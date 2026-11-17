@@ -1282,6 +1282,25 @@ func chargeOf(st state, id string) (day string, c Charge, ok bool) {
 	return "", Charge{}, false
 }
 
+// Reserved answers the minutes a request's turn reserved as it started,
+// from the charge any day state.json keeps holds for it: its deadline
+// less them is when its turn began. ok is false for a request with no
+// charge (one never started, or one whose day is no longer kept) and
+// when state.json cannot be read.
+func (s *Store) Reserved(id string) (minutes int, ok bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	st, err := s.loadState()
+	if err != nil {
+		return 0, false
+	}
+	_, c, ok := chargeOf(st, id)
+	if !ok {
+		return 0, false
+	}
+	return c.Reserved, true
+}
+
 // settleLocked writes the minutes a closed turn ran, rounded up and never
 // more than its reservation, into its charge. The caller holds mu.
 func (s *Store) settleLocked(r Request) error {

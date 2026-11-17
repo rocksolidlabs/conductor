@@ -82,8 +82,8 @@ const (
 	// takes; a longer one is left out.
 	maxStampVersion = 128
 	// maxBrakemanRequestReply bounds GET /api/brakeman/requests/{id}: the
-	// request's document and its brief's.
-	maxBrakemanRequestReply = brakeman.MaxRequestDoc + brakeman.MaxBrief
+	// request's document, its brief's and its digest's.
+	maxBrakemanRequestReply = brakeman.MaxRequestDoc + brakeman.MaxBrief + brakeman.MaxDigestDoc
 	// maxBrakemanEvent bounds a brakeman event's data.
 	maxBrakemanEvent = 200
 	// brakemanMember is the one member of a turn's crew, and its crew's id.
@@ -233,6 +233,9 @@ type brakemanDesk struct {
 	// the next owner's recovery of the same claim. Added to under mu, with
 	// closing read there, so none is admitted once quiesce began.
 	making sync.WaitGroup
+	// live is what the turn in progress is reading now, kept in memory
+	// only (brakeman_progress.go).
+	live brakemanLive
 }
 
 // deskTurn is the slot: a request from starting until its launch has
@@ -1848,6 +1851,9 @@ func (s *Server) routeBrakeman(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/brakeman/role", s.requireAdmin(s.handleBrakemanRoleAction))
 	mux.HandleFunc("POST /api/brakeman/role/notes", s.requireAdmin(s.handleBrakemanKeepNote))
 	mux.HandleFunc("DELETE /api/brakeman/role/notes", s.requireAdmin(s.handleBrakemanClearNotes))
+	mux.HandleFunc("GET /api/brakeman/since", s.requireAdmin(s.handleBrakemanSince))
+	mux.HandleFunc("GET /api/brakeman/opened", s.requireAdmin(s.handleBrakemanOpened))
+	mux.HandleFunc("POST /api/brakeman/opened", s.requireAdmin(s.handleBrakemanMarkOpened))
 	mux.HandleFunc("GET /api/sessions/{id}/brakeman/request", s.handleSessionBrakemanRequest)
 	mux.HandleFunc("POST /api/sessions/{id}/brakeman/brief", s.handleSessionBrakemanBrief)
 }
@@ -1874,6 +1880,11 @@ type brakemanState struct {
 	// stands, without its log (GET /api/brakeman/role).
 	MinutesToday int              `json:"minutesToday"`
 	Role         *crew.RoleRecord `json:"role,omitempty"`
+	// Progress is the turn in progress's reads, budget, times and what it
+	// read last (brakeman_progress.go); NextBriefing the role's next
+	// configured briefing. Both the answer's alone, never kept.
+	Progress     *brakemanProgress `json:"progress,omitempty"`
+	NextBriefing *time.Time        `json:"nextBriefing,omitempty"`
 }
 
 // brakemanFolders is the folder a turn runs in (turnFolder) and the
@@ -1955,6 +1966,7 @@ func (s *Server) handleBrakeman(w http.ResponseWriter, r *http.Request) {
 		rec.Log, rec.Notes = nil, nil
 		out.Role = &rec
 	}
+	s.liveState(d, &out)
 	writeJSON(w, http.StatusOK, out)
 }
 
