@@ -85,6 +85,8 @@ describe('deskRefused and deskStep', () => {
     expect(deskRefused({ code: CloseCode.Forbidden, reason: '' })).toBe(true)
     expect(deskRefused({ code: 1000, reason: '', error: { code: 'not_decision_link', message: '' } })).toBe(true)
     expect(deskRefused({ code: 1000, reason: '', error: { code: 'revoked', message: '' } })).toBe(true)
+    // A hello with a link the owner's store holds as expired is refused with that word.
+    expect(deskRefused({ code: 1000, reason: '', error: { code: 'expired', message: 'this link has expired' } })).toBe(true)
     expect(deskRefused({ code: CloseCode.NotFound, reason: 'no such session' })).toBe(false)
     expect(deskRefused({ code: CloseCode.Unauthorized, reason: '' })).toBe(false)
     expect(deskRefused({ code: 1006, reason: 'peer connection lost' })).toBe(false)

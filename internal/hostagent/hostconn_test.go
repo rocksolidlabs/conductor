@@ -948,6 +948,34 @@ func TestAnswerDroppedWhenItsTurnNeverComes(t *testing.T) {
 	}
 }
 
+// The words a desk tells its viewers as it ends (tellEnded) wait for their
+// turn no longer than the desk's own end message does (controlTurnWait,
+// controlWait here): with the switchyard reading nothing, the desk's end
+// goes on once that wait is over, not once the connection gives up.
+func TestADesksEndWordsWaitNoLongerThanItsOwnMessage(t *testing.T) {
+	a, s, _ := offerHost(t, 300*time.Millisecond)
+	d := &fakeDecisions{}
+	d.ended.Store("dl1", session.ErrExpired)
+	a.opts.Decisions = d
+	a.addPeer("0123456789abcdef", session.RoleControl, "dl1", "")
+	k := &Desk{a: a}
+	told := make(chan struct{})
+	go func() {
+		k.tellEnded()
+		close(told)
+	}()
+	// A bound on a hang: the wait the words have is controlWait.
+	select {
+	case <-told:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the desk's end waited past its own message's turn for the switchyard to read its words")
+	}
+	if n := d.endedAsks.Load(); n != 1 {
+		t.Fatalf("the store was asked about the viewer's link %d times", n)
+	}
+	close(s.read)
+}
+
 // A second offer of a viewer whose first is still being answered (its
 // answer waiting for its turn) is refused, and only the first's answer is
 // sent.

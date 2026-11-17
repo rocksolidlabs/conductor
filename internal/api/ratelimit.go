@@ -7,13 +7,16 @@ import (
 	"time"
 )
 
-// rateLimiter is a per-client token bucket keyed by remote IP.
+// rateLimiter is a per-client token bucket keyed by remote IP. It starts
+// no goroutine: allow forgets the clients idle for idleAfter, at most once
+// every sweepEvery (sweep), on the limiter's clock (now).
 type rateLimiter struct {
 	mu      sync.Mutex
 	rate    float64 // tokens per second
 	burst   float64
 	buckets map[string]*bucket
 	now     func() time.Time
+	swept   time.Time
 }
 
 type bucket struct {
@@ -21,10 +24,15 @@ type bucket struct {
 	last   time.Time
 }
 
+const (
+	// sweepEvery is how often allow looks for idle clients; idleAfter is
+	// how long a client's bucket is kept unused.
+	sweepEvery = time.Minute
+	idleAfter  = 5 * time.Minute
+)
+
 func newRateLimiter(rate, burst float64) *rateLimiter {
-	rl := &rateLimiter{rate: rate, burst: burst, buckets: map[string]*bucket{}, now: time.Now}
-	go rl.sweep()
-	return rl
+	return &rateLimiter{rate: rate, burst: burst, buckets: map[string]*bucket{}, now: time.Now}
 }
 
 // allow consumes one token for key if available.
@@ -32,6 +40,7 @@ func (rl *rateLimiter) allow(key string) bool {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 	now := rl.now()
+	rl.sweep(now)
 	b, ok := rl.buckets[key]
 	if !ok {
 		b = &bucket{tokens: rl.burst, last: now}
@@ -46,16 +55,18 @@ func (rl *rateLimiter) allow(key string) bool {
 	return true
 }
 
-func (rl *rateLimiter) sweep() {
-	for range time.Tick(time.Minute) {
-		rl.mu.Lock()
-		cutoff := rl.now().Add(-5 * time.Minute)
-		for k, b := range rl.buckets {
-			if b.last.Before(cutoff) {
-				delete(rl.buckets, k)
-			}
+// sweep forgets the clients whose buckets have been idle for idleAfter
+// by now, once sweepEvery has passed since it last looked. The caller
+// holds rl.mu.
+func (rl *rateLimiter) sweep(now time.Time) {
+	if now.Sub(rl.swept) < sweepEvery {
+		return
+	}
+	rl.swept = now
+	for k, b := range rl.buckets {
+		if now.Sub(b.last) >= idleAfter {
+			delete(rl.buckets, k)
 		}
-		rl.mu.Unlock()
 	}
 }
 

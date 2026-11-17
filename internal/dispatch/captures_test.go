@@ -26,6 +26,9 @@ import (
 var version5Tables = []string{"captures", "capture_annotations", "capture_annotation_sets", "capture_sends", "capture_send_outcomes",
 	"capture_send_cancels", "capture_files"}
 
+// version6Tables is the tables version 6 makes (opensends_test.go).
+var version6Tables = []string{"capture_sends_open"}
+
 var (
 	capCommit = strings.Repeat("a", 40)
 	contentA  = strings.Repeat("c", 40)
@@ -1109,10 +1112,10 @@ func fixtureV4(t *testing.T) string {
 	return dir
 }
 
-// A version 4 database is brought to version 5 at open: the seven tables
-// and five indexes made, empty, every row of every table as it was, no
-// migrate row, the schema a fresh store's; a capture is then made; and a
-// binary that writes version 4 opens it read-only.
+// A version 4 database is brought to version 5 at open, and on to Version:
+// the seven tables and five indexes made, empty, every row of every table
+// as it was, no migrate row, the schema a fresh store's; a capture is then
+// made; and a binary that writes version 4 opens it read-only.
 func TestMigrationToCapturesKeepsEveryRow(t *testing.T) {
 	ctx := context.Background()
 	dir := fixtureV4(t)
@@ -1123,7 +1126,7 @@ func TestMigrationToCapturesKeepsEveryRow(t *testing.T) {
 	}
 	before, cols := map[string][]string{}, map[string][]string{}
 	for _, table := range tables {
-		if slices.Contains(version5Tables, table) || table == "tickets_fts" || table == "schema_version" {
+		if slices.Contains(version5Tables, table) || slices.Contains(version6Tables, table) || table == "tickets_fts" || table == "schema_version" {
 			continue
 		}
 		cols[table] = columnsOf(t, raw, table)
@@ -1141,7 +1144,7 @@ func TestMigrationToCapturesKeepsEveryRow(t *testing.T) {
 	if ro, why := s.ReadOnly(); ro {
 		t.Fatalf("read-only: %s", why)
 	}
-	if err := s.db.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil || version != captureSchema {
+	if err := s.db.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil || version != Version {
 		t.Fatalf("version %d %v", version, err)
 	}
 	for table, c := range cols {
@@ -1157,7 +1160,7 @@ func TestMigrationToCapturesKeepsEveryRow(t *testing.T) {
 	if n := count(t, s, "SELECT COUNT(*) FROM changes WHERE op = ?", OpMigrate); n != 0 {
 		t.Fatalf("%d migrate rows", n)
 	}
-	if got := texts(t, s, "SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE 'capture%' ORDER BY name"); !slices.Equal(got,
+	if got := texts(t, s, "SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE 'capture%' AND name NOT LIKE 'capture_sends_open%' ORDER BY name"); !slices.Equal(got,
 		[]string{"capture_files_sha256", "capture_send_outcomes_target", "capture_sends_capture_created", "captures_attempt", "captures_created"}) {
 		t.Fatalf("the version 5 indexes: %v", got)
 	}
@@ -1178,7 +1181,7 @@ func TestMigrationToCapturesKeepsEveryRow(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { older.Close() })
-	if ro, why := older.ReadOnly(); !ro || !strings.Contains(why, fmt.Sprintf("version %d, written by a newer Conductor", captureSchema)) {
+	if ro, why := older.ReadOnly(); !ro || !strings.Contains(why, fmt.Sprintf("version %d, written by a newer Conductor", Version)) {
 		t.Fatalf("read-only %v: %s", ro, why)
 	}
 	rc, err := create(t, older, "capture-2", n, f, nil)

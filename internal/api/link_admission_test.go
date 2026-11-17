@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/coder/websocket"
 	"github.com/rocksolidlabs/conductor/ext"
 	"github.com/rocksolidlabs/conductor/internal/config"
 	"github.com/rocksolidlabs/conductor/internal/crew"
@@ -38,7 +39,7 @@ import (
 // expiry sweep) starts ending the viewers attached through it on every
 // session here and every run desk at the switchyard, all at once, and
 // the hook returns without waiting for their closes; the run's desk on
-// this server is closed once the sessions' closes are done. A forgotten
+// this server is closed beside the sessions' closes. A forgotten
 // run's links stay ended here. A link the store does not
 // hold is judged by the switchyard's word alone. The members run on
 // processes in memory, so what reached an input is read, never guessed
@@ -335,7 +336,7 @@ func failRevokesThere(local *testEnv, runID string, sids ...string) {
 // switchyard has not taken its revoke (its carriers fail there): the
 // viewer attached through it to the member's session is ended, told
 // revoked; a viewer that joins with it after is refused revoked; the lane
-// opens nothing for it, and the run's desk refuses its hello; and nothing
+// opens nothing for it, and the run's desk refuses its hello, revoked; and nothing
 // either sends reaches the member's input, which takes the next keys of
 // the server's own window. Before the revoke the link stands: its viewer
 // is welcomed and its keys are written.
@@ -378,7 +379,7 @@ func TestALinkRevokedHereOpensNoneOfItsSessions(t *testing.T) {
 			endsRevoked(t, joining, "the viewer that joined with the revoked link")
 
 			if kind == "run" {
-				refusedAct(t, deskHello(t, yard, token), "the desk's viewer of the revoked link", proto.DecideNotDecisionLink)
+				refusedAct(t, deskHello(t, yard, token), "the desk's viewer of the revoked link", proto.ErrCodeRevoked)
 			}
 
 			own := dialViewer(t, local, sid, adminToken)
@@ -551,6 +552,102 @@ func TestARunLinksRevokeEndsItsViewersEverywhereAtOnce(t *testing.T) {
 	}
 }
 
+// A run link's end begun once the server's stop has made its last wait is
+// done before its caller returns: with a session whose close is held, the
+// revoke's caller is held inside the walk, and once the close is let go and
+// the caller has returned, no goroutine it started is left. The caller
+// runs under a label of the test's own, which what it starts inherits.
+func TestALinksEndAfterTheStopsLastWaitIsDoneBeforeItsCallerReturns(t *testing.T) {
+	local, _ := onFakes(t)
+	link, _, err := local.srv.links.CreateRunLink("run-after-the-stop", session.RoleControl, "phone", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	held := heldSession(t, local)
+	ctx, cancel := context.WithTimeout(context.Background(), testWait)
+	defer cancel()
+	local.srv.Shutdown(ctx)
+
+	value := strconv.FormatInt(fixtureRuns.Add(1), 10)
+	returned := make(chan struct{})
+	go pprof.Do(context.Background(), pprof.Labels(fixtureLabel, value), func(context.Context) {
+		local.srv.links.RevokeRun(link.RunID, link.ID)
+		close(returned)
+	})
+	askedBy(t, held, "the revoke after the stop")
+	// Until the close is let go, one of two states holds: the caller has
+	// returned (the walk left running on its own), or the caller is inside
+	// the walk (the revoke's frame and the walk's on one stack).
+	inside := func(stacks string) bool {
+		for _, g := range strings.Split(stacks, "\n\n") {
+			if strings.Contains(g, "(*Store).RevokeRun") && strings.Contains(g, "(*Server).disconnectLinks") {
+				return true
+			}
+		}
+		return false
+	}
+	var stacks string
+	if !waitFor(testWait, func() bool {
+		_, stacks = fixtureGoroutines(value)
+		select {
+		case <-returned:
+			return true
+		default:
+		}
+		return inside(stacks)
+	}) {
+		t.Fatalf("the revoke's caller neither returned nor walked:\n%s", stacks)
+	}
+	select {
+	case <-returned:
+		_, stacks = fixtureGoroutines(value)
+		t.Fatalf("the revoke's caller returned with the walk still under way:\n%s", stacks)
+	default:
+	}
+	held.release()
+	select {
+	case <-returned:
+	case <-time.After(testWait):
+		t.Fatal("the revoke's caller never returned once the close finished")
+	}
+	left := 0
+	if !waitFor(testWait, func() bool {
+		left, stacks = fixtureGoroutines(value)
+		return left == 0
+	}) {
+		t.Fatalf("%d goroutines the revoke started are left once its caller returned:\n%s", left, stacks)
+	}
+}
+
+// Once the server's stop has closed its sessions' viewers, a session
+// refuses a new one with the stop's reason (1001, server shutting down),
+// by the server's own window and through a run's link alike; a run
+// forgotten after the stop leaves no viewer attached through its link.
+func TestASessionOfAStoppedServerAdmitsNoViewer(t *testing.T) {
+	local, _ := onFakes(t)
+	runID := local.launchCrew(t, "Pair", catMember("a", "immediately"))
+	sid := local.waitRunning(t, runID, "a")
+	_, token := local.decisionLink(t, "/api/runs/"+runID+"/links", "phone", 0)
+	ctx, cancel := context.WithTimeout(context.Background(), testWait)
+	defer cancel()
+	local.srv.Shutdown(ctx)
+	for who, tok := range map[string]string{"the server's own window": adminToken, "the run link's viewer": token} {
+		v := dialViewer(t, local, sid, tok)
+		v.hello(80, 24)
+		if code, reason := closedAs(v); code != websocket.StatusGoingAway || reason != "" {
+			t.Fatalf("%s attaching after the stop was closed %d, told %q", who, code, reason)
+		}
+	}
+	local.srv.runs.ForgetForTest(runID)
+	d, ok := local.srv.registry.Get(sid)
+	if !ok {
+		return
+	}
+	if n := d.(*session.Local).LinkViewers(); len(n) != 0 {
+		t.Fatalf("viewers attached through links after the run was forgotten past the stop: %v", n)
+	}
+}
+
 // A run's decision links expiring in one sweep, their revokes owed at the
 // switchyard, a session whose close does not finish held: the sweep
 // returns (it tells both run links without waiting for their viewers'
@@ -609,12 +706,13 @@ func (d deskEndFirst) DisconnectLink(linkID string, why error) {
 
 // A run's last decision link expiring here ends the run's desk at the
 // switchyard as well (deskCheck), as the walk starts ending the link's
-// viewers: a desk viewer the desk's end reaches first is told the session
-// ended, one the walk reaches first is told expired, and the desk ends
-// either way. While another decision link of the run stands, the desk
-// stays and its viewer of the expired link is told expired
-// (TestARunLinksExpiryEndsItsViewersEverywhereAtOnce).
-func TestARunsLastDecisionLinkExpiringEndsItsDesk(t *testing.T) {
+// viewers: the desk's viewer of the link is told expired before the desk
+// ends, whether the desk's end (its walk's word held until the desk is
+// done) or the walk (the desk's judgement held until the viewer is told)
+// reaches it first, and the desk ends either way. While another decision
+// link of the run stands, the desk stays and its viewer of the expired
+// link is told expired (TestARunLinksExpiryEndsItsViewersEverywhereAtOnce).
+func TestARunsLastDecisionLinkExpiringTellsItsDesksViewersExpired(t *testing.T) {
 	for _, first := range []string{"the desk's end", "the walk"} {
 		t.Run(first, func(t *testing.T) {
 			yard, local, procs := deskPairOnFakes(t)
@@ -623,7 +721,6 @@ func TestARunsLastDecisionLinkExpiringEndsItsDesk(t *testing.T) {
 			runID, _ := publishedMembers(t, local, procs, "a")
 			_, token := ttlLink(t, local, runID, 3600, "phone")
 			desk := joinDesk(t, yard, token)
-			want := proto.ErrCodeSessionEnded
 			told := make(chan struct{})
 			var once sync.Once
 			let := func() { once.Do(func() { close(told) }) }
@@ -634,7 +731,6 @@ func TestARunsLastDecisionLinkExpiringEndsItsDesk(t *testing.T) {
 				rd.desk = deskEndFirst{rd.desk}
 			} else {
 				// The desk's judgement waits until its viewer has been told.
-				want = proto.ErrCodeExpired
 				local.srv.deskCheckSeam = func(string) { <-told }
 			}
 			local.srv.pubMu.Unlock()
@@ -643,18 +739,46 @@ func TestARunsLastDecisionLinkExpiringEndsItsDesk(t *testing.T) {
 			if n := local.srv.links.ExpireDue(time.Now().UTC().Add(90 * time.Minute)); n != 1 {
 				t.Fatalf("the sweep told %d links", n)
 			}
-			endsTold(t, desk.wsClient, "the desk's viewer of the run's last link", want, true)
+			endsTold(t, desk.wsClient, "the desk's viewer of the run's last link", proto.ErrCodeExpired, true)
 			let()
 			until(t, "the run's desk ended", func() bool { return local.srv.liveDesk(runID) == nil })
 		})
 	}
 }
 
-// The run's desk on this server, while a session's close is held: from
-// the revoke's mark its viewer of the revoked link is refused each act,
-// revoked, and the revoke is answered; the desk is closed, told revoked,
-// once the sessions' closes are done.
-func TestTheServersOwnDeskIsRefusedFromTheMarkAndClosedAfterTheSessions(t *testing.T) {
+// A run's last decision link expiring while its desk's viewer's pump at
+// the switchyard is held inside a write, until the desk has ended here and
+// there: once let go, the viewer is told expired, not that the session
+// ended, nor closed without a word.
+func TestARunsLastLinksWordReachesADeskViewerWhosePumpIsHeld(t *testing.T) {
+	yard, local, procs := deskPairOnFakes(t)
+	// The held write outlasts no close wait of the viewer's.
+	yard.srv.viewerCloseWait = 2 * time.Minute
+	writes := newHoldWrites(t)
+	yard.srv.viewerSeam = writes.seam()
+	var ahead atomic.Int64
+	local.srv.links.SetNowForTest(func() time.Time { return time.Now().UTC().Add(time.Duration(ahead.Load())) })
+	runID, _ := publishedMembers(t, local, procs, "a")
+	_, token := ttlLink(t, local, runID, 3600, "phone")
+	desk := joinDesk(t, yard, token)
+	writes.hold.Store(true)
+	// The list's reply holds the viewer's pump inside its write.
+	desk.send(proto.MustControl(proto.DecisionsList{T: proto.CtlDecisionsList, ReqID: desk.reqID()}))
+	until(t, "the desk viewer's pump held in a write", func() bool { return writes.held.Load() > 0 })
+	ahead.Store(int64(90 * time.Minute))
+	if n := local.srv.links.ExpireDue(time.Now().UTC().Add(90 * time.Minute)); n != 1 {
+		t.Fatalf("the sweep told %d links", n)
+	}
+	until(t, "the run's desk ended here", func() bool { return local.srv.liveDesk(runID) == nil })
+	until(t, "the switchyard let the desk go", func() bool { return yard.srv.hosts.DeskCount() == 0 })
+	writes.let()
+	endsTold(t, desk.wsClient, "the desk's viewer whose pump was held", proto.ErrCodeExpired, true)
+}
+
+// The run's desk on this server is closed beside the sessions' closes:
+// while a session's close is held, the revoke is answered and the desk's
+// viewer of the revoked link is closed, told revoked.
+func TestTheServersOwnDeskIsClosedBesideTheSessionsCloses(t *testing.T) {
 	local, _ := onFakes(t)
 	runID := local.launchCrew(t, "Pair", catMember("a", "immediately"))
 	path := "/api/runs/" + runID + "/links"
@@ -672,20 +796,14 @@ func TestTheServersOwnDeskIsRefusedFromTheMarkAndClosedAfterTheSessions(t *testi
 	if code := heldWhile(t, answered, "the revoke's answer"); code != http.StatusNoContent {
 		t.Fatalf("the revoke answered %d", code)
 	}
-	for range 2 {
-		id := desk.reqID()
-		if code := desk.refusedRead(proto.DecisionsList{T: proto.CtlDecisionsList, ReqID: id}, id); code != proto.DecideRevoked {
-			t.Fatalf("the desk's list while the close is held was refused %q", code)
-		}
-	}
+	endsRevoked(t, desk.wsClient, "the server's own desk's viewer while the session's close is held")
 	held.release()
-	endsRevoked(t, desk.wsClient, "the server's own desk's viewer")
 }
 
 // A session's link and a run's link due in one sweep, the session link's
-// close held (its hook waits for its viewers' closes) and the run link
-// told after it, as the sweep tells its links one at a time: while the
-// close is held, the run link's viewer on a member's session has its keys
+// close held (its hook waits for its viewers' closes) and the run link's
+// hook held until it is let go, a seam of the test's own: while the close
+// is held, the run link's viewer on a member's session has its keys
 // refused expired, never written, and a viewer that joins with the link is
 // refused expired; once the close is let go, the run link is told and its
 // viewer is ended.
@@ -701,9 +819,8 @@ func TestAnExpiredRunLinksRefusalDoesNotWaitForTheSweepsOrder(t *testing.T) {
 	if _, _, err := local.srv.links.Create(held.info.ID, session.RoleControl, "held", time.Hour); err != nil {
 		t.Fatal(err)
 	}
-	// The sweep tells its links in no set order: the run link's hook is
-	// told only once the session link's close is let go, whichever comes
-	// first.
+	// The sweep tells its links at once: the run link's hook goes on only
+	// once the session link's close is let go.
 	hook := local.srv.links.OnRevokeRun
 	local.srv.links.OnRevokeRun = func(runID, linkID string) {
 		<-held.gate
@@ -776,8 +893,8 @@ func TestTheDesksReadLoopIsNotHeldByAViewersClose(t *testing.T) {
 // and the switchyard's clock not moved: the attached viewer's keys are
 // refused expired and never written, a viewer that joins is refused
 // expired, and a viewer that opens the run's desk with it is refused
-// not_decision_link at its hello, as for a revoked link; the member's
-// input takes the server's own window's keys.
+// expired at its hello, as the store says of it; the member's input takes
+// the server's own window's keys.
 func TestALinkPastItsExpiryHereIsRefusedExpired(t *testing.T) {
 	yard, local, procs := deskPairOnFakes(t)
 	var ahead atomic.Int64
@@ -802,7 +919,7 @@ func TestALinkPastItsExpiryHereIsRefusedExpired(t *testing.T) {
 	refusedAct(t, attached, "the attached viewer's keys past the expiry", proto.ErrCodeExpired)
 	joining := relayHello(t, yard, hostedID, token)
 	endsTold(t, joining, "the viewer that joined past the expiry here", proto.ErrCodeExpired, false)
-	refusedAct(t, deskHello(t, yard, token), "the desk's viewer past the expiry here", proto.DecideNotDecisionLink)
+	refusedAct(t, deskHello(t, yard, token), "the desk's viewer past the expiry here", proto.ErrCodeExpired)
 	own := dialViewer(t, local, sid, adminToken)
 	own.hello(80, 24)
 	own.expectControl(proto.CtlWelcome)
@@ -987,9 +1104,7 @@ func underFixtureLabel(t *testing.T, name string, f func(*testing.T)) string {
 // fixtureGoroutines counts the goroutines that carry the label's value
 // and run this repository's code outside a test's runner (a server's, a
 // session's, a connection's), from one read of the goroutine profile, and
-// returns their stacks. A server's rate limiters' sweeps are left out:
-// each server starts two that last as long as the process
-// (newRateLimiter), on main as here.
+// returns their stacks.
 func fixtureGoroutines(value string) (int, string) {
 	var buf bytes.Buffer
 	if err := pprof.Lookup("goroutine").WriteTo(&buf, 1); err != nil {
@@ -1000,7 +1115,7 @@ func fixtureGoroutines(value string) (int, string) {
 	var own []string
 	for _, g := range strings.Split(buf.String(), "\n\n") {
 		if !strings.Contains(g, mark) || !strings.Contains(g, "rocksolidlabs/conductor/internal/") ||
-			strings.Contains(g, "testing.tRunner") || strings.Contains(g, "(*rateLimiter).sweep") {
+			strings.Contains(g, "testing.tRunner") {
 			continue
 		}
 		// A record of the profile is the goroutines of one stack and one

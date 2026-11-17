@@ -145,6 +145,7 @@ type Store struct {
 	// session's link (a link revoked before included) and once the link is
 	// found expired (ExpireDue), so live viewers can be closed. The link is
 	// marked first: a viewer that attaches after the mark is refused (Live).
+	// A sweep tells its links' hooks at once, each on a goroutine of its own.
 	OnRevoke func(sessionID, linkID string)
 	// OnRevokeRun is OnRevoke for a run's link.
 	OnRevokeRun func(runID, linkID string)
@@ -536,8 +537,10 @@ func (s *Store) revoke(linkID string, owned func(*Link) bool, wait bool, notify 
 // as a revoke does (end: nothing begun for it after, those begun before
 // waited for up to HoldWait), and then tells its hooks, once per link (OnRevoke for a
 // session's link, OnRevokeRun for a run's), so the viewers still attached
-// through it are closed. A link revoked before is not told again. It
-// returns how many it told.
+// through it are closed: all the links at once, so a hook that waits (a
+// session link's, for its viewers' closes) holds no other link's. It
+// returns once every hook has returned, with how many it told. A link
+// revoked before is not told again.
 func (s *Store) ExpireDue(now time.Time) int {
 	var todo []*Link
 	s.mu.Lock()
@@ -555,8 +558,9 @@ func (s *Store) ExpireDue(now time.Time) int {
 	}
 	wg.Wait()
 	for _, l := range todo {
-		s.tellExpired(l)
+		wg.Go(func() { s.tellExpired(l) })
 	}
+	wg.Wait()
 	return len(todo)
 }
 

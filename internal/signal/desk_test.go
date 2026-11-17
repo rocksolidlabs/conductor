@@ -187,3 +187,39 @@ func TestRelayDropsTheLaneFromAViewer(t *testing.T) {
 		}
 	}
 }
+
+// A desk's viewer the host refuses for its link (`expired`, `revoked`) is
+// closed with that word, also when the desk ends before the viewer's pump
+// has written anything: the pump, begun here only once the desk has ended
+// (its earlier frame still queued), closes the viewer's sink with the
+// link's refusal, which the sink tells it, and writes nothing before it.
+func TestADesksViewerKeepsItsLinksWordThroughTheDesksEnd(t *testing.T) {
+	for code, want := range map[string]error{proto.ErrCodeExpired: session.ErrExpired, proto.ErrCodeRevoked: session.ErrRevoked} {
+		t.Run(code, func(t *testing.T) {
+			hub := NewHub(session.NewRegistry(2), nil)
+			d, _, err := hub.RegisterDesk(deskOf("inst", "run-1"), NewHostConn())
+			if err != nil {
+				t.Fatal(err)
+			}
+			v, err := d.AddViewer("0123456789abcdef", session.RoleControl, "l1", "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			d.HostRelayFrame(v.ID, proto.Frame{Type: proto.TypeControl, Payload: []byte(`{"t":"decisions_changed"}`)})
+			d.HostViewerError(v.ID, code, "the host's words")
+			d.HostStatus(session.StatusStopped, nil)
+			d.EndDesk()
+			if _, ok := hub.Desk(d.Info().ID); ok {
+				t.Fatal("the stopped desk is still held")
+			}
+			sink := &pumpSink{}
+			v.Pump(sink)
+			if !sink.closed || !errors.Is(sink.reason, want) || (want == session.ErrRevoked) == errors.Is(sink.reason, session.ErrExpired) {
+				t.Fatalf("the viewer's sink was closed (%v) with %v, want %v", sink.closed, sink.reason, want)
+			}
+			if n := sink.written(); n != 0 {
+				t.Fatalf("the viewer was written %d frames after its link's refusal", n)
+			}
+		})
+	}
+}

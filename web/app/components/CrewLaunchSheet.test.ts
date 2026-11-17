@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it, vi } from 'vitest'
 import { useDispatchApi } from '../composables/useDispatch'
-import { AT_LAUNCH, OWN_LOGIN, SHEET_DEADLINE_MS, SheetConfirmation, accountName, accountUnreadable, addMemberProblem, boundWords, brakemanAccount, cleanFolder, launchAccountWords, launchLines, memberAccountItems, memberAccountProblem, namedAccounts, readNamedAccounts, readSheet, withAgent } from '../utils/crewLaunch'
+import { AT_LAUNCH, OWN_LOGIN, SHEET_DEADLINE_MS, SheetConfirmation, accountName, afterRefusal, accountUnreadable, addMemberProblem, boundWords, brakemanAccount, cleanFolder, launchAccountWords, launchLines, memberAccountItems, memberAccountProblem, namedAccounts, readNamedAccounts, launchYoloWords, readSheet, refusedTarget, sheetNotice, UNREVISED_WORDS, withAgent, type SheetTarget } from '../utils/crewLaunch'
 import { capacityKey, type After, type CapacityView } from '../utils/capacity'
 import { draftMember, toCrewInput, toCrewMember } from '../utils/crews'
 
@@ -164,6 +164,95 @@ describe('the launch sheet', () => {
     expect(c.holds(n), 'opened again while the launch was under way').toBe(false)
     c.done()
     expect(c.holds(c.take(true)), "the new opening's own launch").toBe(true)
+  })
+
+  it("reads the crew again by its id once the server refused the launch crew_changed, as a new opening: a draft's too, the run's name kept", () => {
+    const byId: SheetTarget = { id: 'pinned', label: 'fix login' }
+    const again = refusedTarget(byId, 'pinned', 'changed', true, new SheetConfirmation())
+    // A new target even for the same id: the sheet reads again only for a target it has not read (CrewLaunchSheet's watch).
+    expect(again).toEqual({ id: 'pinned', label: 'fix login' })
+    expect(again).not.toBe(byId)
+    // A draft's launch named the revision its save answered: the crew is then read as saved, by the id the save gave it.
+    const draft = { key: 'new', draft: {} as never, label: '' } as SheetTarget
+    expect(refusedTarget(draft, 'made-2', 'changed', true, new SheetConfirmation())).toEqual({ id: 'made-2', label: '' })
+    // A draft whose save answered no revision keeps its target, Launch held (sheetNotice).
+    expect(refusedTarget(draft, 'made-2', 'unrevised', true, new SheetConfirmation())).toBe(draft)
+    // An opening that is no longer the sheet's is not opened again: the page only says so.
+    expect(refusedTarget(byId, 'pinned', 'changed', false, new SheetConfirmation())).toBeNull()
+  })
+
+  it('tells a refusal that lands after the page was left by a toast naming the crew, never by the sheet it no longer draws', () => {
+    const byId: SheetTarget = { id: 'pinned', label: 'fix login' }
+    const crew = { id: 'pinned', name: 'Pinned crew' }
+    const here = { confirmed: true, mounted: true, open: true, at: 'pinned', selected: 'pinned' }
+    // The page present, its sheet open on that opening: the sheet reads the crew again and says why (sheetNotice), no toast.
+    expect(afterRefusal(byId, crew, 'changed', here, new SheetConfirmation())).toEqual({ target: { id: 'pinned', label: 'fix login' }, refused: 'changed' })
+    // The page left while the launch was under way: Nuxt keeps its route and its sheet's state as they were, but it is drawn nowhere.
+    const c = new SheetConfirmation()
+    c.opened()
+    const n = c.take(true)
+    expect(afterRefusal(byId, crew, 'changed', { ...here, mounted: false }, c)).toEqual({ toast: 'Pinned crew was saved since the launch sheet read it: no run was started.' })
+    expect(c.holds(n), 'no new opening of a sheet drawn nowhere').toBe(true)
+    expect(afterRefusal(byId, crew, 'unrevised', { ...here, mounted: false }, c)).toEqual({ toast: 'Pinned crew came without a revision from this server: no run was started.' })
+    // Closed, opened on another crew, or opened again: the toast too.
+    for (const p of [{ open: false }, { selected: 'other' }, { confirmed: false }]) expect(afterRefusal(byId, crew, 'changed', { ...here, ...p }, c)).toHaveProperty('toast')
+  })
+
+  it('keeps the refused sheet open as a new opening, whose Launch takes a confirmation once the refused launch has ended', () => {
+    for (const why of ['changed', 'unrevised'] as const) {
+      const c = new SheetConfirmation()
+      c.opened()
+      const n = c.take(true)
+      expect(n).toBe(1)
+      refusedTarget({ id: 'pinned', label: '' }, 'pinned', why, true, c)
+      // The page's launch closes the sheet at its end only while its opening holds: the sheet refused stays open.
+      expect(c.holds(n), `${why}: the refused opening is no longer the sheet's`).toBe(false)
+      c.done()
+      expect(c.take(true), `${why}: the sheet's Launch, once read again`).toBe(2)
+    }
+    // A refusal for an opening no longer the sheet's opens nothing: the sheet opened since keeps its own confirmation.
+    const c = new SheetConfirmation()
+    c.opened()
+    c.take(true)
+    c.opened()
+    refusedTarget({ id: 'pinned', label: '' }, 'pinned', 'changed', false, c)
+    c.done()
+    expect(c.take(true)).toBe(2)
+  })
+
+  it("says what the sheet does after a refusal as its read goes, and holds Launch until the crew is drawn again", () => {
+    const first = 'The crew was saved since this sheet read it, so nothing was launched.'
+    expect(sheetNotice('changed', 'reading', false)).toEqual({ kind: 'changed', words: `${first} It is being read again.`, hold: true })
+    // The read's own error is drawn beside it: the notice adds nothing that contradicts it, and Launch has nothing to start.
+    expect(sheetNotice('changed', 'failed', false)).toEqual({ kind: 'changed', words: first, hold: true })
+    expect(sheetNotice('changed', 'drawn', false)).toEqual({ kind: 'changed', words: `${first} It is shown below as the server holds it now: Launch starts the crew as shown here, and what this sheet says is decided at the launch is decided then.`, hold: false })
+    expect(sheetNotice(null, 'drawn', false)).toBeNull()
+    expect(sheetNotice(undefined, 'reading', false)).toBeNull()
+  })
+
+  it('holds Launch for a crew read without a revision, and for a draft whose save answered none', () => {
+    const held = { kind: 'unrevised', words: UNREVISED_WORDS, hold: true }
+    expect(UNREVISED_WORDS).toBe('This server does not say which copy of the crew it holds, so this sheet cannot tell which copy Launch would start: nothing is launched. Load the page again.')
+    expect(sheetNotice(null, 'drawn', true), 'a saved crew read without one').toEqual(held)
+    expect(sheetNotice('changed', 'drawn', true), 'read again without one').toEqual(held)
+    expect(sheetNotice('unrevised', 'drawn', false), "a draft's save that answered none").toEqual(held)
+    expect(sheetNotice(null, 'reading', true), 'nothing drawn yet: the reading words alone').toBeNull()
+  })
+
+  it("says the run's yolo choice: the crew's setting, or the server's default at the launch with what it is now", () => {
+    expect(launchYoloWords(true, false)).toBe("Yolo on: the members skip their permission prompts (the crew's setting)")
+    expect(launchYoloWords(false, false)).toBe("Yolo off: the members keep their permission prompts (the crew's setting)")
+    expect(launchYoloWords(true, true)).toBe("Yolo: the server's default at the launch (now on: the members skip their permission prompts)")
+    expect(launchYoloWords(false, true)).toBe("Yolo: the server's default at the launch (now off: the members keep their permission prompts)")
+  })
+
+  it("source: the page sends a launch only with the revision of what it launches and answers crew_changed by reading again; the sheet says why", () => {
+    const page = readFileSync(new URL('../pages/crews/[[id]].vue', import.meta.url), 'utf8')
+    expect(page).toContain("const body = crewLaunchBody(t.label, c.revision)\n    if (!body) return startedNothing(t, c, 'unrevised', confirmed())")
+    expect(page).toContain("e.code === CREW_CHANGED) startedNothing(t, c, 'changed', confirmed())")
+    const src = readFileSync(new URL('./CrewLaunchSheet.vue', import.meta.url), 'utf8')
+    expect(src).toContain('<div role="status">')
+    expect(src).toContain(':disabled="!open || !crew || launching || notice?.hold"')
   })
 
   it("source: the sheet's lines draw compact panels that read on open, the ticket dialog's compact panels do not", () => {

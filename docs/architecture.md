@@ -143,6 +143,23 @@ server holds more than 512 KiB for, unwritten, is behind (`viewer_behind`):
 the host holds its frames until it catches up, as it holds a WebRTC viewer's
 while the data channel is full, so the shared connection carries what each
 relayed viewer takes.
+The hosted agent's hooks report its attention to the host on its own
+machine (`hostagent/localreport.go`): `conductor host` listens on a
+unix-domain socket in a folder of mode 0700 of the user's own, made before
+the agent's process starts and named to it in `CONDUCTOR_HOST_SOCKET`.
+`conductor notify` posts the attention route's request there with the
+session's agent token, which the host minted and checks; the host applies
+the report to its session through the calls that spend the session's
+bucket and tells the server on its control connection, now or as its next
+connection starts, so a report made while that connection is down is not
+lost; the agent's own session id a report names goes to the server on
+`agent_session`, which keeps it in the record as its attention route does
+(`hostagent/agentsession.go`), and a host whose server does not say it
+takes that names no socket. The sender posts to the server's route only
+when the socket cannot be reached; a host's refusal is a refusal. Every process of the user can
+reach the socket, other sessions' agents among them: the per-session token
+tells one session's agent from another's, as on the server's route (see
+docs/protocol.md, The host's socket).
 The server never sees terminal bytes on the WebRTC path and never runs the
 command. On the relay path it carries them and can read them; and since it
 carries the signalling and tells the host each viewer's role, a host trusts
