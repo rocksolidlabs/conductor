@@ -69,18 +69,21 @@ func (s *Server) routeCaptureSends(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/captures/{id}/send", s.requireAdmin(s.launchingAny(s.handleCaptureSend)))
 	mux.HandleFunc("POST /api/captures/{id}/sends/{send}/cancel", s.requireAdmin(s.launchingAny(s.handleCaptureSendCancel)))
 	mux.HandleFunc(captureSendRead, s.readable(captureSendRead, s.launchingAny(s.handleCaptureSendRead)))
+	s.routeCaptureDecisions(mux)
 }
 
 // The bodies a send route takes.
 type (
 	// captureSendTo is where a send goes: a new ticket (project, title),
-	// an existing one (key), or Brakeman (question).
+	// an existing one (key), Brakeman (question), or a decision record
+	// (decision, its dr-<n>).
 	captureSendTo struct {
 		Kind     string `json:"kind"`
 		Project  string `json:"project,omitempty"`
 		Title    string `json:"title,omitempty"`
 		Key      string `json:"key,omitempty"`
 		Question string `json:"question,omitempty"`
+		Decision string `json:"decision,omitempty"`
 	}
 	captureSendBody struct {
 		OpID   string        `json:"opId"`
@@ -297,13 +300,16 @@ func (s *Server) handleCaptureSend(w http.ResponseWriter, r *http.Request) {
 	rc, found, err := ds.Replay(ctx, req.op, dispatch.IntentCaptureSend, captureArgs{ID: id, Received: req.digest})
 	if err == nil && !found {
 		to := req.body.To
-		dest := dispatch.Destination{Kind: to.Kind, Project: to.Project, Title: to.Title, Key: to.Key}
+		dest := dispatch.Destination{Kind: to.Kind, Project: to.Project, Title: to.Title, Key: to.Key, Decision: to.Decision}
 		var facts dispatch.SendFacts
-		if to.Kind == dispatch.SendBrakeman {
+		switch to.Kind {
+		case dispatch.SendBrakeman:
 			if facts.Request, err = s.sendRequestOf(ctx, ds, id, to.Question, req.op.By); err != nil {
 				s.dispatchError(w, "capture", err)
 				return
 			}
+		case dispatch.SendDecision:
+			facts.Request = decisionRequestOf(to.Decision, id, req.body.Rev)
 		}
 		rc, err = ds.SendCapture(ctx, req.op, req.digest, id, req.body.Rev, dest, facts)
 	}
@@ -317,9 +323,13 @@ func (s *Server) handleCaptureSend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var refusal *apiError
-	if sv.Kind == dispatch.SendBrakeman && sv.State == dispatch.SendPending {
-		if refusal, err = s.trySend(ctx, sv.ID, !rc.Repeat); err != nil {
-			s.log.Warn("a capture's send to Brakeman is kept pending: it is settled later", "send", sv.ID, "err", err)
+	if sv.State == dispatch.SendPending && (sv.Kind == dispatch.SendBrakeman || sv.Kind == dispatch.SendDecision) {
+		try := s.trySend
+		if sv.Kind == dispatch.SendDecision {
+			try = s.tryDecision
+		}
+		if refusal, err = try(ctx, sv.ID, !rc.Repeat); err != nil {
+			s.log.Warn("a capture's send is kept pending: it is settled later", "send", sv.ID, "kind", sv.Kind, "err", err)
 		}
 		if again, err := ds.CaptureSend(ctx, rc.ID); err == nil {
 			sv = again
@@ -677,6 +687,12 @@ func (s *Server) handleCaptureSendCancel(w http.ResponseWriter, r *http.Request)
 		s.dispatchError(w, "send", err)
 		return
 	}
+	if sv.Kind == dispatch.SendDecision {
+		// A comment on a decision is DR1's to keep: once asked it is made,
+		// or refused, and nothing of it runs on.
+		writeError(w, http.StatusConflict, dispatch.RefusalStaleRevision, "a send to a decision is a comment: nothing of it is under way to cancel")
+		return
+	}
 	rc, err := ds.AskCancel(ctx, req.op, sendID)
 	if err != nil {
 		s.dispatchError(w, "send", err)
@@ -821,18 +837,21 @@ func (s *Server) stopCaptureSends() {
 	})
 }
 
-// settleCaptureSends is one pass of the settlement, while the desk holds
-// its records (recovered) and is not closing: every pending send to
-// Brakeman tried again from its stored request (trySend; a send with a
-// cancel asked is the cancel's), every cancel not done finished
-// (finishCancel), and every pinned op of a send that is no longer pending,
-// or is gone, let go at the desk. A page that cannot be read ends the
+// settleCaptureSends is one pass of the settlement: every pending send to
+// a decision tried again (tryDecision); and while the desk holds its
+// records (recovered) and is not closing, every pending send to Brakeman
+// tried again from its stored request (trySend; a send with a cancel
+// asked is the cancel's), every cancel not done finished (finishCancel),
+// and every pinned op of a send that is no longer pending, or is gone,
+// let go at the desk. A page that cannot be read ends the
 // pass; the next one reads it again.
 func (s *Server) settleCaptureSends(ctx context.Context) {
 	ds, d := s.dispatch, s.brakeman
-	if ds == nil || d == nil || !d.recovered.Load() || d.recovering.Load() || d.closing.Load() {
+	if ds == nil {
 		return
 	}
+	// The sends to a decision are DR1's to answer, the desk's to Brakeman.
+	desk := d != nil && d.recovered.Load() && !d.recovering.Load() && !d.closing.Load()
 	walk := func(page func(after string) (dispatch.SendsPage, error), each func(dispatch.CaptureSend)) {
 		for after := ""; ctx.Err() == nil; {
 			p, err := page(after)
@@ -853,13 +872,22 @@ func (s *Server) settleCaptureSends(ctx context.Context) {
 	walk(func(after string) (dispatch.SendsPage, error) {
 		return ds.PendingSends(ctx, after, dispatch.MaxCapturePage)
 	}, func(sv dispatch.CaptureSend) {
-		if sv.Kind != dispatch.SendBrakeman || len(sv.Cancels) > 0 {
+		var err error
+		switch {
+		case len(sv.Cancels) > 0:
 			return
+		case sv.Kind == dispatch.SendDecision:
+			_, err = s.tryDecision(ctx, sv.ID, false)
+		case sv.Kind == dispatch.SendBrakeman && desk:
+			_, err = s.trySend(ctx, sv.ID, false)
 		}
-		if _, err := s.trySend(ctx, sv.ID, false); err != nil && ctx.Err() == nil {
-			s.log.Warn("a capture's send to Brakeman is kept pending: the next pass tries it again", "send", sv.ID, "err", err)
+		if err != nil && ctx.Err() == nil {
+			s.log.Warn("a capture's send is kept pending: the next pass tries it again", "send", sv.ID, "kind", sv.Kind, "err", err)
 		}
 	})
+	if !desk {
+		return
+	}
 	walk(func(after string) (dispatch.SendsPage, error) {
 		return ds.AskedCancels(ctx, after, dispatch.MaxCapturePage)
 	}, func(sv dispatch.CaptureSend) {
