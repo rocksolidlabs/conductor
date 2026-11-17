@@ -107,7 +107,7 @@ func pageIDs(t *testing.T, p SendsPage, err error) []string {
 }
 
 // pending, asked and sentTo are the ids of the store's pending sends, of
-// its sends with a cancel not cancelled, and of its sends of the kind sent
+// its sends with a cancel open, and of its sends of the kind sent
 // to the target.
 func pending(t *testing.T, s *Store) []string {
 	t.Helper()
@@ -537,7 +537,9 @@ type outcomeRow struct {
 }
 
 // insertOutcomes writes a send's outcome rows in their order, as a
-// replica's arrive, past the store's own rule.
+// replica's arrive, past the store's own rule, each followed by the send's
+// open row written again from its rows, as every write of a send's rows
+// does (reopenSend).
 func insertOutcomes(t *testing.T, s *Store, sendID string, rows ...outcomeRow) {
 	t.Helper()
 	for _, o := range rows {
@@ -549,6 +551,19 @@ func insertOutcomes(t *testing.T, s *Store, sendID string, rows ...outcomeRow) {
 			sendID, id, o.kind, o.target, stamp(o.at), o.actor, o.op); err != nil {
 			t.Fatal(err)
 		}
+		reopenRow(t, s, sendID)
+	}
+}
+
+// reopenRow writes the open row of the send with the id again from its
+// rows, as reopenSend does in an operation's transaction.
+func reopenRow(t *testing.T, s *Store, sendID string) {
+	t.Helper()
+	if _, err := s.db.Exec("DELETE FROM capture_sends_open WHERE send_id = ?", sendID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(openSendsFill("s.id = ?"), sendID); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -603,6 +618,7 @@ func TestSendOutcomesMergeByTheProjection(t *testing.T) {
 			if _, err := s.db.Exec("INSERT INTO capture_send_cancels (send_id, op_id, at, actor) VALUES (?, 'k', ?, 'a')", sid, stamp(t0)); err != nil {
 				t.Fatal(err)
 			}
+			reopenRow(t, s, sid)
 			insertOutcomes(t, s, sid, order...)
 			sv := sendOf(t, s, sid)
 			if sv.State != c.state || sv.Target != c.target {
@@ -616,7 +632,7 @@ func TestSendOutcomesMergeByTheProjection(t *testing.T) {
 			if got := slices.Contains(pending(t, s), sid); got != (c.state == SendPending) {
 				t.Errorf("%s, order %d: pending %v", c.name, j, got)
 			}
-			if got := slices.Contains(asked(t, s), sid); got != (c.state != SendCancelled) {
+			if got := slices.Contains(asked(t, s), sid); got != (c.state == SendPending || c.state == SendSent) {
 				t.Errorf("%s, order %d: asked %v", c.name, j, got)
 			}
 			for _, target := range []string{"br-1", "br-2"} {
@@ -827,7 +843,9 @@ func (w *sendWalk) step(t *testing.T, state, op string) {
 	if got := slices.Contains(pending(t, w.s), sid); got != (after.State == SendPending) {
 		t.Errorf("%s, %s: listed pending %v, the send %s", state, op, got, after.State)
 	}
-	if got := slices.Contains(asked(t, w.s), sid); got != (len(after.Cancels) > 0 && after.State != SendCancelled) {
+	// A cancel is open while its send is pending or sent (nothing closed
+	// it here); a refused or cancelled send has nothing under way.
+	if got := slices.Contains(asked(t, w.s), sid); got != (len(after.Cancels) > 0 && (after.State == SendPending || after.State == SendSent)) {
 		t.Errorf("%s, %s: listed asked %v, the send %s with %d cancels", state, op, got, after.State, len(after.Cancels))
 	}
 }

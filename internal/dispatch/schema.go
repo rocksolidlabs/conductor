@@ -17,13 +17,25 @@ import (
 // GitHub items, the store's instance and the publications' table, and a
 // ticket's closed_on (docs/plans/tracker-linking.md, Program item IN1a);
 // version 5 adds a person's captures of a preview, their annotations and
-// their sends (docs/plans/browser-evidence.md, Program item PV1).
-const Version = captureSchema
+// their sends (docs/plans/browser-evidence.md, Program item PV1); version
+// 6 adds the sends still open, a table of this database's own derived
+// from the sends' rows, which the settlement's reads walk (#794); version
+// 7 adds a finding's capture, the capture, the send and the annotation a
+// finding of kind capture names (#798).
+const Version = findingCaptureSchema
 
 // captureSchema is the version that made the captures' tables: the one
 // place a later version renumbers them (the migration's key, the reads of
 // an older database, the version 4 test).
 const captureSchema = 5
+
+// openSendsSchema is the version that made the open sends' table
+// (openSendsTable): the reads of an older database go without it.
+const openSendsSchema = 6
+
+// findingCaptureSchema is the version that added a finding's capture
+// (findingCaptureColumn): the reads of an older database take it as none.
+const findingCaptureSchema = 7
 
 // migrations bring a database from the version keyed to the next, in the
 // transaction that read the version, with the version's bump. A migration
@@ -56,8 +68,22 @@ const captureSchema = 5
 // versions and sets, their sends, the sends' outcomes and cancels and the
 // files they hold, and their five indexes, and reads or rewrites no row: a
 // version 4 database holds no capture.
+//
+// Version 5 to 6 makes the open sends' table and its two indexes and fills
+// it from the sends' rows as they are (openSendsFill over every send): a
+// row for each send pending by sendState, and for each sent one with a
+// cancel asked, since version 5 recorded no cancel closed. It changes no
+// other row and writes no migrate row: the table is derived and local,
+// never a changes row.
+//
+// Version 6 to 7 adds a finding's capture_ref, empty on every version 6
+// row, which is true of all of them: a version 6 store took no finding of
+// kind capture. It reads and rewrites no row, so nothing is derived and
+// no migrate row is written.
 var migrations = map[int][]string{
-	captureSchema - 1: append(slices.Clone(captureTables), captureIndexes...),
+	captureSchema - 1:        append(slices.Clone(captureTables), captureIndexes...),
+	openSendsSchema - 1:      append(append([]string{openSendsTable}, openSendsIndexes...), openSendsFill("1")),
+	findingCaptureSchema - 1: {findingCaptureColumn},
 	1: append([]string{
 		plansTable,
 		launchesTable,
@@ -208,6 +234,14 @@ const reviewFindingsTable = `CREATE TABLE review_findings (
 		check_ref TEXT NOT NULL DEFAULT '',
 		created_at TEXT NOT NULL
 	)`
+
+// findingCaptureColumn is version 7's column of a finding (#798): a
+// finding of kind capture's reference, the JSON of CaptureRef (the
+// capture, the send that froze what the finding names, the annotation's
+// place k), empty for every other kind. It is added after the table's
+// columns, by a fresh store as by the migration, so both read back one
+// shape.
+const findingCaptureColumn = `ALTER TABLE review_findings ADD COLUMN capture_ref TEXT NOT NULL DEFAULT ''`
 
 // findingMarksTable is a finding's marks, a log: each a person's verdict
 // on the finding against a candidate, with what the page showed of its
@@ -452,6 +486,45 @@ var captureIndexes = []string{
 	`CREATE INDEX capture_files_sha256 ON capture_files (sha256)`,
 }
 
+// openSendsTable is version 6's table (#794): a row for each send still
+// open, while it is pending (pending, by sendState) or has a cancel asked
+// that is not yet closed at its target (cancel: a pending or sent send
+// with a cancel; one refused or cancelled has nothing under way), with the
+// send's created_at, the order the reads page in. A pending send with a
+// cancel asked sets both. It is derived and local, as link_reads is: never
+// a changes row, never replicated; each write that opens or closes a send
+// (its input, an outcome, a cancel asked) writes its row again from the
+// send's rows in the same transaction (reopenSend), and CloseCancel, the
+// one fact the rows do not hold, takes a sent send's row away.
+const openSendsTable = `CREATE TABLE capture_sends_open (
+		send_id TEXT PRIMARY KEY REFERENCES capture_sends(id),
+		created_at TEXT NOT NULL,
+		pending INTEGER NOT NULL DEFAULT 0,
+		cancel INTEGER NOT NULL DEFAULT 0
+	)`
+
+// openSendsIndexes is the indexes version 6 adds: the pending sends and
+// the sends with a cancel open, each in the pages' order, so a page reads
+// the open sends it gives and no other row. None is unique.
+var openSendsIndexes = []string{
+	`CREATE INDEX capture_sends_open_pending ON capture_sends_open (pending, created_at, send_id)`,
+	`CREATE INDEX capture_sends_open_cancel ON capture_sends_open (cancel, created_at, send_id)`,
+}
+
+// openSendsFill is the statement that writes the open row of every send
+// the condition picks (on capture_sends s) from its rows: pending when
+// sendState says so, cancel when a cancel was asked of a pending or a sent
+// one, and no row for a send that is neither. The migration runs it over
+// every send; reopenSend over one.
+func openSendsFill(where string) string {
+	return `INSERT INTO capture_sends_open (send_id, created_at, pending, cancel)
+		SELECT id, created_at, state = 'pending', state IN ('pending', 'sent') AND asked FROM (
+			SELECT s.id, s.created_at, ` + sendStateSQL("s.id") + ` AS state,
+				EXISTS (SELECT 1 FROM capture_send_cancels c WHERE c.send_id = s.id) AS asked
+			FROM capture_sends s WHERE ` + where + `)
+		WHERE state = 'pending' OR (state = 'sent' AND asked)`
+}
+
 // version4Indexes is the indexes version 4 adds: the tickets by their
 // linked item's identity, a ticket's links' reads, a ticket's
 // publications in their order, and the publications by their state. None
@@ -488,14 +561,16 @@ var version2Indexes = []string{
 	`CREATE INDEX launch_files_sha256 ON launch_files (sha256)`,
 }
 
-// schema is version 5, whole: every table of docs/plans/dispatch.md's
+// schema is version 7, whole: every table of docs/plans/dispatch.md's
 // schema table, docs/plans/dispatch-evidence.md's (plans, launches,
 // launch_files, and a link's three columns, last of its table as the
 // migration adds them), docs/plans/review-repair.md's (reviews,
-// review_findings, finding_marks) and docs/plans/tracker-linking.md's
+// review_findings, finding_marks, and a finding's capture_ref, #798, last
+// of its columns as the migration adds it) and docs/plans/tracker-linking.md's
 // (link_reads, ticket_reads, store_instance, publications, and a ticket's
 // closed_on, last of its columns as the migration adds it) and
-// docs/plans/browser-evidence.md's (captureTables), the FTS index included, its indexes and two of the
+// docs/plans/browser-evidence.md's (captureTables, and openSendsTable,
+// #794), the FTS index included, its indexes and two of the
 // list's own (tickets_list, ticket_labels_label), and the unique
 // indexes of the keys never minted twice and nothing else (projects.key,
 // tickets.key and (project_id, number), people.name, changes (actor,
@@ -743,17 +818,20 @@ var schema = append([]string{
 	launchFilesTable,
 	reviewsTable,
 	reviewFindingsTable,
+	findingCaptureColumn,
 	findingMarksTable,
 	linkReadsTable,
 	ticketReadsTable,
 	storeInstanceTable,
 	publicationsTable,
-}, append(append(append(append(slices.Clone(version2Indexes), version3Indexes...), version4Indexes...), captureTables...), captureIndexes...)...)
+}, append(append(append(append(append(append(slices.Clone(version2Indexes), version3Indexes...), version4Indexes...), captureTables...), captureIndexes...),
+	openSendsTable), openSendsIndexes...)...)
 
 // tables is every table of the schema but the FTS index's own and
 // SQLite's, by name: what a test lists sqlite_master against.
 var tables = []string{
 	"attachments", "capture_annotation_sets", "capture_annotations", "capture_files", "capture_send_cancels", "capture_send_outcomes", "capture_sends",
+	"capture_sends_open",
 	"captures", "changes", "comments", "finding_marks", "labels", "launch_files", "launches", "link_reads", "links", "milestones", "ops",
 	"people", "plans", "projects", "publications", "relations", "review_findings", "reviews", "schema_version", "store_instance",
 	"ticket_assignees", "ticket_labels", "ticket_reads", "tickets", "tickets_fts", "uploads", "views",
