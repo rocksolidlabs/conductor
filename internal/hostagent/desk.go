@@ -76,6 +76,7 @@ func (k *Desk) end(runCtx context.Context) {
 	<-k.stop
 	a := k.a
 	a.lanes.end()
+	k.tellEnded()
 	// Told it ended, the switchyard forgets the desk at once and lets its
 	// viewers go, rather than hold it for a host that will not return.
 	a.send(proto.HostStatusMsg{T: proto.HostStatus, SessionID: k.CurrentID(), Status: string(session.StatusStopped)})
@@ -83,6 +84,44 @@ func (k *Desk) end(runCtx context.Context) {
 	k.told.Store(true)
 	k.cancel()
 	a.closeAllPeers()
+}
+
+// tellEnded tells each of the desk's viewers whose link the publisher's
+// own store holds as ended (Decisions.LinkEnded: the run's last decision
+// link expired, say) that link's word, revoked or expired, and returns
+// once each word is written, its viewer has left, or its turn has not come
+// within the wait the desk's end has for its own message (controlTurnWait),
+// the words waiting together: the desk's end, which the switchyard tells
+// the rest as the session's end, comes after them on the same connection.
+// A word the walk sent the viewer already is sent again: the switchyard
+// closes the viewer at the first.
+func (k *Desk) tellEnded() {
+	d := k.a.opts.Decisions
+	if d == nil {
+		return
+	}
+	k.a.mu.Lock()
+	peers := make([]*peer, 0, len(k.a.peers))
+	for _, p := range k.a.peers {
+		peers = append(peers, p)
+	}
+	k.a.mu.Unlock()
+	var wg sync.WaitGroup
+	for _, p := range peers {
+		if p.linkID == "" {
+			continue
+		}
+		why := d.LinkEnded(p.linkID)
+		if why == nil {
+			continue
+		}
+		p.letGo.CompareAndSwap(nil, &why)
+		code, msg, _ := session.LinkRefusal(why)
+		wg.Go(func() {
+			_ = k.a.tellTurn(proto.ViewerError{T: proto.HostViewerError, ViewerID: p.id, Code: code, Message: msg}, p.left)
+		})
+	}
+	wg.Wait()
 }
 
 // OpenDesk registers the desk of the run with the switchyard (ctx bounds
