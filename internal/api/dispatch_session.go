@@ -178,7 +178,11 @@ func (s *Server) memberTicket(ctx context.Context, ds *dispatch.Store, run strin
 
 // handleSessionTicket answers the ticket the session's run is linked to:
 // 200 {ticket, labels, milestone}, the ticket in full as the admin's read
-// gives it (its last 50 comments among it), labels the rows of its live
+// gives it (its last 50 comments among it) as an agent reads it, whichever
+// token asks (dispatch.ForAgent: a title or a description a read of a
+// linked item wrote quoted, a related ticket's such title withheld, the
+// snapshot without what was written on the item but its steps to
+// reproduce, quoted), labels the rows of its live
 // labels by name and milestone its live milestone's row or null; 404
 // no_ticket for a session in no run or a run no live ticket holds; 400
 // invalid_request for any parameter. The reply is bounded as the ticket's
@@ -230,6 +234,12 @@ func (s *Server) handleSessionTicket(w http.ResponseWriter, r *http.Request) {
 	}
 	if !found {
 		noTicket(w, run)
+		return
+	}
+	// The ticket as an agent reads it: a text a read of a linked item
+	// wrote quoted (dispatch.ForAgent).
+	if v, err = ds.ForAgent(ctx, v); err != nil {
+		s.dispatchError(w, "ticket", err)
 		return
 	}
 	project, _, _ := dispatch.ParseKey(v.Key)
