@@ -245,9 +245,20 @@ the item, newest row first.
   the run's ticket offered first, and both. A package numbers its files
   (`.conductor/attachments/01-capture-<id>-r1.json`), which the plan wrote
   as `capture-*.json`.
-- **A capture as a review finding (PR-10, #798).** Request a change and
-  Add to a review on a candidate's capture: still being built; this line
-  is completed when the row lands.
+- **A capture as a review finding (PR-10, #798).** On a candidate's
+  capture the Send offers Request a change and Add to a review; a capture
+  of a worktree still being worked goes to a ticket. Request a change is
+  RV1's Request changes of that candidate, one finding of kind `capture`
+  per annotation chosen, applied by Yardmaster as a repair: the repair
+  attempt finds the send's document and screenshot in
+  `.conductor/evidence/`, copied from the store and checked by size and
+  hash, and its `task.md` names them under each finding. Add to a review
+  puts the same findings into the person's review draft of the
+  candidate, sent with the rest. A capture finding's words, path and line
+  are the server's, made from the annotation the send froze (the note's
+  first 600 characters, the element and what covers it, the source that
+  drew it), and the store binds a finding only to a send to a review of
+  that candidate's own capture. Brakeman's `request_repair` sends none.
 - **A capture attached to a decision (PR-11, #799).** The Send offers
   Attach to a decision while the capture's run has an open decision. The
   send is a comment on that decision in the store's words, naming the
