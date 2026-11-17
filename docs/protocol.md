@@ -505,6 +505,12 @@ keeps the `since` and words of the `done` the copy shows only when it
 carries that one's `id`, and with another `id` replaces it),
 `activity{sessionId,entry,state?}`,
 `session_info{sessionId?,endCommit?}` (what the host reports, below),
+`agent_session{sessionId?,agentSession,turn?}` (the agent's own session
+id an attention report to the host's socket named, and whether the report
+was of a turn: see Attention, The host's socket; only to a server whose
+`registered` said `agentSessions`; at most 512 bytes, `agentSession` 1 to
+128 bytes, one object of these fields alone, else dropped and logged, the
+connection kept),
 `chat{sessionId,message}` (a chat message the host's session kept, as `chat` carries it to a viewer; the server takes the connection's session, keeps `message`, `system` and `sent_to_agent` kinds, scope `session`, bounded ids, cleaned names, the text cleaned and cut to 2048 bytes, `to` only as `agent`, and mirrors it into the events stream; a switchyard drops it),
 `link{requestId, role, ttlSeconds?, label?}` (a share link to the session,
 minted by the server: `requestId` ≤ 32 bytes, `label` ≤ 120 bytes,
@@ -586,7 +592,7 @@ followed, and a server reached without TLS is dialed directly, through no
 proxy (over TLS a proxy carries a tunnel, as before); with no provider, a
 redirect is followed and a proxy used as before.
 
-Server → host: `registered{sessionId, secret, shareBaseUrl, resumed, iceServers, links, recipe?, decisions?, renews?, sessionInfo?}`
+Server → host: `registered{sessionId, secret, shareBaseUrl, resumed, iceServers, links, recipe?, decisions?, renews?, sessionInfo?, agentSessions?}`
 (`decisions: true` from a switchyard that carries a decision link's lane,
 relaying DECISION and DECIDE, keeping run desks and serving the join
 page's Decide tab, below, Decision links: a publisher mints a decision link
@@ -606,7 +612,12 @@ ends such a link only where not being named can mean nothing else (a
 session's own link on its session's connection, a run's link on the
 run's desk), and a member's registration ends nothing of a run's link;
 `recipe`, below; `sessionInfo: true` says the server takes `session_info`,
-below, absent from a switchyard, on a desk's and from an older server),
+below, absent from a switchyard, on a desk's and from an older server;
+`agentSessions: true` says the server takes `agent_session` and keeps
+its id as the attention route keeps `agentSession`, absent on a desk's
+and from an older server: a host names its socket to its agent only when
+its first `registered` says it, and stops listening on it when a later
+one does not (Attention, The host's socket)),
 `viewer_join{viewerId, role, linkId?, linkLabel?, principal?}`, `offer{viewerId,sdp}`, `ice{viewerId,candidate}`,
 `relay_start{viewerId}`, `viewer_leave{viewerId, reason?}`, `link_gone{linkId, ended?}`, `stop{sessionId}`,
 `viewer_behind{viewerId, behind}` (a relayed viewer fell behind what the
@@ -1525,7 +1536,10 @@ becomes the session's `agentSession.id` when it has none, and afterwards as the
 recipe's `idPolicy` says: `latest` takes each new id, `lowest` keeps the
 smallest (Codex's hidden title thread reports with a later id than the
 conversation's). `turn` makes it `resumable`. Any other id is dropped without
-an error, and a hosted session ignores both fields. `conductor notify` fills
+an error. A hosted session keeps the id in its record alone, never in its
+`Info`, by the same recipe and with the same meaning of `turn`, whether
+the report came to this route or to its host's socket (`agent_session`,
+The host's socket). `conductor notify` fills
 them from Claude Code's `session_id` (with `turn` on `Stop` and
 `UserPromptSubmit`), Codex's notify `thread-id` (every
 `agent-turn-complete`; the turn of the hidden thread that names a Codex
@@ -1548,6 +1562,92 @@ start and end), on a server session and on a hosted one, whose copy weighs
 it too and sends it to the host on `attention`. A server that refuses
 `turnId` as unknown (an older one) gets the report again once without it
 alone, `agentSession` and `turn` kept.
+
+#### The host's socket
+
+A hosted session's process also receives `CONDUCTOR_HOST_SOCKET`: the path
+of a unix-domain socket its host (`conductor host`) listens on, made before
+the process starts, so that the agent's reports reach the host on its own
+machine whether or not the host's connection to the server is up. A
+server's own sessions never receive it (`CONDUCTOR_*` from the server's
+environment and the catalog never reach a session, and the server sets
+none), and neither does the process of a host whose server's first
+`registered` did not say `agentSessions` (an older server): the agent
+then reports to this route, as before. The socket is `conductor-host-<random>/report.sock` under
+`$XDG_RUNTIME_DIR` when that folder is the user's alone (mode 0700), else
+under the temporary folder, else `/tmp`, each only when it is a folder,
+not a link, of the user's own or root's that no one else can write, or
+only with the sticky bit set (with none, the host names no socket): a
+folder of the user's own, mode 0700, not a link, made afresh by each host
+and checked before it listens,
+and a path of at most 100 bytes (a socket's address holds 104 on macOS,
+108 on Linux). The host removes both as it ends; a host's start removes,
+in the folder it uses, one that a host that ended without closing it left
+behind: a folder and socket of the user's own, the socket over a minute
+old, nothing listening on it.
+
+`conductor notify` (and the MCP tools `ask` and `set_state`) posts an
+attention report there first: `POST /attention` over the socket, this
+route's body, `Authorization: Bearer <agent token>`. The host answers as
+this route does, `200 {attention}` or `{error: {code, message}}`:
+
+- only the session's own agent token, which the host minted: any other,
+  none, or one sent any other way is `401 unauthorized`, before the body
+  is read;
+- at most 64 KiB of body, one JSON object of this route's fields and
+  nothing after it (an unknown field, trailing data, a body past the
+  bound: `400 invalid_request`), and this route's bounds and codes
+  (`invalid_state`, `invalid_kind`, `message` 4,096 bytes, 32 `options`,
+  `agentSession` 128 bytes, `plan` 1,024; a `turnId` out of its bound is
+  left out, the report taken);
+- a report that comes before the host's session is made waits for it, at
+  most 10 s, then `503 starting`; the sender gives up after its own 5 s
+  first: it says so on stderr and exits 0 (`--quiet`), and the host, the
+  request ended, applies nothing of it; an ended session is `409
+  session_ended`;
+- each report spends a token of the host session's bucket, the one the
+  server's copy keeps for its host is of the same size: with none left,
+  `429 rate_limited`, nothing changed (the sender tries a 429 again there,
+  as it does the server's);
+- any other path is `404`, another method `405`; at most eight
+  connections are served at once, each bounded in time.
+
+The host applies the report to its own session, as the server's route
+applies one to a server session (source `api`), and tells the server what
+its session then shows on `attention` (Host control connection), at once
+or, while its connection is down, as its next connection starts. One
+turn's end is still told once: a `done` that names the turn whose end the
+session recorded last is that report again. The sender posts to this
+route instead only when the socket cannot be reached: not named, gone,
+nothing listening on it, not a socket of the user's own in a folder of
+the user's own, mode 0700, not a link, or one whose peer, as the kernel
+recorded it at the connect (`SO_PEERCRED` on Linux, `LOCAL_PEERCRED` on
+macOS; on another platform the socket is not used), is not the user:
+nothing is written to such a socket, the token least of all. A host's answer, a refusal among them, and a connection lost
+after it was made (the host may have applied the report) are never sent
+to the server as well. `agentSession` and `turn` are taken and bounded on
+the socket as here; a report the host applied that names an id is told
+the server on `agent_session` (Host control connection), which keeps it
+as this route does (the recipe's pattern and policy, `turn` marking it
+resumable, in the record alone). The host tells them in the order the
+reports came, at once while its connection is up and as its next
+connection starts while it is down (the record then takes the id as the
+host comes back). An id is held taken once the server has answered a
+ping the host sent after it on the same connection (the server reads in
+order), and is never sent again; as a connection starts, the ids not
+held taken are sent again, in their order, so that the record ends at
+the newest. It keeps the last 32 (reports of one id one after another
+count as one, its `turn` if either was of a turn). When a later
+`registered` does not say `agentSessions` (the server replaced by an older
+one), the host stops listening on its socket, removes it and forgets what
+it logged, so the agent's reports go to this route and nothing logged
+before is sent after; ids its reports named while its connection was
+down and not yet told are lost then, and so are they when the host ends
+before its connection comes back. Events
+(`POST /api/sessions/{id}/events`) and the files a tool call touched still
+go to the server. A sender of an earlier release ignores the variable and
+posts to this route; a host of an earlier release sets none, and the
+sender posts here.
 
 Session `Info` also carries `branch` (the git branch of the working
 directory, read from `.git/HEAD` at launch; server and host alike) and, for

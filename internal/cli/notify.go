@@ -125,7 +125,7 @@ func runNotify(ctx context.Context, args []string, stdin io.Reader, stdout, stde
 		}
 		options = opts
 	}
-	url, token, err := notify.FromEnv(os.Getenv)
+	target, err := notify.TargetFromEnv(os.Getenv)
 	if err != nil {
 		// A hook runner writes the payload whether or not there is a session
 		// to report to: read it, so the runner never writes into a closed
@@ -180,7 +180,9 @@ func runNotify(ctx context.Context, args []string, stdin io.Reader, stdout, stde
 		}
 		req = mapped
 	}
-	if err := notify.Send(ctx, url, token, req); err != nil {
+	// To the session's host first when it listens (a hosted session), else
+	// to the server (Target.Send).
+	if err := target.Send(ctx, req); err != nil {
 		if *quiet {
 			// Hooks must never break the agent because Conductor is unreachable.
 			fmt.Fprintln(stderr, "conductor notify:", err)

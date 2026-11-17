@@ -291,6 +291,21 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 			env[k] = v
 		}
 	}
+	// The socket the agent's hooks report to on this machine, listening
+	// before its process starts (localreport.go), when the server takes
+	// the agent session ids it is told of (agentsession.go): handed the
+	// session once it is made, closed and removed as the host ends or a
+	// later server takes none (dropReports).
+	var reports *reportListener
+	if registered.AgentSessions {
+		reports = a.startReports(env)
+	} else {
+		opts.Log.Info("the server keeps no agent session a host carries: the agent's reports go to the server")
+	}
+	a.mu.Lock()
+	a.reports = reports
+	a.mu.Unlock()
+	defer a.dropReportsAtEnd()
 	dirFile, err := folder.Dir()
 	if err != nil {
 		folder.Close()
@@ -361,6 +376,11 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 	})
 	a.mu.Lock()
 	a.local = local
+	a.mu.Unlock()
+	a.mu.Lock()
+	if a.reports != nil {
+		a.reports.setSession(local)
+	}
 	a.mu.Unlock()
 
 	runCtx, cancel := context.WithCancel(ctx)
@@ -481,6 +501,25 @@ type agent struct {
 	// (Options.Switchyard): the Uplink's, which leaves the session running
 	// here. Set before the control loop starts; nil ignores the stop.
 	unpublish func()
+
+	// reports is the host's socket while it listens (localreport.go), nil
+	// otherwise; asLog is what its reports said of the agent's own session,
+	// asSeq the last entry's number, asSent the last sent on the current
+	// connection, asTaken the last the server is known to have taken,
+	// asFlushing that a sender runs (agentsession.go). Guarded by mu.
+	// agentSessions is what the server's last registered said of
+	// agent_session (proto.Registered.AgentSessions). asSend and asConfirm
+	// replace the send and its confirmation in tests.
+	reports                *reportListener
+	asLog                  []agentSessionReport
+	asSeq, asSent, asTaken uint64
+	asFlushing             bool
+	// asDropped says the socket was dropped for a server that takes no
+	// ids (dropReports): no id is logged after it. Guarded by mu.
+	asDropped     bool
+	agentSessions atomic.Bool
+	asSend        func(proto.HostAgentSessionMsg) error
+	asConfirm     func() bool
 
 	// sendHook replaces the control connection in tests.
 	sendHook func(v any)
@@ -811,6 +850,7 @@ func (a *agent) dialAndRegister(ctx context.Context) (*websocket.Conn, proto.Reg
 	a.ice = registered.ICEServers
 	a.decisions.Store(registered.Decisions)
 	a.sessionInfo.Store(registered.SessionInfo)
+	a.agentSessions.Store(registered.AgentSessions)
 	unnamed := a.takeHeldLocked(registered.Links)
 	if len(a.opts.ICEServers) > 0 {
 		a.ice = a.opts.ICEServers
@@ -818,6 +858,9 @@ func (a *agent) dialAndRegister(ctx context.Context) (*websocket.Conn, proto.Reg
 	a.mu.Unlock()
 	for _, id := range unnamed {
 		a.linkWent(id, false, true)
+	}
+	if !registered.AgentSessions {
+		a.dropReports()
 	}
 	w := a.useConnHearing(c, pc, live)
 	w.presented, w.renews = token, registered.Renews
@@ -1323,6 +1366,9 @@ func (a *agent) serveConn(ctx context.Context, c *websocket.Conn) error {
 		// The server is told the session's attention as the connection
 		// starts, the empty state included (retellAttention).
 		a.retellAttention()
+		// And the agent session ids its reports to the host's socket named,
+		// to a server that takes them (agentsession.go).
+		a.replayAgentSessions()
 		// Report the current status in case the process ended while disconnected.
 		go a.watchStatus(ctx, w)
 	}
