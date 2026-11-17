@@ -3,6 +3,7 @@ package hostagent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -566,4 +567,20 @@ func TestTheSenderFallsBackOnlyWhenTheSocketCannotBeReached(t *testing.T) {
 		t.Fatalf("the server's route was asked %d times", n)
 	}
 	untilListed(t, h.local, "the server's report", func(i session.Info) bool { return i.Attention.Message == "through the server" })
+}
+
+// A socket that fails its check once made is not listened on or named:
+// the listener is refused and nothing of it is left.
+func TestASocketThatFailsItsCheckIsNotUsed(t *testing.T) {
+	base := socketBase(t)
+	checkReportSocket = func(string) error { return errors.New("not this user's") }
+	t.Cleanup(func() { checkReportSocket = notify.CheckHostSocket })
+	tok, _ := share.NewToken()
+	if l, err := listenReports([]string{base}, tok, discardLog); err == nil {
+		l.Close()
+		t.Fatal("a socket that failed its check was listened on")
+	}
+	if left, _ := os.ReadDir(base); len(left) != 0 {
+		t.Fatalf("left %v", left)
+	}
 }

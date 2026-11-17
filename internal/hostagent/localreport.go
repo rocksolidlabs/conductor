@@ -66,6 +66,10 @@ const (
 	staleReportSocket = time.Minute
 )
 
+// checkReportSocket checks the socket a host made before it is named to
+// the agent (notify.CheckHostSocket); tests replace it.
+var checkReportSocket = notify.CheckHostSocket
+
 // reportListener is the host's socket and what serves it.
 type reportListener struct {
 	path, dir string
@@ -146,8 +150,9 @@ func listenReportsIn(base, token string, log *slog.Logger) (*reportListener, err
 	}
 	// The folder is what keeps others out (macOS does not check a socket's
 	// mode); the socket's own mode says so too where it is checked.
-	if err := os.Chmod(path, 0o600); err == nil {
-		err = notify.CheckHostSocket(path)
+	err = os.Chmod(path, 0o600)
+	if err == nil {
+		err = checkReportSocket(path)
 	}
 	if err != nil {
 		ln.Close()
