@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { measuredBytes } from '../protocol'
 import { FakeDoc, HTML_NS, h, named, reads, resetReads, svg, type FakeEl } from './fakeDom'
 import { readElement } from './report'
-import { STACK, pageEpoch, selectorFor, stackAt, stepStack, walk, type Doc, type El } from './select'
+import { PATH, STACK, pageEpoch, selectorFor, stackAt, stepStack, walk, type Doc, type El } from './select'
 
 const el = (e: FakeEl) => e as unknown as El
 const doc = (d: FakeDoc) => d as unknown as Doc
@@ -79,17 +79,23 @@ describe('the selector a report carries', () => {
     }
     let deep = h('i')
     for (let i = 0; i < 100; i++) deep = h('div', {}, deep)
-    const fixtures: Array<[string, FakeDoc]> = [
+    // Of the 10,000 siblings, the first and last ten, every hundredth (each length of index, 1 to 10000) and the ten each side of
+    // where the path's budget ends (PATH) are looked up: every one of them is a scan of the list, and all 10,000 held the test's
+    // worker for a minute, past vitest's own 60 s wait for its report of the test's start ("Timeout calling onTaskUpdate", #281).
+    const siblings = h('ul', {}, ...Array.from({ length: 10000 }, () => h('li')))
+    const sampled = new Set(siblings.elements.filter((_, i) => i < 10 || i >= 9990 || i % 100 === 99 || Math.abs(i - PATH) <= 10))
+    const fixtures: Array<[string, FakeDoc, ((e: FakeEl) => boolean)?]> = [
       ['two ids that differ in case, in quirks mode', ids('BackCompat')],
       ['two ids that differ in case', ids('CSS1Compat')],
       ['an id holding a NUL', new FakeDoc(h('html', {}, h('body', {}, h('div', { id: `a${String.fromCodePoint(0xfffd)}b` }), h('div', { id: 'a\u0000b' }))))],
       ['a button inside an SVG foreignObject', new FakeDoc(h('html', {}, h('body', {}, svg('svg', {}, svg('foreignObject', {}, h('div', {}, h('button', {}, 'Go')))))))],
       ['an element of a mixed-case name made by script', new FakeDoc(h('html', {}, h('body', {}, h('div', {}, named('MyThing', {}, HTML_NS, 'M')))))],
       ['100 levels deep', new FakeDoc(h('html', {}, h('body', {}, deep)))],
-      ['among 10,000 siblings', new FakeDoc(h('html', {}, h('body', {}, h('ul', {}, ...Array.from({ length: 10000 }, () => h('li'))))))],
+      ['among 10,000 siblings', new FakeDoc(h('html', {}, h('body', {}, siblings))), (e) => e.tag !== 'LI' || sampled.has(e)],
     ]
-    const wrong = fixtures.flatMap(([what, d]) =>
-      [d.documentElement, ...d.documentElement.descendants()].flatMap((e) => {
+    expect(sampled.size).toBe(139)
+    const wrong = fixtures.flatMap(([what, d, looked = () => true]) =>
+      [d.documentElement, ...d.documentElement.descendants()].filter(looked).flatMap((e) => {
         const s = selectorFor(el(e), doc(d))
         const found = s ? d.querySelector(s) : e
         return found === e ? [] : [`${what}: <${e.local}> written ${JSON.stringify(s)}, which finds ${found ? `<${found.local} id=${JSON.stringify(found.attrs.get('id'))}>` : 'nothing'}`]
