@@ -1,5 +1,5 @@
 import type { Ref } from 'vue'
-import { INTENTS, SEVERITIES, VERDICTS, type DraftNote, type Verdict } from '~/utils/review'
+import { INTENTS, SEVERITIES, VERDICTS, type CaptureChoice, type DraftNote, type Verdict } from '~/utils/review'
 import { mintCommandId } from '~/utils/tasks'
 
 /**
@@ -59,14 +59,21 @@ function isNote(n: unknown): n is DraftNote {
   return (
     !!x &&
     typeof x.key === 'string' &&
-    ['line', 'file', 'general', 'check'].includes(x.kind) &&
+    ['line', 'file', 'general', 'check', 'capture'].includes(x.kind) &&
     (x.kind !== 'check' || (!!x.check && x.check.source === 'ledger' && typeof x.check.receipt === 'string')) &&
+    (x.kind !== 'capture' || isCaptureChoice(x.capture)) &&
     (x.measured === undefined || (!!x.measured && typeof x.measured === 'object' && typeof x.measured.receipt === 'string' && typeof x.measured.stable === 'boolean')) &&
     INTENTS.includes(x.intent) &&
     typeof x.message === 'string' &&
     (x.severity === undefined || SEVERITIES.includes(x.severity)) &&
     (x.lines === undefined || (Array.isArray(x.lines) && x.lines.every((l) => typeof l === 'string')))
   )
+}
+
+/** A capture note's capture as the draft keeps it: two ids of the store's form and an annotation from 1. */
+function isCaptureChoice(c: unknown): c is CaptureChoice {
+  const x = c as CaptureChoice
+  return !!x && /^[0-9a-f]{16}$/.test(x.capture) && /^[0-9a-f]{16}$/.test(x.send) && Number.isInteger(x.k) && x.k >= 1 && x.k <= 20
 }
 
 function textOf(d: unknown): DraftText | null {
@@ -141,6 +148,25 @@ export function afterSent(d: StoredDraft, s: DraftText): StoredDraft {
   const notes = d.notes.filter((n) => !was.has(JSON.stringify(n)))
   const summary = d.summary === s.summary ? '' : d.summary
   return { ...emptyDraft(), base: d.base, notes, summary, ...(notes.length || summary ? { verdict: d.verdict } : {}) }
+}
+
+/**
+ * Add to a review (PR-10, #798): the capture notes put into the draft of the candidate on the ticket, from a capture's editor, a page
+ * other than the review's. Each is kept once: a note naming the same send and annotation is not added again. The draft is the page's
+ * when it holds it (pageDrafts), else the storage's, and is written back; how many were added, and whether the storage took it.
+ */
+export function addCaptureNotes(ticket: string, candidate: string, notes: Omit<DraftNote, 'key'>[], storage: DraftStorage | null = browserStorage()): { added: number; kept: boolean } {
+  const key = draftKey(ticket, candidate)
+  const page = pageDrafts(storage)
+  const d = page.drafts.get(key) ?? (page.refused.has(key) ? null : readDraft(storage, key)) ?? emptyDraft()
+  const has = (n: Omit<DraftNote, 'key'>) => d.notes.some((x) => x.kind === 'capture' && x.capture?.send === n.capture?.send && x.capture?.k === n.capture?.k)
+  const fresh = notes.filter((n) => n.kind === 'capture' && n.capture && !has(n)).map((n) => ({ ...n, key: noteKey() }))
+  const next = { ...d, notes: [...d.notes, ...fresh] }
+  page.drafts.set(key, next)
+  const kept = writeDraft(storage, key, next)
+  if (kept) page.refused.delete(key)
+  else page.refused.add(key)
+  return { added: fresh.length, kept }
 }
 
 /** The base-side notes' lock: the base they are on, and how many hold it; null while the draft has none. */
