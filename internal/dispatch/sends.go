@@ -59,9 +59,12 @@ import (
 // send that ended is ended: a sent outcome a replica brings later for one
 // whose files went makes it sent, and this store holds no file of it.
 
-// A send's kind and its state. SendReview and SendDecision are reserved:
-// the store refuses them until the items that own reviews and decisions
-// lift it (the plan's PR-10 and PR-11).
+// A send's kind and its state. A send to a review (SendReview) freezes the
+// capture for findings of kind capture: Request a change, pending with the
+// review it asks for until the API records that review and its sent names
+// it, or Add to a review, sent at once (its target ReviewDraft) for the
+// person's draft to cite (the plan's PR-10). SendDecision is reserved: the
+// store refuses it until the item that owns decisions lifts it (PR-11).
 const (
 	SendTicket    = "ticket"
 	SendBrakeman  = "brakeman"
@@ -71,6 +74,9 @@ const (
 	SendSent      = "sent"
 	SendRefused   = "refused"
 	SendCancelled = "cancelled"
+	// ReviewDraft is the target of a send to a review that Add to a review
+	// made: the person's draft cites it, and no review is asked for.
+	ReviewDraft = "draft"
 )
 
 // The intents of a send's outcomes and of a cancel, beside
@@ -91,12 +97,17 @@ var brakemanTarget = regexp.MustCompile(`^br-[1-9][0-9]{0,17}$`)
 
 // Destination is where a send goes as the person named it, kept as its
 // asked: a new ticket (Project, a project's key, and Title), an existing
-// one (Key), or Brakeman (Kind alone).
+// one (Key), Brakeman (Kind alone), or a review of the candidate the
+// capture shows (Candidate, its annotations Ks, all when none, and Draft
+// for Add to a review).
 type Destination struct {
-	Kind    string `json:"kind"`
-	Project string `json:"project,omitempty"`
-	Title   string `json:"title,omitempty"`
-	Key     string `json:"key,omitempty"`
+	Kind      string `json:"kind"`
+	Project   string `json:"project,omitempty"`
+	Title     string `json:"title,omitempty"`
+	Key       string `json:"key,omitempty"`
+	Candidate string `json:"candidate,omitempty"`
+	Ks        []int  `json:"ks,omitempty"`
+	Draft     bool   `json:"draft,omitempty"`
 }
 
 // SendFacts is what the API made of a send: for Brakeman the request as
@@ -233,16 +244,24 @@ func sentTo(send, target string) string {
 // the screenshot's and the document's content (the document alone with no
 // screenshot), the comment, and the sent outcome, the ticket's rev bumped
 // once; for Brakeman it leaves the send pending with its request. At most
-// MaxCaptureSends a capture and MaxAttachments a ticket (bound). review
-// and decision are refused invalid until their items lift it. The
-// receipt's id is the send's, its key the ticket's; the operation's
-// expected revision is none (the capture's is rev).
+// MaxCaptureSends a capture and MaxAttachments a ticket (bound). A send to
+// a review names the candidate the capture shows (a capture of that
+// candidate's preview checkout: a capture of a worktree being worked goes
+// to a ticket) and annotations it has: Add to a review (Draft) is sent in
+// its one transaction, to ReviewDraft, with no request; Request a change
+// carries the review the API asks for (its request) and is pending until
+// MarkSent names that review. decision is refused invalid until its item
+// lifts it. The receipt's id is the send's, its key the ticket's; the
+// operation's expected revision is none (the capture's is rev).
 func (s *Store) SendCapture(ctx context.Context, op Op, digest, id string, rev int64, to Destination, f SendFacts) (Receipt, error) {
 	doc := bytes.NewReader(nil)
 	var request []byte
 	pre := func() error {
 		c := &checker{}
 		c.must(op.ExpectedRev == 0, RefusalInvalid, "a send names the capture's revision it sends, and the operation none")
+		if to.Kind != SendReview {
+			c.must(to.Candidate == "" && len(to.Ks) == 0 && !to.Draft, RefusalInvalid, "only a send to a review names a candidate, annotations or a draft")
+		}
 		switch to.Kind {
 		case SendTicket:
 			_, _, isKey := ParseKey(to.Key)
@@ -258,10 +277,26 @@ func (s *Store) SendCapture(ctx context.Context, op Op, digest, id string, rev i
 			c.must(to.Key == "" && to.Project == "" && to.Title == "", RefusalInvalid, "a send to Brakeman names no ticket")
 			c.field("send.request", "the request", string(f.Request))
 			c.must(bytes.HasPrefix(bytes.TrimLeft(f.Request, " \t\r\n"), []byte("{")), RefusalInvalid, "the request is not a JSON object")
-		case SendReview, SendDecision:
-			c.must(false, RefusalInvalid, "a capture is sent to a ticket or to Brakeman; a send to a %s comes with its item", to.Kind)
+		case SendReview:
+			c.must(to.Key == "" && to.Project == "" && to.Title == "", RefusalInvalid, "a send to a review names no ticket: the candidate's is the review's")
+			_, err := ParseCandidate(to.Candidate)
+			c.must(err == nil, RefusalInvalid, "the candidate %q is not <run>/<task>/<n>@<commit>", to.Candidate)
+			c.count("annotations sent", len(to.Ks), MaxCaptureAnnotations)
+			seen := map[int]bool{}
+			for _, k := range to.Ks {
+				c.must(k >= 1 && k <= MaxCaptureAnnotations && !seen[k], RefusalInvalid, "the annotations sent are each 1 to %d, once", MaxCaptureAnnotations)
+				seen[k] = true
+			}
+			if to.Draft {
+				c.must(len(f.Request) == 0, RefusalInvalid, "Add to a review asks for no review: it carries no request")
+			} else {
+				c.field("send.request", "the review asked for", string(f.Request))
+				c.must(bytes.HasPrefix(bytes.TrimLeft(f.Request, " \t\r\n"), []byte("{")), RefusalInvalid, "the request is not a JSON object")
+			}
+		case SendDecision:
+			c.must(false, RefusalInvalid, "a capture is sent to a ticket, to Brakeman or to a review; a send to a %s comes with its item", to.Kind)
 		default:
-			c.must(false, RefusalInvalid, "a capture is sent to a ticket or to Brakeman, not to %q", to.Kind)
+			c.must(false, RefusalInvalid, "a capture is sent to a ticket, to Brakeman or to a review, not to %q", to.Kind)
 		}
 		if c.err != nil {
 			return c.err
@@ -296,6 +331,11 @@ func (s *Store) SendCapture(ctx context.Context, op Op, digest, id string, rev i
 		}
 		if c.Rev != rev || sha256Hex(body) != u.sum {
 			return refuse(RefusalStaleRevision, "the capture changed while its document was made, to r%d: send what you see", c.Rev)
+		}
+		if to.Kind == SendReview {
+			if err := reviewable(c, to); err != nil {
+				return err
+			}
 		}
 		var sends int
 		if err := t.tx.QueryRowContext(t.ctx, "SELECT COUNT(*) FROM capture_sends WHERE capture_id = ?", id).Scan(&sends); err != nil {
@@ -337,7 +377,8 @@ func (s *Store) SendCapture(ctx context.Context, op Op, digest, id string, rev i
 			}
 		}
 		key := ""
-		if to.Kind == SendTicket {
+		switch {
+		case to.Kind == SendTicket:
 			var files []string
 			if key, files, err = t.sendToTicket(c, to, u); err != nil {
 				return err
@@ -345,10 +386,34 @@ func (s *Store) SendCapture(ctx context.Context, op Op, digest, id string, rev i
 			if err := t.outcome(in.ID, SendSent, key, files, ""); err != nil {
 				return err
 			}
+		case to.Kind == SendReview && to.Draft:
+			if err := t.outcome(in.ID, SendSent, ReviewDraft, nil, ""); err != nil {
+				return err
+			}
 		}
 		t.created(in.ID, key)
 		return t.reopenSend(in.ID)
 	})
+}
+
+// reviewable refuses a send of the capture c to the review to names
+// unless the capture is of that candidate's preview checkout (Decision 9:
+// Request a change is RV1's Request changes, only on a candidate) and has
+// every annotation named.
+func reviewable(c Capture, to Destination) error {
+	o := c.Origin
+	if o.Kind != OriginCandidate || o.Candidate != to.Candidate {
+		return refuse(RefusalInvalid, "the capture is not of the candidate %s's preview: a review asks changes of the candidate it shows, and a capture of a worktree being worked goes to a ticket", to.Candidate)
+	}
+	for _, k := range to.Ks {
+		if k > len(c.Annotations) {
+			return refuse(RefusalInvalid, "the capture has %d annotations, not an annotation %d", len(c.Annotations), k)
+		}
+	}
+	if len(c.Annotations) == 0 {
+		return refuse(RefusalInvalid, "the capture has no annotation to make a finding of")
+	}
+	return nil
 }
 
 // reopenSend writes the open row of the send with the id again from its
@@ -511,8 +576,17 @@ func (s *Store) settleSend(ctx context.Context, op Op, intent, kind string, args
 			if err := checkField("send.target", "the target", args.Target); err != nil {
 				return err
 			}
-			if sv.Kind != SendBrakeman || !brakemanTarget.MatchString(args.Target) {
-				return refuse(RefusalInvalid, "a send to Brakeman is sent as its request's id, br-<n>")
+			switch sv.Kind {
+			case SendBrakeman:
+				if !brakemanTarget.MatchString(args.Target) {
+					return refuse(RefusalInvalid, "a send to Brakeman is sent as its request's id, br-<n>")
+				}
+			case SendReview:
+				if err := t.reviewCites(args.Target, args.ID); err != nil {
+					return err
+				}
+			default:
+				return refuse(RefusalInvalid, "a send to a %s is sent in its one step", sv.Kind)
 			}
 		case SendRefused:
 			if err := checkField("send.why", "why", args.Why); err != nil {
@@ -540,6 +614,24 @@ func (s *Store) settleSend(ctx context.Context, op Op, intent, kind string, args
 	})
 	s.collectAll(ctx, rc, err, released)
 	return rc, err
+}
+
+// reviewCites refuses the review with the id as the target of the send
+// with the id send unless one of its findings is a capture finding
+// standing on that send.
+func (t *tx) reviewCites(review, send string) error {
+	var cites bool
+	if !ValidID(review) {
+		return refuse(RefusalInvalid, "a send to a review is sent as the review's id")
+	}
+	if err := t.tx.QueryRowContext(t.ctx, `SELECT EXISTS (SELECT 1 FROM review_findings WHERE review_id = ? AND kind = ? AND capture_ref != ''
+		AND json_extract(capture_ref, '$.send') = ?)`, review, FindingKindCapture, send).Scan(&cites); err != nil {
+		return err
+	}
+	if !cites {
+		return refuse(RefusalInvalid, "the review %s has no finding of the send %s", review, send)
+	}
+	return nil
 }
 
 // collectAll collects the files an operation done released, once it is
@@ -627,6 +719,8 @@ func (s *Store) AskCancel(ctx context.Context, op Op, id string) (Receipt, error
 			return err
 		case sv.Kind == SendTicket:
 			return refuse(RefusalStaleRevision, "a send to a ticket is made in its one step: nothing of it is under way")
+		case sv.Kind == SendReview:
+			return refuse(RefusalStaleRevision, "a send to a review is the server's to finish: withdraw its findings on the review instead")
 		case sv.State == SendRefused, sv.State == SendCancelled:
 			return refuse(RefusalStaleRevision, "the send was %s: nothing of it is under way", sv.State)
 		}

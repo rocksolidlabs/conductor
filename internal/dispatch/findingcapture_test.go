@@ -36,10 +36,11 @@ func fixtureV6(t *testing.T) string {
 	return dir
 }
 
-// captureNote is a capture finding asking for a change, and captureOn the
-// evidence that names the capture's send's annotation k.
-func captureNote(words string) NewFinding {
-	return NewFinding{Kind: FindingKindCapture, Intent: FindingIntentChange, Severity: "major", Message: words}
+// captureNote is a capture finding asking for a change on the send's
+// annotation k, and captureOn the evidence that binds each finding's
+// capture as its request names it.
+func captureNote(capture, send string, k int) NewFinding {
+	return NewFinding{Kind: FindingKindCapture, Intent: FindingIntentChange, Severity: "major", Capture: &CaptureRef{Capture: capture, Send: send, K: k}}
 }
 
 func captureOn(r NewReview, refs map[int]*CaptureRef) ReviewEvidence {
@@ -48,6 +49,19 @@ func captureOn(r NewReview, refs map[int]*CaptureRef) ReviewEvidence {
 		ev.Findings[k-1].Capture = ref
 	}
 	return ev
+}
+
+// boundOf is the evidence the server binds to r: each capture finding's
+// capture as its request names it.
+func boundOf(r NewReview) ReviewEvidence {
+	refs := map[int]*CaptureRef{}
+	for i, f := range r.Findings {
+		if f.Capture != nil {
+			ref := *f.Capture
+			refs[i+1] = &ref
+		}
+	}
+	return captureOn(r, refs)
 }
 
 // A version 6 database this code's version 6 wrote is brought to version 7
@@ -187,27 +201,22 @@ func TestAVersion6DatabaseItCannotMigrateReadsItsFindings(t *testing.T) {
 // The store keeps a finding of kind capture with its capture as the
 // server bound it: the capture, its send and the annotation's place, in
 // the finding's row and its create row, read back by every read of it;
-// the capture is the evidence's, so a resend with other evidence is the
-// same review. Refused, nothing kept: a capture finding naming a path,
-// lines or a receipt, or with no words (invalid); a send not of the
-// capture, or none (invalid). Evidence that does not answer the request
-// (a capture finding without one, a capture on another kind, ids not of
-// the store's form, an annotation's place out of bounds) is the server's
-// fault, an error and no receipt.
+// the evidence is not the fingerprint, so a resend with other evidence is
+// the same review. Evidence that does not answer the request (a capture
+// finding without one, a capture on another kind, ids not of the store's
+// form, an annotation's place out of bounds, a capture other than the one
+// the request names) is the server's fault, an error and no receipt.
 func TestACaptureFindingIsKeptWithItsCapture(t *testing.T) {
 	ctx := context.Background()
 	s, key, run := reviewTicket(t)
-	n, f := testCapture(false)
-	capture := mustCreate(t, s, "c1", n, f, nil)
-	sent := mustSend(t, s, "s1", capture, 1, toBrakeman, askBrakeman)
-	other := mustCreate(t, s, "c2", n, f, nil)
-	candidate := candidateOf(run, 2, commitA)
-	r := request(candidate, captureNote("Save is covered by the overlay."), lineChange("Return the users."))
+	capture, sent, candidate := reviewedCapture(t, s, run)
+	other, _, _ := reviewedCapture(t, s, run)
+	r := request(candidate, captureNote(capture, sent, 1), lineChange("Return the users."))
 	ref := &CaptureRef{Capture: capture, Send: sent, K: 1}
-	rc, v, err := s.SubmitReview(ctx, testOp("rv1"), key, r, captureOn(r, map[int]*CaptureRef{1: ref}))
+	rc, v, err := s.SubmitReview(ctx, testOp("rv1"), key, r, boundOf(r))
 	want(t, rc, err, StatusDone, "")
-	if got := v.Findings[0]; got.Kind != FindingKindCapture || got.Capture == nil || *got.Capture != *ref || got.Path != "" || got.AnchorCommit != "" ||
-		got.Message != "Save is covered by the overlay." {
+	if got := v.Findings[0]; got.Kind != FindingKindCapture || got.Capture == nil || *got.Capture != *ref || got.AnchorCommit != "" ||
+		!strings.HasPrefix(got.Message, "Save is covered by the overlay.") {
 		t.Fatalf("the capture finding: %+v", got)
 	}
 	if v.Findings[1].Capture != nil {
@@ -234,36 +243,18 @@ func TestACaptureFindingIsKeptWithItsCapture(t *testing.T) {
 		t.Fatalf("a resend: %+v %v", again, err)
 	}
 	reviews := count(t, s, "SELECT COUNT(*) FROM reviews")
-	// Refused by the store, its receipt kept.
-	for i, c := range []struct {
-		name    string
-		finding NewFinding
-		ref     *CaptureRef
-	}{
-		{"a path", NewFinding{Kind: FindingKindCapture, Intent: FindingIntentNote, Path: "web/app.vue", Side: SideCandidate, Message: "x"}, ref},
-		{"lines", NewFinding{Kind: FindingKindCapture, Intent: FindingIntentNote, From: 1, To: 1, Lines: []string{"x"}, Message: "x"}, ref},
-		{"a receipt", NewFinding{Kind: FindingKindCapture, Intent: FindingIntentNote, Message: "x", Check: checkNote(candidate).Check}, ref},
-		{"no words", NewFinding{Kind: FindingKindCapture, Intent: FindingIntentNote}, ref},
-		{"another capture's send", captureNote("x"), &CaptureRef{Capture: other, Send: sent, K: 1}},
-		{"no send", captureNote("x"), &CaptureRef{Capture: capture, Send: newID(), K: 1}},
-	} {
-		r := request(candidate, c.finding, lineChange("Return the users."))
-		rc, _, err := s.SubmitReview(ctx, testOp(opID("refused-", i)), key, r, captureOn(r, map[int]*CaptureRef{1: c.ref}))
-		if err != nil || rc.Status != StatusFailed || rc.Refusal != RefusalInvalid {
-			t.Errorf("%s: %+v %v", c.name, rc, err)
-		}
-	}
 	// The server's evidence that does not answer the request.
 	for i, c := range []struct {
 		name string
 		r    NewReview
 		refs map[int]*CaptureRef
 	}{
-		{"none", request(candidate, captureNote("x")), nil},
+		{"none", request(candidate, captureNote(capture, sent, 1)), nil},
 		{"on another kind", request(candidate, lineChange("x")), map[int]*CaptureRef{1: ref}},
-		{"an id of no form", request(candidate, captureNote("x")), map[int]*CaptureRef{1: {Capture: "c1", Send: sent, K: 1}}},
-		{"annotation 0", request(candidate, captureNote("x")), map[int]*CaptureRef{1: {Capture: capture, Send: sent, K: 0}}},
-		{"past the annotations", request(candidate, captureNote("x")), map[int]*CaptureRef{1: {Capture: capture, Send: sent, K: MaxCaptureAnnotations + 1}}},
+		{"an id of no form", request(candidate, captureNote(capture, sent, 1)), map[int]*CaptureRef{1: {Capture: "c1", Send: sent, K: 1}}},
+		{"annotation 0", request(candidate, captureNote(capture, sent, 1)), map[int]*CaptureRef{1: {Capture: capture, Send: sent, K: 0}}},
+		{"past the annotations", request(candidate, captureNote(capture, sent, 1)), map[int]*CaptureRef{1: {Capture: capture, Send: sent, K: MaxCaptureAnnotations + 1}}},
+		{"another than asked", request(candidate, captureNote(capture, sent, 1)), map[int]*CaptureRef{1: {Capture: other, Send: sent, K: 1}}},
 	} {
 		op := opID("evidence-", i)
 		rc, _, err := s.SubmitReview(ctx, testOp(op), key, c.r, captureOn(c.r, c.refs))

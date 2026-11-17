@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strconv"
@@ -76,10 +77,9 @@ const (
 	FindingKindCapture = "capture"
 )
 
-// FindingKinds is a finding's kinds: the store's, every one of them. The
-// API takes a finding of kind capture from no route and no act yet
-// (internal/api's captureFindingRefused): the row that fills its evidence
-// lifts that (the plan's PR-10, #798).
+// FindingKinds is a finding's kinds: the store's, every one of them. A
+// finding of kind capture is taken from RV1's review route, never from
+// Brakeman's act (internal/api's captureFindingRefused).
 var FindingKinds = []string{FindingKindLine, FindingKindFile, FindingKindGeneral, FindingKindCheck, FindingKindCapture}
 
 // The intents of a finding: a change asked for, a question, a note.
@@ -155,8 +155,10 @@ type NewReview struct {
 // NewFinding is one finding as the client sent it: its kind and intent, a
 // change's severity, a path and the side it is on (a line or a file
 // finding), the line range and the lines as the person saw them (a line
-// finding), the words and the resolution asked for, and for a check
-// finding the receipt it names (CheckRequest).
+// finding), the words and the resolution asked for, for a check finding
+// the receipt it names (CheckRequest), and for a capture finding the
+// capture, the send of it to a review and the annotation it names, whose
+// words, path and line the store makes (captureFinding).
 type NewFinding struct {
 	Kind       string        `json:"kind"`
 	Intent     string        `json:"intent"`
@@ -169,6 +171,9 @@ type NewFinding struct {
 	Message    string        `json:"message,omitempty"`
 	Resolution string        `json:"resolution,omitempty"`
 	Check      *CheckRequest `json:"check,omitempty"`
+	// Capture is the person's alone: the guide gives a Brakeman turn's act
+	// no such field, and its act refuses one.
+	Capture *CaptureRef `json:"capture,omitempty" guide:"-"`
 }
 
 // CheckRequest is what a client sends of a check finding's receipt: its
@@ -214,8 +219,9 @@ type FindingEvidence struct {
 // send of it whose frozen document and screenshot the finding stands on
 // (a send is never removed, and holds its files while the store keeps
 // it), and the annotation's place k in that document (1 to
-// MaxCaptureAnnotations). It is the server's (FindingEvidence), kept with
-// the finding in its capture_ref, and never part of the fingerprint.
+// MaxCaptureAnnotations). The client names it (NewFinding.Capture), the
+// server binds it (FindingEvidence, the same ref once checked), and the
+// store keeps it with the finding in its capture_ref.
 type CaptureRef struct {
 	Capture string `json:"capture"`
 	Send    string `json:"send"`
@@ -656,7 +662,7 @@ func (s *Store) SubmitReviewClaimed(ctx context.Context, op Op, key string, r Ne
 func (s *Store) submitReviewOp(ctx context.Context, op Op, key string, r NewReview, ev ReviewEvidence, claim bool) (Receipt, Review, ReviewClaim, error) {
 	var c ReviewClaim
 	rc, err := s.Apply(ctx, op, IntentReviewSubmit, ReviewSubmitArgs{Key: key, Review: r}, func(t *tx) error {
-		if err := t.submitReview(key, r, ev); err != nil {
+		if err := t.submitReview(key, r, ev, filepath.Join(s.dir, attachmentsDir)); err != nil {
 			return err
 		}
 		if claim && r.Verdict == VerdictRequestChanges {
@@ -677,8 +683,9 @@ func (s *Store) submitReviewOp(ctx context.Context, op Op, key string, r NewRevi
 	return rc, v, c, err
 }
 
-// submitReview is review.submit's change.
-func (t *tx) submitReview(key string, r NewReview, ev ReviewEvidence) error {
+// submitReview is review.submit's change; root is the content files'
+// directory, where a capture finding's frozen document is read.
+func (t *tx) submitReview(key string, r NewReview, ev ReviewEvidence, root string) error {
 	tk, _, err := t.ticket(key, false)
 	if err != nil {
 		return err
@@ -721,11 +728,17 @@ func (t *tx) submitReview(key string, r NewReview, ev ReviewEvidence) error {
 	if err != nil {
 		return err
 	}
-	for _, f := range rows {
-		if f.Capture != nil {
-			if err := t.captureSent(f.K, f.Capture); err != nil {
+	for i := range rows {
+		if f := &rows[i]; f.Capture != nil {
+			p, err := captureFinding(t.ctx, t.tx, root, c, *f.Capture)
+			if err != nil {
+				var refusal *Refusal
+				if errors.As(err, &refusal) {
+					refusal.Words = fmt.Sprintf("finding %d: %s", f.K, refusal.Words)
+				}
 				return err
 			}
+			f.Message, f.Path, f.From, f.To = p.Message, p.Path, p.Line, p.Line
 		}
 	}
 	if err := t.holdsCandidate(tk, c.Run); err != nil {
@@ -815,6 +828,9 @@ func checkFinding(k int, c Candidate, f NewFinding) error {
 			return err
 		}
 	}
+	if f.Kind == FindingKindCapture || f.Capture != nil {
+		return checkCaptureRequest(what, f)
+	}
 	located := f.Kind == FindingKindLine || f.Kind == FindingKindFile
 	switch {
 	case located && f.Path == "":
@@ -861,6 +877,29 @@ func checkFinding(k int, c Candidate, f NewFinding) error {
 	}
 	if f.Kind == FindingKindCheck {
 		return checkCheckRequest(what, c, *f.Check)
+	}
+	return nil
+}
+
+// checkCaptureRequest checks a capture finding as the client sent it: of
+// kind capture, naming its capture, the send and an annotation 1 to
+// MaxCaptureAnnotations, and none of what the store makes (its words,
+// path and line) or other kinds name (a side, lines, a receipt). An error
+// is a Refusal.
+func checkCaptureRequest(what string, f NewFinding) error {
+	switch r := f.Capture; {
+	case f.Kind != FindingKindCapture:
+		return refuse(RefusalInvalid, "%s: only a capture finding names a capture", what)
+	case r == nil:
+		return refuse(RefusalInvalid, "%s: a capture finding names its capture, its send and its annotation", what)
+	case !ValidID(r.Capture) || !ValidID(r.Send):
+		return refuse(RefusalInvalid, "%s: the capture %q and the send %q are not ids of the store's", what, r.Capture, r.Send)
+	case r.K < 1 || r.K > MaxCaptureAnnotations:
+		return refuse(RefusalInvalid, "%s: annotation %d is not 1 to %d", what, r.K, MaxCaptureAnnotations)
+	case f.Path != "" || f.Side != "" || f.From != 0 || f.To != 0 || len(f.Lines) > 0 || f.Check != nil:
+		return refuse(RefusalInvalid, "%s: a capture finding names no path, side, lines or receipt: its source is the capture's", what)
+	case f.Message != "":
+		return refuse(RefusalInvalid, "%s: a capture finding's words are the store's, made from its annotation", what)
 	}
 	return nil
 }
@@ -941,7 +980,7 @@ func bindEvidence(c Candidate, r NewReview, ev ReviewEvidence) ([]findingCreated
 		case f.Kind != FindingKindCapture && e.Capture != nil:
 			return nil, errEvidence("finding %d is no capture's, and names a capture", k)
 		case f.Kind == FindingKindCapture:
-			ref, err := bindCapture(k, e.Capture)
+			ref, err := bindCapture(k, f.Capture, e.Capture)
 			if err != nil {
 				return nil, err
 			}
@@ -953,10 +992,12 @@ func bindEvidence(c Candidate, r NewReview, ev ReviewEvidence) ([]findingCreated
 }
 
 // bindCapture is a capture finding's capture as it is kept: the server's
-// (got), its capture and its send ids of the store's form and its
-// annotation's place 1 to MaxCaptureAnnotations; that the send is the
-// capture's is the transaction's to say (captureSent).
-func bindCapture(k int, got *CaptureRef) (*CaptureRef, error) {
+// (got), the one the request named (asked), its capture and its send ids
+// of the store's form and its annotation's place 1 to
+// MaxCaptureAnnotations; that the send is the capture's, to a review, of
+// the candidate's capture with that annotation is the transaction's to say
+// (captureFinding).
+func bindCapture(k int, asked, got *CaptureRef) (*CaptureRef, error) {
 	switch {
 	case got == nil:
 		return nil, errEvidence("finding %d is a capture's, and names none", k)
@@ -964,23 +1005,11 @@ func bindCapture(k int, got *CaptureRef) (*CaptureRef, error) {
 		return nil, errEvidence("finding %d's capture %q and send %q are not ids of the store's", k, got.Capture, got.Send)
 	case got.K < 1 || got.K > MaxCaptureAnnotations:
 		return nil, errEvidence("finding %d names annotation %d, not 1 to %d", k, got.K, MaxCaptureAnnotations)
+	case asked == nil || *asked != *got:
+		return nil, errEvidence("finding %d's capture is not the one its request names", k)
 	}
 	kept := *got
 	return &kept, nil
-}
-
-// captureSent refuses a capture finding whose send is not a send of its
-// capture, inside the operation's transaction: invalid, the send named
-// being none of the store's or another capture's.
-func (t *tx) captureSent(k int, ref *CaptureRef) error {
-	var there bool
-	if err := t.tx.QueryRowContext(t.ctx, "SELECT EXISTS (SELECT 1 FROM capture_sends WHERE id = ? AND capture_id = ?)", ref.Send, ref.Capture).Scan(&there); err != nil {
-		return err
-	}
-	if !there {
-		return refuse(RefusalInvalid, "finding %d: the send %s is no send of the capture %s", k, ref.Send, ref.Capture)
-	}
-	return nil
 }
 
 // bindCheck is a check finding's receipt as it is kept: the server's
