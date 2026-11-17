@@ -180,6 +180,7 @@ func listenReportsIn(base, token string, log *slog.Logger) (*reportListener, err
 	l := &reportListener{path: path, dir: dir, token: token, log: log, wait: reportWait, ready: make(chan struct{}), closed: make(chan struct{}), served: make(chan struct{})}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST "+notify.HostReportPath, l.serveAttention)
+	mux.HandleFunc("POST "+notify.HostEventsPath, l.serveEvent)
 	l.srv = &http.Server{
 		Handler:           mux,
 		ReadHeaderTimeout: reportHeaderWait,
@@ -212,6 +213,7 @@ func (a *agent) startReports(env map[string]string) *reportListener {
 	}
 	l.agentSession = a.noteAgentSession
 	env[notify.EnvHostSocket] = l.path
+	env[notify.EnvHostEvents] = "1"
 	return l
 }
 
@@ -373,9 +375,7 @@ type localAttention struct {
 // spending the session's bucket (429 with none left). It answers as that
 // route does: 200 {attention}, or {error:{code,message}}.
 func (l *reportListener) serveAttention(w http.ResponseWriter, r *http.Request) {
-	tok, bearer := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-	if !bearer || !share.Equal(strings.TrimSpace(tok), l.token) {
-		writeReportError(w, http.StatusUnauthorized, "unauthorized", "the session's agent token required")
+	if !l.authorized(w, r) {
 		return
 	}
 	var req localAttention
@@ -395,51 +395,14 @@ func (l *reportListener) serveAttention(w http.ResponseWriter, r *http.Request) 
 	case len(req.Plan) > proto.MaxPlanPath:
 		writeReportError(w, http.StatusBadRequest, "invalid_request", "plan is longer than 1024 bytes")
 		return
-	case len(req.Message) > maxReportMessage:
-		writeReportError(w, http.StatusBadRequest, "invalid_request", "message too long")
-		return
-	case !session.ValidKind(req.Kind):
-		writeReportError(w, http.StatusBadRequest, "invalid_kind", "kind must be permission, prompt, done or empty")
-		return
-	case len(req.Options) > maxReportOptions:
-		writeReportError(w, http.StatusBadRequest, "invalid_request", "too many options")
+	case !checkAttention(w, req.Message, req.Kind, req.Options):
 		return
 	}
-	local := l.session(r.Context())
+	local := l.sessionOrRefuse(w, r)
 	if local == nil {
-		writeReportError(w, http.StatusServiceUnavailable, "starting", "the host's session has not started")
 		return
 	}
-	if local.Info().Status.Ended() {
-		writeReportError(w, http.StatusConflict, "session_ended", "the session has ended")
-		return
-	}
-	ask := req.Ask && state == session.AttentionNeedsInput
-	plan := req.Plan
-	if state != session.AttentionNeedsInput || ask {
-		plan = ""
-	}
-	turn := req.TurnID
-	if !proto.ValidTurnID(turn) {
-		turn = ""
-	}
-	var err error
-	switch {
-	case ask:
-		err = local.TryAsk(req.Message, session.SourceAPI, req.Kind, req.Options)
-	case turn != "":
-		err = local.TrySetAttentionTurn(state, req.Message, session.SourceAPI, req.Kind, req.Options, plan, turn)
-	case plan != "":
-		err = local.TrySetAttentionPlan(state, req.Message, session.SourceAPI, req.Kind, req.Options, plan)
-	default:
-		err = local.TrySetAttentionFull(state, req.Message, session.SourceAPI, req.Kind, req.Options)
-	}
-	if err != nil {
-		if errors.Is(err, session.ErrRateLimited) {
-			writeReportError(w, http.StatusTooManyRequests, "rate_limited", "too many reports for this session")
-			return
-		}
-		writeReportError(w, http.StatusInternalServerError, "internal", "the report could not be applied")
+	if !applyAttention(w, local, state, req.Message, req.Kind, req.Options, req.Ask, req.Plan, req.TurnID) {
 		return
 	}
 	// As the server's route keeps the id once the report is applied.
@@ -447,6 +410,164 @@ func (l *reportListener) serveAttention(w http.ResponseWriter, r *http.Request) 
 		l.agentSession(req.AgentSession, req.Turn)
 	}
 	writeReportJSON(w, http.StatusOK, map[string]any{"attention": local.Info().Attention})
+}
+
+// localEvent is the events route's request (internal/api eventRequest),
+// field for field, decoded as strictly.
+type localEvent struct {
+	Type    string           `json:"type"`
+	Message string           `json:"message"`
+	URL     string           `json:"url"`
+	To      string           `json:"to"`
+	Tool    string           `json:"tool"`
+	Kind    string           `json:"kind"`
+	Options []session.Option `json:"options"`
+	Op      string           `json:"op"`
+	Path    string           `json:"path"`
+	Ask     bool             `json:"ask"`
+}
+
+// eventActor is the display name on an entry an agent reported: the agent
+// said it, whoever holds the token (the events route's own).
+const eventActor = "agent"
+
+// serveEvent takes one event as the events route takes one: the session's
+// own agent token first, the body as strictly and within the same bound as
+// an attention report's, then the session, waited for. An attention word
+// (needs_input, working, done, clear) is applied as the attention route
+// applies it, with no agent session, plan or turn; one of the agent's event
+// types (progress, artifact, handoff, tool_use, tool_denied, error, file)
+// is recorded in the host's session, cleaned as the route cleans it,
+// spending the session's bucket (429 with none left), and reaches the
+// server as any entry the session records (sendActivity), now or, kept,
+// when the host's connection is back. It answers as the route does: 202
+// {accepted: true}, or {error: {code, message}}.
+func (l *reportListener) serveEvent(w http.ResponseWriter, r *http.Request) {
+	if !l.authorized(w, r) {
+		return
+	}
+	var req localEvent
+	if err := decodeReport(w, r, &req); err != nil {
+		writeReportError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	state, isAttention := reportState(req.Type)
+	if !isAttention && !agentEventType(req.Type) {
+		writeReportError(w, http.StatusBadRequest, "invalid_type", "type must be progress, artifact, handoff, tool_use, tool_denied, error, file, needs_input, working, done or clear")
+		return
+	}
+	if isAttention && !checkAttention(w, req.Message, req.Kind, req.Options) {
+		return
+	}
+	entry := session.CleanEntry(session.ActivityEntry{Type: req.Type, Message: req.Message, URL: req.URL, To: req.To, Tool: req.Tool, Op: req.Op, Path: req.Path, ByName: eventActor})
+	if !isAttention && req.Type == session.ActivityFile && (entry.Path == "" || entry.Op == "") {
+		writeReportError(w, http.StatusBadRequest, "invalid_request", "a file event names its op (read, edit, write or delete) and its path")
+		return
+	}
+	local := l.sessionOrRefuse(w, r)
+	if local == nil {
+		return
+	}
+	if isAttention {
+		if !applyAttention(w, local, state, req.Message, req.Kind, req.Options, req.Ask, "", "") {
+			return
+		}
+	} else if !local.Record(entry) {
+		writeReportError(w, http.StatusTooManyRequests, "rate_limited", "too many reports for this session")
+		return
+	}
+	writeReportJSON(w, http.StatusAccepted, map[string]any{"accepted": true})
+}
+
+// agentEventType says whether t is one of the agent's event types the
+// events route takes (internal/api eventType): the entries a session
+// records itself (join, leave, input, link, status, attention) are not,
+// for they skip its bucket.
+func agentEventType(t string) bool {
+	switch t {
+	case session.ActivityProgress, session.ActivityArtifact, session.ActivityHandoff,
+		session.ActivityToolUse, session.ActivityToolDenied, session.ActivityError, session.ActivityFile:
+		return true
+	}
+	return false
+}
+
+// authorized says whether r presents the session's own agent token, in
+// its Authorization header as a bearer token; it answers 401 otherwise,
+// before anything of the body is read.
+func (l *reportListener) authorized(w http.ResponseWriter, r *http.Request) bool {
+	tok, bearer := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if !bearer || !share.Equal(strings.TrimSpace(tok), l.token) {
+		writeReportError(w, http.StatusUnauthorized, "unauthorized", "the session's agent token required")
+		return false
+	}
+	return true
+}
+
+// checkAttention holds an attention report to the attention route's
+// bounds: its message, its kind and its choices; it answers 400 past them.
+func checkAttention(w http.ResponseWriter, message, kind string, options []session.Option) bool {
+	switch {
+	case len(message) > maxReportMessage:
+		writeReportError(w, http.StatusBadRequest, "invalid_request", "message too long")
+	case !session.ValidKind(kind):
+		writeReportError(w, http.StatusBadRequest, "invalid_kind", "kind must be permission, prompt, done or empty")
+	case len(options) > maxReportOptions:
+		writeReportError(w, http.StatusBadRequest, "invalid_request", "too many options")
+	default:
+		return true
+	}
+	return false
+}
+
+// sessionOrRefuse is the host's session, waited for (session), or nil
+// with 503 when it was not made in time and 409 when it has ended.
+func (l *reportListener) sessionOrRefuse(w http.ResponseWriter, r *http.Request) *session.Local {
+	local := l.session(r.Context())
+	if local == nil {
+		writeReportError(w, http.StatusServiceUnavailable, "starting", "the host's session has not started")
+		return nil
+	}
+	if local.Info().Status.Ended() {
+		writeReportError(w, http.StatusConflict, "session_ended", "the session has ended")
+		return nil
+	}
+	return local
+}
+
+// applyAttention applies an attention report to local as the server's
+// route applies one to a session of its own, spending the session's
+// bucket: the agent's own question with ask (needs_input alone), the turn
+// it names, the plan its question is about (needs_input, not ask), or the
+// state alone. It answers 429 with no token left, and false then.
+func applyAttention(w http.ResponseWriter, local *session.Local, state session.AttentionState, message, kind string, options []session.Option, ask bool, plan, turn string) bool {
+	ask = ask && state == session.AttentionNeedsInput
+	if state != session.AttentionNeedsInput || ask {
+		plan = ""
+	}
+	if !proto.ValidTurnID(turn) {
+		turn = ""
+	}
+	var err error
+	switch {
+	case ask:
+		err = local.TryAsk(message, session.SourceAPI, kind, options)
+	case turn != "":
+		err = local.TrySetAttentionTurn(state, message, session.SourceAPI, kind, options, plan, turn)
+	case plan != "":
+		err = local.TrySetAttentionPlan(state, message, session.SourceAPI, kind, options, plan)
+	default:
+		err = local.TrySetAttentionFull(state, message, session.SourceAPI, kind, options)
+	}
+	if err != nil {
+		if errors.Is(err, session.ErrRateLimited) {
+			writeReportError(w, http.StatusTooManyRequests, "rate_limited", "too many reports for this session")
+			return false
+		}
+		writeReportError(w, http.StatusInternalServerError, "internal", "the report could not be applied")
+		return false
+	}
+	return true
 }
 
 // reportState is the attention route's reading of a state's word: clear is

@@ -47,13 +47,13 @@ func socketBase(t *testing.T) string {
 	return d
 }
 
-// routeCount counts the requests that reach the server's attention route
-// of any session.
+// routeCount counts the requests that reach the server's attention or
+// events route of any session.
 type routeCount struct{ n atomic.Int64 }
 
 func (c *routeCount) wrap(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, "/attention") {
+		if strings.HasSuffix(r.URL.Path, "/attention") || strings.HasSuffix(r.URL.Path, "/events") {
 			c.n.Add(1)
 		}
 		h.ServeHTTP(w, r)
@@ -129,7 +129,10 @@ func newReportingHostOf(t *testing.T, cat catalog.Catalog, agentID string, recor
 	}
 	proc := sessiontest.NewFakeProc()
 	t.Cleanup(func() { proc.End(0) })
-	local := session.NewLocal(session.Info{ID: registered.SessionID, Cwd: a.dir, Cols: 80, Rows: 24}, proc, session.Options{OnChange: a.noteChange, Log: discardLog, FileEdit: "off"})
+	// The session's entries reach the server as Run has them reach it.
+	a.activity = newActivityForwarder(a.sendActivity, a.sendChat, discardLog)
+	go a.activity.run(ctx)
+	local := session.NewLocal(session.Info{ID: registered.SessionID, Cwd: a.dir, Cols: 80, Rows: 24}, proc, session.Options{OnChange: a.noteChange, OnActivity: a.onLocalActivity, Log: discardLog, FileEdit: "off"})
 	a.mu.Lock()
 	a.local = local
 	a.mu.Unlock()
@@ -153,7 +156,7 @@ func newReportingHostOf(t *testing.T, cat catalog.Catalog, agentID string, recor
 		t.Fatal("the hosted session is not listed")
 	}
 	h := &reportingHost{hs: d.(*signal.HostedSession), a: a, local: local, proc: proc, l: l, route: route, base: ts.URL, conn: conn,
-		target: notify.Target{URL: attentionURL(ts.URL, registered.SessionID), Token: tok, Socket: l.path}}
+		target: notify.Target{URL: attentionURL(ts.URL, registered.SessionID), Token: tok, Socket: l.path, Events: true}}
 	h.served = serve(conn)
 	h.back = func() {
 		t.Helper()
@@ -430,7 +433,7 @@ func TestTheSocketsBodyIsBoundedAndStrict(t *testing.T) {
 	if code, _ := requestSocket(t, h.l.path, http.MethodGet, notify.HostReportPath, tok, nil); code != http.StatusMethodNotAllowed {
 		t.Errorf("GET: %d", code)
 	}
-	if code, _ := postSocket(t, h.l.path, "/events", tok, `{"type":"progress"}`); code != http.StatusNotFound {
+	if code, _ := postSocket(t, h.l.path, "/elsewhere", tok, `{"type":"progress"}`); code != http.StatusNotFound {
 		t.Errorf("another path: %d", code)
 	}
 	if a := h.local.Info().Attention; a.State != session.AttentionNone {
