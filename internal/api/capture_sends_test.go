@@ -335,9 +335,17 @@ func TestASendToATicketAttachesTheDocument(t *testing.T) {
 			t.Errorf("%s: %d %v", name, status, out)
 		}
 	}
-	big := st.sendBody(t, map[string]any{"kind": "brakeman", "question": strings.Repeat("\U0001F600", maxSendQuestion)})
+	// What the form allows the route takes: 4,000 characters in any script,
+	// and as many characters a request escapes.
+	for name, q := range map[string]string{"Chinese": strings.Repeat("中", maxSendQuestion), "emoji": strings.Repeat("\U0001F600", maxSendQuestion),
+		"escaped": strings.Repeat("<\u2028", maxSendQuestion/2)} {
+		if status, out := st.post(t, st.sendBody(t, map[string]any{"kind": "brakeman", "question": q})); status != http.StatusCreated && status != http.StatusAccepted {
+			t.Errorf("a question of %d characters, %s: %d %v", maxSendQuestion, name, status, out)
+		}
+	}
+	big := st.sendBody(t, map[string]any{"kind": "brakeman", "question": strings.Repeat("a", maxCaptureSendBody)})
 	if status, out := st.post(t, big); status != http.StatusRequestEntityTooLarge || codeOf(out) != "bound" {
-		t.Errorf("a body past 8 KiB: %d %v", status, out)
+		t.Errorf("a body past its bound: %d %v", status, out)
 	}
 }
 
@@ -644,13 +652,18 @@ func TestACancelIsIdempotent(t *testing.T) {
 	}
 }
 
-// Admitted, MarkSent failed, 1,001 other requests made: the settlement
+// Admitted, MarkSent failed, more requests made than the desk's op window
+// holds (a window of three, set on the desk's store): the settlement
 // finds the request by the send's pinned op id, makes no second, sends the
 // send to it and lets the pin go.
 func TestARecoveredSendOutlivesTheOpWindow(t *testing.T) {
 	st := newSendTest(t)
+	// A window of three op ids in place of 1,000: four later requests pass
+	// it as a thousand and one would.
+	const window = 3
+	st.desk.st.SetOpsWindow(window)
 	id, req := st.lostAdmission(t, "Why?")
-	for i := range brakeman.MaxOps + 1 {
+	for i := range window + 1 {
 		if _, _, err := st.desk.st.Create(brakeman.Request{OpID: fmt.Sprintf("later-%d", i), Kind: brakeman.KindBriefing}); err != nil {
 			t.Fatal(err)
 		}
@@ -659,8 +672,13 @@ func TestARecoveredSendOutlivesTheOpWindow(t *testing.T) {
 	if sv := st.stored(t, id); sv.State != "sent" || sv.Target != req.ID {
 		t.Fatalf("the send: %+v", sv)
 	}
-	if _, err := st.desk.st.Get(fmt.Sprintf("br-%d", brakeman.MaxOps+3)); !errors.Is(err, brakeman.ErrNotFound) {
+	if _, err := st.desk.st.Get(fmt.Sprintf("br-%d", window+3)); !errors.Is(err, brakeman.ErrNotFound) {
 		t.Fatalf("a second request: %v", err)
+	}
+	// The window was passed: an op id that is not pinned, the oldest later
+	// one, is no longer held.
+	if _, found, err := st.desk.st.ByOp("later-0"); found || err != nil {
+		t.Fatalf("the window was not passed: %v %v", found, err)
 	}
 	if pins, err := st.desk.st.Pinned(); err != nil || len(pins) != 0 {
 		t.Fatalf("pinned: %+v %v", pins, err)

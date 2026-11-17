@@ -144,6 +144,18 @@ type Store struct {
 	inOwned sync.WaitGroup
 	// skipped is the records of a later schema already logged.
 	skipped map[string]bool
+	// window is how many op ids that are not pinned the state keeps
+	// (MaxOps; a test makes it smaller with SetOpsWindow). Under mu.
+	window int
+}
+
+// SetOpsWindow makes the store keep the newest n op ids that are not
+// pinned in place of MaxOps (n from 1): a test of what outlives the window
+// passes it with a few requests in place of a thousand.
+func (s *Store) SetOpsWindow(n int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.window = max(n, 1)
 }
 
 // keepNewest is Keep; a test makes it smaller.
@@ -585,6 +597,11 @@ type state struct {
 // (askSum), and whether Prune has removed the request, so a repeat of a
 // pruned request is told from a creation whose file never landed. A
 // pinned one (Request.Pin) outlives the trim to MaxOps until Release.
+// `pinned` came with schema 1 unchanged: a build before it reads a
+// state.json that holds a pinned op id as damaged (its strict decode), so
+// a roll-back to such a build while a capture's send to Brakeman waits
+// (pinned, between its admission and its sent) finds Brakeman's records
+// damaged until that send is settled by this build or the field removed.
 type opRef struct {
 	OpID   string `json:"opId"`
 	ID     string `json:"id"`
@@ -703,7 +720,11 @@ func (s *Store) saveState(st state) error {
 			unpinned++
 		}
 	}
-	if drop := unpinned - MaxOps; drop > 0 {
+	window := MaxOps
+	if s.window > 0 {
+		window = s.window
+	}
+	if drop := unpinned - window; drop > 0 {
 		kept := make([]opRef, 0, len(st.Ops)-drop)
 		for _, o := range st.Ops {
 			if !o.Pinned && drop > 0 {
