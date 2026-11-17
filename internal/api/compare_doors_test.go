@@ -66,6 +66,12 @@ type compareOpts struct {
 	// the runs launch, and the env then waits for no session: the test
 	// does, at its seam.
 	launched func(crew.LaunchSpec, string)
+	// agents are catalog entries beside ready-cat (Brakeman's scripted
+	// agents, for a draft's turn).
+	agents []catalog.Agent
+	// draft sets the block's brakeman: Brakeman is asked for a draft once
+	// the lanes settle.
+	draft bool
 }
 
 func newCompareEnv(t *testing.T, o compareOpts) *compareEnv {
@@ -84,7 +90,7 @@ func newCompareEnv(t *testing.T, o compareOpts) *compareEnv {
 		}
 	}
 	e := newTestEnvAgents(t, func(c *config.Config) { c.DataDir = data }, slog.New(slog.NewTextHandler(io.Discard, nil)),
-		[]catalog.Agent{readyCat}, opts...)
+		append([]catalog.Agent{readyCat}, o.agents...), opts...)
 	if o.noDesk != (e.srv.brakeman == nil) {
 		t.Fatalf("Brakeman's desk: %v, want none %v", e.srv.brakeman != nil, o.noDesk)
 	}
@@ -99,7 +105,9 @@ func newCompareEnv(t *testing.T, o compareOpts) *compareEnv {
 	title := tk["title"].(string)
 	delete(tk, "title")
 	e.newDispatchTicket(t, "CND", title, tk)
-	saved, err := e.srv.crews.Create(compareCrewIn(t, repo))
+	in := compareCrewIn(t, repo)
+	in.Compare.Brakeman = o.draft
+	saved, err := e.srv.crews.Create(in)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -503,6 +503,17 @@ func (s *Server) checkBrief(r *http.Request, req brakeman.Request, raw json.RawM
 	if err := brakeman.CheckAnswers(b, req.Kind); err != nil {
 		return brakeman.Brief{}, nil, 0, refused(err)
 	}
+	// A compare request's brief is held to its comparison's table
+	// (compare_drafts.go, compareShape).
+	if req.Kind == brakeman.KindCompare {
+		shape, err := s.compareShape(r.Context(), req)
+		if err != nil {
+			return brakeman.Brief{}, nil, 0, refused(err)
+		}
+		if err := brakeman.CheckCompareBrief(b, shape); err != nil {
+			return brakeman.Brief{}, nil, 0, refused(err)
+		}
+	}
 	if err := checkProposals(b); err != nil {
 		return brakeman.Brief{}, nil, 0, refused(err)
 	}

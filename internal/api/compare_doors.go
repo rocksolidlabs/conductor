@@ -88,6 +88,7 @@ var compareDoors = map[string]doorRule{
 	"GET /api/runs/{run}/commands/{command}":                           doorRefused,
 	"GET /api/runs/{run}/messages":                                     doorRefused,
 	"GET /api/runs/{run}/candidates":                                   doorRefused,
+	"GET /api/runs/{run}/comparison":                                   doorRefused,
 	"GET /api/sessions":                                                doorRefused,
 	"GET /api/touched":                                                 doorRefused,
 	"GET /api/capacity":                                                doorRefused,
