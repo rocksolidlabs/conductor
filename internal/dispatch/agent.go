@@ -302,8 +302,19 @@ func (s *Store) TitlesForAgent(ctx context.Context, rows []TicketSummary) ([]Tic
 // rows, a snapshot's value and prior, a taken-over field's text (an adopt
 // row's value), a read's text (an observe row's value) and every title or
 // description that a read wrote (readWrote of the ticket holding it) are
-// WithheldText; every other row and field is the page's. ErrNotFound when
-// there is no such ticket.
+// WithheldText; so is a publication's body in its create row
+// (publicationForAgent); every other row and field is the page's.
+// ErrNotFound when there is no such ticket.
+//
+// The other rows a ticket's history holds carry no text a read of a linked
+// item wrote: a comment's, a link's note, a plan revision's crew, notes and
+// pins, a launch's label (the key alone for a quoted title), a review's
+// and a finding's words and marks, a capture's and its send's, an
+// attachment's name (an imported image's is github-<n>.<ext>) are a
+// person's, an agent's or Conductor's; a publication's later rows are its
+// state, its tries, its ids, its login, its addresses and Conductor's own
+// words; the ticket's other fields are ids, vocabularies, times and a
+// person's text.
 func (s *Store) ChangesForAgent(ctx context.Context, key string, rows []ChangeRow) ([]ChangeRow, error) {
 	out := slices.Clone(rows)
 	err := s.read(ctx, func(q queryer) error {
@@ -321,6 +332,10 @@ func (s *Store) ChangesForAgent(ctx context.Context, key string, rows []ChangeRo
 			return w, err
 		}
 		for i, c := range out {
+			if c.Entity == EntityPublication && c.Op == OpCreate {
+				out[i].Value = publicationForAgent(c.Value)
+				continue
+			}
 			if c.Entity != EntityTicket {
 				continue
 			}
@@ -438,4 +453,26 @@ func launchedForAgent(ctx context.Context, q queryer, tk Ticket, pt PackageTicke
 		}
 	}
 	return title, description, nil
+}
+
+// publicationForAgent is a publication's create row's value as an agent
+// reads it: its body WithheldText, since a body holds text a person chose
+// from the parts the server offered (the key part is the ticket's title,
+// which a read may have written) and the store cannot tell which; every
+// other field (its target, its state, its parts' names, its login) the
+// row's. A value that does not read as a publication is WithheldText
+// whole.
+func publicationForAgent(value string) string {
+	var p Publication
+	if err := json.Unmarshal([]byte(value), &p); err != nil {
+		return WithheldText
+	}
+	if p.Body != "" {
+		p.Body = WithheldText
+	}
+	b, err := encodeValue(p)
+	if err != nil {
+		return WithheldText
+	}
+	return b
 }

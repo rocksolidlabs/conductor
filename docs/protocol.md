@@ -5826,9 +5826,15 @@ routes are unchanged, byte for byte. Field by field:
   `observe` row's value, an `adopt` row's value (the text an unlink or
   a take-over kept), every value and prior of `external_snapshot`, and
   every title or description value or prior that a read wrote are the
-  fixed words "(a text written outside Conductor, not shown here)";
-  every other row and field as the route answers it, an import's
-  `create` row among them (it names the ticket, not its text).
+  fixed words "(a text written outside Conductor, not shown here)", and
+  so is a publication's `body` in its `create` row (a body holds text a
+  person chose from the parts the composer offered, the key part the
+  ticket's title among them), its other fields as they are; every other
+  row and field as the route answers it, an import's `create` row among
+  them (it names the ticket, not its text): a comment's body, a link's
+  note, a plan revision's, a launch's label, a review's and a finding's
+  words, a capture's, an attachment's name and a publication's later
+  rows are a person's, an agent's or Conductor's.
 - **History's search for a turn** (`GET /api/brakeman/history`): a
   ticket's entry, for a ticket a read of a linked item ever wrote into
   or that is linked now, is titled `<key> (a title written outside
@@ -5848,8 +5854,10 @@ bytes as JSON for each byte of its text (a blank line is `>` and a line
 break) beside its opening and closing lines, and the
 largest ticket's copy for an agent, its description so quoted, is under
 3.5 MiB beside its linked item's parts as an agent reads them (at most
-204 KiB; the admin's 212 KiB), a turn's under its 4 MiB, and a lane's
-read under 3.5 MiB.
+206 KiB; the admin's 212 KiB), a turn's under its 4 MiB, and a lane's
+read under 3.5 MiB. A quoted title is at most 29 bytes longer than a
+title at its escaped worst, so a page of the list, at most 200 rows,
+stays far under a turn's 4 MiB.
 
 #### A ticket's publications
 

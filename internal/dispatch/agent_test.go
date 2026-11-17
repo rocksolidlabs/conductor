@@ -316,15 +316,21 @@ func TestTheListsTitlesForAnAgent(t *testing.T) {
 
 // A ticket's history as an agent reads it: every value and prior a read
 // wrote (an import's and a refresh's observe rows, the snapshots, the
-// text an unlink took over, a person's typing a read's text back) is
-// WithheldText; a person's own text and every other row as the history
-// holds it, the create row of an import among them.
+// text an unlink took over, a person's typing a read's text back) and a
+// publication's body (here its key part, the ticket's title) are
+// WithheldText, the publication's other fields as they are; a person's
+// own text and every other row as the history holds it, the create row of
+// an import among them.
 func TestTheHistoryForAnAgent(t *testing.T) {
 	ctx := context.Background()
 	s := linkedStore(t)
 	newProject(t, s, "CND")
 	key := mustImport(t, s, "imp", "CND", ghRead("I_1", 0, agentPlanted+" title", agentPlanted+" body"))
 	rc, err := s.RefreshExternal(ctx, testOp("ref"), key, ghRead("I_1", 5, agentPlanted+" title two", agentPlanted+" body two"))
+	want(t, rc, err, StatusDone, "")
+	// A publication whose body holds the key part, the ticket's title.
+	body := "Conductor ticket " + key + ": " + agentPlanted + " title two"
+	rc, err = s.PreparePublication(ctx, testOp("pub"), PublicationArgs{Key: key, Target: TargetLinked, Body: body, Parts: []string{"key"}}, issueTarget, markOf)
 	want(t, rc, err, StatusDone, "")
 	rc, err = s.UnlinkExternal(ctx, testOp("un"), key)
 	want(t, rc, err, StatusDone, "")
@@ -360,6 +366,23 @@ func TestTheHistoryForAnAgent(t *testing.T) {
 				t.Fatalf("typed back: %+v", r)
 			}
 			ops = append(ops, "back")
+		case r.Op == OpCreate && r.Entity == EntityPublication:
+			var got, was map[string]any
+			if err := json.Unmarshal([]byte(r.Value), &got); err != nil {
+				t.Fatalf("the publication's row: %v %s", err, r.Value)
+			}
+			if err := json.Unmarshal([]byte(page.Changes[i].Value), &was); err != nil {
+				t.Fatal(err)
+			}
+			if got["body"] != WithheldText || was["body"] != body {
+				t.Fatalf("the publication's body: %v, the admin's %v", got["body"], was["body"])
+			}
+			delete(got, "body")
+			delete(was, "body")
+			if !equalJSON(t, got, was) || fmt.Sprint(got["parts"]) != "[key]" || got["targetRef"] != issueTarget.Ref {
+				t.Fatalf("the publication's other fields changed: %v", got)
+			}
+			ops = append(ops, "publication")
 		case r.Op == OpCreate && r.Entity == EntityTicket:
 			if r.Value != page.Changes[i].Value {
 				t.Fatal("the create row is withheld")
@@ -371,7 +394,7 @@ func TestTheHistoryForAnAgent(t *testing.T) {
 			ops = append(ops, r.Op+" "+r.Field)
 		}
 	}
-	for _, w := range []string{"observe title", "observe description", "set external_snapshot", "adopt title", "adopt description", "mine", "back"} {
+	for _, w := range []string{"observe title", "observe description", "set external_snapshot", "adopt title", "adopt description", "mine", "back", "publication"} {
 		if !slices.Contains(ops, w) {
 			t.Fatalf("no %s row among %v", w, ops)
 		}
@@ -471,7 +494,8 @@ func launchedForAgentOf(s *Store, tk Ticket, pt PackageTicket, src *PackageSourc
 
 // The agent's snapshot is never longer than the admin's at the admin's
 // worst, and at its own worst (the steps to reproduce at their bound in
-// short lines, each a quote's line) still under it, so the linked
+// short lines, each a quote's line, and every account a login at its
+// longest, which the copy keeps) still under it, so the linked
 // issue's parts of an agent's read fit the room the admin's read keeps
 // for them (MaxTicketExternalParts, measured by TestTicketReplyBound);
 // the agent's read of the linked issue is never longer than the admin's.
@@ -489,9 +513,15 @@ func TestTheAgentsSnapshotIsWithinItsRoom(t *testing.T) {
 	}
 	// The steps at the quote's worst: blank lines and lines of a quote,
 	// each written `>` or `> "`.
+	logins := make([]string, MaxSnapshotAssignees)
+	for i := range logins {
+		logins[i] = fmt.Sprintf("%02d", i) + strings.Repeat("b", MaxSnapshotLogin-2)
+	}
 	for _, repro := range []string{"a" + strings.Repeat("\n", MaxRepro-2) + "a", strings.Repeat("\"\n", MaxRepro/2)} {
 		q := sn
 		q.Repro, _ = cutLines(repro, MaxRepro, reproMore)
+		// The accounts the copy keeps, at their longest.
+		q.Author, q.Assignees = strings.Repeat("a", MaxSnapshotLogin), logins
 		raw, err := encodeSnapshot(q)
 		if err != nil {
 			t.Fatal(err)

@@ -260,7 +260,8 @@ func TestTheSessionsReadAfterAnUnlinkAndAnEdit(t *testing.T) {
 // History's search and of what changed since hand GitHub's text as an
 // agent reads it: the ticket's title a quoted line and its description
 // and steps quoted blocks, a related ticket's title withheld, the list's
-// title a quoted line, the history's values a read wrote withheld,
+// title a quoted line, the history's values a read wrote and a
+// publication's body (its key part, the ticket's title) withheld,
 // History's entry the key and the withheld words with no snippet, and
 // nothing of the planted word in what changed; the admin's reads of the
 // same routes are the store's, and the admin's History holds the text.
@@ -275,6 +276,15 @@ func TestBrakemansReadsQuoteGitHubsText(t *testing.T) {
 		done(ds.AddRelation(ctx, adminOp("Ann"), rc.Key, dispatch.RelationRelates, f.ticket))
 		keys = append(keys, rc.Key)
 	}
+	// A publication of the first, its body the key part: the ticket's
+	// title, which the read wrote.
+	v, err := ds.Ticket(ctx, keys[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := dispatch.PublicationTarget{NodeID: "I_b0", SpaceID: "4000001", Kind: dispatch.ExternalIssue, URL: "https://github.com/acme/widgets/issues/7", Ref: "acme/widgets#7"}
+	done(ds.PreparePublication(ctx, adminOp("Ann"), dispatch.PublicationArgs{Key: keys[0], Target: dispatch.TargetLinked, Body: "Conductor ticket " + keys[0] + ": " + v.Title,
+		Parts: []string{"key"}}, target, func(id string) string { return "<!-- conductor-publication:" + id + " -->" }))
 	ix := histSettle(t, f.testEnv)
 	until(t, "the imported tickets indexed", func() bool {
 		for _, k := range keys {
@@ -296,6 +306,23 @@ func TestBrakemansReadsQuoteGitHubsText(t *testing.T) {
 		b, _ := json.Marshal(history)
 		if bytes.Contains(b, []byte(quotePlanted)) || !bytes.Contains(b, []byte(dispatch.WithheldText)) || !bytes.Contains(b, []byte(`"ref":"op:`)) {
 			t.Fatalf("%s: the history: %.600s", name, b)
+		}
+		if i == 0 {
+			published := false
+			for _, c := range history["changes"].([]any) {
+				row := c.(map[string]any)
+				if row["entity"] != dispatch.EntityPublication || row["op"] != dispatch.OpCreate {
+					continue
+				}
+				var p map[string]any
+				if err := json.Unmarshal([]byte(row["value"].(string)), &p); err != nil || p["body"] != dispatch.WithheldText || fmt.Sprint(p["parts"]) != "[key]" {
+					t.Fatalf("the publication's row: %v %v", err, row["value"])
+				}
+				published = true
+			}
+			if !published {
+				t.Fatalf("the history holds no publication: %.600s", b)
+			}
 		}
 		adminUnchanged(t, f.testEnv, key)
 	}
@@ -412,9 +439,12 @@ func largestQuoted(t *testing.T, e *testEnv, key string) largestTicket {
 // read's bound beside the room its linked item's parts take as an agent
 // reads them: MaxTicketReply for the session's read, and the turn's
 // bound for Brakeman's, whose answer gains the refs. The description is
-// the one text whose quote grows: a title's quoted line is shorter than
-// the title at its escaped worst, a related title's fixed words shorter
-// than one at its, so those stay a person's here.
+// the text whose quote grows: a title's quoted line is at most 29 bytes
+// longer than the title at its escaped worst (the line's words, with a
+// reference and an account at their bounds, and 200 characters of four
+// bytes each, against 200 of six as JSON), well inside the room the
+// measure leaves, and a related title's fixed words are shorter than one
+// at its worst; so the title and the related titles stay a person's here.
 func TestTheLargestTicketForAnAgentIsUnderItsBound(t *testing.T) {
 	t.Parallel()
 	t.Run("the session", func(t *testing.T) {

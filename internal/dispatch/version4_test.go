@@ -578,10 +578,11 @@ func bigChecks() []LinkCheck {
 
 // agentPartsBound holds the same parts of the read as an agent reads it
 // (ForAgent) to MaxAgentExternalParts, measured as TestTicketReplyBound
-// measures the admin's, for the read v at the admin's worst and with the
-// snapshot's steps to reproduce at the quote's worst instead (blank lines,
-// each a line `>` of three bytes as JSON for one of the steps'), and
-// within 4 KiB of the measure.
+// measures the admin's, for the read v at the admin's worst and at the
+// agent's own (the snapshot's steps to reproduce at the quote's worst,
+// blank lines, each a line `>` of three bytes as JSON for one of the
+// steps', and its accounts logins at their longest, which the copy keeps),
+// and within 4 KiB of the measure.
 func agentPartsBound(t *testing.T, s *Store, key string, v TicketView, sn ExternalSnapshot) {
 	t.Helper()
 	ctx := context.Background()
@@ -608,7 +609,15 @@ func agentPartsBound(t *testing.T, s *Store, key string, v TicketView, sn Extern
 		return len(reply) - len(asMain)
 	}
 	most := measure(v)
+	// The agent's own worst: the steps at the quote's worst, and the
+	// accounts the copy keeps at their longest (an author and every
+	// assignee a login of MaxSnapshotLogin characters), where the admin's
+	// worst holds characters the copy drops.
 	sn.Repro, _ = cutLines("a"+strings.Repeat("\n", MaxRepro-2)+"a", MaxRepro, reproMore)
+	sn.Author, sn.Assignees = strings.Repeat("a", MaxSnapshotLogin), nil
+	for i := range MaxSnapshotAssignees {
+		sn.Assignees = append(sn.Assignees, fmt.Sprintf("%02d", i)+strings.Repeat("b", MaxSnapshotLogin-2))
+	}
 	snapshot, err := encodeSnapshot(sn)
 	if err != nil {
 		t.Fatal(err)
@@ -620,9 +629,22 @@ func agentPartsBound(t *testing.T, s *Store, key string, v TicketView, sn Extern
 	if err != nil {
 		t.Fatal(err)
 	}
+	if got := agentSnapshotIn(t, mustForAgent(t, s, quote)); got["author"] != sn.Author || len(got["assignees"].([]any)) != MaxSnapshotAssignees {
+		t.Fatalf("the agent's worst keeps no accounts: %v %v", got["author"], got["assignees"])
+	}
 	most = max(most, measure(quote))
 	t.Logf("the new parts as an agent reads them, at their worst: %d bytes, their bound %d", most, MaxAgentExternalParts)
 	if most > MaxAgentExternalParts || MaxAgentExternalParts-most > 4<<10 {
 		t.Fatalf("the new parts as an agent reads them are %d bytes at their worst, their bound %d", most, MaxAgentExternalParts)
 	}
+}
+
+// mustForAgent is ForAgent of v, failing t on an error.
+func mustForAgent(t *testing.T, s *Store, v TicketView) TicketView {
+	t.Helper()
+	a, err := s.ForAgent(context.Background(), v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return a
 }
