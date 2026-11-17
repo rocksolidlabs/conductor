@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -90,6 +91,32 @@ func serveConfig(path string) (*config.Config, error) {
 	return cfg, err
 }
 
+// envName is the form of an environment variable's name --token-env takes.
+var envName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// tokenFromEnv is the workbench token --token-env names: the value of the
+// variable name, refused when the name is not a variable's or the variable
+// is unset or empty. The variable is then taken out of the server's own
+// environment, so no process the server starts inherits it. An error names
+// the variable, never its value; the value goes nowhere but the
+// configuration (not the --print-listen line, which carries a generated
+// token alone, nor the token file, which is kept for a generated one alone).
+func tokenFromEnv(name string) (string, error) {
+	if !envName.MatchString(name) {
+		// Not echoed: what was written may be the token itself (NAME=value).
+		return "", errors.New("--token-env takes the name of an environment variable (letters, digits and _, not starting with a digit), and what it was given is not one")
+	}
+	tok, ok := os.LookupEnv(name)
+	if !ok {
+		return "", fmt.Errorf("--token-env %s: the variable is not set, so the server would have no workbench token", name)
+	}
+	if tok == "" {
+		return "", fmt.Errorf("--token-env %s: the variable is empty, so the server would have no workbench token", name)
+	}
+	_ = os.Unsetenv(name)
+	return tok, nil
+}
+
 func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -102,6 +129,7 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 	printListen := fs.Bool("print-listen", false, "print one JSON line to stdout once listening: {listen, publicUrl, pid, version, workbenchToken?, tlsListen?} (for a parent process such as the desktop app)")
 	exitOnStdinClose := fs.Bool("exit-on-stdin-close", false, "shut down when stdin closes (a parent process that dies takes the server with it)")
 	switchyard := fs.Bool("switchyard", false, "coordinate hosted sessions and launch nothing: no sessions, crews, runs or catalog of its own (env CONDUCTOR_SWITCHYARD=1; conductor switchyard)")
+	tokenEnv := fs.String("token-env", "", "take the workbench token from the environment variable `NAME` (over workbenchToken and CONDUCTOR_WORKBENCH_TOKEN); refused when it is unset or empty, and its value is printed, logged and kept nowhere")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0, nil
@@ -117,6 +145,14 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 	cfg, err := serveConfig(*configPath)
 	if err != nil {
 		return 1, err
+	}
+	if *tokenEnv != "" {
+		tok, err := tokenFromEnv(*tokenEnv)
+		if err != nil {
+			return 2, err
+		}
+		cfg.WorkbenchToken, cfg.GeneratedWorkbenchToken, cfg.WorkbenchTokenRenamed = tok, false, false
+		log.Info("the workbench token is the environment's", "variable", *tokenEnv)
 	}
 	for _, w := range cfg.Warnings() {
 		log.Warn(w)

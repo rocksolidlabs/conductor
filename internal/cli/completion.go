@@ -81,7 +81,7 @@ func completionSpec() []commandSpec {
 	api := func(more ...flagSpec) []flagSpec {
 		return append([]flagSpec{{name: "--server", kind: flagValue}, {name: "--token", kind: flagValue}, {name: "--insecure"}}, more...)
 	}
-	serveFlags := []flagSpec{{name: "--config", kind: flagFile}, {name: "--listen", kind: flagValue}, {name: "--dev"}, {name: "--log-level", kind: flagEnum, values: levels}, {name: "--examples"}, {name: "--yolo"}, {name: "--print-listen"}, {name: "--exit-on-stdin-close"}, {name: "--switchyard"}}
+	serveFlags := []flagSpec{{name: "--config", kind: flagFile}, {name: "--listen", kind: flagValue}, {name: "--dev"}, {name: "--log-level", kind: flagEnum, values: levels}, {name: "--examples"}, {name: "--yolo"}, {name: "--print-listen"}, {name: "--exit-on-stdin-close"}, {name: "--switchyard"}, {name: "--token-env", kind: flagValue}}
 	notifyFlags := []flagSpec{
 		{name: "--state", kind: flagEnum, values: []string{"needs_input", "working", "done", "clear"}},
 		{name: "--message", kind: flagValue},
