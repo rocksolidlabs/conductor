@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { BrakemanRequest, BrakemanRow } from '~/utils/brakeman'
-import { closed, kindWords, refLabel, requestNumber, stateWords, stopAction } from '~/utils/brakeman'
+import { closed, kindWords, refLabel, requestNumber, stateWords } from '~/utils/brakeman'
 import { askChips, askDisabled } from '~/utils/brakemanAsk'
 import { pageState } from '~/utils/pageState'
 
@@ -16,7 +16,6 @@ const bk = useBrakeman()
 const live = useAttention()
 const route = useRoute()
 const router = useRouter()
-const toast = useToast()
 const phone = useIsPhone()
 // What changed since the last briefing, for the bar's first chip and Now's line: read while the page is open.
 bk.followSince()
@@ -181,29 +180,6 @@ function opened(r: BrakemanRequest) {
   })
 }
 
-const busy = ref('')
-async function cancel(r: BrakemanRequest) {
-  busy.value = r.id
-  try {
-    await bk.cancel(r.id)
-  } catch (e) {
-    toast.add({ title: `${r.id} not cancelled`, description: (e as Error).message, icon: 'i-lucide-triangle-alert', color: 'error' })
-  } finally {
-    busy.value = ''
-  }
-}
-/** Stop on the request in progress: an open one is cancelled, a closed one the desk still holds has its run stopped (stopAction). */
-async function stop(r: BrakemanRequest) {
-  busy.value = r.id
-  try {
-    await bk.stop(r)
-  } catch (e) {
-    toast.add({ title: `${r.id} not stopped`, description: (e as Error).message, icon: 'i-lucide-triangle-alert', color: 'error' })
-  } finally {
-    busy.value = ''
-  }
-}
-
 /** The page's standing paragraph: in place until a request is done, then under About this page. Its Settings link is the header's. */
 const ABOUT =
   'Brakeman is an agent of your choosing that reads what the crews, the runs and Dispatch hold, and answers with a brief whose facts link to their evidence. It reads and drafts; nothing it writes becomes work until you act. Its agent, what it may see, its budget and whether it is on are in Settings.'
@@ -304,37 +280,8 @@ const prefill = computed(() => {
               </div>
 
               <div class="contents @min-[53.75rem]:flex @min-[53.75rem]:min-w-0 @min-[53.75rem]:flex-[1_1_280px] @min-[53.75rem]:flex-col @min-[53.75rem]:gap-5" data-brakeman-side>
-                <div v-if="current || queue.length" class="order-1 flex min-w-0 flex-col gap-5 max-sm:order-2" data-brakeman-progress>
-                  <UCard v-if="current" :ui="{ header: 'px-4 py-3', body: 'p-4' }" data-brakeman-current>
-                    <template #header><SettingsCardTitle title="In progress" /></template>
-                    <div class="flex flex-wrap items-center gap-3 text-sm" :data-request="current.id" :data-request-state="current.state">
-                      <span class="font-medium">{{ current.id }} · {{ kindWords(current.kind) }}</span>
-                      <span class="text-muted" data-request-words>{{ words(current) }}</span>
-                      <NuxtLink v-if="current.sessionId" :to="`/sessions/${encodeURIComponent(current.sessionId)}`" class="underline" data-request-session>Watch its terminal</NuxtLink>
-                      <UButton
-                        v-if="stopAction(current)"
-                        :label="stopAction(current) === 'stop_run' ? 'Stop its run' : 'Stop'"
-                        icon="i-lucide-square"
-                        size="sm"
-                        color="neutral"
-                        variant="outline"
-                        class="ml-auto"
-                        :loading="busy === current.id"
-                        :data-request-stop="stopAction(current)"
-                        @click="stop(current)"
-                      />
-                    </div>
-                  </UCard>
-                  <UCard v-if="queue.length" :ui="{ header: 'px-4 py-3', body: 'p-4' }" data-brakeman-queue>
-                    <template #header><SettingsCardTitle title="Waiting" description="Taken one at a time, oldest first." /></template>
-                    <ul class="flex flex-col gap-2">
-                      <li v-for="r in queue" :key="r.id" class="flex items-center gap-3 text-sm" :data-request="r.id" :data-request-state="r.state">
-                        <span class="font-medium">{{ r.id }} · {{ kindWords(r.kind) }}</span>
-                        <span class="text-muted" data-request-words>{{ words(r) }}</span>
-                        <UButton label="Cancel" size="sm" color="neutral" variant="ghost" class="ml-auto" :loading="busy === r.id" data-request-cancel @click="cancel(r)" />
-                      </li>
-                    </ul>
-                  </UCard>
+                <div v-if="current || queue.length" class="order-1 min-w-0 max-sm:order-2" data-brakeman-progress>
+                  <BrakemanInProgress :current="current" :queue="queue" />
                 </div>
                 <div class="order-4 min-w-0">
                   <BrakemanRoleCard v-if="state && config?.enabled" :background="config.wake.mode === 'background'" :window-seconds="config.wake.windowSeconds" />
