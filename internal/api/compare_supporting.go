@@ -48,20 +48,24 @@ type comparisonSupporting struct {
 	Brakeman supportBrakeman `json:"brakeman"`
 }
 
-// supportClaim is a candidate's own summary of its result.
+// supportClaim is a candidate's own summary of its result; it favours
+// its own candidate (PR-6b).
 type supportClaim struct {
 	Task    string `json:"task"`
 	Attempt int    `json:"attempt"`
 	Summary string `json:"summary"`
+	Favours string `json:"favours"`
 }
 
 // supportReview is the verdict of a review of a candidate's commit, and
-// its findings' titles: task and attempt are the review's own.
+// its findings' titles: task and attempt are the review's own; it
+// favours the candidate it approved, none for another verdict (PR-6b).
 type supportReview struct {
 	Task     string   `json:"task"`
 	Attempt  int      `json:"attempt"`
 	Verdict  string   `json:"verdict"`
 	Findings []string `json:"findings"`
+	Favours  string   `json:"favours,omitempty"`
 }
 
 // supportBrakeman is the newest compare request about the comparison:
@@ -110,7 +114,7 @@ func (s *Server) comparisonSupporting(ctx context.Context, c crew.Comparison) *c
 		if !ok {
 			continue
 		}
-		out.Claims = append(out.Claims, supportClaim{Task: cand.Task, Attempt: cand.Attempt, Summary: cutEncoded(res.Summary, maxClaimSummary)})
+		out.Claims = append(out.Claims, supportClaim{Task: cand.Task, Attempt: cand.Attempt, Summary: cutEncoded(res.Summary, maxClaimSummary), Favours: cand.Task})
 		if r, ok := s.reviewOf(launched, chain, attemptsOf, cand); ok {
 			out.Reviews = append(out.Reviews, r)
 		}
@@ -182,6 +186,9 @@ func (s *Server) reviewOf(launched crew.Crew, chain []string, attemptsOf func(st
 			continue
 		}
 		r := supportReview{Task: best.TaskID, Attempt: best.N, Verdict: cutEncoded(res.Verdict, maxSupportVerdict), Findings: []string{}}
+		if res.Verdict == crew.VerdictApproved {
+			r.Favours = cand.Task
+		}
 		for _, f := range res.Findings[:min(len(res.Findings), maxReviewFindings)] {
 			r.Findings = append(r.Findings, cutEncoded(findingTitle(f), maxFindingTitle))
 		}

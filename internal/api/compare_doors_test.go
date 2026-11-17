@@ -72,6 +72,9 @@ type compareOpts struct {
 	// draft sets the block's brakeman: Brakeman is asked for a draft once
 	// the lanes settle.
 	draft bool
+	// checks, when set, are every candidate's checks in place of the
+	// env's one passing check.
+	checks []crew.Check
 	// unticketed lets the engine launch a comparison no ticket's package
 	// carries (SetCompareOpenForTest), set before any run launches: a test
 	// of what such a run's lanes are given.
@@ -111,6 +114,11 @@ func newCompareEnv(t *testing.T, o compareOpts) *compareEnv {
 	e.newDispatchTicket(t, "CND", title, tk)
 	in := compareCrewIn(t, repo)
 	in.Compare.Brakeman = o.draft
+	for i := range in.Tasks {
+		if o.checks != nil && in.Tasks[i].Kind == crew.TaskWork {
+			in.Tasks[i].Checks = o.checks
+		}
+	}
 	saved, err := e.srv.crews.Create(in)
 	if err != nil {
 		t.Fatal(err)
@@ -1066,6 +1074,13 @@ func TestAnUnlistedDoorIsClosedToALane(t *testing.T) {
 			writeError(w, http.StatusUnauthorized, "unauthorized", "agent token required")
 		}
 	})
+	// DR1's session decision routes take their token through
+	// decisionSession (door 9).
+	mux.HandleFunc("GET /api/sessions/{id}/unlisted-decision", func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := s.decisionSession(w, r); ok {
+			served(w)
+		}
+	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	call := func(tok, sid, route string) (int, map[string]any) {
@@ -1080,7 +1095,7 @@ func TestAnUnlistedDoorIsClosedToALane(t *testing.T) {
 		_ = json.NewDecoder(resp.Body).Decode(&out)
 		return resp.StatusCode, out
 	}
-	for _, route := range []string{"unlisted-task", "unlisted-attention", "unlisted-token"} {
+	for _, route := range []string{"unlisted-task", "unlisted-attention", "unlisted-token", "unlisted-decision"} {
 		status, out := call(ce.aTok, ce.a, route)
 		laneRefused(t, route, status, nil, out)
 		if got, _ := call(ce.plainTok, ce.member, route); got != http.StatusOK {

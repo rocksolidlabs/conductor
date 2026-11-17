@@ -1648,14 +1648,16 @@ func filterCandidates(r *http.Request, o *observer, body []byte) ([]byte, error)
 // check: ref, noted at its state, the commit it checked and its log's
 // SHA-256, so a brief citing them after this read alone cites what it
 // observed. A candidate of a run outside the grant (an imported one's
-// source) is shown without a ref and not noted. The selection is left
-// out: the person's answer is never Brakeman's input.
+// source) is shown without a ref and not noted. The selection and the
+// state it gives the comparison are left out: the person's answer is
+// never Brakeman's input.
 func filterComparison(r *http.Request, o *observer, body []byte) ([]byte, error) {
 	var m map[string]json.RawMessage
 	if err := json.Unmarshal(body, &m); err != nil {
 		return nil, err
 	}
 	delete(m, "selection")
+	delete(m, "state")
 	// noted resolves ref as a brief's would and notes it when it is found
 	// in the grant: its state, its revision and its SHA-256.
 	noted := func(ref string) (bool, error) {
