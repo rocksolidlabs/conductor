@@ -89,6 +89,9 @@ type Receipt struct {
 	Refusal   string       `json:"refusal,omitempty"`
 	Task      *ReceiptTask `json:"task,omitempty"`
 	Paused    *bool        `json:"paused,omitempty"`
+	// Preview is the preview a preview command opened or closed
+	// (preview_commands.go), nil for any other command and a refused one.
+	Preview *PreviewRef `json:"preview,omitempty"`
 }
 
 // ReceiptTask is the task a command changed, as its receipt keeps it: what

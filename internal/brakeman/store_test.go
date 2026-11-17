@@ -626,7 +626,8 @@ func TestEveryDocumentFitsItsLoadLimit(t *testing.T) {
 		t.Fatal(err)
 	}
 	r2 := f.start("op-2")
-	// state.json at its largest: MaxOps op ids, ChargeDays of the most turns.
+	// state.json at its largest: MaxOps op ids and MaxPinnedOps pinned ones,
+	// ChargeDays of the most turns.
 	f.s.mu.Lock()
 	st, err := f.s.loadState()
 	if err == nil {
@@ -642,8 +643,8 @@ func TestEveryDocumentFitsItsLoadLimit(t *testing.T) {
 				st.Days[day][requestID(int64(1<<49+d*1000+i))] = Charge{Reserved: m, Settled: &m}
 			}
 		}
-		for i := range MaxOps {
-			st.Ops = append(st.Ops, opRef{OpID: fmt.Sprintf("%032d", i), ID: requestID(int64(1<<49 + i)), Sum: fmt.Sprintf("%064x", i)})
+		for i := range MaxOps + MaxPinnedOps {
+			st.Ops = append(st.Ops, opRef{OpID: fmt.Sprintf("%032d", i), ID: requestID(int64(1<<49 + i)), Sum: fmt.Sprintf("%064x", i), Pruned: true, Pinned: i >= MaxOps})
 		}
 		err = f.s.saveState(st)
 	}

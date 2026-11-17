@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { summaryStatusLine } from './status'
 import { ticketSections, ticketWaits, type TicketSectionsInput, type WaitItem } from './ticketSections'
 
-// A ticket's strip of sections (UX1 PR-16, utils/ticketSections.ts): the nine names in the page's order, each with its state where it has
+// A ticket's strip of sections (UX1 PR-16, utils/ticketSections.ts): the ten names in the page's order, each with its state where it has
 // one, and the ticket's items of the one list, filtered by its key and its runs, never counted again.
 
 const close = { closed: false, ready: false, items: [{ met: true }, { met: false }] }
@@ -12,9 +12,9 @@ function input(p: Partial<TicketSectionsInput> = {}): TicketSectionsInput {
 const words = (i: TicketSectionsInput, id: string) => ticketSections(i).find((s) => s.id === id)!
 
 describe("a ticket's strip of sections", () => {
-  it('names the nine sections in the page’s order, links, relations and attachments not among them', () => {
-    expect(ticketSections(input()).map((s) => s.label)).toEqual(['Description', 'Acceptance', 'Plan', 'Runs', 'Decisions', 'To close', 'People', 'Comments', 'History'])
-    expect(ticketSections(input()).map((s) => s.id)).toEqual(['description', 'acceptance', 'plan', 'runs', 'decisions', 'close', 'people', 'comments', 'history'])
+  it('names the ten sections in the page’s order, links, relations and attachments not among them', () => {
+    expect(ticketSections(input()).map((s) => s.label)).toEqual(['Description', 'Acceptance', 'Plan', 'Runs', 'Captures', 'Decisions', 'To close', 'People', 'Comments', 'History'])
+    expect(ticketSections(input()).map((s) => s.id)).toEqual(['description', 'acceptance', 'plan', 'runs', 'captures', 'decisions', 'close', 'people', 'comments', 'history'])
   })
 
   it("says the featured revision's state, or none, as the Plan section's badge does", () => {
@@ -41,7 +41,7 @@ describe("a ticket's strip of sections", () => {
     expect(ticketSections(input()).map((s) => s.id)).not.toContain('github')
     expect(ticketSections(input({ github: null })).map((s) => s.id)).not.toContain('github')
     const linked = ticketSections(input({ github: { state: 'open' } }))
-    expect(linked.map((s) => s.id)).toEqual(['github', 'description', 'acceptance', 'plan', 'runs', 'decisions', 'close', 'people', 'comments', 'history'])
+    expect(linked.map((s) => s.id)).toEqual(['github', 'description', 'acceptance', 'plan', 'runs', 'captures', 'decisions', 'close', 'people', 'comments', 'history'])
     expect([linked[0]!.label, linked[0]!.words, linked[0]!.tone]).toEqual(['GitHub', 'open', 'neutral'])
     expect(words(input({ github: { state: 'closed', stateReason: 'completed' } }), 'github').words).toBe('closed')
     expect(words(input({ github: { state: 'closed', merged: true } }), 'github').words).toBe('merged')

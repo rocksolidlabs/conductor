@@ -45,6 +45,9 @@ const (
 	// agent's usage on an account, by the time it was read (RFC 3339 in
 	// UTC, as the view gives it).
 	RefCapacity = "capacity" // capacity:<agent>/<account>@<readAt>
+	// PV1's captures (docs/plans/browser-evidence.md): a capture of a
+	// preview, live, or what one of its sends froze, as it was sent.
+	RefCapture = "capture" // capture:<id> or capture:<id>/<send>
 )
 
 // The shapes of a ref's parts, each the one its own package gives it,
@@ -105,6 +108,8 @@ type Ref struct {
 	Agent    string // capacity: a catalog agent's id
 	Account  string // capacity: an account's id
 	ReadAt   string // capacity: when the reading was made, RFC 3339 in UTC as time.RFC3339Nano writes it
+	Capture  string // capture: its id, 16 hex digits
+	Send     string // capture: the send whose frozen document it names, 16 hex digits; "" for the live capture
 }
 
 // RefError is a ref that does not parse: the ref and why.
@@ -279,6 +284,14 @@ func ParseRef(s string) (Ref, error) {
 			return bad("want capacity:<agent>/<account>@<readAt>, readAt in UTC as the view gives it")
 		}
 		r.Agent, r.Account, r.ReadAt = parts[0], account, at
+	case RefCapture:
+		if (!want(1) && !want(2)) || !hexIDPattern.MatchString(parts[0]) || (want(2) && !hexIDPattern.MatchString(parts[1])) {
+			return bad("want capture:<id> or capture:<id>/<send>, each 16 hex digits")
+		}
+		r.Capture = parts[0]
+		if want(2) {
+			r.Send = parts[1]
+		}
 	default:
 		return bad("no kind %q: a ref is one of %s", kind, refFormsWords())
 	}
@@ -355,6 +368,11 @@ func (r Ref) String() string {
 		return "decision:" + r.Decision
 	case RefCapacity:
 		return "capacity:" + r.Agent + "/" + r.Account + "@" + r.ReadAt
+	case RefCapture:
+		if r.Send != "" {
+			return "capture:" + r.Capture + "/" + r.Send
+		}
+		return "capture:" + r.Capture
 	}
 	return ""
 }

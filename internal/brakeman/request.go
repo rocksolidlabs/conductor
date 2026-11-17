@@ -56,6 +56,11 @@ type Request struct {
 	// as it was queued (CapacityOf), at most MaxCapacity bytes; absent on a
 	// server that keeps no capacity.
 	Capacity *Capacity `json:"capacity,omitempty"`
+	// Pin, given to Create, pins the request's op id: kept past the trim
+	// to MaxOps until Store.Release, for a caller whose repeat may come
+	// after a thousand other requests (a capture's send to Brakeman,
+	// settled from its stored request). It is not written in the request.
+	Pin bool `json:"-"`
 }
 
 // Stamp is the agent a turn ran: its id, its adapter, the probed version,

@@ -27,7 +27,9 @@ const intents = [
 const severities = SEVERITIES.map((s) => ({ label: s, value: s }))
 const chars = (s: string) => [...s].length
 const tooLong = computed(() => chars(message.value) > MAX_FINDING_MESSAGE || chars(resolution.value) > MAX_FINDING_RESOLUTION)
-const ready = computed(() => !!message.value.trim() && !tooLong.value)
+/** A capture note's words are the server's, made from its annotation: the form keeps what the person noted, and edits the rest. */
+const capture = computed(() => props.note.kind === 'capture')
+const ready = computed(() => (capture.value || !!message.value.trim()) && !tooLong.value)
 
 function save() {
   if (!ready.value) return
@@ -62,7 +64,10 @@ onMounted(() => nextTick(() => area.value?.textareaRef?.focus()))
       <USelect v-model="intent" :items="intents" size="xs" class="w-32" aria-label="What the note is" data-review-note-intent />
       <USelect v-if="intent === 'change'" v-model="severity" :items="severities" size="xs" class="w-28" aria-label="Severity" data-review-note-severity />
     </div>
+    <p v-if="capture" class="whitespace-pre-wrap break-words rounded border border-default bg-elevated/40 px-2 py-1 text-xs" data-review-note-capture-words>{{ note.message || 'No note.' }}</p>
+    <p v-if="capture" class="text-[11px] text-muted">The finding's words are the annotation's, with the element and its source, as the server makes them.</p>
     <UTextarea
+      v-if="!capture"
       ref="area"
       v-model="message"
       :rows="2"

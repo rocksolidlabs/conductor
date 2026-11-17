@@ -10,7 +10,7 @@ import { checksWords } from './tracker'
  * of where a finding's lines are, a finding's state from its marks, and the bases a candidate's diff may be read against. Pure.
  */
 
-export type NoteKind = 'line' | 'file' | 'general' | 'check'
+export type NoteKind = 'line' | 'file' | 'general' | 'check' | 'capture'
 export type NoteIntent = 'change' | 'question' | 'note'
 export type Severity = 'blocker' | 'major' | 'minor' | 'nit'
 export type Side = 'candidate' | 'base'
@@ -30,6 +30,24 @@ export const MAX_ANCHOR_LINES = 12
 export const MAX_ANCHOR_LINE = 200
 /** What the run keeps of a repair at most (the ledger's MaxPayload): a request past it is refused whole. */
 export const MAX_REPAIR_PAYLOAD = 64 << 10
+/** The most evidence files a repair is handed (crew's maxEvidence): a capture revision's document, and its screenshot when it has one. */
+export const MAX_EVIDENCE = 8
+
+/**
+ * The evidence files a request of the batch hands a repair: each capture revision's once, whichever sends carried its notes (the server
+ * hands two sends of one revision's files over once), two for a note that does not say how many its send holds.
+ */
+export function evidenceFiles(body: ReviewBody, notes: readonly Pick<DraftNote, 'captureRev' | 'captureFiles'>[] = []): number {
+  const seen = new Map<string, number>()
+  body.findings.forEach((f, i) => {
+    if (f.kind !== 'capture' || !f.capture) return
+    const n = notes[i]
+    const key = n?.captureRev !== undefined ? `${f.capture.capture}@${n.captureRev}` : `send ${f.capture.send}`
+    seen.set(key, Math.max(seen.get(key) ?? 0, n?.captureFiles ?? 2))
+  })
+  return [...seen.values()].reduce((a, b) => a + b, 0)
+}
+
 /** A Dispatch id's length: the request is measured with ids of it. */
 const ID_LEN = 16
 
@@ -58,6 +76,27 @@ export interface DraftNote {
    * request: the batch's size counts it (changeRequestOf). For the draft alone; never sent.
    */
   measured?: RequestedCheck
+  /**
+   * A capture note's capture (kind `capture`, Add to a review): the capture, its send to a review and the annotation. The server makes
+   * its words, path and line from the annotation; `message` is the note as the person wrote it, shown in the draft and never sent.
+   */
+  capture?: CaptureChoice
+  /** A capture note's capture in words ("capture 0123abcd r2, annotation 1"), for the draft alone; never sent. */
+  captureName?: string
+  /**
+   * A capture note's capture revision and how many files its send holds (the document, and the screenshot when there is one), for the
+   * draft alone, never sent: two sends of one revision hold the same files, which a repair is handed once, and a repair takes at most
+   * MAX_EVIDENCE files.
+   */
+  captureRev?: number
+  captureFiles?: number
+}
+
+/** What a capture finding names (dispatch.CaptureRef): the capture, its send to a review, and the annotation's place from 1. */
+export interface CaptureChoice {
+  capture: string
+  send: string
+  k: number
 }
 
 /** The classes of a failed check (crew's ClassifyFailure): the server's hint, which a person may change. */
@@ -90,6 +129,7 @@ export interface NewFinding {
   message?: string
   resolution?: string
   check?: CheckChoice
+  capture?: CaptureChoice
 }
 
 /** A selection in the diff (DiffEditor's `select`): the side, the lines from..to (1-based, whole lines), their text, and where to put the bar. */
@@ -138,6 +178,13 @@ export function noteFromSelection(path: string, side: Side, fileLines: readonly 
 export function findingOf(n: DraftNote): NewFinding {
   const f: NewFinding = { kind: n.kind, intent: n.intent }
   if (n.intent === 'change' && n.severity) f.severity = n.severity
+  if (n.kind === 'capture') {
+    // Its words, path and line are the server's, made from the annotation: the route refuses them from a body.
+    const resolution = n.intent === 'change' ? (n.resolution ?? '').trim() : ''
+    if (resolution) f.resolution = resolution
+    if (n.capture) f.capture = { capture: n.capture.capture, send: n.capture.send, k: n.capture.k }
+    return f
+  }
   if (n.kind !== 'general' && n.kind !== 'check') {
     if (n.path) f.path = n.path
     if (n.side) f.side = n.side
@@ -183,6 +230,22 @@ export interface ChangeRequest {
   base?: string
   summary?: string
   changes: Array<Omit<NewFinding, 'check'> & { id: string; check?: RequestedCheck }>
+  /** The evidence files its capture findings stand on (crew.EvidenceRef): each send's document and screenshot. */
+  evidence?: EvidenceRef[]
+}
+
+/** An evidence file a request names (crew.EvidenceRef): its name, SHA-256, size and the send that holds it. */
+export interface EvidenceRef {
+  name: string
+  sha256: string
+  bytes: number
+  send: string
+}
+
+/** A capture send's two files at their widest, as the server names them in a request: the request's measure counts them. */
+function worstEvidence(send: string): EvidenceRef[] {
+  const name = (ext: string) => `capture-${'f'.repeat(ID_LEN)}-r${'9'.repeat(18)}.${ext}`
+  return ['json', 'png'].map((ext) => ({ name: name(ext), sha256: 'f'.repeat(64), bytes: 16 << 20, send }))
 }
 
 /**
@@ -302,6 +365,7 @@ function worstCheck(receipt: string): RequestedCheck {
  * receipt at its largest), with the class chosen and the quote.
  */
 export function changeRequestOf(body: ReviewBody, by: string, notes: readonly Pick<DraftNote, 'measured'>[] = []): ChangeRequest {
+  const sends = [...new Set(body.findings.flatMap((f) => (f.kind === 'capture' && f.capture ? [f.capture.send] : [])))]
   return {
     review: '0'.repeat(ID_LEN),
     by,
@@ -311,12 +375,15 @@ export function changeRequestOf(body: ReviewBody, by: string, notes: readonly Pi
     changes: body.findings.map((f, i) => {
       const { check, ...rest } = f
       const id = (i + 1).toString(16).padStart(ID_LEN, '0')
+      // A capture finding's words, path and line at their largest: the server makes them from the annotation.
+      if (f.kind === 'capture') return { id, ...rest, path: 'p'.repeat(MAX_FINDING_PATH), from: 1e7, to: 1e7, message: 'x'.repeat(MAX_FINDING_MESSAGE) }
       if (!check) return { id, ...rest }
       const filled = { ...(notes[i]?.measured ?? worstCheck(check.receipt)), receipt: check.receipt }
       delete filled.chosen
       delete filled.quote
       return { id, ...rest, check: { ...filled, ...(check.chosen ? { chosen: check.chosen } : {}), ...(check.quote ? { quote: check.quote } : {}) } }
     }),
+    ...(sends.length ? { evidence: sends.flatMap(worstEvidence) } : {}),
   }
 }
 
@@ -349,8 +416,13 @@ export function repairBytes(cr: ChangeRequest): number {
 export const kib = (n: number) => Math.ceil(n / 1024)
 
 /** Where a note is, in words: "stub.txt:3–4 (base)", "stub.txt (the whole file)", "the candidate as a whole". */
-export function noteWhere(n: Pick<DraftNote, 'kind' | 'path' | 'side' | 'from' | 'to' | 'check' | 'checkName'>): string {
+export function noteWhere(n: Pick<DraftNote, 'kind' | 'path' | 'side' | 'from' | 'to' | 'check' | 'checkName' | 'capture' | 'captureName'>): string {
   if (n.kind === 'general') return 'the candidate as a whole'
+  if (n.kind === 'capture') {
+    const what = n.captureName || (n.capture ? `capture ${n.capture.capture.slice(0, 8)}, annotation ${n.capture.k}` : 'a capture')
+    if (!n.path) return what
+    return `${what}, drawn by ${n.path}${n.from ? `:${n.from}` : ''}`
+  }
   if (n.kind === 'check' && n.check?.source === 'external') return `${n.checkName || 'a CI job'} failed on GitHub`
   if (n.kind === 'check') return `${n.checkName || 'the check'} failed (${n.check?.receipt ?? 'its receipt'})`
   const side = n.side === 'base' ? ' (base)' : ''
@@ -364,7 +436,7 @@ export function noteWhere(n: Pick<DraftNote, 'kind' | 'path' | 'side' | 'from' |
  * fifty notes, a request with a change in it, each text within its bound, and a request within what the run keeps (64 KiB). Empty when
  * it may be sent; the server checks all of it again, and the task file's size, which only it can measure.
  */
-export function batchProblems(body: ReviewBody, by: string, notes: readonly Pick<DraftNote, 'measured'>[] = []): string[] {
+export function batchProblems(body: ReviewBody, by: string, notes: readonly Pick<DraftNote, 'measured' | 'captureRev' | 'captureFiles'>[] = []): string[] {
   const out: string[] = []
   if (!body.findings.length && !body.summary) out.push('Add a note or a summary first.')
   if (body.findings.length > MAX_REVIEW_FINDINGS) out.push(`A review holds at most ${MAX_REVIEW_FINDINGS} notes: this one has ${body.findings.length}.`)
@@ -372,7 +444,8 @@ export function batchProblems(body: ReviewBody, by: string, notes: readonly Pick
   if (body.summary && chars(body.summary) > MAX_REVIEW_SUMMARY) out.push(`The summary is more than ${MAX_REVIEW_SUMMARY} characters.`)
   body.findings.forEach((f, i) => {
     const what = `Note ${i + 1}`
-    if (!f.message) out.push(`${what} has no words.`)
+    if (!f.message && f.kind !== 'capture') out.push(`${what} has no words.`)
+    if (f.kind === 'capture' && !f.capture) out.push(`${what} names no capture.`)
     if (f.message && chars(f.message) > MAX_FINDING_MESSAGE) out.push(`${what}'s words are more than ${MAX_FINDING_MESSAGE} characters.`)
     if (f.resolution && chars(f.resolution) > MAX_FINDING_RESOLUTION) out.push(`${what}'s resolution is more than ${MAX_FINDING_RESOLUTION} characters.`)
     if (f.path && bytes(f.path) > MAX_FINDING_PATH) out.push(`${what}'s path is more than ${MAX_FINDING_PATH} bytes.`)
@@ -380,6 +453,8 @@ export function batchProblems(body: ReviewBody, by: string, notes: readonly Pick
   if (body.verdict === 'request_changes') {
     const n = repairBytes(changeRequestOf(body, by, notes))
     if (n > MAX_REPAIR_PAYLOAD) out.push(`The notes are ${kib(n)} KiB as the run keeps them, more than ${MAX_REPAIR_PAYLOAD >> 10} KiB: shorten them.`)
+    const files = evidenceFiles(body, notes)
+    if (files > MAX_EVIDENCE) out.push(`The captures' notes hand the repair ${files} files (each capture revision's document, and its screenshot), more than ${MAX_EVIDENCE}: send the notes of fewer captures, or send them as a comment.`)
   }
   return out
 }

@@ -350,6 +350,8 @@ func (s *Server) openBrakemanDesk(st *store.Store) *brakemanDesk {
 		d.admit.Unlock()
 		d.poke()
 		d.role.Poke()
+		// The capture sends wait for the desk to hold its records.
+		d.s.pokeCaptureSends()
 	})
 	d.loadQueue()
 	if ownedAtOpen {
@@ -1814,6 +1816,8 @@ func (s *Server) brakemanError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "turn_over", err.Error())
 	case errors.Is(err, brakeman.ErrBound):
 		writeError(w, http.StatusRequestEntityTooLarge, "bound", err.Error())
+	case errors.Is(err, brakeman.ErrPinsFull):
+		writeError(w, http.StatusServiceUnavailable, "pins_full", err.Error())
 	case errors.Is(err, errDeskClosing):
 		writeError(w, http.StatusServiceUnavailable, "shutting_down", err.Error())
 	default:
@@ -2217,6 +2221,11 @@ func (s *Server) admitAsk(d *brakemanDesk, in brakeman.Request, spare bool) askA
 	// is refused, or after it, and cancels it with the queue.
 	d.admit.Lock()
 	defer d.admit.Unlock()
+	// A pinned ask (a capture's send, settled from its stored request) is
+	// refused once the desk closes, so no request is pinned past the stop.
+	if in.Pin && d.closing.Load() {
+		return askAnswer{err: errDeskClosing}
+	}
 	// A repeat answers its request whatever stands since. It is looked up
 	// in admission's order, so of two asks with one opId at once the
 	// second finds the first's request, never a slot the first just took.
@@ -2280,6 +2289,27 @@ func (s *Server) admitAsk(d *brakemanDesk, in brakeman.Request, spare bool) askA
 		}
 	}
 	return askAnswer{req: req, status: status}
+}
+
+// askBrakeman is the desk's admission of a request in for a caller that
+// is not the ask route: a capture's send (capture_sends.go). It is
+// admitAsk, the day's budget counted, in that caller's terms: a repeat of
+// in's op id answers its request whatever stands since (created false); a
+// new one is kept and queued under admission's order, unless the desk
+// refuses it in its own words (aerr): brakeman_off, brakeman_stuck,
+// queue_full, budget_spent. err is the store's (brakemanError answers
+// it): brakeman_not_owner before the desk holds the records' queue, an
+// invalid ask, pins_full for a pinned one past the store's pins, and
+// shutting_down for a pinned ask once the desk closes.
+func (s *Server) askBrakeman(d *brakemanDesk, in brakeman.Request) (req brakeman.Request, created bool, aerr *apiError, err error) {
+	a := s.admitAsk(d, in, false)
+	switch {
+	case a.err != nil:
+		return brakeman.Request{}, false, nil, a.err
+	case a.code != "":
+		return brakeman.Request{}, false, newAPIError(a.status, a.code, a.words), nil
+	}
+	return a.req, a.status == http.StatusCreated, nil, nil
 }
 
 // handleBrakemanRequests answers a page of requests, newest first:
@@ -2421,19 +2451,27 @@ func (s *Server) handleBrakemanCancel(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", "opId is 1 to 32 of A-Z, a-z, 0-9, . _ ~ -")
 		return
 	}
-	req, err := d.st.Get(id)
+	req, _, err := d.cancelBrakeman(id)
 	if err != nil {
 		s.brakemanError(w, err)
 		return
 	}
-	if req.Open() {
-		by := "a person cancelled it"
-		if req, err = d.closeTurn(id, brakeman.StateCancelled, by); err != nil {
-			s.brakemanError(w, err)
-			return
-		}
-	}
 	writeJSON(w, http.StatusOK, map[string]any{"request": req})
+}
+
+// cancelBrakeman cancels the request id, the cancel route's and a
+// capture's send's cancel (capture_sends.go): an open one is closed
+// cancelled (closeTurn: a queued one leaves the queue, a starting or
+// running one has its run stopped after the write), closed true; a closed
+// one answers as it stands. The store's error otherwise (ErrNotFound for a
+// request not kept, a pruned one among them).
+func (d *brakemanDesk) cancelBrakeman(id string) (brakeman.Request, bool, error) {
+	req, err := d.st.Get(id)
+	if err != nil || !req.Open() {
+		return req, false, err
+	}
+	req, err = d.closeTurn(id, brakeman.StateCancelled, "a person cancelled it")
+	return req, err == nil, err
 }
 
 // brakemanRun answers 409 brakeman_run for a Brakeman turn's run, which

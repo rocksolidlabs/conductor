@@ -1011,7 +1011,8 @@ func TestCaptureRoutesAreAdminOnly(t *testing.T) {
 			}
 		}
 		raw, _ := json.Marshal(body)
-		if status, data, _ := b.callAsTurn(t, btok, bsid, r[0], r[1], raw); status != http.StatusUnauthorized {
+		// The capture's read is a turn's shared read (PR-6, capture_sends_test.go): here a capture there is none of.
+		if status, data, _ := b.callAsTurn(t, btok, bsid, r[0], r[1], raw); status != http.StatusUnauthorized && (r[1] != "/api/captures/"+id || status != http.StatusNotFound) {
 			t.Errorf("%s %s as a Brakeman turn: %d %s", r[0], r[1], status, data)
 		}
 		for who, pass := range map[string]string{"the decide grant alone": passAna, "the host grant alone": passHostOnly} {
@@ -1081,7 +1082,7 @@ func TestTheCaptureGateAnswersInFixedWords(t *testing.T) {
 }
 
 // Brakeman's reads of Dispatch's changes pass over a capture's rows (a
-// turn has no read of captures yet): a turn of an unscoped grant and one
+// turn reads a capture by its own reads alone): a turn of an unscoped grant and one
 // scoped by a repository each read the changes after a capture was made,
 // edited and deleted, and no row names it.
 func TestBrakemansChangesNameNoCapture(t *testing.T) {

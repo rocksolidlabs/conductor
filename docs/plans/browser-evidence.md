@@ -588,7 +588,9 @@ what the server filled, as RV1's `ReviewSubmitArgs` does):
   `plans.go`'s `planCreated`); a set's row holds its `id`, `rev`,
   `digest` and `members` (under 1.5 KiB); the pointer's row its value
   and prior, `{rev, set}` each; a cancel's row its four fields; a send's input row its fields with the `request` (at
-  most 8 KiB); an outcome's row its fields.
+  most 32 KiB: 4,000 characters of a question or a summary in any script;
+  8 KiB until the review of PR-6, which a question in a script of three or
+  four bytes a character passed); an outcome's row its fields.
 - `rules.go`: a capture's page, origin and image fields `immutable`;
   annotation versions and sets immutable rows, inserted and never
   changed, so two replicas' sets are both kept (keyed by their id, never
@@ -663,17 +665,20 @@ what the server filled, as RV1's `ReviewSubmitArgs` does):
   why)` (what a service's exit after readiness does). The open attempt
   is one owner and behaves as today, every existing test of `steps.go`
   passing unchanged; a preview (`*preview`, `preview.go`) is the other:
-  closed once its end is committed, listed in the engine's previews
+  closed from its end's beginning (in memory, before the end's first
+  write is committed), listed in the engine's previews
   (never `a.trees`) and counted on its run (`r.previews`, beside
   `r.trees.n`, from its reservation until its end's last, its teardown
   done, or until its owed write is no longer tried), which the engine's `idle` reads (`run.go`), so
   `evict` never forgets a run whose preview is opening, serving or
   ending and `forget` never cancels the `r.teardown` its services run
   under (at most 2 previews a server, so at most two runs are held past
-  their class's cap); its rows written to `previews` by `seq`
-  (`Tx.OpenPreview`, `Tx.PreviewReady`, `Tx.EndPreview`, never
-  `PutTree`, so the result checkout's `trees` row is never touched), its
-  ports leased to its tree and released once its end is committed, and a
+  their class's cap); its rows written to `previews` by `seq` by four
+  writers (`Tx.OpenPreview`, `Tx.PreviewReady`, `Tx.PreviewEnding`,
+  `Tx.EndPreview`, never `PutTree`, so the result checkout's `trees` row
+  is never touched), its ports leased to its tree and released once its
+  end is committed, or, when that last write is owed, once its retries
+  stop (the engine's end, or the ledger closed), and a
   lost service ending it (`why: service_exited`, its URL cleared in the
   ending's first transaction). `runStep`, `startService` and `runProbe`
   take the tree and the run as now; the receipts they write stay the
@@ -774,9 +779,22 @@ what the server filled, as RV1's `ReviewSubmitArgs` does):
   `continue.go` parses it; the attempt with its result's commit; its
   receipt numbers seeded from its `checks` rows (each id's largest `k`,
   so `nextK` goes on after them and no receipt overwrites another); the
-  Runtime chosen by `runtimeFor(true, run)`, as a run's is, and recorded
-  in the `previews` row's `where_ran`; and a teardown context of its
-  own, cancelled only by its previews' ends and the server's shutdown.
+  Runtime chosen by `runtimeFor` for the run's id, as a run's is (the
+  offered one when it takes the run and every member takes its tool's
+  own login), and recorded in the `previews` row's `where_ran` and in
+  the preview's receipts; and a teardown context of its own, cancelled
+  only by its previews' ends and the server's shutdown. The receipt
+  numbers and the attempt's last `seq` are read once the candidate's
+  preview is reserved, so no earlier preview of it is still writing; the
+  run's row is judged again in the preview's first transaction, so a run
+  continued since it was read is refused (`409 run_continued`). A run
+  the ledger still has running, or one stopped before it finished, is
+  refused as a held one is (a run stopped once it had finished is
+  previewed: a server's shutdown stops every run it holds). The context
+  writes its previews' rows, events and receipts alone, never a row of
+  the run, its tasks or attempts. It reads `ledger.Load` alone: a result
+  a continuation imported is previewed in the run that made its attempt,
+  as in a run the engine holds.
   It schedules nothing: it is never put in `e.runs`, so `Get`, `TaskOf`,
   the scheduler, `evict`, `forget` and `ContinueRun` never see it, and
   no attempt, check or session starts in it; it is kept with its
@@ -794,7 +812,7 @@ what the server filled, as RV1's `ReviewSubmitArgs` does):
   task_id, n, seq)`, foreign key to the attempt, cascade on the run's
   delete), created by the migration (a new table: no row of an older one
   is rewritten, the conservative rule); its writers (`Tx.OpenPreview`,
-  `Tx.PreviewReady`, `Tx.EndPreview`), the reads, `Recover` reporting a
+  `Tx.PreviewReady`, `Tx.PreviewEnding`, `Tx.EndPreview`), the reads, `Recover` reporting a
   preview `ready` or `resolved` at start as interrupted, the snapshot
   unchanged (the table is in the database). EN1's `trees` table is left
   for the engine's own trees; its key (`run_id, task_id, n, kind`) holds
@@ -889,7 +907,7 @@ what the server filled, as RV1's `ReviewSubmitArgs` does):
 | `GET /api/captures/{id}/sends/{send}` | the send with its frozen document, read from the content file its `digest` names; served for a deleted capture too (the tombstone hides the live capture, never what was sent) |
 | `POST /api/captures/{id}/edit` | `{opId, expectedRev, annotations}` (2 MiB; an element annotation named by its `k`, no new report) → `{receipt, capture}`; `409 stale`; `400 invalid` for a new element report |
 | `POST /api/captures/{id}/delete` | `{opId}` → `{receipt}` |
-| `POST /api/captures/{id}/send` | `{opId, rev, to: {kind: "ticket", project?, title?, key?} \| {kind: "brakeman", question}}` (8 KiB) → `201 {receipt, send}`; `409 stale`, `404 not_found` (a ticket), `409 bound`; for Brakeman, every answer the desk gives, as it gives it: `409 brakeman_off`, `429 queue_full`, `429 budget_spent`, `503 brakeman_stuck`, `503 brakeman_not_owner` (the desk not yet recovered); `202 {receipt, send}` with the send `pending` for the last two, settled later (below) |
+| `POST /api/captures/{id}/send` | `{opId, rev, to: {kind: "ticket", project?, title?, key?} \| {kind: "brakeman", question}}` (32 KiB) → `201 {receipt, send}`; `409 stale`, `404 not_found` (a ticket), `409 bound`; for Brakeman, every answer the desk gives, as it gives it: `409 brakeman_off`, `429 queue_full`, `429 budget_spent`, `503 brakeman_stuck`, `503 brakeman_not_owner` (the desk not yet recovered); `202 {receipt, send}` with the send `pending` for the last two, settled later (below) |
 | `POST /api/captures/{id}/sends/{send}/cancel` | `{opId}` → `{receipt, send}` (the send with its state by `sendState` and its cancel's, `cancel: {asked, done}`); a repeat answered by its receipt; `409 stale` for a ticket send (made in one step: nothing is pending) or a `refused` one (its state named); a `sent` Brakeman send has its request cancelled at Brakeman, a `cancelled` one is answered as it is; the intent committed before any step, its steps serialized with the send's settlement and finished by it after a stop (below) |
 
   **What the server fills, never the client.** On a create, the API

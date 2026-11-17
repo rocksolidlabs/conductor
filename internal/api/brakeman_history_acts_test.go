@@ -54,6 +54,8 @@ var actWords = map[string]map[string]string{
 		"findings[].message": "planted", "findings[].resolution": "planted", "findings[].check.source": "the ledger alone",
 		"findings[].check.receipt": "a receipt the operation resolves", "findings[].check.chosen": "one of the classes",
 		"findings[].check.quote": "planted",
+		// A capture finding, and a finding naming a capture, are refused as the act's body is read (captureFindingRefused).
+		"findings[].capture.capture": "refused: never an act's", "findings[].capture.send": "refused: never an act's",
 	},
 	brakeman.ActRouteDecision: {
 		"opId": "the act's op id", "to.kind": "operator, person or role", "to.name": "a person or a responsibility of the crew's", "to.grant": "a turn's route to a grant is refused (decide-grant.md)", "note": "planted",
