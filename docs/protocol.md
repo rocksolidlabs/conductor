@@ -1712,9 +1712,10 @@ them) reach the server, in order and each once:
   "N activity entries of the host's may be missing here: recorded while its
   connection to this server was down, and not sent".
 
-An entry keeps the time it was recorded at. Every entry kept as a
-connection begins (recorded before it, or sent again) goes with `late:
-true`: the server records it and shows it in its order (`GET /api/events`
+An entry keeps the time it was recorded at. Every entry recorded before
+the connection that carries it began (kept as it begins, or handed to the
+host's sender only after it began), or sent again, goes with `late:
+true`, and so does one the host cannot show was made on that connection: the server records it and shows it in its order (`GET /api/events`
 sends it as `activity` with `late: true`, and the app's feed shows it
 without changing a badge or telling a browser notification, the wall or
 a jump), and offers it to no notification or webhook sink, nor the run

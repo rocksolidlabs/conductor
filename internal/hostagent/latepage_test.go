@@ -136,7 +136,8 @@ func TestAQuestionStillOpenAtTheReturnPagesOnce(t *testing.T) {
 }
 
 // A burst of entries kept while away is recorded and offered to no
-// webhook.
+// webhook: the last of them among it, recorded while away and handed to
+// the host's sender only after the connection came back.
 func TestABurstOfKeptEntriesPagesNobody(t *testing.T) {
 	h, calls := pagedHost(t)
 	h.away(t)
@@ -146,11 +147,42 @@ func TestABurstOfKeptEntriesPagesNobody(t *testing.T) {
 		h.event(t, w)
 		want = append(want, w)
 	}
+	held := h.holdForwarding(session.ActivityToolDenied)
 	h.send(t, notify.Request{Event: session.ActivityToolDenied, Tool: "Bash"})
+	held.await(t)
 	h.back()
+	close(held.release)
 	h.untilEntries(t, "the burst", want)
 	if got := h.pagedBefore(t, calls); len(got) != 0 {
 		t.Fatalf("a burst of kept entries reached the webhook: %d, first %+v", len(got), got[0])
+	}
+}
+
+// An entry is sent live only when it was made on the connection that
+// carries it: handed to the sender on this registration and stamped no
+// earlier than it began. One handed over on an earlier registration, one
+// stamped before the registration began (recorded just before it, handed
+// over just after), and one with no stamp go late.
+func TestAnEntryMadeBeforeTheConnectionBeganIsLate(t *testing.T) {
+	a, got := sentKept(t)
+	entry := func(words string, at time.Time) session.ActivityEntry {
+		return session.ActivityEntry{At: at, Type: session.ActivityProgress, Message: words}
+	}
+	earlier := a.madeOn()
+	a.registeredActivity(true, true)
+	a.sendActivity(entry("handed over late", time.Now().UTC()), "", earlier)
+	a.actMu.Lock()
+	began := a.actBegan
+	a.actMu.Unlock()
+	a.sendActivity(entry("stamped before", began.Add(-time.Nanosecond).UTC()), "", a.madeOn())
+	a.sendActivity(entry("no stamp", time.Time{}), "", a.madeOn())
+	a.sendNow(entry("made now", time.Time{}))
+	want := map[string]bool{"handed over late": true, "stamped before": true, "no stamp": true, "made now": false}
+	for range want {
+		m := <-got
+		if late, ok := want[m.Entry.Message]; !ok || m.Late != late {
+			t.Fatalf("sent %+v", m)
+		}
 	}
 }
 

@@ -45,6 +45,15 @@ func agentMessages(entries []journal.Entry) []string {
 	return out
 }
 
+// sendNow hands e to the host's sender as the session hands an entry it
+// records now: stamped now, made on the registration the host is on.
+func (a *agent) sendNow(e session.ActivityEntry) {
+	if e.At.IsZero() {
+		e.At = time.Now().UTC()
+	}
+	a.sendActivity(e, "", a.madeOn())
+}
+
 // untilEntries waits for the record's agent messages to be want.
 func (h *reportingHost) untilEntries(t *testing.T, what string, want []string) {
 	t.Helper()
@@ -151,7 +160,7 @@ func seqsOf(got chan proto.HostActivityMsg) []uint64 {
 func TestKeptEntriesOnResumeAndOnANewSession(t *testing.T) {
 	a, got := sentKept(t)
 	for _, w := range []string{"a", "b"} {
-		a.sendActivity(session.ActivityEntry{Type: session.ActivityProgress, Message: w}, "")
+		a.sendNow(session.ActivityEntry{Type: session.ActivityProgress, Message: w})
 	}
 	if s := seqsOf(got); !slices.Equal(s, []uint64{1, 2}) {
 		t.Fatalf("sent %v", s)
@@ -166,14 +175,14 @@ func TestKeptEntriesOnResumeAndOnANewSession(t *testing.T) {
 	if s := seqsOf(got); len(s) != 0 {
 		t.Fatalf("a new session was sent %v", s)
 	}
-	a.sendActivity(session.ActivityEntry{Type: session.ActivityProgress, Message: "c"}, "")
+	a.sendNow(session.ActivityEntry{Type: session.ActivityProgress, Message: "c"})
 	m := <-got
 	if m.Seq != 3 || m.LeftOut != 2 {
 		t.Fatalf("sent %+v", m)
 	}
 	// A server that takes no numbers is sent none, and nothing is kept.
 	a.registeredActivity(false, false)
-	a.sendActivity(session.ActivityEntry{Type: session.ActivityProgress, Message: "d"}, "")
+	a.sendNow(session.ActivityEntry{Type: session.ActivityProgress, Message: "d"})
 	if m := <-got; m.Seq != 0 || m.LeftOut != 0 {
 		t.Fatalf("an older server was sent %+v", m)
 	}
@@ -191,7 +200,7 @@ func TestAConfirmedEntryIsNotSentAgain(t *testing.T) {
 	a, got := sentKept(t)
 	confirmed := make(chan struct{}, 4)
 	a.actConfirm = func() bool { confirmed <- struct{}{}; return true }
-	a.sendActivity(session.ActivityEntry{Type: session.ActivityProgress, Message: "a"}, "")
+	a.sendNow(session.ActivityEntry{Type: session.ActivityProgress, Message: "a"})
 	<-confirmed
 	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(time.Millisecond) {
 		a.actMu.Lock()
@@ -229,7 +238,7 @@ func TestAnOlderServerIsSentNoNumbers(t *testing.T) {
 	}
 	t.Cleanup(func() { conn.CloseNow() })
 	<-srv.conns
-	a.sendActivity(session.ActivityEntry{Type: session.ActivityProgress, Message: "plain"}, "")
+	a.sendNow(session.ActivityEntry{Type: session.ActivityProgress, Message: "plain"})
 	for deadline := time.After(10 * time.Second); ; {
 		select {
 		case data := <-srv.got:
@@ -259,7 +268,7 @@ func TestAnEntryNeverWrittenIsSentToANewSession(t *testing.T) {
 	a, _, _, _ := sentAttention(t)
 	a.sendHook = nil
 	a.registeredActivity(true, false)
-	a.sendActivity(session.ActivityEntry{Type: session.ActivityProgress, Message: "away"}, "")
+	a.sendNow(session.ActivityEntry{Type: session.ActivityProgress, Message: "away"})
 	a.registeredActivity(true, false)
 	a.actMu.Lock()
 	defer a.actMu.Unlock()
