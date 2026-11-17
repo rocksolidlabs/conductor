@@ -1719,21 +1719,34 @@ them) reach the server, in order and each once:
   "N activity entries of the host's may be missing here: recorded while its
   connection to this server was down, and not sent".
 
-An entry keeps the time it was recorded at. Every entry recorded before
-the connection that carries it began (kept as it begins, or handed to the
-host's sender only after it began), or sent again, goes with `late:
-true`, and so does one the host cannot show was made on that connection: the server records it and shows it in its order (`GET /api/events`
+An entry keeps the time it was recorded at. The host judges each entry
+by the registration it was made on, read as its session hands the entry
+to the host's sender: the registration the host is on at that moment,
+except that an entry stamped before that registration began and handed
+over within one second of its start (on the host's monotonic clock)
+counts as made on the one before. A stamp equal to the start counts as
+after it, and past that second an entry handed over on a registration is
+made on it whatever its stamp says: a wall clock set back after a
+registration makes none of the connection's entries late. An entry made
+on an earlier registration than the one whose connection carries it
+(recorded while the host was away, or handed over before the
+registration began, however long the host's sender then took to keep
+it), or sent again, goes with `late: true`: the server records it and
+shows it in its order (`GET /api/events`
 sends it as `activity` with `late: true`, and the app's feed shows it
 without changing a badge or telling a browser notification, the wall or
 a jump), and offers it to no notification or webhook sink, nor the run
 engine or Brakeman: nobody is paged for what the session has moved past,
-the left-out notice among it. A question asked while the host was away
-and still open as it comes back pages once, from the session's state: the
-host's retell of its attention as the connection begins carries `retold:
-true` when the question it shows was asked before that connection began,
-and the server, when its copy did not hold that question (its `id`)
-before, offers it to the sinks and the stream once as a live
-`needs_input` (not recorded: its own entry is, late). Entries kept when
+the left-out notice among it. A question asked before the connection
+began and still open as it begins pages once, from the session's state:
+the host's retell of its attention as the connection begins carries
+`retold: true` when the question it shows was asked before the
+registration began (the start its entries are judged by), and the server
+offers it to the sinks and the stream once as a live `needs_input` (not
+recorded: its own entry is, late), unless it offered that question (its
+`id`) live before: its `needs_input` entry, arriving while the server's
+copy showed the question or just before the copy showed a question of
+the same words, or an earlier retell. Entries kept when
 the host ends before its connection comes back are lost. A server that does not
 say `activitySeq` (an earlier release, a switchyard) is sent no `seq` or
 `leftOut`, and nothing is kept for it: an entry recorded while the
