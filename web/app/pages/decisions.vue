@@ -24,7 +24,7 @@ import {
   type RecentEntry,
 } from '~/utils/inbox'
 
-// Needs your decision (docs/plans/decision-inbox.md, Program item MB0, PR-2): every item a person must decide, oldest first, then
+// Needs you (docs/plans/decision-inbox.md, Program item MB0, PR-2): every item a person must decide, oldest first, then
 // what this browser acted on in the last day with the four steps of each action. Built for a phone first: one column below sm, the
 // list and the open item side by side at lg, every target at least 44 px tall. The item is read whole before anything is done to it
 // (the list carries no action's input or scope); each action goes through its own operation's route at the revision that operation

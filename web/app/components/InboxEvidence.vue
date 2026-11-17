@@ -7,7 +7,7 @@ import type { LaneEvidence } from '~/utils/transport/decide'
  * gives one (the session's terminal, the run at the task, the attempt, the ticket, the revision), so every deeper page stays one tap
  * away. A failed check's log tail (its last 4 KiB, from the step log route the run page reads) loads only when its entry is unfolded.
  *
- * On a decision link's page (the join page's Decide tab, MB0's PR-7) the workbench's routes are not the holder's: `read` reads an
+ * On a decision link's page (the join page's Needs you tab, MB0's PR-7) the workbench's routes are not the holder's: `read` reads an
  * entry through the link's lane instead (a check's log's end), `openTerminal` opens a session in the link's scope in its terminal
  * tab, and any other entry shows its label and where it can be opened.
  */

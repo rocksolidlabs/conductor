@@ -978,7 +978,7 @@ export interface HostRegisteredLinks {
 
 /**
  * The part of registered that says the switchyard carries a decision link's lane (docs/protocol.md, Decision links, Through
- * a switchyard): it relays DECISION and DECIDE, keeps run desks and serves the join page's Decide tab. A publisher mints a
+ * a switchyard): it relays DECISION and DECIDE, keeps run desks and serves the join page's Needs you tab. A publisher mints a
  * decision link only at one that says so; absent from an older switchyard. The web never sees it.
  */
 export interface HostRegisteredDecisions {

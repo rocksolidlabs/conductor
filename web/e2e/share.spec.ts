@@ -85,3 +85,38 @@ test('a decision link refused by a switchyard too old: the switch goes off and s
   const { links } = await api.ok<{ links: Array<{ decide?: boolean }> }>('GET', `/api/sessions/${session.id}/links`)
   expect(links.map((l) => l.decide === true)).toEqual([false])
 })
+
+// A decision link says where it opens in the words the join page shows (#920): the page's first tab reads "Needs you", and the
+// dialog's switch and the made link's line say that name, not an older one.
+test('a decision link says it opens on Needs you, the name its join page shows on that tab', async ({ page, api, browser }) => {
+  const session = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'share decide words' })
+  sessions.push(session.id)
+  await page.goto(`/sessions/${session.id}`)
+  await page.getByRole('button', { name: 'Share', exact: true }).first().click()
+  const dialog = page.getByRole('dialog')
+  await expect(dialog.locator('[data-created-url]')).toBeVisible({ timeout: 15_000 })
+  await dialog.getByText('Another link').click()
+  await dialog.locator('[data-another-link]').getByRole('radio', { name: /Control/ }).click()
+  const sw = dialog.getByRole('switch', { name: 'Answer decisions from this link' })
+  await expect(dialog.locator('[data-share-decide]')).toContainText('It opens on Needs you: whoever holds it answers')
+  await sw.click()
+  await expect(sw).toHaveAttribute('aria-checked', 'true')
+  await dialog.getByRole('button', { name: 'Create link' }).click()
+  await expect(dialog.locator('[data-created-decide]')).toHaveText('Answers decisions: the link opens on Needs you.')
+  const url = (await dialog.locator('[data-created-url]').getAttribute('title')) ?? ''
+  expect(url).toMatch(/\/join\//)
+
+  // The link opened: its join page's first tab is the one the words name.
+  const ctx = await browser.newContext()
+  try {
+    const holder = await ctx.newPage()
+    await holder.goto(url)
+    await holder.getByRole('textbox', { name: 'Your name' }).fill('e2e holder')
+    await holder.getByRole('button', { name: 'Join session' }).click()
+    const tab = holder.locator('[data-join-tab="decide"]')
+    await expect(tab).toHaveAttribute('aria-selected', 'true', { timeout: 15_000 })
+    await expect(tab).toHaveText('Needs you')
+  } finally {
+    await ctx.close()
+  }
+})
