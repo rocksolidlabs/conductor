@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { diffSinceSent, isWorkbench, labelWords, parseBridgeMessage, previewPath, retakeAddress, sourceLink } from './capture'
+import { captureOfWords, diffSinceSent, isWorkbench, labelWords, parseBridgeMessage, previewPath, retakeAddress, sourceLink } from './capture'
 import { MAX_ELEMENT_REPORT, MAX_PREVIEW_TO_WORKBENCH, PREVIEW_MARK } from './protocol'
 import { testElement, testPage } from './testdata/preview'
 
@@ -146,5 +146,14 @@ describe('retakeAddress: Capture again opens the same page on this preview, neve
     expect(retakeAddress('http://127.0.0.1:41000//elsewhere.example/x', 'http://127.0.0.1:42000/')).toBe('')
     expect(retakeAddress('not a url', 'http://127.0.0.1:42000/')).toBe('')
     expect(retakeAddress('http://127.0.0.1:41000/', 'file:///etc/passwd')).toBe('')
+  })
+})
+
+describe('captureOfWords', () => {
+  it('says what a sent capture is of: an attempt’s worktree, a candidate’s checkout, a link’s page', () => {
+    const commit = '0123456789abcdef0123456789abcdef01234567'
+    expect(captureOfWords({ kind: 'attempt', task: 'build', attempt: 1, tree: 'worktree', commit, changed: 2 })).toEqual({ lead: 'build attempt 1 · worktree at', commit: '0123456', tail: '· 2 changed' })
+    expect(captureOfWords({ kind: 'candidate', task: 'build', attempt: 2, tree: 'preview', commit, changed: 0 })).toEqual({ lead: 'candidate', commit: '0123456', tail: 'of build · attempt 2 · as committed' })
+    expect(captureOfWords({ kind: 'url', changed: 0 })).toEqual({ lead: 'a link', commit: '', tail: '' })
   })
 })

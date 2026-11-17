@@ -15,6 +15,8 @@ export const PLAN_BOUNDS = {
   referenceNote: 200,
   referencePath: 1024,
   attachments: 8,
+  /** The attachments handed over, in all (dispatch.MaxPlanAttachmentBytes). */
+  attachmentBytes: 16 << 20,
   comments: 20,
   constraints: 8 << 10,
   decisions: 10,

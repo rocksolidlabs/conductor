@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { MAX_SEND_QUESTION, MAX_TICKET_TITLE, SEND_KINDS, cancellable, captureAttachments, sendBody, sendState, titleFrom } from './captureSend'
+import { MAX_SEND_QUESTION, MAX_TICKET_TITLE, SEND_KINDS, cancelWords, cancellable, captureAttachments, sendBody, sendState, titleFrom } from './captureSend'
 
 // A capture's sends in the app (PV1 PR-6, utils/captureSend.ts): each destination's body, a send's state in words and marks, and
 // the attachments a new plan hands over (what changed since a send is utils/capture.ts's diffSinceSent).
@@ -27,6 +27,19 @@ describe('sendBody', () => {
 
   it('offers the four destinations of today, in the editor’s order', () => {
     expect(SEND_KINDS.map((k) => k.kind)).toEqual(['ticket-new', 'ticket', 'brakeman', 'decision', 'review', 'review-draft'])
+  })
+})
+
+describe('the form’s bound and the route’s', () => {
+  // The route's body bound (dispatch.MaxSendRequest, 32 KiB): what the form allows it takes, in any script.
+  const ROUTE_BYTES = 32 << 10
+  it('takes 4,000 characters in any script, and the body they make fits the route', () => {
+    for (const q of ['中'.repeat(MAX_SEND_QUESTION), '\u{1F600}'.repeat(MAX_SEND_QUESTION), '<\u2028'.repeat(MAX_SEND_QUESTION / 2)]) {
+      const b = sendBody('brakeman', { question: q })
+      expect('problem' in b).toBe(false)
+      const bytes = new TextEncoder().encode(JSON.stringify({ opId: 'x'.repeat(64), rev: 1, ...b })).length
+      expect(bytes).toBeLessThan(ROUTE_BYTES)
+    }
   })
 })
 
@@ -63,6 +76,13 @@ describe('sendState', () => {
     expect(sendState({ rev: 1, kind: 'brakeman', state: 'cancelled' })).toMatchObject({ word: 'cancelled', mark: { key: 'cancelled' } })
   })
 
+  it('says a cancel was asked of a send to Brakeman', () => {
+    const asked = [{ opId: 'c1', at: '2026-11-16T10:00:00Z', actor: 'admin' }]
+    expect(sendState({ rev: 1, kind: 'brakeman', state: 'sent', target: 'br-7', cancels: asked }).word).toBe('sent as r1 to Brakeman (br-7) · cancel asked')
+    expect(sendState({ rev: 1, kind: 'brakeman', state: 'pending', cancels: asked }).word).toBe('waiting for Brakeman · cancel asked')
+    expect(sendState({ rev: 1, kind: 'brakeman', state: 'sent', target: 'br-7', cancels: [] }).word).toBe('sent as r1 to Brakeman (br-7)')
+  })
+
   it('names its mark by its own words, the legend the task mark’s', () => {
     const v = sendState({ ...base, state: 'sent' })
     expect(v.mark.word).toBe(v.word)
@@ -76,6 +96,14 @@ describe('sendState', () => {
       false,
       false,
     ])
+    // Asked once, never again.
+    expect(cancellable({ kind: 'brakeman', state: 'sent', cancels: [{ opId: 'c1', at: '', actor: 'admin' }] })).toBe(false)
+  })
+
+  it('says what a cancel did', () => {
+    expect(cancelWords({ done: true })).toBe('Cancelled.')
+    expect(cancelWords({ done: false })).toBe('Cancel asked: it is finished once Brakeman holds its records again.')
+    expect(cancelWords({ done: false, words: 'the request had finished' })).toBe('The request had finished.')
   })
 })
 
@@ -90,7 +118,16 @@ describe('captureAttachments', () => {
       a('5', 'capture-0123456789ABCDEF-r1.json', '2026-11-16T13:00:00Z'),
       a('6', 'capture-0123456789abcdef-r0.json', '2026-11-16T13:00:00Z'),
     ]
-    expect(captureAttachments(attachments, 10)).toEqual(['2', '1'])
-    expect(captureAttachments(attachments, 1)).toEqual(['2'])
+    expect(captureAttachments(attachments, 10)).toEqual({ ids: ['2', '1'], left: 0 })
+    expect(captureAttachments(attachments, 1)).toEqual({ ids: ['2'], left: 0 })
+  })
+
+  it('ticks only what fits the bytes, and counts what it left', () => {
+    const MiB = 1 << 20
+    const f = (id: string, size: number, at: string) => ({ id, name: `capture-0123456789abcdef-r${id}.png`, size, createdAt: `2026-11-16T${at}:00:00Z` })
+    // Newest first: 10 MiB, then 9 MiB (would pass 16), then 5 MiB (fits), then 2 MiB (would pass).
+    const files = [f('1', 2 * MiB, '10'), f('2', 5 * MiB, '11'), f('3', 9 * MiB, '12'), f('4', 10 * MiB, '13')]
+    expect(captureAttachments(files, 8, 16 * MiB)).toEqual({ ids: ['4', '2'], left: 2 })
+    expect(captureAttachments(files, 8)).toEqual({ ids: ['4', '3', '2', '1'], left: 0 })
   })
 })

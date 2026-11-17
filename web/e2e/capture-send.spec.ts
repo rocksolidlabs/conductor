@@ -1,8 +1,8 @@
 import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import type { Locator, Page } from '@playwright/test'
+import type { Frame, Locator, Page } from '@playwright/test'
 import { expect, stopStrays, task, test, type Api } from './fixtures'
-import { endMade, launch, made, pick, previewCrew, previewFrame, previewSeam, scratchDir, stepIn } from './preview-fixtures'
+import { PREVIEW_BOOT_MS, endMade, launch, made, pick, previewCrew, previewFrame, previewSeam, scratchDir, stepIn } from './preview-fixtures'
 
 // A capture's sends (docs/plans/browser-evidence.md, PR-6, #794), from the capture editor's Send against a managed crew of the stub
 // worker whose manifest serves the preview fixture: Create a ticket, its two attachments and its description; an edit, "edited
@@ -55,18 +55,24 @@ async function previewPage(page: Page, shots = true) {
     })
   }
   await page.goto(`/preview?run=${encodeURIComponent(runId)}&task=build&attempt=1`)
-  await expect(page.locator('[data-preview-pane]')).toHaveAttribute('data-preview-bridge', 'ready')
+  await expect(page.locator('[data-preview-pane]')).toHaveAttribute('data-preview-bridge', 'ready', { timeout: PREVIEW_BOOT_MS })
   return previewFrame(page, origin)
 }
 
 /** Captures the button under the overlay with a note and saves it: the capture's id, its Send drawn. */
 async function captured(page: Page, note: string, shots = true): Promise<string> {
-  const frame = await previewPage(page, shots)
+  return capturedIn(page, await previewPage(page, shots), note)
+}
+
+/** Another capture in the preview page already open, saved: its id. */
+async function capturedIn(page: Page, frame: Frame, note: string): Promise<string> {
   const editor = page.locator('[data-capture-editor]')
+  const before = await editor.locator('[data-capture-saved-tab]').count()
   await page.locator('[data-preview-capture]').click()
   await pick(page, frame, '#under', 'button#under.under', { downs: 1 })
   await editor.locator('[data-annotation="1"] textarea').fill(note)
   await editor.locator('[data-capture-save]').click()
+  await expect(editor.locator('[data-capture-saved-tab]')).toHaveCount(before + 1)
   const saved = editor.locator('[data-capture-saved]')
   await expect(saved).toBeVisible()
   await expect(page.locator('[data-capture-send]')).toBeVisible()
@@ -136,6 +142,35 @@ test('Create a ticket with its two attachments; an edit, edited since, and r2 se
   await expect(here.locator('[data-ticket-capture-now]')).toHaveText('Now r2: nothing since')
 })
 
+test('each saved capture has a Send of its own, and changes not saved hold it', async ({ page }) => {
+  // Two captures saved in one editor: each one's Send lists its own sends and takes its own note as the new ticket's title.
+  const first = await captured(page, 'The first capture')
+  const send = page.locator('[data-capture-send]')
+  await choose(page, send.locator('[data-send-project]'), `${project} ·`)
+  await send.locator('[data-capture-send-go]').click()
+  await expect(send.locator('[data-send-row]').first()).toHaveAttribute('data-send-state', 'sent')
+  const second = await capturedIn(page, await previewFrame(page, origin), 'The second capture')
+  expect(second).not.toBe(first)
+  await expect(send.locator('[data-send-title]')).toHaveValue('The second capture')
+  await expect(send.locator('[data-send-row]')).toHaveCount(0)
+  await page.locator(`[data-capture-saved-tab="${first}"]`).click()
+  await expect(page.locator('[data-capture-saved]')).toHaveAttribute('data-capture-saved', first)
+  await expect(send.locator('[data-send-row]')).toHaveCount(1)
+  await expect(send.locator('[data-send-title]')).toHaveValue('The first capture')
+
+  // A note changed and not saved: Send waits for the save, and says so; once saved, it sends the new revision.
+  await page.locator(`[data-capture-saved-tab="${second}"]`).click()
+  await expect(page.locator('[data-capture-saved]')).toHaveAttribute('data-capture-saved', second)
+  const editor = page.locator('[data-capture-editor]')
+  await editor.locator('[data-annotation="1"] textarea').fill('The second capture, edited')
+  await expect(send.locator('[data-capture-send-go]')).toBeDisabled()
+  await expect(send.locator('[data-send-problem]')).toHaveText('Save your changes first: Send sends the saved r1')
+  await editor.locator('[data-capture-save-changes]').click()
+  await expect(send).toHaveAttribute('data-capture-send-rev', '2')
+  await expect(send.locator('[data-send-problem]')).toHaveCount(0)
+  await expect(send.locator('[data-capture-send-go]')).toBeEnabled()
+})
+
 test('a capture saved with no screenshot is sent as its document alone', async ({ page, api }) => {
   const id = await captured(page, 'No pixels here', false)
   const capture = await api.ok<{ image: { how: string } }>('GET', `/api/captures/${id}`)
@@ -176,4 +211,10 @@ test('Ask Brakeman: the stub’s turn reads the document the send froze and cite
   const cited = refs.refs.find((r) => r.ref === `capture:${id}/${sendId}`)
   expect(cited, 'the brief cites the send').toBeTruthy()
   expect(cited!.seen.state).toBe('sent')
+
+  // Cancelled after its turn: the page says what the cancel did, the row that one was asked, and Cancel is no longer offered.
+  await row.locator('[data-send-cancel]').click()
+  await expect(send.locator('[data-send-error]')).toHaveText('The request had finished before the cancel reached it.')
+  await expect(row).toContainText(`sent as r1 to Brakeman (${br}) · cancel asked`)
+  await expect(row.locator('[data-send-cancel]')).toHaveCount(0)
 })

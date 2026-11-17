@@ -330,6 +330,21 @@ export function shortSha(commit: string | undefined): string {
 }
 
 /**
+ * What a sent capture is of, in words around its commit (the ticket's Captures): an attempt's worktree ("build attempt 1 · worktree
+ * at <commit> · 2 changed"), a candidate's checkout ("candidate <commit> of build · attempt 2 · as committed"), or a link's page.
+ */
+export function captureOfWords(o: Pick<CaptureDocument['origin'], 'kind' | 'task' | 'attempt' | 'tree' | 'commit' | 'changed'>): { lead: string; commit: string; tail: string } {
+  switch (o.kind) {
+    case 'attempt':
+      return { lead: `${o.task} attempt ${o.attempt} · ${o.tree} at`, commit: shortSha(o.commit), tail: `· ${o.changed} changed` }
+    case 'candidate':
+      return { lead: 'candidate', commit: shortSha(o.commit), tail: `of ${o.task} · attempt ${o.attempt} · as committed` }
+    default:
+      return { lead: 'a link', commit: '', tail: '' }
+  }
+}
+
+/**
  * The label's line (the plan's "A preview in Conductor"): for a worktree "attempt 2 of build · worktree at a1b2c3d with 3 changed files
  * · changes as the agent works", for a candidate's checkout "candidate a1b2c3d of build · attempt 2 · as committed", for a link "a link
  * · no revision"; before the first read, "reading the revision…". A read that could not see the changes says so in place of the count.

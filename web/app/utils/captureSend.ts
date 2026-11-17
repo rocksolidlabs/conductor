@@ -41,7 +41,10 @@ export const SEND_KINDS: ReadonlyArray<{ kind: SendKind; label: string; icon: st
   { kind: 'review-draft', label: 'Add to a review', icon: 'i-lucide-list-plus' },
 ]
 
-/** A question's bound, in characters, as the route holds it. */
+/**
+ * A question's bound, in characters, as the route holds it. The route's body bound (32 KiB, dispatch.MaxSendRequest) holds 4,000
+ * characters in any script as the body encodes them, so what the form takes the route takes.
+ */
 export const MAX_SEND_QUESTION = 4000
 /** A new ticket's title's bound, in characters, as Dispatch holds it. */
 export const MAX_TICKET_TITLE = 200
@@ -107,16 +110,18 @@ export interface SendStateView {
 const SEND_MARK: Record<string, TaskMarkKey> = { pending: 'waiting', sent: 'done', refused: 'failed', cancelled: 'cancelled' }
 
 /**
- * A send's state in words: "sent as r2 to CND-14"; "waiting for Brakeman: <the desk's words>" (pending, the words of its last try);
- * "refused: <why>"; "cancelled". Its mark is a task's own (waiting, done, failed, cancelled), so no surface keeps a colour of its own.
+ * A send's state in words: "sent as r2 to CND-14"; "sent as r1 to Brakeman (br-3) · cancel asked" once a person cancelled it (a
+ * cancel of a sent send closes its request at the desk, and the send stays sent); "waiting for Brakeman: <the desk's words>" (pending,
+ * the words of its last try); "sending: <words>" for a send to a decision whose comment waits; "refused: <why>"; "cancelled". Its mark
+ * is a task's own (waiting, done, failed, cancelled), so no surface keeps a colour of its own.
  */
-export function sendState(s: Pick<CaptureSendView, 'state' | 'rev' | 'kind' | 'target' | 'why' | 'waiting'>): SendStateView {
+export function sendState(s: Pick<CaptureSendView, 'state' | 'rev' | 'kind' | 'target' | 'why' | 'waiting'> & { cancels?: readonly unknown[] }): SendStateView {
   const key = SEND_MARK[s.state] ?? 'waiting'
   const look = markLook(key)
   let word: string
   switch (s.state) {
     case 'sent':
-      word = `sent as r${s.rev} to ${sendTarget(s)}`
+      word = `sent as r${s.rev} to ${sendTarget(s)}${s.kind === 'brakeman' && s.cancels?.length ? ' · cancel asked' : ''}`
       break
     case 'refused':
       word = s.why ? `refused: ${s.why}` : 'refused'
@@ -125,14 +130,24 @@ export function sendState(s: Pick<CaptureSendView, 'state' | 'rev' | 'kind' | 't
       word = 'cancelled'
       break
     default:
-      word = s.kind === 'brakeman' ? (s.waiting ? `waiting for Brakeman: ${s.waiting}` : 'waiting for Brakeman') : 'sending'
+      if (s.kind === 'brakeman') word = `${s.waiting ? `waiting for Brakeman: ${s.waiting}` : 'waiting for Brakeman'}${s.cancels?.length ? ' · cancel asked' : ''}`
+      else word = 'sending'
   }
   return { word, tone: s.state === 'refused' ? 'error' : 'neutral', mark: { key, word, legend: look.legend } }
 }
 
-/** Whether a send can be cancelled: a pending or a sent one to Brakeman whose request may still run. */
-export function cancellable(s: Pick<CaptureSendView, 'kind' | 'state'>): boolean {
-  return s.kind === 'brakeman' && (s.state === 'pending' || s.state === 'sent')
+/**
+ * Whether a send can be cancelled: a pending or a sent one to Brakeman whose request may still run, and no cancel asked yet (the
+ * settlement finishes a cancel asked, so a second is never needed).
+ */
+export function cancellable(s: Pick<CaptureSendView, 'kind' | 'state'> & { cancels?: readonly unknown[] }): boolean {
+  return s.kind === 'brakeman' && (s.state === 'pending' || s.state === 'sent') && !s.cancels?.length
+}
+
+/** What a cancel's reply says to the person: done, the request finished first, or asked and finished later. */
+export function cancelWords(c: { done: boolean; words?: string }): string {
+  if (c.words) return `${c.words.charAt(0).toUpperCase()}${c.words.slice(1)}.`
+  return c.done ? 'Cancelled.' : 'Cancel asked: it is finished once Brakeman holds its records again.'
 }
 
 /** A ticket attachment a send of a capture made: `capture-<id>-r<rev>.json` or `.png`. */
@@ -140,13 +155,26 @@ const CAPTURE_FILE = /^capture-[0-9a-f]{16}-r[1-9][0-9]*\.(json|png)$/
 
 /**
  * The attachments a new plan revision hands over at first (DispatchPlanPropose, a revision based on none): the ticket's live ones a
- * capture's send made, newest first, at most `most`.
+ * capture's send made, newest first, at most `most` and at most `bytes` in all (a file that would pass it is left, and the older ones
+ * after it are still tried); `left` is how many such files were left unticked for the bytes.
  */
-export function captureAttachments(attachments: ReadonlyArray<{ id: string; name: string; createdAt?: string; deletedAt?: string }>, most: number): string[] {
-  return attachments
-    .filter((a) => !a.deletedAt && CAPTURE_FILE.test(a.name))
-    .slice()
-    .sort((a, b) => (b.createdAt ?? '').localeCompare(a.createdAt ?? ''))
-    .slice(0, most)
-    .map((a) => a.id)
+export function captureAttachments(
+  attachments: ReadonlyArray<{ id: string; name: string; size?: number; createdAt?: string; deletedAt?: string }>,
+  most: number,
+  bytes = Infinity,
+): { ids: string[]; left: number } {
+  const ids: string[] = []
+  let total = 0
+  let left = 0
+  const files = attachments.filter((a) => !a.deletedAt && CAPTURE_FILE.test(a.name)).sort((a, b) => (b.createdAt ?? '').localeCompare(a.createdAt ?? ''))
+  for (const a of files) {
+    if (ids.length >= most) break
+    if (total + (a.size ?? 0) > bytes) {
+      left++
+      continue
+    }
+    total += a.size ?? 0
+    ids.push(a.id)
+  }
+  return { ids, left }
 }

@@ -155,3 +155,10 @@ export async function pick(page: Page, frame: Frame, selector: string, outline: 
   await frame.waitForFunction((want) => (window as unknown as Outlined).outlined() === want, outline)
   await page.keyboard.press('Enter')
 }
+
+/**
+ * The bound on a preview page drawn and its bridge ready, for a spec of the capture's sends: the app's start, the label's read (at
+ * most its 5 s), the fixture page and the bridge's script loaded, the hello answered (at most 3 s), the sum of their worst with room
+ * (preview-capture.spec.ts's BOOT_MS: on a loaded machine the app's start alone took 11 s, past an expect's 15 s).
+ */
+export const PREVIEW_BOOT_MS = 60_000

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { CaptureDocumentView, CaptureView } from '~/composables/useCaptureSends'
 import type { TicketAttachment } from '~/composables/useDispatch'
-import { diffSinceSent } from '~/utils/capture'
+import { captureOfWords, diffSinceSent } from '~/utils/capture'
 import { type CaptureSendView, sendState } from '~/utils/captureSend'
 import { relativeTime } from '~/utils/sessions'
 
@@ -116,12 +116,9 @@ function changes(id: string, sent: CaptureDocumentView): string[] {
         </div>
         <p class="text-xs text-muted" data-ticket-capture-label>
           r{{ s.document.rev }}
-          <template v-if="s.document.origin.kind === 'attempt'">
-            · {{ s.document.origin.task }} attempt {{ s.document.origin.attempt }} · {{ s.document.origin.tree }} at
-            <span class="font-mono" data-mono="commit">{{ (s.document.origin.commit ?? '').slice(0, 7) }}</span>
-            · {{ s.document.origin.changed }} changed
-          </template>
-          <template v-else> · a link</template>
+          · {{ captureOfWords(s.document.origin).lead }}
+          <span v-if="captureOfWords(s.document.origin).commit" class="font-mono" data-mono="commit">{{ captureOfWords(s.document.origin).commit }}</span>
+          {{ captureOfWords(s.document.origin).tail }}
           · {{ s.document.viewport.mode }} {{ s.document.viewport.width }} by {{ s.document.viewport.height }}
         </p>
         <img

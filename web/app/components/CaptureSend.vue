@@ -4,7 +4,7 @@ import type { ProjectSummary, TicketSummary } from '~/composables/useDispatch'
 import { ApiError } from '~/composables/useApi'
 import { diffSinceSent } from '~/utils/capture'
 import { reviewOffered } from '~/utils/captureReview'
-import { SEND_KINDS, type CaptureSendView, type SendForm, type SendKind, cancellable, sendBody, sendState, titleFrom, MAX_SEND_QUESTION, MAX_TICKET_TITLE } from '~/utils/captureSend'
+import { SEND_KINDS, type CaptureSendView, type SendForm, type SendKind, cancellable, cancelWords, sendBody, sendState, titleFrom, MAX_SEND_QUESTION, MAX_TICKET_TITLE } from '~/utils/captureSend'
 
 /**
  * A saved capture's Send (Program item PV1, docs/plans/browser-evidence.md, "Sending"), in the capture editor's Send slot: Create a
@@ -17,6 +17,11 @@ const props = defineProps<{
   capture: CaptureView
   /** The key of the ticket the capture's run was launched from, when it was: offered first by Attach to a ticket. */
   runTicket?: string
+  /**
+   * Whether the editor holds changes not saved yet: a send freezes the saved revision, so Send waits until they are saved (the editor
+   * keys this panel by the capture, so its state is that capture's alone).
+   */
+  dirty?: boolean
 }>()
 const emit = defineEmits<{ sent: [send: CaptureSendView] }>()
 
@@ -96,7 +101,11 @@ const projectItems = computed(() => projects.value.map((p) => ({ label: `${p.key
 
 /** The body the chosen destination would send, or why not yet. */
 const body = computed(() => sendBody(kind.value, kind.value === 'ticket' ? { key: picked.value?.key ?? form.key } : form))
-const problem = computed(() => (deleted.value ? 'The capture is deleted' : 'problem' in body.value ? body.value.problem : ''))
+const problem = computed(() => {
+  if (deleted.value) return 'The capture is deleted'
+  if (props.dirty) return `Save your changes first: Send sends the saved r${props.capture.rev}`
+  return 'problem' in body.value ? body.value.problem : ''
+})
 const chosenKey = computed(() => picked.value?.key ?? form.key)
 
 function chooseRunTicket() {
@@ -173,7 +182,7 @@ async function cancel(s: CaptureSendView) {
   error.value = ''
   try {
     const reply = await api.cancel(props.capture.id, s.id)
-    if (reply.cancel.words) error.value = `Cancelled: ${reply.cancel.words}`
+    error.value = cancelWords(reply.cancel)
   } catch (e) {
     error.value = e instanceof ApiError ? e.message : 'The cancel failed'
   } finally {
@@ -249,7 +258,11 @@ async function cancel(s: CaptureSendView) {
       <p class="text-xs text-muted">A comment on the decision names this capture at r{{ capture.rev }}; whoever answers it reads what was sent.</p>
     </div>
 
-    <CaptureSendReview v-else-if="kind === 'review' || kind === 'review-draft'" :key="kind" :capture="capture" :kind="kind" @sent="readSends" />
+    <!-- A review's own form, its Send held as the others' is while edits are not saved. -->
+    <fieldset v-else-if="kind === 'review' || kind === 'review-draft'" :disabled="dirty" class="contents">
+      <CaptureSendReview :key="kind" :capture="capture" :kind="kind" @sent="readSends" />
+    </fieldset>
+    <p v-if="reviewKind && dirty" class="text-xs text-muted" data-send-problem>Save your changes first: Send sends the saved r{{ capture.rev }}</p>
 
     <div v-if="!reviewKind" class="flex flex-wrap items-center gap-2">
       <UButton label="Send" icon="i-lucide-send" :loading="sending" :disabled="!!problem || sending" data-capture-send-go @click="send" />

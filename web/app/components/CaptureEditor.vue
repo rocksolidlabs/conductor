@@ -361,7 +361,7 @@ const refusal = computed(() => props.session.state.refusal)
       <p v-if="kept" class="text-xs text-muted" data-capture-rev>
         Saved as <span class="font-mono" data-mono="id">{{ kept.capture.id }}</span> r{{ kept.capture.rev }}
       </p>
-      <component :is="CaptureSend" v-if="kept && CaptureSend" :capture="kept.capture" :run-ticket="runTicket" @sent="reload(kept)" />
+      <component :is="CaptureSend" v-if="kept && CaptureSend" :key="kept.capture.id" :capture="kept.capture" :run-ticket="runTicket" :dirty="kept.dirty" @sent="reload(kept)" />
     </template>
   </section>
 </template>
