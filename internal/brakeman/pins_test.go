@@ -57,9 +57,22 @@ func TestAPinnedOpOutlivesTheWindow(t *testing.T) {
 		t.Fatal(created, err)
 	}
 	unpinned := f.create("plain-0")
-	for i := range MaxOps {
-		f.create(fmt.Sprintf("later-%d", i))
+	// A thousand later requests' op ids, as state.json keeps them, then
+	// one request more made: its write trims the op ids to the window.
+	f.s.mu.Lock()
+	st, err := f.s.loadState()
+	if err == nil {
+		for i := range MaxOps {
+			st.Last++
+			st.Ops = append(st.Ops, opRef{OpID: fmt.Sprintf("later-%d", i), ID: requestID(st.Last), Sum: fmt.Sprintf("%064x", i)})
+		}
+		err = f.s.saveState(st)
 	}
+	f.s.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.create("latest")
 	if _, found, err := f.s.ByOp(unpinned.OpID); found || err != nil {
 		t.Fatalf("an unpinned op id past the window: %v %v", found, err)
 	}
