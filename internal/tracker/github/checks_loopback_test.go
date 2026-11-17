@@ -15,9 +15,10 @@ import (
 // over http, as the e2e's fake GitHub serves it behind the logs route's
 // redirect: the item's own host byte for byte, with no user, fetched with
 // no credential. A redirect to another loopback port or spelling, to a
-// user, to https on that host or to another host is not fetched; without
-// the switch the rule is tracker.LogHost's alone, which admits no loopback
-// address.
+// user, to https on that host or to another host is not fetched, nor is a
+// redirect the log's host answers that leaves it; with loopback mode off
+// the adapter fetches no loopback log at all, and the rule is
+// tracker.LogHost's alone, which admits no loopback address.
 func TestLoopbackLogsOnlyFromTheItemsOwnHost(t *testing.T) {
 	fake := githubtest.New(t)
 	host := fake.PlainHost()
@@ -55,6 +56,32 @@ func TestLoopbackLogsOnlyFromTheItemsOwnHost(t *testing.T) {
 			if q.Path == "/_logs/7" {
 				t.Errorf("a log at %s was fetched", loc)
 			}
+		}
+	}
+	// A redirect from the log's host that leaves it, to another loopback
+	// host, is not followed.
+	fake.Reply(http.MethodGet, host, logs, http.StatusFound, "", "Location", "http://"+host+"/_logs/8")
+	fake.Reply(http.MethodGet, host, "/_logs/8", http.StatusFound, "", "Location", "http://"+other+"/_logs/7")
+	before := len(fake.Requests())
+	if _, err := lo.CheckLog(ctx, cred, pr, job, 23); err == nil {
+		t.Error("a log whose host redirected to another host answered")
+	}
+	for _, q := range fake.Requests()[before:] {
+		if q.Host == other {
+			t.Errorf("the redirect to %s was followed", other)
+		}
+	}
+	// Loopback mode off: the adapter fetches no log of a loopback host,
+	// its own redirect to that host included.
+	fake.Reply(http.MethodGet, host, logs, http.StatusFound, "", "Location", "http://"+host+"/_logs/7?sig=signed")
+	off := github.New(github.Options{Transport: fake.Transport()})
+	before = len(fake.Requests())
+	if _, err := off.CheckLog(ctx, cred, pr, job, 23); err == nil {
+		t.Error("loopback mode off: a loopback log answered")
+	}
+	for _, q := range fake.Requests()[before:] {
+		if q.Path == "/_logs/7" {
+			t.Error("loopback mode off: the loopback log was fetched")
 		}
 	}
 	// Without the switch: no loopback log, whatever host the credential names.
