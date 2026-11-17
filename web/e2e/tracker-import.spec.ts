@@ -54,8 +54,15 @@ test('a GitHub token is saved in Settings by its own Check and save, and never s
   await expect(card).toBeVisible()
   await expect(card.locator('[data-github-none]')).toBeVisible()
   const field = card.locator('input[data-github-token]')
-  await expect(field).toHaveAttribute('type', 'password')
-  await expect(field).toHaveAttribute('autocomplete', 'new-password')
+  // No password manager offers to save or fill it: a text field drawn masked, marked for each manager to leave alone.
+  await expect(field).toHaveAttribute('type', 'text')
+  await expect(field).toHaveAttribute('autocomplete', 'off')
+  await expect(field).toHaveAttribute('data-1p-ignore', '')
+  await expect(field).toHaveAttribute('data-lpignore', 'true')
+  await expect(field).toHaveAttribute('data-bwignore', '')
+  await expect(field).toHaveAttribute('data-form-type', 'other')
+  expect(await card.locator('input[type="password"]').count()).toBe(0)
+  expect(await field.evaluate((e) => getComputedStyle(e).getPropertyValue('-webkit-text-security'))).toBe('disc')
   await card.locator('input[data-github-host]').fill(gh.host)
   await field.fill(TOKEN)
   // The card is out of the page's one Save: a token typed makes nothing for the save bar to save.
