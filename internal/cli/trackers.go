@@ -254,8 +254,12 @@ func trackerSet(ctx context.Context, c *apiClient, host, tok string, stdout io.W
 	return 0, nil
 }
 
-// trackerRemove drops host's token and prints what the server said: for
-// the environment's host, that its token is still the one used.
+// trackerRemove drops host's token and prints what the server said: that
+// it was removed, or that none was kept for host (a mistyped or defaulted
+// host) with the hosts the server does keep a token for; and for the
+// environment's host, that its token is still the one used. Nothing
+// removed is no failure (exit 0), as a set of the token already kept is
+// not.
 func trackerRemove(ctx context.Context, c *apiClient, host string, stdout io.Writer) (int, error) {
 	host = cmpOrHost(host)
 	var out struct {
@@ -266,11 +270,34 @@ func trackerRemove(ctx context.Context, c *apiClient, host string, stdout io.Wri
 	if err := c.doLimit(ctx, http.MethodPost, "/api/trackers/github/remove", map[string]string{"host": host}, &out, maxReply); err != nil {
 		return 1, err
 	}
-	fmt.Fprintf(stdout, "%s: removed; the token stays valid on GitHub until it is revoked there\n", oneLine(host))
+	if out.Removed {
+		fmt.Fprintf(stdout, "%s: removed; the token stays valid on GitHub until it is revoked there\n", oneLine(host))
+	} else {
+		fmt.Fprintf(stdout, "%s: no token was kept for it; nothing removed%s\n", oneLine(host), keptHostsWords(ctx, c))
+	}
 	if out.InUse != "" {
 		fmt.Fprintf(stdout, "%s\n", oneLine(out.Message))
 	}
 	return 0, nil
+}
+
+// keptHostsWords names the hosts the server keeps a token for, as words
+// to follow "nothing removed"; nothing when the list cannot be read.
+func keptHostsWords(ctx context.Context, c *apiClient) string {
+	var out struct {
+		GitHub []trackerView `json:"github"`
+	}
+	if c.doLimit(ctx, http.MethodGet, "/api/trackers", nil, &out, maxReply) != nil {
+		return ""
+	}
+	var hosts []string
+	for _, v := range out.GitHub {
+		hosts = append(hosts, v.Host)
+	}
+	if len(hosts) == 0 {
+		return " (no token is kept for any host)"
+	}
+	return oneLine(" (a token is kept for " + strings.Join(hosts, ", ") + ")")
 }
 
 // cmpOrHost is host, github.com when empty.
