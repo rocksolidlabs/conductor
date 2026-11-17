@@ -11,6 +11,8 @@ import {
   HOST_MAX_REPORT_PATH,
   HOST_MAX_REPORT_WHERE,
   HOST_MAX_SESSION_INFO,
+  HOST_MAX_AGENT_SESSION,
+  HOST_MAX_AGENT_SESSION_MESSAGE,
   HOST_MAX_RUN_ID,
   HOST_MAX_TOKEN,
   HOST_MAX_TOKEN_MESSAGE,
@@ -47,6 +49,8 @@ import {
   type HostReport,
   type HostRunGroup,
   type HostSessionInfoMessage,
+  type HostAgentSessionMessage,
+  type HostRegisteredAgentSessions,
   type HostTokenMsg,
   type Welcome,
 } from './protocol'
@@ -545,6 +549,12 @@ describe('a host report', () => {
       { repo: '/Users/李/项目', repoCommon: 'C:\\Users\\Zoë\\app\\.git' },
       { repo: '/Users/ade\u0301/app' },
     ]) expect(hostReportValid(ok), JSON.stringify(ok)).toBe(true)
+  })
+  it('bounds an agent_session by its bytes, its id within them', () => {
+    const m: HostAgentSessionMessage = { t: 'agent_session', sessionId: 's'.repeat(64), agentSession: 'a'.repeat(HOST_MAX_AGENT_SESSION), turn: true }
+    expect(new TextEncoder().encode(JSON.stringify(m)).length).toBeLessThanOrEqual(HOST_MAX_AGENT_SESSION_MESSAGE)
+    const r: HostRegisteredAgentSessions = { agentSessions: true }
+    expect(r.agentSessions).toBe(true)
   })
   it('bounds a session_info by its bytes and its end commit by its form', () => {
     const m: HostSessionInfoMessage = { t: 'session_info', endCommit: 'c'.repeat(64) }

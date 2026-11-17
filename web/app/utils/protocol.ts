@@ -971,6 +971,28 @@ export interface HostRegisteredSessionInfo {
   sessionInfo?: boolean
 }
 
+/** An agent_session message (below) is at most this many bytes, and its agentSession at most HOST_MAX_AGENT_SESSION. */
+export const HOST_MAX_AGENT_SESSION_MESSAGE = 512
+export const HOST_MAX_AGENT_SESSION = 128
+
+/**
+ * host → server, only to a server whose registered said agentSessions: the agent's own session id an attention report to the
+ * host's socket named (1 to HOST_MAX_AGENT_SESSION bytes), and whether the report was of a turn; the server keeps it in the
+ * hosted session's record as its attention route keeps agentSession. One object of these fields alone, at most
+ * HOST_MAX_AGENT_SESSION_MESSAGE bytes, else dropped. The web never sends it.
+ */
+export interface HostAgentSessionMessage {
+  t: 'agent_session'
+  sessionId?: string
+  agentSession: string
+  turn?: boolean
+}
+
+/** The part of registered that says the server takes agent_session; absent from an older server and a desk's. */
+export interface HostRegisteredAgentSessions {
+  agentSessions?: boolean
+}
+
 /** The part of registered that says which links the server still holds for the session; absent from an older server. */
 export interface HostRegisteredLinks {
   links?: string[]

@@ -1,8 +1,10 @@
 package proto
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -41,6 +43,12 @@ const (
 	MaxReportPath   = MaxCwd
 	MaxSessionInfo  = 2 << 10
 	HostSessionInfo = "session_info" // host -> server (HostSessionInfoMsg)
+	// MaxAgentSession bounds an agent session id the host carries
+	// (session.MaxAgentSessionID), and MaxAgentSessionMsg the whole
+	// agent_session message.
+	MaxAgentSession    = 128
+	MaxAgentSessionMsg = 512
+	HostAgentSession   = "agent_session" // host -> server (HostAgentSessionMsg)
 )
 
 // ErrReport refuses a register whose HostReport is past its bounds, and
@@ -100,6 +108,47 @@ func ParseSessionInfo(data []byte) (HostSessionInfoMsg, error) {
 	}
 	if m.EndCommit != "" && !ValidCommit(m.EndCommit) {
 		return HostSessionInfoMsg{}, ErrSessionInfo
+	}
+	return m, nil
+}
+
+// HostAgentSessionMsg (host -> server) is the agent's own session id as
+// an attention report its hooks made to the host's socket named it
+// (agentSession, at most MaxAgentSession bytes), and whether that report
+// was of a turn (turn): what the attention route takes for the server's
+// record of a hosted session (docs/protocol.md, The host's socket). Sent
+// only to a server whose registered said AgentSessions, in the order the
+// reports came, and again in that order as each later connection starts
+// (a report sent again is that report again to the record's recipe). The
+// whole message is at most MaxAgentSessionMsg bytes. SessionID is the
+// host's, ignored: the connection says which session.
+type HostAgentSessionMsg struct {
+	T            string `json:"t"`
+	SessionID    string `json:"sessionId,omitempty"`
+	AgentSession string `json:"agentSession"`
+	Turn         bool   `json:"turn,omitempty"`
+}
+
+// ErrAgentSession refuses an agent_session that is not one within its
+// bounds.
+var ErrAgentSession = errors.New("agent_session: not one, or past its bounds")
+
+// ParseAgentSession reads an agent_session message: at most
+// MaxAgentSessionMsg bytes, one object of its type and fields alone, an
+// AgentSession of 1 to MaxAgentSession bytes. The server drops one it
+// refuses and keeps the connection.
+func ParseAgentSession(data []byte) (HostAgentSessionMsg, error) {
+	var m HostAgentSessionMsg
+	if len(data) > MaxAgentSessionMsg {
+		return m, ErrAgentSession
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&m); err != nil || m.T != HostAgentSession || dec.Decode(&struct{}{}) != io.EOF {
+		return HostAgentSessionMsg{}, ErrAgentSession
+	}
+	if m.AgentSession == "" || len(m.AgentSession) > MaxAgentSession {
+		return HostAgentSessionMsg{}, ErrAgentSession
 	}
 	return m, nil
 }
