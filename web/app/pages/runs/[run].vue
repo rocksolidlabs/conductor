@@ -432,6 +432,8 @@ palette.registerPage(() => {
     // page, Open in Conductor, where it is captured.
     const preview = a.preview
     const n = t.attempt?.n ?? 0
+    // The label is read ahead as the palette lists the row, so choosing it opens the tab at once.
+    if (preview) previewOpen.prime({ run: r.id, task: t.id, attempt: n }, preview)
     if (preview) actions.push({ id: 'open-preview', kind: 'page', target: t.id, label: 'Open preview', icon: 'i-lucide-external-link', run: () => void previewOpen.newTab({ run: r.id, task: t.id, attempt: n }, preview) })
     if (a.inConductor) actions.push({ id: 'open-in-conductor', kind: 'page', target: t.id, label: 'Open in Conductor', icon: 'i-lucide-scan', run: () => void router.push(previewPath({ run: r.id, task: t.id, attempt: n })) })
     // A candidate's preview (PV1 PR-8): its checkout made and the preview page opened at its seq; while one is open, Open it.

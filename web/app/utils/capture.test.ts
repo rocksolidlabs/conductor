@@ -100,6 +100,10 @@ describe('isWorkbench: the pane never frames the workbench, under any spelling',
     const wb = 'http://127.0.0.1:8080'
     for (const u of ['http://127.0.0.1:8080/', 'http://127.0.0.1:8080/other/path?x#y', 'http://localhost:8080/', 'http://[::1]:8080/', 'http://127.1.2.3:8080/', 'http://LOCALHOST:8080/']) expect(isWorkbench(u, wb), u).toBe(true)
     expect(isWorkbench('https://127.0.0.1:8443/', wb, ['https://127.0.0.1:8443'])).toBe(true)
+    // The IPv4 loopback mapped into IPv6, as a URL writes it and as it is typed.
+    expect(isWorkbench('http://[::ffff:7f00:1]:8080/', wb)).toBe(true)
+    expect(isWorkbench('http://[::ffff:127.0.0.1]:8080/', wb)).toBe(true)
+    expect(isWorkbench('http://[::ffff:7f00:1]:41000/', wb)).toBe(false)
   })
   it('frames a preview at another port, and an address that does not parse is no workbench', () => {
     expect(isWorkbench('http://127.0.0.1:41000/', 'http://127.0.0.1:8080')).toBe(false)

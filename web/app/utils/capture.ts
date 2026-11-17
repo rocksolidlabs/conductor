@@ -290,7 +290,9 @@ export function originOf(url: string): string {
 /** The names a host's loopback goes by: the same machine whatever the spelling. */
 function loopback(host: string): boolean {
   const h = host.replace(/^\[|\]$/g, '').toLowerCase()
-  return h === 'localhost' || h.endsWith('.localhost') || h === '::1' || h === '0:0:0:0:0:0:0:1' || /^127(\.\d{1,3}){3}$/.test(h) || h === '0.0.0.0'
+  // An IPv4 loopback address mapped into IPv6 ([::ffff:127.0.0.1], which a URL writes [::ffff:7f00:1]) is the loopback too.
+  const mapped = /^(?:::|(?:0{1,4}:){5})ffff:(?:7f[0-9a-f]{2}:[0-9a-f]{1,4}|127(?:\.\d{1,3}){3})$/.test(h)
+  return h === 'localhost' || h.endsWith('.localhost') || h === '::1' || h === '0:0:0:0:0:0:0:1' || /^127(\.\d{1,3}){3}$/.test(h) || h === '0.0.0.0' || mapped
 }
 
 function portOf(u: URL): string {
