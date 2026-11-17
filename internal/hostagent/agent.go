@@ -463,7 +463,7 @@ type agent struct {
 	attentionRetry  bool
 	attentionOf     string
 	// retellPending says the next attention told is a connection's retell
-	// (retellAttention), connStart when that connection began; lastRetold
+	// (retellAttention), connStart when its registration began; lastRetold
 	// says the attention last told was the retell of a question asked
 	// before it (proto.HostAttentionMsg.Retold), sent again with a retry.
 	// Guarded by mu.
@@ -541,10 +541,13 @@ type agent struct {
 	actConfirming bool
 	actConfirmTo  uint64
 	// actEpoch numbers the registrations (registeredActivity), the last
-	// one's resumed in actResumed; actConfirmOn and actConfirmW are the
-	// registration and the writer the confirmation asked last is of.
-	// Guarded by actMu.
+	// one's start in actBegan (with the monotonic clock's reading; actSince
+	// replaces the time since it in tests), its resumed in actResumed;
+	// actConfirmOn and actConfirmW are the registration and the writer the
+	// confirmation asked last is of. Guarded by actMu.
 	actEpoch     uint64
+	actBegan     time.Time
+	actSince     func() time.Duration
 	actResumed   bool
 	actConfirmOn uint64
 	actConfirmW  *controlWriter
@@ -1096,11 +1099,16 @@ func (a *agent) onLocalChange(info session.Info) {
 // turn among the session's changes, read as the forwarder gets to it
 // (forwardChanges), so that a change made meanwhile is never overtaken by
 // an older attention.
+//
+// The connection's start a retold question is judged by (connStart) is its
+// registration's (registrationBegan), the start its entries are judged by:
+// a question asked after it has a live entry and is not retold, one asked
+// before it a late entry and the retell, never both.
 func (a *agent) retellAttention() {
 	a.mu.Lock()
 	a.attentionUntold = true
 	a.retell = true
-	a.retellPending, a.connStart = true, time.Now()
+	a.retellPending, a.connStart = true, a.registrationBegan()
 	running := a.forwarding
 	a.forwarding = true
 	a.mu.Unlock()
@@ -1210,7 +1218,7 @@ func hostAttentionMsg(sessionID string, att session.Attention, kept []string, tu
 // viewers have its log over their connection.
 func (a *agent) onLocalActivity(_ string, e session.ActivityEntry, state session.AttentionState) {
 	if !a.opts.Switchyard {
-		a.activity.push(e, state)
+		a.activity.push(e, state, a.madeOn(e.At))
 	}
 	if e.Type == session.ActivityStatus {
 		a.statusQueued.Store(true)
@@ -1237,11 +1245,13 @@ func (a *agent) sendChat(m session.ChatMessage) {
 }
 
 // sendActivity delivers one entry, and the attention state it records, on the
-// control connection. A file entry whose path this host's own deny list
+// control connection; made is the registration it was made on, taken as
+// the session handed it over (madeOn), which says whether it is late
+// (keepActivity). A file entry whose path this host's own deny list
 // refuses (Options.FileDeny) is not sent: what the host leaves out of its
 // sessions' files it leaves out of what it reports of them, the server
 // asking nothing of its own machine about a host's paths.
-func (a *agent) sendActivity(e session.ActivityEntry, state session.AttentionState) {
+func (a *agent) sendActivity(e session.ActivityEntry, state session.AttentionState, made uint64) {
 	if e.Type == session.ActivityFile && a.opts.FileDeny != nil && e.Path != "" && session.DeniedBy(session.TouchedAbs(a.dir, e.Path), a.opts.FileDeny()) {
 		return
 	}
@@ -1249,7 +1259,7 @@ func (a *agent) sendActivity(e session.ActivityEntry, state session.AttentionSta
 	m.State = string(state)
 	if a.activitySeq.Load() {
 		// Kept until the server took it (activitykeep.go).
-		a.keepActivity(m)
+		a.keepActivity(m, made)
 		a.sendKeptActivity()
 		return
 	}

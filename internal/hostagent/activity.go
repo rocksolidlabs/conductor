@@ -21,7 +21,7 @@ const activityQueue = 256
 // else, because the session keeps its own log and its own chat.
 type activityForwarder struct {
 	queue    chan forwarded
-	send     func(session.ActivityEntry, session.AttentionState)
+	send     func(session.ActivityEntry, session.AttentionState, uint64)
 	sendChat func(session.ChatMessage)
 	log      *slog.Logger
 	pending  atomic.Int64 // entries queued or being sent
@@ -31,21 +31,26 @@ type activityForwarder struct {
 // forwarded is an entry waiting for the connection, with the attention state
 // it records when it is an attention entry: the session hands the state on
 // with the entry (set with the entry's stamp), for by the time the entry is
-// sent the session may be in another. Or a chat message (chat set).
+// sent the session may be in another. made is the registration the host was
+// on as the session handed the entry over (agent.madeOn): what says, when
+// the entry is kept, whether it was made before the connection carrying it
+// began. Or a chat message (chat set).
 type forwarded struct {
 	entry session.ActivityEntry
 	state session.AttentionState
+	made  uint64
 	chat  *session.ChatMessage
 }
 
-func newActivityForwarder(send func(session.ActivityEntry, session.AttentionState), sendChat func(session.ChatMessage), log *slog.Logger) *activityForwarder {
+func newActivityForwarder(send func(session.ActivityEntry, session.AttentionState, uint64), sendChat func(session.ChatMessage), log *slog.Logger) *activityForwarder {
 	return &activityForwarder{queue: make(chan forwarded, activityQueue), send: send, sendChat: sendChat, log: log}
 }
 
-// push queues e, with the attention state it records, without waiting. It
-// reports false, and drops e, when the queue is full.
-func (f *activityForwarder) push(e session.ActivityEntry, state session.AttentionState) bool {
-	return f.queueOne(forwarded{entry: e, state: state})
+// push queues e, with the attention state it records and the registration
+// it was made on, without waiting. It reports false, and drops e, when the
+// queue is full.
+func (f *activityForwarder) push(e session.ActivityEntry, state session.AttentionState, made uint64) bool {
+	return f.queueOne(forwarded{entry: e, state: state, made: made})
 }
 
 // pushChat queues a chat message the session kept, the same way.
@@ -77,7 +82,7 @@ func (f *activityForwarder) run(ctx context.Context) {
 			if q.chat != nil {
 				f.sendChat(*q.chat)
 			} else {
-				f.send(q.entry, q.state)
+				f.send(q.entry, q.state, q.made)
 			}
 			f.pending.Add(-1)
 		}

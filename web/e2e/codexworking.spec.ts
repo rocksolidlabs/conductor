@@ -286,6 +286,22 @@ test("a form no pattern knows shows Needs you from Codex's status alone, with it
   await expect.poll(async () => (await api.session(id)).attention?.state, { timeout: 15_000 }).toBe('done')
 })
 
+test("a turn Codex's status says ended in an error shows Needs you in Conductor's words until a key in the terminal (#991)", async ({ page, api }) => {
+  const id = await sessionOf(api, 'asks')
+  const since = Date.now()
+  await page.goto('/crews')
+  await api.ok('POST', `/api/runs/${encodeURIComponent(runId)}/broadcast`, { text: 'stub fail', members: ['asks'] })
+  await expect
+    .poll(async () => (await api.session(id)).attention, { timeout: 30_000, message: 'the failed turn waits' })
+    .toMatchObject({ state: 'needs_input', source: 'status', message: "The agent's turn ended in an error; its terminal says why" })
+  await expect(row(page, id)).toHaveAttribute('data-row-state', 'needs', { timeout: 30_000 })
+  // Its one entry is the failed turn's, after the working its status said first.
+  await expect.poll(() => watch!.of(id).filter((e) => e.at >= since).map((e) => e.state), { timeout: 15_000 }).toEqual(['working', 'needs_input'])
+  // The person's Enter in the terminal takes it away.
+  await pressInTerminal(page, id, 'Enter')
+  await expect.poll(async () => (await api.session(id)).attention, { timeout: 15_000, message: 'the Enter took it away' }).toMatchObject({ state: '', source: 'input' })
+})
+
 test("a question Codex asks without waiting never shows Needs you", async ({ api, state }) => {
   const id = await sessionOf(api, 'asks')
   const since = Date.now()

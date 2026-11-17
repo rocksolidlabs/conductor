@@ -1468,16 +1468,23 @@ a kind raises a wait of its own where nothing with words of its own shows
 (`needs_input`, source `status`, kind `permission` or `prompt`, message "The
 agent asks for a permission", "The agent asks a question" or "The agent
 needs you to sign in"); a `blocked` without one (0.163, where a pending
-async question blocks too) raises nothing. A wait the status raised is
-withdrawn by a later status that is neither `blocked` nor `working`, by an
-Enter typed in the terminal and by the screen moving on, as an OSC
-notification's is; one read while a question held on the screen showed is
-remembered and shows once the screen moves on from that question. The state
-outlives Conductor's turns, since Codex writes it only when it changes. With
-Codex 0.163 a wait raised while an async question is pending stands until
-the status says `working` again, when the question is answered or resolves
-by itself, as under the title alone; with 0.164 it gives way after its
-`TitleSettle`.
+async question blocks too) raises nothing. An `error` (the turn failed: a
+refused key, a quota, an outage, which Codex's notify program does not
+report) raises one by the same rules (`needs_input`, source `status`, no
+kind, message "The agent's turn ended in an error; its terminal says why"),
+in place of a wait a `blocked` raised and the other way round. A wait the
+status raised is withdrawn by a later status that is neither `blocked` nor
+`working`, by an Enter typed in the terminal and by the screen moving on, as
+an OSC notification's is, but for the error's: a failed turn that sits idle
+still needs a person, so only `working` (settling it), `done`, a later
+turn's reported done, an Enter in the terminal and the session's end
+withdraw it. A `blocked` or `error` status read while a question held on
+the screen showed is remembered and shows once the screen moves on from that
+question. The state outlives Conductor's turns, since Codex writes it only
+when it changes. With Codex 0.163 a wait raised while an async question is
+pending stands until the status says `working` again, when the question is
+answered or resolves by itself, as under the title alone; with 0.164 it
+gives way after its `TitleSettle`.
 
 An agent's catalog entry can carry a `promptShape` (#714), its own prompt
 at rest matched by its shape against the server session's whole screen (its
@@ -1712,20 +1719,34 @@ them) reach the server, in order and each once:
   "N activity entries of the host's may be missing here: recorded while its
   connection to this server was down, and not sent".
 
-An entry keeps the time it was recorded at. Every entry kept as a
-connection begins (recorded before it, or sent again) goes with `late:
-true`: the server records it and shows it in its order (`GET /api/events`
+An entry keeps the time it was recorded at. The host judges each entry
+by the registration it was made on, read as its session hands the entry
+to the host's sender: the registration the host is on at that moment,
+except that an entry stamped before that registration began and handed
+over within one second of its start (on the host's monotonic clock)
+counts as made on the one before. A stamp equal to the start counts as
+after it, and past that second an entry handed over on a registration is
+made on it whatever its stamp says: a wall clock set back after a
+registration makes none of the connection's entries late. An entry made
+on an earlier registration than the one whose connection carries it
+(recorded while the host was away, or handed over before the
+registration began, however long the host's sender then took to keep
+it), or sent again, goes with `late: true`: the server records it and
+shows it in its order (`GET /api/events`
 sends it as `activity` with `late: true`, and the app's feed shows it
 without changing a badge or telling a browser notification, the wall or
 a jump), and offers it to no notification or webhook sink, nor the run
 engine or Brakeman: nobody is paged for what the session has moved past,
-the left-out notice among it. A question asked while the host was away
-and still open as it comes back pages once, from the session's state: the
-host's retell of its attention as the connection begins carries `retold:
-true` when the question it shows was asked before that connection began,
-and the server, when its copy did not hold that question (its `id`)
-before, offers it to the sinks and the stream once as a live
-`needs_input` (not recorded: its own entry is, late). Entries kept when
+the left-out notice among it. A question asked before the connection
+began and still open as it begins pages once, from the session's state:
+the host's retell of its attention as the connection begins carries
+`retold: true` when the question it shows was asked before the
+registration began (the start its entries are judged by), and the server
+offers it to the sinks and the stream once as a live `needs_input` (not
+recorded: its own entry is, late), unless it offered that question (its
+`id`) live before: its `needs_input` entry, arriving while the server's
+copy showed the question or just before the copy showed a question of
+the same words, or an earlier retell. Entries kept when
 the host ends before its connection comes back are lost. A server that does not
 say `activitySeq` (an earlier release, a switchyard) is sent no `seq` or
 `leftOut`, and nothing is kept for it: an entry recorded while the
