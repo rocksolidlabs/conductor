@@ -462,6 +462,8 @@ export interface PlanBody {
   constraints: string
   decisions: PlanDecision[]
   note: string
+  /** What of the linked item it hands over: absent when it hands over neither the steps to reproduce nor an evidence link. */
+  source?: PlanSource
 }
 
 /** A plan revision read whole (GET /api/dispatch/plans/{id}): its summary and its body. */
@@ -486,6 +488,18 @@ export interface NewPlan {
   constraints?: string
   decisions?: PlanDecision[]
   note?: string
+  /** What of the ticket's linked item the revision hands over (IN1a): the steps to reproduce, pinned, and evidence links; absent for neither. */
+  source?: PlanSource
+}
+
+/**
+ * A revision's choice of the ticket's source (docs/protocol.md, Plan revisions; dispatch.PlanSource): `repro` pins the linked item's
+ * identity (the ticket's `externalId`) and the steps' SHA-256 (its snapshot's `reproSha256`) as the proposal showed them, so the approval
+ * covers the very text handed over; `evidence` the live delivery or external links' ids, at most 8, each once.
+ */
+export interface PlanSource {
+  repro?: { identity: string; sha256: string } | null
+  evidence?: string[]
 }
 
 export interface PlanReply {

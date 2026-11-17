@@ -2,7 +2,7 @@
 import type { DispatchTicket, NewPlan, NewPlanReference, PlanBody, PlanDecision, PlanSummary } from '~/composables/useDispatch'
 import type { CrewPerson, CrewSummary } from '~/composables/useSessions'
 import type { TicketPlans } from '~/composables/useTicketPlans'
-import { commentAuthor } from '~/utils/dispatch'
+import { commentAuthor, linkLabel } from '~/utils/dispatch'
 import { FOR_NONE, PLAN_BOUNDS, decisionsProblem, forItems, keptComments, nextDecisionId, parseReference, planDecisionsOut, referenceText, revisionTag, shortCommit } from '~/utils/dispatchPlans'
 
 /**
@@ -15,9 +15,12 @@ import { FOR_NONE, PLAN_BOUNDS, decisionsProblem, forItems, keptComments, nextDe
  * being out of sight. Nothing is proposed from a revision before its body is read: what it holds is carried over, never dropped for
  * being unread, so until it is the dialog says why (with Read it again) and asks nothing, and the form is filled from it once it is. The
  * server reads the crew, the commit and the references and refuses, in words, what does not hold; the refusal is said in place.
+ * For a ticket linked to a GitHub item (Program item IN1a, PR-9): its Steps to reproduce, on by default when the item has them, sent
+ * pinned to the item and the steps' SHA-256 as shown (the approval covers that very text, and a change of the steps since refuses it),
+ * and its delivery and external links as evidence, at most 8; the imported images are among the attachments above.
  */
 const props = defineProps<{
-  ticket: DispatchTicket
+  ticket: DispatchTicket & { externalSnapshot?: { repro?: string; reproSha256?: string; space?: string; id?: string } }
   plans: TicketPlans
   /** The revision this one revises, with its body: the dialog is prefilled from it. */
   from?: { revision: PlanSummary; body: PlanBody | null } | null
@@ -41,6 +44,10 @@ const comments = ref<string[]>([])
 const constraints = ref('')
 const decisions = ref<PlanDecision[]>([])
 const note = ref('')
+/** The linked item's steps to reproduce handed over (IN1a): on by default when it has them. */
+const repro = ref(false)
+/** The links named as evidence, by id. */
+const evidence = ref<string[]>([])
 const error = ref('')
 const sending = ref(false)
 
@@ -55,6 +62,18 @@ const crewItems = computed(() =>
     .map((c) => ({ label: c.name, value: c.id, description: crewWhy(c) || `${c.members.length} ${c.members.length === 1 ? 'member' : 'members'} · ${c.cwd || 'the server’s folder'}`, disabled: !!crewWhy(c) }))
     .sort((a, b) => Number(a.disabled) - Number(b.disabled) || a.label.localeCompare(b.label)),
 )
+
+/** The steps the linked item has, with their pin: none for a ticket not linked, or an item with no Steps to reproduce. */
+const reproOffer = computed(() => {
+  const sn = props.ticket.externalSnapshot
+  const id = props.ticket.externalId
+  if (!id || !sn?.repro || !sn.reproSha256) return null
+  return { identity: id, sha256: sn.reproSha256, steps: sn.repro, ref: sn.space && sn.id ? `${sn.space}#${sn.id}` : 'the linked item' }
+})
+/** The links a revision may name as evidence: the live delivery and external ones. */
+const evidenceLinks = computed(() => (props.ticket.links ?? []).filter((l) => !l.deletedAt && (l.kind === 'delivery' || l.kind === 'external')))
+/** The bound of evidence links a revision names (dispatch.MaxPackageEvidence). */
+const MAX_EVIDENCE = 8
 
 const liveAttachments = computed(() => (props.ticket.attachments ?? []).filter((a) => !a.deletedAt))
 /** The recent comments offered: the newest live ones the ticket's read carries, at most the bound. */
@@ -99,6 +118,10 @@ function fill() {
   constraints.value = b?.constraints ?? ''
   decisions.value = (b?.decisions ?? []).map((d) => ({ ...d, before: [...d.before] }))
   note.value = ''
+  // A revision revised hands over what it handed over, as far as the ticket still holds it; a new one the steps when the item has them.
+  repro.value = !!reproOffer.value && (f ? !!b?.source?.repro : true)
+  const links = new Set(evidenceLinks.value.map((l) => l.id))
+  evidence.value = (b?.source?.evidence ?? []).filter((id) => links.has(id))
   error.value = ''
 }
 
@@ -155,8 +178,8 @@ function addDecision() {
 function removeDecision(i: number) {
   decisions.value = decisions.value.filter((_, j) => j !== i)
 }
-function toggle(which: 'attachments' | 'comments', id: string, on: boolean | 'indeterminate') {
-  const list = which === 'attachments' ? attachments : comments
+function toggle(which: 'attachments' | 'comments' | 'evidence', id: string, on: boolean | 'indeterminate') {
+  const list = which === 'attachments' ? attachments : which === 'comments' ? comments : evidence
   list.value = on === true ? [...new Set([...list.value, id])] : list.value.filter((x) => x !== id)
 }
 
@@ -178,6 +201,7 @@ const blocked = computed(() => {
   if (refErrors.value.some((e) => e)) return 'A reference is not one'
   if (attachments.value.length > PLAN_BOUNDS.attachments) return `At most ${PLAN_BOUNDS.attachments} attachments`
   if (comments.value.length > PLAN_BOUNDS.comments) return `At most ${PLAN_BOUNDS.comments} comments`
+  if (evidence.value.length > MAX_EVIDENCE) return `At most ${MAX_EVIDENCE} evidence links`
   return decisionsProblem(decisions.value, crewPeople.value, crew.value)
 })
 
@@ -193,6 +217,8 @@ async function submit() {
   if (constraints.value.trim()) req.constraints = constraints.value
   if (decisions.value.length) req.decisions = planDecisionsOut(decisions.value)
   if (note.value.trim()) req.note = note.value
+  const r = repro.value ? reproOffer.value : null
+  if (r || evidence.value.length) req.source = { ...(r ? { repro: { identity: r.identity, sha256: r.sha256 } } : {}), ...(evidence.value.length ? { evidence: [...evidence.value] } : {}) }
   sending.value = true
   error.value = ''
   try {
@@ -264,6 +290,22 @@ async function submit() {
             :label="commentLabel(id, i)"
             :data-plan-propose-earlier-comment="id"
             @update:model-value="(v) => toggle('comments', id, v)"
+          />
+        </div>
+
+        <div v-if="reproOffer" class="flex flex-col gap-1.5">
+          <UCheckbox v-model="repro" :label="`Steps to reproduce, from ${reproOffer.ref}`" description="As they are now: a change of them on GitHub before the launch makes the approval ask again." data-propose-repro />
+          <pre class="ml-6 max-h-32 overflow-auto rounded-md bg-elevated px-2 py-1 font-mono text-xs whitespace-pre-wrap break-words text-muted" data-propose-repro-text>{{ reproOffer.steps }}</pre>
+        </div>
+        <div v-if="evidenceLinks.length" class="flex flex-col gap-1.5">
+          <span class="text-xs font-medium text-muted">Links to hand over as evidence <span class="text-dimmed">(at most {{ MAX_EVIDENCE }})</span></span>
+          <UCheckbox
+            v-for="l in evidenceLinks"
+            :key="l.id"
+            :model-value="evidence.includes(l.id)"
+            :label="`${l.kind === 'delivery' ? 'Delivery' : 'External'}: ${linkLabel(l.url)}`"
+            :data-propose-evidence="l.id"
+            @update:model-value="(v) => toggle('evidence', l.id, v)"
           />
         </div>
 

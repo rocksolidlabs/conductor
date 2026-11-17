@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { DispatchTicket, PlanBody } from '~/composables/useDispatch'
 import type { AgentInfo } from '~/composables/useSessions'
-import { handedCommentWords } from '~/utils/dispatch'
+import { handedCommentWords, linkLabel } from '~/utils/dispatch'
 import { argvLine, expectedChecks, planForWords, planMemberModel, resolvedArgv, shortCommit, yoloWords } from '~/utils/dispatchPlans'
 
 /**
@@ -14,7 +14,7 @@ import { argvLine, expectedChecks, planForWords, planMemberModel, resolvedArgv, 
  */
 const props = defineProps<{
   body: PlanBody
-  ticket: DispatchTicket
+  ticket: DispatchTicket & { externalSnapshot?: { space?: string; id?: string } }
   agents: readonly AgentInfo[]
 }>()
 
@@ -25,6 +25,16 @@ const agentName = (id: string) => props.agents.find((a) => a.id === id)?.name ??
 const tasksOf = (member: string) => (props.body.crew.tasks ?? []).filter((t) => t.member === member).map((t) => t.id)
 const attachmentName = (id: string) => props.ticket.attachments?.find((a) => a.id === id)?.name ?? 'a file since removed'
 const commentWords = (id: string) => handedCommentWords(props.ticket.comments, id)
+// What of the linked item it hands over (IN1a): the steps to reproduce as proposed, and the links named as evidence.
+const reproFrom = computed(() => {
+  const sn = props.ticket.externalSnapshot
+  return sn?.space && sn.id ? `${sn.space}#${sn.id}` : 'the linked item'
+})
+const evidenceOf = (id: string) => {
+  const l = props.ticket.links?.find((x) => x.id === id)
+  return l && !l.deletedAt ? { label: linkLabel(l.url), url: l.url } : null
+}
+const handsSource = computed(() => !!props.body.source?.repro || !!props.body.source?.evidence?.length)
 const manifestWords = computed(() => {
   const m = props.body.crew.manifest
   if (!m) return ''
@@ -111,8 +121,12 @@ const manifestWords = computed(() => {
 
     <div class="flex flex-col gap-1" data-plan-handover>
       <h4 class="text-xs font-semibold text-muted">Handed to every attempt</h4>
-      <p class="text-xs text-muted">The ticket as it stands at the launch, in <code>.conductor/ticket.md</code> and <code>.conductor/package.json</code><template v-if="body.attachments.length || body.comments.length">, with:</template><template v-else>.</template></p>
-      <ul v-if="body.attachments.length || body.comments.length" class="flex flex-col gap-0.5 text-xs">
+      <p class="text-xs text-muted">The ticket as it stands at the launch, in <code>.conductor/ticket.md</code> and <code>.conductor/package.json</code><template v-if="body.attachments.length || body.comments.length || handsSource">, with:</template><template v-else>.</template></p>
+      <ul v-if="body.attachments.length || body.comments.length || handsSource" class="flex flex-col gap-0.5 text-xs">
+        <li v-if="body.source?.repro" data-plan-repro><UIcon name="i-lucide-list-ordered" class="mr-1 size-3 align-[-2px]" />The steps to reproduce of {{ reproFrom }}, as they were when it was proposed</li>
+        <li v-for="id in body.source?.evidence ?? []" :key="id" data-plan-evidence :data-plan-evidence-id="id">
+          <UIcon name="i-lucide-link" class="mr-1 size-3 align-[-2px]" /><template v-if="evidenceOf(id)">Evidence: <a :href="evidenceOf(id)!.url" target="_blank" rel="noopener noreferrer" class="hover:underline">{{ evidenceOf(id)!.label }}</a></template><template v-else>Evidence: a link since removed</template>
+        </li>
         <li v-for="id in body.attachments" :key="id" data-plan-attachment><UIcon name="i-lucide-paperclip" class="mr-1 size-3 align-[-2px]" />{{ attachmentName(id) }}</li>
         <li v-for="c in body.comments" :key="c.id" data-plan-comment><UIcon name="i-lucide-message-square" class="mr-1 size-3 align-[-2px]" />{{ commentWords(c.id) }}</li>
       </ul>

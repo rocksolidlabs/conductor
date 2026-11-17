@@ -13,6 +13,7 @@ import { ticketPath } from '~/utils/dispatch'
 import { revisionTag } from '~/utils/dispatchPlans'
 import { ACCOUNT_UNREAD, accountUnreadable, addMemberProblem, boundWords, readNamedAccounts } from '~/utils/crewLaunch'
 import { runOffer } from '~/utils/runs'
+import { packageSourceWords } from '~/utils/publication'
 
 /**
  * The run page's header: the run named by its crew and its start, how many
@@ -61,14 +62,20 @@ const router = useRouter()
 // Who launched a run from a ticket, from the launch it names (GET /api/dispatch/launches/{id}): once, a launch never changes who made it.
 const dispatchApi = useDispatchApi()
 const launchBy = ref('')
+// The linked item the launch's package names as its source (IN1a): "GitHub acme/api#612" in the launched-from chip; '' for none.
+const launchSource = ref('')
 watch(
   () => props.run?.ticket?.launch,
   async (id) => {
     launchBy.value = ''
+    launchSource.value = ''
     if (!id) return
     try {
       const l = await dispatchApi.launchRead(id)
-      if (props.run?.ticket?.launch === id) launchBy.value = l.createdBy
+      if (props.run?.ticket?.launch === id) {
+        launchBy.value = l.createdBy
+        launchSource.value = packageSourceWords(l.package)
+      }
     } catch {
       /* the launch's chip reads it when opened */
     }
@@ -270,17 +277,18 @@ defineExpose({ openAdd, share: () => (shareOpen.value = true), stopNow: stopAll,
           <UButton
             v-if="chips.launched"
             :to="ticketPath(chips.launched.key)"
-            :label="`Launched from ${chips.launched.key} · plan ${revisionTag(chips.launched.planN)}`"
             icon="i-lucide-ticket"
             size="xs"
             color="neutral"
             variant="soft"
             class="min-w-0 shrink-[2] self-center"
             :ui="{ label: 'truncate' }"
-            :title="`Launched from ${chips.launched.key} at its revision ${chips.launched.rev}, by plan revision ${chips.launched.planN}: the run follows the ticket as launched`"
+            :title="`Launched from ${chips.launched.key} at its revision ${chips.launched.rev}, by plan revision ${chips.launched.planN}${launchSource ? `, its source ${launchSource}` : ''}: the run follows the ticket as launched`"
             data-run-launched-from
             :data-run-launched-key="chips.launched.key"
-          />
+          >
+            <span class="truncate">Launched from {{ chips.launched.key }} · plan {{ revisionTag(chips.launched.planN) }}<span v-if="launchSource" data-run-source> · {{ launchSource }}</span></span>
+          </UButton>
           <UButton
             v-if="chips.linked"
             :to="ticketPath(chips.linked.key)"
