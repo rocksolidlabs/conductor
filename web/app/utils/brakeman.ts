@@ -181,6 +181,90 @@ export interface BrakemanState {
   readOnly?: boolean
   why?: string
   stuck?: boolean
+  /** The running turn's reads as they stand (an older server sends none: the page reads `current` alone). */
+  progress?: BrakemanProgress
+  /** When the background role's next scheduled briefing is, an instant the page draws in the browser's time. */
+  nextBriefing?: string
+}
+
+/** The longest derived reading a digest keeps, in characters (internal/brakeman/digest.go, MaxReading). */
+export const MAX_READING = 280
+
+/** A digest's counts of its brief's items, each omitted when 0 (drafts: draft tickets, crews and plans together). */
+export interface BrakemanDigestCounts {
+  decisions?: number
+  proposals?: number
+  drafts?: number
+  handoffs?: number
+  facts?: number
+  interpretations?: number
+  outcomes?: number
+  overlaps?: number
+  comparisons?: number
+  evidence?: number
+}
+
+/** What a brief cites, first cited first: run ids, "<run>/<task>", session ids and ticket keys; each list omitted when empty. */
+export interface BrakemanDigestAbout {
+  runs?: string[]
+  tasks?: string[]
+  sessions?: string[]
+  tickets?: string[]
+}
+
+/** A brief's digest, the server's sibling of a kept brief: its title, a derived reading cut to MAX_READING, its counts and what it cites. */
+export interface BrakemanDigest {
+  schema: number
+  title: string
+  reading: string
+  readingCut?: boolean
+  counts: BrakemanDigestCounts
+  about: BrakemanDigestAbout
+}
+
+/** A request as the list route answers it: with its brief's digest when it has one, and how it matched an `about` filter. */
+export interface BrakemanRow extends BrakemanRequest {
+  digest?: BrakemanDigest
+  match?: 'subject' | 'cited'
+}
+
+/** The last read a running turn was admitted to, by what it read and, when it fits, the ref. */
+export interface BrakemanReadingNow {
+  what: string
+  ref?: string
+}
+
+/** A running turn's progress, from the `brakeman_progress` event or GET /api/brakeman's `progress`. */
+export interface BrakemanProgress {
+  id: string
+  reads: number
+  readsPerTurn: number
+  startedAt?: string
+  deadline?: string
+  reading?: BrakemanReadingNow
+}
+
+/** One count of GET /api/brakeman/since: how many, at most five refs, and the oldest's time where it has one. */
+export interface BrakemanSinceCount {
+  count: number
+  refs: string[]
+  oldest?: string
+}
+
+/** GET /api/brakeman/since's answer: what changed in Conductor since the last briefing, the last day, or a given time. */
+export interface BrakemanSince {
+  since: { from: 'briefing' | 'day' | 'given'; briefing?: string; at: string }
+  runsEnded: BrakemanSinceCount
+  tasksFailed: BrakemanSinceCount
+  ticketsReady: BrakemanSinceCount
+  questionsOpen: BrakemanSinceCount
+  truncated: boolean
+}
+
+/** GET and POST /api/brakeman/opened's answer: the caller's briefed requests not yet opened, newest first, and when its marks began. */
+export interface BrakemanOpened {
+  unread: string[]
+  begun: string
 }
 
 /** One item of a brief: its kind beside that kind's own fields (docs/protocol.md, "A brief"). */
@@ -745,35 +829,61 @@ export function changedFromBaseline(r: { ref: string; seen: RefState; now: RefSt
   return r.now.state !== r.seen.state || (r.now.rev ?? '') !== (r.seen.rev ?? '') || (r.now.sha256 ?? '') !== (r.seen.sha256 ?? '') ? 'changed' : ''
 }
 
-/** The groups a brief's items are shown in, in this order (docs/plans/brakeman.md, PR-6); comparisons go with the evidence panels. */
-export const ITEM_GROUPS: ReadonlyArray<{ group: string; title: string; kinds: readonly string[] }> = [
-  { group: 'facts', title: 'Facts', kinds: ['fact/1'] },
-  { group: 'interpretations', title: 'Interpretations', kinds: ['interpretation/1'] },
-  { group: 'decisions', title: 'Decisions', kinds: ['decision/1'] },
-  { group: 'proposals', title: 'Proposals', kinds: ['proposal/1'] },
-  { group: 'outcomes', title: 'Verified outcomes', kinds: ['outcome/1'] },
-  { group: 'drafts', title: 'Drafts', kinds: ['draft_ticket/1', 'draft_crew/1', 'draft_plan/1'] },
-  { group: 'handoffs', title: 'Handoffs', kinds: ['handoff/1'] },
-  { group: 'overlaps', title: 'Overlapping changes', kinds: ['overlap/1'] },
-  { group: 'evidence', title: 'Evidence', kinds: ['comparison/1', 'evidence/1'] },
+/** The regions a brief is drawn in, top to bottom, by what needs a person first; an item kind appears in exactly one. */
+export type BriefRegionName = 'needs' | 'proposed' | 'acts' | 'changed' | 'compared' | 'fold'
+
+/**
+ * Each region's kinds, in the order they are drawn within it (a list's kinds share one place and keep the brief's order): the decisions
+ * waiting on a person; what Brakeman proposes, its drafts and its handoffs; the outcomes it verified (beside its acts, which are the
+ * request's, not the brief's); what changed, the facts with their readings, then overlapping changes; comparisons, drawn open; and the
+ * evidence panels, folded with the provenance.
+ */
+export const BRIEF_REGIONS: ReadonlyArray<{ region: BriefRegionName; kinds: ReadonlyArray<readonly string[]> }> = [
+  { region: 'needs', kinds: [['decision/1']] },
+  { region: 'proposed', kinds: [['proposal/1'], ['draft_ticket/1', 'draft_crew/1', 'draft_plan/1'], ['handoff/1']] },
+  { region: 'acts', kinds: [['outcome/1']] },
+  { region: 'changed', kinds: [['fact/1', 'interpretation/1'], ['overlap/1']] },
+  { region: 'compared', kinds: [['comparison/1']] },
+  { region: 'fold', kinds: [['evidence/1']] },
 ]
 
-/** A brief's item as a group shows it: the item, its index in the brief (its anchor, `item-<index>`), and a fact's number. */
+/**
+ * A brief's item as a region draws it: the item, its index in the brief (its anchor `item-<index>`, the make route's item, the note it
+ * keeps, its key), a fact's number, and, for an interpretation, the number of the last fact it reads, under which it is drawn (none: it
+ * names no fact and is drawn after them).
+ */
 export interface GroupedItem {
   item: BriefItem
   index: number
   /** A fact's number among the brief's facts, from 1, as an interpretation names it. */
   fact?: number
+  /** An interpretation's place: the last fact it reads, by number. */
+  under?: number
 }
 
-/** A brief's items in their groups, in ITEM_GROUPS' order and the brief's own within a group; an empty group is left out. */
-export function groupItems(items: readonly BriefItem[]): Array<{ group: string; title: string; items: GroupedItem[] }> {
+/**
+ * A brief's items in their regions (BRIEF_REGIONS), for display only: every item keeps its index. Within "changed", each
+ * interpretation follows the last fact it reads, those naming no fact follow the facts, and overlaps come last. A region with no item
+ * is left out, unless `keep` names it (the acts region holds the request's acts too, which are not items).
+ */
+export function briefRegions(items: readonly BriefItem[], keep: readonly BriefRegionName[] = []): Array<{ region: BriefRegionName; items: GroupedItem[] }> {
   const facts = factNumbers(items)
-  return ITEM_GROUPS.map((g) => ({
-    group: g.group,
-    title: g.title,
-    items: items.flatMap((item, index) => (g.kinds.includes(item.kind) ? [{ item, index, fact: facts.get(index) }] : [])),
-  })).filter((g) => g.items.length > 0)
+  const under = (it: BriefItem): number | undefined => {
+    if (it.kind !== 'interpretation/1') return undefined
+    const named = (it.facts ?? []).map((i) => facts.get(i)).filter((n): n is number => n !== undefined)
+    return named.length ? Math.max(...named) : undefined
+  }
+  const placed = (kinds: readonly string[]): GroupedItem[] => {
+    const xs = items.flatMap((item, index) => (kinds.includes(item.kind) ? [{ item, index, fact: facts.get(index), under: under(item) }] : []))
+    if (!kinds.includes('fact/1')) return xs
+    const out: GroupedItem[] = []
+    for (const x of xs) {
+      if (x.item.kind !== 'fact/1') continue
+      out.push(x, ...xs.filter((y) => y.under === x.fact))
+    }
+    return [...out, ...xs.filter((y) => y.item.kind === 'interpretation/1' && y.under === undefined)]
+  }
+  return BRIEF_REGIONS.map((r) => ({ region: r.region, items: r.kinds.flatMap(placed) })).filter((r) => r.items.length > 0 || keep.includes(r.region))
 }
 
 /** Each fact's number among the brief's facts, by its index in the brief. */
