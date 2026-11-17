@@ -66,6 +66,21 @@ type compareOpts struct {
 	// the runs launch, and the env then waits for no session: the test
 	// does, at its seam.
 	launched func(crew.LaunchSpec, string)
+	// agents are catalog entries beside ready-cat (Brakeman's scripted
+	// agents, for a draft's turn).
+	agents []catalog.Agent
+	// draft sets the block's brakeman: Brakeman is asked for a draft once
+	// the lanes settle.
+	draft bool
+	// checks, when set, are every candidate's checks in place of the
+	// env's one passing check.
+	checks []crew.Check
+	// unticketed lets the engine launch a comparison no ticket's package
+	// carries (SetCompareOpenForTest), set before any run launches: a test
+	// of what such a run's lanes are given.
+	unticketed bool
+	// shape changes the comparison's crew before it is saved.
+	shape func(*crew.Crew)
 }
 
 func newCompareEnv(t *testing.T, o compareOpts) *compareEnv {
@@ -84,7 +99,7 @@ func newCompareEnv(t *testing.T, o compareOpts) *compareEnv {
 		}
 	}
 	e := newTestEnvAgents(t, func(c *config.Config) { c.DataDir = data }, slog.New(slog.NewTextHandler(io.Discard, nil)),
-		[]catalog.Agent{readyCat}, opts...)
+		append([]catalog.Agent{readyCat}, o.agents...), opts...)
 	if o.noDesk != (e.srv.brakeman == nil) {
 		t.Fatalf("Brakeman's desk: %v, want none %v", e.srv.brakeman != nil, o.noDesk)
 	}
@@ -99,7 +114,17 @@ func newCompareEnv(t *testing.T, o compareOpts) *compareEnv {
 	title := tk["title"].(string)
 	delete(tk, "title")
 	e.newDispatchTicket(t, "CND", title, tk)
-	saved, err := e.srv.crews.Create(compareCrewIn(t, repo))
+	in := compareCrewIn(t, repo)
+	in.Compare.Brakeman = o.draft
+	if o.shape != nil {
+		o.shape(&in)
+	}
+	for i := range in.Tasks {
+		if o.checks != nil && in.Tasks[i].Kind == crew.TaskWork {
+			in.Tasks[i].Checks = o.checks
+		}
+	}
+	saved, err := e.srv.crews.Create(in)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,8 +139,11 @@ func newCompareEnv(t *testing.T, o compareOpts) *compareEnv {
 	if o.launched != nil {
 		srv.launches.setSeams(func(g *launchGate) { g.launched = o.launched })
 	}
-	srv.runs.SetCompareOpenForTest(true)
-	launch := entityOf(t, e.expect(t, "POST", "/api/dispatch/tickets/CND-1/launch", map[string]any{"opId": opID(), "plan": plan}, http.StatusCreated, ""), "launch")
+	if o.unticketed {
+		srv.runs.SetCompareOpenForTest(true)
+	}
+	// A person's launch from the ticket, the count the statement said.
+	launch := entityOf(t, e.expect(t, "POST", "/api/dispatch/tickets/CND-1/launch", map[string]any{"opId": opID(), "plan": plan, "candidates": 2}, http.StatusCreated, ""), "launch")
 	ce.run, ce.launch = launch["runId"].(string), launch["id"].(string)
 	plain, release, err := srv.runs.LaunchNamed(t.Context(), managedCrew(repo), "")
 	release()
@@ -469,7 +497,7 @@ func TestEachLaunchsLaneReadsByItsOwnLaunch(t *testing.T) {
 	ce.addComment(t, "agent:lead", "between the launches")
 	between := ce.addLink(t, map[string]any{"kind": "delivery", "url": "https://example.test/pull/8"}, "")
 	ce.attach(t, "between.txt")
-	launch := entityOf(t, ce.expect(t, "POST", "/api/dispatch/tickets/CND-1/launch", map[string]any{"opId": opID(), "plan": ce.plan}, http.StatusCreated, ""), "launch")
+	launch := entityOf(t, ce.expect(t, "POST", "/api/dispatch/tickets/CND-1/launch", map[string]any{"opId": opID(), "plan": ce.plan, "candidates": 2}, http.StatusCreated, ""), "launch")
 	second := launch["runId"].(string)
 	sid, tok := ce.session(t, second, "approach-b")
 	_, first := ce.laneTicketOf(t, ce.bTok, ce.b)
@@ -1060,6 +1088,13 @@ func TestAnUnlistedDoorIsClosedToALane(t *testing.T) {
 			writeError(w, http.StatusUnauthorized, "unauthorized", "agent token required")
 		}
 	})
+	// DR1's session decision routes take their token through
+	// decisionSession (door 9).
+	mux.HandleFunc("GET /api/sessions/{id}/unlisted-decision", func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := s.decisionSession(w, r); ok {
+			served(w)
+		}
+	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	call := func(tok, sid, route string) (int, map[string]any) {
@@ -1074,7 +1109,7 @@ func TestAnUnlistedDoorIsClosedToALane(t *testing.T) {
 		_ = json.NewDecoder(resp.Body).Decode(&out)
 		return resp.StatusCode, out
 	}
-	for _, route := range []string{"unlisted-task", "unlisted-attention", "unlisted-token"} {
+	for _, route := range []string{"unlisted-task", "unlisted-attention", "unlisted-token", "unlisted-decision"} {
 		status, out := call(ce.aTok, ce.a, route)
 		laneRefused(t, route, status, nil, out)
 		if got, _ := call(ce.plainTok, ce.member, route); got != http.StatusOK {

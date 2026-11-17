@@ -1161,6 +1161,9 @@ func (e *Engine) commitHeld(ctx context.Context, r *run, first firstTx, judge fu
 		pending                            []event
 		snap                               snapshot
 		made                               bool
+		// settledWas is the compare run's settled set before this
+		// change's compare step: put back when an undone change fails.
+		settledWas []SettledCandidate
 	)
 	// prepare makes the change and takes what its commit writes, under
 	// e.mu: false when there is nothing to write.
@@ -1185,6 +1188,15 @@ func (e *Engine) commitHeld(ctx context.Context, r *run, first firstTx, judge fu
 		}
 		made = true
 		t := mutate()
+		if r.compare != nil {
+			// The lanes as the change left them, before its ended work:
+			// compare.settled is written with the change that ends the
+			// last lane, after the change's own events.
+			settledWas = r.cmp.settled
+			e.compareStep(r)
+			t.events = append(t.events, r.cmp.events...)
+			r.cmp.events = nil
+		}
 		// What the change left with no work under it ends with it (I11), and
 		// the decisions it changed write with it (decisions_wait.go).
 		e.endedWork(r)
@@ -1302,6 +1314,9 @@ func (e *Engine) commitHeld(ctx context.Context, r *run, first firstTx, judge fu
 		r.pendingEvents, r.pendingMore, r.pendingLast, r.pendingDone = events, more, last, done
 		if undo != nil {
 			undo()
+			// The change undone, its compare step is too: the next change
+			// settles the lanes as they are then.
+			r.cmp.settled = settledWas
 			// The change's decisions are never put back: one closed has its
 			// holds released and its line withdrawn, one opened its holds
 			// made (decisions_wait.go). Their writes and what follows them
@@ -1442,6 +1457,13 @@ func pausedTx(paused bool, err error) tx {
 // committed (transact). The caller holds e.mu, in a transaction's change.
 func (e *Engine) settleRun(r *run) {
 	if r.outcome != "" {
+		return
+	}
+	if r.selectionHolds() {
+		// A comparison with no applied selection settles in its compare
+		// step alone, and not while its selection is open or answered
+		// (compare_select.go): no outcome, run.finished or end before the
+		// record that the change ending the last lane opens.
 		return
 	}
 	r.settle()

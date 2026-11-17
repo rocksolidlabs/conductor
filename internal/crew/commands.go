@@ -136,6 +136,9 @@ const (
 	// RefusalStaleCandidate refuses a command bound to a candidate that is
 	// no longer the task's standing one (Recheck).
 	RefusalStaleCandidate = "stale_candidate"
+	// RefusalNotSelected refuses a task command on a comparison's lane the
+	// applied selection did not select (ErrNotSelected).
+	RefusalNotSelected = "not_selected"
 )
 
 // ErrStaleCandidate refuses a command bound to a candidate the task has
@@ -157,6 +160,8 @@ func refusalOf(err error) string {
 		return RefusalWithdrawn
 	case errors.Is(err, ErrStaleCandidate):
 		return RefusalStaleCandidate
+	case errors.Is(err, ErrNotSelected):
+		return RefusalNotSelected
 	}
 	return RefusalTaskState
 }
@@ -196,8 +201,10 @@ type change func(r *run) (t *task, events []event, err error)
 // and its receipt settles withdrawn with the commit after: its change is
 // committed by its own transaction, where the credential was asked, or
 // not at all. On a compare run a command whose intent compareIntents does
-// not list is refused before the first (ErrNotSelected): no row, no
-// receipt.
+// not list is refused before the first (ErrNotListed), and a task command
+// on a lane the chain's applied selection did not select (ErrNotSelected,
+// laneSelected): no row, no receipt; the latter is judged again in the
+// change, should the selection be applied between the two.
 func (e *Engine) act(ctx context.Context, runID, actor string, cmd Command, intent string, args []string, do change, undo func(r *run)) (Receipt, error) {
 	if !CommandIDPattern.MatchString(cmd.ID) {
 		return Receipt{}, ErrBadCommandID
@@ -213,7 +220,19 @@ func (e *Engine) act(ctx context.Context, runID, actor string, cmd Command, inte
 	// other before anything is written (r.compare is fixed as the run is
 	// made).
 	if r.compare != nil && !slices.Contains(compareIntents, intent) {
-		return Receipt{}, ErrNotSelected
+		return Receipt{}, ErrNotListed
+	}
+	selected := func() error {
+		if r.compare == nil || intent == "pause" || intent == "unpause" || len(args) == 0 {
+			return nil
+		}
+		return r.laneSelected(intent, args[0])
+	}
+	e.mu.Lock()
+	err = selected()
+	e.mu.Unlock()
+	if err != nil {
+		return Receipt{}, err
 	}
 	if e.afterLookup != nil {
 		e.afterLookup(runID)
@@ -298,6 +317,8 @@ func (e *Engine) act(ctx context.Context, runID, actor string, cmd Command, inte
 		if err := cmd.withdrawn(); err != nil {
 			cmdErr = err
 		} else if err := e.continued(r); err != nil {
+			cmdErr = err
+		} else if err := selected(); err != nil {
 			cmdErr = err
 		} else if cmd.ExpectedRevision > 0 && (cmd.ExpectedRevision != before || r.revision != before+1) {
 			cmdErr = fmt.Errorf("%w: expected %d, the run was at %d when the command was taken and is at %d", ErrStaleRevision, cmd.ExpectedRevision, before, r.revision)

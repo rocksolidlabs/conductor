@@ -966,6 +966,15 @@ holds() { git cat-file -e "$1:stub-$2.txt" 2>/dev/null; }
 # commit and submit as a worker does, so a check of theirs can be cited.
 # STUB_DECISION_OPTIONS is the request's options as JSON, in place of the
 # two the type asks with (the first stays the recommended one).
+# STUB_ATTEMPT_HOLD names a file: an attempt that starts while it exists
+# waits until it is gone (120 s at most), so a spec checks a state the
+# attempt's end would replace before it lets the attempt go on.
+# STUB_COMPARE_EDIT makes a work task's commit carry one edit a
+# comparison's checks read (CP1): `manifest` a blank line appended to
+# conductor.manifest.json (the file-form manifest, when the tree has
+# one), `script` a line appended to STUB_COMPARE_SCRIPT
+# (scripts/check.sh when not given), `test` the test file x_test.go.
+# Set on one agent copy (an ownServer AgentCopy's env), it is one lane's.
 
 # mcp_call runs one tool through conductor mcp and prints its reply line.
 mcp_call() {
@@ -1024,6 +1033,21 @@ task_attempt() {
 			printf 'hold: attempt 1 went on when its cap of %s s ran out\n' "$hold_cap" >>"$transcript"
 		fi
 	fi
+	# A spec's hold on whichever attempt starts while it holds one (STUB_ATTEMPT_HOLD, set on an agent copy): while the file it names
+	# exists, the attempt waits, at most 120 s, before it does anything; the spec makes the file before the command that starts the
+	# attempt and removes it once it has checked what the attempt must not change yet. The transcript says which ended the wait.
+	if [[ -n ${STUB_ATTEMPT_HOLD:-} && -e $STUB_ATTEMPT_HOLD ]]; then
+		local j
+		for ((j = 0; j < 1200; j++)); do
+			[[ -e $STUB_ATTEMPT_HOLD ]] || break
+			sleep 0.1
+		done
+		if [[ -e $STUB_ATTEMPT_HOLD ]]; then
+			printf 'hold: attempt %s went on when its cap of 120 s ran out\n' "$n" >>"$transcript"
+		else
+			printf 'hold: attempt %s went on when its hold was taken away\n' "$n" >>"$transcript"
+		fi
+	fi
 	if [[ $kind == task && -n ${STUB_DECISION:-} && -z $decided && $n -ge ${STUB_DECISION_FROM:-1} ]]; then
 		local applied
 		applied=$(decision_in_task "$task" "$ctx")
@@ -1065,6 +1089,31 @@ task_attempt() {
 			# The fixed edits a person's review reads (STUB_REVIEW_EDITS=1, RV1): eight numbered lines to put notes on.
 			printf 'review line %s\n' 1 2 3 4 5 6 7 8 >stub-review.txt
 			git add -- stub-review.txt >/dev/null 2>&1 || true
+		fi
+		if [[ -n ${STUB_COMPARE_EDIT:-} ]]; then
+			# One lane's edit that a comparison's checks read (STUB_COMPARE_EDIT, CP1), committed with stub-<member>.txt.
+			case $STUB_COMPARE_EDIT in
+			manifest)
+				# The file-form manifest changed (a blank line at its end: still the same JSON), so its checkout ran another manifest.
+				if [[ -f conductor.manifest.json ]]; then
+					printf '\n' >>conductor.manifest.json
+					git add -- conductor.manifest.json >/dev/null 2>&1 || true
+				fi
+				;;
+			script)
+				# A line added to the check's script (STUB_COMPARE_SCRIPT, scripts/check.sh when not given), which the check's argv names.
+				local script=${STUB_COMPARE_SCRIPT:-scripts/check.sh}
+				mkdir -p "$(dirname -- "$script")"
+				printf '# %s edited this script in attempt %s\n' "$member" "$n" >>"$script"
+				git add -- "$script" >/dev/null 2>&1 || true
+				;;
+			test)
+				# A test file, which makes the rows of the checks "comparable only if their test changes are fair".
+				printf 'package x\n\n// %s wrote this test file in attempt %s.\n' "$member" "$n" >x_test.go
+				git add -- x_test.go >/dev/null 2>&1 || true
+				;;
+			esac
+			printf 'compare edit: %s by %s, attempt %s\n' "$STUB_COMPARE_EDIT" "$member" "$n" >>"$transcript"
 		fi
 		local addressed=() changes=() id
 		if [[ $ctx == *"asked for changes to the commit"* ]]; then

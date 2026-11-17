@@ -71,22 +71,32 @@ const (
 // nothing is written. The API answers it 409 lane.
 var ErrLane = errors.New("another lane of this comparison")
 
-// ErrNotSelected refuses a command a compare run does not take
+// ErrNotListed refuses a command a compare run does not take
 // (compareIntents) before anything is written: no command row, no
 // receipt. It is a task_state refusal to the API.
-var ErrNotSelected = fmt.Errorf("%w: this command is not open to a comparison's candidates yet", ErrTaskState)
+var ErrNotListed = fmt.Errorf("%w: this command is not open to a comparison's candidates yet", ErrTaskState)
+
+// ErrNotSelected refuses what only a comparison's selected candidate is
+// given (a repair, a delivery, a command) to a candidate no applied
+// selection selects, before anything is written. It is no task_state
+// refusal: the API answers it 409 not_selected.
+var ErrNotSelected = errors.New("not the comparison's selected candidate")
 
 // compareIntents are the commands a compare run takes, through act, the
 // one path of every task and run command. Any other, whatever row or plan
-// adds it, is refused (ErrNotSelected) until its rule for a comparison is
-// written here.
-var compareIntents = []string{"pause", "unpause", TaskCancel, TaskRetry, TaskAccept}
+// adds it, is refused (ErrNotListed) until its rule for a comparison is
+// written here. Every task command listed takes the selection's rule
+// (laneSelected): after an applied selection, refused on a lane not
+// selected.
+var compareIntents = []string{"pause", "unpause", TaskCancel, TaskRetry, TaskAccept, TaskRecheck, intentRequestChanges}
 
-// errComparisonLaunch refuses the launch of a compare crew, every launch
-// and continuation alike, until the launch's statement exists (the plan's
-// PR-3 lifts it). prepare, which every launch and continuation calls,
-// refuses it before a run exists.
-var errComparisonLaunch = invalidf("comparisons arrive with their launch statement: a crew with a compare block is not launched yet")
+// errComparisonNoTicket refuses the launch of a compare crew that no
+// ticket's approved plan revision carries: a comparison is launched by a
+// person from its ticket, where the launch states what it starts and is
+// refused unless the person repeats the count (the API's ticket launch).
+// prepare, which every launch and continuation calls, refuses it before a
+// run exists for every caller that holds no package.
+var errComparisonNoTicket = invalidf("a comparison is launched from a ticket's approved plan revision")
 
 // clone returns a copy of cmp that shares no slice with it.
 func (cmp Compare) clone() Compare {
@@ -200,9 +210,9 @@ func (l Lane) OwnTask(id string) bool {
 func (l Lane) Compare() Compare { return l.cmp.clone() }
 
 // SetCompareOpenForTest lets the engine launch a crew with a compare block
-// (compareOpen), for the tests of another package of what a comparison's
-// run answers, before the plan's row that opens the launch. It is called
-// before the engine launches any run: prepare reads it without a lock.
+// without a ticket's package (compareOpen), for the tests of another
+// package of what a comparison's run answers. It is called before the
+// engine launches any run: prepare reads it without a lock.
 func (e *Engine) SetCompareOpenForTest(open bool) { e.compareOpen = open }
 
 // validate checks the compare block of c, a crew with tasks whose tasks
@@ -312,10 +322,79 @@ func (cmp *Compare) validate(c Crew) error {
 		}
 		laneOf[t.Member] = lane
 	}
+	// Whom the selection is for (HM1): a role a person of the crew holds,
+	// or a person of it, as a plan decision's for is checked. Any other
+	// form is refused, the decide grant's label among them: the operator
+	// answers a selection, for whomever it is.
 	if cmp.Selector != "" {
-		return invalidf("compare: selector is not taken yet: a comparison's selection is the operator's")
+		if _, _, err := Holder(c, cmp.Selector); err != nil {
+			return invalidf("compare: selector: %s", err.Error())
+		}
 	}
 	return nil
+}
+
+// RunCompare is a comparison's run as its reads give it (Run.Compare): its
+// lanes, each candidate task with the review task that reviews it, in the
+// block's column order. At most maxCandidates lanes of two task ids each,
+// about 300 bytes encoded.
+type RunCompare struct {
+	Candidates []RunCandidate `json:"candidates"`
+}
+
+// RunCandidate is one lane of a comparison's run: its candidate task and
+// the task that reviews it, "" for none.
+type RunCandidate struct {
+	Task   string `json:"task"`
+	Review string `json:"review,omitempty"`
+}
+
+// runCompareOf is the run's view of the compare block cmp over its tasks
+// (compareLanes), nil for a run of no comparison.
+func runCompareOf(cmp *Compare, tasks []Task) *RunCompare {
+	if cmp == nil {
+		return nil
+	}
+	lanes := compareLanes(cmp, tasks)
+	out := &RunCompare{Candidates: make([]RunCandidate, 0, len(cmp.Candidates))}
+	for _, cd := range cmp.Candidates {
+		rc := RunCandidate{Task: cd.Task}
+		for _, t := range tasks {
+			if t.ID != cd.Task && lanes[t.ID] == cd.Task {
+				rc.Review = t.ID
+				break
+			}
+		}
+		out.Candidates = append(out.Candidates, rc)
+	}
+	return out
+}
+
+// CompareAtBase is compareChecked for a caller that has read the file-form
+// manifest rec at base itself (a plan revision's proposal, which fixes the
+// base the launch prepares at): a comparison with nothing to compare there
+// is refused in the launch's words, before it is proposed. prefix is cwd's
+// place in its repository, as rev-parse --show-prefix gives it.
+func CompareAtBase(c Crew, rec Manifest, prefix, base string) error {
+	return compareChecked(c, rec, prefix, base)
+}
+
+// compareChecked holds a comparison whose project manifest is the file
+// form to what validate leaves to its launch: something to compare at the
+// base. A comparison whose candidates have no check and whose manifest at
+// the base (rec, the file prefix names, read at base) has no verify step
+// is refused, with the file and the commit named; nothing for a crew of no
+// comparison or with checks of its own.
+func compareChecked(c Crew, rec Manifest, prefix, base string) error {
+	if c.Compare == nil || len(c.Compare.Candidates) == 0 || len(rec.Verify) > 0 {
+		return nil
+	}
+	for _, t := range c.Tasks {
+		if t.ID == c.Compare.Candidates[0].Task && len(t.Checks) > 0 {
+			return nil
+		}
+	}
+	return invalidf("nothing to compare: the candidates have no checks and %s at %s has no verify step", prefix+manifestFile, short(base))
 }
 
 // TaskCompare is the comparison part of an attempt's task file

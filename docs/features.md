@@ -208,6 +208,40 @@ that order.
   link grants. Content appears only after the guest joins.
 - **No Runs nav item** until there is something behind it.
 
+## Compare approaches (CP1, `docs/plans/compare-crew.md`; 2026-11-16)
+
+- **A comparison is a crew shape.** New comparison on the Crews page makes
+  a crew whose `compare` block names two to four candidates of one base,
+  each an agent with its approach, the criteria and the checks they are
+  held to alike, and, when asked, a review of each and Brakeman's draft.
+  It is launched only from a ticket's approved plan revision: the launch
+  states what it starts and sends the count of candidates the person read.
+  Each candidate works in a lane of its own; a lane's session reaches no
+  other lane's work (`409 lane`).
+- **Measured and said are two panels.** The ticket page's comparison
+  (`?view=compare&run=`, any run of the chain) shows what the server
+  measured from git and the ledger alone, and the server's verdict per
+  check; the agents' summaries, their reviews and Brakeman's draft are
+  "Supporting information, not evidence", in a panel of their own that
+  never colours the measured part.
+- **The selection.** When every lane has ended Yardmaster opens a DR1
+  record of origin `compare`: the candidates with a standing result, each
+  at its exact commit, and None of these, nothing recommended. The operator
+  answers it with a rationale, on the comparison, the card, Needs you or a
+  phone; the confirm says the answer is final and names the candidate
+  ("Select approach-b (final)"). A change to a lane before it is applied
+  closes it and a new one opens; a stop or a restart keeps it. The decide
+  grant, a decision link, an agent, Brakeman and a share link never answer
+  it. Once applied, the others are labelled not selected on the comparison,
+  the run page and the ticket's candidates, and refuse their commands.
+- **After the selection.** Review the selected candidate opens RV1's Review
+  view on it (the picker says selected and not selected and opens on the
+  selected one); a repair and a delivery are taken for it alone.
+- **Not observed yet.** The owner's observation with real agents (Claude
+  Code for one candidate, Codex for the other) and Brakeman's real draft
+  are recorded here by a later docs pull request of the stream; the phone
+  layout was measured at 390 x 844 in the tests, not on a device.
+
 ## A launch's first message (UX1 PR-35, P19, D11; 2026-11-16)
 
 - **The server's side.** `POST /api/sessions` takes `message` (at most

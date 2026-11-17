@@ -118,6 +118,8 @@ func (s *Server) actable(pattern string, next http.HandlerFunc) http.HandlerFunc
 		switch {
 		case aerr != nil:
 			writeAPIError(w, aerr)
+		case tp != nil && tp.req.Kind == brakeman.KindCompare:
+			writeError(w, http.StatusForbidden, "not_granted", compareTurnActs)
 		case tp != nil:
 			s.turnAct(w, r, tp, ar)
 		default:
@@ -125,6 +127,11 @@ func (s *Server) actable(pattern string, next http.HandlerFunc) http.HandlerFunc
 		}
 	}
 }
+
+// compareTurnActs is why a compare request's turn runs no act, whatever
+// the person granted: it drafts the comparison for the person, who
+// selects, repairs and delivers; refused before anything is written.
+const compareTurnActs = "a compare turn runs no act: it drafts the comparison, and the person selects, repairs and delivers"
 
 // actBody is an act's body as its operation's route decodes it, the
 // fields its checks and its operation read: the one decoding, so what

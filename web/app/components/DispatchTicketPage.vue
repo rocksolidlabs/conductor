@@ -49,7 +49,8 @@ import { summaryStatusLine } from '~/utils/status'
  * delivery; `&repair=<id>/<k>` prepares a repair from a failed receipt of the candidate, `&focus=findings` shows the findings. Each
  * standing candidate under Runs offers Review, with the open findings of its task, counted from the ticket's reviews (every page), read
  * with the ticket, and each failed receipt Prepare a repair; the palette's page group gains Review the latest candidate, Send review (n
- * notes) and Open findings.
+ * notes) and Open findings. Its compare view (Program item CP1, DispatchComparison), `?view=compare&run=…`, shows a comparison of the
+ * ticket's in place of the sections and the strip, as the Review view does.
  */
 const props = defineProps<{ project: string; ticketKey: string }>()
 
@@ -729,6 +730,9 @@ const router = useRouter()
 
 // The Review view (RV1): ?view=review, at the candidate ?candidate= names (the first standing one when none).
 const reviewView = computed(() => route.query.view === 'review')
+// The compare view (Program item CP1, PR-4): ?view=compare&run=<any run of the chain>, drawn in place of the sections as the Review view is.
+const compareView = computed(() => route.query.view === 'compare')
+const compareRun = computed(() => (typeof route.query.run === 'string' ? route.query.run : ''))
 const reviewCandidate = computed(() => (typeof route.query.candidate === 'string' ? route.query.candidate : ''))
 function pickReviewCandidate(c: string) {
   // Another candidate: a receipt the link named was the last one's.
@@ -972,11 +976,14 @@ const askBrakeman = computed(() =>
           </template>
         </DispatchReview>
 
-        <!-- The strip of sections, staying at the top as the page scrolls (not in the Review view). -->
-        <DispatchTicketStrip v-if="!reviewView" :sections="strip" />
+        <!-- The compare view (CP1) in place of the sections. -->
+        <DispatchComparison v-if="compareView" :ticket-key="ticket.key" :ticket-id="ticket.id" :run="compareRun" :agents="agents" />
+
+        <!-- The strip of sections, staying at the top as the page scrolls (not in the Review view, nor the compare view). -->
+        <DispatchTicketStrip v-if="!reviewView && !compareView" :sections="strip" />
 
         <!-- Its text and history, its properties beside them on a wide screen; on a phone one column, the properties first. -->
-        <div v-if="!reviewView" class="flex flex-col gap-6 lg:flex-row lg:items-start">
+        <div v-if="!reviewView && !compareView" class="flex flex-col gap-6 lg:flex-row lg:items-start">
           <div class="flex min-w-0 flex-1 flex-col gap-6">
             <TicketMarkdown id="ticket-description" tabindex="-1" class="scroll-mt-14 outline-none" :text="ticket.description" label="Description" empty="Add a description…" :max-bytes="MAX_DESCRIPTION" :save="(text, base) => saveText('description', text, base)" :disabled="locked" name="description" :attachment-url="files.resolver.value" />
             <TicketMarkdown id="ticket-acceptance" tabindex="-1" class="scroll-mt-14 outline-none" :text="ticket.acceptance" label="Acceptance criteria" empty="Add what must hold for it to be done…" :max-bytes="MAX_ACCEPTANCE" :save="(text, base) => saveText('acceptance', text, base)" :disabled="locked" name="acceptance" :attachment-url="files.resolver.value" />

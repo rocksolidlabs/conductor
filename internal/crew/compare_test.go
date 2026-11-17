@@ -116,7 +116,7 @@ func TestCompareValidates(t *testing.T) {
 		{"an approach of 2,000 characters", func(c *Crew) { c.Compare.Candidates[0].Approach = strings.Repeat("é", maxApproach) }, ""},
 		{"an approach of 2,001 characters", func(c *Crew) { c.Compare.Candidates[0].Approach = strings.Repeat("é", maxApproach+1) }, `candidate "approach-a": the approach is at most 2000 characters`},
 		{"an approach with NUL", func(c *Crew) { c.Compare.Candidates[0].Approach = "a\x00b" }, "the approach contains NUL"},
-		{"a selector", func(c *Crew) { c.Compare.Selector = "role:architecture" }, "selector is not taken yet"},
+		{"a selector no person holds", func(c *Crew) { c.Compare.Selector = "role:architecture" }, "compare: selector: no person of crew api-sweep holds architecture"},
 		{"a criterion with a line separator", func(c *Crew) { c.Compare.Criteria[0].Text = "No new dependency." }, "the text is one line"},
 		{"the comparison past the never-cut bound", func(c *Crew) {
 			// 12 KiB of goal, 8 KiB of instructions, 24 KiB of criteria:
@@ -298,9 +298,14 @@ func checksOf(n int) []Check {
 	return out
 }
 
-// In this row every launch of a compare crew is refused before a run
-// exists, with its words, and so is a continuation of one: nothing reaches
-// the ledger.
+// A comparison is launched from its ticket alone (O1): every launch that
+// holds no ticket's package (Launch, LaunchNamed, LaunchHeld,
+// LaunchAdopting) is refused before a run exists, with its words, and
+// nothing reaches the ledger; LaunchPlanned launches it, and its
+// continuation, which reads the package from the run's row, is taken. A
+// comparison whose candidates have no check and whose file-form manifest
+// has no verify step at the planned base is refused at prepare with the
+// file and the commit named; with a verify step there it is launched.
 func TestACompareCrewNeedsATicket(t *testing.T) {
 	dir := newRepo(t)
 	e, ld := sqlEngine(t)
@@ -308,7 +313,7 @@ func TestACompareCrewNeedsATicket(t *testing.T) {
 	ctx := t.Context()
 	refused := func(what string, err error) {
 		t.Helper()
-		if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "comparisons arrive with their launch statement") {
+		if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "a comparison is launched from a ticket's approved plan revision") {
 			t.Fatalf("%s: %v", what, err)
 		}
 	}
@@ -320,10 +325,9 @@ func TestACompareCrewNeedsATicket(t *testing.T) {
 	_, release, err = e.LaunchHeld(ctx, c)
 	release()
 	refused("LaunchHeld", err)
-	p := planned(t, "api-sweep-0000000a", head(t, dir))
-	_, release, err = e.LaunchPlanned(ctx, c, "CND-12", p)
+	_, release, err = e.LaunchAdopting(ctx, c, "cand-a", "s-adopted")
 	release()
-	refused("LaunchPlanned", err)
+	refused("LaunchAdopting", err)
 	if rows, err := ld.Runs(ctx); err != nil || len(rows) != 0 {
 		t.Fatalf("the ledger's runs: %d %v", len(rows), err)
 	}
@@ -331,17 +335,48 @@ func TestACompareCrewNeedsATicket(t *testing.T) {
 		t.Fatalf("the engine holds %d runs", len(e.List()))
 	}
 
-	// A continuation of a compare run (made here through the test's seam)
-	// is refused the same way, and makes no run.
-	e.compareOpen = true
-	run := launchManaged(t, e, c)
+	// From its ticket: launched, and its continuation taken with the
+	// package its row keeps.
+	base := head(t, dir)
+	run := launchPlanned(t, e, c, planned(t, "api-sweep-0000000a", base))
+	waitAttempt(t, e, run.ID, "approach-a", ledger.AttemptRunning)
 	stopRun(t, e, run.ID)
-	e.compareOpen = false
-	_, err = e.ContinueRun(ctx, run.ID, "")
-	refused("ContinueRun", err)
-	if rows, err := ld.Runs(ctx); err != nil || len(rows) != 1 {
-		t.Fatalf("the ledger's runs after the refused continuation: %d %v", len(rows), err)
+	next, err := e.ContinueRun(ctx, run.ID, "")
+	if err != nil {
+		t.Fatalf("ContinueRun: %v", err)
 	}
+	defer stopRun(t, e, next.ID)
+	src, _, _ := ld.Run(ctx, run.ID)
+	row, ok, err := ld.Run(ctx, next.ID)
+	if err != nil || !ok || row.Package != src.Package || row.Package == "" || row.Ticket != src.Ticket || row.ContinuedFrom != run.ID {
+		t.Fatalf("the continuation's row: %+v %v %v", row, ok, err)
+	}
+	if next.Compare == nil || len(next.Compare.Candidates) != 2 || next.Ticket == nil {
+		t.Fatalf("the continuation: compare %+v ticket %+v", next.Compare, next.Ticket)
+	}
+
+	// The file form: no verify step at the base and no checks, refused;
+	// a verify step there, launched.
+	fdir := newRepo(t)
+	nothing := compareCrew(t, fdir, 2, false)
+	for i := range nothing.Tasks {
+		nothing.Tasks[i].Checks = nil
+	}
+	nothing.Manifest = &Manifest{File: true}
+	commitManifestFile(t, fdir, `{"schema": 1, "setup": [{"id": "deps", "argv": ["true"]}]}`)
+	fe, fld := sqlEngine(t)
+	at := head(t, fdir)
+	_, release, err = fe.LaunchPlanned(ctx, nothing, "CND-12", planned(t, "api-sweep-0000000b", at))
+	release()
+	if want := "nothing to compare: the candidates have no checks and conductor.manifest.json at " + at[:12] + " has no verify step"; !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), want) {
+		t.Fatalf("a file-form manifest with no verify step: %v, want %q", err, want)
+	}
+	if rows, err := fld.Runs(ctx); err != nil || len(rows) != 0 {
+		t.Fatalf("the ledger's runs after the refusal: %d %v", len(rows), err)
+	}
+	commitManifestFile(t, fdir, `{"schema": 1, "verify": [{"id": "lint", "argv": ["true"]}]}`)
+	verified := launchPlanned(t, fe, nothing, planned(t, "api-sweep-0000000c", head(t, fdir)))
+	stopRun(t, fe, verified.ID)
 }
 
 // The task.md of a comparison's attempt, launched from its ticket, tells
@@ -469,9 +504,12 @@ func TestTheComparisonIsTheLaunchedOne(t *testing.T) {
 }
 
 // I9, door 15: through act, a compare run takes pause, unpause, cancel,
-// retry and accept, and refuses any other intent (request_changes and
-// recheck among them) before anything is written: no command row, no
-// receipt, no event. An ordinary run takes the same intents.
+// retry, accept, Check again and Request changes, each task command with
+// the selection's rule (TestCheckAgainSupersedesTheSelection,
+// TestTheSelectedCandidateIsReviewedAsIs): before an applied selection a
+// Request changes is refused not_selected before anything is written, no
+// command row, no receipt, no event. An ordinary run takes the same
+// intents.
 func TestACompareRunTakesOnlyItsListedCommands(t *testing.T) {
 	ctx := context.Background()
 	refusedOn := func(t *testing.T, e *Engine, l *fakeLedger, runID string, compare bool) {
@@ -485,21 +523,19 @@ func TestACompareRunTakesOnlyItsListedCommands(t *testing.T) {
 			if lerr != nil {
 				t.Fatal(lerr)
 			}
-			if compare {
-				if !errors.Is(err, ErrNotSelected) || !errors.Is(err, ErrTaskState) || found {
+			if compare && id == "rq1" {
+				if !errors.Is(err, ErrNotSelected) || errors.Is(err, ErrTaskState) || found {
 					t.Fatalf("%s on a comparison: %v, receipt %v", id, err, found)
 				}
-			} else if !found || errors.Is(err, ErrNotSelected) {
+			} else if !found || errors.Is(err, ErrNotListed) {
 				t.Fatalf("%s on an ordinary run: %v, receipt %v", id, err, found)
 			}
 		}
-		if n := l.count(runID, "command.accepted"); compare && n != accepted || !compare && n != accepted+2 {
+		if n := l.count(runID, "command.accepted"); compare && n != accepted+1 || !compare && n != accepted+2 {
 			t.Fatalf("command.accepted %d, was %d", n, accepted)
 		}
-		for _, kind := range []string{"command.request_changes", "command.recheck"} {
-			if n := l.count(runID, kind); compare && n != 0 {
-				t.Fatalf("%s written for a refused command", kind)
-			}
+		if n := l.count(runID, "command.request_changes"); compare && n != 0 {
+			t.Fatalf("command.request_changes written for a refused command")
 		}
 	}
 	listed := func(t *testing.T, e *Engine, l *fakeLedger, runID string) {
@@ -519,7 +555,7 @@ func TestACompareRunTakesOnlyItsListedCommands(t *testing.T) {
 			t.Fatalf("retry: %+v %v", rc, err)
 		}
 		// Accept of a task that has not failed: taken, its receipt the refusal.
-		if rc, err := e.Accept(ctx, runID, "admin", cmd("a1"), "approach-a"); !errors.Is(err, ErrTaskState) || errors.Is(err, ErrNotSelected) || rc.Status != ledger.CommandFailed {
+		if rc, err := e.Accept(ctx, runID, "admin", cmd("a1"), "approach-a"); !errors.Is(err, ErrTaskState) || errors.Is(err, ErrNotListed) || errors.Is(err, ErrNotSelected) || rc.Status != ledger.CommandFailed {
 			t.Fatalf("accept: %+v %v", rc, err)
 		}
 		for _, id := range []string{"p1", "p2", "c1", "r1", "a1"} {
@@ -547,7 +583,7 @@ func TestACompareRunTakesOnlyItsListedCommands(t *testing.T) {
 		refusedOn(t, e, l, run.ID, false)
 		listed(t, e, l, run.ID)
 	})
-	if !slices.Equal(compareIntents, []string{"pause", "unpause", TaskCancel, TaskRetry, TaskAccept}) {
+	if !slices.Equal(compareIntents, []string{"pause", "unpause", TaskCancel, TaskRetry, TaskAccept, TaskRecheck, intentRequestChanges}) {
 		t.Fatalf("compareIntents: %v", compareIntents)
 	}
 }

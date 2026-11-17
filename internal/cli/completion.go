@@ -130,7 +130,7 @@ func completionSpec() []commandSpec {
 			flagSpec{name: "--body-file", kind: flagFile}, flagSpec{name: "--op-id", kind: flagValue}))),
 			words: []string{"request", "observe", "act", "brief", "ask", "status", "list", "show", "role"}, after: map[string][]string{"ask": brakeman.Kinds, "observe": observeWhats(), "act": actOperations(), "role": roleActions}},
 		{name: "up", flags: api(flagSpec{name: "--name", kind: flagValue}, flagSpec{name: "--resume", kind: flagValue}, flagSpec{name: "--open"}), crewID: true},
-		{name: "crews", flags: api(flagSpec{name: "--ids"})},
+		{name: "crews", flags: api(flagSpec{name: "--ids"}), words: []string{"compare"}},
 		// Every flag of every dispatch command (each takes its own), and the
 		// store's vocabularies as their values.
 		{name: "dispatch", flags: api(flagSpec{name: "--project", kind: flagValue}, flagSpec{name: "--status", kind: flagEnum, values: dispatch.Statuses}, flagSpec{name: "--q", kind: flagValue}, flagSpec{name: "--json"},
@@ -139,11 +139,13 @@ func completionSpec() []commandSpec {
 			flagSpec{name: "--kind", kind: flagEnum, values: dispatch.LinkKinds}, flagSpec{name: "--url", kind: flagValue}, flagSpec{name: "--ref", kind: flagValue}, flagSpec{name: "--candidate", kind: flagValue},
 			flagSpec{name: "--crew", kind: flagValue}, flagSpec{name: "--base", kind: flagValue}, flagSpec{name: "--based-on", kind: flagValue}, flagSpec{name: "--reference", kind: flagValue}, flagSpec{name: "--attachment", kind: flagValue},
 			flagSpec{name: "--comment", kind: flagValue}, flagSpec{name: "--constraints-file", kind: flagFile}, flagSpec{name: "--decision", kind: flagValue}, flagSpec{name: "--decision-for", kind: flagValue}, flagSpec{name: "--plan", kind: flagValue}, flagSpec{name: "--label", kind: flagValue},
+			// A comparison's (compare.go): the launch's count, the run.
+			flagSpec{name: "--candidates", kind: flagValue}, flagSpec{name: "--run", kind: flagValue},
 			// The reviews' (dispatch_reviews.go): --verdict is a review's or
 			// a mark's, --state a finding's.
 			flagSpec{name: "--verdict", kind: flagEnum, values: append(slices.Clone(dispatch.ReviewVerdicts), dispatch.FindingStates...)}, flagSpec{name: "--summary", kind: flagValue}, flagSpec{name: "--continue"},
 			flagSpec{name: "--file", kind: flagFile}, flagSpec{name: "--state", kind: flagEnum, values: append(slices.Clone(dispatch.FindingStates), "all")}),
-			words: []string{"projects", "tickets", "show", "create", "edit", "comment", "accept", "link", "plans", "plan", "launch", "runs", "review", "reviews", "findings", "finding"},
+			words: []string{"projects", "tickets", "show", "create", "edit", "comment", "accept", "link", "plans", "plan", "launch", "runs", "comparison", "review", "reviews", "findings", "finding"},
 			after: map[string][]string{"plan": planVerbs, "review": reviewVerbs, "finding": findingVerbs}},
 		// Every flag of every decision command, the states as --state's values.
 		{name: "decision", flags: api(flagSpec{name: "--state", kind: flagEnum, values: decisionStates}, flagSpec{name: "--run", kind: flagValue}, flagSpec{name: "--ticket", kind: flagValue}, flagSpec{name: "--json"},

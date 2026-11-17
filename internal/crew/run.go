@@ -312,6 +312,11 @@ type Run struct {
 	// and writes none into its record (Records.Save), which every older
 	// build reads as before.
 	People []Person `json:"people,omitempty"`
+	// Compare is a comparison's lanes, from its crew's compare block as
+	// launched (RunCompare): what a page needs to know that the run is a
+	// comparison and which task is in which lane; absent for a run of no
+	// comparison, whose JSON is unchanged.
+	Compare *RunCompare `json:"compare,omitempty"`
 }
 
 // Managed is what a managed run's record carries beside the run: the
@@ -446,9 +451,17 @@ type Engine struct {
 	// member's start is reserved: a test stops the run there.
 	afterAdd func(runID string)
 	// compareOpen, when set, lets prepare take a crew with a compare block
-	// (errComparisonLaunch): the tests of a compare run's rules launch one
-	// before the plan's row that opens the launch.
+	// that no ticket's package carries (errComparisonNoTicket): the tests
+	// of a compare run's rules launch one without a ticket.
 	compareOpen bool
+	// beforeCompareRule, when set, runs in a continuation's first change
+	// once each task's import and repair are decided, just before a
+	// comparison's rule judges them (compareContinued): a test drops an
+	// import or gives a task a repair there.
+	beforeCompareRule func(r *run)
+	// cmpMeasure is the comparison's measure: its seams and its cache
+	// (comparison.go).
+	cmpMeasure compareMeasure
 	// openPackageFile reads a launch package's attachment by its SHA-256
 	// (UsePackageFiles): Dispatch's store, which the API gives the engine.
 	openPackageFile func(ctx context.Context, launch, sha256 string) (io.ReadCloser, error)
@@ -537,6 +550,10 @@ type Engine struct {
 	// transaction: a test lands a change there.
 	beforeMirror  func(n int64)
 	beforeRespond func(n int64)
+	// beforeApply, when set, runs as applyDecisions takes an answered
+	// decision n up, before its application's transaction: a test holds
+	// the application there.
+	beforeApply func(n int64)
 	// beforeOperate, when set, runs in an operator's operation once it has
 	// looked for a repeat of its id and before its transaction: a test
 	// commits an answer there, which the operation's rev read must meet.
@@ -610,6 +627,12 @@ type run struct {
 	// (compareLanes): set as the run is made and never changed.
 	compare *Compare
 	lanes   map[string]string
+	// cmp is what a compare run keeps of its lanes' settling
+	// (compare_step.go), under e.mu.
+	cmp compareState
+	// sel is what a compare run keeps of its selection (compare_select.go),
+	// under e.mu.
+	sel selectState
 	// rechecks are the attempts Check again recorded whose verification
 	// has not started: the pump starts them once their change is
 	// committed and the prerequisites have passed (startRechecks).
@@ -885,7 +908,7 @@ func (e *Engine) launchNamed(ctx context.Context, c Crew, label string, opts Lau
 	// commit its manifest is validated at, the run records and its
 	// prerequisites and first attempts start from, whatever HEAD does
 	// after.
-	p, err := e.prepare(ctx, c, "")
+	p, err := e.prepare(ctx, c, "", nil)
 	if err != nil {
 		return nil, noop, err
 	}
@@ -925,7 +948,7 @@ func (e *Engine) LaunchAdopting(ctx context.Context, c Crew, self, sessionID str
 	if _, _, ok := e.MemberOf(sessionID); ok {
 		return nil, noop, invalidf("the session is a member of a run already")
 	}
-	p, err := e.prepare(ctx, c, "")
+	p, err := e.prepare(ctx, c, "", nil)
 	if err != nil {
 		return nil, noop, err
 	}
@@ -975,15 +998,19 @@ type prepared struct {
 // the base: base when given (a continuation's own),
 // else HEAD of cwd, read once here; the file form's manifest is read and
 // held to its rules at that commit, so a broken file refuses the launch
-// before a run exists, with the file and the commit named. Every launch
-// and continuation calls it, so it refuses a crew with a compare block for
-// all of them (errComparisonLaunch), before a run exists.
-func (e *Engine) prepare(ctx context.Context, c Crew, base string) (prepared, error) {
+// before a run exists, with the file and the commit named. pkg is the
+// launch package the caller holds: a planned launch's, or the one a
+// continuation reads from its source's row; nil for every other launch.
+// Every launch and continuation calls it, so a crew with a compare block
+// and no package is refused for all of them (errComparisonNoTicket), and
+// so is a comparison with nothing to compare at its base (compareChecked),
+// before a run exists.
+func (e *Engine) prepare(ctx context.Context, c Crew, base string, pkg *runPackage) (prepared, error) {
 	if err := c.validateWithID(); err != nil {
 		return prepared{}, err
 	}
-	if c.Compare != nil && !e.compareOpen {
-		return prepared{}, errComparisonLaunch
+	if c.Compare != nil && pkg == nil && !e.compareOpen {
+		return prepared{}, errComparisonNoTicket
 	}
 	if c.Managed() {
 		if e.ledger == nil {
@@ -1037,6 +1064,9 @@ func (e *Engine) prepare(ctx context.Context, c Crew, base string) (prepared, er
 	}
 	rec, blob, err := resolveManifest(ctx, c.Cwd, base, prefix, c.Tasks)
 	if err != nil {
+		return prepared{}, err
+	}
+	if err := compareChecked(c, rec, prefix, base); err != nil {
 		return prepared{}, err
 	}
 	p.man = resolvedManifest{m: rec, source: sourceFile, digest: blob}
@@ -1149,7 +1179,7 @@ func (e *Engine) ResumeRecord(ctx context.Context, rec Run) (*Run, error) {
 // start under their start rules. With old, the run the engine holds that is
 // resumed, its bookkeeping (resumedBy, resuming) and its note.
 func (e *Engine) resumeInto(ctx context.Context, c Crew, keeps map[string]kept, label, fromID string, old *run) (*Run, error) {
-	p, err := e.prepare(ctx, c, "")
+	p, err := e.prepare(ctx, c, "", nil)
 	if err != nil {
 		if old != nil {
 			e.mu.Lock()
@@ -2161,6 +2191,9 @@ func (e *Engine) stop(ctx context.Context, r *run) error {
 	// theirs: each records the run's stop, and is waited for with the trees.
 	e.endPreviews(r, whyRunStopped)
 	e.mu.Unlock()
+	if f := e.cmpMeasure.stopping; f != nil {
+		f(r.id)
+	}
 	r.cancel()
 	waitFor(ctx, &r.starts)
 	e.mu.Lock()
@@ -2604,6 +2637,7 @@ func (r *run) snapshot(withDiffs, withChat bool) Run {
 		out.Manifest = r.manifestState()
 		out.Cleaning = r.trees.n
 		out.Ticket = r.pkg.ticket()
+		out.Compare = runCompareOf(r.compare, r.plan)
 	}
 	if withChat {
 		for _, m := range r.chat.History() {

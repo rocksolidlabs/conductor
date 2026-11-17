@@ -369,8 +369,8 @@ var operationsTable = sync.OnceValue(func() []Operation {
 		// dispatcher of its own. A turn's session token names its session
 		// in X-Conductor-Session on each.
 		{Name: "observe", MCP: "observe", Scope: "observe", Method: http.MethodGet, Path: "/api/brakeman/changes", needs: needLauncher,
-			Summary:     "Read what you may see as a Brakeman turn: what changed, a status, runs, tasks, receipts, logs, candidates, tickets, plan revisions, sessions, files, overlaps, earlier briefs, the history, capacity.",
-			Description: "When this session is a Brakeman turn: read one thing Conductor holds, within your scope and visibility, each answer counted against your reads. what names it (changes, status, screen, overlaps, briefs, search, runs, run, task, steps, log, command, messages, candidates, projects, tickets, ticket, history, comments, plans, sessions, touched, capacity) and query its parameters (run, task, n, id, k, command, key, session, since, cursor, limit, lines, q, after, before, agent, account, launch). Every item carries the ref a brief cites it by; each answer keeps its observe_<what> entry's bound.",
+			Summary:     "Read what you may see as a Brakeman turn: what changed, a status, runs, tasks, receipts, logs, candidates, comparisons, tickets, plan revisions, sessions, files, overlaps, earlier briefs, the history, capacity.",
+			Description: "When this session is a Brakeman turn: read one thing Conductor holds, within your scope and visibility, each answer counted against your reads. what names it (changes, status, screen, overlaps, briefs, search, runs, run, task, steps, log, command, messages, candidates, comparison, projects, tickets, ticket, history, comments, plans, sessions, touched, capacity) and query its parameters (run, task, n, id, k, command, key, session, since, cursor, limit, lines, q, after, before, agent, account, launch). Every item carries the ref a brief cites it by; each answer keeps its observe_<what> entry's bound.",
 			CLI:         []string{"conductor", "brakeman", "observe", "WHAT", "--KEY", "VALUE"},
 			Input: obj(map[string]any{
 				"what":  map[string]any{"type": "string", "enum": observeWhats, "description": "what to read: the guide's observe_<what> operation names its route"},
@@ -391,6 +391,7 @@ var operationsTable = sync.OnceValue(func() []Operation {
 		observeOp("command", "/api/runs/{run}/commands/{command}", "A run command's receipt."),
 		observeOp("messages", "/api/runs/{run}/messages", "A managed run's members' messages, a page at a time: after (the page before's next) and limit (at most 200).", "after", "limit"),
 		observeOp("candidates", "/api/runs/{run}/candidates", "A managed run's candidates: each task's attempts that submitted something, with the commit, whether it stands, and the receipts of the checks run against it, each with its ref; a page of tasks at a time (after), or one task (task) and its older ones (before).", "after", "task", "before"),
+		observeOp("comparison", "/api/runs/{run}/comparison", "A comparison as its page measures it, from any run of its chain: each candidate with its ref, size, dependency changes and shared commits, each check's cells with their receipts' refs and its verdict, and what was said beside it (claims, reviews, your draft's request); never the person's selection."),
 		observeOp("projects", "/api/dispatch/projects", "Dispatch's projects in your scope.", "archived", "limit", "cursor"),
 		observeOp("tickets", "/api/dispatch/tickets", "A page of tickets in your scope, each with its ref and rev.", "project", "status", "q", "limit", "cursor"),
 		observeOp("ticket", "/api/dispatch/tickets/{key}", "A ticket whole with its last comments, each with its ref and rev."),
@@ -614,6 +615,18 @@ var operationsTable = sync.OnceValue(func() []Operation {
 			CLI:     []string{"conductor", "up", "CREW"},
 			Input:   bodySchema(launchBody{}),
 			Bounds:  map[string]int{"body": maxLaunchBody}},
+		// A comparison's crew and its read (compare.go, Program item CP1):
+		// no MCP tool, so tools/list is as it was.
+		{Name: "crew_compare", Scope: "admin", Method: http.MethodPost, Path: "/api/crews/templates/compare", needs: needLauncher,
+			Summary: "Save a comparison's crew from its template: 2 to 4 candidates, each an agent with an approach, the same instructions, checks and criteria, each reviewed or not. Saving launches nothing: a comparison is launched from a ticket's approved plan revision, repeating the count it starts.",
+			CLI:     []string{"conductor", "crews", "compare", "SPEC.json"},
+			Input:   bodySchema(crew.CompareSpec{}),
+			Bounds:  map[string]int{"body": maxCompareSpecBody}},
+		{Name: "comparison", Scope: "admin", Method: http.MethodGet, Path: "/api/runs/{run}/comparison", needs: needLauncher,
+			Summary: "A comparison as measured, from any run of its chain: the base, the criteria, each candidate's result, size, dependency changes and commits shared with another, each check's cells with its verdict and why, and what independence is not observed.",
+			CLI:     []string{"conductor", "dispatch", "comparison", "KEY-n", "--run", "RUN"},
+			Input:   map[string]any{"type": "object", "description": "no body"},
+			Bounds:  map[string]int{"reply": crew.MaxComparison}},
 		// The history, the admin's (docs/plans/history.md: history_*.go):
 		// no MCP tool, so tools/list is as it was.
 		{Name: "history_search", Scope: "admin", Method: http.MethodGet, Path: "/api/history", needs: needLauncher,
@@ -739,7 +752,7 @@ var operationsTable = sync.OnceValue(func() []Operation {
 
 // observeWhats is what the observe tool reads, each an observe_<what>
 // operation of the table.
-var observeWhats = []string{"changes", "status", "screen", "overlaps", "briefs", "search", "runs", "run", "task", "steps", "log", "command", "messages", "candidates", "projects", "tickets", "ticket", "history", "comments", "plans", "sessions", "touched", "capacity"}
+var observeWhats = []string{"changes", "status", "screen", "overlaps", "briefs", "search", "runs", "run", "task", "steps", "log", "command", "messages", "candidates", "comparison", "projects", "tickets", "ticket", "history", "comments", "plans", "sessions", "touched", "capacity"}
 
 // observeOp is one read of a Brakeman turn's: observe_<what>, its route,
 // its query's parameters by name and its path's, and its answer's bound:
@@ -984,6 +997,10 @@ type guideCaller struct {
 	// lane is what the session is to a comparison's doors (laneOf): a
 	// lane's session is listed only the operations compareDoors serves it.
 	lane laneFact
+	// selected says the session is the selected candidate's own, once its
+	// comparison's selection is applied (laneSelected): the ticket's
+	// comment is named to it.
+	selected bool
 	// acts is a Brakeman turn's operations granted, the snapshot its turn
 	// began under and the configuration now together (grantedActs): the
 	// act scope lists the act tool and these alone.
@@ -1012,6 +1029,7 @@ func (s *Server) sessionCaller(ctx context.Context, d session.Driver) guideCalle
 	c := guideCaller{Kind: "session", Session: id, Scopes: []string{"session"}}
 	_, c.local = d.(*session.Local)
 	_, c.lane = s.laneOf(d)
+	c.selected = c.lane == inLane && s.selectedCandidate(ctx, d)
 	run, member, inRun := s.runs.MemberOf(id)
 	if !inRun {
 		c.Kinds = append(c.Kinds, "plain")
@@ -1075,7 +1093,12 @@ func (s *Server) turnGrant(id string) ([]string, brakeman.Budget, brakeman.Visib
 	if err != nil {
 		return nil, req.Config.Budget, brakeman.Visibility{}
 	}
-	return grantedActs(req.Config.Permissions, cfg.Permissions), req.Config.Budget, bothVisible(req.Config.Visibility, cfg.Visibility)
+	acts := grantedActs(req.Config.Permissions, cfg.Permissions)
+	if req.Kind == brakeman.KindCompare {
+		// A compare turn runs no act (compareTurnActs).
+		acts = nil
+	}
+	return acts, req.Config.Budget, bothVisible(req.Config.Visibility, cfg.Visibility)
 }
 
 // admits reports whether the caller c may call op on this server now:
@@ -1088,7 +1111,7 @@ func (s *Server) turnGrant(id string) ([]string, brakeman.Budget, brakeman.Visib
 // operation a caller would be refused is never listed to it, and one it
 // may call never left out.
 func (s *Server) admits(c guideCaller, op Operation) bool {
-	if !s.reaches(c, op) || !laneGuided(c.lane, op.Method+" "+op.Path) {
+	if !s.reaches(c, op) || !c.guided(op.Method+" "+op.Path) {
 		return false
 	}
 	if c.Kind == "admin" && opAgentOnly(op.Name) {
@@ -1489,7 +1512,7 @@ func overviewLimits(c guideCaller) []string {
 	var out, seen []string
 	add := func(name string) {
 		route, ok := limitRoutes[name]
-		if slices.Contains(seen, name) || ok && !laneGuided(c.lane, route) || !ok && c.lane != noLane {
+		if slices.Contains(seen, name) || ok && !c.guided(route) || !ok && c.lane != noLane {
 			return
 		}
 		if i := slices.IndexFunc(all, func(l guideLimit) bool { return l.Name == name }); i >= 0 {

@@ -1,0 +1,20 @@
+{
+  "schema": "brakeman.brief/1",
+  "title": "Comparison of approach-a and approach-b",
+  "summary": "Both candidates pass the same checks from one base; approach-b changes more files and adds no dependency.",
+  "items": [
+    {
+      "kind": "comparison/1",
+      "title": "approach-a against approach-b",
+      "columns": ["approach-a", "approach-b"],
+      "rows": [
+        { "label": "Behaviour", "cells": ["keeps the old cache path", "replaces the cache with a map"] },
+        { "label": "Complexity", "cells": ["one file changed", "three files changed"] },
+        { "label": "Dependency changes", "cells": ["none", "none"] },
+        { "label": "Checks", "cells": ["unit passed", "unit passed"] },
+        { "label": "Unresolved tradeoffs", "cells": ["the old path stays slow", "a larger diff to review"] }
+      ],
+      "evidence": ["@CANDIDATE_A", "@CANDIDATE_B", "@CHECK_A", "@CHECK_B"]
+    }
+  ]
+}

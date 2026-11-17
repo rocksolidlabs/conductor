@@ -91,7 +91,9 @@ func EntriesOf(rec ledger.DecisionRecord) []PolicyEntry {
 	if json.Unmarshal([]byte(rec.Policy), &p) != nil {
 		return nil
 	}
-	if GivenToGrant(rec.Request) {
+	// A comparison's selection is the operator's alone (I7): never given
+	// to the decide grant, whatever its request says.
+	if rec.Origin != ledger.OriginCompare && GivenToGrant(rec.Request) {
 		p.Authority = append(p.Authority, PolicyEntry{Kind: EntryGrant, Grant: string(ext.GrantDecide)})
 	}
 	return p.Authority
@@ -130,6 +132,9 @@ func AdmissionOf(rec ledger.DecisionRecord, who Admittee) Admission {
 		// The operator entry's own rule: the admin grant through the
 		// workbench token or an identity, and no other way in.
 		return AdmitWhole
+	case rec.Origin == ledger.OriginCompare:
+		// A comparison's selection: the operator's alone (I7).
+		return AdmitNone
 	case !who.holds(ext.GrantDecide) || !Admits(EntriesOf(rec), who):
 		return AdmitNone
 	case rec.State == ledger.DecisionOpen:
