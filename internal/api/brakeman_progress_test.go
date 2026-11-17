@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/rocksolidlabs/conductor/internal/brakeman"
+	"github.com/rocksolidlabs/conductor/internal/crew"
 	"github.com/rocksolidlabs/conductor/internal/session"
 )
 
@@ -392,6 +393,27 @@ func TestTheStateCarriesProgress(t *testing.T) {
 	f.endTurn(t)
 	if state := f.expect(t, "GET", "/api/brakeman", nil, http.StatusOK, ""); state["progress"] != nil {
 		t.Fatalf("progress with no turn: %v", state["progress"])
+	}
+}
+
+// GET /api/brakeman's nextBriefing is the role's next briefing time, on
+// the desk's clock; absent once the role is paused, and for a role only
+// asked.
+func TestTheStateCarriesTheNextBriefing(t *testing.T) {
+	t.Parallel()
+	b := brakemanEnv(t, nil)
+	c := b.background(t, "bk", func(cfg map[string]any) {
+		cfg["wake"].(map[string]any)["briefings"] = []string{"07:00", "18:30"}
+	})
+	want := crew.NextBriefing(crew.RoleSettings{On: true, Briefings: []string{"07:00", "18:30"}, Location: time.Local}, c.now())
+	state := b.expect(t, "GET", "/api/brakeman", nil, http.StatusOK, "")
+	got, err := time.Parse(time.RFC3339Nano, state["nextBriefing"].(string))
+	if err != nil || !got.Equal(want) {
+		t.Fatalf("nextBriefing %v, want %s", state["nextBriefing"], want)
+	}
+	b.expect(t, "POST", "/api/brakeman/role", map[string]any{"action": "pause"}, http.StatusOK, "")
+	if state := b.expect(t, "GET", "/api/brakeman", nil, http.StatusOK, ""); state["nextBriefing"] != nil {
+		t.Fatalf("a paused role's next briefing: %v", state["nextBriefing"])
 	}
 }
 

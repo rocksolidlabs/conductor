@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/rocksolidlabs/conductor/internal/brakeman"
+	"github.com/rocksolidlabs/conductor/internal/crew"
 )
 
 // Brakeman's progress while a turn runs: what the turn in progress has
@@ -187,13 +188,25 @@ func (d *brakemanDesk) progressOf(req brakeman.Request, own bool) brakemanProgre
 	return p
 }
 
-// liveState fills GET /api/brakeman's progress, for the request whose
+// liveState fills GET /api/brakeman's progress (for the request whose
 // turn is under way; a read-only server's without its start or its read,
-// which only the owner knows.
+// which only the owner knows) and nextBriefing (the role's next briefing
+// time, absent when the role is off, paused or has none).
 func (s *Server) liveState(d *brakemanDesk, out *brakemanState) {
 	if out.Current != nil && progressing(*out.Current) {
 		p := d.progressOf(*out.Current, !out.ReadOnly)
 		out.Progress = &p
+	}
+	if !out.Config.Background() || (out.Role != nil && out.Role.State == crew.RolePaused) {
+		return
+	}
+	set, err := roleRecords{d: d}.RoleSettings()
+	if err != nil {
+		return
+	}
+	if next := crew.NextBriefing(set, d.now()); !next.IsZero() {
+		at := next.UTC()
+		out.NextBriefing = &at
 	}
 }
 
