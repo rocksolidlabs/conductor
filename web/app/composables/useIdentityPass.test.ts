@@ -2,7 +2,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // The pass store (docs/plans/decide-grant.md, "web/app"): the tab's sessionStorage, never localStorage, in memory when storage is
 // refused; the workbench token's key never touched. Each test loads the store anew, as a new tab's page does.
-
 class FakeStorage {
   m = new Map<string, string>()
   getItem = (k: string) => this.m.get(k) ?? null
@@ -10,12 +9,29 @@ class FakeStorage {
   removeItem = (k: string) => void this.m.delete(k)
 }
 
+type Store = typeof import('./useIdentityPass')
+
+// The store's loads are made while the file is collected, never inside a test: a load is a request to vitest's module server,
+// which a loaded machine's whole run keeps busy for seconds, and there no test's timeout runs. Each load after resetModules is a
+// new evaluation of the module, holding nothing yet: the store reads the tab's storage at its first use, not at its load, so a
+// test hands each instance the storage it stubbed. LOADS is how many the tests below take, each once.
+const LOADS = 10
+const loaded: Store[] = []
+for (let i = 0; i < LOADS; i++) {
+  vi.resetModules()
+  loaded.push(await import('./useIdentityPass'))
+}
+if (new Set(loaded.map((m) => m.useIdentityPass)).size !== LOADS) throw new Error('a load gave back an instance another load made')
+const load = async (): Promise<Store> => {
+  const store = loaded.shift()
+  if (!store) throw new Error(`the tests take more than the ${LOADS} loads the file made`)
+  return store
+}
+
 let session: FakeStorage
 let local: FakeStorage
-const load = async () => (await import('./useIdentityPass')) as typeof import('./useIdentityPass')
 
 beforeEach(() => {
-  vi.resetModules()
   session = new FakeStorage()
   local = new FakeStorage()
   local.setItem('conductor.workbenchToken', 'workbench-token-0123456789')
@@ -113,7 +129,6 @@ describe('the pass store', () => {
     expect(s.get()).toBe('')
     expect(s.ended.value).toBe(true)
     expect(session.getItem('conductor.identityPass')).toBe('p.2')
-    vi.resetModules()
     expect((await load()).useIdentityPass().get()).toBe('p.2')
   })
 

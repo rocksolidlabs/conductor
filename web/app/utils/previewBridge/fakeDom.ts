@@ -319,7 +319,18 @@ export class FakeEl extends FakeNode {
   }
   /** Its descendant elements in tree order (the test's own look, nothing counted). */
   descendants(): FakeEl[] {
-    return this.elements.flatMap((c) => [c, ...c.descendants()])
+    // One list, pushed to in tree order: a list made and copied at every element cost 9 ms a lookup among 10,000 siblings.
+    const out: FakeEl[] = []
+    const walk = (e: FakeEl) => {
+      for (const c of e._kids) {
+        if (c instanceof FakeEl) {
+          out.push(c)
+          walk(c)
+        }
+      }
+    }
+    walk(this)
+    return out
   }
   querySelectorAll(sel: string): FakeEl[] {
     const all = this.descendants()
@@ -392,7 +403,7 @@ function unescaped(s: string): string {
 }
 
 const asciiLower = (s: string) => s.replace(/[A-Z]/g, (c) => c.toLowerCase())
-const compounds = new Map<string, [string | undefined, string[]]>()
+const compounds = new Map<string, [string | undefined, string[], number[]]>()
 
 /** The documents by their root, so an element's matching knows its document's mode. */
 const docs = new WeakMap<FakeEl, FakeDoc>()
@@ -412,11 +423,13 @@ function compound(e: FakeEl, s: string): boolean {
   if (!c) {
     const m = COMPOUND.exec(s)
     if (!m) throw new SyntaxError(`not a selector the fake reads: ${s}`)
-    compounds.set(s, (c = [m[1], m[2]!.match(PART) ?? []]))
+    const parts = m[2]!.match(PART) ?? []
+    // Each part's number (an :nth-*'s), read once per selector, not once per element it is matched against.
+    compounds.set(s, (c = [m[1], parts, parts.map((part) => Number(/\d+/.exec(part)?.[0]))]))
   }
-  const [name, parts] = c
+  const [name, parts, nums] = c
   if (name && name !== '*' && (e.namespaceURI === HTML_NS ? name.toLowerCase() : name) !== e.local) return false
-  for (const part of parts) {
+  for (const [i, part] of parts.entries()) {
     const id = e.attrs.get('id') ?? ''
     if (part[0] === '#' && (quirks(e) ? asciiLower(id) !== asciiLower(unescaped(part.slice(1))) : id !== unescaped(part.slice(1)))) return false
     if (part[0] === '.' && !(e.attrs.get('class') ?? '').split(/\s+/).includes(part.slice(1))) return false
@@ -424,7 +437,7 @@ function compound(e: FakeEl, s: string): boolean {
       const [name, value] = part.slice(1, -1).split('=')
       if (!e.attrs.has(name!) || (value !== undefined && e.attrs.get(name!) !== value.slice(1, -1))) return false
     }
-    const n = Number(/\d+/.exec(part)?.[0])
+    const n = nums[i]!
     if (part.startsWith(':nth-of-type') && (e._parent?.elements ?? [e]).filter((c) => c.tag === e.tag).indexOf(e) + 1 !== n) return false
     if (part.startsWith(':nth-child') && e._ei + 1 !== n) return false
     if (part === ':root' && (e._parent || e.tag !== 'HTML')) return false

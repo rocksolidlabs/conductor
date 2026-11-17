@@ -1,6 +1,6 @@
 import type { Locator, Page } from '@playwright/test'
 import { budget, dayPage, expect, test, useTheme } from './fixtures'
-import { inside, noSideways, tapTarget, uncut } from './layout'
+import { inside, noSideways, tabTo, tapTarget, uncut } from './layout'
 import { ownServer, type OwnServer } from './own-server'
 import { START_WAIT_MS } from './server'
 
@@ -185,6 +185,186 @@ test("Where things are lists the sidebar's pages, its tiles in order then those 
     await page.mouse.move(1000, 450)
     await expect(tipText, `${label}'s tooltip closed`).toHaveCount(0)
   }
+})
+
+// The tooltips of the welcome's buttons and of Crews' Load the examples (#374): each says what pressing it does, in the words of
+// utils/welcome.ts, written out here so that a change of them is seen.
+const EXAMPLES_TIP = 'Adds five ready-made crews to Crews; nothing starts until you launch one.'
+const TIPS = {
+  agent: (name: string) => `Opens the Launch dialog with ${name} picked; nothing starts until you launch.`,
+  more: 'Opens the Launch dialog, to pick one of the other agents this machine has.',
+  agents: 'Opens Agents: the agents Conductor knows, and which of them this machine has.',
+  launch: 'Opens the Launch dialog, which looks for the agents on this machine again.',
+  host: 'Opens the Quick start in a new tab: how to run conductor host on another machine.',
+  examples: EXAMPLES_TIP,
+}
+
+/** Any tooltip drawn (reka keeps the role on a copy of the words for the button's description, hidden from the tree). */
+function anyTip(page: Page): Locator {
+  return page.getByRole('tooltip', { includeHidden: true })
+}
+
+/** The box drawn around the tooltip whose words are `text`. */
+function tipBox(page: Page, text: string): Locator {
+  return page.locator('[data-slot="content"]').filter({ has: page.getByRole('tooltip', { name: text, exact: true, includeHidden: true }) })
+}
+
+/** The page has drawn what a focus it just took asked for: a tooltip opens in the focus's own handler, drawn at the next render. */
+async function drawnAfterFocus(page: Page): Promise<void> {
+  await page.evaluate(() => new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r()))))
+}
+
+/** `button`'s tooltip is open, says `tip` whole (wrapped inside its box, none of it cut), and is the button's description. */
+async function tipShown(page: Page, button: Locator, tip: string, at: string) {
+  const box = tipBox(page, tip)
+  await expect(box, `${at}: the tooltip "${tip}"`).toBeVisible()
+  await uncut(box.locator('[data-slot="text"]'))
+  await expect(button, at).toHaveAccessibleDescription(tip)
+}
+
+/** The pointer away from every button, and every tooltip closed and gone (one closing is drawn through its animation). */
+async function noTip(page: Page) {
+  await page.mouse.move(1, 1)
+  await expect(anyTip(page)).toHaveCount(0)
+}
+
+/**
+ * The buttons of `controls`, in the order Tab walks them, each with its label (its accessible name, which a tooltip never changes)
+ * and its tooltip: hovered, each shows its tooltip; reached by Tab from the one before, each shows it too (the first by Shift+Tab from
+ * the second).
+ */
+async function tipsOnHoverAndTab(page: Page, controls: { button: Locator; name: string | RegExp; tip: string }[], at: string) {
+  for (const c of controls) {
+    await expect(c.button, at).toHaveAccessibleName(c.name)
+    await c.button.hover()
+    await tipShown(page, c.button, c.tip, `${at}, hovered`)
+    await noTip(page)
+  }
+  if (controls.length < 2) throw new Error('tipsOnHoverAndTab: give two controls or more, the first reached from the second')
+  for (const [i, c] of controls.entries()) {
+    if (i === 0) continue
+    await tabTo(page, c.button, 3, controls[i - 1]!.button)
+    await tipShown(page, c.button, c.tip, `${at}, by Tab`)
+    if (i === 1) {
+      await page.keyboard.press('Shift+Tab')
+      await expect(controls[0]!.button).toBeFocused()
+      await tipShown(page, controls[0]!.button, controls[0]!.tip, `${at}, by Shift+Tab`)
+      await page.keyboard.press('Tab')
+      await expect(c.button).toBeFocused()
+    }
+  }
+  // Off the card, nothing is left open.
+  await page.locator('[data-welcome-sentence], [data-page-why]').first().click()
+  await noTip(page)
+}
+
+/** The welcome's buttons as the card draws them with agents found: each agent, "and N more" when there are more, the host's, the examples'. */
+async function welcomeButtons(card: Locator) {
+  const out: { button: Locator; name: string | RegExp; tip: string }[] = []
+  const agents = card.locator('[data-welcome-agent]')
+  for (let i = 0; i < (await agents.count()); i++) {
+    const name = (await agents.nth(i).locator('[data-welcome-agent-name]').textContent())!.trim()
+    out.push({ button: agents.nth(i), name: new RegExp(`^${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}( |$)`), tip: TIPS.agent(name) })
+  }
+  const more = card.locator('[data-welcome-more]')
+  if (await more.count()) out.push({ button: more, name: (await more.textContent())!.trim(), tip: TIPS.more })
+  out.push({ button: card.locator('[data-welcome-host]'), name: 'How to bring one in', tip: TIPS.host })
+  out.push({ button: card.locator('[data-welcome-examples]'), name: 'Load the example crews', tip: TIPS.examples })
+  return out
+}
+
+test("every button of the welcome says what it does in a tooltip, on hover and on Tab, at the desktop app's width in both themes", async ({ browser }) => {
+  const srv = await empty()
+  budget(2 * 40 * STEP_MS)
+  for (const theme of ['dark', 'light'] as const) {
+    const page = await dayPage(browser, { width: 1440, height: 900, theme, path: '/', server: srv.started })
+    const card = await settled(page)
+    await expect(anyTip(page)).toHaveCount(0)
+    const buttons = await welcomeButtons(card)
+    expect(buttons.length, 'an agent at least, with the host and the examples').toBeGreaterThanOrEqual(3)
+    await tipsOnHoverAndTab(page, buttons, `${theme}`)
+    await page.context().close()
+  }
+})
+
+test('the welcome with no agent found offers Agents, and with the agents not read offers Launch agent, each saying what it does', async ({ browser }) => {
+  const srv = await empty()
+  budget(2 * 20 * STEP_MS)
+  for (const [state, button, name, tip] of [
+    ['none', '[data-welcome-agents]', 'Agents', TIPS.agents],
+    ['unread', '[data-welcome-launch]', 'Launch agent', TIPS.launch],
+  ] as const) {
+    const page = await dayPage(browser, { width: 1440, height: 900, path: '/', server: srv.started })
+    // The catalog's quick answer as this state has it, from the first load on.
+    await page.route(
+      (u) => u.pathname === '/api/catalog',
+      (r) => (state === 'none' ? r.fulfill({ json: { agents: [] } }) : r.fulfill({ status: 500, json: { error: 'catalog_failed', message: 'the catalog could not be read' } })),
+    )
+    await page.reload()
+    const card = page.locator('[data-welcome-card]')
+    await expect(card.locator(button), state).toBeVisible()
+    await tipsOnHoverAndTab(
+      page,
+      [
+        { button: card.locator(button), name, tip },
+        { button: card.locator('[data-welcome-host]'), name: 'How to bring one in', tip: TIPS.host },
+      ],
+      state,
+    )
+    await page.context().close()
+  }
+})
+
+test("on a phone the welcome's buttons keep their labels as their names, and a tap opens no tooltip, then or when the dialog it opened closes", async ({ browser }) => {
+  const srv = await empty()
+  budget(12 * STEP_MS)
+  const page = await dayPage(browser, { width: 390, height: 844, touch: true, path: '/sessions', server: srv.started })
+  const card = await settled(page)
+  for (const c of await welcomeButtons(card)) await expect(c.button).toHaveAccessibleName(c.name)
+  const first = card.locator('[data-welcome-agent]').first()
+  await first.scrollIntoViewIfNeeded()
+  await first.tap()
+  const dialog = page.getByRole('dialog')
+  await expect(dialog).toBeVisible()
+  await drawnAfterFocus(page)
+  await expect(anyTip(page)).toHaveCount(0)
+  await page.keyboard.press('Escape')
+  await expect(dialog).toHaveCount(0)
+  // The dialog hands the focus back to the button: the app's focus, on a touch screen, opens no tooltip.
+  await expect(first).toBeFocused()
+  await drawnAfterFocus(page)
+  await expect(anyTip(page)).toHaveCount(0)
+})
+
+test("Crews' Load the examples says what it does in a tooltip on hover and on Tab, and on a phone a tap opens none", async ({ browser }) => {
+  const srv = await empty()
+  budget(16 * STEP_MS)
+  const page = await dayPage(browser, { width: 1440, height: 900, path: '/crews', server: srv.started })
+  const crewsEmpty = page.locator('[data-crews-empty]')
+  const load = crewsEmpty.getByRole('button', { name: 'Load the examples', exact: true })
+  await expect(load).toBeVisible()
+  await expect(anyTip(page)).toHaveCount(0)
+  await load.hover()
+  await tipShown(page, load, EXAMPLES_TIP, 'Crews, hovered')
+  await noTip(page)
+  // Tab from New crew, the action before it, brings the tooltip too.
+  await tabTo(page, load, 3, crewsEmpty.getByRole('button', { name: 'New crew', exact: true }))
+  await tipShown(page, load, EXAMPLES_TIP, 'Crews, by Tab')
+  await page.context().close()
+
+  // On a phone: the label is the name, and a tap opens no tooltip. The load is answered with a refusal, so that the server's crews stay
+  // as they are for the other cases.
+  const phone = await dayPage(browser, { width: 390, height: 844, touch: true, path: '/crews', server: srv.started })
+  await phone.route(
+    (u) => u.pathname === '/api/crews/examples',
+    (r) => r.fulfill({ status: 503, json: { error: 'unavailable', message: 'not loaded in this test' } }),
+  )
+  const tapped = phone.locator('[data-crews-empty]').getByRole('button', { name: 'Load the examples', exact: true })
+  await expect(tapped).toBeVisible()
+  await tapped.tap()
+  await expect(phone.getByText('Loading the examples failed', { exact: true })).toBeVisible()
+  await drawnAfterFocus(phone)
+  await expect(anyTip(phone)).toHaveCount(0)
 })
 
 test('the examples say what loading them does, on the welcome, on Crews and in the palette, and the welcome loads them onto Crews', async ({ browser }) => {

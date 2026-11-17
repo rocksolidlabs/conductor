@@ -591,12 +591,12 @@ palette.registerPage(() => {
         </template>
         <template #title>
           <div v-if="gone" class="flex min-w-0 items-center gap-2" data-session-gone-head>
-            <span class="truncate text-[15px] font-semibold" data-session-title>{{ goneTitle }}</span>
+            <span class="truncate text-[15px] font-semibold" :title="goneTitle" data-session-title>{{ goneTitle }}</span>
             <StatusMark :status="statusOfKey('exited')" word class="text-xs" data-session-status="gone" />
           </div>
           <div v-else class="flex min-w-0 flex-col">
             <div class="flex items-center gap-2 min-w-0">
-              <span class="truncate text-[15px] font-semibold" data-session-title>{{ current?.name || 'Session' }}</span>
+              <span class="truncate text-[15px] font-semibold" :title="current?.name || 'Session'" data-session-title>{{ current?.name || 'Session' }}</span>
               <StatusMark v-if="status" :status="status" word class="text-xs" :data-session-status="current?.id" />
               <YoloBadge v-if="current?.yolo" />
             </div>

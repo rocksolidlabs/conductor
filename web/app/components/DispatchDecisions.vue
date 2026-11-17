@@ -11,7 +11,7 @@ import { relativeTime } from '~/utils/sessions'
  * history beside the one before), the owner's acceptance on record, the results a person accepted anyway in its runs, and the decision
  * records a merge brought (their link kind reserved for durable decisions, Program item DR1). Then the durable decision records of the
  * ticket's runs (Program item DR1: a gate of the approved revision, an agent's request), each with its state and its receipts in words,
- * and Answer (or Show) opening its card, and a link to its item on the decision page (Needs your decision, MB0's PR-4). Below them, the decisions the approved revision says a person will make, each with its latest
+ * and Answer (or Show) opening its card, and a link to its item on the decision page (Needs you, MB0's PR-4). Below them, the decisions the approved revision says a person will make, each with its latest
  * record's state: Conductor holds the tasks they name until the operator answers. Read from what the page reads (the revisions, the
  * ticket, the runs' candidates, the ticket's decisions), never a copy of its own. One column on a phone.
  */

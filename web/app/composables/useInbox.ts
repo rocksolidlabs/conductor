@@ -315,7 +315,7 @@ export function inboxLive(): InboxLive {
 }
 
 /**
- * The decision inbox for the whole app: the open items and their count (the bar's Decide tab, the sidebar's row, the palette), and
+ * The decision inbox for the whole app: the open items and their count (the bar's Needs you tab, the sidebar's row, the palette), and
  * this browser's recent actions with their steps (the decision page). `start` attaches the reads once, through the client calls of
  * useSessions; the events come from useAttention's stream.
  */

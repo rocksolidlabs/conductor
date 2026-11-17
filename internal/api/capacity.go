@@ -360,7 +360,50 @@ func (d *capacityDesk) onRead(k capacity.Key, v capacity.View) {
 		}
 	}
 	d.mu.Unlock()
+	// A reading that warns is noted for Brakeman's background role, which
+	// judges it on its next pass (capacityRead never waits): before the
+	// event, so a page that saw the event finds it noted.
+	if b := d.s.brakeman; b != nil && capacityWarns(v) {
+		b.capacityRead(k, *v.ReadAt)
+	}
 	d.s.events.capacity(k, v.State, *v.ReadAt)
+}
+
+// capacityWarns reports whether a reading is one the capacity panel warns
+// at (warningOf in web/app/utils/capacity.ts): a reading the provider
+// answered (ok) with a limit it says holds, or a window at its warning or
+// critical severity, or at 90% used or more. Capacity acts on nothing:
+// such a reading only wakes Brakeman's background role.
+func capacityWarns(v capacity.View) bool {
+	if v.State != capacity.StateOK {
+		return false
+	}
+	l := v.Limits
+	if l.Reached != "" || (l.SpendControl != nil && *l.SpendControl) || (l.OrdinaryAllowed != nil && !*l.OrdinaryAllowed) {
+		return true
+	}
+	return slices.ContainsFunc(v.Windows, func(w capacity.Window) bool {
+		return w.Severity == "warning" || w.Severity == "critical" || w.Percent >= capacityWarnPercent
+	})
+}
+
+// capacityWarnPercent is the share used a window warns at whatever its
+// severity (WARN_PERCENT in web/app/utils/capacity.ts).
+const capacityWarnPercent = 90
+
+// accountOfFolder is the account a launch of agent with the login folder
+// runs on, as Brakeman's turn binds its configured folder (boundFolder):
+// the agent's own login for none, the account of its adapter in doc that
+// holds the folder, else a folder Accounts does not hold (unlisted, never
+// read).
+func accountOfFolder(doc capacity.Accounts, agent catalog.Agent, folder string) string {
+	if folder == "" {
+		return capacity.DefaultID
+	}
+	if i := slices.IndexFunc(doc.Accounts, func(a capacity.Account) bool { return a.Adapter == agent.Adapter && boundFolder(a, folder) }); i >= 0 {
+		return doc.Accounts[i].ID
+	}
+	return session.SourceUnlisted
 }
 
 // capacityEvent is the data of a capacity event: the key whose reading
@@ -1049,10 +1092,7 @@ func (s *Server) queuedCapacity(ctx context.Context, cfg brakeman.Config) *brake
 		if err != nil {
 			return nil
 		}
-		account = session.SourceUnlisted
-		if i := slices.IndexFunc(doc.Accounts, func(a capacity.Account) bool { return a.Adapter == agent.Adapter && boundFolder(a, cfg.Account) }); i >= 0 {
-			account = doc.Accounts[i].ID
-		}
+		account = accountOfFolder(doc, agent, cfg.Account)
 	}
 	v := capacity.View{Agent: capacity.ViewAgent{ID: agent.ID, Name: agent.Name, Adapter: agent.Adapter}, Account: capacity.ViewAccount{ID: account},
 		Host: capacity.ViewHost{Kind: capacity.HostNative}, State: capacity.StateUnlisted, Fresh: capacity.FreshNone,

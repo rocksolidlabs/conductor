@@ -264,7 +264,7 @@ func batchClasses(b *crew.Batch) []string {
 		}
 	}
 	if b.Overflow != nil {
-		used[brakeman.ClassRuns], used[brakeman.ClassSessions], used[brakeman.ClassDispatch] = true, true, true
+		used[brakeman.ClassRuns], used[brakeman.ClassSessions], used[brakeman.ClassDispatch], used[brakeman.ClassCapacity] = true, true, true, true
 	}
 	var out []string
 	for _, c := range brakeman.Classes {

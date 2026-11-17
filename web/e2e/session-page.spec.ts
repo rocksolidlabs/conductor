@@ -2,7 +2,7 @@ import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Page } from '@playwright/test'
 import { dayPage, expect, test, useTheme, type Api, type Session } from './fixtures'
-import { noSideways, probeColour, uncut } from './layout'
+import { noOverlap, noSideways, probeColour, uncut } from './layout'
 
 // A session's page where the terminal has the room (the UX review, P11, D7, D9): the inspector closed until a person opens it, the
 // line under the name agent · folder · branch with the ids in More, Share an outline button like its neighbours, the connection an
@@ -198,4 +198,58 @@ test("on a phone the name keeps its room: Files and Share are in More, and Share
   await expect(page.getByRole('dialog')).toHaveCount(0)
   await expect(page.getByRole('button', { name: 'Share', exact: true })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Files', exact: true })).toBeVisible()
+})
+
+/** A name as long as the server takes (proto.MaxSessionName, 120): far too long for a phone's header, and for a desktop's. */
+const LONG_NAME = 'e2e a session named at length, so that its header cannot hold it: every word of the name a person gave it, to the end'
+
+/**
+ * The session's name in its header cut with an ellipsis, with room of its own, its full text its title, nothing of the header over
+ * it. The measures are read where the answer is made, the page at rest (its fonts loaded).
+ */
+async function cutAndWhole(page: Page, at: string) {
+  const header = page.locator('[data-session-bar]')
+  const title = header.locator('[data-session-title]')
+  await expect(title, at).toHaveText(LONG_NAME)
+  await expect(title, `${at}: the full name is its title`).toHaveAttribute('title', LONG_NAME)
+  await page.evaluate(() => document.fonts.ready.then(() => undefined))
+  const m = await title.evaluate((e) => ({ overflow: getComputedStyle(e).textOverflow, cut: e.scrollWidth > e.clientWidth, width: e.getBoundingClientRect().width }))
+  expect(m, `${at}: the name is cut with an ellipsis`).toMatchObject({ overflow: 'ellipsis', cut: true })
+  expect(m.width, `${at}: the name has room`).toBeGreaterThanOrEqual(100)
+  await noOverlap(header)
+}
+
+test('on a phone and at 1440 a name too long for the header is cut with an ellipsis and its full text is its title, again after the window changes, and on the page of a session the server no longer holds', async ({ browser, api, state }) => {
+  expect(LONG_NAME.length, 'the longest name the server takes').toBeLessThanOrEqual(120)
+  const s = await launch(api, state.root, LONG_NAME)
+  await api.ok('POST', `/api/sessions/${s.id}/attention`, { state: 'needs_input', message: 'Ready to go on?', options: [{ label: 'Yes', input: '1' }, { label: 'No', input: '2' }] })
+  const page = await dayPage(browser, { server: state, path: `/sessions/${s.id}`, width: 390, height: 844, touch: true })
+  await expect(page.locator('[data-quick-reply]')).toBeVisible({ timeout: 30_000 })
+  await cutAndWhole(page, 'at 390 × 844')
+  // The window changes and the header is drawn again: at 1024 and back at 390 the name is still cut, with its title.
+  await page.setViewportSize({ width: 1024, height: 768 })
+  await expect(page.getByRole('button', { name: 'Share', exact: true })).toBeVisible()
+  await cutAndWhole(page, 'resized to 1024 × 768')
+  await page.setViewportSize({ width: 390, height: 844 })
+  await expect(page.locator('[data-session-bar]').getByRole('button', { name: 'Share', exact: true })).toBeHidden()
+  await cutAndWhole(page, 'back at 390 × 844')
+
+  // At the desktop app's width with the sidebar at its default width.
+  const wide = await dayPage(browser, { server: state, path: `/sessions/${s.id}` })
+  await expect(wide.locator('#dashboard-sidebar-main')).toBeVisible()
+  await cutAndWhole(wide, 'at 1440 × 900')
+
+  // Ended and removed: the page of a session the server no longer holds has its name in the head, cut, its full text its title.
+  await api.stopSession(s.id)
+  await expect.poll(async () => (await api.session(s.id)).status, { timeout: 15_000 }).toMatch(/exited|stopped/)
+  await api.stopSession(s.id)
+  await expect.poll(async () => (await api.call('GET', `/api/sessions/${s.id}`)).status, { timeout: 15_000 }).toBe(404)
+  await page.reload()
+  await expect(page.locator('[data-session-gone]')).toHaveAttribute('data-session-gone', 'record')
+  await cutAndWhole(page, 'gone, at 390 × 844')
+  // The theme switched, the page drawn again.
+  await useTheme(page, 'light', '[data-session-gone]')
+  await cutAndWhole(page, 'gone, at 390 × 844, light')
+  await page.setViewportSize({ width: 1024, height: 768 })
+  await cutAndWhole(page, 'gone, resized to 1024 × 768')
 })

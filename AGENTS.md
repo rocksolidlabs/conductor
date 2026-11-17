@@ -188,7 +188,36 @@ add its rule here.
   test's arrays, which then saw a second request or an error not yet
   said (2026-11-11, #281). These composables read their auto-imports when
   they are called, so their static import before the stubs is safe; a
-  module that reads one as it loads is imported after its stubs.
+  module that reads one as it loads is imported after its stubs. A test
+  that needs the module fresh (`vi.resetModules`, a new tab's page) takes
+  an instance the file loaded as it was collected, one per load, each
+  handed out once (`useIdentityPass.test.ts`, 2026-11-16, #281): a load
+  in its body is a request to vitest's module server, which a whole run
+  on a loaded machine keeps busy for seconds.
+- Parallel subtests share what their process has. Go runs GOMAXPROCS of
+  them at once by default, and a lock a library takes for the whole
+  process makes each step of each as slow as all of theirs together:
+  every store goes through one SQLite whose allocator takes one lock per
+  process (`modernc.org/libc`'s malloc), so 64 of the address walk's 370
+  fresh stores at once had a tenth of a core each, the process about six
+  cores, and a store's open ran past the 30 s the store gives it at a load
+  average of 40 (`TestNoTextKeepsAnAddressesQuery`, 2026-11-16, #281).
+  Run at once what the work can use (a channel of slots taken after
+  `t.Parallel` and given back by a cleanup registered first, `walkSlots`
+  in `internal/dispatch`), and do once what every check reads (one export
+  for all the secrets a case carries).
+- A test holds its worker while it runs. A vitest test that never awaits
+  keeps its worker's event loop for its whole run, and the worker waits at
+  most 60 s for the main process to take its report of the test's start:
+  the answer, queued behind the test, is read after that timer has fired,
+  and the run exits 1 with every test passed (`Timeout calling
+  "onTaskUpdate"`). A selector test looked each of 10,000 siblings up in a
+  fake document, a scan of the list each time, and held its worker 50 s
+  alone and past 60 s in a whole run; fewer workers did not help, since
+  one worker is enough (`select.test.ts`, 2026-11-17, #281). Keep a
+  test's synchronous work to seconds: look up a sample that covers every
+  case (each length of index, the ends of a budget), and give the fake a
+  walk that costs what an engine's does.
 - Count only what the test made. A spec that counts sessions, tiles or list
   rows sees what an earlier spec left behind and what the server's sweeps
   removed: end the strays first (`stopStrays` in `web/e2e/fixtures.ts`) and
