@@ -35,9 +35,17 @@ func (e *NotSelectedError) Is(target error) bool { return target == ErrNotSelect
 // these, every lane. Before an applied selection every lane takes its
 // commands, which supersede an open or answered selection. The caller
 // holds e.mu.
-func (r *run) laneSelected(taskID string) error {
+func (r *run) laneSelected(intent, taskID string) error {
+	if r.compare == nil {
+		return nil
+	}
 	sel := r.sel.applied
-	if r.compare == nil || sel == nil {
+	if sel == nil {
+		if intent == intentRequestChanges {
+			// Only a selected candidate is repaired (decision 11): a repair
+			// before the selection would make the candidates unlike.
+			return &NotSelectedError{Words: "select a candidate first: a repair before the selection would make the candidates unlike"}
+		}
 		return nil
 	}
 	lane, ok := r.lanes[taskID]
