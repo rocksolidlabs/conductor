@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto'
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Page, Route } from '@playwright/test'
-import { expect, readAgain, task, test, type Api, type Run } from './fixtures'
+import { expect, readAgain, standingRoute, task, test, type Api, type Run } from './fixtures'
 import { freeProjectKey, makeProject, makeTicket, opOf, storedTicket } from './dispatch-helpers'
 
 // Crews, a ticket's launch and Brakeman on their accounts (docs/plans/capacity.md, Program item AC1, PR-7). A managed crew of a
@@ -136,10 +136,11 @@ function attemptTranscript(home: string, taskId: string, n: number): string {
 
 const command = () => ({ commandId: randomBytes(8).toString('hex') })
 
-// A route that lets every request through, kept from before the page loads: the tests' own routes go on top, so interception is
-// never switched on or off while the page has requests out (a GET asked as `page.unroute` ended went unanswered for 30 s, #281).
+// A standing route (standingRoute: one no request matches), kept from before the page loads: the tests' own routes go on top, so
+// interception is never switched on or off while the page has requests out (a GET asked as `page.unroute` ended went
+// unanswered for 30 s, #281).
 test.beforeEach(async ({ page }) => {
-  await page.route('**/*', (route) => route.fallback())
+  await standingRoute(page.context())
 })
 
 test.afterEach(async ({ api }) => {
