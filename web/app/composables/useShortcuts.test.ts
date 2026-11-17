@@ -38,6 +38,10 @@ describe('the page chords', () => {
     expect(chord('E')?.terminal).toEqual(['alt', 'E'])
     expect(chord('W')).toBeUndefined()
   })
+  it('go to Brakeman with G then B, and no Alt twin: Alt+B is the sidebar\'s', () => {
+    expect(chord('B')).toEqual({ keys: ['G', 'B'], label: 'Go to Brakeman' })
+    expect(GLOBAL_SHORTCUTS.rows.find((r) => r.terminal?.join('+') === 'alt+B')?.keys).toEqual(['meta', 'B'])
+  })
   it('name no Alt twin for what needs the list or the page focused, and no label says "in a terminal" any more', () => {
     for (const g of [GLOBAL_SHORTCUTS, SIDEBAR_SHORTCUTS, WALL_SHORTCUTS, CAROUSEL_SHORTCUTS]) for (const r of g.rows) expect(r.label).not.toMatch(/in a terminal/)
     expect(SIDEBAR_SHORTCUTS.rows.find((r) => r.keys[0] === 'J')?.terminal).toBeUndefined()

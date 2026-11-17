@@ -135,10 +135,13 @@ export interface MentionSources {
 
 /** How many matches the `@` list shows. */
 export const MENTIONS_SHOWN = 12
+/** How many of each kind it shows before anything is typed after the `@`. */
+export const MENTIONS_EACH = 3
 
 /**
  * The `@` list's matches for what follows the `@`: among what the page holds, of the ref kinds asked (none: every kind), whose name,
- * id, ref or second line holds the words, the page's own run first (its tasks, on a run's page), at most MENTIONS_SHOWN. A ref typed whole that the
+ * id, ref or second line holds the words (before any is typed, MENTIONS_EACH of each kind), the page's own run first (its tasks, on a
+ * run's page), at most MENTIONS_SHOWN. A ref typed whole that the
  * grammar takes is offered as it is, first, though the page does not hold it: the server resolves every subject. Nothing here judges
  * what Brakeman may see.
  */
@@ -156,7 +159,9 @@ export function mentionMatches(src: MentionSources, query: string, kinds: readon
   if (takes('session')) for (const s of src.sessions) all.push({ ref: `session:${s.id}`, label: s.name, kind: 'session', detail: 'session' })
   if (takes('question')) for (const x of src.questions) all.push({ ref: x.ref, label: x.title, kind: 'question', detail: x.session ? `question in ${x.session}` : 'question' })
   if (takes('ticket')) for (const t of src.tickets) all.push({ ref: `ticket:${t.key}`, label: `${t.key} ${t.title}`, kind: 'ticket', detail: 'ticket' })
-  const hits = q ? all.filter((m) => [m.label, m.ref, m.detail ?? ''].some((w) => w.toLowerCase().includes(q))) : all
+  // With nothing typed yet, a few of each kind, so that the sessions a page holds many of never hide its tickets.
+  const seen: Record<string, number> = {}
+  const hits = q ? all.filter((m) => [m.label, m.ref, m.detail ?? ''].some((w) => w.toLowerCase().includes(q))) : all.filter((m) => (seen[m.kind] = (seen[m.kind] ?? 0) + 1) <= MENTIONS_EACH)
   const typed = parseRef(query.trim())
   const whole: Mention[] = typed && takes(typed.kind) && !hits.some((m) => m.ref === query.trim()) ? [{ ref: query.trim(), label: refLabel(query.trim()), kind: typed.kind, detail: 'as typed' }] : []
   return [...whole, ...hits].slice(0, MENTIONS_SHOWN)

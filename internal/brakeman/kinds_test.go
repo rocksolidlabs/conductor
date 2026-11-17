@@ -781,3 +781,38 @@ func TestTheBasePatternIsDispatchs(t *testing.T) {
 		}
 	}
 }
+
+// The words ask for a short reading and an order a person reads, never
+// refuse a longer one: the summary's words and a rule line name the
+// reading's bound and the order; the summary's own bound is unchanged.
+func TestTheWordsAskForAShortReading(t *testing.T) {
+	all := strings.Join(Words(), "\n")
+	bound := fmt.Sprintf("one sentence of at most %d characters", MaxReading)
+	if !strings.Contains(all, "summary (") || strings.Count(all, bound) < 2 {
+		t.Fatalf("the words do not ask for a short reading: %s", all)
+	}
+	rule := slices.IndexFunc(rulesWords(), func(w string) bool { return strings.HasPrefix(w, "Lead the summary") })
+	if rule < 0 {
+		t.Fatal("no rule line leads the summary")
+	}
+	line := rulesWords()[rule]
+	order := []string{"decision cards first", "then proposals and drafts", "then the facts they rest on", "each fact's interpretation after it"}
+	last := -1
+	for _, w := range order {
+		i := strings.Index(line, w)
+		if i <= last {
+			t.Fatalf("the rule line does not say %q in its place: %s", w, line)
+		}
+		last = i
+	}
+	f := briefFields[slices.IndexFunc(briefFields, func(f Field) bool { return f.Name == "summary" })]
+	if f.Max != MaxSummary || !strings.Contains(f.About, bound) {
+		t.Fatalf("the summary's field: %+v", f)
+	}
+	// A summary past the reading's bound is still taken.
+	b := goodBrief(t)
+	b.Summary = strings.Repeat("word ", MaxReading)
+	if err := check(b); err != nil {
+		t.Fatalf("a long reading refused: %v", err)
+	}
+}
