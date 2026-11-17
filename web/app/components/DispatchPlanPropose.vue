@@ -20,7 +20,7 @@ import { FOR_NONE, PLAN_BOUNDS, decisionsProblem, forItems, keptComments, nextDe
  * and its delivery and external links as evidence, at most 8; the imported images are among the attachments above.
  */
 const props = defineProps<{
-  ticket: DispatchTicket & { externalSnapshot?: { repro?: string; reproSha256?: string; space?: string; id?: string } }
+  ticket: DispatchTicket
   plans: TicketPlans
   /** The revision this one revises, with its body: the dialog is prefilled from it. */
   from?: { revision: PlanSummary; body: PlanBody | null } | null

@@ -14,7 +14,7 @@ import { argvLine, expectedChecks, planForWords, planMemberModel, resolvedArgv, 
  */
 const props = defineProps<{
   body: PlanBody
-  ticket: DispatchTicket & { externalSnapshot?: { space?: string; id?: string } }
+  ticket: DispatchTicket
   agents: readonly AgentInfo[]
 }>()
 

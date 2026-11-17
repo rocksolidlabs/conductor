@@ -237,7 +237,7 @@ describe("a run's source", () => {
   it('names nothing for no source, one held unlinked, another system or a reference that is not one', () => {
     expect(packageSourceWords({ version: 2 })).toBe('')
     expect(packageSourceWords(null)).toBe('')
-    expect(packageSourceWords({ source: { unlinked: true, titleFromGitHub: true } })).toBe('')
+    expect(packageSourceWords({ source: { unlinked: true, system: 'github', ref: 'acme/api#612', titleFromGitHub: true } })).toBe('')
     expect(packageSourceWords({ source: { system: 'jira', ref: 'acme/api#612' } })).toBe('')
     expect(packageSourceWords({ source: { system: 'github', ref: 'acme/api#612 <b>x</b>' } })).toBe('')
     expect(packageSourceWords({ source: { system: 'github', ref: 12 } })).toBe('')
