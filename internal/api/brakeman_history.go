@@ -22,6 +22,7 @@ import (
 
 	"github.com/rocksolidlabs/conductor/internal/brakeman"
 	"github.com/rocksolidlabs/conductor/internal/crew"
+	"github.com/rocksolidlabs/conductor/internal/dispatch"
 	"github.com/rocksolidlabs/conductor/internal/history"
 	"github.com/rocksolidlabs/conductor/internal/journal"
 )
@@ -502,6 +503,11 @@ func (hs *historyScope) turnEntry(ctx context.Context, out servedEntry, e histor
 		Host: out.Host, Project: out.Project, Revision: out.Revision, Agent: out.Agent, Crew: out.Crew, Run: out.Run, Ticket: out.Ticket,
 		URL: out.URL, Availability: out.Availability,
 	}
+	if hs.o.tp != nil && e.Kind == "ticket" {
+		if err := hs.withhold(ctx, &te, e, cited); err != nil {
+			return te, nil, err
+		}
+	}
 	var reads []brakeman.Read
 	if out.Anchor.Ref != "" {
 		rds, ok, err := hs.refReads(ctx, out.Anchor.Ref)
@@ -524,6 +530,31 @@ func (hs *historyScope) turnEntry(ctx context.Context, out servedEntry, e histor
 	}
 	classes = append(slices.Clone(classes), emitFields(&te, hs.o.sees)...)
 	return te, append(readsOf(cited, classes, state), reads...), nil
+}
+
+// withhold is a ticket's entry te as an agent reads it (the entry e, cited
+// by the ticket's ref): its title the key and WithheldTitle when a read of
+// a linked item wrote the title, and no snippet when a read wrote either
+// the title or the description it is drawn from, or when the entry's text
+// cannot be told from the ticket's now (dispatch.EntryWithheld). The
+// index keeps the text, so the entry is found by its words all the same:
+// the turn reads that it matched, never what.
+func (hs *historyScope) withhold(ctx context.Context, te *turnHistoryEntry, e history.Entry, cited brakeman.Ref) error {
+	ds, err := agentStore(hs.o)
+	if err != nil {
+		return err
+	}
+	title, words, err := ds.EntryWithheld(ctx, cited.Ticket, e.Revision)
+	if err != nil {
+		return err
+	}
+	if title {
+		te.Title = cited.Ticket + " " + dispatch.WithheldTitle
+	}
+	if title || words {
+		te.Snippet = ""
+	}
+	return nil
 }
 
 // historyRestriction is the rows a read may answer at all, which the
