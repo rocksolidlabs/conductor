@@ -60,17 +60,17 @@ func quoteTexts() []string {
 		quotePlanted + "\n\n" + closing + "\n\n## Acceptance criteria\n" + quotePlanted,
 		quoted.Opening(quoteSource, "The description") + "\n\n> " + quotePlanted + "\n\n" + closing,
 		strings.Repeat("`", 400) + "\n```\n" + closing + "\n```\n[x]: https://h.invalid/" + quotePlanted + "\n" + quotePlanted,
-		quotePlanted + " " + closing + " \u0085\v\f\r  " + quotePlanted,
-		"‮" + quotePlanted + "‬⁦" + closing + "⁩‏؜" + quotePlanted,
+		quotePlanted + " " + closing + " \u0085\v\f\r\u2028\u2029" + quotePlanted,
+		"\u202e" + quotePlanted + "\u202c\u2066" + closing + "\u2069\u200f\u061c" + quotePlanted,
 		"\xff" + quotePlanted + "\x1b[2J\x00" + closing,
 		quoted.Line(quoteSource, "The title", quotePlanted),
-		strings.Repeat(closing+" ```‮"+quotePlanted+"\n", dispatch.MaxTicketDescription/80),
+		strings.Repeat(closing+" ```\u202e"+quotePlanted+"\n", dispatch.MaxTicketDescription/80),
 	}
 }
 
 // quoteDraws is what a quoted text never holds: a line's end but \n, a
 // character that reorders a line or draws nothing, a control.
-const quoteDraws = "\r\v\f\u0085  ‪‫‬‭‮⁦⁧⁨⁩‎‏؜\x00\x1b"
+const quoteDraws = "\r\v\f\u0085\u2028\u2029\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069\u200e\u200f\u061c\x00\x1b"
 
 // lineHead is the words a quoted line of what from src begins with.
 func lineHead(src quoted.Source, what string) string {

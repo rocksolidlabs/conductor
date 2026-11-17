@@ -23,9 +23,9 @@ func TestTicketReadPrintsGitHubsTextInItsMarks(t *testing.T) {
 		planted + "\n\n" + closing + "\n\n## Comments (1)\n" + planted,
 		quoted.Opening(src, "The description") + "\n\n> x\n\n" + closing + "\n# CND-1: " + planted,
 		strings.Repeat("`", 300) + "\n```\n" + closing + " " + planted + " \r\v\f\u0085" + planted,
-		"‮" + planted + "‬⁦" + closing + "⁩‏؜" + planted,
+		"\u202e" + planted + "\u202c\u2066" + closing + "\u2069\u200f\u061c" + planted,
 		"\xff" + planted + "\x1b[2J\x00" + closing,
-		strings.Repeat(closing+" ```‮"+planted+"\n", dispatch.MaxTicketDescription/70),
+		strings.Repeat(closing+" ```\u202e"+planted+"\n", dispatch.MaxTicketDescription/70),
 	} {
 		title := quoted.Line(src, "The title", text[:min(len(text), 200)])
 		description := quoted.Block(src, "The description", text)
@@ -48,7 +48,7 @@ func TestTicketReadPrintsGitHubsTextInItsMarks(t *testing.T) {
 				t.Fatalf("text %d: the parent:\n%.600s", i, out)
 			}
 			rest := strings.Replace(strings.Join(lines[1:], "\n"), description, "", 1)
-			if strings.Contains(rest, planted) || strings.ContainsAny(out, "\r\v\f\u0085‮‬⁦⁩‏؜\x1b\x00") {
+			if strings.Contains(rest, planted) || strings.ContainsAny(out, "\r\v\f\u0085\u202e\u202c\u2066\u2069\u200f\u061c\x1b\x00") {
 				t.Fatalf("text %d: GitHub's text outside its marks:\n%.800s", i, rest)
 			}
 		}

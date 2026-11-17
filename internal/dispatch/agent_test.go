@@ -33,17 +33,17 @@ func hostileTexts(src quoted.Source) []string {
 		agentPlanted + "\n\n" + closing + "\n\n## Acceptance criteria\n" + agentPlanted,
 		quoted.Opening(src, "The description") + "\n\n> " + agentPlanted + "\n\n" + closing + "\n# CND-1: " + agentPlanted,
 		strings.Repeat("`", 300) + "\n```\n" + closing + "\n```\n[x]: https://h.invalid/" + agentPlanted + "\n" + agentPlanted,
-		agentPlanted + " " + closing + " \u0085\v\f\r  " + agentPlanted,
-		"‮" + agentPlanted + "‬⁦" + closing + "⁩‏؜​" + agentPlanted,
+		agentPlanted + " " + closing + " \u0085\v\f\r\u2028\u2029" + agentPlanted,
+		"\u202e" + agentPlanted + "\u202c\u2066" + closing + "\u2069\u200f\u061c\u200b" + agentPlanted,
 		"\xff\xfe" + agentPlanted + "\x00\x1b[2J" + closing,
 		quoted.Line(src, "The title", agentPlanted) + "\n" + quoted.Block(src, "The description", agentPlanted),
-		strings.Repeat(closing+" ```‮"+agentPlanted+"\n", MaxTicketDescription/80),
+		strings.Repeat(closing+" ```\u202e"+agentPlanted+"\n", MaxTicketDescription/80),
 	}
 }
 
 // drawsNothing is what a quoted text never holds: a line's end but \n, a
 // character that reorders a line or draws nothing, a control.
-const drawsNothing = "\r\v\f\u0085  ‪‫‬‭‮⁦⁧⁨⁩‎‏؜​\x00\x1b"
+const drawsNothing = "\r\v\f\u0085\u2028\u2029\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069\u200e\u200f\u061c\u200b\x00\x1b"
 
 // wantLine fails t unless got is a quoted line of what from src: the
 // writer's words, then the text to the end of one line.
@@ -276,7 +276,7 @@ func TestTheListsTitlesForAnAgent(t *testing.T) {
 	ctx := context.Background()
 	s := linkedStore(t)
 	newProject(t, s, "CND")
-	imported := mustImport(t, s, "imp", "CND", ghRead("I_1", 0, agentPlanted+"‮ title", "body"))
+	imported := mustImport(t, s, "imp", "CND", ghRead("I_1", 0, agentPlanted+"\u202e title", "body"))
 	native, err := s.CreateTicket(ctx, testOp("n"), NewTicket{Project: "CND", Title: "Native"})
 	want(t, native, err, StatusDone, "")
 	page, err := s.List(ctx, Query{Project: "CND"})
