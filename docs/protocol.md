@@ -503,7 +503,9 @@ so the message's bound does not change, and a `turns` that is not one
 fails the message's decode as any malformed field does; a host's `done`
 keeps the `since` and words of the `done` the copy shows only when it
 carries that one's `id`, and with another `id` replaces it),
-`activity{sessionId,entry,state?}`,
+`activity{sessionId,entry,state?,seq?,leftOut?}` (`seq` and `leftOut` only
+to a server whose `registered` said `activitySeq`: see Attention, The
+host's activity while away),
 `session_info{sessionId?,endCommit?}` (what the host reports, below),
 `agent_session{sessionId?,agentSession,turn?}` (the agent's own session
 id an attention report to the host's socket named, and whether the report
@@ -592,7 +594,7 @@ followed, and a server reached without TLS is dialed directly, through no
 proxy (over TLS a proxy carries a tunnel, as before); with no provider, a
 redirect is followed and a proxy used as before.
 
-Server → host: `registered{sessionId, secret, shareBaseUrl, resumed, iceServers, links, recipe?, decisions?, renews?, sessionInfo?, agentSessions?}`
+Server → host: `registered{sessionId, secret, shareBaseUrl, resumed, iceServers, links, recipe?, decisions?, renews?, sessionInfo?, agentSessions?, activitySeq?}`
 (`decisions: true` from a switchyard that carries a decision link's lane,
 relaying DECISION and DECIDE, keeping run desks and serving the join
 page's Decide tab, below, Decision links: a publisher mints a decision link
@@ -617,7 +619,12 @@ below, absent from a switchyard, on a desk's and from an older server;
 its id as the attention route keeps `agentSession`, absent on a desk's
 and from an older server: a host names its socket to its agent only when
 its first `registered` says it, and stops listening on it when a later
-one does not (Attention, The host's socket)),
+one does not (Attention, The host's socket); `activitySeq: true` says
+the server takes `activity`'s `seq` and `leftOut`, absent on a desk's,
+from a switchyard and from an older server: only then does the host keep
+the entries its session records while its connection is down and send
+them as the next connection starts (Attention, The host's activity while
+away)),
 `viewer_join{viewerId, role, linkId?, linkLabel?, principal?}`, `offer{viewerId,sdp}`, `ice{viewerId,candidate}`,
 `relay_start{viewerId}`, `viewer_leave{viewerId, reason?}`, `link_gone{linkId, ended?}`, `stop{sessionId}`,
 `viewer_behind{viewerId, behind}` (a relayed viewer fell behind what the
@@ -1643,11 +1650,68 @@ one), the host stops listening on its socket, removes it and forgets what
 it logged, so the agent's reports go to this route and nothing logged
 before is sent after; ids its reports named while its connection was
 down and not yet told are lost then, and so are they when the host ends
-before its connection comes back. Events
-(`POST /api/sessions/{id}/events`) and the files a tool call touched still
-go to the server. A sender of an earlier release ignores the variable and
-posts to this route; a host of an earlier release sets none, and the
-sender posts here.
+before its connection comes back. A sender of an earlier release ignores
+the variable and posts to this route; a host of an earlier release sets
+none, and the sender posts here.
+
+The agent's events go to the socket too, when its host also sets
+`CONDUCTOR_HOST_EVENTS=1` beside `CONDUCTOR_HOST_SOCKET` (a server's own
+sessions never get it): `POST /events` over the socket, the events
+route's body (`POST /api/sessions/{id}/events`, Events) with the agent
+token, and the files a tool call touched each the same way. The host
+takes it as the route does: the session's own token alone (`401`), the
+same 64 KiB bound and strict decoding (`400 invalid_request`), a type
+the route takes (`400 invalid_type`; the entries a session records
+itself, `join`, `leave`, `input`, `link`, `status` and `attention`, are
+not among them), a `file` event with its `op` and `path`
+(`400 invalid_request`), the wait for the session (`503 starting`), `409
+session_ended`; an attention word is applied as above, with no
+`agentSession`, `plan` or `turnId`; an event is recorded in the host's
+session by `agent`, cleaned as the route cleans it, spending the
+session's bucket (`429 rate_limited`), and answered `202 {accepted:
+true}`. The server has it as every entry the host's session records
+(`activity`): at once, or, kept, as the host comes back (below). The
+sender falls back to the events route only when the socket cannot be
+reached, as for an attention report. A host of an earlier release sets
+no `CONDUCTOR_HOST_EVENTS`, and the sender posts its events to the
+events route, as before.
+
+#### The host's activity while away
+
+A host whose server's `registered` says `activitySeq` keeps each entry
+its session records until it knows the server took it, so that the
+entries recorded while its connection is down (an agent's events among
+them) reach the server, in order and each once:
+
+- each entry is numbered (`activity.seq`), from 1 and one more for each,
+  for the life of the host's process, and kept, at most 256: past that
+  the oldest goes, counted as left out;
+- it is sent in its turn; one certainly not written (no connection, or
+  no turn on a slow one, withdrawn) stays to be sent, and the entries go
+  in their order;
+- once the server has answered a ping the host sent after an entry on
+  the same connection, the entry is taken (the server reads in order) and
+  goes;
+- as a connection starts on a session the server resumed (`registered`'s
+  `resumed`), every entry kept is sent again in order: the server takes
+  one `seq` of a session once, and drops an entry whose `seq` is at or
+  below the last it took, so none is shown twice; on one it did not resume
+  (a server that forgot the session, a restart), the entries sent before
+  are not sent again, for they may have been taken, and are counted as left
+  out;
+- the count of entries left out goes with the next entry sent
+  (`activity.leftOut`, at most 1,048,576, a larger one taken as that), and
+  the server records, before that entry, a `status` entry of the session's:
+  "N activity entries of the host's may be missing here: recorded while its
+  connection to this server was down, and not sent".
+
+An entry keeps the time it was recorded at. Entries kept when the host
+ends before its connection comes back are lost. A server that does not
+say `activitySeq` (an earlier release, a switchyard) is sent no `seq` or
+`leftOut`, and nothing is kept for it: an entry recorded while the
+connection is down is lost, as before, and so are the ones kept when a
+later `registered` does not say it. An older host sends no `seq`, and the
+server takes its entries as before.
 
 Session `Info` also carries `branch` (the git branch of the working
 directory, read from `.git/HEAD` at launch; server and host alike) and, for
