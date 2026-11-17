@@ -457,6 +457,9 @@ export interface ParsedRef {
   item?: number
   launch?: string
   decision?: string
+  /** capture: a capture's id, and the send whose frozen document it names. */
+  capture?: string
+  send?: string
   agent?: string
   account?: string
   readAt?: string
@@ -563,6 +566,9 @@ export function parseRef(s: string): ParsedRef | null {
     case 'decision':
       // decision:<dr-n>, DR1's record, as its run's read lists it.
       return p.length === 1 && DECISION.test(p[0]!) ? { kind, decision: p[0] } : null
+    case 'capture':
+      // capture:<id> (a capture as it is now) or capture:<id>/<send> (what that send froze), PV1's.
+      return (p.length === 1 || p.length === 2) && p.every((x) => HEX.test(x)) ? { kind, capture: p[0], ...(p[1] ? { send: p[1] } : {}) } : null
     case 'capacity': {
       // capacity:<agent>/<account>@<readAt>, AC1's reading (docs/plans/capacity.md, PR-6); its chip is PR-7's.
       // Exactly one '@', and the time as the server's grammar has it (brakeman.ParseRef).
@@ -707,6 +713,8 @@ export function refLabel(ref: string, names: { session?: (id: string) => string 
       return `candidate ${r.task}, attempt ${r.n}`
     case 'decision':
       return `decision ${r.decision}`
+    case 'capture':
+      return r.send ? `capture ${r.capture}, as sent` : `capture ${r.capture}`
     case 'capacity':
       return `capacity of ${r.agent} on ${r.account}`
   }

@@ -3,6 +3,7 @@ import type { DispatchTicket, NewPlan, NewPlanReference, PlanBody, PlanDecision,
 import type { CrewPerson, CrewSummary } from '~/composables/useSessions'
 import type { TicketPlans } from '~/composables/useTicketPlans'
 import { commentAuthor } from '~/utils/dispatch'
+import { captureAttachments } from '~/utils/captureSend'
 import { FOR_NONE, PLAN_BOUNDS, decisionsProblem, forItems, keptComments, nextDecisionId, parseReference, planDecisionsOut, referenceText, revisionTag, shortCommit } from '~/utils/dispatchPlans'
 
 /**
@@ -92,7 +93,8 @@ function fill() {
   base.value = f ? f.revision.base : ''
   refs.value = (b?.references ?? []).map((r) => referenceText(r))
   const live = new Set(liveAttachments.value.map((a) => a.id))
-  attachments.value = (b?.attachments ?? []).filter((id) => live.has(id))
+  // A revision based on none hands over the ticket's captures (PV1: the screenshot and the document a send attached), ticked at first.
+  attachments.value = f ? (b?.attachments ?? []).filter((id) => live.has(id)) : captureAttachments(liveAttachments.value, PLAN_BOUNDS.attachments)
   comments.value = keptComments((b?.comments ?? []).map((c) => c.id), props.ticket.comments ?? [])
   const offered = new Set(recentComments.value.map((c) => c.id))
   earlierComments.value = comments.value.filter((id) => !offered.has(id))
