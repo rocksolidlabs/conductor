@@ -291,12 +291,12 @@ func TestAStopKeepsTheSelection(t *testing.T) {
 		}
 		// Applied once, by the run that held it, or left answered for the
 		// continuation to apply: never twice, never lost.
-		rec := decisionWhen(t, se.ld, row.ID(), "answered or applied", func(rec ledger.DecisionRecord) bool {
+		decisionWhen(t, se.ld, row.ID(), "answered or applied", func(rec ledger.DecisionRecord) bool {
 			return rec.State == ledger.DecisionApplied || rec.State == ledger.DecisionAnswered
 		})
 		next := continueRun(t, se.e, se.run.ID)
 		defer stopRun(t, se.e, next.ID)
-		rec = decisionWhen(t, se.ld, row.ID(), "applied", inState(ledger.DecisionApplied))
+		rec := decisionWhen(t, se.ld, row.ID(), "applied", inState(ledger.DecisionApplied))
 		if kindCount(rec, ledger.HistoryApplied) != 1 || countKind(eventsOf(t, se.ld, se.run.ID), "compare.selected")+countKind(eventsOf(t, se.ld, next.ID), "compare.selected") != 1 {
 			t.Fatalf("applied %d times: %q", kindCount(rec, ledger.HistoryApplied), historyKinds(rec))
 		}

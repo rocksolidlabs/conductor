@@ -196,9 +196,8 @@ func sameCands(cands []*SettledCandidate, opts []SettledCandidate) bool {
 // laneMoved is what changed a selection's lanes, in words: a lane that has
 // not ended, or one whose candidate is not its option's.
 func (r *run) laneMoved(d *decision, opts []SettledCandidate) string {
-	doomed := r.doomed()
 	for _, cd := range r.compare.Candidates {
-		if !r.laneEndedIn(cd.Task, doomed) {
+		if !r.laneEnded(cd.Task) {
 			return fmt.Sprintf("%s runs again", cd.Task)
 		}
 	}
