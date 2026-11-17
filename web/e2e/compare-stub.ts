@@ -32,8 +32,16 @@ export interface ComparisonShape {
   unavailable?: boolean
   /** approach-a still running: no result yet, no cells. */
   running?: boolean
-  /** The supporting part (PR-5) with Brakeman's request, absent when not given. */
+  /** The supporting part (PR-5) with Brakeman's request, absent when not given (and no `supporting` asked). */
   brakemanRequest?: string
+  /**
+   * The supporting part as the server gives it (PR-5, PR-6b): each candidate's claim, which favours its own candidate, and each review's
+   * verdict, an approval favouring the candidate it approved; Brakeman's request when `brakemanRequest` names one, else why there is
+   * none ("Brakeman is not set up").
+   */
+  supporting?: boolean
+  /** The selection part (PR-6b): the newest record, open, or applied with approach-a selected; absent when not given. */
+  selection?: 'open' | 'applied'
 }
 
 type Cell = Record<string, unknown>
@@ -145,9 +153,42 @@ export function comparisonOf(o: ComparisonShape): Record<string, unknown> {
     candidates,
     checks,
     settled: !o.running,
+    // The server's word for where the comparison is (running, selecting, answered, selected, none, ended).
+    state: o.running ? 'running' : o.selection === 'applied' ? 'selected' : 'selecting',
     independence: { notObserved: NOT_OBSERVED },
-    ...(o.brakemanRequest ? { supporting: { claims: [], reviews: [], brakeman: { request: o.brakemanRequest, state: 'queued' } } } : {}),
+    ...(o.supporting ? { supporting: supportingOf(o, lanes) } : o.brakemanRequest ? { supporting: { claims: [], reviews: [], brakeman: { request: o.brakemanRequest, state: 'queued' } } } : {}),
+    ...(o.selection ? { selection: selectionOf(o, candidates) } : {}),
   }
+}
+
+/** What was said (PR-5): a claim per candidate with a result, a review per candidate, the first approved; Brakeman's part. */
+function supportingOf(o: ComparisonShape, lanes: readonly string[]): Record<string, unknown> {
+  return {
+    claims: lanes.map((task) => ({ task, attempt: 1, summary: `${task}: the stub's own summary of its change.`, favours: task })),
+    reviews: lanes.map((task, i) => ({ task: `review-${task.slice(-1)}`, attempt: 1, verdict: i === 0 ? 'approved' : 'needs_changes', findings: i === 0 ? [] : ['the bench script was changed'], ...(i === 0 ? { favours: task } : {}) })),
+    brakeman: o.brakemanRequest ? { request: o.brakemanRequest, state: 'queued' } : { why: 'Brakeman is not set up' },
+  }
+}
+
+/** The selection (PR-6b): its record's options (each selectable candidate at its commit, then None of these), and once applied the answer. */
+function selectionOf(o: ComparisonShape, candidates: ReadonlyArray<{ task: string; run: string; attempt: number; commit: string; selectable: boolean }>): Record<string, unknown> {
+  const picks = candidates.filter((c) => c.selectable)
+  const options = [
+    ...picks.map((c) => ({ label: `${c.task} at ${c.commit.slice(0, 7)}`, tradeoffs: `attempt ${c.attempt}; its checks passed`, subject: { kind: 'candidate', run: c.run, task: c.task, n: c.attempt, commit: c.commit } })),
+    { label: 'None of these', tradeoffs: 'Ends the comparison with no candidate selected.' },
+  ]
+  const out: Record<string, unknown> = { decision: 'dr-9001', state: o.selection, options }
+  if (o.selection === 'applied' && picks[0]) {
+    const c = picks[0]
+    Object.assign(out, {
+      chosen: 0,
+      rationale: 'the stub selects the first',
+      by: 'Nate',
+      at: new Date().toISOString(),
+      applied: { how: 'selected', selected: { task: c.task, run: c.run, attempt: c.attempt, commit: c.commit }, words: `${c.task} selected at ${c.commit.slice(0, 7)}` },
+    })
+  }
+  return out
 }
 
 export interface ServedComparison {

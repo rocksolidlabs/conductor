@@ -302,21 +302,23 @@ test('a comparison of two stub candidates on the real server: the view shows wha
     const run = launched.launch.runId
     expect(run).toBeTruthy()
     // Every lane ended: the ledger's word (settled), not a page's.
+    // Its selection open too: the selection is read just after the measures, so it can come one change later than `settled`.
     await expect
-      .poll(async () => (await s.api.ok<{ settled: boolean }>('GET', `/api/runs/${run}/comparison`)).settled, { timeout: SETTLE_MS, intervals: [1000] })
-      .toBe(true)
+      .poll(async () => (await s.api.ok<{ settled: boolean; selection?: { state: string } }>('GET', `/api/runs/${run}/comparison`)).selection?.state ?? '', { timeout: SETTLE_MS, intervals: [1000] })
+      .toBe('open')
     const real = await s.api.ok<Record<string, unknown>>('GET', `/api/runs/${run}/comparison`)
 
     // The stub's keys are the server's: what the real comparison has no case of here is left out by name, never by its shape.
-    const stub = comparisonOf({ run, brakemanRequest: undefined })
+    const stub = comparisonOf({ run, brakemanRequest: undefined, supporting: true, selection: 'open' })
     expect(
       keyDiff(stub, real, [
-        // No lane git could not read, no diff past its bound, no test or build file changed, no Brakeman.
+        // No lane git could not read, no diff past its bound, no test or build file changed.
         'candidates[].unavailable',
         'candidates[].size.notMeasured',
         'candidates[].verifyFiles',
-        'supporting',
-        'selection',
+        // The stub's second review asks for changes with a finding; these reviews' findings may be none.
+        'supporting.reviews[].findings[]',
+        'supporting.reviews[].favours',
         // The stub's lanes share commits and same patches, a check not run, a failed cell; the real ones none of these.
         'candidates[].shared[]',
         'candidates[].equivalent[]',
@@ -329,6 +331,7 @@ test('a comparison of two stub candidates on the real server: the view shows wha
       "the comparison's keys the server sends that the stub lacks (missing), and the stub's that it never sends (extra)",
     ).toEqual({ missing: [], extra: [] })
     expect((real.independence as { notObserved: string }).notObserved, "the stub carries the server's words").toBe(NOT_OBSERVED)
+    expect((real.supporting as { brakeman: unknown }).brakeman, "the stub's words for a draft not asked").toEqual({ why: 'Brakeman is not set up' })
     // The run's compare part, as compareRun gives it.
     const runRead = await s.api.ok<{ run: Record<string, unknown> }>('GET', `/api/runs/${run}`)
     expect(runRead.run.compare).toEqual({ candidates: [{ task: 'approach-a', review: 'review-a' }, { task: 'approach-b', review: 'review-b' }] })
@@ -379,6 +382,18 @@ test('a comparison of two stub candidates on the real server: the view shows wha
       await page.locator('[data-launch]').click()
       await page.locator('[data-crew-launch-confirm]').click()
       await expect(page.getByText("a comparison is launched from a ticket's approved plan revision").first()).toBeVisible()
+
+      // Answered and applied: the selection's keys once applied are the stub's too.
+      const open = real.selection as { decision: string }
+      const rev = (await s.api.ok<{ decision: { rev: number } }>('GET', `/api/decisions/${open.decision}`)).decision.rev
+      await s.api.ok('POST', `/api/decisions/${open.decision}/respond`, { responseId: 'cmpw-select-a', choice: 0, rationale: 'the stub keys', expectedRev: rev })
+      budget(SETTLE_MS)
+      await expect
+        .poll(async () => (await s.api.ok<{ selection?: { state: string } }>('GET', `/api/runs/${run}/comparison`)).selection?.state ?? '', { timeout: SETTLE_MS, intervals: [1000] })
+        .toBe('applied')
+      const applied = await s.api.ok<Record<string, unknown>>('GET', `/api/runs/${run}/comparison`)
+      expect(keyDiff((comparisonOf({ run, supporting: true, selection: 'applied' }) as { selection: unknown }).selection, applied.selection, []), "the applied selection's keys").toEqual({ missing: [], extra: [] })
+      expect(applied.state).toBe('selected')
     } finally {
       await page.context().close()
     }
