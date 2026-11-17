@@ -129,9 +129,11 @@ func notSelectedWords(task, decision string) string {
 }
 
 // selectFirstWords is what a delivery or a repair before the selection is told:
-// the record that waits for its answer, or that the lanes still run.
+// the record that waits for its answer (open, or answered and not yet
+// applied), or that the lanes still run: a record superseded by a lane's
+// change is named by nothing, since it takes no answer.
 func selectFirstWords(st crew.ComparisonState) string {
-	if st.Decision == "" {
+	if st.Decision == "" || st.State != crew.CompareSelecting && st.State != crew.CompareAnswered {
 		return "select a candidate first: the comparison has not settled"
 	}
 	return "select a candidate first: " + st.Decision + " is open"

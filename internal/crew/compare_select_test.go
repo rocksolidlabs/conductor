@@ -190,6 +190,23 @@ func countKind(evs []ledger.EventRow, kind string) int {
 	return n
 }
 
+// stateWhen waits for the comparison's state, read from the ledger, to be
+// state, and answers it.
+func stateWhen(t *testing.T, e *Engine, runID, state string) ComparisonState {
+	t.Helper()
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		st := stateOf(t, e, runID)
+		if st.State == state {
+			return st
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the comparison is %+v after 20 s, not %s", st, state)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 // outcomeOf is the run's outcome as the engine holds it, "" for none.
 func outcomeOf(t *testing.T, e *Engine, runID string) string {
 	t.Helper()
@@ -430,6 +447,33 @@ func TestAnyLaneChangeSupersedesTheSelection(t *testing.T) {
 			t.Fatalf("%d selections stand", n)
 		}
 	})
+	t.Run("an accept anyway after none stood", func(t *testing.T) {
+		se := launchSelect(t, 2)
+		defer stopRun(t, se.e, se.run.ID)
+		se.fail(t, se.run.ID, "approach-a")
+		se.fail(t, se.run.ID, "approach-b")
+		waitOutcome(t, se.e, se.run.ID, ledger.OutcomeFailed)
+		stateWhen(t, se.e, se.run.ID, CompareEnded)
+		if rows := selections(t, se.ld, se.run.ID); len(rows) != 0 {
+			t.Fatalf("a selection with no candidate: %+v", rows)
+		}
+		finished := countKind(eventsOf(t, se.ld, se.run.ID), "run.finished")
+		if rc, err := se.e.Accept(t.Context(), se.run.ID, "admin", Command{ID: "a1"}, "approach-a"); err != nil || rc.Status != ledger.CommandDone {
+			t.Fatalf("accept: %+v %v", rc, err)
+		}
+		// Opened in the accept's own change: there once the command returns.
+		rows := selections(t, se.ld, se.run.ID)
+		a := taskOf(t, se.e, se.run.ID, "approach-a")
+		if len(rows) != 1 || rows[0].State != ledger.DecisionOpen || !slices.Equal(labels(selectBody(t, rows[0])), []string{"approach-a at " + a.Result.Commit[:7], noneOfThese}) {
+			t.Fatalf("the records after the accept: %+v", rows)
+		}
+		if st := stateOf(t, se.e, se.run.ID); st.State != CompareSelecting {
+			t.Fatalf("the comparison after the accept: %+v", st)
+		}
+		if n := countKind(eventsOf(t, se.ld, se.run.ID), "run.finished"); n != finished || outcomeOf(t, se.e, se.run.ID) != "" {
+			t.Fatalf("run.finished %d after the accept, was %d; outcome %q", n, finished, outcomeOf(t, se.e, se.run.ID))
+		}
+	})
 	t.Run("an accept anyway", func(t *testing.T) {
 		se := launchSelect(t, 2)
 		defer stopRun(t, se.e, se.run.ID)
@@ -611,9 +655,9 @@ func TestAFullRunOpensNoSelection(t *testing.T) {
 	if words != "this run has recorded 1,000 decisions: no room for a selection: continue the run to select in its continuation, or launch a new comparison" {
 		t.Fatalf("the words: %q", words)
 	}
-	if st := stateOf(t, se.e, se.run.ID); st.State != CompareEnded {
-		t.Fatalf("the comparison: %+v", st)
-	}
+	// The ledger's own read, once the change that ended the last lane has
+	// committed: the engine's view is ahead of it until then.
+	stateWhen(t, se.e, se.run.ID, CompareEnded)
 	if _, ok, _ := se.e.SelectedLane(t.Context(), se.run.ID); ok {
 		t.Fatal("a lane is selected")
 	}
