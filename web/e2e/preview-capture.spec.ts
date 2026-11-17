@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import type { Page } from '@playwright/test'
 import { walk, worst } from './contrast'
 import { expect, git, stopStrays, task, test, useTheme } from './fixtures'
+import { noSideways } from './layout'
 import { endMade, launch, made, pick, previewCrew, previewFrame, previewSeam, scratchDir, stepIn } from './preview-fixtures'
 
 // A preview in Conductor and a capture saved (docs/plans/browser-evidence.md, PR-4, #792), against a managed crew of the stub worker
@@ -15,6 +16,13 @@ import { endMade, launch, made, pick, previewCrew, previewFrame, previewSeam, sc
 // the bridge, said after 3 s. The screenshots come through the seam (Playwright's own of the frame's box), so the comparisons run on
 // real pixels. Every wait is on what the page draws or what the server answers.
 test.describe.configure({ mode: 'serial', timeout: 300_000 })
+
+/**
+ * The bound on a preview page drawn and its bridge ready: the app's start, the label's read (at most its 5 s), the fixture page and the
+ * bridge's script loaded, the hello answered (at most 3 s). Each is quick on a quiet machine; on a loaded one the app's start alone
+ * took 11 s, so the bound is the sum of their worst with room, above the expect's 15 s.
+ */
+const BOOT_MS = 60_000
 
 const m = made()
 let runId = ''
@@ -51,7 +59,7 @@ test.afterAll(async ({ api }) => {
 async function previewPage(page: Page) {
   await previewSeam(page)
   await page.goto(`/preview?run=${encodeURIComponent(runId)}&task=build&attempt=1`)
-  await expect(page.locator('[data-preview-pane]')).toHaveAttribute('data-preview-bridge', 'ready')
+  await expect(page.locator('[data-preview-pane]')).toHaveAttribute('data-preview-bridge', 'ready', { timeout: BOOT_MS })
   return previewFrame(page, origin)
 }
 
@@ -72,8 +80,8 @@ test('Open in Conductor, the label, elements under an overlay, a navigation, the
   await page.locator('[data-task-preview-open="build"]').click()
   await expect(page).toHaveURL(new RegExp(`/preview\\?run=${runId}&task=build&attempt=1$`))
   const head = git(worktree, 'rev-parse', 'HEAD').trim()
-  await expect(page.locator('[data-preview-label]')).toHaveText(new RegExp(`^attempt 1 of build · worktree at ${head.slice(0, 7)} .+ · changes as the agent works$`))
-  await expect(page.locator('[data-preview-pane]')).toHaveAttribute('data-preview-bridge', 'ready')
+  await expect(page.locator('[data-preview-label]')).toHaveText(new RegExp(`^attempt 1 of build · worktree at ${head.slice(0, 7)} .+ · changes as the agent works$`), { timeout: BOOT_MS })
+  await expect(page.locator('[data-preview-pane]')).toHaveAttribute('data-preview-bridge', 'ready', { timeout: BOOT_MS })
   const frame = await previewFrame(page, origin)
   const editor = editorOf(page)
 
@@ -169,7 +177,7 @@ test('the page held at its commit while the spec commits B in the worktree: the 
 test('an animated control is kept stable: false and the next element is another capture; a hover-styled one too, once the pointer left it', async ({ page }) => {
   const frame = await previewPage(page)
   await frame.goto(`${origin}/motion`)
-  await expect(page.locator('[data-preview-pane]')).toHaveAttribute('data-preview-bridge', 'ready')
+  await expect(page.locator('[data-preview-pane]')).toHaveAttribute('data-preview-bridge', 'ready', { timeout: BOOT_MS })
   const editor = editorOf(page)
 
   await page.locator('[data-preview-capture]').click()
@@ -196,8 +204,8 @@ test('an animated control is kept stable: false and the next element is another 
 test("a page that does not load the bridge says so after 3 s, and Capture keeps the screenshot and the notes", async ({ page, api }) => {
   const frame = await previewPage(page)
   await frame.goto(`${origin}/no-bridge`)
-  await expect(page.locator('[data-preview-nobridge]')).toHaveText("this page does not load Conductor's bridge: Capture takes the screenshot and your notes only. In the desktop app every page has it.")
-  await expect(page.locator('[data-preview-pane]')).toHaveAttribute('data-preview-bridge', 'absent')
+  await expect(page.locator('[data-preview-nobridge]')).toHaveText("this page does not load Conductor's bridge: Capture takes the screenshot and your notes only. In the desktop app every page has it.", { timeout: BOOT_MS })
+  await expect(page.locator('[data-preview-pane]')).toHaveAttribute('data-preview-bridge', 'absent', { timeout: BOOT_MS })
   await page.locator('[data-preview-capture]').click()
   const editor = editorOf(page)
   await expect(editor.locator('[data-capture-shot]')).toBeVisible()
@@ -220,3 +228,21 @@ for (const theme of ['light', 'dark'] as const)
     expect(judged).toBeGreaterThan(10)
     expect(failures, worst(failures)).toEqual([])
   })
+
+test('on a phone the editor is the page over the frame, out of the way while selecting, and nothing is wider than the screen', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  const frame = await previewPage(page)
+  await page.locator('[data-preview-capture]').click()
+  // Selecting: the frame shows, the editor waits.
+  await expect(page.locator('[data-preview-selecting]')).toBeVisible()
+  await expect(editorOf(page)).toBeHidden()
+  await pick(page, frame, '#second', 'button#second.second', { downs: 1 })
+  const editor = editorOf(page)
+  await expect(editor.locator('[data-annotation="1"]')).toBeVisible()
+  const pane = (await page.locator('[data-preview-stage]').boundingBox())!
+  const drawn = (await editor.boundingBox())!
+  // The editor covers the frame's stage, edge to edge.
+  expect(Math.abs(drawn.x - pane.x)).toBeLessThan(1)
+  expect(Math.abs(drawn.width - pane.width)).toBeLessThan(1)
+  await noSideways(page)
+})
