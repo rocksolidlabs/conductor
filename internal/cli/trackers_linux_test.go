@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/creack/pty"
 	"golang.org/x/sys/unix"
@@ -59,7 +60,12 @@ func TestTrackersSetReadsATerminalUnseen(t *testing.T) {
 		done <- result{code, err, out.String()}
 	}()
 	// Typed only once the read has turned the echo off: before, the
-	// terminal itself would echo it, whatever the command does.
+	// terminal itself would echo it, whatever the command does. A read
+	// that never turns it off fails here, before the test's own deadline.
+	giveUp := time.Now().Add(time.Hour)
+	if d, ok := t.Deadline(); ok {
+		giveUp = d.Add(-time.Until(d) / 10)
+	}
 	for {
 		tio, err := unix.IoctlGetTermios(int(tty.Fd()), unix.TCGETS)
 		if err != nil {
@@ -68,8 +74,8 @@ func TestTrackersSetReadsATerminalUnseen(t *testing.T) {
 		if tio.Lflag&unix.ECHO == 0 {
 			break
 		}
-		if t.Context().Err() != nil {
-			t.Fatal("the echo was never turned off")
+		if time.Now().After(giveUp) {
+			t.Fatal("the echo was never turned off: the token would be shown as it is typed")
 		}
 		runtime.Gosched()
 	}
