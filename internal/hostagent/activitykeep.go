@@ -3,6 +3,7 @@ package hostagent
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/rocksolidlabs/conductor/internal/proto"
 	"github.com/rocksolidlabs/conductor/internal/session"
@@ -49,13 +50,20 @@ type keptActivity struct {
 	late bool
 }
 
-// keepActivity numbers m and keeps it, the oldest going past the bound.
-func (a *agent) keepActivity(m proto.HostActivityMsg) {
+// keepActivity numbers m and keeps it, the oldest going past the bound. It
+// is late unless the code can show it was made on the current connection:
+// handed over on this registration (made, madeOn) and stamped (at; none
+// counts as earlier) no earlier than the registration began. An entry recorded while the host was
+// away and handed to its sender only after the connection came back (the
+// forwarder behind a burst, a slow goroutine) is late, whichever goroutine
+// reaches here first; in doubt, it is late and pages no one.
+func (a *agent) keepActivity(m proto.HostActivityMsg, made uint64, at time.Time) {
 	a.actMu.Lock()
 	defer a.actMu.Unlock()
 	a.actSeq++
 	m.Seq = a.actSeq
-	a.actKept = append(a.actKept, keptActivity{m: m})
+	late := made != a.actEpoch || at.Before(a.actBegan)
+	a.actKept = append(a.actKept, keptActivity{m: m, late: late})
 	if len(a.actKept) > a.keptBound() {
 		a.actLeftOut = min(a.actLeftOut+1+a.actKept[0].m.LeftOut, proto.MaxActivityLeftOut)
 		a.actKept = a.actKept[1:]
@@ -207,6 +215,15 @@ func (a *agent) confirmActivity(w *controlWriter, on, upTo uint64) {
 	}()
 }
 
+// madeOn is the registration the host is on (actEpoch), for an entry the
+// session hands over now: an entry is live only when it is kept on the same
+// one (keepActivity).
+func (a *agent) madeOn() uint64 {
+	a.actMu.Lock()
+	defer a.actMu.Unlock()
+	return a.actEpoch
+}
+
 // confirmOn says whether the server answered a ping sent on w; tests
 // replace it (actConfirm).
 func (a *agent) confirmOn(w *controlWriter) bool {
@@ -233,6 +250,7 @@ func (a *agent) registeredActivity(takes, resumed bool) {
 	a.actMu.Lock()
 	defer a.actMu.Unlock()
 	a.actEpoch++
+	a.actBegan = time.Now()
 	a.actResumed = resumed
 	if !takes {
 		a.actKept, a.actLeftOut = nil, 0
