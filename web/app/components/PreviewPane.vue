@@ -30,6 +30,8 @@ const props = defineProps<{
   retake?: string
   /** A candidate's checkout's state as the run reads it, for the words while its label is not offered yet. */
   checkout?: 'resolved' | 'ready' | 'ending' | ''
+  /** Counts the link tab's Refresh: each one loads the frame again, as the pane's own Refresh does, the drafts kept. */
+  reloads?: number
 }>()
 const emit = defineEmits<{ label: [words: string] }>()
 
@@ -85,6 +87,11 @@ watch(stage, (el, was) => {
   if (was) watcher?.unobserve(was)
   if (el) watcher?.observe(el)
 })
+/** The stage's size read now, as the observer would on its next turn: a size the editor's opening changed is laid out at once. */
+function settleRoom() {
+  const el = stage.value
+  if (el && (el.clientWidth !== room.value.width || el.clientHeight !== room.value.height)) room.value = { width: el.clientWidth, height: el.clientHeight }
+}
 const device = computed(() => (mode.value === 'fit' ? null : DEVICE_SIZES[mode.value]))
 const scale = computed(() => {
   const d = device.value
@@ -108,16 +115,35 @@ const session = usePreviewBridge({
   end: () => ({ window: framed.value ? (frame.value?.contentWindow ?? null) : null, origin: framed.value ? originOf(src.value) : '' }),
   label: () => (props.target ? labels.moment() : Promise.resolve(null)),
   source: () => screenshotSource(frame.value!, { seam: previewSeam.source }),
+  // The frame's box, cut to the stage's: what is outside the stage (the editor beside it) is never in a screenshot.
   rect: () => {
     const r = frame.value?.getBoundingClientRect()
-    return r ? { x: r.x, y: r.y, width: r.width, height: r.height } : { x: 0, y: 0, width: 0, height: 0 }
+    const st = stage.value?.getBoundingClientRect()
+    if (!r) return { x: 0, y: 0, width: 0, height: 0 }
+    if (!st) return { x: r.x, y: r.y, width: r.width, height: r.height }
+    const x = Math.max(r.left, st.left)
+    const y = Math.max(r.top, st.top)
+    return { x, y, width: Math.max(0, Math.min(r.right, st.right) - x), height: Math.max(0, Math.min(r.bottom, st.bottom) - y) }
   },
+  beforeFrame: async () => {
+    // Nothing of the workbench over the frame while its pixels are taken: on a phone the editor goes while the session is busy (the
+    // template's v-show), a size the editor's opening changed is laid out, and both are painted before the frame is read.
+    settleRoom()
+    await nextTick()
+    await painted()
+  },
+  frameElement: () => frame.value,
   view: () => ({ mode: mode.value, scale: scale.value }),
   fallback: () => {
     const d = device.value
     return { url: src.value, width: d ? d.width : room.value.width, height: d ? d.height : room.value.height }
   },
 })
+/** Two animation frames: what the last change drew is on the screen. */
+function painted(): Promise<void> {
+  if (typeof requestAnimationFrame === 'undefined') return Promise.resolve()
+  return new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))
+}
 /** The frame loaded: in the desktop app the shell puts the bridge into it first (any page has it there), then the hello. */
 async function loaded() {
   const at = src.value
@@ -132,8 +158,24 @@ const frameKey = ref(0)
 function refresh() {
   frameKey.value++
 }
-/** The editor: beside the frame on a wide screen; on a phone over it, as the page, and out of the way while the person selects. */
+watch(
+  () => props.reloads,
+  (n, was) => n !== was && was !== undefined && refresh(),
+)
+/**
+ * The editor: beside the frame on a wide screen; on a phone over it, as the page, and out of the way while the session selects,
+ * describes or takes pixels. Made at its first opening and kept: closed, it is hidden, its drafts' notes and saved captures kept.
+ * `opens` counts its openings: each lists the attempt's saved captures again.
+ */
 const editorOpen = ref(false)
+const editorMade = ref(false)
+const opens = ref(0)
+function openEditor() {
+  editorMade.value = true
+  if (!editorOpen.value) opens.value++
+  editorOpen.value = true
+}
+const editorShown = computed(() => editorOpen.value && !(phone.value && !!session.state.busy))
 
 const from = computed<CaptureFrom | null>(() => {
   if (props.target) return { run: props.target.run, task: props.target.task, attempt: props.target.attempt, ...(props.target.seq ? { seq: props.target.seq } : {}) }
@@ -141,11 +183,13 @@ const from = computed<CaptureFrom | null>(() => {
 })
 
 async function capture() {
-  editorOpen.value = true
+  openEditor()
   // The editor opens first, so the frame's size is settled before the moment is read.
   await nextTick()
-  if (session.state.bridge === 'ready') await session.select()
-  else await session.snap()
+  settleRoom()
+  await nextTick()
+  // While the hello is under way Capture waits for it: selection mode where the page answers, the screenshot alone where it does not.
+  await session.start()
 }
 
 /** Waits for the hello after the frame's next load to be answered or given up (a bound on a frame that never loads). */
@@ -169,20 +213,21 @@ const captures = useCaptures()
 const retakeError = ref('')
 async function again(c: CaptureAnswer) {
   retakeError.value = ''
-  editorOpen.value = true
+  openEditor()
   if (c.viewport.mode !== mode.value) mode.value = c.viewport.mode
   await nextTick()
+  settleRoom()
   const want = retakeAddress(c.url, src.value)
   if (!want) {
     retakeError.value = 'the capture names no page this preview can open'
     return
   }
-  if (want !== address.value || session.state.bridge !== 'ready') {
-    const before = hellos.value
-    moved.value = want === src.value ? '' : want
-    frameKey.value++
-    await nextHello(before)
-  }
+  // The frame is always loaded again at the capture's page: the page it shows may be another than the address it was given (a link
+  // followed inside it, a route the page pushed), which nothing tells the pane.
+  const before = hellos.value
+  moved.value = want === src.value ? '' : want
+  frameKey.value++
+  await nextHello(before)
   if (session.state.bridge !== 'ready') {
     retakeError.value = "the page did not answer: Capture again needs the bridge to describe the capture's elements"
     return
@@ -206,21 +251,23 @@ watch(
   { immediate: true },
 )
 
+/** Escape in the pane (its toolbar, its stage) leaves selection mode, or ends the tab's capture; an Escape elsewhere (a menu, a note) does not. */
+const root = ref<HTMLElement | null>(null)
 function onKey(e: KeyboardEvent) {
   if (e.key !== 'Escape') return
   if (session.state.busy === 'select') session.cancel()
-  else void session.release()
+  else if (e.target instanceof Node && root.value?.contains(e.target) && !(e.target as Element).closest?.('[data-capture-editor]')) void session.release()
 }
 onMounted(() => window.addEventListener('keydown', onKey))
 onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 
 const selecting = computed(() => session.state.busy === 'select')
 const canSelect = computed(() => session.state.bridge === 'ready' && framed.value)
-defineExpose({ capture, session, again })
+defineExpose({ capture, session, again, refresh })
 </script>
 
 <template>
-  <div class="flex h-full min-h-0 min-w-0 flex-col" data-preview-pane :data-preview-bridge="session.state.bridge">
+  <div ref="root" class="flex h-full min-h-0 min-w-0 flex-col" data-preview-pane :data-preview-bridge="session.state.bridge">
     <!-- The label, then what the pane offers: one line that never wraps, so nothing it shows resizes the frame (a page's resize is a
          new moment). -->
     <div class="flex h-9 min-w-0 flex-none flex-nowrap items-center gap-2 border-b border-default px-3 text-xs">
@@ -245,6 +292,7 @@ defineExpose({ capture, session, again })
         <IconButton icon="i-lucide-refresh-cw" size="xs" color="neutral" variant="ghost" label="Refresh" :disabled="!framed" data-preview-refresh @click="refresh" />
         <IconButton icon="i-lucide-external-link" size="xs" color="neutral" variant="ghost" label="New tab" :to="src || undefined" :disabled="!src" target="_blank" rel="noopener noreferrer" external data-preview-newtab />
       </template>
+      <IconButton icon="i-lucide-images" size="xs" color="neutral" :variant="editorOpen ? 'soft' : 'ghost'" :label="editorOpen ? 'Hide the captures' : 'Show the captures'" :aria-pressed="editorOpen" data-preview-captures @click="editorOpen ? (editorOpen = false) : openEditor()" />
       <UButton label="Capture" icon="i-lucide-scan" size="xs" class="flex-none" :loading="session.state.busy === 'shot'" :disabled="!framed || selecting" data-preview-capture @click="capture" />
     </div>
     <!-- What the pane says now, in one line of a fixed height: selecting, no bridge, a label that could not be read. -->
@@ -291,9 +339,10 @@ defineExpose({ capture, session, again })
         </div>
       </div>
       <CaptureEditor
-        v-if="editorOpen"
-        v-show="!phone || !selecting"
+        v-if="editorMade"
+        v-show="editorShown"
         :session="session"
+        :opens="opens"
         :from="from"
         :run-ticket="runTicket"
         :attempt-session="attemptSession"
