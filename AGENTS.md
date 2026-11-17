@@ -555,6 +555,16 @@ add its rule here.
   interception on all the same, and a route that takes every request
   to let it through hands each one to the test and back, which sends a
   file the page uploads without its bytes (`dispatch.spec.ts`).
+- A measure a few pixels from its threshold is a coin another change
+  tosses. A session's longest name was 17 px wider than its room in the
+  header at 1440: "cut with an ellipsis" passed on one branch and failed
+  on the next, which had one control fewer in that header
+  (`session-page.spec.ts`, the sweep of 2026-11-17). Assert a cut, a wrap
+  or a fit only where the layout gives the margin (a phone, a narrow
+  window: some 880 px of text in 150 to 300), and where the thing is
+  near its room assert what holds either way (its full text reachable,
+  its room kept, nothing over it). Read the two numbers once before
+  trusting a comparison of them.
 - Measure a thing at rest. A box, a colour or a place read while an
   opening animation or a transition still runs is a state passed through:
   a panel measured 47 ms into its 100 ms opening "moved under the pointer"

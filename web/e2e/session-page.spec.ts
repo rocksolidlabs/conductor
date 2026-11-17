@@ -200,26 +200,32 @@ test("on a phone the name keeps its room: Files and Share are in More, and Share
   await expect(page.getByRole('button', { name: 'Files', exact: true })).toBeVisible()
 })
 
-/** A name as long as the server takes (proto.MaxSessionName, 120): far too long for a phone's header, and for a desktop's. */
+/**
+ * A name as long as the server takes (proto.MaxSessionName, 120): far too long for a phone's header and for a narrow window's
+ * (some 880 px of text where the title has 150 to 300). At 1440 it is within a few pixels of its room (17 px over, measured
+ * 2026-11-17), so whether it is cut there turns on what else the header holds: that case asserts what holds either way.
+ */
 const LONG_NAME = 'e2e a session named at length, so that its header cannot hold it: every word of the name a person gave it, to the end'
 
 /**
  * The session's name in its header cut with an ellipsis, with room of its own, its full text its title, nothing of the header over
- * it. The measures are read where the answer is made, the page at rest (its fonts loaded).
+ * it. The measures are read where the answer is made, the page at rest (its fonts loaded). `room: 'may hold it'` is for a
+ * width where the name is near its room: there it is whole or cut, and everything else holds the same.
  */
-async function cutAndWhole(page: Page, at: string) {
+async function cutAndWhole(page: Page, at: string, room: 'too small' | 'may hold it' = 'too small') {
   const header = page.locator('[data-session-bar]')
   const title = header.locator('[data-session-title]')
   await expect(title, at).toHaveText(LONG_NAME)
   await expect(title, `${at}: the full name is its title`).toHaveAttribute('title', LONG_NAME)
   await page.evaluate(() => document.fonts.ready.then(() => undefined))
   const m = await title.evaluate((e) => ({ overflow: getComputedStyle(e).textOverflow, cut: e.scrollWidth > e.clientWidth, width: e.getBoundingClientRect().width }))
-  expect(m, `${at}: the name is cut with an ellipsis`).toMatchObject({ overflow: 'ellipsis', cut: true })
+  expect(m.overflow, `${at}: a name past its room is cut with an ellipsis`).toBe('ellipsis')
+  if (room === 'too small') expect(m.cut, `${at}: the name is cut`).toBe(true)
   expect(m.width, `${at}: the name has room`).toBeGreaterThanOrEqual(100)
   await noOverlap(header)
 }
 
-test('on a phone and at 1440 a name too long for the header is cut with an ellipsis and its full text is its title, again after the window changes, and on the page of a session the server no longer holds', async ({ browser, api, state }) => {
+test('on a phone and in a narrow window a name too long for the header is cut with an ellipsis and its full text is its title, again after the window changes, at 1440 where the header may hold it, and on the page of a session the server no longer holds', async ({ browser, api, state }) => {
   expect(LONG_NAME.length, 'the longest name the server takes').toBeLessThanOrEqual(120)
   const s = await launch(api, state.root, LONG_NAME)
   await api.ok('POST', `/api/sessions/${s.id}/attention`, { state: 'needs_input', message: 'Ready to go on?', options: [{ label: 'Yes', input: '1' }, { label: 'No', input: '2' }] })
@@ -234,10 +240,10 @@ test('on a phone and at 1440 a name too long for the header is cut with an ellip
   await expect(page.locator('[data-session-bar]').getByRole('button', { name: 'Share', exact: true })).toBeHidden()
   await cutAndWhole(page, 'back at 390 × 844')
 
-  // At the desktop app's width with the sidebar at its default width.
+  // At the desktop app's width with the sidebar at its default width: the name is whole or cut, its title its full text.
   const wide = await dayPage(browser, { server: state, path: `/sessions/${s.id}` })
   await expect(wide.locator('#dashboard-sidebar-main')).toBeVisible()
-  await cutAndWhole(wide, 'at 1440 × 900')
+  await cutAndWhole(wide, 'at 1440 × 900', 'may hold it')
 
   // Ended and removed: the page of a session the server no longer holds has its name in the head, cut, its full text its title.
   await api.stopSession(s.id)
