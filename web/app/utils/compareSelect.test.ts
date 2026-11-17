@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import { candidateMark, cellWords, verdictWords, type CheckCell, type ComparedCandidate, type ComparedCheck, type Comparison, type ComparisonSelection } from './compare'
-import { appliedSelection, brakemanWords, candidateAt, candidateSelection, claimSource, laneSelection, reviewSource, selectionAnswerable, selectionFor, selectionPanelWords, SELECTION_WORDS } from './compareSelect'
+import { appliedSelection, brakemanWords, candidateAt, candidateSelection, claimSource, laneSelection, reviewSource, selectionAnswerable, selectionFor, verdictWord, selectionPanelWords, SELECTION_WORDS } from './compareSelect'
 import { answerAsk, recommended, SELECTION_FINAL, type Decision } from './decisions'
 
 // A comparison's selection and its labels (Program item CP1, docs/plans/compare-crew.md, PR-7): no option preselected whatever
@@ -152,6 +152,7 @@ describe("the panel's words", () => {
     expect(claimSource('approach-a', 1)).toBe("said by approach-a's agent, attempt 1")
     expect(reviewSource('approach-b', 2)).toBe("approach-b's review, attempt 2")
     expect(candidateAt('approach-b', B)).toBe('approach-b at 4b825dc')
+    expect([verdictWord('approved'), verdictWord('needs_changes'), verdictWord('request_changes')]).toEqual(['approved', 'asked for changes', 'asked for changes'])
   })
 })
 

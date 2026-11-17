@@ -5,10 +5,11 @@ import { decisionUntil } from './decisions-helpers'
 import { ownServer } from './own-server'
 
 // Review the selected candidate (Program item CP1, docs/plans/compare-crew.md, PR-8b), on a server of the spec's own: two stub
-// candidates of one base, approach-b selected with a rationale through DR1's route. From the ticket's Decisions and from the comparison,
-// RV1's Review view opens on approach-b; its picker says selected and not selected, and opens on the selected one by itself. A Request
-// changes of approach-a is refused in not_selected's words, nothing kept; one of approach-b makes the repair, whose new candidate the
-// picker shows while the comparison still labels approach-b selected. Every wait is on the server's reads or on what the page draws.
+// candidates of one base. Before the selection a Request changes is refused ("select a candidate first"); then approach-b is selected
+// with a rationale through DR1's route. From the ticket's Decisions and from the comparison, RV1's Review view opens on approach-b; its
+// picker says selected and not selected, and opens on the selected one by itself. A Request changes of approach-a is refused in
+// not_selected's words, nothing kept; one of approach-b makes the repair, whose new candidate the picker shows while the comparison
+// still labels approach-b selected. Every wait is on the server's reads or on what the page draws.
 
 const LOAD_MS = 15_000
 
@@ -28,14 +29,25 @@ test('Review the selected candidate opens RV1’s view on it; a Request changes 
     const c = await launchComparison(s.api, s.repo, 'CREV', [{ agentId: 'worker-cli', approach: 'Key the cache by locale' }, { agentId: 'worker-cli', approach: 'Memoise in the handler' }])
     const sel = await selectionUntil(s.api, c.run, 'open')
     const [a, b] = [sel.options[0]!.subject!, sel.options[1]!.subject!]
-    const rev = (await s.api.ok<{ decision: { rev: number } }>('GET', `/api/decisions/${sel.decision}`)).decision.rev
-    await s.api.ok('POST', `/api/decisions/${sel.decision}/respond`, { responseId: 'crev-select-b', choice: 1, rationale: 'approach-b keeps the handler simple', expectedRev: rev })
-    await decisionUntil(s.api, sel.decision, 'applied', SETTLE_MS)
-    const read = await comparison(s.api, c.run)
-    const base = (read as unknown as { base: string }).base
+    const base = ((await comparison(s.api, c.run)) as unknown as { base: string }).base
     const aRef = `${c.run}/approach-a/${a.n}@${a.commit}`
     const bRef = `${c.run}/approach-b/${b.n}@${b.commit}`
     const page = await dayPage(browser, { server: s.started, path: '/agents' })
+
+    // Before the selection, a Request changes of either candidate is refused, nothing kept: a repair would make them unlike.
+    budget(2 * LOAD_MS)
+    await draft(page, c.ticket, bRef, base, 'Before the selection.')
+    await page.goto(`${c.path}?view=review&candidate=${encodeURIComponent(bRef)}`)
+    await expect(page.locator(`[data-review-view][data-review-candidate="${bRef}"]`)).toHaveAttribute('data-review-diff-base', base, { timeout: 60_000 })
+    await page.locator('[data-review-send]').click()
+    await page.locator('[data-review-confirm-send]').click()
+    await expect(page.locator('[data-review-draft-failure]')).toContainText('select a candidate first', { timeout: 60_000 })
+    expect((await s.api.ok<{ reviews: unknown[] }>('GET', `/api/dispatch/tickets/${c.ticket}/reviews`)).reviews).toEqual([])
+    await page.evaluate((k) => localStorage.removeItem(k), `conductor.reviewDraft:${c.ticket}:${bRef}`)
+
+    const rev = (await s.api.ok<{ decision: { rev: number } }>('GET', `/api/decisions/${sel.decision}`)).decision.rev
+    await s.api.ok('POST', `/api/decisions/${sel.decision}/respond`, { responseId: 'crev-select-b', choice: 1, rationale: 'approach-b keeps the handler simple', expectedRev: rev })
+    await decisionUntil(s.api, sel.decision, 'applied', SETTLE_MS)
 
     // From the ticket's Decisions: the selection's record row offers it.
     budget(LOAD_MS)

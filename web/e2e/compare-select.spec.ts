@@ -248,6 +248,8 @@ test.describe('the selection and the supporting panel on the comparison', () => 
     await expect(panel.locator('[data-compare-ask-words]')).toHaveText('Asked: br-7 is queued.')
     expect(asked).toHaveLength(1)
     expect(asked[0]).toMatchObject({ kind: 'compare', subjects: [`run:${run.id}`] })
+    // The person's op id is the page's own: one beginning `cmp-` is the server's, for the draft the settling asks.
+    expect(String(asked[0]!.opId)).toMatch(/^[0-9a-f]{16}$/)
 
     // The selection: open, nothing preselected or recommended, answered through DR1's own answer.
     const select = v.locator('[data-compare-select]')

@@ -83,9 +83,9 @@ export function reviewSource(task: string, attempt: number): string {
   return `${task}'s review, attempt ${attempt}`
 }
 
-/** A review's verdict in words. */
+/** A review's verdict in words: a crew review's approved or needs_changes (a person's request_changes the same). */
 export function verdictWord(v: string): string {
-  return v === 'approved' ? 'approved' : v === 'request_changes' ? 'asked for changes' : v
+  return v === 'approved' ? 'approved' : v === 'needs_changes' || v === 'request_changes' ? 'asked for changes' : v
 }
 
 /**
