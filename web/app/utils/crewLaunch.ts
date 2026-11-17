@@ -194,6 +194,66 @@ export class SheetConfirmation {
   }
 }
 
+/**
+ * Why a sheet's Launch started nothing (#957): `changed`, the server refused it `crew_changed` (the crew was saved since the copy the
+ * launch named); `unrevised`, the crew came without a revision (a server that does not give one), so the launch was not sent.
+ */
+export type SheetRefusal = 'changed' | 'unrevised'
+
+/**
+ * The sheet's target once its Launch started nothing (`why`). While the launch's opening is still the sheet's (`current`), the sheet
+ * stays open as a new opening of `confirmation`: the launch's end does not close it, and its Launch takes a confirmation again. For
+ * `changed` that is a new target, the saved crew by its id with the run's name kept, so the sheet reads it again (even when it was opened
+ * by that id) and its Launch names the revision of what it then shows; for `unrevised` the same target, its Launch held. null when the
+ * opening is no longer the sheet's (closed or opened again, the page or the token changed): the page then only says so. The server's
+ * refusal alone decides which copy is current.
+ */
+export function refusedTarget(t: SheetTarget, id: string, why: SheetRefusal, current: boolean, confirmation: SheetConfirmation): SheetTarget | null {
+  if (!current) return null
+  confirmation.opened()
+  return why === 'changed' ? { id, label: t.label } : t
+}
+
+/** Where the page stands as a launch that started nothing ends: its opening still confirmed, the page still mounted, the sheet open, on the crew it was opened at. */
+export interface RefusalPlace { confirmed: boolean; mounted: boolean; open: boolean; at?: string; selected?: string }
+
+/**
+ * What the page does once a launch of crew `c` started nothing (`why`): while the sheet of its opening is on the screen (`p`), the sheet's
+ * new target and why (refusedTarget); otherwise, the page left meanwhile too (a sheet then drawn nowhere, whatever it holds), the toast's
+ * words, which name the crew: a refusal is never lost.
+ */
+export function afterRefusal(t: SheetTarget, c: { id: string; name: string }, why: SheetRefusal, p: RefusalPlace, confirmation: SheetConfirmation): { target: SheetTarget; refused: SheetRefusal } | { toast: string } {
+  const target = refusedTarget(t, c.id, why, p.confirmed && p.mounted && p.open && p.at === p.selected, confirmation)
+  if (target) return { target, refused: why }
+  return { toast: `${c.name} ${why === 'changed' ? 'was saved since the launch sheet read it' : 'came without a revision from this server'}: no run was started.` }
+}
+
+/** The sheet's words for a crew that came without a revision: Launch is held. */
+export const UNREVISED_WORDS = 'This server does not say which copy of the crew it holds, so this sheet cannot tell which copy Launch would start: nothing is launched. Load the page again.'
+
+/**
+ * The sheet's notice and whether it holds Launch: for a crew drawn without a revision (`unrevised`, a saved crew read so) or a launch not
+ * sent for want of one, UNREVISED_WORDS, held; after a `changed` refusal, what the sheet is doing about it, in the state of its read again
+ * (`read`): being read, failed (the read's own error is beside it, and Launch has nothing to start), or drawn. null otherwise.
+ */
+export function sheetNotice(refused: SheetRefusal | null | undefined, read: 'reading' | 'failed' | 'drawn', unrevised: boolean): { kind: SheetRefusal; words: string; hold: boolean } | null {
+  if (refused === 'unrevised' || (read === 'drawn' && unrevised)) return { kind: 'unrevised', words: UNREVISED_WORDS, hold: true }
+  if (refused !== 'changed') return null
+  const first = 'The crew was saved since this sheet read it, so nothing was launched.'
+  if (read === 'reading') return { kind: 'changed', words: `${first} It is being read again.`, hold: true }
+  if (read === 'failed') return { kind: 'changed', words: first, hold: true }
+  return { kind: 'changed', words: `${first} It is shown below as the server holds it now: Launch starts the crew as shown here, and what this sheet says is decided at the launch is decided then.`, hold: false }
+}
+
+/**
+ * The run's yolo choice on the launch sheet, in the crew editor's words: the crew's own setting, which the launch's revision covers, or,
+ * for a crew that inherits it (`inherited`), the server's default at the launch, with what it is now (`yolo`).
+ */
+export function launchYoloWords(yolo: boolean, inherited: boolean): string {
+  const what = yolo ? 'on: the members skip their permission prompts' : 'off: the members keep their permission prompts'
+  return inherited ? `Yolo: the server's default at the launch (now ${what})` : `Yolo ${what} (the crew's setting)`
+}
+
 /** Where a run member's login comes from (MemberAccount.source), in words, for a source that is not a registered account. */
 const SOURCE_WORDS: Record<string, string> = {
   own: "the agent's own login",

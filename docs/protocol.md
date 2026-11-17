@@ -505,6 +505,12 @@ keeps the `since` and words of the `done` the copy shows only when it
 carries that one's `id`, and with another `id` replaces it),
 `activity{sessionId,entry,state?}`,
 `session_info{sessionId?,endCommit?}` (what the host reports, below),
+`agent_session{sessionId?,agentSession,turn?}` (the agent's own session
+id an attention report to the host's socket named, and whether the report
+was of a turn: see Attention, The host's socket; only to a server whose
+`registered` said `agentSessions`; at most 512 bytes, `agentSession` 1 to
+128 bytes, one object of these fields alone, else dropped and logged, the
+connection kept),
 `chat{sessionId,message}` (a chat message the host's session kept, as `chat` carries it to a viewer; the server takes the connection's session, keeps `message`, `system` and `sent_to_agent` kinds, scope `session`, bounded ids, cleaned names, the text cleaned and cut to 2048 bytes, `to` only as `agent`, and mirrors it into the events stream; a switchyard drops it),
 `link{requestId, role, ttlSeconds?, label?}` (a share link to the session,
 minted by the server: `requestId` ≤ 32 bytes, `label` ≤ 120 bytes,
@@ -586,7 +592,7 @@ followed, and a server reached without TLS is dialed directly, through no
 proxy (over TLS a proxy carries a tunnel, as before); with no provider, a
 redirect is followed and a proxy used as before.
 
-Server → host: `registered{sessionId, secret, shareBaseUrl, resumed, iceServers, links, recipe?, decisions?, renews?, sessionInfo?}`
+Server → host: `registered{sessionId, secret, shareBaseUrl, resumed, iceServers, links, recipe?, decisions?, renews?, sessionInfo?, agentSessions?}`
 (`decisions: true` from a switchyard that carries a decision link's lane,
 relaying DECISION and DECIDE, keeping run desks and serving the join
 page's Decide tab, below, Decision links: a publisher mints a decision link
@@ -606,7 +612,12 @@ ends such a link only where not being named can mean nothing else (a
 session's own link on its session's connection, a run's link on the
 run's desk), and a member's registration ends nothing of a run's link;
 `recipe`, below; `sessionInfo: true` says the server takes `session_info`,
-below, absent from a switchyard, on a desk's and from an older server),
+below, absent from a switchyard, on a desk's and from an older server;
+`agentSessions: true` says the server takes `agent_session` and keeps
+its id as the attention route keeps `agentSession`, absent on a desk's
+and from an older server: a host names its socket to its agent only when
+its first `registered` says it, and stops listening on it when a later
+one does not (Attention, The host's socket)),
 `viewer_join{viewerId, role, linkId?, linkLabel?, principal?}`, `offer{viewerId,sdp}`, `ice{viewerId,candidate}`,
 `relay_start{viewerId}`, `viewer_leave{viewerId, reason?}`, `link_gone{linkId, ended?}`, `stop{sessionId}`,
 `viewer_behind{viewerId, behind}` (a relayed viewer fell behind what the
@@ -1525,7 +1536,10 @@ becomes the session's `agentSession.id` when it has none, and afterwards as the
 recipe's `idPolicy` says: `latest` takes each new id, `lowest` keeps the
 smallest (Codex's hidden title thread reports with a later id than the
 conversation's). `turn` makes it `resumable`. Any other id is dropped without
-an error, and a hosted session ignores both fields. `conductor notify` fills
+an error. A hosted session keeps the id in its record alone, never in its
+`Info`, by the same recipe and with the same meaning of `turn`, whether
+the report came to this route or to its host's socket (`agent_session`,
+The host's socket). `conductor notify` fills
 them from Claude Code's `session_id` (with `turn` on `Stop` and
 `UserPromptSubmit`), Codex's notify `thread-id` (every
 `agent-turn-complete`; the turn of the hidden thread that names a Codex
@@ -1548,6 +1562,92 @@ start and end), on a server session and on a hosted one, whose copy weighs
 it too and sends it to the host on `attention`. A server that refuses
 `turnId` as unknown (an older one) gets the report again once without it
 alone, `agentSession` and `turn` kept.
+
+#### The host's socket
+
+A hosted session's process also receives `CONDUCTOR_HOST_SOCKET`: the path
+of a unix-domain socket its host (`conductor host`) listens on, made before
+the process starts, so that the agent's reports reach the host on its own
+machine whether or not the host's connection to the server is up. A
+server's own sessions never receive it (`CONDUCTOR_*` from the server's
+environment and the catalog never reach a session, and the server sets
+none), and neither does the process of a host whose server's first
+`registered` did not say `agentSessions` (an older server): the agent
+then reports to this route, as before. The socket is `conductor-host-<random>/report.sock` under
+`$XDG_RUNTIME_DIR` when that folder is the user's alone (mode 0700), else
+under the temporary folder, else `/tmp`, each only when it is a folder,
+not a link, of the user's own or root's that no one else can write, or
+only with the sticky bit set (with none, the host names no socket): a
+folder of the user's own, mode 0700, not a link, made afresh by each host
+and checked before it listens,
+and a path of at most 100 bytes (a socket's address holds 104 on macOS,
+108 on Linux). The host removes both as it ends; a host's start removes,
+in the folder it uses, one that a host that ended without closing it left
+behind: a folder and socket of the user's own, the socket over a minute
+old, nothing listening on it.
+
+`conductor notify` (and the MCP tools `ask` and `set_state`) posts an
+attention report there first: `POST /attention` over the socket, this
+route's body, `Authorization: Bearer <agent token>`. The host answers as
+this route does, `200 {attention}` or `{error: {code, message}}`:
+
+- only the session's own agent token, which the host minted: any other,
+  none, or one sent any other way is `401 unauthorized`, before the body
+  is read;
+- at most 64 KiB of body, one JSON object of this route's fields and
+  nothing after it (an unknown field, trailing data, a body past the
+  bound: `400 invalid_request`), and this route's bounds and codes
+  (`invalid_state`, `invalid_kind`, `message` 4,096 bytes, 32 `options`,
+  `agentSession` 128 bytes, `plan` 1,024; a `turnId` out of its bound is
+  left out, the report taken);
+- a report that comes before the host's session is made waits for it, at
+  most 10 s, then `503 starting`; the sender gives up after its own 5 s
+  first: it says so on stderr and exits 0 (`--quiet`), and the host, the
+  request ended, applies nothing of it; an ended session is `409
+  session_ended`;
+- each report spends a token of the host session's bucket, the one the
+  server's copy keeps for its host is of the same size: with none left,
+  `429 rate_limited`, nothing changed (the sender tries a 429 again there,
+  as it does the server's);
+- any other path is `404`, another method `405`; at most eight
+  connections are served at once, each bounded in time.
+
+The host applies the report to its own session, as the server's route
+applies one to a server session (source `api`), and tells the server what
+its session then shows on `attention` (Host control connection), at once
+or, while its connection is down, as its next connection starts. One
+turn's end is still told once: a `done` that names the turn whose end the
+session recorded last is that report again. The sender posts to this
+route instead only when the socket cannot be reached: not named, gone,
+nothing listening on it, not a socket of the user's own in a folder of
+the user's own, mode 0700, not a link, or one whose peer, as the kernel
+recorded it at the connect (`SO_PEERCRED` on Linux, `LOCAL_PEERCRED` on
+macOS; on another platform the socket is not used), is not the user:
+nothing is written to such a socket, the token least of all. A host's answer, a refusal among them, and a connection lost
+after it was made (the host may have applied the report) are never sent
+to the server as well. `agentSession` and `turn` are taken and bounded on
+the socket as here; a report the host applied that names an id is told
+the server on `agent_session` (Host control connection), which keeps it
+as this route does (the recipe's pattern and policy, `turn` marking it
+resumable, in the record alone). The host tells them in the order the
+reports came, at once while its connection is up and as its next
+connection starts while it is down (the record then takes the id as the
+host comes back). An id is held taken once the server has answered a
+ping the host sent after it on the same connection (the server reads in
+order), and is never sent again; as a connection starts, the ids not
+held taken are sent again, in their order, so that the record ends at
+the newest. It keeps the last 32 (reports of one id one after another
+count as one, its `turn` if either was of a turn). When a later
+`registered` does not say `agentSessions` (the server replaced by an older
+one), the host stops listening on its socket, removes it and forgets what
+it logged, so the agent's reports go to this route and nothing logged
+before is sent after; ids its reports named while its connection was
+down and not yet told are lost then, and so are they when the host ends
+before its connection comes back. Events
+(`POST /api/sessions/{id}/events`) and the files a tool call touched still
+go to the server. A sender of an earlier release ignores the variable and
+posts to this route; a host of an earlier release sets none, and the
+sender posts here.
 
 Session `Info` also carries `branch` (the git branch of the working
 directory, read from `.git/HEAD` at launch; server and host alike) and, for
@@ -2679,31 +2779,40 @@ credential there was lost, the attach is refused as before
 run link's end (a revoke, an expiry) the server starts ending the link's
 viewers on every session it holds and on every run desk it keeps at the
 switchyard, all at once, and waits for none of them: the revoke is
-answered meanwhile. The run's desk on this server is ended once those
-sessions' closes are done, each bounded by its viewer's close wait. A
+answered meanwhile. The run's desk on this server is ended beside those
+sessions' closes, inside the same wait. A
 session link's end waits for its viewers' closes, as before. The
 server's stop waits, within its bound, for an end of a run link's
 viewers begun before its last wait, which comes once its sessions and
-connections are closed; one begun after that is not waited for (the
-process ends, and its connections with it). Past a link's expiry on
+connections are closed; one a revoke or an expiry begins after that is
+done before the revoke or the expiry returns, and one a run's forget
+begins after it is not begun: the stop has closed every viewer it held,
+and from then on each of its sessions refuses a new viewer, by the
+server's own window or through a link, as it closes them (`1001`,
+`server shutting down`).
+Past a link's expiry on
 this server's clock, an attach and every act but a resize are refused
 at once (`expired`);
 output can still reach a viewer attached until it is ended. The
 server's expiry sweep, every 30 s, ends every link that is due through
 its barrier, all at once, waiting at most the store's wait (5 s) for the
-acts under way, and then tells the links one at a time: a session
-link's viewers' closes are waited for, so a run link due in the same
-sweep can be told only after them, its viewers refused from its expiry
-all the same. The switchyard closes a viewer at the link's deadline on
+acts under way, and then tells the links all at once, so a session
+link's wait for its viewers' closes holds no other link due in the same
+sweep, and returns once each is told. The switchyard closes a viewer at the link's deadline on
 its own clock, which is what usually ends it. A run desk's viewer of the
-expired link is told `expired` while another decision link of the run
-stands; when it was the run's last, the run's desk ends as well, and a
-desk viewer the desk's end reaches before the server's end of the link
-is told that the session ended (`session_ended`). A viewer that opens a
-run's desk with a revoked or expired link is refused at its hello
-(`not_decision_link`), as before: `revoked` and `expired` are what a
-session's viewer is told at its attach, and what an attached desk
-viewer is told when it is ended. When a run is forgotten, the store
+expired link is told `expired`, also when it was the run's last and the
+run's desk ends as well: the desk's end tells each of its viewers whose
+link the store holds as ended that link's word before the switchyard
+hears of the end, which tells the rest that the session ended
+(`session_ended`). Those words wait together, each at most the turn the
+desk's own end message waits for (15 s), or until its viewer leaves. The
+switchyard closes a viewer the host refuses as `revoked` or `expired`
+with that word, also when the desk ends before the viewer was written
+what was queued for it. A viewer that opens a run's desk with a link the store
+holds as revoked or expired is refused at its hello with the store's
+word (`revoked`, `expired`), in the words a session's viewer is told at
+its attach; one with a link that is no decision link of the run is
+refused `not_decision_link`. When a run is forgotten, the store
 keeps the id of each of its links minted at the switchyard as ended,
 whatever it stood at (a viewer with one is refused `revoked`), until the
 switchyard confirms it is gone there (the forget's one revoke there
@@ -3216,7 +3325,7 @@ its run, and on no other.
 | `PUT /api/crews/{id}` | admin | replace a crew's fields with the body, shaped as for create, so a crew as `GET` answers it goes back without `id`, `createdAt`, `updatedAt` and `manifestRevision`; `id` and `createdAt` never change, `updatedAt` is now, and `manifestRevision` is one more when the project manifest, a `setup` included, changed (a removal too) and stays as it was otherwise; the body may also carry `revision`, the one a `GET` (or the reply of a create or an earlier update) answered for the copy the edit was made from: the save is made only while that copy is the one stored, checked and written under one lock, so of two saves made from one copy the second is `409 stale_revision` and nothing is saved (the crew editor sends it, and on that answer keeps the person's edits as typed, says what changed elsewhere and offers two choices behind a confirm: read the crew again, which replaces the edits, or save them anyway with the revision of the copy the server holds now, refused again if the crew changed once more); without `revision` the body replaces whatever is stored; `400 invalid_request` for a `revision` that is not 64 lower-case hex digits; reply `{crew, revision}`, the new copy's; `400 invalid_crew` as for create; `404` when unknown; `409 crew_unreadable` when its file cannot be used (it is not replaced) |
 | `DELETE /api/crews/{id}` | admin | delete a crew; `204`, `404` when unknown |
 | `POST /api/crews/{id}/duplicate` | admin | save a copy of a crew as `<id>-copy` (then `<id>-copy-2`…) named `<name> copy`, with new times and the `manifestRevision` of a new crew (1 with a project manifest or a `setup`, absent without), whatever the original's; reply `201 {crew, revision}`, `revision` as for `GET`; `400 invalid_crew` when one of its agents is no longer in the catalog or the copy would be over 1 MiB; `404` when unknown; `409 crew_unreadable` when its file cannot be used |
-| `POST /api/crews/{id}/launch` | admin | launch a crew as a run (see Crew runs); an optional body `{label}` names the run (at most 60 characters, no control characters, trimmed; kept on the run as `label` and by a resume; `400 invalid_request` for a bad label or an unknown field, the body at most 4 KiB); reply `201 {run}` once the session of every member that starts immediately exists, each member `starting` until its prompt is typed; the run's `yolo` is the crew's, else the server's, fixed for every member of the run, one started or added later included; a crew with `viewLinkTtlSeconds` also gets a run link with role `view`, label `launch` and that lifetime, created as `POST /api/runs/{run}/links` would (noted in the run log), and the reply is `201 {run, viewLink: {link, token, url}}`: the token is in this reply only (a link the store refuses leaves the launch standing, without `viewLink`, with an `error` entry in the run log); `400 invalid_crew` for a crew with no members, one that runs on a host, or, with the file form, one whose `conductor.manifest.json` at the run's base (`HEAD` of `cwd`, read once) is missing or broken (the file and the commit named), an agent the catalog does not have, an agent whose program is not installed on the server (`command[0]` does not resolve, by the check of `GET /api/catalog`'s `available`, so a lookup that does not answer within 2 s does not refuse; the message names the member and the agent), arguments to an agent that takes none, or with `isolation: worktree` a `.conductor` or `.conductor/worktrees` in `cwd` that is a symbolic link, or a symbolic link on the way to a member's directory in its worktree; `400 invalid_cwd` as for a session; `409 not_a_repo` with `isolation: worktree` when `cwd` is in no git working tree (`git -C <cwd> rev-parse --show-toplevel` fails), or in one whose `HEAD` is no commit, each with its own message, and a `rev-parse` failure other than 'not a git repository' (a repository owned by another user, or one that cannot be read) says what git said; `500 launch_failed` with `git is not installed on the server` with `isolation: worktree` when `git` is not on the server's `PATH`, before anything is made; `409 run_stopped` when the run is stopped while its sessions start (the run stays, stopped); a member whose session cannot be created answers as `POST /api/sessions` would, naming the member; `500 launch_failed` otherwise; `404` when unknown; `409 crew_unreadable` when its file cannot be used; `503 store_unavailable` without a data directory; `400 invalid_crew` also for a member whose agent's program the identity probe found to be another one (a known impostor, or a verified probe that matched nothing), the message naming the member, the agent, what the program is not and what it printed; a pending or failed probe refuses nothing |
+| `POST /api/crews/{id}/launch` | admin | launch a crew as a run (see Crew runs); an optional body `{label, revision}`: `label` names the run (at most 60 characters, no control characters, trimmed; kept on the run as `label` and by a resume), and `revision`, the one a `GET` (or a save's reply) answered for the copy the launch was read from, makes the launch start that copy only: the crew is judged by it on the launch's one read of the crew, and the run is of that read, so no save comes between the check and the start; another revision is `409 crew_changed`, nothing started or recorded (no run, no record, no session), and the client reads the crew again (the launch sheet does, says why, and its Launch then names the revision of what it shows; the sheet sends no launch for a copy it has no revision for); without `revision` the crew is launched as stored (the CLI's `conductor up`, a provider's `ext.Host` launch); `400 invalid_request` for a bad label, a `revision` that is not 64 lower-case hex digits, or an unknown field (a server older than `revision` refuses it so, starting nothing), the body at most 4 KiB; reply `201 {run}` once the session of every member that starts immediately exists, each member `starting` until its prompt is typed; the run's `yolo` is the crew's, else the server's, fixed for every member of the run, one started or added later included; a crew with `viewLinkTtlSeconds` also gets a run link with role `view`, label `launch` and that lifetime, created as `POST /api/runs/{run}/links` would (noted in the run log), and the reply is `201 {run, viewLink: {link, token, url}}`: the token is in this reply only (a link the store refuses leaves the launch standing, without `viewLink`, with an `error` entry in the run log); `400 invalid_crew` for a crew with no members, one that runs on a host, or, with the file form, one whose `conductor.manifest.json` at the run's base (`HEAD` of `cwd`, read once) is missing or broken (the file and the commit named), an agent the catalog does not have, an agent whose program is not installed on the server (`command[0]` does not resolve, by the check of `GET /api/catalog`'s `available`, so a lookup that does not answer within 2 s does not refuse; the message names the member and the agent), arguments to an agent that takes none, or with `isolation: worktree` a `.conductor` or `.conductor/worktrees` in `cwd` that is a symbolic link, or a symbolic link on the way to a member's directory in its worktree; `400 invalid_cwd` as for a session; `409 not_a_repo` with `isolation: worktree` when `cwd` is in no git working tree (`git -C <cwd> rev-parse --show-toplevel` fails), or in one whose `HEAD` is no commit, each with its own message, and a `rev-parse` failure other than 'not a git repository' (a repository owned by another user, or one that cannot be read) says what git said; `500 launch_failed` with `git is not installed on the server` with `isolation: worktree` when `git` is not on the server's `PATH`, before anything is made; `409 run_stopped` when the run is stopped while its sessions start (the run stays, stopped); a member whose session cannot be created answers as `POST /api/sessions` would, naming the member; `500 launch_failed` otherwise; `404` when unknown; `409 crew_unreadable` when its file cannot be used; `503 store_unavailable` without a data directory; `400 invalid_crew` also for a member whose agent's program the identity probe found to be another one (a known impostor, or a verified probe that matched nothing), the message naming the member, the agent, what the program is not and what it printed; a pending or failed probe refuses nothing |
 | `GET /api/crews/{id}/runs` | admin | `{runs, live}`: the crew's runs, newest first, each as `GET /api/runs/{run}` answers it (without diffs): the `live` first ones the server holds, then the records of runs the server no longer holds, saved under `runs/<id>.json` in the data directory, at most 500 kept (the oldest by start dropped), never a terminal's contents; a run's record is written from its launch on (again a couple of seconds after each change, and as it ends, a reopened run again when it ends again) and read back after a restart, where the record of a run that was running when the server last stopped is marked `interrupted` (its running members `ended` with that `error`), never relaunched on its own; `404 not_found` for a crew neither saved nor recorded |
 | `POST /api/sessions/{id}/paste` | admin | answer a viewer's paste invite for a server session: `{offer, role, label?}`, `offer` a `cpi1.` blob (the viewer's SDP with every candidate gathered, deflated and base64url-encoded, ≤ 64 KiB), reply `201 {answer, role}` with the session's blob of the same form, which the viewer pastes back; the data channel then runs with no server between the two, as a host's does (hello over it, welcome, scrollback, input by role); at most 16 such peers a session, idle ones dropped after two minutes; `400 invalid_offer` for a blob that is not an offer, `400 hosted_session` for a hosted session (shared from its own machine), `409 session_ended` |
 | `GET /api/ice` | none (rate-limited) | `{stun}`: the configured ICE servers' `stun:` and `stuns:` URLs, in order, for a viewer gathering a paste invite's offer before it has any session; never a `turn:` URL, a user name or a credential, and never a media provider's server: the route never asks a provider, so a request nobody authenticated costs one nothing (the paste invite's answer, `POST /api/sessions/{id}/paste`, is handed the configured servers and the provider's, as a hosted viewer's welcome is) |
@@ -3278,10 +3387,10 @@ its run, and on no other.
 | `POST /api/dispatch/plans/{id}/withdraw` | admin | withdraw a plan revision (`plan.withdraw`): `{opId, expectedRev?, byName?}`, `expectedRev` the revision's; reply `{receipt, plan}`; `409 invalid` for one withdrawn already; `404 not_found` |
 | `POST /api/dispatch/tickets/{key}/launch` | admin | launch a managed run from a ticket's approved plan revision (`ticket.launch`; see Launches below): `{opId, plan, expectedRev?, label?, byName?}`, at most 4 KiB, `plan` the revision's id, `expectedRev` the ticket's, `label` the run's own name (at most 60 characters; the ticket's key and title, cut at a word, when absent, or the key alone when its title is quoted, as the package says below); reply `201 {receipt, launch, run}` once the run's first ledger transaction is committed and the launch recorded started, `launch` its summary `{id, ticketId, ticketKey, planId, planN, runId, label, ticketRev, intent, criteria, packageSha256, state, why?, agents, createdAt, createdBy, fingerprint, startedAt?, rev}` (never the package), `run` as `GET /api/runs/{run}` answers it; the same `opId` again answers the same launch, `200` with the receipt's `repeat`, never a second run; `409 launch_failed {error, receipt, launch}` when the run could not be started (an agent not installed or not the one it claims, a working directory outside the allowed roots, the engine's refusal), the launch kept, `failed`, with why; `409 stale_plan` when an agent of the revision resolves otherwise in the catalog now, naming the agent and the part ("…: revise it"), no receipt kept, or when the store finds the approval stale (the ticket's intent changed: "approve it again or revise it"; a handed-over comment or attachment edited or gone, the pinned steps to reproduce changed, an evidence link removed: "revise it"), its receipt kept; `409 invalid` for a ticket closed or a revision not approved; `409 managed_off`; `503 ledger_unavailable` without a ledger, with one another server owns, and while the server takes the ledger over ("the server is taking over the ledger"), no launch kept; a pending launch replayed on a server that may not advance it is answered `503 ledger_unavailable {error, receipt, launch}`, still pending, never recorded failed; once the server's shutdown begins stopping its runs, a launch not yet given to the engine starts no run (`409 launch_failed`, "the server is shutting down: the run was not started"), and the run of one the engine was still starting past the shutdown's wait is stopped as it starts |
 | `GET /api/dispatch/launches/{id}` | admin | a launch whole: `{launch}`, its summary as the launch answers it and `package`, the bytes it is kept as (Launches, below), under 1 MiB (`MaxLaunchReply`); `404 not_found` |
-| `POST /api/dispatch/tickets/{key}/reviews` | admin | send a review of one candidate (`review.submit`; see Reviews below): `{opId, candidate, base, verdict, summary?, findings, via?, byName?, expectedRev?, expectedRevision?, continueRun?}`, at most 192 KiB; `candidate` `<run>/<task>/<n>@<commit>` of a run whose chain the ticket holds alone, `base` a full commit the run names (its base, the attempt's start, or a result of the task in the chain), `verdict` `request_changes`, `comment` or `approve`, `summary` at most 4,000 characters, `findings` at most 50, each `{kind, intent, severity?, path?, side?, from?, to?, lines?, message?, resolution?, check?}` (`kind` `line`, `file`, `general` or `check`; `intent` `change`, `question` or `note`; `severity` `blocker`, `major`, `minor` or `nit` for a change alone; `path` at most 1,024 bytes and `side` `candidate` or `base` for a line or a file; `from` and `to` 1 to 10,000,000 and `lines` 1 to 12 of at most 200 bytes, as the person saw them, for a line; `message` and `resolution` at most 1,000 characters; `check` `{source: "ledger", receipt, chosen?, quote?}` for a check, `receipt` `<run>/<task>/<n>/<phase>/<id>/<k>`, any other member an unknown field), `via` `web` or `cli` (the client's label; `brakeman` is `400 invalid_request` from every body, and recorded by the server for a Brakeman turn's `request_repair`, What a turn may do), `expectedRev` the ticket's, `expectedRevision` the run's for the request's command, `continueRun` the word to continue a run the server does not run; neither of the last two is recorded; reply `201 {receipt, review}` (`200` with `receipt.repeat` for the same `opId` again, answered before any evidence is read), `review` as `GET /api/dispatch/reviews/{id}` reads it, its `application` `{state, try?, run?, command?, revision?, attempt?, why?, at?}` `none` for a comment or an approval, else `applied` (the run the repair was made in, the command `rv.<id>.<try>`, the run's revision after it and the repair attempt's number), `refused` (why, in words) or `pending` (Yardmaster took the request and its change is not recorded yet: settled when it is); before anything is recorded: `409 not_ticket_run` (the ticket does not hold the run's chain: none, another ticket's, `key` naming it, or contested), `409 invalid` (a candidate whose commit is not the attempt's result, a base the run does not name, a check finding's receipt not of the candidate's attempt, not in the ledger, or not failed), `413 too_large` (a request the run could not keep, or whose repair attempt's task file could not hold it), `409 continuation_needed {error, run, words}` (a request of a run the server does not run, sent without `continueRun`: `run` the newest of the candidate's chain, `words` what continuing it starts), `409 managed_off` and `503 ledger_unavailable` for a request this server cannot apply; the store's refusals with their receipts (`invalid`, `bound`, `archived`, `not_found`); a review kept whose read after its commit failed is answered by its receipt, `{receipt, review: null}`, its request left pending for the server's worker, which settles it (not sent: `refused`) |
+| `POST /api/dispatch/tickets/{key}/reviews` | admin | send a review of one candidate (`review.submit`; see Reviews below): `{opId, candidate, base, verdict, summary?, findings, via?, byName?, expectedRev?, expectedRevision?, continueRun?}`, at most 192 KiB; `candidate` `<run>/<task>/<n>@<commit>` of a run whose chain the ticket holds alone, `base` a full commit the run names (its base, the attempt's start, or a result of the task in the chain), `verdict` `request_changes`, `comment` or `approve`, `summary` at most 4,000 characters, `findings` at most 50, each `{kind, intent, severity?, path?, side?, from?, to?, lines?, message?, resolution?, check?}` (`kind` `line`, `file`, `general` or `check`; `intent` `change`, `question` or `note`; `severity` `blocker`, `major`, `minor` or `nit` for a change alone; `path` at most 1,024 bytes and `side` `candidate` or `base` for a line or a file; `from` and `to` 1 to 10,000,000 and `lines` 1 to 12 of at most 200 bytes, as the person saw them, for a line; `message` and `resolution` at most 1,000 characters; `check` `{source: "ledger", receipt, chosen?, quote?}` for a check, `receipt` `<run>/<task>/<n>/<phase>/<id>/<k>`, any other member an unknown field; a finding of `kind` `capture`, which Dispatch keeps since its schema version 7, is `400 invalid_request` before anything is read or recorded, here and in a Brakeman turn's `request_repair`, until a later release binds a capture to a finding), `via` `web` or `cli` (the client's label; `brakeman` is `400 invalid_request` from every body, and recorded by the server for a Brakeman turn's `request_repair`, What a turn may do), `expectedRev` the ticket's, `expectedRevision` the run's for the request's command, `continueRun` the word to continue a run the server does not run; neither of the last two is recorded; reply `201 {receipt, review}` (`200` with `receipt.repeat` for the same `opId` again, answered before any evidence is read), `review` as `GET /api/dispatch/reviews/{id}` reads it, its `application` `{state, try?, run?, command?, revision?, attempt?, why?, at?}` `none` for a comment or an approval, else `applied` (the run the repair was made in, the command `rv.<id>.<try>`, the run's revision after it and the repair attempt's number), `refused` (why, in words) or `pending` (Yardmaster took the request and its change is not recorded yet: settled when it is); before anything is recorded: `409 not_ticket_run` (the ticket does not hold the run's chain: none, another ticket's, `key` naming it, or contested), `409 invalid` (a candidate whose commit is not the attempt's result, a base the run does not name, a check finding's receipt not of the candidate's attempt, not in the ledger, or not failed), `413 too_large` (a request the run could not keep, or whose repair attempt's task file could not hold it), `409 continuation_needed {error, run, words}` (a request of a run the server does not run, sent without `continueRun`: `run` the newest of the candidate's chain, `words` what continuing it starts), `409 managed_off` and `503 ledger_unavailable` for a request this server cannot apply; the store's refusals with their receipts (`invalid`, `bound`, `archived`, `not_found`); a review kept whose read after its commit failed is answered by its receipt, `{receipt, review: null}`, its request left pending for the server's worker, which settles it (not sent: `refused`) |
 | `POST /api/dispatch/reviews/{id}/retry` | admin | Request again (`review.retry`): `{opId, byName?, expectedRev?, expectedRevision?, continueRun?}`, at most 4 KiB, `expectedRev` the review's; a refused request applied again as its next try, at most 5; reply `{receipt, review}`; `409 managed_off`, `503 ledger_unavailable`, `409 not_ticket_run` (the candidate's run no longer its ticket's alone: its link moved, or its chain contested, checked again in the try's transaction) and `409 continuation_needed {error, run, words}` (its run not run by the server, sent without `continueRun`) with the try unchanged and nothing applied; `409 invalid` for a review not refused or not a request, `409 bound` past its fifth try; `503 unavailable` while another holds the store's claim on the review (a request or the server's worker settling its try; only the claim's holder settles a try) past the run's timeout, nothing applied; a try kept whose read after its commit failed is answered `{receipt, review: null}`, left pending for the server's worker, which settles it |
 | `GET /api/dispatch/tickets/{key}/reviews` | admin | a ticket's reviews, deleted or not: `{reviews, next?}`, twenty a page, newest first (`before` a page's `next`), each without its findings, counted by state (`counts {open, resolved, withdrawn}`), and its application; under 1 MiB |
-| `GET /api/dispatch/reviews/{id}` | admin | a review whole: `{review}`, `{id, ticketId, ticketKey, candidate, base, verdict, summary, createdAt, createdBy, actor, via, application, rev, counts, findings}`, each finding `{id, reviewId, ticketId, k, kind, intent, severity?, path?, side?, from?, to?, anchorCommit?, lines, message, resolution?, check?, createdAt, candidate, state, marks, latest?}`, `anchorCommit` the server's (the candidate's commit on its side, the base on its side), `check` the receipt as the ledger kept it (the prepared request's shape), `state` its latest mark's verdict, `open` with none, `latest` that mark without `located`; under 1 MiB |
+| `GET /api/dispatch/reviews/{id}` | admin | a review whole: `{review}`, `{id, ticketId, ticketKey, candidate, base, verdict, summary, createdAt, createdBy, actor, via, application, rev, counts, findings}`, each finding `{id, reviewId, ticketId, k, kind, intent, severity?, path?, side?, from?, to?, anchorCommit?, lines, message, resolution?, check?, capture?, createdAt, candidate, state, marks, latest?}`, `anchorCommit` the server's (the candidate's commit on its side, the base on its side), `check` the receipt as the ledger kept it (the prepared request's shape), `capture` a `capture` finding's `{capture, send, k}` (the capture, the send whose frozen document it stands on, the annotation's place), `state` its latest mark's verdict, `open` with none, `latest` that mark without `located`; under 1 MiB |
 | `GET /api/dispatch/tickets/{key}/findings` | admin | a ticket's findings across its reviews: `{findings, next?}`, at most 100 a page and fewer at 1 MiB, `state` (`open`, `resolved`, `withdrawn`, `all`) narrowing them, `candidate` (`<run>/<task>/<n>@<commit>`) the one to locate them on (its task's findings alone then; by default the newest result of each finding's task in its chain), `after` a page's `next`; each finding as the review's read gives it with `locatedOn` the candidate it was located on, `located` where its lines are there (`{state, from?, to?, path?, located?, why?}`: `same`, `moved` with the nearest range, `changed`, `file_gone`, `renamed` with the new path and where in it, or `unknown` with why: the commit gone, the file binary or past 1 MiB, more than 50 files asked in one reply), and `addressed` `[{run, attempt, note?}]`, what the last three attempts that named it said of it (their claim, never its resolution) |
 | `GET /api/dispatch/findings/{id}/marks` | admin | a finding's marks, oldest first: `{marks, next?}`, at most 20 a page and fewer at 256 KiB (`after` a page's `next`), each `{id, findingId, ticketId, candidate, verdict, located?, note?, createdAt, createdBy, actor, via}` |
 | `POST /api/dispatch/findings/{id}/marks` | admin | mark a finding against a candidate (`finding.mark`): `{opId, candidate, verdict, note?, via?, byName?}`, at most 16 KiB, `verdict` `resolved`, `open` or `withdrawn`, `note` at most 1,000 characters; `candidate` a later attempt's result of the finding's task in the chain of the finding's own candidate (`409 invalid` otherwise, and for `resolved` on a candidate of the finding's own commit), of a chain the ticket holds alone (`409 not_ticket_run`); the server locates the finding's lines on it (a file's lines read without their `\n` or `\r\n`) and keeps that with the mark (`located`, at most 4 KiB as JSON with HTML escaping off; one that would be longer, a renamed path of characters JSON writes six bytes long, is kept as `{state: "unknown", why}`), which never changes the finding's state; reply `201 {receipt, mark}` |

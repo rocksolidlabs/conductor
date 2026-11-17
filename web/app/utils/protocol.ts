@@ -971,6 +971,28 @@ export interface HostRegisteredSessionInfo {
   sessionInfo?: boolean
 }
 
+/** An agent_session message (below) is at most this many bytes, and its agentSession at most HOST_MAX_AGENT_SESSION. */
+export const HOST_MAX_AGENT_SESSION_MESSAGE = 512
+export const HOST_MAX_AGENT_SESSION = 128
+
+/**
+ * host → server, only to a server whose registered said agentSessions: the agent's own session id an attention report to the
+ * host's socket named (1 to HOST_MAX_AGENT_SESSION bytes), and whether the report was of a turn; the server keeps it in the
+ * hosted session's record as its attention route keeps agentSession. One object of these fields alone, at most
+ * HOST_MAX_AGENT_SESSION_MESSAGE bytes, else dropped. The web never sends it.
+ */
+export interface HostAgentSessionMessage {
+  t: 'agent_session'
+  sessionId?: string
+  agentSession: string
+  turn?: boolean
+}
+
+/** The part of registered that says the server takes agent_session; absent from an older server and a desk's. */
+export interface HostRegisteredAgentSessions {
+  agentSessions?: boolean
+}
+
 /** The part of registered that says which links the server still holds for the session; absent from an older server. */
 export interface HostRegisteredLinks {
   links?: string[]
@@ -1695,4 +1717,31 @@ export function parsePreviewMessage(v: unknown, to: PreviewDirection, nonce: str
   if (t === 'selected' && !validElement(m.element)) return null
   if (t === 'described' && (Object.hasOwn(m, 'element') ? !validElement(m.element) : m.missing !== true)) return null
   return m as unknown as PreviewMessage
+}
+
+/**
+ * A crew's revision (crew.Revision), as `GET /api/crews/{id}` and a save answer it: 64 lower-case hex digits, the bound the routes that
+ * take one hold it to (`400 invalid_request` for any other). `POST /api/crews/{id}/launch` takes it as `revision`: the launch starts the
+ * crew only while that is the revision stored, judged on the launch's own read of the crew, and is refused `409 crew_changed` otherwise,
+ * nothing started or recorded; a body without it launches the crew as stored.
+ */
+export const CREW_REVISION = /^[0-9a-f]{64}$/
+export const MAX_CREW_REVISION = 64
+/** The launch's refusal of a revision other than the crew's at the launch: the crew was saved since it was read. */
+export const CREW_CHANGED = 'crew_changed'
+
+/**
+ * The body of `POST /api/crews/{id}/launch` as the launch sheet sends it: the run's name when one was typed, and the revision of the copy
+ * the launch was read from, always (the route takes none from the CLI and providers; the sheet launches only a copy it has one for).
+ */
+export interface CrewLaunchBody {
+  label?: string
+  revision: string
+}
+
+/** A sheet launch's body: the run's name trimmed (none when empty) and the revision as it was read; null without one, so nothing is sent. */
+export function crewLaunchBody(label: string, revision: string | undefined): CrewLaunchBody | null {
+  if (!revision) return null
+  const name = label.trim()
+  return name ? { label: name, revision } : { revision }
 }

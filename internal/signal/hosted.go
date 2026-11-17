@@ -637,7 +637,8 @@ func (v *Viewer) halt() { v.stopOnce.Do(func() { close(v.stop) }) }
 // (the host asks for the close) is in that second group and is drained too.
 // A revoke or the expiry of the viewer's link that lands meanwhile stops
 // them (closeLink, lapse), as does the session's leaving the server
-// (Retire), which writes them nothing at all.
+// (Retire), which writes them nothing at all: the sink's close still
+// says the reason (a link's refusal the host told, HostViewerError).
 // Whoever serves the viewer bounds how long that may take: a viewer that reads
 // too little is cut off (the sink's write fails, and Pump ends).
 //
@@ -2092,11 +2093,22 @@ func (h *HostedSession) HostRelayFrame(viewerID string, inner proto.Frame) {
 }
 
 // HostViewerError forwards a per-viewer error and closes the viewer. The
-// viewer is sent proto.NewError(code, message).
+// viewer is sent proto.NewError(code, message). A link's refusal (revoked,
+// expired) is what the viewer is closed with (session.ErrRevoked,
+// session.ErrExpired), which its sink tells it as it closes (Pump): it
+// reaches the viewer also when the session leaves the server (Retire)
+// before the viewer's earlier frames are written.
 func (h *HostedSession) HostViewerError(viewerID, code, message string) {
 	if v := h.viewer(viewerID); v != nil {
-		v.push(proto.NewError(code, message))
-		v.close(errors.New(code))
+		switch code {
+		case proto.ErrCodeExpired:
+			v.close(session.ErrExpired)
+		case proto.ErrCodeRevoked:
+			v.close(session.ErrRevoked)
+		default:
+			v.push(proto.NewError(code, message))
+			v.close(errors.New(code))
+		}
 	}
 }
 

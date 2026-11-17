@@ -347,6 +347,28 @@ func TestAFirstMessageIsNeverTypedWithoutAKnownPrompt(t *testing.T) {
 // ready: quiet, no known startup question showing.
 func ready(context.Context, *session.Local, func(string)) error { return nil }
 
+// A first message whose context has ended (the server's stop) is typed by
+// no one, also when its session is ready at its prompt: nothing is
+// written, nothing noted, and the session no longer says it waits.
+func TestAFirstMessageOfAStoppedServerIsNeverTyped(t *testing.T) {
+	for range 20 {
+		l, p, _ := firstSession(t, session.Options{})
+		p.Print("> ")
+		waitTrue(t, "the prompt drawn", func() bool { return strings.Contains(strings.Join(l.ScreenLines(24), "\n"), ">") })
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		l.SetFirstMessage("waiting")
+		TypeFirstMessage(ctx, l, FirstMessage{Text: firstText, PromptShape: true, Wait: ready, poll: time.Millisecond})
+		noInput(t, p)
+		if fm := l.Info().FirstMessage; fm != "" {
+			t.Fatalf("the session says its first message is %q", fm)
+		}
+		if n := len(entriesWith(l, session.ActivityStatus, "first message")); n != 0 {
+			t.Fatalf("%d notes of the first message", n)
+		}
+	}
+}
+
 // Before the cap, the wait saying ready is not enough: a quiet screen that
 // is not the agent's prompt (one the catalog does not know) gets nothing,
 // noted once, and the message is typed once the prompt is drawn.

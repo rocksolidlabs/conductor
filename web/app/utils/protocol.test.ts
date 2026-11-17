@@ -11,6 +11,8 @@ import {
   HOST_MAX_REPORT_PATH,
   HOST_MAX_REPORT_WHERE,
   HOST_MAX_SESSION_INFO,
+  HOST_MAX_AGENT_SESSION,
+  HOST_MAX_AGENT_SESSION_MESSAGE,
   HOST_MAX_RUN_ID,
   HOST_MAX_TOKEN,
   HOST_MAX_TOKEN_MESSAGE,
@@ -47,6 +49,8 @@ import {
   type HostReport,
   type HostRunGroup,
   type HostSessionInfoMessage,
+  type HostAgentSessionMessage,
+  type HostRegisteredAgentSessions,
   type HostTokenMsg,
   type Welcome,
 } from './protocol'
@@ -546,11 +550,39 @@ describe('a host report', () => {
       { repo: '/Users/ade\u0301/app' },
     ]) expect(hostReportValid(ok), JSON.stringify(ok)).toBe(true)
   })
+  it('bounds an agent_session by its bytes, its id within them', () => {
+    const m: HostAgentSessionMessage = { t: 'agent_session', sessionId: 's'.repeat(64), agentSession: 'a'.repeat(HOST_MAX_AGENT_SESSION), turn: true }
+    expect(new TextEncoder().encode(JSON.stringify(m)).length).toBeLessThanOrEqual(HOST_MAX_AGENT_SESSION_MESSAGE)
+    const r: HostRegisteredAgentSessions = { agentSessions: true }
+    expect(r.agentSessions).toBe(true)
+  })
   it('bounds a session_info by its bytes and its end commit by its form', () => {
     const m: HostSessionInfoMessage = { t: 'session_info', endCommit: 'c'.repeat(64) }
     const body = JSON.stringify(m)
     expect(body.length).toBeLessThan(HOST_MAX_SESSION_INFO)
     expect(validCommit(m.endCommit!)).toBe(true)
     expect(validCommit('HEAD')).toBe(false)
+  })
+})
+
+// A crew's launch names the revision it was read from (docs/protocol.md, POST /api/crews/{id}/launch; internal/api,
+// TestCrewLaunchNamesTheRevisionItRead): a revision is 64 lower-case hex digits, the bound the route holds it to, and the body
+// carries it with the run's name only when there is one.
+import { CREW_CHANGED, CREW_REVISION, MAX_CREW_REVISION, crewLaunchBody } from './protocol'
+describe("a crew launch's revision", () => {
+  it('is bounded as the route bounds it', () => {
+    const rev = 'a1'.repeat(32)
+    expect(rev).toHaveLength(MAX_CREW_REVISION)
+    expect(CREW_REVISION.test(rev)).toBe(true)
+    for (const bad of [rev + 'a', rev.slice(1), rev.toUpperCase(), '']) expect(CREW_REVISION.test(bad)).toBe(false)
+    expect(CREW_CHANGED).toBe('crew_changed')
+  })
+  it('goes in the body as it was read, beside the name when one was typed; without one the sheet sends no launch', () => {
+    const rev = 'b'.repeat(64)
+    expect(crewLaunchBody('  fix login ', rev)).toEqual({ label: 'fix login', revision: rev })
+    expect(crewLaunchBody('', rev)).toEqual({ revision: rev })
+    expect(crewLaunchBody(' ', undefined)).toBeNull()
+    expect(crewLaunchBody('named', undefined)).toBeNull()
+    expect(crewLaunchBody('named', '')).toBeNull()
   })
 })

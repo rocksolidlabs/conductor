@@ -514,7 +514,7 @@ func TestAnEntryEditedWhileTheProbeRunsIsNotLaunchedUnderItsVersion(t *testing.T
 	// the catalog is edited: it would launch the entry before with no
 	// version. The wait only bounds a hang; the gate ends it.
 	b.srv.probes.wait = 10 * time.Minute
-	b.srv.probes.run = func(_ context.Context, argv []string, _ agents.Probe, _ map[string]string) agents.ProbeResult {
+	b.srv.probes.run = func(_ context.Context, _ *agents.ProbeProcess, argv []string, _ agents.Probe, _ map[string]string) agents.ProbeResult {
 		if slices.Contains(argv, bkScript) {
 			once.Do(func() { close(held) })
 			<-gate
@@ -562,7 +562,7 @@ func (b *bkEnv) coldProbe(t *testing.T, version string) *atomic.Int64 {
 	var probed atomic.Int64
 	b.srv.probes.mu.Lock()
 	b.srv.probes.entries = map[string]probeEntry{}
-	b.srv.probes.run = func(context.Context, []string, agents.Probe, map[string]string) agents.ProbeResult {
+	b.srv.probes.run = func(context.Context, *agents.ProbeProcess, []string, agents.Probe, map[string]string) agents.ProbeResult {
 		probed.Add(1)
 		return agents.ProbeResult{Ran: true, Identified: true, Version: version}
 	}

@@ -86,6 +86,15 @@ const NO_MODEL = 'no model named: the agent chooses, or its arguments do'
 /** The warning fixture's weekly window in a compact panel's details: its share, and its reset five days and an hour off. */
 const WEEKLY_RESET = /Weekly, all models: 92% used, resets \w{3} \d{1,2} \w{3} \d{2}:\d{2}, in 5 days/
 
+/** The config's bound of an expect, and the bound of a wait on a read of a crew or a view. */
+const EXPECT = 15_000
+const READ = 30_000
+/** Raises the running test's timeout by the caps of the waits a step is about to make (palette-rows.spec.ts's budget). */
+function budget(...caps: number[]) {
+  const info = test.info()
+  info.setTimeout(info.timeout + caps.reduce((a, b) => a + b, 0))
+}
+
 /** The app's router, through the page itself. */
 const navigate = (page: Page, path: string) =>
   page.evaluate((u) => (document.querySelector('#__nuxt') as unknown as { __vue_app__: { config: { globalProperties: { $router: { push: (u: string) => Promise<unknown> } } } } }).__vue_app__.config.globalProperties.$router.push(u), path)
@@ -776,7 +785,6 @@ const changeToken = (page: Page) =>
   })
 
 test("a draft's launch starts a run only under the opening and the token it was confirmed under, and a launch closes only its own sheet", async ({ page, api }) => {
-  test.setTimeout(240_000)
   const a = await saveCrew(api, label('confirmed'), [{ name: 'lead', agentId: 'claude' }])
   const launches: string[] = []
   page.on('request', (r) => {
@@ -793,6 +801,7 @@ test("a draft's launch starts a run only under the opening and the token it was 
   let refuseView = true
   const views = (u: URL) => u.pathname === '/api/capacity'
   await page.route(views, (route) => (refuseView && route.request().method() === 'GET' ? route.fulfill(refused('e2e: the view is held back')) : route.fallback()))
+  budget(READ, READ, EXPECT, EXPECT, EXPECT) // the page, the view refused, read again, its error gone, the sheet closed
   await page.goto(`/crews/${encodeURIComponent(a.id)}`)
   await expect(name).toHaveValue(a.name, { timeout: 30_000 })
   await page.locator('[data-launch]').click()
@@ -806,6 +815,7 @@ test("a draft's launch starts a run only under the opening and the token it was 
   await expect(confirm).toHaveCount(0)
 
   // An edited draft's Launch, its save held at this test's route; another token while it is held; the save let through: no launch.
+  budget(READ, EXPECT) // the sheet, the page's words
   await name.fill(`${a.name} 2`)
   await page.locator('[data-launch]').click()
   await expect(confirm).toBeEnabled({ timeout: 30_000 })
@@ -822,6 +832,8 @@ test("a draft's launch starts a run only under the opening and the token it was 
 
   // Again under the page's own token: the save held, Cancel held with it; the sheet closed by Escape and opened again for the same crew
   // from the app-wide palette; the save let through: the first confirmation starts nothing, and the sheet opened again stays open.
+  // The page, the sheet, Cancel held, the sheet closed, the palette's row and its focus, the sheet again, the page's words, its Launch.
+  budget(READ, READ, EXPECT, EXPECT, EXPECT, EXPECT, READ, EXPECT, EXPECT)
   await page.goto(`/crews/${encodeURIComponent(a.id)}`)
   await expect(name).toHaveValue(`${a.name} 2`, { timeout: 30_000 })
   await name.fill(`${a.name} 3`)
@@ -843,8 +855,20 @@ test("a draft's launch starts a run only under the opening and the token it was 
   await expect(confirm, 'the sheet opened again stays open, its Launch free once the first launch ended').toBeEnabled()
   expect(launches, 'the first confirmation started nothing').toEqual([])
 
-  // The sheet opened again launches, its launch held at this test's route; closed and opened again meanwhile, it stays open.
+  // That sheet read the crew while the save was held: its Launch names the copy from before the save, which the server refuses (#957,
+  // crew-launch-revision.spec.ts); the sheet reads the crew again and draws the copy saved.
   const launchA = (u: URL) => u.pathname === `/api/crews/${a.id}/launch`
+  budget(EXPECT, READ, READ) // the notice, the crew drawn again, its Launch
+  const refusedLaunch = page.waitForResponse((r) => r.request().method() === 'POST' && launchA(new URL(r.url())))
+  await confirm.click()
+  expect((await refusedLaunch).status(), 'the copy from before the save is refused').toBe(409)
+  await expect(page.locator('[data-crew-launch-changed]')).toBeVisible()
+  await expect(page.locator('[role="dialog"]').filter({ has: confirm })).toContainText(`Launch ${a.name} 3`, { timeout: 30_000 })
+  await expect(confirm).toBeEnabled({ timeout: 30_000 })
+
+  // The sheet read again launches, its launch held at this test's route; closed and opened again meanwhile, it stays open.
+  // Cancel held, the sheet closed, the palette's row and its focus, the sheet again, its Launch, its state, closed at the end.
+  budget(EXPECT, EXPECT, EXPECT, EXPECT, READ, EXPECT, EXPECT, EXPECT)
   const held = await holdOnce(page, launchA, 'POST')
   await confirm.click()
   await held.seen
@@ -860,7 +884,7 @@ test("a draft's launch starts a run only under the opening and the token it was 
   await held.off()
   await expect(confirm, 'the launch closed none of the sheet opened since').toBeEnabled()
   await expect(page.locator('[role="dialog"]').filter({ has: confirm })).toHaveAttribute('data-state', 'open')
-  expect(launches, 'one launch, from its own confirmation').toHaveLength(1)
+  expect(launches, 'the refused launch, then one from its own confirmation').toHaveLength(2)
   await cancel.click()
   await expect(confirm).toHaveCount(0)
 })

@@ -1,18 +1,19 @@
 <script setup lang="ts">
 import type { AgentInfo, CrewInfo } from '~/composables/useSessions'
 import type { DraftCrew } from '~/utils/crews'
-import { launchLines, readSheet, type SheetRead, type SheetTarget } from '~/utils/crewLaunch'
+import { launchLines, launchYoloWords, readSheet, sheetNotice, type SheetRead, type SheetRefusal, type SheetTarget } from '~/utils/crewLaunch'
 
 /**
  * What a crew's launch asks first (docs/plans/capacity.md, PR-7): each member with its agent, its model and its account, and a compact
  * line of what the server knows of that agent's usage on that account, then Launch. It keeps what it was opened for (`target`), and its
  * Launch hands the page exactly that: a saved crew is read from the server as the sheet opens and that copy is drawn, Launch held until
  * it is here (a failed read says why and offers to read again); the crew page's draft is drawn as it is and saved as it launches. The
- * sheet shows the crew as the server held it when the sheet read it; its Launch starts the crew by id, and the server starts the crew as
- * it holds it at that moment. The launch names no revision yet, so a change saved after the sheet's read (a save of this page still under
- * way, a save from another page or another person) is not shown by the sheet; issue #957 gives the launch its revision and has the
- * server refuse another. A crew that inherits its yolo setting is drawn with the server's default once that is read
- * (readSheet), never before. Each read ends at its deadline in words with Read again, and closing the sheet or opening it for another
+ * sheet shows the crew as the server held it when the sheet read it, and its Launch names that copy's revision: a change saved after the
+ * read (a save of this page still under way, a save from another page or another person) is refused by the server, which starts nothing
+ * (#957); the page then gives the sheet a new target, which it reads again, and `refused` says why (sheetNotice, announced; once the
+ * crew is drawn again the focus is on Launch). A saved crew read without a revision, or a draft whose save answered none, holds Launch
+ * with words. The sheet says the run's yolo choice: the crew's own, or for a crew that inherits it the server's default at the launch,
+ * drawn once that is read (readSheet), never before. Each read ends at its deadline in words with Read again, and closing the sheet or opening it for another
  * target ends the reads under way. A crew gone when it is read closes the sheet (`gone`). A compact panel is read as the sheet opens once
  * its first view has answered (at most once in five minutes per agent and account, as the server holds it); a view that failed first is
  * read by Read again, then by Read now. What the lines say never stops the launch: a window near its limit is said, and Launch stays the
@@ -22,7 +23,7 @@ import { launchLines, readSheet, type SheetRead, type SheetTarget } from '~/util
  * takes a sheet opened again meanwhile with it.
  */
 const open = defineModel<boolean>('open', { default: false })
-const props = defineProps<{ target: SheetTarget | null; agents: AgentInfo[]; launching?: boolean }>()
+const props = defineProps<{ target: SheetTarget | null; agents: AgentInfo[]; launching?: boolean; refused?: SheetRefusal | null }>()
 const emit = defineEmits<{ launch: [crew: CrewInfo | null]; gone: [] }>()
 
 const api = useSessions()
@@ -53,8 +54,15 @@ const got = computed(() => (read.value && read.value.target === props.target ? r
 const failed = computed(() => (got.value && 'error' in got.value ? got.value : null))
 const crew = computed(() => {
   const g = got.value
-  return g && 'crew' in g ? { name: g.crew.name, members: g.crew.members, managed: !!g.crew.tasks, yolo: g.yolo, saved: props.target && 'id' in props.target ? (g.crew as CrewInfo) : null } : null
+  return g && 'crew' in g ? { name: g.crew.name, members: g.crew.members, managed: !!g.crew.tasks, yolo: g.yolo, inherits: typeof g.crew.yolo !== 'boolean', saved: props.target && 'id' in props.target ? (g.crew as CrewInfo) : null } : null
 })
+const notice = computed(() => sheetNotice(props.refused, failed.value ? 'failed' : crew.value ? 'drawn' : 'reading', !!crew.value?.saved && !crew.value.saved.revision))
+// Once a refused launch's crew is drawn again, the focus goes to Launch: Launch was held through the launch and the read again.
+const footer = useTemplateRef<HTMLElement>('footer')
+watch(
+  () => notice.value?.kind === 'changed' && !notice.value.hold && !props.launching,
+  (ready) => ready && void nextTick(() => footer.value?.querySelector<HTMLButtonElement>('[data-crew-launch-confirm]')?.focus()),
+)
 
 const accounts = useAccounts()
 const cap = useCapacity()
@@ -65,12 +73,19 @@ const lines = computed(() => (crew.value ? launchLines(crew.value.members, { age
 <template>
   <UModal v-model:open="open" :title="crew ? `Launch ${crew.name}` : 'Launch'" :description="target?.label ? `As the run ${target.label}` : 'Each member with its agent, model and account'" :ui="{ content: 'max-w-2xl' }">
     <template #body>
+      <div role="status">
+        <p v-if="notice" class="mb-3 flex items-start gap-2 text-sm text-warning" :data-crew-launch-changed="notice.kind === 'changed' ? '' : undefined" :data-crew-launch-unrevised="notice.kind === 'unrevised' ? '' : undefined">
+          <UIcon :name="notice.kind === 'changed' ? 'i-lucide-refresh-cw' : 'i-lucide-circle-alert'" class="mt-0.5 size-4 shrink-0" />
+          <span class="min-w-0">{{ notice.words }}</span>
+        </p>
+      </div>
       <p v-if="failed" class="flex flex-wrap items-center gap-2 text-sm text-error [overflow-wrap:anywhere]" data-crew-launch-read-error>
         <span class="min-w-0">{{ failed.what === 'crew' ? 'The crew could not be read' : "The server's yolo default could not be read" }}, so nothing is launched: {{ failed.error }}</span>
         <UButton label="Read again" icon="i-lucide-refresh-cw" size="xs" color="neutral" variant="outline" :disabled="!open" data-crew-launch-read-again @click="readNow" />
       </p>
       <p v-else-if="!crew" class="flex items-center gap-2 text-sm text-muted" data-crew-launch-reading><UIcon name="i-lucide-loader-circle" class="size-4 animate-spin" />Reading the crew as the server holds it, and the server's yolo default when it inherits it…</p>
-      <ul v-else class="flex flex-col gap-3" data-crew-launch-sheet>
+      <p v-else class="mb-3 text-sm text-muted" data-crew-launch-yolo>{{ launchYoloWords(crew.yolo, crew.inherits) }}</p>
+      <ul v-if="crew && !failed" class="flex flex-col gap-3" data-crew-launch-sheet>
         <li v-for="l in lines" :key="l.name" class="flex flex-col gap-1.5" :data-crew-launch-line="l.name">
           <div class="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-sm">
             <span class="font-mono font-medium text-highlighted">{{ l.name }}</span>
@@ -83,9 +98,9 @@ const lines = computed(() => (crew.value ? launchLines(crew.value.members, { age
       </ul>
     </template>
     <template #footer>
-      <div class="flex w-full items-center justify-end gap-2">
+      <div ref="footer" class="flex w-full items-center justify-end gap-2">
         <UButton label="Cancel" color="neutral" variant="ghost" :disabled="!open || launching" data-crew-launch-cancel @click="open = false" />
-        <UButton label="Launch" icon="i-lucide-play" :loading="launching" :disabled="!open || !crew || launching" data-crew-launch-confirm @click="emit('launch', crew?.saved ?? null)" />
+        <UButton label="Launch" icon="i-lucide-play" :loading="launching" :disabled="!open || !crew || launching || notice?.hold" data-crew-launch-confirm @click="emit('launch', crew?.saved ?? null)" />
       </div>
     </template>
   </UModal>
