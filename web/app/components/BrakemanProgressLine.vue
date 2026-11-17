@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import type { ProgressNow, ProgressOf } from '~/utils/brakemanProgress'
+import type { BrakemanProgress } from '~/utils/brakeman'
+import type { ProgressOf } from '~/utils/brakemanProgress'
 import { readCounts, readingWords, readsLabel, readsPercent, readCountWords, timeWords } from '~/utils/brakemanProgress'
 
 /**
@@ -9,12 +10,12 @@ import { readCounts, readingWords, readsLabel, readsPercent, readCountWords, tim
  * used when the page holds it; else the request's own reads and deadline, as last read. Drawn by the Brakeman page's In progress, the
  * run's and the ticket's panels and the answer under a task row. `compact` draws it smaller, for a panel or a row.
  */
-const props = defineProps<{ request: ProgressOf; progress?: ProgressNow; compact?: boolean }>()
+const props = defineProps<{ request: ProgressOf; progress?: BrakemanProgress; compact?: boolean }>()
 
 const live = useAttention()
 const now = useNow()
 const counts = computed(() => readCounts(props.request, props.progress))
-const mine = computed(() => (props.progress && (!props.progress.id || props.progress.id === props.request.id) ? props.progress : undefined))
+const mine = computed(() => (props.progress?.id === props.request.id ? props.progress : undefined))
 const time = computed(() => timeWords(mine.value?.startedAt, mine.value?.deadline ?? props.request.deadline, now.value))
 const words = computed(() =>
   readingWords(mine.value?.reading, counts.value.used, {

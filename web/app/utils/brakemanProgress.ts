@@ -1,25 +1,8 @@
 // A Brakeman turn's progress in words (docs/protocol.md, Brakeman, the brakeman_progress event and GET /api/brakeman's `progress`):
 // the reads used of the turn's budget, the time it has run of its deadline, and what it read last. Pure: no Nuxt, no fetch.
 
-import { refLabel } from './brakeman'
+import { refLabel, type BrakemanProgress, type BrakemanReadingNow } from './brakeman'
 import { relativeTime } from './sessions'
-
-/** The read a turn made last: what it read (one of the guide's observe operations) and, when the read named one, its record. */
-export interface ProgressReading {
-  what: string
-  ref?: string
-}
-
-/** A turn's progress as the server tells it (the brakeman_progress event, GET /api/brakeman's `progress`). */
-export interface ProgressNow {
-  /** The request it is of. */
-  id?: string
-  reads: number
-  readsPerTurn: number
-  startedAt?: string
-  deadline?: string
-  reading?: ProgressReading
-}
 
 /** What the line needs of the request it is drawn for: the reads and the budget as last read, and the deadline. */
 export interface ProgressOf {
@@ -58,7 +41,7 @@ type Names = Parameters<typeof refLabel>[1]
  * for a listing ("Read what changed"), and "Starting its agent" while it has read nothing. A turn that has read but whose last read
  * the page does not hold (an older server's state, a read-only server's) says nothing of it: "".
  */
-export function readingWords(reading: ProgressReading | undefined, reads: number, names?: Names): string {
+export function readingWords(reading: BrakemanReadingNow | undefined, reads: number, names?: Names): string {
   if (reading?.ref) return `Last read: ${refLabel(reading.ref, names)}`
   if (reading) return READ_WORDS[reading.what] ?? 'Read'
   return reads > 0 ? '' : STARTING_WORDS
@@ -68,8 +51,8 @@ export function readingWords(reading: ProgressReading | undefined, reads: number
  * The reads used and the turn's budget of them: the progress the server last told, else the request's own count against the budget it
  * was asked under. The budget is 0 when neither says it.
  */
-export function readCounts(request: ProgressOf, progress?: ProgressNow): { used: number; of: number } {
-  if (progress && (!progress.id || progress.id === request.id)) return { used: Math.max(progress.reads, request.reads), of: progress.readsPerTurn }
+export function readCounts(request: ProgressOf, progress?: BrakemanProgress): { used: number; of: number } {
+  if (progress?.id === request.id) return { used: Math.max(progress.reads, request.reads), of: progress.readsPerTurn }
   return { used: request.reads, of: request.config?.budget?.readsPerTurn ?? 0 }
 }
 
