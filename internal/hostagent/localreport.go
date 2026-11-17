@@ -128,6 +128,9 @@ func listenReports(bases []string, token string, log *slog.Logger) (*reportListe
 }
 
 func listenReportsIn(base, token string, log *slog.Logger) (*reportListener, error) {
+	if err := checkReportBase(base); err != nil {
+		return nil, err
+	}
 	// The longest name MkdirTemp makes: the prefix and ten digits.
 	if len(filepath.Join(base, reportDirPrefix+"0123456789", reportSocketName)) > notify.MaxHostSocketPath {
 		return nil, fmt.Errorf("%s: the socket's path would be longer than %d bytes", base, notify.MaxHostSocketPath)
@@ -200,6 +203,37 @@ func (a *agent) startReports(env map[string]string) *reportListener {
 	l.agentSession = a.noteAgentSession
 	env[notify.EnvHostSocket] = l.path
 	return l
+}
+
+// checkReportBase says whether base may hold the host's socket folder: a
+// folder (not a link to one) of this user's own or root's, which no one
+// else can write, or only with the sticky bit set (a shared temporary
+// folder), so that no one else can rename or replace the folder the host
+// makes in it.
+func checkReportBase(base string) error {
+	fi, err := os.Lstat(base)
+	if err != nil {
+		return err
+	}
+	if !fi.IsDir() {
+		return fmt.Errorf("%s: not a folder", base)
+	}
+	if fi.Mode().Perm()&0o022 != 0 && fi.Mode()&os.ModeSticky == 0 {
+		return fmt.Errorf("%s: others can write it, and its sticky bit is not set", base)
+	}
+	if uid, ok := ownerOf(fi); !ok || (uid != os.Getuid() && uid != 0) {
+		return fmt.Errorf("%s: neither this user's nor root's", base)
+	}
+	return nil
+}
+
+// ownerOf is the user id that owns what fi describes.
+func ownerOf(fi os.FileInfo) (int, bool) {
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	if !ok {
+		return 0, false
+	}
+	return int(st.Uid), true
 }
 
 // sweepReportDirs removes from base the socket folders of hosts that ended

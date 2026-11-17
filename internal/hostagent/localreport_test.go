@@ -610,3 +610,41 @@ func TestASocketThatFailsItsCheckIsNotUsed(t *testing.T) {
 		t.Fatalf("left %v", left)
 	}
 }
+
+// The socket's folder is made only in a base no one else can write, or
+// only with the sticky bit set, that is a folder and not a link: a base of
+// mode 0777 without the sticky bit is passed over, one of 01777 used.
+func TestTheSocketIsMadeOnlyUnderABaseOthersCannotRewrite(t *testing.T) {
+	tok, _ := share.NewToken()
+	parent := socketBase(t)
+	open, sticky := filepath.Join(parent, "o"), filepath.Join(parent, "s")
+	for d, mode := range map[string]os.FileMode{open: 0o777, sticky: 0o777 | os.ModeSticky} {
+		if err := os.Mkdir(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(d, mode); err != nil {
+			t.Fatal(err)
+		}
+	}
+	link := filepath.Join(parent, "l")
+	if err := os.Symlink(sticky, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := listenReports([]string{open}, tok, discardLog); err == nil {
+		t.Fatal("a socket was made under a base others can rewrite")
+	}
+	if _, err := listenReports([]string{link}, tok, discardLog); err == nil {
+		t.Fatal("a socket was made under a link")
+	}
+	l, err := listenReports([]string{open, link, sticky}, tok, discardLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(l.Close)
+	if filepath.Dir(l.dir) != sticky {
+		t.Fatalf("made in %s", l.dir)
+	}
+	if left, _ := os.ReadDir(open); len(left) != 0 {
+		t.Fatalf("left under the open base: %v", left)
+	}
+}

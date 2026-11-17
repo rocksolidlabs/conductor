@@ -5,6 +5,8 @@ package notify
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -246,5 +248,75 @@ func TestNoSocketReportsToTheServer(t *testing.T) {
 	}
 	if served.Load() != 1 {
 		t.Fatalf("the server was sent %d", served.Load())
+	}
+}
+
+// The sender writes nothing to a socket whose peer is not its own user:
+// the listener reads no byte, no request and no token, and the report goes
+// to the server's route. A socket whose peer is this user (every other
+// test here, the kernel's own answer) is used.
+func TestTheSenderWritesNothingToASocketOfAnotherUser(t *testing.T) {
+	path := filepath.Join(shortDir(t), "report.sock")
+	ln, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	read := make(chan int, 4)
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer c.Close()
+				b, _ := io.ReadAll(c)
+				read <- len(b)
+			}()
+		}
+	}()
+	peerUID = func(net.Conn) (int, error) { return os.Getuid() + 1, nil }
+	t.Cleanup(func() { peerUID = socketPeerUID })
+	srv, served := countingServer(t)
+	if err := (Target{URL: srv.URL, Token: "tok", Socket: path}).Send(context.Background(), Request{State: "done"}); err != nil {
+		t.Fatal(err)
+	}
+	if served.Load() != 1 {
+		t.Fatalf("the server was sent %d", served.Load())
+	}
+	select {
+	case n := <-read:
+		if n != 0 {
+			t.Fatalf("the listener read %d bytes", n)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the connection was never closed")
+	}
+	// A peer that cannot be read is no peer of this user's either.
+	peerUID = func(net.Conn) (int, error) { return 0, errors.New("unknown") }
+	if err := (Target{URL: srv.URL, Token: "tok", Socket: path}).Send(context.Background(), Request{State: "done"}); err != nil {
+		t.Fatal(err)
+	}
+	if n := <-read; n != 0 || served.Load() != 2 {
+		t.Fatalf("the listener read %d bytes, the server was sent %d", n, served.Load())
+	}
+}
+
+// The kernel's answer for a socket this process listens on is this user.
+func TestTheSocketsPeerIsReadFromTheKernel(t *testing.T) {
+	path := filepath.Join(shortDir(t), "report.sock")
+	ln, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	c, err := net.Dial("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if uid, err := socketPeerUID(c); err != nil || uid != os.Getuid() {
+		t.Fatalf("peer %d %v", uid, err)
 	}
 }

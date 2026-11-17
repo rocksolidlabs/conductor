@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -32,8 +33,9 @@ const HostReportPath = "/attention"
 
 // errHostUnreachable says the host's socket could not be reached: it is
 // missing, it is not this user's own in a folder of this user's own that
-// only this user can enter (CheckHostSocket), or no connection to it was
-// made. Nothing reached the host, so the report may go to the server
+// only this user can enter (CheckHostSocket), no connection to it was
+// made, or the process that listens on it is not this user's (its peer,
+// read before anything is written). Nothing reached the host, so the report may go to the server
 // instead. A host's answer, whatever it says, is never this.
 var errHostUnreachable = errors.New("notify: the host's socket cannot be reached")
 
@@ -75,6 +77,10 @@ func CheckHostSocket(path string) error {
 	return checkOwnSocket(path)
 }
 
+// peerUID reads the user id of a connection's peer (socketPeerUID); tests
+// replace it.
+var peerUID = socketPeerUID
+
 // hostPoster makes one attempt on the host's socket, as post does on the
 // server's route. An attempt that made no connection is errHostUnreachable:
 // the request was never written. Once a connection is made, every failure
@@ -91,10 +97,22 @@ func hostPoster(socket, token string) poster {
 			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 				var d net.Dialer
 				c, err := d.DialContext(ctx, "unix", socket)
-				if err == nil {
-					connected.Store(true)
+				if err != nil {
+					return nil, err
 				}
-				return c, err
+				// Nothing is written to a socket whose peer is not this
+				// user: the kernel's record of who listens there, read
+				// after the connect, is what the names checked before it
+				// cannot change.
+				if uid, err := peerUID(c); err != nil || uid != os.Getuid() {
+					c.Close()
+					if err == nil {
+						err = fmt.Errorf("its peer is user %d, not this user", uid)
+					}
+					return nil, err
+				}
+				connected.Store(true)
+				return c, nil
 			},
 			DisableKeepAlives: true,
 		}
