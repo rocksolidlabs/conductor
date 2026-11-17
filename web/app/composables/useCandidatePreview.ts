@@ -1,13 +1,13 @@
 import { ref } from 'vue'
-import { mintCommandId, sendCommand, type Receipt } from '~/utils/tasks'
+import { mintCommandId, type Receipt } from '~/utils/tasks'
 
 /**
  * A candidate's preview (docs/plans/browser-evidence.md, "A candidate's preview"; docs/protocol.md, the preview commands): Preview this
  * candidate makes a preview checkout at the candidate's commit with the run's project manifest, `POST
  * /api/runs/{run}/tasks/{task}/attempts/{n}/preview {commandId}` answering its `seq` and state; Close ends it, `POST
  * …/preview/{seq}/close {commandId}`. Each is a command with its receipt in the run's ledger: a reply lost to the network is asked for
- * once more with the same command id, which the server answers with the first's receipt (sendCommand). A refusal is said in the
- * server's words; two checkouts open already (`429 previews_busy`) names them.
+ * once more with the same command id, which the server answers with the first's receipt. A refusal is said in the server's words
+ * (`{error, receipt}`, or `{error}` before the command was taken); two checkouts open already (`429 previews_busy`) names them.
  */
 
 export interface CandidateOpened {
@@ -33,6 +33,17 @@ export function useCandidatePreview(runId: () => string) {
   const busy = ref('')
   /** The last refusal's words, by `<task>:<n>`. */
   const refused = ref<Record<string, string>>({})
+  /** POSTs body, once more with the same body (its command id) when the reply was lost to the network; a refusal throws the server's error. */
+  async function post<R>(path: string, body: { commandId: string }): Promise<R> {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return await request<R>(path, { method: 'POST', body })
+      } catch (e) {
+        if ((e as { status?: number }).status === 0 && attempt === 1) continue
+        throw e
+      }
+    }
+  }
   const base = (task: string, n: number) => `/api/runs/${encodeURIComponent(runId())}/tasks/${encodeURIComponent(task)}/attempts/${n}/preview`
 
   /** Preview this candidate: its checkout's `seq`, or null when the server refused (its words in `refused`). */
@@ -40,7 +51,7 @@ export function useCandidatePreview(runId: () => string) {
     const key = `${task}:${n}`
     busy.value = `${key}:open`
     try {
-      const r = await sendCommand((b: { commandId: string }) => request<CandidateOpened & { receipt: Receipt }>(base(task, n), { method: 'POST', body: b }), { commandId: mintCommandId() })
+      const r = await post<CandidateOpened & { receipt: Receipt }>(base(task, n), { commandId: mintCommandId() })
       refused.value = { ...refused.value, [key]: '' }
       return r
     } catch (e) {
@@ -56,7 +67,7 @@ export function useCandidatePreview(runId: () => string) {
     const key = `${task}:${n}`
     busy.value = `${key}:close`
     try {
-      await sendCommand((b: { commandId: string }) => request<{ receipt: Receipt; state: string }>(`${base(task, n)}/${seq}/close`, { method: 'POST', body: b }), { commandId: mintCommandId() })
+      await post<{ receipt: Receipt; state: string }>(`${base(task, n)}/${seq}/close`, { commandId: mintCommandId() })
       refused.value = { ...refused.value, [key]: '' }
       return true
     } catch (e) {
