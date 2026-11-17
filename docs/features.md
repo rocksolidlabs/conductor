@@ -299,8 +299,8 @@ the item, newest row first.
 - **The bridge in any frame and the frame's pixels, in the desktop app
   (PR-5, #793).** The shell puts the server's bridge into the preview
   frame whatever page it shows, and takes the frame's pixels with no
-  prompt (at most 2,048 px on the long side, 4 MiB, one at a time per
-  window). Its two channels answer the workbench's main frame alone: a
+  prompt (at most 2,048 px on the long side; past 4 MiB taken again at
+  half its size once, as in a browser; one at a time per window). Its two channels answer the workbench's main frame alone: a
   frame inside the workbench, the app's own file pages and any other
   origin are refused.
 - **The preview in the pane, selection, annotations, a capture saved

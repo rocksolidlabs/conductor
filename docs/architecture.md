@@ -460,7 +460,9 @@ second idle). The screenshot has two paths, chosen in that order: in the
 desktop app the shell takes the pixels of the frame's box in the
 workbench's own window with no prompt (`webContents.capturePage`, the box
 in whole CSS pixels inside the content, at most 2,048 pixels on the long
-side as taken, a PNG of at most 4 MiB, one at a time per window,
+side as taken, a PNG of at most 4 MiB (one past it taken again at half
+its size, once, as the workbench's own encoding does, then dropped with
+words), one at a time per window,
 `web/app/utils/screenshotDesktop.ts`); in a browser that can, the tab
 cropped to the frame, with the person's permission; else none, which the
 capture says. The shell's two channels for these, `conductor:previewBridge`

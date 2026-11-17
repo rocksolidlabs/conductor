@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { capturePreview, frameOriginRefusal, injectBridge, MAX_PREVIEW_PNG, previewFrames, rectRefusal, type PreviewContents, type PreviewFrame, type PreviewImage, type Rect } from '../src/preview'
+import { capturePreview, frameOriginRefusal, injectBridge, MAX_PREVIEW_PNG, TOO_LARGE, previewFrames, rectRefusal, type PreviewContents, type PreviewFrame, type PreviewImage, type Rect } from '../src/preview'
 
 const workbench = 'http://127.0.0.1:4312'
 const preview = 'http://127.0.0.1:5173'
@@ -33,8 +33,8 @@ function contents(children: (main: Fake) => Fake[], capture?: (rect: Rect) => Pr
   return wc as typeof wc & PreviewContents
 }
 
-/** A fake NativeImage of w x h whose PNG is bytes long (by default a few bytes per pixel). */
-function image(w: number, h: number, bytes?: number): PreviewImage & { resized: Array<{ width: number; height: number }> } {
+/** A fake NativeImage of w x h whose PNG is bytes long, a number or one of its size (64 bytes by default). */
+function image(w: number, h: number, bytes?: number | ((w: number, h: number) => number)): PreviewImage & { resized: Array<{ width: number; height: number }> } {
   const resized: Array<{ width: number; height: number }> = []
   const img = {
     resized,
@@ -46,7 +46,7 @@ function image(w: number, h: number, bytes?: number): PreviewImage & { resized: 
       next.resized.unshift(...resized)
       return next
     },
-    toPNG: () => new Uint8Array(bytes ?? 64),
+    toPNG: () => new Uint8Array(typeof bytes === 'function' ? bytes(w, h) : (bytes ?? 64)),
   }
   return img
 }
@@ -208,11 +208,20 @@ describe('capturePreview', () => {
     const got = await capturePreview(wc, { x: 0, y: 0, width: 1000, height: 250 }, deps)
     expect(got).toMatchObject({ width: 2048, height: 512, scale: 2.048 })
   })
-  it('refuses a PNG past 4 MiB, an empty image, and a rectangle it refuses, taking nothing then', async () => {
-    const big = contents(() => [], async () => image(100, 100, MAX_PREVIEW_PNG + 1))
-    expect(await capturePreview(big, { x: 0, y: 0, width: 100, height: 100 }, deps)).toEqual({ refused: 'refused: the screenshot is larger than 4 MiB' })
+  it('takes a PNG past 4 MiB again at half its size, as the workbench encodes one, its scale halved with it', async () => {
+    // Over the bound by a byte at its full size, within it at half (a PNG's bytes go with its pixels).
+    const perPixel = (MAX_PREVIEW_PNG + 1) / (2000 * 1000)
+    const wc = contents(() => [], async () => image(2000, 1000, (w, h) => Math.ceil(w * h * perPixel)))
+    const got = await capturePreview(wc, { x: 0, y: 0, width: 1000, height: 500 }, deps)
+    expect(got).toMatchObject({ width: 1000, height: 500, scale: 1 })
+    expect((got as { png: Uint8Array }).png.byteLength).toBeLessThanOrEqual(MAX_PREVIEW_PNG)
+    // At the bound, it is kept as it is.
     const at = contents(() => [], async () => image(100, 100, MAX_PREVIEW_PNG))
-    expect(await capturePreview(at, { x: 0, y: 0, width: 100, height: 100 }, deps)).toMatchObject({ width: 100, height: 100 })
+    expect(await capturePreview(at, { x: 0, y: 0, width: 100, height: 100 }, deps)).toMatchObject({ width: 100, height: 100, scale: 1 })
+  })
+  it('refuses a PNG past 4 MiB even at half its size, an empty image, and a rectangle it refuses, taking nothing then', async () => {
+    const big = contents(() => [], async () => image(100, 100, MAX_PREVIEW_PNG + 1))
+    expect(await capturePreview(big, { x: 0, y: 0, width: 100, height: 100 }, deps)).toEqual({ refused: TOO_LARGE })
     const empty = contents(() => [], async () => image(0, 0))
     expect(await capturePreview(empty, { x: 0, y: 0, width: 100, height: 100 }, deps)).toEqual({ refused: 'refused: the window gave no pixels' })
     const outside = contents(() => [])
