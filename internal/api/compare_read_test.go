@@ -39,7 +39,7 @@ func TestComparisonRoute(t *testing.T) {
 	if status != http.StatusOK || len(raw) > crew.MaxComparison {
 		t.Fatalf("the comparison: %d %.300s", status, raw)
 	}
-	keys := []string{"run", "base", "objective", "criteria", "candidates", "checks", "settled", "independence", "supporting"}
+	keys := []string{"run", "base", "objective", "criteria", "candidates", "checks", "settled", "independence", "supporting", "state"}
 	for _, k := range keys {
 		if _, ok := out[k]; !ok {
 			t.Fatalf("no %s in %s", k, raw)
