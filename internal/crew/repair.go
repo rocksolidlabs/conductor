@@ -14,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
+	"github.com/rocksolidlabs/conductor/internal/quoted"
 	"github.com/rocksolidlabs/conductor/internal/session"
 )
 
@@ -101,27 +102,38 @@ type RequestedChange struct {
 // ledger's identity (<run>/<task>/<n>/<phase>/<id>/<k>) and its parts, the
 // commit it tested, how it ended, its log's hash and size, the last of its
 // output, the class the server worked out (ClassifyFailure) and the one
-// the person chose, and what they quote of the output.
+// the person chose, and what they quote of the output. Source is the
+// receipt's source: "" (or "ledger") Yardmaster's ledger, "external" a CI
+// job on GitHub that a delivery link's pull request reports (Program item
+// IN1a, PR-10), whose receipt is github:<host>/<owner>/<repo>/check-runs/<n>
+// and which has a name, a conclusion, a page and an app in place of the
+// ledger's fields. An external job's name, app, tail and quote were
+// written outside Conductor: task.md quotes them (internal/quoted).
 type RequestedCheck struct {
-	Receipt   string `json:"receipt"`
-	Run       string `json:"run,omitempty"`
-	Task      string `json:"task,omitempty"`
-	Attempt   int    `json:"attempt,omitempty"`
-	Phase     string `json:"phase,omitempty"`
-	ID        string `json:"id,omitempty"`
-	K         int    `json:"k,omitempty"`
-	Subject   string `json:"subject,omitempty"`
-	Exit      *int   `json:"exit,omitempty"`
-	Signal    string `json:"signal,omitempty"`
-	TimedOut  bool   `json:"timedOut,omitempty"`
-	Stable    bool   `json:"stable"`
-	Error     string `json:"error,omitempty"`
-	LogSHA256 string `json:"logSha256,omitempty"`
-	LogBytes  int64  `json:"logBytes,omitempty"`
-	Tail      string `json:"tail,omitempty"`
-	Class     string `json:"class,omitempty"`
-	Chosen    string `json:"chosen,omitempty"`
-	Quote     string `json:"quote,omitempty"`
+	Source     string `json:"source,omitempty"`
+	Name       string `json:"name,omitempty"`
+	Conclusion string `json:"conclusion,omitempty"`
+	URL        string `json:"url,omitempty"`
+	App        string `json:"app,omitempty"`
+	Receipt    string `json:"receipt"`
+	Run        string `json:"run,omitempty"`
+	Task       string `json:"task,omitempty"`
+	Attempt    int    `json:"attempt,omitempty"`
+	Phase      string `json:"phase,omitempty"`
+	ID         string `json:"id,omitempty"`
+	K          int    `json:"k,omitempty"`
+	Subject    string `json:"subject,omitempty"`
+	Exit       *int   `json:"exit,omitempty"`
+	Signal     string `json:"signal,omitempty"`
+	TimedOut   bool   `json:"timedOut,omitempty"`
+	Stable     bool   `json:"stable"`
+	Error      string `json:"error,omitempty"`
+	LogSHA256  string `json:"logSha256,omitempty"`
+	LogBytes   int64  `json:"logBytes,omitempty"`
+	Tail       string `json:"tail,omitempty"`
+	Class      string `json:"class,omitempty"`
+	Chosen     string `json:"chosen,omitempty"`
+	Quote      string `json:"quote,omitempty"`
 }
 
 // Addressed is one change a repair attempt's result says it addressed:
@@ -235,9 +247,59 @@ func (cr ChangeRequest) validate() error {
 		if ch := c.Check; ch != nil && !oneLineName(ch.Receipt, ch.Run, ch.Task, ch.Phase, ch.ID, ch.Subject, ch.Signal, ch.LogSHA256, ch.Class, ch.Chosen) {
 			return bad("change %s: its check's receipt, identity, subject, signal, hash and classes are each one line of text, with no control character", c.ID)
 		}
+		if ch := c.Check; ch != nil {
+			if err := ch.validateSource(); err != nil {
+				return bad("change %s: %v", c.ID, err)
+			}
+		}
 	}
 	if !asked {
 		return bad("a request asks for at least one change: questions and notes alone repair nothing")
+	}
+	return nil
+}
+
+// The sources of a requested check's receipt (RequestedCheck.Source).
+const (
+	checkSourceLedger   = "ledger"
+	checkSourceExternal = "external"
+)
+
+// The bounds of an external job's fields: its name and its app (Dispatch's
+// MaxCheckName), its page (Dispatch's MaxExternalURL) and its conclusion.
+const (
+	maxJobName       = 200
+	maxJobURL        = 2048
+	maxJobConclusion = 40
+)
+
+// external reports a receipt of a CI job on GitHub.
+func (ch *RequestedCheck) external() bool { return ch.Source == checkSourceExternal }
+
+// validateSource holds a requested check to its source: the ledger's ("" or
+// ledger) has none of an external job's fields; an external one has a
+// receipt github:…, a name, none of the ledger's identity, and its name,
+// app, page and conclusion within their bounds, the page and the
+// conclusion each one line of text with no control character (its name and
+// app, written outside Conductor, are quoted where task.md says them).
+func (ch *RequestedCheck) validateSource() error {
+	switch ch.Source {
+	case "", checkSourceLedger:
+		if ch.Name != "" || ch.Conclusion != "" || ch.URL != "" || ch.App != "" {
+			return errors.New("a receipt of the ledger has no external job's fields")
+		}
+		return nil
+	case checkSourceExternal:
+	default:
+		return fmt.Errorf("its check's source is ledger or external, not %q", ch.Source)
+	}
+	switch {
+	case !strings.HasPrefix(ch.Receipt, "github:") || ch.Run != "" || ch.Task != "" || ch.Attempt != 0 || ch.Phase != "" || ch.ID != "" || ch.K != 0:
+		return errors.New("an external job's receipt is github:<host>/<owner>/<repo>/check-runs/<n>, with none of the ledger's identity")
+	case ch.Name == "" || len(ch.Name) > maxJobName || len(ch.App) > maxJobName || len(ch.URL) > maxJobURL || len(ch.Conclusion) > maxJobConclusion:
+		return fmt.Errorf("an external job has a name, its name and app at most %d bytes, its page %d, its conclusion %d", maxJobName, maxJobURL, maxJobConclusion)
+	case !oneLineName(ch.URL, ch.Conclusion):
+		return errors.New("an external job's page and conclusion are each one line of text, with no control character")
 	}
 	return nil
 }
@@ -707,7 +769,7 @@ func cutChanges(f *TaskFile, m *TaskMore, part int) bool {
 	case cutLines:
 		mc.Lines, c.Lines, c.linesCut = c.Lines, nil, true
 		if ch := c.Check; ch != nil {
-			mc.Check = &RequestedCheck{Receipt: ch.Receipt, Tail: ch.Tail, Quote: ch.Quote}
+			mc.Check = &RequestedCheck{Source: ch.Source, Receipt: ch.Receipt, Tail: ch.Tail, Quote: ch.Quote}
 			ch.Tail, ch.Quote = "", ""
 		}
 		for _, x := range cs {
@@ -818,8 +880,15 @@ func writeChangeRequest(b *strings.Builder, f TaskFile) {
 			b.WriteString("\n")
 		}
 	}
+	if slices.ContainsFunc(cr.Changes, func(c RequestedChange) bool { return c.Check != nil && c.Check.external() }) {
+		b.WriteString(externalJobWords + "\n\n")
+	}
 	b.WriteString("Say which you addressed with `addressed` in your result (each change's id, and a note); a person checks each one on your result.\n\n")
 }
+
+// externalJobWords is what task.md says of an external job's texts in the
+// task's JSON files, which hold them as they were read.
+const externalJobWords = "In `" + taskDir + "/task.json` and `" + taskDir + "/" + taskMoreFile + "`, the `name`, `app`, `tail` and `quote` of a check whose `source` is `external` are the same report task.md quotes: " + quoted.Untrusted + "."
 
 // writeChange writes one requested change as a list item.
 func writeChange(b *strings.Builder, f TaskFile, c RequestedChange) {
@@ -887,6 +956,9 @@ func changeLocation(c RequestedChange) string {
 	case "file":
 		return inlineCode(c.Path) + ", the whole file" + side
 	case "check":
+		if c.Check != nil && c.Check.external() {
+			return "a CI job on GitHub"
+		}
 		if c.Check != nil && c.Check.ID != "" {
 			return "the check " + inlineCode(c.Check.ID)
 		}
@@ -900,6 +972,10 @@ func changeLocation(c RequestedChange) string {
 // person chose, where its log is, and its output as the person quoted it
 // and the ledger kept its last.
 func writeRequestedCheck(b *strings.Builder, f TaskFile, ch *RequestedCheck) {
+	if ch.external() {
+		writeExternalCheck(b, ch)
+		return
+	}
 	fmt.Fprintf(b, "\n  Its receipt in the ledger is %s", ch.Receipt)
 	if ch.Subject != "" {
 		fmt.Fprintf(b, ", on the commit %s", ch.Subject)
@@ -941,6 +1017,68 @@ func writeRequestedCheck(b *strings.Builder, f TaskFile, ch *RequestedCheck) {
 		b.WriteString("\n  Its last output:\n")
 		writeIndentedFence(b, ch.Tail)
 	}
+}
+
+// writeExternalCheck says a check finding's CI job on GitHub: that it is
+// GitHub's, its receipt, the commit it tested and how it ended in
+// Conductor's words (its conclusion only when it is one of GitHub's
+// words), the class the server gave it and the one the person chose, its
+// page, and then what was written outside Conductor, each through
+// internal/quoted, from the check run the receipt names: its name and its
+// app as a line each, their excerpt of its log and the end
+// of its log as a block each, never in the ledger's words.
+func writeExternalCheck(b *strings.Builder, ch *RequestedCheck) {
+	src := externalSource(ch.Receipt)
+	fmt.Fprintf(b, "\n  It is a CI job on GitHub, not one of this crew's checks: GitHub runs it, and Conductor does not run it again on your result. Its receipt is %s", inlineCode(ch.Receipt))
+	if ch.Subject != "" {
+		fmt.Fprintf(b, ", on the commit %s", ch.Subject)
+	}
+	if conclusionWord(ch.Conclusion) {
+		fmt.Fprintf(b, " (it ended %s)", ch.Conclusion)
+	}
+	if ch.Class != "" {
+		fmt.Fprintf(b, "; Conductor classed it %s", ch.Class)
+	}
+	if ch.Chosen != "" && ch.Chosen != ch.Class {
+		fmt.Fprintf(b, ", and the person chose %s", ch.Chosen)
+	} else if ch.Chosen != "" {
+		b.WriteString(", as the person did")
+	}
+	b.WriteString(". GitHub keeps its whole log")
+	if ch.URL != "" {
+		fmt.Fprintf(b, ", on its page <%s>", quoted.Flat(ch.URL))
+	}
+	b.WriteString(".\n")
+	fmt.Fprintf(b, "\n  %s\n", quoted.Line(src, "Its name", ch.Name))
+	if ch.App != "" {
+		fmt.Fprintf(b, "\n  %s\n", quoted.Line(src, "Its app", ch.App))
+	}
+	// A block stands at the line's start, outside the list item, so that
+	// each of its lines begins with the mark its opening line names.
+	if ch.Quote != "" {
+		fmt.Fprintf(b, "\n%s\n", quoted.Block(src, "Their excerpt of its log", ch.Quote))
+	}
+	if ch.Tail != "" {
+		fmt.Fprintf(b, "\n%s\n", quoted.Block(src, "The end of its log", ch.Tail))
+	}
+}
+
+// externalSource is where an external job's texts were written: GitHub,
+// the check run its receipt names (<owner>/<repo>/check-runs/<n>), never
+// an account; a receipt not of that form names no item.
+func externalSource(receipt string) quoted.Source {
+	rest, ok := strings.CutPrefix(receipt, "github:")
+	_, item, found := strings.Cut(rest, "/")
+	if !ok || !found {
+		item = ""
+	}
+	return quoted.Source{On: quoted.FromSystem("github"), Ref: item}
+}
+
+// conclusionWord reports GitHub's word for how a job ended: lower-case
+// letters and '_', at most maxJobConclusion.
+func conclusionWord(s string) bool {
+	return s != "" && len(s) <= maxJobConclusion && strings.Trim(s, "abcdefghijklmnopqrstuvwxyz_") == ""
 }
 
 // singleLine says s has no line break a Markdown reader would take as one
