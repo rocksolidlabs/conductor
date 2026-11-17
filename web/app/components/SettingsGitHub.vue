@@ -92,7 +92,8 @@ const revokeHref = (h: string) => githubHref(`https://${h}/settings/tokens`, h)
             <span>· fingerprint <span class="font-mono" data-mono="id" data-github-fingerprint>{{ e.fingerprint }}</span></span>
           </p>
           <p v-if="e.source === 'environment'" class="text-xs text-dimmed">Given to the server in CONDUCTOR_GITHUB_TOKEN: it cannot be removed here, only where the server is started.</p>
-          <div v-if="asking === e.host" class="flex flex-col gap-2 rounded-md bg-elevated/60 p-2.5 text-xs" data-github-remove-ask>
+          <!-- Under the row it was asked for alone: the environment's token, listed for the same host, cannot be removed here. -->
+          <div v-if="e.source === 'settings' && asking === e.host" class="flex flex-col gap-2 rounded-md bg-elevated/60 p-2.5 text-xs" data-github-remove-ask>
             <p>
               Remove stops Conductor's use of this token only: it stays valid on GitHub until you revoke it there<template v-if="revokeHref(e.host)">,
                 in <a :href="revokeHref(e.host)!" target="_blank" rel="noopener noreferrer" class="underline" data-github-revoke>GitHub's token settings</a></template>.

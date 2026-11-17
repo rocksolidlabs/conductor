@@ -1,4 +1,7 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { sha256Hex } from './publication'
+import { MAX_TICKET_EXTERNAL_SEARCH } from './protocol'
+import { descriptionDiffersFrom, externalSearchable, importReady } from './tracker'
 import { checkHost, checksWords, githubHref, githubStateWords, linkStateWords, ownersWords, parseGitHubRef, readAge, readIsStale, refWords, trackerRefusalWords, type GitHubRef } from './tracker'
 
 // A GitHub item's reference as the server's parse reads it (internal/tracker/ref.go): the same table as TestParseGitHubURLs in
@@ -169,5 +172,48 @@ describe("the tracker's refusals", () => {
     expect(trackerRefusalWords('no_token', '')).toContain('Settings')
     expect(trackerRefusalWords('token_refused', '')).toContain('Settings')
     expect(trackerRefusalWords('something_new', 'the server said')).toBe('the server said')
+  })
+})
+
+describe("GitHub's description differs (a page with no crypto.subtle, as one served over plain http)", () => {
+  afterEach(() => vi.unstubAllGlobals())
+  it("says so for a Dispatch-owned description whose SHA-256 is not the snapshot's, by the page's own digest", () => {
+    vi.stubGlobal('crypto', {})
+    const github = sha256Hex('GitHub wrote this.')
+    expect(descriptionDiffersFrom('Dispatch wrote this.', github, 'dispatch', sha256Hex)).toBe(true)
+    expect(descriptionDiffersFrom('GitHub wrote this.', github, 'dispatch', sha256Hex)).toBe(false)
+    // GitHub's own, or no digest: nothing to say.
+    expect(descriptionDiffersFrom('Dispatch wrote this.', github, 'github', sha256Hex)).toBe(false)
+    expect(descriptionDiffersFrom('Dispatch wrote this.', undefined, 'dispatch', sha256Hex)).toBe(false)
+  })
+})
+
+describe("Import's send", () => {
+  const preview = { linked: undefined as string | undefined }
+  const at = 'https://github.com/octo-example/widgets/issues/12'
+  it('is offered only for the address the preview was read for, as the field holds it now', () => {
+    expect(importReady({ preview, previewed: at, url: at, reading: false })).toBe(true)
+    expect(importReady({ preview, previewed: at, url: ` ${at} `, reading: false })).toBe(true)
+    // Another address typed after the preview: read it first.
+    expect(importReady({ preview, previewed: at, url: 'https://github.com/octo-example/widgets/issues/13', reading: false })).toBe(false)
+    // The dialog opened again (its field emptied) while an earlier read landed.
+    expect(importReady({ preview, previewed: at, url: '', reading: false })).toBe(false)
+    expect(importReady({ preview: null, previewed: '', url: at, reading: false })).toBe(false)
+    expect(importReady({ preview, previewed: at, url: at, reading: true })).toBe(false)
+    expect(importReady({ preview: { linked: 'CND-3' }, previewed: at, url: at, reading: false })).toBe(false)
+  })
+})
+
+describe('a pasted address the palette searches by', () => {
+  const o = { hosts: ['ghe.example.test'] }
+  it('is a GitHub item the parse reads, within the server’s bound', () => {
+    expect(MAX_TICKET_EXTERNAL_SEARCH).toBe(2048)
+    expect(externalSearchable('https://github.com/octo-example/widgets/issues/12', o)).toBe(true)
+    expect(externalSearchable('https://ghe.example.test/team/tool/pull/9', o)).toBe(true)
+    expect(externalSearchable('https://ghe.example.test/team/tool/pull/9', {})).toBe(false)
+    expect(externalSearchable('octo-example/widgets#12', o)).toBe(false)
+    const long = `https://github.com/octo-example/${'w'.repeat(100)}/issues/${'9'.repeat(20)}`
+    expect(externalSearchable(long, o)).toBe(true)
+    expect(externalSearchable(`https://github.com/octo-example/widgets/issues/1${'0'.repeat(MAX_TICKET_EXTERNAL_SEARCH)}`, o)).toBe(false)
   })
 })
