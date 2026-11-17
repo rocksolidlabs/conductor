@@ -4,12 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/coder/websocket"
 
 	"github.com/rocksolidlabs/conductor/internal/catalog"
 	"github.com/rocksolidlabs/conductor/internal/journal"
@@ -111,7 +115,7 @@ func TestAnAgentSessionReportedOnTheSocketIsKeptInTheRecord(t *testing.T) {
 // Reports of the same id one after another are kept as one, its turn if
 // either was of a turn; the log keeps its order and its bound, the oldest
 // going first; nothing is sent while the server takes none; and a
-// connection's start sends the log again from its start, in order.
+// connection's start sends what is not known taken, in order.
 func TestTheAgentSessionLogKeepsItsOrderAndBound(t *testing.T) {
 	a, _, _, _ := sentAttention(t)
 	got := make(chan proto.HostAgentSessionMsg, 256)
@@ -124,25 +128,11 @@ func TestTheAgentSessionLogKeepsItsOrderAndBound(t *testing.T) {
 	a.noteAgentSession("a", true)
 	a.noteAgentSession("b", false)
 	a.noteAgentSession("a", false)
-	a.mu.Lock()
-	log := slices.Clone(a.asLog)
-	a.mu.Unlock()
-	want := []agentSessionReport{{"a", true}, {"b", false}, {"a", false}}
-	if !slices.Equal(log, want) {
+	want := []agentSessionReport{{id: "a", turn: true}, {id: "b"}, {id: "a"}}
+	if log := logOf(a); !slices.Equal(log, want) {
 		t.Fatalf("the log %+v", log)
 	}
-	// The sender has stopped before it is judged.
-	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(time.Millisecond) {
-		a.mu.Lock()
-		flushing := a.asFlushing
-		a.mu.Unlock()
-		if !flushing {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the sender never stopped")
-		}
-	}
+	untilSenderStopped(t, a)
 	if len(got) != 0 {
 		t.Fatalf("sent to a server that takes none: %+v", <-got)
 	}
@@ -248,4 +238,205 @@ func TestALaterOlderServerEndsTheSocket(t *testing.T) {
 	if a.reports != nil {
 		t.Fatal("the host still holds its socket")
 	}
+}
+
+// logOf is a's log, each entry's id and turn.
+func logOf(a *agent) []agentSessionReport {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	out := make([]agentSessionReport, 0, len(a.asLog))
+	for _, r := range a.asLog {
+		out = append(out, agentSessionReport{id: r.id, turn: r.turn})
+	}
+	return out
+}
+
+// untilSenderStopped waits for a's sender of agent session ids to stop:
+// what it sends is judged after.
+func untilSenderStopped(t *testing.T, a *agent) {
+	t.Helper()
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(time.Millisecond) {
+		a.mu.Lock()
+		flushing := a.asFlushing
+		a.mu.Unlock()
+		if !flushing {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the sender never stopped")
+		}
+	}
+}
+
+// agentSessionSender is an agent whose agent_session sends go to sent,
+// each answered by answer (nil: sent), and whose pings are answered as
+// confirmed says.
+func agentSessionSender(t *testing.T, confirmed bool) (a *agent, sent chan proto.HostAgentSessionMsg, answer *func(n int) error) {
+	t.Helper()
+	a, _, _, _ = sentAttention(t)
+	sent = make(chan proto.HostAgentSessionMsg, 256)
+	var mu sync.Mutex
+	n := 0
+	ans := func(int) error { return nil }
+	answer = &ans
+	a.asSend = func(m proto.HostAgentSessionMsg) error {
+		mu.Lock()
+		n++
+		k, f := n, *answer
+		mu.Unlock()
+		err := f(k)
+		if err == nil {
+			sent <- m
+		}
+		return err
+	}
+	a.asConfirm = func() bool { return confirmed }
+	a.agentSessions.Store(true)
+	return a, sent, answer
+}
+
+// drained is what sent holds, once the sender has stopped.
+func drained(t *testing.T, a *agent, sent chan proto.HostAgentSessionMsg) []string {
+	t.Helper()
+	untilSenderStopped(t, a)
+	var out []string
+	for len(sent) > 0 {
+		out = append(out, (<-sent).AgentSession)
+	}
+	return out
+}
+
+// An id the server is known to have taken (a ping answered after it on
+// its connection) is never sent again: two connections' starts with
+// nothing new send nothing.
+func TestAReconnectSendsNoTakenIDAgain(t *testing.T) {
+	a, sent, _ := agentSessionSender(t, true)
+	a.noteAgentSession("a", false)
+	a.noteAgentSession("b", true)
+	if got := drained(t, a, sent); !slices.Equal(got, []string{"a", "b"}) {
+		t.Fatalf("sent %q", got)
+	}
+	a.replayAgentSessions()
+	a.replayAgentSessions()
+	if got := drained(t, a, sent); len(got) != 0 {
+		t.Fatalf("sent again %q", got)
+	}
+	// A turn set on the last entry since is that entry changed: sent.
+	a.noteAgentSession("b", false)
+	a.noteAgentSession("c", false)
+	a.noteAgentSession("c", true)
+	if got := drained(t, a, sent); !slices.Equal(got, []string{"c"}) && !slices.Equal(got, []string{"c", "c"}) {
+		t.Fatalf("sent %q", got)
+	}
+}
+
+// A replay cut short (its connection gone after its first entry) is taken
+// up at the next connection's start from the first entry not known taken,
+// and ends at the newest id.
+func TestAReplayCutShortEndsAtTheNewest(t *testing.T) {
+	a, sent, answer := agentSessionSender(t, false)
+	a.agentSessions.Store(false)
+	for _, id := range []string{"a", "b", "c"} {
+		a.noteAgentSession(id, true)
+	}
+	a.agentSessions.Store(true)
+	*answer = func(n int) error {
+		if n >= 2 {
+			return errConnDown
+		}
+		return nil
+	}
+	a.replayAgentSessions()
+	if got := drained(t, a, sent); !slices.Equal(got, []string{"a"}) {
+		t.Fatalf("the cut replay sent %q", got)
+	}
+	*answer = func(int) error { return nil }
+	a.replayAgentSessions()
+	got := drained(t, a, sent)
+	if len(got) == 0 || got[len(got)-1] != "c" || !slices.Equal(got, []string{"a", "b", "c"}) {
+		t.Fatalf("the replay taken up sent %q", got)
+	}
+}
+
+// After the socket was dropped for a server that took no ids, the route
+// recorded a newer id; the host's next connection to a server that takes
+// them sends none of what it logged before, an id it had not sent among
+// them: the record keeps the route's newest id. Through a real host agent and the server's own capture.
+func TestARouteRecordedIDIsNotSteppedBackByTheHost(t *testing.T) {
+	cat, err := catalog.Load(catalog.File{Agents: []catalog.Agent{{ID: "claude-like", Name: "claude-like", Command: []string{"/bin/cat"},
+		Session: &catalog.SessionRecipe{IDFrom: "hook", IDPolicy: session.PolicyLatest, ResumeArgs: []string{"--resume", "{id}"}, IDPattern: "^[0-9a-f-]+$"}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := newReportingHostOf(t, cat, "claude-like", true)
+	idA, idB, idC := "aaaa-0001", "bbbb-0002", "cccc-0003"
+	h.send(t, notify.Request{State: "working", AgentSession: idA, Turn: true})
+	h.untilRecorded(t, "A", journal.AgentSession{ID: idA, Source: session.AgentSessionHook, Resumable: true})
+	// B is reported while the host is away: not sent yet.
+	h.away(t)
+	h.send(t, notify.Request{State: "done", AgentSession: idB, Turn: true})
+
+	// The host comes back to a server that takes no ids: it drops its
+	// socket, and with it what it had not sent.
+	h.a.mu.Lock()
+	secret := h.a.secret
+	h.a.mu.Unlock()
+	older := olderServerKeeping(t, h.hs.Info().ID, secret)
+	real := h.a.wsURL
+	if h.a.wsURL, err = controlURL(older); err != nil {
+		t.Fatal(err)
+	}
+	oc, _, err := h.a.dialAndRegister(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(h.l.path); !os.IsNotExist(err) {
+		t.Fatalf("the socket stays: %v", err)
+	}
+	oc.CloseNow()
+	// The agent's sender, the socket gone, reports C to the server's route.
+	h.send(t, notify.Request{State: "done", AgentSession: idC, Turn: true})
+	wantC := journal.AgentSession{ID: idC, Source: session.AgentSessionHook, Resumable: true}
+	h.untilRecorded(t, "C through the route", wantC)
+
+	// Back to a server that takes ids.
+	h.a.wsURL = real
+	h.back()
+	untilListed(t, h.hs, "the host back", func(i session.Info) bool { return i.Status == session.StatusRunning })
+	untilSenderStopped(t, h.a)
+	// A change the host tells after its connection's start reaches the
+	// copy after anything sent before it on that connection.
+	h.a.local.SetAttentionFull(session.AttentionNeedsInput, "marker", session.SourceAdmin, "", nil)
+	untilListed(t, h.hs, "the marker", func(i session.Info) bool { return i.Attention.Message == "marker" })
+	if as := h.recordedAgentSession(t); as == nil || *as != wantC {
+		t.Fatalf("the record holds %+v, want %+v", as, wantC)
+	}
+}
+
+// olderServerKeeping is a server of an earlier release that keeps the
+// session's id and secret: it registers the host as id and says nothing
+// of agent_session.
+func olderServerKeeping(t *testing.T, id, secret string) string {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer c.CloseNow()
+		if _, _, err := c.Read(r.Context()); err != nil {
+			return
+		}
+		reg, _ := json.Marshal(map[string]any{"t": proto.HostRegistered, "sessionId": id, "secret": secret, "shareBaseUrl": "http://older.invalid", "resumed": true})
+		if c.Write(r.Context(), websocket.MessageText, reg) != nil {
+			return
+		}
+		for {
+			if _, _, err := c.Read(r.Context()); err != nil {
+				return
+			}
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv.URL
 }

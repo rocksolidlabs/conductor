@@ -1,7 +1,7 @@
 package hostagent
 
 import (
-	"errors"
+	"context"
 
 	"github.com/rocksolidlabs/conductor/internal/proto"
 )
@@ -16,56 +16,70 @@ import (
 // that the agent's reports go to the server's route, which keeps the id,
 // whatever server the host has.
 
-// maxAgentSessionLog bounds the reports a host keeps to tell again.
+// maxAgentSessionLog bounds the reports a host keeps to tell.
 const maxAgentSessionLog = 32
 
-// agentSessionReport is one report's id and whether it was of a turn.
+// agentSessionReport is one report's id and whether it was of a turn; seq
+// orders the log's entries, an entry changed since it was sent (its turn
+// set) taking a new one.
 type agentSessionReport struct {
 	id   string
 	turn bool
+	seq  uint64
 }
 
 // noteAgentSession keeps a report's id, in the order the reports came, and
 // has it sent. Reports of the same id one after another are kept as one,
 // its turn if either was of a turn: to the record's recipe they are the
-// same (session.NextAgentSession). The log is told again from its start as
-// each connection starts (replayAgentSessions): a report the record took
-// already, taken again in its order, changes nothing (the latest id is
-// still the latest, the lowest still the lowest, and a turn still marks
-// the id resumable), so a report a lost connection may or may not have
-// carried is never lost. Past maxAgentSessionLog reports the oldest goes;
-// it was told unless the connection was down for all of them.
+// same (session.NextAgentSession). An entry is sent once on a connection,
+// and is known taken once the server has answered a ping the host sent
+// after it on that connection (the server reads in order and takes the
+// entry before it reads the ping): such an entry is never sent again. As a
+// connection starts, the entries not known taken are sent again, in order
+// (replayAgentSessions): one the record took already, taken again in its
+// order before the newer ones, leaves the record where the newest puts
+// it. Past maxAgentSessionLog entries the oldest goes.
 func (a *agent) noteAgentSession(id string, turn bool) {
 	a.mu.Lock()
+	a.asSeq++
 	if n := len(a.asLog); n > 0 && a.asLog[n-1].id == id {
 		if !a.asLog[n-1].turn && turn {
-			a.asLog[n-1].turn = true
-			a.asNext = min(a.asNext, n-1)
+			a.asLog[n-1].turn, a.asLog[n-1].seq = true, a.asSeq
 		}
 	} else {
-		a.asLog = append(a.asLog, agentSessionReport{id: id, turn: turn})
+		a.asLog = append(a.asLog, agentSessionReport{id: id, turn: turn, seq: a.asSeq})
 		if len(a.asLog) > maxAgentSessionLog {
 			a.asLog = a.asLog[1:]
-			a.asNext = max(a.asNext-1, 0)
 		}
 	}
 	a.mu.Unlock()
 	a.flushAgentSessions()
 }
 
-// replayAgentSessions tells the log again from its start, as a connection
-// starts.
+// replayAgentSessions has a connection that starts sent the entries not
+// known taken, from the first of them.
 func (a *agent) replayAgentSessions() {
 	a.mu.Lock()
-	a.asNext = 0
+	a.asSent = a.asTaken
 	a.mu.Unlock()
 	a.flushAgentSessions()
 }
 
-// flushAgentSessions sends what of the log is not yet sent on the current
-// connection, in order, one sender at a time. A send that fails leaves the
-// rest for the next report or the next connection; nothing goes to a
-// server that does not take it.
+// clearAgentSessions forgets the log: nothing of it is sent again (the
+// socket dropped, the agent's reports going to the server's route, which
+// may record a newer id than any of it).
+func (a *agent) clearAgentSessions() {
+	a.mu.Lock()
+	a.asLog = nil
+	a.asSent, a.asTaken = a.asSeq, a.asSeq
+	a.mu.Unlock()
+}
+
+// flushAgentSessions sends, in order, the entries not yet sent on the
+// current connection, one sender at a time, then pings the server and,
+// answered on the same connection, holds them taken. A send that fails
+// leaves the rest for the next report or the next connection's start;
+// nothing goes to a server that does not take it.
 func (a *agent) flushAgentSessions() {
 	a.mu.Lock()
 	if a.asFlushing {
@@ -75,33 +89,80 @@ func (a *agent) flushAgentSessions() {
 	a.asFlushing = true
 	a.mu.Unlock()
 	go func() {
+		stop := func() {
+			a.asFlushing = false
+			a.mu.Unlock()
+		}
 		for {
 			a.mu.Lock()
-			if a.asNext >= len(a.asLog) || !a.agentSessions.Load() || (a.out == nil && a.sendHook == nil) {
-				a.asFlushing = false
-				a.mu.Unlock()
+			w := a.out
+			if !a.agentSessions.Load() || (w == nil && a.sendHook == nil) {
+				stop()
 				return
 			}
-			r, sid := a.asLog[a.asNext], a.sessID
+			var r *agentSessionReport
+			for i := range a.asLog {
+				if a.asLog[i].seq > a.asSent {
+					r = &a.asLog[i]
+					break
+				}
+			}
+			if r == nil {
+				if a.asSent <= a.asTaken {
+					stop()
+					return
+				}
+				sent := a.asSent
+				a.mu.Unlock()
+				taken := a.confirmAgentSessions(w)
+				a.mu.Lock()
+				if !taken || a.out != w {
+					// Not known taken: sent again as the next connection
+					// starts, or after the next report.
+					stop()
+					return
+				}
+				a.asTaken = max(a.asTaken, sent)
+				a.mu.Unlock()
+				continue
+			}
+			m := proto.HostAgentSessionMsg{T: proto.HostAgentSession, SessionID: a.sessID, AgentSession: r.id, Turn: r.turn}
+			seq := r.seq
 			a.mu.Unlock()
-			err := a.send(proto.HostAgentSessionMsg{T: proto.HostAgentSession, SessionID: sid, AgentSession: r.id, Turn: r.turn})
+			err := a.sendAgentSession(m)
 			a.mu.Lock()
 			if err != nil {
-				a.asFlushing = false
-				a.mu.Unlock()
-				if !errors.Is(err, errConnDown) {
-					a.log.Debug("an agent session id waits for the next connection", "err", err)
-				}
+				stop()
 				return
 			}
-			// The log may have changed meanwhile: the report sent is at or
-			// before asNext still, unless the oldest went.
-			if a.asNext < len(a.asLog) && a.asLog[a.asNext] == r {
-				a.asNext++
-			}
+			a.asSent = max(a.asSent, seq)
 			a.mu.Unlock()
 		}
 	}()
+}
+
+// sendAgentSession hands m to the current connection, waiting for its turn
+// as long as the connection lasts (tell); tests replace it (asSend).
+func (a *agent) sendAgentSession(m proto.HostAgentSessionMsg) error {
+	if a.asSend != nil {
+		return a.asSend(m)
+	}
+	return a.tell(m, nil)
+}
+
+// confirmAgentSessions says whether the server answered a ping sent on w
+// after what was sent on it: what it read before the ping it has taken.
+// Tests replace it (asConfirm).
+func (a *agent) confirmAgentSessions(w *controlWriter) bool {
+	if a.asConfirm != nil {
+		return a.asConfirm()
+	}
+	if w == nil {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(w.ctx, a.heardWithin())
+	defer cancel()
+	return w.c.Ping(ctx) == nil
 }
 
 // dropReports stops listening on the host's socket, for a server that
@@ -113,6 +174,7 @@ func (a *agent) dropReports() {
 	a.reports = nil
 	a.mu.Unlock()
 	if l != nil {
+		a.clearAgentSessions()
 		a.log.Info("the server keeps no agent session a host carries: the agent's reports go to the server")
 		l.Close()
 	}

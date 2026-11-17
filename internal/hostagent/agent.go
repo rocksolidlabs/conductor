@@ -504,15 +504,19 @@ type agent struct {
 
 	// reports is the host's socket while it listens (localreport.go), nil
 	// otherwise; asLog is what its reports said of the agent's own session,
-	// asNext the first entry not yet sent on the current connection,
+	// asSeq the last entry's number, asSent the last sent on the current
+	// connection, asTaken the last the server is known to have taken,
 	// asFlushing that a sender runs (agentsession.go). Guarded by mu.
 	// agentSessions is what the server's last registered said of
-	// agent_session (proto.Registered.AgentSessions).
-	reports       *reportListener
-	asLog         []agentSessionReport
-	asNext        int
-	asFlushing    bool
-	agentSessions atomic.Bool
+	// agent_session (proto.Registered.AgentSessions). asSend and asConfirm
+	// replace the send and its confirmation in tests.
+	reports                *reportListener
+	asLog                  []agentSessionReport
+	asSeq, asSent, asTaken uint64
+	asFlushing             bool
+	agentSessions          atomic.Bool
+	asSend                 func(proto.HostAgentSessionMsg) error
+	asConfirm              func() bool
 
 	// sendHook replaces the control connection in tests.
 	sendHook func(v any)
