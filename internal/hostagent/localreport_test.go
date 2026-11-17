@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -666,5 +667,20 @@ func TestASetSessionIsTheReportsWhileTheListenerCloses(t *testing.T) {
 		if got := l.session(t.Context()); got != local {
 			t.Fatalf("wait %d: %v", i, got)
 		}
+	}
+}
+
+// The last base the host offers is the shared temporary folder by its own
+// path, never a link: /private/tmp on macOS, where /tmp links to it, and
+// /tmp elsewhere; it is the last of the bases on this platform.
+func TestTheLastBaseIsTheTemporaryFolderItself(t *testing.T) {
+	for goos, want := range map[string]string{"darwin": "/private/tmp", "linux": "/tmp", "freebsd": "/tmp"} {
+		if got := lastReportBase(goos); got != want {
+			t.Errorf("%s: %s, want %s", goos, got, want)
+		}
+	}
+	bases := reportBases()
+	if last := bases[len(bases)-1]; last != lastReportBase(runtime.GOOS) {
+		t.Fatalf("the bases %q end with %s", bases, last)
 	}
 }

@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -104,7 +105,16 @@ func reportBases() []string {
 	if d := os.Getenv("XDG_RUNTIME_DIR"); filepath.IsAbs(d) && notify.CheckHostSocketDir(d) == nil {
 		out = append(out, d)
 	}
-	return append(out, os.TempDir(), "/tmp")
+	return append(out, os.TempDir(), lastReportBase(runtime.GOOS))
+}
+
+// lastReportBase is the shared temporary folder of goos by its own path:
+// on macOS /tmp is a link to /private/tmp, and a link is never a base.
+func lastReportBase(goos string) string {
+	if goos == "darwin" {
+		return "/private/tmp"
+	}
+	return "/tmp"
 }
 
 // listenReports makes the host's socket in a folder of its own under the
