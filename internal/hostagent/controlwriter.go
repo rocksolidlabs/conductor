@@ -410,11 +410,17 @@ func newControlWriterWith(c *websocket.Conn, pc *pacedConn, after func(time.Dura
 // sendControl writes one of the host's own messages, ahead of the relayed
 // frames, once its turn comes within controlTurnWait (controlTurn).
 func (w *controlWriter) sendControl(typ websocket.MessageType, data []byte) error {
+	return w.sendControlTurn(typ, data, nil)
+}
+
+// sendControlTurn is sendControl whose wait gone also ends
+// (errViewerGone).
+func (w *controlWriter) sendControlTurn(typ websocket.MessageType, data []byte, gone <-chan struct{}) error {
 	turn := controlTurnWait
 	if w.controlTurn > 0 {
 		turn = w.controlTurn
 	}
-	return w.put(true, typ, data, turn, nil)
+	return w.put(true, typ, data, turn, gone)
 }
 
 // sendControlWhole is sendControl for a message the server must have while

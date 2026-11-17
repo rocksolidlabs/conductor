@@ -173,12 +173,22 @@ func (p *peer) handleDesk(f proto.Frame, via *dcSink) {
 }
 
 // deskAttach welcomes a desk's viewer over the transport its hello came
-// on: a run decision link's alone, refused not_decision_link otherwise.
+// on: a run decision link's alone. A link the publisher's own store holds
+// as ended (Decisions.LinkEnded) is refused with the store's word, revoked
+// or expired, in the words a session's viewer is told; any other link
+// that is no decision link of the run is refused not_decision_link.
 func (p *peer) deskAttach(payload []byte, via *dcSink) {
 	var hello proto.Hello
 	if json.Unmarshal(payload, &hello) != nil || hello.Proto != proto.ProtoVersion {
 		p.a.sendViewerError(p.id, proto.ErrCodeBadFrame, "unsupported hello")
 		return
+	}
+	if d := p.a.opts.Decisions; d != nil && p.linkID != "" && p.a.servesDecisions() {
+		if why := d.LinkEnded(p.linkID); why != nil {
+			code, msg, _ := session.LinkRefusal(why)
+			p.a.sendViewerError(p.id, code, msg)
+			return
+		}
 	}
 	if !p.decides(p.a.desk.ID) {
 		p.a.sendViewerError(p.id, proto.DecideNotDecisionLink, "a desk is a run decision link's")

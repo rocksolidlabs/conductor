@@ -435,6 +435,60 @@ func TestExpireDue(t *testing.T) {
 	}
 }
 
+// A sweep tells its due links' hooks at once: a hook that waits (a session
+// link's, for its viewers' closes) holds no other link's. Both hooks here
+// say they are inside and then wait at one gate, which is let go only once
+// both are inside together, so a sweep that told one link after the other
+// fails whichever it told first; the sweep returns once both hooks have
+// returned.
+func TestASweepTellsItsDueLinksTogether(t *testing.T) {
+	s := NewStore()
+	if _, _, err := s.Create("sess", session.RoleControl, "phone", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.CreateRunLink("run", session.RoleControl, "tablet", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	inside, gate := make(chan string, 2), make(chan struct{})
+	s.OnRevoke = func(string, string) {
+		inside <- "the session link's"
+		<-gate
+	}
+	s.OnRevokeRun = func(string, string) {
+		inside <- "the run link's"
+		<-gate
+	}
+	swept := make(chan int, 1)
+	go func() { swept <- s.ExpireDue(time.Now().Add(time.Hour)) }()
+	// A bound on a hang: what the hooks wait for is the gate alone.
+	bound := time.After(10 * time.Second)
+	var in []string
+	for len(in) < 2 {
+		select {
+		case who := <-inside:
+			in = append(in, who)
+		case <-bound:
+			close(gate)
+			t.Fatalf("only %v hook was told while it was held: the sweep tells one link after another", in)
+		}
+	}
+	// Both hooks are held at the gate: the sweep cannot have returned.
+	select {
+	case n := <-swept:
+		t.Fatalf("the sweep returned (told %d) with a hook held", n)
+	default:
+	}
+	close(gate)
+	select {
+	case n := <-swept:
+		if n != 2 {
+			t.Fatalf("the sweep told %d links, want 2", n)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the sweep never returned once its hooks had")
+	}
+}
+
 // SetGroup says which links it changed and which sessions they no longer
 // name, so the viewers attached to those through them can be closed; the
 // links name the new group's sessions alone from then on.
