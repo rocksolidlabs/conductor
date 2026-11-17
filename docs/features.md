@@ -2167,7 +2167,8 @@ request each from main.
   raises a wait in words of its own ("The agent asks for a permission", "The
   agent asks a question", "The agent needs you to sign in") where nothing
   with words of its own shows, so a form no pattern knows shows in Needs
-  you. Hosted sessions read no status, as they read no title. The sequence
+  you. A hosted session's host reads the status and the title as a server
+  session does, and reports what they raise. The sequence
   is from Codex's source at 0.163.0 and 0.164.0-alpha.3, not a live capture.
   A turn the status says ended in an `error` (a key the provider refused, a
   quota, an outage: Codex's notify program reports finished turns only) is
