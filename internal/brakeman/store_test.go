@@ -972,7 +972,7 @@ func TestDocumentNamesAreTheStoresOwn(t *testing.T) {
 			}
 		}
 	}
-	for _, name := range []string{ConfigFile, StateFile} {
+	for _, name := range []string{ConfigFile, StateFile, OpenedFile} {
 		if !storeName.MatchString(name) {
 			t.Errorf("%s is not a name the store takes", name)
 		}
