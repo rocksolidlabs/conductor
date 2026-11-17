@@ -997,6 +997,10 @@ type guideCaller struct {
 	// lane is what the session is to a comparison's doors (laneOf): a
 	// lane's session is listed only the operations compareDoors serves it.
 	lane laneFact
+	// selected says the session is the selected candidate's own, once its
+	// comparison's selection is applied (laneSelected): the ticket's
+	// comment is named to it.
+	selected bool
 	// acts is a Brakeman turn's operations granted, the snapshot its turn
 	// began under and the configuration now together (grantedActs): the
 	// act scope lists the act tool and these alone.
@@ -1025,6 +1029,7 @@ func (s *Server) sessionCaller(ctx context.Context, d session.Driver) guideCalle
 	c := guideCaller{Kind: "session", Session: id, Scopes: []string{"session"}}
 	_, c.local = d.(*session.Local)
 	_, c.lane = s.laneOf(d)
+	c.selected = c.lane == inLane && s.laneSelected(ctx, d)
 	run, member, inRun := s.runs.MemberOf(id)
 	if !inRun {
 		c.Kinds = append(c.Kinds, "plain")
@@ -1101,7 +1106,7 @@ func (s *Server) turnGrant(id string) ([]string, brakeman.Budget, brakeman.Visib
 // operation a caller would be refused is never listed to it, and one it
 // may call never left out.
 func (s *Server) admits(c guideCaller, op Operation) bool {
-	if !s.reaches(c, op) || !laneGuided(c.lane, op.Method+" "+op.Path) {
+	if !s.reaches(c, op) || !c.guided(op.Method+" "+op.Path) {
 		return false
 	}
 	if c.Kind == "admin" && opAgentOnly(op.Name) {
@@ -1502,7 +1507,7 @@ func overviewLimits(c guideCaller) []string {
 	var out, seen []string
 	add := func(name string) {
 		route, ok := limitRoutes[name]
-		if slices.Contains(seen, name) || ok && !laneGuided(c.lane, route) || !ok && c.lane != noLane {
+		if slices.Contains(seen, name) || ok && !c.guided(route) || !ok && c.lane != noLane {
 			return
 		}
 		if i := slices.IndexFunc(all, func(l guideLimit) bool { return l.Name == name }); i >= 0 {

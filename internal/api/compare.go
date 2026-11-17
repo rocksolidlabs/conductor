@@ -88,6 +88,9 @@ type comparisonReply struct {
 	Independence comparisonIndependence `json:"independence"`
 	Supporting   *comparisonSupporting  `json:"supporting,omitempty"`
 	Selection    *comparisonSelection   `json:"selection,omitempty"`
+	// State is where the comparison stands (PR-6b): running, selecting,
+	// answered, selected, none or ended.
+	State string `json:"state,omitempty"`
 }
 
 // comparisonIndependence says what the comparison does not observe.
@@ -152,7 +155,7 @@ func (s *Server) handleRunComparison(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	reply := comparisonReply{Comparison: c, Independence: comparisonIndependence{NotObserved: notObservedWords},
-		Supporting: s.comparisonSupporting(ctx, c), Selection: s.comparisonSelection(ctx, c)}
+		Supporting: s.comparisonSupporting(ctx, c), Selection: s.comparisonSelection(ctx, c), State: s.comparisonState(ctx, c)}
 	var b bytes.Buffer
 	enc := json.NewEncoder(&b)
 	enc.SetEscapeHTML(false)

@@ -324,8 +324,8 @@ func TestAComparisonIsLaunchedByAPerson(t *testing.T) {
 	f.launch(t, f.testEnv, map[string]any{"plan": plan, "candidates": 2}, http.StatusCreated, "")
 }
 
-// I9: a comparison's candidate is delivered once it is selected; before a
-// selection is a record of its own, a delivery naming a candidate of any
+// I9: a comparison's candidate is delivered once it is selected; before
+// its lanes settle, a delivery naming a candidate of any
 // run of a comparison's chain, the launched one or a continuation, is
 // refused 409 not_selected before anything is kept, though the candidate
 // stands with its receipts; an ordinary run's candidate on the same
@@ -370,7 +370,7 @@ func TestACompareCandidateIsNotDeliveredYet(t *testing.T) {
 	for _, run := range []string{"cmp-0000abcd", "cmp-0000abce"} {
 		op := opID()
 		out := e.deliver(t, "CND-1", op, "https://example.com/pull/"+run, run+"/approach-a/1@"+deliveryCommit(1), http.StatusConflict, "not_selected")
-		if apiMessage(out) != "a comparison's candidate is delivered once it is selected" || out["receipt"] != nil {
+		if apiMessage(out) != "select a candidate first: the comparison has not settled" || out["receipt"] != nil {
 			t.Fatalf("%s: %v", run, out)
 		}
 		// Nothing kept: the op id is free for another link.
