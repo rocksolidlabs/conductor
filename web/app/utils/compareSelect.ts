@@ -69,6 +69,11 @@ export function selectionFor(sel: Pick<ComparisonSelection, 'for'> | null | unde
   return w ? `for ${w}` : ''
 }
 
+/** Whether the selection's record may be answered on the panel: open, or answered and its run not yet continued, never once closed. */
+export function selectionAnswerable(sel: Pick<ComparisonSelection, 'state'> | null | undefined, record: Pick<Decision, 'state'> | null): boolean {
+  return !!sel && !!record && sel.state !== 'superseded' && record.state === 'open'
+}
+
 /** Who said a supporting statement: a candidate's agent, its review, or Brakeman. */
 export function claimSource(task: string, attempt: number): string {
   return `said by ${task}'s agent, attempt ${attempt}`

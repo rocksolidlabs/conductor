@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import { candidateMark, cellWords, verdictWords, type CheckCell, type ComparedCandidate, type ComparedCheck, type Comparison, type ComparisonSelection } from './compare'
-import { appliedSelection, brakemanWords, candidateAt, candidateSelection, claimSource, laneSelection, reviewSource, selectionFor, selectionPanelWords, SELECTION_WORDS } from './compareSelect'
+import { appliedSelection, brakemanWords, candidateAt, candidateSelection, claimSource, laneSelection, reviewSource, selectionAnswerable, selectionFor, selectionPanelWords, SELECTION_WORDS } from './compareSelect'
 import { answerAsk, recommended, SELECTION_FINAL, type Decision } from './decisions'
 
 // A comparison's selection and its labels (Program item CP1, docs/plans/compare-crew.md, PR-7): no option preselected whatever
@@ -108,6 +108,16 @@ describe('nothing preselected, the rationale required, the answer final', () => 
   it('holds the confirm until the rationale holds text, names the candidate and says final', () => {
     expect(answerAsk(record(), 1, '')).toEqual({ confirm: 'Select approach-b (final)', final: SELECTION_FINAL, placeholder: 'Why (required: the record of this selection)…', ready: false })
     expect(answerAsk(record(), 1, 'smaller diff').ready).toBe(true)
+  })
+
+  it('answers only an open record on the panel: an answered, applied or closed one is shown, never answered again', () => {
+    const sel = { state: 'open' } as const
+    expect(selectionAnswerable(sel, record())).toBe(true)
+    expect(selectionAnswerable(sel, record({ state: 'answered' }))).toBe(false)
+    expect(selectionAnswerable({ state: 'superseded' }, record())).toBe(false)
+    expect(selectionAnswerable(sel, record({ state: 'superseded' }))).toBe(false)
+    expect(selectionAnswerable(null, record())).toBe(false)
+    expect(selectionAnswerable(sel, null)).toBe(false)
   })
 })
 
