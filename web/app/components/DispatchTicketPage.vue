@@ -19,7 +19,7 @@ import { ticketSections, ticketWaits } from '~/utils/ticketSections'
 import { summaryStatusLine } from '~/utils/status'
 import { GITHUB_OWNED_WORDS, parseGitHubRef, readIsStale, snapshotOf, trackerRefusalWords } from '~/utils/tracker'
 import type { RefreshReply } from '~/composables/useDispatch'
-import { itemRef, publicationsStripWords } from '~/utils/publication'
+import { publicationsStripWords } from '~/utils/publication'
 
 /**
  * A ticket's page (docs/plans/dispatch.md, PR-8): its key and title, its description and acceptance criteria as Markdown with a
@@ -281,7 +281,7 @@ const locked = computed(() => !ticket.value || deleted.value || archived.value)
 const publications = computed(() => ticket.value?.publications ?? [])
 const publicationsNeedYou = computed(() => ticket.value?.publicationsNeedYou ?? 0)
 /** Somewhere on GitHub to publish to: a linked item, or a live delivery or external link to a GitHub item. */
-const canPublish = computed(() => !!ticket.value?.externalId || (ticket.value?.links ?? []).some((l) => !l.deletedAt && (l.kind === 'delivery' || l.kind === 'external') && !!itemRef(l.url)))
+const canPublish = computed(() => !!ticket.value?.externalId || (ticket.value?.links ?? []).some((l) => !l.deletedAt && (l.kind === 'delivery' || l.kind === 'external') && readableLink(l.url)))
 const publishOpen = ref(false)
 const publishTarget = ref<string | undefined>(undefined)
 const publishFrom = ref<{ id: string; mode: 'resend' | 'new' } | null>(null)

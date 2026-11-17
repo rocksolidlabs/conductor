@@ -10,6 +10,9 @@ import { githubHref } from './tracker'
 export const PUBLICATION_PARTS = ['deliveries', 'checks', 'key'] as const
 export type PublicationPart = (typeof PUBLICATION_PARTS)[number]
 
+/** A publication's bound of posts (dispatch.MaxPublicationTries). */
+export const MAX_PUBLICATION_TRIES = 5
+
 /** The body's bound, in bytes of UTF-8 (dispatch.MaxPublicationBody). */
 export const MAX_PUBLICATION_BODY = 16 << 10
 
@@ -84,6 +87,19 @@ export function targetLabel(target: string, url: string): string {
   const ref = itemRef(url)
   if (target === 'linked') return ref ? `The linked item, ${ref}` : 'The linked item'
   return ref ? `The link to ${ref}` : `The link to ${url}`
+}
+
+/**
+ * The target a composer opens on: the one asked for (a link's row) when the offer holds it, else none, and why in words, never
+ * another item; the offer's first when none was asked for.
+ */
+export function pickTarget(asked: string | undefined, targets: ReadonlyArray<{ target: string }>): { target: string; refused: string } {
+  if (asked) {
+    return targets.some((t) => t.target === asked)
+      ? { target: asked, refused: '' }
+      : { target: '', refused: 'That link cannot be published to: its address is not a GitHub item Conductor reads with a token kept for its host.' }
+  }
+  return { target: targets[0]?.target ?? '', refused: '' }
 }
 
 /** `owner/repo#n` of a GitHub item's address, '' for one that is not. */
@@ -223,10 +239,15 @@ export function publicationWords(p: PublicationSummary, now: number): { text: st
   }
 }
 
+/** How the issue is closed, in words, by the reason the publication holds: "as completed", "as not planned". */
+export function closeAs(reason: string | undefined): string {
+  return reason === 'not_planned' ? 'as not planned' : 'as completed'
+}
+
 /** The issue's close, asked with the publication, in words ('' for none asked). */
 export function closeWords(p: Pick<PublicationSummary, 'closeIssue' | 'closeState' | 'closeError' | 'state'>): { text: string; tone: PublicationTone } {
   if (!p.closeIssue) return { text: '', tone: 'muted' }
-  const as = p.closeIssue === 'completed' ? 'as completed' : 'as not planned'
+  const as = closeAs(p.closeIssue)
   switch (p.closeState) {
     case 'closed':
       return { text: `The issue is closed${p.closeError ? `: ${p.closeError}` : ` ${as}`}`, tone: 'default' }
@@ -249,13 +270,15 @@ export type PublicationAction = 'check' | 'send-again' | 'close-now' | 'new' | '
  * of this store whose close did not finish; Publish as new, for one not confirmed or restored and not sent (the first may still appear);
  * Discard, for a draft, a failed or a not confirmed one.
  */
-export function publicationActions(p: Pick<PublicationSummary, 'state' | 'restored' | 'closeIssue' | 'closeState'>): PublicationAction[] {
+export function publicationActions(p: Pick<PublicationSummary, 'state' | 'restored' | 'closeIssue' | 'closeState'> & Partial<Pick<PublicationSummary, 'tries'>>): PublicationAction[] {
   const out: PublicationAction[] = []
   const s = p.state
+  /** A failed one at its bound of tries is never sent again (the server refuses it): its text may be published as new. */
+  const spent = s === 'failed' && (p.tries ?? 0) >= MAX_PUBLICATION_TRIES
   if (s === 'sending' || s === 'unconfirmed' || (p.restored && (s === 'draft' || s === 'failed'))) out.push('check')
-  if (s === 'failed' && !p.restored) out.push('send-again')
+  if (s === 'failed' && !p.restored && !spent) out.push('send-again')
   if (s === 'sent' && !p.restored && p.closeIssue && (p.closeState === 'pending' || p.closeState === 'closing' || p.closeState === 'refused')) out.push('close-now')
-  if (s !== 'sent' && s !== 'discarded' && s !== 'sending' && (s === 'unconfirmed' || p.restored)) out.push('new')
+  if (s !== 'sent' && s !== 'discarded' && s !== 'sending' && (s === 'unconfirmed' || p.restored || spent)) out.push('new')
   if (s === 'draft' || s === 'failed' || s === 'unconfirmed') out.push('discard')
   return out
 }

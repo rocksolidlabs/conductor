@@ -4,7 +4,9 @@ import type { PublicationSummary } from '~/composables/useDispatch'
 import {
   MAX_PUBLICATION_BODY,
   UNCONFIRMED_WORDS,
+  MAX_PUBLICATION_TRIES,
   bodyProblem,
+  closeAs,
   closeWords,
   commentLink,
   composeBody,
@@ -15,6 +17,7 @@ import {
   normalBody,
   offeredParts,
   packageSourceWords,
+  pickTarget,
   previewHolds,
   previewParts,
   publicationActions,
@@ -241,5 +244,30 @@ describe("a run's source", () => {
     expect(packageSourceWords({ source: { system: 'jira', ref: 'acme/api#612' } })).toBe('')
     expect(packageSourceWords({ source: { system: 'github', ref: 'acme/api#612 <b>x</b>' } })).toBe('')
     expect(packageSourceWords({ source: { system: 'github', ref: 12 } })).toBe('')
+  })
+})
+
+describe('the fix pass of the one review', () => {
+  const targets = [{ target: 'linked' }, { target: 'link:L2' }]
+
+  it("opens the composer on the item asked for, or on none with why: never another item", () => {
+    expect(pickTarget('link:L2', targets)).toEqual({ target: 'link:L2', refused: '' })
+    const refused = pickTarget('link:L9', targets)
+    expect(refused.target).toBe('')
+    expect(refused.refused).toMatch(/^That link cannot be published to/)
+    expect(pickTarget('link:L9', []).target).toBe('')
+    expect(pickTarget(undefined, targets)).toEqual({ target: 'linked', refused: '' })
+    expect(pickTarget(undefined, [])).toEqual({ target: '', refused: '' })
+  })
+
+  it('says the close by the reason the publication holds', () => {
+    expect(closeAs('not_planned')).toBe('as not planned')
+    expect(closeAs('completed')).toBe('as completed')
+    expect(closeWords(pub({ state: 'failed', closeIssue: 'not_planned', closeState: 'pending' })).text).toBe('Closes the issue as not planned once the comment is posted')
+  })
+
+  it('offers Send again below the bound of tries alone, and Publish as new at it', () => {
+    expect(publicationActions(pub({ state: 'failed', tries: MAX_PUBLICATION_TRIES - 1 }))).toEqual(['send-again', 'discard'])
+    expect(publicationActions(pub({ state: 'failed', tries: MAX_PUBLICATION_TRIES }))).toEqual(['new', 'discard'])
   })
 })
