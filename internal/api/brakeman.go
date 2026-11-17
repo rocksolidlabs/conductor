@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"maps"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -2324,42 +2323,6 @@ func (s *Server) askBrakeman(d *brakemanDesk, in brakeman.Request) (req brakeman
 	return a.req, a.status == http.StatusCreated, nil, nil
 }
 
-// handleBrakemanRequests answers a page of requests, newest first:
-// {requests, next}; ?after= the id to read after, ?limit= at most 100.
-func (s *Server) handleBrakemanRequests(w http.ResponseWriter, r *http.Request) {
-	d, ok := s.brakemanDeskOf(w)
-	if !ok {
-		return
-	}
-	dq, err := readQuery(r, "after", "limit")
-	q := url.Values(dq)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
-		return
-	}
-	limit := brakeman.MaxPage
-	if v := q.Get("limit"); v != "" {
-		if _, err := fmt.Sscanf(v, "%d", &limit); err != nil || limit < 1 || limit > brakeman.MaxPage || fmt.Sprint(limit) != v {
-			writeError(w, http.StatusBadRequest, "invalid_request", fmt.Sprintf("limit is 1 to %d", brakeman.MaxPage))
-			return
-		}
-	}
-	after := q.Get("after")
-	if after != "" && !brakemanIDPattern(after) {
-		writeError(w, http.StatusBadRequest, "invalid_request", "after is a request's id (br-<n>)")
-		return
-	}
-	page, next, err := d.st.List(after, limit)
-	if err != nil {
-		s.brakemanError(w, err)
-		return
-	}
-	if page == nil {
-		page = []brakeman.Request{}
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"requests": page, "next": next})
-}
-
 // brakemanIDPattern reports whether id is a request's id.
 func brakemanIDPattern(id string) bool {
 	if !strings.HasPrefix(id, "br-") || len(id) > 21 {
@@ -2377,8 +2340,9 @@ func brakemanIDPattern(id string) bool {
 	return true
 }
 
-// handleBrakemanRequest answers a request whole: {request, brief} (brief
-// null until one is kept), at most maxBrakemanRequestReply bytes.
+// handleBrakemanRequest answers a request whole: {request, brief, digest}
+// (brief null until one is kept, digest beside it once there is one), at
+// most maxBrakemanRequestReply bytes.
 func (s *Server) handleBrakemanRequest(w http.ResponseWriter, r *http.Request) {
 	d, ok := s.brakemanDeskOf(w)
 	if !ok {
@@ -2402,6 +2366,9 @@ func (s *Server) handleBrakemanRequest(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		out["brief"] = b
+		if dg, err := d.st.Digest(id); err == nil && dg != nil {
+			out["digest"] = dg
+		}
 	}
 	writeJSON(w, http.StatusOK, out)
 }
