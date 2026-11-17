@@ -215,6 +215,8 @@ test('the GitHub panel and the Settings card, in both themes, on a desk and a ph
       const panel = page.locator('#ticket-github[data-ticket-github]')
       await expect(panel.locator('[data-github-images] img')).toHaveCount(1)
       await expect(panel.locator('[data-github-read-at]')).toContainText('read')
+      // The walk judges what is in view: on a phone the properties come first, the panel below them.
+      await panel.scrollIntoViewIfNeeded()
       const judged = await walk(page, panel)
       expect(judged.judged, at).toBeGreaterThan(5)
       expect(judged.failures, `${at}: ${worst(judged.failures)}`).toEqual([])
@@ -222,6 +224,7 @@ test('the GitHub panel and the Settings card, in both themes, on a desk and a ph
       await page.goto('/settings?section=github')
       const card = page.locator('[data-settings-section="github"]')
       await expect(card.locator(`[data-github-entry="${gh.host}"]`)).toHaveAttribute('data-github-state', 'ok')
+      await card.scrollIntoViewIfNeeded()
       const cardJudged = await walk(page, card)
       expect(cardJudged.failures, `${at}, Settings: ${worst(cardJudged.failures)}`).toEqual([])
       await noSideways(page)
