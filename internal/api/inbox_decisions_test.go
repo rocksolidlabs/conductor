@@ -1285,3 +1285,56 @@ func TestALinksScopePastItsBoundSaysSo(t *testing.T) {
 		t.Fatalf("past the bound, the hash's marks: %v, %q %v", marks, cut, err)
 	}
 }
+
+// A comparison's selection in Needs you says what it is: a comparison's
+// selection of its run, asked by the comparison and by no agent, its
+// options the candidates and None of these, none of them an approval's
+// approve or reject; each action's scope says the answer is final and
+// needs its rationale, and the blocking says the run waits for it.
+func TestASelectionsItemSaysWhatItIs(t *testing.T) {
+	e := readyEnv(t, nil)
+	ctx := context.Background()
+	const run = "compare-0000c0de"
+	req := `{"question":"Which approach does this comparison continue with?",` +
+		`"options":[{"label":"approach-a at 4b825dc","subject":{"kind":"candidate","run":"` + run + `","task":"approach-a","n":1,"commit":"4b825dc"}},` +
+		`{"label":"approach-b at 9f8e7d6","subject":{"kind":"candidate","run":"` + run + `","task":"approach-b","n":1,"commit":"9f8e7d6"}},{"label":"None of these"}],` +
+		`"recommendation":-1,"authorizes":"Continuing the selected candidate.","subject":{"kind":"comparison","run":"` + run + `","base":"abc123","digest":"d1"}}`
+	var n int64
+	if _, err := e.srv.ledger.Transition(ctx, run, func(tx *ledger.Tx) error {
+		if err := tx.PutRun(ledger.RunRow{ID: run, CrewID: "compare", Crew: `{"id":"compare"}`, Base: "abc123", State: ledger.RunRunning, CreatedAt: tx.Now()}); err != nil {
+			return err
+		}
+		d, _, err := tx.OpenDecision(ledger.DecisionRow{Origin: ledger.OriginCompare, Type: ledger.DecisionApproval, Fingerprint: "fp-sel", Request: req,
+			Policy: `{"revision":"local/1","approver":"operator","quorum":1,"authority":[{"kind":"operator"}]}`})
+		n = d.N
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	it := e.itemOf(t, ledger.DecisionRef(n))
+	id := ledger.DecisionID(n)
+	if !strings.HasPrefix(it.Brief, "A comparison's selection for you, from the comparison of run "+run) || !strings.Contains(it.Brief, "or None of these, with your rationale; the answer is final") {
+		t.Fatalf("the brief: %q", it.Brief)
+	}
+	for _, words := range []string{it.Brief, it.Blocking.Words} {
+		if strings.Contains(words, "agent") || strings.Contains(words, "attempt") {
+			t.Fatalf("a selection worded as an agent's: %q", words)
+		}
+	}
+	if !strings.Contains(it.Blocking.Words, "waits for "+id+": every lane has ended") {
+		t.Fatalf("the blocking: %q", it.Blocking.Words)
+	}
+	var names []string
+	for _, a := range it.Actions {
+		names = append(names, a.Name)
+		if a.Choice != nil && (!strings.Contains(a.Scope, "with the rationale it requires") || strings.Contains(a.Scope, "notes it")) {
+			t.Fatalf("an option's scope: %q", a.Scope)
+		}
+	}
+	if !slices.Equal(names, []string{"select", "select", "none", "comment"}) {
+		t.Fatalf("the actions: %q", names)
+	}
+	if !strings.Contains(it.Actions[2].Scope, "ends the comparison with no candidate selected") || !strings.Contains(it.Actions[0].Scope, "continues that candidate") {
+		t.Fatalf("the scopes: %q / %q", it.Actions[0].Scope, it.Actions[2].Scope)
+	}
+}
