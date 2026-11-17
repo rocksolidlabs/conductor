@@ -104,17 +104,38 @@ type planReply struct {
 	CrewChanged    bool            `json:"crewChanged"`
 	AgentsChanged  bool            `json:"agentsChanged"`
 	ExpectedChecks int             `json:"expectedChecks"`
+	Compare        *planCompare    `json:"compare,omitempty"`
 	Body           json.RawMessage `json:"body,omitempty"`
 }
 
+// planCompare is what a comparison's revision says its launch starts
+// (Program item CP1, the launch's statement), computed from its body and
+// never stored: the candidates, each starting one agent session once the
+// plan's decisions and the project's prerequisites let the run's work
+// start; the review tasks, each starting a session only after its
+// candidate succeeds (so up to that many); the checks each submitted
+// candidate attempt runs at the base (the candidate task's checks and the
+// manifest's verify steps, the crew's form or the file form's at the
+// revision's base); and whether the template asks Brakeman for a draft. No
+// total: the engine keeps none (refunds, Retries and a candidate's own
+// manifest add to it).
+type planCompare struct {
+	Candidates   int  `json:"candidates"`
+	Reviews      int  `json:"reviews"`
+	ChecksAtBase int  `json:"checksAtBase"`
+	BrakemanTurn bool `json:"brakemanTurn"`
+}
+
 // planFacts is what the routes take of a revision's body: its crew's yolo
-// choice, its agents as they resolved, and how many checks it expects
-// (its tasks' checks and its manifest's verify steps, the crew's own or
-// the file form's). A body never changes, so neither do its facts.
+// choice, its agents as they resolved, how many checks it expects (its
+// tasks' checks and its manifest's verify steps, the crew's own or the
+// file form's), and for a comparison what its launch starts. A body never
+// changes, so neither do its facts.
 type planFacts struct {
-	Yolo   *bool
-	Agents []dispatch.PlanAgent
-	Checks int
+	Yolo    *bool
+	Agents  []dispatch.PlanAgent
+	Checks  int
+	Compare *planCompare
 }
 
 // planBodyFacts is the part of a revision's body its facts are read from.
@@ -122,11 +143,20 @@ type planBodyFacts struct {
 	Crew struct {
 		Yolo  *bool `json:"yolo"`
 		Tasks []struct {
+			ID     string            `json:"id"`
+			Kind   string            `json:"kind"`
+			Needs  []string          `json:"needs"`
 			Checks []json.RawMessage `json:"checks"`
 		} `json:"tasks"`
 		Manifest *struct {
 			Verify []json.RawMessage `json:"verify"`
 		} `json:"manifest"`
+		Compare *struct {
+			Candidates []struct {
+				Task string `json:"task"`
+			} `json:"candidates"`
+			Brakeman bool `json:"brakeman"`
+		} `json:"compare"`
 	} `json:"crew"`
 	Agents       []dispatch.PlanAgent `json:"agents"`
 	ManifestFile *struct {
@@ -153,6 +183,29 @@ func readPlanFacts(body json.RawMessage) (planFacts, error) {
 	}
 	if b.ManifestFile != nil {
 		f.Checks += len(b.ManifestFile.Manifest.Verify)
+	}
+	if cmp := b.Crew.Compare; cmp != nil {
+		pc := &planCompare{Candidates: len(cmp.Candidates), BrakemanTurn: cmp.Brakeman}
+		candidate := map[string]bool{}
+		for _, cd := range cmp.Candidates {
+			candidate[cd.Task] = true
+		}
+		for _, t := range b.Crew.Tasks {
+			switch {
+			case t.Kind == crew.TaskReview && len(t.Needs) == 1 && candidate[t.Needs[0]]:
+				pc.Reviews++
+			case len(cmp.Candidates) > 0 && t.ID == cmp.Candidates[0].Task:
+				// Every candidate has the same checks (the block's rule).
+				pc.ChecksAtBase += len(t.Checks)
+			}
+		}
+		if b.Crew.Manifest != nil {
+			pc.ChecksAtBase += len(b.Crew.Manifest.Verify)
+		}
+		if b.ManifestFile != nil {
+			pc.ChecksAtBase += len(b.ManifestFile.Manifest.Verify)
+		}
+		f.Compare = pc
 	}
 	return f, nil
 }
@@ -424,6 +477,7 @@ func (pr *planReplies) of(ctx context.Context, p dispatch.PlanSummary, body json
 		CrewChanged:    pr.crewChanged(p.CrewID, p.CrewUpdatedAt),
 		AgentsChanged:  agentsChange(pr.cat, f, pr.s.cfg.Yolo) != "",
 		ExpectedChecks: f.Checks,
+		Compare:        f.Compare,
 	}
 	if withBody {
 		out.Body = body
@@ -708,6 +762,12 @@ func (s *Server) planBody(ctx context.Context, w http.ResponseWriter, ds *dispat
 			return fail(http.StatusConflict, dispatch.RefusalInvalid, "the crew's project manifest: %s", err.Error())
 		case err != nil:
 			return s.gitFailed(w, "the project manifest at the base", err)
+		}
+		// A comparison needs something to compare at this base, where every
+		// launch of the revision prepares: refused now, as its launch would
+		// be.
+		if err := crew.CompareAtBase(c, m, prefix, base); err != nil {
+			return fail(http.StatusConflict, dispatch.RefusalInvalid, "the crew's comparison: %s", err.Error())
 		}
 		manifest = &dispatch.PlanManifestFile{Path: planManifestFile, Blob: blob, Manifest: encodeRaw(m)}
 	}

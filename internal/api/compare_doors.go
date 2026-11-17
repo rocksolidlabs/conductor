@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"net/http"
 
@@ -88,6 +89,7 @@ var compareDoors = map[string]doorRule{
 	"GET /api/runs/{run}/commands/{command}":                           doorRefused,
 	"GET /api/runs/{run}/messages":                                     doorRefused,
 	"GET /api/runs/{run}/candidates":                                   doorRefused,
+	"GET /api/runs/{run}/comparison":                                   doorRefused,
 	"GET /api/sessions":                                                doorRefused,
 	"GET /api/touched":                                                 doorRefused,
 	"GET /api/capacity":                                                doorRefused,
@@ -160,6 +162,24 @@ const laneCommentPattern = "POST /api/sessions/{id}/ticket/comments"
 // answers it 409 lane.
 func laneGuided(st laneFact, pattern string) bool {
 	return laneServes(st, pattern) && (st == noLane || pattern != laneCommentPattern)
+}
+
+// selectedCandidate reports whether the session d is an attempt at the
+// selected candidate's own task once the selection is applied (door 8):
+// laneSelected, and the session's task is the lane's candidate task, so
+// a review of it is never taken for it, whoever does the review.
+func (s *Server) selectedCandidate(ctx context.Context, d session.Driver) bool {
+	ref := d.Info().Crew
+	if ref == nil || ref.Lane == nil || ref.Task == "" || ref.Task != ref.Lane.Candidate {
+		return false
+	}
+	return s.laneSelected(ctx, d)
+}
+
+// guided is laneGuided for the caller c, whose selected lane's candidate
+// is named the ticket's comment as the route serves it (laneSelected).
+func (c guideCaller) guided(pattern string) bool {
+	return laneGuided(c.lane, pattern) || c.selected && pattern == laneCommentPattern && laneServes(c.lane, pattern)
 }
 
 // laneTicketReadWords is what the guide says ticket_read gives a session
@@ -271,9 +291,12 @@ func (s *Server) laneTicket(w http.ResponseWriter, r *http.Request, ds *dispatch
 
 // laneComment answers 409 lane for a session of a comparison's lane, whose
 // ticket takes no comment from it before a selection, before anything is
-// read or written, and reports whether it did.
-func (s *Server) laneComment(w http.ResponseWriter, d session.Driver) bool {
-	if _, st := s.laneOf(d); st == noLane {
+// read or written, and reports whether it did. Once the selection is
+// applied the selected candidate's own sessions comment as any run's
+// member does (door 8, laneSelected); its reviewer, the other lanes and a
+// lane that cannot be told stay refused.
+func (s *Server) laneComment(ctx context.Context, w http.ResponseWriter, d session.Driver) bool {
+	if _, st := s.laneOf(d); st == noLane || s.selectedCandidate(ctx, d) {
 		return false
 	}
 	writeError(w, http.StatusConflict, "lane", "a candidate of a comparison does not comment on its ticket before the selection: say it in your result's summary")

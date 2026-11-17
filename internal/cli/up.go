@@ -55,6 +55,10 @@ const crewsUsage = `Usage:
       list the saved crews: id, name and members; with --ids the ids only,
       one per line, for shell completion (nothing, and exit 0, when the
       server cannot be asked)
+  conductor crews compare SPEC.json|- [--server URL] [--token T] [--insecure]
+      save a comparison's crew from its template, SPEC.json or - for stdin,
+      and print its id and tasks; it launches nothing (conductor dispatch
+      launch KEY-n --candidates N launches it from a ticket's revision)
 
 The server defaults to CONDUCTOR_SERVER, else http://localhost:8080; the
 workbench token to CONDUCTOR_WORKBENCH_TOKEN. A plain http:// server on

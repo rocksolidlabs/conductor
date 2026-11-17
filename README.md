@@ -1801,6 +1801,25 @@ revision 3, in .conductor/ticket.md. Now at revision 9: the description
 changed; 2 comments since."): the run follows the ticket as launched, and a
 change is a person's to decide.
 
+**Compare approaches.** A ticket's plan revision can be a comparison: **New
+comparison** on the Crews page makes its crew from a goal, the criteria, the
+checks and two to four candidates (each an agent and its approach), and the
+launch from the approved revision says what it starts and asks you to send
+the count of candidates you read. Each candidate works from the same base in
+a lane of its own, and no lane reaches another's work. The ticket page's
+**Comparison** (also linked from the run's header and its card) shows what
+Conductor measured from git and the ledger alone (each candidate's commit,
+size, dependency changes, test and build files, whether it shares commits
+with another, and every check per candidate with whether the results are
+comparable), and apart from it, under "Supporting information, not
+evidence", what the agents, their reviews and Brakeman said (**Ask Brakeman
+to compare** asks for a draft by hand). Once every lane has ended you select
+a candidate, or None of these, with a rationale: nothing is preselected, and
+the answer is final. It is the same decision on the card, Needs you and a
+phone, and only you, the operator, answer it. The selected candidate then
+goes on to review, repair and delivery (**Review the selected candidate**);
+the others keep their branches and receipts and are labelled not selected.
+
 ## Brakeman
 
 Brakeman is Conductor's sidekick agent: an agent of your own choosing, on your

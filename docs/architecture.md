@@ -156,7 +156,14 @@ lost; the agent's own session id a report names goes to the server on
 `agent_session`, which keeps it in the record as its attention route does
 (`hostagent/agentsession.go`), and a host whose server does not say it
 takes that names no socket. The sender posts to the server's route only
-when the socket cannot be reached; a host's refusal is a refusal. Every process of the user can
+when the socket cannot be reached; a host's refusal is a refusal. The agent's events go to the socket too (`CONDUCTOR_HOST_EVENTS`), and
+the host records them in its session; the entries its session records
+reach the server on its connection, and, to a server that says it takes
+their numbers (`registered.activitySeq`), are kept until the server took
+them (`hostagent/activitykeep.go`): those recorded while the connection
+is down are sent as the next one starts, in order, each once, and when
+more than the host keeps were left out the server records that entries
+may be missing. Every process of the user can
 reach the socket, other sessions' agents among them: the per-session token
 tells one session's agent from another's, as on the server's route (see
 docs/protocol.md, The host's socket).
@@ -441,6 +448,43 @@ Nothing rewrites it: the recovery concludes states and leaves it, and a
 continuation's attempts take the Runtime the continuation was given. The
 task read, the steps route and the prerequisites route report it; the run
 page shows nothing of it while `native` is its one value.
+
+### A comparison beside a run
+
+A comparison (Program item CP1, `docs/plans/compare-crew.md`) is a crew
+shape, not a run type: a crew whose `compare` block names two to four
+candidate tasks of one base, each with its approach and, when the
+template asks, a review of it, each in a lane of its own
+(`internal/crew/compare.go`: the block, its bounds, `Engine.LaneOf`; which
+of an agent's routes a lane's session reaches is `compareDoors`, in
+`internal/api/compare_doors.go`). It is launched only from a ticket's
+approved plan revision, the launch repeating the count of candidates the
+person read. When every lane has ended, the run's change that ends the
+last one settles the comparison (`compare.settled`) and opens the
+selection in the same transaction: a DR1 record of origin `compare`
+whose options are the candidates with a standing result, each bound to
+its exact commit, then None of these; its recommendation is always none.
+A change to a lane before the selection is applied (a Retry, a Check
+again, an Accept anyway) closes it, and a new one opens once every lane
+has ended again; a stop, a shutdown and a restart leave it as it was.
+
+`GET /api/runs/{run}/comparison` (`Engine.Comparison`,
+`internal/crew/comparison.go`; any run of the chain, read in one revision,
+at most 1 MiB) gives the measured part from git and the ledger alone: each
+candidate's commit, its size, its dependency changes, its test and build
+files and its independence from the others, and each expected check per
+candidate with the server's verdict (comparable, unknown, not comparable)
+and its reasons. Beside it, apart, `supporting` (the candidates' own
+summaries, their reviews, Brakeman's draft, asked once when the comparison
+settles or by hand) and `selection`. The ticket page's comparison
+(`?view=compare&run=`) draws the two as two panels, never one coloured by
+the other, and answers the selection through DR1's own card, the same act
+as on Needs you or a phone. Only the operator answers it, with a rationale
+on every path; the decide grant, a decision link, an agent, Brakeman and a
+share link are refused. Once it is applied, only the selected candidate is
+continued, reviewed, repaired and delivered; the others keep their
+branches, worktrees and receipts, labelled not selected, and refuse their
+commands with `409 not_selected`.
 
 ## Dispatch
 

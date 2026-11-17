@@ -1,6 +1,7 @@
 import { DispatchOrder, through, throughOrAbsent, type AbsentOptions } from '~/utils/dispatchOrder'
 import { ApiError, type ApiErrorBody } from './useApi'
 import type { CrewCheck, CrewManifest, CrewPerson, Finding, RunAttempt, RunInfo, RunStep, RunTask, RunTicket } from './useSessions'
+import type { CrewCompare } from '~/utils/protocol'
 
 // Dispatch's client (docs/plans/dispatch.md, "web/app"; the routes in docs/protocol.md, Dispatch): the types of every reply, as
 // useSessions.ts holds the crews' and the runs', the dispatch event's beside them, and the routes over useApi. Every page's state goes
@@ -540,6 +541,23 @@ export interface PlanSummary {
   crewChanged?: boolean
   agentsChanged?: boolean
   expectedChecks?: number
+  /** What a comparison's revision starts (CP1): computed from its body at each read, never stored; absent for a revision of no comparison. */
+  compare?: PlanCompare
+}
+
+/**
+ * What a comparison's revision starts, as the plan reads give it (docs/protocol.md, "A comparison's crew"; CP1): `candidates` its lanes, each
+ * one session once the work may start; `reviews` its review tasks, each a session only after its candidate succeeds (so "up to");
+ * `checksAtBase` the checks on each submitted candidate attempt (its task's checks and the manifest's verify steps at the base);
+ * `brakemanTurn` whether Brakeman drafts the comparison; `checksUnread` why a file-form manifest's verify steps could not be read at the
+ * base. No total: the engine keeps none (refunds, Retries and a candidate's own manifest change it).
+ */
+export interface PlanCompare {
+  candidates: number
+  reviews: number
+  checksAtBase: number
+  brakemanTurn: boolean
+  checksUnread?: string
 }
 
 /** An agent a revision's crew names, as the catalog resolved it when the revision was made: what a launch and every attempt compare. */
@@ -586,6 +604,8 @@ export interface PlanCrew {
   manifest?: CrewManifest
   /** The crew's people as the revision keeps them (HM1): who owns its decisions and its tasks' outcomes. */
   people?: CrewPerson[]
+  /** A comparison's block (CP1), as the revision keeps it: its candidates name the lanes' tasks, in the block's order. */
+  compare?: CrewCompare
 }
 
 /** A plan revision's body, immutable once made: what its approval covers and what a launch runs. */
@@ -1215,8 +1235,12 @@ export function useDispatchApi() {
     /** The operator's approval of a revision: `expectedRev` the revision's, `ticketRev` the ticket's as shown, with a note. */
     approvePlan: (id: string, body: OpBody & { ticketRev?: number; note?: string }) => request<PlanReply>(`/api/dispatch/plans/${enc(id)}/approve`, { method: 'POST', body }),
     withdrawPlan: (id: string, body: OpBody) => request<PlanReply>(`/api/dispatch/plans/${enc(id)}/withdraw`, { method: 'POST', body }),
-    /** A managed run launched from the ticket's approved revision `plan`: `expectedRev` the ticket's, `label` the run's own name. */
-    launch: (key: string, body: OpBody & { plan: string; label?: string }) => request<LaunchReply>(`/api/dispatch/tickets/${enc(key)}/launch`, { method: 'POST', body }),
+    /**
+     * A managed run launched from the ticket's approved revision `plan`: `expectedRev` the ticket's, `label` the run's own name; for a
+     * comparison's revision, `candidates` its count as the launch dialog stated it (refused `409 confirm_candidates` without it or with
+     * another, `400 invalid` on any other revision).
+     */
+    launch: (key: string, body: OpBody & { plan: string; label?: string; candidates?: number }) => request<LaunchReply>(`/api/dispatch/tickets/${enc(key)}/launch`, { method: 'POST', body }),
     /** A launch whole, by its id. */
     launchRead: (id: string) => request<{ launch: LaunchRead }>(`/api/dispatch/launches/${enc(id)}`).then((r) => r.launch),
     /** A page of a ticket's launches, hand-linked runs and their chains' runs, newest first, `before` a page's `next`. */

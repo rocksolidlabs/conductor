@@ -204,6 +204,24 @@ func withFor(request string, f *DecisionFor) (string, error) {
 	return string(raw), nil
 }
 
+// withSupersedes is the request kept with its supersedes set to id, every
+// other field as it was kept.
+func withSupersedes(request, id string) (string, error) {
+	var body map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(request), &body); err != nil {
+		return "", err
+	}
+	body["supersedes"], _ = json.Marshal(id)
+	raw, err := json.Marshal(body)
+	if err != nil {
+		return "", err
+	}
+	if len(raw) > ledger.MaxDecisionRequest {
+		return "", refuse(CodeInvalid, "the request would be %d bytes as kept, more than %d", len(raw), ledger.MaxDecisionRequest)
+	}
+	return string(raw), nil
+}
+
 // The destinations of a route (Destination.Kind): the operator, DR1's
 // one, a person's label (HM1): a person by name, or a responsibility's
 // holder, and the decide grant ({kind: grant, grant: decide}: anyone an

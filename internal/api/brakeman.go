@@ -2152,6 +2152,49 @@ func (s *Server) handleBrakemanAsk(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	in := brakeman.Request{OpID: body.OpID, Kind: body.Kind, Subjects: body.Subjects, Note: body.Note, Since: body.Since, By: body.By}
+	if strings.HasPrefix(body.OpID, compareOpPrefix) {
+		writeError(w, http.StatusBadRequest, "invalid_request", "an op id beginning "+compareOpPrefix+" is a comparison's own request: choose another")
+		return
+	}
+	if err := s.compareAskRefusal(r.Context(), in); err != nil {
+		var refused *apiError
+		if errors.As(err, &refused) {
+			writeAPIError(w, refused)
+			return
+		}
+		s.brakemanError(w, err)
+		return
+	}
+	a := s.admitAsk(d, in, false)
+	switch {
+	case a.err != nil:
+		s.brakemanError(w, a.err)
+	case a.code != "":
+		writeError(w, a.status, a.code, a.words)
+	default:
+		writeJSON(w, a.status, map[string]any{"request": a.req})
+	}
+}
+
+// askAnswer is what admitAsk made of a request: the request kept, 200
+// for a repeat or 201 for a new one; or a refusal of the desk's, its
+// status, code and words; or a store's error, as brakemanError answers it.
+type askAnswer struct {
+	req    brakeman.Request
+	status int
+	code   string
+	words  string
+	err    error
+}
+
+// admitAsk keeps the request in, as a person's ask is kept: a repeat of
+// its opId answers its request whatever stands since; else Brakeman on,
+// not stuck, the queue's bound and (unless spare) the day's budget, those
+// queued counted, then the request created, queued and told to the
+// background role. spare is the comparison's own request (compare_drafts.go):
+// past the day's budget it is queued all the same, and its start closes
+// it over_budget, recorded, as any request's start does past the budget.
+func (s *Server) admitAsk(d *brakemanDesk, in brakeman.Request, spare bool) askAnswer {
 	if f := d.beforeAdmit.Load(); f != nil {
 		(*f)()
 	}
@@ -2177,30 +2220,25 @@ func (s *Server) handleBrakemanAsk(w http.ResponseWriter, r *http.Request) {
 	// A repeat answers its request whatever stands since. It is looked up
 	// in admission's order, so of two asks with one opId at once the
 	// second finds the first's request, never a slot the first just took.
-	if _, found, err := d.st.ByOp(body.OpID); err == nil && found {
+	if _, found, err := d.st.ByOp(in.OpID); err == nil && found {
 		req, _, err := d.st.Create(in)
 		if err != nil {
-			s.brakemanError(w, err)
-			return
+			return askAnswer{err: err}
 		}
 		if req.Open() && d.recovered.Load() {
 			asked = req.ID
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"request": req})
-		return
+		return askAnswer{req: req, status: http.StatusOK}
 	}
 	if !d.recovered.Load() {
-		s.brakemanError(w, d.notOwner())
-		return
+		return askAnswer{err: d.notOwner()}
 	}
 	cfg, err := d.st.Config()
 	if err != nil {
-		s.brakemanError(w, err)
-		return
+		return askAnswer{err: err}
 	}
 	if !cfg.Enabled {
-		writeError(w, http.StatusConflict, "brakeman_off", "Brakeman is off: turn it on in Settings")
-		return
+		return askAnswer{status: http.StatusConflict, code: "brakeman_off", words: "Brakeman is off: turn it on in Settings"}
 	}
 	// The request keeps its agent's capacity view as it is queued, made
 	// for the configuration it is admitted under.
@@ -2212,26 +2250,23 @@ func (s *Server) handleBrakemanAsk(w http.ResponseWriter, r *http.Request) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.stuck {
-		writeError(w, http.StatusServiceUnavailable, "brakeman_stuck", "the last turn's run did not stop: stop it from its run page")
-		return
+		return askAnswer{status: http.StatusServiceUnavailable, code: "brakeman_stuck", words: "the last turn's run did not stop: stop it from its run page"}
 	}
 	if len(d.queue) >= brakemanQueue {
-		writeError(w, http.StatusTooManyRequests, "queue_full", fmt.Sprintf("%d requests wait already", brakemanQueue))
-		return
+		return askAnswer{status: http.StatusTooManyRequests, code: "queue_full", words: fmt.Sprintf("%d requests wait already", brakemanQueue)}
 	}
-	turns, err := d.st.TurnsToday(d.now())
-	if err != nil {
-		s.brakemanError(w, err)
-		return
-	}
-	if turns+len(d.queue) >= cfg.Budget.TurnsPerDay {
-		writeError(w, http.StatusTooManyRequests, "budget_spent", fmt.Sprintf("today's %d turns are spent, those queued counted", cfg.Budget.TurnsPerDay))
-		return
+	if !spare {
+		turns, err := d.st.TurnsToday(d.now())
+		if err != nil {
+			return askAnswer{err: err}
+		}
+		if turns+len(d.queue) >= cfg.Budget.TurnsPerDay {
+			return askAnswer{status: http.StatusTooManyRequests, code: "budget_spent", words: fmt.Sprintf("today's %d turns are spent, those queued counted", cfg.Budget.TurnsPerDay)}
+		}
 	}
 	req, created, err := d.st.Create(in)
 	if err != nil {
-		s.brakemanError(w, err)
-		return
+		return askAnswer{err: err}
 	}
 	status := http.StatusOK
 	if created {
@@ -2240,8 +2275,11 @@ func (s *Server) handleBrakemanAsk(w http.ResponseWriter, r *http.Request) {
 		d.publish(req.ID)
 		d.poke()
 		asked = req.ID
+		if req.Kind == brakeman.KindCompare {
+			s.drafts.asked(req)
+		}
 	}
-	writeJSON(w, status, map[string]any{"request": req})
+	return askAnswer{req: req, status: status}
 }
 
 // handleBrakemanRequests answers a page of requests, newest first:

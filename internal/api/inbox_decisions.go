@@ -152,9 +152,17 @@ func (s *Server) runHeld(id string) bool {
 	return ok && r.StoppedAt == nil && r.ResumedBy == ""
 }
 
-// askedWhere says who asked the record: a plan's gate, or an agent's
-// attempt.
+// askedWhere says who asked the record: a plan's gate, a comparison (its
+// selection, which Yardmaster opens once every lane has ended), or an
+// agent's attempt.
 func (rd *inboxRead) askedWhere(row ledger.DecisionRow, run inboxRun) string {
+	if row.Origin == ledger.OriginCompare {
+		w := "the comparison"
+		if run.ok && run.run.Ticket != nil {
+			w += " of " + run.run.Ticket.Key
+		}
+		return w
+	}
 	if row.Origin == ledger.OriginPlan {
 		w := "the plan's gate " + row.Gate
 		if run.ok && run.run.Ticket != nil {
@@ -184,6 +192,13 @@ func (rd *inboxRead) decisionFrom(row ledger.DecisionRow, run inboxRun, runName 
 			return "the plan of " + ticket
 		}
 		return "the plan of run " + runName
+	}
+	if row.Origin == ledger.OriginCompare {
+		from := "the comparison of run " + runName
+		if ticket != "" {
+			from += " for " + ticket
+		}
+		return from
 	}
 	from := rd.askedWhere(row, run) + " of run " + runName
 	if ticket != "" {
@@ -221,6 +236,12 @@ func (rd *inboxRead) decisionItem(row ledger.DecisionRow, held []string, rec *le
 	// "durable" or "gate" is said.
 	it.Title = fitText(req.Question, 200)
 	it.Brief = fitText("A decision for you, from "+rd.decisionFrom(row, run, runName), 2<<10)
+	if row.Origin == ledger.OriginCompare {
+		// A comparison's selection: no agent asked it, and it is no
+		// approval's yes or no (docs/plans/compare-crew.md).
+		it.Brief = fitText("A comparison's selection for you, from "+rd.decisionFrom(row, run, runName)+
+			": choose one of its candidates, each at its exact commit, or None of these, with your rationale; the answer is final", 2<<10)
+	}
 	rd.decisionBlocking(it, row, run, held, where)
 	rd.decisionEvidence(it, row, run, req)
 	switch row.State {
@@ -298,6 +319,8 @@ func (rd *inboxRead) decisionBlocking(it *inboxItem, row ledger.DecisionRow, run
 	switch {
 	case len(held) > 0:
 		words = fmt.Sprintf("Yardmaster holds %s until %s is answered and applied", strings.Join(held, ", "), id)
+	case row.Origin == ledger.OriginCompare:
+		words = fmt.Sprintf("The run %s waits for %s: every lane has ended, and the run ends once a candidate, or None of these, is selected", cmpOr(run.run.Name, row.CurrentRun), id)
 	case row.Origin == ledger.OriginAgent:
 		words = fmt.Sprintf("%s waits for %s's answer", capitalize(where), id)
 	default:
@@ -344,8 +367,13 @@ func (rd *inboxRead) decisionActions(it *inboxItem, row ledger.DecisionRow, req 
 	if rd.askerLive != nil {
 		live = rd.askerLive(row)
 	}
+	options := optionLabels(row, req)
 	applies := func(choice *int) string {
 		switch {
+		case row.Origin == ledger.OriginCompare && choice != nil && *choice == len(options)-1:
+			return "Yardmaster then ends the comparison with no candidate selected; the candidates are kept and none can be continued"
+		case row.Origin == ledger.OriginCompare:
+			return "Yardmaster then continues that candidate into review and delivery; the candidates not selected are kept and cannot be continued"
 		case row.Origin == ledger.OriginAgent && row.TaskID != "" && live:
 			return fmt.Sprintf("Yardmaster then types the answer into attempt %s.%d's session", row.TaskID, row.Attempt)
 		case row.Origin == ledger.OriginAgent && row.TaskID != "":
@@ -359,14 +387,23 @@ func (rd *inboxRead) decisionActions(it *inboxItem, row ledger.DecisionRow, req 
 		}
 		return "Yardmaster then lets " + strings.Join(held, ", ") + " start"
 	}
-	for i, label := range optionLabels(row, req) {
+	for i, label := range options {
 		c := i
 		name := "answer"
-		if row.Type == ledger.DecisionApproval && i < 2 {
+		switch {
+		case row.Origin == ledger.OriginCompare && i == len(options)-1:
+			name = "none"
+		case row.Origin == ledger.OriginCompare:
+			name = "select"
+		case row.Type == ledger.DecisionApproval && i < 2:
 			name = []string{"approve", "reject"}[i]
 		}
-		it.addAction(inboxAction{Name: name, Label: label, Choice: &c, Expect: rev, Route: route, Confirm: row.Type != ledger.DecisionClarification,
-			Scope: fmt.Sprintf("Answers %s '%s' at its rev %s, as the operator: %s%s", id, label, rev, applies(&c), authorizes)})
+		scope := fmt.Sprintf("Answers %s '%s' at its rev %s, as the operator: %s%s", id, label, rev, applies(&c), authorizes)
+		if row.Origin == ledger.OriginCompare {
+			// Its words are the selection's: final, and with a rationale.
+			scope = fmt.Sprintf("Selects '%s' in %s at its rev %s, as the operator, with the rationale it requires: %s", label, id, rev, applies(&c))
+		}
+		it.addAction(inboxAction{Name: name, Label: label, Choice: &c, Expect: rev, Route: route, Confirm: row.Type != ledger.DecisionClarification, Scope: scope})
 	}
 	if row.Type == ledger.DecisionClarification {
 		it.addAction(inboxAction{Name: "answer", Label: "Reply with words", Text: true, Expect: rev, Route: route,

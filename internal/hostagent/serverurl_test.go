@@ -195,12 +195,18 @@ func TestTheProcessIsToldTheServersAddressToReportTo(t *testing.T) {
 // read, or what the server sent (a handshake's headers, a certificate's
 // names).
 func TestAFailedDialNamesItsHostAlone(t *testing.T) {
+	// A port nobody answers on. The listener keeps it for the test's length
+	// and accepts nothing, so that the kernel hands it to no other process,
+	// and the transport's dial below answers for it as the kernel answers a
+	// port with no listener. (A listener closed so that the port is refused
+	// gives the port back: now and then it was another test's server by the
+	// time of the dial, which answered it.)
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { ln.Close() })
 	closed := ln.Addr().String()
-	ln.Close()
 	away := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case strings.HasPrefix(r.URL.Path, "/nowhere"):
@@ -232,6 +238,9 @@ func TestAFailedDialNamesItsHostAlone(t *testing.T) {
 	tr.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
 		if host, _, _ := net.SplitHostPort(addr); host == "nowhere.invalid" {
 			return nil, &net.OpError{Op: "dial", Net: network, Err: &net.DNSError{Err: "no such host SECRET", Name: host, IsNotFound: true}}
+		}
+		if addr == closed {
+			return nil, &net.OpError{Op: "dial", Net: network, Addr: ln.Addr(), Err: os.NewSyscallError("connect", syscall.ECONNREFUSED)}
 		}
 		var d net.Dialer
 		return d.DialContext(ctx, network, addr)

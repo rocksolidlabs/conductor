@@ -128,3 +128,33 @@ func TestMcpAttentionToolsReportToTheHostsSocket(t *testing.T) {
 		t.Fatalf("the server was sent %d reports", ns.calls)
 	}
 }
+
+// With the host's socket taking events (CONDUCTOR_HOST_EVENTS=1),
+// conductor notify --event reports to it, not to the server; without it
+// (a host of an earlier release), to the server's events route.
+func TestNotifyEventsGoToTheHostWhenItTakesThem(t *testing.T) {
+	ns := startNotifyServer(t)
+	host := hostSocket(t)
+	t.Setenv(notify.EnvHostEvents, "1")
+	if code, _, err := runNotifyWith(t, "", "--quiet=false", "--event", "progress", "--message", "step"); code != 0 || err != nil {
+		t.Fatalf("event: %d %v", code, err)
+	}
+	select {
+	case m := <-host:
+		if m["path"] != notify.HostEventsPath || m["type"] != "progress" || m["message"] != "step" {
+			t.Fatalf("the host read %v", m)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the host read nothing")
+	}
+	if ns.calls != 0 {
+		t.Fatalf("the server was sent %d", ns.calls)
+	}
+	t.Setenv(notify.EnvHostEvents, "")
+	if code, _, err := runNotifyWith(t, "", "--quiet=false", "--event", "progress", "--message", "step"); code != 0 || err != nil {
+		t.Fatalf("event: %d %v", code, err)
+	}
+	if ns.calls != 1 || ns.path != "/api/sessions/s1/events" {
+		t.Fatalf("the server was sent %d, last %s", ns.calls, ns.path)
+	}
+}

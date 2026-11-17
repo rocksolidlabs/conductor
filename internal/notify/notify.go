@@ -153,12 +153,13 @@ func Send(ctx context.Context, url, token string, req Request) error {
 }
 
 // Send posts the request with the agent token. A request with Event set
-// goes to the session's events route (URL with /attention replaced by
-// /events) as an event; any other is an attention report, which goes to the
-// host's socket when the target names one, and to URL when it names none or
-// the socket cannot be reached (errHostUnreachable): a report the host
-// answered, whatever it answered, never goes to the server as well. The
-// files a tool call touched go to the events route. Redirects are refused so
+// is an event, for the session's events route (URL with /attention
+// replaced by /events); any other is an attention report, for URL. Each
+// goes to the host's socket first when the target names one that takes it
+// (an event only when Events is set), and to the server's route when it
+// names none or the socket cannot be reached (errHostUnreachable): a report
+// the host answered, whatever it answered, never goes to the server as
+// well. The files a tool call touched are events, each sent the same way. Redirects are refused so
 // a token never follows a rewrite. An attention word answered 429 is tried
 // again after each of retryDelays, while the 5 s budget lasts; anything
 // else is tried once.
@@ -176,14 +177,11 @@ func (t Target) Send(ctx context.Context, req Request) error {
 		if err != nil {
 			return err
 		}
-		err = errHostUnreachable
-		if req.Event == "" && t.Socket != "" {
-			err = send(ctx, "the host", hostPoster(t.Socket, t.Token), req, body)
+		hostPath := HostReportPath
+		if req.Event != "" {
+			hostPath = HostEventsPath
 		}
-		if errors.Is(err, errHostUnreachable) {
-			err = send(ctx, "server", serverPoster(url, t.Token), req, body)
-		}
-		if err != nil {
+		if err := t.sendFirstToHost(ctx, hostPath, url, req, body); err != nil {
 			return err
 		}
 	}
@@ -193,11 +191,27 @@ func (t Target) Send(ctx context.Context, req Request) error {
 		if err != nil {
 			return err
 		}
-		if err := send(ctx, "server", serverPoster(events, t.Token), Request{Event: "file"}, fb); err != nil {
+		if err := t.sendFirstToHost(ctx, HostEventsPath, events, Request{Event: "file"}, fb); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// sendFirstToHost sends body to the host's socket at hostPath when the
+// target names a socket that takes it (an attention report always; an
+// event when the host takes events, Target.Events), and to the server's
+// route url only when the socket cannot be reached (errHostUnreachable):
+// a host's answer, whatever it is, is the report's.
+func (t Target) sendFirstToHost(ctx context.Context, hostPath, url string, req Request, body []byte) error {
+	err := errHostUnreachable
+	if t.Socket != "" && (hostPath == HostReportPath || t.Events) {
+		err = send(ctx, "the host", hostPoster(t.Socket, hostPath, t.Token), req, body)
+	}
+	if errors.Is(err, errHostUnreachable) {
+		err = send(ctx, "server", serverPoster(url, t.Token), req, body)
+	}
+	return err
 }
 
 // poster makes one attempt with body: the status and, for a failure, the

@@ -40,7 +40,7 @@ import (
 
 // dispatchPlannedArgs is the commands of this file, which runDispatch
 // hands here.
-var dispatchPlannedArgs = map[string]bool{"plans": true, "plan": true, "launch": true, "runs": true}
+var dispatchPlannedArgs = map[string]bool{"plans": true, "plan": true, "launch": true, "runs": true, "comparison": true}
 
 // planVerbs is what conductor dispatch plan does.
 var planVerbs = []string{"show", "propose", "approve", "withdraw"}
@@ -69,6 +69,11 @@ type plannedFlags struct {
 	references, attachments, comments          multiFlag
 	decisions, decisionFor, evidence           multiFlag
 	repro                                      *bool
+	// candidates is a comparison's count, which its launch repeats (-1
+	// when not given); run and json are comparison's.
+	candidates *int
+	run        *string
+	json       *bool
 }
 
 // revisionRef names a plan revision: by its number among its ticket's
@@ -165,6 +170,10 @@ func runDispatchPlanned(ctx context.Context, sub string, rest []string, stdin io
 	case "launch":
 		f.plan = fs.String("plan", "", "the revision to launch from, its number or its id: the approved one when not given")
 		f.label = fs.String("label", "", "the run's name: the ticket's key and title when not given")
+		f.candidates = fs.Int("candidates", -1, "a comparison's revision: how many candidates it starts, as its statement says, which the launch repeats")
+	case "comparison":
+		f.run = fs.String("run", "", "a run of the comparison's chain: the ticket's newest comparison when not given")
+		f.json = fs.Bool("json", false, "print the comparison as the server answers it, one JSON object")
 	}
 	fs.Usage = func() {
 		fmt.Fprint(stderr, dispatchUsage, "\nFlags of dispatch "+name+":\n")
@@ -206,6 +215,12 @@ func runDispatchPlanned(ctx context.Context, sub string, rest []string, stdin io
 		}
 		rev = &r
 	}
+	if name == "comparison" && *f.run != "" && !crew.ValidRunID(*f.run) {
+		return 2, fmt.Errorf("dispatch comparison: --run: %q is no run's id", *f.run)
+	}
+	if name == "launch" && *f.candidates < -1 {
+		return 2, errors.New("dispatch launch: --candidates is how many candidates the comparison's revision starts")
+	}
 	if name == "launch" && *f.plan != "" {
 		r, err := parseRevision(*f.plan)
 		if err != nil {
@@ -233,7 +248,9 @@ func runDispatchPlanned(ctx context.Context, sub string, rest []string, stdin io
 	case "plan approve", "plan withdraw":
 		return dispatchPlanAct(ctx, c, key, *rev, strings.TrimPrefix(name, "plan "), f.note, stdout)
 	case "launch":
-		return dispatchLaunch(ctx, c, key, rev, *f.label, stdout)
+		return dispatchLaunch(ctx, c, key, rev, *f.label, *f.candidates, stdout, stderr)
+	case "comparison":
+		return dispatchComparison(ctx, c, key, *f.run, *f.json, stdout)
 	}
 	return dispatchRuns(ctx, c, key, stdout)
 }
@@ -245,10 +262,11 @@ func runDispatchPlanned(ctx context.Context, sub string, rest []string, stdin io
 // revision's own read, its body.
 type planEntry struct {
 	dispatch.PlanSummary
-	CrewChanged    bool            `json:"crewChanged"`
-	AgentsChanged  bool            `json:"agentsChanged"`
-	ExpectedChecks int             `json:"expectedChecks"`
-	Body           json.RawMessage `json:"body,omitempty"`
+	CrewChanged    bool              `json:"crewChanged"`
+	AgentsChanged  bool              `json:"agentsChanged"`
+	ExpectedChecks int               `json:"expectedChecks"`
+	Compare        *planCompareEntry `json:"compare,omitempty"`
+	Body           json.RawMessage   `json:"body,omitempty"`
 }
 
 // ticketPlans reads the ticket's revisions, newest first.
@@ -1129,7 +1147,7 @@ func dispatchPlanAct(ctx context.Context, c *apiClient, key string, ref revision
 // again, which would be a second launch. It prints the launch, the run
 // and the run's page; a launch that failed is the server's words, its
 // launch kept failed (conductor dispatch runs lists it).
-func dispatchLaunch(ctx context.Context, c *apiClient, key string, ref *revisionRef, label string, stdout io.Writer) (int, error) {
+func dispatchLaunch(ctx context.Context, c *apiClient, key string, ref *revisionRef, label string, candidates int, stdout, stderr io.Writer) (int, error) {
 	plans, err := ticketPlans(ctx, c, key)
 	if err != nil {
 		return 1, err
@@ -1143,9 +1161,28 @@ func dispatchLaunch(ctx context.Context, c *apiClient, key string, ref *revision
 	if err != nil {
 		return 1, err
 	}
+	// A comparison's revision is launched only with the count its
+	// statement says: without it, or with another, the statement is
+	// printed and nothing is sent.
+	switch {
+	case p.Compare != nil && candidates != p.Compare.Candidates:
+		var out struct {
+			Plan planEntry `json:"plan"`
+		}
+		if err := c.doLimit(ctx, http.MethodGet, "/api/dispatch/plans/"+url.PathEscape(p.ID), nil, &out, maxDispatchReply); err != nil {
+			return 1, err
+		}
+		fmt.Fprintln(stdout, compareStatement(*p.Compare, compareAgents(out.Plan.Body)))
+		return 2, fmt.Errorf("dispatch launch: r%d starts %d candidates: send --candidates %d to launch them", p.N, p.Compare.Candidates, p.Compare.Candidates)
+	case p.Compare == nil && candidates >= 0:
+		return 2, fmt.Errorf("dispatch launch: r%d is no comparison: --candidates is for a comparison's revision", p.N)
+	}
 	body := map[string]any{"opId": newOpID(), "plan": p.ID}
 	if label != "" {
 		body["label"] = label
+	}
+	if p.Compare != nil {
+		body["candidates"] = candidates
 	}
 	var out struct {
 		Launch dispatch.LaunchSummary `json:"launch"`

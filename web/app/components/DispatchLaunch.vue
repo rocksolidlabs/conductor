@@ -4,6 +4,8 @@ import type { TicketPlans } from '~/composables/useTicketPlans'
 import type { AgentInfo } from '~/composables/useSessions'
 import { PLAN_BOUNDS, revisionTag, shortCommit, yoloWords, type LaunchOutcome } from '~/utils/dispatchPlans'
 import { launchLines } from '~/utils/crewLaunch'
+import { compareLaunch, launchButtonWords } from '~/utils/compareLaunch'
+import { accountCountWords, launchAccounts, memberLogin } from '~/utils/launchAccounts'
 
 /**
  * Launching a managed run from a ticket's approved plan revision (Program item DS2, docs/plans/dispatch-evidence.md, "web/app"). It asks
@@ -17,7 +19,12 @@ import { launchLines } from '~/utils/crewLaunch'
  * read: the yolo choice is said from it, never assumed. Under it, each of the revision's members, read only, with its agent, its model and
  * its account as the revision names them (docs/plans/capacity.md, PR-7): they are what the operator approved; a member that names no
  * account takes the login the server resolves at this launch, said as its view of the line names it now (launchAccountWords). Each line
- * has its usage as the server last read it.
+ * has its usage as the server last read it. A comparison's revision (CP1) says, above those lines, what it starts (compareStatement, from the
+ * revision's own `compare` part: the candidates and their sessions, the reviews' as "up to", the multiplier with its refunds, the checks at
+ * the base, the Brakeman turn, no total), and its button says the count, "Launch 3 candidates". That count is sent with the launch, and only
+ * from here: taken from the statement drawn when the person presses, kept with the operation so a resend sends the same, and never
+ * worked out from the saved crew. A comparison whose statement cannot be drawn is not launched from here. Beside the lines, the sessions
+ * this launch starts on each login (launchAccounts, CP1 PR-9): the first tasks' (a comparison's candidates), then up to its reviews'.
  */
 const props = defineProps<{
   revision: PlanSummary | null
@@ -36,7 +43,7 @@ const error = ref('')
  * launch (being sent, pending, a reply lost), across closes, so it is sent again unchanged; none once it is settled (started, failed or
  * refused), and the next press is another launch.
  */
-const op = ref<{ id: string; plan: string; label: string } | null>(null)
+const op = ref<{ id: string; plan: string; label: string; candidates?: number } | null>(null)
 
 watch(open, (o) => {
   if (!o) return
@@ -68,25 +75,47 @@ watch(
 )
 const cap = useCapacity()
 const lines = computed(() => (props.body ? launchLines(props.body.crew.members ?? [], { agents: agents.value, doc: accounts.doc.value, managed: true, yolo: !!props.body.crew.yolo, view: (q) => cap.entry(q).view }) : []))
+/** The sessions this launch starts on each login, each member's login as its line resolves it (memberLogin: never a default of the page's). */
+const perAccount = computed(() => {
+  const crew = props.body?.crew
+  if (!crew) return []
+  const members = crew.members ?? []
+  return launchAccounts({
+    members,
+    tasks: crew.tasks,
+    compare: crew.compare,
+    accountOf: (name) => {
+      const m = members.find((x) => x.name === name) ?? { name, agentId: '' }
+      const l = lines.value.find((x) => x.name === name)
+      return memberLogin(m, { doc: accounts.doc.value, view: l ? cap.entry(l.query).view : null, agent: l?.agent ?? m.agentId })
+    },
+  })
+})
 const bodyError = computed(() => (props.revision && !props.body ? (props.plans.bodyErrors.get(props.revision.id) ?? '') : ''))
 function readBodyAgain() {
   if (props.revision) void props.plans.readBody(props.revision.id).catch(() => {})
 }
+/** What this launch is: ordinary, a comparison with its count and its statement, or a comparison not to launch yet (with why). */
+const comparison = computed(() => (props.revision && props.body ? compareLaunch(props.revision, props.body, agents.value) : null))
+/** Launch is held before the body is read, and for a comparison whose statement is not drawn; a launch on its way is sent again as it was. */
+const held = computed(() => !props.body || (!op.value && comparison.value?.kind !== 'ordinary' && comparison.value?.kind !== 'compare'))
 const runPath = computed(() => (outcome.value?.state === 'started' ? `/runs/${encodeURIComponent(outcome.value.launch.runId)}` : ''))
 
 async function send() {
   const p = props.revision
-  if (!p || !props.body || sending.value) return
-  // No launch on its way: this press is another launch, and what came of the one before is behind us.
+  if (!p || !props.body || sending.value || held.value) return
+  // No launch on its way: this press is another launch, and what came of the one before is behind us. A comparison's count is the one
+  // its statement shows now, kept with the operation.
   if (!op.value) {
-    op.value = { id: props.plans.mintOpId(), plan: p.id, label: label.value }
+    const c = comparison.value
+    op.value = { id: props.plans.mintOpId(), plan: p.id, label: label.value, ...(c?.kind === 'compare' ? { candidates: c.count } : {}) }
     outcome.value = null
   }
   const sent = op.value
   sending.value = true
   error.value = ''
   try {
-    const out = await props.plans.launch(p, sent.label, sent.id)
+    const out = await props.plans.launch(p, sent.label, sent.id, sent.candidates)
     // Another launch asked for since (the dialog opened on another revision): this one's outcome is not what the dialog shows.
     if (op.value !== sent) return
     outcome.value = out
@@ -116,6 +145,16 @@ async function send() {
             <UButton label="Read it again" size="xs" color="neutral" variant="outline" data-launch-body-retry @click="readBodyAgain" />
           </p>
           <p v-else class="text-dimmed" data-launch-body-reading>Reading revision {{ revision.n }}: its yolo choice is said before anything launches…</p>
+          <p v-if="comparison?.kind === 'compare'" class="text-default" data-launch-compare :data-launch-candidates="comparison.count">
+            <template v-for="(part, i) in comparison.statement" :key="part.key"><span :data-launch-compare-part="part.key">{{ part.words }}</span>{{ i < comparison.statement.length - 1 ? '; ' : '.' }}</template>
+          </p>
+          <p v-else-if="comparison?.kind === 'unstated'" class="flex flex-wrap items-center gap-2 text-warning" data-launch-compare-unstated>
+            <span>{{ comparison.words }}</span>
+            <UButton label="Read it again" size="xs" color="neutral" variant="outline" data-launch-compare-retry @click="plans.read().catch(() => {})" />
+          </p>
+          <ul v-if="perAccount.length" class="flex flex-col gap-0.5 text-xs text-muted" data-launch-accounts>
+            <li v-for="a in perAccount" :key="a.key" :data-launch-account="a.key" :data-launch-account-first="a.first" :data-launch-account-later="a.later">{{ accountCountWords(a) }}</li>
+          </ul>
           <ul v-if="lines.length" class="flex flex-col gap-2" data-launch-members>
             <li v-for="l in lines" :key="l.name" class="flex flex-col gap-1" :data-launch-member="l.name">
               <div class="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
@@ -153,10 +192,11 @@ async function send() {
           <template v-else>
             <UButton label="Cancel" color="neutral" variant="ghost" :disabled="sending" @click="open = false" />
             <UButton
-              :label="outcome?.state === 'pending' || error ? 'Send again' : outcome?.state === 'failed' ? 'Launch again' : 'Launch'"
+              :label="launchButtonWords(comparison, outcome?.state === 'pending' || error ? 'pending' : outcome?.state === 'failed' ? 'failed' : null)"
               icon="i-lucide-play"
               :loading="sending"
-              :disabled="!body"
+              :disabled="held"
+              :data-launch-candidates="op?.candidates ?? (comparison?.kind === 'compare' ? comparison.count : undefined)"
               data-launch-confirm
               @click="send"
             />

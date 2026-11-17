@@ -50,12 +50,16 @@ func newFakeHost(t *testing.T, answer func(n int64, w http.ResponseWriter)) *fak
 		t.Fatal(err)
 	}
 	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != HostReportPath {
+		if r.URL.Path != HostReportPath && r.URL.Path != HostEventsPath {
 			http.NotFound(w, r)
 			return
 		}
 		var m map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&m)
+		if m == nil {
+			m = map[string]any{}
+		}
+		m["_route"] = r.URL.Path
 		h.bodies <- m
 		h.auth <- r.Header.Get("Authorization")
 		answer(h.n.Add(1), w)
@@ -318,5 +322,79 @@ func TestTheSocketsPeerIsReadFromTheKernel(t *testing.T) {
 	defer c.Close()
 	if uid, err := socketPeerUID(c); err != nil || uid != os.Getuid() {
 		t.Fatalf("peer %d %v", uid, err)
+	}
+}
+
+// With the host's socket taking events (EnvHostEvents), an event and the
+// files a tool call touched go to its events path, as the events route's
+// body, and not to the server; a host's refusal of one is not sent to the
+// server; a socket that cannot be reached sends it to the server's events
+// route. Without it (a host of an earlier release), events go to the
+// server's route as before, and attention reports still to the socket.
+func TestEventsGoToTheHostWhenItTakesThem(t *testing.T) {
+	host := newFakeHost(t, func(_ int64, w http.ResponseWriter) { w.WriteHeader(http.StatusAccepted) })
+	paths := map[string]int{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths[r.URL.Path]++
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	t.Cleanup(srv.Close)
+	target := Target{URL: srv.URL + "/api/sessions/a/attention", Token: "tok", Socket: host.path, Events: true}
+	if err := target.Send(context.Background(), Request{Event: "tool_use", Tool: "Edit", Files: []FileRef{{Op: "edit", Path: "a.go"}}}); err != nil {
+		t.Fatal(err)
+	}
+	read := func() map[string]any {
+		t.Helper()
+		select {
+		case m := <-host.bodies:
+			return m
+		case <-time.After(10 * time.Second):
+			t.Fatalf("the host read nothing; the server was sent %v", paths)
+			return nil
+		}
+	}
+	first, second := read(), read()
+	if first["_route"] != HostEventsPath || first["type"] != "tool_use" || first["tool"] != "Edit" {
+		t.Fatalf("the host read %v", first)
+	}
+	if second["_route"] != HostEventsPath || second["type"] != "file" || second["op"] != "edit" || second["path"] != "a.go" {
+		t.Fatalf("the host read %v", second)
+	}
+	if len(paths) != 0 {
+		t.Fatalf("the server was sent %v", paths)
+	}
+	// An earlier host's socket: events to the server, attention to the socket.
+	older := target
+	older.Events = false
+	if err := older.Send(context.Background(), Request{Event: "progress", Message: "step"}); err != nil {
+		t.Fatal(err)
+	}
+	if paths["/api/sessions/a/events"] != 1 || host.n.Load() != 2 {
+		t.Fatalf("the server was sent %v, the host %d", paths, host.n.Load())
+	}
+	if err := older.Send(context.Background(), Request{State: "done"}); err != nil {
+		t.Fatal(err)
+	}
+	if m := <-host.bodies; m["_route"] != HostReportPath || host.n.Load() != 3 {
+		t.Fatalf("the host read %v", m)
+	}
+	// A refusal stays the host's.
+	refusing := newFakeHost(t, func(_ int64, w http.ResponseWriter) { w.WriteHeader(http.StatusUnauthorized) })
+	r := target
+	r.Socket = refusing.path
+	if err := r.Send(context.Background(), Request{Event: "progress"}); err == nil || !strings.Contains(err.Error(), "the host returned 401") {
+		t.Fatalf("a refused event: %v", err)
+	}
+	if paths["/api/sessions/a/events"] != 1 {
+		t.Fatalf("a refusal was sent to the server: %v", paths)
+	}
+	// A socket that is not there: the server's events route.
+	gone := target
+	gone.Socket = filepath.Join(shortDir(t), "report.sock")
+	if err := gone.Send(context.Background(), Request{Event: "progress"}); err != nil {
+		t.Fatal(err)
+	}
+	if paths["/api/sessions/a/events"] != 2 {
+		t.Fatalf("the server was sent %v", paths)
 	}
 }

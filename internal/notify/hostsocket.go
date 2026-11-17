@@ -31,6 +31,18 @@ const MaxHostSocketPath = 100
 // with the session's agent token. The socket serves no other.
 const HostReportPath = "/attention"
 
+// HostEventsPath is the path, on the host's socket, of the events route's
+// request (POST /api/sessions/{id}/events): an event, or an attention word.
+// Only a host that names EnvHostEvents serves it.
+const HostEventsPath = "/events"
+
+// EnvHostEvents, set to "1" beside EnvHostSocket, says the host's socket
+// takes the agent's events too (HostEventsPath): the sender then posts
+// them there first. A host that sets EnvHostSocket alone (an earlier
+// release) takes attention reports alone, and the sender posts its events
+// to the server's events route.
+const EnvHostEvents = "CONDUCTOR_HOST_EVENTS"
+
 // errHostUnreachable says the host's socket could not be reached: it is
 // missing, it is not this user's own in a folder of this user's own that
 // only this user can enter (CheckHostSocket), no connection to it was
@@ -47,6 +59,8 @@ type Target struct {
 	// Socket is the host's socket, "" for none (a server's session, a host
 	// of an earlier release).
 	Socket string
+	// Events says the socket takes the agent's events too (EnvHostEvents).
+	Events bool
 }
 
 // TargetFromEnv is FromEnv with the host's socket, when the environment
@@ -56,7 +70,7 @@ func TargetFromEnv(getenv func(string) string) (Target, error) {
 	if err != nil {
 		return Target{}, err
 	}
-	return Target{URL: url, Token: token, Socket: getenv(EnvHostSocket)}, nil
+	return Target{URL: url, Token: token, Socket: getenv(EnvHostSocket), Events: getenv(EnvHostEvents) == "1"}, nil
 }
 
 // CheckHostSocket says whether path may be handed a token: an absolute,
@@ -85,7 +99,7 @@ var peerUID = socketPeerUID
 // server's route. An attempt that made no connection is errHostUnreachable:
 // the request was never written. Once a connection is made, every failure
 // is the host's (it may have applied the report), never errHostUnreachable.
-func hostPoster(socket, token string) poster {
+func hostPoster(socket, path, token string) poster {
 	return func(ctx context.Context, body []byte) (int, string, error) {
 		if err := CheckHostSocket(socket); err != nil {
 			return 0, "", fmt.Errorf("%w: %v", errHostUnreachable, err)
@@ -117,7 +131,7 @@ func hostPoster(socket, token string) poster {
 			DisableKeepAlives: true,
 		}
 		defer tr.CloseIdleConnections()
-		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://conductor-host"+HostReportPath, bytes.NewReader(body))
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://conductor-host"+path, bytes.NewReader(body))
 		if err != nil {
 			return 0, "", err
 		}

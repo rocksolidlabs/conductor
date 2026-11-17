@@ -34,6 +34,8 @@ const receipt = { opId: 'op', rev: 1, intent: '', status: 'done' } as DispatchRe
 
 /** Every request the page sends, held by name until the test lets it go. */
 let calls: Map<string, Array<ReturnType<typeof held<unknown>>>>
+/** The body of every launch the page sent, in order. */
+let launched: unknown[]
 function hold<T>(name: string): Promise<T> {
   const h = held<unknown>()
   if (!calls.has(name)) calls.set(name, [])
@@ -50,6 +52,7 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 0))
 
 beforeEach(() => {
   calls = new Map()
+  launched = []
   for (const k of ['ref', 'computed', 'reactive', 'shallowReactive', 'watch'] as const) vi.stubGlobal(k, vue[k])
   vi.stubGlobal('onBeforeUnmount', () => {})
   vi.stubGlobal('useToast', () => ({ add: () => {} }))
@@ -63,7 +66,10 @@ beforeEach(() => {
     proposePlan: () => hold('propose'),
     approvePlan: () => hold('approve'),
     withdrawPlan: () => hold('withdraw'),
-    launch: () => hold('launch'),
+    launch: (_key: string, body: unknown) => {
+      launched.push(body)
+      return hold('launch')
+    },
   }))
 })
 afterEach(() => vi.unstubAllGlobals())
@@ -163,5 +169,24 @@ describe("a ticket page's plan", () => {
     await second
     expect(plans.known.value).toEqual([])
     expect(plans.launches.size).toBe(0)
+  })
+
+  it("sends a comparison's count only as the dialog hands it, and an ordinary launch none", async () => {
+    const { plans } = await page()
+    const p1 = plan({ id: 'p1', rev: 5, state: 'approved', compare: { candidates: 2, reviews: 0, checksAtBase: 1, brakemanTurn: false } })
+    void plans.read()
+    sent('plans').ok([p1])
+    await settle()
+    // The revision's own part is not read into the body: the count is the dialog's, given with the press.
+    const ordinary = plans.launch(p1, '', 'op-1')
+    sent('launch').ok({ receipt, launch: launchOf('l1'), run: null })
+    await ordinary
+    const counted = plans.launch(p1, 'mine', 'op-2', 2)
+    sent('launch', 1).ok({ receipt, launch: launchOf('l2'), run: null })
+    await counted
+    expect(launched).toEqual([
+      { opId: 'op-1', plan: 'p1', expectedRev: 3 },
+      { opId: 'op-2', plan: 'p1', expectedRev: 3, label: 'mine', candidates: 2 },
+    ])
   })
 })

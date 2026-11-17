@@ -839,6 +839,18 @@ func (s *Server) submitReview(ctx context.Context, w http.ResponseWriter, ds *di
 		writeAPIError(w, aerr)
 		return
 	}
+	// A comparison's candidate is repaired once it is selected
+	// (compareReviewRefusal), refused before Dispatch keeps anything.
+	if request {
+		switch aerr, err := s.compareReviewRefusal(ctx, c); {
+		case err != nil:
+			s.chainReadError(w, c.Run, err)
+			return
+		case aerr != nil:
+			writeAPIError(w, aerr)
+			return
+		}
+	}
 	switch ok, err := s.allowedBase(ctx, row, a, rv.Base); {
 	case err != nil:
 		s.chainReadError(w, c.Run, err)
@@ -1498,6 +1510,16 @@ func (s *Server) handleDispatchRetryReview(w http.ResponseWriter, r *http.Reques
 			// The candidate's run is still the ticket's alone, as at the
 			// review (the store holds the retry's transaction to it too).
 			if !s.ticketHoldsRun(w, ctx, ds, v.TicketKey, c.Run) {
+				return
+			}
+			// A comparison's candidate is repaired once it is selected
+			// (compareReviewRefusal), the try unchanged.
+			switch aerr, err := s.compareReviewRefusal(ctx, c); {
+			case err != nil:
+				s.chainReadError(w, c.Run, err)
+				return
+			case aerr != nil:
+				writeAPIError(w, aerr)
 				return
 			}
 			newest, live, err := s.newestOf(ctx, c.Run)

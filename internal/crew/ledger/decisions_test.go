@@ -1970,7 +1970,7 @@ func TestMigrationEightToNineKeysARequestByItsTask(t *testing.T) {
 	if ro, why := again.ReadOnly(); ro {
 		t.Fatalf("read-only after the migration: %s", why)
 	}
-	if v := dbVersion(t, again); v != Version || Version != 11 {
+	if v := dbVersion(t, again); v != Version || Version != 12 {
 		t.Fatalf("version %d after the migration, Version %d", v, Version)
 	}
 	var sqlText string

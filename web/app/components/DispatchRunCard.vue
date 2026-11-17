@@ -7,6 +7,7 @@ import { revisionTag } from '~/utils/dispatchPlans'
 import { relativeTime } from '~/utils/sessions'
 import { runItems, runStatusLine, summaryStatusLine } from '~/utils/status'
 import { taskBadges } from '~/utils/tasks'
+import { comparisonLink, runCompare } from '~/utils/compare'
 
 /**
  * One run of a ticket's Runs (Program item DS2, docs/plans/dispatch-evidence.md, "web/app", PR-11): its name, linked to its page, its
@@ -14,7 +15,8 @@ import { taskBadges } from '~/utils/tasks'
  * summary can carry, "2 of 6 done · 2 need you", its "N need you" the run's items of the one list either way), its tasks counted, its blockers, and the questions its members wait on now, each with Open on the member's session, counted
  * from the live sessions joined to the members (utils/dispatchEvidence.ts, runQuestions): a question needs no run event and no reload.
  * Then the run page's own task rows (RunTasks.vue, embedded, not a copy) for the run the live store holds or its record, and its
- * candidates with their receipts and repairs (DispatchCandidates). The header's own actions (a hand link's Unlink) are the slot's.
+ * candidates with their receipts and repairs (DispatchCandidates). The header's own actions (a hand link's Unlink) are the slot's. A
+ * comparison's run (Program item CP1) links to the ticket's compare view beside its revision.
  */
 const props = defineProps<{
   runId: string
@@ -47,6 +49,8 @@ const badges = computed(() => (props.run?.managed ? taskBadges(props.run, runDec
 const blockers = computed(() => runBlockers(props.summary, liveRun.value))
 const managed = computed(() => !!props.run?.managed || Object.keys(props.summary?.tasks ?? {}).length > 0)
 const ticket = computed(() => props.summary?.ticket ?? props.run?.ticket)
+/** A comparison's run links to its ticket's compare view (Program item CP1): the run read, or its summary, says it is one. */
+const comparison = computed(() => (runCompare(props.run) || runCompare(props.summary) ? comparisonLink(ticket.value?.key, props.runId) : null))
 
 /** The task selected in the run's rows, its result and attempts opened under them. */
 const selected = ref('')
@@ -63,6 +67,9 @@ const selected = ref('')
       <span v-else class="min-w-0 truncate text-sm text-muted">Reading <span class="font-mono" data-mono="id">{{ runId }}</span>…</span>
       <span class="flex-none font-mono text-[11px] text-dimmed" :title="runId" data-mono="id">{{ shortRunId(runId) }}</span>
       <UBadge v-if="ticket" :label="revisionTag(ticket.planN)" color="neutral" variant="outline" size="sm" class="flex-none font-mono" :title="`Launched from ${ticket.key} at its revision ${ticket.rev}, plan revision ${ticket.planN}`" data-run-card-plan />
+      <NuxtLink v-if="comparison" :to="comparison" class="flex flex-none items-center gap-1 text-xs text-muted hover:text-default hover:underline" :title="`The comparison of ${runId}'s candidates`" data-run-card-comparison>
+        <UIcon name="i-lucide-columns-3" class="size-3.5" />Comparison
+      </NuxtLink>
       <UBadge v-if="run?.record || (!run && summary?.record)" label="record" color="neutral" variant="subtle" size="sm" class="flex-none" title="A run the server no longer holds, as it was when it ended: read-only" data-ticket-run-record />
       <UBadge v-else-if="state" :label="state.text" :color="state.needs ? 'warning' : state.outcome === 'Failed' ? 'error' : 'neutral'" variant="subtle" size="sm" class="min-w-0 max-w-full truncate" :title="state.text" data-ticket-run-state :data-run-status-from="liveRun ? 'run' : 'summary'" />
       <UBadge v-for="b in badges" :key="b.label" :label="b.label" :color="b.color" variant="subtle" size="sm" class="flex-none" data-ticket-run-badge />
@@ -91,6 +98,6 @@ const selected = ref('')
     </ul>
 
     <RunTasks v-if="run" :run="run" :selected="selected" :now="now" @select="(id: string) => (selected = id)" @open="(id: string) => router.push(`/sessions/${id}`)" />
-    <DispatchCandidates v-if="managed" :run-id="runId" :revision="liveRun?.managed?.revision" />
+    <DispatchCandidates v-if="managed" :run-id="runId" :revision="liveRun?.managed?.revision" :compare="!!(runCompare(run) || runCompare(summary))" />
   </div>
 </template>
