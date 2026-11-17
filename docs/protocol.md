@@ -1575,8 +1575,11 @@ none), and neither does the process of a host whose server's first
 `registered` did not say `agentSessions` (an older server): the agent
 then reports to this route, as before. The socket is `conductor-host-<random>/report.sock` under
 `$XDG_RUNTIME_DIR` when that folder is the user's alone (mode 0700), else
-under the temporary folder, else `/tmp`: a folder of the user's own, mode
-0700, not a link, made afresh by each host and checked before it listens,
+under the temporary folder, else `/tmp`, each only when it is a folder,
+not a link, of the user's own or root's that no one else can write, or
+only with the sticky bit set (with none, the host names no socket): a
+folder of the user's own, mode 0700, not a link, made afresh by each host
+and checked before it listens,
 and a path of at most 100 bytes (a socket's address holds 104 on macOS,
 108 on Linux). The host removes both as it ends; a host's start removes,
 in the folder it uses, one that a host that ended without closing it left
@@ -1598,7 +1601,9 @@ this route does, `200 {attention}` or `{error: {code, message}}`:
   `agentSession` 128 bytes, `plan` 1,024; a `turnId` out of its bound is
   left out, the report taken);
 - a report that comes before the host's session is made waits for it, at
-  most 10 s, then `503 starting`; an ended session is `409
+  most 10 s, then `503 starting`; the sender gives up after its own 5 s
+  first: it says so on stderr and exits 0 (`--quiet`), and the host, the
+  request ended, applies nothing of it; an ended session is `409
   session_ended`;
 - each report spends a token of the host session's bucket, the one the
   server's copy keeps for its host is of the same size: with none left,
@@ -1614,9 +1619,11 @@ or, while its connection is down, as its next connection starts. One
 turn's end is still told once: a `done` that names the turn whose end the
 session recorded last is that report again. The sender posts to this
 route instead only when the socket cannot be reached: not named, gone,
-nothing listening on it, or not a socket of the user's own in a folder of
-the user's own, mode 0700, not a link (the token is never handed to such
-a socket). A host's answer, a refusal among them, and a connection lost
+nothing listening on it, not a socket of the user's own in a folder of
+the user's own, mode 0700, not a link, or one whose peer, as the kernel
+recorded it at the connect (`SO_PEERCRED` on Linux, `LOCAL_PEERCRED` on
+macOS; on another platform the socket is not used), is not the user:
+nothing is written to such a socket, the token least of all. A host's answer, a refusal among them, and a connection lost
 after it was made (the host may have applied the report) are never sent
 to the server as well. `agentSession` and `turn` are taken and bounded on
 the socket as here; a report the host applied that names an id is told
@@ -1625,14 +1632,18 @@ as this route does (the recipe's pattern and policy, `turn` marking it
 resumable, in the record alone). The host tells them in the order the
 reports came, at once while its connection is up and as its next
 connection starts while it is down (the record then takes the id as the
-host comes back), and tells them all again, in that order, as each
-connection starts: one the record took already changes nothing taken
-again in its order. It keeps the last 32 (reports of one id one after
-another count as one, its `turn` if either was of a turn). When a later
+host comes back). An id is held taken once the server has answered a
+ping the host sent after it on the same connection (the server reads in
+order), and is never sent again; as a connection starts, the ids not
+held taken are sent again, in their order, so that the record ends at
+the newest. It keeps the last 32 (reports of one id one after another
+count as one, its `turn` if either was of a turn). When a later
 `registered` does not say `agentSessions` (the server replaced by an older
-one), the host stops listening on its socket and removes it, so the
-agent's reports go to this route; ids its reports named while its
-connection was down and not yet told are lost then. Events
+one), the host stops listening on its socket, removes it and forgets what
+it logged, so the agent's reports go to this route and nothing logged
+before is sent after; ids its reports named while its connection was
+down and not yet told are lost then, and so are they when the host ends
+before its connection comes back. Events
 (`POST /api/sessions/{id}/events`) and the files a tool call touched still
 go to the server. A sender of an earlier release ignores the variable and
 posts to this route; a host of an earlier release sets none, and the
