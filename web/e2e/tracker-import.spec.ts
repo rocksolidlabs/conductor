@@ -175,6 +175,14 @@ test('an issue with two images and steps to reproduce, imported from the palette
   await expect(description.locator('[data-markdown-edit]')).toHaveCount(0)
   await expect(panel.locator('[data-github-owner="title"]')).toHaveAttribute('data-owner', 'github')
 
+  // The item's address pasted into the palette's search finds the ticket linked to it, first, named by the address.
+  await page.keyboard.press('Control+k')
+  await palette.locator('input[data-palette-input]').fill(gh.url(12))
+  const found = palette.locator(`[data-palette-row="ticket:${key}-1"]`)
+  await expect(found).toContainText(`Linked to ${gh.url(12)}`)
+  await page.keyboard.press('Escape')
+  await expect(palette).toBeHidden()
+
   // GitHub's title changed, then Refresh: the title follows, and the history says it came from GitHub.
   gh.set({ ...gh.item(12)!, title: 'The list crashes when it is emptied', updatedAt: undefined })
   await panel.locator('[data-github-refresh]').click()
