@@ -158,3 +158,35 @@ export function briefHeadWords(r: Pick<BrakemanRequest, 'id' | 'kind' | 'by' | '
   const who = askedWords(r)
   return `${latest ? 'Latest brief' : r.id} · ${rowAge(r, now)} · ${who.charAt(0).toLowerCase()}${who.slice(1)}`
 }
+
+/** Earlier's filters: All, With a decision, Briefings (a person's and the background role's), Drafts; each the list route's query. */
+export type EarlierFilter = 'all' | 'decision' | 'briefings' | 'drafts'
+export const EARLIER_FILTERS: ReadonlyArray<{ key: EarlierFilter; label: string; query?: { kind?: string[]; has?: 'decision' | 'draft' } }> = [
+  { key: 'all', label: 'All' },
+  { key: 'decision', label: 'With a decision', query: { has: 'decision' } },
+  { key: 'briefings', label: 'Briefings', query: { kind: ['briefing', 'wake'] } },
+  { key: 'drafts', label: 'Drafts', query: { has: 'draft' } },
+]
+
+/** The longest search the list route takes, in bytes. */
+export const MAX_SEARCH = 200
+
+/** Why a search cannot be sent ("" when it can, or for none): one line of at most MAX_SEARCH bytes. */
+export function searchProblem(q: string): string {
+  const t = q.trim()
+  if (!t) return ''
+  if (/[\r\n]/.test(t)) return 'A search is one line.'
+  if (new TextEncoder().encode(t).length > MAX_SEARCH) return `A search is at most ${MAX_SEARCH} bytes.`
+  return ''
+}
+
+/**
+ * Whether a row matches a search on a server that takes none (the pages the page read, searched here): the words, case folded, in
+ * its title, its note, its subjects (as refs and by name), its kind's words or its id.
+ */
+export function localMatch(r: BrakemanRow, q: string, names: RowNames = {}): boolean {
+  const w = q.trim().toLowerCase()
+  if (!w) return true
+  const hay = [r.digest?.title, r.digest?.reading, r.note, r.id, kindLine(r), ...(r.subjects ?? []), subjectWords(r.subjects, names)]
+  return hay.some((h) => !!h && h.toLowerCase().includes(w))
+}

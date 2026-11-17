@@ -633,9 +633,11 @@ test("a usage reading that warns wakes Brakeman's background role, and the Brake
   await page.goto('/brakeman')
   // The role's card drawn first, with the bound of a first read (a loaded machine takes seconds to boot the page), then its rows.
   await expect(page.locator('[data-brakeman-role] [data-role-state]')).toBeVisible({ timeout: READ })
-  const rows = page.locator('[data-brakeman-role] [data-role-row="capacity"]')
+  // The log is behind Activity: opened, then read.
+  await page.locator('[data-brakeman-role] [data-role-activity]').click()
+  const rows = page.locator('[data-role-sheet] [data-role-row="capacity"]')
   await expect(rows.filter({ hasText: workId })).toContainText(`An agent neared its usage limit: capacity of worker on ${workId}`, { timeout: EXPECT })
-  await expect(rows.filter({ hasText: workId })).toContainText(/waiting in wb-\d+/)
+  await expect(rows.filter({ hasText: workId })).toContainText('waiting for its turn')
   await expect(rows.filter({ hasText: teamId })).toContainText(`An agent neared its usage limit: capacity of codex on ${teamId}`, { timeout: EXPECT })
 })
 
