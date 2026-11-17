@@ -163,6 +163,9 @@ type reviewGate struct {
 	// process takes now, by their operation (sendKey): the worker leaves
 	// them to it (capture_review.go).
 	sending map[string]chan struct{}
+	// sendSteps, a test's seam, is called with the context a send to a
+	// review's steps are taken under, before they are.
+	sendSteps func(ctx context.Context)
 }
 
 // reviewHint is what this process knows of one try of a pending review

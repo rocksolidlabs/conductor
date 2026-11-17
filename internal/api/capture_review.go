@@ -201,16 +201,18 @@ func (s *Server) captureSendToReview(w http.ResponseWriter, ctx context.Context,
 	var out reviewSendReply
 	var aerr *apiError
 	var err error
+	// A review's steps, made now or taken again for the same send, run on
+	// the review's own bound (ReviewTimeout, as RV1's route gives them), to
+	// their end whether or not the client stays.
+	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), ReviewTimeout)
+	defer cancel()
 	switch {
 	case found && rc.Status == dispatch.StatusDone:
-		out, aerr, err = s.continueReviewSend(ctx, ds, op, rc, to.ContinueRun)
+		out, aerr, err = s.continueReviewSend(rctx, ds, op, rc, to.ContinueRun)
 	case found:
 		out.stored = &rc
 	default:
-		// Answered by the route's own words, in the hold the send's steps take.
-		ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), ReviewTimeout)
-		defer cancel()
-		out, aerr, err = s.sendCaptureToReview(ctx, ds, op, digest, id, body.Rev, to)
+		out, aerr, err = s.sendCaptureToReview(rctx, ds, op, digest, id, body.Rev, to)
 	}
 	switch {
 	case out.stored != nil:
@@ -336,6 +338,12 @@ func (s *Server) continueReviewSend(ctx context.Context, ds *dispatch.Store, op 
 // stepsOfReviewSend takes the steps left of the send rc names, under its
 // hold, and answers it.
 func (s *Server) stepsOfReviewSend(ctx context.Context, ds *dispatch.Store, rc dispatch.Receipt, continueRun bool) (reviewSendReply, *apiError, error) {
+	s.reviews.mu.Lock()
+	seam := s.reviews.sendSteps
+	s.reviews.mu.Unlock()
+	if seam != nil {
+		seam(ctx)
+	}
 	v, refusal, err := s.finishReviewSend(ctx, ds, rc.ID, continueRun)
 	if err != nil {
 		s.log.Warn("a capture's send to a review is kept pending: the reviews' worker finishes it", "send", rc.ID, "err", err)

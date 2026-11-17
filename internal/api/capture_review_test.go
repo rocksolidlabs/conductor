@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rocksolidlabs/conductor/internal/brakeman"
 	"github.com/rocksolidlabs/conductor/internal/dispatch"
 )
 
@@ -416,6 +417,19 @@ func TestTheSendRouteTakesASendToAReview(t *testing.T) {
 	if n := reviewsOn(t, l.srv, "CND-1"); n != 1 {
 		t.Fatalf("%d reviews", n)
 	}
+	// The same send again takes what is left of its steps on the review's
+	// own bound, as the first did, never the route's shorter one.
+	lefts := make(chan time.Duration, 1)
+	l.srv.reviews.setSeams(func(g *reviewGate) {
+		g.sendSteps = func(ctx context.Context) {
+			d, _ := ctx.Deadline()
+			lefts <- time.Until(d)
+		}
+	})
+	l.expect(t, "POST", path, body, http.StatusOK, "")
+	if left := <-lefts; left <= dispatchWriteTimeout {
+		t.Fatalf("a send sent again takes its steps with %v left, not the review's bound %v", left, ReviewTimeout)
+	}
 	for _, to := range []map[string]any{
 		{"kind": "ticket", "key": "CND-1", "candidate": cand},
 		{"kind": "brakeman", "question": "Why?", "draft": true},
@@ -469,5 +483,29 @@ func TestTwoSendsOfOneRevisionHandTheirFilesOverOnce(t *testing.T) {
 	js := string(l.treeFile(t, run, "build", 2, "task.json"))
 	if strings.Count(js, fmt.Sprintf(`"name": "capture-%s-r1.json"`, id)) != 1 || strings.Count(js, `"send": "`+sends[0]+`"`) < 3 || strings.Contains(js, sends[1]) {
 		t.Fatalf("task.json's request names the files once, held by the first send:\n%s", js)
+	}
+}
+
+// The guide names a finding's capture member in the admin's review_submit,
+// whose route takes it, and not in Brakeman's request_repair, whose act
+// refuses it.
+func TestTheGuideNamesACaptureFindingForTheAdminAlone(t *testing.T) {
+	capture := func(name string) bool {
+		for _, op := range Operations() {
+			if op.Name != name {
+				continue
+			}
+			items := op.Input["properties"].(map[string]any)["findings"].(map[string]any)["items"].(map[string]any)
+			_, ok := items["properties"].(map[string]any)["capture"]
+			return ok
+		}
+		t.Fatalf("no operation %s", name)
+		return false
+	}
+	if !capture("review_submit") {
+		t.Error("review_submit's findings name no capture")
+	}
+	if capture(brakeman.ActRequestRepair) {
+		t.Error("request_repair's findings name a capture")
 	}
 }

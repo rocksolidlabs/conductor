@@ -422,8 +422,8 @@ var operationsTable = sync.OnceValue(func() []Operation {
 			}, "operation")},
 		actEntry(brakeman.ActLaunchApprovedPlan, ticketLaunchBody{},
 			"Launch a managed run from a ticket's plan revision the operator approved and whose approval still holds (plan: its id; expectedRev: the ticket's revision you read); the same launch for the same opId."),
-		actEntry(brakeman.ActRequestRepair, reviewSubmitBody{},
-			"Request changes of a candidate (<run>/<task>/<n>@<commit>: its task's newest result, in a run this server runs; verdict request_changes; expectedRev: the ticket's revision you read): Yardmaster repairs the task. Never a comment or an approval; via and continueRun are not yours."),
+		noCaptureFinding(actEntry(brakeman.ActRequestRepair, reviewSubmitBody{},
+			"Request changes of a candidate (<run>/<task>/<n>@<commit>: its task's newest result, in a run this server runs; verdict request_changes; expectedRev: the ticket's revision you read): Yardmaster repairs the task. Never a comment or an approval; via and continueRun are not yours.")),
 		actEntry(brakeman.ActPrepareFollowup, planProposeBody{},
 			"Propose a revision of a ticket's plan basedOn the approved one (its id), which the operator then approves or not: never approved by you."),
 		routeActEntry(),
@@ -563,7 +563,7 @@ var operationsTable = sync.OnceValue(func() []Operation {
 		// A person's reviews of a ticket's candidates (RV1,
 		// dispatch_reviews.go).
 		{Name: "review_submit", Scope: "admin", Method: http.MethodPost, Path: "/api/dispatch/tickets/{key}/reviews", needs: needLauncher, Receipt: "dispatch", Revision: "ticket",
-			Summary: "Review a candidate (run/task/n@commit) against a base, as one batch: request_changes is applied as a repair (continueRun for a run not running); comment and approve apply nothing.",
+			Summary: "Review a candidate (run/task/n@commit) against a base, as one batch: request_changes is applied as a repair (continueRun for a run not running); comment and approve apply nothing. A finding of kind capture names a capture, its send to a review and an annotation ({capture, send, k}); the server words it.",
 			CLI:     []string{"conductor", "dispatch", "review", "KEY-n", "--candidate", "RUN/TASK/N@COMMIT", "--verdict", "VERDICT", "--file", "NOTES.json"},
 			Input:   bodySchema(reviewSubmitBody{}),
 			Bounds:  map[string]int{"body": maxReviewBody, "reply": dispatch.MaxReviewReply}},
@@ -803,6 +803,20 @@ func actEntry(op string, body any, summary string) Operation {
 	}
 	return Operation{Name: op, Scope: "act", Method: http.MethodPost, Path: actRouteOf(op), needs: needLauncher, Receipt: "dispatch", Revision: "ticket",
 		Summary: summary, Input: bodySchema(body), Bounds: map[string]int{"body": int(bound)}}
+}
+
+// noCaptureFinding is request_repair's entry with no capture member in its
+// findings: a turn sends no capture finding (repairArgs refuses one),
+// though the person's review_submit takes it.
+func noCaptureFinding(op Operation) Operation {
+	if findings, ok := op.Input["properties"].(map[string]any)["findings"].(map[string]any); ok {
+		if items, ok := findings["items"].(map[string]any); ok {
+			if props, ok := items["properties"].(map[string]any); ok {
+				delete(props, "capture")
+			}
+		}
+	}
+	return op
 }
 
 // routeActEntry is route_decision as the guide lists it: DR1's routing
