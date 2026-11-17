@@ -425,6 +425,34 @@ continuation's attempts take the Runtime the continuation was given. The
 task read, the steps route and the prerequisites route report it; the run
 page shows nothing of it while `native` is its one value.
 
+## Previews and captures
+
+A preview is served on the server's loopback by the tree's own services
+and framed by the workbench, which reads the page through one script, the
+preview bridge (`docs/protocol.md`, Preview bridge): `GET
+/preview-bridge.js` serves it with the server's own workbench origins
+written in, and it answers a parent window at those origins alone. A page
+in a browser has the bridge only when it loads it itself (a tree names its
+URL as `CONDUCTOR_PREVIEW_BRIDGE`); in the desktop app the shell puts the
+same script into the preview frame, whatever page it shows
+(`desktop/src/preview.ts`: `WebFrameMain.executeJavaScript` in the main
+frame's own children at the preview's origin, a page on the loopback that
+is not the workbench under any of its names, the script fetched from the
+server's origin alone; a frame that has a bridge already keeps it, the
+second idle). The screenshot has two paths, chosen in that order: in the
+desktop app the shell takes the pixels of the frame's box in the
+workbench's own window with no prompt (`webContents.capturePage`, the box
+in whole CSS pixels inside the content, at most 2,048 pixels on the long
+side as taken, a PNG of at most 4 MiB, one at a time per window,
+`web/app/utils/screenshotDesktop.ts`); in a browser that can, the tab
+cropped to the frame, with the person's permission; else none, which the
+capture says. The shell's two channels for these, `conductor:previewBridge`
+and `conductor:capturePreview`, answer the workbench's main frame alone
+(its top frame, at the server's origin over http(s)): a frame inside the
+workbench, the app's own file pages and any other origin are refused, and
+each acts on the asking window only. The preload is never put into a
+frame, and the shell adds no permission and no webview.
+
 ## Dispatch
 
 Dispatch is a component, Conductor's own work tracking: projects, tickets

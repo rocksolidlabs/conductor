@@ -315,6 +315,14 @@ async function run() {
       if (await allowIceThroughFirewall(ice.port)) ice.firewall = await firewallRuleExists(ice.port)
       return ice.firewall
     },
+    // The preview's bridge, from the server's own origin alone (preview.ts builds the URL), following no redirect.
+    previewFetch: (url) => fetch(url, { redirect: 'error', signal: AbortSignal.timeout(10_000) }),
+    contentSize: (wc) => {
+      const w = BrowserWindow.fromWebContents(wc as unknown as Electron.WebContents)
+      if (!w || w.isDestroyed()) return null
+      const [width, height] = w.getContentSize()
+      return width && height ? { width, height } : null
+    },
   })
   restrictPermissions()
   // The workbench's zoom: the app's level, on every window of the server's origin, the keys taken before the page sees them.
