@@ -272,6 +272,8 @@ func TestTheRetellOfAQuestionAskedBeforeTheConnectionIsMarked(t *testing.T) {
 	if m := nextSent(t, sent, "the question"); m.Retold {
 		t.Fatalf("a live question marked retold: %+v", m)
 	}
+	// The connection's registration begins after the question.
+	a.registeredActivity(true, true)
 	a.retellAttention()
 	if m := nextSent(t, sent, "the retell"); !m.Retold || m.Message != "Asked before?" {
 		t.Fatalf("the retell %+v", m)
@@ -280,14 +282,17 @@ func TestTheRetellOfAQuestionAskedBeforeTheConnectionIsMarked(t *testing.T) {
 	if m := nextSent(t, sent, "a later question"); m.Retold {
 		t.Fatalf("a later question marked retold: %+v", m)
 	}
-	// A question asked after the connection began, told as its retell:
-	// the connection's start set before the question is asked.
-	a.mu.Lock()
-	a.retellPending, a.connStart, a.attentionUntold = true, time.Now(), true
-	a.mu.Unlock()
+	// A question asked after the registration began and before the
+	// connection's retell: its entry is live, so its retell is not marked
+	// (one start for both, the registration's).
+	a.registeredActivity(true, true)
 	a.local.SetAttentionFull(session.AttentionNeedsInput, "Asked as it began", session.SourceAPI, "", nil)
+	if m := nextSent(t, sent, "a question as the connection began"); m.Retold || m.Message != "Asked as it began" {
+		t.Fatalf("a question asked after the registration began marked retold: %+v", m)
+	}
+	a.retellAttention()
 	if m := nextSent(t, sent, "the retell of a newer question"); m.Retold || m.Message != "Asked as it began" {
-		t.Fatalf("a question asked after the connection began marked retold: %+v", m)
+		t.Fatalf("a question asked after the registration began, retold, marked: %+v", m)
 	}
 	// An older server is never sent the mark.
 	a.activitySeq.Store(false)

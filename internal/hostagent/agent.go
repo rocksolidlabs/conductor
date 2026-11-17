@@ -463,7 +463,7 @@ type agent struct {
 	attentionRetry  bool
 	attentionOf     string
 	// retellPending says the next attention told is a connection's retell
-	// (retellAttention), connStart when that connection began; lastRetold
+	// (retellAttention), connStart when its registration began; lastRetold
 	// says the attention last told was the retell of a question asked
 	// before it (proto.HostAttentionMsg.Retold), sent again with a retry.
 	// Guarded by mu.
@@ -1099,11 +1099,16 @@ func (a *agent) onLocalChange(info session.Info) {
 // turn among the session's changes, read as the forwarder gets to it
 // (forwardChanges), so that a change made meanwhile is never overtaken by
 // an older attention.
+//
+// The connection's start a retold question is judged by (connStart) is its
+// registration's (registrationBegan), the start its entries are judged by:
+// a question asked after it has a live entry and is not retold, one asked
+// before it a late entry and the retell, never both.
 func (a *agent) retellAttention() {
 	a.mu.Lock()
 	a.attentionUntold = true
 	a.retell = true
-	a.retellPending, a.connStart = true, time.Now()
+	a.retellPending, a.connStart = true, a.registrationBegan()
 	running := a.forwarding
 	a.forwarding = true
 	a.mu.Unlock()
