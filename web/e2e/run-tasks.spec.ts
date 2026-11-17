@@ -113,7 +113,10 @@ test("the row's menu holds Cancel, Copy branch and Ask Brakeman why; the keyboar
   await expect(page.locator('[data-task-row="migrate"] [data-task-accept="migrate"]')).toBeVisible()
   await page.locator('[data-task-menu="migrate"]').click()
   await expect(menu.getByRole('menuitem')).toHaveText(['Preview this candidate', 'Copy branch', 'Ask Brakeman why'])
-  await expect(page.locator('[data-task-ask-brakeman="migrate"]')).toHaveAttribute('href', /\/brakeman\?kind=explain&subject=/)
+  // Ask Brakeman why asks at once from where it is (issue 993): an item of the menu, no longer a link to Brakeman's page
+  // (brakeman-where.spec.ts sends it, on a server with Brakeman on).
+  await expect(page.locator('[data-task-ask-brakeman="migrate"]')).toHaveRole('menuitem')
+  await expect(page.locator('[data-task-ask-brakeman="migrate"]')).not.toHaveAttribute('href', /./)
   await expect(page.locator('[data-task-cancel="migrate"]')).toHaveCount(0)
   await page.keyboard.press('Escape')
   await expect(menu).toHaveCount(0)

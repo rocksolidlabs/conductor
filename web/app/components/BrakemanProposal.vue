@@ -101,12 +101,6 @@ function press() {
 <template>
   <div class="flex flex-col gap-1.5" data-brief-proposal :data-proposal-op="item.op" :data-proposal-act="shown">
     <p class="text-sm">{{ item.text }}</p>
-    <div class="flex flex-wrap items-center gap-1.5 text-xs text-muted">
-      <span>Operation <code class="font-mono">{{ item.op }}</code> on</span>
-      <BrakemanRefChip :ref-name="item.target" :resolution="refs.get(item.target)" />
-      <span v-if="item.expectedRevision">· at revision {{ item.expectedRevision }}</span>
-      <span v-if="readsWords(item.facts, items)">· {{ readsWords(item.facts, items) }}</span>
-    </div>
     <dl v-if="sends.length" class="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 rounded-md border border-default p-2 text-xs" data-proposal-args>
       <template v-for="a in sends" :key="a.field">
         <dt class="font-mono text-muted">{{ a.field }}</dt>
@@ -126,6 +120,12 @@ function press() {
         <NuxtLink v-if="to" :to="to" class="underline" data-proposal-link>Its page</NuxtLink>
       </p>
     </template>
+    <div data-proposal-line class="flex flex-wrap items-center gap-1.5 text-xs text-muted">
+      <span>Operation <code class="font-mono">{{ item.op }}</code> on</span>
+      <BrakemanRefChip :ref-name="item.target" :resolution="refs.get(item.target)" />
+      <span v-if="item.expectedRevision">· at revision {{ item.expectedRevision }}</span>
+      <span v-if="readsWords(item.facts, items)">· {{ readsWords(item.facts, items) }}</span>
+    </div>
     <UAlert v-if="refusal" color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="refusal" data-proposal-refused />
 
     <UModal v-model:open="asking" :title="control.kind === 'button' ? `${control.label.replace(/…$/, '')}?` : ''" description="Brakeman proposed it; you decide. Its route refuses it if the record has moved on since Brakeman read it.">
