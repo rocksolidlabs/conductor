@@ -16,7 +16,6 @@ import (
 
 	"github.com/rocksolidlabs/conductor/internal/brakeman"
 	"github.com/rocksolidlabs/conductor/internal/crew"
-	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
 )
 
 // A comparison's Brakeman draft (docs/plans/compare-crew.md, PR-5): when
@@ -339,19 +338,10 @@ func (s *Server) compareAskRefusal(ctx context.Context, in brakeman.Request) err
 	if err != nil {
 		return fmt.Errorf("the ledger's run %s: %w", run, err)
 	}
-	if !ok || !isComparison(row) {
+	if !ok || !rowIsComparison(row) {
 		return refuse
 	}
 	return nil
-}
-
-// isComparison reports whether the run's crew as launched has a compare
-// block.
-func isComparison(row ledger.RunRow) bool {
-	var c struct {
-		Compare json.RawMessage `json:"compare"`
-	}
-	return json.Unmarshal([]byte(row.Crew), &c) == nil && len(c.Compare) > 0 && string(c.Compare) != "null"
 }
 
 // compareShape is what the brief answering the compare request req is

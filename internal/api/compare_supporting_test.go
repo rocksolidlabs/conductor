@@ -426,6 +426,7 @@ func TestTheDraftReachesNoLane(t *testing.T) {
 		"POST /api/sessions/{id}/brakeman/brief",
 		"GET /api/brakeman/changes",
 		"GET /api/runs/{run}/candidates",
+		"GET /api/runs/{run}/comparison",
 		"POST /api/dispatch/tickets/{key}/launch",
 	} {
 		status, raw, out := de.callDoor(t, de.aTok, pattern, de.a)
