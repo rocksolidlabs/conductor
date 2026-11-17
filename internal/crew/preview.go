@@ -487,7 +487,10 @@ func (e *Engine) reservePreview(r *run, taskID string, n int, by string) (*previ
 	if len(e.previews) >= maxPreviews {
 		busy := &PreviewsBusyError{}
 		for _, o := range e.previews {
-			busy.Open = append(busy.Open, PreviewRef{Run: o.key.run, Task: o.key.task, N: o.key.n, Seq: o.seq})
+			// One still opening has no seq yet: counted, not named.
+			if o.seq > 0 {
+				busy.Open = append(busy.Open, PreviewRef{Run: o.key.run, Task: o.key.task, N: o.key.n, Seq: o.seq})
+			}
 		}
 		return nil, busy
 	}

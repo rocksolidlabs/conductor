@@ -95,10 +95,31 @@ func (e *Engine) PreviewCandidate(ctx context.Context, runID, taskID string, n i
 		ref := ps.PreviewRef
 		return &ref, nil
 	})
-	if rc.Repeat && rc.Preview != nil {
+	switch {
+	case rc.Repeat && rc.Preview != nil:
 		ps = e.PreviewNow(*rc.Preview)
+	case rc.Repeat && err == nil && rc.Status == ledger.CommandAccepted:
+		// A repeat of an open still under way (its receipt taken, not yet
+		// settled: a reply lost while its checkout is made): answered with
+		// the preview's seq once its first transaction has given it one,
+		// and as still opening before that, for the asker to ask again.
+		if ps = e.openingPreview(runID, taskID, n); ps.Seq == 0 {
+			err = ErrPreviewOpening
+		}
 	}
 	return rc, ps, err
+}
+
+// openingPreview is the preview of the candidate the engine holds now, as
+// PreviewNow gives it, with seq 0 while it has none yet (or none is held).
+func (e *Engine) openingPreview(runID, taskID string, n int) PreviewState {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	p := e.previews[previewKey{runID, taskID, n}]
+	if p == nil || p.seq == 0 || p.previewing() == nil {
+		return PreviewState{PreviewRef: PreviewRef{Run: runID, Task: taskID, N: n}}
+	}
+	return p.stateOf()
 }
 
 // ClosePreviewCommand closes the preview seq of attempt n of the task as
@@ -229,7 +250,9 @@ func (e *Engine) OpenPreviews() []PreviewRef {
 	defer e.mu.Unlock()
 	out := []PreviewRef{}
 	for _, p := range e.previews {
-		out = append(out, PreviewRef{Run: p.key.run, Task: p.key.task, N: p.key.n, Seq: p.seq})
+		if p.seq > 0 { // one still opening has no seq yet: not named
+			out = append(out, PreviewRef{Run: p.key.run, Task: p.key.task, N: p.key.n, Seq: p.seq})
+		}
 	}
 	return out
 }
