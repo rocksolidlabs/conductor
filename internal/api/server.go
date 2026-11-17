@@ -1462,6 +1462,9 @@ func (s *Server) Shutdown(ctx context.Context) {
 	// the runs and sessions they make are among those stopped below.
 	// Its records, and their owner lock, are let go once the sessions are
 	// stopped (release, below).
+	// A comparison's drafts read nothing more: the run stops below would
+	// start reads of a desk about to be let go.
+	s.drafts.close()
 	if s.brakeman != nil {
 		s.brakeman.quiesce(ctx)
 	}

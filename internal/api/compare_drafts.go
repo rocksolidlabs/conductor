@@ -65,7 +65,10 @@ type compareDrafts struct {
 	mu       sync.Mutex
 	pending  map[string]bool
 	draining bool
-	runs     map[string]*draftRun
+	// closed is set as the server's Shutdown begins: no run is noted
+	// after it.
+	closed bool
+	runs   map[string]*draftRun
 	// newest is the newest compare request about each run, by the run's
 	// id, as this server made or found them (asked, scanNewest); scanned
 	// says the store's newest page was read for them once.
@@ -92,6 +95,10 @@ func (d *compareDrafts) runChanged(s *Server, runID string) {
 		return
 	}
 	d.mu.Lock()
+	if d.closed {
+		d.mu.Unlock()
+		return
+	}
 	if d.pending == nil {
 		d.pending = map[string]bool{}
 	}
@@ -107,6 +114,13 @@ func (d *compareDrafts) runChanged(s *Server, runID string) {
 		d.pending, d.draining = nil, false
 		d.mu.Unlock()
 	}
+}
+
+// close notes no run from now on (the server's Shutdown).
+func (d *compareDrafts) close() {
+	d.mu.Lock()
+	d.closed, d.pending = true, nil
+	d.mu.Unlock()
 }
 
 // drain reads each run noted until none is left.
