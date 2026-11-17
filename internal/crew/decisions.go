@@ -2532,6 +2532,12 @@ func (e *Engine) replaceDecision(r *run, d *decision, why string) (*decision, tx
 				return err
 			}
 		}
+		if d.origin == ledger.OriginCompare {
+			// A selection's replacement names the record it replaces.
+			if row.Request, err = withSupersedes(row.Request, old.ID()); err != nil {
+				return err
+			}
+		}
 		// Superseded first: the answer's place among the run's bounds is the
 		// replacement's (A replacement always has its place).
 		old.State, old.Rev, old.Why = ledger.DecisionSuperseded, old.Rev+1, why

@@ -618,9 +618,10 @@ func TestARepairOfTheSelectedLaneKeepsTheSelection(t *testing.T) {
 }
 
 // A selection answered through an identity whose recheck does not admit
-// it again is replaced by a fresh one listing the same candidates; the
-// operator's answer to the replacement selects the candidate it chose,
-// and no third record opens.
+// it again is replaced by a fresh one listing the same candidates and
+// naming the record it replaces in its supersedes; the operator's answer
+// to the replacement selects the candidate it chose, and no third record
+// opens.
 func TestAReplacedSelectionKeepsItsCandidates(t *testing.T) {
 	se := launchSelect(t, 2)
 	defer stopRun(t, se.e, se.run.ID)
@@ -634,6 +635,9 @@ func TestAReplacedSelectionKeepsItsCandidates(t *testing.T) {
 	se.e.ConfirmAuthority(first.ID(), rc.K, false)
 	decisionWhen(t, se.ld, first.ID(), "superseded", inState(ledger.DecisionSuperseded))
 	next := selectionWhen(t, se.ld, "a replacement, open", func(row ledger.DecisionRow) bool { return row.N != first.N && row.State == ledger.DecisionOpen }, se.run.ID)
+	if b := selectBody(t, next); b.Supersedes != first.ID() {
+		t.Fatalf("the replacement supersedes %q, not %s", b.Supersedes, first.ID())
+	}
 	selectAs(t, se.e, next.ID(), 1, next.Rev)
 	rec := decisionWhen(t, se.ld, next.ID(), "applied", func(rec ledger.DecisionRecord) bool { return rec.Final() })
 	app := applied(t, rec)
