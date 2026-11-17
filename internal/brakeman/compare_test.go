@@ -149,6 +149,28 @@ func TestACompareBriefNeedsItsTable(t *testing.T) {
 	if err := CheckCompareBrief(decodeCompare(t, v), shape); err != nil {
 		t.Errorf("refs of the comparison's own runs: %v", err)
 	}
+	// Every kind a ref can be is judged by the rule: it is in the rule's
+	// table (held to the comparison's runs when it names one) or refused by
+	// name, never both and never neither; and a form that names a run is
+	// read with its run, which is what the rule holds to the comparison.
+	for _, f := range RefForms() {
+		byName := f.Kind == RefBrief || f.Kind == RefDecision
+		if compareRefKinds[f.Kind] == byName {
+			t.Errorf("%s: in the rule's table %v, refused by name %v: a kind is one or the other", f.Kind, compareRefKinds[f.Kind], byName)
+		}
+		r, err := ParseRef(f.Example)
+		if err != nil {
+			t.Fatalf("%s: its example: %v", f.Kind, err)
+		}
+		if named := strings.Contains(f.Form, "<run>"); named != (r.Run != "") {
+			t.Errorf("%s: its form names a run %v, its ref holds one %v", f.Kind, named, r.Run != "")
+		}
+	}
+	// A kind the table does not name is cited in no compare brief: one
+	// added later is refused until the rule judges it.
+	later := decodeCompare(t, good())
+	later.Items[1].Comparison.Evidence = append(later.Items[1].Comparison.Evidence, Ref{Kind: "later"})
+	wantInvalid(t, CheckCompareBrief(later, shape), "items[1].evidence[4]")
 
 	// A decision card is refused, whatever it is about.
 	v = good()

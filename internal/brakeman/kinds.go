@@ -488,7 +488,7 @@ var compareRows = []string{"Behaviour", "Complexity", "Dependency changes", "Che
 var requestRules = []RequestRule{
 	{Kind: KindCompare, Rule: "A compare request's brief holds exactly one comparison/1: its columns the candidates' task ids in the comparison's order (one without a standing result included, its cells saying so), its rows labelled " +
 		strings.Join(compareRows[:len(compareRows)-1], ", ") + " and " + compareRows[len(compareRows)-1] +
-		" (other rows allowed, 20 at most), its evidence citing the candidates (candidate: refs of its columns' tasks) and their receipts (check: refs). Every ref of every item that names a run names a run of this comparison's chain, and it cites no brief: or decision: ref. " +
+		" (other rows allowed, 20 at most), its evidence citing the candidates (candidate: refs of its columns' tasks) and their receipts (check: refs). Every ref of every item that names a run names a run of this comparison's chain, and it cites no brief: or decision: ref and no ref of a kind this rule does not name. " +
 		"It holds no decision/1: the selection is the person's, on the comparison. It proposes no command of a task, a review or a decision: a lane is the person's to command."},
 }
 
@@ -570,17 +570,39 @@ func CheckCompareBrief(b Brief, cmp CompareShape) error {
 	// whose run is known only by reading the record it names, is cited in
 	// no compare brief.
 	for i, it := range b.Items {
-		for _, fr := range itemRefFields(it) {
+		fields := itemRefFields(it)
+		// Both walk the item's fields; one that names a ref the other does
+		// not is a field this rule has not judged, and the brief is refused
+		// rather than taken with a ref nobody held to the comparison.
+		if len(fields) != len(it.Refs()) {
+			return invalidBrief(fmt.Sprintf("items[%d]", i), "a compare brief holds no %s item this rule cannot read every ref of", it.Kind)
+		}
+		for _, fr := range fields {
 			at := fmt.Sprintf("items[%d].%s", i, fr.field)
 			switch {
 			case fr.ref.Kind == RefBrief || fr.ref.Kind == RefDecision:
 				return invalidBrief(at, "a compare brief cites no %s: ref: the run it is of is read from the record it names, so this comparison cannot be told from another's", fr.ref.Kind)
+			case !compareRefKinds[fr.ref.Kind]:
+				return invalidBrief(at, "a compare brief cites no %s: ref: the rule that holds a compare brief to its own comparison has not judged that kind", fr.ref.Kind)
 			case fr.ref.Run != "" && !slices.Contains(cmp.Runs, fr.ref.Run):
 				return invalidBrief(at, "%s names run %s, not a run of this comparison: a compare brief cites its own comparison's runs alone", fr.ref, fr.ref.Run)
 			}
 		}
 	}
 	return nil
+}
+
+// compareRefKinds is every kind of ref a compare brief may cite: the kinds
+// that name a run, each held to the comparison's runs (cmp.Runs), and the
+// kinds that name none of a run's records. brief: and decision: are in
+// neither set and have a refusal of their own. A kind this table does not
+// name is cited in no compare brief: one added later is refused until it
+// is judged here.
+var compareRefKinds = map[string]bool{
+	RefRun: true, RefTask: true, RefAttempt: true, RefCheck: true, RefCommand: true,
+	RefEvent: true, RefMessage: true, RefCommit: true, RefCandidate: true,
+	RefSession: true, RefQuestion: true, RefTicket: true, RefComment: true, RefOp: true,
+	RefFile: true, RefPlan: true, RefLaunch: true, RefCapacity: true,
 }
 
 // fieldRef is a ref of an item with its field's path within the item
