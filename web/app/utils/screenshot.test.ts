@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest'
-import { MAX_SHOT_BYTES, TOO_LARGE_WORDS, encodeShot, fromDesktop, noneSource, sameIn, scaledSize, screenshotSource, type Encoder, type Pixels } from './screenshot'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { MAX_SHOT_BYTES, TAB_ENDED_WORDS, TAB_FRAME_MS, TOO_LARGE_WORDS, encodeShot, fromDesktop, noneSource, sameIn, scaledSize, screenshotSource, tabSource, type Encoder, type Pixels } from './screenshot'
 
 // The screenshot as it is saved (docs/plans/browser-evidence.md, "The screenshot"): at most 2,048 pixels on its long side, PNG, its
 // scale recorded; past 4 MiB scaled again by half, once, then dropped with words. And the pixels' check a moment rests on.
@@ -95,5 +95,49 @@ describe("the desktop app's source", () => {
     expect((await screenshotSource({} as Element, { desktop: d })).how).toBe('desktop')
     const seam = noneSource('seam')
     expect(await screenshotSource({} as Element, { seam, desktop: d })).toBe(seam)
+  })
+})
+
+describe("the tab's capture", () => {
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+  })
+
+  /** The browser's tab capture, stubbed: a track cropped to the element, a video that presents no frame (a crop to an element gone). */
+  function stubTab() {
+    const track = { readyState: 'live', cropTo: async () => {}, stop: () => void (track.readyState = 'ended'), addEventListener: () => {}, removeEventListener: () => {} }
+    const stream = { getVideoTracks: () => [track], getTracks: () => [track] }
+    vi.stubGlobal('CropTarget', { fromElement: async () => ({}) })
+    vi.stubGlobal('navigator', { mediaDevices: { getDisplayMedia: async () => stream } })
+    const video = { muted: false, srcObject: null as unknown, videoWidth: 640, videoHeight: 400, play: async () => {}, requestVideoFrameCallback: () => {} }
+    vi.stubGlobal('document', { createElement: () => video })
+    return track
+  }
+
+  it('gives no frame, and says why, when the capture presents none within its bound, rather than waiting for ever', async () => {
+    stubTab()
+    vi.useFakeTimers()
+    const src = await tabSource({} as Element)
+    expect(src.how).toBe('tab')
+    let got: Pixels | null | 'waiting' = 'waiting'
+    void src.frame({ x: 0, y: 0, width: 10, height: 10 }).then((p) => (got = p))
+    await vi.advanceTimersByTimeAsync(TAB_FRAME_MS - 1)
+    expect(got).toBe('waiting')
+    await vi.advanceTimersByTimeAsync(1)
+    expect(got).toBeNull()
+    expect(src.why).toBe(TAB_ENDED_WORDS)
+  })
+
+  it('ends a wait for a frame when the source is stopped', async () => {
+    stubTab()
+    vi.useFakeTimers()
+    const src = await tabSource({} as Element)
+    let got: Pixels | null | 'waiting' = 'waiting'
+    void src.frame({ x: 0, y: 0, width: 10, height: 10 }).then((p) => (got = p))
+    await Promise.resolve()
+    src.stop()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(got).toBeNull()
   })
 })
