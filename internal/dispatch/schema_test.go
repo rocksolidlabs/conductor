@@ -114,6 +114,7 @@ func versionOneStore(t *testing.T, fill func(s *Store)) string {
 	}
 	db := openRaw(t, filepath.Join(dir, File))
 	for _, stmt := range []string{
+		"DROP TABLE capture_sends_open",
 		"DROP TABLE capture_files",
 		"DROP TABLE capture_send_cancels",
 		"DROP TABLE capture_send_outcomes",
