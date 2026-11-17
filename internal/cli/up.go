@@ -33,6 +33,10 @@ const (
 	maxCrewsReply = 4 << 20
 )
 
+// requestSeam, when a test sets it, is told each request's method, path
+// and bound before it is sent (doWithin).
+var requestSeam func(method, path string, timeout time.Duration)
+
 // requestTimeout bounds one request. conductor up waits for the launch reply,
 // which comes once the sessions of the members that start at once exist. A
 // variable so that a test need not wait it out.
@@ -359,10 +363,14 @@ func (c *apiClient) doLimit(ctx context.Context, method, path string, body, out 
 }
 
 // doWithin is doLimit bounded by timeout instead of requestTimeout: for a
-// request whose server takes longer by design (a launch from a ticket).
+// request whose server takes longer by design (a launch from a ticket, a
+// read of GitHub).
 func (c *apiClient) doWithin(ctx context.Context, timeout time.Duration, method, path string, body, out any, limit int) error {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	if f := requestSeam; f != nil {
+		f(method, path, timeout)
+	}
 	var reader io.Reader
 	if body != nil {
 		// HTML escaping off (encodeJSON): a Dispatch body's bounds are
@@ -387,12 +395,12 @@ func (c *apiClient) doWithin(ctx context.Context, timeout time.Duration, method,
 	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	resp, err := client.Do(req)
 	if err != nil {
-		return c.transportError(err)
+		return c.transportErrorWithin(err, timeout)
 	}
 	defer resp.Body.Close()
 	reply, err := io.ReadAll(io.LimitReader(resp.Body, int64(limit)+1))
 	if err != nil {
-		return c.transportError(err)
+		return c.transportErrorWithin(err, timeout)
 	}
 	if len(reply) > limit {
 		return fmt.Errorf("the reply from %s is larger than %g MiB", c.host, float64(limit)/(1<<20))
@@ -446,13 +454,19 @@ func (c *apiClient) statusError(status string, body []byte) error {
 // came is a lostReply, which a write with an operation id asks for once
 // more (askTwice); an interruption is not.
 func (c *apiClient) transportError(err error) error {
+	return c.transportErrorWithin(err, requestTimeout)
+}
+
+// transportErrorWithin is transportError for a request bounded by
+// timeout, which a reply that never came names.
+func (c *apiClient) transportErrorWithin(err error, timeout time.Duration) error {
 	var ue *url.Error
 	if errors.As(err, &ue) {
 		err = ue.Err
 	}
 	switch {
 	case errors.Is(err, context.DeadlineExceeded):
-		return lostReply{fmt.Errorf("no reply from %s within %s", c.host, requestTimeout)}
+		return lostReply{fmt.Errorf("no reply from %s within %s", c.host, timeout)}
 	case errors.Is(err, context.Canceled):
 		return errors.New("interrupted")
 	}

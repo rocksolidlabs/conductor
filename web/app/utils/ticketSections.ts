@@ -37,6 +37,11 @@ export interface TicketSection {
 export interface TicketSectionsInput {
   /** The ticket's linked GitHub item, as its snapshot says it (IN1a): GitHub's state, apart from the ticket's status; none when unlinked. */
   github?: { state: string; stateReason?: string; merged?: boolean } | null
+  /**
+   * The publications to GitHub a person can act on, in words ("1 publication needs you", '' for none: publicationsStripWords): said in
+   * the GitHub section after GitHub's state, in neutral ink, since they are not among the one list of what needs you (IN1a PR-9).
+   */
+  publications?: string
   /** The revision the Plan section features (the approved one, else the newest proposed), or none. */
   plan: Pick<PlanSummary, 'state' | 'stale'> | null
   /** The ticket's items of the one list (ticketWaits). */
@@ -80,7 +85,7 @@ export function ticketSections(i: TicketSectionsInput): TicketSection[] {
   const closeWords = i.close.closed ? 'closed' : i.close.ready ? 'ready' : `${met} of ${i.close.items.length} met`
   const live = i.comments.filter((c) => !c.deletedAt).length
   const earlier = (i.comments[0]?.n ?? 1) > 1
-  const github: TicketSection[] = i.github ? [{ id: 'github', label: 'GitHub', words: githubStateWords(i.github).key, tone: 'neutral' }] : []
+  const github: TicketSection[] = i.github ? [{ id: 'github', label: 'GitHub', words: [githubStateWords(i.github).key, i.publications ?? ''].filter(Boolean).join(' · '), tone: 'neutral' }] : []
   return [
     ...github,
     { id: 'description', label: 'Description', words: '', tone: 'neutral' },

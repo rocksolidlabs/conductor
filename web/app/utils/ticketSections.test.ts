@@ -49,6 +49,12 @@ describe("a ticket's strip of sections", () => {
     expect(words(input({ github: { state: 'closed' } }), 'github').tone).toBe('neutral')
   })
 
+  it('says the publications that need a person after GitHub\'s state, in neutral ink: they are not in the one list, so never amber', () => {
+    const w = words(input({ github: { state: 'open' }, publications: '2 publications need you' }), 'github')
+    expect([w.words, w.tone]).toEqual(['open · 2 publications need you', 'neutral'])
+    expect(words(input({ github: { state: 'open' }, publications: '' }), 'github').words).toBe('open')
+  })
+
   it('counts the live comments, and says "+" when an earlier page exists', () => {
     const three = [{ n: 1 }, { n: 2 }, { n: 3, deletedAt: '2026-11-16T00:00:00Z' }, { n: 4 }]
     expect(words(input({ comments: three }), 'comments').words).toBe('3')

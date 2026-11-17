@@ -2,6 +2,7 @@
 import type { NewLink, TicketLink } from '~/composables/useDispatch'
 import { candidateName, linkLabel, parseCandidate, verificationWords, type CandidateOption } from '~/utils/dispatch'
 import { relativeTime } from '~/utils/sessions'
+import { itemRef } from '~/utils/publication'
 
 /**
  * A ticket's links outward (docs/plans/dispatch.md, PR-11): where it was delivered, the merged pull request's or the release's URL that a
@@ -28,6 +29,8 @@ const props = defineProps<{
   candidatesError?: string
   /** Whether a delivered candidate's result was withdrawn since, as its run's candidates read now say. */
   withdrawn?: (candidate: string) => boolean
+  /** Opens Publish to GitHub with the link as its target (IN1a): offered on a link to a GitHub item. */
+  publish?: (link: TicketLink) => void
 }>()
 
 type FormKind = Exclude<NewLink['kind'], 'run'>
@@ -143,6 +146,7 @@ const tones = { warning: 'text-warning', error: 'text-error', muted: 'text-muted
           </div>
           <p class="text-xs text-dimmed">added by {{ l.createdBy || 'admin' }} {{ relativeTime(l.createdAt, now, { suffix: true }) }}</p>
         </div>
+        <IconButton v-if="!locked && publish && itemRef(l.url)" icon="i-lucide-send" size="xs" color="neutral" variant="ghost" class="flex-none" :label="`Publish to GitHub on ${linkLabel(l.url)}`" data-link-publish @click="publish(l)" />
         <IconButton v-if="!locked" icon="i-lucide-x" size="xs" color="neutral" variant="ghost" class="flex-none" :label="`Remove the link ${linkLabel(l.url)}`" :loading="removing === l.id" data-link-remove @click="drop(l)" />
       </li>
     </ul>

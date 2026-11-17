@@ -1085,6 +1085,11 @@ func (s *Server) handleDispatchAddPerson(w http.ResponseWriter, r *http.Request)
 var ticketParams = []string{"project", "status", "priority", "label", "owner", "assignee", "milestone", "horizon", "parent",
 	"blocked", "q", "sort", "desc", "deleted", "limit", "cursor"}
 
+// adminTicketParams is ticketParams with the admin's alone: external, a
+// pasted GitHub address searched for (the palette's), which a Brakeman
+// turn's shared read of the list does not take.
+var adminTicketParams = append(slices.Clone(ticketParams), "external")
+
 // ticketQuery reads a ticket list's query (dispatch.Query) from the query
 // string: a priority is its number, 0 (none) to 4 (urgent); a label and a
 // milestone their ids; an assignee person:<name> or agent:<catalog id>; a
@@ -1098,7 +1103,7 @@ func ticketQuery(q dispatchQuery) (dispatch.Query, error) {
 		dst  *string
 	}{
 		{"project", &out.Project}, {"owner", &out.Owner}, {"milestone", &out.Milestone}, {"parent", &out.Parent},
-		{"q", &out.Q}, {"sort", &out.Sort}, {"cursor", &out.Cursor},
+		{"q", &out.Q}, {"sort", &out.Sort}, {"cursor", &out.Cursor}, {"external", &out.External},
 	} {
 		v, err := q.one(s.name)
 		if err != nil {
@@ -1124,6 +1129,9 @@ func ticketQuery(q dispatchQuery) (dispatch.Query, error) {
 		out.Priority = append(out.Priority, n)
 	}
 	out.Status, out.Labels, out.Assignees, out.Horizon = q["status"], q["label"], q["assignee"], q["horizon"]
+	if len(out.External) > dispatch.MaxLinkURL {
+		return out, fmt.Errorf("external is an address of at most %d bytes", dispatch.MaxLinkURL)
+	}
 	limit, err := q.count("limit")
 	out.Limit = limit
 	return out, err
@@ -1138,14 +1146,21 @@ func ticketQuery(q dispatchQuery) (dispatch.Query, error) {
 // one in the ticket or its comments, the last a prefix), ?sort= (updated,
 // created, priority, status, title, key, milestone) and ?desc=1, ?deleted=1
 // (the tombstones beside the live tickets, which a list leaves out
-// otherwise), ?limit= 1 to 200 (100 when absent) and ?cursor= the next of
-// the page before. 400 invalid_request for a bad value.
+// otherwise), ?limit= 1 to 200 (100 when absent), ?cursor= the next of
+// the page before and, the admin's alone, ?external= an address of at
+// most dispatch.MaxLinkURL bytes (the tickets whose linked item's page,
+// or one of whose live links' URL, it is). 400 invalid_request for a bad
+// value, and for external from a Brakeman turn.
 func (s *Server) handleDispatchTickets(w http.ResponseWriter, r *http.Request) {
 	ds, ok := s.dispatchStore(w)
 	if !ok {
 		return
 	}
-	q, err := readQuery(r, ticketParams...)
+	params := ticketParams
+	if principalOf(r).admin {
+		params = adminTicketParams
+	}
+	q, err := readQuery(r, params...)
 	var query dispatch.Query
 	if err == nil {
 		query, err = ticketQuery(q)
