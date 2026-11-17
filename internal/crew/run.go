@@ -449,6 +449,9 @@ type Engine struct {
 	// (errComparisonLaunch): the tests of a compare run's rules launch one
 	// before the plan's row that opens the launch.
 	compareOpen bool
+	// cmpMeasure is the comparison's measure: its seams and its cache
+	// (comparison.go).
+	cmpMeasure compareMeasure
 	// openPackageFile reads a launch package's attachment by its SHA-256
 	// (UsePackageFiles): Dispatch's store, which the API gives the engine.
 	openPackageFile func(ctx context.Context, launch, sha256 string) (io.ReadCloser, error)
@@ -610,6 +613,9 @@ type run struct {
 	// (compareLanes): set as the run is made and never changed.
 	compare *Compare
 	lanes   map[string]string
+	// cmp is what a compare run keeps of its lanes' settling
+	// (compare_step.go), under e.mu.
+	cmp compareState
 	// rechecks are the attempts Check again recorded whose verification
 	// has not started: the pump starts them once their change is
 	// committed and the prerequisites have passed (startRechecks).
@@ -2161,6 +2167,9 @@ func (e *Engine) stop(ctx context.Context, r *run) error {
 	// theirs: each records the run's stop, and is waited for with the trees.
 	e.endPreviews(r, whyRunStopped)
 	e.mu.Unlock()
+	if f := e.cmpMeasure.stopping; f != nil {
+		f(r.id)
+	}
 	r.cancel()
 	waitFor(ctx, &r.starts)
 	e.mu.Lock()
