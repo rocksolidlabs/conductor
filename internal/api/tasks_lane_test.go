@@ -76,6 +76,17 @@ func TestACompareCrewSavesAndIsNotLaunchedFromTheCrewsPage(t *testing.T) {
 	if resp.StatusCode != http.StatusBadRequest || errCodeOf(out) != "invalid_crew" || !strings.Contains(fmt.Sprint(out), "a comparison is launched from a ticket's approved plan revision") {
 		t.Fatalf("the launch: %d %v", resp.StatusCode, out)
 	}
+	// The crews page's launch names the copy it read: a stale one is
+	// crew_changed first, the copy read refused for being a comparison.
+	resp, out = e.do("POST", "/api/crews/"+id+"/launch", adminToken, map[string]any{"revision": strings.Repeat("0", 64)})
+	if resp.StatusCode != http.StatusConflict || errCodeOf(out) != "crew_changed" {
+		t.Fatalf("the launch of a stale copy: %d %v", resp.StatusCode, out)
+	}
+	_, got := e.do("GET", "/api/crews/"+id, adminToken, nil)
+	resp, out = e.do("POST", "/api/crews/"+id+"/launch", adminToken, map[string]any{"revision": got["revision"]})
+	if resp.StatusCode != http.StatusBadRequest || errCodeOf(out) != "invalid_crew" || !strings.Contains(fmt.Sprint(out), "a comparison is launched from a ticket's approved plan revision") {
+		t.Fatalf("the launch of the copy read: %d %v", resp.StatusCode, out)
+	}
 	if resp, out := e.do("GET", "/api/runs", adminToken, nil); resp.StatusCode != http.StatusOK || len(out["runs"].([]any)) != 0 {
 		t.Fatalf("runs after the refused launch: %v", out)
 	}
