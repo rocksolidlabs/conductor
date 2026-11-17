@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -1022,11 +1023,12 @@ func writeRequestedCheck(b *strings.Builder, f TaskFile, ch *RequestedCheck) {
 // writeExternalCheck says a check finding's CI job on GitHub: that it is
 // GitHub's, its receipt, the commit it tested and how it ended in
 // Conductor's words (its conclusion only when it is one of GitHub's
-// words), the class the server gave it and the one the person chose, its
-// page, and then what was written outside Conductor, each through
-// internal/quoted, from the check run the receipt names: its name and its
-// app as a line each, their excerpt of its log and the end
-// of its log as a block each, never in the ledger's words.
+// words), the class the server gave it and the one the person chose, and
+// then what was written outside Conductor, each through internal/quoted,
+// from the check run the receipt names: its name, its page (only one on
+// the receipt's own host, jobPageOnHost) and its app as a line each, their
+// excerpt of its log and the end of its log as a block each, never in the
+// ledger's words.
 func writeExternalCheck(b *strings.Builder, ch *RequestedCheck) {
 	src := externalSource(ch.Receipt)
 	fmt.Fprintf(b, "\n  It is a CI job on GitHub, not one of this crew's checks: GitHub runs it, and Conductor does not run it again on your result. Its receipt is %s", inlineCode(ch.Receipt))
@@ -1044,12 +1046,11 @@ func writeExternalCheck(b *strings.Builder, ch *RequestedCheck) {
 	} else if ch.Chosen != "" {
 		b.WriteString(", as the person did")
 	}
-	b.WriteString(". GitHub keeps its whole log")
-	if ch.URL != "" {
-		fmt.Fprintf(b, ", on its page <%s>", quoted.Flat(ch.URL))
-	}
-	b.WriteString(".\n")
+	b.WriteString(". GitHub keeps its whole log, on the job's page there.\n")
 	fmt.Fprintf(b, "\n  %s\n", quoted.Line(src, "Its name", ch.Name))
+	if page := jobPageOnHost(ch.URL, ch.Receipt); page != "" {
+		fmt.Fprintf(b, "\n  %s\n", quoted.Line(src, "Its page", page))
+	}
 	if ch.App != "" {
 		fmt.Fprintf(b, "\n  %s\n", quoted.Line(src, "Its app", ch.App))
 	}
@@ -1061,6 +1062,23 @@ func writeExternalCheck(b *strings.Builder, ch *RequestedCheck) {
 	if ch.Tail != "" {
 		fmt.Fprintf(b, "\n%s\n", quoted.Block(src, "The end of its log", ch.Tail))
 	}
+}
+
+// jobPageOnHost is an external job's page when it is an https address on
+// the receipt's own host (github:<host>/…), with no user, query or
+// fragment, as the app draws a link only on the item's own host; "" for
+// any other (another host, an app's own page, none).
+func jobPageOnHost(page, receipt string) string {
+	rest, ok := strings.CutPrefix(receipt, "github:")
+	host, _, found := strings.Cut(rest, "/")
+	if page == "" || !ok || !found || host == "" {
+		return ""
+	}
+	u, err := url.Parse(page)
+	if err != nil || u.Scheme != "https" || u.User != nil || u.Host != host || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.Opaque != "" {
+		return ""
+	}
+	return page
 }
 
 // externalSource is where an external job's texts were written: GitHub,
