@@ -201,3 +201,36 @@ func TestAWakeRequestNamesItsBatch(t *testing.T) {
 		t.Fatal("a wake brief without a fact was taken")
 	}
 }
+
+// TestReservedIsWhenTheTurnBegan: a started request's reservation, read
+// back, puts its start at the deadline less it, here 5 minutes of a
+// 15-minute turn the day's minutes held back; a request never started,
+// and one the store does not hold, has none.
+func TestReservedIsWhenTheTurnBegan(t *testing.T) {
+	f := newFixture(t)
+	c := minutesConfig(MinMinutesPerDay + 10) // 20
+	f.spend("op-1", c, 15*time.Minute)
+	began := f.clock.now()
+	r, err := f.s.Start(f.create("op-2").ID, c, Stamp{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, ok := f.s.Reserved(r.ID)
+	if !ok || m != 5 {
+		t.Fatalf("reserved %d %v, want 5", m, ok)
+	}
+	if at := r.Deadline.Add(-time.Duration(m) * time.Minute); !at.Equal(began) {
+		t.Fatalf("began at %s, want %s", at, began)
+	}
+	f.clock.add(2 * time.Minute)
+	f.close(r.ID, StateEnded)
+	if m, ok := f.s.Reserved(r.ID); !ok || m != 5 {
+		t.Fatalf("settled, reserved %d %v, want 5", m, ok)
+	}
+	if m, ok := f.s.Reserved(f.create("op-3").ID); ok || m != 0 {
+		t.Fatalf("queued: %d %v", m, ok)
+	}
+	if _, ok := f.s.Reserved("br-999"); ok {
+		t.Fatal("a request the store does not hold has a reservation")
+	}
+}
