@@ -149,3 +149,56 @@ func TestALateEntryPagesNoOneAndARetoldQuestionPagesOnce(t *testing.T) {
 		t.Fatalf("offered %q", got)
 	}
 }
+
+// The retell of a question pages once unless someone was offered that
+// question live: a question the copy showed whose entry came late pages
+// once on its retell, and once in all however often it is retold; one
+// whose needs_input entry was offered live, before or after the copy
+// showed it, is not paged again by its retell.
+func TestARetoldQuestionPagesUnlessItWasOfferedLive(t *testing.T) {
+	e := newTestEnv(t, nil)
+	var mu sync.Mutex
+	var paged []string
+	e.srv.events.addSink(func(_ string, en session.ActivityEntry, st session.AttentionState) {
+		mu.Lock()
+		paged = append(paged, string(st)+":"+en.Message)
+		mu.Unlock()
+	})
+	pagedNow := func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return slices.Clone(paged)
+	}
+	hs := registerReporting(t, e, "1", "sh", "", proto.HostReport{})
+	host := func(t string, v any) {
+		b, _ := json.Marshal(v)
+		if !e.srv.handleHostMessage(hs, &hostConnState{}, t, b) {
+			panic("closed the connection")
+		}
+	}
+	var seq uint64
+	entry := func(words string, late bool) {
+		seq++
+		host(proto.HostActivity, proto.HostActivityMsg{T: proto.HostActivity, Entry: proto.Activity{Type: "attention", Message: words, At: time.Now().UTC().Format(time.RFC3339Nano)}, State: "needs_input", Seq: seq, Late: late})
+	}
+	ask := func(id, words string, retold bool) {
+		host(proto.HostAttention, proto.HostAttentionMsg{T: proto.HostAttention, SessionID: hs.Info().ID, State: "needs_input", Message: words, Source: session.SourceAPI, ID: id, Retold: retold})
+	}
+	// Shown while connected, its entry late (made before the connection
+	// that carried it): its retell pages it, once in all.
+	ask("q1", "Deploy?", false)
+	entry("Deploy?", true)
+	ask("q1", "Deploy?", true)
+	ask("q1", "Deploy?", true)
+	// Its entry offered live while the copy showed it.
+	ask("q2", "Ship it?", false)
+	entry("Ship it?", false)
+	ask("q2", "Ship it?", true)
+	// Its entry offered live before the copy showed it.
+	entry("Merge?", false)
+	ask("q3", "Merge?", false)
+	ask("q3", "Merge?", true)
+	if got := pagedNow(); !slices.Equal(got, []string{"needs_input:Deploy?", "needs_input:Ship it?", "needs_input:Merge?"}) {
+		t.Fatalf("offered %q", got)
+	}
+}

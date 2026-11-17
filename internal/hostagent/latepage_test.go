@@ -61,6 +61,15 @@ func (h *reportingHost) pagedBefore(t *testing.T, calls chan hookCall) []hookCal
 	}
 }
 
+// untilRetold waits for the server to have read the host's retell of its
+// attention, made after mark: the copy's attention stamped after it. The
+// server reads a connection in order, so what the retell pages is offered
+// before anything the host sends after.
+func (h *reportingHost) untilRetold(t *testing.T, mark time.Time) {
+	t.Helper()
+	untilListed(t, h.hs, "the retell", func(i session.Info) bool { return i.Attention.Since != nil && i.Attention.Since.After(mark) })
+}
+
 // lateAttention reads the server's event stream feed for the session's
 // attention entries until the late ones' messages are want, in order: what
 // a person's feed shows of them. It counts the live ones meanwhile.
@@ -128,10 +137,52 @@ func TestAQuestionStillOpenAtTheReturnPagesOnce(t *testing.T) {
 		t.Fatalf("paged %+v, want the open question once", got)
 	}
 	// Told again (a connection's start once more), it pages no more.
+	mark := time.Now()
 	h.away(t)
 	h.back()
+	h.untilRetold(t, mark)
 	if got := h.pagedBefore(t, calls); len(got) != 0 {
 		t.Fatalf("paged again: %+v", got)
+	}
+}
+
+// A question asked while connected, whose entry was still on its way as
+// the link dropped (its attention told, its entry held behind others),
+// pages once as the host comes back: its entry comes late, so its retell
+// does, though the server's copy showed the question already.
+func TestAQuestionWhoseEntryWasOnItsWayAsTheLinkDroppedPagesOnce(t *testing.T) {
+	h, calls := pagedHost(t)
+	held := h.holdForwarding(session.ActivityAttention)
+	h.send(t, notify.Request{State: "needs_input", Message: "Deploy now?", Ask: true})
+	held.await(t)
+	untilListed(t, h.hs, "the copy's question", func(i session.Info) bool { return i.Attention.Message == "Deploy now?" })
+	mark := time.Now()
+	h.away(t)
+	h.back()
+	h.untilRetold(t, mark)
+	close(held.release)
+	got := h.pagedBefore(t, calls)
+	if len(got) != 1 || got[0].typ != session.ActivityAttention || got[0].message != "Deploy now?" {
+		t.Fatalf("paged %+v, want the question once", got)
+	}
+}
+
+// A question asked while connected, paged by its live entry, is not paged
+// again by its retell, on this reconnection or the next.
+func TestAQuestionPagedLiveIsNotPagedByItsRetell(t *testing.T) {
+	h, calls := pagedHost(t)
+	h.send(t, notify.Request{State: "needs_input", Message: "Ship it?", Ask: true})
+	if got := h.pagedBefore(t, calls); len(got) != 1 || got[0].message != "Ship it?" {
+		t.Fatalf("paged %+v, want the question once", got)
+	}
+	for range 2 {
+		mark := time.Now()
+		h.away(t)
+		h.back()
+		h.untilRetold(t, mark)
+		if got := h.pagedBefore(t, calls); len(got) != 0 {
+			t.Fatalf("paged again: %+v", got)
+		}
 	}
 }
 
