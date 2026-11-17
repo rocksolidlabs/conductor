@@ -152,8 +152,11 @@ session's agent token, which the host minted and checks; the host applies
 the report to its session through the calls that spend the session's
 bucket and tells the server on its control connection, now or as its next
 connection starts, so a report made while that connection is down is not
-lost. The sender posts to the server's route only when the socket cannot
-be reached; a host's refusal is a refusal. Every process of the user can
+lost; the agent's own session id a report names goes to the server on
+`agent_session`, which keeps it in the record as its attention route does
+(`hostagent/agentsession.go`), and a host whose server does not say it
+takes that names no socket. The sender posts to the server's route only
+when the socket cannot be reached; a host's refusal is a refusal. Every process of the user can
 reach the socket, other sessions' agents among them: the per-session token
 tells one session's agent from another's, as on the server's route (see
 docs/protocol.md, The host's socket).

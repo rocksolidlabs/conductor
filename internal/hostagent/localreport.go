@@ -80,6 +80,10 @@ type reportListener struct {
 	// told each report that waits for the session, as its wait begins.
 	wait    time.Duration
 	waiting func()
+	// agentSession, when set, is told the agent's own session id each
+	// applied report names, and whether the report was of a turn, in the
+	// order the reports were applied (agent.noteAgentSession).
+	agentSession func(id string, turn bool)
 
 	mu    sync.Mutex
 	local *session.Local
@@ -193,6 +197,7 @@ func (a *agent) startReports(env map[string]string) *reportListener {
 		a.log.Warn("the agent's reports go to the server alone: the host's socket could not be made", "err", err)
 		return nil
 	}
+	l.agentSession = a.noteAgentSession
 	env[notify.EnvHostSocket] = l.path
 	return l
 }
@@ -386,6 +391,10 @@ func (l *reportListener) serveAttention(w http.ResponseWriter, r *http.Request) 
 		}
 		writeReportError(w, http.StatusInternalServerError, "internal", "the report could not be applied")
 		return
+	}
+	// As the server's route keeps the id once the report is applied.
+	if req.AgentSession != "" && l.agentSession != nil {
+		l.agentSession(req.AgentSession, req.Turn)
 	}
 	writeReportJSON(w, http.StatusOK, map[string]any{"attention": local.Info().Attention})
 }

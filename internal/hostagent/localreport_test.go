@@ -27,6 +27,7 @@ import (
 	"github.com/rocksolidlabs/conductor/internal/session/sessiontest"
 	"github.com/rocksolidlabs/conductor/internal/share"
 	"github.com/rocksolidlabs/conductor/internal/signal"
+	"github.com/rocksolidlabs/conductor/internal/store"
 )
 
 // socketBase is a folder for a test's socket folders, short enough for a
@@ -78,6 +79,14 @@ type reportingHost struct {
 
 func newReportingHost(t *testing.T) *reportingHost {
 	t.Helper()
+	return newReportingHostOf(t, catalog.Default(), "stub", false)
+}
+
+// newReportingHostOf is newReportingHost with the server's catalog, the
+// agent the host registers, and, when records, a data folder: the server
+// keeps the session's record.
+func newReportingHostOf(t *testing.T, cat catalog.Catalog, agentID string, records bool) *reportingHost {
+	t.Helper()
 	cfg := config.Defaults()
 	cfg.WorkbenchToken = adminToken
 	cfg.HostTokens = []string{hostToken}
@@ -86,15 +95,28 @@ func newReportingHost(t *testing.T) *reportingHost {
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	srv, err := api.New(cfg, catalog.Default(), discardLog, nil, nil)
+	var st *store.Store
+	if records {
+		cfg.DataDir = t.TempDir()
+		var err error
+		if st, err = store.Open(cfg.DataDir); err != nil {
+			t.Fatal(err)
+		}
+	}
+	srv, err := api.New(cfg, cat, discardLog, nil, st)
 	if err != nil {
 		t.Fatal(err)
 	}
 	route := &routeCount{}
 	ts := httptest.NewServer(route.wrap(srv.Handler()))
-	t.Cleanup(ts.Close)
+	t.Cleanup(func() {
+		ts.Close()
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		srv.Shutdown(ctx)
+	})
 	tok, _ := share.NewToken()
-	a := &agent{opts: Options{ServerURL: ts.URL, Token: hostToken, Name: "reports", Argv: []string{"stub"}, AgentID: "stub", HostName: "h", Log: discardLog}, peers: map[string]*peer{}, log: discardLog, agentToken: tok}
+	a := &agent{opts: Options{ServerURL: ts.URL, Token: hostToken, Name: "reports", Argv: []string{agentID}, AgentID: agentID, HostName: "h", Log: discardLog}, peers: map[string]*peer{}, log: discardLog, agentToken: tok}
 	a.dir = t.TempDir()
 	if a.wsURL, err = controlURL(ts.URL); err != nil {
 		t.Fatal(err)
@@ -115,6 +137,10 @@ func newReportingHost(t *testing.T) *reportingHost {
 		t.Fatal(err)
 	}
 	t.Cleanup(l.Close)
+	l.agentSession = a.noteAgentSession
+	a.mu.Lock()
+	a.reports = l
+	a.mu.Unlock()
 	l.setSession(local)
 	serve := func(c *websocket.Conn) <-chan error {
 		served := make(chan error, 1)

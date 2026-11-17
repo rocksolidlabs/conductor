@@ -505,6 +505,12 @@ keeps the `since` and words of the `done` the copy shows only when it
 carries that one's `id`, and with another `id` replaces it),
 `activity{sessionId,entry,state?}`,
 `session_info{sessionId?,endCommit?}` (what the host reports, below),
+`agent_session{sessionId?,agentSession,turn?}` (the agent's own session
+id an attention report to the host's socket named, and whether the report
+was of a turn: see Attention, The host's socket; only to a server whose
+`registered` said `agentSessions`; at most 512 bytes, `agentSession` 1 to
+128 bytes, one object of these fields alone, else dropped and logged, the
+connection kept),
 `chat{sessionId,message}` (a chat message the host's session kept, as `chat` carries it to a viewer; the server takes the connection's session, keeps `message`, `system` and `sent_to_agent` kinds, scope `session`, bounded ids, cleaned names, the text cleaned and cut to 2048 bytes, `to` only as `agent`, and mirrors it into the events stream; a switchyard drops it),
 `link{requestId, role, ttlSeconds?, label?}` (a share link to the session,
 minted by the server: `requestId` ≤ 32 bytes, `label` ≤ 120 bytes,
@@ -586,7 +592,7 @@ followed, and a server reached without TLS is dialed directly, through no
 proxy (over TLS a proxy carries a tunnel, as before); with no provider, a
 redirect is followed and a proxy used as before.
 
-Server → host: `registered{sessionId, secret, shareBaseUrl, resumed, iceServers, links, recipe?, decisions?, renews?, sessionInfo?}`
+Server → host: `registered{sessionId, secret, shareBaseUrl, resumed, iceServers, links, recipe?, decisions?, renews?, sessionInfo?, agentSessions?}`
 (`decisions: true` from a switchyard that carries a decision link's lane,
 relaying DECISION and DECIDE, keeping run desks and serving the join
 page's Decide tab, below, Decision links: a publisher mints a decision link
@@ -606,7 +612,12 @@ ends such a link only where not being named can mean nothing else (a
 session's own link on its session's connection, a run's link on the
 run's desk), and a member's registration ends nothing of a run's link;
 `recipe`, below; `sessionInfo: true` says the server takes `session_info`,
-below, absent from a switchyard, on a desk's and from an older server),
+below, absent from a switchyard, on a desk's and from an older server;
+`agentSessions: true` says the server takes `agent_session` and keeps
+its id as the attention route keeps `agentSession`, absent on a desk's
+and from an older server: a host names its socket to its agent only when
+its first `registered` says it, and stops listening on it when a later
+one does not (Attention, The host's socket)),
 `viewer_join{viewerId, role, linkId?, linkLabel?, principal?}`, `offer{viewerId,sdp}`, `ice{viewerId,candidate}`,
 `relay_start{viewerId}`, `viewer_leave{viewerId, reason?}`, `link_gone{linkId, ended?}`, `stop{sessionId}`,
 `viewer_behind{viewerId, behind}` (a relayed viewer fell behind what the
@@ -1525,7 +1536,10 @@ becomes the session's `agentSession.id` when it has none, and afterwards as the
 recipe's `idPolicy` says: `latest` takes each new id, `lowest` keeps the
 smallest (Codex's hidden title thread reports with a later id than the
 conversation's). `turn` makes it `resumable`. Any other id is dropped without
-an error, and a hosted session ignores both fields. `conductor notify` fills
+an error. A hosted session keeps the id in its record alone, never in its
+`Info`, by the same recipe and with the same meaning of `turn`, whether
+the report came to this route or to its host's socket (`agent_session`,
+The host's socket). `conductor notify` fills
 them from Claude Code's `session_id` (with `turn` on `Stop` and
 `UserPromptSubmit`), Codex's notify `thread-id` (every
 `agent-turn-complete`; the turn of the hidden thread that names a Codex
@@ -1557,7 +1571,9 @@ the process starts, so that the agent's reports reach the host on its own
 machine whether or not the host's connection to the server is up. A
 server's own sessions never receive it (`CONDUCTOR_*` from the server's
 environment and the catalog never reach a session, and the server sets
-none). The socket is `conductor-host-<random>/report.sock` under
+none), and neither does the process of a host whose server's first
+`registered` did not say `agentSessions` (an older server): the agent
+then reports to this route, as before. The socket is `conductor-host-<random>/report.sock` under
 `$XDG_RUNTIME_DIR` when that folder is the user's alone (mode 0700), else
 under the temporary folder, else `/tmp`: a folder of the user's own, mode
 0700, not a link, made afresh by each host and checked before it listens,
@@ -1603,8 +1619,20 @@ the user's own, mode 0700, not a link (the token is never handed to such
 a socket). A host's answer, a refusal among them, and a connection lost
 after it was made (the host may have applied the report) are never sent
 to the server as well. `agentSession` and `turn` are taken and bounded on
-the socket and kept by neither end: a hosted session whose agent reports
-through its host's socket records no agent session id. Events
+the socket as here; a report the host applied that names an id is told
+the server on `agent_session` (Host control connection), which keeps it
+as this route does (the recipe's pattern and policy, `turn` marking it
+resumable, in the record alone). The host tells them in the order the
+reports came, at once while its connection is up and as its next
+connection starts while it is down (the record then takes the id as the
+host comes back), and tells them all again, in that order, as each
+connection starts: one the record took already changes nothing taken
+again in its order. It keeps the last 32 (reports of one id one after
+another count as one, its `turn` if either was of a turn). When a later
+`registered` does not say `agentSessions` (the server replaced by an older
+one), the host stops listening on its socket and removes it, so the
+agent's reports go to this route; ids its reports named while its
+connection was down and not yet told are lost then. Events
 (`POST /api/sessions/{id}/events`) and the files a tool call touched still
 go to the server. A sender of an earlier release ignores the variable and
 posts to this route; a host of an earlier release sets none, and the
