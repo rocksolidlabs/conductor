@@ -1502,3 +1502,24 @@ func TestTrackerRequestOnItsOwnConnection(t *testing.T) {
 		}
 	}
 }
+
+// A server started with the tracker test seam on says so once, in a
+// warning naming no token, host or address; one started without it says
+// nothing of it.
+func TestTrackerLoopbackSaidAtStart(t *testing.T) {
+	for _, on := range []bool{true, false} {
+		logs := &logBuffer{}
+		log := slog.New(slog.NewJSONHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+		newTestEnvLogging(t, func(c *config.Config) { c.TrackerLoopback = on }, log)
+		lines := strings.Count(logs.String(), trackerLoopbackWords)
+		switch {
+		case on && (lines != 1 || !strings.Contains(logs.String(), `"level":"WARN","msg":"`+trackerLoopbackWords+`"`)):
+			t.Fatalf("on: %d lines of the seam's warning:\n%s", lines, logs.String())
+		case !on && lines != 0:
+			t.Fatalf("off: the seam's warning was written:\n%s", logs.String())
+		}
+	}
+	if strings.ContainsAny(trackerLoopbackWords, "/:@") && strings.Contains(trackerLoopbackWords, "://") {
+		t.Fatal("the warning names an address")
+	}
+}

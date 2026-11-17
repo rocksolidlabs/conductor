@@ -46,8 +46,10 @@ import (
 const ExternalJobTimeout = 2 * trackerReadsBudget
 
 // ExternalReviewTimeout bounds a review's request that names an external
-// job: a review's own bound and a fresh read of each job it names, one
-// after the other, beside it. Exported for the CLI.
+// job: a review's own bound, and beside it one budget, ExternalJobTimeout,
+// shared by the fresh reads of every job it names (externalBudget), so the
+// review's own bound stays whole for its store steps however many jobs it
+// names. Exported for the CLI.
 const ExternalReviewTimeout = ReviewTimeout + ExternalJobTimeout
 
 // jobIDPattern is a check's id as a link's read names it: a GitHub Actions
@@ -59,9 +61,14 @@ var jobIDPattern = regexp.MustCompile(`^(job|run|status):([1-9][0-9]{0,18})$`)
 // as a check finding keeps it.
 type externalJob struct {
 	item tracker.Ref
+	head string
 	job  tracker.Check
 	ref  dispatch.CheckRef
 }
+
+// externalBudget is the one budget a review's fresh reads of its external
+// jobs share (ExternalJobTimeout at the product's caps).
+func (s *Server) externalBudget() time.Duration { return 2 * s.trackerCaps().reads }
 
 // externalClass is the class the server works out of a job's conclusion:
 // a cancel cancelled, a start that failed the machine's, the rest the
@@ -141,7 +148,7 @@ func (s *Server) readJob(ctx context.Context, ref tracker.Ref, c dispatch.Candid
 		if it.Ref.Kind != tracker.KindChange || it.HeadSHA == "" {
 			return newAPIError(http.StatusConflict, dispatch.RefusalInvalid, "GitHub says "+ref.String()+" is no pull request with a head commit")
 		}
-		out.item = it.Ref
+		out.item, out.head = it.Ref, it.HeadSHA
 		set, err = ad.Checks(rctx, cr, it.Ref, it.HeadSHA)
 		return err
 	})
@@ -149,6 +156,10 @@ func (s *Server) readJob(ctx context.Context, ref tracker.Ref, c dispatch.Candid
 		return out, nil, err
 	}
 	i := slices.IndexFunc(set.Checks, match)
+	if i < 0 && out.head != c.Commit {
+		return out, newAPIError(http.StatusConflict, dispatch.RefusalInvalid, fmt.Sprintf("the pull request's head moved on to %s since its read: its CI jobs now test another commit than the delivered candidate's %s (%s); read the link again",
+			shortCommit(out.head), shortCommit(c.Commit), c.Name())), nil
+	}
 	if i < 0 {
 		words := "no such CI job among the checks GitHub has at the pull request's head commit"
 		if len(set.Incomplete) > 0 {
@@ -174,7 +185,11 @@ func (s *Server) readJob(ctx context.Context, ref tracker.Ref, c dispatch.Candid
 	out.job = job
 	conclusion := checkWord(job.Conclusion)
 	class := externalClass(conclusion)
-	out.ref = dispatch.CheckRef{Source: dispatch.CheckSourceExternal, Receipt: dispatch.ExternalReceipt(out.item.Host, out.item.Space, num), Subject: job.HeadSHA,
+	// The receipt names the repository as the delivery link names it (ref,
+	// its own address), never as GitHub names it now (out.item, after a
+	// rename), so a review finds the link the receipt was prepared from by
+	// the same rule (externalEvidence).
+	out.ref = dispatch.CheckRef{Source: dispatch.CheckSourceExternal, Receipt: dispatch.ExternalReceipt(ref.Host, ref.Space, num), Subject: job.HeadSHA,
 		HeadSha: job.HeadSHA, Argv: []string{}, Name: dispatch.JobText(job.Name), Conclusion: conclusion, URL: dispatch.JobPage(job.URL),
 		App: dispatch.JobText(job.App), Class: class, Chosen: class}
 	if out.ref.Name == "" {
@@ -252,6 +267,12 @@ func (s *Server) handleExternalJobRepair(w http.ResponseWriter, r *http.Request)
 	}
 	job, ae, err := s.readJob(ctx, ref, c, func(ch tracker.Check) bool { return ch.ID == check }, true)
 	switch {
+	case s.external.stopping().Err() != nil:
+		// The stop ended the read: a busy route's answer.
+		w.Header().Set("Retry-After", "5")
+		s.trackerLog(r, ref, errItemBusy.status)
+		writeAPIError(w, errItemBusy)
+		return
 	case err != nil:
 		s.trackerFail(w, r, ref, err)
 		return
@@ -289,7 +310,10 @@ func (s *Server) handleExternalJobRepair(w http.ResponseWriter, r *http.Request)
 // from a fresh read as the prepared request fills it (readJob): of the
 // check run its receipt names, in the pull request of a live delivery link
 // of the ticket that delivers the candidate reviewed (its candidate's
-// commit c's) in the receipt's repository on the receipt's host. 409
+// commit c's) in the receipt's repository on the receipt's host, as the
+// link's own address names them (readJob builds the receipt so). Its reads
+// end with the server's stop, and are made within ctx, the review's one
+// budget for its external reads (externalBudget). 409
 // invalid when no such link is the ticket's, or the job tested another
 // commit; 404 for a job not among the checks read, in words of the
 // finding k; GitHub's failures as trackerAnswer says. What the job's state
@@ -308,25 +332,28 @@ func (s *Server) externalEvidence(ctx context.Context, ds *dispatch.Store, key s
 		}
 		return nil, newAPIError(http.StatusInternalServerError, "store_failed", "the ticket could not be read")
 	}
+	// The server's stop ends a read under way, as trackerContext's does.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	defer context.AfterFunc(s.external.stopping(), cancel)()
 	var last *apiError
 	for _, l := range tv.Links {
 		if l.Kind != dispatch.LinkDelivery || !l.DeletedAt.IsZero() {
 			continue
 		}
 		_, lc, ref, ae := s.deliveryOf(tv, l.ID)
-		if ae != nil || lc.Commit != c.Commit || ref.Host != host || !strings.EqualFold(ref.Space, space) {
+		if ae != nil || lc.Commit != c.Commit || ref.Host != host || ref.Space != space {
 			continue
 		}
 		job, ae, err := s.readJob(ctx, ref, c, func(ch tracker.Check) bool { return ch.ID == "job:"+num || ch.ID == "run:"+num }, false)
 		status := http.StatusOK
 		switch {
+		case s.external.stopping().Err() != nil:
+			// The stop ended the read (a cut read of the checks among it):
+			// a busy route's answer, nothing judged of what was read.
+			ae = errItemBusy
 		case err != nil:
 			ae = trackerAnswer(err, ref)
-			if s.external.stopping().Err() != nil {
-				ae = errItemBusy
-			}
-		case ae == nil && job.ref.Receipt != req.Receipt:
-			ae = newAPIError(http.StatusConflict, dispatch.RefusalInvalid, "the pull request is now at another repository: link it again")
 		}
 		if ae != nil {
 			status = ae.status

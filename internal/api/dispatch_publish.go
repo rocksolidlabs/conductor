@@ -1086,11 +1086,43 @@ func (s *Server) handlePublishOffer(w http.ResponseWriter, r *http.Request) {
 	}
 	add("deliveries", "Delivered in:", deliveries)
 	add("checks", "Checks of the delivered candidate:", checks)
-	parts = append(parts, offerPart{"key", "Conductor ticket " + tv.Key + ": " + tv.Title})
+	parts = append(parts, offerPart{"key", "Conductor ticket " + tv.Key + ": " + inertSpan(tv.Title)})
 	if targets == nil {
 		targets = []offerTarget{}
 	}
 	writeDispatch(w, http.StatusOK, map[string]any{"parts": parts, "targets": targets})
+}
+
+// inertSpan writes a text as one Markdown code span, so nothing in it
+// takes effect where GitHub draws the comment: a mention or a team's, an
+// issue's reference, a link, an image, an emoji's name, HTML. The fence is
+// one backtick longer than the text's longest run of backticks, so no run
+// inside closes it, with a space inside each fence when the text begins or
+// ends with a backtick or with a space at both ends (the space a code span
+// strips is then the fence's own); a line break is written as a space, as
+// a code span draws one. Every ticket's title goes through it, whoever
+// wrote the title: a title Dispatch's own form took may hold the same text
+// as one a GitHub read wrote. "" for an empty text.
+func inertSpan(text string) string {
+	text = strings.NewReplacer("\r\n", " ", "\r", " ", "\n", " ").Replace(text)
+	if text == "" {
+		return ""
+	}
+	longest, run := 0, 0
+	for _, r := range text {
+		if r == '`' {
+			run++
+			longest = max(longest, run)
+		} else {
+			run = 0
+		}
+	}
+	fence := strings.Repeat("`", longest+1)
+	pad := strings.HasPrefix(text, "`") || strings.HasSuffix(text, "`") || strings.HasPrefix(text, " ") && strings.HasSuffix(text, " ") && strings.Trim(text, " ") != ""
+	if pad {
+		return fence + " " + text + " " + fence
+	}
+	return fence + text + fence
 }
 
 // SettlePublications settles, in the background, the publications the

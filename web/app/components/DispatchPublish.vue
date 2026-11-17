@@ -6,12 +6,14 @@ import { CommandRefused, mintCommandId, sendCommand } from '~/utils/tasks'
 import {
   PUBLISH_AS_NEW_WARNING,
   bodyProblem,
+  closeAs,
   closeWords,
   commentLink,
   composeBody,
   markerWords,
   normalBody,
   offeredParts,
+  pickTarget,
   previewHolds,
   previewParts,
   publicationWords,
@@ -62,6 +64,8 @@ const busy = ref<'' | 'offer' | 'prepare' | 'send' | 'read'>('')
 const error = ref('')
 /** The text published as new comes from a publication not confirmed or restored: the warning says the first may still appear. */
 const asNew = ref(false)
+/** The target asked for is not among the offer's: why, in words; nothing is offered to prepare. */
+const targetRefused = ref('')
 /** Each opening is a new one: an answer to an earlier opening changes nothing in this one. */
 let opening = 0
 
@@ -74,7 +78,7 @@ watch(closeOffered, (o) => {
   if (!o) closeIssue.value = false
 })
 const composed = computed(() => composeBody(text.value, parts.value, ticked.value))
-const problem = computed(() => (!target.value ? 'Pick where it is published' : bodyProblem(composed.value.body)))
+const problem = computed(() => (targetRefused.value || !target.value ? 'Pick where it is published' : bodyProblem(composed.value.body)))
 
 /** The preview's parts, when it is the bytes its digest names and the body is what was asked for; null when it is not, and nothing is offered to send. */
 const checked = computed(() => {
@@ -116,6 +120,7 @@ async function start() {
   error.value = ''
   asNew.value = props.from?.mode === 'new'
   target.value = ''
+  targetRefused.value = ''
   // A failed one sent again needs no offer: its preview is read, never composed here.
   if (props.from?.mode !== 'resend') {
     busy.value = 'offer'
@@ -123,7 +128,10 @@ async function start() {
       const o = await api.publishOffer(props.ticket.key)
       if (n !== opening) return
       offer.value = o
-      target.value = props.target && o.targets.some((t) => t.target === props.target) ? props.target : (o.targets[0]?.target ?? '')
+      // The item the person pressed, or none and why: never another item in its place.
+      const picked = pickTarget(props.target, o.targets)
+      target.value = picked.target
+      targetRefused.value = picked.refused
     } catch (e) {
       if (n === opening) offerError.value = (e as Error).message
     } finally {
@@ -283,8 +291,9 @@ const reading = computed(() => (busy.value === 'prepare' ? 'Reading GitHub: the 
         <UAlert v-if="offerError" color="error" variant="subtle" icon="i-lucide-circle-alert" title="What can be published could not be read" :description="offerError" data-publish-offer-error />
 
         <template v-if="step === 'compose' && offer">
-          <p v-if="!targets.length" class="text-muted" data-publish-no-target>This ticket has no linked GitHub item and no link to one: link one to publish.</p>
-          <template v-else>
+          <p v-if="targetRefused" class="text-muted" data-publish-target-refused>{{ targetRefused }}</p>
+          <p v-else-if="!targets.length" class="text-muted" data-publish-no-target>This ticket has no linked GitHub item and no link to one: link one to publish.</p>
+          <template v-if="!targetRefused && targets.length">
             <p v-if="asNew" class="text-muted" data-publish-as-new>{{ PUBLISH_AS_NEW_WARNING }}</p>
             <UFormField label="Published to" size="sm">
               <USelect v-model="target" :items="targets" class="w-full" aria-label="Where it is published" data-publish-target />
@@ -313,7 +322,7 @@ const reading = computed(() => (busy.value === 'prepare' ? 'Reading GitHub: the 
           <pre class="max-h-80 overflow-auto rounded-md bg-elevated px-3 py-2 font-mono text-xs whitespace-pre-wrap break-words text-default" data-publish-preview>{{ prepared.preview }}</pre>
           <p class="text-xs text-muted" data-publish-marker>{{ markerWords(prepared.publication.marker) }}</p>
           <p class="text-xs text-dimmed">Its SHA-256, which Publish names: <span class="break-all font-mono" data-mono="id" data-publish-digest>{{ prepared.postSha256 }}</span></p>
-          <p v-if="prepared.publication.closeIssue" class="text-xs text-muted" data-publish-closes>Then the issue is closed as completed.</p>
+          <p v-if="prepared.publication.closeIssue" class="text-xs text-muted" data-publish-closes>Then the issue is closed {{ closeAs(prepared.publication.closeIssue) }}.</p>
           <p v-if="sendBlocked" class="text-muted" data-publish-blocked>{{ sendBlocked }}</p>
         </template>
 

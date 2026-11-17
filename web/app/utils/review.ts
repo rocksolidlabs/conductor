@@ -1007,3 +1007,14 @@ export function externalHost(receipt: string): string {
   const m = /^github:([^/]+)\//.exec(receipt)
   return m ? m[1]! : ''
 }
+
+/**
+ * Where a sent check finding is, in words, as the Findings list names it: a CI job on GitHub by its name ("CI job test (ubuntu) failed on
+ * GitHub", "a CI job failed on GitHub" with none), the ledger's by its step ("check test failed"), "a check failed" with no receipt. Text,
+ * never markup.
+ */
+export function checkFindingWhere(c: Pick<CheckRef, 'source' | 'phase' | 'id' | 'name'> | null | undefined): string {
+  if (!c) return 'a check failed'
+  if (c.source === 'external') return `${c.name ? `CI job ${c.name}` : 'a CI job'} failed on GitHub`
+  return `${c.phase} ${c.id} failed`
+}

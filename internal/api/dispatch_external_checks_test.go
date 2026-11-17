@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -66,18 +67,26 @@ type jobFake struct {
 	jobHead  map[int]string // a job's own head_sha, when not the head's
 	location string         // the logs' redirect
 	at       map[string]bool
+	space    string // the repository's name as GitHub gives it now
+	none     bool   // no workflow run at the head
 }
 
 // newJobFake serves octo/jobs on github.com's API host with pull request
 // n at the head commit.
 func newJobFake(f *fakeGH, n int, head string) *jobFake {
-	j := &jobFake{f: f, n: n, jobHead: map[int]string{}, at: map[string]bool{},
+	j := &jobFake{f: f, n: n, jobHead: map[int]string{}, at: map[string]bool{}, space: "octo/jobs",
 		location: "https://" + jobLogHost + jobLogPath + "?sig=" + plantedJWT + "&se=2026-11-10T12%3A10%3A00Z"}
 	f.Reply("GET", "api.github.com", "/repos/octo/jobs", http.StatusOK, map[string]any{"id": 4000002, "full_name": "octo/jobs"})
 	num := strconv.Itoa(n)
 	f.Handle("GET", "api.github.com", jobsRepo+"/issues/"+num, j.answer(j.issue))
 	f.Handle("GET", "api.github.com", jobsRepo+"/pulls/"+num, j.answer(j.pull))
 	f.Handle("GET", "api.github.com", jobsRepo+"/actions/runs", j.answer(func() map[string]any {
+		j.mu.Lock()
+		none := j.none
+		j.mu.Unlock()
+		if none {
+			return map[string]any{"total_count": 0, "workflow_runs": []any{}}
+		}
 		return map[string]any{"total_count": 1, "workflow_runs": []any{map[string]any{"id": jobsRun, "name": "CI"}}}
 	}))
 	f.Handle("GET", "api.github.com", fmt.Sprintf("%s/actions/runs/%d/jobs", jobsRepo, jobsRun), j.answer(j.jobs))
@@ -159,9 +168,32 @@ func (j *jobFake) relocate(loc string) {
 	j.location = loc
 }
 
+// rename renames the repository on GitHub to octo/<name>: its old name's
+// lookup answers a redirect to the repository by its id, its new name's
+// lookup answers it, and the item's page names the new place.
+func (j *jobFake) rename(name string) {
+	j.mu.Lock()
+	j.space = "octo/" + name
+	j.mu.Unlock()
+	repo := map[string]any{"id": 4000002, "full_name": "octo/" + name}
+	j.f.Reply("GET", "api.github.com", "/repos/octo/jobs", http.StatusMovedPermanently, `{"message":"Moved Permanently"}`, "Location", "https://api.github.com"+jobsRepo)
+	j.f.Reply("GET", "api.github.com", jobsRepo, http.StatusOK, repo)
+	j.f.Reply("GET", "api.github.com", "/repos/octo/"+name, http.StatusOK, repo)
+}
+
+// setNone makes the head commit have no workflow run (none of the jobs).
+func (j *jobFake) setNone(none bool) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	j.none = none
+}
+
 func (j *jobFake) issue() map[string]any {
 	num := strconv.Itoa(j.n)
-	return map[string]any{"id": 5100000 + j.n, "node_id": "PR_kwDOjobs" + num, "number": j.n, "html_url": "https://github.com/octo/jobs/pull/" + num, "title": "Deliver it",
+	j.mu.Lock()
+	space := j.space
+	j.mu.Unlock()
+	return map[string]any{"id": 5100000 + j.n, "node_id": "PR_kwDOjobs" + num, "number": j.n, "html_url": "https://github.com/" + space + "/pull/" + num, "title": "Deliver it",
 		"body": "", "body_html": "", "state": "open", "labels": []any{}, "assignees": []any{}, "user": map[string]any{"login": "mona", "id": 9000001},
 		"created_at": itemsLayout, "updated_at": itemsLayout, "pull_request": map[string]any{"url": "https://api.github.com/repos/octo/jobs/pulls/" + num}}
 }
@@ -599,4 +631,80 @@ func driveExternalJobs(t *testing.T, e *testEnv, f *fakeGH, do func(pattern, pat
 	body, _ := json.Marshal(map[string]any{"opId": opID(), "candidate": candName(run, "build", 1, head), "base": strings.Repeat("4", 40), "verdict": "comment",
 		"summary": "The job.", "findings": []any{externalFinding(ch["receipt"].(string), "code", "FAIL")}})
 	do("POST /api/dispatch/tickets/{key}/reviews", "/api/dispatch/tickets/"+key+"/reviews", string(body), http.StatusCreated, "")
+}
+
+// A delivery in a repository renamed on GitHub since it was linked: the
+// prepared request's receipt names the repository as the link's address
+// does, so the review that names it finds that link and is kept, its job
+// read again through GitHub's redirect.
+func TestAJobOfARenamedRepositoryIsSubmittable(t *testing.T) {
+	l, j, run, c1, link := jobLaunch(t)
+	j.rename("renamed")
+	got := preparedJob(t, l.testEnv, link, "job:"+strconv.Itoa(jobFailed))
+	if got.Finding.Check.Receipt != "github:github.com/octo/jobs/check-runs/2000001" {
+		t.Fatalf("the receipt names %s, not the link's repository", got.Finding.Check.Receipt)
+	}
+	out := sendReview(t, l.testEnv, "CND-1", reviewOf(candName(run, "build", 1, c1), l.head, "comment", externalFinding(got.Finding.Check.Receipt, "code", "FAIL")), http.StatusCreated, "")
+	if f := entityOf(t, out, "review")["findings"].([]any)[0].(map[string]any)["check"].(map[string]any); f["receipt"] != got.Finding.Check.Receipt || reviewsOn(t, l.srv, "CND-1") != 1 {
+		t.Fatalf("the review: %v", out)
+	}
+}
+
+// A pull request whose head moved on since the link's read, to a commit
+// with no job of the one asked: the prepared request and a review naming
+// it are refused saying the head moved on, not that there is no such job.
+func TestAJobAfterTheHeadMovedSaysSo(t *testing.T) {
+	l, j, run, c1, link := jobLaunch(t)
+	j.moveTo(strings.Repeat("e", 40))
+	j.setNone(true)
+	out := l.expect(t, "GET", jobRepairPath("CND-1", link, "job:"+strconv.Itoa(jobFailed)), nil, http.StatusConflict, "invalid")
+	if !strings.Contains(apiMessage(out), "head moved on to eeeeeee") {
+		t.Fatalf("the prepared request: %v", out)
+	}
+	out = sendReview(t, l.testEnv, "CND-1", reviewOf(candName(run, "build", 1, c1), l.head, "comment", externalFinding("github:github.com/octo/jobs/check-runs/2000001", "", "")), http.StatusConflict, "invalid")
+	if !strings.Contains(apiMessage(out), "head moved on") || reviewsOn(t, l.srv, "CND-1") != 0 {
+		t.Fatalf("the review: %v", out)
+	}
+}
+
+// A review whose job's read is under way when the server begins to stop:
+// the stop ends the read (the read's cap set far above the test's wait),
+// and the review is answered as a busy route is, nothing kept.
+func TestAReviewsJobReadEndsWithTheStop(t *testing.T) {
+	l, j, run, c1, _ := jobLaunch(t)
+	caps := defaultTrackerCaps
+	caps.reads = 10 * time.Minute
+	l.srv.external.caps = &caps
+	jobs := fmt.Sprintf("%s/actions/runs/%d/jobs", jobsRepo, jobsRun)
+	// What ended the held request: the stop's cancel, not the request's
+	// own deadline (the adapter's, below the test's wait).
+	held := make(chan error, 1)
+	l.srv.trackers.gh = l.srv.trackers.adapter(causeOf{j.f.Transport(), jobs, held})
+	gate := j.f.Hold("GET", "api.github.com", jobs)
+	answered := make(chan int, 1)
+	go func() {
+		status, _, _ := l.call(t, "POST", "/api/dispatch/tickets/CND-1/reviews", reviewOf(candName(run, "build", 1, c1), l.head, "comment", externalFinding("github:github.com/octo/jobs/check-runs/2000001", "", "")))
+		answered <- status
+	}()
+	<-gate.Reached()
+	l.srv.external.end()
+	select {
+	case status := <-answered:
+		if status != http.StatusServiceUnavailable {
+			t.Fatalf("the review answered %d", status)
+		}
+	case <-time.After(testWait):
+		t.Fatal("the review's read went on past the server's stop")
+	}
+	var cause error
+	select {
+	case cause = <-held:
+	default:
+	}
+	if cause != context.Canceled {
+		t.Fatalf("the held read was ended by %v, not the stop", cause)
+	}
+	if reviewsOn(t, l.srv, "CND-1") != 0 {
+		t.Fatal("a review was kept")
+	}
 }

@@ -80,7 +80,7 @@ test('composes with every part off, previews the exact bytes with the marker sai
   const keyPart = dialog.getByRole('checkbox', { name: "The ticket's key and title" })
   await expect(keyPart).not.toBeChecked()
   await expect(dialog.getByRole('checkbox', { name: 'Close the issue as completed' })).not.toBeChecked()
-  await expect(dialog.locator('[data-publish-part-text="key"]')).toHaveText(`Conductor ticket ${ticket}: ${TITLE}`)
+  await expect(dialog.locator('[data-publish-part-text="key"]')).toHaveText(`Conductor ticket ${ticket}: \`${TITLE}\``)
   await expect(dialog.locator('[data-publish-part-text="key"] b')).toHaveCount(0)
   await expect(dialog.locator('[data-publish-body]')).toHaveValue('')
 
@@ -96,7 +96,7 @@ test('composes with every part off, previews the exact bytes with the marker sai
   const id = listed.publications[0]!.id
   const read = await publicationOf(id)
   expect(read.publication.state).toBe('draft')
-  expect(read.preview).toBe(`Fixed in the release.\n\nConductor ticket ${ticket}: ${TITLE}\n\n${read.publication.marker}`)
+  expect(read.preview).toBe(`Fixed in the release.\n\nConductor ticket ${ticket}: \`${TITLE}\`\n\n${read.publication.marker}`)
   expect(await preview.evaluate((el) => el.textContent)).toBe(read.preview)
   await expect(preview.locator('b')).toHaveCount(0)
   await expect(dialog.locator('[data-publish-marker]')).toContainText(read.publication.marker)
@@ -179,7 +179,14 @@ test('offers only the parts a composer may offer, the close for an issue alone, 
   test.setTimeout(test.info().timeout + 3 * PREPARE_MS)
   gh.set({ n: PULL, kind: 'pull', title: 'Fix the empty list', body: 'Fixes #12', state: 'open', headSha: 'b'.repeat(40) })
   await srv.api.ok('POST', `/api/dispatch/tickets/${ticket}/links`, { opId: opOf(KEY, 'pr'), kind: 'delivery', url: gh.url(PULL, 'pull'), note: 'the fix' })
+  // A link to a place in the pull request (a fragment): an address the server's offer leaves out, so its row offers no Publish.
+  const placed = `${gh.url(PULL, 'pull')}#discussion_r1`
+  await srv.api.ok('POST', `/api/dispatch/tickets/${ticket}/links`, { opId: opOf(KEY, 'place'), kind: 'external', url: placed })
   const page = await ticketPage(browser)
+  const rowOf = (url: string) => page.locator('[data-ticket-links] li[data-link-kind]').filter({ has: page.locator(`[data-link-url][title="${url}"]`) })
+  await expect(rowOf(gh.url(PULL, 'pull')).locator('[data-link-publish]')).toBeVisible()
+  await expect(rowOf(placed)).toHaveCount(1)
+  await expect(rowOf(placed).locator('[data-link-publish]')).toHaveCount(0)
   // An offer that holds what no composer may insert: a comment, the plan's text.
   await page.route('**/publish/offer', async (route) => {
     const res = await route.fetch()
@@ -222,4 +229,32 @@ test('offers only the parts a composer may offer, the close for an issue alone, 
   await dialog.locator('[data-publish-back]').click()
   await expect.poll(async () => (await publicationOf(draft.id)).publication.state, { timeout: 15_000 }).toBe('discarded')
   expect(gh.count('comment')).toBe(2)
+})
+
+test('sending a failed publication again says the close it holds: as not planned', async ({ browser }) => {
+  test.setTimeout(test.info().timeout + 2 * PUBLISH_MS)
+  const api = srv.api
+  // Prepared as the CLI does, its close not planned; its post refused by GitHub (401), so it is failed and may be sent again.
+  const out = await api.ok<{ publication: { id: string }; postSha256: string }>('POST', `/api/dispatch/tickets/${ticket}/publications`, { opId: opOf(KEY, 'np'), target: 'linked', body: 'Not doing this.', closeIssue: 'not_planned' })
+  const id = out.publication.id
+  const held = gh.hold('comment')
+  const sent = api.call('POST', `/api/dispatch/publications/${id}/send`, { opId: opOf(KEY, 'np-s'), postSha256: out.postSha256 })
+  await held.reached
+  // The token refused from here on (the fake keeps it so): this is the spec's last test.
+  gh.refuse(TOKEN)
+  held.release()
+  await sent
+  expect((await publicationOf(id)).publication.state).toBe('failed')
+
+  const page = await ticketPage(browser)
+  const row = page.locator(`[data-publication="${id}"]`)
+  await expect(row).toHaveAttribute('data-publication-state', 'failed')
+  await expect(row.locator('[data-publication-close]')).toHaveText('Closes the issue as not planned once the comment is posted')
+  await row.locator('[data-publication-send-again]').click()
+  const dialog = page.locator('[data-dispatch-publish]')
+  await expect(dialog.locator('[data-publish-preview]')).toBeVisible({ timeout: 30_000 })
+  await expect(dialog.locator('[data-publish-closes]')).toHaveText('Then the issue is closed as not planned.')
+  await dialog.getByRole('button', { name: 'Cancel' }).click()
+  await expect(dialog).toHaveCount(0)
+  expect((await publicationOf(id)).publication.state).toBe('failed')
 })

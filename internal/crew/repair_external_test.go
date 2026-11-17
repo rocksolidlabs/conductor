@@ -110,7 +110,8 @@ func TestAnExternalJobsTextIsQuotedInTheTaskFile(t *testing.T) {
 	for _, want := range []string{
 		"- `f60718293a4b5c6d` (blocker), a CI job on GitHub:",
 		"It is a CI job on GitHub, not one of this crew's checks: GitHub runs it, and Conductor does not run it again on your result. Its receipt is `github:github.com/octo/app/check-runs/2000001`, on the commit " +
-			strings.Repeat("b", 40) + " (it ended failure); Conductor classed it code, and the person chose infrastructure. GitHub keeps its whole log, on its page <https://github.com/octo/app/actions/runs/7/job/2000001>.",
+			strings.Repeat("b", 40) + " (it ended failure); Conductor classed it code, and the person chose infrastructure. GitHub keeps its whole log, on the job's page there.",
+		"  Its page quoted from octo/app/check-runs/2000001, written on GitHub (" + quoted.Untrusted + ")" + quoted.LineHead + "https://github.com/octo/app/actions/runs/7/job/2000001",
 		"  Its name quoted from octo/app/check-runs/2000001, written on GitHub (" + quoted.Untrusted + ")" + quoted.LineHead,
 		"Their excerpt of its log quoted from octo/app/check-runs/2000001, written on GitHub: " + quoted.Untrusted,
 		"The end of its log quoted from octo/app/check-runs/2000001, written on GitHub: " + quoted.Untrusted,
@@ -177,5 +178,38 @@ func TestARequestedChecksSourceIsHeld(t *testing.T) {
 	ok := ChangeRequest{Review: "4f1c2d3e5a6b7c8d", By: "Nate", Changes: []RequestedChange{externalChange()}}
 	if err := ok.validate(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A job's page reaches task.md only when it is on the receipt's own host,
+// and then as a quoted line: a page on another host (an app's own), one
+// carrying a query, and none at all leave the page out, and no line of the
+// file holds it.
+func TestAJobsPageOnlyOnItsOwnHost(t *testing.T) {
+	for name, c := range map[string]struct{ page, want string }{
+		"on the receipt's host":    {"https://github.com/octo/app/actions/runs/7/job/2000001", "https://github.com/octo/app/actions/runs/7/job/2000001"},
+		"on an app's host":         {"https://ci.example.com/builds/" + outsideMark, ""},
+		"on the host with a query": {"https://github.com/octo/app/runs/7?" + outsideMark, ""},
+		"http on the host":         {"http://github.com/octo/app/runs/7", ""},
+		"a user on the host":       {"https://x@github.com/octo/app/runs/7", ""},
+		"none":                     {"", ""},
+	} {
+		ch := externalChange()
+		ch.Check.URL, ch.Check.Name, ch.Check.App, ch.Check.Tail, ch.Check.Quote = c.page, "test", "", "", ""
+		f := goldenTaskFiles()["repair"]
+		f.Attempt, f.MaxAttempts, f.Start = 3, maxAttemptsPerTask, strings.Repeat("b", 40)
+		cr := &ChangeRequest{Review: "4f1c2d3e5a6b7c8d", By: "Nate", Changes: []RequestedChange{ch}}
+		f.Repair = &TaskRepair{Review: cr.Review, Attempt: 2, Commit: strings.Repeat("b", 40), Request: cr}
+		md, _, _, err := fitTaskFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		line := "Its page quoted from octo/app/check-runs/2000001, written on GitHub (" + quoted.Untrusted + ")" + quoted.LineHead
+		switch {
+		case c.want != "" && !strings.Contains(string(md), line+c.want+"\n"):
+			t.Errorf("%s: the page is not a quoted line:\n%s", name, md)
+		case c.want == "" && (strings.Contains(string(md), "Its page") || c.page != "" && strings.Contains(string(md), c.page) || strings.Contains(string(md), outsideMark)):
+			t.Errorf("%s: the page was written:\n%s", name, md)
+		}
 	}
 }
