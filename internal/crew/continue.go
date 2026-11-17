@@ -249,9 +249,13 @@ func (e *Engine) ContinueRunWith(ctx context.Context, runID, label string, o Con
 		return nil, err
 	}
 	// A comparison's chain is bounded (compareChainRoom): refused here, no
-	// run made.
+	// run made; its settling is read from the chain.
 	if c.Compare != nil {
 		if err := e.compareChainRoom(ctx, from, h); err != nil {
+			undo()
+			return nil, err
+		}
+		if h.settled, err = e.readCompareHistory(ctx, from); err != nil {
 			undo()
 			return nil, err
 		}
@@ -406,6 +410,9 @@ type history struct {
 	// dec is what the continuation takes of the chain's decisions
 	// (decisions_continue.go).
 	dec decisionHistory
+	// settled is a comparison's chain's newest compare.settled, nil for
+	// none (compare_step.go): its compare step starts from it.
+	settled []SettledCandidate
 }
 
 // UncountedAttempt reports whether an attempt's row is one not counted: its
@@ -633,6 +640,7 @@ func (e *Engine) startContinued(ctx context.Context, r *run, from Loaded, h hist
 	var imported, again, uncertain, held int
 	err := e.transactContinued(ctx, r, func() tx {
 		r.base, r.paused, r.pausedWhy, r.resumedFrom = from.Run.Base, from.Run.Paused, from.Run.PausedWhy, from.Run.ID
+		r.cmp.settled = h.settled
 		r.markRun()
 		// The prerequisites run again in the continuation, at its base,
 		// once this is committed: a host fixed since is seen.

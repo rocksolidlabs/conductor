@@ -459,6 +459,9 @@ type Engine struct {
 	// comparison's rule judges them (compareContinued): a test drops an
 	// import or gives a task a repair there.
 	beforeCompareRule func(r *run)
+	// cmpMeasure is the comparison's measure: its seams and its cache
+	// (comparison.go).
+	cmpMeasure compareMeasure
 	// openPackageFile reads a launch package's attachment by its SHA-256
 	// (UsePackageFiles): Dispatch's store, which the API gives the engine.
 	openPackageFile func(ctx context.Context, launch, sha256 string) (io.ReadCloser, error)
@@ -2181,6 +2184,9 @@ func (e *Engine) stop(ctx context.Context, r *run) error {
 	// theirs: each records the run's stop, and is waited for with the trees.
 	e.endPreviews(r, whyRunStopped)
 	e.mu.Unlock()
+	if f := e.cmpMeasure.stopping; f != nil {
+		f(r.id)
+	}
 	r.cancel()
 	waitFor(ctx, &r.starts)
 	e.mu.Lock()
