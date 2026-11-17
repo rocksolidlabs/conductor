@@ -140,9 +140,9 @@ const keepLabel = (fact: number | undefined) => (fact ? `Keep fact ${fact} as a 
       <section class="flex flex-col gap-1.5" data-brief-reading>
         <MarkdownPreview :text="brief.summary" dir="" :relative-links="false" class="text-sm" />
         <div class="flex flex-wrap items-baseline gap-x-1 text-xs text-muted" data-brief-caveat>
-          <span>Brakeman's reading, not a fact.</span>
+          <span>Brakeman's reading, not a fact.</span>{{ ' ' }}
           <div v-if="brief.uncertainty?.trim()" class="flex min-w-0 flex-wrap items-baseline gap-x-1" data-brief-uncertainty>
-            <span>Uncertain:</span>
+            <span>Uncertain:</span>{{ ' ' }}
             <MarkdownPreview :text="brief.uncertainty" dir="" :relative-links="false" class="min-w-0 text-xs" />
           </div>
         </div>
