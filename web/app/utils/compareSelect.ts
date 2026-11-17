@@ -83,6 +83,25 @@ export function reviewSource(task: string, attempt: number): string {
   return `${task}'s review, attempt ${attempt}`
 }
 
+/** What a claim says of its cut: the server gives a summary's first 4 KiB as encoded. */
+export function claimCutWords(c: { summaryCut?: boolean }): string {
+  return c.summaryCut ? 'Cut: the rest of this summary is not shown.' : ''
+}
+
+/** How many of a review's findings are not shown: the server gives the first 20 of `findingsTotal`. */
+export function moreFindingsWords(r: { findings: string[]; findingsTotal?: number }): string {
+  const more = (r.findingsTotal ?? r.findings.length) - r.findings.length
+  return more > 0 ? `${more} more ${more === 1 ? 'finding' : 'findings'} not shown` : ''
+}
+
+/**
+ * Why Ask Brakeman to compare is closed, '' while it may be asked: once the selection is answered (answered, selected, or None of these)
+ * a draft would read the person's answer, which is never Brakeman's input, and the server refuses it (409 selection_made).
+ */
+export function askClosedWords(state: string | undefined): string {
+  return state === 'answered' || state === 'selected' || state === 'none' ? 'The selection is answered: Brakeman drafts a comparison before it, never after.' : ''
+}
+
 /** A review's verdict in words: a crew review's approved or needs_changes (a person's request_changes the same). */
 export function verdictWord(v: string): string {
   return v === 'approved' ? 'approved' : v === 'needs_changes' || v === 'request_changes' ? 'asked for changes' : v

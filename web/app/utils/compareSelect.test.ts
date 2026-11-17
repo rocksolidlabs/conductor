@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import { candidateMark, cellWords, verdictWords, type CheckCell, type ComparedCandidate, type ComparedCheck, type Comparison, type ComparisonSelection } from './compare'
-import { appliedSelection, brakemanWords, candidateAt, candidateSelection, claimSource, laneSelection, reviewSource, selectionAnswerable, selectionFor, verdictWord, selectionPanelWords, SELECTION_WORDS } from './compareSelect'
+import { appliedSelection, askClosedWords, brakemanWords, claimCutWords, moreFindingsWords, candidateAt, candidateSelection, claimSource, laneSelection, reviewSource, selectionAnswerable, selectionFor, verdictWord, selectionPanelWords, SELECTION_WORDS } from './compareSelect'
 import { answerAsk, recommended, SELECTION_FINAL, type Decision } from './decisions'
 
 // A comparison's selection and its labels (Program item CP1, docs/plans/compare-crew.md, PR-7): no option preselected whatever
@@ -168,7 +168,24 @@ describe('the measured part and the supporting panel', () => {
 
   it('are two components: the supporting panel never receives the checks, and draws what agents wrote as text', () => {
     const src = readFileSync(new URL('../components/CompareSupporting.vue', import.meta.url), 'utf8')
-    expect(src).toMatch(/defineProps<\{ supporting: ComparisonSupporting \| null \| undefined; run: string \}>/)
+    // Its props: the supporting part, the run to ask about and the comparison's state word (whether Ask is closed), never the checks.
+    expect(src).toMatch(/defineProps<\{ supporting: ComparisonSupporting \| null \| undefined; run: string; state\?: string \}>/)
     expect(src).not.toMatch(/checks|v-html|MarkdownPreview/)
+  })
+})
+
+describe("the supporting panel's cuts and its ask", () => {
+  it('says a cut summary and the findings not shown', () => {
+    expect(claimCutWords({ summaryCut: true })).toMatch(/^Cut:/)
+    expect(claimCutWords({})).toBe('')
+    expect(moreFindingsWords({ findings: Array(20).fill('f'), findingsTotal: 30 })).toBe('10 more findings not shown')
+    expect(moreFindingsWords({ findings: Array(20).fill('f'), findingsTotal: 21 })).toBe('1 more finding not shown')
+    expect(moreFindingsWords({ findings: ['f'], findingsTotal: 1 })).toBe('')
+    expect(moreFindingsWords({ findings: ['f'] })).toBe('')
+  })
+
+  it('closes Ask Brakeman to compare once the selection is answered', () => {
+    for (const s of ['answered', 'selected', 'none']) expect(askClosedWords(s)).not.toBe('')
+    for (const s of ['running', 'selecting', 'ended', undefined]) expect(askClosedWords(s)).toBe('')
   })
 })

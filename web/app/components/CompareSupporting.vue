@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { ComparisonSupporting } from '~/utils/compare'
-import { brakemanWords, claimSource, reviewSource, verdictWord } from '~/utils/compareSelect'
+import { askClosedWords, brakemanWords, claimCutWords, claimSource, moreFindingsWords, reviewSource, verdictWord } from '~/utils/compareSelect'
 
 /**
  * Supporting information, not evidence (Program item CP1, docs/plans/compare-crew.md, PR-7): what the candidates' agents said of their
@@ -10,7 +10,9 @@ import { brakemanWords, claimSource, reviewSource, verdictWord } from '~/utils/c
  * queues one request by hand (`POST /api/brakeman/requests`, kind `compare`, the comparison's launched run): the template asks once,
  * when every lane is done, and one lost in a crash is asked again here.
  */
-const props = defineProps<{ supporting: ComparisonSupporting | null | undefined; run: string }>()
+const props = defineProps<{ supporting: ComparisonSupporting | null | undefined; run: string; state?: string }>()
+/** Why a draft is asked no more: the selection is answered (askClosedWords). */
+const askClosed = computed(() => askClosedWords(props.state))
 
 const bk = useBrakeman()
 const b = computed(() => props.supporting?.brakeman ?? null)
@@ -58,6 +60,7 @@ async function ask() {
         <li v-for="c in claims" :key="`${c.task}/${c.attempt}`" class="flex min-w-0 flex-col gap-0.5 text-sm" :data-compare-claim="c.task">
           <span class="text-xs text-muted" data-compare-source>{{ claimSource(c.task, c.attempt) }}</span>
           <p class="whitespace-pre-wrap break-words text-default">{{ c.summary }}</p>
+          <span v-if="claimCutWords(c)" class="text-xs text-muted" data-compare-claim-cut>{{ claimCutWords(c) }}</span>
         </li>
       </ul>
     </div>
@@ -70,6 +73,7 @@ async function ask() {
           <ul v-if="r.findings.length" class="flex list-disc flex-col gap-0.5 ps-5 text-xs text-default">
             <li v-for="(f, i) in r.findings" :key="i" class="break-words">{{ f }}</li>
           </ul>
+          <span v-if="moreFindingsWords(r)" class="text-xs text-muted" data-compare-findings-more>{{ moreFindingsWords(r) }}</span>
         </li>
       </ul>
     </div>
@@ -78,8 +82,9 @@ async function ask() {
       <div class="flex min-w-0 flex-wrap items-center gap-2">
         <h4 class="text-xs font-medium text-muted">Brakeman's draft</h4>
         <span class="min-w-0 break-words text-xs text-default" data-compare-brakeman-words>{{ brakeman.words }}</span>
-        <UButton label="Ask Brakeman to compare" icon="i-lucide-sparkles" size="xs" color="neutral" variant="outline" class="ms-auto max-lg:min-h-11" :loading="asking" :disabled="asking || brakeman.open || !run" data-compare-ask-brakeman @click="ask" />
+        <UButton label="Ask Brakeman to compare" icon="i-lucide-sparkles" size="xs" color="neutral" variant="outline" class="ms-auto max-lg:min-h-11" :loading="asking" :disabled="asking || brakeman.open || !run || !!askClosed" data-compare-ask-brakeman @click="ask" />
       </div>
+      <p v-if="askClosed" class="break-words text-xs text-muted" data-compare-ask-closed>{{ askClosed }}</p>
       <p v-if="askWords" class="break-words text-xs text-muted" data-compare-ask-words>{{ askWords }}</p>
       <!-- Brakeman's table scrolls inside its card, never the page. -->
       <div v-if="brakeman.briefed && req" class="min-w-0 overflow-x-auto" data-compare-brief>

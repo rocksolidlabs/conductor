@@ -140,8 +140,10 @@ export interface ComparedCheck {
 
 /** Supporting information, not evidence (PR-5): read here only for the Brakeman request the page follows. */
 export interface ComparisonSupporting {
-  claims?: Array<{ task: string; attempt: number; summary: string }>
-  reviews?: Array<{ task: string; attempt: number; verdict: string; findings: string[] }>
+  /** summaryCut: the summary is longer than the server gives (4 KiB as encoded). */
+  claims?: Array<{ task: string; attempt: number; summary: string; summaryCut?: boolean; favours?: string }>
+  /** findingsTotal: how many findings the review had, of which `findings` gives the first 20. */
+  reviews?: Array<{ task: string; attempt: number; verdict: string; findings: string[]; findingsTotal?: number; favours?: string }>
   brakeman?: { request?: string; state?: string; why?: string; brief?: string } | null
 }
 
