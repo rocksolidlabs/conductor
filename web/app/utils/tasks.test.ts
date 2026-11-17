@@ -154,7 +154,7 @@ describe('taskActions', () => {
     expect(taskActions(task({ state: 'failed', attempt: { n: 2, state: 'failed', result: 'abc' }, commands: ['retry'] }), live).accept).toBe(false)
   })
   it('offers retry and accept on a failed task the engine names them on, cancel on a live one, open and copy with an attempt', () => {
-    expect(taskActions(task({ state: 'failed', attempt: { n: 3, state: 'failed', result: 'abc', sessionId: 's', branch: 'crew/r/build.3' }, commands: ['retry', 'accept'] }), live)).toEqual({ retry: true, accept: true, cancel: false, open: true, copyBranch: true, showResult: false, preview: '', askWhy: true })
+    expect(taskActions(task({ state: 'failed', attempt: { n: 3, state: 'failed', result: 'abc', sessionId: 's', branch: 'crew/r/build.3' }, commands: ['retry', 'accept'] }), live)).toEqual({ retry: true, accept: true, cancel: false, open: true, copyBranch: true, showResult: false, preview: '', inConductor: false, askWhy: true })
     expect(taskActions(task({ state: 'failed', attempt: { n: 3, state: 'failed' } }), live).accept).toBe(false)
     expect(taskActions(task({ state: 'cancelled', commands: ['retry'] }), live)).toMatchObject({ retry: true, accept: false, cancel: false })
     expect(taskActions(task({ state: 'running', attempt: { n: 1, state: 'running', sessionId: 's' }, commands: ['cancel'] }), live)).toMatchObject({ retry: false, cancel: true, open: true })
@@ -445,5 +445,11 @@ describe('taskRow: a task as the table draws it, each part said once', () => {
     expect(record.menu).toEqual(['copyBranch', 'askWhy'])
     // Cancel is never in the row.
     for (const r of [held, record, taskRow(out, live)]) expect(r.shown).not.toContain('cancel')
+  })
+
+  it("offers Open in Conductor in the menu while the attempt's preview is offered, and never without it", () => {
+    const previewing = taskRow(task({ state: 'running', attempts: 1, attempt: attempt(1, { preview: 'http://127.0.0.1:41234/' }), commands: ['cancel'] }), live)
+    expect([previewing.shown, previewing.menu]).toEqual([['open', 'preview'], ['inConductor', 'cancel', 'copyBranch']])
+    expect(taskRow(task({ state: 'running', attempts: 1, attempt: attempt(1) }), live).menu).not.toContain('inConductor')
   })
 })
