@@ -663,17 +663,20 @@ what the server filled, as RV1's `ReviewSubmitArgs` does):
   why)` (what a service's exit after readiness does). The open attempt
   is one owner and behaves as today, every existing test of `steps.go`
   passing unchanged; a preview (`*preview`, `preview.go`) is the other:
-  closed once its end is committed, listed in the engine's previews
+  closed from its end's beginning (in memory, before the end's first
+  write is committed), listed in the engine's previews
   (never `a.trees`) and counted on its run (`r.previews`, beside
   `r.trees.n`, from its reservation until its end's last, its teardown
   done, or until its owed write is no longer tried), which the engine's `idle` reads (`run.go`), so
   `evict` never forgets a run whose preview is opening, serving or
   ending and `forget` never cancels the `r.teardown` its services run
   under (at most 2 previews a server, so at most two runs are held past
-  their class's cap); its rows written to `previews` by `seq`
-  (`Tx.OpenPreview`, `Tx.PreviewReady`, `Tx.EndPreview`, never
-  `PutTree`, so the result checkout's `trees` row is never touched), its
-  ports leased to its tree and released once its end is committed, and a
+  their class's cap); its rows written to `previews` by `seq` by four
+  writers (`Tx.OpenPreview`, `Tx.PreviewReady`, `Tx.PreviewEnding`,
+  `Tx.EndPreview`, never `PutTree`, so the result checkout's `trees` row
+  is never touched), its ports leased to its tree and released once its
+  end is committed, or, when that last write is owed, once its retries
+  stop (the engine's end, or the ledger closed), and a
   lost service ending it (`why: service_exited`, its URL cleared in the
   ending's first transaction). `runStep`, `startService` and `runProbe`
   take the tree and the run as now; the receipts they write stay the
@@ -774,9 +777,18 @@ what the server filled, as RV1's `ReviewSubmitArgs` does):
   `continue.go` parses it; the attempt with its result's commit; its
   receipt numbers seeded from its `checks` rows (each id's largest `k`,
   so `nextK` goes on after them and no receipt overwrites another); the
-  Runtime chosen by `runtimeFor(true, run)`, as a run's is, and recorded
-  in the `previews` row's `where_ran`; and a teardown context of its
-  own, cancelled only by its previews' ends and the server's shutdown.
+  Runtime chosen by `runtimeFor` for the run's id, as a run's is (the
+  offered one when it takes the run and every member takes its tool's
+  own login), and recorded in the `previews` row's `where_ran` and in
+  the preview's receipts; and a teardown context of its own, cancelled
+  only by its previews' ends and the server's shutdown. The receipt
+  numbers and the attempt's last `seq` are read once the candidate's
+  preview is reserved, so no earlier preview of it is still writing; the
+  run's row is judged again in the preview's first transaction, so a run
+  continued since it was read is refused (`409 run_continued`). A run
+  the ledger still has running, or one stopped, is refused as a held one
+  is. The context writes its previews' rows, events and receipts alone,
+  never a row of the run, its tasks or attempts.
   It schedules nothing: it is never put in `e.runs`, so `Get`, `TaskOf`,
   the scheduler, `evict`, `forget` and `ContinueRun` never see it, and
   no attempt, check or session starts in it; it is kept with its
@@ -794,7 +806,7 @@ what the server filled, as RV1's `ReviewSubmitArgs` does):
   task_id, n, seq)`, foreign key to the attempt, cascade on the run's
   delete), created by the migration (a new table: no row of an older one
   is rewritten, the conservative rule); its writers (`Tx.OpenPreview`,
-  `Tx.PreviewReady`, `Tx.EndPreview`), the reads, `Recover` reporting a
+  `Tx.PreviewReady`, `Tx.PreviewEnding`, `Tx.EndPreview`), the reads, `Recover` reporting a
   preview `ready` or `resolved` at start as interrupted, the snapshot
   unchanged (the table is in the database). EN1's `trees` table is left
   for the engine's own trees; its key (`run_id, task_id, n, kind`) holds
