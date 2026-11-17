@@ -15,13 +15,26 @@ import (
 	"github.com/rocksolidlabs/conductor/internal/tracker"
 )
 
+// imageAdmitted is tracker.ImageHost for an item on host, and in loopback
+// mode alone (Options.Loopback, CONDUCTOR_TRACKER_LOOPBACK=1: the tests'
+// and the e2e harness's) an http address on the item's own loopback host,
+// byte for byte, with no user: the fake GitHub a test starts serves its
+// items' images from where it serves its API. No other host is ever
+// admitted by it, and without the switch it is ImageHost exactly.
+func (a *Adapter) imageAdmitted(host string, u *url.URL) bool {
+	if tracker.ImageHost(tracker.GitHub, host, u) {
+		return true
+	}
+	return a.o.Loopback && u != nil && tracker.IsLoopback(host) && u.Scheme == "http" && u.User == nil && u.Opaque == "" && u.Host == host
+}
+
 // imagesOf finds an item's images: the <img src> of its body_html, at most
-// tracker.MaxImages, each kept only when tracker.ImageHost admits it, one
+// tracker.MaxImages, each kept only when admit admits it (imageAdmitted), one
 // per ID, and counts the ones left out (on a host the rule does not admit,
 // past the bound). A private repository's images are reachable only
 // through the short-lived signed URLs GitHub puts in the rendered body,
 // which is why the rendered body is read and not the Markdown.
-func imagesOf(host, bodyHTML string) ([]tracker.ImageRef, tracker.ImagesLeftOut) {
+func imagesOf(admit func(*url.URL) bool, bodyHTML string) ([]tracker.ImageRef, tracker.ImagesLeftOut) {
 	var out []tracker.ImageRef
 	var left tracker.ImagesLeftOut
 	seen := map[string]bool{}
@@ -52,7 +65,7 @@ func imagesOf(host, bodyHTML string) ([]tracker.ImageRef, tracker.ImagesLeftOut)
 			}
 		}
 		u, err := url.Parse(src)
-		if err != nil || !u.IsAbs() || !tracker.ImageHost(tracker.GitHub, host, u) {
+		if err != nil || !u.IsAbs() || !admit(u) {
 			left.Unlisted++
 			continue
 		}
@@ -133,7 +146,7 @@ func (a *Adapter) Image(ctx context.Context, c tracker.Credential, img tracker.I
 		return nil, "", &tracker.RequestError{System: tracker.GitHub, Method: http.MethodGet, Path: "-", Err: tracker.ErrUnsupported, Words: "an image's bound is 1 byte to 16 MiB"}
 	}
 	u, err := url.Parse(img.FetchURL())
-	admit := func(u *url.URL) bool { return tracker.ImageHost(tracker.GitHub, host, u) }
+	admit := func(u *url.URL) bool { return a.imageAdmitted(host, u) }
 	if err != nil || img.FetchURL() == "" || !admit(u) {
 		return nil, "", &tracker.RequestError{System: tracker.GitHub, Method: http.MethodGet, Path: "-", Err: tracker.ErrUnsupported, Words: "an image Conductor does not fetch"}
 	}
