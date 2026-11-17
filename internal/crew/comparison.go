@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path"
 	"slices"
 	"strconv"
 	"strings"
@@ -248,14 +249,17 @@ type CheckCell struct {
 // A cell's state when the candidate has no receipt of the check, the
 // state of a receipt whose run a stop ended, and why a cell was not run.
 const (
-	CellNotRun        = "not_run"
-	CellCancelled     = "cancelled"
-	NotRunEarlier     = "earlier_failed"
-	NotRunNoSuchStep  = "no_such_step"
-	NotRunPending     = "pending"
-	notRunEarlierText = "not run: an earlier check failed"
-	notRunNoStepText  = "not run: its manifest has no such step"
-	notRunPendingText = "not run yet: its checks are under way"
+	CellNotRun          = "not_run"
+	CellCancelled       = "cancelled"
+	NotRunEarlier       = "earlier_failed"
+	NotRunNoSuchStep    = "no_such_step"
+	NotRunPending       = "pending"
+	NotRunEnded         = "ended"
+	notRunEndedText     = "not run: its attempt ended before this check"
+	notRunNoReceiptText = "not run: it has no receipt of this check"
+	notRunEarlierText   = "not run: an earlier check failed"
+	notRunNoStepText    = "not run: its manifest has no such step"
+	notRunPendingText   = "not run yet: its checks are under way"
 )
 
 // SettledCandidate is one lane's shown candidate when every lane ended.
@@ -896,11 +900,10 @@ func measureCandidates(ctx context.Context, git gitFunc, c Crew, base string, ca
 	dir := c.Cwd
 	file := c.Manifest != nil && c.Manifest.File
 	prefix := ""
+	var prefixErr error
 	if file {
 		out, err := git(ctx, dir, 4<<10, "rev-parse", "--show-prefix")
-		if err == nil {
-			prefix = strings.TrimSpace(out)
-		}
+		prefix, prefixErr = strings.TrimSpace(out), err
 	}
 	for _, cc := range cands {
 		if cc.Commit == "" {
@@ -930,6 +933,9 @@ func measureCandidates(ctx context.Context, git gitFunc, c Crew, base string, ca
 				fail(err)
 			}
 		}
+		if file && prefixErr != nil {
+			fail(prefixErr)
+		}
 		if file && cm.unavailable == "" {
 			path := prefix + manifestFile
 			at, aerr := blobAt(ctx, git, dir, cc.Commit, path)
@@ -939,7 +945,11 @@ func measureCandidates(ctx context.Context, git gitFunc, c Crew, base string, ca
 			} else if at != was {
 				cm.manifestChanged = true
 				if at != "" {
-					if rec, ok := manifestAt(ctx, git, dir, at); ok {
+					rec, ok, err := manifestAt(ctx, git, dir, at)
+					switch {
+					case err != nil:
+						fail(err)
+					case ok:
 						cm.manifest = &rec
 					}
 				} else {
@@ -1061,17 +1071,18 @@ func blobAt(ctx context.Context, git gitFunc, dir, commit, path string) (string,
 }
 
 // manifestAt reads a file-form manifest's blob, as much as a comparison
-// needs of it (its verify steps' ids): ok false when it is no manifest.
-func manifestAt(ctx context.Context, git gitFunc, dir, blob string) (Manifest, bool) {
+// needs of it (its verify steps' ids): ok false when it is no manifest,
+// the error when git could not read it.
+func manifestAt(ctx context.Context, git gitFunc, dir, blob string) (Manifest, bool, error) {
 	out, err := git(ctx, dir, maxManifestFile, "cat-file", "blob", blob)
 	if err != nil {
-		return Manifest{}, false
+		return Manifest{}, false, err
 	}
 	var rec Manifest
 	if json.Unmarshal([]byte(out), &rec) != nil {
-		return Manifest{}, false
+		return Manifest{}, false, nil
 	}
-	return rec, true
+	return rec, true, nil
 }
 
 // sharedOf fills each candidate's Shared and Equivalent: for each other
@@ -1208,7 +1219,7 @@ func expectedRows(ctx context.Context, c Crew, base string, git gitFunc) []*chec
 		out, err := git(ctx, c.Cwd, 4<<10, "rev-parse", "--show-prefix")
 		if err == nil {
 			if blob, err := blobAt(ctx, git, c.Cwd, base, strings.TrimSpace(out)+manifestFile); err == nil && blob != "" {
-				if rec, ok := manifestAt(ctx, git, c.Cwd, blob); ok {
+				if rec, ok, _ := manifestAt(ctx, git, c.Cwd, blob); ok {
 					verify = rec.Verify
 				}
 			}
@@ -1276,6 +1287,7 @@ func cmpPhase(p string) string {
 func (rw *checkRow) compare(cands []ComparedCandidate, shown map[string]shownAttempt, cr chainRead, m *measured) ComparedCheck {
 	cc := ComparedCheck{Phase: rw.phase, ID: rw.id, ArgvDigest: rw.digest, TimeoutSeconds: rw.timeout, Cells: []CheckCell{}, Why: []string{}}
 	cc.Argv, cc.ArgvCut = argvPreview(rw.argv)
+	named, namedRead := m.named[rw.digest]
 	var why []string
 	say := func(format string, args ...any) {
 		why = append(why, fmt.Sprintf(format, args...))
@@ -1293,9 +1305,10 @@ func (rw *checkRow) compare(cands []ComparedCandidate, shown map[string]shownAtt
 		cell := CheckCell{Task: cand.Task, Attempt: cand.Attempt, State: CellNotRun}
 		row, ok := latestRow(cr.checks[fmt.Sprintf("%s/%s/%d", cand.Run, cand.Task, cand.Attempt)], rw.phase, rw.id)
 		if !ok {
-			cell.NotRun = notRunOf(rw, sh, m.cands[cand.Task])
+			receipts := cr.checks[fmt.Sprintf("%s/%s/%d", cand.Run, cand.Task, cand.Attempt)]
+			cell.NotRun = notRunOf(rw, sh, m.cands[cand.Task], receipts)
 			notComparable = true
-			say("%s: %s", cand.Task, notRunText(cell.NotRun))
+			say("%s: %s", cand.Task, notRunWordsOf(cell.NotRun, sh.attempt))
 			cc.Cells = append(cc.Cells, cell)
 			continue
 		}
@@ -1367,7 +1380,7 @@ func (rw *checkRow) compare(cands []ComparedCandidate, shown map[string]shownAtt
 		if cm.unavailable != "" || cm.size == nil || cm.size.NotMeasured != "" {
 			continue
 		}
-		for _, path := range m.named[rw.digest] {
+		for _, path := range named {
 			if cm.paths[path] {
 				notComparable = true
 				say("%s changed %s, which the check runs", cand.Task, cutEncoded(path, maxComparePath))
@@ -1375,6 +1388,12 @@ func (rw *checkRow) compare(cands []ComparedCandidate, shown map[string]shownAtt
 		}
 	}
 	unknown := false
+	if !notComparable && !namedRead {
+		// The files its command names were not looked up (git failed or
+		// was late): what a candidate changed of them is not known.
+		unknown = true
+		say("comparable only if no candidate changed what it runs: the files its command names could not be read")
+	}
 	if !notComparable {
 		var changed []string
 		for _, cand := range cands {
@@ -1464,18 +1483,51 @@ func latestRow(rows []ledger.CheckRow, phase, id string) (ledger.CheckRow, bool)
 }
 
 // notRunOf says why a candidate has no receipt of the row: its checks
-// still under way, a verify step its own manifest does not have, or a
-// check before it that failed (the tree's checks stop at the first).
-func notRunOf(rw *checkRow, sh shownAttempt, cm candidateMeasure) string {
+// still under way; a verify step the manifest its tree ran (its own, when
+// it changed it, else the base's) does not have; a check before it that
+// failed (the tree's checks stop at the first); else its attempt ended
+// before this check (stopped, interrupted, cancelled, or failed before its
+// checks ran); "" when none of these is known. receipts are the
+// attempt's.
+func notRunOf(rw *checkRow, sh shownAttempt, cm candidateMeasure, receipts []ledger.CheckRow) string {
 	switch sh.attempt.State {
 	case ledger.AttemptSubmitting, ledger.AttemptVerifying, ledger.AttemptRunning:
 		return NotRunPending
 	}
-	if rw.phase == ledger.PhaseVerify && cm.manifestChanged && cm.manifest != nil &&
-		!slices.ContainsFunc(cm.manifest.Verify, func(ch Check) bool { return ch.ID == rw.id }) {
-		return NotRunNoSuchStep
+	if rw.phase == ledger.PhaseVerify {
+		has := rw.expected
+		if cm.manifestChanged && cm.manifest != nil {
+			has = slices.ContainsFunc(cm.manifest.Verify, func(ch Check) bool { return ch.ID == rw.id })
+		}
+		if !has {
+			return NotRunNoSuchStep
+		}
 	}
-	return NotRunEarlier
+	for _, row := range receipts {
+		phase := cmpPhase(row.Phase)
+		if (phase == ledger.PhaseCheck || phase == ledger.PhaseVerify) && row.State == ledger.CheckFinished &&
+			(row.TimedOut || row.Exit != 0 && !row.Killed) {
+			return NotRunEarlier
+		}
+	}
+	switch sh.attempt.State {
+	case ledger.AttemptSucceeded, "":
+		// It passed every check it ran: no reason is known.
+		return ""
+	}
+	return NotRunEnded
+}
+
+// notRunWordsOf is a not-run cell's words, an ended attempt's with its
+// state and the stage it ended at.
+func notRunWordsOf(why string, a ledger.AttemptRow) string {
+	if why != NotRunEnded {
+		return notRunText(why)
+	}
+	if a.Stage != "" {
+		return fmt.Sprintf("%s (%s, at %s)", notRunEndedText, a.State, cutEncoded(a.Stage, 80))
+	}
+	return fmt.Sprintf("%s (%s)", notRunEndedText, a.State)
 }
 
 func notRunText(why string) string {
@@ -1484,6 +1536,10 @@ func notRunText(why string) string {
 		return notRunNoStepText
 	case NotRunPending:
 		return notRunPendingText
+	case NotRunEnded:
+		return notRunEndedText
+	case "":
+		return notRunNoReceiptText
 	}
 	return notRunEarlierText
 }
@@ -1523,10 +1579,13 @@ func argvPreview(argv []string) ([]string, bool) {
 }
 
 // namedFiles are the files at the base the argv names: each entry that is
-// a path relative to the crew's directory (at most maxArgvPaths of them),
-// looked up in one git ls-tree, by their paths from the repository's top.
+// a path relative to the crew's directory and inside it (at most
+// maxArgvPaths of them), looked up in one git ls-tree, by their paths from
+// the repository's top. Only files count: an entry naming a folder (".",
+// "tests/", "src") names none of the files in it, and one above the
+// crew's directory is passed over.
 func namedFiles(ctx context.Context, git gitFunc, dir, base string, argv []string) ([]string, error) {
-	args := []string{"ls-tree", "-z", "--full-name", "--name-only", base, "--"}
+	args := []string{"ls-tree", "-z", "--full-name", base, "--"}
 	n := 0
 	for _, a := range argv {
 		if n == maxArgvPaths {
@@ -1535,7 +1594,11 @@ func namedFiles(ctx context.Context, git gitFunc, dir, base string, argv []strin
 		if a == "" || strings.HasPrefix(a, "-") || strings.HasPrefix(a, "/") || strings.ContainsAny(a, "\x00\n") {
 			continue
 		}
-		args = append(args, ":(literal)"+a)
+		clean := path.Clean(a)
+		if clean == "." || clean == ".." || strings.HasPrefix(clean, "../") || strings.HasSuffix(a, "/") {
+			continue
+		}
+		args = append(args, ":(literal)"+clean)
 		n++
 	}
 	if n == 0 {
@@ -1546,8 +1609,11 @@ func namedFiles(ctx context.Context, git gitFunc, dir, base string, argv []strin
 		return nil, err
 	}
 	named := []string{}
-	for _, p := range strings.Split(out, "\x00") {
-		if p != "" {
+	for _, entry := range strings.Split(out, "\x00") {
+		// <mode> <type> <object>\t<path>: a blob is a file (a link among
+		// them), a tree a folder.
+		meta, p, ok := strings.Cut(entry, "\t")
+		if f := strings.Fields(meta); ok && len(f) == 3 && f[1] == "blob" {
 			named = append(named, p)
 		}
 	}

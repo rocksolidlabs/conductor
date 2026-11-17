@@ -107,6 +107,7 @@ describe('a cell', () => {
     expect(cellWords(cell({ state: 'not_run', notRun: 'earlier_failed', receipt: '' }))).toMatchObject({ word: 'not run: an earlier check failed', detail: '', state: 'not_run', mark: { key: 'waiting' } })
     expect(notRunWords('no_such_step')).toBe('not run: its manifest has no such step')
     expect(notRunWords('pending')).toBe('not run yet: its checks are under way')
+    expect(notRunWords('ended')).toBe('not run: its attempt ended before this check')
     expect(notRunWords(undefined)).toBe('not run')
     expect(cellWords(cell({ state: 'cancelled', exit: null }))).toMatchObject({ word: 'cancelled', mark: { key: 'cancelled' } })
   })
