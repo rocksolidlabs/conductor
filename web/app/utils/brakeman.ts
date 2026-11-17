@@ -946,6 +946,17 @@ export function citedRuns(items: readonly BriefItem[]): string[] {
   return [...out]
 }
 
+/** The tickets a brief names, each once, first named first: its request's subjects, then every ref its items cite or act on. */
+export function briefTickets(b: Pick<BrakemanBrief, 'items'>, r: Pick<BrakemanRequest, 'subjects'>): string[] {
+  const acted = (b.items ?? []).flatMap((it) => (it.kind === 'proposal/1' ? [it.target] : it.kind === 'decision/1' ? [it.about] : it.kind === 'draft_plan/1' ? [it.ticket] : []))
+  const out = new Set<string>()
+  for (const ref of [...(r.subjects ?? []), ...acted, ...briefEvidence(b.items ?? [])]) {
+    const k = refTicket(ref)
+    if (k) out.add(k)
+  }
+  return [...out]
+}
+
 /** The most names a brief's head gives for what it is about, before "+N". */
 export const HEAD_ABOUT_MAX = 3
 

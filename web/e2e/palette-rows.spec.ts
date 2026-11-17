@@ -597,44 +597,53 @@ test("the ticket page's Plan rows: Propose, Approve revision n, Launch from revi
   await expect(page.locator('[data-launch-dialog]')).toBeHidden()
 })
 
-// Brakeman's rows (docs/plans/brakeman.md, PR-7): Brief me since… and Open Brakeman anywhere, and on a ticket's page Draft tickets
-// and Propose a crew about that ticket, each opening the Brakeman page's composer with what to ask; the ticket page's own Ask
-// Brakeman menu does the same. The run page's rows are brakeman-cards.spec.ts's, with a run of its own.
-test("Brakeman's rows: brief me since…, Open Brakeman, and a ticket page's draft tickets and propose a crew", async ({ page, api }) => {
+// Brakeman's rows (docs/plans/brakeman.md, PR-7; the Brakeman design review): a briefing and Open Brakeman anywhere, and on a ticket's
+// page Draft tickets and Propose a crew about that ticket. The rows ask at once from where the person is (brakeman-ask.spec.ts sends
+// them on a server of its own and reads the request back by its id); here, on the shared server, Brakeman's state is answered off
+// from before the page loads, so that the rows show and say why they cannot ask, send nothing, and Open Brakeman still goes to its
+// page. The run page's rows are brakeman-where.spec.ts's, with a run of its own.
+test("Brakeman's rows: a briefing, Open Brakeman, and a ticket page's draft tickets and propose a crew, each saying why it cannot ask while Brakeman is off", async ({ page, api }) => {
   const key = await freeProjectKey(api, 'BR')
   await makeProject(api, key)
   await makeTicket(api, key, '1', { title: 'Rows for Brakeman' })
+  // Brakeman's state as the server answers it, with Brakeman off: set before the first load, so the page never reads it on.
+  await page.route('**/api/brakeman', async (route) => {
+    const res = await route.fetch()
+    const body = (await res.json()) as { config: Record<string, unknown> }
+    await route.fulfill({ response: res, json: { ...body, config: { ...body.config, enabled: false }, readOnly: false } })
+  })
+  const sent: string[] = []
+  page.on('request', (r) => {
+    if (r.method() === 'POST' && new URL(r.url()).pathname === '/api/brakeman/requests') sent.push(r.postData() ?? '')
+  })
   // The rows show once the layout has read that the server has Brakeman, after each page load: its sidebar row says so.
   const arrive = async (path: string) => {
     budget(1)
     await page.goto(path)
     await expect(page.locator('[data-sidebar-brakeman]')).toBeVisible({ timeout: 30_000 })
   }
+  const offered = async (rowKey: string, query: string) => {
+    budget(3)
+    const palette = await openPalette(page)
+    await palette.locator('input[data-palette-input]').fill(query)
+    const row = palette.locator(`[data-palette-row="${rowKey}"]`)
+    await expect(row).toBeVisible()
+    await expect(row).toHaveAttribute('aria-disabled', 'true')
+    await expect(row.locator('[data-palette-note]')).toHaveText('Brakeman is off: turn it on in Settings')
+    // Pressed all the same, it asks nothing and the palette stays.
+    await row.click({ force: true })
+    await expect(row).toBeVisible()
+    await page.keyboard.press('Escape')
+  }
   await arrive('/agents')
-  await runRow(page, 'brakeman:briefing', 'brief me since')
-  await expect(page).toHaveURL(/\/brakeman\?kind=briefing$/)
-  await expect(page.locator('[data-ask-kind]')).toContainText('Brief me since…')
-  await arrive('/agents')
+  await offered('brakeman:briefing', 'brief me since')
+  await arrive(`/dispatch/${key}/1`)
+  await expect(page.locator('[data-ticket-title]')).toHaveText('Rows for Brakeman', { timeout: 30_000 })
+  await offered('brakeman:draft-tickets', 'draft tickets from this ticket')
+  await offered('brakeman:propose-crew', 'propose a crew for this ticket')
+  expect(sent, 'a row that cannot ask sends nothing').toEqual([])
   // ("open" first would be the open verb: the row is found by its other word.)
   await runRow(page, 'brakeman:open', 'brakeman')
   await expect(page).toHaveURL(/\/brakeman$/)
   await expect(page.locator('[data-brakeman-page]')).toBeVisible()
-
-  await arrive(`/dispatch/${key}/1`)
-  await expect(page.locator('[data-ticket-title]')).toHaveText('Rows for Brakeman', { timeout: 30_000 })
-  const subject = encodeURIComponent(`ticket:${key}-1`)
-  await runRow(page, 'brakeman:draft-tickets', 'draft tickets from this ticket')
-  await expect(page).toHaveURL(new RegExp(`/brakeman\\?kind=draft_tickets&subject=${subject}$`))
-  await expect(page.locator('[data-ask-kind]')).toContainText('Draft tickets')
-  await expect(page.locator('[data-ask-subjects]')).toContainText(`ticket:${key}-1`)
-  await arrive(`/dispatch/${key}/1`)
-  await expect(page.locator('[data-ticket-title]')).toHaveText('Rows for Brakeman', { timeout: 30_000 })
-  await runRow(page, 'brakeman:propose-crew', 'propose a crew for this ticket')
-  await expect(page).toHaveURL(new RegExp(`/brakeman\\?kind=propose_crew&subject=${subject}$`))
-  await expect(page.locator('[data-ask-kind]')).toContainText('Propose a crew')
-  // The ticket page's menu, the same two.
-  await arrive(`/dispatch/${key}/1`)
-  await page.locator('[data-ticket-ask-brakeman]').click()
-  await page.getByRole('menuitem', { name: 'Propose a crew' }).click()
-  await expect(page).toHaveURL(new RegExp(`/brakeman\\?kind=propose_crew&subject=${subject}$`))
 })

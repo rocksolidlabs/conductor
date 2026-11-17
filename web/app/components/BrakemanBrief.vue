@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { BrakemanBrief, BrakemanRequest, BrakemanRow, BriefItem, BriefRegionName, RefResolution } from '~/utils/brakeman'
-import { actsApart, briefEvidence, briefRegions, foldWords, provenance, readsWords, refLabel, regionHeading } from '~/utils/brakeman'
+import { actsApart, briefEvidence, briefRegions, briefTickets, foldWords, provenance, readsWords, refLabel, regionHeading } from '~/utils/brakeman'
 import { briefMarkdown } from '~/utils/brakemanCards'
 import { statusOfKey } from '~/utils/status'
 
@@ -116,6 +116,12 @@ function copyMarkdown() {
   }
   void copy(md, 'The brief is copied as Markdown')
 }
+/** Comment on a ticket: the brief as Markdown, to a ticket it names or any other, under the person's name. */
+const commenting = ref(false)
+const commentText = computed(() => (brief.value ? briefMarkdown(brief.value, props.request, label) : ''))
+const tickets = computed(() => (brief.value ? briefTickets(brief.value, props.request) : []))
+/** Whether the request's turn could read terminal screens or check logs, which the brief may quote. */
+const quotes = computed(() => !!(props.request.config?.visibility?.terminals || props.request.config?.visibility?.logs))
 const KEEP_WHY = 'given to every later turn, whatever it may see'
 const keepLabel = (fact: number | undefined) => (fact ? `Keep fact ${fact} as a note: ${KEEP_WHY}` : `Keep this reading as a note: ${KEEP_WHY}`)
 </script>
@@ -127,7 +133,9 @@ const keepLabel = (fact: number | undefined) => (fact ? `Keep fact ${fact} as a 
     <template v-else-if="brief">
       <BrakemanBriefHead v-if="head" :request="live" :brief="brief" :digest="live.digest" :fresh="fresh">
         <IconButton label="Copy as Markdown" icon="i-lucide-clipboard-copy" size="sm" color="neutral" variant="ghost" data-brief-copy @click="copyMarkdown" />
+        <UButton v-if="commentText" label="Comment on a ticket…" icon="i-lucide-message-square-plus" size="sm" color="neutral" variant="ghost" data-brief-comment @click="commenting = true" />
       </BrakemanBriefHead>
+      <BrakemanCommentTicket v-if="head && commentText" v-model:open="commenting" :text="commentText" :keys="tickets" what="The brief" :quotes="quotes" />
       <h2 class="break-words text-lg font-semibold text-highlighted" data-brief-title>{{ brief.title }}</h2>
       <section class="flex flex-col gap-1.5" data-brief-reading>
         <MarkdownPreview :text="brief.summary" dir="" :relative-links="false" class="text-sm" />

@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import type { BrakemanAct, BrakemanConfig, BrakemanDigest, BrakemanDigestAbout, BrakemanDigestCounts, BriefItem, CapacitySnapshot } from './brakeman'
 import { renderMarkdown } from './markdown'
-import { BOUNDS, BRIEFING_TIME, GRANTS, KINDS, MAX_READING, KIND_SUBJECTS, MAX_BY, NO_AGENT, actDecision, actFor, refDecision, actsApart, readingBlocks, actLaunchRef, actMade, actReceiptRef, actShown, actShownFrom, actLaunchId, keepLaunch, MAX_KEPT_LAUNCHES, proposalOffered, actWords, followLaunch, capacityRefWords, agentChoice, agentIdOf, agentItems, askProblem, briefingLine, briefingList, changedFromBaseline, changedSince, configProblems, displayBy, foldersLine, formField, grantHeld, grantLabel, briefAbout, briefEvidence, briefRegions, citedRuns, foldWords, regionHeading, keptBrief, kindWords, observesOnly, openedMark, parseRef, provenance, readsWords, receiptPath, refLabel, refPage, refRoute, refTicket, sameConfig, scopeJSONBytes, servedGrants, stateRank, stateWords, stopAction, unopened, withGrant } from './brakeman'
+import { BOUNDS, BRIEFING_TIME, GRANTS, KINDS, MAX_READING, KIND_SUBJECTS, MAX_BY, NO_AGENT, actDecision, actFor, refDecision, actsApart, readingBlocks, actLaunchRef, actMade, actReceiptRef, actShown, actShownFrom, actLaunchId, keepLaunch, MAX_KEPT_LAUNCHES, proposalOffered, actWords, followLaunch, capacityRefWords, agentChoice, agentIdOf, agentItems, askProblem, briefingLine, briefingList, changedFromBaseline, changedSince, configProblems, displayBy, foldersLine, formField, grantHeld, grantLabel, briefAbout, briefEvidence, briefRegions, briefTickets, citedRuns, foldWords, regionHeading, keptBrief, kindWords, observesOnly, openedMark, parseRef, provenance, readsWords, receiptPath, refLabel, refPage, refRoute, refTicket, sameConfig, scopeJSONBytes, servedGrants, stateRank, stateWords, stopAction, unopened, withGrant } from './brakeman'
 
 // Brakeman's words, refs and checks on the app's pages (docs/plans/brakeman.md, PR-6).
 
@@ -312,6 +312,17 @@ describe("a brief's items", () => {
     // An older server sends no digest: the runs the brief's items cite stand in for it.
     expect(briefAbout({ kind: 'wake' }, { items: [{ kind: 'fact/1', text: 'f', evidence: ['task:fix-login-1a2b3c4d/build'] }] }, names)).toEqual(['fix-login'])
     expect(briefAbout({ kind: 'briefing' }, {})).toEqual([])
+  })
+
+  it('name the tickets a brief names, its subjects first, each once', () => {
+    const named: BriefItem[] = [
+      { kind: 'fact/1', text: 'a', evidence: ['comment:CND-9/0123456789abcdef', `run:${RUN}`] },
+      { kind: 'proposal/1', text: 'tell it', op: 'ticket_comment_admin', target: 'ticket:CND-41' },
+      { kind: 'draft_plan/1', ticket: 'ticket:CND-52', crew: 'team' },
+      { kind: 'evidence/1', title: 'e', refs: ['ticket:CND-41', 'plan:CND-60/2'] },
+    ]
+    expect(briefTickets({ items: named }, { subjects: ['ticket:CND-7'] })).toEqual(['CND-7', 'CND-41', 'CND-52', 'CND-9', 'CND-60'])
+    expect(briefTickets({ items: [] }, {})).toEqual([])
   })
 
   it("fold the provenance under one line: the agent, its model, the request and its reads, with no turn's length", () => {

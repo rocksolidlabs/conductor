@@ -305,6 +305,10 @@ defineShortcuts({
   'g-h': chord(() => router.push('/history')),
   'g-c': chord(() => router.push('/crews')),
   'g-d': chord(() => router.push('/dispatch')),
+  // A server without Brakeman has no page of it (utils/pages.ts, `when`).
+  'g-b': chord(() => {
+    if (brakeman.available.value) router.push('/brakeman')
+  }),
   'g-s': chord(goSettings),
   ']': () => cursor.step(1),
   '[': () => cursor.step(-1),

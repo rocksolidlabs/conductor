@@ -121,6 +121,14 @@ describe('the @ list', () => {
     expect(mentionMatches(src, 'build', ['task', 'attempt', 'session']).map((m) => m.label)).toEqual(['build of fix-login'])
   })
 
+  it('shows a few of each kind before anything is typed, so many sessions never hide the tickets', () => {
+    const many: MentionSources = { ...src, sessions: Array.from({ length: 20 }, (_, i) => ({ id: `${i}`.padStart(16, '0'), name: `session ${i}` })) }
+    const shown = mentionMatches(many, '')
+    expect(shown.filter((m) => m.kind === 'session')).toHaveLength(3)
+    expect(shown.at(-1)!.ref).toBe('ticket:CND-41')
+    expect(mentionMatches(many, 'session').filter((m) => m.kind === 'session')).toHaveLength(12)
+  })
+
   it('matches a name, an id or a ref, in any case', () => {
     expect(mentionMatches(src, 'TENANT').map((m) => m.ref)).toEqual(['ticket:CND-41'])
     expect(mentionMatches(src, 'docs').map((m) => m.kind)).toEqual(['session', 'question'])
