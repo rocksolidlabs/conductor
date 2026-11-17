@@ -2,6 +2,7 @@ package crew
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -126,5 +127,52 @@ func TestAComparisonsChainIsBounded(t *testing.T) {
 				t.Fatal("refused by DR1's bound, not the comparison's")
 			}
 		})
+	}
+}
+
+// The bound on the ledger's own chain: 256 runs of a comparison, each
+// continued by the next, as the ledger keeps them. The last one's
+// continuation is refused with the comparison's words and makes no run,
+// and its comparison is read whole, from the launched run.
+func TestAComparisonsChainOf256IsReadWhole(t *testing.T) {
+	dir := newRepo(t)
+	e, ld := sqlEngine(t)
+	raw, err := json.Marshal(compareCrew(t, dir, 2, false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := head(t, dir)
+	ctx := context.Background()
+	var ids []string
+	for i := range maxCompareChain {
+		id := fmt.Sprintf("api-sweep-%08x", i+1)
+		prev := ""
+		if i > 0 {
+			prev = ids[i-1]
+		}
+		if _, err := ld.Transition(ctx, id, func(tx *ledger.Tx) error {
+			if err := tx.CreateRun(ledger.RunRow{ID: id, CrewID: "api-sweep", Crew: string(raw), Base: base, State: ledger.RunStopped, ContinuedFrom: prev, CreatedAt: tx.Now()}); err != nil {
+				return err
+			}
+			if prev != "" {
+				return tx.Continued(prev)
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, id)
+	}
+	last := ids[len(ids)-1]
+	_, err = e.ContinueRun(ctx, last, "")
+	if want := fmt.Sprintf("this comparison has been continued %d times: launch a new comparison", maxCompareChain-1); !errors.Is(err, ErrChainTooLong) || err.Error() != want {
+		t.Fatalf("the continuation of the 256th run: %v", err)
+	}
+	if rows, err := ld.Runs(ctx); err != nil || len(rows) != maxCompareChain {
+		t.Fatalf("the ledger's runs: %d %v", len(rows), err)
+	}
+	c, err := e.Comparison(ctx, last)
+	if err != nil || c.Run != ids[0] || len(c.Candidates) != 2 {
+		t.Fatalf("the comparison of the last run: %+v %v", c, err)
 	}
 }
