@@ -94,7 +94,8 @@ export function comparisonOf(o: ComparisonShape): Record<string, unknown> {
               i === 0
                 ? { files: 3, added: 40, removed: 2, filesAdded: 1, filesDeleted: 0, list: [{ path: 'internal/cache/cache.go', status: 'M', added: 30, removed: 2, binary: false }, { path: 'internal/cache/locale.go', status: 'A', added: 10, removed: 0, binary: false }, { path: 'go.mod', status: 'M', added: 0, removed: 0, binary: false }], total: 3 }
                 : { files: 2, added: 12, removed: 30, filesAdded: 0, filesDeleted: 1, list: [{ path: 'internal/cache/cache.go', status: 'D', added: 0, removed: 28, binary: false }, { path: 'scripts/bench.sh', status: 'M', added: 12, removed: 2, binary: false }], total: 2 },
-            deps: i === 0 ? { files: ['go.mod', 'go.sum'], modules: [{ file: 'go.mod', name: 'golang.org/x/text', from: '', to: 'v0.3.0' }], total: 2, modulesTotal: 1 } : { files: [], modules: [], total: 0, modulesTotal: 0 },
+            // No dependency file changed: no `deps` at all, as the server leaves it out.
+            ...(i === 0 ? { deps: { files: ['go.mod', 'go.sum'], modules: [{ file: 'go.mod', name: 'golang.org/x/text', from: '', to: 'v0.3.0' }], total: 2, modulesTotal: 1 } } : {}),
             ...(o.testChange && i === 0 ? { verifyFiles: { files: [{ path: 'internal/cache/cache_test.go', kind: 'test' }, { path: 'Makefile', kind: 'build' }], total: 2 } } : {}),
           }
         : {}),
@@ -181,7 +182,7 @@ export async function serveComparison(page: Page, runId: string, reply: Record<s
  * one need is its candidate), the review of approach-b running, its `compare` part (each candidate's task with its review's), and
  * the ticket it was launched from (`ticket`, the key the links go to). Built as runInfo builds a run, its tasks renamed.
  */
-export function compareRun(o: { ticket: string }): StubRun {
+export function compareRun(o: { ticket: string }): StubRun & { compare: { candidates: Array<{ task: string; review?: string }> } } {
   const run = runInfo({ tasks: 6, states: ['succeeded', 'succeeded', 'succeeded', 'running', 'blocked', 'blocked'] })
   const ids: Record<string, { id: string; kind: 'work' | 'review'; needs?: string[] }> = {
     t01: { id: 'approach-a', kind: 'work' },
