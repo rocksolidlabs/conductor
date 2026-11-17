@@ -17,8 +17,7 @@ import { firstReviewCandidate, latestReviewable } from '~/utils/review'
 import { entryRunId } from '~/utils/dispatchEvidence'
 import { ticketSections, ticketWaits } from '~/utils/ticketSections'
 import { summaryStatusLine } from '~/utils/status'
-import type { PublicationSummary } from '~/composables/useDispatch'
-import { itemRef } from '~/utils/publication'
+import { itemRef, publicationsStripWords } from '~/utils/publication'
 
 /**
  * A ticket's page (docs/plans/dispatch.md, PR-8): its key and title, its description and acceptance criteria as Markdown with a
@@ -271,9 +270,8 @@ const locked = computed(() => !ticket.value || deleted.value || archived.value)
 
 // Its publications to GitHub (IN1a, PR-9): the newest ten and the older ones that need a person, from the ticket's read; Publish to GitHub
 // opens the composer, from the Publications, from a GitHub link's row, or from a publication (sent again, or published as new).
-const published = computed(() => (ticket.value as (DispatchTicket & { publications?: PublicationSummary[]; publicationsNeedYou?: number }) | null) ?? null)
-const publications = computed(() => published.value?.publications ?? [])
-const publicationsNeedYou = computed(() => published.value?.publicationsNeedYou ?? 0)
+const publications = computed(() => ticket.value?.publications ?? [])
+const publicationsNeedYou = computed(() => ticket.value?.publicationsNeedYou ?? 0)
 /** Somewhere on GitHub to publish to: a linked item, or a live delivery or external link to a GitHub item. */
 const canPublish = computed(() => !!ticket.value?.externalId || (ticket.value?.links ?? []).some((l) => !l.deletedAt && (l.kind === 'delivery' || l.kind === 'external') && !!itemRef(l.url)))
 const publishOpen = ref(false)
@@ -344,6 +342,8 @@ const strip = computed(() => {
     decisions: decisionRecords.decisions.value ?? [],
     close: closeCard(t),
     comments: t.comments ?? [],
+    // The publications a person can act on, in words, in the GitHub section (IN1a PR-9): never amber, not in the one list.
+    publications: publicationsStripWords(t.publications ?? [], t.publicationsNeedYou ?? 0),
   })
 })
 /** Brings a section up under the strip and gives it the focus, as the strip's own press does (People's "in the plan"). */
