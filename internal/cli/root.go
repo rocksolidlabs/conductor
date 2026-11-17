@@ -39,7 +39,9 @@ Usage:
                                launch a saved crew as a run and print its URL
   conductor crews [--server URL] [--token T] [--ids]
                                list the saved crews (--ids: ids only, for completion)
-  conductor dispatch projects|tickets|show|create|edit|comment|accept|link|plans|plan|launch|runs|
+  conductor crews compare SPEC.json|- [--server URL] [--token T]
+                               save a comparison's crew from its template
+  conductor dispatch projects|tickets|show|create|edit|comment|accept|link|plans|plan|launch|runs|comparison|
                     review|reviews|findings|finding [--server URL] [--token T]
                                Dispatch's projects and tickets from the shell, their plan revisions,
                                the runs launched from them, and a person's reviews of their
@@ -112,6 +114,9 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	case "up":
 		return runUp(ctx, args[1:], stdout, stderr)
 	case "crews":
+		if len(args) > 1 && args[1] == "compare" {
+			return runCrewsCompare(ctx, args[2:], stdin, stdout, stderr)
+		}
 		return runCrews(ctx, args[1:], stdout, stderr)
 	case "dispatch":
 		return runDispatch(ctx, args[1:], stdin, stdout, stderr)

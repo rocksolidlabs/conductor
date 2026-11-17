@@ -6,6 +6,7 @@ import type { RunInfo } from './useSessions'
 // stubbed below.
 import { ApiError } from './useApi'
 import { dispatchLive } from './useDispatchLive'
+import { decisionsLive } from './useDecisions'
 import { useComparison } from './useComparison'
 
 // The comparison's reads (Program item CP1, docs/plans/compare-crew.md, PR-4), wired to an API whose every request the test holds and
@@ -127,6 +128,32 @@ describe('useComparison', () => {
     expect(sent).toHaveLength(2)
     sent[1]!.ok(reply())
     await settle()
+  })
+
+  it("reads again on a decision event of its selection, answered from a second client while the run is not held, with no reconnect, and shows the new state", async () => {
+    // The run is stopped: its events do not move as the selection is answered, nor does its ticket.
+    const stopped = { ...run(3), stoppedAt: '2026-11-16T10:00:00Z' } as RunInfo
+    liveRuns.value = [stopped]
+    const open = { decision: 'dr-9', state: 'open', options: [{ label: 'approach-a at 1f3a5c7' }, { label: 'None of these' }] } as const
+    const c = await mounted(reply({ selection: { ...open, options: [...open.options] } }))
+    // Another record of another run: nothing read.
+    decisionsLive().stream('decision', { id: 'dr-40', run: 'e2e-crew-ffffffff', state: 'answered', rev: 2 })
+    await settle()
+    expect(sent).toHaveLength(1)
+    // The selection answered elsewhere: its decision event reads the comparison again, and the panel shows it answered.
+    decisionsLive().stream('decision', { id: 'dr-9', run: RUN, state: 'answered', rev: 2 })
+    await settle()
+    expect(sent).toHaveLength(2)
+    sent[1]!.ok(reply({ selection: { ...open, options: [...open.options], state: 'answered', chosen: 0, rationale: 'smaller' } }))
+    await settle()
+    expect(c.comparison.value?.selection?.state).toBe('answered')
+    // A record of the chain's run that is not the selection shown (a new one opened after a lane ended again) reads it too.
+    decisionsLive().stream('decision', { id: 'dr-10', run: RUN, state: 'open', rev: 1 })
+    await settle()
+    expect(sent).toHaveLength(3)
+    sent[2]!.ok(reply())
+    await settle()
+    expect(liveRuns.value[0]!.managed?.revision).toBe(3)
   })
 
   it("reads again on the stream's reconnect snapshot", async () => {

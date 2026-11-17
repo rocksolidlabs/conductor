@@ -1893,6 +1893,17 @@ func (a *agent) sendViewerError(viewerID, code, msg string) bool {
 // waits for its turn as long as the connection does, or until gone closes
 // (the viewer left, and the server let it go itself).
 func (a *agent) tell(v any, gone <-chan struct{}) error {
+	return a.tellWith(v, func(w *controlWriter, b []byte) error { return w.sendControlWhole(websocket.MessageText, b, gone) })
+}
+
+// tellTurn is tell within the turn of the host's own messages
+// (controlTurnWait), past which it is dropped, as send's are.
+func (a *agent) tellTurn(v any, gone <-chan struct{}) error {
+	return a.tellWith(v, func(w *controlWriter, b []byte) error { return w.sendControlTurn(websocket.MessageText, b, gone) })
+}
+
+// tellWith hands v, encoded, to the current control connection with put.
+func (a *agent) tellWith(v any, put func(w *controlWriter, b []byte) error) error {
 	if a.sendHook != nil {
 		a.sendHook(v)
 		return nil
@@ -1905,7 +1916,7 @@ func (a *agent) tell(v any, gone <-chan struct{}) error {
 	}
 	b, err := json.Marshal(v)
 	if err == nil {
-		err = w.sendControlWhole(websocket.MessageText, b, gone)
+		err = put(w, b)
 	}
 	if err != nil {
 		a.log.Debug("control send failed", "err", err)

@@ -7,7 +7,8 @@ import { runItems, runStatusLine } from '~/utils/status'
 import { runLive, runState } from '~/utils/runs'
 import { modelProblem } from '~/utils/capacity'
 import { pageState } from '~/utils/pageState'
-import { SheetConfirmation, type SheetTarget } from '~/utils/crewLaunch'
+import { SheetConfirmation, afterRefusal, type SheetRefusal, type SheetTarget } from '~/utils/crewLaunch'
+import { CREW_CHANGED, crewLaunchBody } from '~/utils/protocol'
 
 // Two things, told apart: a crew is a saved plan, a run is one launch of it.
 // /crews is the home: the runs going now, then the saved crews. /crews/<id>
@@ -453,17 +454,19 @@ function launchNamed() {
  * useCrewLaunch and opens the sheet, which lists each member with its agent, model, account and a line of its usage; only its Launch
  * launches, and it launches what the sheet was opened for (SheetTarget): from the crew's page its draft when new or changed (saved
  * first), else the saved crew by its id. The crew page the sheet was opened on is kept (`at`): a move to another crew closes it, and so
- * does another workbench token. Each opening is one confirmation (SheetConfirmation): its Launch starts one run at most.
+ * does another workbench token. Each opening is one confirmation (SheetConfirmation): its Launch starts one run at most. The launch names
+ * the revision of the copy it starts (the one the sheet read, or the draft's save answered), and none is sent without one: a crew saved
+ * since is refused by the server (`crew_changed`, #957), and the sheet, still open, reads it again as a new opening (`refused` says why).
  */
 const crewLaunch = useCrewLaunch()
-const sheet = reactive<{ open: boolean; target: SheetTarget | null; at?: string }>({ open: false, target: null })
+const sheet = reactive<{ open: boolean; target: SheetTarget | null; at?: string; refused?: SheetRefusal | null }>({ open: false, target: null })
 const confirmation = new SheetConfirmation()
 function openSheet(id: string, label: string) {
   const key = selectedKey.value
   if (!id && (key === undefined || !draft.value)) return
   const target: SheetTarget = id || !(key === NEW || isDirty(key!)) ? { id: id || key!, label } : { key: key!, draft: draft.value!, label }
   confirmation.opened()
-  Object.assign(sheet, { open: true, target, at: key })
+  Object.assign(sheet, { open: true, target, at: key, refused: null })
 }
 /** The crew the sheet read is gone: the sheet closes, and the page says so. */
 function sheetGone() {
@@ -537,11 +540,14 @@ async function launch(t: SheetTarget, read: CrewInfo | null, confirmed: () => bo
       toast.add({ title: 'The launch was not started', description: `${c.name} was saved, but the launch sheet was opened again or the workbench token changed meanwhile: no run was started.`, icon: 'i-lucide-circle-x', color: 'warning' })
       return
     }
+    const body = crewLaunchBody(t.label, c.revision)
+    if (!body) return startedNothing(t, c, 'unrevised', confirmed())
     let launched: Awaited<ReturnType<typeof api.launchCrew>>
     try {
-      launched = await api.launchCrew(c.id, t.label.trim() ? { label: t.label.trim() } : undefined)
+      launched = await api.launchCrew(c.id, body)
     } catch (e) {
-      if (e instanceof ApiError && e.code === 'not_a_repo') fail('Not a git repository', e)
+      if (e instanceof ApiError && e.code === CREW_CHANGED) startedNothing(t, c, 'changed', confirmed())
+      else if (e instanceof ApiError && e.code === 'not_a_repo') fail('Not a git repository', e)
       else fail('Launch failed', e)
       return
     }
@@ -575,6 +581,17 @@ async function launch(t: SheetTarget, read: CrewInfo | null, confirmed: () => bo
   } finally {
     launchingKey.value = undefined
   }
+}
+
+/**
+ * The launch started nothing (`why`): the server refused it, the crew saved since the copy it named (`crew_changed`), or the crew came
+ * without a revision and no launch was sent. A sheet still open on that opening, on this page not left, stays open and says why
+ * (afterRefusal: it reads the crew again, or holds Launch); otherwise a toast says so wherever the person now is.
+ */
+function startedNothing(t: SheetTarget, c: CrewInfo, why: SheetRefusal, confirmed: boolean) {
+  const next = afterRefusal(t, c, why, { confirmed, mounted, open: sheet.open, at: sheet.at, selected: selectedKey.value }, confirmation)
+  if ('target' in next) return void Object.assign(sheet, next)
+  toast.add({ title: 'The launch was not started', description: next.toast, icon: 'i-lucide-circle-x', color: 'warning' })
 }
 
 let tick: number | undefined
@@ -832,7 +849,7 @@ usePalette().registerPage(() => ({
           </div>
         </template>
       </UModal>
-      <CrewLaunchSheet v-model:open="sheet.open" :target="sheet.target" :agents="agents" :launching="launchingKey !== undefined" @launch="launchFromSheet" @gone="sheetGone" />
+      <CrewLaunchSheet v-model:open="sheet.open" :target="sheet.target" :refused="sheet.refused" :agents="agents" :launching="launchingKey !== undefined" @launch="launchFromSheet" @gone="sheetGone" />
       <UModal v-model:open="deleteOpen" :title="`Delete ${saved?.name ?? routeId ?? 'crew'}?`" description="The saved crew goes. Runs already launched keep going, and their worktrees and branches stay.">
         <template #footer>
           <div class="flex w-full justify-end gap-2">

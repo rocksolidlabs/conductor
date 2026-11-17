@@ -130,6 +130,10 @@ const (
 	RefusalExternalLinked = "external_linked"
 	RefusalExternalOwned  = "external_owned"
 	RefusalStaleRead      = "stale_read"
+	// RefusalConfirmCandidates is the launch of a comparison's revision
+	// that does not repeat how many candidates it starts (Program item
+	// CP1): the person confirms the count the launch states.
+	RefusalConfirmCandidates = "confirm_candidates"
 )
 
 // The words of an op_conflict refusal: the id was used with other
