@@ -6383,8 +6383,11 @@ candidates' task ids in its block's order and whose rows include
 `Behaviour`, `Complexity`, `Dependency changes`, `Checks` and
 `Unresolved tradeoffs` (matched without regard to case), its evidence
 citing at least one `candidate:` ref and in its `candidate:` and
-`check:` refs naming only its columns' tasks in the runs of the
-request's comparison's chain; no `decision/1`, and no
+`check:` refs naming only its columns' tasks; every ref of every item
+of the brief that names a run (`run:`, `task:`, `attempt:`, `check:`,
+`candidate:`, `command:`, `event:`, `message:`, `commit:`) naming a run
+of the request's comparison's chain, and none a `brief:` or
+`decision:` ref (whose run is read only from the record it names); no `decision/1`, and no
 `proposal/1` of an operation that commands a task, a review or a
 decision; else `400 invalid_brief` naming the field. The turn reads the
 comparison with `observe_comparison` (`GET /api/runs/{run}/comparison`,

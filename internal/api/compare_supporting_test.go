@@ -708,8 +708,9 @@ func TestTheBriefIsSupportingOnly(t *testing.T) {
 
 // brief_submit holds a compare request's brief to its comparison's
 // table, read from the crew as launched: columns out of the block's
-// order, a decision card, a proposal to retry a lane's task and evidence
-// naming a candidate of a run outside its chain are
+// order, a decision card, a proposal to retry a lane's task, and a
+// candidate or an attempt of a run outside its chain, in the table or in
+// another item, are
 // refused 400 invalid_brief with nothing kept, and the table is taken.
 func TestTheCompareBriefIsHeldAtSubmit(t *testing.T) {
 	de := newCmpDraftEnv(t, compareOpts{})
@@ -732,7 +733,9 @@ func TestTheCompareBriefIsHeldAtSubmit(t *testing.T) {
 	elsewhere := de.compareBrief("x")
 	table := elsewhere["items"].([]any)[1].(map[string]any)
 	table["evidence"] = append(table["evidence"].([]any), "candidate:other-0000abcd/approach-b/1")
-	for name, b := range map[string]map[string]any{"columns": swapped, "decision": decided, "retry": retry, "another comparison's candidate": elsewhere} {
+	panel := de.compareBrief("x")
+	panel["items"] = append(panel["items"].([]any), map[string]any{"kind": brakeman.ItemEvidence, "title": "elsewhere", "refs": []any{"attempt:other-0000abcd/approach-a/1"}})
+	for name, b := range map[string]map[string]any{"columns": swapped, "decision": decided, "retry": retry, "another comparison's candidate": elsewhere, "another comparison's attempt in a panel": panel} {
 		status, out := de.bk.submit(t, sid, tok, "b-"+name, b)
 		if status != http.StatusBadRequest || errorCode(out) != brakeman.CodeInvalidBrief {
 			t.Errorf("%s: %d %v", name, status, out)

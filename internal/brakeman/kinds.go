@@ -488,7 +488,7 @@ var compareRows = []string{"Behaviour", "Complexity", "Dependency changes", "Che
 var requestRules = []RequestRule{
 	{Kind: KindCompare, Rule: "A compare request's brief holds exactly one comparison/1: its columns the candidates' task ids in the comparison's order (one without a standing result included, its cells saying so), its rows labelled " +
 		strings.Join(compareRows[:len(compareRows)-1], ", ") + " and " + compareRows[len(compareRows)-1] +
-		" (other rows allowed, 20 at most), its evidence citing the candidates (candidate: refs of its columns' tasks, in the comparison's own runs) and their receipts (check: refs). " +
+		" (other rows allowed, 20 at most), its evidence citing the candidates (candidate: refs of its columns' tasks) and their receipts (check: refs). Every ref of every item that names a run names a run of this comparison's chain, and it cites no brief: or decision: ref. " +
 		"It holds no decision/1: the selection is the person's, on the comparison. It proposes no command of a task, a review or a decision: a lane is the person's to command."},
 }
 
@@ -513,7 +513,8 @@ type CompareShape struct {
 // order, its rows holding the five labels (compareRows, matched without
 // regard to case), its evidence citing at least one candidate: ref and
 // naming in its candidate: and check: refs only its columns' tasks in
-// the comparison's runs (cmp.Runs); no
+// the comparison's runs (cmp.Runs); every ref of every item that names a
+// run naming one of cmp.Runs, and no brief: or decision: ref; no
 // decision/1; no proposal/1 naming one of cmp.Commands. With no columns
 // given every brief is refused: a comparison the API could not read is
 // no table to hold one to. The error is an *Invalid (invalid_brief).
@@ -564,7 +565,77 @@ func CheckCompareBrief(b Brief, cmp CompareShape) error {
 	if !cited {
 		return invalidBrief(field+".evidence", "cite the candidates the table compares: a candidate: ref of a column's task at least")
 	}
+	// Every ref of every item names this comparison's runs alone: one that
+	// names a run names one of cmp.Runs, and a brief: or decision: ref,
+	// whose run is known only by reading the record it names, is cited in
+	// no compare brief.
+	for i, it := range b.Items {
+		for _, fr := range itemRefFields(it) {
+			at := fmt.Sprintf("items[%d].%s", i, fr.field)
+			switch {
+			case fr.ref.Kind == RefBrief || fr.ref.Kind == RefDecision:
+				return invalidBrief(at, "a compare brief cites no %s: ref: the run it is of is read from the record it names, so this comparison cannot be told from another's", fr.ref.Kind)
+			case fr.ref.Run != "" && !slices.Contains(cmp.Runs, fr.ref.Run):
+				return invalidBrief(at, "%s names run %s, not a run of this comparison: a compare brief cites its own comparison's runs alone", fr.ref, fr.ref.Run)
+			}
+		}
+	}
 	return nil
+}
+
+// fieldRef is a ref of an item with its field's path within the item
+// ("evidence[2]", "target").
+type fieldRef struct {
+	field string
+	ref   Ref
+}
+
+// itemRefFields is every ref the item names (Item.Refs) with its field's
+// path, in its fields' order.
+func itemRefFields(it Item) []fieldRef {
+	var out []fieldRef
+	list := func(name string, refs []Ref) {
+		for k, r := range refs {
+			out = append(out, fieldRef{fmt.Sprintf("%s[%d]", name, k), r})
+		}
+	}
+	one := func(name string, r *Ref) {
+		if r != nil {
+			out = append(out, fieldRef{name, *r})
+		}
+	}
+	switch it.Kind {
+	case ItemFact:
+		list("evidence", it.Fact.Evidence)
+	case ItemProposal:
+		one("target", &it.Proposal.Target)
+	case ItemOutcome:
+		one("receipt", &it.Outcome.Receipt)
+	case ItemDecision:
+		one("about", &it.Decision.About)
+		list("blocked", it.Decision.Blocked)
+		list("evidence", it.Decision.Evidence)
+	case ItemComparison:
+		list("evidence", it.Comparison.Evidence)
+	case ItemEvidence:
+		list("refs", it.Evidence.Refs)
+	case ItemDraftTicket:
+		list("from", it.DraftTicket.From)
+	case ItemDraftCrew:
+		list("from", it.DraftCrew.From)
+	case ItemDraftPlan:
+		one("ticket", &it.DraftPlan.Ticket)
+		one("basedOn", it.DraftPlan.BasedOn)
+		list("comments", it.DraftPlan.Comments)
+		list("from", it.DraftPlan.From)
+	case ItemHandoff:
+		one("revision", it.Handoff.Revision)
+		list("evidence", it.Handoff.Evidence)
+	case ItemOverlap:
+		list("between", it.Overlap.Between)
+		list("evidence", it.Overlap.Evidence)
+	}
+	return out
 }
 
 // Words is the brief's shape in words, as the guide's briefs section

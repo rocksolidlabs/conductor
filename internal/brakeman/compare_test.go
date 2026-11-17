@@ -118,6 +118,38 @@ func TestACompareBriefNeedsItsTable(t *testing.T) {
 		wantInvalid(t, CheckCompareBrief(decodeCompare(t, v), shape), "items[1].evidence[4]")
 	}
 
+	// Every ref of every item that names a run names one of the
+	// comparison's: each kind naming another run, in the table's evidence
+	// or another item, is refused at its field; a brief: or decision: ref
+	// is cited in none; the same refs naming the comparison's run are kept.
+	sha := strings.Repeat("ab", 20)
+	refsOf := func(run string) []string {
+		return []string{"attempt:" + run + "/approach-a/1", "task:" + run + "/approach-a", "run:" + run, "commit:" + run + "/" + sha,
+			"command:" + run + "/retry-1", "event:" + run + "/3", "message:" + run + "/2", "candidate:" + run + "/approach-b/1", "check:" + run + "/approach-b/1/tests/1"}
+	}
+	for _, r := range append(refsOf(other), "brief:br-1/0", "decision:dr-1") {
+		v = good()
+		itemOf(v, 1)["evidence"] = append(itemOf(v, 1)["evidence"].([]any), r)
+		wantInvalid(t, CheckCompareBrief(decodeCompare(t, v), shape), "items[1].evidence[4]")
+		v = good()
+		v["items"] = append(v["items"].([]any), map[string]any{"kind": ItemEvidence, "title": "elsewhere", "refs": []any{"candidate:" + runA + "/approach-a/1", r}})
+		wantInvalid(t, CheckCompareBrief(decodeCompare(t, v), shape), "items[2].refs[1]")
+		v = good()
+		v["items"] = append(v["items"].([]any), map[string]any{"kind": ItemFact, "text": "elsewhere", "evidence": []any{r}})
+		wantInvalid(t, CheckCompareBrief(decodeCompare(t, v), shape), "items[2].evidence[0]")
+	}
+	v = good()
+	var mine []any
+	for _, r := range refsOf(runA) {
+		mine = append(mine, r)
+	}
+	itemOf(v, 1)["evidence"] = append(itemOf(v, 1)["evidence"].([]any), mine[:6]...)
+	v["items"] = append(v["items"].([]any), map[string]any{"kind": ItemEvidence, "title": "here", "refs": mine},
+		map[string]any{"kind": ItemFact, "text": "here", "evidence": mine[:9]})
+	if err := CheckCompareBrief(decodeCompare(t, v), shape); err != nil {
+		t.Errorf("refs of the comparison's own runs: %v", err)
+	}
+
 	// A decision card is refused, whatever it is about.
 	v = good()
 	v["items"] = append(v["items"].([]any), jsonValue(t, kinds[4].Example))
