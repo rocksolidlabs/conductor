@@ -450,6 +450,10 @@ func (s *Server) handleSessionBrakemanBrief(w http.ResponseWriter, r *http.Reque
 			return
 		}
 		d.publish(id)
+		// A background brief with a decision no earlier one held tells
+		// the pages and the webhooks that list it, here alone, once, after
+		// the briefed event and before the answer (brakeman_notify.go).
+		d.briefKept(kept, b)
 		d.poke()
 		writeJSON(w, http.StatusCreated, map[string]any{"request": turnRequestOf(kept, cfg, d.now())})
 		return

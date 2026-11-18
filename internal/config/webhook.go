@@ -42,6 +42,12 @@ const EventExitNonZero = "exit_nonzero"
 // sends after each commit (docs/plans/decisions.md, Notifications).
 const EventDecision = "decision"
 
+// EventBrakemanNeedsYou is the event of a background brief of Brakeman's
+// that holds a decision no earlier background brief held: one
+// notification of Conductor's own fixed words, the request's id and a
+// path, sent to the webhooks that list it and to no other sink.
+const EventBrakemanNeedsYou = "brakeman_needs_you"
+
 // webhookResolveTimeout bounds the lookups of the webhooks' hosts at
 // validation, which run at once.
 const webhookResolveTimeout = 2 * time.Second
@@ -49,13 +55,14 @@ const webhookResolveTimeout = 2 * time.Second
 // ValidWebhookEvent reports whether a webhook may list t: an activity entry
 // type (session.ValidEventType); an attention state, needs_input, working or
 // done, which an attention entry counts as when it records it;
-// EventExitNonZero; or EventDecision. These are the Events page's names.
+// EventExitNonZero; EventDecision; or EventBrakemanNeedsYou. These are the
+// Events page's names, and Brakeman's one.
 func ValidWebhookEvent(t string) bool {
 	switch session.AttentionState(t) {
 	case session.AttentionNeedsInput, session.AttentionWorking, session.AttentionDone:
 		return true
 	}
-	return t == EventExitNonZero || t == EventDecision || session.ValidEventType(t)
+	return t == EventExitNonZero || t == EventDecision || t == EventBrakemanNeedsYou || session.ValidEventType(t)
 }
 
 // Endpoint is the webhook's URL without its user info, query and fragment,

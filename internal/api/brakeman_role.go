@@ -36,7 +36,9 @@ import (
 // (its acts, a draft a person made from it), nor for a reading of the
 // agent and account Brakeman's own turns launch on. A wake turn is BK1's turn
 // unchanged: a fresh run of a fresh session, which reads its batch
-// through its request, and whose questions page no one (quiet).
+// through its request, and whose questions page no one (quiet). Its brief
+// notifies only when it holds a decision none of the role's earlier
+// background briefs held (brakeman_notify.go).
 
 // maxRoleLogReply bounds GET /api/brakeman/role's log, in rows.
 const maxRoleLogReply = crew.MaxRoleLog

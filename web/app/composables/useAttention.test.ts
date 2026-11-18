@@ -2,7 +2,7 @@ import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { computed, ref, type Ref } from 'vue'
-import { openEvents } from './useAttention'
+import { openEvents, readSettings } from './useAttention'
 import { useWorkbenchToken } from './useWorkbenchToken'
 
 // The events stream's request as the layout makes it as it mounts: with a wrong token in the browser it is refused, and its refusal
@@ -172,5 +172,29 @@ describe('openEvents', () => {
     answer(200)
     expect((await out)?.status).toBe(200)
     expect(admin.needsToken.value).toBe(false)
+  })
+})
+
+// The alert settings a browser keeps: Brakeman's background briefs alert unless switched off, a browser's settings from before the
+// switch read it on, and a key the page does not know harms nothing.
+describe('readSettings', () => {
+  let kept: string | null
+  beforeEach(() => {
+    kept = null
+    vi.stubGlobal('localStorage', { getItem: () => kept, setItem: (_: string, v: string) => (kept = v) })
+  })
+  afterEach(() => vi.unstubAllGlobals())
+
+  it('reads briefs on with nothing kept, and with settings kept before it', () => {
+    expect(readSettings()).toEqual({ notifications: false, chime: false, briefs: true })
+    kept = JSON.stringify({ notifications: true, chime: true })
+    expect(readSettings()).toEqual({ notifications: true, chime: true, briefs: true })
+  })
+
+  it('reads briefs off once switched off, an unknown key beside it harmless', () => {
+    kept = JSON.stringify({ notifications: true, chime: false, briefs: false, later: 'x' })
+    expect(readSettings()).toMatchObject({ notifications: true, chime: false, briefs: false })
+    kept = '{not json'
+    expect(readSettings()).toEqual({ notifications: false, chime: false, briefs: true })
   })
 })
