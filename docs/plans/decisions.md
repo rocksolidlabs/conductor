@@ -936,10 +936,10 @@ restart asks again rather than superseding; no supersedes it as an
 identity's is; not known leaves the decision `answered` and asks again
 (1 s doubling to 60 s while the run is held), never applying and never
 superseding on what nobody said (`docs/plans/sync-seams.md`, OS-3).
-Under a router's policy a held answer is judged at the response as an
-identity's is at the route, and at application it needs the router's
-confirmation as well as this recheck (`docs/plans/decision-policy.md`,
-Responding and Application).
+A held answer and a router's policy do not combine in the first
+version: on a server whose registered router confirms policies every
+held answer is refused, kept, `403 answered_at_server`
+(`docs/plans/decision-policy.md`, Responding, Held answers).
 
 A recheck that fails at application supersedes the decision with its
 words (`answered` → `superseded`) and keeps the response; what it held
