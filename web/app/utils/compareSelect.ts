@@ -182,6 +182,14 @@ export function selectionWaitsWords(sel: Pick<ComparisonSelection, 'decision' | 
   return sel?.state === 'open' ? `A selection waits for your answer (${sel.decision}): it is at the end, after what it is answered from.` : ''
 }
 
+/**
+ * The verdict a draft takes while Request changes is held for its candidate: Comment in its place, so the verdict checked is one the
+ * person can send ("A comment or an approval is recorded as for any candidate"); any other verdict as it is.
+ */
+export function heldVerdict<V extends string>(verdict: V, hold: unknown): V | 'comment' {
+  return hold && verdict === 'request_changes' ? 'comment' : verdict
+}
+
 /** What Request changes is, while it is held: the line under the hold's words. */
 export const REVIEW_HOLD_WORDS = 'Request changes is held: only the selected candidate is repaired. A comment or an approval is recorded as for any candidate.'
 

@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
-import { candidateSelection, compareRunOf, reviewHold, selectedReview, selectionReview, selectionWaitsWords, stopSelectionWords } from './compareSelect'
+import { candidateSelection, compareRunOf, heldVerdict, reviewHold, selectedReview, selectionReview, selectionWaitsWords, stopSelectionWords } from './compareSelect'
 import type { Comparison } from './compare'
 import { firstReviewCandidate, latestOfSelected, pickerLabel, reviewDefault } from './review'
 
@@ -197,5 +197,22 @@ describe("the comparison's top line while its selection waits", () => {
     expect(selectionWaitsWords({ decision: 'dr-9', state: 'open' })).toBe('A selection waits for your answer (dr-9): it is at the end, after what it is answered from.')
     for (const state of ['answered', 'applied', 'superseded']) expect(selectionWaitsWords({ decision: 'dr-9', state })).toBe('')
     expect(selectionWaitsWords(null)).toBe('')
+  })
+})
+
+describe('the verdict of a draft while Request changes is held', () => {
+  const hold = { title: 'approach-a was not selected', words: 'approach-a was not selected in dr-9: launch a new comparison to try it again' }
+  it('is Comment in place of Request changes, so the verdict checked can be sent; any other verdict stays', () => {
+    expect(heldVerdict('request_changes', hold)).toBe('comment')
+    expect(heldVerdict('approve', hold)).toBe('approve')
+    expect(heldVerdict('comment', hold)).toBe('comment')
+    expect(heldVerdict('request_changes', null)).toBe('request_changes')
+  })
+
+  it("is set by the view while the hold stands, and the hold's words keep the candidate's name as written", () => {
+    const view = readFileSync(new URL('../components/DispatchReview.vue', import.meta.url), 'utf8')
+    expect(view).toContain('const want = heldVerdict(v, h)')
+    const draft = readFileSync(new URL('../components/ReviewDraft.vue', import.meta.url), 'utf8')
+    expect(draft).toContain('data-review-hold-words>{{ hold.words }}.</span>')
   })
 })

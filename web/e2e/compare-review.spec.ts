@@ -50,10 +50,12 @@ test('Review the selected candidate opens RV1’s view on it; a Request changes 
     await draft(page, c.ticket, bRef, base, 'Before the selection.')
     await page.goto(`${c.path}?view=review&candidate=${encodeURIComponent(bRef)}`)
     await expect(page.locator(`[data-review-view][data-review-candidate="${bRef}"]`)).toHaveAttribute('data-review-diff-base', base, { timeout: VIEW_MS })
-    await expect(page.locator('[data-review-hold-words]')).toHaveText('Select a candidate first: a repair before the selection would make the candidates unlike.', { timeout: VIEW_MS })
+    await expect(page.locator('[data-review-hold-words]')).toHaveText('select a candidate first: a repair before the selection would make the candidates unlike.', { timeout: VIEW_MS })
+    // The draft asked for changes: held, the verdict checked is Comment, which can be sent; nothing is sent until a person sends it.
     await expect(page.getByRole('radio', { name: /^Request changes/ })).toBeDisabled()
-    await expect(page.locator('[data-review-draft-problems]')).toContainText('Request changes is not sent: select a candidate first')
-    await expect(page.locator('[data-review-send]')).toBeDisabled()
+    await expect(page.getByRole('radio', { name: /^Request changes/ })).not.toBeChecked()
+    await expect(page.getByRole('radio', { name: /^Comment/ })).toBeChecked()
+    await expect(page.locator('[data-review-send]')).toBeEnabled()
     expect(posted).toEqual([])
     expect((await s.api.ok<{ reviews: unknown[] }>('GET', `/api/dispatch/tickets/${c.ticket}/reviews`)).reviews).toEqual([])
     await page.evaluate((k) => localStorage.removeItem(k), `conductor.reviewDraft:${c.ticket}:${bRef}`)
@@ -96,8 +98,11 @@ test('Review the selected candidate opens RV1’s view on it; a Request changes 
         const at = `${size.width} wide, ${theme}`
         await expect(page.locator('[data-review-draft]'), at).toHaveAttribute('data-review-draft-notes', '0')
         await expect(page.locator('[data-review-hold]')).toContainText('approach-a was not selected', { timeout: VIEW_MS })
-        await expect(page.locator('[data-review-hold-words]')).toHaveText(`Approach-a was not selected in ${sel.decision}: launch a new comparison to try it again.`)
+        // The candidate's name as it is written, never capitalised.
+        await expect(page.locator('[data-review-hold-words]')).toHaveText(`approach-a was not selected in ${sel.decision}: launch a new comparison to try it again.`)
         await expect(page.getByRole('radio', { name: /^Request changes/ })).toBeDisabled()
+        await expect(page.getByRole('radio', { name: /^Request changes/ })).not.toBeChecked()
+        await expect(page.getByRole('radio', { name: /^Comment/ })).toBeChecked()
         // Comment and Approve stay.
         await expect(page.getByRole('radio', { name: /^Comment/ })).toBeEnabled()
         const hold = (await page.locator('[data-review-hold]').boundingBox())!
@@ -109,14 +114,16 @@ test('Review the selected candidate opens RV1’s view on it; a Request changes 
       }
     }
     await page.setViewportSize({ width: 1440, height: 900 })
-    // A draft that asks for changes is not sent: Send review is held, and nothing reaches Dispatch.
+    // A draft that asked for changes: nothing reaches Dispatch until a person sends it.
     budget(VIEW_MS + 6 * LOAD_MS)
     await draft(page, c.ticket, aRef, base, 'Handle the empty locale.')
     await page.goto(`${c.path}?view=review&candidate=${encodeURIComponent(aRef)}`)
     await expect(page.locator(`[data-review-view][data-review-candidate="${aRef}"]`)).toHaveAttribute('data-review-diff-base', base, { timeout: VIEW_MS })
     await expect(page.locator('[data-review-draft]')).toHaveAttribute('data-review-draft-notes', '1')
-    await expect(page.locator('[data-review-draft-problems]')).toContainText(`Request changes is not sent: approach-a was not selected in ${sel.decision}`)
-    await expect(page.locator('[data-review-send]')).toBeDisabled()
+    // Its Request changes is held: Comment is checked in its place, and Send review is live for it, as the hold says.
+    await expect(page.getByRole('radio', { name: /^Comment/ })).toBeChecked()
+    await expect(page.locator('[data-review-draft-problems]')).toHaveCount(0)
+    await expect(page.locator('[data-review-send]')).toBeEnabled()
     expect(posted).toEqual([])
     expect((await s.api.ok<{ reviews: unknown[] }>('GET', `/api/dispatch/tickets/${c.ticket}/reviews`)).reviews).toEqual([])
     // The server's refusal stays the last guard: a request for changes of approach-a sent past the page is refused in the same words.
