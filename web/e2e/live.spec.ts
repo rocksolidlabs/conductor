@@ -288,10 +288,22 @@ async function answerOrExit(api: Api, runId: string, read: () => Promise<string>
     const m = member(await api.run(runId), 'solo')
     if (m.status === 'ended') throw new Error(`the agent ended before answering (${m.error || 'it exited'}): is it signed in? run it once by hand in the repository`)
     const asks = m.sessionId ? (await api.session(m.sessionId)).attention : undefined
-    if (asks?.state === 'needs_input' && asks.source === 'trust') {
+    // The wait Conductor raises when the agent's program says its turn ended in an error (#991): no answer will come.
+    const failed = asks?.state === 'needs_input' && asks.source === 'status' && /turn ended in an error/i.test(asks.message ?? '')
+    if (asks?.state === 'needs_input' && (asks.source === 'trust' || failed)) {
       const words = asks.message ?? ''
       if (held?.words !== words) held = { words, since: Date.now() }
-      else if (Date.now() - held.since >= HELD_MS) throw new Error(`the agent is not ready: its screen asks "${words}", which nobody here answers`)
+      else if (Date.now() - held.since >= HELD_MS) {
+        if (!failed) throw new Error(`the agent is not ready: its screen asks "${words}", which nobody here answers`)
+        // Why it failed is on its screen: the words this suite knows a refusal by are looked for once, as for a row out of time.
+        const holds = m.sessionId && look ? await look(m.sessionId, want).catch(() => [] as string[]) : []
+        const billing = holds.includes('billing')
+        if (current) giveUp(current, `${current}: an earlier row's turn ended in an error on this run's key${billing ? ' (its screen named billing)' : ''}`)
+        throw new Error(
+          `the agent did not answer: Conductor says "${words}"${billing ? ', and its screen names billing: the provider refuses this key for its quota or its billing' : ''}; ` +
+            `of the words this suite knows a screen by, its screen holds: ${holds.join(', ') || 'none'}`,
+        )
+      }
     } else held = undefined
     last = await read()
     if (last.includes(want)) return

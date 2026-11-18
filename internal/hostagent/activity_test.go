@@ -25,7 +25,7 @@ func entryMessage(msg string) session.ActivityEntry {
 func TestActivityForwarderSendsInOrder(t *testing.T) {
 	var mu sync.Mutex
 	var got []string
-	f := newActivityForwarder(func(e session.ActivityEntry, _ session.AttentionState) {
+	f := newActivityForwarder(func(e session.ActivityEntry, _ session.AttentionState, _ uint64) {
 		mu.Lock()
 		got = append(got, e.Message)
 		mu.Unlock()
@@ -35,7 +35,7 @@ func TestActivityForwarderSendsInOrder(t *testing.T) {
 	for i := 0; i < 100; i++ {
 		msg := strings.Repeat("x", i)
 		want = append(want, msg)
-		if !f.push(entryMessage(msg), "") {
+		if !f.push(entryMessage(msg), "", 0) {
 			t.Fatalf("entry %d refused", i)
 		}
 	}
@@ -62,7 +62,7 @@ func waitIdle(t *testing.T, f *activityForwarder) {
 // the process: a connection that takes seconds to write must not hold it.
 func TestActivityForwarderNeverBlocksTheRecorder(t *testing.T) {
 	release := make(chan struct{})
-	f := newActivityForwarder(func(session.ActivityEntry, session.AttentionState) { <-release }, func(session.ChatMessage) {}, discardLog)
+	f := newActivityForwarder(func(session.ActivityEntry, session.AttentionState, uint64) { <-release }, func(session.ChatMessage) {}, discardLog)
 	go f.run(t.Context())
 	defer close(release)
 
@@ -70,7 +70,7 @@ func TestActivityForwarderNeverBlocksTheRecorder(t *testing.T) {
 	go func() {
 		n := 0
 		for i := 0; i < 3*activityQueue; i++ {
-			if f.push(entryMessage("n"), "") {
+			if f.push(entryMessage("n"), "", 0) {
 				n++
 			}
 		}
@@ -93,7 +93,7 @@ func TestActivityForwarderNeverBlocksTheRecorder(t *testing.T) {
 func TestActivityForwarderIsSafeFromManyGoroutines(t *testing.T) {
 	var sent sync.WaitGroup
 	sent.Add(800)
-	f := newActivityForwarder(func(session.ActivityEntry, session.AttentionState) { sent.Done() }, func(session.ChatMessage) {}, discardLog)
+	f := newActivityForwarder(func(session.ActivityEntry, session.AttentionState, uint64) { sent.Done() }, func(session.ChatMessage) {}, discardLog)
 	go f.run(t.Context())
 	var wg sync.WaitGroup
 	for g := 0; g < 8; g++ {
@@ -101,7 +101,7 @@ func TestActivityForwarderIsSafeFromManyGoroutines(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for i := 0; i < 100; i++ {
-				for !f.push(entryMessage("n"), "") { // the queue holds 256; the sender drains it
+				for !f.push(entryMessage("n"), "", 0) { // the queue holds 256; the sender drains it
 					time.Sleep(time.Millisecond)
 				}
 			}
@@ -119,7 +119,7 @@ func TestActivityForwarderIsSafeFromManyGoroutines(t *testing.T) {
 }
 
 func TestActivityForwarderStopsWithItsContext(t *testing.T) {
-	f := newActivityForwarder(func(session.ActivityEntry, session.AttentionState) {}, func(session.ChatMessage) {}, discardLog)
+	f := newActivityForwarder(func(session.ActivityEntry, session.AttentionState, uint64) {}, func(session.ChatMessage) {}, discardLog)
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan struct{})
 	go func() { f.run(ctx); close(done) }()
@@ -412,7 +412,7 @@ func TestSettleDoesNotWaitOnceCancelled(t *testing.T) {
 	release := make(chan struct{})
 	a.sendHook = func(any) { <-release }
 	defer close(release)
-	a.activity.push(entryMessage("stuck"), "") // the forwarder takes it and stalls in send: never idle
+	a.activity.push(entryMessage("stuck"), "", 0) // the forwarder takes it and stalls in send: never idle
 	// a.flushed is nil, as it is when watchStatus returned on the cancel.
 
 	ctx, cancel := context.WithCancel(t.Context())
