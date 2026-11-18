@@ -67,6 +67,46 @@ func (h *reportingHost) untilEntries(t *testing.T, what string, want []string) {
 	}
 }
 
+// untilKept waits for the host to have kept the entry of words, numbered,
+// and sent on a connection when sent says so (read under actMu): its
+// number. The session records an event before its host's sender has it (the
+// forwarder hands it on after), so an event reported is not yet an entry
+// the host keeps.
+func (h *reportingHost) untilKept(t *testing.T, words string, sent bool) uint64 {
+	t.Helper()
+	for deadline := time.Now().Add(15 * time.Second); ; time.Sleep(time.Millisecond) {
+		h.a.actMu.Lock()
+		var seq uint64
+		for _, k := range h.a.actKept {
+			if k.m.Entry.Message == words && (k.sent || !sent) {
+				seq = k.m.Seq
+			}
+		}
+		h.a.actMu.Unlock()
+		if seq > 0 {
+			return seq
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the host never kept %q (sent: %v)", words, sent)
+		}
+	}
+}
+
+// recordUntil waits for the record to hold the agent message words, and
+// says what agent messages it holds then.
+func (h *reportingHost) recordUntil(t *testing.T, words string) []string {
+	t.Helper()
+	for deadline := time.Now().Add(15 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		got := agentMessages(h.recordEntries(t))
+		if slices.Contains(got, words) {
+			return got
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the record never held %q: it holds %q", words, got)
+		}
+	}
+}
+
 func (h *reportingHost) event(t *testing.T, words string) {
 	t.Helper()
 	h.send(t, notify.Request{Event: session.ActivityProgress, Message: words})
@@ -117,7 +157,9 @@ func TestAnEntrySentAgainIsShownOnce(t *testing.T) {
 }
 
 // Past the bound of entries kept the oldest go, and the record says that
-// entries may be missing, before the first entry sent after them.
+// entries may be missing, before the first entry sent after them. All five
+// are kept while the host is away (the fifth waited for), so two went
+// unsent.
 func TestPastTheBoundTheRecordIsToldEntriesAreMissing(t *testing.T) {
 	h := newReportingHostOf(t, codexLike(t), "codex-like", true)
 	h.a.actBound = 3
@@ -125,8 +167,35 @@ func TestPastTheBoundTheRecordIsToldEntriesAreMissing(t *testing.T) {
 	for _, w := range []string{"1", "2", "3", "4", "5"} {
 		h.event(t, w)
 	}
+	h.untilKept(t, "5", false)
 	h.back()
 	h.untilEntries(t, "the last three", []string{"2 activity entries of the host's may be missing here: recorded while its connection to this server was down, and not sent", "3", "4", "5"})
+}
+
+// An entry kept after the host's link returns, while the entries the host
+// sent as the connection began wait for their confirmation, pushes the
+// oldest of them out of the bound. Written on the connection the host is
+// on, it is not counted missing, nor the count it carried: the record says
+// once that an entry may be missing, where one is, and nothing more.
+func TestAnEntryPushedOutAfterItsWriteIsNotToldMissing(t *testing.T) {
+	h := newReportingHostOf(t, codexLike(t), "codex-like", true)
+	h.a.actBound = 3
+	// No confirmation comes: what was sent stays kept, as it does while
+	// the server's answer to the ping is on its way.
+	h.a.actConfirm = func() bool { return false }
+	h.away(t)
+	for _, w := range []string{"1", "2", "3", "4"} {
+		h.event(t, w)
+	}
+	h.untilKept(t, "4", false)
+	h.back()
+	// The three kept are written on the new connection, in order.
+	h.untilKept(t, "4", true)
+	h.event(t, "5")
+	want := []string{"1 activity entry of the host's may be missing here: recorded while its connection to this server was down, and not sent", "2", "3", "4", "5"}
+	if got := h.recordUntil(t, "5"); !slices.Equal(got, want) {
+		t.Fatalf("the record holds %q, want %q", got, want)
+	}
 }
 
 // sentKept is an agent whose activity is kept for a server that takes its
