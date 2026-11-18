@@ -362,17 +362,21 @@ func (h *extHost) Launch(ctx context.Context, r ext.LaunchRequest) (ext.RunRef, 
 	}
 	r.Label = strings.TrimSpace(r.Label)
 	if err := r.Valid(); err != nil {
-		return ext.RunRef{}, refused("%v", err)
+		return ext.RunRef{}, refusedCode(ext.RefusalInvalidRequest, "%v", err)
 	}
 	if !crew.ValidID(r.Crew) {
-		return ext.RunRef{}, refused("crew %q is not a crew id", r.Crew)
+		return ext.RunRef{}, refusedCode(ext.RefusalInvalidRequest, "crew %q is not a crew id", r.Crew)
+	}
+	if r.Origin != (ext.Origin{}) {
+		// A provider's launch, with its operation id (exthost_launch.go).
+		return h.launchOrigin(ctx, r)
 	}
 	bctx, end := h.bound(ctx)
 	defer end()
 	// The try's end is checked once more as the engine is asked (admit):
 	// a lookup the try's end cut short counts as an answer, and the launch
 	// itself runs on to its end once admitted.
-	run, c, release, err := h.s.launchSaved(bctx, r.Crew, r.Label, "", h.gone)
+	run, c, release, err := h.s.launchSaved(bctx, r.Crew, r.Label, "", h.gone, crew.LaunchOpts{})
 	defer release()
 	if err != nil {
 		if h.gone() != nil {
@@ -387,7 +391,8 @@ func (h *extHost) Launch(ctx context.Context, r ext.LaunchRequest) (ext.RunRef, 
 	return ext.RunRef{ID: run.ID, Crew: c.ID, URL: h.s.publicBase(nil) + "/runs/" + url.PathEscape(run.ID)}, nil
 }
 
-// launchError is a launch's error as the provider is told it.
+// launchError is a launch's error as the provider is told it: a refusal
+// keeps the launch route's code (ext.Refusal).
 func (h *extHost) launchError(id string, err error) error {
 	var refusal launchRefused
 	var stored crewStoreErr
@@ -395,17 +400,23 @@ func (h *extHost) launchError(id string, err error) error {
 	case errors.As(err, &refusal) && refusal.e.Code == "store_unavailable":
 		return fmt.Errorf("%w: %s", ext.ErrUnsupported, refusal.e.Message)
 	case errors.As(err, &refusal):
-		return refused("%s", refusal.e.Message)
+		return refusedCode(refusal.e.Code, "%s", refusal.e.Message)
 	case errors.As(err, &stored) && errors.Is(stored.err, crew.ErrNotFound):
 		return fmt.Errorf("%w: no such crew", ext.ErrNotFound)
 	case errors.As(err, &stored) && (errors.Is(stored.err, crew.ErrUnreadable) || errors.Is(stored.err, crew.ErrInvalid)):
-		return refused("%v", stored.err)
+		return refusedCode(ext.RefusalInvalidCrew, "%v", stored.err)
 	case errors.As(err, &stored):
 		h.s.log.Error("crew read failed", "crew", id, "provider", h.name, "err", stored.err)
-		return refused("could not read the crews")
+		return refusedCode("crews_unreadable", "could not read the crews")
 	}
 	h.s.log.Warn("crew launch failed", "crew", id, "provider", h.name, "err", err)
-	return refused("%v", err)
+	return refusedCode("launch_failed", "%v", err)
+}
+
+// refusedCode is a refusal with its code (ext.Refusal), ext.ErrRefused
+// with the words why.
+func refusedCode(code, format string, args ...any) error {
+	return &ext.Refusal{Code: code, Why: fmt.Sprintf(format, args...)}
 }
 
 // LaunchTurn launches the turn of the Brakeman request r.Request, the one

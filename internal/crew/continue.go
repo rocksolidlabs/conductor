@@ -52,6 +52,9 @@ type Loaded struct {
 	// HeldDecisions the decisions of the active ones (decisions_continue.go).
 	Holds         []ledger.HoldRow
 	HeldDecisions map[int64]ledger.DecisionRow
+	// Origin is its row of run_origin (origin.go), nil for a run with
+	// none.
+	Origin *ledger.OriginRow
 }
 
 // LoadImports reads into from.Imported the attempt rows of the results its
@@ -220,6 +223,12 @@ func (e *Engine) ContinueRunWith(ctx context.Context, runID, label string, o Con
 		undo()
 		return nil, ErrRunRunning
 	}
+	if o := from.Origin; o != nil && !o.Deadline.IsZero() && !e.now().Before(o.Deadline) {
+		// The chain's time limit has passed: it takes no continuation, a
+		// person's request for changes among them.
+		undo()
+		return nil, fmt.Errorf("%w (it was %s)", ErrTimeLimitPassed, o.Deadline.Format(time.RFC3339))
+	}
 	if want := o.Command.ExpectedRevision; o.Repair != nil && want > 0 && want != from.Run.Revision {
 		undo()
 		return nil, fmt.Errorf("%w: expected %d, run %s is at %d", ErrStaleRevision, want, runID, from.Run.Revision)
@@ -293,6 +302,14 @@ func (e *Engine) ContinueRunWith(ctx context.Context, runID, label string, o Con
 	var r *run
 	for try := 1; ; try++ {
 		r, _ = e.addRun(c, p, label, "", pkg)
+		if from.Origin != nil {
+			// Where its chain came from, and its deadline, as a person's
+			// run: the row's copy has no operation id.
+			row := continuedOrigin(*from.Origin, r.id)
+			e.mu.Lock()
+			r.origin = &row
+			e.mu.Unlock()
+		}
 		if e.afterAdd != nil {
 			e.afterAdd(r.id)
 		}
@@ -315,6 +332,9 @@ func (e *Engine) ContinueRunWith(ctx context.Context, runID, label string, o Con
 		return nil, err
 	}
 	defer e.launched(r)
+	// Its chain's deadline holds: armed once its first transaction has
+	// committed.
+	e.watchDeadline(r)
 	out, ok := e.Get(r.id)
 	if !ok {
 		return nil, ErrRunNotFound
@@ -803,6 +823,11 @@ func (e *Engine) startContinued(ctx context.Context, r *run, from Loaded, h hist
 		e.settleRun(r)
 		r.note(session.ActivityStatus, "continues %s: %d results kept, %d verified again, %d uncertain launches waiting for a retry, %d messages carried", from.Run.ID, imported, again, uncertain, len(r.messages))
 		w := ev("run.continued", map[string]any{"from": from.Run.ID, "base": r.base, "imported": imported, "reverified": again, "uncertain": uncertain, "messages": len(r.messages), "held": held})
+		var origin *ledger.OriginRow
+		if r.origin != nil {
+			row := *r.origin
+			origin = &row
+		}
 		if rc != nil {
 			w.events = append(w.events, rc.events(r)...)
 		}
@@ -816,6 +841,11 @@ func (e *Engine) startContinued(ctx context.Context, r *run, from Loaded, h hist
 			}
 			if err := ltx.Continued(from.Run.ID); err != nil {
 				return err
+			}
+			if origin != nil {
+				if err := ltx.PutOrigin(*origin); err != nil {
+					return err
+				}
 			}
 			// The messages carried, under this run: a later continuation
 			// reads them here.
@@ -1104,6 +1134,10 @@ func Recovered(rec Run, from Loaded) Run {
 		// run's binding was read says it too.
 		rec.Ticket = ticketOfRow(from.Run)
 	}
+	// Where it came from, as the ledger keeps it: the authority, so a
+	// record that lacks it, or says otherwise, says it as the row, and a
+	// record that carries one the ledger has no row of says none.
+	rec.Origin = originOfRow(from.Origin)
 	// The people and the tasks' owners are the launch's, whatever the
 	// record said: an older build writes it without them.
 	rec.People = nil

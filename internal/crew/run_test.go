@@ -114,6 +114,10 @@ func newEngine(t *testing.T) (*Engine, *fakeLauncher) {
 	e := NewEngine(fl, fl.lookup)
 	e.exec.port, e.exec.probe = fl.ports.port, fl.probes.probe
 	fl.engine = e
+	// The engine's runs end at the test's end even when no process was
+	// launched: a run still making its first attempt's worktree would
+	// otherwise write into a folder the test's cleanup is removing.
+	t.Cleanup(fl.endRuns)
 	return e, fl
 }
 

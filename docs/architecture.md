@@ -1418,9 +1418,10 @@ answered as if none had happened, with no restart. A wait bounds a hang,
 never a normal answer: a provider answers from what it holds.
 
 **Queues.** The calls fed from the server's own activity (`Notify` to a
-notification sink, `NoteTouch` to a context provider) go through an
-`extQueue`: a ring per provider and kind (`SinkQueue` 256, `TouchQueue`
-1,024) filled without waiting, a full ring dropping its oldest (the first
+notification sink, `NoteTouch` to a context provider, `Used` to an identity
+provider that is an `ext.UsageObserver`) go through an `extQueue`: a ring
+per provider and kind (`SinkQueue` 256, `TouchQueue` 1,024, `UsageQueue`
+256) filled without waiting, a full ring dropping its oldest (the first
 drop and every hundredth logged, as a webhook's queue does), drained in
 order by one goroutine of its own, each delivery with a context that ends
 after `DeliveryWait` (10 s), its panic recovered. A provider that is no
@@ -1431,6 +1432,26 @@ its `Start` has succeeded. `Saved`, `Deleted` (sync) and `Resolved`
 again: they are delivered the same way from lists that drop nothing (C6,
 C5). `Shutdown` ends the drains with the webhooks, what waits in them
 undelivered, and waits for their goroutines with its others (`track`).
+
+**Relay usage** (`internal/api/relayusage.go`). On a switchyard whose
+identity provider is an `ext.UsageObserver`, each host connection admitted
+through the provider's principal keeps what the relay counted for it, at
+the two places the switchyard's hourly relay figure counts (a host's
+relayed frames, a viewer's relayed frames to the host that carries its
+session now), and reports it every `ext.UsageEvery` (60 s, on the server's
+clock seam), at each renewal to another credential (cut under the
+connection's credential turn, before the new credential takes effect, so
+each report's counts belong to the one credential whose hash it carries),
+and at its close, before the session shows its host gone. A connection
+that has admitted two such renewals inline in one period keeps its next
+one pending for the recheck. A renewal so kept pending is asked of nobody,
+and is not among the credentials the identity's detail is filtered by
+until the recheck adopts it. The reports are delivered through
+`extDeliver` from one ring of `ext.UsageQueue`, logged as every identity
+kind is, by the provider's name and count alone. Nothing is made (no ring,
+no goroutine, no count) on a server that is no switchyard or whose
+identity provider observes nothing, nor for a connection of the server's
+own tokens or an open host.
 
 **Host and Start.** A provider that needs the server is an `ext.Starter`.
 `runServe` calls `Server.StartExtensions` once the server is made, its
@@ -1486,6 +1507,34 @@ send one (`ErrUnsupported`), so notices never loop between providers;
 the sinks that list `TypeProvider` are handed it (Notifications, below). `DataDir` is
 `<dataDir>/ext/<name>`, made 0700 through the store. `Log` is the
 server's logger naming the provider.
+
+**A provider's launch** (`internal/api/exthost_launch.go`, `ext/launch.go`,
+`ext/resolve.go`). A `Launch` with an `Origin` is a registered provider's
+launch of a saved crew with tasks, made with nobody present: its
+operation id is looked up in the ledger first (`run_origin`, keyed by the
+provider's name and the operation id), and a row found answers that run
+and launches nothing, whatever else the request asks; otherwise the
+origin, the subject, the earlier run and the time limit are written in the
+transaction that makes the run's row, before any attempt can start. The
+ledger is the authority; the run's record carries them as `origin`, a
+cache, filled from the ledger at recovery. The engine stops the run at its
+deadline as the stop route does, its timer waking at the lesser of what is
+left and a short period to read the engine's clock; a continuation keeps
+the deadline, takes no operation id (it is a person's run) and is refused
+once the deadline has passed. `Run`, `RunByOp` and `StopRun` answer for a
+run whose ledger row names the calling provider and carries its operation
+id, and for no other (`ErrNotFound`, the answer for no run at all).
+`ResolveLaunch` works out what a launch would run now (the crew, the
+server's defaults, the folders, the project manifest at the base, each
+member's catalogue entry and binding) and digests it with
+`ext.ResolvedDigest`, the one function that encodes the record for a
+digest; a launch that carries the digest is resolved again in the launch
+itself, from the values it then hands the engine, and refused
+`launch_changed` on any difference. Each attempt of such a run starts its
+agent only from the catalogue entry whose selection the launch confirmed.
+Every refusal a caller may act on is a `*ext.Refusal` with its code. The
+desk's `Host`, a switchyard and `conductor host` answer `ErrUnsupported`
+from the four doors.
 
 **Identity.** The identity provider is asked last (`internal/api/auth.go`,
 `identity.go`): `authenticate` tries the workbench token, each host token
@@ -1692,7 +1741,7 @@ still resolved. A switchyard routes and answers none.
 | `internal/store` | atomic JSON documents in the data directory, and plain files such as the generated workbench token |
 | `internal/agents` | hook adapters per agent: assets under `dataDir/hooks`, launch injection, on-demand install, payload mappers |
 | `internal/crew` | saved crews, one file each in `dataDir/crews/`: members, role prompts, start conditions, validation; runs: member sessions through the server's launch path, git worktrees, readiness and the trust hold, prompts, start conditions, handoffs between members (an activity sink and a change hook of `internal/api`), run state, change reports, member resume |
-| `internal/crew/ledger` | the managed runs' ledger (#334): `runs/managed.sqlite` in the data directory, opened beside the records with the owner lock `runs/owner.lock`; one connection, every transition one transaction committed before the side effect it precedes; the rows of runs, tasks, attempts, checks (with their logs), commands (receipts) and events, each attempt, check and prerequisite row saying where it ran (`where_ran`, schema version 7); a table of where a run was launched from (`run_origin`, schema version 13), which nothing writes yet; recovery of what the last owner left open; read-only, with managed launches refused, when another server holds the lock, the filesystem has no locks, the server may not write the database file, or the database is damaged or newer |
+| `internal/crew/ledger` | the managed runs' ledger (#334): `runs/managed.sqlite` in the data directory, opened beside the records with the owner lock `runs/owner.lock`; one connection, every transition one transaction committed before the side effect it precedes; the rows of runs, tasks, attempts, checks (with their logs), commands (receipts) and events, each attempt, check and prerequisite row saying where it ran (`where_ran`, schema version 7); a table of where a run a registered provider launched came from (`run_origin`, schema version 13: its origin, operation id, subject, deadline, digest and confirmed selections, written with the run's first row and copied by a continuation); recovery of what the last owner left open; read-only, with managed launches refused, when another server holds the lock, the filesystem has no locks, the server may not write the database file, or the database is damaged or newer |
 | `internal/dispatch` | Dispatch's store: projects, tickets, their discussion and history in `dataDir/dispatch/dispatch.sqlite`; every write a typed operation with a kept receipt and its rows in the `changes` log; no HTTP, no session, no process |
 | `internal/tracker` | an external tracker's contract for Dispatch (IN1a): the adapter, the records a read gives, the person's token as a `Credential` carried to one API address, GitHub references, the steps to reproduce, the hosts an image or a log may come from; standard library only |
 | `internal/tracker/github` | the GitHub adapter: REST over `net/http` and GraphQL for the calls that address an item by its node id, every answer read to its bound, nothing retried; `githubtest` is its fake GitHub |

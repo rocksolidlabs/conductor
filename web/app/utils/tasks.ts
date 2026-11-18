@@ -1,5 +1,6 @@
 import type { RunAttempt, RunInfo, RunStep, RunTask } from '~/composables/useSessions'
 import { relativeTime, shortCwd } from './sessions'
+import { timeLimitPassed } from './runOrigin'
 
 // A managed run's tasks on the run page (#334, row 7): the counts its
 // header says, a task's state in words, which actions apply to it, and the
@@ -234,14 +235,16 @@ export interface TaskActionSet {
  * blocked. The engine judges what the page cannot see: an Accept anyway takes any attempt kept since a withdrawal that submitted a
  * commit, of any kind, and a stopped run still takes its commands. Open preview follows the attempt's `preview` alone: the server
  * sets it at its worktree's `tree.ready` and clears it at the attempt's close, at a service's own exit and while the run stops, so
- * nothing here second-guesses it.
+ * nothing here second-guesses it. A run a provider launched whose time limit has passed at `now` (its `origin`'s deadline) takes
+ * no Retry and no Accept anyway: each would start an attempt, which the server refuses (`time_limit_passed`).
  */
-export function taskActions(t: RunTask, run: Pick<RunInfo, 'record' | 'resumedBy'> & Partial<Pick<RunInfo, 'stoppedAt'>>): TaskActionSet {
+export function taskActions(t: RunTask, run: Pick<RunInfo, 'record' | 'resumedBy'> & Partial<Pick<RunInfo, 'stoppedAt' | 'origin'>>, now: number = Date.now()): TaskActionSet {
   const live = !run.record && !run.resumedBy
   const named = (c: TaskCommand) => live && !!t.commands?.includes(c)
+  const starts = !timeLimitPassed(run.origin, now)
   return {
-    retry: named('retry'),
-    accept: named('accept'),
+    retry: starts && named('retry'),
+    accept: starts && named('accept'),
     cancel: named('cancel'),
     open: !!t.attempt?.sessionId,
     copyBranch: !!t.attempt?.branch,

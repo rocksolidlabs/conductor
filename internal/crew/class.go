@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"regexp"
+
+	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
 )
 
 // A run's class (docs/plans/brakeman.md, A turn is a run Yardmaster
@@ -20,9 +22,14 @@ const ClassBrakeman = "brakeman"
 
 // LaunchOpts are what LaunchNamedWith stamps on a run: its class ("" for
 // the default) and, for a Brakeman turn, the request it does (br-<n>).
+//
+// Origin, for a provider's launch of a crew with tasks, is where the run
+// comes from, written with the run's first row (run_origin): the engine
+// sets its run and, for a limit, its deadline; nil for every other launch.
 type LaunchOpts struct {
 	Class   string
 	Request string
+	Origin  *ledger.OriginRow
 }
 
 // The caps of a Brakeman turn's runs: the engine keeps at most
@@ -57,6 +64,9 @@ func (o LaunchOpts) check() error {
 	default:
 		return invalidf("no run class %s", quote(o.Class))
 	}
+	if o.Origin != nil && o.Class != "" {
+		return invalidf("a provider's launch is a person's class of run")
+	}
 	return nil
 }
 
@@ -81,17 +91,30 @@ func recordsCap(class string) int {
 // Launcher in each member's LaunchSpec. LaunchNamed is it with none.
 func (e *Engine) LaunchNamedWith(ctx context.Context, c Crew, label string, opts LaunchOpts) (*Run, func(), error) {
 	noop := func() {}
-	if err := opts.check(); err != nil {
+	if err := e.checkLaunch(c, opts); err != nil {
 		return nil, noop, err
 	}
+	return e.launchNamed(ctx, c, label, opts)
+}
+
+// checkLaunch holds opts to c: their shapes, a Brakeman turn of
+// Brakeman's own crew and never a managed one, and a provider's launch of
+// a crew with tasks.
+func (e *Engine) checkLaunch(c Crew, opts LaunchOpts) error {
+	if err := opts.check(); err != nil {
+		return err
+	}
 	if opts.Class == ClassBrakeman && c.Managed() {
-		return nil, noop, invalidf("a Brakeman turn is never a managed run")
+		return invalidf("a Brakeman turn is never a managed run")
+	}
+	if opts.Origin != nil && !c.Managed() {
+		return invalidf("a provider's launch is of a crew with tasks")
 	}
 	// A turn's crew is Brakeman's own id (the store reserves it), so its
 	// runs and their records are named brakeman-<n>: the records' prune
 	// counts them by that name before it reads any.
 	if opts.Class == ClassBrakeman && c.ID != ClassBrakeman {
-		return nil, noop, invalidf("a Brakeman turn's crew is %s", ClassBrakeman)
+		return invalidf("a Brakeman turn's crew is %s", ClassBrakeman)
 	}
-	return e.launchNamed(ctx, c, label, opts)
+	return nil
 }

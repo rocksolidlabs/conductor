@@ -585,7 +585,9 @@ the connection `4403` when it does not, and, with no answer, keeps both
 for the recheck after. Anything else (a message past its
 bounds, a connection not admitted
 so, a token of the server's own (the workbench token, a host token, a
-link, expired or revoked: never asked of the provider), an error, a late
+link, expired or revoked, or a session's live agent token: never asked of
+the provider; a pending token that has since become a live agent token is
+refused so at the recheck), an error, a late
 or panicking answer, another subject or no host grant) closes the
 connection `4403` (`access revoked`), and the host registers again. A host
 whose send is withdrawn or fails closes the connection `1000` itself. A
@@ -893,7 +895,11 @@ the secret its `registered` gave; after the switchyard restarts, by a
 fresh `register_desk`, which takes back a desk held under that id while
 its host was away and is refused while another connection holds it live
 (or another instance's: two publishers with one run id have two desks,
-of two owners). Its `registered` carries the ids of the live links
+of two owners). A desk that ended or was forgotten is not taken back,
+even in the moment before the switchyard forgets its id: a `resume` of it
+is closed `4404`, and a `register_desk` registers the desk anew, the old
+desk's place among the sessions given back. A session held under a
+desk's id refuses the desk. Its `registered` carries the ids of the live links
 naming it (`links`) and `decisions`, no recipe. A desk is never listed
 as a session, and holds a place among the switchyard's sessions while it
 lives (the session limit counts it). It sends a desk's messages alone:
@@ -978,7 +984,10 @@ A host that loses its connection reconnects with `resume` and the secret from
 `registered`. The session shows `host_disconnected` in the meantime and is
 removed after 60 s without the host. A server that no longer knows the session (a restarted switchyard keeps
 hosted sessions in memory) closes the resume with `4404`; the host then
-registers afresh. On every connection it starts, the host sends its
+registers afresh. So does a server that let the session go, even in the
+moment before it forgets its id: a session removed after it ended, or
+forgotten after its host's grace, is never resumed and never has a host
+put on it again. On every connection it starts, the host sends its
 session's `attention`, the empty state included: the server keeps the
 attention it had when the host went, so a question answered at the host's
 own terminal while it was away leaves the listing when the host is back.
@@ -990,7 +999,11 @@ connection. With them the session's id is fixed: a hash of the pair, so a
 host that registers again after the server restarted gets the same id, and
 a link minted for it before names it again; a session still held under that
 id whose host is away is taken back (`resumed: true`), one whose host is
-connected refuses the second. `conductor host` makes an instance when it
+connected refuses the second, and so does one whose first registration
+of that id is still under way. A session held under that id that has
+left the server (removed after it ended, or forgotten) is not taken back:
+the id is registered anew, a new session with a new secret. A desk held
+under the id refuses the session. `conductor host` makes an instance when it
 starts; a Conductor publishing to a switchyard makes one for its life and
 uses each session's own id. The publishing server keeps its records of the
 links minted for a session while `registered.links` (then `link_created` and
@@ -3345,18 +3358,33 @@ frames no preview: `GET /preview-bridge.js` answers it `404 no_bridge`.
 Every `/api/...` route, with the credential it needs. Admin means
 `Authorization: Bearer <workbench token>`; a share token is also accepted where the
 table says so. A token is read in this order: the workbench token, each host
-token, the share links, then, only when the build has an identity provider
-registered, the live agent tokens this server minted, and only then, for a
-token none of them knows, that provider (package `ext`; a plain build has
-none, so there the order ends at the links). A live agent token is one this
-server minted for a session it launches, from before the agent's process
-starts until the session ends, or until its launch fails; it is found by its
-hash in one set, which holds beyond the live sessions' tokens only those of
-the launches under way, and a token of another length than the 43
-characters the server mints is never one. A hosted session's agent token is
-minted by its host, not by this server, and is not one of them: at a route
-that takes it first nothing changes, and at a route that does not take it,
-it is asked of the provider as any token the chain does not know. An
+token, the share links, then, only when the build has an identity provider registered, the live
+agent tokens the server knows, and only then, for a token none of them
+knows, that provider (package `ext`; a plain build has none, so there the
+order ends at the links). A live agent token is one of two kinds. One this
+server minted for a session it launches is live from before the agent's
+process starts until the session ends, or until its launch fails. A hosted
+session's agent token, which its host chooses, is live from the session's
+registration, or from an attach that carries a token (a resume, or the
+same instance registering again), until the session ends (its host says
+`exited` or `stopped`), leaves the server (it is removed, or its host
+stays away past the grace), or its registration fails; an end is final, so
+a `running` after it, or an attach to an ended or removed session, makes
+no token live again. A resume that carries another token makes the new one
+live and the old one unknown, with no moment where neither is live; a
+reconnect with the same token keeps it live throughout. Live agent tokens
+are found by their hash in one set, counted per session, which holds
+beyond the live sessions' tokens only those of the launches under way; a
+token of another length than the 43 characters the server mints is never
+one, whoever chose it. A hosted session whose token equals another
+session's takes nothing from it: the token stays live while either session
+lives, and neither session gains anything of the other's standing. While a
+hosted session lives, its token is answered as that session's alone, never
+put to the provider, even where the provider would admit the same string:
+a host can so withhold from the provider only a token it already knows,
+and only until its session ends. Nor is a live agent token ever a host
+credential: a `host_token` renewal that carries one is refused, the
+connection closed `4403`, and the provider is not asked about it. An
 expired or revoked link is refused as a link and never asked of a
 provider, nor is a live agent token (a Brakeman turn's among them): at a
 route that does not take it, it is an unknown token answered without a
@@ -3465,7 +3493,7 @@ its run, and on no other.
 | `GET /api/people` | admin | the people Conductor knows (docs/plans/decisions.md, HM1): the union of Dispatch's directory and the saved crews' people, each name once, read from both and written to neither: `{people, next?, dispatchUnavailable?}`, `people` ordered by name as Dispatch orders its directory (byte for byte), each `{name, dispatch, crews, crewsMore?}`, `dispatch` whether the directory has the name, `crews` at most 20 of the crews that list it in the crews' order, each `{id, name, responsibilities}`, `crewsMore` `true` past them; at most `?limit=` names (1 to 200, 200 when absent), `next` the page's last name when more follow, which the next page passes as `?after=` (the names after it); `?q=` (at most 60 characters) keeps the names that contain it, ignoring case; `dispatchUnavailable: true` when Dispatch is off or cannot be read, the crews' people listed all the same; `400 invalid_request` for a parameter out of its bounds, given twice or unknown |
 | `GET /api/people/{name}` | admin | a person's work (docs/plans/decisions.md, HM1), the name matched exactly, as Dispatch matches it: `{name, dispatch, crews, crewsMore?, tasks, more?, tickets, decisions, decisionsMore?, decisionsUnavailable?, dispatchUnavailable?, crewsUnavailable?, recordsUnavailable?}`; `{name}` is the name's segment by one rule, the app's links' too (`personSegment` in `internal/api/people.go` and `web/app/utils/people.ts`, tested against the cases of `internal/api/testdata/person-segments.json`): a plain name (ASCII letters and digits, `-`, `_`, `.`, a space, characters past ASCII; not starting with `.` or a space, not ending with a space) is itself, escaped (`/api/people/Jos%C3%A9`), and any other name `~` and the base64url of its UTF-8 without padding (`/api/people/~Li4` is `..`'s, `/api/people/~YS9i` `a/b`'s), so no decoding, cleaning or proxy's normalising of the path reads a segment as more than a name; a segment not in the one form written for its name is `404 not_found`; `dispatch` whether Dispatch's directory has the name; `crews` at most 100 of the saved crews that list the person, in the crews' order, each `{id, name, responsibilities}`, `crewsMore` `true` past them; `tasks` the tasks the person owns (the task names them, or they are the crew's acceptance owner) in the runs the engine holds and the managed runs' records, as each run's crew was launched, at most 200, the newest run first and its tasks in the crew's order, each `{run, runLabel, task, state, member, ownerFrom}` (`runLabel` the run's label, else its crew's name; `member` the agent that does it; `ownerFrom` `task` or `acceptance`), `more` `true` past them; `tickets` what Dispatch holds for them, `{owner, assignee, ownerHref, assigneeHref}`: how many live tickets they own and how many name them an assignee, each the `total` of Dispatch's own list, and that list's link (`/api/dispatch/tickets?owner=<name>`, `/api/dispatch/tickets?assignee=person:<name>`), which the person's page reads and pages through with its `cursor` (two lists, since every condition of a list's filter must hold), `null` with `dispatchUnavailable: true` while Dispatch is off or cannot be read (`dispatch` still `true` when the directory was read and lists the name); `crewsUnavailable: true` when the saved crews' directory, or one crew in it, could not be read, the crews read listed all the same; `recordsUnavailable: true` when the managed runs' records' directory, or one record in it, could not be read, the tasks of the runs the engine holds and of the records read listed all the same (a list is read and holding rows, read and empty, or not read whole and saying so); `decisions` the decisions for the person (HM1, PR-12), open and answered, the newest first, at most 100, each as `GET /api/decisions` gives it, `decisionsMore` `true` past them and `decisionsUnavailable` `true` when the ledger could not be read; `404 not_found` only for a name no source knows (neither store, nor a run's people or its tasks' owners, nor a ticket, nor a decision's `for`) when every source was read whole, every crew and record included, so a person removed from the saved crew after a launch still has a page with that run's work on it, and a name only an unreadable source could know is answered with what was read and which source was not; `400 invalid_request` for any parameter |
 | `GET /api/runs` | admin | `{runs}`: the runs in the server's memory, newest first, each with its `state` and `needsInput` (see Crew runs), and the crew's `people` as launched (People in a crew below) |
-| `GET /api/runs/{run}` | admin | `{run}` with each worktree member's `diff{added, removed}`, the run's `log`, whose entries Crew runs lists, and its `chat` (the run's chat messages, oldest first, at most 500; see Chat); for a run the server no longer holds (it ended before the server last started, or was evicted) but has a record of, `{run, record: true}` as it was last written (its `state` as recorded, `interrupted` for a run the server's end cut short), no diffs, and its page opens read-only: the run's actions (stop, members, broadcast, links) answer `404` for it as for any run not held, and `POST /api/runs/{run}/resume` resumes it from the record; `404` when unknown |
+| `GET /api/runs/{run}` | admin | `{run}` with each worktree member's `diff{added, removed}`, the run's `log`, whose entries Crew runs lists, and its `chat` (the run's chat messages, oldest first, at most 500; see Chat); a run a registered provider launched, and a continuation of one, carries `origin` (Managed runs, A provider's launch); for a run the server no longer holds (it ended before the server last started, or was evicted) but has a record of, `{run, record: true}` as it was last written (its `state` as recorded, `interrupted` for a run the server's end cut short), no diffs, and its page opens read-only: the run's actions (stop, members, broadcast, links) answer `404` for it as for any run not held, and `POST /api/runs/{run}/resume` resumes it from the record; `404` when unknown |
 | `POST /api/runs/{run}/members` | admin | add a member mid-run: body a crew member; reply `201 {run}`, once the session of a member that starts immediately exists; `400 invalid_crew` for an invalid member, a name the run has (`the name is used twice`), a prompt over 32756 bytes with the run's goal in it, an `after` naming no member of the run, a 13th member or an agent as at launch; a member whose session cannot be created answers as at launch (`409 not_a_repo`, `500 launch_failed`), and stays in the run, `ended` with its `error`, its name taken: adding it again under that name is `400 invalid_crew`; `409 run_stopped`; `404` when unknown |
 | `POST /api/runs/{run}/members/{name}/start` | admin | start a pending member by hand, whatever its start condition; reply `{run}` once its session exists, the member `starting` until its prompt is typed; a session that cannot be created answers as at launch (`409 not_a_repo`, `500 launch_failed`), the member `ended` with its `error`; `409 member_started`, `409 run_stopped`; `404` for an unknown run or member |
 | `POST /api/runs/{run}/members/{name}/resume` | admin | resume an ended member of the run (no body), in its working directory, its worktree and branch kept: a session tagged with the run that resumes the member's last `agentSession` with its agent's `session` recipe when the agent has one and the session was `resumable` (`resumed: true`; no prompt is typed, its conversation has it), and otherwise a fresh one whose role prompt is typed again once it is ready (`resumed: false`, with a `notice`); the member is `starting` with the new `sessionId` until its session is ready for a prompt (a resumed conversation, whose agent takes a while to show its prompt; a trust question holding it is noted) or until that prompt is typed (a fresh one), then `running`, so a handoff typed into it meanwhile waits, queued, and is typed once it is; noted in the run log; reply `201 {session, resumed, notice?}`, the new session's `Info` with `resumedFrom`; `404` for an unknown run or member; `409 still_running` for a member that is pending, starting or running, and, read as the launch starts, while its session's process is not done (its stop failed), whatever its status says; `409 run_stopped` only while a stop is under way or was cut short: an ended member of a run whose stop completed is resumed in place, which reopens the run (`stoppedAt` cleared, the log noting `reopened: <member> resumes`; the other ended members stay ended until resumed one by one, and a later stop stops it again); `409 already_resumed` when a running session holds that agent session; `400 invalid_agent` when the member's agent is no longer in the catalog; a session that cannot be created answers as at launch, the member `ended` with its `error` |
@@ -4308,7 +4336,10 @@ a "Cut to fit" section of `task.md` name. In a crew with people,
 came to own it, each responsibility's holder, the rule that the agent asks
 for a person's decision through Conductor and never acts or answers as
 them), name who answers for the work as the run was launched, never cut;
-a crew without people writes neither, its task files as before. An attempt after one that
+a crew without people writes neither, its task files as before. An
+attempt of a run a provider launched with a subject also has `task.json`'s
+`subject` and `task.md`'s "Subject" (Managed runs, A provider's launch);
+one with none, neither. An attempt after one that
 failed at a check or a project manifest's verify step (DS2) is handed
 that receipt: `task.json`'s `previous.check`, `{receipt, run, task,
 attempt, phase, id, k, argv, subject, exit, signal?, timedOut, stable,
@@ -4840,13 +4871,8 @@ is refused with a receipt (`task_state`), nothing changed. A row written
 before this (ledger version 9 or earlier) has none of `request`, `start`
 and `findingsFrom` and reads as before; the ledger's version 10 changes
 no table and is a barrier, so an older binary opens it read-only rather
-than dropping a request it does not know. The ledger's version 13 adds a
-table that keeps where a run was launched from (`run_origin`, one row a
-run at most, removed with its run, and one run for a provider's operation
-id); no run before it has a row, and nothing writes one yet. A build that
-writes version 12 opens such a ledger read-only: it launches no crew with
-tasks there and rewrites nothing; opened again by a build that writes 13,
-it is as it was.
+than dropping a request it does not know. Version 13 is a provider's
+launch's (A provider's launch, below).
 
 **Commands with receipts.** A person's change to a managed run (pause,
 unpause, cancel, retry, accept) is a command: the client mints a `commandId`
@@ -5017,6 +5043,225 @@ version 7, refused when empty); a version 6 database is brought to it as
 it opens, every row it holds `native`, which is what ran them, and one
 read before its migration (another server still holding the owner lock, or
 a migration that failed) reads `native` too.
+
+**A provider's launch.** A registered provider launches a saved crew
+with tasks through its `ext.Host` (`Launch` with an `Origin`, the records
+of `ext/launch.go` and `ext/resolve.go`), with nobody present, and reads,
+finds and stops the runs it launched. A person's launch carries none of
+this: `POST /api/crews/{id}/launch` takes no origin, limit or digest, and
+a launch with no provider registered is as it was.
+
+- **The launch's fields**, each `ext.LaunchRequest`'s and checked by its
+  `Valid` (refused `invalid_request`), none of them without an `origin`, so
+  a launch that carries none is the launch it was: `opId`, 1 to 32 of
+  letters, digits and `._~-`, required with an origin; `origin` `{ref,
+  label}`, `ref` 1 to 200 bytes of printable ASCII with no space (the
+  provider's own reference, never a link or a secret) and `label` 1 to 60
+  characters on one line; `subject` `{ref, url?, prior?}`, `ref` 1 to 512
+  bytes on one line of the form `<kind>:<parts>` (`change:<host>/<owner>/
+  <name>#<n>@<commit>` and `job:<host>/<owner>/<name>#<n>@<commit>/<check>`
+  held to their pattern: a host of 1 to 253 of `a-z`, `0-9`, `.` and `-`,
+  an owner and a name of 1 to 100 of `A-Z`, `a-z`, `0-9`, `.`, `_` and `-`,
+  a number from 1 of at most 18 digits, a full commit, a check of 1 to 64
+  of the owner's characters; Brakeman's references taken as Brakeman reads
+  them; any other kind refused `invalid_subject`), `url` an `https` link
+  with a host and no userinfo, query or fragment, at most 2,048 bytes of
+  printable ASCII, and `prior` an earlier run, a run id of at most 73
+  bytes, that this provider launched (`prior_unknown` otherwise, the same
+  words for a run that is not there); `stopAfter`, the time limit, a whole
+  number of minutes from 10 to 1,440, encoded in JSON as nanoseconds (an
+  hour is `3600000000000`); `project`, a Dispatch project's key; and
+  `resolvedDigest` (64 lower-case hex, with a `project`) and `startCommit`
+  (40 or 64 lower-case hex), below. Every launch with an origin of a
+  crew without tasks, held or not, is refused `not_managed`, right after
+  the crew is read (after `invalid_subject` and `prior_unknown`, before
+  `start_commit_missing` and `launch_changed`); a resolve of such a crew
+  still answers `managed` false.
+- **Once per operation id.** The provider's name and the operation id are
+  looked up in the ledger before anything is made, and a run found is
+  answered, whatever else the request asks: the run's `origin` (`Run`)
+  says what it was launched with. Otherwise the origin is written in the
+  transaction that makes the run's row, before any attempt can start, so
+  two launches at once with one operation id make one run, and a launch
+  whose answer was lost is answered its run after a restart. The ledger
+  keeps an operation id as long as it keeps the run.
+- **The time limit.** A launch with `stopAfter` has a deadline, the
+  launch's time and the limit, in UTC to the second, kept in the ledger.
+  At the deadline a run that is running or waits for input, paused or not,
+  is stopped as `POST /api/runs/{run}/stop` stops it, its log saying
+  "stopped: its launch's time limit of 60 minutes" (the limit's minutes); a
+  run already stopped, finished or interrupted is left as it is, and the
+  deadline is read off the engine's clock, so a machine that slept stops
+  the run when it wakes. A continuation keeps the deadline and is stopped
+  at it too. Once it has passed, the run takes no change that would start
+  an attempt and its chain no continuation, and nothing is changed: Retry,
+  Accept anyway, Check again and a continuation (`POST
+  /api/runs/{run}/resume`) are refused `time_limit_passed` (`409` at the
+  routes, a command's receipt saying why), "the run's time limit has
+  passed: it takes no change that would start an attempt, and its chain no
+  continuation", and a review's request for changes (`POST
+  /api/dispatch/tickets/{key}/reviews`, its retry) is kept with its
+  application `refused` in those words. Pause, Cancel, Stop and the reads
+  are as before. The run page offers none of the refused actions past the
+  deadline, and says why.
+- **The provider's runs.** `Run`, `RunByOp` and `StopRun` answer for a run
+  whose ledger row names the calling provider and carries an operation id,
+  and for no other: a person's run, another provider's run and a person's
+  continuation of the provider's run (which says where its chain came from
+  and has no operation id) answer `ErrNotFound`, as a run that is not
+  there does; the run's record grants nothing. `Run` answers the run as
+  the server holds it now (`ext.RunStatus`: `id`, `crew`, `state`
+  `running`, `needs_input`, `stopped`, `finished` or `interrupted`,
+  `outcome`, `paused`, `needsInput`, `startedAt`, `stoppedAt`, and its
+  `origin` `{opId, ref, label, subject?, project?, startCommit?,
+  resolvedDigest?, deadline?}`), an interrupted run after a restart among
+  them; `RunByOp` finds the run of an operation id and never launches;
+  `StopRun` stops a running run as the stop route does, its log saying
+  "stopped by <name> through <provider>" and, with a why (at most 200
+  bytes on one line), ": <why>"; a run not running answers `ErrNotRunning`,
+  nothing changed; on a server that does not own the ledger (another
+  server holds it) `StopRun` answers `ledger_unavailable` and stops
+  nothing. A call given up is answered with its context's own error:
+  `context.Canceled` for a try given up or a call cancelled,
+  `context.DeadlineExceeded` for a call whose own deadline passed; never
+  `ledger_unavailable`, and it logs no ledger failure. The desk's Host, a switchyard and `conductor host`
+  answer `ErrUnsupported` from each, and from a launch with an origin.
+- **Refusals with a code.** Every refusal of `Launch`, `ResolveLaunch`,
+  `Run`, `RunByOp` and `StopRun` that is `ErrRefused` is an `*ext.Refusal`
+  `{Code, Why}` (`ext.RefusalCode` reads the code through a wrap), its code
+  1 to 40 of `a-z`, `0-9` and `_`: `invalid_request`, `not_managed`,
+  `invalid_subject`, `prior_unknown`, `project_unknown`,
+  `project_archived`, `launch_changed`, `start_commit_missing`,
+  `resolved_too_large`, and the launch route's own (`crew_changed`,
+  `managed_off`, `ledger_unavailable`, `invalid_crew`, `invalid_cwd`,
+  `invalid_account`, `capacity_unavailable`, `account_gone`,
+  `crews_unreadable`, `dispatch_unavailable`, `launch_failed`). No such
+  crew, and a run that is not the caller's, are `ErrNotFound`; a call
+  given up, its context's error (`context.Canceled`, or
+  `context.DeadlineExceeded` for a call past its own deadline).
+- **The resolved launch.** `ResolveLaunch` `{crew, project?, commit?}`
+  answers what a launch of the saved crew would run now, for the project
+  (or none) at the commit (or the launch folder's `HEAD`): `{crew, name,
+  managed, tasks, where, project?, projectCwd?, cwd, inProject, manifest,
+  members, digest, capacity?}`. `tasks` is how many (their content is in
+  the crew's revision); `where` `server` or `host`; `cwd` the launch folder
+  and `projectCwd` the project's, each resolved to its real path on the
+  server; `inProject` whether the one is the other or under it, false with
+  no project and for a project with no folder; `manifest` `{source:
+  none|crew|file, revision?, blob?}`, the crew's manifest revision or the
+  file's blob at the base; each member `{name, agent, start, after?, yolo,
+  selection, account?, accountSource?, model?}`, its yolo as resolved with
+  the server's default, `selection` the hex SHA-256 of the agent's
+  catalogue entry it would start from (its command, its session recipe
+  and its environment's names, never a value), `account` the account a
+  launch would bind now (`default` or `a-` and 12 characters),
+  `accountSource` where its login comes from (`own`, `account`, `pinned`,
+  `launch_env`) and `model` the model ("" for the agent's default), never
+  the account's folder or the login's fingerprint. `capacity` is, for
+  each distinct agent and account among the members, at most 12, the
+  account's usage as the server last read it (`{agent, account, label?,
+  state, fresh, readAt?, running, started5h, started7d, windows?,
+  credits?}`, at most 16 windows `{kind, name, minutes?, percent,
+  resetsAt?, severity?}` and 4 credit figures `{kind, enabled?, used?,
+  limit?, balance?, unlimited?, currency?}` as the tool wrote them; a
+  member whose login the launch's environment sets, its yolo recipe's,
+  shown `env_set` with no windows, no credits and freshness `none`; a
+  default login on a server whose runtime is not native is shown as read,
+  with no word that where the run will start is undetermined): the
+  resolve reads no usage, asks no tool and moves nothing to make it. It
+  runs no agent's program, keeps nothing and holds no reservation once it
+  has answered. A crew on a host resolves with `where` `host`, its folder
+  as saved (the host's), no manifest and no binding, and one without tasks
+  with `managed` false: the caller decides what to make of either (a
+  launch of a crew on a host is refused `invalid_crew`). A crew on a host
+  saved with no folder, with a relative one or with one longer than
+  `ext.MaxFolder` is refused `invalid_cwd`: no record could name its
+  folder. Refusals:
+  `invalid_request` (a commit for a crew without tasks among them, whose
+  launch has no base); `ErrNotFound` for no such crew;
+  `project_unknown`, `project_archived`; `invalid_crew`, `invalid_cwd`;
+  `start_commit_missing` (a commit the folder's repository does not hold;
+  a commit is named by its own full id: an annotated tag's id, or any
+  other object's, is `invalid_request`); `resolved_too_large`; a server with no ledger or no Dispatch store
+  answers `ErrUnsupported`.
+- **The digest.** `digest` is `ext.ResolvedDigest`'s: the lower-case hex
+  SHA-256 of `conductor resolved launch 1\n`, the crew's revision (64
+  lower-case hex), `\n` and the record encoded by `encoding/json` with
+  `digest` empty and `capacity` left out, fields in their declared order,
+  HTML escaping off, no indent, no final newline. It pins everything in
+  the record but `capacity`: the crew (a re-save changes it), the server's
+  defaults as resolved, the folders and the project, the manifest at the
+  base, each member's selection and binding; never a reading, a count or a
+  time. The pinned record is at most 8 KiB as encoded and refused
+  `resolved_too_large` past it, never cut; the whole reply, its capacity
+  views at their bounds, is at most 288 KiB (`ext.MaxResolvedReply`). A
+  digest says the launch is unchanged since it was resolved; it is no
+  approval and opens nothing. It does not pin the commit it was resolved
+  at, only what the manifest is there: a provider that wants a launch held
+  to a commit names it in the resolve (`commit`) and in the launch
+  (`startCommit`).
+- **A launch held to its digest.** A launch with `resolvedDigest` (and so
+  a `project`) is resolved again in the launch itself, for that project at
+  `startCommit` (none: the folder's `HEAD`), from the values it then hands
+  the engine, and any difference is refused `launch_changed`, nothing
+  started: the crew, a default, a folder, the project's folder, the
+  manifest, a selection, an account the launch would bind. `startCommit`
+  is the run's base instead of `HEAD`: a commit's own full id, one the
+  repository lacks refused `start_commit_missing`, an annotated tag's id or
+  any other object's `invalid_request`. The selections the launch confirmed are kept
+  with the run, and every attempt starts its agent only from the
+  catalogue entry it confirmed: a changed entry, or an agent the launch
+  did not confirm (a member added later, or an entry kept with an empty
+  selection), fails the attempt at "agent" before any step of its tree
+  runs (no worktree, no setup step, no service, no process), "is not the
+  one this run's launch confirmed", not counted, and pauses the run for a
+  person; a continuation is held to the same. A comparison's Brakeman
+  draft is the server's own Brakeman turn, a run of its own, and is not
+  held to the launch's selections. A provider's launch makes no view
+  link, whatever the crew's `viewLinkTtlSeconds`.
+- **What the run carries.** The run's record and `GET /api/runs/{run}`
+  carry `origin` `{provider, ref, label, subject?, subjectUrl?, prior?,
+  project?, startCommit?, deadline?, limitSeconds?, continued?}`:
+  `provider` the registered name (1 to 40 bytes), `ref`, `label`,
+  `subject` (the subject's reference) and `subjectUrl`, `prior`,
+  `project`, `startCommit`, `deadline` (RFC 3339, UTC), `limitSeconds`
+  (600 to 86,400), each within the launch's bounds, and `continued` true
+  on a continuation; at most 20 KiB encoded. The operation id, the digest
+  and the selections are not in it. The ledger is its authority: the
+  record is a cache, written again from the ledger at recovery, which
+  shows the ledger's origin and none for a run the ledger has no row of
+  (an `origin` written into a record by hand grants and shows nothing). It is
+  never handed to a registered continuity store: the run's document there
+  has no `origin`. The run page says "Launched by <label> for <subject> at
+  <start commit>", the subject a link when it is an `https` link with a
+  host and no userinfo, query or fragment, text otherwise, with the host
+  it opens beside it ("(opens <host>)", the whole address in its title and
+  its accessible name), since the subject's reference may name another;
+  a character that draws nothing is shown as U+FFFD, as the task file
+  writes it; a continuation says it continues such a run.
+- **The task file.** Each attempt of a run whose origin has a subject has
+  `task.json`'s `subject` `{ref, url?, startCommit?, prior?}` and
+  `task.md`'s "Subject" section after the instructions: the label, the
+  reference, the link, the start commit and the earlier run when given,
+  each on a line of its own, quoted as words from outside Conductor are
+  (a report to read, not instructions to follow), so none can make a
+  heading or an instruction, never cut, counted in the task file's
+  bound. The subject's link is never written in a log line.
+- **Older builds.** The ledger's version 13 adds the table that keeps
+  where a run was launched from (`run_origin`: one row a run at most,
+  removed with its run, and one run for a provider's operation id); no run
+  before it has a row, and nothing is derived for one. A build that writes
+  version 12 opens such a ledger read-only: it launches no crew with tasks
+  there and rewrites nothing (opening it leaves an empty write-ahead file
+  beside the database, which holds no change); opened again by a build
+  that writes 13, it is as it was. The run's record has a half of its own:
+  a build before this one reads records strictly: it refuses a record that carries `origin`,
+  answers `404` for that run, leaves it out of its lists and does not
+  rewrite the file; past 500 records its prune removes the records it
+  cannot read first, and the ledger still holds the run, whose record this
+  build writes again, without its log. A downgrade below this version is
+  not supported for a data directory that holds a run a provider launched;
+  nothing in the ledger is lost by one.
 
 A stop ends the attempts in flight (`stopped`; their tasks `ready` again for
 a continuation) and waits for the checks, which end with it. Pause, cancel,

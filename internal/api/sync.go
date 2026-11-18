@@ -675,6 +675,10 @@ func publicRunDoc(b []byte) []byte {
 	if json.Unmarshal(b, &r) != nil {
 		return nil
 	}
+	// Where a run a provider launched came from (its provider, reference,
+	// label, subject and link, its deadline) stays on the server: a
+	// continuity store is handed none of it.
+	r.Origin = nil
 	out, err := store.Encode(r)
 	if err != nil {
 		return nil

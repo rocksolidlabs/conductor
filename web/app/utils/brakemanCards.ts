@@ -129,7 +129,7 @@ export function planCardControl(p: Pick<PlanSummary, 'n' | 'state' | 'stale' | '
 }
 
 /** The commands a task's card offers, by taskActions' rules, with the revision they carry. */
-function taskControls(run: Pick<RunInfo, 'id' | 'stoppedAt' | 'record' | 'resumedBy' | 'managed' | 'tasks'>, t: RunTask, expectedRevision: number, to: string): CardControls {
+function taskControls(run: Pick<RunInfo, 'id' | 'stoppedAt' | 'record' | 'resumedBy' | 'managed' | 'tasks'> & Partial<Pick<RunInfo, 'origin'>>, t: RunTask, expectedRevision: number, to: string): CardControls {
   const a = taskActions(t, run)
   const commands = (['retry', 'accept', 'cancel'] as const).filter((c) => a[c])
   const base = { kind: 'task' as const, run: run.id, task: t.id, to }
