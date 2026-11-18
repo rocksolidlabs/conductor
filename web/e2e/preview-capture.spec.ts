@@ -299,7 +299,7 @@ test('a saved capture is listed again after the editor was closed and after a re
   await expect.poll(async () => !!(await api.ok<{ deletedAt?: string }>('GET', `/api/captures/${c.id}`)).deletedAt).toBe(true)
 })
 
-test("Capture again loads the capture's page again though the frame went elsewhere inside itself", async ({ page, api }) => {
+test("Capture again sends the frame back to the capture's page when it went elsewhere inside itself, and describes on the next press", async ({ page, api }) => {
   const frame = await previewPage(page)
   await page.locator('[data-preview-capture]').click()
   await pick(page, frame, '#second', 'button#second.second', { downs: 1 })
@@ -308,8 +308,15 @@ test("Capture again loads the capture's page again though the frame went elsewhe
   expect(first.url).toBe(`${origin}/`)
   // The page moves on by itself: the pane's address for the frame is unchanged.
   await frame.evaluate(() => history.pushState({}, '', '/next'))
+  // The page reports /next: the frame goes back to the capture's page, and nothing is described yet.
   await editorOf(page).locator('[data-capture-again]').click()
+  await expect(page.locator('[data-preview-retake-moved]')).toBeVisible({ timeout: BOOT_MS })
   const retake = editorOf(page).locator('[data-capture-draft]')
+  await expect(retake).toHaveCount(0)
+  await expect.poll(() => page.frames().some((f) => f.url().startsWith(`${origin}/`) && !f.url().startsWith(`${origin}/next`)), { timeout: BOOT_MS }).toBe(true)
+  await expect(page.locator('[data-preview-pane]')).toHaveAttribute('data-preview-bridge', 'ready', { timeout: BOOT_MS })
+  // Pressed again on the capture's page: its element described.
+  await editorOf(page).locator('[data-capture-again]').click()
   await expect(retake).toHaveAttribute('data-capture-url', `${origin}/`, { timeout: BOOT_MS })
   await expect(editorOf(page).locator('[data-annotation="1"] [data-capture-element-summary]')).toContainText('button#second')
 })
