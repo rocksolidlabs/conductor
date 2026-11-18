@@ -248,6 +248,13 @@ const runChatAnswers = useRunChatAnswer({
   members: () => runMembers.value.map((m) => ({ name: m.name, session: m.sessionId && (m.status === 'running' || m.status === 'starting') ? { id: m.sessionId, kind: m.kind ?? 'server' } : undefined })),
   may: () => info.value?.role === 'control',
   via: () => ({ token: token.value, server: server.value }),
+  // The link's read of the run is the page's own: read again as a question comes and as a choice is pressed, so that a member's
+  // next attempt is answered through its own session.
+  refresh: async () => {
+    await fetchInfo()
+    return !error.value
+  },
+  lines: () => runChat.thread.value.messages,
 })
 function chatSendToAgent(ref: string) {
   if (!chat.sendToAgent(ref, viaChatSend)) toast.add({ title: 'Not connected', color: 'warning' })
