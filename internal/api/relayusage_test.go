@@ -419,13 +419,14 @@ func TestRelayUsageRenewalToAnotherCredentialSplits(t *testing.T) {
 		h, _ := dialCred(t, e, hostReg("1", nil), credOld)
 		v, id, tap := relayedViewer(t, e, h)
 		const total = 64 * proto.MaxInput
+		pre := relayIn(t, v, tap, id, 100) // counted before the cut, whatever the race
 		done := make(chan struct{})
 		go func() { defer close(done); flood(t.Context(), v, total) }()
 		h.send(hostToken(credNew))
 		o.awaitAsk(t, credNew)
 		<-done
-		if !waitFor(testWait, func() bool { return tap.inputBytes(id) >= total }) {
-			t.Fatalf("the host has %d of %d input bytes", tap.inputBytes(id), total)
+		if !waitFor(testWait, func() bool { return tap.inputBytes(id) >= int(pre)+total }) {
+			t.Fatalf("the host has %d of %d input bytes", tap.inputBytes(id), int(pre)+total)
 		}
 		h.c.CloseNow()
 		var sum int64
@@ -438,8 +439,8 @@ func TestRelayUsageRenewalToAnotherCredentialSplits(t *testing.T) {
 				break
 			}
 		}
-		if sum != total || len(hashes) != 2 || hashes[0] != credHash(credOld) || hashes[1] != credHash(credNew) {
-			t.Fatalf("%d bytes reported in %d reports, want %d in one under each credential", sum, len(hashes), total)
+		if sum != pre+total || len(hashes) != 2 || hashes[0] != credHash(credOld) || hashes[1] != credHash(credNew) {
+			t.Fatalf("%d bytes reported in %d reports, want %d in one under each credential", sum, len(hashes), pre+total)
 		}
 	})
 }
