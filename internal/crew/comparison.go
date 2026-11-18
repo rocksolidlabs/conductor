@@ -375,13 +375,15 @@ type chainRead struct {
 // those rows name, under a budget of its own: a call that fails, is late
 // or passes its bound leaves that candidate Unavailable and the rest whole.
 func (e *Engine) Comparison(ctx context.Context, runID string) (Comparison, error) {
-	c, _, err := e.comparisonAt(ctx, runID)
+	c, _, err := e.comparisonAt(ctx, runID, nil)
 	return c, err
 }
 
 // comparisonAt is Comparison with the revision of each run of the chain
-// that its rows were read at.
-func (e *Engine) comparisonAt(ctx context.Context, runID string) (Comparison, map[string]int64, error) {
+// that its rows were read at; adjust, when given, changes the rows read
+// before they are measured (measureAhead: what a change about to be made
+// leaves of them).
+func (e *Engine) comparisonAt(ctx context.Context, runID string, adjust func(*chainRead)) (Comparison, map[string]int64, error) {
 	if !ValidRunID(runID) {
 		return Comparison{}, nil, fmt.Errorf("%w: %s", ErrRunNotFound, runID)
 	}
@@ -409,7 +411,11 @@ func (e *Engine) comparisonAt(ctx context.Context, runID string) (Comparison, ma
 			return Comparison{}, nil, ErrRunChanging
 		}
 	}
-	return e.measureComparison(ctx, cr), cr.revs, nil
+	revs := cr.revs
+	if adjust != nil {
+		adjust(&cr)
+	}
+	return e.measureComparison(ctx, cr), revs, nil
 }
 
 // readChain reads the chain runID is in: its runs' pointers, the launched
