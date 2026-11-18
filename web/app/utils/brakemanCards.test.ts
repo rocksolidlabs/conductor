@@ -1,9 +1,11 @@
+import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import type { RunInfo, RunTask, SessionInfo } from '~/composables/useSessions'
 import type { BriefItem } from './brakeman'
 import {
   blocksWords,
   briefMarkdown,
+  cardReason,
   COMMENT_MAX,
   compareAt,
   draftName,
@@ -568,5 +570,26 @@ describe('a brief as Markdown (Copy as Markdown, Comment on a ticket)', () => {
   it('is empty for a brief with no prose to copy', () => {
     expect(briefMarkdown({ schema: 'brakeman.brief/1', title: ' ', summary: '', items: [] }, r)).toBe('')
     expect(briefMarkdown({ schema: 'brakeman.brief/1', title: 'Quiet', summary: '', items: [] }, r)).toContain('# Quiet')
+  })
+})
+
+describe("a decision card's reason for offering no command", () => {
+  const base = { run: 'r', task: 'build', to: '/runs/r?task=build' }
+  it('is the controls\' own words when a task offers no command, or nothing here can act, and nothing when a command is offered', () => {
+    expect(cardReason({ kind: 'task', ...base, commands: [], expectedRevision: 0, words: 'Brakeman named no revision of the run it read: act from the run page, on the run as it is.' })).toBe(
+      'Brakeman named no revision of the run it read: act from the run page, on the run as it is.',
+    )
+    expect(cardReason({ kind: 'task', ...base, commands: [], expectedRevision: 4, words: 'build is done: nothing can be done to it from here now.' })).toBe('build is done: nothing can be done to it from here now.')
+    expect(cardReason({ kind: 'none', to: '/runs/r', words: 'The task build is not held here now: open its run.' })).toBe('The task build is not held here now: open its run.')
+    expect(cardReason({ kind: 'task', ...base, commands: ['retry'], expectedRevision: 4, words: 'build is failed. Each command carries revision 4 of the run, the one Brakeman read.' })).toBe('')
+    expect(cardReason({ kind: 'ticket', to: '/dispatch/CND/4', words: "Decide it on CND-4's page." })).toBe('')
+  })
+
+  it('is drawn where the commands would be, outside Details, which a phone does not draw', () => {
+    const src = readFileSync(new URL('../components/BrakemanDecision.vue', import.meta.url), 'utf8')
+    const template = src.slice(src.indexOf('<template>'))
+    const controls = template.slice(template.indexOf('data-decision-controls'), template.indexOf('<UCollapsible'))
+    expect(controls).toContain('data-controls-reason')
+    expect(template.slice(template.indexOf('<UCollapsible'), template.indexOf('</UCollapsible>'))).not.toContain('data-controls-reason')
   })
 })

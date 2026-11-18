@@ -793,7 +793,8 @@ test("a brief's capacity chip says how old and how sure its reading is, and its 
   await page.route((u) => u.pathname === `/api/brakeman/requests/${id}`, (route) => route.fulfill({ json: { request, brief } }))
   await page.route((u) => u.pathname === `/api/brakeman/requests/${id}/refs`, (route) => route.fulfill({ json: { refs: [{ ref, seen: {}, now: {}, capacity: reading }] } }))
   await page.goto(`/brakeman?request=${id}`)
-  const chip = page.locator(`[data-ref-chip="${ref}"]`)
+  // The fact's own chip: the brief's fold lists every chip it cites once more, folded away until it is opened.
+  const chip = page.locator(`#item-0 [data-ref-chip="${ref}"]`)
   // The chip's own text: when it was read, that it was stale when cited, and that the agent may stop.
   await expect(chip.locator('[data-ref-capacity]')).toContainText('stale when cited', { timeout: 30_000 })
   await expect(chip.locator('[data-ref-capacity]')).toContainText('may stop')

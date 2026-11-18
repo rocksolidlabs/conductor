@@ -192,7 +192,7 @@ const keepLabel = (fact: number | undefined) => (fact ? `Keep fact ${fact} as a 
             <BrakemanDraftTicket v-else-if="x.item.kind === 'draft_ticket/1'" :request="request" :item="x.item" :index="x.index" :items="items" :refs="refs" />
             <BrakemanDraftCrew v-else-if="x.item.kind === 'draft_crew/1'" :request="request" :item="x.item" :index="x.index" :refs="refs" />
             <BrakemanDraftPlan v-else-if="x.item.kind === 'draft_plan/1'" :request="request" :item="x.item" :index="x.index" :refs="refs" />
-            <BrakemanHandoff v-else-if="x.item.kind === 'handoff/1'" :item="x.item" :refs="refs" />
+            <BrakemanHandoff v-else-if="x.item.kind === 'handoff/1'" :item="x.item" :refs="refs" :quotes="quotes" />
             <div v-else-if="x.item.kind === 'overlap/1'" class="flex flex-col gap-1" data-brief-overlap>
               <p class="break-all font-mono text-xs" data-mono="path">{{ x.item.paths.join(', ') }}</p>
               <div class="flex flex-wrap gap-1.5"><BrakemanRefChip v-for="r in x.item.between" :key="r" :ref-name="r" :resolution="refs.get(r)" /></div>

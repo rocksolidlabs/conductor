@@ -138,6 +138,15 @@ function taskControls(run: Pick<RunInfo, 'id' | 'stoppedAt' | 'record' | 'resume
   return { ...base, commands, expectedRevision, words: `${t.id} is ${t.state}. Each command carries revision ${expectedRevision} of the run, the one Brakeman read.` }
 }
 
+/**
+ * Why a decision card offers no command, in its controls' own words, drawn where the commands would be: a task that allows none now,
+ * or one with no revision Brakeman read, and a record no control here acts on. "" when the card offers its controls.
+ */
+export function cardReason(c: CardControls): string {
+  if (c.kind === 'none' || (c.kind === 'task' && !c.commands.length)) return c.words
+  return ''
+}
+
 /** What a card's command button says. */
 export function commandLabel(c: TaskCommand): string {
   return c === 'retry' ? 'Retry' : c === 'accept' ? 'Accept anyway…' : 'Cancel…'
