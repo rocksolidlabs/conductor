@@ -473,7 +473,9 @@ so it can never pass for an admin's answer whose subject it shares. A
 `sync` response is a held answer a registered sync provider handed in
 (`docs/plans/sync-seams.md`, OS-3); its authority also keeps the
 membership, the sign-in or device it was made through, when it was
-made, the identity provider's signed statement of it, the held
+made, the SHA-256 of the identity provider's signed statement of it
+(the statement itself kept beside the response, in the ledger's
+`decision_statements`, since it may pass `MaxAuthority`), the held
 answer's id and its fence, all from the door's checked record, never
 from a route's body.
 
@@ -918,8 +920,9 @@ way. A run not held never takes an identity's response (`not_held`,
 above), so no such response waits for a continuation.
 
 A `sync` response is rechecked at application by the identity
-provider's `AdmitsAnswer` over the authority the ledger keeps (its
-statement is a signed statement, not a token, so it is kept), not by
+provider's `AdmitsAnswer` over the authority the ledger keeps and the
+statement kept beside it (a signed statement, not a token, so it is
+kept), not by
 `ConfirmAuthority`: yes applies it, in a transaction that checks `k`
 is still the decision's accepted response, and not its `boot`, so a
 restart asks again rather than superseding; no supersedes it as an

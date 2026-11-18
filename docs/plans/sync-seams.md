@@ -203,9 +203,11 @@ of this repository), and every project not shared, behave exactly as on
 captured from a session or a check (its screen, scrollback and ring
 buffer, its activity log's words, a check's log, a history record's
 words) are handed to no provider by any door or document below. Every
-field handed out is an id, an enum, a time, a number, or text a person
-or an agent wrote into Dispatch or a decision through a route whose
-bounds refuse control characters. Such text can still quote captured
+field handed out is an id, an enum, a time, a number, a name the person
+chose (a session's name in a pin, a palette recent's key of the kinds
+named under OS-2), or text a person or an agent wrote into Dispatch or a
+decision through a route whose bounds refuse control characters; no
+path on this machine is handed out. Such text can still quote captured
 output (an agent's paste and a person's alike), so each free-text value
 is judged when it is written by the copied-output check (OS-1c for
 Dispatch's rows, OS-3 for decision records), its verdict stored beside
@@ -213,11 +215,15 @@ it, and every hand-out carries the verdict, so no provider reads
 captured output to judge it. What counts as terminal output for that
 check is an open question of the owner's (The open question, below);
 OS-1c and OS-3 wait for its answer, and the rows before them hold under
-either reading.
+either reading. A provider may apply checks of its own to what it is
+handed and keep back what they flag; what it keeps back it names in its
+status (`SyncReport.Withheld`, OS-4), and this repository applies no
+other check to it.
 
 **Dispatch's rows** (OS-1a, OS-1b), handed out by
 `Host.DispatchChanges` whole, each with its origin, its two verdicts and
-whether it came from another replica. Only rows whose (entity, op,
+whether it came from another replica, and the entities it needs
+(`Refs`). Only rows whose (entity, op,
 field) replicates are ever handed out or applied (`Replicates`,
 `rules.go`; Owner decisions, 21):
 
@@ -256,8 +262,11 @@ body_elsewhere`, OS-1a).
 **Run pointers.** C6's pointer document as on `main` (`id`, `crew`,
 `state`, `outcome`, `paused`, `revision`, `continuedFrom`,
 `continuedBy`, `createdAt`, `closedAt`), with one field added (OS-4,
-Owner decisions, 23): `ticket`, the id of the ticket whose launch made
-the run's chain, or `''`. Never the run's record, the crew as launched,
+Owner decisions, 23): `ticket`, the ticket whose launch made the run's
+chain (the ledger's `runs.ticket`, DS2's, which continuations carry),
+present only while that ticket's project is shared here and absent for
+every other run, a run of a ticket in a project not shared among them.
+Never the run's record, the crew as launched,
 its tasks, attempts, checks, logs, events, receipts, worktree paths,
 members' messages or checkpoints, and no count of what waits on it.
 
@@ -266,8 +275,12 @@ OS-3 says: the request's words and ids, the accepted response with what
 was answered, the states, never the session, the authority, the
 fingerprints, the history or any evidence a ref names.
 
-**UI documents** (OS-2): `ui/layout.json`, `ui/palette.json` and
-`ui/pins.json`, delivered as the other allowlisted data documents are.
+**UI documents** (OS-2): `ui/layout.json` whole; `ui/palette.json`
+with only the recents of the kinds `go:`, `ticket:`, `crew:`, `run:` and
+`action:` (never a file's path, a session, a joined link, an artifact, a
+member or an answer-all key); `ui/pins.json` with each pin's name under
+the copied-output check (from OS-1c on), an output-like name delivered
+empty. The server's own copies keep everything, for the free build.
 
 **Never handed out, by anything here**: the workbench token, `links/`,
 `tls/`, `hooks/`, `ext/` (every provider's own state), `history/`,
@@ -278,8 +291,8 @@ adds no use of them (Owner decisions, 3).
 
 ### `internal/dispatch` and `ext` (OS-1a): rows from elsewhere
 
-**Schema version 8** (the next at its merge; migration keyed 7),
-additions only:
+**Schema version 8** (the next at its merge; migration keyed 7), row
+OS-1a0, which ships alone before OS-1a; additions only:
 
 - `CREATE TABLE replica_tags (tag TEXT PRIMARY KEY, workspace TEXT NOT
   NULL, device TEXT NOT NULL, instance TEXT NOT NULL, joined_at TEXT NOT
@@ -406,10 +419,14 @@ write:
 
 **Reading the log.** `Store.ChangesFrom(ctx, after int64, limit int)
 ([]ChangeRow, int64, error)`: whole rows (value and prior) after the
-position `after`, at most `MaxFeedPage` (1,000) and 4 MiB encoded, in
-`seq` order, local and remote alike, and the position to read from next.
-`ChangeRow` gains `Origin`, `RecoveredBy`, `Output`, `PriorOutput`,
-`Remote` and, for a plan's create, `ViewDigest` (from `plans.
+position `after`, at most `MaxChangesPage` (1,000, new, equal to
+`ext.MaxDispatchBatch`) and 4 MiB encoded (`ext.MaxDispatchBytes`), in
+`seq` order, local and remote alike, and the position to read from next
+(a limit past `MaxChangesPage` refused). Main's `MaxFeedPage` (5,000,
+`feed.go`) stays as it is for `ChangesAfter`, Brakeman's changes route
+and the History index. `ChangeRow` gains `Origin`, `RecoveredBy`,
+`Output`, `PriorOutput`, `Remote`, `Refs` (`Refs` of the row, below)
+and, for a plan's create, `ViewDigest` (from `plans.
 view_digest`, so a revision made before version 8 is named as one made
 after). `Store.RevisionView(ctx, viewDigest string) ([]byte, error)`: a
 revision's view, made in the transaction that makes the revision (and by
@@ -437,15 +454,27 @@ error)`, one transaction:
 
 1. Refuse the batch, applying nothing, when a row's (entity, op, field)
    does not replicate (`ErrNotReplicated`, naming it), when a row has no
-   origin or a canonical actor past its bound (`ErrBadActor`), or when it
-   names a project this store neither shares nor receives
-   (`ErrNotShared`). A provider never sends such a batch; a defective
-   one changes nothing here.
-2. Drop a row whose canonical identity the log holds (DS1's immutable
+   origin or a canonical actor past its bound (`ErrBadActor`), when the
+   store has no active tag, or when it names a project held here whose
+   `share_state` is `''`, `pending`, `completing` or `refused` (a local
+   project, which only its own share makes shared: `ErrNotShared`). A
+   provider never sends such a batch; a defective one changes nothing
+   here.
+2. **Receive** a project not held here whose `create` row is in the
+   batch (or already in `held_rows`): it is made from that row with
+   `shared` the active tag's workspace (`replica_tags`), `share_state`
+   `shared` and its registry key from `keys`, so from then on its
+   creates here take block, then overflow, numbers, its local rows are
+   handed out as a shared project's are, and `project.rekey` on it is
+   `409 shared` (`TestFirstBatchOfAnUnknownProjectApplied`,
+   `TestReceivedProjectIsShared`). A project of `dormant` state is
+   received the same way and turns `shared`. A row of a project neither
+   held here nor created in the batch is an orphan (step 5).
+3. Drop a row whose canonical identity the log holds (DS1's immutable
    class).
-3. Record each project's registry key from `keys`
+4. Record each project's registry key from `keys`
    (`projects.registry_key`, OS-1b).
-4. Write to `held_rows` and `held_bodies`, untouched and in the same
+5. Write to `held_rows` and `held_bodies`, untouched and in the same
    transaction: the rows of an incoming project whose registry key a
    local unshared project holds ("CND is this machine's own project:
    give it another key to receive the workspace's"); the rows of an
@@ -456,20 +485,20 @@ error)`, one transaction:
    holds ("CND-12 was numbered twice: kept on the machine that numbered
    it first"). So no batch of a correct provider fails for good, and its
    follower never stalls.
-5. Insert the rest with their qualified actors, origins and
+6. Insert the rest with their qualified actors, origins and
    `recovered_by`, `remote` 1.
-6. Project each field by its class: a project's `key` and its tickets'
+7. Project each field by its class: a project's `key` and its tickets'
    keys from the registry key, never from a row (OS-1b); every other
    field by `Merge` (scalar last writer wins, sets observed-remove, logs
    appended); the counterpart group by `ReconcileCounterpart` over this
    replica's rows (below).
-7. Run `Reconcile` over every invariant the batch touched, writing its
+8. Run `Reconcile` over every invariant the batch touched, writing its
    `reconcile` rows under the actor `merge`; maintain `tickets_fts`;
    bump each entity's `rev`.
-8. Apply the held rows the batch made applicable (an orphan's create or
+9. Apply the held rows the batch made applicable (an orphan's create or
    a missing reference arrived), in the one order, until nothing more
    applies.
-9. Then `OnCommit` and `OnChange`, as for a local commit.
+10. Then `OnCommit` and `OnChange`, as for a local commit.
 
 A plan's create arrives with its view (`views`, by view digest), stored
 with `body_here` 0 and `plans.body` `''`. A local bound is not applied
@@ -491,10 +520,19 @@ comment waits for its ticket"), and each create applied replays the
 held rows waiting for it, in the one order and in the same transaction.
 A reference the schema does not enforce (`parent_id`, `milestone_id`) is
 applied and read as unknown until its entity arrives, as a deleted one
-is (DS1). A provider that withholds an entity withholds every row that
-references it (`Refs` is exported for it), so a row waits here only for
-an entity still on its way (`TestChildBeforeParentHeldThenApplied`: a
-comment before its ticket, a ticket-label add before its label, a
+is (DS1). A provider in another module cannot import
+`internal/dispatch`, so `Host.DispatchChanges` hands each row's
+references with it (`DispatchChange.Refs`, each `kind:id`, at most 3,
+filled from `Refs`). A provider that withholds an entity's `create`
+withholds every later row of that entity (the same `Entity` and
+`EntityID`) and every row whose `Refs` names it, so a row waits here
+only for an entity still on its way (`TestDispatchChangesCarryRefs`: a
+comment, a ticket-label add and a relation handed out, each change's
+`Refs` naming its ticket, its label and its far end as `Refs` does;
+`TestWithheldCreateWithholdsItsDependants`, with `exttest.FakeHost`: a
+ticket's create kept back, the rows a provider then sends by `Refs`
+leave no held row on the receiver; `TestChildBeforeParentHeldThenApplied`:
+a comment before its ticket, a ticket-label add before its label, a
 relation before its far end, in every order;
 `TestOrphanRowsHeldUntilTheirCreate`).
 
@@ -613,6 +651,7 @@ type DispatchChange struct {
 	RecoveredBy     string    `json:"recoveredBy,omitempty"`
 	ViewDigest      string    `json:"viewDigest,omitempty"` // a plan's create
 	Remote          bool      `json:"remote,omitempty"`     // applied here from another replica
+	Refs            []string  `json:"refs,omitempty"`       // the entities the row needs, each "kind:id", at most MaxDispatchRefs
 	OutputLike      bool      `json:"outputLike,omitempty"`
 	PriorOutputLike bool      `json:"priorOutputLike,omitempty"`
 }
@@ -626,6 +665,7 @@ const (
 	MaxDispatchValue  = 64 << 10 // DS1's bound of a row's value
 	MaxDispatchActor  = 60       // dispatch.MaxActor
 	MaxTag            = 8
+	MaxDispatchRefs   = 3       // the most any row needs is two (a relation's ends, a ticket-label add's ticket and label)
 	MaxDispatchBatch  = 1000    // rows a batch holds, either way
 	MaxDispatchBytes  = 4 << 20 // a batch's rows encoded
 )
@@ -634,8 +674,11 @@ func ValidTag(tag string) bool
 
 `Valid` checks every bound above, the op id's pattern (`dispatch.
 OpIDPattern`), an origin that is a valid tag, `By` within
-`dispatch.MaxByName` characters, and the absence of control characters
-where DS1's fields refuse them.
+`dispatch.MaxByName` characters, `Refs` within its bound and each of
+the shape `kind:id`, and the absence of control characters where DS1's
+fields refuse them. `DispatchApply` ignores a row's `Refs` and computes
+them again from the row (`rules.go`'s `Refs`): what a provider sends
+never decides what a row needs here.
 
 `docs/repository-map.md`'s `internal/dispatch` and `ext` rows say what
 OS-1a adds.
@@ -824,7 +867,29 @@ route is a row of `docs/protocol.md` with its bound.
 
 **The adapter's allowlist** (`syncDataDoc`) gains
 `ui/(layout|palette|pins)\.json` (`Store: "data"`), and its replay lists
-`ui/` beside `crews/` and `runs/` (`TestUIStateOnTheAllowlist`).
+`ui/` beside `crews/` and `runs/` (`TestUIStateOnTheAllowlist`). What
+leaves of them is narrower than what the server keeps, and the adapter
+builds it at delivery, as it masks `catalog.json`:
+
+- `ui/layout.json` whole: enums and fractions only.
+- `ui/palette.json` with only the recents whose key is of the kinds
+  `go:` (a page), `ticket:`, `crew:`, `run:` and `action:` (a built-in
+  action's id). Every other kind stays on the machine: `open:` and
+  `touched:` (file paths), `shared:` (joined links), `session:`,
+  `artifact:`, `member:`, `answer-all:`, and any kind a later row adds
+  until it is named here (`TestPaletteDeliveredWithoutPaths`: a recent of
+  each kind written, the delivered document holding the five kinds
+  alone).
+- `ui/pins.json` with each pin's session id and agent, and its name
+  under the copied-output check: the name's verdict is made when the pin
+  is written and kept beside it in the server's document as
+  `nameVerdict`, which the server sets and a `PUT` may not carry (from
+  OS-1c on; until then a pin's name is delivered empty)
+  and an output-like or `pending` name is delivered empty
+  (`TestPinNameUnderTheOutputCheck`).
+
+The server's own documents, its export and its own pages keep every
+recent and every name, so the free build loses nothing.
 
 **An `ext.Host` door, `SetUIState(ctx, name string, data []byte)
 error`**, for the sync store alone: writes `layout` or `palette` (never
@@ -1017,7 +1082,8 @@ ledger holds (`Ledger.DecisionRevisions`, paged).
 
 **The decision document** (`syncDecision`, deterministic: the same
 record at the same `rev` gives the same bytes and the same
-`requestSHA256`), at most 64 KiB:
+`requestSHA256`), at most `ext.MaxDecisionDoc` (80 KiB, the sum of its
+parts' bounds below):
 
 | Holds | Never holds |
 |---|---|
@@ -1028,10 +1094,17 @@ at most 40 KiB (past it `context` and then `options[].tradeoffs` are cut
 at a character's end, `cut: "size"`), the responses at most 16 KiB (the
 accepted one always, at most 7 KiB with its text, rationale and words,
 then the newest others while they fit, each under 1 KiB), `applied` and
-`states` at most 4 KiB together, the rest ids and enums. A decision with
-DR1's most responses (32, each with an 8 KiB receipt, the accepted one
-with the longest text and rationale) fits
-(`TestDecisionDocWithTheMostResponsesFits`, `TestDecisionDocCutsPastItsBound`,
+`states` at most 4 KiB together, the ids and enums at most 4 KiB, and
+`policy`, the record's policy whole, a part of its own at the ledger's
+`MaxDecisionPolicy` (16 KiB once the decision-policy plan,
+`docs/plans/decision-policy.md`, raises it from main's 1 KiB): a
+provider that shows the decision elsewhere needs to know who may answer
+it. So the total is 40 + 16 + 4 + 4 + 16 = 80 KiB, and a test holds
+`ext.MaxDecisionDoc` to that sum computed from the constants, so a
+later raise of a part's bound fails it until the total moves too. A
+decision with DR1's most responses (32, each with an 8 KiB receipt, the
+accepted one with the longest text and rationale) and its policy at
+`MaxDecisionPolicy` fits (`TestDecisionDocWithTheMostResponsesFits`, `TestDecisionDocCutsPastItsBound`,
 `TestDecisionDocIsTheTable`: the fields against the table, no
 `session_id`, authority, history or fingerprint).
 
@@ -1056,8 +1129,28 @@ something was (`TestLocalAnswerReachesTheDocument`: a choice and a
 free-text answer made with the workbench token, in the document with
 text and rationale).
 
+**Where a held answer's statement is kept.** DR1's authority is at most
+`ledger.MaxAuthority` (1 KiB, checked by `authorityOf` as given and as
+re-encoded), and the statement alone may be 2 KiB, so the statement is
+not in the authority: the ledger's step keeps it in a table of its own,
+`CREATE TABLE decision_statements (decision INTEGER NOT NULL, k INTEGER
+NOT NULL, statement TEXT NOT NULL, PRIMARY KEY (decision, k))`, written
+in DR1's transaction with the response row it belongs to (accepted, or a
+kept refusal), and the authority holds only its SHA-256
+(`statementSha256`). With the opaque ids of the shape above (no byte
+JSON escapes), the `via: sync` authority at every field's bound (`grant`,
+`via`, `subject` at `MaxSubject`, `membership`, `signIn` or `appDevice`,
+`at`, `statementSha256`, `held`, `fence`, `boot`, with their keys) is
+under 700 bytes, so `MaxAuthority` stays 1 KiB
+(`TestSyncAuthorityAtEveryBoundRecorded`: a held answer with a 2 KiB
+statement and every other field at its bound recorded; one whose
+statement is past 2 KiB refused by `HeldAnswer.Valid`, never by
+`authorityOf`).
+
 **The copied-output verdicts, kept in the ledger** (schema version 13,
-the next at its merge; additions only): `CREATE TABLE decision_output
+the next at its merge, row OS-3a, the same step as
+`decision_statements`;
+additions only): `CREATE TABLE decision_output
 (decision INTEGER NOT NULL, part TEXT NOT NULL, verdict TEXT NOT NULL,
 cut_at INTEGER NOT NULL DEFAULT -1, PRIMARY KEY (decision, part))`, a
 row for each free-text part of a decision (the request's fields, each
@@ -1093,9 +1186,9 @@ removed) is delivered again (`TestSyncResendMarksOneDoc`).
 // for the identity provider to judge.
 type AnswerCheck struct {
 	Subject       string    `json:"subject"`             // the person, MaxSubject
-	Membership    string    `json:"membership"`          // the membership the answer was made under: opaque, at most 64 bytes
-	SignIn        string    `json:"signIn,omitempty"`    // the sign-in it was made through, opaque, at most 64 bytes
-	AppDevice     string    `json:"appDevice,omitempty"` // or the device, opaque, at most 64 bytes; exactly one of the two
+	Membership    string    `json:"membership"`          // the membership the answer was made under: opaque, at most 64 bytes of [A-Za-z0-9._~:-]
+	SignIn        string    `json:"signIn,omitempty"`    // the sign-in it was made through, opaque, the same shape
+	AppDevice     string    `json:"appDevice,omitempty"` // or the device, the same shape; exactly one of the two
 	At            time.Time `json:"at"`
 	Statement     string    `json:"statement"`           // the identity provider's signed statement of the answer, at most 2 KiB, opaque here
 	Decision      string    `json:"decision"`            // dr-n
@@ -1123,8 +1216,8 @@ type HeldAnswer struct {
 	Rationale   string      `json:"rationale,omitempty"` // at most 2 KiB
 	Check       AnswerCheck `json:"check"`
 	HeldAt      time.Time   `json:"heldAt"`
-	Held        string      `json:"held"`  // the provider's id of the held answer, at most 64 bytes
-	Fence       string      `json:"fence"` // the provider's token for this hand-out, at most 64 bytes
+	Held        string      `json:"held"`  // the provider's id of the held answer, the same shape
+	Fence       string      `json:"fence"` // the provider's token for this hand-out, the same shape
 }
 type AnswerOutcome struct {
 	Status  string `json:"status"` // recorded | refused | not_held | moved | unknown_authority
@@ -1159,7 +1252,8 @@ a decision opened to the decide grant). No is `refused` with
 (the provider releases the answer and asks again later). Yes:
 `Engine.RespondDecision` with the actor `user:<subject>` and the
 authority `{grant, via: "sync", subject, membership, signIn | appDevice,
-at, statement, held, fence}`: DR1's path whole (its idempotence on
+at, statementSha256, held, fence}` and the statement in
+`decision_statements`: DR1's path whole (its idempotence on
 `(decision, actor, responseId)`, its rechecks, `not_held` for a run not
 held, `stale_decision`, `decision_answered`, `decision_closed`,
 `stale_policy`, `decision_limit`, its bounds and the replacement's
@@ -1192,8 +1286,9 @@ decision opened before a moment it records from one opened after
 (`TestLastDecisionReadsTheLedger`).
 
 **At application**, a `via: sync` response is rechecked by
-`AdmitsAnswer` again from the authority the ledger keeps (the statement
-is a signed statement, not a token, so it is kept), in
+`AdmitsAnswer` again from the authority the ledger keeps and the
+statement kept beside it (`decision_statements`: a signed statement,
+not a token, so it is kept), in
 `ConfirmAuthority`'s place: yes applies it, in a transaction that checks
 `k` is still the decision's accepted response, and not the `boot` (a
 restart asks again rather than superseding, since nothing that was kept
@@ -1239,16 +1334,18 @@ type Remote struct {
 }
 func (r Remote) Valid() error
 const (
-	MaxRemoteData   = 64 << 10
+	MaxRemoteData   = 64 << 10 // a pointer or a pins document
+	MaxDecisionDoc  = 80 << 10 // a decision document (OS-3): the sum of its parts' bounds
 	MaxRemoteDevice = 1 << 10
 	MaxRemoteHosts  = 16 << 10
 	MaxRemoteFiles  = 10_000
 )
 ```
 
-`Data` is, by kind: `decision`, a decision document of OS-3's shape;
-`pointer`, a run pointer document (with `ticket`, above); `pins`, a
-`ui/pins.json` document; each at most `MaxRemoteData`. For HS2
+`Data` is, by kind: `decision`, a decision document of OS-3's shape, at
+most `MaxDecisionDoc`; `pointer`, a run pointer document (with `ticket`
+when present, above); `pins`, a `ui/pins.json` document as delivered
+(OS-2); each of the last two at most `MaxRemoteData`. For HS2
 (`docs/plans/hosts.md`): `device`, a live server device of the
 workspace as the provider knows it (`{id, name, kind, platform, version,
 lastReport, revoked}`, at most `MaxRemoteDevice`; a device of the kind
@@ -1445,7 +1542,11 @@ Every other path this plan names is on `main`. New: `ext/dispatch.go`
   `DispatchApply`, which applies or durably holds every row in one
   Dispatch transaction, and advances its own cursor only after it
   returns; a crash in between applies the batch again, whose rows are
-  then dropped as held identities (`TestApplyRemoteDropsHeldIdentities`,
+  then dropped as held identities. A project the store did not hold
+  arrives with its `create` and is received as shared, in the
+  workspace of the store's active tag (OS-1a, `ApplyRemote`'s step 2),
+  so the receiver's own creates in it take block numbers and its own
+  rows are sent (`TestApplyRemoteDropsHeldIdentities`,
   `TestApplyRemoteProjectsByClass` for each class,
   `TestReconcileAfterRemoteRows`, `TestRemoteRowsIgnoreLocalBounds`,
   `TestIncomingKeyHeldByALocalProjectIsHeld`).
@@ -1596,16 +1697,29 @@ replica's tags and other replicas' names (schema 8), its instance as on
 `remote/` (derived, never exported), `output-index.sqlite`
 (fingerprints of captured output, never output, never exported or
 handed out). The ledger: the decision records with their `via: sync`
-authorities (with the statement and the fence) and `decision_output`
-(schema 13). Nothing here keeps a provider's credential or address.
+authorities (with the statement's hash and the fence),
+`decision_statements` and `decision_output` (schema 13). Nothing here keeps a provider's credential or address.
 
 ### Migrations
 
-Dispatch 7 → 8 (OS-1a): additions only, with a Go step that makes the
-view of every existing revision. The ledger 12 → 13 (OS-3): additions
-only, `decision_output`; OS-3 writes DR1's `authority` JSON with the
-`via: sync` fields, which DR1's decoder gains (an older binary reads a
-`via` it does not know as no grant, and applies nothing of it). The
+Each store step is a row of its own (The PRs), holding every table and
+column the later rows need, and ships alone, right before the code that
+uses it:
+
+- **Dispatch 7 → 8 (OS-1a0)**: additions only (every table and column
+  of OS-1a and OS-1b above), with a Go step that makes the view of every
+  existing revision; a version 8 database opens read-only under a
+  version 7 binary (`TestSchema8MigratesAndKeepsEveryRow`,
+  `TestMigrationMakesTheViewOfEveryRevision`,
+  `TestVersion8OpensReadOnlyInVersion7`).
+- **The ledger 12 → 13 (OS-3a)**: additions only, `decision_output`
+  and `decision_statements`; a version 13 database opens read-only
+  under a version 12 binary, as the ledger's rule is
+  (`TestSchema13MigratesAndKeepsEveryRow`,
+  `TestVersion13OpensReadOnlyInVersion12`). OS-3 then writes DR1's
+  `authority` JSON with the `via: sync` fields, which DR1's decoder
+  gains (an older binary reads a `via` it does not know as no grant, and
+  applies nothing of it). The
 output index: a file of its own, made and filled at the first start that
 lacks it, its verdicts `pending` until it is whole. Each migration takes
 the next version at its merge, whatever other row took one first.
@@ -1660,7 +1774,10 @@ either reading (a value kept back is simply not sent).
 - Reviews and their findings (RV1), captures and their sends (PV1) and
   publications (IN1a) across machines: they stay on the machine that
   made them in v1 (Owner decisions, 21); a later item may add them with
-  their own field rules.
+  their own field rules. A limit that follows: nothing stops one outcome
+  being published twice from two machines that share a ticket; a person
+  on the second machine sees the first machine's publication only on the
+  tracker item itself, not on the ticket's page.
 - Replicating decision records: another machine is shown a copy, read
   only, as a remote record.
 - History (HS1's records) across machines: TS1.
@@ -1826,31 +1943,40 @@ test-only binary registers a provider: the doors are reached through
 
 ## The PRs
 
-Each row is one issue and one branch cut from `main`, a draft PR at its
-first commit, the checks of every surface it touches before each push,
-its body ticking the open-core checklist and naming the agent that made
-it, and each leaves `main` working and green on its own. The rows touch
-the same packages, so they go one after another. Sizes are changed
-lines, code and tests. A provider in another module builds against a
-tag of this module: a tag that holds OS-1a, OS-1b, OS-2 and OS-1c gives
-it the Dispatch doors with their verdicts, and one that holds OS-3 and
-OS-4 the rest; a provider is not to use `DispatchChanges` from a tag
-without OS-1c, whose verdicts it relies on.
+The rows below are units of work, in their order; how rows are grouped
+into pull requests follows `AGENTS.md` (Working an issue) at the time
+they are built. Two things that rule sets apart hold whatever the
+grouping: each store step is a row of its own that ships alone, right
+before the code that uses it (OS-1a0 and OS-3a), and OS-3's held answer
+handed in (`via: sync`) changes who may answer a decision, a boundary,
+so it is a part of its own with an adversarial review of its own. Each
+row leaves `main` working and green on its own, its checks those of
+every surface it touches. Sizes are changed lines, code and tests. A
+provider in another module builds against a tag of this module: a tag
+that holds OS-1a, OS-1b, OS-2 and OS-1c gives it the Dispatch doors
+with their verdicts, and one that holds OS-3 and OS-4 the rest; a
+provider is not to use `DispatchChanges` from a tag without OS-1c,
+whose verdicts it relies on.
 
-| PR | Title | Contains | Touches | Tests | Depends on | Parallel with | Size |
-|---|---|---|---|---|---|---|---|
-| OS-0 (#996) | plans: sync's seams | this file; the amendments to `docs/plans/dispatch.md`, `docs/plans/dispatch-evidence.md` and `docs/plans/decisions.md`; the copied-output check's reading written as the open question it is | `docs/plans` | none (docs) | none | none | docs ~2,150 |
-| OS-1a | dispatch, ext: rows from elsewhere | schema 8 with its views' Go step; `Join`, `Retire` (and at `Open`), `Canon`, origins, `ChangesFrom`, `RevisionView`, `ApplyRemote` with `held_rows` and `Refs`, `Replicates`, `stampFor` in every scalar writer, the provisional window, view-only revisions in `Store.Plan` and `dispatch_plans.go`, `launchable`'s and `ApprovePlan`'s rules; the counterpart group merged on a receiver and `TicketsLinkedTo` with `alsoLinked`; `ext.DispatchChange`, `ext.DispatchApplied`; the plan view's drawing; `docs/repository-map.md` | `internal/dispatch`, `internal/api`, `ext`, `web/app`, `docs` | the OS-1a tests above | OS-0 | none | ~850 + 800 |
-| OS-1b | dispatch, api, ext: sharing with its cut-over, numbers, rekey and registry keys, the provider's doors | blocks with their tag and instance, overflow, the namespaces, `project.share`, `CompleteShare`, `ConfirmShare`, `RefuseShare`, `Dormant`, `Unshared`, `project.rekey` with held rows applied, keys projected from the registry, the two routes, the `Host` doors and `DispatchWatcher`, `FakeHost`; `docs/protocol.md` | `internal/dispatch`, `internal/api`, `internal/hostagent`, `ext`, `ext/exttest`, `docs` | the OS-1b tests above | OS-1a | none | ~700 + 700 |
-| OS-2 | api, web: UI state in the data directory, pins, restore into another provider's directory, a replay on request | `ui/` documents with `at` and `by`, routes, `ui/writer` left out, the allowlist, `Host.SetUIState`, `RestoreRequest.ProviderDir`, `Host.SyncReplay`; `useUiState` and its callers; pins; `ui-state.spec.ts` | `internal/api`, `internal/export`, `ext`, `web/app`, `web/e2e`, `docs` | the OS-2 tests above | OS-1b | none | ~750 + 700 |
-| OS-1c | api, dispatch: the output index and the copied-output check for Dispatch's rows | `outputGuard`, `outputIndex` (winnowed fingerprints and lines in `output-index.sqlite`, the memory cache, prunes with their sources, the bound, failing closed with `pending`, pending made `output` at start), the verdicts at every operation's commit, `DispatchChanges` carrying both and stopping before a `pending` row; this file amended with the owner's reading | `internal/api`, `internal/dispatch`, `internal/export`, `ext`, `docs` | the OS-1c tests above | OS-2; the owner's answer to The open question | none | ~650 + 700 |
-| OS-3 | api, crew, ext: decisions handed out, answers handed in | `ledger.OnDecisions`, the decision document with its request part and `requestSHA256`, `decision_output` (ledger schema 13) and the check at each write, `Host.SyncResend`, `ext.AnswerCheck`, `ext.SubjectChecker`, `Host.RespondDecision` with `via: sync`, `Host.SyncDelivery`, `Host.LastDecision`, the recheck at application that waits on unknown, `AnswerOutcome.Repeat`; the agent skill's line | `internal/api`, `internal/crew`, `internal/crew/ledger`, `internal/agents`, `ext`, `ext/exttest`, `docs` | the OS-3 tests above | OS-1c; DR1's PR-4 (#637) and the decide grant (#776), both on `main`; the owner's answer to The open question | none | ~800 + 800 |
-| OS-4 | api, web, ext: what other machines hold, read only; the Sync row; Share in the project page; the features entry | `Host.PutRemote`, `DeleteRemote`, `ClearRemote`, `remote/` with the kinds `decision`, `pointer`, `pins`, `device` and `hosts`, the pointer's `ticket`, `GET /api/remote`, `ext.SyncStatus` with its own device, workspace and person, `GET /api/sync`; the ticket page's, the decision page's and the sidebar's remote rows, the Sync row, Share and rekey controls, the ticket page's `alsoLinked` words; `remote.spec.ts`, `sync-free.spec.ts`; `docs/features.md` | `internal/api`, `internal/export`, `ext`, `ext/exttest`, `web/app`, `web/e2e`, `docs` | the OS-4 tests above | OS-3; DR1's PR-7 (#640) and MB0's PR-4 on `main` | none | ~750 + 750 |
+| Row | Title | Contains | Touches | Tests | Depends on | Size |
+|---|---|---|---|---|---|---|
+| OS-0 (#996) | plans: sync's seams | this file; the amendments to `docs/plans/dispatch.md`, `docs/plans/dispatch-evidence.md`, `docs/plans/decisions.md`, `docs/plans/review-repair.md` and `docs/plans/tracker-linking.md`; the copied-output check's reading written as the open question it is | `docs/plans` | none (docs) | none | docs ~2,300 |
+| OS-1a0 | dispatch: schema 8 alone | every table and column OS-1a and OS-1b use (`replica_tags`, `replica_names`, the `changes` columns, `held_rows`, `held_bodies`, `plan_views`, the `projects` and `plans` columns) and the views' Go step (`migrationsGo[7]`); nothing reads or writes them yet | `internal/dispatch` | `TestSchema8MigratesAndKeepsEveryRow`, `TestMigrationMakesTheViewOfEveryRevision`, `TestVersion8OpensReadOnlyInVersion7` | OS-0 | ~200 + 250 |
+| OS-1a | dispatch, ext: rows from elsewhere (after the step) | `Join`, `Retire` (and at `Open`), `Canon`, origins, `ChangesFrom` with `MaxChangesPage`, `RevisionView`, `ApplyRemote` with the received project, `held_rows` and `Refs`, `Replicates`, `stampFor` in every scalar writer, the provisional window, view-only revisions in `Store.Plan` and `dispatch_plans.go`, `launchable`'s and `ApprovePlan`'s rules; the counterpart group merged on a receiver and `TicketsLinkedTo` with `alsoLinked`; `ext.DispatchChange` with `Refs`, `ext.DispatchApplied`; the plan view's drawing; `docs/repository-map.md` | `internal/dispatch`, `internal/api`, `ext`, `web/app`, `docs` | the OS-1a tests above | OS-1a0 | ~700 + 650 |
+| OS-1b | dispatch, api, ext: sharing with its cut-over, numbers, rekey and registry keys, the provider's doors | blocks with their tag and instance, overflow, the namespaces, `project.share`, `CompleteShare`, `ConfirmShare`, `RefuseShare`, `Dormant`, `Unshared`, `project.rekey` with held rows applied, keys projected from the registry, the two routes, the `Host` doors and `DispatchWatcher`, `FakeHost`; `docs/protocol.md` | `internal/dispatch`, `internal/api`, `internal/hostagent`, `ext`, `ext/exttest`, `docs` | the OS-1b tests above | OS-1a | ~700 + 700 |
+| OS-2 | api, web: UI state in the data directory, pins, restore into another provider's directory, a replay on request | `ui/` documents with `at` and `by`, routes, `ui/writer` left out, the allowlist with what leaves of each document, `Host.SetUIState`, `RestoreRequest.ProviderDir`, `Host.SyncReplay`; `useUiState` and its callers; pins; `ui-state.spec.ts` | `internal/api`, `internal/export`, `internal/hostagent`, `ext`, `web/app`, `web/e2e`, `docs` | the OS-2 tests above | OS-1b | ~800 + 750 |
+| OS-1c | api, dispatch: the output index and the copied-output check for Dispatch's rows and pins' names | `outputGuard`, `outputIndex` (winnowed fingerprints and lines in `output-index.sqlite`, the memory cache, prunes with their sources, the bound, failing closed with `pending`, pending made `output` at start), the verdicts at every operation's commit and a pin's `nameVerdict`, `DispatchChanges` carrying both and stopping before a `pending` row; this file amended with the owner's reading (no store step: the columns are OS-1a0's, the index a file of its own) | `internal/api`, `internal/dispatch`, `internal/export`, `ext`, `docs` | the OS-1c tests above | OS-2; the owner's answer to The open question | ~650 + 700 |
+| OS-3a | crew/ledger: schema 13 alone | `decision_output` and `decision_statements`; nothing reads or writes them yet | `internal/crew/ledger` | `TestSchema13MigratesAndKeepsEveryRow`, `TestVersion13OpensReadOnlyInVersion12` | OS-1c | ~80 + 150 |
+| OS-3 | api, crew, ext: decisions handed out, answers handed in (after the step; a boundary part with its own adversarial review) | `ledger.OnDecisions`, the decision document with its request part, its policy part and `requestSHA256`, the check at each write into `decision_output`, `Host.SyncResend`, `ext.AnswerCheck`, `ext.SubjectChecker`, `Host.RespondDecision` with `via: sync` (the statement in `decision_statements`) under a router's policy as the decision-policy plan judges a held answer, `Host.SyncDelivery`, `Host.LastDecision`, the recheck at application that waits on unknown, `AnswerOutcome.Repeat`; the agent skill's line | `internal/api`, `internal/crew`, `internal/crew/ledger`, `internal/agents`, `internal/hostagent`, `ext`, `ext/exttest`, `docs` | the OS-3 tests above | OS-3a; DR1's PR-4 (#637) and the decide grant (#776), both on `main`; the owner's answer to The open question | ~800 + 850 |
+| OS-4 | api, web, ext: what other machines hold, read only; the Sync row; Share in the project page; the features entry | `Host.PutRemote`, `DeleteRemote`, `ClearRemote`, `remote/` with the kinds `decision`, `pointer`, `pins`, `device` and `hosts`, the pointer's `ticket` (`RunPointer` and its columns read `runs.ticket`), `GET /api/remote`, `ext.SyncStatus` with its own device, workspace and person, `GET /api/sync`; the ticket page's, the decision page's and the sidebar's remote rows, the Sync row, Share and rekey controls, the ticket page's `alsoLinked` words; `remote.spec.ts`, `sync-free.spec.ts`; `docs/features.md` | `internal/api`, `internal/crew/ledger`, `internal/export`, `internal/hostagent`, `ext`, `ext/exttest`, `web/app`, `web/e2e`, `docs` | the OS-4 tests above | OS-3; DR1's PR-7 (#640) and MB0's PR-4 on `main` | ~750 + 750 |
 
-Each row's checks before its push are the repository's (`docs/checks.md`):
-the module's race tests, `make lint`, `make lint-static`, and for OS-1a,
-OS-2 and OS-4 the web's typecheck, vitest and `make test-e2e`. OS-4 is
-the last code row and adds the `docs/features.md` entry.
+Each row's checks are the repository's (`docs/checks.md`): the module's
+race tests, `make lint`, `make lint-static`, and for OS-1a, OS-2 and
+OS-4 the web's typecheck, vitest and `make test-e2e`. Every row that
+adds an `ext.Host` method adds it to the host agent's `Host`
+(`internal/hostagent/exthost.go`), answering `ErrUnsupported`, or the
+build fails. OS-4 is the last code row and adds the `docs/features.md`
+entry.
 
 ## Owner decisions
 
@@ -1971,16 +2097,38 @@ taken. The one decision still open is The open question above.
     project's `cwd`, a ticket's snapshot and its attachments stay on
     their machine whatever a provider does. The alternative, leaving the
     filter to the provider alone, would let a defective provider apply a
-    launch row or a path on another machine.
+    launch row or a path on another machine. This narrows two plans for
+    CS1's first version, and amends them in so many words: reviews, their
+    findings and marks (`docs/plans/review-repair.md`, Owner decisions 2,
+    which put them in Dispatch so a workspace could share them) and
+    publications (`docs/plans/tracker-linking.md`, whose field classes
+    for a publication were written for replicas) do not replicate yet;
+    their field classes stand for the later item that adds them. Nothing
+    then stops one outcome being published twice from two machines that
+    share a ticket: each machine's publications are its own, a person on
+    the second machine sees no publication the first made on the
+    ticket's page (only the comment itself, on the tracker item), and may
+    publish the same outcome again. That is a limit of the first version
+    (Out of scope).
 22. **The store's instance is IN1a's `store_instance`.** A restore's
     `Reissue` already makes a restored store a new instance; a raw copy
     of a data directory is the same instance, and what a provider does
     about two processes of one machine is the provider's.
 23. **A run a launch made is shown on other machines by its launch's
-    ticket.** A launched run has no `run` link (DS2's Owner decisions,
-    10) and launches do not replicate, so the run pointer document names
-    the ticket whose launch made the run's chain (`ticket`), and the
+    ticket, and only for a shared project.** A launched run has no `run`
+    link (DS2's Owner decisions, 10) and launches do not replicate, so
+    the run pointer document names the ticket whose launch made the
+    run's chain (`ticket`, from the ledger's `runs.ticket`), and the
     ticket page matches remote pointers by it as well as by run links.
+    The field is present only while that ticket's project is shared
+    here; for a run of a ticket in a project that is not shared it is
+    absent, so a personal project's ticket ids are never handed out on a
+    pointer. When a project's share state turns `shared`, or leaves it,
+    the adapter marks pending the pointers of the runs of its tickets, so
+    the field follows the share with no change to the run
+    (`TestPointerNamesItsLaunchTicket`,
+    `TestPointerOfAnUnsharedProjectNamesNoTicket`,
+    `TestPointerTicketFollowsTheShare`).
 24. **This public plan comes first.** The open-source rows are planned
     here and land as open-source PRs, this plan reviewed and merged
     before any of their code, so the repository's plan-before-code rule
@@ -2018,7 +2166,7 @@ with a real provider is the provider module's.
 
 ## The amendments to the other plans
 
-This plan's pull request changes three plans in these places, quoted as
+This plan's pull request changes five plans in these places, quoted as
 they now read.
 
 **`docs/plans/dispatch.md`**, "Ids and keys", the reserved columns:
@@ -2105,7 +2253,9 @@ The response's authority (The changes, the ledger):
 > `sync` response is a held answer a registered sync provider handed in
 > (`docs/plans/sync-seams.md`, OS-3); its authority also keeps the
 > membership, the sign-in or device it was made through, when it was
-> made, the identity provider's signed statement of it, the held
+> made, the SHA-256 of the identity provider's signed statement of it
+> (the statement itself kept beside the response, in the ledger's
+> `decision_statements`, since it may pass `MaxAuthority`), the held
 > answer's id and its fence, all from the door's checked record, never
 > from a route's body.
 
@@ -2113,8 +2263,9 @@ The recheck (Applying), after "... so no such response waits for a
 continuation.":
 
 > A `sync` response is rechecked at application by the identity
-> provider's `AdmitsAnswer` over the authority the ledger keeps (its
-> statement is a signed statement, not a token, so it is kept), not by
+> provider's `AdmitsAnswer` over the authority the ledger keeps and the
+> statement kept beside it (a signed statement, not a token, so it is
+> kept), not by
 > `ConfirmAuthority`: yes applies it, in a transaction that checks `k`
 > is still the decision's accepted response, and not its `boot`, so a
 > restart asks again rather than superseding; no supersedes it as an
@@ -2137,3 +2288,34 @@ Owner decisions 3, its last clause, and 12, its last clause:
 
 > ... the `decision` link kind DS2 reserved stays reserved and refused
 > locally; CS1 does not use it, since a copy names its ticket.
+
+The history's cap paragraph, corrected to main's count
+(`mandatoryHistory`):
+
+> ... at most 32 of the operator's operations together (...); at most 4
+> of a Brakeman turn's operations, apart from them
+> (`MaxDecisionTurnOps`); at most 32 `responded`, ... That is at most 77
+> rows (`mandatoryHistory`; 93 once the decision-policy plan's group of
+> 16 is in); ...
+
+**`docs/plans/review-repair.md`**, Owner decisions 2, after its last
+sentence:
+
+> CS1's first version does not replicate reviews, findings or marks
+> (`docs/plans/sync-seams.md`, Owner decisions 21): they stay on the
+> machine that made them until a later item adds them under the field
+> rules above.
+
+**`docs/plans/tracker-linking.md`**, the field rules' publication row,
+its last cell, after "is never sent":
+
+> CS1's first version does not replicate publications
+> (`docs/plans/sync-seams.md`, Owner decisions 21): each machine's are
+> its own until a later item adds them under these classes
+
+and the sentence after the counterpart group's rules:
+
+> "One ticket per linked issue" is a rule of the local write; two
+> replicas that each import the same issue make two tickets, which CS1's
+> plan shows, never folds: both are kept, each naming the other
+> (`docs/plans/sync-seams.md`, One tracker item, two tickets).
