@@ -275,8 +275,13 @@ func (l *Ledger) RunByOp(ctx context.Context, provider, opID string) (OriginRow,
 	if opID == "" {
 		return OriginRow{}, false, nil
 	}
-	return l.origin(ctx, "provider = ? AND op_id = ?", provider, opID)
+	return l.origin(ctx, originByOp, provider, opID)
 }
+
+// originByOp is RunByOp's condition. It names a non-empty op_id, as the partial
+// index run_origin_op does, so SQLite searches the index rather than
+// scanning the table.
+const originByOp = "provider = ? AND op_id = ? AND op_id != ''"
 
 func (l *Ledger) origin(ctx context.Context, where string, args ...any) (OriginRow, bool, error) {
 	db, version, err := l.connAt()
