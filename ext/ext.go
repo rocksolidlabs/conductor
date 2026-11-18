@@ -69,9 +69,10 @@
 //
 // A provider that needs the server implements Starter. Start is called
 // after the server is made and before it serves, with a Host: the
-// provider's one door into the app (launch a crew's run, type into a
-// session or answer its question, send a notice, a directory of its own, a
-// logger). Start returns at once; reaching the provider's service is the
+// provider's one door into the app (launch a crew's run, read, find and
+// stop the runs it launched, resolve a launch and hold a launch to it,
+// type into a session or answer its question, send a notice, a directory
+// of its own, a logger). Start returns at once; reaching the provider's service is the
 // work of goroutines it begins, which end with Start's context. A Start
 // that errs, panics or has not returned within StartWait is tried again
 // later, with backoff, never while an earlier try is still running.
@@ -104,7 +105,10 @@
 // hosted service can take them as its wire records. Every bound and wait
 // is a constant of this package, and every record a provider hands the
 // server has a Valid method the guard applies and the provider can call
-// itself. Two returned records have none, since no code of this
+// itself; so has every record the server answers a provider's launch
+// with (RunStatus, ResolvedLaunch), so a provider or a test can check
+// one. A refusal a caller may act on is a *Refusal, its code read by
+// RefusalCode. Two returned records have none, since no code of this
 // repository takes them: RoomJoin (Room has no caller until Program item
 // CL1's rooms, which add its check with it) and Entitlement (the private
 // repositories' providers ask the entitlement source; this repository
