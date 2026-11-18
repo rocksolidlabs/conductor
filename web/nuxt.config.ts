@@ -4,7 +4,7 @@ import { AGENT_ICONS } from './app/utils/agentIcons'
 import { bundledPackages } from './build/bundledPackages'
 import { PREVIEW_BRIDGE, buildPreviewBridge, devPreviewBridge, previewBridgeBuild } from './build/previewBridge'
 import { MERMAID_RENDERER_DEV_PATH } from './app/utils/mermaidRules'
-import { devApi, devPreviewBridgeSrc } from './build/devConfig'
+import { devApi, devPreviewBridgeHead } from './build/devConfig'
 
 const webRoot = fileURLToPath(new URL('.', import.meta.url))
 
@@ -55,12 +55,12 @@ export default defineNuxtConfig({
       // Empty means same origin (the embedded UI). Set NUXT_PUBLIC_API_BASE
       // to http://localhost:8080 when the dev proxy cannot upgrade WebSockets.
       apiBase: '',
-      // The preview bridge the dev build loads (plugins/previewBridge.client.ts); the built app's is always empty ($development).
-      previewBridge: '',
     },
   },
   $development: {
-    runtimeConfig: { public: { previewBridge: devPreviewBridgeSrc(process.env.CONDUCTOR_PREVIEW_BRIDGE) } },
+    // The preview bridge, for developing Conductor itself: a tag in the dev server's document head, so it loads with the page (a
+    // framing pane hears it from the frame's load); the built app's head never has it.
+    app: { head: { script: devPreviewBridgeHead(process.env.CONDUCTOR_PREVIEW_BRIDGE) } },
   },
   nitro: {
     // Output stays in web/.output/public; `make web-build` copies it into

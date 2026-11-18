@@ -106,7 +106,7 @@ describe('the selector a report carries', () => {
 })
 
 describe('the stack and the walk', () => {
-  it('steps Down from an overlay to the button under it, while the hit test still names the overlay', () => {
+  it('steps Down from an overlay to the button under it, while the hit test still names the overlay, as the outline does', () => {
     const p = page()
     const stack = stackAt(doc(p.d), 20, 20, null)
     expect(stack[0]).toBe(p.overlay)
@@ -114,7 +114,7 @@ describe('the stack and the walk', () => {
     expect(down).toBe(p.save)
     expect(stepStack(stack, down, false)).toBe(p.overlay)
     const r = readElement(down as El, { doc: doc(p.d), win: nowhere })
-    expect(r.hit).toEqual({ self: false, selector: ':root > body:nth-child(1) > div:nth-child(2)', tag: 'div' })
+    expect(r.hit).toEqual({ self: false, selector: 'div.overlay', tag: 'div' })
   })
 
   it('leaves the bridge host out of the stack', () => {

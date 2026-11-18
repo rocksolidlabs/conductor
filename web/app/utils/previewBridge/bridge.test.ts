@@ -459,7 +459,7 @@ describe('the bridge in a page', () => {
     const pSelector = ':root > body:nth-child(2) > p:nth-child(1)'
     expect(described.element).toMatchObject({ tag: 'html', selector: ':root', ancestors: [], hints: [], neighbourhood: '', hit: { self: false, selector: '', tag: '' }, cut: [] })
     expect(described.element!.html).toBe('<html><head></head><body><p>Hello</p></body></html>')
-    expect(selected.element).toMatchObject({ tag: 'p', text: 'Hello', selector: pSelector, hit: { self: true, selector: pSelector, tag: 'p' }, hints: [], cut: [] })
+    expect(selected.element).toMatchObject({ tag: 'p', text: 'Hello', selector: pSelector, hit: { self: true, selector: 'p "Hello"', tag: 'p' }, hints: [], cut: [] })
     expect(selected.element.ancestors.map((a) => a.tag)).toEqual(['body', 'html'])
     writeAnswers('plain-page-messages.json', 'the bridge’s answers on a plain page (no framework, no title, the root element described, a paragraph selected)', got)
   })

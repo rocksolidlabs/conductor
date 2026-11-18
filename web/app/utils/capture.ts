@@ -421,6 +421,14 @@ export function hitWords(e: { hit: { self: boolean; selector?: string; tag?: str
   return what ? `a click at its centre reaches ${what}` : 'a click at its centre reaches nothing of the page'
 }
 
+/**
+ * The hit test said whole, as a ticket's capture card says it: what a click at the element's centre reaches, the element itself or
+ * what covers it. Before a repair and after it, two captures whose screenshots are the same (a transparent overlay) differ here.
+ */
+export function hitSentence(e: { hit: { self: boolean; selector?: string; tag?: string } }): string {
+  return hitWords(e) || 'a click at its centre reaches the element itself'
+}
+
 /** The element's disabled, hidden, inert and aria state, as words; empty when it has none. */
 export function elementStateWords(s: ElementReport['state']): string[] {
   const out: string[] = []
@@ -457,6 +465,53 @@ export function sourceLink(s: Pick<CaptureSource, 'path' | 'found' | 'outside' |
   // eslint-disable-next-line no-control-regex
   if (/[\u0000-\u001f\u007f]/.test(p)) return null
   return { path: p, line: s.line && s.line > 0 ? s.line : undefined }
+}
+
+/** A hint the page gave, as the editor lists it before Save: its path as a person reads it, never the machine's, and whether it is a library's. */
+export interface DraftSource {
+  path: string
+  line?: number
+  how: string
+  component?: string
+  /** A library's file (a path with a node_modules folder), listed after the tree's own. */
+  vendor: boolean
+}
+
+/**
+ * The hints of a draft's element as the editor lists them before Save, the way the server's checked sources read after it (the
+ * capture's "Sources": the tree's own files first, relative to the tree, a library's last): a hint's file made relative to `tree`
+ * (the attempt's worktree, where the page names it) as the server makes it; a path already relative, as given; an absolute one
+ * elsewhere (a candidate's checkout, whose folder the page is not told), relative to the folder that holds the hints' node_modules
+ * when it is in it, a library's from its node_modules, else its last three parts after `…/`. No absolute path is returned. The
+ * tree's own keep the page's order (innermost first), the libraries' after them in theirs. What the capture keeps is the page's
+ * hints as given; the server checks them at Save.
+ */
+export function draftSources(hints: ReadonlyArray<{ how: string; file: string; line?: number; component?: string }>, tree = ''): DraftSource[] {
+  const slashed = (p: string) => p.replace(/\\/g, '/')
+  const absolute = (p: string) => p.startsWith('/') || /^[a-z]:\//i.test(p)
+  const base = slashed(tree).replace(/\/+$/, '')
+  const vendorAt = (p: string) => p.split('/').indexOf('node_modules')
+  // The folder that holds a library's node_modules: a folder of the tree, whatever the tree's own folder is.
+  const anchor =
+    hints
+      .map((h) => slashed(h.file))
+      .filter((p) => absolute(p) && vendorAt(p) > 0)
+      .map((p) => p.split('/').slice(0, vendorAt(p)).join('/'))[0] ?? ''
+  const shown = (file: string): string => {
+    const p = slashed(file)
+    if (!absolute(p)) return p.replace(/^(\.\/)+/, '')
+    if (base && absolute(base) && p.startsWith(base + '/')) return p.slice(base.length + 1)
+    const parts = p.split('/')
+    const v = parts.indexOf('node_modules')
+    if (v >= 0) return parts.slice(v).join('/')
+    if (anchor && p.startsWith(anchor + '/')) return p.slice(anchor.length + 1)
+    return `…/${parts.filter(Boolean).slice(-3).join('/')}`
+  }
+  const out = hints.map((h) => {
+    const path = shown(h.file)
+    return { path, line: h.line && h.line > 0 ? h.line : undefined, how: h.how, component: h.component || undefined, vendor: path.split('/').includes('node_modules') }
+  })
+  return [...out.filter((s) => !s.vendor), ...out.filter((s) => s.vendor)]
 }
 
 /** The preview page of an attempt, `&seq=` for its candidate's checkout (Open in Conductor). */

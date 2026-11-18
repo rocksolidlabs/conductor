@@ -297,6 +297,22 @@ function motionOf(el: El): number {
   return n
 }
 
+/**
+ * The words the hit test names what a click reaches by (the report's `hit.selector`), as the outline in the frame names an element:
+ * its id's selector when the id names it (selectorFor's `#id`); else its tag with its first two classes, bounded as the outline's are
+ * (the tag to 64 bytes, the class list to its first 128), `span.absolute.-inset-1`; else, with no class, its tag and its accessible name in
+ * quotes, to 64 bytes; and its path from the root only where it has none of them. Words for a person and an agent, never queried.
+ */
+export function hitName(el: El, doc: Doc): string {
+  const selector = selectorFor(el, doc)
+  if (selector.startsWith('#')) return selector
+  const tag = cutStart(nameOf(el, 64), 64)
+  const classes = cutStart(classesOf(el, 128), 128).split(' ').filter(Boolean).slice(0, 2)
+  if (classes.length) return `${tag}${classes.map((c) => '.' + c).join('')}`
+  const name = cutStart(accessibleName(el, doc), 64).trim()
+  return name ? `${tag} "${name}"` : selector
+}
+
 /** el's report as read now, cut to MAX_ELEMENT_REPORT. Nothing of the bridge's own is on the page while it reads. */
 export function readElement(el: El, page: Page): ElementReport {
   const { doc, win } = page
@@ -329,7 +345,7 @@ export function readElement(el: El, page: Page): ElementReport {
       hovered: safeMatches(el, ':hover'),
       motion: motionOf(el),
     },
-    hit: { self: !!hit && !!up(hit, (e) => e === el), selector: hit ? selectorFor(hit, doc) : '', tag: hit ? nameOf(hit) : '' },
+    hit: { self: !!hit && !!up(hit, (e) => e === el), selector: hit ? hitName(hit, doc) : '', tag: hit ? nameOf(hit) : '' },
     html: markup(el, B.html),
     neighbourhood: el.parentElement ? markup(el.parentElement, B.neighbourhood, el) : '',
     ancestors,

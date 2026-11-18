@@ -11,7 +11,7 @@ import { desktopPreviewBridge } from '~/utils/screenshotDesktop'
  * preview (its label's admin address, the tree's secret put in, which only the frame and New tab are given) or of a link, the
  * revision label above it (read every 5 s and at every run event, neutral ink), the device mode (Fit the pane, or Desktop 1280 × 800,
  * Tablet 820 × 1180, Phone 390 × 844: the frame that many CSS pixels, scaled down to fit), Refresh, New tab and Capture, which puts
- * the page into selection mode through the bridge (usePreviewBridge) and opens the capture editor beside the frame. The frame keeps
+ * the page into selection mode through the bridge (usePreviewBridge) and opens the capture editor over the frame's edge. The frame keeps
  * the page's own origin and its scripts (`allow-scripts allow-same-origin allow-forms allow-popups`, as the session's link tab
  * always had), sends no referrer, and is never the workbench itself, under any spelling of its address.
  */
@@ -172,9 +172,11 @@ watch(
   (n, was) => n !== was && was !== undefined && refresh(),
 )
 /**
- * The editor: beside the frame on a wide screen; on a phone over it, as the page, and out of the way while the session selects,
- * describes or takes pixels. Made at its first opening and kept: closed, it is hidden, its drafts' notes and saved captures kept.
- * `opens` counts its openings: each lists the attempt's saved captures again.
+ * The editor: over the frame, never beside it, so its opening never narrows the frame and lays the page out again under the pointer
+ * (Capture's selection is made on the frame's box as it was at the press): on a wide screen over the stage's right edge, on a phone
+ * over the whole stage, as the page; out of the way while the session selects, describes or takes pixels. Made at its first opening
+ * and kept: closed, it is hidden, its drafts' notes and saved captures kept. `opens` counts its openings: each lists the attempt's
+ * saved captures again.
  */
 const editorOpen = ref(false)
 const editorMade = ref(false)
@@ -184,7 +186,7 @@ function openEditor() {
   if (!editorOpen.value) opens.value++
   editorOpen.value = true
 }
-const editorShown = computed(() => editorOpen.value && !(phone.value && !!session.state.busy))
+const editorShown = computed(() => editorOpen.value && !session.state.busy)
 
 const from = computed<CaptureFrom | null>(() => {
   if (props.target) return { run: props.target.run, task: props.target.task, attempt: props.target.attempt, ...(props.target.seq ? { seq: props.target.seq } : {}) }
@@ -193,7 +195,7 @@ const from = computed<CaptureFrom | null>(() => {
 
 async function capture() {
   openEditor()
-  // The editor opens first, so the frame's size is settled before the moment is read.
+  // The editor opens first (over the frame: the frame keeps its box), and the stage's size is read before the moment is.
   await nextTick()
   settleRoom()
   await nextTick()
@@ -357,7 +359,7 @@ defineExpose({ capture, session, again, refresh })
         :attempt-session="attemptSession"
         :can-select="canSelect"
         again
-        :class="phone ? 'absolute inset-0 z-10 bg-default' : 'w-[26rem] max-w-[50%] flex-none border-l border-default'"
+        :class="phone ? 'absolute inset-0 z-10 bg-default' : 'absolute inset-y-0 right-0 z-10 w-[26rem] max-w-[50%] border-l border-default bg-default'"
         @close="editorOpen = false"
         @again="again"
       />
