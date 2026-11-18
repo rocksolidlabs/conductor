@@ -104,15 +104,19 @@ func (s *Server) agentTokenOK(r *http.Request, d session.Driver) agentTokenAnswe
 	return agentTokenServed
 }
 
-// liveTokens is the set of the live agent tokens this server minted
-// (session.TokenSet), counted: the hash of each, from before the agent's
-// process starts (createLocalSession) until the session ends, or until its
-// launch fails, one owner of each entry at a time (session.TokenEntry),
-// with the number of owners holding an entry for it. A hosted session's
-// agent token is minted by its host, not by this server, and is not one of
-// them: at a route that takes it first nothing changes, and at a route
-// that does not take it, it is asked of the provider as any token the
-// chain does not know. tokenPrincipal reads it.
+// liveTokens is the set of the live agent tokens the server knows
+// (session.TokenSet), counted: the hash of each with the number of owners
+// holding an entry for it, one owner of each entry at a time
+// (session.TokenEntry). A launched session's token is in it from before
+// the agent's process starts (createLocalSession) until the session ends,
+// or until its launch fails. A hosted session's, of the length the server
+// mints, from its registration, or from an attach that carries a token,
+// until the session ends, leaves the server, or its registration fails
+// (signal.Hub.Tokens). A hosted session's token is its host's choice: one
+// equal to another session's counts twice, so neither's end takes the
+// other's entry, and a token of that length the host already knows is
+// answered as that session's alone (known, no principal) while it lives,
+// never put to the provider. tokenPrincipal reads it.
 type liveTokens struct {
 	mu   sync.Mutex
 	held map[[32]byte]int
