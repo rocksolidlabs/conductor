@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { BrakemanConfig } from './brakeman'
 import { GRANTS, sameConfig } from './brakeman'
-import { PRESETS, applyPreset, briefingTimes, crewItems, pickerItems, presetChoice, presetLabel, presetOf, projectItems, runItems, sessionItems, withEntry, withoutAt, type Preset } from './brakemanSettings'
+import { PRESETS, applyPreset, briefingTimes, crewPicks, pickerItems, presetChoice, presetLabel, presetOf, projectPicks, runPicks, sessionPicks, withEntry, withoutAt, type Preset } from './brakemanSettings'
 
 // Brakeman's settings from a preset (#993): a preset sets what Brakeman may do, and nothing else of the form.
 
@@ -115,7 +115,7 @@ describe('the presets', () => {
 
 describe('the scope pickers', () => {
   it('list what is read, then each id saved but not listed, by its id, once', () => {
-    const listed = runItems([{ id: 'fix-login-1a2b3c4d', name: 'fix-login', label: 'Fix login' }])
+    const listed = runPicks([{ id: 'fix-login-1a2b3c4d', name: 'fix-login', label: 'Fix login' }])
     expect(pickerItems(listed, ['fix-login-1a2b3c4d', 'gone-0a0b0c0d', 'gone-0a0b0c0d'])).toEqual([
       { label: 'Fix login (fix-login-1a2b3c4d)', value: 'fix-login-1a2b3c4d' },
       { label: 'gone-0a0b0c0d', value: 'gone-0a0b0c0d', unlisted: true },
@@ -124,13 +124,13 @@ describe('the scope pickers', () => {
   })
 
   it('name each kind by what a person reads, saving its id', () => {
-    expect(projectItems([{ key: 'CND', name: 'Conductor' }, { key: 'OLD', name: 'Old', archivedAt: '2026-01-01T00:00:00Z' }, { key: 'ABC', name: 'ABC' }])).toEqual([
+    expect(projectPicks([{ key: 'CND', name: 'Conductor' }, { key: 'OLD', name: 'Old', archivedAt: '2026-01-01T00:00:00Z' }, { key: 'ABC', name: 'ABC' }])).toEqual([
       { label: 'CND · Conductor', value: 'CND' },
       { label: 'ABC', value: 'ABC' },
     ])
-    expect(crewItems([{ id: 'reviewers', name: 'Reviewers' }])).toEqual([{ label: 'Reviewers (reviewers)', value: 'reviewers' }])
-    expect(runItems([{ id: 'r-0a1b2c3d', name: 'r' }])).toEqual([{ label: 'r (r-0a1b2c3d)', value: 'r-0a1b2c3d' }])
-    expect(sessionItems([{ id: '0123456789abcdef', name: 'shell' }, { id: 'fedcba9876543210', name: '' }])).toEqual([
+    expect(crewPicks([{ id: 'reviewers', name: 'Reviewers' }])).toEqual([{ label: 'Reviewers (reviewers)', value: 'reviewers' }])
+    expect(runPicks([{ id: 'r-0a1b2c3d', name: 'r' }])).toEqual([{ label: 'r (r-0a1b2c3d)', value: 'r-0a1b2c3d' }])
+    expect(sessionPicks([{ id: '0123456789abcdef', name: 'shell' }, { id: 'fedcba9876543210', name: '' }])).toEqual([
       { label: 'shell (0123456789abcdef)', value: '0123456789abcdef' },
       { label: 'fedcba9876543210', value: 'fedcba9876543210' },
     ])
