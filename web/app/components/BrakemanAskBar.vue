@@ -189,8 +189,8 @@ async function send(b: AskBody) {
   }
 }
 
+/** Ask, pressed or clicked: Enter or Tab that picks from the @ list never gets here (onKeydown prevents it). */
 function submit() {
-  if (listOpen.value && matches.value.length) return
   const b = body.value
   if (!canAsk.value || !b || refused(b)) return
   void send(b)

@@ -23,6 +23,8 @@ const IDLE_MS = 120_000
 const NAME = 'Rail Tester'
 let srv: BrakemanServer
 let ticket = ''
+/** The run of the turn beforeAll waits out: a ref a person may type whole. */
+let turnRun = ''
 
 test.beforeAll(async () => {
   srv = await brakemanServer({ name: 'brakeman-ask' })
@@ -31,7 +33,8 @@ test.beforeAll(async () => {
   ticket = await makeTicket(srv.api, 'ASK', '1', { title: 'Login keys the session by tenant' })
   // One turn ended: its run and session are what the page holds besides the ticket, for the @ list to offer and a kind to narrow away.
   const first = await srv.ask({ kind: 'overlaps' })
-  await srv.until(first.id, ['briefed'])
+  turnRun = (await srv.until(first.id, ['briefed'])).runId ?? ''
+  expect(turnRun).not.toBe('')
 })
 
 test.afterAll(async () => {
@@ -154,6 +157,24 @@ test('a briefing sends at once, and from another time through its caret', async 
   expect(r.kind).toBe('briefing')
   // The browser's 18:00, as the server takes it: RFC 3339 in UTC.
   expect(r.since).toBe(await page.evaluate(() => new Date('2026-11-16T18:00').toISOString().replace('.000Z', 'Z')))
+})
+
+test('a click on Ask while the @ list is open sends the line as typed', async ({ page }) => {
+  await srv.open(page, '/brakeman', { name: NAME })
+  const b = await bar(page, 'full')
+  const field = b.locator('[data-ask-field]')
+  await field.click()
+  // A ref typed whole is always offered, so the list is open with a match when Ask is clicked.
+  await field.pressSequentially(`explain @run:${turnRun}`)
+  await expect(b.locator(`[data-ask-mentions] [data-ask-mention="run:${turnRun}"]`)).toBeVisible()
+  const before = await ids()
+  await b.locator('[data-ask-send]').click()
+  const r = await madeSince(before)
+  expect(r.kind).toBe('ask')
+  expect(r.note).toBe(`explain @run:${turnRun}`)
+  expect(r.by).toBe(NAME)
+  await expect(field).toHaveValue('')
+  await expect(page.getByRole('listbox')).toHaveCount(0)
 })
 
 test("the page's ?kind=&subject= fills the bar and sends nothing until Ask", async ({ page }) => {
