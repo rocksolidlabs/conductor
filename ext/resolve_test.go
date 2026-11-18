@@ -29,7 +29,8 @@ func goldenLaunch() ext.ResolvedLaunch {
 	}
 }
 
-// boundLaunch is goldenLaunch with K-8's binding and a capacity view.
+// boundLaunch is goldenLaunch with each member's binding and a capacity
+// view.
 func boundLaunch() ext.ResolvedLaunch {
 	r := goldenLaunch()
 	r.Members[0].Account, r.Members[0].AccountSource, r.Members[0].Model = "default", ext.AccountOwn, ""

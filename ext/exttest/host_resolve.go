@@ -81,8 +81,9 @@ func (h *FakeHost) OnResolveLaunch(fn func(ext.ResolveRequest) (ext.ResolvedLaun
 // manifest's blob at the commit, the bindings, the capacity views), its
 // digest by ext.ResolvedDigest over the crew's revision; or what
 // OnResolveLaunch set. A crew it was given no record for answers
-// ext.ErrNotFound; a commit the repository does not hold (SetCommits) is
-// refused start_commit_missing; a record past ext.MaxResolvedLaunch
+// ext.ErrNotFound; a commit for a crew without tasks is refused
+// invalid_request, and one the repository does not hold (SetCommits)
+// start_commit_missing; a record past ext.MaxResolvedLaunch
 // resolved_too_large; a request its Valid refuses invalid_request. It
 // launches nothing and keeps nothing.
 func (h *FakeHost) ResolveLaunch(ctx context.Context, r ext.ResolveRequest) (ext.ResolvedLaunch, error) {
@@ -117,6 +118,9 @@ func (s *fakeServer) resolve(r ext.ResolveRequest) (ext.ResolvedLaunch, error) {
 	c, ok := s.crews[r.Crew]
 	if !ok {
 		return ext.ResolvedLaunch{}, fmt.Errorf("%w: no crew %s", ext.ErrNotFound, r.Crew)
+	}
+	if r.Commit != "" && !c.r.Managed {
+		return ext.ResolvedLaunch{}, refusal(ext.RefusalInvalidRequest, "a start commit is a crew with tasks' base, and the crew %s has none", r.Crew)
 	}
 	if r.Commit != "" && !s.holds(r.Commit) {
 		return ext.ResolvedLaunch{}, refusal(ext.RefusalStartCommitMissing, "the folder's repository does not hold %s", r.Commit)

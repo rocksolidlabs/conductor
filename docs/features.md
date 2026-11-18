@@ -208,6 +208,76 @@ that order.
   link grants. Content appears only after the guest joins.
 - **No Runs nav item** until there is something behind it.
 
+## A provider's launch says where it came from, and is held to what was confirmed (#1003, #1004, #1005, #1002, #910; 2026-11-18)
+
+A registered provider that launches a saved crew with nobody present can
+now retry without a second run, say what the run is about, bound its
+time, find and stop what it launched, and hold the launch to what was
+looked at. Built as one pull request in four lanes, after the ledger step
+of its own (version 13, `run_origin`). With no provider registered,
+nothing changes.
+
+- **A provider's launch has an origin (#1003).** `ext.LaunchRequest` gains
+  an operation id, an origin (a reference and a label), a subject (a
+  reference, its link and an earlier run of the same provider) and a time
+  limit of 10 minutes to 24 hours, each bounded and checked by `Valid`,
+  none of them without an origin. They are written to the ledger in the
+  transaction that makes the run, before any attempt starts: a retry with
+  the same operation id answers the run it made, and two launches at once
+  make one. The engine stops the run at its deadline; a continuation keeps
+  the deadline and is refused once it has passed. `ext.Host` gains `Run`,
+  `RunByOp` (a look-up that never launches) and `StopRun`, which answer
+  only for the provider's own runs. A refusal a caller may act on carries a
+  code (`ext.Refusal`). `ext/exttest`'s fake does what the server does,
+  across a restart of the provider.
+- **The resolved launch (#1004).** `ext.Host.ResolveLaunch` answers what a
+  launch of a saved crew would run now (the crew, where it runs, the
+  folders, the project manifest at a commit, each member's agent, start,
+  yolo and catalogue entry) and one digest over it, `ext.ResolvedDigest`.
+  A launch that carries the digest is resolved again in the launch itself
+  and refused `launch_changed` on any difference; its start commit is the
+  run's base; every attempt starts its agent only from the entry the launch
+  confirmed. A provider's launch makes no view link. Each attempt's task
+  file and the run page say the subject: "Launched by <label> for
+  <subject> at <start commit>", with its link when the page may open it.
+- **The binding beside it (#1005).** Each member of a resolved launch names
+  the account (its id and where its login comes from) and the model a
+  launch would bind now, in the digest, and the bound accounts' kept usage
+  beside them, outside it. No folder or login is in a reply; the resolve
+  reads no usage and holds nothing.
+- **A switchyard tells a registered identity provider what the hosts it
+  admitted used (#1002).** An identity provider that also implements
+  `ext.UsageObserver` is handed an `ext.Usage` for each host connection
+  admitted through its principal (a session's or a run's desk's), every 60
+  s, at each change of the connection's credential and once at its close
+  (`Final`): an opaque connection id, the SHA-256 of the credential that
+  admitted it for that stretch (never the credential), the subject, the
+  session and its whole seconds (none for a desk), and the bytes the relay
+  counted both ways, so a hosted service can bound the relay it runs for
+  the hosts it admits. A renewal (`host_token`) to another credential ends
+  a stretch: what came before it is reported under the old credential's
+  hash; a renewal with the same credential ends nothing. A connection that
+  renews to other credentials more than twice in one period has the next
+  renewal kept pending for its 30 s recheck, which adopts it, so a flood
+  of renewals cuts no more reports; no renewal is refused for it. The
+  reports go through a queue of 256 that never holds the relay, the oldest
+  dropped and counted. None for the workbench token, a host token, an open
+  host or a share link, none on a server that is no switchyard, and none
+  with no identity provider or one that does not observe usage. It gates
+  nothing, nothing is stored, and what is still queued at shutdown is not
+  delivered.
+- **A hosted session's agent token is known to the chain (#910).** With an
+  identity provider registered, a hosted session's live agent token is
+  answered by the server at every route and never put to the provider,
+  from its registration until the session ends, leaves or fails to
+  register; the tokens are counted per session, in memory, as hashes.
+
+Not built, for the maintainers to decide: a run pointer's origin for a
+continuity store, launch fields on the person's launch route, a prune of
+the ledger's operation ids, acting on an account's capacity at a launch,
+a launch through a host or a switchyard, a capacity interface in `ext`,
+and the renewal of a host token checked against the live tokens.
+
 ## Brakeman's page says what it found (#993; 2026-11-17)
 
 A maintainer asked for Brakeman's screens to mean more, as the Brakeman
