@@ -1338,3 +1338,88 @@ func TestASelectionsItemSaysWhatItIs(t *testing.T) {
 		t.Fatalf("the scopes: %q / %q", it.Actions[0].Scope, it.Actions[2].Scope)
 	}
 }
+
+// A comparison's selection says only what is true of its state: open, it
+// asks for a choice and the run waits for one; answered, the choice is
+// made and the run waits for Yardmaster to apply it; applied, nothing
+// waits for it and nothing more is asked. It never offers Ask for more,
+// in any state: no agent asked it.
+func TestASelectionsWordsFollowItsState(t *testing.T) {
+	e := readyEnv(t, nil)
+	ctx := context.Background()
+	const run = "compare-0000beef"
+	req := `{"question":"Which approach does this comparison continue with?",` +
+		`"options":[{"label":"approach-a at 4b825dc","subject":{"kind":"candidate","run":"` + run + `","task":"approach-a","n":1,"commit":"4b825dc"}},` +
+		`{"label":"None of these"}],` +
+		`"recommendation":-1,"authorizes":"Continuing the selected candidate.","subject":{"kind":"comparison","run":"` + run + `","base":"abc123","digest":"d1"}}`
+	var n int64
+	if _, err := e.srv.ledger.Transition(ctx, run, func(tx *ledger.Tx) error {
+		if err := tx.PutRun(ledger.RunRow{ID: run, CrewID: "compare", Crew: `{"id":"compare"}`, Base: "abc123", State: ledger.RunRunning, CreatedAt: tx.Now()}); err != nil {
+			return err
+		}
+		d, _, err := tx.OpenDecision(ledger.DecisionRow{Origin: ledger.OriginCompare, Type: ledger.DecisionApproval, Fingerprint: "fp-words", Request: req,
+			Policy: `{"revision":"local/1","approver":"operator","quorum":1,"authority":[{"kind":"operator"}]}`})
+		n = d.N
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	id := ledger.DecisionID(n)
+	names := actionNames
+
+	open := e.itemOf(t, ledger.DecisionRef(n))
+	if !strings.Contains(open.Brief, ": choose one of its candidates") || !strings.Contains(open.Blocking.Words, "the run ends once a candidate, or None of these, is selected") {
+		t.Fatalf("open: %q / %q", open.Brief, open.Blocking.Words)
+	}
+	if got := names(open); !slices.Equal(got, []string{"select", "none", "comment"}) {
+		t.Fatalf("open, the actions: %q", got)
+	}
+
+	if _, err := e.srv.ledger.Transition(ctx, run, func(tx *ledger.Tx) error {
+		if _, err := tx.Respond(n, ledger.ResponseRow{Actor: adminActor, Authority: `{"grant":"admin","via":"workbench","boot":"b"}`, ResponseID: "sel-1",
+			Fingerprint: "fa-sel", Status: ledger.ResponseAccepted, Receipt: `{"words":"selected"}`}); err != nil {
+			return err
+		}
+		ok, err := tx.Answer(n, run, 1)
+		if err == nil && !ok {
+			err = fmt.Errorf("%s not answered", id)
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	answered := e.itemOf(t, ledger.DecisionRef(n))
+	for _, w := range []string{answered.Brief, answered.Blocking.Words} {
+		if strings.Contains(w, "choose") || strings.Contains(w, "is selected") || strings.Contains(w, "for you") {
+			t.Fatalf("answered, words of an open selection: %q", w)
+		}
+	}
+	if !strings.Contains(answered.Brief, ": it is answered, and the answer is final; Yardmaster applies it") ||
+		!strings.Contains(answered.Blocking.Words, "its selection is made; the run ends once Yardmaster applies it") {
+		t.Fatalf("answered: %q / %q", answered.Brief, answered.Blocking.Words)
+	}
+	if got := names(answered); !slices.Equal(got, []string{"comment"}) {
+		t.Fatalf("answered, the actions: %q", got)
+	}
+
+	if _, err := e.srv.ledger.Transition(ctx, run, func(tx *ledger.Tx) error {
+		d, ok, err := tx.Decision(n)
+		if err != nil || !ok {
+			return fmt.Errorf("%s: %v %v", id, ok, err)
+		}
+		d.State, d.Rev, d.Applied = ledger.DecisionApplied, d.Rev+1, `{"words":"continued approach-a"}`
+		return tx.PutDecision(d)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	applied := e.itemOf(t, ledger.DecisionRef(n))
+	if applied.Blocking.Words != "Nothing waits for "+id+" now: it is applied" {
+		t.Fatalf("applied, what waits: %q", applied.Blocking.Words)
+	}
+	if !strings.Contains(applied.Brief, ": it is applied, and nothing more is asked of you") || strings.Contains(applied.Brief, "choose") {
+		t.Fatalf("applied, the brief: %q", applied.Brief)
+	}
+	if got := names(applied); slices.Contains(got, "more_info") || slices.ContainsFunc(got, func(n string) bool { return n == "select" || n == "none" }) {
+		t.Fatalf("applied, the actions: %q", got)
+	}
+}
