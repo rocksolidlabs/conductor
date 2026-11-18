@@ -5,6 +5,7 @@ import { captureOfWords, diffSinceSent, hitSentence } from '~/utils/capture'
 import { type CaptureSendView, sendState } from '~/utils/captureSend'
 import { relativeTime } from '~/utils/sessions'
 import { retakeCandidate, type RetakeCandidate, type RetakeRun } from '~/utils/captureReview'
+import type { Comparison } from '~/utils/compare'
 import { entryRunId } from '~/utils/dispatchEvidence'
 import { previewPath } from '~/utils/capture'
 import { checkoutOfAttempt, previewRefusal } from '~/composables/useCandidatePreview'
@@ -84,8 +85,8 @@ watch(
 )
 
 // Capture again on a later candidate (PR-8): the ticket's runs' candidates, newest run first, read with the captures; each capture of a
-// task is offered the candidate retakeCandidate names (its own task's other attempt in its own run, or a repair run's, whatever that
-// run's crew and tasks are called), its checkout opened (or the one open) and the preview page asked to capture it again (`&retake=`).
+// task is offered the candidate retakeCandidate names (its own task's later attempt in its own run, or a later repair run's, whatever
+// that run's crew and tasks are called, a comparison's selected candidate alone), its checkout opened (or the one open) and the preview page asked to capture it again (`&retake=`).
 const runCandidates = ref<RetakeRun[]>([])
 async function readCandidates() {
   try {
@@ -98,11 +99,26 @@ async function readCandidates() {
     const out: RetakeRun[] = []
     for (const [run, startedAt] of started) {
       const c = await dispatch.runCandidates(run).catch(() => null)
-      if (c?.managed) out.push({ run, startedAt, candidates: c.candidates })
+      if (c?.managed) out.push({ run, startedAt, candidates: c.candidates, ...(await comparedSelection(run)) })
     }
     runCandidates.value = out
   } catch {
     runCandidates.value = []
+  }
+}
+/**
+ * For a run that says it is a comparison (its read's `compare` part), the task of the candidate its applied selection selected, null
+ * while none is applied or None of these was answered; for a run of no comparison, nothing. A read that fails offers nothing from the
+ * run (null), never a guess.
+ */
+async function comparedSelection(run: string): Promise<{ selected?: string | null }> {
+  try {
+    const r = await sessions.getRun(run)
+    if (!r.compare) return {}
+    const sel = (await request<Comparison>(`/api/runs/${encodeURIComponent(run)}/comparison`)).selection
+    return { selected: (sel?.state === 'applied' && !sel.applied?.none && sel.applied?.selected?.task) || null }
+  } catch {
+    return { selected: null }
   }
 }
 /**
@@ -135,8 +151,9 @@ function retakes(c: CaptureHere): string {
 }
 
 function retakeOn(c: CaptureHere): RetakeCandidate | null {
-  const o = c.sends[0]?.document.origin
-  return o ? retakeCandidate(o, runCandidates.value) : null
+  // Later than the capture: its own moment, the selection its screenshot shows.
+  const d = c.sends[0]?.document
+  return d ? retakeCandidate(d.origin, runCandidates.value, d.selectedAt) : null
 }
 const retaking = ref('')
 const retakeRefused = reactive(new Map<string, string>())
