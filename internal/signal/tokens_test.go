@@ -269,10 +269,23 @@ func TestAnEndedOrRetiredSessionTakesNoToken(t *testing.T) {
 		hs.HostDisconnected(conn)
 		reg.Remove(hs.Info().ID)
 		wantSize(t, set, 0, "once the session left the registry")
-		if again, resumed, err := registerToken(hub, "instance-a", hostToken("b"), NewHostConn()); err != nil || !resumed || again != hs {
-			t.Fatalf("registering again while the hub still holds it: %v %v", err, resumed)
+		reg2 := proto.Register{T: proto.HostRegister, Proto: proto.ProtoVersion, Host: proto.HostInfo{Name: "laptop", Instance: "instance-a"},
+			Session: proto.HostSession{Command: []string{"bash"}, Cols: 80, Rows: 24, LocalID: "1", AgentToken: hostToken("b")}}
+		if hs.attach(reg2, NewHostConn()) {
+			t.Fatal("a retired session took a host")
 		}
-		wantSize(t, set, 0, "once a retired session was attached with a token")
+		wantSize(t, set, 0, "once a retired session was offered a host with a token")
+		hs.mu.Lock()
+		hs.setAgentToken(hostToken("b"))
+		hs.mu.Unlock()
+		wantSize(t, set, 0, "once a retired session was handed a token")
+		again, resumed, err := registerToken(hub, "instance-a", hostToken("b"), NewHostConn())
+		if err != nil || resumed || again == hs {
+			t.Fatalf("registering again while the hub still holds the retired session: %v %v", err, resumed)
+		}
+		if !set.holds(hostToken("b")) || set.size() != 1 {
+			t.Fatal("the set does not hold the new session's token alone")
+		}
 	})
 	t.Run("running after exited", func(t *testing.T) {
 		hub, _, set := tokenHub(t, 4, nil)
@@ -523,5 +536,108 @@ func TestAnExpiryBesideARegistrationLeavesTheLiveToken(t *testing.T) {
 			}
 			wantSize(t, set, 1, "once the expiry returned")
 		})
+	}
+}
+
+// attachedTo says whether hs holds conn as its host's connection, and
+// whether it was retired.
+func attachedTo(hs *HostedSession, conn *HostConn) (attached, retired bool) {
+	hs.mu.Lock()
+	defer hs.mu.Unlock()
+	return hs.conn == conn, hs.retired
+}
+
+// A registration whose look-up found the session just before an expiry
+// took it out of the hub's table never puts its host on that session.
+// The expiry is held between its table delete and its registry removal
+// (the hub's logger holds its "hosted session expired" record); there the
+// registration's step after its look-up, the attach, is made as Register
+// makes it, and refused; the expiry let go, the session is retired, no
+// host on it; the instance registering again makes a new session, which
+// the hub and the registry both hold, its host on it.
+func TestARegistrationMeetingAnExpiryNeverAttachesToTheExpiredSession(t *testing.T) {
+	log := &holdingHandler{msg: "hosted session expired", at: make(chan struct{}), gate: make(chan struct{})}
+	hub, reg, set := tokenHub(t, 4, slog.New(log))
+	conn := NewHostConn()
+	gone, _, err := registerToken(hub, "instance-a", hostToken("o"), conn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gone.HostDisconnected(conn)
+	expired := make(chan struct{})
+	go func() {
+		hub.Expire(time.Now().Add(DisconnectGrace + time.Second))
+		close(expired)
+	}()
+	select {
+	case <-log.at:
+	case <-time.After(tokenWait):
+		t.Fatal("the expiry never reached the registry")
+	}
+	late := NewHostConn()
+	again := proto.Register{T: proto.HostRegister, Proto: proto.ProtoVersion,
+		Host: proto.HostInfo{Name: "laptop", Instance: "instance-a"}, Session: proto.HostSession{Command: []string{"bash"}, Cols: 80, Rows: 24, LocalID: "1", AgentToken: hostToken("o")}}
+	took := gone.attach(again, late)
+	close(log.gate)
+	<-expired
+	if attached, retired := attachedTo(gone, late); took || attached || !retired {
+		t.Fatalf("the expired session took the late host %v (on it %v), retired %v; want false, false, true", took, attached, retired)
+	}
+	wantSize(t, set, 0, "once the session expired")
+	live, resumed, err := hub.Register(again, NewHostConn())
+	if err != nil || resumed || live == gone {
+		t.Fatalf("registering again: %v %v", err, resumed)
+	}
+	id := HostedID("instance-a", "1")
+	if h, ok := hub.Get(id); !ok || h != live {
+		t.Fatal("the hub does not hold the new session")
+	}
+	if d, ok := reg.Get(id); !ok || d != session.Driver(live) {
+		t.Fatal("the registry does not hold the new session")
+	}
+	wantSize(t, set, 1, "once the instance registered again")
+}
+
+// A session that left the registry while the hub still holds it (its
+// removal comes before the hub forgets it) is never taken back: the same
+// instance registering again makes a new session, which the hub and the
+// registry both hold and an expiry leaves alone; a resume with the old
+// session's secret is refused.
+func TestARegistrationNeverTakesBackASessionTheRegistryLetGo(t *testing.T) {
+	hub, reg, set := tokenHub(t, 4, nil)
+	conn := NewHostConn()
+	old, _, err := registerToken(hub, "instance-a", hostToken("o"), conn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old.HostDisconnected(conn)
+	id := old.Info().ID
+	reg.Remove(id)
+	if _, _, err := resumeToken(hub, old, hostToken("o"), NewHostConn()); !errors.Is(err, ErrBadResume) {
+		t.Fatalf("a resume of a session the registry let go: %v", err)
+	}
+	fresh := NewHostConn()
+	live, resumed, err := registerToken(hub, "instance-a", hostToken("n"), fresh)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resumed || live == old {
+		t.Fatalf("the instance took back a session the registry let go (resumed %v)", resumed)
+	}
+	if attached, _ := attachedTo(old, fresh); attached {
+		t.Fatal("the host is on the session the registry let go")
+	}
+	hub.Expire(time.Now())
+	if h, ok := hub.Get(id); !ok || h != live {
+		t.Fatal("the hub does not hold the new session after an expiry")
+	}
+	if d, ok := reg.Get(id); !ok || d != session.Driver(live) {
+		t.Fatal("the registry does not hold the new session")
+	}
+	if attached, retired := attachedTo(live, fresh); !attached || retired {
+		t.Fatalf("the new session holds its host %v, retired %v; want true, false", attached, retired)
+	}
+	if set.holds(hostToken("o")) || !set.holds(hostToken("n")) {
+		t.Fatal("the set does not hold the new session's token alone")
 	}
 }

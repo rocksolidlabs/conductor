@@ -122,7 +122,8 @@ func (hub *Hub) Register(reg proto.Register, conn *HostConn) (*HostedSession, bo
 		if !ok || hs.desk != "" || !share.Equal(reg.Resume.Secret, hs.secret) {
 			return nil, false, ErrBadResume
 		}
-		if !hs.attach(reg, conn) {
+		// A session that left the registry or the table is not resumed.
+		if attached, _ := hs.attachLive(reg, conn); !attached {
 			return nil, false, ErrBadResume
 		}
 		return hs, true, nil
@@ -135,27 +136,46 @@ func (hub *Hub) Register(reg proto.Register, conn *HostConn) (*HostedSession, bo
 		// taken back, one with a live connection refused.
 		id = HostedID(reg.Host.Instance, reg.Session.LocalID)
 		owner = ownerOf(reg.Host.Instance)
-		hub.mu.Lock()
-		hs, ok := hub.sessions[id]
-		if !ok {
-			// A first registration of this id: another under way is
-			// refused, nothing made, and this one is marked until the
-			// session is in the table or the registration failed.
-			if _, under := hub.registering[id]; under {
-				hub.mu.Unlock()
+		for looks := 0; ; looks++ {
+			hub.mu.Lock()
+			hs, ok := hub.sessions[id]
+			if ok && hs.desk == "" && hs.forgetIfLeft() {
+				// It left the registry (retired) and the hub had not yet
+				// forgotten it: forgotten here, as Expire would, and the
+				// id registered anew.
+				delete(hub.sessions, id)
+				ok = false
+			}
+			if !ok {
+				// A first registration of this id: another under way is
+				// refused, nothing made, and this one is marked until the
+				// session is in the table or the registration failed.
+				if _, under := hub.registering[id]; under {
+					hub.mu.Unlock()
+					return nil, false, ErrBadRegister
+				}
+				if hub.registering == nil {
+					hub.registering = map[string]struct{}{}
+				}
+				hub.registering[id] = struct{}{}
+			}
+			hub.mu.Unlock()
+			if !ok {
+				break
+			}
+			if hs.desk != "" || hs.owner != owner {
 				return nil, false, ErrBadRegister
 			}
-			if hub.registering == nil {
-				hub.registering = map[string]struct{}{}
+			attached, left := hs.attachLive(reg, conn)
+			if attached {
+				return hs, true, nil
 			}
-			hub.registering[id] = struct{}{}
-		}
-		hub.mu.Unlock()
-		if ok {
-			if hs.desk != "" || hs.owner != owner || !hs.attach(reg, conn) {
+			if !left || looks > 0 {
 				return nil, false, ErrBadRegister
 			}
-			return hs, true, nil
+			// It left the table or the registry between the look-up and
+			// the attach (an expiry, a removal): look again, and register
+			// anew if nothing holds the id now.
 		}
 	}
 	secret, _ := share.NewToken()
@@ -214,12 +234,25 @@ func (hub *Hub) Register(reg proto.Register, conn *HostConn) (*HostedSession, bo
 
 // attach puts conn on a session whose host is away (a resume, or the same
 // instance registering again) and refreshes what the host says of it; false
-// when the session has a live connection.
+// when the session has a live connection, or has left the registry or the
+// hub's table (attachLive).
 func (hs *HostedSession) attach(reg proto.Register, conn *HostConn) bool {
+	attached, _ := hs.attachLive(reg, conn)
+	return attached
+}
+
+// attachLive is attach saying why it refused: left, the session left the
+// registry (retired) or the hub's table (forgotten), which no host is put
+// on again; otherwise it has a live connection.
+func (hs *HostedSession) attachLive(reg proto.Register, conn *HostConn) (attached, left bool) {
 	hs.mu.Lock()
+	if hs.retired || hs.forgotten {
+		hs.mu.Unlock()
+		return false, true
+	}
 	if hs.conn != nil {
 		hs.mu.Unlock()
-		return false
+		return false, false
 	}
 	hs.conn = conn
 	if !hs.info.Status.Ended() {
@@ -235,7 +268,7 @@ func (hs *HostedSession) attach(reg proto.Register, conn *HostConn) bool {
 	}
 	hs.mu.Unlock()
 	hs.notifyChange()
-	return true
+	return true, false
 }
 
 // HostedID is the id of a session registered with an instance and a local
@@ -262,39 +295,40 @@ func (hub *Hub) Get(id string) (*HostedSession, bool) {
 
 // Expire removes sessions whose host has been gone longer than the grace
 // period, and forgets ended sessions that the registry already dropped.
-// A session's token entry goes in the same hold that takes it out of the
-// table (the hub's lock, then the session's), and the registry loses only
-// the session expired: one registered under its id since is left alone.
+// A session is judged, marked forgotten (no host is attached to it again)
+// and its token entry removed in one hold of its lock, inside the hold of
+// the hub's that takes it out of the table: a host that attached before
+// the judgement keeps it, one that comes after finds it gone. The
+// registry loses only the session expired: one registered under its id
+// since is left alone.
 func (hub *Hub) Expire(now time.Time) {
 	hub.mu.Lock()
-	var expired []string
+	var desks, gone []*HostedSession
 	for id, hs := range hub.sessions {
+		// A desk is in no registry: only its host gone past the grace
+		// ends it. A session the registry no longer holds as itself is
+		// forgotten whatever its host does.
+		registered := true
+		if hs.desk == "" {
+			d, ok := hub.registry.Get(id)
+			registered = ok && d == session.Driver(hs)
+		}
 		hs.mu.Lock()
-		gone := hs.conn == nil && !hs.disconnectedAt.IsZero() && now.Sub(hs.disconnectedAt) >= DisconnectGrace
+		expire := !registered || hs.conn == nil && !hs.disconnectedAt.IsZero() && now.Sub(hs.disconnectedAt) >= DisconnectGrace
+		if expire {
+			hs.forgotten = true
+			hs.endToken()
+		}
 		hs.mu.Unlock()
-		if hs.desk != "" {
-			// A desk is in no registry: its host gone past the grace ends it.
-			if gone {
-				expired = append(expired, id)
-			}
+		if !expire {
 			continue
 		}
-		if _, inRegistry := hub.registry.Get(id); gone || !inRegistry {
-			expired = append(expired, id)
-		}
-	}
-	var desks, gone []*HostedSession
-	for _, id := range expired {
-		hs := hub.sessions[id]
+		delete(hub.sessions, id)
 		if hs.desk != "" {
 			desks = append(desks, hs)
 		} else {
 			gone = append(gone, hs)
 		}
-		delete(hub.sessions, id)
-		hs.mu.Lock()
-		hs.endToken()
-		hs.mu.Unlock()
 	}
 	hub.mu.Unlock()
 	for _, d := range desks {
