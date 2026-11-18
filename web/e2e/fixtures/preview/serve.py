@@ -17,7 +17,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 BRIDGE = os.environ.get("CONDUCTOR_PREVIEW_BRIDGE", "")
-PAGES = {"/": "index.html", "/next": "index.html", "/no-bridge": "index.html", "/late": "index.html", "/motion": "motion.html"}
+PAGES = {"/": "index.html", "/next": "index.html", "/no-bridge": "index.html", "/late": "index.html", "/motion": "motion.html", "/dialog": "dialog.html"}
 # The late page's bridge: its tag added once the page's request for /late-gate is answered.
 LATE = """<script>
 fetch('/late-gate', { cache: 'no-store' }).then((r) => r.text()).then(() => {

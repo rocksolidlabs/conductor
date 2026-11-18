@@ -1,7 +1,7 @@
 import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import type { Page, Route } from '@playwright/test'
-import { expect, stopStrays, task, test } from './fixtures'
+import type { Frame, Page, Route } from '@playwright/test'
+import { expect, stopStrays, task, test, type Api } from './fixtures'
 import { PREVIEW_BOOT_MS, endMade, launch, made, pick, previewCrew, previewFrame, previewSeam, scratchDir, stepIn } from './preview-fixtures'
 
 // A page whose bridge starts after the frame's load, later than the pane's first 3 s (docs/protocol.md, Preview bridge: the hello
@@ -56,6 +56,26 @@ async function pageGate(page: Page, shut: boolean) {
   )
   return g
 }
+
+interface Saved {
+  id: string
+  url: string
+  retakeOf?: string
+  annotations: Array<{ element?: { id?: string } }>
+}
+
+/** Saves the editor's capture and reads it back; the spec's routing ended first (a routed request's multipart body is not sent whole). */
+async function save(page: Page, api: Api): Promise<Saved> {
+  await page.unrouteAll({ behavior: 'wait' })
+  const editor = page.locator('[data-capture-editor]')
+  await editor.locator('[data-capture-save]').click()
+  const saved = editor.locator('[data-capture-saved]')
+  await expect(saved).toBeVisible()
+  return api.ok<Saved>('GET', `/api/captures/${await saved.getAttribute('data-capture-saved')}`)
+}
+
+/** The pane's count of the frame's loads. */
+const loads = async (page: Page) => Number(await page.locator('[data-preview-pane]').getAttribute('data-preview-loads'))
 
 test('a bridge that starts after the pane said the page has not answered is reached, and a selection names its element', async ({ page }) => {
   // The page's requests for its gate, held until the spec answers them.
@@ -208,3 +228,78 @@ test('a capture made before the page answered takes its element once it has, whi
   await expect(draft).toHaveAttribute('data-capture-url', `${origin}/late`)
 })
 
+test('Capture again waits for a bridge that answers late, describes on the page as it is, and the retake names the first capture', async ({ page, api }) => {
+  await pageGate(page, false)
+  await previewSeam(page)
+  await page.goto(previewURL())
+  const pane = page.locator('[data-preview-pane]')
+  await expect(pane).toHaveAttribute('data-preview-bridge', 'ready', { timeout: PREVIEW_BOOT_MS })
+  await page.locator('[data-preview-capture]').click()
+  await pick(page, await previewFrame(page, origin), '#second', 'button#second.second', { downs: 1 })
+  const first = (await save(page, api)).id
+
+  // The retake's page, its bridge held back.
+  const g = await pageGate(page, true)
+  await page.goto(previewURL(first))
+  const retake = page.locator('[data-preview-retake]')
+  await expect(retake).toBeVisible({ timeout: PREVIEW_BOOT_MS })
+  const frame = await previewFrame(page, origin)
+  await frame.evaluate(() => ((window as unknown as { kept: string }).kept = 'this load'))
+  await retake.click()
+  await expect(page.locator('[data-preview-retake-waiting]')).toBeVisible()
+
+  // The page answers: the retake is made on the page as it was, never loaded again.
+  await g.open()
+  const editor = page.locator('[data-capture-editor]')
+  // The retake's own draft (the editor shows a draft over the saved captures it lists).
+  await expect(editor.locator('[data-capture-draft="1"]')).toBeVisible({ timeout: PREVIEW_BOOT_MS })
+  await expect(editor.locator('[data-annotation="1"] [data-capture-element-summary]')).toContainText('button#second')
+  expect(await frame.evaluate(() => (window as unknown as { kept?: string }).kept)).toBe('this load')
+  await expect(page.locator('[data-preview-retake-error]')).toHaveCount(0)
+  await expect(retake).toBeVisible()
+  const second = await save(page, api)
+  expect([second.retakeOf, second.annotations.map((a) => a.element?.id)]).toEqual([first, ['second']])
+})
+
+test('Capture again describes an element the person opened on the page, and from another page goes to the capture’s first, describing on the next press', async ({ page, api }) => {
+  await previewSeam(page)
+  await page.goto(previewURL())
+  const pane = page.locator('[data-preview-pane]')
+  await expect(pane).toHaveAttribute('data-preview-bridge', 'ready', { timeout: PREVIEW_BOOT_MS })
+
+  // The dialog page, its dialog opened by the person, its button captured.
+  const before = await loads(page)
+  const frame = await previewFrame(page, origin)
+  await frame.goto(`${origin}/dialog`)
+  await expect.poll(() => loads(page), { timeout: PREVIEW_BOOT_MS }).toBeGreaterThan(before)
+  await expect(pane).toHaveAttribute('data-preview-bridge', 'ready', { timeout: PREVIEW_BOOT_MS })
+  await frame.locator('#open').click()
+  await page.locator('[data-preview-capture]').click()
+  await pick(page, frame, '#in-sheet', 'button#in-sheet')
+  const first = await save(page, api)
+  expect(first.url).toBe(`${origin}/dialog`)
+
+  // The retake's page opens at the preview's own page: the first press sends the frame to the capture's and describes nothing.
+  await page.goto(previewURL(first.id))
+  await expect(pane).toHaveAttribute('data-preview-bridge', 'ready', { timeout: PREVIEW_BOOT_MS })
+  const retake = page.locator('[data-preview-retake]')
+  const at = await loads(page)
+  await retake.click()
+  await expect(page.locator('[data-preview-retake-moved]')).toBeVisible({ timeout: PREVIEW_BOOT_MS })
+  await expect.poll(() => loads(page), { timeout: PREVIEW_BOOT_MS }).toBeGreaterThan(at)
+  await expect(pane).toHaveAttribute('data-preview-bridge', 'ready', { timeout: PREVIEW_BOOT_MS })
+  const editor = page.locator('[data-capture-editor]')
+  await expect(editor.locator('[data-capture-draft]')).toHaveCount(0)
+
+  // The person opens the dialog, then presses again: its button is described, the dialog still open.
+  let there: Frame | undefined
+  await expect.poll(() => (there = page.frames().find((f) => f.url().startsWith(`${origin}/dialog`))) !== undefined).toBe(true)
+  await there!.locator('#open').click()
+  await expect(there!.locator('#in-sheet')).toBeVisible()
+  await retake.click()
+  await expect(editor.locator('[data-capture-draft="1"]')).toBeVisible({ timeout: PREVIEW_BOOT_MS })
+  await expect(editor.locator('[data-annotation="1"] [data-capture-element-summary]')).toContainText('button#in-sheet')
+  await expect(there!.locator('#sheet')).toBeVisible()
+  const second = await save(page, api)
+  expect([second.retakeOf, second.annotations.map((a) => a.element?.id)]).toEqual([first.id, ['in-sheet']])
+})

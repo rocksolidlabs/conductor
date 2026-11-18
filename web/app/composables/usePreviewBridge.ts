@@ -561,6 +561,13 @@ export function createPreviewSession(deps: BridgeDeps) {
     if (missing.length) state.refusal = `not on this page now, so not retaken: ${missing.join(', ')}`
   }
 
+  /** The page's address now, as the bridge reports it (a look); null without an answer. */
+  async function where(): Promise<string | null> {
+    if (state.bridge !== 'ready' || state.busy || waiting) return null
+    const m = await ask('look')
+    return m?.t === 'looked' ? m.url : null
+  }
+
   /** Leaves selection mode: the bridge answers cancelled, which ends the selection waiting for it. */
   function cancel() {
     if (waiting?.t === 'select') post({ t: 'cancel' })
@@ -657,7 +664,7 @@ export function createPreviewSession(deps: BridgeDeps) {
     else await snap()
   }
 
-  return { state, hello, gone, select, describe, cancel, retake, snap, start, addRegion, drop, release, close }
+  return { state, hello, gone, select, describe, where, cancel, retake, snap, start, addRegion, drop, release, close }
 }
 
 export type PreviewSession = ReturnType<typeof createPreviewSession>

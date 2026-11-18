@@ -209,27 +209,50 @@ async function capture() {
   await session.start()
 }
 
-/** Waits for the hello after the frame's next load to be answered or given up (a bound on a frame that never loads). */
-function nextHello(after: number): Promise<void> {
+/**
+ * Waits for the bridge of the frame's load now (the next load when none is under way): true once it answers, false when that load ends
+ * first or the pane comes to say the page does not load the bridge. It waits as long as the frame stays on that load, as the pane's
+ * own hello does.
+ */
+function bridgeOfThisLoad(): Promise<boolean> {
+  if (session.state.bridge === 'ready') return Promise.resolve(true)
+  const load = session.state.bridge === 'none' ? hellos.value + 1 : hellos.value
+  const judge = (): boolean | null => {
+    const n = hellos.value
+    const b = session.state.bridge
+    if (n > load) return false
+    if (n < load) return null
+    if (b === 'ready') return true
+    return b === 'none' || session.state.unanswered ? false : null
+  }
   return new Promise((resolve) => {
-    const done = () => {
+    const first = judge()
+    if (first !== null) return resolve(first)
+    const stop = watch([hellos, () => session.state.bridge, () => session.state.unanswered], () => {
+      const done = judge()
+      if (done === null) return
       stop()
-      clearTimeout(bound)
-      resolve()
-    }
-    const stop = watch([hellos, () => session.state.bridge], ([n, b]) => n > after && (b === 'ready' || b === 'absent') && done(), { immediate: true })
-    const bound = setTimeout(done, 30_000)
+      resolve(done)
+    })
   })
 }
 
 /**
- * Capture again (PV1 PR-8): the earlier capture's device mode and address (its path on this preview's own origin, never another), each
- * of its elements described again by its selector into a new capture that names it as the one it retakes.
+ * Capture again (PV1 PR-8): the earlier capture's device mode, and its elements described again by their selectors into a new capture
+ * that names it as the one it retakes, on the page as the person has it when the frame is at the capture's address (its path on this
+ * preview's own origin, never another, compared without the fragment), so what they opened stays. It waits for the page's bridge as
+ * long as the frame stays on its load (the page's present address is the bridge's word). On another page the frame goes to the
+ * capture's address and nothing is described: the person sets the page up as the capture had it and presses again. A refusal leaves
+ * the button: the person presses again.
  */
 const captures = useCaptures()
 const retakeError = ref('')
+/** Capture again under way: waiting for the page's bridge, or the frame sent to the capture's address for the person to set up. */
+const retakeState = ref<'' | 'waiting' | 'moved'>('')
 async function again(c: CaptureAnswer) {
+  if (retakeState.value === 'waiting') return
   retakeError.value = ''
+  retakeState.value = ''
   openEditor()
   if (c.viewport.mode !== mode.value) mode.value = c.viewport.mode
   await nextTick()
@@ -239,14 +262,17 @@ async function again(c: CaptureAnswer) {
     retakeError.value = 'the capture names no page this preview can open'
     return
   }
-  // The frame is always loaded again at the capture's page: the page it shows may be another than the address it was given (a link
-  // followed inside it, a route the page pushed), which nothing tells the pane.
-  const before = hellos.value
-  moved.value = want === src.value ? '' : want
-  frameKey.value++
-  await nextHello(before)
-  if (session.state.bridge !== 'ready') {
-    retakeError.value = "the page did not answer: Capture again needs the bridge to describe the capture's elements"
+  retakeState.value = 'waiting'
+  const here = (await bridgeOfThisLoad()) ? await session.where() : null
+  retakeState.value = ''
+  if (here === null) {
+    retakeError.value = "the page has not answered: Capture again needs the bridge to describe the capture's elements; press it again once the page answers"
+    return
+  }
+  if (withoutFragment(here) !== withoutFragment(want)) {
+    moved.value = want === src.value ? '' : want
+    frameKey.value++
+    retakeState.value = 'moved'
     return
   }
   const elements = (c.annotations ?? []).filter((a) => a.kind === 'element' && a.element).map((a) => ({ selector: a.element!.selector, note: a.note }))
@@ -284,7 +310,7 @@ defineExpose({ capture, session, again, refresh })
 </script>
 
 <template>
-  <div ref="root" class="flex h-full min-h-0 min-w-0 flex-col" data-preview-pane :data-preview-bridge="session.state.bridge">
+  <div ref="root" class="flex h-full min-h-0 min-w-0 flex-col" data-preview-pane :data-preview-bridge="session.state.bridge" :data-preview-loads="hellos">
     <!-- The label, then what the pane offers: one line that never wraps, so nothing it shows resizes the frame (a page's resize is a
          new moment). -->
     <div class="flex h-9 min-w-0 flex-none flex-nowrap items-center gap-2 border-b border-default px-3 text-xs">
@@ -320,12 +346,32 @@ defineExpose({ capture, session, again, refresh })
         </span>
         <UButton label="Stop selecting" size="xs" color="neutral" variant="ghost" class="flex-none" data-preview-cancel @click="session.cancel()" />
       </template>
-      <span v-else-if="session.state.bridge === 'absent'" class="min-w-0 flex-1 truncate text-muted" :title="`${session.state.words}.`" data-preview-nobridge>{{ session.state.words }}.</span>
-      <span v-else-if="retakeError" class="min-w-0 flex-1 truncate text-default" data-preview-retake-error>{{ retakeError }}</span>
-      <template v-else-if="retaking && !retaking.deletedAt">
-        <span class="min-w-0 flex-1 truncate text-default" :title="retaking.url" data-preview-retake-of>Capture again of <span class="font-mono" data-mono="id">{{ retaking.id }}</span>: its page and device mode here, each element described again.</span>
-        <UButton label="Capture again" icon="i-lucide-repeat" size="xs" color="neutral" variant="outline" class="flex-none" :disabled="!framed || !!session.state.busy" data-preview-retake @click="again(retaking)" />
+      <template v-else-if="retakeError || retakeState || (retaking && !retaking.deletedAt)">
+        <span v-if="retakeError" class="min-w-0 flex-1 truncate text-default" :title="retakeError" data-preview-retake-error>{{ retakeError }}</span>
+        <span v-else-if="retakeState === 'waiting'" class="min-w-0 flex-1 truncate text-default" data-preview-retake-waiting>Capture again waits for the page to answer: the pane keeps asking.</span>
+        <span
+          v-else-if="retakeState === 'moved'"
+          class="min-w-0 flex-1 truncate text-default"
+          title="The frame is at the capture's page now: set the page up as the capture shows it (open what it had open), then press Capture again."
+          data-preview-retake-moved
+          >The frame is at the capture's page now: set it up as the capture shows it, then press Capture again.</span
+        >
+        <span v-else-if="session.state.bridge === 'absent'" class="min-w-0 flex-1 truncate text-muted" :title="`${session.state.words}.`" data-preview-nobridge>{{ session.state.words }}.</span>
+        <span v-else class="min-w-0 flex-1 truncate text-default" :title="retaking?.url" data-preview-retake-of>Capture again of <span class="font-mono" data-mono="id">{{ retaking?.id }}</span>: its device mode here, each element described again on the page as you have it.</span>
+        <UButton
+          v-if="retaking && !retaking.deletedAt"
+          label="Capture again"
+          icon="i-lucide-repeat"
+          size="xs"
+          color="neutral"
+          variant="outline"
+          class="flex-none"
+          :disabled="!framed || !!session.state.busy || retakeState === 'waiting'"
+          data-preview-retake
+          @click="again(retaking)"
+        />
       </template>
+      <span v-else-if="session.state.bridge === 'absent'" class="min-w-0 flex-1 truncate text-muted" :title="`${session.state.words}.`" data-preview-nobridge>{{ session.state.words }}.</span>
       <span v-else-if="labels.error.value" class="min-w-0 flex-1 truncate text-muted" data-preview-label-error>The label could not be read: {{ labels.error.value }}</span>
     </div>
 
