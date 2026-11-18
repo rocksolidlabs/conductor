@@ -723,8 +723,8 @@ on 2026-11-18.
     did (a run with tasks listed each attempt in its chat under the
     attempt's label, not its member's name, so the page found nobody to
     answer: #1009), and one such dialog was written to the run's log three
-    times (a dialog read again while it waits is the same question now, and
-    a read without the question's own words asks nothing: #1010).
+    times (the log notes one line for one dialog in a wait now, however
+    many times the session reads the dialog again: #1010).
   - **Observed differently from the plan's words.** The desktop app was not
     quit: the server's process was stopped and started instead. The
     byte-for-byte comparison of the measured part was made across a second
