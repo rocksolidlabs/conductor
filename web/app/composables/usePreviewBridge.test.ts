@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { CHANGED_WORDS, MOVING_WORDS, NO_BRIDGE_WORDS, RESTLESS_WORDS, type HeardMessage, type LabelRead } from '~/utils/capture'
+import { ANSWERED_WORDS, ASKING_WORDS, CHANGED_WORDS, MOVING_WORDS, NO_BRIDGE_WORDS, RESTLESS_WORDS, type HeardMessage, type LabelRead } from '~/utils/capture'
 import { PREVIEW_MARK, type ElementReport, type PreviewPage } from '~/utils/protocol'
 import type { Pixels, ScreenshotSource } from '~/utils/screenshot'
 import { testElement, testPage } from '~/utils/testdata/preview'
-import { HELLO_AGAIN_MS, HELLO_EVERY_MS, HELLO_MS, createPreviewSession, type BridgeDeps } from './usePreviewBridge'
+import { HELLO_AGAIN_MS, HELLO_EVERY_MS, HELLO_MS, NO_BRIDGE_MS, createPreviewSession, type BridgeDeps } from './usePreviewBridge'
 
 // The workbench's side of the bridge (docs/plans/browser-evidence.md, "The messages" and "One capture is one moment"), against a
 // fake page that answers as the bridge does, through the same gate the pane uses: the 3 s hello, one request in flight, and a
@@ -175,7 +175,7 @@ const first = testElement({ selector: '#save', box: { x: 10, y: 20, width: 80, h
 const second = testElement({ selector: '#next', id: 'next', box: { x: 200, y: 200, width: 50, height: 20 } })
 
 describe('the hello', () => {
-  it("says the page does not load the bridge when no ready comes within 3 s, and nothing when one does", async () => {
+  it("says the page has not answered yet when no ready comes within 3 s, that it does not load the bridge at 30 s, and nothing when one does", async () => {
     const h = harness()
     // The page answers nothing: its window takes no message.
     h.s.hello()
@@ -195,7 +195,11 @@ describe('the hello', () => {
     quiet.advance(HELLO_MS - 1)
     expect([quiet.s.state.bridge, quiet.s.state.words]).toEqual(['hello', ''])
     quiet.advance(1)
-    expect([quiet.s.state.bridge, quiet.s.state.words]).toEqual(['absent', NO_BRIDGE_WORDS])
+    expect([quiet.s.state.bridge, quiet.s.state.words, quiet.s.state.unanswered]).toEqual(['absent', ASKING_WORDS, false])
+    quiet.advance(NO_BRIDGE_MS - HELLO_MS - 1)
+    expect(quiet.s.state.words).toBe(ASKING_WORDS)
+    quiet.advance(1)
+    expect([quiet.s.state.bridge, quiet.s.state.words, quiet.s.state.unanswered]).toEqual(['absent', NO_BRIDGE_WORDS, true])
   })
 
   it('takes no answer from another window or origin, nor one with another nonce', async () => {
@@ -464,7 +468,7 @@ describe('a bridge that starts late: the hello said while the frame stays on its
     const c = late()
     c.h.s.hello()
     c.h.advance(HELLO_MS)
-    expect([c.h.s.state.bridge, c.h.s.state.words]).toEqual(['absent', NO_BRIDGE_WORDS])
+    expect([c.h.s.state.bridge, c.h.s.state.words]).toEqual(['absent', ASKING_WORDS])
     // The bridge's script starts now, long after the load: it answers the next hello, said at the pane's own pace.
     c.h.advance(10_000)
     c.up = true
@@ -498,12 +502,13 @@ describe('a bridge that starts late: the hello said while the frame stays on its
   it('goes on saying the hello with the load’s one nonce, every second within its 3 s and every two after, one timer at a time', () => {
     const c = late()
     c.h.s.hello()
-    for (let i = 0; i < 20; i++) {
+    for (let i = 0; i < 40; i++) {
       c.h.advance(1000)
       // The 3 s and at most one hello said again are set; after the 3 s, the one hello alone.
-      expect(c.h.live()).toBe(c.h.clock < HELLO_MS ? 2 : 1)
+      // The words' timer (3 s, then 30 s) and at most one hello said again; past 30 s, the one hello alone.
+      expect(c.h.live()).toBe(c.h.clock < NO_BRIDGE_MS ? 2 : 1)
     }
-    expect(c.hellos.map((x) => x.at)).toEqual([0, 1000, 2000, 4000, 6000, 8000, 10000, 12000, 14000, 16000, 18000, 20000])
+    expect(c.hellos.map((x) => x.at)).toEqual([0, 1000, 2000, ...Array.from({ length: 19 }, (_, i) => 4000 + 2000 * i)])
     expect(new Set(c.hellos.map((x) => x.nonce))).toEqual(new Set([NONCE]))
     expect(c.h.s.state.bridge).toBe('absent')
   })
@@ -525,6 +530,56 @@ describe('a bridge that starts late: the hello said while the frame stays on its
     expect(c.h.s.state.bridge).toBe('absent')
     c.h.deliver(readyOf('nonce-of-load-2-0000000'))
     expect([c.h.s.state.bridge, c.h.live()]).toEqual(['ready', 0])
+  })
+
+  it('takes a ready long after it said the page does not load the bridge, and the words go', () => {
+    const c = late()
+    c.h.s.hello()
+    c.h.advance(NO_BRIDGE_MS + 10_000)
+    expect([c.h.s.state.words, c.h.s.state.unanswered]).toEqual([NO_BRIDGE_WORDS, true])
+    c.h.deliver(readyOf(NONCE))
+    expect([c.h.s.state.bridge, c.h.s.state.words, c.h.s.state.unanswered, c.h.live()]).toEqual(['ready', '', false, 0])
+  })
+
+  /** A capture made while the page has not answered: the screenshot alone, then the page answers. */
+  async function askedThenAnswered(frames: Pixels[]) {
+    const c = late()
+    c.h.frames = frames
+    c.h.s.hello()
+    c.h.advance(HELLO_MS)
+    await c.h.s.start()
+    const d = c.h.s.state.drafts[0]!
+    expect([d.annotations.length, d.open, d.asked, d.words]).toEqual([0, true, true, []])
+    c.h.s.addRegion(d, { x: 1, y: 1, width: 5, height: 5 })
+    c.up = true
+    c.h.deliver(readyOf(NONCE))
+    expect(c.h.s.state.drafts[0]!.words).toEqual([ANSWERED_WORDS])
+    await selectOf(c.h, first)
+    return c
+  }
+
+  it('lets a capture made before the page answered take its first element once it has, where the frame still looks as its screenshot', async () => {
+    const c = await askedThenAnswered([screen()])
+    expect(c.h.s.state.drafts).toHaveLength(1)
+    const d = c.h.s.state.drafts[0]!
+    expect(d.annotations.map((a) => [a.kind, a.element?.selector ?? '', a.observed?.stable ?? null])).toEqual([
+      ['region', '', null],
+      ['element', '#save', true],
+    ])
+    // The page's moment now: its URL, viewport and epoch, the element observed at it; the answered words gone.
+    expect([d.moment.url, d.moment.epoch, d.moment.viewport.width, d.asked, d.words]).toEqual([c.h.page.url, c.h.page.epoch, c.h.page.viewport.width, false, []])
+    expect(d.annotations[1]!.observed!.url).toBe(d.moment.url)
+    // A second element joins it as a selection joins any draft.
+    await selectOf(c.h, second)
+    expect(c.h.s.state.drafts.map((x) => x.annotations.length)).toEqual([3])
+  })
+
+  it('starts a new capture for the element when the frame no longer looks as the screenshot taken before the page answered', async () => {
+    const c = await askedThenAnswered([screen(), screen({ x: 300, y: 200, width: 50, height: 50 })])
+    expect(c.h.s.state.drafts).toHaveLength(2)
+    const [a, b] = c.h.s.state.drafts
+    expect([a!.annotations.map((x) => x.kind), a!.open, a!.words]).toEqual([['region'], false, []])
+    expect([b!.annotations.map((x) => x.element?.selector), b!.words]).toEqual([['#save'], [CHANGED_WORDS]])
   })
 
   it('takes a late ready only from the frame’s window at the preview’s origin', () => {

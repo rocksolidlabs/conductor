@@ -449,7 +449,11 @@ export const MOVING_WORDS = 'this element was moving: its report is of a moment 
 export const CHANGED_WORDS = 'the page changed since this screenshot: this element starts a new capture'
 /** The words of a page whose epoch moved at every screenshot. */
 export const RESTLESS_WORDS = 'this page does not hold still long enough to capture'
-/** The words of a page that answered no hello within 3 s. */
+/** The words of a page that has answered no hello within 3 s, while the pane keeps asking (until NO_BRIDGE_WORDS, at 30 s). */
+export const ASKING_WORDS = "this page has not answered Conductor's bridge yet, and the pane keeps asking: until it answers, Capture takes the screenshot and your notes only"
+/** The words of a capture made before the page answered, once it has. */
+export const ANSWERED_WORDS = 'the page answers now: an element selected joins this screenshot while the page still looks as it does in it'
+/** The words of a page that answered no hello within 30 s (the pane still takes a later answer). */
 export const NO_BRIDGE_WORDS = "this page does not load Conductor's bridge: Capture takes the screenshot and your notes only. In the desktop app every page has it"
 /** The words of the pane asked to frame the workbench itself. */
 export const SELF_WORDS = 'this is Conductor itself: open it in a new tab'

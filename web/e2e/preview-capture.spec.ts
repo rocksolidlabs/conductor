@@ -16,7 +16,7 @@ import { PREVIEW_SERVICE, endMade, launch, made, pick, previewCrew, previewFrame
 // capture; an element no hit test returns, by walking the DOM and by selector; a region; Save, and the records read back with the
 // server's commit and content. Then the page held at its commit while the spec commits B in the worktree: the label and the save
 // read B, the capture says the page serves A. Then an animated control and a hover-styled one, as the pixels say; and a page without
-// the bridge, said after 3 s. The screenshots come through the seam (Playwright's own of the frame's box), so the comparisons run on
+// the bridge, said to have not answered yet after 3 s. The screenshots come through the seam (Playwright's own of the frame's box), so the comparisons run on
 // real pixels. Every wait is on what the page draws or what the server answers.
 test.describe.configure({ mode: 'serial', timeout: 300_000 })
 
@@ -207,10 +207,10 @@ test('an animated control is kept stable: false and the next element is another 
   await expect(editor.locator('[data-capture-draft-tab]')).toHaveCount(4)
 })
 
-test("a page that does not load the bridge says so after 3 s, and Capture keeps the screenshot and the notes", async ({ page, api }) => {
+test("a page that does not answer the bridge is said to have not answered yet after 3 s, and Capture keeps the screenshot and the notes", async ({ page, api }) => {
   const frame = await previewPage(page)
   await frame.goto(`${origin}/no-bridge`)
-  await expect(page.locator('[data-preview-nobridge]')).toHaveText("this page does not load Conductor's bridge: Capture takes the screenshot and your notes only. In the desktop app every page has it.", { timeout: BOOT_MS })
+  await expect(page.locator('[data-preview-nobridge]')).toHaveText("this page has not answered Conductor's bridge yet, and the pane keeps asking: until it answers, Capture takes the screenshot and your notes only.", { timeout: BOOT_MS })
   await expect(page.locator('[data-preview-pane]')).toHaveAttribute('data-preview-bridge', 'absent', { timeout: BOOT_MS })
   await page.locator('[data-preview-capture]').click()
   const editor = editorOf(page)

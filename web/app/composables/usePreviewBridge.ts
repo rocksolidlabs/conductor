@@ -1,5 +1,7 @@
 import { getCurrentInstance, markRaw, onBeforeUnmount, reactive, watch } from 'vue'
 import {
+  ANSWERED_WORDS,
+  ASKING_WORDS,
   CHANGED_WORDS,
   MOVING_WORDS,
   NO_BRIDGE_WORDS,
@@ -71,6 +73,11 @@ export interface Draft {
   open: boolean
   /** The capture this one retakes (Capture again), '' for none: the create sends it as `retakeOf`. */
   retakeOf: string
+  /**
+   * Made while the page had not answered the pane's hello: its moment is the pane's own (the frame's address and size). Its first
+   * element, once the page answers, joins it only where the frame then is the same as its screenshot, every pixel.
+   */
+  asked?: boolean
 }
 
 /** What the session needs of the pane. */
@@ -116,6 +123,8 @@ export const HELLO_MS = 3000
  */
 export const HELLO_AGAIN_MS = [1000, 2000] as const
 export const HELLO_EVERY_MS = 2000
+/** How long the pane says the page has not answered yet before it says the page does not load the bridge; it still takes a later ready. */
+export const NO_BRIDGE_MS = 30_000
 export const ANSWER_MS = 3000
 /** How many annotations a draft holds (dispatch.MaxCaptureAnnotations). */
 export const MAX_ANNOTATIONS = 20
@@ -214,8 +223,10 @@ export function createPreviewSession(deps: BridgeDeps) {
   const state = reactive({
     /** The handshake: none yet, a hello waiting, the bridge ready, or absent (no ready within 3 s; the hello is still said). */
     bridge: 'none' as 'none' | 'hello' | 'ready' | 'absent',
-    /** What the pane says of the bridge: that the page does not load it. */
+    /** What the pane says of the bridge: that the page has not answered yet (from 3 s), then that it does not load it (from 30 s). */
     words: '',
+    /** The page answered no hello within NO_BRIDGE_MS of its load: the pane says it does not load the bridge (and still asks). */
+    unanswered: false,
     /** What is under way: a selection, a describe, a screenshot; '' for nothing. */
     busy: '' as '' | 'select' | 'describe' | 'shot',
     /** The last refusal's words (a page that would not hold still, a selector that matched nothing, a full draft). */
@@ -246,6 +257,9 @@ export function createPreviewSession(deps: BridgeDeps) {
       stopHello()
       state.bridge = 'ready'
       state.words = ''
+      state.unanswered = false
+      // A capture made before the page answered can take its element now: the editor says so.
+      for (const d of state.drafts) if (d.open && d.asked && !d.words.includes(ANSWERED_WORDS)) d.words.push(ANSWERED_WORDS)
       return
     }
     const w = waiting
@@ -316,18 +330,26 @@ export function createPreviewSession(deps: BridgeDeps) {
     for (const d of state.drafts) d.open = false
     state.bridge = 'hello'
     state.words = ''
+    state.unanswered = false
     if (!post({ t: 'hello' })) {
       state.bridge = 'absent'
       state.words = NO_BRIDGE_WORDS
+      state.unanswered = true
       return
     }
     sayAgain(0)
+    // At 3 s the words say the page has not answered yet and the pane keeps asking; at 30 s, that it does not load the bridge.
     helloTimer = setTimer(() => {
       helloTimer = null
-      if (state.bridge === 'hello') {
-        state.bridge = 'absent'
+      if (state.bridge !== 'hello') return
+      state.bridge = 'absent'
+      state.words = ASKING_WORDS
+      helloTimer = setTimer(() => {
+        helloTimer = null
+        if (state.bridge !== 'absent') return
         state.words = NO_BRIDGE_WORDS
-      }
+        state.unanswered = true
+      }, NO_BRIDGE_MS - HELLO_MS)
     }, HELLO_MS)
   }
 
@@ -439,6 +461,25 @@ export function createPreviewSession(deps: BridgeDeps) {
     join(state.drafts[state.drafts.length - 1]!, page.element, page, at, stable)
   }
 
+  /**
+   * The first element of a draft made before the page answered: the draft takes the page's moment and the element where the frame is
+   * now the same as its screenshot, every pixel, and the label's revision has not moved; else the element starts a new draft, the
+   * first kept and closed.
+   */
+  async function adopt(d: Draft, m: { element: ElementReport } & PreviewPage, label: LabelRead | null, at: string) {
+    d.asked = false
+    d.words = d.words.filter((w) => w !== ANSWERED_WORDS)
+    const sameLabel = (d.moment.label?.commit ?? '') === (label?.commit ?? '') && (d.moment.label?.content ?? '') === (label?.content ?? '')
+    const frame = d.shot && sameLabel ? await shoot(await screenshots()) : null
+    if (d.shot && frame && sameIn(d.shot, frame, { x: 0, y: 0, width: d.shot.width, height: d.shot.height })) {
+      d.moment = momentOf(m, label, at)
+      d.ratio = m.viewport.width > 0 ? d.shot.width / m.viewport.width : 1
+      return join(d, m.element, m, at, true)
+    }
+    d.open = false
+    await startDraft(m, label, at, frame, [CHANGED_WORDS])
+  }
+
   /** An element the bridge selected or described: it joins the open draft at the same moment and pixels, or starts a new one. */
   async function take(m: { element: ElementReport } & PreviewPage) {
     state.busy = 'shot'
@@ -447,6 +488,7 @@ export function createPreviewSession(deps: BridgeDeps) {
       const at = now().toISOString()
       const moment = momentOf(m, label, at)
       const d = current()
+      if (d?.asked) return await adopt(d, m, label, at)
       if (d && sameMoment(d.moment, moment)) {
         if (!d.shot) return join(d, m.element, m, at, undefined)
         const src = await screenshots()
@@ -548,7 +590,9 @@ export function createPreviewSession(deps: BridgeDeps) {
         label,
         at: now().toISOString(),
       }
-      state.drafts.push({ id: ++ids, moment, shot: shot && markRaw(shot), how: shot ? src.how : 'none', why: shot ? '' : src.why || 'no screenshot could be taken', ratio: shot && f.width > 0 ? shot.width / f.width : 1, annotations: [], words: [], open: false, retakeOf: '' })
+      // Made while the page has not answered yet: open, its first element joining it once the page answers (adopt).
+      const asked = state.bridge === 'hello' || state.bridge === 'absent'
+      state.drafts.push({ id: ++ids, moment, shot: shot && markRaw(shot), how: shot ? src.how : 'none', why: shot ? '' : src.why || 'no screenshot could be taken', ratio: shot && f.width > 0 ? shot.width / f.width : 1, annotations: [], words: [], open: asked, retakeOf: '', asked })
     } finally {
       state.busy = ''
     }
@@ -578,6 +622,7 @@ export function createPreviewSession(deps: BridgeDeps) {
     for (const d of state.drafts) d.open = false
     state.bridge = 'none'
     state.words = ''
+    state.unanswered = false
   }
 
   function close() {

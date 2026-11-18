@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { CaptureAnswer, CaptureFrom, ViewportMode } from '~/utils/capture'
-import { DEVICE_SIZES, NO_BRIDGE_WORDS, SELF_WORDS, isWorkbench, labelWords, originOf, retakeAddress } from '~/utils/capture'
+import { DEVICE_SIZES, SELF_WORDS, isWorkbench, labelWords, originOf, retakeAddress } from '~/utils/capture'
 import { previewSeam, usePreviewBridge, withoutFragment } from '~/composables/usePreviewBridge'
 import { type LabelTarget, usePreviewLabel } from '~/composables/usePreviewLabel'
 import { screenshotSource } from '~/utils/screenshot'
@@ -320,7 +320,7 @@ defineExpose({ capture, session, again, refresh })
         </span>
         <UButton label="Stop selecting" size="xs" color="neutral" variant="ghost" class="flex-none" data-preview-cancel @click="session.cancel()" />
       </template>
-      <span v-else-if="session.state.bridge === 'absent'" class="min-w-0 flex-1 truncate text-muted" :title="`${NO_BRIDGE_WORDS}.`" data-preview-nobridge>{{ NO_BRIDGE_WORDS }}.</span>
+      <span v-else-if="session.state.bridge === 'absent'" class="min-w-0 flex-1 truncate text-muted" :title="`${session.state.words}.`" data-preview-nobridge>{{ session.state.words }}.</span>
       <span v-else-if="retakeError" class="min-w-0 flex-1 truncate text-default" data-preview-retake-error>{{ retakeError }}</span>
       <template v-else-if="retaking && !retaking.deletedAt">
         <span class="min-w-0 flex-1 truncate text-default" :title="retaking.url" data-preview-retake-of>Capture again of <span class="font-mono" data-mono="id">{{ retaking.id }}</span>: its page and device mode here, each element described again.</span>

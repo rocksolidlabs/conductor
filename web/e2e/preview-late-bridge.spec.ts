@@ -1,6 +1,6 @@
 import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import type { Route } from '@playwright/test'
+import type { Page, Route } from '@playwright/test'
 import { expect, stopStrays, task, test } from './fixtures'
 import { PREVIEW_BOOT_MS, endMade, launch, made, pick, previewCrew, previewFrame, previewSeam, scratchDir, stepIn } from './preview-fixtures'
 
@@ -14,7 +14,10 @@ import { PREVIEW_BOOT_MS, endMade, launch, made, pick, previewCrew, previewFrame
 // spec, never by a clock.
 test.describe.configure({ mode: 'serial', timeout: 300_000 })
 
-const NO_BRIDGE = "this page does not load Conductor's bridge: Capture takes the screenshot and your notes only. In the desktop app every page has it."
+/** The pane's words from 3 s while the page has not answered and the pane keeps asking. */
+const ASKING = "this page has not answered Conductor's bridge yet, and the pane keeps asking: until it answers, Capture takes the screenshot and your notes only."
+/** The editor's words on a capture made before the page answered, once it has. */
+const ANSWERED = 'the page answers now: an element selected joins this screenshot while the page still looks as it does in it'
 
 const m = made()
 let runId = ''
@@ -34,7 +37,27 @@ test.afterAll(async ({ api }) => {
   await endMade(api, m)
 })
 
-test('a bridge that starts after the pane said the page does not load one is reached, and a selection names its element', async ({ page }) => {
+/** The preview page of the run's attempt, `&retake=` the capture given. */
+const previewURL = (retake = '') => `/preview?run=${encodeURIComponent(runId)}&task=build&attempt=1${retake ? `&retake=${retake}` : ''}`
+
+/** The page's requests for its gate: held while shut, let through once opened (and those held then). */
+async function pageGate(page: Page, shut: boolean) {
+  const g = {
+    shut,
+    held: [] as Route[],
+    async open() {
+      g.shut = false
+      for (const r of g.held.splice(0)) await r.continue()
+    },
+  }
+  await page.route(
+    (u) => u.origin === origin && u.pathname === '/late-gate',
+    (r) => (g.shut ? void g.held.push(r) : void r.continue()),
+  )
+  return g
+}
+
+test('a bridge that starts after the pane said the page has not answered is reached, and a selection names its element', async ({ page }) => {
   // The page's requests for its gate, held until the spec answers them.
   const held: Route[] = []
   await page.route(
@@ -47,7 +70,7 @@ test('a bridge that starts after the pane said the page does not load one is rea
   const words = page.locator('[data-preview-nobridge]')
 
   // The page loaded without its bridge: the pane says so at its 3 s.
-  await expect(words).toHaveText(NO_BRIDGE, { timeout: PREVIEW_BOOT_MS })
+  await expect(words).toHaveText(ASKING, { timeout: PREVIEW_BOOT_MS })
   await expect(pane).toHaveAttribute('data-preview-bridge', 'absent')
   const frame = await previewFrame(page, origin)
   await expect.poll(() => held.length, { timeout: PREVIEW_BOOT_MS, message: 'the page asked for its gate' }).toBeGreaterThan(0)
@@ -67,7 +90,7 @@ test('a bridge that starts after the pane said the page does not load one is rea
   // A Refresh is a new load, its bridge late again: the words once more at its 3 s, then the bridge reached once its gate opens.
   await editor.locator('[data-capture-close]').click()
   await page.locator('[data-preview-refresh]').click()
-  await expect(words).toHaveText(NO_BRIDGE, { timeout: PREVIEW_BOOT_MS })
+  await expect(words).toHaveText(ASKING, { timeout: PREVIEW_BOOT_MS })
   await expect.poll(() => held.length, { timeout: PREVIEW_BOOT_MS, message: 'the page asked for its gate again' }).toBeGreaterThan(0)
   for (const r of held.splice(0)) await r.continue()
   await expect(pane).toHaveAttribute('data-preview-bridge', 'ready', { timeout: PREVIEW_BOOT_MS })
@@ -152,3 +175,36 @@ test('a draft made before the bridge answers names the page without the fragment
   const c = await api.ok<{ url: string }>('GET', `/api/captures/${await saved.getAttribute('data-capture-saved')}`)
   expect(c.url).toBe(`${origin}/late`)
 })
+
+test('a capture made before the page answered takes its element once it has, while the words say the pane keeps asking', async ({ page }) => {
+  const g = await pageGate(page, true)
+  await previewSeam(page)
+  await page.goto(previewURL())
+  const pane = page.locator('[data-preview-pane]')
+  const words = page.locator('[data-preview-nobridge]')
+  await expect(words).toHaveText(ASKING, { timeout: PREVIEW_BOOT_MS })
+  await expect(pane).toHaveAttribute('data-preview-bridge', 'absent')
+
+  // Capture now: the screenshot alone.
+  await page.locator('[data-preview-capture]').click()
+  const editor = page.locator('[data-capture-editor]')
+  const draft = editor.locator('[data-capture-draft="1"]')
+  await expect(draft.locator('[data-capture-shot]')).toBeVisible()
+  await expect(editor.locator('[data-annotation]')).toHaveCount(0)
+
+  // The page answers: the words go, the editor says the capture can take its element, and a selection joins it.
+  await g.open()
+  await expect(pane).toHaveAttribute('data-preview-bridge', 'ready', { timeout: PREVIEW_BOOT_MS })
+  await expect(words).toHaveCount(0)
+  await expect(draft.locator('[data-capture-changed]')).toHaveText(ANSWERED)
+  const frame = await previewFrame(page, origin)
+  await editor.locator('[data-capture-select]').click()
+  await pick(page, frame, '#second', 'button#second.second', { downs: 1 })
+  await expect(editor.locator('[data-annotation="1"] [data-capture-element-summary]')).toContainText('button#second')
+  await expect(draft).toBeVisible()
+  await expect(editor.locator('[data-capture-draft="2"]')).toHaveCount(0)
+  await expect(draft.locator('[data-capture-changed]')).toHaveCount(0)
+  // The page's moment now, named without the fragment the preview was opened with.
+  await expect(draft).toHaveAttribute('data-capture-url', `${origin}/late`)
+})
+
