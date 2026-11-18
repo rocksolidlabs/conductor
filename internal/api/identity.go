@@ -320,7 +320,13 @@ func (s *Server) principalWatch(p principal, wt *watchedToken, need ext.Grant) f
 			if pending != "" {
 				tok = pending
 			}
-			pr, admitted, known := g.recheck(ctx, tok)
+			var pr ext.Principal
+			admitted, known := false, true
+			if pending == "" || !s.ownLiveToken(pending) {
+				pr, admitted, known = g.recheck(ctx, tok)
+			}
+			// else: a pending renewal that has since become a session's
+			// live agent token is refused unasked, as hostToken refuses one.
 			if !known || ctx.Err() != nil {
 				wt.give()
 				continue
@@ -361,7 +367,8 @@ func (s *Server) principalWatch(p principal, wt *watchedToken, need ext.Grant) f
 // false, and the caller closes the connection 4403 access revoked: a
 // message past its bounds (proto.ParseHostToken), a connection not
 // admitted through a provider's principal, a token the server's own
-// chain knows (never asked of the provider), a connection already
+// chain knows or a live agent token of a session's (neither asked of the
+// provider), a connection already
 // ended, an error, a late or panicking answer, and a verdict (no
 // principal, another subject, no host grant), recorded under the turn as
 // a recheck's is. The ask is made under the connection's credential
@@ -374,6 +381,11 @@ func (s *Server) hostToken(hc *hostConnState, data []byte) bool {
 		return false
 	}
 	if _, known := s.chainPrincipal(tok); known {
+		return false
+	}
+	if s.ownLiveToken(tok) {
+		// A session's live agent token is never a host credential:
+		// refused as an unknown one is, never asked of the provider.
 		return false
 	}
 	g, ok := s.exts.identity.(guardIdentity)

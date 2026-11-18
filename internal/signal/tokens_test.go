@@ -624,6 +624,9 @@ func TestARegistrationNeverTakesBackASessionTheRegistryLetGo(t *testing.T) {
 	if resumed || live == old {
 		t.Fatalf("the instance took back a session the registry let go (resumed %v)", resumed)
 	}
+	if live.secret == old.secret {
+		t.Fatal("the session registered anew kept the old session's secret")
+	}
 	if attached, _ := attachedTo(old, fresh); attached {
 		t.Fatal("the host is on the session the registry let go")
 	}
@@ -709,5 +712,40 @@ func TestADeskRegistrationMeetingARetiredDeskRegistersItAnew(t *testing.T) {
 	// Two places: the new desk holds one, the old one's is free again.
 	if _, err := reg.Reserve(); err != nil {
 		t.Fatalf("the old desk's place was not given back: %v", err)
+	}
+}
+
+// A session and a desk never take each other's id: a desk registration
+// that finds a session under the desk's id is refused, as is a session's
+// registration that finds a desk under its id; neither attaches.
+func TestASessionAndADeskNeverTakeEachOthersID(t *testing.T) {
+	hub, _, _ := tokenHub(t, 4, nil)
+	conn := NewHostConn()
+	sess, _, err := hub.Register(proto.Register{T: proto.HostRegister, Proto: proto.ProtoVersion, Host: proto.HostInfo{Name: "box", Instance: "inst-a"},
+		Session: proto.HostSession{Command: []string{"bash"}, Cols: 80, Rows: 24, LocalID: proto.DeskLocalID("run-1")}}, conn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess.HostDisconnected(conn)
+	if _, _, err := hub.RegisterDesk(deskOf("inst-a", "run-1"), NewHostConn()); !errors.Is(err, ErrBadRegister) {
+		t.Fatalf("a desk registration over a session's id: %v", err)
+	}
+	dconn := NewHostConn()
+	desk, _, err := hub.RegisterDesk(deskOf("inst-a", "run-2"), dconn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	desk.HostDisconnected(dconn)
+	if _, _, err := hub.Register(proto.Register{T: proto.HostRegister, Proto: proto.ProtoVersion, Host: proto.HostInfo{Name: "box", Instance: "inst-a"},
+		Session: proto.HostSession{Command: []string{"bash"}, Cols: 80, Rows: 24, LocalID: proto.DeskLocalID("run-2")}}, NewHostConn()); !errors.Is(err, ErrBadRegister) {
+		t.Fatalf("a session registration over a desk's id: %v", err)
+	}
+	for _, hs := range []*HostedSession{sess, desk} {
+		hs.mu.Lock()
+		attached := hs.conn != nil
+		hs.mu.Unlock()
+		if attached {
+			t.Fatal("a registration of the other kind put its host on it")
+		}
 	}
 }

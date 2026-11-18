@@ -1679,3 +1679,58 @@ func isGuardType(e ast.Expr) bool {
 	id, ok := e.(*ast.Ident)
 	return ok && id.Name == "guardIdentity"
 }
+
+// hostedWithToken registers a hosted session on e, with a host token,
+// whose agent token is tok: tok is then a live agent token.
+func hostedWithToken(t *testing.T, e *testEnv, localID, tok string) {
+	t.Helper()
+	dialFakeHostWith(t, e, proto.HostInfo{Name: "box", Instance: "inst-live"},
+		proto.HostSession{Name: "hosted", AgentID: "cat", Command: []string{"cat"}, Cwd: "/tmp", Cols: 80, Rows: 24, LocalID: localID, AgentToken: tok}, "Bearer test-host-token")
+	if !e.srv.agentTokens.holds(tok) {
+		t.Fatal("the hosted session's token is not live")
+	}
+}
+
+// A session's live agent token is never a host credential: a host
+// connection admitted through the provider that renews to one is closed
+// 4403 as for a token the provider refuses, and the provider is never
+// asked about it, though it would admit it.
+func TestARenewalToALiveAgentTokenIsRefusedUnasked(t *testing.T) {
+	f := newCredIdentity()
+	e, _ := credEnv(t, f)
+	live := unminted("l")
+	f.set(func(f *credIdentity) { f.admits[live] = credHost })
+	hostedWithToken(t, e, "live", live)
+	h, _ := dialCred(t, e, hostReg("1", nil), credOld)
+	h.send(hostToken(live))
+	closedRevoked(t, h)
+	if n := f.timesAsked(live); n != 0 {
+		t.Fatalf("the provider was asked %d times about a live agent token offered as a host credential", n)
+	}
+}
+
+// A renewal kept pending (every renewal slot taken) that has since become
+// a session's live agent token is refused at the connection's recheck, the
+// provider never asked about it, though it would admit it.
+func TestAPendingRenewalThatBecameALiveAgentTokenIsRefusedUnasked(t *testing.T) {
+	f := newCredIdentity()
+	e, clock := credEnv(t, f)
+	live := unminted("p")
+	f.set(func(f *credIdentity) { f.admits[live] = credHost })
+	h, _ := dialCred(t, e, hostReg("1", nil), credOld)
+	first := clock.next(t, identityRecheckEvery)
+	gate := make(chan struct{})
+	t.Cleanup(func() { close(gate) })
+	fillRenewals(t, e, clock, f, gate)
+	h.send(hostToken(live))
+	h.link("view", "") // read after the renewal: kept pending, the connection stayed
+	if n := f.timesAsked(live); n != 0 {
+		t.Fatal("a renewal past every slot was asked")
+	}
+	hostedWithToken(t, e, "pending", live)
+	first.fire <- time.Now()
+	closedRevoked(t, h)
+	if n := f.timesAsked(live); n != 0 {
+		t.Fatalf("the recheck asked the provider %d times about a pending renewal that is a live agent token", n)
+	}
+}
