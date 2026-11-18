@@ -1,6 +1,7 @@
 package signal
 
 import (
+	"context"
 	"crypto/sha256"
 	"errors"
 	"fmt"
@@ -342,4 +343,185 @@ func TestADeskHoldsNoToken(t *testing.T) {
 		t.Fatal(err)
 	}
 	wantSize(t, set, 0, "once a desk registered")
+}
+
+// slowDriver is a session in the registry whose Info waits at gate once
+// armed: a registry Add counts the sessions by their Info, so a
+// registration is held inside its Add, after its look-up of the id.
+type slowDriver struct {
+	mu    sync.Mutex
+	armed bool
+	at    chan struct{}
+	gate  chan struct{}
+}
+
+func (d *slowDriver) Info() session.Info {
+	d.mu.Lock()
+	armed := d.armed
+	d.armed = false
+	d.mu.Unlock()
+	if armed {
+		close(d.at)
+		<-d.gate
+	}
+	return session.Info{ID: "slow", Kind: session.KindHosted, Status: session.StatusRunning}
+}
+func (*slowDriver) Stop(context.Context) error  { return nil }
+func (*slowDriver) DisconnectLink(string)       {}
+func (*slowDriver) EndLink(string)              {}
+func (*slowDriver) LinkViewers() map[string]int { return nil }
+
+// Two first registrations of one instance make one session: the second,
+// made while the first is held inside the registry's Add, is refused at
+// once and makes nothing; the hub and the registry hold the first, and
+// the set its token alone.
+func TestTwoFirstRegistrationsOfOneInstanceMakeOneSession(t *testing.T) {
+	hub, reg, set := tokenHub(t, 4, nil)
+	slow := &slowDriver{at: make(chan struct{}), gate: make(chan struct{})}
+	if err := reg.Add(slow); err != nil {
+		t.Fatal(err)
+	}
+	slow.mu.Lock()
+	slow.armed = true
+	slow.mu.Unlock()
+	type result struct {
+		hs  *HostedSession
+		err error
+	}
+	firstDone, secondDone := make(chan result, 1), make(chan result, 1)
+	go func() {
+		hs, _, err := registerToken(hub, "instance-a", hostToken("a"), NewHostConn())
+		firstDone <- result{hs, err}
+	}()
+	select {
+	case <-slow.at:
+	case <-time.After(tokenWait):
+		t.Fatal("the first registration never reached the registry's Add")
+	}
+	go func() {
+		hs, _, err := registerToken(hub, "instance-a", hostToken("b"), NewHostConn())
+		secondDone <- result{hs, err}
+	}()
+	var second result
+	select {
+	case second = <-secondDone:
+	case <-time.After(tokenWait):
+		// Waiting behind the first: let both through, and judge them.
+		close(slow.gate)
+		second = <-secondDone
+		<-firstDone
+		t.Fatalf("the second registration waited behind the first and made %v (%v)", second.hs != nil, second.err)
+	}
+	if !errors.Is(second.err, ErrBadRegister) || second.hs != nil {
+		t.Fatalf("the second first registration: %v %v", second.hs, second.err)
+	}
+	close(slow.gate)
+	first := <-firstDone
+	if first.err != nil {
+		t.Fatal(first.err)
+	}
+	id := HostedID("instance-a", "1")
+	if got, ok := hub.Get(id); !ok || got != first.hs {
+		t.Fatal("the hub does not hold the first registration's session")
+	}
+	if d, ok := reg.Get(id); !ok || d != session.Driver(first.hs) {
+		t.Fatal("the registry does not hold the first registration's session")
+	}
+	if reg.Count() != 2 {
+		t.Fatalf("the registry holds %d sessions, not the slow one and the first", reg.Count())
+	}
+	if !set.holds(hostToken("a")) || set.holds(hostToken("b")) {
+		t.Fatal("the set does not hold the first registration's token alone")
+	}
+	wantSize(t, set, 1, "once both registrations returned")
+}
+
+// holdingHandler is a logger's handler that holds the record named msg at
+// gate once, after saying so on at: what the hub logs between two steps.
+type holdingHandler struct {
+	msg      string
+	once     sync.Once
+	at, gate chan struct{}
+}
+
+func (h *holdingHandler) Enabled(context.Context, slog.Level) bool { return true }
+func (h *holdingHandler) Handle(_ context.Context, r slog.Record) error {
+	if r.Message == h.msg {
+		h.once.Do(func() {
+			close(h.at)
+			<-h.gate
+		})
+	}
+	return nil
+}
+func (h *holdingHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h *holdingHandler) WithGroup(string) slog.Handler      { return h }
+
+// A session expired as the same instance registers again leaves exactly
+// the live session's token known, whichever comes first: the expired
+// session's entry goes as it leaves the hub's table, and the registry
+// loses the expired session alone. Held between the table and the
+// registry, a registration in between makes a new session, which stays
+// registered, unretired, its token held; the expired one is retired.
+func TestAnExpiryBesideARegistrationLeavesTheLiveToken(t *testing.T) {
+	for _, held := range []bool{true, false} {
+		name := "registration after the expiry"
+		if held {
+			name = "registration inside the expiry"
+		}
+		t.Run(name, func(t *testing.T) {
+			log := &holdingHandler{msg: "hosted session expired", at: make(chan struct{}), gate: make(chan struct{})}
+			hub, reg, set := tokenHub(t, 4, slog.New(log))
+			old, fresh := hostToken("o"), hostToken("n")
+			conn := NewHostConn()
+			gone, _, err := registerToken(hub, "instance-a", old, conn)
+			if err != nil {
+				t.Fatal(err)
+			}
+			gone.HostDisconnected(conn)
+			wantSize(t, set, 1, "once the host went")
+			expired := make(chan struct{})
+			if !held {
+				close(log.gate)
+			}
+			go func() {
+				hub.Expire(time.Now().Add(DisconnectGrace + time.Second))
+				close(expired)
+			}()
+			select {
+			case <-log.at:
+			case <-time.After(tokenWait):
+				t.Fatal("the expiry never reached the registry")
+			}
+			if !held {
+				<-expired
+			}
+			wantSize(t, set, 0, "once the session left the hub's table")
+			live, resumed, err := registerToken(hub, "instance-a", fresh, NewHostConn())
+			if err != nil || resumed || live == gone {
+				t.Fatalf("registering again: %v %v", err, resumed)
+			}
+			wantSize(t, set, 1, "once the instance registered again")
+			if held {
+				close(log.gate)
+				<-expired
+			}
+			if d, ok := reg.Get(live.Info().ID); !ok || d != session.Driver(live) {
+				t.Fatal("the registry does not hold the live session")
+			}
+			live.mu.Lock()
+			retired := live.retired
+			live.mu.Unlock()
+			gone.mu.Lock()
+			goneRetired := gone.retired
+			gone.mu.Unlock()
+			if retired || !goneRetired {
+				t.Fatalf("the live session retired %v, the expired one %v; want false, true", retired, goneRetired)
+			}
+			if set.holds(old) || !set.holds(fresh) {
+				t.Fatalf("the set holds the expired token %v, the live one %v; want false, true", set.holds(old), set.holds(fresh))
+			}
+			wantSize(t, set, 1, "once the expiry returned")
+		})
+	}
 }
