@@ -80,7 +80,11 @@ What the other items give this one, and where they meet it:
   `docs/plans/capabilities.md` for BK0, but BK0 is planned in
   `docs/plans/brakeman.md`, which says so, and there is no
   `capabilities.md`. Capacity is not a provider: no `ext` interface
-  carries it, and `GET /api/capabilities` is unchanged.
+  carries it, and `GET /api/capabilities` is unchanged. A registered
+  provider reads a launch's binding and the kept view of the bound
+  accounts' usage through `ext.Host`'s resolved launch (`ResolveLaunch`:
+  each member's account and model, and `Capacity`; `docs/protocol.md`,
+  A provider's launch), which reads no usage to answer.
 - **Brakeman** (`docs/plans/brakeman.md`, BK1 and BK2 merged): its
   configuration's `account` folder, its visibility classes, its shared
   reads (`brakemanReads`), its evidence refs and its `proposal/1` items
@@ -1091,7 +1095,9 @@ no turn, and no server without the owner lock starts Claude Code.
   an account's folder; keeping a login's email, organisation or ids.
 - A capacity provider in `ext`, a hosted capacity service, or a
   Workspace view of several people's accounts (paid, and an amendment
-  first).
+  first). A provider reads a launch's binding and the kept view through
+  `ext.Host`'s resolved launch, which is a Host read, not a capacity
+  interface.
 
 ## Tests per surface
 
