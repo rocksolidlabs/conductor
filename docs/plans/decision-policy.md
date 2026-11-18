@@ -1,10 +1,10 @@
 # A decision router's policy on decision records (SW1's open-source rows, issue #997)
 
 Status: proposed 2026-11-18, for the owner's review before any of its
-code. The owner sets it to Planned by approving it; its code rows
-(PR-7, PR-7b, PR-8, PR-9, The PRs) are then cut into issues of this
-repository, one issue, one branch `issue-N`, one PR each (`AGENTS.md`),
-or built together as one bundle where the maintainers say so.
+code. The owner sets it to Planned by approving it; its rows (PR-7a,
+PR-7, PR-7b, PR-8, PR-9a and PR-9, The PRs) are units of work, grouped
+into pull requests as `AGENTS.md` (Working an issue) says at the time
+they are built.
 
 Today a durable decision (DR1, `docs/plans/decisions.md`) has one
 policy, `local/1`: one response from the operator, or from a holder of
@@ -30,9 +30,8 @@ Switchman, the team routing of decisions (Program item SW1), is one
 such router; this plan is SW1's open-source part, written in public
 before its code, as the repository requires. It says what the
 open-source build does for **any** registered decision router, and
-nothing of how a router decides, where it reads its policy from, or
-what it does with what it is told: that is the business of the module
-that registers the router.
+nothing of how a router decides or what it does with what it is told:
+that is the business of the module that registers the router.
 
 It was written against `main` at `f10eb297` (2026-11-18), after
 reading `ext/decisions.go`, `ext/host.go`, `ext/notify.go`,
@@ -214,7 +213,7 @@ started, it fails, it is late, it says not in force):
   restart.
 
 A policy binds only while its router confirms it. An operator who
-stops the router from confirming (stops it, or cuts what it reads)
+stops the router from confirming (stops it, or keeps it from answering)
 answers its decisions under `local/1`, and nothing here prevents that:
 article 8 asks for exactly this fallback. What the server promises is
 that every such answer is recorded as one, with its why, and kept for
@@ -287,9 +286,12 @@ behaves unchanged, and a router that does not implement
   (`json:"record,omitempty"`), set only for a durable record
   (`Request` set), never for a session's question:
   - `Type` (`clarification`, `approval`, `assignment`), `Origin`
-    (`agent`, `plan`), `Gate` (at most 40 bytes), `Ticket` (a ticket's
-    key), `Project` (its project's key), `Crew` (at most
-    `ext.MaxCrewID`), `Task` (at most 40 bytes);
+    (`agent`, `plan`, or `compare` for a comparison's selection, which
+    only the operator answers: a router may route it for the record's
+    history, and any `Policy` it answers for it is written nothing for),
+    `Gate` (at most 40 bytes), `Ticket` (a ticket's key), `Project` (its
+    project's key), `Crew` (at most `ext.MaxCrewID`), `Task` (at most 40
+    bytes);
   - `For` (`{Label, Person, Responsibility}`, HM1's, the label at most
     60 characters), and `Origin` says whose it is: a plan's is the
     approved revision's, an agent's is the requester's own, so a router
@@ -351,8 +353,11 @@ behaves unchanged, and a router that does not implement
   panicking or invalid answer, or one with no call slot free, is
   `{InForce: false, Why: "the router did not answer"}`. `MaxBehind`
   (120 s) is the interface's promise, written on it: a router answers
-  `Behind` or `Routes` for one record for at most that long, and then
-  answers in force or not; the server holds it to that (I10).
+  `Behind` or `Routes`, or a `Revision` other than the record's, for
+  one record for at most that long, counted from the first such answer
+  after one that was none of them, and then answers in force at the
+  record's revision, or not in force; the server holds it to that
+  (I10).
 - `host.go`, four methods for the registered router; every other
   provider's `Host` answers `ErrUnsupported`, and so does the router's
   where the server keeps no ledger (a switchyard):
@@ -365,7 +370,12 @@ behaves unchanged, and a router that does not implement
     route's), Rev, Counted []CountedResponse}` with
     `CountedResponse{Subject, Groups, At, Confirmed}` (PR-9; none
     before it). No count cut: a router reads every page before it
-    first acts on what it holds (I12).
+    first acts on what it holds (I12). It differs from
+    `Host.OpenDecisionRefs` (`docs/plans/phone-shell.md`), which any
+    provider with a `Host` may call and which returns only the refs of
+    the open decisions, a page at a time: this read is the registered
+    router's alone and returns each open record whole with its policy,
+    `RoutedAt`, rev and counted responses.
   - `Outcomes(ctx, after uint64) (OutcomesPage, error)` and
     `AckOutcomes(ctx, through uint64) error`: the **outcome outbox**,
     one row per record that ever carried a router's policy, read in
@@ -386,8 +396,9 @@ behaves unchanged, and a router that does not implement
     revision is already the record's (I14); `ErrStale` (new,
     `errors.New("ext: stale")`, wrapped with the current rev and
     revision) when the record moved past `ExpectedRev`; `ErrRefused`
-    with the words why for a policy the server refuses (its `Pinned` or
-    `Scope` changed, its groups following neither the requirement nor
+    with the words why for a comparison's selection (never given a
+    router's policy) and for a policy the server refuses (its `Pinned`
+    or `Scope` changed, its groups following neither the requirement nor
     the unsupported form, a bound passed); else `{Rev}`, with
     `Superseded` naming the fresh decision only in PR-9's one case
     (Groups, quorum and distinct persons, below).
@@ -426,12 +437,17 @@ behaves unchanged, and a router that does not implement
   network blocked, from several goroutines at once, each answer valid.
   `RunAll` runs it for a router that implements `PolicyConfirmer`.
 
-### `internal/crew/ledger` (PR-7; PR-7b writes the outbox; PR-9 for the barrier)
+### `internal/crew/ledger` (the steps PR-7a and PR-9a; the code PR-7, PR-9)
 
 - `MaxDecisionPolicy` goes from 1 KiB to 16 KiB: a router's policy at
   its bound (14 KiB) with the server's own fields. Every bound derived
-  from it (`internal/api`'s `maxDecisionListed` and its list page)
-  moves with it, and their tests hold (below).
+  from it moves with it, and their tests hold (below):
+  `internal/api`'s `maxDecisionListed` and its list page, and the
+  decision document `docs/plans/sync-seams.md` hands a sync provider,
+  which carries the record's policy and whose total bound is the sum of
+  its parts' bounds with the policy at `MaxDecisionPolicy`
+  (`TestDecisionDocWithTheMostResponsesFits` there, built with the
+  policy at this bound).
 - `policyShape` (the policy column, decoded with unknown fields
   refused) gains the fields the server writes: `approver` (`operator`
   or `router`), `router` (the provider's name), `scope`, `pinned`,
@@ -443,27 +459,44 @@ behaves unchanged, and a router that does not implement
 - `Tx.PutPolicy(n int64, policy string, rev int) (bool, error)` (new):
   the one writer of the column after the opening. It writes only while
   the decision is `open` and at `rev` (answers false otherwise, writing
-  nothing), checks the policy's shape and bound, and leaves every other
+  nothing), refuses a comparison's selection (origin `compare`, which
+  only the operator answers, as `Tx.RouteFor` refuses it) with
+  `ErrInvalidDecision`, checks the policy's shape and bound, and leaves
+  every other
   column; the rev and the history are the caller's, in the same
   transaction. So, as on `main`, **a decision's entries change only
   while it is open** (I16).
-- History: a kind `rerouted` (new) beside the reserved `assigned`,
-  `delegated` and `escalated`; the four become one bounded group of 16
-  (`historyBounds`, `MaxDecisionRouterChanges`), added to
-  `mandatoryHistory` (77 rows on `main`, 93 after). A router's 17th
-  change and later write no history row (I1, `Host.Reroute`).
+- History (PR-7): a kind `rerouted` (new) beside the reserved
+  `assigned`, `delegated` and `escalated`, the router's four kinds.
+  On `main`, `Tx.History` refuses an op id on any kind but
+  `commented`, `info_requested`, `routed` and `cancelled` ("a %s row is
+  no operation"), and puts every op row that is not a cancel in the
+  operator's group (`ops`, `MaxDecisionOperations`) or a Brakeman
+  turn's (`turn`); the `rest` count holds `assigned`, `delegated` and
+  `escalated`. So: the op check also takes an op id on the router's
+  four kinds; their rows (by `router:<name>`, never `TurnActor`) count
+  in a group of their own, `MaxDecisionRouterChanges` (16), a branch
+  beside `turn` in that group choice, never in `ops`, `Tx.Operations`
+  or `turn`; the `rest` count drops the three and keeps `notified` and
+  `expired`; and the repeat lookup by `(decision, by, op_id)` answers
+  a router's row sent again as it answers the others. The group is
+  added to `mandatoryHistory` (77 rows on `main`: 1 + 2 + 32 + 4 + 32 +
+  1 + 1 + 1 + 3; 93 after). A router's 17th change and later write no
+  history row (I1, `Host.Reroute`).
 - `decision_responses.status` takes `counted` (PR-9) beside `accepted`
   and `refused` (`Tx.Respond` accepts it; no column changes).
-- **The ledger's next schema version** (PR-7), at its merge (13 if no
-  other migration merges first; `main` is at 12). The stream writes two
-  shapes a binary before it misjudges: a router's policy (PR-7; such a
-  binary answers every response to it `stale_policy`, the operator's
-  too) and a spare (PR-7b; such a binary counts no place for it). So the
-  version is a barrier, as versions 10 and 12 are on `main`: an older
-  binary opens the ledger read-only. Its migration creates the outcome
-  outbox, which PR-7b writes and serves, so the stream moves the
-  version once before PR-9; nothing is derived, since no row of an
-  earlier version holds either shape.
+- **The step PR-7a: the ledger's next schema version**, at its merge
+  (13 if no other migration merges first; `main` is at 12), shipped
+  alone right before PR-7. PR-7 writes shapes a binary before the step
+  misjudges: a router's policy (such a binary answers every response to
+  it `stale_policy`, the operator's too), a spare (it counts no place
+  for it), an outbox row and the router's history rows. So the version
+  is a barrier, as versions 10 and 12 are on `main`: an older binary
+  opens the ledger read-only. Its migration creates the outcome outbox,
+  the one table PR-7 and PR-7b need; nothing is derived, since no row
+  of an earlier version holds any of these shapes. PR-7b writes no
+  shape PR-7 does not, so a build of PR-7 alone reads correctly what a
+  build of PR-7b wrote, and the one step covers both.
 - **The outcome outbox**, created by that migration, one `CREATE
   TABLE` and one index:
 
@@ -480,23 +513,25 @@ behaves unchanged, and a router that does not implement
     ON decision_outbox(decision);
   ```
 
-  `Tx.Outcome(n, outcome)` (PR-7b) writes the row in the transaction
+  `Tx.Outcome(n, outcome)` (PR-7) writes the row in the transaction
   that gives a router-policy record its final state (applied,
   superseded, cancelled, expired), one per record;
   `Ledger.Outcomes(ctx, after, limit)` reads in `seq` order;
-  `Ledger.AckOutcomes(ctx, through)`
-  deletes up to `through`. A record under `local/1` alone writes no
+  `Ledger.AckOutcomes(ctx, through)` deletes up to `through` (both
+  read and served from PR-7b). A record under `local/1` alone writes no
   row, so a server with no router writes none. A row is
   self-contained: nothing in it is read from another table when it is
   served, so a run pruned since loses nothing. Rows are bounded by the
   records that ever held a router's policy, one each; they leave only
   by an acknowledgement. `Snapshot` and `SnapshotFile` copy the table
   with the rest.
-- **The barrier** (PR-9): the schema version after PR-7's, with a
-  migration of no statements, as RV1's (version 10) is, so that an
-  older binary opens a ledger that may hold `counted` rows read-only.
-- `placeCond` (the condition of a decision holding a place for its
-  replacement) gains one clause: an `open` or `answered` decision
+- **The step PR-9a: the barrier**, the schema version after PR-7a's,
+  shipped alone right before PR-9, with a migration of no statements,
+  as RV1's (version 10) is, so that an older binary (PR-7 to PR-8
+  among them, which count no approvals) opens a ledger that may hold
+  `counted` rows read-only.
+- `placeCond` (PR-7; the condition of a decision holding a place for
+  its replacement) gains one clause: an `open` or `answered` decision
   whose policy holds a spare (`json_extract(d.policy, '$.spare') = 1`)
   holds one place, and an identity's accepted or counted response to it
   takes that place, never a second one (Every routed decision keeps
@@ -525,16 +560,27 @@ behaves unchanged, and a router that does not implement
   it (`PolicyCheck`: a decision, a revision, a subject and a time to a
   `Confirmation`, the guard's `Confirm`), which it calls outside every
   transaction.
-- **The opening** (PR-7b). A record opened while the engine routes
-  policies holds a **spare** (its `local/1` policy written with
-  `spare: true`, which every later policy keeps): one place for the
-  replacement its routed answer may need (Every routed decision keeps
-  room, below).
+- **The opening** (PR-7). A record opened while the engine routes
+  policies, but a comparison's selection, holds a **spare** (its
+  `local/1` policy written with `spare: true`, which every later policy
+  keeps): one place for the replacement its routed answer may need
+  (Every routed decision keeps room, below).
 - **The policy's transaction** (`Engine.RoutePolicy(ctx, id, by string,
   rev int, policy ext.RoutePolicy, to []Destination, rule string)`,
   new, beside `RecordRoute`): one transaction through the ledger,
-  taken whether or not the run is held. When the record is `open` at
-  `rev` and its policy is `local/1`, it writes the policy
+  taken whether or not the run is held. A route that carries a
+  `Policy` writes the router's single `routed` row here (by
+  `router:<name>`, no op id), the already-answered branch below
+  included, and `RecordRoute` is not called for it: on `main` every
+  opening writes the first of the two `routed` rows a record may hold
+  (the operator's by policy, `routedDetail`), so a `RecordRoute` row
+  beside this one would be a third, refused `decision_limit`, and the
+  policy with it. `RecordRoute` stays for a route with no `Policy`. A
+  comparison's selection (origin `compare`) takes no policy: the
+  transaction writes nothing for it, not even the `routed` row, and
+  its route is kept as on `main` (`RecordRoute` for destinations).
+  When the record is `open` at `rev` and its policy is `local/1`, it
+  writes the policy
   (`Tx.PutPolicy`, `approver: "router"`, `router: <provider name>`,
   `routedAt` now, the spare kept, `fallback: "local/1"`), rev + 1, the
   router's one `routed` row (`{to, rule, revision, by:
@@ -546,9 +592,23 @@ behaves unchanged, and a router that does not implement
   is not written: a change of policy is `Host.Reroute`'s.
 - **Responding** (`respondTx`, judged after DR1's replay of a repeat,
   in the order of the table The respond route's judgement, under
-  Events, orderings and invariants). The route asks `Confirm` first,
-  outside the transaction, and hands its answer to the engine with the
-  response:
+  Events, orderings and invariants). Every door that hands a response
+  in asks `Confirm` first, outside the transaction, and hands its
+  answer to the engine with the response: the respond route (the
+  operator's and the decide principal's) and a sync provider's door
+  for held answers (below). The guard says beside the confirmation
+  whether the router answered at all.
+  - **A comparison's selection** (origin `compare`) never holds a
+    router's policy: it is judged under `local/1` as on `main`, with no
+    confirmation asked, no window and no `stale_policy`; only the
+    operator answers it.
+  - **A router's own answer** (`via: router`, `Route.Answer`) is
+    refused `403 not_approver`, kept, under every policy, as under
+    `local/1` on `main` (I3); no confirmation is asked for it.
+  - **No confirmation handed in**: a record under a router's policy
+    that reaches the engine with no confirmation (a door that did not
+    ask) is refused `409 stale_policy`, unkept, never taken as "not in
+    force" (I5).
   - **The opening window**: a record in its window (`internal/api`,
     `router.go`, below; I10) refuses every response `409
     stale_policy` ("dr-7's policy is being written: try again").
@@ -561,7 +621,7 @@ behaves unchanged, and a router that does not implement
     principal is refused `403 not_approver`; the receipt keeps
     `{policy: "local/1", why}` with the router's why.
   - **Stale** (`Confirmation.Revision` differs from the record's) or
-    **behind**: `409 stale_policy`, to retry.
+    **behind**: `409 stale_policy`, to retry, within I10's bound.
   - **In force, the subject eligible** (entries admit it, and
     `Confirmation.Groups` holds a group of the policy): the response
     counts for every group it is eligible in; the receipt keeps
@@ -582,6 +642,37 @@ behaves unchanged, and a router that does not implement
     history, judged again when sent again with the same response id),
     as DR1's bound refusals are: it says "try again", and a kept one
     would answer the retry with itself.
+  - **A held answer under a router's policy** (one rule, mirrored in
+    `docs/plans/sync-seams.md` at its `RespondDecision` door). An answer
+    handed in by a sync provider (`via: sync`) to a record under a
+    router's policy is judged like an identity's response at the route:
+    the door asks the router's confirmation with the held answer's
+    subject before the engine, and hands the confirmation in.
+    - An eligible subject's answer counts: the door asks the store's
+      own check (`AdmitsAnswer`) with the grant the subject holds
+      (decide or admin), which the policy's `eligible` entry admits,
+      and the response is judged by the row "in force, the subject
+      eligible".
+    - The operator who is not eligible is refused `403 not_eligible`,
+      kept: a held answer carries no override, so under `override:
+      operator` as under `override: none` it never stands in the
+      policy's place.
+    - A router that is behind, names another revision, answers
+      `Routes` (it will route the record now) or does not answer:
+      nothing is written, and the provider may hand the answer in again
+      (the door's `unknown_authority`, `docs/plans/sync-seams.md`).
+    - A policy not in force (`InForce` false) is `local/1`, as at the
+      route.
+    - At application, BOTH the store's own recheck (`AdmitsAnswer`) and
+      the router's confirmation (with `Since`, from PR-9) must say yes.
+      Either one's no supersedes, as for an identity; a router that is
+      behind or does not answer leaves the answer waiting, asked again,
+      as the store's unknown does.
+    - Held by `TestAdminHeldAnswerCannotBypassOverrideNone`,
+      `TestEligibleHeldAnswerUnderAPolicyCounts`,
+      `TestHeldAnswerUnheardByTheRouterWritesNothing`,
+      `TestHeldAnswerUnderAPolicyIsConfirmedAtApplication` and
+      `TestRespondWithoutConfirmationIsStalePolicy`.
   - Then DR1's checks as on `main`: the state, the rev, the
     membership, the bounds.
 - **Application** (`applyDecisions`): for a response that counted
@@ -611,9 +702,10 @@ behaves unchanged, and a router that does not implement
   history. A re-route opens no decision and has no count bound, but for
   PR-9's one case.
 - **Every routed decision keeps room for its answer and its
-  replacement** (PR-7b, I11). DR1 refuses an identity's response
-  `decision_limit` when the place its replacement would need passes
-  the run's 1,000, the workbench token being its way out. Under a
+  replacement** (I11; the spare and its place PR-7's, a replacement
+  chain and the voided bound PR-7b's). DR1 refuses an identity's
+  response `decision_limit` when the place its replacement would need
+  passes the run's 1,000, the workbench token being its way out. Under a
   router's policy with `override: none` there is no such way out, so
   the room is taken earlier, where DR1 already refuses: at the opening.
   A record opened while the engine routes policies holds its spare
@@ -653,43 +745,48 @@ behaves unchanged, and a router that does not implement
   router was asked, within `MaxDecisionOperations`), moves no rev, and
   after its commit the record is told again. A Brakeman turn may not
   send it.
-- **Outcomes** (PR-7b): a router-policy record's final transaction
-  writes its outbox row (`Tx.Outcome`), every final state, answered or
-  not; `Resolution.Outcome` is filled from the same values when its end
-  is told.
+- **Outcomes**: a router-policy record's final transaction writes its
+  outbox row (`Tx.Outcome`, PR-7), every final state, answered or not;
+  `Resolution.Outcome` is filled from the same values when its end is
+  told (PR-7b).
 - **Counted responses** (PR-9): Groups, quorum and distinct persons,
   below.
 
 ### `internal/api` (PR-7; PR-7b where it says)
 
 - `extensions.go`: `guardRouter` gains `confirm(ctx, ConfirmQuery)
-  Confirmation`, in one of the provider's call slots as every call
-  takes, bounded by `ext.ConfirmWait`, its answer checked by
-  `Confirmation.Valid`; `routeIn` checks a route's `Policy` with
-  `RoutePolicy.Valid(Record)` and refuses one from a router that does
+  (Confirmation, bool)`, in one of the provider's call slots as every
+  call takes, bounded by `ext.ConfirmWait`, its answer checked by
+  `Confirmation.Valid`, the bool saying whether the router answered
+  (a held answer's door writes nothing when it did not); `routeIn`
+  checks a route's `Policy` with `RoutePolicy.Valid(Record)` and
+  refuses one from a router that does
   not implement `PolicyConfirmer`, or one past PR-7's shape (below).
   The composition tells the engine `SetRouterPolicies` from the
   registered router.
 - `router.go`: the record told to the router gets `Record` filled
   (`recordDecision`), its `Recommended` from the `routed` rows written
   before the router's own. `routeRecord` hands a route with a `Policy`
-  to `Engine.RoutePolicy` at the rev the router was shown, beside the
-  destinations' `RecordRoute`. The **opening window** (I10) is kept in
-  memory, per record: it opens at the commit of a record opened while
-  the engine routes policies (marked in `Server.decisionTold`, which
-  runs under the ledger's lock once the commit is made, before it
-  broadcasts the record's `decision` event: on `main` the event goes
-  first, so the mark is put ahead of it, and a client that answers on
-  the event never beats the router), and closes at the first
-  of: the policy's transaction, the router's answer with no policy,
-  a tell not made (no call slot, the provider not started) or failed,
-  `ext.RouteWait` after the tell began, and twice `ext.RouteWait` after
-  the commit (a tell that waited in the queue). Past it, a record the
-  router still means to route is held by `Confirm`'s `Routes`, under
-  its own bound. A restart forgets the windows; a pass tells every
-  open record again, and `Routes` covers them. A record re-told by a
-  pass that already carries a router's policy is told as on `main`,
-  and a policy in the answer writes nothing.
+  to `Engine.RoutePolicy` at the rev the router was shown, which writes
+  the route's one `routed` row with it; `RecordRoute` is called only
+  for a route with no `Policy`. A comparison's selection is told as on
+  `main`, with `Record.Origin` `compare`, and no window opens for it.
+  The **opening window** (I10) is kept in memory, per record: it opens
+  at the commit of a record opened while the engine routes policies
+  (marked in `Server.decisionTold`, which runs under the ledger's lock
+  once the commit is made, before it broadcasts the record's `decision`
+  event: on `main` the event goes first, so the mark is put ahead of it,
+  and a client that answers on the event never beats the router), and
+  closes at the first of: the policy's transaction, the router's answer
+  with no policy, a tell not made (no call slot, the provider not
+  started) or failed, `ext.RouteWait` after the tell began, and twice
+  `ext.RouteWait` after the commit (a tell that waited in the queue).
+  Past it, a record the router still means to route is held by
+  `Confirm`'s `Routes`, under its own bound. A restart forgets the
+  windows; a pass tells every open record again, and `Routes` covers
+  them. A record re-told by a pass that already carries a router's
+  policy is told as on `main`, and a policy in the answer writes
+  nothing.
 - `exthost.go`: `OpenDecisions`, `Outcomes`, `AckOutcomes` and
   `Reroute` for the router's `Host` (PR-7 declares and answers
   `ErrUnsupported`; PR-7b serves them); `Notify` with a `Recipient`
@@ -726,8 +823,10 @@ behaves unchanged, and a router that does not implement
   (eligible persons as `person`, gaps as `role`, the first group's
   rule line), at their bounds (`routedRule` 200 bytes).
 - `lane_decisions.go`: a decision link's lane answers no record, as on
-  `main` (`refuseRecordDecide`); its record head carries the larger
-  policy, within `proto.MaxDecision` (128 KiB), which
+  `main` (`refuseRecordDecide`); its record head (`laneRecordPart`'s
+  `Decision`, a `crew.Decision` whose `policy` is the column as kept,
+  carried as JSON, so no `internal/proto` type names it) carries the
+  larger policy, within `proto.MaxDecision` (128 KiB), which
   `TestTheFullestDecisionRecordThroughTheLane` holds at the new bound.
 - The guide's `decision_route` input schema gains `router` among the
   destinations; Brakeman's `route_decision` is unchanged and refused
@@ -810,6 +909,10 @@ security). The decision is complete when the coverage reaches the sum
 of the quorums (at most 16): it is then `answered`, with the combined
 answer. A delegate counts as themselves. One eligible Reject answers it
 at once, rejected. A clarification takes the first eligible answer.
+An accepted override (the operator, where the policy says `operator`)
+answers the decision whole, every group at once, since it stands in
+the policy's place; it fills no single group, and the counted
+responses before it are kept in the record as counted.
 
 **Every unmet quorum place keeps a row for the response that fills it.**
 An eligible approval is counted only when it raises the coverage; one
@@ -890,9 +993,15 @@ counted response; the operator's card shows each group's count.
   application; a share link, a decision link, an agent's token,
   Brakeman, a decide principal not named and a person the router no
   longer names are refused; a decide principal sees only the decisions
-  it is eligible for now (`TestEligibleSubjectAnswers`,
+  it is eligible for now. Every door asks: a held answer handed in by
+  a sync provider is judged as an identity's response at the route,
+  and a record under a router's policy that reaches the engine with no
+  confirmation is refused, never taken as not in force
+  (`TestEligibleSubjectAnswers`,
   `TestIneligibleDecidePrincipalIsRefused`,
-  `TestDecidePrincipalSeesOnlyItsDecisions`).
+  `TestDecidePrincipalSeesOnlyItsDecisions`,
+  `TestAdminHeldAnswerCannotBypassOverrideNone`,
+  `TestRespondWithoutConfirmationIsStalePolicy`).
 - **I6, the operator's answer under a policy in force is an override**:
   explicit, with its reason, only where the policy's `override` is
   `operator`, recorded as one with its subject. Only the admin grant
@@ -918,14 +1027,18 @@ counted response; the operator's card shows each group's count.
   (`TestOutcomeOutboxWrittenInTheFinalTransaction`,
   `TestOutcomeOutboxAckedOnlyByTheRouter`).
 - **I10, every answer to retry has a bound.** `409 stale_policy` is
-  answered only in the opening window (below), while `Confirm` answers
-  `Behind` or `Routes`, and while a record's
-  new revision is being installed; the server holds the router to the
-  same bound it promises, `ext.MaxBehind` (120 s): per record, past
-  120 s of such answers since the first, the server treats the next as
-  not in force, and the operator answers under `local/1` (I7, I9). No
-  partial failure leaves a decision unanswerable
-  (`TestStalePolicyRefused`, `TestBehindPastItsBoundIsNotInForce`).
+  answered only in the opening window (below), and while `Confirm`
+  answers `Behind`, `Routes` or a `Revision` other than the record's
+  (a new revision not yet installed); the server holds the router to
+  the same bound it promises, `ext.MaxBehind` (120 s): per record, a
+  clock starts at the first such answer after one that was none of
+  them, any other answer clears it, and past 120 s on it the server
+  treats the next such answer as not in force, and the operator
+  answers under `local/1` (I7, I9). No partial failure leaves a
+  decision unanswerable (`TestStalePolicyRefused`,
+  `TestBehindPastItsBoundIsNotInForce`,
+  `TestRevisionMismatchPastItsBoundIsNotInForce`,
+  `TestBehindBoundClearedByAnInForceAnswer`).
 - **I11, room is kept for what is still required.** A record opened
   under a router that routes policies holds a spare from its opening;
   an eligible answer is never refused for room; every replacement has
@@ -975,11 +1088,13 @@ counted response; the operator's card shows each group's count.
    decision still `open` at the rev the router was shown; between the
    two, a response is `409 stale_policy` (the opening window), and only
    a router that answers no policy, fails or is late leaves `local/1`.
-2. A response: the identity provider's admission (as on `main`), then
-   `Confirm` (outside the transaction, bounded), then DR1's transaction
-   with its rechecks, the policy's revision among them; then DR1's
-   identity recheck after the commit, and a second `Confirm` before the
-   application's transaction.
+2. A response, at the route or at a sync provider's door: the identity
+   provider's admission (as on `main`; at the door, the store's own
+   check), then `Confirm` (outside the transaction, bounded), then
+   DR1's transaction with its rechecks, the policy's revision among
+   them; then DR1's identity recheck after the commit (at the door, the
+   store's recheck), and a second `Confirm` before the application's
+   transaction.
 3. A re-route: the router computes from what it holds and the record's
    rev, then `Host.Reroute` (one transaction, conditional on `open` and
    that rev; `ErrStale` sends the router back to compute again). A
@@ -997,22 +1112,29 @@ counted response; the operator's card shows each group's count.
    `Resolved` (best-effort, with `Outcome`); then the router reads the
    outbox and acknowledges what it has taken. A crash between any two
    steps loses nothing: the outbox is read again.
-6. A schema version before a shape: PR-7's version moves before any
-   router's policy or spare can be written, so an older binary opens a
-   ledger that may hold one read-only; PR-9's barrier does the same for
-   `counted` rows. A provider that routes by this seam waits for a tag
-   holding PR-7, PR-7b and PR-8 (The PRs).
+6. A schema version before a shape: the step PR-7a ships alone, before
+   PR-7 can write any router's policy, spare, outbox row or router
+   history row, so an older binary opens a ledger that may hold one
+   read-only; the step PR-9a does the same for `counted` rows, before
+   PR-9. A provider that routes by this seam waits for a tag
+   holding PR-7a, PR-7, PR-7b and PR-8 (The PRs).
 
 **The respond route's judgement**, under a router's policy, in order
-(the first row that matches answers):
+(the first row that matches answers). It is the engine's, whichever
+door handed the response in: the respond route, or a sync provider's
+door for held answers (`via: sync`, Responding, above):
 
 | Case | Answer | Kept |
 |---|---|---|
 | a repeat (same actor and response id) | the saved receipt | as saved |
+| a router's own answer (`via: router`) | `403 not_approver` | yes |
+| no confirmation handed in | `409 stale_policy` | no |
 | the opening window | `409 stale_policy` | no |
-| `Confirm` not in force (or no answer), the operator | accepted under `local/1`, `{policy: local/1, why}` | yes |
+| a held answer (`via: sync`): the router behind, another revision, `Routes`, or no answer | nothing written; the provider may hand it in again (`unknown_authority`) | no |
+| a held answer, in force, the operator not eligible | `403 not_eligible` (a held answer carries no override) | yes |
+| `Confirm` not in force (or, at the route, no answer), the operator | accepted under `local/1`, `{policy: local/1, why}` | yes |
 | `Confirm` not in force, a decide principal | `403 not_approver` | yes |
-| `Confirm` `Behind`, or `Revision` other than the record's | `409 stale_policy` | no |
+| `Confirm` `Behind`, or `Revision` other than the record's (within I10's bound; past it, as not in force) | `409 stale_policy` | no |
 | in force, the subject eligible | counted (PR-9) or accepted, `{groups, via, ref}` | yes |
 | in force, a decide principal not eligible | `403 not_eligible` | yes |
 | in force, the operator, no `override` | `403 not_eligible` | yes |
@@ -1040,11 +1162,18 @@ decision states are unchanged, PR-9 adds the response status
 
 ## Out of scope
 
-- **How a router decides**: where its policy comes from, who holds a
-  role, delegation windows, escalation, quiet hours, batching and
-  deduplication of its notices, and what it does with outcomes. The
-  server keeps `notify` and `escalateAfter` in the record for the
-  router and acts on neither.
+- **Clearing the outbox without a router.** Rows leave only by a
+  router's acknowledgement (I9). A server whose router is no longer
+  registered keeps them, one per record that ever held a router's
+  policy, at most 24 KiB each, and an export carries them; no command
+  clears them in this plan. A way for the operator to clear them is a
+  later choice, kept apart so that no outcome is lost while a router
+  may still come back to take it.
+
+- **How a router decides**: who holds a role, delegation windows,
+  escalation, quiet hours, batching and deduplication of its notices,
+  and what it does with outcomes. The server keeps `notify` and
+  `escalateAfter` in the record for the router and acts on neither.
 - **Delivering a notice to one person**: `Notification.Recipient` and
   `RecipientSink` are the seam; no sink of this repository implements
   `RecipientSink`, so in the free build a notice with a `Recipient`
@@ -1068,6 +1197,13 @@ lint, `npm --prefix web run typecheck`, `typecheck:e2e`, `npm --prefix
 web test` and `make test-e2e`. Every new test is proved able to fail.
 
 - PR-6: docs only; no check applies.
+- `internal/crew/ledger`, the step PR-7a:
+  `TestRoutedLedgerMigrationFreshAndAgain` (the version's table made
+  once, a run again a no-op),
+  `TestOlderBinaryOpensARoutedLedgerReadOnly` (a binary of version 12
+  opens a version 13 ledger read-only).
+- `internal/crew/ledger`, the step PR-9a:
+  `TestLedgerBarrierOpensOlderBinariesReadOnly`.
 - `ext`, `ext/exttest` (PR-7): `TestRoutePolicyValid` (every bound of
   The policy, each just inside and just past),
   `TestPolicyOnlyWithARecord` (a policy on a screen's question is
@@ -1082,7 +1218,19 @@ web test` and `make test-e2e`. Every new test is proved able to fail.
   router that fetches on the call's path fails it with the network
   blocked).
 - `internal/api`, `internal/crew`, `internal/crew/ledger` (PR-7):
-  `TestAPolicyIsRecordedAsTheDecisionsPolicy`,
+  `TestAPolicyIsRecordedAsTheDecisionsPolicy` (a route with
+  destinations and a `Policy`, through `routeRecord`, on a gate-opened
+  record with a `for` and on one without: the policy written, rev + 1,
+  exactly 2 `routed` rows with no op id),
+  `TestCompareSelectionNeverTakesAPolicy` (a router answering a policy
+  with `override: none` for every record: the selection keeps
+  `local/1`, no `routed` row of the policy, and the workbench token's
+  answer is accepted), `TestPutPolicyRefusesASelection`,
+  `TestRouterChangesHaveTheirOwnBound` (32 operator comments, then 16
+  router rows of `delegated` and `rerouted`, each with an op id: all
+  written; a 17th router row refused `decision_limit`; a further
+  operator comment refused only by the operator's own 32; a router row
+  sent again answered as a repeat),
   `TestPolicyAfterAnswerChangesNothing` (I16),
   `TestRetoldRecordWithAPolicyWritesNothing` (a pass tells it again; the
   router answers another policy: nothing written),
@@ -1094,6 +1242,9 @@ web test` and `make test-e2e`. Every new test is proved able to fail.
   `TestOperatorNeedsAnExplicitOverride`,
   `TestOverrideNoneRefusesTheOperator`,
   `TestOverrideByAnAdminIdentityIsRechecked`,
+  `TestRespondWithoutConfirmationIsStalePolicy` (a router-policy record
+  handed to the engine with no confirmation: `409 stale_policy`,
+  nothing written, never `local/1`),
   `TestPolicyNotInForceIsLocal1`, `TestStalePolicyRefused`,
   `TestStalePolicyRefusalIsNotKept` (I14),
   `TestBehindPastItsBoundIsNotInForce` (I10: a fake router answering
@@ -1112,16 +1263,27 @@ web test` and `make test-e2e`. Every new test is proved able to fail.
   `TestRouterEntryIsTheOneCheck` (`TestAdmitsIsTheOneCheck` extended:
   the list and the read agree on every record under a policy),
   `TestPolicyColumnIsCanonical`,
-  `TestRoutedLedgerMigrationFreshAndAgain` (the version's table made
-  once, a run again a no-op),
-  `TestOlderBinaryOpensARoutedLedgerReadOnly`, `TestTheHistoryCapHolds`
-  (updated: the router group's 16 rows),
+  `TestOpeningUnderARouterReservesItsSpare` (the opening refused
+  `decision_limit` when its spare would pass),
+  `TestOutcomeOutboxWrittenInTheFinalTransaction`,
+  `TestOutboxCarriesCancellationsAndSupersessions` (I15),
+  `TestOutcomeSurvivesAPrunedRun`,
+  `TestRevisionMismatchPastItsBoundIsNotInForce` (I10: a fake router
+  answering `{InForce: true, Revision: r'}` for ever while the record
+  holds r; past 120 s of a fake clock the operator answers under
+  `local/1`), `TestBehindBoundClearedByAnInForceAnswer` (`Behind`, then
+  in force for longer than 120 s, then `Behind` once: `409
+  stale_policy`, not `local/1`), `TestTheHistoryCapHolds` (updated:
+  the router group's 16 rows),
   `TestTheFullestDecisionFitsItsBound` (updated: the policy at 16 KiB
   with `Pinned` and `Recent` at their bounds, the receipt's group fields
   and 16 router rows, within `maxDecisionReply`),
   `TestTheOperatorsDecisionListFitsItsBound` and
   `TestTheFullestDecisionRecordThroughTheLane` (updated: the larger
-  policy within their bounds).
+  policy within their bounds); and `docs/plans/sync-seams.md`'s
+  `TestDecisionDocWithTheMostResponsesFits`, with the policy at
+  `MaxDecisionPolicy`, in whichever of PR-7 and that plan's row lands
+  second.
 - `internal/api`, `internal/crew`, `internal/crew/ledger` (PR-7b):
   `TestRerouteWritesItsHistoryKind`, `TestManyReroutesKeepTheDecision`
   (40 re-routes of one decision in a run at 1,000 decisions: no new
@@ -1140,17 +1302,12 @@ web test` and `make test-e2e`. Every new test is proved able to fail.
   opens a routed record with `override: none`; its first eligible
   response is accepted; its recheck fails at application; the
   replacement's first eligible response is accepted too),
-  `TestOpeningUnderARouterReservesItsSpare` (the opening refused
-  `decision_limit` when its spare would pass),
-  `TestReplacementChainHoldsOneSpare`,
+  `TestReplacementChainHoldsOneSpare`, `TestRerouteRefusesASelection`,
   `TestVoidedRoutedAnswersBoundPerRun`,
   `TestOpenDecisionsPagesEveryRecord` (more than 1,024 open records
   across runs), `TestOpenDecisionsOnlyForTheRouter`,
   `TestRecordsToldPastMaxUnresolved` (I12),
-  `TestOutcomeOutboxWrittenInTheFinalTransaction`,
   `TestOutcomeOutboxAckedOnlyByTheRouter` (I9),
-  `TestOutboxCarriesCancellationsAndSupersessions` (I15),
-  `TestOutcomeSurvivesAPrunedRun`,
   `TestRouteDecisionUnderAPolicyIsRefused`,
   `TestGrantRouteRefusedUnderAPolicy`,
   `TestDecisionLinkCannotAnswerARoutedDecision`,
@@ -1162,6 +1319,23 @@ web test` and `make test-e2e`. Every new test is proved able to fail.
   `TestDecideListLeavesOutUnconfirmedRows` (`cut` set),
   `TestRecipientNoticeReachesOnlyRecipientSinks`,
   `TestInboxShowsThePolicy`.
+- Held answers under a router's policy (one rule of two plans, with
+  `docs/plans/sync-seams.md`; the same names there), in
+  `internal/api` and `internal/crew`, built in whichever of PR-7 and
+  that plan's held-answer row lands second, against the other's code:
+  `TestAdminHeldAnswerCannotBypassOverrideNone` (an admin's held answer
+  to dr-7 under a policy in force with `override: none` is refused
+  `not_eligible`, not recorded under `local/1`),
+  `TestEligibleHeldAnswerUnderAPolicyCounts` (Ana's held answer, with
+  only the decide grant, is recorded),
+  `TestHeldAnswerUnheardByTheRouterWritesNothing` (the router behind,
+  naming another revision, answering `Routes`, or held at a gate past
+  `ConfirmWait`: nothing written, `unknown_authority`; handed in again
+  once it answers: recorded),
+  `TestHeldAnswerUnderAPolicyIsConfirmedAtApplication` (the store's
+  recheck yes and the router's no: superseded; the router not
+  answering: waits). `TestRespondWithoutConfirmationIsStalePolicy` is
+  PR-7's (above).
 - `web/app` (PR-8): vitest `utils/decisionPolicy.test.ts` (every `via`,
   a gap, not in force, an override),
   `components/DecisionRespond.test.ts` (the operator's disabled answer
@@ -1176,7 +1350,6 @@ web test` and `make test-e2e`. Every new test is proved able to fail.
   `TestOnePersonInTwoGroupsWithoutDistinct`,
   `TestAnEligibleRejectAnswersAtOnce`,
   `TestCountedResponsesKeepTheirPlaces`,
-  `TestLedgerBarrierOpensOlderBinariesReadOnly`,
   `TestPartialApprovalSurvivesARestart` (confirmed counted responses),
   `TestUnconfirmedCountedResponseAfterARestartIsRefused`,
   `TestCountedApprovalVoidedByASignInRevocation`,
@@ -1229,23 +1402,42 @@ The eight of the Program's section 2.5:
 
 ## The PRs
 
-The open-source rows of SW1, in this repository. Each is one issue and
-one branch cut from `main` (or rows of one bundle, where the
-maintainers build them together), the checks of its surfaces before
-each push, its body ticking the open-core checklist; each leaves `main`
-working and green on its own, and with no router registered changes
-nothing. A provider that routes by this seam waits for a tag holding
-PR-7, PR-7b and PR-8, and a later one holding PR-9.
+The open-source rows of SW1, in this repository. The rows are units
+of work; how rows are grouped into pull requests follows `AGENTS.md`
+(Working an issue) at the time they are built. Each row is built with
+the checks of its surfaces and the open-core checklist; each leaves
+`main` working and green on its own, and with no router registered
+changes nothing. A provider that routes by this seam waits for a tag
+holding PR-7a, PR-7, PR-7b and PR-8, and a later one holding PR-9a
+and PR-9.
+
+**The ledger's steps.** The ledger holds data on every server, so a
+step to it is a row of its own, shipped first and alone, right before
+the code that uses it, so that it can be reverted alone. PR-7a is the
+one step for PR-7 and PR-7b together: the next schema version, a
+barrier, with every table those rows need (the outcome outbox). It
+covers what PR-7b writes because PR-7 already writes every shape the
+ledger holds by PR-7b's code: the spare and its place, the outbox row
+in a final transaction, and the router's history rows in their own
+group are PR-7's; PR-7b adds the code that drives them (`Host.Reroute`,
+the outbox's reads and acknowledgement) and no shape of its own. PR-9a
+is PR-9's barrier, a second step and a version of its own: it exists to
+keep a build of PR-7 to PR-8, which counts no approvals, read-only on a
+ledger that holds `counted` rows, which a barrier folded into PR-7a
+could not do. The code rows say "after the step".
 
 | PR | Title | Contains | Touches | Tests | Depends on | Parallel with | Size (code + tests) |
 |---|---|---|---|---|---|---|---|
-| PR-6 (#997) | plan: a decision router's policy on decision records | this file | `docs/plans` | none: docs only | none | none | about 1,370 lines of docs |
-| PR-7 | ext, api, crew: a router's policy on a decision record, one group: eligibility at response and application, the override, the fallback, the opening window | every `ext` addition (the record with its `Subject` key, `RoutePolicy` with `Pinned` and `Scope`, `PolicyConfirmer`, the four `Host` methods declared, `Resolution.Outcome`, `Notification.Recipient`, `Key`, `RecipientSink`), `ext/exttest`'s fakes and checks, the ledger's next version (a barrier, with the outbox table), `MaxDecisionPolicy` at 16 KiB, `Tx.PutPolicy`, the `eligible` entry, the policy's transaction, the respond judgement and the override, `stale_policy` unkept, the application's confirm, the server's 120 s bound, `policyNow`, the decide words, `docs/protocol.md` | `ext`, `ext/exttest`, `internal/api`, `internal/crew`, `internal/crew/ledger`, `docs` | the PR-7 lists | PR-6 | none: every later row builds on it | about 750 + 650 |
-| PR-7b | api, crew, ledger: re-routes, route changes under a policy, visibility, outcomes and recipients | `Host.Reroute` (its rev check, a repeat by its revision, `Pinned` and `Scope` unchanged, the one change of form, `Reroutes` and `Recent` past the history's 16), `Host.OpenDecisions` page by page, the outcome outbox written (`decision_outbox`, made by PR-7's version) and `Host.Outcomes` and `AckOutcomes`, the spare and a chain's one place, the voided routed decisions' bound, the route operation's `router`, `routed_by_policy`, a `for` change telling the router again, visibility following eligibility on the decide routes, `Resolution.Outcome` filled, notices with a `Recipient`, MB0's routed fields | `internal/api`, `internal/crew`, `internal/crew/ledger`, `docs` | the PR-7b list | PR-7 | PR-8 | about 600 + 650 |
+| PR-6 (#997) | plan: a decision router's policy on decision records | this file | `docs/plans` | none: docs only | none | none | about 1,580 lines of docs |
+| PR-7a | ledger: the next schema version, a barrier for a router's policy, with the outcome outbox | the migration alone: `decision_outbox` and its unique index, the version's barrier | `internal/crew/ledger` | `TestRoutedLedgerMigrationFreshAndAgain`, `TestOlderBinaryOpensARoutedLedgerReadOnly` | PR-6 | none: it ships alone, right before PR-7 | about 30 + 120 |
+| PR-7 | ext, api, crew: a router's policy on a decision record, one group: eligibility at response and application, the override, the fallback, the opening window | every `ext` addition (the record with its `Subject` key, `RoutePolicy` with `Pinned` and `Scope`, `PolicyConfirmer`, the four `Host` methods declared, `Resolution.Outcome`, `Notification.Recipient`, `Key`, `RecipientSink`), `ext/exttest`'s fakes and checks, `MaxDecisionPolicy` at 16 KiB, `Tx.PutPolicy` (refusing a selection), the spare from the opening and its place, the outbox row written in a final transaction, the router's history group, the `eligible` entry, the policy's transaction, the respond judgement and the override, `stale_policy` unkept, the application's confirm, the server's 120 s bound, `policyNow`, the decide words, `docs/protocol.md` | `ext`, `ext/exttest`, `internal/api`, `internal/crew`, `internal/crew/ledger`, `docs` | the PR-7 lists | after the step PR-7a | none: every later row builds on it | about 850 + 750 |
+| PR-7b | api, crew, ledger: re-routes, route changes under a policy, visibility, outcomes and recipients | `Host.Reroute` (its rev check, a repeat by its revision, `Pinned` and `Scope` unchanged, the one change of form, `Reroutes` and `Recent` past the history's 16), `Host.OpenDecisions` page by page, `Host.Outcomes` and `AckOutcomes` over the outbox PR-7 writes, a replacement chain's one place, the voided routed decisions' bound, the route operation's `router`, `routed_by_policy`, a `for` change telling the router again, visibility following eligibility on the decide routes, `Resolution.Outcome` filled, notices with a `Recipient`, MB0's routed fields | `internal/api`, `internal/crew`, `internal/crew/ledger`, `docs` | the PR-7b list | PR-7 (after the step PR-7a) | PR-8 | about 500 + 550 |
 | PR-8 | web, cli, e2e: who may answer, the gap, the override, the policy in words | `utils/decisionPolicy.ts`, `DecisionCard.vue`, `DecisionRespond.vue`, the decide page's words, `conductor decision show` and `respond --override`, `web/e2e/decision-policy.spec.ts` | `web/app`, `internal/cli`, `web/e2e` | the PR-8 list | PR-7 | PR-7b | about 450 + 400 |
-| PR-9 | ext, crew, ledger, api, web: groups, quorum and distinct persons on a decision record; the features entry | the `counted` response, the coverage and the rows kept for unmet places, the combined answer, the ledger's barrier version, `RoutePolicy`'s full shape taken, the card's "1 of 2", the decide view's `counted`, `docs/features.md` | `ext`, `internal/crew`, `internal/crew/ledger`, `internal/api`, `web/app`, `docs` | the PR-9 list | PR-7b, PR-8 | none | about 700 + 750 |
+| PR-9a | ledger: the schema version after PR-7a's, a barrier for counted responses | the migration alone, of no statements | `internal/crew/ledger` | `TestLedgerBarrierOpensOlderBinariesReadOnly` | PR-7b, PR-8 | none: it ships alone, right before PR-9 | about 10 + 60 |
+| PR-9 | ext, crew, ledger, api, web: groups, quorum and distinct persons on a decision record; the features entry | the `counted` response, the coverage and the rows kept for unmet places, the combined answer, `RoutePolicy`'s full shape taken, the card's "1 of 2", the decide view's `counted`, `docs/features.md` | `ext`, `internal/crew`, `internal/crew/ledger`, `internal/api`, `web/app`, `docs` | the PR-9 list | after the step PR-9a | none | about 700 + 700 |
 
-PR-6 to PR-8 (with PR-7b) give one group end to end: a decision routed
+PR-6 to PR-8 (with the step PR-7a and PR-7b) give one group end to
+end: a decision routed
 to a role's holder or a person named by the router, answered only by
 them, rechecked when applied, overridden only explicitly, and reported
 when it was answered without its policy. PR-9 adds counted approvals
@@ -1322,22 +1514,31 @@ remove rows, and each says which.
    policy can only be `local/1`); here it means "try again", and a kept
    refusal would answer the retry with itself. So it takes no row and
    is judged again when sent again.
-8. **The server holds the retry bound itself.** `Behind` and `Routes`
-   are the router's promise to settle within 120 s; the server keeps,
-   per record and in memory, when such an answer was first given, and
-   treats the next past `ext.MaxBehind` as not in force, so a router
+8. **The server holds the retry bound itself.** `Behind`, `Routes` and
+   a `Revision` other than the record's are the router's promise to
+   settle within 120 s; the server keeps, per record and in memory, a
+   clock started at the first such answer after one that was none of
+   them and cleared by any other answer, and treats such an answer past
+   `ext.MaxBehind` on that clock as not in force, so a router
    that never settles cannot make a decision unanswerable by the
    operator (article 4). A restart starts the count again. The opening
    window has a bound of its own measured from the commit (twice
    `ext.RouteWait`), since on `main` a record's tell waits in a queue
    for a worker and a call slot.
-9. **One schema version for PR-7 and PR-7b.** PR-7 already writes
-   shapes an older binary misjudges, so it takes the ledger's next
-   version as a barrier (as versions 10 and 12 are), and that version's
-   migration makes the outbox table PR-7b writes. The other reading,
-   a barrier of no statements in PR-7 and the table in a version of
-   PR-7b's own, moves the version twice for one stream; it changes
-   PR-7 and PR-7b only.
+9. **One ledger step for PR-7 and PR-7b, a row of its own (PR-7a).**
+   A step to a store that holds data ships alone, right before the code
+   that uses it, so that it can be reverted alone. PR-7a's version is a
+   barrier (as versions 10 and 12 are) against every binary before it,
+   and its migration makes the outbox table. It covers PR-7b because
+   every shape the ledger holds by PR-7b's code is written by PR-7's
+   code already (the spare and its place, the outbox row, the router's
+   history rows), so a build of PR-7 alone reads a ledger PR-7b wrote
+   as PR-7b does. PR-9's barrier is a second step (PR-9a), since only a
+   version after PR-8's builds keeps them from a ledger that holds
+   `counted` rows. The other reading, PR-7 and PR-7b shipped in one tag
+   with no build between and never reverted apart, would leave the
+   spare and the outbox's writes in PR-7b; it changes PR-7 and PR-7b
+   only.
 
 ## Acceptance
 
