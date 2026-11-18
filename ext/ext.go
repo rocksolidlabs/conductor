@@ -72,8 +72,8 @@
 // provider's one door into the app (launch a crew's run, read, find and
 // stop the runs it launched, resolve a launch and hold a launch to it,
 // type into a session or answer its question, send a notice, a directory
-// of its own, a logger). Start returns at once; reaching the provider's service is the
-// work of goroutines it begins, which end with Start's context. A Start
+// of its own, a logger). Start returns at once; reaching the provider's
+// service is the work of goroutines it begins, which end with Start's context. A Start
 // that errs, panics or has not returned within StartWait is tried again
 // later, with backoff, never while an earlier try is still running.
 //
@@ -93,8 +93,8 @@
 // an answer its record's Valid refuses are answered with the free default
 // instead, call by call, with nothing remembered about the failure, so a
 // provider whose service comes back is used again at its next call. Calls
-// fed from queues (NoteTouch, Notify) never hold the code that queues
-// them: a full queue drops its oldest.
+// fed from queues (NoteTouch, Notify, UsageObserver.Used) never hold the
+// code that queues them: a full queue drops its oldest.
 // While a provider has not started, or its service is unreachable,
 // Conductor is the open-source build, mid-session, with no restart.
 //

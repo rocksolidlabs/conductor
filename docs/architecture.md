@@ -1416,9 +1416,10 @@ answered as if none had happened, with no restart. A wait bounds a hang,
 never a normal answer: a provider answers from what it holds.
 
 **Queues.** The calls fed from the server's own activity (`Notify` to a
-notification sink, `NoteTouch` to a context provider) go through an
-`extQueue`: a ring per provider and kind (`SinkQueue` 256, `TouchQueue`
-1,024) filled without waiting, a full ring dropping its oldest (the first
+notification sink, `NoteTouch` to a context provider, `Used` to an identity
+provider that is an `ext.UsageObserver`) go through an `extQueue`: a ring
+per provider and kind (`SinkQueue` 256, `TouchQueue` 1,024, `UsageQueue`
+256) filled without waiting, a full ring dropping its oldest (the first
 drop and every hundredth logged, as a webhook's queue does), drained in
 order by one goroutine of its own, each delivery with a context that ends
 after `DeliveryWait` (10 s), its panic recovered. A provider that is no
@@ -1429,6 +1430,24 @@ its `Start` has succeeded. `Saved`, `Deleted` (sync) and `Resolved`
 again: they are delivered the same way from lists that drop nothing (C6,
 C5). `Shutdown` ends the drains with the webhooks, what waits in them
 undelivered, and waits for their goroutines with its others (`track`).
+
+**Relay usage** (`internal/api/relayusage.go`). On a switchyard whose
+identity provider is an `ext.UsageObserver`, each host connection admitted
+through the provider's principal keeps what the relay counted for it, at
+the two places the switchyard's hourly relay figure counts (a host's
+relayed frames, a viewer's relayed frames to the host that carries its
+session now), and reports it every `ext.UsageEvery` (60 s, on the server's
+clock seam), at each renewal to another credential (cut under the
+connection's credential turn, before the new credential takes effect, so
+each report's counts belong to the one credential whose hash it carries),
+and at its close, before the session shows its host gone. A connection
+that has admitted two such renewals inline in one period keeps its next
+one pending for the recheck. The reports are delivered through
+`extDeliver` from one ring of `ext.UsageQueue`, logged as every identity
+kind is, by the provider's name and count alone. Nothing is made (no ring,
+no goroutine, no count) on a server that is no switchyard or whose
+identity provider observes nothing, nor for a connection of the server's
+own tokens or an open host.
 
 **Host and Start.** A provider that needs the server is an `ext.Starter`.
 `runServe` calls `Server.StartExtensions` once the server is made, its
