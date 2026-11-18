@@ -354,6 +354,36 @@ func TestStartCommitIsTheRunBase(t *testing.T) {
 	}
 }
 
+// A provider's launch mints no view link, whatever the crew's
+// ViewLinkTTLSeconds says: none in the store, none in the run's log.
+func TestProviderLaunchMintsNoViewLink(t *testing.T) {
+	e, _ := resolveEnv(t, nil)
+	id := e.sendCrew("POST", "/api/crews", map[string]any{"name": "Shared", "goal": "g", "cwd": e.root, "where": "server", "isolation": "worktree",
+		"viewLinkTtlSeconds": 3600,
+		"members":            []any{map[string]any{"name": "lead", "agentId": "ready-cat", "prompt": "", "start": map[string]any{"when": "task"}}},
+		"tasks":              []any{map[string]any{"id": "build", "member": "lead", "kind": "work", "instructions": "Build it."}}}, http.StatusCreated)["id"].(string)
+	if c, err := e.srv.crews.Get(id); err != nil || c.ViewLinkTTLSeconds != 3600 {
+		t.Fatalf("the crew asks for no view link: %+v %v", c.ViewLinkTTLSeconds, err)
+	}
+	h := testHost(e.srv, t.Context(), "example")
+	for i, r := range []ext.LaunchRequest{originLaunch(id, "op-1"), launchHeldTo(id, "op-2", resolve(t, e, id, "").Digest)} {
+		ref, err := h.Launch(t.Context(), r)
+		if err != nil {
+			t.Fatalf("launch %d: %v", i, err)
+		}
+		if links := e.srv.links.ListByRun(ref.ID); len(links) != 0 {
+			t.Fatalf("launch %d minted links: %+v", i, links)
+		}
+		run, _ := e.srv.runs.Get(ref.ID)
+		for _, l := range run.Log {
+			if strings.Contains(l.Message, "link created") {
+				t.Fatalf("launch %d's log: %+v", i, run.Log)
+			}
+		}
+		_ = e.srv.runs.Stop(t.Context(), ref.ID)
+	}
+}
+
 // A resolve keeps nothing: no reservation once it has answered (the
 // account it bound can be removed at once), no run, no row, no record.
 func TestResolveLaunchKeepsNothing(t *testing.T) {
