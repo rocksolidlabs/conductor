@@ -26,8 +26,8 @@ export function devApi(value: string | undefined): string {
 }
 
 /**
- * devPreviewBridgeSrc is the bridge the dev build loads (plugins/previewBridge.client.ts): CONDUCTOR_PREVIEW_BRIDGE when it is the
- * bridge of a Conductor server on the loopback (http, a loopback host, /preview-bridge.js, nothing after), else '' and none is loaded.
+ * devPreviewBridgeSrc is the bridge the dev build loads (devPreviewBridgeHead): CONDUCTOR_PREVIEW_BRIDGE when it is the bridge of a
+ * Conductor server on the loopback (http, a loopback host, /preview-bridge.js, nothing after), else '' and none is loaded.
  */
 export function devPreviewBridgeSrc(value: string | undefined): string {
   if (!value) return ''
@@ -39,4 +39,14 @@ export function devPreviewBridgeSrc(value: string | undefined): string {
   } catch {
     return ''
   }
+}
+
+/**
+ * devPreviewBridgeHead is the dev build's document head's scripts (nuxt.config.ts's `$development` alone): one tag for the bridge
+ * CONDUCTOR_PREVIEW_BRIDGE names, as devPreviewBridgeSrc holds it, `async`, so it loads with the page and runs before the frame's
+ * load, not once the app has started; none for anything else. The built app's head never has it.
+ */
+export function devPreviewBridgeHead(value: string | undefined): Array<{ src: string; async: true; 'data-conductor-preview-bridge': '' }> {
+  const src = devPreviewBridgeSrc(value)
+  return src ? [{ src, async: true, 'data-conductor-preview-bridge': '' }] : []
 }
