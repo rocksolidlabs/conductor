@@ -1220,8 +1220,22 @@ func (s *Local) firePattern(line string) {
 // would get (Codex's update question after its background-server one,
 // where 1 runs npm install). That is weighed under the lock that sets the
 // question (startupLook).
+//
+// A dialog read again while its question still waits is that question,
+// whatever a screen being drawn again shows of it (stillAsks): its id and its words
+// stay, and a run's log, which notes each question once by its id, notes it
+// once. And a look that does not read the question's words whole (the
+// catalog's words, wholeWords: its first choice drawn, its heading not) asks
+// nothing: words are never read off a choice. Neither answers anything, and
+// a prompt typed meanwhile is refused as before (startupOnScreen).
 func (s *Local) fireTrust(text string) {
 	if q, words, seen, shown := s.startupSeen(text); q != nil {
+		if s.stillAsks(q) || words == "" {
+			// One held answered that the screen no longer shows is cleared,
+			// as below.
+			s.escGone()
+			return
+		}
 		if s.heldGone(words) {
 			// An Escape typed at it before it was asked took it away.
 			return
@@ -4726,8 +4740,15 @@ func (s *Local) lastStartupQ(text string) (*StartupQuestion, string) {
 // answered or the next takes its place, and the screen decides neither);
 // one with none is not (fireTrust). Without that screen, the look's words,
 // shown.
+//
+// The words are read whole or not at all (wholeWords): "" when neither the
+// look's text nor the screen shows the question's own words, as when a
+// screen drawn again, or too short, shows its first choice and not its
+// heading.
 func (s *Local) startupSeen(text string) (q *StartupQuestion, words string, seen heldStartup, shown bool) {
-	q, words = s.lastStartupQ(text)
+	if q, _ = s.lastStartupQ(text); q != nil {
+		words = q.wholeWords(text)
+	}
 	if q == nil || s.asked == nil {
 		return q, words, seen, q != nil
 	}
@@ -4739,11 +4760,46 @@ func (s *Local) startupSeen(text string) (q *StartupQuestion, words string, seen
 		return q, words, seen, false
 	}
 	if v.Text != "" {
-		if w := q.words(v.Text); w != "" {
+		if w := q.wholeWords(v.Text); w != "" {
 			words = w
 		}
 	}
 	return q, words, seen, true
+}
+
+// stillAsks reports whether the question showing is the dialog q, read
+// again while it still waits: q is found by one row (its Pattern, a choice)
+// and its words read apart (Words, its heading), and the question showing
+// is a startup question with q's words (Words matches them), neither
+// answered nor reached by a reply or by keys (claimed, consumed, held by an
+// Escape: heldAnswer). It is then that question (fireTrust), not a new one:
+// the screen drawn again, cut at any point, shows its heading in part or
+// not at all, and nothing that would tell one dialog from another. A
+// question without Words is told by what its Pattern matched, whole or not
+// at all: other words are another question (two of one pattern).
+func (s *Local) stillAsks(q *StartupQuestion) bool {
+	if q.Words == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cur := s.info.Attention
+	if cur.State != AttentionNeedsInput || cur.Source != SourceTrust || cur.ID == "" || cur.Answered != "" ||
+		s.claimedLocked(cur.ID) || cur.ID == s.consumed || s.heldAnswer.id == cur.ID {
+		return false
+	}
+	return q.Words.MatchString(cur.words())
+}
+
+// wholeWords is words when text shows q's own words whole: with the
+// catalog's words (Words), only where they match, never what q's Pattern
+// matched in their place (its first choice, "Update now (runs"); "" when
+// text does not show them.
+func (q StartupQuestion) wholeWords(text string) string {
+	if q.Words != nil && !q.Words.MatchString(text) {
+		return ""
+	}
+	return q.words(text)
 }
 
 // startupShown is the startup question the output shows and its words: the
