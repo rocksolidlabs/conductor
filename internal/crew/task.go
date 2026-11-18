@@ -3006,6 +3006,9 @@ func (e *Engine) CancelTask(ctx context.Context, runID, taskID string) error {
 		}
 		return tx{events: e.cancelTask(r, t)}
 	}, nil)
+	if e.beforeCancelPump != nil {
+		e.beforeCancelPump(runID)
+	}
 	e.afterTransact(r, err)
 	if err == nil {
 		return refused

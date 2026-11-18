@@ -19,7 +19,7 @@ concurrency:
 env:
   GOFLAGS: -mod=readonly
   GOTOOLCHAIN: auto # go.mod pins the patch toolchain; the go command fetches it
-  NVIM_VERSION: v0.10.4 # the go and e2e jobs' Neovim, its cache key too
+  NVIM_VERSION: v0.10.4 # the go-race and e2e jobs' Neovim, its cache key too
 
 jobs:
   web:
@@ -51,11 +51,72 @@ jobs:
           if-no-files-found: error
 
   go:
+    # The Go checks but the race tests, which run in go-race beside it.
     runs-on: ubuntu-latest
     needs: web
-    # A hang still ends the job: its bound is the race tests' 60 m plus its other
-    # steps, above the test bound, never a multiple of it.
+    # A hang still ends the job: its steps took about four minutes on main (2026-11-18), the
+    # group check's race build of internal/api and its six listings a few more; 30 is above
+    # every honest run.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          # The latest patch of the go.mod line's minor: the standard library's
+          # fixes (govulncheck) land in patches.
+          go-version: '~1.26.0'
+          check-latest: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: web-dist
+          path: internal/web/dist
+      - run: make lint
+      - run: make lint-static
+      # Every package of go list ./... is in exactly one of go-race's groups, every test of
+      # internal/api in exactly one of its five, as go test -list answers each group's -run;
+      # and the matrix below lists every group once (scripts/go_test_groups.py).
+      - run: python3 scripts/go_test_groups.py check
+      - run: make build-go
+      - run: make check-version
+      - run: python3 scripts/brand_assets.py --check
+      - run: python3 -m unittest discover -s scripts -p '*_test.py'
+      # THIRD_PARTY_NOTICES is current: the Go modules, the web bundle's packages and the desktop app's, read from their node_modules.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            web/package-lock.json
+            desktop/package-lock.json
+      - run: npm ci --ignore-scripts
+        working-directory: web
+      - run: npm ci --ignore-scripts
+        working-directory: desktop
+      - uses: actions/download-artifact@v4
+        with:
+          name: web-packages
+          path: web/.nuxt
+      - run: python3 scripts/notices.py --check
+      - uses: actions/upload-artifact@v4
+        with:
+          name: conductor-linux-amd64
+          path: bin/conductor
+
+  go-race:
+    # `go test -race -count=1 -timeout 60m ./...` as several jobs side by side: internal/api's
+    # tests dealt by name into five groups, internal/crew (with its ledger) and
+    # internal/dispatch in a job each, every other package together. The same flags and bound
+    # in each; scripts/go_test_groups.py makes each group's command, and the go job's check
+    # fails the run when a test is in no group or in two (docs/checks.md).
+    runs-on: ubuntu-latest
+    needs: web
+    # A hang still ends a job: its bound is the race tests' 60 m plus its other steps
+    # (Neovim's download 5 among them), above the test bound, never a multiple of it.
     timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [api-1, api-2, api-3, api-4, api-5, crew, dispatch, rest]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -89,36 +150,11 @@ jobs:
         with:
           name: web-dist
           path: internal/web/dist
-      - run: make lint
-      - run: make lint-static
-      # The bound catches a hang: internal/api alone takes about thirty minutes
-      # here, past go test's default ten and near the old 30 m (docs/checks.md).
-      - run: go test -race -count=1 -timeout 60m ./...
-      - run: make build-go
-      - run: make check-version
-      - run: python3 scripts/brand_assets.py --check
-      - run: python3 -m unittest discover -s scripts -p '*_test.py'
-      # THIRD_PARTY_NOTICES is current: the Go modules, the web bundle's packages and the desktop app's, read from their node_modules.
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: |
-            web/package-lock.json
-            desktop/package-lock.json
-      - run: npm ci --ignore-scripts
-        working-directory: web
-      - run: npm ci --ignore-scripts
-        working-directory: desktop
-      - uses: actions/download-artifact@v4
-        with:
-          name: web-packages
-          path: web/.nuxt
-      - run: python3 scripts/notices.py --check
-      - uses: actions/upload-artifact@v4
-        with:
-          name: conductor-linux-amd64
-          path: bin/conductor
+      # The group's tests: its command first, then go test's own output.
+      - name: go test -race of the group
+        env:
+          GROUP: ${{ matrix.group }}
+        run: python3 scripts/go_test_groups.py run "$GROUP"
 
   vuln:
     runs-on: ubuntu-latest
@@ -166,17 +202,18 @@ jobs:
     # 22.04: Playwright 1.44.1's dependency list names libasound2, which 24.04 no longer has.
     runs-on: ubuntu-22.04
     needs: web
-    # The suite in two shards side by side, `e2e (1)` and `e2e (2)`, each a Playwright run of
+    # The suite in six shards side by side, `e2e (1)` to `e2e (6)`, each a Playwright run of
     # its own with its own server (docs/checks.md); the job keeps its id, so required-checks
-    # still fails when either shard does. fail-fast: false lets the other shard finish, so
-    # both reports are kept. The bound catches a hang: the set-up steps' own caps (Neovim's
+    # still fails when any shard does. fail-fast: false lets the other shards finish, so
+    # every report is kept. The bound catches a hang: the set-up steps' own caps (Neovim's
     # download 5, the mirrors' 5, the browser's packages and download 40 each: 90) and the
-    # longest whole-suite run (67, main on 2026-11-15) are 157 together, under 160.
+    # longest shard measured (66, a half of the suite, main on 2026-11-18; a sixth runs
+    # well under it) are 156 together, under 160.
     timeout-minutes: 160
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2]
+        shard: [1, 2, 3, 4, 5, 6]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -286,7 +323,7 @@ jobs:
         working-directory: web
       # Playwright shards by test group, a whole file here (fullyParallel is off), and balances
       # the shards by their counts of tests; preflight_test.py holds the matrix to the step's N.
-      - run: npx playwright test --shard=${{ matrix.shard }}/2
+      - run: npx playwright test --shard=${{ matrix.shard }}/6
         working-directory: web
       # One name a shard: upload-artifact@v4 refuses a second artifact of one name in a run.
       - uses: actions/upload-artifact@v4
@@ -397,10 +434,13 @@ jobs:
         run: python3 scripts/dco_check.py --base "$BASE" --head "$HEAD"
 
   # The one check branch protection requires: green only when every job
-  # above passed.
+  # above passed. A matrix job's result is one result for all its cells
+  # (go-race's eight groups, e2e's six shards): failure when one cell failed
+  # and the others passed (docs/checks.md), and any result but success
+  # fails this job.
   required-checks:
     if: always()
-    needs: [web, go, vuln, build-matrix, e2e, pebble, desktop-test, desktop-smoke, dco]
+    needs: [web, go, go-race, vuln, build-matrix, e2e, pebble, desktop-test, desktop-smoke, dco]
     runs-on: ubuntu-latest
     steps:
       - name: Every job passed

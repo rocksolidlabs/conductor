@@ -29,7 +29,7 @@ make test-network              # the built-in agents' sites on the network (nigh
 make test-recipes              # the recipe, Brakeman and usage-reader flags against the CLIs on this machine (nightly; the usage reads need a login, and a Claude Code other than the checked version is read only when CONDUCTOR_USAGE_CHECK names it)
 python3 scripts/brand_assets.py --check
 python3 scripts/notices.py --check  # THIRD_PARTY_NOTICES current (after make web-build, npm ci in desktop/)
-python3 -m unittest discover -s scripts -p '*_test.py'  # the scripts' own tests (dco_check.py, notices.py, preflight.py, release_draft.py, design_drift.py, live_setup.py)
+python3 -m unittest discover -s scripts -p '*_test.py'  # the scripts' own tests (dco_check.py, notices.py, preflight.py, release_draft.py, design_drift.py, live_setup.py, go_test_groups.py)
 ```
 
 `npm --prefix web test` runs the design system's rule checks among the
@@ -57,31 +57,67 @@ go test's default, ten minutes a package, is less than `internal/api` takes
 on a machine shared with other runs: 17.7 minutes in a run of the whole
 module on the 64-core Linux box at a load average of 77 to 160
 (2026-10-30). On CI's runner it takes about thirty minutes (1553 to 1796 s
-on main's green runs of 2026-11-08), and a run reached the old 30 m bound
-with nothing hung (#281), so the bound is 60 m: above every honest run, a
-hang bound only. A run left at the default fails for no defect. `make
-test`, `ci.yml` and `scripts/preflight.py` pass the same bound, and
-`scripts/preflight_test.py` holds them to it. CI's go job has its own
-`timeout-minutes: 90`, the test bound plus its other steps (never a
-multiple of it), so a hang still ends the job.
+on main's green runs of 2026-11-08, 3,129 s on 2026-11-18), and a run
+reached the old 30 m bound with nothing hung (#281), so the bound is 60 m:
+above every honest run, a hang bound only. A run left at the default fails
+for no defect. `make test`, `scripts/preflight.py` and every group of CI's
+`go-race` job pass the same bound, and `scripts/preflight_test.py` holds
+them to it. Each `go-race` job has its own `timeout-minutes: 90`, the test
+bound plus its other steps (never a multiple of it), so a hang still ends
+the job.
+
+CI runs the race tests as several jobs side by side, since on its four-core
+runner the one command took 57 minutes (main, 2026-11-18). The `go-race`
+job is a matrix of eight groups, `go-race (api-1)` to `go-race (api-5)`,
+`go-race (crew)`, `go-race (dispatch)` and `go-race (rest)`:
+`internal/api`'s tests dealt by name into five groups (a test's group is
+the SHA-256 of its name modulo five, so a test added or removed moves no
+other), `internal/crew` with its ledger, `internal/dispatch`, and every
+other package of `go list ./...` together. Each runs
+`go test -race -count=1 -timeout 60m`, the whole module's flags; an `api`
+group adds `-run '^(TestA|TestB|...)$'`, which selects top-level tests,
+each with its subtests, and runs the package's `TestMain` as any `-run`
+does. `scripts/go_test_groups.py` makes each group's command and prints its
+tests before it runs them. The `go` job (lint, staticcheck, the build, the
+notices) runs `python3 scripts/go_test_groups.py check`, which fails the
+run when the matrix does not list every group once, when a package of `go
+list ./...` is in no group or in two, or when a test of `internal/api` is
+selected by no group's `-run` or by two, as `go test -list` with each
+group's expression answers: Go's own matching. Benchmarks run in no group,
+as before (none is run without `-bench`); the repository has no examples,
+and its fuzz targets (`internal/quoted`, `internal/session`) run their seed
+corpus in `rest`. To run one group here as CI does:
+`python3 scripts/go_test_groups.py run api-3` (`command api-3` prints the
+command, `groups` lists them). A developer's own command stays the whole
+module, `go test -race -count=1 -timeout 60m ./...` or `make test`.
 
 A file CI's jobs fetch from a release mirror is cached by its version (`actions/cache`) and its download retried for minutes: Neovim's tarball through `curl --retry-all-errors`, refetched when it is not a gzip, and Electron's binary through
 `desktop/scripts/install-electron.mjs` (the desktop tests' `pretest`, six tries of electron's own installer), so a mirror's bad half hour fails one try, not the run (#281).
 The browser's system packages (the `e2e` job, `live.yml`) come from the runner's apt mirror list: when the first mirror's name does not resolve, a step before the install takes out each mirror whose name does not, and uses kernel.org's Ubuntu mirror when none is left (apt still checks its indexes against the image's Ubuntu archive key); the install gets three tries a minute apart, each ended after ten minutes by a `timeout` run as root, so that it reaches apt (#281).
 
-CI's `e2e` job runs the Playwright suite in two shards side by side, `e2e (1)` and
-`e2e (2)`, so that a pull request waits for it about as long as for the go job.
-Playwright gives a shard whole spec files (`fullyParallel` is off) and balances the two
-by their counts of tests; each shard is a run of its own, whose global setup starts its
-own shared server, and a failing shard uploads its report as `playwright-report-1` or
-`playwright-report-2`. `npx playwright test --shard=1/2` in `web/` (after `make
+CI's `e2e` job runs the Playwright suite in six shards side by side, `e2e (1)` to
+`e2e (6)`, so that a pull request waits for it about as long as for the race tests.
+Playwright gives a shard whole spec files (`fullyParallel` is off), in order, cut by
+their counts of tests, not their times; each shard is a run of its own, whose global
+setup starts its own shared server, and a failing shard uploads its report as
+`playwright-report-<k>`. `npx playwright test --shard=3/6` in `web/` (after `make
 web-build build-go`) runs one shard here; `make test-e2e` and `make preflight` still run
 the whole suite on one machine. The job keeps its id, so `required-checks` fails when
-either shard does; `scripts/preflight_test.py` holds the matrix to the shard count. Its
+any shard does; `scripts/preflight_test.py` holds the matrix to the shard count. Its
 `timeout-minutes: 160` is a hang bound: the set-up steps' own caps (90 minutes) and the
-longest whole-suite run (67, on 2026-11-15) together. On the pull request that cut the
-shards (#955), shard 1 ran 284 tests in 32 minutes and shard 2 ran 280 in 27 (34 and 29
-for each job), where the whole suite of 564 had taken one job 67.
+longest shard measured (66, a half of the suite, on 2026-11-18) together. On the pull
+request that cut two shards (#955), shard 1 ran 284 tests in 32 minutes and shard 2 ran
+280 in 27, where the whole suite of 564 had taken one job 67; by 2026-11-18 the suite was
+974 tests, and its two shards took 65 and 46 minutes. Cut six ways, that run's per-test
+times give shards of 23, 20, 20, 13, 18 and 14 minutes.
+
+`required-checks`, the one check branch protection requires, needs every
+other job and fails when any of them failed, was cancelled or was skipped.
+A matrix job's result is one result for all its cells: when one shard or
+group fails, the job's result is `failure` (pull requests' runs of 2026-11-15 and
+2026-11-17, where one `e2e` shard failed and the other passed, failed
+`required-checks`).
+`scripts/preflight_test.py` holds its needs to the workflow's jobs.
 
 A spec asserts layout by measures, never by pixels: `web/e2e/layout.ts`'s
 helpers say the measure in the failure. What a person can see of an
@@ -127,8 +163,8 @@ binary compiles, any but a `_test.go` one, naming `ext.EntitlementSource`,
 `ext/local`'s `AllowAll` under any import name, dot-importing either
 package, or calling a method named `Entitled`; this rule parses each file it
 reads whole, the others read imports and build constraints only). A
-problem names its rule, file and line; the race suite runs the same test, so CI's go job fails on it
-twice over.
+problem names its rule, file and line; the race suite runs the same test, so CI fails on it
+twice over (the go job's `make lint`, and go-race's `rest` group).
 
 The e2e stub (`web/e2e/stub-agent.sh`) answers as Claude Code, Codex or an
 impostor by `STUB_IDENTITY`, reports as its agent's hooks do by
