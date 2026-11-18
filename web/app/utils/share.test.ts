@@ -64,16 +64,20 @@ describe('shareRefusal', () => {
 
 describe('shareDescription', () => {
   it('says the link is copied only once one was made and the copy took', () => {
-    expect(shareDescription({ run: true, copied: true, refused: false })).toBe('The link is copied: it opens every agent of the crew, one added later too. Revoking disconnects whoever used it.')
-    expect(shareDescription({ run: false, copied: true, refused: false })).toBe('The link is copied. Revoking disconnects whoever used it.')
+    expect(shareDescription({ run: true, copied: true, shown: true, refused: false })).toBe('The link is copied: it opens every agent of the crew, one added later too. Revoking disconnects whoever used it.')
+    expect(shareDescription({ run: false, copied: true, shown: true, refused: false })).toBe('The link is copied. Revoking disconnects whoever used it.')
   })
   it('while a link is made, or when making or copying it failed, says what a link opens and nothing of a copy', () => {
-    for (const run of [true, false]) expect(shareDescription({ run, copied: false, refused: false })).not.toMatch(/copied/i)
-    expect(shareDescription({ run: true, copied: false, refused: false })).toBe('A link opens every agent of the crew, one added later too. Revoking disconnects whoever used it.')
+    for (const run of [true, false]) expect(shareDescription({ run, copied: false, shown: true, refused: false })).not.toMatch(/copied/i)
+    expect(shareDescription({ run: true, copied: false, shown: false, refused: false })).toBe('A link opens every agent of the crew, one added later too. Revoking disconnects whoever used it.')
+  })
+  it('a link copied and then revoked is shown no more, and the line says nothing of a copy', () => {
+    for (const run of [true, false]) expect(shareDescription({ run, copied: true, shown: false, refused: false })).not.toMatch(/copied/i)
+    expect(shareDescription({ run: true, copied: true, shown: false, refused: false })).toBe('A link opens every agent of the crew, one added later too. Revoking disconnects whoever used it.')
   })
   it('refused, says no link was made, whatever was copied before', () => {
-    expect(shareDescription({ run: true, copied: false, refused: true })).toBe('No link was made for this run.')
-    expect(shareDescription({ run: true, copied: true, refused: true })).toBe('No link was made for this run.')
-    expect(shareDescription({ run: false, copied: false, refused: true })).toBe('No link was made.')
+    expect(shareDescription({ run: true, copied: false, shown: false, refused: true })).toBe('No link was made for this run.')
+    expect(shareDescription({ run: true, copied: true, shown: true, refused: true })).toBe('No link was made for this run.')
+    expect(shareDescription({ run: false, copied: false, shown: false, refused: true })).toBe('No link was made.')
   })
 })

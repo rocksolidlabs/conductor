@@ -159,7 +159,7 @@ export function compareRunOf(ids: readonly string[], named: string | undefined, 
 /**
  * Why the Review view holds Request changes on a candidate of a comparison's lane (PR-8b), said before anything is written: the server
  * refuses it (409 not_selected, internal/api compareReviewRefusal) on a lane not selected, after None of these, and before the selection
- * is applied, and these are its words. null for a candidate it takes: the selected lane's, and any candidate of a task that is no lane
+ * is applied, and these are its words; a selection answered and not applied yet is said as that, not as one to make. null for a candidate it takes: the selected lane's, and any candidate of a task that is no lane
  * of the comparison (`c` the comparison of the candidate's chain; null while it is not read, the server's refusal then the guard).
  * Comment and Approve are kept for any candidate.
  */
@@ -167,9 +167,27 @@ export function reviewHold(c: Pick<Comparison, 'candidates' | 'selection' | 'sta
   if (!c || !c.candidates.some((x) => x.task === task)) return null
   const a = appliedSelection(c.selection)
   if (a === 'none' || (!a && (c.state === 'none' || c.state === 'ended'))) return { title: 'No candidate was selected', words: 'no candidate was selected: launch a new comparison' }
+  if (!a && c.selection?.state === 'answered')
+    return { title: 'The selection is answered, not applied yet', words: `${c.selection.decision} is answered and not applied yet: Yardmaster applies it next, or when the run is continued if it is stopped; a repair waits for it` }
   if (!a) return { title: 'The selection is not applied yet', words: 'select a candidate first: a repair before the selection would make the candidates unlike' }
   if (a.task === task) return null
   return { title: `${task} was not selected`, words: `${task} was not selected in ${c.selection!.decision}: launch a new comparison to try it again` }
+}
+
+/**
+ * The comparison's top line while its selection waits for an answer (the panel is last, after what it is answered from): '' once it is
+ * answered, applied or closed, and while there is none.
+ */
+export function selectionWaitsWords(sel: Pick<ComparisonSelection, 'decision' | 'state'> | null | undefined): string {
+  return sel?.state === 'open' ? `A selection waits for your answer (${sel.decision}): it is at the end, after what it is answered from.` : ''
+}
+
+/**
+ * The verdict a draft takes while Request changes is held for its candidate: Comment in its place, so the verdict checked is one the
+ * person can send ("A comment or an approval is recorded as for any candidate"); any other verdict as it is.
+ */
+export function heldVerdict<V extends string>(verdict: V, hold: unknown): V | 'comment' {
+  return hold && verdict === 'request_changes' ? 'comment' : verdict
 }
 
 /** What Request changes is, while it is held: the line under the hold's words. */

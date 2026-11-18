@@ -3317,8 +3317,9 @@ reached however late: 3 s with no `ready` it says the page has not
 answered yet and that it keeps asking, 30 s with none that the page does
 not load the bridge, and a `ready` with that load's nonce that comes
 later is still taken and ends the words. A capture made before the page
-answered takes its first element once it has only where the frame is
-then the same as its screenshot; Capture again waits for the `ready` as
+answered takes its first element once it has only where the frame then
+matches its screenshot inside that element's box, inside every
+annotation's box and over the whole frame, each judged on its own; Capture again waits for the `ready` as
 long as the frame stays on its load, and describes on the page as it is
 when the page reports the capture's address (compared without the
 fragment), else sends the frame there and describes on the next press. A `ready` ends the hellos; so do a new
@@ -5798,7 +5799,9 @@ scrub finds one, `400 invalid_request` (`opId holds a tree's secret`,
 `the capture's id holds a tree's secret`), before any call to the store,
 so no operation's row, receipt or reply carries it. A capture's address
 is the page's: the address its bridge reports, or, when the page's bridge
-did not answer, the address the pane gave the frame without its fragment;
+did not answer, the address the pane gave the frame; for an attempt's or
+a candidate's preview the pane names it without the fragment it opened
+the preview with, and a link's address keeps its fragment;
 for an attempt's preview the server keeps that address, and each
 element's moment's, without a fragment that holds a part of such a
 secret or its name (a preview's own address opens it with its tree's

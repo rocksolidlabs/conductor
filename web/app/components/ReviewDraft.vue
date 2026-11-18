@@ -111,7 +111,7 @@ async function go(continueRun: boolean) {
 
     <UAlert v-if="hold" color="neutral" variant="subtle" icon="i-lucide-lock" :title="hold.title" data-review-hold>
       <template #description>
-        <span class="block" data-review-hold-words>{{ hold.words.charAt(0).toUpperCase() + hold.words.slice(1) }}.</span>
+        <span class="block" data-review-hold-words>{{ hold.words }}.</span>
         <span class="block">{{ REVIEW_HOLD_WORDS }}</span>
       </template>
     </UAlert>

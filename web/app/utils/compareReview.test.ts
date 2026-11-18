@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
-import { candidateSelection, compareRunOf, reviewHold, selectedReview, selectionReview, stopSelectionWords } from './compareSelect'
+import { candidateSelection, compareRunOf, heldVerdict, reviewHold, selectedReview, selectionReview, selectionWaitsWords, stopSelectionWords } from './compareSelect'
 import type { Comparison } from './compare'
 import { firstReviewCandidate, latestOfSelected, pickerLabel, reviewDefault } from './review'
 
@@ -160,8 +160,17 @@ describe('Request changes on a candidate of a comparison, held before anything i
     const none = cmp({ decision: 'dr-9', state: 'applied', options: [], applied: { how: 'selected', none: true } })
     expect(reviewHold(none, 'approach-b')).toEqual({ title: 'No candidate was selected', words: 'no candidate was selected: launch a new comparison' })
     expect(reviewHold(cmp(null, 'ended'), 'approach-b')!.words).toBe('no candidate was selected: launch a new comparison')
-    for (const s of [cmp({ decision: 'dr-9', state: 'open', options: [] }), cmp({ decision: 'dr-9', state: 'answered', options: [] }), cmp(null, 'running')])
+    for (const s of [cmp({ decision: 'dr-9', state: 'open', options: [] }), cmp(null, 'running')])
       expect(reviewHold(s, 'approach-b')).toEqual({ title: 'The selection is not applied yet', words: 'select a candidate first: a repair before the selection would make the candidates unlike' })
+  })
+
+  it('says a selection answered and not applied yet as that, never asking the person who answered it to select', () => {
+    const answered = reviewHold(cmp({ decision: 'dr-9', state: 'answered', options: [] }, 'answered'), 'approach-a')!
+    expect(answered).toEqual({
+      title: 'The selection is answered, not applied yet',
+      words: 'dr-9 is answered and not applied yet: Yardmaster applies it next, or when the run is continued if it is stopped; a repair waits for it',
+    })
+    expect(answered.words).not.toContain('select a candidate first')
   })
 
   it('is said in the draft, above its notes, and holds the Request changes verdict and Send review', () => {
@@ -180,5 +189,30 @@ describe("the run's Stop, with a comparison's selection waiting on it", () => {
     expect(stopSelectionWords({ id: 'dr-2', state: 'answered' })).toBe('Its selection, dr-2, is answered and not applied yet: the answer is applied when the run is continued. Stopping changes nothing of it.')
     expect(stopSelectionWords({ id: 'dr-2', state: 'applied' })).toBe('')
     expect(stopSelectionWords(null)).toBe('')
+  })
+})
+
+describe("the comparison's top line while its selection waits", () => {
+  it('says a selection waits only while it is open, and names it', () => {
+    expect(selectionWaitsWords({ decision: 'dr-9', state: 'open' })).toBe('A selection waits for your answer (dr-9): it is at the end, after what it is answered from.')
+    for (const state of ['answered', 'applied', 'superseded']) expect(selectionWaitsWords({ decision: 'dr-9', state })).toBe('')
+    expect(selectionWaitsWords(null)).toBe('')
+  })
+})
+
+describe('the verdict of a draft while Request changes is held', () => {
+  const hold = { title: 'approach-a was not selected', words: 'approach-a was not selected in dr-9: launch a new comparison to try it again' }
+  it('is Comment in place of Request changes, so the verdict checked can be sent; any other verdict stays', () => {
+    expect(heldVerdict('request_changes', hold)).toBe('comment')
+    expect(heldVerdict('approve', hold)).toBe('approve')
+    expect(heldVerdict('comment', hold)).toBe('comment')
+    expect(heldVerdict('request_changes', null)).toBe('request_changes')
+  })
+
+  it("is set by the view while the hold stands, and the hold's words keep the candidate's name as written", () => {
+    const view = readFileSync(new URL('../components/DispatchReview.vue', import.meta.url), 'utf8')
+    expect(view).toContain('const want = heldVerdict(v, h)')
+    const draft = readFileSync(new URL('../components/ReviewDraft.vue', import.meta.url), 'utf8')
+    expect(draft).toContain('data-review-hold-words>{{ hold.words }}.</span>')
   })
 })
