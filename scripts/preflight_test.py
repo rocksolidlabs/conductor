@@ -11,6 +11,7 @@ import tempfile
 import unittest
 import unittest.mock
 
+import go_test_groups
 import preflight as p
 
 HEAD = "a" * 40
@@ -148,11 +149,33 @@ class Steps(unittest.TestCase):
         # loaded machine (docs/checks.md), so one left at it fails there.
         root = Path(__file__).resolve().parent.parent
         want = " ".join(p.GO_TEST_RACE)
-        for path in (".github/workflows/ci.yml", "Makefile", "docs/checks.md"):
+        for path in ("Makefile", "docs/checks.md"):
             lines = [line for line in (root / path).read_text().splitlines() if "go test -race" in line and "./..." in line]
             self.assertTrue(lines, f"{path} runs no race tests of the whole module")
             for line in lines:
                 self.assertIn(want, line, f"{path}: {line.strip()}")
+        # CI runs the module in groups (go_test_groups.py), each with the same
+        # flags and bound; a race run written into ci.yml itself has them too.
+        self.assertEqual([*go_test_groups.RUN, "./..."], p.GO_TEST_RACE)
+        for line in (root / ".github/workflows/ci.yml").read_text().splitlines():
+            if "run: go test -race" in line:
+                self.assertIn(" ".join(p.GO_TEST_RACE[:-1]), line, line.strip())
+
+    def test_required_checks_needs_every_other_job(self):
+        # The one check branch protection requires is green only when every
+        # job passed: a job left out of its needs could fail, or never run,
+        # and a pull request would merge anyway.
+        text = (Path(__file__).resolve().parent.parent / ".github" / "workflows" / "ci.yml").read_text()
+        jobs_block = text[text.index("\njobs:\n") :]
+        jobs = set(re.findall(r"^  ([A-Za-z0-9_-]+):\s*$", jobs_block, re.M))
+        gate = re.search(r"^  required-checks:\n    if: always\(\)\n    needs: \[([^\]]*)\]\n", jobs_block, re.M)
+        self.assertIsNotNone(gate, "required-checks runs always() and names its needs on one line")
+        needs = [n.strip() for n in gate.group(1).split(",")]
+        self.assertEqual(sorted(needs), sorted(jobs - {"required-checks"}))
+        self.assertIn(
+            "if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'skipped')",
+            jobs_block,
+        )
 
     def test_the_desktop_tests_run_on_every_machine(self):
         for steps in (p.LINUX_STEPS, p.MAC_STEPS, p.WINDOWS_STEPS):

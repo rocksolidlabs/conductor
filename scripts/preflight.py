@@ -47,8 +47,9 @@ RECEIPT_VERSION = 1
 # check branch protection requires, green when every other job passed).
 # The order is CI's: the web build first, since the Go binary embeds it.
 GATE_JOBS = ("required-checks",)
-# The whole module's race tests, as ci.yml, make test and docs/checks.md run
-# them (preflight_test.py holds them to one bound). The bound catches a hang:
+# The whole module's race tests, as make test and docs/checks.md run them and
+# as ci.yml's go-race job runs them in groups (scripts/go_test_groups.py, with
+# the same flags; preflight_test.py holds them to one bound). The bound catches a hang:
 # go test's default, ten minutes a package, is less than internal/api takes
 # on a machine shared with other runs.
 GO_TEST_RACE = ["go", "test", "-race", "-count=1", "-timeout", "60m", "./..."]
@@ -62,7 +63,9 @@ LINUX_STEPS = [
     {"name": "web-build", "covers": "web", "argv": ["make", "web-build"]},
     {"name": "lint", "covers": "go", "argv": ["make", "lint"]},
     {"name": "lint-static", "covers": "go", "argv": ["make", "lint-static"]},
-    {"name": "go-test-race", "covers": "go", "argv": [*GO_TEST_RACE]},
+    {"name": "go-test-groups", "covers": "go", "argv": ["python3", "scripts/go_test_groups.py", "check"]},
+    # Every group of go-race at once: the whole module, as a developer runs it.
+    {"name": "go-test-race", "covers": "go-race", "argv": [*GO_TEST_RACE]},
     {
         "name": "build-linux-arm64",
         "covers": "build-matrix",
