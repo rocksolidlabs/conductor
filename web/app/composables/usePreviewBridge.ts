@@ -17,7 +17,8 @@ import { decodePng, fromBase64, sameIn, type Pixels, type ScreenshotSource } fro
 
 /**
  * The workbench's side of the preview bridge (docs/plans/browser-evidence.md, "The messages" and "One capture is one moment"): the
- * handshake with the framed page (a hello with a nonce of its own, 3 s with no ready meaning no bridge), one request in flight at a
+ * handshake with the framed page (a hello with a nonce of its own for each load, said again while the frame stays on that load and no
+ * ready came, 3 s with no ready saying the page does not load the bridge, a later ready of that load still taken), one request in flight at a
  * time, and the drafts. Every message is taken through parseBridgeMessage alone (the frame's own window, the preview's origin, the
  * hello's nonce, 64 KiB, the schema). A draft is one moment: its screenshot, taken at its first selection and checked with a `look`
  * (the page's epoch moved while the pixels were taken: the element is read again by its selector and the pixels taken again, at most
@@ -101,10 +102,15 @@ export interface BridgeDeps {
   clearTimer?(id: unknown): void
 }
 
-/** How long a hello waits for its ready, and a look or a describe for its answer. */
+/** How long a hello waits for its ready before the pane says the page does not load the bridge, and a look or a describe for its answer. */
 export const HELLO_MS = 3000
-/** The hello is said again at these times within its 3 s, for a bridge whose script starts after the frame's load. */
+/**
+ * The hello is said again, with its load's nonce, at these times within its 3 s, then every HELLO_EVERY_MS while the frame stays on
+ * that load and no ready has come: a bridge whose script starts after the frame's load (a dev build that adds its tag as the app
+ * starts) answers a later one, however late, and its ready is taken then.
+ */
 export const HELLO_AGAIN_MS = [1000, 2000] as const
+export const HELLO_EVERY_MS = 2000
 export const ANSWER_MS = 3000
 /** How many annotations a draft holds (dispatch.MaxCaptureAnnotations). */
 export const MAX_ANNOTATIONS = 20
@@ -195,7 +201,7 @@ export function createPreviewSession(deps: BridgeDeps) {
   const setTimer = deps.setTimer ?? ((fn: () => void, ms: number) => setTimeout(fn, ms))
   const clearTimer = deps.clearTimer ?? ((id: unknown) => clearTimeout(id as ReturnType<typeof setTimeout>))
   const state = reactive({
-    /** The handshake: none yet, a hello waiting, the bridge ready, or absent (no ready within 3 s). */
+    /** The handshake: none yet, a hello waiting, the bridge ready, or absent (no ready within 3 s; the hello is still said). */
     bridge: 'none' as 'none' | 'hello' | 'ready' | 'absent',
     /** What the pane says of the bridge: that the page does not load it. */
     words: '',
@@ -210,7 +216,9 @@ export function createPreviewSession(deps: BridgeDeps) {
   let nonce = ''
   let waiting: Waiting | null = null
   let helloTimer: unknown = null
-  let helloAgain: unknown[] = []
+  let helloAgain: unknown = null
+  /** The frame element the hello under way was said to: its hellos end when another is there. */
+  let helloTo: unknown = undefined
   let sourceFor: unknown = undefined
   let source: Promise<ScreenshotSource> | null = null
   let ids = 0
@@ -221,9 +229,10 @@ export function createPreviewSession(deps: BridgeDeps) {
     const m = parseBridgeMessage(e, { source: end.window, origin: end.origin, nonce })
     if (!m) return
     if (m.t === 'ready') {
-      if (state.bridge !== 'hello') return
-      if (helloTimer !== null) clearTimer(helloTimer)
-      helloTimer = null
+      // The current load's ready (parseBridgeMessage held it to this load's nonce), taken while its hello is said, also after the
+      // words: it ends the hellos and the words.
+      if (state.bridge !== 'hello' && state.bridge !== 'absent') return
+      stopHello()
       state.bridge = 'ready'
       state.words = ''
       return
@@ -264,18 +273,35 @@ export function createPreviewSession(deps: BridgeDeps) {
   function stopHello() {
     if (helloTimer !== null) clearTimer(helloTimer)
     helloTimer = null
-    for (const t of helloAgain) clearTimer(t)
-    helloAgain = []
+    if (helloAgain !== null) clearTimer(helloAgain)
+    helloAgain = null
   }
 
   /**
-   * The frame (re)loaded: a hello with a new nonce, said again twice within its 3 s (a bridge whose script starts after the frame's
-   * load hears a later one); whatever was asked of the page before is dropped, and no draft is joined again.
+   * The next time the load's hello is said again, `n` times said again so far: at HELLO_AGAIN_MS within its 3 s, then every
+   * HELLO_EVERY_MS. One timer at a time; it ends itself once a ready came, the frame element was replaced, or the frame's window is
+   * gone, and a new load, the frame's going and the pane's close end it.
+   */
+  function sayAgain(n: number) {
+    const delay = n < HELLO_AGAIN_MS.length ? HELLO_AGAIN_MS[n]! - (n > 0 ? HELLO_AGAIN_MS[n - 1]! : 0) : HELLO_EVERY_MS
+    helloAgain = setTimer(() => {
+      helloAgain = null
+      if (state.bridge !== 'hello' && state.bridge !== 'absent') return
+      if (deps.frameElement && deps.frameElement() !== helloTo) return
+      if (post({ t: 'hello' })) sayAgain(n + 1)
+    }, delay)
+  }
+
+  /**
+   * The frame (re)loaded: a hello with a new nonce, said again while the frame stays on this load and no ready came (a bridge whose
+   * script starts after the frame's load hears a later one, and its ready is taken whenever it comes); the words at 3 s without one;
+   * whatever was asked of the page before is dropped, and no draft is joined again.
    */
   function hello() {
     finish(null)
     stopHello()
     nonce = deps.nonce ? deps.nonce() : mintNonce()
+    helloTo = deps.frameElement?.()
     for (const d of state.drafts) d.open = false
     state.bridge = 'hello'
     state.words = ''
@@ -284,7 +310,7 @@ export function createPreviewSession(deps: BridgeDeps) {
       state.words = NO_BRIDGE_WORDS
       return
     }
-    helloAgain = HELLO_AGAIN_MS.map((ms) => setTimer(() => state.bridge === 'hello' && post({ t: 'hello' }), ms))
+    sayAgain(0)
     helloTimer = setTimer(() => {
       helloTimer = null
       if (state.bridge === 'hello') {
@@ -521,9 +547,24 @@ export function createPreviewSession(deps: BridgeDeps) {
     if (i >= 0) state.drafts.splice(i, 1)
   }
 
+  /**
+   * The frame's load is over without a new one yet (the frame element replaced or removed, its address changed): its hellos end, its
+   * nonce with them (no answer of that load is taken again), and what was asked of it is dropped. The next load says hello afresh.
+   */
+  function gone() {
+    finish(null)
+    stopHello()
+    nonce = ''
+    helloTo = undefined
+    for (const d of state.drafts) d.open = false
+    state.bridge = 'none'
+    state.words = ''
+  }
+
   function close() {
     finish(null)
     stopHello()
+    nonce = ''
     off()
     void release()
   }
@@ -552,7 +593,7 @@ export function createPreviewSession(deps: BridgeDeps) {
     else await snap()
   }
 
-  return { state, hello, select, describe, cancel, retake, snap, start, addRegion, drop, release, close }
+  return { state, hello, gone, select, describe, cancel, retake, snap, start, addRegion, drop, release, close }
 }
 
 export type PreviewSession = ReturnType<typeof createPreviewSession>

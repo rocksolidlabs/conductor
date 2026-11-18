@@ -154,6 +154,15 @@ async function loaded() {
   }
 }
 const hellos = ref(0)
+// A frame element replaced or removed, or its address changed, ends the load it was on: its hellos stop and nothing of it is taken
+// again; the next load says hello afresh.
+watch(
+  [frame, address],
+  ([el, at], [was, wasAt]) => {
+    if ((was && el !== was) || (wasAt && at !== wasAt)) session.gone()
+  },
+  { flush: 'sync' },
+)
 const frameKey = ref(0)
 function refresh() {
   frameKey.value++
