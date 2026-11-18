@@ -455,7 +455,10 @@ admits anyone an identity provider gives `ext.GrantDecide`
 (`docs/plans/decide-grant.md`). One function, `crew.Admits`, judges the
 entries (`crew.EntriesOf`), for the response's transaction and every
 read of a decide principal (`crew.AdmissionOf`); no write changes the
-policy. The record keeps it so that a response and an application check
+policy. The decision-policy plan (`docs/plans/decision-policy.md`)
+gives the column one writer after the opening, `Tx.PutPolicy`, which
+writes only while the decision is `open` and at its rev, so a
+decision's entries still change only while it is open. The record keeps it so that a response and an application check
 the policy the decision was opened under against the one in force, and
 so that a later policy is a later revision of the same field.
 
@@ -494,7 +497,11 @@ attempt whose files carry the answer), `commented` (`{text, by}`),
 `info_requested` (`{text, by}`), `superseded`, `cancelled`, and, for a
 provider only, `assigned`, `delegated`, `escalated` and `expired`, which
 no code of this repository writes. A row's `detail` is at most 2 KiB as
-encoded.
+encoded. The decision-policy plan (`docs/plans/decision-policy.md`)
+amends this list: a kind `rerouted` (new) joins the reserved
+`assigned`, `delegated` and `escalated`, and the four become one bounded
+group of 16 rows (`historyBounds`, `MaxDecisionRouterChanges`), a
+router's 17th change and later writing no history row.
 
 At most 256 rows per decision, a cap each kind's own bound keeps: one
 `opened`; two `routed` at the opening (the operator by policy, a
@@ -2847,7 +2854,8 @@ not choose (the Program, section 3.1).
 8. **A router's held answer is not the operator's** under `local/1`: it
    is recorded as a refused response and never applied; the router's
    destinations are recorded as routing history. SW1 brings the policy
-   that lets a routed person answer.
+   that lets a routed person answer (planned in
+   `docs/plans/decision-policy.md`).
 9. **A rejection cancels only a gate's tasks**: an agent's own approval
    answered "no" is delivered as words, and the agent decides; a gate's
    Reject (or an assignment's Not done) cancels the tasks it held, as
