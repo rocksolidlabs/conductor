@@ -340,9 +340,16 @@ test('on a phone and in a narrow window a name too long for the header is cut wi
   // The page measures the name and then draws it as it decided: wait for the drawing to agree with the measure, then read it once.
   await expect.poll(() => wideName.evaluate((e) => (e.tagName === 'BUTTON') === e.scrollWidth > e.clientWidth), { message: 'at 1440 × 900: a button exactly when cut' }).toBe(true)
   if (await wideName.evaluate((e) => e.tagName === 'BUTTON')) {
+    // The popover scales in as it opens, and a measure taken while it does reads its text out of a box still scaled (#281): the
+    // page's animations run at a tenth of their pace, so that a measure not taken at rest fails every run, not only on a slow one.
+    const cdp = await wide.context().newCDPSession(wide)
+    await cdp.send('Animation.enable')
+    await cdp.send('Animation.setPlaybackRate', { playbackRate: 0.1 })
     await wideName.click()
     await expect(wide.locator('[data-session-title-whole]')).toHaveText(LONG_NAME)
+    await atRest(wide.locator('[data-session-title-whole]'))
     await uncut(wide.locator('[data-session-title-whole]'))
+    await cdp.send('Animation.setPlaybackRate', { playbackRate: 1 })
     await wide.keyboard.press('Escape')
     await expect(wide.locator('[data-session-title-whole]')).toHaveCount(0)
   } else await uncut(wideName)
