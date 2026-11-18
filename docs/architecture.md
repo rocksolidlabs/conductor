@@ -1442,7 +1442,9 @@ connection's credential turn, before the new credential takes effect, so
 each report's counts belong to the one credential whose hash it carries),
 and at its close, before the session shows its host gone. A connection
 that has admitted two such renewals inline in one period keeps its next
-one pending for the recheck. The reports are delivered through
+one pending for the recheck. A renewal so kept pending is asked of nobody,
+and is not among the credentials the identity's detail is filtered by
+until the recheck adopts it. The reports are delivered through
 `extDeliver` from one ring of `ext.UsageQueue`, logged as every identity
 kind is, by the provider's name and count alone. Nothing is made (no ring,
 no goroutine, no count) on a server that is no switchyard or whose

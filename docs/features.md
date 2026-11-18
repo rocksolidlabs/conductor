@@ -225,7 +225,10 @@ nothing changes.
   transaction that makes the run, before any attempt starts: a retry with
   the same operation id answers the run it made, and two launches at once
   make one. The engine stops the run at its deadline; a continuation keeps
-  the deadline and is refused once it has passed. `ext.Host` gains `Run`,
+  the deadline, and once it has passed the run takes no change that would
+  start an attempt (Retry, Accept anyway, Check again, a request for
+  changes) and its chain no continuation, which the run page says in place
+  of offering them. `ext.Host` gains `Run`,
   `RunByOp` (a look-up that never launches) and `StopRun`, which answer
   only for the provider's own runs. A refusal a caller may act on carries a
   code (`ext.Refusal`). `ext/exttest`'s fake does what the server does,
@@ -239,7 +242,8 @@ nothing changes.
   run's base; every attempt starts its agent only from the entry the launch
   confirmed. A provider's launch makes no view link. Each attempt's task
   file and the run page say the subject: "Launched by <label> for
-  <subject> at <start commit>", with its link when the page may open it.
+  <subject> at <start commit>", with its link when the page may open it
+  and the host that link opens beside it.
 - **The binding beside it (#1005).** Each member of a resolved launch names
   the account (its id and where its login comes from) and the model a
   launch would bind now, in the digest, and the bound accounts' kept usage
@@ -263,20 +267,31 @@ nothing changes.
   reports go through a queue of 256 that never holds the relay, the oldest
   dropped and counted. None for the workbench token, a host token, an open
   host or a share link, none on a server that is no switchyard, and none
-  with no identity provider or one that does not observe usage. It gates
-  nothing, nothing is stored, and what is still queued at shutdown is not
-  delivered.
+  with no identity provider or one that does not observe usage. A
+  connection that closes with nothing to report (before its first report,
+  with no whole session second and no byte) makes no report at all; one
+  that reported before always ends with its `Final`. What bounds the rest
+  is that the provider admits each connection, and that the ring's drops
+  are counted and logged. It gates nothing, nothing is stored, and what is
+  still queued at shutdown is not delivered.
 - **A hosted session's agent token is known to the chain (#910).** With an
   identity provider registered, a hosted session's live agent token is
   answered by the server at every route and never put to the provider,
   from its registration until the session ends, leaves or fails to
-  register; the tokens are counted per session, in memory, as hashes.
+  register; the tokens are counted per session, in memory, as hashes. A
+  host's renewal (`host_token`) that carries a live agent token is refused
+  before the provider is asked, and so is a pending renewal that has since
+  become one. A host's registration that meets a session or a desk that
+  left the server registers it anew rather than taking it back, and a
+  resume of a session that left is refused.
 
 Not built, for the maintainers to decide: a run pointer's origin for a
 continuity store, launch fields on the person's launch route, a prune of
 the ledger's operation ids, acting on an account's capacity at a launch,
 a launch through a host or a switchyard, a capacity interface in `ext`,
-and the renewal of a host token checked against the live tokens.
+and the resolved launch's capacity view saying that where a default
+login's run will start is undetermined, as `GET /api/capacity` does on a
+server whose runtime is not native.
 
 ## Brakeman's page says what it found (#993; 2026-11-17)
 

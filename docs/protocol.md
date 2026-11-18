@@ -5048,8 +5048,11 @@ a launch with no provider registered is as it was.
   number of minutes from 10 to 1,440, encoded in JSON as nanoseconds (an
   hour is `3600000000000`); `project`, a Dispatch project's key; and
   `resolvedDigest` (64 lower-case hex, with a `project`) and `startCommit`
-  (40 or 64 lower-case hex), below. A launch with an origin of a crew
-  without tasks is refused `not_managed`.
+  (40 or 64 lower-case hex), below. Every launch with an origin of a
+  crew without tasks, held or not, is refused `not_managed`, right after
+  the crew is read (after `invalid_subject` and `prior_unknown`, before
+  `start_commit_missing` and `launch_changed`); a resolve of such a crew
+  still answers `managed` false.
 - **Once per operation id.** The provider's name and the operation id are
   looked up in the ledger before anything is made, and a run found is
   answered, whatever else the request asks: the run's `origin` (`Run`)
@@ -5066,13 +5069,17 @@ a launch with no provider registered is as it was.
   run already stopped, finished or interrupted is left as it is, and the
   deadline is read off the engine's clock, so a machine that slept stops
   the run when it wakes. A continuation keeps the deadline and is stopped
-  at it too; once it has passed, the chain takes no continuation, a
-  person's request for changes among them, and nothing is written: `POST
-  /api/runs/{run}/resume` answers `409 time_limit_passed`, "the run's time
-  limit has passed: its chain takes no continuation", and a review's
-  request for changes that would continue the run (`POST
+  at it too. Once it has passed, the run takes no change that would start
+  an attempt and its chain no continuation, and nothing is changed: Retry,
+  Accept anyway, Check again and a continuation (`POST
+  /api/runs/{run}/resume`) are refused `time_limit_passed` (`409` at the
+  routes, a command's receipt saying why), "the run's time limit has
+  passed: it takes no change that would start an attempt, and its chain no
+  continuation", and a review's request for changes (`POST
   /api/dispatch/tickets/{key}/reviews`, its retry) is kept with its
-  application `refused` in those words.
+  application `refused` in those words. Pause, Cancel, Stop and the reads
+  are as before. The run page offers none of the refused actions past the
+  deadline, and says why.
 - **The provider's runs.** `Run`, `RunByOp` and `StopRun` answer for a run
   whose ledger row names the calling provider and carries an operation id,
   and for no other: a person's run, another provider's run and a person's
@@ -5088,7 +5095,10 @@ a launch with no provider registered is as it was.
   `StopRun` stops a running run as the stop route does, its log saying
   "stopped by <name> through <provider>" and, with a why (at most 200
   bytes on one line), ": <why>"; a run not running answers `ErrNotRunning`,
-  nothing changed. The desk's Host, a switchyard and `conductor host`
+  nothing changed; on a server that does not own the ledger (another
+  server holds it) `StopRun` answers `ledger_unavailable` and stops
+  nothing. A call whose try was given up is answered `context.Canceled`,
+  never `ledger_unavailable`, and logs no ledger failure. The desk's Host, a switchyard and `conductor host`
   answer `ErrUnsupported` from each, and from a launch with an origin.
 - **Refusals with a code.** Every refusal of `Launch`, `ResolveLaunch`,
   `Run`, `RunByOp` and `StopRun` that is `ErrRefused` is an `*ext.Refusal`
@@ -5126,7 +5136,11 @@ a launch with no provider registered is as it was.
   state, fresh, readAt?, running, started5h, started7d, windows?,
   credits?}`, at most 16 windows `{kind, name, minutes?, percent,
   resetsAt?, severity?}` and 4 credit figures `{kind, enabled?, used?,
-  limit?, balance?, unlimited?, currency?}` as the tool wrote them): the
+  limit?, balance?, unlimited?, currency?}` as the tool wrote them; a
+  member whose login the launch's environment sets, its yolo recipe's,
+  shown `env_set` with no windows, no credits and freshness `none`; a
+  default login on a server whose runtime is not native is shown as read,
+  with no word that where the run will start is undetermined): the
   resolve reads no usage, asks no tool and moves nothing to make it. It
   runs no agent's program, keeps nothing and holds no reservation once it
   has answered. A crew on a host resolves with `where` `host`, its folder
@@ -5139,8 +5153,9 @@ a launch with no provider registered is as it was.
   `invalid_request` (a commit for a crew without tasks among them, whose
   launch has no base); `ErrNotFound` for no such crew;
   `project_unknown`, `project_archived`; `invalid_crew`, `invalid_cwd`;
-  `start_commit_missing` (a commit the folder's repository does not hold);
-  `resolved_too_large`; a server with no ledger or no Dispatch store
+  `start_commit_missing` (a commit the folder's repository does not hold;
+  a commit is named by its own full id: an annotated tag's id, or any
+  other object's, is `invalid_request`); `resolved_too_large`; a server with no ledger or no Dispatch store
   answers `ErrUnsupported`.
 - **The digest.** `digest` is `ext.ResolvedDigest`'s: the lower-case hex
   SHA-256 of `conductor resolved launch 1\n`, the crew's revision (64
@@ -5154,21 +5169,28 @@ a launch with no provider registered is as it was.
   `resolved_too_large` past it, never cut; the whole reply, its capacity
   views at their bounds, is at most 288 KiB (`ext.MaxResolvedReply`). A
   digest says the launch is unchanged since it was resolved; it is no
-  approval and opens nothing.
+  approval and opens nothing. It does not pin the commit it was resolved
+  at, only what the manifest is there: a provider that wants a launch held
+  to a commit names it in the resolve (`commit`) and in the launch
+  (`startCommit`).
 - **A launch held to its digest.** A launch with `resolvedDigest` (and so
   a `project`) is resolved again in the launch itself, for that project at
   `startCommit` (none: the folder's `HEAD`), from the values it then hands
   the engine, and any difference is refused `launch_changed`, nothing
   started: the crew, a default, a folder, the project's folder, the
   manifest, a selection, an account the launch would bind. `startCommit`
-  is the run's base instead of `HEAD`, one the repository lacks refused
-  `start_commit_missing`. The selections the launch confirmed are kept
+  is the run's base instead of `HEAD`: a commit's own full id, one the
+  repository lacks refused `start_commit_missing`, an annotated tag's id or
+  any other object's `invalid_request`. The selections the launch confirmed are kept
   with the run, and every attempt starts its agent only from the
   catalogue entry it confirmed: a changed entry, or an agent the launch
-  did not confirm (a member added later), fails the attempt at "agent"
-  before any process exists, "is not the one this run's launch
-  confirmed", not counted, and pauses the run for a person; a
-  continuation is held to the same. A provider's launch makes no view
+  did not confirm (a member added later, or an entry kept with an empty
+  selection), fails the attempt at "agent" before any step of its tree
+  runs (no worktree, no setup step, no service, no process), "is not the
+  one this run's launch confirmed", not counted, and pauses the run for a
+  person; a continuation is held to the same. A comparison's Brakeman
+  draft is the server's own Brakeman turn, a run of its own, and is not
+  held to the launch's selections. A provider's launch makes no view
   link, whatever the crew's `viewLinkTtlSeconds`.
 - **What the run carries.** The run's record and `GET /api/runs/{run}`
   carry `origin` `{provider, ref, label, subject?, subjectUrl?, prior?,
@@ -5179,12 +5201,17 @@ a launch with no provider registered is as it was.
   (600 to 86,400), each within the launch's bounds, and `continued` true
   on a continuation; at most 20 KiB encoded. The operation id, the digest
   and the selections are not in it. The ledger is its authority: the
-  record is a cache, written again from the ledger at recovery. It is
+  record is a cache, written again from the ledger at recovery, which
+  shows the ledger's origin and none for a run the ledger has no row of
+  (an `origin` written into a record by hand grants and shows nothing). It is
   never handed to a registered continuity store: the run's document there
   has no `origin`. The run page says "Launched by <label> for <subject> at
   <start commit>", the subject a link when it is an `https` link with a
-  host and no userinfo, query or fragment, text otherwise; a continuation
-  says it continues such a run.
+  host and no userinfo, query or fragment, text otherwise, with the host
+  it opens beside it ("(opens <host>)", the whole address in its title and
+  its accessible name), since the subject's reference may name another;
+  a character that draws nothing is shown as U+FFFD, as the task file
+  writes it; a continuation says it continues such a run.
 - **The task file.** Each attempt of a run whose origin has a subject has
   `task.json`'s `subject` `{ref, url?, startCommit?, prior?}` and
   `task.md`'s "Subject" section after the instructions: the label, the
