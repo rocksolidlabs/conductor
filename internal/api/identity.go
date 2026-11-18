@@ -93,11 +93,16 @@ func (s *Server) grantPrincipal(pr ext.Principal) principal {
 // under the turn of a renewal to another token about to take effect,
 // before tok changes: by hostToken (inline) and by principalWatch's
 // adoption of a pending one. It is never told of the same token.
+// unasked says pending was kept with nobody asked about it (a paced
+// renewal, hostToken): never handed to the provider, it is not among the
+// tokens held until it is adopted, so a host cannot have the detail's
+// filter hide what holds a string of its choosing.
 type watchedToken struct {
 	turn    chan struct{}
 	mu      sync.Mutex
 	tok     string
 	pending string
+	unasked bool
 	ended   atomic.Bool
 	changed func(tok string, inline bool)
 }
@@ -110,13 +115,25 @@ func newWatchedToken(tok string) *watchedToken {
 func (w *watchedToken) set(tok, pending string) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	w.tok, w.pending = tok, pending
+	w.tok, w.pending, w.unasked = tok, pending, false
 }
 
-// held is the tokens the connection holds, its pending one among them.
+// keepUnasked keeps pending with nobody asked about it (a paced renewal);
+// the caller holds the turn.
+func (w *watchedToken) keepUnasked(pending string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.pending, w.unasked = pending, true
+}
+
+// held is the tokens the connection holds, its pending one among them
+// unless nobody was asked about it.
 func (w *watchedToken) held() []string {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if w.unasked {
+		return []string{w.tok}
+	}
 	return []string{w.tok, w.pending}
 }
 
@@ -378,8 +395,9 @@ func (s *Server) hostToken(hc *hostConnState, data []byte) bool {
 		// A reported connection that has admitted its renewals to another
 		// credential this period (relayUsageRenewals): this one is kept
 		// pending, as a busy one is, and nobody is asked now; its next
-		// recheck asks about it and adopts it.
-		hc.cred.set(hc.cred.tok, tok)
+		// recheck asks about it and adopts it. Asked of nobody, it is not
+		// among the tokens the detail's filter holds (held).
+		hc.cred.keepUnasked(tok)
 		return true
 	}
 	pr, admitted, known, busy := g.renew(hc.ctx, tok)
