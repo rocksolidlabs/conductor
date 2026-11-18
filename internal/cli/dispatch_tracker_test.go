@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/rocksolidlabs/conductor/internal/api"
+	"github.com/rocksolidlabs/conductor/internal/dispatch"
 )
 
 // ghItem serves item 41 of octo/app on the fake's loopback host, its title
@@ -378,5 +379,27 @@ func TestTwoLinksToOneURLAreNamedByTheirIDs(t *testing.T) {
 	defer mu.Unlock()
 	if len(posts) != 1 || posts[0] != "/api/dispatch/tickets/CND-1/links/bbbbbbbbbbbbbbbb/read" {
 		t.Fatalf("the reads: %q", posts)
+	}
+}
+
+// A link's read whose checks were kept from an earlier read says when they
+// were read on the checks' line, beside the read's own time; a read of its
+// checks says none (#989).
+func TestWriteLinkReadKeptChecksSayWhenRead(t *testing.T) {
+	now := time.Date(2026, 11, 18, 12, 0, 0, 0, time.UTC)
+	head := strings.Repeat("a", 40)
+	r := dispatch.LinkRead{Kind: "change", State: "open", HeadSha: head, ReadAt: now,
+		Checks:     []dispatch.LinkCheck{{ID: "status:1", Name: "lint", Status: "pending"}},
+		Incomplete: &dispatch.ChecksIncomplete{Words: []string{"the checks could not be read: tracker_unavailable"}, ReadAt: now.Add(-12 * time.Minute)}}
+	var b strings.Builder
+	writeLinkRead(&b, "CND-1", "l1", r)
+	if !strings.Contains(b.String(), "read 2026-11-18 12:00 UTC\n") || !strings.Contains(b.String(), "checks at "+short(head)+", as read 2026-11-18 11:48 UTC:\n") {
+		t.Fatalf("kept checks:\n%s", b.String())
+	}
+	r.Incomplete = nil
+	b.Reset()
+	writeLinkRead(&b, "CND-1", "l1", r)
+	if !strings.Contains(b.String(), "checks at "+short(head)+":\n") {
+		t.Fatalf("checks read with the read:\n%s", b.String())
 	}
 }

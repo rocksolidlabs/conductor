@@ -1924,13 +1924,15 @@ func TestCloseReadsOnlyForAClose(t *testing.T) {
 	}
 }
 
-// The close's read of a delivery link reads its checks with it (#989): a
-// link read while its check was pending, finished on GitHub since, shows
-// it passed after the close, its checks asked once more by the close. A
-// read whose checks cannot be read (a link's own, then the close's) keeps
-// the last read's checks with the time they were read, the first read's
-// through both, said in the words and in the ticket's summary, never as
-// whole and never under the new read's time alone; the close goes on.
+// The close reads each delivery link's checks too (#989), after its
+// items: a link read while its check was pending, finished on GitHub
+// since, shows it passed after the close, its checks asked once more by
+// the close. A read whose checks are not read (a link's own whose checks
+// failed, then the close's, whose first pass reads none and whose second
+// fails) keeps the last read's checks with the time they were read, the
+// first read's through both, said in the words and in the ticket's
+// summary, never as whole and never under the new read's time alone; the
+// close goes on.
 func TestCloseReadsChecks(t *testing.T) {
 	e, g, merged := mergedEnv(t, nil)
 	status := itemsRepo + "/commits/" + headSHA + "/status"
@@ -1967,11 +1969,11 @@ func TestCloseReadsChecks(t *testing.T) {
 		t.Fatalf("the first read: %+v", first)
 	}
 	g.f.Reply("GET", "api.github.com", status, http.StatusBadGateway, map[string]any{"message": "unavailable"})
-	kept := func(what string) {
+	kept := func(what, why string) {
 		t.Helper()
 		r := readOf(link)
 		if r.ReadAt.Before(first.ReadAt) || len(r.Checks) != 1 || r.Checks[0].Conclusion != "success" || r.Incomplete == nil ||
-			!r.Incomplete.ReadAt.Equal(first.ReadAt) || len(r.Incomplete.Words) == 0 || !strings.Contains(r.Incomplete.Words[0], "could not be read: tracker_unavailable") {
+			!r.Incomplete.ReadAt.Equal(first.ReadAt) || len(r.Incomplete.Words) != 1 || !strings.Contains(r.Incomplete.Words[0], why) {
 			t.Fatalf("%s: %+v, incomplete %+v; the first read at %s", what, r.Checks, r.Incomplete, first.ReadAt)
 		}
 		tv := e.expect(t, "GET", "/api/dispatch/tickets/"+key, nil, http.StatusOK, "")
@@ -1982,11 +1984,118 @@ func TestCloseReadsChecks(t *testing.T) {
 		}
 	}
 	e.expect(t, "POST", "/api/dispatch/tickets/"+key+"/links/"+link+"/read", map[string]any{}, http.StatusOK, "")
-	kept("a link's read whose checks failed")
+	kept("a link's read whose checks failed", "could not be read: tracker_unavailable")
 	if tk := entityOf(t, e.closeIt(t, key, http.StatusOK), "ticket"); tk["status"] != "done" {
 		t.Fatalf("a close whose checks failed: %v", tk)
 	}
-	kept("the close's read whose checks failed")
+	kept("the close's read whose checks failed", "were not read with this read")
+}
+
+// The close's checks are off its critical path (#989): fourteen delivery
+// links, every item read in the close's first pass, then the checks in a
+// second, four at once, the first four checks reads answered and the rest
+// held at the fake past the phase. The close passes; each link shows
+// either the checks read now or the last read's with the time they were
+// read. With the checks read beside each item, the held reads keep the
+// four slots to the read's cap and then to the phase's end, the last two
+// links get none, and the close is refused.
+func TestCloseChecksAfterTheItems(t *testing.T) {
+	e, g, _ := mergedEnv(t, &trackerCaps{busy: 500 * time.Millisecond, reads: testWait, images: testWait, merged: 3 * time.Second, write: testWait})
+	key := e.newDispatchTicket(t, "MLR", "Close it", nil)["key"].(string)
+	// The links added with no token kept, so no read starts in the
+	// background (one at a time per ticket, each wait within the short
+	// cap); then each read by its own route.
+	e.expect(t, "POST", "/api/trackers/github/remove", map[string]any{"host": "github.com"}, http.StatusOK, "")
+	var links []string
+	for n := 60; n < 74; n++ {
+		g.set(n, ghItem{Node: "PR_kwDOcrit" + strconv.Itoa(n), Title: "Merged", Pull: true, Merged: true, State: "closed", Updated: t0})
+		links = append(links, e.addPullLink(t, key, n))
+	}
+	if status, data, _ := e.saveToken(t, "", plantedToken); status != http.StatusOK {
+		t.Fatalf("the token again: %d %s", status, data)
+	}
+	first := map[string]dispatch.LinkRead{}
+	for _, l := range links {
+		e.expect(t, "POST", "/api/dispatch/tickets/"+key+"/links/"+l+"/read", map[string]any{}, http.StatusOK, "")
+		r, ok, err := e.srv.dispatch.LinkReadOf(t.Context(), l)
+		if err != nil || !ok || !r.Merged || len(r.Checks) != 1 || r.Incomplete != nil {
+			t.Fatalf("%s was not read with its checks: %+v %v", l, r, err)
+		}
+		first[l] = r
+	}
+	// The first four checks reads answered, a failure now; the rest held
+	// until the test ends.
+	var mu sync.Mutex
+	answered := 0
+	held := make(chan struct{})
+	t.Cleanup(func() { close(held) })
+	g.f.Handle("GET", "api.github.com", itemsRepo+"/commits/"+headSHA+"/status", func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		answered++
+		hold := answered > 4
+		mu.Unlock()
+		if hold {
+			select {
+			case <-held:
+			case <-r.Context().Done():
+			}
+			return
+		}
+		g.answer(w, map[string]any{"state": "failure", "total_count": 1, "statuses": []any{map[string]any{"id": 31, "context": "lint", "state": "failure",
+			"target_url": "https://ci.example.com/31", "created_at": itemsLayout, "updated_at": "2026-11-01T10:00:00Z"}}})
+	})
+	if tk := entityOf(t, e.closeIt(t, key, http.StatusOK), "ticket"); tk["status"] != "done" {
+		t.Fatalf("the close: %v", tk)
+	}
+	now := 0
+	for _, l := range links {
+		r, _, err := e.srv.dispatch.LinkReadOf(t.Context(), l)
+		switch {
+		case err != nil || len(r.Checks) != 1:
+			t.Fatalf("%s after the close: %+v %v", l, r, err)
+		case r.Checks[0].Conclusion == "failure" && r.Incomplete == nil:
+			now++
+		case r.Checks[0].Conclusion != "success" || r.Incomplete == nil || !r.Incomplete.ReadAt.Equal(first[l].ReadAt):
+			t.Fatalf("%s after the close is neither read now nor kept with its time: %+v, incomplete %+v", l, r.Checks, r.Incomplete)
+		}
+	}
+	if now == 0 || now > 4 {
+		t.Fatalf("%d links' checks read by the close, want 1 to 4", now)
+	}
+}
+
+// Checks no read read are never kept (#989): with the checks failing from
+// a link's first read, its next read says they were not read, with no
+// time, once, and the ticket's summary dates nothing.
+func TestChecksNeverReadKeepNothing(t *testing.T) {
+	e, g := externalEnv(t)
+	g.set(71, ghItem{Node: "PR_kwDOnoread71", Title: "A change", Pull: true, Updated: t0})
+	g.f.Reply("GET", "api.github.com", itemsRepo+"/commits/"+headSHA+"/status", http.StatusBadGateway, map[string]any{"message": "unavailable"})
+	e.newDispatchProject(t, "NRD", nil)
+	key := e.newDispatchTicket(t, "NRD", "Deliver it", nil)["key"].(string)
+	link := e.addPullLink(t, key, 71)
+	notRead := func(what string) {
+		t.Helper()
+		var r dispatch.LinkRead
+		if !waitFor(testWait, func() bool {
+			var ok bool
+			r, ok, _ = e.srv.dispatch.LinkReadOf(t.Context(), link)
+			return ok && !r.ReadAt.IsZero()
+		}) {
+			t.Fatalf("%s: no read", what)
+		}
+		if len(r.Checks) != 0 || r.Incomplete == nil || !r.Incomplete.NotRead || !r.Incomplete.ReadAt.IsZero() || len(r.Incomplete.Words) != 1 ||
+			!strings.Contains(r.Incomplete.Words[0], "could not be read: tracker_unavailable") {
+			t.Fatalf("%s: %+v, incomplete %+v", what, r.Checks, r.Incomplete)
+		}
+		sum, _ := entityOf(t, e.expect(t, "GET", "/api/dispatch/tickets/"+key, nil, http.StatusOK, ""), "ticket")["linkReads"].(map[string]any)[link].(map[string]any)
+		if checks, _ := sum["checks"].(map[string]any); checks["incomplete"] != true || checks["readAt"] != nil {
+			t.Fatalf("%s: the ticket's summary %v", what, sum)
+		}
+	}
+	notRead("the read after the add")
+	e.expect(t, "POST", "/api/dispatch/tickets/"+key+"/links/"+link+"/read", map[string]any{}, http.StatusOK, "")
+	notRead("a read again")
 }
 
 // A deleted ticket is asked nothing and records nothing: a link's read, a

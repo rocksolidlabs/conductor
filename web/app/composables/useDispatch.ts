@@ -379,8 +379,11 @@ export interface LinkRead {
   mergeSha?: string
   headSha?: string
   checks: LinkCheck[]
-  /** Why the checks are not whole; `readAt` when they were read, when a later read kept them (ChecksSummary.readAt). */
-  incomplete?: { words: string[]; omitted?: number; readAt?: string }
+  /**
+   * Why the checks are not whole; `readAt` when they were read, when a later read kept them (ChecksSummary.readAt); `notRead` a set no
+   * read read, which a later read keeps nothing of.
+   */
+  incomplete?: { words: string[]; omitted?: number; readAt?: string; notRead?: boolean }
   updatedAt: string
   readAt?: string
   error?: string

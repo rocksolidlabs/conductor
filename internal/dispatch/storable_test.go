@@ -253,6 +253,22 @@ func TestKeptChecks(t *testing.T) {
 	if err := s.RecordRead(ctx, rc.ID, r); !isRefusal(err, RefusalInvalid) {
 		t.Fatalf("a kept time after the read: %v", err)
 	}
+	// A set no read read holds no checks (prRead's two) and no time, and
+	// a read holding one has no checks read to keep; a whole read has.
+	r.Incomplete = &ChecksIncomplete{Words: []string{"not read"}, NotRead: true}
+	if err := s.RecordRead(ctx, rc.ID, r); !isRefusal(err, RefusalInvalid) {
+		t.Fatalf("a set not read with checks: %v", err)
+	}
+	r.Checks = []LinkCheck{}
+	if err := s.RecordRead(ctx, rc.ID, r); err != nil {
+		t.Fatalf("a set not read: %v", err)
+	}
+	if got, _, err := s.LinkReadOf(ctx, rc.ID); err != nil || got.ChecksRead() || !got.Incomplete.NotRead {
+		t.Fatalf("a read of a set not read: %+v %v", got, err)
+	}
+	if !(LinkRead{ReadAt: at}).ChecksRead() || (LinkRead{}).ChecksRead() {
+		t.Fatal("a whole read's checks are read, and no read's are not")
+	}
 }
 
 // FitIncomplete gives what the store's own check keeps, whatever the
