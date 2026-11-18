@@ -12,6 +12,7 @@ import (
 
 	"github.com/rocksolidlabs/conductor/internal/brakeman"
 	"github.com/rocksolidlabs/conductor/internal/crew"
+	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
 	"github.com/rocksolidlabs/conductor/internal/dispatch"
 	"github.com/rocksolidlabs/conductor/internal/session"
 )
@@ -104,10 +105,11 @@ type handTarget struct {
 	Task    string `json:"task"`
 	State   string `json:"state"`
 	Attempt int    `json:"attempt"`
-	// Starting is true while that attempt is open and its agent has not
-	// started (no session yet): it is handed the package if its task file
-	// is not written yet, otherwise the package waits for the attempt
-	// after it. Absent when false.
+	// Starting is true while that attempt is open, still reserved and its
+	// agent has not started (no session yet): the dispatch is preparing
+	// it, and it is handed the package if its task file is not written
+	// yet, otherwise the package waits for the attempt after it. Absent
+	// when false.
 	Starting bool `json:"starting,omitempty"`
 }
 
@@ -120,9 +122,10 @@ type handRefusal struct {
 
 // sentRecord is a record as the routes answer it: the store's record
 // without its text, at most brakeman.MaxHandoffRecord bytes, and, for a
-// handed record whose attempt the engine holds and which closed without
-// its agent ever starting, notStarted: the attempt took the package and
-// never read it, so the person may send it again.
+// handed record whose attempt closed without its agent ever starting,
+// notStarted (judged from the engine's run while it holds it, else from
+// the ledger's row of that attempt: sentRecordOf): the attempt took the
+// package and never read it, so the person may send it again.
 type sentRecord struct {
 	brakeman.SentHandoff
 	NotStarted bool `json:"notStarted,omitempty"`
@@ -267,7 +270,11 @@ func (s *Server) handGoalOf(ctx context.Context, req brakeman.Request) (handGoal
 	target := &handTarget{Run: run.ID, RunName: run.Name, Task: t.ID, State: t.State}
 	if t.Attempt != nil {
 		target.Attempt = t.Attempt.N
-		target.Starting = t.Attempt.EndedAt == nil && t.Attempt.SessionID == ""
+		// Only an attempt the dispatch is still preparing: open, no
+		// session, and still reserved (a dispatched attempt is reserved
+		// until its launch; a Check again's attempt is verifying from its
+		// start, asks for no package and has no task file).
+		target.Starting = t.Attempt.EndedAt == nil && t.Attempt.SessionID == "" && t.Attempt.State == ledger.AttemptReserved
 	}
 	chain := []string{run.ID}
 	for _, n := range nodes {

@@ -19,6 +19,7 @@ import (
 	"github.com/rocksolidlabs/conductor/internal/brakeman"
 	"github.com/rocksolidlabs/conductor/internal/catalog"
 	"github.com/rocksolidlabs/conductor/internal/crew"
+	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
 	"github.com/rocksolidlabs/conductor/internal/session"
 )
 
@@ -728,4 +729,38 @@ func TestThePreviewAtItsWidestFitsItsBound(t *testing.T) {
 	if err := json.Unmarshal(data, &got); err != nil || got.Text != brakeman.HandoffText(h) || got.Refusal == nil || got.Refusal.Code != refusalRunNotRunning || got.Handoff == nil || got.Handoff.EndedAt == nil {
 		t.Fatalf("the widest preview: %+v %v", got.Refusal, err)
 	}
+}
+
+// TestACheckAgainAttemptIsNotStarting: a Check again of a failed
+// candidate makes an attempt open with no session that is verifying from
+// its start, which asks for no package and has no task file: while its
+// verification is held at its start the preview answers the task's state
+// with that attempt and no starting.
+func TestACheckAgainAttemptIsNotStarting(t *testing.T) {
+	l, run, mark, commits := failingLaunch(t)
+	held, gate := make(chan struct{}, 1), make(chan struct{})
+	var once sync.Once
+	release := func() { once.Do(func() { close(gate) }) }
+	t.Cleanup(release)
+	l.srv.runs.SetBeforeRecheckForTest(func(string) {
+		select {
+		case held <- struct{}{}:
+		default:
+		}
+		<-gate
+	})
+	f := &handFixture{bkEnv: &bkEnv{testEnv: l.testEnv, desk: l.srv.brakeman}, run: run}
+	req := f.handRequest(t, brakeman.KindHandoff, "task:"+run+"/build", brakeman.Handoff{Objective: "Check it again."})
+	k := receiptK(t, l.testEnv, run, 3, "test").K
+	p := prepared(t, l.testEnv, run, "build", 3, "test", k)
+	mustMark(t, mark)
+	if status, out := recheckOn(t, l.testEnv, run, map[string]any{"commandId": "again", "attempt": 3, "commit": commits[2], "expectedRevision": p.Recheck.Revision}); status != http.StatusOK || out["attempt"] != 4.0 {
+		t.Fatalf("Check again: %d %v", status, out)
+	}
+	<-held
+	got := f.preview(t, req, 1)
+	if got.Target == nil || got.Target.Attempt != 4 || got.Target.State != ledger.TaskVerifying || got.Target.Starting {
+		t.Fatalf("a Check again's target: %+v %+v", got.Target, got.Refusal)
+	}
+	release()
 }
