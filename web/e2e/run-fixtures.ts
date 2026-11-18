@@ -368,6 +368,12 @@ export async function serveRun(page: Page, runs: StubRun | StubRun[]): Promise<S
           const of = all.find((r) => r.id === u.searchParams.get('run'))
           if (of) return answer(200, { ticket: null })
         }
+        if (path === '/api/brakeman/requests') {
+          // What Brakeman said about a stub run (the run page's panel and its rows' answers ask it): nothing, as the server answers a
+          // run it holds no request about. Any other list is the server's.
+          const about = u.searchParams.get('about') ?? ''
+          if (all.some((r) => about === `run:${r.id}` || about.startsWith(`task:${r.id}/`))) return answer(200, { requests: [], next: '' })
+        }
         if (run) {
           if (path === under) {
             // A record is answered as the server answers one: the run, and `record` beside it.
