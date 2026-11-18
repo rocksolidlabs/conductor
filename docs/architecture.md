@@ -1005,7 +1005,8 @@ and `unavailable` says why and keeps its batch. Each change is written to
 `brakeman/role.json` before what it starts, so a restart reads it back and
 a batch fires once; the day's minutes bound every turn, whoever started
 it. A wake turn's session is marked quiet: its question is listed in Needs
-you and notifies no one.
+you and notifies no one (its brief may, #1012: A background brief that
+holds a decision, below).
 
 **The guide** (`internal/api/guide.go`, BK0) is what an agent learns this
 build can do, from the running server rather than a static prompt. One
@@ -1062,6 +1063,51 @@ there. An actor keeps its newest 500 marks; past that the oldest goes, and
 a brief whose mark went that is still kept and briefed after the count
 began shows as not opened again (only pinned requests keep more than 500).
 
+**A handoff package sent to a task's next attempt** (#1012, decision 23;
+`brakeman_handoff.go`, `internal/brakeman/handoffs.go`). A person, never
+Brakeman, sends a brief's `handoff/1` to the next attempt of the task its
+`handoff` request was about: the preview route answers the exact text
+(`brakeman.HandoffText`, one cleaned text, at most 16 KiB) and the target,
+found from the request's own subject alone (the newest run of its chain the
+engine holds, running, managed, no comparison, with the task); the send
+keeps a record in `brakeman/handoffs.json` under the person's op id and the
+SHA-256 of the text shown; Withdraw closes it while it waits. The engine
+holds a seam beside the context's (`Engine.SetHandoff`, `crew.HandoffFunc`,
+set by `wireContext` to the server's `handoffFor`), asked once an attempt
+after its decisions are read and just before its task files are written,
+outside the engine's lock, never for a comparison's attempt: the store's
+`Take` writes the record `handed` before it answers the text, so a package
+goes to one attempt and is used up by it, whether or not that attempt's
+agent then starts. The task file quotes it (`writeHandoff`, every line
+through `quoted.QuoteLines`, Conductor's words naming the sender and calling
+it a report, not instructions), and it is the first thing `fitTaskFile`
+cuts, its head kept. The run's log names what was sent, withdrawn and
+taken, by ids; the text is in no log, ledger event or session's input.
+Brakeman's token reaches none of the routes, no grant names them, and a
+worker gains no tool.
+
+**A background brief that holds a decision** (#1012, decision 24;
+`brakeman_notify.go`). Where a turn's new brief is kept
+(`handleSessionBrakemanBrief`, after `publish`, before the answer), the
+desk's `briefKept` notifies when the brief is the background role's own
+`wake` request's, holds a decision card, and holds one that none of the
+role's 20 earlier background briefs held (`heldBefore` reads them; nothing
+is stored): the hub sends `brakeman_needs_you` `{id, decisions}` to the
+pages, as droppable as progress, and the notifier's `send` queues one
+notification of fixed words for the webhooks that list the name, and for no
+provider's sink. The page's `useAttention.ts` turns the event into a
+browser notification and the chime under its switches and its own, built
+from the validated id (`utils/brakemanAlert.ts`); a background turn's
+question stays quiet as before.
+
+**Sharing a brief** (#1012, decision 25) is the app's alone
+(`BrakemanShare.vue`, `utils/brakemanShare.ts`): the people of the crews
+whose runs the brief is about, as those runs were launched (read from the
+page's runs or `GET /api/runs/{run}`, at most three), named on the first
+line of the brief's Markdown, which the person copies or comments on the
+run's ticket through the comment dialog under their own name. No route,
+document or event is added; the server keeps no record of a share.
+
 **The records** are JSON documents under the data directory's `brakeman/`
 (0700; `internal/brakeman`, which has no HTTP, no session, no process and
 no import of `internal/crew`): `config.json`, `state.json` (the last
@@ -1069,7 +1115,8 @@ number, the op ids, the day's charges), per request,
 `requests/br-<n>.json` with its brief, the brief's resolutions and digest,
 the turn's read log and a pending make's input beside it, each measured
 before it is written, `opened.json` (each actor's opened marks, at most 32
-actors of 500 marks, 512 KiB), and `folders/<account>/`, the folder a turn runs in
+actors of 500 marks, 512 KiB), `handoffs.json` (the handoff packages sent,
+at most 20 waiting and 40 kept, 2 MiB), and `folders/<account>/`, the folder a turn runs in
 in place of the home folder (`default` for the agent's default login, else
 32 hex characters of the account's SHA-256), kept across turns; the newest
 500 requests are kept, and every open or pinned one. The desk owns them while it holds `brakeman/owner.lock`, taken
@@ -1650,7 +1697,11 @@ what they were; its queue is an `extQueue` too (256, the oldest dropped,
 the drops logged as a webhook's), delivered by the webhook itself, with
 its timeout, address rule and redirect rule unchanged. A provider's
 notice (`Host.Notify`) reaches only the sinks that list `TypeProvider`,
-never a webhook (no webhook may list it). Each sink's `Events` is read
+never a webhook (no webhook may list it). Two notifications that are no
+session's entry come by a call of their own (`send`): a durable decision's
+change, for the webhooks and the sinks that take it, and a background
+brief of Brakeman's that holds a new decision (`brakeman_needs_you`), for
+the webhooks that list it alone, never a provider's sink. Each sink's `Events` is read
 once, on its own goroutine (its supervisor's before its first `Start`, or
 its queue's first delivery, before that delivery's `DeliveryWait`
 starts), never by the hub: until it is read the

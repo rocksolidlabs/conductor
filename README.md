@@ -891,7 +891,10 @@ your menu or the command palette, by **All alert rules** in the phone's More,
 or by `?alerts` on any page's address (an old link to the retired Events
 page's Routing tab opens it over History's feed). On top are the two switches, a browser
 notification and a chime, for when a session needs input and for the events
-routed to Browser. Under them, **Where each event goes** lists the ten events
+routed to Browser. While Brakeman runs in the background a third switch,
+**Brakeman's background briefs with a decision**, says whether such a brief
+alerts in this browser (on unless you switch it off; Brakeman, In the
+background). Under them, **Where each event goes** lists the ten events
 grouped by how loud they are (needs you, worth knowing, background), each
 with its destinations as switches: a labelled badge on its session in the
 sidebar and on its Yard tile (until the session reports `working` or
@@ -1072,7 +1075,11 @@ goes**.
 `events` takes the events' names as Alerts lists them (`needs_input`, `done`, `working`,
 `tool_denied`, `progress`, `artifact`, `handoff`, `error`, `exit_nonzero`,
 `tool_use`) and the entry types (`attention`, which covers all three
-attention states, `status`, `join`, `leave`, `input` and `link`).
+attention states, `status`, `join`, `leave`, `input` and `link`), and
+`brakeman_needs_you`, one POST for each background brief of Brakeman's that
+holds a decision no earlier one held, in Conductor's own words
+(`Brakeman's background brief br-14 holds 1 decision`, with its page's path,
+and no session); a webhook that does not list it gets nothing of it.
 `exit_nonzero` is a process that exited on its own with a non-zero code,
 never one an admin stopped. There are at most 16 webhooks, and a URL is
 `http` or `https` of at most 2048 bytes. `CONDUCTOR_WEBHOOKS` takes the same
@@ -1971,7 +1978,8 @@ phone: the counts, the latest brief with what needs you open, and the ask
 bar at the foot.
 
 **A brief** leads with what needs you. Its head says its kind, its age and
-what it is about, with **Copy as Markdown** and **Comment on a ticket…**;
+what it is about, with **Copy as Markdown**, **Comment on a ticket…** and
+**Share…**;
 then its title and Brakeman's reading whole, marked "Brakeman's reading, not
 a fact.", with its uncertainty. Then, each under its own heading and count:
 **Needs you**, the decision cards (the question, what happened and what
@@ -1981,7 +1989,8 @@ so a run that moved is refused rather than acted on blind; a question
 answered on its session page; "Brakeman recommends: …" said in words beside
 them, never as the button, the alternatives under Details); **Proposed**,
 the proposals, draft tickets and crews as forms you edit and **Create** (a
-crew is saved and opened in the editor, never launched) and handoffs;
+crew is saved and opened in the editor, never launched) and handoff
+packages (below);
 **What Brakeman did**, its acts and outcomes with their receipts; **What
 changed**, the facts numbered, each with its evidence as links (a run, a
 task, a check's receipt with its log's SHA-256, a ticket, a session, a
@@ -1999,6 +2008,30 @@ never cutting it, and it says when the brief may quote a terminal screen or a
 check log. A brief is never kept with a claim you cannot follow: the server
 refuses one whose evidence names nothing or lies outside what Brakeman may
 see.
+
+**Share…** (an icon in the head's line on a phone) names the people of the
+crews whose runs the brief is about, as those runs were launched, and gives
+**Copy for them** and **Comment on <ticket>…** (the run's own ticket, else
+one you pick), the brief with their names on its first line ("For <crew>'s
+people: <name> (<what they answer for>), …"). It is your own sending:
+Conductor sends nothing and notifies no one, keeps no record that you shared
+and makes no link to a brief, so nobody gains a way to read it in
+Conductor; a ticket's comment is read by whoever reads the ticket, and by
+the agents of a run launched from it later.
+
+**A handoff package to a task's next attempt.** A brief you asked as
+"Prepare a handoff" about a task can send its handoff package to that
+task's next attempt. You read the exact text the server will hand (at most
+16 KiB; a longer one is refused, never cut) and where it goes, and send it
+or not: nothing is edited, and nothing starts by it (Retry stays yours on
+the run's page). The next attempt of the task, and only that one, finds it
+in its task file as a quoted report Brakeman wrote and a person sent, which
+it reads as a report, never as instructions; the brief says it waits, then
+that it was taken, with Withdraw while it waits, and the run's log says what
+was sent, withdrawn and taken. Whoever can watch the task's session or read
+its files (a link's holder too) can read what you send, and the agent may
+repeat it in its result. Brakeman cannot send one, and a worker gains none
+of Brakeman's tools.
 
 **What it may run.** Settings' "What it may run" grants Brakeman operations
 from a closed list, each said in words: **Launch an approved plan** (a managed
@@ -2027,7 +2060,12 @@ minutes) before the next, and stops with words when the day's turns or
 minutes are spent. Between turns no process runs and no model is polled, and
 a restart carries on from Conductor's records (a batch that was gathering
 fires once). A background turn's question is listed in Needs you and
-notifies no one. The Brakeman page says the role's state once (an
+notifies no one. A background brief that holds a decision no earlier
+background brief held notifies once: a browser notification ("Brakeman's
+background brief br-14 holds 1 decision", which opens it) and the chime, as
+your Alerts switches say, on the pages open then, and a POST to the
+webhooks that list `brakeman_needs_you`; nothing of the brief's own words
+leaves the page, and every other brief stays a count. The Brakeman page says the role's state once (an
 unavailable one says why and what tries again), with Pause and Resume; its
 wakes, each by name with what became of it, and the notes you keep from a
 brief's facts (**Keep as a note**, given to every turn) are behind
@@ -2058,6 +2096,11 @@ records are JSON files under `brakeman/` in the data directory: a restart
 keeps every request and brief, and a **Brief me since…** with no time starts
 where the last complete briefing's coverage ended, read from them, never from
 a conversation.
+
+Not built, and paid when it comes: routing a brief to a named person, push
+delivery (a phone whose browser is closed hears nothing), briefings shared
+across a workspace and a briefing scheduled from the cloud. No provider is
+called for Brakeman, no seam waits for them and nothing is behind a flag.
 
 ## Yolo
 

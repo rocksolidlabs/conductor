@@ -208,6 +208,60 @@ that order.
   link grants. Content appears only after the guest joins.
 - **No Runs nav item** until there is something behind it.
 
+## Brakeman hands a package on, tells of a new decision, and shares a brief (#1012; 2026-11-18)
+
+The Brakeman design review's third tier, which #993 left for a decision,
+as the owner decided it (`docs/plans/brakeman.md`, decisions 23 to 25).
+Built as one pull request; no store step: one new document,
+`brakeman/handoffs.json`, and no field in a request, a brief,
+`state.json` or the ledger.
+
+- **A handoff package to a task's next attempt.** On a brief asked as
+  "Prepare a handoff" about a task, the handoff package can be sent to that
+  task's next attempt. The person reads the exact text the server will hand
+  and where it goes, and sends it or not: it goes exactly as Brakeman wrote
+  it, at most 16 KiB (a longer one is refused in words, never cut), under
+  the person's name. The next attempt, and no later one, finds it in its
+  task file as a quoted report ("A handoff package a person sent"), named
+  as Brakeman's writing sent by a person, to read and not to follow, every
+  line of it quoted; it adds no task and grants nothing. It is taken just
+  before that attempt's task file is written and used up by it, even when
+  the attempt then ends before its agent starts: the brief then says it was
+  not read, and the person sends it again. Sending starts nothing (Retry
+  stays the person's), a send can be withdrawn while it waits, and the
+  run's log says what was sent, withdrawn and taken. Brakeman cannot send
+  one, no grant names it and a worker gains no tool. Whoever can watch the
+  task's session or read its files (a link's holder too) can read what is
+  sent, and the agent may repeat it in its result.
+- **A background brief that holds a decision notifies, once.** When a
+  background turn keeps a brief holding a decision that none of the role's
+  earlier background briefs held, the open pages show a browser
+  notification ("Brakeman's background brief br-14 holds 1 decision", "It
+  opens on the Brakeman page.") and play the chime, under Browser
+  notification, Chime and a third switch, "Brakeman's background briefs
+  with a decision" (on by default, per browser, shown while Brakeman is in
+  the background); a click opens the brief. It reaches only the pages
+  connected then, at most once. A webhook whose `events` list
+  `brakeman_needs_you` gets one POST in the same fixed words; no webhook of
+  today hears anything new, and no notification provider gets it. Nothing
+  of the brief's own words leaves the page. A brief a person asked for, a
+  background brief with no new decision and a background turn's own
+  question stay silent, as before.
+- **Share with a crew's people.** A brief's head gains **Share…** (an
+  icon in the head's line on a phone, where Copy and Comment are hidden):
+  the people of the crews whose runs the brief is about, as launched, and
+  **Copy for them** and **Comment on <ticket>…** with their names on the
+  first line. It is the person's own sending: Conductor sends nothing,
+  keeps no record of a share and makes no link to a brief, so nobody new
+  reads a brief in Conductor. A brief about no run with a crew's people
+  goes with no names.
+
+Not built, and paid when it comes (`docs/plans/brakeman.md`, article 3):
+routing a brief to a named person, push delivery (a phone whose browser is
+closed hears nothing), briefings shared across a workspace and a briefing
+scheduled from the cloud. No provider is called, no seam is added and
+nothing is behind a flag.
+
 ## A provider's launch says where it came from, and is held to what was confirmed (#1003, #1004, #1005, #1002, #910; 2026-11-18)
 
 A registered provider that launches a saved crew with nobody present can
@@ -350,7 +404,8 @@ to a request, a brief, `state.json` or the role's record.
 
 Not built, for the maintainers to decide: handing a handoff into a task's
 next attempt, notifying on a background brief, and sharing a brief beyond
-Copy as Markdown and Comment on a ticket. Also left out of the review's
+Copy as Markdown and Comment on a ticket (2026-11-18: the three are built
+by #1012, above, as the owner decided them). Also left out of the review's
 boards: a filled "(Recommended)" button, a seconds clock, a green reads
 meter, "asked from this row" (it would need a stored field), the run's
 panel outside its Tasks view, a palette row that only goes to the page,
