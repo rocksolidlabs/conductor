@@ -649,8 +649,9 @@ func TestARunsOriginStaysOnTheServer(t *testing.T) {
 }
 
 // A call whose try was given up (its context ended) is answered
-// context.Canceled by every door, never ledger_unavailable, and the
-// server logs no ledger failure for it.
+// context.Canceled by every door, and one past its own deadline
+// context.DeadlineExceeded, never ledger_unavailable, and the server logs
+// no ledger failure for either.
 func TestAGivenUpCallIsNoLedgerFailure(t *testing.T) {
 	logs := &syncBuffer{}
 	e := newTestEnvAgents(t, nil, slog.New(slog.NewTextHandler(logs, nil)), []catalog.Agent{{ID: "ready-cat", Name: "ready cat", Command: []string{"/bin/sh", "-c", "echo ready; exec cat"}}})
@@ -675,6 +676,12 @@ func TestAGivenUpCallIsNoLedgerFailure(t *testing.T) {
 	}
 	if _, err := h.Launch(ended, originLaunch(id, "op-1")); !errors.Is(err, context.Canceled) {
 		t.Fatalf("a retry of a given-up call: %v", err)
+	}
+	// A call past its own deadline is answered that context's error.
+	late, stop := context.WithDeadline(t.Context(), time.Now().Add(-time.Second))
+	defer stop()
+	if _, err := h.Run(late, ref.ID); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Run of a call past its deadline: %v", err)
 	}
 	if strings.Contains(logs.String(), "the ledger could not be read") {
 		t.Fatalf("a given-up call was logged as a ledger failure:\n%s", logs.String())

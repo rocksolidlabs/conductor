@@ -5121,8 +5121,10 @@ a launch with no provider registered is as it was.
   bytes on one line), ": <why>"; a run not running answers `ErrNotRunning`,
   nothing changed; on a server that does not own the ledger (another
   server holds it) `StopRun` answers `ledger_unavailable` and stops
-  nothing. A call whose try was given up is answered `context.Canceled`,
-  never `ledger_unavailable`, and logs no ledger failure. The desk's Host, a switchyard and `conductor host`
+  nothing. A call given up is answered with its context's own error:
+  `context.Canceled` for a try given up or a call cancelled,
+  `context.DeadlineExceeded` for a call whose own deadline passed; never
+  `ledger_unavailable`, and it logs no ledger failure. The desk's Host, a switchyard and `conductor host`
   answer `ErrUnsupported` from each, and from a launch with an origin.
 - **Refusals with a code.** Every refusal of `Launch`, `ResolveLaunch`,
   `Run`, `RunByOp` and `StopRun` that is `ErrRefused` is an `*ext.Refusal`
@@ -5134,8 +5136,9 @@ a launch with no provider registered is as it was.
   `managed_off`, `ledger_unavailable`, `invalid_crew`, `invalid_cwd`,
   `invalid_account`, `capacity_unavailable`, `account_gone`,
   `crews_unreadable`, `dispatch_unavailable`, `launch_failed`). No such
-  crew, and a run that is not the caller's, are `ErrNotFound`; a try
-  given up, `context.Canceled`.
+  crew, and a run that is not the caller's, are `ErrNotFound`; a call
+  given up, its context's error (`context.Canceled`, or
+  `context.DeadlineExceeded` for a call past its own deadline).
 - **The resolved launch.** `ResolveLaunch` `{crew, project?, commit?}`
   answers what a launch of the saved crew would run now, for the project
   (or none) at the commit (or the launch folder's `HEAD`): `{crew, name,
