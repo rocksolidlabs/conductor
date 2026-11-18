@@ -124,6 +124,50 @@ export function expectedChecks(body: Pick<PlanBody, 'crew' | 'manifestFile'>): E
   return out
 }
 
+/** Where a revision's verify steps come from: no manifest, the crew's own, or conductor.manifest.json read at each tree (the file form). */
+export type ManifestForm = 'none' | 'crew' | 'file'
+
+export function manifestForm(body: Pick<PlanBody, 'crew'>): ManifestForm {
+  const m = body.crew.manifest
+  return !m ? 'none' : m.file ? 'file' : 'crew'
+}
+
+/**
+ * The checks each submitted candidate attempt of a comparison runs at the base (CP1): its task's checks, which are the same for every
+ * candidate (the block's rule), then the manifest's verify steps, the first candidate's task read as the server reads it for the launch's
+ * statement (internal/api, readPlanFacts' `checksAtBase`). null for a revision of no comparison. expectedChecks counts every lane's
+ * checks together, which is never what one candidate runs.
+ */
+export function comparisonChecks(body: Pick<PlanBody, 'crew' | 'manifestFile'>): ExpectedCheck[] | null {
+  const block = body.crew.compare
+  if (!block) return null
+  const first = block.candidates[0]?.task
+  return expectedChecks(body).filter((c) => c.phase === 'verify' || (!!first && c.task === first))
+}
+
+/** The count of checks on each candidate attempt, in the launch statement's words: "1 check on each submitted candidate attempt". */
+export function checksEachWords(n: number): string {
+  return `${n} ${n === 1 ? 'check' : 'checks'} on each submitted candidate attempt`
+}
+
+/**
+ * A comparison as its revision fixes it (CP1): the criteria every candidate is held to, and each candidate in the block's order with its
+ * task, its member, that member's agent (the catalog's name, else its id) and its approach ('' for an independent try). null for a
+ * revision of no comparison.
+ */
+export function planComparison(body: Pick<PlanBody, 'crew'>, catalog: ReadonlyArray<{ id: string; name: string }> = []): { criteria: Array<{ id: string; text: string }>; candidates: Array<{ task: string; member: string; agent: string; approach: string }> } | null {
+  const block = body.crew.compare
+  if (!block) return null
+  return {
+    criteria: block.criteria.map((c) => ({ id: c.id, text: c.text })),
+    candidates: block.candidates.map((c) => {
+      const task = body.crew.tasks?.find((t) => t.id === c.task)
+      const member = task ? body.crew.members?.find((m) => m.name === task.member) : undefined
+      return { task: c.task, member: member?.name ?? task?.member ?? '', agent: member ? (catalog.find((a) => a.id === member.agentId)?.name ?? member.agentId) : '', approach: c.approach?.trim() ?? '' }
+    }),
+  }
+}
+
 /** An argv as one line: each element quoted when it holds a space, a quote or nothing, so where one ends is plain. Shown, never run. */
 export function argvLine(argv: readonly string[]): string {
   return argv.map((a) => (a === '' || /[\s"'\\]/.test(a) ? JSON.stringify(a) : a)).join(' ')
@@ -159,11 +203,21 @@ export function yoloWords(yolo: boolean | undefined): { label: string; words: st
  * Whether a revision folds on the ticket's page, and its line when it does (UX1 PR-16): folded only while it is approved and its approval
  * holds (planRemedy null: no reason that blocks), since a proposed, stale or superseded revision is what a person reads before acting on
  * it. The line says what the approval covers: "2 members · 3 tasks · 4 checks · from 1a2b3c4d5e6f · Yolo off", one of each in the
- * singular.
+ * singular. A comparison's says its candidates and the checks on each, as its launch's statement counts them: "2 candidates · 4 members ·
+ * 4 tasks · 1 check on each candidate · …".
  */
 export function planFold(revision: Pick<PlanSummary, 'n' | 'state' | 'stale' | 'agentsChanged' | 'crewChanged' | 'crewName'>, body: Pick<PlanBody, 'base' | 'crew' | 'manifestFile'>): { folded: boolean; line: string } {
   const count = (n: number, one: string) => `${n} ${one}${n === 1 ? '' : 's'}`
-  const line = [count(body.crew.members?.length ?? 0, 'member'), count(body.crew.tasks?.length ?? 0, 'task'), count(expectedChecks(body).length, 'check'), `from ${shortCommit(body.base)}`, yoloWords(body.crew.yolo).label].join(' · ')
+  const each = comparisonChecks(body)
+  const checks = each ? `${count(each.length, 'check')} on each candidate` : count(expectedChecks(body).length, 'check')
+  const line = [
+    ...(body.crew.compare ? [count(body.crew.compare.candidates.length, 'candidate')] : []),
+    count(body.crew.members?.length ?? 0, 'member'),
+    count(body.crew.tasks?.length ?? 0, 'task'),
+    checks,
+    `from ${shortCommit(body.base)}`,
+    yoloWords(body.crew.yolo).label,
+  ].join(' · ')
   return { folded: revision.state === 'approved' && planRemedy(revision) === null, line }
 }
 
