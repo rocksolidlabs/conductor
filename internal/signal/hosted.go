@@ -906,6 +906,14 @@ type HostedSession struct {
 	// nothing here and goes on to the host, which judges it by its own.
 	// Guarded by mu.
 	endedTurn string
+	// askPaged is the id of the host's question someone was offered as a
+	// live event: its needs_input entry, offered live while the copy showed
+	// it, or its retell (HostQuestionTold). askAhead is the words of a live
+	// needs_input entry offered before the copy showed its question (the
+	// host sends a question's attention and its entry apart, in either
+	// order), taken by the next question the copy shows. Cleared as the
+	// copy's attention is when the session ends. Guarded by mu.
+	askPaged, askAhead string
 	// desk is the run a desk carries (desk.go), "" for a session; place
 	// its place among the registry's sessions while it lives.
 	desk  string
@@ -1969,8 +1977,56 @@ func (h *HostedSession) HostActivityOf(a proto.Activity, state string, late bool
 	if e.Type == session.ActivityFile && e.Op != "" && e.Path != "" {
 		h.touched.Note(HostAbs(h.info.Cwd, e.Path), e.Op, e.Tool, e.ByName, e.At)
 	}
+	if !late && recorded == session.AttentionNeedsInput {
+		// A question offered live: its retell pages no one again.
+		if cur := h.info.Attention; cur.State == session.AttentionNeedsInput && cur.ID != "" && askLabel(cur.Message) == e.Message {
+			h.askPaged, h.askAhead = cur.ID, ""
+		} else {
+			h.askAhead = e.Message
+		}
+	}
 	h.mu.Unlock()
 	h.offerActivity(id, e, recorded, late)
+}
+
+// askLabel is the words of the attention entry a host's session records for
+// a question of these words (session.Local's label): the words, or the
+// state's name for none.
+func askLabel(message string) string {
+	if message == "" {
+		return string(session.AttentionNeedsInput)
+	}
+	return message
+}
+
+// HostQuestionTold takes the host's attention for its question id, just
+// applied (HostAttentionTurns), and says whether it pages: only a retell
+// (proto.HostAttentionMsg.Retold) of the question the copy now shows, and
+// only when no one was offered that question live, its entry or a retell
+// before (askPaged). A question whose entry went late (made before the
+// connection carrying it, while the copy already showed the question) is
+// paged once by its retell; one offered live is not paged again; one
+// retold on every reconnection pages once in all.
+func (h *HostedSession) HostQuestionTold(id string, retold bool) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	cur := h.info.Attention
+	if id == "" || cur.State != session.AttentionNeedsInput || cur.ID != id {
+		return false
+	}
+	if h.askAhead != "" {
+		// Its entry came first, offered live: this question's when its
+		// words are.
+		if h.askAhead == askLabel(cur.Message) {
+			h.askPaged = id
+		}
+		h.askAhead = ""
+	}
+	if !retold || h.askPaged == id {
+		return false
+	}
+	h.askPaged = id
+	return true
 }
 
 // offerActivity hands e to the hub's OnActivity, or, late, to its
@@ -2192,6 +2248,7 @@ func (h *HostedSession) HostStatus(status session.Status, exitCode *int) {
 		// session keeps its state.
 		h.info.Attention = session.Attention{}
 		h.asked = false
+		h.askPaged, h.askAhead = "", ""
 	}
 	h.mu.Unlock()
 	h.notifyChange()

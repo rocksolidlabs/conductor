@@ -1038,6 +1038,16 @@ func statusWords(kind string) string {
 	return "The agent waits"
 }
 
+// statusErrorWords are the words of the wait an error status raises: the
+// program says its turn ended in an error, and its terminal shows why. They
+// are Conductor's own, never read off the screen.
+const statusErrorWords = "The agent's turn ended in an error; its terminal says why"
+
+// statusErrorWait reports whether a is the wait an error status raised.
+func statusErrorWait(a Attention) bool {
+	return a.State == AttentionNeedsInput && a.Source == SourceStatus && a.Message == statusErrorWords
+}
+
 func statusKindOf(kind string) string {
 	switch kind {
 	case "permission":
@@ -1064,10 +1074,22 @@ func statusKindOf(kind string) string {
 // a wait of its own, with words naming the kind, over nothing with words of
 // its own (unlessWorded: a bare bell's wait gives way to it) and not over
 // the done of the turn just ended; blocked without one (0.163, where an
-// async question the agent works on blocks too) raises nothing. A wait the
-// status raised is the status's to withdraw: a later state that is neither
-// blocked nor working (the form cancelled, the turn interrupted, the agent
-// gone) withdraws it at once; working lets it settle as any wait.
+// async question the agent works on blocks too) raises nothing.
+//
+// Error (0.164: the turn failed, a refused key, a quota, an outage; nothing
+// reports such a turn's end, as the notify program reports a finished one)
+// raises a wait too, in words of Conductor's own (statusErrorWords), by the
+// same rules, the wait a blocked status raised giving way to it
+// (overStatus); the same error again changes nothing.
+//
+// A wait the status raised is the status's to withdraw: a later state that
+// is neither blocked nor working (the form cancelled, the turn interrupted,
+// the agent gone) withdraws it at once; working lets it settle as any wait.
+// The error's wait is the exception: a failed turn that then sits idle
+// still needs a person, so idle, clear and a state not understood leave it,
+// and only working (settling it), a done, a person's Enter in the terminal
+// and the session's end withdraw it; nor does the screen moving on
+// (screenQuiet).
 func (s *Local) readStatus(state, kind string, turn uint64) {
 	s.mu.Lock()
 	s.statusSeen = true
@@ -1081,20 +1103,27 @@ func (s *Local) readStatus(state, kind string, turn uint64) {
 		return
 	}
 	s.disarmSettleLocked()
-	if state != StatusBlocked {
-		if att := s.info.Attention; att.State == AttentionNeedsInput && att.Source == SourceStatus && att.ID != "" && !s.claimedLocked(att.ID) {
-			s.withdrawShownLocked(SourceScreen)
-			s.mu.Unlock()
-			s.notifyChange()
-			return
-		}
+	switch state {
+	case StatusError:
 		s.mu.Unlock()
+		s.setAttentionRead(AttentionNeedsInput, statusErrorWords, SourceStatus, "", nil, unlessWorded|overStatus|unlessTurnEnded, turn)
+		return
+	case StatusBlocked:
+		s.mu.Unlock()
+		if kind != "" {
+			s.setAttentionRead(AttentionNeedsInput, statusWords(kind), SourceStatus, statusKindOf(kind), nil, unlessWorded|overStatus|unlessTurnEnded, turn)
+		}
+		return
+	}
+	att := s.info.Attention
+	if att.State == AttentionNeedsInput && att.Source == SourceStatus && att.ID != "" && !s.claimedLocked(att.ID) &&
+		(!statusErrorWait(att) || state == StatusDone) {
+		s.withdrawShownLocked(SourceScreen)
+		s.mu.Unlock()
+		s.notifyChange()
 		return
 	}
 	s.mu.Unlock()
-	if kind != "" {
-		s.setAttentionRead(AttentionNeedsInput, statusWords(kind), SourceStatus, statusKindOf(kind), nil, unlessWorded|unlessTurnEnded, turn)
-	}
 }
 
 // settleLocked follows the attention now showing, att, for the settle
@@ -2059,6 +2088,11 @@ const (
 	// with words of its own: anything but a bare bell's wait ("terminal
 	// bell"), whose words a program status with a kind replaces.
 	unlessWorded
+	// overStatus (readStatus), with unlessWorded: between a wait a blocked
+	// status raised and the one an error status raised, the one showing
+	// gives way to the other: a form whose turn then failed, a failed turn
+	// whose program then asks. The same wait again stays.
+	overStatus
 	// agentAsks (Ask) marks a needs_input change as the agent's own
 	// question, which the session keeps (own); with another state it
 	// changes nothing.
@@ -2262,7 +2296,8 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 	fresh := rules&unlessFresh != 0 && cur.State == AttentionNeedsInput && cur.ID != "" && cur.ID == s.settleID && time.Now().Before(s.settleAt)
 	working := rules&unlessWorking != 0 && cur.State == AttentionWorking
 	ended := rules&unlessEnded != 0 && s.info.Status.Ended()
-	worded := rules&unlessWorded != 0 && waiting && cur.Source != SourceBell
+	statusOver := rules&overStatus != 0 && cur.Source == SourceStatus && (statusErrorWait(cur) != (message == statusErrorWords))
+	worded := rules&unlessWorded != 0 && waiting && cur.Source != SourceBell && !statusOver
 	notSettling := rules&onlySettling != 0 && (s.settleTimer == nil || s.settleGen != look || !s.saysWorkingLocked() ||
 		cur.State != AttentionNeedsInput || cur.ID == "" || cur.ID != s.settleID)
 	// A startup question answered and still shown (its write not made yet,
@@ -4013,6 +4048,17 @@ func (s *Local) resolve(id string, token uint64, by, byName, reqID string, keys 
 			now := time.Now().UTC()
 			s.info.Attention = Attention{State: AttentionWorking, Source: SourceStatus, Since: &now}
 			s.statusReconciled = true
+		} else if heldSource(q.Source) && s.statusSeen && s.lastStatus == StatusError && !s.turnEnded && !s.info.Status.Ended() {
+			// A dialog answered while the program's status says its turn
+			// ended in an error: read while the dialog showed, the error was
+			// kept out by its words and is not written again (readStatus),
+			// so the failed turn's wait shows at the answer, recorded below
+			// (statusReconciled), as when the screen leaves the dialog
+			// (withdrawShownLocked). Not a blocked status's: Codex says
+			// blocked for the dialog answered itself.
+			now := time.Now().UTC()
+			s.info.Attention = Attention{State: AttentionNeedsInput, Message: statusErrorWords, Source: SourceStatus, Since: &now, ID: NewID()}
+			s.statusReconciled = true
 		}
 		s.settleLocked(s.info.Attention)
 		s.signalAttention()
@@ -4320,6 +4366,12 @@ func (s *Local) withdrawShownLocked(source string) {
 		now := time.Now().UTC()
 		s.info.Attention = Attention{State: AttentionNeedsInput, Message: statusWords(s.statusKind), Source: SourceStatus, Kind: statusKindOf(s.statusKind), Since: &now, ID: NewID()}
 		s.statusReconciled = true
+	} else if source == SourceScreen && heldSource(att.Source) && s.statusSeen && s.lastStatus == StatusError && !s.turnEnded && !s.info.Status.Ended() {
+		// The same for an error status read while the question showed: the
+		// failed turn's wait shows now (readStatus).
+		now := time.Now().UTC()
+		s.info.Attention = Attention{State: AttentionNeedsInput, Message: statusErrorWords, Source: SourceStatus, Since: &now, ID: NewID()}
+		s.statusReconciled = true
 	} else if source == SourceScreen && heldSource(att.Source) && s.statusSeen && s.lastStatus == StatusWorking && !s.info.Status.Ended() {
 		// The screen moved on from a question the session held while the
 		// program's status says it works: read as the question showed and
@@ -4408,7 +4460,9 @@ func (s *Local) screenQuiet(string) {
 		return
 	}
 	att := s.info.Attention
-	if att.State != AttentionNeedsInput || att.ID == "" || att.Source != SourceBell && att.Source != SourceOSC && att.Source != SourceStatus || s.claimedLocked(att.ID) {
+	// The error status's wait is not the screen's to withdraw (readStatus):
+	// what a failed turn prints after it says why, not that it went on.
+	if att.State != AttentionNeedsInput || att.ID == "" || att.Source != SourceBell && att.Source != SourceOSC && att.Source != SourceStatus || statusErrorWait(att) || s.claimedLocked(att.ID) {
 		s.shotWait, s.shotRows = "", nil
 		s.mu.Unlock()
 		return

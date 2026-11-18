@@ -76,6 +76,34 @@ type reportingHost struct {
 	served <-chan error
 	// back serves the host's next connection, a resume.
 	back func()
+	// held is the entry the host's forwarder holds before keeping and
+	// sending it (holdForwarding), nil for none.
+	held *atomic.Pointer[heldEntry]
+}
+
+// heldEntry holds the forwarder at the first entry of type typ: reached
+// closes as it is held, and it goes on once release is closed.
+type heldEntry struct {
+	typ              string
+	reached, release chan struct{}
+}
+
+// holdForwarding has the host's forwarder hold the next entry of type typ,
+// recorded in the session and not yet kept or sent, until release closes.
+func (h *reportingHost) holdForwarding(typ string) *heldEntry {
+	e := &heldEntry{typ: typ, reached: make(chan struct{}), release: make(chan struct{})}
+	h.held.Store(e)
+	return e
+}
+
+// await waits for the forwarder to hold the entry.
+func (e *heldEntry) await(t *testing.T) {
+	t.Helper()
+	select {
+	case <-e.reached:
+	case <-time.After(30 * time.Second):
+		t.Fatalf("the forwarder never took the %s entry", e.typ)
+	}
 }
 
 func newReportingHost(t *testing.T) *reportingHost {
@@ -139,8 +167,16 @@ func newReportingHostWith(t *testing.T, cat catalog.Catalog, agentID string, rec
 	}
 	proc := sessiontest.NewFakeProc()
 	t.Cleanup(func() { proc.End(0) })
-	// The session's entries reach the server as Run has them reach it.
-	a.activity = newActivityForwarder(a.sendActivity, a.sendChat, discardLog)
+	// The session's entries reach the server as Run has them reach it,
+	// one held where the test asks (holdForwarding).
+	held := &atomic.Pointer[heldEntry]{}
+	a.activity = newActivityForwarder(func(e session.ActivityEntry, state session.AttentionState, made uint64) {
+		if h := held.Load(); h != nil && e.Type == h.typ && held.CompareAndSwap(h, nil) {
+			close(h.reached)
+			<-h.release
+		}
+		a.sendActivity(e, state, made)
+	}, a.sendChat, discardLog)
 	go a.activity.run(ctx)
 	local := session.NewLocal(session.Info{ID: registered.SessionID, Cwd: a.dir, Cols: 80, Rows: 24}, proc, session.Options{OnChange: a.noteChange, OnActivity: a.onLocalActivity, Log: discardLog, FileEdit: "off"})
 	a.mu.Lock()
@@ -165,7 +201,7 @@ func newReportingHostWith(t *testing.T, cat catalog.Catalog, agentID string, rec
 	if !ok {
 		t.Fatal("the hosted session is not listed")
 	}
-	h := &reportingHost{hs: d.(*signal.HostedSession), a: a, local: local, proc: proc, l: l, route: route, base: ts.URL, conn: conn,
+	h := &reportingHost{hs: d.(*signal.HostedSession), a: a, local: local, proc: proc, l: l, route: route, base: ts.URL, conn: conn, held: held,
 		target: notify.Target{URL: attentionURL(ts.URL, registered.SessionID), Token: tok, Socket: l.path, Events: true}}
 	h.served = serve(conn)
 	h.back = func() {

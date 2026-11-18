@@ -405,7 +405,7 @@ func TestTheHostLeavesOutWhatItsDenyListRefuses(t *testing.T) {
 		{Type: session.ActivityFile, Op: "edit", Path: "main.go"},
 		{Type: session.ActivityProgress, Message: "built"},
 	} {
-		a.sendActivity(e, "")
+		a.sendNow(e)
 	}
 	if len(sent) != 2 || sent[0].Entry.Path != "main.go" || sent[1].Entry.Message != "built" {
 		t.Fatalf("sent %+v", sent)
