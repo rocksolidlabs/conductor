@@ -1271,7 +1271,7 @@ in `r.Check`, and judges it by the record's policy:
     place.
   - A router that is behind, names another revision, answers `Routes`
     (it will route the record now) or does not answer: nothing is
-    written, and the provider may hand the answer in again (the door's
+    written, and the provider may hand it in again (the door's
     `unknown_authority`).
   - A policy not in force (`InForce` false) is `local/1`, as at the
     route.
