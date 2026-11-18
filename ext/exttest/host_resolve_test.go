@@ -112,6 +112,15 @@ func TestFakeHostResolvesWithItsSettings(t *testing.T) {
 	if _, err := h.ResolveLaunch(ctx, ext.ResolveRequest{Crew: "web", Commit: otherSHA}); ext.RefusalCode(err) != ext.RefusalStartCommitMissing {
 		t.Errorf("a resolve at a commit the folder lacks = %v", err)
 	}
+	plain := sampleResolved()
+	plain.Managed, plain.Tasks = false, 0
+	h.SetResolved("plain", plain)
+	if _, err := h.ResolveLaunch(ctx, ext.ResolveRequest{Crew: "plain", Commit: headSHA}); ext.RefusalCode(err) != ext.RefusalInvalidRequest {
+		t.Errorf("a commit for a crew without tasks = %v", err)
+	}
+	if _, err := h.ResolveLaunch(ctx, ext.ResolveRequest{Crew: "plain"}); err != nil {
+		t.Errorf("a crew without tasks at HEAD = %v", err)
+	}
 	big := sampleResolved()
 	big.Cwd = "/" + strings.Repeat("<", ext.MaxFolder-1)
 	big.ProjectCwd = "/" + strings.Repeat("<", ext.MaxFolder-1)
@@ -119,8 +128,8 @@ func TestFakeHostResolvesWithItsSettings(t *testing.T) {
 	if _, err := h.ResolveLaunch(ctx, ext.ResolveRequest{Crew: "big", Project: "CND"}); ext.RefusalCode(err) != ext.RefusalResolvedTooLarge {
 		t.Errorf("a resolve past its bound = %v", err)
 	}
-	if n := len(h.Resolves()); n != 9 {
-		t.Errorf("%d resolves recorded, want 9", n)
+	if n := len(h.Resolves()); n != 11 {
+		t.Errorf("%d resolves recorded, want 11", n)
 	}
 	// The record answered is the caller's own.
 	got.Members[0].Name = "changed"
