@@ -1,10 +1,10 @@
 import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Browser, Locator, Page } from '@playwright/test'
-import { expect, stopStrays, task, test } from './fixtures'
+import { budget, expect, stopStrays, task, test } from './fixtures'
 import { decision, decisionServer, operatorPage, type DecisionServer } from './decisions-helpers'
 import { PREVIEW_BOOT_MS, PREVIEW_SERVICE, pick, previewFrame, previewSeam, scratchDir, made, endMade } from './preview-fixtures'
-import { inside, layoutRoot, noSideways, tapTarget, uncut } from './layout'
+import { MEASURE_WAIT_MS, inside, layoutRoot, noSideways, tapTarget, uncut } from './layout'
 
 // A capture sent to a pending decision, where the decision is answered (docs/plans/browser-evidence.md, PR-11; the card's rows are
 // DecisionCaptures, who reads what is utils/decisionCaptures.ts): on a server of its own, a managed crew whose stub worker serves the
@@ -29,8 +29,21 @@ const SIZES = [
   { width: 390, height: 844 },
 ]
 
+// Each step raises its test's timeout by the caps of its own waits (AGENTS.md, Tests that do not flake): an expect's 15 s (the
+// config's), a measure's MEASURE_WAIT_MS, the waits given their own bound, and an action (a goto, a click, a fill) counted at 15 s,
+// whose own wait the config leaves unbounded. The describe's timeout above them bounds a hang.
+const E = 15_000
+/** operatorRow: the thumbnail's 30 s, then 18 waits of 15 s (expects, measures, scrolls, a click). */
+const OPERATOR_ROW_MS = 30_000 + 18 * Math.max(E, MEASURE_WAIT_MS)
+/** Joining a link: the goto, the name filled and read back, the join pressed, the first row's 30 s. */
+const JOIN_MS = 4 * E + 30_000
+/** joinHeaderFits (5 waits) and pageFits (3), each of 15 s. */
+const FITS_MS = 8 * Math.max(E, MEASURE_WAIT_MS)
+
 test.beforeAll(async ({ browser }) => {
-  test.setTimeout(420_000)
+  // The sum of its waits' caps: the server's start and the crew's launch (counted at 60 s), two 120 s polls, the bridge's
+  // PREVIEW_BOOT_MS, the pick (its own waits, counted at 60 s), the save's 30 s and eight more of 15 s.
+  test.setTimeout(60_000 + 2 * 120_000 + PREVIEW_BOOT_MS + 60_000 + 30_000 + 8 * E)
   srv = await decisionServer('capture-decision-card', [{ id: 'worker-decides', from: 'worker', env: { STUB_DECISION: 'approval' } }])
   await stopStrays(srv.api, [])
   gate = join(scratchDir(m, 'capture-decision-card'), 'gate')
@@ -122,6 +135,7 @@ const natural = (img: Locator) => img.evaluate((i: HTMLImageElement) => (i.compl
 
 /** The operator's row of the send in `within`: the screenshot small and decoded, the note, the element's name, Open; measured. */
 async function operatorRow(page: Page, within: Locator, theme: string) {
+  budget(OPERATOR_ROW_MS)
   const row = within.locator(`[data-decision-capture="${sendId}"]`)
   const thumb = row.locator('[data-decision-capture-thumb]')
   await expect(thumb).toBeVisible({ timeout: 30_000 })
@@ -155,6 +169,8 @@ for (const theme of ['light', 'dark'] as const) {
   test(`Needs you (${theme}): the capture sent to the decision is shown, its screenshot small, its note, its element and Open, wide and on a phone`, async ({ browser }) => {
     const { page, asked } = await themed(browser, theme)
     for (const size of SIZES) {
+      // The goto, the layout's and the question's 30 s each, the page measured.
+      budget(E + 30_000 + 30_000 + MEASURE_WAIT_MS)
       await page.setViewportSize(size)
       await page.goto(`${srv.started.baseURL}/decisions?item=decision%3Adr-1`)
       await expect(page.locator(layoutRoot(size.width)).first()).toBeVisible({ timeout: 30_000 })
@@ -171,6 +187,8 @@ for (const theme of ['light', 'dark'] as const) {
 test('the decision’s modal, as the run’s task and the ticket’s Decisions open it, shows the capture the same way, on a phone too', async ({ browser }) => {
   const { page } = await themed(browser, 'dark')
   for (const size of SIZES) {
+    // The goto, the layout's 30 s, the click, the question's 30 s, two measures, Escape and the modal gone.
+    budget(E + 30_000 + E + 30_000 + 2 * MEASURE_WAIT_MS + 2 * E)
     await page.setViewportSize(size)
     await page.goto(`${srv.started.baseURL}/runs/${encodeURIComponent(runId)}?view=tasks&task=build`)
     await expect(page.locator(layoutRoot(size.width)).first()).toBeVisible({ timeout: 30_000 })
@@ -187,6 +205,8 @@ test('the decision’s modal, as the run’s task and the ticket’s Decisions o
 })
 
 test('a screenshot the server does not give is words in its place, never a broken image; the note and the element stay', async ({ browser }) => {
+  // The goto, the row's 30 s, then ten waits of 15 s.
+  budget(E + 30_000 + 10 * E)
   const { page } = await themed(browser, 'light', SIZES[1])
   let refused = 0
   await page.route(
@@ -214,6 +234,9 @@ test('a screenshot the server does not give is words in its place, never a broke
 
 for (const theme of ['light', 'dark'] as const) {
   test(`a decision link’s holder (${theme}) is shown the reference as words, and its page asks no capture route`, async ({ browser }) => {
+    // The token's page: joined, the row opened, the question's and the reader's 30 s, ten more waits, then its fit; the bare page:
+    // joined, then its fit at two widths, with the theme and the wordmark read at each.
+    budget(JOIN_MS + 2 * 30_000 + 10 * E + FITS_MS + JOIN_MS + 2 * FITS_MS + 3 * E)
     const link = await srv.api.ok<{ url: string }>('POST', `/api/runs/${runId}/links`, { role: 'control', decide: true, label: `e2e capture card link ${theme}` })
     // The page holds a workbench token where the workbench keeps it: it is the card that asks nothing, not the server that refuses.
     const ctx = await browser.newContext({ viewport: SIZES[1], colorScheme: theme })
@@ -274,14 +297,40 @@ for (const theme of ['light', 'dark'] as const) {
   })
 }
 
+for (const theme of ['light', 'dark'] as const) {
+  test(`a session decision link’s holder (${theme}): the session’s header fits a phone and is as before on a desktop`, async ({ browser }) => {
+    budget(JOIN_MS + 2 * FITS_MS + 3 * E)
+    const sid = task(await srv.api.run(runId), 'build').attempt?.sessionId ?? ''
+    expect(sid, 'the attempt’s session').not.toBe('')
+    const { token } = await srv.api.ok<{ token: string }>('POST', `/api/sessions/${sid}/links`, { role: 'control', decide: true, label: `e2e capture card session link ${theme}` })
+    const own = await browser.newContext({ viewport: SIZES[1], colorScheme: theme })
+    await own.addInitScript((theme) => localStorage.setItem('conductor-color-mode', theme), theme)
+    const bare = await own.newPage()
+    await bare.goto(`${srv.started.baseURL}/join/${token}`)
+    await bare.getByRole('textbox', { name: 'Your name' }).fill('e2e session holder')
+    await expect(bare.getByRole('textbox', { name: 'Your name' })).toHaveValue('e2e session holder')
+    await bare.getByRole('button', { name: 'Join session' }).click()
+    await expect(bare.locator('[data-join-session-decide] [data-inbox-row="decision:dr-1"]')).toBeVisible({ timeout: 30_000 })
+    await expect(bare.locator('html')).toHaveClass(theme === 'dark' ? /\bdark\b/ : /^(?!.*\bdark\b)/)
+    await joinHeaderFits(bare, SIZES[1].width)
+    await expect(bare.locator('[data-join-wordmark]')).toBeHidden()
+    await pageFits(bare, '[data-join-session-decide]')
+    await bare.setViewportSize(SIZES[0])
+    await joinHeaderFits(bare, SIZES[0].width)
+    await expect(bare.locator('[data-join-wordmark]')).toBeVisible()
+    await pageFits(bare, '[data-join-session-decide]')
+    await own.close()
+  })
+}
+
 /**
- * The join page at its width: the document does not scroll sideways, and nothing of its header or of Needs you is cut or scrolls
- * sideways. The crew's terminal tiles below clip their own glyphs by design (a tile is as wide as it is given), so they are not read.
+ * The join page at its width: the document does not scroll sideways, and nothing of its header or of Needs you (`decide`) is cut or
+ * scrolls sideways. The terminals clip their own glyphs by design (a terminal is as wide as it is given), so they are not read.
  */
-async function pageFits(page: Page) {
+async function pageFits(page: Page, decide = '[data-join-run-decide]') {
   expect(await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth), 'the page scrolls sideways').toBeLessThanOrEqual(0)
   await noSideways(page, { root: page.locator('[data-join-header]') })
-  await noSideways(page, { root: page.locator('[data-join-run-decide]') })
+  await noSideways(page, { root: page.locator(decide) })
 }
 
 /** The join page's header within a window `width` wide: its box, and every control and word drawn in it, inside the header and the window. */

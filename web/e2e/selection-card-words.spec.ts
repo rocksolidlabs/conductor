@@ -1,7 +1,7 @@
 import type { Browser, Page } from '@playwright/test'
-import { dayPage, expect, test, useTheme } from './fixtures'
+import { budget, dayPage, expect, test, useTheme } from './fixtures'
 import { inboxItem, stubInbox, type StubItem } from './inbox-stub'
-import { noSideways } from './layout'
+import { MEASURE_WAIT_MS, noSideways } from './layout'
 import { runInfo, serveRun, type StubRun } from './run-fixtures'
 
 // Needs you's count of choices, and a comparison's selection's card in each of its states (docs/plans/compare-crew.md; the card is
@@ -9,6 +9,10 @@ import { runInfo, serveRun, type StubRun } from './run-fixtures'
 // every kind of decision the page lists; the selection's card is to be answered while open, answered once answered and once applied,
 // and offers no Ask for more in any state, no agent having asked it, while an agent's record keeps it. The items are the inbox
 // stub's (inbox-stub.ts) on the day's server, wide and at 390 x 844, in both themes; every wait is on what the page draws.
+
+// Each step raises its test's timeout by the caps of its own waits (AGENTS.md, Tests that do not flake): an expect's 15 s (the
+// config's), a measure's MEASURE_WAIT_MS, and an action (a goto, a reload) counted at 15 s, whose own wait the config leaves unbounded.
+const E = 15_000
 
 const DESK = { width: 1440, height: 900 }
 const PHONE = { width: 390, height: 844, touch: true }
@@ -42,6 +46,8 @@ async function needsYou(browser: Browser, size: typeof DESK | typeof PHONE, item
 test.describe('Needs you and a selection’s card', () => {
   test('counts each row’s answers, never Comment or Ask for more, for a selection, an agent’s approval, a plan’s gate, a clarification and a question', async ({ day, browser }) => {
     void day
+    // The page made and opened (two actions), then a count read for each of the five rows and the selection's once more.
+    budget(2 * E + 6 * E)
     const sel = selections().open
     const agent = inboxItem('decision', { run })
     const plan = inboxItem('decision', { origin: 'plan', run })
@@ -79,6 +85,8 @@ test.describe('Needs you and a selection’s card', () => {
           [answered, 'answered by'],
           [applied, 'answered by'],
         ] as const) {
+          // The goto, the theme's reload and its two reads of the drawn page, then ten reads of 15 s and the measure.
+          budget(4 * E + 10 * E + MEASURE_WAIT_MS)
           await page.goto(`/decisions?item=${encodeURIComponent(it.ref)}`)
           await useTheme(page, theme)
           const item = page.locator(`[data-inbox-item="${it.ref}"]`)
@@ -100,6 +108,7 @@ test.describe('Needs you and a selection’s card', () => {
         }
       }
       // An agent's approval, its attempt live, keeps Ask for more, to be answered while open.
+      budget(3 * E)
       await page.goto(`/decisions?item=${encodeURIComponent(agent.ref)}`)
       const item = page.locator(`[data-inbox-item="${agent.ref}"]`)
       await expect(item.locator('[data-decision-card] [data-decision-approver-lead]')).toHaveText('to be answered by')

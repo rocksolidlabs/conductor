@@ -786,7 +786,11 @@ export const MORE_INFO_LABEL = 'Ask for more information'
  * The answers a person can give a listed item, of its actions' labels (the list's summary carries the labels alone): every action of
  * a question, a plan revision and a task; a decision's options and its line of words, never its Comment or its Ask for more. The
  * server lists a decision's actions in one order, its answers, then Ask for more when it is offered, then Comment always last, so the
- * two are taken off its end by their fixed labels, and an option that happens to be called the same is still counted.
+ * two are taken off its end by their fixed labels. The summary gives the labels alone (no action's name, no flag that the asker is
+ * live), so the count goes by them: an option called "Comment" anywhere but last, or "Ask for more information" anywhere but just
+ * before Comment, is counted; one called "Ask for more information" and listed last, with no Ask for more offered, is not, and the
+ * badge then says one choice fewer (the card still shows every option). Telling them apart would need the summary to carry the
+ * actions' names, a protocol change this count does not make.
  */
 export function answersOf(kind: string, actions: readonly string[]): string[] {
   const out = [...actions]
