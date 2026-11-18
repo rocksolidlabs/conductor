@@ -1208,8 +1208,18 @@ these classes, `rules.go`'s `Class` and its tests saying the same:
 | gated | a launch made, and a revision approved | the writer applied the rule (an approved, fresh revision; the operator); a merge never applies it again, since the facts it rests on travel in the same log |
 | kept | two approved revisions of one ticket, approved on two replicas | both stand; the page shows both, a launch names one, a person withdraws the other; no reconcile rule, since nothing is undone |
 
-A launch's start is recorded only by the server whose ledger has its run;
-a replica shows the launch as it was given.
+A launch's start is recorded only by the server whose ledger has its
+run. Launches do not replicate (CS1, `docs/plans/sync-seams.md`): a
+replica shows the run a launch made by its pointer, matched to the
+ticket the pointer names. A revision replicates as its **view** (the
+body less the crew's paths, its setup, every argv and each agent's
+command), named by its own digest beside the whole body's, and a
+store that holds only the view does not launch it (`409
+body_elsewhere`); on the machine that holds the whole body, an
+approval last written by another machine does not launch it until this
+machine's operator approves it again (`409 approved_elsewhere`), so a
+revision is launched only where it was made, on that machine's own
+approval.
 
 **Events.** `dispatch` events gain the entities `plan` and `launch`,
 naming their ticket and project, by DS1's path and bound (the longest
@@ -1243,8 +1253,8 @@ tested in `api/events_test.go` and the routes' tests.
 - Context from the Code Context Graph in a package (CG1 through C4), and
   a context provider at all: the package's context is Dispatch's own
   records.
-- Replicating revisions and launches (CS1): the field rules are written
-  here.
+- Replicating revisions as their views, and not launches (CS1,
+  `docs/plans/sync-seams.md`): the field rules are written here.
 - A ticket's status changed by a run, a launch or a delivery: they stay
   separate facts, and a person moves the status.
 - Launching a crew without tasks from a ticket, or a crew whose members

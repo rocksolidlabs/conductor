@@ -80,11 +80,14 @@ a person is never a session.
   RV1's repair transition, like any new candidate of a task, supersedes an
   approval of the old one (Events, S3). Both add ledger tables; whichever
   merges second takes the next schema version (The changes, the ledger).
-- **CS1** (sync, cloud): it replicates decision records later. Every
-  change of a decision here is a transition of a run, so the ledger's
-  `OnCommit` hook already tells the sync adapter of it (`internal/api/
-  sync.go` hands a run's pointer over); the decision document kind on the
-  sync allowlist is CS1's plan's.
+- **CS1** (sync): decision records are not replicated. CS1's
+  open-source rows (`docs/plans/sync-seams.md`, OS-3) hand a
+  registered sync provider a bounded document of each decision, told
+  by the ledger's `OnDecisions` hook, and let it hand in a held answer
+  (`Host.RespondDecision`), recorded through this plan's respond path
+  with the authority `via: sync` and applied only after the identity
+  provider admits it again at application; another machine shows the
+  document read only, as a remote record.
 - **SW1** (Switchman team routing, premium): its open decision O4 (which
   roles, groups, delegates and overrides) is not DR1's (Owner decisions,
   1). DR1 records a policy revision, `local/1`, so that SW1's policies
@@ -452,18 +455,27 @@ admits anyone an identity provider gives `ext.GrantDecide`
 (`docs/plans/decide-grant.md`). One function, `crew.Admits`, judges the
 entries (`crew.EntriesOf`), for the response's transaction and every
 read of a decide principal (`crew.AdmissionOf`); no write changes the
-policy. The record keeps it so that a response and an application check
+policy. The decision-policy plan (`docs/plans/decision-policy.md`)
+gives the column one writer after the opening, `Tx.PutPolicy`, which
+writes only while the decision is `open` and at its rev, so a
+decision's entries still change only while it is open. The record keeps it so that a response and an application check
 the policy the decision was opened under against the one in force, and
 so that a later policy is a later revision of the same field.
 
 A response's `authority` is what the policy checks, kept apart from its
-`actor`, the audit's words: `grant` (`admin`, else `decide`, or none), `via`
-(`workbench`, `identity` or `router`) and the identity's `subject`, all
-from the principal the request authenticated (`authorityOf` in
-`internal/api`, beside `actorOf`), never from a body; `boot` is the
-server process's id, minted at its start. A router's answer offered to
-the engine has `via: router` and no grant, so it can never pass for an
-admin's answer whose subject it shares.
+`actor`, the audit's words: `grant` (`admin`, else `decide`, or none),
+`via` (`workbench`, `identity`, `router` or `sync`) and the identity's
+`subject`, all from the principal the request authenticated
+(`authorityOf` in `internal/api`, beside `actorOf`), never from a
+body; `boot` is the server process's id, minted at its start. A
+router's answer offered to the engine has `via: router` and no grant,
+so it can never pass for an admin's answer whose subject it shares. A
+`sync` response is a held answer a registered sync provider handed in
+(`docs/plans/sync-seams.md`, OS-3); its authority also keeps the
+membership, the sign-in or device it was made through, when it was
+made, the identity provider's signed statement of it, the held
+answer's id and its fence, all from the door's checked record, never
+from a route's body.
 
 `applied` (JSON), the execution owner's application receipt: `{at, by:
 "yardmaster", run, task?, attempt?, response, validated: true, how,
@@ -485,7 +497,11 @@ attempt whose files carry the answer), `commented` (`{text, by}`),
 `info_requested` (`{text, by}`), `superseded`, `cancelled`, and, for a
 provider only, `assigned`, `delegated`, `escalated` and `expired`, which
 no code of this repository writes. A row's `detail` is at most 2 KiB as
-encoded.
+encoded. The decision-policy plan (`docs/plans/decision-policy.md`)
+amends this list: a kind `rerouted` (new) joins the reserved
+`assigned`, `delegated` and `escalated`, and the four become one bounded
+group of 16 rows (`historyBounds`, `MaxDecisionRouterChanges`), a
+router's 17th change and later writing no history row.
 
 At most 256 rows per decision, a cap each kind's own bound keeps: one
 `opened`; two `routed` at the opening (the operator by policy, a
@@ -900,6 +916,16 @@ response and its application; its `boot` another process's) has no
 recheck coming, since the token was never kept: superseded the same
 way. A run not held never takes an identity's response (`not_held`,
 above), so no such response waits for a continuation.
+
+A `sync` response is rechecked at application by the identity
+provider's `AdmitsAnswer` over the authority the ledger keeps (its
+statement is a signed statement, not a token, so it is kept), not by
+`ConfirmAuthority`: yes applies it, in a transaction that checks `k`
+is still the decision's accepted response, and not its `boot`, so a
+restart asks again rather than superseding; no supersedes it as an
+identity's is; not known leaves the decision `answered` and asks again
+(1 s doubling to 60 s while the run is held), never applying and never
+superseding on what nobody said (`docs/plans/sync-seams.md`, OS-3).
 
 A recheck that fails at application supersedes the decision with its
 words (`answered` → `superseded`) and keeps the response; what it held
@@ -2037,8 +2063,10 @@ person goes into the JSON of DR1's rows, in DR1's transactions.
 - Authenticated responders beyond the admin grant, domain roles, quorum,
   delegation, escalation, quiet hours and expiry: SW1 and ID1 (decision
   D4).
-- Replicating decisions and keeping a managed copy while the owner is
-  offline: CS1.
+- Replicating decisions: none in v1. A registered sync provider is
+  handed a bounded document of each decision and may hand in a held
+  answer, recorded and rechecked here (CS1, `docs/plans/sync-seams.md`,
+  OS-3).
 - Push notifications: MB1 (the sinks take the `decision` notification
   already).
 - Brakeman's `route_decision` grant, its `decision:` ref and
@@ -2806,7 +2834,9 @@ not choose (the Program, section 3.1).
    sqlite`, not a store of their own: a hold, its release and the task it
    holds commit together, which a second database could not promise.
 3. **The id is `dr-<n>`**, from the ledger's `AUTOINCREMENT`, never
-   reused in a data directory; a replicated id is CS1's to qualify.
+   reused in a data directory; a decision is never replicated, and
+   another machine shows a copy under the device that reported it
+   (CS1).
 4. **Three types:** clarification (a question with an answer), approval
    (a yes or no, or one of the requester's alternatives, about an exact
    subject) and assignment (something a person does by hand, answered
@@ -2824,7 +2854,8 @@ not choose (the Program, section 3.1).
 8. **A router's held answer is not the operator's** under `local/1`: it
    is recorded as a refused response and never applied; the router's
    destinations are recorded as routing history. SW1 brings the policy
-   that lets a routed person answer.
+   that lets a routed person answer (planned in
+   `docs/plans/decision-policy.md`).
 9. **A rejection cancels only a gate's tasks**: an agent's own approval
    answered "no" is delivered as words, and the agent decides; a gate's
    Reject (or an assignment's Not done) cancels the tasks it held, as
@@ -2840,8 +2871,8 @@ not choose (the Program, section 3.1).
     other tasks and the run's other work are never held by it.
 12. **No Dispatch link per decision**: the record names its ticket, and
     the ticket page lists decisions by that column; the `decision` link
-    kind DS2 reserved stays reserved and refused locally, for CS1's plan
-    to use or drop.
+    kind DS2 reserved stays reserved and refused locally; CS1 does not
+    use it, since a copy names its ticket.
 13. **Application and delivery are two things**: applied is the one
     transition that validates the answer and releases the hold (at most
     once); delivery is the line typed into the asking attempt, or the
