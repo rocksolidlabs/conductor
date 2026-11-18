@@ -1481,7 +1481,10 @@ taken.
    attempts are execution, Yardmaster's. Chosen over the ledger alone,
    which would leave reviews unreplicated and tie them to the owner lock,
    and over Dispatch alone, which would put execution state outside
-   Yardmaster (the Program, section 1.4).
+   Yardmaster (the Program, section 1.4). CS1's first version does not
+   replicate reviews, findings or marks (`docs/plans/sync-seams.md`,
+   Owner decisions 21): they stay on the machine that made them until a
+   later item adds them under the field rules above.
 3. **A review needs a ticket.** The run must be one a ticket holds (DS2's
    chain rule); a run without one offers DS1's hand link first. Chosen
    over reviews of any run, which would need a second home and a second
