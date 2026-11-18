@@ -763,6 +763,13 @@ func (s *Server) serveHostedViewer(ctx context.Context, c *websocket.Conn, raw n
 		v.ConnFailed()
 		endWaits()
 	})
+	// What the viewer relays counts against the host connection that
+	// carries the session as it is relayed, on a server that reports it
+	// (relayusage.go).
+	var hostedID string
+	if s.exts.relayUsage != nil {
+		hostedID = hs.Info().ID
+	}
 	for {
 		if s.viewerSeam != nil && s.viewerSeam.read != nil {
 			s.viewerSeam.read(pumped)
@@ -792,6 +799,9 @@ func (s *Server) serveHostedViewer(ctx context.Context, c *websocket.Conn, raw n
 				continue
 			}
 			s.relayed.add(len(f.Payload))
+			if s.exts.relayUsage != nil {
+				s.exts.relayUsage.add(hostedID, len(f.Payload))
+			}
 			err := hs.RelayToHost(v, f)
 			if err != nil {
 				switch {
