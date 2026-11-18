@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { Decision, DecisionRef } from '~/utils/decisions'
-import { acceptedAnswer, approverWords, askedWhere, assignmentWords, authorizesLine, decisionWords, detailsOpen, historyWords, optionSubject, optionsOf, recommended, routedFor, stepLook, subjectWords } from '~/utils/decisions'
+import { acceptedAnswer, approverLead, approverWords, askedWhere, assignmentWords, authorizesLine, decisionWords, detailsOpen, historyWords, optionSubject, optionsOf, recommended, routedFor, stepLook, subjectWords } from '~/utils/decisions'
 import { relativeTime } from '~/utils/sessions'
 
 /**
@@ -65,7 +65,7 @@ watch(
     <p class="text-xs text-muted">
       Asked by {{ askedWhere(decision) }} in
       <NuxtLink :to="`/runs/${encodeURIComponent(decision.run)}?view=tasks${decision.asker ? `&task=${encodeURIComponent(decision.asker.task)}` : ''}`" class="font-mono hover:underline" data-decision-run>{{ decision.run }}</NuxtLink>
-      {{ relativeTime(decision.createdAt, now, { suffix: true }) }} · answered by <span data-decision-approver>{{ approverWords(decision) }}</span><span v-if="routedFor(decision)" :data-decision-routed-for="routedFor(decision)!.person">, for {{ routedFor(decision)!.person }} (routed by {{ routedFor(decision)!.by }})</span>
+      {{ relativeTime(decision.createdAt, now, { suffix: true }) }} · <span data-decision-approver-lead>{{ approverLead(decision) }}</span> <span data-decision-approver>{{ approverWords(decision) }}</span><span v-if="routedFor(decision)" :data-decision-routed-for="routedFor(decision)!.person">, for {{ routedFor(decision)!.person }} (routed by {{ routedFor(decision)!.by }})</span>
     </p>
     <p v-if="assignmentWords(decision)" class="text-sm text-default" data-decision-assignment>{{ assignmentWords(decision) }}.</p>
 

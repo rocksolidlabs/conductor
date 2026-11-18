@@ -1,11 +1,11 @@
 <script setup lang="ts">
 import type { Decision, OpReceipt, ResponseReceipt } from '~/utils/decisions'
-import { answerAsk, answerAsWords, askForMore, commentDecision, confirmAuthorizes, optionSubject, optionsOf, rationaleRequired, recommended, refusalOf, respondDecision, responseBody } from '~/utils/decisions'
+import { answerAsk, answerAsWords, askForMore, commentDecision, offersAskForMore, confirmAuthorizes, optionSubject, optionsOf, rationaleRequired, recommended, refusalOf, respondDecision, responseBody } from '~/utils/decisions'
 
 /**
  * The operator's answer to a durable decision (Program item DR1, docs/plans/decisions.md, "web/app"): the controls by its type (a
  * button per option, the recommended one marked on it and each option's tradeoffs in a line under them, UX1 PR-20; a clarification's
- * text beside them), a rationale, Comment and Ask for more (disabled, with the record's words,
+ * text beside them), a rationale, Comment and Ask for more (none on a comparison's selection; disabled, with the record's words,
  * when no live agent asked it). An approval's and an assignment's answer is asked first: the choice, then Confirm, which sends it
  * against the rev the card showed when it was picked. The receipt is shown (Recorded); a refusal is shown in the server's words (who
  * answered first, what changed), with Read again. A choice picked stays to be confirmed even when the record moves meanwhile: the
@@ -29,6 +29,8 @@ const options = computed(() => optionsOf(d.value))
 const best = computed(() => recommended(d.value))
 const confirms = computed(() => d.value.type === 'approval' || d.value.type === 'assignment')
 const more = computed(() => askForMore(d.value))
+/** Ask for more is offered where an agent may be asked; a comparison's selection has none, ever (offersAskForMore). */
+const asks = computed(() => offersAskForMore(d.value))
 const ticket = useDecisionRunInfo(() => d.value.run).ticket
 const rationaleNeeded = computed(() => rationaleRequired(d.value))
 
@@ -195,11 +197,11 @@ watch(
 
     <!-- A comment is kept in the history; Ask for more types it to the asking agent, which answers with a new request. -->
     <div class="flex flex-col gap-1.5 border-t border-default pt-2" data-decision-comment-box>
-      <UTextarea v-model="comment" :rows="1" autoresize placeholder="A comment, or what the agent should say more about…" :maxlength="4000" :disabled="commentBusy" data-decision-comment-text />
+      <UTextarea v-model="comment" :rows="1" autoresize :placeholder="asks ? 'A comment, or what the agent should say more about…' : 'A comment, kept with the decision'" :maxlength="4000" :disabled="commentBusy" data-decision-comment-text />
       <div class="flex flex-wrap items-center justify-end gap-2">
-        <span v-if="!more.enabled" class="min-w-0 flex-1 break-words text-xs text-muted" data-decision-more-why>{{ more.why }}</span>
+        <span v-if="asks && !more.enabled" class="min-w-0 flex-1 break-words text-xs text-muted" data-decision-more-why>{{ more.why }}</span>
         <UButton label="Comment" icon="i-lucide-message-square" size="xs" color="neutral" variant="outline" :disabled="!comment.trim() || commentBusy" data-decision-comment @click="opSend('comment')" />
-        <UButton label="Ask for more" icon="i-lucide-message-circle-question" size="xs" color="neutral" variant="outline" :disabled="!more.enabled || !comment.trim() || commentBusy" :title="more.enabled ? undefined : more.why" data-decision-more @click="opSend('more_info')" />
+        <UButton v-if="asks" label="Ask for more" icon="i-lucide-message-circle-question" size="xs" color="neutral" variant="outline" :disabled="!more.enabled || !comment.trim() || commentBusy" :title="more.enabled ? undefined : more.why" data-decision-more @click="opSend('more_info')" />
       </div>
       <p v-if="opWords" class="text-xs text-muted" data-decision-op-words>{{ opWords }}</p>
     </div>

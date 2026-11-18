@@ -769,3 +769,27 @@ export function decisionLinkTargets(
   }
   return out
 }
+
+/** The labels the server gives a record's Comment and its Ask for more (internal/api/inbox_decisions.go), which answer nothing. */
+export const COMMENT_LABEL = 'Comment'
+export const MORE_INFO_LABEL = 'Ask for more information'
+
+/**
+ * The answers a person can give a listed item, of its actions' labels (the list's summary carries the labels alone): every action of
+ * a question, a plan revision and a task; a decision's options and its line of words, never its Comment or its Ask for more. The
+ * server lists a decision's actions in one order, its answers, then Ask for more when it is offered, then Comment always last, so the
+ * two are taken off its end by their fixed labels, and an option that happens to be called the same is still counted.
+ */
+export function answersOf(kind: string, actions: readonly string[]): string[] {
+  const out = [...actions]
+  if (kind !== 'decision') return out
+  if (out[out.length - 1] === COMMENT_LABEL) out.pop()
+  if (out[out.length - 1] === MORE_INFO_LABEL) out.pop()
+  return out
+}
+
+/** A row's count of its answers ("3 choices"), '' for an item with none. */
+export function choicesWords(s: Pick<InboxSummary, 'kind' | 'actions'>): string {
+  const n = answersOf(s.kind, s.actions).length
+  return n ? `${n} ${n === 1 ? 'choice' : 'choices'}` : ''
+}

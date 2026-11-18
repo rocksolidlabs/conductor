@@ -6,6 +6,7 @@ import {
   INBOX_KINDS,
   INBOX_ROW_CLASS,
   atZero,
+  choicesWords,
   decisionIdOf,
   firstToOpen,
   inboxEmpty,
@@ -353,7 +354,7 @@ const lastClosed = computed(() => lastClosedWords(state.value.closed, recent.val
                   <UBadge v-if="s.card" label="Brakeman's brief" color="primary" variant="subtle" size="sm" />
                   <UBadge v-if="s.blocks" :label="`${s.blocks} waiting on it`" color="neutral" variant="subtle" size="sm" />
                   <UBadge v-if="!s.actions.length" label="Open the terminal" color="warning" variant="subtle" size="sm" />
-                  <UBadge v-else :label="`${s.actions.length} ${s.actions.length === 1 ? 'choice' : 'choices'}`" color="neutral" variant="outline" size="sm" />
+                  <UBadge v-else-if="choicesWords(s)" :label="choicesWords(s)" color="neutral" variant="outline" size="sm" data-inbox-row-choices />
                 </span>
               </button>
             </li>

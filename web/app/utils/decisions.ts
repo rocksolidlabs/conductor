@@ -227,6 +227,15 @@ export function approverWords(d: Pick<Decision, 'policy'> & { request?: Pick<Dec
   return w ? `${who}, for ${f.person} (${w})` : `${who}, for ${f.person}`
 }
 
+/**
+ * The words before the approver on the card's line, true of the record's state: an open record is "to be answered by" them, one
+ * with an accepted answer was "answered by" them, and one closed with none (expired, cancelled, superseded) "was for" them.
+ */
+export function approverLead(d: Pick<Decision, 'state' | 'type' | 'request' | 'responses' | 'answer'>): string {
+  if (d.state === 'open') return 'to be answered by'
+  return acceptedAnswer(d) ? 'answered by' : 'was for'
+}
+
 /** Whom a decision is for, or a receipt answered for, in words (HM1): "nate, the architecture owner", or "ana" for a person by name. '' for none. */
 export function forWords(f: { person?: string; responsibility?: string } | null | undefined): string {
   if (!f?.person) return ''
@@ -525,6 +534,14 @@ export function askForMore(d: Pick<Decision, 'id' | 'origin' | 'state' | 'asker'
   if (d.state !== 'open') return { enabled: false, why: `${d.id} is ${d.state}` }
   if (!d.asker?.live) return { enabled: false, why: `${d.id}'s agent has ended its attempt: comment, answer or cancel it` }
   return { enabled: true, why: '' }
+}
+
+/**
+ * Whether the answer offers Ask for more at all: not on a comparison's selection, which the comparison asks and no agent ever does,
+ * so it could never be sent (askForMore's words say why where it is offered and held).
+ */
+export function offersAskForMore(d: Pick<Decision, 'origin'>): boolean {
+  return d.origin !== 'compare'
 }
 
 /** A response as the respond route takes it. */
