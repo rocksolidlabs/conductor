@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -147,15 +148,20 @@ func TestSinceCountsFromTheLastBriefing(t *testing.T) {
 		t.Fatalf("a ticket made ready before the briefing: %v", got.TicketsReady)
 	}
 
-	// Within five seconds of the desk's clock the same reply; after them
-	// the run that ended meanwhile.
+	// A run record written with no event told: within five seconds of
+	// the desk's clock the same reply is answered, and after them the
+	// new count. Once the run's event is told, a read at once, the clock
+	// not moved, has the new count (TestSinceIsReadAgainAfterAnEvent).
 	b.sinceRecord(t, "late-0000aaa7", "", at.Add(5*time.Minute))
 	c.add(sinceCacheFor - time.Millisecond)
 	if again := b.since(t, ""); again.RunsEnded.Count != 2 {
-		t.Fatalf("within five seconds: %+v", again.RunsEnded)
+		t.Fatalf("within five seconds, nothing told: %+v", again.RunsEnded)
 	}
-	c.add(time.Millisecond)
-	want("runs ended, five seconds on", b.since(t, "").RunsEnded, "run:late-0000aaa7", "run:legacy-0000aaa5", "run:ended-0000aaa2")
+	b.srv.events.run("late-0000aaa7", false)
+	want("runs ended, its event told", b.since(t, "").RunsEnded, "run:late-0000aaa7", "run:legacy-0000aaa5", "run:ended-0000aaa2")
+	b.sinceRecord(t, "later-0000aaa8", "", at.Add(6*time.Minute))
+	c.add(sinceCacheFor)
+	want("runs ended, five seconds on", b.since(t, "").RunsEnded, "run:later-0000aaa8", "run:late-0000aaa7", "run:legacy-0000aaa5", "run:ended-0000aaa2")
 
 	// A time given is where the counts start, once it is not after now.
 	c.add(10 * time.Minute)
@@ -163,8 +169,99 @@ func TestSinceCountsFromTheLastBriefing(t *testing.T) {
 	if given.Since.From != sinceFromGiven || given.Since.Briefing != "" {
 		t.Fatalf("a given start %+v", given.Since)
 	}
-	want("runs ended since a time given", given.RunsEnded, "run:late-0000aaa7", "run:legacy-0000aaa5")
+	want("runs ended since a time given", given.RunsEnded, "run:later-0000aaa8", "run:late-0000aaa7", "run:legacy-0000aaa5")
 	want("tasks failed since a time given", given.TasksFailed)
+}
+
+// A read made after the server has told an event the page reads since
+// again on (run, dispatch, brakeman, session, removed) is never answered
+// with a reply computed before it, the desk's clock never moved: each
+// event is waited for on the stream before the read. A reply computed
+// while an event passed is not kept as fresh either: the cache marks a
+// reply with what had been told before it was computed.
+func TestSinceIsReadAgainAfterAnEvent(t *testing.T) {
+	t.Parallel()
+	b := brakemanEnv(t, nil)
+	b.enable(t, "bk", nil)
+	doneOf(t)(b.srv.dispatch.CreateProject(t.Context(), adminOp("Ann"), dispatch.NewProject{Key: "CND", Name: "Conductor"}))
+	c := b.fakeClock()
+	events := b.sse(t)
+	told := func(prefix string) {
+		t.Helper()
+		b.waitEvent(t, events, func(ev string) bool { return strings.HasPrefix(ev, prefix) })
+	}
+	first := b.since(t, "")
+	if first.Since.From != sinceFromDay || first.RunsEnded.Count != 0 || first.TicketsReady.Count != 0 || first.QuestionsOpen.Count != 0 {
+		t.Fatalf("the first read: %+v", first)
+	}
+
+	// run: the engine tells it once the run's end is readable.
+	b.sinceRecord(t, "ended-0000aaa1", "", c.now().Add(-time.Minute))
+	b.srv.events.run("ended-0000aaa1", false)
+	told(`run {"id":"ended-0000aaa1"`)
+	if got := b.since(t, ""); got.RunsEnded.Count != 1 {
+		t.Fatalf("after a run event: %+v", got.RunsEnded)
+	}
+
+	// dispatch: a ticket made ready through its route.
+	key := b.sinceTicket(t, "Ready now", dispatch.TicketReady)
+	told("dispatch ")
+	if got := b.since(t, ""); got.TicketsReady.Count != 1 || got.TicketsReady.Refs[0] != "ticket:"+key {
+		t.Fatalf("after a dispatch event: %+v", got.TicketsReady)
+	}
+
+	// session: a question asked.
+	sid := b.createSession("cat")
+	d, _ := b.srv.registry.Get(sid)
+	d.(*session.Local).SetAttentionFull(session.AttentionNeedsInput, "Proceed?", session.SourceAPI, session.KindPrompt, []session.Option{{Label: "Yes", Input: "y"}})
+	b.waitEvent(t, events, func(ev string) bool {
+		return strings.HasPrefix(ev, "session ") && strings.Contains(ev, sid) && strings.Contains(ev, string(session.AttentionNeedsInput))
+	})
+	if got := b.since(t, ""); got.QuestionsOpen.Count != 1 {
+		t.Fatalf("after a session event: %+v", got.QuestionsOpen)
+	}
+
+	// removed: the session stopped, then gone, its question with it.
+	b.expect(t, "DELETE", "/api/sessions/"+sid, nil, http.StatusOK, "")
+	if !waitFor(30*time.Second, func() bool { return d.Info().Status.Ended() }) {
+		t.Fatal("the session did not end")
+	}
+	if resp, _ := b.do("DELETE", "/api/sessions/"+sid, adminToken, nil); resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("the removal: %d", resp.StatusCode)
+	}
+	told(`removed {"id":"` + sid + `"}`)
+	if got := b.since(t, ""); got.QuestionsOpen.Count != 0 {
+		t.Fatalf("after a removed event: %+v", got.QuestionsOpen)
+	}
+
+	// brakeman: a briefing kept is the new start.
+	brief := b.sinceBriefing(t)
+	b.desk.publish(brief.ID)
+	told(`brakeman {"id":"` + brief.ID + `"`)
+	if got := b.since(t, ""); got.Since.From != sinceFromBriefing || got.Since.Briefing != brief.ID {
+		t.Fatalf("after a brakeman event: %+v", got.Since)
+	}
+
+	// An event told while a reply is computed: that reply is answered
+	// once, and the next read computes again.
+	var once sync.Once
+	during := func() {
+		once.Do(func() {
+			b.sinceRecord(t, "during-0000aaa2", "", c.now())
+			b.srv.events.run("during-0000aaa2", false)
+		})
+	}
+	b.desk.live.sinceCounted.Store(&during)
+	t.Cleanup(func() { b.desk.live.sinceCounted.Store(nil) })
+	c.add(time.Millisecond)
+	query := "?since=" + url.QueryEscape(c.now().Add(-time.Hour).Format(time.RFC3339Nano))
+	if got := b.since(t, query); got.RunsEnded.Count != 1 {
+		t.Fatalf("the reply computed before the event: %+v", got.RunsEnded)
+	}
+	told(`run {"id":"during-0000aaa2"`)
+	if got := b.since(t, query); got.RunsEnded.Count != 2 {
+		t.Fatalf("a reply computed while an event passed was kept as fresh: %+v", got.RunsEnded)
+	}
 }
 
 // With no briefing kept, the counts are of the last day: a briefing
