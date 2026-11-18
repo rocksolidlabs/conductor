@@ -2099,6 +2099,26 @@ func (e *Engine) dispatch(ctx context.Context, r *run, a *attempt) {
 		}, nil)
 		e.afterTransact(r, terr)
 	}
+	// A run whose launch was held to a resolved launch starts each
+	// member's session only from the selection that launch confirmed
+	// (origin.go): an agent it confirmed none for (or an empty one) fails
+	// the attempt at "agent", uncounted, here, before any session is let
+	// go, any tree made, any step run or any process started; the
+	// launcher compares the entry with the selection at the start.
+	confirmedSHA, confirmed := "", false
+	if r.pkg == nil {
+		e.mu.Lock()
+		sels, held := r.confirmedAgents()
+		e.mu.Unlock()
+		if confirmed = held; held {
+			sha, ok := sels[m.def.AgentID]
+			if !ok || sha == "" {
+				fail("agent", fmt.Errorf("the agent %s is not among those this run's launch confirmed", m.def.AgentID), false, true)
+				return
+			}
+			confirmedSHA = sha
+		}
+	}
 	// The member's previous session, idle since its task: let go, so that
 	// its place is free for this one.
 	e.mu.Lock()
@@ -2337,24 +2357,11 @@ func (e *Engine) dispatch(ctx context.Context, r *run, a *attempt) {
 		}
 		spec.AgentSHA256 = sha
 	}
-	// A run whose launch was held to a resolved launch starts each
-	// member's session only from the selection that launch confirmed
-	// (origin.go): one with none, or one the entry no longer matches,
-	// fails the attempt at "agent", uncounted, and pauses the run.
-	confirmed := false
-	if r.pkg == nil {
-		e.mu.Lock()
-		sels, held := r.confirmedAgents()
-		e.mu.Unlock()
-		if confirmed = held; held {
-			sha, ok := sels[m.def.AgentID]
-			if !ok {
-				release()
-				fail("agent", fmt.Errorf("the agent %s is not among those this run's launch confirmed", m.def.AgentID), false, true)
-				return
-			}
-			spec.AgentSHA256 = sha
-		}
+	// The selection its launch confirmed (checked above): the launcher
+	// refuses an entry that no longer matches it, and the attempt fails at
+	// "agent", uncounted, and pauses the run.
+	if confirmed {
+		spec.AgentSHA256 = confirmedSHA
 	}
 	local, err := e.launcher.Launch(ctx, spec)
 	if err != nil {

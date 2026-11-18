@@ -358,7 +358,7 @@ func (s *Server) resolvedCapacity(ctx context.Context, rec ext.ResolvedLaunch) [
 		if !ok {
 			continue
 		}
-		v, aerr := d.viewOf(ctx, agent, capacityQuery{account: m.Account, model: m.Model, launch: "managed", held: true}, latest)
+		v, aerr := d.viewOf(ctx, agent, capacityQuery{account: m.Account, model: m.Model, launch: "managed", yolo: m.Yolo, held: true}, latest)
 		if aerr != nil {
 			continue
 		}

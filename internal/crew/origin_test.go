@@ -3,6 +3,7 @@ package crew
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -504,6 +505,9 @@ func TestASecondLaunchOfAnOperationIDIsDiscardedWhole(t *testing.T) {
 	if got, ok, err := ld.RunByOp(context.Background(), "example", "op-1"); err != nil || !ok || got.RunID != first.ID {
 		t.Fatalf("op-1 names %+v %v %v", got, ok, err)
 	}
+	// Its attempt made, and the run stopped, before the test's folders go.
+	waitAttempt(t, e, first.ID, "build", ledger.AttemptRunning)
+	stopRun(t, e, first.ID)
 }
 
 // A provider's launch is of a crew with tasks: one without is refused
@@ -720,4 +724,52 @@ func TestPastItsDeadlineARunTakesNoChangeThatStartsAnAttempt(t *testing.T) {
 	}
 	waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
 	stopRun(t, e, run.ID)
+}
+
+// An attempt doomed at "agent" is refused before anything of it is made:
+// with a project manifest whose setup step leaves a mark, an agent the
+// launch confirmed no selection for, or an empty one (a row's agents
+// edited by hand), fails the attempt at "agent" with no setup step run,
+// no receipt, no worktree and no process.
+func TestAnUnconfirmedAgentFailsBeforeItsTree(t *testing.T) {
+	for name, agents := range map[string]map[string]string{
+		"no selection":    {"codex": strings.Repeat("e", 64)},
+		"empty selection": {"claude": ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := newRepo(t)
+			e, ld := sqlEngine(t)
+			fl := e.launcher.(*fakeLauncher)
+			mark := filepath.Join(t.TempDir(), "setup-ran")
+			c := repoManifestCrew(dir, Manifest{Setup: []Check{shStep("mark", "touch "+mark)}}, work("build", "lead"))
+			run, err := launchOrigin(t, e, c, confirmedOrigin(t, "op-1", agents))
+			if err != nil {
+				t.Fatal(err)
+			}
+			row := sqlAttemptWhen(t, ld, run.ID, "build", 1, func(r ledger.AttemptRow) bool { return r.State == ledger.AttemptFailed })
+			if row.Stage != "agent" || row.SessionID != "" || row.Worktree != "" && fileExists(row.Worktree) {
+				t.Fatalf("the attempt: %+v", row)
+			}
+			if fileExists(mark) {
+				t.Fatal("the manifest's setup step ran for an attempt doomed at agent")
+			}
+			if checks, err := ld.Checks(context.Background(), run.ID, "build", 1, false); err != nil || len(checks) != 0 {
+				t.Fatalf("receipts of a doomed attempt: %+v %v", checks, err)
+			}
+			fl.mu.Lock()
+			calls := len(fl.calls)
+			fl.mu.Unlock()
+			if calls != 0 {
+				t.Fatalf("%d processes started", calls)
+			}
+			waitTrue(t, "the run paused", func() bool { r, _ := e.Get(run.ID); return r.Paused })
+			stopRun(t, e, run.ID)
+		})
+	}
+}
+
+// fileExists reports whether path exists.
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }
