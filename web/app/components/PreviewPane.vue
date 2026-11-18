@@ -133,7 +133,9 @@ const session = usePreviewBridge({
     await painted()
   },
   frameElement: () => frame.value,
+  // An attempt's or a candidate's preview is opened with a fragment of its own; a link's fragment is its page's.
   opened: () => {
+    if (!props.target) return ''
     const a = address.value
     const i = a.indexOf('#')
     return i < 0 ? '' : a.slice(i)
@@ -141,8 +143,8 @@ const session = usePreviewBridge({
   view: () => ({ mode: mode.value, scale: scale.value }),
   fallback: () => {
     const d = device.value
-    // The frame's address less its fragment: what opens the preview there stays the frame's.
-    return { url: withoutFragment(address.value), width: d ? d.width : room.value.width, height: d ? d.height : room.value.height }
+    // The frame's address: the session's own pane names an attempt's preview without the fragment that opens it (opened).
+    return { url: address.value, width: d ? d.width : room.value.width, height: d ? d.height : room.value.height }
   },
 })
 /** Two animation frames: what the last change drew is on the screen. */
@@ -210,32 +212,42 @@ async function capture() {
 }
 
 /**
- * Waits for the bridge of the frame's load now (the next load when none is under way): true once it answers, false when that load ends
- * first or the pane comes to say the page does not load the bridge. It waits as long as the frame stays on that load, as the pane's
- * own hello does.
+ * Waits for the bridge of the frame's load now (the next load when none is under way): true once it answers; false when that load
+ * ends first, when there is no frame to wait on (the preview closed), or when the pane goes. It waits as long as the frame stays on
+ * that load, as the pane's own hello does, past the 30 s words too.
  */
 function bridgeOfThisLoad(): Promise<boolean> {
   if (session.state.bridge === 'ready') return Promise.resolve(true)
   const load = session.state.bridge === 'none' ? hellos.value + 1 : hellos.value
   const judge = (): boolean | null => {
+    if (!frame.value || !framed.value) return false
     const n = hellos.value
     const b = session.state.bridge
     if (n > load) return false
     if (n < load) return null
     if (b === 'ready') return true
-    return b === 'none' || session.state.unanswered ? false : null
+    return b === 'none' ? false : null
   }
   return new Promise((resolve) => {
     const first = judge()
     if (first !== null) return resolve(first)
-    const stop = watch([hellos, () => session.state.bridge, () => session.state.unanswered], () => {
-      const done = judge()
-      if (done === null) return
+    const end = (done: boolean) => {
       stop()
+      waits.delete(end)
       resolve(done)
+    }
+    const stop = watch([hellos, () => session.state.bridge, frame, framed], () => {
+      const done = judge()
+      if (done !== null) end(done)
     })
+    waits.add(end)
   })
 }
+/** The waits of Capture again under way: each ended (false) when the pane goes. */
+const waits = new Set<(done: boolean) => void>()
+onBeforeUnmount(() => {
+  for (const end of [...waits]) end(false)
+})
 
 /**
  * Capture again (PV1 PR-8): the earlier capture's device mode, and its elements described again by their selectors into a new capture
@@ -262,6 +274,10 @@ async function again(c: CaptureAnswer) {
     retakeError.value = 'the capture names no page this preview can open'
     return
   }
+  if (!frame.value || !framed.value) {
+    retakeError.value = 'no page is in the frame now: Capture again needs the preview open'
+    return
+  }
   retakeState.value = 'waiting'
   const here = (await bridgeOfThisLoad()) ? await session.where() : null
   retakeState.value = ''
@@ -275,7 +291,7 @@ async function again(c: CaptureAnswer) {
     retakeState.value = 'moved'
     return
   }
-  const elements = (c.annotations ?? []).filter((a) => a.kind === 'element' && a.element).map((a) => ({ selector: a.element!.selector, note: a.note }))
+  const elements = (c.annotations ?? []).filter((a) => a.kind === 'element' && a.element).map((a) => ({ selector: a.element!.selector }))
   await session.retake(c.id, elements)
 }
 /** The capture `retake` names, read to offer Capture again of it. */
