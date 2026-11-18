@@ -90,6 +90,7 @@ type relayUsageConn struct {
 	from     time.Time
 	carry    time.Duration
 	renewals int
+	reported bool // a report of the connection was queued
 	closed   bool
 }
 
@@ -148,7 +149,10 @@ func (c *relayUsageConn) add(n int) {
 }
 
 // cut queues the report of the stretch up to now and starts the next;
-// the caller holds c.mu. Nothing once the connection's Final is queued.
+// the caller holds c.mu. Nothing once the connection's Final is queued,
+// and no Final for a connection with nothing to report (no report before
+// it, no whole session second, no byte): a host that connects and drops
+// in a loop pushes no other connection's reports out of the queue.
 func (c *relayUsageConn) cut(final bool) {
 	if c.closed {
 		return
@@ -164,6 +168,10 @@ func (c *relayUsageConn) cut(final bool) {
 		u.SessionSeconds, c.carry = int64(span/time.Second), span%time.Second
 	}
 	c.from, c.closed = to, final
+	if final && !c.reported && u.SessionSeconds == 0 && u.RelayedBytes == 0 {
+		return
+	}
+	c.reported = true
 	// Queued under c.mu, so the connection's reports are queued in the
 	// order they were cut; push never waits on the provider.
 	c.desk.queue.push(u)
