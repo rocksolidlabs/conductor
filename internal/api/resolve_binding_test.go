@@ -3,11 +3,13 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/rocksolidlabs/conductor/ext"
 	"github.com/rocksolidlabs/conductor/internal/capacity"
@@ -201,3 +203,34 @@ func TestResolvedCapacityHonoursTheMembersYolo(t *testing.T) {
 	}
 }
 
+// A resolve moves no key's place in the kept readings: with them at their
+// bound, a resolve's view of the least recently asked key leaves it the
+// one the admin's next read drops, as with no resolve.
+func TestResolveLaunchMovesNoReading(t *testing.T) {
+	b := newBoundEnv(t)
+	least := capacity.Key{Agent: "claude-p", Account: b.account}
+	at := readTime(t, readNow(t, b.testEnv, least.Agent, least.Account, false)["readAt"])
+	cache := b.srv.capacity.cache
+	var next capacity.Key
+	var nextAt time.Time
+	for i := range capacity.MaxKeys - 1 {
+		k := capacity.Key{Agent: fmt.Sprintf("fill-%d", i), Account: capacity.DefaultID}
+		v := cache.Read(t.Context(), k, capacity.ReadOptions{})
+		if v.ReadAt == nil {
+			t.Fatalf("no reading of %v: %+v", k, v)
+		}
+		if i == 0 {
+			next, nextAt = k, *v.ReadAt
+		}
+	}
+	if rl := resolve(t, b.testEnv, b.crew, ""); len(rl.Capacity) == 0 || rl.Capacity[0].Account != b.account {
+		t.Fatalf("the resolve's views: %+v", rl.Capacity)
+	}
+	readNow(t, b.testEnv, "codex-p", capacity.DefaultID, false)
+	if _, ok := cache.Kept(least, at); ok {
+		t.Fatal("the key the resolve viewed is still kept: the resolve moved it, and the admin's read dropped another")
+	}
+	if _, ok := cache.Kept(next, nextAt); !ok {
+		t.Fatalf("%v, the next least recently asked, was dropped", next)
+	}
+}
