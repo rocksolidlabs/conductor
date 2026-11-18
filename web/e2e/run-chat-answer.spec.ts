@@ -18,23 +18,31 @@ test.afterAll(async ({ api, state }) => {
   for (const m of ['stub-update', 'stub-update-answer']) rmSync(join(state.home, '.codex', m), { force: true })
 })
 
+/** A wait's cap, the config's expect bound: every wait and action of the test is bounded by it unless it names its own. */
+const STEP = 15_000
+/** A wait of the cap `ms`, added to the test's timeout as the step takes it (AGENTS.md, Tests that do not flake). */
+function cap(ms: number): number {
+  budget(ms)
+  return ms
+}
+
 /** A guest on a run link of the role, in a browser with no workbench token: the run's chat opened. */
 async function guest(browser: Browser, api: Api, runId: string, role: 'view' | 'control', name: string): Promise<Page> {
   const { token } = await api.ok<{ token: string }>('POST', `/api/runs/${runId}/links`, { role, ttlSeconds: 3600 })
   const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } })
   await ctx.addInitScript((n) => localStorage.setItem('conductor.displayName', n), name)
   const page = await ctx.newPage()
-  await page.goto(`/join/${token}`)
-  await page.getByRole('button', { name: 'Join crew' }).click()
-  await expect(page.locator('[data-join-tiles] [data-member]')).toHaveCount(2, { timeout: 30_000 })
-  await expect(page.locator('[data-run-chat-button]:not([data-run-chat-offline])')).toBeVisible({ timeout: 15_000 })
-  await page.locator('[data-run-chat-button]').click()
+  await page.goto(`/join/${token}`, { timeout: cap(STEP) })
+  await page.getByRole('button', { name: 'Join crew' }).click({ timeout: cap(STEP) })
+  await expect(page.locator('[data-join-tiles] [data-member]')).toHaveCount(2, { timeout: cap(30_000) })
+  await expect(page.locator('[data-run-chat-button]:not([data-run-chat-offline])')).toBeVisible({ timeout: cap(STEP) })
+  await page.locator('[data-run-chat-button]').click({ timeout: cap(STEP) })
   return page
 }
 
 test("a member's question in a run with tasks is answered from the run's chat: the run page, a control link; a view link gets the choices as text", async ({ page, api, state, browser }) => {
-  // Each step's own waits, as it takes them: two attempts asked (45 s), then each page's (15 s each) and each answer's (15 s each).
-  budget(45_000 + 6 * 15_000)
+  // Every wait below adds its own cap to the test's timeout as it is taken (cap): the config's 120 s is left for the requests and
+  // the setup between them.
   const dir = join(state.home, '.codex')
   mkdirSync(dir, { recursive: true })
   for (const m of ['stub-hooks-review', 'stub-background']) rmSync(join(dir, m), { force: true })
@@ -66,7 +74,7 @@ test("a member's question in a run with tasks is answered from the run's chat: t
     const id = member(await api.run(run.id), name).sessionId ?? ''
     return id ? ((await api.session(id)).attention ?? { state: '' }) : { state: '' }
   }
-  await expect.poll(async () => `${(await asked('cand-a')).message ?? ''} | ${(await asked('cand-b')).message ?? ''}`, { timeout: 45_000, message: 'both attempts ask whether to update' }).toMatch(/^Update available.* \| Update available/)
+  await expect.poll(async () => `${(await asked('cand-a')).message ?? ''} | ${(await asked('cand-b')).message ?? ''}`, { timeout: cap(45_000), message: 'both attempts ask whether to update' }).toMatch(/^Update available.* \| Update available/)
   expect(answered(), 'no choice taken yet').toBe('')
   // Each question's line in the run's chat is the question's own id.
   const idA = (await asked('cand-a')).id ?? ''
@@ -75,35 +83,35 @@ test("a member's question in a run with tasks is answered from the run's chat: t
 
   // The run page: cand-a's question, on cand-a, answered by its first choice (Escape: skip).
   await page.addInitScript(() => localStorage.setItem('conductor.displayName', 'Nate'))
-  await page.goto(`/runs/${run.id}`)
-  await expect(page.locator('[data-run-chat-button]:not([data-run-chat-offline])')).toBeVisible({ timeout: 15_000 })
-  await page.locator('[data-run-chat-button]').click()
+  await page.goto(`/runs/${run.id}`, { timeout: cap(STEP) })
+  await expect(page.locator('[data-run-chat-button]:not([data-run-chat-offline])')).toBeVisible({ timeout: cap(STEP) })
+  await page.locator('[data-run-chat-button]').click({ timeout: cap(STEP) })
   const chat = page.locator('[data-run-chat]')
   const onA = chat.locator(`[data-chat-question][data-chat-message="${idA}"]`)
-  await expect(onA).toContainText('Update available', { timeout: 15_000 })
-  await onA.locator('[data-chat-option]').filter({ hasText: 'Skip this update' }).click()
-  await expect.poll(answered, { timeout: 15_000, message: "cand-a's stub skipped" }).toBe('skip')
-  await expect.poll(async () => (await asked('cand-a')).state, { timeout: 15_000, message: "cand-a's question goes" }).not.toBe('needs_input')
-  await expect(onA.locator('[data-chat-chosen]')).toHaveText('Skip this update', { timeout: 15_000 })
-  await expect(onA.locator('[data-chat-option]')).toHaveCount(0)
+  await expect(onA).toContainText('Update available', { timeout: cap(STEP) })
+  await onA.locator('[data-chat-option]').filter({ hasText: 'Skip this update' }).click({ timeout: cap(STEP) })
+  await expect.poll(answered, { timeout: cap(STEP), message: "cand-a's stub skipped" }).toBe('skip')
+  await expect.poll(async () => (await asked('cand-a')).state, { timeout: cap(STEP), message: "cand-a's question goes" }).not.toBe('needs_input')
+  await expect(onA.locator('[data-chat-chosen]')).toHaveText('Skip this update', { timeout: cap(STEP) })
+  await expect(onA.locator('[data-chat-option]')).toHaveCount(0, { timeout: cap(STEP) })
   // The line is on the member as the run names it, not on its attempt's label.
-  await expect(onA.locator('[data-chat-on]')).toHaveAttribute('data-chat-on', 'cand-a')
+  await expect(onA.locator('[data-chat-on]')).toHaveAttribute('data-chat-on', 'cand-a', { timeout: cap(STEP) })
   expect((await asked('cand-b')).state, "cand-b's question is still its own").toBe('needs_input')
 
   // A view link's holder: cand-b's question with its choices as text, no button.
   const jane = await guest(browser, api, run.id, 'view', 'Jane')
   const janeOnB = jane.locator(`[data-run-chat] [data-chat-question][data-chat-message="${idB}"]`)
-  await expect(janeOnB.locator('[data-chat-choice]')).toHaveCount(2, { timeout: 15_000 })
-  await expect(janeOnB.locator('[data-chat-option]')).toHaveCount(0)
+  await expect(janeOnB.locator('[data-chat-choice]')).toHaveCount(2, { timeout: cap(STEP) })
+  await expect(janeOnB.locator('[data-chat-option]')).toHaveCount(0, { timeout: cap(STEP) })
 
   // A control link's holder: cand-b's question answered by its second choice.
   const priya = await guest(browser, api, run.id, 'control', 'Priya')
   const priyaOnB = priya.locator(`[data-run-chat] [data-chat-question][data-chat-message="${idB}"]`)
-  await priyaOnB.locator('[data-chat-option]').filter({ hasText: 'Skip until next version' }).click()
-  await expect.poll(answered, { timeout: 15_000, message: "cand-b's stub skipped until the next version" }).toBe('skip-version')
-  await expect.poll(async () => (await asked('cand-b')).state, { timeout: 15_000, message: "cand-b's question goes" }).not.toBe('needs_input')
-  await expect(janeOnB.locator('[data-chat-chosen]')).toHaveText('Skip until next version', { timeout: 15_000 })
-  await expect(chat.locator('[data-chat-system]').filter({ hasText: 'Answered by Priya: Skip until next version' })).toHaveCount(1, { timeout: 15_000 })
+  await priyaOnB.locator('[data-chat-option]').filter({ hasText: 'Skip until next version' }).click({ timeout: cap(STEP) })
+  await expect.poll(answered, { timeout: cap(STEP), message: "cand-b's stub skipped until the next version" }).toBe('skip-version')
+  await expect.poll(async () => (await asked('cand-b')).state, { timeout: cap(STEP), message: "cand-b's question goes" }).not.toBe('needs_input')
+  await expect(janeOnB.locator('[data-chat-chosen]')).toHaveText('Skip until next version', { timeout: cap(STEP) })
+  await expect(chat.locator('[data-chat-system]').filter({ hasText: 'Answered by Priya: Skip until next version' })).toHaveCount(1, { timeout: cap(STEP) })
   await jane.context().close()
   await priya.context().close()
 })
