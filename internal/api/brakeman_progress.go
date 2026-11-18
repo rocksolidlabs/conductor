@@ -76,6 +76,9 @@ type brakemanLive struct {
 	trailed atomic.Uint64
 
 	since sinceCache
+	// sinceCounted, when a test sets it, runs in a since read once its
+	// counts are computed and before its reply is kept.
+	sinceCounted atomic.Pointer[func()]
 }
 
 // noteReading notes r, the read of request id just admitted, as the
