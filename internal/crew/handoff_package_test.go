@@ -14,6 +14,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/rocksolidlabs/conductor/ext"
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
 )
 
@@ -331,5 +332,44 @@ func TestTheWorstRepairFileHoldsAPackagesHead(t *testing.T) {
 	}
 	if !strings.Contains(string(md), handoffHeading) || !strings.Contains(string(md), "`handoff.text` in `.conductor/task-more.json`") || !strings.Contains(string(more), `"handoff"`) {
 		t.Fatalf("the package's head is not in task.md, or its text not in task-more.json:\n%s", md)
+	}
+}
+
+// An attempt cancelled before the package is asked for asks for none, so
+// a cancel or a stop that lands in the dispatch never uses a package up:
+// the dispatch is held in its context ask (asked just before), the task
+// cancelled, then let go, and waited for to its end.
+func TestAClosedAttemptAsksForNoPackage(t *testing.T) {
+	dir := newRepo(t)
+	e, _, _ := managedEngine(t)
+	entered, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	e.SetContext(func(ctx context.Context, q ext.ContextQuery) []TaskContext {
+		once.Do(func() { close(entered); <-release })
+		return nil
+	})
+	var mu sync.Mutex
+	asked := 0
+	e.SetHandoff(func(context.Context, HandoffQuery) *TaskHandoff {
+		mu.Lock()
+		asked++
+		mu.Unlock()
+		return nil
+	})
+	run := launchManaged(t, e, repoCrew(dir, work("build", "lead")))
+	<-entered
+	if err := e.CancelTask(t.Context(), run.ID, "build"); err != nil {
+		close(release)
+		t.Fatal(err)
+	}
+	close(release)
+	e.mu.Lock()
+	r := e.runs[run.ID]
+	e.mu.Unlock()
+	r.starts.Wait()
+	mu.Lock()
+	defer mu.Unlock()
+	if asked != 0 {
+		t.Fatalf("a cancelled attempt asked for a package %d times", asked)
 	}
 }

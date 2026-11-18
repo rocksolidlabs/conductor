@@ -86,8 +86,10 @@ func decisionKey(x *brakeman.Decision) string {
 // When the brief notifies (briefNeedsYou) and holds a decision none of
 // the role's earlier background briefs held (heldBefore), it sends the
 // pages' event and queues the webhooks' notification, once, before the
-// submission is answered. Earlier briefs that cannot be read notify no
-// one: nothing is kept to send later, and a restart sends nothing.
+// submission is answered. A list of the earlier requests that cannot be
+// read notifies no one (an earlier brief that does not read is passed
+// over, heldBefore): nothing is kept to send later, and a restart sends
+// nothing.
 func (d *brakemanDesk) briefKept(kept brakeman.Request, b brakeman.Brief) {
 	n := briefNeedsYou(kept, brakeman.DigestOf(b))
 	if n < 1 || n > brakeman.MaxItems {
@@ -95,7 +97,7 @@ func (d *brakemanDesk) briefKept(kept brakeman.Request, b brakeman.Brief) {
 	}
 	held, err := d.heldBefore(kept.ID)
 	if err != nil {
-		d.s.log.Warn("Brakeman's earlier briefs could not be read: the background brief notifies no one", "request", kept.ID, "err", err)
+		d.s.log.Warn("Brakeman's earlier requests could not be listed: the background brief notifies no one", "request", kept.ID, "err", err)
 		return
 	}
 	fresh := false
@@ -116,8 +118,11 @@ func (d *brakemanDesk) briefKept(kept brakeman.Request, b brakeman.Brief) {
 
 // heldBefore is the decisions the role's background briefs kept before
 // the request id held: of its newest needsYouEarlier with a brief, among
-// the needsYouLook requests before it. A brief whose digest counts no
-// decision is not read; one gone since it was listed holds none.
+// the needsYouLook requests before it, its items alone (never its
+// resolutions). Only a list that cannot be read is an error: a brief
+// whose digest counts no decision is not read, and one whose digest or
+// brief does not read (gone since it was listed, or damaged) is passed
+// over as holding none, so a decision only it held is told again.
 func (d *brakemanDesk) heldBefore(id string) (map[string]bool, error) {
 	held := map[string]bool{}
 	briefs, looked, after := 0, 0, id
@@ -137,7 +142,7 @@ func (d *brakemanDesk) heldBefore(id string) (map[string]bool, error) {
 			if dg, err := d.st.Digest(r.ID); err != nil || dg == nil || dg.Counts.Decisions == 0 {
 				continue
 			}
-			earlier, _, err := d.st.Brief(r.ID)
+			earlier, err := d.st.BriefAlone(r.ID)
 			if err != nil {
 				continue
 			}
