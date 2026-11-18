@@ -35,6 +35,28 @@ const props = defineProps<{
 const emit = defineEmits<{ close: []; again: [capture: CaptureAnswer] }>()
 
 const captures = useCaptures()
+const sessions = useSessions()
+
+/**
+ * The tree the page is served from, where the editor can know it: an attempt's worktree, read from its task (a draft's hints are
+ * listed relative to it before Save, as the server lists the sources after). A candidate's checkout and a link name none here.
+ */
+const tree = ref('')
+const treeOf = computed(() => (props.from && 'run' in props.from && !props.from.seq ? props.from : null))
+watch(
+  () => (treeOf.value ? `${treeOf.value.run}/${treeOf.value.task}/${treeOf.value.attempt}` : ''),
+  async (key) => {
+    tree.value = ''
+    const f = treeOf.value
+    if (!key || !f) return
+    const worktree = await sessions
+      .runTask(f.run, f.task)
+      .then((r) => r.attempts.find((a) => a.n === f.attempt)?.worktree ?? '')
+      .catch(() => '')
+    if (key === (treeOf.value ? `${treeOf.value.run}/${treeOf.value.task}/${treeOf.value.attempt}` : '')) tree.value = worktree
+  },
+  { immediate: true },
+)
 const desktop = typeof window !== 'undefined' && 'conductorDesktop' in window
 
 /** A saved capture as the editor holds it: the server's answer, its screenshot's object URL, the annotations as edited, unsaved. */
@@ -415,6 +437,7 @@ const refusal = computed(() => props.session.state.refusal)
           :observed="a.observed"
           :words="a.words"
           :session="attemptSession"
+          :tree="tree"
           :first="i === 0"
           :last="i === draft.annotations.length - 1"
           @update:note="(v: string) => (a.note = v)"

@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto'
 import type { Page, Request } from '@playwright/test'
-import { expect, test, type Api } from './fixtures'
+import { expect, test, useTheme, type Api } from './fixtures'
 import { freeProjectKey, makeProject, makeTicket, opOf, storedTicket } from './dispatch-helpers'
 import { createComparison, makeComparison } from './compare-helpers'
 import { noOverlap, noSideways } from './layout'
@@ -63,12 +63,18 @@ async function ordinaryCrew(api: Api) {
   return crew
 }
 
-/** A ticket of a project of its own, with `crew` proposed and approved as its revision 1. */
-async function approvedTicket(api: Api, crew: string) {
+/** A ticket of a project of its own, with `crew` proposed as its revision 1. */
+async function proposedTicket(api: Api, crew: string) {
   const key = await freeProjectKey(api, 'CMP')
   await makeProject(api, key)
   const ticketKey = await makeTicket(api, key, '1', { title: 'Compare the cache' })
   const { plan } = await api.ok<{ plan: { id: string; rev: number } }>('POST', `/api/dispatch/tickets/${ticketKey}/plans`, { opId: opOf(key, 'r1'), crew })
+  return { key, ticketKey, plan }
+}
+
+/** A ticket of a project of its own, with `crew` proposed and approved as its revision 1. */
+async function approvedTicket(api: Api, crew: string) {
+  const { key, ticketKey, plan } = await proposedTicket(api, crew)
   const ticket = await storedTicket(api, ticketKey)
   await api.ok('POST', `/api/dispatch/plans/${plan.id}/approve`, { opId: opOf(key, 'ap1'), expectedRev: plan.rev, ticketRev: ticket.rev })
   return { key, ticketKey, plan }
@@ -136,7 +142,7 @@ test("a comparison's launch says what it starts, its button says the count, and 
   await expect(statement.locator('[data-launch-compare-part="reviews"]')).toHaveText('then an agent review of each candidate that succeeds: up to 2 more sessions, none for a candidate that fails or is cancelled')
   await expect(statement.locator('[data-launch-compare-part="multiplier"]')).toContainText("a review's request for changes, an attempt that could not start and each Retry you give add more")
   await expect(statement.locator('[data-launch-compare-part="checks"]')).toHaveText(
-    "1 check on each submitted candidate attempt (the task's checks and conductor.manifest.json's verify steps at the base; a candidate that changes the manifest runs its own)",
+    "1 check on each submitted candidate attempt (the task's checks: the crew names no manifest, so no verify step runs)",
   )
   await expect(statement.locator('[data-launch-compare-part="brakeman"]')).toHaveText('1 Brakeman turn on your Brakeman account, when all candidates are done')
   await expect(statement.locator('[data-launch-compare-part="usage"]')).toHaveText('Usage per account: shown below')
@@ -348,4 +354,86 @@ test('New comparison keeps its draft across a close until Cancel, and a candidat
   await page.locator('[data-new-comparison]').click()
   await expect(form.locator('[data-compare-name]')).toHaveValue('')
   await expect(form.locator('[data-compare-template-problem]')).toHaveText('Name the comparison')
+})
+
+const PHONE = { width: 390, height: 844 }
+const DESK = { width: 1440, height: 900 }
+
+test("a comparison's plan revision and its approval show each candidate's approach and the criteria, and the checks its launch states", async ({ page, api }) => {
+  test.setTimeout(180_000)
+  const crew = await comparisonCrew(api, { reviews: true })
+  const { key } = await proposedTicket(api, crew.id)
+  for (const size of [DESK, PHONE]) {
+    await page.setViewportSize(size)
+    for (const theme of ['dark', 'light'] as const) {
+      await page.goto(`/dispatch/${key}/1`)
+      const featured = page.locator('[data-plan-section] [data-plan-featured]')
+      await expect(featured).toHaveAttribute('data-plan-state', 'proposed', { timeout: 30_000 })
+      await useTheme(page, theme, '[data-plan-section] [data-plan-featured] [data-plan-body]')
+      const at = `${size.width} wide, ${theme}`
+      // The revision's body: the criteria, then each candidate with its agent and approach, before the members.
+      const cmp = featured.locator('[data-plan-compare]')
+      await expect(cmp, at).toHaveAttribute('data-plan-compare-candidates', '2')
+      await expect(cmp.locator('[data-plan-compare-criterion]')).toHaveText(['no new dependency'])
+      await expect(cmp.locator('[data-plan-compare-candidate="approach-a"] [data-plan-compare-approach]')).toHaveText('key the cache by locale')
+      await expect(cmp.locator('[data-plan-compare-candidate="approach-b"] [data-plan-compare-approach]')).toHaveText('No approach given: an independent try.')
+      await expect(cmp.locator('[data-plan-compare-candidate="approach-b"]')).toContainText('cand-b · Worker, CLI (e2e stub)')
+      // One check on each candidate attempt: each lane has the one check, never the two added together.
+      await expect(featured.locator('[data-plan-expected]')).toHaveAttribute('data-count', '1')
+      await expect(featured.locator('[data-plan-expected]')).toHaveText('1 check on each submitted candidate attempt, the same for every candidate.')
+      const box = async (sel: string) => (await featured.locator(sel).first().boundingBox())!
+      expect((await box('[data-plan-compare]')).y, at).toBeLessThan((await box('[data-plan-member]')).y)
+      // The plan's own section, at the comparison (the ticket's strip of sections above it scrolls sideways by design).
+      await cmp.scrollIntoViewIfNeeded()
+      await noSideways(page, { root: page.locator('[data-plan-section]') })
+
+      // The approval dialog says the same before it is approved.
+      await featured.locator('[data-plan-approve]').click()
+      const dialog = page.locator('[data-plan-approve-dialog]')
+      await expect(dialog.locator('[data-plan-approve-yolo]')).toBeVisible({ timeout: 30_000 })
+      await expect(dialog.locator('[data-plan-compare-criterion]')).toHaveText(['no new dependency'])
+      await expect(dialog.locator('[data-plan-compare-candidate="approach-a"] [data-plan-compare-approach]')).toHaveText('key the cache by locale')
+      await expect(dialog.locator('[data-plan-compare-candidate="approach-b"] [data-plan-compare-approach]')).toHaveText('No approach given: an independent try.')
+      await expect(dialog.locator('[data-plan-compare-checks]')).toHaveAttribute('data-count', '1')
+      await expect(dialog.locator('[data-plan-compare-checks]')).toHaveText('1 check on each submitted candidate attempt: unit true.')
+      await noSideways(page, { root: dialog })
+      await page.keyboard.press('Escape')
+      await expect(dialog).toHaveCount(0)
+    }
+  }
+
+  // Approved, its launch states the same count.
+  await page.setViewportSize(DESK)
+  await page.goto(`/dispatch/${key}/1`)
+  const featured = page.locator('[data-plan-section] [data-plan-featured]')
+  await featured.locator('[data-plan-approve]').click()
+  await page.locator('[data-plan-approve-submit]').click()
+  await expect(featured).toHaveAttribute('data-plan-state', 'approved', { timeout: 30_000 })
+  await featured.locator('[data-plan-launch]').click()
+  const statement = page.locator('[data-launch-dialog] [data-launch-compare]')
+  await expect(statement.locator('[data-launch-compare-part="checks"]')).toHaveText(/^1 check on each submitted candidate attempt /, { timeout: 30_000 })
+})
+
+test("New comparison's title and description stay clear of its close button, wide and on a phone, in both themes", async ({ page }) => {
+  test.setTimeout(120_000)
+  for (const size of [DESK, PHONE]) {
+    await page.setViewportSize(size)
+    await page.goto('/crews')
+    for (const theme of ['dark', 'light'] as const) {
+      await useTheme(page, theme, '[data-new-comparison]')
+      await page.locator('[data-new-comparison]').click()
+      const dialog = page.getByRole('dialog').filter({ has: page.locator('[data-compare-template]') })
+      await expect(dialog.locator('[data-compare-template]')).toBeVisible()
+      const close = (await dialog.locator('[data-slot="close"]').boundingBox())!
+      for (const part of ['title', 'description']) {
+        const text = (await dialog.locator(`[data-slot="${part}"]`).boundingBox())!
+        // Beside the button, the words end before it starts; below it, they are past its bottom.
+        const clear = text.x + text.width <= close.x || text.y >= close.y + close.height
+        expect(clear, `the ${part} ends at ${text.x + text.width}, the close button starts at ${close.x} (${size.width} wide, ${theme})`).toBe(true)
+      }
+      await noSideways(page)
+      await page.keyboard.press('Escape')
+      await expect(dialog).toHaveCount(0)
+    }
+  }
 })

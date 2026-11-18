@@ -3210,7 +3210,12 @@ its 63 nearest ancestors), hovered, motion (the animations playing on
 it, on the elements a walk of its subtree reaches within 64 links and on
 its 12 nearest ancestors)}, hit {self, selector, tag} (what
 elementFromPoint finds at the box's centre; self when that is it or it
-is one of the 63 nearest ancestors of what is found), html (its markup
+is one of the 63 nearest ancestors of what is found; selector the words
+that name it as the selection's outline names an element: its `#id` when
+the id names it, else its tag with its first two classes (the tag to 64
+bytes, the class list to its first 128), else its tag and its accessible
+name in quotes (to 64 bytes), else its path from the root; words for a
+person and an agent, never asked of the page), html (its markup
 as the bridge writes it, within 3,072 links and its bound in bytes,
 every node whole and every element closed, so it is never cut
 afterwards), neighbourhood (its parent's, written the same way within

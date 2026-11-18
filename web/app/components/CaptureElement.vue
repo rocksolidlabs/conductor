@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { CaptureSource, StoredElement } from '~/utils/capture'
-import { elementSummary, hitWords, sourceLink, elementStateWords } from '~/utils/capture'
+import { draftSources, elementSummary, hitWords, sourceLink, elementStateWords } from '~/utils/capture'
 import type { ElementReport } from '~/utils/protocol'
 
 /**
@@ -14,6 +14,8 @@ const props = defineProps<{
   sources?: CaptureSource[]
   /** The attempt's session, where a found source opens; none for a capture whose session is gone. */
   session?: string
+  /** The tree the page is served from, where the editor knows it (the attempt's worktree): a draft's hints are listed relative to it. */
+  tree?: string
 }>()
 
 const summary = computed(() => elementSummary(props.element))
@@ -24,8 +26,11 @@ const box = computed(() => {
   return `${Math.round(b.width)} × ${Math.round(b.height)} at ${Math.round(b.x)}, ${Math.round(b.y)}`
 })
 const styles = computed(() => (props.element.styles ?? []).map(([k, v]) => `${k}: ${v};`).join('\n'))
-/** The hints the page gave, before the server checked them (a draft's). */
-const hints = computed(() => (props.sources ? [] : (props.element.hints ?? []).map((h) => `${h.file}${h.line ? `:${h.line}` : ''}${h.component ? ` · ${h.how} component ${h.component}` : ` · ${h.how}`}`)))
+/**
+ * The hints the page gave, before the server checked them (a draft's), listed as the checked sources are after Save (draftSources): the
+ * tree's own files first and relative to the tree, a library's last, no path of the machine.
+ */
+const hints = computed(() => (props.sources ? [] : draftSources(props.element.hints ?? [], props.tree)))
 function sourceTo(s: CaptureSource): string | undefined {
   const link = sourceLink(s)
   if (!link || !props.session) return undefined
@@ -54,9 +59,15 @@ function sourceWords(s: CaptureSource): string {
       </li>
     </ul>
     <p v-else-if="sources" class="text-muted">The page gives no source.</p>
-    <ul v-else-if="hints.length" class="flex flex-col gap-0.5" data-capture-hints>
-      <li v-for="(h, i) in hints" :key="i" class="min-w-0 break-all font-mono text-muted" data-mono="path">{{ h }}</li>
-    </ul>
+    <template v-else-if="hints.length">
+      <ul class="flex flex-col gap-0.5" data-capture-hints>
+        <li v-for="(h, i) in hints" :key="i" class="flex min-w-0 flex-wrap items-baseline gap-x-2" :data-capture-hint="h.path" :data-hint-vendor="h.vendor ? '' : undefined">
+          <span class="min-w-0 break-all font-mono" data-mono="path">{{ h.path }}{{ h.line ? `:${h.line}` : '' }}</span>
+          <span class="text-muted">{{ h.component ? `${h.how} component ${h.component}` : h.how }}{{ h.vendor ? ' · a library' : '' }}</span>
+        </li>
+      </ul>
+      <p class="text-muted" data-capture-hints-unchecked>As the page names them: Save checks each in the tree.</p>
+    </template>
     <p v-else class="text-muted">The page gives no source.</p>
     <details v-if="element.html" class="min-w-0">
       <summary class="cursor-pointer text-muted">HTML</summary>

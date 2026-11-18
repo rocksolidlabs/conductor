@@ -302,24 +302,31 @@ test.describe('the selection and the supporting panel on the comparison', () => 
     await labelled()
   })
 
-  test('on a phone: one column, the candidates, the measured part, the supporting panel, then the selection, nothing sideways', async ({ day, browser }) => {
+  test('wide and on a phone: the candidates, the measured part, the supporting panel, then the selection, nothing sideways', async ({ day, browser }) => {
     await day.part('dispatch')
-    budget(3 * LOAD_MS)
+    budget(6 * LOAD_MS)
     const run = compareRun({ ticket: COMPARE_TICKET })
     const sel = inboxItem('decision', { origin: 'compare', run, candidates: [{ task: 'approach-a', n: 1, commit: 'a'.repeat(40) }] })
-    const page = await dayPage(browser, { ...PHONE, path: '/agents' })
-    await serveRun(page, run)
-    await stubInbox(page, [sel])
-    await serveComparison(page, run.id, () => ({ ...comparisonOf({ run: run.id, failed: true }), selection: selectionOf(sel, 'open'), supporting: SAID }))
-    for (const theme of ['dark', 'light'] as const) {
-      await openCompare(page, run.id)
-      await useTheme(page, theme, '[data-compare-select] [data-decision-choice]')
-      const v = page.locator('[data-compare-view]')
-      const top = async (sel: string) => (await v.locator(sel).first().boundingBox())!.y
-      const order = [await top('[data-compare-columns]'), await top('[data-compare-measured]'), await top('[data-compare-supporting]'), await top('[data-compare-select]')]
-      expect(order, 'candidates, measured, supporting, selection, top to bottom').toEqual([...order].sort((a, b) => a - b))
-      await tapTarget(v.locator('[data-compare-select] [data-decision-choice], [data-compare-ask-brakeman]'))
-      await noSideways(page)
+    for (const size of [DESK, PHONE]) {
+      const page = await dayPage(browser, { ...size, path: '/agents' })
+      await serveRun(page, run)
+      await stubInbox(page, [sel])
+      await serveComparison(page, run.id, () => ({ ...comparisonOf({ run: run.id, failed: true }), selection: selectionOf(sel, 'open'), supporting: SAID }))
+      for (const theme of ['dark', 'light'] as const) {
+        await openCompare(page, run.id)
+        await useTheme(page, theme, '[data-compare-select] [data-decision-choice]')
+        const v = page.locator('[data-compare-view]')
+        const box = async (s: string) => (await v.locator(s).first().boundingBox())!
+        const [columns, measured, supporting, select] = [await box('[data-compare-columns]'), await box('[data-compare-measured]'), await box('[data-compare-supporting]'), await box('[data-compare-select]')]
+        // Each part starts below the end of the one before it: the answer sits under everything it is answered from.
+        const at = `${size.width} wide, ${theme}`
+        expect(measured.y, `the measured part after the candidates, ${at}`).toBeGreaterThanOrEqual(columns.y + columns.height)
+        expect(supporting.y, `the supporting panel after the measured part, ${at}`).toBeGreaterThanOrEqual(measured.y + measured.height)
+        expect(select.y, `the selection after the supporting panel, ${at}`).toBeGreaterThanOrEqual(supporting.y + supporting.height)
+        if (size === PHONE) await tapTarget(v.locator('[data-compare-select] [data-decision-choice], [data-compare-ask-brakeman]'))
+        await noSideways(page)
+      }
+      await page.context().close()
     }
   })
 
@@ -522,10 +529,35 @@ test.describe('the selection on the real server', () => {
       await expect(select).toHaveAttribute('data-compare-selection', second.decision)
       await expect(select.locator('[data-decision-choice]')).toHaveCount(second.options.length)
 
-      // A Stop while selecting: the panel stays open with the same options; the answer is recorded and waits for the run.
-      await s.api.ok('POST', `/api/runs/${c.run}/stop`, {})
+      // A Stop while selecting, from the run page: its confirm says the selection stays open and how it is answered, its words clear of
+      // the close button, wide and on a phone, in both themes; then the panel stays open with the same options, and the answer is
+      // recorded and waits for the run.
+      budget(4 * LOAD_MS)
+      for (const size of [DESK, PHONE]) {
+        await page.setViewportSize(size)
+        for (const theme of ['dark', 'light'] as const) {
+          await page.goto(`/runs/${c.run}?view=tasks`)
+          await useTheme(page, theme, '[data-crew-run-header] [data-run-stop]')
+          await page.locator('[data-crew-run-header] [data-run-stop]').click()
+          const confirm = page.getByRole('dialog').filter({ has: page.locator('[data-confirm-stop]') })
+          const at = `${size.width} wide, ${theme}`
+          await expect(confirm.locator('[data-run-stop-selection]'), at).toHaveText(
+            `Its selection, ${second.decision}, stays open: you can answer it on the stopped run, and the answer is applied when the run is continued. Stopping selects nothing and cancels nothing.`,
+            { timeout: LOAD_MS },
+          )
+          const close = (await confirm.locator('[data-slot="close"]').boundingBox())!
+          const words = (await confirm.locator('[data-slot="description"]').boundingBox())!
+          expect(words.x + words.width <= close.x || words.y >= close.y + close.height, `the description clear of the close button, ${at}`).toBe(true)
+          await noSideways(page)
+          if (size === PHONE && theme === 'light') break
+          await page.keyboard.press('Escape')
+          await expect(confirm).toHaveCount(0)
+        }
+      }
+      await page.locator('[data-confirm-stop]').click()
       await expect.poll(async () => !!(await s.api.run(c.run)).stoppedAt, { timeout: 30_000, intervals: [500], message: 'the run is stopped' }).toBe(true)
-      await page.reload()
+      await page.setViewportSize(DESK)
+      await page.goto(`${c.path}?view=compare&run=${c.run}`)
       await expect(select.locator('[data-decision-choice]')).toHaveText(second.options.map((o) => o.label))
       await select.locator('[data-decision-choice="0"]').click()
       await select.locator('textarea[data-decision-rationale]').fill('the one whose checks pass')
@@ -537,6 +569,16 @@ test.describe('the selection on the real server', () => {
       await s.api.ok('POST', `/api/runs/${c.run}/resume`, {})
       await decisionUntil(s.api, second.decision, 'applied', SETTLE_MS)
       await expect(select.locator('[data-compare-select-state]')).toHaveText(/^Applied: approach-a selected at [0-9a-f]{7}$/)
+
+      // The ticket's candidates of the continuation, which submitted nothing of its own, name the run its results are kept from.
+      const next = (await s.api.run(c.run)).resumedBy
+      expect(next, 'the run is continued').toBeTruthy()
+      await page.goto(c.path)
+      await expect(page.locator(`[data-candidates][data-candidates-run="${next}"] [data-candidates-none]`)).toHaveText(
+        `No attempt of this run has submitted a result yet. A result its tasks keep from the run it continues (${c.run.slice(c.run.lastIndexOf('-') + 1)}) is that run's candidate, listed with that run.`,
+        { timeout: 60_000 },
+      )
+      await expect(page.locator(`[data-candidates][data-candidates-run="${c.run}"] [data-candidate-task="approach-a"] [data-candidate-selection]`)).toHaveText('selected')
       await page.context().close()
     } finally {
       rmSync(hold, { force: true })

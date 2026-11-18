@@ -156,4 +156,22 @@ describe('the candidate Capture again opens', () => {
     expect(retakeCandidate({ run: 'a', task: 'build', attempt: 2 }, runs.slice(1))).toEqual({ run: 'a', task: 'build', attempt: 1, commit: 'c'.repeat(40) })
     expect(retakeCandidate({}, runs)).toBeNull()
   })
+
+  it("is a repair run's candidate whatever its crew's task is called, the capture's own task's first when the run has one", () => {
+    // The capture was taken in a run of one crew (task look); the ticket's repair is another crew's run (task fix).
+    const repair = { run: 'r', startedAt: '2026-11-18T06:00:00Z', candidates: [{ task: 'fix', kind: 'work', candidates: [cand(1, true)] }] }
+    const look = { run: 'a', startedAt: '2026-11-18T05:00:00Z', candidates: [{ task: 'look', kind: 'work', candidates: [cand(1, true)] }] }
+    expect(retakeCandidate({ run: 'a', task: 'look', attempt: 1 }, [repair])).toEqual({ run: 'r', task: 'fix', attempt: 1, commit: 'c'.repeat(40) })
+    expect(retakeCandidate({ run: 'a', task: 'look', attempt: 1 }, [repair, look])).toEqual({ run: 'r', task: 'fix', attempt: 1, commit: 'c'.repeat(40) })
+    // Of several tasks, the capture's own name first, else the last work task with a standing candidate (a review's never).
+    const tasks = (...names: string[]) => names.map((task) => ({ task, kind: task === 'review' ? 'review' : 'work', candidates: [{ ...cand(1, true), commit: task.padEnd(40, '0') }] }))
+    expect(retakeCandidate({ run: 'a', task: 'look' }, [{ run: 'r', candidates: tasks('look', 'fix') }])?.task).toBe('look')
+    expect(retakeCandidate({ run: 'a', task: 'look' }, [{ run: 'r', candidates: tasks('fix', 'test', 'review') }])?.task).toBe('test')
+    // In the capture's own run, only its own task's other attempts: a sibling task is not what repairs it.
+    expect(retakeCandidate({ run: 'a', task: 'look', attempt: 1 }, [{ run: 'a', candidates: tasks('look', 'fix') }])).toBeNull()
+    // A run that started before the capture's own is no later candidate's: the retake's card does not point back at the first run.
+    expect(retakeCandidate({ run: 'r', task: 'fix', attempt: 1 }, [repair, look])).toBeNull()
+    // Without the times, every run of the ticket is offered as before.
+    expect(retakeCandidate({ run: 'r', task: 'fix', attempt: 1 }, [{ ...repair, startedAt: undefined }, look])).toEqual({ run: 'a', task: 'look', attempt: 1, commit: 'c'.repeat(40) })
+  })
 })

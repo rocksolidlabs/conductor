@@ -526,3 +526,11 @@ describe('changed since a launch', () => {
     expect(changesSinceNote(null, false)).toBe('unread')
   })
 })
+
+describe("a run's candidates while none has submitted", () => {
+  it('names the run a continuation keeps its results from, and says nothing was submitted otherwise', async () => {
+    const { noCandidateWords } = await import('./dispatchEvidence')
+    expect(noCandidateWords('slg-1-awk-77428684')).toBe("No attempt of this run has submitted a result yet. A result its tasks keep from the run it continues (77428684) is that run's candidate, listed with that run.")
+    expect(noCandidateWords()).toBe('No attempt has submitted a result yet.')
+  })
+})

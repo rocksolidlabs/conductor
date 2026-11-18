@@ -375,34 +375,41 @@ type chainRead struct {
 // those rows name, under a budget of its own: a call that fails, is late
 // or passes its bound leaves that candidate Unavailable and the rest whole.
 func (e *Engine) Comparison(ctx context.Context, runID string) (Comparison, error) {
+	c, _, err := e.comparisonAt(ctx, runID)
+	return c, err
+}
+
+// comparisonAt is Comparison with the revision of each run of the chain
+// that its rows were read at.
+func (e *Engine) comparisonAt(ctx context.Context, runID string) (Comparison, map[string]int64, error) {
 	if !ValidRunID(runID) {
-		return Comparison{}, fmt.Errorf("%w: %s", ErrRunNotFound, runID)
+		return Comparison{}, nil, fmt.Errorf("%w: %s", ErrRunNotFound, runID)
 	}
 	if e.ledger == nil {
-		return Comparison{}, ErrNoLedger
+		return Comparison{}, nil, ErrNoLedger
 	}
 	cl, ok := e.ledger.(compareLedger)
 	if !ok {
-		return Comparison{}, fmt.Errorf("%w: this ledger cannot read a comparison", ErrNoLedger)
+		return Comparison{}, nil, fmt.Errorf("%w: this ledger cannot read a comparison", ErrNoLedger)
 	}
 	var cr chainRead
 	for try := 1; ; try++ {
 		var err error
 		if cr, err = e.readChain(ctx, cl, runID); err != nil {
-			return Comparison{}, err
+			return Comparison{}, nil, err
 		}
 		moved, err := cr.moved(ctx, cl)
 		if err != nil {
-			return Comparison{}, err
+			return Comparison{}, nil, err
 		}
 		if !moved {
 			break
 		}
 		if try == compareReadTries {
-			return Comparison{}, ErrRunChanging
+			return Comparison{}, nil, ErrRunChanging
 		}
 	}
-	return e.measureComparison(ctx, cr), nil
+	return e.measureComparison(ctx, cr), cr.revs, nil
 }
 
 // readChain reads the chain runID is in: its runs' pointers, the launched

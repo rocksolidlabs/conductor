@@ -14,6 +14,7 @@ import { revisionTag } from '~/utils/dispatchPlans'
 import { ACCOUNT_UNREAD, accountUnreadable, addMemberProblem, boundWords, readNamedAccounts } from '~/utils/crewLaunch'
 import { runOffer } from '~/utils/runs'
 import { comparisonLink, runCompare } from '~/utils/compare'
+import { stopSelectionWords } from '~/utils/compareSelect'
 import { packageSourceWords } from '~/utils/publication'
 
 /**
@@ -230,8 +231,10 @@ async function togglePause() {
   }
 }
 
-// Stop asks first.
+// Stop asks first, and says what becomes of a comparison's selection that waits on the run (CP1): nothing.
 const stopOpen = ref(false)
+const decisionStore = useDecisions()
+const stopSelection = computed(() => stopSelectionWords(decisionStore.decisions.value.find((d) => d.run === props.runId && d.origin === 'compare' && (d.state === 'open' || d.state === 'answered'))))
 const stopping = ref(false)
 
 async function stopAll() {
@@ -412,7 +415,12 @@ defineExpose({ openAdd, share: () => (shareOpen.value = true), stopNow: stopAll,
 
   <ShareLinksModal v-model:open="shareOpen" :run-id="runId" :session-name="run?.name" />
 
-  <UModal v-model:open="stopOpen" :title="`Stop this run of ${run?.name || 'the crew'}?`" description="Every member's session is stopped; a member not started yet never starts. The worktrees and their branches stay, and the run can be resumed as a new run.">
+  <UModal v-model:open="stopOpen" :title="`Stop this run of ${run?.name || 'the crew'}?`" description="Every member's session is stopped; a member not started yet never starts. The worktrees and their branches stay, and the run can be resumed as a new run." :ui="{ wrapper: 'min-w-0 pe-10' }" data-run-stop-confirm>
+    <template v-if="stopSelection" #body>
+      <p class="flex items-start gap-1.5 text-sm text-default" data-run-stop-selection>
+        <UIcon name="i-lucide-list-checks" class="mt-0.5 size-4 flex-none text-muted" /><span class="min-w-0 break-words">{{ stopSelection }}</span>
+      </p>
+    </template>
     <template #footer>
       <div class="flex w-full justify-end gap-2">
         <UButton label="Cancel" color="neutral" variant="ghost" @click="stopOpen = false" />

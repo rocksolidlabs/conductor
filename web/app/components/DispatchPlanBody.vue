@@ -2,7 +2,7 @@
 import type { DispatchTicket, PlanBody } from '~/composables/useDispatch'
 import type { AgentInfo } from '~/composables/useSessions'
 import { handedCommentWords, linkLabel } from '~/utils/dispatch'
-import { argvLine, expectedChecks, planForWords, planMemberModel, resolvedArgv, shortCommit, yoloWords } from '~/utils/dispatchPlans'
+import { argvLine, checksEachWords, comparisonChecks, expectedChecks, planForWords, planMemberModel, resolvedArgv, shortCommit, yoloWords } from '~/utils/dispatchPlans'
 
 /**
  * A plan revision's body as the ticket page shows it (Program item DS2, docs/plans/dispatch-evidence.md, "web/app"): exactly what its
@@ -11,6 +11,8 @@ import { argvLine, expectedChecks, planForWords, planMemberModel, resolvedArgv, 
  * the ticket's People names the agents and links here); the tasks with who does each, its
  * kind, what it needs and its checks; the checks expected; the source references at the base; what the package hands over (the
  * attachments, the comments); the constraints; the decisions a person makes, which hold the tasks they name in a run launched from it (Program item DR1); the note. One column.
+ * A comparison's revision (CP1) says, before its members, the criteria and each candidate's approach (DispatchPlanCompare), and counts
+ * its checks on each candidate attempt, as its launch's statement does, never every lane's added together.
  */
 const props = defineProps<{
   body: PlanBody
@@ -20,6 +22,8 @@ const props = defineProps<{
 
 const yolo = computed(() => yoloWords(props.body.crew.yolo))
 const checks = computed(() => expectedChecks(props.body))
+/** A comparison's checks on each candidate attempt: null for a revision of no comparison. */
+const each = computed(() => comparisonChecks(props.body))
 const agentOf = (id: string) => props.body.agents.find((a) => a.id === id)
 const agentName = (id: string) => props.agents.find((a) => a.id === id)?.name ?? id
 const tasksOf = (member: string) => (props.body.crew.tasks ?? []).filter((t) => t.member === member).map((t) => t.id)
@@ -65,6 +69,8 @@ const manifestWords = computed(() => {
       </template>
     </dl>
 
+    <DispatchPlanCompare :body="body" :agents="agents" />
+
     <div class="flex flex-col gap-2">
       <h4 class="text-xs font-semibold text-muted">Members</h4>
       <ul class="flex flex-col gap-2">
@@ -101,7 +107,10 @@ const manifestWords = computed(() => {
       </ul>
     </div>
 
-    <p class="text-xs text-muted" data-plan-expected :data-count="checks.length">
+    <p v-if="each" class="text-xs text-muted" data-plan-expected :data-count="each.length">
+      {{ checksEachWords(each.length) }}<template v-if="each.length">, the same for every candidate</template>.
+    </p>
+    <p v-else class="text-xs text-muted" data-plan-expected :data-count="checks.length">
       <template v-if="checks.length">
         {{ checks.length }} {{ checks.length === 1 ? 'check is' : 'checks are' }} expected<template v-if="checks.some((c) => c.phase === 'verify')">, the manifest's verify steps ({{ checks.filter((c) => c.phase === 'verify').map((c) => c.id).join(', ') }}) among them, run on each result</template>.
       </template>
