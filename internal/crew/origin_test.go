@@ -332,6 +332,9 @@ func TestDeadlineSurvivesARestart(t *testing.T) {
 	if wait := timers2.waitAsked(t, 1); wait != deadlinePeriod {
 		t.Fatalf("the continuation's watch waits %s", wait)
 	}
+	// Its attempt made before the test's folders go.
+	waitAttempt(t, e2, next.ID, "build", ledger.AttemptRunning)
+	stopRun(t, e2, next.ID)
 }
 
 // A continuation keeps its chain's deadline: two continuations, one
@@ -443,6 +446,9 @@ func TestPriorSurvivesRestartAndContinuation(t *testing.T) {
 	if next.Origin == nil || next.Origin.Prior != "api-sweep-0000000a" || !next.Origin.Continued {
 		t.Fatalf("the continuation's origin: %+v", next.Origin)
 	}
+	// Its attempt made before the test's folders go.
+	waitAttempt(t, e2, next.ID, "build", ledger.AttemptRunning)
+	stopRun(t, e2, next.ID)
 }
 
 // A second launch with an operation id the provider's rows hold is

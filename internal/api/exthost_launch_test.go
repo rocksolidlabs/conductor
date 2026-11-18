@@ -130,6 +130,11 @@ func TestHostLaunchOpIDIsIdempotent(t *testing.T) {
 	if _, ok := e2.srv.runs.Get(refs[0].ID); !ok {
 		t.Fatal("the engine does not hold op-2's run")
 	}
+	// Its attempt made, then stopped, before the test's folders go.
+	runningAttempt(t, e2, refs[0].ID, "build", 1)
+	if err := e2.srv.runs.Stop(t.Context(), refs[0].ID); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // A retry with an operation id answers the run that id made, whatever else
