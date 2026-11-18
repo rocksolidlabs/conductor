@@ -6,6 +6,8 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -357,6 +359,75 @@ func TestADecisionIsHeldAgainstTheRolesEarlierBriefs(t *testing.T) {
 	}
 	if r := wake(a3); !told(r, a3) {
 		t.Fatal("a decision past the twenty earlier briefs told no one")
+	}
+}
+
+// TestEarlierBriefsThatCannotBeRead: the two ways the earlier briefs fail
+// to read, each as the code takes it. A list of the earlier requests that
+// cannot be read notifies no one. An earlier brief that does not read is
+// passed over as holding no decision, so a decision only it held is told
+// again: the rule errs toward telling a person twice, never toward
+// silence about a decision no readable brief held.
+func TestEarlierBriefsThatCannotBeRead(t *testing.T) {
+	t.Parallel()
+	if os.Geteuid() == 0 {
+		t.Skip("root reads a directory whatever its mode")
+	}
+	b := brakemanEnv(t, nil)
+	events := b.sse(t)
+	rec := 0
+	card := brakeman.Item{Kind: brakeman.ItemDecision, Decision: &brakeman.Decision{About: listRef(t, "ticket:CND-1"), Happened: "h", WhyHuman: "w", Question: "q?",
+		Alternatives: []brakeman.Alternative{{Label: "a", Tradeoffs: "x"}, {Label: "b", Tradeoffs: "y"}}, Recommendation: &rec, Authorizes: "z",
+		Evidence: []brakeman.Ref{listRef(t, "ticket:CND-1")}, SubjectRevision: "3"}}
+	wake := func() brakeman.Request {
+		id := b.listed(t, brakeman.Request{Kind: brakeman.KindWake, Batch: fmt.Sprintf("wb-%d", bkOps.Add(1))}, "t", "s", []brakeman.Item{listFact(t, "f", "ticket:CND-1"), card}, "", "")
+		r, err := b.desk.st.Get(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	told := func(r brakeman.Request) []string {
+		t.Helper()
+		b.desk.briefKept(r, brakeman.Brief{Schema: brakeman.BriefSchema, Title: "t", Summary: "s", Items: []brakeman.Item{card}})
+		b.srv.events.brakemanOpened()
+		return needsYouBefore(t, events)
+	}
+	reqs := filepath.Join(b.srv.store.Dir(), brakeman.Dir, brakeman.RequestsDir)
+	earlier, repeat := wake(), wake()
+	// The control: a repeat of the decision a readable brief held is silent.
+	if got := told(repeat); len(got) != 0 {
+		t.Fatalf("a repeat: %v", got)
+	}
+	// The list cannot be read (the folder's entries refused; its files
+	// still open by name): no one is notified, though the card is new.
+	fresh := wake()
+	if err := os.Chmod(reqs, 0o300); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(reqs, 0o700) })
+	if _, _, err := b.desk.st.List(fresh.ID, brakeman.MaxPage); err == nil {
+		t.Fatal("the list still reads")
+	}
+	if got := told(fresh); len(got) != 0 {
+		t.Fatalf("an unreadable list notified: %v", got)
+	}
+	if err := os.Chmod(reqs, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// Every earlier brief that held the decision does not read: each is
+	// passed over, and the decision is told again.
+	for _, r := range []brakeman.Request{earlier, repeat, fresh} {
+		if err := os.WriteFile(filepath.Join(reqs, r.ID+"-brief.json"), []byte("{"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := b.desk.st.BriefAlone(r.ID); err == nil {
+			t.Fatalf("%s still reads", r.ID)
+		}
+	}
+	again := wake()
+	if got := told(again); len(got) != 1 || got[0] != needsYouEvent(again.ID, 1) {
+		t.Fatalf("a decision only unreadable briefs held: %v", got)
 	}
 }
 
