@@ -282,3 +282,26 @@ func TestRefusalIsARefusalWithItsCode(t *testing.T) {
 		}
 	}
 }
+
+func TestValidRunIDAndOpID(t *testing.T) {
+	for _, id := range []string{"nightly-0123abcd", "0-00000000", strings.Repeat("a", ext.MaxCrewID) + "-0123abcd", "a-b-0123abcd"} {
+		if !ext.ValidRunID(id) {
+			t.Errorf("ValidRunID(%q) = false", id)
+		}
+	}
+	for _, id := range []string{"", "nightly", "nightly-0123abc", "nightly-0123abcde", "nightly-0123ABCD", "-0123abcd", "Nightly-0123abcd", "a_b-0123abcd", strings.Repeat("a", ext.MaxCrewID+1) + "-0123abcd", "run-1"} {
+		if ext.ValidRunID(id) {
+			t.Errorf("ValidRunID(%q) = true", id)
+		}
+	}
+	for _, id := range []string{"a", "op-1", "A.b_c~d-9", strings.Repeat("x", ext.MaxOpID)} {
+		if !ext.ValidOpID(id) {
+			t.Errorf("ValidOpID(%q) = false", id)
+		}
+	}
+	for _, id := range []string{"", "a b", "a/b", "a:b", "é", strings.Repeat("x", ext.MaxOpID+1)} {
+		if ext.ValidOpID(id) {
+			t.Errorf("ValidOpID(%q) = true", id)
+		}
+	}
+}
