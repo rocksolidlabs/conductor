@@ -17,8 +17,12 @@ test.describe.configure({ mode: 'serial' })
 const STEP_MS = 15_000
 test.use({ actionTimeout: STEP_MS, navigationTimeout: STEP_MS })
 
-/** The bound on the earlier tests' turns all ending: each stub turn reads twice and submits; this only bounds a hang. */
-const IDLE_MS = 120_000
+/**
+ * One turn's cap, from its start to its slot given up: the stub's own turn (two reads and a brief, bounded here at 30 s), then the
+ * desk's grace before it stops a briefed turn's run (brakemanGrace, 20 s, internal/api/brakeman.go) and one stop's bound
+ * (brakemanStopWait, 15 s). The turns run one at a time, so the wait for the earlier tests' turns to end is this for each open one.
+ */
+const TURN_MS = 30_000 + 20_000 + 15_000
 
 const NAME = 'Rail Tester'
 let srv: BrakemanServer
@@ -55,15 +59,18 @@ async function madeSince(before: Set<string>): Promise<BrakemanRequestSeen & { n
 
 const ids = async () => new Set((await requests()).map((r) => r.id))
 
-/** Waits until no turn is under way and none waits: what the earlier tests asked has ended. */
+/** What is open at the desk: 'idle', or the turn under way and the queue, for the poll's last value to say what did not end. */
+async function desk(): Promise<{ open: number; words: string }> {
+  const s = await srv.api.ok<{ current: { id: string; state: string } | null; queue: Array<{ id: string }>; stuck?: boolean }>('GET', '/api/brakeman')
+  const open = (s.current ? 1 : 0) + s.queue.length
+  return { open, words: open ? `current ${s.current?.id ?? '-'} ${s.current?.state ?? ''}, queue ${s.queue.map((q) => q.id).join(' ')}${s.stuck ? ', stuck' : ''}` : 'idle' }
+}
+
+/** Waits until no turn is under way and none waits: what the earlier tests asked has ended, each open turn within its cap. */
 async function idle() {
-  budget(IDLE_MS)
-  await expect
-    .poll(async () => {
-      const s = await srv.api.ok<{ current: unknown; queue: unknown[] }>('GET', '/api/brakeman')
-      return !s.current && !s.queue.length
-    }, { timeout: IDLE_MS })
-    .toBe(true)
+  const bound = Math.max(1, (await desk()).open) * TURN_MS
+  budget(bound)
+  await expect.poll(async () => (await desk()).words, { timeout: bound }).toBe('idle')
 }
 
 /** The page's bar of a size, once the state is read and it can ask. */
