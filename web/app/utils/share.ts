@@ -89,11 +89,12 @@ export function shareRefusal(code: string): ShareRefusal | null {
 }
 
 /**
- * The Share dialog's line under its title, true in every outcome: it says the link is copied only once a link was made and the copy
- * took; while one is being made, or when making or copying it failed, it says what a link opens; refused, that none was made.
+ * The Share dialog's line under its title, true for the dialog as it stands: it says the link is copied only while the dialog shows a
+ * link it made and copied (`shown`: a link revoked since is shown no more, and the line goes with it); while one is being made, or when
+ * making or copying it failed, it says what a link opens; refused, that none was made.
  */
-export function shareDescription(o: { run: boolean; copied: boolean; refused: boolean }): string {
+export function shareDescription(o: { run: boolean; copied: boolean; shown: boolean; refused: boolean }): string {
   if (o.refused) return o.run ? 'No link was made for this run.' : 'No link was made.'
-  if (o.copied) return o.run ? 'The link is copied: it opens every agent of the crew, one added later too. Revoking disconnects whoever used it.' : 'The link is copied. Revoking disconnects whoever used it.'
+  if (o.copied && o.shown) return o.run ? 'The link is copied: it opens every agent of the crew, one added later too. Revoking disconnects whoever used it.' : 'The link is copied. Revoking disconnects whoever used it.'
   return o.run ? 'A link opens every agent of the crew, one added later too. Revoking disconnects whoever used it.' : 'A link opens this session. Revoking disconnects whoever used it.'
 }
