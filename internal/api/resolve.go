@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/rocksolidlabs/conductor/ext"
+	"github.com/rocksolidlabs/conductor/internal/capacity"
 	"github.com/rocksolidlabs/conductor/internal/crew"
 	"github.com/rocksolidlabs/conductor/internal/dispatch"
 )
@@ -229,7 +230,9 @@ func (h *extHost) ResolveLaunch(ctx context.Context, r ext.ResolveRequest) (ext.
 		return ext.ResolvedLaunch{}, err
 	}
 	rr.release()
-	return rr.record, nil
+	rec := rr.record
+	rec.Capacity = h.s.resolvedCapacity(bctx, rec)
+	return rec, nil
 }
 
 // launchResolved launches what rr resolved, as launchSaved launches a
@@ -311,4 +314,102 @@ func (h *extHost) heldLaunchError(crewID string, err error) error {
 	}
 	h.s.log.Warn("crew launch failed", "crew", crewID, "provider", h.name, "err", err)
 	return engineRefusal(err)
+}
+
+// resolvedCapacity is the kept usage view of each distinct agent and
+// account among the resolved members, in their order, at most
+// ext.MaxCapacityViews: what the server keeps (capacity.Cache.Latest),
+// reading nothing, asking no agent's tool, moving no key's place, and the
+// program's look-ups asked only what they hold. A view that cannot be made
+// is left out. Nothing of it is logged.
+func (s *Server) resolvedCapacity(ctx context.Context, rec ext.ResolvedLaunch) []ext.CapacityView {
+	d := s.capacity
+	if d == nil || d.st == nil {
+		return nil
+	}
+	latest := func(k capacity.Key) capacity.View {
+		v, _ := d.cache.Latest(k)
+		return v
+	}
+	cat := s.Catalog()
+	seen := map[[2]string]bool{}
+	var out []ext.CapacityView
+	for _, m := range rec.Members {
+		key := [2]string{m.Agent, m.Account}
+		if m.Account == "" || seen[key] || len(out) == ext.MaxCapacityViews {
+			continue
+		}
+		seen[key] = true
+		agent, ok := cat.Get(m.Agent)
+		if !ok {
+			continue
+		}
+		v, aerr := d.viewOf(ctx, agent, capacityQuery{account: m.Account, model: m.Model, launch: "managed", held: true}, latest)
+		if aerr != nil {
+			continue
+		}
+		out = append(out, capacityViewOf(m.Agent, m.Account, v))
+	}
+	return out
+}
+
+// capacityViewOf is a kept view as a provider is handed it, each part held
+// to ext's bounds: words cut, a state or a kind that is not a word left
+// out, a percent within 0 to 100.
+func capacityViewOf(agent, account string, v capacity.View) ext.CapacityView {
+	out := ext.CapacityView{Agent: agent, Account: account, Label: cutRunes(v.Account.Label, ext.MaxAccountLabel-1), State: capacityWord(v.State),
+		Fresh: v.Fresh, Running: v.Counts.Running, Started5h: v.Counts.Started5h, Started7d: v.Counts.Started7d}
+	switch out.Fresh {
+	case ext.CapacityFresh, ext.CapacityStale, ext.CapacityResetPassed:
+	default:
+		out.Fresh = ext.CapacityNone
+	}
+	if out.State == "" {
+		out.State = "unknown"
+	}
+	if v.ReadAt != nil {
+		out.ReadAt = v.ReadAt.UTC()
+	}
+	for _, w := range v.Windows {
+		if len(out.Windows) == ext.MaxCapacityWindows {
+			break
+		}
+		cw := ext.CapacityWindow{Kind: capacityWord(w.Kind), Name: cutBytes(w.Name, ext.MaxCapacityName), Minutes: max(w.Minutes, 0), Percent: min(max(w.Percent, 0), 100)}
+		if w.ResetsAt != nil {
+			cw.ResetsAt = w.ResetsAt.UTC()
+		}
+		switch w.Severity {
+		case "normal", "warning", "critical":
+			cw.Severity = w.Severity
+		}
+		out.Windows = append(out.Windows, cw)
+	}
+	figure := func(p *string) string {
+		if p == nil {
+			return ""
+		}
+		return cutBytes(*p, ext.MaxCapacityFigure)
+	}
+	for _, c := range v.Credits {
+		if len(out.Credits) == ext.MaxCapacityCredits {
+			break
+		}
+		out.Credits = append(out.Credits, ext.CapacityCredit{Kind: capacityWord(c.Kind), Enabled: c.Enabled, Used: figure(c.Used), Limit: figure(c.Limit),
+			Balance: figure(c.Balance), Unlimited: c.Unlimited, Currency: cutBytes(c.Currency, ext.MaxCapacityWord)})
+	}
+	return out
+}
+
+// capacityWord is s when it is a word of a view (1 to ext.MaxCapacityWord
+// of a-z, 0-9 and '_'), "" otherwise.
+func capacityWord(s string) string {
+	if s == "" || len(s) > ext.MaxCapacityWord {
+		return ""
+	}
+	for i := 0; i < len(s); i++ {
+		if c := s[i]; (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '_' {
+			return ""
+		}
+	}
+	return s
 }

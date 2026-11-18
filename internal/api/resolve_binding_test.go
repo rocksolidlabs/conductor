@@ -2,8 +2,10 @@ package api
 
 import (
 	"bytes"
+	"encoding/json"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 
@@ -114,3 +116,60 @@ func TestBindingChangeChangesTheDigest(t *testing.T) {
 
 // errorsIsRefused reports whether err is a refusal with a code.
 func errorsIsRefused(err error) bool { return ext.RefusalCode(err) != "" }
+
+// The kept usage, its counts and its freshness, and time passing, change
+// the view and never the digest; a restart's empty cache gives the same
+// digest.
+func TestCapacityChangesLeaveTheDigest(t *testing.T) {
+	b := newBoundEnv(t)
+	rl := resolve(t, b.testEnv, b.crew, "")
+	readNow(t, b.testEnv, "claude-p", b.account, false)
+	if !waitFor(testWait, func() bool {
+		v := resolve(t, b.testEnv, b.crew, "")
+		return len(v.Capacity) > 0 && v.Capacity[0].Fresh != ext.CapacityNone
+	}) {
+		t.Fatal("the resolve shows no kept reading after a read")
+	}
+	read := resolve(t, b.testEnv, b.crew, "")
+	if read.Digest != rl.Digest || len(read.Capacity) == 0 {
+		t.Fatalf("a reading changed the digest, or no view: %+v", read.Capacity)
+	}
+	shutdown(b.testEnv)
+	again := resolve(t, b.testEnv.restart(), b.crew, "")
+	if again.Digest != rl.Digest {
+		t.Fatalf("after a restart: %s, was %s", again.Digest, rl.Digest)
+	}
+}
+
+// A resolve reads no usage: the reader is asked nothing, however many
+// resolves are made.
+func TestResolveLaunchReadsNoUsage(t *testing.T) {
+	b := newBoundEnv(t)
+	calls, _ := b.claude.count()
+	for range 5 {
+		resolve(t, b.testEnv, b.crew, "")
+	}
+	if after, _ := b.claude.count(); after != calls {
+		t.Fatalf("five resolves read usage %d times", after-calls)
+	}
+}
+
+// The resolved launch, as encoded, holds no account's folder and no
+// login's fingerprint; the server's log holds no label and no folder.
+func TestResolvedLaunchCarriesNoFolderOrLogin(t *testing.T) {
+	b := newBoundEnv(t)
+	readNow(t, b.testEnv, "claude-p", b.account, false)
+	rl := resolve(t, b.testEnv, b.crew, "")
+	raw, err := json.Marshal(rl)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, leak := range []string{b.folder, "D=[", "fingerprint"} {
+		if strings.Contains(string(raw), leak) {
+			t.Fatalf("the resolved launch carries %q: %s", leak, raw)
+		}
+	}
+	if strings.Contains(b.log.String(), "Work account") || strings.Contains(b.log.String(), b.folder) {
+		t.Fatalf("the log names the account:\n%s", b.log.String())
+	}
+}
