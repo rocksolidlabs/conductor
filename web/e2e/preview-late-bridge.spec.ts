@@ -24,7 +24,7 @@ let gate = ''
 test.beforeAll(async ({ api }) => {
   await stopStrays(api, [])
   gate = join(scratchDir(m, 'preview-late'), 'gate')
-  runId = await launch(api, m, await previewCrew(api, m, 'e2e preview late bridge', gate, 'http://127.0.0.1:${CONDUCTOR_PORT_WEB}/late'))
+  runId = await launch(api, m, await previewCrew(api, m, 'e2e preview late bridge', gate, 'http://127.0.0.1:${CONDUCTOR_PORT_WEB}/late#token=${CONDUCTOR_TREE_SECRET}'))
   await stepIn(api, runId, 1, 'check:gate:1', 'running')
   origin = new URL(task(await api.run(runId), 'build').attempt!.preview!).origin
 })
@@ -122,4 +122,33 @@ test('Capture keeps the frame’s box: the editor opens over the frame’s edge,
   await expect(editor.locator('[data-annotation="2"] [data-capture-element-summary]')).toContainText('button#under')
   await expect(editor.locator('[data-capture-draft="1"]')).toBeVisible()
   await expect(editor.locator('[data-capture-draft="2"]')).toHaveCount(0)
+})
+
+test('a draft made before the bridge answers names the page without the fragment of the preview’s address, shown and saved', async ({ page, api }) => {
+  const held: Route[] = []
+  await page.route(
+    (u) => u.origin === origin && u.pathname === '/late-gate',
+    (r) => void held.push(r),
+  )
+  await previewSeam(page)
+  await page.goto(`/preview?run=${encodeURIComponent(runId)}&task=build&attempt=1`)
+  const pane = page.locator('[data-preview-pane]')
+  await expect(pane).toHaveAttribute('data-preview-bridge', 'absent', { timeout: PREVIEW_BOOT_MS })
+  // The frame is opened at the preview's address, its fragment with it.
+  expect(await page.locator('[data-preview-frame]').getAttribute('src')).toMatch(/\/late#token=[0-9a-f]{64}$/)
+
+  // Capture while the page has not answered: the screenshot alone, at the frame's address without its fragment.
+  await page.locator('[data-preview-capture]').click()
+  const editor = page.locator('[data-capture-editor]')
+  const draft = editor.locator('[data-capture-draft="1"]')
+  await expect(draft).toHaveAttribute('data-capture-url', `${origin}/late`)
+  await expect(draft.locator('code')).toHaveText(`${origin}/late`)
+  // The gate let through and the spec's routing ended before the save: a routed request's multipart body is not sent whole.
+  for (const r of held.splice(0)) await r.continue()
+  await page.unrouteAll({ behavior: 'wait' })
+  await editor.locator('[data-capture-save]').click()
+  const saved = editor.locator('[data-capture-saved]')
+  await expect(saved).toBeVisible()
+  const c = await api.ok<{ url: string }>('GET', `/api/captures/${await saved.getAttribute('data-capture-saved')}`)
+  expect(c.url).toBe(`${origin}/late`)
 })

@@ -206,7 +206,11 @@ the whole range is this store's), let CS1 hand each replica a block of
 numbers so concurrent creation never collides, and the allocation rule
 under "Field rules for replication" says what a replica does when its
 block is out and the service unreachable: it creates, from a range of
-its own, and waits on nothing (Owner decisions, 7).
+its own, and waits on nothing (Owner decisions, 7). CS1's open-source
+rows (`docs/plans/sync-seams.md`, OS-1a and OS-1b) add the columns
+beside them: the tag a block was handed to, the block asked ahead, the
+overflow range and a retired store's provisional window, each usable
+only by the instance and the active tag it was handed to.
 
 **Schema, version 1** (`schema.go`; times are RFC 3339 text in UTC with
 nanoseconds; JSON is text). `rev` is on every row with a scalar field
@@ -948,7 +952,7 @@ their text.
 | scalar | `title`, `description`, `acceptance`, `status`, `priority`, `horizon`, `owner`, `parent_id`, `milestone_id`, `accepted_at`, `accepted_by`, `accepted_for`, `accepted_criteria`, `accepted_note`, `closed_at`, `deleted_at`, `external_*`, `authority`; a project's `name`, `description`, `cwd`, `tracker`, `tracker_url`, `close_requires`, `archived_at`; a label's `name`, `color`, `deleted_at`; a milestone's and a view's fields, `deleted_at` included; a comment's `body`, `edited_at`, `deleted_at` | last writer wins per field: the later `at` wins; equal, the greater `actor`; equal, the greater `op_id`. A field is merged alone: concurrent edits of `title` and `priority` both survive |
 | set | `ticket_assignees`, `ticket_labels`, `relations`, `links`, `attachments` | an observed-remove set: an `add` is tagged by its change row's identity (`actor`, `op_id`, `n`); a `remove` names in `prior` the tags of that member's adds it had seen and removes those alone; a member is present while an add of it exists that no remove names, so an add a remove did not see survives whatever the clocks say, and two adds of one member from two replicas are two tags, both needed gone. The set tables hold the members those tags make |
 | log | `comments`, `changes` | append only, in the one order (`at`, `actor`, `op_id`, `n`); a comment's place on the page by (`created_at`, `author`, `id`), its number derived; never merged, never lost |
-| allocation | `number`, a project's `key` | a store with no replication provider, this item whole and the free default for good, owns the whole range: `next_number` alone, no block and nothing registered anywhere (`number_from` and `number_to` 0 say so). Under CS1 a create is local and never waits on the service (articles 7 and 8): each replica mints from a block the sync service handed it ahead of need (the next asked for when half is used, so an outage of days exhausts none) and, when its block is out and the service unreachable, from a private overflow range of its own, high and never shared, handed to it once when it joined (columns CS1 adds beside the two reserved here), so an offline create succeeds at once with a key that is unique by construction and never renumbered, only long (`CND-1000012`, which the page says is from the replica's overflow and which a new block does not replace); a project made while the service is unreachable is made at once, its key registered when the service answers, and a key found taken by then keeps the project on its replica, unshared, its page saying so, until the person gives it a free key (`project.rekey`, an intent CS1 adds, allowed only while nothing of the project has left the replica, its tickets' keys following since none has been seen elsewhere); joining a team with a store that already holds tickets is CS1's to design |
+| allocation | `number`, a project's `key` | a store with no replication provider, this item whole and the free default for good, owns the whole range: `next_number` alone, no block and nothing registered anywhere (`number_from` and `number_to` 0 say so). Under CS1 a create is local and never waits on the service (articles 7 and 8): each replica mints from a block the sync service handed it ahead of need (the next asked for when half is used, so an outage of days exhausts none) and, when its block is out and the service unreachable, from a private overflow range of its own, high and never shared, handed to it once when it joined (columns CS1 adds beside the two reserved here), so an offline create succeeds at once with a key that is unique by construction and never renumbered, only long (`CND-1000012`, which the page says is from the replica's overflow and which a new block does not replace); a project made while the service is unreachable is made at once, its key registered when the service answers, and a key found taken by then keeps the project on its replica, unshared, its page saying so, until the person gives it a free key (`project.rekey`, an intent CS1 adds, allowed only while the project is neither shared nor being shared, its tickets' keys following since none has been seen elsewhere). Joining a team with a store that already holds tickets is CS1's share, an ordered cut-over (`docs/plans/sync-seams.md`, Events, Sharing a project): the project's next 1,000 numbers reserved, its history sent, the share completed only when no row is past what was sent, and block numbers taken once it is shared. A project's numbers before its share and every block are below 1,000,000, each replica's overflow range above it, and a retired store's provisional window above 2,000,000,000; a shared project's key on every replica is the workspace registry's, never projected from a row |
 | gated | `status` set to `done` | the writer applied the close policy; a merge takes the scalar rule and never re-applies the policy, since the facts it rests on travel in the same log; the page shows the policy's state as read |
 
 A bound (8 assignees, 20 labels, 100 relations, 50 links, 50 attachments
@@ -1026,8 +1030,12 @@ tests apply both.
 `at` is the writer's clock, UTC with nanoseconds; CS1 may replace it with
 a hybrid logical clock without changing a rule, since every rule compares
 `at`, `actor`, `op_id` and `n` and nothing else. The schema reserves
-nothing more for it: a replica's identity is its `actor` prefix, which
-CS1 defines.
+nothing more for it. A replica's identity is the origin its rows are
+written under: CS1's rows (`docs/plans/sync-seams.md`, OS-1a) add
+`changes.origin`, a tag a replica's provider hands it, set on every
+local row from the replica's first join on, and the rules compare
+canonical actors, `@<origin>/<actor>`, so every replica orders the same
+rows the same way; a local actor never begins with `@`.
 
 ## Out of scope
 

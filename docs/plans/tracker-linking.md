@@ -857,7 +857,7 @@ bodies, `needYou` keeping only those; the API serves it (below).
 | `source`, `closed_on` | scalar (DS1 lists `source` already) | `source` is written only at the ticket's create; `closed_on` travels with the gated close it records |
 | `external_id`, `external_url`, `external_snapshot`, `authority` | counterpart (new) | merged as one group by `ReconcileCounterpart`, never field by field (below) |
 | a publication's `id`, `ticket_id`, `target`, `target_kind`, `target_url`, `target_ref`, `target_node_id`, `target_space_id`, `instance`, `marker`, `body`, `post_sha256`, `parts`, `close_issue`, `created_at`, `created_by` | immutable | a publication's content never changes once prepared |
-| a publication's `state`, `tries`, `attempt`, `close_tries`, `find_since`, `sent_as_id`, `sent_as_login`, `remote_id`, `remote_url`, `close_state`, `close_error`, `error`, `sending_at`, `sent_at`, `sent_by` | scalar | written by the replica that sends; only the instance that prepared a publication can send it (`instance`), so another replica's draft, or a restored copy's, is never sent |
+| a publication's `state`, `tries`, `attempt`, `close_tries`, `find_since`, `sent_as_id`, `sent_as_login`, `remote_id`, `remote_url`, `close_state`, `close_error`, `error`, `sending_at`, `sent_at`, `sent_by` | scalar | written by the replica that sends; only the instance that prepared a publication can send it (`instance`), so another replica's draft, or a restored copy's, is never sent. CS1's first version does not replicate publications (`docs/plans/sync-seams.md`, Owner decisions 21): each machine's are its own until a later item adds them under these classes |
 | `link_reads`, `ticket_reads` and `store_instance` (every column) | derived (new) | local: never a `changes` row, never shipped; each replica reads GitHub itself and has its own instance |
 
 **The counterpart group** (`ClassCounterpart`, and `ReconcileCounterpart`
@@ -957,7 +957,8 @@ tests.
 
 "One ticket per linked issue" is a rule of the local write; two replicas
 that each import the same issue make two tickets, which CS1's plan
-folds or shows, as DS1 leaves its other cross-replica cases to CS1.
+shows, never folds: both are kept, each naming the other
+(`docs/plans/sync-seams.md`, One tracker item, two tickets).
 
 **The package, version 2** (`package.go`, `plans.go`; DS2's plan owns the
 package and its rules, and this item adds one part under them).

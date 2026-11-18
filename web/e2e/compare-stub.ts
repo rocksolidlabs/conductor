@@ -163,7 +163,7 @@ export function comparisonOf(o: ComparisonShape): Record<string, unknown> {
     state: o.running ? 'running' : o.selection === 'applied' ? 'selected' : 'selecting',
     independence: { notObserved: NOT_OBSERVED },
     ...(o.supporting ? { supporting: supportingOf(o, lanes) } : o.brakemanRequest ? { supporting: { claims: [], reviews: [], brakeman: { request: o.brakemanRequest, state: 'queued' } } } : {}),
-    ...(o.selection ? { selection: selectionOf(o, candidates) } : {}),
+    ...(o.selection ? { selection: selectionOf(o, candidates, checks) } : {}),
   }
 }
 
@@ -176,11 +176,31 @@ function supportingOf(o: ComparisonShape, lanes: readonly string[]): Record<stri
   }
 }
 
+/**
+ * An option's words as the server makes them (internal/crew compare_select.go, tradeoffs): the attempt, then each row's outcome for the
+ * candidate and the row's verdict, the reasons in the comparison's own words: "attempt 1; check unit: passed, comparable; check bench:
+ * passed, not comparable (approach-b changed scripts/bench.sh, which the check runs); …".
+ */
+function optionWords(task: string, attempt: number, checks: ReadonlyArray<{ phase: string; id: string; cells: Cell[]; verdict: string; why: string[] }>): string {
+  const rows = checks.map((r) => {
+    const c = r.cells.find((x) => x.task === task)
+    const outcome = !c || c.state === 'not_run' ? 'not run' : c.exit === 0 ? 'passed' : `failed (exit ${c.exit})`
+    const why = r.why.map((w) => w.replace(/^comparable only if their test changes are fair: /, '')).join('; ')
+    const verdict = r.verdict === 'comparable' ? 'comparable' : r.verdict === 'unknown' ? `comparable only if their test changes are fair (${why})` : `not comparable (${why})`
+    return `${r.phase} ${r.id}: ${outcome}, ${verdict}`
+  })
+  return [`attempt ${attempt}`, ...(rows.length ? rows : ['no check is compared'])].join('; ')
+}
+
 /** The selection (PR-6b): its record's options (each selectable candidate at its commit, then None of these), and once applied the answer. */
-function selectionOf(o: ComparisonShape, candidates: ReadonlyArray<{ task: string; run: string; attempt: number; commit: string; selectable: boolean }>): Record<string, unknown> {
+function selectionOf(
+  o: ComparisonShape,
+  candidates: ReadonlyArray<{ task: string; run: string; attempt: number; commit: string; selectable: boolean }>,
+  checks: ReadonlyArray<{ phase: string; id: string; cells: Cell[]; verdict: string; why: string[] }>,
+): Record<string, unknown> {
   const picks = candidates.filter((c) => c.selectable)
   const options = [
-    ...picks.map((c) => ({ label: `${c.task} at ${c.commit.slice(0, 7)}`, tradeoffs: `attempt ${c.attempt}; its checks passed`, subject: { kind: 'candidate', run: c.run, task: c.task, n: c.attempt, commit: c.commit } })),
+    ...picks.map((c) => ({ label: `${c.task} at ${c.commit.slice(0, 7)}`, tradeoffs: optionWords(c.task, c.attempt, checks), subject: { kind: 'candidate', run: c.run, task: c.task, n: c.attempt, commit: c.commit } })),
     { label: 'None of these', tradeoffs: 'Ends the comparison with no candidate selected.' },
   ]
   const out: Record<string, unknown> = { decision: 'dr-9001', state: o.selection, options }

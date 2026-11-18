@@ -165,6 +165,12 @@ export function boxIn(e: Pick<ElementReport, 'box'>, ratio: number): CaptureRect
   return { x: e.box.x * ratio, y: e.box.y * ratio, width: e.box.width * ratio, height: e.box.height * ratio }
 }
 
+/** url without its fragment (`#` and what follows). */
+export function withoutFragment(url: string): string {
+  const i = url.indexOf('#')
+  return i < 0 ? url : url.slice(0, i)
+}
+
 /** The test seam (C9): the screenshot source a test hands in; whatever else a test sees still goes through parseBridgeMessage. */
 export const previewSeam: { source: ScreenshotSource | null } = { source: null }
 
@@ -521,7 +527,9 @@ export function createPreviewSession(deps: BridgeDeps) {
       const ua = typeof navigator === 'undefined' ? '' : navigator.userAgent.slice(0, MAX_PREVIEW_USER_AGENT)
       const dpr = typeof window === 'undefined' ? 1 : window.devicePixelRatio || 1
       const moment: Moment = {
-        url: f.url,
+        // The page the pane can name without the bridge: the address it gave the frame, less its fragment (a preview's own address
+        // carries what opens it there, never part of the page shown).
+        url: withoutFragment(f.url),
         title: '',
         viewport: { mode: view.mode, width: Math.round(f.width), height: Math.round(f.height), scale: view.scale, dpr, colorScheme: 'light', userAgent: ua, scrollX: 0, scrollY: 0 },
         epoch: 0,

@@ -5784,7 +5784,13 @@ answers as sent, the `opId` and an edit's or a delete's capture id in
 its path, are refused when one holds a part of such a secret, as the
 scrub finds one, `400 invalid_request` (`opId holds a tree's secret`,
 `the capture's id holds a tree's secret`), before any call to the store,
-so no operation's row, receipt or reply carries it. Then, in this order:
+so no operation's row, receipt or reply carries it. A capture's address
+is the page's: the address its bridge reports, or, when the page's bridge
+did not answer, the address the pane gave the frame without its fragment;
+for an attempt's preview the server keeps that address, and each
+element's moment's, without a fragment that holds a part of such a
+secret or its name (a preview's own address opens it with its tree's
+secret there), before the scrub. Then, in this order:
 every string the request carries (the client's words, `byName`, each
 annotation, each text of an element's report, an edit's notes, a link's
 and a page's URLs) is scrubbed of those secrets, in any case: each run
