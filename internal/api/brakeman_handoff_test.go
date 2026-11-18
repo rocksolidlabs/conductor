@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/rocksolidlabs/conductor/internal/brakeman"
 	"github.com/rocksolidlabs/conductor/internal/catalog"
@@ -532,5 +533,67 @@ func TestTheHandoffFunctionTakesNothingWhileNotOwner(t *testing.T) {
 	}
 	if h := f.srv.handoffFor(t.Context(), q); h != nil {
 		t.Fatal("handed twice")
+	}
+}
+
+// TestAPackageTakenByAnAttemptThatNeverStartedSaysSo: an attempt that
+// takes the package and then fails at its setup, before its agent
+// starts, uses it up (one send, one attempt); the preview's record says
+// it was not read (notStarted), and the next attempt holds no section
+// until the person sends it again.
+func TestAPackageTakenByAnAttemptThatNeverStartedSaysSo(t *testing.T) {
+	l := &handLog{}
+	e := newTestEnvAgents(t, nil, slog.New(slog.NewTextHandler(l, nil)),
+		append(bkAgents(), catalog.Agent{ID: "ready-cat", Name: "ready cat", Command: []string{"/bin/sh", "-c", "echo ready; exec cat"}}))
+	b := bkEnvOf(t, e)
+	e.gitRepo(t)
+	mark := filepath.Join(t.TempDir(), "down")
+	if err := os.WriteFile(mark, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	run, release, err := e.srv.runs.LaunchNamed(t.Context(), manifestRunCrew(e.root, mark), "")
+	release()
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := &handFixture{bkEnv: b, log: l, run: run.ID}
+	paused := func(n int) {
+		t.Helper()
+		taskVia(t, e, run.ID, "build", fmt.Sprintf("attempt %d failed at its setup", n), func(task map[string]any) bool {
+			a, _ := task["attempt"].(map[string]any)
+			return a != nil && a["n"] == float64(n) && a["state"] == "failed" && task["state"] == "ready"
+		})
+		if !waitFor(30*time.Second, func() bool { r, _ := e.srv.runs.Get(run.ID); return r.Paused }) {
+			t.Fatal("the run never paused")
+		}
+	}
+	paused(1)
+	h := hostilePackage(run.ID)
+	req := f.handRequest(t, brakeman.KindHandoff, "task:"+run.ID+"/build", h)
+	p := f.preview(t, req, 1)
+	if p.Target == nil || p.Target.State != "ready" || p.Target.Attempt != 1 {
+		t.Fatalf("the target: %+v %+v", p.Target, p.Refusal)
+	}
+	_, out := f.send(t, req, 1, "send-1", p.SHA256, "Ada")
+	id := entityOf(t, out, "handoff")["id"].(string)
+	command(t, e, run.ID, "unpause")
+	paused(2)
+	if !waitFor(30*time.Second, func() bool { return f.record(t, req, 1).State == brakeman.HandoffHanded }) {
+		t.Fatal("the package was never taken")
+	}
+	got := f.preview(t, req, 1)
+	if got.Handoff == nil || got.Handoff.ID != id || got.Handoff.State != brakeman.HandoffHanded || !got.Handoff.NotStarted || got.Handoff.Handed[0].Attempt != 2 {
+		t.Fatalf("the record of a package an attempt took and never read: %+v", got.Handoff)
+	}
+	if err := os.Remove(mark); err != nil {
+		t.Fatal(err)
+	}
+	command(t, e, run.ID, "unpause")
+	if md, _ := f.taskFileOf(t, "build", 3); strings.Contains(md, "handoff package") {
+		t.Fatalf("a used-up package reached the next attempt:\n%s", md)
+	}
+	// Sent again, it waits for the attempt after the running one.
+	if status, out := f.send(t, req, 1, "send-2", p.SHA256, "Ada"); status != http.StatusCreated || entityOf(t, out, "handoff")["state"] != brakeman.HandoffWaiting {
+		t.Fatalf("sent again: %d %v", status, out)
 	}
 }
