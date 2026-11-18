@@ -33,3 +33,12 @@ func (h *extHost) StopRun(context.Context, ext.StopRequest) error {
 	}
 	return fmt.Errorf("%w: this server does not stop a provider's runs yet", ext.ErrUnsupported)
 }
+
+// ResolveLaunch answers what a launch of a saved crew would run now. Not
+// built yet: every call answers ext.ErrUnsupported.
+func (h *extHost) ResolveLaunch(context.Context, ext.ResolveRequest) (ext.ResolvedLaunch, error) {
+	if err := h.gone(); err != nil {
+		return ext.ResolvedLaunch{}, err
+	}
+	return ext.ResolvedLaunch{}, fmt.Errorf("%w: this server does not resolve a launch yet", ext.ErrUnsupported)
+}

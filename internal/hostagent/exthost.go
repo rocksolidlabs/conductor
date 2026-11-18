@@ -236,6 +236,9 @@ func (h *hostExtHost) RunByOp(context.Context, string) (ext.RunStatus, error) {
 	return ext.RunStatus{}, h.refuse()
 }
 func (h *hostExtHost) StopRun(context.Context, ext.StopRequest) error { return h.refuse() }
+func (h *hostExtHost) ResolveLaunch(context.Context, ext.ResolveRequest) (ext.ResolvedLaunch, error) {
+	return ext.ResolvedLaunch{}, h.refuse()
+}
 
 // DataDir is <state>/ext/<name>, made 0700.
 func (h *hostExtHost) DataDir() (string, error) {

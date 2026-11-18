@@ -98,6 +98,18 @@ type Host interface {
 	// stop handed to the engine runs to its end though the call's try is
 	// given up.
 	StopRun(ctx context.Context, r StopRequest) error
+	// ResolveLaunch answers what a launch of the saved crew r.Crew would
+	// run now, for the Dispatch project r.Project (or none) at r.Commit (or
+	// the launch folder's HEAD), and its digest; it starts nothing, runs
+	// no agent's program and keeps nothing. A crew the server does not
+	// hold answers ErrNotFound; a refusal is a *Refusal (invalid_request,
+	// project_unknown, project_archived, invalid_crew, invalid_cwd,
+	// start_commit_missing, resolved_too_large); a server with no ledger
+	// or no Dispatch store, the desk's Host and conductor host answer
+	// ErrUnsupported. A crew without tasks resolves with Managed false, and
+	// one on a host with Where RunsOnHost: what the caller makes of either
+	// is its own.
+	ResolveLaunch(ctx context.Context, r ResolveRequest) (ResolvedLaunch, error)
 }
 
 // TurnLaunch is a Brakeman turn to launch: the catalog agent, its model
@@ -154,6 +166,20 @@ type LaunchRequest struct {
 	// and its continuations at the launch's time plus it. A time.Duration,
 	// it is encoded in JSON as its nanoseconds (an hour is 3600000000000).
 	StopAfter time.Duration `json:"stopAfter,omitempty"`
+	// Project is the Dispatch project the launch is for (its key), required
+	// with ResolvedDigest.
+	Project string `json:"project,omitempty"`
+	// ResolvedDigest holds the launch to a resolved launch
+	// (Host.ResolveLaunch, ResolvedLaunch.Digest): the server resolves the
+	// launch again, in the launch itself, for Project at StartCommit, and
+	// refuses a difference launch_changed, starting nothing. Every attempt
+	// of the run then starts its agent only from the catalogue entry the
+	// resolved launch named.
+	ResolvedDigest string `json:"resolvedDigest,omitempty"`
+	// StartCommit is the run's base, a full commit id (40 or 64 lower-case
+	// hex), instead of the launch folder's HEAD; one the folder's
+	// repository does not hold is refused start_commit_missing.
+	StartCommit string `json:"startCommit,omitempty"`
 }
 
 // RunRef is a run a launch made.
@@ -228,8 +254,10 @@ const (
 // 0-9 and '-' beginning with a letter or a digit (the shape of a crew's
 // id), a label of at most MaxRunLabel characters with no control
 // character, and a valid By. With an Origin: an operation id (opId's
-// rule), a valid Origin, a valid Subject or none, and a time limit that is
-// 0 or a whole number of minutes from MinStopAfter to MaxStopAfter.
+// rule), a valid Origin, a valid Subject or none, a time limit that is 0
+// or a whole number of minutes from MinStopAfter to MaxStopAfter, a
+// project's key or none, a digest of DigestLen lower-case hex or none (and
+// then a project), and a full commit id or none.
 // Without one, every field after By is zero. Whether the crew exists is
 // the server's to answer (ErrNotFound), as are whether it has tasks
 // (not_managed), whether the subject's kind is one it knows
@@ -256,8 +284,8 @@ func (r LaunchRequest) Valid() error {
 // an Origin; with one, each within its bound.
 func (r LaunchRequest) validOrigin(rec string) error {
 	if r.Origin == (Origin{}) {
-		if r.OpID != "" || r.Subject != (Subject{}) || r.StopAfter != 0 {
-			return invalid(rec, "an operation id, a subject and a time limit are a launch's with an origin, and none is given")
+		if r.OpID != "" || r.Subject != (Subject{}) || r.StopAfter != 0 || r.Project != "" || r.ResolvedDigest != "" || r.StartCommit != "" {
+			return invalid(rec, "an operation id, a subject, a time limit, a project, a digest and a start commit are a launch's with an origin, and none is given")
 		}
 		return nil
 	}
@@ -274,6 +302,16 @@ func (r LaunchRequest) validOrigin(rec string) error {
 	}
 	if r.StopAfter != 0 && !stopAfter(r.StopAfter) {
 		return invalid(rec, "stopAfter is not a whole number of minutes from %d to %d", int(MinStopAfter/time.Minute), int(MaxStopAfter/time.Minute))
+	}
+	switch {
+	case r.Project != "" && !projectKey(r.Project):
+		return invalid(rec, "project %q is not a project's key", r.Project)
+	case r.ResolvedDigest != "" && !lowerHex(r.ResolvedDigest, DigestLen):
+		return invalid(rec, "resolvedDigest is not %d lower-case hex", DigestLen)
+	case r.ResolvedDigest != "" && r.Project == "":
+		return invalid(rec, "a resolved digest is of a project, and none is named")
+	case r.StartCommit != "" && !commitID(r.StartCommit):
+		return invalid(rec, "startCommit %q is not a full commit id", r.StartCommit)
 	}
 	return nil
 }

@@ -28,6 +28,15 @@ var (
 		OpID: "op-1", Ref: "example:42", Label: "Nightly", Subject: ext.Subject{Ref: "example:42", URL: "https://example.com/42", Prior: "c1-0123abcd"},
 		Project: "CND", StartCommit: strings.Repeat("a", 40), ResolvedDigest: strings.Repeat("b", 64), Deadline: at.Add(time.Hour),
 	}
+	resolved = ext.ResolvedLaunch{
+		Crew: "c1", Name: "Nightly", Managed: true, Tasks: 2, Where: ext.RunsOnServer, Project: "CND",
+		ProjectCwd: "/src/cnd", Cwd: "/src/cnd/web", InProject: true,
+		Manifest: ext.ResolvedManifest{Source: ext.ManifestFile, Blob: strings.Repeat("c", 40)},
+		Members: []ext.ResolvedMember{{
+			Name: "builder", Agent: "claude", Start: "after", After: "planner", Yolo: true, Selection: strings.Repeat("d", 64),
+		}},
+		Digest: strings.Repeat("e", 64),
+	}
 )
 
 // records is one of every wire record of ext, every field set, so the
@@ -63,6 +72,7 @@ var records = []any{
 	&ext.LaunchRequest{
 		Crew: "c1", Label: "nightly", By: principal, OpID: "op-1", Origin: ext.Origin{Ref: "example:42", Label: "Nightly"},
 		Subject: ext.Subject{Ref: "example:42", URL: "https://example.com/42", Prior: "c1-0123abcd"}, StopAfter: time.Hour,
+		Project: "CND", ResolvedDigest: strings.Repeat("b", 64), StartCommit: strings.Repeat("a", 40),
 	},
 	&ext.Origin{Ref: "example:42", Label: "Nightly"},
 	&ext.Subject{Ref: "example:42", URL: "https://example.com/42", Prior: "c1-0123abcd"},
@@ -72,6 +82,10 @@ var records = []any{
 	},
 	&runOrigin,
 	&ext.StopRequest{Run: "c1-89abcdef", By: principal, Why: "superseded"},
+	&ext.ResolveRequest{Crew: "c1", Project: "CND", Commit: strings.Repeat("a", 40)},
+	&resolved,
+	&ext.ResolvedManifest{Source: ext.ManifestCrew, Revision: 3, Blob: strings.Repeat("c", 40)},
+	&resolved.Members[0],
 	&ext.RunRef{ID: "r1", Crew: "c1", URL: "https://conductor.example.com/runs/r1"},
 	&ext.SubmitRequest{Session: "s1", Question: "q1", Input: "1", Text: "yes", By: principal},
 	&ext.SubmitResult{Status: "entered"},

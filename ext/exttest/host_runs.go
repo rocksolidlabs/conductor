@@ -33,3 +33,11 @@ func (h *FakeHost) StopRun(ctx context.Context, r ext.StopRequest) error {
 	}
 	return fmt.Errorf("%w: no run %s", ext.ErrNotFound, r.Run)
 }
+
+// ResolveLaunch answers ext.ErrNotFound: the fake resolves no crew yet.
+func (h *FakeHost) ResolveLaunch(ctx context.Context, r ext.ResolveRequest) (ext.ResolvedLaunch, error) {
+	if err := h.enter(ctx); err != nil {
+		return ext.ResolvedLaunch{}, err
+	}
+	return ext.ResolvedLaunch{}, fmt.Errorf("%w: no crew %s", ext.ErrNotFound, r.Crew)
+}

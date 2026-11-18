@@ -103,6 +103,27 @@ func TestLaunchRequestBounds(t *testing.T) {
 		{"limit of 1,441 minutes", edit(func(r *ext.LaunchRequest) { r.StopAfter = 1441 * time.Minute }), false},
 		{"limit not of whole minutes", edit(func(r *ext.LaunchRequest) { r.StopAfter = time.Hour + time.Second }), false},
 		{"limit below 0", edit(func(r *ext.LaunchRequest) { r.StopAfter = -time.Hour }), false},
+
+		// The project, the digest and the start commit.
+		{"held to a resolved launch", edit(func(r *ext.LaunchRequest) {
+			r.Project, r.ResolvedDigest, r.StartCommit = "CND", strings.Repeat("f", ext.DigestLen), sha40
+		}), true},
+		{"a project alone", edit(func(r *ext.LaunchRequest) { r.Project = "CND" }), true},
+		{"a start commit alone, of 64 hex", edit(func(r *ext.LaunchRequest) { r.StartCommit = sha64 }), true},
+		{"a digest without a project", edit(func(r *ext.LaunchRequest) { r.ResolvedDigest = strings.Repeat("f", ext.DigestLen) }), false},
+		{"a digest in capitals", edit(func(r *ext.LaunchRequest) { r.Project, r.ResolvedDigest = "CND", strings.Repeat("F", ext.DigestLen) }), false},
+		{"a digest short", edit(func(r *ext.LaunchRequest) { r.Project, r.ResolvedDigest = "CND", strings.Repeat("f", ext.DigestLen-1) }), false},
+		{"a project's key in lower case", edit(func(r *ext.LaunchRequest) { r.Project = "cnd" }), false},
+		{"a project's key past its bound", edit(func(r *ext.LaunchRequest) { r.Project = "C123456" }), false},
+		{"a start commit of HEAD~1", edit(func(r *ext.LaunchRequest) { r.StartCommit = "HEAD~1" }), false},
+		{"a start commit short", edit(func(r *ext.LaunchRequest) { r.StartCommit = sha40[:7] }), false},
+		{"a start commit of a branch", edit(func(r *ext.LaunchRequest) { r.StartCommit = "main" }), false},
+		{"a project without an origin", edit(func(r *ext.LaunchRequest) {
+			r.Origin, r.OpID, r.Subject, r.StopAfter, r.Project = ext.Origin{}, "", ext.Subject{}, 0, "CND"
+		}), false},
+		{"a start commit without an origin", edit(func(r *ext.LaunchRequest) {
+			r.Origin, r.OpID, r.Subject, r.StopAfter, r.StartCommit = ext.Origin{}, "", ext.Subject{}, 0, sha40
+		}), false},
 	}
 	for _, c := range cases {
 		if (c.err == nil) != c.ok {
