@@ -80,6 +80,16 @@ func (e *Engine) PrepareLaunch(ctx context.Context, c Crew, base string) (*Prepa
 			case err != nil && ctx.Err() != nil:
 				return nil, ctx.Err()
 			case err != nil:
+				// Not a commit: an object the repository holds (a tree, a
+				// blob, a tag of one) is named so; only an id it does not
+				// hold is missing.
+				kind, kerr := git(ctx, c.Cwd, "cat-file", "-t", base)
+				if kerr == nil {
+					return nil, fmt.Errorf("%w: %s names a %s, not a commit", ErrStartCommitNotACommit, base, strings.TrimSpace(kind))
+				}
+				if ctx.Err() != nil {
+					return nil, ctx.Err()
+				}
 				return nil, fmt.Errorf("%w: %s", ErrStartCommitMissing, base)
 			case strings.TrimSpace(out) != base:
 				return nil, fmt.Errorf("%w: %s names a tag or another object, not a commit", ErrStartCommitNotACommit, base)

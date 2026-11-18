@@ -365,6 +365,17 @@ func TestStartCommitIsTheRunBase(t *testing.T) {
 	if _, err := h.ResolveLaunch(t.Context(), ext.ResolveRequest{Crew: id, Project: "CND", Commit: tag}); ext.RefusalCode(err) != ext.RefusalInvalidRequest {
 		t.Fatalf("a resolve at a tag's id: %v", err)
 	}
+	// A tree's and a blob's ids name objects the repository holds, and no
+	// commit: invalid_request, never start_commit_missing.
+	for kind, obj := range map[string]string{"tree": gitIn(t, e.root, "rev-parse", "HEAD^{tree}"), "blob": gitIn(t, e.root, "rev-parse", "HEAD:README")} {
+		r.StartCommit = obj
+		if _, err := h.Launch(t.Context(), r); ext.RefusalCode(err) != ext.RefusalInvalidRequest || !strings.Contains(err.Error(), "names a "+kind) {
+			t.Fatalf("a %s's id as the start commit: %v", kind, err)
+		}
+		if _, err := h.ResolveLaunch(t.Context(), ext.ResolveRequest{Crew: id, Project: "CND", Commit: obj}); ext.RefusalCode(err) != ext.RefusalInvalidRequest {
+			t.Fatalf("a resolve at a %s's id: %v", kind, err)
+		}
+	}
 	for _, bad := range []string{base[:12], "HEAD~1", "main"} {
 		r.StartCommit = bad
 		if _, err := h.Launch(t.Context(), r); ext.RefusalCode(err) != ext.RefusalInvalidRequest {
