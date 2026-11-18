@@ -19,8 +19,13 @@ const SHARE_WHAT =
   "Conductor sends nothing and notifies no one: you copy the brief, or comment it on a ticket, with their names on its first line. No one gains a way to read the brief here. A ticket's comment is read by whoever reads the ticket, and by the agents of a run launched from it later."
 /** A person's name that is a link and a mention as typed: it must reach the text as its own characters, never as markup. */
 const HOSTILE = 'Bo [x](https://evil.example/a) @team'
-/** The first line Copy for them writes for the api crew: every ASCII punctuation character of a name after a backslash. */
-const API_LINE = "For e2e share api's people: Ada (architecture owner), Bo \\[x\\]\\(https\\:\\/\\/evil\\.example\\/a\\) \\@team (security reviewer)"
+/**
+ * The first line Copy for them writes for the api crew: a name a tracker would link (a mention, an address) as a code span, in which
+ * nothing is linked.
+ */
+const API_LINE = "For e2e share api's people: Ada (architecture owner), `Bo [x](https://evil.example/a) @team` (security reviewer)"
+/** A name with a variation selector, which the first line keeps as the chip shows it. */
+const HEART = 'Ana \u2764\ufe0f'
 const TITLE = 'Two crews worked on it'
 
 /** Each wait's cap: a page's first draw of a brief, and every other step. */
@@ -59,7 +64,7 @@ test.beforeAll(async () => {
       { name: HOSTILE, responsibilities: ['security'] },
     ]))
   ).crew.id
-  webCrew = (await api.ok<{ crew: { id: string } }>('POST', '/api/crews', crewBody('e2e share web', [{ name: 'Cy', responsibilities: ['product'] }]))).crew.id
+  webCrew = (await api.ok<{ crew: { id: string } }>('POST', '/api/crews', crewBody('e2e share web', [{ name: 'Cy', responsibilities: ['product'] }, { name: HEART }]))).crew.id
   // The api crew's run is launched from the ticket (an approved plan's launch): its record carries the ticket. The web crew's is not.
   const ticketRev = async () => (await api.ok<{ ticket: { rev: number } }>('GET', `/api/dispatch/tickets/${KEY}`)).ticket.rev
   const proposed = await api.ok<{ plan: { id: string; rev: number } }>('POST', `/api/dispatch/tickets/${KEY}/plans`, { opId: 'bks-r1', crew: apiCrew })
@@ -125,16 +130,17 @@ test("Share names each crew's people, and Copy for them puts their names on the 
   expect(lines[2]).toBe(`# ${TITLE}`)
   // No token and no query string anywhere in what leaves the page.
   expect(md).not.toContain(srv.started.token)
-  for (const l of [...md.matchAll(/\]\(([^)]*)\)/g)].map((m) => m[1]!)) expect(l).toMatch(/^\/[^?]*$/)
+  // A name a tracker would link is a code span, in which nothing is a link: every link outside one is a page's own path.
+  for (const l of [...md.replace(/`[^`\n]*`/g, '').matchAll(/\]\(([^)]*)\)/g)].map((m) => m[1]!)) expect(l).toMatch(/^\/[^?]*$/)
 
   // The other crew: its run was launched from no ticket, which the dialog says; its comment asks for a ticket.
   await dialog.locator(`[data-share-pick="${webCrew}"]`).click()
   await expect(dialog.locator(`[data-share-pick="${webCrew}"]`)).toHaveAttribute('aria-pressed', 'true')
-  await expect(dialog.locator(`[data-share-crew="${webCrew}"] [data-share-person]`)).toHaveText(['Cy · product owner'])
+  await expect(dialog.locator(`[data-share-crew="${webCrew}"] [data-share-person]`)).toHaveText(['Cy · product owner', HEART])
   await expect(dialog.locator('[data-share-no-ticket]')).toHaveText("e2e share web's run was launched from no ticket: pick the ticket to comment on.")
   await expect(page.locator('[data-share-comment]')).toHaveText('Comment on a ticket…')
   await page.locator('[data-share-copy]').click()
-  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toMatch(/^For e2e share web's people: Cy \(product owner\)\n\n# /)
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toMatch(new RegExp(`^For e2e share web's people: Cy \\(product owner\\), ${HEART}\\n\\n# `))
 })
 
 test("Comment on the run's ticket posts the addressed brief under the person's name", async ({ page }) => {
@@ -155,6 +161,21 @@ test("Comment on the run's ticket posts the addressed brief under the person's n
   expect(comments).toHaveLength(1)
   expect(comments[0]!.by).toBe('Nate')
   expect(comments[0]!.body.split('\n')[0]).toBe(API_LINE)
+})
+
+test('where the browser refuses the clipboard, the dialog draws the addressed text to select by hand', async ({ page }) => {
+  budget(DRAW_MS + 6 * STEP_MS)
+  // A browser that refuses the page's write to the clipboard, as one over plain HTTP or with the permission denied does.
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator.clipboard, 'writeText', { value: () => Promise.reject(new DOMException('denied', 'NotAllowedError')) })
+  })
+  const b = await opened(page, about)
+  const dialog = await share(page, b, 'wide')
+  await expect(dialog.locator('[data-share-uncopied]')).toHaveCount(0)
+  await page.locator('[data-share-copy]').click()
+  await expect(dialog.locator('[data-share-uncopied] span')).toHaveText('The browser did not let the page copy: select the text below and copy it by hand.')
+  const text = await dialog.locator('[data-share-text]').evaluate((el) => el.textContent ?? '')
+  expect(text.split('\n').slice(0, 3)).toEqual([API_LINE, '', `# ${TITLE}`])
 })
 
 test('a brief about no run says it goes with no names, and still copies', async ({ page, context }) => {

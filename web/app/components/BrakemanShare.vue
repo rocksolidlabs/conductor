@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { RunInfo } from '~/composables/useSessions'
 import type { BrakemanDigest, BrakemanRequest, BriefItem } from '~/utils/brakeman'
-import { SHARE_NONE, SHARE_WHAT, type ShareCrew, forLine, shareCrews, shareNoTicket, shareRuns, shareTickets } from '~/utils/brakemanShare'
+import { SHARE_NONE, SHARE_UNCOPIED, SHARE_WHAT, type ShareCrew, forLine, shareCrews, shareNoTicket, shareRuns, shareTickets } from '~/utils/brakemanShare'
 import { responsibilityWords } from '~/utils/crews'
 import { personPath } from '~/utils/people'
 
@@ -42,15 +42,28 @@ async function readCrews() {
   if (!crews.value.some((c) => c.crewId === crewId.value)) crewId.value = crews.value[0]?.crewId ?? ''
   reading.value = false
 }
-watch(open, (o) => o && void readCrews(), { immediate: true })
+watch(
+  open,
+  (o) => {
+    if (!o) return
+    uncopied.value = ''
+    void readCrews()
+  },
+  { immediate: true },
+)
+watch(crewId, () => (uncopied.value = ''))
 
 const addressed = computed(() => props.markdown(forLine(crew.value)))
 const keys = computed(() => shareTickets(crew.value, props.tickets))
 const commentLabel = computed(() => (crew.value?.ticket ? `Comment on ${crew.value.ticket}…` : 'Comment on a ticket…'))
 
-function copyForThem() {
+/** The addressed text, drawn for the person to select when the browser refused the clipboard; "" otherwise. */
+const uncopied = ref('')
+async function copyForThem() {
   const c = crew.value
-  void copy(addressed.value, c ? `The brief is copied for ${c.name}'s people` : 'The brief is copied')
+  const text = addressed.value
+  uncopied.value = ''
+  if (!(await copy(text, c ? `The brief is copied for ${c.name}'s people` : 'The brief is copied'))) uncopied.value = text
 }
 const commenting = ref(false)
 function comment() {
@@ -100,6 +113,10 @@ function comment() {
         </template>
         <p v-else class="text-sm text-muted" data-share-none>{{ SHARE_NONE }}</p>
         <p class="text-xs text-muted" data-share-what>{{ SHARE_WHAT }}</p>
+        <div v-if="uncopied" class="flex min-w-0 flex-col gap-1" data-share-uncopied>
+          <span class="text-xs text-muted">{{ SHARE_UNCOPIED }}</span>
+          <pre class="max-h-60 select-text overflow-auto whitespace-pre-wrap break-words rounded-md bg-elevated p-3 font-mono text-xs" tabindex="0" aria-label="The brief, addressed to them" data-share-text>{{ uncopied }}</pre>
+        </div>
       </div>
     </template>
     <template #footer>

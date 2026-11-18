@@ -16,6 +16,9 @@ export const SHARE_WHAT =
 /** The dialog's words for a brief about no run whose crew lists people. */
 export const SHARE_NONE = "This brief names no run with a crew's people: it goes with no names."
 
+/** The dialog's words over the addressed text it draws when the browser refused the clipboard. */
+export const SHARE_UNCOPIED = 'The browser did not let the page copy: select the text below and copy it by hand.'
+
 /** The dialog's words for a crew whose run was launched from no ticket: the comment's dialog then asks which ticket. */
 export const shareNoTicket = (crew: string) => `${crew}'s run was launched from no ticket: pick the ticket to comment on.`
 
@@ -70,20 +73,43 @@ export function shareCrews(runs: ReadonlyArray<Pick<RunInfo, 'id' | 'crewId' | '
 const BREAKS = /[\n\r\t\v\f\u0085\u2028\u2029]/gu
 /**
  * Every character that draws nothing of its own (as the server's quote writer judges them): a control, a format character such as
- * those that reorder a line or join two, a surrogate alone, a private-use or unassigned code point, a default-ignorable code point
- * or a variation selector.
+ * those that reorder a line, a surrogate alone, a private-use or unassigned code point, a default-ignorable code point or a
+ * variation selector. A name keeps those it is written with (KEPT).
  */
 const HIDDEN = /[\p{Cc}\p{Cf}\p{Cs}\p{Co}\p{Cn}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}\p{Variation_Selector}]/gu
+/** The hidden characters a name keeps: the zero-width non-joiner and joiner, and the variation selectors, which shape its letters. */
+const KEPT = /^[\u200c\u200d\p{Variation_Selector}]$/u
 /** Every ASCII punctuation character: CommonMark lets each be escaped, and an escaped one is text. */
 const PUNCTUATION = /[!-/:-@[-`{-~]/g
+/**
+ * The shapes a tracker links in rendered text, whatever escapes the Markdown had: a mention or an e-mail address (`@`), an issue
+ * reference (`#`, `GH-<digits>`, `<owner>/<repo>#`), an address by its scheme or by `www.`.
+ */
+const LINKED = /[@#]|\bgh-\d|[a-z][a-z0-9+.-]*:|www\./i
+
+/** A name on one line: each line end a space, each character that draws nothing U+FFFD except those a name keeps (KEPT). */
+function oneLine(name: string): string {
+  return name.replace(BREAKS, ' ').replace(HIDDEN, (c) => (KEPT.test(c) ? c : '\ufffd'))
+}
+
+/** Text as a Markdown code span: its fence one backtick longer than its longest run of them, padded where it begins or ends with one. */
+function codeSpan(text: string): string {
+  const longest = Math.max(0, ...(text.match(/`+/g) ?? []).map((r) => r.length))
+  const fence = '`'.repeat(longest + 1)
+  const pad = /^[` ]|[` ]$/.test(text) ? ' ' : ''
+  return `${fence}${pad}${text}${pad}${fence}`
+}
 
 /**
- * A name as plain text inside Markdown, on one line: each line end a space, each character that draws nothing U+FFFD, and a backslash
- * before every ASCII punctuation character, so that no name becomes markup, a link, an address a reader links by itself (`:` and
- * `.` escaped) or a mention (`@` escaped), and none ends or reorders the line it is written on.
+ * A name inside Markdown, on one line (oneLine), never markup, a link or a mention. A name with the shape a tracker links in rendered
+ * text (LINKED: `@`, `#`, an issue reference, an address) is written as a code span, inside which a renderer and a tracker link nothing;
+ * any other is written as text, a backslash before every ASCII punctuation character, so it is no markup and no address a reader links
+ * by itself.
  */
 export function mdPlain(name: string): string {
-  return name.replace(BREAKS, ' ').replace(HIDDEN, '\ufffd').replace(PUNCTUATION, (c) => `\\${c}`)
+  const line = oneLine(name)
+  if (LINKED.test(line)) return codeSpan(line)
+  return line.replace(PUNCTUATION, (c) => `\\${c}`)
 }
 
 /** The first line of a share: "For <crew>'s people: <name> (<responsibility words>), …", every name plain; "" for a crew of none. */

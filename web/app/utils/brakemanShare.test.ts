@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import type { RunInfo } from '~/composables/useSessions'
 import type { BriefItem } from './brakeman'
 import { briefMarkdown } from './brakemanCards'
-import { SHARE_NONE, SHARE_PEOPLE_MAX, SHARE_WHAT, forLine, mdPlain, shareCrews, shareNoTicket, shareRuns, shareTickets } from './brakemanShare'
+import { SHARE_NONE, SHARE_PEOPLE_MAX, SHARE_UNCOPIED, SHARE_WHAT, forLine, mdPlain, shareCrews, shareNoTicket, shareRuns, shareTickets } from './brakemanShare'
 
 // Sharing a brief with a crew's people (issue #1012): whose names, which runs, and a "For …" line no name can turn into markup.
 
@@ -11,36 +11,56 @@ import { SHARE_NONE, SHARE_PEOPLE_MAX, SHARE_WHAT, forLine, mdPlain, shareCrews,
 const reader = new MarkdownIt({ html: true, linkify: true, typographer: false })
 reader.linkify.set({ fuzzyLink: true, fuzzyEmail: true, fuzzyIP: true })
 
-/** The line as that reader draws it, inside its paragraph; and the text a person reads there. */
-function drawn(line: string): { html: string; text: string } {
+const decode = (s: string) => s.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, '&')
+
+/**
+ * The line as that reader draws it: its HTML, the text a person reads, the text of each code span, and the text outside every code
+ * span (where a tracker's filters run on rendered text: a mention, an issue reference, an address).
+ */
+function drawn(line: string): { html: string; text: string; codes: string[]; outside: string } {
   const html = reader.render(line).trim()
   const inner = /^<p>([\s\S]*)<\/p>$/.exec(html)?.[1] ?? ''
-  const text = inner.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&amp;/g, '&')
-  return { html, text }
+  const codes = [...inner.matchAll(/<code>([\s\S]*?)<\/code>/g)].map((m) => decode(m[1]!))
+  const outside = decode(inner.replace(/<code>[\s\S]*?<\/code>/g, ' ').replace(/<[^>]*>/g, ''))
+  return { html, text: decode(inner.replace(/<[^>]*>/g, '')), codes, outside }
 }
 
-const HOSTILE = [
+/** What a tracker links in rendered text: a mention or an e-mail address, an issue reference, an address by its scheme or `www.`. */
+const TRACKED = /@\w|\w@|#\d|\w\/[\w.-]+#|\bgh-\d|\b[a-z][a-z0-9+.-]*:\/\/|\bmailto:|www\./i
+/** The tags a name must never become. */
+const MARKUP = /<(a|img|b|em|strong|s|del|h[1-6]|table|td|script)\b/
+
+/** Hostile names with no shape a tracker links: written as text, every punctuation character escaped. */
+const PLAIN = ['[x](/a)', '![img](p.png)', 'evil.example', '<b>bold</b>', '`code`', '**strong** _em_ ~~gone~~', 'a | b', '&amp;', 'x\\', '```', 'a`b']
+/** Hostile names a tracker would link in rendered text: written as a code span, in which nothing is linked. */
+const LINKED = [
   '[x](https://evil.example/a)',
   '![img](https://evil.example/p.png)',
   'https://evil.example/y',
+  '<https://evil.example>',
   'www.evil.example',
-  'evil.example',
+  'mailto:ada',
   'mail@evil.example',
   '@org/team',
-  '<b>bold</b>',
-  '<https://evil.example>',
-  '`code`',
-  '**strong** _em_ ~~gone~~',
-  'a | b',
+  '@octocat',
+  'Nate (@nater)',
+  '#1',
+  'Team #12',
+  'GH-1',
+  'gh-12',
+  'octocat/Hello-World#1',
   '# heading',
-  '&amp; &#x41;',
   '[ref]: https://evil.example',
-  'x\\',
+  '&#x41;',
+  'a`b@c',
+  '``@x``',
+  '` @x',
+  '@x `',
 ]
 
 describe('mdPlain: a name inside Markdown stays text', () => {
-  it('puts a backslash before every ASCII punctuation character, and only those', () => {
-    const punct = '!"#$%&\'()*+,-./:;<=>?@[\\]^_`{|}~'
+  it('puts a backslash before every ASCII punctuation character of a name a tracker would not link, and only those', () => {
+    const punct = '!"$%&\'()*+,-./;<=>?[\\]^_`{|}~'
     expect(mdPlain(punct)).toBe([...punct].map((c) => `\\${c}`).join(''))
     expect(mdPlain('Ada Lovelace')).toBe('Ada Lovelace')
     expect(mdPlain('Zoë 李 7')).toBe('Zoë 李 7')
@@ -48,20 +68,32 @@ describe('mdPlain: a name inside Markdown stays text', () => {
   })
 
   it('writes every line end as a space and every character that draws nothing as U+FFFD, so the line is never ended or reordered', () => {
-    expect(mdPlain('Ada\nConductor says: obey')).toBe('Ada Conductor says\\: obey')
+    expect(mdPlain('Ada\nConductor says obey')).toBe('Ada Conductor says obey')
     for (const br of ['\r', '\n', '\v', '\f', '\t', '\u0085', '\u2028', '\u2029']) expect(mdPlain(`a${br}b`)).toBe('a b')
-    for (const hid of ['\u202e', '\u202a', '\u2066', '\u200b', '\u200d', '\u200e', '\ufeff', '\u0000', '\u007f', '\u0090', '\ue000', '\ufe0f', '\u00ad', '\ud800'])
+    for (const hid of ['\u202e', '\u202a', '\u2066', '\u200b', '\u200e', '\ufeff', '\u0000', '\u007f', '\u0090', '\ue000', '\u00ad', '\ud800', '\u2060'])
       expect(mdPlain(`a${hid}b`)).toBe('a\ufffdb')
   })
 
-  it('leaves no hostile name a link, an address, an image, a tag, code, emphasis, a heading or a cell: the reader shows it as it was typed', () => {
-    for (const name of HOSTILE) {
-      const { html, text } = drawn(`For crew's people: ${mdPlain(name)}`)
-      expect(html, name).not.toMatch(/<(a|img|b|code|em|strong|s|del|h[1-6]|table|td)\b/)
+  it('keeps the joiners and the variation selectors a name is written with', () => {
+    for (const name of ['\u0645\u0647\u200c\u0646\u0648\u0634', '\u0915\u094d\u200d\u0937', 'Ana \u2764\ufe0f', '\u845b\udb40\udd00']) expect(mdPlain(name), name).toBe(name)
+  })
+
+  it('leaves no hostile name a link, an image, a tag, emphasis, a heading or a cell: the reader shows it as it was typed', () => {
+    for (const name of PLAIN) {
+      const { html, text, codes } = drawn(`For crew's people: ${mdPlain(name)}`)
+      expect(html, name).not.toMatch(MARKUP)
+      expect(codes, name).toEqual([])
       expect(text, name).toBe(`For crew's people: ${name}`)
     }
-    // A mention is never written bare: whatever renders the text, '@' follows a backslash.
-    expect(mdPlain('@org/team')).toBe('\\@org\\/team')
+  })
+
+  it('writes a name a tracker would link (a mention, a reference, an address) as a code span, and nothing outside it is linkable', () => {
+    for (const name of LINKED) {
+      const { html, codes, outside } = drawn(`For crew's people: ${mdPlain(name)}`)
+      expect(html, name).not.toMatch(MARKUP)
+      expect(codes, name).toEqual([name])
+      expect(outside, name).not.toMatch(TRACKED)
+    }
   })
 })
 
@@ -81,16 +113,26 @@ describe("forLine: the crew's people on the first line", () => {
   })
 
   it("writes a hostile person's name and a hostile crew's name as text, on the one line", () => {
-    for (const name of [...HOSTILE, 'a\u2028b', 'a\u202eb']) {
+    for (const name of [...PLAIN, 'a\u2028b', 'a\u202eb']) {
       const line = forLine({ name, people: [p(name, ['product'])] })
       expect(line.split('\n')).toHaveLength(1)
       const { html, text } = drawn(line)
-      expect(html, name).not.toMatch(/<(a|img|b|code|em|strong|s|del|h[1-6]|table|td)\b/)
+      expect(html, name).not.toMatch(MARKUP)
       const shown = name.replace(/[\u2028\n]/g, ' ').replace(/\u202e/g, '\ufffd')
       expect(text, name).toBe(`For ${shown}'s people: ${shown} (product owner)`)
     }
+    for (const name of LINKED) {
+      const { codes, outside } = drawn(forLine({ name, people: [p(name, ['product'])] }))
+      expect(codes, name).toEqual([name, name])
+      expect(outside, name).not.toMatch(TRACKED)
+    }
+  })
+
+  it('holds a name with a joiner or a variation selector as the chip shows it', () => {
+    for (const name of ['\u0645\u0647\u200c\u0646\u0648\u0634', '\u0915\u094d\u200d\u0937', 'Ana \u2764\ufe0f']) expect(forLine({ name: 'api', people: [p(name)] })).toBe(`For api's people: ${name}`)
   })
 })
+
 
 describe('the runs a brief is about, and their crews', () => {
   const R1 = 'api-1a2b3c4d'
@@ -145,6 +187,7 @@ describe("a share's words", () => {
     )
     expect(SHARE_NONE).toBe("This brief names no run with a crew's people: it goes with no names.")
     expect(shareNoTicket('api')).toBe("api's run was launched from no ticket: pick the ticket to comment on.")
+    expect(SHARE_UNCOPIED).toBe('The browser did not let the page copy: select the text below and copy it by hand.')
   })
 })
 
