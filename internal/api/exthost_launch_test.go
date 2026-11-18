@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/rocksolidlabs/conductor/ext"
+	"github.com/rocksolidlabs/conductor/internal/catalog"
 	"github.com/rocksolidlabs/conductor/internal/crew"
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
 )
@@ -642,5 +644,65 @@ func TestARunsOriginStaysOnTheServer(t *testing.T) {
 	}
 	if doc["id"] != rec.ID {
 		t.Fatalf("the store's run: %s", out)
+	}
+}
+
+// A call whose try was given up (its context ended) is answered
+// context.Canceled by every door, never ledger_unavailable, and the
+// server logs no ledger failure for it.
+func TestAGivenUpCallIsNoLedgerFailure(t *testing.T) {
+	logs := &syncBuffer{}
+	e := newTestEnvAgents(t, nil, slog.New(slog.NewTextHandler(logs, nil)), []catalog.Agent{{ID: "ready-cat", Name: "ready cat", Command: []string{"/bin/sh", "-c", "echo ready; exec cat"}}})
+	e.gitRepo(t)
+	endRunsAtCleanup(t, e)
+	id := originCrew(t, e, "Reviews")
+	h := testHost(e.srv, t.Context(), "example")
+	ref, err := h.Launch(t.Context(), originLaunch(id, "op-1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ended, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, err := h.Run(ended, ref.ID); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run of a given-up call: %v", err)
+	}
+	if _, err := h.RunByOp(ended, "op-1"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("RunByOp of a given-up call: %v", err)
+	}
+	if err := h.StopRun(ended, ext.StopRequest{Run: ref.ID, By: ada}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("StopRun of a given-up call: %v", err)
+	}
+	if _, err := h.Launch(ended, originLaunch(id, "op-1")); !errors.Is(err, context.Canceled) {
+		t.Fatalf("a retry of a given-up call: %v", err)
+	}
+	if strings.Contains(logs.String(), "the ledger could not be read") {
+		t.Fatalf("a given-up call was logged as a ledger failure:\n%s", logs.String())
+	}
+	if run, _ := e.srv.runs.Get(ref.ID); run.StoppedAt != nil {
+		t.Fatal("a given-up stop stopped the run")
+	}
+}
+
+// On a server whose ledger is read-only (another server owns it and runs
+// the run), StopRun answers ledger_unavailable, never that the run is not
+// running, and stops nothing.
+func TestStopRunOnAReadOnlyLedgerSaysSo(t *testing.T) {
+	e, id := originEnv(t)
+	h := testHost(e.srv, t.Context(), "example")
+	ref, err := h.Launch(t.Context(), originLaunch(id, "op-1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	runningAttempt(t, e, ref.ID, "build", 1)
+	ro := restartEnding(t, e)
+	if r, _ := ro.srv.ledger.ReadOnly(); !r {
+		t.Fatal("the second server owns the ledger")
+	}
+	err = testHost(ro.srv, t.Context(), "example").StopRun(t.Context(), ext.StopRequest{Run: ref.ID, By: ada})
+	if ext.RefusalCode(err) != "ledger_unavailable" || errors.Is(err, ext.ErrNotRunning) {
+		t.Fatalf("StopRun on a read-only ledger: %v", err)
+	}
+	if run, _ := e.srv.runs.Get(ref.ID); run.StoppedAt != nil {
+		t.Fatal("the run was stopped")
 	}
 }

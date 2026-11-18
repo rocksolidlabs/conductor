@@ -47,7 +47,7 @@ func (h *extHost) launchOrigin(ctx context.Context, r ext.LaunchRequest) (ext.Ru
 	if r.Subject.Prior != "" {
 		row, ok, err := h.s.ledger.Origin(ctx, r.Subject.Prior)
 		if err != nil {
-			return ext.RunRef{}, h.ledgerError(err)
+			return ext.RunRef{}, h.ledgerError(ctx, err)
 		}
 		if !ok || !h.owns(row) {
 			return ext.RunRef{}, refusedCode(ext.RefusalPriorUnknown, "the earlier run is not one this provider launched")
@@ -114,14 +114,14 @@ func (h *extHost) launchOrigin(ctx context.Context, r ext.LaunchRequest) (ext.Ru
 func (h *extHost) runOfOp(ctx context.Context, opID string) (ext.RunRef, bool, error) {
 	row, ok, err := h.s.ledger.RunByOp(ctx, h.name, opID)
 	if err != nil {
-		return ext.RunRef{}, false, h.ledgerError(err)
+		return ext.RunRef{}, false, h.ledgerError(ctx, err)
 	}
 	if !ok {
 		return ext.RunRef{}, false, nil
 	}
 	run, found, err := h.s.ledger.Run(ctx, row.RunID)
 	if err != nil {
-		return ext.RunRef{}, false, h.ledgerError(err)
+		return ext.RunRef{}, false, h.ledgerError(ctx, err)
 	}
 	crewID := ""
 	if found {
@@ -159,8 +159,13 @@ func (h *extHost) owns(row ledger.OriginRow) bool {
 	return row.Provider == h.name && row.OpID != ""
 }
 
-// ledgerError is a failure of the ledger's read as the provider is told it.
-func (h *extHost) ledgerError(err error) error {
+// ledgerError is a failure of the ledger's read as the provider is told it:
+// the call's own end when its context has ended (a try given up), which
+// is no failure of the ledger's and is not logged as one.
+func (h *extHost) ledgerError(ctx context.Context, err error) error {
+	if cerr := ctx.Err(); cerr != nil {
+		return cerr
+	}
 	h.s.log.Warn("the ledger could not be read for a provider", "provider", h.name, "err", err)
 	return refusedCode("ledger_unavailable", "the ledger could not be read; see the server's log")
 }
@@ -196,7 +201,7 @@ func (h *extHost) Run(ctx context.Context, id string) (ext.RunStatus, error) {
 	}
 	row, ok, err := h.s.ledger.Origin(ctx, id)
 	if err != nil {
-		return ext.RunStatus{}, h.ledgerError(err)
+		return ext.RunStatus{}, h.ledgerError(ctx, err)
 	}
 	if !ok || !h.owns(row) {
 		return ext.RunStatus{}, fmt.Errorf("%w: no such run of this provider", ext.ErrNotFound)
@@ -215,7 +220,7 @@ func (h *extHost) RunByOp(ctx context.Context, opID string) (ext.RunStatus, erro
 	}
 	row, ok, err := h.s.ledger.RunByOp(ctx, h.name, opID)
 	if err != nil {
-		return ext.RunStatus{}, h.ledgerError(err)
+		return ext.RunStatus{}, h.ledgerError(ctx, err)
 	}
 	if !ok {
 		return ext.RunStatus{}, fmt.Errorf("%w: no run of this operation id", ext.ErrNotFound)
@@ -238,13 +243,18 @@ func (h *extHost) StopRun(ctx context.Context, r ext.StopRequest) error {
 	}
 	row, ok, err := h.s.ledger.Origin(ctx, r.Run)
 	if err != nil {
-		return h.ledgerError(err)
+		return h.ledgerError(ctx, err)
 	}
 	if !ok || !h.owns(row) {
 		return fmt.Errorf("%w: no such run of this provider", ext.ErrNotFound)
 	}
 	if err := h.gone(); err != nil {
 		return err
+	}
+	if ro, why := h.s.ledger.ReadOnly(); ro {
+		// Another server owns the ledger and runs the run: this one can
+		// neither stop it nor say it is not running.
+		return refusedCode("ledger_unavailable", "%s", why)
 	}
 	note := "stopped by " + r.By.Name + " through " + h.name
 	if r.Why != "" {
@@ -290,7 +300,7 @@ func (h *extHost) status(ctx context.Context, row ledger.OriginRow) (ext.RunStat
 func (h *extHost) recovered(ctx context.Context, runID string) (crew.Run, bool, error) {
 	from, ok, err := crew.SQLLedger(h.s.ledger).Load(ctx, runID)
 	if err != nil {
-		return crew.Run{}, false, h.ledgerError(err)
+		return crew.Run{}, false, h.ledgerError(ctx, err)
 	}
 	if !ok {
 		return crew.Run{}, false, nil
