@@ -730,10 +730,13 @@ func TestLedgerVersionIsABarrier(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer db.Close()
-		// Version 9 had no previews table (version 11 added it).
+		// Version 9 had no previews table (version 11 added it) and no
+		// table of where a run was launched from (version 13 added it).
 		if v == 9 {
-			if _, err := db.Exec("DROP TABLE previews"); err != nil {
-				t.Fatal(err)
+			for _, stmt := range []string{"DROP TABLE run_origin", "DROP TABLE previews"} {
+				if _, err := db.Exec(stmt); err != nil {
+					t.Fatal(err)
+				}
 			}
 		}
 		if _, err := db.Exec("UPDATE schema_version SET version = ?", v); err != nil {
@@ -763,7 +766,7 @@ func TestLedgerVersionIsABarrier(t *testing.T) {
 	if ro, why := migrated.ReadOnly(); ro {
 		t.Fatalf("read-only after 9 to 10: %s", why)
 	}
-	if v := version(); v != ledger.Version || ledger.Version != 12 {
+	if v := version(); v != ledger.Version || ledger.Version != 13 {
 		t.Fatalf("version %d after the migration, Version %d", v, ledger.Version)
 	}
 	if got := rows(migrated); got != before {
