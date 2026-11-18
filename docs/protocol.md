@@ -3313,9 +3313,15 @@ It says `hello` with a new nonce at every load of the frame, and again
 with that nonce, at 1 s and 2 s and then every 2 s, while the frame stays
 on that load and no `ready` has come, so a bridge whose script starts
 after the load (a dev build that adds its tag as its app starts) is
-reached however late: 3 s with no `ready` it says the page does not load
-the bridge, and a `ready` with that load's nonce that comes later is
-still taken and ends the words. A `ready` ends the hellos; so do a new
+reached however late: 3 s with no `ready` it says the page has not
+answered yet and that it keeps asking, 30 s with none that the page does
+not load the bridge, and a `ready` with that load's nonce that comes
+later is still taken and ends the words. A capture made before the page
+answered takes its first element once it has only where the frame is
+then the same as its screenshot; Capture again waits for the `ready` as
+long as the frame stays on its load, and describes on the page as it is
+when the page reports the capture's address (compared without the
+fragment), else sends the frame there and describes on the next press. A `ready` ends the hellos; so do a new
 load (whose nonce replaces the old, and a `ready` with the old is
 dropped), a frame replaced, removed or sent to another address, and the
 pane's close, each leaving no timer.
