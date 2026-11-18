@@ -1489,7 +1489,8 @@ ended). Every ordering is a test (PR-3c).
   background briefs held (a decision named by what it is about at the
   revision it was written at, so the same subject at a new revision is
   new; the earlier briefs are read, nothing is kept, and a list that
-  cannot be read notifies no one). It sends the operator's pages
+  cannot be read notifies no one, while an earlier brief that does not
+  read is passed over as holding no decision). It sends the operator's pages
   `brakeman_needs_you` `{id, decisions}` (droppable: at most once, and
   only to a page connected then), which a page turns into a browser
   notification and the chime under the person's switches and a switch of
@@ -1500,6 +1501,10 @@ ended). Every ordering is a test (PR-3c).
   count and a path, never a word of the brief. A background brief without
   a decision card or with only decisions told before, every brief a
   person asked for, and a background turn's own question notify no one.
+  Each open page plays its own chime, as for every other alert, and how
+  often a background brief notifies is bounded by the role's own limits
+  (its window, cool-down and daily turns and minutes), with no cap of its
+  own.
 - Nothing Brakeman submits changes a ticket's status, a run's state, a
   task's outcome, a verification or an acceptance: those stay separate
   facts with their own owners (the Program, section 1.4), and a brief only
@@ -1881,7 +1886,12 @@ the text in no log), `TestAWithdrawnPackageIsHandedToNoOne`,
 `TestOnlyTheAdminReachesTheHandRoutes`,
 `TestAHandoffPackageWaitsForTheContinuation`,
 `TestTheHandoffFunctionTakesNothingWhileNotOwner`,
-`TestAPackageTakenByAnAttemptThatNeverStartedSaysSo`; unchanged and green,
+`TestAPackageTakenByAnAttemptThatNeverStartedSaysSo` (still so once the run
+is let go), `TestAPackageNeverReadStaysSoOnceTheRunIsLetGo`,
+`TestAStartingAttemptIsNamedInThePreview`,
+`TestThePreviewAtItsWidestFitsItsBound` (16 KiB of characters JSON writes
+twice, within 38 KiB), and `crew`'s `TestAClosedAttemptAsksForNoPackage`;
+unchanged and green,
 `TestToolsListIsUnchanged`, `TestTheActToolIsListedOnlyWithAGrant`,
 `TestBrakemansTokenReachesNoAdminRoute` and
 `TestTaskFileByteIdenticalWithoutContext`. The notification, Go race
@@ -1892,7 +1902,9 @@ the text in no log), `TestAWithdrawnPackageIsHandedToNoOne`,
 `TestADecisionIsHeldAgainstTheRolesEarlierBriefs`,
 `TestAWebhookThatListsOnlyQuestionsHearsNoBrief`,
 `TestAProvidersSinkHearsNoBrief`, `TestTheNeedsYouEventIsBounded`,
-`TestTheBriefsNotificationIsConductorsWords`, and
+`TestTheBriefsNotificationIsConductorsWords`, `TestEarlierBriefsThatCannotBeRead`
+(an unreadable list notifies no one; an unreadable earlier brief is passed
+over), `brakeman/brief_alone_test.go`'s `TestBriefAloneReadsNoResolutions`, and
 `config/webhook_test.go`'s `TestBrakemanNeedsYouIsAWebhookEvent`; the
 quiet mark's three tests unchanged; vitest `utils/brakemanAlert.test.ts`
 (the words read from the Go source, the event's refusals) and
@@ -1900,14 +1912,17 @@ quiet mark's three tests unchanged; vitest `utils/brakemanAlert.test.ts`
 `brakeman-notify.spec.ts`. The send's page, vitest
 `utils/brakemanSend.test.ts` (the preview's parser and its bounds held to
 the Go constants, every refusal's words, the state sentences and status
-lines, the who-reads sentence, a name refused before sending, an older
-server's 404, a `proposal/1` naming the operations drawn as text);
+lines, an attempt still starting, the who-reads sentence, a name refused
+before sending, an older server's 404 and its catch-all's, a `proposal/1`
+naming the operations drawn as text);
 Playwright `brakeman-send.spec.ts` (the dialog's text equal to the
 preview's, sent, handed to the next attempt and read from its task file,
 a later attempt holding none, withdrawn, no control for another kind or
 an older server, a phone). Sharing, vitest `utils/brakemanShare.test.ts`
-(`mdPlain`, `forLine`, `shareRuns`, `shareCrews`, `briefMarkdown` without
-the line as it was); Playwright `brakeman-share.spec.ts`.
+(`mdPlain`: a name a tracker would link written as a code span, any other
+escaped, joiners and variation selectors kept; `forLine`, `shareRuns`,
+`shareCrews`, `briefMarkdown` without the line as it was); Playwright
+`brakeman-share.spec.ts` (with a refused clipboard's text to select).
 
 **What tests cannot cover, by hand** (Acceptance): a real agent on the
 owner's own subscription (Claude Code and Codex) doing real turns against a

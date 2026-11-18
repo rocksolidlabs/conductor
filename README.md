@@ -2014,15 +2014,24 @@ are hidden) opens "Share with a crew's people": the people of the crews
 whose runs the brief is about, as those runs were launched (at most three
 runs read), each a chip with what they answer for that links to their page,
 and a choice of crew when the brief names more than one. **Copy for them**
-puts the brief on your clipboard and **Comment on <ticket>…** opens the
+puts the brief on your clipboard (where the browser refuses the clipboard,
+the dialog says "The browser did not let the page copy: select the text
+below and copy it by hand." and shows the text to select) and **Comment on
+<ticket>…** opens the
 comment dialog with the run's own ticket picked, each with their names as
 the first line, above the brief's title: "For <crew>'s people: <name> (<what
 they answer for>), …". A crew whose run was launched from no ticket says
 "<crew>'s run was launched from no ticket: pick the ticket to comment on.",
 and a brief about no run with a crew's people says "This brief names no run
-with a crew's people: it goes with no names." Every punctuation character of
-a name, and of the crew's, is escaped, so no name becomes a link, an
-address, a mention or markup; Brakeman's own text stays Markdown. The
+with a crew's people: it goes with no names." No name, nor the crew's,
+becomes a link, an address, a mention or markup: a name with `@` or `#`, or
+the shape of an issue reference (`GH-12`, `owner/repo#1`), an address (a
+URL scheme, `www.`) or an e-mail address is written as a Markdown code span,
+in which neither a renderer nor a tracker links anything, and any other as
+text with every punctuation character escaped. A line break in a name is a
+space, and a character that draws nothing is written U+FFFD, but for the
+zero-width joiners and the variation selectors a name keeps. Brakeman's own
+text stays Markdown. The
 comment goes under your name and, past 16 KiB, says so and sends nothing,
 never cutting it. The dialog says what it is: "Conductor sends nothing and
 notifies no one: you copy the brief, or comment it on a ticket, with their
@@ -2039,7 +2048,8 @@ size ("… KiB, exactly as the server will hand it"); where it goes ("To build
 of <run>.") and which attempt takes it by the task's state ("build has
 failed: the package waits for its next attempt. Retry build on its run to
 start one.", or the like for a task not started, waiting, running, cancelled
-or with a result); "Sending starts nothing. The agent reads it as a quoted
+or with a result, and, while the task's newest attempt is still starting,
+"build is starting attempt 2. If its task file is not written yet, it is handed the package; otherwise the package waits for the attempt after it."); "Sending starts nothing. The agent reads it as a quoted
 report in its task file, not as instructions."; "Whoever can watch build's
 session or read its files (a link's holder too) can read what you send, and
 the agent may repeat it in its result."; and "It goes under your name, Ada."
@@ -2066,7 +2076,7 @@ refusal has its words, "The run is not running on this server. Continue it,
 then send the package: it goes to the continuation." among them, and one the
 page does not know reads "It cannot be sent now."); a brief of another kind,
 a package about a session, a comparison's lane, a run without tasks and a
-server too old to have the route draw no button. The run's log says what was
+server too old to have the route draw no button and no read failure. The run's log says what was
 sent, withdrawn and taken. Brakeman cannot send one (a proposal that names
 the operation is drawn as text, never a button), and a worker gains none of
 Brakeman's tools.
@@ -2101,9 +2111,12 @@ fires once). A background turn's question is listed in Needs you and
 notifies no one. A background brief that holds a decision no earlier
 background brief held notifies once: a browser notification ("Brakeman's
 background brief br-14 holds 1 decision", which opens it) and the chime, as
-your Alerts switches say, on the pages open then, and a POST to the
-webhooks that list `brakeman_needs_you`; nothing of the brief's own words
-leaves the page, and every other brief stays a count. The Brakeman page says the role's state once (an
+your Alerts switches say, on the pages open then (each open page plays
+its own chime, as for every other alert), and a POST to the webhooks that
+list `brakeman_needs_you`; nothing of the brief's own words leaves the page,
+and every other brief stays a count. How often it can happen is bounded by
+the background role's own limits (its window, its cool-down and its turns
+and minutes a day), with no cap of its own. The Brakeman page says the role's state once (an
 unavailable one says why and what tries again), with Pause and Resume; its
 wakes, each by name with what became of it, and the notes you keep from a
 brief's facts (**Keep as a note**, given to every turn) are behind

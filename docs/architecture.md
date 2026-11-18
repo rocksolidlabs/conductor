@@ -1096,8 +1096,10 @@ the person read and their name.
 (`handleSessionBrakemanBrief`, after `publish`, before the answer), the
 desk's `briefKept` notifies when the brief is the background role's own
 `wake` request's, holds a decision card, and holds one that none of the
-role's 20 earlier background briefs held (`heldBefore` reads them; nothing
-is stored): the hub sends `brakeman_needs_you` `{id, decisions}` to the
+role's 20 earlier background briefs held (`heldBefore` reads their items
+alone, `Store.BriefAlone`; nothing is stored; only a list it cannot read
+notifies no one, and an earlier brief that does not read is passed over as
+holding no decision): the hub sends `brakeman_needs_you` `{id, decisions}` to the
 pages, as droppable as progress, and the notifier's `send` queues one
 notification of fixed words for the webhooks that list the name, and for no
 provider's sink. The page's `useAttention.ts` turns the event into a
@@ -1128,14 +1130,17 @@ in place of the home folder (`default` for the agent's default login, else
 by the ledger's own lock code (`store.OwnerLock`); a second server on the
 directory reads them and writes nothing (`503 brakeman_not_owner`).
 
-In the web app `useBrakeman.ts` is the client, its one door to these
-routes (the configuration; a page of requests, then the `brakeman`,
+In the web app `useBrakeman.ts` is the client of these routes, but the
+handoff package's three, which `useBrakemanSend.ts` calls over
+`utils/brakemanSend.ts`'s parser, and `brakeman_needs_you`, which
+`useAttention.ts` reads through `utils/brakemanAlert.ts` (each part has a
+file of its own); `useBrakeman.ts` holds the configuration; a page of requests, then the `brakeman`,
 `brakeman_progress` and `brakeman_opened` events of `GET /api/events`;
 `list` with the filters, every row applied into the live store with its
 digest kept; `since`, read at most every 5 s while a page follows it;
 `progress`; the unread ids, the server's while `GET /api/brakeman/opened`
 answers and the browser's own marks on 404 or 503; and `events`, the seam
-other reads follow). Settings holds `BrakemanSettings.vue`, which starts
+other reads follow. Settings holds `BrakemanSettings.vue`, which starts
 from a preset (`utils/brakemanSettings.ts`: a preset sets drafting,
 proposing and the grants only, ticks no grant and never turns on terminal
 screens; the page's one Save sends it at the revision read). `/brakeman`

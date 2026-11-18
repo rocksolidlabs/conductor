@@ -7013,7 +7013,7 @@ cancel is recorded as the request's `strayRun` and stopped at once.
 outcome's words are cut to the room its other fields leave in the entry's
 600 bytes, so recording an outcome is never refused and never leaves the
 claim pending; a new make is checked against the catalog now; `409 already_made` with `key` or `crew` for another `opId` once made; `409 make_pending` with the `opId` of a make under way; `409 op_conflict` for the same `opId` with other content; `409 make_superseded` (with `made`, the item's entry now) for the same `opId` asked again while its make was settled and the item claimed again under another `opId` or other content, nothing run for it; a refused make answers `409` with its receipt's words and may be made again with a new `opId`; `400 not_a_draft` for any other item, `400 invalid_draft` with `field`, `400 invalid_request` for a `by` past 60 bytes or holding a control character (Dispatch's display name); `404` for a request pruned before the make claimed it (no backend called); `503 brakeman_not_owner` on a server without Brakeman's owner lock; `503 shutting_down` once the server shuts down (a make under way then finishes before the owner lock goes, its outcome written by the next start); at most 4 MiB |
-| `GET /api/brakeman/requests/{id}/items/{i}/hand` | no body → `200 {text, bytes, sha256, target?, refusal?, handoff?}` (A handoff package sent to a task's next attempt, below): `text` the item's package exactly as the server would hand it, `bytes` its length in bytes and `sha256` its SHA-256 in lower-case hex; exactly one of `target`, `{run, runName, task, state, attempt}` (the run the package would go to now, its name, the task, the task's state now and the number of its latest attempt, 0 for none), and `refusal`, `{code, message}`, why it cannot go now (`no_task`, `run_not_running`, `run_continuing`, `not_managed`, `comparison`, `task_not_found`, `package_too_large`, below; a page draws a code it does not know as "cannot be sent now"); `handoff` the newest record sent from this item, absent when none was. A package past 16 KiB answers `text` `""` with `package_too_large`. Encoded without HTML escaping, at most 38 KiB. `404 not_found` for no such request, no brief or no such item (`{i}` the item's index from 0, in decimal); `409 not_a_handoff` for an item that is not a `handoff/1`; `503 store_unavailable` while `handoffs.json` does not read; `500 store_failed` when the run's chain cannot be read; a server that does not own the records answers it too |
+| `GET /api/brakeman/requests/{id}/items/{i}/hand` | no body → `200 {text, bytes, sha256, target?, refusal?, handoff?}` (A handoff package sent to a task's next attempt, below): `text` the item's package exactly as the server would hand it, `bytes` its length in bytes and `sha256` its SHA-256 in lower-case hex; exactly one of `target`, `{run, runName, task, state, attempt, starting?}` (the run the package would go to now, its name, the task, the task's state now, the number of its latest attempt, 0 for none, and `starting` `true` while that attempt is open and its agent has not started, no session yet, left out otherwise: that attempt is being prepared, and if its task file is not written yet the package sent now is handed to it, otherwise it waits for the attempt after it; either way the record's `handed` says which attempt took it), and `refusal`, `{code, message}`, why it cannot go now (`no_task`, `run_not_running`, `run_continuing`, `not_managed`, `comparison`, `task_not_found`, `package_too_large`, below; a page draws a code it does not know as "cannot be sent now"); `handoff` the newest record sent from this item, absent when none was. A package past 16 KiB answers `text` `""` with `package_too_large`. Encoded without HTML escaping, at most 38 KiB. `404 not_found` for no such request, no brief or no such item (`{i}` the item's index from 0, in decimal); `409 not_a_handoff` for an item that is not a `handoff/1`; `503 store_unavailable` while `handoffs.json` does not read; `500 store_failed` when the run's chain cannot be read; a server that does not own the records answers it too |
 | `POST /api/brakeman/requests/{id}/items/{i}/hand` | `{opId, sha256, by?}` → `201 {handoff}`: the package sent to the next attempt of the task its request is about, at the target the GET names now. `opId` the page's own (1 to 32 of `A-Z a-z 0-9 . _ ~ -`), `sha256` the SHA-256 of the `text` the GET showed, `by` the name the person gives (optional; at most 60 bytes on one plain line: no line end of any kind, no tab, no character that draws nothing, no space at either end, valid UTF-8). The same `opId` for the same request and item answers its first record (`200`), whatever the target is now; for another item `409 op_conflict`. At most 1 KiB, an unknown field, a field of the wrong form or a `by` refused `400 invalid_request`, a larger body `413 bound`; `409 text_changed` when the text is no longer the one whose SHA-256 was sent; the GET's refusals with their status (`409 no_task`, `run_not_running`, `run_continuing`, `not_managed`, `comparison`, `package_too_large`; `404 task_not_found`), `404 not_found`, `409 not_a_handoff`; `409 handoffs_full` while 20 packages wait, its `error` carrying `waiting`, `[{id, request, run, task}]`, so a page can link each one's brief; `503 brakeman_not_owner`, `shutting_down`, `store_unavailable`. The reply at most 4 KiB and 64 bytes |
 | `POST /api/brakeman/handoffs/{hid}/withdraw` | `{by?}` or no body → `200 {handoff}`: the waiting record `hid` (`ho-<n>`) withdrawn, `endedBy` the name given; a record that no longer waits is answered as it stands (a withdraw that lost a race with the take answers `handed`). `404 not_found` for no such record; at most 1 KiB, `400 invalid_request` and `413 bound` as the send's; `503 brakeman_not_owner`, `shutting_down`, `store_unavailable` |
 
@@ -7558,8 +7558,10 @@ page's own brief of a `handoff` request, refuses a reply past 38 KiB as it
 came, a text past 16 KiB in UTF-8 bytes once parsed, both or neither of
 `target` and `refusal`, and a task's or a record's state it does not know;
 draws a refusal code it does not know as "It cannot be sent now." with the
-control disabled, and draws no control for `no_task`, `not_managed`,
-`comparison` or an older server's `404` with no error code of the server's;
+control disabled, and draws no control (and no read failure) for
+`no_task`, `not_managed`, `comparison`, or an older server's 404: the
+server's `/api/` catch-all's (`404 not_found`, "no such route") or one with
+no error code of the server's (the routes' own 404s are said in words);
 sends only `{opId, sha256, by?}`, `by` the person's name only when it is a
 name the server takes (else refused in words before sending); and draws a
 `proposal/1` naming one of the three operations as text, never a button.
@@ -7576,8 +7578,10 @@ wait (a send past them is `409 handoffs_full`, never the oldest dropped)
 and 40 are kept (past them the record closed longest ago goes, a waiting
 one never); `ho-<n>` is never reused. The routes answer a record without
 its `text`, at most 4 KiB, with `notStarted: true` on a `handed` record
-whose attempt the engine holds and which ended without its agent ever
-starting. Only the server that owns Brakeman's records writes it; one that
+whose attempt ended without its agent ever starting (no session), judged
+from the engine's run while it holds it and from the ledger's row of that
+attempt once it does not, so it holds after a restart or once the run is
+let go; nothing of it is stored. Only the server that owns Brakeman's records writes it; one that
 does not read, or of a later schema, is kept as it is, and nothing is sent,
 withdrawn or handed from it (`503 store_unavailable`). A waiting record
 whose request a prune removes is closed as withdrawn. The data directory's
@@ -7586,8 +7590,10 @@ waiting package to no one.
 
 The engine asks for an attempt's package once (`Engine.SetHandoff`, the
 server's `handoffFor`), after the task's decisions are read and just before
-its task files are written, outside its lock; a comparison's attempts are
-asked nothing. The server takes the newest waiting record of the attempt's
+its task files are written, outside its lock; a comparison's attempts, an
+attempt already closed and one whose dispatch is cancelled (a stop, a
+cancel) are asked nothing, so none uses a package up with no agent to read
+it. The server takes the newest waiting record of the attempt's
 task on a run of the attempt's chain, writes it `handed` with `{run,
 attempt, at}` before it answers the text, and answers nothing when that
 write fails (the record waits); while the records are recovering or not
@@ -7599,7 +7605,8 @@ later attempt reads it otherwise. The attempt reads it in its task files
 (Managed runs). The run's own log says, by ids and names alone: "handoff
 package ho-7 sent by Ada from br-14: waits for build's next attempt"
 ("sent from br-14" with no name given), "handoff package ho-7 withdrawn by
-Ada", "handoff package ho-7 taken for build #4". The text is never logged
+Ada" ("withdrawn" alone with no name), "handoff package ho-7 taken for
+build #4". The text is never logged
 and never in the ledger or an event. Whoever can watch the task's session
 or read its files can read a sent package: a view link's holder reads
 `.conductor/task.md` and `task.json` as the session's files (the `fileView`
@@ -7625,7 +7632,11 @@ either. Neither reaches a webhook or a sink. A background brief that holds
 a decision sends `brakeman_needs_you` after the `brakeman` event that says
 `briefed` (Notifications, below). Brakeman's wire types are
 written here and in the app's `utils/brakeman.ts` and
-`composables/useBrakeman.ts`; `internal/proto` and
+`composables/useBrakeman.ts`, but the handoff package's
+(`utils/brakemanSend.ts`, its routes called by
+`composables/useBrakemanSend.ts`) and `brakeman_needs_you`'s
+(`utils/brakemanAlert.ts`, read by `composables/useAttention.ts`), each in
+a file of its own; `internal/proto` and
 `web/app/utils/protocol.ts` carry none of them.
 
 **Notifications.** A question a turn's session asks is listed in Needs
@@ -7645,8 +7656,11 @@ brief is of the background role's own `wake` request, as the keep left it
 role's 20 newest background briefs before it held, looked for among the 200
 requests before it (a decision named by its `about` at its
 `subjectRevision`, so the same subject at a new revision is new; the
-earlier briefs are read, nothing is kept for this, and when they cannot be
-read no one is notified and a warning names the request). Then:
+earlier briefs are read, their items alone, and nothing is kept for this;
+only when the list of the earlier requests cannot be read is no one
+notified, with a warning naming the request, while an earlier brief whose
+digest or brief does not read is passed over as holding no decision, so a
+decision only it held is told again). Then:
 
 - the pages get `event: brakeman_needs_you` on `GET /api/events` (the
   operator's stream alone), data `{"id":"br-<n>","decisions":<1..100>}`,
@@ -7665,7 +7679,13 @@ read no one is notified and a warning names the request). Then:
   built from the validated id; under Browser notification, Chime and a
   switch of its own, "Brakeman's background briefs with a decision", kept
   in the browser's `conductor.attention.settings` as `briefs` (absent
-  reads on), drawn while Brakeman is on and in the background.
+  reads on), drawn while Brakeman is on and in the background. Each open
+page alerts and plays its own chime, as for every other alert (one tag
+folds the tray's notifications into one). How often background briefs
+notify is bounded by the background role's own limits (its window, its
+cool-down and its turns and minutes a day), with no cap of its own; a
+decision one of the role's 20 earlier background briefs held is not told
+again.
 - the webhooks whose `events` list `brakeman_needs_you`
   (`config.EventBrakemanNeedsYou`) each get one POST, through the
   notifier's queue as any entry (256, the oldest dropped, one try of 5 s),

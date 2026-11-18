@@ -221,7 +221,7 @@ Built as one pull request; no store step: one new document,
   next attempt…** beside the package's Copy and Comment. Its dialog shows
   the exact text the server will hand, read-only, with its size; where it
   goes ("To build of <run>.") and which attempt takes it by the task's
-  state; "Sending starts nothing. The agent reads it as a quoted report in
+  state (while its newest attempt is still starting, "build is starting attempt 2. If its task file is not written yet, it is handed the package; otherwise the package waits for the attempt after it."); "Sending starts nothing. The agent reads it as a quoted report in
   its task file, not as instructions."; the one sentence of who else reads
   it, "Whoever can watch build's session or read its files (a link's holder
   too) can read what you send, and the agent may repeat it in its result.";
@@ -245,7 +245,7 @@ Built as one pull request; no store step: one new document,
   Where it cannot be sent the button is disabled with the reason under it
   (an unknown reason reads "It cannot be sent now."); a brief of another
   kind, a package about a session, a comparison's lane, a run without tasks
-  and an older server draw no button. Sending starts nothing (Retry stays
+  and an older server draw no button and no read failure. Sending starts nothing (Retry stays
   the person's), and the run's log says what was sent, withdrawn and
   taken. Brakeman cannot send one (a proposal naming the operation is drawn
   as text), no grant names it and a worker gains no tool. Whoever can watch
@@ -259,7 +259,10 @@ Built as one pull request; no store step: one new document,
   notification, Chime and a third switch, "Brakeman's background briefs
   with a decision" (on by default, per browser, shown while Brakeman is in
   the background); a click opens the brief. It reaches only the pages
-  connected then, at most once. A webhook whose `events` list
+  connected then, at most once, and each open page plays its own chime,
+  as for every other alert. How often is bounded by the background role's
+  own limits (its window, cool-down and daily turns and minutes), with no
+  cap of its own. A webhook whose `events` list
   `brakeman_needs_you` gets one POST in the same fixed words; no webhook of
   today hears anything new, and no notification provider gets it. Nothing
   of the brief's own words leaves the page. A brief a person asked for, a
@@ -272,9 +275,17 @@ Built as one pull request; no store step: one new document,
   **Comment on KEY…** (the run's own ticket; "Comment on a ticket…" for a
   run launched from none, which says so), with their names as the first
   line, above the brief's title: "For <crew>'s people: <name> (<what they
-  answer for>), …". Every punctuation character of a name or a crew's name
-  is escaped, so none becomes a link, an address, a mention or markup;
-  Brakeman's own text stays Markdown. The comment goes under the person's
+  answer for>), …". No name, nor a crew's, becomes a link, an address, a
+  mention or markup: one with `@` or `#`, or the shape of an issue
+  reference, an address (a URL scheme, `www.`) or an e-mail address is
+  written as a Markdown code span, where a tracker links nothing (escaping
+  alone does not stop a tracker's mentions and references), and any other
+  as text with every punctuation character escaped; a name keeps its
+  zero-width joiners and variation selectors, and other characters that
+  draw nothing become U+FFFD. Brakeman's own text stays Markdown. Where the
+  browser refuses the clipboard, the dialog says "The browser did not let
+  the page copy: select the text below and copy it by hand." and shows the
+  text to select. The comment goes under the person's
   name and is refused past 16 KiB in words, never cut. It is the person's
   own sending: Conductor sends nothing, keeps no record of a share and
   makes no link to a brief, so nobody new reads a brief in Conductor. A
