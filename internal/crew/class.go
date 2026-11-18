@@ -91,20 +91,30 @@ func recordsCap(class string) int {
 // Launcher in each member's LaunchSpec. LaunchNamed is it with none.
 func (e *Engine) LaunchNamedWith(ctx context.Context, c Crew, label string, opts LaunchOpts) (*Run, func(), error) {
 	noop := func() {}
-	if err := opts.check(); err != nil {
+	if err := e.checkLaunch(c, opts); err != nil {
 		return nil, noop, err
 	}
+	return e.launchNamed(ctx, c, label, opts)
+}
+
+// checkLaunch holds opts to c: their shapes, a Brakeman turn of
+// Brakeman's own crew and never a managed one, and a provider's launch of
+// a crew with tasks.
+func (e *Engine) checkLaunch(c Crew, opts LaunchOpts) error {
+	if err := opts.check(); err != nil {
+		return err
+	}
 	if opts.Class == ClassBrakeman && c.Managed() {
-		return nil, noop, invalidf("a Brakeman turn is never a managed run")
+		return invalidf("a Brakeman turn is never a managed run")
 	}
 	if opts.Origin != nil && !c.Managed() {
-		return nil, noop, invalidf("a provider's launch is of a crew with tasks")
+		return invalidf("a provider's launch is of a crew with tasks")
 	}
 	// A turn's crew is Brakeman's own id (the store reserves it), so its
 	// runs and their records are named brakeman-<n>: the records' prune
 	// counts them by that name before it reads any.
 	if opts.Class == ClassBrakeman && c.ID != ClassBrakeman {
-		return nil, noop, invalidf("a Brakeman turn's crew is %s", ClassBrakeman)
+		return invalidf("a Brakeman turn's crew is %s", ClassBrakeman)
 	}
-	return e.launchNamed(ctx, c, label, opts)
+	return nil
 }

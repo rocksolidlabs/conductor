@@ -953,6 +953,11 @@ func (e *Engine) launchNamed(ctx context.Context, c Crew, label string, opts Lau
 	if err != nil {
 		return nil, noop, err
 	}
+	return e.launchPrepared(ctx, c, p, label, opts)
+}
+
+// launchPrepared is launchNamed once its crew is prepared.
+func (e *Engine) launchPrepared(ctx context.Context, c Crew, p prepared, label string, opts LaunchOpts) (*Run, func(), error) {
 	p.opts = opts
 	// A managed run's id is minted against the runs the engine holds; the
 	// ledger may have it (a planned run's, after a restart), which the
