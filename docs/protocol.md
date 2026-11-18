@@ -5117,7 +5117,10 @@ a launch with no provider registered is as it was.
   has answered. A crew on a host resolves with `where` `host`, its folder
   as saved (the host's), no manifest and no binding, and one without tasks
   with `managed` false: the caller decides what to make of either (a
-  launch of a crew on a host is refused `invalid_crew`). Refusals:
+  launch of a crew on a host is refused `invalid_crew`). A crew on a host
+  saved with no folder, with a relative one or with one longer than
+  `ext.MaxFolder` is refused `invalid_cwd`: no record could name its
+  folder. Refusals:
   `invalid_request` (a commit for a crew without tasks among them, whose
   launch has no base); `ErrNotFound` for no such crew;
   `project_unknown`, `project_archived`; `invalid_crew`, `invalid_cwd`;
