@@ -2735,8 +2735,9 @@ func runState(r Run) (string, int) {
 // name's session (a startup dialog: the folder's trust, the agent's own
 // update; or a question it asks), saying where a person answers it: a
 // question the session offers with its choices (att, as the session shows
-// it, when it is still that question) with one of them on the member's
-// session page, where its choices answer it, or in its terminal; one that
+// it, when it is still that question) with one of them in the run page's
+// chat or on the member's session page, where its choices answer it, or in
+// its terminal; one that
 // mirrors a decision through the decision. Nothing answers it by itself.
 // A Brakeman turn's: its terminal.
 func heldWords(r *run, name, question string, att session.Attention) string {
@@ -2758,7 +2759,7 @@ func heldWords(r *run, name, question string, att session.Attention) string {
 	if len(labels) > 1 {
 		choice = "one of its choices (" + strings.Join(labels, ", ") + ")"
 	}
-	return fmt.Sprintf("%s: answer it on %s's session page with %s, or in its terminal", asks, name, choice)
+	return fmt.Sprintf("%s: answer it with %s in the run page's chat or on %s's session page, or in its terminal", asks, choice, name)
 }
 
 // AwaitReady waits until l is ready for its prompt (readyAt), looking every
