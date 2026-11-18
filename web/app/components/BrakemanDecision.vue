@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { BriefItem, RefResolution } from '~/utils/brakeman'
 import { parseRef, refLabel } from '~/utils/brakeman'
-import { ANSWERER, commandLabel, decisionControls, isStale, revisionOf, staleWords } from '~/utils/brakemanCards'
+import { ANSWERER, cardReason, commandLabel, decisionControls, isStale, revisionOf, staleWords } from '~/utils/brakemanCards'
 import type { TaskCommand } from '~/utils/tasks'
 
 /**
@@ -141,6 +141,7 @@ function press(command: TaskCommand) {
       <UButton v-else-if="controls.kind === 'ticket'" :to="controls.to" label="Open the ticket" icon="i-lucide-ticket" size="sm" color="neutral" variant="outline" class="self-start max-sm:min-h-11 max-sm:w-full max-sm:justify-center" data-decision-ticket />
       <BrakemanPlanControl v-else-if="controls.kind === 'plan'" :ticket-key="controls.ticket" :n="controls.n" @offered="approvable = $event" />
       <UButton v-else-if="controls.to" :to="controls.to" label="Open its page" icon="i-lucide-arrow-up-right" size="sm" color="neutral" variant="ghost" class="self-start max-sm:min-h-11" />
+      <p v-if="cardReason(controls)" class="text-xs text-muted" data-controls-reason>{{ cardReason(controls) }}</p>
       <p v-if="recommends" class="text-xs text-muted" data-brief-recommends>Brakeman recommends: {{ recommends }}</p>
       <UAlert v-if="refusal" color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="refusal" data-card-refused />
     </div>
@@ -161,7 +162,7 @@ function press(command: TaskCommand) {
         </div>
         <div class="flex flex-wrap items-center gap-1.5 text-xs text-muted">
           <BrakemanRefChip :ref-name="item.about" :resolution="refs.get(item.about)" />
-          <span data-controls-words>{{ controls.words }}</span>
+          <span v-if="!cardReason(controls)" data-controls-words>{{ controls.words }}</span>
         </div>
       </template>
     </UCollapsible>
