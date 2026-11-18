@@ -108,13 +108,38 @@ describe('the reads about a subject', () => {
     f.answers(async () => ({ requests: [row('br-9300')], next: '', filtered: true }))
     const r = new AboutReads(f.list)
     r.set(RUN)
-    r.add(row('br-9301', { state: 'queued', hasBrief: false }))
+    r.add(row('br-9301', { state: 'queued', hasBrief: false, subjects: [`task:${RUN.slice(4)}/build`] }))
     await f.release()
     expect(r.rows.map((x) => x.id)).toEqual(['br-9301', 'br-9300'])
     f.answers(async () => ({ requests: [row('br-9301'), row('br-9300')], next: '', filtered: true }))
     r.event({ id: 'br-9301', state: 'briefed' })
     await f.release()
     expect(r.rows.map((x) => x.id)).toEqual(['br-9301', 'br-9300'])
+  })
+
+  it('takes no request the page asked that is not about the subject, so it never becomes its latest brief', async () => {
+    const f = fakeList()
+    f.answers(async () => ({ requests: [row('br-9300')], next: '', filtered: true }))
+    const r = new AboutReads(f.list)
+    r.set(RUN)
+    // The run panel's Overlapping changes: a request with no subject.
+    r.add(row('br-9301', { kind: 'overlaps', subjects: [], state: 'queued', hasBrief: false }))
+    expect(r.rows.map((x) => x.id)).toEqual([])
+    await f.release()
+    expect(r.rows.map((x) => x.id)).toEqual(['br-9300'])
+  })
+
+  it("takes no request asked about another run whose reply came after the page moved to this one", async () => {
+    const f = fakeList()
+    f.answers(async () => ({ requests: [row('br-9400', { subjects: ['task:checkout-0c1d2e3f/build'] })], next: '', filtered: true }))
+    const r = new AboutReads(f.list)
+    r.set(RUN)
+    await f.release()
+    r.set('run:checkout-0c1d2e3f')
+    // Run A's ask, answered once the page shows run B.
+    r.add(row('br-9401', { subjects: [`task:${RUN.slice(4)}/build`], state: 'queued', hasBrief: false }))
+    await f.release()
+    expect(r.rows.map((x) => x.id)).toEqual(['br-9400'])
   })
 
   it('reads nothing for no subject or one that is no ref', () => {
