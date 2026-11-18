@@ -108,6 +108,15 @@ func (s *Server) resolveSaved(ctx context.Context, crewID, project, commit strin
 		}
 		launch.Members = members
 		rr.launch, rr.release = launch, unbind
+		// The account and the model each member would be bound to now:
+		// pinned by the digest, named by the account's id and where its
+		// login comes from, never by its folder or its login.
+		for i, m := range members {
+			if b := m.Bound; b != nil {
+				rec.Members[i].Account, rec.Members[i].AccountSource = b.ID, b.Source
+			}
+			rec.Members[i].Model = m.Model
+		}
 		if commit != "" && !c.Managed() {
 			rr.release()
 			return nil, refusedCode(ext.RefusalInvalidRequest, "a start commit is a crew with tasks' base, and this crew has none")
