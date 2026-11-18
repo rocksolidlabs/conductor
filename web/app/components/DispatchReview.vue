@@ -11,7 +11,7 @@ import { CommandRefused } from '~/utils/tasks'
 import { receiptChips, receiptFailed, receiptKey, receiptName } from '~/utils/dispatchEvidence'
 import { lineageOf, type LineageAttempt, type LineageReviewTask } from '~/utils/reviewLineage'
 import type { RunInfo } from '~/composables/useSessions'
-import { appliedSelection, candidateSelection, compareRunOf, reviewHold } from '~/utils/compareSelect'
+import { appliedSelection, candidateSelection, compareRunOf, heldVerdict, reviewHold } from '~/utils/compareSelect'
 import {
   latest,
   barTop,
@@ -230,6 +230,15 @@ const refused = ref(new Set<string>())
 const offered = computed<BaseChoice[] | null>(() => withDraftBase(listed.value, draft.value.base, refused.value.has(`${chosen.value}|${draft.value.base}`)))
 const drafts = useReviewDraft({ ticket: () => props.ticketKey, candidate: () => chosen.value, offered: () => offered.value?.map((b) => b.commit) ?? null })
 const draft = drafts.draft
+// While Request changes is held for the candidate shown, the draft's verdict is Comment: the checked verdict is one that can be sent.
+watch(
+  () => [hold.value, draft.value.verdict, chosen.value] as const,
+  ([h, v]) => {
+    const want = heldVerdict(v, h)
+    if (want !== v) drafts.setVerdict(want)
+  },
+  { immediate: true },
+)
 const lockWords = computed(() => {
   const l = drafts.lock.value
   if (!l) return ''

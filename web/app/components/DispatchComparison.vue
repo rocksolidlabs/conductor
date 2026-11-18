@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { AgentInfo } from '~/composables/useSessions'
 import { MEASURED_BY } from '~/utils/compare'
-import { laneSelection, type SelectionMark } from '~/utils/compareSelect'
+import { laneSelection, selectionWaitsWords, type SelectionMark } from '~/utils/compareSelect'
 import { ticketPath } from '~/utils/dispatch'
 import { shortCommit } from '~/utils/dispatchPlans'
 
@@ -35,6 +35,13 @@ const state = computed(() => {
   return c.error.value ? 'failed' : 'reading'
 })
 const back = { query: {} }
+/** The top line while the selection waits for an answer, and the press that brings the panel into view with the focus on it. */
+const waits = computed(() => selectionWaitsWords(comparison.value?.selection))
+function toSelection() {
+  const el = document.getElementById('compare-selection')
+  el?.scrollIntoView({ block: 'start' })
+  el?.focus({ preventScroll: true })
+}
 /** Each lane's label once the selection is applied: selected, not selected. */
 const labels = computed<Record<string, SelectionMark>>(() => {
   const out: Record<string, SelectionMark> = {}
@@ -71,6 +78,11 @@ const labels = computed<Record<string, SelectionMark>>(() => {
           <span class="font-mono text-highlighted" :title="comparison.base" data-mono="commit" data-compare-base>{{ shortCommit(comparison.base) }}</span>
           <span>·</span>
           <span data-compare-lanes-words>{{ comparison.settled ? 'every lane has ended' : 'a lane is still being worked' }}</span>
+        </p>
+        <p v-if="waits" class="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-sm text-default" data-compare-waits>
+          <UIcon name="i-lucide-list-checks" class="size-4 flex-none text-muted" />
+          <span class="min-w-0 break-words">{{ waits }}</span>
+          <UButton label="Go to the selection" icon="i-lucide-arrow-down" size="xs" color="neutral" variant="outline" class="max-sm:min-h-11" data-compare-waits-go @click="toSelection" />
         </p>
         <p v-if="comparison.objective" class="whitespace-pre-wrap break-words text-default" data-compare-objective>{{ comparison.objective }}</p>
         <div v-if="comparison.criteria.length" class="flex flex-col gap-0.5">

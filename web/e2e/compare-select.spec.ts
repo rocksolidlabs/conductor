@@ -266,7 +266,8 @@ test.describe('the selection and the supporting panel on the comparison', () => 
     // The person's op id is the page's own: one beginning `cmp-` is the server's, for the draft the settling asks.
     expect(String(asked[0]!.opId)).toMatch(/^[0-9a-f]{16}$/)
 
-    // The selection: open, nothing preselected or recommended, answered through DR1's own answer.
+    // The selection: open, said at the top, nothing preselected or recommended, answered through DR1's own answer.
+    await expect(v.locator('[data-compare-waits]')).toBeVisible()
     const select = v.locator('[data-compare-select]')
     await expect(select.locator('[data-compare-select-state]')).toHaveText("Open: waits for the operator's answer")
     await expect(select.locator('[data-decision-choice]')).toHaveCount(2)
@@ -288,6 +289,7 @@ test.describe('the selection and the supporting panel on the comparison', () => 
       await open()
       await expect(select.locator('[data-compare-select-state]')).toHaveText('Applied: approach-a selected at aaaaaaa, by Nate')
       await expect(select.locator('[data-decision-respond]')).toHaveCount(0)
+      await expect(v.locator('[data-compare-waits]')).toHaveCount(0)
       await expect(v.locator('[data-compare-candidate="approach-a"] [data-compare-selection]')).toHaveText('selected')
       await expect(v.locator('[data-compare-candidate="approach-b"] [data-compare-selection]')).toHaveText('not selected')
       await page.goto(`/runs/${run.id}?view=tasks`)
@@ -302,9 +304,8 @@ test.describe('the selection and the supporting panel on the comparison', () => 
     await labelled()
   })
 
-  test('wide and on a phone: the candidates, the measured part, the supporting panel, then the selection, nothing sideways', async ({ day, browser }) => {
+  test('wide and on a phone: the candidates, the measured part, the supporting panel, then the selection, a line at the top that takes you to it', async ({ day, browser }) => {
     await day.part('dispatch')
-    budget(6 * LOAD_MS)
     const run = compareRun({ ticket: COMPARE_TICKET })
     const sel = inboxItem('decision', { origin: 'compare', run, candidates: [{ task: 'approach-a', n: 1, commit: 'a'.repeat(40) }] })
     for (const size of [DESK, PHONE]) {
@@ -313,6 +314,8 @@ test.describe('the selection and the supporting panel on the comparison', () => 
       await stubInbox(page, [sel])
       await serveComparison(page, run.id, () => ({ ...comparisonOf({ run: run.id, failed: true }), selection: selectionOf(sel, 'open'), supporting: SAID }))
       for (const theme of ['dark', 'light'] as const) {
+        // This pass's caps beside openCompare's own: the theme's reload, the measures, the press and what it brings into view.
+        budget(8 * LOAD_MS)
         await openCompare(page, run.id)
         await useTheme(page, theme, '[data-compare-select] [data-decision-choice]')
         const v = page.locator('[data-compare-view]')
@@ -325,6 +328,17 @@ test.describe('the selection and the supporting panel on the comparison', () => 
         expect(select.y, `the selection after the supporting panel, ${at}`).toBeGreaterThanOrEqual(supporting.y + supporting.height)
         if (size === PHONE) await tapTarget(v.locator('[data-compare-select] [data-decision-choice], [data-compare-ask-brakeman]'))
         await noSideways(page)
+
+        // At the top, above the candidates, a line says a selection waits; its press brings the panel into view and gives it the focus.
+        const waits = v.locator('[data-compare-waits]')
+        await expect(waits, at).toContainText(`A selection waits for your answer (${sel.ref.slice('decision:'.length)})`)
+        expect((await box('[data-compare-waits]')).y, `the line above the candidates, ${at}`).toBeLessThan(columns.y)
+        await page.evaluate(() => window.scrollTo(0, 0))
+        await expect(v.locator('[data-compare-select]')).not.toBeInViewport()
+        if (size === PHONE) await tapTarget(waits.locator('[data-compare-waits-go]'))
+        await waits.locator('[data-compare-waits-go]').click()
+        await expect(v.locator('[data-compare-select]'), `the press brings the selection into view, ${at}`).toBeInViewport()
+        await expect(v.locator('[data-compare-select]')).toBeFocused()
       }
       await page.context().close()
     }
@@ -357,6 +371,8 @@ test.describe('the selection and the supporting panel on the comparison', () => 
       )
       await serveComparison(page, run.id, () => ({ ...comparisonOf({ run: run.id }), selection: { ...selectionOf(sel, 'open'), options: record.request.options } }))
       for (const theme of ['dark', 'light'] as const) {
+        // This pass's caps beside openCompare's own: the theme's reload, two expects per line, the measures.
+        budget(8 * LOAD_MS)
         await openCompare(page, run.id)
         await useTheme(page, theme, '[data-compare-select] [data-decision-choice]')
         const select = page.locator('[data-compare-select]')
@@ -578,10 +594,11 @@ test.describe('the selection on the real server', () => {
       // A Stop while selecting, from the run page: its confirm says the selection stays open and how it is answered, its words clear of
       // the close button, wide and on a phone, in both themes; then the panel stays open with the same options, and the answer is
       // recorded and waits for the run.
-      budget(4 * LOAD_MS)
       for (const size of [DESK, PHONE]) {
         await page.setViewportSize(size)
         for (const theme of ['dark', 'light'] as const) {
+          // This pass's caps: the page and its theme's reload, the press, the words' wait, the measures, the close.
+          budget(7 * LOAD_MS)
           await page.goto(`/runs/${c.run}?view=tasks`)
           await useTheme(page, theme, '[data-crew-run-header] [data-run-stop]')
           await page.locator('[data-crew-run-header] [data-run-stop]').click()
@@ -600,6 +617,7 @@ test.describe('the selection on the real server', () => {
           await expect(confirm).toHaveCount(0)
         }
       }
+      budget(30_000 + 6 * LOAD_MS)
       await page.locator('[data-confirm-stop]').click()
       await expect.poll(async () => !!(await s.api.run(c.run)).stoppedAt, { timeout: 30_000, intervals: [500], message: 'the run is stopped' }).toBe(true)
       await page.setViewportSize(DESK)
@@ -617,6 +635,7 @@ test.describe('the selection on the real server', () => {
       await expect(select.locator('[data-compare-select-state]')).toHaveText(/^Applied: approach-a selected at [0-9a-f]{7}$/)
 
       // The ticket's candidates of the continuation, which submitted nothing of its own, name the run its results are kept from.
+      budget(60_000 + 3 * LOAD_MS)
       const next = (await s.api.run(c.run)).resumedBy
       expect(next, 'the run is continued').toBeTruthy()
       await page.goto(c.path)

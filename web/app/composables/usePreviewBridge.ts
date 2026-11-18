@@ -75,7 +75,8 @@ export interface Draft {
   retakeOf: string
   /**
    * Made while the page had not answered the pane's hello: its moment is the pane's own (the frame's address and size). Its first
-   * element, once the page answers, joins it only where the frame then is the same as its screenshot, every pixel.
+   * element, once the page answers, joins it only where the frame then matches its screenshot inside that element's box, inside
+   * every annotation's box and over the whole frame (sameIn's tolerance, as a selection joining any draft is held).
    */
   asked?: boolean
 }
@@ -463,7 +464,8 @@ export function createPreviewSession(deps: BridgeDeps) {
 
   /**
    * The first element of a draft made before the page answered: the draft takes the page's moment and the element where the frame is
-   * now the same as its screenshot, every pixel, and the label's revision has not moved; else the element starts a new draft, the
+   * now matches its screenshot inside the element's own box, inside every annotation's box and over the whole frame (each judged by
+   * sameIn on its own, so a change confined to a small box is caught there), and the label's revision has not moved; else the element starts a new draft, the
    * first kept and closed.
    */
   async function adopt(d: Draft, m: { element: ElementReport } & PreviewPage, label: LabelRead | null, at: string) {
@@ -471,9 +473,11 @@ export function createPreviewSession(deps: BridgeDeps) {
     d.words = d.words.filter((w) => w !== ANSWERED_WORDS)
     const sameLabel = (d.moment.label?.commit ?? '') === (label?.commit ?? '') && (d.moment.label?.content ?? '') === (label?.content ?? '')
     const frame = d.shot && sameLabel ? await shoot(await screenshots()) : null
-    if (d.shot && frame && sameIn(d.shot, frame, { x: 0, y: 0, width: d.shot.width, height: d.shot.height })) {
+    const ratio = d.shot && m.viewport.width > 0 ? d.shot.width / m.viewport.width : 1
+    const boxes = d.shot ? [{ x: 0, y: 0, width: d.shot.width, height: d.shot.height }, ...d.annotations.map((a) => a.rect), boxIn(m.element, ratio)] : []
+    if (d.shot && frame && boxes.every((b) => sameIn(d.shot!, frame, b))) {
       d.moment = momentOf(m, label, at)
-      d.ratio = m.viewport.width > 0 ? d.shot.width / m.viewport.width : 1
+      d.ratio = ratio
       return join(d, m.element, m, at, true)
     }
     d.open = false
@@ -531,10 +535,10 @@ export function createPreviewSession(deps: BridgeDeps) {
 
   /**
    * Capture again (the plan's "A candidate's preview"): each element of an earlier capture described again by its selector on this
-   * page, in its order, with its note, into a new draft that names the earlier as the capture it retakes; one that is not on this page
-   * is said. Nothing joins a draft from before it. The pane opens the same URL and device mode first.
+   * page, in its order, into a new draft that names the earlier as the capture it retakes, each with no note (the earlier capture
+   * keeps its own words; the person writes what they see now); one that is not on this page is said. Nothing joins a draft from before it. The pane opens the same URL and device mode first.
    */
-  async function retake(of: string, elements: ReadonlyArray<{ selector: string; note: string }>) {
+  async function retake(of: string, elements: ReadonlyArray<{ selector: string }>) {
     if (state.bridge !== 'ready' || state.busy || waiting) return
     state.refusal = ''
     for (const d of state.drafts) d.open = false
@@ -550,9 +554,6 @@ export function createPreviewSession(deps: BridgeDeps) {
           continue
         }
         await take({ ...m, element: m.element })
-        const d = current()
-        const a = d?.annotations[d.annotations.length - 1]
-        if (d?.retakeOf === of && a && a.element?.selector === m.element.selector && !a.note) a.note = e.note
       }
     } finally {
       state.retakeOf = ''
@@ -587,9 +588,9 @@ export function createPreviewSession(deps: BridgeDeps) {
       const ua = typeof navigator === 'undefined' ? '' : navigator.userAgent.slice(0, MAX_PREVIEW_USER_AGENT)
       const dpr = typeof window === 'undefined' ? 1 : window.devicePixelRatio || 1
       const moment: Moment = {
-        // The page the pane can name without the bridge: the address it gave the frame, less its fragment (a preview's own address
-        // carries what opens it there, never part of the page shown).
-        url: withoutFragment(f.url),
+        // The page the pane can name without the bridge: the address it gave the frame, less the fragment it opened a preview with
+        // (opened: what opens an attempt's or a candidate's preview there, never part of the page shown); a link's address whole.
+        url: pageAddress(f.url),
         title: '',
         viewport: { mode: view.mode, width: Math.round(f.width), height: Math.round(f.height), scale: view.scale, dpr, colorScheme: 'light', userAgent: ua, scrollX: 0, scrollY: 0 },
         epoch: 0,

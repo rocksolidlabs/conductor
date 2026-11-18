@@ -510,7 +510,8 @@ export interface PlanStale {
 /**
  * A plan revision as the list gives it (GET /api/dispatch/tickets/{key}/plans), never with its body: `n` its place among the ticket's
  * revisions; the approval's fields while it has one; `crewChanged` the saved crew edited since or gone, `agentsChanged` an agent resolving
- * otherwise now (both cured by a new revision alone); `expectedChecks` its tasks' checks and its manifest's verify steps. A ticket's read
+ * otherwise now (both cured by a new revision alone); `expectedChecks` its tasks' checks and its manifest's verify steps, a comparison's
+ * candidates counted once (each runs the same checks: it equals `compare.checksAtBase`). A ticket's read
  * carries its approved ones without the last three.
  */
 export interface PlanSummary {

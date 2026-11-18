@@ -12,10 +12,18 @@ import { PREVIEW_BOOT_MS, endMade, launch, made, pick, previewCrew, previewFrame
 // keeps the frame's box: the editor opens over the frame's edge, never beside it, so the page is not laid out again under the
 // pointer between the press and the pick. Every wait is on what the page draws or what the page asked; the gate is opened by the
 // spec, never by a clock.
-test.describe.configure({ mode: 'serial', timeout: 300_000 })
+test.describe.configure({ mode: 'serial' })
+
+/** The cap of a step's wait: the config's expect bound (a pick is three: the selection, the outline, the answer). */
+const STEP_MS = 15_000
+/** Raises the running test's timeout by the caps of the waits its steps make, above the config's own for what lies between them. */
+function budget(ms: number) {
+  const info = test.info()
+  info.setTimeout(info.timeout + ms)
+}
 
 /** The pane's words from 3 s while the page has not answered and the pane keeps asking. */
-const ASKING = "this page has not answered Conductor's bridge yet, and the pane keeps asking: until it answers, Capture takes the screenshot and your notes only."
+const ASKING = "this page has not answered Conductor's bridge yet, and the pane keeps asking: until it answers, Capture takes the screenshot, and the regions you draw on it with their notes."
 /** The editor's words on a capture made before the page answered, once it has. */
 const ANSWERED = 'the page answers now: an element selected joins this screenshot while the page still looks as it does in it'
 
@@ -25,6 +33,8 @@ let origin = ''
 let gate = ''
 
 test.beforeAll(async ({ api }) => {
+  // The launch, and the attempt's check reached (stepIn's own 120 s), above the config's bound.
+  test.setTimeout(120_000 + 120_000)
   await stopStrays(api, [])
   gate = join(scratchDir(m, 'preview-late'), 'gate')
   runId = await launch(api, m, await previewCrew(api, m, 'e2e preview late bridge', gate, 'http://127.0.0.1:${CONDUCTOR_PORT_WEB}/late#token=${CONDUCTOR_TREE_SECRET}'))
@@ -78,6 +88,8 @@ async function save(page: Page, api: Api): Promise<Saved> {
 const loads = async (page: Page) => Number(await page.locator('[data-preview-pane]').getAttribute('data-preview-loads'))
 
 test('a bridge that starts after the pane said the page has not answered is reached, and a selection names its element', async ({ page }) => {
+  // Its waits' own caps: 6 for a page or a bridge (PREVIEW_BOOT_MS each), 21 steps of the expect's bound.
+  budget(6 * PREVIEW_BOOT_MS + 21 * STEP_MS)
   // The page's requests for its gate, held until the spec answers them.
   const held: Route[] = []
   await page.route(
@@ -123,6 +135,8 @@ test('a bridge that starts after the pane said the page has not answered is reac
 })
 
 test('Capture keeps the frame’s box: the editor opens over the frame’s edge, out of the way while selecting, and the page is not laid out again under the pointer', async ({ page }) => {
+  // Its waits' own caps: 1 for a page or a bridge (PREVIEW_BOOT_MS each), 22 steps of the expect's bound.
+  budget(1 * PREVIEW_BOOT_MS + 22 * STEP_MS)
   await page.route(
     (u) => u.origin === origin && u.pathname === '/late-gate',
     (r) => r.continue(),
@@ -168,6 +182,8 @@ test('Capture keeps the frame’s box: the editor opens over the frame’s edge,
 })
 
 test('a draft made before the bridge answers names the page without the fragment of the preview’s address, shown and saved', async ({ page, api }) => {
+  // Its waits' own caps: 1 for a page or a bridge (PREVIEW_BOOT_MS each), 6 steps of the expect's bound.
+  budget(1 * PREVIEW_BOOT_MS + 6 * STEP_MS)
   const held: Route[] = []
   await page.route(
     (u) => u.origin === origin && u.pathname === '/late-gate',
@@ -197,6 +213,8 @@ test('a draft made before the bridge answers names the page without the fragment
 })
 
 test('a capture made before the page answered takes its element once it has, while the words say the pane keeps asking', async ({ page }) => {
+  // Its waits' own caps: 2 for a page or a bridge (PREVIEW_BOOT_MS each), 17 steps of the expect's bound.
+  budget(2 * PREVIEW_BOOT_MS + 17 * STEP_MS)
   const g = await pageGate(page, true)
   await previewSeam(page)
   await page.goto(previewURL())
@@ -229,6 +247,8 @@ test('a capture made before the page answered takes its element once it has, whi
 })
 
 test('Capture again waits for a bridge that answers late, describes on the page as it is, and the retake names the first capture', async ({ page, api }) => {
+  // Its waits' own caps: 3 for a page or a bridge (PREVIEW_BOOT_MS each), 18 steps of the expect's bound.
+  budget(3 * PREVIEW_BOOT_MS + 18 * STEP_MS)
   await pageGate(page, false)
   await previewSeam(page)
   await page.goto(previewURL())
@@ -262,6 +282,8 @@ test('Capture again waits for a bridge that answers late, describes on the page 
 })
 
 test('Capture again describes an element the person opened on the page, and from another page goes to the capture’s first, describing on the next press', async ({ page, api }) => {
+  // Its waits' own caps: 8 for a page or a bridge (PREVIEW_BOOT_MS each), 19 steps of the expect's bound.
+  budget(8 * PREVIEW_BOOT_MS + 19 * STEP_MS)
   await previewSeam(page)
   await page.goto(previewURL())
   const pane = page.locator('[data-preview-pane]')

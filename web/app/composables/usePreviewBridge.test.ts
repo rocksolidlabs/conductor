@@ -371,18 +371,16 @@ describe('one capture is one moment', () => {
 })
 
 describe('Capture again', () => {
-  it("describes each element of the earlier capture again into a new draft that names it, notes kept, joining nothing before it", async () => {
+  it("describes each element of the earlier capture again into a new draft that names it, each with no note, joining nothing before it", async () => {
     const h = await ready()
     await selectOf(h, first)
-    await h.s.retake('0123456789abcdef', [
-      { selector: '#save', note: 'covered' },
-      { selector: '#next', note: '' },
-    ])
+    // The earlier capture's notes are its own: what the caller hands in beside the selectors is never the retake's note.
+    await h.s.retake('0123456789abcdef', [{ selector: '#save', note: 'Broken' } as { selector: string }, { selector: '#next' }])
     expect(h.s.state.drafts).toHaveLength(2)
     const d = h.s.state.drafts[1]!
     expect(d.retakeOf).toBe('0123456789abcdef')
     expect(d.annotations.map((a) => [a.element?.selector, a.note])).toEqual([
-      ['#save', 'covered'],
+      ['#save', ''],
       ['#next', ''],
     ])
     expect(h.posts.filter((p) => p.t === 'describe').map((p) => p.selector)).toEqual(['#save', '#next'])
@@ -393,10 +391,7 @@ describe('Capture again', () => {
 
   it('says which elements are not on the page now, and retakes the rest', async () => {
     const h = await ready()
-    await h.s.retake('0123456789abcdef', [
-      { selector: '#none', note: '' },
-      { selector: '#save', note: '' },
-    ])
+    await h.s.retake('0123456789abcdef', [{ selector: '#none' }, { selector: '#save' }])
     expect(h.s.state.refusal).toBe('not on this page now, so not retaken: #none')
     expect(h.s.state.drafts.map((d) => [d.retakeOf, d.annotations.length])).toEqual([['0123456789abcdef', 1]])
   })
@@ -582,6 +577,20 @@ describe('a bridge that starts late: the hello said while the frame stays on its
     expect([b!.annotations.map((x) => x.element?.selector), b!.words]).toEqual([['#save'], [CHANGED_WORDS]])
   })
 
+  it('starts a new capture for the element when only the element’s own box changed since the screenshot taken before the page answered', async () => {
+    // 225 pixels inside #save's box: fewer than the whole frame's share of differing pixels, all of the box's.
+    const c = await askedThenAnswered([screen(), screen({ x: 20, y: 25, width: 15, height: 15 })])
+    expect(c.h.s.state.drafts).toHaveLength(2)
+    const [a, b] = c.h.s.state.drafts
+    expect([a!.annotations.map((x) => x.kind), a!.open]).toEqual([['region'], false])
+    expect([b!.annotations.map((x) => x.element?.selector), b!.words]).toEqual([['#save'], [CHANGED_WORDS]])
+  })
+
+  it('starts a new capture for the element when only a region drawn before the page answered changed inside its box', async () => {
+    const c = await askedThenAnswered([screen(), screen({ x: 2, y: 2, width: 3, height: 3 })])
+    expect(c.h.s.state.drafts.map((d) => d.annotations.map((x) => x.kind))).toEqual([['region'], ['element']])
+  })
+
   it('takes a late ready only from the frame’s window at the preview’s origin', () => {
     const c = late()
     c.h.s.hello()
@@ -712,12 +721,31 @@ describe("a draft's address", () => {
     expect(h.s.state.drafts[1]!.moment.url).toBe(`${ORIGIN}/app#/settings`)
   })
 
-  it('is the address the pane gave the frame, without its fragment', async () => {
-    const h = harness({ deps: { fallback: () => ({ url: `${ORIGIN}/app?tab=2#token=${'c'.repeat(64)}`, width: 400, height: 300 }) } })
+  it('without the bridge is the address the pane gave the frame, without the fragment it opened a preview with', async () => {
+    const opened = `#token=${'c'.repeat(64)}`
+    const h = harness({ deps: { opened: () => opened, fallback: () => ({ url: `${ORIGIN}/app?tab=2${opened}`, width: 400, height: 300 }) } })
     ;(h.frameWindow as { postMessage: unknown }).postMessage = () => {}
     h.s.hello()
     h.advance(HELLO_MS)
     await h.s.snap()
     expect(h.s.state.drafts.map((d) => d.moment.url)).toEqual([`${ORIGIN}/app?tab=2`])
+  })
+
+  it('of a link keeps the fragment the link was opened with, with the bridge and without it', async () => {
+    const link = `${ORIGIN}/#/settings`
+    const quiet = harness({ deps: { opened: () => '', fallback: () => ({ url: link, width: 400, height: 300 }) } })
+    ;(quiet.frameWindow as { postMessage: unknown }).postMessage = () => {}
+    quiet.s.hello()
+    quiet.advance(HELLO_MS)
+    await quiet.s.snap()
+    expect(quiet.s.state.drafts.map((d) => d.moment.url)).toEqual([link])
+
+    const h = harness({ deps: { opened: () => '' } })
+    h.page = { ...h.page, url: link }
+    h.s.hello()
+    await h.settle()
+    await selectOf(h, first)
+    const d = h.s.state.drafts[0]!
+    expect([d.moment.url, d.annotations[0]!.observed!.url]).toEqual([link, link])
   })
 })

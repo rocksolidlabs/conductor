@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto'
 import type { Page, Request } from '@playwright/test'
-import { expect, test, useTheme, type Api } from './fixtures'
+import { budget, expect, test, useTheme, type Api } from './fixtures'
 import { freeProjectKey, makeProject, makeTicket, opOf, storedTicket } from './dispatch-helpers'
 import { createComparison, makeComparison } from './compare-helpers'
 import { noOverlap, noSideways } from './layout'
@@ -359,13 +359,17 @@ test('New comparison keeps its draft across a close until Cancel, and a candidat
 const PHONE = { width: 390, height: 844 }
 const DESK = { width: 1440, height: 900 }
 
+/** An expect's own bound (playwright.config.ts): what each step's budget counts per expect. */
+const EXPECT_MS = 15_000
+
 test("a comparison's plan revision and its approval show each candidate's approach and the criteria, and the checks its launch states", async ({ page, api }) => {
-  test.setTimeout(180_000)
   const crew = await comparisonCrew(api, { reviews: true })
   const { key } = await proposedTicket(api, crew.id)
   for (const size of [DESK, PHONE]) {
     await page.setViewportSize(size)
     for (const theme of ['dark', 'light'] as const) {
+      // This pass's caps: the page's two 30 s waits, its load and its theme's reload, about twenty expects and measures.
+      budget(2 * 30_000 + 22 * EXPECT_MS)
       await page.goto(`/dispatch/${key}/1`)
       const featured = page.locator('[data-plan-section] [data-plan-featured]')
       await expect(featured).toHaveAttribute('data-plan-state', 'proposed', { timeout: 30_000 })
@@ -403,6 +407,7 @@ test("a comparison's plan revision and its approval show each candidate's approa
   }
 
   // Approved, its launch states the same count.
+  budget(2 * 30_000 + 4 * EXPECT_MS)
   await page.setViewportSize(DESK)
   await page.goto(`/dispatch/${key}/1`)
   const featured = page.locator('[data-plan-section] [data-plan-featured]')
@@ -420,6 +425,8 @@ test("New comparison's title and description stay clear of its close button, wid
     await page.setViewportSize(size)
     await page.goto('/crews')
     for (const theme of ['dark', 'light'] as const) {
+      // This pass's caps: the theme's reload, the dialog's opening and closing, the measures.
+      budget(6 * EXPECT_MS)
       await useTheme(page, theme, '[data-new-comparison]')
       await page.locator('[data-new-comparison]').click()
       const dialog = page.getByRole('dialog').filter({ has: page.locator('[data-compare-template]') })
