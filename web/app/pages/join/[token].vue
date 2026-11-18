@@ -466,12 +466,13 @@ function requestFile(path: string, stat?: boolean, extra?: FileGetExtra) {
   </template>
 
   <template v-else-if="run && !current">
-    <header class="flex items-center gap-3 border-b border-default px-4 py-2">
+    <!-- On a phone the gaps and the side padding narrow and the wordmark gives way to the mark, so every control stays inside the window. -->
+    <header class="flex items-center gap-2 border-b border-default px-3 py-2 sm:gap-3 sm:px-4" data-join-header>
       <IconButton v-if="inWorkbench" icon="i-lucide-arrow-left" color="neutral" variant="ghost" size="sm" label="Back to the list" class="lg:hidden" to="/sessions" data-back-to-list />
       <template v-if="!inWorkbench">
         <img src="/brand/conductor-mark.svg" alt="" class="size-6 dark:hidden" />
         <img src="/brand/conductor-mark-reversed.svg" alt="" class="size-6 hidden dark:block" />
-        <span class="font-semibold">Conductor</span>
+        <span class="hidden font-semibold sm:inline" data-join-wordmark>Conductor</span>
         <USeparator orientation="vertical" class="h-5" />
       </template>
       <span class="truncate">{{ run.name }}</span>
@@ -515,7 +516,8 @@ function requestFile(path: string, stat?: boolean, extra?: FileGetExtra) {
   </template>
 
   <template v-else-if="info && current">
-    <header class="flex items-center gap-3 border-b border-default px-4 py-2">
+    <!-- On a phone the gaps and the side padding narrow and the wordmark gives way to the mark, so every control stays inside the window. -->
+    <header class="flex items-center gap-2 border-b border-default px-3 py-2 sm:gap-3 sm:px-4" data-join-header>
       <IconButton v-if="inWorkbench && !run" icon="i-lucide-arrow-left" color="neutral" variant="ghost" size="sm" label="Back to the list" class="lg:hidden" to="/sessions" data-back-to-list />
       <UTooltip v-if="run" text="Back to the crew">
         <UButton icon="i-lucide-arrow-left" color="neutral" variant="ghost" size="sm" aria-label="Back to the crew" @click="backToCrew" />
@@ -523,7 +525,7 @@ function requestFile(path: string, stat?: boolean, extra?: FileGetExtra) {
       <template v-if="!inWorkbench">
         <img src="/brand/conductor-mark.svg" alt="" class="size-6 dark:hidden" />
         <img src="/brand/conductor-mark-reversed.svg" alt="" class="size-6 hidden dark:block" />
-        <span class="font-semibold">Conductor</span>
+        <span class="hidden font-semibold sm:inline" data-join-wordmark>Conductor</span>
         <USeparator orientation="vertical" class="h-5" />
       </template>
       <span class="truncate"><template v-if="run">{{ run.name }} · </template>{{ current.name }}</span>
