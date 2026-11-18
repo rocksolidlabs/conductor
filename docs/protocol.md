@@ -4210,7 +4210,7 @@ whose `message` is one of these:
 | member joined | `status` | `<member> joined the run` (added mid-run) |
 | not ready | `status` | `<member> was not ready after 1m0s: typing its prompt anyway` |
 | prompt typed | `status` | `typed <member>'s prompt` |
-| trust question | `status` | `<member> asks "<question>": answer it in <member>'s terminal; its prompt waits`, once each time the question holds the prompt |
+| trust question | `status` | `<member> asks "<question>": answer it on <member>'s session page with one of its choices ("<choice>", …), or in its terminal; its prompt waits` when the session offers the question's choices (a startup dialog the catalog knows: the folder's trust, the agent's own update), else `<member> asks "<question>": answer it in <member>'s terminal; its prompt waits`; once each time the question holds the prompt (`; its handoffs wait` for a member resumed) |
 | prompt without its Enter | `error` | `typed <member>'s prompt without its Enter: <member> waits on a question; answer it, then press Enter in its terminal` |
 | Enter again | `status` | `pressed Enter again for <member>: it did not report taking its prompt within 3s` |
 | no yolo recipe | `status` | `<member>: yolo is on, but <agent name> has no yolo recipe: launched without one` |
