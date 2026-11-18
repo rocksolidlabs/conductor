@@ -2,10 +2,14 @@ package ledger
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 // Where a run was launched from (version 13): the table and its index,
@@ -182,13 +186,18 @@ func TestRunOriginOpIDsAreOnePerProvider(t *testing.T) {
 }
 
 // A run's origin is its run's: one row a run, a row for a run the ledger
-// lacks refused (the foreign key), and the row removed when its run is
-// pruned.
+// lacks refused (the foreign key), a row that names no run refused (a
+// primary key that is not an integer may be NULL in SQLite unless the
+// column says otherwise, and such a row would pass the foreign key and
+// never go with a run), and the row removed when its run is pruned.
 func TestRunOriginGoesWithItsRun(t *testing.T) {
 	l := openLedger(t, filepath.Join(t.TempDir(), "runs"))
 	const run, kept = "team-00000001", "team-00000002"
 	if err := putOrigin(l, run, "example", "op-1"); err == nil || !strings.Contains(err.Error(), "FOREIGN KEY") {
 		t.Fatalf("an origin of a run the ledger lacks: %v", err)
+	}
+	if _, err := l.db.Exec("INSERT INTO run_origin (run_id, provider, ref) VALUES (NULL, 'example', 'example:42')"); err == nil || !strings.Contains(err.Error(), "NOT NULL") {
+		t.Fatalf("an origin that names no run: %v", err)
 	}
 	newRun(t, l, run)
 	newRun(t, l, kept)
@@ -210,5 +219,164 @@ func TestRunOriginGoesWithItsRun(t *testing.T) {
 	}
 	if n := countRows(t, l, "SELECT COUNT(*) FROM run_origin WHERE run_id = ?", kept); n != 1 {
 		t.Fatalf("the other run's origin: %d rows", n)
+	}
+}
+
+// fullOrigin is an origin row of run with every column given.
+func fullOrigin(run string) OriginRow {
+	return OriginRow{RunID: run, Provider: "example", OpID: "op-1", Ref: "example:42", Label: "Review of change 42",
+		Project: "CND", Subject: "change:git.example.com/acme/app#42@" + strings.Repeat("a", 40), SubjectURL: "https://git.example.com/acme/app/pull/42",
+		Prior: "team-0000000a", StartCommit: strings.Repeat("b", 40), Deadline: time.Date(2026, 11, 18, 12, 0, 0, 0, time.UTC), LimitSeconds: 3600,
+		ResolvedDigest: strings.Repeat("c", 64), Agents: `[{"agent":"claude","selection":"` + strings.Repeat("d", 64) + `"}]`}
+}
+
+// putOriginTx writes row in a transition of run.
+func putOriginTx(l *Ledger, run string, row OriginRow) error {
+	_, err := l.Transition(context.Background(), run, func(tx *Tx) error { return tx.PutOrigin(row) })
+	return err
+}
+
+// Each column of an origin row is held to its bound by its writer: at the
+// bound it is kept, read back as written; one past it is refused
+// (ErrBadOrigin) with nothing written, the run's revision as it was. A
+// row of another run than the transaction's is refused, and so is a
+// second row of the run (ErrOriginExists) and an operation id the
+// provider's rows hold (ErrOpExists).
+func TestRunOriginRowBounds(t *testing.T) {
+	ctx := context.Background()
+	l := openLedger(t, filepath.Join(t.TempDir(), "runs"))
+	hex := func(n int) string { return strings.Repeat("e", n) }
+	runID := func(n int) string { return strings.Repeat("a", n-9) + "-0000000f" }
+	cases := []struct {
+		name     string
+		at, past func(*OriginRow)
+	}{
+		{name: "provider", at: func(r *OriginRow) { r.Provider = strings.Repeat("p", MaxOriginProvider) }, past: func(r *OriginRow) { r.Provider = strings.Repeat("p", MaxOriginProvider+1) }},
+		{name: "provider's form", at: func(r *OriginRow) { r.Provider = "a-1" }, past: func(r *OriginRow) { r.Provider = "A" }},
+		{name: "no provider", at: func(r *OriginRow) {}, past: func(r *OriginRow) { r.Provider = "" }},
+		{name: "op id", at: func(r *OriginRow) { r.OpID = strings.Repeat("o", MaxOriginOpID) }, past: func(r *OriginRow) { r.OpID = strings.Repeat("o", MaxOriginOpID+1) }},
+		{name: "op id's form", at: func(r *OriginRow) { r.OpID = "A.b_c~d-1" }, past: func(r *OriginRow) { r.OpID = "a b" }},
+		{name: "no op id", at: func(r *OriginRow) { r.OpID = "" }, past: func(r *OriginRow) { r.OpID = "é" }},
+		{name: "ref", at: func(r *OriginRow) { r.Ref = strings.Repeat("r", MaxOriginRef) }, past: func(r *OriginRow) { r.Ref = strings.Repeat("r", MaxOriginRef+1) }},
+		{name: "ref's form", at: func(r *OriginRow) { r.Ref = "a:b~!" }, past: func(r *OriginRow) { r.Ref = "a b" }},
+		{name: "no ref", at: func(r *OriginRow) {}, past: func(r *OriginRow) { r.Ref = "" }},
+		{name: "label", at: func(r *OriginRow) { r.Label = strings.Repeat("é", MaxOriginLabel) }, past: func(r *OriginRow) { r.Label = strings.Repeat("é", MaxOriginLabel+1) }},
+		{name: "label's line", at: func(r *OriginRow) { r.Label = "a # b" }, past: func(r *OriginRow) { r.Label = "a\nb" }},
+		{name: "no label", at: func(r *OriginRow) {}, past: func(r *OriginRow) { r.Label = "" }},
+		{name: "project", at: func(r *OriginRow) { r.Project = "A12345" }, past: func(r *OriginRow) { r.Project = "A123456" }},
+		{name: "project's form", at: func(r *OriginRow) { r.Project = "" }, past: func(r *OriginRow) { r.Project = "cnd" }},
+		{name: "subject", at: func(r *OriginRow) { r.Subject = strings.Repeat("s", MaxOriginSubject) }, past: func(r *OriginRow) { r.Subject = strings.Repeat("s", MaxOriginSubject+1) }},
+		{name: "subject's line", at: func(r *OriginRow) { r.Subject = "" }, past: func(r *OriginRow) { r.Subject = "a\rb" }},
+		{name: "link", at: func(r *OriginRow) { r.SubjectURL = "https://x/" + strings.Repeat("u", MaxOriginURL-10) }, past: func(r *OriginRow) { r.SubjectURL = "https://x/" + strings.Repeat("u", MaxOriginURL-9) }},
+		{name: "link's scheme", at: func(r *OriginRow) { r.SubjectURL = "" }, past: func(r *OriginRow) { r.SubjectURL = "http://x/" }},
+		{name: "link's query", at: func(r *OriginRow) {}, past: func(r *OriginRow) { r.SubjectURL = "https://x/?token=1" }},
+		{name: "link's fragment", at: func(r *OriginRow) {}, past: func(r *OriginRow) { r.SubjectURL = "https://x/#a" }},
+		{name: "earlier run", at: func(r *OriginRow) { r.Prior = runID(MaxOriginRunID) }, past: func(r *OriginRow) { r.Prior = runID(MaxOriginRunID + 1) }},
+		{name: "earlier run's form", at: func(r *OriginRow) { r.Prior = "" }, past: func(r *OriginRow) { r.Prior = "team-0000000G" }},
+		{name: "start commit", at: func(r *OriginRow) { r.StartCommit = hex(64) }, past: func(r *OriginRow) { r.StartCommit = hex(41) }},
+		{name: "digest", at: func(r *OriginRow) { r.ResolvedDigest = hex(64) }, past: func(r *OriginRow) { r.ResolvedDigest = hex(63) }},
+		{name: "limit", at: func(r *OriginRow) { r.LimitSeconds = MaxOriginLimit }, past: func(r *OriginRow) { r.LimitSeconds = MaxOriginLimit + 1 }},
+		{name: "least limit", at: func(r *OriginRow) { r.LimitSeconds = MinOriginLimit }, past: func(r *OriginRow) { r.LimitSeconds = MinOriginLimit - 1 }},
+		{name: "deadline with no limit", at: func(r *OriginRow) { r.Deadline, r.LimitSeconds = time.Time{}, 0 }, past: func(r *OriginRow) { r.LimitSeconds = 0 }},
+		{name: "limit with no deadline", at: func(r *OriginRow) {}, past: func(r *OriginRow) { r.Deadline = time.Time{} }},
+		{name: "agents", at: func(r *OriginRow) { r.Agents = `"` + strings.Repeat("x", MaxOriginAgents-2) + `"` }, past: func(r *OriginRow) { r.Agents = `"` + strings.Repeat("x", MaxOriginAgents-1) + `"` }},
+		{name: "agents' JSON", at: func(r *OriginRow) { r.Agents = "" }, past: func(r *OriginRow) { r.Agents = "[" }},
+	}
+	for i, c := range cases {
+		run := fmt.Sprintf("team-%08x", 2*i+1)
+		newRun(t, l, run)
+		before, _, _ := l.Run(ctx, run)
+		past := fullOrigin(run)
+		past.OpID = fmt.Sprintf("past-%d", i)
+		c.past(&past)
+		if err := putOriginTx(l, run, past); !errors.Is(err, ErrBadOrigin) {
+			t.Fatalf("%s one past its bound: %v", c.name, err)
+		}
+		if after, _, _ := l.Run(ctx, run); after.Revision != before.Revision {
+			t.Fatalf("%s: the refusal moved the run's revision", c.name)
+		}
+		if _, ok, err := l.Origin(ctx, run); ok || err != nil {
+			t.Fatalf("%s: a refused row was written: %v %v", c.name, ok, err)
+		}
+		at := fullOrigin(run)
+		at.OpID = fmt.Sprintf("at-%d", i)
+		c.at(&at)
+		if err := putOriginTx(l, run, at); err != nil {
+			t.Fatalf("%s at its bound: %v", c.name, err)
+		}
+		if got, ok, err := l.Origin(ctx, run); err != nil || !ok || !reflect.DeepEqual(got, at) {
+			t.Fatalf("%s at its bound, read back: %+v %v %v\nwritten %+v", c.name, got, ok, err, at)
+		}
+	}
+
+	const run, other = "team-00001001", "team-00001002"
+	newRun(t, l, run)
+	newRun(t, l, other)
+	if err := putOriginTx(l, run, fullOrigin(other)); !errors.Is(err, ErrBadOrigin) {
+		t.Fatalf("a row of another run: %v", err)
+	}
+	if _, ok, _ := l.Origin(ctx, other); ok {
+		t.Fatal("another run's row was written")
+	}
+	first := fullOrigin(run)
+	first.OpID = "op-x"
+	if err := putOriginTx(l, run, first); err != nil {
+		t.Fatal(err)
+	}
+	again := fullOrigin(run)
+	again.OpID = "op-y"
+	if err := putOriginTx(l, run, again); !errors.Is(err, ErrOriginExists) {
+		t.Fatalf("a second row of the run: %v", err)
+	}
+	taken := fullOrigin(other)
+	taken.OpID = "op-x"
+	if err := putOriginTx(l, other, taken); !errors.Is(err, ErrOpExists) {
+		t.Fatalf("an operation id the provider's rows hold: %v", err)
+	}
+	if got, ok, _ := l.Origin(ctx, run); !ok || got.OpID != "op-x" {
+		t.Fatalf("the first row after the refusals: %+v %v", got, ok)
+	}
+}
+
+// RunByOp finds the run of a provider's operation id and no other: none
+// for another provider's id, for an empty id (a continuation's row) and
+// for an id no row holds. It is answered by a read-only ledger, and by
+// one whose database is older than the table, with no row.
+func TestRunByOpReadsTheProvidersOwn(t *testing.T) {
+	ctx := context.Background()
+	dir := filepath.Join(t.TempDir(), "runs")
+	l := openLedger(t, dir)
+	const run, cont = "team-00000001", "team-00000002"
+	newRun(t, l, run)
+	newRun(t, l, cont)
+	if err := putOriginTx(l, run, fullOrigin(run)); err != nil {
+		t.Fatal(err)
+	}
+	c := fullOrigin(cont)
+	c.OpID = ""
+	if err := putOriginTx(l, cont, c); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok, err := l.RunByOp(ctx, "example", "op-1"); err != nil || !ok || got.RunID != run {
+		t.Fatalf("the provider's op-1: %+v %v %v", got, ok, err)
+	}
+	for _, q := range [][2]string{{"other", "op-1"}, {"example", ""}, {"example", "op-2"}} {
+		if got, ok, err := l.RunByOp(ctx, q[0], q[1]); ok || err != nil {
+			t.Fatalf("%q's %q: %+v %v %v", q[0], q[1], got, ok, err)
+		}
+	}
+	ro := openReadOnly(t, dir)
+	if got, ok, err := ro.RunByOp(ctx, "example", "op-1"); err != nil || !ok || got.RunID != run {
+		t.Fatalf("a read-only ledger's op-1: %+v %v %v", got, ok, err)
+	}
+	ro.Close()
+	l.Close()
+	rawExec(t, dir, append(slices.Clone(version13Added), "UPDATE schema_version SET version = 12")...)
+	old := openReadOnly(t, dir)
+	if got, ok, err := old.RunByOp(ctx, "example", "op-1"); ok || err != nil {
+		t.Fatalf("a version 12 database's op-1: %+v %v %v", got, ok, err)
+	}
+	if got, ok, err := old.Origin(ctx, run); ok || err != nil {
+		t.Fatalf("a version 12 database's origin: %+v %v %v", got, ok, err)
 	}
 }

@@ -81,6 +81,10 @@ type extSlots struct {
 	sinks    []ext.NotificationSink
 	sync     ext.ContinuityStore
 	media    ext.MediaRoomProvider
+	// relayUsage is the host connections' usage reports to the identity
+	// provider (relayusage.go): nil unless the server is a switchyard and
+	// its registered identity provider is an ext.UsageObserver.
+	relayUsage *relayUsageDesk
 	// all is every registered provider (ext.Providers.All), unwrapped: what
 	// the providers' Start (StartExtensions, through extStarters) and GET
 	// /api/capabilities (capabilities.go) read. No call is made through it.
@@ -118,6 +122,12 @@ func (s *Server) installExtensions(p ext.Providers) {
 		sync:     guardSync{s: s, name: syncName, p: p.Continuity, ready: s.readyOf(syncName, p.Continuity)},
 		media:    guardMedia{s: s, name: mediaName, p: p.Media, ready: s.readyOf(mediaName, p.Media)},
 		all:      append([]ext.Entry(nil), p.All...),
+	}
+	// Asserted on the provider as it was registered, never on a free
+	// default (which is none), and only on a switchyard: anywhere else no
+	// report is made, no queue made and no goroutine started.
+	if obs, ok := p.Identity.(ext.UsageObserver); ok && s.cfg.Switchyard.Enabled && s.identityName() != "" {
+		s.exts.relayUsage = s.newRelayUsageDesk(idName, obs)
 	}
 	for i, c := range p.Context {
 		n := name(ext.KindContext, i, c)
