@@ -2364,11 +2364,11 @@ Owner decisions 3, its last clause, and 12, its last clause:
 The history's cap paragraph, corrected to main's count
 (`mandatoryHistory`):
 
-> ... at most 32 of the operator's operations together (...); at most 4
-> of a Brakeman turn's operations, apart from them
+> ... at most 32 of the operator's operations together (...); at most
+> four of a Brakeman turn's routes, a group of their own
 > (`MaxDecisionTurnOps`); at most 32 `responded`, ... That is at most 77
-> rows (`mandatoryHistory`; 93 once the decision-policy plan's group of
-> 16 is in); ...
+> rows (`mandatoryHistory`: 1 + 2 + 32 + 4 + 32 + 1 + 1 + 1 + 3; 93 with
+> the decision-policy plan's 16 router changes); ...
 
 **`docs/plans/review-repair.md`**, Owner decisions 2, after its last
 sentence:

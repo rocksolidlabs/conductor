@@ -503,20 +503,27 @@ encoded. The decision-policy plan (`docs/plans/decision-policy.md`)
 amends this list: a kind `rerouted` (new) joins the reserved
 `assigned`, `delegated` and `escalated`, and the four become one bounded
 group of 16 rows (`historyBounds`, `MaxDecisionRouterChanges`), a
-router's 17th change and later writing no history row.
+router's 17th change and later writing no history row. `Tx.History`'s
+op check takes an op id on the router's four kinds as well; their rows
+count in their own group, a branch beside a Brakeman turn's, never
+among the operator's operations; and the `rest` count drops
+`assigned`, `delegated` and `escalated`, keeping `notified` and
+`expired`.
 
 At most 256 rows per decision, a cap each kind's own bound keeps: one
 `opened`; two `routed` at the opening (the operator by policy, a
 registered router); at most 32 of the operator's operations together
 (`commented`, `info_requested` and a re-route's `routed`, on a final
 decision too; past them the operation is answered `decision_limit` with
-no row); at most 32 `responded`, one per response row (a router's
+no row); at most four of a Brakeman turn's routes, a group of their own
+(`MaxDecisionTurnOps`); at most 32 `responded`, one per response row (a router's
 refused answer is one of them); one `applied`; one `superseded` or
 `cancelled` (an applied approval's supersession, S1 or S4, included); at most
 one `refunded` (a decision holds its task, so no second attempt
 of it can wait on it, and a refund is never repeated, I3); at most three
 `delivery.*` (the typing, its end, and the task file). That is at most
-73 rows; `notified` rows take the rest, and past 256 a `notified` row is
+77 rows (`mandatoryHistory`: 1 + 2 + 32 + 4 + 32 + 1 + 1 + 1 + 3; 93
+with the decision-policy plan's 16 router changes); `notified` rows take the rest, and past 256 a `notified` row is
 not written (counted in the next written row's detail as `dropped`).
 `TestTheHistoryCapHolds` writes every kind to its bound.
 
