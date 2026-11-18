@@ -37,9 +37,12 @@ type UsageObserver interface {
 // every report's counts belong to the one credential it names. The
 // reports of a connection tile its life: each From is the previous To.
 //
-// What is still queued when the server shuts down is not delivered: a
-// connection whose Final never came ended at its last report's To, or
-// later, before the server stopped.
+// A connection with nothing to report (it closed before its first
+// period, with no whole session second and no byte relayed) makes no
+// report at all, not even a Final; a connection that reported before
+// always ends with its Final. What is still queued when the server shuts
+// down is not delivered: a connection whose Final never came ended at its
+// last report's To, or later, before the server stopped.
 type Usage struct {
 	// Connection is an opaque id the server makes for each host
 	// connection, UsageConnectionLen lower-case hex characters: the same

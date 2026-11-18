@@ -547,6 +547,8 @@ func TestRelayUsageNoneForOwnTokensOpenHostsOrWithoutObserver(t *testing.T) {
 		}
 		// The queue is in order: the first report is the provider's.
 		p, _ := dialCred(t, e, hostReg("provider", nil), credOld)
+		relayOut(t, p, nobody, 1) // something to report
+		readUpTo(p)
 		p.c.CloseNow()
 		if u := o.next(t); u.Credential != credHash(credOld) || !u.Final {
 			t.Fatalf("the first report is not the provider-admitted connection's: %+v", u)
@@ -712,4 +714,79 @@ func TestRelayUsageObserverPanicLeavesTheServerUp(t *testing.T) {
 	if strings.Contains(log, "the observer's own words") || strings.Contains(strings.ToLower(log), "panic") {
 		t.Fatalf("the log holds a word of the panic: %s", log)
 	}
+}
+
+// detailObserver is usageObserver saying who the server is signed in as.
+type detailObserver struct {
+	*usageObserver
+	detail atomic.Pointer[string]
+}
+
+func (d *detailObserver) Detail() string {
+	if v := d.detail.Load(); v != nil {
+		return *v
+	}
+	return ""
+}
+
+// TestRelayUsagePacedRenewalIsNotHeld: a renewal kept pending by the pace,
+// which nobody was asked about, is not among the credentials the
+// identity's detail is filtered by: a host cannot have a detail that holds
+// a string of its choosing (here one character) hidden.
+func TestRelayUsagePacedRenewalIsNotHeld(t *testing.T) {
+	d := &detailObserver{usageObserver: newUsageObserver()}
+	shown := "signed in as Ada"
+	d.detail.Store(&shown)
+	e := providerEnv(t, func(c *config.Config) { c.Switchyard.Enabled = true }, d)
+	newUsageClock(e.srv)
+	h, _ := dialCred(t, e, hostReg("1", nil), credOld)
+	h.send(hostToken(credNew))
+	h.send(hostToken(credOld))
+	h.send(hostToken("a"))
+	readUpTo(h) // the connection stays, "a" kept pending
+	if d.timesAsked("a") != 0 {
+		t.Fatal("the provider was asked about the paced renewal")
+	}
+	if _, out := e.do("GET", "/api/capabilities", adminToken, nil); !strings.Contains(mustJSON(out), shown) {
+		t.Fatalf("a detail holding the paced renewal's token is dropped: %v", out)
+	}
+}
+
+// TestRelayUsageEmptyConnectionsMakeNoReport: connections that close with
+// nothing to report queue no Final, so a flood of them leaves another
+// connection's reports in the queue; a connection that reported before
+// still ends with its Final, empty or not.
+func TestRelayUsageEmptyConnectionsMakeNoReport(t *testing.T) {
+	o := newUsageObserver()
+	gate := make(chan struct{})
+	var release sync.Once
+	o.block.Store(&gate)
+	e, clock, ut := usageEnv(t, o, func(c *config.Config) { c.MaxSessions = 1000 })
+	t.Cleanup(func() { o.block.Store(nil); release.Do(func() { close(gate) }) })
+	a, _ := dialCred(t, e, hostReg("kept", nil), credOld)
+	clock.tickAfter(t, ut, ext.UsageEvery)
+	receive(t, o.entered, "the observer's first call")
+	n := relayOut(t, a, nobody, 10)
+	readUpTo(a)
+	clock.tickAfter(t, ut, ext.UsageEvery) // queued behind the held call
+	clock.next(t, ext.UsageEvery)
+	for i := range ext.UsageQueue + 4 {
+		h, _ := dialCred(t, e, hostReg(fmt.Sprintf("empty-%d", i), nil), credNew)
+		h.c.CloseNow()
+		hostAway(t, e, h.sessionID)
+	}
+	if queued, dropped := e.srv.exts.relayUsage.queue.stats(); queued != 1 || dropped != 0 {
+		t.Fatalf("%d queued and %d dropped after the empty connections, want 1 and 0", queued, dropped)
+	}
+	o.block.Store(nil)
+	release.Do(func() { close(gate) })
+	first := o.next(t)
+	checkReport(t, o.next(t), first.Connection, credOld, 1, n)
+	a.c.CloseNow()
+	last := o.next(t)
+	checkReport(t, last, first.Connection, credOld, 1, 0)
+	if !last.Final {
+		t.Fatalf("the connection that reported before has no Final: %+v", last)
+	}
+	o.none(t)
 }
