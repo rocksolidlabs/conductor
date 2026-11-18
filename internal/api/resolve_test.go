@@ -432,7 +432,9 @@ func TestAResolvedLaunchPastItsBoundIsRefused(t *testing.T) {
 	}
 }
 
-// The desk's Host, a switchyard and a given-up try resolve nothing.
+// The desk's Host resolves nothing, nor a server with no Dispatch store;
+// an unknown crew is ext.ErrNotFound and a commit of another shape
+// invalid_request.
 func TestResolveLaunchDoors(t *testing.T) {
 	e, id := resolveEnv(t, nil)
 	desk := &extHost{s: e.srv, name: "brakeman", ctx: t.Context(), desk: true}
@@ -445,6 +447,20 @@ func TestResolveLaunchDoors(t *testing.T) {
 	if _, err := testHost(e.srv, t.Context(), "example").ResolveLaunch(t.Context(), ext.ResolveRequest{Crew: id, Commit: "HEAD"}); ext.RefusalCode(err) != ext.RefusalInvalidRequest {
 		t.Fatalf("a commit of another shape: %v", err)
 	}
+	// A server with no Dispatch store resolves nothing, and holds no
+	// launch to a project.
+	store := e.srv.dispatch
+	e.srv.dispatch = nil
+	t.Cleanup(func() { e.srv.dispatch = store })
+	if _, err := testHost(e.srv, t.Context(), "example").ResolveLaunch(t.Context(), ext.ResolveRequest{Crew: id, Project: "CND"}); !errors.Is(err, ext.ErrUnsupported) {
+		t.Fatalf("a resolve with no Dispatch store: %v", err)
+	}
+	r := originLaunch(id, "op-1")
+	r.Project = "CND"
+	if _, err := testHost(e.srv, t.Context(), "example").Launch(t.Context(), r); !errors.Is(err, ext.ErrUnsupported) {
+		t.Fatalf("a launch for a project with no Dispatch store: %v", err)
+	}
+	e.srv.dispatch = store
 	_ = crew.ErrInvalid
 }
 
