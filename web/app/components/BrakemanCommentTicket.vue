@@ -9,7 +9,7 @@ import { dispatchFailureWords } from '~/composables/useDispatchOps'
  * names first, or any key typed), through Dispatch's comment operation as the admin, under the person's name, with a fresh opId. The
  * text is in a field the person may edit before sending; past a comment's bound (Dispatch's 16 KiB, in UTF-8 bytes) it is not sent
  * until the person shortens it there: nothing is ever cut silently. The confirm says it posts under the person's name, and, with
- * `quotes`, that the text may quote a terminal screen or a check log. Brakeman's own turns never comment: only a person, here.
+ * `quotes`, that the text (the brief, the handoff: `what`) may quote a terminal screen or a check log. Brakeman's own turns never comment: only a person, here.
  */
 const props = defineProps<{ text: string; keys: readonly string[]; what: string; quotes?: boolean; pick?: string }>()
 const open = defineModel<boolean>('open', { default: false })
@@ -94,7 +94,7 @@ async function send() {
         </div>
         <p class="text-xs text-muted" data-comment-confirm>
           {{ name ? `It posts under your name, ${name}.` : 'It posts as the admin, with no name: set your name in Settings to sign it.' }}
-          <template v-if="quotes">{{ ' The brief may quote a terminal screen or a check log.' }}</template>
+          <template v-if="quotes">{{ ` ${what} may quote a terminal screen or a check log.` }}</template>
         </p>
       </div>
     </template>
