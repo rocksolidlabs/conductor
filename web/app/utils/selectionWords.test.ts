@@ -74,6 +74,10 @@ describe("a selection's card, by its state", () => {
     expect(respond).toMatch(/<UButton v-if="asks" label="Ask for more"/)
     expect(respond).toMatch(/v-if="asks && !more\.enabled"[^>]*data-decision-more-why/)
     expect(page).toContain(':label="choicesWords(s)"')
+    // The ticket's Decisions word a record with whether its run is held, as the card and the comparison do.
+    const ticket = readFileSync(new URL('../components/DispatchDecisions.vue', import.meta.url), 'utf8')
+    expect(ticket).toContain('decisionWords(r, { runHeld: runHeldOf(live.runOf(r.run)) })')
+    expect(ticket).not.toMatch(/decisionWords\(r\)/)
     expect(page).not.toMatch(/s\.actions\.length\} \$\{s\.actions\.length === 1/)
   })
 })

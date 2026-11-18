@@ -241,17 +241,7 @@ func (rd *inboxRead) decisionItem(row ledger.DecisionRow, held []string, rec *le
 		// approval's yes or no (docs/plans/compare-crew.md). Its words are
 		// true of its state: to choose while open, chosen once answered,
 		// done once closed.
-		from := rd.decisionFrom(row, run, runName)
-		switch row.State {
-		case ledger.DecisionOpen:
-			it.Brief = "A comparison's selection for you, from " + from +
-				": choose one of its candidates, each at its exact commit, or None of these, with your rationale; the answer is final"
-		case ledger.DecisionAnswered:
-			it.Brief = "A comparison's selection, from " + from + ": it is answered, and the answer is final; Yardmaster applies it"
-		default:
-			it.Brief = "A comparison's selection, from " + from + ": it is " + row.State + ", and nothing more is asked of you"
-		}
-		it.Brief = fitText(it.Brief, 2<<10)
+		it.Brief = fitText(selectionBrief(row.State, rd.decisionFrom(row, run, runName), rd.s.runHeld(row.CurrentRun)), 2<<10)
 	}
 	rd.decisionBlocking(it, row, run, held, where)
 	rd.decisionEvidence(it, row, run, req)
@@ -287,6 +277,22 @@ func cmpPrefix(p, s string) string {
 		return ""
 	}
 	return p + s
+}
+
+// selectionBrief is a comparison's selection's brief in its state: to
+// choose while open; answered, when it is applied (next while the engine
+// holds its run, once the run is continued otherwise: answeredWaits);
+// closed, that nothing more is asked.
+func selectionBrief(state, from string, held bool) string {
+	switch state {
+	case ledger.DecisionOpen:
+		return "A comparison's selection for you, from " + from +
+			": choose one of its candidates, each at its exact commit, or None of these, with your rationale; the answer is final"
+	case ledger.DecisionAnswered:
+		return "A comparison's selection, from " + from + ": it is answered, and the answer is final; " + answeredWaits(held)
+	default:
+		return "A comparison's selection, from " + from + ": it is " + state + ", and nothing more is asked of you"
+	}
 }
 
 // answeredWaits says what an answered record waits for: Yardmaster's
@@ -341,7 +347,8 @@ func (rd *inboxRead) decisionBlocking(it *inboxItem, row ledger.DecisionRow, run
 	case len(held) > 0:
 		words = fmt.Sprintf("Yardmaster holds %s until %s is answered and applied", strings.Join(held, ", "), id)
 	case row.Origin == ledger.OriginCompare && row.State == ledger.DecisionAnswered:
-		words = fmt.Sprintf("The run %s waits for %s: every lane has ended, and its selection is made; the run ends once Yardmaster applies it", cmpOr(run.run.Name, row.CurrentRun), id)
+		words = fmt.Sprintf("The run %s waits for %s: every lane has ended, and its selection is made; %s, and the run ends once it is applied",
+			cmpOr(run.run.Name, row.CurrentRun), id, answeredWaits(rd.s.runHeld(row.CurrentRun)))
 	case row.Origin == ledger.OriginCompare:
 		words = fmt.Sprintf("The run %s waits for %s: every lane has ended, and the run ends once a candidate, or None of these, is selected", cmpOr(run.run.Name, row.CurrentRun), id)
 	case row.Origin == ledger.OriginAgent:
@@ -350,7 +357,7 @@ func (rd *inboxRead) decisionBlocking(it *inboxItem, row ledger.DecisionRow, run
 		words = "Nothing is held for " + id
 	}
 	if row.State == ledger.DecisionAnswered && row.Origin != ledger.OriginCompare {
-		words += "; it is answered, and what it holds waits for Yardmaster to apply it"
+		words += "; it is answered: " + answeredWaits(rd.s.runHeld(row.CurrentRun))
 	}
 	it.Blocking.Words = fitText(words, 500)
 }

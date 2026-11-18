@@ -1394,9 +1394,16 @@ func TestASelectionsWordsFollowItsState(t *testing.T) {
 			t.Fatalf("answered, words of an open selection: %q", w)
 		}
 	}
-	if !strings.Contains(answered.Brief, ": it is answered, and the answer is final; Yardmaster applies it") ||
-		!strings.Contains(answered.Blocking.Words, "its selection is made; the run ends once Yardmaster applies it") {
+	// The engine holds no run of this one (a run kept only as its record, as a stopped one is): nothing is applied until the run is
+	// continued, and no word says Yardmaster applies it next.
+	if !strings.Contains(answered.Brief, ": it is answered, and the answer is final; it waits for its run to be continued, which applies it") ||
+		!strings.Contains(answered.Blocking.Words, "its selection is made; it waits for its run to be continued, which applies it, and the run ends once it is applied") {
 		t.Fatalf("answered: %q / %q", answered.Brief, answered.Blocking.Words)
+	}
+	for _, w := range []string{answered.Brief, answered.Blocking.Words, answered.Now} {
+		if strings.Contains(w, "applies it next") {
+			t.Fatalf("answered on a run not held, words of a held one: %q", w)
+		}
 	}
 	if got := names(answered); !slices.Equal(got, []string{"comment"}) {
 		t.Fatalf("answered, the actions: %q", got)
@@ -1473,5 +1480,25 @@ func TestAClosedRecordBlocksNothing(t *testing.T) {
 		if want := "Nothing waits for " + id + " now: it is " + state; it.Blocking.Words != want {
 			t.Fatalf("%s %s: %q", id, state, it.Blocking.Words)
 		}
+	}
+}
+
+// An answered selection's brief says when it is applied by whether the
+// engine holds its run: next while it does; once the run is continued
+// while it is stopped or kept only as its record.
+func TestASelectionsAnsweredBriefFollowsItsRun(t *testing.T) {
+	for _, c := range []struct {
+		held bool
+		want string
+	}{
+		{true, "A comparison's selection, from the comparison of run r: it is answered, and the answer is final; Yardmaster applies it next"},
+		{false, "A comparison's selection, from the comparison of run r: it is answered, and the answer is final; it waits for its run to be continued, which applies it"},
+	} {
+		if got := selectionBrief(ledger.DecisionAnswered, "the comparison of run r", c.held); got != c.want {
+			t.Errorf("held %v: %q", c.held, got)
+		}
+	}
+	if got := selectionBrief(ledger.DecisionApplied, "x", false); got != "A comparison's selection, from x: it is applied, and nothing more is asked of you" {
+		t.Errorf("applied: %q", got)
 	}
 }

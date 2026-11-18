@@ -92,9 +92,22 @@ describe('a decision routed to a person', () => {
 })
 
 describe("a decision's words", () => {
+  // An answer on a run the engine does not hold (stopped, or kept only as its record) is applied when the run is continued; one whose
+  // run is not known yet says what is true either way, never that Yardmaster applies it next.
+  it('says when an answered record is applied by whether its run is held, and nothing it does not know', () => {
+    const d = decision({ state: 'answered', answeredAt: T1, responses: [recorded] })
+    expect(decisionWords(d, { runHeld: true }).state).toBe('Recorded: Yardmaster applies it next')
+    expect(decisionWords(d, { runHeld: false }).state).toBe('Recorded: waiting for the run to be continued')
+    expect(decisionWords(d).state).toBe('Recorded: applied when its run next acts')
+    for (const held of [false, undefined]) {
+      const w = decisionWords(d, { runHeld: held })
+      expect([w.state, ...w.steps.map((s) => s.words)].join(' | '), String(held)).not.toMatch(/ next(?! acts)/)
+    }
+  })
+
   it('says every state, each in its words', () => {
     expect(decisionWords(decision()).state).toBe("Open: waits for the operator's answer")
-    expect(decisionWords(decision({ state: 'answered', answeredAt: T1, responses: [recorded] })).state).toBe('Recorded: Yardmaster applies it next')
+    expect(decisionWords(decision({ state: 'answered', answeredAt: T1, responses: [recorded] }), { runHeld: true }).state).toBe('Recorded: Yardmaster applies it next')
     expect(decisionWords(decision({ state: 'answered', answeredAt: T1 }), { runHeld: false }).state).toBe('Recorded: waiting for the run to be continued')
     expect(decisionWords(decision({ state: 'applied', answeredAt: T1, applied: typed })).state).toBe("Applied: typed into build's attempt 1")
     expect(decisionWords(decision({ state: 'superseded', why: 'HEAD is now 9f2c1ab, was 3c1f2d0', supersededBy: 'dr-9' })).state).toBe('Superseded: HEAD is now 9f2c1ab, was 3c1f2d0 (dr-9 takes its place)')
@@ -120,7 +133,8 @@ describe("a decision's words", () => {
     const answered = decisionWords(decision({ state: 'answered', answeredAt: T1, responses: [recorded] })).steps
     expect(answered.map((s) => s.status)).toEqual(['done', 'done', 'waiting', 'pending'])
     expect(answered[1]).toMatchObject({ words: 'Recorded: dr-7 answered by Nate', at: T1, receipt: 'dr-7/1' })
-    expect(answered[2]!.words).toBe('Yardmaster validates it next')
+    expect(decisionWords(decision({ state: 'answered', answeredAt: T1, responses: [recorded] }), { runHeld: true }).steps[2]!.words).toBe('Yardmaster validates it next')
+    expect(answered[2]!.words).toBe('Yardmaster validates it when its run next acts')
     expect(decisionWords(decision({ state: 'answered', answeredAt: T1, responses: [recorded] }), { runHeld: false }).steps[2]!.words).toBe('waiting for the run to be continued')
 
     const applied = decisionWords(decision({ state: 'applied', answeredAt: T1, responses: [recorded], applied: typed })).steps

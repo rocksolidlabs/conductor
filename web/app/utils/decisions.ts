@@ -460,7 +460,9 @@ export function decisionWords(d: Decision, o: { runHeld?: boolean; controls?: bo
     steps.push({ key: 'validated', label: CHECKED, status: 'ended', words: answered ? 'not validated' : 'nothing to validate' })
     steps.push({ key: 'applied', label: `Not applied: ${d.state}`, status: 'ended', words: (d.why || d.state) + (d.supersededBy ? `; ${d.supersededBy} takes its place` : ''), at: d.closedAt })
   } else if (answered) {
-    const waits = o.runHeld === false ? 'waiting for the run to be continued' : 'Yardmaster validates it next'
+    // Whether the engine holds its run decides when: next while it does, at the run's continuation while it is stopped or kept only
+    // as its record, and, not known, words true of both (never "next" without knowing it).
+    const waits = o.runHeld === false ? 'waiting for the run to be continued' : o.runHeld ? 'Yardmaster validates it next' : 'Yardmaster validates it when its run next acts'
     steps.push({ key: 'validated', label: CHECKED, status: 'waiting', words: waits })
     steps.push({ key: 'applied', label: 'Applied', status: 'pending', words: 'not yet' })
   } else {
@@ -473,7 +475,7 @@ export function decisionWords(d: Decision, o: { runHeld?: boolean; controls?: bo
     case 'open':
       return { state: `Open: waits for ${approverWords(d)}'s answer`, tone: 'warning', steps }
     case 'answered':
-      return { state: o.runHeld === false ? 'Recorded: waiting for the run to be continued' : 'Recorded: Yardmaster applies it next', tone: 'default', steps }
+      return { state: o.runHeld === false ? 'Recorded: waiting for the run to be continued' : o.runHeld ? 'Recorded: Yardmaster applies it next' : 'Recorded: applied when its run next acts', tone: 'default', steps }
     case 'applied':
       // Done, in neutral ink as a done step is (UX1 PR-20, the plan's invariant 7: green is a live agent's alone).
       return { state: `Applied: ${app?.words ?? 'done'}`, tone: 'default', steps }

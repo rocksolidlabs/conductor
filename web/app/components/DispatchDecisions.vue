@@ -2,7 +2,7 @@
 import type { PlanDecision } from '~/composables/useDispatch'
 import type { DecisionRow } from '~/utils/dispatch'
 import type { Decision } from '~/utils/decisions'
-import { askedWhere, decisionWords, requiredRecord } from '~/utils/decisions'
+import { askedWhere, decisionWords, requiredRecord, runHeldOf } from '~/utils/decisions'
 import { selectedReview } from '~/utils/compareSelect'
 import { relativeTime } from '~/utils/sessions'
 
@@ -41,6 +41,12 @@ const recordOf = (gate: string) => requiredRecord(props.records, gate, props.pla
 /** A record's item on the decision page (Program item MB0), by its ref. */
 const decisionPage = (id: string) => `/decisions?item=${encodeURIComponent(`decision:${id}`)}`
 const reviewOf = selectedReview
+/**
+ * A record's words with whether the engine holds its run, as the live store knows it (a stopped run held there says so): an answer
+ * waits for the run's continuation where the run is stopped, and where the run is not known the words claim neither.
+ */
+const live = useAttention()
+const wordsOf = (r: Decision) => decisionWords(r, { runHeld: runHeldOf(live.runOf(r.run)) })
 </script>
 
 <template>
@@ -70,13 +76,13 @@ const reviewOf = selectedReview
     </ul>
     <ul v-if="records?.length" class="flex flex-col gap-1.5" data-ticket-decision-records>
       <li v-for="r in records" :key="r.id" class="flex min-w-0 items-start gap-2 rounded-md px-3 py-2 text-sm ring ring-default" :data-ticket-decision-record="r.id" :data-decision-state="r.state">
-        <UIcon name="i-lucide-scale" class="mt-0.5 size-4 flex-none" :class="tones[decisionWords(r).tone]" />
+        <UIcon name="i-lucide-scale" class="mt-0.5 size-4 flex-none" :class="tones[wordsOf(r).tone]" />
         <div class="flex min-w-0 flex-1 flex-col gap-0.5">
           <div class="flex min-w-0 flex-wrap items-baseline gap-x-2">
             <span class="font-mono text-xs font-semibold">{{ r.id }}</span>
             <span class="min-w-0 break-words font-medium text-highlighted">{{ r.request.question }}</span>
           </div>
-          <p class="break-words text-xs" :class="tones[decisionWords(r).tone]" data-ticket-decision-state>{{ decisionWords(r).state }}</p>
+          <p class="break-words text-xs" :class="tones[wordsOf(r).tone]" data-ticket-decision-state>{{ wordsOf(r).state }}</p>
           <p v-if="r.answer" class="break-words text-xs text-muted">answered: {{ r.answer }}</p>
           <p class="text-xs text-dimmed">
             {{ r.origin === 'plan' ? `the plan's gate ${r.gate ?? ''}` : r.origin === 'compare' ? `asked by ${askedWhere(r)}` : `asked by ${r.asker?.task ?? 'an agent'}` }} {{ relativeTime(r.createdAt, now, { suffix: true }) }} ·
