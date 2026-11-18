@@ -536,6 +536,13 @@ func worstRepairFile(c Crew, pkg *Package, def Task, prompt string, rp *repair, 
 		services = append(services, fmt.Sprintf("%s%d", id[:idLen-1], i))
 	}
 	f.Manifest = &TaskManifest{Source: sourceFile, Revision: 1<<63 - 1, Digest: commit, Ports: ports, Preview: widest(maxPreview, true, wide), Services: services}
+	// A provider's subject at its widest (origin.go): its reference and
+	// link at their byte bounds, its label at its character bound, an
+	// earlier run and the start commit; never cut, so measured here.
+	f.Subject = &TaskSubject{Ref: widest(ledger.MaxOriginSubject, true, wide), URL: widest(ledger.MaxOriginURL, true, wide), StartCommit: commit,
+		Prior: strings.Repeat("p", ledger.MaxOriginRunID-9) + "-ffffffff"}
+	f.subjectLabel = widest(ledger.MaxOriginLabel, false, wide)
+	f.subjectFrom = quoted.Source{On: strings.Repeat("p", ledger.MaxOriginProvider), Ref: strings.Repeat("r", ledger.MaxOriginRef)}
 	return f
 }
 
