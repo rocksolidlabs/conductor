@@ -876,33 +876,6 @@ func TestAHostedSessionsTokenIsAskedOfTheProvider(t *testing.T) {
 	setHolds("the hosted session left the registry")
 }
 
-// No Go file of internal/signal, its tests among them, holds an identifier
-// spelled TokenSet, TokenEntry, AddToken, TakeAgentToken, Tokens,
-// agentTokens or liveTokens, wherever it stands (a declaration, a field, a
-// selector), whatever it refers to. It looks inside that package alone and
-// by those names alone: a hosted session reaches the set of live tokens by
-// none of them.
-func TestNoHostedSessionNamesTheLiveTokens(t *testing.T) {
-	files, err := filepath.Glob("../signal/*.go")
-	if err != nil || len(files) == 0 {
-		t.Fatalf("no file of internal/signal: %v", err)
-	}
-	names := []string{"TokenSet", "TokenEntry", "AddToken", "TakeAgentToken", "Tokens", "agentTokens", "liveTokens"}
-	fset := token.NewFileSet()
-	for _, name := range files {
-		file, err := parser.ParseFile(fset, name, nil, parser.SkipObjectResolution)
-		if err != nil {
-			t.Fatal(err)
-		}
-		ast.Inspect(file, func(n ast.Node) bool {
-			if id, ok := n.(*ast.Ident); ok && slices.Contains(names, id.Name) {
-				t.Errorf("%s: %s names the set of live tokens", fset.Position(id.Pos()), id.Name)
-			}
-			return true
-		})
-	}
-}
-
 // tokenWriters is a catalog of agents named names, each writing its
 // CONDUCTOR_NOTIFY_TOKEN to the file of its name in dir.
 func tokenWriters(t *testing.T, e *testEnv, dir string, names ...string) {

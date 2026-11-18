@@ -53,6 +53,12 @@ type Hub struct {
 	// sends, checked (report.go). Set them before the first host registers.
 	OnAdded       func(*HostedSession)
 	OnSessionInfo func(*HostedSession, proto.HostSessionInfoMsg)
+	// Tokens, when set, is the set of live agent tokens a hosted session's
+	// token is entered in (setAgentToken): from its registration, or an
+	// attach that carries a token, until the session ends, leaves the
+	// registry or this table, or its registration fails; nil keeps none.
+	// Desks carry no token. Set it before the first host registers.
+	Tokens session.TokenSet
 	// decisions says this switchyard carries a decision link's lane
 	// (SetDecisions).
 	decisions atomic.Bool
@@ -169,6 +175,8 @@ func (hub *Hub) Register(reg proto.Register, conn *HostConn) (*HostedSession, bo
 	hs.setAgentToken(reg.Session.AgentToken)
 	hs.setAnswerAs(reg.Host.AnswerAs)
 	if err := hub.registry.Add(hs); err != nil {
+		// Never shared: its entry goes with the registration.
+		hs.endToken()
 		return nil, false, err
 	}
 	hub.mu.Lock()
