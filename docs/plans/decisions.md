@@ -938,7 +938,8 @@ identity's is; not known leaves the decision `answered` and asks again
 superseding on what nobody said (`docs/plans/sync-seams.md`, OS-3).
 A held answer and a router's policy do not combine in the first
 version: on a server whose registered router confirms policies every
-held answer is refused, kept, `403 answered_at_server`
+held answer is refused, final (nothing written; the provider does not
+hand it in again), `403 answered_at_server`
 (`docs/plans/decision-policy.md`, Responding, Held answers).
 
 A recheck that fails at application supersedes the decision with its
