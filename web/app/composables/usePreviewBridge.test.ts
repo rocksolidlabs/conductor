@@ -582,6 +582,20 @@ describe('a bridge that starts late: the hello said while the frame stays on its
     expect([b!.annotations.map((x) => x.element?.selector), b!.words]).toEqual([['#save'], [CHANGED_WORDS]])
   })
 
+  it('starts a new capture for the element when only the element’s own box changed since the screenshot taken before the page answered', async () => {
+    // 225 pixels inside #save's box: fewer than the whole frame's share of differing pixels, all of the box's.
+    const c = await askedThenAnswered([screen(), screen({ x: 20, y: 25, width: 15, height: 15 })])
+    expect(c.h.s.state.drafts).toHaveLength(2)
+    const [a, b] = c.h.s.state.drafts
+    expect([a!.annotations.map((x) => x.kind), a!.open]).toEqual([['region'], false])
+    expect([b!.annotations.map((x) => x.element?.selector), b!.words]).toEqual([['#save'], [CHANGED_WORDS]])
+  })
+
+  it('starts a new capture for the element when only a region drawn before the page answered changed inside its box', async () => {
+    const c = await askedThenAnswered([screen(), screen({ x: 2, y: 2, width: 3, height: 3 })])
+    expect(c.h.s.state.drafts.map((d) => d.annotations.map((x) => x.kind))).toEqual([['region'], ['element']])
+  })
+
   it('takes a late ready only from the frame’s window at the preview’s origin', () => {
     const c = late()
     c.h.s.hello()

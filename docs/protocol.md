@@ -3317,8 +3317,9 @@ reached however late: 3 s with no `ready` it says the page has not
 answered yet and that it keeps asking, 30 s with none that the page does
 not load the bridge, and a `ready` with that load's nonce that comes
 later is still taken and ends the words. A capture made before the page
-answered takes its first element once it has only where the frame is
-then the same as its screenshot; Capture again waits for the `ready` as
+answered takes its first element once it has only where the frame then
+matches its screenshot inside that element's box, inside every
+annotation's box and over the whole frame, each judged on its own; Capture again waits for the `ready` as
 long as the frame stays on its load, and describes on the page as it is
 when the page reports the capture's address (compared without the
 fragment), else sends the frame there and describes on the next press. A `ready` ends the hellos; so do a new

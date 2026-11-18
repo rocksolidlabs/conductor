@@ -75,7 +75,8 @@ export interface Draft {
   retakeOf: string
   /**
    * Made while the page had not answered the pane's hello: its moment is the pane's own (the frame's address and size). Its first
-   * element, once the page answers, joins it only where the frame then is the same as its screenshot, every pixel.
+   * element, once the page answers, joins it only where the frame then matches its screenshot inside that element's box, inside
+   * every annotation's box and over the whole frame (sameIn's tolerance, as a selection joining any draft is held).
    */
   asked?: boolean
 }
@@ -463,7 +464,8 @@ export function createPreviewSession(deps: BridgeDeps) {
 
   /**
    * The first element of a draft made before the page answered: the draft takes the page's moment and the element where the frame is
-   * now the same as its screenshot, every pixel, and the label's revision has not moved; else the element starts a new draft, the
+   * now matches its screenshot inside the element's own box, inside every annotation's box and over the whole frame (each judged by
+   * sameIn on its own, so a change confined to a small box is caught there), and the label's revision has not moved; else the element starts a new draft, the
    * first kept and closed.
    */
   async function adopt(d: Draft, m: { element: ElementReport } & PreviewPage, label: LabelRead | null, at: string) {
@@ -471,9 +473,11 @@ export function createPreviewSession(deps: BridgeDeps) {
     d.words = d.words.filter((w) => w !== ANSWERED_WORDS)
     const sameLabel = (d.moment.label?.commit ?? '') === (label?.commit ?? '') && (d.moment.label?.content ?? '') === (label?.content ?? '')
     const frame = d.shot && sameLabel ? await shoot(await screenshots()) : null
-    if (d.shot && frame && sameIn(d.shot, frame, { x: 0, y: 0, width: d.shot.width, height: d.shot.height })) {
+    const ratio = d.shot && m.viewport.width > 0 ? d.shot.width / m.viewport.width : 1
+    const boxes = d.shot ? [{ x: 0, y: 0, width: d.shot.width, height: d.shot.height }, ...d.annotations.map((a) => a.rect), boxIn(m.element, ratio)] : []
+    if (d.shot && frame && boxes.every((b) => sameIn(d.shot!, frame, b))) {
       d.moment = momentOf(m, label, at)
-      d.ratio = m.viewport.width > 0 ? d.shot.width / m.viewport.width : 1
+      d.ratio = ratio
       return join(d, m.element, m, at, true)
     }
     d.open = false
