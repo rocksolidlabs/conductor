@@ -293,6 +293,12 @@ func (e *Engine) act(ctx context.Context, runID, actor string, cmd Command, inte
 	if taken != nil {
 		taken(runID, cmd.ID)
 	}
+	// An accept anyway or a cancel may end a comparison's last lane, and
+	// its change then opens the selection: the comparison its words are
+	// is read first (measureAhead). Nothing is written by it.
+	if r.compare != nil && (intent == TaskAccept || intent == TaskCancel) && len(args) > 0 {
+		e.measureAhead(ctx, r, args[0])
+	}
 	// The change, with its receipt.
 	var out Receipt
 	var cmdErr error

@@ -58,6 +58,17 @@ type selectState struct {
 	// ended is why the comparison ended with no selection opened ("" when
 	// one opened, or none was looked for).
 	ended string
+	// measured is the comparison read ahead of a change that may open the
+	// selection (measureAhead), nil before.
+	measured *aheadMeasure
+}
+
+// aheadMeasure is the comparison as the ledger held it with the run at
+// revision rev: the comparison of the state the next change starts from,
+// for as long as no change of the run commits after it (measuredNow).
+type aheadMeasure struct {
+	rev int64
+	cmp Comparison
 }
 
 // The selection's words (the plan's, Which record and Opening).
@@ -396,23 +407,172 @@ func (r *run) launchedRun() string {
 	return r.id
 }
 
-// tradeoffs are an option's facts the engine holds, in words: the attempt
-// and whether its checks passed or a person accepted it anyway. The
-// comparison measures the rest. The caller holds e.mu.
+// measureAhead reads the comparison before a change that may open the
+// selection: one that may end the last lane still running (task's, a
+// candidate or a review of one), with no selection of the chain applied.
+// The opening's words are the comparison's verdicts (tradeoffs), and the
+// comparison is git and the ledger, which no change reads under e.mu; so
+// it is read here, before the change, and kept with the run's revision it
+// was read at, which is taken first: a change of the run committed after
+// it leaves the read unused (measuredNow). The caller holds no lock.
+func (e *Engine) measureAhead(ctx context.Context, r *run, task string) {
+	if r.compare == nil {
+		return
+	}
+	e.mu.Lock()
+	lane := cmp.Or(r.lanes[task], task)
+	want := r.sel.applied == nil && !r.carried()
+	for _, cd := range r.compare.Candidates {
+		if cd.Task != lane && !r.laneEnded(cd.Task) {
+			want = false
+		}
+	}
+	rev := r.revision
+	e.mu.Unlock()
+	if !want {
+		return
+	}
+	c, revs, err := e.comparisonAt(ctx, r.id)
+	if err != nil || revs[r.id] != rev {
+		return
+	}
+	e.mu.Lock()
+	if r.revision == rev {
+		r.sel.measured = &aheadMeasure{rev: rev, cmp: c}
+	}
+	e.mu.Unlock()
+}
+
+// carried says the run holds a change the ledger has not written (a
+// failed commit's, carried to the next): the state is ahead of the
+// ledger's rows at the run's revision. The caller holds e.mu.
+func (r *run) carried() bool {
+	return len(r.pendingEvents) > 0 || len(r.pendingMore) > 0 || len(r.pendingLast) > 0
+}
+
+// measuredNow is the comparison read ahead (measureAhead) while it is the
+// comparison of the state the change under way started from: nothing of
+// the run committed or carried since; nil otherwise. The caller holds
+// e.mu.
+func (r *run) measuredNow() *Comparison {
+	m := r.sel.measured
+	if m == nil || m.rev != r.revision || r.carried() {
+		return nil
+	}
+	return &m.cmp
+}
+
+// notCompared is said of a candidate's checks when the comparison was not
+// read before the opening (a continuation's first change, a stop, a change
+// another one overtook): what it holds of them is the comparison's.
+const notCompared = "not compared when this opened: the comparison says whether its checks compare"
+
+// tradeoffs are an option's facts in words: the attempt, then what the
+// comparison says of each of the candidate's checks (its outcome and the
+// row's verdict, with why in the comparison's words), and whether a person
+// accepted it after a failed check; with no comparison read ahead, that
+// its checks passed and were not compared. The caller holds e.mu.
 func (r *run) tradeoffs(c SettledCandidate) string {
 	words := fmt.Sprintf("attempt %d", c.Attempt)
 	if c.Run != r.id {
 		words += " of " + c.Run
 	}
+	accepted := false
 	if t := r.task(c.Task); t != nil && strings.HasPrefix(t.reason, "accepted by ") {
-		return words + "; accepted after a failed check"
+		accepted = true
 	}
-	return words + "; its checks passed"
+	checks, measured := "", false
+	if m := r.measuredNow(); m != nil {
+		checks, measured = comparedWords(*m, c)
+	}
+	switch {
+	case measured && accepted:
+		words += "; " + checks + "; accepted after a failed check"
+	case measured:
+		words += "; " + checks
+	case accepted:
+		words += "; accepted after a failed check; " + notCompared
+	default:
+		words += "; its checks passed, " + notCompared
+	}
+	return cutEncoded(words, ledger.MaxOptionTradeoffs)
+}
+
+// comparedWords is what the comparison c says of the candidate's checks, row
+// by row: "check ok: passed, comparable"; ok false when c does not show
+// that candidate in its lane (another attempt or commit).
+func comparedWords(c Comparison, sc SettledCandidate) (string, bool) {
+	i := slices.IndexFunc(c.Candidates, func(cc ComparedCandidate) bool { return cc.Task == sc.Task })
+	if i < 0 {
+		return "", false
+	}
+	if cc := c.Candidates[i]; cc.Run != sc.Run || cc.Attempt != sc.Attempt || cc.Commit != sc.Commit {
+		return "", false
+	}
+	if len(c.Checks) == 0 {
+		return "no check is compared", true
+	}
+	var rows []string
+	for _, row := range c.Checks {
+		outcome := "not run"
+		if j := slices.IndexFunc(row.Cells, func(cell CheckCell) bool { return cell.Task == sc.Task }); j >= 0 {
+			outcome = cellWords(row.Cells[j])
+		}
+		rows = append(rows, fmt.Sprintf("%s %s: %s, %s", row.Phase, row.ID, outcome, verdictWords(row)))
+	}
+	return strings.Join(rows, "; "), true
+}
+
+// cellWords is a candidate's run of one check in words.
+func cellWords(cell CheckCell) string {
+	switch {
+	case cell.State == CellNotRun:
+		return "not run"
+	case cell.State == CellCancelled:
+		return "cancelled"
+	case cell.State != ledger.CheckFinished:
+		return fmt.Sprintf("did not finish (%s)", cell.State)
+	case cell.TimedOut:
+		return "timed out"
+	case cell.Signal != "":
+		return fmt.Sprintf("failed (%s)", cell.Signal)
+	case cell.Exit != nil && *cell.Exit != 0:
+		return fmt.Sprintf("failed (exit %d)", *cell.Exit)
+	}
+	return "passed"
+}
+
+// verdictWords is a check row's verdict in words, why in the comparison's
+// own words: "comparable"; "not comparable (approach-a changed check.sh,
+// which the check runs)"; "comparable only if their test changes are fair
+// (approach-a changed x_test.go, a test file; approach-b changed none)".
+func verdictWords(row ComparedCheck) string {
+	switch row.Verdict {
+	case VerdictComparable:
+		return "comparable"
+	case VerdictNotComparable:
+		if len(row.Why) == 0 {
+			return "not comparable"
+		}
+		return "not comparable (" + strings.Join(row.Why, "; ") + ")"
+	}
+	var why []string
+	for _, w := range row.Why {
+		if head, tail, ok := strings.Cut(w, ": "); ok {
+			w = head + " (" + tail + ")"
+		}
+		why = append(why, w)
+	}
+	if len(why) == 0 {
+		return "not known to be comparable"
+	}
+	return strings.Join(why, "; ")
 }
 
 // selectionContext is the comparison at the opening in words, within the
-// ledger's bound: the base, the criteria, and each lane's candidate or
-// why it has none. The caller holds e.mu.
+// ledger's bound: the base, the criteria, and each lane's candidate with
+// what the comparison says of its checks, or why it has none and what the
+// comparison says of its last commit's. The caller holds e.mu.
 func (r *run) selectionContext(opts []SettledCandidate) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Every candidate started at %s.", shortOf(r.base))
@@ -422,6 +582,7 @@ func (r *run) selectionContext(opts []SettledCandidate) string {
 			fmt.Fprintf(&b, " %s: %s;", cr.ID, cr.Text)
 		}
 	}
+	m := r.measuredNow()
 	for _, cd := range r.compare.Candidates {
 		i := slices.IndexFunc(opts, func(c SettledCandidate) bool { return c.Task == cd.Task })
 		t := r.task(cd.Task)
@@ -429,7 +590,13 @@ func (r *run) selectionContext(opts []SettledCandidate) string {
 		case i >= 0:
 			fmt.Fprintf(&b, " %s: %s, %s.", cd.Task, shortOf(opts[i].Commit), r.tradeoffs(opts[i]))
 		case t != nil:
-			fmt.Fprintf(&b, " %s: no result (%s).", cd.Task, t.state)
+			fmt.Fprintf(&b, " %s: no result (%s)", cd.Task, t.state)
+			if last, ok := lastCompared(m, cd.Task); ok {
+				if words, ok := comparedWords(*m, last); ok {
+					fmt.Fprintf(&b, "; at %s, attempt %d: %s", shortOf(last.Commit), last.Attempt, words)
+				}
+			}
+			b.WriteString(".")
 		}
 	}
 	out := strings.TrimSpace(oneLine.Replace(b.String()))
@@ -437,6 +604,21 @@ func (r *run) selectionContext(opts []SettledCandidate) string {
 		out = string([]rune(out)[:ledger.MaxDecisionContext])
 	}
 	return out
+}
+
+// lastCompared is the commit the comparison m shows in the lane of task,
+// for a lane with no standing result: its last submitted one; ok false
+// for none, or no comparison.
+func lastCompared(m *Comparison, task string) (SettledCandidate, bool) {
+	if m == nil {
+		return SettledCandidate{}, false
+	}
+	i := slices.IndexFunc(m.Candidates, func(cc ComparedCandidate) bool { return cc.Task == task })
+	if i < 0 || m.Candidates[i].Commit == "" {
+		return SettledCandidate{}, false
+	}
+	cc := m.Candidates[i]
+	return SettledCandidate{Task: task, Run: cc.Run, Attempt: cc.Attempt, Commit: cc.Commit}, true
 }
 
 // selectionApplication is a selection's application: the selected
