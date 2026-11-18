@@ -209,13 +209,16 @@ export const ROLE_LOG_READ = 200
 /**
  * How many times the role was woken today and how many briefs those wakes led to: the log's rows (newest first, as read, at most
  * ROLE_LOG_READ) not held, on the browser's day, and the distinct requests among them the page holds as briefed. "Woken 5 times today, 2
- * briefs." A read that reached its bound says "200 or more".
+ * briefs." A read that reached its bound inside today says what it holds "or more".
  */
 export function wokenWords(log: readonly RoleLogRow[], requests: ReadonlyMap<string, Pick<BrakemanRequest, 'hasBrief'>>, now = new Date(), read = ROLE_LOG_READ): string {
   const today = now.toDateString()
   const rows = log.filter((r) => !r.held && new Date(r.at).toDateString() === today)
   const briefs = new Set(rows.filter((r) => r.request && requests.get(r.request)?.hasBrief).map((r) => r.request))
-  const n = log.length >= read && rows.length === log.length ? `${read} or more` : String(rows.length)
+  // The rows read are the newest: a full read whose oldest row is today's was cut inside today, and what it holds is a floor.
+  const oldest = log[log.length - 1]
+  const cut = log.length >= read && !!oldest && new Date(oldest.at).toDateString() === today
+  const n = cut ? `${rows.length} or more` : String(rows.length)
   const times = n === '1' ? 'once' : `${n} times`
   return `Woken ${times} today, ${briefs.size} ${briefs.size === 1 ? 'brief' : 'briefs'}.`
 }
