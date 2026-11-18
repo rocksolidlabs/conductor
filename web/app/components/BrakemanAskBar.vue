@@ -329,7 +329,9 @@ const optionId = (i: number) => `${id}-mention-${i}`
       <IconButton v-if="size === 'foot'" type="submit" icon="i-lucide-send" color="neutral" variant="outline" class="min-h-11 min-w-11 justify-center" label="Ask" :loading="sending" :disabled="!canAsk" data-ask-send />
       <UButton v-else type="submit" label="Ask" icon="i-lucide-send" :class="[tall, 'shrink-0']" :loading="sending" :disabled="!canAsk" data-ask-send />
     </div>
-    <div v-if="showChips" class="flex min-w-0 flex-wrap gap-1.5" data-ask-chips>
+    <!-- A press keeps the field's focus, as on the @ list's options: where a pressed button takes none (WebKit), the field's blur
+         would hide the foot's chips before the click lands. -->
+    <div v-if="showChips" class="flex min-w-0 flex-wrap gap-1.5" data-ask-chips @mousedown.prevent>
       <template v-for="c in chips" :key="c.key">
         <UFieldGroup v-if="c.more === 'since'">
           <UButton :label="c.label" color="neutral" variant="outline" :size="size === 'compact' ? 'xs' : 'sm'" :class="control" :disabled="!!disabled || sending" :data-ask-chip="c.key" @click="chip(c)" />

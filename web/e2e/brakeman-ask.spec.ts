@@ -306,6 +306,31 @@ test.describe('on a phone', () => {
     await expect(more).not.toHaveAttribute('aria-current', 'page')
   })
 
+  test("a press on a foot chip where the press takes no focus (WebKit's order, dispatched by hand) still asks", async ({ page }) => {
+    await idle()
+    await srv.open(page, '/brakeman', { name: NAME })
+    const b = await bar(page, 'foot')
+    await b.locator('[data-ask-field]').focus()
+    const chip = b.locator('[data-ask-chip="overlaps"]')
+    await expect(chip).toBeVisible()
+    const before = await ids()
+    // WebKit gives a pressed button no focus: the press clears the focus (a focusout with no related target) unless its mousedown
+    // is prevented, the page redraws, and the click goes only to a chip still in the page.
+    const pressed = await chip.evaluate(async (el) => {
+      const down = new MouseEvent('mousedown', { bubbles: true, cancelable: true })
+      el.dispatchEvent(down)
+      if (!down.defaultPrevented) (document.activeElement as HTMLElement | null)?.blur()
+      await new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)))
+      el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }))
+      if (el.isConnected) (el as HTMLElement).click()
+      return { prevented: down.defaultPrevented, connected: el.isConnected }
+    })
+    expect(pressed).toEqual({ prevented: true, connected: true })
+    const r = await madeSince(before)
+    expect(r.kind).toBe('overlaps')
+    expect(r.by).toBe(NAME)
+  })
+
   for (const theme of ['dark', 'light'] as const) {
     test(`the foot bar in ${theme}: 44 px to tap, its chips on focus, nothing sideways, every text over its floor`, async ({ page }) => {
       await srv.open(page, '/brakeman', { name: NAME })
