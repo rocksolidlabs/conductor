@@ -243,6 +243,7 @@ test('a brief of another kind draws no control, and nor does an older server tha
 test('on a phone the control and the dialog are a thumb wide, and nothing goes sideways', async ({ page }) => {
   budget(DRAW_MS + 8 * STEP_MS)
   await page.setViewportSize({ width: 390, height: 844 })
+  const before = (await previewOf()).handoff
   const h = await box(page, handoff, true)
   const control = h.locator('[data-handoff-send]')
   await expect(control).toBeVisible()
@@ -257,6 +258,6 @@ test('on a phone the control and the dialog are a thumb wide, and nothing goes s
   // Not sent: Cancel leaves the package as it stood.
   await page.locator('[data-handoff-send-cancel]').click()
   await expect(dialog).toHaveCount(0)
-  expect((await previewOf()).handoff?.state).toBe('withdrawn')
+  expect((await previewOf()).handoff).toEqual(before)
   expect(existsSync(hold)).toBe(false)
 })
