@@ -5799,7 +5799,9 @@ scrub finds one, `400 invalid_request` (`opId holds a tree's secret`,
 `the capture's id holds a tree's secret`), before any call to the store,
 so no operation's row, receipt or reply carries it. A capture's address
 is the page's: the address its bridge reports, or, when the page's bridge
-did not answer, the address the pane gave the frame without its fragment;
+did not answer, the address the pane gave the frame; for an attempt's or
+a candidate's preview the pane names it without the fragment it opened
+the preview with, and a link's address keeps its fragment;
 for an attempt's preview the server keeps that address, and each
 element's moment's, without a fragment that holds a part of such a
 secret or its name (a preview's own address opens it with its tree's

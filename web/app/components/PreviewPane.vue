@@ -133,7 +133,9 @@ const session = usePreviewBridge({
     await painted()
   },
   frameElement: () => frame.value,
+  // An attempt's or a candidate's preview is opened with a fragment of its own; a link's fragment is its page's.
   opened: () => {
+    if (!props.target) return ''
     const a = address.value
     const i = a.indexOf('#')
     return i < 0 ? '' : a.slice(i)
@@ -141,8 +143,8 @@ const session = usePreviewBridge({
   view: () => ({ mode: mode.value, scale: scale.value }),
   fallback: () => {
     const d = device.value
-    // The frame's address less its fragment: what opens the preview there stays the frame's.
-    return { url: withoutFragment(address.value), width: d ? d.width : room.value.width, height: d ? d.height : room.value.height }
+    // The frame's address: the session's own pane names an attempt's preview without the fragment that opens it (opened).
+    return { url: address.value, width: d ? d.width : room.value.width, height: d ? d.height : room.value.height }
   },
 })
 /** Two animation frames: what the last change drew is on the screen. */

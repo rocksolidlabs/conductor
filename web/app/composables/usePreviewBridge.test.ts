@@ -726,12 +726,31 @@ describe("a draft's address", () => {
     expect(h.s.state.drafts[1]!.moment.url).toBe(`${ORIGIN}/app#/settings`)
   })
 
-  it('is the address the pane gave the frame, without its fragment', async () => {
-    const h = harness({ deps: { fallback: () => ({ url: `${ORIGIN}/app?tab=2#token=${'c'.repeat(64)}`, width: 400, height: 300 }) } })
+  it('without the bridge is the address the pane gave the frame, without the fragment it opened a preview with', async () => {
+    const opened = `#token=${'c'.repeat(64)}`
+    const h = harness({ deps: { opened: () => opened, fallback: () => ({ url: `${ORIGIN}/app?tab=2${opened}`, width: 400, height: 300 }) } })
     ;(h.frameWindow as { postMessage: unknown }).postMessage = () => {}
     h.s.hello()
     h.advance(HELLO_MS)
     await h.s.snap()
     expect(h.s.state.drafts.map((d) => d.moment.url)).toEqual([`${ORIGIN}/app?tab=2`])
+  })
+
+  it('of a link keeps the fragment the link was opened with, with the bridge and without it', async () => {
+    const link = `${ORIGIN}/#/settings`
+    const quiet = harness({ deps: { opened: () => '', fallback: () => ({ url: link, width: 400, height: 300 }) } })
+    ;(quiet.frameWindow as { postMessage: unknown }).postMessage = () => {}
+    quiet.s.hello()
+    quiet.advance(HELLO_MS)
+    await quiet.s.snap()
+    expect(quiet.s.state.drafts.map((d) => d.moment.url)).toEqual([link])
+
+    const h = harness({ deps: { opened: () => '' } })
+    h.page = { ...h.page, url: link }
+    h.s.hello()
+    await h.settle()
+    await selectOf(h, first)
+    const d = h.s.state.drafts[0]!
+    expect([d.moment.url, d.annotations[0]!.observed!.url]).toEqual([link, link])
   })
 })

@@ -591,9 +591,9 @@ export function createPreviewSession(deps: BridgeDeps) {
       const ua = typeof navigator === 'undefined' ? '' : navigator.userAgent.slice(0, MAX_PREVIEW_USER_AGENT)
       const dpr = typeof window === 'undefined' ? 1 : window.devicePixelRatio || 1
       const moment: Moment = {
-        // The page the pane can name without the bridge: the address it gave the frame, less its fragment (a preview's own address
-        // carries what opens it there, never part of the page shown).
-        url: withoutFragment(f.url),
+        // The page the pane can name without the bridge: the address it gave the frame, less the fragment it opened a preview with
+        // (opened: what opens an attempt's or a candidate's preview there, never part of the page shown); a link's address whole.
+        url: pageAddress(f.url),
         title: '',
         viewport: { mode: view.mode, width: Math.round(f.width), height: Math.round(f.height), scale: view.scale, dpr, colorScheme: 'light', userAgent: ua, scrollX: 0, scrollY: 0 },
         epoch: 0,
