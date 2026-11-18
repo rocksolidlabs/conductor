@@ -385,3 +385,19 @@ func TestDecisionIsAWebhookEvent(t *testing.T) {
 		t.Fatalf("an unknown event beside it: %v", err)
 	}
 }
+
+// A webhook may list brakeman_needs_you, a background brief with a
+// decision, and a config that names it validates; a name beside it that is
+// none still fails.
+func TestBrakemanNeedsYouIsAWebhookEvent(t *testing.T) {
+	fakeLookup(t, map[string][]string{"hooks.example.com": {"93.184.215.14"}})
+	if !ValidWebhookEvent(EventBrakemanNeedsYou) || EventBrakemanNeedsYou != "brakeman_needs_you" {
+		t.Fatal("brakeman_needs_you is not a webhook's event")
+	}
+	if err := withWebhooks(Webhook{URL: "https://hooks.example.com/c", Events: []string{"brakeman_needs_you"}}).Validate(); err != nil {
+		t.Fatalf("a webhook of Brakeman's briefs: %v", err)
+	}
+	if err := withWebhooks(Webhook{URL: "https://hooks.example.com/c", Events: []string{"brakeman_needs_you", "brakeman_decision"}}).Validate(); err == nil || !strings.Contains(err.Error(), `"brakeman_decision"`) {
+		t.Fatalf("an unknown event beside it: %v", err)
+	}
+}

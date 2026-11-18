@@ -886,29 +886,5 @@ func decisionNotification(row ledger.DecisionRow, by string) ext.Notification {
 
 // decision queues a decision's notification for every webhook that lists
 // the decision event and every provider sink that takes it, without
-// waiting. Once the webhooks are closed it queues nothing.
-func (nt *notifier) decision(n ext.Notification) {
-	if nt.hooks.ctx.Err() != nil {
-		return
-	}
-	var body []byte
-	for _, w := range nt.hooks.hooks {
-		event := w.eventFor(n.Event, n.Type)
-		if event == "" {
-			continue
-		}
-		if body == nil {
-			b, err := webhookBody(n)
-			if err != nil {
-				break
-			}
-			body = b
-		}
-		w.queue.push(webhookDelivery{event: event, body: body})
-	}
-	for _, g := range nt.sinks {
-		if g.mayTake(n.Event, n.Type) {
-			g.queue.push(n)
-		}
-	}
-}
+// waiting (send). Once the webhooks are closed it queues nothing.
+func (nt *notifier) decision(n ext.Notification) { nt.send(n, true) }
