@@ -540,6 +540,13 @@ type agent struct {
 	actLeftOut    uint32
 	actConfirming bool
 	actConfirmTo  uint64
+	// actWriting is the number of the entry being written, 0 for none;
+	// actSentGone how many went past the bound after their write on the
+	// current connection, with the counts they carried, actSentGoneTo the
+	// highest number among them (trimKept). Guarded by actMu.
+	actWriting    uint64
+	actSentGone   uint32
+	actSentGoneTo uint64
 	// actEpoch numbers the registrations (registeredActivity), the last
 	// one's start in actBegan (with the monotonic clock's reading; actSince
 	// replaces the time since it in tests), its resumed in actResumed;
