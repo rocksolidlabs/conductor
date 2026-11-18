@@ -14,8 +14,14 @@ import (
 // Launch, Submit and Notify and answers what a test scripts (by default a
 // run of the crew asked, "entered", and nil), refusing a request its
 // record's Valid refuses as the server does (ext.ErrRefused with the
-// words); its DataDir is a t.TempDir() and its Log writes into the test's
-// log. While blocked, every call waits until it is let go, its context
+// words; a launch's, a *ext.Refusal invalid_request); its DataDir is a
+// t.TempDir() and its Log writes into the test's log. A provider's launch
+// (one with an Origin) is made as the server makes it: once per operation
+// id, kept with its origin, read and stopped through Run, RunByOp and
+// StopRun by the provider alone, across a restart of the provider
+// (Restarted); ResolveLaunch resolves what SetResolved gave with the
+// settings now, its digest by ext.ResolvedDigest, and a launch held to a
+// digest is resolved again and refused launch_changed on a difference. While blocked, every call waits until it is let go, its context
 // ends or the host is closed. Once closed, every call answers
 // context.Canceled, as the Host of a try the server gave up does. Safe for
 // concurrent use.
@@ -42,6 +48,16 @@ type FakeHost struct {
 	decision func(string) (ext.DecisionState, error)
 	token    string
 	mode     string
+
+	// What a provider's launches made and what a resolve reads: the
+	// server's, shared with the fakes Restarted from this one.
+	srv       *fakeServer
+	stops     []ext.StopRequest
+	resolves  []ext.ResolveRequest
+	onRun     func(string) (ext.RunStatus, error)
+	onRunByOp func(string) (ext.RunStatus, error)
+	onStop    func(ext.StopRequest) error
+	onResolve func(ext.ResolveRequest) (ext.ResolvedLaunch, error)
 }
 
 // SetHostToken has HostToken answer t ("" by default).
@@ -80,7 +96,7 @@ func (h *FakeHost) Mode() string {
 // closed; when t takes cleanups (Cleanup), the host is closed in one, so
 // a provider's goroutine that outlives the test logs nowhere.
 func NewFakeHost(t T) *FakeHost {
-	h := &FakeHost{dir: t.TempDir(), done: make(chan struct{})}
+	h := &FakeHost{dir: t.TempDir(), done: make(chan struct{}), srv: newFakeServer()}
 	if l, ok := t.(interface{ Logf(string, ...any) }); ok {
 		h.logf = l.Logf
 	}
@@ -225,9 +241,12 @@ func (h *FakeHost) enter(ctx context.Context) error {
 }
 
 // Launch records r and answers a run of its crew (run-1, run-2, …), or
-// what OnLaunch set. The record, the callback and the caller each hold a
-// copy of their own: a callback that changes its request changes neither
-// the record nor the caller's.
+// what OnLaunch set. A launch with an Origin is a provider's, made as the
+// server makes it (launchOwn): the run its operation id made, whatever
+// else it asks; a new run <crew>-<8 hex> otherwise, after its refusals.
+// The record, the callback and the caller each hold a copy of their own:
+// a callback that changes its request changes neither the record nor the
+// caller's.
 func (h *FakeHost) Launch(ctx context.Context, r ext.LaunchRequest) (ext.RunRef, error) {
 	if err := h.enter(ctx); err != nil {
 		return ext.RunRef{}, err
@@ -242,10 +261,13 @@ func (h *FakeHost) Launch(ctx context.Context, r ext.LaunchRequest) (ext.RunRef,
 	h.mu.Unlock()
 	h.tell()
 	if err := r.Valid(); err != nil {
-		return ext.RunRef{}, fmt.Errorf("%w: %v", ext.ErrRefused, err)
+		return ext.RunRef{}, refusal(ext.RefusalInvalidRequest, "%v", err)
 	}
 	if fn != nil {
 		return fn(r)
+	}
+	if r.Origin != (ext.Origin{}) {
+		return h.launchOwn(r)
 	}
 	id := fmt.Sprintf("run-%d", n)
 	return ext.RunRef{ID: id, Crew: r.Crew, URL: "/crews/" + r.Crew + "/runs/" + id}, nil

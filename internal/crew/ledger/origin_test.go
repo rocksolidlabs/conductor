@@ -186,13 +186,18 @@ func TestRunOriginOpIDsAreOnePerProvider(t *testing.T) {
 }
 
 // A run's origin is its run's: one row a run, a row for a run the ledger
-// lacks refused (the foreign key), and the row removed when its run is
-// pruned.
+// lacks refused (the foreign key), a row that names no run refused (a
+// primary key that is not an integer may be NULL in SQLite unless the
+// column says otherwise, and such a row would pass the foreign key and
+// never go with a run), and the row removed when its run is pruned.
 func TestRunOriginGoesWithItsRun(t *testing.T) {
 	l := openLedger(t, filepath.Join(t.TempDir(), "runs"))
 	const run, kept = "team-00000001", "team-00000002"
 	if err := putOrigin(l, run, "example", "op-1"); err == nil || !strings.Contains(err.Error(), "FOREIGN KEY") {
 		t.Fatalf("an origin of a run the ledger lacks: %v", err)
+	}
+	if _, err := l.db.Exec("INSERT INTO run_origin (run_id, provider, ref) VALUES (NULL, 'example', 'example:42')"); err == nil || !strings.Contains(err.Error(), "NOT NULL") {
+		t.Fatalf("an origin that names no run: %v", err)
 	}
 	newRun(t, l, run)
 	newRun(t, l, kept)

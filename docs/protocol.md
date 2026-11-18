@@ -3323,18 +3323,31 @@ frames no preview: `GET /preview-bridge.js` answers it `404 no_bridge`.
 Every `/api/...` route, with the credential it needs. Admin means
 `Authorization: Bearer <workbench token>`; a share token is also accepted where the
 table says so. A token is read in this order: the workbench token, each host
-token, the share links, then, only when the build has an identity provider
-registered, the live agent tokens this server minted, and only then, for a
-token none of them knows, that provider (package `ext`; a plain build has
-none, so there the order ends at the links). A live agent token is one this
-server minted for a session it launches, from before the agent's process
-starts until the session ends, or until its launch fails; it is found by its
-hash in one set, which holds beyond the live sessions' tokens only those of
-the launches under way, and a token of another length than the 43
-characters the server mints is never one. A hosted session's agent token is
-minted by its host, not by this server, and is not one of them: at a route
-that takes it first nothing changes, and at a route that does not take it,
-it is asked of the provider as any token the chain does not know. An
+token, the share links, then, only when the build has an identity provider registered, the live
+agent tokens the server knows, and only then, for a token none of them
+knows, that provider (package `ext`; a plain build has none, so there the
+order ends at the links). A live agent token is one of two kinds. One this
+server minted for a session it launches is live from before the agent's
+process starts until the session ends, or until its launch fails. A hosted
+session's agent token, which its host chooses, is live from the session's
+registration, or from an attach that carries a token (a resume, or the
+same instance registering again), until the session ends (its host says
+`exited` or `stopped`), leaves the server (it is removed, or its host
+stays away past the grace), or its registration fails; an end is final, so
+a `running` after it, or an attach to an ended or removed session, makes
+no token live again. A resume that carries another token makes the new one
+live and the old one unknown, with no moment where neither is live; a
+reconnect with the same token keeps it live throughout. Live agent tokens
+are found by their hash in one set, counted per session, which holds
+beyond the live sessions' tokens only those of the launches under way; a
+token of another length than the 43 characters the server mints is never
+one, whoever chose it. A hosted session whose token equals another
+session's takes nothing from it: the token stays live while either session
+lives, and neither session gains anything of the other's standing. While a
+hosted session lives, its token is answered as that session's alone, never
+put to the provider, even where the provider would admit the same string:
+a host can so withhold from the provider only a token it already knows,
+and only until its session ends. An
 expired or revoked link is refused as a link and never asked of a
 provider, nor is a live agent token (a Brakeman turn's among them): at a
 route that does not take it, it is an unknown token answered without a

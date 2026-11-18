@@ -297,6 +297,15 @@ func subjectURL(s string) bool {
 	return err == nil && u.Scheme == "https" && u.Host != "" && u.User == nil && u.Opaque == "" && u.Hostname() != ""
 }
 
+// ValidRunID reports whether id has a run id's shape: a crew id, a dash
+// and 8 lower-case hex, at most MaxRunID bytes. Whether the run is there
+// is the server's to answer.
+func ValidRunID(id string) bool { return runID(id) }
+
+// ValidOpID reports whether id can be an operation's id: 1 to MaxOpID of
+// letters, digits and ._~-.
+func ValidOpID(id string) bool { return opID(id) }
+
 // runID reports whether s has a run id's shape: a crew id, a dash and 8
 // lower-case hex, at most MaxRunID bytes.
 func runID(s string) bool {

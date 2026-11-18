@@ -23,7 +23,7 @@ import (
 // row. The columns' bounds are their writer's (checkOrigin); no CHECK
 // holds them.
 const runOriginTable = `CREATE TABLE run_origin (
-		run_id TEXT PRIMARY KEY REFERENCES runs(id) ON DELETE CASCADE,
+		run_id TEXT NOT NULL PRIMARY KEY REFERENCES runs(id) ON DELETE CASCADE,
 		provider TEXT NOT NULL,
 		op_id TEXT NOT NULL DEFAULT '',
 		ref TEXT NOT NULL,

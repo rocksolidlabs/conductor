@@ -18,8 +18,9 @@ import (
 // "C2, identity at authenticate and hostTokenOK"). It is asked last, for a
 // bearer token the server's own chain does not know: the workbench token,
 // each host token and the share links come first, and a link that is
-// expired or revoked is refused as a link, then a live agent token of the
-// server's own (liveTokens), so a live token of this server's own never reaches a
+// expired or revoked is refused as a link, then a live agent token the
+// server knows (liveTokens: a launched session's, or a hosted session's
+// while it lives), so a live token of this server's own never reaches a
 // provider and the free path never waits on one. Its
 // answer goes through the guard (guardIdentity, extensions.go), which
 // bounds it by ext.IdentityWait: a principal with no grant is no
@@ -88,12 +89,17 @@ func (s *Server) grantPrincipal(pr ext.Principal) principal {
 // provider (every renewal slot taken): the next recheck asks about it
 // first (principalWatch). tok and pending change only under the turn and
 // under mu, so the detail's check reads them under mu alone (held).
+// changed, when set (a reported host connection, relayusage.go), is told
+// under the turn of a renewal to another token about to take effect,
+// before tok changes: by hostToken (inline) and by principalWatch's
+// adoption of a pending one. It is never told of the same token.
 type watchedToken struct {
 	turn    chan struct{}
 	mu      sync.Mutex
 	tok     string
 	pending string
 	ended   atomic.Bool
+	changed func(tok string, inline bool)
 }
 
 func newWatchedToken(tok string) *watchedToken {
@@ -304,6 +310,9 @@ func (s *Server) principalWatch(p principal, wt *watchedToken, need ext.Grant) f
 			}
 			if admitted && s.admitsAs(pr, p.subject, need) {
 				if pending != "" {
+					if wt.changed != nil && !share.Equal(pending, wt.tok) {
+						wt.changed(pending, false)
+					}
 					wt.set(pending, "")
 				}
 				wt.give()
@@ -323,12 +332,15 @@ func (s *Server) principalWatch(p principal, wt *watchedToken, need ext.Grant) f
 // hostToken takes a host_token, inline in the host connection's read
 // loop: it reports whether the connection stays, which it does on the
 // one success path (the same subject admitted with the host grant, the
-// new token then the connection's) and on two that ask nobody: the token
-// the connection holds already, which clears a pending one, and a
+// new token then the connection's) and on three that ask nobody: the
+// token the connection holds already, which clears a pending one; a
 // renewal the guard could not put to the provider, every renewal slot
 // taken, which is no verdict (as a busy recheck is none), the
 // connection keeping its token and the offered one pending for its next
-// recheck. Every other outcome is the one fallback,
+// recheck; and, kept pending the same way, a renewal of a reported
+// connection that has admitted its renewals to another credential this
+// period (relayUsageRenewals), so a flood of them cuts no more reports.
+// Every other outcome is the one fallback,
 // false, and the caller closes the connection 4403 access revoked: a
 // message past its bounds (proto.ParseHostToken), a connection not
 // admitted through a provider's principal, a token the server's own
@@ -362,6 +374,14 @@ func (s *Server) hostToken(hc *hostConnState, data []byte) bool {
 		hc.cred.set(hc.cred.tok, "")
 		return true
 	}
+	if hc.usage.paced() {
+		// A reported connection that has admitted its renewals to another
+		// credential this period (relayUsageRenewals): this one is kept
+		// pending, as a busy one is, and nobody is asked now; its next
+		// recheck asks about it and adopts it.
+		hc.cred.set(hc.cred.tok, tok)
+		return true
+	}
 	pr, admitted, known, busy := g.renew(hc.ctx, tok)
 	if busy {
 		// Not put to the provider, every renewal slot taken: no verdict,
@@ -372,6 +392,9 @@ func (s *Server) hostToken(hc *hostConnState, data []byte) bool {
 		return true
 	}
 	if known && admitted && s.admitsAs(pr, hc.subject, ext.GrantHost) {
+		if hc.cred.changed != nil {
+			hc.cred.changed(tok, true)
+		}
 		hc.cred.set(tok, "")
 		return true
 	}
