@@ -633,9 +633,11 @@ test("a usage reading that warns wakes Brakeman's background role, and the Brake
   await page.goto('/brakeman')
   // The role's card drawn first, with the bound of a first read (a loaded machine takes seconds to boot the page), then its rows.
   await expect(page.locator('[data-brakeman-role] [data-role-state]')).toBeVisible({ timeout: READ })
-  const rows = page.locator('[data-brakeman-role] [data-role-row="capacity"]')
+  // The log is behind Activity: opened, then read.
+  await page.locator('[data-brakeman-role] [data-role-activity]').click()
+  const rows = page.locator('[data-role-sheet] [data-role-row="capacity"]')
   await expect(rows.filter({ hasText: workId })).toContainText(`An agent neared its usage limit: capacity of worker on ${workId}`, { timeout: EXPECT })
-  await expect(rows.filter({ hasText: workId })).toContainText(/waiting in wb-\d+/)
+  await expect(rows.filter({ hasText: workId })).toContainText('waiting for its turn')
   await expect(rows.filter({ hasText: teamId })).toContainText(`An agent neared its usage limit: capacity of codex on ${teamId}`, { timeout: EXPECT })
 })
 
@@ -791,7 +793,8 @@ test("a brief's capacity chip says how old and how sure its reading is, and its 
   await page.route((u) => u.pathname === `/api/brakeman/requests/${id}`, (route) => route.fulfill({ json: { request, brief } }))
   await page.route((u) => u.pathname === `/api/brakeman/requests/${id}/refs`, (route) => route.fulfill({ json: { refs: [{ ref, seen: {}, now: {}, capacity: reading }] } }))
   await page.goto(`/brakeman?request=${id}`)
-  const chip = page.locator(`[data-ref-chip="${ref}"]`)
+  // The fact's own chip: the brief's fold lists every chip it cites once more, folded away until it is opened.
+  const chip = page.locator(`#item-0 [data-ref-chip="${ref}"]`)
   // The chip's own text: when it was read, that it was stale when cited, and that the agent may stop.
   await expect(chip.locator('[data-ref-capacity]')).toContainText('stale when cited', { timeout: 30_000 })
   await expect(chip.locator('[data-ref-capacity]')).toContainText('may stop')

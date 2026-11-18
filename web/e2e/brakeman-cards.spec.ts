@@ -14,8 +14,8 @@ import { renderConfig, scratchRepo, startServer, stopServer, type Started } from
 // no Retry); once the run has moved, the card's Retry and the pause proposal carry the revision Brakeman read and their routes refuse
 // them, said in words; a stop and a resume are text with the run page's link; a ticket's edit shows every field it sends and asks
 // with them first. The drafts are made work as edited, once, and a make that did not finish is finished as it was sent; the crew is
-// saved and opened in the editor, never launched; the handoff copies and comments on its ticket. The run page's tasks and the
-// palette ask Brakeman about the run and the task.
+// saved and opened in the editor, never launched; the handoff copies and comments on its ticket through the shared comment dialog.
+// (Asking Brakeman from the run page's tasks and the palette is brakeman-where.spec.ts's and brakeman-ask.spec.ts's.)
 test.describe.configure({ mode: 'serial' })
 
 interface Request {
@@ -215,9 +215,19 @@ test('a decision card offers what the run page allows, with the revision Brakema
   await expect(buildCard.locator('[data-card-command="cancel"]')).toHaveCount(0)
   await expect(buildCard.locator('[data-decision-answerer]')).toHaveText('you, the operator')
   await expect(buildCard.locator('[data-decision-authorizes]')).toHaveText('One more attempt of build.')
+  // Brakeman's pick is words under the controls, never a control's label; the card's whole text is under Details.
+  await expect(buildCard.locator('[data-brief-recommends]')).toHaveText('Brakeman recommends: Retry')
+  await expect(buildCard.locator('[data-card-command="retry"]')).toHaveText('Retry')
+  await expect(buildCard.locator('[data-alternative="0"] [data-recommended]')).toBeHidden()
+  await buildCard.locator('[data-brief-decision-details]').click()
   await expect(buildCard.locator('[data-alternative="0"] [data-recommended]')).toBeVisible()
-  // docs is blocked: Cancel, no Retry.
+  await expect(buildCard.locator('[data-decision-footnote]')).toHaveText(`You answer, as the operator. One more attempt of build. Read at revision ${seen}: refused if the run has moved.`)
+  // docs is blocked: Cancel, no Retry; Brakeman recommends none, and no line says one.
   const docsCard = b.locator(`[data-decision-about="task:${runId}/docs"]`)
+  await expect(docsCard.locator('[data-brief-recommends]')).toHaveCount(0)
+  // Both cards still offer a command: Needs you carries its mark, from the live controls.
+  await expect(b.locator('[data-brief-heading="needs"] [data-status-mark="needs"]')).toBeVisible()
+  await expect(b.locator('[data-brief-heading="needs"]')).toHaveText('Needs you · 2')
   await expect(docsCard.locator('[data-card-command="cancel"]')).toBeVisible()
   await expect(docsCard.locator('[data-card-command="retry"]')).toHaveCount(0)
   // A stop and a resume check no revision: text with the run page's link, no button.
@@ -474,6 +484,15 @@ test('the handoff copies, and comments on its ticket', async ({ page, context })
   await h.locator('[data-handoff-copy]').click()
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toContain('## Handoff: Get build past its check')
   await h.locator(`[data-handoff-comment="${PROJECT}-1"]`).click()
+  // The shared comment dialog, its ticket picked, says under whose name it posts.
+  const dialog = page.locator('[data-comment-ticket]')
+  await expect(dialog).toHaveAttribute('data-comment-target', `${PROJECT}-1`)
+  // The turn could read check logs (the configuration's own): the handoff's dialog warns as the brief's does (D39).
+  const { request: asked } = await api.ok<{ request: { config: { visibility: { logs?: boolean; terminals?: boolean } } } }>('GET', '/api/brakeman/requests/br-1')
+  expect(asked.config.visibility.logs || asked.config.visibility.terminals).toBe(true)
+  await expect(dialog.locator('[data-comment-confirm]')).toHaveText('It posts under your name, Nate. The handoff may quote a terminal screen or a check log.')
+  await page.locator('[data-comment-send]').click()
+  await expect(dialog).toHaveCount(0)
   await expect(h.locator(`[data-handoff-comment="${PROJECT}-1"]`)).toHaveText(`Commented on ${PROJECT}-1`)
   const comments = await api.ok<{ comments: Array<{ body: string; by: string }> }>('GET', `/api/dispatch/tickets/${PROJECT}-1/comments?after=0&limit=50`)
   expect(comments.comments.map((x) => [x.body.split('\n')[0], x.by])).toEqual([['## Handoff: Get build past its check', 'Nate']])
@@ -485,50 +504,28 @@ test("a handoff longer than a ticket's comment holds is commented as the person 
   const h = page.locator('[data-brief="br-1"] [data-brief-item="13"] [data-brief-handoff]')
   await expect(h.locator('[data-handoff-bound]')).toContainText("more than a ticket's comment holds (16.0 KiB)", { timeout: 30_000 })
   const button = h.locator(`[data-handoff-comment="${PROJECT}-1"]`)
-  await expect(button).toBeDisabled()
   await h.locator('[data-handoff-copy]').click()
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toContain('question 19:')
+  // The dialog holds the whole package and sends nothing until the person shortens it: nothing is cut for them.
+  await button.click()
+  const dialog = page.locator('[data-comment-ticket]')
+  const send = page.locator('[data-comment-send]')
+  await expect(dialog.locator('[data-comment-bound]')).toBeVisible()
+  await expect(send).toBeDisabled()
   // Shortened to the bound exactly (in UTF-8 bytes, as Dispatch measures it), it is sent; a byte over, it is not.
-  const body = h.locator('[data-handoff-comment-body] textarea, textarea[data-handoff-comment-body]').first()
+  const body = dialog.locator('[data-comment-body] textarea, textarea[data-comment-body]').first()
   const head = '## Handoff: Carry the whole check history\n\n'
   const fill = 'é'.repeat((16384 - head.length - 1) / 2)
   await body.fill(head + fill + 'xx')
-  await expect(button).toBeDisabled()
+  await expect(send).toBeDisabled()
   await body.fill(head + fill + 'x')
-  await expect(h.locator('[data-handoff-comment-size]')).toHaveText('16.0 KiB of 16.0 KiB')
-  await button.click()
+  await expect(dialog.locator('[data-comment-size]')).toHaveText('16.0 KiB of 16.0 KiB')
+  await expect(dialog.locator('[data-comment-bound]')).toHaveCount(0)
+  await send.click()
+  await expect(dialog).toHaveCount(0)
   await expect(button).toHaveText(`Commented on ${PROJECT}-1`)
   const comments = await api.ok<{ comments: Array<{ body: string }> }>('GET', `/api/dispatch/tickets/${PROJECT}-1/comments?after=0&limit=50`)
   const sent = comments.comments.find((x) => x.body.startsWith('## Handoff: Carry the whole check history'))!
   expect(Buffer.byteLength(sent.body, 'utf8')).toBe(16384)
 })
 
-test("the run page's Ask Brakeman why and the palette's Brakeman rows open the composer about the task and the run", async ({ page }) => {
-  await open(page, `/runs/${encodeURIComponent(runId)}?view=tasks`)
-  // Ask Brakeman why is behind each row's menu (UX1 PR-11), which draws in a portal outside the row.
-  await page.locator('[data-task-menu="docs"]').click({ timeout: 30_000 })
-  // docs, blocked, is asked about too (a failed, cancelled or blocked task, or one whose attempt reports a blocker).
-  await expect(page.locator('[data-task-ask-brakeman="docs"]')).toBeVisible()
-  await page.keyboard.press('Escape')
-  await expect(page.getByRole('menu')).toHaveCount(0)
-  await page.locator('[data-task-menu="build"]').click()
-  const ask = page.locator('[data-task-ask-brakeman="build"]')
-  await expect(ask).toBeVisible()
-  await ask.click()
-  await expect(page).toHaveURL(new RegExp(`/brakeman\\?kind=explain&subject=${encodeURIComponent(`task:${runId}/build`)}$`))
-  await expect(page.locator('[data-ask-kind]')).toContainText('Explain this')
-  await expect(page.locator('[data-ask-subjects]')).toContainText('build')
-
-  // The palette on the run page, the task selected: brief me since…, explain this run, explain this task, Open Brakeman.
-  await page.goto(`${server!.baseURL}/runs/${encodeURIComponent(runId)}?view=tasks&task=build`)
-  await expect(page.locator('#dashboard-sidebar-main')).toBeAttached()
-  await expect(page.locator('[data-task-row="build"]')).toBeVisible({ timeout: 30_000 })
-  await page.keyboard.press('Alt+/')
-  const palette = page.locator('[data-palette]')
-  await expect(palette).toBeVisible()
-  await palette.locator('input[data-palette-input]').fill('ask brakeman')
-  for (const key of ['briefing', 'explain-run', 'explain-task']) await expect(palette.locator(`[data-palette-row="brakeman:${key}"]`)).toBeVisible()
-  await palette.locator('[data-palette-row="brakeman:explain-run"]').click()
-  await expect(page).toHaveURL(new RegExp(`/brakeman\\?kind=explain&subject=${encodeURIComponent(`run:${runId}`)}$`))
-  await expect(page.locator('[data-ask-subjects]')).toContainText(runId)
-})

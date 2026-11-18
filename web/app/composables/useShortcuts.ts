@@ -35,6 +35,8 @@ export const GLOBAL_SHORTCUTS: ShortcutGroup = {
     { keys: ['G', 'R'], label: 'Go to the Roundhouse', terminal: ['alt', 'R'] },
     { keys: ['G', 'C'], label: 'Go to Crews', terminal: ['alt', 'C'] },
     { keys: ['G', 'D'], label: 'Go to Dispatch', terminal: ['alt', 'D'] },
+    // No terminal twin: Alt+B is the sidebar's own, so Brakeman has the plain chord alone (on a server that has Brakeman).
+    { keys: ['G', 'B'], label: 'Go to Brakeman' },
     { keys: ['G', 'A'], label: 'Go to Agents', terminal: ['alt', 'A'] },
     { keys: ['G', 'E'], label: "Go to History's feed", terminal: ['alt', 'E'] },
     // No terminal twin: Alt+H is the shortcuts' own (chords.ts), so History has the plain chord alone.

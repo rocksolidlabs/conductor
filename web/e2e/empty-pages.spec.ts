@@ -293,7 +293,7 @@ const CREWS_WHY =
   'A crew is a saved plan: agents, each with a first prompt and a start rule, in one working directory or a git worktree each. A run is one launch of it, here or with conductor up <crew>. The examples show four shapes of crew by start rules and one by tasks, where Yardmaster gives each member its tasks as the results they need come in; they are ordinary crews once loaded.'
 const DISPATCH_WHY = "Dispatch keeps a team's work as tickets: what is asked, who owns it, what became of it. A project holds them under its key."
 const EVENTS_WHY = 'Nothing yet since this tab opened. An agent reports when it needs input, finishes a turn, hands work off or hits an error.'
-const BRAKEMAN_WHY = 'No brief yet. Ask for the first one above.'
+const BRAKEMAN_WHY = 'No brief yet. Ask for the first one.'
 const AGENTS_WHY = "The catalog has no agent. Add one here, or in the config file's catalog."
 
 test("a server with nothing on it: Crews, Dispatch, Brakeman and History's feed draw the one empty shape, at the desktop and the phone, in both themes", async ({ browser }) => {
@@ -516,7 +516,8 @@ test('About this page: Agents and Crews fold their paragraphs once they have con
 
 /**
  * Brakeman's header on a phone with a brief done (About this page drawn beside Settings): the title whole, Settings still named and
- * a link to Settings, nothing in the header over anything else or past the window, and the day's budget line read in the body.
+ * a link to Settings, nothing in the header over anything else or past the window, and the day's budget line read in the body, in
+ * the role's card.
  */
 async function brakemanPhoneHeader(browser: Browser, srv: OwnServer, theme: 'dark' | 'light') {
   const page = await dayPage(browser, { ...PHONE, theme, path: '/brakeman', server: srv.started })
@@ -530,8 +531,11 @@ async function brakemanPhoneHeader(browser: Browser, srv: OwnServer, theme: 'dar
   await expect(header.locator('[data-slot="title"]'), `${at}: the title`).toHaveText('Brakeman')
   await noOverlap(header)
   await noSideways(page)
-  await expect(page.locator('[data-brakeman-page] [data-turns-today]'), `${at}: the budget line in the body`).toContainText('turns,')
-  await uncut(page.locator('[data-brakeman-page] [data-turns-today]'))
+  const budgetLine = page.locator('[data-brakeman-page] [data-brakeman-role] [data-turns-today]')
+  await expect(budgetLine, `${at}: the budget line in the role's card`).toContainText('turns,')
+  // Below the latest brief on a phone: brought into view to be measured.
+  await budgetLine.scrollIntoViewIfNeeded()
+  await uncut(budgetLine)
   await page.context().close()
 }
 

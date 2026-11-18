@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/rocksolidlabs/conductor/ext"
@@ -37,6 +38,11 @@ type eventHub struct {
 	// (the webhooks, then the providers' sinks; notify.go), the crew runs,
 	// then the context providers' touch sink (extcontext.go).
 	sinks []activitySink
+	// told counts the events that may change what a page reads (every
+	// one broadcast or sent as a session's change), each counted before
+	// it is queued: a reply computed under an older count is from before
+	// that event (the since read's cache, brakeman_since.go).
+	told atomic.Uint64
 }
 
 // activitySink receives an activity entry of a session and, for an attention
@@ -109,6 +115,7 @@ func (h *eventHub) publishLatest(id string, current func(id string) (session.Inf
 // sendSessionLocked queues a session event for every client, under h.mu; a
 // client that cannot keep up is dropped.
 func (h *eventHub) sendSessionLocked(msg []byte) {
+	h.told.Add(1)
 	for ch := range h.clients {
 		select {
 		case ch <- msg:
@@ -385,6 +392,7 @@ func (h *eventHub) dispatchRead(n dispatch.ReadNotice) {
 // broadcast queues msg, one event or a commit's several, as one entry for
 // every client; a client that cannot keep up is dropped.
 func (h *eventHub) broadcast(msg []byte) {
+	h.told.Add(1)
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	for ch := range h.clients {

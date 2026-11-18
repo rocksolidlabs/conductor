@@ -560,6 +560,13 @@ async function putBack(api: Api, start: BrakemanConf) {
 }
 /** The Reads a turn field of Brakeman's section, and a value of it that is not the one saved. */
 const readsField = (page: Page) => page.locator('[data-brakeman-reads] input, input[data-brakeman-reads]').first()
+/** Opens the Advanced fold of Brakeman's section (#993), where its limits are: kept mounted while folded, shown once opened. */
+async function brakemanAdvanced(page: Page) {
+  const toggle = page.locator('[data-brakeman-advanced-toggle]')
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false')
+  await toggle.click()
+  await expect(readsField(page)).toBeVisible()
+}
 
 /** One set the stand-in app was asked: what the server held of Brakeman's reads then, and the two switches the steps change. */
 type AppSet = { reads: number; yolo: boolean; closeToTray: boolean }
@@ -632,6 +639,7 @@ test("the page's one Save saves Brakeman's section with the app's settings, and 
   try {
     await page.goto('/settings')
     await settled(page, 'linux')
+    await brakemanAdvanced(page)
     const save = page.locator('[data-save-settings]')
     const error = page.locator('[data-settings-error]')
     const toast = (words: string) => page.getByText(words, { exact: true })
@@ -738,6 +746,7 @@ test("a Save that cannot send Brakeman's section with the app's settings is refu
   try {
     await page.goto('/settings')
     await settled(page, 'linux')
+    await brakemanAdvanced(page)
     const save = page.locator('[data-save-settings]')
     const error = page.locator('[data-settings-error]')
     const dataDir = page.getByLabel('Data directory', { exact: true })
@@ -798,6 +807,7 @@ test('the Save sends what the page held at the click, and Read again drops the e
   try {
     await page.goto('/settings')
     await settled(page, 'linux')
+    await brakemanAdvanced(page)
     const save = page.locator('[data-save-settings]')
     const stale = page.locator('[data-brakeman-stale]')
 
@@ -887,6 +897,7 @@ test("in a browser, Brakeman's section is saved by the page's one Save", async (
   try {
     await page.goto('/settings')
     await expect(page.locator('[data-brakeman-enabled]')).toBeVisible()
+    await brakemanAdvanced(page)
     const save = page.locator('[data-save-settings]')
     await expect(page.locator('[data-brakeman-save]')).toHaveCount(0)
     await expect(save).toBeDisabled()

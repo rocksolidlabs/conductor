@@ -2,7 +2,7 @@ import type { RunInfo, RunTask, SessionInfo } from '~/composables/useSessions'
 import type { AttentionOption } from './protocol'
 import { liveAttention } from './attention'
 import type { PlanSummary } from '~/composables/useDispatch'
-import { parseRef, refRoute, type BrakemanAct, type BrakemanEdge, type BrakemanMade, type BrakemanRequest, type BriefItem } from './brakeman'
+import { briefRegions, factNumbers, parseRef, provenance, readsWords, refLabel, refRoute, type BrakemanAct, type BrakemanBrief, type BrakemanEdge, type BrakemanMade, type BrakemanRequest, type BriefItem } from './brakeman'
 import { PLAN_BOUNDS, approvable, planReasons, revisionTag } from './dispatchPlans'
 import { taskActions, type TaskCommand } from './tasks'
 
@@ -136,6 +136,15 @@ function taskControls(run: Pick<RunInfo, 'id' | 'stoppedAt' | 'record' | 'resume
   if (!commands.length) return { ...base, commands: [], expectedRevision, words: `${t.id} is ${t.state}: nothing can be done to it from here now.` }
   if (!expectedRevision) return { ...base, commands: [], expectedRevision: 0, words: 'Brakeman named no revision of the run it read: act from the run page, on the run as it is.' }
   return { ...base, commands, expectedRevision, words: `${t.id} is ${t.state}. Each command carries revision ${expectedRevision} of the run, the one Brakeman read.` }
+}
+
+/**
+ * Why a decision card offers no command, in its controls' own words, drawn where the commands would be: a task that allows none now,
+ * or one with no revision Brakeman read, and a record no control here acts on. "" when the card offers its controls.
+ */
+export function cardReason(c: CardControls): string {
+  if (c.kind === 'none' || (c.kind === 'task' && !c.commands.length)) return c.words
+  return ''
 }
 
 /** What a card's command button says. */
@@ -454,6 +463,86 @@ export function handoffMarkdown(h: Extract<BriefItem, { kind: 'handoff/1' }>, la
   if (h.revision) out.push('', '### Revision', '', `- ${label(h.revision)} (\`${h.revision}\`)`)
   if (h.questions?.length) out.push('', '### Open questions', '', ...h.questions.map((q) => `- ${q}`))
   if (h.evidence?.length) out.push('', '### Evidence', '', ...h.evidence.map((r) => `- ${label(r)} (\`${r}\`)`))
+  return out.join('\n') + '\n'
+}
+
+/**
+ * A ref as Copy as Markdown writes it: its label, linked to the page's own path when it has one (never a query string, never a token:
+ * a path is cut at its "?"), and the ref itself, so a reader can find the record again.
+ */
+function refMarkdown(ref: string, label: (ref: string) => string): string {
+  const path = (refRoute(ref) ?? '').split('?')[0]!
+  return `${path.startsWith('/') ? `[${label(ref)}](${path})` : label(ref)} (\`${ref}\`)`
+}
+
+/** A Markdown table cell: its line breaks and its pipes made safe. */
+function cell(s: string): string {
+  return s.replace(/\r?\n/g, ' ').replace(/\|/g, '\\|')
+}
+
+/**
+ * A brief as Markdown, for Copy and for a ticket's comment: the title; Brakeman's reading, marked as its reading and not a fact; then
+ * each kind under its own heading, never run together: the decisions waiting on a person, what Brakeman proposes, the outcomes it
+ * verified, the facts with their evidence, its readings of them, the overlapping changes, the comparisons and the evidence panels;
+ * last, where it came from. Refs are linked by the page's own paths. "" for a brief with no prose to copy.
+ */
+export function briefMarkdown(b: BrakemanBrief, r: Pick<BrakemanRequest, 'id' | 'agent' | 'briefAt'>, label: (ref: string) => string = (x) => refLabel(x), agentName?: string): string {
+  const items = b.items ?? []
+  if (!b.title.trim() && !b.summary.trim() && !items.length) return ''
+  const refs = (xs: readonly string[] | undefined) => (xs ?? []).map((x) => refMarkdown(x, label)).join(', ')
+  const out: string[] = [`# ${b.title.trim() || r.id}`]
+  if (b.summary.trim() || b.uncertainty?.trim()) {
+    out.push('', "**Brakeman's reading, not a fact.**")
+    if (b.summary.trim()) out.push('', b.summary.trim())
+    if (b.uncertainty?.trim()) out.push('', `Uncertain: ${b.uncertainty.trim()}`)
+  }
+  const facts = factNumbers(items)
+  const of = (kinds: readonly string[]) => items.filter((it) => kinds.includes(it.kind))
+  const decisions = of(['decision/1']) as Array<Extract<BriefItem, { kind: 'decision/1' }>>
+  if (decisions.length) {
+    out.push('', '## Needs you')
+    for (const d of decisions) {
+      out.push('', `### ${d.question}`, '', d.happened)
+      if (d.blocked?.length) out.push('', `Waiting on it: ${refs(d.blocked)}`)
+      if (d.alternatives.length) out.push('', ...d.alternatives.map((a, i) => `- ${a.label}${d.recommendation === i ? " (Brakeman's recommendation)" : ''}${a.tradeoffs ? `: ${a.tradeoffs}` : ''}`))
+      if (d.authorizes) out.push('', `Answering authorizes: ${d.authorizes}`)
+      if (d.evidence.length) out.push('', `Evidence: ${refs(d.evidence)}`)
+    }
+  }
+  const proposed = briefRegions(items).find((x) => x.region === 'proposed')?.items.map((x) => x.item) ?? []
+  if (proposed.length) {
+    out.push('', '## Proposed', '')
+    for (const it of proposed) {
+      if (it.kind === 'proposal/1') out.push(`- ${it.text} (operation \`${it.op}\` on ${refMarkdown(it.target, label)}${it.expectedRevision ? `, at revision ${it.expectedRevision}` : ''})`)
+      else if (it.kind === 'draft_ticket/1') out.push(`- A draft ticket in ${it.project}: ${it.title}`)
+      else if (it.kind === 'draft_crew/1') out.push(`- A draft crew${it.crew.name ? `: ${it.crew.name}` : ''}`)
+      else if (it.kind === 'draft_plan/1') out.push(`- A draft plan revision for ${refMarkdown(it.ticket, label)}, running the crew ${it.crew}`)
+      else if (it.kind === 'handoff/1') out.push(`- A handoff: ${it.objective}`)
+    }
+  }
+  const outcomes = of(['outcome/1']) as Array<Extract<BriefItem, { kind: 'outcome/1' }>>
+  if (outcomes.length) out.push('', '## Verified outcomes', '', ...outcomes.map((o) => `- ${o.text} (receipt ${refMarkdown(o.receipt, label)})`))
+  const factItems = items.flatMap((it, i) => (it.kind === 'fact/1' ? [{ it, n: facts.get(i)! }] : []))
+  if (factItems.length) {
+    out.push('', '## Facts', '')
+    for (const { it, n } of factItems) out.push(`${n}. ${it.text}${it.evidence.length ? ` Evidence: ${refs(it.evidence)}` : ''}`)
+  }
+  const readings = of(['interpretation/1']) as Array<Extract<BriefItem, { kind: 'interpretation/1' }>>
+  if (readings.length) {
+    out.push('', "## Brakeman's readings (interpretations, not facts)", '')
+    for (const it of readings) {
+      const reads = readsWords(it.facts, items)
+      out.push(`- ${reads ? `It ${reads}: ` : ''}${it.text}`)
+    }
+  }
+  const overlaps = of(['overlap/1']) as Array<Extract<BriefItem, { kind: 'overlap/1' }>>
+  if (overlaps.length) out.push('', '## Overlapping changes', '', ...overlaps.map((o) => `- ${o.paths.map((p) => `\`${p}\``).join(', ')}${o.between.length ? `, between ${refs(o.between)}` : ''}`))
+  for (const c of of(['comparison/1']) as Array<Extract<BriefItem, { kind: 'comparison/1' }>>) {
+    out.push('', `## Compared: ${c.title}`, '', `| | ${c.columns.map(cell).join(' | ')} |`, `|---|${c.columns.map(() => '---').join('|')}|`, ...c.rows.map((row) => `| ${cell(row.label)} | ${row.cells.map(cell).join(' | ')} |`))
+    if (c.evidence?.length) out.push('', `Evidence: ${refs(c.evidence)}`)
+  }
+  for (const e of of(['evidence/1']) as Array<Extract<BriefItem, { kind: 'evidence/1' }>>) out.push('', `## Evidence: ${e.title}`, '', ...e.refs.map((x) => `- ${refMarkdown(x, label)}`))
+  out.push('', '---', '', `From Brakeman: ${provenance(r, agentName)}`)
   return out.join('\n') + '\n'
 }
 

@@ -139,6 +139,9 @@ test("runInfo's run, its tasks in each state the day holds, its members and serv
       same(`a candidate of ${r.name}`, (stubPage as Cands).candidates.flatMap((c) => c.candidates)[0]!, theirs)
     }
     same(`GET ${r.name}'s links`, await stub(`/api/runs/${run.id}/links`), await api.ok<Record<string, unknown>>('GET', `/api/runs/${r.id}/links`))
+    // What Brakeman said about the run, as the run page asks it (useBrakemanAbout): the stub's run has nothing said about it.
+    const about = (id: string) => `/api/brakeman/requests?limit=50&about=${encodeURIComponent(`run:${id}`)}`
+    same(`GET Brakeman's requests about ${r.name}`, await stub(about(run.id)), await api.ok<Record<string, unknown>>('GET', about(r.id)), ['requests.*'])
     // The ticket linked to a run that was not launched from one: none.
     if (!whole.ticket) {
       seen.add('no ticket')

@@ -1,8 +1,8 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
-import type { BrakemanAct, BrakemanConfig, BriefItem, CapacitySnapshot } from './brakeman'
+import type { BrakemanAct, BrakemanConfig, BrakemanDigest, BrakemanDigestAbout, BrakemanDigestCounts, BriefItem, CapacitySnapshot } from './brakeman'
 import { renderMarkdown } from './markdown'
-import { BOUNDS, BRIEFING_TIME, GRANTS, KINDS, KIND_SUBJECTS, MAX_BY, NO_AGENT, actDecision, actFor, refDecision, actsApart, readingBlocks, actLaunchRef, actMade, actReceiptRef, actShown, actShownFrom, actLaunchId, keepLaunch, MAX_KEPT_LAUNCHES, proposalOffered, actWords, followLaunch, capacityRefWords, agentChoice, agentIdOf, agentItems, askProblem, briefingLine, briefingList, changedFromBaseline, changedSince, configProblems, displayBy, foldersLine, formField, grantHeld, grantLabel, groupItems, keptBrief, kindWords, observesOnly, openedMark, parseRef, provenance, readsWords, receiptPath, refLabel, refPage, refRoute, refTicket, sameConfig, scopeJSONBytes, servedGrants, stateRank, stateWords, stopAction, unopened, withGrant } from './brakeman'
+import { BOUNDS, BRIEFING_TIME, GRANTS, KINDS, MAX_READING, KIND_SUBJECTS, MAX_BY, NO_AGENT, actDecision, actFor, refDecision, actsApart, readingBlocks, actLaunchRef, actMade, actReceiptRef, actShown, actShownFrom, actLaunchId, keepLaunch, MAX_KEPT_LAUNCHES, proposalOffered, actWords, followLaunch, capacityRefWords, agentChoice, agentIdOf, agentItems, askProblem, briefingLine, briefingList, changedFromBaseline, changedSince, configProblems, displayBy, foldersLine, formField, grantHeld, grantLabel, briefAbout, briefEvidence, briefRegions, briefTickets, citedRuns, foldWords, regionHeading, keptBrief, kindWords, observesOnly, openedMark, parseRef, provenance, readsWords, receiptPath, refLabel, refPage, refRoute, refTicket, sameConfig, scopeJSONBytes, servedGrants, stateRank, stateWords, stopAction, unopened, withGrant } from './brakeman'
 
 // Brakeman's words, refs and checks on the app's pages (docs/plans/brakeman.md, PR-6).
 
@@ -24,6 +24,22 @@ function config(over: Partial<BrakemanConfig> = {}): BrakemanConfig {
     ...over,
   }
 }
+
+describe("a brief's digest, as the server keeps it", () => {
+  const src = readFileSync(new URL('../../../internal/brakeman/digest.go', import.meta.url), 'utf8')
+  /** The JSON names of a Go struct's fields, in order. */
+  const fields = (struct: string) => [...src.matchAll(/type ([A-Za-z]+) struct \{([^}]*)\}/g)].find((m) => m[1] === struct)![2]!.match(/json:"([a-zA-Z]+)/g)!.map((x) => x.slice(6))
+
+  it("cuts its reading where the server does, and names its fields as the server's", () => {
+    expect(MAX_READING).toBe(Number(/\bMaxReading\s*=\s*(\d+)/.exec(src)![1]))
+    const digest: Record<keyof BrakemanDigest, true> = { schema: true, title: true, reading: true, readingCut: true, counts: true, about: true }
+    const counts: Record<keyof BrakemanDigestCounts, true> = { decisions: true, proposals: true, drafts: true, handoffs: true, facts: true, interpretations: true, outcomes: true, overlaps: true, comparisons: true, evidence: true }
+    const about: Record<keyof BrakemanDigestAbout, true> = { runs: true, tasks: true, sessions: true, tickets: true }
+    expect(fields('Digest')).toEqual(Object.keys(digest))
+    expect(fields('DigestCounts')).toEqual(Object.keys(counts))
+    expect(fields('DigestAbout')).toEqual(Object.keys(about))
+  })
+})
 
 describe('the kinds and the states, in words', () => {
   it('names every kind the server takes, and only those', () => {
@@ -224,19 +240,100 @@ describe("a brief's items", () => {
     { kind: 'draft_ticket/1', project: 'CND', title: 't' },
   ]
 
-  it('are grouped facts, interpretations, decisions, proposals, outcomes, drafts, handoffs, overlaps, evidence, each in the brief\'s order', () => {
-    const groups = groupItems(items)
-    expect(groups.map((g) => g.group)).toEqual(['facts', 'interpretations', 'decisions', 'proposals', 'outcomes', 'drafts', 'handoffs', 'overlaps', 'evidence'])
-    expect(groups[0]!.items.map((x) => [x.index, x.fact])).toEqual([[1, 1], [5, 2]])
-    expect(groups.find((g) => g.group === 'drafts')!.items.map((x) => x.index)).toEqual([8, 11])
-    expect(groups.find((g) => g.group === 'evidence')!.items.map((x) => x.index)).toEqual([0, 9])
-    expect(groupItems([{ kind: 'fact/1', text: 'only', evidence: [`run:${RUN}`] }]).map((g) => g.group)).toEqual(['facts'])
+  it('are drawn in regions led by what needs a person: decisions, proposals with drafts and handoffs, outcomes, what changed, comparisons, the evidence', () => {
+    const regions = briefRegions(items)
+    expect(regions.map((r) => r.region)).toEqual(['needs', 'proposed', 'acts', 'changed', 'compared', 'fold'])
+    expect(regions.map((r) => [r.region, r.items.map((x) => x.index)])).toEqual([
+      ['needs', [10]],
+      ['proposed', [2, 8, 11, 7]],
+      ['acts', [6]],
+      // The interpretation reads facts 1 and 2: it follows fact 2, the last it reads; the overlap comes after the facts.
+      ['changed', [1, 5, 3, 4]],
+      ['compared', [9]],
+      ['fold', [0]],
+    ])
+    const changed = regions.find((r) => r.region === 'changed')!.items
+    expect(changed.map((x) => [x.index, x.fact, x.under])).toEqual([[1, 1, undefined], [5, 2, undefined], [3, undefined, 2], [4, undefined, undefined]])
+    expect(briefRegions([{ kind: 'fact/1', text: 'only', evidence: [`run:${RUN}`] }]).map((r) => r.region)).toEqual(['changed'])
+  })
+
+  it('keep every item once, with its own index, whatever the order it is drawn in', () => {
+    const drawn = briefRegions(items).flatMap((r) => r.items)
+    expect(drawn.map((x) => x.index).sort((a, b) => a - b)).toEqual(items.map((_, i) => i))
+    for (const x of drawn) expect(x.item).toBe(items[x.index])
+  })
+
+  it('put an interpretation under the last fact it reads, and one that names no fact after the facts', () => {
+    const three: BriefItem[] = [
+      { kind: 'interpretation/1', text: 'none named', facts: [] },
+      { kind: 'fact/1', text: 'a', evidence: [`run:${RUN}`] },
+      { kind: 'interpretation/1', text: 'reads 1 and 3', facts: [1, 4] },
+      { kind: 'fact/1', text: 'b', evidence: [`run:${RUN}`] },
+      { kind: 'fact/1', text: 'c', evidence: [`run:${RUN}`] },
+      { kind: 'interpretation/1', text: 'reads 1', facts: [1] },
+      { kind: 'interpretation/1', text: 'reads an item that is no fact', facts: [0] },
+    ]
+    expect(briefRegions(three)[0]!.items.map((x) => x.index)).toEqual([1, 5, 3, 4, 2, 0, 6])
+    expect(briefRegions(three)[0]!.items.map((x) => x.under)).toEqual([undefined, 1, undefined, undefined, 3, undefined, undefined])
+  })
+
+  it('keep a region with no item when asked to: the acts the request ran are drawn there', () => {
+    expect(briefRegions([], ['acts'])).toEqual([{ region: 'acts', items: [] }])
+    expect(briefRegions([{ kind: 'fact/1', text: 'f', evidence: [] }], ['acts']).map((r) => r.region)).toEqual(['acts', 'changed'])
+  })
+
+  it("say each region's heading with its count, the facts counted apart from their readings", () => {
+    const regions = briefRegions(items)
+    const heading = (r: string) => regionHeading(r as never, regions.find((x) => x.region === r)!.items)
+    expect(heading('needs')).toBe('Needs you · 1')
+    expect(heading('proposed')).toBe('Proposed · 4')
+    expect(heading('changed')).toBe('What changed · 2 facts')
+    expect(regionHeading('changed', briefRegions([{ kind: 'fact/1', text: 'f', evidence: [] }])[0]!.items)).toBe('What changed · 1 fact')
+    expect(regionHeading('changed', briefRegions([{ kind: 'overlap/1', paths: ['a'], between: [] }])[0]!.items)).toBe('What changed')
+    expect(heading('acts')).toBe('What Brakeman did')
+    expect(heading('compared')).toBe('Compared')
+  })
+
+  it('cite every evidence ref of the brief once, first cited first, and the runs among them', () => {
+    expect(briefEvidence(items)).toEqual([`run:${RUN}`, `attempt:${RUN}/a/1`, `attempt:${RUN}/b/1`, `session:${SESSION}`, `check:${RUN}/build/1/unit/1`])
+    const cites: BriefItem[] = [
+      { kind: 'fact/1', text: 'a', evidence: ['task:fix-login-1a2b3c4d/build', 'ticket:CND-4'] },
+      { kind: 'overlap/1', paths: ['a.go'], between: ['attempt:checkout-0c1d2e3f/a/1'], evidence: ['run:other-9a8b7c6d'] },
+      { kind: 'fact/1', text: 'b', evidence: ['attempt:fix-login-1a2b3c4d/build/2'] },
+    ]
+    expect(citedRuns(cites)).toEqual(['fix-login-1a2b3c4d', 'checkout-0c1d2e3f', 'other-9a8b7c6d'])
+  })
+
+  it("say what a brief is about by name: an asked request's subjects, a wake request's cited runs, three and then +N", () => {
+    const names = { run: (id: string) => ({ 'fix-login-1a2b3c4d': 'fix-login' })[id] }
+    expect(briefAbout({ kind: 'explain', subjects: ['task:fix-login-1a2b3c4d/build'] }, {}, names)).toEqual(['task build'])
+    expect(briefAbout({ kind: 'wake', subjects: [] }, { digest: { about: { runs: ['fix-login-1a2b3c4d', 'checkout-0c1d2e3f'] } } }, names)).toEqual(['fix-login', 'checkout-0c1d2e3f'])
+    expect(briefAbout({ kind: 'wake' }, { digest: { about: { runs: ['a', 'b', 'c', 'd', 'e'] } } })).toEqual(['a', 'b', 'c', '+2'])
+    // An older server sends no digest: the runs the brief's items cite stand in for it.
+    expect(briefAbout({ kind: 'wake' }, { items: [{ kind: 'fact/1', text: 'f', evidence: ['task:fix-login-1a2b3c4d/build'] }] }, names)).toEqual(['fix-login'])
+    expect(briefAbout({ kind: 'briefing' }, {})).toEqual([])
+  })
+
+  it('name the tickets a brief names, its subjects first, each once', () => {
+    const named: BriefItem[] = [
+      { kind: 'fact/1', text: 'a', evidence: ['comment:CND-9/0123456789abcdef', `run:${RUN}`] },
+      { kind: 'proposal/1', text: 'tell it', op: 'ticket_comment_admin', target: 'ticket:CND-41' },
+      { kind: 'draft_plan/1', ticket: 'ticket:CND-52', crew: 'team' },
+      { kind: 'evidence/1', title: 'e', refs: ['ticket:CND-41', 'plan:CND-60/2'] },
+    ]
+    expect(briefTickets({ items: named }, { subjects: ['ticket:CND-7'] })).toEqual(['CND-7', 'CND-41', 'CND-52', 'CND-9', 'CND-60'])
+    expect(briefTickets({ items: [] }, {})).toEqual([])
+  })
+
+  it("fold the provenance under one line: the agent, its model, the request and its reads, with no turn's length", () => {
+    expect(foldWords({ id: 'br-14', agent: { agentId: 'claude', model: 'opus' }, reads: 41 })).toBe('Provenance and all evidence: claude, opus, request br-14, 41 reads')
+    expect(foldWords({ id: 'br-2', agent: {}, reads: 1 })).toBe('Provenance and all evidence: an agent, its default model, request br-2, 1 read')
   })
 
   it('of a brief kept with its summary alone are none, though the server writes them null', () => {
     const b = keptBrief({ schema: 'brakeman.brief/1', title: 'Nothing changed', summary: 'Quiet.', items: null })!
     expect(b.items).toEqual([])
-    expect(groupItems(b.items)).toEqual([])
+    expect(briefRegions(b.items)).toEqual([])
     expect(keptBrief({ schema: 'brakeman.brief/1', title: 't', summary: 's' })!.items).toEqual([])
     expect(keptBrief(null)).toBeNull()
     expect(keptBrief({ schema: 'brakeman.brief/1', title: 't', summary: 's', items })!.items).toBe(items)
@@ -451,14 +548,14 @@ describe("the background role's controls, the server's", () => {
 })
 
 describe("DS2's records in a brief (PR-11)", () => {
-  it("group a draft plan revision with the other drafts", () => {
+  it("draw a draft plan revision with the other drafts, among what Brakeman proposes", () => {
     const items: BriefItem[] = [
       { kind: 'fact/1', text: 'f', evidence: ['ticket:CND-4'] },
       { kind: 'draft_plan/1', ticket: 'ticket:CND-4', crew: 'team' },
     ]
-    expect(groupItems(items).map((g) => [g.group, g.items.map((x) => x.index)])).toEqual([
-      ['facts', [0]],
-      ['drafts', [1]],
+    expect(briefRegions(items).map((r) => [r.region, r.items.map((x) => x.index)])).toEqual([
+      ['proposed', [1]],
+      ['changed', [0]],
     ])
   })
 })

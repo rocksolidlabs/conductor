@@ -1891,46 +1891,114 @@ adapter registers Conductor's tools and has a read-only mode); the account,
 the folder its login lives in (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`), empty for
 its default login; the model, empty for the agent's default; the folder its
 turns run in; whether Conductor's tools run without asking (without it the
-agent asks before each one and the turn waits on you in Needs you); what it may
-see (runs, check logs, Dispatch, sessions, touched files, and terminal
-screens, off until you turn them on); its scope (all of it, or chosen
-projects, repositories, crews, runs and sessions); whether it may draft and
-propose; what it may run (below); whether it wakes on events (below); and
-its budget (15 minutes and 300 reads a turn, 40 turns and 240 minutes a day
-by default). A turn always runs in the agent's own read-only mode and never with
-yolo. Under Codex, Settings says what that mode does not hold: Codex 0.163.0's
+agent asks before each one and the turn waits on you in Needs you). Then
+what it may do, which starts from a preset: **Observe** (it reads and
+briefs, drafting, proposing and running nothing), **Draft and propose** (it
+drafts tickets, crews and handoffs and proposes operations, which you edit,
+make and take) or **Act within grants** (as Draft and propose, and it runs
+the operations you grant below). A preset only fills the Draft and Propose
+switches and the grants under it, which stay there to change one by one: it
+ticks no grant (Act within grants asks you to tick one, and with none saves
+as Draft and propose), never turns on terminal screens and never changes the
+agent, its account, its folder or its tools; settings no preset makes say
+**Custom**. Then what it may see (runs, check logs, Dispatch, sessions,
+touched files, capacity, and terminal screens, off until you turn them on);
+its scope (all of it, or the projects, crews, runs and sessions picked from
+the lists Settings shows or typed by id, and repositories added by folder;
+an id saved but no longer listed stays as a chip you can take off); whether
+it wakes on events, with its briefing times as a list of times (below); and,
+under **Advanced**, its budget (15 minutes and 300 reads a turn, 40 turns and
+240 minutes a day by default) and the background role's window, cooldown and
+question wait (Advanced says on its toggle how many of its fields hold a
+value that would be refused). The page's one Save sends it all at the
+revision Settings read: changed elsewhere since, it is refused and your
+edits are kept. A turn always runs in the agent's own read-only mode and
+never with yolo. Under Codex, Settings says what that mode does not hold: Codex 0.163.0's
 read-only sandbox leaves your own MCP servers (one yes away from writing) and
 your exec-policy allow rules (a matching command runs outside it without
 asking), and no flag isolates them, so a Codex turn is read-only only for an
 account with neither.
 
-**Asking.** **Brakeman**'s tile in the sidebar's foot (under More on a phone) opens `/brakeman`: pick **Brief
-me since…**, **Explain this**, **Prepare a decision**, **Draft tickets**,
-**Propose a crew**, **Prepare a handoff**, **Find…**, **Overlapping changes**
-or **A question**, the runs, tasks, sessions or ticket it is about, a note and
-a time. The request shows queued, then running with its session and its run
-(watch the terminal, or Stop), then briefed; one turn runs at a time and 8
-wait. The palette's Brakeman rows, a task's **Ask Brakeman why** on the run
-page and a ticket's **Ask Brakeman** menu open the same form, filled in. A
-brief arriving adds a count to the sidebar's Brakeman tile and nothing else: no dialog,
-no toast, no change of page.
+**Asking.** **Brakeman**'s tile in the sidebar's foot (under More on a phone,
+or G then B) opens `/brakeman`, whose ask bar is one line and a row of chips:
+**Brief me since HH:MM** (since the last briefing kept; its caret takes
+another time), **Explain this…**, **Prepare a decision…**, **Draft
+tickets…**, **Propose a crew…** and **Prepare a handoff…** (each opens the
+`@` list to name the runs, tasks, sessions, questions or tickets it is
+about), **Overlapping changes** and **Find…**; a line typed alone is a
+question, and `@` names what it is about. The same bar stands in a panel,
+**Brakeman on this run** beside a managed run's tasks (in its Tasks view:
+Explain this run, a handoff for the task selected, Overlapping changes) and
+**Brakeman on this ticket** under a ticket's properties (Explain this
+ticket, Prepare a decision, Draft tickets, Propose a crew), where it asks
+about that run or ticket; the panel shows the latest brief about it (its
+title and counts, linking to the brief), the request being read now, or
+that Brakeman has said nothing about it, and is drawn only while Brakeman is
+on or has said something about it. The palette's Brakeman rows (on a run,
+**Ask Brakeman…** with a line, which switches to its Tasks view), Needs
+you's **Ask Brakeman** and a task's **Ask Brakeman why** ask at once from
+where you are; the task's answer stands under its row (its reading, its
+evidence, Open the brief and Ask again), and the others say "Asked as br-n"
+with Open. The
+request shows queued, then running, with its progress (reads used of its
+budget, time used of its deadline, what it read last) and its session and
+run (watch the terminal, or Stop), then briefed; one turn runs at a time
+and 8 wait. A brief arriving adds a count to the sidebar's Brakeman tile and
+nothing else: no dialog, no toast, no change of page (the only toasts are
+those that answer your own press). The count is the
+server's, of the briefs not yet opened under your credential: people who
+share one workbench token share one count, and a second server reading the
+same records keeps no marks, so its pages count in the browser as before.
 
-**A brief** says which agent, model and version made it, for which request, as
-of when; then Brakeman's reading (its interpretation), the facts, each with
-its evidence as links (a run, a task, a check's receipt with its log's
-SHA-256, a ticket, a session, a question, a file, an earlier brief), marked
-"changed since" when the record moved after the brief was kept, the
-interpretations and the facts they read, proposals, outcomes with their
-receipts, and what was asked for: decision cards (the question, the
-alternatives, the recommendation and its uncertainty, what answering
-authorizes) whose buttons are Conductor's own, read from the live record (a
-failed task's Retry or Accept anyway, sent with the revision Brakeman read, so
-a run that moved is refused rather than acted on blind; a question answered on
-its session page); draft tickets and crews as forms you edit and **Create**
-(a crew is saved and opened in the editor, never launched); handoffs to copy
-or comment on a ticket. A brief is never kept with a claim you cannot follow:
-the server refuses one whose evidence names nothing or lies outside what
-Brakeman may see.
+**The page.** Under the ask bar, **Now** is Conductor's own count, live,
+with no agent turn and no budget: what needs you, what is working, what
+finished and the tasks waiting on others, each a link, and a line of what
+changed "Since the last briefing, at HH:MM" (runs ended, tasks failed,
+tickets made ready, questions waiting, each by name). Then the latest
+brief, the newest as you arrived (a newer one arriving later adds "A newer
+brief: …" with Show, and changes nothing until you press it), and
+**Earlier**, every closed request as a row that says its finding: its title,
+its kind and what it was about, at most three counts ("1 decision, 3 facts",
+or "no decision"), its age and who asked; filters (All, With a decision,
+Briefings, Drafts), a search of the titles, readings and what they cite, and
+Ask again for a request that ended with no brief. Opening a row shows its
+brief in the card, with "Back to the latest". At the side, **In progress**
+(the turn under way, its progress line, Watch and Stop, and the queue, each
+with Cancel), **In the background** (the role's state in one sentence, its
+next briefing, "Woken N times today", the day's budget, Pause or Resume, and
+Activity, its wakes by name and the notes you keep) and **Notes**. On a
+phone: the counts, the latest brief with what needs you open, and the ask
+bar at the foot.
+
+**A brief** leads with what needs you. Its head says its kind, its age and
+what it is about, with **Copy as Markdown** and **Comment on a ticket…**;
+then its title and Brakeman's reading whole, marked "Brakeman's reading, not
+a fact.", with its uncertainty. Then, each under its own heading and count:
+**Needs you**, the decision cards (the question, what happened and what
+waits on it, buttons that are Conductor's own, read from the live record: a
+failed task's Retry or Accept anyway, sent with the revision Brakeman read,
+so a run that moved is refused rather than acted on blind; a question
+answered on its session page; "Brakeman recommends: …" said in words beside
+them, never as the button, the alternatives under Details); **Proposed**,
+the proposals, draft tickets and crews as forms you edit and **Create** (a
+crew is saved and opened in the editor, never launched) and handoffs;
+**What Brakeman did**, its acts and outcomes with their receipts; **What
+changed**, the facts numbered, each with its evidence as links (a run, a
+task, a check's receipt with its log's SHA-256, a ticket, a session, a
+question, a file, an earlier brief), marked "changed since" when the record
+moved after the brief was kept, and each of Brakeman's readings under the
+last fact it reads; then comparisons; and a fold, **Provenance and all
+evidence**, with the agent, model and version that made it, the request and
+its reads. A decision card is marked as needing you only while its live
+controls still offer something to do. **Copy as Markdown** puts the brief on
+your clipboard with each kind under its own heading and Brakeman's reading
+marked as such, its links as the app's paths. **Comment on a ticket…** posts
+it, or a handoff, to a ticket you pick (the brief's own first) under your
+name, in text you can edit first; past 16 KiB it says so and sends nothing,
+never cutting it, and it says when the brief may quote a terminal screen or a
+check log. A brief is never kept with a claim you cannot follow: the server
+refuses one whose evidence names nothing or lies outside what Brakeman may
+see.
 
 **What it may run.** Settings' "What it may run" grants Brakeman operations
 from a closed list, each said in words: **Launch an approved plan** (a managed
@@ -1959,9 +2027,11 @@ minutes) before the next, and stops with words when the day's turns or
 minutes are spent. Between turns no process runs and no model is polled, and
 a restart carries on from Conductor's records (a batch that was gathering
 fires once). A background turn's question is listed in Needs you and
-notifies no one. The Brakeman page shows the role's state (an unavailable one
-says why and what tries again), Pause and Resume, the notes you keep from a
-brief's facts (**Keep as a note**, given to every turn), and its log of wakes.
+notifies no one. The Brakeman page says the role's state once (an
+unavailable one says why and what tries again), with Pause and Resume; its
+wakes, each by name with what became of it, and the notes you keep from a
+brief's facts (**Keep as a note**, given to every turn) are behind
+**Activity**.
 
 **From a shell**, with the workbench token (`--server`, `--token` and
 `--insecure` as `conductor dispatch` takes them):
@@ -1969,7 +2039,8 @@ brief's facts (**Keep as a note**, given to every turn), and its log of wakes.
 ```bash
 conductor brakeman ask briefing --since 18:00        # or explain --subject run:<run>, draft_tickets --subject ticket:CND-4, ...
 conductor brakeman status                             # on or off, the turn in progress, the queue, today's turns
-conductor brakeman list                               # the requests, newest first
+conductor brakeman list                               # the requests, newest first, each with its brief's title
+conductor brakeman list --has decision --about run:<run> -q cache   # filtered: --kind, --has, --about, -q
 conductor brakeman show br-12                         # a request whole, with its brief
 conductor brakeman role on|off|pause|resume|status    # the background role
 conductor guide [--section operations] [--json]       # what this server says the caller may do here

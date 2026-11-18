@@ -642,6 +642,13 @@ add its rule here.
   went out live and paged a webhook (`latepage_test.go`, #281). Stamp what
   decides where the thing is made (`madeOn`), and hold the queue in the
   test (`holdForwarding`) so the old code fails every run.
+- A measure reads the box the browser drew, not the one the layout
+  meant. A container queries' root centred at a half pixel, or columns
+  of fractional shares, draw their contents half a pixel off, and
+  `uncut` then reads words as out of their boxes on one width and not
+  the next (Brakeman's page, #993). Put the root at a whole pixel (the
+  body's full width, the page centred inside it) and give columns fixed
+  bases, so every width draws on whole pixels.
 - Prove a flake fix the way it failed: `go test -race -count=30` (on the
   Mac too when it flaked there), `npx playwright test <spec> --repeat-each
   10`, and once more under load.

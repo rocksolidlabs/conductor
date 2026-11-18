@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { RouteLocationRaw } from 'vue-router'
 import type { RunAttempt, RunInfo, RunStep, RunTask } from '~/composables/useSessions'
+import type { BrakemanRequest, BrakemanRow } from '~/utils/brakeman'
 import { candidateRef, ticketPath } from '~/utils/dispatch'
 import { taskReviewTarget } from '~/utils/review'
 import { relativeTime } from '~/utils/sessions'
@@ -24,7 +25,9 @@ import { SELECTION_WORDS, laneSelection } from '~/utils/compareSelect'
  * words with its result commit, and what can be done with it: Answer,
  * Retry, Accept anyway, Open and Open preview in the row, Open in Conductor
  * (the preview page), Cancel, Copy branch and Ask Brakeman why behind its
- * menu (taskRow). The
+ * menu (taskRow). Ask Brakeman why asks Brakeman to explain the task at once and selects its row; the page that holds Brakeman's
+ * answers (`answers`, the run page's) shows the newest about the task under the selected row, and a page that holds none (a ticket's
+ * run card) says the request's id in a toast with a link to it. The
  * selected task (`?task=`) opens its result and its attempts under the rows,
  * each attempt with what it submitted and its receipts (RunAttemptSteps).
  * A run with a project manifest shows its prerequisites' receipts above the
@@ -51,8 +54,13 @@ const props = defineProps<{
   ticket?: string
   /** The receipt a link named on that attempt, `<phase>/<id>/<k>`. */
   step?: string
+  /**
+   * Brakeman's answer about each task, by task id (issue 993, F8): the run page's reads of the run. The selected row shows its own
+   * under it. Absent where the page reads none (a ticket's run cards): an ask from a row then says its request in a toast.
+   */
+  answers?: Record<string, BrakemanRow>
 }>()
-const emit = defineEmits<{ select: [id: string]; open: [sessionId: string] }>()
+const emit = defineEmits<{ select: [id: string]; open: [sessionId: string]; asked: [request: BrakemanRequest] }>()
 
 const copy = useCopy()
 const commands = useTaskCommands(() => props.run.id)
@@ -98,10 +106,21 @@ function hasActs(t: RunTask): boolean {
   const a = acts(t)
   return !!(taskAnswer(t) || a.retry || a.accept || a.open || a.preview || rowOf(t).menu.length)
 }
-// Ask Brakeman why: the Brakeman page's composer, asking it to explain the task (shown where the server has Brakeman).
+// Ask Brakeman why (shown where the server has Brakeman): asks it to explain the task, at once, under the person's name, and selects
+// the row, under which the answer stands while it is selected. A refusal is said in a toast, in the server's words.
 const brakeman = useBrakeman()
 const decisionModal = useDecisionModal()
-const askWhy = (t: RunTask) => `/brakeman?kind=explain&subject=${encodeURIComponent(`task:${props.run.id}/${t.id}`)}`
+const asker = useAskBrakeman()
+async function askWhy(t: RunTask) {
+  if (props.selected !== t.id) emit('select', t.id)
+  const body = { kind: 'explain', subjects: [`task:${props.run.id}/${t.id}`] }
+  // Where the page shows the answer under the row, the row says it; elsewhere a toast names the request (or the refusal).
+  const r = props.answers ? await asker.send(body).catch((e: Error) => (toast.add({ title: 'Not asked', description: e.message, icon: 'i-lucide-triangle-alert', color: 'error' }), null)) : await asker.tell(body)
+  if (r) emit('asked', r)
+}
+const toast = useToast()
+/** The answer under the task's row: the selected row's alone, when the page holds one. */
+const answerOf = (t: RunTask) => (props.selected === t.id ? props.answers?.[t.id] : undefined)
 /** The attempt's preview page (Open in Conductor): it frames the preview and captures it. */
 const inConductor = (t: RunTask) => previewPath({ run: props.run.id, task: t.id, attempt: t.attempt!.n })
 /** A preview that names its tree's secret opens at the label's admin URL, read as it is clicked; any other is a plain link. */
@@ -133,7 +152,7 @@ function menuOf(t: RunTask) {
     if (k === 'candidateClose') return { label: "Close the candidate's preview", icon: 'i-lucide-circle-stop', 'data-task-candidate-close': t.id, onSelect: () => void closeCandidate(t) }
     if (k === 'cancel') return { label: 'Cancel…', icon: 'i-lucide-x', color: 'error' as const, 'data-task-cancel': t.id, onSelect: () => (asking.value = { task: t, command: 'cancel' }) }
     if (k === 'copyBranch') return { label: 'Copy branch', icon: 'i-lucide-git-branch', 'data-task-copy-branch': t.id, onSelect: () => copy(t.attempt!.branch!, 'Branch copied') }
-    return { label: 'Ask Brakeman why', icon: 'i-lucide-message-circle-question', to: askWhy(t), 'data-task-ask-brakeman': t.id }
+    return { label: 'Ask Brakeman why', icon: 'i-lucide-message-circle-question', 'data-task-ask-brakeman': t.id, onSelect: () => void askWhy(t) }
   })
 }
 // Each task's state in the status language (utils/status.ts, taskStatus): its attempt's session read from the live store.
@@ -306,11 +325,12 @@ async function confirm() {
           <span v-if="laneLabel(row.lane.task)" class="flex-none font-medium" :class="laneLabel(row.lane.task) === 'selected' ? 'text-default' : 'text-muted'" data-task-lane-selection>{{ SELECTION_WORDS[laneLabel(row.lane.task)!] }}</span>
         </li>
         <template v-else>
-        <li v-for="t in [row.task!]" :key="t.id" :data-task-row="t.id" :data-task-state="t.state">
+        <!-- With Brakeman's answer under it, the row and its answer are one box: the border and the background move to the item. -->
+        <li v-for="t in [row.task!]" :key="t.id" :class="answerOf(t) && 'rounded-md border border-primary bg-primary/5'" :data-task-row="t.id" :data-task-state="t.state">
           <!-- Enter selects the row only when the row has the focus: a control inside it (Answer, Retry, the menu) keeps its own keys. -->
           <div
-            class="task-grid rounded-md border px-3 py-2 text-sm"
-            :class="[selected === t.id ? 'border-primary bg-primary/5' : 'border-default bg-elevated/30', { 'task-bare': !hasActs(t) }]"
+            class="task-grid rounded-md px-3 py-2 text-sm"
+            :class="[answerOf(t) ? 'border-0' : selected === t.id ? 'border border-primary bg-primary/5' : 'border border-default bg-elevated/30', { 'task-bare': !hasActs(t) }]"
             role="button"
             tabindex="0"
             @click="emit('select', selected === t.id ? '' : t.id)"
@@ -343,6 +363,7 @@ async function confirm() {
               </UDropdownMenu>
             </div>
           </div>
+          <BrakemanRowAnswer v-if="answerOf(t)" :request="answerOf(t)!" :run-id="run.id" :task="t" :now="clock" @asked="emit('asked', $event)" />
         </li>
         </template>
         </template>

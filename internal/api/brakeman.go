@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"maps"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -82,8 +81,8 @@ const (
 	// takes; a longer one is left out.
 	maxStampVersion = 128
 	// maxBrakemanRequestReply bounds GET /api/brakeman/requests/{id}: the
-	// request's document and its brief's.
-	maxBrakemanRequestReply = brakeman.MaxRequestDoc + brakeman.MaxBrief
+	// request's document, its brief's and its digest's.
+	maxBrakemanRequestReply = brakeman.MaxRequestDoc + brakeman.MaxBrief + brakeman.MaxDigestDoc
 	// maxBrakemanEvent bounds a brakeman event's data.
 	maxBrakemanEvent = 200
 	// brakemanMember is the one member of a turn's crew, and its crew's id.
@@ -233,6 +232,9 @@ type brakemanDesk struct {
 	// the next owner's recovery of the same claim. Added to under mu, with
 	// closing read there, so none is admitted once quiesce began.
 	making sync.WaitGroup
+	// live is what the turn in progress is reading now, kept in memory
+	// only (brakeman_progress.go).
+	live brakemanLive
 }
 
 // deskTurn is the slot: a request from starting until its launch has
@@ -1848,6 +1850,9 @@ func (s *Server) routeBrakeman(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/brakeman/role", s.requireAdmin(s.handleBrakemanRoleAction))
 	mux.HandleFunc("POST /api/brakeman/role/notes", s.requireAdmin(s.handleBrakemanKeepNote))
 	mux.HandleFunc("DELETE /api/brakeman/role/notes", s.requireAdmin(s.handleBrakemanClearNotes))
+	mux.HandleFunc("GET /api/brakeman/since", s.requireAdmin(s.handleBrakemanSince))
+	mux.HandleFunc("GET /api/brakeman/opened", s.requireAdmin(s.handleBrakemanOpened))
+	mux.HandleFunc("POST /api/brakeman/opened", s.requireAdmin(s.handleBrakemanMarkOpened))
 	mux.HandleFunc("GET /api/sessions/{id}/brakeman/request", s.handleSessionBrakemanRequest)
 	mux.HandleFunc("POST /api/sessions/{id}/brakeman/brief", s.handleSessionBrakemanBrief)
 }
@@ -1874,6 +1879,11 @@ type brakemanState struct {
 	// stands, without its log (GET /api/brakeman/role).
 	MinutesToday int              `json:"minutesToday"`
 	Role         *crew.RoleRecord `json:"role,omitempty"`
+	// Progress is the turn in progress's reads, budget, times and what it
+	// read last (brakeman_progress.go); NextBriefing the role's next
+	// configured briefing. Both the answer's alone, never kept.
+	Progress     *brakemanProgress `json:"progress,omitempty"`
+	NextBriefing *time.Time        `json:"nextBriefing,omitempty"`
 }
 
 // brakemanFolders is the folder a turn runs in (turnFolder) and the
@@ -1955,6 +1965,7 @@ func (s *Server) handleBrakeman(w http.ResponseWriter, r *http.Request) {
 		rec.Log, rec.Notes = nil, nil
 		out.Role = &rec
 	}
+	s.liveState(d, &out)
 	writeJSON(w, http.StatusOK, out)
 }
 
@@ -2312,42 +2323,6 @@ func (s *Server) askBrakeman(d *brakemanDesk, in brakeman.Request) (req brakeman
 	return a.req, a.status == http.StatusCreated, nil, nil
 }
 
-// handleBrakemanRequests answers a page of requests, newest first:
-// {requests, next}; ?after= the id to read after, ?limit= at most 100.
-func (s *Server) handleBrakemanRequests(w http.ResponseWriter, r *http.Request) {
-	d, ok := s.brakemanDeskOf(w)
-	if !ok {
-		return
-	}
-	dq, err := readQuery(r, "after", "limit")
-	q := url.Values(dq)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
-		return
-	}
-	limit := brakeman.MaxPage
-	if v := q.Get("limit"); v != "" {
-		if _, err := fmt.Sscanf(v, "%d", &limit); err != nil || limit < 1 || limit > brakeman.MaxPage || fmt.Sprint(limit) != v {
-			writeError(w, http.StatusBadRequest, "invalid_request", fmt.Sprintf("limit is 1 to %d", brakeman.MaxPage))
-			return
-		}
-	}
-	after := q.Get("after")
-	if after != "" && !brakemanIDPattern(after) {
-		writeError(w, http.StatusBadRequest, "invalid_request", "after is a request's id (br-<n>)")
-		return
-	}
-	page, next, err := d.st.List(after, limit)
-	if err != nil {
-		s.brakemanError(w, err)
-		return
-	}
-	if page == nil {
-		page = []brakeman.Request{}
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"requests": page, "next": next})
-}
-
 // brakemanIDPattern reports whether id is a request's id.
 func brakemanIDPattern(id string) bool {
 	if !strings.HasPrefix(id, "br-") || len(id) > 21 {
@@ -2365,8 +2340,9 @@ func brakemanIDPattern(id string) bool {
 	return true
 }
 
-// handleBrakemanRequest answers a request whole: {request, brief} (brief
-// null until one is kept), at most maxBrakemanRequestReply bytes.
+// handleBrakemanRequest answers a request whole: {request, brief, digest}
+// (brief null until one is kept, digest beside it once there is one), at
+// most maxBrakemanRequestReply bytes.
 func (s *Server) handleBrakemanRequest(w http.ResponseWriter, r *http.Request) {
 	d, ok := s.brakemanDeskOf(w)
 	if !ok {
@@ -2390,6 +2366,9 @@ func (s *Server) handleBrakemanRequest(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		out["brief"] = b
+		if dg, err := d.st.Digest(id); err == nil && dg != nil {
+			out["digest"] = dg
+		}
 	}
 	writeJSON(w, http.StatusOK, out)
 }

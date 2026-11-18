@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { refRoute } from '~/utils/brakeman'
+import { KIND_SUBJECTS, refRoute } from '~/utils/brakeman'
 import { pageState } from '~/utils/pageState'
 import { relativeTime } from '~/utils/sessions'
 import {
@@ -214,14 +214,28 @@ async function reread() {
   await readItem()
 }
 
-/** Ask Brakeman about the item's subject, on the Brakeman page's composer, where the server has Brakeman and explains that kind. */
+/**
+ * Ask Brakeman to explain the item's subject, at once, where the server has Brakeman and explains that kind (issue 993, F3): the
+ * request's id is said in a toast with a link to it on Brakeman's page; a refusal in the server's words. The page stays where it is.
+ */
 const askBrakeman = computed(() => {
   const it = item.value
   if (bk.available.value !== true || !it) return undefined
   const kind = it.subject.slice(0, it.subject.indexOf(':'))
-  if (!['question', 'task', 'ticket', 'run', 'session', 'attempt'].includes(kind)) return undefined
-  return `/brakeman?kind=explain&subject=${encodeURIComponent(it.subject)}`
+  if (!(KIND_SUBJECTS.explain?.kinds ?? []).includes(kind)) return undefined
+  return it.subject
 })
+const askingBrakeman = ref(false)
+const asker = useAskBrakeman()
+async function askAbout(subject: string) {
+  if (askingBrakeman.value) return
+  askingBrakeman.value = true
+  try {
+    await asker.tell({ kind: 'explain', subjects: [subject] })
+  } finally {
+    askingBrakeman.value = false
+  }
+}
 
 /** The run page's question for Accept anyway and Cancel (useTaskCommands.question); Withdraw's own. */
 function confirmQuestion(a: InboxAction): { title: string; detail: string } {
@@ -392,12 +406,14 @@ const lastClosed = computed(() => lastClosedWords(state.value.closed, recent.val
             :refusal="refusal"
             :unknown="unknown"
             :ask-brakeman="askBrakeman"
+            :asking-brakeman="askingBrakeman"
             :confirm-question="confirmQuestion"
             :drawn="record.decision.value?.request.evidence"
             :record-shown="!!record.decision.value && record.decision.value.id === decisionIdOf(item.ref)"
             @act="act"
             @comment="comment"
             @reread="reread"
+            @ask="askAbout"
           >
             <template #record>
               <UAlert v-if="record.error.value" color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="record.error.value" data-inbox-record-error>

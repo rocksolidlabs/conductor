@@ -681,6 +681,35 @@ func TestBriefingTimesInTheLocalZone(t *testing.T) {
 	}
 }
 
+// TestNextBriefingIsTheNextTime: the next briefing is the first time
+// after now in the role's zone, the next day's past midnight, never the
+// moment itself; none for a role that is off or has no time, and a time
+// that does not parse is passed over.
+func TestNextBriefingIsTheNextTime(t *testing.T) {
+	zone := time.FixedZone("CST", -6*3600)
+	on := RoleSettings{On: true, Briefings: []string{"18:30", "07:00", "7:5"}, Location: zone}
+	for _, c := range []struct {
+		name string
+		s    RoleSettings
+		now  time.Time
+		want time.Time
+	}{
+		{"later today", on, time.Date(2026, 11, 5, 9, 0, 0, 0, zone), time.Date(2026, 11, 5, 18, 30, 0, 0, zone)},
+		{"across midnight", on, time.Date(2026, 11, 5, 23, 30, 0, 0, zone), time.Date(2026, 11, 6, 7, 0, 0, 0, zone)},
+		{"at a time, the next", on, time.Date(2026, 11, 5, 7, 0, 0, 0, zone), time.Date(2026, 11, 5, 18, 30, 0, 0, zone)},
+		// 05:30 UTC is 23:30 the day before in the role's zone: the
+		// zone's 07:00 comes next, at 13:00 UTC.
+		{"in another zone", on, time.Date(2026, 11, 6, 5, 30, 0, 0, time.UTC), time.Date(2026, 11, 6, 13, 0, 0, 0, time.UTC)},
+		{"off", RoleSettings{Briefings: []string{"07:00"}, Location: zone}, time.Date(2026, 11, 5, 6, 0, 0, 0, zone), time.Time{}},
+		{"no time", RoleSettings{On: true, Location: zone}, time.Date(2026, 11, 5, 6, 0, 0, 0, zone), time.Time{}},
+		{"only a bad time", RoleSettings{On: true, Briefings: []string{"7:5"}, Location: zone}, time.Date(2026, 11, 5, 6, 0, 0, 0, zone), time.Time{}},
+	} {
+		if got := NextBriefing(c.s, c.now); !got.Equal(c.want) {
+			t.Errorf("%s: %s, want %s", c.name, got, c.want)
+		}
+	}
+}
+
 // TestAPausedRoleGathersNothing: paused, a wake is logged as held and
 // joins no batch, and no briefing time fires; a turn running when the
 // pause came runs to its end, and resuming takes up what is left.

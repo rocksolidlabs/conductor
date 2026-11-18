@@ -18,6 +18,8 @@ import type { RelatedTicket } from '~/composables/useDispatch'
 import { chainLinkedTicket, latest } from '~/utils/review'
 import { runLinkWatch, runTicketRead } from '~/composables/useDispatchLive'
 import { previewPath } from '~/utils/capture'
+import type { BrakemanRequest } from '~/utils/brakeman'
+import { askChips, askDisabled } from '~/utils/brakemanAsk'
 
 // The run page: a tile for every member of one run, its activity and a
 // broadcast bar. Sessions and the run come from the live store (useAttention):
@@ -273,6 +275,29 @@ function openTask(id: string) {
   else selectTask(id, true)
 }
 const taskCommands = useTaskCommands(() => runId.value)
+
+// Brakeman on this run (issue 993, F8): what it said about the run and its tasks, read once per run and again as its records move,
+// beside the tasks in the Tasks view (the panel) and under the selected task's row (its answer). An ask from here (the panel's bar,
+// a row's menu, the palette's row) is shown where it was asked: the palette's switches to the Tasks view, where the answer stands.
+const bk = useBrakeman()
+const brakemanAbout = useBrakemanAbout(() => `run:${runId.value}`)
+const brakemanAsker = useAskBrakeman()
+/** The first task that needs a person, for the panel's handoff chip when no task is selected. */
+const needsTask = computed(() => (run.value?.tasks ?? []).find((t) => taskMarks.value.get(t.id)?.key === 'needs')?.id)
+const brakemanChips = computed(() => askChips({ run: runId.value, selectedTask: selectedTask.value || undefined, needsTask: needsTask.value }))
+function brakemanAsked(r: BrakemanRequest) {
+  brakemanAbout.add(r)
+}
+/** Why the palette's Ask Brakeman… cannot ask, or "" when it can: the ask bar's words. */
+const brakemanAskOff = computed(() => askDisabled(bk.state.value))
+async function paletteAskBrakeman(text: string) {
+  const note = text.trim()
+  if (!note) return
+  const r = await brakemanAsker.tell({ kind: 'ask', subjects: [`run:${runId.value}`], note })
+  if (!r) return
+  brakemanAsked(r)
+  if (run.value?.managed) selectTask(selectedTask.value, true)
+}
 const states = computed(() => new Map((run.value?.members ?? []).map((m) => [m.name, memberStatus(run.value!, m, live.sessions.value)])))
 // The members' and the tasks' states in the status language (utils/status.ts): the graph, its legend and the palette's rows draw these.
 const memberMarks = computed(() => new Map((run.value?.members ?? []).map((m) => [m.name, memberStatusOf(run.value!, m, live.sessions.value, now.value).mark])))
@@ -513,6 +538,21 @@ palette.registerPage(() => {
       ...views.map(([v, label, icon]) => ({ key: `page:view:${v}`, label, icon, on: view.value === v, run: () => (view.value = v) })),
       { key: 'page:share', label: 'Share run', icon: 'i-lucide-share-2', kbds: ['S'], run: () => header.value?.share() },
       ...(r.managed && !stopped && !r.record ? [{ key: 'page:pause', label: r.paused ? 'Resume scheduling' : 'Pause scheduling', icon: r.paused ? 'i-lucide-play' : 'i-lucide-pause', run: () => header.value?.togglePause() }] : []),
+      ...(bk.available.value === true
+        ? [
+            {
+              key: 'page:ask-brakeman',
+              label: 'Ask Brakeman…',
+              detail: brakemanAskOff.value || `About ${title}: the answer shows beside the tasks`,
+              icon: 'i-lucide-notebook-pen',
+              disabled: !!brakemanAskOff.value,
+              // Enter opens the field; the line is the question. Nothing is asked without one.
+              run: () => {},
+              fieldOnEnter: true,
+              field: { placeholder: 'Ask about this run…', button: 'Ask', submit: paletteAskBrakeman },
+            } satisfies PaletteItem,
+          ]
+        : []),
       { key: 'page:chat', label: `Open the run's chat${runChatUnread.value ? ` · ${runChatUnread.value} unread` : ''}`, icon: 'i-lucide-message-circle', run: () => (runChatOpen.value = true) },
       ...(stopped
         ? [{ key: 'page:resume', label: 'Resume as new run', icon: 'i-lucide-history', run: () => header.value?.resume() }]
@@ -585,8 +625,10 @@ palette.registerPage(() => {
             @show-task="selectTask($event, true)"
           />
         </div>
-        <div v-else-if="shownView === 'tasks' && run" class="min-h-0 flex-1 overflow-y-auto p-3" data-run-tasks-view>
-          <RunTasks :run="run" :ticket="reviewTicket" :selected="selectedTask" :attempt="wantedAttempt" :step="wantedStep" :now="now" @select="selectTask($event, true)" @open="router.push(`/sessions/${$event}`)" />
+        <!-- The tasks, with Brakeman on this run beside them; on a narrow window the panel wraps under the tasks. -->
+        <div v-else-if="shownView === 'tasks' && run" class="flex min-h-0 flex-1 flex-wrap content-start items-start gap-3 overflow-y-auto p-3" data-run-tasks-view>
+          <RunTasks class="min-w-0 [flex:3_1_40rem]" :run="run" :ticket="reviewTicket" :selected="selectedTask" :attempt="wantedAttempt" :step="wantedStep" :now="now" :answers="brakemanAbout.byTask.value" @select="selectTask($event, true)" @open="router.push(`/sessions/${$event}`)" @asked="brakemanAsked" />
+          <BrakemanSubjectPanel class="[flex:1_1_300px]" :subject="`run:${run.id}`" :label="runTitle(run)" :chips="brakemanChips" :about="brakemanAbout" @asked="brakemanAsked" />
         </div>
         <div v-else-if="shownView === 'timeline' && run" class="min-h-0 flex-1 overflow-y-auto p-3" data-run-timeline-view>
           <RunTimeline :run="run" :sessions="sessions" :feed="events.entries.value" :now="now" />

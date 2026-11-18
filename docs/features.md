@@ -208,6 +208,69 @@ that order.
   link grants. Content appears only after the guest joins.
 - **No Runs nav item** until there is something behind it.
 
+## Brakeman's page says what it found (#993; 2026-11-17)
+
+A maintainer asked for Brakeman's screens to mean more, as the Brakeman
+design review proposes: asking was a form, the log came before the news,
+a running turn said only where it ran, a row named the request and not the
+finding, and a brief put every fact before what needed a person. Built as
+one pull request in seven lanes. Nothing is a migration: no field was added
+to a request, a brief, `state.json` or the role's record.
+
+- **An ask bar** in place of the form, on the page, in a panel on a run
+  and a ticket, and at a phone's foot: one line, a row of chips (Brief me
+  since HH:MM, the kinds that need a subject, Overlapping changes, Find…),
+  `@` to name a run, a task, a session, a question or a ticket, a line
+  typed alone asked as a question. The palette's rows, Needs you's Ask
+  Brakeman and a task's Ask Brakeman why ask at once from where the
+  person is, with "Asked as br-n · Open". G then B opens the page.
+- **A brief led by what needs a person**: its head (kind, age, what it is
+  about, Copy as Markdown, Comment on a ticket), its title and reading
+  marked as Brakeman's, then Needs you, Proposed, What Brakeman did, What
+  changed (each reading under the last fact it reads), Compared, and a
+  fold of provenance and all evidence. The regions sort for display only:
+  every item keeps its index, so a decision's buttons and a kept note name
+  the item drawn. "Brakeman recommends" is words beside Conductor's own
+  buttons, never a button. Comment on a ticket posts under the person's
+  name, editable, never cut past 16 KiB.
+- **Now, with no agent turn**: the sidebar's own counts (needs you,
+  working, finished, waiting) and "Since the last briefing, at HH:MM", from
+  `GET /api/brakeman/since`.
+- **Rows that say the finding**: a kept brief's digest (title, a reading of
+  at most 280 characters as plain text, counts, what it cites) in a sibling
+  document of its own; the list filters by kind, by what a brief holds, by
+  what it is about and by a word; Earlier draws the title, counts, age and
+  who asked, with filters, a search and Ask again.
+- **Progress while a turn runs**: `brakeman_progress` after each counted
+  read (reads used of the budget, the start and deadline, what it read
+  last), at most one a second, droppable, reaching no sink; the progress
+  line in In progress, on the run's panel and under a task's row.
+- **The answer where it was asked**: Brakeman on this run (a managed run's
+  Tasks view) and on this ticket, with the latest brief about it, the
+  request being read and the compact bar; a task's answer under its row.
+  Drawn only while Brakeman is on or has said something about the subject.
+- **One line for the background role**: its state once, its next briefing
+  from the server, "Woken N times today", the budget; wakes and notes
+  behind Activity.
+- **One unread count**, kept by the server for each credential's actor
+  (people who share one token share one count; a read-only server keeps
+  none, and the browser counts there).
+- **Settings from a preset**: Observe, Draft and propose, Act within grants
+  (which asks for a grant until one is ticked), Custom when none matches;
+  scope by pickers, briefing times as a list, limits under Advanced. A
+  preset only fills the form and never turns on terminal screens.
+- **A rule for short briefs**: the guide asks for a first paragraph of one
+  sentence of at most 280 characters, and the items in the order a person
+  needs them; nothing new is refused.
+
+Not built, for the maintainers to decide: handing a handoff into a task's
+next attempt, notifying on a background brief, and sharing a brief beyond
+Copy as Markdown and Comment on a ticket. Also left out of the review's
+boards: a filled "(Recommended)" button, a seconds clock, a green reads
+meter, "asked from this row" (it would need a stored field), the run's
+panel outside its Tasks view, a palette row that only goes to the page,
+and a closed turn's length.
+
 ## Browser evidence: an element selected in a preview, captured for a ticket (PV1; 2026-11-17)
 
 The Program's PV1 (`docs/plans/browser-evidence.md`): a person picks out a

@@ -9,7 +9,7 @@ import type { ActivityEntry, ChatMessage, SessionActivity } from '~/utils/protoc
 import { RunStore } from '~/utils/runs'
 import { decisionsLive } from './useDecisions'
 import { asDispatchEvent, asDispatchRead, dispatchLive } from './useDispatchLive'
-import { asBrakemanEvent, brakemanLive } from './useBrakeman'
+import { asBrakemanEvent, brakemanLive, brakemanStream } from './useBrakeman'
 import { capacityLive } from './useCapacity'
 import { inboxLive } from './useInbox'
 import { notificationTarget } from '~/utils/inbox'
@@ -321,6 +321,9 @@ export function useAttention() {
       const payload = JSON.parse(data.join('\n'))
       // A durable decision changed, or the stream came back: the decisions' store reads again (useDecisions; Program item DR1).
       decisionsLive().stream(event, payload)
+      // A turn's progress, a brief opened elsewhere, and what may change the Brakeman page's line of what changed since the last
+      // briefing (a run's, Dispatch's or a session's event, a session removed): Brakeman's live store follows (useBrakeman).
+      brakemanStream(brakemanLive(), event, payload)
       // The decision page lists DR1's records too (docs/plans/decision-inbox.md, PR-3): it reads again on their event.
       if (event === 'decision') void inboxLive().event()
       if (event === 'snapshot') {
