@@ -153,8 +153,8 @@ func (h *FakeHost) OnStopRun(fn func(ext.StopRequest) error) {
 
 // launchOwn is Launch of a valid request with an origin, as the server
 // makes it: the run its operation id made, whatever the request asks
-// (RunStatus.Origin says what that run was launched with); else, in this
-// order, not_managed, prior_unknown, start_commit_missing, and with a
+// (RunStatus.Origin says what that run was launched with); else, in the
+// server's order, prior_unknown, not_managed, start_commit_missing, and with a
 // digest, the launch resolved again with the settings now and refused
 // launch_changed on another digest; else a new run, kept under the
 // operation id.
@@ -165,13 +165,13 @@ func (h *FakeHost) launchOwn(r ext.LaunchRequest) (ext.RunRef, error) {
 	if id, ok := s.byOp[r.OpID]; ok {
 		return runRef(s.runs[id].status), nil
 	}
-	if managed, set := s.managed[r.Crew]; set && !managed {
-		return ext.RunRef{}, refusal(ext.RefusalNotManaged, "the crew %s has no tasks: a launch with an origin is of a crew with tasks", r.Crew)
-	}
 	if r.Subject.Prior != "" {
 		if p := s.runs[r.Subject.Prior]; p == nil || !p.own {
 			return ext.RunRef{}, refusal(ext.RefusalPriorUnknown, "the earlier run is not one this provider launched")
 		}
+	}
+	if managed, set := s.managed[r.Crew]; set && !managed {
+		return ext.RunRef{}, refusal(ext.RefusalNotManaged, "the crew %s has no tasks: a launch with an origin is of a crew with tasks", r.Crew)
 	}
 	if r.StartCommit != "" && !s.holds(r.StartCommit) {
 		return ext.RunRef{}, refusal(ext.RefusalStartCommitMissing, "the folder's repository does not hold %s", r.StartCommit)

@@ -532,6 +532,7 @@ type Notification struct {
 	By      string     `json:"by,omitempty"`
 	ByName  string     `json:"byName,omitempty"`
 	Origin  string     `json:"origin,omitempty"` // the provider that sent a notice
+	Ref     string     `json:"ref,omitempty"`    // the record it is about: decision:dr-<n>, or "" (docs/plans/phone-shell.md, OSS-2a)
 }
 const (
 	TypeProvider = "provider"
@@ -1232,6 +1233,10 @@ the host's attention and activity always do.
 answers through it; their result is `sent`, and the host's next attention
 says whether it was applied. A line with no question into a hosted session
 stays `ErrUnsupported`: no message types plain text into a host's session.
+
+A router may also implement `ext.PolicyConfirmer` and answer a policy for
+a decision record (`docs/plans/decision-policy.md`); one that does not
+gets C5's behaviour unchanged.
 
 ### C6, sync hooks after every local commit; export and restore (PR-11, PR-12, PR-13)
 
