@@ -532,6 +532,7 @@ type Notification struct {
 	By      string     `json:"by,omitempty"`
 	ByName  string     `json:"byName,omitempty"`
 	Origin  string     `json:"origin,omitempty"` // the provider that sent a notice
+	Ref     string     `json:"ref,omitempty"`    // the record it is about: decision:dr-<n>, or "" (docs/plans/phone-shell.md, OSS-2a)
 }
 const (
 	TypeProvider = "provider"
