@@ -1252,10 +1252,12 @@ in `r.Check`, and judges it by the record's policy:
 - **A held answer and a router's policy do not combine in the first
   version** (one rule, mirrored from `docs/plans/decision-policy.md`,
   Responding, Held answers; Owner decisions, 26). On a server whose
-  registered decision router confirms policies, this door refuses every
-  held answer: nothing is written to the decision, the router is not
-  asked, and the refusal is kept (the provider does not hand it in
-  again), `403 answered_at_server` ("dr-7 is answered at its server, by
+  registered decision router confirms policies (it implements
+  `ext.PolicyConfirmer`: the engine's `SetRouterPolicies(true)`, the
+  decision-policy plan's I17), this door refuses every held answer:
+  nothing is written to the decision, the router is not asked, and the
+  refusal is final (the provider does not hand it in again), `403
+  answered_at_server` ("dr-7 is answered at its server, by
   the operator or the people its router names, at the server's own
   routes: an answer given elsewhere is not taken here"). The engine
   refuses the same way a `via: sync` response that reaches it for a
@@ -1273,6 +1275,10 @@ in `r.Check`, and judges it by the record's policy:
   this door checked; `Admittee.Sent` takes a `sync` response as its
   subject's own. A record left under a router's policy with no such
   router registered is not in force, so `local/1`, and judged so.
+- A held answer recorded before such a router was registered (a
+  restart with a new router) stands as recorded: it is applied by its
+  `AdmitsAnswer` recheck alone, as an identity's answer under the
+  server's own policy is; the refusal is made at the response only.
 - **A comparison's selection is never answered by a held answer.** A
   selection (origin `compare`) is the operator's alone, answered only by
   a principal authenticated at this server (the workbench token, or an
@@ -1283,9 +1289,13 @@ in `r.Check`, and judges it by the record's policy:
 - Held by `TestHeldAnswerRefusedWhereTheRouterConfirmsPolicies` (the
   door: on a server whose router confirms policies, an admin's and a
   decide principal's held answers, to a record under the router's
-  policy and to a `local/1` one, each `403 answered_at_server`, kept,
+  policy and to a `local/1` one, each `403 answered_at_server`, final,
   with its words, no row of the decision written, the fake router asked
-  nothing), `TestEngineRefusesAHeldAnswerUnderAPolicy` (the engine),
+  nothing; the store's `AdmitsAnswer` answering unknown: still
+  `answered_at_server`, the store not asked),
+  `TestEngineRefusesAHeldAnswerUnderAPolicy` (the engine: once with no
+  confirmation and once with an in-force confirmation naming its
+  subject eligible: each `403 answered_at_server`),
   `TestHeldAnswerAdmittedByTheEntries` (table-driven, on a server with
   no router: an admin's `via: sync` answer accepted under `local/1`; a
   decide one accepted on a record given to the grant and refused on one
@@ -2200,16 +2210,18 @@ taken. The one decision still open is The open question above.
     token, or an identity provider's principal with the admin grant); a
     held answer to one is refused `403 not_approver`, kept, with words
     that say so, whatever grant its subject holds
-    (`TestHeldAnswerToASelectionIsRefused`). Every other record judges a
-    held answer by its entries, `via: sync` taken as `via: identity`
-    (`TestHeldAnswerAdmittedByTheEntries`). The other way: an admin
+    (`TestHeldAnswerToASelectionIsRefused`). On a server whose router
+    confirms no policies, every other record judges a held answer by its
+    entries, `via: sync` taken as `via: identity`
+    (`TestHeldAnswerAdmittedByTheEntries`); where it confirms policies,
+    decision 26 holds. The other way: an admin
     subject's held answer counts as the operator's for a selection too;
     it changes the decision-policy plan's respond judgement and that
     test, and this plan's door, and no other row.
 26. **A held answer and a router's policy do not combine in the first
     version** (default; the same decision as the decision-policy plan's
     Owner decisions, 11). On a server whose registered router confirms
-    policies, this door refuses every held answer, kept, `403
+    policies, this door refuses every held answer, final, `403
     answered_at_server`, nothing written and the router not asked, and
     the engine refuses a `via: sync` response to a record under a
     router's policy (`TestHeldAnswerRefusedWhereTheRouterConfirmsPolicies`,
@@ -2367,7 +2379,8 @@ continuation.":
 > superseding on what nobody said (`docs/plans/sync-seams.md`, OS-3).
 > A held answer and a router's policy do not combine in the first
 > version: on a server whose registered router confirms policies every
-> held answer is refused, kept, `403 answered_at_server`
+> held answer is refused, final (nothing written; the provider does not
+> hand it in again), `403 answered_at_server`
 > (`docs/plans/decision-policy.md`, Responding, Held answers).
 
 Out of scope, the replication bullet:
