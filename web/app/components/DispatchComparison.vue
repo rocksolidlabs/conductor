@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { AgentInfo } from '~/composables/useSessions'
 import { MEASURED_BY } from '~/utils/compare'
-import { laneSelection, type SelectionMark } from '~/utils/compareSelect'
+import { laneSelection, selectionWaitsWords, type SelectionMark } from '~/utils/compareSelect'
 import { ticketPath } from '~/utils/dispatch'
 import { shortCommit } from '~/utils/dispatchPlans'
 
@@ -9,11 +9,11 @@ import { shortCommit } from '~/utils/dispatchPlans'
  * A ticket's compare view (Program item CP1, docs/plans/compare-crew.md, PR-4), the ticket page's `?view=compare&run=<any run of the
  * chain>`, drawn in place of its sections and its strip as the Review view is: the comparison's base commit, its objective and
  * criteria, one column per candidate (CompareCandidates), the checks with the server's verdicts (CompareChecks) and the measured rows
- * (CompareMeasured), every one measured by Conductor; under the columns the selection (CompareSelect, PR-7: DR1's record of origin
- * `compare`, answered through DR1's own card) and, below the measured part and apart from it, the supporting information
- * (CompareSupporting: what the agents, their reviews and Brakeman said). Each column says "selected" or "not selected" once the
- * selection is applied, read from the selection alone. One column on a phone: the candidates, the measured part, the supporting
- * panel, then the selection (PR-8b); Brakeman's table scrolls inside its own card, never the page. Read by
+ * (CompareMeasured), every one measured by Conductor; below the measured part and apart from it, the supporting information
+ * (CompareSupporting: what the agents, their reviews and Brakeman said); and last the selection (CompareSelect, PR-7: DR1's record of
+ * origin `compare`, answered through DR1's own card), so Send is reached only past what it is answered from. Each column says
+ * "selected" or "not selected" once the selection is applied, read from the selection alone. One column on a phone, in the same
+ * order (PR-8b); Brakeman's table scrolls inside its own card, never the page. Read by
  * useComparison: again on the run's change, on Dispatch's events naming the ticket, on the comparison's Brakeman request and on a
  * reconnect. A run of no comparison, a read under way and a first read that failed are said as every page says them (PageEmpty).
  */
@@ -35,6 +35,13 @@ const state = computed(() => {
   return c.error.value ? 'failed' : 'reading'
 })
 const back = { query: {} }
+/** The top line while the selection waits for an answer, and the press that brings the panel into view with the focus on it. */
+const waits = computed(() => selectionWaitsWords(comparison.value?.selection))
+function toSelection() {
+  const el = document.getElementById('compare-selection')
+  el?.scrollIntoView({ block: 'start' })
+  el?.focus({ preventScroll: true })
+}
 /** Each lane's label once the selection is applied: selected, not selected. */
 const labels = computed<Record<string, SelectionMark>>(() => {
   const out: Record<string, SelectionMark> = {}
@@ -72,6 +79,11 @@ const labels = computed<Record<string, SelectionMark>>(() => {
           <span>·</span>
           <span data-compare-lanes-words>{{ comparison.settled ? 'every lane has ended' : 'a lane is still being worked' }}</span>
         </p>
+        <p v-if="waits" class="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-sm text-default" data-compare-waits>
+          <UIcon name="i-lucide-list-checks" class="size-4 flex-none text-muted" />
+          <span class="min-w-0 break-words">{{ waits }}</span>
+          <UButton label="Go to the selection" icon="i-lucide-arrow-down" size="xs" color="neutral" variant="outline" class="max-sm:min-h-11" data-compare-waits-go @click="toSelection" />
+        </p>
         <p v-if="comparison.objective" class="whitespace-pre-wrap break-words text-default" data-compare-objective>{{ comparison.objective }}</p>
         <div v-if="comparison.criteria.length" class="flex flex-col gap-0.5">
           <span class="text-xs font-medium text-muted">Criteria</span>
@@ -89,10 +101,6 @@ const labels = computed<Record<string, SelectionMark>>(() => {
         <CompareCandidates :candidates="comparison.candidates" :agents="agents" :labels="labels" />
       </section>
 
-      <!-- The selection (PR-7): DR1's record, answered through DR1's own card. Under the columns; on a phone last, after the measured
-           part and the supporting panel, so a person reads both before answering (PR-8b). -->
-      <CompareSelect :comparison="comparison" class="max-sm:order-last" />
-
       <section class="flex flex-col gap-4" data-compare-measured>
         <CompareChecks :checks="comparison.checks" :candidates="comparison.candidates" />
         <CompareMeasured :candidates="comparison.candidates" :not-observed="comparison.independence?.notObserved" />
@@ -100,6 +108,10 @@ const labels = computed<Record<string, SelectionMark>>(() => {
 
       <!-- Supporting information, not evidence: its own panel, below the measured part, never colouring it. -->
       <CompareSupporting :supporting="comparison.supporting" :run="comparison.run" :state="comparison.state" @asked="c.read()" />
+
+      <!-- The selection (PR-7): DR1's record, answered through DR1's own card. Last, on every width: after the measured part and the
+           supporting panel, so the answer sits under what it is answered from (PR-8b's phone order, on a wide window too). -->
+      <CompareSelect :comparison="comparison" />
     </template>
   </section>
 </template>

@@ -298,6 +298,20 @@ func (e *Engine) act(ctx context.Context, runID, actor string, cmd Command, inte
 	if taken != nil {
 		taken(runID, cmd.ID)
 	}
+	// An accept anyway or a cancel may end a comparison's last lane, and
+	// its change then opens the selection: the comparison its words are
+	// is read first (measureAhead), only when the task's state takes the
+	// command and every other lane has ended. Nothing is written by it.
+	// The read (tens of milliseconds, git's measure kept after the first)
+	// lies between the command's taking and its change, where any commit
+	// of the run makes a command sent with an expected revision stale. An
+	// accept anyway's lane has no attempt in flight to commit there; a
+	// cancel's has, so a cancel sent with an expected revision is not held
+	// for the read: its selection, if it opens one, says its checks were
+	// not compared.
+	if r.compare != nil && (intent == TaskAccept || intent == TaskCancel && cmd.ExpectedRevision == 0) && len(args) > 0 {
+		e.measureAhead(ctx, r, args[0], commandClosing(intent, args[0]))
+	}
 	// The change, with its receipt.
 	var out Receipt
 	var cmdErr error

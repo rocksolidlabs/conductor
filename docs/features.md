@@ -368,6 +368,111 @@ the bridge and its protocol, the label and the capture routes, and a
 candidate's preview checkout. This entry covers the bundle that finished
 the item, newest row first.
 
+- **The acceptance, observed 2026-11-18, and what it found, fixed (#1000).**
+  Setting: headless Chromium on the WSL box, the open-source build with no
+  account, a scratch clone of this repository whose name dialog's Save was
+  covered by a transparent `span` (committed with a message that does not
+  say so), the repository's own `conductor.manifest.json`, and a real Claude
+  Code (haiku) as the one member of each crew, on the owner's subscription.
+  The pane's screenshot was the browser's own tab capture, its prompt
+  accepted by a browser flag.
+  - **On `main` at f10eb297.** A first run's attempt served the broken app,
+    and Open in Conductor showed it with its label ("attempt 1 of look ·
+    worktree at … · changes as the agent works"). The pane never connected
+    to the page's bridge by itself: Conductor's own dev build started the
+    bridge seconds after the frame's load, after the pane's last hello, so
+    the pick was made with the frame's load dispatched again by the
+    observer. The covered Save was picked by stepping Down from the overlay,
+    noted "Broken", saved, and made into a ticket with Create a ticket: the
+    ticket held the screenshot, the element, the hit test reaching the
+    overlay and `web/app/components/NameDialog.vue`, its description the
+    generated one with "Broken" the only words given. A plan revision with
+    the capture's attachments ticked was approved and launched with the
+    task's words only "Resolve the ticket.": the attempt read the ticket
+    file, the capture's document and its screenshot, gave the span
+    `pointer-events-none` and submitted, and its typecheck passed. Preview
+    this candidate showed "candidate … of fix · attempt 1 · as committed",
+    and Save worked there. A capture sent as Request a change was repaired
+    by attempt 2, whose `.conductor/evidence/` held the capture and whose
+    `task.md` named it under the finding. A capture attached to a run's
+    pending gate decision was listed on the decision, and the decision was
+    answered.
+  - **What changed.** The pane says its hello for as long as the frame stays
+    on a load and takes the `ready` that answers that load whenever it
+    comes; from three seconds it says that the page "has not answered
+    Conductor's bridge yet, and the pane keeps asking", and only after
+    thirty that the page does not load the bridge. Conductor's own dev build
+    loads the bridge with the page, by a tag in its document's head
+    (`web/build/devConfig.ts`: a loopback server's `/preview-bridge.js` and
+    nothing else; a built app has no such tag). Capture keeps the frame's
+    box, so the page does not lay itself out again under the pointer. A
+    capture made before the page answered stays open: the first element
+    selected joins it only while the frame still matches its screenshot (the
+    whole frame, the element's own box and every annotation's), and
+    otherwise starts a new capture, the first kept. A capture of a preview
+    names its page without the fragment the pane opened the frame with. The
+    hit test names what a click reaches as the selection's outline names an
+    element (`hitName`), a capture's card says it in words (`hitSentence`),
+    and before Save the editor lists the sources as after it, the tree's own
+    files first and relative (`draftSources`). A ticket's capture offers
+    Capture again for the candidate that repairs the ticket, whatever its
+    crew and task are called (`retakeCandidate`: a later attempt of the
+    capture's own task; in a later run of the ticket the task of the same
+    name, else the last work task with a standing candidate; of a
+    comparison, the selected candidate alone). Capture again waits for the
+    page's bridge, describes on the page as the person has it when the frame
+    is at the capture's address, and otherwise takes the frame there and
+    describes on the next press; a retake's elements start with no note;
+    sent to the ticket, the retake is shown beside the first capture as
+    Before and After. A capture sent to a decision shows its screenshot, its
+    note, the element and what a click reaches where the decision is
+    answered (`DecisionCaptures.vue`) and opens in place; a decision link's
+    holder sees the reference in words and asks no capture route. A link's
+    page header, a run's and a session's, wraps on a phone and stays inside
+    the window.
+  - **Again, on this pull request's build at 0d371466, with no aid.** The
+    pane connected to the bridge by itself on every open, 4 to 16 s after
+    the frame's load, saying meanwhile that the page had not answered yet.
+    Capture left Save under the pointer; the hit test said "a click at its
+    centre reaches span.absolute.-inset-1" and the editor listed the tree's
+    files first; the pick, the note and Create a ticket took 13 s. A real
+    agent repaired the control again from the ticket, using the ticket file,
+    the capture's document and the repository's last commit. On the ticket,
+    "Capture again on fix#1" was offered across the two crews' task names:
+    it described the Save in the candidate's preview on the page as the
+    person had it, its dialog still open, and saved a retake linked to the
+    first capture (`retakeOf`, `retakeVia: ticket`). Sent to the ticket, the
+    two were shown side by side as Before and After (one above the other at
+    390 x 844): "reaches span.absolute.-inset-1" against "reaches the
+    element itself", over screenshots that look the same. With the frame on
+    another page, Capture again took it to the capture's page, asked for it
+    to be set up, and described on the second press. A capture taken before
+    the page answered was kept, and its element did not join it, the
+    screenshot showing the app not yet drawn. A capture sent to a pending
+    decision showed there its screenshot, note, element and hit test, opened
+    in place, and the decision was answered.
+  - **Found by that second look and by the review, and fixed after them
+    (held by tests, not seen live).** The After card repeated the first
+    capture's note, so a retake's elements now start with no note. The pane
+    promised "your notes" where a capture made without the bridge has no
+    note field: its words now name the screenshot and the regions a person
+    draws, each with its note. A capture made before the page answered
+    joined its first element on a whole-frame match that let a small change
+    through. A capture of a session's link lost its fragment. Capture again
+    on a ticket whose repair is a comparison offered the last lane, and an
+    older run or attempt than the capture's own could be offered. A session
+    link's header ran past a phone's window.
+  - **Observed differently from the plan's words.** The bridge of
+    Conductor's own dev app comes seconds after the page's load, and the
+    pane says so while it waits. A package numbers its attachments
+    (`01-capture-…`). The broken and the repaired screenshots are the same
+    pixels, the overlay being transparent: only the hit test tells them
+    apart.
+  - **Not observed.** An element joining a screenshot taken before the page
+    answered (on Conductor's own app the page is drawn only as its bridge
+    starts); the real tab-capture prompt; the desktop app, Windows, Firefox
+    and Safari. The owner's word that the agent repaired the control from
+    the capture alone is owed.
 - **Conductor's own app (PR-9, #797).** `conductor.manifest.json` at the
   repository's root serves Conductor in a tree: a server of the tree's own
   on the loopback (`go run ./cmd/conductor serve --dev --token-env
@@ -381,7 +486,8 @@ the item, newest row first.
   empty (never falling back to another token), takes it out of the
   server's environment, and prints, logs and keeps it nowhere: no error
   repeats what the flag was given. The dev build alone loads the bridge the tree is told
-  of (`plugins/previewBridge.client.ts`); the built app never does.
+  of, by a tag in its document's head (`web/build/devConfig.ts`); the
+  built app never does.
   `TestTheRepositorysManifestIsValid` holds the file to the manifest's
   rules; `capture-repair.spec.ts` walks the loop on stubs: a covered Save
   captured with the note "Broken", the overlay named by the hit test and
@@ -460,18 +566,19 @@ the item, newest row first.
   numbered boxes, each element's hit test, state, sources and HTML as
   text, regions, and Save. One capture is one moment: a selection after a
   navigation, a scroll, a mode change, a mutation or a pixel change starts
-  a new capture; a moving element is kept `stable: false`. A page without
-  the bridge is said after 3 s, and captured with the screenshot alone.
+  a new capture; a moving element is kept `stable: false`. A page that
+  has not answered the bridge is said so after 3 s while the pane keeps
+  asking, and a page that does not load it after 30 s; either is captured
+  with the screenshot and the regions a person draws.
 
-Owed by hand, none of it done: the real tab-capture prompt in Chromium and
-its crop to the frame; the desktop app's pixels on Linux, macOS and
-Windows; the Windows app framing a preview served inside WSL with no step
-by the person; Firefox and Safari framing a loopback preview (recorded,
-not required); and the plan's Acceptance, a real agent repairing a
-control of Conductor's own app from a capture alone, on the owner's
-subscription, with what was missing, slow or wrong written here. PR-10's
-"a capture sent as Request changes and repaired" and PR-11's "a capture
-on a pending decision answered" are each to be seen once.
+Owed by hand: the real tab-capture prompt in Chromium and its crop to the
+frame; the desktop app's pixels on Linux, macOS and Windows; the Windows app
+framing a preview served inside WSL with no step by the person; Firefox and
+Safari framing a loopback preview (recorded, not required). The plan's
+Acceptance, a real agent repairing a control of Conductor's own app from a
+capture alone, was observed on 2026-11-18 (the first entry above), and with
+it PR-10's "a capture sent as Request changes and repaired" and PR-11's "a
+capture on a pending decision answered"; the owner's word on it is owed.
 
 ## Compare approaches (CP1, `docs/plans/compare-crew.md`; 2026-11-16)
 
@@ -502,10 +609,127 @@ on a pending decision answered" are each to be seen once.
 - **After the selection.** Review the selected candidate opens RV1's Review
   view on it (the picker says selected and not selected and opens on the
   selected one); a repair and a delivery are taken for it alone.
-- **Not observed yet.** The owner's observation with real agents (Claude
-  Code for one candidate, Codex for the other) and Brakeman's real draft
-  are recorded here by a later docs pull request of the stream; the phone
-  layout was measured at 390 x 844 in the tests, not on a device.
+- **The acceptance, observed 2026-11-18, and what it found, fixed (#1006).**
+  Setting: a build of `main` at f10eb297, the open-source build with no
+  account, real agents on the owner's subscriptions (Claude Code 2.1.326 for
+  one candidate, Codex CLI 0.167.2 for the other), and a scratch repository
+  both agents trust. The ticket asked for a shell tool that slugs a list of
+  titles without starting processes for every title; its design question had
+  two credible answers, one awk program for the whole input or one stream
+  through the tools the script already used. Brakeman was set up in Settings
+  with Claude Code, the Observe preset and the Runs class alone. Two
+  comparisons of that ticket were run.
+  - **1.** New comparison on the Crews page made the crew: two candidates,
+    the project's one check, agent reviews and Brakeman's draft. It was
+    proposed and approved as the ticket's revision 1. Before anything
+    started, Launch showed what it starts: 2 candidates, up to 2 review
+    sessions, the multiplier, 1 check on each submitted attempt, 1 Brakeman
+    turn, and each account's sessions; the button read "Launch 2
+    candidates", and the launch sent `candidates: 2`.
+  - **2.** In the ledger and in each task file, both candidates' first
+    attempts started at the revision's base. The first comparison's task
+    files named nothing of the other lane. In the second, each candidate
+    tried three of its tools at its approach's request: the server answered
+    `message_send` to the other lane's member and `ticket_comment` with
+    `409`, the agents' copies of the answers say `lane`, `run_status` showed
+    the caller's own member alone, and nothing was written.
+  - **3.** The comparison showed both candidates' receipts for the one check
+    as comparable; each cell opened its receipt with the log and its
+    SHA-256, and the served log hashed to the receipt's digest. In the
+    second comparison one candidate added a case to the check's script, and
+    the row read "not comparable, because approach-a changed check.sh, which
+    the check runs".
+  - **4.** Brakeman's draft arrived in the supporting panel 29 s after the
+    selection opened, with the five rows, citing both candidates and both
+    receipts; nothing was preselected. Across a second draft asked by hand,
+    the measured part of the comparison's reply stayed the same byte for
+    byte.
+  - **5.** With the selection open, the server was stopped by its process
+    and started again: the selection was still open, with the same options
+    and commits, on the stopped run. A run stopped while selecting took the
+    answer as "Recorded: waiting for the run to be continued", and Continue
+    applied it.
+  - **6.** A candidate was selected with a rationale; the confirm named it
+    and said the answer was final. The decision record had the options with
+    their commits, the response with the rationale and the actor, and the
+    application `selected` with the commit. The ticket's Decisions section
+    and Needs you showed the same record. A decision link showed the
+    selection with no answer and refused a decide on it (`unsupported`,
+    nothing done). The candidate's own agent had no tool to answer it.
+  - **7.** The candidate not selected kept its branch, worktree and receipt;
+    it was labelled not selected on the comparison, the run page and the
+    ticket's candidates, and refused a Retry and a Request changes with a
+    note (`not_selected`). The selected candidate opened in the Review view
+    at its commit; one Request changes made one repair in its lane by the
+    real agent, which was approved.
+  - **What that found.** A selection's options said a bare "its checks
+    passed" beside a candidate whose row was not comparable; Needs you
+    counted Comment among a selection's choices; and a few words of the
+    launch's statement, the plan revision, the selection's cards, the Review
+    view and the run's Stop misled a person.
+  - **What changed.** A selection's options and its context say of each
+    candidate, check by check, what the comparison's verdict says: passed
+    and comparable; passed but not comparable, with the reason in the
+    comparison's own words; failed; not run. Words past a record's bound end
+    at a whole clause and say how many more checks the comparison holds.
+    Needs you counts a decision's answers; a selection's card names who
+    answers by the record's state, offers no Ask for more, and once it is
+    closed says nothing waits and lists nothing as blocked; an answer
+    recorded on a stopped run is said to be applied when the run is
+    continued, on every card. A comparison's plan revision and its approve
+    dialog show each candidate's approach and the criteria, and count the
+    checks as the launch's statement does; the statement names a manifest's
+    verify steps only when the plan holds a manifest. The selection comes
+    after the measured rows and the supporting panel on every width, and the
+    top of the comparison says a selection is open and leads to it. The
+    Review view says why a candidate that was not selected cannot be sent
+    back before anything is written, with Comment as its verdict, and with
+    no candidate named opens on the selected candidate's latest attempt. A
+    ticket's candidates say where a continuation's results are kept from.
+    The run's Stop says what happens to an open selection. Share on a run
+    the server keeps only as its record says at once that no link is made
+    and why (`409 run_record`), and the dialog says a link is copied only
+    while it shows one that was. The run's log names the member's session
+    page for an agent's own update dialog.
+  - **Again, on this pull request's build at 0d371466,** with a fresh data
+    directory and one comparison without reviews or draft, in which one
+    candidate added a case to the check's script. The plan revision and its
+    approve dialog showed each candidate's approach and the criteria and
+    counted "1 check on each candidate"; the statement said "the plan holds
+    no manifest, so no verify steps". The selection's two options and its
+    context read "check check: passed, not comparable (approach-a changed
+    check.sh, which the check runs)", word for word, on the comparison,
+    Needs you, the ticket's Decisions, the record's modal and a decision
+    link's page. Needs you counted 3 choices; the card said "to be answered
+    by the operator" while open and "answered by" after, offered no Ask for
+    more, and once applied said "Nothing waits for dr-1 now". The
+    selection's panel sat below the measured rows and the supporting panel.
+    The run's Stop said the selection stays open and is applied when the run
+    is continued. After a server restart, Share on the stopped run said no
+    link was made and why, and none was made; Open on your phone said which
+    runs it does not offer. The Review view held Request changes on the
+    candidate not selected and said why before anything was written; with no
+    candidate named it opened on the selected candidate's repair attempt.
+  - **Found by that second observation and by the review.** Fixed after
+    them, held by tests and not seen live: the ticket's Decisions row and
+    Needs you said Yardmaster applies a recorded answer "next" while the run
+    was stopped; the Review view's held Request changes was still the
+    checked verdict; a selection opened by the last lane's failed or
+    cancelled attempt gave a check's reason as still under way; a closed
+    decision's item still listed its run as blocked. Open: a choice pressed
+    in the run's chat did not answer an agent's own update dialog, where the
+    member's session page's did (#1009), and one such dialog was written to
+    the run's log three times (#1010).
+  - **Observed differently from the plan's words.** The desktop app was not
+    quit: the server's process was stopped and started instead. The
+    byte-for-byte comparison of the measured part was made across a second
+    draft asked by hand. The agent's own answer stopped in its client, and
+    no answer reached the server.
+  - **Not observed.** The phone layout on a real phone (it was measured at
+    390 x 844 in the tests); the server's refusal of an answer sent with an
+    agent's own session token; a continuation's "kept from" words (the block
+    already held the repair when it was read). The owner's word on the
+    comparison as a person saw it is owed.
 
 ## Agent and account capacity (AC1, `docs/plans/capacity.md`; PR-8 2026-11-16)
 
@@ -753,8 +977,8 @@ said on GitHub but what a person publishes.
   Observed differently from the plan's words: the image was linked into the
   issue and served through GitHub's image proxy, not pasted, and the
   repository is public. No defect was found; two small things the
-  observation saw are #989. The judgement that the published comment's text
-  holds nothing private is the maintainers'.
+  observation saw are #989. A maintainer read the published comment on
+  2026-11-17 and judged that it holds nothing private.
 - **Still by hand.** Not observed yet: a classic token; a private
   repository's pasted screenshot; a renamed repository followed; the same
   from the Windows app's own server; and a delivery pull request's failed CI

@@ -16,7 +16,7 @@ import { PREVIEW_SERVICE, endMade, launch, made, pick, previewCrew, previewFrame
 // capture; an element no hit test returns, by walking the DOM and by selector; a region; Save, and the records read back with the
 // server's commit and content. Then the page held at its commit while the spec commits B in the worktree: the label and the save
 // read B, the capture says the page serves A. Then an animated control and a hover-styled one, as the pixels say; and a page without
-// the bridge, said after 3 s. The screenshots come through the seam (Playwright's own of the frame's box), so the comparisons run on
+// the bridge, said to have not answered yet after 3 s. The screenshots come through the seam (Playwright's own of the frame's box), so the comparisons run on
 // real pixels. Every wait is on what the page draws or what the server answers.
 test.describe.configure({ mode: 'serial', timeout: 300_000 })
 
@@ -207,10 +207,10 @@ test('an animated control is kept stable: false and the next element is another 
   await expect(editor.locator('[data-capture-draft-tab]')).toHaveCount(4)
 })
 
-test("a page that does not load the bridge says so after 3 s, and Capture keeps the screenshot and the notes", async ({ page, api }) => {
+test("a page that does not answer the bridge is said to have not answered yet after 3 s, and Capture takes the screenshot alone", async ({ page, api }) => {
   const frame = await previewPage(page)
   await frame.goto(`${origin}/no-bridge`)
-  await expect(page.locator('[data-preview-nobridge]')).toHaveText("this page does not load Conductor's bridge: Capture takes the screenshot and your notes only. In the desktop app every page has it.", { timeout: BOOT_MS })
+  await expect(page.locator('[data-preview-nobridge]')).toHaveText("this page has not answered Conductor's bridge yet, and the pane keeps asking: until it answers, Capture takes the screenshot, and the regions you draw on it with their notes.", { timeout: BOOT_MS })
   await expect(page.locator('[data-preview-pane]')).toHaveAttribute('data-preview-bridge', 'absent', { timeout: BOOT_MS })
   await page.locator('[data-preview-capture]').click()
   const editor = editorOf(page)
@@ -299,7 +299,7 @@ test('a saved capture is listed again after the editor was closed and after a re
   await expect.poll(async () => !!(await api.ok<{ deletedAt?: string }>('GET', `/api/captures/${c.id}`)).deletedAt).toBe(true)
 })
 
-test("Capture again loads the capture's page again though the frame went elsewhere inside itself", async ({ page, api }) => {
+test("Capture again sends the frame back to the capture's page when it went elsewhere inside itself, and describes on the next press", async ({ page, api }) => {
   const frame = await previewPage(page)
   await page.locator('[data-preview-capture]').click()
   await pick(page, frame, '#second', 'button#second.second', { downs: 1 })
@@ -308,8 +308,15 @@ test("Capture again loads the capture's page again though the frame went elsewhe
   expect(first.url).toBe(`${origin}/`)
   // The page moves on by itself: the pane's address for the frame is unchanged.
   await frame.evaluate(() => history.pushState({}, '', '/next'))
+  // The page reports /next: the frame goes back to the capture's page, and nothing is described yet.
   await editorOf(page).locator('[data-capture-again]').click()
+  await expect(page.locator('[data-preview-retake-moved]')).toBeVisible({ timeout: BOOT_MS })
   const retake = editorOf(page).locator('[data-capture-draft]')
+  await expect(retake).toHaveCount(0)
+  await expect.poll(() => page.frames().some((f) => f.url().startsWith(`${origin}/`) && !f.url().startsWith(`${origin}/next`)), { timeout: BOOT_MS }).toBe(true)
+  await expect(page.locator('[data-preview-pane]')).toHaveAttribute('data-preview-bridge', 'ready', { timeout: BOOT_MS })
+  // Pressed again on the capture's page: its element described.
+  await editorOf(page).locator('[data-capture-again]').click()
   await expect(retake).toHaveAttribute('data-capture-url', `${origin}/`, { timeout: BOOT_MS })
   await expect(editorOf(page).locator('[data-annotation="1"] [data-capture-element-summary]')).toContainText('button#second')
 })
@@ -469,6 +476,41 @@ test("a session's link tab keeps its capture drafts and notes across its Refresh
     // Back to the first link's tab: its draft and note.
     await page.locator(`[data-editor-tab="url:${link}"] button`).first().click()
     await expect(pane.locator('[data-annotation="1"] textarea')).toHaveValue('kept across Refresh')
+  } finally {
+    await api.stopSession(s.id)
+    svc.kill()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("a session's link tab names its page with the fragment the link was opened with, with the bridge and without it", async ({ page, api, state }) => {
+  // Each step's own caps: the service's start, two tabs opened and drawn (the pane's boot each), a pick and the draft's words.
+  test.info().setTimeout(test.info().timeout + 30_000 + 2 * (BOOT_MS + 4 * 15_000))
+  const dir = mkdtempSync(join(tmpdir(), 'conductor-e2e-link-fragment-'))
+  const port = await freePort()
+  const svc: ChildProcess = spawn('python3', [PREVIEW_SERVICE, String(port)], { cwd: dir, env: { ...process.env, CONDUCTOR_PREVIEW_BRIDGE: `${state.baseURL}/preview-bridge.js` }, stdio: 'ignore' })
+  const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'plain', name: 'link-fragment', cwd: state.root })
+  try {
+    await expect.poll(() => fetch(`http://127.0.0.1:${port}/ready`).then((r) => r.status, () => 0), { timeout: 30_000 }).toBe(200)
+    await previewSeam(page)
+    await page.goto(`/sessions/${s.id}`)
+    await expect(page.locator('.terminal-host').first()).toBeVisible({ timeout: BOOT_MS })
+    // A page that routes by its fragment, with the bridge: the element's capture names it with its fragment.
+    const link = `http://127.0.0.1:${port}/#/settings`
+    await previewInPane(page, link)
+    const pane = page.locator(`[data-editor-link-pane="url:${link}"]`)
+    await expect(pane).toHaveAttribute('data-preview-bridge', 'ready', { timeout: BOOT_MS })
+    const frame = await previewFrame(page, `http://127.0.0.1:${port}`)
+    await pane.locator('[data-preview-capture]').click()
+    await pick(page, frame, '#second', 'button#second.second', { downs: 1 })
+    await expect(pane.locator('[data-capture-draft="1"]')).toHaveAttribute('data-capture-url', link)
+    // Without the bridge: the screenshot alone, at the link's address whole.
+    const other = `http://127.0.0.1:${port}/no-bridge#/settings`
+    await previewInPane(page, other)
+    const second = page.locator(`[data-editor-link-pane="url:${other}"]`)
+    await expect(second).toHaveAttribute('data-preview-bridge', 'absent', { timeout: BOOT_MS })
+    await second.locator('[data-preview-capture]').click()
+    await expect(second.locator('[data-capture-draft="1"]')).toHaveAttribute('data-capture-url', other)
   } finally {
     await api.stopSession(s.id)
     svc.kill()

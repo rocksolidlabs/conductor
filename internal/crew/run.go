@@ -502,6 +502,11 @@ type Engine struct {
 	// afterLookup, when set, runs once a command or RetryTask has looked
 	// its run up and before its change: a test evicts the run there.
 	afterLookup func(runID string)
+	// beforeCancelPump, when set, runs in CancelTask between its commit and
+	// the dispatch after it (afterTransact, which waits for the run's
+	// transactions): a test holds the cancel there until what the commit
+	// set going has reached a commit of its own.
+	beforeCancelPump func(runID string)
 	// afterTaken, when set, runs in a command between its two
 	// transactions (SetAfterTakenForTest). Guarded by mu.
 	afterTaken func(runID, commandID string)
@@ -1742,8 +1747,9 @@ func (e *Engine) promptWith(ctx context.Context, r *run, m *member, local *sessi
 		}
 		for {
 			err := e.await(ctx, local, func(question string) {
+				att := local.Info().Attention // read before e.mu: the session's lock is never taken under it here
 				e.mu.Lock()
-				r.note(session.ActivityStatus, "%s asks %s: answer it in %s's terminal; its prompt waits", name, quote(question), name)
+				r.note(session.ActivityStatus, "%s; its prompt waits", heldWords(r, name, question, att))
 				e.mu.Unlock()
 			})
 			switch {
@@ -1906,8 +1912,9 @@ func (e *Engine) settle(r *run, m *member, local *session.Local) {
 	defer r.starts.Done()
 	name := m.def.Name
 	err := e.await(r.ctx, local, func(question string) {
+		att := local.Info().Attention // read before e.mu: the session's lock is never taken under it here
 		e.mu.Lock()
-		r.note(session.ActivityStatus, "%s asks %s: answer it in %s's terminal; its handoffs wait", name, quote(question), name)
+		r.note(session.ActivityStatus, "%s; its handoffs wait", heldWords(r, name, question, att))
 		e.mu.Unlock()
 	})
 	switch {
@@ -2757,6 +2764,36 @@ func runState(r Run) (string, int) {
 		return RunNeedsInput, needs
 	}
 	return RunRunning, 0
+}
+
+// heldWords is the run log's words for a question that holds member
+// name's session (a startup dialog: the folder's trust, the agent's own
+// update; or a question it asks), saying where a person answers it: a
+// question the session offers with its choices (att, as the session shows
+// it, when it is still that question) with one of them on the member's
+// session page, where its choices answer it, or in its terminal; one that
+// mirrors a decision through the decision. Nothing answers it by itself.
+// A Brakeman turn's: its terminal.
+func heldWords(r *run, name, question string, att session.Attention) string {
+	asks := fmt.Sprintf("%s asks %s", name, quote(question))
+	if att.Message != question {
+		att = session.Attention{}
+	}
+	switch {
+	case att.Decision != "":
+		return fmt.Sprintf("%s: answer %s where decisions are answered", asks, att.Decision)
+	case len(att.Options) == 0 || att.Answered != "" || r.class == ClassBrakeman:
+		return fmt.Sprintf("%s: answer it in %s's terminal", asks, name)
+	}
+	labels := make([]string, 0, len(att.Options))
+	for _, o := range att.Options {
+		labels = append(labels, quote(o.Label))
+	}
+	choice := "its choice " + labels[0]
+	if len(labels) > 1 {
+		choice = "one of its choices (" + strings.Join(labels, ", ") + ")"
+	}
+	return fmt.Sprintf("%s: answer it on %s's session page with %s, or in its terminal", asks, name, choice)
 }
 
 // AwaitReady waits until l is ready for its prompt (readyAt), looking every

@@ -3,7 +3,7 @@ import type { LinkRequest, ReachInfo, ShareLink } from '~/composables/useSession
 import { ApiError } from '~/composables/useApi'
 import type { Role } from '~/utils/protocol'
 import { qrSvg } from '~/utils/qr'
-import { reuseHeld, shareReach, type ShareReach } from '~/utils/share'
+import { reuseHeld, shareDescription, shareReach, shareRefusal, type ShareReach, type ShareRefusal } from '~/utils/share'
 
 /**
  * Share in one click: opening the dialog makes a link for two hours, with the
@@ -22,6 +22,10 @@ import { reuseHeld, shareReach, type ShareReach } from '~/utils/share'
  * page's Needs you tab, where its holder answers what the link covers. At a
  * switchyard that carries no decisions the server refuses it
  * (`switchyard_too_old`), and the switch then stays off with the words why.
+ *
+ * Its words are true in every outcome (shareDescription): the line under the title says the link is copied only once one was made
+ * and the copy took. A run the server keeps only as its record has no links (`run_record`): the dialog then says at once why none
+ * is made, and offers no link (shareRefusal).
  */
 type Target = { sessionId: string; runId?: undefined } | { runId: string; sessionId?: undefined }
 /** `role`: the role asked for by whoever opened the dialog (the palette's `share <name> control`), used for this opening's link. */
@@ -50,11 +54,17 @@ function routes() {
 const isRun = computed(() => props.runId !== undefined)
 const targetKey = computed(() => (props.runId !== undefined ? `run:${props.runId}` : `session:${props.sessionId}`))
 const title = computed(() => (props.sessionName ? `Share ${props.sessionName}` : props.runId ? 'Share this crew' : 'Share this session'))
-const description = computed(() =>
-  props.runId
-    ? 'The link is copied: it opens every agent of the crew, one added later too. Revoking disconnects whoever used it.'
-    : 'The link is copied. Revoking disconnects whoever used it.',
-)
+/** Whether the link shown was copied: the line says so only then. */
+const copied = ref(false)
+/** Why no link can be made for the target, from the server's refusal (`run_record`); null while one can. */
+const refused = ref<ShareRefusal | null>(null)
+const description = computed(() => shareDescription({ run: isRun.value, copied: copied.value, shown: !!created.value, refused: !!refused.value }))
+/** Takes the server's failure as the refusal it is, when it is one (shareRefusal): its words are then shown in place of a link. */
+function refusedBy(e: unknown): boolean {
+  const r = e instanceof ApiError ? shareRefusal(e.code) : null
+  if (r) refused.value = r
+  return !!r
+}
 const toast = useToast()
 const copyText = useCopy()
 const links = ref<ShareLink[]>([])
@@ -189,7 +199,7 @@ async function refresh() {
     links.value = list.links
     publication.value = { republish: list.republish, published: list.published }
   } catch (e) {
-    error.value = (e as Error).message
+    if (!refusedBy(e)) error.value = (e as Error).message
   } finally {
     loading.value = false
   }
@@ -204,11 +214,14 @@ async function refresh() {
 watch(open, async (v) => {
   if (!v) return
   error.value = ''
+  copied.value = false
+  refused.value = null
   api
     .reach()
     .then((r) => (reach.value = r))
     .catch(() => (reach.value = null))
   await refresh()
+  if (refused.value) return
   const held = reuseHeld(created.value, createdFor.value === targetKey.value && (!props.role || created.value?.role === props.role), links.value, publication.value)
   if (held) {
     await copy(created.value!.url)
@@ -240,7 +253,7 @@ async function create(body: LinkRequest) {
     if (body.decide && e instanceof ApiError && e.code === 'switchyard_too_old') {
       decideRefused.value = e.message
       form.decide = false
-    } else error.value = (e as Error).message
+    } else if (!refusedBy(e)) error.value = (e as Error).message
   } finally {
     creating.value = false
   }
@@ -252,15 +265,18 @@ async function createAnother() {
   form.label = ''
 }
 
-function copy(url: string) {
-  return copyText(url, 'Link copied', 'Paste it to whoever should join.')
+async function copy(url: string) {
+  copied.value = await copyText(url, 'Link copied', 'Paste it to whoever should join.')
 }
 
 async function revoke(link: ShareLink) {
   try {
     await routes().revoke(link.id)
     toast.add({ title: 'Link revoked', description: 'Viewers using it were disconnected.', icon: 'i-lucide-ban', color: 'neutral' })
-    if (created.value && created.value.linkId === link.id) created.value = null
+    if (created.value && created.value.linkId === link.id) {
+      created.value = null
+      copied.value = false
+    }
     await refresh()
   } catch (e) {
     error.value = (e as Error).message
@@ -287,136 +303,140 @@ const live = computed(() => links.value.filter((l) => !l.revoked))
     <template #body>
       <div class="flex flex-col gap-4">
         <UAlert v-if="error" color="error" variant="subtle" icon="i-lucide-triangle-alert" :title="error" />
+        <UAlert v-if="refused" color="neutral" variant="subtle" icon="i-lucide-unlink" :title="refused.title" :description="refused.text" data-share-refused />
 
-        <div v-if="creating && !created" class="flex items-center gap-2 text-sm text-muted" data-share-making>
-          <UIcon name="i-lucide-loader-circle" class="size-4 animate-spin" />
-          Making the link…
-        </div>
+        <template v-if="!refused">
 
-        <div v-if="created" class="flex flex-col gap-2 rounded-md bg-elevated px-3.5 py-3" data-share-created>
-          <div class="flex items-center gap-2.5">
-            <span class="flex-1 truncate font-mono text-xs" :title="created.url" data-created-url>{{ shortUrl(created.url) }}</span>
-            <UButton label="Copy link" size="sm" v-bind="look('copy')" data-share-copy @click="copy(created!.url)" />
+          <div v-if="creating && !created" class="flex items-center gap-2 text-sm text-muted" data-share-making>
+            <UIcon name="i-lucide-loader-circle" class="size-4 animate-spin" />
+            Making the link…
           </div>
-          <div v-if="qr" class="flex items-center gap-3" data-share-qr-row>
-            <svg :viewBox="qr.viewBox" class="size-28 flex-none rounded bg-white text-black" shape-rendering="crispEdges" role="img" :aria-label="created.url" data-share-qr>
-              <path :d="qr.path" fill="currentColor" />
-            </svg>
-            <span class="text-xs text-muted">Scan it with a phone to open the link there. The code holds the link alone.</span>
-          </div>
-          <div class="flex flex-wrap items-center gap-2">
-            <div class="flex gap-0.5 rounded-md bg-default p-0.5 ring ring-default" role="radiogroup" aria-label="What the link allows" data-share-role>
-              <button
-                v-for="r in roles"
-                :key="r.value"
-                type="button"
-                role="radio"
-                :aria-checked="created.role === r.value"
-                :disabled="switching || creating"
-                class="flex items-center gap-1.5 rounded px-2.5 py-1 text-xs font-medium transition-colors disabled:opacity-60"
-                :class="created.role === r.value ? 'bg-inverted text-inverted' : 'text-muted hover:text-default'"
-                :data-share-role-option="r.value"
-                @click="setRole(r.value)"
-              >
-                <UIcon :name="r.value === 'control' ? 'i-lucide-keyboard' : 'i-lucide-eye'" class="size-3.5" />{{ r.label }}
-              </button>
-            </div>
-            <span class="text-xs text-muted">{{ roles.find((r) => r.value === created!.role)?.description }}</span>
-            <UIcon v-if="switching" name="i-lucide-loader-circle" class="size-3.5 animate-spin text-muted" />
-          </div>
-          <p v-if="created.decide" class="flex items-center gap-1.5 text-xs text-muted" data-created-decide>
-            <UIcon name="i-lucide-list-checks" class="size-3.5" /> Answers decisions: the link opens on Needs you.
-          </p>
-          <div v-if="created.invite" class="flex items-center gap-2.5" data-created-invite>
-            <span class="flex-1 truncate font-mono text-xs text-muted" :title="created.invite">{{ created.invite }}</span>
-            <UButton label="Copy invite" size="sm" color="neutral" variant="outline" @click="copyText(created!.invite!, 'Invite copied', 'It opens in the Conductor app; the link opens in a browser.')" />
-          </div>
-          <UAlert
-            v-if="createdReach"
-            :color="reachColor[createdReach.kind === 'unpublished' ? 'pending' : createdReach.level]"
-            variant="soft"
-            :icon="reachIcon"
-            :title="createdReach.title"
-            :description="createdReach.text"
-            :data-link-reach="createdReach.level"
-            :data-share-reach="createdReach.kind"
-            class="mt-1"
-          />
-        </div>
 
-        <details class="rounded-md border border-default px-3.5 py-2" data-another-link @toggle="anotherOpen = ($event.target as HTMLDetailsElement).open">
-          <summary class="cursor-pointer text-sm font-semibold">Another link</summary>
-          <form class="mt-3 flex flex-col gap-4" @submit.prevent="createAnother">
-            <div class="grid grid-cols-2 gap-2" role="radiogroup" aria-label="Role">
-              <button
-                v-for="r in roles"
-                :key="r.value"
-                type="button"
-                role="radio"
-                :aria-checked="form.role === r.value"
-                class="flex flex-col gap-1 rounded-md border p-3 text-left transition-colors"
-                :class="form.role === r.value ? 'border-primary bg-primary/5 ring-1 ring-primary' : 'border-default hover:border-accented'"
-                @click="form.role = r.value"
-              >
-                <span class="text-sm font-semibold">{{ r.label }}</span>
-                <span class="text-xs leading-snug text-muted">{{ r.description }}</span>
-              </button>
+          <div v-if="created" class="flex flex-col gap-2 rounded-md bg-elevated px-3.5 py-3" data-share-created>
+            <div class="flex items-center gap-2.5">
+              <span class="flex-1 truncate font-mono text-xs" :title="created.url" data-created-url>{{ shortUrl(created.url) }}</span>
+              <UButton label="Copy link" size="sm" v-bind="look('copy')" data-share-copy @click="copy(created!.url)" />
             </div>
-            <div v-if="form.role === 'control'" class="flex flex-col gap-1" data-share-decide>
-              <USwitch v-model="form.decide" :disabled="!!decideRefused" label="Answer decisions from this link" description="It opens on Needs you: whoever holds it answers the questions and the tasks' choices it covers, each recorded as the link's." data-share-decide-switch />
-              <p v-if="decideRefused" class="text-xs text-warning" data-share-decide-refused>{{ decideRefused }}</p>
+            <div v-if="qr" class="flex items-center gap-3" data-share-qr-row>
+              <svg :viewBox="qr.viewBox" class="size-28 flex-none rounded bg-white text-black" shape-rendering="crispEdges" role="img" :aria-label="created.url" data-share-qr>
+                <path :d="qr.path" fill="currentColor" />
+              </svg>
+              <span class="text-xs text-muted">Scan it with a phone to open the link there. The code holds the link alone.</span>
             </div>
-            <div class="grid grid-cols-2 gap-3">
-              <UFormField label="Label" name="label">
-                <UInput v-model="form.label" placeholder="what the link is for (optional)" class="w-full" />
-              </UFormField>
-              <UFormField label="Expires" name="ttl">
-                <USelect v-model="form.ttl" :items="ttlItems" class="w-full" />
-              </UFormField>
-            </div>
-            <UButton label="Create link" type="submit" icon="i-lucide-link" v-bind="look('create')" :loading="creating" class="self-end" />
-          </form>
-        </details>
-
-        <details v-if="'sessionId' in props && props.sessionId" class="rounded-md border border-default px-3.5 py-2" data-paste-invite>
-          <summary class="cursor-pointer text-sm font-semibold">Answer a paste invite</summary>
-          <div class="mt-2 flex flex-col gap-2">
-            <p class="text-xs text-muted">For a viewer no server can reach from here: they open <code>/paste</code> on any Conductor, send you their invite, you answer it here, and the terminal runs between the two machines alone.</p>
-            <UTextarea v-model="paste.offer" :rows="3" placeholder="cpi1.…" class="w-full font-mono text-[11px]" data-paste-offer-in />
-            <div class="flex items-center gap-2">
-              <USelect v-model="paste.role" :items="roles.map((r) => ({ label: r.label, value: r.value }))" class="w-36" />
-              <UButton label="Answer" icon="i-lucide-reply" size="sm" v-bind="look('answer')" :loading="paste.busy" :disabled="!paste.offer.trim()" data-paste-answer-make @click="answerPaste" />
-            </div>
-            <UAlert v-if="paste.error" color="error" variant="subtle" icon="i-lucide-triangle-alert" :title="paste.error" />
-            <template v-if="paste.answer">
-              <UTextarea :model-value="paste.answer" :rows="3" readonly class="w-full font-mono text-[11px]" data-paste-answer-out />
-              <UButton label="Copy answer" icon="i-lucide-clipboard" size="sm" v-bind="look('copy-answer')" class="self-start" @click="copyText(paste.answer, 'Answer copied')" />
-            </template>
-          </div>
-        </details>
-
-        <div>
-          <div class="flex items-center justify-between mb-2">
-            <h3 class="text-[11px] font-semibold uppercase tracking-wider text-muted">Links</h3>
-            <IconButton icon="i-lucide-refresh-cw" size="xs" color="neutral" variant="ghost" :loading="loading" label="Refresh" @click="refresh" />
-          </div>
-          <p v-if="!live.length && !loading" class="text-sm text-muted">No links yet.</p>
-          <ul v-else class="flex flex-col gap-2">
-            <li v-for="link in live" :key="link.id" class="flex flex-col gap-1 rounded-md border border-default px-3 py-2.5" data-share-link>
-              <div class="flex items-center gap-2">
-                <span class="text-sm font-medium truncate">{{ link.label || 'unlabelled' }}</span>
-                <UBadge :label="link.role === 'control' ? 'Control' : 'View'" :color="link.role === 'control' ? 'primary' : 'neutral'" :variant="link.role === 'control' ? 'subtle' : 'outline'" size="sm" />
-                <UBadge v-if="link.remote" label="switchyard" color="info" variant="subtle" size="sm" icon="i-lucide-globe" />
-                <UBadge v-if="link.decide" label="answers decisions" color="primary" variant="outline" size="sm" icon="i-lucide-list-checks" data-share-link-decide />
-                <UBadge v-if="link.revokePending" label="revoke pending" color="warning" variant="subtle" size="sm" />
-                <UButton label="Revoke" size="xs" variant="link" color="secondary" class="ml-auto" @click="revoke(link)" />
+            <div class="flex flex-wrap items-center gap-2">
+              <div class="flex gap-0.5 rounded-md bg-default p-0.5 ring ring-default" role="radiogroup" aria-label="What the link allows" data-share-role>
+                <button
+                  v-for="r in roles"
+                  :key="r.value"
+                  type="button"
+                  role="radio"
+                  :aria-checked="created.role === r.value"
+                  :disabled="switching || creating"
+                  class="flex items-center gap-1.5 rounded px-2.5 py-1 text-xs font-medium transition-colors disabled:opacity-60"
+                  :class="created.role === r.value ? 'bg-inverted text-inverted' : 'text-muted hover:text-default'"
+                  :data-share-role-option="r.value"
+                  @click="setRole(r.value)"
+                >
+                  <UIcon :name="r.value === 'control' ? 'i-lucide-keyboard' : 'i-lucide-eye'" class="size-3.5" />{{ r.label }}
+                </button>
               </div>
-              <span class="font-mono text-[11px] text-muted">
-                created {{ fmt(link.createdAt) }}<template v-if="link.expiresAt"> · expires {{ fmt(link.expiresAt) }}</template><template v-if="link.active !== undefined && !link.remote"> · {{ link.active }} using</template>
-              </span>
-            </li>
-          </ul>
-        </div>
+              <span class="text-xs text-muted">{{ roles.find((r) => r.value === created!.role)?.description }}</span>
+              <UIcon v-if="switching" name="i-lucide-loader-circle" class="size-3.5 animate-spin text-muted" />
+            </div>
+            <p v-if="created.decide" class="flex items-center gap-1.5 text-xs text-muted" data-created-decide>
+              <UIcon name="i-lucide-list-checks" class="size-3.5" /> Answers decisions: the link opens on Needs you.
+            </p>
+            <div v-if="created.invite" class="flex items-center gap-2.5" data-created-invite>
+              <span class="flex-1 truncate font-mono text-xs text-muted" :title="created.invite">{{ created.invite }}</span>
+              <UButton label="Copy invite" size="sm" color="neutral" variant="outline" @click="copyText(created!.invite!, 'Invite copied', 'It opens in the Conductor app; the link opens in a browser.')" />
+            </div>
+            <UAlert
+              v-if="createdReach"
+              :color="reachColor[createdReach.kind === 'unpublished' ? 'pending' : createdReach.level]"
+              variant="soft"
+              :icon="reachIcon"
+              :title="createdReach.title"
+              :description="createdReach.text"
+              :data-link-reach="createdReach.level"
+              :data-share-reach="createdReach.kind"
+              class="mt-1"
+            />
+          </div>
+
+          <details class="rounded-md border border-default px-3.5 py-2" data-another-link @toggle="anotherOpen = ($event.target as HTMLDetailsElement).open">
+            <summary class="cursor-pointer text-sm font-semibold">Another link</summary>
+            <form class="mt-3 flex flex-col gap-4" @submit.prevent="createAnother">
+              <div class="grid grid-cols-2 gap-2" role="radiogroup" aria-label="Role">
+                <button
+                  v-for="r in roles"
+                  :key="r.value"
+                  type="button"
+                  role="radio"
+                  :aria-checked="form.role === r.value"
+                  class="flex flex-col gap-1 rounded-md border p-3 text-left transition-colors"
+                  :class="form.role === r.value ? 'border-primary bg-primary/5 ring-1 ring-primary' : 'border-default hover:border-accented'"
+                  @click="form.role = r.value"
+                >
+                  <span class="text-sm font-semibold">{{ r.label }}</span>
+                  <span class="text-xs leading-snug text-muted">{{ r.description }}</span>
+                </button>
+              </div>
+              <div v-if="form.role === 'control'" class="flex flex-col gap-1" data-share-decide>
+                <USwitch v-model="form.decide" :disabled="!!decideRefused" label="Answer decisions from this link" description="It opens on Needs you: whoever holds it answers the questions and the tasks' choices it covers, each recorded as the link's." data-share-decide-switch />
+                <p v-if="decideRefused" class="text-xs text-warning" data-share-decide-refused>{{ decideRefused }}</p>
+              </div>
+              <div class="grid grid-cols-2 gap-3">
+                <UFormField label="Label" name="label">
+                  <UInput v-model="form.label" placeholder="what the link is for (optional)" class="w-full" />
+                </UFormField>
+                <UFormField label="Expires" name="ttl">
+                  <USelect v-model="form.ttl" :items="ttlItems" class="w-full" />
+                </UFormField>
+              </div>
+              <UButton label="Create link" type="submit" icon="i-lucide-link" v-bind="look('create')" :loading="creating" class="self-end" />
+            </form>
+          </details>
+
+          <details v-if="'sessionId' in props && props.sessionId" class="rounded-md border border-default px-3.5 py-2" data-paste-invite>
+            <summary class="cursor-pointer text-sm font-semibold">Answer a paste invite</summary>
+            <div class="mt-2 flex flex-col gap-2">
+              <p class="text-xs text-muted">For a viewer no server can reach from here: they open <code>/paste</code> on any Conductor, send you their invite, you answer it here, and the terminal runs between the two machines alone.</p>
+              <UTextarea v-model="paste.offer" :rows="3" placeholder="cpi1.…" class="w-full font-mono text-[11px]" data-paste-offer-in />
+              <div class="flex items-center gap-2">
+                <USelect v-model="paste.role" :items="roles.map((r) => ({ label: r.label, value: r.value }))" class="w-36" />
+                <UButton label="Answer" icon="i-lucide-reply" size="sm" v-bind="look('answer')" :loading="paste.busy" :disabled="!paste.offer.trim()" data-paste-answer-make @click="answerPaste" />
+              </div>
+              <UAlert v-if="paste.error" color="error" variant="subtle" icon="i-lucide-triangle-alert" :title="paste.error" />
+              <template v-if="paste.answer">
+                <UTextarea :model-value="paste.answer" :rows="3" readonly class="w-full font-mono text-[11px]" data-paste-answer-out />
+                <UButton label="Copy answer" icon="i-lucide-clipboard" size="sm" v-bind="look('copy-answer')" class="self-start" @click="copyText(paste.answer, 'Answer copied')" />
+              </template>
+            </div>
+          </details>
+
+          <div>
+            <div class="flex items-center justify-between mb-2">
+              <h3 class="text-[11px] font-semibold uppercase tracking-wider text-muted">Links</h3>
+              <IconButton icon="i-lucide-refresh-cw" size="xs" color="neutral" variant="ghost" :loading="loading" label="Refresh" @click="refresh" />
+            </div>
+            <p v-if="!live.length && !loading" class="text-sm text-muted">No links yet.</p>
+            <ul v-else class="flex flex-col gap-2">
+              <li v-for="link in live" :key="link.id" class="flex flex-col gap-1 rounded-md border border-default px-3 py-2.5" data-share-link>
+                <div class="flex items-center gap-2">
+                  <span class="text-sm font-medium truncate">{{ link.label || 'unlabelled' }}</span>
+                  <UBadge :label="link.role === 'control' ? 'Control' : 'View'" :color="link.role === 'control' ? 'primary' : 'neutral'" :variant="link.role === 'control' ? 'subtle' : 'outline'" size="sm" />
+                  <UBadge v-if="link.remote" label="switchyard" color="info" variant="subtle" size="sm" icon="i-lucide-globe" />
+                  <UBadge v-if="link.decide" label="answers decisions" color="primary" variant="outline" size="sm" icon="i-lucide-list-checks" data-share-link-decide />
+                  <UBadge v-if="link.revokePending" label="revoke pending" color="warning" variant="subtle" size="sm" />
+                  <UButton label="Revoke" size="xs" variant="link" color="secondary" class="ml-auto" @click="revoke(link)" />
+                </div>
+                <span class="font-mono text-[11px] text-muted">
+                  created {{ fmt(link.createdAt) }}<template v-if="link.expiresAt"> · expires {{ fmt(link.expiresAt) }}</template><template v-if="link.active !== undefined && !link.remote"> · {{ link.active }} using</template>
+                </span>
+              </li>
+            </ul>
+          </div>
+        </template>
       </div>
     </template>
   </UModal>

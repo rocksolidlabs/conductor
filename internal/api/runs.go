@@ -441,8 +441,9 @@ func (s *Server) handleListRuns(w http.ResponseWriter, r *http.Request) {
 // run the engine no longer holds (ended before the server last started, or
 // evicted) is answered from its record (crew.Records), marked `record`, so
 // that its page opens read-only: no diffs, nothing of it live, and its
-// actions (stop, resume, a member added or started, a broadcast, its links)
-// answer 404 as for any run the engine does not hold.
+// actions (stop, resume, a member added or started, a broadcast) answer 404
+// as for any run the engine does not hold; its links' routes answer 409
+// run_record, saying why none is made (refuseRunNotHeld).
 func (s *Server) handleGetRun(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("run")
 	after, ok := decisionsAfter(w, r)

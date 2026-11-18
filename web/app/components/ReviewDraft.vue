@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ContinuationNeeded } from '~/composables/useReview'
 import { MAX_REPAIR_PAYLOAD, MAX_REVIEW_SUMMARY, kib, noteWhere, requestWords, type DraftNote, type Verdict } from '~/utils/review'
+import { REVIEW_HOLD_WORDS } from '~/utils/compareSelect'
 
 // The template has three roots (the draft and its two dialogs), so a class the page gives the draft (its width beside the diff) is
 // bound to the draft's own section: inherited, it was dropped, and the draft took its content's whole width, the diff squeezed to a
@@ -15,6 +16,8 @@ defineOptions({ inheritAttrs: false })
  * first (continuation_needed), asks a second time in the server's words before it sends again with `continueRun`. The draft is this
  * browser's until it is sent; a failure keeps it as it is. A draft has one send at a time (useReviewDraft): while it is under way, from
  * this view or one closed since, Send review waits; when its answer was lost, Send review sends that same review again, as it was sent.
+ * A candidate the server would refuse a repair of (`hold`: a comparison's lane not selected, CP1) says so first, above the notes, and
+ * its Request changes is held; the view's problems then hold Send review while it is the verdict.
  */
 const props = defineProps<{
   notes: DraftNote[]
@@ -28,6 +31,8 @@ const props = defineProps<{
   commit: string
   /** The candidate's attempt as its run lists it: where it started and how it ended, which say where a repair starts. */
   attempt?: { attempt: number; start?: string; state?: string; stage?: string }
+  /** Request changes is refused for this candidate (a comparison's lane not selected, CP1): why, in the server's words; null when it is not. */
+  hold?: { title: string; words: string } | null
   /** The draft's base is none the page offers now: why, in words; the draft is shown and not sent. */
   stale?: string
   /** The storage refused it: kept in this page alone. */
@@ -41,11 +46,11 @@ const props = defineProps<{
 }>()
 const emit = defineEmits<{ open: [note: DraftNote]; edit: [note: DraftNote]; drop: [note: DraftNote]; general: []; verdict: [v: Verdict]; summary: [s: string]; discard: [] }>()
 
-const verdicts = [
-  { label: 'Request changes', value: 'request_changes', description: 'Yardmaster reopens the task at this candidate with these notes.' },
+const verdicts = computed(() => [
+  { label: 'Request changes', value: 'request_changes', description: props.hold ? 'Held for this candidate, as said above.' : 'Yardmaster reopens the task at this candidate with these notes.', disabled: !!props.hold },
   { label: 'Comment', value: 'comment', description: 'Recorded beside the candidate; no run changes.' },
   { label: 'Approve', value: 'approve', description: 'Recorded; it accepts nothing, delivers nothing and closes nothing.' },
-]
+])
 const confirmOpen = ref(false)
 const continuation = ref<ContinuationNeeded | null>(null)
 const sending = ref(false)
@@ -60,7 +65,7 @@ const confirmWords = computed(() => requestWords(props.task, { ...props.attempt,
 const resendWords = computed(() => {
   const r = props.resend
   if (!r) return ''
-  const v = verdicts.find((x) => x.value === r.verdict)?.label ?? r.verdict
+  const v = verdicts.value.find((x) => x.value === r.verdict)?.label ?? r.verdict
   return `Its answer did not come, so it may be recorded. Send review asks for that same review again (${r.notes === 1 ? '1 note' : `${r.notes} notes`}, ${v}), as it was sent and under the same operation, so it is recorded once; a change made to the draft since stays here to send after it.`
 })
 
@@ -75,6 +80,7 @@ function intentColor(n: DraftNote): 'error' | 'warning' | 'info' | 'neutral' {
 function ask() {
   failure.value = ''
   if (blocked.value) return
+  if (sendVerdict.value === 'request_changes' && props.hold) return
   if (sendVerdict.value === 'request_changes') confirmOpen.value = true
   else void go(false)
 }
@@ -102,6 +108,13 @@ async function go(continueRun: boolean) {
       <UButton label="A general note" icon="i-lucide-message-square-plus" size="xs" color="neutral" variant="ghost" class="ml-auto" data-review-general @click="emit('general')" />
     </div>
     <p class="text-xs text-dimmed">Kept in this browser until it is sent; nothing is a record before.<template v-if="unsaved"> This browser did not keep it: it lasts as long as this page.</template></p>
+
+    <UAlert v-if="hold" color="neutral" variant="subtle" icon="i-lucide-lock" :title="hold.title" data-review-hold>
+      <template #description>
+        <span class="block" data-review-hold-words>{{ hold.words }}.</span>
+        <span class="block">{{ REVIEW_HOLD_WORDS }}</span>
+      </template>
+    </UAlert>
 
     <UAlert v-if="stale" color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="stale" description="Its notes are shown to copy or drop; it is not sent." data-review-draft-stale>
       <template #actions>

@@ -951,16 +951,34 @@ func TestAPortIsLetGoOnlyOnceItsTreesEndIsCommitted(t *testing.T) {
 				t.Cleanup(release)
 			}
 			l.mu.Unlock()
-			if err := e.CancelTask(t.Context(), run.ID, "build"); err != nil {
-				t.Fatal(err)
+			// The cancel's commit sets the tree's end going, and CancelTask
+			// then waits for the run's transactions to dispatch: with the
+			// end's commit held, it returns only once the end is let
+			// through. So it runs on a goroutine of its own, held after
+			// its commit until the end is at its gate (beforeCancelPump),
+			// the order a loaded machine can give.
+			cancelled := make(chan error, 1)
+			atGate := make(chan struct{})
+			if !tc.refused {
+				e.beforeCancelPump = func(string) {
+					select {
+					case <-l.blocked:
+						close(atGate)
+					case <-time.After(10 * time.Second):
+					}
+				}
 			}
+			go func() { cancelled <- e.CancelTask(context.Background(), run.ID, "build") }()
 			if tc.refused {
+				if err := <-cancelled; err != nil {
+					t.Fatal(err)
+				}
 				// The cancel's commit counted the tree before CancelTask
 				// returned: the count drops once its refused end returns.
 				waitTreesEnded(t, e, run.ID)
 			} else {
 				select {
-				case <-l.blocked:
+				case <-atGate:
 				case <-time.After(10 * time.Second):
 					t.Fatal("the tree's end did not reach its commit")
 				}
@@ -989,6 +1007,14 @@ func TestAPortIsLetGoOnlyOnceItsTreesEndIsCommitted(t *testing.T) {
 				}
 			} else {
 				release()
+				select {
+				case err := <-cancelled:
+					if err != nil {
+						t.Fatal(err)
+					}
+				case <-time.After(10 * time.Second):
+					t.Fatal("the cancel did not return once the end's commit was let through")
+				}
 			}
 			l.waitTreeRowsEnded(t, run.ID, "build", 1, ledger.TreeWorktree)
 			waitTreesEnded(t, e, run.ID)

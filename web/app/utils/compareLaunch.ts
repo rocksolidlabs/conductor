@@ -1,4 +1,5 @@
 import type { PlanBody, PlanCompare, PlanSummary } from '~/composables/useDispatch'
+import { checksEachWords, manifestForm, type ManifestForm } from './dispatchPlans'
 
 /**
  * A comparison's launch (CP1, docs/plans/compare-crew.md, "The launch says what it costs"): what it starts, said before anything starts, from
@@ -28,12 +29,21 @@ export type CompareLaunch =
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`
 
+/** Where a candidate attempt's checks come from, by the revision's manifest. */
+const CHECKS_FROM: Record<ManifestForm, string> = {
+  none: "the task's checks; the plan holds no manifest, so no verify steps",
+  crew: "the task's checks and the crew's manifest's verify steps",
+  file: "the task's checks and conductor.manifest.json's verify steps at the base; a candidate that changes the manifest runs its own",
+}
+
 /**
  * The statement's parts, in the plan's words: the candidates and their sessions; up to as many review sessions after them; the
- * multiplier, with the refunds and Retries named; the checks on each submitted candidate attempt at the base; the Brakeman turn; and
- * where usage per account is shown (AC1's member lines, below the statement).
+ * multiplier, with the refunds and Retries named; the checks on each submitted candidate attempt at the base, named by where they come
+ * from (`manifest`: the revision's, manifestForm: no verify step is named for a crew with no manifest, and only the file form's
+ * conductor.manifest.json can be changed by a candidate); the Brakeman turn; and where usage per account is shown (AC1's member lines,
+ * below the statement).
  */
-export function compareStatement(part: PlanCompare, agents: readonly string[]): StatementPart[] {
+export function compareStatement(part: PlanCompare, agents: readonly string[], manifest: ManifestForm = 'file'): StatementPart[] {
   const n = part.candidates
   const out: StatementPart[] = [
     {
@@ -54,7 +64,7 @@ export function compareStatement(part: PlanCompare, agents: readonly string[]): 
     key: 'checks',
     words: part.checksUnread
       ? `the checks on each submitted candidate attempt are not known: ${part.checksUnread} (a candidate that changes the manifest runs its own)`
-      : `${plural(part.checksAtBase, 'check')} on each submitted candidate attempt (the task's checks and conductor.manifest.json's verify steps at the base; a candidate that changes the manifest runs its own)`,
+      : `${checksEachWords(part.checksAtBase)} (${CHECKS_FROM[manifest]})`,
   })
   out.push({ key: 'brakeman', words: part.brakemanTurn ? '1 Brakeman turn on your Brakeman account, when all candidates are done' : 'no Brakeman turn: this comparison asks no draft' })
   out.push({ key: 'usage', words: 'Usage per account: shown below' })
@@ -93,7 +103,7 @@ export function compareLaunch(revision: Pick<PlanSummary, 'n' | 'compare'>, body
   const agents = block ? candidateAgents(body, catalog) : null
   if (!block || !agents || agents.length !== part.candidates || !Number.isInteger(part.candidates) || part.candidates < 1)
     return { kind: 'unstated', words: `Revision ${revision.n}'s statement and its crew disagree on its candidates: read the ticket again before launching it` }
-  return { kind: 'compare', count: part.candidates, agents, statement: compareStatement(part, agents) }
+  return { kind: 'compare', count: part.candidates, agents, statement: compareStatement(part, agents, manifestForm(body)) }
 }
 
 /** The launch button's words: "Launch 3 candidates" for a comparison, "Launch" otherwise; a resend's and a retry's words stay theirs. */

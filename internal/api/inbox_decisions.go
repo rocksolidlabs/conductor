@@ -238,9 +238,10 @@ func (rd *inboxRead) decisionItem(row ledger.DecisionRow, held []string, rec *le
 	it.Brief = fitText("A decision for you, from "+rd.decisionFrom(row, run, runName), 2<<10)
 	if row.Origin == ledger.OriginCompare {
 		// A comparison's selection: no agent asked it, and it is no
-		// approval's yes or no (docs/plans/compare-crew.md).
-		it.Brief = fitText("A comparison's selection for you, from "+rd.decisionFrom(row, run, runName)+
-			": choose one of its candidates, each at its exact commit, or None of these, with your rationale; the answer is final", 2<<10)
+		// approval's yes or no (docs/plans/compare-crew.md). Its words are
+		// true of its state: to choose while open, chosen once answered,
+		// done once closed.
+		it.Brief = fitText(selectionBrief(row.State, rd.decisionFrom(row, run, runName), rd.s.runHeld(row.CurrentRun)), 2<<10)
 	}
 	rd.decisionBlocking(it, row, run, held, where)
 	rd.decisionEvidence(it, row, run, req)
@@ -278,6 +279,22 @@ func cmpPrefix(p, s string) string {
 	return p + s
 }
 
+// selectionBrief is a comparison's selection's brief in its state: to
+// choose while open; answered, when it is applied (next while the engine
+// holds its run, once the run is continued otherwise: answeredWaits);
+// closed, that nothing more is asked.
+func selectionBrief(state, from string, held bool) string {
+	switch state {
+	case ledger.DecisionOpen:
+		return "A comparison's selection for you, from " + from +
+			": choose one of its candidates, each at its exact commit, or None of these, with your rationale; the answer is final"
+	case ledger.DecisionAnswered:
+		return "A comparison's selection, from " + from + ": it is answered, and the answer is final; " + answeredWaits(held)
+	default:
+		return "A comparison's selection, from " + from + ": it is " + state + ", and nothing more is asked of you"
+	}
+}
+
 // answeredWaits says what an answered record waits for: Yardmaster's
 // application, at once while the engine holds its run, else once the run
 // is continued.
@@ -311,14 +328,27 @@ func (rd *inboxRead) decisionBlocking(it *inboxItem, row ledger.DecisionRow, run
 	if row.Origin == ledger.OriginAgent && row.TaskID != "" {
 		add(row.TaskID)
 	}
-	for _, t := range tasks {
-		it.block("task:" + row.CurrentRun + "/" + t)
+	// A closed record (applied, or closed without an answer: superseded,
+	// cancelled, expired) blocks nothing, and says so: its run and its
+	// asking task are named in its evidence, never as blocked by it.
+	closed := row.State != ledger.DecisionOpen && row.State != ledger.DecisionAnswered
+	if !closed {
+		for _, t := range tasks {
+			it.block("task:" + row.CurrentRun + "/" + t)
+		}
+		it.block("run:" + row.CurrentRun)
 	}
-	it.block("run:" + row.CurrentRun)
 	var words string
 	switch {
+	case closed:
+		// Closed (applied, or closed without an answer): nothing waits for
+		// it now, whatever it held while it was open.
+		words = fmt.Sprintf("Nothing waits for %s now: it is %s", id, row.State)
 	case len(held) > 0:
 		words = fmt.Sprintf("Yardmaster holds %s until %s is answered and applied", strings.Join(held, ", "), id)
+	case row.Origin == ledger.OriginCompare && row.State == ledger.DecisionAnswered:
+		words = fmt.Sprintf("The run %s waits for %s: every lane has ended, and its selection is made; %s, and the run ends once it is applied",
+			cmpOr(run.run.Name, row.CurrentRun), id, answeredWaits(rd.s.runHeld(row.CurrentRun)))
 	case row.Origin == ledger.OriginCompare:
 		words = fmt.Sprintf("The run %s waits for %s: every lane has ended, and the run ends once a candidate, or None of these, is selected", cmpOr(run.run.Name, row.CurrentRun), id)
 	case row.Origin == ledger.OriginAgent:
@@ -326,8 +356,8 @@ func (rd *inboxRead) decisionBlocking(it *inboxItem, row ledger.DecisionRow, run
 	default:
 		words = "Nothing is held for " + id
 	}
-	if row.State == ledger.DecisionAnswered {
-		words += "; it is answered, and what it holds waits for Yardmaster to apply it"
+	if row.State == ledger.DecisionAnswered && row.Origin != ledger.OriginCompare {
+		words += "; it is answered: " + answeredWaits(rd.s.runHeld(row.CurrentRun))
 	}
 	it.Blocking.Words = fitText(words, 500)
 }
