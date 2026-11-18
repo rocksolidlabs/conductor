@@ -81,6 +81,10 @@ type LedgerTx interface {
 	Continued(from string) error
 	// PutMessage keeps a message a member sent another (messages.go).
 	PutMessage(ledger.MessageRow) error
+	// PutOrigin writes the run's origin once, in its first transaction
+	// (origin.go): ledger.ErrOpExists when the provider's operation id
+	// names another run.
+	PutOrigin(ledger.OriginRow) error
 }
 
 // Ledger is the managed runs' ledger as the engine writes it: one
@@ -317,7 +321,15 @@ func (s sqlLedger) Load(ctx context.Context, runID string) (Loaded, bool, error)
 			held[h.Decision] = rec.DecisionRow
 		}
 	}
-	return Loaded{Run: row, Launch: launch, Tasks: tasks, Attempts: attempts, Messages: messages, Prerequisites: prereqs, FailedChecks: failed, Holds: holds, HeldDecisions: held}, true, nil
+	out := Loaded{Run: row, Launch: launch, Tasks: tasks, Attempts: attempts, Messages: messages, Prerequisites: prereqs, FailedChecks: failed, Holds: holds, HeldDecisions: held}
+	origin, ok, err := s.l.Origin(ctx, runID)
+	if err != nil {
+		return Loaded{}, true, err
+	}
+	if ok {
+		out.Origin = &origin
+	}
+	return out, true, nil
 }
 
 func (s sqlLedger) CheckLog(ctx context.Context, runID, taskID string, n int, id string, k int) (ledger.CheckRow, bool, error) {
@@ -1309,7 +1321,9 @@ func (e *Engine) commitHeld(ctx context.Context, r *run, first firstTx, judge fu
 	e.mu.Lock()
 	r.committing = false
 	if err != nil {
-		if snap.create && errors.Is(err, ErrRunExists) {
+		if snap.create && (errors.Is(err, ErrRunExists) || errors.Is(err, ledger.ErrOpExists)) {
+			// Its id is another run's, or its operation id names another
+			// run: nothing of it is written again, and it goes.
 			r.foreign = true
 		}
 		snap.undo(r)
@@ -1818,6 +1832,15 @@ func (e *Engine) startManaged(ctx context.Context, r *run) error {
 			payload["ticket"], payload["digest"] = r.pkg.p.Ticket.Key, r.pkg.digest
 		}
 		out := ev("run.created", payload)
+		if r.origin != nil {
+			// A provider's launch: its origin, with the run's first row,
+			// before any attempt can start; its deadline the engine's
+			// clock's now plus its limit.
+			r.origin.RunID = r.id
+			r.origin.Deadline = deadlineOf(e.now(), r.origin.LimitSeconds)
+			row := *r.origin
+			out.more = func(ltx LedgerTx) error { return ltx.PutOrigin(row) }
+		}
 		// The plan revision's gates, with their tasks' rows (O2).
 		var gates tx
 		gates, ungate = e.openGates(r)
@@ -1826,6 +1849,7 @@ func (e *Engine) startManaged(ctx context.Context, r *run) error {
 	}, func() { ungate() }); err != nil {
 		return err
 	}
+	e.watchDeadline(r)
 	e.pumpLocked(r)
 	return nil
 }
