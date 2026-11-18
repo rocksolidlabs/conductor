@@ -127,22 +127,24 @@ describe("the launch statement's checks, by the revision's manifest", () => {
 
   it('names no verify step for a crew with no manifest', () => {
     expect(manifestForm(body())).toBe('none')
-    expect(words(body())).toBe("1 check on each submitted candidate attempt (the task's checks: the crew names no manifest, so no verify step runs)")
+    expect(words(body())).toBe("1 check on each submitted candidate attempt (the task's checks; the plan holds no manifest, so no verify steps)")
     expect(words(body())).not.toContain('conductor.manifest.json')
   })
 
   it("names the crew's own manifest's verify steps, and conductor.manifest.json's only for the file form", () => {
     const own = body({ manifest: { verify: [{ id: 'lint', argv: ['make', 'lint'] }] } })
     expect(manifestForm(own)).toBe('crew')
-    expect(words(own)).toBe("1 check on each submitted candidate attempt (the task's checks and the verify steps of the crew's own manifest)")
+    expect(words(own)).toBe("1 check on each submitted candidate attempt (the task's checks and the crew's manifest's verify steps)")
     const file = body({ manifest: { file: true } })
     expect(manifestForm(file)).toBe('file')
+    // A manifest file read at the base is the file form too.
+    expect(manifestForm(body({ manifestFile: { path: 'conductor.manifest.json', blob: 'b'.repeat(40), manifest: {} } }))).toBe('file')
     expect(words(file)).toBe("1 check on each submitted candidate attempt (the task's checks and conductor.manifest.json's verify steps at the base; a candidate that changes the manifest runs its own)")
   })
 
   it("is told the revision's manifest by the launch", () => {
     const l = compareLaunch({ n: 1, compare: part }, body(), catalog)
     if (l.kind !== 'compare') throw new Error(l.kind)
-    expect(l.statement.find((p) => p.key === 'checks')!.words).toContain('the crew names no manifest')
+    expect(l.statement.find((p) => p.key === 'checks')!.words).toContain('the plan holds no manifest')
   })
 })

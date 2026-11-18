@@ -127,9 +127,10 @@ export function expectedChecks(body: Pick<PlanBody, 'crew' | 'manifestFile'>): E
 /** Where a revision's verify steps come from: no manifest, the crew's own, or conductor.manifest.json read at each tree (the file form). */
 export type ManifestForm = 'none' | 'crew' | 'file'
 
-export function manifestForm(body: Pick<PlanBody, 'crew'>): ManifestForm {
+export function manifestForm(body: Pick<PlanBody, 'crew' | 'manifestFile'>): ManifestForm {
   const m = body.crew.manifest
-  return !m ? 'none' : m.file ? 'file' : 'crew'
+  if (m?.file || body.manifestFile) return 'file'
+  return m ? 'crew' : 'none'
 }
 
 /**

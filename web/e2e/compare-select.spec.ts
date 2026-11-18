@@ -5,7 +5,7 @@ import type { Browser, Page } from '@playwright/test'
 import { budget, dayPage, expect, test, useTheme } from './fixtures'
 import { compareRun, comparisonOf } from './compare-stub'
 import { decisionRecord, inboxItem, stubInbox, SELECTION_AUTHORIZES, type StubItem } from './inbox-stub'
-import { noSideways, tapTarget } from './layout'
+import { inside, noSideways, tapTarget, uncut } from './layout'
 import { serveComparison } from './compare-stub'
 import { SETTLE_MS, checkScript, comparison, launchComparison, selectionUntil } from './compare-select-helpers'
 import { decisionUntil } from './decisions-helpers'
@@ -325,6 +325,52 @@ test.describe('the selection and the supporting panel on the comparison', () => 
         expect(select.y, `the selection after the supporting panel, ${at}`).toBeGreaterThanOrEqual(supporting.y + supporting.height)
         if (size === PHONE) await tapTarget(v.locator('[data-compare-select] [data-decision-choice], [data-compare-ask-brakeman]'))
         await noSideways(page)
+      }
+      await page.context().close()
+    }
+  })
+
+  test("an option's longest words wrap inside the selection, wide and on a phone, in both themes, nothing cut", async ({ day, browser }) => {
+    await day.part('dispatch')
+    budget(6 * LOAD_MS)
+    const run = compareRun({ ticket: COMPARE_TICKET })
+    const sel = inboxItem('decision', { origin: 'compare', run, candidates: [{ task: 'approach-a', n: 1, commit: 'a'.repeat(40) }, { task: 'approach-b', n: 3, commit: 'b'.repeat(40) }] })
+    // The server's words at their longest (an option's words are cut to the ledger's 1 KiB): a clause per check with its verdict and
+    // every reason, one of them a path with no place to break.
+    const clause = (i: number) => `check check-${i}: passed, not comparable (approach-a changed internal/cache/locale/${'x'.repeat(60)}_${i}.sh, which the check runs; approach-b: not run: an earlier check failed)`
+    let long = 'attempt 1'
+    for (let i = 0; long.length < 1024; i++) long = `${long}; ${clause(i)}`
+    // Cut to the ledger's bound, as the server cuts it.
+    long = long.slice(0, 1024)
+    expect(long.length).toBe(1024)
+    const record = decisionRecord(sel, true) as { request: { options: Array<{ tradeoffs?: string }>; context: string } }
+    for (const o of record.request.options.slice(0, 2)) o.tradeoffs = long
+    record.request.context = `approach-a: aaaaaaa, attempt 1; ${long.slice('attempt 1; '.length)}.`
+    for (const size of [DESK, PHONE]) {
+      const page = await dayPage(browser, { ...size, path: '/agents' })
+      await serveRun(page, run)
+      await stubInbox(page, [sel])
+      // The record read by its id, with the long words (registered after the stub, so it answers first).
+      await page.route(
+        (u) => u.pathname === `/api/decisions/${sel.ref.slice('decision:'.length)}`,
+        (route) => (route.request().method() === 'GET' ? route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ decision: record, refs: [] }) }) : route.fallback()),
+      )
+      await serveComparison(page, run.id, () => ({ ...comparisonOf({ run: run.id }), selection: { ...selectionOf(sel, 'open'), options: record.request.options } }))
+      for (const theme of ['dark', 'light'] as const) {
+        await openCompare(page, run.id)
+        await useTheme(page, theme, '[data-compare-select] [data-decision-choice]')
+        const select = page.locator('[data-compare-select]')
+        const lines = select.locator('[data-decision-tradeoff]')
+        await expect(lines.first()).toContainText(long.slice(0, 200))
+        const at = `${size.width} wide, ${theme}`
+        for (const i of [0, 1]) {
+          const line = select.locator(`[data-decision-tradeoff="${i}"]`)
+          await expect(line, at).toContainText(long.slice(-120))
+          await line.scrollIntoViewIfNeeded()
+          await uncut(line)
+        }
+        await inside(lines, select)
+        await noSideways(page, { root: select })
       }
       await page.context().close()
     }

@@ -142,7 +142,7 @@ test("a comparison's launch says what it starts, its button says the count, and 
   await expect(statement.locator('[data-launch-compare-part="reviews"]')).toHaveText('then an agent review of each candidate that succeeds: up to 2 more sessions, none for a candidate that fails or is cancelled')
   await expect(statement.locator('[data-launch-compare-part="multiplier"]')).toContainText("a review's request for changes, an attempt that could not start and each Retry you give add more")
   await expect(statement.locator('[data-launch-compare-part="checks"]')).toHaveText(
-    "1 check on each submitted candidate attempt (the task's checks: the crew names no manifest, so no verify step runs)",
+    "1 check on each submitted candidate attempt (the task's checks; the plan holds no manifest, so no verify steps)",
   )
   await expect(statement.locator('[data-launch-compare-part="brakeman"]')).toHaveText('1 Brakeman turn on your Brakeman account, when all candidates are done')
   await expect(statement.locator('[data-launch-compare-part="usage"]')).toHaveText('Usage per account: shown below')
