@@ -363,6 +363,9 @@ func (s *Server) handleCaptureCreate(w http.ResponseWriter, r *http.Request) {
 			measured[i] = proto.PreviewMeasure(*a.Element)
 		}
 	}
+	if !isLink(req.body.From) {
+		keptAddresses(&req.body, secrets)
+	}
 	scrubSecrets(&req.body, secrets)
 	req.op.By = req.body.ByName
 	n := req.body.NewCapture
@@ -411,6 +414,34 @@ func (s *Server) handleCaptureCreate(w http.ResponseWriter, r *http.Request) {
 	scrubSecrets(&n, s.liveSecrets())
 	rc, err = ds.CreateCapture(ctx, req.op, req.digest, n, facts, image)
 	s.answerCapture(w, ctx, ds, rc, err, true, "")
+}
+
+// keptAddresses makes a preview's capture's addresses, the page's and
+// each annotation's moment's alike, the page's address without a fragment
+// that holds a part of a tree's secret or its name (keptAddress), before
+// the scrub: a preview's own address keeps its tree's secret in its
+// fragment (#token=), which the page is opened with and is no part of the
+// page shown.
+func keptAddresses(b *captureCreateBody, secrets []string) {
+	b.URL = keptAddress(b.URL, secrets)
+	for _, a := range b.Annotations {
+		if a.Observed != nil {
+			a.Observed.URL = keptAddress(a.Observed.URL, secrets)
+		}
+	}
+}
+
+// keptAddress is u without its fragment when the fragment holds a part of
+// one of secrets as the scrub finds one, or the secrets' name; else u.
+func keptAddress(u string, secrets []string) string {
+	i := strings.IndexByte(u, '#')
+	if i < 0 {
+		return u
+	}
+	if f := u[i:]; holdsSecret(f, secrets) || strings.Contains(f, treeSecretName) {
+		return u[:i]
+	}
+	return u
 }
 
 // isLink is whether from names a link, not an attempt.

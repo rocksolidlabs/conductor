@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { CaptureAnswer, CaptureFrom, ViewportMode } from '~/utils/capture'
 import { DEVICE_SIZES, NO_BRIDGE_WORDS, SELF_WORDS, isWorkbench, labelWords, originOf, retakeAddress } from '~/utils/capture'
-import { previewSeam, usePreviewBridge } from '~/composables/usePreviewBridge'
+import { previewSeam, usePreviewBridge, withoutFragment } from '~/composables/usePreviewBridge'
 import { type LabelTarget, usePreviewLabel } from '~/composables/usePreviewLabel'
 import { screenshotSource } from '~/utils/screenshot'
 import { desktopPreviewBridge } from '~/utils/screenshotDesktop'
@@ -136,7 +136,8 @@ const session = usePreviewBridge({
   view: () => ({ mode: mode.value, scale: scale.value }),
   fallback: () => {
     const d = device.value
-    return { url: src.value, width: d ? d.width : room.value.width, height: d ? d.height : room.value.height }
+    // The frame's address less its fragment: what opens the preview there stays the frame's.
+    return { url: withoutFragment(address.value), width: d ? d.width : room.value.width, height: d ? d.height : room.value.height }
   },
 })
 /** Two animation frames: what the last change drew is on the screen. */

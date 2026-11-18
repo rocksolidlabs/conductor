@@ -641,3 +641,14 @@ describe('the screenshot source and the frame element', () => {
     expect(c.made.length).toBe(2)
   })
 })
+
+describe("a draft's address without the bridge", () => {
+  it('is the address the pane gave the frame, without its fragment', async () => {
+    const h = harness({ deps: { fallback: () => ({ url: `${ORIGIN}/app?tab=2#token=${'c'.repeat(64)}`, width: 400, height: 300 }) } })
+    ;(h.frameWindow as { postMessage: unknown }).postMessage = () => {}
+    h.s.hello()
+    h.advance(HELLO_MS)
+    await h.s.snap()
+    expect(h.s.state.drafts.map((d) => d.moment.url)).toEqual([`${ORIGIN}/app?tab=2`])
+  })
+})
