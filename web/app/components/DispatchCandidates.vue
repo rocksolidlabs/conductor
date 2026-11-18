@@ -9,6 +9,7 @@ import { previewPath } from '~/utils/capture'
 import { checkoutOfAttempt } from '~/composables/useCandidatePreview'
 import { runCompare } from '~/utils/compare'
 import { SELECTION_WORDS, candidateSelection } from '~/utils/compareSelect'
+import { noCandidateWords } from '~/utils/dispatchEvidence'
 
 /**
  * A run's candidates (Program item DS2, docs/plans/dispatch-evidence.md, "web/app", PR-11), read from the ledger (GET
@@ -24,7 +25,8 @@ import { SELECTION_WORDS, candidateSelection } from '~/utils/compareSelect'
  * repair there; and a person's repairs (the ticket's reviews that asked for changes) are listed with the run's (PR-7). A comparison's
  * run (its `compare` part, as the page read the run or the live store holds it) labels each work candidate "selected" or "not selected" once its selection is
  * applied (Program item CP1, PR-7), read from the comparison alone, in neutral ink.
- * A candidate whose attempt's preview is offered now offers Open in Conductor, the preview page (PV1).
+ * A candidate whose attempt's preview is offered now offers Open in Conductor, the preview page (PV1). A continuation with no attempt of its
+ * own that submitted says its results are the run it continues', whose candidates that run lists (noCandidateWords).
  */
 const props = defineProps<{
   runId: string
@@ -32,6 +34,8 @@ const props = defineProps<{
   revision?: number
   /** The run is a comparison's, as the page that draws it read the run (a record the live store leaves out among them). */
   compare?: boolean
+  /** The run this one continues, when it is a continuation: its results kept from it are that run's candidates, listed with it. */
+  continues?: string
 }>()
 
 const copy = useCopy()
@@ -119,7 +123,7 @@ const tone = { warning: 'text-warning', error: 'text-error', muted: 'text-muted'
     <p v-if="error" class="text-xs text-warning" data-candidates-error>The candidates could not be read: {{ error }}</p>
     <p v-else-if="!pages" class="text-xs text-dimmed">Reading the candidates…</p>
     <p v-else-if="!managed" class="text-xs text-dimmed">Not a managed run: it has no tasks, and so no candidates.</p>
-    <p v-else-if="!tasks.some((t) => t.candidates.length)" class="text-xs text-dimmed">No attempt has submitted a result yet.</p>
+    <p v-else-if="!tasks.some((t) => t.candidates.length)" class="text-xs text-dimmed" data-candidates-none>{{ noCandidateWords(continues) }}</p>
 
     <ul v-if="tasks.length" class="flex flex-col gap-2">
       <li v-for="t in tasks" v-show="t.candidates.length" :key="t.task" class="flex flex-col gap-1.5" :data-candidate-task="t.task">
