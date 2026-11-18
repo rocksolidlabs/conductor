@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -14,9 +15,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rocksolidlabs/conductor/ext"
 	"github.com/rocksolidlabs/conductor/internal/brakeman"
 	"github.com/rocksolidlabs/conductor/internal/catalog"
 	"github.com/rocksolidlabs/conductor/internal/crew"
+	"github.com/rocksolidlabs/conductor/internal/session"
 )
 
 // handLog is a log safe for the server's goroutines.
@@ -344,6 +347,16 @@ func TestAWithdrawnPackageIsHandedToNoOne(t *testing.T) {
 	if status, _, out := f.call(t, http.MethodPost, "/api/brakeman/handoffs/ho-999/withdraw", nil); status != http.StatusNotFound || codeOf(out) != "not_found" {
 		t.Fatalf("a withdraw of no record: %d %v", status, out)
 	}
+	// Withdrawn with no name: the run's log line names none and ends there.
+	_, out = f.send(t, f.request, 1, "send-3", p.SHA256, "")
+	id3 := entityOf(t, out, "handoff")["id"].(string)
+	if status, _, out := f.call(t, http.MethodPost, "/api/brakeman/handoffs/"+id3+"/withdraw", nil); status != http.StatusOK {
+		t.Fatalf("a withdraw with no name: %d %v", status, out)
+	}
+	r, _ := f.srv.runs.Get(f.run)
+	if !slices.ContainsFunc(r.Log, func(e session.ActivityEntry) bool { return e.Message == "handoff package "+id3+" withdrawn" }) {
+		t.Fatalf("the run's log has no line \"handoff package %s withdrawn\": %+v", id3, r.Log)
+	}
 }
 
 // TestEveryRefusalOfAHandoffPackageWritesNothing: each refusal of the
@@ -536,18 +549,18 @@ func TestTheHandoffFunctionTakesNothingWhileNotOwner(t *testing.T) {
 	}
 }
 
-// TestAPackageTakenByAnAttemptThatNeverStartedSaysSo: an attempt that
-// takes the package and then fails at its setup, before its agent
-// starts, uses it up (one send, one attempt); the preview's record says
-// it was not read (notStarted), and the next attempt holds no section
-// until the person sends it again.
-func TestAPackageTakenByAnAttemptThatNeverStartedSaysSo(t *testing.T) {
+// neverStarted is a managed run whose build attempt 2 took a package and
+// failed at its setup before its agent started: the fixture, the request
+// and the record's id, the run paused with attempt 2 ended. paused waits
+// for attempt n to have failed at its setup and the run to pause.
+func neverStarted(t *testing.T) (f *handFixture, req, id, mark string, paused func(n int)) {
+	t.Helper()
 	l := &handLog{}
 	e := newTestEnvAgents(t, nil, slog.New(slog.NewTextHandler(l, nil)),
 		append(bkAgents(), catalog.Agent{ID: "ready-cat", Name: "ready cat", Command: []string{"/bin/sh", "-c", "echo ready; exec cat"}}))
 	b := bkEnvOf(t, e)
 	e.gitRepo(t)
-	mark := filepath.Join(t.TempDir(), "down")
+	mark = filepath.Join(t.TempDir(), "down")
 	if err := os.WriteFile(mark, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -556,8 +569,8 @@ func TestAPackageTakenByAnAttemptThatNeverStartedSaysSo(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f := &handFixture{bkEnv: b, log: l, run: run.ID}
-	paused := func(n int) {
+	f = &handFixture{bkEnv: b, log: l, run: run.ID}
+	paused = func(n int) {
 		t.Helper()
 		taskVia(t, e, run.ID, "build", fmt.Sprintf("attempt %d failed at its setup", n), func(task map[string]any) bool {
 			a, _ := task["attempt"].(map[string]any)
@@ -568,32 +581,151 @@ func TestAPackageTakenByAnAttemptThatNeverStartedSaysSo(t *testing.T) {
 		}
 	}
 	paused(1)
-	h := hostilePackage(run.ID)
-	req := f.handRequest(t, brakeman.KindHandoff, "task:"+run.ID+"/build", h)
+	req = f.handRequest(t, brakeman.KindHandoff, "task:"+run.ID+"/build", hostilePackage(run.ID))
 	p := f.preview(t, req, 1)
-	if p.Target == nil || p.Target.State != "ready" || p.Target.Attempt != 1 {
+	if p.Target == nil || p.Target.State != "ready" || p.Target.Attempt != 1 || p.Target.Starting {
 		t.Fatalf("the target: %+v %+v", p.Target, p.Refusal)
 	}
 	_, out := f.send(t, req, 1, "send-1", p.SHA256, "Ada")
-	id := entityOf(t, out, "handoff")["id"].(string)
+	id = entityOf(t, out, "handoff")["id"].(string)
 	command(t, e, run.ID, "unpause")
 	paused(2)
 	if !waitFor(30*time.Second, func() bool { return f.record(t, req, 1).State == brakeman.HandoffHanded }) {
 		t.Fatal("the package was never taken")
 	}
+	return f, req, id, mark, paused
+}
+
+// notStartedOf is the preview's record of req's item, which must be the
+// record id handed to attempt 2 and said not read.
+func (f *handFixture) notStartedOf(t *testing.T, req, id string) {
+	t.Helper()
 	got := f.preview(t, req, 1)
 	if got.Handoff == nil || got.Handoff.ID != id || got.Handoff.State != brakeman.HandoffHanded || !got.Handoff.NotStarted || got.Handoff.Handed[0].Attempt != 2 {
 		t.Fatalf("the record of a package an attempt took and never read: %+v", got.Handoff)
 	}
+}
+
+// TestAPackageTakenByAnAttemptThatNeverStartedSaysSo: an attempt that
+// takes the package and then fails at its setup, before its agent
+// starts, uses it up (one send, one attempt); the preview's record says
+// it was not read (notStarted), the next attempt holds no section, and
+// once the engine has let the run go (attempt 2 no longer the task's
+// latest) the record still says so, from the ledger's rows.
+func TestAPackageTakenByAnAttemptThatNeverStartedSaysSo(t *testing.T) {
+	f, req, id, mark, _ := neverStarted(t)
+	f.notStartedOf(t, req, id)
 	if err := os.Remove(mark); err != nil {
 		t.Fatal(err)
 	}
-	command(t, e, run.ID, "unpause")
+	command(t, f.testEnv, f.run, "unpause")
 	if md, _ := f.taskFileOf(t, "build", 3); strings.Contains(md, "handoff package") {
 		t.Fatalf("a used-up package reached the next attempt:\n%s", md)
 	}
-	// Sent again, it waits for the attempt after the running one.
-	if status, out := f.send(t, req, 1, "send-2", p.SHA256, "Ada"); status != http.StatusCreated || entityOf(t, out, "handoff")["state"] != brakeman.HandoffWaiting {
-		t.Fatalf("sent again: %d %v", status, out)
+	if err := f.srv.runs.Stop(t.Context(), f.run); err != nil {
+		t.Fatal(err)
+	}
+	f.srv.runs.ForgetForTest(f.run)
+	if _, ok := f.srv.runs.Get(f.run); ok {
+		t.Fatal("the engine still holds the run")
+	}
+	f.notStartedOf(t, req, id)
+}
+
+// TestAPackageNeverReadStaysSoOnceTheRunIsLetGo: the run whose attempt
+// took the package and never started it is stopped and let go by the
+// engine: the preview's record still says it was not read.
+func TestAPackageNeverReadStaysSoOnceTheRunIsLetGo(t *testing.T) {
+	f, req, id, _, _ := neverStarted(t)
+	if err := f.srv.runs.Stop(t.Context(), f.run); err != nil {
+		t.Fatal(err)
+	}
+	f.srv.runs.ForgetForTest(f.run)
+	f.notStartedOf(t, req, id)
+}
+
+// TestAStartingAttemptIsNamedInThePreview: while the task's newest
+// attempt is open with no session (here held in its context ask, which
+// comes just before the package is asked for), the preview's target says
+// starting, with that attempt's number; a package sent then goes to that
+// attempt. An attempt whose agent runs answers no starting.
+func TestAStartingAttemptIsNamedInThePreview(t *testing.T) {
+	f := newHandFixture(t)
+	if p := f.preview(t, f.request, 1); p.Target == nil || p.Target.Starting || p.Target.Attempt != 1 {
+		t.Fatalf("a running attempt's target: %+v", p.Target)
+	}
+	entered, release := make(chan struct{}), make(chan struct{})
+	var once, freed sync.Once
+	t.Cleanup(func() { freed.Do(func() { close(release) }) })
+	f.srv.runs.SetContext(func(ctx context.Context, q ext.ContextQuery) []crew.TaskContext {
+		if q.Task == "build" && q.Attempt == 2 {
+			once.Do(func() { close(entered); <-release })
+		}
+		return nil
+	})
+	command(t, f.testEnv, f.run, "tasks/build/cancel")
+	command(t, f.testEnv, f.run, "tasks/build/retry")
+	<-entered
+	p := f.preview(t, f.request, 1)
+	if p.Target == nil || !p.Target.Starting || p.Target.Attempt != 2 || p.Target.State != "running" {
+		t.Fatalf("a starting attempt's target: %+v %+v", p.Target, p.Refusal)
+	}
+	if status, out := f.send(t, f.request, 1, "send-1", p.SHA256, "Ada"); status != http.StatusCreated {
+		t.Fatalf("the send: %d %v", status, out)
+	}
+	freed.Do(func() { close(release) })
+	md, _ := f.taskFileOf(t, "build", 2)
+	rec := f.record(t, f.request, 1)
+	quotedSection(t, md, rec.ID)
+	if rec.State != brakeman.HandoffHanded || rec.Handed[0].Attempt != 2 {
+		t.Fatalf("the record: %+v", rec)
+	}
+	if p := f.preview(t, f.request, 1); p.Target == nil || p.Target.Starting {
+		t.Fatalf("a running attempt's target after the take: %+v", p.Target)
+	}
+}
+
+// TestThePreviewAtItsWidestFitsItsBound: a package of exactly 16 KiB of
+// characters JSON writes as two bytes (quotes and line breaks), beside a
+// handed record whose name is at its bound and the refusal with the
+// longest words, answers within maxHandPreview.
+func TestThePreviewAtItsWidestFitsItsBound(t *testing.T) {
+	f := newHandFixture(t)
+	q := strings.Repeat(`"`, 99) + "\n"
+	h := brakeman.Handoff{Objective: strings.Repeat(`"`, 2<<10), Constraints: strings.Repeat(q, 40)}
+	for len(brakeman.HandoffText(h)) < brakeman.MaxHandoffText {
+		if len(h.Decisions) < 20 {
+			h.Decisions = append(h.Decisions, strings.Repeat(`"`, 500))
+		} else {
+			h.Questions = append(h.Questions, strings.Repeat(`"`, 500))
+		}
+	}
+	over := len(brakeman.HandoffText(h)) - brakeman.MaxHandoffText
+	if n := len(h.Questions); n > 0 {
+		h.Questions[n-1] = h.Questions[n-1][:500-over]
+	} else {
+		h.Decisions[len(h.Decisions)-1] = h.Decisions[len(h.Decisions)-1][:500-over]
+	}
+	if n := len(brakeman.HandoffText(h)); n != brakeman.MaxHandoffText {
+		t.Fatalf("the package is %d bytes", n)
+	}
+	req := f.handRequest(t, brakeman.KindHandoff, "task:"+f.run+"/build", h)
+	p := f.preview(t, req, 1)
+	if status, out := f.send(t, req, 1, strings.Repeat("o", 32), p.SHA256, strings.Repeat(`"`, brakeman.MaxBy)); status != http.StatusCreated {
+		t.Fatalf("the send: %d %v", status, out)
+	}
+	if th := f.srv.handoffFor(t.Context(), crew.HandoffQuery{Run: f.run, Chain: []string{f.run}, Task: "build", Attempt: 99}); th == nil {
+		t.Fatal("not taken")
+	}
+	if err := f.srv.runs.Stop(t.Context(), f.run); err != nil {
+		t.Fatal(err)
+	}
+	status, data, _ := f.call(t, http.MethodGet, f.handPath(req, 1), nil)
+	if status != http.StatusOK || len(data) > maxHandPreview || len(data) < 2*brakeman.MaxHandoffText {
+		t.Fatalf("the widest preview: %d, %d bytes against %d", status, len(data), maxHandPreview)
+	}
+	var got handPreview
+	if err := json.Unmarshal(data, &got); err != nil || got.Text != brakeman.HandoffText(h) || got.Refusal == nil || got.Refusal.Code != refusalRunNotRunning || got.Handoff == nil || got.Handoff.EndedAt == nil {
+		t.Fatalf("the widest preview: %+v %v", got.Refusal, err)
 	}
 }
