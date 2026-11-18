@@ -6,6 +6,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"path/filepath"
+	"strings"
+	"time"
 	"unicode/utf8"
 )
 
@@ -41,6 +43,11 @@ type ResolvedLaunch struct {
 	Manifest  ResolvedManifest `json:"manifest"`
 	Members   []ResolvedMember `json:"members"` // 1 to MaxResolvedMembers, in the crew's order
 	Digest    string           `json:"digest"`  // ResolvedDigest's, DigestLen lower-case hex
+	// Capacity is each bound account's usage as the server last read it,
+	// for each distinct agent and account among the members in their
+	// order: what the server keeps, read without asking the agent's tool.
+	// It is never in the digest.
+	Capacity []CapacityView `json:"capacity,omitempty"` // at most MaxCapacityViews
 }
 
 // ResolvedManifest is the project manifest a launch would run with: none,
@@ -53,18 +60,80 @@ type ResolvedManifest struct {
 }
 
 // ResolvedMember is one member of a resolved launch: its agent, how it
-// starts, whether it runs yolo (as resolved with the server's default) and
+// starts, whether it runs yolo (as resolved with the server's default),
 // the hex SHA-256 of the agent's catalogue entry it would start from (its
 // command, its session recipe and its environment's names, never a
-// value).
+// value), and the account and the model a launch would bind it to now
+// (the crew's account for the member, else the agent's default). The
+// account is named by its id and where its login comes from, never by its
+// folder or its login.
 type ResolvedMember struct {
-	Name      string `json:"name"`
-	Agent     string `json:"agent"`
-	Start     string `json:"start"`           // immediately | after | manual | task
-	After     string `json:"after,omitempty"` // with after: the member waited for
-	Yolo      bool   `json:"yolo"`
-	Selection string `json:"selection"` // 64 lower-case hex
+	Name          string `json:"name"`
+	Agent         string `json:"agent"`
+	Start         string `json:"start"`           // immediately | after | manual | task
+	After         string `json:"after,omitempty"` // with after: the member waited for
+	Yolo          bool   `json:"yolo"`
+	Selection     string `json:"selection"`               // 64 lower-case hex
+	Account       string `json:"account,omitempty"`       // the account a launch would bind now, by its id
+	AccountSource string `json:"accountSource,omitempty"` // own | account | pinned | launch_env
+	Model         string `json:"model,omitempty"`         // "" for the agent's default
 }
+
+// CapacityView is what the server keeps of an account's usage, as last
+// read: its state and freshness, this server's own counts of the sessions
+// bound to it, and the windows and credit figures the agent's tool
+// reported.
+type CapacityView struct {
+	Agent     string           `json:"agent"`
+	Account   string           `json:"account"`
+	Label     string           `json:"label,omitempty"` // at most MaxAccountLabel characters
+	State     string           `json:"state"`           // 1 to MaxCapacityWord of a-z, 0-9 and '_'
+	Fresh     string           `json:"fresh"`           // fresh | stale | reset_passed | none
+	ReadAt    time.Time        `json:"readAt,omitzero"`
+	Running   int              `json:"running"`
+	Started5h int              `json:"started5h"`
+	Started7d int              `json:"started7d"`
+	Windows   []CapacityWindow `json:"windows,omitempty"` // at most MaxCapacityWindows
+	Credits   []CapacityCredit `json:"credits,omitempty"` // at most MaxCapacityCredits
+}
+
+// CapacityWindow is one usage limit as the agent's tool reported it.
+type CapacityWindow struct {
+	Kind     string    `json:"kind"`               // at most MaxCapacityWord bytes, the tool's word
+	Name     string    `json:"name"`               // at most MaxCapacityName bytes, for people
+	Minutes  int       `json:"minutes,omitempty"`  // the window's length, when the tool says it
+	Percent  int       `json:"percent"`            // 0 to 100, the share used
+	ResetsAt time.Time `json:"resetsAt,omitzero"`  // none when the tool gave none
+	Severity string    `json:"severity,omitempty"` // normal | warning | critical
+}
+
+// CapacityCredit is one of the tool's credit figures, as it wrote them.
+type CapacityCredit struct {
+	Kind      string `json:"kind"` // at most MaxCapacityWord bytes
+	Enabled   *bool  `json:"enabled,omitempty"`
+	Used      string `json:"used,omitempty"` // each figure at most MaxCapacityFigure bytes, as the tool wrote it
+	Limit     string `json:"limit,omitempty"`
+	Balance   string `json:"balance,omitempty"`
+	Unlimited bool   `json:"unlimited,omitempty"`
+	Currency  string `json:"currency,omitempty"` // at most MaxCapacityWord bytes
+}
+
+// Where a resolved member's account's login comes from
+// (ResolvedMember.AccountSource).
+const (
+	AccountOwn       = "own"        // the tool's own login: nothing sets its folder or a login variable
+	AccountAccount   = "account"    // a registered account
+	AccountPinned    = "pinned"     // the agent's catalogue entry sets the login
+	AccountLaunchEnv = "launch_env" // the launch's own environment sets the login
+)
+
+// The freshness of a capacity view (CapacityView.Fresh).
+const (
+	CapacityFresh       = "fresh"        // read a short while ago
+	CapacityStale       = "stale"        // read longer ago
+	CapacityResetPassed = "reset_passed" // a window's reset is behind the clock
+	CapacityNone        = "none"         // nothing read
+)
 
 // Where a resolved launch runs (ResolvedLaunch.Where).
 const (
@@ -92,6 +161,24 @@ const (
 	MaxCrewTasks = 128
 	// MaxMemberName bounds a crew member's name, in bytes: the crews' own.
 	MaxMemberName = 40
+	// MaxCapacityViews, MaxCapacityWindows and MaxCapacityCredits bound a
+	// resolved launch's capacity views, a view's windows and its credit
+	// figures.
+	MaxCapacityViews   = 12
+	MaxCapacityWindows = 16
+	MaxCapacityCredits = 4
+	// MaxAccountLabel bounds an account's label, in characters.
+	MaxAccountLabel = 60
+	// MaxCapacityWord bounds a state, a kind and a currency, in bytes;
+	// MaxCapacityName a window's name; MaxCapacityFigure a credit's figure.
+	MaxCapacityWord   = 40
+	MaxCapacityName   = 80
+	MaxCapacityFigure = 32
+	// MaxResolvedReply bounds a whole resolved launch, its capacity views
+	// with it, in bytes as encoding/json encodes it: the pinned part's
+	// MaxResolvedLaunch and every view at its bounds, each byte one the
+	// encoder writes as six.
+	MaxResolvedReply = 288 << 10
 )
 
 // digestPrefix leads what a resolved launch's digest is the SHA-256 of; its
@@ -102,8 +189,8 @@ const digestPrefix = "conductor resolved launch 1\n"
 //
 //	"conductor resolved launch 1\n" + crewRevision + "\n" + canonical
 //
-// where canonical is r encoded by encoding/json with Digest "" (and
-// Members [] for none), fields in their declared order, HTML escaping off,
+// where canonical is r encoded by encoding/json with Digest "" and
+// Capacity nil (and Members [] for none), fields in their declared order, HTML escaping off,
 // no indent, no final newline; crewRevision is the crew's revision as the
 // server names a stored copy of the crew (64 lower-case hex). ok is false
 // when canonical is past MaxResolvedLaunch, or crewRevision is not a
@@ -126,7 +213,7 @@ func ResolvedDigest(r ResolvedLaunch, crewRevision string) (digest string, ok bo
 // canonical is r as ResolvedDigest encodes it, and whether it is within
 // MaxResolvedLaunch.
 func (r ResolvedLaunch) canonical() ([]byte, bool) {
-	r.Digest = ""
+	r.Digest, r.Capacity = "", nil
 	if r.Members == nil {
 		r.Members = []ResolvedMember{}
 	}
@@ -145,8 +232,9 @@ func (r ResolvedLaunch) canonical() ([]byte, bool) {
 // MaxCrewTasks tasks; where it runs; a project's key or none, and a
 // project folder and InProject only with one; absolute folders of at most
 // MaxFolder bytes; a valid manifest; 1 to MaxResolvedMembers valid
-// members; a digest of DigestLen lower-case hex or none; and its pinned
-// record within MaxResolvedLaunch.
+// members; a digest of DigestLen lower-case hex or none; at most
+// MaxCapacityViews valid capacity views; its pinned record within
+// MaxResolvedLaunch and the whole within MaxResolvedReply.
 func (r ResolvedLaunch) Valid() error {
 	const rec = "resolved launch"
 	switch {
@@ -174,6 +262,13 @@ func (r ResolvedLaunch) Valid() error {
 		return invalid(rec, "members are not 1 to %d", MaxResolvedMembers)
 	case r.Digest != "" && !lowerHex(r.Digest, DigestLen):
 		return invalid(rec, "digest is not %d lower-case hex", DigestLen)
+	case len(r.Capacity) > MaxCapacityViews:
+		return invalid(rec, "capacity is past %d views", MaxCapacityViews)
+	}
+	for _, v := range r.Capacity {
+		if err := v.Valid(); err != nil {
+			return invalid(rec, "%v", err)
+		}
 	}
 	if err := r.Manifest.Valid(); err != nil {
 		return invalid(rec, "%v", err)
@@ -185,6 +280,9 @@ func (r ResolvedLaunch) Valid() error {
 	}
 	if _, ok := r.canonical(); !ok {
 		return invalid(rec, "the record is past %d bytes", MaxResolvedLaunch)
+	}
+	if b, err := json.Marshal(r); err != nil || len(b) > MaxResolvedReply {
+		return invalid(rec, "the record with its capacity is past %d bytes", MaxResolvedReply)
 	}
 	return nil
 }
@@ -222,7 +320,9 @@ func (m ResolvedManifest) Valid() error {
 // Valid checks m against its bounds: a member's name (1 to MaxMemberName
 // of a-z, 0-9, '.', '_' and '-', beginning with a letter or a digit); a
 // catalog agent's id; one of the starts, and the member waited for with
-// after alone; a selection of 64 lower-case hex.
+// after alone; a selection of 64 lower-case hex; an account's id
+// ("default", or "a-" and 12 of a-z and 2-7) and where its login comes
+// from, both or neither; a model's name or none.
 func (m ResolvedMember) Valid() error {
 	const rec = "resolved member"
 	switch {
@@ -238,8 +338,125 @@ func (m ResolvedMember) Valid() error {
 		return invalid(rec, "after %q is not a member's name", m.After)
 	case !lowerHex(m.Selection, 64):
 		return invalid(rec, "selection is not 64 lower-case hex")
+	case (m.Account == "") != (m.AccountSource == ""):
+		return invalid(rec, "an account and where its login comes from are given together")
+	case m.Account != "" && !accountID(m.Account):
+		return invalid(rec, "account %q is not an account's id", m.Account)
+	case m.AccountSource != "" && m.AccountSource != AccountOwn && m.AccountSource != AccountAccount && m.AccountSource != AccountPinned && m.AccountSource != AccountLaunchEnv:
+		return invalid(rec, "accountSource %q is not %s, %s, %s or %s", m.AccountSource, AccountOwn, AccountAccount, AccountPinned, AccountLaunchEnv)
+	case m.Model != "" && !model(m.Model):
+		return invalid(rec, "model %q is not a model's name", m.Model)
 	}
 	return nil
+}
+
+// accountID reports whether s is an account's id: "default", or "a-" and
+// 12 of a-z and 2-7.
+func accountID(s string) bool {
+	if s == "default" {
+		return true
+	}
+	rest, ok := strings.CutPrefix(s, "a-")
+	if !ok || len(rest) != 12 {
+		return false
+	}
+	for i := 0; i < len(rest); i++ {
+		if c := rest[i]; (c < 'a' || c > 'z') && (c < '2' || c > '7') {
+			return false
+		}
+	}
+	return true
+}
+
+// capacityWord reports whether s is 1 to MaxCapacityWord of a-z, 0-9 and
+// '_'.
+func capacityWord(s string) bool {
+	if s == "" || len(s) > MaxCapacityWord {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if c := s[i]; (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '_' {
+			return false
+		}
+	}
+	return true
+}
+
+// Valid checks v against its bounds: a catalog agent's id; an account's
+// id; a label of at most MaxAccountLabel characters on one line, or none;
+// a state of 1 to MaxCapacityWord of a-z, 0-9 and '_'; one of the
+// freshnesses; counts not below 0; at most MaxCapacityWindows valid
+// windows and MaxCapacityCredits valid credit figures.
+func (v CapacityView) Valid() error {
+	const rec = "capacity view"
+	switch {
+	case !agentID(v.Agent):
+		return invalid(rec, "agent %q is not a catalog agent's id", v.Agent)
+	case !accountID(v.Account):
+		return invalid(rec, "account %q is not an account's id", v.Account)
+	case !oneLine(v.Label) || utf8.RuneCountInString(v.Label) > MaxAccountLabel:
+		return invalid(rec, "label is not one line of at most %d characters", MaxAccountLabel)
+	case !capacityWord(v.State):
+		return invalid(rec, "state %q is not 1 to %d of a-z, 0-9 and '_'", v.State, MaxCapacityWord)
+	case v.Fresh != CapacityFresh && v.Fresh != CapacityStale && v.Fresh != CapacityResetPassed && v.Fresh != CapacityNone:
+		return invalid(rec, "fresh %q is not %s, %s, %s or %s", v.Fresh, CapacityFresh, CapacityStale, CapacityResetPassed, CapacityNone)
+	case v.Running < 0 || v.Started5h < 0 || v.Started7d < 0:
+		return invalid(rec, "a count is below 0")
+	case len(v.Windows) > MaxCapacityWindows:
+		return invalid(rec, "windows are past %d", MaxCapacityWindows)
+	case len(v.Credits) > MaxCapacityCredits:
+		return invalid(rec, "credits are past %d", MaxCapacityCredits)
+	}
+	for _, w := range v.Windows {
+		if err := w.Valid(); err != nil {
+			return invalid(rec, "%v", err)
+		}
+	}
+	for _, c := range v.Credits {
+		if err := c.Valid(); err != nil {
+			return invalid(rec, "%v", err)
+		}
+	}
+	return nil
+}
+
+// Valid checks w against its bounds: a kind of 1 to MaxCapacityWord bytes
+// and a name of at most MaxCapacityName bytes, each on one line; minutes
+// not below 0; a percent from 0 to 100; a severity of normal, warning or
+// critical, or none.
+func (w CapacityWindow) Valid() error {
+	const rec = "capacity window"
+	if err := line(rec, "kind", w.Kind, MaxCapacityWord, true); err != nil {
+		return err
+	}
+	if err := line(rec, "name", w.Name, MaxCapacityName, false); err != nil {
+		return err
+	}
+	switch {
+	case w.Minutes < 0:
+		return invalid(rec, "minutes is below 0")
+	case w.Percent < 0 || w.Percent > 100:
+		return invalid(rec, "percent is not 0 to 100")
+	case w.Severity != "" && w.Severity != "normal" && w.Severity != "warning" && w.Severity != "critical":
+		return invalid(rec, "severity %q is not normal, warning or critical", w.Severity)
+	}
+	return nil
+}
+
+// Valid checks c against its bounds: a kind of 1 to MaxCapacityWord bytes,
+// figures of at most MaxCapacityFigure bytes and a currency of at most
+// MaxCapacityWord, each on one line.
+func (c CapacityCredit) Valid() error {
+	const rec = "capacity credit"
+	if err := line(rec, "kind", c.Kind, MaxCapacityWord, true); err != nil {
+		return err
+	}
+	for _, f := range []struct{ name, v string }{{"used", c.Used}, {"limit", c.Limit}, {"balance", c.Balance}} {
+		if err := line(rec, f.name, f.v, MaxCapacityFigure, false); err != nil {
+			return err
+		}
+	}
+	return line(rec, "currency", c.Currency, MaxCapacityWord, false)
 }
 
 // memberName reports whether s is a crew member's name.

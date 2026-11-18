@@ -3,11 +3,14 @@ package ext_test
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/rocksolidlabs/conductor/ext"
 )
@@ -24,6 +27,21 @@ func goldenLaunch() ext.ResolvedLaunch {
 			{Name: "builder", Agent: "codex", Start: "task", Yolo: true, Selection: strings.Repeat("e", 64)},
 		},
 	}
+}
+
+// boundLaunch is goldenLaunch with K-8's binding and a capacity view.
+func boundLaunch() ext.ResolvedLaunch {
+	r := goldenLaunch()
+	r.Members[0].Account, r.Members[0].AccountSource, r.Members[0].Model = "default", ext.AccountOwn, ""
+	r.Members[1].Account, r.Members[1].AccountSource, r.Members[1].Model = "a-abcdefgh2345", ext.AccountAccount, "gpt-5.4"
+	on := true
+	r.Capacity = []ext.CapacityView{{
+		Agent: "codex", Account: "a-abcdefgh2345", Label: "Work", State: "ok", Fresh: ext.CapacityFresh,
+		ReadAt: time.Date(2026, 11, 18, 9, 0, 0, 0, time.UTC), Running: 1, Started5h: 2, Started7d: 3,
+		Windows: []ext.CapacityWindow{{Kind: "primary", Name: "5-hour", Minutes: 300, Percent: 42, Severity: "normal"}},
+		Credits: []ext.CapacityCredit{{Kind: "credits", Enabled: &on, Balance: "8.50", Currency: "USD"}},
+	}}
+	return r
 }
 
 // goldenCanonical is goldenLaunch as the digest encodes it: declared
@@ -46,6 +64,7 @@ func TestResolvedDigest(t *testing.T) {
 	}{
 		{"every field", goldenLaunch(), rev, "22374238e7f4fe4e90af175fa6a4109e0d8354caa05abc5a8210d16f7c2fb469"},
 		{"the zero record", ext.ResolvedLaunch{}, strings.Repeat("0", 64), "3d0f384e867cba7bc111df1b09ac0943b0bc220a3584d731a97335d3847b9a0d"},
+		{"a member bound to an account", boundLaunch(), rev, "1ef7023435177b7ca5d84561c85bd8daa4f29ca1a3c55e25edfaf41f5f988589"},
 	} {
 		got, ok := ext.ResolvedDigest(c.r, c.rev)
 		if !ok || got != c.want {
@@ -77,9 +96,28 @@ func TestResolvedDigest(t *testing.T) {
 		t.Error("no members and an empty list of them give two digests")
 	}
 
+	// The capacity views never change it: their usage, counts, freshness
+	// and time, none at all.
+	bound, _ := ext.ResolvedDigest(boundLaunch(), rev)
+	for name, f := range map[string]func(*ext.ResolvedLaunch){
+		"none":   func(r *ext.ResolvedLaunch) { r.Capacity = nil },
+		"usage":  func(r *ext.ResolvedLaunch) { r.Capacity[0].Windows[0].Percent = 99 },
+		"counts": func(r *ext.ResolvedLaunch) { r.Capacity[0].Running, r.Capacity[0].Started7d = 4, 9 },
+		"freshness": func(r *ext.ResolvedLaunch) {
+			r.Capacity[0].Fresh, r.Capacity[0].ReadAt = ext.CapacityStale, time.Time{}
+		},
+		"another": func(r *ext.ResolvedLaunch) { r.Capacity = append(r.Capacity, r.Capacity[0]) },
+	} {
+		r := boundLaunch()
+		f(&r)
+		if d, _ := ext.ResolvedDigest(r, rev); d != bound {
+			t.Errorf("a change of the capacity views (%s) changes the digest", name)
+		}
+	}
+
 	// Every other field, in the record, its manifest and a member, changes
 	// it: a field added to the record is pinned unless this test is told.
-	unpinned := map[string]bool{"Digest": true}
+	unpinned := map[string]bool{"Digest": true, "Capacity": true}
 	seen := 0
 	for _, path := range fieldPaths(reflect.TypeOf(ext.ResolvedLaunch{}), nil) {
 		if unpinned[path[0]] {
@@ -90,7 +128,7 @@ func TestResolvedDigest(t *testing.T) {
 			t.Errorf("a change of %s leaves the digest", strings.Join(path, "."))
 		}
 	}
-	if seen < 18 {
+	if seen < 21 {
 		t.Errorf("only %d fields were changed", seen)
 	}
 
@@ -244,6 +282,160 @@ func TestResolvedLaunchValid(t *testing.T) {
 		{"two folders past its bound once escaped", edit(func(r *ext.ResolvedLaunch) {
 			r.Cwd, r.ProjectCwd = "/"+strings.Repeat(" ", 1365), "/"+strings.Repeat(" ", 1365)
 		}), false},
+	} {
+		if (c.err == nil) != c.ok {
+			t.Errorf("%s: Valid() = %v, want ok %v", c.name, c.err, c.ok)
+		}
+	}
+}
+
+// TestAResolvedLaunchAtEveryBoundIsWithinItsReply holds the whole reply
+// to MaxResolvedReply: the pinned part at its bound and every capacity
+// view at its bounds, each field at its escaped worst (a byte the encoder
+// writes as six, a character as six).
+func TestAResolvedLaunchAtEveryBoundIsWithinItsReply(t *testing.T) {
+	worst := func(n int) string { return strings.Repeat("<", n) }
+	worstChars := func(n int) string { return strings.Repeat(" ", n) }
+	on := true
+	readAt := time.Date(2026, 11, 18, 9, 0, 0, 123456789, time.FixedZone("x", -12*3600))
+	window := ext.CapacityWindow{
+		Kind: worst(ext.MaxCapacityWord), Name: worst(ext.MaxCapacityName), Minutes: 1<<62 - 1, Percent: 100,
+		ResetsAt: readAt, Severity: "critical",
+	}
+	credit := ext.CapacityCredit{
+		Kind: worst(ext.MaxCapacityWord), Enabled: &on, Used: worst(ext.MaxCapacityFigure), Limit: worst(ext.MaxCapacityFigure),
+		Balance: worst(ext.MaxCapacityFigure), Unlimited: true, Currency: worst(ext.MaxCapacityWord),
+	}
+	view := ext.CapacityView{
+		Agent: strings.Repeat("a", ext.MaxAgentID), Account: "a-abcdefgh2345", Label: worstChars(ext.MaxAccountLabel),
+		State: strings.Repeat("s", ext.MaxCapacityWord), Fresh: ext.CapacityResetPassed, ReadAt: readAt,
+		Running: 1<<62 - 1, Started5h: 1<<62 - 1, Started7d: 1<<62 - 1,
+	}
+	for range ext.MaxCapacityWindows {
+		view.Windows = append(view.Windows, window)
+	}
+	for range ext.MaxCapacityCredits {
+		view.Credits = append(view.Credits, credit)
+	}
+	if err := view.Valid(); err != nil {
+		t.Fatalf("the view at its bounds: %v", err)
+	}
+	r := boundLaunch()
+	r.ProjectCwd, r.Cwd = filepath.Join(os.TempDir(), "p"), filepath.Join(os.TempDir(), "p")
+	// The pinned part brought up to its bound by the folder.
+	for {
+		c := r
+		if len(c.Cwd) < ext.MaxFolder {
+			c.Cwd += "<"
+		} else {
+			c.ProjectCwd += "<"
+		}
+		if _, ok := ext.ResolvedDigest(c, strings.Repeat("1", 64)); !ok {
+			break
+		}
+		r = c
+	}
+	r.Capacity = nil
+	for range ext.MaxCapacityViews {
+		r.Capacity = append(r.Capacity, view)
+	}
+	b, err := json.Marshal(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(b) > ext.MaxResolvedReply {
+		t.Fatalf("a resolved launch at every bound is %d bytes, past MaxResolvedReply %d", len(b), ext.MaxResolvedReply)
+	}
+	if err := r.Valid(); err != nil {
+		t.Fatalf("a resolved launch at every bound: %v", err)
+	}
+	t.Logf("at every bound: %d bytes", len(b))
+
+	// One view more, a window more or a credit more is refused.
+	over := r
+	over.Capacity = append(append([]ext.CapacityView(nil), r.Capacity...), view)
+	if over.Valid() == nil {
+		t.Error("a view past MaxCapacityViews was taken")
+	}
+	v := view
+	v.Windows = append(append([]ext.CapacityWindow(nil), view.Windows...), window)
+	if v.Valid() == nil {
+		t.Error("a window past MaxCapacityWindows was taken")
+	}
+	v = view
+	v.Credits = append(append([]ext.CapacityCredit(nil), view.Credits...), credit)
+	if v.Valid() == nil {
+		t.Error("a credit past MaxCapacityCredits was taken")
+	}
+}
+
+func TestCapacityViewValid(t *testing.T) {
+	good := boundLaunch().Capacity[0]
+	edit := func(f func(*ext.CapacityView)) error {
+		v := good
+		v.Windows = append([]ext.CapacityWindow(nil), good.Windows...)
+		v.Credits = append([]ext.CapacityCredit(nil), good.Credits...)
+		f(&v)
+		return v.Valid()
+	}
+	for _, c := range []struct {
+		name string
+		err  error
+		ok   bool
+	}{
+		{"a view", good.Valid(), true},
+		{"nothing read", ext.CapacityView{Agent: "codex", Account: "default", State: "never_read", Fresh: ext.CapacityNone}.Valid(), true},
+		{"a label at its bound", edit(func(v *ext.CapacityView) { v.Label = strings.Repeat("é", ext.MaxAccountLabel) }), true},
+		{"a label past its bound", edit(func(v *ext.CapacityView) { v.Label = strings.Repeat("a", ext.MaxAccountLabel+1) }), false},
+		{"a label of two lines", edit(func(v *ext.CapacityView) { v.Label = "a\nb" }), false},
+		{"an account that is no id", edit(func(v *ext.CapacityView) { v.Account = "/home/u/.codex" }), false},
+		{"an account of a minted shape in capitals", edit(func(v *ext.CapacityView) { v.Account = "a-ABCDEFGH2345" }), false},
+		{"an agent that is no id", edit(func(v *ext.CapacityView) { v.Agent = "" }), false},
+		{"a state of words", edit(func(v *ext.CapacityView) { v.State = "signed out" }), false},
+		{"a state past its bound", edit(func(v *ext.CapacityView) { v.State = strings.Repeat("s", ext.MaxCapacityWord+1) }), false},
+		{"another freshness", edit(func(v *ext.CapacityView) { v.Fresh = "old" }), false},
+		{"a count below 0", edit(func(v *ext.CapacityView) { v.Started5h = -1 }), false},
+		{"a percent past 100", edit(func(v *ext.CapacityView) { v.Windows[0].Percent = 101 }), false},
+		{"a percent below 0", edit(func(v *ext.CapacityView) { v.Windows[0].Percent = -1 }), false},
+		{"minutes below 0", edit(func(v *ext.CapacityView) { v.Windows[0].Minutes = -1 }), false},
+		{"another severity", edit(func(v *ext.CapacityView) { v.Windows[0].Severity = "high" }), false},
+		{"a window without a kind", edit(func(v *ext.CapacityView) { v.Windows[0].Kind = "" }), false},
+		{"a window's name past its bound", edit(func(v *ext.CapacityView) { v.Windows[0].Name = strings.Repeat("a", ext.MaxCapacityName+1) }), false},
+		{"a figure past its bound", edit(func(v *ext.CapacityView) { v.Credits[0].Balance = strings.Repeat("9", ext.MaxCapacityFigure+1) }), false},
+		{"a currency past its bound", edit(func(v *ext.CapacityView) { v.Credits[0].Currency = strings.Repeat("a", ext.MaxCapacityWord+1) }), false},
+		{"a credit without a kind", edit(func(v *ext.CapacityView) { v.Credits[0].Kind = "" }), false},
+	} {
+		if (c.err == nil) != c.ok {
+			t.Errorf("%s: Valid() = %v, want ok %v", c.name, c.err, c.ok)
+		}
+	}
+
+	// A member's binding.
+	member := func(f func(*ext.ResolvedMember)) error {
+		r := boundLaunch()
+		r.ProjectCwd, r.Cwd = filepath.Join(os.TempDir(), "p"), filepath.Join(os.TempDir(), "p")
+		f(&r.Members[1])
+		return r.Valid()
+	}
+	for _, c := range []struct {
+		name string
+		err  error
+		ok   bool
+	}{
+		{"a member bound to an account", member(func(*ext.ResolvedMember) {}), true},
+		{"a member with no binding", member(func(m *ext.ResolvedMember) { m.Account, m.AccountSource, m.Model = "", "", "" }), true},
+		{"every source", errors.Join(
+			member(func(m *ext.ResolvedMember) { m.Account, m.AccountSource = "default", ext.AccountOwn }),
+			member(func(m *ext.ResolvedMember) { m.Account, m.AccountSource = "default", ext.AccountPinned }),
+			member(func(m *ext.ResolvedMember) { m.Account, m.AccountSource = "default", ext.AccountLaunchEnv }),
+		), true},
+		{"an account without its source", member(func(m *ext.ResolvedMember) { m.AccountSource = "" }), false},
+		{"a source without its account", member(func(m *ext.ResolvedMember) { m.Account = "" }), false},
+		{"another source", member(func(m *ext.ResolvedMember) { m.AccountSource = "unlisted" }), false},
+		{"an account's folder for its id", member(func(m *ext.ResolvedMember) { m.Account = "/home/u/.codex" }), false},
+		{"a model at its bound", member(func(m *ext.ResolvedMember) { m.Model = strings.Repeat("m", ext.MaxModel) }), true},
+		{"a model past its bound", member(func(m *ext.ResolvedMember) { m.Model = strings.Repeat("m", ext.MaxModel+1) }), false},
+		{"a model with a space", member(func(m *ext.ResolvedMember) { m.Model = "gpt 5" }), false},
 	} {
 		if (c.err == nil) != c.ok {
 			t.Errorf("%s: Valid() = %v, want ok %v", c.name, c.err, c.ok)

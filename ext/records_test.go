@@ -34,8 +34,17 @@ var (
 		Manifest: ext.ResolvedManifest{Source: ext.ManifestFile, Blob: strings.Repeat("c", 40)},
 		Members: []ext.ResolvedMember{{
 			Name: "builder", Agent: "claude", Start: "after", After: "planner", Yolo: true, Selection: strings.Repeat("d", 64),
+			Account: "a-abcdefgh2345", AccountSource: ext.AccountAccount, Model: "opus",
 		}},
-		Digest: strings.Repeat("e", 64),
+		Digest:   strings.Repeat("e", 64),
+		Capacity: []ext.CapacityView{capacityView},
+	}
+	enabled      = true
+	capacityView = ext.CapacityView{
+		Agent: "claude", Account: "a-abcdefgh2345", Label: "Work", State: "ok", Fresh: ext.CapacityFresh, ReadAt: at,
+		Running: 1, Started5h: 2, Started7d: 3,
+		Windows: []ext.CapacityWindow{{Kind: "five_hour", Name: "5-hour", Minutes: 300, Percent: 42, ResetsAt: at.Add(time.Hour), Severity: "normal"}},
+		Credits: []ext.CapacityCredit{{Kind: "credits", Enabled: &enabled, Used: "1.50", Limit: "10", Balance: "8.50", Unlimited: true, Currency: "USD"}},
 	}
 )
 
@@ -86,6 +95,9 @@ var records = []any{
 	&resolved,
 	&ext.ResolvedManifest{Source: ext.ManifestCrew, Revision: 3, Blob: strings.Repeat("c", 40)},
 	&resolved.Members[0],
+	&capacityView,
+	&capacityView.Windows[0],
+	&capacityView.Credits[0],
 	&ext.RunRef{ID: "r1", Crew: "c1", URL: "https://conductor.example.com/runs/r1"},
 	&ext.SubmitRequest{Session: "s1", Question: "q1", Input: "1", Text: "yes", By: principal},
 	&ext.SubmitResult{Status: "entered"},
