@@ -1526,3 +1526,28 @@ describe("the stream's events that change what changed since the last briefing",
     expect(f.live.openedSeq).toBe(1)
   })
 })
+
+describe('whether the server has Brakeman', () => {
+  it('is said by the state read alone: the requests page, the opened marks and a since answer arriving while it is out leave it unsaid', async () => {
+    let answerState!: (s: BrakemanState) => void
+    let changes = 0
+    const live = new BrakemanLive(() => changes++)
+    live.attach({
+      state: () => new Promise((done) => (answerState = done)),
+      page: async () => ({ requests: [], next: '' }),
+      request: () => Promise.reject(new Error('none')),
+      opened: async () => ({ unread: [], begun: '' }),
+      since: async () => ({ since: { from: 'day', at: '2026-11-16T09:00:00Z' }, runsEnded: { count: 0, refs: [] }, tasksFailed: { count: 0, refs: [] }, ticketsReady: { count: 0, refs: [] }, questionsOpen: { count: 0, refs: [] }, truncated: false }),
+    })
+    const first = live.readFirst()
+    live.followSince()
+    await settle()
+    await settle()
+    // The page, the marks and the since answer are in, the store has told the pages it changed, and the state read is still out.
+    expect([live.openedMode, live.sinceNow?.since.from, changes > 0]).toEqual(['server', 'day', true])
+    expect(live.available).toBeUndefined()
+    answerState({ config: {} as never, current: null, queue: [], turnsToday: 0 })
+    await first
+    expect(live.available).toBe(true)
+  })
+})
