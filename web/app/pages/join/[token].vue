@@ -239,15 +239,16 @@ function runChatSendTo(ref: string, to: string) {
 watch(runChat.refused, (r) => {
   if (r) toast.add({ title: 'Not sent to the member', description: skipWords(r.reason), color: 'warning' })
 })
-/** A member's question answered from the run's chat: the choice's keys into that member, over the link. */
-const quick = useQuickReply()
-function runChatAnswer(m: ChatMessage, index: number) {
-  const o = m.options?.[index]
-  const member = runMembers.value.find((x) => x.name === m.on)
-  if (!o || !member?.sessionId) return
-  // The question's line in the chat is the question's own id.
-  quick.send({ id: member.sessionId, kind: member.kind ?? 'server' }, o.input, { token: token.value, server: server.value, question: m.id }).catch((e: unknown) => toast.add(replyFailure(e, member.name)))
-}
+/**
+ * A member's question answered from the run's chat (useRunChatAnswer): with control alone, the choice's keys into the running session
+ * of the member the line is on, over the link's own credential, which the session holds to the link's role; a view link offers no
+ * button, and no line a running member did not ask offers one.
+ */
+const runChatAnswers = useRunChatAnswer({
+  members: () => runMembers.value.map((m) => ({ name: m.name, session: m.sessionId && (m.status === 'running' || m.status === 'starting') ? { id: m.sessionId, kind: m.kind ?? 'server' } : undefined })),
+  may: () => info.value?.role === 'control',
+  via: () => ({ token: token.value, server: server.value }),
+})
 function chatSendToAgent(ref: string) {
   if (!chat.sendToAgent(ref, viaChatSend)) toast.add({ title: 'Not connected', color: 'warning' })
 }
@@ -511,7 +512,8 @@ function requestFile(path: string, stat?: boolean, extra?: FileGetExtra) {
       @send="runChatSend"
       @send-to="runChatSendTo"
       @retry="runChat.retry"
-      @answer="runChatAnswer"
+      :answerable="runChatAnswers.answerable"
+      @answer="runChatAnswers.answer"
     />
   </template>
 
@@ -617,7 +619,8 @@ function requestFile(path: string, stat?: boolean, extra?: FileGetExtra) {
       @send="runChatSend"
       @send-to="runChatSendTo"
       @retry="runChat.retry"
-      @answer="runChatAnswer"
+      :answerable="runChatAnswers.answerable"
+      @answer="runChatAnswers.answer"
     />
   </template>
     </JoinFrame>
