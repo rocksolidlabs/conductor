@@ -414,8 +414,13 @@ func (r *run) launchedRun() string {
 // comparison is git and the ledger, which no change reads under e.mu; so
 // it is read here, before the change, and kept with the run's revision it
 // was read at, which is taken first: a change of the run committed after
-// it leaves the read unused (measuredNow). The caller holds no lock.
-func (e *Engine) measureAhead(ctx context.Context, r *run, task string) {
+// it leaves the read unused (measuredNow). closes says under e.mu what
+// the change leaves of the lane's attempt it decides (nil for none), and
+// false for a change that will not be made (a command its task's state
+// refuses): nothing is read for it. The rows read are measured as that
+// change leaves them, so the lane whose own change opens the selection is
+// not read as still under way. The caller holds no lock.
+func (e *Engine) measureAhead(ctx context.Context, r *run, task string, closes func(*run) (*closing, bool)) {
 	if r.compare == nil {
 		return
 	}
@@ -427,12 +432,20 @@ func (e *Engine) measureAhead(ctx context.Context, r *run, task string) {
 			want = false
 		}
 	}
+	var cl *closing
+	if want {
+		cl, want = closes(r)
+	}
 	rev := r.revision
 	e.mu.Unlock()
 	if !want {
 		return
 	}
-	c, revs, err := e.comparisonAt(ctx, r.id)
+	var adjust func(*chainRead)
+	if cl != nil {
+		adjust = func(cr *chainRead) { cl.leave(cr, r.id) }
+	}
+	c, revs, err := e.comparisonAt(ctx, r.id, adjust)
 	if err != nil || revs[r.id] != rev {
 		return
 	}
@@ -441,6 +454,63 @@ func (e *Engine) measureAhead(ctx context.Context, r *run, task string) {
 		r.sel.measured = &aheadMeasure{rev: rev, cmp: c}
 	}
 	e.mu.Unlock()
+}
+
+// closing is what a change about to be made leaves of one attempt of the
+// run: the task's attempt n closed as state (ledger.Attempt*), and a check
+// of it still in flight interrupted by the close, as its receipt then says
+// (its process is ended once the change commits).
+type closing struct {
+	task  string
+	n     int
+	state string
+}
+
+// closingOf is what accepting or refusing a's result leaves of it.
+func closingOf(a *attempt, ok bool) func(*run) (*closing, bool) {
+	return func(*run) (*closing, bool) {
+		state := ledger.AttemptFailed
+		if ok {
+			state = ledger.AttemptSucceeded
+		}
+		return &closing{task: a.t.def.ID, n: a.n, state: state}, true
+	}
+}
+
+// commandClosing is what a task command (an accept anyway, a cancel) of
+// task leaves: a cancel closes its attempt in flight as cancelled
+// (cancelTask); an accept anyway closes none. False when the task's state
+// refuses the command: its change will not be made. The caller holds e.mu.
+func commandClosing(intent, task string) func(*run) (*closing, bool) {
+	return func(r *run) (*closing, bool) {
+		t := r.task(task)
+		if t == nil {
+			return nil, false
+		}
+		if _, err := taskCommandCheck(r, intent, t); err != nil {
+			return nil, false
+		}
+		if a := t.active(); intent == TaskCancel && a != nil {
+			return &closing{task: task, n: a.n, state: ledger.AttemptCancelled}, true
+		}
+		return nil, true
+	}
+}
+
+// leave sets the rows read of run as the change leaves them: the attempt's
+// state, and each receipt of it still in flight ended, as its process is.
+func (cl *closing) leave(cr *chainRead, run string) {
+	for i := range cr.attempts[run] {
+		if a := &cr.attempts[run][i]; a.TaskID == cl.task && a.N == cl.n {
+			a.State = cl.state
+		}
+	}
+	key := fmt.Sprintf("%s/%s/%d", run, cl.task, cl.n)
+	for i := range cr.checks[key] {
+		if row := &cr.checks[key][i]; row.State == ledger.CheckStarted || row.State == ledger.CheckRunning {
+			row.State, row.Stable = ledger.CheckInterrupted, false
+		}
+	}
 }
 
 // carried says the run holds a change the ledger has not written (a
@@ -471,56 +541,137 @@ const notCompared = "not compared when this opened: the comparison says whether 
 // comparison says of each of the candidate's checks (its outcome and the
 // row's verdict, with why in the comparison's words), and whether a person
 // accepted it after a failed check; with no comparison read ahead, that
-// its checks passed and were not compared. The caller holds e.mu.
+// its checks passed and were not compared. Whole clauses within the
+// ledger's bound: the checks that do not fit are counted, never cut. The
+// caller holds e.mu.
 func (r *run) tradeoffs(c SettledCandidate) string {
-	words := fmt.Sprintf("attempt %d", c.Attempt)
+	head := fmt.Sprintf("attempt %d", c.Attempt)
 	if c.Run != r.id {
-		words += " of " + c.Run
+		head += " of " + c.Run
 	}
-	accepted := false
+	tail := ""
 	if t := r.task(c.Task); t != nil && strings.HasPrefix(t.reason, "accepted by ") {
-		accepted = true
+		tail = "; accepted after a failed check"
 	}
-	checks, measured := "", false
+	var words string
+	clauses, measured := []string(nil), false
 	if m := r.measuredNow(); m != nil {
-		checks, measured = comparedWords(*m, c)
+		clauses, measured = comparedClauses(*m, c)
 	}
 	switch {
-	case measured && accepted:
-		words += "; " + checks + "; accepted after a failed check"
 	case measured:
-		words += "; " + checks
-	case accepted:
-		words += "; accepted after a failed check; " + notCompared
+		words = head + "; " + fittedChecks(clauses, ledger.MaxOptionTradeoffs-encodedLen(head+"; "+tail)) + tail
+	case tail != "":
+		words = head + tail + "; " + notCompared
 	default:
-		words += "; its checks passed, " + notCompared
+		words = head + "; its checks passed, " + notCompared
 	}
-	return cutEncoded(words, ledger.MaxOptionTradeoffs)
+	// The last guard, for a run's name past any bound: never reached by
+	// the words above.
+	return fitEncoded(words, ledger.MaxOptionTradeoffs)
 }
 
-// comparedWords is what the comparison c says of the candidate's checks, row
-// by row: "check ok: passed, comparable"; ok false when c does not show
-// that candidate in its lane (another attempt or commit).
-func comparedWords(c Comparison, sc SettledCandidate) (string, bool) {
+// fittedChecks are a candidate's check clauses joined within n bytes as
+// encoded: whole clauses, then how many more the comparison has.
+func fittedChecks(clauses []string, n int) string {
+	return fitClauses(clauses, "; ", n, encodedLen, fitEncoded, func(k int) string {
+		return fmt.Sprintf("; and %d more %s: the comparison has %s", k, plural(k, "check", "checks"), plural(k, "it", "them"))
+	})
+}
+
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return one
+	}
+	return many
+}
+
+// fitClauses joins clauses with sep so that size of the whole is at most
+// n: every clause while all fit; else whole clauses in order while each,
+// with the words for the ones left after it (more(k), "" for none), fits,
+// then more for those left. A first clause that does not fit alone is cut
+// by cut, which marks its cut.
+func fitClauses(clauses []string, sep string, n int, size func(string) int, cut func(string, int) string, more func(int) string) string {
+	all := strings.Join(clauses, sep)
+	if size(all) <= n {
+		return all
+	}
+	out := ""
+	for i, cl := range clauses {
+		next := cl
+		if i > 0 {
+			next = out + sep + cl
+		}
+		left := len(clauses) - i - 1
+		var after string
+		if left > 0 {
+			after = more(left)
+		}
+		if size(next+after) <= n {
+			out = next
+			continue
+		}
+		if i == 0 {
+			after = ""
+			if len(clauses) > 1 {
+				after = more(len(clauses) - 1)
+			}
+			return cut(cl, n-size(after)) + after
+		}
+		return out + more(len(clauses)-i)
+	}
+	return out
+}
+
+// fitEncoded is s within n bytes as encoded, cut at a character and the
+// cut marked with an ellipsis when it does not fit.
+func fitEncoded(s string, n int) string {
+	if encodedLen(s) <= n {
+		return s
+	}
+	return cutEncoded(s, max(0, n-encodedLen("…"))) + "…"
+}
+
+// fitRunes is s within n characters, cut and the cut marked as fitEncoded.
+func fitRunes(s string, n int) string {
+	rs := []rune(s)
+	if len(rs) <= n {
+		return s
+	}
+	return string(rs[:max(0, n-1)]) + "…"
+}
+
+// comparedClauses is what the comparison c says of the candidate's checks,
+// one clause a row: "check ok: passed, comparable"; ok false when c does
+// not show that candidate in its lane (another attempt or commit), or when
+// a cell of a row is still under way (a check in flight, or one not run
+// yet while its attempt's checks are): the comparison has no verdict of
+// that row to say yet.
+func comparedClauses(c Comparison, sc SettledCandidate) ([]string, bool) {
 	i := slices.IndexFunc(c.Candidates, func(cc ComparedCandidate) bool { return cc.Task == sc.Task })
 	if i < 0 {
-		return "", false
+		return nil, false
 	}
 	if cc := c.Candidates[i]; cc.Run != sc.Run || cc.Attempt != sc.Attempt || cc.Commit != sc.Commit {
-		return "", false
+		return nil, false
 	}
 	if len(c.Checks) == 0 {
-		return "no check is compared", true
+		return []string{"no check is compared"}, true
 	}
 	var rows []string
 	for _, row := range c.Checks {
+		for _, cell := range row.Cells {
+			if cell.NotRun == NotRunPending || cell.State == ledger.CheckStarted || cell.State == ledger.CheckRunning {
+				return nil, false
+			}
+		}
 		outcome := "not run"
 		if j := slices.IndexFunc(row.Cells, func(cell CheckCell) bool { return cell.Task == sc.Task }); j >= 0 {
 			outcome = cellWords(row.Cells[j])
 		}
 		rows = append(rows, fmt.Sprintf("%s %s: %s, %s", row.Phase, row.ID, outcome, verdictWords(row)))
 	}
-	return strings.Join(rows, "; "), true
+	return rows, true
 }
 
 // cellWords is a candidate's run of one check in words.
@@ -572,38 +723,48 @@ func verdictWords(row ComparedCheck) string {
 // selectionContext is the comparison at the opening in words, within the
 // ledger's bound: the base, the criteria, and each lane's candidate with
 // what the comparison says of its checks, or why it has none and what the
-// comparison says of its last commit's. The caller holds e.mu.
+// comparison says of its last commit's. Whole criteria and whole
+// candidates' sentences only: those that do not fit are counted, never
+// cut. The criteria take at most a third of the bound, so the candidates
+// keep room. The caller holds e.mu.
 func (r *run) selectionContext(opts []SettledCandidate) string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "Every candidate started at %s.", shortOf(r.base))
+	runes := utf8.RuneCountInString
+	head := fmt.Sprintf("Every candidate started at %s.", shortOf(r.base))
 	if len(r.compare.Criteria) > 0 {
-		b.WriteString(" Criteria:")
+		var crit []string
 		for _, cr := range r.compare.Criteria {
-			fmt.Fprintf(&b, " %s: %s;", cr.ID, cr.Text)
+			crit = append(crit, oneLine.Replace(fmt.Sprintf("%s: %s", cr.ID, cr.Text)))
 		}
+		head += " Criteria: " + fitClauses(crit, "; ", ledger.MaxDecisionContext/3, runes, fitRunes, func(k int) string {
+			return fmt.Sprintf("; and %d more %s: the comparison has %s", k, plural(k, "criterion", "criteria"), plural(k, "it", "them"))
+		}) + "."
 	}
 	m := r.measuredNow()
+	var lanes []string
 	for _, cd := range r.compare.Candidates {
 		i := slices.IndexFunc(opts, func(c SettledCandidate) bool { return c.Task == cd.Task })
 		t := r.task(cd.Task)
 		switch {
 		case i >= 0:
-			fmt.Fprintf(&b, " %s: %s, %s.", cd.Task, shortOf(opts[i].Commit), r.tradeoffs(opts[i]))
+			lanes = append(lanes, fmt.Sprintf(" %s: %s, %s.", cd.Task, shortOf(opts[i].Commit), r.tradeoffs(opts[i])))
 		case t != nil:
-			fmt.Fprintf(&b, " %s: no result (%s)", cd.Task, t.state)
+			words := fmt.Sprintf(" %s: no result (%s)", cd.Task, t.state)
 			if last, ok := lastCompared(m, cd.Task); ok {
-				if words, ok := comparedWords(*m, last); ok {
-					fmt.Fprintf(&b, "; at %s, attempt %d: %s", shortOf(last.Commit), last.Attempt, words)
+				if clauses, ok := comparedClauses(*m, last); ok {
+					at := fmt.Sprintf("; at %s, attempt %d: ", shortOf(last.Commit), last.Attempt)
+					words += at + fittedChecks(clauses, ledger.MaxOptionTradeoffs-encodedLen(at))
 				}
 			}
-			b.WriteString(".")
+			lanes = append(lanes, words+".")
 		}
 	}
-	out := strings.TrimSpace(oneLine.Replace(b.String()))
-	if utf8.RuneCountInString(out) > ledger.MaxDecisionContext {
-		out = string([]rune(out)[:ledger.MaxDecisionContext])
+	for i := range lanes {
+		lanes[i] = oneLine.Replace(lanes[i])
 	}
-	return out
+	body := fitClauses(lanes, "", ledger.MaxDecisionContext-runes(head), runes, fitRunes, func(k int) string {
+		return fmt.Sprintf(" And %d more %s: the comparison has %s.", k, plural(k, "candidate", "candidates"), plural(k, "it", "them"))
+	})
+	return fitRunes(strings.TrimSpace(oneLine.Replace(head)+body), ledger.MaxDecisionContext)
 }
 
 // lastCompared is the commit the comparison m shows in the lane of task,
