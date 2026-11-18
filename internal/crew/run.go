@@ -342,6 +342,10 @@ type Engine struct {
 	// question once each time a trust question holds the prompt: AwaitReady,
 	// but for tests.
 	await func(ctx context.Context, l *session.Local, held func(question string)) error
+	// promptRefused, when set, is called each time a member's prompt is
+	// refused for a dialog on its screen, after the run's note for it: a
+	// test's, to count the tries without a clock. Set before any launch.
+	promptRefused func()
 	// now is the clock of the diff cache.
 	now func() time.Time
 	// excludeMu keeps two launches from writing a repository's info/exclude
@@ -1698,6 +1702,12 @@ func (e *Engine) promptWith(ctx context.Context, r *run, m *member, local *sessi
 		// its start bound with the screen's words (notStarted). stop says
 		// the wait ended, with what promptWith returns.
 		noted := false
+		// unread notes once that the member shows a dialog the session
+		// does not read whole (session.Local.UnreadDialog: a window too
+		// short for its heading from its first draw): it asks nothing, so
+		// no question is held and the prompt is refused at each try. No
+		// choice is offered for it: its terminal answers it.
+		unread := false
 		unrecognised := func() (stop bool, err error) {
 			if !noted {
 				noted = true
@@ -1776,6 +1786,15 @@ func (e *Engine) promptWith(ctx context.Context, r *run, m *member, local *sessi
 				// typed, and it waits for the answer. The wait may find
 				// the session ready (a report of its own on show while the
 				// dialog is up), so it looks again a poll later.
+				if !unread && local.UnreadDialog() {
+					unread = true
+					e.mu.Lock()
+					r.note(session.ActivityStatus, "%s shows a dialog Conductor does not read whole: answer it in %s's terminal; its prompt waits", name, name)
+					e.mu.Unlock()
+				}
+				if e.promptRefused != nil {
+					e.promptRefused()
+				}
 				select {
 				case <-ctx.Done():
 					return ctx.Err()

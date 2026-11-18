@@ -1222,15 +1222,18 @@ func (s *Local) firePattern(line string) {
 // question (startupLook).
 //
 // A dialog read again while its question still waits is that question,
-// whatever a screen being drawn again shows of it (stillAsks): its id and its words
-// stay, and a run's log, which notes each question once by its id, notes it
-// once. And a look that does not read the question's words whole (the
-// catalog's words, wholeWords: its first choice drawn, its heading not) asks
-// nothing: words are never read off a choice. Neither answers anything, and
-// a prompt typed meanwhile is refused as before (startupOnScreen).
+// whatever a screen being drawn again shows of it, unless it reads other
+// words whole (stillAsks): its id and its words stay, and a run's log,
+// which notes each question once by its id, notes it once. A look that
+// does not read the question's words whole (the catalog's words,
+// wholeWords: its first choice drawn, its heading not; half a frame) asks
+// nothing: words are never read off a choice or a heading drawn in part.
+// Neither answers anything, and a prompt typed meanwhile is refused as
+// before (startupOnScreen); a reply to the question kept is weighed
+// against its dialog on the screen (keptWords).
 func (s *Local) fireTrust(text string) {
 	if q, words, seen, shown := s.startupSeen(text); q != nil {
-		if s.stillAsks(q) || words == "" {
+		if s.stillAsks(q, words) || words == "" {
 			// One held answered that the screen no longer shows is cleared,
 			// as below.
 			s.escGone()
@@ -4661,7 +4664,12 @@ func (s *Local) stillOnScreen(id string) error {
 	}
 	switch {
 	case att.Source == SourceTrust && s.trust != nil:
-		if _, words := s.startupShown(s.trust.Text()); !sameWords(words, att.words()) {
+		// The dialog shown with other words than the question's is another
+		// question, but for the question's own dialog drawn again without
+		// its heading (keptWords): that is the question still waiting
+		// (stillAsks), and its choice goes to it.
+		tail := s.trust.Text()
+		if _, words := s.startupShown(tail); !sameWords(words, att.words()) {
 			return ErrQuestionAnswered
 		}
 		// The output the watcher keeps holds what came before a screen
@@ -4670,8 +4678,10 @@ func (s *Local) stillOnScreen(id string) error {
 		// screen as it is now, a whole frame, shows the question, or the
 		// reply would reach what took its place.
 		if s.asked != nil {
-			if text, settled, _, _ := s.asked.Whole(); settled && !sameWords(s.lastStartup(text), att.words()) {
-				return ErrQuestionAnswered
+			if text, settled, _, _ := s.asked.Whole(); settled {
+				if q, words := s.lastStartupQ(text); !sameWords(s.keptWords(q, words, tail), att.words()) {
+					return ErrQuestionAnswered
+				}
 			}
 		}
 	case att.Source != SourceQuestion && s.trust != nil && s.trust.Watching():
@@ -4756,6 +4766,13 @@ func (s *Local) startupSeen(text string) (q *StartupQuestion, words string, seen
 	v := s.asked.Seen()
 	s.feedMu.Unlock()
 	seen = heldStartup{fed: v.Fed, cols: v.Cols, rows: v.Rows, drawnCols: v.DrawnCols, drawnRows: v.DrawnRows}
+	if !v.Drawn && q.Words != nil {
+		// Half a frame (a synchronized update under way): its words, there
+		// and in the output's tail, may be drawn in part ("→ 0.1"), and a
+		// version cut short still matches them. Not read whole: the look
+		// after the frame's end reads them.
+		return q, "", seen, true
+	}
 	if v.Uncut && s.lastStartup(v.Text) == "" {
 		return q, words, seen, false
 	}
@@ -4776,8 +4793,10 @@ func (s *Local) startupSeen(text string) (q *StartupQuestion, words string, seen
 // the screen drawn again, cut at any point, shows its heading in part or
 // not at all, and nothing that would tell one dialog from another. A
 // question without Words is told by what its Pattern matched, whole or not
-// at all: other words are another question (two of one pattern).
-func (s *Local) stillAsks(q *StartupQuestion) bool {
+// at all: other words are another question (two of one pattern). So are
+// other words of q read whole (words, from a frame the program finished:
+// startupSeen): another dialog of its kind.
+func (s *Local) stillAsks(q *StartupQuestion, words string) bool {
 	if q.Words == nil {
 		return false
 	}
@@ -4788,7 +4807,76 @@ func (s *Local) stillAsks(q *StartupQuestion) bool {
 		s.claimedLocked(cur.ID) || cur.ID == s.consumed || s.heldAnswer.id == cur.ID {
 		return false
 	}
-	return q.Words.MatchString(cur.words())
+	return q.Words.MatchString(cur.words()) && (words == "" || sameWords(words, cur.words()))
+}
+
+// keptWords is words, the words read of the startup dialog q found on the
+// screen or in the output's tail (tail), or the words of the startup
+// question showing when q's dialog shows that question kept without its
+// heading (keptShown): what tells the dialog on the screen from the
+// question (sameWords) then tells it is that question.
+func (s *Local) keptWords(q *StartupQuestion, words, tail string) string {
+	if q == nil || q.Words == nil {
+		return words
+	}
+	s.mu.Lock()
+	att := s.info.Attention
+	s.mu.Unlock()
+	if att.State == AttentionNeedsInput && att.Source == SourceTrust && att.ID != "" && !sameWords(words, att.words()) && s.keptShown(q, att, tail) {
+		return att.words()
+	}
+	return words
+}
+
+// keptShown reports whether the dialog q, found on the screen or in the
+// output's tail (tail) with other words than att's, is the question att
+// still waiting with its heading not shown (stillAsks keeps it so): q has
+// words of its own (Words) and att's words are q's; q's choice row (its
+// Pattern) is on the screen now; and neither the screen nor tail reads
+// other words of q whole. Any other screen is not that dialog: none of its
+// choices on it, another catalog question's dialog, or q with other words
+// read whole (another dialog of its kind).
+func (s *Local) keptShown(q *StartupQuestion, att Attention, tail string) bool {
+	if q == nil || q.Words == nil || s.asked == nil || !q.Words.MatchString(att.words()) {
+		return false
+	}
+	screen, _, _, _ := s.asked.Whole()
+	if !q.Pattern.MatchString(screen) {
+		return false
+	}
+	for _, text := range []string{screen, tail} {
+		if w := q.wholeWords(text); w != "" && !sameWords(w, att.words()) {
+			return false
+		}
+	}
+	return true
+}
+
+// UnreadDialog reports whether the screen, a frame the program has
+// finished, shows one of the agent's startup dialogs that the session does
+// not ask because its words are not read whole (fireTrust, wholeWords): its
+// choice row on the screen, the catalog's words for it neither there nor in
+// the output's tail (a window too short for its heading from its first
+// draw), and no question showing. Nothing answers such a dialog but keys
+// typed in the terminal; a prompt is refused meanwhile (startupOnScreen).
+// What waits on the session's prompt says so once.
+func (s *Local) UnreadDialog() bool {
+	if s.trust == nil || !s.trust.Watching() || s.asked == nil {
+		return false
+	}
+	tail := s.trust.Text()
+	s.feedMu.Lock()
+	v := s.asked.Seen()
+	s.feedMu.Unlock()
+	if !v.Drawn {
+		return false
+	}
+	q, _ := s.lastStartupQ(v.Text)
+	if q == nil || q.Words == nil || q.wholeWords(v.Text) != "" || q.wholeWords(tail) != "" {
+		return false
+	}
+	att := s.Info().Attention
+	return att.State != AttentionNeedsInput || !heldSource(att.Source)
 }
 
 // wholeWords is words when text shows q's own words whole: with the
@@ -4813,16 +4901,19 @@ func (q StartupQuestion) wholeWords(text string) string {
 // another (sameWords): fireTrust raises it with them, and what compares the
 // tail's words with the question's reads them the same way. Without the
 // screen, or when it does not show them, the tail's words.
+//
+// The question showing, kept while its dialog is drawn again without its
+// heading (stillAsks), is what that dialog shows (keptWords): its words.
 func (s *Local) startupShown(text string) (*StartupQuestion, string) {
 	q, words := s.lastStartupQ(text)
 	if q != nil && s.asked != nil {
 		if whole, _, _, _ := s.asked.Whole(); whole != "" {
 			if w := q.words(whole); w != "" {
-				return q, w
+				words = w
 			}
 		}
 	}
-	return q, words
+	return q, s.keptWords(q, words, text)
 }
 
 // noteDialogAnswered notes the dialog of words as answered (dialogAnswered),

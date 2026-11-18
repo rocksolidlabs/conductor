@@ -467,3 +467,54 @@ func TestAFirstMessageTypedAndNotSentSaysSo(t *testing.T) {
 		})
 	}
 }
+
+// A launch's update dialog drawn in a window too short for its heading from
+// its first draw is no question the session reads whole: nothing asks it,
+// and the first message is refused at each try. The session's Activity
+// says so once, however many tries: the agent shows a dialog Conductor
+// does not read whole, answered in its terminal. Nothing is typed into it;
+// once a key typed in the terminal answers it and the prompt shows, the
+// message goes in.
+func TestAFirstMessageSaysOnceThatADialogIsNotReadWhole(t *testing.T) {
+	l, p, sub := firstSession(t, session.Options{Questions: []session.StartupQuestion{{
+		Pattern: regexp.MustCompile(`(?i)update\s*now\s*\(\s*runs`),
+		Words:   regexp.MustCompile(`(?i)(update\s*available)\W*?(\d+(?:\.\d+)+\s*(?:→|->)\s*\d+(?:\.\d+)+)`),
+		Answers: []session.Option{{Label: "Skip this update", Input: "\x1b"}, {Label: "Skip until next version", Input: "3"}},
+	}}})
+	if err := l.Resize(sub, 80, 5); err != nil {
+		t.Fatal(err)
+	}
+	p.Print("\x1b[2J\x1b[H› 1. Update now (runs `npm install -g @openai/codex`)\r\n  2. Skip\r\n  3. Skip until next version\r\n\r\n  enter continue · esc skip")
+	waitTrue(t, "the dialog on the screen", l.UnreadDialog)
+	tries := make(chan struct{}, 64)
+	wait := func(context.Context, *session.Local, func(string)) error {
+		select {
+		case tries <- struct{}{}:
+		default:
+		}
+		return nil
+	}
+	_, done := typeFirst(t, l, FirstMessage{Wait: wait})
+	for range 4 {
+		<-tries
+	}
+	const note = "the first message waits: the agent shows a dialog Conductor does not read whole; answer it in its terminal"
+	if n := len(entriesWith(l, session.ActivityStatus, note)); n != 1 {
+		t.Fatalf("%d notes, want one: %+v", n, l.Activity())
+	}
+	noInput(t, p)
+	if err := l.Input(sub, []byte("\x1b")); err != nil {
+		t.Fatal(err)
+	}
+	if b := <-p.Input; string(b) != "\x1b" {
+		t.Fatalf("written %q", b)
+	}
+	p.Print("\x1b[2J\x1b[H> ")
+	if got := typedOn(t, nil, p, "> "); !strings.Contains(got, firstText) {
+		t.Fatalf("written %q", got)
+	}
+	returned(t, done)
+	if n := len(entriesWith(l, session.ActivityStatus, note)); n != 1 {
+		t.Fatalf("%d notes, want one", n)
+	}
+}

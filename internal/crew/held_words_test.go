@@ -86,3 +86,74 @@ func TestHeldWordsSayWhereTheQuestionIsAnswered(t *testing.T) {
 		}
 	}
 }
+
+// A member's update dialog drawn in a window too short for its heading from
+// its first draw is no question the session reads whole: nothing asks it,
+// no choice is offered for it, and the prompt is refused at each try. The
+// run's log says so once, however many tries: the member shows a dialog
+// Conductor does not read whole, answered in its terminal, its prompt
+// waiting. Nothing is typed into it; once a key typed in the terminal
+// answers it and the agent's prompt shows, the prompt goes in.
+func TestADialogNotReadWholeIsNotedOnceAndHoldsThePrompt(t *testing.T) {
+	e, fl := newEngine(t)
+	fl.questions = codexQuestions()
+	refused := make(chan struct{}, 64)
+	e.promptRefused = func() {
+		select {
+		case refused <- struct{}{}:
+		default:
+		}
+	}
+	subs := make(chan *session.Subscription, 1)
+	fl.onLaunch = func(_ string, p *sessiontest.FakeProc, l *session.Local) {
+		// The page's terminal, five rows tall, sizes the session before
+		// the agent draws.
+		sub, err := l.Attach("", session.RoleControl, "", 80, 5, nopSink{})
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		if err := l.Resize(sub, 80, 5); err != nil {
+			t.Error(err)
+			return
+		}
+		subs <- sub
+		_ = p.Print("\x1b[2J\x1b[H› 1. Update now (runs `npm install -g @openai/codex`)\r\n  2. Skip\r\n  3. Skip until next version\r\n\r\n  enter continue · esc skip")
+	}
+	run, err := e.Launch(t.Context(), testCrew(immediate("lead", "Plan it.")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sub := <-subs
+	// Three tries refused: the note is made at the first.
+	for range 3 {
+		select {
+		case <-refused:
+		case <-time.After(30 * time.Second):
+			t.Fatal("the prompt was not tried")
+		}
+	}
+	const note = "lead shows a dialog Conductor does not read whole: answer it in lead's terminal; its prompt waits"
+	got, _ := e.Get(run.ID)
+	if n := logCount(t, e, run.ID, note); n != 1 || logCount(t, e, run.ID, "lead asks") != 0 {
+		t.Fatalf("noted %d times: %+v", n, got.Log)
+	}
+	l, p := fl.member("lead")
+	if w := typed(p); len(w) != 0 {
+		t.Fatalf("typed into the dialog: %q", w)
+	}
+	if err := l.Input(sub, []byte("\x1b")); err != nil {
+		t.Fatal(err)
+	}
+	if got := <-p.Input; string(got) != "\x1b" {
+		t.Fatalf("the person typed %q", got)
+	}
+	_ = p.Print("\x1b[2J\x1b[H> ")
+	if got := waitTyped(t, p, 30*time.Second); got != "Plan it.\r" {
+		t.Fatalf("typed %q", got)
+	}
+	waitStatus(t, e, run.ID, "lead", MemberRunning, 10*time.Second)
+	if n := logCount(t, e, run.ID, note); n != 1 {
+		t.Fatalf("noted %d times", n)
+	}
+}
