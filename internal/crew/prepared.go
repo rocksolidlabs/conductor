@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // A launch its caller holds to what it resolved (internal/api's resolved
@@ -15,6 +16,11 @@ import (
 // ErrStartCommitMissing says the launch folder's repository holds no commit of
 // the id a launch named as its base.
 var ErrStartCommitMissing = errors.New("the folder's repository does not hold the commit")
+
+// ErrStartCommitNotACommit says the id a launch named as its base is an
+// object of the folder's repository that is not a commit (an annotated
+// tag's): a start commit is a commit's own full id.
+var ErrStartCommitNotACommit = errors.New("the start commit is not a commit's own id")
 
 // The sources of a prepared launch's project manifest (Prepared.Manifest).
 const (
@@ -66,11 +72,17 @@ func (e *Engine) PrepareLaunch(ctx context.Context, c Crew, base string) (*Prepa
 			return nil, invalidf("the start commit %s is not a full commit id", quote(base))
 		}
 		if c.Isolation == IsolationWorktree && c.Cwd != "" {
-			if _, err := git(ctx, c.Cwd, "cat-file", "-e", base+"^{commit}"); err != nil {
-				if ctx.Err() != nil {
-					return nil, ctx.Err()
-				}
+			// The commit itself: an annotated tag's id (or any object's
+			// that is not a commit) peels to a commit, but no worktree is
+			// ever at it.
+			out, err := git(ctx, c.Cwd, "rev-parse", "--verify", "--quiet", base+"^{commit}")
+			switch {
+			case err != nil && ctx.Err() != nil:
+				return nil, ctx.Err()
+			case err != nil:
 				return nil, fmt.Errorf("%w: %s", ErrStartCommitMissing, base)
+			case strings.TrimSpace(out) != base:
+				return nil, fmt.Errorf("%w: %s names a tag or another object, not a commit", ErrStartCommitNotACommit, base)
 			}
 		}
 	}

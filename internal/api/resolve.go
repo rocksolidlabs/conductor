@@ -193,6 +193,8 @@ func engineRefusal(err error) error {
 	switch {
 	case errors.Is(err, crew.ErrStartCommitMissing):
 		return refusedCode(ext.RefusalStartCommitMissing, "%v", err)
+	case errors.Is(err, crew.ErrStartCommitNotACommit):
+		return refusedCode(ext.RefusalInvalidRequest, "%v", err)
 	case errors.Is(err, crew.ErrInvalid):
 		return refusedCode(ext.RefusalInvalidCrew, "%v", err)
 	case errors.Is(err, crew.ErrNotRepo), errors.Is(err, crew.ErrNoGit):
