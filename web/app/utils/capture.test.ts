@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { captureOfWords, diffSinceSent, isWorkbench, labelWords, parseBridgeMessage, previewPath, retakeAddress, sourceLink } from './capture'
+import { captureOfWords, diffSinceSent, draftSources, hitSentence, isWorkbench, labelWords, parseBridgeMessage, previewPath, retakeAddress, sourceLink } from './capture'
 import { MAX_ELEMENT_REPORT, MAX_PREVIEW_TO_WORKBENCH, PREVIEW_MARK } from './protocol'
 import { testElement, testPage } from './testdata/preview'
 
@@ -159,5 +159,60 @@ describe('captureOfWords', () => {
     expect(captureOfWords({ kind: 'attempt', task: 'build', attempt: 1, tree: 'worktree', commit, changed: 2 })).toEqual({ lead: 'build attempt 1 · worktree at', commit: '0123456', tail: '· 2 changed' })
     expect(captureOfWords({ kind: 'candidate', task: 'build', attempt: 2, tree: 'preview', commit, changed: 0 })).toEqual({ lead: 'candidate', commit: '0123456', tail: 'of build · attempt 2 · as committed' })
     expect(captureOfWords({ kind: 'url', changed: 0 })).toEqual({ lead: 'a link', commit: '', tail: '' })
+  })
+})
+
+describe("hitSentence: a ticket's card says the hit test whole", () => {
+  it('says what covers the element, or that a click reaches the element itself: before a repair and after it read apart', () => {
+    const before = hitSentence({ hit: { self: false, selector: 'span.absolute.-inset-1', tag: 'span' } })
+    const after = hitSentence({ hit: { self: true, selector: '#save', tag: 'button' } })
+    expect(before).toBe('a click at its centre reaches span.absolute.-inset-1')
+    expect(after).toBe('a click at its centre reaches the element itself')
+    expect(before).not.toBe(after)
+    expect(hitSentence({ hit: { self: false, selector: '', tag: 'div' } })).toBe('a click at its centre reaches div')
+    expect(hitSentence({ hit: { self: false, selector: '', tag: '' } })).toBe('a click at its centre reaches nothing of the page')
+  })
+})
+
+describe("draftSources: before Save the editor lists a page's hints as the server's checked sources read after it", () => {
+  const T = '/srv/trees/run-1/look'
+  // A Vue dev build's chain, innermost first: a library's components, then the app's own, every file an absolute path in the tree.
+  const hints = [
+    { how: 'vue', file: `${T}/web/node_modules/@nuxt/ui/dist/runtime/components/LinkBase.vue`, component: 'ULinkBase' },
+    { how: 'vue', file: `${T}/web/node_modules/@nuxt/ui/dist/runtime/components/Button.vue`, component: 'UButton' },
+    { how: 'vue', file: `${T}/web/app/components/NameDialog.vue`, component: 'NameDialog' },
+    { how: 'vue', file: `${T}/web/app/app.vue`, component: 'App' },
+  ]
+  it("puts the tree's own files first, relative to the tree, a library's last, in the page's order within each", () => {
+    expect(draftSources(hints, T).map((s) => [s.path, s.vendor])).toEqual([
+      ['web/app/components/NameDialog.vue', false],
+      ['web/app/app.vue', false],
+      ['web/node_modules/@nuxt/ui/dist/runtime/components/LinkBase.vue', true],
+      ['web/node_modules/@nuxt/ui/dist/runtime/components/Button.vue', true],
+    ])
+    expect(draftSources(hints, `${T}/`)[0]!.path).toBe('web/app/components/NameDialog.vue')
+    expect(draftSources(hints, T)[0]).toEqual({ path: 'web/app/components/NameDialog.vue', line: undefined, how: 'vue', component: 'NameDialog', vendor: false })
+  })
+
+  it('shows no path of the machine where the tree is not known: from the folder holding node_modules, else the last three parts', () => {
+    const out = draftSources([...hints, { how: 'attribute', file: '/opt/elsewhere/lib/a/b/c.ts', line: 7 }], '')
+    expect(out.map((s) => s.path)).toEqual([
+      'app/components/NameDialog.vue',
+      'app/app.vue',
+      '…/a/b/c.ts',
+      'node_modules/@nuxt/ui/dist/runtime/components/LinkBase.vue',
+      'node_modules/@nuxt/ui/dist/runtime/components/Button.vue',
+    ])
+    expect(out.find((s) => s.path === '…/a/b/c.ts')?.line).toBe(7)
+    // A tree that is not where the page's files are (a candidate's checkout) is not used.
+    expect(draftSources(hints, '/srv/trees/run-2/fix').map((s) => s.path)[0]).toBe('app/components/NameDialog.vue')
+    for (const tree of ['', T, '/srv/other']) for (const s of draftSources([...hints, { how: 'vue', file: 'C:\\work\\x\\y\\z.vue' }], tree)) expect(s.path).not.toMatch(/^(\/|[a-z]:)/i)
+  })
+
+  it('keeps a path the page gives relative as it is, and a relative library path last', () => {
+    expect(draftSources([{ how: 'attribute', file: 'node_modules/widgets/Form.vue', line: 3 }, { how: 'attribute', file: './app/page.html', line: 33 }]).map((s) => [s.path, s.line, s.vendor])).toEqual([
+      ['app/page.html', 33, false],
+      ['node_modules/widgets/Form.vue', 3, true],
+    ])
   })
 })
