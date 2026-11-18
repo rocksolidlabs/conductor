@@ -653,6 +653,18 @@ add its rule here.
   the next (Brakeman's page, #993). Put the root at a whole pixel (the
   body's full width, the page centred inside it) and give columns fixed
   bases, so every width draws on whole pixels.
+- A call that dispatches after its commit waits for the run's transaction
+  lock, which a commit held at a gate keeps. `CancelTask`, like any command,
+  commits and then dispatches (`afterTransact`, `pumpLocked`); the commit
+  can set a second transaction going on a goroutine of its own (a tree's
+  end), and a test that holds THAT commit at a gate and calls the command on
+  its own goroutine opens the gate only after a call that waits for the
+  gate: on a loaded runner the held commit takes the lock first and both
+  wait for good (`TestAPortIsLetGoOnlyOnceItsTreesEndIsCommitted` hung 53
+  minutes in CI, #1008). A test that holds a commit the call itself sets
+  going makes the call on a goroutine of its own, and opens the gate before
+  it waits for the call to return; a seam between the commit and the
+  dispatch (`beforeCancelPump`) makes the old order fail every run.
 - Prove a flake fix the way it failed: `go test -race -count=30` (on the
   Mac too when it flaked there), `npx playwright test <spec> --repeat-each
   10`, and once more under load.

@@ -1,8 +1,8 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
-import { candidateSelection, compareRunOf, selectedReview, selectionReview } from './compareSelect'
+import { candidateSelection, compareRunOf, heldVerdict, reviewHold, selectedReview, selectionReview, selectionWaitsWords, stopSelectionWords } from './compareSelect'
 import type { Comparison } from './compare'
-import { firstReviewCandidate, pickerLabel, reviewDefault } from './review'
+import { firstReviewCandidate, latestOfSelected, pickerLabel, reviewDefault } from './review'
 
 // Review the selected candidate (Program item CP1, docs/plans/compare-crew.md, PR-8b): in RV1's view the picker labels a
 // comparison's candidates "selected" and "not selected" and opens on the selected one; every other run's picker is as RV1 made it.
@@ -78,7 +78,7 @@ describe("Review the selected candidate on the ticket's Decisions", () => {
     const picker = readFileSync(new URL('../components/ReviewCandidate.vue', import.meta.url), 'utf8')
     expect(picker).toContain('label: pickerLabel(o)')
     const view = readFileSync(new URL('../components/DispatchReview.vue', import.meta.url), 'utf8')
-    expect(view).toContain('reviewDefault(props.candidates.runs.value, compareRun.value ? true : compareOf.value.known ? false : undefined, selected.value)')
+    expect(view).toContain('reviewDefault(props.candidates.runs.value, compareRun.value ? true : compareOf.value.known ? false : undefined, selected.value, props.continues)')
   })
 })
 
@@ -110,5 +110,109 @@ describe("the comparison's run, the live store's or a record's", () => {
     const view = readFileSync(new URL('../components/DispatchReview.vue', import.meta.url), 'utf8')
     expect(view).toContain('attention.refreshRun(id)')
     expect(view).toContain('compareOf.value.known ? false : undefined')
+  })
+})
+
+describe("the Review view after the selected candidate's repair", () => {
+  const NEXT = 'crew-0000aaaa-33334444'
+  const OTHER = 'crew-0000cccc-55556666'
+  const at = (run: string, task: string, attempt: number, commit: string, t: string, o: { withdrawn?: boolean } = {}) => ({
+    run,
+    label: run,
+    startedAt: '2026-11-16T09:00:00Z',
+    tasks: [{ task, kind: 'work', candidates: [{ attempt, commit, state: 'succeeded', standing: true, withdrawn: !!o.withdrawn, receipts: receipt(t) }] }],
+  })
+  const sel = { run: RUN, task: 'approach-b', attempt: 2, commit: B }
+  const chain = new Map([[NEXT, RUN]])
+
+  it("opens on the selected lane's latest attempt: its repair in the run that continues it, once it has submitted", () => {
+    const withRepair = [...runs, at(NEXT, 'approach-b', 3, R, '2026-11-16T10:00:00Z')]
+    expect(reviewDefault(withRepair, true, sel, chain)).toBe(`${NEXT}/approach-b/3@${R}`)
+    expect(latestOfSelected(withRepair, sel, chain)).toBe(`${NEXT}/approach-b/3@${R}`)
+    // A later attempt in the selected candidate's own run is one too.
+    const sameRun = [{ ...runs[0]!, tasks: [runs[0]!.tasks[0]!, { ...runs[0]!.tasks[1]!, candidates: [...runs[0]!.tasks[1]!.candidates, { attempt: 3, commit: R, state: 'succeeded', standing: true, withdrawn: false, receipts: receipt('2026-11-16T10:00:00Z') }] }] }]
+    expect(reviewDefault(sameRun, true, sel)).toBe(`${RUN}/approach-b/3@${R}`)
+  })
+
+  it('opens on the selected candidate itself before a repair, and never on another lane, another chain or a withdrawn attempt', () => {
+    expect(reviewDefault(runs, true, sel, chain)).toBe(`${RUN}/approach-b/2@${B}`)
+    // A newer approach-a, a newer approach-b of another comparison (a chain of its own), a withdrawn repair: none of them.
+    const others = [...runs, at(NEXT, 'approach-a', 3, R, '2026-11-16T10:00:00Z'), at(OTHER, 'approach-b', 1, R, '2026-11-16T11:00:00Z'), at(NEXT, 'approach-b', 4, A, '2026-11-16T12:00:00Z', { withdrawn: true })]
+    expect(reviewDefault(others, true, sel, chain)).toBe(`${RUN}/approach-b/2@${B}`)
+    // Not among the runs read: the applied selection's own candidate.
+    expect(reviewDefault([], true, sel, chain)).toBe(`${RUN}/approach-b/2@${B}`)
+  })
+})
+
+describe('Request changes on a candidate of a comparison, held before anything is written', () => {
+  const cmp = (sel: Comparison['selection'], state?: string) => ({ ...comparison(sel), state })
+  it("is held on a lane not selected, in the server's words", () => {
+    expect(reviewHold(applied, 'approach-a')).toEqual({ title: 'approach-a was not selected', words: 'approach-a was not selected in dr-9: launch a new comparison to try it again' })
+  })
+
+  it('is free on the selected lane, its repair among them, and on a task that is no lane (a review), and while nothing is read', () => {
+    expect(reviewHold(applied, 'approach-b')).toBeNull()
+    expect(reviewHold(applied, 'review-b')).toBeNull()
+    expect(reviewHold(null, 'approach-a')).toBeNull()
+  })
+
+  it('is held after None of these, and before the selection is applied', () => {
+    const none = cmp({ decision: 'dr-9', state: 'applied', options: [], applied: { how: 'selected', none: true } })
+    expect(reviewHold(none, 'approach-b')).toEqual({ title: 'No candidate was selected', words: 'no candidate was selected: launch a new comparison' })
+    expect(reviewHold(cmp(null, 'ended'), 'approach-b')!.words).toBe('no candidate was selected: launch a new comparison')
+    for (const s of [cmp({ decision: 'dr-9', state: 'open', options: [] }), cmp(null, 'running')])
+      expect(reviewHold(s, 'approach-b')).toEqual({ title: 'The selection is not applied yet', words: 'select a candidate first: a repair before the selection would make the candidates unlike' })
+  })
+
+  it('says a selection answered and not applied yet as that, never asking the person who answered it to select', () => {
+    const answered = reviewHold(cmp({ decision: 'dr-9', state: 'answered', options: [] }, 'answered'), 'approach-a')!
+    expect(answered).toEqual({
+      title: 'The selection is answered, not applied yet',
+      words: 'dr-9 is answered and not applied yet: Yardmaster applies it next, or when the run is continued if it is stopped; a repair waits for it',
+    })
+    expect(answered.words).not.toContain('select a candidate first')
+  })
+
+  it('is said in the draft, above its notes, and holds the Request changes verdict and Send review', () => {
+    const draft = readFileSync(new URL('../components/ReviewDraft.vue', import.meta.url), 'utf8')
+    expect(draft).toContain("disabled: !!props.hold")
+    expect(draft.indexOf('data-review-hold>')).toBeLessThan(draft.indexOf('<ol v-if="notes.length"'))
+    const view = readFileSync(new URL('../components/DispatchReview.vue', import.meta.url), 'utf8')
+    expect(view).toContain(':hold="hold"')
+    expect(view).toContain("if (hold.value && toSend.value.verdict === 'request_changes') p.unshift(")
+  })
+})
+
+describe("the run's Stop, with a comparison's selection waiting on it", () => {
+  it('says the selection stays, open or answered, and is applied when the run is continued', () => {
+    expect(stopSelectionWords({ id: 'dr-2', state: 'open' })).toBe('Its selection, dr-2, stays open: you can answer it on the stopped run, and the answer is applied when the run is continued. Stopping selects nothing and cancels nothing.')
+    expect(stopSelectionWords({ id: 'dr-2', state: 'answered' })).toBe('Its selection, dr-2, is answered and not applied yet: the answer is applied when the run is continued. Stopping changes nothing of it.')
+    expect(stopSelectionWords({ id: 'dr-2', state: 'applied' })).toBe('')
+    expect(stopSelectionWords(null)).toBe('')
+  })
+})
+
+describe("the comparison's top line while its selection waits", () => {
+  it('says a selection waits only while it is open, and names it', () => {
+    expect(selectionWaitsWords({ decision: 'dr-9', state: 'open' })).toBe('A selection waits for your answer (dr-9): it is at the end, after what it is answered from.')
+    for (const state of ['answered', 'applied', 'superseded']) expect(selectionWaitsWords({ decision: 'dr-9', state })).toBe('')
+    expect(selectionWaitsWords(null)).toBe('')
+  })
+})
+
+describe('the verdict of a draft while Request changes is held', () => {
+  const hold = { title: 'approach-a was not selected', words: 'approach-a was not selected in dr-9: launch a new comparison to try it again' }
+  it('is Comment in place of Request changes, so the verdict checked can be sent; any other verdict stays', () => {
+    expect(heldVerdict('request_changes', hold)).toBe('comment')
+    expect(heldVerdict('approve', hold)).toBe('approve')
+    expect(heldVerdict('comment', hold)).toBe('comment')
+    expect(heldVerdict('request_changes', null)).toBe('request_changes')
+  })
+
+  it("is set by the view while the hold stands, and the hold's words keep the candidate's name as written", () => {
+    const view = readFileSync(new URL('../components/DispatchReview.vue', import.meta.url), 'utf8')
+    expect(view).toContain('const want = heldVerdict(v, h)')
+    const draft = readFileSync(new URL('../components/ReviewDraft.vue', import.meta.url), 'utf8')
+    expect(draft).toContain('data-review-hold-words>{{ hold.words }}.</span>')
   })
 })

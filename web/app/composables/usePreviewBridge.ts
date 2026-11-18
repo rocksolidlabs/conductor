@@ -1,5 +1,7 @@
 import { getCurrentInstance, markRaw, onBeforeUnmount, reactive, watch } from 'vue'
 import {
+  ANSWERED_WORDS,
+  ASKING_WORDS,
   CHANGED_WORDS,
   MOVING_WORDS,
   NO_BRIDGE_WORDS,
@@ -17,7 +19,8 @@ import { decodePng, fromBase64, sameIn, type Pixels, type ScreenshotSource } fro
 
 /**
  * The workbench's side of the preview bridge (docs/plans/browser-evidence.md, "The messages" and "One capture is one moment"): the
- * handshake with the framed page (a hello with a nonce of its own, 3 s with no ready meaning no bridge), one request in flight at a
+ * handshake with the framed page (a hello with a nonce of its own for each load, said again while the frame stays on that load and no
+ * ready came, 3 s with no ready saying the page does not load the bridge, a later ready of that load still taken), one request in flight at a
  * time, and the drafts. Every message is taken through parseBridgeMessage alone (the frame's own window, the preview's origin, the
  * hello's nonce, 64 KiB, the schema). A draft is one moment: its screenshot, taken at its first selection and checked with a `look`
  * (the page's epoch moved while the pixels were taken: the element is read again by its selector and the pixels taken again, at most
@@ -70,6 +73,12 @@ export interface Draft {
   open: boolean
   /** The capture this one retakes (Capture again), '' for none: the create sends it as `retakeOf`. */
   retakeOf: string
+  /**
+   * Made while the page had not answered the pane's hello: its moment is the pane's own (the frame's address and size). Its first
+   * element, once the page answers, joins it only where the frame then matches its screenshot inside that element's box, inside
+   * every annotation's box and over the whole frame (sameIn's tolerance, as a selection joining any draft is held).
+   */
+  asked?: boolean
 }
 
 /** What the session needs of the pane. */
@@ -89,6 +98,11 @@ export interface BridgeDeps {
   /** What a draft without the bridge records of the page: the frame's address and its size. */
   fallback(): { url: string; width: number; height: number }
   /**
+   * The fragment of the address the pane gave the frame ('#…', '' for none): what opens the preview there, never part of the page
+   * shown; a page's address the bridge reports ending with it is named without it.
+   */
+  opened?(): string
+  /**
    * Called before every frame is read, and awaited: the pane draws nothing of its own over the frame's box while pixels are taken
    * (the editor over a phone's frame goes, a size a device mode changed is laid out) and waits until that is painted.
    */
@@ -101,10 +115,17 @@ export interface BridgeDeps {
   clearTimer?(id: unknown): void
 }
 
-/** How long a hello waits for its ready, and a look or a describe for its answer. */
+/** How long a hello waits for its ready before the pane says the page does not load the bridge, and a look or a describe for its answer. */
 export const HELLO_MS = 3000
-/** The hello is said again at these times within its 3 s, for a bridge whose script starts after the frame's load. */
+/**
+ * The hello is said again, with its load's nonce, at these times within its 3 s, then every HELLO_EVERY_MS while the frame stays on
+ * that load and no ready has come: a bridge whose script starts after the frame's load (a dev build that adds its tag as the app
+ * starts) answers a later one, however late, and its ready is taken then.
+ */
 export const HELLO_AGAIN_MS = [1000, 2000] as const
+export const HELLO_EVERY_MS = 2000
+/** How long the pane says the page has not answered yet before it says the page does not load the bridge; it still takes a later ready. */
+export const NO_BRIDGE_MS = 30_000
 export const ANSWER_MS = 3000
 /** How many annotations a draft holds (dispatch.MaxCaptureAnnotations). */
 export const MAX_ANNOTATIONS = 20
@@ -159,6 +180,12 @@ export function boxIn(e: Pick<ElementReport, 'box'>, ratio: number): CaptureRect
   return { x: e.box.x * ratio, y: e.box.y * ratio, width: e.box.width * ratio, height: e.box.height * ratio }
 }
 
+/** url without its fragment (`#` and what follows). */
+export function withoutFragment(url: string): string {
+  const i = url.indexOf('#')
+  return i < 0 ? url : url.slice(0, i)
+}
+
 /** The test seam (C9): the screenshot source a test hands in; whatever else a test sees still goes through parseBridgeMessage. */
 export const previewSeam: { source: ScreenshotSource | null } = { source: null }
 
@@ -195,10 +222,12 @@ export function createPreviewSession(deps: BridgeDeps) {
   const setTimer = deps.setTimer ?? ((fn: () => void, ms: number) => setTimeout(fn, ms))
   const clearTimer = deps.clearTimer ?? ((id: unknown) => clearTimeout(id as ReturnType<typeof setTimeout>))
   const state = reactive({
-    /** The handshake: none yet, a hello waiting, the bridge ready, or absent (no ready within 3 s). */
+    /** The handshake: none yet, a hello waiting, the bridge ready, or absent (no ready within 3 s; the hello is still said). */
     bridge: 'none' as 'none' | 'hello' | 'ready' | 'absent',
-    /** What the pane says of the bridge: that the page does not load it. */
+    /** What the pane says of the bridge: that the page has not answered yet (from 3 s), then that it does not load it (from 30 s). */
     words: '',
+    /** The page answered no hello within NO_BRIDGE_MS of its load: the pane says it does not load the bridge (and still asks). */
+    unanswered: false,
     /** What is under way: a selection, a describe, a screenshot; '' for nothing. */
     busy: '' as '' | 'select' | 'describe' | 'shot',
     /** The last refusal's words (a page that would not hold still, a selector that matched nothing, a full draft). */
@@ -210,7 +239,9 @@ export function createPreviewSession(deps: BridgeDeps) {
   let nonce = ''
   let waiting: Waiting | null = null
   let helloTimer: unknown = null
-  let helloAgain: unknown[] = []
+  let helloAgain: unknown = null
+  /** The frame element the hello under way was said to: its hellos end when another is there. */
+  let helloTo: unknown = undefined
   let sourceFor: unknown = undefined
   let source: Promise<ScreenshotSource> | null = null
   let ids = 0
@@ -221,11 +252,15 @@ export function createPreviewSession(deps: BridgeDeps) {
     const m = parseBridgeMessage(e, { source: end.window, origin: end.origin, nonce })
     if (!m) return
     if (m.t === 'ready') {
-      if (state.bridge !== 'hello') return
-      if (helloTimer !== null) clearTimer(helloTimer)
-      helloTimer = null
+      // The current load's ready (parseBridgeMessage held it to this load's nonce), taken while its hello is said, also after the
+      // words: it ends the hellos and the words.
+      if (state.bridge !== 'hello' && state.bridge !== 'absent') return
+      stopHello()
       state.bridge = 'ready'
       state.words = ''
+      state.unanswered = false
+      // A capture made before the page answered can take its element now: the editor says so.
+      for (const d of state.drafts) if (d.open && d.asked && !d.words.includes(ANSWERED_WORDS)) d.words.push(ANSWERED_WORDS)
       return
     }
     const w = waiting
@@ -264,33 +299,58 @@ export function createPreviewSession(deps: BridgeDeps) {
   function stopHello() {
     if (helloTimer !== null) clearTimer(helloTimer)
     helloTimer = null
-    for (const t of helloAgain) clearTimer(t)
-    helloAgain = []
+    if (helloAgain !== null) clearTimer(helloAgain)
+    helloAgain = null
   }
 
   /**
-   * The frame (re)loaded: a hello with a new nonce, said again twice within its 3 s (a bridge whose script starts after the frame's
-   * load hears a later one); whatever was asked of the page before is dropped, and no draft is joined again.
+   * The next time the load's hello is said again, `n` times said again so far: at HELLO_AGAIN_MS within its 3 s, then every
+   * HELLO_EVERY_MS. One timer at a time; it ends itself once a ready came, the frame element was replaced, or the frame's window is
+   * gone, and a new load, the frame's going and the pane's close end it.
+   */
+  function sayAgain(n: number) {
+    const delay = n < HELLO_AGAIN_MS.length ? HELLO_AGAIN_MS[n]! - (n > 0 ? HELLO_AGAIN_MS[n - 1]! : 0) : HELLO_EVERY_MS
+    helloAgain = setTimer(() => {
+      helloAgain = null
+      if (state.bridge !== 'hello' && state.bridge !== 'absent') return
+      if (deps.frameElement && deps.frameElement() !== helloTo) return
+      if (post({ t: 'hello' })) sayAgain(n + 1)
+    }, delay)
+  }
+
+  /**
+   * The frame (re)loaded: a hello with a new nonce, said again while the frame stays on this load and no ready came (a bridge whose
+   * script starts after the frame's load hears a later one, and its ready is taken whenever it comes); the words at 3 s without one;
+   * whatever was asked of the page before is dropped, and no draft is joined again.
    */
   function hello() {
     finish(null)
     stopHello()
     nonce = deps.nonce ? deps.nonce() : mintNonce()
+    helloTo = deps.frameElement?.()
     for (const d of state.drafts) d.open = false
     state.bridge = 'hello'
     state.words = ''
+    state.unanswered = false
     if (!post({ t: 'hello' })) {
       state.bridge = 'absent'
       state.words = NO_BRIDGE_WORDS
+      state.unanswered = true
       return
     }
-    helloAgain = HELLO_AGAIN_MS.map((ms) => setTimer(() => state.bridge === 'hello' && post({ t: 'hello' }), ms))
+    sayAgain(0)
+    // At 3 s the words say the page has not answered yet and the pane keeps asking; at 30 s, that it does not load the bridge.
     helloTimer = setTimer(() => {
       helloTimer = null
-      if (state.bridge === 'hello') {
-        state.bridge = 'absent'
+      if (state.bridge !== 'hello') return
+      state.bridge = 'absent'
+      state.words = ASKING_WORDS
+      helloTimer = setTimer(() => {
+        helloTimer = null
+        if (state.bridge !== 'absent') return
         state.words = NO_BRIDGE_WORDS
-      }
+        state.unanswered = true
+      }, NO_BRIDGE_MS - HELLO_MS)
     }, HELLO_MS)
   }
 
@@ -327,8 +387,14 @@ export function createPreviewSession(deps: BridgeDeps) {
   /** The draft a selection may join: the last one still open. */
   const current = () => [...state.drafts].reverse().find((d) => d.open) ?? null
 
+  /** The page's address as a capture names it: the bridge's word, without the fragment the pane opened the frame with. */
+  function pageAddress(url: string): string {
+    const f = deps.opened?.() ?? ''
+    return f.startsWith('#') && f.length > 1 && url.endsWith(f) ? url.slice(0, -f.length) : url
+  }
+
   function momentOf(page: PreviewPage, label: LabelRead | null, at: string): Moment {
-    return { url: page.url, title: page.title, viewport: viewportOf(page.viewport, deps.view()), epoch: page.epoch, revision: page.revision, label, at }
+    return { url: pageAddress(page.url), title: page.title, viewport: viewportOf(page.viewport, deps.view()), epoch: page.epoch, revision: page.revision, label, at }
   }
 
   function observedOf(d: Draft, page: PreviewPage, at: string, stable: boolean | undefined): Observed {
@@ -396,6 +462,28 @@ export function createPreviewSession(deps: BridgeDeps) {
     join(state.drafts[state.drafts.length - 1]!, page.element, page, at, stable)
   }
 
+  /**
+   * The first element of a draft made before the page answered: the draft takes the page's moment and the element where the frame is
+   * now matches its screenshot inside the element's own box, inside every annotation's box and over the whole frame (each judged by
+   * sameIn on its own, so a change confined to a small box is caught there), and the label's revision has not moved; else the element starts a new draft, the
+   * first kept and closed.
+   */
+  async function adopt(d: Draft, m: { element: ElementReport } & PreviewPage, label: LabelRead | null, at: string) {
+    d.asked = false
+    d.words = d.words.filter((w) => w !== ANSWERED_WORDS)
+    const sameLabel = (d.moment.label?.commit ?? '') === (label?.commit ?? '') && (d.moment.label?.content ?? '') === (label?.content ?? '')
+    const frame = d.shot && sameLabel ? await shoot(await screenshots()) : null
+    const ratio = d.shot && m.viewport.width > 0 ? d.shot.width / m.viewport.width : 1
+    const boxes = d.shot ? [{ x: 0, y: 0, width: d.shot.width, height: d.shot.height }, ...d.annotations.map((a) => a.rect), boxIn(m.element, ratio)] : []
+    if (d.shot && frame && boxes.every((b) => sameIn(d.shot!, frame, b))) {
+      d.moment = momentOf(m, label, at)
+      d.ratio = ratio
+      return join(d, m.element, m, at, true)
+    }
+    d.open = false
+    await startDraft(m, label, at, frame, [CHANGED_WORDS])
+  }
+
   /** An element the bridge selected or described: it joins the open draft at the same moment and pixels, or starts a new one. */
   async function take(m: { element: ElementReport } & PreviewPage) {
     state.busy = 'shot'
@@ -404,6 +492,7 @@ export function createPreviewSession(deps: BridgeDeps) {
       const at = now().toISOString()
       const moment = momentOf(m, label, at)
       const d = current()
+      if (d?.asked) return await adopt(d, m, label, at)
       if (d && sameMoment(d.moment, moment)) {
         if (!d.shot) return join(d, m.element, m, at, undefined)
         const src = await screenshots()
@@ -446,10 +535,10 @@ export function createPreviewSession(deps: BridgeDeps) {
 
   /**
    * Capture again (the plan's "A candidate's preview"): each element of an earlier capture described again by its selector on this
-   * page, in its order, with its note, into a new draft that names the earlier as the capture it retakes; one that is not on this page
-   * is said. Nothing joins a draft from before it. The pane opens the same URL and device mode first.
+   * page, in its order, into a new draft that names the earlier as the capture it retakes, each with no note (the earlier capture
+   * keeps its own words; the person writes what they see now); one that is not on this page is said. Nothing joins a draft from before it. The pane opens the same URL and device mode first.
    */
-  async function retake(of: string, elements: ReadonlyArray<{ selector: string; note: string }>) {
+  async function retake(of: string, elements: ReadonlyArray<{ selector: string }>) {
     if (state.bridge !== 'ready' || state.busy || waiting) return
     state.refusal = ''
     for (const d of state.drafts) d.open = false
@@ -465,15 +554,19 @@ export function createPreviewSession(deps: BridgeDeps) {
           continue
         }
         await take({ ...m, element: m.element })
-        const d = current()
-        const a = d?.annotations[d.annotations.length - 1]
-        if (d?.retakeOf === of && a && a.element?.selector === m.element.selector && !a.note) a.note = e.note
       }
     } finally {
       state.retakeOf = ''
       state.busy = ''
     }
     if (missing.length) state.refusal = `not on this page now, so not retaken: ${missing.join(', ')}`
+  }
+
+  /** The page's address now, as the bridge reports it (a look); null without an answer. */
+  async function where(): Promise<string | null> {
+    if (state.bridge !== 'ready' || state.busy || waiting) return null
+    const m = await ask('look')
+    return m?.t === 'looked' ? m.url : null
   }
 
   /** Leaves selection mode: the bridge answers cancelled, which ends the selection waiting for it. */
@@ -495,7 +588,9 @@ export function createPreviewSession(deps: BridgeDeps) {
       const ua = typeof navigator === 'undefined' ? '' : navigator.userAgent.slice(0, MAX_PREVIEW_USER_AGENT)
       const dpr = typeof window === 'undefined' ? 1 : window.devicePixelRatio || 1
       const moment: Moment = {
-        url: f.url,
+        // The page the pane can name without the bridge: the address it gave the frame, less the fragment it opened a preview with
+        // (opened: what opens an attempt's or a candidate's preview there, never part of the page shown); a link's address whole.
+        url: pageAddress(f.url),
         title: '',
         viewport: { mode: view.mode, width: Math.round(f.width), height: Math.round(f.height), scale: view.scale, dpr, colorScheme: 'light', userAgent: ua, scrollX: 0, scrollY: 0 },
         epoch: 0,
@@ -503,7 +598,9 @@ export function createPreviewSession(deps: BridgeDeps) {
         label,
         at: now().toISOString(),
       }
-      state.drafts.push({ id: ++ids, moment, shot: shot && markRaw(shot), how: shot ? src.how : 'none', why: shot ? '' : src.why || 'no screenshot could be taken', ratio: shot && f.width > 0 ? shot.width / f.width : 1, annotations: [], words: [], open: false, retakeOf: '' })
+      // Made while the page has not answered yet: open, its first element joining it once the page answers (adopt).
+      const asked = state.bridge === 'hello' || state.bridge === 'absent'
+      state.drafts.push({ id: ++ids, moment, shot: shot && markRaw(shot), how: shot ? src.how : 'none', why: shot ? '' : src.why || 'no screenshot could be taken', ratio: shot && f.width > 0 ? shot.width / f.width : 1, annotations: [], words: [], open: asked, retakeOf: '', asked })
     } finally {
       state.busy = ''
     }
@@ -521,9 +618,25 @@ export function createPreviewSession(deps: BridgeDeps) {
     if (i >= 0) state.drafts.splice(i, 1)
   }
 
+  /**
+   * The frame's load is over without a new one yet (the frame element replaced or removed, its address changed): its hellos end, its
+   * nonce with them (no answer of that load is taken again), and what was asked of it is dropped. The next load says hello afresh.
+   */
+  function gone() {
+    finish(null)
+    stopHello()
+    nonce = ''
+    helloTo = undefined
+    for (const d of state.drafts) d.open = false
+    state.bridge = 'none'
+    state.words = ''
+    state.unanswered = false
+  }
+
   function close() {
     finish(null)
     stopHello()
+    nonce = ''
     off()
     void release()
   }
@@ -552,7 +665,7 @@ export function createPreviewSession(deps: BridgeDeps) {
     else await snap()
   }
 
-  return { state, hello, select, describe, cancel, retake, snap, start, addRegion, drop, release, close }
+  return { state, hello, gone, select, describe, where, cancel, retake, snap, start, addRegion, drop, release, close }
 }
 
 export type PreviewSession = ReturnType<typeof createPreviewSession>

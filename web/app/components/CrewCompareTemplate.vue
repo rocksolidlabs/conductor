@@ -74,7 +74,7 @@ async function create() {
 </script>
 
 <template>
-  <UModal v-model:open="open" title="New comparison" description="One objective, worked by two to four candidates apart from one base, each checked alike. It is saved as a crew; a ticket's approved plan revision launches it." :ui="{ content: 'sm:max-w-2xl' }">
+  <UModal v-model:open="open" title="New comparison" description="One objective, worked by two to four candidates apart from one base, each checked alike. It is saved as a crew; a ticket's approved plan revision launches it." :ui="{ content: 'sm:max-w-2xl', wrapper: 'min-w-0 pe-10' }" data-compare-template-dialog>
     <template #body>
       <UForm :state="draft" class="flex flex-col gap-5 text-sm" data-compare-template @submit="create">
         <div class="grid gap-4 sm:grid-cols-2">

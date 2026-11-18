@@ -10,6 +10,7 @@ import (
 	"sync"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/rocksolidlabs/conductor/ext"
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
@@ -185,13 +186,28 @@ func TestACancelThatFinishesTheRunEndsItsPrerequisites(t *testing.T) {
 	l.mu.Lock()
 	l.blockOn, l.blocked, l.release = "step.finished[phase=prerequisite]", make(chan struct{}, 1), make(chan struct{})
 	l.mu.Unlock()
-	if err := e.CancelTask(t.Context(), run.ID, "build"); err != nil {
-		t.Fatal(err)
+	// The cancel waits after its commit for the run's transactions, so it
+	// returns only once the held commit is let through: it runs on a
+	// goroutine of its own, held after its commit until the prerequisite's
+	// end is at its gate (beforeCancelPump).
+	cancelled := make(chan error, 1)
+	atGate := make(chan struct{})
+	e.beforeCancelPump = func(string) {
+		select {
+		case <-l.blocked:
+			close(atGate)
+		case <-time.After(10 * time.Second):
+		}
+	}
+	go func() { cancelled <- e.CancelTask(context.Background(), run.ID, "build") }()
+	select {
+	case <-atGate:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the prerequisite's end did not reach its commit")
 	}
 	if r, _ := e.Get(run.ID); r.Outcome != ledger.OutcomeCancelled {
 		t.Fatalf("the run after the cancel: %q", r.Outcome)
 	}
-	<-l.blocked
 	if alive(pid) {
 		t.Fatalf("the prerequisite's process %d outlived the run's end", pid)
 	}
@@ -204,6 +220,14 @@ func TestACancelThatFinishesTheRunEndsItsPrerequisites(t *testing.T) {
 		t.Fatal("the run was forgotten with its prerequisites' last commit in flight")
 	}
 	close(l.release)
+	select {
+	case err := <-cancelled:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the cancel did not return once the held commit was let through")
+	}
 	r := runOf(t, e, run.ID)
 	waitTrue(t, "the generation's end", func() bool { _, _, n := prereqState(e, r); return n == 0 })
 	if rows := l.prereqRows(run.ID); len(rows) != 1 || rows[0].State != ledger.CheckInterrupted || rows[0].Error != "tools was interrupted: the run finished before the prerequisite ended" {

@@ -294,12 +294,36 @@ func (s *Server) publicBase(r *http.Request) string {
 	return scheme + "://" + host
 }
 
+// runRecordNoLink are the words of a link refused for a run the server keeps
+// only as its record.
+const runRecordNoLink = "no link can be made for this run: the server keeps it only as its record (it ended before the server last started, or was let go with the oldest runs), and a link opens only a run the server holds"
+
+// refuseRunNotHeld answers a link route for a run the engine does not hold:
+// 409 run_record when the run's record is kept, so the refusal says why no
+// link is made rather than that the run does not exist; 404 not_found
+// otherwise. Either way nothing is made, listed or noted: a run link opens
+// what the engine holds of a run (its members' sessions, its desk), and a
+// record holds none of it.
+func (s *Server) refuseRunNotHeld(w http.ResponseWriter, id string) {
+	if s.records != nil {
+		_, ok, err := s.records.Get(id)
+		if err != nil {
+			s.log.Warn("run record", "run", id, "err", err)
+		}
+		if ok {
+			writeError(w, http.StatusConflict, "run_record", runRecordNoLink)
+			return
+		}
+	}
+	writeError(w, http.StatusNotFound, "not_found", "no such run")
+}
+
 // handleCreateRunLink creates a link to a crew run: its role on the session
 // of every member of the run, those that join later included.
 func (s *Server) handleCreateRunLink(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("run")
 	if _, ok := s.runs.Get(id); !ok {
-		writeError(w, http.StatusNotFound, "not_found", "no such run")
+		s.refuseRunNotHeld(w, id)
 		return
 	}
 	req, ok := readLinkRequest(w, r)
@@ -475,7 +499,7 @@ func (s *Server) handleListRunLinks(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("run")
 	run, ok := s.runs.Get(id)
 	if !ok {
-		writeError(w, http.StatusNotFound, "not_found", "no such run")
+		s.refuseRunNotHeld(w, id)
 		return
 	}
 	active := map[string]int{}

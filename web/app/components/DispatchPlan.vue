@@ -261,7 +261,7 @@ defineExpose({ propose, approve, launch })
     </div>
 
     <DispatchPlanPropose v-model:open="proposeOpen" :ticket="ticket" :plans="plans" :from="proposeFromBody" />
-    <DispatchPlanApprove v-model:open="approveOpen" :revision="actingNow" :body="actingBody" :ticket="ticket" :plans="plans" />
+    <DispatchPlanApprove v-model:open="approveOpen" :revision="actingNow" :body="actingBody" :ticket="ticket" :plans="plans" :agents="agents" />
     <DispatchLaunch v-model:open="launchOpen" :revision="actingNow" :body="actingBody" :ticket="ticket" :plans="plans" />
   </section>
 </template>

@@ -704,7 +704,8 @@ func withImage(b captureCreateBody) captureCreateBody {
 // The tree's secret is in no byte the store keeps, whichever string of a
 // capture carried it (the page's URL and an observed one keeping
 // #token=, an href and the HTML, a note, a link fallback's frame src),
-// nor in the document or a ticket made from it; the URLs keep its name.
+// nor in the document or a ticket made from it; the page's URLs are kept
+// without the fragment that held it, the other texts keep its name.
 func TestATreeSecretIsScrubbedFromEveryCapture(t *testing.T) {
 	p := previewEnv(t, nil)
 	keyed := p.page + "#token=" + p.secret
@@ -722,7 +723,7 @@ func TestATreeSecretIsScrubbedFromEveryCapture(t *testing.T) {
 	fb.URL = keyed
 	fb.Annotations = []captureAnnotation{{Kind: "region", Note: p.secret, Rect: dispatch.Rect{X: 0, Y: 0, Width: 1, Height: 1}}}
 	created(t, p.e, fb, pngOf(t, 2, 2))
-	if c["url"] != p.page+"#token="+treeSecretName {
+	if c["url"] != p.page {
 		t.Fatalf("the capture's URL: %v", c["url"])
 	}
 	ds := p.e.srv.dispatch
@@ -742,6 +743,39 @@ func TestATreeSecretIsScrubbedFromEveryCapture(t *testing.T) {
 	tk, err := ds.Ticket(ctx, rc.Key)
 	if err != nil || strings.Contains(strings.ToLower(tk.Description), p.secret) {
 		t.Fatalf("the ticket: %v %q", err, tk.Description)
+	}
+	p.keptNowhere(t, p.secret)
+}
+
+// A preview's capture keeps its page's address, and each element's moment's,
+// without a fragment that holds a part of a tree's secret or its name, and
+// with any other fragment as sent; a link's capture keeps its fragment,
+// scrubbed.
+func TestAPreviewCapturesAddressHoldsNoFragmentWithItsTreesValue(t *testing.T) {
+	p := previewEnv(t, nil)
+	for _, c := range []struct{ sent, kept string }{
+		{p.page + "#token=" + p.secret, p.page},
+		{p.page + "#token=" + strings.ToUpper(p.secret[:20]), p.page},
+		{p.page + "#token=" + treeSecretName, p.page},
+		{p.page + "#/settings", p.page + "#/settings"},
+		{p.page + "?tab=1#a=" + p.secret, p.page + "?tab=1"},
+	} {
+		b := p.body(t, p.label(t), button())
+		b.URL = c.sent
+		moment(&b)
+		got := created(t, p.e, b, nil)
+		if got["url"] != c.kept {
+			t.Fatalf("%q: the capture's URL %v", c.sent, got["url"])
+		}
+		ann := got["annotations"].([]any)[0].(map[string]any)
+		if o := ann["observed"].(map[string]any); o["url"] != c.kept {
+			t.Fatalf("%q: the element's moment's URL %v", c.sent, o["url"])
+		}
+	}
+	link := p.body(t, p.label(t))
+	link.From, link.Label, link.URL = captureFrom{URL: "http://example.test/"}, dispatch.TreeRead{}, "http://example.test/#k="+p.secret
+	if got := created(t, p.e, link, nil); got["url"] != "http://example.test/#k="+treeSecretName {
+		t.Fatalf("the link's capture: %v", got["url"])
 	}
 	p.keptNowhere(t, p.secret)
 }

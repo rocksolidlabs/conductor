@@ -2766,6 +2766,9 @@ func treeReserved(ctx context.Context, dir, commit string) (reserved, links bool
 // caller does not hold e.mu.
 func (e *Engine) accept(r *run, a *attempt, ok bool, stage, errText string) {
 	t := a.t
+	// A comparison's last lane may end in this change, which then opens
+	// the selection: its words are the comparison's, read first.
+	e.measureAhead(r.ctx, r, t.def.ID, closingOf(a, ok))
 	err := e.transact(context.Background(), r, func() tx {
 		if !a.closedAt.IsZero() {
 			// Closed meanwhile (cancelled, stopped): what closed it wrote it.
@@ -3003,6 +3006,9 @@ func (e *Engine) CancelTask(ctx context.Context, runID, taskID string) error {
 		}
 		return tx{events: e.cancelTask(r, t)}
 	}, nil)
+	if e.beforeCancelPump != nil {
+		e.beforeCancelPump(runID)
+	}
 	e.afterTransact(r, err)
 	if err == nil {
 		return refused

@@ -1073,11 +1073,22 @@ func TestACleanupStepThatFailsJustBeforeTheCutOffIsAFailure(t *testing.T) {
 	m := Manifest{Cleanup: []Check{shStep("db", `echo "the database would not drop"; exit 1`)}}
 	run := launchManaged(t, e, repoManifestCrew(dir, m, work("build", "lead")))
 	waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
-	if err := e.CancelTask(t.Context(), run.ID, "build"); err != nil {
-		t.Fatal(err)
+	// The cancel waits after its commit for the run's transactions, so it
+	// returns only once the step's held commit is let through: it runs on
+	// a goroutine of its own, held after its commit until the step's
+	// receipt is at its gate (beforeCancelPump).
+	cancelled := make(chan error, 1)
+	atGate := make(chan struct{})
+	e.beforeCancelPump = func(string) {
+		select {
+		case <-l.blocked:
+			close(atGate)
+		case <-time.After(10 * time.Second):
+		}
 	}
+	go func() { cancelled <- e.CancelTask(context.Background(), run.ID, "build") }()
 	select {
-	case <-l.blocked:
+	case <-atGate:
 	case <-time.After(10 * time.Second):
 		t.Fatal("the cleanup step's receipt was not committed after 10 s")
 	}
@@ -1089,6 +1100,14 @@ func TestACleanupStepThatFailsJustBeforeTheCutOffIsAFailure(t *testing.T) {
 	waitFake(t, "the cut-off", func() bool { return r.teardown.Err() != nil })
 	released = true
 	close(l.release)
+	select {
+	case err := <-cancelled:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the cancel did not return once the step's commit was let through")
+	}
 	l.waitTreeRowsEnded(t, run.ID, "build", 1, ledger.TreeWorktree)
 	if db, _ := rowOf(l.stepRows(run.ID, "build", 1), "db", 1); db.State != ledger.CheckFinished || db.Exit != 1 {
 		t.Fatalf("the cleanup step: %+v", db)

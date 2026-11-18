@@ -1172,7 +1172,7 @@ func dispatchLaunch(ctx context.Context, c *apiClient, key string, ref *revision
 		if err := c.doLimit(ctx, http.MethodGet, "/api/dispatch/plans/"+url.PathEscape(p.ID), nil, &out, maxDispatchReply); err != nil {
 			return 1, err
 		}
-		fmt.Fprintln(stdout, compareStatement(*p.Compare, compareAgents(out.Plan.Body)))
+		fmt.Fprintln(stdout, compareStatement(*p.Compare, compareAgents(out.Plan.Body), compareManifest(out.Plan.Body)))
 		return 2, fmt.Errorf("dispatch launch: r%d starts %d candidates: send --candidates %d to launch them", p.N, p.Compare.Candidates, p.Compare.Candidates)
 	case p.Compare == nil && candidates >= 0:
 		return 2, fmt.Errorf("dispatch launch: r%d is no comparison: --candidates is for a comparison's revision", p.N)

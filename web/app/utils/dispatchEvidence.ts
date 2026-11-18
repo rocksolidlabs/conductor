@@ -3,6 +3,7 @@ import type { Finding, RunAttempt, RunInfo, RunStep, RunTask, SessionInfo } from
 import { isEnded, liveAttention } from './attention'
 import { closedStatus } from './dispatch'
 import { revisionTag } from './dispatchPlans'
+import { shortRunId } from './crewWords'
 import { runState, type RunState } from './runs'
 
 // A ticket's runs and their evidence in words (Program item DS2, docs/plans/dispatch-evidence.md, "web/app"): the entries of a ticket's
@@ -541,4 +542,15 @@ export function launchEntryWords(e: Pick<TicketRunEntry, 'launch' | 'run'>): str
   if (l.state === 'failed') return l.why ? `The launch failed: ${l.why}` : 'The launch failed'
   if (l.state === 'pending') return 'Recorded; its run is being started, or the server stopped before it could tell'
   return e.run ? '' : 'Its run is known to no engine, record or ledger the server can read now'
+}
+
+/**
+ * What a run's candidates say while none of its attempts has submitted a result: a continuation's tasks may hold results kept from the
+ * run it continues (its task rows say "kept from the run continued"), and those are that run's candidates, listed with it; so it names
+ * that run rather than saying that nothing was submitted.
+ */
+export function noCandidateWords(continues?: string): string {
+  return continues
+    ? `No attempt of this run has submitted a result yet. A result its tasks keep from the run it continues (${shortRunId(continues)}) is that run's candidate, listed with that run.`
+    : 'No attempt has submitted a result yet.'
 }

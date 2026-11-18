@@ -753,6 +753,14 @@ export interface DecisionLinkTarget {
 }
 
 /**
+ * What Open on your phone says of the runs it does not offer (decisionLinkTargets), as Share answers for them: a stopped run is not
+ * offered, and a run the server keeps only as its record has no links at all (`run_record`, shareRefusal); a selection either still
+ * holds is answered on Needs you, which no link answers (a link cannot answer a run's decision record).
+ */
+export const PHONE_NOT_OFFERED =
+  'Stopped runs are not offered here, and a run the server keeps only as its record has no links at all. A selection such a run still holds is answered on Needs you, not through a link.'
+
+/**
  * The runs and sessions a decision link can be made for (Open on your phone, on a loopback origin, MB0's PR-7): the runs the engine
  * still holds (running, or finished and still retried: a failed run's tasks are its decisions), newest first, then this server's own
  * sessions still running (a hosted session's decisions are answered where it runs). A run's members are covered by the run's link.
@@ -768,4 +776,32 @@ export function decisionLinkTargets(
     out.push({ value: `session:${s.id}`, label: `Session: ${s.name}` })
   }
   return out
+}
+
+/** The labels the server gives a record's Comment and its Ask for more (internal/api/inbox_decisions.go), which answer nothing. */
+export const COMMENT_LABEL = 'Comment'
+export const MORE_INFO_LABEL = 'Ask for more information'
+
+/**
+ * The answers a person can give a listed item, of its actions' labels (the list's summary carries the labels alone): every action of
+ * a question, a plan revision and a task; a decision's options and its line of words, never its Comment or its Ask for more. The
+ * server lists a decision's actions in one order, its answers, then Ask for more when it is offered, then Comment always last, so the
+ * two are taken off its end by their fixed labels. The summary gives the labels alone (no action's name, no flag that the asker is
+ * live), so the count goes by them: an option called "Comment" anywhere but last, or "Ask for more information" anywhere but just
+ * before Comment, is counted; one called "Ask for more information" and listed last, with no Ask for more offered, is not, and the
+ * badge then says one choice fewer (the card still shows every option). Telling them apart would need the summary to carry the
+ * actions' names, a protocol change this count does not make.
+ */
+export function answersOf(kind: string, actions: readonly string[]): string[] {
+  const out = [...actions]
+  if (kind !== 'decision') return out
+  if (out[out.length - 1] === COMMENT_LABEL) out.pop()
+  if (out[out.length - 1] === MORE_INFO_LABEL) out.pop()
+  return out
+}
+
+/** A row's count of its answers ("3 choices"), '' for an item with none. */
+export function choicesWords(s: Pick<InboxSummary, 'kind' | 'actions'>): string {
+  const n = answersOf(s.kind, s.actions).length
+  return n ? `${n} ${n === 1 ? 'choice' : 'choices'}` : ''
 }

@@ -1,6 +1,8 @@
 <script setup lang="ts">
+import { ApiError } from '~/composables/useApi'
 import { qrSvg } from '~/utils/qr'
-import { decisionLinkTargets, phoneOffer } from '~/utils/inbox'
+import { shareRefusal } from '~/utils/share'
+import { decisionLinkTargets, phoneOffer, PHONE_NOT_OFFERED } from '~/utils/inbox'
 
 /**
  * Open on your phone: the decision page's address as a QR code, whatever page it is opened from (its origin and `/decisions` alone);
@@ -45,7 +47,8 @@ async function makeDecisionLink() {
     const res = kind === 'run' ? await api.createRunLink(id, body) : await api.createLink(id, body)
     madeLink.value = { url: res.url, loopback: phoneOffer(new URL(res.url).origin).kind === 'loopback' }
   } catch (e) {
-    linkError.value = (e as Error).message
+    // A run let go as it was picked answers as Share does: why no link is made, in the same words.
+    linkError.value = (e instanceof ApiError ? shareRefusal(e.code)?.text : undefined) ?? (e as Error).message
   } finally {
     making.value = false
   }
@@ -76,6 +79,7 @@ watch(open, (o) => {
             <UButton label="Make a decision link" icon="i-lucide-link" :loading="making" :disabled="!target" class="min-h-11" data-phone-make-link @click="makeDecisionLink" />
           </div>
         </template>
+        <p class="text-xs text-pretty text-muted" data-phone-not-offered>{{ PHONE_NOT_OFFERED }}</p>
         <UAlert v-if="linkError" color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="linkError" data-phone-link-error />
         <div v-if="madeLink && madeQr" class="flex flex-col items-center gap-3" data-phone-link :data-phone-url="madeLink.url">
           <svg :viewBox="madeQr.viewBox" class="size-48 rounded bg-white text-black" shape-rendering="crispEdges" role="img" :aria-label="madeLink.url" data-phone-link-qr>

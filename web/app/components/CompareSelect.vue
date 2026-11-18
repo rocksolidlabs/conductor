@@ -28,7 +28,7 @@ const tones = { warning: 'text-warning', muted: 'text-muted', error: 'text-error
 </script>
 
 <template>
-  <section class="flex min-w-0 flex-col gap-3 rounded-lg border border-default p-3" data-compare-select :data-compare-selection="sel?.decision ?? ''" :data-selection-state="d?.state ?? sel?.state ?? ''">
+  <section id="compare-selection" tabindex="-1" class="flex min-w-0 scroll-mt-4 flex-col gap-3 rounded-lg border border-default p-3 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary" data-compare-select :data-compare-selection="sel?.decision ?? ''" :data-selection-state="d?.state ?? sel?.state ?? ''">
     <header class="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5">
       <h3 class="text-sm font-semibold text-highlighted">Select a candidate</h3>
       <span v-if="forWho" class="text-xs text-muted" data-compare-select-for>{{ forWho }}</span>

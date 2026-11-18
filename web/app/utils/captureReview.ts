@@ -132,19 +132,45 @@ export interface RetakeCandidate {
 }
 
 /**
- * The candidate an earlier capture is captured again on (Capture again on a later candidate, PR-8): among the ticket's runs, newest
- * first, the first standing work candidate of the capture's own task that is not the capture's own attempt; null for a capture of no
- * task, or with no such candidate.
+ * A run of the ticket as Capture again reads it: its id, when it started (when the read says), its candidates by task, in the crew's
+ * order, and, for a run that is a comparison, the task of the candidate its applied selection selected (`selected`, null while no
+ * selection is applied, when it was answered None of these, or when the comparison could not be read); absent for a run of no
+ * comparison.
  */
-export function retakeCandidate(
-  origin: { run?: string; task?: string; attempt?: number },
-  runs: ReadonlyArray<{ run: string; candidates: ReadonlyArray<{ task: string; kind: string; candidates: ReadonlyArray<{ attempt: number; commit?: string; standing: boolean; kind: string }> }> }>,
-): RetakeCandidate | null {
+export interface RetakeRun {
+  run: string
+  startedAt?: string
+  selected?: string | null
+  candidates: ReadonlyArray<{ task: string; kind: string; candidates: ReadonlyArray<{ attempt: number; commit?: string; standing: boolean; kind: string }> }>
+}
+
+/**
+ * The candidate an earlier capture is captured again on (Capture again on a later candidate, PR-8; docs/plans/browser-evidence.md, "A
+ * candidate's preview": the first capture "may be of another run, as a ticket's repair is"): among the ticket's runs, newest first,
+ * the first that has a later standing work candidate for it.
+ * - In the capture's own run: its own task's, of a later attempt than the capture's.
+ * - In another run of the ticket, a repair, whatever its crew and its tasks are called: in a comparison, its selected candidate's task
+ *   alone, and nothing while no selection is applied or None of these was answered; in any other run, the task of the capture's name
+ *   when the run has one with a candidate, else the last of the run's work tasks with one (the crew's order: where its work ends).
+ * - A run that started before the capture is no later candidate's: `capturedAt` is the capture's own moment; without it, the start of
+ *   the capture's own run when the ticket lists it; with neither, no run is left out.
+ * Null for a capture of no task, or with no such candidate.
+ */
+export function retakeCandidate(origin: { run?: string; task?: string; attempt?: number }, runs: ReadonlyArray<RetakeRun>, capturedAt?: string): RetakeCandidate | null {
   if (!origin.task) return null
+  const taken = Date.parse(capturedAt ?? '')
+  const since = Number.isNaN(taken) ? Date.parse(runs.find((r) => r.run === origin.run)?.startedAt ?? '') : taken
   for (const r of runs) {
-    for (const t of r.candidates) {
-      if (t.task !== origin.task || t.kind !== 'work') continue
-      const c = t.candidates.find((x) => x.kind === 'work' && x.standing && x.commit && !(r.run === origin.run && x.attempt === origin.attempt))
+    const own = r.run === origin.run
+    if (!own && Date.parse(r.startedAt ?? '') < since) continue
+    const work = r.candidates.filter((t) => t.kind === 'work')
+    const named = work.filter((t) => t.task === origin.task)
+    let order: typeof work
+    if (own) order = named
+    else if (r.selected !== undefined) order = r.selected === null ? [] : work.filter((t) => t.task === r.selected)
+    else order = [...named, ...work.filter((t) => t.task !== origin.task).reverse()]
+    for (const t of order) {
+      const c = t.candidates.find((x) => x.kind === 'work' && x.standing && x.commit && !(own && origin.attempt !== undefined && x.attempt <= origin.attempt))
       if (c) return { run: r.run, task: t.task, attempt: c.attempt, commit: c.commit! }
     }
   }

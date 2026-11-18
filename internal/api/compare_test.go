@@ -169,6 +169,11 @@ func TestThePlanReadStatesTheMultiplier(t *testing.T) {
 			if !maps.Equal(got["compare"].(map[string]any), tc.want) {
 				t.Fatalf("the revision's compare: %v, want %v", got["compare"], tc.want)
 			}
+			// The revision's count of checks is the statement's: the
+			// candidates' one set, not a set for each candidate.
+			if got["expectedChecks"] != tc.want["checksAtBase"] {
+				t.Fatalf("the revision expects %v checks, its launch states %v", got["expectedChecks"], tc.want["checksAtBase"])
+			}
 			var listed map[string]any
 			for _, v := range p.expect(t, "GET", "/api/dispatch/tickets/CND-1/plans", nil, http.StatusOK, "")["plans"].([]any) {
 				if v.(map[string]any)["id"] == plan {
