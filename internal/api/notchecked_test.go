@@ -775,6 +775,34 @@ func (l *liveTokens) size() int {
 	return len(l.held)
 }
 
+// The set of live tokens counts each owner's entry: a hash two owners
+// hold is held until both have removed theirs, and removing a hash that
+// is not held changes nothing.
+func TestALiveTokenSetCountsEachOwner(t *testing.T) {
+	var l liveTokens
+	tok, other := unminted("c"), unminted("d")
+	h := share.HashToken(tok)
+	l.Add(h)
+	l.Add(h)
+	l.Remove(h)
+	if !l.holds(tok) || l.size() != 1 {
+		t.Fatalf("one owner's removal of a hash two hold: held %v, size %d", l.holds(tok), l.size())
+	}
+	l.Remove(share.HashToken(other))
+	if !l.holds(tok) || l.holds(other) || l.size() != 1 {
+		t.Fatalf("a removal of a hash not held: held %v and %v, size %d", l.holds(tok), l.holds(other), l.size())
+	}
+	l.Remove(h)
+	if l.holds(tok) || l.size() != 0 {
+		t.Fatalf("both owners removed theirs: held %v, size %d", l.holds(tok), l.size())
+	}
+	l.Remove(h)
+	l.Add(h)
+	if !l.holds(tok) || l.size() != 1 {
+		t.Fatalf("a removal past none left a count behind: held %v, size %d", l.holds(tok), l.size())
+	}
+}
+
 // A hosted session's agent token is minted by its host, not by this server,
 // and the set of live tokens holds nothing for it. At a route that takes it
 // first (the session's report) it is served as a server with no provider
