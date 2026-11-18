@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -29,12 +30,48 @@ func originCrew(t *testing.T, e *testEnv, name string) string {
 		"tasks":   []any{map[string]any{"id": "build", "member": "lead", "kind": "work", "instructions": "Build it."}}}, http.StatusCreated)["id"].(string)
 }
 
+// endRunsAtCleanup ends, as the test ends and before its folders go, every
+// run e's engine holds: each managed one once its first attempt is made
+// (or failed, or the run paused, stopped or done), so no attempt's
+// worktree is being made as the test's folders are removed.
+func endRunsAtCleanup(t *testing.T, e *testEnv) {
+	t.Helper()
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), testWait)
+		defer cancel()
+		for _, r := range e.srv.runs.List() {
+			waitFor(testWait, func() bool {
+				run, ok := e.srv.runs.Get(r.ID)
+				if !ok || run.Managed == nil || run.StoppedAt != nil || run.Paused || run.Outcome != "" {
+					return true
+				}
+				for _, ts := range run.Tasks {
+					if a := ts.Attempt; a != nil && a.State != "" && a.State != "reserved" {
+						return true
+					}
+				}
+				return false
+			})
+			_ = e.srv.runs.Stop(ctx, r.ID)
+		}
+	})
+}
+
+// restartEnding is e.restart, its runs ended as the test ends.
+func restartEnding(t *testing.T, e *testEnv) *testEnv {
+	t.Helper()
+	again := e.restart()
+	endRunsAtCleanup(t, again)
+	return again
+}
+
 // originEnv is a ready environment with a repository and one saved crew
 // of tasks, and the crew's id.
 func originEnv(t *testing.T) (*testEnv, string) {
 	t.Helper()
 	e := readyEnv(t, nil)
 	e.gitRepo(t)
+	endRunsAtCleanup(t, e)
 	return e, originCrew(t, e, "Reviews")
 }
 
@@ -91,7 +128,7 @@ func TestHostLaunchOpIDIsIdempotent(t *testing.T) {
 	// A retry is answered from the ledger before anything is launched: a
 	// second server over the same data, whose ledger is read-only while
 	// the first owns it and which launches no crew with tasks, answers it.
-	ro := e.restart()
+	ro := restartEnding(t, e)
 	if r, _ := ro.srv.ledger.ReadOnly(); !r {
 		t.Fatal("the second server owns the ledger")
 	}
@@ -100,7 +137,7 @@ func TestHostLaunchOpIDIsIdempotent(t *testing.T) {
 	}
 	shutdown(ro)
 	shutdown(e)
-	e2 := e.restart()
+	e2 := restartEnding(t, e)
 	h2 := testHost(e2.srv, t.Context(), "example")
 	after, err := h2.Launch(t.Context(), originLaunch(id, "op-1"))
 	if err != nil || after.ID != first.ID {
@@ -208,7 +245,7 @@ func TestOriginCommittedBeforeTheFirstAttempt(t *testing.T) {
 	if err := os.Remove(filepath.Join(e.srv.cfg.DataDir, "runs", ref.ID+".json")); err != nil && !os.IsNotExist(err) {
 		t.Fatal(err)
 	}
-	e2 := e.restart()
+	e2 := restartEnding(t, e)
 	h2 := testHost(e2.srv, t.Context(), "example")
 	resp, out := e2.do("GET", "/api/runs/"+ref.ID, adminToken, nil)
 	if resp.StatusCode != http.StatusOK {
@@ -252,7 +289,7 @@ func TestRunByOpNeverCreates(t *testing.T) {
 	}
 	// A second server over the same data, its ledger read-only while the
 	// first owns it: the look-up is answered.
-	ro := e.restart()
+	ro := restartEnding(t, e)
 	if r, _ := ro.srv.ledger.ReadOnly(); !r {
 		t.Fatal("the second server owns the ledger")
 	}
@@ -389,7 +426,7 @@ func TestStopRunOfARunNotRunning(t *testing.T) {
 	}
 	runningAttempt(t, e, running.ID, "build", 1)
 	crashServer(t, e, stopped.ID, finished.ID, running.ID)
-	e2 := e.restart()
+	e2 := restartEnding(t, e)
 	h2 := testHost(e2.srv, t.Context(), "example")
 	st, err := h2.Run(t.Context(), running.ID)
 	if err != nil || st.State != ext.RunInterrupted || st.Origin.OpID != "op-3" {

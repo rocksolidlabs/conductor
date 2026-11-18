@@ -22,6 +22,7 @@ func resolveEnv(t *testing.T, mutate func(*config.Config)) (*testEnv, string) {
 	t.Helper()
 	e := readyEnv(t, mutate)
 	e.gitRepo(t)
+	endRunsAtCleanup(t, e)
 	e.newDispatchProject(t, "CND", map[string]any{"cwd": e.root})
 	return e, originCrew(t, e, "Reviews")
 }
@@ -89,7 +90,7 @@ func TestResolveLaunchFollowsTheServerDefaults(t *testing.T) {
 	}
 	e.srv.cfg.DefaultCwd = ""
 	shutdown(e)
-	if after := resolve(t, e.restart(), id, ""); after.Digest != rl.Digest {
+	if after := resolve(t, restartEnding(t, e), id, ""); after.Digest != rl.Digest {
 		t.Fatalf("after a restart: %s, was %s", after.Digest, rl.Digest)
 	}
 }

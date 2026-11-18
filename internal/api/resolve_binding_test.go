@@ -53,6 +53,7 @@ func newBoundEnv(t *testing.T) *boundEnv {
 	claude := newFakeUsage("claude")
 	e := capEnv(t, nil, slog.New(slog.NewTextHandler(logs, nil)), claude, newFakeUsage("codex"), bindAgents(t.TempDir(), realRoot(t, t.TempDir())))
 	e.gitRepo(t)
+	endRunsAtCleanup(t, e)
 	e.newDispatchProject(t, "CND", map[string]any{"cwd": e.root})
 	b := &boundEnv{testEnv: e, claude: claude, log: logs}
 	be := &bindEnv{testEnv: e}
@@ -135,7 +136,7 @@ func TestCapacityChangesLeaveTheDigest(t *testing.T) {
 		t.Fatalf("a reading changed the digest, or no view: %+v", read.Capacity)
 	}
 	shutdown(b.testEnv)
-	again := resolve(t, b.testEnv.restart(), b.crew, "")
+	again := resolve(t, restartEnding(t, b.testEnv), b.crew, "")
 	if again.Digest != rl.Digest {
 		t.Fatalf("after a restart: %s, was %s", again.Digest, rl.Digest)
 	}
