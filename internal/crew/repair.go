@@ -543,6 +543,10 @@ func worstRepairFile(c Crew, pkg *Package, def Task, prompt string, rp *repair, 
 		Prior: strings.Repeat("p", ledger.MaxOriginRunID-9) + "-ffffffff"}
 	f.subjectLabel = widest(ledger.MaxOriginLabel, false, wide)
 	f.subjectFrom = quoted.Source{On: strings.Repeat("p", ledger.MaxOriginProvider), Ref: strings.Repeat("r", ledger.MaxOriginRef)}
+	// A handoff package a person sent (issue #1012) at its widest: its
+	// text is cut first, the section's head never, so measured here.
+	f.Handoff = &TaskHandoff{ID: "ho-" + strings.Repeat("9", 18), By: strings.Repeat("\"", MaxHandoffBy), SentAt: time.Now().UTC(), Brief: "br-" + strings.Repeat("9", 18),
+		Item: MaxHandoffItem - 1, Text: strings.Repeat("\"", MaxHandoffText)}
 	return f
 }
 

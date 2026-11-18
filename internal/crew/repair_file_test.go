@@ -434,7 +434,9 @@ func TestFitChangeRequestWithTheTasksText(t *testing.T) {
 // each, the package's files beside them.
 func TestFitChangeRequestCountsTheSummaryAndThePackage(t *testing.T) {
 	dir := newRepo(t)
-	c := textCrew(t, dir, "g", "", clefs(16<<10))
+	// The crew's text leaves room for the head of a handoff package a
+	// person may send (worstRepairFile measures it at its widest).
+	c := textCrew(t, dir, "g", "", clefs(15<<10))
 	runID := "api-sweep-0000000b"
 	p := fullPackage(runID, head(t, dir))
 	p.Ticket.Title = strings.Repeat("<", 300)
