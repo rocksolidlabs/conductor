@@ -1283,6 +1283,14 @@ in `r.Check`, and judges it by the record's policy:
   - A record under a router's policy that reaches the engine with no
     confirmation is refused `409 stale_policy`, never taken as "not in
     force"; the door always asks, so it never sends one.
+  - A record in its opening window (the decision-policy plan's I10) is
+    answered by the engine's unkept, try-again `409 stale_policy`; the
+    door answers it `unknown_authority`, never under `refused`: nothing
+    is written, and the provider releases the answer and hands it in
+    again (`TestHeldAnswerUnheardByTheRouterWritesNothing`, its
+    opening-window case: the router's `Route` held at a gate, the held
+    answer `unknown_authority` with no row and no fence, then recorded
+    once the window closes).
   - Held by `TestAdminHeldAnswerCannotBypassOverrideNone`,
     `TestEligibleHeldAnswerUnderAPolicyCounts`,
     `TestHeldAnswerUnheardByTheRouterWritesNothing` and
@@ -1298,9 +1306,9 @@ at, statementSha256, held, fence}` and the statement in
 `decision_statements`: DR1's path whole (its idempotence on
 `(decision, actor, responseId)`, its rechecks, `not_held` for a run not
 held, `stale_decision`, `decision_answered`, `decision_closed`,
-`stale_policy`, `decision_limit`, its bounds and the replacement's
-place, counted as an identity's), its answer mapped to the outcome by
-its status, never by `Repeat`. The held answer's id and fence are
+`stale_policy` (answered `unknown_authority`, above), `decision_limit`,
+its bounds and the replacement's place, counted as an identity's), its
+answer mapped to the outcome by its status, never by `Repeat`. The held answer's id and fence are
 written in DR1's own transaction, with the accepted response or with a
 kept refusal's receipt, so a ledger holds an answer's fence exactly when
 it recorded that answer (`TestFenceWrittenInDR1sTransaction`,
@@ -1656,13 +1664,15 @@ Every other path this plan names is on `main`. New: `ext/dispatch.go`
   the response counted for its groups and the decision waits for the
   others, the decision-policy plan's PR-9: the receipt kept, a provider
   settles the held answer as recorded); `refused` (`decision_answered`,
-  `decision_closed`, `stale_decision`, `stale_policy`, `not_approver`,
+  `decision_closed`, `stale_decision`, `not_approver`,
   `decision_limit`, and under a router's policy `not_eligible`,
   `override_refused`, `not_needed` and `already_counted`, first time or
   a repeat, with the words of the receipt); `unknown_authority` (the
   identity provider cannot say now, or the router is behind, names
-  another revision, answers `Routes` or does not answer: nothing
-  written); `not_held` (the run is not running: the server was stopped
+  another revision, answers `Routes` or does not answer, or the record
+  is in its opening window, the engine's unkept `409 stale_policy`:
+  nothing written, and the provider releases the answer and hands it
+  in again); `not_held` (the run is not running: the server was stopped
   and the run interrupted, as on `main`; nothing written, the words
   "run release-7 is not running: continue it to apply this answer";
   the operator's Continue moves the decision to the continuation, DR1's
