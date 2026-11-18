@@ -507,3 +507,120 @@ func TestAProvidersLaunchIsOfACrewWithTasks(t *testing.T) {
 		t.Fatalf("a provider's launch of a crew without tasks: %v", err)
 	}
 }
+
+// confirmedOrigin is a provider's origin held to a resolved launch: its
+// digest, and the selections it confirmed for the agents given.
+func confirmedOrigin(t *testing.T, opID string, agents map[string]string) ledger.OriginRow {
+	t.Helper()
+	o := providerOrigin(opID, 0)
+	o.Project, o.ResolvedDigest = "CND", strings.Repeat("d", 64)
+	sel, err := ConfirmedAgents(agents)
+	if err != nil {
+		t.Fatal(err)
+	}
+	o.Agents = sel
+	return o
+}
+
+// Every attempt of a run whose launch was held to a resolved launch asks
+// the launcher for its agent's confirmed selection, and a continuation's
+// attempts do too; an agent the launch confirmed none for fails the
+// attempt at "agent", uncounted, no session started, and pauses the run;
+// a launcher that refuses the selection (ErrAgentChanged) does the same,
+// in words that name no plan revision. A run launched with no digest asks
+// for none.
+func TestAConfirmedRunHoldsEachAttemptToItsAgents(t *testing.T) {
+	dir := newRepo(t)
+	e, ld := sqlEngine(t)
+	fl := e.launcher.(*fakeLauncher)
+	sel := strings.Repeat("e", 64)
+	c := repoCrew(dir, work("build", "lead"))
+	run, err := launchOrigin(t, e, c, confirmedOrigin(t, "op-1", map[string]string{"claude": sel}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+	fl.mu.Lock()
+	calls := slices.Clone(fl.calls)
+	fl.mu.Unlock()
+	if len(calls) != 1 || calls[0].agentSHA256 != sel {
+		t.Fatalf("the launches: %+v", calls)
+	}
+	if row, _ := originIn(t, ld, run.ID); row.Agents != `[{"agent":"claude","selection":"`+sel+`"}]` {
+		t.Fatalf("the row's agents: %s", row.Agents)
+	}
+	stopRun(t, e, run.ID)
+	next, err := e.ContinueRun(context.Background(), run.ID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitAttempt(t, e, next.ID, "build", ledger.AttemptRunning)
+	fl.mu.Lock()
+	calls = slices.Clone(fl.calls)
+	fl.mu.Unlock()
+	if len(calls) != 2 || calls[1].agentSHA256 != sel || calls[1].ref.RunID != next.ID {
+		t.Fatalf("the continuation's launch: %+v", calls)
+	}
+	if row, _ := originIn(t, ld, next.ID); row.Agents == "" || row.ResolvedDigest == "" {
+		t.Fatalf("the continuation's row: %+v", row)
+	}
+	stopRun(t, e, next.ID)
+
+	// An agent the launch confirmed nothing for.
+	other, err := launchOrigin(t, e, repoCrew(newRepo(t), work("build", "lead")), confirmedOrigin(t, "op-2", map[string]string{"codex": sel}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	words := "the agent claude is not among those this run's launch confirmed"
+	row := sqlAttemptWhen(t, ld, other.ID, "build", 1, func(r ledger.AttemptRow) bool { return r.State == ledger.AttemptFailed })
+	if row.Stage != "agent" || row.Error != words || row.SessionID != "" {
+		t.Fatalf("an agent not confirmed: %+v", row)
+	}
+	if fp := failedPayload(t, ld, other.ID, "build", 1); fp["uncounted"] != true {
+		t.Fatalf("attempt.failed: %v", fp)
+	}
+	waitTrue(t, "the run paused", func() bool { r, _ := e.Get(other.ID); return r.Paused && strings.Contains(r.PausedWhy, words) })
+	stopRun(t, e, other.ID)
+
+	// The launcher refuses the selection: the entry changed.
+	fl.mu.Lock()
+	fl.fail["lead · build #1"] = ErrAgentChanged
+	fl.mu.Unlock()
+	changed, err := launchOrigin(t, e, repoCrew(newRepo(t), work("build", "lead")), confirmedOrigin(t, "op-3", map[string]string{"claude": sel}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	row = sqlAttemptWhen(t, ld, changed.ID, "build", 1, func(r ledger.AttemptRow) bool { return r.State == ledger.AttemptFailed })
+	if want := "the agent claude is not the one this run's launch confirmed: its catalog entry changed since"; row.Stage != "agent" || row.Error != want {
+		t.Fatalf("a changed entry: %+v", row)
+	}
+	waitTrue(t, "the run paused", func() bool { r, _ := e.Get(changed.ID); return r.Paused })
+	stopRun(t, e, changed.ID)
+	fl.mu.Lock()
+	delete(fl.fail, "lead · build #1")
+	fl.mu.Unlock()
+
+	// A row with a digest whose selections are gone holds to nothing: it
+	// fails; one launched with no digest asks for none.
+	gone := confirmedOrigin(t, "op-4", nil)
+	gone.Agents = ""
+	empty, err := launchOrigin(t, e, repoCrew(newRepo(t), work("build", "lead")), gone)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row := sqlAttemptWhen(t, ld, empty.ID, "build", 1, func(r ledger.AttemptRow) bool { return r.State == ledger.AttemptFailed }); row.Stage != "agent" {
+		t.Fatalf("a digest with no selections: %+v", row)
+	}
+	stopRun(t, e, empty.ID)
+	plain, err := launchOrigin(t, e, repoCrew(newRepo(t), work("build", "lead")), providerOrigin("op-5", 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitAttempt(t, e, plain.ID, "build", ledger.AttemptRunning)
+	fl.mu.Lock()
+	last := fl.calls[len(fl.calls)-1]
+	fl.mu.Unlock()
+	if last.agentSHA256 != "" || last.ref.RunID != plain.ID {
+		t.Fatalf("a run with no digest asked for %q", last.agentSHA256)
+	}
+}

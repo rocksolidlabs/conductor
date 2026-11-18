@@ -2337,11 +2337,34 @@ func (e *Engine) dispatch(ctx context.Context, r *run, a *attempt) {
 		}
 		spec.AgentSHA256 = sha
 	}
+	// A run whose launch was held to a resolved launch starts each
+	// member's session only from the selection that launch confirmed
+	// (origin.go): one with none, or one the entry no longer matches,
+	// fails the attempt at "agent", uncounted, and pauses the run.
+	confirmed := false
+	if r.pkg == nil {
+		e.mu.Lock()
+		sels, held := r.confirmedAgents()
+		e.mu.Unlock()
+		if confirmed = held; held {
+			sha, ok := sels[m.def.AgentID]
+			if !ok {
+				release()
+				fail("agent", fmt.Errorf("the agent %s is not among those this run's launch confirmed", m.def.AgentID), false, true)
+				return
+			}
+			spec.AgentSHA256 = sha
+		}
+	}
 	local, err := e.launcher.Launch(ctx, spec)
 	if err != nil {
 		release()
 		if r.pkg != nil && errors.Is(err, ErrAgentChanged) {
 			fail("agent", agentChangedWords(err, m.def.AgentID, r.pkg.p.Plan.N), false, true)
+			return
+		}
+		if confirmed && errors.Is(err, ErrAgentChanged) {
+			fail("agent", confirmedChangedWords(err, m.def.AgentID), false, true)
 			return
 		}
 		fail("launch", err, false, false)

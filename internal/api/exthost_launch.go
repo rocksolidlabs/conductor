@@ -68,7 +68,20 @@ func (h *extHost) launchOrigin(ctx context.Context, r ext.LaunchRequest) (ext.Ru
 	if held {
 		// Resolved for its project at its start commit, held to its
 		// digest, and launched from what was resolved (resolve.go).
-		run, c, release, err = h.heldLaunch(bctx, r, func(ext.ResolvedLaunch) (crew.LaunchOpts, error) {
+		run, c, release, err = h.heldLaunch(bctx, r, func(rec ext.ResolvedLaunch) (crew.LaunchOpts, error) {
+			if r.ResolvedDigest != "" {
+				// The selections the resolved launch confirmed, one per
+				// agent: every attempt is held to them.
+				byAgent := map[string]string{}
+				for _, m := range rec.Members {
+					byAgent[m.Agent] = m.Selection
+				}
+				agents, err := crew.ConfirmedAgents(byAgent)
+				if err != nil {
+					return crew.LaunchOpts{}, err
+				}
+				origin.Agents = agents
+			}
 			return crew.LaunchOpts{Origin: origin}, nil
 		})
 	} else {

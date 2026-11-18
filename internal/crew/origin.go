@@ -2,8 +2,11 @@ package crew
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"time"
 
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
@@ -170,4 +173,57 @@ func (e *Engine) stopIfRunning(ctx context.Context, r *run, note string) error {
 	r.stopping, r.stopNote = true, note
 	e.mu.Unlock()
 	return e.stop(ctx, r)
+}
+
+// confirmedAgent is one entry of a run_origin row's agents: an agent of
+// the crew and the selection of its catalogue entry the launch confirmed.
+type confirmedAgent struct {
+	Agent     string `json:"agent"`
+	Selection string `json:"selection"`
+}
+
+// ConfirmedAgents is the agents' selections a launch held to a resolved
+// launch confirmed, as its origin row keeps them (OriginRow.Agents): a
+// JSON array of {agent, selection}, one per agent, sorted by the agent's
+// id.
+func ConfirmedAgents(byAgent map[string]string) (string, error) {
+	out := make([]confirmedAgent, 0, len(byAgent))
+	for _, id := range slices.Sorted(maps.Keys(byAgent)) {
+		out = append(out, confirmedAgent{Agent: id, Selection: byAgent[id]})
+	}
+	b, err := json.Marshal(out)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+
+// confirmedAgents is the selections r's launch confirmed, by agent id, and
+// whether its launch was held to a resolved launch (its origin has a
+// digest): every attempt of such a run starts its agent only from the
+// entry confirmed for it, and an agent with none (a member added later, a
+// row whose selections are gone or unreadable) fails at "agent". The
+// caller holds e.mu.
+func (r *run) confirmedAgents() (map[string]string, bool) {
+	if r.origin == nil || r.origin.ResolvedDigest == "" {
+		return nil, false
+	}
+	var list []confirmedAgent
+	out := map[string]string{}
+	if json.Unmarshal([]byte(r.origin.Agents), &list) == nil {
+		for _, a := range list {
+			out[a.Agent] = a.Selection
+		}
+	}
+	return out, true
+}
+
+// confirmedChangedWords is what an attempt's ErrAgentChanged says in a run
+// its launch held to a resolved launch: the launcher's own words when it
+// gave any, else the agent.
+func confirmedChangedWords(err error, agentID string) error {
+	if err == ErrAgentChanged {
+		return &wordsError{msg: fmt.Sprintf("the agent %s is not the one this run's launch confirmed: its catalog entry changed since", agentID), err: err}
+	}
+	return err
 }

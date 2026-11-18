@@ -142,13 +142,13 @@ func TestResolvedLaunchPinsTheAgentSelection(t *testing.T) {
 		t.Fatalf("%d runs", n)
 	}
 	// Unchanged: the launch is held to it and runs, its row keeping the
-	// digest and the project.
+	// digest, the project and the confirmed selection.
 	ref, err := testHost(e.srv, t.Context(), "example").Launch(t.Context(), launchHeldTo(id, "op-ok", rl.Digest))
 	if err != nil {
 		t.Fatal(err)
 	}
 	row, _, _ := e.srv.ledger.Origin(t.Context(), ref.ID)
-	if row.ResolvedDigest != rl.Digest || row.Project != "CND" {
+	if row.ResolvedDigest != rl.Digest || row.Project != "CND" || !strings.Contains(row.Agents, rl.Members[0].Selection) {
 		t.Fatalf("the origin row: %+v", row)
 	}
 	_ = e.srv.runs.Stop(t.Context(), ref.ID)
@@ -416,4 +416,41 @@ func TestResolveLaunchDoors(t *testing.T) {
 		t.Fatalf("a commit of another shape: %v", err)
 	}
 	_ = crew.ErrInvalid
+}
+
+// An attempt of a run whose launch was held to a resolved launch starts
+// its agent only from the entry the launch confirmed: the entry changed
+// between the first attempt and the second, the second fails at "agent",
+// not counted, no session started, and the run pauses, in words that name
+// no plan revision.
+func TestAttemptRefusesAChangedAgentSelection(t *testing.T) {
+	e, id := resolveEnv(t, nil)
+	rl := resolve(t, e, id, "")
+	ref, err := testHost(e.srv, t.Context(), "example").Launch(t.Context(), launchHeldTo(id, "op-1", rl.Digest))
+	if err != nil {
+		t.Fatal(err)
+	}
+	runningAttempt(t, e, ref.ID, "build", 1)
+	cat := e.srv.Catalog()
+	edited := cat.Clone()
+	a, _ := edited.Get("ready-cat")
+	a.Command = append(a.Command, "--more")
+	if err := edited.Upsert(a); err != nil {
+		t.Fatal(err)
+	}
+	e.setCatalog(edited)
+	command(t, e, ref.ID, "tasks/build/cancel")
+	command(t, e, ref.ID, "tasks/build/retry")
+	task := taskVia(t, e, ref.ID, "build", "attempt 2 failed at agent", func(task map[string]any) bool {
+		at, _ := task["attempt"].(map[string]any)
+		return at != nil && at["n"] == float64(2) && at["state"] == "failed" && at["stage"] == "agent"
+	})
+	at := task["attempt"].(map[string]any)
+	if at["sessionId"] != nil || !strings.Contains(at["error"].(string), "this run's launch") || strings.Contains(at["error"].(string), "plan revision") {
+		t.Fatalf("attempt 2: %v", at)
+	}
+	if !waitFor(testWait, func() bool { r, _ := e.srv.runs.Get(ref.ID); return r.Paused }) {
+		t.Fatal("the run did not pause")
+	}
+	_ = e.srv.runs.Stop(t.Context(), ref.ID)
 }
