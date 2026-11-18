@@ -307,9 +307,10 @@ type planCompareEntry struct {
 // in the plan's words: the candidates and their agents, the reviews'
 // sessions as up to one after each candidate that succeeds, each
 // candidate worked as a task of its own crew with the refunds and Retries
-// that add to it, the checks at the base and a Brakeman turn; never a
-// total.
-func compareStatement(pc planCompareEntry, agents []string) string {
+// that add to it, the checks at the base, named by the manifest the
+// revision holds (manifest, compareManifest's), and a Brakeman turn;
+// never a total.
+func compareStatement(pc planCompareEntry, agents []string, manifest string) string {
 	n := strconv.Itoa(pc.Candidates)
 	var b strings.Builder
 	fmt.Fprintf(&b, "This comparison starts %s candidates", n)
@@ -321,12 +322,52 @@ func compareStatement(pc planCompareEntry, agents []string) string {
 		fmt.Fprintf(&b, "; then an agent review of each candidate that succeeds: up to %d more sessions, none for a candidate that fails or is cancelled", pc.Reviews)
 	}
 	fmt.Fprintf(&b, "; then what %s runs of one candidate's crew would take, since each candidate is worked as a task of its own crew is (each attempt a session of its own; 3 counted attempts a task, and a review's request for changes, an attempt that could not start and each Retry you give add more)", n)
-	fmt.Fprintf(&b, "; %s on each submitted candidate attempt (the task's checks and conductor.manifest.json's verify steps at the base; a candidate that changes the manifest runs its own)", checksWords(pc.ChecksAtBase))
+	fmt.Fprintf(&b, "; %s on each submitted candidate attempt (%s)", checksWords(pc.ChecksAtBase), checksFrom(manifest))
 	if pc.BrakemanTurn {
 		b.WriteString("; 1 Brakeman turn on your Brakeman account, when all candidates are done")
 	}
 	b.WriteString(". Usage per account is not shown in this build.")
 	return b.String()
+}
+
+// The manifests a revision's crew may be held to (compareManifest).
+const (
+	manifestNone = ""
+	manifestCrew = "crew"
+	manifestFile = "file"
+)
+
+// checksFrom says where the checks each candidate attempt runs come from,
+// for the manifest a revision holds.
+func checksFrom(manifest string) string {
+	switch manifest {
+	case manifestNone:
+		return "the task's checks; the plan holds no manifest, so no verify steps"
+	case manifestCrew:
+		return "the task's checks and the crew's manifest's verify steps"
+	}
+	return "the task's checks and conductor.manifest.json's verify steps at the base; a candidate that changes the manifest runs its own"
+}
+
+// compareManifest is the manifest a revision's crew is held to: its own
+// verify steps (crew), conductor.manifest.json read at the base (file),
+// or none; the file form's words for a body that cannot be read, which
+// name the most.
+func compareManifest(body json.RawMessage) string {
+	var b struct {
+		Crew         crew.Crew       `json:"crew"`
+		ManifestFile json.RawMessage `json:"manifestFile"`
+	}
+	if json.Unmarshal(body, &b) != nil {
+		return manifestFile
+	}
+	switch {
+	case b.Crew.Manifest != nil && b.Crew.Manifest.File, len(b.ManifestFile) > 0 && string(b.ManifestFile) != "null":
+		return manifestFile
+	case b.Crew.Manifest != nil:
+		return manifestCrew
+	}
+	return manifestNone
 }
 
 // compareAgents is the agent of each candidate of a revision's crew, in

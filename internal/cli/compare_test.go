@@ -115,7 +115,7 @@ func TestDispatchLaunchCandidates(t *testing.T) {
 		want := "This comparison starts 2 candidates (ready-cat, ready-cat): 2 agent sessions, once the plan's decisions and the project's prerequisites let the work start; " +
 			"then an agent review of each candidate that succeeds: up to 2 more sessions, none for a candidate that fails or is cancelled; " +
 			"then what 2 runs of one candidate's crew would take, since each candidate is worked as a task of its own crew is"
-		if !strings.HasPrefix(out, want) || !strings.Contains(out, "1 check on each submitted candidate attempt") || strings.Contains(out, "Brakeman") || strings.Contains(strings.ToLower(out), "total") {
+		if !strings.HasPrefix(out, want) || !strings.Contains(out, "1 check on each submitted candidate attempt (the task's checks; the plan holds no manifest, so no verify steps)") || strings.Contains(out, "Brakeman") || strings.Contains(strings.ToLower(out), "total") {
 			t.Fatalf("launch %v printed %q", args, out)
 		}
 		if p := a.posts(from, "/api/dispatch/tickets/CND-1/launch"); len(p) != 0 {
@@ -200,5 +200,28 @@ func TestDispatchComparisonPicksAStartedLaunch(t *testing.T) {
 	code, err := runDispatch(t.Context(), []string{"comparison", "CND-1", "--server", srv.URL, "--token", "t"}, strings.NewReader(""), &out, &bytes.Buffer{})
 	if code != 0 || err != nil || !strings.HasPrefix(out.String(), "CND-1: comparison of cmp-0000000a at ") || len(asked) != 1 {
 		t.Fatalf("comparison: %d %v %q, asked %v", code, err, out.String(), asked)
+	}
+}
+
+// The launch's statement names the verify steps the revision's manifest
+// holds: none for a plan with no manifest, the crew's own, or the file's
+// at the base, which a candidate that changes it runs its own of.
+func TestTheCompareStatementNamesTheManifestHeld(t *testing.T) {
+	pc := planCompareEntry{Candidates: 2, ChecksAtBase: 1}
+	for _, tc := range []struct {
+		name, body, want string
+	}{
+		{"none", `{"crew":{"name":"x"}}`, "1 check on each submitted candidate attempt (the task's checks; the plan holds no manifest, so no verify steps)"},
+		{"the crew's", `{"crew":{"manifest":{"verify":[{"id":"vet","argv":["true"]}]}}}`, "1 check on each submitted candidate attempt (the task's checks and the crew's manifest's verify steps)"},
+		{"the file", `{"crew":{"manifest":{"file":true}},"manifestFile":{"path":"conductor.manifest.json"}}`,
+			"1 check on each submitted candidate attempt (the task's checks and conductor.manifest.json's verify steps at the base; a candidate that changes the manifest runs its own)"},
+		{"a body not read", `{`, "conductor.manifest.json's verify steps at the base"},
+	} {
+		if got := compareStatement(pc, nil, compareManifest([]byte(tc.body))); !strings.Contains(got, tc.want) {
+			t.Errorf("%s: %q has no %q", tc.name, got, tc.want)
+		}
+	}
+	if got := compareStatement(pc, nil, compareManifest([]byte(`{"crew":{}}`))); strings.Contains(got, "manifest.json") {
+		t.Errorf("a plan with no manifest names the file: %q", got)
 	}
 }

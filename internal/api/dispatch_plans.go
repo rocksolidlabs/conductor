@@ -175,7 +175,23 @@ func readPlanFacts(body json.RawMessage) (planFacts, error) {
 		return planFacts{}, fmt.Errorf("a plan revision's body: %w", err)
 	}
 	f := planFacts{Yolo: b.Crew.Yolo, Agents: b.Agents}
+	// A comparison's candidates are held to the same checks (the block's
+	// rule): they are its checks once, as its launch's statement counts
+	// them, not once for each candidate.
+	candidates := map[string]bool{}
+	if cmp := b.Crew.Compare; cmp != nil {
+		for _, cd := range cmp.Candidates {
+			candidates[cd.Task] = true
+		}
+	}
+	counted := false
 	for _, t := range b.Crew.Tasks {
+		if candidates[t.ID] {
+			if counted {
+				continue
+			}
+			counted = true
+		}
 		f.Checks += len(t.Checks)
 	}
 	if b.Crew.Manifest != nil {
