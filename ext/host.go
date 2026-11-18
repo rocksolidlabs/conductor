@@ -79,6 +79,25 @@ type Host interface {
 	// (past MaxDecisionRef bytes, or not dr-<n>), and ErrUnsupported where
 	// the server keeps no ledger (a switchyard).
 	Decision(ctx context.Context, request string) (DecisionState, error)
+	// Run reads a run this provider launched (one its Launch with an
+	// Origin made) as the server holds it now, an interrupted one among
+	// them. Any other run (a person's, another provider's, a person's
+	// continuation of this provider's run) answers ErrNotFound, as a run
+	// that is not there does; a run id of another shape is refused
+	// (invalid_request); a server that keeps no ledger (a switchyard), the
+	// desk's Host and conductor host answer ErrUnsupported.
+	Run(ctx context.Context, id string) (RunStatus, error)
+	// RunByOp finds the run this provider's launch with the operation id
+	// opID made, and answers it as Run does; ErrNotFound for none. It never
+	// launches and writes nothing.
+	RunByOp(ctx context.Context, opID string) (RunStatus, error)
+	// StopRun stops a run this provider launched, as POST
+	// /api/runs/{run}/stop does, the why in the run's log. A run that is
+	// not running (stopped, finished or interrupted) answers ErrNotRunning
+	// and nothing changes; a run that is not the provider's ErrNotFound. A
+	// stop handed to the engine runs to its end though the call's try is
+	// given up.
+	StopRun(ctx context.Context, r StopRequest) error
 }
 
 // TurnLaunch is a Brakeman turn to launch: the catalog agent, its model
@@ -112,11 +131,29 @@ type ApprovedLaunch struct {
 	By          Principal `json:"by"`
 }
 
-// LaunchRequest is a saved crew to launch as a run, and who asks.
+// LaunchRequest is a saved crew to launch as a run, and who asks. A launch
+// with an Origin is a provider's launch of a crew with tasks: its
+// operation id (OpID) makes a retry answer the run it made, and never a
+// second one, for as long as the server keeps the run; the origin, the
+// subject and the time limit are kept in the server's ledger with the
+// run. A launch without an Origin sets none of the fields after By, and is
+// the launch POST /api/crews/{id}/launch makes.
 type LaunchRequest struct {
 	Crew  string    `json:"crew"`
 	Label string    `json:"label,omitempty"`
 	By    Principal `json:"by"`
+	// OpID is the launch's operation id, required with Origin: 1 to
+	// MaxOpID of letters, digits and ._~-, one provider's own.
+	OpID string `json:"opId,omitempty"`
+	// Origin is where the launch comes from.
+	Origin Origin `json:"origin,omitzero"`
+	// Subject is what the run is about, for its agents and its page.
+	Subject Subject `json:"subject,omitzero"`
+	// StopAfter is the run's time limit, a whole number of minutes from
+	// MinStopAfter to MaxStopAfter, or 0 for none: the engine stops the run
+	// and its continuations at the launch's time plus it. A time.Duration,
+	// it is encoded in JSON as its nanoseconds (an hour is 3600000000000).
+	StopAfter time.Duration `json:"stopAfter,omitempty"`
 }
 
 // RunRef is a run a launch made.
@@ -190,8 +227,14 @@ const (
 // Valid checks r against its bounds: a crew id of 1 to MaxCrewID of a-z,
 // 0-9 and '-' beginning with a letter or a digit (the shape of a crew's
 // id), a label of at most MaxRunLabel characters with no control
-// character, and a valid By. Whether the crew exists is the server's to
-// answer (ErrNotFound).
+// character, and a valid By. With an Origin: an operation id (opId's
+// rule), a valid Origin, a valid Subject or none, and a time limit that is
+// 0 or a whole number of minutes from MinStopAfter to MaxStopAfter.
+// Without one, every field after By is zero. Whether the crew exists is
+// the server's to answer (ErrNotFound), as are whether it has tasks
+// (not_managed), whether the subject's kind is one it knows
+// (invalid_subject) and whether the earlier run is the provider's
+// (prior_unknown).
 func (r LaunchRequest) Valid() error {
 	const rec = "launch request"
 	if !slug(r.Crew, MaxCrewID, false) {
@@ -205,6 +248,32 @@ func (r LaunchRequest) Valid() error {
 	}
 	if err := r.By.Valid(); err != nil {
 		return invalid(rec, "by: %v", err)
+	}
+	return r.validOrigin(rec)
+}
+
+// validOrigin checks the fields of a provider's launch: all zero without
+// an Origin; with one, each within its bound.
+func (r LaunchRequest) validOrigin(rec string) error {
+	if r.Origin == (Origin{}) {
+		if r.OpID != "" || r.Subject != (Subject{}) || r.StopAfter != 0 {
+			return invalid(rec, "an operation id, a subject and a time limit are a launch's with an origin, and none is given")
+		}
+		return nil
+	}
+	if !opID(r.OpID) {
+		return invalid(rec, "opId %q is not an operation's id: a launch with an origin needs one", r.OpID)
+	}
+	if err := r.Origin.Valid(); err != nil {
+		return invalid(rec, "%v", err)
+	}
+	if r.Subject != (Subject{}) {
+		if err := r.Subject.Valid(); err != nil {
+			return invalid(rec, "%v", err)
+		}
+	}
+	if r.StopAfter != 0 && !stopAfter(r.StopAfter) {
+		return invalid(rec, "stopAfter is not a whole number of minutes from %d to %d", int(MinStopAfter/time.Minute), int(MaxStopAfter/time.Minute))
 	}
 	return nil
 }
