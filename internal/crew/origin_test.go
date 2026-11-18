@@ -504,6 +504,9 @@ func TestASecondLaunchOfAnOperationIDIsDiscardedWhole(t *testing.T) {
 	if got, ok, err := ld.RunByOp(context.Background(), "example", "op-1"); err != nil || !ok || got.RunID != first.ID {
 		t.Fatalf("op-1 names %+v %v %v", got, ok, err)
 	}
+	// Its attempt made, and the run stopped, before the test's folders go.
+	waitAttempt(t, e, first.ID, "build", ledger.AttemptRunning)
+	stopRun(t, e, first.ID)
 }
 
 // A provider's launch is of a crew with tasks: one without is refused
