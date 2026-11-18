@@ -75,6 +75,8 @@ type fakeLedger struct {
 	// order, with its events and its task rows (a comparison's tests).
 	revs    map[string]int64
 	commits []fakeCommit
+	// origins are the runs' origin rows, by run.
+	origins map[string]ledger.OriginRow
 }
 
 // fakeCommit is one committed transaction of the fake ledger.
@@ -128,6 +130,8 @@ type fakeTx struct {
 	settles []ledger.CommandRow
 	// continued is the run this transaction's run continues, marked at commit.
 	continued string
+	// origins are the origin rows it writes, applied at commit.
+	origins []ledger.OriginRow
 }
 
 func newFakeLedger() *fakeLedger {
@@ -147,6 +151,9 @@ func (l *fakeLedger) Load(ctx context.Context, runID string) (Loaded, bool, erro
 		return Loaded{}, false, nil
 	}
 	out := Loaded{Run: row}
+	if o, ok := l.origins[runID]; ok {
+		out.Origin = &o
+	}
 	// The chain's launch row's crew, as the SQL ledger's Load reads it.
 	out.Launch, _ = LaunchCrew(runID, func(id string) (ledger.RunRow, bool, error) {
 		r, ok := l.runs[id]
@@ -251,6 +258,26 @@ func (l *fakeLedger) CheckChanged(ctx context.Context, runID, taskID string, n i
 		}
 	}
 	return nil, nil
+}
+
+// PutOrigin refuses another run's row, a second row of the run and an
+// operation id the provider's rows hold, as the ledger's does.
+func (tx *fakeTx) PutOrigin(r ledger.OriginRow) error {
+	if r.RunID != tx.runID {
+		return ledger.ErrBadOrigin
+	}
+	tx.l.mu.Lock()
+	defer tx.l.mu.Unlock()
+	if _, ok := tx.l.origins[r.RunID]; ok {
+		return ledger.ErrOriginExists
+	}
+	for _, o := range tx.l.origins {
+		if r.OpID != "" && o.Provider == r.Provider && o.OpID == r.OpID {
+			return fmt.Errorf("%w: %s", ledger.ErrOpExists, o.RunID)
+		}
+	}
+	tx.origins = append(tx.origins, r)
+	return nil
 }
 
 func (tx *fakeTx) PutMessage(r ledger.MessageRow) error {
@@ -411,6 +438,12 @@ func (l *fakeLedger) Transition(ctx context.Context, runID string, fn func(Ledge
 	}
 	for _, m := range tx.messages {
 		l.messages[fmt.Sprintf("%s/%d", m.RunID, m.Seq)] = m
+	}
+	for _, o := range tx.origins {
+		if l.origins == nil {
+			l.origins = map[string]ledger.OriginRow{}
+		}
+		l.origins[o.RunID] = o
 	}
 	l.events = append(l.events, tx.events...)
 	return l.rev, nil
