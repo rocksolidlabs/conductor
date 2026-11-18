@@ -7544,7 +7544,17 @@ U+FFFD, each line's trailing spaces left out) and ending with one line
 break: the record, its SHA-256, the preview, `task.json` and the quote
 hold the same characters. It is sent at most 16 KiB (`MaxHandoffText`): a
 longer package is refused `package_too_large` in words, never cut. Sending
-starts nothing and changes no state of a run, a task or a ticket.
+starts nothing and changes no state of a run, a task or a ticket. The app
+(`web/app/utils/brakemanSend.ts`) reads the preview only for the Brakeman
+page's own brief of a `handoff` request, refuses a reply past 38 KiB as it
+came, a text past 16 KiB in UTF-8 bytes once parsed, both or neither of
+`target` and `refusal`, and a task's or a record's state it does not know;
+draws a refusal code it does not know as "It cannot be sent now." with the
+control disabled, and draws no control for `no_task`, `not_managed`,
+`comparison` or an older server's `404` with no error code of the server's;
+sends only `{opId, sha256, by?}`, `by` the person's name only when it is a
+name the server takes (else refused in words before sending); and draws a
+`proposal/1` naming one of the three operations as text, never a button.
 
 The record is `brakeman/handoffs.json`, schema 1, at most 2 MiB: `{schema,
 next, handoffs: [{id, opId, request, item, run, task, actor, by?, sentAt,

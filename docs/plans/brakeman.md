@@ -1204,10 +1204,14 @@ fact cites its own session and run (and a check receipt when
 - `components/BrakemanHandoff.vue`: the package as Markdown, Copy, and
   "Comment on the ticket" for a ticket in its refs (Dispatch's comment
   operation as the admin, the person's name). (2026-11-18, #1012: and,
-  for a request of kind `handoff` about a task or an attempt, a control
-  that sends the package to that task's next attempt, showing the exact
-  text first, then the send's state, with Withdraw while it waits:
-  decision 23.)
+  on the page's own brief of a request of kind `handoff` about a task or
+  an attempt, "Send to <task>'s next attempt…", whose dialog
+  (`BrakemanSendHandoff.vue`) shows the exact text read-only with its
+  size, where it goes, that sending starts nothing, who else can read it
+  and under whose name it goes, then Send; the box then says where the
+  package stands (waiting with Withdraw, handed, taken by an attempt that
+  did not start with Send it again, withdrawn, replaced), and a refusal
+  draws the control disabled with its words: decision 23.)
 - Entry points: the palette gains a Brakeman group (`usePaletteRows`: "Ask
   Brakeman: brief me since…", "…explain this run", "…this task", "…draft
   tickets from this ticket", "…propose a crew for this ticket", "Open
@@ -1893,7 +1897,15 @@ the text in no log), `TestAWithdrawnPackageIsHandedToNoOne`,
 quiet mark's three tests unchanged; vitest `utils/brakemanAlert.test.ts`
 (the words read from the Go source, the event's refusals) and
 `composables/useAttention.test.ts`'s settings; Playwright
-`brakeman-notify.spec.ts`. Sharing, vitest `utils/brakemanShare.test.ts`
+`brakeman-notify.spec.ts`. The send's page, vitest
+`utils/brakemanSend.test.ts` (the preview's parser and its bounds held to
+the Go constants, every refusal's words, the state sentences and status
+lines, the who-reads sentence, a name refused before sending, an older
+server's 404, a `proposal/1` naming the operations drawn as text);
+Playwright `brakeman-send.spec.ts` (the dialog's text equal to the
+preview's, sent, handed to the next attempt and read from its task file,
+a later attempt holding none, withdrawn, no control for another kind or
+an older server, a phone). Sharing, vitest `utils/brakemanShare.test.ts`
 (`mdPlain`, `forLine`, `shareRuns`, `shareCrews`, `briefMarkdown` without
 the line as it was); Playwright `brakeman-share.spec.ts`.
 
@@ -2303,8 +2315,8 @@ stand.
     under Brakeman's name. It goes to the next attempt only: the package
     is taken just before that attempt's task file is written and is used
     up by it, even when the attempt then ends before its agent starts
-    (the brief then says it was taken and not read, and offers the send
-    again; nothing is given back by itself), and no later attempt reads
+    (the brief then says it was taken and not read, and one press sends
+    it again; nothing is given back by itself), and no later attempt reads
     it unless the person sends it again. The attempt reads it in its task file as a
     quoted report, named as Brakeman's writing sent by a person, which
     adds no task and grants nothing; it is the first thing cut to fit, its
@@ -2312,7 +2324,7 @@ stand.
     state; Brakeman cannot send one, no grant names it and a worker gains
     no tool. Whoever can watch the task's session or read its files (a
     link's holder too) can read what is sent, and the agent may repeat it
-    in its result: the send says so.
+    in its result: the send's dialog says so in one fixed sentence.
 24. **A background brief that holds a decision notifies, once.** To the
     person's open pages (a browser notification and the chime, under the
     person's switches) and to the webhooks that list

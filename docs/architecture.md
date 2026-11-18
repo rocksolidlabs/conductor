@@ -1084,7 +1084,12 @@ it a report, not instructions), and it is the first thing `fitTaskFile`
 cuts, its head kept. The run's log names what was sent, withdrawn and
 taken, by ids; the text is in no log, ledger event or session's input.
 Brakeman's token reaches none of the routes, no grant names them, and a
-worker gains no tool.
+worker gains no tool. The page's side (`BrakemanHandoff.vue`,
+`BrakemanSendHandoff.vue`, `useBrakemanSend.ts`, `utils/brakemanSend.ts`)
+reads the preview as the box is drawn, after the person's own send or
+withdraw, and when the page's copy of the package's run changes, never on a
+timer; it sends no text, run or task, only the op id, the SHA-256 of what
+the person read and their name.
 
 **A background brief that holds a decision** (#1012, decision 24;
 `brakeman_notify.go`). Where a turn's new brief is kept

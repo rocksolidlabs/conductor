@@ -216,23 +216,41 @@ Built as one pull request; no store step: one new document,
 `brakeman/handoffs.json`, and no field in a request, a brief,
 `state.json` or the ledger.
 
-- **A handoff package to a task's next attempt.** On a brief asked as
-  "Prepare a handoff" about a task, the handoff package can be sent to that
-  task's next attempt. The person reads the exact text the server will hand
-  and where it goes, and sends it or not: it goes exactly as Brakeman wrote
-  it, at most 16 KiB (a longer one is refused in words, never cut), under
-  the person's name. The next attempt, and no later one, finds it in its
-  task file as a quoted report ("A handoff package a person sent"), named
-  as Brakeman's writing sent by a person, to read and not to follow, every
-  line of it quoted; it adds no task and grants nothing. It is taken just
-  before that attempt's task file is written and used up by it, even when
-  the attempt then ends before its agent starts: the brief then says it was
-  not read, and the person sends it again. Sending starts nothing (Retry
-  stays the person's), a send can be withdrawn while it waits, and the
-  run's log says what was sent, withdrawn and taken. Brakeman cannot send
-  one, no grant names it and a worker gains no tool. Whoever can watch the
-  task's session or read its files (a link's holder too) can read what is
-  sent, and the agent may repeat it in its result.
+- **A handoff package to a task's next attempt.** On the Brakeman page, a
+  brief asked as "Prepare a handoff" about a task draws **Send to <task>'s
+  next attempt…** beside the package's Copy and Comment. Its dialog shows
+  the exact text the server will hand, read-only, with its size; where it
+  goes ("To build of <run>.") and which attempt takes it by the task's
+  state; "Sending starts nothing. The agent reads it as a quoted report in
+  its task file, not as instructions."; the one sentence of who else reads
+  it, "Whoever can watch build's session or read its files (a link's holder
+  too) can read what you send, and the agent may repeat it in its result.";
+  and under whose name it goes (the person's name in Settings, refused
+  before sending when it is not one plain line of at most 60 bytes). Then
+  Send or Cancel: nothing is editable, and it goes exactly as Brakeman wrote
+  it, at most 16 KiB (a longer one is refused in words, never cut). The
+  next attempt, and no later one, finds it in its task file as a quoted
+  report ("A handoff package a person sent"), named as Brakeman's writing
+  sent by a person, to read and not to follow, every line of it quoted; it
+  adds no task and grants nothing. It is taken just before that attempt's
+  task file is written and used up by it, even when the attempt then ends
+  before its agent starts. The box then says where it stands: waiting (with
+  Withdraw and a link to the run at the task), "Handed to attempt 4 of
+  build", "Taken for attempt 4 of build, which did not start: it was not
+  read. Send it again." (one press sends the same text again; the dialog
+  opens instead when the text changed), withdrawn, or replaced. It reads
+  that again after the person's own press and when the page hears of a
+  change to the run, never on a timer, so an attempt that took it and did
+  not start can show "Handed" until the run's next change or a reload.
+  Where it cannot be sent the button is disabled with the reason under it
+  (an unknown reason reads "It cannot be sent now."); a brief of another
+  kind, a package about a session, a comparison's lane, a run without tasks
+  and an older server draw no button. Sending starts nothing (Retry stays
+  the person's), and the run's log says what was sent, withdrawn and
+  taken. Brakeman cannot send one (a proposal naming the operation is drawn
+  as text), no grant names it and a worker gains no tool. Whoever can watch
+  the task's session or read its files (a link's holder too) can read what
+  is sent, and the agent may repeat it in its result.
 - **A background brief that holds a decision notifies, once.** When a
   background turn keeps a brief holding a decision that none of the role's
   earlier background briefs held, the open pages show a browser
@@ -249,12 +267,19 @@ Built as one pull request; no store step: one new document,
   question stay silent, as before.
 - **Share with a crew's people.** A brief's head gains **Share…** (an
   icon in the head's line on a phone, where Copy and Comment are hidden):
-  the people of the crews whose runs the brief is about, as launched, and
-  **Copy for them** and **Comment on <ticket>…** with their names on the
-  first line. It is the person's own sending: Conductor sends nothing,
-  keeps no record of a share and makes no link to a brief, so nobody new
-  reads a brief in Conductor. A brief about no run with a crew's people
-  goes with no names.
+  the people of the crews whose runs the brief is about, as launched (a
+  choice of crew when there are several), and **Copy for them** and
+  **Comment on KEY…** (the run's own ticket; "Comment on a ticket…" for a
+  run launched from none, which says so), with their names as the first
+  line, above the brief's title: "For <crew>'s people: <name> (<what they
+  answer for>), …". Every punctuation character of a name or a crew's name
+  is escaped, so none becomes a link, an address, a mention or markup;
+  Brakeman's own text stays Markdown. The comment goes under the person's
+  name and is refused past 16 KiB in words, never cut. It is the person's
+  own sending: Conductor sends nothing, keeps no record of a share and
+  makes no link to a brief, so nobody new reads a brief in Conductor. A
+  brief about no run with a crew's people says "This brief names no run
+  with a crew's people: it goes with no names."
 
 Not built, and paid when it comes (`docs/plans/brakeman.md`, article 3):
 routing a brief to a named person, push delivery (a phone whose browser is

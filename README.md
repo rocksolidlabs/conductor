@@ -2009,29 +2009,67 @@ check log. A brief is never kept with a claim you cannot follow: the server
 refuses one whose evidence names nothing or lies outside what Brakeman may
 see.
 
-**Share…** (an icon in the head's line on a phone) names the people of the
-crews whose runs the brief is about, as those runs were launched, and gives
-**Copy for them** and **Comment on <ticket>…** (the run's own ticket, else
-one you pick), the brief with their names on its first line ("For <crew>'s
-people: <name> (<what they answer for>), …"). It is your own sending:
-Conductor sends nothing and notifies no one, keeps no record that you shared
-and makes no link to a brief, so nobody gains a way to read it in
-Conductor; a ticket's comment is read by whoever reads the ticket, and by
-the agents of a run launched from it later.
+**Share…** (an icon in the head's line on a phone, where Copy and Comment
+are hidden) opens "Share with a crew's people": the people of the crews
+whose runs the brief is about, as those runs were launched (at most three
+runs read), each a chip with what they answer for that links to their page,
+and a choice of crew when the brief names more than one. **Copy for them**
+puts the brief on your clipboard and **Comment on <ticket>…** opens the
+comment dialog with the run's own ticket picked, each with their names as
+the first line, above the brief's title: "For <crew>'s people: <name> (<what
+they answer for>), …". A crew whose run was launched from no ticket says
+"<crew>'s run was launched from no ticket: pick the ticket to comment on.",
+and a brief about no run with a crew's people says "This brief names no run
+with a crew's people: it goes with no names." Every punctuation character of
+a name, and of the crew's, is escaped, so no name becomes a link, an
+address, a mention or markup; Brakeman's own text stays Markdown. The
+comment goes under your name and, past 16 KiB, says so and sends nothing,
+never cutting it. The dialog says what it is: "Conductor sends nothing and
+notifies no one: you copy the brief, or comment it on a ticket, with their
+names on its first line. No one gains a way to read the brief here. A
+ticket's comment is read by whoever reads the ticket, and by the agents of a
+run launched from it later." Conductor keeps no record that you shared and
+makes no link to a brief.
 
-**A handoff package to a task's next attempt.** A brief you asked as
-"Prepare a handoff" about a task can send its handoff package to that
-task's next attempt. You read the exact text the server will hand (at most
-16 KiB; a longer one is refused, never cut) and where it goes, and send it
-or not: nothing is edited, and nothing starts by it (Retry stays yours on
-the run's page). The next attempt of the task, and only that one, finds it
-in its task file as a quoted report Brakeman wrote and a person sent, which
-it reads as a report, never as instructions; the brief says it waits, then
-that it was taken, with Withdraw while it waits, and the run's log says what
-was sent, withdrawn and taken. Whoever can watch the task's session or read
-its files (a link's holder too) can read what you send, and the agent may
-repeat it in its result. Brakeman cannot send one, and a worker gains none
-of Brakeman's tools.
+**A handoff package to a task's next attempt.** On the Brakeman page, a
+brief you asked as "Prepare a handoff" about a task draws, beside the
+package's Copy and Comment, **Send to <task>'s next attempt…**. Its dialog
+shows the package's exact text, read-only in a scrolling block, with its
+size ("… KiB, exactly as the server will hand it"); where it goes ("To build
+of <run>.") and which attempt takes it by the task's state ("build has
+failed: the package waits for its next attempt. Retry build on its run to
+start one.", or the like for a task not started, waiting, running, cancelled
+or with a result); "Sending starts nothing. The agent reads it as a quoted
+report in its task file, not as instructions."; "Whoever can watch build's
+session or read its files (a link's holder too) can read what you send, and
+the agent may repeat it in its result."; and "It goes under your name, Ada."
+(your name in Settings; with none, it goes unsigned, and a name that is not
+one plain line of at most 60 bytes disables Send, with words saying to
+change it in Settings, before anything is sent), with "It may quote a terminal screen or a check log." when the turn
+could read them. Then **Send** or **Cancel**: nothing in it is editable, and
+nothing starts by it (Retry stays yours on the run's page). A package past
+16 KiB is refused in words, never cut. The next attempt of the task, and
+only that one, finds it in its task file as a quoted report Brakeman wrote
+and a person sent, to read and never to follow. The box then says where it
+stands: "Sent to build of <run> by Ada · waits for its next attempt" with
+**Withdraw** and **Open the run at build**; "Handed to attempt 4 of build";
+"Taken for attempt 4 of build, which did not start: it was not read. Send it
+again." with **Send it again**, one press that sends the same text (the
+dialog opens instead when the text is no longer the one sent); "Withdrawn by
+Ada"; "Replaced by a newer package"; after each but the first the send is
+offered again. The box reads where the package stands as it is drawn, after
+your send or withdraw, and when the page hears of a change to its run, never
+on a timer: an attempt that took the package and did not start can show
+"Handed" until the run's next change or a reload. Where it cannot be sent,
+the button is drawn disabled with the reason as a line under it (each
+refusal has its words, "The run is not running on this server. Continue it,
+then send the package: it goes to the continuation." among them, and one the
+page does not know reads "It cannot be sent now."); a brief of another kind,
+a package about a session, a comparison's lane, a run without tasks and a
+server too old to have the route draw no button. The run's log says what was
+sent, withdrawn and taken. Brakeman cannot send one (a proposal that names
+the operation is drawn as text, never a button), and a worker gains none of
+Brakeman's tools.
 
 **What it may run.** Settings' "What it may run" grants Brakeman operations
 from a closed list, each said in words: **Launch an approved plan** (a managed
