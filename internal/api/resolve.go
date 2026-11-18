@@ -71,7 +71,12 @@ func (s *Server) resolveSaved(ctx context.Context, crewID, project, commit strin
 	}
 	if c.Where == crew.WhereHost {
 		// A crew on a host: what it would run is the host's to work out;
-		// its folder is the host's, said as saved.
+		// its folder is the host's, said as saved. One saved with no
+		// whole folder (its host's default) names none the record can
+		// say: refused, the caller told why.
+		if !filepath.IsAbs(c.Cwd) || len(c.Cwd) > ext.MaxFolder {
+			return nil, refusedCode(ext.RefusalInvalidCwd, "a crew on a host resolves only with a whole folder of its own, and this one names none")
+		}
 		rec.Where, rec.Cwd = ext.RunsOnHost, c.Cwd
 	} else {
 		if err := c.Launchable(); err != nil {

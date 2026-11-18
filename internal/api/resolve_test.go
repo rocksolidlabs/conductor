@@ -154,7 +154,8 @@ func TestResolvedLaunchPinsTheAgentSelection(t *testing.T) {
 	_ = e.srv.runs.Stop(t.Context(), ref.ID)
 }
 
-// A crew on a host resolves with Where host.
+// A crew on a host resolves with Where host, its folder as saved; one
+// saved with no folder of its own is refused invalid_cwd.
 func TestHostCrewResolvesWhereHost(t *testing.T) {
 	e, _ := resolveEnv(t, nil)
 	id := e.sendCrew("POST", "/api/crews", map[string]any{"name": "Remote", "goal": "g", "cwd": "/home/ada/src", "where": "host", "isolation": "none",
@@ -162,6 +163,13 @@ func TestHostCrewResolvesWhereHost(t *testing.T) {
 	rl := resolve(t, e, id, "")
 	if rl.Where != ext.RunsOnHost || rl.Managed || rl.Cwd != "/home/ada/src" || rl.InProject {
 		t.Fatalf("a host's crew: %+v", rl)
+	}
+	// One saved with no folder of its own: refused, never a record that
+	// fails its own bounds.
+	none := e.sendCrew("POST", "/api/crews", map[string]any{"name": "Remote default", "goal": "g", "where": "host", "isolation": "none",
+		"members": []any{catMember("core", "immediately")}}, http.StatusCreated)["id"].(string)
+	if _, err := testHost(e.srv, t.Context(), "example").ResolveLaunch(t.Context(), ext.ResolveRequest{Crew: none, Project: "CND"}); ext.RefusalCode(err) != ext.RefusalInvalidCwd {
+		t.Fatalf("a host's crew with no folder: %v", err)
 	}
 }
 
