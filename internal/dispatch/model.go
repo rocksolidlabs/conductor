@@ -442,7 +442,7 @@ const (
 	// it (LinkReadSummary), at its escaped worst as the route encodes it
 	// (encodeValue and the API's writeDispatch: Go's JSON with HTML
 	// escaping off, so the words' worst is U+2028, six bytes a character),
-	// in bytes: it measures 1,626 at its worst (TestTicketReplyBound).
+	// in bytes: it measures 1,668 at its worst (TestTicketReplyBound).
 	MaxLinkReadSummary = 2 << 10
 	// MaxTicketExternalParts bounds what this version adds to a ticket's
 	// read (the snapshot, the owners, the linked issue's read, closed_on, a
@@ -451,13 +451,14 @@ const (
 	// newest MaxTicketPublications publications with the count of older
 	// ones that need a person), measured as the reply the route returns at
 	// its escaped worst less the same read as main's would hold it, in
-	// bytes: the measure, 216,023 bytes (the snapshot 34,186 of them, fifty
-	// summaries and ten publications most of the rest, the page 2,065 and
-	// the merged words 2,100), rounded up to a KiB or two
+	// bytes: the measure, 218,123 bytes (the snapshot 34,186 of them, fifty
+	// summaries, each with the time of checks kept from an earlier read,
+	// and ten publications most of the rest, the page 2,065 and the merged
+	// words 2,100), rounded up to a KiB or two
 	// (TestTicketReplyBound finds the parts from TicketView's type and
 	// holds the bound within 4 KiB of the measure). The room the API's
 	// MaxTicketReply keeps for it.
-	MaxTicketExternalParts = 212 << 10
+	MaxTicketExternalParts = 214 << 10
 	// MaxAgentExternalParts bounds the same parts of a ticket's read as an
 	// agent reads it (ForAgent: the snapshot without what was written on
 	// the item but its steps to reproduce, quoted, and the linked issue's
@@ -469,7 +470,7 @@ const (
 	// them beside an agent's copy of the rest, whose description a quote
 	// can make three times its size as JSON (internal/api's
 	// TestTheLargestTicketForAnAgentIsUnderItsBound).
-	MaxAgentExternalParts = 206 << 10
+	MaxAgentExternalParts = 207 << 10
 	// MaxMergedReadAge is how old a link's read may be for the close
 	// policy's merged: the close route's own read is what counts.
 	MaxMergedReadAge = 5 * time.Minute

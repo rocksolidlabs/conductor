@@ -29,6 +29,8 @@ withDefaults(
     description?: string
     scopeItems?: ScopeItem[]
     sendTargets?: ScopeItem[]
+    /** Whether a question's choices may be pressed here, beside the role (ChatPanel's `answerable`). */
+    answerable?: (m: ChatMessage) => boolean
   }>(),
   {
     ended: false,
@@ -40,6 +42,7 @@ withDefaults(
     description: '',
     scopeItems: undefined,
     sendTargets: undefined,
+    answerable: undefined,
   },
 )
 const emit = defineEmits<{ send: [text: string, to: string]; sendTo: [ref: string, to: string]; retry: [nonce: string]; answer: [m: ChatMessage, index: number] }>()
@@ -73,6 +76,7 @@ const BODY_HEIGHT = 'calc(100% - var(--snap-point-height, 0px) - 1.375rem)'
           :scope="scope"
           :scope-items="scopeItems"
           :send-targets="sendTargets"
+          :answerable="answerable"
           bare
           phone
           @send="(text, to) => emit('send', text, to)"
@@ -103,6 +107,7 @@ const BODY_HEIGHT = 'calc(100% - var(--snap-point-height, 0px) - 1.375rem)'
           :scope="scope"
           :scope-items="scopeItems"
           :send-targets="sendTargets"
+          :answerable="answerable"
           bare
           @send="(text, to) => emit('send', text, to)"
           @send-to="(ref, to) => emit('sendTo', ref, to)"

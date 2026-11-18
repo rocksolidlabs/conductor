@@ -75,10 +75,25 @@ type LinkCheck struct {
 // has at the commit: the words of each reason (a kind of check that could
 // not be read, each bound the read met), and the checks the system's
 // totals counted that the set does not hold. A set with any is never "all
-// passed", wherever it is shown.
+// passed", wherever it is shown. ReadAt, when set, is when the checks the
+// set holds were read: a read that did not read them kept an earlier
+// read's (KeptChecks), its first reason saying why, so they are never
+// shown under that read's time alone. NotRead marks a set no read read:
+// a read that did not read the checks and had none read before to keep
+// (the set is empty); a later read keeps nothing of it (ChecksRead).
 type ChecksIncomplete struct {
-	Words   []string `json:"words"`
-	Omitted int      `json:"omitted,omitempty"`
+	Words   []string  `json:"words"`
+	Omitted int       `json:"omitted,omitempty"`
+	ReadAt  time.Time `json:"readAt,omitzero"`
+	NotRead bool      `json:"notRead,omitempty"`
+}
+
+// ChecksRead reports whether the read holds checks some read read: a
+// read made (its time set) whose set is not one no read read (NotRead).
+// Only such a set is kept by a later read that does not read them
+// (KeptChecks).
+func (r LinkRead) ChecksRead() bool {
+	return !r.ReadAt.IsZero() && (r.Incomplete == nil || !r.Incomplete.NotRead)
 }
 
 // LinkRead is a read of the outside item a link names, as the API hands it
@@ -130,14 +145,16 @@ type LinkReadSummary struct {
 // an error), pending (queued, in progress, waiting, or no conclusion yet)
 // and other (neutral, skipped, stale and the rest); incomplete when the set
 // is not whole, never all passed then; omitted, the checks the system
-// counted that the set does not hold.
+// counted that the set does not hold; readAt, when the checks were read,
+// set only when an earlier read's were kept (ChecksIncomplete.ReadAt).
 type ChecksSummary struct {
-	Passed     int  `json:"passed"`
-	Failed     int  `json:"failed"`
-	Pending    int  `json:"pending"`
-	Other      int  `json:"other"`
-	Incomplete bool `json:"incomplete"`
-	Omitted    int  `json:"omitted"`
+	Passed     int       `json:"passed"`
+	Failed     int       `json:"failed"`
+	Pending    int       `json:"pending"`
+	Other      int       `json:"other"`
+	Incomplete bool      `json:"incomplete"`
+	Omitted    int       `json:"omitted"`
+	ReadAt     time.Time `json:"readAt,omitzero"`
 }
 
 // classify is a check's place in its summary.
@@ -170,7 +187,7 @@ func (r LinkRead) summary() LinkReadSummary {
 		}
 	}
 	if r.Incomplete != nil {
-		s.Checks.Incomplete, s.Checks.Omitted = true, r.Incomplete.Omitted
+		s.Checks.Incomplete, s.Checks.Omitted, s.Checks.ReadAt = true, r.Incomplete.Omitted, r.Incomplete.ReadAt
 	}
 	return s
 }
@@ -343,7 +360,7 @@ func FitChecks(checks []LinkCheck, words []string, omitted int) ([]LinkCheck, *C
 // within that bound, in at most MaxChecksIncomplete (bound, invalid).
 func encodeIncomplete(r ChecksIncomplete) (string, error) {
 	// A copy: the caller's read is never changed under it.
-	in := ChecksIncomplete{Words: slices.Clone(r.Words), Omitted: r.Omitted}
+	in := ChecksIncomplete{Words: slices.Clone(r.Words), Omitted: r.Omitted, ReadAt: r.ReadAt.UTC(), NotRead: r.NotRead}
 	if len(in.Words) == 0 || len(in.Words) > MaxIncompleteWords || in.Omitted < 0 {
 		return "", refuse(RefusalInvalid, "an incomplete set of checks says why in 1 to %d reasons", MaxIncompleteWords)
 	}
@@ -372,14 +389,21 @@ const incompleteRest = "more reasons than Conductor keeps; see the checks on the
 // dropped from the end, the last kept saying the rest were left out
 // (incompleteRest), until the set fits.
 func FitIncomplete(words []string, omitted int) *ChecksIncomplete {
+	return fitIncomplete(words, omitted, time.Time{})
+}
+
+// fitIncomplete is FitIncomplete with the time the checks were read
+// (ChecksIncomplete.ReadAt) measured with the reasons.
+func fitIncomplete(words []string, omitted int, readAt time.Time) *ChecksIncomplete {
 	var kept []string
 	for _, w := range words {
 		if w = Storable(w, MaxIncompleteWord, false); w != "" {
 			kept = append(kept, w)
 		}
 	}
+	readAt = readAt.UTC()
 	for n := len(kept); n > 0; n-- {
-		in := ChecksIncomplete{Words: kept[:n:n], Omitted: max(omitted, 0)}
+		in := ChecksIncomplete{Words: kept[:n:n], Omitted: max(omitted, 0), ReadAt: readAt}
 		if n < len(kept) {
 			in.Words = append(kept[:n-1:n-1], incompleteRest)
 		}
@@ -387,7 +411,33 @@ func FitIncomplete(words []string, omitted int) *ChecksIncomplete {
 			return &in
 		}
 	}
-	return &ChecksIncomplete{Words: []string{incompleteRest}, Omitted: max(omitted, 0)}
+	return &ChecksIncomplete{Words: []string{incompleteRest}, Omitted: max(omitted, 0), ReadAt: readAt}
+}
+
+// KeptChecks is what a read of a link's item that did not read its checks
+// (or whose read of them failed) keeps of prior, the link's last read,
+// made at the same head commit, its checks read (ChecksRead, which the
+// caller asks first): prior's checks, with the time they were
+// read (prior's own, or the earlier one prior kept them from), why first
+// (the reason kept sets begin with, prior's own left out), then prior's
+// other reasons, fitted as FitIncomplete fits them. The set is never whole
+// then, so never "all passed" under a read that did not read it.
+func KeptChecks(prior LinkRead, why string) ([]LinkCheck, *ChecksIncomplete) {
+	at, words, omitted := prior.ReadAt, []string(nil), 0
+	if in := prior.Incomplete; in != nil {
+		words, omitted = in.Words, in.Omitted
+		if !in.ReadAt.IsZero() {
+			at = in.ReadAt
+			if len(words) > 0 {
+				words = words[1:]
+			}
+		}
+	}
+	checks := slices.Clone(prior.Checks)
+	if checks == nil {
+		checks = []LinkCheck{}
+	}
+	return checks, fitIncomplete(append([]string{why}, words...), omitted, at)
 }
 
 // RecordRead records a read of the outside item the link with the id
@@ -411,6 +461,14 @@ func (s *Store) RecordRead(ctx context.Context, linkID string, r LinkRead) error
 		// another (a node id, a host or a system of its own) is refused, as
 		// is one older than the read kept. A row a failure alone wrote names
 		// no item yet.
+		// Checks kept from an earlier read were read before this one.
+		// A set no read read holds no checks and no time they were read.
+		switch in := r.Incomplete; {
+		case in != nil && in.ReadAt.After(now):
+			return refuse(RefusalInvalid, "the checks kept were read at %s, after this read", stamp(in.ReadAt))
+		case in != nil && in.NotRead && (len(r.Checks) > 0 || !in.ReadAt.IsZero()):
+			return refuse(RefusalInvalid, "a set of checks not read holds checks or the time they were read")
+		}
 		var system, host, node, at string
 		switch err := dbtx.QueryRowContext(ctx, "SELECT system, host, node_id, updated_at FROM link_reads WHERE link_id = ?", l.ID).Scan(&system, &host, &node, &at); {
 		case isNoRows(err), node == "":

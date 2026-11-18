@@ -63,9 +63,10 @@ const (
 	// trackerImagesBudget bounds an import's or a refresh's images: their
 	// downloads (each within the adapter's ImageTimeout) and commits.
 	trackerImagesBudget = 60 * time.Second
-	// mergedReadsBudget bounds the close's reads of its delivery links.
+	// mergedReadsBudget bounds each of the close's reads of its delivery
+	// links: an item's read in the first pass, its checks in the second.
 	mergedReadsBudget = 30 * time.Second
-	// maxCloseReads is the close's reads made at once.
+	// maxCloseReads is the close's reads made at once, in each pass.
 	maxCloseReads = 4
 )
 
@@ -491,7 +492,8 @@ func (s *Server) replayed(ctx context.Context, w http.ResponseWriter, ds *dispat
 // externalPreview is what an import of an item would make, from the
 // import's own projection (dispatch.Projection): the title and the
 // description (the description's first maxPreviewDescription bytes and
-// its length), the manifest's images by id, the steps to reproduce,
+// its length), the manifest's images by id with their alternative texts
+// in the same order (imageAlts), the steps to reproduce,
 // GitHub's state, labels and assignees as the snapshot keeps them (shown,
 // never mapped), the owners an import gives (the item's system for both),
 // and the live ticket that has it as its linked issue already, if any.
@@ -502,6 +504,7 @@ type externalPreview struct {
 	Description       string          `json:"description"`
 	DescriptionLength int             `json:"descriptionLength"`
 	Images            []string        `json:"images"`
+	ImageAlts         []string        `json:"imageAlts"`
 	Repro             string          `json:"repro,omitempty"`
 	State             string          `json:"state"`
 	StateReason       string          `json:"stateReason,omitempty"`
@@ -513,6 +516,10 @@ type externalPreview struct {
 
 // maxPreviewDescription bounds the description a preview shows.
 const maxPreviewDescription = 2 << 10
+
+// maxPreviewImageAlt bounds an image's alternative text a preview gives,
+// in bytes.
+const maxPreviewImageAlt = 250
 
 // handleDispatchExternalPreview reads an item and answers what its import
 // would make (externalPreview); it writes nothing, and a store that takes
@@ -558,8 +565,17 @@ func (s *Server) handleDispatchExternalPreview(w http.ResponseWriter, r *http.Re
 	p := externalPreview{Ref: it.Ref, URL: sn.URL, Title: title, DescriptionLength: len(description), Repro: sn.Repro, State: sn.State,
 		StateReason: sn.StateReason, Labels: sn.Labels, Assignees: sn.Assignees, Owners: dispatch.Owners{Title: it.Ref.System, Description: it.Ref.System}, Images: []string{}}
 	p.Description, _ = tracker.CutBytes(description, maxPreviewDescription)
+	// Each image's alternative text as the item's body gives it (#989),
+	// "" for none: what a screen reader says of it in the preview, one
+	// line made storable, cut to maxPreviewImageAlt.
+	p.ImageAlts = []string{}
 	for _, im := range sn.Images {
 		p.Images = append(p.Images, im.ID)
+		alt := ""
+		if i := slices.IndexFunc(it.Images, func(r tracker.ImageRef) bool { return r.ID == im.ID }); i >= 0 {
+			alt = strings.TrimSpace(dispatch.Storable(it.Images[i].Alt, maxPreviewImageAlt, false))
+		}
+		p.ImageAlts = append(p.ImageAlts, alt)
 	}
 	// The live ticket whose linked issue it is, looked up by the item's
 	// identity as the store holds one item to one ticket.
@@ -1115,10 +1131,11 @@ func (s *Server) linkRef(tv dispatch.TicketView, id string) (tracker.Ref, *apiEr
 
 // readLink reads the item a link names and records it (RecordRead): its
 // state, a pull request's merge and head, and, withChecks, its checks at
-// the head commit (a cut set saying so; checks that could not be read
-// said, the state kept). Without checks (the close's reads), the last
-// read's checks are kept when the head is the same, and said not read
-// otherwise. A failure, GitHub's or the store's check of what was read
+// the head commit (a cut set saying so). Checks that could not be read,
+// or not read at all (a publication's read), keep the last read's when
+// the head is the same, with the time they were read and why
+// (dispatch.KeptChecks), and are said not read otherwise; the state is
+// recorded either way. A failure, GitHub's or the store's check of what was read
 // (a read older than the one kept and a removed link's aside, which record
 // nothing), is recorded as the read's words (RecordReadError) and
 // returned. Every request is made through atGitHub, within ctx; once the
@@ -1179,22 +1196,28 @@ func (s *Server) readLinkIn(rctx, ctx context.Context, ds *dispatch.Store, key, 
 		IssueETag: etag(it.Validators.Issue), PullETag: etag(it.Validators.Pull)}
 	switch {
 	case it.Ref.Kind != tracker.KindChange:
-	case !withChecks && prior.HeadSha == it.HeadSHA:
-		lr.Checks, lr.Incomplete = prior.Checks, prior.Incomplete
-	case !withChecks:
-		lr.Incomplete = &dispatch.ChecksIncomplete{Words: []string{"the checks at this head commit were not read with this read: read the link again"}}
-	case checksErr != nil:
-		lr.Incomplete = &dispatch.ChecksIncomplete{Words: []string{"the checks could not be read: " + trackerAnswer(checksErr, ref).Code}}
-	default:
-		// Every text GitHub wrote made storable (dispatch.Storable), each
-		// state one of the system's words (checkWord).
-		for _, c := range set.Checks {
-			lr.Checks = append(lr.Checks, dispatch.LinkCheck{ID: c.ID, Name: dispatch.Storable(c.Name, dispatch.MaxCheckName, false), Status: checkWord(c.Status),
-				Conclusion: checkWord(c.Conclusion), URL: c.URL, App: dispatch.Storable(c.App, dispatch.MaxCheckName, false), HasLog: c.HasLog, CompletedAt: c.CompletedAt})
+	case !withChecks || checksErr != nil:
+		// The checks not read (a publication's read reads none) or their
+		// read failed: the last read's are kept when they are of this head
+		// commit and some read read them (ChecksRead), with the time they
+		// were read and why (KeptChecks), never under this read's time
+		// alone; none otherwise.
+		why := "the checks at this head commit were not read with this read"
+		if checksErr != nil {
+			why = "the checks could not be read: " + trackerAnswer(checksErr, ref).Code
 		}
-		// The checks and the reasons cut to what the store keeps, measured
-		// as the store measures them.
-		lr.Checks, lr.Incomplete = dispatch.FitChecks(lr.Checks, set.Incomplete, set.Omitted)
+		if prior.HeadSha == it.HeadSHA && prior.ChecksRead() {
+			lr.Checks, lr.Incomplete = dispatch.KeptChecks(prior, why)
+			break
+		}
+		if checksErr == nil {
+			why += ": read the link again"
+		}
+		// No read read them: marked so, so a later read keeps nothing of
+		// this set, and never dates it.
+		lr.Incomplete = &dispatch.ChecksIncomplete{Words: []string{why}, NotRead: true}
+	default:
+		lr.Checks, lr.Incomplete = linkChecks(set)
 	}
 	err = ds.RecordRead(wctx, linkID, lr)
 	if ref := (*dispatch.Refusal)(nil); errors.As(err, &ref) && ref.Code != dispatch.RefusalNotFound && ref.Code != dispatch.RefusalStaleRead {
@@ -1203,6 +1226,51 @@ func (s *Server) readLinkIn(rctx, ctx context.Context, ds *dispatch.Store, key, 
 		_ = ds.RecordReadError(wctx, linkID, "GitHub's answer for the item could not be kept: "+ref.Code)
 	}
 	return err
+}
+
+// linkChecks is a read set of checks as a link's read keeps it: every
+// text GitHub wrote made storable (dispatch.Storable), each state one of
+// the system's words (checkWord), the checks and the reasons cut to what
+// the store keeps, measured as the store measures them.
+func linkChecks(set tracker.CheckSet) ([]dispatch.LinkCheck, *dispatch.ChecksIncomplete) {
+	checks := []dispatch.LinkCheck{}
+	for _, c := range set.Checks {
+		checks = append(checks, dispatch.LinkCheck{ID: c.ID, Name: dispatch.Storable(c.Name, dispatch.MaxCheckName, false), Status: checkWord(c.Status),
+			Conclusion: checkWord(c.Conclusion), URL: c.URL, App: dispatch.Storable(c.App, dispatch.MaxCheckName, false), HasLog: c.HasLog, CompletedAt: c.CompletedAt})
+	}
+	return dispatch.FitChecks(checks, set.Incomplete, set.Omitted)
+}
+
+// readChecksIn is the close's second pass for one link: it reads the
+// checks of the pull request the link's last read recorded, at that
+// read's head commit, within rctx, and records them on that read
+// (RecordRead of it with its checks replaced, within a write's cap of its
+// own taken from ctx). It is best effort and never a failure: it records
+// nothing when the link has no read of a pull request at a head commit,
+// a failed read after it, or a token; when the checks cannot be read or
+// rctx ends before they are whole (the read's own checks then stand: kept
+// with the time they were read, or said not read); and once the server
+// has begun to stop. Its caller holds the link's lock.
+func (s *Server) readChecksIn(rctx, ctx context.Context, ds *dispatch.Store, linkID string, ref tracker.Ref) {
+	stop := s.external.stopping()
+	prior, found, err := ds.LinkReadOf(ctx, linkID)
+	if err != nil || !found || prior.ReadAt.IsZero() || prior.Kind != dispatch.ExternalChange || prior.HeadSha == "" || prior.Error != "" && prior.ErrorAt.After(prior.ReadAt) {
+		return
+	}
+	var set tracker.CheckSet
+	err = s.atGitHub(rctx, ref, func(ad tracker.Adapter, c tracker.Credential) error {
+		var e error
+		set, e = ad.Checks(rctx, c, ref, prior.HeadSha)
+		return e
+	})
+	if err != nil || rctx.Err() != nil || stop.Err() != nil {
+		return
+	}
+	lr := prior
+	lr.Checks, lr.Incomplete = linkChecks(set)
+	wctx, wcancel := context.WithTimeout(ctx, s.trackerCaps().write)
+	defer wcancel()
+	_ = ds.RecordRead(wctx, linkID, lr)
 }
 
 // handleDispatchReadLink reads the GitHub item a ticket's live delivery or
@@ -1337,7 +1405,11 @@ func (s *Server) readAddedLink(ds *dispatch.Store, key string, l dispatch.NewLin
 // meanwhile) records nothing, and either refuses the edit, 409
 // close_policy naming the link, nothing closed; once the server has begun
 // to stop, a close whose reads it ended answers 503 tracker_busy, nothing
-// closed. The store decides every close under merged: it closes only
+// closed. Those reads read the items alone (their checks kept from the
+// last read with their time); once every link is read, a second pass
+// reads each one's checks (readChecksIn) in what is left of the phase,
+// at most maxCloseReads at once, best effort: it never refuses the close
+// and records no failure. The store decides every close under merged: it closes only
 // while a live delivery link's latest read was made within
 // dispatch.MaxMergedReadAge (five minutes), says merged, and has no failed
 // read recorded after it. Where the route does not
@@ -1405,6 +1477,9 @@ func (s *Server) readForClose(w http.ResponseWriter, r *http.Request, ds *dispat
 	var wg sync.WaitGroup
 	at := make(chan struct{}, maxCloseReads)
 	failed := make([]string, len(tv.Links))
+	// The links pass one read, by their place, and their references.
+	readOK := make([]bool, len(tv.Links))
+	refs := make([]tracker.Ref, len(tv.Links))
 	for i, l := range tv.Links {
 		if l.Kind != dispatch.LinkDelivery || !l.DeletedAt.IsZero() {
 			continue
@@ -1433,11 +1508,13 @@ func (s *Server) readForClose(w http.ResponseWriter, r *http.Request, ds *dispat
 			defer release()
 			rctx, rcancel := context.WithTimeout(pctx, caps.merged)
 			defer rcancel()
+			// Pass one: the item alone, which decides the close; its
+			// checks are kept from the last read with their time.
 			if err := s.readLinkIn(rctx, ctx, ds, key, l.ID, ref, false); err != nil {
 				s.log.Info("tracker read", "route", r.Pattern, "ref", ref.Key(), "status", trackerAnswer(err, ref).status)
 				return
 			}
-			failed[i] = ""
+			failed[i], readOK[i], refs[i] = "", true, ref
 		})
 	}
 	wg.Wait()
@@ -1450,6 +1527,33 @@ func (s *Server) readForClose(w http.ResponseWriter, r *http.Request, ds *dispat
 			return false
 		}
 	}
+	// Pass two, once every link was read: each link's checks at the head
+	// commit pass one read (readChecksIn), so the row shows what GitHub
+	// says now, at most maxCloseReads at once within what is left of the
+	// phase. Best effort: it never refuses the close nor records a
+	// failure, and a link it does not reach keeps pass one's read.
+	for i, l := range tv.Links {
+		if !readOK[i] {
+			continue
+		}
+		wg.Go(func() {
+			select {
+			case at <- struct{}{}:
+			case <-pctx.Done():
+				return
+			}
+			defer func() { <-at }()
+			release, ok := s.external.lock(pctx, "link:"+l.ID, caps.busy)
+			if !ok {
+				return
+			}
+			defer release()
+			rctx, rcancel := context.WithTimeout(pctx, caps.merged)
+			defer rcancel()
+			s.readChecksIn(rctx, ctx, ds, l.ID, refs[i])
+		})
+	}
+	wg.Wait()
 	return true
 }
 

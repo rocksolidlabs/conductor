@@ -663,6 +663,9 @@ describe('a CI job on GitHub (IN1a PR-10)', () => {
       allPassed: false,
     })
     expect(externalJobs({ checks: [] })).toMatchObject({ jobs: [], allPassed: false })
+    // Kept from an earlier read whose time is said: never shown as passing now (#989).
+    const kept = { ...passing, incomplete: { words: ['the checks could not be read: rate_limited'], readAt: '2026-11-18T11:00:00Z' } }
+    expect(externalJobs(kept, Date.parse('2026-11-18T12:00:00Z'))).toMatchObject({ incomplete: 'checks as read 1h ago: not read again with the last read', allPassed: false })
   })
 
   it("names the host of an external receipt, none of the ledger's", () => {

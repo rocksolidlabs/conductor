@@ -422,6 +422,8 @@ func dispatchLinkRead(ctx context.Context, c *apiClient, key, ref string, stdout
 
 // writeLinkRead prints a link's read: the item's state, a pull request's
 // merge and head, its checks one a line, and why the set is not whole.
+// Checks kept from an earlier read (the read could not read them, or did
+// not ask) say when they were read, never only the read's time.
 func writeLinkRead(w io.Writer, key, id string, r dispatch.LinkRead) {
 	state := oneLine(r.State)
 	if r.Merged {
@@ -441,7 +443,11 @@ func writeLinkRead(w io.Writer, key, id string, r dispatch.LinkRead) {
 	if r.Error != "" {
 		fmt.Fprintf(w, "the last read failed: %s\n", oneLine(r.Error))
 	}
-	if r.HeadSha != "" {
+	switch in := r.Incomplete; {
+	case r.HeadSha == "":
+	case in != nil && !in.ReadAt.IsZero():
+		fmt.Fprintf(w, "checks at %s, as read %s:\n", short(oneLine(r.HeadSha)), when(in.ReadAt))
+	default:
 		fmt.Fprintf(w, "checks at %s:\n", short(oneLine(r.HeadSha)))
 	}
 	for _, ch := range r.Checks {

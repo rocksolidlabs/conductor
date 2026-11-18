@@ -735,10 +735,14 @@ func (r *ChatRoom) snapshotMembers() []roomMember {
 	return slices.Clone(r.members)
 }
 
+// memberNamed is the session the member name joined with last: a managed
+// run's member has one session per attempt, and an earlier attempt's stays
+// in the room until it leaves the server.
 func (r *ChatRoom) memberNamed(name string) (*Local, bool) {
-	for _, m := range r.snapshotMembers() {
-		if m.name == name {
-			return m.l, true
+	members := r.snapshotMembers()
+	for i := len(members) - 1; i >= 0; i-- {
+		if members[i].name == name {
+			return members[i].l, true
 		}
 	}
 	return nil, false

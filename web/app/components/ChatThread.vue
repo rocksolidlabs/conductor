@@ -21,7 +21,14 @@ import { quoteLocation, relocationWords, type Relocation } from '~/utils/quote'
  * answered; then, and for anyone who cannot answer, the choices stay as
  * plain text, the one picked marked, and a typed answer under them (#364).
  */
-const props = withDefaults(defineProps<{ messages: ChatMessage[]; pending: PendingChat[]; canSendToAgent: boolean; sendTargets?: ScopeItem[]; canAnswer?: boolean }>(), { sendTargets: undefined, canAnswer: false })
+const props = withDefaults(
+  defineProps<{ messages: ChatMessage[]; pending: PendingChat[]; canSendToAgent: boolean; sendTargets?: ScopeItem[]; canAnswer?: boolean; answerable?: (m: ChatMessage) => boolean }>(),
+  { sendTargets: undefined, canAnswer: false, answerable: undefined },
+)
+/** A question's choices as buttons: for a controller, until a line says it was answered, and only where the page can answer it. */
+function offered(m: ChatMessage): boolean {
+  return !!m.options?.length && props.canAnswer && !answers.value.has(m.id) && (props.answerable?.(m) ?? true)
+}
 const emit = defineEmits<{ sendToAgent: [ref: string]; sendTo: [ref: string, to: string]; retry: [nonce: string]; answer: [m: ChatMessage, index: number] }>()
 const answers = computed(() => chatAnswers(props.messages))
 /** Whether the question's choice i is the one answered with: its label is what the answered line says. */
@@ -101,7 +108,7 @@ onMounted(() => {
             <span class="font-mono text-[11px] text-muted">{{ chatTime(m.at) }}</span>
           </div>
           <p class="whitespace-pre-wrap break-words text-sm">{{ m.text }}</p>
-          <div v-if="m.options?.length && canAnswer && !answers.has(m.id)" class="flex flex-wrap gap-1.5">
+          <div v-if="offered(m)" class="flex flex-wrap gap-1.5">
             <UButton
               v-for="(o, i) in m.options"
               :key="i"
@@ -117,7 +124,8 @@ onMounted(() => {
               <template v-if="choiceKey(o, i)" #leading><UKbd :value="String(choiceKey(o, i))" size="sm" class="opacity-70" /></template>
             </UButton>
           </div>
-          <!-- The choices as text once the question takes no answer, or for a viewer: the one picked is marked (#364). -->
+          <!-- The choices as text once the question takes no answer, for a viewer, or where the page cannot answer it: the one picked
+               is marked (#364). -->
           <div v-else-if="m.options?.length" class="flex flex-wrap gap-1.5" data-chat-choices>
             <span
               v-for="(o, i) in m.options"

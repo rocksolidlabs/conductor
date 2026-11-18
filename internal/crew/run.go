@@ -1745,13 +1745,11 @@ func (e *Engine) promptWith(ctx context.Context, r *run, m *member, local *sessi
 			}
 			return false, nil
 		}
+		// One line in the run's log for one question, over every wait
+		// for this prompt (heldLines).
+		lines := e.heldLines(r, name, local, "its prompt waits")
 		for {
-			err := e.await(ctx, local, func(question string) {
-				att := local.Info().Attention // read before e.mu: the session's lock is never taken under it here
-				e.mu.Lock()
-				r.note(session.ActivityStatus, "%s; its prompt waits", heldWords(r, name, question, att))
-				e.mu.Unlock()
-			})
+			err := e.await(lines.ctx(ctx), local, lines.held)
 			switch {
 			case errors.Is(err, errNotReady) && r.class == ClassBrakeman:
 				// Not taken for its prompt: nothing is typed (unrecognised).
@@ -1911,12 +1909,8 @@ func (e *Engine) endedEarly(r *run, m *member, local *session.Local, why string)
 func (e *Engine) settle(r *run, m *member, local *session.Local) {
 	defer r.starts.Done()
 	name := m.def.Name
-	err := e.await(r.ctx, local, func(question string) {
-		att := local.Info().Attention // read before e.mu: the session's lock is never taken under it here
-		e.mu.Lock()
-		r.note(session.ActivityStatus, "%s; its handoffs wait", heldWords(r, name, question, att))
-		e.mu.Unlock()
-	})
+	lines := e.heldLines(r, name, local, "its handoffs wait")
+	err := e.await(lines.ctx(r.ctx), local, lines.held)
 	switch {
 	case errors.Is(err, session.ErrSessionEnded):
 		e.endedEarly(r, m, local, "before it was ready again")
@@ -2770,12 +2764,17 @@ func runState(r Run) (string, int) {
 // name's session (a startup dialog: the folder's trust, the agent's own
 // update; or a question it asks), saying where a person answers it: a
 // question the session offers with its choices (att, as the session shows
-// it, when it is still that question) with one of them on the member's
-// session page, where its choices answer it, or in its terminal; one that
+// it, when it is still that question) with one of them in the run page's
+// chat or on the member's session page, where its choices answer it, or in
+// its terminal; one that
 // mirrors a decision through the decision. Nothing answers it by itself.
 // A Brakeman turn's: its terminal.
 func heldWords(r *run, name, question string, att session.Attention) string {
-	asks := fmt.Sprintf("%s asks %s", name, quote(question))
+	return heldWordsAs(r, name, fmt.Sprintf("%s asks %s", name, quote(question)), question, att)
+}
+
+// heldWordsAs is heldWords with what the line says the member asks (asks).
+func heldWordsAs(r *run, name, asks, question string, att session.Attention) string {
 	if att.Message != question {
 		att = session.Attention{}
 	}
@@ -2793,8 +2792,85 @@ func heldWords(r *run, name, question string, att session.Attention) string {
 	if len(labels) > 1 {
 		choice = "one of its choices (" + strings.Join(labels, ", ") + ")"
 	}
-	return fmt.Sprintf("%s: answer it on %s's session page with %s, or in its terminal", asks, name, choice)
+	return fmt.Sprintf("%s: answer it with %s in the run page's chat or on %s's session page, or in its terminal", asks, choice, name)
 }
+
+// heldLines writes the run's log line for each question that holds member
+// name's prompt (or its handoffs) in one wait: a line for a question the
+// wait had not noted (heldWords, then "; " and what waits). The session
+// makes a question anew each time it reads the dialog again with other
+// words (a screen drawn again after a page attached the terminal), so the
+// log is told once per dialog, however many ids its readings make: words
+// noted once in the wait are not noted again, and a reading whose words
+// are the row the dialog is found by rather than its own
+// (session.Local.WordsFromChoice: its first choice, its heading not on the
+// screen) is not noted when a reading of the dialog's own words was noted
+// in the wait or comes by the wait's next look. Held at that next look
+// with only such a reading, the question is noted once without those
+// words. Nothing of it changes what the wait waits for.
+type heldLines struct {
+	e     *Engine
+	r     *run
+	name  string
+	local *session.Local
+	waits string
+	// noted are the words noted in the wait; cut is the id of a reading
+	// from the choice's row held and not noted yet; cutNoted says the
+	// line without words was written.
+	noted    []string
+	cut      string
+	cutNoted bool
+}
+
+func (e *Engine) heldLines(r *run, name string, local *session.Local, waits string) *heldLines {
+	return &heldLines{e: e, r: r, name: name, local: local, waits: waits}
+}
+
+// ctx is ctx carrying the wait's look at a question it holds still
+// (heldAgain), for the readiness wait to call.
+func (h *heldLines) ctx(ctx context.Context) context.Context {
+	return context.WithValue(ctx, heldAgainKey{}, h.again)
+}
+
+// held is the readiness wait's call for a question it holds anew.
+func (h *heldLines) held(question string) {
+	att := h.local.Info().Attention // read before e.mu: the session's lock is never taken under it here
+	if h.local.WordsFromChoice(question) {
+		if len(h.noted) == 0 && !h.cutNoted {
+			h.cut = att.ID
+		}
+		return
+	}
+	h.cut = ""
+	if slices.Contains(h.noted, question) {
+		return
+	}
+	h.noted = append(h.noted, question)
+	h.note(heldWords(h.r, h.name, question, att))
+}
+
+// again is the readiness wait's call at a later look that holds the same
+// question (id, its words question): a reading from the choice's row held
+// so, with no reading of the dialog's own words in the wait, is noted
+// without its words.
+func (h *heldLines) again(id, question string) {
+	if h.cut == "" || id != h.cut || len(h.noted) > 0 || h.cutNoted {
+		return
+	}
+	h.cut, h.cutNoted = "", true
+	att := h.local.Info().Attention
+	h.note(heldWordsAs(h.r, h.name, h.name+" asks a question of its agent's own", question, att))
+}
+
+func (h *heldLines) note(words string) {
+	h.e.mu.Lock()
+	h.r.note(session.ActivityStatus, "%s; %s", words, h.waits)
+	h.e.mu.Unlock()
+}
+
+// heldAgainKey is the context key of a readiness wait's call at a later
+// look that holds the same question (heldLines.again).
+type heldAgainKey struct{}
 
 // AwaitReady waits until l is ready for its prompt (readyAt), looking every
 // readyPoll: the one rule a crew member's prompt and a launch's first
@@ -2870,6 +2946,10 @@ func (w readyWait) await(ctx context.Context, l *session.Local, held func(questi
 				// Each question once: a startup question drawn right after
 				// the one answered is held anew.
 				held(att.Message)
+			} else if again, _ := ctx.Value(heldAgainKey{}).(func(id, question string)); again != nil {
+				// The same question at a later look: told to what writes
+				// the run's log (heldLines), which waits for it.
+				again(att.ID, att.Message)
 			}
 			holding, heldID = true, att.ID
 			start = now // once it is answered, the wait starts over

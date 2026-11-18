@@ -1002,3 +1002,27 @@ func TestATypedAnswerIsNotInTheChatsLine(t *testing.T) {
 		t.Fatalf("the answered line repeats the line typed: %v", a["text"])
 	}
 }
+
+// A member with a session per attempt (a managed run's) is in the room once
+// per attempt under one name: the one it joined with last is the member,
+// so that a send to the name reaches the attempt that runs and not an
+// earlier one still on the server (#1009); each session keeps its name.
+func TestRunChatMemberNamedIsItsLatestSession(t *testing.T) {
+	room := NewChatRoom(nil, nil)
+	first, _ := newLocalWith(t, Options{RunChat: room})
+	second, _ := newLocalWith(t, Options{RunChat: room})
+	other, _ := newLocalWith(t, Options{RunChat: room})
+	room.Join(first, "lead")
+	room.Join(other, "writer")
+	room.Join(second, "lead")
+	if l, ok := room.memberNamed("lead"); !ok || l != second {
+		t.Fatalf("lead is %p, want the latest attempt %p", l, second)
+	}
+	if room.nameOf(first) != "lead" || room.nameOf(second) != "lead" || room.nameOf(other) != "writer" {
+		t.Fatalf("names: %q %q %q", room.nameOf(first), room.nameOf(second), room.nameOf(other))
+	}
+	room.Leave(second)
+	if l, ok := room.memberNamed("lead"); !ok || l != first {
+		t.Fatalf("with the latest gone, lead is %p, want %p", l, first)
+	}
+}

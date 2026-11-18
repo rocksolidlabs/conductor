@@ -86,6 +86,8 @@ export interface FakeGitHub {
   item(n: number): FakeItem | undefined
   /** The checks at a commit. */
   checks(sha: string, list: FakeCheck[]): void
+  /** Every request for the checks answered 502 while on: the item is read, its checks are not. */
+  checksDown(on: boolean): void
   /** Holds a route's requests until `release` (or `stop`); `reached` resolves once one has arrived. */
   hold(route: FakeRoute): { reached: Promise<void>; release(): void }
   /** How many requests a route answered (or held). */
@@ -116,6 +118,7 @@ export async function fakeGitHub(o: { owner?: string; repo?: string; login?: str
   const login = o.login ?? 'mona-example'
   const items = new Map<number, Held>()
   const checkSets = new Map<string, FakeCheck[]>()
+  let checksAnswer502 = false
   const posted = new Map<number, Array<{ id: number; body: string; author: string; createdAt: string }>>()
   const counts = new Map<FakeRoute, number>()
   const log: FakeRequest[] = []
@@ -264,6 +267,7 @@ export async function fakeGitHub(o: { owner?: string; repo?: string; login?: str
         return it && it.kind === 'pull' ? send(res, 200, pullJSON(it)) : notFound(res)
       }
       case 'checks':
+        if (checksAnswer502) return send(res, 502, { message: 'fake checks unavailable' })
         return serveChecks(res, u, m!)
       case 'log': {
         if (u.pathname.startsWith('/_logs/')) {
@@ -411,6 +415,9 @@ export async function fakeGitHub(o: { owner?: string; repo?: string; login?: str
     item: (n) => items.get(n),
     checks(sha, list) {
       checkSets.set(sha, list)
+    },
+    checksDown(on) {
+      checksAnswer502 = on
     },
     hold(route) {
       let release!: () => void

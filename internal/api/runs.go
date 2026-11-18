@@ -107,7 +107,15 @@ func (s *Server) Launch(ctx context.Context, spec crew.LaunchSpec) (*session.Loc
 		s.brakeman.memberStarted(spec.Request, local)
 	}
 	if room != nil {
-		room.Join(local, spec.Name)
+		// Under the member's name, which the run's page, its links and its
+		// chat's sends name it by: a managed run's attempt is launched
+		// under a label of its own ("lead · build #1"), and a question
+		// it asked named no member the page could answer it through.
+		member := spec.Ref.Member
+		if member == "" {
+			member = spec.Name
+		}
+		room.Join(local, member)
 	}
 	if yolo && !local.Info().Yolo {
 		if a, ok := s.Catalog().Get(spec.AgentID); ok {

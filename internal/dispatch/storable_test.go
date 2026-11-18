@@ -1,10 +1,12 @@
 package dispatch
 
 import (
+	"context"
 	"fmt"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 	"unicode"
 	"unicode/utf8"
 )
@@ -212,6 +214,60 @@ func TestFitChecksGivesBackARefusedSetWhole(t *testing.T) {
 	if left <= 0 || !slices.Equal(kept, order[:len(kept)]) || in == nil || in.Omitted != 2+left || in.Words[0] != words[0] ||
 		in.Words[len(in.Words)-1] != fmt.Sprintf("%d checks left out to keep the list within %d checks and %d KiB, failures kept first", left, MaxLinkChecks, MaxLinkChecksJSON>>10) {
 		t.Fatalf("120 checks the store takes: %d kept, not the first failures first, or the cut said %+v", len(kept), in)
+	}
+}
+
+// KeptChecks keeps an earlier read's checks with the time they were read:
+// a whole read's own time, then, kept again, the first time and not the
+// read that kept them, its reason replaced and the earlier read's other
+// reasons and count kept; the set is never whole. With reasons at their
+// worst it still fits the store's check, time and all. The store refuses
+// a kept time after the read that keeps it.
+func TestKeptChecks(t *testing.T) {
+	at := time.Date(2026, 11, 1, 10, 0, 0, 5, time.UTC)
+	whole := LinkRead{Checks: []LinkCheck{{ID: "status:1", Name: "lint", Status: "completed", Conclusion: "success"}}, ReadAt: at}
+	checks, in := KeptChecks(whole, "the checks could not be read: rate_limited")
+	if len(checks) != 1 || in == nil || !in.ReadAt.Equal(at) || !slices.Equal(in.Words, []string{"the checks could not be read: rate_limited"}) {
+		t.Fatalf("kept from a whole read: %+v %+v", checks, in)
+	}
+	cut := LinkRead{Checks: checks, ReadAt: at.Add(time.Hour), Incomplete: &ChecksIncomplete{Words: append(slices.Clone(in.Words), "200 statuses at this commit; the first 100 read"), Omitted: 100, ReadAt: at}}
+	_, again := KeptChecks(cut, "the checks at this head commit were not read with this read")
+	if !again.ReadAt.Equal(at) || again.Omitted != 100 || !slices.Equal(again.Words, []string{"the checks at this head commit were not read with this read", "200 statuses at this commit; the first 100 read"}) {
+		t.Fatalf("kept again: %+v", again)
+	}
+	worst := LinkRead{ReadAt: at, Incomplete: &ChecksIncomplete{Words: slices.Repeat([]string{strings.Repeat(`"`, MaxIncompleteWord)}, MaxIncompleteWords), Omitted: 1 << 62}}
+	if _, in := KeptChecks(worst, strings.Repeat(`\`, MaxIncompleteWord)); !in.ReadAt.Equal(at) {
+		t.Fatalf("at the worst: %+v", in)
+	} else if _, err := encodeIncomplete(*in); err != nil {
+		t.Fatalf("at the worst: %v", err)
+	}
+
+	ctx := context.Background()
+	s := linkedStore(t)
+	newProject(t, s, "KPT")
+	key := mustImport(t, s, "imp", "KPT", ghRead("I_1", 0, "T", "B"))
+	rc, err := addLink(s, "l"+newID(), key, NewLink{Kind: LinkDelivery, URL: "https://github.com/o/r/pull/1"})
+	want(t, rc, err, StatusDone, "")
+	r := prRead("PR_1", 1, "open")
+	r.Incomplete = &ChecksIncomplete{Words: []string{"kept"}, ReadAt: time.Now().Add(time.Hour)}
+	if err := s.RecordRead(ctx, rc.ID, r); !isRefusal(err, RefusalInvalid) {
+		t.Fatalf("a kept time after the read: %v", err)
+	}
+	// A set no read read holds no checks (prRead's two) and no time, and
+	// a read holding one has no checks read to keep; a whole read has.
+	r.Incomplete = &ChecksIncomplete{Words: []string{"not read"}, NotRead: true}
+	if err := s.RecordRead(ctx, rc.ID, r); !isRefusal(err, RefusalInvalid) {
+		t.Fatalf("a set not read with checks: %v", err)
+	}
+	r.Checks = []LinkCheck{}
+	if err := s.RecordRead(ctx, rc.ID, r); err != nil {
+		t.Fatalf("a set not read: %v", err)
+	}
+	if got, _, err := s.LinkReadOf(ctx, rc.ID); err != nil || got.ChecksRead() || !got.Incomplete.NotRead {
+		t.Fatalf("a read of a set not read: %+v %v", got, err)
+	}
+	if !(LinkRead{ReadAt: at}).ChecksRead() || (LinkRead{}).ChecksRead() {
+		t.Fatal("a whole read's checks are read, and no read's are not")
 	}
 }
 

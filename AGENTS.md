@@ -577,7 +577,13 @@ add its rule here.
   `session-page.spec.ts`, #956). A loaded machine reads later and passes;
   CI reads sooner and fails. Wait for the element's own animations to have
   ended (`rowAnswer` in `web/e2e/fixtures.ts` hands a panel over only
-  then), never for a time.
+  then), never for a time. A fix to one measure of a thing covers every
+  measure of it: the wait went into the phone's steps of
+  `session-page.spec.ts` and not into the same popover's measure at 1440,
+  which then failed in CI. Where a step measures a thing that opens, run
+  the page's animations slowly while it does (`Animation.setPlaybackRate`
+  over a CDP session), so that a measure taken too soon fails every run
+  and not only on a quick machine.
 - Close what a spec opened before its server stops. Pages left open go on
   calling whatever server next takes that port, with a token it refuses,
   and spend its limit of refused requests for their address: a join in

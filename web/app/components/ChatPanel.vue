@@ -23,6 +23,11 @@ const props = withDefaults(
     /** A run's chat: the composer's menu of where a message goes, and the members a kept message can be sent to. */
     scopeItems?: ScopeItem[]
     sendTargets?: ScopeItem[]
+    /**
+     * Whether a question's choices may be pressed here, beside the role: a run's chat offers them only for a question one of its
+     * running members asked, which the page can answer through (useRunChatAnswer); the others' stay as text.
+     */
+    answerable?: (m: ChatMessage) => boolean
   }>(),
   {
     ended: false,
@@ -34,6 +39,7 @@ const props = withDefaults(
     bare: false,
     scopeItems: undefined,
     sendTargets: undefined,
+    answerable: undefined,
   },
 )
 /** `to` is '' for the chat alone, `agent` for the session's agent, else a run member's name; `answer` is a question's choice. */
@@ -62,6 +68,7 @@ const empty = computed(() => props.thread.messages.every((m) => m.kind === 'syst
       :pending="thread.pending"
       :can-send-to-agent="agentOk"
       :can-answer="role === 'control' && !ended"
+      :answerable="answerable"
       :send-targets="sendTargets"
       @send-to-agent="emit('sendToAgent', $event)"
       @send-to="(ref, to) => emit('sendTo', ref, to)"
