@@ -31,8 +31,8 @@ const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? o
 
 /** Where a candidate attempt's checks come from, by the revision's manifest. */
 const CHECKS_FROM: Record<ManifestForm, string> = {
-  none: "the task's checks: the crew names no manifest, so no verify step runs",
-  crew: "the task's checks and the verify steps of the crew's own manifest",
+  none: "the task's checks; the plan holds no manifest, so no verify steps",
+  crew: "the task's checks and the crew's manifest's verify steps",
   file: "the task's checks and conductor.manifest.json's verify steps at the base; a candidate that changes the manifest runs its own",
 }
 
