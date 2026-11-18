@@ -3,6 +3,7 @@ package crew
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -662,4 +663,61 @@ func TestAProvidersRunHandsItsSubjectToEachAttempt(t *testing.T) {
 	if md, f := taskFileOf(t, a); f.Subject != nil || strings.Contains(md, "## Subject") {
 		t.Fatalf("a run with no subject: %+v", f.Subject)
 	}
+}
+
+// Past its deadline a run takes no change that would start an attempt: a
+// finished run the engine still holds is refused Retry, Accept anyway,
+// Check again and Request changes, each with a receipt that says the time
+// limit has passed (time_limit_passed), the run as it was, no attempt
+// started. Before the deadline the same run takes them.
+func TestPastItsDeadlineARunTakesNoChangeThatStartsAnAttempt(t *testing.T) {
+	dir := newRepo(t)
+	e, ld := sqlEngine(t)
+	clk, timers := driven(e)
+	build := work("build", "lead")
+	build.Checks = []Check{markedCheck("test", filepath.Join(t.TempDir(), "never"))}
+	run, err := launchOrigin(t, e, repoCrew(dir, build), providerOrigin("op-1", 600))
+	if err != nil {
+		t.Fatal(err)
+	}
+	failed := spend(t, e, run.ID, "build", "built.txt")
+	waitOutcome(t, e, run.ID, ledger.OutcomeFailed)
+	row, _ := originIn(t, ld, run.ID)
+	clk.set(row.Deadline.Add(time.Second))
+	timers.fireAll()
+	if err := timers.waitActed(t, run.ID); !errors.Is(err, ErrRunNotRunning) {
+		t.Fatalf("the watch at the deadline of a finished run: %v", err)
+	}
+	ctx := context.Background()
+	n, commit := failed.Attempt.N, failed.Attempt.Result
+	for name, try := range map[string]func() (Receipt, error){
+		"retry":  func() (Receipt, error) { return e.Retry(ctx, run.ID, "admin", Command{ID: "c-retry"}, "build") },
+		"accept": func() (Receipt, error) { return e.Accept(ctx, run.ID, "admin", Command{ID: "c-accept"}, "build") },
+		"recheck": func() (Receipt, error) {
+			return recheck(e, run.ID, "c-recheck", "build", n, commit)
+		},
+		"request changes": func() (Receipt, error) {
+			return requestChanges(e, run.ID, "c-changes", "build", n, commit, personsRequest("rv-0001"))
+		},
+	} {
+		rc, err := try()
+		if err != nil && !errors.Is(err, ErrTimeLimitPassed) {
+			t.Fatalf("%s past the deadline: %v", name, err)
+		}
+		if err == nil && (rc.Status != ledger.CommandFailed || rc.Refusal != RefusalTimeLimitPassed || !strings.Contains(rc.Error, "time limit has passed")) {
+			t.Fatalf("%s past the deadline: %+v", name, rc)
+		}
+		got, _ := e.Get(run.ID)
+		ts := taskOf(t, e, run.ID, "build")
+		if got.Outcome != ledger.OutcomeFailed || ts.State != ledger.TaskFailed || ts.Attempts != failed.Attempts {
+			t.Fatalf("%s past the deadline changed the run: %s/%s %+v", name, got.State, got.Outcome, ts)
+		}
+	}
+	// Before the deadline the same command is taken.
+	clk.set(row.Deadline.Add(-time.Minute))
+	if rc, err := e.Retry(ctx, run.ID, "admin", Command{ID: "c-retry-2"}, "build"); err != nil || rc.Status != ledger.CommandDone {
+		t.Fatalf("a retry before the deadline: %+v %v", rc, err)
+	}
+	waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+	stopRun(t, e, run.ID)
 }
