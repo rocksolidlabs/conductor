@@ -13,6 +13,7 @@ import { asBrakemanEvent, brakemanLive, brakemanStream } from './useBrakeman'
 import { capacityLive } from './useCapacity'
 import { inboxLive } from './useInbox'
 import { notificationTarget } from '~/utils/inbox'
+import { asBrakemanNeedsYou, briefAlert, type BrakemanNeedsYou } from '~/utils/brakemanAlert'
 import { needsCount } from '~/utils/needsYou'
 
 const SETTINGS_KEY = 'conductor.attention.settings'
@@ -26,21 +27,26 @@ let runStore: RunStore | undefined
 export interface AttentionSettings {
   notifications: boolean
   chime: boolean
+  /** Brakeman's background briefs with a decision alert, under the two switches above; absent (a browser's settings before it) reads on. */
+  briefs: boolean
 }
 
-function readSettings(): AttentionSettings {
+const DEFAULT_SETTINGS: AttentionSettings = { notifications: false, chime: false, briefs: true }
+
+/** The settings this browser keeps, over the defaults: a key missing reads as its default, an unknown one harms nothing. */
+export function readSettings(): AttentionSettings {
   try {
     const raw = localStorage.getItem(SETTINGS_KEY)
-    if (raw) return { notifications: false, chime: false, ...JSON.parse(raw) }
+    if (raw) return { ...DEFAULT_SETTINGS, ...JSON.parse(raw) }
   } catch {
     /* ignore */
   }
-  return { notifications: false, chime: false }
+  return { ...DEFAULT_SETTINGS }
 }
 
 /** Persisted user preferences for attention alerts. */
 export function useAttentionSettings() {
-  const settings = useState<AttentionSettings>('attentionSettings', () => (import.meta.client ? readSettings() : { notifications: false, chime: false }))
+  const settings = useState<AttentionSettings>('attentionSettings', () => (import.meta.client ? readSettings() : { ...DEFAULT_SETTINGS }))
   const permission = useState<NotificationPermission | 'unsupported'>('notificationPermission', () =>
     import.meta.client && 'Notification' in window ? Notification.permission : 'unsupported',
   )
@@ -68,7 +74,12 @@ export function useAttentionSettings() {
     if (on) playChime()
   }
 
-  return { settings, permission, setNotifications, setChime }
+  function setBriefs(on: boolean) {
+    settings.value = { ...settings.value, briefs: on }
+    save()
+  }
+
+  return { settings, permission, setNotifications, setChime, setBriefs }
 }
 
 interface AttentionStore {
@@ -210,7 +221,7 @@ export function useAttention() {
     if (!import.meta.client) return
     const fresh = alerting(newlyNeedingInput(prev, next))
     if (!fresh.length || !events.routes.value.needs_input.browser) return
-    for (const s of fresh) notify(`${s.name} needs input`, s.attention?.message || 'The agent is waiting for you.', `conductor-${s.id}`, s.id, s.attention?.id)
+    for (const s of fresh) notify(`${s.name} needs input`, s.attention?.message || 'The agent is waiting for you.', `conductor-${s.id}`, () => notificationTarget(window.innerWidth, s.id, s.attention?.id))
     chime()
   }
 
@@ -233,18 +244,30 @@ export function useAttention() {
   function reactToEvent(e: RoutedEvent) {
     const alert = eventAlert(e, events.routes.value)
     if (!alert) return
-    notify(alert.title, alert.body, alert.tag, e.sessionId)
+    notify(alert.title, alert.body, alert.tag, () => notificationTarget(window.innerWidth, e.sessionId))
     chime()
   }
 
-  /** A browser notification; tapped, it opens the session, or below lg a question's item on the decision page (`question`). */
-  function notify(title: string, body: string, tag: string, sessionId: string, question?: string) {
+  /**
+   * A background brief of Brakeman's that holds a decision no earlier one held (the server decides, and sends the event once): a
+   * browser notification and the chime, under the two switches and the briefs' own. On the event alone, never on a snapshot, a
+   * reconnect, a read or a page load; its click opens the brief, the path built from the validated id. No routing rule covers it.
+   */
+  function alertBrief(e: BrakemanNeedsYou) {
+    if (!import.meta.client || settings.value.briefs === false) return
+    const a = briefAlert(e)
+    notify(a.title, a.body, a.tag, () => a.path)
+    chime()
+  }
+
+  /** A browser notification; tapped, it opens what `target` answers then (a session, a question's item below lg, a brief). */
+  function notify(title: string, body: string, tag: string, target: () => string) {
     if (!settings.value.notifications || !('Notification' in window) || Notification.permission !== 'granted') return
     try {
       const n = new Notification(title, { body, tag })
       n.onclick = () => {
         window.focus()
-        navigateTo(notificationTarget(window.innerWidth, sessionId, question))
+        navigateTo(target())
         n.close()
       }
     } catch {
@@ -359,6 +382,10 @@ export function useAttention() {
         const e = asBrakemanEvent(payload)
         if (e) brakemanLive().event(e)
         void inboxLive().event()
+      } else if (event === 'brakeman_needs_you') {
+        // A background brief holds a decision no earlier one held: it alerts once, here (alertBrief). Nothing takes the focus.
+        const e = asBrakemanNeedsYou(data.join('\n'))
+        if (e) alertBrief(e)
       } else if (event === 'capacity') {
         // A reading of an agent's usage was kept: the capacity views shown of its key read again (useCapacity). Nothing else moves.
         capacityLive().event(payload)
