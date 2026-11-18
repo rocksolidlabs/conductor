@@ -307,3 +307,29 @@ func TestAContinuationIsAskedWithItsChain(t *testing.T) {
 		t.Fatalf("the queries: %+v", asked)
 	}
 }
+
+// A request for changes accepted at the edge still writes its repair
+// attempt's task file when a person has sent a package at its widest:
+// the package's text is cut, its head stays, and the head is counted
+// (worstRepairFile), so the attempt never fails at its task file for it.
+func TestTheWorstRepairFileHoldsAPackagesHead(t *testing.T) {
+	dir := newRepo(t)
+	c := textCrew(t, dir, "g", "p", clefs(24<<10))
+	n := edgeOf(t, func(n int) error {
+		return FitChangeRequest(c, nil, "build", ChangeRequest{Review: "rv", By: "Nate", Changes: pathChanges(n)})
+	})
+	cr := ChangeRequest{Review: "rv", By: "Nate", Changes: pathChanges(n - 1)}
+	f := worstRepairFile(c, nil, c.Tasks[0], c.Members[0].Prompt, measuredRepair(cr), false)
+	if w := f.Handoff; w == nil || !w.Valid() || len(w.By) != MaxHandoffBy || len(w.Text) != MaxHandoffText || len(w.ID) != 21 || len(w.Brief) != 21 {
+		t.Fatalf("the worst repair file measures no package's head at its widest: %+v", w)
+	}
+	f.Handoff = &TaskHandoff{ID: "ho-" + strings.Repeat("9", 18), By: strings.Repeat("\"", MaxHandoffBy), SentAt: time.Now().UTC(), Brief: "br-" + strings.Repeat("9", 18),
+		Item: MaxHandoffItem - 1, Text: strings.Repeat("\"", MaxHandoffText)}
+	md, js, more, err := fitTaskFile(f)
+	if err != nil || len(md) > maxTaskFile || len(js) > maxTaskFile {
+		t.Fatalf("the repair attempt's task file with a package: task.md %d, task.json %d bytes: %v", len(md), len(js), err)
+	}
+	if !strings.Contains(string(md), handoffHeading) || !strings.Contains(string(md), "`handoff.text` in `.conductor/task-more.json`") || !strings.Contains(string(more), `"handoff"`) {
+		t.Fatalf("the package's head is not in task.md, or its text not in task-more.json:\n%s", md)
+	}
+}
