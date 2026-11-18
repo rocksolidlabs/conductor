@@ -31,7 +31,11 @@ import (
 //     counted left out;
 //   - past maxActivityKept the oldest goes, counted left out; the count
 //     goes with the next entry sent (LeftOut), and the server records that
-//     entries may be missing there.
+//     entries may be missing there. One already written on the connection
+//     the host is on is not counted as it goes, nor the count it carried:
+//     they are counted only if that connection ends before the server's
+//     taking of them is confirmed. One being written goes once its write
+//     has returned, judged by what the write did.
 //
 // To an older server nothing is kept: an entry goes once, as before.
 
@@ -64,9 +68,40 @@ func (a *agent) keepActivity(m proto.HostActivityMsg, made uint64) {
 	m.Seq = a.actSeq
 	late := made != a.actEpoch
 	a.actKept = append(a.actKept, keptActivity{m: m, late: late})
-	if len(a.actKept) > a.keptBound() {
-		a.actLeftOut = min(a.actLeftOut+1+a.actKept[0].m.LeftOut, proto.MaxActivityLeftOut)
-		a.actKept = a.actKept[1:]
+	a.trimKept()
+}
+
+// trimKept pushes the oldest kept entries out past the bound. One being
+// written (actWriting) stays until its write returns, the buffer holding
+// one more than the bound meanwhile, and the next oldest goes past that.
+// One sent on the connection the host is on may have been taken: it and
+// the count it carried are not counted left out as it goes but held
+// (actSentGone, up to actSentGoneTo) until the server's taking of it is
+// confirmed on that connection (confirmActivity), or counted as the next
+// registration begins (registeredActivity). Any other is counted at once.
+// Guarded by actMu.
+func (a *agent) trimKept() {
+	for bound := a.keptBound(); len(a.actKept) > bound; {
+		i := 0
+		if a.actWriting != 0 && a.actKept[0].m.Seq == a.actWriting {
+			if len(a.actKept) <= bound+1 {
+				return
+			}
+			i = 1
+		}
+		k := a.actKept[i]
+		gone := 1 + k.m.LeftOut
+		if k.sent && k.on == a.actEpoch {
+			a.actSentGone = min(a.actSentGone+gone, proto.MaxActivityLeftOut)
+			a.actSentGoneTo = max(a.actSentGoneTo, k.m.Seq)
+		} else {
+			a.actLeftOut = min(a.actLeftOut+gone, proto.MaxActivityLeftOut)
+		}
+		if i == 0 {
+			a.actKept = a.actKept[1:]
+		} else {
+			a.actKept = append(a.actKept[:i], a.actKept[i+1:]...)
+		}
 	}
 }
 
@@ -103,6 +138,8 @@ func (a *agent) sendKeptActivity() {
 		m := k.m
 		m.LeftOut = min(m.LeftOut+extra, proto.MaxActivityLeftOut)
 		m.Late = k.late
+		// Not pushed out while it is written (trimKept).
+		a.actWriting = m.Seq
 		a.actMu.Unlock()
 		// The writer of this registration's connection: a connection ends
 		// (its writer let go) before the next registration begins.
@@ -111,10 +148,16 @@ func (a *agent) sendKeptActivity() {
 		a.mu.Unlock()
 		err := a.send(m)
 		if errors.Is(err, errConnDown) || errors.Is(err, session.ErrSlowConsumer) {
-			// Not written: sent in its turn later.
+			// Not written: sent in its turn later, unless the bound pushes
+			// it out meanwhile, counted.
+			a.actMu.Lock()
+			a.actWriting = 0
+			a.trimKept()
+			a.actMu.Unlock()
 			break
 		}
 		a.actMu.Lock()
+		a.actWriting = 0
 		a.actLeftOut -= min(a.actLeftOut, extra)
 		if j := keptIndex(a.actKept, m.Seq); j >= 0 {
 			a.actKept[j].m.LeftOut = m.LeftOut
@@ -134,6 +177,8 @@ func (a *agent) sendKeptActivity() {
 				a.actKept = append(a.actKept[:j], a.actKept[j+1:]...)
 			}
 		}
+		// What its write did is known: past the bound, it goes as any.
+		a.trimKept()
 		current := a.actEpoch == epoch
 		a.actMu.Unlock()
 		if current {
@@ -204,6 +249,11 @@ func (a *agent) confirmActivity(w *controlWriter, on, upTo uint64) {
 					}
 				}
 				a.actKept = kept
+				// So are those pushed out after their write on it, when the
+				// confirmation reaches the last of them.
+				if a.actSentGone > 0 && a.actSentGoneTo <= to {
+					a.actSentGone, a.actSentGoneTo = 0, 0
+				}
 			}
 			if a.actConfirmTo == to && a.actConfirmOn == on {
 				a.actConfirming = false
@@ -277,6 +327,8 @@ func (a *agent) confirmOn(w *controlWriter) bool {
 // one again, in order (it drops those it took); one that did not is sent
 // those never written, and the others are counted left out. Every entry
 // kept now was recorded before this connection, or is sent again: late.
+// Those pushed out after their write on the connection that ended, not
+// confirmed taken, can be sent no more: counted left out, resumed or not.
 func (a *agent) registeredActivity(takes, resumed bool) {
 	a.activitySeq.Store(takes)
 	a.actMu.Lock()
@@ -284,6 +336,8 @@ func (a *agent) registeredActivity(takes, resumed bool) {
 	a.actEpoch++
 	a.actBegan = time.Now()
 	a.actResumed = resumed
+	a.actLeftOut = min(a.actLeftOut+a.actSentGone, proto.MaxActivityLeftOut)
+	a.actSentGone, a.actSentGoneTo = 0, 0
 	if !takes {
 		a.actKept, a.actLeftOut = nil, 0
 		return

@@ -278,6 +278,10 @@ add its rule here.
   A message sent from inside a step is not the step done: the session
   sends a viewer its welcome inside `AttachWith`, before the host's peer
   holds the subscription (`awaitSub` in `internal/hostagent` waits for it).
+  An event the session recorded is not yet an entry its host has kept: the
+  forwarder hands it to the host's sender after, so a link brought back
+  "after" five events can come back before the fifth is kept. Wait for the
+  host to hold it (`untilKept`) where the test means that order.
 - End what a test started before its directories go. An engine a test
   abandons (the server that ended, before a continuation) keeps reacting:
   when the fake launcher ended its processes at cleanup, it failed their

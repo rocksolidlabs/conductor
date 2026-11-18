@@ -1699,7 +1699,10 @@ them) reach the server, in order and each once:
 
 - each entry is numbered (`activity.seq`), from 1 and one more for each,
   for the life of the host's process, and kept, at most 256: past that
-  the oldest goes, counted as left out;
+  the oldest goes, counted as left out, unless it was already written on
+  the connection the host is on: it and the count it carried are then
+  counted only if that connection ends before the server's taking of them
+  is confirmed (one being written goes once its write returns);
 - it is sent in its turn; one certainly not written (no connection, or
   no turn on a slow one, withdrawn) stays to be sent, and the entries go
   in their order;
