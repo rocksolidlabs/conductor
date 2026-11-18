@@ -12,6 +12,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/rocksolidlabs/conductor/ext"
 	"github.com/rocksolidlabs/conductor/internal/agents"
 	"github.com/rocksolidlabs/conductor/internal/capacity"
 	"github.com/rocksolidlabs/conductor/internal/catalog"
@@ -267,7 +268,7 @@ func (s *Server) handleLaunchCrew(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("id")
-	run, c, release, err := s.launchSaved(r.Context(), id, strings.TrimSpace(body.Label), body.Revision, nil)
+	run, c, release, err := s.launchSaved(r.Context(), id, strings.TrimSpace(body.Label), body.Revision, nil, crew.LaunchOpts{})
 	// Released once the reply is written: the view link is minted first, so a
 	// launch at the cap meanwhile cannot forget the run.
 	defer release()
@@ -335,7 +336,11 @@ func launchRefusal(status int, code, message string) error {
 // starts nothing (ext.Host's Launch, whose try may have been given up
 // meanwhile). Its error is a launchRefused for a refusal of the request, a
 // crewStoreErr for the store's, admit's, or the engine's (runError).
-func (s *Server) launchSaved(ctx context.Context, crewID, label, revision string, admit func() error) (*crew.Run, crew.Crew, func(), error) {
+//
+// opts are what the engine stamps on the run (crew.LaunchOpts): a
+// provider's launch's origin, which only a crew with tasks takes
+// (not_managed).
+func (s *Server) launchSaved(ctx context.Context, crewID, label, revision string, admit func() error, opts crew.LaunchOpts) (*crew.Run, crew.Crew, func(), error) {
 	noop := func() {}
 	if err := crew.ValidateLabel(label); err != nil {
 		return nil, crew.Crew{}, noop, launchRefusal(http.StatusBadRequest, "invalid_request", err.Error())
@@ -349,6 +354,9 @@ func (s *Server) launchSaved(ctx context.Context, crewID, label, revision string
 	}
 	if revision != "" && crew.Revision(c) != revision {
 		return nil, c, noop, launchRefusal(http.StatusConflict, "crew_changed", "the crew was saved since the copy this launch was read from: read it again")
+	}
+	if opts.Origin != nil && !c.Managed() {
+		return nil, c, noop, launchRefusal(http.StatusConflict, ext.RefusalNotManaged, "a provider's launch is of a crew with tasks, and this crew has none")
 	}
 	if c.Managed() {
 		// A managed run needs the server's ledger, as its owner, and the
@@ -398,7 +406,7 @@ func (s *Server) launchSaved(ctx context.Context, crewID, label, revision string
 	// The launch's context ends with its release, as the route's did at
 	// its end: after the engine's release.
 	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), runTimeout)
-	run, release, err := s.runs.LaunchNamed(rctx, launch, label)
+	run, release, err := s.runs.LaunchNamedWith(rctx, launch, label, opts)
 	return run, c, func() { release(); cancel(); unbind() }, err
 }
 
@@ -714,6 +722,8 @@ func (s *Server) runError(w http.ResponseWriter, what, id string, err error) {
 		writeError(w, http.StatusConflict, "managed_run", err.Error())
 	case errors.Is(err, crew.ErrChainTooLong):
 		writeError(w, http.StatusConflict, "chain_too_long", err.Error())
+	case errors.Is(err, crew.ErrTimeLimitPassed):
+		writeError(w, http.StatusConflict, "time_limit_passed", err.Error())
 	case errors.Is(err, crew.ErrNotSelected):
 		writeError(w, http.StatusConflict, "not_selected", err.Error())
 	case errors.Is(err, crew.ErrLoginNotKept):
