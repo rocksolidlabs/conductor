@@ -489,6 +489,11 @@ type Engine struct {
 	// afterLookup, when set, runs once a command or RetryTask has looked
 	// its run up and before its change: a test evicts the run there.
 	afterLookup func(runID string)
+	// beforeCancelPump, when set, runs in CancelTask between its commit and
+	// the dispatch after it (afterTransact, which waits for the run's
+	// transactions): a test holds the cancel there until what the commit
+	// set going has reached a commit of its own.
+	beforeCancelPump func(runID string)
 	// afterTaken, when set, runs in a command between its two
 	// transactions (SetAfterTakenForTest). Guarded by mu.
 	afterTaken func(runID, commandID string)
