@@ -35,7 +35,7 @@ const (
 
 // Version is the schema this binary writes. A database of a later version
 // opens read-only; an earlier one is brought to it (migrations).
-const Version = 12
+const Version = 13
 
 // migrations bring a database from the version keyed to the next, in one
 // transaction with the version's change: 1 to 2 adds the attempts'
@@ -132,6 +132,13 @@ var migrations = map[int][]string{
 	// row a version 11 database holds has neither shape and reads as it
 	// did.
 	11: {},
+	// Version 13 (#1001): where a run was launched from, a table of its
+	// own with its unique index on a provider's operation id (origin.go).
+	// No run before this version has an origin, so a version 12
+	// database's rows are all true as they are: nothing is derived. The
+	// version is a barrier as every later one is: a binary that writes 12
+	// opens a version 13 ledger read-only.
+	12: {runOriginTable, runOriginOpIndex},
 }
 
 // migrationsGo run after a version's statements, in the same transaction:
@@ -880,8 +887,9 @@ func (l *Ledger) release() {
 // older one is brought to it by migrations). Times are RFC 3339 text in
 // UTC; JSON is text; a run's rows go with it (ON DELETE CASCADE) when the
 // owner prunes it. The decision tables (version 8) are decisionTables,
-// their request index as version 9 keys it decisionsRequestV9, and the
-// previews (version 11) previewsTable, last.
+// their request index as version 9 keys it decisionsRequestV9, the
+// previews (version 11) previewsTable, and where a run was launched from
+// (version 13) runOriginTable and runOriginOpIndex, last.
 var schema = append(append([]string{
 	`CREATE TABLE schema_version (version INTEGER NOT NULL)`,
 	`CREATE TABLE runs (
@@ -1000,4 +1008,4 @@ var schema = append(append([]string{
 	messagesTable,
 	prerequisitesTable,
 	treesTable,
-}, decisionTables...), append(slices.Clone(decisionsRequestV9), previewsTable)...)
+}, decisionTables...), append(slices.Clone(decisionsRequestV9), previewsTable, runOriginTable, runOriginOpIndex)...)
