@@ -582,7 +582,9 @@ tree's own (`serve --dev --token-env CONDUCTOR_TREE_SECRET` on the
 loopback, its data under the tree's state directory, publishing nothing)
 and the web app's dev server, which proxies to it (`CONDUCTOR_DEV_API`) and,
 in the dev build alone, loads the bridge the tree is told of
-(`CONDUCTOR_PREVIEW_BRIDGE`, `web/app/plugins/previewBridge.client.ts`).
+(`CONDUCTOR_PREVIEW_BRIDGE`) by a tag in its document's head
+(`web/nuxt.config.ts`'s `$development`, `web/build/devConfig.ts`), so
+the bridge runs before the frame's load rather than once the app starts.
 The inner server's token is the tree's secret, minted for that tree and
 given only in its environment, so no argv and no file of the repository
 holds it; the preview names it as `${CONDUCTOR_TREE_SECRET}`, which the

@@ -1105,29 +1105,34 @@ func TestCapturesByTicketAreItsSends(t *testing.T) {
 	unsent := mustCreate(t, s, "unsent", n, f, nil)
 	brakeman := mustCreate(t, s, "brakeman-only", n, f, nil)
 	mustSend(t, s, "brakeman-only-send", brakeman, 1, toBrakeman, askBrakeman)
-	retake := func(opID, of, run string) Capture {
+	retake := func(opID, of, run, task string) Capture {
 		t.Helper()
 		rn, rf := testCapture(false)
 		rn.RetakeOf, rf.Run = of, run
+		if task != "" {
+			rf.Task = task
+		}
 		rc, err := create(t, s, opID, rn, rf, nil)
 		want(t, rc, err, StatusDone, "")
 		return captureOf(t, s, rc.ID)
 	}
 	for i, c := range []struct {
-		name, of, run, via string
+		name, of, run, task, via string
 	}{
-		{"run launched from the ticket the first was sent to", first, launched, RetakeTicket},
-		{"run launched from another ticket", first, launched2, RetakeRepo},
-		{"the first never sent", unsent, launched, RetakeRepo},
-		{"the first sent to Brakeman alone", brakeman, launched, RetakeRepo},
-		{"a run launched from no ticket", first, "crew-89abcdef", RetakeRepo},
-		{"the same run and task beats the ticket", first, f.Run, RetakeRun},
+		{"run launched from the ticket the first was sent to", first, launched, "", RetakeTicket},
+		// A ticket's repair is often another crew's run, whose task has another name: the ticket relates it all the same.
+		{"a task of another name in a run launched from the ticket", first, launched, "fix", RetakeTicket},
+		{"run launched from another ticket", first, launched2, "", RetakeRepo},
+		{"the first never sent", unsent, launched, "", RetakeRepo},
+		{"the first sent to Brakeman alone", brakeman, launched, "", RetakeRepo},
+		{"a run launched from no ticket", first, "crew-89abcdef", "", RetakeRepo},
+		{"the same run and task beats the ticket", first, f.Run, "", RetakeRun},
 	} {
-		if got := retake(opID("retake-", i), c.of, c.run); got.RetakeVia != c.via {
+		if got := retake(opID("retake-", i), c.of, c.run, c.task); got.RetakeVia != c.via {
 			t.Errorf("%s: via %q, want %q", c.name, got.RetakeVia, c.via)
 		}
 	}
-	second := retake("second", first, launched)
+	second := retake("second", first, launched, "")
 	if second.RetakeVia != RetakeTicket || !slices.Equal(ticketCaptures(t, s, key), []string{first}) {
 		t.Fatalf("a retake not yet sent: %s, listed %v", second.RetakeVia, ticketCaptures(t, s, key))
 	}
