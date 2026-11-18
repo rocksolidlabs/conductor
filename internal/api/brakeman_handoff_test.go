@@ -89,10 +89,29 @@ func newHandFixture(t *testing.T) *handFixture {
 	}
 	runningAttempt(t, e, run.ID, "build", 1)
 	f := &handFixture{bkEnv: b, log: l, run: run.ID}
+	f.endRunAtCleanup(t)
 	h := hostilePackage(run.ID)
 	f.request = f.handRequest(t, brakeman.KindHandoff, "task:"+run.ID+"/build", h)
 	f.text = brakeman.HandoffText(h)
 	return f
+}
+
+// endRunAtCleanup stops the fixture's run (f.run as it is then: a
+// continuation's when the test continued it) at the test's cleanup, before
+// the server's sessions are stopped and before the folders go: cleanups
+// run last in, first out, and this one is registered after the server and
+// its repository's folder are made. A stop waits out the run's starts,
+// handoffs, checks and trees, so no attempt is dispatched after it; left
+// running, the engine would see its sessions end at the cleanup, dispatch
+// the task's next attempt and add its worktree to the repository while
+// t.TempDir removes it. Its bound only bounds a hang.
+func (f *handFixture) endRunAtCleanup(t *testing.T) {
+	t.Helper()
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		_ = f.srv.runs.Stop(ctx, f.run)
+	})
 }
 
 // handRequest keeps a request of kind about subject, briefed with a fact
@@ -571,6 +590,7 @@ func neverStarted(t *testing.T) (f *handFixture, req, id, mark string, paused fu
 		t.Fatal(err)
 	}
 	f = &handFixture{bkEnv: b, log: l, run: run.ID}
+	f.endRunAtCleanup(t)
 	paused = func(n int) {
 		t.Helper()
 		taskVia(t, e, run.ID, "build", fmt.Sprintf("attempt %d failed at its setup", n), func(task map[string]any) bool {
@@ -738,6 +758,8 @@ func TestThePreviewAtItsWidestFitsItsBound(t *testing.T) {
 // with that attempt and no starting.
 func TestACheckAgainAttemptIsNotStarting(t *testing.T) {
 	l, run, mark, commits := failingLaunch(t)
+	f := &handFixture{bkEnv: &bkEnv{testEnv: l.testEnv, desk: l.srv.brakeman}, run: run}
+	f.endRunAtCleanup(t) // registered before the hold's release: runs after it
 	held, gate := make(chan struct{}, 1), make(chan struct{})
 	var once sync.Once
 	release := func() { once.Do(func() { close(gate) }) }
@@ -749,7 +771,6 @@ func TestACheckAgainAttemptIsNotStarting(t *testing.T) {
 		}
 		<-gate
 	})
-	f := &handFixture{bkEnv: &bkEnv{testEnv: l.testEnv, desk: l.srv.brakeman}, run: run}
 	req := f.handRequest(t, brakeman.KindHandoff, "task:"+run+"/build", brakeman.Handoff{Objective: "Check it again."})
 	k := receiptK(t, l.testEnv, run, 3, "test").K
 	p := prepared(t, l.testEnv, run, "build", 3, "test", k)
@@ -763,4 +784,20 @@ func TestACheckAgainAttemptIsNotStarting(t *testing.T) {
 		t.Fatalf("a Check again's target: %+v %+v", got.Target, got.Refusal)
 	}
 	release()
+}
+
+// TestTheHandFixtureEndsItsRunBeforeItsFolders: the run a fixture made is
+// stopped by the time the fixture's test has ended, so nothing of it is
+// dispatched while the test's folders are removed, and its build task had
+// no attempt after the one the test saw.
+func TestTheHandFixtureEndsItsRunBeforeItsFolders(t *testing.T) {
+	var f *handFixture
+	t.Run("fixture", func(t *testing.T) { f = newHandFixture(t) })
+	r, ok := f.srv.runs.Get(f.run)
+	if !ok || r.StoppedAt == nil {
+		t.Fatalf("the fixture's run outlived its test: held %v, stopped %v", ok, r.StoppedAt)
+	}
+	if _, attempts, err := f.srv.runs.TaskOf(f.run, "build"); err != nil || len(attempts) != 1 {
+		t.Fatalf("build was dispatched again at the cleanup: %d attempts, %v", len(attempts), err)
+	}
 }
