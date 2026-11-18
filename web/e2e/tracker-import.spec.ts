@@ -137,7 +137,7 @@ test('an issue with two images and steps to reproduce, imported from the palette
     '[a link](javascript:window.__pwned=2)',
     '![remote](https://evil.example/pixel.png)',
   ].join('\n')
-  gh.set({ n: 12, kind: 'issue', title: 'The list crashes when empty', body, state: 'open', labels: ['bug'], assignees: ['hubot-example'], images: [{ path: GH_HEX, type: 'image/png', bytes: PNG }, { path: GH_UUID, type: 'image/png', bytes: PNG }] })
+  gh.set({ n: 12, kind: 'issue', title: 'The list crashes when empty', body, state: 'open', labels: ['bug'], assignees: ['hubot-example'], images: [{ path: GH_HEX, type: 'image/png', bytes: PNG, alt: 'The empty list after the crash' }, { path: GH_UUID, type: 'image/png', bytes: PNG, alt: '' }] })
 
   const page = await dayPage(browser, { path: `/dispatch/${key}`, server: srv.started })
   await expect(page.locator('[data-dispatch-import-open]')).toBeVisible()
@@ -155,6 +155,9 @@ test('an issue with two images and steps to reproduce, imported from the palette
   await expect(preview.locator('[data-import-title]')).toHaveText('The list crashes when empty')
   // Each image by its place: GitHub serves it under an identifier, never shown (#989).
   await expect(preview.locator('[data-import-image]')).toHaveText(['image 1', 'image 2'])
+  // The issue's alternative text is what a screen reader hears of the first; the second, given none, is its caption.
+  await expect(preview.getByRole('img', { name: 'The empty list after the crash' })).toHaveAttribute('data-import-image', '')
+  await expect(preview.locator('[data-import-image]').nth(1)).not.toHaveAttribute('aria-label')
   for (const id of [GH_HEX, GH_UUID]) await expect(dialog).not.toContainText(id.slice(0, 8))
   await expect(preview.locator('[data-import-repro]')).toContainText('Remove every item')
   await expect(preview.locator('[data-import-state]')).toHaveText('Open')

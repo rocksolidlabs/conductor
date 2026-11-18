@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import type { RunInfo, RunMember, SessionInfo } from '~/composables/useSessions'
-import type { ChatMessage } from '~/utils/protocol'
 import { scopeItems } from '~/utils/chat'
 import { broadcastByName, broadcastSelection, broadcastSummary, crewFeed, memberStatus, skipWords, takeViewLink } from '~/utils/crews'
 import { stopQuestion, type Action } from '~/utils/actions'
@@ -13,7 +12,6 @@ import { memberWords, runTitle, startedClock } from '~/utils/crewWords'
 import { memberOffer, runOffer } from '~/utils/runs'
 import { handoffsOf } from '~/utils/crewGraph'
 import { bestGrid, lastItemSpan } from '~/utils/wall'
-import { replyFailure } from '~/utils/reply'
 import type { RelatedTicket } from '~/composables/useDispatch'
 import { chainLinkedTicket, latest } from '~/utils/review'
 import { runLinkWatch, runTicketRead } from '~/composables/useDispatchLive'
@@ -324,15 +322,14 @@ const runChatDescription = computed(() => (run.value ? `${runTitle(run.value)} Â
 function runChatSendTo(ref: string, to: string) {
   if (!runChat.sendTo(ref, to)) toast.add({ title: 'Not connected', color: 'warning' })
 }
-/** A member's question answered from the run's chat: the choice's keys into that member, as the Yard's quick reply types. */
-const quick = useQuickReply()
-function runChatAnswer(m: ChatMessage, index: number) {
-  const o = m.options?.[index]
-  const t = tiles.value.find((x) => x.name === m.on)
-  if (!o || !t?.session) return
-  // The question's line in the chat is the question's own id: a choice clicked once it was answered types nothing.
-  quick.send(t.session, o.input, { question: m.id }).catch((e: unknown) => toast.add(replyFailure(e, t.name)))
-}
+/**
+ * A member's question answered from the run's chat (useRunChatAnswer): the choice's keys into the running session of the member
+ * the line is on, naming the question, with the workbench's own credential; a line no running member asked offers no button.
+ */
+const runChatAnswers = useRunChatAnswer({
+  members: () => tiles.value.map((t) => ({ name: t.name, session: t.session && (t.session.status === 'running' || t.session.status === 'starting') ? t.session : undefined })),
+  may: () => !run.value?.stoppedAt,
+})
 watch(runChat.refused, (r) => {
   if (r) toast.add({ title: 'Not sent to the member', description: skipWords(r.reason), color: 'warning' })
 })
@@ -691,6 +688,7 @@ palette.registerPage(() => {
     @send="(text, to) => runChat.send(text, to)"
     @send-to="runChatSendTo"
     @retry="runChat.retry"
-    @answer="runChatAnswer"
+    :answerable="runChatAnswers.answerable"
+    @answer="runChatAnswers.answer"
   />
 </template>

@@ -210,10 +210,10 @@ const tones = { warning: 'text-warning', error: 'text-error', muted: 'text-muted
                 <span v-if="summaryOf(l)!.merged && summaryOf(l)!.mergedAt" class="text-muted">merged {{ relativeTime(summaryOf(l)!.mergedAt!, now, { suffix: true }) }}</span>
                 <span v-if="summaryOf(l)!.merged && summaryOf(l)!.mergeSha" class="font-mono text-dimmed" data-mono="commit" :title="summaryOf(l)!.mergeSha" data-link-merge-sha>{{ summaryOf(l)!.mergeSha!.slice(0, 7) }}</span>
                 <span v-if="summaryOf(l)!.headSha" class="text-muted" data-link-check-counts>
-                  · checks: {{ checksWords(summaryOf(l)!.checks).allPassed ? `all ${summaryOf(l)!.checks.passed} passed` : checksWords(summaryOf(l)!.checks).counts }}
+                  · checks: {{ checksWords(summaryOf(l)!.checks, now).allPassed ? `all ${summaryOf(l)!.checks.passed} passed` : checksWords(summaryOf(l)!.checks, now).counts }}
                 </span>
               </span>
-              <span v-if="summaryOf(l)!.checks.incomplete" class="text-muted" data-link-incomplete>{{ checksWords(summaryOf(l)!.checks).incomplete }}</span>
+              <span v-if="summaryOf(l)!.checks.incomplete" class="text-muted" data-link-incomplete :data-link-checks-kept="summaryOf(l)!.checks.readAt ? '' : undefined">{{ checksWords(summaryOf(l)!.checks, now).incomplete }}</span>
               <ul v-if="whole.get(l.id)?.checks.length" class="flex flex-wrap gap-1" data-link-checks>
                 <li v-for="c in whole.get(l.id)!.checks" :key="c.id" :data-link-check="c.id">
                   <a v-if="githubHref(c.url, hostOf(l.url))" :href="githubHref(c.url, hostOf(l.url))!" target="_blank" rel="noopener noreferrer" class="hover:underline">

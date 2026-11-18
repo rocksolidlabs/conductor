@@ -2219,8 +2219,9 @@ taken. The one decision still open is The open question above.
     it changes the decision-policy plan's respond judgement and that
     test, and this plan's door, and no other row.
 26. **A held answer and a router's policy do not combine in the first
-    version** (default; the same decision as the decision-policy plan's
-    Owner decisions, 11). On a server whose registered router confirms
+    version** (the default; decided by the owner on 2026-11-18: it
+    stands; the same decision as the decision-policy plan's Owner
+    decisions, 11). On a server whose registered router confirms
     policies, this door refuses every held answer, final, `403
     answered_at_server`, nothing written and the router not asked, and
     the engine refuses a `via: sync` response to a record under a

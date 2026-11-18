@@ -275,16 +275,20 @@ export function imageCaption(index: number, attachmentId?: string, attachments: 
 
 /**
  * A link's checks counted in words: "3 passed · 1 failed · 2 pending"; "no checks" for none. A cut list never says all passed: its
- * words are "incomplete: N checks not read, see them on GitHub" (`incomplete`), shown in place of any all-passed word.
+ * words are "incomplete: N checks not read, see them on GitHub" (`incomplete`), shown in place of any all-passed word. Checks a later
+ * read did not read (or could not) and kept from an earlier one (`readAt`) say when they were read (#989): "checks as read 12m ago: not
+ * read again with the last read", never shown as the last read's.
  */
-export function checksWords(c: LinkReadSummary['checks']): { counts: string; incomplete: string; allPassed: boolean } {
+export function checksWords(c: LinkReadSummary['checks'], now = Date.now()): { counts: string; incomplete: string; allPassed: boolean } {
   const parts = [
     c.passed ? `${c.passed} passed` : '',
     c.failed ? `${c.failed} failed` : '',
     c.pending ? `${c.pending} pending` : '',
     c.other ? `${c.other} other` : '',
   ].filter(Boolean)
-  const incomplete = c.incomplete ? `incomplete: ${c.omitted ? `${c.omitted} ${c.omitted === 1 ? 'check' : 'checks'}` : 'some checks'} not read, see them on GitHub` : ''
+  const notRead = `${c.omitted ? `${c.omitted} ${c.omitted === 1 ? 'check' : 'checks'}` : 'some checks'} not read, see them on GitHub`
+  const kept = c.readAt ? `checks as read ${relativeTime(c.readAt, now, { suffix: true })}: not read again with the last read` : ''
+  const incomplete = !c.incomplete ? '' : kept ? (c.omitted ? `${kept}; ${notRead}` : kept) : `incomplete: ${notRead}`
   const allPassed = !c.incomplete && c.passed > 0 && !c.failed && !c.pending && !c.other
   return { counts: parts.length ? parts.join(' · ') : 'no checks', incomplete, allPassed }
 }

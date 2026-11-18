@@ -1581,7 +1581,8 @@ remove rows, and each says which.
     selection too; it changes PR-7's respond judgement and that test,
     and `docs/plans/sync-seams.md`'s door, and no other row.
 11. **A held answer and a router's policy do not combine in the first
-    version** (default). On a server whose registered router confirms
+    version** (the default; decided by the owner on 2026-11-18: it
+    stands). On a server whose registered router confirms
     policies, a sync provider's door refuses every held answer, final,
     `403 answered_at_server`, nothing written and the router not asked,
     and the engine refuses a `via: sync` response to a record under a

@@ -551,8 +551,8 @@ the item, newest row first.
   - **Not observed.** An element joining a screenshot taken before the page
     answered (on Conductor's own app the page is drawn only as its bridge
     starts); the real tab-capture prompt; the desktop app, Windows, Firefox
-    and Safari. The owner's word that the agent repaired the control from
-    the capture alone is owed.
+    and Safari. The owner gave their word on 2026-11-18 that the agent
+    repaired the control from the capture alone.
 - **Conductor's own app (PR-9, #797).** `conductor.manifest.json` at the
   repository's root serves Conductor in a tree: a server of the tree's own
   on the loopback (`go run ./cmd/conductor serve --dev --token-env
@@ -658,7 +658,8 @@ Safari framing a loopback preview (recorded, not required). The plan's
 Acceptance, a real agent repairing a control of Conductor's own app from a
 capture alone, was observed on 2026-11-18 (the first entry above), and with
 it PR-10's "a capture sent as Request changes and repaired" and PR-11's "a
-capture on a pending decision answered"; the owner's word on it is owed.
+capture on a pending decision answered"; the owner gave their word on it
+on 2026-11-18.
 
 ## Compare approaches (CP1, `docs/plans/compare-crew.md`; 2026-11-16)
 
@@ -796,10 +797,14 @@ capture on a pending decision answered"; the owner's word on it is owed.
     was stopped; the Review view's held Request changes was still the
     checked verdict; a selection opened by the last lane's failed or
     cancelled attempt gave a check's reason as still under way; a closed
-    decision's item still listed its run as blocked. Open: a choice pressed
-    in the run's chat did not answer an agent's own update dialog, where the
-    member's session page's did (#1009), and one such dialog was written to
-    the run's log three times (#1010).
+    decision's item still listed its run as blocked. Fixed since, in a
+    pull request of their own: a choice pressed in the run's chat did not
+    answer an agent's own update dialog, where the member's session page's
+    did (a run with tasks listed each attempt in its chat under the
+    attempt's label, not its member's name, so the page found nobody to
+    answer: #1009), and one such dialog was written to the run's log three
+    times (the log notes one line for one dialog in a wait now, however
+    many times the session reads the dialog again: #1010).
   - **Observed differently from the plan's words.** The desktop app was not
     quit: the server's process was stopped and started instead. The
     byte-for-byte comparison of the measured part was made across a second
@@ -808,8 +813,8 @@ capture on a pending decision answered"; the owner's word on it is owed.
   - **Not observed.** The phone layout on a real phone (it was measured at
     390 x 844 in the tests); the server's refusal of an answer sent with an
     agent's own session token; a continuation's "kept from" words (the block
-    already held the repair when it was read). The owner's word on the
-    comparison as a person saw it is owed.
+    already held the repair when it was read). The owner gave their word
+    on the comparison as a person saw it on 2026-11-18.
 
 ## Agent and account capacity (AC1, `docs/plans/capacity.md`; PR-8 2026-11-16)
 
@@ -973,7 +978,14 @@ said on GitHub but what a person publishes.
   the title and the description until a person takes them over; the
   ticket's status never moves because GitHub's did. A delivery or external
   link to a GitHub item is read for its state and checks, and a close
-  policy may ask for `merged`.
+  policy may ask for `merged`: the close reads each delivery link again,
+  then, best effort and never in the close's way, each one's checks, so
+  its row shows what GitHub says now. Checks a read could not read are
+  the last read's, shown with the time they were read and never as
+  passing, and only when some read read them (#989). An imported image is captioned with its
+  attachment's name in the GitHub panel and "image 1", "image 2" in
+  Import's preview, where the issue's alternative text for it, when it
+  gives one, is what a screen reader hears.
 - **Publications (PR-5, PR-5b).** One comment a publication, prepared,
   previewed as the exact bytes with GitHub's hidden marker, sent by the
   person's Send alone, once: a try is committed before its post and a

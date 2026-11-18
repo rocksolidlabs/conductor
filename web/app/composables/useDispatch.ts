@@ -328,7 +328,10 @@ export interface TicketRead {
   errorAt?: string
 }
 
-/** A link's checks counted: passed, failed, pending and other; `incomplete` when the set is not whole (never all passed then). */
+/**
+ * A link's checks counted: passed, failed, pending and other; `incomplete` when the set is not whole (never all passed then); `readAt`
+ * when the checks were read, set only when a later read could not read them and kept these (never shown under that read's time alone).
+ */
 export interface ChecksSummary {
   passed: number
   failed: number
@@ -336,6 +339,7 @@ export interface ChecksSummary {
   other: number
   incomplete: boolean
   omitted: number
+  readAt?: string
 }
 
 /** A link's last read as the ticket's read carries it (`linkReads`, by link id). */
@@ -375,7 +379,11 @@ export interface LinkRead {
   mergeSha?: string
   headSha?: string
   checks: LinkCheck[]
-  incomplete?: { words: string[]; omitted?: number }
+  /**
+   * Why the checks are not whole; `readAt` when they were read, when a later read kept them (ChecksSummary.readAt); `notRead` a set no
+   * read read, which a later read keeps nothing of.
+   */
+  incomplete?: { words: string[]; omitted?: number; readAt?: string; notRead?: boolean }
   updatedAt: string
   readAt?: string
   error?: string
@@ -997,6 +1005,8 @@ export interface ExternalPreview {
   descriptionLength: number
   /** The images an import would download, by their ids (their URLs without a query). */
   images: string[]
+  /** Each image's alternative text as the issue gives it, in the order of `images`, '' for none (#989): what a screen reader says. */
+  imageAlts?: string[]
   repro?: string
   state: string
   stateReason?: string

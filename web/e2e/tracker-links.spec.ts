@@ -64,7 +64,7 @@ test("the fake answers what the server's adapter asks, and the token goes to its
 })
 
 test('a delivery link to a pull request is read open, then merged; a policy requiring merged refuses Close, then is met', async ({ browser }) => {
-  budget(24 * STEP_MS)
+  budget(30 * STEP_MS)
   const api = srv.api
   const key = await freeProjectKey(api, 'GHL')
   await makeProject(api, key, [])
@@ -124,7 +124,22 @@ test('a delivery link to a pull request is read open, then merged; a policy requ
   await read.locator('[data-link-read-again]').click()
   await expect(read).toHaveAttribute('data-link-state', 'merged')
   await expect(read.locator('[data-link-merge-sha]')).toHaveText('ccccccc')
+  // A read whose checks GitHub does not answer keeps the last read's, said with the time they were read, never as this read's (#989).
+  gh.checksDown(true)
+  const asked = gh.count('checks')
+  await read.locator('[data-link-read-again]').click()
+  await expect(read.locator('[data-link-checks-kept]')).toContainText(/^checks as read .+ ago: not read again with the last read$/)
+  expect(gh.count('checks')).toBeGreaterThan(asked)
+  await expect(read.locator('[data-link-check-counts]')).toContainText('1 passed · 1 failed')
+  // GitHub ran the lint again, and it passed: the close reads the checks with the link, and the row shows what GitHub says now.
+  gh.checksDown(false)
+  gh.checks(head, [
+    { kind: 'job', id: 2000011, name: 'test', status: 'completed', conclusion: 'success', log: 'ok\n' },
+    { kind: 'run', id: 2100011, name: 'lint', status: 'completed', conclusion: 'success' },
+  ])
   await close.locator('[data-close]').click()
   await expect(close).toHaveAttribute('data-close-closed', '')
   expect((await api.ok<{ ticket: { status: string } }>('GET', `/api/dispatch/tickets/${ticket}`)).ticket.status).toBe('done')
+  await expect(read.locator('[data-link-check-counts]')).toContainText('all 2 passed')
+  await expect(read.locator('[data-link-incomplete]')).toHaveCount(0)
 })

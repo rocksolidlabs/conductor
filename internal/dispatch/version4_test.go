@@ -423,7 +423,8 @@ func TestTicketReplyBound(t *testing.T) {
 		r := prRead(strings.Repeat("N", MaxNodeID), 1, "merged")
 		r.MergeSha, r.HeadSha, r.Checks = strings.Repeat("a", 64), strings.Repeat("b", 64), checks
 		r.MergedAt, r.UpdatedAt = day0.Add(time.Nanosecond), day0.Add(time.Nanosecond)
-		r.Incomplete = &ChecksIncomplete{Words: []string{"x"}, Omitted: 1 << 62}
+		// Checks kept from an earlier read, with that read's time.
+		r.Incomplete = &ChecksIncomplete{Words: []string{"x"}, Omitted: 1 << 62, ReadAt: day0.Add(time.Nanosecond)}
 		if err := s.RecordRead(ctx, rc.ID, r); err != nil {
 			t.Fatal(err)
 		}
