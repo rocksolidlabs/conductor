@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -704,5 +705,38 @@ func TestStopRunOnAReadOnlyLedgerSaysSo(t *testing.T) {
 	}
 	if run, _ := e.srv.runs.Get(ref.ID); run.StoppedAt != nil {
 		t.Fatal("the run was stopped")
+	}
+}
+
+// Past its deadline a provider's failed run offers nothing that would
+// start an attempt: the inbox has no open item for its failed task, where
+// before the deadline it offers Retry. The clock is the engine's seam.
+func TestPastItsDeadlineTheInboxOffersNothingThatStartsAnAttempt(t *testing.T) {
+	var offset atomic.Int64
+	e := readyEnv(t, nil)
+	e.srv.runs.SetClockForTest(func() time.Time { return time.Now().Add(time.Duration(offset.Load())) })
+	e.gitRepo(t)
+	endRunsAtCleanup(t, e)
+	mark := filepath.Join(t.TempDir(), "passes")
+	id := e.sendCrew("POST", "/api/crews", map[string]any{"name": "Reviews", "goal": "g", "cwd": e.root, "where": "server", "isolation": "worktree",
+		"members": []any{map[string]any{"name": "lead", "agentId": "ready-cat", "prompt": "", "start": map[string]any{"when": "task"}}},
+		"tasks": []any{map[string]any{"id": "build", "member": "lead", "kind": "work", "instructions": "Build it.",
+			"checks": []any{map[string]any{"id": "test", "argv": []any{"sh", "-c", "test -e " + mark}}}}}}, http.StatusCreated)["id"].(string)
+	ref, err := testHost(e.srv, t.Context(), "example").Launch(t.Context(), originLaunch(id, "op-1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	spendBuild(t, e, ref.ID, "built.txt")
+	item := "task:" + ref.ID + "/build"
+	if page, _ := e.inboxList(t, ""); !listed(page, item) {
+		t.Fatalf("before the deadline the failed task is not an open item: %+v", page.Items)
+	}
+	offset.Store(int64(2 * time.Hour))
+	if page, _ := e.inboxList(t, ""); listed(page, item) {
+		t.Fatalf("past the deadline the failed task is still an open item: %+v", page.Items)
+	}
+	set, err := e.srv.runs.TaskCommands(ref.ID, "build")
+	if err != nil || len(set.Commands) != 0 || set.Recheck != nil {
+		t.Fatalf("the commands past the deadline: %+v %v", set, err)
 	}
 }

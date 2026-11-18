@@ -246,3 +246,9 @@ func (e *Engine) pastDeadline(r *run, intent string) error {
 	}
 	return fmt.Errorf("%w (it was %s)", ErrTimeLimitPassed, r.origin.Deadline.Format(time.RFC3339))
 }
+
+// SetClockForTest gives the engine's clock to a test: the clock a run's
+// deadline is set by, watched against and asked by the commands that
+// would start an attempt (pastDeadline). It is called before the engine
+// launches any run: the clock is read without a lock.
+func (e *Engine) SetClockForTest(now func() time.Time) { e.now = now }

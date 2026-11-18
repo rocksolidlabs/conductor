@@ -693,6 +693,14 @@ func TestPastItsDeadlineARunTakesNoChangeThatStartsAnAttempt(t *testing.T) {
 		t.Fatalf("the watch at the deadline of a finished run: %v", err)
 	}
 	ctx := context.Background()
+	// Nothing that would start an attempt is offered either: the task's
+	// commands are what act takes (TaskCommands).
+	if set, err := e.TaskCommands(run.ID, "build"); err != nil || slices.Contains(set.Commands, TaskRetry) || slices.Contains(set.Commands, TaskAccept) || set.Recheck != nil {
+		t.Fatalf("the commands offered past the deadline: %+v %v", set, err)
+	}
+	if err := e.RetryTask(ctx, run.ID, "build"); !errors.Is(err, ErrTimeLimitPassed) {
+		t.Fatalf("a retry without a receipt past the deadline: %v", err)
+	}
 	n, commit := failed.Attempt.N, failed.Attempt.Result
 	for name, try := range map[string]func() (Receipt, error){
 		"retry":  func() (Receipt, error) { return e.Retry(ctx, run.ID, "admin", Command{ID: "c-retry"}, "build") },
@@ -717,8 +725,11 @@ func TestPastItsDeadlineARunTakesNoChangeThatStartsAnAttempt(t *testing.T) {
 			t.Fatalf("%s past the deadline changed the run: %s/%s %+v", name, got.State, got.Outcome, ts)
 		}
 	}
-	// Before the deadline the same command is taken.
+	// Before the deadline the same commands are offered, and taken.
 	clk.set(row.Deadline.Add(-time.Minute))
+	if set, err := e.TaskCommands(run.ID, "build"); err != nil || !slices.Contains(set.Commands, TaskRetry) || set.Recheck == nil {
+		t.Fatalf("the commands offered before the deadline: %+v %v", set, err)
+	}
 	if rc, err := e.Retry(ctx, run.ID, "admin", Command{ID: "c-retry-2"}, "build"); err != nil || rc.Status != ledger.CommandDone {
 		t.Fatalf("a retry before the deadline: %+v %v", rc, err)
 	}

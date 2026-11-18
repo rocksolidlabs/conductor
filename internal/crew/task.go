@@ -3086,6 +3086,9 @@ func (e *Engine) RetryTask(ctx context.Context, runID, taskID string) error {
 		if refused = e.continued(r); refused != nil || retryable(t) != nil {
 			return tx{} // continued or changed meanwhile
 		}
+		if refused = e.pastDeadline(r, TaskRetry); refused != nil {
+			return tx{} // past the run's deadline: no attempt starts
+		}
 		if refused = r.retryNeedsRoom(t, "retry"); refused != nil {
 			return tx{}
 		}

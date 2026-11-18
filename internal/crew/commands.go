@@ -849,7 +849,9 @@ func (e *Engine) commandsOf(r *run, t *task) TaskCommandSet {
 	}
 	for _, name := range []string{TaskRetry, TaskAccept, TaskCancel} {
 		a, err := taskCommandCheck(r, name, t)
-		if err != nil {
+		if err != nil || e.pastDeadline(r, name) != nil {
+			// Not offered: a command act would refuse (past the run's
+			// deadline, one that would start an attempt).
 			continue
 		}
 		out.Commands = append(out.Commands, name)
@@ -860,7 +862,7 @@ func (e *Engine) commandsOf(r *run, t *task) TaskCommandSet {
 			out.RetryStart = r.startCommit(t)
 		}
 	}
-	if fc, ok := r.standingFailed(t); ok && t.state == ledger.TaskFailed {
+	if fc, ok := r.standingFailed(t); ok && t.state == ledger.TaskFailed && e.pastDeadline(r, TaskRecheck) == nil {
 		rq := RecheckRequest{Task: t.def.ID, Attempt: fc.N, Commit: fc.ResultCommit}
 		if fc.RunID != r.id {
 			rq.Imported = fmt.Sprintf("%s/%s/%d", fc.RunID, fc.TaskID, fc.N)
