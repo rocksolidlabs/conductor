@@ -2,7 +2,7 @@
 import type { AgentInfo } from '~/composables/useSessions'
 import type { BrakemanConfig, BrakemanScope, BrakemanVisibility } from '~/utils/brakeman'
 import { BOUNDS, BRAKEMAN_ADAPTERS, GRANTS, agentChoice, agentIdOf, agentItems as agentChoices, configProblems, foldersLine, formField, sameConfig, grantHeld, observesOnly, servedGrants, withGrant } from '~/utils/brakeman'
-import { PRESETS, applyPreset, briefingTimes, crewItems, presetChoice, projectItems, runItems, sessionItems, withEntry, withoutAt, type PickerItem, type Preset } from '~/utils/brakemanSettings'
+import { PRESETS, applyPreset, briefingTimes, crewPicks, presetChoice, projectPicks, runPicks, sessionPicks, withEntry, withoutAt, type PickerItem, type Preset } from '~/utils/brakemanSettings'
 import { ApiError } from '~/composables/useApi'
 import { SETTINGS_FIELD_UI as fieldUi } from '~/utils/settingsSections'
 import { StaleRefusal, configForm, type BrakemanPart } from '~/utils/settingsSave'
@@ -223,7 +223,7 @@ onMounted(async () => {
       if (!page.next) break
       cursor = page.next
     }
-    projects.value = projectItems(all)
+    projects.value = projectPicks(all)
   } catch {
     projects.value = []
   }
@@ -231,14 +231,14 @@ onMounted(async () => {
 onMounted(() =>
   api
     .listCrews(0, 500)
-    .then((r) => (crews.value = crewItems(r.crews)))
+    .then((r) => (crews.value = crewPicks(r.crews)))
     .catch(() => (crews.value = [])),
 )
 const pickers = computed<Array<{ key: Exclude<keyof BrakemanScope, 'repos'>; label: string; placeholder: string; listed: PickerItem[] }>>(() => [
   { key: 'projects', label: 'Projects', placeholder: 'A project, or its key', listed: projects.value },
   { key: 'crews', label: 'Crews', placeholder: "A crew, or its id", listed: crews.value },
-  { key: 'runs', label: 'Runs', placeholder: "A run, or its id", listed: runItems(live.runs.value) },
-  { key: 'sessions', label: 'Sessions', placeholder: "A session, or its id", listed: sessionItems(live.sessions.value) },
+  { key: 'runs', label: 'Runs', placeholder: "A run, or its id", listed: runPicks(live.runs.value) },
+  { key: 'sessions', label: 'Sessions', placeholder: "A session, or its id", listed: sessionPicks(live.sessions.value) },
 ])
 function addRepo() {
   scopePicked.repos = withEntry(scopePicked.repos, repoText.value)

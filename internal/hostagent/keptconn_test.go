@@ -27,7 +27,7 @@ func TestAnEntryWrittenAsTheConnectionEndsIsNotLost(t *testing.T) {
 				a.registeredActivity(true, resumed)
 			}
 		}
-		a.sendActivity(session.ActivityEntry{Type: session.ActivityProgress, Message: "edge"}, "")
+		a.sendNow(session.ActivityEntry{Type: session.ActivityProgress, Message: "edge"})
 		first := <-got
 		a.actMu.Lock()
 		kept := slices.Clone(a.actKept)
@@ -76,7 +76,7 @@ func TestAConfirmationAskedOnANewConnectionIsMade(t *testing.T) {
 		a.mu.Unlock()
 	}
 	setOut(&controlWriter{})
-	a.sendActivity(session.ActivityEntry{Type: session.ActivityProgress, Message: "old"}, "")
+	a.sendNow(session.ActivityEntry{Type: session.ActivityProgress, Message: "old"})
 	<-got
 	<-calls
 	// A new connection, while the old one's confirmation waits.
@@ -84,7 +84,7 @@ func TestAConfirmationAskedOnANewConnectionIsMade(t *testing.T) {
 	a.registeredActivity(true, true)
 	setOut(&controlWriter{})
 	a.sendKeptActivity()
-	a.sendActivity(session.ActivityEntry{Type: session.ActivityProgress, Message: "new"}, "")
+	a.sendNow(session.ActivityEntry{Type: session.ActivityProgress, Message: "new"})
 	for len(got) > 0 {
 		<-got
 	}

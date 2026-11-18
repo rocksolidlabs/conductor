@@ -158,7 +158,9 @@
 # outlasts that done. `stub bell <seconds>` rings the bell and draws nothing
 # for that many seconds (a wait with no words), then prints four lines (the
 # agent moving on: the wait is withdrawn by the screen), pauses two seconds
-# and spins as `stub spin 30` does.
+# and spins as `stub spin 30` does. `stub fail` is a turn that ends in an
+# error: the status working, an error printed, the status error, and no
+# report of the turn's end (#991).
 # The agent's session: --session-id ID names it, --resume ID (or a leading
 # `resume ID`) continues it; without either a fresh id is made. The
 # transcript lives in $HOME/.stub-sessions/<id>.txt, so a resumed session
@@ -2182,6 +2184,16 @@ handle_line() {
 		# The program status's shape for this session (status_set).
 		put "$transcripts/$id.status" "${BASH_REMATCH[1]}"$'\n'
 		status_last=
+	elif [[ $line == 'stub fail' ]]; then
+		# A turn that ends in an error (Codex 0.164 and later, a key its
+		# provider refused, #991): working, the error printed, the status
+		# error, and no report of the turn's end, as Codex's notify program
+		# is called for a finished turn only.
+		title_working
+		printf 'Error: unexpected status 401 Unauthorized\n'
+		title_stop
+		status_set error
+		printf 'fail: errored\n' >>"$transcript"
 	elif [[ $line == 'stub tui on' ]]; then
 		# Any-event mouse tracking in SGR, and keys read one by one with the
 		# terminal's line editing and echo off, as Claude Code and Codex do.
