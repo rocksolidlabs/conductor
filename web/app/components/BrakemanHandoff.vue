@@ -44,11 +44,21 @@ const toast = useToast()
 const offered = computed(() => sendOffered(props.request, props.index))
 const preview = ref<HandPreview | null>(null)
 const readFailed = ref('')
+/**
+ * Where the box's read stands, drawn as `data-handoff-read` (a seam a test waits on before it judges what is not drawn): `mounting`
+ * until the box has mounted, `none` for a box that makes no read, `reading`, `read`, `older` (the server has no such route: nothing
+ * is drawn) or `failed`.
+ */
+const readState = ref<'mounting' | 'none' | 'reading' | 'read' | 'older' | 'failed'>('mounting')
 /** The reads in order: a reply to an older read than one already taken is dropped. */
 let reads = 0
 let taken = 0
 async function read() {
-  if (!offered.value) return
+  if (!offered.value) {
+    readState.value = 'none'
+    return
+  }
+  if (readState.value !== 'read') readState.value = 'reading'
   const n = ++reads
   try {
     const p = await hand.preview(props.request!.id, props.index!)
@@ -56,9 +66,11 @@ async function read() {
     taken = n
     preview.value = p
     readFailed.value = ''
+    readState.value = p ? 'read' : 'older'
   } catch (e) {
     if (n < taken) return
     taken = n
+    readState.value = 'failed'
     readFailed.value = e instanceof ApiError ? handRefusalWords(e.status === 401 ? 'unauthorized' : e.code) : (e as Error).message
   }
 }
@@ -133,7 +145,7 @@ async function withdraw() {
 </script>
 
 <template>
-  <div class="flex flex-col gap-2 rounded-md border border-default p-3" data-brief-handoff>
+  <div class="flex flex-col gap-2 rounded-md border border-default p-3" data-brief-handoff :data-handoff-read="readState">
     <MarkdownPreview :text="markdown" dir="" :relative-links="false" class="text-sm" data-handoff-markdown />
     <p v-if="over && tickets.length" class="text-xs text-muted" data-handoff-bound>
       The package is {{ kib(utf8Bytes(markdown)) }}, more than a ticket's comment holds ({{ kib(COMMENT_MAX) }}). Copy keeps the whole; a comment sends what you shorten it to.

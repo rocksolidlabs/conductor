@@ -117,6 +117,13 @@ describe("the preview's parser", () => {
     expect(asHandPreview(100, preview({ text: '', bytes: 20_000 }))).toBeNull()
   })
 
+  it('takes whether the newest attempt is starting: a boolean or absent, and nothing else', () => {
+    expect(asHandPreview(100, preview({ target: { ...preview().target, starting: true } }))?.target?.starting).toBe(true)
+    expect(asHandPreview(100, preview({ target: { ...preview().target, starting: false } }))?.target).not.toHaveProperty('starting')
+    expect(asHandPreview(100, preview())?.target).not.toHaveProperty('starting')
+    for (const bad of ['true', 1, null, {}]) expect(asHandPreview(100, preview({ target: { ...preview().target, starting: bad } })), JSON.stringify(bad)).toBeNull()
+  })
+
   it("refuses a task's state, a record's state, a code or a SHA-256 it does not know", () => {
     expect(asHandPreview(100, preview({ target: { ...preview().target, state: 'exploded' } }))).toBeNull()
     expect(asHandPreview(100, preview({ target: { ...preview().target, attempt: -1 } }))).toBeNull()
@@ -140,6 +147,10 @@ describe("the preview's parser", () => {
   it("hides the control for an older server's 404, and only for that", () => {
     expect(olderServer({ status: 404, code: 'http_error' })).toBe(true)
     expect(olderServer({ status: 404, code: 'not_found' })).toBe(false)
+    // The /api/ catch-all of every server: a server without the route answers this.
+    expect(olderServer({ status: 404, code: 'not_found', message: 'no such route' })).toBe(true)
+    // The new routes' own 404s say what is missing: a brief or a package, which the box says.
+    for (const message of ['no such request or item', 'the request has no brief', 'the brief has 1 items', 'no such handoff package']) expect(olderServer({ status: 404, code: 'not_found', message })).toBe(false)
     expect(olderServer({ status: 503, code: 'http_error' })).toBe(false)
     expect(olderServer(null)).toBe(false)
   })
@@ -183,6 +194,12 @@ describe("the dialog's words", () => {
     expect(stateSentence(t('verifying'))).toBe('build is running attempt 2, which is not told. The package waits for the attempt after it, if there is one.')
     expect(stateSentence(t('failed'))).toBe('build has failed: the package waits for its next attempt. Retry build on its run to start one.')
     expect(stateSentence(t('cancelled'))).toBe('build was cancelled: the package waits for its next attempt. Retry build on its run to start one.')
+    // An attempt still being prepared may yet take the package: the sentence says both ways, never "not told".
+    for (const state of ['running', 'verifying', 'ready'] as const)
+      expect(stateSentence({ ...t(state, 2), starting: true })).toBe(
+        'build is starting attempt 2. If its task file is not written yet, it is handed the package; otherwise the package waits for the attempt after it.',
+      )
+    expect(stateSentence({ ...t('running', 2), starting: false })).toBe(stateSentence(t('running', 2)))
     expect(stateSentence(t('succeeded'))).toBe('build has a result. The package is handed only if build is opened again, by a review that asks for changes.')
   })
 

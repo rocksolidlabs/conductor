@@ -222,19 +222,23 @@ test('a brief of another kind draws no control, and nor does an older server tha
     if (r.url().includes('/hand')) reads.push(r.url())
   })
   const other = await box(page, explain)
+  // The box has mounted and judged it makes no read: only then is "nothing drawn, nothing read" a finding.
+  await expect(other).toHaveAttribute('data-handoff-read', 'none')
   await expect(other.locator('[data-handoff-copy]')).toBeVisible()
   await expect(other.locator('[data-handoff-send]')).toHaveCount(0)
   expect(reads).toEqual([])
 
-  // An older server's mux: a 404 with no error of the server's. The read is answered, then nothing is drawn.
+  // An older server: its /api/ catch-all answers the route it does not have. The read is answered, then nothing is drawn.
   await standingRoute(context)
   let answered = 0
   await page.route('**/api/brakeman/requests/*/items/*/hand', async (route) => {
     answered++
-    await route.fulfill({ status: 404, contentType: 'text/plain; charset=utf-8', body: '404 page not found\n' })
+    await route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ error: { code: 'not_found', message: 'no such route' } }) })
   })
   const h = await box(page, handoff)
   await expect.poll(() => answered, { timeout: STEP_MS }).toBeGreaterThan(0)
+  // The reply handled (the box says the server has no such route) before what it must not draw is judged.
+  await expect(h).toHaveAttribute('data-handoff-read', 'older')
   await expect(h.locator('[data-handoff-copy]')).toBeVisible()
   await expect(h.locator('[data-handoff-send], [data-handoff-sent], [data-handoff-read-failed]')).toHaveCount(0)
   await page.unrouteAll({ behavior: 'wait' })

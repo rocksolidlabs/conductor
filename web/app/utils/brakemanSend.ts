@@ -51,6 +51,8 @@ export interface HandTarget {
   task: string
   state: HandTaskState
   attempt: number
+  /** The task's newest attempt is open and has no session yet: it may still be handed the package, if its task file is not written. */
+  starting?: boolean
 }
 
 /** The preview: the exact text, its size and SHA-256, exactly one of where it goes and why it cannot, and the newest record of it. */
@@ -119,7 +121,9 @@ export function asHandPreview(size: number, x: unknown): HandPreview | null {
   if (target !== undefined) {
     if (!isObj(target) || !short(target.run) || !short(target.runName, true) || !short(target.task) || !count(target.attempt)) return null
     if (typeof target.state !== 'string' || !(TASK_STATES as readonly string[]).includes(target.state)) return null
+    if (target.starting !== undefined && typeof target.starting !== 'boolean') return null
     out.target = { run: target.run, runName: target.runName, task: target.task, state: target.state as HandTaskState, attempt: target.attempt }
+    if (target.starting) out.target.starting = true
   } else {
     if (!isObj(refusal) || typeof refusal.code !== 'string' || !CODE.test(refusal.code) || typeof refusal.message !== 'string' || refusal.message.length > 1024) return null
     out.refusal = { code: refusal.code, message: refusal.message }
@@ -153,9 +157,13 @@ export function parsePreview(text: string, size: number, id: string, item: numbe
   return p
 }
 
-/** Whether an error is an older server's: its mux answers 404 with no error code of the server's own, and then no control is drawn. */
-export function olderServer(e: { status?: number; code?: string } | null | undefined): boolean {
-  return e?.status === 404 && e.code === 'http_error'
+/**
+ * Whether an error is an older server's, which has no such route, and then no control is drawn: its `/api/` catch-all's 404
+ * (`not_found`, "no such route"), or a 404 with no error code of the server's own. The new routes' own 404s (no such request, item or
+ * package) are not.
+ */
+export function olderServer(e: { status?: number; code?: string; message?: string } | null | undefined): boolean {
+  return e?.status === 404 && (e.code === 'http_error' || (e.code === 'not_found' && e.message === 'no such route'))
 }
 
 /** Whether a brief's handoff package may have a send at all, before any read: the page's own brief (`request` and `index` given) asked to prepare a handoff. */
@@ -196,8 +204,9 @@ export const whoReads = (task: string) => `Whoever can watch ${task}'s session o
 export const underName = (by: string | null) => (by === null ? BAD_NAME : by ? `It goes under your name, ${by}.` : 'It goes with no name: set your name in Settings to sign it.')
 
 /** The dialog's sentence for the task's state now: which attempt is handed the package. */
-export function stateSentence(t: Pick<HandTarget, 'task' | 'state' | 'attempt'>): string {
+export function stateSentence(t: Pick<HandTarget, 'task' | 'state' | 'attempt' | 'starting'>): string {
   const task = t.task
+  if (t.starting && t.attempt > 0) return `${task} is starting attempt ${t.attempt}. If its task file is not written yet, it is handed the package; otherwise the package waits for the attempt after it.`
   switch (t.state) {
     case 'blocked':
     case 'ready':
