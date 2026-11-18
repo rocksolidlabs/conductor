@@ -291,7 +291,7 @@ async function again(c: CaptureAnswer) {
     retakeState.value = 'moved'
     return
   }
-  const elements = (c.annotations ?? []).filter((a) => a.kind === 'element' && a.element).map((a) => ({ selector: a.element!.selector, note: a.note }))
+  const elements = (c.annotations ?? []).filter((a) => a.kind === 'element' && a.element).map((a) => ({ selector: a.element!.selector }))
   await session.retake(c.id, elements)
 }
 /** The capture `retake` names, read to offer Capture again of it. */

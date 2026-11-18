@@ -535,10 +535,10 @@ export function createPreviewSession(deps: BridgeDeps) {
 
   /**
    * Capture again (the plan's "A candidate's preview"): each element of an earlier capture described again by its selector on this
-   * page, in its order, with its note, into a new draft that names the earlier as the capture it retakes; one that is not on this page
-   * is said. Nothing joins a draft from before it. The pane opens the same URL and device mode first.
+   * page, in its order, into a new draft that names the earlier as the capture it retakes, each with no note (the earlier capture
+   * keeps its own words; the person writes what they see now); one that is not on this page is said. Nothing joins a draft from before it. The pane opens the same URL and device mode first.
    */
-  async function retake(of: string, elements: ReadonlyArray<{ selector: string; note: string }>) {
+  async function retake(of: string, elements: ReadonlyArray<{ selector: string }>) {
     if (state.bridge !== 'ready' || state.busy || waiting) return
     state.refusal = ''
     for (const d of state.drafts) d.open = false
@@ -554,9 +554,6 @@ export function createPreviewSession(deps: BridgeDeps) {
           continue
         }
         await take({ ...m, element: m.element })
-        const d = current()
-        const a = d?.annotations[d.annotations.length - 1]
-        if (d?.retakeOf === of && a && a.element?.selector === m.element.selector && !a.note) a.note = e.note
       }
     } finally {
       state.retakeOf = ''

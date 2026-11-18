@@ -371,18 +371,16 @@ describe('one capture is one moment', () => {
 })
 
 describe('Capture again', () => {
-  it("describes each element of the earlier capture again into a new draft that names it, notes kept, joining nothing before it", async () => {
+  it("describes each element of the earlier capture again into a new draft that names it, each with no note, joining nothing before it", async () => {
     const h = await ready()
     await selectOf(h, first)
-    await h.s.retake('0123456789abcdef', [
-      { selector: '#save', note: 'covered' },
-      { selector: '#next', note: '' },
-    ])
+    // The earlier capture's notes are its own: what the caller hands in beside the selectors is never the retake's note.
+    await h.s.retake('0123456789abcdef', [{ selector: '#save', note: 'Broken' } as { selector: string }, { selector: '#next' }])
     expect(h.s.state.drafts).toHaveLength(2)
     const d = h.s.state.drafts[1]!
     expect(d.retakeOf).toBe('0123456789abcdef')
     expect(d.annotations.map((a) => [a.element?.selector, a.note])).toEqual([
-      ['#save', 'covered'],
+      ['#save', ''],
       ['#next', ''],
     ])
     expect(h.posts.filter((p) => p.t === 'describe').map((p) => p.selector)).toEqual(['#save', '#next'])
@@ -393,10 +391,7 @@ describe('Capture again', () => {
 
   it('says which elements are not on the page now, and retakes the rest', async () => {
     const h = await ready()
-    await h.s.retake('0123456789abcdef', [
-      { selector: '#none', note: '' },
-      { selector: '#save', note: '' },
-    ])
+    await h.s.retake('0123456789abcdef', [{ selector: '#none' }, { selector: '#save' }])
     expect(h.s.state.refusal).toBe('not on this page now, so not retaken: #none')
     expect(h.s.state.drafts.map((d) => [d.retakeOf, d.annotations.length])).toEqual([['0123456789abcdef', 1]])
   })
