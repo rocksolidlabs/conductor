@@ -160,6 +160,16 @@ describe("a link's checks", () => {
     expect(checksWords(sum({ passed: 4, incomplete: true })).incomplete).toBe('incomplete: some checks not read, see them on GitHub')
     expect(checksWords(sum({ passed: 4 })).incomplete).toBe('')
   })
+
+  it('kept from an earlier read say when they were read, never as the last read whole (#989)', () => {
+    const now = Date.parse('2026-11-18T12:00:00Z')
+    const kept = checksWords(sum({ passed: 2, incomplete: true, readAt: '2026-11-18T11:48:00Z' }), now)
+    expect(kept.allPassed).toBe(false)
+    expect(kept.incomplete).toBe('checks as read 12m ago: not read again with the last read')
+    expect(checksWords(sum({ passed: 2, incomplete: true, omitted: 3, readAt: '2026-11-18T11:48:00Z' }), now).incomplete).toBe(
+      'checks as read 12m ago: not read again with the last read; 3 checks not read, see them on GitHub',
+    )
+  })
 })
 
 describe("the tracker's refusals", () => {

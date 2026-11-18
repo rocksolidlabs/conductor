@@ -587,7 +587,7 @@ watch(
 function jobsOf(id: string) {
   const r = jobReads.value[id]
   if (!r) return null
-  const listed = externalJobs(r)
+  const listed = externalJobs(r, props.now)
   return { ...listed, headSha: r.headSha ?? '', atCandidate: !!r.headSha && r.headSha === cref.value?.commit, readAt: r.readAt, error: r.error }
 }
 function prepareJob(link: string, check: string) {

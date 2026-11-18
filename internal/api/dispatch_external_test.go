@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"html"
 	"io/fs"
 	"maps"
 	"net/http"
@@ -21,6 +22,7 @@ import (
 	"testing"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/rocksolidlabs/conductor/internal/config"
 	"github.com/rocksolidlabs/conductor/internal/dispatch"
@@ -56,6 +58,7 @@ type ghItem struct {
 	Huge                             bool     // an answer past the adapter's bound
 	Labels                           []string // the labels, ["bug"] when nil
 	ETag                             string   // the issue's ETag, the body's digest when ""
+	Alt                              string   // each image's alternative text, "shot" when ""
 }
 
 // ghItems scripts the fake's items and images. With poison set, every
@@ -243,9 +246,13 @@ func (g *ghItems) serve(w http.ResponseWriter, r *http.Request, n int, pull bool
 		if it.Pull {
 			kind = "pull"
 		}
-		var html strings.Builder
+		var body strings.Builder
+		alt := "shot"
+		if it.Alt != "" {
+			alt = html.EscapeString(it.Alt)
+		}
 		for _, p := range it.Images {
-			fmt.Fprintf(&html, `<p><img src="https://%s%s?jwt=%s" alt="shot"></p>`, imageHost, p, plantedJWT)
+			fmt.Fprintf(&body, `<p><img src="https://%s%s?jwt=%s" alt="%s"></p>`, imageHost, p, plantedJWT, alt)
 		}
 		labels := []any{map[string]any{"name": "bug"}}
 		if it.Labels != nil {
@@ -255,7 +262,7 @@ func (g *ghItems) serve(w http.ResponseWriter, r *http.Request, n int, pull bool
 			}
 		}
 		v = map[string]any{"id": 5000000 + n, "node_id": it.Node, "number": n, "html_url": "https://github.com/octo/app/" + kind + "/" + num, "title": it.Title,
-			"body": it.Body, "body_html": html.String(), "state": it.State, "state_reason": it.Reason, "labels": labels,
+			"body": it.Body, "body_html": body.String(), "state": it.State, "state_reason": it.Reason, "labels": labels,
 			"assignees": []any{map[string]any{"login": "hubot"}}, "user": map[string]any{"login": "mona", "id": 9000001},
 			"created_at": itemsLayout, "updated_at": it.Updated.UTC().Format(time.RFC3339)}
 		if g.poisonOn() {
@@ -345,6 +352,28 @@ const (
 	pngID = "https://" + imageHost + "/1/a.png"
 	svgID = "https://" + imageHost + "/1/b.svg"
 )
+
+// The preview gives each image's alternative text as the issue's body
+// gives it (#989), in the images' order: one line, its reordering and
+// control characters dropped, cut to its bound at a character's edge.
+func TestPreviewImageAlts(t *testing.T) {
+	e, g := externalEnv(t)
+	it := issue("I_kwDOalts14", "Alts", t0)
+	it.Alt = "The empty list\u202e crashed " + strings.Repeat("é", maxPreviewImageAlt)
+	g.set(14, it)
+	pv := entityOf(t, e.expect(t, "POST", "/api/dispatch/external/preview", map[string]any{"url": "octo/app#14"}, http.StatusOK, ""), "preview")
+	images, _ := pv["images"].([]any)
+	alts, _ := pv["imageAlts"].([]any)
+	if len(images) != 2 || len(alts) != 2 {
+		t.Fatalf("the preview's images %v and alternative texts %v", images, alts)
+	}
+	for _, a := range alts {
+		alt, _ := a.(string)
+		if !strings.HasPrefix(alt, "The empty list crashed é") || len(alt) > maxPreviewImageAlt || !utf8.ValidString(alt) || strings.ContainsRune(alt, '\u202e') {
+			t.Fatalf("an alternative text: %q", alt)
+		}
+	}
+}
 
 // An import makes the ticket GitHub owns the title and the description
 // of, its steps to reproduce and its labels in the snapshot (never
@@ -1893,6 +1922,71 @@ func TestCloseReadsOnlyForAClose(t *testing.T) {
 	if n := g.count("api.github.com", itemsRepo+"/pulls/92") - before; n != 0 {
 		t.Fatalf("a stale edit: %d reads", n)
 	}
+}
+
+// The close's read of a delivery link reads its checks with it (#989): a
+// link read while its check was pending, finished on GitHub since, shows
+// it passed after the close, its checks asked once more by the close. A
+// read whose checks cannot be read (a link's own, then the close's) keeps
+// the last read's checks with the time they were read, the first read's
+// through both, said in the words and in the ticket's summary, never as
+// whole and never under the new read's time alone; the close goes on.
+func TestCloseReadsChecks(t *testing.T) {
+	e, g, merged := mergedEnv(t, nil)
+	status := itemsRepo + "/commits/" + headSHA + "/status"
+	lint := func(state string) {
+		g.f.Reply("GET", "api.github.com", status, http.StatusOK, map[string]any{"state": state, "total_count": 1, "statuses": []any{map[string]any{"id": 31,
+			"context": "lint", "state": state, "target_url": "https://ci.example.com/31", "created_at": itemsLayout, "updated_at": "2026-11-01T10:00:00Z"}}})
+	}
+	readOf := func(link string) dispatch.LinkRead {
+		t.Helper()
+		r, ok, err := e.srv.dispatch.LinkReadOf(t.Context(), link)
+		if err != nil || !ok {
+			t.Fatalf("no read of %s: %v", link, err)
+		}
+		return r
+	}
+	key, link := merged(85)
+	lint("pending")
+	e.expect(t, "POST", "/api/dispatch/tickets/"+key+"/links/"+link+"/read", map[string]any{}, http.StatusOK, "")
+	if r := readOf(link); len(r.Checks) != 1 || r.Checks[0].Status != "pending" {
+		t.Fatalf("the read while the check waited: %+v", r.Checks)
+	}
+	lint("success")
+	asked := g.count("api.github.com", status)
+	if tk := entityOf(t, e.closeIt(t, key, http.StatusOK), "ticket"); tk["status"] != "done" || g.count("api.github.com", status) != asked+1 {
+		t.Fatalf("the close: %v, the checks asked %d times", tk, g.count("api.github.com", status)-asked)
+	}
+	if r := readOf(link); len(r.Checks) != 1 || r.Checks[0].Conclusion != "success" || r.Incomplete != nil {
+		t.Fatalf("after the close the row shows %+v, incomplete %+v", r.Checks, r.Incomplete)
+	}
+
+	key, link = merged(86)
+	first := readOf(link)
+	if len(first.Checks) != 1 || first.Incomplete != nil {
+		t.Fatalf("the first read: %+v", first)
+	}
+	g.f.Reply("GET", "api.github.com", status, http.StatusBadGateway, map[string]any{"message": "unavailable"})
+	kept := func(what string) {
+		t.Helper()
+		r := readOf(link)
+		if r.ReadAt.Before(first.ReadAt) || len(r.Checks) != 1 || r.Checks[0].Conclusion != "success" || r.Incomplete == nil ||
+			!r.Incomplete.ReadAt.Equal(first.ReadAt) || len(r.Incomplete.Words) == 0 || !strings.Contains(r.Incomplete.Words[0], "could not be read: tracker_unavailable") {
+			t.Fatalf("%s: %+v, incomplete %+v; the first read at %s", what, r.Checks, r.Incomplete, first.ReadAt)
+		}
+		tv := e.expect(t, "GET", "/api/dispatch/tickets/"+key, nil, http.StatusOK, "")
+		sum, _ := entityOf(t, tv, "ticket")["linkReads"].(map[string]any)[link].(map[string]any)
+		checks, _ := sum["checks"].(map[string]any)
+		if at, _ := time.Parse(time.RFC3339Nano, fmt.Sprint(checks["readAt"])); checks["incomplete"] != true || !at.Equal(first.ReadAt) {
+			t.Fatalf("%s: the ticket's summary %v", what, sum)
+		}
+	}
+	e.expect(t, "POST", "/api/dispatch/tickets/"+key+"/links/"+link+"/read", map[string]any{}, http.StatusOK, "")
+	kept("a link's read whose checks failed")
+	if tk := entityOf(t, e.closeIt(t, key, http.StatusOK), "ticket"); tk["status"] != "done" {
+		t.Fatalf("a close whose checks failed: %v", tk)
+	}
+	kept("the close's read whose checks failed")
 }
 
 // A deleted ticket is asked nothing and records nothing: a link's read, a

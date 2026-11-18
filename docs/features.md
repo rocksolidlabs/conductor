@@ -808,7 +808,13 @@ said on GitHub but what a person publishes.
   the title and the description until a person takes them over; the
   ticket's status never moves because GitHub's did. A delivery or external
   link to a GitHub item is read for its state and checks, and a close
-  policy may ask for `merged`.
+  policy may ask for `merged`: the close reads each delivery link again
+  with its checks, so its row shows what GitHub says now. Checks a read
+  could not read are the last read's, shown with the time they were read
+  and never as passing (#989). An imported image is captioned with its
+  attachment's name in the GitHub panel and "image 1", "image 2" in
+  Import's preview, where the issue's alternative text for it, when it
+  gives one, is what a screen reader hears.
 - **Publications (PR-5, PR-5b).** One comment a publication, prepared,
   previewed as the exact bytes with GitHub's hidden marker, sent by the
   person's Send alone, once: a try is committed before its post and a

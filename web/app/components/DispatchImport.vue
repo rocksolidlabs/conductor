@@ -146,7 +146,15 @@ const kib = (n: number) => `${Math.round((n / 1024) * 10) / 10} KiB`
           <div v-if="preview.images.length" class="flex flex-col gap-1 text-xs">
             <span class="text-muted">{{ preview.images.length }} {{ preview.images.length === 1 ? 'image' : 'images' }} found, downloaded as attachments (PNG, JPEG, GIF or WebP, at most 16 MiB each, eight at most):</span>
             <ul class="flex flex-wrap gap-1.5">
-              <li v-for="(id, i) in preview.images" :key="id" data-import-image><UBadge :label="imageCaption(i)" icon="i-lucide-image" color="neutral" variant="subtle" size="sm" /></li>
+              <li
+                v-for="(id, i) in preview.images"
+                :key="id"
+                :role="preview.imageAlts?.[i] ? 'img' : undefined"
+                :aria-label="preview.imageAlts?.[i] || undefined"
+                data-import-image
+              >
+                <UBadge :label="imageCaption(i)" icon="i-lucide-image" color="neutral" variant="subtle" size="sm" />
+              </li>
             </ul>
           </div>
           <details v-if="preview.repro" class="text-xs" data-import-repro open>

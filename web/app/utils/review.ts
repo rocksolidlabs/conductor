@@ -1098,9 +1098,10 @@ export interface ExternalJob {
  * The CI jobs of a delivery's pull request at its head commit, from the link's read, as the failed-check panel lists them (IN1a PR-10):
  * failed first, then the rest in the read's order; a job is preparable when it failed and is a GitHub Actions job or another app's check
  * run. `incomplete` is the read's own words when it was cut ("incomplete: N checks not read, see them on GitHub", utils/tracker's
- * checksWords), and `allPassed` is never true for a cut read, nor for a read with no job.
+ * checksWords) or kept an earlier read's checks (when they were read, #989), and `allPassed` is never true for a cut read, nor for a
+ * read with no job.
  */
-export function externalJobs(read: Pick<LinkRead, 'checks' | 'incomplete'>): { jobs: ExternalJob[]; incomplete: string; allPassed: boolean } {
+export function externalJobs(read: Pick<LinkRead, 'checks' | 'incomplete'>, now = Date.now()): { jobs: ExternalJob[]; incomplete: string; allPassed: boolean } {
   const jobs = read.checks.map((c): ExternalJob => {
     const failed = JOB_FAILED.includes(c.conclusion ?? '')
     const kind = c.id.split(':')[0]
@@ -1116,9 +1117,10 @@ export function externalJobs(read: Pick<LinkRead, 'checks' | 'incomplete'>): { j
     other: 0,
     incomplete: !!read.incomplete,
     omitted: read.incomplete?.omitted ?? 0,
+    readAt: read.incomplete?.readAt,
   }
   counts.other = read.checks.length - counts.passed - counts.failed - counts.pending
-  const w = checksWords(counts)
+  const w = checksWords(counts, now)
   return { jobs, incomplete: w.incomplete, allPassed: w.allPassed }
 }
 
