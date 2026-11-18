@@ -1074,14 +1074,36 @@ in place of the home folder (`default` for the agent's default login, else
 by the ledger's own lock code (`store.OwnerLock`); a second server on the
 directory reads them and writes nothing (`503 brakeman_not_owner`).
 
-In the web app `useBrakeman.ts` is the client (the configuration, a page
-of requests, then the `brakeman` event of `GET /api/events`); Settings
-holds `BrakemanSettings.vue`, and `/brakeman` the composer, the request in
-progress, the queue and the briefs. The palette, a run's task actions and
-a ticket's page open the composer with a kind and a subject. A brief
-arriving adds a count to the sidebar's Brakeman row and nothing else; a
-question Brakeman's own session asks shows in Needs you as "Brakeman ·
-br-n".
+In the web app `useBrakeman.ts` is the client, its one door to these
+routes (the configuration; a page of requests, then the `brakeman`,
+`brakeman_progress` and `brakeman_opened` events of `GET /api/events`;
+`list` with the filters, every row applied into the live store with its
+digest kept; `since`, read at most every 5 s while a page follows it;
+`progress`; the unread ids, the server's while `GET /api/brakeman/opened`
+answers and the browser's own marks on 404 or 503; and `events`, the seam
+other reads follow). Settings holds `BrakemanSettings.vue`, which starts
+from a preset (`utils/brakemanSettings.ts`: a preset sets drafting,
+proposing and the grants only, ticks no grant and never turns on terminal
+screens; the page's one Save sends it at the revision read). `/brakeman`
+(`pages/brakeman.vue`) is the ask bar (`BrakemanAskBar.vue`, its chips
+from `askChips` in `utils/brakemanAsk.ts`), Now (`BrakemanNow.vue`, the
+sidebar's own counts and the since line), the latest brief, Earlier
+(`BrakemanEarlier.vue`, its row words from `utils/brakemanRows.ts`), In
+progress (`BrakemanInProgress.vue` with `BrakemanProgressLine.vue`), the
+role's card with Activity (`BrakemanRoleCard.vue`, `BrakemanActivity.vue`)
+and Notes. A brief (`BrakemanBrief.vue`) is drawn in regions
+(`briefRegions`: needs, proposed, acts, changed, compared and the fold),
+which sort for display only, each item keeping its index in the brief, so
+a decision's controls and a kept note always name the item they were drawn
+for. Every other door asks through `useAskBrakeman.ts` (the palette's rows,
+Needs you's Ask, a task row's Ask Brakeman why, Ask again), with the
+person's display name and the "Asked as br-n" toast; a run's Tasks view and
+a ticket's page draw `BrakemanSubjectPanel.vue`, and a task row the answer
+under it (`BrakemanRowAnswer.vue`), from `useBrakemanAbout.ts`, which reads
+`list({about})` once per subject and again on the events that touch its
+rows. A brief arriving adds a count to the sidebar's Brakeman row and
+nothing else; a question Brakeman's own session asks shows in Needs you as
+"Brakeman · br-n".
 
 ## History
 

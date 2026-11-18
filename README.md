@@ -1944,10 +1944,31 @@ request shows queued, then running, with its progress (reads used of its
 budget, time used of its deadline, what it read last) and its session and
 run (watch the terminal, or Stop), then briefed; one turn runs at a time
 and 8 wait. A brief arriving adds a count to the sidebar's Brakeman tile and
-nothing else: no dialog, no toast, no change of page. The count is the
+nothing else: no dialog, no toast, no change of page (the only toasts are
+those that answer your own press). The count is the
 server's, of the briefs not yet opened under your credential: people who
 share one workbench token share one count, and a second server reading the
 same records keeps no marks, so its pages count in the browser as before.
+
+**The page.** Under the ask bar, **Now** is Conductor's own count, live,
+with no agent turn and no budget: what needs you, what is working, what
+finished and the tasks waiting on others, each a link, and a line of what
+changed "Since the last briefing, at HH:MM" (runs ended, tasks failed,
+tickets made ready, questions waiting, each by name). Then the latest
+brief, the newest as you arrived (a newer one arriving later adds "A newer
+brief: …" with Show, and changes nothing until you press it), and
+**Earlier**, every closed request as a row that says its finding: its title,
+its kind and what it was about, at most three counts ("1 decision, 3 facts",
+or "no decision"), its age and who asked; filters (All, With a decision,
+Briefings, Drafts), a search of the titles, readings and what they cite, and
+Ask again for a request that ended with no brief. Opening a row shows its
+brief in the card, with "Back to the latest". At the side, **In progress**
+(the turn under way, its progress line, Watch and Stop, and the queue, each
+with Cancel), **In the background** (the role's state in one sentence, its
+next briefing, "Woken N times today", the day's budget, Pause or Resume, and
+Activity, its wakes by name and the notes you keep) and **Notes**. On a
+phone: the counts, the latest brief with what needs you open, and the ask
+bar at the foot.
 
 **A brief** leads with what needs you. Its head says its kind, its age and
 what it is about, with **Copy as Markdown** and **Comment on a ticket…**;
@@ -2006,9 +2027,11 @@ minutes) before the next, and stops with words when the day's turns or
 minutes are spent. Between turns no process runs and no model is polled, and
 a restart carries on from Conductor's records (a batch that was gathering
 fires once). A background turn's question is listed in Needs you and
-notifies no one. The Brakeman page shows the role's state (an unavailable one
-says why and what tries again), Pause and Resume, the notes you keep from a
-brief's facts (**Keep as a note**, given to every turn), and its log of wakes.
+notifies no one. The Brakeman page says the role's state once (an
+unavailable one says why and what tries again), with Pause and Resume; its
+wakes, each by name with what became of it, and the notes you keep from a
+brief's facts (**Keep as a note**, given to every turn) are behind
+**Activity**.
 
 **From a shell**, with the workbench token (`--server`, `--token` and
 `--insecure` as `conductor dispatch` takes them):
