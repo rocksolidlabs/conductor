@@ -15,7 +15,7 @@ import { ACCOUNT_UNREAD, accountUnreadable, addMemberProblem, boundWords, readNa
 import { runOffer } from '~/utils/runs'
 import { comparisonLink, runCompare } from '~/utils/compare'
 import { packageSourceWords } from '~/utils/publication'
-import { runOriginLine } from '~/utils/runOrigin'
+import { runOriginLine, TIME_LIMIT_PASSED, timeLimitPassed } from '~/utils/runOrigin'
 
 /**
  * The run page's header: the run named by its crew and its start, how many
@@ -119,10 +119,12 @@ function loginsOpened() {
 
 // Where a registered provider's launch came from (the run's origin): the words are runOrigin.ts's.
 const origin = computed(() => runOriginLine(props.run?.origin))
+// A provider's run past its launch's time limit takes no continuation: the header says so where Resume would be.
+const limitPassed = computed(() => timeLimitPassed(props.run?.origin, props.now))
 
 const stopped = computed(() => !!props.run?.stoppedAt)
 /** Resume as new run: a stopped run the server holds, or a record (#153) not resumed yet. */
-const resumable = computed(() => !!props.run && runResumable(props.run, !stopped.value && !props.record))
+const resumable = computed(() => !!props.run && !limitPassed.value && runResumable(props.run, !stopped.value && !props.record))
 const uptime = computed(() => {
   const r = props.run
   if (!r) return ''
@@ -395,19 +397,25 @@ defineExpose({ openAdd, share: () => (shareOpen.value = true), stopNow: stopAll,
         <BrakemanRefChip :ref-name="`launch:${run.ticket.launch}`" />
       </span>
       <!-- A run a registered provider launched: by its label, for its subject (its link when the page may open it), at its start commit. -->
-      <span v-if="origin" class="inline-flex min-w-0 max-w-full items-baseline gap-1 text-muted" :title="origin.text" :aria-label="origin.text" data-run-origin :data-run-origin-continued="run.origin?.continued ? '' : undefined">
+      <span v-if="origin" class="inline-flex min-w-0 max-w-full flex-wrap items-baseline gap-x-1 text-muted" :title="origin.text" :aria-label="origin.text" data-run-origin :data-run-origin-continued="run.origin?.continued ? '' : undefined">
         <UIcon name="i-lucide-plug" class="size-3.5 flex-none self-center" />
         <span class="flex-none">{{ origin.lead }}</span>
         <bdi class="min-w-0 truncate font-medium text-highlighted" data-run-origin-label>{{ origin.label }}</bdi>
         <template v-if="origin.subject">
           <span class="flex-none">for</span>
-          <a v-if="origin.href" :href="origin.href" target="_blank" rel="noopener noreferrer" class="min-w-0 truncate font-mono text-primary underline underline-offset-2 [unicode-bidi:isolate]" data-mono="id" data-run-origin-subject data-run-origin-link>{{ origin.subject }}</a>
+          <a v-if="origin.href" :href="origin.href" target="_blank" rel="noopener noreferrer" :title="origin.href" :aria-label="`${origin.subject}, a link that opens ${origin.href}`" class="min-w-0 truncate font-mono text-primary underline underline-offset-2 [unicode-bidi:isolate]" data-mono="id" data-run-origin-subject data-run-origin-link>{{ origin.subject }}</a>
+          <span v-if="origin.host" class="max-w-full flex-none whitespace-normal text-default [overflow-wrap:anywhere]" :title="origin.href" data-run-origin-host>(opens {{ origin.host }})</span>
           <bdi v-else class="min-w-0 truncate font-mono text-default" data-mono="id" data-run-origin-subject>{{ origin.subject }}</bdi>
         </template>
         <template v-if="origin.commit">
           <span class="flex-none">at</span>
           <span class="flex-none font-mono text-default" data-mono="commit" data-run-origin-commit>{{ origin.commit }}</span>
         </template>
+      </span>
+      <!-- Past its launch's time limit: what Resume, Retry and Request changes would do is refused, and the page says why. -->
+      <span v-if="limitPassed" class="inline-flex min-w-0 max-w-full items-center gap-1 text-warning" :title="TIME_LIMIT_PASSED" data-run-time-limit>
+        <UIcon name="i-lucide-timer-off" class="size-3.5 flex-none" />
+        <span class="min-w-0">{{ TIME_LIMIT_PASSED }}</span>
       </span>
       <span class="ml-auto flex-none text-muted" data-run-uptime>{{ uptime }}</span>
     </div>
