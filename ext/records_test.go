@@ -24,6 +24,28 @@ var (
 		Options: []ext.DecisionOption{{Label: "Yes", Input: "1"}, {Label: "No", Input: "2"}},
 		Plan:    "the plan", Since: at, Request: "dr-7",
 	}
+	runOrigin = ext.RunOrigin{
+		OpID: "op-1", Ref: "example:42", Label: "Nightly", Subject: ext.Subject{Ref: "example:42", URL: "https://example.com/42", Prior: "c1-0123abcd"},
+		Project: "CND", StartCommit: strings.Repeat("a", 40), ResolvedDigest: strings.Repeat("b", 64), Deadline: at.Add(time.Hour),
+	}
+	resolved = ext.ResolvedLaunch{
+		Crew: "c1", Name: "Nightly", Managed: true, Tasks: 2, Where: ext.RunsOnServer, Project: "CND",
+		ProjectCwd: "/src/cnd", Cwd: "/src/cnd/web", InProject: true,
+		Manifest: ext.ResolvedManifest{Source: ext.ManifestFile, Blob: strings.Repeat("c", 40)},
+		Members: []ext.ResolvedMember{{
+			Name: "builder", Agent: "claude", Start: "after", After: "planner", Yolo: true, Selection: strings.Repeat("d", 64),
+			Account: "a-abcdefgh2345", AccountSource: ext.AccountAccount, Model: "opus",
+		}},
+		Digest:   strings.Repeat("e", 64),
+		Capacity: []ext.CapacityView{capacityView},
+	}
+	enabled      = true
+	capacityView = ext.CapacityView{
+		Agent: "claude", Account: "a-abcdefgh2345", Label: "Work", State: "ok", Fresh: ext.CapacityFresh, ReadAt: at,
+		Running: 1, Started5h: 2, Started7d: 3,
+		Windows: []ext.CapacityWindow{{Kind: "five_hour", Name: "5-hour", Minutes: 300, Percent: 42, ResetsAt: at.Add(time.Hour), Severity: "normal"}},
+		Credits: []ext.CapacityCredit{{Kind: "credits", Enabled: &enabled, Used: "1.50", Limit: "10", Balance: "8.50", Unlimited: true, Currency: "USD"}},
+	}
 )
 
 // records is one of every wire record of ext, every field set, so the
@@ -56,7 +78,26 @@ var records = []any{
 	&ext.RoomRequest{Kind: "ticket", ID: "CND-1", By: principal},
 	&ext.RoomJoin{URL: "https://rooms.example.com/r", Token: "t", ExpiresAt: at},
 	&ext.Registration{Kind: ext.KindIdentity, Name: "cloud"},
-	&ext.LaunchRequest{Crew: "c1", Label: "nightly", By: principal},
+	&ext.LaunchRequest{
+		Crew: "c1", Label: "nightly", By: principal, OpID: "op-1", Origin: ext.Origin{Ref: "example:42", Label: "Nightly"},
+		Subject: ext.Subject{Ref: "example:42", URL: "https://example.com/42", Prior: "c1-0123abcd"}, StopAfter: time.Hour,
+		Project: "CND", ResolvedDigest: strings.Repeat("b", 64), StartCommit: strings.Repeat("a", 40),
+	},
+	&ext.Origin{Ref: "example:42", Label: "Nightly"},
+	&ext.Subject{Ref: "example:42", URL: "https://example.com/42", Prior: "c1-0123abcd"},
+	&ext.RunStatus{
+		ID: "c1-89abcdef", Crew: "c1", State: ext.RunNeedsInput, Outcome: ext.OutcomeFailed, Paused: true, NeedsInput: 1,
+		StartedAt: at, StoppedAt: at.Add(time.Minute), Origin: runOrigin,
+	},
+	&runOrigin,
+	&ext.StopRequest{Run: "c1-89abcdef", By: principal, Why: "superseded"},
+	&ext.ResolveRequest{Crew: "c1", Project: "CND", Commit: strings.Repeat("a", 40)},
+	&resolved,
+	&ext.ResolvedManifest{Source: ext.ManifestCrew, Revision: 3, Blob: strings.Repeat("c", 40)},
+	&resolved.Members[0],
+	&capacityView,
+	&capacityView.Windows[0],
+	&capacityView.Credits[0],
 	&ext.RunRef{ID: "r1", Crew: "c1", URL: "https://conductor.example.com/runs/r1"},
 	&ext.SubmitRequest{Session: "s1", Question: "q1", Input: "1", Text: "yes", By: principal},
 	&ext.SubmitResult{Status: "entered"},
@@ -106,6 +147,13 @@ func TestRecordsRoundTrip(t *testing.T) {
 		{ext.RoomJoin{URL: "u"}, `{"url":"u"}`},
 		{ext.Route{}, `{}`},
 		{ext.Principal{Subject: "s", Name: "n"}, `{"subject":"s","name":"n"}`},
+		// A launch without an origin is encoded as it was before a
+		// provider's launch had one.
+		{ext.LaunchRequest{Crew: "c", By: ext.Principal{Subject: "s", Name: "n"}}, `{"crew":"c","by":{"subject":"s","name":"n"}}`},
+		// A time limit is a duration: its nanoseconds.
+		{ext.LaunchRequest{Crew: "c", StopAfter: time.Hour}, `{"crew":"c","by":{"subject":"","name":""},"stopAfter":3600000000000}`},
+		{ext.RunOrigin{OpID: "o", Ref: "r", Label: "l"}, `{"opId":"o","ref":"r","label":"l"}`},
+		{ext.StopRequest{Run: "c-0123abcd"}, `{"run":"c-0123abcd","by":{"subject":"","name":""}}`},
 	} {
 		data, err := json.Marshal(c.rec)
 		if err != nil || string(data) != c.want {
