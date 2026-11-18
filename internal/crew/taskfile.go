@@ -19,6 +19,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
+	"github.com/rocksolidlabs/conductor/internal/quoted"
 	"github.com/rocksolidlabs/conductor/internal/session"
 )
 
@@ -75,6 +76,11 @@ type TaskFile struct {
 	// its package is in the worktree, absent for a run no ticket launched.
 	// Never cut.
 	Ticket *TaskTicket `json:"ticket,omitempty"`
+	// Subject is what a run a registered provider launched is about
+	// (origin.go): its reference, its link, the start commit the launch
+	// asked for and the provider's earlier run it follows; absent for a
+	// run with no subject. Never cut.
+	Subject *TaskSubject `json:"subject,omitempty"`
 	// Repair is set when a review asked for changes: the review, the
 	// commit it reviewed (where this attempt starts) and its findings.
 	Repair *TaskRepair `json:"repair,omitempty"`
@@ -100,6 +106,10 @@ type TaskFile struct {
 	ticketTitle   string
 	ticketQuoted  string
 	packageQuoted bool
+	// subjectLabel and subjectFrom are the origin's label and where the
+	// provider's words come from, which task.md quotes the subject with.
+	subjectLabel string
+	subjectFrom  quoted.Source
 	// comparison says the run is a comparison's (its sessions carry a
 	// lane, crewRef), whose members do not comment on the ticket: task.md
 	// tells them what they do instead.
@@ -119,6 +129,18 @@ type TaskTicket struct {
 	PlanN  int      `json:"planN"`
 	Digest string   `json:"digest"`
 	Files  []string `json:"files"`
+}
+
+// TaskSubject is the subject of a run a registered provider launched, as
+// an attempt's task file names it: its reference (<kind>:<parts>), its
+// https link, the commit the launch asked the run to start from, and an
+// earlier run of the same provider the run follows, which the agent may
+// read the records of. Each is the provider's own words.
+type TaskSubject struct {
+	Ref         string `json:"ref"`
+	URL         string `json:"url,omitempty"`
+	StartCommit string `json:"startCommit,omitempty"`
+	Prior       string `json:"prior,omitempty"`
 }
 
 // taskMoreFile is the task file beside task.md and task.json that has, in
@@ -281,6 +303,10 @@ func (e *Engine) taskFile(ctx context.Context, r *run, a *attempt, tr *tree, blo
 		p := rp.p
 		f.Ticket = &TaskTicket{Key: p.Ticket.Key, Rev: p.Ticket.Rev, Plan: p.Plan.ID, PlanN: p.Plan.N, Digest: rp.digest, Files: packageFilePaths(p)}
 		f.ticketTitle, f.ticketQuoted, f.packageQuoted = cutTitle(p.Ticket.Title), quotedTitle(p), quotedPackage(p)
+	}
+	if o := r.origin; o != nil && o.Subject != "" {
+		f.Subject = &TaskSubject{Ref: o.Subject, URL: o.SubjectURL, StartCommit: o.StartCommit, Prior: o.Prior}
+		f.subjectLabel, f.subjectFrom = o.Label, quoted.Source{On: o.Provider, Ref: o.Ref}
 	}
 	for _, in := range a.inputs {
 		f.Inputs = append(f.Inputs, TaskInput{Task: in.task, Attempt: in.attempt, Commit: in.commit, Branch: in.branch, Summary: in.summary, Verdict: in.verdict})
@@ -696,6 +722,7 @@ func taskMarkdown(f TaskFile) string {
 			b.WriteString("or a comment on the ticket.\n\n")
 		}
 	}
+	writeSubject(&b, f)
 	fmt.Fprintf(&b, "## Where you are\n\nYour worktree is `%s`, on the branch `%s`, at the commit %s", f.Worktree, f.Branch, f.Start)
 	if f.StartFrom != "" {
 		fmt.Fprintf(&b, " (%s)", f.StartFrom)

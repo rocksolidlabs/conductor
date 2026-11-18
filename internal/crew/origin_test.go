@@ -624,3 +624,36 @@ func TestAConfirmedRunHoldsEachAttemptToItsAgents(t *testing.T) {
 		t.Fatalf("a run with no digest asked for %q", last.agentSHA256)
 	}
 }
+
+// Each attempt of a run a provider launched with a subject is handed it in
+// its task files: task.json's subject and task.md's section; a run with
+// none hands none.
+func TestAProvidersRunHandsItsSubjectToEachAttempt(t *testing.T) {
+	e, _ := sqlEngine(t)
+	dir := newRepo(t)
+	o := providerOrigin("op-1", 0)
+	o.StartCommit = runGit(t, dir, "rev-parse", "HEAD")
+	run, err := launchOrigin(t, e, repoCrew(dir, work("build", "lead")), o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+	md, f := taskFileOf(t, a)
+	if f.Subject == nil || f.Subject.Ref != o.Subject || f.Subject.URL != o.SubjectURL || f.Subject.Prior != o.Prior || f.Subject.StartCommit != o.StartCommit {
+		t.Fatalf("task.json's subject: %+v", f.Subject)
+	}
+	if !strings.Contains(md, "## Subject") || !strings.Contains(md, o.Label) {
+		t.Fatalf("task.md:\n%s", md)
+	}
+	stopRun(t, e, run.ID)
+	plain := providerOrigin("op-2", 0)
+	plain.Subject, plain.SubjectURL, plain.Prior = "", "", ""
+	other, err := launchOrigin(t, e, repoCrew(newRepo(t), work("build", "lead")), plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a = waitAttempt(t, e, other.ID, "build", ledger.AttemptRunning)
+	if md, f := taskFileOf(t, a); f.Subject != nil || strings.Contains(md, "## Subject") {
+		t.Fatalf("a run with no subject: %+v", f.Subject)
+	}
+}
