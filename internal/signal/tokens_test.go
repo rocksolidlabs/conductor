@@ -641,3 +641,73 @@ func TestARegistrationNeverTakesBackASessionTheRegistryLetGo(t *testing.T) {
 		t.Fatal("the set does not hold the new session's token alone")
 	}
 }
+
+// A desk its host ended is forgotten in the same hold of the hub's lock
+// that takes it out of the table, under its own lock: no moment comes
+// where the table has let it go and a host can still be put on it. The
+// moment has no seam (EndDesk's table delete and its retirement follow
+// each other with nothing between), so the test reads the mark the hold
+// leaves: forgotten as it leaves the table, and refusing a host after.
+func TestAnEndedDeskIsForgottenAsItLeavesTheTable(t *testing.T) {
+	hub, reg, _ := tokenHub(t, 4, nil)
+	desk, _, err := hub.RegisterDesk(deskOf("inst-a", "run-1"), NewHostConn())
+	if err != nil {
+		t.Fatal(err)
+	}
+	desk.EndDesk()
+	if _, ok := hub.Desk(desk.Info().ID); ok {
+		t.Fatal("the hub still holds an ended desk")
+	}
+	desk.mu.Lock()
+	forgotten, retired := desk.forgotten, desk.retired
+	desk.mu.Unlock()
+	if !forgotten || !retired {
+		t.Fatalf("an ended desk forgotten %v, retired %v; want true, true", forgotten, retired)
+	}
+	if desk.attach(proto.Register{Host: proto.HostInfo{Name: "box", Instance: "inst-a"}}, NewHostConn()) {
+		t.Fatal("an ended desk took a host")
+	}
+	if n := reg.Count(); n != 0 {
+		t.Fatalf("the registry holds %d sessions for a desk", n)
+	}
+}
+
+// A desk registration that meets a desk that left (retired, or forgotten)
+// registers the desk anew, as a session's registration does: the hub
+// holds the new desk, its host on it, and the old desk's place among the
+// sessions is given back; a resume of the old desk is refused.
+func TestADeskRegistrationMeetingARetiredDeskRegistersItAnew(t *testing.T) {
+	hub, reg, _ := tokenHub(t, 2, nil)
+	conn := NewHostConn()
+	old, _, err := hub.RegisterDesk(deskOf("inst-a", "run-1"), conn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old.HostDisconnected(conn)
+	// The state an end in the moment after a look-up leaves: retired,
+	// and still in the table.
+	old.Retire()
+	resume := deskOf("inst-a", "run-1")
+	resume.Resume = &proto.HostResume{SessionID: old.Info().ID, Secret: old.secret}
+	if _, _, err := hub.RegisterDesk(resume, NewHostConn()); !errors.Is(err, ErrBadResume) {
+		t.Fatalf("a resume of a retired desk: %v", err)
+	}
+	fresh := NewHostConn()
+	desk, resumed, err := hub.RegisterDesk(deskOf("inst-a", "run-1"), fresh)
+	if err != nil {
+		t.Fatalf("registering the desk again: %v", err)
+	}
+	if resumed || desk == old {
+		t.Fatalf("the retired desk was taken back (resumed %v)", resumed)
+	}
+	if h, ok := hub.Desk(desk.Info().ID); !ok || h != desk {
+		t.Fatal("the hub does not hold the new desk")
+	}
+	if attached, retired := attachedTo(desk, fresh); !attached || retired {
+		t.Fatalf("the new desk holds its host %v, retired %v; want true, false", attached, retired)
+	}
+	// Two places: the new desk holds one, the old one's is free again.
+	if _, err := reg.Reserve(); err != nil {
+		t.Fatalf("the old desk's place was not given back: %v", err)
+	}
+}

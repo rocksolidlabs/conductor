@@ -51,21 +51,72 @@ func (hub *Hub) RegisterDesk(m proto.RegisterDesk, conn *HostConn) (*HostedSessi
 	}
 	id := HostedID(m.Host.Instance, m.LocalID)
 	owner := ownerOf(m.Host.Instance)
-	hub.mu.Lock()
-	hs, ok := hub.sessions[id]
-	hub.mu.Unlock()
-	if ok {
-		if hs.desk == "" || hs.owner != owner || !hs.attach(reg, conn) {
-			return nil, false, ErrBadRegister
+	// takeBack puts conn on a desk found under id: refused for a session or
+	// another owner's desk, or a desk with a live connection; again when the
+	// desk left (retired or forgotten) between the look-up and the attach,
+	// so the id is looked up once more and registered anew.
+	takeBack := func(hs *HostedSession, looks int) (taken, again bool, err error) {
+		if hs.desk == "" || hs.owner != owner {
+			return false, false, ErrBadRegister
 		}
-		return hs, true, nil
+		attached, left := hs.attachLive(reg, conn)
+		if attached {
+			return true, false, nil
+		}
+		if !left || looks > 0 {
+			return false, false, ErrBadRegister
+		}
+		return false, true, nil
 	}
+	for looks := 0; ; looks++ {
+		hub.mu.Lock()
+		hs, ok := hub.sessions[id]
+		left := ok && hs.desk != "" && hs.forgetIfLeft()
+		if left {
+			delete(hub.sessions, id)
+			ok = false
+		}
+		hub.mu.Unlock()
+		if left {
+			// It left (retired) while the hub still held it: forgotten
+			// here, its place given back, and the desk registered anew.
+			hs.retireDesk()
+		}
+		if ok {
+			taken, again, err := takeBack(hs, looks)
+			if taken {
+				return hs, true, nil
+			}
+			if again {
+				continue
+			}
+			return nil, false, err
+		}
+		desk, other, err := hub.newDesk(m, id, owner, conn)
+		if err != nil || desk != nil {
+			return desk, false, err
+		}
+		// Another registration of the same desk came first.
+		taken, again, err := takeBack(other, looks)
+		if taken {
+			return other, true, nil
+		}
+		if !again {
+			return nil, false, err
+		}
+	}
+}
+
+// newDesk makes the desk id and puts it in the table, or answers the one
+// another registration put there first (a desk there that left is
+// forgotten and replaced).
+func (hub *Hub) newDesk(m proto.RegisterDesk, id, owner string, conn *HostConn) (desk, other *HostedSession, err error) {
 	place, err := hub.registry.Reserve()
 	if err != nil {
-		return nil, false, err
+		return nil, nil, err
 	}
 	secret, _ := share.NewToken()
-	hs = &HostedSession{
+	hs := &HostedSession{
 		hub:        hub,
 		owner:      owner,
 		secret:     secret,
@@ -85,18 +136,19 @@ func (hub *Hub) RegisterDesk(m proto.RegisterDesk, conn *HostConn) (*HostedSessi
 		},
 	}
 	hub.mu.Lock()
-	if other, held := hub.sessions[id]; held {
-		// Another registration of the same desk came first.
+	other, held := hub.sessions[id]
+	left := held && other.desk != "" && other.forgetIfLeft()
+	if held && !left {
 		hub.mu.Unlock()
 		place.Release()
-		if other.owner != owner || !other.attach(reg, conn) {
-			return nil, false, ErrBadRegister
-		}
-		return other, true, nil
+		return nil, other, nil
 	}
 	hub.sessions[id] = hs
 	hub.mu.Unlock()
-	return hs, false, nil
+	if left {
+		other.retireDesk()
+	}
+	return hs, nil, nil
 }
 
 // Desk is the desk with id, false for none (or a session's id).
@@ -124,6 +176,12 @@ func (h *HostedSession) EndDesk() {
 	if h.hub.sessions[h.info.ID] == h {
 		delete(h.hub.sessions, h.info.ID)
 	}
+	// Forgotten in the hold that takes it out of the table: a registration
+	// that looked it up before can no longer put its host on it.
+	h.mu.Lock()
+	h.forgotten = true
+	h.endToken()
+	h.mu.Unlock()
 	h.hub.mu.Unlock()
 	h.retireDesk()
 }
