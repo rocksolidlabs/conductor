@@ -247,7 +247,7 @@ for (const theme of ['light', 'dark'] as const) {
     await expect(phone.locator('html')).toHaveClass(theme === 'dark' ? /\bdark\b/ : /^(?!.*\bdark\b)/)
     // The page at a phone's width: its header's every control inside the window, nothing scrolling or cut sideways.
     await joinHeaderFits(phone, SIZES[1].width)
-    await noSideways(phone)
+    await pageFits(phone)
     expect(asked.filter((p) => /^\/api\/captures(\/|$)/.test(p) || /^\/api\/decisions\/[^/]+\/captures$/.test(p)), 'no capture route asked').toEqual([])
     expect(await captures.textContent()).not.toContain('PAGE-NOTE')
     await ctx.close()
@@ -265,13 +265,23 @@ for (const theme of ['light', 'dark'] as const) {
     await expect(bare.locator('html')).toHaveClass(theme === 'dark' ? /\bdark\b/ : /^(?!.*\bdark\b)/)
     await joinHeaderFits(bare, SIZES[1].width)
     await expect(bare.locator('[data-join-wordmark]')).toBeHidden()
-    await noSideways(bare)
+    await pageFits(bare)
     await bare.setViewportSize(SIZES[0])
     await joinHeaderFits(bare, SIZES[0].width)
     await expect(bare.locator('[data-join-wordmark]')).toBeVisible()
-    await noSideways(bare)
+    await pageFits(bare)
     await own.close()
   })
+}
+
+/**
+ * The join page at its width: the document does not scroll sideways, and nothing of its header or of Needs you is cut or scrolls
+ * sideways. The crew's terminal tiles below clip their own glyphs by design (a tile is as wide as it is given), so they are not read.
+ */
+async function pageFits(page: Page) {
+  expect(await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth), 'the page scrolls sideways').toBeLessThanOrEqual(0)
+  await noSideways(page, { root: page.locator('[data-join-header]') })
+  await noSideways(page, { root: page.locator('[data-join-run-decide]') })
 }
 
 /** The join page's header within a window `width` wide: its box, and every control and word drawn in it, inside the header and the window. */
