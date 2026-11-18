@@ -153,7 +153,10 @@ func (e *Engine) SetHandoff(f HandoffFunc) {
 func (e *Engine) askHandoff(ctx context.Context, r *run, a *attempt) *TaskHandoff {
 	e.mu.Lock()
 	f := e.handoffOf
-	if r.compare != nil || r.lanes != nil {
+	// A comparison's lanes are handed alike; an attempt already closed,
+	// or whose dispatch is cancelled (a stop, a cancel), would use the
+	// package up with no agent to read it: none of them asks.
+	if r.compare != nil || r.lanes != nil || !a.closedAt.IsZero() || ctx.Err() != nil {
 		f = nil
 	}
 	var q HandoffQuery
