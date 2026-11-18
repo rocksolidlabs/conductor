@@ -3304,6 +3304,16 @@ leaves selection mode. It posts only to `window.parent`, addressed to
 that origin, never `*`, and only a message its own parser takes as one to
 the workbench. The workbench takes an answer only
 from the frame's window at the preview's origin with the nonce it sent.
+It says `hello` with a new nonce at every load of the frame, and again
+with that nonce, at 1 s and 2 s and then every 2 s, while the frame stays
+on that load and no `ready` has come, so a bridge whose script starts
+after the load (a dev build that adds its tag as its app starts) is
+reached however late: 3 s with no `ready` it says the page does not load
+the bridge, and a `ready` with that load's nonce that comes later is
+still taken and ends the words. A `ready` ends the hellos; so do a new
+load (whose nonce replaces the old, and a `ready` with the old is
+dropped), a frame replaced, removed or sent to another address, and the
+pane's close, each leaving no timer.
 Nothing the page sends is executed or rendered as HTML by the workbench.
 
 ## HTTP API
