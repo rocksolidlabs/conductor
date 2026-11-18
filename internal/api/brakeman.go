@@ -1838,6 +1838,8 @@ func (s *Server) routeBrakeman(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/brakeman/requests/{id}/refs", s.requireAdmin(s.handleBrakemanRefs))
 	mux.HandleFunc("POST /api/brakeman/requests/{id}/cancel", s.requireAdmin(s.handleBrakemanCancel))
 	mux.HandleFunc("POST /api/brakeman/requests/{id}/items/{i}/make", s.requireAdmin(s.handleBrakemanMake))
+	// A handoff package sent to a task's next attempt (brakeman_handoff.go).
+	s.routeBrakemanHandoff(mux)
 	mux.HandleFunc("GET /api/brakeman/changes", s.observeRoute(s.handleBrakemanChanges))
 	mux.HandleFunc("GET /api/brakeman/status", s.observeRoute(s.handleBrakemanStatus))
 	mux.HandleFunc("GET /api/brakeman/screen", s.observeRoute(s.handleBrakemanScreen))

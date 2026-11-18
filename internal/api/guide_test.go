@@ -818,6 +818,7 @@ func TestEachBodySchemaIsWhatItsRouteDecodes(t *testing.T) {
 		"ticket_create": ticketCreateBody{}, "ticket_edit": ticketEditBody{}, "ticket_comment_admin": commentBody{}, "ticket_link": linkBody{},
 		"crew_create": crewInput{}, "crew_launch": launchBody{}, "crew_compare": crew.CompareSpec{},
 		"brakeman_config": brakemanConfigBody{}, "brakeman_ask": brakemanAskBody{}, "brakeman_cancel": brakemanCancelBody{}, "brakeman_open": brakemanOpenedBody{},
+		"brakeman_hand": handBody{}, "brakeman_hand_withdraw": withdrawBody{},
 		"accounts_add": addAccountBody{}, "accounts_rename": renameAccountBody{}, "accounts_retire": accountRevBody{}, "accounts_default": accountDefaultBody{}, "capacity_read": capacityReadBody{},
 		// A Brakeman turn's granted operations take their routes' own bodies.
 		"launch_approved_plan": ticketLaunchBody{}, "prepare_followup": followupActBody{},
