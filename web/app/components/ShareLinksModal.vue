@@ -58,7 +58,7 @@ const title = computed(() => (props.sessionName ? `Share ${props.sessionName}` :
 const copied = ref(false)
 /** Why no link can be made for the target, from the server's refusal (`run_record`); null while one can. */
 const refused = ref<ShareRefusal | null>(null)
-const description = computed(() => shareDescription({ run: isRun.value, copied: copied.value, refused: !!refused.value }))
+const description = computed(() => shareDescription({ run: isRun.value, copied: copied.value, shown: !!created.value, refused: !!refused.value }))
 /** Takes the server's failure as the refusal it is, when it is one (shareRefusal): its words are then shown in place of a link. */
 function refusedBy(e: unknown): boolean {
   const r = e instanceof ApiError ? shareRefusal(e.code) : null
@@ -273,7 +273,10 @@ async function revoke(link: ShareLink) {
   try {
     await routes().revoke(link.id)
     toast.add({ title: 'Link revoked', description: 'Viewers using it were disconnected.', icon: 'i-lucide-ban', color: 'neutral' })
-    if (created.value && created.value.linkId === link.id) created.value = null
+    if (created.value && created.value.linkId === link.id) {
+      created.value = null
+      copied.value = false
+    }
     await refresh()
   } catch (e) {
     error.value = (e as Error).message
