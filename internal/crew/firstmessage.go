@@ -97,7 +97,7 @@ func TypeFirstMessage(ctx context.Context, l *session.Local, fm FirstMessage) {
 		}
 	}
 	ended := func() { note("the first message was not typed: the session ended first") }
-	capped, noted := false, false
+	capped, noted, unread := false, false, false
 	for {
 		if !capped {
 			err := wait(ctx, l, func(question string) {
@@ -149,6 +149,13 @@ func TypeFirstMessage(ctx context.Context, l *session.Local, fm FirstMessage) {
 		case errors.Is(err, session.ErrTrustQuestion), errors.Is(err, session.ErrQuestion):
 			// A question the wait had not seen yet holds it: looked at
 			// again a poll later, through the wait while it is not capped.
+			// A dialog the session does not read whole asks nothing and
+			// holds it all the same (session.Local.UnreadDialog): said
+			// once, answered in the terminal.
+			if !unread && l.UnreadDialog() {
+				unread = true
+				note("the first message waits: the agent shows a dialog Conductor does not read whole; answer it in its terminal")
+			}
 		default:
 			return
 		}
