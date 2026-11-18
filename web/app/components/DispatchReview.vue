@@ -11,7 +11,7 @@ import { CommandRefused } from '~/utils/tasks'
 import { receiptChips, receiptFailed, receiptKey, receiptName } from '~/utils/dispatchEvidence'
 import { lineageOf, type LineageAttempt, type LineageReviewTask } from '~/utils/reviewLineage'
 import type { RunInfo } from '~/composables/useSessions'
-import { appliedSelection, candidateSelection, compareRunOf } from '~/utils/compareSelect'
+import { appliedSelection, candidateSelection, compareRunOf, reviewHold } from '~/utils/compareSelect'
 import {
   latest,
   barTop,
@@ -78,7 +78,9 @@ import {
  *
  * A ticket whose runs hold a comparison (Program item CP1, PR-8b; a run whose read carries its `compare` part): the picker labels each
  * of its candidates "selected" or "not selected" once the selection is applied, and a route that names no candidate opens on the
- * selected one, waiting for the comparison's read rather than settling on another first. Every other ticket's view is as RV1 made it.
+ * selected one's latest attempt (its repair once submitted), waiting for the comparison's read rather than settling on another first. On a
+ * candidate the server would refuse a repair of (a lane not selected, None of these, a selection not applied yet), the draft says so
+ * before anything is written and holds Request changes (reviewHold); Comment and Approve stay. Every other ticket's view is as RV1 made it.
  */
 const props = defineProps<{
   ticketKey: string
@@ -147,8 +149,25 @@ const selected = computed(() => {
   return comparing.loaded.value ? appliedSelection(comparing.comparison.value?.selection) : undefined
 })
 const selectionOf = (task: string, attempt: number, commit: string | undefined) => candidateSelection(comparing.comparison.value, { task, attempt, commit })
-const chosen = computed(() => props.candidate || reviewDefault(props.candidates.runs.value, compareRun.value ? true : compareOf.value.known ? false : undefined, selected.value))
+const chosen = computed(() => props.candidate || reviewDefault(props.candidates.runs.value, compareRun.value ? true : compareOf.value.known ? false : undefined, selected.value, props.continues))
 const cref = computed(() => parseCandidate(chosen.value))
+/** The run a chain starts from, followed back through the runs each continues (the ticket's Runs). */
+function rootOf(run: string): string {
+  let r = run
+  for (let n = 0; props.continues?.get(r) && n < 64; n++) r = props.continues.get(r)!
+  return r
+}
+/**
+ * Why Request changes is held on the candidate shown, before anything is written (CP1, PR-8b): a candidate of a lane of the comparison
+ * of its own chain that the server would refuse a repair of (reviewHold, in its words); null for any other candidate, and while the
+ * comparison is not read (the server's refusal stays the last guard).
+ */
+const hold = computed(() => {
+  const w = cref.value
+  const cmp = comparing.comparison.value
+  if (!w || !cmp || comparing.error.value || comparing.missing.value || rootOf(w.run) !== rootOf(cmp.run)) return null
+  return reviewHold(cmp, w.task)
+})
 const dispatchApi = useDispatchApi()
 /** What moves what the view reads of the candidate and its findings: the ticket read again, the stream's reset, the runs' candidates read again (a run's change). */
 const ticks = () => [props.reads, props.resets, props.candidates.runs.value]
@@ -369,6 +388,7 @@ const body = computed(() => reviewBody(chosen.value, toSend.value.base, toSend.v
 const problems = computed(() => {
   const p = batchProblems(body.value, review.by(), toSend.value.notes)
   if (!toSend.value.base) p.unshift('The base is not known yet: the diff is being read.')
+  if (hold.value && toSend.value.verdict === 'request_changes') p.unshift(`Request changes is not sent: ${hold.value.words}. Choose Comment or Approve.`)
   return p
 })
 const bytes = computed(() => (toSend.value.verdict === 'request_changes' ? repairBytes(changeRequestOf(body.value, review.by(), toSend.value.notes)) : undefined))
@@ -508,11 +528,7 @@ const checksUnread = computed(() => {
 const taskFailed = computed(() => {
   const e = entry.value
   if (!e || e.c.state !== 'failed') return false
-  const root = (run: string) => {
-    let r = run
-    for (let n = 0; props.continues?.get(r) && n < 64; n++) r = props.continues.get(r)!
-    return r
-  }
+  const root = rootOf
   const i = ranked.value.findIndex((x) => x.value === e.value)
   return !ranked.value.slice(0, Math.max(i, 0)).some((x) => x.task === e.task && root(x.run) === root(e.run))
 })
@@ -758,6 +774,7 @@ defineExpose({
           :commit="cref?.commit ?? ''"
           :attempt="entry?.c"
           :stale="staleWords"
+          :hold="hold"
           :unsaved="drafts.unsaved.value"
           :flying="drafts.flying.value"
           :resend="resend"

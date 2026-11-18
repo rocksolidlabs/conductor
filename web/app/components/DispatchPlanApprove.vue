@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { DispatchTicket, PlanBody, PlanSummary } from '~/composables/useDispatch'
 import type { TicketPlans } from '~/composables/useTicketPlans'
+import type { AgentInfo } from '~/composables/useSessions'
 import { PLAN_BOUNDS, revisionTag, shortCommit, yoloWords } from '~/utils/dispatchPlans'
 
 /**
@@ -8,13 +9,17 @@ import { PLAN_BOUNDS, revisionTag, shortCommit, yoloWords } from '~/utils/dispat
  * rationale, kept beside the approval. The dialog says what the approval covers before it is made: the revision's crew, its commit and its
  * yolo choice, and the ticket's title, description and criteria as they stand now, an edit of which makes it stale until it is approved
  * again. It supersedes the ticket's approval before it. A refusal is said in place, in the store's words. Nothing is approved before the
- * revision's body is read: the yolo choice is what an approval most needs to show.
+ * revision's body is read: the yolo choice is what an approval most needs to show. A comparison's revision (CP1) also says what is
+ * approved of the comparison: the criteria, each candidate's approach, and the checks on each candidate attempt as its launch's
+ * statement counts them (DispatchPlanCompare).
  */
 const props = defineProps<{
   revision: PlanSummary | null
   body: PlanBody | null
   ticket: DispatchTicket
   plans: TicketPlans
+  /** The catalog, naming each candidate's agent; its id where absent. */
+  agents?: readonly AgentInfo[]
 }>()
 const open = defineModel<boolean>('open', { default: false })
 
@@ -67,6 +72,7 @@ async function submit() {
           <UButton label="Read it again" size="xs" color="neutral" variant="outline" data-plan-approve-body-retry @click="readBodyAgain" />
         </p>
         <p v-else class="text-dimmed" data-plan-approve-body-reading>Reading revision {{ revision.n }}: its yolo choice is said before it is approved…</p>
+        <DispatchPlanCompare v-if="body?.crew.compare" :body="body" :agents="agents" compact class="rounded-md bg-elevated/30 p-2" />
         <p class="text-xs text-muted">
           The approval covers the ticket's title, description and acceptance criteria as they are now (its revision {{ ticket.rev }}): an edit of
           any of them makes it stale, and nothing launches until it is approved again.

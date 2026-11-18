@@ -155,3 +155,33 @@ export function compareRunOf(ids: readonly string[], named: string | undefined, 
   if (named && isCompare(named)) return { run: named, known: true }
   return { run: all.find(isCompare) ?? '', known }
 }
+
+/**
+ * Why the Review view holds Request changes on a candidate of a comparison's lane (PR-8b), said before anything is written: the server
+ * refuses it (409 not_selected, internal/api compareReviewRefusal) on a lane not selected, after None of these, and before the selection
+ * is applied, and these are its words. null for a candidate it takes: the selected lane's, and any candidate of a task that is no lane
+ * of the comparison (`c` the comparison of the candidate's chain; null while it is not read, the server's refusal then the guard).
+ * Comment and Approve are kept for any candidate.
+ */
+export function reviewHold(c: Pick<Comparison, 'candidates' | 'selection' | 'state'> | null | undefined, task: string): { title: string; words: string } | null {
+  if (!c || !c.candidates.some((x) => x.task === task)) return null
+  const a = appliedSelection(c.selection)
+  if (a === 'none' || (!a && (c.state === 'none' || c.state === 'ended'))) return { title: 'No candidate was selected', words: 'no candidate was selected: launch a new comparison' }
+  if (!a) return { title: 'The selection is not applied yet', words: 'select a candidate first: a repair before the selection would make the candidates unlike' }
+  if (a.task === task) return null
+  return { title: `${task} was not selected`, words: `${task} was not selected in ${c.selection!.decision}: launch a new comparison to try it again` }
+}
+
+/** What Request changes is, while it is held: the line under the hold's words. */
+export const REVIEW_HOLD_WORDS = 'Request changes is held: only the selected candidate is repaired. A comment or an approval is recorded as for any candidate.'
+
+/**
+ * What the run page's Stop says of a comparison's selection waiting on the run (a record of origin `compare`, open or answered): a stop
+ * cancels nothing of it (DR1 keeps every decision over a stop). '' for none.
+ */
+export function stopSelectionWords(d: Pick<Decision, 'id' | 'state'> | null | undefined): string {
+  if (!d) return ''
+  if (d.state === 'open') return `Its selection, ${d.id}, stays open: you can answer it on the stopped run, and the answer is applied when the run is continued. Stopping selects nothing and cancels nothing.`
+  if (d.state === 'answered') return `Its selection, ${d.id}, is answered and not applied yet: the answer is applied when the run is continued. Stopping changes nothing of it.`
+  return ''
+}

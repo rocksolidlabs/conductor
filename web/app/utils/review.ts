@@ -1036,17 +1036,39 @@ export function firstReviewCandidate(runs: readonly ReviewableRun[]): string {
 
 /**
  * The candidate the Review view opens when the route names none, on a ticket whose runs hold a comparison (Program item CP1, PR-8b):
- * its applied selection's candidate (`<run>/<task>/<n>@<commit>`); while the comparison is being read (`selected` undefined) none yet,
- * so the view does not settle on another first; with no selection applied, or None of these, the view's own first. A ticket with no
- * comparison (`compare` false) opens as it always has; while whether one of its runs is a comparison is not known yet (`compare`
- * undefined: a run neither the live store holds nor its own read has answered), none yet either.
+ * the selected candidate's latest attempt, its repair once one has submitted (latestOfSelected), else the applied selection's own
+ * candidate (`<run>/<task>/<n>@<commit>`); while the comparison is being read (`selected` undefined) none yet, so the view does not
+ * settle on another first; with no selection applied, or None of these, the view's own first. A ticket with no comparison (`compare`
+ * false) opens as it always has; while whether one of its runs is a comparison is not known yet (`compare` undefined: a run neither the
+ * live store holds nor its own read has answered), none yet either. `continues` maps a run to the run it continues (the ticket's Runs).
  */
-export function reviewDefault(runs: readonly ReviewableRun[], compare: boolean | undefined, selected: { run: string; task: string; attempt: number; commit: string } | 'none' | null | undefined): string {
+export function reviewDefault(
+  runs: readonly ReviewableRun[],
+  compare: boolean | undefined,
+  selected: { run: string; task: string; attempt: number; commit: string } | 'none' | null | undefined,
+  continues: ReadonlyMap<string, string> = new Map(),
+): string {
   if (compare === undefined) return ''
   if (!compare) return firstReviewCandidate(runs)
   if (selected === undefined) return ''
-  if (selected && selected !== 'none') return `${selected.run}/${selected.task}/${selected.attempt}@${selected.commit}`
+  if (selected && selected !== 'none') return latestOfSelected(runs, selected, continues) || `${selected.run}/${selected.task}/${selected.attempt}@${selected.commit}`
   return firstReviewCandidate(runs)
+}
+
+/**
+ * The selected candidate's latest attempt among the ticket's runs, newest first by the one ordering (rankCandidates): an attempt of the
+ * selected task at or after the selected one in its run, or in a run that continues it (`continues`, followed back from each run), as
+ * the server's delivery rule takes them (internal/api, atOrAfter); a withdrawn one is not. '' when the runs read hold none of them, not
+ * even the selected candidate itself.
+ */
+export function latestOfSelected(runs: readonly ReviewableRun[], selected: { run: string; task: string; attempt: number }, continues: ReadonlyMap<string, string>): string {
+  const after = (run: string) => {
+    let r = continues.get(run)
+    for (let n = 0; r && n < 64; n++, r = continues.get(r)) if (r === selected.run) return true
+    return false
+  }
+  const x = rankCandidates(runs).find((c) => c.task === selected.task && !c.c.withdrawn && (c.run === selected.run ? c.c.attempt >= selected.attempt : after(c.run)))
+  return x?.value ?? ''
 }
 
 /**
