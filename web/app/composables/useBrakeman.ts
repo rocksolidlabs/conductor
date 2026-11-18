@@ -448,7 +448,8 @@ export class BrakemanLive {
       else this.next = page.next
       if (at !== this.gen) return
       this.newestPaged = Math.max(this.newestPaged, ...page.requests.map((r) => requestNumber(r.id)))
-      this.available = true
+      // Whether the server has Brakeman is the state read's to say (take): the sidebar holds Brakeman's slot until it has, so that
+      // More does not move when the tile fills. A page of requests, the opened marks or a since answer never says it by itself.
       this.problem = ''
     } catch (e) {
       if (at !== this.gen) return
