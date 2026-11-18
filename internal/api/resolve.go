@@ -44,10 +44,12 @@ var afterResolveCompare func()
 // folder's HEAD). The members are bound as a launch binds them; the caller
 // calls release once it is done with them (a resolve at once, a launch once
 // the run's record holds them). It runs no agent's installed or identity
-// look-up and writes nothing. A refusal is an ext.Refusal (or
+// look-up and writes nothing. For a provider's launch (provider), a crew
+// without tasks is refused not_managed first; a resolve answers it with
+// Managed false. A refusal is an ext.Refusal (or
 // ext.ErrNotFound, ext.ErrUnsupported); the engine's own errors are told
 // by engineRefusal.
-func (s *Server) resolveSaved(ctx context.Context, crewID, project, commit string) (*resolvedRun, error) {
+func (s *Server) resolveSaved(ctx context.Context, crewID, project, commit string, provider bool) (*resolvedRun, error) {
 	if s.crews == nil {
 		return nil, fmt.Errorf("%w: no data directory is configured", ext.ErrUnsupported)
 	}
@@ -60,6 +62,11 @@ func (s *Server) resolveSaved(ctx context.Context, crewID, project, commit strin
 	case err != nil:
 		s.log.Error("crew read failed", "crew", crewID, "err", err)
 		return nil, refusedCode("crews_unreadable", "could not read the crews")
+	}
+	if provider && !c.Managed() {
+		// A provider's launch is of a crew with tasks: refused before its
+		// project, folder or commit is looked at, as the plain launch is.
+		return nil, refusedCode(ext.RefusalNotManaged, "a provider's launch is of a crew with tasks, and this crew has none")
 	}
 	rr := &resolvedRun{saved: c, release: func() {}}
 	rec := ext.ResolvedLaunch{Crew: c.ID, Name: c.Name, Managed: c.Managed(), Tasks: len(c.Tasks), Where: ext.RunsOnServer, Project: project,
@@ -193,6 +200,8 @@ func engineRefusal(err error) error {
 	switch {
 	case errors.Is(err, crew.ErrStartCommitMissing):
 		return refusedCode(ext.RefusalStartCommitMissing, "%v", err)
+	case errors.Is(err, crew.ErrStartCommitNotACommit):
+		return refusedCode(ext.RefusalInvalidRequest, "%v", err)
 	case errors.Is(err, crew.ErrInvalid):
 		return refusedCode(ext.RefusalInvalidCrew, "%v", err)
 	case errors.Is(err, crew.ErrNotRepo), errors.Is(err, crew.ErrNoGit):
@@ -227,7 +236,7 @@ func (h *extHost) ResolveLaunch(ctx context.Context, r ext.ResolveRequest) (ext.
 	}
 	bctx, end := h.bound(ctx)
 	defer end()
-	rr, err := h.s.resolveSaved(bctx, r.Crew, r.Project, r.Commit)
+	rr, err := h.s.resolveSaved(bctx, r.Crew, r.Project, r.Commit, false)
 	if err != nil {
 		if h.gone() != nil {
 			return ext.ResolvedLaunch{}, context.Canceled
@@ -289,7 +298,7 @@ func (s *Server) launchResolved(ctx context.Context, rr *resolvedRun, label stri
 // started), and launched from what was resolved.
 func (h *extHost) heldLaunch(ctx context.Context, r ext.LaunchRequest, origin func(rec ext.ResolvedLaunch) (crew.LaunchOpts, error)) (*crew.Run, crew.Crew, func(), error) {
 	noop := func() {}
-	rr, err := h.s.resolveSaved(ctx, r.Crew, r.Project, r.StartCommit)
+	rr, err := h.s.resolveSaved(ctx, r.Crew, r.Project, r.StartCommit, true)
 	if err != nil {
 		return nil, crew.Crew{}, noop, err
 	}

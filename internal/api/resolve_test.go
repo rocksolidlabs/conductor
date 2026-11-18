@@ -324,8 +324,8 @@ func TestLaunchRefusesAChangedManifestAtTheStartCommit(t *testing.T) {
 
 // The start commit is the run's base: its task with no input starts
 // there, and the ledger and the origin keep it; a commit the repository
-// lacks is start_commit_missing; a short id and a ref name are refused by
-// Valid.
+// lacks is start_commit_missing; an annotated tag's own id is no commit
+// (invalid_request); a short id and a ref name are refused by Valid.
 func TestStartCommitIsTheRunBase(t *testing.T) {
 	e, id := resolveEnv(t, nil)
 	base := gitIn(t, e.root, "rev-parse", "HEAD")
@@ -354,6 +354,16 @@ func TestStartCommitIsTheRunBase(t *testing.T) {
 	}
 	if _, err := h.ResolveLaunch(t.Context(), ext.ResolveRequest{Crew: id, Project: "CND", Commit: strings.Repeat("e", 40)}); ext.RefusalCode(err) != ext.RefusalStartCommitMissing {
 		t.Fatalf("a resolve at a commit the repository lacks: %v", err)
+	}
+	// An annotated tag's own id peels to a commit, and is no commit.
+	gitIn(t, e.root, "-c", "tag.gpgSign=false", "tag", "-a", "v1", "-m", "x", base)
+	tag := gitIn(t, e.root, "rev-parse", "v1")
+	r.StartCommit = tag
+	if _, err := h.Launch(t.Context(), r); ext.RefusalCode(err) != ext.RefusalInvalidRequest || !strings.Contains(err.Error(), "not a commit") {
+		t.Fatalf("a tag's id as the start commit: %v", err)
+	}
+	if _, err := h.ResolveLaunch(t.Context(), ext.ResolveRequest{Crew: id, Project: "CND", Commit: tag}); ext.RefusalCode(err) != ext.RefusalInvalidRequest {
+		t.Fatalf("a resolve at a tag's id: %v", err)
 	}
 	for _, bad := range []string{base[:12], "HEAD~1", "main"} {
 		r.StartCommit = bad

@@ -93,11 +93,16 @@ func (s *Server) grantPrincipal(pr ext.Principal) principal {
 // under the turn of a renewal to another token about to take effect,
 // before tok changes: by hostToken (inline) and by principalWatch's
 // adoption of a pending one. It is never told of the same token.
+// unasked says pending was kept with nobody asked about it (a paced
+// renewal, hostToken): never handed to the provider, it is not among the
+// tokens held until it is adopted, so a host cannot have the detail's
+// filter hide what holds a string of its choosing.
 type watchedToken struct {
 	turn    chan struct{}
 	mu      sync.Mutex
 	tok     string
 	pending string
+	unasked bool
 	ended   atomic.Bool
 	changed func(tok string, inline bool)
 }
@@ -110,13 +115,25 @@ func newWatchedToken(tok string) *watchedToken {
 func (w *watchedToken) set(tok, pending string) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	w.tok, w.pending = tok, pending
+	w.tok, w.pending, w.unasked = tok, pending, false
 }
 
-// held is the tokens the connection holds, its pending one among them.
+// keepUnasked keeps pending with nobody asked about it (a paced renewal);
+// the caller holds the turn.
+func (w *watchedToken) keepUnasked(pending string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.pending, w.unasked = pending, true
+}
+
+// held is the tokens the connection holds, its pending one among them
+// unless nobody was asked about it.
 func (w *watchedToken) held() []string {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if w.unasked {
+		return []string{w.tok}
+	}
 	return []string{w.tok, w.pending}
 }
 
@@ -303,7 +320,13 @@ func (s *Server) principalWatch(p principal, wt *watchedToken, need ext.Grant) f
 			if pending != "" {
 				tok = pending
 			}
-			pr, admitted, known := g.recheck(ctx, tok)
+			var pr ext.Principal
+			admitted, known := false, true
+			if pending == "" || !s.ownLiveToken(pending) {
+				pr, admitted, known = g.recheck(ctx, tok)
+			}
+			// else: a pending renewal that has since become a session's
+			// live agent token is refused unasked, as hostToken refuses one.
 			if !known || ctx.Err() != nil {
 				wt.give()
 				continue
@@ -344,7 +367,8 @@ func (s *Server) principalWatch(p principal, wt *watchedToken, need ext.Grant) f
 // false, and the caller closes the connection 4403 access revoked: a
 // message past its bounds (proto.ParseHostToken), a connection not
 // admitted through a provider's principal, a token the server's own
-// chain knows (never asked of the provider), a connection already
+// chain knows or a live agent token of a session's (neither asked of the
+// provider), a connection already
 // ended, an error, a late or panicking answer, and a verdict (no
 // principal, another subject, no host grant), recorded under the turn as
 // a recheck's is. The ask is made under the connection's credential
@@ -357,6 +381,11 @@ func (s *Server) hostToken(hc *hostConnState, data []byte) bool {
 		return false
 	}
 	if _, known := s.chainPrincipal(tok); known {
+		return false
+	}
+	if s.ownLiveToken(tok) {
+		// A session's live agent token is never a host credential:
+		// refused as an unknown one is, never asked of the provider.
 		return false
 	}
 	g, ok := s.exts.identity.(guardIdentity)
@@ -378,8 +407,9 @@ func (s *Server) hostToken(hc *hostConnState, data []byte) bool {
 		// A reported connection that has admitted its renewals to another
 		// credential this period (relayUsageRenewals): this one is kept
 		// pending, as a busy one is, and nobody is asked now; its next
-		// recheck asks about it and adopts it.
-		hc.cred.set(hc.cred.tok, tok)
+		// recheck asks about it and adopts it. Asked of nobody, it is not
+		// among the tokens the detail's filter holds (held).
+		hc.cred.keepUnasked(tok)
 		return true
 	}
 	pr, admitted, known, busy := g.renew(hc.ctx, tok)

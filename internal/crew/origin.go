@@ -46,9 +46,11 @@ type RunOrigin struct {
 const maxRunOrigin = 20 << 10
 
 // ErrTimeLimitPassed refuses a continuation of a run whose launch's time
-// limit has passed: the chain takes no continuation after its deadline, a
-// person's request for changes among them.
-var ErrTimeLimitPassed = errors.New("the run's time limit has passed: its chain takes no continuation")
+// limit has passed, and a change of it that would start an attempt (Retry,
+// Accept anyway, Check again, Request changes: pastDeadline): the chain
+// takes neither after its deadline, a person's request for changes among
+// them.
+var ErrTimeLimitPassed = errors.New("the run's time limit has passed: it takes no change that would start an attempt, and its chain no continuation")
 
 // ErrRunNotRunning answers a stop of a run that is not running (StopIfRunning):
 // stopped, finished, or let go by the engine. Nothing changed.
@@ -226,4 +228,21 @@ func confirmedChangedWords(err error, agentID string) error {
 		return &wordsError{msg: fmt.Sprintf("the agent %s is not the one this run's launch confirmed: its catalog entry changed since", agentID), err: err}
 	}
 	return err
+}
+
+// startsAttempts are the commands that can start an attempt of a run:
+// Retry, Accept anyway, Check again and Request changes, each of which may
+// reopen a finished run.
+var startsAttempts = map[string]bool{"retry": true, "accept": true, TaskRecheck: true, intentRequestChanges: true}
+
+// pastDeadline refuses intent, when it is one that can start an attempt,
+// of a run whose launch's time limit has passed (ErrTimeLimitPassed): past
+// its deadline a run takes no change that would start an attempt, as its
+// chain takes no continuation. Every other command (pause, cancel, a stop)
+// is as before. The caller holds e.mu, in the command's change.
+func (e *Engine) pastDeadline(r *run, intent string) error {
+	if !startsAttempts[intent] || r.origin == nil || r.origin.Deadline.IsZero() || e.now().Before(r.origin.Deadline) {
+		return nil
+	}
+	return fmt.Errorf("%w (it was %s)", ErrTimeLimitPassed, r.origin.Deadline.Format(time.RFC3339))
 }

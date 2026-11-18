@@ -982,11 +982,14 @@ var tokenReaders = []string{"AgentTokenOK"}
 // any other; and the token methods of a server session and a hosted one
 // are the ones named here, so a new reader is a new name this test knows.
 // The question whether a token is a live one of the server's own reads
-// the set alone (liveTokens.holds), once, in tokenPrincipal: no session.
-// The read is seen by its field's name (agentTokens.holds); an alias of
-// the field is not followed.
+// the set alone (liveTokens.holds), once, in ownLiveToken: no session;
+// and ownLiveToken is asked by a request's principal (tokenPrincipal) and
+// a host connection's renewal (hostToken, principalWatch) alone. The read
+// is seen by its field's name (agentTokens.holds); an alias of the field
+// is not followed.
 func TestEveryAgentTokenPathIsGuarded(t *testing.T) {
 	inGuard, inQuestion := 0, 0
+	askers := map[string]int{}
 	fset := token.NewFileSet()
 	err := filepath.WalkDir("..", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -1011,11 +1014,14 @@ func TestEveryAgentTokenPathIsGuarded(t *testing.T) {
 					return true
 				}
 				if x, ok := sel.X.(*ast.SelectorExpr); ok && x.Sel.Name == "agentTokens" && sel.Sel.Name == "holds" {
-					if filepath.ToSlash(path) == "../api/auth.go" && fn != nil && fn.Name.Name == "tokenPrincipal" {
+					if filepath.ToSlash(path) == "../api/auth.go" && fn != nil && fn.Name.Name == "ownLiveToken" {
 						inQuestion++
 					} else {
-						t.Errorf("%s: the index of live tokens is read outside tokenPrincipal", fset.Position(sel.Pos()))
+						t.Errorf("%s: the index of live tokens is read outside ownLiveToken", fset.Position(sel.Pos()))
 					}
+				}
+				if sel.Sel.Name == "ownLiveToken" && fn != nil {
+					askers[filepath.ToSlash(path)+":"+fn.Name.Name]++
 				}
 				if !slices.Contains(tokenReaders, sel.Sel.Name) {
 					return true
@@ -1034,7 +1040,10 @@ func TestEveryAgentTokenPathIsGuarded(t *testing.T) {
 		t.Fatal(err)
 	}
 	if inGuard != 2 || inQuestion != 1 {
-		t.Fatalf("agentTokenOK reads the token %d times, not 2 (a server session's, a hosted one's); tokenPrincipal reads the index %d times, not 1", inGuard, inQuestion)
+		t.Fatalf("agentTokenOK reads the token %d times, not 2 (a server session's, a hosted one's); ownLiveToken reads the index %d times, not 1", inGuard, inQuestion)
+	}
+	if want := map[string]int{"../api/auth.go:tokenPrincipal": 1, "../api/identity.go:hostToken": 1, "../api/identity.go:principalWatch": 1}; !maps.Equal(askers, want) {
+		t.Errorf("ownLiveToken is asked by %v, not %v", askers, want)
 	}
 	token := regexp.MustCompile(`(?i)agenttoken`)
 	for _, c := range []struct {

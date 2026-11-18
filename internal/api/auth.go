@@ -154,7 +154,7 @@ func (s *Server) tokenPrincipal(w http.ResponseWriter, r *http.Request, tok stri
 	if p, known := s.chainPrincipal(tok); known {
 		return p, true
 	}
-	if s.identityName() != "" && s.agentTokens.holds(tok) {
+	if s.ownLiveToken(tok) {
 		// A live token of the server's own, at a route that does not take
 		// it: known, no principal, and never asked of a provider.
 		return principal{}, true
@@ -165,6 +165,16 @@ func (s *Server) tokenPrincipal(w http.ResponseWriter, r *http.Request, tok stri
 		return principal{}, false
 	}
 	return p, true
+}
+
+// ownLiveToken says tok is a live agent token the server knows
+// (liveTokens): the set's one read, asked only when a provider is
+// registered, one length check and one hash, no session looked at. A
+// request's principal asks it (tokenPrincipal), and so does a host
+// connection's renewal (hostToken, principalWatch): a session's agent
+// token is never a host credential, nor put to the provider as one.
+func (s *Server) ownLiveToken(tok string) bool {
+	return s.identityName() != "" && s.agentTokens.holds(tok)
 }
 
 // chainPrincipal is the principal of tok in the server's own chain (the

@@ -585,7 +585,9 @@ the connection `4403` when it does not, and, with no answer, keeps both
 for the recheck after. Anything else (a message past its
 bounds, a connection not admitted
 so, a token of the server's own (the workbench token, a host token, a
-link, expired or revoked: never asked of the provider), an error, a late
+link, expired or revoked, or a session's live agent token: never asked of
+the provider; a pending token that has since become a live agent token is
+refused so at the recheck), an error, a late
 or panicking answer, another subject or no host grant) closes the
 connection `4403` (`access revoked`), and the host registers again. A host
 whose send is withdrawn or fails closes the connection `1000` itself. A
@@ -893,7 +895,11 @@ the secret its `registered` gave; after the switchyard restarts, by a
 fresh `register_desk`, which takes back a desk held under that id while
 its host was away and is refused while another connection holds it live
 (or another instance's: two publishers with one run id have two desks,
-of two owners). Its `registered` carries the ids of the live links
+of two owners). A desk that ended or was forgotten is not taken back,
+even in the moment before the switchyard forgets its id: a `resume` of it
+is closed `4404`, and a `register_desk` registers the desk anew, the old
+desk's place among the sessions given back. A session held under a
+desk's id refuses the desk. Its `registered` carries the ids of the live links
 naming it (`links`) and `decisions`, no recipe. A desk is never listed
 as a session, and holds a place among the switchyard's sessions while it
 lives (the session limit counts it). It sends a desk's messages alone:
@@ -978,7 +984,10 @@ A host that loses its connection reconnects with `resume` and the secret from
 `registered`. The session shows `host_disconnected` in the meantime and is
 removed after 60 s without the host. A server that no longer knows the session (a restarted switchyard keeps
 hosted sessions in memory) closes the resume with `4404`; the host then
-registers afresh. On every connection it starts, the host sends its
+registers afresh. So does a server that let the session go, even in the
+moment before it forgets its id: a session removed after it ended, or
+forgotten after its host's grace, is never resumed and never has a host
+put on it again. On every connection it starts, the host sends its
 session's `attention`, the empty state included: the server keeps the
 attention it had when the host went, so a question answered at the host's
 own terminal while it was away leaves the listing when the host is back.
@@ -990,7 +999,11 @@ connection. With them the session's id is fixed: a hash of the pair, so a
 host that registers again after the server restarted gets the same id, and
 a link minted for it before names it again; a session still held under that
 id whose host is away is taken back (`resumed: true`), one whose host is
-connected refuses the second. `conductor host` makes an instance when it
+connected refuses the second, and so does one whose first registration
+of that id is still under way. A session held under that id that has
+left the server (removed after it ended, or forgotten) is not taken back:
+the id is registered anew, a new session with a new secret. A desk held
+under the id refuses the session. `conductor host` makes an instance when it
 starts; a Conductor publishing to a switchyard makes one for its life and
 uses each session's own id. The publishing server keeps its records of the
 links minted for a session while `registered.links` (then `link_created` and
@@ -3347,7 +3360,9 @@ lives, and neither session gains anything of the other's standing. While a
 hosted session lives, its token is answered as that session's alone, never
 put to the provider, even where the provider would admit the same string:
 a host can so withhold from the provider only a token it already knows,
-and only until its session ends. An
+and only until its session ends. Nor is a live agent token ever a host
+credential: a `host_token` renewal that carries one is refused, the
+connection closed `4403`, and the provider is not asked about it. An
 expired or revoked link is refused as a link and never asked of a
 provider, nor is a live agent token (a Brakeman turn's among them): at a
 route that does not take it, it is an unknown token answered without a

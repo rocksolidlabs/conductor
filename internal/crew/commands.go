@@ -142,6 +142,9 @@ const (
 	// RefusalNotSelected refuses a task command on a comparison's lane the
 	// applied selection did not select (ErrNotSelected).
 	RefusalNotSelected = "not_selected"
+	// RefusalTimeLimitPassed refuses a change that would start an attempt
+	// of a run whose launch's time limit has passed (ErrTimeLimitPassed).
+	RefusalTimeLimitPassed = "time_limit_passed"
 )
 
 // ErrStaleCandidate refuses a command bound to a candidate the task has
@@ -165,6 +168,8 @@ func refusalOf(err error) string {
 		return RefusalStaleCandidate
 	case errors.Is(err, ErrNotSelected):
 		return RefusalNotSelected
+	case errors.Is(err, ErrTimeLimitPassed):
+		return RefusalTimeLimitPassed
 	}
 	return RefusalTaskState
 }
@@ -320,6 +325,8 @@ func (e *Engine) act(ctx context.Context, runID, actor string, cmd Command, inte
 		if err := cmd.withdrawn(); err != nil {
 			cmdErr = err
 		} else if err := e.continued(r); err != nil {
+			cmdErr = err
+		} else if err := e.pastDeadline(r, intent); err != nil {
 			cmdErr = err
 		} else if err := selected(); err != nil {
 			cmdErr = err

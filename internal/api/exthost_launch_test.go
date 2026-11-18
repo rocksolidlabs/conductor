@@ -456,7 +456,7 @@ func runLogged(r crew.Run, msg string) bool {
 }
 
 // A launch with an origin is of a crew with tasks: one without is refused
-// not_managed, nothing launched.
+// not_managed, nothing launched, a held launch's too.
 func TestLaunchNeedsAManagedCrew(t *testing.T) {
 	e := newTestEnv(t, nil)
 	e.stopEverything(t)
@@ -471,6 +471,32 @@ func TestLaunchNeedsAManagedCrew(t *testing.T) {
 	}
 	if after := len(e.srv.runs.List()); after != before {
 		t.Fatalf("%d runs, were %d", after, before)
+	}
+	// A held launch (a project, a digest, a start commit) is refused the
+	// same, before its project or commit is looked at; a resolve still
+	// answers Managed false.
+	e.gitRepo(t)
+	e.newDispatchProject(t, "CND", map[string]any{"cwd": e.root})
+	h := testHost(e.srv, t.Context(), "example")
+	rl, err := h.ResolveLaunch(t.Context(), ext.ResolveRequest{Crew: id, Project: "CND"})
+	if err != nil || rl.Managed {
+		t.Fatalf("a resolve of a crew without tasks: %+v %v", rl, err)
+	}
+	head := gitIn(t, e.root, "rev-parse", "HEAD")
+	for name, change := range map[string]func(*ext.LaunchRequest){
+		"a project":          func(r *ext.LaunchRequest) { r.Project = "CND" },
+		"a digest":           func(r *ext.LaunchRequest) { r.Project, r.ResolvedDigest = "CND", rl.Digest },
+		"a start commit":     func(r *ext.LaunchRequest) { r.StartCommit = head },
+		"an unknown project": func(r *ext.LaunchRequest) { r.Project = "ZZZ" },
+	} {
+		r := originLaunch(id, "op-held")
+		change(&r)
+		if _, err := h.Launch(t.Context(), r); ext.RefusalCode(err) != ext.RefusalNotManaged {
+			t.Fatalf("a held launch with %s of a crew without tasks: %v", name, err)
+		}
+	}
+	if after := len(e.srv.runs.List()); after != before {
+		t.Fatalf("%d runs after the held launches, were %d", after, before)
 	}
 }
 
