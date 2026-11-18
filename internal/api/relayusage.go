@@ -33,6 +33,15 @@ import (
 // alone, never with the provider's words (extFailed).
 const kindIdentityRelayUsage = ext.KindIdentity + "-relay-usage"
 
+// relayUsageRenewals is how many renewals to another credential a
+// connection has admitted inline (hostToken) in one period before its
+// next is kept pending for the recheck (principalWatch), which adopts it:
+// so a host that floods renewals cuts at most this many reports a period
+// inline, and two more a minute at the recheck, and the reports of other
+// connections are not pushed out of the queue by it. No renewal is
+// refused and no connection closed for its pace.
+const relayUsageRenewals = 2
+
 // relayUsageDesk is the server's usage reports: the queue to the observer
 // and the live connections by the hosted session they carry, which the
 // viewers' relay counts against (add). Nil on a server that reports
@@ -65,7 +74,8 @@ func (s *Server) newRelayUsageDesk(name string, obs ext.UsageObserver) *relayUsa
 // the bytes counted as they pass (atomic, so a viewer's frame and a cut
 // never wait on each other, and each frame lands on exactly one side of a
 // cut), and, under mu, the credential's hash, the report's start, the
-// session's seconds carried.
+// session's seconds carried, and how many renewals were admitted inline
+// this period.
 type relayUsageConn struct {
 	desk     *relayUsageDesk
 	id       string
@@ -75,11 +85,12 @@ type relayUsageConn struct {
 
 	bytes atomic.Int64
 
-	mu     sync.Mutex
-	cred   share.Hash
-	from   time.Time
-	carry  time.Duration
-	closed bool
+	mu       sync.Mutex
+	cred     share.Hash
+	from     time.Time
+	carry    time.Duration
+	renewals int
+	closed   bool
 }
 
 // clock is the time of a report's edge.
@@ -162,7 +173,34 @@ func (c *relayUsageConn) cut(final bool) {
 func (c *relayUsageConn) period() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.renewals = 0
 	c.cut(false)
+}
+
+// renewed is a renewal to tok, another credential, about to take effect:
+// the stretch up to it is reported under the old credential's hash, and
+// the counts start again under tok's. inline is a renewal hostToken
+// admitted, counted against relayUsageRenewals; the recheck's adoption of
+// a pending one is not.
+func (c *relayUsageConn) renewed(tok string, inline bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.cut(false)
+	c.cred = share.HashToken(tok)
+	if inline {
+		c.renewals++
+	}
+}
+
+// paced says the connection has admitted relayUsageRenewals renewals to
+// another credential inline this period: its next is kept pending.
+func (c *relayUsageConn) paced() bool {
+	if c == nil {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.renewals >= relayUsageRenewals
 }
 
 // close takes the connection out of the desk, unless another connection

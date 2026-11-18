@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -336,6 +337,180 @@ func TestRelayUsageReconnectIsANewConnection(t *testing.T) {
 	}
 }
 
+// TestRelayUsageRenewalSameCredentialEndsNothing: a host_token with the
+// credential the connection holds asks nobody and cuts nothing: the
+// period's one report holds the bytes before and after it.
+func TestRelayUsageRenewalSameCredentialEndsNothing(t *testing.T) {
+	o := newUsageObserver()
+	e, clock, _ := usageEnv(t, o, nil)
+	h, _ := dialCred(t, e, hostReg("1", nil), credOld)
+	n := relayOut(t, h, nobody, 10)
+	h.send(hostToken(credOld))
+	n += relayOut(t, h, nobody, 20)
+	readUpTo(h)
+	clock.tick(t)
+	// A cut would have been queued ahead of the period's report.
+	checkReport(t, o.next(t), "", credOld, 1, n)
+	o.none(t)
+	if k := o.timesAsked(credOld); k != 1 {
+		t.Fatalf("the provider was asked about the held credential %d times, want once (its admission)", k)
+	}
+}
+
+// TestRelayUsageRenewalToAnotherCredentialSplits: a renewal to another
+// credential between two periods splits the report, the bytes before it
+// under the old hash and those after under the new; a pending renewal the
+// recheck adopts splits it the same way; and a viewer's frames racing a
+// cut each land on one side of it.
+func TestRelayUsageRenewalToAnotherCredentialSplits(t *testing.T) {
+	t.Run("inline", func(t *testing.T) {
+		o := newUsageObserver()
+		e, clock, ut := usageEnv(t, o, nil)
+		h, _ := dialCred(t, e, hostReg("1", nil), credOld)
+		v, id, tap := relayedViewer(t, e, h)
+		a := relayOut(t, h, id, 10)
+		readUpTo(h)
+		a += relayIn(t, v, tap, id, 5)
+		ut.advance(20 * time.Second)
+		h.send(hostToken(credNew))
+		o.awaitAsk(t, credNew)
+		b := relayOut(t, h, id, 30)
+		readUpTo(h)
+		b += relayIn(t, v, tap, id, 7)
+		ut.advance(40 * time.Second)
+		clock.tick(t)
+		before, after := o.next(t), o.next(t)
+		checkReport(t, before, "", credOld, 1, a)
+		checkReport(t, after, before.Connection, credNew, 1, b)
+		if !before.To.Equal(usageEpoch.Add(20*time.Second)) || !after.From.Equal(before.To) || !after.To.Equal(ut.now()) {
+			t.Fatalf("the stretches do not meet at the renewal: %+v, %+v", before, after)
+		}
+		if before.SessionSeconds != 20 || after.SessionSeconds != 40 {
+			t.Fatalf("session seconds %d and %d, want 20 and 40", before.SessionSeconds, after.SessionSeconds)
+		}
+	})
+	t.Run("a pending renewal the recheck adopts", func(t *testing.T) {
+		o := newUsageObserver()
+		e, clock, _ := usageEnv(t, o, nil)
+		h, _ := dialCred(t, e, hostReg("1", nil), credOld)
+		// Two renewals admitted inline this period: the third is kept pending.
+		h.send(hostToken(credNew))
+		h.send(hostToken(credOld))
+		o.set(func(f *credIdentity) { f.admits["renewal-pending"] = credHost })
+		h.send(hostToken("renewal-pending"))
+		readUpTo(h)
+		r1, r2 := o.next(t), o.next(t)
+		checkReport(t, r1, "", credOld, 1, 0)
+		checkReport(t, r2, r1.Connection, credNew, 1, 0)
+		n := relayOut(t, h, nobody, 25)
+		readUpTo(h)
+		clock.next(t, identityRecheckEvery).fire <- time.Now()
+		o.awaitAsk(t, "renewal-pending")
+		cut := o.next(t)
+		checkReport(t, cut, r1.Connection, credOld, 1, n)
+		m := relayOut(t, h, nobody, 3)
+		readUpTo(h)
+		clock.tick(t)
+		checkReport(t, o.next(t), r1.Connection, "renewal-pending", 1, m)
+	})
+	t.Run("a viewer's frames racing a cut", func(t *testing.T) {
+		o := newUsageObserver()
+		e, _, _ := usageEnv(t, o, nil)
+		h, _ := dialCred(t, e, hostReg("1", nil), credOld)
+		v, id, tap := relayedViewer(t, e, h)
+		const total = 64 * proto.MaxInput
+		done := make(chan struct{})
+		go func() { defer close(done); flood(t.Context(), v, total) }()
+		h.send(hostToken(credNew))
+		o.awaitAsk(t, credNew)
+		<-done
+		if !waitFor(testWait, func() bool { return tap.inputBytes(id) >= total }) {
+			t.Fatalf("the host has %d of %d input bytes", tap.inputBytes(id), total)
+		}
+		h.c.CloseNow()
+		var sum int64
+		var hashes [][32]byte
+		for {
+			u := o.next(t)
+			sum += u.RelayedBytes
+			hashes = append(hashes, u.Credential)
+			if u.Final {
+				break
+			}
+		}
+		if sum != total || len(hashes) != 2 || hashes[0] != credHash(credOld) || hashes[1] != credHash(credNew) {
+			t.Fatalf("%d bytes reported in %d reports, want %d in one under each credential", sum, len(hashes), total)
+		}
+	})
+}
+
+// TestRelayUsageRenewalFloodIsPacedByTheRecheck: ten renewals to other
+// credentials in one period cut two reports inline; the later ones are
+// kept pending and nobody is asked about them, the connection stays, and
+// the recheck adopts the last one and cuts once. The period resets the
+// pace. With no observer, every renewal is asked inline as before.
+func TestRelayUsageRenewalFloodIsPacedByTheRecheck(t *testing.T) {
+	flood := func(o *credIdentity) []string {
+		var toks []string
+		for i := range 10 {
+			tok := fmt.Sprintf("renewal-%d", i)
+			o.set(func(f *credIdentity) { f.admits[tok] = credHost })
+			toks = append(toks, tok)
+		}
+		return toks
+	}
+	t.Run("reported", func(t *testing.T) {
+		o := newUsageObserver()
+		e, clock, _ := usageEnv(t, o, nil)
+		toks := flood(o.credIdentity)
+		h, _ := dialCred(t, e, hostReg("1", nil), credOld)
+		for _, tok := range toks {
+			h.send(hostToken(tok))
+		}
+		readUpTo(h) // the connection stays
+		r1, r2 := o.next(t), o.next(t)
+		checkReport(t, r1, "", credOld, 1, 0)
+		checkReport(t, r2, r1.Connection, toks[0], 1, 0)
+		o.none(t)
+		for i, tok := range toks {
+			if want, k := min(1, max(0, 2-i)), o.timesAsked(tok); k != want {
+				t.Fatalf("the provider was asked about renewal %d %d times, want %d", i, k, want)
+			}
+		}
+		clock.next(t, identityRecheckEvery).fire <- time.Now()
+		o.awaitAsk(t, toks[9])
+		checkReport(t, o.next(t), r1.Connection, toks[1], 1, 0)
+		readUpTo(h)
+		o.none(t)
+		for _, tok := range toks[2:9] {
+			if o.timesAsked(tok) != 0 {
+				t.Fatalf("the provider was asked about %s, which a later renewal replaced", tok)
+			}
+		}
+		// A new period: renewals are asked inline again.
+		clock.tick(t)
+		checkReport(t, o.next(t), r1.Connection, toks[9], 1, 0)
+		h.send(hostToken(credNew))
+		o.awaitAsk(t, credNew)
+		checkReport(t, o.next(t), r1.Connection, toks[9], 1, 0)
+	})
+	t.Run("no observer", func(t *testing.T) {
+		f := newCredIdentity()
+		e, _ := credEnv(t, f)
+		toks := flood(f)
+		h, _ := dialCred(t, e, hostReg("1", nil), credOld)
+		for _, tok := range toks {
+			h.send(hostToken(tok))
+		}
+		readUpTo(h)
+		for i, tok := range toks {
+			if k := f.timesAsked(tok); k != 1 {
+				t.Fatalf("with no observer, renewal %d was asked %d times, want once inline", i, k)
+			}
+		}
+	})
+}
+
 // TestRelayUsageNoneForOwnTokensOpenHostsOrWithoutObserver: no report, no
 // queue and no goroutine for a connection of the workbench token, a host
 // token or an open host, nor for a link's viewer of one; none at all on a
@@ -458,6 +633,59 @@ func TestRelayUsageQueueFullDropsOldest(t *testing.T) {
 		}
 	}
 	o.none(t)
+}
+
+// TestRelayUsageCarriesNoToken: no report and no log line holds a
+// credential the connection presented, admitted, renewed or refused; each
+// report's Credential is its SHA-256.
+func TestRelayUsageCarriesNoToken(t *testing.T) {
+	o := newUsageObserver()
+	logs := &syncLog{}
+	e := newTestEnvAgents(t, func(c *config.Config) { c.Switchyard.Enabled = true },
+		slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug})), nil, withIdentity(o))
+	clock := newUsageClock(e.srv)
+	h, _ := dialCred(t, e, hostReg("1", nil), credOld)
+	relayOut(t, h, nobody, 10)
+	h.send(hostToken(credNew))
+	o.awaitAsk(t, credNew)
+	clock.tick(t)
+	o.set(func(f *credIdentity) {
+		f.answer[credNew2] = func(context.Context) (ext.Principal, bool, error) { return ext.Principal{}, false, nil }
+	})
+	h.send(hostToken(credNew2))
+	closedRevoked(t, h)
+	var got []ext.Usage
+	for {
+		u := o.next(t)
+		got = append(got, u)
+		if u.Final {
+			break
+		}
+	}
+	want := []string{credOld, credNew, credNew}
+	if len(got) != len(want) {
+		t.Fatalf("%d reports, want %d: %+v", len(got), len(want), got)
+	}
+	for i, u := range got {
+		if u.Credential != credHash(want[i]) {
+			t.Fatalf("report %d is not under %s's hash", i, want[i])
+		}
+		b, _ := json.Marshal(u)
+		for _, tok := range []string{credOld, credNew, credNew2} {
+			if bytes.Contains(b, []byte(tok)) {
+				t.Fatalf("a report holds a credential: %s", b)
+			}
+		}
+	}
+	log := logs.String()
+	if !strings.Contains(log, "host registered") {
+		t.Fatalf("nothing logged: %q", log)
+	}
+	for _, tok := range []string{credOld, credNew, credNew2} {
+		if strings.Contains(log, tok) {
+			t.Fatalf("the log holds %s: %s", tok, log)
+		}
+	}
 }
 
 // TestRelayUsageObserverPanicLeavesTheServerUp: a Used that panics is

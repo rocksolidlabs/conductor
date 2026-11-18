@@ -143,7 +143,9 @@ func (s *Server) handleHostWS(w http.ResponseWriter, r *http.Request) {
 		// and, on a switchyard whose provider observes it, reported
 		// (relayusage.go), each change of its credential cutting a report.
 		hc.cred, hc.subject = newWatchedToken(tok), hp.subject
-		hc.usage = s.exts.relayUsage.open(info.ID, hp.subject, tok, isDesk)
+		if hc.usage = s.exts.relayUsage.open(info.ID, hp.subject, tok, isDesk); hc.usage != nil {
+			hc.cred.changed = hc.usage.renewed
+		}
 	}
 	if s.cfg.Switchyard.Enabled {
 		switch {
