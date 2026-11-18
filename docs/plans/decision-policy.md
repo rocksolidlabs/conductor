@@ -543,14 +543,16 @@ behaves unchanged, and a router that does not implement
 ### `internal/crew` (PR-7; PR-7b and PR-9 where they say)
 
 - `decisions_admit.go`: a kind of entry `eligible` (`EntryEligible`,
-  with `Subject`), which admits an identity's principal, or a held
-  answer's (`via: sync`), holding the decide grant or the admin grant
-  whose subject is `Subject`. `PolicyEntry.admits` takes `via: sync` as
-  it takes `via: identity`: the operator entry with the admin grant, the
-  grant entry, and the `eligible` entry, each with the grant the sync
-  provider's door checked (`AdmitsAnswer`); `Admittee.Sent` takes a
-  `sync` response as its subject's own. A comparison's selection is the
-  exception: no held answer answers it (Owner decisions, 10).
+  with `Subject`), which admits an identity's principal holding the
+  decide grant or the admin grant whose subject is `Subject`.
+  `PolicyEntry.admits` takes `via: sync` as it takes `via: identity`
+  for the operator entry with the admin grant and the grant entry with
+  the decide grant, each with the grant the sync provider's door
+  checked (`AdmitsAnswer`); `Admittee.Sent` takes a `sync` response as
+  its subject's own. The `eligible` entry admits no held answer (a held
+  answer is never judged under a router's policy, Responding, Held
+  answers), and no held answer answers a comparison's selection (Owner
+  decisions, 10).
   `EntriesOf` of a record under a router's policy is the operator's
   entry and one `eligible` entry per distinct subject among the
   groups' eligible, never the grant's entry, whatever the request's
@@ -564,8 +566,8 @@ behaves unchanged, and a router that does not implement
   implements `PolicyConfirmer` (`Engine.SetRouterPolicies(bool)`, new,
   from `internal/api`'s composition) and is handed one function to ask
   it (`PolicyCheck`: a decision, a revision, a subject and a time to a
-  `Confirmation` and whether the router answered, the guard's
-  `confirm`), which it calls outside every transaction.
+  `Confirmation`, the guard's `confirm`), which it calls outside every
+  transaction.
 - **The opening** (PR-7). A record opened while the engine routes
   policies, but a comparison's selection, holds a **spare** (its
   `local/1` policy written with `spare: true`, which every later policy
@@ -601,9 +603,8 @@ behaves unchanged, and a router that does not implement
   Events, orderings and invariants). Every door that hands a response
   in asks `Confirm` first, outside the transaction, and hands its
   answer to the engine with the response: the respond route (the
-  operator's and the decide principal's) and a sync provider's door
-  for held answers (below). The guard says beside the confirmation
-  whether the router answered at all.
+  operator's and the decide principal's). A sync provider's door for
+  held answers asks nothing of the router (Held answers, below).
   - **A comparison's selection** (origin `compare`) never holds a
     router's policy: it is judged under `local/1` as on `main`, with no
     confirmation asked, no window and no `stale_policy`; only the
@@ -616,24 +617,22 @@ behaves unchanged, and a router that does not implement
   - **A router's own answer** (`via: router`, `Route.Answer`) is
     refused `403 not_approver`, kept, under every policy, as under
     `local/1` on `main` (I3); no confirmation is asked for it.
-  - **No confirmation handed in**: on a server whose registered router
-    confirms policies (`SetRouterPolicies(true)`), any record, `local/1`
-    included, that reaches the engine with no confirmation (a door that
-    did not ask) is refused `409 stale_policy`, unkept, never taken as
-    "not in force" (I5); a comparison's selection and the router's own
-    answer keep their exemptions (above). So a door that skips the ask
-    is refused by the engine.
+  - **No confirmation handed in**: a record under a router's policy
+    that reaches the engine with no confirmation (a door that did not
+    ask) is refused `409 stale_policy`, unkept, never taken as "not in
+    force" (I5). A record still under the server's own policy is
+    answered as on `main`, on any server: by the operator and, where it
+    was given to the decide grant, by a decide principal.
   - **The opening window**: a record in its window (`internal/api`,
     `router.go`, below; I10) refuses every response `409
-    stale_policy` ("dr-7's policy is being written: try again"). At a
-    sync provider's door this unkept refusal is `unknown_authority`:
-    nothing written, the provider hands the answer in again, never
-    under `refused` (`docs/plans/sync-seams.md`).
+    stale_policy` ("dr-7's policy is being written: try again").
   - A `local/1` record whose router implements `PolicyConfirmer` asks
     `Confirm` with no subject before accepting the operator's response:
     `Routes` is `409 stale_policy` too, and marks the record to be told
-    again.
-  - **Not in force** (no router, no answer, `InForce` false):
+    again; any other answer leaves it judged by its entries, as on
+    `main`.
+  - **Not in force** (a record under a router's policy: no router, no
+    answer, `InForce` false):
     `local/1` decides, as DR1 ships it: the operator answers, a decide
     principal is refused `403 not_approver`; the receipt keeps
     `{policy: "local/1", why}` with the router's why.
@@ -659,65 +658,40 @@ behaves unchanged, and a router that does not implement
     history, judged again when sent again with the same response id),
     as DR1's bound refusals are: it says "try again", and a kept one
     would answer the retry with itself.
-  - **A held answer under a router's policy** (one rule, mirrored in
-    `docs/plans/sync-seams.md` at its `RespondDecision` door). An answer
-    handed in by a sync provider (`via: sync`) to a record under a
-    router's policy is judged like an identity's response at the route:
-    the door asks the router's confirmation with the held answer's
-    subject before the engine, and hands the confirmation in.
-    - **A record still `local/1`** on a server whose registered router
-      confirms policies: the door asks the router's confirmation, with
-      no subject, BEFORE the store's own check. A router that answers
-      `Routes` (it will route this `local/1` record now), is behind or
-      does not answer: nothing is written (`unknown_authority`), within
-      I10's bound. Not in force (`InForce` false from a router that
-      answered): the record goes on as `local/1`, judged by its entries.
-    - An eligible subject's answer counts: the door asks the store's
-      own check (`AdmitsAnswer`) with the grant the subject holds
-      (decide or admin), which the policy's `eligible` entry admits,
-      and the response is judged by the row "in force, the subject
-      eligible".
-    - The operator who is not eligible is refused `403 not_eligible`,
-      kept: a held answer carries no override, so under `override:
-      operator` as under `override: none` it never stands in the
-      policy's place.
-    - A router that is behind, names another revision or does not
-      answer: nothing is written, and the provider may hand the answer
-      in again (the door's `unknown_authority`,
-      `docs/plans/sync-seams.md`), within I10's bound; past it, as not
-      in force.
-    - A policy not in force (`InForce` false from a router that
-      answered) is `local/1`, as at the route.
-    - At application, BOTH the store's own recheck (`AdmitsAnswer`) and
-      the router's confirmation (with `Since`, from PR-9) must say yes.
-      A no (not eligible, or `InForce` false from a router that
-      answered) supersedes, as for an identity. A router that is behind
-      or does not answer leaves the decision `answered` (a counted
-      response counted), asked again, as the store's unknown does,
-      within I10's bound; past it, as not in force, which supersedes.
-    - Held by `TestAdminHeldAnswerCannotBypassOverrideNone`,
-      `TestEligibleHeldAnswerUnderAPolicyCounts`,
-      `TestHeldAnswerUnheardByTheRouterWritesNothing`,
-      `TestHeldAnswerUnderAPolicyIsConfirmedAtApplication`,
-      `TestRespondWithoutConfirmationIsStalePolicy`,
-      `TestUnconfirmedHeldCountedResponseAfterARestartIsRechecked`,
-      `TestHeldAnswerAdmittedByTheEntries` and
-      `TestHeldAnswerToASelectionIsRefused`.
+  - **Held answers** (one rule, mirrored in `docs/plans/sync-seams.md`
+    at its `RespondDecision` door; Owner decisions, 11). A held answer
+    and a router's policy do not combine in the first version. On a
+    server whose registered router confirms policies, the sync
+    provider's door refuses every held answer: nothing is written to
+    the decision, the router is not asked, and the refusal is kept (the
+    provider does not hand it in again), `403 answered_at_server` (a
+    new code, `CodeAnsweredAtServer`, listed with the decisions' codes
+    and in `docs/protocol.md`; its words a fixed line of the server's)
+    ("dr-7 is answered at its server, by the operator or the people its
+    router names, at the server's own routes: an answer given elsewhere
+    is not taken here"). The engine refuses
+    the same way a `via: sync` response that reaches it for a record
+    under a router's policy while such a router is registered (the door
+    is not the only guard). On a server with no router, or with one
+    that confirms no policies, a held answer is judged by the record's
+    own policy and its entries (`via: sync` taken as `via: identity`),
+    the store's own check first, DR1's rules after; a record left under
+    a router's policy with no such router registered is not in force,
+    so `local/1`, and judged so. Held by
+    `TestHeldAnswerRefusedWhereTheRouterConfirmsPolicies` (the door),
+    `TestEngineRefusesAHeldAnswerUnderAPolicy` (the engine),
+    `TestHeldAnswerAdmittedByTheEntries` and
+    `TestHeldAnswerToASelectionIsRefused`.
   - Then DR1's checks as on `main`: the state, the rev, the
     membership, the bounds.
 - **Application** (`applyDecisions`): for a response that counted
   under a router's policy, the engine asks `Confirm` again with its
   subject (and, in PR-9, `Since` its time) before the application's
-  transaction, beside DR1's identity recheck. For an identity's
-  response, not confirmed (no longer eligible, not in force, no answer)
-  supersedes the decision with DR1's fresh decision and words ("Ana's
-  answer could not be confirmed: dr-9 asks again"), exactly as DR1 does
-  for an identity recheck that fails; the fresh decision is told to the
-  router like any opening. For a held answer (`via: sync`), only a no
-  (not eligible, or `InForce` false from a router that answered)
-  supersedes it; a router that is behind or did not answer leaves the
-  decision `answered`, asked again, within I10's bound, and past it as
-  not in force, which supersedes (Responding, held answers). An
+  transaction, beside DR1's identity recheck. Not confirmed (no longer
+  eligible, not in force, no answer) supersedes the decision with DR1's
+  fresh decision and words ("Ana's answer could not be confirmed: dr-9
+  asks again"), exactly as DR1 does for an identity recheck that fails;
+  the fresh decision is told to the router like any opening. An
   override or a `local/1` answer by the workbench token holds (the
   token is the server's); one by an identity's admin principal keeps
   DR1's identity recheck and restart rule whole and needs no router
@@ -790,10 +764,9 @@ behaves unchanged, and a router that does not implement
 ### `internal/api` (PR-7; PR-7b where it says)
 
 - `extensions.go`: `guardRouter` gains `confirm(ctx, ConfirmQuery)
-  (Confirmation, bool)`, in one of the provider's call slots as every
-  call takes, bounded by `ext.ConfirmWait`, its answer checked by
-  `Confirmation.Valid`, the bool saying whether the router answered
-  (a held answer's door writes nothing when it did not); `routeIn`
+  Confirmation`, in one of the provider's call slots as every call
+  takes, bounded by `ext.ConfirmWait`, its answer checked by
+  `Confirmation.Valid`; `routeIn`
   checks a route's `Policy` with `RoutePolicy.Valid(Record)` and
   refuses one from a router that does
   not implement `PolicyConfirmer`, or one past PR-7's shape (below).
@@ -915,11 +888,12 @@ layout by measures.
 - `docs/protocol.md`, its Decisions section (PR-7, PR-7b): the policy
   in the record, the respond body's `override`, the refusal codes
   (`not_eligible`, `override_refused`, `routed_by_policy`,
-  `no_router`, and PR-9's `not_needed`, `already_counted`),
-  `policyNow`, the route operation's `router`, the decide routes'
-  admission under a router's policy, the response status `counted`.
-  No WebSocket frame changes, and the `decision` event is unchanged
-  (its `state` and `rev` move as they did).
+  `no_router`, `answered_at_server` for a held answer, and PR-9's
+  `not_needed`, `already_counted`), `policyNow`, the route operation's
+  `router`, the decide routes' admission under a router's policy, the
+  response status `counted`. No WebSocket frame changes, and the
+  `decision` event is unchanged (its `state` and `rev` move as they
+  did).
 - `docs/features.md` (PR-9, the last row): the entry for a router's
   policy on decision records.
 
@@ -976,23 +950,16 @@ a restart. A counted response is written `confirmed: false`; DR1's
 identity recheck after its commit (`recheckResponse`, the same as
 today) sets it `confirmed`, or refuses it with words ("Ana's approval
 could not be rechecked: answer again") and the decision stays open.
-An identity's counted response found unconfirmed after a restart (its
-`boot` another process's) is refused the same way. A held one (`via:
-sync`) is never judged by its `boot`: at the next start it is
-rechecked from the authority and the statement the ledger keeps (the
-store's `AdmitsAnswer`): yes sets it `confirmed`, no refuses it with
-the same words, and unknown leaves it unconfirmed and asks again (1 s
-doubling to 60 s), as `docs/plans/sync-seams.md` does at application.
-A confirmed one keeps its place across restarts. At application every
-counted response is rechecked by `Confirm` with its subject and
-`Since` its time: a router that cannot say the subject stayed eligible
-since then answers not eligible, and the decision is superseded with
-DR1's fresh decision and words, as a failing identity recheck does. No
-credential is stored. How a router establishes "since" is its own; the
-server's promise is that it asks, and that a "no" voids the approval.
-No answer voids an identity's; it leaves a held answer's waiting,
-counted, asked again within I10's bound, and past it as not in force,
-which voids it (Responding, held answers).
+One found unconfirmed after a restart (its `boot` another process's) is
+refused the same way (a held answer never counts: Responding, Held
+answers). A confirmed one keeps its place across restarts. At
+application every counted response is rechecked by `Confirm` with its
+subject and `Since` its time: a router that cannot say the subject
+stayed eligible since then answers not eligible, and the decision is
+superseded with DR1's fresh decision and words, as a failing identity
+recheck does. No credential is stored. How a router establishes "since"
+is its own; the server's promise is that it asks, and that "no" or no
+answer voids the approval.
 
 The policy's full shape is taken from this row on: PR-7's server takes
 a `Pinned` of any legal shape and `Groups` of one group of quorum 1
@@ -1036,16 +1003,14 @@ counted response; the operator's card shows each group's count.
   application; a share link, a decision link, an agent's token,
   Brakeman, a decide principal not named and a person the router no
   longer names are refused; a decide principal sees only the decisions
-  it is eligible for now. Every door asks: a held answer handed in by
-  a sync provider is judged as an identity's response at the route,
-  and on a server whose router confirms policies any record (`local/1`
-  included, a comparison's selection apart) that reaches the engine
-  with no confirmation is refused, never taken as not in force
-  (`TestEligibleSubjectAnswers`,
+  it is eligible for now. A record under a router's policy that
+  reaches the engine with no confirmation is refused, never taken as
+  not in force, and a held answer is never judged under a router's
+  policy (`TestEligibleSubjectAnswers`,
   `TestIneligibleDecidePrincipalIsRefused`,
   `TestDecidePrincipalSeesOnlyItsDecisions`,
-  `TestAdminHeldAnswerCannotBypassOverrideNone`,
-  `TestRespondWithoutConfirmationIsStalePolicy`).
+  `TestRespondWithoutConfirmationIsStalePolicy`,
+  `TestEngineRefusesAHeldAnswerUnderAPolicy`).
 - **I6, the operator's answer under a policy in force is an override**:
   explicit, with its reason, only where the policy's `override` is
   `operator`, recorded as one with its subject. Only the admin grant
@@ -1073,13 +1038,11 @@ counted response; the operator's card shows each group's count.
 - **I10, every answer to retry has a bound.** `409 stale_policy` is
   answered only in the opening window (below), and while `Confirm`
   answers `Behind`, `Routes` or a `Revision` other than the record's
-  (a new revision not yet installed), and while a router does not
-  answer a held answer's door or its application recheck (nothing
-  written, the answer waiting); the server holds the router to
+  (a new revision not yet installed); the server holds the router to
   the same bound it promises, `ext.MaxBehind` (120 s): per record, a
   clock starts at the first such answer after one that was none of
   them, any other answer clears it, and past 120 s on it the server
-  treats the next such answer (or no answer) as not in force, and the
+  treats the next such answer as not in force, and the
   operator answers under `local/1` (I7, I9). No partial failure leaves a
   decision unanswerable (`TestStalePolicyRefused`,
   `TestBehindPastItsBoundIsNotInForce`,
@@ -1134,13 +1097,12 @@ counted response; the operator's card shows each group's count.
    decision still `open` at the rev the router was shown; between the
    two, a response is `409 stale_policy` (the opening window), and only
    a router that answers no policy, fails or is late leaves `local/1`.
-2. A response, at the route or at a sync provider's door: the identity
-   provider's admission (as on `main`; at the door, the store's own
-   check), then `Confirm` (outside the transaction, bounded), then
-   DR1's transaction with its rechecks, the policy's revision among
-   them; then DR1's identity recheck after the commit (at the door, the
-   store's recheck), and a second `Confirm` before the application's
-   transaction.
+2. A response: the identity provider's admission (as on `main`), then
+   `Confirm` (outside the transaction, bounded), then DR1's transaction
+   with its rechecks, the policy's revision among them; then DR1's
+   identity recheck after the commit, and a second `Confirm` before the
+   application's transaction. A held answer on a server whose router
+   confirms policies is refused at the door, before any of these.
 3. A re-route: the router computes from what it holds and the record's
    rev, then `Host.Reroute` (one transaction, conditional on `open` and
    that rev; `ErrStale` sends the router back to compute again). A
@@ -1166,9 +1128,9 @@ counted response; the operator's card shows each group's count.
    holding PR-7a, PR-7, PR-7b and PR-8 (The PRs).
 
 **The respond route's judgement**, under a router's policy, in order
-(the first row that matches answers). It is the engine's, whichever
-door handed the response in: the respond route, or a sync provider's
-door for held answers (`via: sync`, Responding, above):
+(the first row that matches answers). It is the engine's; a sync
+provider's door for held answers refuses every one on a server whose
+router confirms policies before the engine (Responding, Held answers):
 
 | Case | Answer | Kept |
 |---|---|---|
@@ -1176,12 +1138,10 @@ door for held answers (`via: sync`, Responding, above):
 | a router's own answer (`via: router`) | `403 not_approver` | yes |
 | a comparison's selection, a held answer (`via: sync`) | `403 not_approver` (answered only at this server) | yes |
 | a comparison's selection, at the route | `local/1`, as on `main`: the operator answers | as DR1 |
-| no confirmation handed in, on a server whose router confirms policies, any record (`local/1` included) | `409 stale_policy` | no |
-| the opening window | `409 stale_policy`; at a sync provider's door `unknown_authority`, nothing written, handed in again | no |
-| a held answer to a `local/1` record, the router answering `Routes`, behind, or not answering (asked with no subject, before the store's check) | nothing written; the provider may hand it in again (`unknown_authority`); within I10's bound, past it as not in force | no |
-| a held answer under a router's policy: the router behind, another revision, or no answer | nothing written; the provider may hand it in again (`unknown_authority`); within I10's bound, past it as not in force | no |
-| a held answer, in force, the operator not eligible | `403 not_eligible` (a held answer carries no override) | yes |
-| `Confirm` not in force (or, at the route, no answer), the operator | accepted under `local/1`, `{policy: local/1, why}` | yes |
+| a held answer (`via: sync`) to a record under a router's policy, such a router registered | `403 answered_at_server` | yes |
+| no confirmation handed in, a record under a router's policy | `409 stale_policy` | no |
+| the opening window | `409 stale_policy` | no |
+| `Confirm` not in force (or no answer), the operator | accepted under `local/1`, `{policy: local/1, why}` | yes |
 | `Confirm` not in force, a decide principal | `403 not_approver` | yes |
 | `Confirm` `Behind`, or `Revision` other than the record's (within I10's bound; past it, as not in force) | `409 stale_policy` | no |
 | in force, the subject eligible | counted (PR-9) or accepted, `{groups, via, ref}` | yes |
@@ -1291,11 +1251,12 @@ web test` and `make test-e2e`. Every new test is proved able to fail.
   `TestOperatorNeedsAnExplicitOverride`,
   `TestOverrideNoneRefusesTheOperator`,
   `TestOverrideByAnAdminIdentityIsRechecked`,
-  `TestRespondWithoutConfirmationIsStalePolicy` (a router-policy record,
-  and a `local/1` record on a server whose router confirms policies,
-  each handed to the engine with no confirmation: `409 stale_policy`,
-  nothing written, never `local/1`; a comparison's selection at the
-  route still answered under `local/1`),
+  `TestRespondWithoutConfirmationIsStalePolicy` (a router-policy record
+  handed to the engine with no confirmation: `409 stale_policy`,
+  nothing written, never `local/1`; on a server whose router confirms
+  policies, a `local/1` record given to the decide grant still
+  answered by a decide principal, and one of the operator's by the
+  operator, as on `main`),
   `TestPolicyNotInForceIsLocal1`, `TestStalePolicyRefused`,
   `TestStalePolicyRefusalIsNotKept` (I14),
   `TestBehindPastItsBoundIsNotInForce` (I10: a fake router answering
@@ -1370,36 +1331,26 @@ web test` and `make test-e2e`. Every new test is proved able to fail.
   `TestDecideListLeavesOutUnconfirmedRows` (`cut` set),
   `TestRecipientNoticeReachesOnlyRecipientSinks`,
   `TestInboxShowsThePolicy`.
-- Held answers under a router's policy (one rule of two plans, with
-  `docs/plans/sync-seams.md`; the same names there), in
-  `internal/api` and `internal/crew`, built in whichever of PR-7 and
-  that plan's held-answer row lands second, against the other's code:
-  `TestAdminHeldAnswerCannotBypassOverrideNone` (an admin's held answer
-  to dr-7 under a policy in force, once with `override: none` and once
-  with `override: operator`, is refused `not_eligible` both times, not
-  recorded under `local/1` and not taken as an override),
-  `TestEligibleHeldAnswerUnderAPolicyCounts` (Ana's held answer, with
-  only the decide grant, is recorded),
-  `TestHeldAnswerUnheardByTheRouterWritesNothing` (under a router's
-  policy: the router behind, naming another revision, or held at a
-  gate past `ConfirmWait`; on a `local/1` record: the router answering
-  `Routes`, an admin's held answer with a valid statement; and a record
-  in its opening window, the router's `Route` held at its gate: each
-  `unknown_authority`, no row and no fence; handed in again once the
-  router answers or the record is routed: judged and recorded under
-  the router's policy; past I10's bound: as not in force),
-  `TestHeldAnswerUnderAPolicyIsConfirmedAtApplication` (the store's
-  recheck yes and the router's no: superseded; the router answering
-  `InForce: false`: superseded; the router held past `ConfirmWait`:
-  the decision stays `answered` and is asked again; past I10's bound:
-  superseded), `TestHeldAnswerAdmittedByTheEntries` (table-driven: an
-  admin's `via: sync` answer accepted under `local/1`; a decide one
-  accepted on a record given to the grant and refused on one that is
-  not; an eligible one admitted by the `eligible` entry; `Sent` takes
-  it as its subject's own), `TestHeldAnswerToASelectionIsRefused` (an
-  admin's held answer to a comparison's selection: `403 not_approver`,
-  kept, with its words; the workbench token's answer to it accepted).
-  `TestRespondWithoutConfirmationIsStalePolicy` is PR-7's (above).
+- Held answers (one rule of two plans, with `docs/plans/sync-seams.md`;
+  the same names there), in `internal/api` and `internal/crew`, built
+  in whichever of PR-7 and that plan's held-answer row lands second,
+  against the other's code:
+  `TestHeldAnswerRefusedWhereTheRouterConfirmsPolicies` (on a server
+  whose router confirms policies, an admin's and a decide principal's
+  held answers, to a record under the router's policy and to a
+  `local/1` one: each `403 answered_at_server`, kept, with its words;
+  no row of the decision written; the fake router asked nothing),
+  `TestEngineRefusesAHeldAnswerUnderAPolicy` (a `via: sync` response
+  handed straight to the engine for a record under a router's policy,
+  such a router registered: `403 answered_at_server`, kept; with no
+  router registered, the record not in force: judged under `local/1`
+  by its entries), `TestHeldAnswerAdmittedByTheEntries` (table-driven,
+  on a server with no router: an admin's `via: sync` answer accepted
+  under `local/1`; a decide one accepted on a record given to the grant
+  and refused on one that is not; `Sent` takes it as its subject's
+  own), `TestHeldAnswerToASelectionIsRefused` (an admin's held answer
+  to a comparison's selection: `403 not_approver`, kept, with its
+  words; the workbench token's answer to it accepted).
 - `web/app` (PR-8): vitest `utils/decisionPolicy.test.ts` (every `via`,
   a gap, not in force, an override),
   `components/DecisionRespond.test.ts` (the operator's disabled answer
@@ -1415,13 +1366,7 @@ web test` and `make test-e2e`. Every new test is proved able to fail.
   `TestAnEligibleRejectAnswersAtOnce`,
   `TestCountedResponsesKeepTheirPlaces`,
   `TestPartialApprovalSurvivesARestart` (confirmed counted responses),
-  `TestUnconfirmedCountedResponseAfterARestartIsRefused` (an
-  identity's),
-  `TestUnconfirmedHeldCountedResponseAfterARestartIsRechecked` (a held
-  counted response committed, a restart before the store's recheck:
-  confirmed by `AdmitsAnswer` yes and kept counted, refused by a no with
-  the same words, left unconfirmed and asked again by an unknown; never
-  refused for its `boot`),
+  `TestUnconfirmedCountedResponseAfterARestartIsRefused`,
   `TestCountedApprovalVoidedByASignInRevocation`,
   `TestCountedApprovalVoidedWhenItsAuthorityCannotBeEstablished` (the
   fake router's `Confirm` with `Since` answering not eligible),
@@ -1615,12 +1560,34 @@ remove rows, and each says which.
     workbench token, or an identity provider's principal with the admin
     grant); a held answer to one (`via: sync`) is refused `403
     not_approver`, kept, with words that say so, whatever grant its
-    subject holds (`TestHeldAnswerToASelectionIsRefused`). Every other
-    record judges a held answer by its entries, `via: sync` taken as
-    `via: identity` (`TestHeldAnswerAdmittedByTheEntries`). The other
+    subject holds (`TestHeldAnswerToASelectionIsRefused`). On a server
+    whose router confirms no policies, every other record judges a held
+    answer by its entries, `via: sync` taken as `via: identity`
+    (`TestHeldAnswerAdmittedByTheEntries`); where it confirms policies,
+    decision 11 holds. The other
     way: an admin subject's held answer counts as the operator's for a
     selection too; it changes PR-7's respond judgement and that test,
     and `docs/plans/sync-seams.md`'s door, and no other row.
+11. **A held answer and a router's policy do not combine in the first
+    version** (default). On a server whose registered router confirms
+    policies, a sync provider's door refuses every held answer, kept,
+    `403 answered_at_server`, nothing written and the router not asked,
+    and the engine refuses a `via: sync` response to a record under a
+    router's policy
+    (`TestHeldAnswerRefusedWhereTheRouterConfirmsPolicies`,
+    `TestEngineRefusesAHeldAnswerUnderAPolicy`). What a person sees
+    meanwhile: on such a server a decision is answered at the server's
+    own routes by whoever its policy admits (the operator, or the people
+    its router names on the decide page), and an answer given on another
+    device is refused with words that say where to answer. The other
+    way, a held answer judged under the router's policy, is a later
+    design, which must first solve three things: a held answer is bound
+    to the revision it was given for, and a policy written after it
+    raises the revision; a held answer that waits for a silent router
+    needs a bound that nothing else resets; and a response that carries
+    no confirmation must be refused without closing the decide grant's
+    own route. It changes PR-7's respond judgement and its tests, and
+    `docs/plans/sync-seams.md`'s door.
 
 ## Acceptance
 
