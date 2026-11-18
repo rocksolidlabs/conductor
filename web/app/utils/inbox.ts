@@ -753,6 +753,14 @@ export interface DecisionLinkTarget {
 }
 
 /**
+ * What Open on your phone says of the runs it does not offer (decisionLinkTargets), as Share answers for them: a stopped run is not
+ * offered, and a run the server keeps only as its record has no links at all (`run_record`, shareRefusal); a selection either still
+ * holds is answered on Needs you, which no link answers (a link cannot answer a run's decision record).
+ */
+export const PHONE_NOT_OFFERED =
+  'Stopped runs are not offered here, and a run the server keeps only as its record has no links at all. A selection such a run still holds is answered on Needs you, not through a link.'
+
+/**
  * The runs and sessions a decision link can be made for (Open on your phone, on a loopback origin, MB0's PR-7): the runs the engine
  * still holds (running, or finished and still retried: a failed run's tasks are its decisions), newest first, then this server's own
  * sessions still running (a hosted session's decisions are answered where it runs). A run's members are covered by the run's link.
