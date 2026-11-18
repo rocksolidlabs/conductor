@@ -207,10 +207,10 @@ test('an animated control is kept stable: false and the next element is another 
   await expect(editor.locator('[data-capture-draft-tab]')).toHaveCount(4)
 })
 
-test("a page that does not answer the bridge is said to have not answered yet after 3 s, and Capture keeps the screenshot and the notes", async ({ page, api }) => {
+test("a page that does not answer the bridge is said to have not answered yet after 3 s, and Capture takes the screenshot alone", async ({ page, api }) => {
   const frame = await previewPage(page)
   await frame.goto(`${origin}/no-bridge`)
-  await expect(page.locator('[data-preview-nobridge]')).toHaveText("this page has not answered Conductor's bridge yet, and the pane keeps asking: until it answers, Capture takes the screenshot and your notes only.", { timeout: BOOT_MS })
+  await expect(page.locator('[data-preview-nobridge]')).toHaveText("this page has not answered Conductor's bridge yet, and the pane keeps asking: until it answers, Capture takes the screenshot, and the regions you draw on it with their notes.", { timeout: BOOT_MS })
   await expect(page.locator('[data-preview-pane]')).toHaveAttribute('data-preview-bridge', 'absent', { timeout: BOOT_MS })
   await page.locator('[data-preview-capture]').click()
   const editor = editorOf(page)
