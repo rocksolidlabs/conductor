@@ -1207,6 +1207,10 @@ answers through it; their result is `sent`, and the host's next attention
 says whether it was applied. A line with no question into a hosted session
 stays `ErrUnsupported`: no message types plain text into a host's session.
 
+A router may also implement `ext.PolicyConfirmer` and answer a policy for
+a decision record (`docs/plans/decision-policy.md`); one that does not
+gets C5's behaviour unchanged.
+
 ### C6, sync hooks after every local commit; export and restore (PR-11, PR-12, PR-13)
 
 **The hooks** (PR-11):
