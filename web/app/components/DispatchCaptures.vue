@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { CaptureDocumentView, CaptureView } from '~/composables/useCaptureSends'
 import type { TicketAttachment } from '~/composables/useDispatch'
-import { captureOfWords, diffSinceSent } from '~/utils/capture'
+import { captureOfWords, diffSinceSent, hitSentence } from '~/utils/capture'
 import { type CaptureSendView, sendState } from '~/utils/captureSend'
 import { relativeTime } from '~/utils/sessions'
 import { retakeCandidate, type RetakeCandidate, type RetakeRun } from '~/utils/captureReview'
@@ -13,7 +13,8 @@ import { mintCommandId } from '~/utils/tasks'
 /**
  * A ticket's Captures (Program item PV1, "On the ticket"): the captures sent to the ticket, and only those (a capture, a retake too,
  * reaches a ticket by a send), each as it was sent: its page and revision label, its screenshot (the attachment the send made), its
- * annotations as the send froze them, and each send's receipt; Open shows the capture as it is now and what changed since. Read when
+ * annotations as the send froze them, each element's hit test in words (what a click at its centre reaches: the element itself or what
+ * covers it, which tells a capture before a repair from one after it when their screenshots are the same), and each send's receipt; Open shows the capture as it is now and what changed since. Read when
  * the page is, and again when Dispatch says a capture or a send changed.
  */
 const props = defineProps<{
@@ -237,6 +238,9 @@ function changes(id: string, sent: CaptureDocumentView): string[] {
                 {{ a.k }} · {{ a.kind }}<template v-if="a.element"> · <code>{{ a.element.selector || a.element.tag }}</code></template>
                 <template v-if="a.sources?.length"> · <span class="font-mono" data-mono="path">{{ a.sources[0]!.path }}</span></template>
               </span>
+              <span v-if="a.element?.hit" :class="['text-xs', a.element.hit.self ? 'text-muted' : 'text-default']" data-ticket-capture-hit :data-hit-self="a.element.hit.self ? '' : undefined">{{
+                hitSentence(a.element)
+              }}</span>
               <span v-if="a.note" class="whitespace-pre-wrap break-words">{{ a.note }}</span>
             </li>
           </ol>

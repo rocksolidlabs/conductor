@@ -17,6 +17,8 @@ const props = defineProps<{
   /** The words the pane gave it as it was taken (that it was moving). */
   words?: string
   session?: string
+  /** The tree the page is served from, where the editor knows it: a draft's hints are listed relative to it. */
+  tree?: string
   first: boolean
   last: boolean
 }>()
@@ -37,7 +39,7 @@ const moving = computed(() => props.words || (props.observed?.stable === false ?
     <UTextarea :model-value="note" :rows="2" autoresize :maxlength="4000" placeholder="What is wrong here, or what should change" class="w-full" data-annotation-note @update:model-value="(v: string | number) => emit('update:note', String(v ?? ''))" />
     <p v-if="moving" class="text-xs text-muted" data-annotation-stable="false">{{ moving }}</p>
     <span v-else-if="observed?.stable" class="hidden" data-annotation-stable="true" />
-    <CaptureElement v-if="element" :element="element" :sources="sources" :session="session" />
+    <CaptureElement v-if="element" :element="element" :sources="sources" :session="session" :tree="tree" />
     <p v-else class="text-xs text-muted">A part of the screenshot, with no element.</p>
   </li>
 </template>

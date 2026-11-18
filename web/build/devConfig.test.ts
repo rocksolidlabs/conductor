@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { DEFAULT_DEV_API, devApi, devPreviewBridgeSrc } from './devConfig'
+import { DEFAULT_DEV_API, devApi, devPreviewBridgeHead, devPreviewBridgeSrc } from './devConfig'
 
 describe("the dev server's API target", () => {
   it('is the named loopback server, or the default one', () => {
@@ -24,5 +24,9 @@ describe('the bridge the dev build loads', () => {
     for (const v of [undefined, '', 'https://example.com/preview-bridge.js', 'http://192.168.1.5:4312/preview-bridge.js', 'http://127.0.0.1:4312/other.js', 'http://127.0.0.1:4312/preview-bridge.js?x=1', 'http://127.0.0.1:4312/preview-bridge.js#x', 'http://me@127.0.0.1:4312/preview-bridge.js', 'javascript:alert(1)', 'data:text/javascript,1', 'HTTP://127.0.0.1:4312/preview-bridge.js', 'not a url']) {
       expect(devPreviewBridgeSrc(v), String(v)).toBe('')
     }
+  })
+  it("is one async tag in the dev document's head, and none for anything else", () => {
+    expect(devPreviewBridgeHead('http://127.0.0.1:4312/preview-bridge.js')).toEqual([{ src: 'http://127.0.0.1:4312/preview-bridge.js', async: true, 'data-conductor-preview-bridge': '' }])
+    for (const v of [undefined, '', 'https://example.com/preview-bridge.js', 'http://127.0.0.1:4312/other.js']) expect(devPreviewBridgeHead(v), String(v)).toEqual([])
   })
 })

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { ELEMENT_BOUNDS as B, ELEMENT_CUTS, MAX_ELEMENT_REPORT, measuredBytes, previewMeasure, validElement, type ElementReport } from '../protocol'
 import { FakeDoc, h, plainText, type FakeEl } from './fakeDom'
 import { fixture } from './fixture'
-import { REPORT_STYLES, boundFields, cutEnd, cutReport, cutStart, markup, readElement, tagWithin } from './report'
+import { REPORT_STYLES, boundFields, cutEnd, cutReport, cutStart, hitName, markup, readElement, tagWithin } from './report'
 import type { Doc, El } from './select'
 
 /** s of exactly n measured bytes, made of c (a character of a measure that divides n, or 'a'). */
@@ -184,6 +184,35 @@ describe('the reading of an element', () => {
     expect(r.styles[0]).toEqual(['display', 'block'])
     expect(new Set(REPORT_STYLES).size).toBe(64)
     expect(REPORT_STYLES.slice(0, 8)).toEqual(['display', 'visibility', 'opacity', 'pointer-events', 'position', 'z-index', 'inset', 'transform'])
+    expect(validElement(r)).toBe(true)
+  })
+
+  it('names what a click reaches as the outline names an element: an id that names it, else the tag and two classes, else the tag and its name, else its path', () => {
+    const cover = h('span', { class: 'absolute -inset-1 z-10' })
+    const named = h('div', { role: 'dialog', 'aria-label': 'Unsaved changes' })
+    const bare = h('div', {})
+    const long = h('i', { class: `${of(100)} ${of(100, 'b')} c` })
+    const wordy = h('div', {}, of(200))
+    const byId = h('div', { id: 'cover', class: 'cover' })
+    const twins = [h('b', { id: 'twin' }), h('b', { id: 'twin' })]
+    const body = h('body', {}, h('form', {}, cover, named, bare, long, wordy, byId, ...twins))
+    const fake = new FakeDoc(h('html', {}, body))
+    const d = fake as unknown as Doc
+    const name = (e: FakeEl) => hitName(e as unknown as El, d)
+    expect(name(cover)).toBe('span.absolute.-inset-1')
+    expect(name(named)).toBe('div "Unsaved changes"')
+    expect(name(byId)).toBe('#cover')
+    // An id two elements hold names the second by its path, as its selector does (the first is the one the document gives for it).
+    expect(name(twins[1]!)).toBe(':root > body:nth-child(1) > form:nth-child(1) > b:nth-child(8)')
+    // Bounded as the outline's: the class list read to its first 128 bytes, then its first two; a name to 64 bytes.
+    expect(name(long)).toBe(`i.${of(100)}.${of(27, 'b')}`)
+    expect(name(wordy)).toBe(`div "${of(64)}"`)
+    // Nothing better: the path from the root.
+    expect(name(bare)).toBe(':root > body:nth-child(1) > form:nth-child(1) > div:nth-child(3)')
+    // The report carries it in its hit test's field, within the field's bound.
+    fake.hitAt = () => [cover]
+    const r = readElement(named as unknown as El, { doc: d, win: win() })
+    expect(r.hit).toEqual({ self: false, selector: 'span.absolute.-inset-1', tag: 'span' })
     expect(validElement(r)).toBe(true)
   })
 

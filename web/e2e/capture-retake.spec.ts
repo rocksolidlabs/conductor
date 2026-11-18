@@ -11,13 +11,16 @@ import { scratchRepo } from './server'
 // ticket's repair is"). The capture that makes a ticket is taken in a run of one crew whose task is `look`; the ticket's repair is a
 // run of ANOTHER crew whose one task is `fix`, launched from the ticket's plan. The ticket's capture offers Capture again on fix#1, the
 // retake is kept with the first as its retakeOf (retakeVia ticket), and once it is sent to the ticket the two captures are shown side
-// by side, before and after, on a wide screen and one above the other on a phone, nothing scrolling sideways. The broken page, its
-// service and the capture-fixing stub are the repair loop's (web/e2e/fixtures/repair/, read here as they are). Every wait is on what
-// the page draws or what the server answers.
+// by side, before and after, on a wide screen and one above the other on a phone, nothing scrolling sideways; each card says its hit
+// test in words, which tells the two apart though their screenshots are the same pixels. Before Save the editor lists the page's
+// source hints as the server's checked sources read after it: the tree's own file first, relative to the tree, the library's last, no
+// absolute path. The page (web/e2e/fixtures/retake/) is the repair loop's broken settings page with a Vue dev build's component
+// chain, its files absolute paths in the tree, the library's innermost; the capture-fixing stub repairs it. Every wait is on what the
+// page draws or what the server answers.
 test.describe.configure({ mode: 'serial' })
 
-const REPAIR_SERVICE = fileURLToPath(new URL('./fixtures/repair/serve.py', import.meta.url))
-const REPAIR_PAGE = fileURLToPath(new URL('./fixtures/repair/page.html', import.meta.url))
+const RETAKE_SERVICE = fileURLToPath(new URL('./fixtures/retake/serve.py', import.meta.url))
+const RETAKE_PAGE = fileURLToPath(new URL('./fixtures/retake/page.html', import.meta.url))
 
 /**
  * The waits this walk takes, each bounded as capture-repair.spec.ts bounds them: the app's start with the bridge (60 s), the launch from
@@ -61,7 +64,7 @@ function crewBody(name: string, id: string, check: string[]) {
     tasks: [{ id, member: 'fixer', kind: 'work', instructions: 'Repair what the capture shows.', checks: [{ id: 'fixed', argv: check, timeoutSeconds: 900 }] }],
     manifest: {
       ports: ['web'],
-      services: [{ id: 'web', argv: ['python3', REPAIR_SERVICE, '${CONDUCTOR_PORT_WEB}'] }],
+      services: [{ id: 'web', argv: ['python3', RETAKE_SERVICE, '${CONDUCTOR_PORT_WEB}'] }],
       ready: [{ id: 'up', url: 'http://127.0.0.1:${CONDUCTOR_PORT_WEB}/ready', intervalSeconds: 1, timeoutSeconds: 60 }],
       preview: 'http://127.0.0.1:${CONDUCTOR_PORT_WEB}/',
     },
@@ -77,7 +80,7 @@ test.beforeAll(async ({ api, state }) => {
   mkdirSync(join(repo, 'app'), { recursive: true })
   m.dirs.push(repo)
   scratchRepo(repo)
-  copyFileSync(REPAIR_PAGE, join(repo, 'app', 'page.html'))
+  copyFileSync(RETAKE_PAGE, join(repo, 'app', 'page.html'))
   writeFileSync(join(repo, '.gitignore'), 'node_modules/\n')
   git(repo, 'add', 'app/page.html', '.gitignore')
   git(repo, 'commit', '-q', '-m', 'the settings page, its Save covered')
@@ -126,10 +129,22 @@ test("a ticket's capture is captured again on the repair of another crew whose t
   const editor = page.locator('[data-capture-editor]')
   await page.locator('[data-preview-capture]').click()
   await pick(page, frame, '#save', 'button#save.save', { downs: 1 })
+  // Before Save: the page's hints, the tree's own file first and relative to the tree, the library's after it; no path of the machine.
+  const hints = editor.locator('[data-annotation="1"] [data-capture-hint]')
+  await expect(hints).toHaveCount(2)
+  expect(await hints.evaluateAll((l) => l.map((e) => [e.getAttribute('data-capture-hint'), e.hasAttribute('data-hint-vendor')]))).toEqual([
+    ['app/page.html', false],
+    ['node_modules/widgets/Button.vue', true],
+  ])
+  await expect(editor.locator('[data-annotation="1"] [data-capture-hints]')).not.toContainText(repo)
   await editor.locator('[data-annotation="1"] textarea').fill('Save cannot be clicked')
   await editor.locator('[data-capture-save]').click()
   await expect(editor.locator('[data-capture-saved]')).toBeVisible()
   const first = (await editor.locator('[data-capture-saved]').getAttribute('data-capture-saved'))!
+  // After Save: the server's checked sources, in the same order and the same words.
+  const checked = editor.locator('[data-annotation="1"] [data-capture-source]')
+  await expect(checked).toHaveCount(2)
+  expect(await checked.evaluateAll((l) => l.map((e) => e.getAttribute('data-capture-source')))).toEqual(['app/page.html', 'node_modules/widgets/Button.vue'])
   const send = page.locator('[data-capture-send]')
   await choose(page, send.locator('[data-send-project]'), `${project} ·`)
   await send.locator('[data-capture-send-go]').click()
@@ -195,6 +210,9 @@ test("a ticket's capture is captured again on the repair of another crew whose t
   const after = pair.locator(`[data-ticket-capture="${second}"]`)
   await expect(before.locator('[data-ticket-capture-role="first"]')).toBeVisible()
   await expect(after.locator('[data-ticket-capture-role="retake"]')).toContainText(first.slice(0, 8))
+  // The two screenshots are the same pixels (the overlay is transparent): the hit test in words tells them apart.
+  await expect(before.locator('[data-ticket-capture-annotation="1"] [data-ticket-capture-hit]')).toHaveText('a click at its centre reaches #cover')
+  await expect(after.locator('[data-ticket-capture-annotation="1"] [data-ticket-capture-hit]')).toHaveText('a click at its centre reaches the element itself')
   // The retake's run is the newest of the ticket's: its card offers no Capture again pointing back.
   await expect(after.locator('[data-ticket-capture-again]')).toHaveCount(0)
   const sideBySide = async () => {

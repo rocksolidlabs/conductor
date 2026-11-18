@@ -8,8 +8,10 @@ import { PREVIEW_BOOT_MS, endMade, launch, made, pick, previewCrew, previewFrame
 // said again while the frame stays on its load): the preview fixture's /late adds the bridge's tag only once its own request for
 // /late-gate is answered, and the spec holds that answer until the pane has said the page does not load the bridge. Then the
 // bridge starts, silent until a workbench says hello: the pane, still saying its hello, is answered, the words go, and Capture
-// selects an element by name. A Refresh is a new load: its hellos start afresh and reach the bridge started late again. Every wait
-// is on what the page draws or what the page asked; the gate is opened by the spec, never by a clock.
+// selects an element by name. A Refresh is a new load: its hellos start afresh and reach the bridge started late again. And Capture
+// keeps the frame's box: the editor opens over the frame's edge, never beside it, so the page is not laid out again under the
+// pointer between the press and the pick. Every wait is on what the page draws or what the page asked; the gate is opened by the
+// spec, never by a clock.
 test.describe.configure({ mode: 'serial', timeout: 300_000 })
 
 const NO_BRIDGE = "this page does not load Conductor's bridge: Capture takes the screenshot and your notes only. In the desktop app every page has it."
@@ -75,4 +77,49 @@ test('a bridge that starts after the pane said the page does not load one is rea
   await pick(page, again, '#under', 'button#under.under', { downs: 1 })
   await expect(editor.locator('[data-capture-draft="2"]')).toBeVisible()
   await expect(editor.locator('[data-annotation="1"] [data-capture-element-summary]')).toContainText('button#under')
+})
+
+test('Capture keeps the frame’s box: the editor opens over the frame’s edge, out of the way while selecting, and the page is not laid out again under the pointer', async ({ page }) => {
+  await page.route(
+    (u) => u.origin === origin && u.pathname === '/late-gate',
+    (r) => r.continue(),
+  )
+  await previewSeam(page)
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.goto(`/preview?run=${encodeURIComponent(runId)}&task=build&attempt=1`)
+  const pane = page.locator('[data-preview-pane]')
+  await expect(pane).toHaveAttribute('data-preview-bridge', 'ready', { timeout: PREVIEW_BOOT_MS })
+  const frame = await previewFrame(page, origin)
+  const frameEl = page.locator('[data-preview-frame]')
+  const editor = page.locator('[data-capture-editor]')
+  const before = (await frameEl.boundingBox())!
+  const target = (await frame.locator('#second').boundingBox())!
+  const width = await frame.evaluate(() => window.innerWidth)
+
+  // The press: selection mode on the frame as it was, nothing of the editor over it while the person aims.
+  await page.locator('[data-preview-capture]').click()
+  await frame.waitForFunction(() => (window as unknown as { selecting(): boolean }).selecting())
+  await expect(editor).toBeHidden()
+  expect(await frameEl.boundingBox()).toEqual(before)
+  expect(await frame.locator('#second').boundingBox()).toEqual(target)
+  expect(await frame.evaluate(() => window.innerWidth)).toBe(width)
+  await pick(page, frame, '#second', 'button#second.second', { downs: 1 })
+
+  // The pick made: the editor shows over the stage's right edge, the frame and the page as they were.
+  await expect(editor.locator('[data-annotation="1"] [data-capture-element-summary]')).toContainText('button#second')
+  expect(await frameEl.boundingBox()).toEqual(before)
+  expect(await frame.evaluate(() => window.innerWidth)).toBe(width)
+  const stage = (await page.locator('[data-preview-stage]').boundingBox())!
+  const box = (await editor.boundingBox())!
+  expect(box.x).toBeGreaterThan(stage.x)
+  expect(Math.abs(box.x + box.width - (stage.x + stage.width))).toBeLessThanOrEqual(1)
+  expect([box.y >= stage.y - 1, box.y + box.height <= stage.y + stage.height + 1]).toEqual([true, true])
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+
+  // A second element, picked from the editor, joins the same capture: the frame never moved between the two.
+  await editor.locator('[data-capture-select]').click()
+  await pick(page, frame, '#under', 'button#under.under', { downs: 1 })
+  await expect(editor.locator('[data-annotation="2"] [data-capture-element-summary]')).toContainText('button#under')
+  await expect(editor.locator('[data-capture-draft="1"]')).toBeVisible()
+  await expect(editor.locator('[data-capture-draft="2"]')).toHaveCount(0)
 })
