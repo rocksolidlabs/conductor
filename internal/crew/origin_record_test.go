@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
 	"github.com/rocksolidlabs/conductor/internal/proto"
 	"github.com/rocksolidlabs/conductor/internal/session"
 	"github.com/rocksolidlabs/conductor/internal/store"
@@ -188,5 +189,20 @@ func TestRunRecordOriginWithinItsBound(t *testing.T) {
 	var back RunOrigin
 	if err := json.Unmarshal(b, &back); err != nil || back != o {
 		t.Fatalf("read back: %+v %v", back, err)
+	}
+}
+
+// A record is a cache of the ledger: an origin written into the record of
+// a run the ledger keeps no origin of is not shown once the record is
+// recovered from the ledger; the ledger's own row is.
+func TestARecordsOriginIsTheLedgers(t *testing.T) {
+	row := ledger.RunRow{ID: "api-sweep-0000beef", CrewID: "api-sweep", State: ledger.RunStopped, Revision: 3}
+	hand := stoppedRecord(&RunOrigin{Provider: "example", Ref: "example:42", Label: "Not launched by it"})
+	if got := Recovered(hand, Loaded{Run: row}); got.Origin != nil {
+		t.Fatalf("a record's origin with no row in the ledger: %+v", got.Origin)
+	}
+	kept := ledger.OriginRow{RunID: row.ID, Provider: "example", OpID: "op-1", Ref: "example:7", Label: "Its own"}
+	if got := Recovered(hand, Loaded{Run: row, Origin: &kept}); got.Origin == nil || got.Origin.Label != "Its own" {
+		t.Fatalf("the ledger's origin: %+v", got.Origin)
 	}
 }

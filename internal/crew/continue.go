@@ -1134,11 +1134,10 @@ func Recovered(rec Run, from Loaded) Run {
 		// run's binding was read says it too.
 		rec.Ticket = ticketOfRow(from.Run)
 	}
-	if from.Origin != nil {
-		// Where it came from, as the ledger keeps it: the authority, so a
-		// record that lacks it, or says otherwise, says it as the row.
-		rec.Origin = originOfRow(from.Origin)
-	}
+	// Where it came from, as the ledger keeps it: the authority, so a
+	// record that lacks it, or says otherwise, says it as the row, and a
+	// record that carries one the ledger has no row of says none.
+	rec.Origin = originOfRow(from.Origin)
 	// The people and the tasks' owners are the launch's, whatever the
 	// record said: an older build writes it without them.
 	rec.People = nil
