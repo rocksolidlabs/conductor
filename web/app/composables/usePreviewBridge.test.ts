@@ -3,7 +3,7 @@ import { CHANGED_WORDS, MOVING_WORDS, NO_BRIDGE_WORDS, RESTLESS_WORDS, type Hear
 import { PREVIEW_MARK, type ElementReport, type PreviewPage } from '~/utils/protocol'
 import type { Pixels, ScreenshotSource } from '~/utils/screenshot'
 import { testElement, testPage } from '~/utils/testdata/preview'
-import { HELLO_AGAIN_MS, HELLO_MS, createPreviewSession, type BridgeDeps } from './usePreviewBridge'
+import { HELLO_AGAIN_MS, HELLO_EVERY_MS, HELLO_MS, createPreviewSession, type BridgeDeps } from './usePreviewBridge'
 
 // The workbench's side of the bridge (docs/plans/browser-evidence.md, "The messages" and "One capture is one moment"), against a
 // fake page that answers as the bridge does, through the same gate the pane uses: the 3 s hello, one request in flight, and a
@@ -30,7 +30,14 @@ interface Harness {
   framesTaken: number
   label: LabelRead
   view: { mode: 'fit' | 'desktop' | 'tablet' | 'phone'; scale: number }
-  timers: Array<{ fn: () => void; ms: number }>
+  /** The session's timers on the harness's clock: each its delay, when it is due, and whether it is still set. */
+  timers: Array<{ fn: () => void; ms: number; due: number; live: boolean }>
+  /** The harness's clock, in ms since the harness was made: only advance moves it. */
+  clock: number
+  /** Moves the clock on by ms, running every timer that falls due meanwhile in the order they fall due. */
+  advance(ms: number): void
+  /** The timers still set. */
+  live(): number
   /** Bumps the page's epoch as each look is answered, `bumps` times. */
   bumps: number
   /** Answers the pending select with the element. */
@@ -82,6 +89,19 @@ function harness(o: { noSource?: boolean; deps?: Partial<BridgeDeps> } = {}): Ha
     label: { commit: 'a'.repeat(40), content: 'b'.repeat(40), changed: 1, readAt: '2026-11-16T10:00:00Z' },
     view: { mode: 'fit', scale: 1 },
     timers: [],
+    clock: 0,
+    advance(ms: number) {
+      const until = h.clock + ms
+      for (;;) {
+        const next = h.timers.filter((t) => t.live && t.due <= until).sort((a, b) => a.due - b.due)[0]
+        if (!next) break
+        h.clock = next.due
+        next.live = false
+        next.fn()
+      }
+      h.clock = until
+    },
+    live: () => h.timers.filter((t) => t.live).length,
     bumps: 0,
     frameWindow,
     deliver(data: unknown, source: unknown = frameWindow, origin = ORIGIN) {
@@ -123,12 +143,12 @@ function harness(o: { noSource?: boolean; deps?: Partial<BridgeDeps> } = {}): Ha
     nonce: () => NONCE,
     ...o.deps,
     setTimer(fn, ms) {
-      h.timers.push({ fn, ms })
+      h.timers.push({ fn, ms, due: h.clock + ms, live: true })
       return h.timers.length - 1
     },
     clearTimer(id) {
       const t = h.timers[id as number]
-      if (t) t.fn = () => {}
+      if (t) t.live = false
     },
   })
   return h
@@ -159,18 +179,22 @@ describe('the hello', () => {
     const h = harness()
     // The page answers nothing: its window takes no message.
     h.s.hello()
-    expect(h.timers.map((t) => t.ms)).toEqual([...HELLO_AGAIN_MS, HELLO_MS])
+    expect(h.timers.map((t) => t.ms)).toEqual([HELLO_AGAIN_MS[0], HELLO_MS])
     expect(HELLO_MS).toBe(3000)
     await h.settle()
     expect(h.s.state.bridge).toBe('ready')
-    for (const t of h.timers) t.fn()
-    expect(h.s.state.bridge).toBe('ready')
+    // The ready ended the hellos and the 3 s: nothing is left to fire.
+    expect(h.live()).toBe(0)
+    h.advance(60_000)
+    expect([h.s.state.bridge, h.posts.filter((p) => p.t === 'hello').length]).toEqual(['ready', 1])
 
     const quiet = harness()
     ;(quiet.frameWindow as { postMessage: unknown }).postMessage = () => {}
     quiet.s.hello()
     expect(quiet.s.state.bridge).toBe('hello')
-    for (const t of quiet.timers) t.fn()
+    quiet.advance(HELLO_MS - 1)
+    expect([quiet.s.state.bridge, quiet.s.state.words]).toEqual(['hello', ''])
+    quiet.advance(1)
     expect([quiet.s.state.bridge, quiet.s.state.words]).toEqual(['absent', NO_BRIDGE_WORDS])
   })
 
@@ -385,9 +409,8 @@ describe('the hello said again, and Capture during it', () => {
       post(m, origin)
     }
     h.s.hello()
-    expect(h.timers.map((t) => t.ms)).toEqual([...HELLO_AGAIN_MS, HELLO_MS])
     expect(h.s.state.bridge).toBe('hello')
-    h.timers[0]!.fn()
+    h.advance(HELLO_AGAIN_MS[0])
     await h.settle()
     expect([hellos, h.s.state.bridge]).toEqual([2, 'ready'])
   })
@@ -400,7 +423,7 @@ describe('the hello said again, and Capture during it', () => {
     await h.settle()
     expect(h.s.state.drafts).toEqual([])
     // Given up at its 3 s: the screenshot alone.
-    h.timers.find((t) => t.ms === HELLO_MS)!.fn()
+    h.advance(HELLO_MS)
     await capture
     expect(h.s.state.drafts.map((d) => d.annotations.length)).toEqual([0])
 
@@ -412,6 +435,148 @@ describe('the hello said again, and Capture during it', () => {
     await ok.pick(first)
     await started
     expect(ok.s.state.drafts.map((d) => d.annotations.length)).toEqual([1])
+  })
+})
+
+describe('a bridge that starts late: the hello said while the frame stays on its load', () => {
+  /**
+   * The frame's page with a bridge not running yet: every hello is kept (its nonce, at the clock's time) and none is answered until
+   * `up`; then a hello is answered as the bridge answers it, with the nonce it carried.
+   */
+  function late(o: { deps?: Partial<BridgeDeps> } = {}) {
+    const h = harness(o)
+    const post = (h.frameWindow as { postMessage(m: Record<string, unknown>, o: string): void }).postMessage
+    const c = { h, up: false, hellos: [] as Array<{ nonce: unknown; at: number }> }
+    ;(h.frameWindow as { postMessage: unknown }).postMessage = (m: Record<string, unknown>, origin: string) => {
+      if (m.t === 'hello') c.hellos.push({ nonce: m.nonce, at: h.clock })
+      if (c.up) post(m, origin)
+    }
+    return c
+  }
+  const readyOf = (nonce: string) => ({ conductor: PREVIEW_MARK, nonce, t: 'ready', version: 1, hints: [], ...testPage() })
+  /** A nonce of its own for each load. */
+  const loads = () => {
+    let n = 0
+    return () => `nonce-of-load-${++n}-0000000`
+  }
+
+  it('takes a ready that comes after the words, and the words go', async () => {
+    const c = late()
+    c.h.s.hello()
+    c.h.advance(HELLO_MS)
+    expect([c.h.s.state.bridge, c.h.s.state.words]).toEqual(['absent', NO_BRIDGE_WORDS])
+    // The bridge's script starts now, long after the load: it answers the next hello, said at the pane's own pace.
+    c.h.advance(10_000)
+    c.up = true
+    const said = c.hellos.length
+    c.h.advance(HELLO_EVERY_MS)
+    await c.h.settle()
+    expect(c.hellos.length).toBe(said + 1)
+    expect([c.h.s.state.bridge, c.h.s.state.words]).toEqual(['ready', ''])
+    // Ready: no hello is said again and no timer is left.
+    expect(c.h.live()).toBe(0)
+    c.h.advance(60_000)
+    expect(c.hellos.length).toBe(said + 1)
+    // Capture now selects.
+    const sel = c.h.s.start()
+    await c.h.settle()
+    expect(c.h.s.state.busy).toBe('select')
+    await c.h.pick(first)
+    await sel
+    expect(c.h.s.state.drafts.map((d) => d.annotations.map((a) => a.element?.selector))).toEqual([['#save']])
+  })
+
+  it('takes a ready the page sends of itself for the load’s nonce after the words, as a bridge answering an earlier hello late', () => {
+    const c = late()
+    c.h.s.hello()
+    c.h.advance(HELLO_MS)
+    expect(c.h.s.state.bridge).toBe('absent')
+    c.h.deliver(readyOf(NONCE))
+    expect([c.h.s.state.bridge, c.h.s.state.words, c.h.live()]).toEqual(['ready', '', 0])
+  })
+
+  it('goes on saying the hello with the load’s one nonce, every second within its 3 s and every two after, one timer at a time', () => {
+    const c = late()
+    c.h.s.hello()
+    for (let i = 0; i < 20; i++) {
+      c.h.advance(1000)
+      // The 3 s and at most one hello said again are set; after the 3 s, the one hello alone.
+      expect(c.h.live()).toBe(c.h.clock < HELLO_MS ? 2 : 1)
+    }
+    expect(c.hellos.map((x) => x.at)).toEqual([0, 1000, 2000, 4000, 6000, 8000, 10000, 12000, 14000, 16000, 18000, 20000])
+    expect(new Set(c.hellos.map((x) => x.nonce))).toEqual(new Set([NONCE]))
+    expect(c.h.s.state.bridge).toBe('absent')
+  })
+
+  it('ends the old load’s hellos at a new load, and drops a ready for the old load’s nonce', () => {
+    const c = late({ deps: { nonce: loads() } })
+    c.h.s.hello()
+    c.h.advance(5000)
+    const old = 'nonce-of-load-1-0000000'
+    expect(c.hellos.every((x) => x.nonce === old)).toBe(true)
+    // The frame loads again: a new nonce, the old load's hellos ended.
+    c.h.s.hello()
+    const at = c.hellos.length
+    c.h.advance(30_000)
+    expect(c.hellos.slice(at).map((x) => x.nonce)).toEqual(Array(c.hellos.length - at).fill('nonce-of-load-2-0000000'))
+    expect(c.h.live()).toBe(1)
+    // A late ready of the old load is dropped; the new load's is taken.
+    c.h.deliver(readyOf(old))
+    expect(c.h.s.state.bridge).toBe('absent')
+    c.h.deliver(readyOf('nonce-of-load-2-0000000'))
+    expect([c.h.s.state.bridge, c.h.live()]).toEqual(['ready', 0])
+  })
+
+  it('takes a late ready only from the frame’s window at the preview’s origin', () => {
+    const c = late()
+    c.h.s.hello()
+    c.h.advance(HELLO_MS)
+    c.h.deliver(readyOf(NONCE), { other: 'window' })
+    c.h.deliver(readyOf(NONCE), c.h.frameWindow, 'http://127.0.0.1:41001')
+    c.h.deliver({ ...readyOf(NONCE), version: 2 })
+    expect(c.h.s.state.bridge).toBe('absent')
+  })
+
+  it('leaves no timer when the frame goes, and takes nothing of its load after', () => {
+    const c = late()
+    c.h.s.hello()
+    c.h.advance(7000)
+    c.h.s.gone()
+    expect([c.h.live(), c.h.s.state.bridge, c.h.s.state.words]).toEqual([0, 'none', ''])
+    const said = c.hellos.length
+    c.h.advance(60_000)
+    expect(c.hellos.length).toBe(said)
+    c.h.deliver(readyOf(NONCE))
+    expect(c.h.s.state.bridge).toBe('none')
+
+    const closed = late()
+    closed.h.s.hello()
+    closed.h.advance(1500)
+    closed.h.s.close()
+    expect(closed.h.live()).toBe(0)
+    closed.h.advance(60_000)
+    expect(closed.hellos.length).toBe(2)
+  })
+
+  it('stops saying the hello to a frame element since replaced, or once the frame has no window', () => {
+    let el: object = { frame: 1 }
+    const c = late({ deps: { frameElement: () => el } })
+    c.h.s.hello()
+    c.h.advance(4000)
+    el = { frame: 2 }
+    const said = c.hellos.length
+    c.h.advance(60_000)
+    expect([c.hellos.length, c.h.live()]).toEqual([said, 0])
+
+    // The frame's window gone (the pane frames nothing now): the next hello is not said, and nothing is set again.
+    let open = true
+    const quiet = { postMessage: () => {} }
+    const w = harness({ deps: { end: () => ({ window: open ? quiet : null, origin: ORIGIN }) } })
+    w.s.hello()
+    w.advance(4000)
+    open = false
+    w.advance(60_000)
+    expect(w.live()).toBe(0)
   })
 })
 
