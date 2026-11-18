@@ -104,6 +104,11 @@ type handTarget struct {
 	Task    string `json:"task"`
 	State   string `json:"state"`
 	Attempt int    `json:"attempt"`
+	// Starting is true while that attempt is open and its agent has not
+	// started (no session yet): it is handed the package if its task file
+	// is not written yet, otherwise the package waits for the attempt
+	// after it. Absent when false.
+	Starting bool `json:"starting,omitempty"`
 }
 
 // handRefusal is why a preview's package cannot be sent now: one of the
@@ -262,6 +267,7 @@ func (s *Server) handGoalOf(ctx context.Context, req brakeman.Request) (handGoal
 	target := &handTarget{Run: run.ID, RunName: run.Name, Task: t.ID, State: t.State}
 	if t.Attempt != nil {
 		target.Attempt = t.Attempt.N
+		target.Starting = t.Attempt.EndedAt == nil && t.Attempt.SessionID == ""
 	}
 	chain := []string{run.ID}
 	for _, n := range nodes {
@@ -273,21 +279,33 @@ func (s *Server) handGoalOf(ctx context.Context, req brakeman.Request) (handGoal
 }
 
 // sentRecordOf is a record as the routes answer it: notStarted set for a
-// handed one whose attempt the engine holds and which closed without its
-// agent ever starting.
-func (s *Server) sentRecordOf(h brakeman.SentHandoff) sentRecord {
+// handed one whose attempt closed without its agent ever starting (no
+// session), judged from the engine's run while it holds it, else from the
+// ledger's row of that attempt (the ledger keeps every attempt of a
+// managed run; a run's kept record keeps only each task's latest).
+func (s *Server) sentRecordOf(ctx context.Context, h brakeman.SentHandoff) sentRecord {
 	out := sentRecord{SentHandoff: h}
 	if h.State != brakeman.HandoffHanded || len(h.Handed) == 0 {
 		return out
 	}
 	last := h.Handed[len(h.Handed)-1]
-	_, attempts, err := s.runs.TaskOf(last.Run, h.Task)
-	if err != nil {
+	if _, attempts, err := s.runs.TaskOf(last.Run, h.Task); err == nil {
+		for _, a := range attempts {
+			if a.N == last.Attempt && a.EndedAt != nil && a.SessionID == "" {
+				out.NotStarted = true
+			}
+		}
+		return out
+	} else if !errors.Is(err, crew.ErrRunNotFound) {
 		return out
 	}
-	for _, a := range attempts {
-		if a.N == last.Attempt && a.EndedAt != nil && a.SessionID == "" {
-			out.NotStarted = true
+	if s.ledger != nil {
+		if rows, err := s.ledger.Attempts(ctx, last.Run); err == nil {
+			for _, a := range rows {
+				if a.TaskID == h.Task && a.N == last.Attempt {
+					out.NotStarted = !a.ClosedAt.IsZero() && a.SessionID == ""
+				}
+			}
 		}
 	}
 	return out
@@ -363,7 +381,7 @@ func (s *Server) handleHandPreview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if found {
-		rec := s.sentRecordOf(h)
+		rec := s.sentRecordOf(r.Context(), h)
 		p.Handoff = &rec
 	}
 	s.writeHandJSON(w, http.StatusOK, p, maxHandPreview)
@@ -422,7 +440,7 @@ func (s *Server) handleHand(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, "op_conflict", "the op id sent another item")
 			return
 		}
-		s.writeHandJSON(w, http.StatusOK, handSent{Handoff: s.sentRecordOf(h)}, brakeman.MaxHandoffRecord+64)
+		s.writeHandJSON(w, http.StatusOK, handSent{Handoff: s.sentRecordOf(r.Context(), h)}, brakeman.MaxHandoffRecord+64)
 		return
 	}
 	if len(hi.text) > brakeman.MaxHandoffText {
@@ -454,7 +472,7 @@ func (s *Server) handleHand(w http.ResponseWriter, r *http.Request) {
 		status = http.StatusCreated
 		s.runs.Note(h.Run, session.ActivityStatus, fmt.Sprintf("handoff package %s sent %sfrom %s: waits for %s's next attempt", h.ID, byWords(h.By), h.Request, h.Task))
 	}
-	s.writeHandJSON(w, status, handSent{Handoff: s.sentRecordOf(h)}, brakeman.MaxHandoffRecord+64)
+	s.writeHandJSON(w, status, handSent{Handoff: s.sentRecordOf(r.Context(), h)}, brakeman.MaxHandoffRecord+64)
 }
 
 // byWords is "by <name> " for a name given, "" for none.
@@ -507,9 +525,9 @@ func (s *Server) handleHandWithdraw(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if withdrawn {
-		s.runs.Note(h.Run, session.ActivityStatus, fmt.Sprintf("handoff package %s withdrawn %s", h.ID, strings.TrimSpace(byWords(h.EndedBy))))
+		s.runs.Note(h.Run, session.ActivityStatus, strings.TrimSpace(fmt.Sprintf("handoff package %s withdrawn %s", h.ID, byWords(h.EndedBy))))
 	}
-	s.writeHandJSON(w, http.StatusOK, handSent{Handoff: s.sentRecordOf(h)}, brakeman.MaxHandoffRecord+64)
+	s.writeHandJSON(w, http.StatusOK, handSent{Handoff: s.sentRecordOf(r.Context(), h)}, brakeman.MaxHandoffRecord+64)
 }
 
 // handoffFor is the engine's handoff function (wireContext): the package
