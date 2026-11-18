@@ -63,7 +63,8 @@ type Options struct {
 	// it is given to. A launch adds its token's hash itself, at the mint,
 	// and hands the entry over (TakeAgentToken): the session holds it from
 	// that hand-off. Either way the session removes the entry when another
-	// token replaces it or as the session ends (TokenEntry).
+	// entry replaces it, the same token's among them, or as the session
+	// ends (TokenEntry): the set is counted, one entry per owner.
 	Tokens TokenSet
 	// OnChange is called (outside the session lock) after status, viewer
 	// count or attention changes so listings and event streams stay current.
@@ -2753,15 +2754,15 @@ func (s *Local) TakeAgentToken(tok string, e TokenEntry) {
 	s.takeAgentToken(tok, e)
 }
 
-// takeAgentToken, s.mu held: the earlier entry, if another, is removed
-// once e is in.
+// takeAgentToken, s.mu held: the earlier entry is removed once e is in,
+// whatever its hash. Each entry is a count of its own (TokenSet): a token
+// the session is handed again is in the set twice for a moment, then once.
 func (s *Local) takeAgentToken(tok string, e TokenEntry) {
 	s.agentTokenHash = sha256.Sum256([]byte(tok))
 	s.hasAgentToken = tok != ""
-	if old := s.token.Hand(); old != e {
-		old.Remove()
-	}
+	old := s.token.Hand()
 	s.token = e
+	old.Remove()
 	if s.info.Status.Ended() {
 		s.token.Remove()
 	}
@@ -2784,8 +2785,10 @@ func (s *Local) AgentTokenOK(tok string) bool {
 	return true
 }
 
-// TokenSet is a set of the hashes of live agent tokens; removing a hash
-// that is not in it does nothing.
+// TokenSet is a set of the hashes of live agent tokens, counted: each Add
+// is one owner's entry (TokenEntry), matched by exactly one Remove by the
+// same owner, and a hash is in the set while any owner holds an entry for
+// it. Removing a hash that is not in it does nothing.
 type TokenSet interface {
 	Add(h [32]byte)
 	Remove(h [32]byte)

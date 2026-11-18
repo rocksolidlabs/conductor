@@ -201,7 +201,7 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 		if req.agentSHA256 != "" {
 			// An attempt whose approved agent was deleted or hidden since:
 			// not the selection its plan revision approved either.
-			return nil, newAPIError(http.StatusConflict, agentChangedCode, "the agent "+req.AgentID+" is no longer in the catalog its plan revision approved it from")
+			return nil, newAPIError(http.StatusConflict, agentChangedCode, "the agent "+req.AgentID+" is no longer in the catalog its run's launch took it from")
 		}
 		return nil, newAPIError(http.StatusBadRequest, "invalid_agent", "unknown agent id")
 	}
@@ -217,7 +217,7 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 	// approved one (another command that takes no extra arguments, say) is
 	// always that, never an ordinary refusal of the launch.
 	if req.agentSHA256 != "" && agentSelection(agent, yolo).SHA256 != req.agentSHA256 {
-		return nil, newAPIError(http.StatusConflict, agentChangedCode, "the agent "+agent.ID+"'s catalog entry is not the one its plan revision approved")
+		return nil, newAPIError(http.StatusConflict, agentChangedCode, "the agent "+agent.ID+"'s catalog entry is not the one its run's launch took")
 	}
 	if len(req.Args) > 0 && !agent.AllowArgs && !req.conductorArgs {
 		return nil, newAPIError(http.StatusBadRequest, "args_not_allowed", "this agent does not accept extra arguments")

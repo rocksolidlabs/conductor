@@ -699,6 +699,18 @@ type Host interface {
 	// the launch it made. Declared by Brakeman's PR-17, wired to DS2's
 	// launch by its PR-12.
 	LaunchApproved(ctx context.Context, r ApprovedLaunch) (RunRef, error)
+	// Run, RunByOp and StopRun read, find and stop a run this provider
+	// launched (a Launch with an Origin made it), and no other: any other
+	// run answers ErrNotFound, as no run does. RunByOp never launches; a
+	// stop of a run not running answers ErrNotRunning, nothing changed.
+	Run(ctx context.Context, id string) (RunStatus, error)
+	RunByOp(ctx context.Context, opID string) (RunStatus, error)
+	StopRun(ctx context.Context, r StopRequest) error
+	// ResolveLaunch answers what a launch of a saved crew would run now,
+	// for a Dispatch project at a commit, and one digest over it: a launch
+	// that carries the digest is resolved again in the launch itself and
+	// refused launch_changed on any difference.
+	ResolveLaunch(ctx context.Context, r ResolveRequest) (ResolvedLaunch, error)
 }
 type TurnLaunch struct {
 	Agent      string `json:"agent"`            // a catalog agent's id, at most MaxAgentID
@@ -721,7 +733,22 @@ type LaunchRequest struct {
 	Crew  string    `json:"crew"`
 	Label string    `json:"label,omitempty"`
 	By    Principal `json:"by"`
+	// A provider's launch, all of them with Origin and none without it:
+	OpID           string        `json:"opId,omitempty"`           // required with Origin; a retry answers the run it made
+	Origin         Origin        `json:"origin,omitzero"`          // {ref, label}: where the launch comes from
+	Subject        Subject       `json:"subject,omitzero"`         // {ref, url, prior}: what the run is about
+	StopAfter      time.Duration `json:"stopAfter,omitempty"`      // 10 minutes to 24 hours, whole minutes; nanoseconds in JSON
+	Project        string        `json:"project,omitempty"`        // a Dispatch project's key, required with ResolvedDigest
+	ResolvedDigest string        `json:"resolvedDigest,omitempty"` // a ResolvedLaunch's Digest the launch is held to
+	StartCommit    string        `json:"startCommit,omitempty"`    // the run's base, 40 or 64 lower-case hex
 }
+// The records of a provider's launch, its runs and its resolved launch
+// (Origin, Subject, RunStatus, RunOrigin, StopRequest, ResolveRequest,
+// ResolvedLaunch, ResolvedManifest, ResolvedMember, CapacityView,
+// CapacityWindow, CapacityCredit), their bounds, ResolvedDigest and
+// Refusal with its codes are in ext/launch.go and ext/resolve.go; their
+// words, bounds and refusals in docs/protocol.md, Managed runs, "A
+// provider's launch".
 type RunRef struct {
 	ID   string `json:"id"`
 	Crew string `json:"crew"`

@@ -139,8 +139,13 @@ func (s *Server) handleHostWS(w http.ResponseWriter, r *http.Request) {
 		hc.addr = addr
 	}
 	if hp.subject != "" {
-		// An identity provider's principal: rechecked and renewed (identity.go).
+		// An identity provider's principal: rechecked and renewed (identity.go),
+		// and, on a switchyard whose provider observes it, reported
+		// (relayusage.go), each change of its credential cutting a report.
 		hc.cred, hc.subject = newWatchedToken(tok), hp.subject
+		if hc.usage = s.exts.relayUsage.open(info.ID, hp.subject, tok, isDesk); hc.usage != nil {
+			hc.cred.changed = hc.usage.renewed
+		}
 	}
 	if s.cfg.Switchyard.Enabled {
 		switch {
@@ -165,6 +170,13 @@ func (s *Server) handleHostWS(w http.ResponseWriter, r *http.Request) {
 	// links its instance made with the host token count against its address
 	// from here, before it is told them: those past the bound end.
 	defer s.hostUp(hs.Owner(), hc.addr)()
+	// A reported connection's Final is queued as it ends, before the session
+	// shows its host gone (so a resume counts on a connection of its own),
+	// and its periods are reported until then.
+	if hc.usage != nil {
+		defer hc.usage.close()
+		go s.watchRelayUsage(ctx, hc.usage)
+	}
 
 	// An open host, which presented no token, is handed the configured
 	// servers alone: no media provider is asked for it (iceServersFor).
@@ -254,6 +266,7 @@ func (s *Server) handleHostWS(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			s.relayed.add(len(data))
+			hc.usage.add(len(data))
 			if inner.Type == proto.TypeInput || inner.Type == proto.TypeDecide {
 				continue // hosts never send input, nor an action on a decision, to viewers
 			}
@@ -371,6 +384,9 @@ type hostConnState struct {
 	// provider's principal (hostToken); nil and "" for every other.
 	cred    *watchedToken
 	subject string
+	// usage is the connection's usage report (relayusage.go): nil unless
+	// cred is set on a switchyard whose identity provider observes it.
+	usage *relayUsageConn
 }
 
 // chargeForward charges, before a viewer is sent it, what a host's message

@@ -365,8 +365,10 @@ func (s *Server) handleCrewRuns(w http.ResponseWriter, r *http.Request) {
 		}
 		for _, run := range all {
 			if !seen[run.ID] {
-				// A list carries no chat; a run read alone does.
+				// A list carries no chat; a run read alone does. Where it
+				// came from is the ledger's to say.
 				run.Chat = nil
+				s.ledgerOrigin(r.Context(), &run)
 				recorded = append(recorded, run)
 			}
 		}

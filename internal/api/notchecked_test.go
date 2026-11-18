@@ -31,6 +31,7 @@ import (
 	"github.com/rocksolidlabs/conductor/internal/session"
 	"github.com/rocksolidlabs/conductor/internal/session/sessiontest"
 	"github.com/rocksolidlabs/conductor/internal/share"
+	"github.com/rocksolidlabs/conductor/internal/signal"
 )
 
 // The answer to a request whose token the identity provider did not judge
@@ -433,13 +434,15 @@ func placeToken(pl principalPlace) string {
 	return judgedAdmin
 }
 
-// The workbench token, a host token, a link and a session's own agent
-// token are answered as ever in every state of the provider, which is
-// never asked about them.
+// The workbench token, a host token, a link, a session's own agent token
+// and a hosted session's are answered as ever in every state of the
+// provider, which is never asked about them.
 func TestChainTokensNeverWaitOnTheProvider(t *testing.T) {
 	e, f, sid := notCheckedEnv(t)
 	t.Cleanup(func() { extWaiting.Store(nil) })
 	agentTok := e.agentToken(sid)
+	hostedTok := unminted("h")
+	hosted := dialFakeHost(t, e, hostedTok).sessionID
 	_, linkTok, err := e.srv.links.Create(sid, session.RoleView, "", 0)
 	if err != nil {
 		t.Fatal(err)
@@ -448,18 +451,25 @@ func TestChainTokensNeverWaitOnTheProvider(t *testing.T) {
 		pl   principalPlace
 		tok  string
 		want int
+		sid  string
 	}
 	asks := []ask{
-		{principalPlace{method: "GET", path: "/api/whoami"}, adminToken, http.StatusOK},
-		{principalPlace{method: "GET", path: "/api/whoami"}, "test-host-token", http.StatusUnauthorized},
-		{principalPlace{method: "GET", path: "/api/me"}, "test-host-token", http.StatusOK},
-		{principalPlace{method: "GET", path: "/api/sessions/{sid}"}, linkTok, http.StatusOK},
-		{principalPlace{method: "POST", path: "/api/sessions/{sid}/attention", body: `{"state":"working"}`}, agentTok, http.StatusOK},
+		{principalPlace{method: "GET", path: "/api/whoami"}, adminToken, http.StatusOK, ""},
+		{principalPlace{method: "GET", path: "/api/whoami"}, "test-host-token", http.StatusUnauthorized, ""},
+		{principalPlace{method: "GET", path: "/api/me"}, "test-host-token", http.StatusOK, ""},
+		{principalPlace{method: "GET", path: "/api/sessions/{sid}"}, linkTok, http.StatusOK, ""},
+		{principalPlace{method: "POST", path: "/api/sessions/{sid}/attention", body: `{"state":"working"}`}, agentTok, http.StatusOK, ""},
+		{principalPlace{method: "GET", path: "/api/whoami"}, hostedTok, http.StatusUnauthorized, ""},
+		{principalPlace{method: "POST", path: "/api/sessions/{sid}/attention", body: `{"state":"working"}`}, hostedTok, http.StatusOK, hosted},
 	}
 	run := func(state string) {
 		t.Helper()
 		for _, a := range asks {
-			if rec := askPlace(e.srv, a.pl, sid, a.tok); rec.Code != a.want {
+			at := sid
+			if a.sid != "" {
+				at = a.sid
+			}
+			if rec := askPlace(e.srv, a.pl, at, a.tok); rec.Code != a.want {
 				t.Fatalf("%s %s, %s: %d %s, want %d", a.pl.method, a.pl.path, state, rec.Code, rec.Body, a.want)
 			}
 		}
@@ -490,6 +500,8 @@ func TestChainTokensNeverWaitOnTheProvider(t *testing.T) {
 type ownTokens struct {
 	e                          *testEnv
 	sid, tok, turnSid, turnTok string
+	// hostedSid and hostedTok are a hosted session's id and agent token.
+	hostedSid, hostedTok string
 }
 
 // ownTokenEnv is ownTokens on a server whose identity provider is p (none
@@ -501,8 +513,9 @@ func ownTokenEnv(t *testing.T, p ext.IdentityProvider) ownTokens {
 		opts = append(opts, withIdentity(p))
 	}
 	b := bkEnvOf(t, newTestEnvAgents(t, nil, slog.New(slog.NewTextHandler(io.Discard, nil)), bkAgents(), opts...))
-	o := ownTokens{e: b.testEnv, sid: b.createSession("cat")}
+	o := ownTokens{e: b.testEnv, sid: b.createSession("cat"), hostedTok: unminted("h")}
 	o.tok = b.agentToken(o.sid)
+	o.hostedSid = dialFakeHost(t, b.testEnv, o.hostedTok).sessionID
 	b.enable(t, "bk", nil)
 	req := b.briefing(t)
 	o.turnSid, o.turnTok, _ = b.turnSession(t, req)
@@ -510,8 +523,9 @@ func ownTokenEnv(t *testing.T, p ext.IdentityProvider) ownTokens {
 	return o
 }
 
-// A live session's agent token and a live Brakeman turn's token (named as
-// a turn names its session, and not), at every place that makes a
+// A live session's agent token, a live hosted session's (its session named,
+// and another), and a live Brakeman turn's token (named as a turn names its
+// session, and not), at every place that makes a
 // principal from a request and in every state of the provider, are
 // answered as the same request is by a server with no provider registered,
 // and the provider is never asked about them. A session that has ended
@@ -520,23 +534,34 @@ func TestOwnTokensAnsweredAsWithoutProvider(t *testing.T) {
 	f := &judgeIdentity{asked: map[string]int{}}
 	with, without := ownTokenEnv(t, f), ownTokenEnv(t, nil)
 	t.Cleanup(func() { extWaiting.Store(nil) })
+	none := func(ownTokens) string { return "" }
 	presented := []struct {
-		what      string
-		tok, turn func(o ownTokens) string
+		what           string
+		tok, turn, sid func(o ownTokens) string
 	}{
-		{"a session's agent token", func(o ownTokens) string { return o.tok }, func(ownTokens) string { return "" }},
-		{"a turn's token", func(o ownTokens) string { return o.turnTok }, func(ownTokens) string { return "" }},
-		{"a turn's token, its session named", func(o ownTokens) string { return o.turnTok }, func(o ownTokens) string { return o.turnSid }},
+		{"a session's agent token", func(o ownTokens) string { return o.tok }, none, none},
+		{"a turn's token", func(o ownTokens) string { return o.turnTok }, none, none},
+		{"a turn's token, its session named", func(o ownTokens) string { return o.turnTok }, func(o ownTokens) string { return o.turnSid }, none},
+		{"a hosted session's agent token", func(o ownTokens) string { return o.hostedTok }, none, none},
+		{"a hosted session's agent token, its session at the path", func(o ownTokens) string { return o.hostedTok }, none, func(o ownTokens) string { return o.hostedSid }},
+	}
+	// at is the session a place names for p: the server session's, unless
+	// p names its own.
+	at := func(o ownTokens, sid func(ownTokens) string) string {
+		if id := sid(o); id != "" {
+			return id
+		}
+		return o.sid
 	}
 	run := func(state string) {
 		t.Helper()
 		for _, pl := range principalPlaces {
 			for _, p := range presented {
-				want := placeAnswerOf(askAs(without.e.srv, pl, without.sid, p.tok(without), p.turn(without), nil))
+				want := placeAnswerOf(askAs(without.e.srv, pl, at(without, p.sid), p.tok(without), p.turn(without), nil))
 				if state == "late" {
 					setGuardWait(time.Nanosecond)
 				}
-				got := placeAnswerOf(askAs(with.e.srv, pl, with.sid, p.tok(with), p.turn(with), &judgeCase{state: state}))
+				got := placeAnswerOf(askAs(with.e.srv, pl, at(with, p.sid), p.tok(with), p.turn(with), &judgeCase{state: state}))
 				extWaiting.Store(nil)
 				if got != want {
 					t.Fatalf("%s, %s, %s: %+v, want %+v", pl.at, state, p.what, got, want)
@@ -555,7 +580,7 @@ func TestOwnTokensAnsweredAsWithoutProvider(t *testing.T) {
 	free := holdSlots(t, with.e.srv, "cloud")
 	run("busy")
 	free()
-	for _, tok := range []string{with.tok, with.turnTok} {
+	for _, tok := range []string{with.tok, with.turnTok, with.hostedTok} {
 		if n := f.timesAsked(tok); n != 0 {
 			t.Fatalf("the provider was asked %d times about a token of the server's own", n)
 		}
@@ -775,15 +800,44 @@ func (l *liveTokens) size() int {
 	return len(l.held)
 }
 
-// A hosted session's agent token is minted by its host, not by this server,
-// and the set of live tokens holds nothing for it. At a route that takes it
-// first (the session's report) it is served as a server with no provider
-// serves it, the provider never asked; at a route that does not take it, it
-// is a token the chain does not know: the provider is asked, and while it
-// cannot judge, 503 not_checked. Nothing the session's host does after,
-// a resume with a token of its own, a status, or the session's leaving
-// the registry, puts anything in the set.
-func TestAHostedSessionsTokenIsAskedOfTheProvider(t *testing.T) {
+// The set of live tokens counts each owner's entry: a hash two owners
+// hold is held until both have removed theirs, and removing a hash that
+// is not held changes nothing.
+func TestALiveTokenSetCountsEachOwner(t *testing.T) {
+	var l liveTokens
+	tok, other := unminted("c"), unminted("d")
+	h := share.HashToken(tok)
+	l.Add(h)
+	l.Add(h)
+	l.Remove(h)
+	if !l.holds(tok) || l.size() != 1 {
+		t.Fatalf("one owner's removal of a hash two hold: held %v, size %d", l.holds(tok), l.size())
+	}
+	l.Remove(share.HashToken(other))
+	if !l.holds(tok) || l.holds(other) || l.size() != 1 {
+		t.Fatalf("a removal of a hash not held: held %v and %v, size %d", l.holds(tok), l.holds(other), l.size())
+	}
+	l.Remove(h)
+	if l.holds(tok) || l.size() != 0 {
+		t.Fatalf("both owners removed theirs: held %v, size %d", l.holds(tok), l.size())
+	}
+	l.Remove(h)
+	l.Add(h)
+	if !l.holds(tok) || l.size() != 1 {
+		t.Fatalf("a removal past none left a count behind: held %v, size %d", l.holds(tok), l.size())
+	}
+}
+
+// A hosted session's agent token is answered by the server itself from the
+// session's registration until it ends: at a route that takes it first (the
+// session's report) as a server with no provider serves it, and at a route
+// that does not take it as a token nobody minted is once the provider judges
+// it not its own, the provider never asked. A resume with another token
+// swaps them: the new one is known, the old one is a token the chain does
+// not know, asked of the provider (503 while it cannot judge). The
+// session's end makes its token unknown again, and its leaving the registry
+// leaves the set empty.
+func TestAHostedSessionsTokenIsAnsweredByTheServer(t *testing.T) {
 	e, f := liveTokenEnv(t, nil)
 	free := newTestEnv(t, nil)
 	tok := unminted("h")
@@ -795,24 +849,21 @@ func TestAHostedSessionsTokenIsAskedOfTheProvider(t *testing.T) {
 	if secret == "" {
 		t.Fatal("the server sent no secret to resume with")
 	}
-	setHolds := func(when string) {
+	setHolds := func(n int, when string) {
 		t.Helper()
-		if n := e.srv.agentTokens.size(); n != 0 {
-			t.Fatalf("the set of live tokens holds %d tokens once %s, not 0", n, when)
+		if got := e.srv.agentTokens.size(); got != n {
+			t.Fatalf("the set of live tokens holds %d tokens once %s, not %d", got, when, n)
 		}
 	}
-	setHolds("a hosted session registered")
+	setHolds(1, "a hosted session registered")
 	report := principalPlaces[1]
 	want := placeAnswerOf(askPlace(free.srv, report, dialFakeHost(t, free, tok).sessionID, tok))
 	if got := placeAnswerOf(askAs(e.srv, report, host.sessionID, tok, "", &judgeCase{state: "fails"})); got != want || got.code != http.StatusOK {
 		t.Fatalf("a hosted session's report: %+v, want %+v (200)", got, want)
 	}
+	asAnUnknownToken(t, e.srv, "a hosted session's token at a route that does not take it", whoami, "", tok, "")
 	if n := f.timesAsked(tok); n != 0 {
-		t.Fatalf("the provider was asked %d times about a hosted session's report", n)
-	}
-	isNotChecked(t, "a hosted session's token at a route that does not take it", askAs(e.srv, whoami, "", tok, "", &judgeCase{state: "fails"}))
-	if n := f.timesAsked(tok); n != 1 {
-		t.Fatalf("the provider was asked %d times about a hosted session's token at a route that does not take it", n)
+		t.Fatalf("the provider was asked %d times about a live hosted session's token", n)
 	}
 
 	// The host goes and resumes the session with another token, which the
@@ -820,6 +871,7 @@ func TestAHostedSessionsTokenIsAskedOfTheProvider(t *testing.T) {
 	id := host.sessionID
 	host.c.CloseNow()
 	until(t, "the host gone", func() bool { return hostedSession(t, e, id).Info().Status == session.StatusHostDisconnected })
+	setHolds(1, "the host went")
 	tok2 := unminted("r")
 	again, resumed := dialFakeHostRegister(t, e, proto.Register{T: proto.HostRegister, Proto: proto.ProtoVersion, Host: proto.HostInfo{Name: "laptop"}, Session: sess(tok2),
 		Resume: &proto.HostResume{SessionID: id, Secret: secret}}, "Bearer test-host-token", nil)
@@ -829,7 +881,12 @@ func TestAHostedSessionsTokenIsAskedOfTheProvider(t *testing.T) {
 	if !hostedSession(t, e, id).AgentTokenOK(tok2) {
 		t.Fatal("the resumed session does not hold the resume's token")
 	}
-	setHolds("the hosted session resumed with a token")
+	setHolds(1, "the hosted session resumed with another token")
+	asAnUnknownToken(t, e.srv, "the resume's token", whoami, "", tok2, "")
+	isNotChecked(t, "the token the resume replaced", askAs(e.srv, whoami, "", tok, "", &judgeCase{state: "fails"}))
+	if o, n := f.timesAsked(tok), f.timesAsked(tok2); o != 1 || n != 0 {
+		t.Fatalf("the provider was asked %d times about the replaced token and %d about the resume's, not 1 and 0", o, n)
+	}
 
 	// A status, the session's end: the read loop has handled it once it
 	// answers a revoke sent after it.
@@ -839,39 +896,166 @@ func TestAHostedSessionsTokenIsAskedOfTheProvider(t *testing.T) {
 	if st := hostedSession(t, e, id).Info().Status; st != session.StatusExited {
 		t.Fatalf("the hosted session's status after its host said exited: %s", st)
 	}
-	setHolds("the hosted session's host sent a status")
+	setHolds(0, "the hosted session's host said it exited")
+	isNotChecked(t, "an ended hosted session's token", askAs(e.srv, whoami, "", tok2, "", &judgeCase{state: "fails"}))
+	if n := f.timesAsked(tok2); n != 1 {
+		t.Fatalf("the provider was asked %d times about an ended hosted session's token, not once", n)
+	}
 
 	// The ended session leaves the registry (Retire) before the answer.
 	if resp, out := e.do("DELETE", "/api/sessions/"+id, adminToken, nil); resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("removing the ended hosted session: %d %v", resp.StatusCode, out)
 	}
-	setHolds("the hosted session left the registry")
+	setHolds(0, "the hosted session left the registry")
 }
 
-// No Go file of internal/signal, its tests among them, holds an identifier
-// spelled TokenSet, TokenEntry, AddToken, TakeAgentToken, Tokens,
-// agentTokens or liveTokens, wherever it stands (a declaration, a field, a
-// selector), whatever it refers to. It looks inside that package alone and
-// by those names alone: a hosted session reaches the set of live tokens by
-// none of them.
-func TestNoHostedSessionNamesTheLiveTokens(t *testing.T) {
-	files, err := filepath.Glob("../signal/*.go")
-	if err != nil || len(files) == 0 {
-		t.Fatalf("no file of internal/signal: %v", err)
-	}
-	names := []string{"TokenSet", "TokenEntry", "AddToken", "TakeAgentToken", "Tokens", "agentTokens", "liveTokens"}
-	fset := token.NewFileSet()
-	for _, name := range files {
-		file, err := parser.ParseFile(fset, name, nil, parser.SkipObjectResolution)
-		if err != nil {
-			t.Fatal(err)
+// A hosted session registered with a live launched session's token takes
+// nothing from it and gains nothing of it, whichever ends first: the token
+// stays known, never asked of the provider, while either session lives,
+// and is unknown once both have ended; the launched session is never noted
+// as called by its agent.
+func TestAHostedTokenEqualToALaunchedOneTakesNothingFromIt(t *testing.T) {
+	for _, hostedFirst := range []bool{true, false} {
+		name := "the launched session ends first"
+		if hostedFirst {
+			name = "the hosted session ends first"
 		}
-		ast.Inspect(file, func(n ast.Node) bool {
-			if id, ok := n.(*ast.Ident); ok && slices.Contains(names, id.Name) {
-				t.Errorf("%s: %s names the set of live tokens", fset.Position(id.Pos()), id.Name)
+		t.Run(name, func(t *testing.T) {
+			e, f := liveTokenEnv(t, nil)
+			sid := e.createSession("cat")
+			tok := e.agentToken(sid)
+			host := dialFakeHost(t, e, tok)
+			if n := e.srv.agentTokens.size(); n != 1 {
+				t.Fatalf("the set holds %d tokens for one token two sessions hold, not 1", n)
 			}
-			return true
+			if rec := askPlace(e.srv, principalPlaces[1], host.sessionID, tok); rec.Code != http.StatusOK {
+				t.Fatalf("the hosted session's report: %d %s", rec.Code, rec.Body)
+			}
+			d, _ := e.srv.registry.Get(sid)
+			local := d.(*session.Local)
+			endHosted := func() {
+				t.Helper()
+				host.send(proto.HostStatusMsg{T: proto.HostStatus, SessionID: host.sessionID, Status: string(session.StatusExited)})
+				host.send(proto.HostLinkRevokeMsg{T: proto.HostLinkRevoke, RequestID: "after-status", LinkID: "none"})
+				linkAnswer(t, host, "after-status")
+				if !hostedSession(t, e, host.sessionID).Info().Status.Ended() {
+					t.Fatal("the hosted session did not end")
+				}
+			}
+			endLaunched := func() {
+				t.Helper()
+				if err := local.Stop(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+			}
+			first, second := endLaunched, endHosted
+			if hostedFirst {
+				first, second = endHosted, endLaunched
+			}
+			first()
+			asAnUnknownToken(t, e.srv, "the token, one of its two sessions ended", whoami, sid, tok, "")
+			if n := f.timesAsked(tok); n != 0 {
+				t.Fatalf("the provider was asked %d times about a token a live session holds", n)
+			}
+			second()
+			if n := e.srv.agentTokens.size(); n != 0 {
+				t.Fatalf("the set holds %d tokens once both sessions ended, not 0", n)
+			}
+			isNotChecked(t, "the token, both its sessions ended", askAs(e.srv, whoami, "", tok, "", &judgeCase{state: "fails"}))
+			if n := f.timesAsked(tok); n != 1 {
+				t.Fatalf("the provider was asked %d times about a token no live session holds, not once", n)
+			}
+			if local.AgentCalled() {
+				t.Fatal("the launched session was noted as called by its agent")
+			}
 		})
+	}
+}
+
+// afterSet is the server's set calling after once each change is made.
+type afterSet struct {
+	*liveTokens
+	after func()
+}
+
+func (a *afterSet) Add(h [32]byte)    { a.liveTokens.Add(h); a.after() }
+func (a *afterSet) Remove(h [32]byte) { a.liveTokens.Remove(h); a.after() }
+
+// A host that comes back with the token its session holds keeps it known
+// throughout: GET /api/me made after each step of the refresh, the new
+// entry added and the old one removed, is answered as a token nobody
+// minted is once the provider judges it, never 503, the provider never
+// asked.
+func TestAHostedReconnectKeepsItsTokenKnown(t *testing.T) {
+	e, f := liveTokenEnv(t, nil)
+	tok := unminted("h")
+	me := principalPlace{method: "GET", path: "/api/me"}
+	steps := 0
+	e.srv.hosts.Tokens = &afterSet{liveTokens: &e.srv.agentTokens, after: func() {
+		steps++
+		asAnUnknownToken(t, e.srv, fmt.Sprintf("the token after step %d", steps), me, "", tok, "")
+	}}
+	s := proto.HostSession{Name: "hosted", AgentID: "cat", Command: []string{"cat"}, Cwd: e.root, Cols: 80, Rows: 24, LocalID: "1", AgentToken: tok}
+	conn := signal.NewHostConn()
+	hs := registerSession(t, e, conn, s)
+	hs.HostDisconnected(conn)
+	steps = 0
+	again := registerSession(t, e, signal.NewHostConn(), s)
+	if again != hs {
+		t.Fatal("the same instance did not take its session back")
+	}
+	if steps != 2 {
+		t.Fatalf("the refresh made %d changes to the set, not an add and a remove", steps)
+	}
+	if n := f.timesAsked(tok); n != 0 {
+		t.Fatalf("the provider was asked %d times about a reconnecting session's token", n)
+	}
+}
+
+// A hosted session removed from the registry while its registration is
+// still finishing (held at its record's begin, after the registry and the
+// hub hold it) leaves no entry, and none once the registration returns.
+func TestARemovalDuringARegistrationLeavesNoToken(t *testing.T) {
+	e, f := liveTokenEnv(t, nil)
+	tok := unminted("h")
+	s := proto.HostSession{Name: "hosted", AgentID: "cat", Command: []string{"cat"}, Cwd: e.root, Cols: 80, Rows: 24, LocalID: "1", AgentToken: tok}
+	id := signal.HostedID("instance-r", "1")
+	begun, gate := make(chan struct{}), make(chan struct{})
+	hook := func(stage, sid string) {
+		if sid == id && stage == "hostedBegun" {
+			close(begun)
+			<-gate
+		}
+	}
+	e.srv.recordHook.Store(&hook)
+	t.Cleanup(func() { e.srv.recordHook.Store(nil) })
+	registered := make(chan error, 1)
+	go func() {
+		_, _, err := e.srv.hosts.Register(proto.Register{T: proto.HostRegister, Proto: proto.ProtoVersion, Host: proto.HostInfo{Name: "mac", User: "ada", Instance: "instance-r"}, Session: s}, signal.NewHostConn())
+		registered <- err
+	}()
+	select {
+	case <-begun:
+	case <-time.After(testWait):
+		t.Fatal("the registration never began its record")
+	}
+	if n := e.srv.agentTokens.size(); n != 1 {
+		t.Fatalf("the set holds %d tokens while the registration is held, not 1", n)
+	}
+	e.srv.registry.Remove(id)
+	if n := e.srv.agentTokens.size(); n != 0 {
+		t.Fatalf("the set holds %d tokens once the held registration's session was removed, not 0", n)
+	}
+	close(gate)
+	if err := <-registered; err != nil {
+		t.Fatal(err)
+	}
+	if n := e.srv.agentTokens.size(); n != 0 {
+		t.Fatalf("the set holds %d tokens once the registration returned, not 0", n)
+	}
+	isNotChecked(t, "a removed hosted session's token", askAs(e.srv, whoami, "", tok, "", &judgeCase{state: "fails"}))
+	if n := f.timesAsked(tok); n != 1 {
+		t.Fatalf("the provider was asked %d times about a removed hosted session's token, not once", n)
 	}
 }
 
@@ -1494,4 +1678,59 @@ func isGuardType(e ast.Expr) bool {
 	}
 	id, ok := e.(*ast.Ident)
 	return ok && id.Name == "guardIdentity"
+}
+
+// hostedWithToken registers a hosted session on e, with a host token,
+// whose agent token is tok: tok is then a live agent token.
+func hostedWithToken(t *testing.T, e *testEnv, localID, tok string) {
+	t.Helper()
+	dialFakeHostWith(t, e, proto.HostInfo{Name: "box", Instance: "inst-live"},
+		proto.HostSession{Name: "hosted", AgentID: "cat", Command: []string{"cat"}, Cwd: "/tmp", Cols: 80, Rows: 24, LocalID: localID, AgentToken: tok}, "Bearer test-host-token")
+	if !e.srv.agentTokens.holds(tok) {
+		t.Fatal("the hosted session's token is not live")
+	}
+}
+
+// A session's live agent token is never a host credential: a host
+// connection admitted through the provider that renews to one is closed
+// 4403 as for a token the provider refuses, and the provider is never
+// asked about it, though it would admit it.
+func TestARenewalToALiveAgentTokenIsRefusedUnasked(t *testing.T) {
+	f := newCredIdentity()
+	e, _ := credEnv(t, f)
+	live := unminted("l")
+	f.set(func(f *credIdentity) { f.admits[live] = credHost })
+	hostedWithToken(t, e, "live", live)
+	h, _ := dialCred(t, e, hostReg("1", nil), credOld)
+	h.send(hostToken(live))
+	closedRevoked(t, h)
+	if n := f.timesAsked(live); n != 0 {
+		t.Fatalf("the provider was asked %d times about a live agent token offered as a host credential", n)
+	}
+}
+
+// A renewal kept pending (every renewal slot taken) that has since become
+// a session's live agent token is refused at the connection's recheck, the
+// provider never asked about it, though it would admit it.
+func TestAPendingRenewalThatBecameALiveAgentTokenIsRefusedUnasked(t *testing.T) {
+	f := newCredIdentity()
+	e, clock := credEnv(t, f)
+	live := unminted("p")
+	f.set(func(f *credIdentity) { f.admits[live] = credHost })
+	h, _ := dialCred(t, e, hostReg("1", nil), credOld)
+	first := clock.next(t, identityRecheckEvery)
+	gate := make(chan struct{})
+	t.Cleanup(func() { close(gate) })
+	fillRenewals(t, e, clock, f, gate)
+	h.send(hostToken(live))
+	h.link("view", "") // read after the renewal: kept pending, the connection stayed
+	if n := f.timesAsked(live); n != 0 {
+		t.Fatal("a renewal past every slot was asked")
+	}
+	hostedWithToken(t, e, "pending", live)
+	first.fire <- time.Now()
+	closedRevoked(t, h)
+	if n := f.timesAsked(live); n != 0 {
+		t.Fatalf("the recheck asked the provider %d times about a pending renewal that is a live agent token", n)
+	}
 }

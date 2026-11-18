@@ -81,6 +81,10 @@ type LedgerTx interface {
 	Continued(from string) error
 	// PutMessage keeps a message a member sent another (messages.go).
 	PutMessage(ledger.MessageRow) error
+	// PutOrigin writes the run's origin once, in its first transaction
+	// (origin.go): ledger.ErrOpExists when the provider's operation id
+	// names another run.
+	PutOrigin(ledger.OriginRow) error
 }
 
 // Ledger is the managed runs' ledger as the engine writes it: one
@@ -317,7 +321,15 @@ func (s sqlLedger) Load(ctx context.Context, runID string) (Loaded, bool, error)
 			held[h.Decision] = rec.DecisionRow
 		}
 	}
-	return Loaded{Run: row, Launch: launch, Tasks: tasks, Attempts: attempts, Messages: messages, Prerequisites: prereqs, FailedChecks: failed, Holds: holds, HeldDecisions: held}, true, nil
+	out := Loaded{Run: row, Launch: launch, Tasks: tasks, Attempts: attempts, Messages: messages, Prerequisites: prereqs, FailedChecks: failed, Holds: holds, HeldDecisions: held}
+	origin, ok, err := s.l.Origin(ctx, runID)
+	if err != nil {
+		return Loaded{}, true, err
+	}
+	if ok {
+		out.Origin = &origin
+	}
+	return out, true, nil
 }
 
 func (s sqlLedger) CheckLog(ctx context.Context, runID, taskID string, n int, id string, k int) (ledger.CheckRow, bool, error) {
@@ -1309,7 +1321,9 @@ func (e *Engine) commitHeld(ctx context.Context, r *run, first firstTx, judge fu
 	e.mu.Lock()
 	r.committing = false
 	if err != nil {
-		if snap.create && errors.Is(err, ErrRunExists) {
+		if snap.create && (errors.Is(err, ErrRunExists) || errors.Is(err, ledger.ErrOpExists)) {
+			// Its id is another run's, or its operation id names another
+			// run: nothing of it is written again, and it goes.
 			r.foreign = true
 		}
 		snap.undo(r)
@@ -1818,6 +1832,15 @@ func (e *Engine) startManaged(ctx context.Context, r *run) error {
 			payload["ticket"], payload["digest"] = r.pkg.p.Ticket.Key, r.pkg.digest
 		}
 		out := ev("run.created", payload)
+		if r.origin != nil {
+			// A provider's launch: its origin, with the run's first row,
+			// before any attempt can start; its deadline the engine's
+			// clock's now plus its limit.
+			r.origin.RunID = r.id
+			r.origin.Deadline = deadlineOf(e.now(), r.origin.LimitSeconds)
+			row := *r.origin
+			out.more = func(ltx LedgerTx) error { return ltx.PutOrigin(row) }
+		}
 		// The plan revision's gates, with their tasks' rows (O2).
 		var gates tx
 		gates, ungate = e.openGates(r)
@@ -1826,6 +1849,7 @@ func (e *Engine) startManaged(ctx context.Context, r *run) error {
 	}, func() { ungate() }); err != nil {
 		return err
 	}
+	e.watchDeadline(r)
 	e.pumpLocked(r)
 	return nil
 }
@@ -2075,6 +2099,26 @@ func (e *Engine) dispatch(ctx context.Context, r *run, a *attempt) {
 		}, nil)
 		e.afterTransact(r, terr)
 	}
+	// A run whose launch was held to a resolved launch starts each
+	// member's session only from the selection that launch confirmed
+	// (origin.go): an agent it confirmed none for (or an empty one) fails
+	// the attempt at "agent", uncounted, here, before any session is let
+	// go, any tree made, any step run or any process started; the
+	// launcher compares the entry with the selection at the start.
+	confirmedSHA, confirmed := "", false
+	if r.pkg == nil {
+		e.mu.Lock()
+		sels, held := r.confirmedAgents()
+		e.mu.Unlock()
+		if confirmed = held; held {
+			sha, ok := sels[m.def.AgentID]
+			if !ok || sha == "" {
+				fail("agent", fmt.Errorf("the agent %s is not among those this run's launch confirmed", m.def.AgentID), false, true)
+				return
+			}
+			confirmedSHA = sha
+		}
+	}
 	// The member's previous session, idle since its task: let go, so that
 	// its place is free for this one.
 	e.mu.Lock()
@@ -2313,11 +2357,21 @@ func (e *Engine) dispatch(ctx context.Context, r *run, a *attempt) {
 		}
 		spec.AgentSHA256 = sha
 	}
+	// The selection its launch confirmed (checked above): the launcher
+	// refuses an entry that no longer matches it, and the attempt fails at
+	// "agent", uncounted, and pauses the run.
+	if confirmed {
+		spec.AgentSHA256 = confirmedSHA
+	}
 	local, err := e.launcher.Launch(ctx, spec)
 	if err != nil {
 		release()
 		if r.pkg != nil && errors.Is(err, ErrAgentChanged) {
 			fail("agent", agentChangedWords(err, m.def.AgentID, r.pkg.p.Plan.N), false, true)
+			return
+		}
+		if confirmed && errors.Is(err, ErrAgentChanged) {
+			fail("agent", confirmedChangedWords(err, m.def.AgentID), false, true)
 			return
 		}
 		fail("launch", err, false, false)
@@ -3031,6 +3085,9 @@ func (e *Engine) RetryTask(ctx context.Context, runID, taskID string) error {
 	err = e.transact(ctx, r, func() tx {
 		if refused = e.continued(r); refused != nil || retryable(t) != nil {
 			return tx{} // continued or changed meanwhile
+		}
+		if refused = e.pastDeadline(r, TaskRetry); refused != nil {
+			return tx{} // past the run's deadline: no attempt starts
 		}
 		if refused = r.retryNeedsRoom(t, "retry"); refused != nil {
 			return tx{}
