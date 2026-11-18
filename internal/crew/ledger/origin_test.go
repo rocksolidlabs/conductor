@@ -365,6 +365,24 @@ func TestRunByOpReadsTheProvidersOwn(t *testing.T) {
 			t.Fatalf("%q's %q: %+v %v %v", q[0], q[1], got, ok, err)
 		}
 	}
+	// The look-up searches the index; it never scans the table.
+	plan, err := l.db.Query("EXPLAIN QUERY PLAN SELECT "+originCols+" FROM run_origin WHERE "+originByOp, "example", "op-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var details []string
+	for plan.Next() {
+		var id, parent, unused int
+		var detail string
+		if err := plan.Scan(&id, &parent, &unused, &detail); err != nil {
+			t.Fatal(err)
+		}
+		details = append(details, detail)
+	}
+	plan.Close()
+	if len(details) != 1 || !strings.Contains(details[0], "USING INDEX run_origin_op") {
+		t.Fatalf("RunByOp's plan: %q", details)
+	}
 	ro := openReadOnly(t, dir)
 	if got, ok, err := ro.RunByOp(ctx, "example", "op-1"); err != nil || !ok || got.RunID != run {
 		t.Fatalf("a read-only ledger's op-1: %+v %v %v", got, ok, err)

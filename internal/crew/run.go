@@ -1,6 +1,7 @@
 package crew
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/rocksolidlabs/conductor/ext"
 	"github.com/rocksolidlabs/conductor/ext/local"
+	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
 	"github.com/rocksolidlabs/conductor/internal/proto"
 	"github.com/rocksolidlabs/conductor/internal/session"
 )
@@ -301,6 +303,11 @@ type Run struct {
 	// launched from (LaunchPlanned), read from its package, which its
 	// continuations carry; absent for a run no ticket launched.
 	Ticket *RunTicket `json:"ticket,omitempty"`
+	// Origin is where a run a registered provider launched came from
+	// (origin.go), a cache of its ledger row as Ticket is of the package;
+	// a continuation's says where its chain came from. Absent for every
+	// other run, whose JSON is unchanged.
+	Origin *RunOrigin `json:"origin,omitempty"`
 	// Class is the run's class (ClassBrakeman for a Brakeman turn) and
 	// Request the Brakeman request it does; both absent for a person's
 	// run, whose JSON is unchanged (LaunchNamedWith).
@@ -383,8 +390,14 @@ type Engine struct {
 	// previewRuns are the preview-only contexts of runs the engine does
 	// not hold (preview_context.go), by run id, under mu: never in runs,
 	// kept while a preview of theirs is, dropped with its last.
-	previewRuns     map[string]*run
-	idleTimer       func(time.Duration) <-chan time.Time
+	previewRuns map[string]*run
+	idleTimer   func(time.Duration) <-chan time.Time
+	// deadlineTimer, when a test sets it, is the deadline watch's timer in
+	// place of time.After (origin.go: watchDeadline).
+	deadlineTimer func(time.Duration) <-chan time.Time
+	// afterDeadline, when a test sets it, is told each deadline watch's
+	// stop and its answer, once made.
+	afterDeadline   func(runID string, err error)
 	checkoutBound   func() (context.Context, context.CancelFunc)
 	checkoutMade    func(dir string)
 	beforeIdleEnd   func()
@@ -686,6 +699,13 @@ type run struct {
 	// pkg is the launch package of a run launched from a ticket
 	// (LaunchPlanned) or of a continuation of one; nil for any other run.
 	pkg *runPackage
+	// origin is the run's row of run_origin (origin.go): a provider's
+	// launch's, or the copy a continuation of one writes; nil for any
+	// other run. Its deadline is set by the run's first change.
+	origin *ledger.OriginRow
+	// stopNote is what the run's log says of its stop in place of
+	// "stopped" (StopIfRunning), under e.mu.
+	stopNote string
 	// The run's project manifest (steps.go): the crew's effective one as
 	// launched (manifest, with File for the file form; a legacy setup
 	// lifted), its revision, and the manifest at the base (baseMan),
@@ -1393,6 +1413,10 @@ func (e *Engine) addRun(c Crew, p prepared, label, id string, pkg *runPackage) (
 		}
 	}
 	r.pkg = pkg
+	if o := p.opts.Origin; o != nil {
+		row := *o
+		r.origin = &row
+	}
 	// The run's Runtime is chosen for its id before the run takes e.mu
 	// (runtimeFor): a minted id another run of the engine holds by then is
 	// minted again, and its Runtime chosen again.
@@ -2261,7 +2285,7 @@ func (e *Engine) stop(ctx context.Context, r *run) error {
 	if r.stoppedAt == nil {
 		now := time.Now().UTC()
 		r.stoppedAt = &now
-		r.note(session.ActivityStatus, "stopped")
+		r.note(session.ActivityStatus, "%s", cmp.Or(r.stopNote, "stopped"))
 		if r.managed {
 			// Told once recordStop commits it (noteEnd waits for that).
 			r.endPending = true
@@ -2658,6 +2682,7 @@ func (r *run) snapshot(withDiffs, withChat bool) Run {
 		out.Manifest = r.manifestState()
 		out.Cleaning = r.trees.n
 		out.Ticket = r.pkg.ticket()
+		out.Origin = originOfRow(r.origin)
 		out.Compare = runCompareOf(r.compare, r.plan)
 	}
 	if withChat {

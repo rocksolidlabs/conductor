@@ -841,6 +841,37 @@ export interface RunInfo {
    * when the server last stopped); Resume as new run resumes it from the record, once.
    */
   record?: boolean
+  /** Where the run was launched from when a registered provider launched it, or launched the run a continuation continues; absent otherwise. */
+  origin?: RunOrigin
+}
+
+/**
+ * A run's `origin` (GET /api/runs/{run}): the provider that launched it, its reference and label, and, when given, the subject
+ * the run is about (its reference and link), the earlier run it follows, the Dispatch project, the start commit and the time
+ * limit with the instant it ends at. `continued` on a continuation: a person's run that says where its chain came from.
+ */
+export interface RunOrigin {
+  /** The provider's registered name, 1 to 40 bytes. */
+  provider: string
+  /** The provider's reference, 1 to 200 bytes. */
+  ref: string
+  /** 1 to 60 characters on one line. */
+  label: string
+  /** The subject's reference, at most 512 bytes. */
+  subject?: string
+  /** The subject's link: https, at most 2,048 bytes. */
+  subjectUrl?: string
+  /** An earlier run of the same provider. */
+  prior?: string
+  /** A Dispatch project's key. */
+  project?: string
+  /** The run's base: 40 or 64 lower-case hex. */
+  startCommit?: string
+  /** RFC 3339, UTC: when the engine stops the run and its continuations. */
+  deadline?: string
+  /** The time limit as asked, in seconds: 600 to 86,400. */
+  limitSeconds?: number
+  continued?: boolean
 }
 
 /** GET /api/reach: what the server knows about being reached from outside its network, and whether its TLS listener has a certificate. */
