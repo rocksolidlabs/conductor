@@ -20,6 +20,7 @@ import (
 
 	"github.com/rocksolidlabs/conductor/internal/proto"
 	"github.com/rocksolidlabs/conductor/internal/session"
+	"github.com/rocksolidlabs/conductor/internal/share"
 )
 
 // Errors reported to viewers and hosts.
@@ -877,6 +878,14 @@ type HostedSession struct {
 	// retired says the session left the server's registry (Retire): no
 	// viewer is added any more.
 	retired bool
+	// token is the session's entry for its agent token in the hub's set of
+	// live tokens (Hub.Tokens), one owner at a time: added as the token is
+	// set, removed as another replaces it, as the session ends, leaves the
+	// registry (Retire) or the hub's table (Expire), or as its
+	// registration fails. tokenDone says one of those ends came: no entry
+	// is held for the session again. Both guarded by mu.
+	token     session.TokenEntry
+	tokenDone bool
 	// events limits what the server forwards to the host on an agent's behalf
 	// (ForwardActivity, and SetAttentionFull with forward): the host's
 	// connection also carries its viewers' input, and closes when its queue is
@@ -1221,9 +1230,31 @@ func (h *HostedSession) AgentTokenOK(tok string) bool {
 	return subtle.ConstantTimeCompare(sum[:], h.agentTokenHash[:]) == 1
 }
 
+// setAgentToken takes tok as the session's agent token, mu held (or the
+// session not yet shared). Its entry in the hub's set is added before the
+// old one is removed, whatever the old one's hash: a token set again
+// counts twice for a moment, never none. No entry is added for a session
+// whose end came (tokenDone), nor for a token of another length than the
+// server mints, which the set's one read never matches (an empty one
+// among them).
 func (h *HostedSession) setAgentToken(tok string) {
 	h.agentTokenHash = sha256.Sum256([]byte(tok))
 	h.hasAgentToken = tok != ""
+	var e session.TokenEntry
+	if !h.tokenDone && len(tok) == share.TokenLen && h.hub != nil {
+		e = session.AddToken(h.hub.Tokens, h.agentTokenHash)
+	}
+	old := h.token.Hand()
+	h.token = e
+	old.Remove()
+}
+
+// endToken removes the session's entry for good, mu held (or the session
+// not shared): its end, its retirement, its leaving the hub's table, or a
+// registration that failed.
+func (h *HostedSession) endToken() {
+	h.tokenDone = true
+	h.token.Remove()
 }
 
 // SetAttention records an attention change without prompt details. See
@@ -2249,6 +2280,9 @@ func (h *HostedSession) HostStatus(status session.Status, exitCode *int) {
 		h.info.Attention = session.Attention{}
 		h.asked = false
 		h.askPaged, h.askAhead = "", ""
+		// An end is final for the token's entry: a running after it
+		// makes the token known again no more.
+		h.endToken()
 	}
 	h.mu.Unlock()
 	h.notifyChange()
@@ -2305,6 +2339,7 @@ func (h *HostedSession) HostDisconnected(conn *HostConn) {
 func (h *HostedSession) Retire() {
 	h.mu.Lock()
 	h.retired = true
+	h.endToken()
 	for id := range h.linkLapse {
 		h.forgetLink(id)
 	}

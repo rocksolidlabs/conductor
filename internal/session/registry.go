@@ -159,6 +159,11 @@ func (r *Registry) Remove(id string) {
 	}
 }
 
+// RemoveIf deletes the session id from the index if it is still d, as
+// Remove does, and says whether it did: a session added under the same
+// id since is left alone.
+func (r *Registry) RemoveIf(id string, d Driver) bool { return r.removeIf(id, d) }
+
 // removeIf deletes the session id from the index if it is still d.
 func (r *Registry) removeIf(id string, d Driver) bool {
 	r.mu.Lock()
