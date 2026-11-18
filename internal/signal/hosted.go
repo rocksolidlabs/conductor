@@ -886,6 +886,10 @@ type HostedSession struct {
 	// is held for the session again. Both guarded by mu.
 	token     session.TokenEntry
 	tokenDone bool
+	// forgotten says the hub's table let the session go (Expire, or a
+	// registration that found it retired): no host is attached to it
+	// again (attachLive). Guarded by mu.
+	forgotten bool
 	// events limits what the server forwards to the host on an agent's behalf
 	// (ForwardActivity, and SetAttentionFull with forward): the host's
 	// connection also carries its viewers' input, and closes when its queue is
@@ -1247,6 +1251,20 @@ func (h *HostedSession) setAgentToken(tok string) {
 	old := h.token.Hand()
 	h.token = e
 	old.Remove()
+}
+
+// forgetIfLeft, the hub's lock held, says whether the session left the
+// registry (retired) or the table, and if so marks it forgotten, its
+// entry removed, so no host is attached to it again.
+func (h *HostedSession) forgetIfLeft() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if !h.retired && !h.forgotten {
+		return false
+	}
+	h.forgotten = true
+	h.endToken()
+	return true
 }
 
 // endToken removes the session's entry for good, mu held (or the session
