@@ -1145,6 +1145,9 @@ fact cites its own session and run (and a check receipt when
 - The sidebar's foot gains a Brakeman row (`data-sidebar-brakeman`) with
   the count of briefs not yet opened, kept per browser; no toast, no dialog,
   no navigation when a brief arrives.
+  (2026-11-17, #993: the count is now kept by the server, for each
+  credential's actor, `GET` and `POST /api/brakeman/opened`; a browser
+  counts by itself only where the server keeps no marks.)
 
 ### `web/app`: decision cards, drafts, handoffs and the entry points (PR-7)
 

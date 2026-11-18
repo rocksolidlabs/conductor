@@ -636,6 +636,19 @@ add its rule here.
   seconds after the last answer came, past the expect's bound on a loaded
   box (`dispatch.spec.ts`, #281). Count the page's requests before
   doubting the bound; the page bounds its own (`DISPATCH_READS_IN_FLIGHT`).
+- Judge a thing by when it was made, never by when a queue hands it on.
+  The host told an entry late only when it was already kept as the link
+  came back: one recorded while away and still in the forwarder's queue
+  went out live and paged a webhook (`latepage_test.go`, #281). Stamp what
+  decides where the thing is made (`madeOn`), and hold the queue in the
+  test (`holdForwarding`) so the old code fails every run.
+- A measure reads the box the browser drew, not the one the layout
+  meant. A container queries' root centred at a half pixel, or columns
+  of fractional shares, draw their contents half a pixel off, and
+  `uncut` then reads words as out of their boxes on one width and not
+  the next (Brakeman's page, #993). Put the root at a whole pixel (the
+  body's full width, the page centred inside it) and give columns fixed
+  bases, so every width draws on whole pixels.
 - Prove a flake fix the way it failed: `go test -race -count=30` (on the
   Mac too when it flaked there), `npx playwright test <spec> --repeat-each
   10`, and once more under load.

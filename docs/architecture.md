@@ -1021,27 +1021,89 @@ shape (`briefs`: in words and as its JSON Schema). A plain
 session's guide is not an attempt's, and a turn's lists its `observe`
 reads and none of the crew or ticket tools.
 
+**What a page reads without a turn** (#993). A kept brief gets a digest
+(`internal/brakeman/digest.go`): its title, a reading of at most 280
+characters derived from its summary's first paragraph as plain text (cut at
+a word with `…`, the brief itself whole), its items counted by kind, and the
+runs, tasks, sessions and tickets its items cite, at most 20 of each. The
+digest is a sibling document, `requests/br-<n>-digest.json`, written after
+the brief's refs and before the request, so the request's and the brief's
+documents do not change by a byte and an older build neither reads nor
+removes it; a brief kept before it is digested when listed (the owner writes
+it back, a read-only store only derives it), and digests are held in memory
+until a prune. The admin's list (`brakeman_list.go`) filters by `kind`, by
+what a brief holds (`has`: a decision, a proposal, a draft, any brief), by
+`about` (one run, task, session or ticket ref, matched as `subject` when a
+subject is it or under it and as `cited` when the digest cites it, by the one
+table `testdata/about-table.json` that Go and the app's vitest both read;
+`about.go`) and by a word (`q`, over the id, the note, the subjects and the
+digest's title, reading and citations), and answers each row with its
+digest. A turn under way sends `brakeman_progress` on `GET /api/events`
+(`brakeman_progress.go`) after each counted read: the reads used of its
+budget, its start and deadline (from `Store.Reserved`) and what it read
+last, at most one a second with one trailing send, at most 768 bytes, as
+droppable as chat and to no sink, never for a closed request; `GET
+/api/brakeman` carries the same `progress` and `nextBriefing`, the role's
+next briefing time (`crew.NextBriefing`). `GET /api/brakeman/since`
+(`brakeman_since.go`) counts, since the last briefing kept (or the last
+day, or a given time), the runs that ended, the tasks that failed, the
+tickets made ready and the questions open, at most five refs of each,
+leaving Brakeman's own runs out; it reads the configuration only for where
+the last briefing starts, writes nothing and is kept 5 s. The opened marks
+(`brakeman_opened.go`, `internal/brakeman/opened.go`) are the briefs each
+credential's actor (`actorOf`: the workbench token's `admin`, an identity's
+`user:<subject>`) has not yet opened, counted from its first read; a mark
+is a set union, the change sends `brakeman_opened` with `{}`, and people who
+share one token share one count. Only the owner keeps marks: a read-only
+server answers `503 brakeman_not_owner` and the app counts in the browser
+there. An actor keeps its newest 500 marks; past that the oldest goes, and
+a brief whose mark went that is still kept and briefed after the count
+began shows as not opened again (only pinned requests keep more than 500).
+
 **The records** are JSON documents under the data directory's `brakeman/`
 (0700; `internal/brakeman`, which has no HTTP, no session, no process and
 no import of `internal/crew`): `config.json`, `state.json` (the last
 number, the op ids, the day's charges), per request,
-`requests/br-<n>.json` with its brief, the brief's resolutions, the
-turn's read log and a pending make's input beside it, each measured
-before it is written, and `folders/<account>/`, the folder a turn runs in
+`requests/br-<n>.json` with its brief, the brief's resolutions and digest,
+the turn's read log and a pending make's input beside it, each measured
+before it is written, `opened.json` (each actor's opened marks, at most 32
+actors of 500 marks, 512 KiB), and `folders/<account>/`, the folder a turn runs in
 in place of the home folder (`default` for the agent's default login, else
 32 hex characters of the account's SHA-256), kept across turns; the newest
 500 requests are kept, and every open or pinned one. The desk owns them while it holds `brakeman/owner.lock`, taken
 by the ledger's own lock code (`store.OwnerLock`); a second server on the
 directory reads them and writes nothing (`503 brakeman_not_owner`).
 
-In the web app `useBrakeman.ts` is the client (the configuration, a page
-of requests, then the `brakeman` event of `GET /api/events`); Settings
-holds `BrakemanSettings.vue`, and `/brakeman` the composer, the request in
-progress, the queue and the briefs. The palette, a run's task actions and
-a ticket's page open the composer with a kind and a subject. A brief
-arriving adds a count to the sidebar's Brakeman row and nothing else; a
-question Brakeman's own session asks shows in Needs you as "Brakeman ·
-br-n".
+In the web app `useBrakeman.ts` is the client, its one door to these
+routes (the configuration; a page of requests, then the `brakeman`,
+`brakeman_progress` and `brakeman_opened` events of `GET /api/events`;
+`list` with the filters, every row applied into the live store with its
+digest kept; `since`, read at most every 5 s while a page follows it;
+`progress`; the unread ids, the server's while `GET /api/brakeman/opened`
+answers and the browser's own marks on 404 or 503; and `events`, the seam
+other reads follow). Settings holds `BrakemanSettings.vue`, which starts
+from a preset (`utils/brakemanSettings.ts`: a preset sets drafting,
+proposing and the grants only, ticks no grant and never turns on terminal
+screens; the page's one Save sends it at the revision read). `/brakeman`
+(`pages/brakeman.vue`) is the ask bar (`BrakemanAskBar.vue`, its chips
+from `askChips` in `utils/brakemanAsk.ts`), Now (`BrakemanNow.vue`, the
+sidebar's own counts and the since line), the latest brief, Earlier
+(`BrakemanEarlier.vue`, its row words from `utils/brakemanRows.ts`), In
+progress (`BrakemanInProgress.vue` with `BrakemanProgressLine.vue`), the
+role's card with Activity (`BrakemanRoleCard.vue`, `BrakemanActivity.vue`)
+and Notes. A brief (`BrakemanBrief.vue`) is drawn in regions
+(`briefRegions`: needs, proposed, acts, changed, compared and the fold),
+which sort for display only, each item keeping its index in the brief, so
+a decision's controls and a kept note always name the item they were drawn
+for. Every other door asks through `useAskBrakeman.ts` (the palette's rows,
+Needs you's Ask, a task row's Ask Brakeman why, Ask again), with the
+person's display name and the "Asked as br-n" toast; a run's Tasks view and
+a ticket's page draw `BrakemanSubjectPanel.vue`, and a task row the answer
+under it (`BrakemanRowAnswer.vue`), from `useBrakemanAbout.ts`, which reads
+`list({about})` once per subject and again on the events that touch its
+rows. A brief arriving adds a count to the sidebar's Brakeman row and
+nothing else; a question Brakeman's own session asks shows in Needs you as
+"Brakeman · br-n".
 
 ## History
 

@@ -126,7 +126,7 @@ that order.
 | Agent | Command | Waiting-for-input signal | Turn done | Tool events | Wiring | Verify before shipping | Yolo recipe (what it turns off) | Trust prompt | Session recipe (id; resume) |
 |---|---|---|---|---|---|---|---|---|---|
 | Claude Code | `claude` | `Notification`/`PermissionRequest` hooks (with options); `idle_prompt` (a minute at rest) is done, not a question (round 4) | `Stop` | `PostToolUse`, `PermissionDenied`, `SubagentStop` | launch: `--settings <hooks/claude.json>` | — | `--dangerously-skip-permissions`, `skipDangerousModePermissionPrompt` in the `--settings` file (every permission prompt; `.git`, `.claude` writable; deny rules hold; the trust question stays) — live, 2.1.287 | `Is this a project you created or one you trust?` — live; no per-launch trust: trust the repository once (its worktrees follow) | set `--session-id {uuid}`, then hook `session_id` (latest); `--resume {id}` — live |
-| Codex CLI | `codex` | the bell (`tui.notification_method="bel"`), rung for every notification but `async-question` (`tui.notifications`, 0.161, 2026-10-14: a question Codex asks while its turn goes on rings nothing, #186), and the `PermissionRequest` hook; its window title says it works (`tui.terminal_title=["activity","run-state"]`: "⠋ Working" through a turn, "Ready" at rest, seen with 0.161 on 2026-10-14), read by the catalog's `workingTitle` as `working` (source `title`), and a wait raised while it says so (its own question it goes on from, a bell) gives way a second later (#186); its program status (OSC 7501, 0.163 and later: `working`, `blocked`, from 0.164 with the kind of what blocks it, and `working` while an async question is pending where the title says Action Required) retires the title once read, settles waits as the title did and raises one for a form no pattern knows (source `status`, #197); the end of a turn is done, not a question (round 4), and the bell it rings after its done is that turn's own, not a question, until the next Enter (2026-10-11); its command approval ("Would you like to run the following command?") read off the screen for the session's whole life, with its words and choices `y`, `p`, Esc (0.161, 2026-10-11), and its form asking to allow a tool of an MCP server ("Allow the conductor MCP server to run tool "guide"?", 0.163.0 to 0.169.0 from Codex's source, #716) read off the screen the same way, its choices read off the form (Allow, Allow for this session and Always allow each its digit, the two that remember it mode answers; Cancel Esc, which cancels the call and closes the form with every form Codex had waiting behind it, a server's own among them, not asked again, their calls still waiting, as Esc typed in the terminal does), the four choices from 53 columns wide and the two at 40 too: narrower, on a screen that is not plainly the one form and on a hosted session whose host did not say it reads forms (an earlier release's, or one published to a switchyard: only a host whose register says `forms` is sent the form, #970, and asks it as a server session does), no choices are offered and it is answered in the terminal; the same form shown right behind an answered one is held as answered, answered in the terminal | `notify` (agent-turn-complete) → done; the hidden title thread's turn is ignored | experimental `hooks.json` (`features.hooks`), not on Windows | launch: `-c notify=[…]`, `-c tui.notification_method="bel"`, `-c tui.notifications=[…]`, `-c tui.terminal_title=["activity","run-state"]`; file: `~/.codex/config.toml` + `~/.codex/hooks.json` | `-c` array syntax; PermissionRequest hook shape | `--dangerously-bypass-approvals-and-sandbox` (every approval and the sandbox) and per launch `-c projects={"<repo>"={trust_level="trusted"}}` — live, 0.159.0 | `Trust this folder?` (Enter accepts and saves it) — live; its other answer is Quit in 0.161 (Down, Enter), which ends Codex, labelled "No, quit" | not settable; notify `thread-id` (lowest: the title thread reports too); `resume {id} -c tui.resume_cwd="session"`, same directory — live |
+| Codex CLI | `codex` | the bell (`tui.notification_method="bel"`), rung for every notification but `async-question` (`tui.notifications`, 0.161, 2026-10-14: a question Codex asks while its turn goes on rings nothing, #186), and the `PermissionRequest` hook; its window title says it works (`tui.terminal_title=["activity","run-state"]`: "⠋ Working" through a turn, "Ready" at rest, seen with 0.161 on 2026-10-14), read by the catalog's `workingTitle` as `working` (source `title`), and a wait raised while it says so (its own question it goes on from, a bell) gives way a second later (#186); its program status (OSC 7501, 0.163 and later: `working`, `blocked`, from 0.164 with the kind of what blocks it, and `working` while an async question is pending where the title says Action Required) retires the title once read, settles waits as the title did and raises one for a form no pattern knows (source `status`, #197) and one for a turn it says ended in an `error`, "The agent's turn ended in an error; its terminal says why", which stays until it works again, a later done, an Enter in the terminal or the end (#991); the end of a turn is done, not a question (round 4), and the bell it rings after its done is that turn's own, not a question, until the next Enter (2026-10-11); its command approval ("Would you like to run the following command?") read off the screen for the session's whole life, with its words and choices `y`, `p`, Esc (0.161, 2026-10-11), and its form asking to allow a tool of an MCP server ("Allow the conductor MCP server to run tool "guide"?", 0.163.0 to 0.169.0 from Codex's source, #716) read off the screen the same way, its choices read off the form (Allow, Allow for this session and Always allow each its digit, the two that remember it mode answers; Cancel Esc, which cancels the call and closes the form with every form Codex had waiting behind it, a server's own among them, not asked again, their calls still waiting, as Esc typed in the terminal does), the four choices from 53 columns wide and the two at 40 too: narrower, on a screen that is not plainly the one form and on a hosted session whose host did not say it reads forms (an earlier release's, or one published to a switchyard: only a host whose register says `forms` is sent the form, #970, and asks it as a server session does), no choices are offered and it is answered in the terminal; the same form shown right behind an answered one is held as answered, answered in the terminal | `notify` (agent-turn-complete) → done; the hidden title thread's turn is ignored | experimental `hooks.json` (`features.hooks`), not on Windows | launch: `-c notify=[…]`, `-c tui.notification_method="bel"`, `-c tui.notifications=[…]`, `-c tui.terminal_title=["activity","run-state"]`; file: `~/.codex/config.toml` + `~/.codex/hooks.json` | `-c` array syntax; PermissionRequest hook shape | `--dangerously-bypass-approvals-and-sandbox` (every approval and the sandbox) and per launch `-c projects={"<repo>"={trust_level="trusted"}}` — live, 0.159.0 | `Trust this folder?` (Enter accepts and saves it) — live; its other answer is Quit in 0.161 (Down, Enter), which ends Codex, labelled "No, quit" | not settable; notify `thread-id` (lowest: the title thread reports too); `resume {id} -c tui.resume_cwd="session"`, same directory — live |
 | Antigravity | `agy` | bell (no notification event) | `Stop` | `PreToolUse` (working; a `toolCall` without the `error` field) / `PostToolUse` (`toolCall.name`) | file: `~/.gemini/config/hooks.json` (global) or `.agents/hooks.json` (project) | exact global path | `--dangerously-skip-permissions` (tool permission requests; its trust dialog stays, trusted per exact path) — help | — | not settable; hook `conversationId` (installed hooks only); `--conversation {id}`, same directory — live (`-p`) |
 | Copilot CLI | `copilot` | `notification` (`permission_prompt`) | `agentStop` | `userPromptSubmitted`/`preToolUse` (working), `postToolUse`, `errorOccurred` | file: `~/.copilot/hooks/conductor.json` (own file, no merge) | permission prompt key bindings for options | `--yolo`, `COPILOT_ALLOW_ALL=true` (every tool, path and URL; the env var also skips its trust question; deny rules win) — live, 1.0.59 | — (the recipe skips it) | set `--session-id {uuid}`, hook `sessionId`; `--session-id {id}` — live (the hook's `sessionId` not live) |
 | Cursor CLI | `cursor-agent` | bell / pattern (CLI fires no waiting event) | `stop` | `beforeSubmitPrompt`/`preToolUse` (working), `postToolUse`, `afterFileEdit` | file: `~/.cursor/hooks.json` (merge) | CLI binary name; which events the CLI fires today | `--yolo --trust` (command and MCP approvals; `--trust` skips workspace trust) — docs | — (the recipe skips it) | not settable; hook `conversation_id` (installed hooks only); `--resume {id}`, same directory — docs |
@@ -207,6 +207,69 @@ that order.
   join. The join page shows only the session name, agent, host and the role the
   link grants. Content appears only after the guest joins.
 - **No Runs nav item** until there is something behind it.
+
+## Brakeman's page says what it found (#993; 2026-11-17)
+
+A maintainer asked for Brakeman's screens to mean more, as the Brakeman
+design review proposes: asking was a form, the log came before the news,
+a running turn said only where it ran, a row named the request and not the
+finding, and a brief put every fact before what needed a person. Built as
+one pull request in seven lanes. Nothing is a migration: no field was added
+to a request, a brief, `state.json` or the role's record.
+
+- **An ask bar** in place of the form, on the page, in a panel on a run
+  and a ticket, and at a phone's foot: one line, a row of chips (Brief me
+  since HH:MM, the kinds that need a subject, Overlapping changes, Find…),
+  `@` to name a run, a task, a session, a question or a ticket, a line
+  typed alone asked as a question. The palette's rows, Needs you's Ask
+  Brakeman and a task's Ask Brakeman why ask at once from where the
+  person is, with "Asked as br-n · Open". G then B opens the page.
+- **A brief led by what needs a person**: its head (kind, age, what it is
+  about, Copy as Markdown, Comment on a ticket), its title and reading
+  marked as Brakeman's, then Needs you, Proposed, What Brakeman did, What
+  changed (each reading under the last fact it reads), Compared, and a
+  fold of provenance and all evidence. The regions sort for display only:
+  every item keeps its index, so a decision's buttons and a kept note name
+  the item drawn. "Brakeman recommends" is words beside Conductor's own
+  buttons, never a button. Comment on a ticket posts under the person's
+  name, editable, never cut past 16 KiB.
+- **Now, with no agent turn**: the sidebar's own counts (needs you,
+  working, finished, waiting) and "Since the last briefing, at HH:MM", from
+  `GET /api/brakeman/since`.
+- **Rows that say the finding**: a kept brief's digest (title, a reading of
+  at most 280 characters as plain text, counts, what it cites) in a sibling
+  document of its own; the list filters by kind, by what a brief holds, by
+  what it is about and by a word; Earlier draws the title, counts, age and
+  who asked, with filters, a search and Ask again.
+- **Progress while a turn runs**: `brakeman_progress` after each counted
+  read (reads used of the budget, the start and deadline, what it read
+  last), at most one a second, droppable, reaching no sink; the progress
+  line in In progress, on the run's panel and under a task's row.
+- **The answer where it was asked**: Brakeman on this run (a managed run's
+  Tasks view) and on this ticket, with the latest brief about it, the
+  request being read and the compact bar; a task's answer under its row.
+  Drawn only while Brakeman is on or has said something about the subject.
+- **One line for the background role**: its state once, its next briefing
+  from the server, "Woken N times today", the budget; wakes and notes
+  behind Activity.
+- **One unread count**, kept by the server for each credential's actor
+  (people who share one token share one count; a read-only server keeps
+  none, and the browser counts there).
+- **Settings from a preset**: Observe, Draft and propose, Act within grants
+  (which asks for a grant until one is ticked), Custom when none matches;
+  scope by pickers, briefing times as a list, limits under Advanced. A
+  preset only fills the form and never turns on terminal screens.
+- **A rule for short briefs**: the guide asks for a first paragraph of one
+  sentence of at most 280 characters, and the items in the order a person
+  needs them; nothing new is refused.
+
+Not built, for the maintainers to decide: handing a handoff into a task's
+next attempt, notifying on a background brief, and sharing a brief beyond
+Copy as Markdown and Comment on a ticket. Also left out of the review's
+boards: a filled "(Recommended)" button, a seconds clock, a green reads
+meter, "asked from this row" (it would need a stored field), the run's
+panel outside its Tasks view, a palette row that only goes to the page,
+and a closed turn's length.
 
 ## Browser evidence: an element selected in a preview, captured for a ticket (PV1; 2026-11-17)
 
@@ -2184,8 +2247,20 @@ request each from main.
   raises a wait in words of its own ("The agent asks for a permission", "The
   agent asks a question", "The agent needs you to sign in") where nothing
   with words of its own shows, so a form no pattern knows shows in Needs
-  you. Hosted sessions read no status, as they read no title. The sequence
+  you. A hosted session's host reads the status and the title as a server
+  session does, and reports what they raise. The sequence
   is from Codex's source at 0.163.0 and 0.164.0-alpha.3, not a live capture.
+  A turn the status says ended in an `error` (a key the provider refused, a
+  quota, an outage: Codex's notify program reports finished turns only) is
+  a wait for a person too, "The agent's turn ended in an error; its terminal
+  says why", with no choices, in Needs you, on the session's row and tile and
+  as the member's wait on a run's task, which goes on waiting (the attempt
+  neither fails nor is tried again) until the person types in the terminal
+  or stops the task. It never replaces a question with words of its own nor
+  the done of a turn just reported, is recorded once per failed turn, and
+  stays through `idle`, `clear` and the screen moving on: working again, a
+  later turn's done, an Enter in the terminal or the session's end take it
+  away (#991, seen live with Codex 0.169.0 on 2026-11-17).
 - **A question answered in its terminal is offered nowhere** (#284, issue
   #258). A dialog answered by a key typed in its terminal stays a question
   while the program's dialog is on the screen, by design, and now carries

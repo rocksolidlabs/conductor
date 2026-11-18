@@ -81,22 +81,22 @@ export function pickerItems(listed: readonly PickerItem[], picked: readonly stri
 }
 
 /** Dispatch's projects, by key. */
-export function projectItems(projects: ReadonlyArray<{ key: string; name: string; archivedAt?: string }>): PickerItem[] {
+export function projectPicks(projects: ReadonlyArray<{ key: string; name: string; archivedAt?: string }>): PickerItem[] {
   return projects.filter((p) => !p.archivedAt).map((p) => ({ label: p.name && p.name !== p.key ? `${p.key} · ${p.name}` : p.key, value: p.key }))
 }
 
 /** The saved crews, by id. */
-export function crewItems(crews: ReadonlyArray<{ id: string; name: string }>): PickerItem[] {
+export function crewPicks(crews: ReadonlyArray<{ id: string; name: string }>): PickerItem[] {
   return crews.map((c) => ({ label: c.name && c.name !== c.id ? `${c.name} (${c.id})` : c.id, value: c.id }))
 }
 
 /** The runs the page has live, by id. */
-export function runItems(runs: ReadonlyArray<{ id: string; name: string; label?: string }>): PickerItem[] {
+export function runPicks(runs: ReadonlyArray<{ id: string; name: string; label?: string }>): PickerItem[] {
   return runs.map((r) => ({ label: `${r.label || r.name} (${r.id})`, value: r.id }))
 }
 
 /** The sessions the page has live, by id. */
-export function sessionItems(sessions: ReadonlyArray<{ id: string; name: string }>): PickerItem[] {
+export function sessionPicks(sessions: ReadonlyArray<{ id: string; name: string }>): PickerItem[] {
   return sessions.map((s) => ({ label: s.name ? `${s.name} (${s.id})` : s.id, value: s.id }))
 }
 

@@ -555,13 +555,13 @@ func (s *Server) handleHostMessage(hs *signal.HostedSession, hc *hostConnState, 
 		// The host's own report is not forwarded, so it is never limited;
 		// its question keeps the host's id, and its mark as the agent's own;
 		// its turns, once true, is learned (an older host sends none).
-		prev := hs.Info().Attention.ID
 		hs.HostAttentionTurns(session.AttentionState(m.State), m.Message, m.Source, m.Kind, signal.OptionsFromProto(m.Options), m.ID, m.Ask, m.Answered, m.Plan, m.Kept, m.Turns)
-		// A question asked while the host was away, still open as it
-		// comes back (its retell, Retold), and not one the copy held:
-		// its entries come late and page no one, so it pages once here,
-		// from the session's state, as a live event of the session's.
-		if m.Retold && session.AttentionState(m.State) == session.AttentionNeedsInput && m.ID != "" && m.ID != prev {
+		// A question asked before the host's connection began, still open
+		// as it begins (its retell, Retold), that no one was offered live
+		// (its entry came late, or was never offered): it pages once here,
+		// from the session's state, as a live event of the session's, and
+		// never again (HostQuestionTold).
+		if session.AttentionState(m.State) == session.AttentionNeedsInput && hs.HostQuestionTold(m.ID, m.Retold) {
 			s.events.activity(hs.Info().ID, session.ActivityEntry{At: time.Now().UTC(), Type: session.ActivityAttention, Message: m.Message}, session.AttentionNeedsInput)
 		}
 	case proto.HostActivity:
