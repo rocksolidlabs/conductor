@@ -19,9 +19,9 @@ import (
 // its migration, the writers and their bounds, the readers, the prune's
 // refusal and hand-back, the recovery and the snapshot.
 
-// version8Added is what versions 8 to 11 added, dropped: a database of
+// version8Added is what versions 8 to 13 added, dropped: a database of
 // this version made a version 7 one (children before the table they
-// cite; version 11's previews first, version11Added).
+// cite; version 13's and 11's tables first, version11Added).
 var version8Added = append(slices.Clone(version11Added),
 	"DROP TABLE decision_refunds",
 	"DROP TABLE decision_holds",
@@ -30,9 +30,14 @@ var version8Added = append(slices.Clone(version11Added),
 	"DROP TABLE decisions",
 )
 
-// version11Added is what version 11 added (the previews), dropped: a
-// database of this version made a version 10 one.
-var version11Added = []string{"DROP TABLE previews"}
+// version11Added is what versions 11 to 13 added (the previews, where a
+// run was launched from), dropped: a database of this version made a
+// version 10 one (version 13's first, version13Added).
+var version11Added = append(slices.Clone(version13Added), "DROP TABLE previews")
+
+// version13Added is what version 13 added (where a run was launched
+// from), dropped: a database of this version made a version 12 one.
+var version13Added = []string{"DROP TABLE run_origin"}
 
 const (
 	localPolicy   = `{"revision":"local/1","approver":"operator","quorum":1,"authority":[{"kind":"operator"}]}`
@@ -221,8 +226,11 @@ func version7Like(t *testing.T, src, dir string) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	db.SetMaxOpenConns(1)                                                                     // the ATTACH and the pragma are the connection's
-	stmts := slices.Clone(schema[:len(schema)-len(decisionTables)-len(decisionsRequestV9)-1]) // and the previews, last
+	db.SetMaxOpenConns(1) // the ATTACH and the pragma are the connection's
+	// The schema without the decision tables, their request index, the
+	// previews and where a run was launched from (its table and its
+	// index), which come last.
+	stmts := slices.Clone(schema[:len(schema)-len(decisionTables)-len(decisionsRequestV9)-3])
 	// The rows are copied as they are, in no parent-first order.
 	stmts = append(stmts, "INSERT INTO schema_version (version) VALUES (7)", "PRAGMA foreign_keys = OFF", "ATTACH DATABASE '"+filepath.Join(src, File)+"' AS src")
 	for _, table := range v7Tables {
@@ -317,17 +325,18 @@ func TestMigrationSevenToEightAddsOnlyTables(t *testing.T) {
 		t.Fatalf("read-only after the migration: %s", why)
 	}
 	// Brought to Version: 8's tables, and of the versions after it only
-	// 11 adds one (9 is #683's index, 10 a barrier, 11 the previews).
+	// 11 and 13 add one (9 is #683's index, 10 and 12 barriers, 11 the
+	// previews, 13 where a run was launched from, with its index).
 	if v := dbVersion(t, again); v != Version {
 		t.Fatalf("version %d after the migration, Version %d", v, Version)
 	}
-	wantTables := slices.Sorted(slices.Values(append(slices.Clone(v7Tables), "decisions", "decision_responses", "decision_history", "decision_holds", "decision_refunds", "previews")))
+	wantTables := slices.Sorted(slices.Values(append(slices.Clone(v7Tables), "decisions", "decision_responses", "decision_history", "decision_holds", "decision_refunds", "previews", "run_origin")))
 	if got := schemaNames(t, again, "table"); !slices.Equal(got, wantTables) {
 		t.Fatalf("tables after the migration: %v", got)
 	}
 	// The indexes: the versions', and the access path the owner makes as it
 	// prepares the database (accessPaths), which no version names.
-	if got, want := schemaNames(t, again, "index"), []string{"decision_holds_decision", "decision_ops", "decisions_current", "decisions_open", "decisions_request"}; !slices.Equal(got, want) {
+	if got, want := schemaNames(t, again, "index"), []string{"decision_holds_decision", "decision_ops", "decisions_current", "decisions_open", "decisions_request", "run_origin_op"}; !slices.Equal(got, want) {
 		t.Fatalf("indexes after the migration: %v", got)
 	}
 	if n := countRows(t, again, "SELECT COUNT(*) FROM sqlite_master WHERE name = 'sqlite_sequence'"); n != 1 {
@@ -1962,7 +1971,7 @@ func TestMigrationEightToNineKeysARequestByItsTask(t *testing.T) {
 	n := open(t, l, agentDecision(run, "build", 1, "q1"))
 	before := tableRows(t, l, "decisions")
 	l.Close()
-	rawExec(t, dir, "DROP TABLE previews", "DROP INDEX decisions_request",
+	rawExec(t, dir, "DROP TABLE run_origin", "DROP TABLE previews", "DROP INDEX decisions_request",
 		"CREATE UNIQUE INDEX decisions_request ON decisions(run_id, member, request_id) WHERE request_id != ''",
 		"UPDATE schema_version SET version = 8")
 
@@ -1970,7 +1979,7 @@ func TestMigrationEightToNineKeysARequestByItsTask(t *testing.T) {
 	if ro, why := again.ReadOnly(); ro {
 		t.Fatalf("read-only after the migration: %s", why)
 	}
-	if v := dbVersion(t, again); v != Version || Version != 12 {
+	if v := dbVersion(t, again); v != Version || Version != 13 {
 		t.Fatalf("version %d after the migration, Version %d", v, Version)
 	}
 	var sqlText string
