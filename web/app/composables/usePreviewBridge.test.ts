@@ -642,7 +642,21 @@ describe('the screenshot source and the frame element', () => {
   })
 })
 
-describe("a draft's address without the bridge", () => {
+describe("a draft's address", () => {
+  it('is the page’s address the bridge reports, without the fragment the pane opened the frame with, and any other fragment kept', async () => {
+    const opened = `#token=${'c'.repeat(64)}`
+    const h = harness({ deps: { opened: () => opened } })
+    h.page = { ...h.page, url: `${ORIGIN}/app${opened}` }
+    h.s.hello()
+    await h.settle()
+    await selectOf(h, first)
+    const d = h.s.state.drafts[0]!
+    expect([d.moment.url, d.annotations[0]!.observed!.url]).toEqual([`${ORIGIN}/app`, `${ORIGIN}/app`])
+    h.page = { ...h.page, url: `${ORIGIN}/app#/settings` }
+    await selectOf(h, second)
+    expect(h.s.state.drafts[1]!.moment.url).toBe(`${ORIGIN}/app#/settings`)
+  })
+
   it('is the address the pane gave the frame, without its fragment', async () => {
     const h = harness({ deps: { fallback: () => ({ url: `${ORIGIN}/app?tab=2#token=${'c'.repeat(64)}`, width: 400, height: 300 }) } })
     ;(h.frameWindow as { postMessage: unknown }).postMessage = () => {}

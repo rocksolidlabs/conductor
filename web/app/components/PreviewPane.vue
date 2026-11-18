@@ -133,6 +133,11 @@ const session = usePreviewBridge({
     await painted()
   },
   frameElement: () => frame.value,
+  opened: () => {
+    const a = address.value
+    const i = a.indexOf('#')
+    return i < 0 ? '' : a.slice(i)
+  },
   view: () => ({ mode: mode.value, scale: scale.value }),
   fallback: () => {
     const d = device.value

@@ -90,6 +90,11 @@ export interface BridgeDeps {
   /** What a draft without the bridge records of the page: the frame's address and its size. */
   fallback(): { url: string; width: number; height: number }
   /**
+   * The fragment of the address the pane gave the frame ('#…', '' for none): what opens the preview there, never part of the page
+   * shown; a page's address the bridge reports ending with it is named without it.
+   */
+  opened?(): string
+  /**
    * Called before every frame is read, and awaited: the pane draws nothing of its own over the frame's box while pixels are taken
    * (the editor over a phone's frame goes, a size a device mode changed is laid out) and waits until that is painted.
    */
@@ -359,8 +364,14 @@ export function createPreviewSession(deps: BridgeDeps) {
   /** The draft a selection may join: the last one still open. */
   const current = () => [...state.drafts].reverse().find((d) => d.open) ?? null
 
+  /** The page's address as a capture names it: the bridge's word, without the fragment the pane opened the frame with. */
+  function pageAddress(url: string): string {
+    const f = deps.opened?.() ?? ''
+    return f.startsWith('#') && f.length > 1 && url.endsWith(f) ? url.slice(0, -f.length) : url
+  }
+
   function momentOf(page: PreviewPage, label: LabelRead | null, at: string): Moment {
-    return { url: page.url, title: page.title, viewport: viewportOf(page.viewport, deps.view()), epoch: page.epoch, revision: page.revision, label, at }
+    return { url: pageAddress(page.url), title: page.title, viewport: viewportOf(page.viewport, deps.view()), epoch: page.epoch, revision: page.revision, label, at }
   }
 
   function observedOf(d: Draft, page: PreviewPage, at: string, stable: boolean | undefined): Observed {
