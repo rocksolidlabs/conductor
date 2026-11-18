@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import type { BrakemanRequest } from '~/utils/brakeman'
 import type { AskChip } from '~/utils/brakemanAsk'
-import { aboutNoun, latestWords, noneWords, queuedWords } from '~/utils/brakemanAbout'
-import { askDisabled } from '~/utils/brakemanAsk'
+import { aboutNoun, latestWords, noneWords, queuedWords, subjectUnder } from '~/utils/brakemanAbout'
+import { askDisabled, askedToast } from '~/utils/brakemanAsk'
 import { countsWords, shortKind, subjectWords } from '~/utils/brakemanRows'
 import type { BrakemanAbout } from '~/composables/useBrakemanAbout'
 
@@ -43,7 +43,13 @@ const disabled = computed(() => askDisabled(bk.state.value))
 const counts = computed(() => countsWords(latest.value?.digest, latest.value?.made).join(' · '))
 const placeholder = computed(() => `Ask about this ${noun.value}`)
 
+const toast = useToast()
+/**
+ * An ask from the bar: one about the subject is read here; one that is not (Overlapping changes names no subject) says where it went,
+ * the request's id with Open, since the panel will not show it.
+ */
 function asked(r: BrakemanRequest) {
+  if (!subjectUnder(props.subject, r.subjects ?? [])) toast.add(askedToast(r))
   about.value.add(r)
   emit('asked', r)
 }

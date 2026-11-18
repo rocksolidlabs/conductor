@@ -3,7 +3,7 @@ import { computed, ref, watch, type Ref } from 'vue'
 import type { BrakemanConfig, BrakemanDigest, BrakemanRequest, BrakemanSince, BrakemanState } from '../utils/brakeman'
 import { makeAgain } from '../utils/brakemanCards'
 import { ApiError } from './useApi'
-import { BrakemanLive, MAX_MARKS, MAX_OPENED_EVENT, MAX_UNREAD, asOpenedReply, MAX_PROGRESS_EVENT, SINCE_EVERY_MS, asBrakemanEvent, asBrakemanOpened, asBrakemanProgress, brakemanLive, keepOpened, listParams, sendTwice, useBrakeman, type BrakemanReads } from './useBrakeman'
+import { BrakemanLive, MAX_MARKS, MAX_OPENED_EVENT, MAX_UNREAD, asOpenedReply, MAX_PROGRESS_EVENT, SINCE_EVERY_MS, asBrakemanEvent, asBrakemanOpened, asBrakemanProgress, brakemanLive, brakemanStream, keepOpened, listParams, sendTwice, useBrakeman, type BrakemanReads } from './useBrakeman'
 import { DispatchLive } from './useDispatchLive'
 import { requestNumber, sameConfig } from '../utils/brakeman'
 import { StaleRefusal, configForm } from '../utils/settingsSave'
@@ -1474,5 +1474,55 @@ describe('the unread count, kept by the server', () => {
       await settle()
       expect(bk.unopened.value).toEqual([])
     })
+  })
+})
+
+describe("the stream's events that change what changed since the last briefing", () => {
+  afterEach(() => void vi.useRealTimers())
+
+  /** A store followed by a page, its since reads counted, its clock the test's. */
+  function followed() {
+    let clock = 1_000_000
+    let reads = 0
+    const live = new BrakemanLive()
+    live.now = () => clock
+    const since: BrakemanSince = { since: { from: 'day', at: '2026-11-16T09:00:00Z' }, runsEnded: { count: 0, refs: [] }, tasksFailed: { count: 0, refs: [] }, ticketsReady: { count: 0, refs: [] }, questionsOpen: { count: 1, refs: [] }, truncated: false }
+    live.attach({ state: () => Promise.reject(new Error('none')), page: () => Promise.reject(new Error('none')), request: () => Promise.reject(new Error('none')), since: async () => (reads++, since) })
+    live.followSince()
+    return { live, reads: () => reads, tick: (ms: number) => ((clock += ms), vi.advanceTimersByTime(ms)) }
+  }
+
+  // A question asked or answered in a plain session is only a session's event (or its removal): the open questions are counted again.
+  for (const [event, payload] of [
+    ['session', { id: 'a'.repeat(16), status: 'running', attention: { state: 'working' } }],
+    ['removed', { id: 'a'.repeat(16) }],
+    ['run', { id: 'fix-login-1a2b3c4d' }],
+    ['dispatch', { seq: 1, entity: 'ticket', project: 'BK', ticket: 't1', op: 'edit' }],
+  ] as const) {
+    it(`reads it again on a ${event} event`, async () => {
+      vi.useFakeTimers()
+      const f = followed()
+      await Promise.resolve()
+      expect(f.reads()).toBe(1)
+      f.tick(SINCE_EVERY_MS)
+      brakemanStream(f.live, event, payload)
+      await Promise.resolve()
+      expect(f.reads()).toBe(2)
+    })
+  }
+
+  it("reads it on none of the events that change nothing of it, and hands progress and the opened marks to the store", async () => {
+    vi.useFakeTimers()
+    const f = followed()
+    await Promise.resolve()
+    f.tick(SINCE_EVERY_MS)
+    brakemanStream(f.live, 'chat', { sessionId: 'a'.repeat(16) })
+    brakemanStream(f.live, 'capacity', {})
+    await Promise.resolve()
+    expect(f.reads()).toBe(1)
+    brakemanStream(f.live, 'brakeman_progress', { id: 'br-3', reads: 4, readsPerTurn: 300 })
+    expect(f.live.progress['br-3']?.reads).toBe(4)
+    brakemanStream(f.live, 'brakeman_opened', {})
+    expect(f.live.openedSeq).toBe(1)
   })
 })

@@ -39,6 +39,14 @@ const draftBrief = {
   ],
 }
 
+/** A brief taller than a phone's window: its reading is a dozen paragraphs. */
+const longBrief = {
+  schema: 'brakeman.brief/1',
+  title: 'A long reading of the check',
+  summary: Array.from({ length: 12 }, (_, i) => `Paragraph ${i + 1} of the reading: the check failed on the same test, and the test is flaky at the base commit too.`).join('\n\n'),
+  items: [{ kind: 'fact/1', text: 'The check failed.', evidence: [`ticket:${KEY}-1`] }],
+}
+
 test.beforeAll(async () => {
   test.setTimeout(240_000)
   srv = await brakemanServer({ name: 'brakeman-page' })
@@ -142,8 +150,16 @@ test('Earlier says what each brief found, filters on the server and searches, th
   // A word searches the titles.
   await earlier.getByRole('textbox', { name: 'Search briefs' }).fill('tickets from the discussion')
   await expect.poll(shown).toEqual([ids.drafts])
-  // The filter checked again after a redraw the test causes (a theme switch keeps nothing of the search).
   await earlier.getByRole('textbox', { name: 'Search briefs' }).fill('')
+  await expect.poll(shown).toEqual([ids.ended, ids.drafts, ids.briefing, 'br-1'])
+  // A redraw the test causes (the theme switched, the page read again): the server's filters checked again.
+  await useTheme(page, 'light')
+  await expect(filter('all')).toHaveAttribute('aria-pressed', 'true')
+  await expect.poll(shown).toEqual([ids.ended, ids.drafts, ids.briefing, 'br-1'])
+  await filter('drafts').click()
+  await expect(filter('drafts')).toHaveAttribute('aria-pressed', 'true')
+  await expect.poll(shown).toEqual([ids.drafts])
+  await filter('all').click()
   await expect.poll(shown).toEqual([ids.ended, ids.drafts, ids.briefing, 'br-1'])
 
   // Ask again asks the same once more, under a new id: it runs (the gate is shut), and the row no longer offers it.
@@ -154,15 +170,23 @@ test('Earlier says what each brief found, filters on the server and searches, th
   expect(ids.again).not.toBe(ids.ended)
   expect(await srv.request(ids.again)).toMatchObject({ kind: 'explain', subjects: [`ticket:${KEY}-1`] })
   await expect(earlier.locator(`[data-request="${ids.ended}"] [data-request-again]`)).toHaveCount(0)
+  // A turn under way is In progress's: a search the server matches by its id lists it nowhere in Earlier.
+  await earlier.getByRole('textbox', { name: 'Search briefs' }).fill(ids.again)
+  await expect(earlier.locator('[data-briefs-none]')).toBeVisible()
+  await expect(earlier.locator(`[data-request="${ids.again}"]`)).toHaveCount(0)
+  await earlier.getByRole('textbox', { name: 'Search briefs' }).fill('')
+  await expect.poll(shown).toEqual([ids.ended, ids.drafts, ids.briefing, 'br-1'])
 
-  // Its brief, kept while the page shows another, is offered by a line and swaps nothing.
+  // Its brief (a long one), kept while the page shows another, is offered by a line and swaps nothing.
+  srv.setBrief(longBrief)
   srv.openGate()
   await srv.until(ids.again, ['briefed'], TURN_MS)
-  await expect(latest.locator('[data-brief-newer]')).toContainText(`A newer brief: Stub brief for ${ids.again}`)
+  srv.setBrief(null)
+  await expect(latest.locator('[data-brief-newer]')).toContainText(`A newer brief: ${longBrief.title}`)
   await expect(latest).toHaveAttribute('data-request', ids.drafts)
   await latest.locator('[data-brief-newer-show]').click()
   await expect(latest).toHaveAttribute('data-request', ids.again)
-  await expect(latest.locator(`[data-brief="${ids.again}"] [data-brief-title]`)).toHaveText(`Stub brief for ${ids.again}`)
+  await expect(latest.locator(`[data-brief="${ids.again}"] [data-brief-title]`)).toHaveText(longBrief.title)
   await expect(latest.locator('[data-brief-newer]')).toHaveCount(0)
 
   // A row's link shows its brief in the card, with Back to the latest; the row of the brief shown folds the card.
@@ -173,6 +197,21 @@ test('Earlier says what each brief found, filters on the server and searches, th
   await latest.locator('[data-brief-back]').click()
   await expect(latest).toHaveAttribute('data-request', ids.again)
   await expect(page.locator('[data-brief]')).toHaveCount(1)
+})
+
+test('on a phone, a row of Earlier pressed below the card brings the card into view, and the focus stays on the row', async ({ browser }) => {
+  budget(10 * STEP_MS)
+  const page = await pageAt(browser, '/brakeman', { phone: true })
+  const card = page.locator('[data-brakeman-latest]')
+  await expect(card.locator(`[data-brief="${ids.again}"] [data-brief-title]`)).toHaveText(longBrief.title)
+  // Scrolled down to Earlier, past the long brief: the card is out of view.
+  const row = page.locator(`[data-brakeman-briefs] [data-request="${ids.briefing}"] [data-request-open]`)
+  await page.locator('[data-brakeman-notes]').scrollIntoViewIfNeeded()
+  await expect(card.locator('[data-brief-title]')).not.toBeInViewport()
+  await row.click()
+  await expect(card).toHaveAttribute('data-request', ids.briefing)
+  await expect(card.locator(`[data-brief="${ids.briefing}"] [data-brief-title]`)).toBeInViewport()
+  expect(await row.evaluate((el) => document.activeElement === el)).toBe(true)
 })
 
 test("Now's need-you count is the sidebar's, and its line names a run that ended since the last briefing", async ({ browser }) => {

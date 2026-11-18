@@ -661,6 +661,31 @@ export class BrakemanLive {
 /** The words of a configuration read answered, or asked, after the token changed. */
 export const TOKEN_MOVED_READ = "The token changed before Brakeman's settings were read: the form shown is this server's."
 
+/**
+ * What the events stream tells the live store besides a request's `brakeman` event and the stream's start again (useAttention hands
+ * it every event): a turn's progress, a brief opened somewhere with this credential, and the events that may change what changed since
+ * the last briefing: a run's (ended, a task failed), Dispatch's (a ticket made ready) and a session's or its removal (a question asked
+ * or answered, whose count is the open ones'). The since read follows those (nudgeSince: only while a page follows it, at most once
+ * every five seconds); nothing else is read and nothing takes the focus.
+ */
+export function brakemanStream(store: BrakemanLive, event: string, payload: unknown) {
+  switch (event) {
+    case 'run':
+    case 'dispatch':
+    case 'session':
+    case 'removed':
+      store.nudgeSince()
+      return
+    case 'brakeman_progress': {
+      const p = asBrakemanProgress(payload)
+      if (p) store.progressEvent(p)
+      return
+    }
+    case 'brakeman_opened':
+      if (asBrakemanOpened(payload)) store.openedEvent()
+  }
+}
+
 let live: BrakemanLive | undefined
 /** The app's one live store of Brakeman's requests; useAttention hands it every `brakeman` event and every `snapshot`. */
 export function brakemanLive(): BrakemanLive {

@@ -10,7 +10,8 @@ import { COMMENT_MAX, handoffMarkdown, handoffTickets, utf8Bytes } from '~/utils
  * under the person's name. A package longer than a comment holds (Dispatch's 16 KiB) is commented as the person shortens it in the
  * dialog: Copy keeps the whole.
  */
-const props = defineProps<{ item: Extract<BriefItem, { kind: 'handoff/1' }>; refs: ReadonlyMap<string, RefResolution> }>()
+/** `quotes`: the turn could read terminal screens or check logs, so the dialog says the package may quote one (as the brief's does). */
+const props = defineProps<{ item: Extract<BriefItem, { kind: 'handoff/1' }>; refs: ReadonlyMap<string, RefResolution>; quotes?: boolean }>()
 
 const copy = useCopy()
 
@@ -49,6 +50,6 @@ function comment(key: string) {
         @click="comment(key)"
       />
     </div>
-    <BrakemanCommentTicket v-if="tickets.length" v-model:open="commenting" :text="markdown" :keys="tickets" :pick="pick" what="The handoff" @commented="(k, n) => (commented = { ...commented, [k]: n })" />
+    <BrakemanCommentTicket v-if="tickets.length" v-model:open="commenting" :text="markdown" :keys="tickets" :pick="pick" what="The handoff" :quotes="quotes" @commented="(k, n) => (commented = { ...commented, [k]: n })" />
   </div>
 </template>

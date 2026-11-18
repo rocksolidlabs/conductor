@@ -1,5 +1,5 @@
 import type { BrakemanRequest, BrakemanRow } from '../utils/brakeman'
-import { latestBrief, openAbout, answersByTask } from '../utils/brakemanAbout'
+import { latestBrief, openAbout, answersByTask, subjectUnder } from '../utils/brakemanAbout'
 import { parseRef } from '../utils/brakeman'
 
 // What Brakeman said about one subject (issue 993, F8): the requests the list route answers for `about=<subject>`, read once per
@@ -59,9 +59,13 @@ export class AboutReads {
     if (e.id === '' || e.state === 'briefed' || this.rows.some((r) => r.id === e.id)) void this.read()
   }
 
-  /** A request the page asked about the subject: among the rows at once, read again with them later. */
+  /**
+   * A request the page asked: among the rows at once when one of its subjects is about the subject, and read again with them later.
+   * One about something else (an ask with no subject, or one asked on another subject whose reply came after the page moved) is not
+   * the subject's: the server's about= read holds it only if its brief cites the subject.
+   */
   add(r: BrakemanRequest) {
-    if (this.rows.some((x) => x.id === r.id)) return
+    if (!subjectUnder(this.subject, r.subjects ?? []) || this.rows.some((x) => x.id === r.id)) return
     this.rows = [r, ...this.rows]
     this.changed()
   }

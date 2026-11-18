@@ -77,7 +77,11 @@ type sinceCount struct {
 }
 
 // sinceCache is the since read's replies by query, each kept for
-// sinceCacheFor.
+// sinceCacheFor and only while no event has been told since it was
+// computed: each is marked with the hub's count of events told
+// (eventHub.told) read before its counts were, so a read made after an
+// event the page reads again on (run, dispatch, brakeman, session,
+// removed) is never answered with a reply from before it.
 type sinceCache struct {
 	mu      sync.Mutex
 	replies map[string]sinceCached
@@ -85,29 +89,35 @@ type sinceCache struct {
 
 type sinceCached struct {
 	at   time.Time
+	told uint64
 	body []byte
 }
 
 // get is the reply kept for key, made no longer than sinceCacheFor
-// before now.
-func (c *sinceCache) get(key string, now time.Time) ([]byte, bool) {
+// before now with no event told since (told, the hub's count now).
+func (c *sinceCache) get(key string, now time.Time, told uint64) ([]byte, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	e, ok := c.replies[key]
-	if !ok || now.Sub(e.at) >= sinceCacheFor || now.Before(e.at) {
+	if !ok || e.told != told || now.Sub(e.at) >= sinceCacheFor || now.Before(e.at) {
 		return nil, false
 	}
 	return e.body, true
 }
 
-// put keeps body for key, the oldest of sinceCacheKeep dropped.
-func (c *sinceCache) put(key string, now time.Time, body []byte) {
+// put keeps body for key, computed after told events, the oldest of
+// sinceCacheKeep dropped; never over a reply computed after more.
+func (c *sinceCache) put(key string, now time.Time, told uint64, body []byte) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.replies == nil {
 		c.replies = map[string]sinceCached{}
 	}
-	if _, ok := c.replies[key]; !ok && len(c.replies) >= sinceCacheKeep {
+	had, ok := c.replies[key]
+	if ok && had.told > told {
+		return
+	}
+	if !ok && len(c.replies) >= sinceCacheKeep {
 		oldest := ""
 		for k, e := range c.replies {
 			if oldest == "" || e.at.Before(c.replies[oldest].at) {
@@ -116,7 +126,7 @@ func (c *sinceCache) put(key string, now time.Time, body []byte) {
 		}
 		delete(c.replies, oldest)
 	}
-	c.replies[key] = sinceCached{at: now, body: body}
+	c.replies[key] = sinceCached{at: now, told: told, body: body}
 }
 
 // handleBrakemanSince answers GET /api/brakeman/since[?since=]: the
@@ -154,7 +164,9 @@ func (s *Server) handleBrakemanSince(w http.ResponseWriter, r *http.Request) {
 		start = sinceStart{From: sinceFromGiven, At: at.UTC()}
 	}
 	key := "since=" + given
-	if body, ok := d.live.since.get(key, now); ok {
+	// The events told so far, read before anything the reply counts.
+	told := s.events.told.Load()
+	if body, ok := d.live.since.get(key, now, told); ok {
 		writeRawJSON(w, body)
 		return
 	}
@@ -165,6 +177,9 @@ func (s *Server) handleBrakemanSince(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	out, err := s.sinceCounts(r.Context(), start)
+	if f := d.live.sinceCounted.Load(); f != nil {
+		(*f)()
+	}
 	if err != nil {
 		s.log.Warn("Brakeman's since read failed", "err", err)
 		writeError(w, http.StatusInternalServerError, "internal", "the counts could not be read")
@@ -175,7 +190,7 @@ func (s *Server) handleBrakemanSince(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "bound", fmt.Sprintf("the counts are larger than their %d bytes", maxBrakemanSince))
 		return
 	}
-	d.live.since.put(key, now, body)
+	d.live.since.put(key, now, told, body)
 	writeRawJSON(w, body)
 }
 

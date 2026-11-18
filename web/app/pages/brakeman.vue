@@ -130,6 +130,16 @@ function showNewer() {
   newer.value = null
   folded.value = false
   if (openId.value) void router.replace({ query: { ...route.query, request: undefined }, hash: '' })
+  bringCard('nearest')
+}
+
+/**
+ * Brings the card into view after a person's press showed a brief in it (a row of Earlier, Back to the latest, a newer brief's Show):
+ * the card is above Earlier, so without it a press below seems to do nothing. The page scrolls, the focus stays where it was; nothing
+ * else on the page scrolls it (a brief kept, a read again).
+ */
+function bringCard(block: ScrollLogicalPosition = 'start') {
+  void nextTick(() => document.querySelector('[data-brakeman-latest]')?.scrollIntoView({ block }))
 }
 
 /** The request the card shows: the one a link names, else the latest. */
@@ -145,11 +155,11 @@ function toggle(id: string) {
     return
   }
   folded.value = false
-  void router.replace({ query: { ...route.query, request: id }, hash: '' })
+  void router.replace({ query: { ...route.query, request: id }, hash: '' }).then(() => bringCard())
 }
 function backToLatest() {
   folded.value = false
-  void router.replace({ query: { ...route.query, request: undefined }, hash: '' })
+  void router.replace({ query: { ...route.query, request: undefined }, hash: '' }).then(() => bringCard())
 }
 const cardState = computed(() => pageState({ read: latestRead.value || !!openId.value, error: bk.problem.value, count: cardId.value ? 1 : 0 }))
 

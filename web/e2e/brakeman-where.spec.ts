@@ -1,5 +1,5 @@
 import type { Browser, BrowserContext, Page } from '@playwright/test'
-import { budget, expect, itemURL, standingRoute, task, test, type Run } from './fixtures'
+import { expect, itemURL, standingRoute, task, test, type Run } from './fixtures'
 import { brakemanServer, type BrakemanServer } from './brakeman-server'
 import { noSideways } from './layout'
 import { walk, worst } from './contrast'
@@ -155,7 +155,8 @@ test("the run palette's Ask Brakeman… asks about the run and shows the Tasks v
   srv.shutGate()
   const page = await opened(browser, `/runs/${encodeURIComponent(runId)}?view=grid`)
   await expect(page.locator('[data-run-grid]')).toBeVisible({ timeout: 30_000 })
-  budget(3)
+  // The palette's key once the layout listens for it (its sidebar root drawn), pressed once.
+  await expect(page.locator('#dashboard-sidebar-main')).toBeAttached()
   await page.keyboard.press('Alt+/')
   const palette = page.locator('[data-palette]')
   await expect(palette).toBeVisible()
@@ -180,6 +181,37 @@ test("the run palette's Ask Brakeman… asks about the run and shows the Tasks v
   srv.openGate()
   await srv.until(id, ['briefed'])
   await expect(panel(page, `run:${runId}`).locator('[data-panel-latest]')).toHaveAttribute('data-request', id, { timeout: 15_000 })
+})
+
+test("the run panel's Overlapping changes, which names no subject, says where it went and never becomes the run's latest brief", async ({ browser }) => {
+  test.setTimeout(120_000)
+  // The stub's own brief, which cites its own session and run, never this run; held at the gate until the request is named here.
+  srv.setBrief(null)
+  srv.shutGate()
+  const page = await opened(browser, `/runs/${encodeURIComponent(runId)}?view=tasks`)
+  const latest = panel(page, `run:${runId}`).locator('[data-panel-latest]')
+  await expect(latest).toBeVisible({ timeout: 30_000 })
+  const before = (await latest.getAttribute('data-request'))!
+  // The page's own read of the new request once its brief is kept: what would mark it briefed in the page.
+  let id = ''
+  const briefedRead = page.waitForResponse(async (res) => {
+    if (!id || new URL(res.url()).pathname !== `/api/brakeman/requests/${id}`) return false
+    const body = (await res.json().catch(() => null)) as { request?: { state?: string } } | null
+    return body?.request?.state === 'briefed'
+  })
+  await panel(page, `run:${runId}`).locator('[data-ask-chip="overlaps"]').click()
+  // Not about the run: the panel says where it went.
+  const toast = page.locator('li').filter({ hasText: /^Asked as br-\d+/ }).last()
+  await expect(toast).toBeVisible({ timeout: 15_000 })
+  id = /Asked as (br-\d+)/.exec(await toast.innerText())![1]!
+  expect(await srv.request(id)).toMatchObject({ kind: 'overlaps' })
+  srv.openGate()
+  await srv.until(id, ['briefed'])
+  await briefedRead
+  await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))))
+  // Its brief neither names nor cites the run: the panel's latest is the run's own, as before.
+  await expect(latest).toHaveAttribute('data-request', before)
+  await expect(panel(page, `run:${runId}`).locator(`[data-request="${id}"]`)).toHaveCount(0)
 })
 
 test("the ticket's panel sends its chip about the ticket at once, and reads it", async ({ browser }) => {
