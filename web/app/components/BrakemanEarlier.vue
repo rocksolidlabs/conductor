@@ -2,6 +2,7 @@
 import type { BrakemanRequest, BrakemanRow } from '~/utils/brakeman'
 import { closed, kindWords, stateWords } from '~/utils/brakeman'
 import type { BrakemanListQuery } from '~/composables/useBrakeman'
+import { FilteredList, filteredRows } from '~/utils/brakemanEarlier'
 import { EARLIER_FILTERS, askAgain, kindLine, localMatch, rowAge, rowMeta, rowTitle, searchProblem, subjectWords, type EarlierFilter } from '~/utils/brakemanRows'
 
 /**
@@ -70,76 +71,34 @@ const asked = computed<BrakemanListQuery | null>(() => {
   return { ...f.query, ...(query.value ? { q: query.value } : {}) }
 })
 
-/** The filtered list as the server answered it: its ids in order, and the id to read the next page after. */
-const ids = ref<string[]>([])
-const next = ref('')
-const reading = ref(false)
-const failed = ref('')
-let sent = 0
-let busy = false
-let again = false
-/** Reads the first page of the filtered list (one read at a time: one asked meanwhile is one after); the rows shown keep their place. */
-async function readFirst(fresh: boolean) {
-  const q = asked.value
-  if (!q) return
-  if (busy) {
-    again = true
-    return
-  }
-  busy = true
-  reading.value = fresh
-  const mine = ++sent
-  try {
-    const out = await bk.list(q)
-    if (mine !== sent || asked.value !== q) return
-    if (!out.filtered) {
-      local.value = true
-      return
-    }
-    failed.value = ''
-    const got = out.requests.map((r) => r.id)
-    // A page read again: what is new goes first, what was shown keeps its place.
-    ids.value = fresh ? got : [...got.filter((id) => !ids.value.includes(id)), ...ids.value]
-    if (fresh) next.value = out.next
-  } catch (e) {
-    if (mine === sent) failed.value = (e as Error).message
-  } finally {
-    busy = false
-    reading.value = false
-    if (again) {
-      again = false
-      void readFirst(false)
-    }
-  }
-}
-watch(asked, (q) => {
-  ids.value = []
-  next.value = ''
-  failed.value = ''
-  sent++
-  if (q) void readFirst(true)
-})
-// A brief kept while a filter is on (or the stream back): its first page again.
+/** The filtered list as the server answered it (FilteredList: one read at a time, a query changed meanwhile read fresh after it). */
+const version = ref(0)
+const filtered = new FilteredList(
+  (q) => bk.list(q),
+  () => version.value++,
+  () => (local.value = true),
+)
+watch(asked, (q) => filtered.set(q))
+// A brief kept or a request closed while a filter is on (or the stream back): its first page again.
 watch(
   () => bk.events.value.seq,
   () => {
     const e = bk.events.value
-    if (asked.value && (e.id === '' || e.state === 'briefed' || closed(e.state))) void readFirst(false)
+    if (asked.value && (e.id === '' || e.state === 'briefed' || closed(e.state))) filtered.refresh()
   },
 )
+const list = computed(() => {
+  void version.value
+  return { ids: filtered.ids, next: filtered.next, reading: filtered.reading, failed: filtered.failed }
+})
+const reading = computed(() => list.value.reading)
+const failed = computed(() => list.value.failed)
 const moreBusy = ref(false)
 async function readMore() {
-  const q = asked.value
-  if (!q) return bk.more()
-  if (!next.value) return
+  if (!asked.value) return bk.more()
   moreBusy.value = true
   try {
-    const out = await bk.list({ ...q, after: next.value })
-    if (asked.value !== q) return
-    ids.value = [...ids.value, ...out.requests.map((r) => r.id).filter((id) => !ids.value.includes(id))]
-    next.value = out.next
-  } catch (e) {
-    failed.value = (e as Error).message
+    await filtered.more()
   } finally {
     moreBusy.value = false
   }
@@ -149,14 +108,12 @@ async function readMore() {
 const done = computed(() => bk.requests.value.filter((r) => closed(r.state)))
 /** The rows shown: the filtered list's (each as the live store has it now), the live store's, or the pages read searched here. */
 const rows = computed<BrakemanRow[]>(() => {
-  if (asked.value) {
-    const byId = new Map(bk.requests.value.map((r) => [r.id, r]))
-    return ids.value.map((id) => byId.get(id)).filter((r): r is BrakemanRow => !!r)
-  }
+  // A request queued or under way that a filter matches is In progress's: it is drawn here once it is done.
+  if (asked.value) return filteredRows(list.value.ids, bk.requests.value)
   if (local.value && search.value.trim()) return done.value.filter((r) => localMatch(r, search.value, names))
   return done.value
 })
-const hasMore = computed(() => (asked.value ? next.value !== '' : bk.hasMore.value))
+const hasMore = computed(() => (asked.value ? list.value.next !== '' : bk.hasMore.value))
 const searched = computed(() => !!asked.value || (local.value && !!search.value.trim()))
 
 function clear() {
