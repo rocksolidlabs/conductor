@@ -145,6 +145,18 @@ describe('taskActions', () => {
     const a = taskActions(t, run)
     expect((['retry', 'accept', 'cancel'] as const).filter((c) => a[c])).toEqual(row.commands)
   })
+  it('offers no Retry and no Accept anyway on a provider\'s run past its time limit, and keeps Cancel', () => {
+    const t = task({ state: 'failed', attempts: 1, attempt: { n: 1, state: 'failed', result: 'abc' }, commands: ['retry', 'accept', 'cancel'] })
+    const deadline = '2026-11-18T10:00:00Z'
+    const origin = { provider: 'example', ref: 'example:42', label: 'Nightly', deadline }
+    const before = taskActions(t, { origin }, Date.parse(deadline) - 1000)
+    expect([before.retry, before.accept, before.cancel]).toEqual([true, true, true])
+    const after = taskActions(t, { origin }, Date.parse(deadline))
+    expect([after.retry, after.accept, after.cancel]).toEqual([false, false, true])
+    // A run with no limit offers them whenever.
+    const none = taskActions(t, { origin: { provider: 'example', ref: 'example:42', label: 'Nightly' } }, Date.parse(deadline) + 1e12)
+    expect([none.retry, none.accept]).toEqual([true, true])
+  })
   it('offers Accept anyway as the engine names it, whatever the latest attempt and the kind: the run page used to judge from the latest work attempt alone', () => {
     // The latest attempt submitted nothing, an earlier kept one did: the engine takes it.
     expect(taskActions(task({ state: 'failed', attempts: 3, attempt: { n: 3, state: 'failed' }, commands: ['retry', 'accept'] }), live).accept).toBe(true)

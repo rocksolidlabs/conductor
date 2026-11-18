@@ -1,9 +1,23 @@
 import { describe, expect, it } from 'vitest'
 import type { RunOrigin } from '~/composables/useSessions'
-import { cutForEye, ORIGIN_LABEL_SHOWN, ORIGIN_SUBJECT_SHOWN, runOriginLine, shownText, subjectHref } from './runOrigin'
+import { cutForEye, ORIGIN_LABEL_SHOWN, ORIGIN_SUBJECT_SHOWN, runOriginLine, shownText, subjectHref, timeLimitPassed } from './runOrigin'
 
 const sha = 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678'
 const base: RunOrigin = { provider: 'example', ref: 'example:42', label: 'Nightly checks' }
+
+// Characters that draw nothing, each one the task file's quoting replaces with U+FFFD.
+const HIDDEN_CHARS = ['\u{200b}', '\u{200c}', '\u{200d}', '\u{2060}', '\u{feff}', '\u{ad}', '\u{2028}', '\u{2029}', '\u{180e}', '\u{3164}', '\u{115f}', '\u{fe0f}', '\u{e0041}', '\u{e0001}', '\u{e000}', '\u{34f}', '\u{202e}', '\u{2066}', '\u{7}', '\u{9b}']
+
+describe('timeLimitPassed', () => {
+  it('is past the deadline only, and never without one', () => {
+    const deadline = '2026-11-18T10:00:00Z'
+    expect(timeLimitPassed({ ...base, deadline }, Date.parse(deadline) - 1)).toBe(false)
+    expect(timeLimitPassed({ ...base, deadline }, Date.parse(deadline))).toBe(true)
+    expect(timeLimitPassed(base, Date.parse(deadline) + 1e12)).toBe(false)
+    expect(timeLimitPassed(undefined, 0)).toBe(false)
+    expect(timeLimitPassed({ ...base, deadline: 'not a time' }, 0)).toBe(false)
+  })
+})
 
 describe('runOriginLine', () => {
   it('is null for a run no provider launched', () => {
@@ -12,11 +26,12 @@ describe('runOriginLine', () => {
   })
 
   it('names the label alone, then the subject, then the start commit, short', () => {
-    expect(runOriginLine(base)).toEqual({ text: 'Launched by Nightly checks', lead: 'Launched by', label: 'Nightly checks', subject: undefined, href: undefined, commit: undefined })
+    expect(runOriginLine(base)).toEqual({ text: 'Launched by Nightly checks', lead: 'Launched by', label: 'Nightly checks', subject: undefined, href: undefined, host: undefined, commit: undefined })
     const all = runOriginLine({ ...base, subject: 'change:git.example.com/acme/web#12@' + sha, subjectUrl: 'https://git.example.com/acme/web/pull/12', startCommit: sha })!
-    expect(all.text).toBe(`Launched by Nightly checks for change:git.example.com/acme/web#12@${sha} at ${sha}`)
+    expect(all.text).toBe(`Launched by Nightly checks for change:git.example.com/acme/web#12@${sha} (its link opens https://git.example.com/acme/web/pull/12) at ${sha}`)
     expect(all.commit).toBe('a1b2c3d')
     expect(all.href).toBe('https://git.example.com/acme/web/pull/12')
+    expect(all.host).toBe('git.example.com')
     const noSubject = runOriginLine({ ...base, startCommit: sha })!
     expect(noSubject.text).toBe(`Launched by Nightly checks at ${sha}`)
     expect(noSubject.subject).toBeUndefined()
@@ -71,6 +86,20 @@ describe('runOriginLine', () => {
     expect(l.subject).toBe('example:\ufffd@x\ufffd@')
     expect(l.text).not.toMatch(/[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/)
     expect(shownText('a\u0007b\u009bc')).toBe('a\ufffdb\ufffdc')
+  })
+
+  it('names the host a link opens, whatever host its reference names', () => {
+    const l = runOriginLine({ ...base, subject: 'change:git.example.com/acme/web#12@' + sha, subjectUrl: 'https://other.example:8443/x' })!
+    expect(l.host).toBe('other.example:8443')
+    expect(l.text).toContain('(its link opens https://other.example:8443/x)')
+    expect(runOriginLine({ ...base, subject: 'example:42', subjectUrl: 'http://other.example/x' })!.host).toBeUndefined()
+  })
+
+  it('marks every character the task file replaces: zero-width, invisible, separators, tags, selectors', () => {
+    for (const c of HIDDEN_CHARS) {
+      expect(shownText(`a${c}b`), `U+${c.codePointAt(0)!.toString(16)}`).toBe('a\ufffdb')
+    }
+    expect(shownText('Café · naïve — 日本 😀 tab-free')).toBe('Café · naïve — 日本 😀 tab-free')
   })
 
   it('keeps markup as text', () => {

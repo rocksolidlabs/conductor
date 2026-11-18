@@ -14,6 +14,7 @@ import { personPath } from '~/utils/people'
 import { previewPath, TREE_SECRET_NAME } from '~/utils/capture'
 import { lanesOf, tasksByLane, type RunLane } from '~/utils/compare'
 import { SELECTION_WORDS, laneSelection } from '~/utils/compareSelect'
+import { TIME_LIMIT_PASSED, timeLimitPassed } from '~/utils/runOrigin'
 
 /**
  * The tasks of a managed run (#334, row 7), as a table (the UX review's
@@ -93,12 +94,14 @@ function reviewAt(run: string, task: string, attempt: number, commit: string | u
  */
 const reviewTarget = computed(() => (selectedTask.value ? taskReviewTarget(props.run.id, selectedTask.value, attempts.value) : null))
 // The run's state too: a task of an interrupted run says what its continuation takes up (taskWords), a held one among them (DR1).
-const live = computed(() => ({ state: props.run.state, stoppedAt: props.run.stoppedAt, paused: props.run.paused, pausedWhy: props.run.pausedWhy, record: props.run.record, resumedBy: props.run.resumedBy }))
+const live = computed(() => ({ state: props.run.state, stoppedAt: props.run.stoppedAt, paused: props.run.paused, pausedWhy: props.run.pausedWhy, record: props.run.record, resumedBy: props.run.resumedBy, origin: props.run.origin }))
 function agentOf(member: string): string {
   return props.run.members.find((m) => m.name === member)?.agentId ?? ''
 }
 const short = (c?: string) => (c ? c.slice(0, 12) : '')
-const acts = (t: RunTask) => taskActions(t, live.value)
+const acts = (t: RunTask) => taskActions(t, live.value, clock.value)
+// A provider's run past its launch's time limit: a request for changes would be refused, and the review entry says so.
+const limitPassed = computed(() => timeLimitPassed(props.run.origin, clock.value))
 /** A task's row in the table: its words without the attempt, the attempt and the owner said once, its actions in the row and in its menu. */
 const rowOf = (t: RunTask) => taskRow(t, live.value, { brakeman: brakeman.available.value })
 /** Whether the row draws an action (Answer, Retry, Accept, Open, Open preview or its menu): narrow, one that draws none has no line for them. */
@@ -382,6 +385,7 @@ async function confirm() {
       <!-- Its candidate reviewed on the ticket that holds the run (RV1), or why not. -->
       <div v-if="selectedTask.kind === 'work' && reviewTarget" class="flex flex-wrap items-center gap-2" data-task-review-entry>
         <UButton v-if="ticket" :label="`Review on ${ticket}`" icon="i-lucide-scan-eye" size="xs" color="neutral" variant="outline" :to="reviewAt(reviewTarget.run, selectedTask.id, reviewTarget.attempt, reviewTarget.commit)" data-task-review />
+        <span v-if="limitPassed" class="text-xs text-warning" data-task-time-limit>{{ TIME_LIMIT_PASSED }}.</span>
         <span v-else class="text-xs text-muted" data-task-review-unlinked>
           No ticket holds this run as far as the page read: no launch, and no run link to it or to a run of its chain. Link a run of its chain to a ticket to review it: a ticket's Runs section links a run by its id (<NuxtLink to="/dispatch" class="underline">Dispatch</NuxtLink>).
         </span>

@@ -2,7 +2,7 @@ import type { Locator, Page } from '@playwright/test'
 import { dayPage, expect, test, useTheme, type DayPageOptions } from './fixtures'
 import { stubInbox } from './inbox-stub'
 import { walk, worst } from './contrast'
-import { inside, noSideways } from './layout'
+import { inside, noSideways, uncut } from './layout'
 import { ledgerRun, serveRun, type StubRun } from './run-fixtures'
 
 // The run page's origin line: a run a registered provider launched says, in the header's second row, "Launched by <label> for
@@ -40,12 +40,13 @@ const ORIGIN: Origin = {
 }
 
 /** The Ledger run with origin o, served, on a page of its own at the run. */
-async function originPage(browser: Parameters<typeof dayPage>[0], o: Origin | undefined, opts: DayPageOptions = {}): Promise<{ page: Page; header: Locator; line: Locator }> {
+async function originPage(browser: Parameters<typeof dayPage>[0], o: Origin | undefined, opts: DayPageOptions & { stopped?: boolean; view?: string } = {}): Promise<{ page: Page; header: Locator; line: Locator }> {
   const run: StubRun & { origin?: Origin } = { ...ledgerRun(), ...(o ? { origin: o } : {}) }
+  if (opts.stopped) Object.assign(run, { state: 'stopped', stoppedAt: new Date(Date.now() - 60_000).toISOString() })
   const page = await dayPage(browser, { path: '/', ...opts })
   await stubInbox(page, [])
   await serveRun(page, run)
-  await page.goto(`/runs/${run.id}`)
+  await page.goto(`/runs/${run.id}${opts.view ? `?view=${opts.view}` : ''}`)
   const header = page.locator('[data-crew-run-header]')
   await expect(header.locator('[data-run-name]')).toHaveText(run.name)
   return { page, header, line: header.locator('[data-run-origin]') }
@@ -53,7 +54,7 @@ async function originPage(browser: Parameters<typeof dayPage>[0], o: Origin | un
 
 test('a run a provider launched says by what, for what and at which commit, with the subject’s link, in both modes', async ({ day, browser }) => {
   const { page, header, line } = await originPage(browser, ORIGIN, { theme: 'light' })
-  const whole = `Launched by ${ORIGIN.label} for ${SUBJECT} at ${COMMIT}`
+  const whole = `Launched by ${ORIGIN.label} for ${SUBJECT} (its link opens ${LINK}) at ${COMMIT}`
   for (const mode of ['light', 'dark'] as const) {
     if (mode === 'dark') await useTheme(page, 'dark', '#dashboard-sidebar-main')
     await expect(line, mode).toBeVisible()
@@ -64,6 +65,10 @@ test('a run a provider launched says by what, for what and at which commit, with
     await expect(link, mode).toHaveAttribute('href', LINK)
     await expect(link, mode).toHaveAttribute('rel', 'noopener noreferrer')
     await expect(link, mode).toHaveAttribute('target', '_blank')
+    await expect(link, mode).toHaveAttribute('title', LINK)
+    await expect(link, mode).toHaveAttribute('aria-label', `${SUBJECT.slice(0, 47)}…, a link that opens ${LINK}`)
+    // The host the link opens is said beside it, whole.
+    await expect(line.locator('[data-run-origin-host]'), mode).toHaveText('(opens git.example.com)')
     // The subject is cut for the eye (48 characters, an ellipsis) and whole in the line's title.
     await expect(link, mode).toHaveText(`${SUBJECT.slice(0, 47)}…`)
     await inside(line, header.locator('[data-run-summary]'))
@@ -80,6 +85,7 @@ test('a subject’s link the page may not open is shown as text, and markup in a
     const { page, line } = await originPage(browser, { ...ORIGIN, label: '<b>bold</b> & <i>not</i>', subjectUrl: url })
     await expect(line, url).toBeVisible()
     await expect(line.locator('a'), url).toHaveCount(0)
+    await expect(line.locator('[data-run-origin-host]'), url).toHaveCount(0)
     await expect(line.locator('[data-run-origin-subject]'), url).toHaveText(`${SUBJECT.slice(0, 47)}…`)
     await expect(line.locator('[data-run-origin-label]'), url).toHaveText('<b>bold</b> & <i>not</i>')
     await expect(line.locator('b, i'), url).toHaveCount(0)
@@ -101,6 +107,31 @@ test('a continuation says it continues a provider’s run; a run with no origin 
   void day
 })
 
+test('past its time limit a provider\'s run offers no Continue and no Retry, and says why; before it, both', async ({ day, browser }) => {
+  for (const [when, passed] of [
+    ['an hour ago', true],
+    ['in an hour', false],
+  ] as const) {
+    const deadline = new Date(Date.now() + (passed ? -1 : 1) * 3_600_000).toISOString()
+    const { page, header } = await originPage(browser, { ...ORIGIN, deadline }, { stopped: true, view: 'tasks' })
+    // The task table is drawn (its failed task's row) before anything is judged absent.
+    const row = page.locator('[data-task-row="migrate"]')
+    await expect(row, when).toBeVisible()
+    if (passed) {
+      await expect(header.locator('[data-run-time-limit]'), when).toContainText("The run's time limit has passed")
+      await expect(header.locator('[data-run-resume]'), when).toHaveCount(0)
+      await expect(row.locator('[data-task-retry="migrate"]'), when).toHaveCount(0)
+      await expect(row.locator('[data-task-accept="migrate"]'), when).toHaveCount(0)
+    } else {
+      await expect(header.locator('[data-run-resume]'), when).toBeVisible()
+      await expect(row.locator('[data-task-retry="migrate"]'), when).toBeVisible()
+      await expect(header.locator('[data-run-time-limit]'), when).toHaveCount(0)
+    }
+    await page.context().close()
+  }
+  void day
+})
+
 test('on a phone, in both modes, the line wraps inside the header and nothing scrolls sideways', async ({ day, browser }) => {
   const { page, header, line } = await originPage(browser, { ...ORIGIN, label: 'é'.repeat(60) }, { width: 390, height: 844, touch: true, theme: 'dark' })
   for (const mode of ['dark', 'light'] as const) {
@@ -108,7 +139,12 @@ test('on a phone, in both modes, the line wraps inside the header and nothing sc
     await expect(line, mode).toBeVisible()
     // The label at its bound is cut for the eye at 40 characters and whole in the title.
     await expect(line.locator('[data-run-origin-label]'), mode).toHaveText(`${'é'.repeat(39)}…`)
-    await expect(line, mode).toHaveAttribute('title', `Launched by ${'é'.repeat(60)} for ${SUBJECT} at ${COMMIT}`)
+    await expect(line, mode).toHaveAttribute('title', `Launched by ${'é'.repeat(60)} for ${SUBJECT} (its link opens ${LINK}) at ${COMMIT}`)
+    // The host the link opens is seen whole at this width too.
+    const host = line.locator('[data-run-origin-host]')
+    await expect(host, mode).toHaveText('(opens git.example.com)')
+    await uncut(host)
+    await inside(host, header)
     await inside(line, header)
     await noSideways(page, { root: header })
   }

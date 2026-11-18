@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -77,7 +78,8 @@ func (h *FakeHost) Restarted(t T) *FakeHost {
 }
 
 // SetManaged has a launch with an origin of crew take it as a crew with
-// tasks (true, the default) or refuse it not_managed (false).
+// tasks (true) or refuse it not_managed (false). Unset, a crew is one
+// with tasks unless the record SetResolved gave for it says it has none.
 func (h *FakeHost) SetManaged(crew string, managed bool) {
 	h.srv.mu.Lock()
 	h.srv.managed[crew] = managed
@@ -154,7 +156,9 @@ func (h *FakeHost) OnStopRun(fn func(ext.StopRequest) error) {
 // launchOwn is Launch of a valid request with an origin, as the server
 // makes it: the run its operation id made, whatever the request asks
 // (RunStatus.Origin says what that run was launched with); else, in the
-// server's order, prior_unknown, not_managed, start_commit_missing, and with a
+// server's order, invalid_subject, prior_unknown, not_managed (SetManaged,
+// or the record SetResolved gave, of a crew without tasks),
+// start_commit_missing, and with a
 // digest, the launch resolved again with the settings now and refused
 // launch_changed on another digest; else a new run, kept under the
 // operation id.
@@ -165,12 +169,15 @@ func (h *FakeHost) launchOwn(r ext.LaunchRequest) (ext.RunRef, error) {
 	if id, ok := s.byOp[r.OpID]; ok {
 		return runRef(s.runs[id].status), nil
 	}
+	if !knownSubject(r.Subject.Ref) {
+		return ext.RunRef{}, refusal(ext.RefusalInvalidSubject, "the subject's reference is in no form this server knows")
+	}
 	if r.Subject.Prior != "" {
 		if p := s.runs[r.Subject.Prior]; p == nil || !p.own {
 			return ext.RunRef{}, refusal(ext.RefusalPriorUnknown, "the earlier run is not one this provider launched")
 		}
 	}
-	if managed, set := s.managed[r.Crew]; set && !managed {
+	if !s.isManaged(r.Crew) {
 		return ext.RunRef{}, refusal(ext.RefusalNotManaged, "the crew %s has no tasks: a launch with an origin is of a crew with tasks", r.Crew)
 	}
 	if r.StartCommit != "" && !s.holds(r.StartCommit) {
@@ -199,6 +206,38 @@ func (h *FakeHost) launchOwn(r ext.LaunchRequest) (ext.RunRef, error) {
 	s.runs[st.ID] = &fakeRun{status: st, own: true}
 	s.byOp[r.OpID] = st.ID
 	return runRef(st), nil
+}
+
+// knownSubject reports whether a subject's reference is of a form the
+// server knows: none, a change: or a job: reference (their patterns are
+// ext.SubjectRef's, which Valid applies), or a reference of a kind Brakeman
+// reads (the server reads its parts too; the fake knows the kinds alone).
+func knownSubject(ref string) bool {
+	if ref == "" {
+		return true
+	}
+	kind, _, _ := strings.Cut(ref, ":")
+	return slices.Contains(subjectKinds, kind)
+}
+
+// subjectKinds are the kinds of reference a server knows for a subject:
+// change: and job:, and Brakeman's.
+var subjectKinds = []string{
+	"change", "job", "run", "task", "attempt", "check", "command", "event", "message", "session", "question", "ticket",
+	"comment", "op", "commit", "file", "brief", "plan", "launch", "candidate", "decision", "capacity", "capture",
+}
+
+// isManaged reports whether crew is a crew with tasks: false when
+// SetManaged said so, or when the record SetResolved gave for it is of a
+// crew without tasks. Under s.mu.
+func (s *fakeServer) isManaged(crew string) bool {
+	if managed, set := s.managed[crew]; set {
+		return managed
+	}
+	if c, ok := s.crews[crew]; ok {
+		return c.r.Managed
+	}
+	return true
 }
 
 // runRef is the run's reference, as a launch answers it.
