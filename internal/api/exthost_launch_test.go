@@ -708,6 +708,91 @@ func TestStopRunOnAReadOnlyLedgerSaysSo(t *testing.T) {
 	}
 }
 
+// A run's record is served with the ledger's origin: an origin written
+// into the record file by hand shows nothing on a person's run (the
+// ledger has no row of it), and the ledger's own on a provider's run, in
+// the run's read and in its crew's runs.
+func TestARunsRecordShowsTheLedgersOrigin(t *testing.T) {
+	e, id := originEnv(t)
+	h := testHost(e.srv, t.Context(), "example")
+	mine, err := h.Launch(t.Context(), originLaunch(id, "op-1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, out := e.do("POST", "/api/crews/"+id+"/launch", adminToken, map[string]any{})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("a person's launch: %d %v", resp.StatusCode, out)
+	}
+	persons := out["run"].(map[string]any)["id"].(string)
+	for _, run := range []string{mine.ID, persons} {
+		runningAttempt(t, e, run, "build", 1)
+		if err := e.srv.runs.Stop(t.Context(), run); err != nil {
+			t.Fatal(err)
+		}
+	}
+	waitUntil(t, "both records written stopped", func() bool {
+		for _, run := range []string{mine.ID, persons} {
+			if rec, ok, _ := e.srv.records.Get(run); !ok || rec.State != crew.RunStopped {
+				return false
+			}
+		}
+		return true
+	})
+	shutdown(e)
+	for _, run := range []string{mine.ID, persons} {
+		// The record file edited by hand: its origin replaced, its
+		// revision left as it is.
+		path := filepath.Join(e.srv.cfg.DataDir, "runs", run+".json")
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var doc map[string]any
+		if err := json.Unmarshal(raw, &doc); err != nil {
+			t.Fatal(err)
+		}
+		doc["origin"] = map[string]any{"provider": "elsewhere", "ref": "hand:1", "label": "Written by hand"}
+		edited, _ := json.Marshal(doc)
+		if err := os.WriteFile(path, edited, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A restart over the edited files: the records are current with the
+	// ledger, so nothing writes them again.
+	e = restartEnding(t, e)
+	for _, run := range []string{mine.ID, persons} {
+		if rec, _, _ := e.srv.records.Get(run); rec.Origin == nil || rec.Origin.Label != "Written by hand" {
+			t.Fatalf("the record file as edited: %+v", rec.Origin)
+		}
+	}
+	read := func(run string) map[string]any {
+		resp, out := e.do("GET", "/api/runs/"+run, adminToken, nil)
+		if resp.StatusCode != http.StatusOK || out["record"] != true {
+			t.Fatalf("the record of %s: %d %v", run, resp.StatusCode, out)
+		}
+		origin, _ := out["run"].(map[string]any)["origin"].(map[string]any)
+		return origin
+	}
+	if o := read(persons); o != nil {
+		t.Fatalf("a person's run shows a hand-written origin: %v", o)
+	}
+	if o := read(mine.ID); o == nil || o["provider"] != "example" || o["label"] != "Review of change 42" {
+		t.Fatalf("a provider's run shows another origin than the ledger's: %v", o)
+	}
+	resp, out = e.do("GET", "/api/crews/"+id+"/runs", adminToken, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("the crew's runs: %d %v", resp.StatusCode, out)
+	}
+	for _, raw := range out["runs"].([]any) {
+		r := raw.(map[string]any)
+		o, _ := r["origin"].(map[string]any)
+		switch {
+		case r["id"] == persons && o != nil, r["id"] == mine.ID && (o == nil || o["provider"] != "example"):
+			t.Fatalf("the crew's runs show %s with origin %v", r["id"], o)
+		}
+	}
+}
+
 // Past its deadline a provider's failed run offers nothing that would
 // start an attempt: the inbox has no open item for its failed task, where
 // before the deadline it offers Retry. The clock is the engine's seam.

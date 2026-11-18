@@ -252,3 +252,8 @@ func (e *Engine) pastDeadline(r *run, intent string) error {
 // would start an attempt (pastDeadline). It is called before the engine
 // launches any run: the clock is read without a lock.
 func (e *Engine) SetClockForTest(now func() time.Time) { e.now = now }
+
+// OriginOf is the origin a run's record says of an origin row: nil for
+// none. A record served for a run the ledger knows says the ledger's row
+// through it, never its own.
+func OriginOf(row *ledger.OriginRow) *RunOrigin { return originOfRow(row) }

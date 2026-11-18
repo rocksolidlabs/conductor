@@ -463,8 +463,10 @@ func (s *Server) handleGetRun(w http.ResponseWriter, r *http.Request) {
 		}
 		if ok {
 			// Its decisions are the ledger's, and outlast the engine's hold;
-			// a preview of its candidates the engine's (PV1).
+			// a preview of its candidates the engine's (PV1); where it came
+			// from the ledger's too.
 			s.withPreviewing(&run)
+			s.ledgerOrigin(r.Context(), &run)
 			reply := map[string]any{"run": run, "record": true}
 			s.addRunDecisions(r, reply, id, "", after)
 			writeJSON(w, http.StatusOK, reply)
@@ -898,4 +900,18 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{"run": run})
+}
+
+// ledgerOrigin sets the origin of a run's record as it is served: the
+// ledger's row for a run the ledger keeps one of, and none otherwise (no
+// row, no ledger, a run without tasks): an origin written into a record
+// file by hand shows nothing. A ledger that cannot be read leaves none.
+func (s *Server) ledgerOrigin(ctx context.Context, run *crew.Run) {
+	run.Origin = nil
+	if s.ledger == nil || run.ID == "" {
+		return
+	}
+	if row, ok, err := s.ledger.Origin(ctx, run.ID); err == nil && ok {
+		run.Origin = crew.OriginOf(&row)
+	}
 }
