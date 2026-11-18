@@ -123,6 +123,17 @@ func (c *usageClock) tick(t *testing.T) {
 	c.next(t, ext.UsageEvery).fire <- time.Now()
 }
 
+// cut fires the next period a connection waits for and waits until the
+// period's report is queued: the connection asks for its next period only
+// after it, and that wait is answered, to be fired by the test. Firing
+// alone says nothing of when the report is cut: what the test does next
+// (a frame, a renewal, a close) can come first on a loaded machine.
+func (c *usageClock) cut(t *testing.T) fakeTimer {
+	t.Helper()
+	c.tick(t)
+	return c.next(t, ext.UsageEvery)
+}
+
 // tickAfter moves ut by d once a connection waits for its period, and
 // then fires it: the period's report is read off the clock after the move,
 // and the next move waits for the next period.
@@ -650,8 +661,10 @@ func TestRelayUsageCarriesNoToken(t *testing.T) {
 	h, _ := dialCred(t, e, hostReg("1", nil), credOld)
 	relayOut(t, h, nobody, 10)
 	h.send(hostToken(credNew))
-	o.awaitAsk(t, credNew)
-	clock.tick(t)
+	// Asked is not admitted: the renewal is taken (and its report cut) once
+	// a message after it is answered.
+	readUpTo(h)
+	clock.cut(t) // before the refusal closes the connection
 	o.set(func(f *credIdentity) {
 		f.answer[credNew2] = func(context.Context) (ext.Principal, bool, error) { return ext.Principal{}, false, nil }
 	})
@@ -702,10 +715,10 @@ func TestRelayUsageObserverPanicLeavesTheServerUp(t *testing.T) {
 		slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug})), nil, withIdentity(o))
 	clock := newUsageClock(e.srv)
 	h, _ := dialCred(t, e, hostReg("1", nil), credOld)
-	clock.tick(t) // panics
+	next := clock.cut(t) // its report panics in the observer
 	n := relayOut(t, h, nobody, 10)
 	readUpTo(h)
-	clock.tick(t)
+	next.fire <- time.Now()
 	checkReport(t, o.next(t), "", credOld, 1, n)
 	if resp, _ := e.do(http.MethodGet, "/api/sessions", adminToken, nil); resp.StatusCode != http.StatusOK {
 		t.Fatalf("the server answers %d after the observer's panic", resp.StatusCode)
