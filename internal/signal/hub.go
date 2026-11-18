@@ -53,6 +53,17 @@ type Hub struct {
 	// sends, checked (report.go). Set them before the first host registers.
 	OnAdded       func(*HostedSession)
 	OnSessionInfo func(*HostedSession, proto.HostSessionInfoMsg)
+	// Tokens, when set, is the set of live agent tokens a hosted session's
+	// token is entered in (setAgentToken): from its registration, or an
+	// attach that carries a token, until the session ends, leaves the
+	// registry or this table, or its registration fails; nil keeps none.
+	// Desks carry no token. Set it before the first host registers.
+	Tokens session.TokenSet
+	// registering holds the ids of the registrations with an instance
+	// under way, from the look-up that found no session under the id to
+	// the insert into sessions or the failure: a second one meanwhile is
+	// refused, so one id is never made twice. Guarded by mu.
+	registering map[string]struct{}
 	// decisions says this switchyard carries a decision link's lane
 	// (SetDecisions).
 	decisions atomic.Bool
@@ -126,6 +137,19 @@ func (hub *Hub) Register(reg proto.Register, conn *HostConn) (*HostedSession, bo
 		owner = ownerOf(reg.Host.Instance)
 		hub.mu.Lock()
 		hs, ok := hub.sessions[id]
+		if !ok {
+			// A first registration of this id: another under way is
+			// refused, nothing made, and this one is marked until the
+			// session is in the table or the registration failed.
+			if _, under := hub.registering[id]; under {
+				hub.mu.Unlock()
+				return nil, false, ErrBadRegister
+			}
+			if hub.registering == nil {
+				hub.registering = map[string]struct{}{}
+			}
+			hub.registering[id] = struct{}{}
+		}
 		hub.mu.Unlock()
 		if ok {
 			if hs.desk != "" || hs.owner != owner || !hs.attach(reg, conn) {
@@ -169,10 +193,16 @@ func (hub *Hub) Register(reg proto.Register, conn *HostConn) (*HostedSession, bo
 	hs.setAgentToken(reg.Session.AgentToken)
 	hs.setAnswerAs(reg.Host.AnswerAs)
 	if err := hub.registry.Add(hs); err != nil {
+		// Never shared: its entry goes with the registration.
+		hs.endToken()
+		hub.mu.Lock()
+		delete(hub.registering, id)
+		hub.mu.Unlock()
 		return nil, false, err
 	}
 	hub.mu.Lock()
 	hub.sessions[hs.info.ID] = hs
+	delete(hub.registering, id)
 	hub.mu.Unlock()
 	if hub.OnAdded != nil {
 		hub.OnAdded(hs)
@@ -232,6 +262,9 @@ func (hub *Hub) Get(id string) (*HostedSession, bool) {
 
 // Expire removes sessions whose host has been gone longer than the grace
 // period, and forgets ended sessions that the registry already dropped.
+// A session's token entry goes in the same hold that takes it out of the
+// table (the hub's lock, then the session's), and the registry loses only
+// the session expired: one registered under its id since is left alone.
 func (hub *Hub) Expire(now time.Time) {
 	hub.mu.Lock()
 	var expired []string
@@ -250,22 +283,37 @@ func (hub *Hub) Expire(now time.Time) {
 			expired = append(expired, id)
 		}
 	}
-	var desks []*HostedSession
+	var desks, gone []*HostedSession
 	for _, id := range expired {
-		if hs := hub.sessions[id]; hs.desk != "" {
+		hs := hub.sessions[id]
+		if hs.desk != "" {
 			desks = append(desks, hs)
+		} else {
+			gone = append(gone, hs)
 		}
 		delete(hub.sessions, id)
+		hs.mu.Lock()
+		hs.endToken()
+		hs.mu.Unlock()
 	}
 	hub.mu.Unlock()
 	for _, d := range desks {
 		hub.log.Info("desk expired", "desk", d.info.ID)
 		d.retireDesk()
 	}
-	for _, id := range expired {
-		if _, ok := hub.registry.Get(id); ok {
+	for _, hs := range gone {
+		id := hs.info.ID
+		d, ok := hub.registry.Get(id)
+		if !ok {
+			continue
+		}
+		if d == session.Driver(hs) {
 			hub.log.Info("hosted session expired", "session", id)
-			hub.registry.Remove(id)
+		}
+		if !hub.registry.RemoveIf(id, hs) {
+			// Registered again under its id since it left the table: the
+			// new one stays; this one leaves as a removal retires it.
+			hs.Retire()
 		}
 	}
 }

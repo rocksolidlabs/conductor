@@ -752,6 +752,9 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 	// The context providers: an attempt's context, and the files touched.
 	s.wireContext()
 	s.hosts = signal.NewHub(s.registry, log)
+	// A hosted session's live agent token is one of the server's own, as a
+	// launched session's is (liveTokens).
+	s.hosts.Tokens = &s.agentTokens
 	if cfg.MaxViewersPerSession > 0 {
 		s.hosts.MaxViewers = cfg.MaxViewersPerSession
 	}
