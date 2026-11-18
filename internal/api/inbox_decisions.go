@@ -322,13 +322,19 @@ func (rd *inboxRead) decisionBlocking(it *inboxItem, row ledger.DecisionRow, run
 	if row.Origin == ledger.OriginAgent && row.TaskID != "" {
 		add(row.TaskID)
 	}
-	for _, t := range tasks {
-		it.block("task:" + row.CurrentRun + "/" + t)
+	// A closed record (applied, or closed without an answer: superseded,
+	// cancelled, expired) blocks nothing, and says so: its run and its
+	// asking task are named in its evidence, never as blocked by it.
+	closed := row.State != ledger.DecisionOpen && row.State != ledger.DecisionAnswered
+	if !closed {
+		for _, t := range tasks {
+			it.block("task:" + row.CurrentRun + "/" + t)
+		}
+		it.block("run:" + row.CurrentRun)
 	}
-	it.block("run:" + row.CurrentRun)
 	var words string
 	switch {
-	case row.State != ledger.DecisionOpen && row.State != ledger.DecisionAnswered:
+	case closed:
 		// Closed (applied, or closed without an answer): nothing waits for
 		// it now, whatever it held while it was open.
 		words = fmt.Sprintf("Nothing waits for %s now: it is %s", id, row.State)

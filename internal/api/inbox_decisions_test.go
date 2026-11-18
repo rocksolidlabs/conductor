@@ -1413,6 +1413,9 @@ func TestASelectionsWordsFollowItsState(t *testing.T) {
 		t.Fatal(err)
 	}
 	applied := e.itemOf(t, ledger.DecisionRef(n))
+	if len(applied.Blocking.Refs) != 0 || applied.Blocking.More != 0 {
+		t.Fatalf("applied, still blocking: %v (+%d)", applied.Blocking.Refs, applied.Blocking.More)
+	}
 	if applied.Blocking.Words != "Nothing waits for "+id+" now: it is applied" {
 		t.Fatalf("applied, what waits: %q", applied.Blocking.Words)
 	}
@@ -1421,5 +1424,54 @@ func TestASelectionsWordsFollowItsState(t *testing.T) {
 	}
 	if got := names(applied); slices.Contains(got, "more_info") || slices.ContainsFunc(got, func(n string) bool { return n == "select" || n == "none" }) {
 		t.Fatalf("applied, the actions: %q", got)
+	}
+}
+
+// A record closed in any state blocks nothing: its blocking names no run
+// and no task, its words say nothing waits for it, and the list's summary
+// counts nothing it blocks; while it was open it blocked its run.
+func TestAClosedRecordBlocksNothing(t *testing.T) {
+	e := readyEnv(t, nil)
+	ctx := context.Background()
+	const run = "compare-0000c105"
+	req := `{"question":"Which approach?","options":[{"label":"approach-a at 4b825dc","subject":{"kind":"candidate","run":"` + run +
+		`","task":"approach-a","n":1,"commit":"4b825dc"}},{"label":"None of these"}],"recommendation":-1,"authorizes":"Continuing the selected candidate.",` +
+		`"subject":{"kind":"comparison","run":"` + run + `","base":"abc123","digest":"d1"}}`
+	if _, err := e.srv.ledger.Transition(ctx, run, func(tx *ledger.Tx) error {
+		return tx.PutRun(ledger.RunRow{ID: run, CrewID: "compare", Crew: `{"id":"compare"}`, Base: "abc123", State: ledger.RunRunning, CreatedAt: tx.Now()})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, state := range []string{ledger.DecisionExpired, ledger.DecisionCancelled, ledger.DecisionSuperseded} {
+		var n int64
+		if _, err := e.srv.ledger.Transition(ctx, run, func(tx *ledger.Tx) error {
+			d, _, err := tx.OpenDecision(ledger.DecisionRow{Origin: ledger.OriginCompare, Type: ledger.DecisionApproval, Fingerprint: "fp-closed-" + state, Request: req,
+				Policy: `{"revision":"local/1","approver":"operator","quorum":1,"authority":[{"kind":"operator"}]}`})
+			n = d.N
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		id := ledger.DecisionID(n)
+		if open := e.itemOf(t, ledger.DecisionRef(n)); !slices.Contains(open.Blocking.Refs, "run:"+run) {
+			t.Fatalf("%s open: its run not blocked: %v", id, open.Blocking.Refs)
+		}
+		if _, err := e.srv.ledger.Transition(ctx, run, func(tx *ledger.Tx) error {
+			d, _, err := tx.Decision(n)
+			if err != nil {
+				return err
+			}
+			d.State, d.Rev = state, d.Rev+1
+			return tx.PutDecision(d)
+		}); err != nil {
+			t.Fatal(err)
+		}
+		it := e.itemOf(t, ledger.DecisionRef(n))
+		if len(it.Blocking.Refs) != 0 || it.Blocking.More != 0 || it.summary().Blocks != 0 {
+			t.Fatalf("%s %s: still blocking %v (+%d), summary %d", id, state, it.Blocking.Refs, it.Blocking.More, it.summary().Blocks)
+		}
+		if want := "Nothing waits for " + id + " now: it is " + state; it.Blocking.Words != want {
+			t.Fatalf("%s %s: %q", id, state, it.Blocking.Words)
+		}
 	}
 }
