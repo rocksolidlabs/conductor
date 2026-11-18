@@ -4816,7 +4816,13 @@ is refused with a receipt (`task_state`), nothing changed. A row written
 before this (ledger version 9 or earlier) has none of `request`, `start`
 and `findingsFrom` and reads as before; the ledger's version 10 changes
 no table and is a barrier, so an older binary opens it read-only rather
-than dropping a request it does not know.
+than dropping a request it does not know. The ledger's version 13 adds a
+table that keeps where a run was launched from (`run_origin`, one row a
+run at most, removed with its run, and one run for a provider's operation
+id); no run before it has a row, and nothing writes one yet. A build that
+writes version 12 opens such a ledger read-only: it launches no crew with
+tasks there and rewrites nothing; opened again by a build that writes 13,
+it is as it was.
 
 **Commands with receipts.** A person's change to a managed run (pause,
 unpause, cancel, retry, accept) is a command: the client mints a `commandId`
