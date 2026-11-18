@@ -487,7 +487,10 @@ test('the handoff copies, and comments on its ticket', async ({ page, context })
   // The shared comment dialog, its ticket picked, says under whose name it posts.
   const dialog = page.locator('[data-comment-ticket]')
   await expect(dialog).toHaveAttribute('data-comment-target', `${PROJECT}-1`)
-  await expect(dialog.locator('[data-comment-confirm]')).toHaveText('It posts under your name, Nate.')
+  // The turn could read check logs (the configuration's own): the handoff's dialog warns as the brief's does (D39).
+  const { request: asked } = await api.ok<{ request: { config: { visibility: { logs?: boolean; terminals?: boolean } } } }>('GET', '/api/brakeman/requests/br-1')
+  expect(asked.config.visibility.logs || asked.config.visibility.terminals).toBe(true)
+  await expect(dialog.locator('[data-comment-confirm]')).toHaveText('It posts under your name, Nate. The handoff may quote a terminal screen or a check log.')
   await page.locator('[data-comment-send]').click()
   await expect(dialog).toHaveCount(0)
   await expect(h.locator(`[data-handoff-comment="${PROJECT}-1"]`)).toHaveText(`Commented on ${PROJECT}-1`)

@@ -161,5 +161,11 @@ describe('the role in one sentence', () => {
     expect(wokenWords(log.slice(2, 3), new Map(), now)).toBe('Woken once today, 0 briefs.')
     const full = Array.from({ length: ROLE_LOG_READ }, () => ({ source: 'task_failed', at: today(20), batch: 'wb-9' }))
     expect(wokenWords(full, new Map(), now)).toBe(`Woken ${ROLE_LOG_READ} or more times today, 0 briefs.`)
+    // A read cut inside today, some of its rows held: what was read is a floor, never a count.
+    const someHeld = full.map((r, i) => (i % 25 === 0 ? { ...r, held: 'paused' } : r))
+    expect(wokenWords(someHeld, new Map(), now)).toBe(`Woken ${ROLE_LOG_READ - 8} or more times today, 0 briefs.`)
+    // A full read whose oldest row is yesterday's holds all of today's.
+    const reachesYesterday = [...full.slice(1), { source: 'task_failed', at: new Date(2026, 10, 4, 23).toISOString(), batch: 'wb-0' }]
+    expect(wokenWords(reachesYesterday, new Map(), now)).toBe(`Woken ${ROLE_LOG_READ - 1} times today, 0 briefs.`)
   })
 })
