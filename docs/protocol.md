@@ -2296,8 +2296,11 @@ key and may be the start of what the next write goes on with: a report's
 rest, an Alt chord), counts for what refuses a reply, never for what clears
 a question or puts its screen behind: a startup question it may answer is
 held consumed until the screen shows it gone (a whole frame, after output fed
-since the Escape, at least as large as the screen was), a key surely
-answers it, or the next startup question takes its place; a page's Escape
+since the Escape, at least as large as the screen was; each look of the
+session's asks that first, the look that reads its kept output for a
+startup question to ask among them, so that the dialog's own words left in
+that output are not asked again), a key surely answers it, or the next
+startup question takes its place; a page's Escape
 sent as a reply is a structured answer, and resolves the question as it is
 written. Keys that answered a dialog hold the next look at the screen until
 output comes or the end of a quiet period, so the look before a submission

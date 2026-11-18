@@ -1222,6 +1222,14 @@ func (s *Local) firePattern(line string) {
 // where 1 runs npm install). That is weighed under the lock that sets the
 // question (startupLook).
 func (s *Local) fireTrust(text string) {
+	// A question an Escape answered (heldAnswer) that a whole frame of the
+	// screen shows gone is withdrawn first, as the screen's own look does
+	// first (fireAsked, missAsked): the output this look keeps still holds
+	// the dialog it left, whose words read as another question, and asked
+	// so it would never go. Withdrawn, the question's output is behind
+	// (startupGone): this look, which took its text before, asks nothing.
+	// Either look first, the same picture.
+	s.escGone()
 	if q, words, seen, shown := s.startupSeen(text); q != nil {
 		if s.heldGone(words) {
 			// An Escape typed at it before it was asked took it away.
