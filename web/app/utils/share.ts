@@ -68,3 +68,32 @@ export function shareReach(created: CreatedLink, reach: ReachInfo | null | undef
   }
   return { kind: 'local', level: local.level, title: local.title, text: local.text }
 }
+
+/** Why Share made no link, in the dialog's words: a title and its sentence. */
+export interface ShareRefusal {
+  title: string
+  text: string
+}
+
+/**
+ * shareRefusal says why no link can be made, from the code of the server's refusal of a link route: `run_record`, a run the server
+ * keeps only as its record (stopped, then the server restarted, or let go with the oldest runs), which has no links and is given none
+ * (docs/protocol.md, the run links' routes). Null for any other failure, which the dialog shows as the error it is.
+ */
+export function shareRefusal(code: string): ShareRefusal | null {
+  if (code !== 'run_record') return null
+  return {
+    title: 'No link for this run',
+    text: 'The server keeps this run only as its record: it ended before the server last started, or was let go with the oldest runs. A link opens only a run the server holds, so none was made. A selection the run still holds is answered on Needs you, not through a link.',
+  }
+}
+
+/**
+ * The Share dialog's line under its title, true in every outcome: it says the link is copied only once a link was made and the copy
+ * took; while one is being made, or when making or copying it failed, it says what a link opens; refused, that none was made.
+ */
+export function shareDescription(o: { run: boolean; copied: boolean; refused: boolean }): string {
+  if (o.refused) return o.run ? 'No link was made for this run.' : 'No link was made.'
+  if (o.copied) return o.run ? 'The link is copied: it opens every agent of the crew, one added later too. Revoking disconnects whoever used it.' : 'The link is copied. Revoking disconnects whoever used it.'
+  return o.run ? 'A link opens every agent of the crew, one added later too. Revoking disconnects whoever used it.' : 'A link opens this session. Revoking disconnects whoever used it.'
+}

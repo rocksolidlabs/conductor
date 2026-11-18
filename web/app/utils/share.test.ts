@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { hostOf, reuseHeld, shareReach } from './share'
+import { hostOf, reuseHeld, shareDescription, shareReach, shareRefusal } from './share'
 
 const offline = { mode: 'off' as const, mapped: false }
 
@@ -45,5 +45,35 @@ describe('shareReach', () => {
   it('hostOf', () => {
     expect(hostOf('https://switchyard.example.net/join/x')).toBe('switchyard.example.net')
     expect(hostOf('nonsense')).toBe('nonsense')
+  })
+})
+
+describe('shareRefusal', () => {
+  it('a run kept only as its record: why no link is made, and where its selection is answered', () => {
+    const r = shareRefusal('run_record')!
+    expect(r.title).toBe('No link for this run')
+    expect(r.text).toContain('The server keeps this run only as its record')
+    expect(r.text).toContain('A link opens only a run the server holds, so none was made.')
+    expect(r.text).toContain('answered on Needs you, not through a link')
+    expect(r.text).not.toMatch(/copied|no such run/i)
+  })
+  it('any other failure is no refusal of this kind: the dialog shows it as the error it is', () => {
+    for (const code of ['not_found', 'too_many_links', 'switchyard_too_old', 'rendezvous_unavailable', '']) expect(shareRefusal(code)).toBeNull()
+  })
+})
+
+describe('shareDescription', () => {
+  it('says the link is copied only once one was made and the copy took', () => {
+    expect(shareDescription({ run: true, copied: true, refused: false })).toBe('The link is copied: it opens every agent of the crew, one added later too. Revoking disconnects whoever used it.')
+    expect(shareDescription({ run: false, copied: true, refused: false })).toBe('The link is copied. Revoking disconnects whoever used it.')
+  })
+  it('while a link is made, or when making or copying it failed, says what a link opens and nothing of a copy', () => {
+    for (const run of [true, false]) expect(shareDescription({ run, copied: false, refused: false })).not.toMatch(/copied/i)
+    expect(shareDescription({ run: true, copied: false, refused: false })).toBe('A link opens every agent of the crew, one added later too. Revoking disconnects whoever used it.')
+  })
+  it('refused, says no link was made, whatever was copied before', () => {
+    expect(shareDescription({ run: true, copied: false, refused: true })).toBe('No link was made for this run.')
+    expect(shareDescription({ run: true, copied: true, refused: true })).toBe('No link was made for this run.')
+    expect(shareDescription({ run: false, copied: false, refused: true })).toBe('No link was made.')
   })
 })
