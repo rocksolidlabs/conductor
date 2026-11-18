@@ -674,13 +674,15 @@ func TestEveryDocumentFitsItsLoadLimit(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	f.largestHandoffs()
 	for name, limit := range map[string]int{
-		filepath.Join(f.data.Dir(), Dir, ConfigFile): MaxConfigDoc,
-		filepath.Join(f.data.Dir(), Dir, StateFile):  MaxStateDoc,
-		f.reqPath(briefDoc(r.ID)):                    MaxBrief,
-		f.reqPath(refsDoc(r.ID)):                     MaxRefsDoc,
-		f.reqPath(readsDoc(r2.ID)):                   MaxReadsDoc,
-		f.reqPath(makeDoc(r2.ID, 3)):                 MaxMakeDoc,
+		filepath.Join(f.data.Dir(), Dir, HandoffsFile): MaxHandoffsDoc,
+		filepath.Join(f.data.Dir(), Dir, ConfigFile):   MaxConfigDoc,
+		filepath.Join(f.data.Dir(), Dir, StateFile):    MaxStateDoc,
+		f.reqPath(briefDoc(r.ID)):                      MaxBrief,
+		f.reqPath(refsDoc(r.ID)):                       MaxRefsDoc,
+		f.reqPath(readsDoc(r2.ID)):                     MaxReadsDoc,
+		f.reqPath(makeDoc(r2.ID, 3)):                   MaxMakeDoc,
 	} {
 		fi, err := os.Stat(name)
 		if err != nil {
@@ -691,6 +693,9 @@ func TestEveryDocumentFitsItsLoadLimit(t *testing.T) {
 		}
 	}
 	f.reopen()
+	if _, ok, err := f.s.HandoffOf(requestID(1<<49), MaxItems-1); err != nil || !ok {
+		t.Fatalf("handoffs.json at its largest: %v %v", ok, err)
+	}
 	if got, err := f.s.Config(); err != nil || got.Rev != c.Rev {
 		t.Fatalf("config: %v", err)
 	}

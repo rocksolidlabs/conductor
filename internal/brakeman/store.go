@@ -1537,6 +1537,13 @@ func (s *Store) PruneKeeping(keep int) (int, error) {
 		}
 		gone = append(gone, id)
 	}
+	// A package still waiting from a request to go is closed as
+	// withdrawn before any file goes (closeHandoffsOfLocked).
+	if len(gone) > 0 {
+		if err := s.closeHandoffsOfLocked(gone); err != nil {
+			return 0, err
+		}
+	}
 	// The op ids of the requests to go are marked pruned before any file
 	// goes, so a repeat of one is never taken for a request whose file
 	// never landed; a crash between leaves a marked request that is still
