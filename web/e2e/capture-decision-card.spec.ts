@@ -245,10 +245,52 @@ for (const theme of ['light', 'dark'] as const) {
     await captures.locator('[data-decision-captures-refused]').scrollIntoViewIfNeeded()
   await uncut(captures.locator('[data-decision-captures-refused]'))
     await expect(phone.locator('html')).toHaveClass(theme === 'dark' ? /\bdark\b/ : /^(?!.*\bdark\b)/)
-    // The card at a phone's width (the join page's own header is not this card's: measured where it is drawn).
-    await noSideways(phone, { root: card })
+    // The page at a phone's width: its header's every control inside the window, nothing scrolling or cut sideways.
+    await joinHeaderFits(phone, SIZES[1].width)
+    await pageFits(phone)
     expect(asked.filter((p) => /^\/api\/captures(\/|$)/.test(p) || /^\/api\/decisions\/[^/]+\/captures$/.test(p)), 'no capture route asked').toEqual([])
     expect(await captures.textContent()).not.toContain('PAGE-NOTE')
     await ctx.close()
+
+    // A holder with no workbench token, as on a phone of the holder's own: the header shows the brand, and fits at 390 x 844 (the
+    // mark alone) and at 1440 x 900 (the mark and its word), nothing of the page scrolling sideways.
+    const own = await browser.newContext({ viewport: SIZES[1], colorScheme: theme })
+    await own.addInitScript((theme) => localStorage.setItem('conductor-color-mode', theme), theme)
+    const bare = await own.newPage()
+    await bare.goto(link.url)
+    await bare.getByRole('textbox', { name: 'Your name' }).fill('e2e phone holder')
+    await expect(bare.getByRole('textbox', { name: 'Your name' })).toHaveValue('e2e phone holder')
+    await bare.getByRole('button', { name: 'Join crew' }).click()
+    await expect(bare.locator('[data-join-run-decide] [data-inbox-row="decision:dr-1"]')).toBeVisible({ timeout: 30_000 })
+    await expect(bare.locator('html')).toHaveClass(theme === 'dark' ? /\bdark\b/ : /^(?!.*\bdark\b)/)
+    await joinHeaderFits(bare, SIZES[1].width)
+    await expect(bare.locator('[data-join-wordmark]')).toBeHidden()
+    await pageFits(bare)
+    await bare.setViewportSize(SIZES[0])
+    await joinHeaderFits(bare, SIZES[0].width)
+    await expect(bare.locator('[data-join-wordmark]')).toBeVisible()
+    await pageFits(bare)
+    await own.close()
   })
+}
+
+/**
+ * The join page at its width: the document does not scroll sideways, and nothing of its header or of Needs you is cut or scrolls
+ * sideways. The crew's terminal tiles below clip their own glyphs by design (a tile is as wide as it is given), so they are not read.
+ */
+async function pageFits(page: Page) {
+  expect(await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth), 'the page scrolls sideways').toBeLessThanOrEqual(0)
+  await noSideways(page, { root: page.locator('[data-join-header]') })
+  await noSideways(page, { root: page.locator('[data-join-run-decide]') })
+}
+
+/** The join page's header within a window `width` wide: its box, and every control and word drawn in it, inside the header and the window. */
+async function joinHeaderFits(page: Page, width: number) {
+  const header = page.locator('[data-join-header]')
+  await expect(header).toBeVisible()
+  await expect.poll(() => header.evaluate((h) => Math.round(h.getBoundingClientRect().width)), { message: 'the header as wide as the window' }).toBe(width)
+  await inside(header.locator(':scope > *'), header)
+  const past = await header.evaluate((h, w) => Array.from(h.querySelectorAll('*')).filter((e) => { const r = e.getBoundingClientRect(); return r.width > 0 && r.right > w + 0.5 }).map((e) => e.outerHTML.slice(0, 80)), width)
+  expect(past, 'nothing of the header past the window’s right edge').toEqual([])
+  expect(await header.evaluate((h) => h.scrollWidth - h.clientWidth), 'the header holds what it draws').toBeLessThanOrEqual(0)
 }
