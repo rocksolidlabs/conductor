@@ -66,9 +66,10 @@ The twelve articles are the Program's (section 2.1).
    two adds a generic shell, a bridge and a page that reads from what a
    shell supplies. None names a service, a contract of one, a route of
    one or a plan. The key plugin signs only what a native policy builds,
-   and the open-source build has no policy, so no service's assertion
-   format is known here. The web app asks only whether a bridge with a
-   provider is present, as it asks whether a provider is registered.
+   and the open-source build has no policy, so the format of anything a
+   service asks the phone to sign is not known here. The web app asks
+   only whether a bridge with a provider is present, as it asks whether
+   a provider is registered.
 2. **The open-source build is fully useful.** A build with no sink and no
    shell is `main`: the notifier, the webhooks (byte for byte), browser
    notifications, the decision page, the decide page and decision links
@@ -101,8 +102,9 @@ The twelve articles are the Program's (section 2.1).
    time; nothing is sent.
 9. **CGO off.** No Go change compiles for the phone; the shell is
    TypeScript and Swift (and Kotlin for the second platform).
-10. **The repository contract.** This plan before its code, one issue
-    and one PR per row, Go race tests for part one, vitest and Playwright
+10. **The repository contract.** This plan before its code, its rows
+    grouped into pull requests as `AGENTS.md` says (The PRs), Go race
+    tests for part one, vitest and Playwright
     for the web rows, the shell's own vitest, Playwright and XCTest jobs,
     the notices regenerated with each new npm package. No
     `internal/proto` frame changes (Events, Protocol).
@@ -250,7 +252,10 @@ func ParseDecisionRef(ref string) (id string, ok bool)
 Any provider with a `Host` may call it (a notification sink above all:
 it is how a sink that missed notifications finds what is still open). It
 answers from the ledger, never from a provider, within the Host's own
-bound on a call.
+bound on a call. It is not the decision router's `Host.OpenDecisions`
+(`docs/plans/decision-policy.md`), which hands the registered router
+alone each open record whole with its policy, 64 a page: this read hands
+any provider the refs alone, 256 a page.
 
 `ext/exttest`:
 
@@ -313,7 +318,8 @@ gains the `Ref` line. `docs/repository-map.md` (OSS-2a): the `ext` row's
   name or another definition, it answers `ErrUnavailable` and no number;
   a database older than the decision tables hands none. It reads the
   number alone: no request, policy or other column. **No schema change**:
-  the ledger stays at schema version 12.
+  the read uses the index the ledger already makes, whatever its version
+  when this row is built.
 - **`hostExtHost.OpenDecisionRefs`** (`internal/hostagent/exthost.go`):
   `ErrUnsupported`, as its `Decision` (a host keeps no ledger), and
   `context.Canceled` once its try has ended.
@@ -346,8 +352,11 @@ say `npm ci` in `mobile/` beside `desktop/`.
 development id: a packaging that signs its own build sets its own),
 `webDir` the folder `make mobile-sync` fills (`mobile/www`, ignored by
 git), and navigation inside the web view allowed to nothing but the
-bundle (`server.allowNavigation` empty): every other address opens in the
-in-app browser, outside the shell's page.
+bundle (`server.allowNavigation` empty). The shell's own openings (Open a
+server, a provider's sign-in page) go to the in-app browser through
+`@capacitor/browser`; any other navigation away from the bundle (a link
+tapped in a decision's context) is handed by Capacitor to the system
+browser, outside the shell, and never loads in the shell's page.
 
 **`mobile/ios/`**: the Xcode project Capacitor generates (with the Swift
 Package Manager where the pinned Capacitor offers it, so the build needs
@@ -446,16 +455,22 @@ a decision or a draft:
   interrupted before its rename leaves the old record whole; the folder
   excluded from backups (`NSURLIsExcludedFromBackupKey`) and every file
   `NSFileProtectionComplete` (unreadable while the phone is locked).
-- Two areas with their own bounds. **drafts**: at most 32 records of at
-  most 12 KiB each, never evicted; a write past either bound is refused
-  (`full`, `too_large`) and reported, never shown as kept. **cache**: at
-  most 1 MiB in all, its oldest records evicted first to make room; a
-  record past 1 MiB is refused.
+- Three areas with their own bounds. **drafts**: at most 32 records of
+  at most 12 KiB each, never evicted; a write past either bound is
+  refused (`full`, `too_large`) and reported, never shown as kept.
+  **cache**: at most 1 MiB in all, its oldest records evicted first to
+  make room; a record past 1 MiB is refused. **servers**: the shell's
+  own, Open a server's last five addresses (at most 2,048 bytes each),
+  never evicted by the cache and never handed to a provider.
 - Calls: `put(area, key, data)`, `get(area, key)` (the data and its
   `savedAt`), `list(area)` (keys with `savedAt`), `remove(area, key)` and
-  `clear()`, which empties both areas and the shell's HTTP caches
-  (`URLCache.shared`, and the web view's `WKWebsiteDataStore` data for
-  the bundle's origin). A key is 1 to 64 of `a-z`, `0-9`, `-`, `_`, `.`.
+  `clear()`, which empties the drafts and cache areas and the shell's
+  HTTP caches (`URLCache.shared`, and the web view's `WKWebsiteDataStore`
+  data for the bundle's origin) and leaves the servers area: a
+  provider's sign-out does not forget the person's own addresses, which
+  Open a server's **Forget these addresses** empties. A key is 1 to 64
+  of `a-z`, `0-9`, `-`, `_`, `.`. The store a provider is handed reaches
+  the drafts and cache areas only.
 - Neither Capacitor's Preferences (UserDefaults) nor the web view's own
   storage holds anything of a card or a draft in the shell.
 
@@ -474,7 +489,7 @@ window.conductorShell = Object.freeze({
   push: { permission, request, onTap },   // onTap(cb): each tap's data, handed on unchanged
   links: { onOpen },              // onOpen(cb): each address the shell is opened with
   openServer,                     // openServer(address): { ok: true } | { ok: false, words }
-  servers: { recent },            // recent(): the last five addresses opened, newest first
+  servers: { recent, forget },    // recent(): the last five addresses opened, newest first; forget(): none kept
   provider,                       // the provider's ShellProvider, or null
   register,                       // register(factory): a provider module's one call
 })
@@ -502,22 +517,47 @@ and nothing else: no key, no store, no push token, no HTTP call.
   a network you trust"; every other scheme (`javascript:`, `file:`,
   `data:`, a custom one) and an address of more than 2,048 bytes or with
   a control character refused with words. An address opened is kept in
-  the store's cache area as the five most recent (`servers.recent`).
+  the store's servers area as the five most recent (`servers.recent`).
 - **The page's content security policy.** `make mobile-sync` writes into
   the copied `index.html` a `<meta http-equiv="Content-Security-Policy">`
-  of `script-src 'self'` and the SHA-256 hash of each inline script the
-  bundle's `index.html` holds (on `main` today the import map and the
-  two start-up scripts: the colour mode and the runtime configuration;
-  the bundle's JSON data block is not a script the browser runs and
-  takes no hash), computed by `mobile/scripts/csp.mjs` from that file's
-  own scripts; `csp.mjs` fails the sync on an inline script it cannot
-  hash or an `eval` in the bundle. No other inline script and no `eval`
-  run in the shell. DR1's and MB0's components draw a decision's words
-  as text, so an agent's words cannot become a script. A script in the
-  web view could still reach Capacitor's plugin registry; what it would
-  get is what the policy builds, and a signature marked for presence
-  only behind the person's Face ID or passcode, which is why the plugin
-  makes the presence check and not the bridge or the provider.
+  of `script-src 'self' 'wasm-unsafe-eval'` and the SHA-256 hash of each
+  inline script the bundle's `index.html` holds, computed by
+  `mobile/scripts/csp.mjs` from that file's own scripts. On `main`
+  (built at `f10eb297`) those are three: the import map, the colour mode
+  and the runtime configuration; the bundle's JSON data block is not a
+  script the browser runs and takes no hash. `csp.mjs` fails the sync on
+  what a hash cannot admit in `index.html`: an inline event handler
+  attribute or a `javascript:` address.
+  - **`'wasm-unsafe-eval'`, and why.** DR1's card draws a decision's
+    context through `MarkdownPreview.vue`, which highlights a fenced code
+    block with shiki's default engine, compiled from WebAssembly
+    (`WebAssembly.instantiate`); without this source the web view refuses
+    the compile, every code block stays plain and a violation is
+    reported. It admits compiling WebAssembly only: it does not admit
+    `eval`, `new Function` or a string timer, which the policy refuses
+    (no `'unsafe-eval'`), and WebKit has honoured it since iOS 16, the
+    shell's minimum.
+  - **No text scan for `eval`.** The bundle holds the word in text that
+    no page of the shell runs (Monaco's TypeScript worker carries the
+    declaration `declare function eval(x: string): any;`), and the
+    shell's pages load no Monaco worker. Whether the shell's pages need
+    anything the policy refuses is checked by running them under it:
+    the boot checks open the shell's screens and a decision with a code
+    block and a diagram under the real policy and fail on any
+    `securitypolicyviolation` (Tests).
+  - **What else runs.** Mermaid's diagrams are drawn in MarkdownPreview's
+    sandboxed frame (`utils/mermaidFrame.ts`), whose `srcdoc` inherits
+    the shell's policy beside its own and loads its one script by the
+    app's own address, which `'self'` admits. Styles are not restricted
+    by the policy.
+  DR1's and MB0's components draw a decision's words as text, or as
+  Markdown that `MarkdownPreview.vue` sanitises (raw HTML parsed as text,
+  scripted links refused), so an agent's words cannot become a script.
+  A script in the web view could still reach Capacitor's plugin
+  registry; what it would get is what the policy builds, and a
+  signature marked for presence only behind the person's Face ID or
+  passcode, which is why the plugin makes the presence check and not the
+  bridge or the provider.
 
 **`Makefile`**: `mobile-install` (`npm ci` in `mobile/`), `mobile-sync`
 (the bundle copied from `internal/web/dist` into `mobile/www`, the
@@ -557,7 +597,7 @@ interface ConductorShell {
   }
   links: { onOpen(cb: (url: string) => void): () => void }
   openServer(address: string): Promise<{ ok: true; words?: string } | { ok: false; words: string }>
-  servers: { recent(): Promise<string[]> }       // at most 5, newest first
+  servers: { recent(): Promise<string[]>; forget(): Promise<void> }   // at most 5, newest first
   provider: ShellProvider | null
   register(factory: unknown): void               // a provider module's; the workbench never calls it
 }
@@ -674,7 +714,8 @@ stores.
   Settings in every state the provider reports (signed out, signed in,
   with its words that it cannot be reached, with its words that it
   cannot answer now), and it never calls the provider: the field, Open,
-  the words of `openServer`'s answer, and the last five addresses.
+  the words of `openServer`'s answer, the last five addresses, and
+  **Forget these addresses**.
 - The layout follows the system text size (`font: -apple-system-body`
   and relative units), keeps 44 px targets, labels every control for
   VoiceOver, uses Nuxt UI and the brand palette, and passes the design
@@ -709,27 +750,50 @@ gain.**
   interface DecisionAnswering {
     /** What it carries: absent, every control. A control it does not carry is drawn disabled with these words. */
     supports?: { respond?: true | string; comment?: true | string; more_info?: true | string }
-    respond(id: string, body: ResponseBody): Promise<{ receipt?: ResponseReceipt; decision?: Decision; words?: string }>
+    /** An answer sent, waiting, refused or not known: the component's success path runs on 'kept' with a receipt alone. */
+    respond(id: string, body: ResponseBody): Promise<{ outcome: 'kept' | 'refused' | 'waiting' | 'unknown'; receipt?: ResponseReceipt; decision?: Decision; words?: string }>
     comment(id: string, c: { kind: 'comment' | 'more_info'; text: string; expectedRev: number }): Promise<{ receipt: OpReceipt; decision: Decision }>
     /** The answer as typed, kept and restored by the page that provides it: the choice, the text and the rationale. */
     draft?: { initial(id: string): { choice?: number; text?: string; rationale?: string } | null; changed(id: string, f: { choice?: number; text?: string; rationale?: string }): void }
+    /** Reactive: the answer's lock, its words and the actions it offers; null while the answer may be edited and sent. */
+    state?(id: string): { lock: boolean; words?: string; actions?: ('cancel' | 'confirm')[] } | null
+    cancel?(id: string): void    // the 'cancel' action: a waiting answer back to editing
+    confirm?(id: string): void   // the 'confirm' action: a waiting answer, or one that did not arrive, sent through checking
   }
   ```
 
   With nothing injected, the answering is today's: the server's routes
-  through `useApi`, every control carried, no draft, so the operator's
-  decision page, the run's card and MB0's pages are unchanged. A control
-  the provided answering does not carry is drawn disabled with its words,
-  as the component already disables Ask for more when the asker is not
-  live. `DecisionCard.vue` is not edited.
+  through `useApi` (a success answered `kept` with its receipt, a
+  refusal as today), every control carried, no draft and no state, so
+  the operator's decision page, the run's card and MB0's pages are
+  unchanged. `DecisionRespond.vue` gains these rules and no others:
+  - a control the provided answering does not carry is drawn disabled
+    with its words, as the component already disables Ask for more when
+    the asker is not live;
+  - it clears its pending choice, picked option, text and rationale, and
+    calls `take`, only on `outcome: 'kept'` with a receipt; any other
+    outcome keeps the content as typed, shows the reply's words, and
+    calls no `draft.changed`;
+  - while `state(id)` holds `lock`, its choices, text, rationale, Back
+    and Answer are disabled and it calls no `draft.changed`; it draws the
+    state's words, and Cancel and **Confirm to send your answer** when
+    `actions` names them, calling `cancel(id)` and `confirm(id)`. A page
+    opened on a draft that `initial` restores while `state` reports a
+    lock (a restart in `waiting` or `unknown`) is drawn locked from the
+    first frame.
+  `DecisionCard.vue` is not edited.
 - **The shell's answering**, `utils/transport/shell.ts`, beside
-  `utils/transport/decide.ts`: `respond` maps the body onto the answer's
+  `utils/transport/decide.ts`: `respond` hands the body to the answer's
   state machine (`answer.ts`, below), which calls `ShellInbox.respond`
   field for field with the draft's `responseId` (never the one
-  `responseBody` mints) and its `rev`; `supports` carries `respond` alone
-  and disables Comment and Ask for more with "Comment on the desktop:
-  <name> takes answers, not comments"; `draft` reads and writes
-  `ShellDrafts`.
+  `responseBody` mints) and the draft's `rev`, which is always the rev
+  last drawn to the person (a draft is rebased when a changed decision
+  is drawn, Events); it answers the machine's outcome (`kept`, `refused`,
+  `waiting`, `unknown`) and words. `state`, `cancel` and `confirm` are
+  the machine's for the item (lock in `checking`, `sending`, `waiting`
+  and `unknown`). `supports` carries `respond` alone and disables Comment
+  and Ask for more with "Comment on the desktop: this phone sends
+  answers, not comments". `draft` reads and writes `ShellDrafts`.
 - **What a provider's record may lack.** A `ShellItem.decision` may hold
   no history rows, no comments and no evidence contents. The card draws
   those as DR1's card draws a record that has none yet (no history
@@ -762,6 +826,15 @@ rows say so), with "As of 14:02" and the offline line; it refreshes on
   `rev` it was written against and one `responseId` minted when the
   draft begins, for at most 7 days (a draft older is removed at read),
   removed when its answer is kept or the provider signs out.
+- **A draft is rebased when a changed decision is drawn.** When Answer
+  finds the decision at another `rev` (or a refused send returns it at
+  one), the page draws the decision as it is now with "This decision
+  changed after you wrote your answer: read it again", and the draft is
+  stored again at the drawn `rev` with a new `responseId` and its content
+  kept, state `editing`: the next Answer is checked against the rev the
+  person has now read. A new `responseId`, because the old one may
+  already have reached the provider with a refused send. A `put` refused
+  then leaves the draft as it was and shows its words.
 - A draft whose `put` was refused shows the refusal's words ("Not saved
   on this phone") and is never shown as kept or waiting.
 - What **Answer** does and what the screen shows after every step is the
@@ -777,8 +850,9 @@ rows say so), with "As of 14:02" and the offline line; it refreshes on
 **The routes into the page**:
 
 - A notification tap (`push.onTap`, data `h`) goes to
-  `/shell/open?h=<handle>`, then `inbox.resolve(handle)`, then the item. A tap whose data has no
-  `h`, or an `h` of more than 256 bytes, opens the inbox.
+  `/shell/open?h=<handle>`, then `inbox.resolve(handle)`, then the
+  item. A tap whose data has no `h`, or an `h` of more than 256 bytes,
+  opens the inbox.
 - A link the shell is opened with (`links.onOpen`) goes to
   `provider.route(url)`, then the item; a link the provider does not
   know (`null`) opens the inbox, and with no provider, Open a server with
@@ -860,20 +934,22 @@ derived.
 | `editing` | Answer | `checking` | Answer disabled, "Checking the decision"; the item read again | `answer.test.ts` |
 | `checking`, `sending` | Answer again (a second tap) | the same | nothing new: the press is ignored, and any send carries the draft's one `responseId` | `answer.test.ts`, `shell-decisions.spec.ts` |
 | `checking` | the read: open at the draft's `rev`, its *Response recorded* row not done by another answer, no `elsewhere` | `sending` | "Sending"; the provider's respond asks the key plugin, and the system's sheet asks "Confirm your answer in Conductor" | `answer.test.ts` |
-| `checking` | the read: the `rev` changed, or the decision superseded | `editing` | the decision as it is now, "This decision changed after you wrote your answer: read it again", a superseded one linking to its successor; the draft kept, nothing sent | `answer.test.ts` |
+| `checking` | the read: the `rev` changed, or the decision superseded | `editing` | the decision as it is now, "This decision changed after you wrote your answer: read it again", a superseded one linking to its successor; nothing sent | `answer.test.ts` |
+| `editing`, after that row | the changed decision drawn at its new `rev` | `editing` | the draft stored again at the drawn `rev` with a new `responseId` and its content kept (a rebase, Drafts); the next Answer is checked against that `rev`; a refused `put` leaves the draft as it was, with its words | `answer.test.ts` |
 | `checking` | the read: *Response recorded* done by another answer (not `own`'s, or `own` of another `responseId`), or the decision not open | `editing`, Answer disabled while it holds | that row's words, or the record's words (DR1's `decisionWords`); the draft kept | `answer.test.ts` |
 | `checking` | the read: the item has `elsewhere` | `editing`, no Answer | the item's `elsewhere` words; the draft kept, nothing sent | `answer.test.ts` |
 | `checking` | the read fails `offline` or `unreachable` | `waiting` | "Not sent: you are offline. It will be checked and sent when you are back online, if the decision is still as you read it" (or "<name> cannot be reached" in its place), and Cancel | `answer.test.ts` |
-| `waiting` | the app in the foreground and online (resume, or the browser's `online`) | `checking` | as `checking`, then "Confirm to send your answer" | `answer.test.ts` |
+| `waiting` | the app in the foreground and online (resume, or the browser's `online`) | `waiting`, Confirm offered | "Back online: confirm to send your answer", **Confirm to send your answer** and Cancel (`state` actions `confirm`, `cancel`) | `answer.test.ts` |
+| `waiting` | Confirm | `checking` | as `checking`; nothing is sent without this press after a wait | `answer.test.ts` |
 | `waiting` | Cancel | `editing` | the draft, no longer waiting | `answer.test.ts` |
-| `sending` | `refused`, code `presence_refused` | `editing` | "Not sent: confirm with Face ID or the passcode to answer"; nothing signed or sent | `answer.test.ts`, `ConductorKeyTests` |
+| `sending` | `refused`, code `presence_refused` | `editing`, or `waiting` for a send begun from `waiting` | "Not sent: confirm with Face ID or the passcode to answer"; nothing signed or sent; a send begun from `waiting` waits again with Confirm offered | `answer.test.ts`, `ConductorKeyTests` |
 | `sending` | `refused`, code `not_saved` (the provider could not store the draft `unknown` before its send) | `editing` | "Not saved on this phone: nothing was sent" | `answer.test.ts` |
 | `sending` | `kept` or `same` | `kept` | the returned item's rows, and a `kept` reply's words above them when it has any; the draft removed | `answer.test.ts` |
-| `sending` | `refused`, any other code | `editing` | the reply's words, and its item (when it has one) judged again as at `checking`; the draft stored `editing` again | `answer.test.ts` |
+| `sending` | `refused`, any other code | `editing` | the reply's words, and its item (when it has one) judged again as at `checking` (a changed `rev` rebases the draft); the draft stored `editing` again | `answer.test.ts` |
 | `sending` | `unknown` (a timeout, a lost reply) | `unknown` | "Checking whether your answer arrived"; the draft, stored `unknown` by the provider before its send, locked: not editable, not sendable | `answer.test.ts` |
 | a restart | the draft found `unknown` | `unknown` | "Checking whether your answer arrived", then `answerOf` | `answer.test.ts` (a crash after the provider's store and before its request; and after its service kept the answer, before the reply) |
 | `unknown` | `answerOf` finds it, with the draft's `h` | `kept` | its rows; the draft removed | `answer.test.ts` |
-| `unknown` | `answerOf` says `none` | `unknown`, Answer offered | "Your answer did not arrive: confirm to send it again"; the content stays locked, and Answer goes through `checking` with the same `responseId` and content; a change found there begins a new draft (a new `responseId`) from the old one's content | `answer.test.ts` |
+| `unknown` | `answerOf` says `none` | `unknown`, Confirm offered | "Your answer did not arrive: confirm to send it again"; the content stays locked; **Confirm to send your answer** (`state` action `confirm`) goes through `checking` with the same `responseId` and content; a change found there rebases the draft (a new `responseId`, the content kept) and nothing is sent | `answer.test.ts` |
 | `unknown` | `answerOf` finds it with another `h` (no path makes one: the draft was locked) | `kept` | its rows and "An earlier answer from this phone was kept"; the draft removed | `answer.test.ts` |
 | `unknown` | `answerOf` unreachable | `unknown` | still locked, asked again at each resume | `answer.test.ts` |
 | `kept` | the rows move (`watch` in the foreground, or a read) | `kept` | the rows as given; a refusal after it with its words, and Answer again while the decision is open (a new draft) | `shell-decisions.spec.ts` |
@@ -884,7 +960,12 @@ Its invariants, each a property `answer.test.ts` checks over every row:
 - **A1, one `responseId` per draft, and only the draft's content under
   it.** A tap, a retry, a send again after `none` and a send after
   waiting carry the draft's one `responseId`, and no edit is possible
-  once a send has begun and not settled. The provider's `respond`
+  once a send has begun and not settled (the answering's `state` holds
+  `lock` in `checking`, `sending`, `waiting` and `unknown`, and the
+  component disables its inputs and writes no draft while it does). A
+  rebase begins a new `responseId` for content the person may edit
+  again; nothing sent under the old one is sent again under the new
+  one without a fresh check. The provider's `respond`
   contract: after the person's confirmation and before anything leaves
   the phone, it stores the draft `unknown` with its `h`, and if that
   store fails it sends nothing and answers `not_saved`; so a crash before
@@ -907,7 +988,7 @@ Its invariants, each a property `answer.test.ts` checks over every row:
 | Another person answered first | the item's *Response recorded* row, or a `refused` reply naming it | that row's words; the draft kept, not sent | `answer.test.ts`, `shell-decisions.spec.ts` |
 | The decision changed while a draft was open | the item's `rev` against the draft's | the decision as it is now, "…read it again"; the draft kept | `answer.test.ts`, `shell-decisions.spec.ts` |
 | A decision the provider takes no answer for on the phone | the item's `elsewhere` | the card whole, its words, no Answer | `answer.test.ts`, `shell-decisions.spec.ts` |
-| The phone offline, then back | the read's `offline`, the resume | cards "as of 14:02, offline"; an answer waiting, checked on return and sent once after the confirmation | `answer.test.ts`, `shell-decisions.spec.ts` |
+| The phone offline, then back | the read's `offline`, the resume | cards "as of 14:02, offline"; an answer waiting, Confirm offered on return, then checked and sent once after the confirmation | `answer.test.ts`, `shell-decisions.spec.ts` |
 | Face ID or the passcode cancelled | the key plugin's presence check | "Not sent: confirm with Face ID or the passcode to answer"; the draft kept | `ConductorKeyTests`, `answer.test.ts` |
 | A send whose outcome is not known | `answerOf` | "Checking whether your answer arrived"; locked until the read | `answer.test.ts` |
 | A notification no longer current | `resolve`'s `unknown_handle` | the inbox, "This notification is no longer current: here is what is waiting" | `shell-decisions.spec.ts` |
@@ -931,6 +1012,9 @@ Its invariants, each a property `answer.test.ts` checks over every row:
   active, so it never holds a card.
 - **The push token**: the platform's, held by the push plugin in memory
   and handed to the provider; nothing of it in the store.
+- **The servers area**: Open a server's last five addresses, the
+  shell's own, never handed to a provider; kept through a provider's
+  sign-out, emptied by **Forget these addresses**.
 - **The web view's own storage**: nothing of a card or a draft in a shell.
 
 ### Protocol
@@ -1038,20 +1122,26 @@ over a fake native layer):
   taking `https://` and `http://` (the latter with its words) and
   refusing `javascript:`, `file:`, `data:`, a custom scheme, an address
   past 2,048 bytes and one with a control character; `servers.recent`
-  the last five, newest first; a factory that throws leaves `provider`
+  the last five, newest first, kept through a cache eviction, and none
+  after `servers.forget`; a factory that throws leaves `provider`
   null.
 - `mobile/test/store.test.ts` (over a fake file layer): writing past the
   cache's bound evicts the oldest cache records and never a draft; a
   draft past its bound, and a 33rd draft, refused and reported, never
   shown as kept; a write interrupted before its rename leaves the old
-  record whole; `clear()` leaves no file and empties the HTTP caches; a
-  key outside its alphabet refused.
-- `mobile/test/csp.test.ts`: the synced `index.html` carries the policy
-  with every inline script's hash and no other, and no inline script is
-  left unhashed; a bundle given an extra inline script whose hash is not
-  written, or an `eval`, fails `csp.mjs`; the script tags of `bridge.js`
-  and of a provider module stand before the entry, the latter only when
-  the file is there.
+  record whole; `clear()` leaves no file of the drafts and cache areas,
+  empties the HTTP caches and leaves the servers area; the store handed
+  to a provider cannot reach the servers area; a key outside its
+  alphabet refused.
+- `mobile/test/csp.test.ts`: the real `make web-build` output syncs
+  and its `index.html` carries the policy (`script-src 'self'
+  'wasm-unsafe-eval'`) with every inline script's hash and no other, no
+  inline script left unhashed (the bundle's Monaco worker, which holds
+  the text `eval(`, does not fail it); an `index.html` given an inline
+  event handler or a `javascript:` address fails `csp.mjs`; an extra
+  inline script is hashed like the others; the script tags of
+  `bridge.js` and of a provider module stand before the entry, the
+  latter only when the file is there.
 - XCTest on the simulator job (`make mobile-ios`):
   `ConductorKeyTests`, with a test policy of the tests' own that names no
   service: nothing signed without a policy (`no_policy`); only the plan's
@@ -1097,11 +1187,22 @@ vitest whole; the e2e build and the specs named):
   bridge): the bundle's own start draws the shell's first screen with no
   provider (Open a server), the colour mode applied, and no
   `securitypolicyviolation` event reported. An injected bridge cannot
-  stand in for this: it is the bundle's start that is checked.
+  stand in for this: it is the bundle's start that is checked. From
+  OSS-2b, a second case: a sync of the same bundle with a test provider
+  module (`mobile/e2e/fixtures/provider.js`, the tests' own, naming no
+  service: signed in, one item whose decision's context holds a fenced
+  `go` block and a Mermaid diagram) opens `/shell/decisions/<id>` under
+  the same policy; the code block is highlighted (`pre.shiki`), the
+  diagram drawn in its frame, and no `securitypolicyviolation` is
+  reported. Without `'wasm-unsafe-eval'` the block stays plain and a
+  violation fires, which fails it. (In a browser with no native runtime
+  the bridge hands the factory a key and a store that refuse every call,
+  `no_native`; the fixture uses neither.)
 - `ShellBootsUnderItsPolicyTests` (XCUITest on the simulator job): the
   built app with no provider draws Open a server under its real policy,
   and the page's violation listener (an external script of the test's)
-  reports none.
+  reports none; from OSS-2b, the same fixture provider's decision is
+  drawn in WebKit with its code block highlighted and no violation.
 
 **The web, OSS-2b**:
 
@@ -1112,15 +1213,28 @@ vitest whole; the e2e build and the specs named):
   `rev`; every outcome and code passed back; Comment and Ask for more
   drawn disabled with the answering's words and never reaching it; the
   draft's fields restored from `initial` and written through `changed`;
-  and the component with nothing injected as on `main` (its routes
-  through `useApi`, every control).
+  a `respond` answering `waiting` leaves the choice, text and rationale
+  as typed, makes no `draft.changed` call, disables the inputs and draws
+  Cancel; one answering `unknown` keeps the content locked with no
+  enabled Answer; a draft `initial` restores while `state` reports a
+  lock is drawn locked from the first frame, and `confirm` and `cancel`
+  are called by their buttons; only `kept` with a receipt clears the
+  fields; and the component with nothing injected as on `main` (its
+  routes through `useApi`, every control, a success clearing the fields
+  as today).
 - `web/app/utils/shell-ref-access.test.ts`: a chip, a receipt and the
   card's run line under the shell's `REF_ACCESS` make no `useApi` call
   and show the words.
 - `web/app/utils/answer.test.ts`: every row of the answer's state
   machine, in the table's order, over a fake provider, with what the
   screen shows after each; A1 to A4 as properties over every row; a
-  restart between any two steps resuming from the draft's state.
+  restart between any two steps resuming from the draft's state; the
+  rebase: a fake provider holding the item at rev 4 and a draft at rev
+  3, a first Answer ends in `editing` with "read it again" and no
+  `respond`, and a second Answer with the item still at rev 4 sends
+  exactly one `respond` with `expectedRev` 4 and a `responseId` other
+  than the old draft's; after `waiting`, nothing is sent on resume until
+  Confirm.
 - `web/app/utils/drafts.test.ts`: through `ShellDrafts`, a draft written,
   then read back by a new provider instance over the same fake store (a
   restart) with its `responseId`, `rev` and state; each refusal code
@@ -1136,7 +1250,7 @@ vitest whole; the e2e build and the specs named):
   shows its words and no Answer; a double tap on Answer sends one
   `respond`; another answer recorded shows its words and keeps the
   draft; a changed decision shows the new text before any send; an
-  offline answer waits and is sent once on the fake's resume; an
+  offline answer waits and is sent once on Confirm after the fake's resume; an
   unknown handle, an unreachable provider and an item not visible each
   open the inbox with their own words; a link the provider routes opens
   its item and one it does not opens the inbox; the page's measures at
@@ -1194,12 +1308,15 @@ phone's checks are that provider's.
 
 ## The PRs
 
-Each row is one issue and one branch cut from `main`, a draft PR at its
-first commit, the checks of every surface it touches before each push,
-its body ticking the open-core checklist and citing this plan, and each
-leaves `main` working and green on its own: part one's rows are reached
-by Go tests with fake sinks, and the shell's rows build and run with no
-provider. Sizes are changed lines, code and tests.
+The rows are units of work; how rows are grouped into pull requests
+follows `AGENTS.md` (Working an issue) at the time they are built. Each
+row runs the checks of every surface it touches, ticks the open-core
+checklist and cites this plan, and leaves `main` working and green on
+its own: part one's rows are reached by Go tests with fake sinks, and
+the shell's rows build and run with no provider. **No store step**: no
+row changes the schema of the ledger or of Dispatch's store (OSS-2a's
+read uses the ledger's existing index), so no row ships a migration
+ahead of its code. Sizes are changed lines, code and tests.
 
 | PR | Title | Contains | Touches | Tests | Depends on | Parallel with | Size |
 |---|---|---|---|---|---|---|---|
@@ -1208,7 +1325,7 @@ provider. Sizes are changed lines, code and tests.
 | OSS-2a | ext, api: a notification names its record; the open decisions' refs for a sink | `ext.Notification.Ref`, `ext.DecisionRef`, `ext.ParseDecisionRef`, the two bounds, `Valid`'s check; `Host.OpenDecisionRefs` in `internal/api` (with `ledger.OpenDecisionsAfter`) and `internal/hostagent`; `exttest`'s fake and its sink check; `docs/repository-map.md`'s two rows | `ext`, `ext/exttest`, `internal/api`, `internal/crew/ledger`, `internal/hostagent`, `internal/brakeman` (a test), `docs` | the Go tests above | OSS-0a; DR1's decision notification (on `main`) | OSS-1a, OSS-1b | ~200 + 300 |
 | OSS-1a | mobile: the iOS shell, its native key and store, its bridge | `mobile/` (the Capacitor project, the iOS app with its cover and its media capture refused, `Info.plist`, `ConductorKey.swift` with `KeySigningPolicy` and no policy, `ConductorStore.swift`, their XCTest cases, `bridge.ts` and the factory with the key's whole interface, `csp.mjs`), the `mobile-*` targets, CI's `mobile` and `mobile-ios` jobs under `required-checks`, the notices over `mobile/`, `docs/dependencies.md`, `docs/checks.md`, `AGENTS.md`'s notices words, `docs/repository-map.md`'s row | `mobile`, `.github/workflows`, `scripts`, `Makefile`, `.gitignore`, `THIRD_PARTY_NOTICES`, `AGENTS.md`, `docs` | `bridge.test.ts`, `store.test.ts`, `csp.test.ts`, `ConductorKeyTests`, `ConductorStoreTests`, `ShellInfoPlistTests`, the simulator build | OSS-0b | OSS-2a | ~750 + 750, the generated Xcode project aside |
 | OSS-1b | web: the bridge's types and the shell's own screens | `web/app/utils/shell.ts` (bridge v1 whole), `middleware/shell.global.ts`, `layouts/shell.vue`, `pages/shell/{index,signin,settings}.vue` with Open a server in every state; `mobile/e2e/boot.spec.ts` and `ShellBootsUnderItsPolicyTests`, added to `mobile-test` and `mobile-ios`; `docs/repository-map.md` | `web/app`, `web/e2e`, `mobile`, `docs` | `shell.test.ts`, `shell.spec.ts`, `boot.spec.ts`, `ShellBootsUnderItsPolicyTests` | OSS-1a | OSS-2a | ~450 + 450 |
-| OSS-2b | web: the decision page from a shell's inbox, drafts revalidated, the handle's and the link's routes; the features entry | `utils/answering.ts` and its one seam in `DecisionRespond.vue`; the shell's `REF_ACCESS` and `utils/transport/shell.ts`; `utils/drafts.ts` and `utils/answer.ts`; `pages/shell/decisions/[id].vue`, the shell's inbox screen, `/shell/open`, `links.onOpen` through `route`; `docs/features.md` | `web/app`, `web/e2e`, `docs` | the OSS-2b vitest and Playwright above | OSS-1b, OSS-2a | none | ~650 + 750 |
+| OSS-2b | web: the decision page from a shell's inbox, drafts revalidated, the handle's and the link's routes; the features entry | `utils/answering.ts` and its one seam in `DecisionRespond.vue`; the shell's `REF_ACCESS` and `utils/transport/shell.ts`; `utils/drafts.ts` and `utils/answer.ts`; `pages/shell/decisions/[id].vue`, the shell's inbox screen, `/shell/open`, `links.onOpen` through `route`; the boot checks' decision case and its fixture provider; `docs/features.md` | `web/app`, `web/e2e`, `mobile`, `docs` | the OSS-2b vitest and Playwright above | OSS-1b, OSS-2a | none | ~650 + 750 |
 | OSS-3 | mobile: the Android shell (a later row) | `mobile/android`, `ConductorKey.kt`, the store's Android side, the platform's push token and taps, CI's `mobile-android` job, `docs/features.md`'s line | `mobile`, `.github/workflows`, `docs` | `mobile/test`, the Gradle build and the emulator start | OSS-2b | none | ~600 + 350 |
 
 OSS-2a needs nothing of the shell and the shell's rows nothing of
@@ -1245,8 +1362,9 @@ otherwise; the rest are defaults of this plan.
    complete card; quick answers would need a policy of what is
    low-impact, which no record holds.
 4. **The key signs only what a native policy builds, and the presence
-   check is the plugin's.** The open-source shell may not know any
-   service's assertion format (article 1), and a signature that must
+   check is the plugin's.** The open-source shell may not know the
+   format of anything a service asks it to sign (article 1), and a
+   signature that must
    carry the person's confirmation cannot be left to a script in the web
    view, which a page could forge; the policy builds, the plugin signs.
 5. **An Ed25519 key in the Keychain, this device only, while unlocked,
@@ -1257,9 +1375,11 @@ otherwise; the rest are defaults of this plan.
 6. **Drafts stay on the phone and are checked before sending.** A draft
    keeps the `rev` it was written against and one `responseId`; it is
    sent only after a fresh read shows the decision unchanged, and an
-   answer made offline is sent on return only under the same check and
-   after the same confirmation as a first send. Where anything changed,
-   nothing is sent.
+   answer made offline is sent on return only after the person presses
+   Confirm, under the same check and the same confirmation as a first
+   send. Where anything changed, nothing is sent: the changed decision
+   is drawn, the draft is rebased to the rev drawn with a new
+   `responseId`, and the person answers again from what they now read.
 7. **One provider and one sign-in per install.** A second provider would
    need a picker and a key per provider for a case nobody has asked for.
 8. **Only a durable decision's notification carries a ref.** A session's
