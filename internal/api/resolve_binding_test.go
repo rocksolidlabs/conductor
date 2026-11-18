@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/rocksolidlabs/conductor/ext"
+	"github.com/rocksolidlabs/conductor/internal/capacity"
 )
 
 // The resolved launch's binding and the kept capacity view beside it
@@ -174,3 +175,29 @@ func TestResolvedLaunchCarriesNoFolderOrLogin(t *testing.T) {
 		t.Fatalf("the log names the account:\n%s", b.log.String())
 	}
 }
+
+// A member whose agent's yolo recipe sets its own login, in a crew whose
+// yolo is on, is bound to the launch's environment's login: its view says
+// so (env_set), with no windows, no credits and no freshness, never the
+// tool's own login's usage.
+func TestResolvedCapacityHonoursTheMembersYolo(t *testing.T) {
+	b := newBoundEnv(t)
+	readNow(t, b.testEnv, "claude-yolo", "default", false)
+	id := b.sendCrew("POST", "/api/crews", map[string]any{"name": "Yolo", "goal": "g", "cwd": b.root, "where": "server", "isolation": "worktree", "yolo": true,
+		"members": []any{map[string]any{"name": "lead", "agentId": "claude-yolo", "prompt": "", "start": map[string]any{"when": "task"}}},
+		"tasks":   []any{map[string]any{"id": "build", "member": "lead", "kind": "work", "instructions": "Build it."}}}, http.StatusCreated)["id"].(string)
+	if v, state := b.srv.capacity.cache.Latest(capacity.Key{Agent: "claude-yolo", Account: "default"}); state == "" || v.ReadAt == nil {
+		t.Fatalf("no kept reading of the tool's own login: %+v", v)
+	}
+	rl := resolve(t, b.testEnv, id, "")
+	if m := rl.Members[0]; m.AccountSource != ext.AccountLaunchEnv || m.Account != "default" {
+		t.Fatalf("the member: %+v", m)
+	}
+	if len(rl.Capacity) != 1 {
+		t.Fatalf("the views: %+v", rl.Capacity)
+	}
+	if v := rl.Capacity[0]; v.State != "env_set" || len(v.Windows) != 0 || len(v.Credits) != 0 || v.Fresh != ext.CapacityNone {
+		t.Fatalf("the view of a login the launch's environment sets: %+v", v)
+	}
+}
+
