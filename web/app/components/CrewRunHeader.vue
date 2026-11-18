@@ -15,6 +15,7 @@ import { ACCOUNT_UNREAD, accountUnreadable, addMemberProblem, boundWords, readNa
 import { runOffer } from '~/utils/runs'
 import { comparisonLink, runCompare } from '~/utils/compare'
 import { packageSourceWords } from '~/utils/publication'
+import { runOriginLine } from '~/utils/runOrigin'
 
 /**
  * The run page's header: the run named by its crew and its start, how many
@@ -37,7 +38,8 @@ import { packageSourceWords } from '~/utils/publication'
  * login and model as the launch bound them (docs/plans/capacity.md, PR-7): an account by its label (the
  * accounts are the admin's), any other login by where it comes from; for a run launched from a ticket's
  * revision that named no account for a member, that it took the default at the launch. A comparison's run (Program item CP1) links to
- * its ticket's compare view after the sentence, and from the run's menu.
+ * its ticket's compare view after the sentence, and from the run's menu. A run a registered provider launched says so in row two:
+ * "Launched by <label> for <subject> at <start commit>", the subject a link when it is an https link the page may open.
  */
 const props = withDefaults(
   defineProps<{
@@ -114,6 +116,9 @@ function loginsOpened() {
   if (namedNow.value?.error) void readNamed()
   if (accounts.problem.value) void accounts.store.load()
 }
+
+// Where a registered provider's launch came from (the run's origin): the words are runOrigin.ts's.
+const origin = computed(() => runOriginLine(props.run?.origin))
 
 const stopped = computed(() => !!props.run?.stoppedAt)
 /** Resume as new run: a stopped run the server holds, or a record (#153) not resumed yet. */
@@ -388,6 +393,21 @@ defineExpose({ openAdd, share: () => (shareOpen.value = true), stopNow: stopAll,
       <span v-if="run.ticket?.launch" class="inline-flex flex-none items-center gap-1 text-muted" data-run-launch :data-run-launch-by="launchBy || undefined">
         <template v-if="launchBy">launched by {{ launchBy }}</template>
         <BrakemanRefChip :ref-name="`launch:${run.ticket.launch}`" />
+      </span>
+      <!-- A run a registered provider launched: by its label, for its subject (its link when the page may open it), at its start commit. -->
+      <span v-if="origin" class="inline-flex min-w-0 max-w-full items-baseline gap-1 text-muted" :title="origin.text" :aria-label="origin.text" data-run-origin :data-run-origin-continued="run.origin?.continued ? '' : undefined">
+        <UIcon name="i-lucide-plug" class="size-3.5 flex-none self-center" />
+        <span class="flex-none">{{ origin.lead }}</span>
+        <bdi class="min-w-0 truncate font-medium text-highlighted" data-run-origin-label>{{ origin.label }}</bdi>
+        <template v-if="origin.subject">
+          <span class="flex-none">for</span>
+          <a v-if="origin.href" :href="origin.href" target="_blank" rel="noopener noreferrer" class="min-w-0 truncate font-mono text-primary underline underline-offset-2 [unicode-bidi:isolate]" data-mono="id" data-run-origin-subject data-run-origin-link>{{ origin.subject }}</a>
+          <bdi v-else class="min-w-0 truncate font-mono text-default" data-mono="id" data-run-origin-subject>{{ origin.subject }}</bdi>
+        </template>
+        <template v-if="origin.commit">
+          <span class="flex-none">at</span>
+          <span class="flex-none font-mono text-default" data-mono="commit" data-run-origin-commit>{{ origin.commit }}</span>
+        </template>
       </span>
       <span class="ml-auto flex-none text-muted" data-run-uptime>{{ uptime }}</span>
     </div>
