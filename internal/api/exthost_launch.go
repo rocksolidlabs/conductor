@@ -35,9 +35,6 @@ func (h *extHost) launchOrigin(ctx context.Context, r ext.LaunchRequest) (ext.Ru
 	if h.desk {
 		return ext.RunRef{}, fmt.Errorf("%w: the desk's host launches no run with an origin", ext.ErrUnsupported)
 	}
-	if r.Project != "" || r.ResolvedDigest != "" || r.StartCommit != "" {
-		return ext.RunRef{}, fmt.Errorf("%w: this server does not take a launch's project, digest or start commit yet", ext.ErrUnsupported)
-	}
 	if h.s.ledger == nil {
 		return ext.RunRef{}, refusedCode("ledger_unavailable", "the ledger could not be opened; see the server's log")
 	}
@@ -57,10 +54,26 @@ func (h *extHost) launchOrigin(ctx context.Context, r ext.LaunchRequest) (ext.Ru
 		}
 	}
 	origin := &ledger.OriginRow{Provider: h.name, OpID: r.OpID, Ref: r.Origin.Ref, Label: r.Origin.Label,
-		Subject: r.Subject.Ref, SubjectURL: r.Subject.URL, Prior: r.Subject.Prior, LimitSeconds: int(r.StopAfter / time.Second)}
+		Subject: r.Subject.Ref, SubjectURL: r.Subject.URL, Prior: r.Subject.Prior, LimitSeconds: int(r.StopAfter / time.Second),
+		Project: r.Project, StartCommit: r.StartCommit, ResolvedDigest: r.ResolvedDigest}
 	bctx, end := h.bound(ctx)
 	defer end()
-	run, c, release, err := h.s.launchSaved(bctx, r.Crew, r.Label, "", h.gone, crew.LaunchOpts{Origin: origin})
+	var (
+		run     *crew.Run
+		c       crew.Crew
+		release func()
+		err     error
+		held    = r.Project != "" || r.ResolvedDigest != "" || r.StartCommit != ""
+	)
+	if held {
+		// Resolved for its project at its start commit, held to its
+		// digest, and launched from what was resolved (resolve.go).
+		run, c, release, err = h.heldLaunch(bctx, r, func(ext.ResolvedLaunch) (crew.LaunchOpts, error) {
+			return crew.LaunchOpts{Origin: origin}, nil
+		})
+	} else {
+		run, c, release, err = h.s.launchSaved(bctx, r.Crew, r.Label, "", h.gone, crew.LaunchOpts{Origin: origin})
+	}
 	defer release()
 	if errors.Is(err, ledger.ErrOpExists) {
 		// Launched at once by another call with the operation id: that
@@ -72,6 +85,9 @@ func (h *extHost) launchOrigin(ctx context.Context, r ext.LaunchRequest) (ext.Ru
 	if err != nil {
 		if h.gone() != nil {
 			return ext.RunRef{}, context.Canceled
+		}
+		if held {
+			return ext.RunRef{}, h.heldLaunchError(r.Crew, err)
 		}
 		return ext.RunRef{}, h.launchError(r.Crew, err)
 	}
@@ -288,13 +304,4 @@ func extRunState(state string) string {
 		return ext.RunInterrupted
 	}
 	return ext.RunRunning
-}
-
-// ResolveLaunch answers what a launch of a saved crew would run now. Not
-// built yet: every call answers ext.ErrUnsupported.
-func (h *extHost) ResolveLaunch(context.Context, ext.ResolveRequest) (ext.ResolvedLaunch, error) {
-	if err := h.gone(); err != nil {
-		return ext.ResolvedLaunch{}, err
-	}
-	return ext.ResolvedLaunch{}, fmt.Errorf("%w: this server does not resolve a launch yet", ext.ErrUnsupported)
 }
