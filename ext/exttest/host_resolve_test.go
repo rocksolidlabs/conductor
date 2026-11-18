@@ -191,6 +191,24 @@ func TestFakeHostRefusesAChangedLaunch(t *testing.T) {
 	if _, err := h.Launch(ctx, noProject); ext.RefusalCode(err) != ext.RefusalInvalidRequest {
 		t.Errorf("a digest with no project = %v", err)
 	}
+	// A crew the record says has no tasks is refused not_managed, held to
+	// its digest or not, before its start commit is judged.
+	plain := sampleResolved()
+	plain.Crew, plain.Managed, plain.Tasks = "plain", false, 0
+	h.SetResolved("plain", plain)
+	pr, err := h.ResolveLaunch(ctx, ext.ResolveRequest{Crew: "plain", Project: "CND"})
+	if err != nil || pr.Managed {
+		t.Fatalf("the resolve of a crew without tasks = %+v, %v", pr, err)
+	}
+	held := heldLaunch("op-plain", pr.Digest, "")
+	held.Crew = "plain"
+	if _, err := h.Launch(ctx, held); ext.RefusalCode(err) != ext.RefusalNotManaged {
+		t.Errorf("a held launch of a crew without tasks = %v, want not_managed", err)
+	}
+	held.ResolvedDigest, held.StartCommit, held.OpID = "", otherSHA, "op-plain-2"
+	if _, err := h.Launch(ctx, held); ext.RefusalCode(err) != ext.RefusalNotManaged {
+		t.Errorf("a launch of a crew without tasks at a commit the folder lacks = %v, want not_managed", err)
+	}
 	// A retry of the launch that was made answers its run, whatever moved.
 	h.SetServerYolo(true)
 	if again, err := h.Launch(ctx, heldLaunch("op-1", r.Digest, headSHA)); err != nil || again != ref {

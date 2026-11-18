@@ -12,9 +12,12 @@ import (
 
 var ann = ext.Principal{Subject: "u-1", Name: "Ann"}
 
+// subjectRef is a subject's reference of a form the server knows.
+const subjectRef = "change:git.example.com/acme/web#12@0123456789abcdef0123456789abcdef01234567"
+
 // providerLaunch is a provider's launch of crew with the operation id op.
 func providerLaunch(crew, op string) ext.LaunchRequest {
-	return ext.LaunchRequest{Crew: crew, By: ann, OpID: op, Origin: ext.Origin{Ref: "example:42", Label: "Nightly"}}
+	return ext.LaunchRequest{Crew: crew, By: ann, OpID: op, Origin: ext.Origin{Ref: subjectRef, Label: "Nightly"}}
 }
 
 func TestFakeHostLaunchIsOncePerOpID(t *testing.T) {
@@ -92,12 +95,12 @@ func TestFakeHostRefusesALaunchAsTheServerDoes(t *testing.T) {
 		{"a crew without tasks", providerLaunch("plain", "op-plain"), ext.RefusalNotManaged},
 		{"a prior that is not the provider's", func() ext.LaunchRequest {
 			r := providerLaunch("web", "op-p1")
-			r.Subject = ext.Subject{Ref: "example:42", Prior: "web-0000abcd"}
+			r.Subject = ext.Subject{Ref: subjectRef, Prior: "web-0000abcd"}
 			return r
 		}(), ext.RefusalPriorUnknown},
 		{"a prior that is not there", func() ext.LaunchRequest {
 			r := providerLaunch("web", "op-p2")
-			r.Subject = ext.Subject{Ref: "example:42", Prior: "web-ffffffff"}
+			r.Subject = ext.Subject{Ref: subjectRef, Prior: "web-ffffffff"}
 			return r
 		}(), ext.RefusalPriorUnknown},
 	}
@@ -112,15 +115,33 @@ func TestFakeHostRefusesALaunchAsTheServerDoes(t *testing.T) {
 			}
 		}
 	}
+	// A subject the server knows no form of is refused first, before the
+	// earlier run and the crew; a Brakeman reference is one it knows.
+	odd := providerLaunch("plain", "op-odd")
+	odd.Subject = ext.Subject{Ref: "example:42", Prior: "web-ffffffff"}
+	if _, err := h.Launch(ctx, odd); ext.RefusalCode(err) != ext.RefusalInvalidSubject {
+		t.Errorf("a subject in no known form = %v, want invalid_subject", err)
+	}
+	ticket := providerLaunch("web", "op-ticket")
+	ticket.Subject = ext.Subject{Ref: "ticket:CND-12"}
+	if _, err := h.Launch(ctx, ticket); err != nil {
+		t.Errorf("a ticket's reference as the subject = %v", err)
+	}
+	// A retry of a launch made answers its run before any check.
+	again := providerLaunch("web", "op-ticket")
+	again.Subject = ext.Subject{Ref: "example:42"}
+	if _, err := h.Launch(ctx, again); err != nil {
+		t.Errorf("a retry with another subject = %v, want the run", err)
+	}
 	// As the server judges them: the earlier run before the crew.
 	both := providerLaunch("plain", "op-both")
-	both.Subject = ext.Subject{Ref: "example:42", Prior: "web-ffffffff"}
+	both.Subject = ext.Subject{Ref: subjectRef, Prior: "web-ffffffff"}
 	if _, err := h.Launch(ctx, both); ext.RefusalCode(err) != ext.RefusalPriorUnknown {
 		t.Errorf("an unknown prior with a crew without tasks = %v, want prior_unknown", err)
 	}
 	// A prior that is the provider's own is taken.
 	r := providerLaunch("web", "op-p3")
-	r.Subject = ext.Subject{Ref: "example:42", Prior: mine.ID}
+	r.Subject = ext.Subject{Ref: subjectRef, Prior: mine.ID}
 	if _, err := h.Launch(ctx, r); err != nil {
 		t.Errorf("a launch after the provider's own run: %v", err)
 	}
