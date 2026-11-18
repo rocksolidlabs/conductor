@@ -112,6 +112,12 @@ func TestFakeHostRefusesALaunchAsTheServerDoes(t *testing.T) {
 			}
 		}
 	}
+	// As the server judges them: the earlier run before the crew.
+	both := providerLaunch("plain", "op-both")
+	both.Subject = ext.Subject{Ref: "example:42", Prior: "web-ffffffff"}
+	if _, err := h.Launch(ctx, both); ext.RefusalCode(err) != ext.RefusalPriorUnknown {
+		t.Errorf("an unknown prior with a crew without tasks = %v, want prior_unknown", err)
+	}
 	// A prior that is the provider's own is taken.
 	r := providerLaunch("web", "op-p3")
 	r.Subject = ext.Subject{Ref: "example:42", Prior: mine.ID}
