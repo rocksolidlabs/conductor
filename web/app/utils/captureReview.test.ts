@@ -146,14 +146,17 @@ describe('the evidence files a draft hands a repair', () => {
 
 describe('the candidate Capture again opens', () => {
   const cand = (attempt: number, standing: boolean, commit = 'c'.repeat(40)) => ({ attempt, commit, standing, kind: 'work' })
-  it("is the newest run's standing candidate of the capture's task, never the capture's own attempt", () => {
+  it("is the newest run's standing candidate of the capture's task, never the capture's own attempt nor an earlier one", () => {
     const runs = [
       { run: 'b', candidates: [{ task: 'docs', kind: 'work', candidates: [cand(1, true)] }, { task: 'build', kind: 'work', candidates: [cand(3, false), cand(2, true)] }] },
       { run: 'a', candidates: [{ task: 'build', kind: 'work', candidates: [cand(1, true)] }] },
     ]
     expect(retakeCandidate({ run: 'a', task: 'build', attempt: 1 }, runs)).toEqual({ run: 'b', task: 'build', attempt: 2, commit: 'c'.repeat(40) })
     expect(retakeCandidate({ run: 'a', task: 'build', attempt: 1 }, runs.slice(1))).toBeNull()
-    expect(retakeCandidate({ run: 'a', task: 'build', attempt: 2 }, runs.slice(1))).toEqual({ run: 'a', task: 'build', attempt: 1, commit: 'c'.repeat(40) })
+    // In its own run, only a later attempt than the capture's: attempt 1, still the task's result, is older than a capture of attempt 2.
+    expect(retakeCandidate({ run: 'a', task: 'build', attempt: 2 }, runs.slice(1))).toBeNull()
+    const later = [{ run: 'a', candidates: [{ task: 'build', kind: 'work', candidates: [cand(3, true)] }] }]
+    expect(retakeCandidate({ run: 'a', task: 'build', attempt: 2 }, later)).toEqual({ run: 'a', task: 'build', attempt: 3, commit: 'c'.repeat(40) })
     expect(retakeCandidate({}, runs)).toBeNull()
   })
 
@@ -171,7 +174,30 @@ describe('the candidate Capture again opens', () => {
     expect(retakeCandidate({ run: 'a', task: 'look', attempt: 1 }, [{ run: 'a', candidates: tasks('look', 'fix') }])).toBeNull()
     // A run that started before the capture's own is no later candidate's: the retake's card does not point back at the first run.
     expect(retakeCandidate({ run: 'r', task: 'fix', attempt: 1 }, [repair, look])).toBeNull()
-    // Without the times, every run of the ticket is offered as before.
+    // The capture's own moment decides when its own run is not among the ticket's (a capture of a run launched elsewhere): a run of the
+    // ticket that started before it is never offered, one that started after it is.
+    const elsewhere = { run: 'x', task: 'look', attempt: 1 }
+    const at = (startedAt: string) => [{ run: 'r', startedAt, candidates: [{ task: 'fix', kind: 'work', candidates: [cand(1, true)] }] }]
+    expect(retakeCandidate(elsewhere, at('2026-11-18T05:00:00Z'), '2026-11-18T06:00:00Z')).toBeNull()
+    expect(retakeCandidate(elsewhere, at('2026-11-18T07:00:00Z'), '2026-11-18T06:00:00Z')).toEqual({ run: 'r', task: 'fix', attempt: 1, commit: 'c'.repeat(40) })
+    // With no time known at all, every run of the ticket is offered as before.
     expect(retakeCandidate({ run: 'r', task: 'fix', attempt: 1 }, [{ ...repair, startedAt: undefined }, look])).toEqual({ run: 'a', task: 'look', attempt: 1, commit: 'c'.repeat(40) })
+  })
+
+  it("is a comparison's selected candidate alone, and none while no selection is applied or None of these was answered", () => {
+    const tasks = (...names: string[]) => names.map((task) => ({ task, kind: task === 'review' ? 'review' : 'work', candidates: [{ ...cand(1, true), commit: task.padEnd(40, '0') }] }))
+    const lanes = tasks('approach-a', 'approach-b', 'review')
+    expect(retakeCandidate({ run: 'a', task: 'look' }, [{ run: 'r', selected: 'approach-a', candidates: lanes }])?.task).toBe('approach-a')
+    expect(retakeCandidate({ run: 'a', task: 'look' }, [{ run: 'r', selected: 'approach-b', candidates: lanes }])?.task).toBe('approach-b')
+    expect(retakeCandidate({ run: 'a', task: 'look' }, [{ run: 'r', selected: null, candidates: lanes }])).toBeNull()
+    // A lane named as the capture's task is no exception: the selection decides.
+    expect(retakeCandidate({ run: 'a', task: 'approach-b' }, [{ run: 'r', selected: 'approach-a', candidates: lanes }])?.task).toBe('approach-a')
+    // The selected lane with no standing candidate in this run (a continuation's imported result) offers nothing here; an older run of
+    // the chain, its comparison read the same, offers it.
+    const imported = [{ task: 'approach-a', kind: 'work', candidates: [{ ...cand(1, false) }] }, ...tasks('approach-b')]
+    expect(retakeCandidate({ run: 'a', task: 'look' }, [{ run: 'c', selected: 'approach-a', candidates: imported }])).toBeNull()
+    expect(retakeCandidate({ run: 'a', task: 'look' }, [{ run: 'c', selected: 'approach-a', candidates: imported }, { run: 'r', selected: 'approach-a', candidates: lanes }])).toMatchObject({ run: 'r', task: 'approach-a' })
+    // A run of no comparison keeps its rule beside it.
+    expect(retakeCandidate({ run: 'a', task: 'look' }, [{ run: 'r', selected: null, candidates: lanes }, { run: 's', candidates: tasks('fix') }])).toMatchObject({ run: 's', task: 'fix' })
   })
 })
