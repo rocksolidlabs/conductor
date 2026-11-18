@@ -191,7 +191,10 @@ test('Copy as Markdown copies the brief with its reading marked and its kinds ap
   expect(md).toContain("**Brakeman's reading, not a fact.**")
   for (const h of ['## Needs you', '## Proposed', '## Facts', "## Brakeman's readings (interpretations, not facts)"]) expect(md).toContain(`\n${h}\n`)
   expect(md).toContain('- It reads facts 1 and 2: The ticket can be closed once a person agrees.')
-  expect(md).not.toContain('?')
+  // Its links are the pages' own paths: none carries a query string.
+  const links = [...md.matchAll(/\]\(([^)]*)\)/g)].map((m) => m[1]!)
+  expect(links.length).toBeGreaterThan(0)
+  for (const l of links) expect(l).toMatch(/^\/[^?]*$/)
   expect(md).not.toContain(srv.started.token)
 })
 
