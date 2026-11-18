@@ -31,9 +31,9 @@ func codexQuestions() []session.StartupQuestion {
 }
 
 // The agent's own update dialog holds a member's prompt, and the run's log
-// says where a person answers it: on the member's session page with the
-// choices the session offers for it, or in its terminal. Nothing answers
-// it.
+// says where a person answers it: with the choices the session offers for
+// it in the run page's chat or on the member's session page, or in its
+// terminal. Nothing answers it.
 func TestTheRunLogSaysWhereAnUpdateDialogIsAnswered(t *testing.T) {
 	e, fl := newEngine(t)
 	fl.questions = codexQuestions()
@@ -52,7 +52,7 @@ func TestTheRunLogSaysWhereAnUpdateDialogIsAnswered(t *testing.T) {
 			note = entry.Message
 		}
 	}
-	want := `lead asks "Update available 0.167.2 -> 0.170.0": answer it on lead's session page with one of its choices ("Skip this update", "Skip until next version"), or in its terminal; its prompt waits`
+	want := `lead asks "Update available 0.167.2 -> 0.170.0": answer it with one of its choices ("Skip this update", "Skip until next version") in the run page's chat or on lead's session page, or in its terminal; its prompt waits`
 	if note != want {
 		t.Fatalf("the run log says %q, want %q", note, want)
 	}
@@ -75,7 +75,7 @@ func TestHeldWordsSayWhereTheQuestionIsAnswered(t *testing.T) {
 		want string
 	}{
 		{"no choices", crewRun, session.Attention{Message: "Trust this folder?"}, `lead asks "Trust this folder?": answer it in lead's terminal`},
-		{"one choice", crewRun, session.Attention{Message: "Trust this folder?", Options: opts}, `lead asks "Trust this folder?": answer it on lead's session page with its choice "Yes", or in its terminal`},
+		{"one choice", crewRun, session.Attention{Message: "Trust this folder?", Options: opts}, `lead asks "Trust this folder?": answer it with its choice "Yes" in the run page's chat or on lead's session page, or in its terminal`},
 		{"another question shown now", crewRun, session.Attention{Message: "Sign in?", Options: opts}, `lead asks "Trust this folder?": answer it in lead's terminal`},
 		{"answered in the terminal", crewRun, session.Attention{Message: "Trust this folder?", Options: opts, Answered: session.AnsweredTerminal}, `lead asks "Trust this folder?": answer it in lead's terminal`},
 		{"a decision's", crewRun, session.Attention{Message: "Trust this folder?", Options: opts, Decision: "dr-3"}, `lead asks "Trust this folder?": answer dr-3 where decisions are answered`},
