@@ -61,7 +61,7 @@ func TestLaunchRequestBounds(t *testing.T) {
 		{"origin label past its bound", edit(func(r *ext.LaunchRequest) { r.Origin.Label = long(ext.MaxRunLabel + 1) }), false},
 		{"origin label empty", edit(func(r *ext.LaunchRequest) { r.Origin.Label = "" }), false},
 		{"origin label of two lines", edit(func(r *ext.LaunchRequest) { r.Origin.Label = "a\n# b" }), false},
-		{"origin label with a bidirectional control", edit(func(r *ext.LaunchRequest) { r.Origin.Label = "a‮b" }), true},
+		{"origin label with a bidirectional control", edit(func(r *ext.LaunchRequest) { r.Origin.Label = "a\u202eb" }), true},
 
 		// The subject.
 		{"subject ref at its bound", edit(func(r *ext.LaunchRequest) { r.Subject.Ref = "example:" + long(ext.MaxSubjectRef-8) }), true},

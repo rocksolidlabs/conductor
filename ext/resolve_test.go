@@ -280,7 +280,7 @@ func TestResolvedLaunchValid(t *testing.T) {
 		{"a selection that is not one", member(func(m *ext.ResolvedMember) { m.Selection = "abc" }), false},
 		{"a folder at its bound", edit(func(r *ext.ResolvedLaunch) { r.Cwd = "/" + strings.Repeat("a", ext.MaxFolder-1) }), true},
 		{"two folders past its bound once escaped", edit(func(r *ext.ResolvedLaunch) {
-			r.Cwd, r.ProjectCwd = "/"+strings.Repeat(" ", 1365), "/"+strings.Repeat(" ", 1365)
+			r.Cwd, r.ProjectCwd = "/"+strings.Repeat("\u2028", 1365), "/"+strings.Repeat("\u2028", 1365)
 		}), false},
 	} {
 		if (c.err == nil) != c.ok {
@@ -295,7 +295,7 @@ func TestResolvedLaunchValid(t *testing.T) {
 // writes as six, a character as six).
 func TestAResolvedLaunchAtEveryBoundIsWithinItsReply(t *testing.T) {
 	worst := func(n int) string { return strings.Repeat("<", n) }
-	worstChars := func(n int) string { return strings.Repeat(" ", n) }
+	worstChars := func(n int) string { return strings.Repeat("\u2028", n) }
 	on := true
 	readAt := time.Date(2026, 11, 18, 9, 0, 0, 123456789, time.FixedZone("x", -12*3600))
 	window := ext.CapacityWindow{
