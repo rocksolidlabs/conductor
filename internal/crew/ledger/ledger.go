@@ -35,7 +35,7 @@ const (
 
 // Version is the schema this binary writes. A database of a later version
 // opens read-only; an earlier one is brought to it (migrations).
-const Version = 13
+const Version = 14
 
 // migrations bring a database from the version keyed to the next, in one
 // transaction with the version's change: 1 to 2 adds the attempts'
@@ -139,6 +139,16 @@ var migrations = map[int][]string{
 	// version is a barrier as every later one is: a binary that writes 12
 	// opens a version 13 ledger read-only.
 	12: {runOriginTable, runOriginOpIndex},
+	// Version 14 (SW1, a decision router's policy on decision records):
+	// the outcome outbox, a table of its own with its unique index on the
+	// decision (outbox.go). From this version on the server may write
+	// shapes a binary before it misjudges: a router's policy on a decision
+	// record, a spare place for its replacement, an outbox row and the
+	// router's history rows. No row of a version 13 database holds any of
+	// them, so its rows are all true as they are: nothing is derived. The
+	// version is a barrier: a binary that writes 13 opens a version 14
+	// ledger read-only.
+	13: {decisionOutboxTable, decisionOutboxIndex},
 }
 
 // migrationsGo run after a version's statements, in the same transaction:
@@ -888,8 +898,9 @@ func (l *Ledger) release() {
 // UTC; JSON is text; a run's rows go with it (ON DELETE CASCADE) when the
 // owner prunes it. The decision tables (version 8) are decisionTables,
 // their request index as version 9 keys it decisionsRequestV9, the
-// previews (version 11) previewsTable, and where a run was launched from
-// (version 13) runOriginTable and runOriginOpIndex, last.
+// previews (version 11) previewsTable, where a run was launched from
+// (version 13) runOriginTable and runOriginOpIndex, and the outcome outbox
+// (version 14) decisionOutboxTable and decisionOutboxIndex, last.
 var schema = append(append([]string{
 	`CREATE TABLE schema_version (version INTEGER NOT NULL)`,
 	`CREATE TABLE runs (
@@ -1008,4 +1019,4 @@ var schema = append(append([]string{
 	messagesTable,
 	prerequisitesTable,
 	treesTable,
-}, decisionTables...), append(slices.Clone(decisionsRequestV9), previewsTable, runOriginTable, runOriginOpIndex)...)
+}, decisionTables...), append(slices.Clone(decisionsRequestV9), previewsTable, runOriginTable, runOriginOpIndex, decisionOutboxTable, decisionOutboxIndex)...)
