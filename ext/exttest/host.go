@@ -27,6 +27,9 @@ import (
 // concurrent use.
 type FakeHost struct {
 	changes
+	// UnsupportedSync answers sync's doors until their rows give the fake
+	// its scripts (docs/plans/sync-seams.md).
+	ext.UnsupportedSync
 	dir  string
 	log  *slog.Logger
 	logf func(format string, args ...any)

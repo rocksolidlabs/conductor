@@ -775,7 +775,10 @@ holds) and `400 invalid` for a key that is not one. Each is a row of
 shared?}` and, for a project held back by a key, `heldBy: {key, rows}`
 (the held rows waiting for it), so the page can say why.
 
-**`ext.Host` doors** (`ext/host.go`), each answering `ErrUnsupported` on
+**`ext.Host` doors** (`ext/host.go`, gathered as the interface
+`ext.SyncDoors` in `ext/sync.go`, which `Host` embeds, with every door of
+OS-1b, OS-2 and OS-3; `ext.UnsupportedSync` answers each
+`ErrUnsupported`, for a `Host` that is not the sync store's), each answering `ErrUnsupported` on
 a `Host` given to any provider but the registered sync store
 (`extHost`'s `name` against the sync slot's, as `HostToken` checks the
 identity slot's; the host agent's `Host`, `internal/hostagent/
@@ -807,15 +810,20 @@ DispatchNames(ctx context.Context, names map[string]string) error // tag to devi
   against a module without OS-1c is not to be deployed (The PRs).
 - `DispatchApply` takes at most `MaxDispatchBatch` rows and
   `MaxDispatchBytes`, each row's `Valid`, the views each at most
-  `dispatch.MaxPlanBody`, the keys each a project key; it is
-  `Store.ApplyRemote`.
+  `dispatch.MaxPlanBody` (`ext.MaxPlanView`), the keys each a project
+  key, by the project's id; it is `Store.ApplyRemote`. Its `Held` holds
+  at most `ext.MaxHeldWords` (50) words of at most `ext.MaxHeldWord`
+  (200) bytes; the words a share's refusal, `Unshared` and `Dormant`
+  keep are at most `ext.MaxSyncWords` (200) bytes.
 - `BlockState {Project string; From, To, Next, NextFrom, NextTo int64;
   Left int64}` (each shared project's current and next block and how
   much is left); `SharedProject {ID, Key, Name, State, Words string;
   ReservedTo, Highest int64}` (each `{id, key, name, state, reservedTo,
-  highest}`); both at most 1,000 entries.
-- `DispatchNames` takes at most 1,000 names, each a valid tag to at most
-  64 bytes of one line.
+  highest}`); both at most 1,000 entries (`ext.MaxDispatchProjects`).
+  `ErrShareMoved` is `ext.ErrShareMoved{Newest int64}`, an error type.
+- `DispatchNames` takes at most 1,000 names (`ext.MaxDispatchNames`),
+  each a valid tag to at most 64 bytes (`ext.MaxDeviceName`) of one line
+  of words: a name is kept address-free, as Dispatch keeps words.
 - An optional interface the sync store may implement,
   `ext.DispatchWatcher { BlockLow(project string) }`, called after the
   commit, from the store's own goroutine, never blocking a write (a
@@ -1108,6 +1116,30 @@ accepted one with the longest text and rationale) and its policy at
 `TestDecisionDocIsTheTable`: the fields against the table, no
 `session_id`, authority, history or fingerprint).
 
+**Whom it is opened to.** The document carries `openedTo`, written by
+the server from its own record at every build: `decide` when the
+decision's request was made for the decide grant (its `for` names the
+grant, `{label: "grant:decide"}` with no person, as `crew.GivenToGrant`
+reads it) and the decision is not a comparison's selection (origin
+`compare`, the operator's alone, never opened to the grant whatever its
+request says), and `operator` otherwise. These are exactly the records
+`crew.EntriesOf` gives the grant's entry. Whatever holds the document
+for an absent operator reads there who may answer it, without reading
+the policy's entries itself. It is outside the request part, so the
+request part and `requestSHA256` are as they would be without it
+(`TestDecisionDocOpenedToFollowsTheRecord`: a record given to the grant
+`decide`, one that is not `operator`, a comparison's selection whose
+request names the grant `operator`, and the request hash the same
+either way).
+
+The Go shape of the document is `ext.DecisionDoc` (`ext/sync.go`), with
+`ext.DecisionRequestPart`, the part hashed, and `ext.DecisionDocStates`,
+the four states as `{open, recorded, validated, applied}`, each but the
+first `{at, words}` once reached; the parts' bounds are
+`ext.MaxDecisionDocRequest`, `MaxDecisionDocResponses`,
+`MaxDecisionDocApplied`, `MaxDecisionDocIDs` and `MaxDecisionDocPolicy`,
+and `ext.MaxDecisionDoc` their sum.
+
 The document's **request part** is what a person answers and what a yes
 acts on: the target's identifiers, `{decision (dr-n), openedIn, origin,
 type, gate, task, attempt, ticket, plan, planDigest}`, with the
@@ -1231,6 +1263,15 @@ const MaxAnswerRationale = 2 << 10
 func (h HeldAnswer) Valid() error
 func (o AnswerOutcome) Valid() error
 ```
+
+The statuses are the constants `ext.AnswerRecorded`, `AnswerRefused`,
+`AnswerNotHeld`, `AnswerMoved` and `AnswerUnknownAuthority`; the
+statement is at most `ext.MaxStatement` (2 KiB), each opaque id
+(`membership`, `signIn`, `appDevice`, `held`, `fence`) at most
+`ext.MaxHeldID` (64) bytes, and an outcome with its receipt at most
+`ext.MaxAnswerOutcome` (8 KiB). The types are in `ext/sync.go` beside the
+Dispatch ones (the plan's `ext/dispatch.go` and `ext/answers.go` are one
+file).
 
 `AdmitsAnswer` answers yes only when the identity provider verifies the
 statement against its keys and its claims against `a` (this server, the

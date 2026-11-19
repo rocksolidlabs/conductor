@@ -316,6 +316,9 @@ type extHost struct {
 	// (BrakemanHost), never on a provider's, whatever its name: only it
 	// launches a turn (LaunchTurn).
 	desk bool
+	// UnsupportedSync answers sync's doors until their rows give the sync
+	// store its own (docs/plans/sync-seams.md).
+	ext.UnsupportedSync
 }
 
 var _ ext.Host = (*extHost)(nil)

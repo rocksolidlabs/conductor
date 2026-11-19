@@ -110,6 +110,9 @@ type Host interface {
 	// one on a host with Where RunsOnHost: what the caller makes of either
 	// is its own.
 	ResolveLaunch(ctx context.Context, r ResolveRequest) (ResolvedLaunch, error)
+	// SyncDoors are the doors the registered sync store alone calls
+	// (sync.go); every other provider's Host answers each ErrUnsupported.
+	SyncDoors
 }
 
 // TurnLaunch is a Brakeman turn to launch: the catalog agent, its model
