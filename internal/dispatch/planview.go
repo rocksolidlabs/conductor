@@ -29,18 +29,22 @@ const planViewVersion = 1
 // lowers it to make a view past its bound.
 var maxPlanView = MaxPlanBody
 
-// revisionView is a revision's view, version 1.
+// revisionView is a revision's view, version 1. Every type it holds is a
+// view type of this file, each field named here: an allow-list all the
+// way down, so a field a body's types gain later stays on the machine
+// until a view type names it. makePlanView reads the body's JSON straight
+// into these types (viewBody), never through the body's own.
 type revisionView struct {
 	V           int              `json:"v"`
 	Digest      string           `json:"digest"`
 	Base        string           `json:"base"`
 	Crew        viewCrew         `json:"crew"`
 	Agents      []string         `json:"agents"`
-	References  []PlanReference  `json:"references"`
+	References  []viewReference  `json:"references"`
 	Attachments []viewAttachment `json:"attachments"`
-	Comments    []PlanComment    `json:"comments"`
+	Comments    []viewComment    `json:"comments"`
 	Constraints string           `json:"constraints"`
-	Decisions   []PlanDecision   `json:"decisions"`
+	Decisions   []viewDecision   `json:"decisions"`
 	Note        string           `json:"note"`
 }
 
@@ -70,6 +74,52 @@ type viewAttachment struct {
 	Name string `json:"name"`
 }
 
+// viewReference is a source reference as a view gives it: its relative
+// path, its line range, its note, and the object it names at the base.
+type viewReference struct {
+	Path   string `json:"path"`
+	Start  int    `json:"start,omitempty"`
+	End    int    `json:"end,omitempty"`
+	Note   string `json:"note,omitempty"`
+	Object string `json:"object"`
+	Kind   string `json:"kind"`
+}
+
+// viewComment is a comment a revision hands over: its id and its body's
+// SHA-256 when the revision was made.
+type viewComment struct {
+	ID     string `json:"id"`
+	SHA256 string `json:"sha256"`
+}
+
+// viewDecision is a decision a person will make, as a view gives it: its
+// id, its question, its kind, the tasks that wait on it and whom it is
+// for.
+type viewDecision struct {
+	ID       string   `json:"id"`
+	Question string   `json:"question"`
+	Kind     string   `json:"kind"`
+	Before   []string `json:"before"`
+	For      string   `json:"for,omitempty"`
+}
+
+// viewBody is what a view reads of a body, in the view's own types: the
+// body's other parts (the agents' commands and arguments, a manifest
+// file, the source) are never decoded.
+type viewBody struct {
+	Base   string          `json:"base"`
+	Crew   json.RawMessage `json:"crew"`
+	Agents []struct {
+		ID string `json:"id"`
+	} `json:"agents"`
+	References  []viewReference `json:"references"`
+	Attachments []string        `json:"attachments"`
+	Comments    []viewComment   `json:"comments"`
+	Constraints string          `json:"constraints"`
+	Decisions   []viewDecision  `json:"decisions"`
+	Note        string          `json:"note"`
+}
+
 // viewBodyCrew is what a view reads of a body's crew.
 type viewBodyCrew struct {
 	ID      string `json:"id"`
@@ -91,9 +141,9 @@ type viewBodyCrew struct {
 // digest, naming each attachment it hands over by name(id) (empty for
 // one the store has no row of). It gives the view as encoded, or false when
 // the body is not one the view can be read from or the view would be past
-// maxPlanView: such a revision has no view and is never handed out.
+// maxPlanView.
 func makePlanView(body, digest string, name func(id string) (string, error)) (string, bool, error) {
-	var b PlanBody
+	var b viewBody
 	if err := json.Unmarshal([]byte(body), &b); err != nil {
 		return "", false, nil
 	}
@@ -113,7 +163,7 @@ func makePlanView(body, digest string, name func(id string) (string, error)) (st
 		Attachments: []viewAttachment{},
 		Comments:    nonNil(b.Comments),
 		Constraints: b.Constraints,
-		Decisions:   []PlanDecision{},
+		Decisions:   []viewDecision{},
 		Note:        b.Note,
 	}
 	for _, task := range c.Tasks {
@@ -153,30 +203,10 @@ func nonNil[T any](s []T) []T {
 	return s
 }
 
-// writePlanViews is version 8's Go step: the view of every revision the
-// store holds, made from its body in the migration's transaction, kept in
-// plan_views under its digest and named by the revision's view_digest. A
-// revision whose view cannot be made (makePlanView) keeps an empty view_digest.
-func writePlanViews(ctx context.Context, tx *sql.Tx) error {
-	type revision struct{ id, body, digest string }
-	rows, err := tx.QueryContext(ctx, "SELECT id, body, digest FROM plans ORDER BY rowid")
-	if err != nil {
-		return err
-	}
-	var all []revision
-	for rows.Next() {
-		var r revision
-		if err := rows.Scan(&r.id, &r.body, &r.digest); err != nil {
-			rows.Close()
-			return err
-		}
-		all = append(all, r)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return err
-	}
-	name := func(id string) (string, error) {
+// attachmentName is the name of the attachment with the id as the
+// transaction reads it, empty for one it holds no row of.
+func attachmentName(ctx context.Context, tx *sql.Tx) func(id string) (string, error) {
+	return func(id string) (string, error) {
 		var n string
 		switch err := tx.QueryRowContext(ctx, "SELECT name FROM attachments WHERE id = ?", id).Scan(&n); {
 		case isNoRows(err):
@@ -186,19 +216,59 @@ func writePlanViews(ctx context.Context, tx *sql.Tx) error {
 		}
 		return n, nil
 	}
-	for _, r := range all {
-		view, ok, err := makePlanView(r.body, r.digest, name)
+}
+
+// keepPlanView keeps view, the view of the revision id of the body whose
+// digest is digest, in plan_views under its SHA-256 and names it as the
+// revision's view_digest, in tx.
+func keepPlanView(ctx context.Context, tx *sql.Tx, id, digest, view string) error {
+	viewDigest := sha256Hex(view)
+	if _, err := tx.ExecContext(ctx, "INSERT OR IGNORE INTO plan_views (view_digest, digest, view) VALUES (?, ?, ?)", viewDigest, digest, []byte(view)); err != nil {
+		return err
+	}
+	_, err := tx.ExecContext(ctx, "UPDATE plans SET view_digest = ? WHERE id = ?", viewDigest, id)
+	return err
+}
+
+// writePlanViews is version 8's Go step: the view of every revision the
+// store holds, made from its body in the migration's transaction, kept in
+// plan_views under its digest and named by the revision's view_digest. It
+// reads the revisions' ids first and then each body by its id, so it holds
+// one body at a time. A revision whose view cannot be made (makePlanView)
+// keeps an empty view_digest; a revision made on version 8 has its view
+// from its proposal (ProposePlan).
+func writePlanViews(ctx context.Context, tx *sql.Tx) error {
+	rows, err := tx.QueryContext(ctx, "SELECT id FROM plans ORDER BY rowid")
+	if err != nil {
+		return err
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return err
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	name := attachmentName(ctx, tx)
+	for _, id := range ids {
+		var body, digest string
+		if err := tx.QueryRowContext(ctx, "SELECT body, digest FROM plans WHERE id = ?", id).Scan(&body, &digest); err != nil {
+			return err
+		}
+		view, ok, err := makePlanView(body, digest, name)
 		if err != nil {
 			return err
 		}
 		if !ok {
 			continue
 		}
-		viewDigest := sha256Hex(view)
-		if _, err := tx.ExecContext(ctx, "INSERT OR IGNORE INTO plan_views (view_digest, digest, view) VALUES (?, ?, ?)", viewDigest, r.digest, []byte(view)); err != nil {
-			return err
-		}
-		if _, err := tx.ExecContext(ctx, "UPDATE plans SET view_digest = ? WHERE id = ?", viewDigest, r.id); err != nil {
+		if err := keepPlanView(ctx, tx, id, digest, view); err != nil {
 			return err
 		}
 	}

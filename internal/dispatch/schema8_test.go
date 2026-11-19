@@ -142,14 +142,14 @@ func fixtureView(digest, attachment, comment string) revisionView {
 			{ID: "review", Kind: "review", Member: "rev", Agent: "checker", Instructions: "Review the fix", Needs: []string{"build"}},
 		}},
 		Agents: []string{"builder", "checker"},
-		References: []PlanReference{
+		References: []viewReference{
 			{Path: "docs/login.md", Start: 2, End: 9, Note: "the flow", Object: strings.Repeat("34", 20), Kind: ObjectBlob},
 			{Path: "web", Object: strings.Repeat("56", 20), Kind: ObjectTree},
 		},
 		Attachments: []viewAttachment{{ID: attachment, Name: "trace notes.txt"}},
-		Comments:    []PlanComment{{ID: comment, SHA256: sha256Hex("Use the second approach.")}},
+		Comments:    []viewComment{{ID: comment, SHA256: sha256Hex("Use the second approach.")}},
 		Constraints: "Keep the old route working.",
-		Decisions:   []PlanDecision{{ID: "ship", Question: "Ship it on Friday?", Kind: DecisionApproval, Before: []string{"review"}, For: "person:Operator"}},
+		Decisions:   []viewDecision{{ID: "ship", Question: "Ship it on Friday?", Kind: DecisionApproval, Before: []string{"review"}, For: "person:Operator"}},
 		Note:        "Second try, with a & b <c>.",
 	}
 }
