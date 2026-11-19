@@ -310,7 +310,13 @@ add its rule here.
   agent CLI on the caller's PATH outlived its e2e server's stop and wrote
   into the HOME its test had removed (`agent-path.spec.ts`,
   `TestShutdownEndsTheProbesUnderWay`,
-  `TestWaitBackgroundEndsTheProbesUnderWay`, #961).
+  `TestWaitBackgroundEndsTheProbesUnderWay`, #961). A cleanup that stops
+  a server's sessions is itself what wakes an engine left running: it
+  takes the session's end as a failure and starts the task's next attempt.
+  Stop the test's runs in a cleanup registered after the server is made,
+  so that it runs before the sessions are stopped and the folders go
+  (`endRunAtCleanup` in `internal/api`'s handoff tests: every fixture
+  there left its run running, and one lost the race in CI, #1012).
 - Servers over one data directory hand its owner lock on: a later one
   waits for it and takes it when the first ends. End the later ones first
   (cleanups run last in, first out, so `serve` registers each one's end

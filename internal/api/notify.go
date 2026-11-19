@@ -25,8 +25,15 @@ import (
 // handed back round. Every sink has a queue of its own (an extQueue of
 // ext.SinkQueue), filled without waiting, its oldest dropped when it is
 // full, so no sink delays the hub, a session, the engine or another sink.
-// A server with no webhook and no sink adds no notifier: the free build's
-// hub is as it was.
+// A server with no webhook and no sink adds no notifier to the hub: the
+// free build's hub is as it was.
+//
+// Two notifications are not a session's entry and come to the notifier by
+// a call of their own (send): a durable decision's change (decisionTold),
+// for the webhooks and the providers' sinks that take it, and a background
+// brief of Brakeman's that holds a decision no earlier one held
+// (brakeman_notify.go), for the webhooks that list brakeman_needs_you
+// alone, never a provider's sink.
 
 // notifier hands the hub's entries and the providers' notices to the
 // webhooks and the providers' sinks.
@@ -130,6 +137,39 @@ func (nt *notifier) notification(sessionID string, e session.ActivityEntry, typ 
 		Path:    e.Path,
 		By:      e.By,
 		ByName:  e.ByName,
+	}
+}
+
+// send queues n, a notification that is not a session's entry, for every
+// webhook that lists its event or its type and, when sinks, every provider
+// sink that may take it, without waiting. The webhooks that want it share
+// one body. Once the webhooks are closed it queues nothing.
+func (nt *notifier) send(n ext.Notification, sinks bool) {
+	if nt.hooks.ctx.Err() != nil {
+		return
+	}
+	var body []byte
+	for _, w := range nt.hooks.hooks {
+		event := w.eventFor(n.Event, n.Type)
+		if event == "" {
+			continue
+		}
+		if body == nil {
+			b, err := webhookBody(n)
+			if err != nil {
+				break
+			}
+			body = b
+		}
+		w.queue.push(webhookDelivery{event: event, body: body})
+	}
+	if !sinks {
+		return
+	}
+	for _, g := range nt.sinks {
+		if g.mayTake(n.Event, n.Type) {
+			g.queue.push(n)
+		}
 	}
 }
 

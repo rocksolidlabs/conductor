@@ -85,6 +85,13 @@ The other Program items this plan meets, in plain words:
    paid (decision D1); routing a brief to a named person, push delivery,
    graph-enriched context and shared briefings are paid later and live
    behind the providers of `ext`, which this plan neither calls nor defines.
+   (2026-11-18, #1012: "shared briefings" are briefings shared across a
+   workspace, as Out of scope says. A person's own sending of a brief,
+   copied or commented on a ticket with a crew's people named on its first
+   line, is not routing and is free (decision 25); so is the notification
+   of a background brief that holds a decision, which goes to the person's
+   open pages and to the webhooks that list its event, and calls no
+   provider (decision 24).)
 4. Stop, inspect, revoke, export, required approvals: a Brakeman turn is an
    ordinary run that Stop ends; its requests, briefs and the drafts made
    from them are plain files in the data directory (inspected on the page
@@ -115,7 +122,10 @@ The other Program items this plan meets, in plain words:
     for the pages; no WebSocket frame or control message, so
     `internal/proto` and `web/app/utils/protocol.ts` are untouched, and
     `docs/protocol.md` gains the HTTP routes and one Server-Sent Event,
-    `brakeman`, with its size limit and its test. A Server-Sent Event is
+    `brakeman`, with its size limit and its test (2026-11-18, #1012: and
+    the three admin routes of a handoff package sent to a task's next
+    attempt and the event `brakeman_needs_you`, each with its size limit
+    and its test; still no frame or control message). A Server-Sent Event is
     typed as the `run` and DS1's `dispatch` events are: in
     `docs/protocol.md` and the composable that reads it
     (`web/app/composables/useAttention.ts` reads `dispatch`), since
@@ -216,6 +226,9 @@ After the first slice (PR-1 to PR-8) ships, a person sees:
   "Brakeman · br-n", and notifies (a browser notification, Chime, a
   webhook) only for a request a person made; a background turn's question
   (BK3) notifies nothing, and its deadline ends it unanswered.
+  (2026-11-18, #1012: a background brief that holds a decision card no
+  earlier background brief held also raises one notification, which takes
+  no focus: decision 24.)
 - After a restart of the server, or with another agent or model chosen,
   "What changed since your last brief?" reads the earlier briefs and their
   coverage from the data directory, not from any conversation: every turn is
@@ -495,7 +508,7 @@ Each kind's fields and rules, enforced by `Validate`:
 | `evidence/1` | `title`, `refs` (1 to 50) | An evidence panel. |
 | `draft_ticket/1` | `project` (a key), `title` (200 characters), `description` (16 KiB), `acceptance` (8 KiB), `priority` (0 to 4), `blocks` (indexes of other draft tickets of the brief), `from` (refs) | At most 20 a brief; `blocks` has no cycle. |
 | `draft_crew/1` | `crew` (the body `POST /api/crews` takes), `gates` (up to 10 notes: a task id and the decision a person makes before it), `from` (refs) | The crew passes `Facts.CheckCrew` (the API's `crew.Crew.Validate`) at submission. |
-| `handoff/1` | `objective`, `constraints`, `decisions` (up to 20), `revision` (a `commit:` ref), `questions` (up to 20), `evidence` | Built from Conductor's records; never an agent's conversation. |
+| `handoff/1` | `objective`, `constraints`, `decisions` (up to 20), `revision` (a `commit:` ref), `questions` (up to 20), `evidence` | Built from Conductor's records; never an agent's conversation. (2026-11-18, #1012: a person may send it, exactly as written, to the next attempt of the task its request was about: decision 23.) |
 | `overlap/1` | `paths` (1 to 50), `between` (2 to 8 refs of attempts or sessions), `evidence` | |
 
 The four kinds a brief's reader must never confuse are four kinds: a fact
@@ -924,7 +937,10 @@ dropped.
 
 **The `brakeman` event** on `GET /api/events`: `{id, state}` after each
 change of a request's state, at most 200 bytes, state a page cannot do
-without (like `run` and `dispatch`), never a webhook. `docs/protocol.md`
+without (like `run` and `dispatch`), never a webhook (2026-11-18, #1012:
+that stands for `brakeman`; a background brief that holds a new decision
+also sends `brakeman_needs_you`, `{id, decisions}`, at most 64 bytes and
+droppable, and the webhook event of the same name: decision 24). `docs/protocol.md`
 gains a Brakeman section: the routes above with their bounds and refusals,
 the event, the request's states, the brief's schema and the refs.
 
@@ -1187,7 +1203,15 @@ fact cites its own session and run (and a check receipt when
   editor, never launched.
 - `components/BrakemanHandoff.vue`: the package as Markdown, Copy, and
   "Comment on the ticket" for a ticket in its refs (Dispatch's comment
-  operation as the admin, the person's name).
+  operation as the admin, the person's name). (2026-11-18, #1012: and,
+  on the page's own brief of a request of kind `handoff` about a task or
+  an attempt, "Send to <task>'s next attempt…", whose dialog
+  (`BrakemanSendHandoff.vue`) shows the exact text read-only with its
+  size, where it goes, that sending starts nothing, who else can read it
+  and under whose name it goes, then Send; the box then says where the
+  package stands (waiting with Withdraw, handed, taken by an attempt that
+  did not start with Send it again, withdrawn, replaced), and a refusal
+  draws the control disabled with its words: decision 23.)
 - Entry points: the palette gains a Brakeman group (`usePaletteRows`: "Ask
   Brakeman: brief me since…", "…explain this run", "…this task", "…draft
   tickets from this ticket", "…propose a crew for this ticket", "Open
@@ -1325,6 +1349,10 @@ Dispatch none; Brakeman's records are new JSON documents of their own
 rewritten, so an older binary started on newer data loses nothing
 (the conservative rule the ledger's migrations follow). No WebSocket frame
 or control message changes; the one new Server-Sent Event is `brakeman`.
+(2026-11-18, #1012: the records gain `brakeman/handoffs.json`, schema 1,
+the handoff packages a person sent, which an older build neither opens
+nor removes and from which it hands a waiting package to no one; the
+events gain `brakeman_needs_you`, decision 24's.)
 
 **A request's states.**
 
@@ -1430,8 +1458,9 @@ ended). Every ordering is a test (PR-3c).
   that would pass it as `over_budget`.
 - A question a Brakeman session asks is shown in Needs you labelled
   "Brakeman · br-n"; it reaches browser notifications, Chime and webhooks
-  only when the request's kind is not `wake`, so a background turn pages
-  no one. The classification is the session's own, set before it can ask
+  only when the request's kind is not `wake`, so a background turn's
+  question pages no one (reworded on 2026-11-18, #1012, from "so a
+  background turn pages no one": its brief may, below). The classification is the session's own, set before it can ask
   anything: `Server.Launch` writes `crew.brakeman: {request, quiet}` into
   the session's `CrewRef` from the `LaunchSpec` (PR-3c), at creation, so
   every snapshot of the session that can need input already carries it;
@@ -1450,10 +1479,38 @@ ended). Every ordering is a test (PR-3c).
   (`TestAWakeTurnsSessionIsMarkedQuiet`); PR-15's `brakeman-role.spec.ts`
   checks a wake turn's question raises no browser notification. The
   sessions JSON gains the field in `docs/protocol.md` (PR-3c).
+- (2026-11-18, #1012, decision 24.) A background brief that holds a
+  decision notifies, once. The server alone decides, in the one place a
+  new brief is kept (the brief route's new-brief path, after the
+  `brakeman` event that says `briefed` and before the submission is
+  answered; never a repeat of a kept brief, a restart, a recovery or a
+  read): the brief is of the role's own `wake` request, holds at least one
+  decision card, and holds one that none of the role's 20 earlier
+  background briefs held (a decision named by what it is about at the
+  revision it was written at, so the same subject at a new revision is
+  new; the earlier briefs are read, nothing is kept, and a list that
+  cannot be read notifies no one, while an earlier brief that does not
+  read is passed over as holding no decision). It sends the operator's pages
+  `brakeman_needs_you` `{id, decisions}` (droppable: at most once, and
+  only to a page connected then), which a page turns into a browser
+  notification and the chime under the person's switches and a switch of
+  its own, and queues one notification for each webhook whose `events`
+  list `brakeman_needs_you`, never a provider's sink. Its words are
+  Conductor's own and fixed ("Brakeman's background brief br-14 holds 1
+  decision", the path `/brakeman?request=br-14`): the request's id, a
+  count and a path, never a word of the brief. A background brief without
+  a decision card or with only decisions told before, every brief a
+  person asked for, and a background turn's own question notify no one.
+  Each open page plays its own chime, as for every other alert, and how
+  often a background brief notifies is bounded by the role's own limits
+  (its window, cool-down and daily turns and minutes), with no cap of its
+  own.
 - Nothing Brakeman submits changes a ticket's status, a run's state, a
   task's outcome, a verification or an acceptance: those stay separate
   facts with their own owners (the Program, section 1.4), and a brief only
-  cites them.
+  cites them. (2026-11-18, #1012: a person's sending of a handoff package
+  changes none of them either and starts no attempt: the task's next
+  attempt, started as it would have been, reads it.)
 
 **The `brakeman` event**: `{id, state}`, sent after each state is written,
 at most 200 bytes (an id of at most 12 bytes and a state of at most 12),
@@ -1516,7 +1573,7 @@ creates its request with the same op id, which finds the one a crash
 left between the request's write and the role's, so a batch fires once;
 `briefing` follows its request, which rule 2 made `interrupted`, to
 `cooling`. A `wake` turn's own question notifies no one (the invariant
-above), and its deadline ends it unanswered. The engine's loop holds no process between
+above; 2026-11-18, #1012: its brief may, decision 24), and its deadline ends it unanswered. The engine's loop holds no process between
 turns and polls no model: it is woken by the activity sink, the engine's
 run changes, Dispatch's `OnChange` and one timer for the next configured
 briefing or window end.
@@ -1535,7 +1592,9 @@ briefing or window end.
 - An agent's private conversation: Brakeman never reads another agent's
   transcript or session files, and a handoff package never pretends to
   carry one provider's conversation to another; it is built from
-  Conductor's records.
+  Conductor's records. (2026-11-18, #1012: sent to a task's next attempt
+  it is still that, a quoted report Brakeman wrote from Conductor's
+  records, never a conversation.)
 - Brakeman listening by default: terminal screens are off until a person
   turns them on, and are read only when Brakeman asks, a bounded number of
   lines; huddles (Program item CL1) are not touched.
@@ -1543,6 +1602,13 @@ briefing or window end.
   delivery, graph-enriched context, workspace-shared briefings, and a
   briefing scheduled from the cloud while the machine sleeps (Program item
   AU1). BK3's briefing times are local and fire while the server runs.
+  (2026-11-18, #1012: none of these is built, behind a flag or as a
+  seam. The line: naming a crew's people in a brief a person copies or
+  comments on a ticket is that person's own sending, and the background
+  brief's notification to the person's open pages and listed webhooks is
+  Conductor's own, both free; Conductor delivering a brief to a named
+  person, a push to a browser that is closed, and a brief shared across a
+  workspace stay paid.)
 - An account registry, usage windows and reset times (Program item AC1):
   the account here is a folder reference.
 - A2UI, AG-UI and MCP Apps: candidates the Program names; none is adopted
@@ -1795,6 +1861,69 @@ asks a question is listed in Needs you and raises no browser
 notification, read off the page's `Notification` stub; paused, nothing
 wakes it).
 
+**#1012** (2026-11-18; decisions 23 to 25). The handoff package, Go race:
+`brakeman/handoffs_test.go`: `TestHandoffTextIsOneCleanedText`,
+`TestAPackagePastItsBoundIsRefusedInWords` (16 KiB taken, one byte past
+refused, the largest `handoff/1` refused in words, never cut),
+`TestASendIsKeptBeforeItIsAnswered`, `TestASendLeavesEveryOtherRecordAsItWas`,
+`TestOnePackageWaitsForATask`, `TestTwentyWaitAtMostAndFortyAreKept`,
+`TestATakeIsWrittenBeforeItIsAnswered`, `TestATakeAndAWithdrawInBothOrders`
+(held by a seam in both orders), `TestHandoffsAreTheOwnersAlone`,
+`TestADamagedHandoffsDocumentIsKept`, `TestAPrunedRequestsWaitingPackageIsWithdrawn`,
+`TestASendsNameIsOnePlainLine`, and `TestEveryDocumentFitsItsLoadLimit`'s
+line for `handoffs.json`; `crew/handoff_package_test.go`:
+`TestAHandoffPackageInTheTaskFile` (the golden files with a package and
+cut), `TestNoTextLeavesTheHandoffPackagesQuote` (every hostile line end,
+heading, fence, link definition and closing line),
+`TestAPackageOfTheWrongShapeWritesNoSection`,
+`TestEngineAsksForAHandoffPackageOutsideTheLock`,
+`TestAComparisonIsHandedNoPackage`, `TestAContinuationIsAskedWithItsChain`,
+`TestTheWorstRepairFileHoldsAPackagesHead`; `agents/skill_test.go`'s
+sentences; `api/brakeman_handoff_test.go`:
+`TestAHandoffPackageReachesTheNextAttemptAsAQuotedReport` (the whole path,
+the text in no log), `TestAWithdrawnPackageIsHandedToNoOne`,
+`TestEveryRefusalOfAHandoffPackageWritesNothing`,
+`TestOnlyTheAdminReachesTheHandRoutes`,
+`TestAHandoffPackageWaitsForTheContinuation`,
+`TestTheHandoffFunctionTakesNothingWhileNotOwner`,
+`TestAPackageTakenByAnAttemptThatNeverStartedSaysSo` (still so once the run
+is let go), `TestAPackageNeverReadStaysSoOnceTheRunIsLetGo`,
+`TestAStartingAttemptIsNamedInThePreview`,
+`TestThePreviewAtItsWidestFitsItsBound` (16 KiB of characters JSON writes
+twice, within 38 KiB), and `crew`'s `TestAClosedAttemptAsksForNoPackage`;
+unchanged and green,
+`TestToolsListIsUnchanged`, `TestTheActToolIsListedOnlyWithAGrant`,
+`TestBrakemansTokenReachesNoAdminRoute` and
+`TestTaskFileByteIdenticalWithoutContext`. The notification, Go race
+`api/brakeman_notify_test.go`: `TestABackgroundBriefWithADecisionNotifiesOnce`,
+`TestABackgroundBriefWithoutADecisionStaysSilent`,
+`TestAPersonsBriefWithADecisionStaysSilent`,
+`TestARepeatedDecisionNotifiesNoOneAgain`,
+`TestADecisionIsHeldAgainstTheRolesEarlierBriefs`,
+`TestAWebhookThatListsOnlyQuestionsHearsNoBrief`,
+`TestAProvidersSinkHearsNoBrief`, `TestTheNeedsYouEventIsBounded`,
+`TestTheBriefsNotificationIsConductorsWords`, `TestEarlierBriefsThatCannotBeRead`
+(an unreadable list notifies no one; an unreadable earlier brief is passed
+over), `brakeman/brief_alone_test.go`'s `TestBriefAloneReadsNoResolutions`, and
+`config/webhook_test.go`'s `TestBrakemanNeedsYouIsAWebhookEvent`; the
+quiet mark's three tests unchanged; vitest `utils/brakemanAlert.test.ts`
+(the words read from the Go source, the event's refusals) and
+`composables/useAttention.test.ts`'s settings; Playwright
+`brakeman-notify.spec.ts`. The send's page, vitest
+`utils/brakemanSend.test.ts` (the preview's parser and its bounds held to
+the Go constants, every refusal's words, the state sentences and status
+lines, an attempt still starting, the who-reads sentence, a name refused
+before sending, an older server's 404 and its catch-all's, a `proposal/1`
+naming the operations drawn as text);
+Playwright `brakeman-send.spec.ts` (the dialog's text equal to the
+preview's, sent, handed to the next attempt and read from its task file,
+a later attempt holding none, withdrawn, no control for another kind or
+an older server, a phone). Sharing, vitest `utils/brakemanShare.test.ts`
+(`mdPlain`: a name a tracker would link written as a code span, any other
+escaped, joiners and variation selectors kept; `forLine`, `shareRuns`,
+`shareCrews`, `briefMarkdown` without the line as it was); Playwright
+`brakeman-share.spec.ts` (with a refused clipboard's text to select).
+
 **What tests cannot cover, by hand** (Acceptance): a real agent on the
 owner's own subscription (Claude Code and Codex) doing real turns against a
 night of real crews; Claude Code's `--allowedTools` and `--disallowedTools`
@@ -1827,7 +1956,10 @@ launch, the pages and the engine.
    ordinary server session; nothing here reaches a pid or a tty; a turn is
    stopped through `Engine.Stop`.
 3. **An attempt's context is files.** Not touched: a turn is not an
-   attempt and adds nothing to one. Its request lives in the data
+   attempt and adds nothing to one (2026-11-18, #1012: still so of a
+   turn; a person may add a kept handoff package to a task's next
+   attempt, which reads it in its task files, `.conductor/task.md` and
+   `task.json`, decision 23). Its request lives in the data
    directory, a file, and reaches the agent over the network (4).
 4. **The agent talks to the server over the network.** Every Brakeman tool
    is HTTP with the session's `CONDUCTOR_NOTIFY_TOKEN`, through `conductor
@@ -1859,7 +1991,9 @@ launch, the pages and the engine.
   Conductor service.
 - [x] Article 3, paid features gated by hosted dependencies: nothing here is
   paid; the paid extras of decision D1 are out of scope and would arrive as
-  providers.
+  providers. (2026-11-18, #1012: sharing a brief is the person's own
+  sending, and the background brief's notification goes to the person's
+  pages and the webhooks that list it: both free, no provider called.)
 - [x] Article 4, stop, inspect, revoke, export, required approvals stay free
   and never degrade: a turn stops like any run, every request and brief is
   inspectable and in the data directory export carries, Brakeman's token
@@ -2179,6 +2313,53 @@ make (the Program, section 3.1); the reasoning is why it was taken.
     `crew.Launcher`, never `os/exec`, and PR-17 puts `ext.Host` in front
     of it once #476 merges, before any BK2 launch. Without the approval,
     PR-3c waits for #476 and PR-17 folds into it.
+
+Dated 2026-11-18, #1012: the owner's answers to the questions the
+design review's third tier left open, each with the one rule the stream
+added to it. They change no decision above; decisions 7, 15, 16 and 19
+stand.
+
+23. **A person may send a handoff package to a task's next attempt,
+    exactly as Brakeman wrote it.** Only a person holding the admin
+    credential, through Conductor's own routes, for a brief's `handoff/1`
+    whose request is of kind `handoff` about a task or an attempt: the
+    target is that request's own subject, never anything the package
+    says. The person reads the exact text the server will hand, at most
+    16 KiB (a longer package is refused in words, never cut), and sends it
+    or not; nothing is edited and nothing a browser types reaches a worker
+    under Brakeman's name. It goes to the next attempt only: the package
+    is taken just before that attempt's task file is written and is used
+    up by it, even when the attempt then ends before its agent starts
+    (the brief then says it was taken and not read, and one press sends
+    it again; nothing is given back by itself), and no later attempt reads
+    it unless the person sends it again. The attempt reads it in its task file as a
+    quoted report, named as Brakeman's writing sent by a person, which
+    adds no task and grants nothing; it is the first thing cut to fit, its
+    section's head always kept. Sending starts nothing and changes no
+    state; Brakeman cannot send one, no grant names it and a worker gains
+    no tool. Whoever can watch the task's session or read its files (a
+    link's holder too) can read what is sent, and the agent may repeat it
+    in its result: the send's dialog says so in one fixed sentence.
+24. **A background brief that holds a decision notifies, once.** To the
+    person's open pages (a browser notification and the chime, under the
+    person's switches) and to the webhooks that list
+    `brakeman_needs_you`, in Conductor's own fixed words ("Brakeman's
+    background brief br-14 holds 1 decision", with its path): no title,
+    no agent's sentence, nothing to a notification provider, and no
+    webhook a person has today receives anything new. A person is told
+    of a decision once: a brief notifies only when it holds a decision no
+    earlier background brief of the role held, with nothing stored for
+    it. The page's notification is at most once, to a page connected
+    then. A brief a person asked for, a background brief without a new
+    decision and a background turn's own question notify no one.
+25. **Sharing a brief is the person's own sending, addressed to the
+    crew's people.** Share names the people of the crews whose runs the
+    brief is about, as launched, and gives Copy as Markdown and Comment on
+    the run's ticket with their names on the first line, on a phone too.
+    Nobody gains a way to read a brief in Conductor, the server keeps no
+    record of a share and makes no link to a brief, and Conductor delivers
+    nothing; routing a brief to a named person, push delivery and
+    workspace sharing stay paid and unbuilt (article 3).
 
 No question is left open: each answer above lets the plan stand, and the
 owner overturns any of them with one row.

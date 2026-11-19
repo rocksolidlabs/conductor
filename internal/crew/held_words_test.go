@@ -248,7 +248,7 @@ func TestTheSameDialogInTwoWaitsIsOneLineInEach(t *testing.T) {
 			t.Fatal(err)
 		}
 		_ = p.Print(updateShort)
-		untilShown(t, l, "the dialog read off its choice", func(a session.Attention) bool { return startupShown(a) && a.ID != first.ID })
+		cut := untilShown(t, l, "the dialog read off its choice", func(a session.Attention) bool { return startupShown(a) && a.ID != first.ID })
 		look()
 		if got := asksLines(t, e, runID); len(got) != wait {
 			t.Fatalf("wait %d: the run's log: %q", wait, got)
@@ -256,16 +256,44 @@ func TestTheSameDialogInTwoWaitsIsOneLineInEach(t *testing.T) {
 		if wait == 2 {
 			break
 		}
-		// Answered in its terminal; the agent says it waits at its prompt,
-		// and the prompt goes in.
-		if err := l.Input(sub, []byte("\x1b")); err != nil {
+		// The wait is left the same way whichever of the session's two
+		// looks at the next screen runs first (the startup questions'
+		// watcher's and the screen's, after one quiet period): the dialog
+		// is drawn whole again at the window's full size, its heading read
+		// (one more reading of the dialog, no line of its own), and
+		// answered in its terminal by a key that surely picks a choice,
+		// "Skip until next version", which puts the dialog's output behind
+		// at once. An Escape there is held as an answer until the screen
+		// shows the dialog gone, and how such a question leaves depends on
+		// the order of the two looks: that is the session's, tracked in
+		// issue 1017, not this test's.
+		if err := l.Resize(sub, 80, 24); err != nil {
 			t.Fatal(err)
 		}
-		if b := <-p.Input; string(b) != "\x1b" {
+		_ = p.Print(updateWhole)
+		untilShown(t, l, "the dialog whole again", func(a session.Attention) bool {
+			return startupShown(a) && a.Message == updateWords && a.ID != first.ID && a.ID != cut.ID
+		})
+		look()
+		if got := asksLines(t, e, runID); len(got) != wait {
+			t.Fatalf("wait %d, the dialog whole again: the run's log: %q", wait, got)
+		}
+		// The agent says it waits at its prompt, and the prompt goes in.
+		if err := l.Input(sub, []byte("3")); err != nil {
+			t.Fatal(err)
+		}
+		if b := <-p.Input; string(b) != "3" {
 			t.Fatalf("the person typed %q", b)
 		}
 		_ = p.Print("\x1b[2J\x1b[H> ")
-		untilShown(t, l, "past the dialog", func(a session.Attention) bool { return !startupShown(a) })
+		// The question goes at the screen's next look: the bound only
+		// bounds a hang.
+		for deadline := time.Now().Add(30 * time.Second); startupShown(l.Info().Attention); {
+			if time.Now().After(deadline) {
+				t.Fatalf("the dialog answered, the session still shows %+v", l.Info().Attention)
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
 		l.SetAttention(session.AttentionNeedsInput, "ready", session.SourceAPI)
 		// The wait's look finds it ready, and the prompt is typed.
 		var typedIn string

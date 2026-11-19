@@ -1,0 +1,61 @@
+{
+  "run": "r-0123456789ab",
+  "crew": "c-build",
+  "crewName": "Build crew",
+  "goal": "Ship the parser, tested.",
+  "task": "build",
+  "attempt": 2,
+  "maxAttempts": 3,
+  "member": "lead",
+  "role": "You lead the build.",
+  "kind": "work",
+  "instructions": "Write the parser in parse.go & test it: <input> yields a tree.",
+  "worktree": "/repo/.conductor/worktrees/r-0123456789ab/build.2",
+  "branch": "crew/r-0123456789ab/build.2",
+  "prefix": "svc",
+  "start": "dddddddddddddddddddddddddddddddddddddddd",
+  "startFrom": "task \"design\"'s result",
+  "inputs": [
+    {
+      "task": "design",
+      "attempt": 1,
+      "commit": "dddddddddddddddddddddddddddddddddddddddd",
+      "branch": "crew/r-0123456789ab/design.1",
+      "summary": "The grammar, in grammar.md."
+    }
+  ],
+  "handoff": {
+    "id": "ho-7",
+    "by": "Ada",
+    "sentAt": "2026-11-18T14:02:11Z",
+    "brief": "br-14",
+    "item": 2,
+    "text": "## Handoff package: Key the cache by locale.\n\n### Constraints\n\nKeep the file format.\n\n### Decisions made\n\n- keep the cache's file format\n\n### Revision\n\ncommit:c-build-0000000a/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n\n### Open questions\n\n- Is the locale always set?\n\n### Evidence\n\n- attempt:c-build-0000000a/build/3\n"
+  },
+  "checks": [
+    {
+      "id": "test",
+      "argv": [
+        "go",
+        "test",
+        "./..."
+      ],
+      "timeoutSeconds": 600
+    },
+    {
+      "id": "vet",
+      "argv": [
+        "go",
+        "vet",
+        "./..."
+      ]
+    }
+  ],
+  "previous": {
+    "attempt": 1,
+    "state": "failed",
+    "stage": "check test",
+    "error": "exit 1: parse_test.go:12: want a tree"
+  },
+  "writtenAt": "2026-10-31T12:00:00Z"
+}

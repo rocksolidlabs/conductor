@@ -208,6 +208,96 @@ that order.
   link grants. Content appears only after the guest joins.
 - **No Runs nav item** until there is something behind it.
 
+## Brakeman hands a package on, tells of a new decision, and shares a brief (#1012; 2026-11-18)
+
+The Brakeman design review's third tier, which #993 left for a decision,
+as the owner decided it (`docs/plans/brakeman.md`, decisions 23 to 25).
+Built as one pull request; no store step: one new document,
+`brakeman/handoffs.json`, and no field in a request, a brief,
+`state.json` or the ledger.
+
+- **A handoff package to a task's next attempt.** On the Brakeman page, a
+  brief asked as "Prepare a handoff" about a task draws **Send to <task>'s
+  next attempt…** beside the package's Copy and Comment. Its dialog shows
+  the exact text the server will hand, read-only, with its size; where it
+  goes ("To build of <run>.") and which attempt takes it by the task's
+  state (while its newest attempt is still starting, "build is starting attempt 2. If its task file is not written yet, it is handed the package; otherwise the package waits for the attempt after it."); "Sending starts nothing. The agent reads it as a quoted report in
+  its task file, not as instructions."; the one sentence of who else reads
+  it, "Whoever can watch build's session or read its files (a link's holder
+  too) can read what you send, and the agent may repeat it in its result.";
+  and under whose name it goes (the person's name in Settings, refused
+  before sending when it is not one plain line of at most 60 bytes). Then
+  Send or Cancel: nothing is editable, and it goes exactly as Brakeman wrote
+  it, at most 16 KiB (a longer one is refused in words, never cut). The
+  next attempt, and no later one, finds it in its task file as a quoted
+  report ("A handoff package a person sent"), named as Brakeman's writing
+  sent by a person, to read and not to follow, every line of it quoted; it
+  adds no task and grants nothing. It is taken just before that attempt's
+  task file is written and used up by it, even when the attempt then ends
+  before its agent starts. The box then says where it stands: waiting (with
+  Withdraw and a link to the run at the task), "Handed to attempt 4 of
+  build", "Taken for attempt 4 of build, which did not start: it was not
+  read. Send it again." (one press sends the same text again; the dialog
+  opens instead when the text changed), withdrawn, or replaced. It reads
+  that again after the person's own press and when the page hears of a
+  change to the run, never on a timer, so an attempt that took it and did
+  not start can show "Handed" until the run's next change or a reload.
+  Where it cannot be sent the button is disabled with the reason under it
+  (an unknown reason reads "It cannot be sent now."); a brief of another
+  kind, a package about a session, a comparison's lane, a run without tasks
+  and an older server draw no button and no read failure. Sending starts nothing (Retry stays
+  the person's), and the run's log says what was sent, withdrawn and
+  taken. Brakeman cannot send one (a proposal naming the operation is drawn
+  as text), no grant names it and a worker gains no tool. Whoever can watch
+  the task's session or read its files (a link's holder too) can read what
+  is sent, and the agent may repeat it in its result.
+- **A background brief that holds a decision notifies, once.** When a
+  background turn keeps a brief holding a decision that none of the role's
+  earlier background briefs held, the open pages show a browser
+  notification ("Brakeman's background brief br-14 holds 1 decision", "It
+  opens on the Brakeman page.") and play the chime, under Browser
+  notification, Chime and a third switch, "Brakeman's background briefs
+  with a decision" (on by default, per browser, shown while Brakeman is in
+  the background); a click opens the brief. It reaches only the pages
+  connected then, at most once, and each open page plays its own chime,
+  as for every other alert. How often is bounded by the background role's
+  own limits (its window, cool-down and daily turns and minutes), with no
+  cap of its own. A webhook whose `events` list
+  `brakeman_needs_you` gets one POST in the same fixed words; no webhook of
+  today hears anything new, and no notification provider gets it. Nothing
+  of the brief's own words leaves the page. A brief a person asked for, a
+  background brief with no new decision and a background turn's own
+  question stay silent, as before.
+- **Share with a crew's people.** A brief's head gains **Share…** (an
+  icon in the head's line on a phone, where Copy and Comment are hidden):
+  the people of the crews whose runs the brief is about, as launched (a
+  choice of crew when there are several), and **Copy for them** and
+  **Comment on KEY…** (the run's own ticket; "Comment on a ticket…" for a
+  run launched from none, which says so), with their names as the first
+  line, above the brief's title: "For <crew>'s people: <name> (<what they
+  answer for>), …". No name, nor a crew's, becomes a link, an address, a
+  mention or markup: one with `@` or `#`, or the shape of an issue
+  reference, an address (a URL scheme, `www.`) or an e-mail address is
+  written as a Markdown code span, where a tracker links nothing (escaping
+  alone does not stop a tracker's mentions and references), and any other
+  as text with every punctuation character escaped; a name keeps its
+  zero-width joiners and variation selectors, and other characters that
+  draw nothing become U+FFFD. Brakeman's own text stays Markdown. Where the
+  browser refuses the clipboard, the dialog says "The browser did not let
+  the page copy: select the text below and copy it by hand." and shows the
+  text to select. The comment goes under the person's
+  name and is refused past 16 KiB in words, never cut. It is the person's
+  own sending: Conductor sends nothing, keeps no record of a share and
+  makes no link to a brief, so nobody new reads a brief in Conductor. A
+  brief about no run with a crew's people says "This brief names no run
+  with a crew's people: it goes with no names."
+
+Not built, and paid when it comes (`docs/plans/brakeman.md`, article 3):
+routing a brief to a named person, push delivery (a phone whose browser is
+closed hears nothing), briefings shared across a workspace and a briefing
+scheduled from the cloud. No provider is called, no seam is added and
+nothing is behind a flag.
+
 ## A provider's launch says where it came from, and is held to what was confirmed (#1003, #1004, #1005, #1002, #910; 2026-11-18)
 
 A registered provider that launches a saved crew with nobody present can
@@ -350,7 +440,8 @@ to a request, a brief, `state.json` or the role's record.
 
 Not built, for the maintainers to decide: handing a handoff into a task's
 next attempt, notifying on a background brief, and sharing a brief beyond
-Copy as Markdown and Comment on a ticket. Also left out of the review's
+Copy as Markdown and Comment on a ticket (2026-11-18: the three are built
+by #1012, above, as the owner decided them). Also left out of the review's
 boards: a filled "(Recommended)" button, a seconds clock, a green reads
 meter, "asked from this row" (it would need a stored field), the run's
 panel outside its Tasks view, a palette row that only goes to the page,

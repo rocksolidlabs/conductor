@@ -32,12 +32,14 @@ import (
 // offered: the list is read as the touch is delivered, on the provider's
 // own goroutine, so the stat it takes is never the recording goroutine's.
 
-// wireContext gives the engine its context function and, when the server
+// wireContext gives the engine its context function, its handoff
+// function (a package a person sent, brakeman_handoff.go) and, when the server
 // holds a context provider, the hub its touch sink, after the run engine's
 // (a server with none adds no sink: the hub's are main's, as the notifier
 // leaves them; notify.go). New calls it once the engine and the hub exist.
 func (s *Server) wireContext() {
 	s.runs.SetContext(s.contextFor)
+	s.runs.SetHandoff(s.handoffFor)
 	if len(s.exts.context) > 0 {
 		s.events.addSink(s.noteTouches)
 	}
