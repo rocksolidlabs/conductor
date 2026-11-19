@@ -577,13 +577,15 @@ not the guess (an autopair, an abbreviation, a mapping) its text wins once
 and the guessing stops until insert mode is left.
 
 URLs printed by an agent are clickable, an address in its text and a hyperlink
-it prints (OSC 8) alike: a click opens it in a new tab, once (the desktop app
-hands it to the system's browser), with no question asked, and a toast says
-where it went with **Preview in pane** (a sandboxed iframe; sites that forbid
-embedding stay blank). The pointer over a link shows its real address at the
-foot of the terminal, whatever the words it is printed as. A drag that selects
-text is not a click, and a hyperlink to a scheme other than http or https is
-not a link.
+it prints (OSC 8) alike: a single click opens it in a new tab, once (the
+desktop app hands it to the system's browser), with no question asked, and a
+toast says where it went with **Preview in pane** (a sandboxed iframe; sites
+that forbid embedding stay blank). The pointer over a link shows where it goes
+at the foot of the terminal, read from its address whatever the words it is
+printed as: its scheme and host first and whole, then its path, cut at its end
+when long. A double-click opens it once, and a drag that selects text, a middle
+or a right click opens nothing; a hyperlink to a scheme other than http or
+https is not a link.
 A link an agent opens for you (an artifact, a pull request, a preview, a
 sign-in page) goes through Conductor: `conductor open <url>`, the MCP tool
 `open_url`, or the agent's own opener, which an agent with a browser set gets

@@ -22,7 +22,7 @@ const LINKS = [
   `${MR} the merge request`,
   `${MR} ${MR}`,
   `- ${MR}`,
-].join('|')
+]
 
 type Seen = { e2eOpens?: string[][] }
 const sessions: string[] = []
@@ -56,7 +56,7 @@ async function watch(page: Page) {
 }
 
 /** The session page with the stub's links on its first rows, watched. */
-async function linksPage(page: Page, api: Api, home: string, name: string) {
+async function linksPage(page: Page, api: Api, home: string, name: string, links: string[] = LINKS) {
   const { dialogs, opens } = await watch(page)
   const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name })
   sessions.push(s.id)
@@ -64,9 +64,9 @@ async function linksPage(page: Page, api: Api, home: string, name: string) {
   await expect(page.locator('[data-transport-state]').first()).toHaveAttribute('data-transport-state', 'open', { timeout: 30_000 })
   const terminal = page.locator('.terminal-host .xterm-helper-textarea').first()
   await terminal.focus()
-  await page.keyboard.type(`stub links ${LINKS}`)
+  await page.keyboard.type(`stub links ${links.join('|')}`)
   await page.keyboard.press('Enter')
-  await expect.poll(async () => transcript(home, await api.session(s.id)), { timeout: 30_000, message: 'the stub printed its links' }).toContain('links: printed 6\n')
+  await expect.poll(async () => transcript(home, await api.session(s.id)), { timeout: 30_000, message: 'the stub printed its links' }).toContain(`links: printed ${links.length}\n`)
   const host = page.locator('.terminal-host').first()
   const box = (await host.boundingBox())!
   const rows = Number(await host.getAttribute('data-rows'))
@@ -84,22 +84,30 @@ async function linksPage(page: Page, api: Api, home: string, name: string) {
       await expect(pointer).toHaveCount(1, { timeout: 1000 })
     }).toPass({ timeout: 15_000 })
   }
-  const click = async (row: number, ctrl = false) => {
+  const click = async (row: number, ctrl = false, o: { button?: 'left' | 'middle' | 'right'; clickCount?: number } = {}) => {
     const p = at(row)
     if (ctrl) await page.keyboard.down('Control')
-    await page.mouse.click(p.x, p.y)
+    if (o.clickCount === 2) await page.mouse.dblclick(p.x, p.y, { button: o.button })
+    else await page.mouse.click(p.x, p.y, { button: o.button })
     if (ctrl) await page.keyboard.up('Control')
   }
   /** A drag that selects, from one cell to another, in steps over what lies between. */
-  const drag = async (from: { row: number; col: number }, to: { row: number; col: number }) => {
+  const drag = async (from: { row: number; col: number }, to: { row: number; col: number }, fromLink = false) => {
     const a = cell(from.row, from.col)
     const b = cell(to.row, to.col)
-    await page.mouse.move(a.x, a.y)
+    if (fromLink) {
+      // Pressed on the link itself: xterm holds it as the link under the pointer before the press.
+      await expect(async () => {
+        await page.mouse.move(a.x + 1, a.y)
+        await page.mouse.move(a.x, a.y)
+        await expect(pointer).toHaveCount(1, { timeout: 1000 })
+      }).toPass({ timeout: 15_000 })
+    } else await page.mouse.move(a.x, a.y)
     await page.mouse.down()
     await page.mouse.move(b.x, b.y, { steps: 8 })
     await page.mouse.up()
   }
-  return { s, dialogs, overLink, click, drag, opens, at }
+  return { s, dialogs, overLink, click, drag, opens, at, cell }
 }
 
 const OPENED: string[][] = [[MR, '_blank', 'noopener,noreferrer']]
@@ -155,18 +163,69 @@ test("the pointer over a hyperlink shows where it goes, its real address whateve
   expect(await t.opens()).toEqual([])
 })
 
-test('a drag that selects text across a link is not a click: nothing opens', async ({ page, api, state }) => {
+test('a drag that selects text across a link, or inside its words, is not a click: nothing opens', async ({ page, api, state }) => {
   const t = await linksPage(page, api, state.home, 'e2e terminal link drag')
   await t.overLink(ROW.hyperlink)
+  // Inside the link's words alone ("the merge request"): from its second letter to its fourteenth, as a part is selected to copy.
+  await t.drag({ row: ROW.hyperlink, col: 1 }, { row: ROW.hyperlink, col: 13 }, true)
   // From the row above (no link there) to after the link's words, over the link; and from after them back onto the link.
   await t.drag({ row: ROW.custom, col: 30 }, { row: ROW.hyperlink, col: 30 })
   await t.drag({ row: ROW.hyperlink, col: 30 }, { row: ROW.hyperlink, col: 3 })
-  // A gate: a Ctrl+click on the link, handled after both drags were.
+  // A gate: a Ctrl+click on the link, handled after the drags were.
   await t.overLink(ROW.hyperlink)
   await t.click(ROW.hyperlink, true)
   await expect.poll(async () => t.dialogs.length + (await t.opens()).length, { timeout: 15_000, message: 'the gate was handled' }).toBeGreaterThan(0)
   expect(t.dialogs).toEqual([])
   expect(await t.opens(), 'only the click opened').toEqual(OPENED)
+})
+
+test('a double-click opens a link once, and a middle or a right press opens nothing', async ({ page, api, state }) => {
+  const t = await linksPage(page, api, state.home, 'e2e terminal link presses')
+  await t.overLink(ROW.hyperlink)
+  // A double-click: its first press opens, its second (which selects a word) does nothing more.
+  await t.click(ROW.hyperlink, false, { clickCount: 2 })
+  await expect.poll(async () => t.dialogs.length + (await t.opens()).length, { timeout: 15_000, message: 'the double-click was handled' }).toBeGreaterThan(0)
+  expect(await t.opens(), 'a double-click opens once').toEqual(OPENED)
+  // A middle press, then a right press (its menu shown and closed).
+  await t.overLink(ROW.hyperlink)
+  await t.click(ROW.hyperlink, false, { button: 'middle' })
+  await t.overLink(ROW.hyperlink)
+  await t.click(ROW.hyperlink, false, { button: 'right' })
+  await page.keyboard.press('Escape')
+  await expect(page.getByRole('menu')).toHaveCount(0)
+  // A gate: a click, handled after both presses were.
+  await t.overLink(ROW.hyperlink)
+  await t.click(ROW.hyperlink, true)
+  await expect.poll(async () => (await t.opens()).length, { timeout: 15_000, message: 'the gate was handled' }).toBeGreaterThan(1)
+  expect(t.dialogs).toEqual([])
+  expect(await t.opens(), 'the presses opened nothing').toEqual([...OPENED, ...OPENED])
+})
+
+test('the hover draws where a link goes from its address: a long host whole and first, no sign-in part, a long path cut at its end', async ({ page, api, state }) => {
+  // A narrow window, as a tile's: the host is longer than the line.
+  await page.setViewportSize({ width: 640, height: 800 })
+  const host = `${'part.'.repeat(30)}example.net`
+  const path = `/${'segment/'.repeat(30)}the-end`
+  const t = await linksPage(page, api, state.home, 'e2e terminal link tip', [`https://example.com@${host}${path} the merge request`])
+  await t.overLink(0)
+  const tip = page.locator('[data-terminal-link-tip]')
+  const origin = tip.locator('[data-link-tip-origin]')
+  const rest = tip.locator('[data-link-tip-rest]')
+  await expect(origin).toHaveText(`https://${host}`)
+  await expect(tip).not.toContainText('example.com')
+  await expect(rest).toHaveText(/^\/segment\/segment\/.*…$/)
+  // The host is all drawn: inside the tip, inside the window, nothing of it hidden.
+  const m = await origin.evaluate((el) => {
+    const r = el.getBoundingClientRect()
+    const box = el.parentElement!.getBoundingClientRect()
+    return { hidden: el.scrollWidth - el.clientWidth, left: r.left - box.left, right: box.right - r.right, inWindow: r.right <= window.innerWidth && r.left >= 0, lines: Math.round(r.height / parseFloat(getComputedStyle(el).lineHeight)) }
+  })
+  expect(m.hidden, 'nothing of the host is cut').toBeLessThanOrEqual(1)
+  expect(m.left).toBeGreaterThanOrEqual(0)
+  expect(m.right).toBeGreaterThanOrEqual(0)
+  expect(m.inWindow).toBe(true)
+  expect(m.lines, 'the host longer than the line wraps').toBeGreaterThan(1)
+  expect(await t.opens()).toEqual([])
 })
 
 test('a hyperlink to a scheme that is not the web’s is no link: a click opens nothing, says nothing and asks nothing', async ({ page, api, state }) => {
