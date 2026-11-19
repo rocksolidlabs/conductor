@@ -672,6 +672,10 @@ const (
 func ValidTag(tag string) bool
 ```
 
+A row that replicates names its project in `ProjectID`, but a person's
+(entity `person`, which names none), and a project's own rows name its
+own id (`ProjectID` equal to `EntityID`), as the store writes them.
+
 `Valid` checks every bound above, the op id's pattern (`dispatch.
 OpIDPattern`), an origin that is a valid tag, `By` within
 `dispatch.MaxByName` characters, `Refs` within its bound and each of
@@ -1132,6 +1136,12 @@ request part and `requestSHA256` are as they would be without it
 request names the grant `operator`, and the request hash the same
 either way).
 
+A decision's `origin` is the ledger's own word, `agent`, `plan` or
+`compare` (`ext.DecisionOrigins`; `internal/crew/ledger`'s `OriginAgent`,
+`OriginPlan` and `OriginCompare` are those constants), so every origin
+the ledger writes is one the document carries
+(`TestEveryOriginTheLedgerWritesIsOneTheDocumentCarries`).
+
 The Go shape of the document is `ext.DecisionDoc` (`ext/sync.go`), with
 `ext.DecisionRequestPart`, the part hashed, and `ext.DecisionDocStates`,
 the four states as `{open, recorded, validated, applied}`, each but the
@@ -1145,8 +1155,19 @@ acts on: the target's identifiers, `{decision (dr-n), openedIn, origin,
 type, gate, task, attempt, ticket, plan, planDigest}`, with the
 `request` object as cut. Two decisions that ask the same question with
 the same options differ in it by their ids, their subject and what they
-authorize. `requestSHA256` is the SHA-256 of the request part in
-canonical JSON (keys sorted, no insignificant space); the server
+authorize. A request kept back (`requestKept: "output"`, below) is
+absent: the document then carries no `request` at all and the mark, and
+its request part leaves `request` out, so the part is the target's
+identifiers alone; a document carries exactly one of `request` and
+`requestKept`, never both and never neither (`ext.DecisionDoc.
+RequestPart` refuses either). `requestSHA256` is the SHA-256, in
+lower-case hex, of the request part in canonical JSON (every object's
+keys sorted, no insignificant space, strings as `encoding/json` writes
+them with HTML escaping off, numbers as integers;
+`ext.DecisionRequestPart.SHA256`), with the request when it is there and
+without it when it is kept (`TestAKeptRequestIsLeftOutOfThePart`: a kept
+request's part without `request`, the mark in the document, the hash
+over exactly that; and a document with both, or neither, refused); the server
 computes it again from its own record before it records a held answer,
 so a statement made for one decision's request part is never recorded
 against another's (`TestRequestPartNamesTheTarget`,
@@ -1263,6 +1284,10 @@ const MaxAnswerRationale = 2 << 10
 func (h HeldAnswer) Valid() error
 func (o AnswerOutcome) Valid() error
 ```
+
+A held answer's `choice` is present only where the decision's request
+has options, and is then below their count; `HeldAnswer.Valid` checks
+its shape and the door checks it against the record.
 
 The statuses are the constants `ext.AnswerRecorded`, `AnswerRefused`,
 `AnswerNotHeld`, `AnswerMoved` and `AnswerUnknownAuthority`; the
@@ -1415,7 +1440,13 @@ Cut once OS-3, DR1's PR-7 (#640) and MB0's PR-4 are on `main`.
 
 **`ext.Host` doors for the sync store alone**: `PutRemote(ctx, r Remote)
 error`, `DeleteRemote(ctx, kind, device, id string) error` and
-`ClearRemote(ctx) error`.
+`ClearRemote(ctx) error`, in `ext.SyncDoors` with the others. The kinds
+are the constants `ext.RemoteDecision`, `RemotePointer`, `RemotePins`,
+`RemoteDevice` and `RemoteHosts`; a report's states are `ext.SyncCurrent`,
+`SyncBehind`, `SyncUnreachable`, `SyncLapsed` and `SyncSignedOut`, its
+withheld changes at most `ext.MaxSyncWithheld` (50) and its answer page
+at most `ext.MaxAnswerURL` (2 KiB); `MaxDecisionDoc` is OS-3's constant,
+declared once.
 
 ```go
 type Remote struct {

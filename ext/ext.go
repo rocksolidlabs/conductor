@@ -87,7 +87,7 @@
 //
 // The server calls every provider through a guard. Each call has a wait
 // (IdentityWait, RouteWait, ContextWait, ICEWait, DeliveryWait, StartWait,
-// TakesWait; a Runtime's process methods have none, since a process that
+// TakesWait, StatusWait; a Runtime's process methods have none, since a process that
 // started is not answered for by a default), a bound of a hang and never
 // what a normal answer takes; a call past it, one that errs or panics, and
 // an answer its record's Valid refuses are answered with the free default

@@ -14,6 +14,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/rocksolidlabs/conductor/ext"
 )
 
 // Decision requests (DR1, docs/plans/decisions.md, The changes, the
@@ -128,9 +130,12 @@ var decisionTables = []string{
 // are final: nothing changes a final decision but its history and one
 // transition, applied → superseded (an applied approval whose subject
 // moved).
+//
+// The origins are ext's (ext.DecisionOrigins), so a decision's document
+// carries every origin the ledger writes.
 const (
-	OriginAgent = "agent"
-	OriginPlan  = "plan"
+	OriginAgent = ext.DecisionOriginAgent
+	OriginPlan  = ext.DecisionOriginPlan
 	// OriginCompare is a comparison's selection (docs/plans/compare-crew.md,
 	// PR-6a): opened by Yardmaster itself when every lane of a compare run
 	// has ended, an approval with no asking task, attempt, session, member
@@ -138,7 +143,7 @@ const (
 	// subject) and None of these, its own subject the comparison. Only the
 	// operator answers it: it is never routed, and never given to the
 	// decide grant (RouteFor, Hold).
-	OriginCompare = "compare"
+	OriginCompare = ext.DecisionOriginCompare
 
 	DecisionClarification = "clarification"
 	DecisionApproval      = "approval"

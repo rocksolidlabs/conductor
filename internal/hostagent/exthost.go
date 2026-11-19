@@ -282,6 +282,11 @@ func (h *hostExtHost) SyncDelivery(context.Context, string, string) (ext.AnswerO
 	return ext.AnswerOutcome{}, "", false, h.refuse()
 }
 func (h *hostExtHost) LastDecision(context.Context) (int64, error) { return 0, h.refuse() }
+func (h *hostExtHost) PutRemote(context.Context, ext.Remote) error { return h.refuse() }
+func (h *hostExtHost) DeleteRemote(context.Context, string, string, string) error {
+	return h.refuse()
+}
+func (h *hostExtHost) ClearRemote(context.Context) error { return h.refuse() }
 
 // DataDir is <state>/ext/<name>, made 0700.
 func (h *hostExtHost) DataDir() (string, error) {

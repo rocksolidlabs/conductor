@@ -1,7 +1,10 @@
 package ext
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -100,6 +103,15 @@ type SyncDoors interface {
 	// LastDecision is the highest decision number the ledger holds (the n
 	// of dr-n, 0 for none). It never writes.
 	LastDecision(ctx context.Context) (int64, error)
+
+	// PutRemote keeps a record another machine holds (OS-4), read only
+	// here: written under remote/<device>/<kind>-<id>.json, never exported
+	// and never handed out; r must be Valid.
+	PutRemote(ctx context.Context, r Remote) error
+	// DeleteRemote removes one such record.
+	DeleteRemote(ctx context.Context, kind, device, id string) error
+	// ClearRemote removes every such record.
+	ClearRemote(ctx context.Context) error
 }
 
 // UnsupportedSync answers every door of SyncDoors with ErrUnsupported: a
@@ -156,6 +168,11 @@ func (UnsupportedSync) SyncDelivery(context.Context, string, string) (AnswerOutc
 	return AnswerOutcome{}, "", false, ErrUnsupported
 }
 func (UnsupportedSync) LastDecision(context.Context) (int64, error) { return 0, ErrUnsupported }
+func (UnsupportedSync) PutRemote(context.Context, Remote) error     { return ErrUnsupported }
+func (UnsupportedSync) DeleteRemote(context.Context, string, string, string) error {
+	return ErrUnsupported
+}
+func (UnsupportedSync) ClearRemote(context.Context) error { return ErrUnsupported }
 
 // errNotBuilt is the answer of a check whose row has not been built yet:
 // it refuses everything, so nothing passes it before its rules do.
@@ -164,10 +181,13 @@ var errNotBuilt = errors.New("ext: this check is not built yet")
 // DispatchChange is one row of Dispatch's log as the sync store is handed
 // it, or hands back from another replica (OS-1a).
 type DispatchChange struct {
-	Seq             int64     `json:"seq,omitempty"` // this store's position; never compared across replicas
-	Entity          string    `json:"entity"`
-	EntityID        string    `json:"entityId"`
-	TicketID        string    `json:"ticketId,omitempty"`
+	Seq      int64  `json:"seq,omitempty"` // this store's position; never compared across replicas
+	Entity   string `json:"entity"`
+	EntityID string `json:"entityId"`
+	TicketID string `json:"ticketId,omitempty"`
+	// ProjectID is the project the row belongs to: every row that
+	// replicates names one but a person's (entity person, which names
+	// none), and a project's own rows name its own id (EntityID).
 	ProjectID       string    `json:"projectId,omitempty"`
 	Field           string    `json:"field,omitempty"`
 	Op              string    `json:"op"`
@@ -291,7 +311,7 @@ type DecisionDoc struct {
 	ID         string `json:"id"`       // dr-n
 	Run        string `json:"run"`      // its current run: moves with a continuation, outside the request part
 	OpenedIn   string `json:"openedIn"` // the run it was opened in, which never changes
-	Origin     string `json:"origin"`   // agent | gate | compare
+	Origin     string `json:"origin"`   // one of DecisionOrigins, the ledger's own words
 	Type       string `json:"type"`
 	Gate       string `json:"gate,omitempty"`
 	Task       string `json:"task,omitempty"`
@@ -301,13 +321,17 @@ type DecisionDoc struct {
 	Plan       string `json:"plan,omitempty"`
 	PlanDigest string `json:"planDigest,omitempty"`
 
-	Request       DecisionDocRequest `json:"request"`
-	RequestSHA256 string             `json:"requestSha256"`
-	// RequestKept is "output" when the request's text is kept on the
-	// machine (an output-like or pending question, label, recommendation,
-	// uncertainty or authorizes, or an agent's request of an earlier
-	// schema): Request then holds nothing of it, and nothing can answer
-	// the decision away from the machine.
+	// Request is the request as the document gives it, or nil when it is
+	// kept on the machine; RequestKept then says why. Exactly one of the
+	// two is set (RequestPart).
+	Request       *DecisionDocRequest `json:"request,omitempty"`
+	RequestSHA256 string              `json:"requestSHA256"`
+	// RequestKept is DecisionRequestKeptOutput when the request's text is
+	// kept on the machine (an output-like or pending question, label,
+	// recommendation, uncertainty or authorizes, or an agent's request of an
+	// earlier schema): the document then carries no request, its request
+	// part none either, and nothing can answer the decision away from the
+	// machine.
 	RequestKept string `json:"requestKept,omitempty"`
 
 	// OpenedTo is whom the decision is opened to, written by the server
@@ -339,6 +363,22 @@ type DecisionDoc struct {
 	States           DecisionDocStates     `json:"states"`
 }
 
+// The origins of a decision, the ledger's own words (internal/crew/ledger
+// takes its constants from these): an agent's request, a plan's gate, a
+// comparison's selection.
+const (
+	DecisionOriginAgent   = "agent"
+	DecisionOriginPlan    = "plan"
+	DecisionOriginCompare = "compare"
+)
+
+// DecisionOrigins is every origin a decision may have.
+var DecisionOrigins = []string{DecisionOriginAgent, DecisionOriginPlan, DecisionOriginCompare}
+
+// DecisionRequestKeptOutput is DecisionDoc.RequestKept's one value: the
+// request's text reads as copied output.
+const DecisionRequestKeptOutput = "output"
+
 // The values of DecisionDoc.OpenedTo.
 const (
 	DecisionOpenedToOperator = "operator" // the operator alone
@@ -346,20 +386,70 @@ const (
 )
 
 // DecisionRequestPart is what a person answers and what a yes acts on:
-// RequestSHA256 is the SHA-256 of its canonical JSON (keys sorted, no
-// insignificant space).
+// DecisionDoc.RequestSHA256 is its SHA256. Request is nil when the
+// document keeps its request back, and the part then leaves it out.
 type DecisionRequestPart struct {
-	Decision   string             `json:"decision"`
-	OpenedIn   string             `json:"openedIn"`
-	Origin     string             `json:"origin"`
-	Type       string             `json:"type"`
-	Gate       string             `json:"gate,omitempty"`
-	Task       string             `json:"task,omitempty"`
-	Attempt    int                `json:"attempt,omitempty"`
-	Ticket     string             `json:"ticket,omitempty"`
-	Plan       string             `json:"plan,omitempty"`
-	PlanDigest string             `json:"planDigest,omitempty"`
-	Request    DecisionDocRequest `json:"request"`
+	Decision   string              `json:"decision"`
+	OpenedIn   string              `json:"openedIn"`
+	Origin     string              `json:"origin"`
+	Type       string              `json:"type"`
+	Gate       string              `json:"gate,omitempty"`
+	Task       string              `json:"task,omitempty"`
+	Attempt    int                 `json:"attempt,omitempty"`
+	Ticket     string              `json:"ticket,omitempty"`
+	Plan       string              `json:"plan,omitempty"`
+	PlanDigest string              `json:"planDigest,omitempty"`
+	Request    *DecisionDocRequest `json:"request,omitempty"`
+}
+
+// RequestPart is the document's request part, or why the document holds
+// none: exactly one of Request and RequestKept is set, and RequestKept is
+// DecisionRequestKeptOutput when set.
+func (d DecisionDoc) RequestPart() (DecisionRequestPart, error) {
+	switch {
+	case d.Request != nil && d.RequestKept != "":
+		return DecisionRequestPart{}, fmt.Errorf("%w: %s carries its request and says it kept it", ErrRefused, d.ID)
+	case d.Request == nil && d.RequestKept == "":
+		return DecisionRequestPart{}, fmt.Errorf("%w: %s carries no request and says nothing kept it", ErrRefused, d.ID)
+	case d.RequestKept != "" && d.RequestKept != DecisionRequestKeptOutput:
+		return DecisionRequestPart{}, fmt.Errorf("%w: %s's request kept for %q", ErrRefused, d.ID, d.RequestKept)
+	}
+	return DecisionRequestPart{Decision: d.ID, OpenedIn: d.OpenedIn, Origin: d.Origin, Type: d.Type, Gate: d.Gate, Task: d.Task,
+		Attempt: d.Attempt, Ticket: d.Ticket, Plan: d.Plan, PlanDigest: d.PlanDigest, Request: d.Request}, nil
+}
+
+// SHA256 is the SHA-256, in lower-case hex, of the part's canonical JSON:
+// every object's keys sorted, no insignificant space, strings as
+// encoding/json writes them with HTML escaping off, numbers as integers.
+func (p DecisionRequestPart) SHA256() (string, error) {
+	b, err := canonicalJSON(p)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+// canonicalJSON is v's JSON with every object's keys sorted, no
+// insignificant space and HTML escaping off.
+func canonicalJSON(v any) ([]byte, error) {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return nil, err
+	}
+	dec := json.NewDecoder(bytes.NewReader(b))
+	dec.UseNumber()
+	var tree any
+	if err := dec.Decode(&tree); err != nil {
+		return nil, err
+	}
+	var out bytes.Buffer
+	enc := json.NewEncoder(&out)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(tree); err != nil {
+		return nil, err
+	}
+	return bytes.TrimSuffix(out.Bytes(), []byte("\n")), nil
 }
 
 // DecisionDocRequest is a decision's request as the document gives it,
@@ -412,7 +502,7 @@ type DecisionDocResponse struct {
 	ResponseID string    `json:"responseId"`
 	At         time.Time `json:"at"`
 	Via        string    `json:"via"`
-	Choice     *int      `json:"choice,omitempty"`
+	Choice     *int      `json:"choice,omitempty"` // present only where the request has options, and below their count
 	Code       string    `json:"code,omitempty"`
 	Words      string    `json:"words,omitempty"`
 	Text       string    `json:"text,omitempty"`
@@ -497,16 +587,18 @@ type SubjectChecker interface {
 // HeldAnswer is an answer made elsewhere to a decision of this server,
 // handed in by the sync store (RespondDecision).
 type HeldAnswer struct {
-	Decision    string      `json:"decision"`
-	ExpectedRev int         `json:"expectedRev"`
-	ResponseID  string      `json:"responseId"`
-	Choice      *int        `json:"choice,omitempty"`
-	Text        string      `json:"text,omitempty"`      // at most MaxAnswerText
-	Rationale   string      `json:"rationale,omitempty"` // at most MaxAnswerRationale
-	Check       AnswerCheck `json:"check"`
-	HeldAt      time.Time   `json:"heldAt"`
-	Held        string      `json:"held"`  // the provider's id of the held answer, the shape of AnswerCheck.Membership
-	Fence       string      `json:"fence"` // the provider's token for this hand-out, the same shape
+	Decision    string `json:"decision"`
+	ExpectedRev int    `json:"expectedRev"`
+	ResponseID  string `json:"responseId"`
+	// Choice is the option chosen: present only where the decision's
+	// request has options, and then below their count.
+	Choice    *int        `json:"choice,omitempty"`
+	Text      string      `json:"text,omitempty"`      // at most MaxAnswerText
+	Rationale string      `json:"rationale,omitempty"` // at most MaxAnswerRationale
+	Check     AnswerCheck `json:"check"`
+	HeldAt    time.Time   `json:"heldAt"`
+	Held      string      `json:"held"`  // the provider's id of the held answer, the shape of AnswerCheck.Membership
+	Fence     string      `json:"fence"` // the provider's token for this hand-out, the same shape
 }
 
 // Valid checks a held answer against its bounds and shapes. Until OS-3 it
@@ -541,4 +633,91 @@ const (
 	MaxStatement       = 2 << 10
 	MaxHeldID          = 64
 	MaxAnswerOutcome   = 8 << 10
+)
+
+// Remote is a record another machine holds, as the sync store reports it
+// (OS-4): its kind, the machine (the provider's id of it and its name),
+// the record's id there, its revision and time, and its body.
+type Remote struct {
+	Kind       string    `json:"kind"`       // RemoteDecision, RemotePointer, RemotePins, RemoteDevice or RemoteHosts
+	Device     string    `json:"device"`     // the provider's id of the machine that reported it, at most MaxHeldID bytes of [A-Za-z0-9._-]
+	DeviceName string    `json:"deviceName"` // at most MaxDeviceName bytes, one line
+	ID         string    `json:"id"`         // the record's id on that machine (dr-n, a run's id, "pins", a device's id, "summary"), the shape of Device
+	Rev        int64     `json:"rev"`
+	At         time.Time `json:"at"`
+	Data       []byte    `json:"data"` // the kind's body: a DecisionDoc, a run pointer, a pins document, a device, a host summary
+}
+
+// Valid checks a record against its kind's bound and shape. Until OS-4 it
+// refuses every one.
+func (r Remote) Valid() error { return errNotBuilt }
+
+// The kinds of a Remote.
+const (
+	RemoteDecision = "decision"
+	RemotePointer  = "pointer"
+	RemotePins     = "pins"
+	RemoteDevice   = "device"
+	RemoteHosts    = "hosts"
+)
+
+// The bounds of what other machines hold.
+const (
+	MaxRemoteData   = 64 << 10 // a pointer or a pins document; a decision is at most MaxDecisionDoc
+	MaxRemoteDevice = 1 << 10
+	MaxRemoteHosts  = 16 << 10
+	MaxRemoteFiles  = 10_000
+)
+
+// SyncStatus is an optional interface beside ContinuityStore: the sync
+// store's state, answered from memory through the guard (StatusWait),
+// for the Sync row of the app's settings.
+type SyncStatus interface {
+	SyncStatus() SyncReport
+}
+
+// SyncReport is the sync store's state: SyncCurrent, SyncBehind,
+// SyncUnreachable, SyncLapsed or SyncSignedOut, since when, how many
+// changes wait, what was kept back and why, where a remote decision is
+// answered, and this server's own device, workspace and person as the
+// provider names them (empty while it is not signed in).
+type SyncReport struct {
+	State      string         `json:"state"`
+	Since      time.Time      `json:"since,omitzero"`
+	Waiting    int            `json:"waiting,omitempty"`
+	Withheld   []SyncWithheld `json:"withheld,omitempty"`  // at most MaxSyncWithheld
+	AnswerURL  string         `json:"answerUrl,omitempty"` // https, at most MaxAnswerURL bytes
+	Device     string         `json:"device,omitempty"`    // as Remote.Device names devices
+	DeviceName string         `json:"deviceName,omitempty"`
+	Workspace  string         `json:"workspace,omitempty"` // opaque, at most MaxHeldID bytes
+	Person     string         `json:"person,omitempty"`    // the same
+}
+
+// SyncWithheld is a change kept back: what (CND-12's comment, dr-7), at
+// most MaxHeldID bytes, and why, at most MaxSyncWords characters of one
+// line.
+type SyncWithheld struct {
+	Ref   string `json:"ref"`
+	Words string `json:"words"`
+}
+
+// Valid checks a report against its bounds. Until OS-4 it refuses every
+// one.
+func (r SyncReport) Valid() error { return errNotBuilt }
+
+// The states of a SyncReport.
+const (
+	SyncCurrent     = "current"
+	SyncBehind      = "behind"
+	SyncUnreachable = "unreachable"
+	SyncLapsed      = "lapsed"
+	SyncSignedOut   = "signed_out"
+)
+
+const (
+	MaxSyncWithheld = 50
+	MaxAnswerURL    = 2 << 10
+	// StatusWait bounds a SyncStatus call; past it the server answers as
+	// if no provider were registered.
+	StatusWait = 100 * time.Millisecond
 )
