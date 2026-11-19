@@ -893,13 +893,13 @@ const openish = `(d.state = 'open' OR ` + placeCond + `)`
 // response, an identity's or not, takes that one place, never a second.
 const placeCond = `((d.state = 'answered' AND EXISTS (SELECT 1 FROM decision_responses r
 	WHERE r.decision = d.n AND r.status = 'accepted' AND json_extract(r.authority, '$.via') = 'identity'))
-	OR (d.state IN ('open', 'answered') AND json_extract(d.policy, '$.spare') = 1))`
+	OR (d.state IN ('open', 'answered') AND COALESCE(json_extract(d.policy, '$.spare'), 0) = 1))`
 
 // voidedCond is the SQL condition of a voided routed decision (alias d):
 // superseded while it held a spare (opened while a decision router routed
 // policies), its replacement standing in its place. The run's voided
 // decisions are bound apart (MaxVoidedRoutedPerRun).
-const voidedCond = `(d.state = 'superseded' AND json_extract(d.policy, '$.spare') = 1)`
+const voidedCond = `(d.state = 'superseded' AND COALESCE(json_extract(d.policy, '$.spare'), 0) = 1)`
 
 // MaxVoidedRoutedPerRun bounds a run's voided routed decisions: past it an
 // answer to a routed decision is refused for room (the replacement it may
