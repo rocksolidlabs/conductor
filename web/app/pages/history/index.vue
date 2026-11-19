@@ -1,5 +1,24 @@
 <script setup lang="ts">
-import { byAnchor, cutWords, filterOf, historyNoneWords, historyQuestions, historyTarget, indexingWords, machineOf, outcomeChips, withFilter, type HistoryFilter } from '~/utils/history'
+import {
+  activeFilters,
+  byAnchor,
+  FILTER_WORDS,
+  classChips,
+  clearedQuery,
+  cutWords,
+  filterOf,
+  historyNoneWords,
+  historyQuestions,
+  historyTarget,
+  indexingWords,
+  machineOf,
+  outcomeChips,
+  sinceChips,
+  withFilter,
+  withoutFilter,
+  type ActiveFilter,
+  type HistoryFilter,
+} from '~/utils/history'
 import { pageState } from '~/utils/pageState'
 import { LATEST_SESSIONS } from '~/composables/usePaletteHistory'
 import type { HistoryOptions } from '~/composables/useHistorySearch'
@@ -150,40 +169,52 @@ const machine = computed(() => (search.result.value?.q === LATEST_SESSIONS ? mac
 const project = computed(() => (projects.value.length === 1 ? projects.value[0] : undefined))
 const chipRows = computed<Array<{ name: HistoryFilter; label: string; chips: Chip[] }>>(() =>
   [
-    {
-      name: 'class' as const,
-      label: 'Kind of evidence',
-      chips: [
-        { value: 'said', label: 'Conversation' },
-        { value: 'decided', label: 'Decision' },
-        { value: 'checked', label: 'Checked' },
-        { value: 'record', label: 'Records' },
-      ],
-    },
+    { name: 'class' as const, label: FILTER_WORDS.class, chips: classChips() },
     {
       name: 'outcome' as const,
-      label: 'Outcome',
+      label: FILTER_WORDS.outcome,
       // Rejected writes the rejecting outcomes the "Rejected designs" question asks for (utils/history.ts, REJECTING_OUTCOMES).
       chips: outcomeChips(),
     },
-    { name: 'project' as const, label: 'Project', chips: projects.value.map((k) => ({ value: k, label: k })) },
-    { name: 'host' as const, label: 'Host', chips: hosts.value.map((h) => ({ value: h, label: h })) },
-    { name: 'agent' as const, label: 'Agent', chips: agents.value.map((x) => ({ value: x.id, label: x.name || x.id })) },
-    {
-      name: 'since' as const,
-      label: 'Since',
-      chips: [
-        { value: '24h', label: 'A day' },
-        { value: '7d', label: 'A week' },
-        { value: '30d', label: 'A month' },
-      ],
-    },
+    { name: 'project' as const, label: FILTER_WORDS.project, chips: projects.value.map((k) => ({ value: k, label: k })) },
+    { name: 'host' as const, label: FILTER_WORDS.host, chips: hosts.value.map((h) => ({ value: h, label: h })) },
+    { name: 'agent' as const, label: FILTER_WORDS.agent, chips: agents.value.map((x) => ({ value: x.id, label: x.name || x.id })) },
+    { name: 'since' as const, label: FILTER_WORDS.since, chips: sinceChips() },
   ].filter((r) => r.chips.length),
 )
 /** A chip pressed: its filter written into the query (the one value it holds), or taken out when it already held that value. */
 function press(name: HistoryFilter, value: string) {
   text.value = withFilter(text.value.trim(), name, filterOf(text.value, name) === value ? '' : value)
 }
+
+// ---- What filters the search, listed under the box, each with its own ×, and Clear all beside them (#1023). Clear all empties the
+// search: every filter and the words (clearedQuery). A removal and Clear all are each a step of the browser's history (push), so Back
+// puts back what they took off; the route's watch above writes the box.
+const agentName = (id: string) => agents.value.find((x) => x.id === id)?.name
+const active = computed(() => activeFilters(text.value, agentName))
+const field = useTemplateRef<{ inputRef?: HTMLInputElement }>('field')
+const activeBar = useTemplateRef<HTMLElement>('activeBar')
+async function writeQuery(q: string) {
+  await router.push({ query: { ...route.query, q: q || undefined } })
+  // The route's watch writes the box when the route moves; written here too, so that a push the router refused leaves the box right.
+  text.value = q
+  await nextTick()
+}
+/** One taken off: the focus goes to the next one's ×, else the one before it, else the box. */
+async function removeFilter(f: ActiveFilter, i: number) {
+  await writeQuery(withoutFilter(text.value.trim(), f))
+  const xs = activeBar.value?.querySelectorAll<HTMLElement>('[data-history-active-remove]') ?? []
+  const to = xs[Math.min(i, xs.length - 1)]
+  if (to) to.focus()
+  else field.value?.inputRef?.focus()
+}
+/** Clear all: the search emptied, the focus in the box. */
+async function clearAll() {
+  await writeQuery(clearedQuery())
+  field.value?.inputRef?.focus()
+}
+const removeWords = (f: ActiveFilter) => (f.name === 'words' ? `Remove the words ${f.value}` : `Remove the filter ${f.label}: ${f.value}`)
+
 const questions = computed(() => historyQuestions({ project: project.value, host: machine.value || undefined }))
 /** The search's caption: in place while the history has nothing to show, under About this page once it has. */
 const CAPTION = 'What was said (Conversation), decided (Decision) and checked (a receipt) are kept apart: a sentence repeated is still Conversation.'
@@ -220,10 +251,18 @@ const CAPTION = 'What was said (Conversation), decided (Decision) and checked (a
           <EventsAside :entries="events.entries.value" :now="now" :routes="events.routes.value" :integrations="integrations" class="flex-none border-t border-default pt-5 xl:w-[340px] xl:border-t-0 xl:border-l xl:pt-0 xl:pl-5" />
         </div>
       </div>
-      <div v-else class="mx-auto grid w-full max-w-6xl min-w-0 grid-cols-1 gap-5 lg:grid-cols-[15rem_minmax(0,1fr)]" data-history-page>
+      <div v-else class="mx-auto grid w-full max-w-6xl min-w-0 grid-cols-1 gap-5 lg:grid-cols-[15rem_minmax(0,1fr)] lg:grid-rows-[auto_1fr]" data-history-page>
         <!-- The search box first on a phone, beside the chips on a wide screen. -->
         <div class="min-w-0 lg:col-start-2 lg:row-start-1" data-history-search>
-          <UInput v-model="text" icon="i-lucide-search" placeholder="Words, or filters: class: outcome: project: host: agent: since:" size="lg" class="w-full" aria-label="Search the history" data-history-input />
+          <UInput ref="field" v-model="text" icon="i-lucide-search" placeholder="Words, or filters: class: outcome: project: host: agent: since:" size="lg" class="w-full" aria-label="Search the history" data-history-input />
+          <!-- What narrows the search, each with its own ×, and Clear all: shown only while something does. -->
+          <div v-if="active.length" ref="activeBar" role="group" aria-label="Active filters" class="mt-2 flex min-w-0 flex-wrap items-center gap-1.5" data-history-active-bar>
+            <UBadge v-for="(f, i) in active" :key="f.key" color="primary" variant="subtle" size="md" class="max-w-full min-w-0 gap-1 py-0 pr-0" :data-history-active="f.key">
+              <span class="min-w-0 truncate" data-history-active-words>{{ f.label }}: <span class="font-semibold">{{ f.value }}</span></span>
+              <IconButton icon="i-lucide-x" size="xs" color="primary" variant="link" :label="removeWords(f)" class="flex-none justify-center max-sm:size-11" data-history-active-remove @click="removeFilter(f, i)" />
+            </UBadge>
+            <UButton label="Clear all" icon="i-lucide-filter-x" size="xs" color="neutral" variant="outline" class="max-sm:min-h-11" data-history-clear-all @click="clearAll" />
+          </div>
           <p v-if="state !== 'content'" class="mt-1 text-xs text-muted" data-history-caption>{{ CAPTION }} The palette searches the same with <UKbd value="~" size="sm" />.</p>
         </div>
 
@@ -262,7 +301,15 @@ const CAPTION = 'What was said (Conversation), decided (Decision) and checked (a
             <PageEmpty v-if="state === 'reading'" :page="query ? undefined : 'history'" state="reading" thing="history" data-history-loading />
             <PageEmpty v-else-if="state === 'failed'" :page="query ? undefined : 'history'" state="failed" :error="error?.code ? `${error.message} (${error.code})` : error?.message" data-history-error @again="readAgain" />
             <!-- Nothing kept with nothing typed (the page's sentence above it); nothing matched with a query (a filter's answer, no first line). -->
-            <PageEmpty v-else-if="state === 'empty'" :page="query ? undefined : 'history'" state="empty" :words="historyNoneWords(query)" icon="i-lucide-search" data-history-none />
+            <PageEmpty
+              v-else-if="state === 'empty'"
+              :page="query ? undefined : 'history'"
+              state="empty"
+              :words="historyNoneWords(query)"
+              :actions="query ? [{ label: 'Clear all', icon: 'i-lucide-filter-x', onClick: clearAll }] : []"
+              icon="i-lucide-search"
+              data-history-none
+            />
             <template v-if="shown && state === 'content'">
               <p class="text-xs text-muted" data-history-total>
                 <template v-if="query">{{ shown.total }}{{ shown.totalCapped ? '+' : '' }} {{ shown.total === 1 && !shown.totalCapped ? 'match' : 'matches' }}<template v-if="shown.cut"> · <span data-history-cut>{{ cutWords(shown.cut) }}</span></template></template>

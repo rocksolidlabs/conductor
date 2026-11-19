@@ -8,6 +8,7 @@ import { clipboardKey, forcesSelection, menuPress, pressClearsSelection, readRig
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { WebglAddon } from '@xterm/addon-webgl'
 import { findFileLocations } from '~/utils/links'
+import { terminalLinkHandler } from '~/utils/terminalLinks'
 import { ALT_PASSTHROUGH_CODES, usePageAltCodes } from '~/composables/useShortcuts'
 import { NEWLINE_IN_PROMPT, newlineChord } from '~/utils/terminalKeys'
 import { closeReason, encodeText, FOLLOW_SIZE, type ActivityEntry, type Attention, type ChatHistory, type ChatMessage, type ChatPost, type ChatRoster, type ChatSend, type ControlMessage, type FileGetExtra, type FileResponse, type FileWriteOptions, type NvimSwapChoice, type Role, type TransportKind, type ViewerInfo, type Welcome } from '~/utils/protocol'
@@ -788,7 +789,15 @@ function snapshot(): string[] | null {
 defineExpose({ connect, disconnect, requestFile, writeFile, nvimOpen, nvimInput, nvimClose, nvimSwap, sendInput, submit, answer, chat, chatSend, lane, focus: () => term?.focus(), scrollToBottom: () => term?.scrollToBottom(), takeSize, sizerShown: () => !!sizerChip.value, snapshot, openPaste })
 
 onMounted(() => {
+  // One handler for the terminal's web links of both kinds, the hyperlinks an agent prints (OSC 8, xterm's linkHandler: without it
+  // xterm asked with the page's confirm, #1020) and the addresses in the text (the web-links addon): Ctrl/⌘+click opens a new tab,
+  // a plain click offers the link to the page; a link to any other scheme is none.
+  const links = terminalLinkHandler(
+    (url) => window.open(url, '_blank', 'noopener,noreferrer'),
+    (url) => emit('openUrl', url),
+  )
   term = new Terminal({
+    linkHandler: links,
     cursorBlink: !props.compact,
     scrollback: Math.max(1, props.scrollback),
     allowProposedApi: true,
@@ -809,12 +818,7 @@ onMounted(() => {
   })
   fit = new FitAddon()
   term.loadAddon(fit)
-  term.loadAddon(
-    new WebLinksAddon((event, uri) => {
-      if (event.ctrlKey || event.metaKey) window.open(uri, '_blank', 'noopener,noreferrer')
-      else emit('openUrl', uri)
-    }),
-  )
+  term.loadAddon(new WebLinksAddon((event, uri) => links.activate(event, uri)))
   term.registerLinkProvider(fileLinkProvider)
   // Shift+Enter and Ctrl+Enter are a newline in the agent's prompt, not a
   // submit: the session gets ESC CR instead of xterm's plain CR. Alt+<page
