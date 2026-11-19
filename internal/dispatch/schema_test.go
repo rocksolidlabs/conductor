@@ -114,6 +114,32 @@ func versionOneStore(t *testing.T, fill func(s *Store)) string {
 	}
 	db := openRaw(t, filepath.Join(dir, File))
 	for _, stmt := range []string{
+		"DROP TABLE plan_views",
+		"DROP TABLE held_bodies",
+		"DROP TABLE held_rows",
+		"DROP TABLE replica_names",
+		"DROP TABLE replica_tags",
+		"ALTER TABLE plans DROP COLUMN body_here",
+		"ALTER TABLE plans DROP COLUMN view_digest",
+		"ALTER TABLE projects DROP COLUMN registry_key",
+		"ALTER TABLE projects DROP COLUMN provisional_next",
+		"ALTER TABLE projects DROP COLUMN provisional_to",
+		"ALTER TABLE projects DROP COLUMN provisional_from",
+		"ALTER TABLE projects DROP COLUMN overflow_next",
+		"ALTER TABLE projects DROP COLUMN overflow_to",
+		"ALTER TABLE projects DROP COLUMN overflow_from",
+		"ALTER TABLE projects DROP COLUMN next_to",
+		"ALTER TABLE projects DROP COLUMN next_from",
+		"ALTER TABLE projects DROP COLUMN block_tag",
+		"ALTER TABLE projects DROP COLUMN share_reserved_to",
+		"ALTER TABLE projects DROP COLUMN share_upto",
+		"ALTER TABLE projects DROP COLUMN share_state",
+		"ALTER TABLE projects DROP COLUMN shared",
+		"ALTER TABLE changes DROP COLUMN remote",
+		"ALTER TABLE changes DROP COLUMN recovered_by",
+		"ALTER TABLE changes DROP COLUMN prior_output",
+		"ALTER TABLE changes DROP COLUMN output",
+		"ALTER TABLE changes DROP COLUMN origin",
 		"DROP TABLE capture_sends_open",
 		"DROP TABLE capture_files",
 		"DROP TABLE capture_send_cancels",
@@ -207,7 +233,7 @@ func TestSchemaVersion2(t *testing.T) {
 	for table, want := range map[string][]string{
 		"plans": {"id", "ticket_id", "based_on", "crew_id", "crew_name", "crew_updated_at", "base", "body", "digest", "bytes", "state",
 			"approved_at", "approved_by", "approved_note", "approved_rev", "approved_intent", "withdrawn_at", "withdrawn_by", "created_at",
-			"created_by", "fingerprint", "rev"},
+			"created_by", "fingerprint", "rev", "view_digest", "body_here"},
 		"launches": {"id", "ticket_id", "plan_id", "run_id", "label", "ticket_rev", "intent", "criteria", "package", "package_sha256", "state",
 			"why", "agents", "created_at", "created_by", "fingerprint", "started_at", "rev"},
 		"launch_files": {"launch_id", "sha256"},
@@ -279,7 +305,7 @@ func TestMigratedVersion2EqualsAFreshOne(t *testing.T) {
 		// below reads) and the version, which the migration bumps.
 		if slices.Contains([]string{"plans", "launches", "launch_files", "reviews", "review_findings", "finding_marks", "link_reads", "ticket_reads",
 			"store_instance", "publications", "tickets_fts", "schema_version"}, table) || slices.Contains(version5Tables, table) ||
-			slices.Contains(version6Tables, table) {
+			slices.Contains(version6Tables, table) || slices.Contains(version8Tables, table) {
 			continue
 		}
 		v1Columns[table] = columnsOf(t, raw, table)

@@ -579,7 +579,8 @@ const (
 )
 
 // version5Kept is the decision of every text column version 5 adds, and
-// of the later versions' (6, the open sends; 7, a finding's capture).
+// of the later versions' (6, the open sends; 7, a finding's capture; 8,
+// sync's).
 var version5Kept = map[string]string{
 	"captures.id": keptDerived, "captures.created_at": keptDerived, "captures.created_by": keptOperator, "captures.actor": keptOperator,
 	"captures.via": keptClosed, "captures.fingerprint": keptDerived, "captures.url": keptEvidence, "captures.title": keptEvidence,
@@ -614,6 +615,24 @@ var version5Kept = map[string]string{
 	// Version 7's capture of a finding: the server's evidence, two of the
 	// store's ids and a number.
 	"review_findings.capture_ref": keptDerived,
+	// Version 8's (sync, Program item CS1): a replica's tags, workspaces,
+	// devices and instances, a project's share and registry key, a change
+	// row's origin and the tag that recovered it, the views' and bodies'
+	// digests are ids a provider or the store gives, of patterns no address
+	// meets; a verdict and a share's state are closed sets; times, a held
+	// row (a change row as the store encodes it) and why it is held are the
+	// store's own; another replica's device name is the words its provider
+	// gives.
+	"replica_tags.tag": keptOpaque, "replica_tags.workspace": keptOpaque, "replica_tags.device": keptOpaque,
+	"replica_tags.instance": keptDerived, "replica_tags.joined_at": keptDerived,
+	"replica_names.tag": keptOpaque, "replica_names.name": keptWords,
+	"held_rows.project_key": keptOpaque, "held_rows.why": keptDerived, "held_rows.waits_for": keptOpaque,
+	"held_rows.row": keptDerived, "held_rows.held_at": keptDerived,
+	"held_bodies.digest":     keptDerived,
+	"plan_views.view_digest": keptDerived, "plan_views.digest": keptDerived,
+	"projects.shared": keptOpaque, "projects.share_state": keptClosed, "projects.block_tag": keptOpaque, "projects.registry_key": keptOpaque,
+	"changes.origin": keptOpaque, "changes.output": keptClosed, "changes.prior_output": keptClosed, "changes.recovered_by": keptOpaque,
+	"plans.view_digest": keptDerived,
 }
 
 // Every text column version 5 adds, and every later version, has a
