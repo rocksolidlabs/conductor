@@ -1399,22 +1399,40 @@ finished, grey stopped, red a member failed, an amber edge when someone had
 to answer) with when the last one started, **Edit** and **Launch run**. A
 saved crew never says "Running": status belongs to runs.
 
-**A saved crew's page.** `/crews/<id>` has the crew's name in its header
-(edit it there), **Duplicate**, a menu with **Delete crew**, and **Launch
-run**. A banner says when a run of it is live ("started 08:31 · 3 running ·
-review needs you · docs waits for Start now") and leads to it. **Setup** holds
-the goal, where runs work (**Runs in**, with the directory's git state and a folder button that browses the allowed roots), what
-each run does (one working directory or a git worktree each; the line under
-it, which opens the switches, says whether a launch opens the run page,
-makes a view link and which yolo it uses), and the members as a table (name,
-agent, first prompt, when it starts: **At launch**, **After lead is done**,
-**When you press Start**; a row's menu adds extra arguments, moves or removes
-it) or as the graph of their start rules. A sentence beside the heading reads
-the start order ("lead → core → tests start in a chain; docs waits for you;
-review starts at once"). An edit gets an **Unsaved changes** bar at the
-bottom naming what changed, with **Discard** and **Save**; while a run is
+**A saved crew's page.** `/crews/<id>` has the crew's name in its header,
+**Duplicate**, a menu with **Delete crew**, and **Launch run**. A banner says
+when a run of it is live ("started 08:31 · 3 running · review needs you · docs
+waits for Start now") and leads to it. **Setup** holds one labelled control
+for each thing a crew is set to: **Name**; **Goal** (a prompt can use it as
+`$GOAL`); **Folder** (with the folder's git state and a folder button that
+browses the allowed roots); **Workspace** (one folder for everyone, or a copy
+for each member, a git worktree); **How members start** (by their start
+rules, or by tasks); and, folded under **More options** with a line saying
+what each is now, **After launch** (stay on this page, or open the run),
+**Permission prompts** (the server's default, ask, or skip) and **View link**.
+Then the members as a table (name, agent, first prompt, when it starts:
+**At launch**, **After lead is done**, **When you press Start**, and under
+each its **Account** and **Model**, empty for the agent's choice; a row's
+menu adds extra arguments, moves or removes it; on a phone each member is a
+card with every control labelled) or as the graph of their start rules. A
+sentence beside the heading reads the start order ("lead → core → tests
+start in a chain; docs waits for you; review starts at once"). An edit gets
+an **Unsaved changes** bar at the bottom naming what changed, with
+**Discard** and **Save**; a crew that cannot be saved says why beside the
+field it is about and beside **Save** (no name, a name another crew has, a
+member's name twice or with characters it may not have); while a run is
 live it says the run keeps the version it launched with. A crew not saved
-yet is drafted at `/crews/new`.
+yet is drafted at `/crews/new`, its **Name** field focused. A crew not saved,
+or one with edits ("Unsaved changes" beside the button), has **Save and
+launch** where **Launch run** was: it saves, then opens the launch sheet.
+
+**The launch sheet.** Every launch of a crew asks first: a short table, a
+row a member (member, agent, model, account), the run's permission prompts
+in one line, and **Launch**. Above the table it notes only what of a
+member's usage needs you before this launch (a window near its limit, a
+limit reached, an agent signed out or not installed), saying what it means
+for this run; **Details** holds the rest: the sessions the launch starts on
+each login and each member's usage panel.
 
 **Runs.** The crew's **Runs** tab charts its last twelve runs as bars (minutes,
 with the median, how many needed an answer and how many failed) and lists
@@ -1429,8 +1447,8 @@ Chips above the table filter the rows by state (all, live, finished, stopped,
 failed, each with its count) and a select by when they started (today, 7 or
 30 days, all time); the browser keeps the choice. A member that reports it is done keeps its run running, for a done agent is
 idle, not gone. The pages follow the runs through the event stream, as the
-run page and the sidebar do. A crew's **Yolo** setting (the server's default,
-on or off; see [Yolo](#yolo)) is fixed on the run when it is launched, so
+run page and the sidebar do. A crew's **Permission prompts** setting (the
+server's default, ask or skip: its yolo, see [Yolo](#yolo)) is fixed on the run when it is launched, so
 every member, one started or added later included, follows it.
 
 **The graph.** The run page has a **Graph** tab beside the tile grid: one

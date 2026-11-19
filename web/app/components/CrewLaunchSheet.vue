@@ -3,11 +3,13 @@ import type { AgentInfo, CrewInfo } from '~/composables/useSessions'
 import { plainTasks, type DraftCrew } from '~/utils/crews'
 import { accountCountWords, launchAccounts, memberLogin } from '~/utils/launchAccounts'
 import { COMPARISON_LAUNCHES_FROM_A_TICKET } from '~/utils/compareLaunch'
-import { launchLines, launchYoloWords, readSheet, sheetNotice, type SheetRead, type SheetRefusal, type SheetTarget } from '~/utils/crewLaunch'
+import { launchLines, launchYoloWords, readSheet, sheetNotes, sheetNotice, sheetRows, type SheetRead, type SheetRefusal, type SheetTarget } from '~/utils/crewLaunch'
 
 /**
- * What a crew's launch asks first (docs/plans/capacity.md, PR-7): each member with its agent, its model and its account, and a compact
- * line of what the server knows of that agent's usage on that account, then Launch. It keeps what it was opened for (`target`), and its
+ * What a crew's launch asks first (docs/plans/capacity.md, PR-7), short (the review of 2026-11-18, C10): a table, a row a member (member ·
+ * agent · model · account, in plain words); above it only what of a member's usage needs the person before this launch (sheetNotes); the
+ * run's permission prompts in one line; then Launch, the one filled button. Everything else is under Details, nothing dropped: the sessions
+ * this launch starts on each login, and each member's compact usage panel, read as the sheet opens. It keeps what it was opened for (`target`), and its
  * Launch hands the page exactly that: a saved crew is read from the server as the sheet opens and that copy is drawn, Launch held until
  * it is here (a failed read says why and offers to read again); the crew page's draft is drawn as it is and saved as it launches. The
  * sheet shows the crew as the server held it when the sheet read it, and its Launch names that copy's revision: a change saved after the
@@ -93,6 +95,10 @@ const comparison = computed(() => {
   return !!(g && 'crew' in g && g.crew.compare)
 })
 const lines = computed(() => (crew.value ? launchLines(crew.value.members, { agents: props.agents, doc: accounts.doc.value, managed: crew.value.managed, yolo: crew.value.yolo, view: (q) => cap.entry(q).view }) : []))
+const viewOf = (q: Parameters<typeof cap.entry>[0]) => cap.entry(q).view
+/** The table's rows, and the notes that need the person before this launch. */
+const rows = computed(() => (crew.value ? sheetRows(lines.value, crew.value.members, accounts.doc.value, viewOf) : []))
+const notes = computed(() => sheetNotes(rows.value, viewOf))
 </script>
 
 <template>
@@ -109,25 +115,49 @@ const lines = computed(() => (crew.value ? launchLines(crew.value.members, { age
         <UButton label="Read again" icon="i-lucide-refresh-cw" size="xs" color="neutral" variant="outline" :disabled="!open" data-crew-launch-read-again @click="readNow" />
       </p>
       <p v-else-if="!crew" class="flex items-center gap-2 text-sm text-muted" data-crew-launch-reading><UIcon name="i-lucide-loader-circle" class="size-4 animate-spin" />Reading the crew as the server holds it, and the server's yolo default when it inherits it…</p>
-      <p v-else class="mb-3 text-sm text-muted" data-crew-launch-yolo>{{ launchYoloWords(crew.yolo, crew.inherits) }}</p>
-      <p v-if="crew && !failed && comparison" class="mb-3 flex items-start gap-2 text-sm text-warning" data-crew-launch-comparison>
-        <UIcon name="i-lucide-git-compare" class="mt-0.5 size-4 shrink-0" />
-        <span class="min-w-0">{{ COMPARISON_LAUNCHES_FROM_A_TICKET }}.</span>
-      </p>
-      <ul v-if="crew && !failed && perAccount.length" class="mb-3 flex flex-col gap-0.5 text-xs text-muted" data-crew-launch-accounts>
-        <li v-for="a in perAccount" :key="a.key" :data-crew-launch-account="a.key" :data-launch-account-first="a.first" :data-launch-account-later="a.later">{{ accountCountWords(a) }}</li>
-      </ul>
-      <ul v-if="crew && !failed" class="flex flex-col gap-3" data-crew-launch-sheet>
-        <li v-for="l in lines" :key="l.name" class="flex flex-col gap-1.5" :data-crew-launch-line="l.name">
-          <div class="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-sm">
-            <span class="font-mono font-medium text-highlighted">{{ l.name }}</span>
-            <span class="text-muted" data-crew-launch-agent>{{ l.agent }}</span>
-            <span class="text-xs text-muted">Model: <span class="text-default" data-crew-launch-model>{{ l.model }}</span></span>
-            <span class="text-xs text-muted">Account: <span class="text-default" data-crew-launch-account>{{ l.account }}</span></span>
+      <template v-else>
+        <p v-if="comparison" class="mb-3 flex items-start gap-2 text-sm text-warning" data-crew-launch-comparison>
+          <UIcon name="i-lucide-git-compare" class="mt-0.5 size-4 shrink-0" />
+          <span class="min-w-0">{{ COMPARISON_LAUNCHES_FROM_A_TICKET }}.</span>
+        </p>
+        <!-- Only what needs the person before this launch; Launch stays theirs. -->
+        <ul v-if="notes.length" class="mb-3 flex flex-col gap-1.5" data-crew-launch-notes>
+          <li v-for="n in notes" :key="n.member" class="flex items-start gap-2 text-sm [overflow-wrap:anywhere]" :class="n.color === 'error' ? 'text-error' : 'text-warning'" :data-crew-launch-note="n.member" :data-crew-launch-note-color="n.color">
+            <UIcon name="i-lucide-triangle-alert" class="mt-0.5 size-4 shrink-0" />
+            <span class="min-w-0">{{ n.words }}</span>
+          </li>
+        </ul>
+        <div role="table" aria-label="Who this launch starts" class="overflow-hidden rounded-md ring ring-default text-sm" data-crew-launch-sheet>
+          <div role="row" class="hidden grid-cols-[8rem_1fr_1fr_1fr] gap-x-3 border-b border-default bg-muted px-3 py-2 text-[11px] font-semibold uppercase tracking-wider text-muted sm:grid">
+            <span role="columnheader">Member</span>
+            <span role="columnheader">Agent</span>
+            <span role="columnheader">Model</span>
+            <span role="columnheader">Account</span>
           </div>
-          <CapacityPanel :query="open ? l.query : null" compact read-on-open />
-        </li>
-      </ul>
+          <div v-for="r in rows" :key="r.name" role="row" class="grid grid-cols-1 gap-x-3 gap-y-0.5 border-b border-default px-3 py-2 last:border-b-0 sm:grid-cols-[8rem_1fr_1fr_1fr]" :data-crew-launch-line="r.name">
+            <span role="cell" class="min-w-0 font-mono font-medium text-highlighted [overflow-wrap:anywhere]" data-mono="id">{{ r.name }}</span>
+            <span role="cell" class="min-w-0 [overflow-wrap:anywhere]"><span class="text-muted sm:hidden">Agent: </span><span data-crew-launch-agent>{{ r.agent }}</span></span>
+            <span role="cell" class="min-w-0 [overflow-wrap:anywhere]"><span class="text-muted sm:hidden">Model: </span><span :class="r.query.model ? 'font-mono text-[13px]' : 'text-muted'" data-crew-launch-model>{{ r.model }}</span></span>
+            <span role="cell" class="min-w-0 [overflow-wrap:anywhere]"><span class="text-muted sm:hidden">Account: </span><span data-crew-launch-account>{{ r.account }}</span></span>
+          </div>
+        </div>
+        <p class="mt-3 text-sm text-muted" data-crew-launch-yolo>{{ launchYoloWords(crew.yolo, crew.inherits) }}</p>
+        <!-- Everything else the sheet knows, one press away: the sessions per login, and each member's usage as the server read it. -->
+        <details class="group mt-3 text-sm" data-crew-launch-details>
+          <summary class="flex w-fit cursor-pointer list-none items-center gap-1 rounded-xs text-muted outline-none hover:text-default focus-visible:ring-2 focus-visible:ring-primary max-sm:min-h-11 [&::-webkit-details-marker]:hidden" data-crew-launch-details-open>
+            <UIcon name="i-lucide-chevron-right" class="size-4 transition-transform group-open:rotate-90" />Details: sessions per account and each member's usage
+          </summary>
+          <div class="mt-2 flex flex-col gap-3">
+            <ul v-if="perAccount.length" class="flex flex-col gap-0.5 text-xs text-muted" data-crew-launch-accounts>
+              <li v-for="a in perAccount" :key="a.key" :data-crew-launch-account="a.key" :data-launch-account-first="a.first" :data-launch-account-later="a.later">{{ accountCountWords(a) }}</li>
+            </ul>
+            <div v-for="l in lines" :key="l.name" class="flex flex-col gap-1" :data-crew-launch-usage="l.name">
+              <span class="text-xs text-muted"><span class="font-mono text-default" data-mono="id">{{ l.name }}</span> · {{ l.agent }} · usage</span>
+              <CapacityPanel :query="open ? l.query : null" compact read-on-open />
+            </div>
+          </div>
+        </details>
+      </template>
     </template>
     <template #footer>
       <div ref="footer" class="flex w-full items-center justify-end gap-2">

@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it, vi } from 'vitest'
 import { useDispatchApi } from '../composables/useDispatch'
-import { AT_LAUNCH, OWN_LOGIN, SHEET_DEADLINE_MS, SheetConfirmation, accountName, afterRefusal, accountUnreadable, addMemberProblem, boundWords, brakemanAccount, cleanFolder, launchAccountWords, launchLines, memberAccountItems, memberAccountProblem, namedAccounts, readNamedAccounts, launchYoloWords, readSheet, refusedTarget, sheetNotice, UNREVISED_WORDS, withAgent, type SheetTarget } from '../utils/crewLaunch'
+import { AGENT_CHOOSES, AT_LAUNCH, OWN_LOGIN, SHEET_DEADLINE_MS, SheetConfirmation, accountName, afterRefusal, accountUnreadable, addMemberProblem, boundWords, brakemanAccount, cleanFolder, launchAccountWords, launchLines, memberAccountItems, memberAccountProblem, namedAccounts, readNamedAccounts, launchYoloWords, readSheet, refusedTarget, sheetAccountWords, sheetNotes, sheetNotice, sheetRows, UNREVISED_WORDS, withAgent, type SheetTarget } from '../utils/crewLaunch'
 import { capacityKey, type After, type CapacityView } from '../utils/capacity'
 import { draftMember, toCrewInput, toCrewMember } from '../utils/crews'
 
@@ -239,11 +239,63 @@ describe('the launch sheet', () => {
     expect(sheetNotice(null, 'reading', true), 'nothing drawn yet: the reading words alone').toBeNull()
   })
 
-  it("says the run's yolo choice: the crew's setting, or the server's default at the launch with what it is now", () => {
-    expect(launchYoloWords(true, false)).toBe("Yolo on: the members skip their permission prompts (the crew's setting)")
-    expect(launchYoloWords(false, false)).toBe("Yolo off: the members keep their permission prompts (the crew's setting)")
-    expect(launchYoloWords(true, true)).toBe("Yolo: the server's default at the launch (now on: the members skip their permission prompts)")
-    expect(launchYoloWords(false, true)).toBe("Yolo: the server's default at the launch (now off: the members keep their permission prompts)")
+  it("says the run's permission prompts in one plain line: the crew's setting, or the server's default now", () => {
+    expect(launchYoloWords(true, false)).toBe("Permission prompts: skipped: the members act without asking (the crew's setting)")
+    expect(launchYoloWords(false, false)).toBe("Permission prompts: the members ask before they act (the crew's setting)")
+    expect(launchYoloWords(true, true)).toBe("Permission prompts: skipped: the members act without asking (the server's default now)")
+    expect(launchYoloWords(false, true)).toBe("Permission prompts: the members ask before they act (the server's default now)")
+  })
+
+  it('draws its table a row a member: member, agent, model and account in plain words, the default named once the view says it', () => {
+    const members = [
+      { name: 'lead', agentId: 'claude' },
+      { name: 'checker', agentId: 'codex', account: 'a-cccccccccccc', model: 'gpt-5' },
+      { name: 'pinned', agentId: 'claude' },
+    ]
+    const lines = launchLines(members, { agents, doc, managed: false, yolo: false })
+    const views: Record<string, CapacityView | null> = {
+      lead: view({ account: { id: 'a-aaaaaaaaaaaa', label: 'Work' } }),
+      checker: null,
+      pinned: view({ entryLogin: 'ANTHROPIC_BASE_URL' }),
+    }
+    const byQuery = (q: { agent: string; account?: string }) => (q.account ? views.checker! : null)
+    // Before any view has answered: the default account, named by nothing the page worked out.
+    expect(sheetRows(lines, members, doc, byQuery).map((r) => [r.name, r.agent, r.model, r.account])).toEqual([
+      ['lead', 'Claude Code', AGENT_CHOOSES, 'Default account'],
+      ['checker', 'Codex CLI', 'gpt-5', 'Team'],
+      ['pinned', 'Claude Code', AGENT_CHOOSES, 'Default account'],
+    ])
+    // Each view answered: the default by its name, the login an entry sets.
+    let n = 0
+    const each = () => [views.lead, views.checker, views.pinned][n++ % 3] ?? null
+    expect(sheetRows(lines, members, doc, each).map((r) => r.account)).toEqual(['Work (the default)', 'Team', 'The login its entry sets (ANTHROPIC_BASE_URL)'])
+    // The tool's own login, the default: said as it is.
+    expect(sheetAccountWords(doc, undefined, view({ account: { id: 'default' } }))).toBe('Default login')
+    expect(sheetAccountWords(doc, undefined, view({ state: 'env_set', host: { kind: 'native' } }))).toBe('The login its launch sets')
+  })
+
+  it('notes only what needs the person before this launch, saying what it means for it; a version not checked or a failed read stays in Details', () => {
+    const rows = launchLines([{ name: 'a', agentId: 'claude' }, { name: 'b', agentId: 'claude' }, { name: 'c', agentId: 'claude' }, { name: 'd', agentId: 'claude' }, { name: 'e', agentId: 'claude' }, { name: 'f', agentId: 'claude' }], { agents, doc, managed: false, yolo: false })
+    const r = sheetRows(rows, [], doc, () => null)
+    const window = { kind: 'weekly', name: 'Weekly', percent: 95, severity: 'warning' }
+    const v: Record<string, CapacityView> = {
+      a: view({ state: 'ok', windows: [window] as CapacityView['windows'], credits: [], account: { id: 'a-aaaaaaaaaaaa', label: 'Work' } }),
+      b: view({ state: 'ok', windows: [], credits: [], limits: { source: 'provider', reached: '2026-11-18T20:00:00Z' } }),
+      c: view({ state: 'signed_out', windows: [], credits: [] }),
+      d: view({ state: 'not_installed', windows: [], credits: [] }),
+      e: view({ state: 'unqualified', windows: [], credits: [], words: 'Claude Code 2.1.287 is read only from 2.1.322' }),
+      f: view({ state: 'error', windows: [], credits: [] }),
+    }
+    let i = 0
+    const names = ['a', 'b', 'c', 'd', 'e', 'f']
+    expect(sheetNotes(r, () => v[names[i++ % 6]!]!)).toEqual([
+      { member: 'a', color: 'warning', words: 'a may stop before its usage resets: a window of Work is near its limit.' },
+      { member: 'b', color: 'error', words: 'b may stop at once: the provider says Default login has reached a limit.' },
+      { member: 'c', color: 'error', words: 'c would start signed out: Claude Code is not signed in on Default login. Sign it in first, or it cannot work.' },
+      { member: 'd', color: 'error', words: 'd cannot start: Claude Code is not installed on this server.' },
+    ])
+    // No view yet: nothing to say.
+    expect(sheetNotes(r, () => null)).toEqual([])
   })
 
   it("source: the page sends a launch only with the revision of what it launches and answers crew_changed by reading again; the sheet says why", () => {
@@ -269,17 +321,17 @@ describe("the crew editor's Account choice", () => {
   it("offers the default at launch as the server's view names it, the default login and the accounts of the tool not retired, the default marked", () => {
     // The view resolves another default than the accounts' Work: the item says the server's.
     expect(memberAccountItems(doc, 'claude', '', view({ account: { id: 'default' } }))).toEqual([
-      { value: AT_LAUNCH, label: 'The default at launch (now Default login)' },
+      { value: AT_LAUNCH, label: 'Default account (now Default login)' },
       { value: 'default', label: 'Default login' },
       { value: 'a-aaaaaaaaaaaa', label: 'Work (default)' },
     ])
-    expect(memberAccountItems(doc, 'codex', '', view({ account: { id: 'a-cccccccccccc', label: 'Team' } })).map((i) => i.label)).toEqual(['The default at launch (now Team)', 'Default login (default)', 'Team'])
+    expect(memberAccountItems(doc, 'codex', '', view({ account: { id: 'a-cccccccccccc', label: 'Team' } })).map((i) => i.label)).toEqual(['Default account (now Team)', 'Default login (default)', 'Team'])
   })
 
   it('names no default and offers no account before the view has answered, or when it failed', () => {
-    expect(memberAccountItems(doc, 'claude')).toEqual([{ value: AT_LAUNCH, label: 'The default at launch' }])
+    expect(memberAccountItems(doc, 'claude')).toEqual([{ value: AT_LAUNCH, label: 'Default account' }])
     expect(memberAccountItems(doc, 'claude', 'a-aaaaaaaaaaaa', null)).toEqual([
-      { value: AT_LAUNCH, label: 'The default at launch' },
+      { value: AT_LAUNCH, label: 'Default account' },
       { value: 'a-aaaaaaaaaaaa', label: 'Work' },
     ])
   })

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { AgentInfo, CrewCheck, CrewInfo, CrewMember, CrewManifest, CrewStart, CrewTask, RunInfo, RunMember, SessionInfo } from '~/composables/useSessions'
 import type { FeedEntry } from './events'
-import { argsFrom, changedBetween, refusedAsStale, revisionToSave, elsewhereWords, broadcastByName, broadcastSelection, broadcastSummary, checkProblems, crewFeed, crewKey, defaultCrew, holdViewLink, joinTileStatus, keepParked, liftSetup, manifestIds, memberNameError, memberNameFrom, memberStatus, pageAfterDelete, manifestMarks, manifestProblems, runCounts, secondsText, sidebarRunFor, startFrom, startValue, summaryOf, takeViewLink, typedSeconds, toCrewInput, toCrewMember, toDraft, taskProblems, taskRowProblems, taskSaveProblems, draftTask, tasksFollowMembers, TASK_LIMITS, ownerOf, ownerWords, ownersFollowPeople, peopleProblems, peopleRowProblems, responsibilityWords, taskPeopleBytes, ownerChoices, OWNER_GONE, OWNER_NONE } from './crews'
+import { argsFrom, CREW_NAME_MAX, crewNameProblem, memberSaveProblem, moreOptionsLine, permissionItems, SETUP_WORDS, viewLinkHoursWords, changedBetween, refusedAsStale, revisionToSave, elsewhereWords, broadcastByName, broadcastSelection, broadcastSummary, checkProblems, crewFeed, crewKey, defaultCrew, holdViewLink, joinTileStatus, keepParked, liftSetup, manifestIds, memberNameError, memberNameFrom, memberStatus, pageAfterDelete, manifestMarks, manifestProblems, runCounts, secondsText, sidebarRunFor, startFrom, startValue, summaryOf, takeViewLink, typedSeconds, toCrewInput, toCrewMember, toDraft, taskProblems, taskRowProblems, taskSaveProblems, draftTask, tasksFollowMembers, TASK_LIMITS, ownerOf, ownerWords, ownersFollowPeople, peopleProblems, peopleRowProblems, responsibilityWords, taskPeopleBytes, ownerChoices, OWNER_GONE, OWNER_NONE } from './crews'
 import type { ManifestList, ManifestShape, TaskShape } from './crews'
 import { changedFields, startSentence, startWords } from './crewWords'
 
@@ -205,9 +205,9 @@ describe('defaultCrew', () => {
     { id: 'shell', name: 'Shell', command: ['bash', '-l'], allowArgs: false },
   ]
 
-  it('is a new crew on the server with a worktree per agent and one member on the first agent', () => {
+  it('is a new crew with no name yet (the focused Name field takes it), on the server, a worktree per agent and one member on the first agent', () => {
     expect(wire(defaultCrew(agents))).toEqual({
-      name: 'New crew',
+      name: '',
       goal: '',
       cwd: '',
       where: 'server',
@@ -223,6 +223,67 @@ describe('defaultCrew', () => {
 
   it('passes its own member names', () => {
     expect(memberNameError(defaultCrew(agents).members[0]!.name)).toBe('')
+  })
+})
+
+describe("a crew's name and members as Save says them (C7)", () => {
+  const others = [
+    { id: 'checkout-squad', name: 'Checkout squad' },
+    { id: 'invoice-audit', name: 'Invoice audit' },
+  ]
+
+  it('says a crew needs a name, empty or only spaces', () => {
+    expect(crewNameProblem('')).toBe('A crew needs a name')
+    expect(crewNameProblem('   ', others)).toBe('A crew needs a name')
+  })
+
+  it('says another crew is called the same, whatever the case or the spaces around it', () => {
+    expect(crewNameProblem('Checkout squad', others)).toBe('Another crew is called Checkout squad: give this one a name of its own')
+    expect(crewNameProblem('  checkout SQUAD ', others)).toBe('Another crew is called Checkout squad: give this one a name of its own')
+    expect(crewNameProblem('Checkout squad two', others)).toBe('')
+  })
+
+  it("never holds a crew to its own name, nor a saved crew to a name it was saved under beside another's", () => {
+    expect(crewNameProblem('Checkout squad', others, { id: 'checkout-squad', saved: 'Checkout squad' })).toBe('')
+    // Saved under a name another crew has too (two files made elsewhere): it may keep it, and edit the rest.
+    expect(crewNameProblem('Invoice audit', others, { id: 'invoice-audit-2', saved: 'Invoice audit' })).toBe('')
+    // Renamed to another crew's name: held.
+    expect(crewNameProblem('Invoice audit', others, { id: 'checkout-squad', saved: 'Checkout squad' })).toBe('Another crew is called Invoice audit: give this one a name of its own')
+  })
+
+  it('takes a name as long as the field takes', () => {
+    expect(crewNameProblem('x'.repeat(CREW_NAME_MAX), others)).toBe('')
+  })
+
+  it("says which member cannot be saved and what to do: no name, a name twice, characters a name may not have", () => {
+    expect(memberSaveProblem({ name: '' }, 1, ['lead'])).toBe('Member 2 needs a name')
+    expect(memberSaveProblem({ name: 'lead' }, 1, ['lead'])).toBe('Two members are called lead: give each a name of its own')
+    expect(memberSaveProblem({ name: 'Checker!' }, 1, ['lead'])).toBe('The member name Checker! may hold only lower-case letters, digits, ".", "_" and "-", starting with a letter or digit, at most 40')
+    expect(memberSaveProblem({ name: 'a..b' }, 0)).toBe('a..b: git refuses this as a branch name: no "..", and no "." or ".lock" at the end')
+    expect(memberSaveProblem({ name: 'ana' }, 0, [], ['ana'])).toBe("ana: The name is a person's; a person is never a member, so the two names differ")
+    expect(memberSaveProblem({ name: 'checker' }, 1, ['lead'])).toBe('')
+  })
+})
+
+describe("the Setup's words (C8): plain labels over the values a crew stores", () => {
+  it('offers each stored value once, so a crew saved through them is the file it was', () => {
+    expect(SETUP_WORDS.workspaceItems.map((i) => i.value)).toEqual(['none', 'worktree'])
+    expect(SETUP_WORDS.workspaceItems.map((i) => i.label)).toEqual(['One folder for everyone', 'A copy for each member (a git worktree)'])
+    expect(SETUP_WORDS.afterLaunchItems.map((i) => i.value)).toEqual(['stay', 'open'])
+    expect(SETUP_WORDS.startItems.map((i) => i.value)).toEqual(['starts', 'tasks'])
+    expect(permissionItems(false).map((i) => i.value)).toEqual(['default', 'off', 'on'])
+  })
+
+  it("names the server's default with what it is now", () => {
+    expect(permissionItems(false)[0]!.label).toBe("The server's default (now ask)")
+    expect(permissionItems(true)[0]!.label).toBe("The server's default (now skip)")
+  })
+
+  it('says beside More options what each folded choice is now', () => {
+    expect(moreOptionsLine({ openAfterLaunch: false }, false)).toBe("Stays on this page · Permission prompts: the server's default (ask) · No view link")
+    expect(moreOptionsLine({ openAfterLaunch: true, yolo: true, viewLinkTtlSeconds: 8 * 3600 }, false)).toBe('Opens the run · Permission prompts: skip · A view link for 8 h')
+    expect(moreOptionsLine({ openAfterLaunch: true, yolo: false, viewLinkTtlSeconds: 1800 }, true)).toBe('Opens the run · Permission prompts: ask · A view link for 0.5 h')
+    expect(viewLinkHoursWords(undefined)).toBe('8 h')
   })
 })
 

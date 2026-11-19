@@ -1,6 +1,6 @@
 import type { DraftCrew } from './crews'
 import { memberNameError } from './crews'
-import { accountChoices, accountWords, launchLogin, modelProblem, modelWords, realAfter, withDeadline, type After, type AccountChoice, type AccountsLike, type CapacityQuery, type CapacityView } from './capacity'
+import { accountChoices, accountWords, launchLogin, limited, modelProblem, modelWords, realAfter, warningOf, withDeadline, type After, type AccountChoice, type AccountsLike, type CapacityQuery, type CapacityView } from './capacity'
 
 /**
  * A crew's members on their accounts and models (docs/plans/capacity.md, PR-7): the crew editor's Account choice, the lines the launch
@@ -27,8 +27,8 @@ export function accountName(doc: AccountsDocLike | null | undefined, id: string)
 
 /**
  * The crew editor's Account choice for a member of `adapter`, from the server's view of its launch with no account named (`view`, asked
- * as the launch will be: with the crew's yolo): the default at launch first (what a member that names none takes, named as the view
- * resolves it), then the choices a session's launch offers, and the account the member names when it is none of them (retired, or not
+ * as the launch will be: with the crew's yolo): "Default account" first (what a member that names none takes at the launch, named as the
+ * view resolves it now), then the choices a session's launch offers, and the account the member names when it is none of them (retired, or not
  * in Accounts), so the select shows what is saved. A launch whose login its entry or its launch sets takes that login whatever is
  * chosen: that login alone is offered. Before the view has answered, or when it failed, the default at launch alone, named by nothing
  * the page worked out. [] for an adapter the accounts do not list: such a member has no account to choose.
@@ -38,12 +38,12 @@ export function memberAccountItems(doc: AccountsDocLike | null | undefined, adap
   if (!choices.length) return []
   const login = view ? launchLogin(view) : null
   const items: AccountChoice[] = !login
-    ? [{ value: AT_LAUNCH, label: 'The default at launch' }]
+    ? [{ value: AT_LAUNCH, label: 'Default account' }]
     : login.kind === 'entry'
       ? [{ value: AT_LAUNCH, label: `The login its entry sets (${login.variable})` }]
       : login.kind === 'own'
         ? [{ value: AT_LAUNCH, label: 'The login its launch sets' }]
-        : [{ value: AT_LAUNCH, label: `The default at launch (now ${accountWords(view!.account)})` }, ...choices]
+        : [{ value: AT_LAUNCH, label: `Default account (now ${accountWords(view!.account)})` }, ...choices]
   if (current && !items.some((i) => i.value === current)) items.push({ value: current, label: accountName(doc, current) })
   return items
 }
@@ -246,12 +246,75 @@ export function sheetNotice(refused: SheetRefusal | null | undefined, read: 'rea
 }
 
 /**
- * The run's yolo choice on the launch sheet, in the crew editor's words: the crew's own setting, which the launch's revision covers, or,
- * for a crew that inherits it (`inherited`), the server's default at the launch, with what it is now (`yolo`).
+ * The run's permission prompts on the launch sheet, in one plain line: asked or skipped, and whether that is the crew's own setting (the
+ * launch's revision covers it) or, for a crew that inherits it (`inherited`), the server's default at the launch, with what it is now
+ * (`yolo`).
  */
 export function launchYoloWords(yolo: boolean, inherited: boolean): string {
-  const what = yolo ? 'on: the members skip their permission prompts' : 'off: the members keep their permission prompts'
-  return inherited ? `Yolo: the server's default at the launch (now ${what})` : `Yolo ${what} (the crew's setting)`
+  const what = yolo ? 'skipped: the members act without asking' : 'the members ask before they act'
+  return `Permission prompts: ${what} (${inherited ? "the server's default now" : "the crew's setting"})`
+}
+
+/** One member's row of the launch sheet's table: member · agent · model · account, in plain words, and the question its usage asks. */
+export interface SheetRow {
+  name: string
+  agent: string
+  model: string
+  account: string
+  query: CapacityQuery
+}
+
+/** A member that names no model, in the sheet's table: what the agent (or its arguments) choose, never called the agent's default. */
+export const AGENT_CHOOSES = "The agent's choice"
+
+/**
+ * A member's account in the sheet's table, in plain words: the account it names; for none, what the server's view of its launch resolved
+ * now ("Default login", "Work (the default)", the login its entry or its launch sets); before the view has answered, "Default account", named by nothing
+ * the page worked out.
+ */
+export function sheetAccountWords(doc: AccountsDocLike | null | undefined, account: string | undefined, view: Pick<CapacityView, 'state' | 'host' | 'account' | 'entryLogin'> | null | undefined): string {
+  if (account) return accountName(doc, account)
+  if (!view) return 'Default account'
+  const login = launchLogin(view)
+  if (login.kind === 'entry') return `The login its entry sets (${login.variable})`
+  if (login.kind === 'own') return 'The login its launch sets'
+  // The tool's own login is said as it is; another account the default names is said as the default.
+  return view.account.id === 'default' ? accountWords(view.account) : `${accountWords(view.account)} (the default)`
+}
+
+/** The launch sheet's table: a row a member, from the lines a launch asks (launchLines), its model and account said plainly. */
+export function sheetRows(lines: readonly LaunchLine[], members: readonly LaunchMember[], doc: AccountsDocLike | null | undefined, view: (q: CapacityQuery) => CapacityView | null): SheetRow[] {
+  return lines.map((l) => {
+    const m = members.find((x) => x.name === l.name)
+    return { name: l.name, agent: l.agent, model: l.query.model || AGENT_CHOOSES, account: sheetAccountWords(doc, m?.account, view(l.query)), query: l.query }
+  })
+}
+
+/** A note the launch sheet shows above its table: only what needs the person before this launch, in its colour. */
+export interface SheetNote {
+  member: string
+  words: string
+  color: 'warning' | 'error'
+}
+
+/**
+ * What of each member's usage needs the person before THIS launch, said with what it means for the launch: a limit the provider says is
+ * reached (the member may stop at once), a window near its limit (it may stop before the reset), its agent signed out on the account (it
+ * would start signed out) or not installed (it cannot start). Everything else the server says of a member's usage (a version not checked,
+ * a read that failed, how fresh, each window) is in the sheet's Details. None of it holds Launch.
+ */
+export function sheetNotes(rows: readonly SheetRow[], view: (q: CapacityQuery) => CapacityView | null): SheetNote[] {
+  const out: SheetNote[] = []
+  for (const r of rows) {
+    const v = view(r.query)
+    if (!v) continue
+    const on = accountWords(v.account)
+    if (v.state === 'not_installed') out.push({ member: r.name, color: 'error', words: `${r.name} cannot start: ${r.agent} is not installed on this server.` })
+    else if (v.state === 'signed_out') out.push({ member: r.name, color: 'error', words: `${r.name} would start signed out: ${r.agent} is not signed in on ${on}. Sign it in first, or it cannot work.` })
+    else if (limited(v.limits)) out.push({ member: r.name, color: 'error', words: `${r.name} may stop at once: the provider says ${on} has reached a limit.` })
+    else if (warningOf(v)) out.push({ member: r.name, color: warningOf(v)!.color, words: `${r.name} may stop before its usage resets: a window of ${on} is near its limit.` })
+  }
+  return out
 }
 
 /** Where a run member's login comes from (MemberAccount.source), in words, for a source that is not a registered account. */
