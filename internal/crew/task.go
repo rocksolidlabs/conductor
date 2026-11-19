@@ -1352,8 +1352,13 @@ func (e *Engine) commitHeld(ctx context.Context, r *run, first firstTx, judge fu
 	// The greater: a continuation's mark moves a run's revision outside
 	// the run's own transactions (startContinued reads it back).
 	r.revision = max(r.revision, rev)
+	// The run's first transaction committed (a continuation's too): a
+	// context provider is told of its base, once the engine's lock is let
+	// go below.
+	var noteBase func(ext.CommitNote)
 	if snap.create {
 		r.created = true
+		noteBase = e.commitNotes
 	}
 	for _, f := range done {
 		f()
@@ -1382,7 +1387,9 @@ func (e *Engine) commitHeld(ctx context.Context, r *run, first firstTx, judge fu
 	}
 	stops := r.pendingStops
 	r.pendingStops = nil
+	base := r.base
 	e.mu.Unlock()
+	noteCommit(noteBase, ext.CommitNote{Run: r.id, Kind: ext.CommitBase, Commit: base, At: time.Now().UTC()})
 	for _, id := range stops {
 		if l, ok := e.lookup(id); ok {
 			go stopLocal(l)
@@ -2752,7 +2759,12 @@ func (e *Engine) Submit(ctx context.Context, sessionID string, res Result) (Task
 		go e.verify(r, a)
 	}
 	st := r.taskStateOf(t)
+	notes := e.commitNotes
 	e.mu.Unlock()
+	if t.def.Kind == TaskWork {
+		// A candidate recorded: a context provider is told of it.
+		noteCommit(notes, ext.CommitNote{Run: r.id, Task: t.def.ID, Attempt: a.n, Kind: ext.CommitCandidate, Commit: head, At: time.Now().UTC()})
+	}
 	return st, false, nil
 }
 

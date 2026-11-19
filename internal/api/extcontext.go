@@ -43,6 +43,21 @@ func (s *Server) wireContext() {
 	if len(s.exts.context) > 0 {
 		s.events.addSink(s.noteTouches)
 	}
+	// The commit notes (ext.CommitNoter): set only when a context provider
+	// takes them, each such provider's own queue fed without waiting.
+	var noters []*guardContext
+	for _, g := range s.exts.context {
+		if g.commits != nil {
+			noters = append(noters, g)
+		}
+	}
+	if len(noters) > 0 {
+		s.runs.SetCommitNotes(func(n ext.CommitNote) {
+			for _, g := range noters {
+				g.commits.push(n)
+			}
+		})
+	}
 }
 
 // contextFor answers the context blocks for the attempt q: every provider
@@ -64,7 +79,7 @@ func (s *Server) contextFor(ctx context.Context, q ext.ContextQuery) []crew.Task
 	size := 0
 	for i, bs := range answers {
 		for _, b := range bs {
-			c := crew.TaskContext{Source: providers[i].Name(), Title: b.Title, Ref: b.Ref, Body: b.Body}
+			c := crew.TaskContext{Source: providers[i].Name(), Title: b.Title, Ref: b.Ref, Body: b.Body, Pack: b.Pack}
 			blocks = append(blocks, c)
 			size += crew.TaskContextBytes(c)
 		}

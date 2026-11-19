@@ -167,7 +167,7 @@ func TestEngineAsksContextOutsideTheLock(t *testing.T) {
 		t.Fatalf("launched %d before the context was answered", n)
 	}
 	tree := filepath.Join(dir, ".conductor", "worktrees", run.ID, "build.1")
-	want := ext.ContextQuery{Run: run.ID, Crew: c.ID, Task: "build", Attempt: 1, Kind: TaskWork, Goal: c.Goal, Instructions: "Do build.", Worktree: tree, Dir: tree, Start: base}
+	want := ext.ContextQuery{Run: run.ID, Crew: c.ID, Task: "build", Attempt: 1, Kind: TaskWork, Goal: c.Goal, Instructions: "Do build.", Worktree: tree, Dir: tree, Start: base, Base: base}
 	if !reflect.DeepEqual(a.q, want) {
 		t.Fatalf("the query:\n got %+v\nwant %+v", a.q, want)
 	}
@@ -196,7 +196,7 @@ func TestEngineAsksContextOutsideTheLock(t *testing.T) {
 	result := strings.TrimSpace(runGit(t, tree, "rev-parse", "HEAD"))
 	submit(t, e, build.Attempt.SessionID, Result{Summary: "built it"})
 	a = <-calls
-	if a.q.Task != "check" || a.q.Kind != TaskReview || a.q.Start != result || !reflect.DeepEqual(a.q.Inputs, []ext.ContextInput{{Task: "build", Commit: result}}) {
+	if a.q.Task != "check" || a.q.Kind != TaskReview || a.q.Start != result || !reflect.DeepEqual(a.q.Inputs, []ext.ContextInput{{Task: "build", Commit: result, Attempt: 1, Start: base}}) {
 		t.Fatalf("the review's query: %+v", a.q)
 	}
 	a.gate <- nil
