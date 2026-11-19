@@ -4909,7 +4909,8 @@ before this (ledger version 9 or earlier) has none of `request`, `start`
 and `findingsFrom` and reads as before; the ledger's version 10 changes
 no table and is a barrier, so an older binary opens it read-only rather
 than dropping a request it does not know. Version 13 is a provider's
-launch's (A provider's launch, below).
+launch's (A provider's launch, below), and version 14 a decision
+router's outcome outbox (Decisions, Routed decisions).
 
 **Commands with receipts.** A person's change to a managed run (pause,
 unpause, cancel, retry, accept) is a command: the client mints a `commandId`
@@ -8451,6 +8452,16 @@ the authority `{via: router}` and no grant, which `local/1` refuses
 (`not_approver`, "refused under local/1") whatever principal the subject
 names: kept as a refused response with its `responded` row, never
 applied. The operator answers it as any other.
+
+The ledger's version 14 adds the outcome outbox (`decision_outbox`): one
+row at most for each decision record that carried a router's policy,
+written as the record reaches its final state and kept until the router
+acknowledges it, the row self-contained and outliving a run pruned since.
+No record before it has a row, nothing is derived for one, and nothing
+writes or reads the table yet; a server with no router writes none. A
+build that writes version 13 opens such a ledger read-only: it launches
+no crew with tasks there and rewrites nothing; opened again by a build
+that writes 14, it is as it was.
 
 ### Capacity
 
