@@ -181,13 +181,15 @@ const chipRows = computed<FilterGroup[]>(() => {
     { name: 'outcome' as const, label: FILTER_WORDS.outcome, chips: outcomeChips() },
   ].filter((r) => r.chips.length || r.more?.length)
 })
-const chipOn = (name: HistoryFilter, value: string) => filterOf(text.value, name) === value
+// An agent's chip is pressed by its id as the server reads it: lower case, each value once (`agent:Codex`, `agent:codex,codex`).
+const agentValue = (v: string) => [...new Set(v.toLowerCase().split(',').filter(Boolean))].join(',')
+const chipOn = (name: HistoryFilter, value: string) => (name === 'agent' ? agentValue(filterOf(text.value, name)) === value : filterOf(text.value, name) === value)
 // On a narrow window the groups wait behind Filters, its count the filters on (the words are not one).
 const filtersOpen = ref(false)
 const filterCount = computed(() => active.value.filter((f) => f.name !== 'words').length)
 /** A chip pressed: its filter written into the query (the one value it holds), or taken out when it already held that value. */
 function press(name: HistoryFilter, value: string) {
-  text.value = withFilter(text.value.trim(), name, filterOf(text.value, name) === value ? '' : value)
+  text.value = withFilter(text.value.trim(), name, chipOn(name, value) ? '' : value)
 }
 
 // ---- What filters the search, listed under the box, each with its own ×, and Clear all beside them (#1023). Clear all empties the
@@ -337,10 +339,10 @@ const CAPTION = 'What was said (Conversation), decided (Decision) and checked (a
                 <template v-else>The latest sessions</template>
               </p>
               <!-- The rows under day headings that stay at the top while their day scrolls; a thin rule between rows, no cards. -->
-              <section v-for="d in days" :key="d.day" class="min-w-0" :aria-labelledby="`history-day-${d.day || 'undated'}`" :data-history-day="d.day || 'undated'">
-                <h3 :id="`history-day-${d.day || 'undated'}`" class="sticky top-0 z-20 -mx-1 border-b border-default bg-default/95 px-3 py-1.5 text-xs font-semibold text-toned backdrop-blur" data-history-day-heading>{{ d.label }}</h3>
+              <section v-for="d in days" :key="d.key" class="min-w-0" :aria-labelledby="`history-day-${d.key}`" :data-history-day="d.day || 'undated'">
+                <h3 :id="`history-day-${d.key}`" class="sticky top-0 z-20 -mx-1 border-b border-default bg-default/95 px-3 py-1.5 text-xs font-semibold text-toned backdrop-blur" data-history-day-heading>{{ d.label }}</h3>
                 <ul class="flex flex-col divide-y divide-default">
-                  <HistoryRow v-for="e in d.entries" :key="e.key" :entry="e" :now="now" />
+                  <HistoryRow v-for="e in d.entries" :key="e.key" :entry="e" :now="now" :searched="!!query" />
                 </ul>
               </section>
               <div v-if="shown.next" class="flex justify-center">

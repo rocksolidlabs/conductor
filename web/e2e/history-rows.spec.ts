@@ -1,7 +1,11 @@
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import type { Locator } from '@playwright/test'
 import { Api, budget, expect, test, type Session } from './fixtures'
 import { noSideways, tapTarget } from './layout'
 import { walk, worst } from './contrast'
+import { renderConfig, scratchRepo, START_WAIT_MS, startServer, stopServer, type Started } from './server'
 
 // The History page's rows and filters as the review of its screens asked (#1024): a row's name is its first text, its state one word of
 // the app's status language, its time at the right, its action written out (Open, Transcript) and done by Enter on it; the rows under
@@ -131,6 +135,9 @@ test('on a phone the results follow the search, the groups wait behind Filters, 
     expect(first!.y + first!.height).toBeLessThan(844)
     expect(first!.y - (box!.y + box!.height)).toBeLessThan(200)
     await expect(pageEl.locator('[data-history-chips]')).toBeHidden()
+    // A phone's row leaves the id out of its line (it would take a line of its own): the line's title holds it.
+    await expect(row.locator('[data-history-row-id]')).toBeHidden()
+    await expect(row.locator('[data-history-row-detail]')).toHaveAttribute('title', new RegExp(`id ${s.id}`))
 
     // The active filters on one line that scrolls sideways, Clear all beside it, each a 44 px target.
     const tops = await pageEl.locator('[data-history-active]').evaluateAll((els) => els.map((e) => Math.round(e.getBoundingClientRect().top)))
@@ -160,4 +167,93 @@ test('on a phone the results follow the search, the groups wait behind Filters, 
   } finally {
     await api.stopSession(s.id).catch(() => undefined)
   }
+})
+
+// The ranked answer's test runs its own server, ended after it (a test run again starts its own, on data of its own).
+let own: Started | null = null
+let ownLog = ''
+test.afterEach(async () => {
+  if (own) await stopServer(own.pid)
+  own = null
+  if (ownLog) {
+    mkdirSync('test-results', { recursive: true })
+    copyFileSync(ownLog, 'test-results/history-rows-server.log')
+  }
+  ownLog = ''
+})
+
+test("a word search keeps the server's ranked order under its day headings, and Show more's rows land at the end", async ({ state, page }) => {
+  // Records of three days ago that match the words best, and today's that match them less well, more than a page (20) of them: the
+  // server ranks the best first, so the days alternate from today's order. Records are dated by their start (the record's file, edited
+  // while the server is stopped, the index rebuilt from them at the next start).
+  const STOP_MS = 5_000 // stopServer's SIGTERM wait
+  const here = dirname(fileURLToPath(import.meta.url))
+  const root = mkdtempSync(join(state.root, 'history-ranked-'))
+  const [home, data, repo] = ['home', 'data', 'repo'].map((d) => join(root, d)) as [string, string, string]
+  for (const d of [home, data, repo]) mkdirSync(d, { recursive: true })
+  scratchRepo(repo)
+  const config = join(root, 'conductor.json')
+  renderConfig(join(here, 'conductor.e2e.json'), config)
+  ownLog = join(root, 'server.log')
+  const start = () => startServer({ config, home, data, allowedRoot: root, defaultCwd: repo, log: ownLog })
+  budget(START_WAIT_MS)
+  own = await start()
+  let api = new Api(own)
+
+  const tag = `rk${Date.now().toString(36)}`
+  const strong = 3
+  const weak = 19
+  budget((strong + weak) * 2 * STEP_MS)
+  const made: Array<{ id: string; strong: boolean }> = []
+  for (let i = 0; i < strong + weak; i++) {
+    const isStrong = i < strong
+    // The best matches: the words alone in a short name; the weaker: the word among many others.
+    const name = isStrong ? `${tag} ${tag}` : `${tag} weaker match number ${i} among several other words of a longer name`
+    const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name })
+    made.push({ id: s.id, strong: isStrong })
+  }
+  for (const m of made) await api.stopSession(m.id)
+  for (const m of made) await expect.poll(async () => (await api.ok<{ record: { endedAt?: string } }>('GET', `/api/history/sessions/${m.id}`)).record.endedAt ?? '', { timeout: STEP_MS }).not.toBe('')
+
+  // Stopped: the best matches moved three days back, the index left to be built again from the records.
+  budget(STOP_MS + START_WAIT_MS + INDEX_MS)
+  await stopServer(own.pid)
+  own = null
+  const back = (iso?: string) => (iso ? new Date(Date.parse(iso) - 3 * 86_400_000).toISOString() : iso)
+  const records = join(data, 'history', 'sessions')
+  for (const m of made.filter((x) => x.strong)) {
+    const file = join(records, `${m.id}.json`)
+    const r = JSON.parse(readFileSync(file, 'utf8')) as { startedAt: string; endedAt?: string; entries?: Array<{ at: string }> }
+    r.startedAt = back(r.startedAt)!
+    r.endedAt = back(r.endedAt)
+    for (const e of r.entries ?? []) e.at = back(e.at)!
+    writeFileSync(file, JSON.stringify(r))
+  }
+  for (const f of readdirSync(join(data, 'history'))) if (f.startsWith('index.sqlite')) rmSync(join(data, 'history', f))
+  own = await start()
+  api = new Api(own)
+  const q = `${tag} kind:session`
+  const first = () => api.ok<{ entries: Array<{ key: string; at: string }>; next?: string }>('GET', `/api/history?q=${encodeURIComponent(q)}&limit=20`)
+  await expect.poll(async () => { const r = await first(); return r.entries.length === 20 && !!r.next && r.entries.slice(0, strong).every((e) => made.some((m) => m.strong && `session:${m.id}` === e.key)) }, { timeout: INDEX_MS, message: 'the ranked answer: the three best, of three days ago, first, and a second page' }).toBe(true)
+  const page1 = await first()
+  const page2 = (await api.ok<{ entries: Array<{ key: string }> }>('GET', `/api/history?q=${encodeURIComponent(q)}&limit=20&after=${encodeURIComponent(page1.next!)}`)).entries.map((e) => e.key)
+  expect(page2.length).toBeGreaterThan(0)
+
+  budget(30_000 + 8 * STEP_MS)
+  await page.addInitScript((t) => localStorage.setItem('conductor.workbenchToken', t), own.token)
+  await page.goto(`${own.baseURL}/history?q=${encodeURIComponent(q)}`)
+  const pageEl = page.locator('[data-history-page]')
+  const rows = pageEl.locator('[data-history-row]')
+  await expect(rows).toHaveCount(20, { timeout: 30_000 })
+  // The server's order is the page's: its best match first, under its own day's heading, then Today.
+  expect(await rows.evaluateAll((els) => els.map((e) => e.getAttribute('data-history-row')))).toEqual(page1.entries.map((e) => e.key))
+  const headings = pageEl.locator('[data-history-day-heading]')
+  await expect(headings).toHaveCount(2)
+  await expect(headings.nth(0)).not.toHaveText('Today')
+  await expect(headings.nth(1)).toHaveText('Today')
+  // Show more: the next page's rows land after every row already read, in its order.
+  await pageEl.locator('[data-history-more]').click()
+  await expect(rows).toHaveCount(20 + page2.length, { timeout: 30_000 })
+  expect(await rows.evaluateAll((els) => els.map((e) => e.getAttribute('data-history-row')))).toEqual([...page1.entries.map((e) => e.key), ...page2])
+  await expect(headings).toHaveCount(2)
 })

@@ -97,15 +97,36 @@ describe('the rows under day headings, by the local day (#1024)', () => {
     expect(dayWords('2026-11-16', now)).toBe('Mon 16 Nov')
     expect(dayWords('2025-12-31', now)).toBe('Wed 31 Dec 2025')
   })
-  it('groups by the local day, the days newest first, each day in the answer’s order, a key twice kept once, the undated last', () => {
-    const e = (key: string, a: string) => ({ key, at: a })
-    const groups = byDay([e('a', at(16, 9)), e('b', at(18, 8)), e('c', at(16, 23)), e('d', 'not a time'), e('b', at(18, 8)), e('f', at(17, 0)), e('g', at(18, 14))], now)
-    expect(groups.map((g) => [g.label, g.entries.map((x) => x.key)])).toEqual([
-      ['Today', ['b', 'g']],
-      ['Yesterday', ['f']],
-      ['Mon 16 Nov', ['a', 'c']],
-      ['Undated', ['d']],
+  const e = (key: string, a: string) => ({ key, at: a })
+  const brief = (gs: ReturnType<typeof byDay<{ key: string; at: string }>>) => gs.map((g) => [g.label, g.entries.map((x) => x.key)])
+  it('gives a newest-first answer one heading a day, a key twice kept once', () => {
+    const groups = byDay([e('a', at(18, 14)), e('b', at(18, 8)), e('b', at(18, 8)), e('c', at(17, 0)), e('d', at(16, 23)), e('f', at(16, 9))], now)
+    expect(brief(groups)).toEqual([
+      ['Today', ['a', 'b']],
+      ['Yesterday', ['c']],
+      ['Mon 16 Nov', ['d', 'f']],
     ])
+  })
+  it("keeps a ranked answer's order: a heading wherever the day changes, the best match first, Show more's rows at the end", () => {
+    // The server ranks a search with words by score: its days alternate.
+    const page1 = [e('old', at(16, 9)), e('new', at(18, 8)), e('mid', at(17, 0)), e('new2', at(18, 6)), e('undated', 'not a time')]
+    const groups = byDay(page1, now)
+    expect(brief(groups)).toEqual([
+      ['Mon 16 Nov', ['old']],
+      ['Today', ['new']],
+      ['Yesterday', ['mid']],
+      ['Today', ['new2']],
+      ['Undated', ['undated']],
+    ])
+    // Each run has its own key, though a day heads two of them.
+    expect(new Set(groups.map((g) => g.key)).size).toBe(groups.length)
+    // Show more appends the next page: its rows land after every row already read, a key seen on page 1 not again.
+    const more = byDay([...page1, e('today2', at(18, 7)), e('old', at(16, 9)), e('older', at(16, 1))], now)
+    expect(brief(more).slice(-2)).toEqual([
+      ['Today', ['today2']],
+      ['Mon 16 Nov', ['older']],
+    ])
+    expect(brief(more).slice(0, 5)).toEqual(brief(groups))
   })
   it("gives a row its local clock time", () => {
     expect(clockTime(new Date(2026, 10, 18, 9, 5).toISOString())).toBe('09:05')
@@ -130,6 +151,11 @@ describe("the Agent filter's order (#1024)", () => {
     const c = agentChips(agents, { claude: 1 }, ['goose'])
     expect(c.shown.map((x) => x.value)).toEqual(['claude', 'goose'])
     expect(c.more.map((x) => x.value)).toEqual(['aider', 'codex'])
+  })
+  it('reads a pressed agent as the server does: lower case, each once, never a second chip', () => {
+    const c = agentChips(agents, { claude: 1 }, ['Codex', 'codex', 'CLAUDE'])
+    expect(c.shown.map((x) => x.value)).toEqual(['claude', 'codex'])
+    expect(c.more.map((x) => x.value)).toEqual(['aider', 'goose'])
   })
   it('with no history yet, every agent is behind More', () => {
     expect(agentChips(agents, {}).shown).toEqual([])
