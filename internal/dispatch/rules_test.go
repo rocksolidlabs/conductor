@@ -1204,9 +1204,11 @@ func TestEveryNewFieldHasItsClass(t *testing.T) {
 		cols := columnsOf(t, s.db, tableOf[entity])
 		classed := 0
 		for _, col := range cols {
-			if col == "rev" {
+			// A rev is a replica's own count; a revision's view_digest and
+			// body_here (version 8) are what this replica holds of it.
+			if col == "rev" || entity == EntityPlan && (col == "view_digest" || col == "body_here") {
 				if got := Class(entity, col); got != "" {
-					t.Errorf("%s.rev has the class %q: a rev is a replica's own count", entity, got)
+					t.Errorf("%s.%s has the class %q: it is a replica's own", entity, col, got)
 				}
 				continue
 			}

@@ -80,7 +80,7 @@ func TestMigrationToFindingCapturesKeepsEveryRow(t *testing.T) {
 	}
 	before, cols := map[string][]string{}, map[string][]string{}
 	for _, table := range tables {
-		if table == "tickets_fts" || table == "schema_version" {
+		if slices.Contains(version8Tables, table) || table == "tickets_fts" || table == "schema_version" {
 			continue
 		}
 		cols[table] = columnsOf(t, raw, table)
@@ -143,7 +143,7 @@ func TestMigrationToFindingCapturesKeepsEveryRow(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { older.Close() })
-	if ro, why := older.ReadOnly(); !ro || !strings.Contains(why, fmt.Sprintf("version %d, written by a newer Conductor", findingCaptureSchema)) {
+	if ro, why := older.ReadOnly(); !ro || !strings.Contains(why, fmt.Sprintf("version %d, written by a newer Conductor", Version)) {
 		t.Fatalf("read-only %v: %s", ro, why)
 	}
 	rc, _, err := older.MarkFinding(ctx, testOp("older-mark"), v.Findings[0].ID, NewMark{Candidate: v.Candidate, Verdict: FindingWithdrawn, Via: ViaWeb}, nil)
