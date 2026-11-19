@@ -2,7 +2,7 @@ import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it, vi } from 'vitest'
-import { checkAddress, makeBridge, MAX_ADDRESS, PLAIN_WORDS, type ListenerHandle, type NativeLayer, type ProviderKit, type StoreArea } from '../src/bridge'
+import { checkAddress, makeBridge, MAX_ADDRESS, MAX_HTTP_BODY, PLAIN_WORDS, type ListenerHandle, type NativeLayer, type ProviderKit, type StoreArea } from '../src/bridge'
 
 // The phone shell's bridge over a fake native layer (docs/plans/phone-shell.md, OSS-1a, Tests per surface, mobile/test/bridge.test.ts):
 // a provider module registers once, and only before the workbench reads the bridge; its factory alone is handed the key, the store,
@@ -136,6 +136,27 @@ describe('a provider module', () => {
     expect(Object.keys(bridge).sort()).toEqual(['links', 'openServer', 'platform', 'provider', 'push', 'register', 'servers', 'v'])
     expect(JSON.stringify([...held].filter((v) => typeof v === 'string'))).not.toContain('tok-1')
     expect(Object.isFrozen(bridge)).toBe(true)
+  })
+
+  it("is handed a reply's body as its text, byte for byte, never parsed; one that is not text, or past the bound, refused", async () => {
+    const { native } = fakeNative()
+    // Key order, spacing and escapes that a parse and a re-encoding would change.
+    const body = '{"z":1,  "a":[2,1],\n "s":"\\u00e9t\u00e9", "n":1.50}'
+    native.http.request = vi.fn(async () => ({ status: 200, headers: { 'content-type': 'application/json' }, data: body }))
+    const { bridge } = makeBridge(native, quiet())
+    let kit: ProviderKit | undefined
+    bridge.register((k: ProviderKit) => ((kit = k), { name: 'P' }))
+    const sent = '{"b":2,"a":1}'
+    const r = await kit!.http({ url: 'https://relay.example.test/v1/x', method: 'POST', data: sent })
+    expect(r.data).toBe(body)
+    expect(r.status).toBe(200)
+    expect(native.http.request).toHaveBeenCalledWith({ url: 'https://relay.example.test/v1/x', method: 'POST', data: sent, responseType: 'text' })
+    native.http.request = vi.fn(async () => ({ status: 200, headers: {}, data: { parsed: true } }))
+    await expect(kit!.http({ url: 'https://relay.example.test/' })).rejects.toMatchObject({ code: 'unreadable' })
+    native.http.request = vi.fn(async () => ({ status: 200, headers: {}, data: 'x'.repeat(MAX_HTTP_BODY + 1) }))
+    await expect(kit!.http({ url: 'https://relay.example.test/' })).rejects.toMatchObject({ code: 'too_large' })
+    native.http.request = vi.fn(async () => ({ status: 200, headers: {}, data: 'é'.repeat(MAX_HTTP_BODY / 2) }))
+    expect((await kit!.http({ url: 'https://relay.example.test/' })).data).toHaveLength(MAX_HTTP_BODY / 2)
   })
 
   it("is handed the drafts and cache areas of the store, never the shell's servers area", async () => {

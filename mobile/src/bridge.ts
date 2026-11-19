@@ -58,7 +58,8 @@ export interface NativeLayer {
     getLaunchUrl(): Promise<{ url?: string } | undefined>
   }
   browser: { open(o: { url: string }): Promise<void> }
-  http: { request(o: { url: string; method?: string; headers?: Record<string, string>; data?: unknown }): Promise<{ status: number; headers: Record<string, string>; data: unknown }> }
+  /** The native HTTP call: asked for the body as text (`responseType: 'text'`), it answers it as received, never parsed. */
+  http: { request(o: { url: string; method?: string; headers?: Record<string, string>; data?: string; responseType: 'text' }): Promise<{ status: number; headers: Record<string, string>; data: unknown }> }
 }
 
 /** What the page offers the bridge: where it is, and how a browser opens a tab (the platform `web`). */
@@ -78,7 +79,12 @@ export interface ProviderKit {
     clear(): Promise<void>
   }
   push: { token(): string | null; onToken(cb: (token: string) => void): () => void }
-  http: NativeLayer['http']['request']
+  /**
+   * The native HTTP call. The request's body is sent exactly as given; the reply's body comes back as its text, exactly as
+   * received, never parsed (a provider verifies signatures and hashes over the exact bytes), at most MAX_HTTP_BODY bytes. A reply
+   * that is not text is refused `unreadable`, one past the bound `too_large`.
+   */
+  http: (o: { url: string; method?: string; headers?: Record<string, string>; data?: string }) => Promise<{ status: number; headers: Record<string, string>; data: string }>
 }
 
 /** The bridge the workbench reads (web/app/utils/shell.ts types it whole). */
@@ -100,6 +106,8 @@ export interface Bridge {
 /** The bounds of Open a server: an address's bytes, and how many are kept. */
 export const MAX_ADDRESS = 2048
 export const RECENT_SERVERS = 5
+/** The bound of a reply's body the native HTTP call hands a provider, in bytes of its UTF-8 text. */
+export const MAX_HTTP_BODY = 1024 * 1024
 /** The words an `http://` address is opened with. */
 export const PLAIN_WORDS = 'This address is not encrypted: use it only on a network you trust'
 /** The record in the servers area that keeps the last addresses, newest first. */
@@ -253,7 +261,12 @@ export function makeBridge(native: NativeLayer | null, host: PageHost): { bridge
         },
         store: providerStore(native.store),
         push: { token: () => token, onToken: (cb) => (tokenListeners.add(cb), () => tokenListeners.delete(cb)) },
-        http: (o) => native.http.request(o),
+        http: async (o) => {
+          const r = await native.http.request({ ...o, responseType: 'text' })
+          if (typeof r.data !== 'string') return refuse({ code: 'unreadable', words: 'The reply was not handed over as its text.' })
+          if (new TextEncoder().encode(r.data).length > MAX_HTTP_BODY) return refuse({ code: 'too_large', words: `The reply is longer than ${MAX_HTTP_BODY} bytes.` })
+          return { status: r.status, headers: r.headers, data: r.data }
+        },
       }
     : { ...refusingKit(), push: { token: () => null, onToken: () => () => {} } }
 
