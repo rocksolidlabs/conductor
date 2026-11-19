@@ -68,7 +68,7 @@ func TestOpenMakesTheSchema(t *testing.T) {
 		tables = append(tables, n)
 	}
 	rows.Close()
-	if want := "attempts checks commands decision_history decision_holds decision_refunds decision_responses decisions events messages prerequisites previews run_origin runs schema_version sqlite_sequence tasks trees"; strings.Join(tables, " ") != want {
+	if want := "attempts checks commands decision_history decision_holds decision_outbox decision_refunds decision_responses decisions events messages prerequisites previews run_origin runs schema_version sqlite_sequence tasks trees"; strings.Join(tables, " ") != want {
 		t.Fatalf("tables %v", tables)
 	}
 	newRun(t, l, "team-00000001")
@@ -91,8 +91,8 @@ func TestOpenMakesTheSchema(t *testing.T) {
 // read-only, written by a newer Conductor, its writes and its recovery
 // refused and its rows as they were.
 func TestTheLedgerVersionFencesComparisons(t *testing.T) {
-	if Version != 13 {
-		t.Fatalf("Version %d: the comparisons' barrier is 12, and 13 the version after it", Version)
+	if Version != 14 {
+		t.Fatalf("Version %d: the comparisons' barrier is 12, and 13 and 14 the versions after it", Version)
 	}
 	dir := filepath.Join(t.TempDir(), "runs")
 	l := openLedger(t, dir)
@@ -129,7 +129,8 @@ func TestTheLedgerVersionFencesComparisons(t *testing.T) {
 	l.Close()
 
 	// 11 to 12, and on to Version: the same tables, every row as it was
-	// (version 13's table, which 11 lacks, dropped first and made again).
+	// (version 13's and 14's tables, which 11 lacks, dropped first and
+	// made again).
 	rawExec(t, dir, append(slices.Clone(version13Added), "UPDATE schema_version SET version = 11")...)
 	migrated := openLedger(t, dir)
 	if ro, why := migrated.ReadOnly(); ro {

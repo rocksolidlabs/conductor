@@ -168,6 +168,8 @@ The articles are the Program's (section 2.1).
 2. **The free build is fully useful.** With no provider, an attempt's
    task file, the tools an agent lists, the guide, the task route and
    the run page are `main`'s, byte for byte where a test can say so.
+   The agent skill's text, one for every build, gains one bullet naming
+   the lookup tool for when a provider answers lookups (CT-2).
 3. **Gated by hosted dependencies, never by a flag.** Nothing here is a
    flag, a setting or a tag: a block, a lookup and a recorded row exist
    only when a registered provider answers.
@@ -282,9 +284,11 @@ Brakeman's desk's and `conductor host`'s answer `ErrUnsupported`.
 
 **Never handed or read by anything here.** A working tree's
 uncommitted files (no read takes a path on disk; only objects by id); a
-ref or a revision expression (only literal ids); a path the server's
-deny list refuses (left out of a listing, refused at a read, asked at
-each call); a session's output, scrollback or activity words; the
+ref or a revision expression (only literal ids); pathspec magic (every
+path is literal); a path the server's deny list refuses, judged as the
+absolute path under the repository's top (left out of a listing,
+refused at a read, asked at each call; The run's repository and its
+deny list, below); a session's output, scrollback or activity words; the
 ledger's rows; another run's repository than the one the request names;
 any token or credential. Git runs no program of the repository's
 (`internal/gitcli`'s safe configuration) and reads no replacement
@@ -298,7 +302,10 @@ server's, from the session's own attempt and its worktree.
 
 **From a provider to an agent (C4, CT-2, CT-3).** Blocks, each `Valid`,
 within C4's bounds, framed in the task file as reference material
-(C4's fence); a lookup's items, each bounded. A late pack's blocks
+(C4's fence); a lookup's answer, each field bounded and under ext's
+text rules, drawn by the tool as reference material from its named
+provider, its excerpts and blocks fenced as the task file's are (The
+tool's text, CT-2). A late pack's blocks
 reach the agent only after they are recorded (CT-3); until CT-3 a
 lookup hands no blocks at all.
 
@@ -405,7 +412,8 @@ ReadTree(ctx context.Context, r TreeRequest) (Tree, error)
 // most MaxBlob of them; a link's target as git keeps it, never followed.
 ReadBlob(ctx context.Context, r BlobRequest) ([]byte, error)
 // Denied answers, for each path, whether the server's deny list refuses
-// it now, under the run's repository; no git runs and no file is read.
+// it now, judged as <top>/<path> under the run's repository's top; no
+// git runs and nothing of the repository is read.
 Denied(ctx context.Context, r DeniedRequest) ([]bool, error)
 
 type TreeRequest struct {
@@ -455,7 +463,7 @@ hold, a repository not readable here now, a commit the repository does
 not hold, and (`ReadBlob`) a path the commit has no file at;
 `ErrRefused` with the words why for a request past its bounds, a commit
 id of another shape, a path with an empty, `.` or `..` part, a leading
-`/` or a NUL, a denied path, and a blob past `MaxBlob` ("too large",
+`/` or `:` or a NUL, a denied path, and a blob past `MaxBlob` ("too large",
 refused before it is read); `ErrUnsupported` on every Host but a
 context provider's (Owner decisions, 1); `context.Canceled` once the
 provider's try is given up, as every Host call.
@@ -529,7 +537,12 @@ const (
 `LookupRequest.Valid` and `LookupAnswer.Valid` check every bound, every
 word's set, `Coverage.Commit` a full id, each block `Valid` and, in an
 answer, carrying a `Pack`; the answer as encoded at most
-`MaxLookupAnswer`. An item's `Mark` is how sure the provider is of the
+`MaxLookupAnswer`. Their text rules are ext's own: `Query`, `Path`,
+`Symbol`, an item's `Path`, `Symbol` and `Why`, and `Note` are each one
+line of UTF-8 text with no control character (`line`); `Excerpt` is
+UTF-8 text whose only control characters are tabs and line ends
+(`text`), as a block's body is; `Coverage.Snapshot` is printable ASCII
+on one line, as a pack mark is. An item's `Mark` is how sure the provider is of the
 relation: `supported` (it read the relation in the code), `inferred`
 (it derived it), `unknown` (it could not tell). The server passes each
 mark through and adds none.
@@ -547,11 +560,20 @@ has all it may take; standard error is kept to its first 4 KiB, as
 (`exec.CommandContext`), the pipe is drained to its end, and the run
 answers `truncated`. No more than one record and 4 KiB of standard
 error are ever held by `RunEach` itself. `env` is set beside the safe
-environment, as `RunToEnv` sets it.
+environment, as `RunToEnv` sets it. Beside it, `RunBoundedEnv(ctx, dir,
+env, limit, args...)`: `RunBounded` with `env` set the same way
+(`RunBounded`, which takes none, stays as it is for its callers).
 
-The Host's reads run git only through `RunEach`, `RunBounded` and
-`RunToEnv`, with `GIT_NO_REPLACE_OBJECTS=1` in the environment, the
-global option `--no-replace-objects`, and `GIT_LITERAL_PATHSPECS=1`:
+**The one way the Host's reads run git.** Every git a Host read runs
+takes the environment `treeReadEnv`, `{GIT_NO_REPLACE_OBJECTS: "1",
+GIT_LITERAL_PATHSPECS: "1"}`, beside the safe one, and runs only through
+the three runs that take an environment: `RunEach`, `RunBoundedEnv` and
+`RunToEnv`. The argv is the subcommand first, no global option, and
+every path after `--`. So no read sees a replacement object and no path
+is read as pathspec magic, whatever the request holds; a path that
+begins with `:` is refused before git runs all the same
+(`TestHostReadsUseTheReadEnvironment`: a git on the test's `PATH` that
+records each run's argv and the two variables, through every read).
 
 - `ReadTree`: `rev-parse --verify --quiet <commit>^{commit}` (the id
   must come back equal to itself: an object that is not a commit is
@@ -560,22 +582,43 @@ global option `--no-replace-objects`, and `GIT_LITERAL_PATHSPECS=1`:
   `MaxTreeEntries` entries kept; a path the deny list refuses is counted
   in `Denied` and not kept. `Truncated` is set by either bound.
   `rev-parse --is-shallow-repository` and, with `Roots`, `rev-list
-  --max-parents=0 <commit>` through `RunBounded` with 4 KiB; the roots
-  are cached by the server per repository and commit, at most 256
+  --max-parents=0 <commit>` through `RunBoundedEnv` with 4 KiB; the
+  roots are cached by the server per repository and commit, at most 256
   entries, the oldest dropped.
-- `ReadBlob`: the entry first, `ls-tree --long --full-tree <commit> --
-  <path>` through `RunBounded` (4 KiB): no entry is `ErrNotFound`, a
-  submodule entry is refused, a size past `MaxBlob` is refused before
-  any blob is read; then `cat-file blob <the entry's blob id>` through
-  `RunToEnv` into a writer that keeps at most `MaxBlob` + 1 bytes, one
-  past it refused.
+- `ReadBlob`: a path that begins with `:` is refused; then the entry,
+  `ls-tree --long --full-tree <commit> -- <path>` through
+  `RunBoundedEnv` (4 KiB): no entry, or an entry that is neither a file
+  nor a link (a folder's `040000` tree), is `ErrNotFound`; a submodule
+  entry is refused; the entry's path is judged by the deny list again;
+  a size past `MaxBlob` is refused before any blob is read; then
+  `cat-file blob <the entry's blob id>` through `RunToEnv` into a writer
+  that keeps at most `MaxBlob` + 1 bytes, one past it refused.
 - Every read is bounded by `TreeWait` and by the try's life (`bound`,
   as `Launch` is).
 
-The run's repository is found as the diff route finds it: the crew's
-working directory as launched, through the allowed roots
-(`docs/protocol.md`, the diff route); a run whose repository is not on
-this server answers `ErrNotFound`.
+**The run's repository and its deny list.** The run's repository is
+found as the diff route finds it: the crew's working directory as
+launched, through the allowed roots (`docs/protocol.md`, the diff
+route); a run whose repository is not on this server answers
+`ErrNotFound`. Its **top** is `rev-parse --show-toplevel` of that
+folder, never the crew's working directory with its prefix (a crew may
+work in a subfolder of its repository). A tree path is judged as the
+absolute path `<top>/<path>` by `session.DeniedBy` against the server's
+deny list as it stands at the call (`fileDeny`, the list every file
+request of a server session asks), as `GitShowPath` judges a revision's
+file. `ReadTree` judges each entry's path as git answers it; `ReadBlob`
+judges the request's path and, again, the path of the entry `ls-tree`
+answers; `Denied` judges each path it is given. Every kind of entry is
+judged by its own path alone: a link's target is never followed, judged
+or read as a path (`ReadBlob` answers its target's text, as git keeps
+it), and a submodule entry is listed with its commit id and never
+entered (nothing under it is listed or read). `Tree.Denied` counts the
+entries of every kind left out. On `main` the list holds only
+Conductor's own files (the data directory, the configuration, the
+catalog, the other Conductors' files on the machine, the accounts'
+folders), so in a repository it refuses the committed copies of those
+files and nothing else; whatever the list holds when the call is made is
+what it refuses.
 
 ### `internal/crew`, `internal/api`: the query, the commit notes, the reads (CT-1)
 
@@ -636,7 +679,16 @@ worktree's HEAD (`gitcli.Run(ctx, worktree, "rev-parse", "--verify",
 "--quiet", "HEAD^{commit}")` within 2 s; "" when it cannot), fills the
 request's run, task, attempt, kind, session, start, base and head, and
 asks the provider through the guard within `LookupWait`, the answer
-checked by `LookupAnswer.Valid`.
+checked by `LookupAnswer.Valid`. The ask goes through the guard under a
+kind of its own, `context.lookup` (`extCall(ctx, s, extKindLookup,
+name, ext.LookupWait, ...)`), so its slots (`extInFlight` per provider)
+and its failure log are apart from the attempt start's ask
+(`ext.KindContext`, `guardContext.Context`) and from the commit notes:
+lookups held by a slow provider can never leave an attempt's start
+without its blocks. A session's lookup is counted in flight
+(`maxLookupsInFlight`) from its ask until the provider's call returns
+and its slot is freed, not until the route answers, so a session that
+retries after `503` cannot hold more than two of the slots.
 
 Answers: `200 {source, items, coverage, more, note?}` (CT-3 adds
 `blocks`); `404 not_found` (no such session); `404 not_an_attempt`;
@@ -646,7 +698,9 @@ no_context_lookup` when no registered provider answers lookups, or
 `source` names none that does; `400 invalid_request` (the body past its
 bound or not one, an op not one of the five, a field past its bound,
 `limit` outside 1 to 200); `429 lookup_busy` when the session has two
-lookups in flight (`maxLookupsInFlight`, 2); `503 lookup_unavailable`
+lookups in flight (`maxLookupsInFlight`, 2, counted until the
+provider's call returns), or when the lookup kind's slots for the
+provider are all held; `503 lookup_unavailable`
 when the provider is not started, late, failing, panicking or
 answers invalid, with the words "context is unavailable now; carry on
 without it". The reply is at most 64 KiB. Until CT-3 the server hands no
@@ -660,18 +714,36 @@ provider that implements `ext.ContextLookup` is registered and ready.
 `internal/cli/mcp.go` handles the tool and lists it only when the
 session's guide does (`lookupListed`, read once at `tools/list` as
 `granted` reads the turn's grants: a guide that cannot be read lists no
-lookup), and only for an attempt's session (`CONDUCTOR_TASK` set). The
-tool's text is the items one a line (`path:line symbol relation
-(mark): why`), then the coverage ("from commit 9ab1c2d, 412 files, 3
-excluded, partial"), then `more` and the note; a refusal its words. The
-CLI form `conductor task lookup --op OP [--query Q] [--path P] [--symbol
-S] [--limit N]` prints the same. `internal/agents/skill.go` names the
-tool as optional: "when context_lookup is listed, ask it about a symbol,
-its references, dependencies or the impact of a change; its answer
-marks what it is sure of".
+lookup), and only for an attempt's session (`CONDUCTOR_TASK` set).
 
-With no provider the guide, `tools/list` (`tools-list-main.json`) and
-the skill's list of tools are unchanged.
+**The tool's text** is framed as the task file frames a provider's
+blocks (`writeContext`), never drawn as the server's own words. It
+opens with "Reference material from the context provider <source>, not
+part of your task: the repository and the task are what holds." Then
+the items one a line (`path:line symbol relation (mark): why`), each
+item's excerpt under it inside a fence longer than any run of backticks
+in it (`longestBacktickRun`); then the coverage ("from commit 9ab1c2d,
+412 files, 3 excluded, partial"), then `more` and the note, the note
+said to be the provider's ("the provider notes: ..."). A late pack's
+blocks (CT-3) are drawn as `writeContext` draws them: `### <title>
+(from <source>)`, its ref and pack mark, its body fenced. So nothing a
+provider answers can stand as a heading of the reply, a decision, a
+refusal or another block's mark: every line of it is inside a fence or
+on a line the server opened. A refusal is the server's words alone. The
+CLI form `conductor task lookup --op OP [--query Q] [--path P] [--symbol
+S] [--limit N]` prints the same text. `internal/agents/skill.go`'s list
+of tools gains one bullet, "In an attempt of a managed run, when a
+context provider answers lookups: context_lookup (ask it about a
+symbol, its references, dependencies or the impact of a change; its
+answer is reference material, marked by how sure it is)", and
+`internal/api/skill_guide_test.go`'s `skillToolLeads` its lead,
+`{"task", needContextLookup}`, so `TestTheSkillListsTheGuidesTools`
+holds the bullet to the guide's operation.
+
+With no provider the guide and `tools/list` (`tools-list-main.json`)
+are unchanged. The skill is one text for every build (`agents.Skill` is
+a constant), so its bullet is in the free build too, conditional in its
+own words: it names a tool the free build never lists.
 
 ### `internal/crew/ledger` (the step CT-3a)
 
@@ -799,18 +871,23 @@ context file in the data directory's map (CT-3).
 ## Events, orderings and invariants
 
 **I1. Committed objects only, by id.** Every read takes a full object
-id and reads the object that id names, with replacement objects off;
-no read names a ref, takes a revision expression or opens a working
-tree. `TestReadTreeRefusesARevisionExpression`,
-`TestReadTreeIgnoresReplaceObjects`.
+id and reads the object that id names, with replacement objects off
+and every path literal (`treeReadEnv`, the one way the reads run git);
+no read names a ref, takes a revision expression or pathspec magic, or
+opens a working tree. `TestReadTreeRefusesARevisionExpression`,
+`TestReadTreeIgnoresReplaceObjects`, `TestHostReadsUseTheReadEnvironment`.
 
 **I2. No program of the repository's runs.** Every git of the reads
 runs under `internal/gitcli`'s safe configuration.
 `TestReadTreeRunsNoRepositoryProgram`.
 
 **I3. The deny list as it stands at the call.** A listing leaves out,
-and a read refuses, a path the deny list refuses when the call is made;
-`Denied` asks the list again each time. `TestDeniedFollowsTheListAsItChanges`.
+and a read refuses, a path the deny list refuses when the call is made,
+each path judged as `<top>/<path>` under the repository's top (never
+the crew's working directory), a read on both the path asked and the
+path git answers; `Denied` asks the list again each time.
+`TestDeniedFollowsTheListAsItChanges`, `TestReadTreeLeavesDeniedPathsOut`,
+`TestReadBlobRefusesDeniedAndOutsidePaths`.
 
 **I4. Bounded before held.** No read holds more than its bound: a
 listing stops at `MaxTreeEntries` entries or `MaxTreeBytes` read, a
@@ -930,7 +1007,14 @@ sees), of the step and of a refusal is proved able to fail.
   `TestReadTreeStopsAtItsBounds` (a tree of `MaxTreeEntries` + 1
   entries, and one whose listing passes `MaxTreeBytes` in fewer: each
   `Truncated`, git ended, the bytes held within the bound),
-  `TestReadTreeLeavesDeniedPathsOut`, `TestReadBlobRefusesDeniedAndOutsidePaths`,
+  `TestReadTreeLeavesDeniedPathsOut` and `TestReadBlobRefusesDeniedAndOutsidePaths`
+  (a repository whose top holds the server's data directory with a
+  `catalog.json` committed in it, and the crew launched in a subfolder
+  of the repository: `ReadTree` counts that entry in `Denied` and leaves
+  it out, `ReadBlob` refuses it, `Denied` answers true for it; and
+  `ReadBlob` of `:(top)<denied path>` and `:/<denied path>` refused,
+  never their bytes, and of a folder's path `ErrNotFound`),
+  `TestHostReadsUseTheReadEnvironment`,
   `TestReadBlobRefusesLargeBeforeReading` (a 2 MiB blob: refused, no
   `cat-file` run), `TestReadBlobGivesALinksTarget`,
   `TestDeniedFollowsTheListAsItChanges`, `TestReadsEndWithTheTry`,
@@ -946,11 +1030,25 @@ sees), of the step and of a refusal is proved able to fail.
   `TestLookupRefusedToALane`, `TestLookupFillsTheAttemptNotTheBody`,
   `TestLookupFillsHeadFromTheWorktree`, `TestLookupAnswerBounded`,
   `TestLookupUnavailableSaysSo` (late, failing, panicking, invalid, not
-  started: `503` and its words), `TestLookupBusyPastTwo`,
-  `TestLookupHandsNoBlocksYet`, `TestToolListedOnlyWithProvider` (the
-  guide and `tools/list` with none, with one that does not implement
-  lookups and with one that does; `tools-list-main.json` unchanged),
-  `TestLookupToolText`.
+  started: `503` and its words), `TestLookupBusyPastTwo` (a session's
+  two lookups held in the provider past `LookupWait`: a third is `429`
+  until a held call returns), `TestLookupSlotsLeaveTheStartAlone` (a
+  provider whose `Lookup` waits at a gate, every lookup slot filled from
+  eight attempts' sessions, each answered `503`: a ninth attempt then
+  starts and its task file holds the provider's Context blocks; the gate
+  let go at cleanup), `TestLookupHandsNoBlocksYet`,
+  `TestToolListedOnlyWithProvider` (the guide and `tools/list` with
+  none, with one that does not implement lookups and with one that
+  does; `tools-list-main.json` unchanged),
+  `TestTheSkillListsTheGuidesTools` (on `main`; the new bullet and its
+  lead make it pass with `context_lookup` in the guide),
+  `TestLookupAnswerRefusesControlCharacters` (an item's `Path` with an
+  escape character, a `Symbol` with a line end, an `Excerpt` with an
+  escape character, a `Snapshot` with a space: each refused by
+  `Valid`), `TestLookupToolTextFramesReference` (the text opens with the
+  framing line naming the source; an excerpt holding a run of backticks
+  stays inside its fence; a note or an excerpt that reads as a heading
+  or a refusal is drawn inside the provider's lines), `TestLookupToolText`.
 - `internal/crew/ledger`, the step CT-3a:
   `TestAttemptContextMigrationFreshAndAgain`,
   `TestOlderBinaryOpensAnAttemptContextLedgerReadOnly`,
@@ -1040,8 +1138,8 @@ CT-3.
 | Row | Title | Contains | Touches | Tests | Depends on | Size (code + tests) |
 |---|---|---|---|---|---|---|
 | CT-0 (#1034) | plans: context seams | this file; the line in `docs/plans/ext.md`'s C4 | `docs/plans` | none: docs only | none | docs ~900 |
-| CT-1 | ext, gitcli, crew, api: committed trees, the query's work fields, commit notes, the pack mark | `ContextQuery`'s fields and `Valid`, `ContextTicket`, `ContextCheck`, `ContextFinding`, `ContextInput`'s fields, `ContextBlock.Pack`, `CommitNoter`, `CommitNote`, the bounds; `Host.ReadTree`, `ReadBlob`, `Denied` and their types; `gitcli.RunEach`; the query filled, the commit notes queued, the pack mark in the task file; the three methods in `internal/hostagent`; `FakeHost`'s reads, the `Context` check's parts, the `Tree` check | `ext`, `ext/exttest`, `internal/gitcli`, `internal/crew`, `internal/api`, `internal/hostagent` | the CT-1 lists | CT-0 merged | ~800 + 1,000 |
-| CT-2 | ext, api, cli, agents: the lookup | `ContextLookup`, `LookupRequest`, `LookupAnswer`, `LookupItem`, `LookupCoverage`, the bounds; the route, `Engine.LookupScope`, the in-flight bound, the guide's operation and `needContextLookup`, the MCP tool and its listing, `conductor task lookup`, the skill's line, the exttest check; `docs/protocol.md` | `ext`, `ext/exttest`, `internal/api`, `internal/crew`, `internal/cli`, `internal/agents`, `docs` | the CT-2 lists | CT-1 | ~500 + 650 |
+| CT-1 | ext, gitcli, crew, api: committed trees, the query's work fields, commit notes, the pack mark | `ContextQuery`'s fields and `Valid`, `ContextTicket`, `ContextCheck`, `ContextFinding`, `ContextInput`'s fields, `ContextBlock.Pack`, `CommitNoter`, `CommitNote`, the bounds; `Host.ReadTree`, `ReadBlob`, `Denied` and their types; `gitcli.RunEach` and `gitcli.RunBoundedEnv`, `treeReadEnv`, the deny list judged under the repository's top; the query filled, the commit notes queued, the pack mark in the task file; the three methods in `internal/hostagent`; `FakeHost`'s reads, the `Context` check's parts, the `Tree` check | `ext`, `ext/exttest`, `internal/gitcli`, `internal/crew`, `internal/api`, `internal/hostagent` | the CT-1 lists | CT-0 merged | ~800 + 1,000 |
+| CT-2 | ext, api, cli, agents: the lookup | `ContextLookup`, `LookupRequest`, `LookupAnswer`, `LookupItem`, `LookupCoverage`, the bounds; the route, `Engine.LookupScope`, the in-flight bound, the guide's operation and `needContextLookup`, the MCP tool and its listing, `conductor task lookup`, the skill's bullet and its lead in `skillToolLeads`, the lookup's own guard kind, the tool's framing and the answer's text rules, the exttest check; `docs/protocol.md` | `ext`, `ext/exttest`, `internal/api`, `internal/crew`, `internal/cli`, `internal/agents`, `docs` | the CT-2 lists | CT-1 | ~500 + 650 |
 | CT-3a | ledger: the next schema version, a barrier, with `attempt_context` | the migration alone | `internal/crew/ledger` | the CT-3a list | CT-2 | ~40 + 150 |
 | CT-3 | crew, api, web: the attempt's context recorded and shown (after the step) | `Tx.AddAttemptContext`, `Ledger.AttemptContext`, the context file and its writer, the rows in the workspace transaction, `Engine.RecordLookupContext` and the lookup's blocks, the task route's `context`, the body route, `filterTask`, the candidates' count; `utils/attemptContext.ts`, `AttemptContext.vue`, the run page's and the ticket's lists; `docs/protocol.md`, `docs/features.md`, `docs/repository-map.md` | `internal/crew`, `internal/crew/ledger`, `internal/api`, `web/app`, `web/e2e`, `docs` | the CT-3 lists | CT-3a | ~650 + 900 |
 
