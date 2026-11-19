@@ -540,10 +540,11 @@ export function cutWords(cut?: string): string {
 
 /**
  * What History says when its answer holds nothing: with nothing typed the page asked for the latest sessions, so none is kept yet;
- * with a query, nothing matches it.
+ * with a query, nothing matches it, and a query with a filter says the filters are why (the page offers Clear all beside it).
  */
 export function historyNoneWords(query: string): string {
-  return query.trim() ? 'Nothing in the history matches.' : 'No session is kept yet.'
+  if (!query.trim()) return 'No session is kept yet.'
+  return activeFilters(query).some((f) => f.name !== 'words') ? 'Nothing matches these filters.' : 'Nothing in the history matches.'
 }
 
 /** The index's state in words, or '' when it is ready and nothing is behind: "Indexing: 3 sources behind". */
@@ -654,6 +655,123 @@ export function withFilter(q: string, name: HistoryFilter, value: string): strin
     kept.splice(at, 0, `${name}:${value}`)
   }
   return kept.join(' ')
+}
+
+/** What the History page calls each filter: its chips' row where it has one, the grammar's name in words where it has none. */
+export const FILTER_WORDS: Record<HistoryFilter, string> = {
+  class: 'Kind of evidence',
+  kind: 'Kind',
+  outcome: 'Outcome',
+  project: 'Project',
+  repo: 'Repository',
+  host: 'Host',
+  agent: 'Agent',
+  crew: 'Crew',
+  run: 'Run',
+  ticket: 'Ticket',
+  session: 'Session',
+  since: 'Since',
+  until: 'Until',
+}
+
+/** The History page's Kind of evidence chips, each a `class:` filter's value. */
+export function classChips(): Array<{ value: string; label: string }> {
+  return [
+    { value: 'said', label: 'Conversation' },
+    { value: 'decided', label: 'Decision' },
+    { value: 'checked', label: 'Checked' },
+    { value: 'record', label: 'Records' },
+  ]
+}
+
+/** The History page's Since chips, each a `since:` filter's value. */
+export function sinceChips(): Array<{ value: string; label: string }> {
+  return [
+    { value: '24h', label: 'A day' },
+    { value: '7d', label: 'A week' },
+    { value: '30d', label: 'A month' },
+  ]
+}
+
+/** One thing narrowing a History search, as the page lists it: a filter of the query, or its words and phrases taken together. */
+export interface ActiveFilter {
+  /** The filter's name, or `words` for the words and phrases. */
+  name: HistoryFilter | 'words'
+  /** Unique among the list: `name:value` as written (`words` for the words), with `#2` on a second that is the same. */
+  key: string
+  /** What the page calls it: "Kind of evidence", "Agent", "Words". */
+  label: string
+  /** Its value in the page's words: "Records", "Claude Code", `papaya "a phrase"`. */
+  value: string
+  /** The query's words it is (their places), what taking it off drops. */
+  at: number[]
+}
+
+/** A filter's value in the page's words: the chip's label where a chip writes that value, an agent's name, else as written. */
+function filterValueWords(name: HistoryFilter, value: string, agentName?: (id: string) => string | undefined): string {
+  if (!value) return 'no value'
+  const label = (chips: Array<{ value: string; label: string }>, v: string) => chips.find((c) => c.value === v)?.label ?? v
+  const each = (f: (v: string) => string) => value.split(',').map((v) => f(v.toLowerCase())).join(' or ')
+  switch (name) {
+    case 'class':
+      return each((v) => label(classChips(), v === 'conversation' ? 'said' : v === 'decision' ? 'decided' : v))
+    case 'outcome': {
+      const vs = value.toLowerCase().split(',')
+      if (vs.length === REJECTING_OUTCOMES.length && REJECTING_OUTCOMES.every((o) => vs.includes(o))) return 'Rejected'
+      return each((v) => label(outcomeChips(), v))
+    }
+    case 'since':
+      return label(sinceChips(), value)
+    case 'agent':
+      return value
+        .split(',')
+        .map((v) => agentName?.(v) || v)
+        .join(' or ')
+  }
+  return value
+}
+
+/**
+ * What narrows a History search, in the order the page lists it: the words and phrases first, as one (their own removal takes off the
+ * text alone), then each filter of the query as written, a filter written twice listed twice. `agentName` names an agent's id.
+ */
+export function activeFilters(q: string, agentName?: (id: string) => string | undefined): ActiveFilter[] {
+  const ws = words(q)
+  const typed: number[] = []
+  const filters: ActiveFilter[] = []
+  const seen = new Map<string, number>()
+  ws.forEach((w, i) => {
+    const colon = w.startsWith('"') ? -1 : w.indexOf(':')
+    const name = colon > 0 ? w.slice(0, colon).toLowerCase() : ''
+    if (!(HISTORY_FILTERS as readonly string[]).includes(name)) {
+      // A lone quote is text the box holds too: listed with nothing to show, the words' removal takes it.
+      typed.push(i)
+      return
+    }
+    const f = name as HistoryFilter
+    const value = w.slice(colon + 1)
+    const base = `${f}:${value}`
+    const n = (seen.get(base) ?? 0) + 1
+    seen.set(base, n)
+    filters.push({ name: f, key: n > 1 ? `${base}#${n}` : base, label: FILTER_WORDS[f], value: filterValueWords(f, value, agentName), at: [i] })
+  })
+  const shown = typed.filter((i) => ws[i]!.replace(/"/g, '').trim())
+  return shown.length ? [{ name: 'words', key: 'words', label: 'Words', value: shown.map((i) => ws[i]).join(' '), at: typed }, ...filters] : filters
+}
+
+/** The query with one of what narrows it taken off (its words dropped), the rest kept in their order. */
+export function withoutFilter(q: string, f: Pick<ActiveFilter, 'at'>): string {
+  return words(q)
+    .filter((_, i) => !f.at.includes(i))
+    .join(' ')
+}
+
+/**
+ * The query Clear all leaves: nothing, every filter AND the words, since words narrow the list just as a filter does. The page's two
+ * Clear all buttons (beside the active filters, and where an empty answer would be) both write it.
+ */
+export function clearedQuery(): string {
+  return ''
 }
 
 /** A row's icon, by its class and kind: a session, a receipt passed or failed, a decision, words. */
