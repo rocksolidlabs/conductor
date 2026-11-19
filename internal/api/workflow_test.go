@@ -2,14 +2,15 @@ package api
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/rocksolidlabs/conductor/ext"
-	"github.com/rocksolidlabs/conductor/ext/exttest"
 	"github.com/rocksolidlabs/conductor/internal/brakeman"
 	"github.com/rocksolidlabs/conductor/internal/crew"
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
@@ -141,9 +142,7 @@ func walkWorkflow(t *testing.T, w *workflow) {
 			})
 		}},
 	} {
-		if err := exttest.Await(t.Context(), f.fake, f.ok); err != nil {
-			t.Fatalf("%s: %v", what, err)
-		}
+		awaitFake(t, f.fake, what, f.ok)
 	}
 }
 
@@ -158,6 +157,7 @@ func TestWorkflowStaleCard(t *testing.T) {
 	w.toDecision(t)
 	f := w.decide()
 	read := f.view(t, passAna, w.did)
+	kept := len(w.record(t, w.did).Responses)
 	at, gate := f.holdAt(t, false)
 	sent := make(chan walkReply, 1)
 	client, base := w.client, w.http.URL
@@ -168,7 +168,7 @@ func TestWorkflowStaleCard(t *testing.T) {
 	f.srv.decideSeam.Store(nil)
 	w.expect(t, http.MethodPost, "/api/decisions/"+w.did+"/comment", map[string]any{"opId": "c-1", "kind": "comment", "text": "Check the SSO callback first.", "expectedRev": read.Rev}, http.StatusOK, "")
 	close(gate)
-	got := <-sent
+	got := received(t, sent, "ana's stale answer")
 	if got.err != nil {
 		t.Fatal(got.err)
 	}
@@ -183,7 +183,7 @@ func TestWorkflowStaleCard(t *testing.T) {
 		t.Fatalf("the stale answer: %d %s", got.status, got.data)
 	}
 	rec := w.record(t, w.did)
-	if rec.State != ledger.DecisionOpen || len(rec.Responses) != 1 || rec.Responses[0].Status != "refused" || rec.Rev != read.Rev+1 {
+	if rec.State != ledger.DecisionOpen || len(rec.Responses) != kept+1 || rec.Responses[kept].Status != "refused" || rec.Rev != read.Rev+1 {
 		t.Fatalf("after the stale answer: %s rev %d, %+v", rec.State, rec.Rev, rec.Responses)
 	}
 	now := f.view(t, passAna, w.did)
@@ -201,12 +201,15 @@ func TestWorkflowStaleCard(t *testing.T) {
 // phone sends it again with the same response id; the operator answers
 // too. One receipt, the same each time; the operator's refused
 // decision_answered with words naming who answered first; one
-// application, one release of the held work.
+// application, one release of the held work, the answer typed into the
+// asking attempt once; and once the build goes on to its candidate and the
+// review starts, the build still has its one attempt: no work ran twice.
 func TestWorkflowDuplicateTap(t *testing.T) {
 	w := newWorkflow(t, false)
 	w.toDecision(t)
 	f := w.decide()
-	rev := w.record(t, w.did).Rev
+	before := w.record(t, w.did)
+	rev := before.Rev
 	status, first, _ := f.respondAs(t, passAna, w.did, "tap-1", 0, rev)
 	if status != http.StatusCreated {
 		t.Fatalf("the first tap: %d %s", status, first)
@@ -244,8 +247,27 @@ func TestWorkflowDuplicateTap(t *testing.T) {
 			accepted++
 		}
 	}
-	if released != 1 || accepted != 1 || len(rec.Responses) != 2 {
-		t.Fatalf("%d releases, %d accepted of %d responses", released, accepted, len(rec.Responses))
+	if released != 1 || accepted != 1 || len(rec.Responses) != len(before.Responses)+2 {
+		t.Fatalf("%d releases, %d accepted of %d responses (%d before the taps)", released, accepted, len(rec.Responses), len(before.Responses))
+	}
+	// The build goes on: its candidate, its check, the review started.
+	w.candidate(t)
+	w.assertTruthful(t, "the build's candidate after the taps")
+	attempts, err := w.srv.ledger.Attempts(t.Context(), w.run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	builds := 0
+	for _, a := range attempts {
+		if a.TaskID == "build" {
+			builds++
+		}
+	}
+	if builds != 1 {
+		t.Fatalf("the build ran %d attempts for one answer: %v", builds, attemptNumbers(attempts))
+	}
+	if n := w.typedTimes(t, w.sid, w.did); n != typedShows {
+		t.Fatalf("the answer to %s shows %d times in the asking attempt's terminal, one typing shows it %d times", w.did, n, typedShows)
 	}
 }
 
@@ -262,6 +284,7 @@ func TestWorkflowWithdrawnResponder(t *testing.T) {
 	t.Run("before the response", func(t *testing.T) {
 		w := newWorkflow(t, false)
 		w.toDecision(t)
+		kept := len(w.record(t, w.did).Responses)
 		w.fakes.id.Remove(passAna)
 		delete(w.eligible, ext.SubjectActor+walkAna.Subject)
 		if status, data := w.decide().readAs(t, passAna, w.did); status != http.StatusUnauthorized {
@@ -270,7 +293,7 @@ func TestWorkflowWithdrawnResponder(t *testing.T) {
 		if status, data, _ := w.respondAs(t, passAna, "late-1", 0); status != http.StatusUnauthorized {
 			t.Fatalf("the withdrawn pass's answer: %d %s", status, data)
 		}
-		if rec := w.record(t, w.did); len(rec.Responses) != 0 || rec.State != ledger.DecisionOpen {
+		if rec := w.record(t, w.did); len(rec.Responses) != kept || rec.State != ledger.DecisionOpen {
 			t.Fatalf("after the withdrawn pass: %s %+v", rec.State, rec.Responses)
 		}
 		w.assertTruthful(t, "the withdrawn pass refused")
@@ -316,7 +339,7 @@ func TestWorkflowWithdrawnResponder(t *testing.T) {
 		}
 		g.Remove(passAna)
 		close(gate)
-		if got := <-sent; got.err != nil || got.status != http.StatusCreated {
+		if got := received(t, sent, "ana's answer"); got.err != nil || got.status != http.StatusCreated {
 			t.Fatalf("ana's answer, recorded before the recheck: %d %s %v", got.status, got.data, got.err)
 		}
 		old := w.decisionWhen(t, w.did, "superseded", inState(ledger.DecisionSuperseded))
@@ -372,14 +395,14 @@ func TestWorkflowContextUnavailable(t *testing.T) {
 		t.Cleanup(func() { close(fakes.late.gate) })
 		w.noContext = true
 		w.toDecision(t)
-		select {
-		case q := <-fakes.late.asked:
-			if q.Run != w.run || q.Task != "build" {
-				t.Fatalf("the late provider was asked %+v", q)
-			}
-		default:
-			t.Fatal("the late provider was never asked")
+		if q := received(t, fakes.late.asked, "the late provider asked"); q.Run != w.run || q.Task != "build" {
+			t.Fatalf("the late provider was asked %+v", q)
 		}
+		// The guard ended the call at the product's wait, and says so: the
+		// attempt started on that, not on the provider (which never
+		// answers while the test runs) and not on a later bound.
+		note := fmt.Sprintf("kind=context provider=graph failure=late failures=1 err=\"no answer within %s\"", ext.ContextWait)
+		waitUntil(t, "the guard's note of the late call", func() bool { return strings.Contains(w.logs.String(), note) })
 		w.assertTruthful(t, "an attempt started past a late provider")
 		t.Run("the lookup's words and the run page's list", func(t *testing.T) {
 			t.Skip(waitsContext)
@@ -397,13 +420,16 @@ func TestWorkflowOwnerDisconnected(t *testing.T) {
 	w := newWorkflow(t, false)
 	w.toDecision(t)
 	read := w.decide().view(t, passAna, w.did)
-	w.http.Close()
-	if got := walkSend(w.client, w.http.URL, passAna, http.MethodPost, "/api/decisions/"+w.did+"/respond", map[string]any{"responseId": "away-1", "choice": 0, "expectedRev": read.Rev}); got.err == nil {
-		t.Fatalf("the server out of reach answered: %d %s", got.status, got.data)
+	kept := len(w.record(t, w.did).Responses)
+	// Out of reach: the phone's dial is refused as the kernel refuses a port
+	// nobody listens on, through the client's own dial, never by dialling a
+	// port the test has freed.
+	if got := walkSend(refusingClient(), w.http.URL, passAna, http.MethodPost, "/api/decisions/"+w.did+"/respond", map[string]any{"responseId": "away-1", "choice": 0, "expectedRev": read.Rev}); !errors.Is(got.err, syscall.ECONNREFUSED) {
+		t.Fatalf("the server out of reach answered: %d %s %v", got.status, got.data, got.err)
 	}
 	w.restart(t)
 	rec := w.record(t, w.did)
-	if rec.State != ledger.DecisionOpen || rec.Rev != read.Rev || len(rec.Responses) != 0 || !slices.Equal(rec.Held, []string{"build"}) {
+	if rec.State != ledger.DecisionOpen || rec.Rev != read.Rev || len(rec.Responses) != kept || !slices.Equal(rec.Held, []string{"build"}) {
 		t.Fatalf("after the restart: %s rev %d (read at %d), %d responses, held %v", rec.State, rec.Rev, read.Rev, len(rec.Responses), rec.Held)
 	}
 	if v := w.decide().view(t, passAna, w.did); v.Rev != read.Rev || v.State != ledger.DecisionOpen {
@@ -529,7 +555,7 @@ func TestWorkflowAgentRestarted(t *testing.T) {
 		}
 		w.assertTruthful(t, "ana's answer superseded after the restart")
 		close(gate)
-		<-sent
+		received(t, sent, "the ended server's reply to ana's answer")
 		w.respond1(t, fresh, adminToken, "op-1", 0, http.StatusCreated, "")
 		w.applied(t, fresh)
 		w.assertTruthful(t, "the fresh decision answered by the operator")
@@ -574,7 +600,7 @@ func TestWorkflowSidekickAway(t *testing.T) {
 		if r := w.bk.waitState(t, id, brakeman.StateEnded); r.Why != "the session ended with no brief" || r.HasBrief {
 			t.Fatalf("the request: %+v", r)
 		}
-		if after := w.record(t, w.did); after.Rev != before.Rev || after.State != ledger.DecisionOpen || len(after.Responses) != 0 {
+		if after := w.record(t, w.did); after.Rev != before.Rev || after.State != ledger.DecisionOpen || len(after.Responses) != len(before.Responses) {
 			t.Fatalf("the turn changed %s: %+v", w.did, after.DecisionRow)
 		}
 		if status, data, _ := w.respondAs(t, passAna, "ana-1", 0); status != http.StatusCreated {
@@ -587,13 +613,20 @@ func TestWorkflowSidekickAway(t *testing.T) {
 
 // TestWorkflowEntitlementEnded: the providers stop giving what they gave,
 // as providers whose entitlement ran out would: the identity provider no
-// longer admits the decide passes, the router answers no destination, the
-// context provider no block. The decision is still given to the decide
-// grant, which no pass reaches now; its gates and holds are as they were;
-// no response but the operator's is taken; stop, inspect and export are
-// answered; the operator takes the decision back and answers it; no code
-// of this repository asked the entitlement source.
+// longer admits the decide passes, the router (which routed the first
+// decision to ana) answers no destination, the context provider no block.
+// The decision is still given to the decide grant, which no pass reaches
+// now; its gates and holds are as they were; no response but the
+// operator's is taken; stop, inspect and export are answered; the operator
+// takes the decision back. The server asks the other two providers again
+// and gets their lapse: the asking session ends, the operator's answer
+// goes to the next attempt, whose start asks the context provider and is
+// given no block; that attempt raises a second decision, told to the
+// router, which routes nothing and holds no answer, so it stays open and
+// held, the operator's to answer. No code of this repository asked the
+// entitlement source.
 func TestWorkflowEntitlementEnded(t *testing.T) {
+	records := watchRecords(t)
 	w := newWorkflow(t, false)
 	w.toDecision(t)
 	before := w.record(t, w.did)
@@ -603,15 +636,17 @@ func TestWorkflowEntitlementEnded(t *testing.T) {
 	for _, p := range []ext.Principal{walkAna, walkBob} {
 		delete(w.eligible, ext.SubjectActor+p.Subject)
 	}
-	w.fakes.router.SetRoute(w.did, ext.Route{})
+	const second = "dr-2"
+	w.fakes.router.SetRoute(second, ext.Route{})
 	w.fakes.context.SetBlocks(nil)
+	asked := len(w.fakes.context.Queries())
 	for _, pass := range []string{passAna, passBob} {
 		if status, data, _ := w.respondAs(t, pass, "lapsed-1", 0); status != http.StatusUnauthorized {
 			t.Fatalf("%s's answer after the lapse: %d %s", pass, status, data)
 		}
 	}
 	rec := w.record(t, w.did)
-	if f := forOf(t, rec.Request); rec.State != ledger.DecisionOpen || rec.Rev != before.Rev || f["label"] != "grant:decide" || !slices.Equal(rec.Held, before.Held) || len(rec.Responses) != 0 {
+	if f := forOf(t, rec.Request); rec.State != ledger.DecisionOpen || rec.Rev != before.Rev || f["label"] != "grant:decide" || !slices.Equal(rec.Held, before.Held) || len(rec.Responses) != len(before.Responses) {
 		t.Fatalf("after the lapse: %s rev %d for %v held %v, %d responses", rec.State, rec.Rev, f, rec.Held, len(rec.Responses))
 	}
 	w.assertTruthful(t, "the providers lapsed")
@@ -624,11 +659,60 @@ func TestWorkflowEntitlementEnded(t *testing.T) {
 	if f := forOf(t, w.record(t, w.did).Request); f["label"] == "grant:decide" {
 		t.Fatalf("taken back, still for %v", f)
 	}
+	// The asking session ends; the operator's answer goes to the next
+	// attempt, which asks the context provider as it starts.
+	d, ok := w.srv.registry.Get(w.sid)
+	if !ok {
+		t.Fatalf("no session %s", w.sid)
+	}
+	if err := d.Stop(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	w.decisionWhen(t, w.did, "its attempt given back", func(d map[string]any) bool {
+		return slices.ContainsFunc(historyOf(d), func(h string) bool { return strings.HasPrefix(h, ledger.HistoryRefunded+" ") })
+	})
 	w.respond0(t, adminToken, "op-1", 0, http.StatusCreated, "")
 	w.applied(t, w.did)
 	w.assertTruthful(t, "the operator's answer after the lapse")
+	a := runningAttempt(t, w.testEnv, w.run, "build", 2)
+	if qs := w.fakes.context.Queries(); !slices.ContainsFunc(qs[asked:], func(q ext.ContextQuery) bool { return q.Run == w.run && q.Task == "build" && q.Attempt == 2 }) {
+		t.Fatalf("the next attempt's start never asked the context provider after the lapse: %+v", qs[asked:])
+	}
+	if md := string(w.launches().treeFile(t, w.run, "build", 2, "task.md")); strings.Contains(md, "## Context") || strings.Contains(md, walkBlockMark) || !strings.Contains(md, w.did) {
+		t.Fatalf("the next attempt's task.md after the lapse:\n%s", md)
+	}
+	// The next attempt raises a second decision: the router is told of it
+	// and routes nothing.
+	w.sid = a["sessionId"].(string)
+	w.tok = w.agentToken(w.sid)
+	got := entityOf(t, w.decide().ask(t, w.raiseBody("arch-2"), http.StatusCreated, ""), "decision")
+	if got["id"] != second {
+		t.Fatalf("the second decision: %v", got)
+	}
+	awaitFake(t, w.fakes.router, "the router told of "+second, func() bool {
+		return slices.ContainsFunc(w.fakes.router.Decisions(), func(d ext.Decision) bool { return d.Request == second })
+	})
+	// The router's answer to it handled (the router's own step, its seam):
+	// no destination and no answer.
+	if step := records.wait(t, "routed", second); step.err != nil || len(step.rt.To) != 0 || step.rt.Answer != nil {
+		t.Fatalf("the lapsed router's answer to %s: %+v", second, step)
+	}
+	rec = w.record(t, second)
+	f := forOf(t, rec.Request)
+	if rec.State != ledger.DecisionOpen || !slices.Equal(rec.Held, []string{"build"}) || len(rec.Responses) != 0 || f["label"] != "role:"+crew.RespArchitecture {
+		t.Fatalf("%s after the router's lapse: %s held %v, %d responses, for %v", second, rec.State, rec.Held, len(rec.Responses), f)
+	}
+	for _, h := range rec.History {
+		if h.By == "router:switchman" {
+			t.Fatalf("the lapsed router routed %s: %+v", second, h)
+		}
+	}
+	w.assertTruthful(t, "a second decision after the lapse")
+	w.respond1(t, second, adminToken, "op-2", 0, http.StatusCreated, "")
+	w.applied(t, second)
+	w.assertTruthful(t, "the second decision answered by the operator")
 	w.expect(t, http.MethodPost, "/api/runs/"+w.run+"/stop", nil, http.StatusOK, "")
-	if asked := w.fakes.ents.Asked(); len(asked) != 0 {
+	if asked := w.ents.Asked(); len(asked) != 0 {
 		t.Fatalf("the entitlement source was asked about %v", asked)
 	}
 }

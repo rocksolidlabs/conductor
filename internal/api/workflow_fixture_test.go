@@ -3,14 +3,21 @@ package api
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
+	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
+	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -49,7 +56,21 @@ const (
 	waitsContext = "waits for WF-2a: context recorded, the lookup and its absence (after context-seams CT-3)"
 	waitsPolicy  = "waits for WF-2b: eligibility by a router's policy (after decision-policy's PR-7a and PR-7)"
 	waitsSync    = "waits for WF-2c: the held answer for the owner disconnected (after sync-seams OS-3)"
+	// waits1046 is step 9 on the operator's decision page, which main
+	// cannot show: a Brakeman card about a decision record (issue 1046).
+	waits1046 = "waits for issue 1046: Brakeman's brief on a decision record's item"
 )
+
+// The walk's first decision, which the router is set to route before it
+// is raised, and the rule the router names.
+const (
+	walkFirstDecision = "dr-1"
+	walkRouteRule     = "the architecture owner"
+)
+
+// walkPasses is every pass the walk presents: none of them is ever in a
+// log line or a URL (the plan's step 10, never).
+var walkPasses = []string{passAdmin, passAna, passBob, passHal}
 
 // passHal is a pass the walk's identity provider admits with the host
 // grant alone: a principal without the decide grant. The others are the
@@ -174,6 +195,14 @@ type workflow struct {
 	did    string   // the architecture decision
 	answer string   // the accepted response's id
 
+	// ents is the entitlement source, registered in the free walk too (its
+	// slot alone): no code of this repository asks it. logs is the
+	// server's log and urls every URL the walk's client asked: neither
+	// ever holds a pass.
+	ents *exttest.FakeEntitlements
+	logs *logBuffer
+	urls *urlLog
+
 	// noContext is set where the context provider gives nothing (failing,
 	// late, lapsed): the implementer's task carries no block.
 	noContext bool
@@ -197,15 +226,31 @@ func newWorkflow(t *testing.T, free bool) *workflow {
 // newWorkflowWith makes the walk's server with the fakes (nil: none).
 func newWorkflowWith(t *testing.T, fakes *workflowFakes) *workflow {
 	t.Helper()
-	w := &workflow{fakes: fakes, eligible: map[string]bool{adminActor: true}, seen: map[string]int{}}
+	w := &workflow{fakes: fakes, eligible: map[string]bool{adminActor: true}, seen: map[string]int{}, logs: &logBuffer{}, urls: &urlLog{}}
+	// Registered first, so run last: once every server of the walk has
+	// ended, nothing it logged and no URL the walk asked holds a pass.
+	t.Cleanup(func() { w.noPassLeaked(t) })
 	var opts []Option
 	if fakes != nil {
+		w.ents = fakes.ents
 		opts = append(opts, fakes.option())
 		w.eligible[ext.SubjectActor+walkOperator.Subject] = true
+		if fakes.late == nil {
+			// The test's own wait for every provider call, where the
+			// product's (IdentityWait, a second) is not what is tested.
+			walkWait(t)
+		}
+	} else {
+		// The free walk registers the entitlement source alone, to show no
+		// code of this repository asks it there either.
+		w.ents = exttest.NewFakeEntitlements("plans")
+		opts = append(opts, WithExtensions(local.Fill(ext.Providers{All: []ext.Entry{{Kind: ext.KindEntitlements, Name: "plans", Value: w.ents}}})))
 	}
-	e := newTestEnvAgents(t, func(cfg *config.Config) { cfg.DataDir = filepath.Join(t.TempDir(), "data") }, slog.New(slog.NewTextHandler(io.Discard, nil)),
+	e := newTestEnvAgents(t, func(cfg *config.Config) { cfg.DataDir = filepath.Join(t.TempDir(), "data") },
+		slog.New(slog.NewTextHandler(w.logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
 		[]catalog.Agent{readyCat, bkAgents()[0]}, opts...)
 	e.srv.limiter = newRateLimiter(1e6, 1e6)
+	e.client = w.urls.client(e.client)
 	w.testEnv = e
 	w.repo = filepath.Join(e.root, "repo")
 	w.head = planRepo(t, w.repo)
@@ -321,11 +366,22 @@ func (w *workflow) raise(t *testing.T) {
 	if (w.free() || w.noContext) == strings.Contains(md, walkBlockMark) || (w.free() || w.noContext) == strings.Contains(md, "## Context") {
 		t.Fatalf("the implementer's task (a context provider registered: %v):\n%s", !w.free(), md)
 	}
+	if w.fakes != nil {
+		// The router answers the decision with a destination and an answer
+		// it holds: the destination is recorded, the answer refused under
+		// local/1 and kept, never counted.
+		w.fakes.router.SetRoute(walkFirstDecision, ext.Route{To: []ext.Destination{{Kind: "person", Name: "ana"}}, Rule: walkRouteRule,
+			Answer: &ext.Answer{Input: "1", By: walkAna}})
+	}
 	d := entityOf(t, w.decide().ask(t, w.raiseBody("arch-1"), http.StatusCreated, ""), "decision")
 	w.did = d["id"].(string)
 	asker, _ := d["asker"].(map[string]any)
-	if d["state"] != ledger.DecisionOpen || d["rev"] != 1.0 || d["origin"] != ledger.OriginAgent || asker["task"] != "build" || asker["attempt"] != 1.0 {
+	if d["state"] != ledger.DecisionOpen || d["rev"] != 1.0 || d["origin"] != ledger.OriginAgent || asker["task"] != "build" || asker["attempt"] != 1.0 ||
+		(w.fakes != nil && w.did != walkFirstDecision) {
 		t.Fatalf("the decision: %v", d)
+	}
+	if w.fakes != nil {
+		w.routedByTheRouter(t)
 	}
 	rec := w.record(t, w.did)
 	if f := forOf(t, rec.Request); f["label"] != "role:"+crew.RespArchitecture || f["person"] != "ana" {
@@ -340,14 +396,54 @@ func (w *workflow) raise(t *testing.T) {
 		t.Fatalf("the result's refusal: %v", out)
 	}
 	if w.fakes != nil {
-		if err := exttest.Await(t.Context(), w.fakes.sink, func() bool {
+		awaitFake(t, w.fakes.sink, "the sink handed the opening", func() bool {
 			return slices.ContainsFunc(w.fakes.sink.Notifications(), func(n ext.Notification) bool {
 				return n.Type == "decision" && n.State == ledger.DecisionOpen && n.Message == walkQuestion
 			})
-		}); err != nil {
-			t.Fatalf("the sink was never handed the opening: %v", err)
+		})
+	}
+}
+
+// routedByTheRouter is what the router's answer to the walk's decision
+// leaves (C5, under local/1): a routed row by the router naming ana and its
+// rule, its held answer kept as a refused not_approver row, never counted
+// or applied, and the decision still open, for the operator. What the
+// operator's item shows of the route waits for decision-policy's PR-7b,
+// which fills a record's item from its policy (WF-2b).
+func (w *workflow) routedByTheRouter(t *testing.T) {
+	t.Helper()
+	awaitFake(t, w.fakes.router, "the router told of "+w.did, func() bool {
+		return slices.ContainsFunc(w.fakes.router.Decisions(), func(d ext.Decision) bool { return d.Request == w.did })
+	})
+	d := w.decisionWhen(t, w.did, "routed by the router, its answer refused", func(d map[string]any) bool {
+		rs, _ := d["responses"].([]any)
+		return slices.Contains(historyOf(d), ledger.HistoryRouted+" router:switchman") && len(rs) > 0
+	})
+	rec := w.record(t, w.did)
+	routed := 0
+	for _, h := range rec.History {
+		if h.Kind == ledger.HistoryRouted && h.By == "router:switchman" {
+			routed++
+			if !strings.Contains(h.Detail, `"name":"ana"`) || !strings.Contains(h.Detail, walkRouteRule) {
+				t.Fatalf("the router's routed row: %s", h.Detail)
+			}
 		}
 	}
+	rcs, _ := d["responses"].([]any)
+	if routed != 1 || len(rcs) != 1 || rec.State != ledger.DecisionOpen || d["answer"] != nil || d["applied"] != nil {
+		t.Fatalf("after the router's answer: %d routed rows, %s, responses %v, answer %v", routed, rec.State, d["responses"], d["answer"])
+	}
+	if rc := rcs[0].(map[string]any); rc["status"] != "refused" || rc["code"] != crew.CodeNotApprover {
+		t.Fatalf("the router's answer: %v", rc)
+	}
+	t.Run("the operator's item routed to ana under a router's policy", func(t *testing.T) {
+		t.Skip(waitsPolicy)
+		it := entityOf(t, w.expect(t, http.MethodGet, "/api/inbox/item?ref="+ledger.DecisionRef(numberOf(w.did)), nil, http.StatusOK, ""), "item")
+		to, _ := it["routedTo"].([]any)
+		if len(to) != 1 || to[0].(map[string]any)["name"] != "ana" || it["routedRule"] != walkRouteRule {
+			t.Fatalf("the item's route: %v %v", it["routedTo"], it["routedRule"])
+		}
+	})
 }
 
 // holdsTheAskerAlone is step 7: the asking task alone is held by the
@@ -387,11 +483,9 @@ func (w *workflow) give(t *testing.T) {
 	for _, p := range []ext.Principal{walkAna, walkBob} {
 		w.eligible[ext.SubjectActor+p.Subject] = true
 	}
-	if err := exttest.Await(t.Context(), w.fakes.router, func() bool {
+	awaitFake(t, w.fakes.router, "the router told of "+w.did, func() bool {
 		return slices.ContainsFunc(w.fakes.router.Decisions(), func(d ext.Decision) bool { return d.Request == w.did })
-	}); err != nil {
-		t.Fatalf("the router was never told of %s: %v", w.did, err)
-	}
+	})
 }
 
 // toDecision is the walk to step 8 the conditions start from: the ticket,
@@ -520,8 +614,9 @@ func factRank(state string) int {
 // approval); at most one decision.applied and one application; no step
 // shown going back; no held task's attempt reserved inside its hold, and
 // no hold released before its decision's application or end; no attempt
-// number of a task started twice; no refused row counted; no code of this
-// repository asking the entitlement source. An open or answered decision
+// number of a task started twice, and none started while the one before
+// it ran; no answer typed in twice; no refused row counted; no code of
+// this repository asking the entitlement source, in the free walk too. An open or answered decision
 // holds its work, in the run that holds it now.
 func (w *workflow) assertTruthful(t *testing.T, step string) {
 	t.Helper()
@@ -603,6 +698,15 @@ func (w *workflow) assertTruthful(t *testing.T, step string) {
 		if typed > 1 {
 			fail("%s's history holds %d applications", did, typed)
 		}
+		entered := 0
+		for _, h := range historyOf(d) {
+			if strings.HasPrefix(h, ledger.HistoryDeliveryEntered+" ") {
+				entered++
+			}
+		}
+		if entered > 1 {
+			fail("%s's answer was typed in %d times", did, entered)
+		}
 		rec := w.record(t, did)
 		records[rec.N] = rec
 	}
@@ -643,6 +747,9 @@ func (w *workflow) assertTruthful(t *testing.T, step string) {
 				if a.N != as[0].N+i {
 					fail("%s's attempts in %s are numbered %v", task, run, attemptNumbers(as))
 				}
+				if i > 0 && (as[i-1].ClosedAt.IsZero() || a.ReservedAt.Before(as[i-1].ClosedAt)) {
+					fail("%s's attempt %d started while attempt %d ran (closed %v, started %v)", task, a.N, as[i-1].N, as[i-1].ClosedAt, a.ReservedAt)
+				}
 				if a.SessionID != "" && sessions[a.SessionID] {
 					fail("%s's session %s ran two attempts", task, a.SessionID)
 				}
@@ -655,10 +762,8 @@ func (w *workflow) assertTruthful(t *testing.T, step string) {
 			fail("%s is %s and holds nothing: its work could run before its answer is applied", rec.ID(), rec.State)
 		}
 	}
-	if w.fakes != nil {
-		if asked := w.fakes.ents.Asked(); len(asked) != 0 {
-			fail("the entitlement source was asked about %v", asked)
-		}
+	if asked := w.ents.Asked(); len(asked) != 0 {
+		fail("the entitlement source was asked about %v", asked)
 	}
 }
 
@@ -706,6 +811,7 @@ func (w *workflow) serveAgain(t *testing.T) {
 	}
 	again := w.serve(srv)
 	again.srv.limiter = newRateLimiter(1e6, 1e6)
+	again.client = w.urls.client(again.client)
 	t.Cleanup(func() { stopEveryRun(srv) })
 	w.testEnv = again
 	w.bk = &bkEnv{testEnv: again, desk: again.srv.brakeman}
@@ -881,36 +987,69 @@ func (w *workflow) approve(t *testing.T) {
 	approve()
 }
 
-// briefDecision is step 9: asked about the asking task, Brakeman's brief
-// cites the decision and the run; it is kept in Brakeman's records, the
-// decision unchanged (its rev, its state, no response), and Brakeman's
-// token answers nothing. The decide page a decide principal reads shows
-// the decision's own words and none of the brief's.
+// briefDecision is step 9 as main has it. Asked about the asking task,
+// Brakeman's brief carries a decision card about that task, at the
+// revision its turn read (main takes a card about a question, a task, a
+// ticket or a plan, not about a decision record: issue 1046), and cites
+// the decision and the run. It is accepted and kept as Brakeman's, its
+// card and refs among it; the decision's record is unchanged (its rev, its
+// state, its responses) and so are its words on the operator's item;
+// Brakeman's token answers nothing. The operator's item carrying the
+// brief waits for issue 1046 (briefedItem). The decide page a decide
+// principal reads shows the decision's own words and none of the brief's.
 func (w *workflow) briefDecision(t *testing.T, clock *clock) {
 	t.Helper()
 	before := w.record(t, w.did)
-	id, sid, tok := w.turn(t, brakeman.KindDecision, "task:"+w.run+"/build")
+	itemBefore := entityOf(t, w.expect(t, http.MethodGet, "/api/inbox/item?ref="+ledger.DecisionRef(numberOf(w.did)), nil, http.StatusOK, ""), "item")
+	task := "task:" + w.run + "/build"
+	id, sid, tok := w.turn(t, brakeman.KindDecision, task)
 	if status, out := w.asBrakeman(t, sid, tok, http.MethodPost, "/api/decisions/"+w.did+"/respond", map[string]any{"responseId": "bk-1", "choice": 0, "expectedRev": before.Rev}); status != http.StatusUnauthorized {
 		t.Fatalf("Brakeman's token on the response: %d %v", status, out)
 	}
+	status, read := w.asBrakeman(t, sid, tok, http.MethodGet, "/api/runs/"+w.run+"/tasks/build", nil)
+	if status != http.StatusOK {
+		t.Fatalf("the turn's read of the task: %d %v", status, read)
+	}
+	taskRev := fmt.Sprint(entityOf(t, read, "task")["revision"])
+	evidence := []brakeman.Ref{ref(t, "decision:"+w.did), ref(t, "run:"+w.run)}
 	w.briefed(t, clock, id, sid, tok, brakemanBrief("The architecture question of "+w.did, "Brakeman recommends keeping the cookie.",
-		brakeman.Item{Kind: brakeman.ItemFact, Fact: &brakeman.Fact{Text: walkBriefMark, Evidence: []brakeman.Ref{ref(t, "decision:"+w.did), ref(t, "run:"+w.run)}}}))
+		brakeman.Item{Kind: brakeman.ItemFact, Fact: &brakeman.Fact{Text: walkBriefMark, Evidence: evidence}},
+		walkCard(t, ref(t, task), taskRev, evidence)))
 	got := w.expect(t, http.MethodGet, "/api/brakeman/requests/"+id, nil, http.StatusOK, "")
-	if b := entityOf(t, got, "brief"); !strings.Contains(string(decisionJSON(t, b)), walkBriefMark) {
-		t.Fatalf("the brief kept: %v", b)
+	if r := entityOf(t, got, "request"); r["state"] != brakeman.StateBriefed || r["kind"] != brakeman.KindDecision {
+		t.Fatalf("the request: %v", r)
+	}
+	kept := entityOf(t, got, "brief")
+	items, _ := kept["items"].([]any)
+	card := slices.IndexFunc(items, func(it any) bool {
+		m := it.(map[string]any)
+		return m["kind"] == brakeman.ItemDecision && m["about"] == task && m["subjectRevision"] == taskRev && m["happened"] == walkBriefMark
+	})
+	if len(items) != 2 || card < 0 {
+		t.Fatalf("the brief kept: %v", kept)
 	}
 	refs := w.expect(t, http.MethodGet, "/api/brakeman/requests/"+id+"/refs", nil, http.StatusOK, "")["refs"].([]any)
 	var named []string
 	for _, r := range refs {
 		named = append(named, r.(map[string]any)["ref"].(string))
 	}
-	if !slices.Contains(named, "decision:"+w.did) || !slices.Contains(named, "run:"+w.run) {
+	if !slices.Contains(named, "decision:"+w.did) || !slices.Contains(named, "run:"+w.run) || !slices.Contains(named, task) {
 		t.Fatalf("the brief's refs: %v", named)
 	}
 	after := w.record(t, w.did)
-	if after.Rev != before.Rev || after.State != ledger.DecisionOpen || len(after.Responses) != 0 {
-		t.Fatalf("the brief changed %s: rev %d %s, %d responses", w.did, after.Rev, after.State, len(after.Responses))
+	if after.Rev != before.Rev || after.State != ledger.DecisionOpen || len(after.Responses) != len(before.Responses) || after.Request != before.Request {
+		t.Fatalf("the brief changed %s: rev %d %s, %d responses (were %d)", w.did, after.Rev, after.State, len(after.Responses), len(before.Responses))
 	}
+	// The operator's item keeps the decision's own words and rev.
+	it := entityOf(t, w.expect(t, http.MethodGet, "/api/inbox/item?ref="+ledger.DecisionRef(numberOf(w.did)), nil, http.StatusOK, ""), "item")
+	if it["question"] != walkQuestion || it["title"] != walkQuestion || it["revision"] != itemBefore["revision"] || it["state"] != ledger.DecisionOpen ||
+		strings.Contains(fmt.Sprint(it["question"], it["title"]), "BRAKEMANMARK") {
+		t.Fatalf("the operator's item after the brief: %v", it)
+	}
+	t.Run("the operator's item with Brakeman's brief on the decision", func(t *testing.T) {
+		t.Skip(waits1046)
+		w.briefedItem(t, clock)
+	})
 	if w.free() {
 		return
 	}
@@ -946,12 +1085,13 @@ func (w *workflow) respond(t *testing.T) {
 	if share == "" {
 		t.Fatalf("no share link: %v", link)
 	}
+	kept := len(w.record(t, w.did).Responses)
 	for name, tok := range map[string]string{"a principal without the decide grant": passHal, "a share link": share, "the asking agent": w.tok} {
 		if status, data, _ := w.callAs(t, tok, http.MethodPost, "/api/decisions/"+w.did+"/respond", map[string]any{"responseId": "x-1", "choice": 1, "expectedRev": w.record(t, w.did).Rev}); status != http.StatusUnauthorized {
 			t.Fatalf("%s's response: %d %s", name, status, data)
 		}
 	}
-	if rec := w.record(t, w.did); len(rec.Responses) != 0 || rec.State != ledger.DecisionOpen {
+	if rec := w.record(t, w.did); len(rec.Responses) != kept || rec.State != ledger.DecisionOpen {
 		t.Fatalf("a refused responder was kept: %+v", rec.Responses)
 	}
 	v := w.decide().view(t, passAna, w.did)
@@ -959,8 +1099,9 @@ func (w *workflow) respond(t *testing.T) {
 		t.Fatalf("ana's card: %+v", v)
 	}
 	// The recheck is held past the guard's own wait, which only bounds a
-	// hang: the test reads the records meanwhile.
-	holdRechecks(t)
+	// hang: the test reads the records meanwhile. The wait is put back as
+	// the held step ends.
+	putBack := holdRechecks(t)
 	gate := w.fakes.id.recheckAs(passAna, walkAna, true)
 	t.Cleanup(func() {
 		select {
@@ -983,11 +1124,12 @@ func (w *workflow) respond(t *testing.T) {
 	// Recorded, not yet validated: answered, the hold kept, nothing applied.
 	w.assertTruthful(t, "step 10, the answer recorded, its recheck held")
 	rec := w.record(t, w.did)
-	if rec.State != ledger.DecisionAnswered || len(rec.Responses) != 1 || !slices.Equal(rec.Held, []string{"build"}) || rec.Applied != "" {
+	if rec.State != ledger.DecisionAnswered || len(rec.Responses) != kept+1 || !slices.Equal(rec.Held, []string{"build"}) || rec.Applied != "" {
 		t.Fatalf("held at the recheck: %s, %d responses, held %v, applied %q", rec.State, len(rec.Responses), rec.Held, rec.Applied)
 	}
 	close(gate)
-	got := <-sent
+	got := received(t, sent, "ana's response")
+	putBack()
 	if got.err != nil {
 		t.Fatalf("ana's response: %v", got.err)
 	}
@@ -1001,7 +1143,7 @@ func (w *workflow) respond(t *testing.T) {
 	w.answer = "ana-1"
 	d := w.applied(t, w.did)
 	rcs, _ := d["responses"].([]any)
-	if len(rcs) != 1 || rcs[0].(map[string]any)["actor"] != ext.SubjectActor+"ana" || rcs[0].(map[string]any)["rationale"] == nil {
+	if len(rcs) != kept+1 || rcs[kept].(map[string]any)["actor"] != ext.SubjectActor+"ana" || rcs[kept].(map[string]any)["status"] != "accepted" || rcs[kept].(map[string]any)["rationale"] == nil {
 		t.Fatalf("the response kept: %v", d["responses"])
 	}
 	// The answer is on the card as recorded and applied.
@@ -1041,13 +1183,11 @@ func (w *workflow) candidate(t *testing.T) string {
 		t.Fatalf("the review starts at %v, the candidate is %s", rv["start"], c)
 	}
 	if w.fakes != nil {
-		if err := exttest.Await(t.Context(), w.fakes.context, func() bool {
+		awaitFake(t, w.fakes.context, "the context provider asked about the review at "+c, func() bool {
 			return slices.ContainsFunc(w.fakes.context.Queries(), func(q ext.ContextQuery) bool {
 				return q.Run == w.run && q.Task == "review" && q.Attempt == 1 && q.Start == c && q.Kind == crew.TaskReview
 			})
-		}); err != nil {
-			t.Fatalf("the context provider was never asked about the review at %s: %+v", c, w.fakes.context.Queries())
-		}
+		})
 	}
 	rsid := rv["sessionId"].(string)
 	if resp, out := w.do(http.MethodPost, "/api/sessions/"+rsid+"/task/result", w.agentToken(rsid), map[string]any{"verdict": crew.VerdictApproved, "findings": []any{}}); resp.StatusCode != http.StatusCreated {
@@ -1132,8 +1272,11 @@ func (w *workflow) repair(t *testing.T, candidate string) string {
 
 // outcome is step 14: the repaired candidate passes its check; the
 // operator accepts the ticket for its owner against its criteria as they
-// stand, and adds a delivery link naming the candidate, verified. The
-// criteria edited, the acceptance reads unmet.
+// stand (their hash recorded), and adds a delivery link naming the
+// candidate, verified. The criteria edited, the acceptance reads unmet and
+// the ticket cannot be closed against its close policy (close_policy, the
+// acceptance missing); accepted again, then its owner changed, it reads
+// unmet again, in words naming the new owner.
 func (w *workflow) outcome(t *testing.T, run string) {
 	t.Helper()
 	a := runningAttempt(t, w.testEnv, run, "build", 2)
@@ -1145,7 +1288,7 @@ func (w *workflow) outcome(t *testing.T, run string) {
 	}
 	out := w.expect(t, http.MethodPost, "/api/dispatch/tickets/CND-1/accept", map[string]any{"opId": opID(), "byName": "Nate", "note": "Signed in once, landed on the dashboard."}, http.StatusOK, "")
 	tk := entityOf(t, out, "ticket")
-	if tk["acceptedFor"] != walkOwner || tk["acceptedBy"] != "Nate" || tk["acceptedCriteria"] == nil || tk["acceptedCriteria"] == "" || tk["close"].(map[string]any)["met"].(map[string]any)["acceptance"] != true {
+	if tk["acceptedFor"] != walkOwner || tk["acceptedBy"] != "Nate" || tk["acceptedCriteria"] != acceptanceHash(tk["acceptance"]) || tk["close"].(map[string]any)["met"].(map[string]any)["acceptance"] != true {
 		t.Fatalf("the acceptance: %v", tk)
 	}
 	out = w.deliver(t, "CND-1", opID(), "https://example.test/pull/12", candName(run, "build", 2, c), http.StatusCreated, "")
@@ -1156,6 +1299,38 @@ func (w *workflow) outcome(t *testing.T, run string) {
 	if tk["close"].(map[string]any)["met"].(map[string]any)["acceptance"] != false {
 		t.Fatalf("the acceptance after the criteria changed: %v", tk["close"])
 	}
+	out = w.expect(t, http.MethodPost, "/api/dispatch/tickets/CND-1/edit", map[string]any{"opId": opID(), "set": map[string]any{"status": "done"}}, http.StatusConflict, "close_policy")
+	if rc := receiptOf(t, out); !slices.Contains(listOfAny(rc["missing"]), "acceptance") {
+		t.Fatalf("closing against the close policy: %v", rc)
+	}
+	if tk := entityOf(t, w.expect(t, http.MethodGet, "/api/dispatch/tickets/CND-1", nil, http.StatusOK, ""), "ticket"); tk["status"] == "done" || tk["closedAt"] != nil {
+		t.Fatalf("closed against its close policy: %v", tk)
+	}
+	tk = entityOf(t, w.expect(t, http.MethodPost, "/api/dispatch/tickets/CND-1/accept", map[string]any{"opId": opID(), "byName": "Nate"}, http.StatusOK, ""), "ticket")
+	if tk["acceptedCriteria"] != acceptanceHash(tk["acceptance"]) || tk["close"].(map[string]any)["met"].(map[string]any)["acceptance"] != true {
+		t.Fatalf("accepted again against the criteria now: %v", tk)
+	}
+	tk = entityOf(t, w.expect(t, http.MethodPost, "/api/dispatch/tickets/CND-1/edit", map[string]any{"opId": opID(), "set": map[string]any{"owner": "Bob"}}, http.StatusOK, ""), "ticket")
+	if c := tk["close"].(map[string]any); c["met"].(map[string]any)["acceptance"] != false || !strings.Contains(fmt.Sprint(c["why"]), "the owner is now Bob") {
+		t.Fatalf("the acceptance after the owner changed: %v", c)
+	}
+}
+
+// acceptanceHash is the hash an acceptance records of the criteria it was
+// made against: SHA-256 of their text, in hex.
+func acceptanceHash(acceptance any) string {
+	sum := sha256.Sum256([]byte(fmt.Sprint(acceptance)))
+	return hex.EncodeToString(sum[:])
+}
+
+// listOfAny is a JSON array's strings.
+func listOfAny(v any) []string {
+	var out []string
+	xs, _ := v.([]any)
+	for _, x := range xs {
+		out = append(out, fmt.Sprint(x))
+	}
+	return out
 }
 
 // contextAbsent is what context-seams' CT-2 and CT-3 show of a provider
@@ -1175,14 +1350,192 @@ func contextAbsent(t *testing.T, w *workflow) {
 	}
 }
 
-// holdRechecks makes every provider call's wait an hour until the test
-// ends (extWaiting, as TestConfirmAuthorityAdmitsDecide does): a recheck
-// held at the provider's gate stays held while the test reads the
-// records, on a loaded machine too, instead of ending at the guard's
-// IdentityWait, which bounds a hang. The walk's tests are not parallel.
-func holdRechecks(t *testing.T) {
+// holdRechecks makes every provider call's wait an hour (extWaiting, as
+// TestConfirmAuthorityAdmitsDecide does): a recheck held at the
+// provider's gate stays held while the test reads the records, on a
+// loaded machine too, instead of ending at the guard's wait, which bounds
+// a hang. The wait it found is put back by the function it answers, which
+// the held step calls as it ends, and by a cleanup of the test (or
+// subtest) it was called in, whichever comes first. The walk's tests are
+// not parallel.
+func holdRechecks(t *testing.T) (putBack func()) {
 	t.Helper()
+	was := extWaiting.Load()
 	long := time.Hour
 	extWaiting.Store(&long)
+	var once sync.Once
+	putBack = func() { once.Do(func() { extWaiting.Store(was) }) }
+	t.Cleanup(putBack)
+	return putBack
+}
+
+// walkWait gives every provider call the test's own wait, a minute, until
+// the test ends, as runtime_test.go's takesAnswered does: the fakes
+// answer at once, and a loaded machine that schedules an answer late must
+// not turn an admitted pass into a refused one (the product's
+// IdentityWait is a second). A test of the product's bound (the late
+// context provider) keeps it.
+func walkWait(t *testing.T) {
+	t.Helper()
+	wait := time.Minute
+	extWaiting.Store(&wait)
 	t.Cleanup(func() { extWaiting.Store(nil) })
+}
+
+// awaitFake waits for ok, asked again at each change of the fake, within
+// the test's own bound, failing t with what it waited for.
+func awaitFake(t *testing.T, f interface{ Changed() <-chan struct{} }, what string, ok func() bool) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), testWait)
+	defer cancel()
+	if err := exttest.Await(ctx, f, ok); err != nil {
+		t.Fatalf("%s: not after %s", what, testWait)
+	}
+}
+
+// received is the next value on ch, within the test's own bound.
+func received[T any](t *testing.T, ch <-chan T, what string) T {
+	t.Helper()
+	select {
+	case v := <-ch:
+		return v
+	case <-time.After(testWait):
+		t.Fatalf("%s: none after %s", what, testWait)
+	}
+	var zero T
+	return zero
+}
+
+// urlLog keeps every URL the walk's client asked for.
+type urlLog struct {
+	mu   sync.Mutex
+	urls []string
+}
+
+// client is c with every request's URL kept.
+func (l *urlLog) client(c *http.Client) *http.Client {
+	base := c.Transport
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	out := *c
+	out.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		l.mu.Lock()
+		l.urls = append(l.urls, r.URL.String())
+		l.mu.Unlock()
+		return base.RoundTrip(r)
+	})
+	return &out
+}
+
+func (l *urlLog) all() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return slices.Clone(l.urls)
+}
+
+// roundTripFunc is a RoundTripper of a function.
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+// noPassLeaked is the plan's step 10, never: no pass the walk presented is
+// in a line any of its servers logged or in a URL the walk asked for.
+func (w *workflow) noPassLeaked(t *testing.T) {
+	t.Helper()
+	logs, urls := w.logs.String(), w.urls.all()
+	if len(urls) == 0 || logs == "" {
+		t.Errorf("nothing to judge: %d URLs, %d bytes of log", len(urls), len(logs))
+	}
+	for _, pass := range walkPasses {
+		if strings.Contains(logs, pass) {
+			t.Errorf("a log line holds the pass %s", pass)
+		}
+		for _, u := range urls {
+			if strings.Contains(u, pass) {
+				t.Errorf("a URL holds the pass %s: %s", pass, u)
+			}
+		}
+	}
+}
+
+// refusingClient is a client whose every dial is refused as the kernel
+// refuses a port nobody listens on: the owning server out of reach,
+// without dialling a port a test has freed (AGENTS.md: a port a test
+// freed is not a closed port).
+func refusingClient() *http.Client {
+	return &http.Client{Transport: &http.Transport{DialContext: func(context.Context, string, string) (net.Conn, error) {
+		return nil, &net.OpError{Op: "dial", Net: "tcp", Err: os.NewSyscallError("connect", syscall.ECONNREFUSED)}
+	}}}
+}
+
+// typedShows is how many times one typing of an answer shows in the
+// asking attempt's terminal: the terminal echoes the typed line and the
+// stub agent (a cat) prints it back.
+const typedShows = 2
+
+// typedTimes is how many times the answer to did shows in the session
+// sid's terminal: a viewer's replay of the session's output, from its
+// welcome to its ready, counted by the words the typed line opens with.
+func (w *workflow) typedTimes(t *testing.T, sid, did string) int {
+	t.Helper()
+	c := dialViewer(t, w.testEnv, sid, adminToken)
+	c.hello(200, 50)
+	var out []byte
+	for {
+		f, err := c.read()
+		if err != nil {
+			t.Fatalf("the replay of %s: %v", sid, err)
+		}
+		if f.Type == proto.TypeOutput || f.Type == proto.TypeScrollback {
+			out = append(out, f.Payload...)
+		}
+		if f.Type == proto.TypeControl {
+			var m map[string]any
+			_ = json.Unmarshal(f.Payload, &m)
+			if m["t"] == "ready" {
+				break
+			}
+		}
+	}
+	c.c.CloseNow()
+	return bytes.Count(printed(out), []byte("Decision "+did+" (approval) answered by"))
+}
+
+// walkCard is Brakeman's decision card about the subject at its revision:
+// what happened (the walk's mark), why a person, the decision's two
+// alternatives, a recommendation and its uncertainty, citing evidence.
+func walkCard(t *testing.T, about brakeman.Ref, rev string, evidence []brakeman.Ref) brakeman.Item {
+	t.Helper()
+	keep := 0
+	return brakeman.Item{Kind: brakeman.ItemDecision, Decision: &brakeman.Decision{About: about, Happened: walkBriefMark,
+		WhyHuman: "Only the architecture owner decides how sign-in keeps its session.", Question: walkQuestion,
+		Alternatives:   []brakeman.Alternative{{Label: "Keep the session cookie", Tradeoffs: "a one-line fix"}, {Label: "Move to tokens", Tradeoffs: "a larger change"}},
+		Recommendation: &keep, Uncertainty: "BRAKEMANMARK whether the SSO callback sets the path too", Authorizes: "the build goes on with the cookie",
+		Evidence: evidence, SubjectRevision: rev}}
+}
+
+// briefedItem is the plan's step 9 on the operator's decision page, once
+// issue 1046 lets Brakeman brief a decision record: a turn's card about
+// the decision, at the rev it read, is on the decision's item, marked
+// Brakeman's, beside the decision's own question and title, its
+// recommendation a mark and nothing answered; the record unchanged.
+func (w *workflow) briefedItem(t *testing.T, clock *clock) {
+	t.Helper()
+	before := w.record(t, w.did)
+	id, sid, tok := w.turn(t, brakeman.KindDecision, "task:"+w.run+"/build")
+	evidence := []brakeman.Ref{ref(t, "decision:"+w.did), ref(t, "run:"+w.run)}
+	w.briefed(t, clock, id, sid, tok, brakemanBrief("The architecture question of "+w.did, "Brakeman recommends keeping the cookie.",
+		brakeman.Item{Kind: brakeman.ItemFact, Fact: &brakeman.Fact{Text: walkBriefMark, Evidence: evidence}},
+		walkCard(t, ref(t, "decision:"+w.did), strconv.Itoa(before.Rev), evidence)))
+	after := w.record(t, w.did)
+	it := entityOf(t, w.expect(t, http.MethodGet, "/api/inbox/item?ref="+ledger.DecisionRef(numberOf(w.did)), nil, http.StatusOK, ""), "item")
+	if it["briefBy"] != "brakeman" || !strings.Contains(fmt.Sprint(it["brief"]), walkBriefMark) || it["question"] != walkQuestion || it["title"] != walkQuestion ||
+		!strings.HasPrefix(fmt.Sprint(it["card"]), "brief:"+id+"/") || it["revision"] != strconv.Itoa(after.Rev) || it["cardNote"] != nil ||
+		!strings.Contains(fmt.Sprint(it["uncertainty"]), "BRAKEMANMARK") || it["recommended"] != 0.0 {
+		t.Fatalf("the operator's item with Brakeman's brief: %v", it)
+	}
+	if after.Rev != before.Rev || after.State != ledger.DecisionOpen || len(after.Responses) != len(before.Responses) {
+		t.Fatalf("the brief changed %s: rev %d %s, %d responses (were %d)", w.did, after.Rev, after.State, len(after.Responses), len(before.Responses))
+	}
 }
