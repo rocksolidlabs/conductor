@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import { CommandRefused } from './tasks'
 import {
+  activeFilters,
+  clearedQuery,
+  withoutFilter,
   availabilityWords,
   byAnchor,
   classBadge,
@@ -68,7 +71,11 @@ describe('historyNoneWords', () => {
     expect(historyNoneWords('')).toBe('No session is kept yet.')
     expect(historyNoneWords('  ')).toBe('No session is kept yet.')
     expect(historyNoneWords('zzz')).toBe('Nothing in the history matches.')
-    expect(historyNoneWords('class:said')).toBe('Nothing in the history matches.')
+    // A filter in the query: the filters are why, and the page offers Clear all beside it.
+    expect(historyNoneWords('class:said')).toBe('Nothing matches these filters.')
+    expect(historyNoneWords('zzz agent:claude')).toBe('Nothing matches these filters.')
+    // A name the filters do not take is a word.
+    expect(historyNoneWords('http://x')).toBe('Nothing in the history matches.')
   })
 })
 
@@ -426,5 +433,62 @@ describe('what a host reported', () => {
     const native = { ...hosted, where: 'native', agent: { id: 'claude', version: '2.1.304' }, repo: '/Users/ada/app', startCommit: 'a'.repeat(40) }
     expect(recordWhere(native)).toBe('ran natively')
     expect(hostUnreported(native)).toEqual([])
+  })
+})
+
+describe('what narrows a search, and what clearing takes off (#1023)', () => {
+  const names: Record<string, string> = { claude: 'Claude Code' }
+  const agentName = (id: string) => names[id]
+  const brief = (q: string) => activeFilters(q, agentName).map((f) => [f.key, `${f.label}: ${f.value}`])
+
+  it('lists the words first, as one, then each filter as written, in the chips\' words', () => {
+    expect(brief('papaya class:record agent:claude "a phrase" since:7d')).toEqual([
+      ['words', 'Words: papaya "a phrase"'],
+      ['class:record', 'Kind of evidence: Records'],
+      ['agent:claude', 'Agent: Claude Code'],
+      ['since:7d', 'Since: A week'],
+    ])
+    expect(brief(`outcome:${REJECTING_OUTCOMES.join(',')} OUTCOME:failed,passed class:conversation`)).toEqual([
+      [`outcome:${REJECTING_OUTCOMES.join(',')}`, 'Outcome: Rejected'],
+      ['outcome:failed,passed', 'Outcome: Failed or Passed'],
+      ['class:conversation', 'Kind of evidence: Conversation'],
+    ])
+    // A filter with no chip: its name in words, its value as written; an agent the catalog does not name, by its id.
+    expect(brief('kind:session repo:conductor since:3d agent:goose until:')).toEqual([
+      ['kind:session', 'Kind: session'],
+      ['repo:conductor', 'Repository: conductor'],
+      ['since:3d', 'Since: 3d'],
+      ['agent:goose', 'Agent: goose'],
+      ['until:', 'Until: no value'],
+    ])
+    // A filter written twice is listed twice, each its own; a name the filters do not take is a word.
+    expect(brief('class:said class:said http://x').map(([k]) => k)).toEqual(['words', 'class:said', 'class:said#2'])
+  })
+
+  it('lists nothing when nothing narrows the search', () => {
+    expect(activeFilters('')).toEqual([])
+    expect(activeFilters('   ')).toEqual([])
+    // A lone quote holds no word: nothing listed, though the box is not empty.
+    expect(activeFilters('"')).toEqual([])
+  })
+
+  it("takes one off by its own removal, the rest kept in their order", () => {
+    const q = 'papaya class:record agent:claude "a phrase" since:7d'
+    const of = (key: string) => activeFilters(q).find((f) => f.key === key)!
+    expect(withoutFilter(q, of('agent:claude'))).toBe('papaya class:record "a phrase" since:7d')
+    // The words' removal takes off the text alone, every word and phrase, and leaves the filters.
+    expect(withoutFilter(q, of('words'))).toBe('class:record agent:claude since:7d')
+    expect(activeFilters(withoutFilter(q, of('words'))).map((f) => f.key)).toEqual(['class:record', 'agent:claude', 'since:7d'])
+    // The second of two the same: only it.
+    const twice = 'class:said x class:said'
+    expect(withoutFilter(twice, activeFilters(twice).find((f) => f.key === 'class:said#2')!)).toBe('class:said x')
+    // A lone quote goes with the words; a quote not closed runs to the end, a filter after it a word of its phrase (as the server reads it).
+    expect(withoutFilter('x class:said "', activeFilters('x class:said "')[0]!)).toBe('class:said')
+    expect(activeFilters('x "class:said').map((f) => f.key)).toEqual(['words'])
+  })
+
+  it('clears every filter and the words: Clear all leaves nothing narrowing the search', () => {
+    expect(clearedQuery()).toBe('')
+    expect(activeFilters(clearedQuery())).toEqual([])
   })
 })

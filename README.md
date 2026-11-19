@@ -2271,8 +2271,10 @@ quotes), and filters narrow it: `class:` (`said`, `decided`, `checked`,
 it reads at most the 10,000 matches indexed most recently and ranks at
 most 2,000 of them, and says so when it stopped. **History** under the sidebar's More (or Go to, `G H`)
 opens `/history` on its Search: the same search with filter chips that write
-those filters, every result paged with Show more, the query in the URL so a
-search is a link, one column on a phone. Its second view, **Feed**
+those filters, the words and each active filter listed under the search box
+with its own × and **Clear all** beside them (Clear all takes off every filter
+and the words; Back puts them back), every result paged with Show more, the
+query in the URL so a search is a link, one column on a phone. Its second view, **Feed**
 (`?view=feed`, **G E**), is the live feed of what agents report (Events and
 hooks).
 
