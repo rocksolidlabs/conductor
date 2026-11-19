@@ -113,7 +113,7 @@ test('the editor sets a start rule by drawing an edge, and refuses a second pare
   await page.mouse.move(b.x + b.width / 2, b.y + b.height / 2, { steps: 12 })
   await page.mouse.up()
   await expect(canvas.locator('[data-graph-edge="tests-docs"][data-graph-edge-kind="after"]')).toHaveCount(1)
-  await page.getByRole('button', { name: 'Save' }).click()
+  await page.getByRole('button', { name: 'Save', exact: true }).click()
   await expect.poll(async () => (await api.crew(crewId)).members.find((m) => m.name === 'docs')?.start, { timeout: 15_000 }).toEqual({ when: 'after', member: 'tests' })
 
   // A second parent for docs is refused, and said.
@@ -130,7 +130,7 @@ test('the editor sets a start rule by drawing an edge, and refuses a second pare
   // The × on the edge removes the rule: docs starts immediately.
   await canvas.locator('[data-graph-edge-label="tests-docs"][data-graph-label-kind="after"] [data-graph-edge-delete]').click()
   await expect(canvas.locator('[data-graph-edge="tests-docs"]')).toHaveCount(0)
-  await page.getByRole('button', { name: 'Save' }).click()
+  await page.getByRole('button', { name: 'Save', exact: true }).click()
   await expect.poll(async () => (await api.crew(crewId)).members.find((m) => m.name === 'docs')?.start, { timeout: 15_000 }).toEqual({ when: 'immediately' })
 })
 
