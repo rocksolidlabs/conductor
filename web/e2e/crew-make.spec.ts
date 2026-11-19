@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto'
-import type { Locator, Page } from '@playwright/test'
-import { expect, test, type Run } from './fixtures'
+import type { Locator, Page, Route } from '@playwright/test'
+import { budget, expect, test, type Run } from './fixtures'
 import { noSideways, tapTarget, uncut } from './layout'
 
 // Making a crew and starting it, by the Setup's labelled fields (issue 1024's review, C7 to C10 and C16): a new crew's Name field is the
@@ -14,6 +14,9 @@ test.afterEach(async ({ api }) => {
   for (const id of made.runs.splice(0)) await api.stopRun(id)
   for (const id of made.crews.splice(0)) await api.call('DELETE', `/api/crews/${encodeURIComponent(id)}`)
 })
+
+/** The config's bound of an expect, of an action, and of a page's load: each group of steps raises the test's timeout by its own (budget). */
+const EXPECT = 15_000
 
 const unique = (what: string) => `e2e ${what} ${randomBytes(3).toString('hex')}`
 
@@ -32,6 +35,7 @@ test('a crew of two made from nothing by its labelled fields says why it cannot 
   made.crews.push(other.id)
   const { agents } = await api.ok<{ agents: Array<{ id: string; name: string }> }>('GET', '/api/catalog')
 
+  budget(6 * EXPECT) // the home, New crew, the URL, the label, the focus, the first field
   await page.goto('/crews')
   await page.locator('[data-new-crew]').click()
   await expect(page).toHaveURL(/\/crews\/new$/)
@@ -43,6 +47,7 @@ test('a crew of two made from nothing by its labelled fields says why it cannot 
   await expect(page.locator('[data-crew-editor]').getByRole('textbox').first()).toHaveAccessibleName('Crew name')
 
   // No name yet: said beside the field and beside the held Save, and the launch is held with it.
+  budget(4 * EXPECT)
   const bar = page.locator('[data-unsaved-bar]')
   const save = bar.getByRole('button', { name: 'Save', exact: true })
   const reason = bar.locator('[data-save-reason]')
@@ -52,7 +57,8 @@ test('a crew of two made from nothing by its labelled fields says why it cannot 
   await expect(save).toBeDisabled()
   await expect(launch).toBeDisabled()
 
-  // A name another crew has, typed into the focused field.
+  // A name another crew has, typed into the focused field; then a name of its own, the goal and the workspace (a pick is three waits).
+  budget(15 * EXPECT)
   await page.keyboard.type(taken.toUpperCase())
   await expect(name).toHaveValue(taken.toUpperCase())
   const takenWords = `Another crew is called ${taken}: give this one a name of its own`
@@ -71,6 +77,7 @@ test('a crew of two made from nothing by its labelled fields says why it cannot 
   await pick(page, page.locator('[data-crew-workspace]'), 'One folder for everyone')
 
   // A second member: named as the first, then with characters a name may not have, each said beside its field and beside Save.
+  budget(16 * EXPECT)
   await page.locator('[data-add-member]').click()
   const rows = page.locator('[data-crew-member]')
   await expect(rows).toHaveCount(2)
@@ -92,7 +99,8 @@ test('a crew of two made from nothing by its labelled fields says why it cannot 
   // Its model, labelled, empty: the agent's choice.
   await expect(rows.nth(1).getByRole('textbox', { name: 'Model for checker' })).toHaveAttribute('placeholder', "The agent's choice")
 
-  // A draft's button saves, then opens the sheet on the crew as saved.
+  // A draft's button saves, then opens the sheet on the crew as saved; its table, its Launch, the run page.
+  budget(17 * EXPECT)
   await expect(launch).toHaveAccessibleName('Save and launch')
   const created = page.waitForResponse((r) => r.request().method() === 'POST' && new URL(r.url()).pathname === '/api/crews')
   await launch.click()
@@ -125,6 +133,62 @@ test('a crew of two made from nothing by its labelled fields says why it cannot 
   const { crew: saved } = await api.ok<{ crew: { name: string; isolation: string; members: Array<{ name: string; start: { when: string } }> } }>('GET', `/api/crews/${crew.id}`)
   expect([saved.name, saved.isolation, saved.members.map((m) => [m.name, m.start.when])]).toEqual([crewName, 'none', [['lead', 'immediately'], ['checker', 'manual']]])
 })
+
+/** The first `method` request `match` takes, held at this test's route until `release` (`seen` once it is held); the others pass. */
+async function holdOnce(page: Page, match: (u: URL) => boolean, method: string) {
+  let seen!: () => void
+  let release!: () => void
+  const at = new Promise<void>((r) => (seen = r))
+  const gate = new Promise<void>((r) => (release = r))
+  let first = true
+  const handler = async (route: Route) => {
+    if (route.request().method() !== method || !first) return route.fallback()
+    first = false
+    seen()
+    await gate
+    await route.fallback()
+  }
+  await page.route(match, handler)
+  return { seen: at, release, off: () => page.unroute(match, handler) }
+}
+
+/** The app's router, through the page itself: a move inside the app, as a link to another crew makes it (the page stays mounted). */
+const navigate = (page: Page, path: string) =>
+  page.evaluate((u) => (document.querySelector('#__nuxt') as unknown as { __vue_app__: { config: { globalProperties: { $router: { push: (u: string) => Promise<unknown> } } } } }).__vue_app__.config.globalProperties.$router.push(u), path)
+
+for (const button of ['Save and launch', 'Save'] as const) {
+  test(`a new crew's ${button} that lands after the person went to another crew saves it and moves nobody: no sheet opens there`, async ({ page, api }) => {
+    budget(12 * EXPECT) // the draft, the held save, the other crew, the answer, where the person is, the words, no sheet
+    const other = unique('elsewhere')
+    const { crew: b } = await api.ok<{ crew: { id: string } }>('POST', '/api/crews', { name: other, goal: '', cwd: '', where: 'server', isolation: 'none', openAfterLaunch: false, members: [{ name: 'lead', agentId: 'claude', prompt: '', start: { when: 'manual' } }] })
+    made.crews.push(b.id)
+    await page.goto('/crews/new')
+    const name = page.getByRole('textbox', { name: 'Crew name' })
+    await expect(name).toBeFocused()
+    const crewName = unique('left')
+    await name.fill(crewName)
+    await expect(name).toHaveValue(crewName)
+    // The new crew's save held at this test's route until the person is on the other crew's page.
+    const held = await holdOnce(page, (u) => u.pathname === '/api/crews', 'POST')
+    if (button === 'Save') await page.locator('[data-unsaved-bar]').getByRole('button', { name: 'Save', exact: true }).click()
+    else await page.locator('[data-launch]').click()
+    await held.seen
+    await navigate(page, `/crews/${encodeURIComponent(b.id)}`)
+    await expect(name).toHaveValue(other)
+    const answered = page.waitForResponse((r) => r.request().method() === 'POST' && new URL(r.url()).pathname === '/api/crews')
+    held.release()
+    const { crew } = (await (await answered).json()) as { crew: { id: string; name: string } }
+    made.crews.push(crew.id)
+    await held.off()
+    // Saved, and said so; the person stays on the crew they went to, and no sheet opens there.
+    await expect(page.getByText(button === 'Save' ? 'Crew saved' : 'its launch sheet was not opened').first()).toBeVisible()
+    await expect(page).toHaveURL(new RegExp(`/crews/${b.id}$`))
+    await expect(name).toHaveValue(other)
+    await expect(page.locator('[data-crew-launch-confirm]')).toHaveCount(0)
+    expect(crew.name).toBe(crewName)
+    expect((await api.ok<{ crew: { name: string } }>('GET', `/api/crews/${encodeURIComponent(crew.id)}`)).crew.name).toBe(crewName)
+  })
+}
 
 test('a saved crew with edits says so beside its launch, which saves them first; More options keeps every choice one press away', async ({ page, api }) => {
   const crewName = unique('edits')
@@ -170,6 +234,12 @@ test("on a phone a member is a card: each control labelled and 44 px to press, a
   await expect(card).toBeVisible()
   for (const label of ['Name', 'Agent', 'First prompt', 'Starts', 'Account', 'Model']) await expect(card.getByText(label, { exact: true })).toBeVisible()
   await tapTarget(card.locator('input, textarea, button'))
+  // Its extra arguments, asked for from its menu: labelled, and as tall to press as its neighbours.
+  await card.locator('[data-member-menu]').click()
+  await page.getByRole('menuitem', { name: 'Extra arguments' }).click()
+  await expect(page.getByRole('menu')).toHaveCount(0)
+  await expect(card.locator('[data-member-args-field]').getByText('Extra arguments', { exact: true })).toBeVisible()
+  await tapTarget(card.locator('input, textarea, button'))
   await noSideways(page)
   await page.locator('[data-launch]').click()
   const row = page.locator('[data-crew-launch-line="lead"]')
@@ -195,6 +265,8 @@ for (const [width, height] of [
     const row = page.locator('[data-crew-member]').first()
     await expect(row.getByRole('combobox', { name: 'Agent for reconciliation-worker-01' })).toContainText('Worker, CLI (e2e stub)')
     await expect(row.locator('[data-member-start]')).toContainText('When you press Start')
+    // The sidebar at its opening width (280 px), as a person first meets it: the page's content is what is left.
+    await expect.poll(async () => Math.round((await page.locator('#dashboard-sidebar-main').boundingBox())?.width ?? 0)).toBeGreaterThanOrEqual(280)
     // The table's columns are drawn (the wide layout): its heads, and no card labels.
     await expect(page.locator('[data-crew-members] > [aria-hidden="true"]').first()).toBeVisible()
     await uncut(row.locator('[data-slot="value"]'))

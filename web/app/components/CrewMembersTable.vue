@@ -36,20 +36,20 @@ const emit = defineEmits<{ add: []; addFromSession: [] }>()
 // long as "Claude Code (worker, busy)", "When you press Start") and moves to a card layout when the table is narrow, each control then under its own label
 // and, on a phone, 44 px to press (a container query, so the slideover gets it too). Full class names: Tailwind scans them.
 const cell = {
-  name: 'col-start-1 col-span-2 row-start-1 @min-[60rem]:col-start-auto @min-[60rem]:col-span-1 @min-[60rem]:row-start-auto',
-  agent: 'col-start-1 col-span-3 row-start-2 @min-[60rem]:col-start-auto @min-[60rem]:col-span-1 @min-[60rem]:row-start-auto',
-  prompt: 'col-start-1 col-span-3 row-start-3 @min-[60rem]:col-start-auto @min-[60rem]:col-span-1 @min-[60rem]:row-start-auto',
-  start: 'col-start-1 col-span-3 row-start-4 @min-[60rem]:col-start-auto @min-[60rem]:col-span-1 @min-[60rem]:row-start-auto',
-  menu: 'col-start-3 row-start-1 @min-[60rem]:col-start-auto @min-[60rem]:row-start-auto',
+  name: 'col-start-1 col-span-2 row-start-1 @min-[56rem]:col-start-auto @min-[56rem]:col-span-1 @min-[56rem]:row-start-auto',
+  agent: 'col-start-1 col-span-3 row-start-2 @min-[56rem]:col-start-auto @min-[56rem]:col-span-1 @min-[56rem]:row-start-auto',
+  prompt: 'col-start-1 col-span-3 row-start-3 @min-[56rem]:col-start-auto @min-[56rem]:col-span-1 @min-[56rem]:row-start-auto',
+  start: 'col-start-1 col-span-3 row-start-4 @min-[56rem]:col-start-auto @min-[56rem]:col-span-1 @min-[56rem]:row-start-auto',
+  menu: 'col-start-3 row-start-1 @min-[56rem]:col-start-auto @min-[56rem]:row-start-auto',
 }
 // A managed crew's members have no Starts column: their tasks start them.
 const cols = computed(() =>
   props.managed
-    ? 'grid-cols-[minmax(0,1fr)_minmax(0,1fr)_2.75rem] gap-x-2.5 gap-y-2.5 @min-[60rem]:grid-cols-[10rem_17rem_minmax(10rem,1fr)_2rem]'
-    : 'grid-cols-[minmax(0,1fr)_minmax(0,1fr)_2.75rem] gap-x-2.5 gap-y-2.5 @min-[60rem]:grid-cols-[10rem_17rem_minmax(10rem,1fr)_15rem_2rem]',
+    ? 'grid-cols-[minmax(0,1fr)_minmax(0,1fr)_2.75rem] gap-x-2.5 gap-y-2.5 @min-[56rem]:grid-cols-[9rem_16.5rem_minmax(10rem,1fr)_2rem]'
+    : 'grid-cols-[minmax(0,1fr)_minmax(0,1fr)_2.75rem] gap-x-2.5 gap-y-2.5 @min-[56rem]:grid-cols-[9rem_16.5rem_minmax(10rem,1fr)_14rem_2rem]',
 )
 /** A control's label in the card layout; the wide table's column heads say it there. */
-const cardLabel = 'text-xs font-medium text-muted @min-[60rem]:hidden'
+const cardLabel = 'text-xs font-medium text-muted @min-[56rem]:hidden'
 /** A control 44 px tall on a phone, the size it is elsewhere. */
 const touch = 'max-sm:min-h-11'
 
@@ -206,7 +206,7 @@ const focusedPrompt = ref<number | null>(null)
 
 <template>
   <div class="@container overflow-hidden rounded-lg ring ring-default" data-crew-members>
-    <div class="hidden border-b border-default bg-muted px-4 py-2.5 text-[11px] font-semibold uppercase tracking-wider text-muted @min-[60rem]:grid" :class="cols" aria-hidden="true">
+    <div class="hidden border-b border-default bg-muted px-4 py-2.5 text-[11px] font-semibold uppercase tracking-wider text-muted @min-[56rem]:grid" :class="cols" aria-hidden="true">
       <span>Name</span>
       <span>Agent</span>
       <span v-if="managed">Role <span class="font-normal normal-case tracking-normal">· written into each task file</span></span>
@@ -283,19 +283,19 @@ const focusedPrompt = ref<number | null>(null)
         />
         </div>
 
-        <div :class="cell.menu" class="mt-5 flex h-8 items-center justify-end max-sm:h-11 @min-[60rem]:mt-0">
+        <div :class="cell.menu" class="mt-5 flex h-8 items-center justify-end max-sm:h-11 @min-[56rem]:mt-0">
           <UDropdownMenu v-if="!single" :items="menu(m, i)" :content="{ align: 'end' }">
             <IconButton icon="i-lucide-ellipsis" color="neutral" variant="ghost" size="xs" :label="`${who(m, i)}: more`" class="max-sm:min-h-11 max-sm:min-w-11 max-sm:justify-center" data-member-menu />
           </UDropdownMenu>
         </div>
       </div>
 
-      <!-- Its account and its model, each under its label: aligned under the prompt in the wide table. -->
-      <div v-if="(unread && agentOf(m.agentId)?.adapter) || accountItems(m).length" class="flex flex-wrap items-start gap-x-3 gap-y-2 pl-0 @min-[60rem]:pl-[28.25rem]" data-member-login>
+      <!-- Its account and its model, each under its label: under the agent they belong to in the wide table. -->
+      <div v-if="(unread && agentOf(m.agentId)?.adapter) || accountItems(m).length" class="flex flex-wrap items-start gap-x-3 gap-y-2 pl-0 @min-[56rem]:pl-[9.625rem]" data-member-login>
         <p v-if="unread" class="w-full max-w-80 text-xs text-muted [overflow-wrap:anywhere]" data-member-login-unread>
           Account: {{ m.account ? accountName(null, m.account) : 'the default at launch' }}, kept as saved: none can be chosen while the accounts cannot be read ({{ unread }}).
         </p>
-        <div v-else class="flex w-full min-w-0 flex-col gap-1 sm:w-72">
+        <div v-else class="flex w-full min-w-0 flex-col gap-1 sm:w-80">
           <span class="text-xs font-medium text-muted" aria-hidden="true">Account</span>
           <USelect
             :model-value="m.account || AT_LAUNCH"
@@ -312,7 +312,7 @@ const focusedPrompt = ref<number | null>(null)
           />
           <span v-if="accountProblem(m)" class="text-xs leading-snug text-error" data-member-account-error>{{ accountProblem(m) }}</span>
         </div>
-        <div class="flex w-full min-w-0 flex-col gap-1 sm:w-60">
+        <div class="flex w-full min-w-0 flex-col gap-1 sm:w-64">
           <span class="text-xs font-medium text-muted" aria-hidden="true">Model</span>
           <UInput
             :model-value="m.model ?? ''"
@@ -332,7 +332,9 @@ const focusedPrompt = ref<number | null>(null)
         </div>
       </div>
 
-      <div v-if="showsArgs(m)" class="flex items-center gap-2 pl-0 @min-[60rem]:pl-[28.25rem]">
+      <!-- Under its label, as the Account and the Model are; 44 px to press on a phone, as its neighbours. -->
+      <div v-if="showsArgs(m)" class="flex flex-col gap-1 pl-0 @min-[56rem]:pl-[9.625rem]" data-member-args-field>
+        <span class="text-xs font-medium text-muted" aria-hidden="true">Extra arguments</span>
         <UInput
           :model-value="m.argsText"
           :placeholder="agentOf(m.agentId)?.allowArgs === false ? 'this agent takes no extra arguments' : 'extra arguments, as on the command line'"
@@ -342,7 +344,7 @@ const focusedPrompt = ref<number | null>(null)
           icon="i-lucide-terminal"
           size="sm"
           :aria-label="`Extra arguments for ${who(m, i)}`"
-          :ui="{ base: 'font-mono text-xs' }"
+          :ui="{ base: `font-mono text-xs ${touch}` }"
           class="w-full max-w-xl"
           data-member-args
           @update:model-value="setArgs(m.key, String($event))"
