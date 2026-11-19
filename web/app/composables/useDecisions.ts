@@ -2,6 +2,7 @@ import { hasInjectionContext, inject, type ComputedRef } from 'vue'
 import type { DecisionEvent } from '~/utils/protocol'
 import { REF_ACCESS } from '~/utils/refAccess'
 import type { Decision, DecisionRef } from '~/utils/decisions'
+import type { PolicyNow } from '~/utils/decisionPolicy'
 import { isDecisionId, replaces, runHeldOf } from '~/utils/decisions'
 import type { RunInfo } from './useSessions'
 import { ApiError } from './useApi'
@@ -375,6 +376,8 @@ export function useDecisionRecord(id: () => string) {
   const view = new DecisionRecordView()
   const decision = ref<Decision | null>(null)
   const refs = ref<DecisionRef[]>([])
+  /** Whether a router's policy on it is in force now, as the last read said (none under the server's own policy). */
+  const policyNow = ref<PolicyNow | null>(null)
   const error = ref('')
   const loading = ref(false)
   function show() {
@@ -387,8 +390,11 @@ export function useDecisionRecord(id: () => string) {
     const gen = view.generation
     loading.value = true
     try {
-      const r = await request<{ decision: Decision; refs?: DecisionRef[] }>(`/api/decisions/${encodeURIComponent(d)}`)
-      if (view.read(gen, d, id(), r)) show()
+      const r = await request<{ decision: Decision; refs?: DecisionRef[]; policyNow?: PolicyNow }>(`/api/decisions/${encodeURIComponent(d)}`)
+      if (view.read(gen, d, id(), r)) {
+        show()
+        policyNow.value = r.policyNow ?? null
+      }
       if (d === id()) error.value = ''
     } catch (e) {
       if (d === id()) error.value = (e as Error).message
@@ -419,6 +425,7 @@ export function useDecisionRecord(id: () => string) {
       if (view.decision?.id !== d) {
         view.clear()
         show()
+        policyNow.value = null
         error.value = ''
       }
       if (d) void read()
@@ -426,7 +433,7 @@ export function useDecisionRecord(id: () => string) {
     { immediate: true },
   )
   onBeforeUnmount(stop)
-  return { decision, refs, error, loading, read, begin }
+  return { decision, refs, policyNow, error, loading, read, begin }
 }
 
 /**

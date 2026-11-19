@@ -211,6 +211,41 @@ that order.
   link grants. Content appears only after the guest joins.
 - **No Runs nav item** until there is something behind it.
 
+## A decision router's policy on decision records: who may answer (SW1, #1030; 2026-11-19)
+
+The open-source half of Switchman's team routing (`docs/plans/decision-policy.md`,
+rows PR-7a to PR-8; groups, quorum and distinct persons are PR-9's, the second
+half of this entry). It does anything only on a server where a decision router
+is registered that confirms policies (`ext.PolicyConfirmer`); with none, every
+decision opens and stays under the server's own policy and is answered as before.
+
+- **A router says who may answer.** A durable decision is told to the router with
+  what it says of itself (its type, where it comes from, the crew, whom it is for,
+  its subject by kind and key). The router may answer a policy: one group, a role
+  with its label, the persons eligible (by name, the role's holder, a delegate
+  beside someone, a backup), the rule that named them, or a gap's words when
+  nobody fills it, and whether the operator may override. It is written into the
+  record; the ledger's version 14 keeps the record's outcome for the router.
+- **Only the people it names answer, while the router stands behind it.** Each
+  answer is confirmed with the router at the response and again before it is
+  applied; a person the router no longer names stops seeing the decision on the
+  decide page at their next request. The operator answers only by an explicit
+  override, with a reason of at least ten characters, where the policy allows one.
+  When the router does not stand behind its policy (no answer, it says so, or it
+  keeps asking for a retry past two minutes), the operator answers as before and
+  the receipt says why.
+- **The router routes again.** It re-routes a record (who is eligible, never what
+  is required), reads every open record and the outcomes back, and acknowledges
+  them; the operator can ask it to route a decision again. A route to a person, a
+  role or the decide grant is refused while a policy is in force.
+- **Said in the app and the CLI.** The decision's card says who may answer, by
+  group, each person with how they are eligible and the rule; a gap in its own
+  words; "Routed to Ana: not in force now (why). The operator answers." when it is
+  not in force. Under a policy in force the operator's answer buttons wait with
+  "This is Ana's to answer", and Override… asks for a choice and a reason before it
+  sends the answer as an override. `conductor decision show` prints the policy;
+  `conductor decision respond --override --why TEXT` overrides.
+
 ## Brakeman hands a package on, tells of a new decision, and shares a brief (#1012; 2026-11-18)
 
 The Brakeman design review's third tier, which #993 left for a decision,

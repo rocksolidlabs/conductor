@@ -90,6 +90,16 @@ export interface ResponseReceipt {
   kept?: boolean
   /** Whom an accepted response answered for (HM1), beside who answered (actor, byName). */
   for?: { person: string; responsibility?: string }
+  /**
+   * Under a decision router's policy (SW1): `policy` local/1 and `policyWhy` the router's why when the operator answered with the
+   * policy not in force; `groups`, `via` and `ref` what an eligible answer counted for; `override` an override's.
+   */
+  policy?: string
+  policyWhy?: string
+  groups?: string[]
+  via?: string
+  ref?: string
+  override?: boolean
 }
 
 /** Yardmaster's receipt of an answer applied. */
@@ -554,6 +564,8 @@ export interface ResponseBody {
   rationale?: string
   expectedRev: number
   byName?: string
+  /** The operator's answer in a router's policy's place, its reason the rationale (the admin's alone). */
+  override?: boolean
 }
 
 /** A cancel as the cancel route takes it. */
@@ -617,8 +629,9 @@ export async function sendDecisionWrite<B, R>(send: (body: B) => Promise<R>, bod
 }
 
 /** A response's body with its id minted: `choice` an option's index, `text` a clarification's words; `expectedRev` the rev the card read. */
-export function responseBody(r: { choice?: number; text?: string; rationale?: string; expectedRev: number; byName?: string }, responseId = mintCommandId()): ResponseBody {
+export function responseBody(r: { choice?: number; text?: string; rationale?: string; expectedRev: number; byName?: string; override?: boolean }, responseId = mintCommandId()): ResponseBody {
   const body: ResponseBody = { responseId, expectedRev: r.expectedRev }
+  if (r.override) body.override = true
   if (r.choice !== undefined) body.choice = r.choice
   if (r.text?.trim()) body.text = r.text.trim()
   if (r.rationale?.trim()) body.rationale = r.rationale.trim()
@@ -661,6 +674,9 @@ export function decideWords(code: string, did: string): string {
     stale_policy: `${did} was opened under another policy and cannot be answered here.`,
     invalid: `This answer does not fit ${did}: check the choice and the text.`,
     decision_limit: `${did} takes no more answers.`,
+    not_eligible: `You are not among those who may answer ${did}.`,
+    not_needed: `${did} needs no more answers of this kind.`,
+    already_counted: `Your answer to ${did} is counted already.`,
     // The page's own words for a reply that does not say whether the answer was recorded.
     decision_moved: `Not known whether your answer to ${did} was recorded: send it again.`,
     rate_limited: `The server is working on other requests of yours: send your answer to ${did} again in a moment.`,
@@ -669,7 +685,7 @@ export function decideWords(code: string, did: string): string {
 }
 
 /** The respond codes that judge an answer (internal/api/decide.go, decideWords and decisionStatus): the answer held is let go. */
-export const DECIDE_JUDGING: readonly string[] = ['decision_answered', 'decision_closed', 'stale_decision', 'not_approver', 'response_conflict', 'not_held', 'stale_policy', 'invalid', 'decision_limit']
+export const DECIDE_JUDGING: readonly string[] = ['decision_answered', 'decision_closed', 'stale_decision', 'not_approver', 'response_conflict', 'not_held', 'stale_policy', 'invalid', 'decision_limit', 'not_eligible', 'not_needed', 'already_counted']
 
 /**
  * What a respond reply says of the answer `responseId` it was sent: taken (a 2xx whose receipt names that response id), refused by the
