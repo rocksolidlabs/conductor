@@ -68,8 +68,9 @@ the walk's last parts need, and those parts (WF-2) wait for their rows:
 
 - `docs/plans/context-seams.md` (CT-1 to CT-3): the context each
   attempt was given, recorded and shown, and the lookup.
-- `docs/plans/decision-policy.md` (its policy rows, one group first):
-  a registered router's policy names who may answer, and only they do.
+- `docs/plans/decision-policy.md` (its rows PR-7a, the ledger's step,
+  and PR-7, one group): a registered router's policy names who may
+  answer, and only they do.
 - `docs/plans/sync-seams.md` (OS-3): an answer given while the owning
   server is out of reach, held by a sync provider and handed in once.
 
@@ -144,10 +145,13 @@ done or refused is never shown going back. Beside them, five promises
 the walk checks after every step and every condition:
 
 - **No accepted response but an eligible person's.** A response from
-  anyone the decision does not admit now (a person it was not routed
-  to, a principal whose access was withdrawn, a share link, an agent,
-  Brakeman) is refused; its refusal may be kept as a refused row, never
-  counted, never applied.
+  anyone the decision does not admit now is refused; its refusal may be
+  kept as a refused row, never counted, never applied. On `main` the
+  refusals the walk checks are a principal whose access was withdrawn,
+  a principal without the decide grant, a share link, an agent and
+  Brakeman; while a decision is given to the decide grant every holder
+  of that grant is eligible. A person the decision was not routed to is
+  refused only under a router's policy (WF-2b).
 - **Applied at most once.** One accepted response, one application, one
   release of the held work, however many taps, retries, restarts or
   hand-ins (DR1's I1).
@@ -167,8 +171,9 @@ never filled in (`docs/plans/context-seams.md`).
 
 **For the work**, truthful is: a plan approval that no longer holds says
 so; a candidate is shown with the receipts of the checks it passed or
-failed; a ticket is accepted only by its owner, against its criteria as
-they stand.
+failed; a ticket's acceptance is the operator's, recorded for the
+ticket's owner (`accepted_for`) against its criteria as they stand
+(`accepted_criteria`), and reads unmet once either changes.
 
 ## The workflow, step by step
 
@@ -187,8 +192,12 @@ happen, and what holds it on `main`. "The walk" is WF-1's test.
    this one's. *On main*: C4's seam; the base note waits for CT-1.
 3. **Brakeman drafts the plan.** Asked about CND-12, Brakeman's brief
    carries a draft plan revision: the crew (implementer, then
-   reviewer), the checks, and one required decision for the
-   architecture owner (`role:architecture`). *Sees*: the brief and its
+   reviewer), the checks, and the people with their responsibilities
+   (ana the architecture owner). It names no required decision: a
+   plan's required decision is a gate DR1 opens in the run's first
+   transaction, held until it is answered the way steps 8 to 11 answer
+   one, and this walk follows the one decision the agent raises.
+   *Sees*: the brief and its
    draft. *Holds*: Brakeman's request and brief, never a revision: a
    draft becomes a revision only when a person proposes it. *Never*: a
    draft approved, launched or proposed by Brakeman. *On main*: BK1,
@@ -199,10 +208,10 @@ happen, and what holds it on `main`. "The walk" is WF-1's test.
    that no longer holds (the ticket edited since) launched; it says so
    and asks again. *On main*: DS2.
 5. **Yardmaster starts the managed run.** Launched from the approved
-   revision. *Sees*: the run, its tasks, the architecture gate holding
-   the tasks it names. *Holds*: the run's first transaction with its
-   gate and holds. *Never*: an attempt of a held task reserved before
-   its hold exists (DR1's O2). *On main*: DS2, Yardmaster, DR1.
+   revision. *Sees*: the run, its tasks, its people. *Holds*: the run's
+   first transaction, its launch recorded against the revision.
+   *Never*: a run launched from a revision whose approval no longer
+   holds. *On main*: DS2, Yardmaster.
 6. **The implementing agent raises an architecture question.** Its
    attempt calls `decision_request` (approval, for
    `role:architecture`, with its alternatives, recommendation,
@@ -210,21 +219,29 @@ happen, and what holds it on `main`. "The walk" is WF-1's test.
    dr-7"; the card. *Holds*: the decision `open` at rev 1, its hold, its
    history row, `decision.opened`. *Never*: the agent told it may go on
    with the dependent work. *On main*: DR1.
-7. **Yardmaster keeps it and holds only the dependent work.** *Sees*:
-   the dependent task held, the others running. *Holds*: the holds on
-   the named tasks alone. *Never*: a held task dispatched; an unheld one
-   held back by the wait (DR1's I2, I12). *On main*: DR1.
-8. **It is routed to an eligible architecture owner.** *Sees*: the card
-   says whom it is for ("for ana, the architecture owner") and who may
-   answer. *Holds*: the request's `for`, the `routed` row. On `main` the
-   operator routes it to the decide grant, and any decide principal may
-   answer; with a router's policy (decision-policy's rows) only the
-   persons the policy names may. *Never*: a person who is not eligible
-   shown the card or able to answer. *On main*: HM1, C5, the decide
-   grant; the policy waits for its rows (WF-2).
-9. **Brakeman prepares a brief.** *Sees*: the card with the brief: what
-   happened, the evidence, the uncertainty, a recommendation marked as
-   Brakeman's. *Holds*: the brief in Brakeman's records, its refs to
+7. **Yardmaster keeps it and holds only the asking task.** *Sees*: the
+   asking task waiting for dr-7; the run's other tasks not held by it
+   (the reviewer's waits on its needs, as it would anyway). *Holds*: the
+   hold on the asking task alone (DR1's Opening). *Never*: the asking
+   task dispatched again before the application; another task held by
+   dr-7 (DR1's I2, I12). *On main*: DR1.
+8. **It is given to someone who may answer.** On `main`: opened for
+   `role:architecture`, the card says "for ana, the architecture
+   owner", and the operator answers; the operator then gives it to the
+   decide grant. *Sees*: the card "for the decide grant"; any decide
+   principal may answer, beside the operator. *Holds*: the request's
+   `for` rewritten to the grant with no person, the `routed` row with
+   what it was for before, rev + 1; the router told of it (C5).
+   *Never*: a principal without the decide grant, or whose access was
+   withdrawn, able to answer. With a router's policy (decision-policy's
+   PR-7a and PR-7, WF-2b) the card says "for ana, the architecture
+   owner" and only ana may answer. *On main*: HM1, C5, the decide grant;
+   the policy waits for its rows (WF-2b).
+9. **Brakeman prepares a brief.** *Sees*: on the operator's decision
+   page, the item with the brief: what happened, the evidence, the
+   uncertainty, a recommendation marked as Brakeman's. The decide page
+   a decide principal reads shows the decision's own words and no
+   brief. *Holds*: the brief in Brakeman's records, its refs to
    the decision and the run. *Never*: the brief standing in for the
    decision's own words, or answering. *On main*: BK1 (with context's
    lookup once CT-2 lands).
@@ -244,26 +261,31 @@ happen, and what holds it on `main`. "The walk" is WF-1's test.
 12. **The work goes on to a candidate, its checks and its review.** The
     held task starts, the implementer submits `9ab1…`, its checks run,
     the reviewing agent's attempt starts at the candidate (with the
-    context of that commit, CT-1) and submits `needs_changes` with
+    context of that commit, CT-1) and submits `approved` with no
     findings. *Sees*: the candidate with its receipts; the review's
     verdict. *Holds*: attempts, receipts, the result, the review
-    attempt's verdict and findings; with CT-3, each attempt's context
-    rows. *Never*: a review of another commit than the candidate; an
+    attempt's verdict; with CT-3, each attempt's context rows. (A
+    review that submits `needs_changes` reopens the task at once with
+    every one of its findings, before any person acts: that is a repair
+    of its own, not this walk's step 13.) *Never*: a review of another commit than the candidate; an
     attempt started twice. *On main*: Yardmaster, RV1; context waits for
     CT-3 (WF-2).
-13. **A person batches the findings into a repair.** The operator reads
-    the review, keeps two findings, and sends a review that requests
-    changes. *Sees*: the review, its findings, the repair attempt.
-    *Holds*: Dispatch's review with its findings and application, the
-    repair attempt with them in its task file. *Never*: a finding the
-    person dropped handed to the repair. *On main*: RV1.
+13. **A person batches their findings into a repair.** The operator
+    reviews the candidate in the ticket's Review view and sends Request
+    changes with two notes of their own. *Sees*: the review, its notes,
+    the repair attempt. *Holds*: Dispatch's review with its two notes
+    and its application, the repair attempt with exactly those two
+    changes in its task file. *Never*: a note the person did not send
+    handed to the repair. *On main*: RV1.
 14. **Dispatch records the outcome.** The repaired candidate passes its
-    checks and review; the ticket's owner accepts it against its
+    checks; the operator accepts it for the ticket's owner against its
     criteria; a delivery link is added. *Sees*: the ticket with its
     candidate, checks, decisions, acceptance and delivery. *Holds*:
-    every one of those as Dispatch's and the ledger's rows. *Never*: an
-    acceptance by anyone but the ticket's owner; a ticket closed against
-    its close policy. *On main*: DS2.
+    every one of those as Dispatch's and the ledger's rows, the
+    acceptance with `accepted_for` the owner and `accepted_criteria` the
+    criteria's hash. *Never*: an acceptance read as met for an owner or
+    criteria other than the ticket's now; a ticket closed against its
+    close policy. *On main*: DS2.
 
 ## The conditions
 
@@ -311,7 +333,8 @@ the provider, or shown context it was not given.
 **The owner disconnected.** The owning server is out of the person's
 reach when they open the card (stopped, or its address unreachable).
 *Made by*: the walk's server stopped and started again over its data
-directory (the later servers ended first, `AGENTS.md`). *Sees*: the
+directory, the same fakes registered with the new server (the later
+servers ended first, `AGENTS.md`). *Sees*: the
 decide page cannot reach the server and says so; nothing is shown as
 sent. When the server is back, the card at its rev, still open.
 *Holds*: nothing while it is away; the decision open, its holds kept,
@@ -325,15 +348,22 @@ not applied; one applied twice. The person being away from their phone
 is the plain case of silence: nothing is recorded, nothing is approved.
 
 **An agent restarted.** The implementing agent's session ends while
-dr-7 is open, and in a second run of it the server restarts between the
-response and its application. *Made by*: the stub's session stopped;
-the server stopped and its run continued. *Sees*: "waiting for decision
-dr-7"; the attempt given back, not counted; after the answer, the next
-attempt with the answer in its task file. *Holds*: the refund row; the
-decision moved to the continuation and applied once there. *Never*: an
-attempt counted against the task for waiting; an answer typed twice;
-an identity's response applied after a restart without its recheck
-(DR1's `TestAnIdentityAnswerIsNotAppliedAfterARestart`).
+dr-7 is open; and, in two more runs of it, the server restarts between
+a response and its application. *Made by*: the stub's session stopped;
+the server stopped and its run continued (a new server over the same
+data directory, the fakes registered again: a restart drops what a
+provider was given, and the walk hands the new server the same fakes).
+*Sees*: "waiting for decision dr-7"; the attempt given back, not
+counted. When the operator answered (the workbench token), the answer
+is moved to the continuation and applied once there, and the next
+attempt has it in its task file. When ana answered (her decide pass, an
+identity), the card says her answer could not be rechecked and a fresh
+decision asks again, for the operator to answer. *Holds*: the refund
+row; the operator's answer moved and applied once; ana's response kept,
+its decision superseded by a fresh one carrying its holds, nothing
+applied (DR1's I13). *Never*: an attempt counted against the task for
+waiting; an answer typed twice; an identity's response applied after a
+restart (DR1's `TestAnIdentityAnswerIsNotAppliedAfterARestart`).
 
 **The sidekick away.** Brakeman is not configured, or its turn ends
 with no brief. *Made by*: the walk once with no Brakeman desk, once
@@ -343,14 +373,17 @@ brief". *Holds*: Brakeman's request `ended` (or none); the decision
 unchanged. *Never*: a brief invented; the decision waiting on Brakeman
 to be answerable.
 
-**An entitlement that ran out.** The entitlement source answers not
-allowed for every feature, and the providers that ask it stop giving
-what they gave: the router answers no destination, the context
-provider no block, the identity provider no longer admits the decide
-pass. *Made by*: `FakeEntitlements` set to nothing, the fakes made to
-answer their free default. *Sees*: the decision "for the operator"
-again, the operator's card to answer it; the run page's state as it
-was. *Holds*: the gates and holds unchanged; no response but the
+**An entitlement that ran out.** The providers stop giving what they
+gave, as providers whose entitlement ran out would: the router answers
+no destination, the context provider no block, the identity provider no
+longer admits the decide pass. No code of this repository asks the
+entitlement source, so the lapse reaches the server only as these
+answers. *Made by*: the decide pass removed (`FakeIdentity.Remove`),
+the router and the context provider set to their empty answers.
+*Sees*: the decision still given to the decide grant, which no pass now
+reaches; the operator answers it on the operator's card, or takes it
+back (a route to the operator); the run page's state as it was.
+*Holds*: the gates and holds unchanged; no response but the
 operator's accepted; no code of this repository asked the entitlement
 source (`FakeEntitlements.Asked` empty). *Never*: a held task started
 because a provider stopped; a decision closed or approved by the lapse;
@@ -367,12 +400,12 @@ repository the test makes (`gitRepo`), with a Dispatch project.
 
 | Slot | Fake | What the walk makes it do |
 |---|---|---|
-| identity | `FakeIdentity` | admits the operator's pass (`GrantAdmin`), the architecture owner's (`GrantDecide`), an unrelated person's (`GrantDecide`); removes one for the withdrawn responder; wrapped as the decide tests' `gatedIdentity` to hold a recheck |
+| identity | `FakeIdentity` | admits the operator's pass (`GrantAdmin`), the architecture owner's (`GrantDecide`), an unrelated person's (`GrantDecide`: eligible on `main` while a decision is given to the decide grant; their refusal is WF-2b's check, skipped in WF-1 naming that row); removes one for the withdrawn responder; wrapped as the decide tests' `gatedIdentity` to hold a recheck |
 | decision router | `FakeRouter` | is told of every decision (C5) and answers a destination; with WF-2b, a policy |
 | context | `FakeContext` | answers blocks with a pack mark; `SetErr` for context unavailable; with WF-2a, lookups and commit notes |
 | notifications | `FakeSink` | records the decision's notices |
 | sync | `FakeContinuity` | is told of every commit; with WF-2c, holds and hands in an answer |
-| entitlements | `FakeEntitlements` | allows the features the fakes ask about; set to nothing for the lapse |
+| entitlements | `FakeEntitlements` | registered so that `Asked()` can be checked empty: no code on `main` asks it |
 
 The runtime and media slots keep their free defaults: the workflow does
 not use media, and the attempts must run on this machine, which a fake
@@ -458,7 +491,7 @@ loaded machine (`AGENTS.md`).
 |---|---|---|---|---|---|
 | WF-0 (#1034) | plans: the first end-to-end workflow | this file | `docs/plans` | none | docs ~500 |
 | WF-1 | api: the workflow's walk on `main`'s seams | `workflow_test.go`: the fixture with every slot a fake, `assertTruthful`, `TestWorkflowEndToEnd` with its waiting parts skipped, the eight condition tests as `main` can show them, `TestWorkflowFree` | `internal/api` (tests only) | WF-0 | ~1,300 (tests) |
-| WF-2 | api: the walk widened as its seams land | three parts, each its own commits: (a) context recorded, the lookup and its absence (after context-seams CT-3); (b) eligibility by a router's policy, the router away (after decision-policy's one-group rows); (c) the held answer for the owner disconnected (after sync-seams OS-3); each removes its skips | `internal/api` (tests only) | WF-1 and the named rows | ~250 each |
+| WF-2 | api: the walk widened as its seams land | three parts, each its own commits: (a) context recorded, the lookup and its absence (after context-seams CT-3); (b) eligibility by a router's policy: the card "for ana, the architecture owner", only ana admitted, the unrelated decide principal refused, and the router away (after decision-policy's PR-7a and PR-7); (c) the held answer for the owner disconnected (after sync-seams OS-3); each removes its skips | `internal/api` (tests only) | WF-1 and the named rows | ~250 each |
 | WF-3 | docs: the workflow in the features record | `docs/features.md`'s entry: the walk, what it holds, and the owner's by-hand observation with real providers and agents, in words that name no provider | `docs` | WF-1; the observation | docs ~80 |
 
 A part of WF-2 that finds a defect in the code of the row it waits for
