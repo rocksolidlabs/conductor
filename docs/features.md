@@ -960,12 +960,12 @@ logins, which no test reaches. The issue stays open for them (#788).
   tab) land on History's Feed, `?tab=routing` on the Alerts panel over it,
   `?tab=integrations` on Agents' Reporting to Conductor
   (`eventsRedirect` in `web/app/utils/events.ts`). G E and Alt+E open the
-  Feed ("Go to History's feed"). A crew run's "All events" opens it.
+  Feed, its tab named Live ("Go to History · Live"). A crew run's "All events" opens it.
 - **Seven destinations.** Needs you, Yard, Crews, Dispatch, Brakeman,
   Agents, History, with Settings in the desktop app: the pages' table in
   that order. The sidebar's More holds Agents and History; the phone's
   More Dispatch, Brakeman, Agents, History; the palette's Go to adds the
-  Roundhouse, Agents · Reporting, History · Feed and Paste invite.
+  Roundhouse, Agents · Reporting, History · Live and Paste invite.
   `web/e2e/destinations.spec.ts` holds every list as drawn.
 
 ## Tracker linking: GitHub issues and pull requests on tickets (IN1a PR-1 to PR-10; 2026-11-16)

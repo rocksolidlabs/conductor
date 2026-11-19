@@ -2268,12 +2268,19 @@ quotes), and filters narrow it: `class:` (`said`, `decided`, `checked`,
 it reads at most the 10,000 matches indexed most recently and ranks at
 most 2,000 of them, and says so when it stopped. **History** under the sidebar's More (or Go to, `G H`)
 opens `/history` on its Search: the same search with filter chips that write
-those filters, the words and each active filter listed under the search box
-with its own × and **Clear all** beside them (Clear all takes off every filter
-and the words; Back puts them back), every result paged with Show more, the
-query in the URL so a search is a link, one column on a phone. Its second view, **Feed**
-(`?view=feed`, **G E**), is the live feed of what agents report (Events and
-hooks).
+those filters (Since first, the agents that have history before the rest, which
+wait behind More agents; a pressed chip filled and ticked), the words and each
+active filter listed under the search box with its own × and **Clear all**
+beside them (Clear all takes off every filter and the words; Back puts them
+back), the results under day headings (Today, Yesterday, Mon 16 Nov), each row
+its name, its state in the sidebar's words, its time, one line of agent ·
+repository · branch · id (a press copies the id) and its action written out
+(Open, or Transcript for a session that ended, with Resume where the sidebar
+offers it), every result paged with Show more, the query in the URL so a
+search is a link. On a phone the results follow the search at once and the
+groups wait behind **Filters**. Its second view, **Live** (`?view=feed`,
+**G E**), is the live feed of what agents report from the moment the page
+opened (Events and hooks), which agents report folded under its button.
 
 **What a row says.** A badge for what kind of evidence it is, and the
 kinds never mix: **Conversation** (something said: a session's line, a

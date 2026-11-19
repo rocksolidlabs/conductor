@@ -127,11 +127,12 @@ test('the active filters are listed, each removed by its own ×, and Clear all t
     await expect(row(claude1)).toBeVisible({ timeout: 30_000 })
     await tapTarget(bar.locator('[data-history-active-remove]'))
     await tapTarget(bar.locator('[data-history-clear-all]'))
-    await noSideways(page, { root: pageEl })
-    // On a phone the list sits under the box, above the long column of chips.
-    const [box, list, chips] = [await pageEl.locator('[data-history-search] input').boundingBox(), await bar.boundingBox(), await pageEl.locator('[data-history-chips]').boundingBox()]
+    // The list's one line scrolls sideways by design (history-rows.spec.ts); nothing else does.
+    await noSideways(page, { root: pageEl, allow: bar.locator('[data-history-active-strip]') })
+    // On a phone the list sits under the box, the results under it (the chips wait behind Filters).
+    const [box, list, results] = [await pageEl.locator('[data-history-search] input').boundingBox(), await bar.boundingBox(), await row(claude1).boundingBox()]
     expect(list!.y).toBeGreaterThan(box!.y)
-    expect(chips!.y).toBeGreaterThan(list!.y)
+    expect(results!.y).toBeGreaterThan(list!.y)
   } finally {
     for (const s of made) await api.stopSession(s.id).catch(() => undefined)
   }

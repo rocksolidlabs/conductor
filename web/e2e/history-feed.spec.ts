@@ -36,7 +36,7 @@ test.afterAll(async ({ api }) => {
   if (crewId) await api.call('DELETE', `/api/crews/${encodeURIComponent(crewId)}`)
 })
 
-const view = (page: Page, name: 'Search' | 'Feed') => page.locator('[data-history-views]').getByRole('tab', { name })
+const view = (page: Page, name: 'Search' | 'Live') => page.locator('[data-history-views]').getByRole('tab', { name })
 
 /**
  * Presses lowercase letters in turn as a person typing quickly does, every key handed to the browser at once (shortcuts.spec.ts's
@@ -72,10 +72,10 @@ test("History's Feed names crew members, offers Answer, fills the last hour besi
   await page.goto('/history?view=feed')
   const feed = page.locator('[data-event-feed]')
   await expect(feed).toBeVisible()
-  await expect(view(page, 'Feed')).toHaveAttribute('aria-selected', 'true')
-  await expect(page.locator('[data-history-feed-caption]')).toHaveText('Since this tab opened')
-  // The title's page part: a count of what needs you may lead it ("(2) History · Feed · Conductor").
-  await expect.poll(() => pageTitle(page)).toMatch(/^History · Feed\b/)
+  await expect(view(page, 'Live')).toHaveAttribute('aria-selected', 'true')
+  await expect(page.locator('[data-history-feed-caption]')).toHaveText('What agents report, from the moment this page opened.')
+  // The title's page part: a count of what needs you may lead it ("(2) History · Live · Conductor").
+  await expect.poll(() => pageTitle(page)).toMatch(/^History · Live\b/)
   const run = await api.launchCrew(crewId)
   runs.push(run.id)
   const ask = () => feed.locator('[data-event="needs_input"]').filter({ hasText: 'e2e history feed / review' }).first()
@@ -86,6 +86,9 @@ test("History's Feed names crew members, offers Answer, fills the last hour besi
   await expect.poll(async () => Number(await chart.getAttribute('data-total')), { timeout: 30_000 }).toBeGreaterThanOrEqual(2)
   await expect(chart.locator('[data-activity-bar]')).toHaveCount(60)
   await expect(page.locator('[data-routing-readout]')).toContainText('Browser notification')
+  // Which agents report is set-up, not history: folded until asked for.
+  await expect(page.locator('[data-reporting-agent="claude"]')).toBeHidden()
+  await page.locator('[data-reporting-toggle]').click()
   await expect(page.locator('[data-reporting-agent="claude"]')).toBeVisible()
 
   // Search, the view History opens on: the search box, no feed, the address without the view.
@@ -94,7 +97,7 @@ test("History's Feed names crew members, offers Answer, fills the last hour besi
   await expect(page.locator('[data-history-input]')).toBeVisible()
   await expect(feed).toHaveCount(0)
   // Back to the Feed: the rows are read again after the redraw, from the tab's memory.
-  await view(page, 'Feed').click()
+  await view(page, 'Live').click()
   await expect(page).toHaveURL(/\/history\?view=feed$/)
   await expect(ask()).toBeVisible()
   await expect(ask().locator('[data-feed-answer]')).toHaveAttribute('href', /^\/sessions\//)
