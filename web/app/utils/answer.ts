@@ -239,6 +239,8 @@ export function createAnswer(deps: AnswerDeps) {
       const gen = generation
       const d = await stored(id)
       if (gen !== generation) return view(id)
+      // A send pressed while the draft was read is left as it is: an open never unlocks it (A1).
+      if (view(id).lock) return view(id)
       set(id, gen, { draft: d, item, words: '', notSaved: '' })
       if (d?.state === 'unknown') {
         set(id, gen, { step: 'unknown', words: ANSWER_WORDS.unknown, actions: [] })

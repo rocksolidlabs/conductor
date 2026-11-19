@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { ANSWER_WORDS, createAnswer, type AnswerView } from './answer'
 import type { Decision } from './decisions'
 import type { DeliveryStep } from './inbox'
@@ -397,6 +397,22 @@ describe('the invariants', () => {
     f.replies.push({ outcome: 'kept', item: odd })
     await m.open('i1', f.item)
     expect((await m.answer('i1', { choice: 0 })).item?.rows).toEqual(odd.rows)
+  })
+
+  it('A1: an open that ends while Answer is under way leaves the send locked as it is', async () => {
+    const { f, make } = fake()
+    const m = make()
+    await m.open('i1', f.item)
+    await m.edit('i1', { choice: 0 })
+    f.sendGate = gate()
+    const pressing = m.answer('i1', { choice: 0 })
+    await vi.waitFor(() => expect(m.view('i1').step).toBe('sending'))
+    // An open brought by a watch event, its draft read answering while the send is under way.
+    await m.open('i1', f.item)
+    expect(m.view('i1')).toMatchObject({ step: 'sending', lock: true })
+    f.sendGate.open()
+    expect((await pressing).step).toBe('kept')
+    expect(f.sent).toHaveLength(1)
   })
 
   it('A4: a check under way at a sign-out puts no draft, sends nothing and writes no state once its read answers', async () => {
