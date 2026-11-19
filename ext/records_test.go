@@ -42,6 +42,8 @@ var (
 	enabled        = true
 	contextFinding = ext.ContextFinding{Severity: "major", Path: "a.go", Line: 3, Message: "m"}
 	contextTicket  = ext.ContextTicket{Key: "CND-12", Rev: 9, Plan: "0123456789abcdef", PlanN: 3, Digest: strings.Repeat("e", 64), Owner: "Ada", Assignees: []string{"Grace"}}
+	lookupItem     = ext.LookupItem{Kind: ext.ItemSymbol, Path: "a.go", Line: 3, Symbol: "Open", Relation: ext.RelationCalledBy, Mark: ext.MarkSupported, Why: "w", Excerpt: "e"}
+	lookupCoverage = ext.LookupCoverage{Commit: strings.Repeat("a", 40), Snapshot: "s-1", Files: 412, Excluded: 3, Unknown: 1, Partial: true, At: at}
 	treeEntry      = ext.TreeEntry{Path: "README", Mode: "100644", Kind: ext.EntryFile, Object: strings.Repeat("d", 40), Size: 6}
 	capacityView   = ext.CapacityView{
 		Agent: "claude", Account: "a-abcdefgh2345", Label: "Work", State: "ok", Fresh: ext.CapacityFresh, ReadAt: at,
@@ -85,6 +87,11 @@ var records = []any{
 	&treeEntry,
 	&ext.BlobRequest{Run: "c1-89abcdef", Commit: strings.Repeat("a", 40), Path: "README"},
 	&ext.DeniedRequest{Run: "c1-89abcdef", Paths: []string{"README"}},
+	&ext.LookupRequest{Op: ext.LookupReferences, Query: "q", Path: "a.go", Symbol: "store.Open", Limit: 20, Run: "c1-89abcdef", Task: "build", Attempt: 1,
+		Kind: "work", Session: "0123456789abcdef", Start: strings.Repeat("a", 40), Base: strings.Repeat("b", 40), Head: strings.Repeat("c", 40)},
+	&ext.LookupAnswer{Items: []ext.LookupItem{lookupItem}, Blocks: []ext.ContextBlock{{Title: "t", Body: "b", Pack: "p-1"}}, Coverage: lookupCoverage, More: true, Note: "n"},
+	&lookupItem,
+	&lookupCoverage,
 	&ext.Notification{
 		Event: "needs_input", Type: "attention", At: at, Session: session, State: "open", Message: "m",
 		URL: "https://example.com/s", To: "ada", Tool: "Edit", Op: "edit", Path: "/src/a.go", By: "v1", ByName: "Ada", Origin: "push",
