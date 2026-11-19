@@ -1387,17 +1387,24 @@ run**.
   still joins.
 
 **The Crews page.** `/crews` opens on **Running now**: one card per run
-going now, named by its crew and its start, with a badge (**running**, or
-how many members **need you**), the members as chips in the shape of the
-crew with a status dot each, a line for every member that asks a question
-with **Answer** beside it, how long it has been up, **Stop** and **Open run**.
-Below, **Saved crews** is a table of plans: name and goal (and "1 live run"
-when one is going, leading to it), the crew's shape in miniature with a few
-words ("5 · a chain of 3, 1 by hand, 1 alone"), where its runs work, its
-last runs as bars (height how long each went, colour how it ended: green
-finished, grey stopped, red a member failed, an amber edge when someone had
-to answer) with when the last one started, **Edit** and **Launch run**. A
-saved crew never says "Running": status belongs to runs.
+going now, named by its crew and its start, with its state (**Running** or
+**Needs you**) and its counts ("1 working · 1 idle · 1 needs you"), then each
+member on a line: its name, whom it waits for ("after driver", "by hand"), the
+task it is on, and its state's word beside its mark (**Working**, **Idle**,
+**Needs you**, **Waiting to start**, **Finished**, **Failed**, **Stopped**).
+A member that asks a question has its words under the lines, and its choices
+as buttons that answer it there, through the run chat's own path; a question
+without choices keeps **Answer**, which opens the member's session. Then when
+it started and how long it has gone, **Stop** and **Open run**. A run launched
+from here is said at the top of the page ("Started Docs sweep", with **Open
+run**) and is under Running now at once. Below, **Saved crews** is a table of
+plans: the name (the way into the crew) and goal, its members ("5 members ·
+Claude Code, Codex CLI, Shell"), its last run (its state's word with its
+mark, when it started and how long it took; "Never run"), and **Launch run**.
+A run's state is one of **Running**, **Needs you**, **Succeeded**, **Failed**
+and **Stopped**, the same word on every Crews screen: a run whose task failed
+reads **Failed** everywhere. Times of day are 24-hour ("19:28") on every
+Crews screen and in the sidebar.
 
 **A saved crew's page.** `/crews/<id>` has the crew's name in its header
 (edit it there), **Duplicate**, a menu with **Delete crew**, and **Launch
@@ -1416,17 +1423,20 @@ bottom naming what changed, with **Discard** and **Save**; while a run is
 live it says the run keeps the version it launched with. A crew not saved
 yet is drafted at `/crews/new`.
 
-**Runs.** The crew's **Runs** tab charts its last twelve runs as bars (minutes,
-with the median, how many needed an answer and how many failed) and lists
-every run, newest first, the live ones and the records of those that ended:
-when it started with its short id, its state (**needs you**, **running**,
-**finished**, **stopped**, **failed**: a member ended with an error of its
-own, whether the run was then stopped or not), its members as tiles with a
-status dot each, how long it took, a note (who asks a question, what failed,
-how many a stop cut off, what changed as `+412 −58 on 5 branches`), and
-**Stop** and **Open** while it goes, **Resume as new run** and **Open** after.
-Chips above the table filter the rows by state (all, live, finished, stopped,
-failed, each with its count) and a select by when they started (today, 7 or
+**Runs.** The crew's **Runs** tab says in a sentence how its last run went
+and how long its runs usually take ("The last run failed after 3 min; runs of
+this crew usually take 6 min"); from five runs it charts the last twelve as
+bars (minutes, with the median, how many needed an answer and how many
+failed). It lists every run, newest first, the live ones and the records of
+those that ended: the run's own name, else "Run of today 19:28", its state
+(**Running**, **Needs you**, **Succeeded**, **Failed**: a task failed, or a
+member ended with an error of its own, whether the run was then stopped or
+not; **Stopped**), its members by name with their state's word, how long it
+took in words ("20 min so far", "3 min"), a note (who asks a question, what
+failed, how many a stop cut off, what changed as `+412 −58 on 5 branches`),
+**Stop** and **Open** while it goes, **Resume as new run** and **Open** after,
+and its short id at the row's end. Chips above the table filter the rows by
+state (All, Running, Succeeded, Failed, Stopped, each with its count) and a select by when they started (today, 7 or
 30 days, all time); the browser keeps the choice. A member that reports it is done keeps its run running, for a done agent is
 idle, not gone. The pages follow the runs through the event stream, as the
 run page and the sidebar do. A crew's **Yolo** setting (the server's default,
@@ -1451,7 +1461,7 @@ sets a rule by hand or removes the member, and a member started by hand is
 drawn dashed. A member waits for at most one
 other, so a second parent, a self edge and a cycle are refused with a word
 on why. On a phone the graph is a list indented by depth with the same
-badges, and the Crews table shows each crew's shape in miniature.
+badges.
 
 **The tasks.** Yardmaster, Conductor's agent harness, runs a crew with tasks
 as a managed run (see [Crews](#crews)); its run page has a **Tasks** tab first: one row per task with its state,
@@ -1488,12 +1498,13 @@ scratch.
 one bar per member from its start to its end or now, amber where its session
 waited for input (the feed's attention entries), a mark with a line to the
 other member's row for each handoff, and the run's stopped line; a hover
-reads the exact times. Runs that end (stopped or finished) are recorded as
+reads the exact times; the names' column is as wide as the longest name, up to
+a cap, and a longer name is cut at its end. Runs that end (stopped or finished) are recorded as
 `runs/<id>.json` in the data directory (the run as the API answers it, never
 a terminal's contents; at most 500 kept) and read back after a restart, so
-a crew's Runs tab lists them and charts the last twelve as bars (minutes,
-coloured by outcome, an amber edge when someone had to answer), once there
-are two, and the Crews table draws the same bars beside each crew.
+a crew's Runs tab lists them and, once there are five, charts the last
+twelve as bars (minutes, coloured by outcome, an amber edge when someone had
+to answer), and the Crews table says the last one beside each crew.
 History's feed draws the last hour's events per minute (what needs
 you, handoffs, errors, the rest) once two are in it, and the Yard's header shows its sessions by attention state as a slim
 stacked bar from two sessions on. Nothing is charted with fewer than two points.

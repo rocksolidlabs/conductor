@@ -9033,7 +9033,15 @@ screen. Nothing said which was the plan and which the thing running.
   card draws its tasks lit by their states, or its members by theirs, at
   most 520 px wide with their names. A crew's banner for a live run says
   the run's one sentence (`runStatusLine`), its icon neutral and its edge
-  amber only while something needs a person.
+  amber only while something needs a person. Since the review of issue
+  1024 the table is Crew, Members ("5 members · Claude Code, Codex CLI"),
+  Last run (its state's word with its mark, when, how long; "Never run") and
+  Launch run, the shape, the folder, the bars and Edit gone from it; a live
+  run's card lists each member on a line with its state's word, a
+  question's choices as buttons that answer in place; one vocabulary for a
+  run (Running, Needs you, Succeeded, Failed, Stopped) and a member
+  (Working, Idle, Needs you, Waiting to start, Finished, Failed, Stopped),
+  read from the run's own outcome, and one 24-hour clock.
   `/crews/<id>` is one saved crew with Setup and Runs tabs; `/crews/new` the
   draft of a crew not saved yet (the server never derives the id `new`).
   The summary `GET /api/crews` lists carries the goal now.
