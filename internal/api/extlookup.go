@@ -13,6 +13,7 @@ import (
 	"github.com/rocksolidlabs/conductor/ext"
 	"github.com/rocksolidlabs/conductor/internal/crew"
 	"github.com/rocksolidlabs/conductor/internal/gitcli"
+	"github.com/rocksolidlabs/conductor/internal/session"
 )
 
 // A lookup (docs/plans/context-seams.md, CT-2): an attempt's agent asks a
@@ -120,13 +121,14 @@ func (s *Server) lookupSource(source string) *guardContext {
 var extLookingUp atomic.Pointer[func(session string)]
 
 // handleContextLookup answers POST /api/sessions/{id}/context/lookup:
-// 200 {source, items, coverage, more, note?}; 404 not_found, 404
-// not_an_attempt, 409 not_running, 409 lane (a comparison's lane, which
-// asks no context), 404 no_context_lookup, 400 invalid_request, 429
-// lookup_busy and 503 lookup_unavailable (docs/protocol.md, Context
-// lookup).
+// 200 {source, items, coverage, more, note?}; to every caller but the
+// attempt's own agent 401, the workbench token 403 agent_only, before
+// anything of the session is said (lookupCaller); to that agent 409
+// not_running, 409 lane (a comparison's lane, which asks no context), 404
+// no_context_lookup, 400 invalid_request, 429 lookup_busy and 503
+// lookup_unavailable (docs/protocol.md, Context lookup).
 func (s *Server) handleContextLookup(w http.ResponseWriter, r *http.Request) {
-	d, ok := s.taskSession(w, r, opAgentOnly("context_lookup"))
+	d, ok := s.lookupCaller(w, r)
 	if !ok {
 		return
 	}
@@ -222,6 +224,44 @@ func agentFieldsValid(r ext.LookupRequest) error {
 	zero := strings.Repeat("0", 40)
 	r.Run, r.Task, r.Attempt, r.Kind, r.Session, r.Start, r.Base, r.Head = "x-00000000", "x", 1, "work", "x", zero, zero, ""
 	return r.Valid()
+}
+
+// lookupCaller judges who asks before anything of the session is said:
+// only the agent token of the session the path names, when that session
+// is an attempt's, is served (a comparison's lane's own token answered
+// 409 lane, as on every door closed to a lane). Every other caller is
+// refused as one with no right here, whatever the session is or whether
+// it is there: the workbench token 403 agent_only (the route is an
+// agent's, opAgentOnly), any other token, or none, 401; so no token but
+// the attempt's own learns from the answer whether the session exists,
+// is an attempt or runs. It answers having written the refusal when it
+// reports false.
+func (s *Server) lookupCaller(w http.ResponseWriter, r *http.Request) (session.Driver, bool) {
+	if d, found := s.registry.Get(r.PathValue("id")); found {
+		if _, _, _, attempt := s.runs.AttemptOf(d.Info().ID); attempt {
+			switch s.agentTokenOK(r, d) {
+			case agentTokenServed:
+				return d, true
+			case agentTokenLaneClosed:
+				writeLaneClosed(w)
+				return nil, false
+			}
+		}
+	}
+	p, ok := s.authenticate(w, r, false)
+	if !ok {
+		return nil, false
+	}
+	if p.admin && opAgentOnly("context_lookup") {
+		writeError(w, http.StatusForbidden, "agent_only", "a lookup is asked by the attempt's own session, with its token")
+		return nil, false
+	}
+	if !s.limiter.allow(clientKey(r)) {
+		writeError(w, http.StatusTooManyRequests, "rate_limited", "too many requests")
+		return nil, false
+	}
+	writeError(w, http.StatusUnauthorized, "unauthorized", "agent token required")
+	return nil, false
 }
 
 // lookupReply is the route's answer.

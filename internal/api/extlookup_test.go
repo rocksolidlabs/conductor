@@ -99,19 +99,23 @@ func TestLookupRefusedWithoutProvider(t *testing.T) {
 	}
 }
 
-// Only the attempt's own agent asks: the workbench token is 403
-// agent_only, another session's token 401, a session that is no attempt
-// 404 not_an_attempt; nothing reaches the provider.
+// Only the attempt's own agent asks, and the caller is judged before
+// anything of the session is said: the workbench token is 403 agent_only,
+// and another session's token, a session's own token where it is no
+// attempt's, and no token are 401, alike whether the session named is an
+// attempt, is no attempt or is not there; nothing reaches the provider.
 func TestLookupRefusedToTheAdmin(t *testing.T) {
 	l := &looker{fakeContext: &fakeContext{name: "graph"}}
 	e, runID, a, _ := lookupAttempt(t, l)
 	sid := a["sessionId"].(string)
 	body := map[string]any{"op": "symbol", "symbol": "Build"}
-	e.expectAs(t, adminToken, "POST", lookupPath(sid), body, http.StatusForbidden, "agent_only")
 	other := e.createSession("cat")
-	e.expectAs(t, e.agentToken(other), "POST", lookupPath(sid), body, http.StatusUnauthorized, "unauthorized")
-	e.expectAs(t, e.agentToken(other), "POST", lookupPath(other), body, http.StatusNotFound, "not_an_attempt")
-	e.expectAs(t, "", "POST", lookupPath(sid), body, http.StatusUnauthorized, "unauthorized")
+	otherTok := e.agentToken(other)
+	for _, target := range []string{sid, other, "0000000000000000"} {
+		e.expectAs(t, adminToken, "POST", lookupPath(target), body, http.StatusForbidden, "agent_only")
+		e.expectAs(t, otherTok, "POST", lookupPath(target), body, http.StatusUnauthorized, "unauthorized")
+		e.expectAs(t, "", "POST", lookupPath(target), body, http.StatusUnauthorized, "unauthorized")
+	}
 	if n := len(l.asked()); n != 0 {
 		t.Fatalf("the provider was asked %d times", n)
 	}
