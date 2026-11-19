@@ -5,13 +5,14 @@ const MR = 'https://example.com/group/project/-/merge_requests/95'
 const OTHER = ['file:///etc/passwd', 'javascript:void(0)', 'JavaScript:alert(1)', 'data:text/html,hi', 'vscode://file/etc/passwd', 'mailto:a@example.com', 'ftp://example.com/x', 'about:blank', '/etc/passwd', 'example.com', 'not a link', '']
 const CLICK = { button: 0, detail: 1 }
 
-function handler(selected = false) {
+function handler(selected = false, mac = false) {
   const calls: string[] = []
   const h = terminalLinkHandler({
     open: (u: string) => calls.push(`open ${u}`),
     opened: (u: string) => calls.push(`opened ${u}`),
     show: (t: LinkTip | null) => calls.push(`show ${t ? t.origin + t.rest : null}`),
     selected: () => selected,
+    mac,
   })
   return { h, calls }
 }
@@ -81,27 +82,46 @@ describe('what the hover shows', () => {
 
 describe('which press opens a link', () => {
   it('a single press of the primary button that selected nothing', () => {
-    expect(opensLink(CLICK, false)).toBe(true)
-    expect(opensLink({}, false)).toBe(true)
+    expect(opensLink(CLICK, false, false)).toBe(true)
+    expect(opensLink({}, false, false)).toBe(true)
   })
 
   it('not the second press of a double-click, nor a triple-click’s', () => {
-    expect(opensLink({ button: 0, detail: 2 }, false)).toBe(false)
-    expect(opensLink({ button: 0, detail: 3 }, false)).toBe(false)
+    expect(opensLink({ button: 0, detail: 2 }, false, false)).toBe(false)
+    expect(opensLink({ button: 0, detail: 3 }, false, false)).toBe(false)
   })
 
   it('not a middle or a right press', () => {
-    expect(opensLink({ button: 1, detail: 1 }, false)).toBe(false)
-    expect(opensLink({ button: 2, detail: 1 }, false)).toBe(false)
+    expect(opensLink({ button: 1, detail: 1 }, false, false)).toBe(false)
+    expect(opensLink({ button: 2, detail: 1 }, false, false)).toBe(false)
   })
 
   it('not a press that selected text', () => {
-    expect(opensLink(CLICK, true)).toBe(false)
+    expect(opensLink(CLICK, true, false)).toBe(false)
+  })
+
+  it('on a Mac, not Control with the primary button, the secondary click there; ⌘ with it opens', () => {
+    expect(opensLink({ ...CLICK, ctrlKey: true }, false, true)).toBe(false)
+    expect(opensLink({ ...CLICK, metaKey: true }, false, true)).toBe(true)
+    expect(opensLink(CLICK, false, true)).toBe(true)
+  })
+
+  it('elsewhere, Control with the primary button opens', () => {
+    expect(opensLink({ ...CLICK, ctrlKey: true }, false, false)).toBe(true)
   })
 })
 
 describe("the terminal's link handler", () => {
-  it('opens a web link once on a single click, with or without Ctrl or ⌘, then tells the page', () => {
+  it('on a Mac opens nothing on Control with the primary button, and once on ⌘ with it', () => {
+    const ctrl = handler(false, true)
+    ctrl.h.activate({ ...CLICK, ctrlKey: true }, MR)
+    expect(ctrl.calls).toEqual([])
+    const cmd = handler(false, true)
+    cmd.h.activate({ ...CLICK, metaKey: true }, MR)
+    expect(cmd.calls).toEqual([`open ${MR}`, `opened ${MR}`])
+  })
+
+  it('opens a web link once on a single click, with or without Ctrl or ⌘ off a Mac, then tells the page', () => {
     for (const mods of [{}, { ctrlKey: true }, { metaKey: true }]) {
       const { h, calls } = handler()
       h.activate({ ...CLICK, ...mods }, MR)

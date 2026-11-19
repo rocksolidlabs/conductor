@@ -4,6 +4,8 @@
 // could potentially be dangerous"), which the desktop app shows as a native dialog. The protection a person keeps is the browser's
 // own: where a link goes is shown while the pointer is over it, before any click, from its parsed address.
 
+import { menuPress } from '~/utils/terminalClipboard'
+
 /** webLink is the address when it is a web one (http or https), else null: no other scheme is opened from a terminal. */
 export function webLink(uri: string): string | null {
   try {
@@ -63,12 +65,14 @@ export type LinkPress = Partial<Pick<MouseEvent, 'button' | 'detail' | 'ctrlKey'
 
 /**
  * opensLink is whether a mouse-up on a link opens it: a single press of the primary button (xterm calls a link's activate on every
- * mouse-up that ends on the link the press began on, whatever the button or the count) that made no selection. The first click of
- * a double-click opens it once; the second (detail 2), a triple's third, a middle or a right press, and a drag that selected text
- * inside the link open nothing.
+ * mouse-up that ends on the link the press began on, whatever the button or the count) that made no selection and asks for no
+ * menu (menuPress: on a Mac, Control with the primary button is the secondary click, so there ⌘ is the modifier that opens). The
+ * first click of a double-click opens it once; the second (detail 2), a triple's third, a middle or a right press, a Mac's
+ * Control-click, and a drag that selected text inside the link open nothing.
  */
-export function opensLink(e: LinkPress, selected: boolean): boolean {
-  return (e.button ?? 0) === 0 && (e.detail ?? 1) <= 1 && !selected
+export function opensLink(e: LinkPress, selected: boolean, mac: boolean): boolean {
+  const button = e.button ?? 0
+  return button === 0 && (e.detail ?? 1) <= 1 && !selected && !menuPress({ button, ctrlKey: !!e.ctrlKey }, mac)
 }
 
 export interface TerminalLinks {
@@ -80,11 +84,13 @@ export interface TerminalLinks {
   show(tip: LinkTip | null): void
   /** Whether the terminal holds a selection now, at the mouse-up: a drag that selected text is not a click. */
   selected(): boolean
+  /** Whether the page runs on a Mac, where Control with the primary button asks for a menu. */
+  mac: boolean
 }
 
 /**
  * terminalLinkHandler is the terminal's link handler (xterm's linkHandler option, and the web-links addon's handler and hover): a
- * plain single click of the primary button on a web link, with Ctrl or ⌘ or not, that made no selection opens it once (open) and
+ * plain single click of the primary button on a web link, with ⌘ or (but on a Mac) Ctrl or not, that made no selection opens it once (open) and
  * then tells the page (opened); the pointer over one shows where it goes, drawn from its parsed address (show), until it leaves. A
  * link to any other scheme does nothing and shows nothing, and xterm is told not to make one of a hyperlink to such a scheme at all.
  */
@@ -93,7 +99,7 @@ export function terminalLinkHandler(o: TerminalLinks) {
     allowNonHttpProtocols: false,
     activate(event: LinkPress, uri: string): void {
       const url = webLink(uri)
-      if (!url || !opensLink(event, o.selected())) return
+      if (!url || !opensLink(event, o.selected(), o.mac)) return
       o.open(url)
       o.opened(url)
     },

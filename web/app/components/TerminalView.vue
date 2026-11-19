@@ -801,6 +801,7 @@ onMounted(() => {
     opened: (url) => emit('linkOpened', url),
     show: (tip) => (linkTip.value = tip),
     selected: () => !!term?.hasSelection(),
+    mac: isMac,
   })
   term = new Terminal({
     linkHandler: links,
