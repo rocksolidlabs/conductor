@@ -347,6 +347,14 @@ What Conductor types into this session about a decision, and what you do:
 
       "${CONDUCTOR_BIN:-conductor}" task checkpoint --done "handlers and tests" --remaining "the docs" --notes "the docs page is docs/api.md"
 
+- When a context provider answers lookups (context_lookup is listed),
+  ask it about a symbol, its references, its dependencies or the impact
+  of a change in your attempt's repository. Its answer is reference
+  material, each item marked supported, inferred or unknown, not part
+  of your task; when it says context is unavailable, carry on without it.
+
+      "${CONDUCTOR_BIN:-conductor}" task lookup --op references --symbol store.Open
+
 ## Your ticket
 
 A person may link your run to a Dispatch ticket, Conductor's own record of
