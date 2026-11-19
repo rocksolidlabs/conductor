@@ -1336,22 +1336,25 @@ func (s *Local) missAsked(text string) {
 }
 
 // startupOnScreen reports whether the screen still shows a startup
-// question while the startup questions' watch lasts (before the first
-// submission's Enter): typed text is refused meanwhile (Submit), the
-// question asked, answered or not, since its Enter would pick what the
-// dialog highlights (Claude Code's "No, exit") and its letters reach the
-// dialog's keys. The screen is read as a frame the program has finished
-// drawing with nothing lost to a window made smaller (Screen.DrawnAt), the
-// window grown since counting, its wrapped rows joined. Nothing without
-// the screen the questions asked during the work are read from, kept for
-// this with startup questions alone.
+// question, or a startup dialog's numbered choice (startupChoiceShown),
+// while the startup questions' watch lasts (before the first submission's
+// Enter): typed text is refused meanwhile (Submit), the question asked,
+// answered or not, since its Enter would pick what the dialog highlights
+// (Claude Code's "No, exit") and its letters reach the dialog's keys. A
+// choice alone is a dialog whose heading is off the screen; the Enter is
+// refused there too (startupMayShow), and the text is held back with it,
+// a digit of it picking a choice at once. The screen is read as a frame
+// the program has finished drawing with nothing lost to a window made
+// smaller (Screen.DrawnAt), the window grown since counting, its wrapped
+// rows joined. Nothing without the screen the questions asked during the
+// work are read from, kept for this with startup questions alone.
 func (s *Local) startupOnScreen() bool {
 	if s.trust == nil || !s.trust.Watching() || s.asked == nil {
 		return false
 	}
 	whole, _, _, _ := s.asked.Whole()
 	uncut, _, _ := s.asked.DrawnAt()
-	return uncut && s.lastStartup(whole) != ""
+	return uncut && (s.lastStartup(whole) != "" || startupChoiceShown(whole))
 }
 
 // startupMayShow reports whether keys typed in the terminal may reach a

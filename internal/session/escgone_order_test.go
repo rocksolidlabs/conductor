@@ -237,6 +237,29 @@ func TestAStartupQuestionAnEscapeAnsweredStaysWhileItsChoicesShow(t *testing.T) 
 	}
 }
 
+// A screen that shows a startup dialog's choices and no question the
+// session recognises (the row its dialog is found by never drawn, a window
+// too short for it) refuses a line's text as it refuses its Enter: nothing
+// is written.
+func TestALinesTextIsRefusedWhileAStartupDialogsChoicesShow(t *testing.T) {
+	s, p, sub, write := escSession(t)
+	if err := s.Resize(sub, 80, 5); err != nil {
+		t.Fatal(err)
+	}
+	write("\x1b[?1049h" + codexChoicesOnly)
+	if a := s.Info().Attention; a.State == AttentionNeedsInput {
+		t.Fatalf("a question asked: %+v", a)
+	}
+	if _, err := s.Submit(t.Context(), Submission{Text: "1 fix the bug", By: sub}); !errors.Is(err, ErrTrustQuestion) {
+		t.Fatalf("a line submitted at the dialog's choices: %v", err)
+	}
+	select {
+	case b := <-p.input:
+		t.Fatalf("written %q", b)
+	default:
+	}
+}
+
 // Another startup question drawn right after the Escape (the folder's
 // trust question in the update dialog's place) is asked, in either order.
 func TestTheNextStartupQuestionAfterAnEscapeIsAskedInEitherOrder(t *testing.T) {
