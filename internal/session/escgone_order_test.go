@@ -115,6 +115,11 @@ func escAnswered(t *testing.T, s *Local, p *fakeProc, sub *Subscription, write f
 	return cut
 }
 
+// codexChoicesOnly is Codex's update dialog drawn again as a whole frame
+// in the short window, its highlight moved and its first choice's row off
+// the screen: its later choices and its footer show.
+var codexChoicesOnly = codexFrame([]string{"› 2. Skip", "  3. Skip until next version", "", "  enter continue · esc skip"})
+
 // codexPrompt is Codex's composer, the screen it draws once its update
 // question is skipped, in the short window.
 var codexPrompt = codexFrame([]string{"", "  >_ OpenAI Codex (v0.163.0)", "", "› Ask Codex to do anything", ""})
@@ -202,6 +207,33 @@ func TestAStartupQuestionAnEscapeAnsweredStaysWhileItsDialogShows(t *testing.T) 
 				}
 			})
 		}
+	}
+}
+
+// The question an Escape answered is not withdrawn while its dialog's
+// choices show, though the row its dialog is found by does not (the dialog
+// drawn again with its first choice off the screen), in either order: a
+// startup question still shows (the startup watcher, looking first, may
+// ask the dialog's heading anew from the output it keeps), and a line
+// submitted then, a digit first, is refused, nothing written.
+func TestAStartupQuestionAnEscapeAnsweredStaysWhileItsChoicesShow(t *testing.T) {
+	for _, trustFirst := range []bool{true, false} {
+		t.Run(orderName(trustFirst), func(t *testing.T) {
+			s, p, sub, write := escSession(t)
+			escAnswered(t, s, p, sub, write)
+			looksAfter(t, s, trustFirst, func() { write(codexChoicesOnly) })
+			if a := s.Info().Attention; a.State != AttentionNeedsInput || a.Source != SourceTrust {
+				t.Fatalf("the dialog's choices on the screen, the session shows %+v", a)
+			}
+			if _, err := s.Submit(t.Context(), Submission{Text: "1 fix the bug", By: sub}); !errors.Is(err, ErrTrustQuestion) {
+				t.Fatalf("a line submitted at the dialog: %v", err)
+			}
+			select {
+			case b := <-p.input:
+				t.Fatalf("written %q", b)
+			default:
+			}
+		})
 	}
 }
 

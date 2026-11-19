@@ -5456,7 +5456,9 @@ func (s *Local) escGone() {
 }
 
 // screenShowsNoStartup reports whether the screen the questions asked
-// during the work are read from, whole, shows no startup question, and
+// during the work are read from, whole, shows no startup question and no
+// choice of a startup dialog (startupChoiceShown: a numbered row, as a
+// dialog drawn again with its first rows off the screen still shows), and
 // shows everything the program drew as it drew it (no synchronized update
 // under way, which a terminal would still show the frame before; nothing
 // cut by a window made smaller since the program last erased the screen:
@@ -5469,7 +5471,7 @@ func (s *Local) escGone() {
 func (s *Local) screenShowsNoStartup(held heldStartup) bool {
 	text, _, cols, rows := s.asked.Whole()
 	uncut, drawnCols, drawnRows := s.asked.DrawnAt()
-	return uncut && cols >= held.cols && rows >= held.rows && drawnCols >= held.drawnCols && drawnRows >= held.drawnRows && s.lastStartup(text) == ""
+	return uncut && cols >= held.cols && rows >= held.rows && drawnCols >= held.drawnCols && drawnRows >= held.drawnRows && s.lastStartup(text) == "" && !startupChoiceShown(text)
 }
 
 // heldGone reports whether the startup question with words, about to be
