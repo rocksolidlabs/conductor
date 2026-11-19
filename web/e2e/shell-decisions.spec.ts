@@ -219,6 +219,26 @@ test.describe("the decision page from a shell's inbox", () => {
     await t.close()
   })
 
+  test('a second notification tapped while the first opens opens the second; the first, answering late, moves no one', async ({ browser, baseURL }) => {
+    const second = { ...item({}, decision('clarification', 3, { id: 'dr-8', request: { question: 'Which region ships second?', options: [{ label: 'Asia' }, { label: 'Africa' }] } })), id: 'i2' }
+    const t = await shellTab(browser, baseURL!, cfg({ i1: item(), i2: second }, { handles: { 'h-1': { id: 'i1' }, 'h-2': { id: 'i2' } } }))
+    const { page } = t
+    await page.addInitScript(() => void ((window as unknown as { __shell: { holdHandles: string[] } }).__shell.holdHandles = ['h-1']))
+    await page.goto('/shell')
+    await expect(page.locator('[data-shell-inbox]')).toBeVisible()
+    await shellDo(page, 'tap', { h: 'h-1' })
+    await expect(page.locator('[data-shell-opening]')).toBeVisible()
+    await expect.poll(async () => (await shellRecord(page)).calls.filter((c) => c === 'resolve').length).toBe(1)
+    await shellDo(page, 'tap', { h: 'h-2' })
+    await expect(page.locator('[data-shell-item="i2"]')).toBeVisible()
+    await shellDo(page, 'release', 'resolve:h-1')
+    await expect.poll(async () => (await shellRecord(page)).done.filter((c) => c === 'resolve').length).toBe(2)
+    await page.evaluate(() => new Promise((r) => setTimeout(() => requestAnimationFrame(() => r(null)), 0)))
+    await expect(page).toHaveURL(/\/shell\/decisions\/i2$/)
+    await expect(page.locator('[data-shell-item="i2"]')).toBeVisible()
+    await t.close()
+  })
+
   test('a notification tapped opens its item; one no longer current, one with the provider unreachable and an item not visible each open the inbox with their words', async ({ browser, baseURL }) => {
     const handles = { 'h-ok': { id: 'i1' }, 'h-gone': { code: 'unknown_handle', words: 'gone' }, 'h-far': { code: 'unreachable', words: 'far' } }
     const t = await shellTab(browser, baseURL!, cfg({ i1: item() }, { handles }))

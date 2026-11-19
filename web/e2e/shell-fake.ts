@@ -40,6 +40,8 @@ export async function fakeShell(page: Page, cfg: FakeConfig): Promise<void> {
       hold: [] as string[],
       /** Items whose reads wait until `release('item:<id>')`. */
       holdIds: [] as string[],
+      /** Handles whose resolve waits until `release('resolve:<handle>')`. */
+      holdHandles: [] as string[],
       offline: false,
       /** state() refuses while set. */
       stateFails: false,
@@ -118,7 +120,11 @@ export async function fakeShell(page: Page, cfg: FakeConfig): Promise<void> {
             const own = (p.items?.[id] as Rec | undefined)?.own as Rec | undefined
             return own && own.responseId === responseId ? { state: own.state, words: own.words, h: rec.drafts[id]?.h ?? '' } : { state: 'none' }
           }),
-        resolve: (handle: string) => call('resolve', () => clone(p.handles?.[handle] ?? { code: 'unknown_handle', words: 'unknown' })),
+        resolve: (handle: string) =>
+          call('resolve', async () => {
+            if (rec.holdHandles.includes(handle)) await new Promise<void>((r) => (rec.held[`resolve:${handle}`] ??= []).push(r))
+            return clone(p.handles?.[handle] ?? { code: 'unknown_handle', words: 'unknown' })
+          }),
         watch: (cb: (id: string) => void) => {
           rec.calls.push('watch')
           watchers.add(cb)
@@ -180,6 +186,7 @@ export async function fakeShell(page: Page, cfg: FakeConfig): Promise<void> {
       release: (name: string) => {
         rec.hold = rec.hold.filter((h) => h !== name)
         rec.holdIds = rec.holdIds.filter((h) => `item:${h}` !== name)
+        rec.holdHandles = rec.holdHandles.filter((h) => `resolve:${h}` !== name)
         for (const r of rec.held[name]?.splice(0) ?? []) r()
       },
       tap: (d: Record<string, string>) => tapListeners.forEach((l) => l(d)),
