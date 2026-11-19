@@ -157,6 +157,9 @@ describe('a provider module', () => {
     await expect(kit!.http({ url: 'https://relay.example.test/' })).rejects.toMatchObject({ code: 'too_large' })
     native.http.request = vi.fn(async () => ({ status: 200, headers: {}, data: 'é'.repeat(MAX_HTTP_BODY / 2) }))
     expect((await kit!.http({ url: 'https://relay.example.test/' })).data).toHaveLength(MAX_HTTP_BODY / 2)
+    // The bound is the text's UTF-8 bytes, not its characters: one two-byte character past it is refused.
+    native.http.request = vi.fn(async () => ({ status: 200, headers: {}, data: 'é'.repeat(MAX_HTTP_BODY / 2 + 1) }))
+    await expect(kit!.http({ url: 'https://relay.example.test/' })).rejects.toMatchObject({ code: 'too_large' })
   })
 
   it("is handed the drafts and cache areas of the store, never the shell's servers area", async () => {
