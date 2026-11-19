@@ -731,10 +731,11 @@ func TestLedgerVersionIsABarrier(t *testing.T) {
 		}
 		defer db.Close()
 		// Version 9 had no previews table (version 11 added it), no
-		// table of where a run was launched from (version 13 added it)
-		// and no outcome outbox (version 14 added it).
+		// table of where a run was launched from (version 13 added it),
+		// no outcome outbox (version 14 added it) and no record of the
+		// context each attempt was given (version 15 added it).
 		if v == 9 {
-			for _, stmt := range []string{"DROP TABLE decision_outbox", "DROP TABLE run_origin", "DROP TABLE previews"} {
+			for _, stmt := range []string{"DROP TABLE attempt_context", "DROP TABLE decision_outbox", "DROP TABLE run_origin", "DROP TABLE previews"} {
 				if _, err := db.Exec(stmt); err != nil {
 					t.Fatal(err)
 				}
@@ -767,7 +768,7 @@ func TestLedgerVersionIsABarrier(t *testing.T) {
 	if ro, why := migrated.ReadOnly(); ro {
 		t.Fatalf("read-only after 9 to 10: %s", why)
 	}
-	if v := version(); v != ledger.Version || ledger.Version != 14 {
+	if v := version(); v != ledger.Version || ledger.Version != 15 {
 		t.Fatalf("version %d after the migration, Version %d", v, ledger.Version)
 	}
 	if got := rows(migrated); got != before {

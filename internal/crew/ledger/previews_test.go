@@ -79,7 +79,7 @@ func TestPreviewsTableMigration(t *testing.T) {
 	if ro, why := again.ReadOnly(); ro {
 		t.Fatalf("read-only after the migration: %s", why)
 	}
-	if v := dbVersion(t, again); v != Version || Version != 14 {
+	if v := dbVersion(t, again); v != Version || Version != 15 {
 		t.Fatalf("version %d after the migration, Version %d", v, Version)
 	}
 	var sqlText string
