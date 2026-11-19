@@ -70,6 +70,9 @@ test('the rotation goes on after the thumbnails are opened and closed, at its ow
     }, ROT)
 
     // 1. Go into Yard. 2. Choose Roundhouse.
+    // The waits before the first step have caps of their own (the sidebar, two chips, the count, the header's
+    // two words): the test's timeout is raised by their sum before the page is asked for.
+    budget(4 * 30_000 + 4 * STEP_MS)
     await page.goto('/yard')
     await expect(page.locator('#dashboard-sidebar-main')).toBeVisible({ timeout: 30_000 })
     await page.locator('[data-yard-view="roundhouse"]').click()
