@@ -7,6 +7,7 @@ import { ApiError } from '~/composables/useApi'
 import { SETTINGS_FIELD_UI as fieldUi } from '~/utils/settingsSections'
 import { StaleRefusal, configForm, type BrakemanPart } from '~/utils/settingsSave'
 import { OWN_LOGIN, brakemanAccount } from '~/utils/crewLaunch'
+import { BRIEF_SETTINGS_SENTENCE } from '~/utils/brakemanAlert'
 
 /**
  * Brakeman's card in Settings (docs/plans/brakeman.md, PR-6): its configuration, saved on the server (PUT /api/brakeman/config, at
@@ -395,7 +396,7 @@ defineExpose({ dirty, blocked: computed(() => Object.keys(problems.value).length
         <USwitch
           :model-value="form.wake.mode === 'background'"
           label="Wake on events"
-          description="A task that failed, a question left waiting, a run that ended or paused, a ticket made ready, and the briefing times below. Its turns ask no one anything that pages: their questions wait in Needs you."
+          :description="`A task that failed, a question left waiting, a run that ended or paused, a ticket made ready, and the briefing times below. Its turns ask no one anything that pages: their questions wait in Needs you. ${BRIEF_SETTINGS_SENTENCE}`"
           data-brakeman-background
           @update:model-value="setBackground"
         />

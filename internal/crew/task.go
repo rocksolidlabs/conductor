@@ -2283,7 +2283,10 @@ func (e *Engine) dispatch(ctx context.Context, r *run, a *attempt) {
 	// uncounted, and pauses the run, since every attempt would fail the
 	// same way until a person looks. The receipt of a check that failed
 	// the attempt before is read the same way (at "receipt").
-	md, js, more, log, evidence, err := e.taskFile(ctx, r, a, tr, blocks)
+	// The handoff package a person sent for the task, asked just before
+	// the task files are written (askHandoff): the take uses it up.
+	handoff := e.askHandoff(ctx, r, a)
+	md, js, more, log, evidence, err := e.taskFile(ctx, r, a, tr, blocks, handoff)
 	if err == nil {
 		err = writeTaskFiles(ctx, a.worktree, r.prefix, md, js, more, r.pkg, e.openPackageFile, log, evidence, e.openEvidenceFile)
 	}

@@ -1271,6 +1271,15 @@ func (e *Engine) startRechecks(r *run) {
 	r.rechecks = nil
 }
 
+// SetBeforeRecheckForTest sets the seam a Check again's verification runs
+// once its change is committed and before it starts (nil for none), for a
+// test that reads the attempt while it is open and verifying.
+func (e *Engine) SetBeforeRecheckForTest(fn func(runID string)) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.beforeRecheck = fn
+}
+
 // recheckRecorded verifies a Check again's attempt, its change committed,
 // and lets go of the start startRechecks counted.
 func (e *Engine) recheckRecorded(r *run, a *attempt) {

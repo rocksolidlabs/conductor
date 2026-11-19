@@ -1537,6 +1537,13 @@ func (s *Store) PruneKeeping(keep int) (int, error) {
 		}
 		gone = append(gone, id)
 	}
+	// A package still waiting from a request to go is closed as
+	// withdrawn before any file goes (closeHandoffsOfLocked).
+	if len(gone) > 0 {
+		if err := s.closeHandoffsOfLocked(gone); err != nil {
+			return 0, err
+		}
+	}
 	// The op ids of the requests to go are marked pruned before any file
 	// goes, so a repeat of one is never taken for a request whose file
 	// never landed; a crash between leaves a marked request that is still
@@ -1834,29 +1841,50 @@ func footprintOf(log ReadLog, v Visibility, also []string) *Footprint {
 func (s *Store) Brief(id string) (Brief, []Resolution, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	r, err := s.loadLocked(id)
+	b, err := s.briefLocked(id)
 	if err != nil {
 		return Brief{}, nil, err
-	}
-	if !r.HasBrief {
-		return Brief{}, nil, fmt.Errorf("%w: %s has no brief", ErrNotFound, id)
-	}
-	var b Brief
-	ok, err := s.reqs.LoadLimit(briefDoc(id), &b, MaxBrief)
-	if err != nil {
-		return Brief{}, nil, err
-	}
-	if !ok {
-		return Brief{}, nil, fmt.Errorf("%w: %s names %s, which is gone", ErrNotFound, id, briefDoc(id))
 	}
 	var refs []Resolution
-	if ok, err = s.reqs.LoadLimit(refsDoc(id), &refs, MaxRefsDoc); err != nil {
+	ok, err := s.reqs.LoadLimit(refsDoc(id), &refs, MaxRefsDoc)
+	if err != nil {
 		return Brief{}, nil, err
 	}
 	if !ok {
 		return Brief{}, nil, fmt.Errorf("%w: %s names %s, which is gone", ErrNotFound, id, refsDoc(id))
 	}
 	return b, refs, nil
+}
+
+// BriefAlone answers a request's kept brief without its resolutions, for
+// a reader that needs only its items (the notification's earlier briefs,
+// internal/api/brakeman_notify.go): the refs document, up to MaxRefsDoc,
+// is never read. A brief the request names but that is gone answers
+// ErrNotFound, as Brief does.
+func (s *Store) BriefAlone(id string) (Brief, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.briefLocked(id)
+}
+
+// briefLocked is a request's kept brief. The caller holds mu.
+func (s *Store) briefLocked(id string) (Brief, error) {
+	r, err := s.loadLocked(id)
+	if err != nil {
+		return Brief{}, err
+	}
+	if !r.HasBrief {
+		return Brief{}, fmt.Errorf("%w: %s has no brief", ErrNotFound, id)
+	}
+	var b Brief
+	ok, err := s.reqs.LoadLimit(briefDoc(id), &b, MaxBrief)
+	if err != nil {
+		return Brief{}, err
+	}
+	if !ok {
+		return Brief{}, fmt.Errorf("%w: %s names %s, which is gone", ErrNotFound, id, briefDoc(id))
+	}
+	return b, nil
 }
 
 // Read is one answer a turn read: the ref it is cited by, its visibility

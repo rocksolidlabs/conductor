@@ -10,7 +10,8 @@ import { statusOfKey } from '~/utils/status'
  * with what it is unsure of), then its regions. Needs you: the decision cards with Conductor's controls from the live record (PR-7),
  * marked while a control still offers something to answer. Proposed: proposals (a proposal Brakeman ran under a grant with its
  * receipt, PR-13), the drafts as forms the person makes work (a draft plan revision through DS2's own route, PR-11) and the handoff
- * packages. What Brakeman did: every act the request ran that no proposal shows, with its receipt, and the verified outcomes. What
+ * packages (on the page's own brief, with `head`, a package of a request to prepare a handoff is also sent to its task's next attempt;
+ * a brief embedded elsewhere draws no such control and makes no such read). What Brakeman did: every act the request ran that no proposal shows, with its receipt, and the verified outcomes. What
  * changed: the numbered facts with their evidence as chips, each reading under the last fact it reads, then overlapping changes.
  * Compared: the comparison tables, drawn open. Last, folded: the provenance line, the evidence panels and every chip of the brief.
  *
@@ -120,6 +121,9 @@ function copyMarkdown() {
 const commenting = ref(false)
 const commentText = computed(() => (brief.value ? briefMarkdown(brief.value, props.request, label) : ''))
 const tickets = computed(() => (brief.value ? briefTickets(brief.value, props.request) : []))
+/** Share with a crew's people: the brief as Markdown with their names on its first line, copied or commented by the person. */
+const sharing = ref(false)
+const shareMarkdown = (addressed?: string) => (brief.value ? briefMarkdown(brief.value, props.request, label, undefined, addressed) : '')
 /** Whether the request's turn could read terminal screens or check logs, which the brief may quote. */
 const quotes = computed(() => !!(props.request.config?.visibility?.terminals || props.request.config?.visibility?.logs))
 const KEEP_WHY = 'given to every later turn, whatever it may see'
@@ -134,8 +138,13 @@ const keepLabel = (fact: number | undefined) => (fact ? `Keep fact ${fact} as a 
       <BrakemanBriefHead v-if="head" :request="live" :brief="brief" :digest="live.digest" :fresh="fresh">
         <IconButton label="Copy as Markdown" icon="i-lucide-clipboard-copy" size="sm" color="neutral" variant="ghost" data-brief-copy @click="copyMarkdown" />
         <UButton v-if="commentText" label="Comment on a ticket…" icon="i-lucide-message-square-plus" size="sm" color="neutral" variant="ghost" data-brief-comment @click="commenting = true" />
+        <UButton v-if="commentText" label="Share…" aria-label="Share with a crew's people" icon="i-lucide-users" size="sm" color="neutral" variant="ghost" data-brief-share="wide" @click="sharing = true" />
+        <template v-if="commentText" #phone>
+          <IconButton label="Share with a crew's people" icon="i-lucide-users" size="sm" color="neutral" variant="ghost" class="min-h-11 min-w-11 justify-center" data-brief-share="phone" @click="sharing = true" />
+        </template>
       </BrakemanBriefHead>
       <BrakemanCommentTicket v-if="head && commentText" v-model:open="commenting" :text="commentText" :keys="tickets" what="The brief" :quotes="quotes" />
+      <BrakemanShare v-if="head && commentText" v-model:open="sharing" :request="live" :digest="live.digest" :items="items" :markdown="shareMarkdown" :tickets="tickets" :quotes="quotes" />
       <h2 class="break-words text-lg font-semibold text-highlighted" data-brief-title>{{ brief.title }}</h2>
       <section class="flex flex-col gap-1.5" data-brief-reading>
         <MarkdownPreview :text="brief.summary" dir="" :relative-links="false" class="text-sm" />
@@ -192,7 +201,7 @@ const keepLabel = (fact: number | undefined) => (fact ? `Keep fact ${fact} as a 
             <BrakemanDraftTicket v-else-if="x.item.kind === 'draft_ticket/1'" :request="request" :item="x.item" :index="x.index" :items="items" :refs="refs" />
             <BrakemanDraftCrew v-else-if="x.item.kind === 'draft_crew/1'" :request="request" :item="x.item" :index="x.index" :refs="refs" />
             <BrakemanDraftPlan v-else-if="x.item.kind === 'draft_plan/1'" :request="request" :item="x.item" :index="x.index" :refs="refs" />
-            <BrakemanHandoff v-else-if="x.item.kind === 'handoff/1'" :item="x.item" :refs="refs" :quotes="quotes" />
+            <BrakemanHandoff v-else-if="x.item.kind === 'handoff/1'" :item="x.item" :refs="refs" :quotes="quotes" :request="head ? live : undefined" :index="head ? x.index : undefined" />
             <div v-else-if="x.item.kind === 'overlap/1'" class="flex flex-col gap-1" data-brief-overlap>
               <p class="break-all font-mono text-xs" data-mono="path">{{ x.item.paths.join(', ') }}</p>
               <div class="flex flex-wrap gap-1.5"><BrakemanRefChip v-for="r in x.item.between" :key="r" :ref-name="r" :resolution="refs.get(r)" /></div>
