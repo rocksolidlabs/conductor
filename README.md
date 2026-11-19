@@ -576,8 +576,23 @@ not handled after a tenth of a second is underlined. When Neovim's text is
 not the guess (an autopair, an abbreviation, a mapping) its text wins once
 and the guessing stops until insert mode is left.
 
-URLs printed by an agent are clickable: a click offers **Open in new tab** or
-**Preview in pane** (a sandboxed iframe; sites that forbid embedding stay blank).
+URLs printed by an agent are clickable, an address in its text and a hyperlink
+it prints (OSC 8) alike: a single click opens it in a new tab, once (the
+desktop app hands it to the system's browser), with no question asked, and a
+toast says where it went with **Preview in pane** (a sandboxed iframe; sites
+that forbid embedding stay blank). The pointer over a link shows where it goes
+at the foot of the terminal, read from its address whatever the words it is
+printed as: its scheme and host first and whole, then its path, cut at its end
+when long; the address shown is the one that opens. A double-click opens it
+once, and a drag that selects text, a middle or a right click or an Alt+click
+opens nothing, nor does Ctrl+click on a Mac (its secondary click; ⌘+click opens
+there). While the program in the terminal takes the mouse (Neovim, tmux), a
+click is the program's and offers the link in a note, as before (**Open in new
+tab** or **Preview in pane**), and Shift+click (⌘+click on a Mac) opens it at
+once, as the hover then says; a view link's page keeps every click and opens
+the link on a plain one. On a touch screen a tap opens the link at once, as a tap
+does in any browser, and the toast then says where it went: there is no hover
+to show it first. Only an address printed as `http://` or `https://` is a link.
 A link an agent opens for you (an artifact, a pull request, a preview, a
 sign-in page) goes through Conductor: `conductor open <url>`, the MCP tool
 `open_url`, or the agent's own opener, which an agent with a browser set gets
@@ -723,7 +738,7 @@ inspector's views and the open tabs on a session page, and with a file open
 the editor's Keys → Neovim, Save, Close file and Ask the agent about the
 selection; the broadcast, the
 view, the chat and the members on a run page; the chips on the Yard, the
-rotation on the Roundhouse, Launch on Crews, History's Search and Feed, Save on
+rotation on the Roundhouse, Launch on Crews, History's Search and Live, Save on
 Settings), then Running, Exited (folded to a line), Runs, Shared with you,
 Artifacts, Go to and every other action. Typing filters the rows, the match
 marked; **↓** moves into the list, where the sidebar's keys work on the
@@ -787,13 +802,14 @@ the full sidebar on Exited. Every shape has a tooltip naming it in words
 exited"). The rail keeps the mark, Launch, a search button that opens the
 command palette, the pages (the Yard's count as an amber chip) and
 your menu. The panel button at the bottom of the rail brings the
-full sidebar back, as does **Ctrl+B**. The full sidebar opens at its
-narrowest, 12.5 rem (200 px) on every screen, its header the mark,
-"Conductor" and your menu (a wider font shortens the name first); drag its
-right edge to widen it, up to 26 % of the window but never less than
-17.5 rem (280 px), and on to the window's left edge for the rail; a
-double-click on the edge returns it to 200 px, and a narrower window keeps
-it within that window's bounds. The full sidebar's foot is the pages as six
+full sidebar back, as does **Ctrl+B**. The full sidebar opens at 17.5 rem
+(280 px) on every screen, wide enough for each row's name, question and
+choices, its header the mark, "Conductor" and your menu (a wider font
+shortens the name first); drag its right edge to narrow it to 16 rem
+(256 px) or widen it, up to 26 % of the window but never less than 21 rem
+(336 px), and on to the window's left edge for the rail; a double-click on
+the edge returns it to 280 px, and a narrower window keeps it within that
+window's bounds. The full sidebar's foot is the pages as six
 tiles in two rows, an icon over each name: **Needs you** (its number on the
 corner while something waits), **Yard**, **Crews**, **Dispatch**, **Brakeman**
 and **More**, which holds **Agents**, **History** and, in the desktop app,
@@ -871,7 +887,7 @@ ending "(Recommended)": that one alone is filled. A permission question whose di
 session's) is answered in the terminal. Every report also lands in the session's
 activity log and in the live feed, **History**'s second view.
 
-**History's Feed** (`/history?view=feed`, **G E**, **Alt+E** in a terminal) is
+History's **Live** view (`/history?view=feed`, **G E**, **Alt+E** in a terminal) is
 the live feed; History opens on its Search, and its view switch, under the
 title, holds both. The feed lists the events
 newest first in groups of one minute: the time, the event's icon, who reported
@@ -879,11 +895,12 @@ it (a crew member as `<crew> / <member>`), what happened and the one thing to
 do about it (**Answer** a question, **Open run** for a handoff, **Open** an
 artifact). Beside it: the last hour as bars per minute (what needs you,
 handoffs, errors and the rest, as the tab saw them), where each kind of event
-goes now (**Edit routing** opens Alerts), and whether each agent reports. The
-feed is this browser tab's: it says "Since this tab opened", keeps the last
+goes now (**Edit routing** opens Alerts), and whether each agent reports (folded
+under **Which agents report**). The feed is this browser tab's: it says "What
+agents report, from the moment this page opened.", keeps the last
 500 events in memory and starts empty at each load. An artifact's URL becomes
 a link only when it is `http(s)`. The Events page is retired: an old link to
-`/events` lands on History's Feed, its Routing tab on the Alerts panel over
+`/events` lands on History's **Live** view, its Routing tab on the Alerts panel over
 the feed, and its Integrations tab on Agents' Reporting to Conductor.
 
 **Alerts** is one panel at the right of the window, opened by **Alerts…** in
@@ -1349,15 +1366,20 @@ a double-click on its header, opens the session's page. The diff counts the
 lines of tracked files the member's worktree adds and removes against the
 commit it began from, committed or not; untracked files are not counted, and
 the numbers are read again when the run changes, at most every 10 seconds. The
-page follows the run through the event stream and polls nothing. A member that
-has not started yet shows a placeholder ("starts after lead is done", "waits
-for Start now"), a pending one offers **Start now**, and an ended one
-**Resume** (see [Resume and relaunch](#resume-and-relaunch)). A member a stop
-cut off reads "not started" or "stopped" in grey; red is kept for a member
-that ended with an error of its own. The header has **Add agent** (a member
-joins the run, not the saved crew), **Share** and **Stop**; stopping ends every
-session and leaves the worktrees, and a stopped run offers **Resume as new
-run**.
+page follows the run through the event stream and polls nothing. Each tile
+says its member's state in the Crews pages' words at its foot (**Working**,
+**Idle**, **Needs you**, **Finished**, **Failed (exit 1)**, **Stopped**); a
+member that has not started yet shows its state's word ("Waiting to start",
+with "after lead" or "by hand"), a pending one offers **Start now**, and an
+ended one **Resume** (see [Resume and relaunch](#resume-and-relaunch)). A
+member a stop cut off, or the server's end, reads "Stopped"; "Failed" is kept
+for a member that ended with an error of its own or whose agent exited with a
+code other than 0. A tile whose member asks a question with choices shows them
+under its terminal, and a press answers it there. The header has **Add agent**
+(a member joins the run, not the saved crew), **Share** and **Stop**; stopping
+ends every session and leaves the worktrees, and a stopped run offers **Resume
+as new run**. A run that ended with nothing left for a person offers neither
+**Pause** nor **Stop**.
 
 - **Broadcast.** Every member with a session is ticked, and one that starts
   later is ticked when its tile appears; untick the ones to leave out (the
@@ -1384,50 +1406,81 @@ run**.
   still joins.
 
 **The Crews page.** `/crews` opens on **Running now**: one card per run
-going now, named by its crew and its start, with a badge (**running**, or
-how many members **need you**), the members as chips in the shape of the
-crew with a status dot each, a line for every member that asks a question
-with **Answer** beside it, how long it has been up, **Stop** and **Open run**.
-Below, **Saved crews** is a table of plans: name and goal (and "1 live run"
-when one is going, leading to it), the crew's shape in miniature with a few
-words ("5 · a chain of 3, 1 by hand, 1 alone"), where its runs work, its
-last runs as bars (height how long each went, colour how it ended: green
-finished, grey stopped, red a member failed, an amber edge when someone had
-to answer) with when the last one started, **Edit** and **Launch run**. A
-saved crew never says "Running": status belongs to runs.
+going now, named by its crew and its start, with its state (**Running** or
+**Needs you**) and its counts ("1 working · 1 idle · 1 needs you"), then each
+member on a line: its name, whom it waits for ("after driver", "by hand"), the
+task it is on, and its state's word beside its mark (**Working**, **Idle**,
+**Needs you**, **Waiting to start**, **Finished**, **Failed**, **Stopped**).
+A member that asks a question has its words under the lines, and its choices
+as buttons that answer it there, through the run chat's own path; a question
+without choices keeps **Answer**, which opens the member's session. Then when
+it started and how long it has gone, **Stop** and **Open run**. A run launched
+from here is said at the top of the page ("Started Docs sweep", with **Open
+run**) and is under Running now at once. Below, **Saved crews** is a table of
+plans: the name (the way into the crew) and goal, its members ("5 members ·
+Claude Code, Codex CLI, Shell"), its last run (its state's word with its
+mark, when it started and how long it took; "Never run"), and **Launch run**.
+A run's state is one of **Running**, **Needs you**, **Succeeded**, **Failed**
+and **Stopped**, the same word on every Crews screen: a run whose task failed,
+or whose member's agent exited with a code other than 0, reads **Failed**
+everywhere; a run the server's end stopped reads **Stopped**, with the server's
+words beside it, and a paused run keeps **Running** with "Paused" and its reason
+beside it. Times of day are 24-hour ("19:28") on every
+Crews screen and in the sidebar.
 
-**A saved crew's page.** `/crews/<id>` has the crew's name in its header
-(edit it there), **Duplicate**, a menu with **Delete crew**, and **Launch
-run**. A banner says when a run of it is live ("started 08:31 · 3 running ·
-review needs you · docs waits for Start now") and leads to it. **Setup** holds
-the goal, where runs work (**Runs in**, with the directory's git state and a folder button that browses the allowed roots), what
-each run does (one working directory or a git worktree each; the line under
-it, which opens the switches, says whether a launch opens the run page,
-makes a view link and which yolo it uses), and the members as a table (name,
-agent, first prompt, when it starts: **At launch**, **After lead is done**,
-**When you press Start**; a row's menu adds extra arguments, moves or removes
-it) or as the graph of their start rules. A sentence beside the heading reads
-the start order ("lead → core → tests start in a chain; docs waits for you;
-review starts at once"). An edit gets an **Unsaved changes** bar at the
-bottom naming what changed, with **Discard** and **Save**; while a run is
+**A saved crew's page.** `/crews/<id>` has the crew's name in its header,
+**Duplicate**, a menu with **Delete crew**, and **Launch run**. A banner says
+when a run of it is live ("started 08:31 · 3 running · review needs you · docs
+waits for Start now") and leads to it. **Setup** holds one labelled control
+for each thing a crew is set to: **Name**; **Goal** (a prompt can use it as
+`$GOAL`); **Folder** (with the folder's git state and a folder button that
+browses the allowed roots); **Workspace** (one folder for everyone, or a copy
+for each member, a git worktree); **How members start** (by their start
+rules, or by tasks); and, folded under **More options** with a line saying
+what each is now, **After launch** (stay on this page, or open the run),
+**Permission prompts** (the server's default, ask, or skip) and **View link**.
+Then the members as a table (name, agent, first prompt, when it starts:
+**At launch**, **After lead is done**, **When you press Start**, and under
+each its **Account** and **Model**, empty for the agent's choice; a row's
+menu adds extra arguments, moves or removes it; on a phone each member is a
+card with every control labelled) or as the graph of their start rules. A
+sentence beside the heading reads the start order ("lead → core → tests
+start in a chain; docs waits for you; review starts at once"). An edit gets
+an **Unsaved changes** bar at the bottom naming what changed, with
+**Discard** and **Save**; a crew that cannot be saved says why beside the
+field it is about and beside **Save** (no name, a name another crew has, a
+member's name twice or with characters it may not have); while a run is
 live it says the run keeps the version it launched with. A crew not saved
-yet is drafted at `/crews/new`.
+yet is drafted at `/crews/new`, its **Name** field focused. A crew not saved,
+or one with edits ("Unsaved changes" beside the button), has **Save and
+launch** where **Launch run** was: it saves, then opens the launch sheet.
 
-**Runs.** The crew's **Runs** tab charts its last twelve runs as bars (minutes,
-with the median, how many needed an answer and how many failed) and lists
-every run, newest first, the live ones and the records of those that ended:
-when it started with its short id, its state (**needs you**, **running**,
-**finished**, **stopped**, **failed**: a member ended with an error of its
-own, whether the run was then stopped or not), its members as tiles with a
-status dot each, how long it took, a note (who asks a question, what failed,
-how many a stop cut off, what changed as `+412 −58 on 5 branches`), and
-**Stop** and **Open** while it goes, **Resume as new run** and **Open** after.
-Chips above the table filter the rows by state (all, live, finished, stopped,
-failed, each with its count) and a select by when they started (today, 7 or
+**The launch sheet.** Every launch of a crew asks first: a short table, a
+row a member (member, agent, model, account), the run's permission prompts
+in one line, and **Launch**. Above the table it notes only what of a
+member's usage needs you before this launch (a window near its limit, a
+limit reached, an agent signed out or not installed), saying what it means
+for this run; **Details** holds the rest: the sessions the launch starts on
+each login and each member's usage panel.
+
+**Runs.** The crew's **Runs** tab says in a sentence how its last run went
+and how long its runs usually take ("The last run failed after 3 min; runs of
+this crew usually take 6 min"); from five runs it charts the last twelve as
+bars (minutes, with the median, how many needed an answer and how many
+failed). It lists every run, newest first, the live ones and the records of
+those that ended: the run's own name, else "Run of today 19:28", its state
+(**Running**, **Needs you**, **Succeeded**, **Failed**: a task failed, or a
+member ended with an error of its own, whether the run was then stopped or
+not; **Stopped**), its members by name with their state's word, how long it
+took in words ("20 min so far", "3 min"), a note (who asks a question, what
+failed, how many a stop cut off, what changed as `+412 −58 on 5 branches`),
+**Stop** and **Open** while it goes, **Resume as new run** and **Open** after,
+and its short id at the row's end. Chips above the table filter the rows by
+state (All, Running, Succeeded, Failed, Stopped, each with its count) and a select by when they started (today, 7 or
 30 days, all time); the browser keeps the choice. A member that reports it is done keeps its run running, for a done agent is
 idle, not gone. The pages follow the runs through the event stream, as the
-run page and the sidebar do. A crew's **Yolo** setting (the server's default,
-on or off; see [Yolo](#yolo)) is fixed on the run when it is launched, so
+run page and the sidebar do. A crew's **Permission prompts** setting (the
+server's default, ask or skip: its yolo, see [Yolo](#yolo)) is fixed on the run when it is launched, so
 every member, one started or added later included, follows it.
 
 **The graph.** The run page has a **Graph** tab beside the tile grid: one
@@ -1448,7 +1501,7 @@ sets a rule by hand or removes the member, and a member started by hand is
 drawn dashed. A member waits for at most one
 other, so a second parent, a self edge and a cycle are refused with a word
 on why. On a phone the graph is a list indented by depth with the same
-badges, and the Crews table shows each crew's shape in miniature.
+badges.
 
 **The tasks.** Yardmaster, Conductor's agent harness, runs a crew with tasks
 as a managed run (see [Crews](#crews)); its run page has a **Tasks** tab first: one row per task with its state,
@@ -1485,12 +1538,13 @@ scratch.
 one bar per member from its start to its end or now, amber where its session
 waited for input (the feed's attention entries), a mark with a line to the
 other member's row for each handoff, and the run's stopped line; a hover
-reads the exact times. Runs that end (stopped or finished) are recorded as
+reads the exact times; the names' column is as wide as the longest name, up to
+a cap, and a longer name is cut at its end. Runs that end (stopped or finished) are recorded as
 `runs/<id>.json` in the data directory (the run as the API answers it, never
 a terminal's contents; at most 500 kept) and read back after a restart, so
-a crew's Runs tab lists them and charts the last twelve as bars (minutes,
-coloured by outcome, an amber edge when someone had to answer), once there
-are two, and the Crews table draws the same bars beside each crew.
+a crew's Runs tab lists them and, once there are five, charts the last
+twelve as bars (minutes, coloured by outcome, an amber edge when someone had
+to answer), and the Crews table says the last one beside each crew.
 History's feed draws the last hour's events per minute (what needs
 you, handoffs, errors, the rest) once two are in it, and the Yard's header shows its sessions by attention state as a slim
 stacked bar from two sessions on. Nothing is charted with fewer than two points.
@@ -2160,8 +2214,9 @@ With yolo on (`"yolo": true` in the config, `CONDUCTOR_YOLO` set to `1` or
 permission prompts, and the server says so in a warning at startup.
 `CONDUCTOR_YOLO` set to `0` or `false` turns the config file's `yolo` off. A
 launch overrides the server: the Launch dialog has a **Yolo** switch, and
-`POST /api/sessions` takes `yolo: true` or `false`; so does a crew (the
-editor's **Yolo** select: the server's default, on or off). Each built-in
+`POST /api/sessions` takes `yolo: true` or `false`; so does a crew (its
+**Permission prompts** under **More options**: the server's default, ask, or
+skip). Each built-in
 carries a yolo recipe, arguments put after its command and your extra
 arguments, and variables set in its environment through the same filtered
 environment as its own `env` (a recipe cannot set `CONDUCTOR_*`):
@@ -2268,10 +2323,19 @@ quotes), and filters narrow it: `class:` (`said`, `decided`, `checked`,
 it reads at most the 10,000 matches indexed most recently and ranks at
 most 2,000 of them, and says so when it stopped. **History** under the sidebar's More (or Go to, `G H`)
 opens `/history` on its Search: the same search with filter chips that write
-those filters, every result paged with Show more, the query in the URL so a
-search is a link, one column on a phone. Its second view, **Feed**
-(`?view=feed`, **G E**), is the live feed of what agents report (Events and
-hooks).
+those filters (Since first, the agents that have history before the rest, which
+wait behind More agents; a pressed chip filled and ticked), the words and each
+active filter listed under the search box with its own × and **Clear all**
+beside them (Clear all takes off every filter and the words; Back puts them
+back), the results under day headings (Today, Yesterday, Mon 16 Nov), each row
+its name, its state in the sidebar's words, its time, one line of agent ·
+repository · branch · id (a press copies the id) and its action written out
+(Open, or Transcript for a session that ended, with Resume where the sidebar
+offers it), every result paged with Show more, the query in the URL so a
+search is a link. On a phone the results follow the search at once and the
+groups wait behind **Filters**. Its second view, **Live** (`?view=feed`,
+**G E**), is the live feed of what agents report from the moment the page
+opened (Events and hooks), which agents report folded under its button.
 
 **What a row says.** A badge for what kind of evidence it is, and the
 kinds never mix: **Conversation** (something said: a session's line, a

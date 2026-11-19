@@ -4,7 +4,7 @@ import type { AgentInfo, RunInfo } from '~/composables/useSessions'
 import { draftMember, memberNameError, memberNameFrom, responsibilityWords, type DraftMember } from '~/utils/crews'
 import { avatarTone } from '~/utils/avatar'
 import { personPath } from '~/utils/people'
-import { runResumable, runSubtitle, runTicketChips, shortRunId } from '~/utils/crewWords'
+import { runLook, runResumable, runSpan, runSubtitle, runTicketChips, shortRunId } from '~/utils/crewWords'
 import { runBarParts, runItems, runStatusLine, type BarSegment } from '~/utils/status'
 import { initials, relativeTime } from '~/utils/sessions'
 import { commandBody, sendCommand } from '~/utils/tasks'
@@ -131,6 +131,9 @@ const uptime = computed(() => {
   if (!r) return ''
   const where = `server · ${r.isolation === 'worktree' ? 'worktrees' : 'shared'}`
   if (r.stoppedAt) return `stopped · ran ${relativeTime(r.startedAt, Date.parse(r.stoppedAt))} · ${where}`
+  // A run that ended without a stop (its tasks' outcome, every member ended) stops counting at its end.
+  const going = look.value ? look.value.phase === 'running' || look.value.phase === 'needs' : true
+  if (!going) return `ended · ran ${relativeTime(r.startedAt, Date.parse(r.startedAt) + runSpan(r, false, props.now))} · ${where}`
   return `up ${relativeTime(r.startedAt, props.now)} · ${where}`
 })
 
@@ -207,6 +210,18 @@ const chips = computed(() => runTicketChips(props.run?.ticket, props.ticket))
 // gate's decision that holds no task among them.
 const needsYou = useNeedsYou()
 const statusLine = computed(() => (props.run ? runStatusLine(props.run, live.sessions.value, runItems(needsYou.items.value, props.runId), props.now) : null))
+// The run's state in the Crews pages' one vocabulary (C2): its word beside its mark, then its counts in the member words.
+const look = computed(() => (props.run ? runLook(props.run, live.sessions.value, runItems(needsYou.items.value, props.runId), props.now) : null))
+/**
+ * A run that ended (its tasks' outcome, every member ended, the server's end) and holds nothing a person can still act on: nothing to
+ * pause or stop. A failed run whose task offers Retry or Accept anyway keeps both, for its scheduling goes on once one is taken.
+ */
+const ended = computed(() => {
+  const l = look.value
+  if (!l || (l.phase !== 'succeeded' && l.phase !== 'failed' && l.phase !== 'stopped')) return false
+  return l.needs === 0 && (statusLine.value?.tasks.needs ?? 0) === 0
+})
+const lookText = computed(() => (look.value ? [look.value.view.word, look.value.detail].filter(Boolean).join(' · ') : ''))
 const bar = computed(() => (statusLine.value ? runBarParts(statusLine.value) : []))
 /** A segment's fill: its mark's tone (amber for what waits on a person, green for a live agent, red for failed), else neutral ink. */
 const SEGMENT: Record<BarSegment['part'], string> = {
@@ -271,7 +286,7 @@ const menu = computed(() => [
 ])
 
 // The run page's command palette (#302) runs the header's actions: Add agent, Share, Stop (asked in the palette's row), Resume.
-defineExpose({ openAdd, share: () => (shareOpen.value = true), stopNow: stopAll, resume: resumeRun, togglePause })
+defineExpose({ openAdd, share: () => (shareOpen.value = true), stopNow: stopAll, resume: resumeRun, togglePause, isEnded: () => ended.value })
 </script>
 
 <template>
@@ -321,11 +336,12 @@ defineExpose({ openAdd, share: () => (shareOpen.value = true), stopNow: stopAll,
             :data-run-ticket-key="chips.linked.key"
             :data-run-ticket-deleted="chips.linked.deletedAt ? '' : undefined"
           />
-          <span v-if="statusLine?.text" class="hidden min-w-0 shrink-[3] items-center gap-2 self-center text-xs font-normal text-default [@media(max-height:480px)]:inline-flex" :title="statusLine.text" data-run-progress-low>
+          <span v-if="look" class="hidden min-w-0 shrink-[3] items-center gap-2 self-center text-xs font-normal text-default [@media(max-height:480px)]:inline-flex" :title="lookText" data-run-progress-low>
             <span v-if="bar.length" class="flex h-1.5 w-16 flex-none overflow-hidden rounded-full bg-elevated" aria-hidden="true">
               <span v-for="b in bar" :key="b.part" class="h-full" :class="SEGMENT[b.part]" :style="{ flexGrow: b.count, flexBasis: 0 }" />
             </span>
-            <span class="truncate">{{ statusLine.text }}</span>
+            <StatusMark :status="look.view" word />
+            <span v-if="look.detail" class="truncate">{{ look.detail }}</span>
           </span>
         </span>
       </template>
@@ -336,9 +352,9 @@ defineExpose({ openAdd, share: () => (shareOpen.value = true), stopNow: stopAll,
         </IconButton>
         <!-- Icons only on a phone: the labels would push the name off the bar. -->
         <IconButton v-if="resumable" icon="i-lucide-play" color="primary" variant="soft" :label="run?.managed ? 'Continue the run' : 'Resume as new run'" :loading="resuming" data-run-resume @click="resumeRun"><span class="hidden sm:inline">{{ run?.managed ? 'Continue' : 'Resume as new run' }}</span></IconButton>
-        <IconButton v-if="run?.managed && !stopped && !record" :icon="run.paused ? 'i-lucide-play' : 'i-lucide-pause'" color="neutral" variant="outline" :label="run.paused ? 'Resume scheduling' : 'Pause scheduling'" :loading="pausing" data-run-pause :data-run-paused="run.paused ? '' : undefined" @click="togglePause"><span class="hidden sm:inline">{{ run.paused ? 'Resume' : 'Pause' }}</span></IconButton>
+        <IconButton v-if="run?.managed && !stopped && !record && !ended" :icon="run.paused ? 'i-lucide-play' : 'i-lucide-pause'" color="neutral" variant="outline" :label="run.paused ? 'Resume scheduling' : 'Pause scheduling'" :loading="pausing" data-run-pause :data-run-paused="run.paused ? '' : undefined" @click="togglePause"><span class="hidden sm:inline">{{ run.paused ? 'Resume' : 'Pause' }}</span></IconButton>
         <!-- Neutral at rest: red only in its confirm. -->
-        <IconButton v-if="!stopped && !record" icon="i-lucide-square" color="neutral" variant="outline" label="Stop" :disabled="!run" data-run-stop @click="stopOpen = true"><span class="hidden sm:inline">Stop</span></IconButton>
+        <IconButton v-if="!stopped && !record && !ended" icon="i-lucide-square" color="neutral" variant="outline" label="Stop" :disabled="!run" data-run-stop @click="stopOpen = true"><span class="hidden sm:inline">Stop</span></IconButton>
         <UDropdownMenu :items="menu" :content="{ align: 'end' }">
           <IconButton icon="i-lucide-ellipsis" color="neutral" variant="ghost" label="More for this run" data-run-menu />
         </UDropdownMenu>
@@ -352,7 +368,10 @@ defineExpose({ openAdd, share: () => (shareOpen.value = true), stopNow: stopAll,
       <span v-if="bar.length" class="flex h-1.5 w-28 flex-none overflow-hidden rounded-full bg-elevated" role="img" :aria-label="bar.map((b) => b.words).join(', ')" data-run-bar>
         <span v-for="b in bar" :key="b.part" class="h-full" :class="SEGMENT[b.part]" :style="{ flexGrow: b.count, flexBasis: 0 }" :title="b.words" :data-part="b.part" :data-count="b.count" />
       </span>
-      <span v-if="statusLine?.text" class="min-w-0 text-default" :data-needs="statusLine.needs" data-run-progress data-run-state>{{ statusLine.text }}</span>
+      <span v-if="look" class="inline-flex min-w-0 flex-wrap items-center gap-x-2 text-default" :title="lookText" :data-needs="look.needs" :data-phase="look.phase" data-run-progress data-run-state>
+        <StatusMark :status="look.view" word class="[&_[data-status-word]]:font-medium [&_[data-status-word]]:text-highlighted" data-run-phase />
+        <span v-if="look.detail" class="min-w-0" data-run-detail>{{ look.detail }}</span>
+      </span>
       <UButton v-if="comparison" :to="comparison" label="Comparison" icon="i-lucide-columns-3" size="xs" color="neutral" variant="ghost" class="flex-none" :title="`The comparison of this run's candidates, on ${run.ticket?.key ?? ticket?.key}`" data-run-comparison />
       <span v-if="run.paused" class="inline-flex min-w-0 max-w-full items-center gap-1 text-warning" :title="run.pausedWhy ? `Paused: ${run.pausedWhy}` : 'Paused by a person'" data-run-paused-note>
         <UIcon name="i-lucide-pause" class="size-3.5 flex-none" />

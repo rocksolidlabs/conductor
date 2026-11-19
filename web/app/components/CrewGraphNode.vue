@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { Handle, Position, type NodeProps } from '@vue-flow/core'
 import type { GraphDirection, GraphNode } from '~/utils/crewGraph'
-import { memberWords, startWords } from '~/utils/crewWords'
+import { startWords } from '~/utils/crewWords'
 import type { MarkView } from '~/utils/status'
 import { memberOffer, type OfferRun } from '~/utils/runs'
 
@@ -37,8 +37,18 @@ const targetPos = computed(() => (props.data.direction === 'LR' ? Position.Left 
 const sourcePos = computed(() => (props.data.direction === 'LR' ? Position.Right : Position.Bottom))
 const manual = computed(() => n.value.member.start.when === 'manual')
 const start = computed(() => startWords(n.value.member.start))
-/** The run's words for the member; the start rule's in the editor and for a crew not running. */
-const words = computed(() => (state.value ? memberWords({ stoppedAt: props.data.stopped ? 'stopped' : undefined }, n.value.member, state.value) : null))
+/**
+ * The node's last line in a run (its state's word is the mark's, the Crews pages' one vocabulary): whom a member not started waits for,
+ * why one ended; the start rule's words in the editor and for a crew not running.
+ */
+const words = computed<{ text: string; tone: 'warning' | 'error' | 'muted' | 'default' } | null>(() => {
+  if (!state.value) return null
+  const m = n.value.member
+  const mark = props.data.mark
+  if (state.value === 'pending') return { text: props.data.stopped ? 'never started' : m.start.when === 'after' ? `after ${m.start.member}` : m.start.when === 'manual' ? 'by hand' : 'at launch', tone: 'muted' }
+  if (state.value === 'ended') return { text: mark ? mark.legend.replace(/^[^:]+: /, '') : '', tone: mark?.key === 'failed' ? 'error' : 'muted' }
+  return { text: mark?.word ?? '', tone: 'default' }
+})
 /** What the node offers by hand: Start now, Resume or Relaunch, or nothing (memberOffer). */
 const offer = computed(() => memberOffer(state.value, props.data.run))
 const tone = { warning: 'text-warning', error: 'text-error', muted: 'text-muted', default: 'text-default' }

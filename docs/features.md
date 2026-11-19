@@ -59,7 +59,10 @@ for the wire details.
 - **Carousel** (1g): film strip of all sessions with a rotation progress bar,
   a "next up" line, and a "jumped here" note when follow mode moved. Follow
   mode holds for two intervals (at least 20 s), not forever, so a stray
-  prompt cannot freeze the rotation.
+  prompt cannot freeze the rotation. The rotation holds while the mouse
+  moves over the slide, and only then: a slide that grows under a
+  pointer at rest, as when the strip's thumbnails are closed, keeps
+  rotating (#1021).
 - **Launch** (1d): "Runs on: Server / My machine". The latter shows the exact
   `conductor host` command, including the host token, and waits for a hosted
   session with that name to appear.
@@ -960,12 +963,12 @@ logins, which no test reaches. The issue stays open for them (#788).
   tab) land on History's Feed, `?tab=routing` on the Alerts panel over it,
   `?tab=integrations` on Agents' Reporting to Conductor
   (`eventsRedirect` in `web/app/utils/events.ts`). G E and Alt+E open the
-  Feed ("Go to History's feed"). A crew run's "All events" opens it.
+  Feed, its tab named Live ("Go to History · Live"). A crew run's "All events" opens it.
 - **Seven destinations.** Needs you, Yard, Crews, Dispatch, Brakeman,
   Agents, History, with Settings in the desktop app: the pages' table in
   that order. The sidebar's More holds Agents and History; the phone's
   More Dispatch, Brakeman, Agents, History; the palette's Go to adds the
-  Roundhouse, Agents · Reporting, History · Feed and Paste invite.
+  Roundhouse, Agents · Reporting, History · Live and Paste invite.
   `web/e2e/destinations.spec.ts` holds every list as drawn.
 
 ## Tracker linking: GitHub issues and pull requests on tickets (IN1a PR-1 to PR-10; 2026-11-16)
@@ -1147,24 +1150,29 @@ open deferred item from rounds 1 and 2, then the features below.
   The phone's list, the palette, the pill, the Yard and the session page keep
   the question whole. Specs reach a row's answer through `rowAnswer`
   (`web/e2e/fixtures.ts`).
-- **Sidebar width (#437, #706, UX1 PR-7).** The full sidebar opens at its
-  minimum, 12.5 rem (200 px) on every screen (16.75 rem from #706 until the
-  UX review's P5): its header is the mark, "Conductor" and your menu, about
+- **Sidebar width (#437, #706, UX1 PR-7, #1022).** The full sidebar opens at
+  17.5 rem (280 px) on every screen, where each row's name, question and
+  choices are whole in the row (it opened at its 200 px minimum from UX1 PR-7
+  until #1022, which cut a run's members, a decision's question and the
+  filter's words); its minimum is 16 rem (256 px), the narrowest at which
+  every row still names itself whole: its header is the mark, "Conductor" and your menu, about
   186 px, and Alerts… (a slideover of the alert switches and, since PR-28,
   the rules where each event goes, `AlertsPanel.vue`)
   and Collapse to the rail (⌘B) are in your menu, the sidebar's alone (not in
   `accountActions`, which the phone's More and the palette show). A drag on
   its edge widens it up to 26 % of the window, never less than the minimum
-  plus 5 rem (280 px, the width at which a row shows its question whole) and
-  never below the minimum; a width dragged under #706 is kept as saved; a drag on toward the window's left edge
-  gives the rail, a double-click returns to the minimum. The bounds are
+  plus 5 rem (336 px) and never below the minimum; a width saved at or above
+  the minimum is kept, one below it (the 200 px minimum before #1022) opens at
+  280 px; a drag on toward the window's left edge gives the rail, a
+  double-click returns to 280 px. The bounds are
   `SIDEBAR_SIZE` and `sidebarBounds` in `web/app/utils/sidebar.ts`; the
   layout's `UDashboardGroup` works in rem. Nuxt UI clamps only during a drag,
   so the drawn width is `SIDEBAR_WIDTH`, a CSS clamp of Nuxt UI's `--width` to
   the same bounds, which holds as the window changes. The width is kept per
   browser under `conductor.sidebar.width` (rem); the percent width kept before
-  under `conductor.sidebar.size` is removed on first read, so every browser
-  opens at the minimum once. Below lg nothing changed.
+  under `conductor.sidebar.size` is read once as that share of the window,
+  kept under the new key when it is at least the minimum, and removed. Below
+  lg nothing changed (`sidebar-opens.spec.ts`).
 - **Launch with a first message (the UX review, P19; #951).** The Launch
   dialog's "What should it do?" (on this server, not for a clone or "On this
   computer") sends `message` with the launch; past 4,096 bytes the field says
@@ -9030,7 +9038,15 @@ screen. Nothing said which was the plan and which the thing running.
   card draws its tasks lit by their states, or its members by theirs, at
   most 520 px wide with their names. A crew's banner for a live run says
   the run's one sentence (`runStatusLine`), its icon neutral and its edge
-  amber only while something needs a person.
+  amber only while something needs a person. Since the review of issue
+  1024 the table is Crew, Members ("5 members · Claude Code, Codex CLI"),
+  Last run (its state's word with its mark, when, how long; "Never run") and
+  Launch run, the shape, the folder, the bars and Edit gone from it; a live
+  run's card lists each member on a line with its state's word, a
+  question's choices as buttons that answer in place; one vocabulary for a
+  run (Running, Needs you, Succeeded, Failed, Stopped) and a member
+  (Working, Idle, Needs you, Waiting to start, Finished, Failed, Stopped),
+  read from the run's own outcome, and one 24-hour clock.
   `/crews/<id>` is one saved crew with Setup and Runs tabs; `/crews/new` the
   draft of a crew not saved yet (the server never derives the id `new`).
   The summary `GET /api/crews` lists carries the goal now.

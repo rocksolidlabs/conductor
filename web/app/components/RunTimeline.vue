@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { RunInfo, SessionInfo } from '~/composables/useSessions'
 import type { FeedEntry } from '~/utils/events'
+import { clockTime } from '~/utils/crewWords'
 import { durationLabel, scaleX, tickLabel, ticks, timelineOf } from '~/utils/timeline'
 
 /**
@@ -8,11 +9,16 @@ import { durationLabel, scaleX, tickLabel, ticks, timelineOf } from '~/utils/tim
  * or now, amber segments while its session waited for input, a mark where it
  * handed work to another member (with a line to that member's row) and the
  * run's stopped line. Drawn as SVG from the run and the live feed, so it
- * follows the stream; a hover reads the exact times.
+ * follows the stream; a hover reads the exact times. The names' column is as wide as the longest name, up to a cap (C15); a name
+ * longer than that is cut at its end, the whole name in its title.
  */
 const props = defineProps<{ run: RunInfo; sessions: SessionInfo[]; feed: FeedEntry[]; now: number }>()
 
-const LABEL_W = 112
+/** The names' column: at least this wide, at most LABEL_CAP, as wide as the longest name between. */
+const LABEL_MIN = 80
+const LABEL_CAP = 240
+const LABEL_PAD = 16
+const LABEL_FONT = '12px ui-sans-serif, system-ui, sans-serif'
 const ROW_H = 28
 const HEAD_H = 22
 const PAD_R = 16
@@ -34,15 +40,43 @@ watch(
 )
 
 const tl = computed(() => timelineOf(props.run, props.sessions, props.feed, props.now))
-const plotW = computed(() => Math.max(80, width.value - LABEL_W - PAD_R))
+
+// A name's width as the SVG draws it (a canvas measures the same font); 7 px a character where no canvas is.
+let ctx: CanvasRenderingContext2D | null | undefined
+function textWidth(t: string): number {
+  if (ctx === undefined) {
+    try {
+      ctx = document.createElement('canvas').getContext('2d')
+      if (ctx) ctx.font = LABEL_FONT
+    } catch {
+      ctx = null
+    }
+  }
+  return ctx ? ctx.measureText(t).width : t.length * 7
+}
+const LABEL_W = computed(() => Math.min(LABEL_CAP, Math.max(LABEL_MIN, ...tl.value.rows.map((r) => Math.ceil(textWidth(r.name)) + LABEL_PAD))))
+/** A name cut at its end to fit the column ("backfill-and-reconcil…"); the whole when it fits. */
+function fitName(name: string): string {
+  const room = LABEL_W.value - LABEL_PAD
+  if (textWidth(name) <= room) return name
+  let lo = 0
+  let hi = name.length
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2)
+    if (textWidth(`${name.slice(0, mid)}…`) <= room) lo = mid
+    else hi = mid - 1
+  }
+  return `${name.slice(0, lo)}…`
+}
+const plotW = computed(() => Math.max(80, width.value - LABEL_W.value - PAD_R))
 const height = computed(() => HEAD_H + tl.value.rows.length * ROW_H + 8)
-const x = (t: number) => LABEL_W + scaleX(t, tl.value.from, tl.value.to, plotW.value)
+const x = (t: number) => LABEL_W.value + scaleX(t, tl.value.from, tl.value.to, plotW.value)
 const rowY = (i: number) => HEAD_H + i * ROW_H
 const rowIndex = (name: string) => tl.value.rows.findIndex((r) => r.name === name)
 const axis = computed(() => ticks(tl.value.from, tl.value.to).map((t) => ({ t, x: x(t), label: tickLabel(t, tl.value.to - tl.value.from) })))
 const started = computed(() => tl.value.rows.some((r) => r.start !== undefined))
 
-const time = (t: number) => new Date(t).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+const time = (t: number) => clockTime(t, { seconds: true })
 
 function barTitle(r: (typeof tl.value.rows)[number]): string {
   if (r.start === undefined) return `${r.name}: not started`
@@ -71,9 +105,9 @@ const barFill = (status: string) => (status === 'running' || status === 'startin
       </g>
       <!-- One row per member. -->
       <g v-for="(r, i) in tl.rows" :key="r.name" :data-timeline-row="r.name" :data-status="r.status" :transform="`translate(0, ${rowY(i)})`">
-        <text :x="LABEL_W - 8" :y="ROW_H / 2 + 3" text-anchor="end" fill="var(--ui-text)" class="font-sans text-xs">
+        <text :x="0" :y="ROW_H / 2 + 3" text-anchor="start" fill="var(--ui-text)" class="font-sans text-xs" :data-timeline-name="r.name">
           <title>{{ barTitle(r) }}</title>
-          {{ r.name }}
+          {{ fitName(r.name) }}
         </text>
         <template v-if="r.start !== undefined">
           <rect :x="x(r.start)" :y="ROW_H / 2 - 7" :width="Math.max(2, x(r.end ?? now) - x(r.start))" height="14" rx="3" :fill="barFill(r.status)" :stroke="r.error ? 'var(--ui-error)' : 'none'" stroke-width="1.5" data-timeline-bar>

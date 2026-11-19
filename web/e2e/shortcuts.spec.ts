@@ -49,7 +49,7 @@ test("G then Y, R, C and E go to the Yard, the Roundhouse, Crews and History's f
   const yard = modal.locator('[data-shortcut="Go to the Yard"]')
   await expect(yard.locator('[data-shortcut-terminal]')).toHaveText(/Alt.*Y/i)
   await expect(yard.locator('[data-shortcut-outside]')).toHaveText(/G\s*then\s*Y/)
-  await expect(modal.locator('[data-shortcut="Go to History\'s feed"] [data-shortcut-outside]')).toHaveText(/G\s*then\s*E/)
+  await expect(modal.locator('[data-shortcut="Go to History · Live"] [data-shortcut-outside]')).toHaveText(/G\s*then\s*E/)
   // What needs the list focused has no key in a terminal: the cell shows nothing and reads "none" (#328: no dot; the
   // word is visually hidden text, since an empty span's aria-label is not announced).
   const none = modal.locator('[data-shortcut="Next row (or ↓)"] [data-shortcut-terminal]')

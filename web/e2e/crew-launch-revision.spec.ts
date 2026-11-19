@@ -158,36 +158,38 @@ function oneRunOf(launches: ReturnType<typeof launchesOf>, now: string) {
   expect(launches.seen.filter((l) => l.status === 409).map((l) => l.status), 'one refusal').toEqual([409])
 }
 
-test("a sheet opened again from the palette while a draft's launch saves it shows the copy before the save: its launch is refused, read again, one run", async ({ page, api }) => {
+test("Save and launch saves the edits first; a sheet the palette opens while the save is held draws the copy before it, then the copy saved once it lands: one run", async ({ page, api }) => {
   const a = await saveCrew(api, label('reopened'))
   const launches = launchesOf(page, a.id)
   const s = sheet(page)
   const aCrew = (u: URL) => u.pathname === `/api/crews/${a.id}`
-  budget(READ, READ, EXPECT) // the page, the sheet, its close
+  budget(READ, EXPECT, READ, EXPECT, READ, EXPECT) // the page, the button, the sheet, the save, the sheet again, its Launch
   await page.goto(`/crews/${encodeURIComponent(a.id)}`)
   await expect(page.getByLabel('Crew name')).toHaveValue(a.name, { timeout: READ })
-  // The draft renames the member and launches; its save is held at this test's route.
+  // The edit renames the member: the header says so beside the button, which now saves first.
   await page.getByLabel('Name of lead').fill('renamed')
-  await page.locator('[data-launch]').click()
-  await expect(s.line('renamed')).toBeVisible({ timeout: READ })
+  await expect(page.locator('[data-launch-unsaved]')).toHaveText('Unsaved changes')
+  await expect(page.locator('[data-launch]')).toHaveAccessibleName('Save and launch')
   const save = await holdOnce(page, aCrew, 'PUT')
-  await s.confirm.click()
+  await page.locator('[data-launch]').click()
   await save.seen
-  await page.keyboard.press('Escape')
-  await expect(s.confirm).toHaveCount(0)
-  // Opened again from the palette: it reads the crew while the save is held, the copy before the save.
+  // Opened from the palette while the save is held: it reads the crew as saved before the edit.
   await paletteLaunch(page, a)
-  budget(READ, EXPECT) // the sheet, the page's words
   await expect(s.line('lead')).toBeVisible({ timeout: READ })
   const saved = page.waitForResponse((r) => r.request().method() === 'PUT' && aCrew(new URL(r.url())))
   save.release()
   expect((await saved).ok()).toBe(true)
-  await expect(page.getByText('was saved, but the launch sheet was opened again').first()).toBeVisible({ timeout: EXPECT })
   await save.off()
-  expect(launches.seen, 'the first confirmation started nothing').toEqual([])
-  await refusedThenLaunched(page, launches, 'renamed')
-  oneRunOf(launches, 'renamed')
-  expect(await crewRuns(api, a.id)).toEqual([launches.seen.find((l) => l.run)!.run!.id])
+  // The save landed: the sheet opens again on the crew as saved, read by its id; nothing was launched meanwhile.
+  await expect(s.line('renamed'), 'the sheet draws the copy saved').toBeVisible({ timeout: READ })
+  await expect(s.line('lead')).toHaveCount(0)
+  expect(launches.seen, 'nothing launched before Launch').toEqual([])
+  const started = page.waitForResponse((r) => r.request().method() === 'POST' && new URL(r.url()).pathname === `/api/crews/${a.id}/launch`)
+  await s.confirm.click()
+  expect((await started).status()).toBe(201)
+  await launches.settled()
+  expect(launches.seen.map((l) => [l.status, l.run?.members.map((m) => m.name).join()])).toEqual([[201, 'renamed']])
+  expect(await crewRuns(api, a.id)).toEqual([launches.seen[0]!.run!.id])
 })
 
 test("a sheet opened from the palette while the editor's own Save is under way is refused once it lands, read again, one run", async ({ page, api }) => {
@@ -286,7 +288,7 @@ test('a refusal that lands after the crew page was left is told on the page the 
   expect(await crewRuns(api, a.id)).toEqual([])
 })
 
-test("a crew read without a revision holds Launch with words, and so does a draft whose save answers none: nothing is launched", async ({ page, api }) => {
+test("a crew read without a revision holds Launch with words, and so does one Save and launch saved without one: nothing is launched", async ({ page, api }) => {
   const a = await saveCrew(api, label('unrevised'), true)
   const launches = launchesOf(page, a.id)
   const s = sheet(page)
@@ -308,21 +310,19 @@ test("a crew read without a revision holds Launch with words, and so does a draf
   await expect(s.unrevised).toHaveText(unrevised)
   await expect(s.confirm).toBeDisabled()
   // The crew inherits its yolo setting: the sheet says it is the server's at the launch, and what it is now.
-  await expect(s.yolo).toHaveText(`Yolo: the server's default at the launch (now ${yoloDefault ? 'on: the members skip' : 'off: the members keep'} their permission prompts)`)
+  await expect(s.yolo).toHaveText(`Permission prompts: ${yoloDefault ? 'skipped: the members act without asking' : 'the members ask before they act'} (the server's default now)`)
   await page.locator('[data-crew-launch-cancel]').click()
   await expect(s.confirm).toHaveCount(0)
-  // A draft is drawn as it is; its Launch saves it, and the save answers no revision: no launch is sent, the sheet stays, Launch held.
-  budget(READ, EXPECT, EXPECT, EXPECT, EXPECT) // the sheet, no words yet, its words, its Launch, the sheet still open
+  // An edit's Save and launch saves it first, and the save answers no revision; the sheet then reads the crew, which comes without one
+  // too: Launch held with the words, and no launch is sent.
+  budget(EXPECT, READ, EXPECT, EXPECT) // the save, the sheet, its words, its Launch
   await page.getByLabel('Name of lead').fill('renamed')
-  await page.locator('[data-launch]').click()
-  await expect(s.line('renamed')).toBeVisible({ timeout: READ })
-  await expect(s.unrevised).toHaveCount(0)
   const saved = page.waitForResponse((r) => r.request().method() === 'PUT' && aCrew(new URL(r.url())))
-  await s.confirm.click()
-  expect((await saved).ok(), 'the draft is saved').toBe(true)
+  await page.locator('[data-launch]').click()
+  expect((await saved).ok(), 'the edit is saved').toBe(true)
+  await expect(s.line('renamed')).toBeVisible({ timeout: READ })
   await expect(s.unrevised).toHaveText(unrevised)
   await expect(s.confirm).toBeDisabled()
-  await expect(s.line('renamed'), 'the sheet stays open on what it drew').toBeVisible()
   expect(launches.asked(), 'no launch was asked').toBe(0)
   expect(await crewRuns(api, a.id)).toEqual([])
 })
@@ -347,7 +347,7 @@ test('nothing that should go is refused: a saved crew, a draft in one go, two la
     await page.locator('[data-launch]').click()
     await launchOnce('lead')
   }
-  // A draft in one go: saved, then launched at the revision its save answered.
+  // An edit in one go: Save and launch saves it, and the sheet launches the revision the save answered.
   await page.getByLabel('Name of lead').fill('renamed')
   await page.locator('[data-launch]').click()
   await launchOnce('renamed')

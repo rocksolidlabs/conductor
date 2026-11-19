@@ -1,10 +1,11 @@
 import { diffAgainst, type ChangeRow } from '~/utils/changes'
 import { commitAgainst, type CommitChangeRow } from '~/utils/commits'
 import { emptyTabs, openPreview, openTab, toggleFold, type TabsState } from '~/utils/editorTabs'
+import { LINK_OFFER_TOAST, linkHost, linkOfferNote, openWebLink, shownLink } from '~/utils/terminalLinks'
 
 /**
  * The files a page has open in its editor area (design 4b): the tabs, how a
- * path or a URL the agent printed opens, and the fold (T; Alt+T while
+ * path the agent printed opens, what a link it printed says once opened, and the fold (T; Alt+T while
  * typing in a terminal). One per page: the session page, the Yard's
  * focused tile, a guest's join page.
  */
@@ -23,17 +24,36 @@ export function useEditorTabs() {
     tabs.value = openPreview(tabs.value, loc.path)
   }
 
-  /** A URL the agent printed: a new tab, or a preview tab in the area. */
-  function openUrl(url: string) {
+  /**
+   * A web link of the terminal's, opened already by the click (#1020): the toast says where it went and offers its preview tab in
+   * the area, which opens nothing more.
+   */
+  function linkOpened(url: string) {
     toast.add({
-      title: url,
-      icon: 'i-lucide-link',
+      title: `Opened ${linkHost(url)}`,
+      description: shownLink(url),
+      icon: 'i-lucide-external-link',
       color: 'neutral',
-      actions: [
-        { label: 'Open in new tab', icon: 'i-lucide-external-link', onClick: () => window.open(url, '_blank', 'noopener,noreferrer') },
-        { label: 'Preview in pane', icon: 'i-lucide-panel-right', onClick: () => (tabs.value = openTab(tabs.value, 'url', url)) },
-      ],
+      actions: [{ label: 'Preview in pane', icon: 'i-lucide-panel-right', onClick: () => (tabs.value = openTab(tabs.value, 'url', url)) }],
     })
+  }
+
+  /**
+   * A web link of the terminal's a click did not open (the program in the terminal holds the mouse): offered in the one note, as
+   * the terminal always has. Open opens the string offered, once, and the usual note then replaces the offer.
+   */
+  function linkOffered(url: string) {
+    toast.add(
+      linkOfferNote(
+        url,
+        (u) => {
+          toast.remove(LINK_OFFER_TOAST)
+          openWebLink(u)
+          linkOpened(u)
+        },
+        (u) => (tabs.value = openTab(tabs.value, 'url', u)),
+      ),
+    )
   }
 
   /** A change from the Changes section opens as a diff against the base (design 4d). */
@@ -55,5 +75,5 @@ export function useEditorTabs() {
     alt_t: { usingInput: true, handler: fold },
   })
 
-  return { tabs, editorOpen, openFile, previewFile, openUrl, openDiff, openCommitDiff, fold }
+  return { tabs, editorOpen, openFile, previewFile, linkOpened, linkOffered, openDiff, openCommitDiff, fold }
 }

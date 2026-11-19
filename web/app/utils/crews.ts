@@ -382,6 +382,37 @@ export function memberNameError(name: string, taken: readonly string[] = [], peo
   return ''
 }
 
+/** The longest crew name the Name field takes. */
+export const CREW_NAME_MAX = 60
+
+/**
+ * Why a crew's name cannot be saved, said beside its Name field and beside Save; '' when it can. A crew needs one, and one no other saved crew
+ * is called (`others`, the crews listed, compared without case or the spaces around it): the server would save a second under an id of its
+ * own (`-2`), and the lists and the palette would show two crews alike. A crew already saved under a name another has keeps it (`saved`, its
+ * name as saved): only a name typed now is held to it.
+ */
+export function crewNameProblem(name: string, others: ReadonlyArray<{ id: string; name: string }> = [], self: { id?: string; saved?: string } = {}): string {
+  const typed = name.trim()
+  if (!typed) return 'A crew needs a name'
+  const fold = (s: string) => s.trim().toLowerCase()
+  if (self.saved !== undefined && fold(self.saved) === fold(typed)) return ''
+  const other = others.find((c) => c.id !== self.id && fold(c.name) === fold(typed))
+  return other ? `Another crew is called ${other.name}: give this one a name of its own` : ''
+}
+
+/**
+ * Why a member cannot be saved, in the words said beside Save (memberNameError says the field's own beside its field): which member, and
+ * what to do. '' when its name is fine.
+ */
+export function memberSaveProblem(m: { name: string }, i: number, taken: readonly string[] = [], people: readonly string[] = []): string {
+  const err = memberNameError(m.name, taken, people)
+  if (!err) return ''
+  if (!m.name) return `Member ${i + 1} needs a name`
+  if (!MEMBER_NAME.test(m.name)) return `The member name ${m.name} may hold only lower-case letters, digits, ".", "_" and "-", starting with a letter or digit, at most 40`
+  if (err === memberNameError('a', ['a'])) return `Two members are called ${m.name}: give each a name of its own`
+  return `${m.name}: ${err}`
+}
+
 /** Drops what may not end a member name: ".", "-", "_" and ".lock". */
 function trimNameEnd(s: string): string {
   let out = s
@@ -866,11 +897,14 @@ export function startFrom(value: string): CrewStart {
   return { when: value === 'manual' ? 'manual' : 'immediately' }
 }
 
-/** What "New crew" starts from: on the server, a worktree per agent, the run view opened after launch, and one member on the first catalog agent. */
+/**
+ * What "New crew" starts from: no name yet (the page's Name field, focused, takes it), on the server, a worktree per agent, the run view
+ * opened after launch, and one member on the first catalog agent.
+ */
 export function defaultCrew(catalog: readonly AgentInfo[]): CrewInput {
   const first = catalog[0]
   return {
-    name: 'New crew',
+    name: '',
     goal: '',
     cwd: '',
     where: 'server',
@@ -1287,4 +1321,52 @@ export function broadcastSelection(members: readonly BroadcastMember[], choices:
     sending: selected.filter((m) => m.live && !m.waiting).map((m) => m.name),
     waiting: selected.filter((m) => m.live && m.waiting).map((m) => m.name),
   }
+}
+
+/**
+ * The Setup's controls, in plain words (the review of 2026-11-18, C8): each control's label and its choices. They are the page's words only:
+ * each choice is the value the crew stores, so a crew saved through them is the file it was.
+ */
+export const SETUP_WORDS = {
+  workspace: 'Workspace',
+  workspaceItems: [
+    { label: 'One folder for everyone', value: 'none' },
+    { label: 'A copy for each member (a git worktree)', value: 'worktree' },
+  ],
+  start: 'How members start',
+  startItems: [
+    { label: 'By their start rules, set for each member below', value: 'starts' },
+    { label: 'By tasks: Yardmaster hands each member its tasks as what they need is done', value: 'tasks' },
+  ],
+  afterLaunch: 'After launch',
+  afterLaunchItems: [
+    { label: 'Stay on this page', value: 'stay' },
+    { label: 'Open the run', value: 'open' },
+  ],
+  permissions: 'Permission prompts',
+  viewLink: 'View link',
+} as const
+
+/** The Permission prompts choice: the server's default (named with what it is now), ask, or skip; each the crew's `yolo` as it stores it (yoloChoice). */
+export function permissionItems(serverDefault: boolean): Array<{ label: string; value: 'default' | 'off' | 'on' }> {
+  return [
+    { label: `The server's default (now ${serverDefault ? 'skip' : 'ask'})`, value: 'default' },
+    { label: 'Ask before acting', value: 'off' },
+    { label: 'Skip: members act without asking', value: 'on' },
+  ]
+}
+
+/** A view link's hours as the Setup says them: 8 by default, else its own. */
+export function viewLinkHoursWords(ttlSeconds: number | undefined): string {
+  return ttlSeconds && ttlSeconds !== 8 * 3600 ? `${Math.round((ttlSeconds / 3600) * 10) / 10} h` : '8 h'
+}
+
+/**
+ * The line beside "More options" while they are folded: what each folded choice is now, so nothing set there is hidden. "Stays on this
+ * page · Permission prompts: the server's default (ask) · No view link".
+ */
+export function moreOptionsLine(c: Pick<CrewInput, 'openAfterLaunch' | 'viewLinkTtlSeconds' | 'yolo'>, serverDefault: boolean): string {
+  const prompts = c.yolo === undefined || c.yolo === null ? `the server's default (${serverDefault ? 'skip' : 'ask'})` : c.yolo ? 'skip' : 'ask'
+  const link = c.viewLinkTtlSeconds ? `a view link for ${viewLinkHoursWords(c.viewLinkTtlSeconds)}` : 'no view link'
+  return `${c.openAfterLaunch ? 'Opens the run' : 'Stays on this page'} · Permission prompts: ${prompts} · ${link.charAt(0).toUpperCase()}${link.slice(1)}`
 }

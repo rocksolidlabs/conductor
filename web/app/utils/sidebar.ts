@@ -6,6 +6,7 @@ import { questionOf } from './reply'
 import { askedWhere } from './decisions'
 import type { NeedsItem } from './needsYou'
 import { agentInitials, relativeTime } from './sessions'
+import { clockTime } from './crewWords'
 import { blockStatus, joinedStatus, sessionStatus, statusOfKey, statusTally, type StatusKey, type StatusView } from './status'
 
 /** The desktop sidebar's two modes: everything, or an icon rail. */
@@ -56,16 +57,17 @@ export function writeSidebarMode(storage: KeyValueStore, mode: SidebarMode): voi
 }
 
 /**
- * The full sidebar's width, in rem (the unit of the layout's UDashboardGroup): it opens at its minimum on every screen, and a
- * drag widens it up to 26 % of the window, never below the minimum (#437). The minimum, 12.5 rem (200 px), shows the header
- * whole: the mark, "Conductor" and your menu (Alerts and the collapse to the rail are in your menu), about 186 px with the
- * header's padding and border. A wider font shortens the name first, its whole text in its title. The maximum is never less
- * than the minimum plus `range` rem (280 px), so the handle widens it in a window 1024 px wide too, where 26 % is barely more
- * than the minimum, and there reaches the width at which a row shows its question whole. Nuxt UI clamps only during a drag:
- * `sidebarBounds` gives the bounds of a window for the drag, and `SIDEBAR_WIDTH` keeps the drawn width within them as the window
- * changes. A width saved at an earlier minimum is kept as saved.
+ * The full sidebar's width, in rem (the unit of the layout's UDashboardGroup). It opens at `open`, 17.5 rem (280 px, the width
+ * `NARROW_SIDEBAR_PX` names), on every screen: there a row is whole, its name, its question and its choices in the row, and so
+ * are the filter's words, a run's line with one agent and the line that counts a run's other members (#1022). A drag narrows it
+ * to `min`, 16 rem (256 px), the narrowest at which every row still names itself whole (a member's "clarifier · naming #1", a
+ * decision's question, a one-agent run's "started 19:21 · 1 agent · 1 need you", the filter's words), its question on two lines
+ * with the choices in the panel beside it; at 200 px, the minimum before #1022, those were cut. A drag widens it up to 26 % of
+ * the window, never less than the minimum plus `range` rem (336 px), so the handle widens it in a window 1024 px wide too
+ * (#437). Nuxt UI clamps only during a drag: `sidebarBounds` gives the bounds of a window for the drag, and `SIDEBAR_WIDTH` keeps
+ * the drawn width within them as the window changes.
  */
-export const SIDEBAR_SIZE = { min: 12.5, maxShare: 0.26, range: 5 } as const
+export const SIDEBAR_SIZE = { min: 16, open: 17.5, maxShare: 0.26, range: 5 } as const
 /** The full sidebar's bounds in a window, in rem. */
 export interface SidebarBounds {
   min: number
@@ -109,30 +111,47 @@ export function panelRow(focused: string | null, pressed: string | null, rows: R
 
 /** The width a drag left, in rem, per browser, beside the mode: with Nuxt UI's persistence off, nothing else keeps it over a reload. */
 export const SIDEBAR_SIZE_KEY = 'conductor.sidebar.width'
-/** The width before #437, in percent of the window: dropped once, so every browser opens at the minimum. */
+/** The width before #437, in percent of the window: read once as rem of the window it opens in, then removed. */
 export const LEGACY_SIDEBAR_SIZE_KEY = 'conductor.sidebar.size'
 
 export function clampSidebarSize(size: number, bounds: SidebarBounds): number {
   return Math.min(bounds.max, Math.max(bounds.min, size))
 }
 
+/** The width the sidebar opens at in a window with `bounds`: `SIDEBAR_SIZE.open`, within them. */
+export function openSidebarSize(bounds: SidebarBounds): number {
+  return clampSidebarSize(SIDEBAR_SIZE.open, bounds)
+}
+
 /**
- * The width saved for this browser, within the bounds of the window it opens in; the minimum when there is none, it is not a
- * number, or storage throws. A width saved before #437 is removed on the way.
+ * The width saved for this browser, within the bounds of the window it opens in. The opening width when there is none, it is not
+ * a number, storage throws, or it is narrower than the minimum (a width an earlier version kept at its 200 px minimum, by a drag
+ * or a double-click on the handle: unusably narrow now, #1022); it stays saved until the next drag. A width saved before #437,
+ * in percent of the window, is read as that share of this window (`windowRem`, the window's width in rem) where no width is
+ * saved in rem, kept under the new key when it is wide enough, and removed.
  */
-export function readSidebarSize(storage: KeyValueStore, bounds: SidebarBounds): number {
+export function readSidebarSize(storage: KeyValueStore, bounds: SidebarBounds, windowRem = Number.NaN): number {
+  const open = openSidebarSize(bounds)
+  let saved = Number.NaN
   try {
-    if (storage.getItem(LEGACY_SIDEBAR_SIZE_KEY) !== null) storage.removeItem(LEGACY_SIDEBAR_SIZE_KEY)
+    saved = Number(storage.getItem(SIDEBAR_SIZE_KEY) || Number.NaN)
+  } catch {
+    return open
+  }
+  try {
+    const legacy = storage.getItem(LEGACY_SIDEBAR_SIZE_KEY)
+    if (legacy !== null) {
+      storage.removeItem(LEGACY_SIDEBAR_SIZE_KEY)
+      const share = Number(legacy || Number.NaN)
+      if (!Number.isFinite(saved) && Number.isFinite(share) && share > 0 && share <= 100 && Number.isFinite(windowRem) && windowRem > 0) {
+        saved = (share / 100) * windowRem
+        if (saved >= bounds.min) writeSidebarSize(storage, saved, bounds)
+      }
+    }
   } catch {
     /* not removed: tried again on the next read */
   }
-  try {
-    const size = Number(storage.getItem(SIDEBAR_SIZE_KEY) || Number.NaN)
-    if (Number.isFinite(size)) return clampSidebarSize(size, bounds)
-  } catch {
-    /* no storage: the minimum */
-  }
-  return bounds.min
+  return Number.isFinite(saved) && saved >= bounds.min ? clampSidebarSize(saved, bounds) : open
 }
 
 /** Saves a width within the bounds, to two decimals; a value that is not a number is not saved. */
@@ -406,10 +425,9 @@ export function rowMeta(s: SessionInfo, member: boolean, now = Date.now()): stri
   return member ? [s.agentId, tail] : [s.agentId, 'server', tail]
 }
 
-/** A clock for the narrow sidebar: 24-hour, as the design writes it ("started 08:31"), so the line fits. */
+/** A clock for the narrow sidebar: the Crews pages' one clock (clockTime: 24-hour, "started 08:31", never "24:05"), so the line fits. */
 function clock(iso: string): string {
-  const d = new Date(iso)
-  return Number.isNaN(d.getTime()) ? '' : d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', hour12: false })
+  return clockTime(iso)
 }
 
 /**

@@ -119,7 +119,8 @@ test('a run of six tasks speaks the status language: its rows, its graph, its le
     budget(LOAD_MS)
     await page.goto('/crews')
     const card = page.locator(`[data-running-now] [data-run="${run.id}"] [data-run-state]`)
-    await expect(card).toHaveText(/^1 of 6 done · 1 working · 1 checking · 1 finished · 2 need you$/)
+    await expect(card.locator('[data-status-word]').first()).toHaveText('Needs you')
+    await expect(card.locator('[data-run-detail]')).toHaveText(/^1 of 6 done · 1 working · 1 checking · 1 finished · 2 need you$/)
   }
   await read()
   await useTheme(page, 'light')

@@ -494,6 +494,7 @@ export function usePaletteRows(ctx: PaletteContext) {
       key: `go:${p.id}`,
       label: p.id === 'decisions' && d ? `${p.title} · ${d} waiting` : p.title,
       detail: p.about,
+      ...(p.words ? { words: [...p.words] } : {}),
       icon: p.icon,
       kbds: [...(p.chord ?? [])],
       run: () => go(p.to),

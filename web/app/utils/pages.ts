@@ -43,6 +43,8 @@ export interface PageEntry {
    * current on its route (pageActive).
    */
   viewOf?: PageId
+  /** Words the palette's row is found by beside its title and sentence: a name the page had before (History · Live was the Feed). */
+  words?: readonly string[]
 }
 
 export const PAGES: readonly PageEntry[] = [
@@ -119,8 +121,10 @@ export const PAGES: readonly PageEntry[] = [
   },
   {
     id: 'history-feed',
-    label: 'Feed',
-    title: 'History · Feed',
+    label: 'Live',
+    title: 'History · Live',
+    // Its name until #1024: what a person used to type for it, and what the retired Events page was.
+    words: ['Feed', 'Events'],
     to: '/history?view=feed',
     icon: 'i-lucide-radio-tower',
     chord: ['G', 'E'],
@@ -208,7 +212,7 @@ export function phoneMore(s: Pick<PageScope, 'desktop' | 'brakeman'> = {}): Page
   return placed('more', s)
 }
 
-/** The palette's Go to rows, in order: the destinations and their views (the Roundhouse, Agents · Reporting, History · Feed), the paste invite. */
+/** The palette's Go to rows, in order: the destinations and their views (the Roundhouse, Agents · Reporting, History · Live), the paste invite. */
 export function palettePages(s: Pick<PageScope, 'desktop'> = {}): PageEntry[] {
   return placed('palette', s)
 }

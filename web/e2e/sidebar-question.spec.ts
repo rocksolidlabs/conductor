@@ -8,7 +8,8 @@ import { lines, rowsInView, tabTo, tapTarget, uncut } from './layout'
 // A question in the narrow sidebar (the UX review's P5, owner decision 7): below 280 px a row shows two lines of its question, and
 // the whole question with its choices or its reply field opens in a panel beside the row, to the right of the sidebar, while the row
 // has the focus or from its Answer button. The digits answer the focused row as before. At 280 px and wider, and on the phone's list,
-// the question stays whole in the row. Every session here is the test's own on the day's server, ended and removed before the test
+// the question stays whole in the row. The sidebar opens at 280 px (#1022), so each test here drags it to its minimum, 256 px, a
+// narrow list. Every session here is the test's own on the day's server, ended and removed before the test
 // ends (the day's guard).
 
 /** A question of exactly 500 bytes, the server's bound (session.MaxAttentionMessage). */
@@ -54,6 +55,16 @@ async function dragTo(page: Page, x: number) {
   await page.mouse.up()
 }
 
+/** The sidebar's minimum, 256 px: a narrow list. */
+const MIN = 256
+
+/** Drags the sidebar from the width it opens at (280 px) to its minimum, and waits for it to be drawn there. */
+async function atMinimum(page: Page) {
+  await expect.poll(() => sidebarWidth(page)).toBeCloseTo(280, 0)
+  await dragTo(page, 100)
+  await expect.poll(() => sidebarWidth(page)).toBeCloseTo(MIN, 0)
+}
+
 /** The text a stub session was typed (its transcript): '' until it is written. */
 function transcript(day: Day, s: Session): string {
   const file = join(day.server.home, '.stub-sessions', `${s.agentSession?.id ?? ''}.txt`)
@@ -64,12 +75,12 @@ for (const [w, h] of [
   [1440, 900],
   [1280, 720],
 ] as const) {
-  test(`at 200 px a question at the server's bound is two lines in its row and whole in the panel beside it, at ${w}×${h}`, async ({ day, browser }) => {
+  test(`at the minimum, 256 px, a question at the server's bound is two lines in its row and whole in the panel beside it, at ${w}×${h}`, async ({ day, browser }) => {
     const a = await asking(day, 'e2e bound question', LONGEST)
     const b = await asking(day, 'e2e second asker', 'Run the migration now?')
     try {
       const page = await dayPage(browser, { width: w, height: h, path: '/crews' })
-      await expect.poll(() => sidebarWidth(page)).toBeCloseTo(200, 0)
+      await atMinimum(page)
       const row = rowOf(page, a.id)
       const prompt = row.locator('[data-row-prompt]')
       await expect(prompt).toHaveAttribute('data-row-clamped', '')
@@ -125,10 +136,10 @@ for (const [w, h] of [
       await link.focus()
       await expect(row).toHaveAttribute('data-row-focused', '')
       await expect(page.locator('[data-row-panel]')).toHaveCount(0)
-      // Back to 200 px: clamped again, and again after the row is drawn anew (asked again).
+      // Back to the minimum: clamped again, and again after the row is drawn anew (asked again).
       await link.blur()
       await dragTo(page, 100)
-      await expect.poll(() => sidebarWidth(page)).toBeCloseTo(200, 0)
+      await expect.poll(() => sidebarWidth(page)).toBeCloseTo(MIN, 0)
       await expect(prompt).toHaveAttribute('data-row-clamped', '')
       await ask(day, a.id, `${LONGEST.slice(0, 480)} once more?`)
       await expect(prompt).toHaveText(`${LONGEST.slice(0, 480)} once more?`)
@@ -146,7 +157,7 @@ test("the panel's reply field keeps the focus and every key while the rows chang
   const ids = [a.id]
   try {
     const page = await dayPage(browser, { path: '/crews' })
-    await expect.poll(() => sidebarWidth(page)).toBeCloseTo(200, 0)
+    await atMinimum(page)
     const row = rowOf(page, a.id)
     await expect(row.locator('[data-row-prompt]')).toHaveAttribute('data-row-clamped', '')
     // Answer moves the focus into the panel's field.
@@ -188,7 +199,7 @@ test('on a touch screen a tap on Answer opens the panel and a tap on a choice an
   const a = await asking(day, 'e2e touch question', 'Apply the patch to every host?')
   try {
     const page = await dayPage(browser, { width: 1280, height: 800, touch: true, path: '/crews' })
-    await expect.poll(() => sidebarWidth(page)).toBeCloseTo(200, 0)
+    await atMinimum(page)
     const row = rowOf(page, a.id)
     await expect(row.locator('[data-row-prompt]')).toHaveAttribute('data-row-clamped', '')
     await row.locator('[data-row-answer-open]').tap()
@@ -213,12 +224,12 @@ test('on a touch screen a tap on Answer opens the panel and a tap on a choice an
 
 // With the pages as six tiles at the sidebar's foot the list is about 625 px tall at 900 px, where the column of pages left it
 // about 440 (the review counted two asking rows in view, each holding its question whole). A plan's, a task's and a decision's row
-// of Needs you (UX1 PR-13) count as asking rows. The plan asked for five: an asking session's row at 200 px is 100 to 116 px tall and
+// of Needs you (UX1 PR-13) count as asking rows. The plan asked for five: an asking session's row in the narrow list is 100 to 116 px tall and
 // the busy day's runs each add a header and an "and N more" line, so the list holds four.
-test("on the day's busy part, at 200 px, the list shows more asking rows whole than with each question whole", async ({ day, browser }) => {
+test("on the day's busy part, at the minimum, the list shows more asking rows whole than with each question whole", async ({ day, browser }) => {
   await day.part('busy')
   const page = await dayPage(browser, { path: '/crews' })
-  await expect.poll(() => sidebarWidth(page)).toBeCloseTo(200, 0)
+  await atMinimum(page)
   const list = page.locator('[data-session-list="sidebar"]')
   await expect(list).toHaveAttribute('data-list-width', 'narrow')
   await expect(list.locator('[data-row-clamped]').first()).toBeVisible()

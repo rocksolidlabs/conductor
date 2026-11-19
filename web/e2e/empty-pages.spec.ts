@@ -272,7 +272,7 @@ test('About this page: History with entries folds its caption to a popover, whic
   budget(2 * 8 * STEP_MS)
   for (const theme of ['dark', 'light'] as const) {
     const page = await dayPage(browser, { ...DESK, theme, path: '/history' })
-    await expect(page.locator('[data-history-group]').first()).toBeVisible({ timeout: 30_000 })
+    await expect(page.locator('[data-history-day]').first()).toBeVisible({ timeout: 30_000 })
     await expect(page.locator('[data-history-caption]'), `${theme}: no caption in the body`).toHaveCount(0)
     const button = page.locator('[data-page-about-button]')
     await button.click()

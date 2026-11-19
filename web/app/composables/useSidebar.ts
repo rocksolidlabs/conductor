@@ -1,9 +1,14 @@
-import { clampSidebarSize, readSidebarMode, readSidebarSize, sidebarBounds, writeSidebarMode, writeSidebarSize, type SidebarBounds, type SidebarMode } from '~/utils/sidebar'
+import { clampSidebarSize, openSidebarSize, readSidebarMode, readSidebarSize, sidebarBounds, writeSidebarMode, writeSidebarSize, type SidebarBounds, type SidebarMode } from '~/utils/sidebar'
 
 /** The full sidebar's bounds in this window, in rem (Nuxt UI's rem: the root element's font size). */
 function windowBounds(): SidebarBounds {
   if (!import.meta.client) return sidebarBounds(Number.NaN)
-  return sidebarBounds(window.innerWidth, Number.parseFloat(getComputedStyle(document.documentElement).fontSize))
+  return sidebarBounds(window.innerWidth, rootRem())
+}
+
+/** The root element's font size in px: Nuxt UI's rem. */
+function rootRem(): number {
+  return Number.parseFloat(getComputedStyle(document.documentElement).fontSize)
 }
 
 /**
@@ -14,7 +19,8 @@ function windowBounds(): SidebarBounds {
  * rail. On narrow screens the sidebar is a slideover and the mode is ignored.
  *
  * The full sidebar's width (rem) is kept beside it, read once when the app
- * starts within the window's bounds; `resize` saves the width a drag left.
+ * starts within the window's bounds (the opening width when none is saved, or
+ * one below the minimum, #1022); `resize` saves the width a drag left.
  * `bounds` follows the window once a component calls `follow` (#437).
  */
 export function useSidebar() {
@@ -29,11 +35,11 @@ export function useSidebar() {
   const rail = computed(() => mode.value === 'rail')
   const bounds = useState<SidebarBounds>('sidebarBounds', windowBounds)
   const size = useState<number>('sidebarSize', () => {
-    if (!import.meta.client) return bounds.value.min
+    if (!import.meta.client) return openSidebarSize(bounds.value)
     try {
-      return readSidebarSize(localStorage, bounds.value)
+      return readSidebarSize(localStorage, bounds.value, window.innerWidth / rootRem())
     } catch {
-      return bounds.value.min
+      return openSidebarSize(bounds.value)
     }
   })
 

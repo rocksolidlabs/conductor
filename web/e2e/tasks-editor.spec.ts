@@ -1,6 +1,6 @@
 import { expect, test } from './fixtures'
 
-// A crew with tasks (#334, row 4): the editor's Coordination select turns the
+// A crew with tasks (#334, row 4): the editor's "How members start" select turns the
 // crew managed; the tasks table takes a task per thing a member delivers; a
 // cycle in the needs blocks Save with its words; a check's quoted argument
 // is one array element; a setup step goes in the project manifest under the
@@ -22,7 +22,7 @@ test('a crew with tasks: a cycle blocks Save, a quoted argument is one element, 
   await page.getByLabel('Goal').fill('ship the thing')
 
   await page.locator('[data-crew-coordination]').click()
-  await page.getByRole('option', { name: /by tasks/ }).click()
+  await page.getByRole('option', { name: /By tasks/ }).click()
   await expect(page.locator('[data-crew-tasks-section]')).toBeVisible()
   await expect(page.locator('[data-member-start]')).toHaveCount(0)
 

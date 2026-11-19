@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import type { AgentInfo, CrewInfo, CrewSummary, RunInfo } from '~/composables/useSessions'
 import { ApiError } from '~/composables/useApi'
-import { crewKey, defaultCrew, EXAMPLES_LINE, holdViewLink, keepParked, memberNameError, pageAfterDelete, peopleProblems, refusedAsStale, revisionToSave, elsewhereWords, summaryOf, toDraft, type DraftCrew, taskProblems, taskSaveProblems } from '~/utils/crews'
-import { changedFields, startedClock } from '~/utils/crewWords'
-import { runItems, runStatusLine } from '~/utils/status'
+import { crewKey, crewNameProblem, defaultCrew, EXAMPLES_LINE, holdViewLink, keepParked, memberSaveProblem, pageAfterDelete, peopleProblems, refusedAsStale, revisionToSave, elsewhereWords, summaryOf, toDraft, type DraftCrew, taskProblems, taskSaveProblems } from '~/utils/crews'
+import { changedFields, launchSaidIn, runLook, startedClock } from '~/utils/crewWords'
+import { runItems } from '~/utils/status'
 import { runLive, runState } from '~/utils/runs'
 import { modelProblem } from '~/utils/capacity'
 import { pageState } from '~/utils/pageState'
@@ -188,18 +188,20 @@ const tabItems = computed(() => [
   { label: 'Runs', value: 'runs', badge: records.runs.value.length || undefined },
 ])
 /** The live-run banner's lines, one per run going now. */
-// Each live run of the crew in the run's one sentence (runStatusLine): its "need you" the run's items of the one list.
+// Each live run of the crew in the one vocabulary of the Crews pages (runLook): its state's word and mark, then its counts in the member
+// words ("1 working · 1 idle"), its "need you" the run's items of the one list.
 const needsYou = useNeedsYou()
-const banners = computed(() => crewLive.value.map((r) => ({ run: r, started: startedClock(r.startedAt), line: runStatusLine(r, live.sessions.value, runItems(needsYou.items.value, r.id), now.value) })))
+const banners = computed(() => crewLive.value.map((r) => ({ run: r, started: startedClock(r.startedAt), look: runLook(r, live.sessions.value, runItems(needsYou.items.value, r.id), now.value) })))
 
-const nameMissing = computed(() => !draft.value?.name.trim())
+/** Why the crew's name cannot be saved (none, or another crew's), said beside its Name field and beside Save; '' when it can. */
+const nameProblem = computed(() => (draft.value ? crewNameProblem(draft.value.name, crews.value, { id: draft.value.id, saved: saved.value?.name }) : ''))
 /** Why the draft breaks a rule every crew is held to, saved or launched, in words; '' when it does not. */
 const ruleProblem = computed(() => {
   const d = draft.value
   if (!d) return 'Loading'
-  if (nameMissing.value) return 'The crew needs a name'
+  if (nameProblem.value) return nameProblem.value
   for (const [i, m] of d.members.entries()) {
-    const err = memberNameError(m.name, d.members.filter((_, j) => j !== i).map((x) => x.name))
+    const err = memberSaveProblem(m, i, d.members.filter((_, j) => j !== i).map((x) => x.name))
     if (err) return err
     if (!m.agentId) return `${m.name || 'A member'} needs an agent`
     const model = modelProblem(m.model ?? '')
@@ -222,9 +224,14 @@ const launchBlocked = computed(() => {
   if (d.compare) return COMPARISON_LAUNCHES_FROM_A_TICKET
   if (d.where !== 'server') return 'Only a crew that runs on the server can be launched'
   // A launch saves the draft first only when it changed or is new: an unchanged crew saved before the save-only rules launches.
-  if (ruleProblem.value || ((dirty.value || !d.id) && saveOnlyProblem.value)) return 'Fix the fields marked in red first'
+  if (ruleProblem.value) return ruleProblem.value
+  if ((dirty.value || !d.id) && saveOnlyProblem.value) return saveOnlyProblem.value
   return ''
 })
+/** A draft, or a saved crew with edits: its launch saves it first ("Save and launch"), then opens the sheet on what was saved. */
+const needsSave = computed(() => !!draft.value && (!draft.value.id || dirty.value))
+/** The header's title: the crew's name as typed, else what it is. */
+const title = computed(() => draft.value?.name.trim() || (isNew.value ? 'New crew' : routeId.value))
 /** The header's line: where the crew is saved (a path, in the code font) and how many agents, in words. */
 const subtitle = computed(() => {
   const d = draft.value
@@ -280,10 +287,6 @@ function fail(title: string, e: unknown) {
   toast.add({ title, description: (e as Error).message, icon: 'i-lucide-triangle-alert', color: 'error' })
 }
 
-function setName(name: string) {
-  if (draft.value) draft.value = { ...draft.value, name }
-}
-
 /**
  * Saves the draft on screen and returns the crew as saved; undefined when the server refused it (a toast says why). An update is made from the
  * copy the draft was made from (its base's revision), or, `anyway`, from the copy the server holds now as read after a refusal: the person
@@ -306,7 +309,8 @@ async function save(anyway = false): Promise<CrewInfo | undefined> {
     // Only a new crew adds to the count: one opened by its link from another page was counted already.
     if (key === NEW) total.value += 1
     // A new crew moves to its page before its draft goes, so /crews/new never shows without it in between.
-    if (key === NEW) await router.replace(`/crews/${encodeURIComponent(c.id)}`)
+    // Only while the person is still on the draft: one who went elsewhere meanwhile stays there (the crew is saved all the same).
+    if (key === NEW && selectedKey.value === NEW) await router.replace(`/crews/${encodeURIComponent(c.id)}`)
     // The lists the file switch set aside stay with the draft: turning it off gives them back after the save.
     const next = { ...drafts.value, [c.id]: keepParked(toDraft(c), d) }
     if (key === NEW) delete next[NEW]
@@ -464,9 +468,9 @@ function launchNamed() {
 
 /**
  * A launch asks first (docs/plans/capacity.md, PR-7): every launch of a crew, from this page or the app's palette, is asked through
- * useCrewLaunch and opens the sheet, which lists each member with its agent, model, account and a line of its usage; only its Launch
- * launches, and it launches what the sheet was opened for (SheetTarget): from the crew's page its draft when new or changed (saved
- * first), else the saved crew by its id. The crew page the sheet was opened on is kept (`at`): a move to another crew closes it, and so
+ * useCrewLaunch and opens the sheet, which lists each member with its agent, model and account; only its Launch launches, and it
+ * launches what the sheet was opened for (SheetTarget): a saved crew by its id. From the crew's page a draft, new or changed, is saved
+ * first, and the sheet opens on what was saved (startLaunch). The crew page the sheet was opened on is kept (`at`): a move to another crew closes it, and so
  * does another workbench token. Each opening is one confirmation (SheetConfirmation): its Launch starts one run at most. The launch names
  * the revision of the copy it starts (the one the sheet read, or the draft's save answered), and none is sent without one: a crew saved
  * since is refused by the server (`crew_changed`, #957), and the sheet, still open, reads it again as a new opening (`refused` says why).
@@ -475,11 +479,36 @@ const crewLaunch = useCrewLaunch()
 const sheet = reactive<{ open: boolean; target: SheetTarget | null; at?: string; refused?: SheetRefusal | null }>({ open: false, target: null })
 const confirmation = new SheetConfirmation()
 function openSheet(id: string, label: string) {
-  const key = selectedKey.value
-  if (!id && (key === undefined || !draft.value)) return
-  const target: SheetTarget = id || !(key === NEW || isDirty(key!)) ? { id: id || key!, label } : { key: key!, draft: draft.value!, label }
+  const target: SheetTarget = { id, label }
   confirmation.opened()
-  Object.assign(sheet, { open: true, target, at: key, refused: null })
+  Object.assign(sheet, { open: true, target, at: selectedKey.value, refused: null })
+}
+
+/** A save made for a launch is under way: the header's button shows it. */
+const savingToLaunch = ref(false)
+/**
+ * The header's launch (and Launch named): a saved crew without edits opens the sheet at once; a draft, or a crew with edits, is saved
+ * first ("Save and launch") and the sheet then opens on the crew as saved, read by its id: nothing is launched that is not saved. A save
+ * refused says why (save's toast) and opens nothing; so does a save that lands after the page moved to another crew or the workbench
+ * token changed: the crew is saved, and nothing else happens.
+ */
+async function startLaunch(label: string) {
+  const key = selectedKey.value
+  if (key === undefined || !draft.value) return
+  if (key !== NEW && !isDirty(key)) return openSheet(key, label)
+  const token = admin.token.value
+  savingToLaunch.value = true
+  try {
+    const c = await save()
+    if (!c) return
+    if (admin.token.value !== token || selectedKey.value !== c.id) {
+      toast.add({ title: 'Crew saved', description: `${c.name} was saved; the page or the workbench token changed meanwhile, so its launch sheet was not opened.`, icon: 'i-lucide-check', color: 'neutral' })
+      return
+    }
+    openSheet(c.id, label)
+  } finally {
+    savingToLaunch.value = false
+  }
 }
 /** The crew the sheet read is gone: the sheet closes, and the page says so. */
 function sheetGone() {
@@ -495,7 +524,8 @@ watch(
   (a) => {
     if (!a) return
     crewLaunch.asked.value = null
-    openSheet(a.id, a.label)
+    if (a.id) openSheet(a.id, a.label)
+    else void startLaunch(a.label)
   },
   { immediate: true },
 )
@@ -526,6 +556,8 @@ const menu = computed(() => [[{ label: 'Delete crew', icon: 'i-lucide-trash-2', 
  */
 const shownLink = usePageMemory<{ url: string; runId: string; name: string; hours: number } | null>('crewShownLink', () => null)
 let mounted = false
+/** The home's note of the run it launched (C11), in the crew's row: "Started" with Open run, until dismissed or another launch. */
+const startedNote = ref<{ crewId: string; runId: string; label: string } | null>(null)
 const shownOpen = computed({
   get: () => !!shownLink.value,
   set: (open: boolean) => {
@@ -545,14 +577,12 @@ function hours(ttlSeconds: number): number {
  * when the launch opens that, else a dialog here does.
  */
 async function launch(t: SheetTarget, read: CrewInfo | null, confirmed: () => boolean) {
-  launchingKey.value = 'id' in t ? t.id : t.key
+  // The page opens the sheet on saved crews alone (startLaunch saves a draft first): its Launch starts the copy the sheet read.
+  if (!('id' in t)) return
+  launchingKey.value = t.id
   try {
-    const c = 'id' in t ? read : drafts.value[t.key] === t.draft ? await save() : undefined
+    const c = read
     if (!c) return
-    if (!('id' in t) && !confirmed()) {
-      toast.add({ title: 'The launch was not started', description: `${c.name} was saved, but the launch sheet was opened again or the workbench token changed meanwhile: no run was started.`, icon: 'i-lucide-circle-x', color: 'warning' })
-      return
-    }
     const body = crewLaunchBody(t.label, c.revision)
     if (!body) return startedNothing(t, c, 'unrevised', confirmed())
     let launched: Awaited<ReturnType<typeof api.launchCrew>>
@@ -585,12 +615,16 @@ async function launch(t: SheetTarget, read: CrewInfo | null, confirmed: () => bo
       }
       return
     }
-    toast.add({
-      title: `${c.name}: ${run.label || `run started ${startedClock(run.startedAt)}`}`,
-      icon: 'i-lucide-circle-play',
-      color: 'success',
-      actions: [{ label: 'Open run', icon: 'i-lucide-arrow-right', onClick: () => router.push(`/runs/${encodeURIComponent(run.id)}`) }],
-    })
+    // In the crew's row while the home shows it, until dismissed (C11), the run under Running now; else (another page of Saved crews,
+    // another page of the app) a toast.
+    if (launchSaidIn(mounted && home.value, crews.value, c.id) === 'row') startedNote.value = { crewId: c.id, runId: run.id, label: run.label || `run started ${startedClock(run.startedAt)}` }
+    else
+      toast.add({
+        title: `${c.name}: ${run.label || `run started ${startedClock(run.startedAt)}`}`,
+        icon: 'i-lucide-circle-play',
+        color: 'success',
+        actions: [{ label: 'Open run', icon: 'i-lucide-arrow-right', onClick: () => router.push(`/runs/${encodeURIComponent(run.id)}`) }],
+      })
   } finally {
     launchingKey.value = undefined
   }
@@ -678,20 +712,7 @@ usePalette().registerPage(() => ({
         <template #title>
           <div class="flex min-w-0 items-center gap-2">
             <NuxtLink to="/crews" class="flex-none text-[15px] text-muted hover:text-default">Crews /</NuxtLink>
-            <UInput
-              v-if="draft"
-              :model-value="draft.name"
-              variant="ghost"
-              maxlength="60"
-              placeholder="Crew name"
-              aria-label="Crew name"
-              :color="nameMissing ? 'error' : undefined"
-              :highlight="nameMissing"
-              :ui="{ base: 'px-1 -mx-1 text-[17px] md:text-[17px] font-semibold text-highlighted' }"
-              class="min-w-0 max-w-xs flex-1"
-              @update:model-value="setName(String($event))"
-            />
-            <span v-else class="truncate text-[17px] font-semibold text-highlighted">{{ routeId }}</span>
+            <span class="min-w-0 truncate text-[17px] font-semibold text-highlighted" :class="!draft?.name.trim() && 'text-muted'" :title="title" data-crew-title>{{ title }}</span>
             <UBadge v-if="draft" :label="draft.id ? 'Saved crew' : 'New crew'" :icon="draft.id ? 'i-lucide-bookmark' : 'i-lucide-pencil'" color="neutral" variant="outline" size="sm" class="hidden flex-none sm:inline-flex" data-crew-kind />
             <span v-if="subtitle" class="hidden truncate text-[11.5px] text-muted tabular-nums lg:inline" data-crew-subtitle><span v-if="subtitle.file" class="font-mono" data-mono="path">{{ subtitle.file }}</span><template v-else>not saved yet</template> · {{ subtitle.words }}</span>
           </div>
@@ -701,17 +722,28 @@ usePalette().registerPage(() => ({
           <UDropdownMenu v-if="saved || unreadable" :items="menu" :content="{ align: 'end' }">
             <IconButton icon="i-lucide-ellipsis" color="neutral" variant="outline" label="More" />
           </UDropdownMenu>
+          <!-- A saved crew with edits says so beside its launch, which saves them first. -->
+          <span v-if="draft?.id && dirty" class="hidden text-xs text-muted md:inline" data-launch-unsaved>Unsaved changes</span>
           <UTooltip :text="launchBlocked" :disabled="!launchBlocked">
             <UFieldGroup>
-              <UButton icon="i-lucide-play" :loading="launchingKey === selectedKey" :disabled="!!launchBlocked || saving" aria-label="Launch run" data-launch @click="crewLaunch.ask()"><span class="hidden sm:inline">Launch run</span></UButton>
+              <UButton
+                :icon="needsSave ? 'i-lucide-save' : 'i-lucide-play'"
+                :loading="launchingKey === selectedKey || savingToLaunch"
+                :disabled="!!launchBlocked || saving"
+                :aria-label="needsSave ? 'Save and launch' : 'Launch run'"
+                :data-launch-saves="needsSave ? '' : undefined"
+                data-launch
+                @click="startLaunch('')"
+                ><span class="hidden sm:inline">{{ needsSave ? 'Save and launch' : 'Launch run' }}</span></UButton
+              >
               <UPopover v-model:open="nameOpen" :content="{ align: 'end' }">
                 <UButton icon="i-lucide-chevron-down" :disabled="!!launchBlocked || saving" aria-label="Name this run" class="border-l border-inverted/20" data-launch-menu />
                 <template #content>
                   <form class="flex w-72 flex-col gap-2 p-3" @submit.prevent="launchNamed">
                     <span class="text-sm font-medium text-highlighted">Name this run</span>
                     <UInput v-model="runName" maxlength="60" placeholder="what this run is for" autofocus aria-label="Run name" data-launch-name />
-                    <span class="text-xs text-muted">Shown wherever the run is named; without one the pages say when it started.</span>
-                    <UButton type="submit" label="Launch named" icon="i-lucide-play" :disabled="!runName.trim()" class="self-end" data-launch-named />
+                    <span class="text-xs text-muted">Shown wherever the run is named; without one the pages say when it started.{{ needsSave ? ' The crew is saved first.' : '' }}</span>
+                    <UButton type="submit" :label="needsSave ? 'Save and launch named' : 'Launch named'" icon="i-lucide-play" :disabled="!runName.trim()" class="self-end" data-launch-named />
                   </form>
                 </template>
               </UPopover>
@@ -743,7 +775,7 @@ usePalette().registerPage(() => ({
             <span class="text-[11px] font-semibold uppercase tracking-wider text-muted">Saved crews · {{ total }}</span>
             <span v-if="!crewsShown" class="text-xs text-muted" data-crews-caption>plans: who, which agent, which prompt, who waits for whom. Nothing runs until you launch one</span>
           </div>
-          <CrewsTable v-if="crews.length" :crews="crews" :runs="live.runs.value" :sessions="live.sessions.value" :now="now" :launching="launchingKey ?? ''" @launch="crewLaunch.ask($event)" />
+          <CrewsTable v-if="crews.length" :crews="crews" :runs="live.runs.value" :sessions="live.sessions.value" :now="now" :launching="launchingKey ?? ''" :started="startedNote" @launch="crewLaunch.ask($event)" @dismiss="startedNote = null" />
           <PageEmpty
             v-else-if="crewsState !== 'content'"
             page="crews"
@@ -761,7 +793,6 @@ usePalette().registerPage(() => ({
             <!-- What Load the examples does, in the welcome's words (the UX review's P17). -->
             <p v-if="crewsState === 'empty'" class="text-sm text-muted" data-examples-line>{{ EXAMPLES_LINE }}</p>
           </PageEmpty>
-          <p v-if="crews.length" class="text-xs text-muted">Bars: the last runs' durations, coloured by how each ended (green still going, grey ended, lighter grey stopped, red a member failed; amber edge = someone had to answer).</p>
           <UPagination v-if="total > PAGE_SIZE" v-model:page="page" :total="total" :items-per-page="PAGE_SIZE" size="xs" class="self-center" />
         </section>
       </div>
@@ -779,13 +810,12 @@ usePalette().registerPage(() => ({
               v-for="b in banners"
               :key="b.run.id"
               class="flex flex-wrap items-center gap-x-2.5 gap-y-1 rounded-md border px-3.5 py-2.5 text-[13.5px]"
-              :class="b.line.needs ? 'border-warning bg-warning/10' : 'border-default bg-elevated'"
+              :class="b.look.phase === 'needs' ? 'border-warning bg-warning/10' : 'border-default bg-elevated'"
               data-live-run-banner
               :data-run="b.run.id"
             >
-              <UIcon name="i-lucide-circle-play" class="size-4 flex-none text-muted" />
-              <b class="font-semibold text-highlighted">live run</b>
-              <span class="min-w-0 text-muted">started {{ b.started }} · <span data-live-run-line>{{ b.line.text }}</span></span>
+              <StatusMark :status="b.look.view" word class="[&_[data-status-word]]:font-semibold [&_[data-status-word]]:text-highlighted" data-live-run-state />
+              <span class="min-w-0 text-muted">live run, started {{ b.started }}<template v-if="b.look.detail"> · <span data-live-run-line>{{ b.look.detail }}</span></template></span>
               <NuxtLink :to="`/runs/${encodeURIComponent(b.run.id)}`" class="ml-auto flex flex-none items-center gap-1 font-medium text-highlighted hover:underline">Open run <UIcon name="i-lucide-arrow-right" class="size-3.5" /></NuxtLink>
             </div>
             <UAlert
@@ -802,7 +832,7 @@ usePalette().registerPage(() => ({
               data-crew-stale
             />
             <UTabs v-model="tab" :items="tabItems" :content="false" color="neutral" variant="link" size="sm" class="-mb-1" data-crew-tabs />
-            <CrewEditor v-if="tab === 'setup'" :key="selectedKey" v-model="draft" :agents="agents" :yolo-default="yoloDefault" />
+            <CrewEditor v-if="tab === 'setup'" :key="selectedKey" v-model="draft" :agents="agents" :yolo-default="yoloDefault" :name-problem="nameProblem" :focus-name="isNew" />
             <CrewRunsPanel v-else :runs="records.runs.value" :sessions="live.sessions.value" :now="now" :error="records.error.value" />
           </template>
           <div v-else-if="crewLoading === crewId || !loaded" class="flex items-center gap-2 text-sm text-muted" data-crew-loading>
@@ -820,9 +850,15 @@ usePalette().registerPage(() => ({
             <UIcon name="i-lucide-pencil" class="size-4 flex-none text-primary" />
             <b class="font-semibold text-highlighted">{{ draft.id ? 'Unsaved changes to the saved crew' : 'New crew, not saved yet' }}</b>
             <span class="min-w-0 text-muted" data-unsaved-words>{{ changeWords }}</span>
-            <div class="ml-auto flex flex-none items-center gap-2">
+            <!-- Why it cannot be saved, in words, beside the Save it holds; the two keep to the bar's right end as they wrap. -->
+            <div class="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-x-3 gap-y-2">
+            <span v-if="saveProblem" class="flex min-w-0 items-start gap-1.5 text-[13px] text-error [overflow-wrap:anywhere]" data-save-reason>
+              <UIcon name="i-lucide-circle-alert" class="mt-0.5 size-4 flex-none" />{{ saveProblem }}
+            </span>
+            <div class="flex flex-none items-center gap-2">
               <UButton label="Discard" color="neutral" variant="outline" size="sm" :disabled="saving" @click="discard" />
               <UButton label="Save" color="primary" size="sm" :loading="saving" :disabled="invalid || saving || !!launchingKey" :title="saveProblem || undefined" :data-save-problem="saveProblem || undefined" @click="onSave" />
+            </div>
             </div>
           </div>
         </div>

@@ -64,7 +64,7 @@ const focusTerminal = ref<{ focus: () => void; requestFile: (p: string, s?: bool
 const viewers = ref(0)
 const transport = ref<{ kind: TransportKind; state: TransportState; rtt: number | null }>({ kind: 'ws', state: 'idle', rtt: null })
 // The editor area (design 4g): files open above the focused tile's terminal, the Files pane beside it.
-const { tabs, editorOpen, openFile, previewFile, openUrl, openDiff, openCommitDiff } = useEditorTabs()
+const { tabs, editorOpen, openFile, previewFile, linkOpened, linkOffered, openDiff, openCommitDiff } = useEditorTabs()
 watch(focusId, () => {
   viewers.value = 0
   transport.value = { kind: 'ws', state: 'idle', rtt: null }
@@ -283,7 +283,8 @@ usePalette().registerPage(() => {
             @viewers="viewers = $event.count"
             @transport="transport = $event"
             @open-file="openFile"
-            @open-url="openUrl"
+            @link-opened="linkOpened"
+            @link-offered="linkOffered"
           />
           <template #bar>
             <QuickReplyBar :attention="focused.attention" :agent-name="focused.agentId" role="control" :busy="quick.sending.value.has(focused.id)" answers @answer="decisionModal.open" @reply="(text, q) => reply(focused!, text, q)" @option="(i, q) => option(focused!, i, q)" @open-plan="openFile({ path: $event })" @preview-plan="previewFile({ path: $event })" />

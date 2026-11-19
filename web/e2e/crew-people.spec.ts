@@ -519,7 +519,7 @@ test("a live run's Add an agent marks a person's name and holds the button, as t
   await expect(addAgent).not.toHaveAttribute('data-disabled', '')
   await addAgent.click()
   const dialog = page.getByRole('dialog', { name: 'Add an agent' })
-  // The member's name field, by its placeholder exactly: the Model field's "no model named" has the word too.
+  // The member's name field, by its placeholder exactly.
   const name = dialog.locator('[data-crew-member]').getByPlaceholder('name', { exact: true })
   await expect(name).toBeVisible()
   const addButton = dialog.getByRole('button', { name: 'Add to the run' })

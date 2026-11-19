@@ -83,6 +83,8 @@ const WARN = 'The agent may stop before the reset: a window is near its limit. L
 const LIMIT = 'The agent may stop: the provider says a limit is reached. Launching is still yours to decide.'
 /** The one sentence for a member that names no model, on every screen (modelWords). */
 const NO_MODEL = 'no model named: the agent chooses, or its arguments do'
+/** The launch sheet's table's words for the same: the agent's choice, never called its default. */
+const AGENT_CHOOSES = "The agent's choice"
 /** The warning fixture's weekly window in a compact panel's details: its share, and its reset five days and an hour off. */
 const WEEKLY_RESET = /Weekly, all models: 92% used, resets \w{3} \d{1,2} \w{3} \d{2}:\d{2}, in 5 days/
 
@@ -191,29 +193,37 @@ test("a crew's launch sheet shows each member's account, and a retry after the d
   // The editor gives each member its account and model.
   const builderRow = page.locator('[data-crew-member]').nth(0)
   const reviewerRow = page.locator('[data-crew-member]').nth(1)
-  await expect(builderRow.locator('[data-member-account]')).toContainText(`The default at launch (now ${work})`)
+  await expect(builderRow.locator('[data-member-account]')).toContainText(`Default account (now ${work})`)
   await expect(reviewerRow.locator('[data-member-account]')).toContainText(team)
   await expect(reviewerRow.locator('[data-member-model]')).toHaveValue('gpt-e2e')
 
-  // The launch asks first: a line per member, with its agent, model and account and what the server read of its usage.
+  // The launch asks first: a row per member, with its agent, model and account in plain words; each one's usage under Details.
   await page.locator('[data-launch]').click()
   const builder = page.locator('[data-crew-launch-line="builder"]')
   const reviewer = page.locator('[data-crew-launch-line="reviewer"]')
   await expect(builder.locator('[data-crew-launch-agent]')).toHaveText('Worker (e2e stub)')
-  await expect(builder.locator('[data-crew-launch-model]')).toHaveText(NO_MODEL)
-  await expect(builder.locator('[data-crew-launch-account]')).toHaveText(`the default at the launch (now ${work})`)
+  await expect(builder.locator('[data-crew-launch-model]')).toHaveText(AGENT_CHOOSES)
+  await expect(builder.locator('[data-crew-launch-account]')).toHaveText(`${work} (the default)`)
   await expect(reviewer.locator('[data-crew-launch-agent]')).toHaveText('Codex CLI (e2e stub)')
   await expect(reviewer.locator('[data-crew-launch-model]')).toHaveText('gpt-e2e')
   await expect(reviewer.locator('[data-crew-launch-account]')).toHaveText(team)
-  // Each line's usage, read as the sheet opened: the stub's figures for the account the member launches on.
-  await expect(builder.locator('[data-capacity-panel]')).toHaveAttribute('data-capacity-state', 'ok', { timeout: 30_000 })
-  await expect(builder.locator('[data-capacity-line]')).toContainText('Claude Max · ')
-  await expect(builder.locator('[data-capacity-line]')).toContainText('Weekly, all models 40%')
-  await expect(reviewer.locator('[data-capacity-panel]')).toHaveAttribute('data-capacity-state', 'ok', { timeout: 30_000 })
-  await expect(reviewer.locator('[data-capacity-line]')).toContainText('ChatGPT Pro')
-  // At the provider's limit, its windows under 90%: the warning is said, in brick, and Launch stays the person's.
-  await expect(reviewer.locator('[data-capacity-warning]')).toHaveText(LIMIT)
-  await expect(reviewer.locator('[data-capacity-warning]')).toHaveAttribute('data-capacity-warning-color', 'error')
+  // Each member's usage, read as the sheet opened, under Details: the stub's figures for the account the member launches on.
+  await page.locator('[data-crew-launch-details-open]').click()
+  const builderUsage = page.locator('[data-crew-launch-usage="builder"]')
+  const reviewerUsage = page.locator('[data-crew-launch-usage="reviewer"]')
+  await expect(builderUsage.locator('[data-capacity-panel]')).toHaveAttribute('data-capacity-state', 'ok', { timeout: 30_000 })
+  await expect(builderUsage.locator('[data-capacity-line]')).toContainText('Claude Max · ')
+  await expect(builderUsage.locator('[data-capacity-line]')).toContainText('Weekly, all models 40%')
+  await expect(reviewerUsage.locator('[data-capacity-panel]')).toHaveAttribute('data-capacity-state', 'ok', { timeout: 30_000 })
+  await expect(reviewerUsage.locator('[data-capacity-line]')).toContainText('ChatGPT Pro')
+  // At the provider's limit, its windows under 90%: the panel warns in brick, and above the table a note says what it means for this
+  // launch; the builder's usage needs nothing, so it has no note. Launch stays the person's.
+  await expect(reviewerUsage.locator('[data-capacity-warning]')).toHaveText(LIMIT)
+  await expect(reviewerUsage.locator('[data-capacity-warning]')).toHaveAttribute('data-capacity-warning-color', 'error')
+  await expect(page.locator('[data-crew-launch-note="reviewer"]')).toHaveText(`reviewer may stop at once: the provider says ${team} has reached a limit.`)
+  await expect(page.locator('[data-crew-launch-note="reviewer"]')).toHaveAttribute('data-crew-launch-note-color', 'error')
+  await expect(page.locator('[data-crew-launch-note="builder"]')).toHaveCount(0)
+  await expect(page.locator('[data-crew-launch-confirm]')).toBeEnabled()
 
   const launched = page.waitForResponse((r) => r.request().method() === 'POST' && new URL(r.url()).pathname === `/api/crews/${crew.id}/launch`)
   await page.locator('[data-crew-launch-confirm]').click()
@@ -418,17 +428,22 @@ test("the launch sheet draws the crew as the server holds it, for the crew it wa
   const lead = page.locator('[data-crew-launch-line="lead"]')
   await expect(lead.locator('[data-crew-launch-account]')).toHaveText(near)
   await page.unroute(aCrew)
-  // Near's usage at the provider's warning: said in words, in the warning's colour, and Launch stays enabled.
-  await expect(lead.locator('[data-capacity-panel]')).toHaveAttribute('data-capacity-state', 'ok', { timeout: 30_000 })
-  await expect(lead.locator('[data-capacity-line]')).toContainText('Weekly, all models 92%')
-  await expect(lead.locator('[data-capacity-warning]')).toHaveText(WARN)
-  await expect(lead.locator('[data-capacity-warning]')).toHaveAttribute('data-capacity-warning-color', 'warning')
+  // Near's usage at the provider's warning: a note above the table says what it means for this launch, in the warning's colour; the
+  // panel under Details says it in its own words; Launch stays enabled.
+  const leadUsage = page.locator('[data-crew-launch-usage="lead"]')
+  await expect(leadUsage.locator('[data-capacity-panel]')).toHaveAttribute('data-capacity-state', 'ok', { timeout: 30_000 })
+  await expect(page.locator('[data-crew-launch-note="lead"]')).toHaveText(`lead may stop before its usage resets: a window of ${near} is near its limit.`)
+  await expect(page.locator('[data-crew-launch-note="lead"]')).toHaveAttribute('data-crew-launch-note-color', 'warning')
+  await page.locator('[data-crew-launch-details-open]').click()
+  await expect(leadUsage.locator('[data-capacity-line]')).toContainText('Weekly, all models 92%')
+  await expect(leadUsage.locator('[data-capacity-warning]')).toHaveText(WARN)
+  await expect(leadUsage.locator('[data-capacity-warning]')).toHaveAttribute('data-capacity-warning-color', 'warning')
   await expect(confirm).toBeEnabled()
   // The window's reset, in the line's details, opened by a pointer or a touch.
-  await lead.locator('[data-capacity-details-open]').click()
-  await expect(lead.locator('[data-capacity-details]')).toContainText(WEEKLY_RESET)
+  await leadUsage.locator('[data-capacity-details-open]').click()
+  await expect(leadUsage.locator('[data-capacity-details]')).toContainText(WEEKLY_RESET)
   // The member that names no account, of an agent whose entry sets its login: named by that login, as the server's view resolves it.
-  await expect(page.locator('[data-crew-launch-line="pinned"] [data-crew-launch-account]')).toHaveText('the login its entry sets (ANTHROPIC_BASE_URL)')
+  await expect(page.locator('[data-crew-launch-line="pinned"] [data-crew-launch-account]')).toHaveText('The login its entry sets (ANTHROPIC_BASE_URL)')
 
   // Closed while its read is held at this test's route: the read is ended there, and opened again the sheet draws its own read.
   await page.locator('[data-crew-launch-cancel]').click()
@@ -467,7 +482,7 @@ test("the launch sheet draws the crew as the server holds it, for the crew it wa
   await expect(confirm).toBeDisabled()
   refuse = false
   await page.locator('[data-crew-launch-read-again]').click()
-  await expect(lead.locator('[data-crew-launch-account]')).toHaveText('the default at the launch (now Default login)')
+  await expect(lead.locator('[data-crew-launch-account]')).toHaveText('Default login')
   await expect(confirm).toBeEnabled()
   expect(launches, 'nothing was launched before Launch').toEqual([])
 
@@ -665,7 +680,7 @@ test("a crew that inherits its yolo setting is drawn with the server's default o
   await expect(confirm).toBeDisabled()
   release()
   // The member whose yolo recipe sets its login: that login, as the server's view of a yolo launch resolves it.
-  await expect(page.locator('[data-crew-launch-line="lead"] [data-crew-launch-account]')).toHaveText('the login its launch sets', { timeout: 30_000 })
+  await expect(page.locator('[data-crew-launch-line="lead"] [data-crew-launch-account]')).toHaveText('The login its launch sets', { timeout: 30_000 })
   await expect(confirm).toBeEnabled()
   await page.locator('[data-crew-launch-cancel]').click()
   await expect(confirm).toHaveCount(0)
@@ -755,7 +770,7 @@ test("the crew editor asks each member's login as the crew launches, marks an ac
   await pinned.getByRole('combobox', { name: 'Agent for pinned' }).click()
   await page.getByRole('option', { name: 'Codex CLI (e2e stub)' }).click()
   await expect(page.getByRole('listbox')).toHaveCount(0)
-  await expect(pinned.locator('[data-member-account]')).toContainText('The default at launch', { timeout: 30_000 })
+  await expect(pinned.locator('[data-member-account]')).toContainText('Default account', { timeout: 30_000 })
   await expect(marked).toHaveCount(0)
   await expect(pinned.locator('[data-member-model]')).toHaveValue('')
 })
@@ -827,7 +842,7 @@ const changeToken = (page: Page) =>
     h.token.value = `${h.token.value}-another`
   })
 
-test("a draft's launch starts a run only under the opening and the token it was confirmed under, and a launch closes only its own sheet", async ({ page, api }) => {
+test("Save and launch opens the sheet only under the token it saved under, a sheet opened during its save draws the saved copy once it lands, and a launch closes only its own sheet", async ({ page, api }) => {
   const a = await saveCrew(api, label('confirmed'), [{ name: 'lead', agentId: 'claude' }])
   const launches: string[] = []
   page.on('request', (r) => {
@@ -837,79 +852,66 @@ test("a draft's launch starts a run only under the opening and the token it was 
   const cancel = page.locator('[data-crew-launch-cancel]')
   const name = page.getByLabel('Crew name')
   const lead = page.locator('[data-crew-launch-line="lead"]')
-  const notStarted = page.getByText('was saved, but the launch sheet was opened again or the workbench token changed meanwhile: no run was started.')
+  const leadUsage = page.locator('[data-crew-launch-usage="lead"]')
   const aCrew = (u: URL) => u.pathname === `/api/crews/${a.id}`
 
-  // A member's view refused at this test's route: its compact panel says so with Read again, which reads it and draws it.
+  // A member's view refused at this test's route: its compact panel, under Details, says so with Read again, which reads it and draws it.
   let refuseView = true
   const views = (u: URL) => u.pathname === '/api/capacity'
   await page.route(views, (route) => (refuseView && route.request().method() === 'GET' ? route.fulfill(refused('e2e: the view is held back')) : route.fallback()))
-  budget(READ, READ, EXPECT, EXPECT, EXPECT) // the page, the view refused, read again, its error gone, the sheet closed
+  budget(READ, READ, EXPECT, EXPECT, EXPECT, EXPECT) // the page, the view refused, Details, read again, its error gone, the sheet closed
   await page.goto(`/crews/${encodeURIComponent(a.id)}`)
   await expect(name).toHaveValue(a.name, { timeout: 30_000 })
   await page.locator('[data-launch]').click()
-  await expect(lead.locator('[data-capacity-error]')).toContainText('e2e: the view is held back', { timeout: 30_000 })
+  await page.locator('[data-crew-launch-details-open]').click()
+  await expect(leadUsage.locator('[data-capacity-error]')).toContainText('e2e: the view is held back', { timeout: 30_000 })
   refuseView = false
   // The panel reads again by itself after a refused view: Read again only hurries it, and can be gone before a click lands. It is
   // pressed until the view it leads to is drawn (readAgain), never once and blind.
-  await readAgain(lead.locator('[data-capacity-again]'), lead.locator('[data-capacity-panel]:not(:has([data-capacity-error]))'))
-  await expect(lead.locator('[data-capacity-panel]')).toHaveAttribute('data-capacity-state', /^[a-z_]+$/)
-  await expect(lead.locator('[data-capacity-error]')).toHaveCount(0)
+  await readAgain(leadUsage.locator('[data-capacity-again]'), leadUsage.locator('[data-capacity-panel]:not(:has([data-capacity-error]))'))
+  await expect(leadUsage.locator('[data-capacity-panel]')).toHaveAttribute('data-capacity-state', /^[a-z_]+$/)
+  await expect(leadUsage.locator('[data-capacity-error]')).toHaveCount(0)
   await page.unroute(views)
   await cancel.click()
   await expect(confirm).toHaveCount(0)
 
-  // An edited draft's Launch, its save held at this test's route; another token while it is held; the save let through: no launch.
-  budget(READ, EXPECT) // the sheet, the page's words
+  // An edit's Save and launch, its save held at this test's route; another token while it is held; the save let through: the crew is
+  // saved, and no sheet opens, so nothing is launched.
+  budget(EXPECT, EXPECT, EXPECT) // the button, the page's words, no sheet
   await name.fill(`${a.name} 2`)
-  await page.locator('[data-launch]').click()
-  await expect(confirm).toBeEnabled({ timeout: 30_000 })
+  await expect(page.locator('[data-launch]')).toHaveAccessibleName('Save and launch')
   const save1 = await holdOnce(page, aCrew, 'PUT')
-  await confirm.click()
+  await page.locator('[data-launch]').click()
   await save1.seen
   await changeToken(page)
   const saved1 = page.waitForResponse((r) => r.request().method() === 'PUT' && aCrew(new URL(r.url())))
   save1.release()
   expect((await saved1).ok(), 'the save went through under the token it was sent with').toBe(true)
-  await expect(notStarted.first()).toBeVisible({ timeout: 15_000 })
+  await expect(page.getByText('its launch sheet was not opened').first()).toBeVisible({ timeout: 15_000 })
   await save1.off()
+  await expect(confirm).toHaveCount(0)
   expect(launches, 'no launch under another token').toEqual([])
 
-  // Again under the page's own token: the save held, Cancel held with it; the sheet closed by Escape and opened again for the same crew
-  // from the app-wide palette; the save let through: the first confirmation starts nothing, and the sheet opened again stays open.
-  // The page, the sheet, Cancel held, the sheet closed, the palette's row and its focus, the sheet again, the page's words, its Launch.
-  budget(READ, READ, EXPECT, EXPECT, EXPECT, EXPECT, READ, EXPECT, EXPECT)
+  // Again under the page's own token: the save held; the sheet opened meanwhile from the app-wide palette reads the crew as saved before
+  // it; the save let through, the sheet opens again on the copy saved, its Launch free.
+  // The page, the palette's row and its focus, the sheet, the sheet again, its Launch.
+  budget(READ, EXPECT, EXPECT, READ, READ, EXPECT)
   await page.goto(`/crews/${encodeURIComponent(a.id)}`)
   await expect(name).toHaveValue(`${a.name} 2`, { timeout: 30_000 })
   await name.fill(`${a.name} 3`)
-  await page.locator('[data-launch]').click()
-  await expect(confirm).toBeEnabled({ timeout: 30_000 })
   const save2 = await holdOnce(page, aCrew, 'PUT')
-  await confirm.click()
+  await page.locator('[data-launch]').click()
   await save2.seen
-  await expect(cancel).toBeDisabled()
-  await page.keyboard.press('Escape')
-  await expect(confirm).toHaveCount(0)
   await paletteLaunch(page, a)
-  await expect(lead.locator('[data-crew-launch-account]')).toBeVisible({ timeout: 30_000 })
+  await expect(page.locator('[role="dialog"]').filter({ has: confirm })).toContainText(`Launch ${a.name} 2`, { timeout: 30_000 })
   const saved2 = page.waitForResponse((r) => r.request().method() === 'PUT' && aCrew(new URL(r.url())))
   save2.release()
   expect((await saved2).ok()).toBe(true)
-  await expect(notStarted.first()).toBeVisible({ timeout: 15_000 })
   await save2.off()
-  await expect(confirm, 'the sheet opened again stays open, its Launch free once the first launch ended').toBeEnabled()
-  expect(launches, 'the first confirmation started nothing').toEqual([])
-
-  // That sheet read the crew while the save was held: its Launch names the copy from before the save, which the server refuses (#957,
-  // crew-launch-revision.spec.ts); the sheet reads the crew again and draws the copy saved.
-  const launchA = (u: URL) => u.pathname === `/api/crews/${a.id}/launch`
-  budget(EXPECT, READ, READ) // the notice, the crew drawn again, its Launch
-  const refusedLaunch = page.waitForResponse((r) => r.request().method() === 'POST' && launchA(new URL(r.url())))
-  await confirm.click()
-  expect((await refusedLaunch).status(), 'the copy from before the save is refused').toBe(409)
-  await expect(page.locator('[data-crew-launch-changed]')).toBeVisible()
   await expect(page.locator('[role="dialog"]').filter({ has: confirm })).toContainText(`Launch ${a.name} 3`, { timeout: 30_000 })
   await expect(confirm).toBeEnabled({ timeout: 30_000 })
+  expect(launches, 'nothing launched before Launch').toEqual([])
+  const launchA = (u: URL) => u.pathname === `/api/crews/${a.id}/launch`
 
   // The sheet read again launches, its launch held at this test's route; closed and opened again meanwhile, it stays open.
   // Cancel held, the sheet closed, the palette's row and its focus, the sheet again, its Launch, its state, closed at the end.
@@ -929,7 +931,7 @@ test("a draft's launch starts a run only under the opening and the token it was 
   await held.off()
   await expect(confirm, 'the launch closed none of the sheet opened since').toBeEnabled()
   await expect(page.locator('[role="dialog"]').filter({ has: confirm })).toHaveAttribute('data-state', 'open')
-  expect(launches, 'the refused launch, then one from its own confirmation').toHaveLength(2)
+  expect(launches, 'one launch, from its own confirmation').toHaveLength(1)
   await cancel.click()
   await expect(confirm).toHaveCount(0)
 })

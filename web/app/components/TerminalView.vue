@@ -8,6 +8,7 @@ import { clipboardKey, forcesSelection, menuPress, pressClearsSelection, readRig
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { WebglAddon } from '@xterm/addon-webgl'
 import { findFileLocations } from '~/utils/links'
+import { openWebLink, terminalLinkHandler, type LinkTip } from '~/utils/terminalLinks'
 import { ALT_PASSTHROUGH_CODES, usePageAltCodes } from '~/composables/useShortcuts'
 import { NEWLINE_IN_PROMPT, newlineChord } from '~/utils/terminalKeys'
 import { closeReason, encodeText, FOLLOW_SIZE, type ActivityEntry, type Attention, type ChatHistory, type ChatMessage, type ChatPost, type ChatRoster, type ChatSend, type ControlMessage, type FileGetExtra, type FileResponse, type FileWriteOptions, type NvimSwapChoice, type Role, type TransportKind, type ViewerInfo, type Welcome } from '~/utils/protocol'
@@ -55,7 +56,10 @@ const emit = defineEmits<{
   transport: [info: { kind: TransportKind; state: TransportState; rtt: number | null }]
   closed: [info: CloseInfo]
   openFile: [loc: { path: string; line?: number }]
-  openUrl: [url: string]
+  /** A web link of the terminal's, opened (a new tab; the desktop app's system browser): the page says where it went. */
+  linkOpened: [url: string]
+  /** A web link a click over a program that holds the mouse did not open: the page offers it in a note. */
+  linkOffered: [url: string]
   /** A chat message, live; the kept chat on each welcome; an error the owner sent about one of this client's posts or sends. */
   chat: [msg: ChatMessage]
   chatHistory: [history: ChatHistory]
@@ -270,6 +274,8 @@ const terminalMenu = computed(() => [
 const scaledView = ref(props.fit === 'scale')
 /** Who sizes it and Fit to my window: on a full view of a controller that does not hold the size. */
 const sizerChip = computed(() => chipFor(sizerView()))
+/** Where the link the pointer is over goes (#1020), from its parsed address: shown at the foot of the terminal, as a browser shows it, before a click. */
+const linkTip = ref<LinkTip | null>(null)
 const sizedHere = computed(() => sizedElsewhere(sizerView()))
 // The line that says so sits under the grid: the scaled grid is placed in the pane above it (applyScale).
 const sizedLine = ref<HTMLElement>()
@@ -788,7 +794,23 @@ function snapshot(): string[] | null {
 defineExpose({ connect, disconnect, requestFile, writeFile, nvimOpen, nvimInput, nvimClose, nvimSwap, sendInput, submit, answer, chat, chatSend, lane, focus: () => term?.focus(), scrollToBottom: () => term?.scrollToBottom(), takeSize, sizerShown: () => !!sizerChip.value, snapshot, openPaste })
 
 onMounted(() => {
+  // One handler for the terminal's web links of both kinds, the hyperlinks an agent prints (OSC 8, xterm's linkHandler: without it
+  // xterm asked with the page's confirm, #1020) and the addresses in the text (the web-links addon): a plain single click opens a
+  // new tab once at the parsed address, a double-click, another button, an Alt+click or a drag that selected text does not, and
+  // while the program holds the mouse only Shift+click (⌘+click on a Mac), the press the terminal keeps from it, does, and another
+  // click offers it in a note; the pointer over a link shows where it goes; a link to any other scheme is none.
+  const links = terminalLinkHandler({
+    open: openWebLink,
+    opened: (url) => emit('linkOpened', url),
+    offer: (url) => emit('linkOffered', url),
+    show: (tip) => (linkTip.value = tip),
+    selected: () => !!term?.hasSelection(),
+    mac: isMac,
+    // The program's clicks are the program's only where this page reports them to it: a page that may not type keeps every click.
+    appMouse: () => appHoldsMouse() && canPaste(),
+  })
   term = new Terminal({
+    linkHandler: links,
     cursorBlink: !props.compact,
     scrollback: Math.max(1, props.scrollback),
     allowProposedApi: true,
@@ -809,12 +831,7 @@ onMounted(() => {
   })
   fit = new FitAddon()
   term.loadAddon(fit)
-  term.loadAddon(
-    new WebLinksAddon((event, uri) => {
-      if (event.ctrlKey || event.metaKey) window.open(uri, '_blank', 'noopener,noreferrer')
-      else emit('openUrl', uri)
-    }),
-  )
+  term.loadAddon(new WebLinksAddon((event, uri) => links.activate(event, uri), { hover: (event, uri) => links.hover(event, uri), leave: () => links.leave() }))
   term.registerLinkProvider(fileLinkProvider)
   // Shift+Enter and Ctrl+Enter are a newline in the agent's prompt, not a
   // submit: the session gets ESC CR instead of xterm's plain CR. Alt+<page
@@ -922,6 +939,13 @@ onBeforeUnmount(() => {
     <UContextMenu :items="terminalMenu" :disabled="compact">
       <div ref="host" class="terminal-host" :class="{ 'terminal-compact': compact, 'terminal-scale': scaledView, 'terminal-tile': props.fit === 'tile' }" :data-ended="ended ? 'true' : undefined" :data-renderer="renderer" :data-cols="grid.cols || undefined" :data-rows="grid.rows || undefined" :data-scaled-font="scaledAt" :data-fit-passes="fitPasses" :data-fit-resizes="fitResizes" :aria-label="readOnly ? 'terminal (read-only)' : 'terminal'" role="region" />
     </UContextMenu>
+
+    <!-- Where the link under the pointer goes, from its parsed address whatever its words (#1020); text, never markup. The scheme and
+         host come first and are never cut (a long one wraps); only the path after them is cut, at its end. A visual aid, as a
+         browser's: not a live region. -->
+    <p v-if="linkTip" class="pointer-events-none absolute bottom-2 left-2 z-20 flex max-w-[calc(100%-1rem)] min-w-0 flex-wrap rounded-md border border-default bg-default/95 px-2 py-1 text-xs text-default shadow-sm" aria-hidden="true" data-terminal-link-tip>
+      <span class="min-w-0 max-w-full font-medium break-all" data-link-tip-origin>{{ linkTip.origin }}</span><span class="min-w-0 max-w-full truncate text-muted" data-link-tip-rest>{{ linkTip.rest }}</span><span v-if="linkTip.hint" class="ml-2 shrink-0 font-medium" data-link-tip-hint>{{ linkTip.hint }}</span>
+    </p>
 
     <div v-if="sizerChip" class="absolute right-2 bottom-2 z-10 flex items-center gap-2 rounded-md border border-default bg-default/90 py-1 pr-1 pl-2.5 text-xs shadow-sm backdrop-blur-sm" data-terminal-sizer :data-sizer-by="sizedBy">
       <UIcon name="i-lucide-scaling" class="size-3.5 text-muted" />

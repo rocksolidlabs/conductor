@@ -1,11 +1,14 @@
 import type { RelatedTicket } from '~/composables/useDispatch'
 import type { CrewInput, CrewMember, CrewStart, RunInfo, RunMember, RunTicket, SessionInfo } from '~/composables/useSessions'
-import type { ActivityEntry } from './protocol'
+import type { ActivityEntry, ChatMessage } from './protocol'
+import { liveAttention, offeredChoices } from './attention'
 import { runLength } from './charts'
-import { ownError, STOPPED_ERROR, toCrewInput, type MemberStatus } from './crews'
-import { runState, type RunState } from './runs'
-import { relativeTime } from './sessions'
-import { memberStatusOf } from './status'
+import type { NeedsItem } from './needsYou'
+import { memberSession, ownError, STOPPED_ERROR, toCrewInput, type MemberStatus } from './crews'
+import { rowStatus } from './historyRows'
+import { runLive, runState } from './runs'
+import { agentName } from './sessions'
+import { memberStatusOf, runStatusLine, type MarkKey, type MarkView } from './status'
 
 /**
  * The words of the Crews pages. Two nouns, said every time: a crew is a saved
@@ -96,6 +99,16 @@ export function crewShape(members: readonly ShapeMember[]): string {
   return `${n} · ${parts.join(', ')}`
 }
 
+/**
+ * A crew's members on the home (C4): how many, and on which agents, each agent once in the crew's order: "5 members · Claude Code,
+ * Codex CLI, Shell agent", "1 member · Claude Code"; "No members yet". An agent the catalog does not name is said by its id.
+ */
+export function crewMembersWords(members: ReadonlyArray<Pick<CrewMember, 'agentId'>>, names: ReadonlyMap<string, string> = new Map()): string {
+  if (!members.length) return 'No members yet'
+  const agents = [...new Set(members.map((m) => names.get(m.agentId) || agentName(m.agentId)))]
+  return `${members.length} ${members.length === 1 ? 'member' : 'members'} · ${agents.join(', ')}`
+}
+
 function list(names: readonly string[]): string {
   if (names.length <= 1) return names[0] ?? ''
   return `${names.slice(0, -1).join(', ')} and ${names.at(-1)}`
@@ -125,33 +138,263 @@ export function startSentence(members: readonly ShapeMember[]): string {
   return parts.join('; ')
 }
 
-/** The ways a run can be, as a badge says them: a run that has ended says "ended", never "finished" (a session's word). */
-export type RunOutcome = 'needs you' | 'running' | 'ended' | 'stopped' | 'failed' | 'interrupted'
+/*
+ * One vocabulary for the Crews pages (the review of issue 1024, C2): a run is Running, Needs you, Succeeded, Failed or Stopped; a
+ * member is Working, Idle, Needs you, Waiting to start, Finished, Failed or Stopped. Each word has one mark of the status language
+ * (StatusMark draws it: its shape and its colour), so no state is said by colour alone, and every list, card, header and tile of
+ * these pages asks runPhase and memberPhase rather than reading a run's or a member's fields itself.
+ */
 
-/** A run's outcome from its live state: failed when a member ended with an error of its own, whether the run was then stopped or not. */
-export function runOutcome(run: Pick<RunInfo, 'members'>, state: RunState): RunOutcome {
-  if (state === 'needs_input') return 'needs you'
-  if (state === 'running') return 'running'
-  if (state === 'interrupted') return 'interrupted'
-  if (run.members.some((m) => ownError(m))) return 'failed'
-  return state === 'stopped' ? 'stopped' : 'ended'
+/** A run's state as the Crews pages say it. */
+export type RunPhase = 'running' | 'needs' | 'succeeded' | 'failed' | 'stopped'
+export const RUN_PHASES: readonly RunPhase[] = ['running', 'needs', 'succeeded', 'failed', 'stopped']
+
+interface Look {
+  word: string
+  /** The mark StatusMark draws for it: its shape and its tone. */
+  mark: MarkKey
+  legend: string
 }
 
-/** The badge of an outcome: its colour, and whether it is drawn solid-ish (the ones to act on) or as an outline. */
-export function outcomeBadge(o: RunOutcome): { label: string; color: 'warning' | 'success' | 'error' | 'neutral'; variant: 'subtle' | 'outline' } {
-  switch (o) {
-    case 'needs you':
-      return { label: 'needs you', color: 'warning', variant: 'subtle' }
-    case 'running':
-      return { label: 'running', color: 'success', variant: 'subtle' }
-    case 'failed':
-      return { label: 'failed', color: 'error', variant: 'subtle' }
-    case 'stopped':
-      return { label: 'stopped', color: 'neutral', variant: 'outline' }
-    case 'interrupted':
-      return { label: 'interrupted', color: 'warning', variant: 'outline' }
+/** Each run state's word and mark: green dot, amber dot, check, red cross, grey dash. */
+export const RUN_LOOK: Readonly<Record<RunPhase, Look>> = Object.freeze({
+  running: { word: 'Running', mark: 'running', legend: 'Running: its members are at work, or wait for their turn' },
+  needs: { word: 'Needs you', mark: 'needs', legend: "Needs you: a member asked, or a decision waits for a person's answer" },
+  succeeded: { word: 'Succeeded', mark: 'done', legend: 'Succeeded: every task gave its result, or every member ended without an error' },
+  failed: { word: 'Failed', mark: 'failed', legend: 'Failed: a task failed, or a member ended with an error of its own' },
+  stopped: { word: 'Stopped', mark: 'cancelled', legend: 'Stopped: a person stopped it, or the server stopped while it ran' },
+})
+
+/**
+ * A run's state, by these rules in order: a run that still goes needs you while a member waits on a prompt or the run has items of
+ * the one list (`needs`, its decisions and the tasks a person decides on), else it is running; an ended run with tasks says its own
+ * outcome (succeeded, failed; cancelled is stopped); a run whose member ended with an error of its own failed, stopped or not; a run
+ * stopped by a person, or by the server's end (interrupted), stopped; a run every member of which ended without an error succeeded.
+ */
+export function runPhase(run: Pick<RunInfo, 'members' | 'managed' | 'outcome'> & Parameters<typeof runState>[0], sessions: readonly SessionInfo[], needs = 0): RunPhase {
+  const st = runState(run, sessions).state
+  if (st === 'needs_input') return 'needs'
+  if (st === 'running') return needs > 0 ? 'needs' : 'running'
+  if (run.outcome) return run.outcome === 'succeeded' ? 'succeeded' : run.outcome === 'failed' ? 'failed' : 'stopped'
+  // The server's end stopped it: every member it cut off carries the interruption as its error, which is no error of its own.
+  if (st === 'interrupted') return 'stopped'
+  if (run.members.some((m) => ownError(m) || exitFailure(run, m, sessions) !== null)) return 'failed'
+  return st === 'finished' ? 'succeeded' : 'stopped'
+}
+
+/** The words the server gives an interrupted run's members ("interrupted: the server stopped while it ran"), after its prefix. */
+const INTERRUPTED = /^interrupted: /
+
+/** Why a run that ended was stopped by the server's end, in the server's own words; '' for any other run. */
+export function interruptedWords(run: Pick<RunInfo, 'state' | 'members'>): string {
+  if (run.state !== 'interrupted') return ''
+  const said = run.members.map((m) => m.error ?? '').find((e) => INTERRUPTED.test(e))
+  return said ? said.replace(INTERRUPTED, '') : 'the server stopped while it ran'
+}
+
+/**
+ * The exit code of a member whose agent failed, by the one rule History's rows say an ended session by (rowStatus, through the
+ * status language's sessionStatus: "exit N" for a session that exited with a code other than 0, "exited" for one a person stopped);
+ * null for a member that did not fail so. A member the run's own Stop ended, or whose session a person stopped, did not fail, whatever
+ * its code; one whose session is no longer listed is not known to have failed.
+ */
+export function exitFailure(run: RunInfo, m: RunMember, sessions: readonly SessionInfo[]): number | null {
+  if (run.stoppedAt) return null
+  const s = memberSession(run, m, sessions)
+  if (!s || s.status !== 'exited') return null
+  // A listed session: the row says its own state (the record's fields are read only without one).
+  const said = rowStatus({ kind: 'session', availability: { state: '', words: '' } }, s)
+  const code = said ? /^exit (-?\d+)$/.exec(said.word) : null
+  return code ? Number(code[1]) : null
+}
+
+/**
+ * What a run's state word does not say and a person must know, beside it with its icon (never colour alone): a live run whose
+ * scheduling is paused ("Paused: <the server's reason>"; "Paused" for a person's pause), or a run the server's end stopped (its
+ * words). Null for anything else.
+ */
+export function runAside(run: Pick<RunInfo, 'paused' | 'pausedWhy' | 'state' | 'members' | 'stoppedAt' | 'outcome'>): { icon: string; text: string } | null {
+  if (run.paused && !run.stoppedAt && !run.outcome) return { icon: 'i-lucide-pause', text: run.pausedWhy ? `Paused: ${run.pausedWhy}` : 'Paused' }
+  const why = interruptedWords(run)
+  return why ? { icon: 'i-lucide-power', text: why } : null
+}
+
+/** A run state as StatusMark draws it: its mark, its word, its legend (the interrupted run's own reason in the title). */
+export function runPhaseView(phase: RunPhase, interrupted = false): MarkView {
+  const l = RUN_LOOK[phase]
+  return { key: l.mark, word: l.word, legend: interrupted && phase === 'stopped' ? 'Stopped: the server stopped while it ran' : l.legend }
+}
+
+/** A run's state and its words, for a list's row, a card, a header: the state's view, and the run's counts after it. */
+export interface RunLook {
+  phase: RunPhase
+  view: MarkView
+  /** What goes after the word: "2 of 6 done · 1 working", "1 working · 1 idle · 1 needs you"; '' for nothing more. */
+  detail: string
+  /** How many things a person can act on in the run: the items of the one list, else the members that ask. */
+  needs: number
+}
+
+/**
+ * A run in this vocabulary, with its counts: runStatusLine's parts (the members or the tasks by state, "N need you" from the run's
+ * items of the one list) said in the member words (a session's "running", which reports no turn, is idle), the outcome left to the
+ * state's word. An ended run with tasks keeps "2 of 3 done", and what still needs a person in it.
+ */
+export function runLook(run: RunInfo, sessions: readonly SessionInfo[], items: readonly NeedsItem[], now = Date.now()): RunLook {
+  const line = runStatusLine(run, sessions, items, now)
+  const prompts = runState(run, sessions).needs
+  const needs = Math.max(line.needs, prompts)
+  // A task held for a person (taskStatus's needs: an open decision, a failed task with Retry) makes the run need you, whether or not
+  // the one list has read its item yet.
+  const phase = runPhase(run, sessions, Math.max(needs, line.tasks.needs ?? 0))
+  const st = runState(run, sessions).state
+  const view = runPhaseView(phase, st === 'interrupted')
+  // An ended run keeps what a person can still act on in it (a failed task's Retry, Accept anyway).
+  if (line.outcome) return { phase, view, detail: [line.done, line.needs ? needWords(line.needs) : '', interruptedWords(run)].filter(Boolean).join(' · '), needs }
+  const parts = line.parts.map((p) => (p.key === 'running' && p.n > 0 ? `${p.n} idle` : p.key === 'needs' ? needWords(p.n) : p.text))
+  if (!line.parts.some((p) => p.key === 'needs') && prompts > 0) parts.push(needWords(prompts))
+  return { phase, view, detail: parts.join(' · '), needs }
+}
+
+const needWords = (n: number) => `${n} ${n === 1 ? 'needs' : 'need'} you`
+
+/** A member's state as the Crews pages say it. */
+export type MemberPhase = 'working' | 'idle' | 'needs' | 'waiting' | 'finished' | 'failed' | 'stopped'
+export const MEMBER_PHASES: readonly MemberPhase[] = ['working', 'idle', 'needs', 'waiting', 'finished', 'failed', 'stopped']
+
+/** Each member state's word and mark: the status language's own for the five a session can be in, a task's own for the rest. */
+export const MEMBER_LOOK: Readonly<Record<MemberPhase, Look>> = Object.freeze({
+  working: { word: 'Working', mark: 'working', legend: 'Working: the agent is in a turn' },
+  idle: { word: 'Idle', mark: 'running', legend: 'Idle: the agent is at its prompt, or does not say when it works' },
+  needs: { word: 'Needs you', mark: 'needs', legend: 'Needs you: it asked, and waits for an answer' },
+  waiting: { word: 'Waiting to start', mark: 'waiting', legend: 'Waiting to start: the member has not started yet' },
+  finished: { word: 'Finished', mark: 'finished', legend: 'Finished: it ended its turn, or its session ended without an error' },
+  failed: { word: 'Failed', mark: 'failed', legend: 'Failed: the member ended with an error of its own' },
+  stopped: { word: 'Stopped', mark: 'cancelled', legend: "Stopped: the run's stop ended it, or it never started" },
+})
+
+/** A member as the Crews pages draw it: its state, its view for StatusMark, its memberStatus (what `data-status` says), and its start. */
+export interface MemberLook {
+  m: RunMember
+  phase: MemberPhase
+  view: MarkView
+  status: MemberStatus
+  /** Who it waits for, beside its name: "after driver", "by hand"; '' for a member that starts at launch or by its tasks. */
+  after: string
+}
+
+/**
+ * A member's state, from memberStatusOf (its live session's state, else the run's word for it): an ended member failed with an error
+ * of its own, stopped when the run's stop ended it, else finished; a member not started waits to start, or stopped in a run that was
+ * stopped or ended;
+ * a starting one waits to start; a live one is working, idle (a session that reports no turn, or has none yet), needs you, or
+ * finished (its turn ended). A host away keeps its own word on the idle mark.
+ */
+export function memberLook(run: RunInfo, m: RunMember, sessions: readonly SessionInfo[], now = Date.now()): MemberLook {
+  const { status, mark } = memberStatusOf(run, m, sessions, now)
+  const after = m.start.when === 'after' ? `after ${m.start.member}` : m.start.when === 'manual' ? 'by hand' : ''
+  const one = (phase: MemberPhase, why?: string): MemberLook => {
+    const l = MEMBER_LOOK[phase]
+    return { m, phase, status, after, view: { key: l.mark, word: l.word, legend: why ?? l.legend, ...(mark.since ? { since: mark.since } : {}) } }
   }
-  return { label: 'ended', color: 'neutral', variant: 'outline' }
+  if (status === 'ended') {
+    // The server's end cut it off: stopped, in the server's words.
+    if (run.state === 'interrupted' && INTERRUPTED.test(m.error ?? '')) return one('stopped', `Stopped: ${(m.error ?? '').replace(INTERRUPTED, '')}`)
+    if (ownError(m)) return one('failed', `Failed: ${ownError(m)}`)
+    if (run.stoppedAt || m.error) return one('stopped')
+    // A person stopped its session: stopped, whatever its code (the one rule History's rows say it by).
+    if (memberSession(run, m, sessions)?.status === 'stopped') return one('stopped', 'Stopped: a person stopped its session')
+    const code = exitFailure(run, m, sessions)
+    if (code !== null) {
+      const l = one('failed', `Failed: its agent exited with code ${code}`)
+      return { ...l, view: { ...l.view, word: `Failed (exit ${code})` } }
+    }
+    return one('finished')
+  }
+  if (status === 'pending') {
+    if (run.stoppedAt) return one('stopped', 'Stopped: the run was stopped before it started')
+    // A run that ended (its tasks' outcome, the server's end) starts nothing more: its member never will.
+    if (run.outcome || run.state === 'interrupted') return one('stopped', 'Stopped: the run ended before it started')
+    return one('waiting')
+  }
+  if (status === 'starting') return one('waiting', 'Waiting to start: its agent is starting')
+  switch (mark.key) {
+    case 'needs':
+      return one('needs')
+    case 'working':
+      return one('working')
+    case 'finished':
+      return one('finished')
+    case 'exited':
+      return { ...one('idle'), view: { key: 'running', word: mark.word.charAt(0).toUpperCase() + mark.word.slice(1), legend: mark.legend } }
+  }
+  return one('idle')
+}
+
+/**
+ * A member's question as a run's card and tile offer it (C6): its words, and, where it has choices a page may press, the line of the
+ * run's chat that question is (the session keeps a question in the chat under the question's own id, so a choice pressed names the
+ * question the person was shown, as a press in the chat does). No line for a question without choices, for a decision's (answered
+ * only as that decision), for one the terminal already answered, or from an owner that gives no id: those keep "Answer", the way in.
+ */
+export function memberAsk(name: string, s: Pick<SessionInfo, 'agentId' | 'attention'> | undefined): { question: string; line: ChatMessage | null } {
+  const a = liveAttention(s?.attention)
+  if (a?.state !== 'needs_input') return { question: '', line: null }
+  const question = a.message || 'waits on a prompt'
+  const options = offeredChoices(a)
+  if (!a.id || !options.length) return { question, line: null }
+  const line: ChatMessage = { t: 'chat', id: a.id, at: a.since ?? '', scope: 'run', kind: 'question', by: { id: 'agent', name: s!.agentId, role: 'agent' }, text: question, on: name, options }
+  return { question, line }
+}
+
+/** The members of a run as the rows, cards and tiles draw them. */
+export function memberLooks(run: RunInfo, sessions: readonly SessionInfo[], now = Date.now()): MemberLook[] {
+  return run.members.map((m) => memberLook(run, m, sessions, now))
+}
+
+/**
+ * The time of day, everywhere a run's time is written (C3): 24-hour whatever the browser's locale ("19:28", "00:05", never "07:28
+ * PM" nor "24:05"), as the sidebar, the chat and the activity log write it; with `seconds`, "19:28:50". '' for no time.
+ */
+export function clockTime(at: string | number, o: { seconds?: boolean; locale?: string } = {}): string {
+  const d = new Date(at)
+  if (Number.isNaN(d.getTime())) return ''
+  return new Intl.DateTimeFormat(o.locale, { hour: '2-digit', minute: '2-digit', ...(o.seconds ? { second: '2-digit' } : {}), hourCycle: 'h23' }).format(d)
+}
+
+/**
+ * How long a run took, in words (C12): "20 min so far" while it goes, "3 min", "under a minute", "1 h 4 min", "2 days". It ends at
+ * its stop, at a run with tasks' outcome (its log's last line), or at its last member's end.
+ */
+export function tookWords(run: Pick<RunInfo, 'startedAt' | 'stoppedAt' | 'members' | 'state' | 'outcome' | 'log'>, live: boolean, now = Date.now()): string {
+  if (Number.isNaN(Date.parse(run.startedAt))) return ''
+  const words = lengthWords(runSpan(run, live, now))
+  return live ? `${words} so far` : words
+}
+
+/** How long a run went, in ms: to now while it goes, else to its stop, to a run with tasks' outcome (its log's last line), or to its last member's end. */
+export function runSpan(run: Pick<RunInfo, 'startedAt' | 'stoppedAt' | 'members' | 'state' | 'outcome' | 'log'>, live: boolean, now: number): number {
+  const start = Date.parse(run.startedAt)
+  if (Number.isNaN(start)) return 0
+  if (live) return Math.max(0, now - start)
+  if (!run.stoppedAt && run.outcome && run.log.length) {
+    const end = Math.max(...run.log.map((e) => Date.parse(e.at)).filter((t) => !Number.isNaN(t)))
+    if (Number.isFinite(end) && end >= start) return end - start
+  }
+  return runLength(run, now)
+}
+
+/** A length in words: "under a minute", "3 min", "1 h 4 min", "2 h", "2 days". */
+export function lengthWords(ms: number): string {
+  const min = Math.floor(ms / 60_000)
+  if (min < 1) return 'under a minute'
+  if (min < 60) return `${min} min`
+  if (min < 48 * 60) {
+    const h = Math.floor(min / 60)
+    const rest = min % 60
+    return rest ? `${h} h ${rest} min` : `${h} h`
+  }
+  return `${Math.floor(min / 1440)} days`
 }
 
 /** How many times a member asked a question in a run: the "asks" lines of its log. */
@@ -165,15 +408,27 @@ export function shortRunId(id: string): string {
   return at >= 0 ? id.slice(at + 1) : id
 }
 
-/** The clock time a run started, "08:31". */
+/** The clock time a run started, "08:31" (clockTime: 24-hour). */
 export function startedClock(iso: string): string {
-  const d = new Date(iso)
-  return Number.isNaN(d.getTime()) ? '' : d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
+  return clockTime(iso)
 }
 
 /** The part after the crew's name: the run's own name when it was given one at launch, else "run started 08:31". */
 export function runSubtitle(run: Pick<RunInfo, 'label' | 'startedAt'>): string {
   return run.label || `run started ${startedClock(run.startedAt)}`
+}
+
+/**
+ * Where a launch that stays on the page is said (C11): in the crew's row of the home's table when the home shows that row, else (the
+ * crew on another page of Saved crews, the person on another page) by a toast, so a launch is never said nowhere.
+ */
+export function launchSaidIn(onHome: boolean, shown: ReadonlyArray<{ id: string }>, crewId: string): 'row' | 'toast' {
+  return onHome && shown.some((c) => c.id === crewId) ? 'row' : 'toast'
+}
+
+/** A run in a list of its crew's runs (C12): its own name when it has one, else "Run of today 08:31". */
+export function runListName(run: Pick<RunInfo, 'label' | 'startedAt'>, now = Date.now()): string {
+  return run.label || `Run of ${runWhen(run.startedAt, now)}`
 }
 
 /**
@@ -195,13 +450,12 @@ export function runWhen(iso: string, now = Date.now(), time = true): string {
   const d = new Date(iso)
   if (Number.isNaN(d.getTime())) return ''
   const n = new Date(now)
-  const hm = d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', hour12: false })
+  const hm = clockTime(d.getTime())
   if (d.getFullYear() === n.getFullYear() && d.getMonth() === n.getMonth() && d.getDate() === n.getDate()) return `today ${hm}`
   const md = d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
   return time ? `${md} ${hm}` : md
 }
 
-/** How long a run has gone or went: "up 4m" while it goes, else "22m". */
 /**
  * Whether a run's row offers Resume as new run: a run that is not live, was stopped and has not been resumed already; a record of a run the
  * server no longer holds (#127) when it stopped, finished or was interrupted and has not been resumed from its record yet (#153).
@@ -210,12 +464,6 @@ export function runResumable(r: RunInfo, live: boolean): boolean {
   if (r.record) return !r.resumedBy && (r.state === 'stopped' || r.state === 'finished' || r.state === 'interrupted')
   // A managed run is continued once it stopped or ended with an outcome (#334, row 8); a legacy run resumed once stopped.
   return !live && (!!r.stoppedAt || (!!r.managed && !!r.outcome)) && !r.resumedBy
-}
-
-export function runTook(run: Pick<RunInfo, 'startedAt' | 'stoppedAt' | 'members' | 'state'>, live: boolean, now = Date.now()): string {
-  if (live) return `up ${relativeTime(run.startedAt, now)}`
-  const start = Date.parse(run.startedAt)
-  return Number.isNaN(start) ? '' : relativeTime(run.startedAt, start + runLength(run, now))
 }
 
 /** What a member's tile reads, and in which tone: red only for an error of its own; what a stop cut off is grey. */
@@ -284,7 +532,7 @@ export interface RunBar {
   /** ms. */
   startedAt: number
   minutes: number
-  outcome: RunOutcome
+  phase: RunPhase
   /** Questions answered during the run. */
   asked: number
 }
@@ -296,26 +544,26 @@ export function runBars(runs: readonly RunInfo[], sessions: readonly SessionInfo
     .map((r) => ({
       id: r.id,
       startedAt: Date.parse(r.startedAt) || 0,
-      minutes: Math.round((runLength(r, now) / 60_000) * 10) / 10,
-      outcome: runOutcome(r, runState(r, sessions).state),
+      minutes: Math.round((runSpan(r, runLive(runState(r, sessions).state), now) / 60_000) * 10) / 10,
+      phase: runPhase(r, sessions),
       asked: askedCount(r.log),
     }))
     .reverse()
 }
 
-/**
- * The bars' colours: a run still going the working green (green is for what is live), an ended run neutral, a stopped one lighter, a
- * failed one red.
- */
-export function barClass(o: RunOutcome): string {
-  switch (o) {
-    case 'needs you':
+/** A crew's runs need this many before the Runs tab draws them as a chart (C13): fewer say it in a sentence. */
+export const CHART_AT = 5
+
+/** The bars' colours, each the tone of its state's mark (RUN_LOOK): the live green, amber, neutral ink for succeeded, red, grey. */
+export function barClass(p: RunPhase): string {
+  switch (p) {
     case 'running':
-      return 'bg-success'
+      return 'bg-(--ui-success)'
+    case 'needs':
+      return 'bg-(--ui-warning)'
     case 'failed':
-      return 'bg-error'
+      return 'bg-(--ui-error)'
     case 'stopped':
-    case 'interrupted':
       return 'bg-accented'
   }
   return 'bg-(--ui-text-muted)'
@@ -343,9 +591,29 @@ export function barsSummary(bars: readonly RunBar[]): string {
   const parts = [`duration in minutes · median ${minutesLabel(medianMinutes(bars))}`]
   const asked = bars.filter((b) => b.asked > 0).length
   if (asked) parts.push(`${asked} needed an answer`)
-  const failed = bars.filter((b) => b.outcome === 'failed').length
+  const failed = bars.filter((b) => b.phase === 'failed').length
   if (failed) parts.push(`${failed} failed`)
   return parts.join(' · ')
+}
+
+const ENDED_WORDS: Record<RunPhase, string> = { running: 'is running', needs: 'needs you', succeeded: 'succeeded', failed: 'failed', stopped: 'was stopped' }
+
+/**
+ * The Runs tab's sentence where a chart would say little (C13: under CHART_AT runs): how the last run went and how long runs of the crew
+ * usually take. "No runs yet."; "The only run so far failed after 3 min."; "The last run succeeded after 4 min; runs of this crew
+ * usually take 6 min (the middle of 3)."; a run that still goes "is running, 2 min so far".
+ */
+export function runsSentence(bars: readonly RunBar[]): string {
+  const last = bars.at(-1)
+  if (!last) return 'No runs yet.'
+  const live = last.phase === 'running' || last.phase === 'needs'
+  const took = lengthWords(last.minutes * 60_000)
+  const how = live ? `${ENDED_WORDS[last.phase]}, ${took} so far` : `${ENDED_WORDS[last.phase]} ${took === 'under a minute' ? 'in' : 'after'} ${took}`
+  if (bars.length === 1) return `The only run so far ${how}.`
+  const ended = bars.filter((b) => b.phase !== 'running' && b.phase !== 'needs')
+  if (!ended.length) return `The last run ${how}.`
+  const usual = lengthWords(medianMinutes(ended) * 60_000)
+  return `The last run ${how}; runs of this crew usually take ${usual}${ended.length > 1 ? ` (the middle of ${ended.length})` : ''}.`
 }
 
 /** The fields of a draft that differ from the crew as saved, as the unsaved-changes bar names them: "Goal, Members". */
@@ -356,15 +624,17 @@ export function changedFields(draft: CrewInput, saved: CrewInput | undefined): s
   const out: string[] = []
   if (a.name !== b.name) out.push('Name')
   if (a.goal !== b.goal) out.push('Goal')
-  if (a.cwd !== b.cwd) out.push('Working directory')
-  if (a.isolation !== b.isolation || a.openAfterLaunch !== b.openAfterLaunch || a.viewLinkTtlSeconds !== b.viewLinkTtlSeconds || a.yolo !== b.yolo) out.push('Each run')
+  // In the Setup's own words: its Folder, its Workspace, and what More options folds.
+  if (a.cwd !== b.cwd) out.push('Folder')
+  if (a.isolation !== b.isolation) out.push('Workspace')
+  if (a.openAfterLaunch !== b.openAfterLaunch || a.viewLinkTtlSeconds !== b.viewLinkTtlSeconds || a.yolo !== b.yolo) out.push('More options')
   if (JSON.stringify(a.members) !== JSON.stringify(b.members)) out.push('Members')
   if (JSON.stringify(a.compare) !== JSON.stringify(b.compare)) out.push('Comparison')
   return out
 }
 
-/** The Runs tab's filter: by how runs ended (live is running or needing you) and by when they started. */
-export type RunFilterState = 'all' | 'live' | 'ended' | 'stopped' | 'failed'
+/** The Runs tab's filter: by the run's state (Running counts the runs that need you too) and by when they started. */
+export type RunFilterState = 'all' | 'live' | 'succeeded' | 'failed' | 'stopped'
 export type RunFilterSince = 'today' | '7d' | '30d' | 'all'
 export interface RunFilter {
   state: RunFilterState
@@ -373,12 +643,18 @@ export interface RunFilter {
 export const DEFAULT_RUN_FILTER: RunFilter = { state: 'all', since: 'all' }
 /** Where this browser keeps the filter: a habit of the reader's, not part of a link. */
 export const RUN_FILTER_KEY = 'conductor.crewRuns.filter'
+/** The chips, in their order, each with the vocabulary's word. */
+export const RUN_FILTER_CHIPS: ReadonlyArray<{ value: RunFilterState; label: string }> = [
+  { value: 'all', label: 'All' },
+  { value: 'live', label: 'Running' },
+  { value: 'succeeded', label: 'Succeeded' },
+  { value: 'failed', label: 'Failed' },
+  { value: 'stopped', label: 'Stopped' },
+]
 
-/** The chip an outcome falls under. */
-export function filterState(o: RunOutcome): Exclude<RunFilterState, 'all'> {
-  if (o === 'needs you' || o === 'running') return 'live'
-  // A run the server's end cut short did not finish: it sits with the stopped ones.
-  return o === 'interrupted' ? 'stopped' : o
+/** The chip a run's state falls under: Running holds the runs that need you. */
+export function filterState(p: RunPhase): Exclude<RunFilterState, 'all'> {
+  return p === 'running' || p === 'needs' ? 'live' : p
 }
 
 /** The instant a window begins: local midnight for today, now minus 7 or 30 days, -Infinity for all. */
@@ -398,17 +674,17 @@ function inWindow(startedAt: string, since: RunFilterSince, now: number): boolea
 }
 
 /** The rows a filter keeps, in their order. */
-export function filterRuns<T extends { run: Pick<RunInfo, 'startedAt'>; outcome: RunOutcome }>(rows: readonly T[], f: RunFilter, now: number): T[] {
-  return rows.filter((r) => inWindow(r.run.startedAt, f.since, now) && (f.state === 'all' || filterState(r.outcome) === f.state))
+export function filterRuns<T extends { run: Pick<RunInfo, 'startedAt'>; phase: RunPhase }>(rows: readonly T[], f: RunFilter, now: number): T[] {
+  return rows.filter((r) => inWindow(r.run.startedAt, f.since, now) && (f.state === 'all' || filterState(r.phase) === f.state))
 }
 
 /** Each chip's count within the time window; All counts the window. */
-export function filterCounts<T extends { run: Pick<RunInfo, 'startedAt'>; outcome: RunOutcome }>(rows: readonly T[], since: RunFilterSince, now: number): Record<RunFilterState, number> {
-  const out: Record<RunFilterState, number> = { all: 0, live: 0, ended: 0, stopped: 0, failed: 0 }
+export function filterCounts<T extends { run: Pick<RunInfo, 'startedAt'>; phase: RunPhase }>(rows: readonly T[], since: RunFilterSince, now: number): Record<RunFilterState, number> {
+  const out: Record<RunFilterState, number> = { all: 0, live: 0, succeeded: 0, failed: 0, stopped: 0 }
   for (const r of rows) {
     if (!inWindow(r.run.startedAt, since, now)) continue
     out.all++
-    out[filterState(r.outcome)]++
+    out[filterState(r.phase)]++
   }
   return out
 }
@@ -417,10 +693,10 @@ export function filterCounts<T extends { run: Pick<RunInfo, 'startedAt'>; outcom
 export function readRunFilter(raw: string | null): RunFilter {
   try {
     const v = JSON.parse(raw ?? '') as Partial<RunFilter>
-    const states: RunFilterState[] = ['all', 'live', 'ended', 'stopped', 'failed']
+    const states: RunFilterState[] = ['all', 'live', 'succeeded', 'failed', 'stopped']
     const sinces: RunFilterSince[] = ['today', '7d', '30d', 'all']
-    // "finished" is what this browser kept before the chip was named Ended.
-    const state = (v.state as string) === 'finished' ? 'ended' : v.state
+    // "finished" and "ended" are what this browser kept before the chip was named Succeeded.
+    const state = (v.state as string) === 'finished' || (v.state as string) === 'ended' ? 'succeeded' : v.state
     return {
       state: states.includes(state as RunFilterState) ? (state as RunFilterState) : 'all',
       since: sinces.includes(v.since as RunFilterSince) ? (v.since as RunFilterSince) : 'all',
