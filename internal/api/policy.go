@@ -54,15 +54,9 @@ func (s *Server) routerRegistered() bool {
 // late, failing, panicking or invalid answer, or none for want of a slot.
 var notConfirmed = ext.Confirmation{Why: "the router did not answer"}
 
-// confirm asks the provider to confirm q, in one of its call slots, within
-// ext.ConfirmWait, its answer checked (ext.Confirmation.Valid); any
-// failure is notConfirmed.
-func (g guardRouter) confirm(ctx context.Context, q ext.ConfirmQuery) ext.Confirmation {
-	c, _ := g.confirmTold(ctx, q)
-	return c
-}
-
-// confirmTold is confirm, and says whether the router answered at all: in
+// confirmTold asks the provider to confirm q, in one of its call slots,
+// within ext.ConfirmWait, its answer checked (ext.Confirmation.Valid); any
+// failure is notConfirmed. answered says the router answered at all: in
 // time, valid, in a slot it had free.
 func (g guardRouter) confirmTold(ctx context.Context, q ext.ConfirmQuery) (ext.Confirmation, bool) {
 	pc, ok := g.p.(ext.PolicyConfirmer)
