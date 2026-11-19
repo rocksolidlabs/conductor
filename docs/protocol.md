@@ -1822,7 +1822,10 @@ session with a `trustPrompt` the pause lasts until the screen watcher has had
 its 500 ms look at what was drawn since the text (at most 2 s more), so a
 trust question drawn then holds the carriage return back too. While the
 screen, a whole frame, still shows a startup question, answered or not (the
-program slow to move on), no line is typed into it: a person's is refused
+program slow to move on), or a dialog's numbered choice on any row (a dialog
+whose heading is off the screen, where its Enter is refused already; a line
+typed only at the agent's prompt is refused there as no prompt), no line is
+typed into it: a person's is refused
 (`not_sent` with the trust question's words), Conductor's own waits. No lock
 of the session is held
 across the pause, and a person's keystrokes (INPUT) are written as they come,
@@ -2296,8 +2299,12 @@ key and may be the start of what the next write goes on with: a report's
 rest, an Alt chord), counts for what refuses a reply, never for what clears
 a question or puts its screen behind: a startup question it may answer is
 held consumed until the screen shows it gone (a whole frame, after output fed
-since the Escape, at least as large as the screen was), a key surely
-answers it, or the next startup question takes its place; a page's Escape
+since the Escape, at least as large as the screen was, showing no startup
+question and no dialog's numbered choice on any row; each look of the
+session's asks that first, the look that reads its kept output for a
+startup question to ask among them, so that the dialog's own words left in
+that output are not asked again), a key surely answers it, or the next
+startup question takes its place; a page's Escape
 sent as a reply is a structured answer, and resolves the question as it is
 written. Keys that answered a dialog hold the next look at the screen until
 output comes or the end of a quiet period, so the look before a submission

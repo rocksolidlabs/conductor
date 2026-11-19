@@ -465,8 +465,9 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 		return res, ErrQuestion
 	}
 	// A startup question the screen still shows, answered or not (the
-	// program slow to move on from it): nothing is typed into it either.
-	if s.startupOnScreen() {
+	// program slow to move on from it), or a startup dialog's choices
+	// (startupChoicesOnScreen): nothing is typed into it either.
+	if s.startupOnScreen() || !sub.OnlyAtPrompt && s.startupChoicesOnScreen() {
 		if sub.UnlessWaiting {
 			return res, nil
 		}
@@ -1289,7 +1290,7 @@ func (s *Local) textGuard(sub Submission, st submitState) func() error {
 		att := s.info.Attention
 		s.mu.Unlock()
 		showing := att.State == AttentionNeedsInput && !(sub.Decision != "" && att.Decision != "")
-		startup := s.startupOnScreen()
+		startup := s.startupOnScreen() || !sub.OnlyAtPrompt && s.startupChoicesOnScreen()
 		switch {
 		case sub.UnlessWaiting && (showing || dialog || startup):
 			return errWaiting

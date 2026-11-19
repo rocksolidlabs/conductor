@@ -1222,6 +1222,14 @@ func (s *Local) firePattern(line string) {
 // where 1 runs npm install). That is weighed under the lock that sets the
 // question (startupLook).
 func (s *Local) fireTrust(text string) {
+	// A question an Escape answered (heldAnswer) that a whole frame of the
+	// screen shows gone is withdrawn first, as the screen's own look does
+	// first (fireAsked, missAsked): the output this look keeps still holds
+	// the dialog it left, whose words read as another question, and asked
+	// so it would never go. Withdrawn, the question's output is behind
+	// (startupGone): this look, which took its text before, asks nothing.
+	// Either look first, the same picture.
+	s.escGone()
 	if q, words, seen, shown := s.startupSeen(text); q != nil {
 		if s.heldGone(words) {
 			// An Escape typed at it before it was asked took it away.
@@ -1344,6 +1352,23 @@ func (s *Local) startupOnScreen() bool {
 	whole, _, _, _ := s.asked.Whole()
 	uncut, _, _ := s.asked.DrawnAt()
 	return uncut && s.lastStartup(whole) != ""
+}
+
+// startupChoicesOnScreen reports whether, while the startup questions'
+// watch lasts, the screen, read as startupOnScreen reads it, shows a
+// startup dialog's numbered choice (startupChoiceShown): a dialog whose
+// heading, or the row it is found by, is off the screen. Its Enter is
+// refused there (startupMayShow), and a line's text is held back with it
+// (Submit), a digit of it picking a choice at once. A line typed only at
+// the agent's prompt (OnlyAtPrompt) is refused there already, the screen
+// being no prompt (atPrompt), and is told so.
+func (s *Local) startupChoicesOnScreen() bool {
+	if s.trust == nil || !s.trust.Watching() || s.asked == nil {
+		return false
+	}
+	whole, _, _, _ := s.asked.Whole()
+	uncut, _, _ := s.asked.DrawnAt()
+	return uncut && startupChoiceShown(whole)
 }
 
 // startupMayShow reports whether keys typed in the terminal may reach a
@@ -5448,7 +5473,9 @@ func (s *Local) escGone() {
 }
 
 // screenShowsNoStartup reports whether the screen the questions asked
-// during the work are read from, whole, shows no startup question, and
+// during the work are read from, whole, shows no startup question and no
+// choice of a startup dialog (startupChoiceShown: a numbered row, as a
+// dialog drawn again with its first rows off the screen still shows), and
 // shows everything the program drew as it drew it (no synchronized update
 // under way, which a terminal would still show the frame before; nothing
 // cut by a window made smaller since the program last erased the screen:
@@ -5461,7 +5488,7 @@ func (s *Local) escGone() {
 func (s *Local) screenShowsNoStartup(held heldStartup) bool {
 	text, _, cols, rows := s.asked.Whole()
 	uncut, drawnCols, drawnRows := s.asked.DrawnAt()
-	return uncut && cols >= held.cols && rows >= held.rows && drawnCols >= held.drawnCols && drawnRows >= held.drawnRows && s.lastStartup(text) == ""
+	return uncut && cols >= held.cols && rows >= held.rows && drawnCols >= held.drawnCols && drawnRows >= held.drawnRows && s.lastStartup(text) == "" && !startupChoiceShown(text)
 }
 
 // heldGone reports whether the startup question with words, about to be

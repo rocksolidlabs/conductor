@@ -136,6 +136,12 @@ add its rule here.
   (a viewer's lapse closing it) says nothing of the other (its link's
   lapse telling the host): set the deadline far off and call what the
   timers call, in the order the test needs.
+- Two watchers with one quiet period look in no set order either: force
+  each look (hold one at its gate, `afterLook`, and make the other with
+  `CheckNow`), and a state that sticks in one order is a product bug, not
+  a slow wait. The session's startup watcher, looking before the screen's,
+  asked a dialog an Escape had answered again from the output it keeps,
+  and it never left (#1017, `escgone_order_test.go`).
 - The product's bound is not the test's. A 3 s probe limit or a 10 s kill
   wait is right for the product and wrong for a test that only needs the
   thing to happen: give the test its own wait where the product's is not
