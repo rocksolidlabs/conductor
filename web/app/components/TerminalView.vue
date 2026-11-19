@@ -8,7 +8,7 @@ import { clipboardKey, forcesSelection, menuPress, pressClearsSelection, readRig
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { WebglAddon } from '@xterm/addon-webgl'
 import { findFileLocations } from '~/utils/links'
-import { terminalLinkHandler } from '~/utils/terminalLinks'
+import { shownAddress, terminalLinkHandler } from '~/utils/terminalLinks'
 import { ALT_PASSTHROUGH_CODES, usePageAltCodes } from '~/composables/useShortcuts'
 import { NEWLINE_IN_PROMPT, newlineChord } from '~/utils/terminalKeys'
 import { closeReason, encodeText, FOLLOW_SIZE, type ActivityEntry, type Attention, type ChatHistory, type ChatMessage, type ChatPost, type ChatRoster, type ChatSend, type ControlMessage, type FileGetExtra, type FileResponse, type FileWriteOptions, type NvimSwapChoice, type Role, type TransportKind, type ViewerInfo, type Welcome } from '~/utils/protocol'
@@ -56,7 +56,8 @@ const emit = defineEmits<{
   transport: [info: { kind: TransportKind; state: TransportState; rtt: number | null }]
   closed: [info: CloseInfo]
   openFile: [loc: { path: string; line?: number }]
-  openUrl: [url: string]
+  /** A web link of the terminal's, opened (a new tab; the desktop app's system browser): the page says where it went. */
+  linkOpened: [url: string]
   /** A chat message, live; the kept chat on each welcome; an error the owner sent about one of this client's posts or sends. */
   chat: [msg: ChatMessage]
   chatHistory: [history: ChatHistory]
@@ -271,6 +272,8 @@ const terminalMenu = computed(() => [
 const scaledView = ref(props.fit === 'scale')
 /** Who sizes it and Fit to my window: on a full view of a controller that does not hold the size. */
 const sizerChip = computed(() => chipFor(sizerView()))
+/** The address of the link the pointer is over (#1020): shown at the foot of the terminal, as a browser shows it, before a click. */
+const linkTip = ref<string | null>(null)
 const sizedHere = computed(() => sizedElsewhere(sizerView()))
 // The line that says so sits under the grid: the scaled grid is placed in the pane above it (applyScale).
 const sizedLine = ref<HTMLElement>()
@@ -790,12 +793,13 @@ defineExpose({ connect, disconnect, requestFile, writeFile, nvimOpen, nvimInput,
 
 onMounted(() => {
   // One handler for the terminal's web links of both kinds, the hyperlinks an agent prints (OSC 8, xterm's linkHandler: without it
-  // xterm asked with the page's confirm, #1020) and the addresses in the text (the web-links addon): Ctrl/⌘+click opens a new tab,
-  // a plain click offers the link to the page; a link to any other scheme is none.
-  const links = terminalLinkHandler(
-    (url) => window.open(url, '_blank', 'noopener,noreferrer'),
-    (url) => emit('openUrl', url),
-  )
+  // xterm asked with the page's confirm, #1020) and the addresses in the text (the web-links addon): a click opens a new tab once,
+  // the pointer over a link shows its real address; a link to any other scheme is none.
+  const links = terminalLinkHandler({
+    open: (url) => window.open(url, '_blank', 'noopener,noreferrer'),
+    opened: (url) => emit('linkOpened', url),
+    show: (url) => (linkTip.value = url),
+  })
   term = new Terminal({
     linkHandler: links,
     cursorBlink: !props.compact,
@@ -818,7 +822,7 @@ onMounted(() => {
   })
   fit = new FitAddon()
   term.loadAddon(fit)
-  term.loadAddon(new WebLinksAddon((event, uri) => links.activate(event, uri)))
+  term.loadAddon(new WebLinksAddon((event, uri) => links.activate(event, uri), { hover: (event, uri) => links.hover(event, uri), leave: () => links.leave() }))
   term.registerLinkProvider(fileLinkProvider)
   // Shift+Enter and Ctrl+Enter are a newline in the agent's prompt, not a
   // submit: the session gets ESC CR instead of xterm's plain CR. Alt+<page
@@ -926,6 +930,9 @@ onBeforeUnmount(() => {
     <UContextMenu :items="terminalMenu" :disabled="compact">
       <div ref="host" class="terminal-host" :class="{ 'terminal-compact': compact, 'terminal-scale': scaledView, 'terminal-tile': props.fit === 'tile' }" :data-ended="ended ? 'true' : undefined" :data-renderer="renderer" :data-cols="grid.cols || undefined" :data-rows="grid.rows || undefined" :data-scaled-font="scaledAt" :data-fit-passes="fitPasses" :data-fit-resizes="fitResizes" :aria-label="readOnly ? 'terminal (read-only)' : 'terminal'" role="region" />
     </UContextMenu>
+
+    <!-- Where the link under the pointer goes, its real address whatever its words (#1020); text, never markup. -->
+    <p v-if="linkTip" class="pointer-events-none absolute bottom-2 left-2 z-20 max-w-[calc(100%-1rem)] truncate rounded-md border border-default bg-default/95 px-2 py-1 font-mono text-xs text-default shadow-sm" role="status" data-terminal-link-tip>{{ shownAddress(linkTip) }}</p>
 
     <div v-if="sizerChip" class="absolute right-2 bottom-2 z-10 flex items-center gap-2 rounded-md border border-default bg-default/90 py-1 pr-1 pl-2.5 text-xs shadow-sm backdrop-blur-sm" data-terminal-sizer :data-sizer-by="sizedBy">
       <UIcon name="i-lucide-scaling" class="size-3.5 text-muted" />
