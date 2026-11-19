@@ -189,7 +189,8 @@ func (r LookupRequest) Valid() error {
 // the coverage's commit a full id, its snapshot printable ASCII on one
 // line as a pack mark is, or none, its counts not below 0; the note one
 // line of at most MaxLookupNote bytes; and the answer as encoded at most
-// MaxLookupAnswer bytes.
+// MaxLookupAnswer bytes. Its words never quote what the answer holds:
+// the server logs a refusal of a provider's answer.
 func (a LookupAnswer) Valid() error {
 	const rec = "lookup answer"
 	switch {
@@ -214,7 +215,7 @@ func (a LookupAnswer) Valid() error {
 	c := a.Coverage
 	switch {
 	case !commitID(c.Commit):
-		return invalid(rec, "coverage's commit %q is not a full commit id", c.Commit)
+		return invalid(rec, "coverage's commit is not a full commit id")
 	case c.Snapshot != "" && !packMark(c.Snapshot):
 		return invalid(rec, "coverage's snapshot is not 1 to %d bytes of printable ASCII with no space at either end", MaxContextPack)
 	case c.Files < 0 || c.Excluded < 0 || c.Unknown < 0:
@@ -238,17 +239,17 @@ func (it LookupItem) valid() error {
 	switch it.Kind {
 	case ItemSymbol, ItemFile, ItemTest, ItemPackage:
 	default:
-		return invalid(rec, "kind %q is not symbol, file, test or package", it.Kind)
+		return invalid(rec, "kind is not symbol, file, test or package")
 	}
 	switch it.Relation {
 	case "", RelationCalls, RelationCalledBy, RelationImports, RelationImportedBy, RelationTests, RelationChanges:
 	default:
-		return invalid(rec, "relation %q is not one", it.Relation)
+		return invalid(rec, "relation is not one of the six")
 	}
 	switch it.Mark {
 	case MarkSupported, MarkInferred, MarkUnknown:
 	default:
-		return invalid(rec, "mark %q is not supported, inferred or unknown", it.Mark)
+		return invalid(rec, "mark is not supported, inferred or unknown")
 	}
 	if err := line(rec, "path", it.Path, MaxLookupPath, false); err != nil {
 		return err
