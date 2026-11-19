@@ -4,7 +4,7 @@ import { scopeItems } from '~/utils/chat'
 import { broadcastByName, broadcastSelection, broadcastSummary, crewFeed, memberStatus, skipWords, takeViewLink } from '~/utils/crews'
 import { stopQuestion, type Action } from '~/utils/actions'
 import { taskActions, taskWords } from '~/utils/tasks'
-import { attemptSession, markSection, memberStatusOf, sessionStatus, taskStatus } from '~/utils/status'
+import { attemptSession, markSection, sessionStatus, taskStatus } from '~/utils/status'
 import { rowPrompt } from '~/utils/sidebarActions'
 import { sessionRow } from '~/utils/sidebar'
 import type { PaletteItem } from '~/composables/usePalette'
@@ -297,8 +297,9 @@ async function paletteAskBrakeman(text: string) {
   if (run.value?.managed) selectTask(selectedTask.value, true)
 }
 const states = computed(() => new Map((run.value?.members ?? []).map((m) => [m.name, memberStatus(run.value!, m, live.sessions.value)])))
-// The members' and the tasks' states in the status language (utils/status.ts): the graph, its legend and the palette's rows draw these.
-const memberMarks = computed(() => new Map((run.value?.members ?? []).map((m) => [m.name, memberStatusOf(run.value!, m, live.sessions.value, now.value).mark])))
+// The members' states in the Crews pages' one vocabulary (memberLook) and the tasks' in the status language: the graph, its legend
+// and the palette's rows draw these.
+const memberMarks = computed(() => new Map((run.value?.members ?? []).map((m) => [m.name, memberLook(run.value!, m, live.sessions.value, now.value).view])))
 const taskMarks = computed(() => new Map((run.value?.tasks ?? []).map((t) => [t.id, taskStatus(t, run.value!, attemptSession(t, live.sessions.value), now.value)])))
 
 // The run's chat (design 2e): one thread for everyone on the run, over a quiet connection to a live member; a message may also
@@ -426,7 +427,7 @@ watch(() => admin.token.value, () => {
 // This page's group in the command palette (#302): the header's buttons, the view, the chat, then the members as rows, the one
 // asking first. The broadcast takes its line in the row and says who gets it and who is skipped, as the bar does.
 const palette = usePalette()
-const header = useTemplateRef<{ openAdd: () => void; share: () => void; stopNow: () => Promise<void>; resume: () => Promise<void>; togglePause: () => Promise<void> }>('header')
+const header = useTemplateRef<{ openAdd: () => void; share: () => void; stopNow: () => Promise<void>; resume: () => Promise<void>; togglePause: () => Promise<void>; isEnded: () => boolean }>('header')
 const identity = useIdentity()
 async function paletteBroadcast(text: string) {
   const line = text.trim()
@@ -502,7 +503,7 @@ palette.registerPage(() => {
       const m = t.member
       const pending = m?.status === 'pending'
       const ended = m?.status === 'ended' || (s && (s.status === 'exited' || s.status === 'stopped'))
-      // The member's state in the status language (memberStatusOf), else, for a session the last read did not know yet, its session's.
+      // The member's state in the Crews pages' words (memberLook), else, for a session the last read did not know yet, its session's.
       const mark = m ? memberMarks.value.get(m.name) : s ? sessionStatus(s, now.value) : undefined
       const state = mark ? markSection(mark.key) : ('idle' as const)
       // What the member's tile offers, and nothing else (memberOffer).
@@ -540,7 +541,7 @@ palette.registerPage(() => {
       { key: 'page:add', label: 'Add an agent…', icon: 'i-lucide-user-plus', disabled: !runOffer(r).add, run: () => header.value?.openAdd() },
       ...views.map(([v, label, icon]) => ({ key: `page:view:${v}`, label, icon, on: view.value === v, run: () => (view.value = v) })),
       { key: 'page:share', label: 'Share run', icon: 'i-lucide-share-2', kbds: ['S'], run: () => header.value?.share() },
-      ...(r.managed && !stopped && !r.record ? [{ key: 'page:pause', label: r.paused ? 'Resume scheduling' : 'Pause scheduling', icon: r.paused ? 'i-lucide-play' : 'i-lucide-pause', run: () => header.value?.togglePause() }] : []),
+      ...(r.managed && !stopped && !r.record && !header.value?.isEnded() ? [{ key: 'page:pause', label: r.paused ? 'Resume scheduling' : 'Pause scheduling', icon: r.paused ? 'i-lucide-play' : 'i-lucide-pause', run: () => header.value?.togglePause() }] : []),
       ...(bk.available.value === true
         ? [
             {
@@ -559,7 +560,9 @@ palette.registerPage(() => {
       { key: 'page:chat', label: `Open the run's chat${runChatUnread.value ? ` · ${runChatUnread.value} unread` : ''}`, icon: 'i-lucide-message-circle', run: () => (runChatOpen.value = true) },
       ...(stopped
         ? [{ key: 'page:resume', label: 'Resume as new run', icon: 'i-lucide-history', run: () => header.value?.resume() }]
-        : [{ key: 'page:stop', label: 'Stop run…', icon: 'i-lucide-square', kbds: ['X'], disabled: !!r.record, ask: stopQuestion({ kind: 'run', name: title }), run: () => header.value?.stopNow() }]),
+        : header.value?.isEnded()
+          ? []
+          : [{ key: 'page:stop', label: 'Stop run…', icon: 'i-lucide-square', kbds: ['X'], disabled: !!r.record, ask: stopQuestion({ kind: 'run', name: title }), run: () => header.value?.stopNow() }]),
       ...taskRows,
       ...members,
   ]

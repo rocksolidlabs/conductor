@@ -212,6 +212,15 @@ const needsYou = useNeedsYou()
 const statusLine = computed(() => (props.run ? runStatusLine(props.run, live.sessions.value, runItems(needsYou.items.value, props.runId), props.now) : null))
 // The run's state in the Crews pages' one vocabulary (C2): its word beside its mark, then its counts in the member words.
 const look = computed(() => (props.run ? runLook(props.run, live.sessions.value, runItems(needsYou.items.value, props.runId), props.now) : null))
+/**
+ * A run that ended (its tasks' outcome, every member ended, the server's end) and holds nothing a person can still act on: nothing to
+ * pause or stop. A failed run whose task offers Retry or Accept anyway keeps both, for its scheduling goes on once one is taken.
+ */
+const ended = computed(() => {
+  const l = look.value
+  if (!l || (l.phase !== 'succeeded' && l.phase !== 'failed' && l.phase !== 'stopped')) return false
+  return l.needs === 0 && (statusLine.value?.tasks.needs ?? 0) === 0
+})
 const lookText = computed(() => (look.value ? [look.value.view.word, look.value.detail].filter(Boolean).join(' · ') : ''))
 const bar = computed(() => (statusLine.value ? runBarParts(statusLine.value) : []))
 /** A segment's fill: its mark's tone (amber for what waits on a person, green for a live agent, red for failed), else neutral ink. */
@@ -277,7 +286,7 @@ const menu = computed(() => [
 ])
 
 // The run page's command palette (#302) runs the header's actions: Add agent, Share, Stop (asked in the palette's row), Resume.
-defineExpose({ openAdd, share: () => (shareOpen.value = true), stopNow: stopAll, resume: resumeRun, togglePause })
+defineExpose({ openAdd, share: () => (shareOpen.value = true), stopNow: stopAll, resume: resumeRun, togglePause, isEnded: () => ended.value })
 </script>
 
 <template>
@@ -343,9 +352,9 @@ defineExpose({ openAdd, share: () => (shareOpen.value = true), stopNow: stopAll,
         </IconButton>
         <!-- Icons only on a phone: the labels would push the name off the bar. -->
         <IconButton v-if="resumable" icon="i-lucide-play" color="primary" variant="soft" :label="run?.managed ? 'Continue the run' : 'Resume as new run'" :loading="resuming" data-run-resume @click="resumeRun"><span class="hidden sm:inline">{{ run?.managed ? 'Continue' : 'Resume as new run' }}</span></IconButton>
-        <IconButton v-if="run?.managed && !stopped && !record" :icon="run.paused ? 'i-lucide-play' : 'i-lucide-pause'" color="neutral" variant="outline" :label="run.paused ? 'Resume scheduling' : 'Pause scheduling'" :loading="pausing" data-run-pause :data-run-paused="run.paused ? '' : undefined" @click="togglePause"><span class="hidden sm:inline">{{ run.paused ? 'Resume' : 'Pause' }}</span></IconButton>
+        <IconButton v-if="run?.managed && !stopped && !record && !ended" :icon="run.paused ? 'i-lucide-play' : 'i-lucide-pause'" color="neutral" variant="outline" :label="run.paused ? 'Resume scheduling' : 'Pause scheduling'" :loading="pausing" data-run-pause :data-run-paused="run.paused ? '' : undefined" @click="togglePause"><span class="hidden sm:inline">{{ run.paused ? 'Resume' : 'Pause' }}</span></IconButton>
         <!-- Neutral at rest: red only in its confirm. -->
-        <IconButton v-if="!stopped && !record" icon="i-lucide-square" color="neutral" variant="outline" label="Stop" :disabled="!run" data-run-stop @click="stopOpen = true"><span class="hidden sm:inline">Stop</span></IconButton>
+        <IconButton v-if="!stopped && !record && !ended" icon="i-lucide-square" color="neutral" variant="outline" label="Stop" :disabled="!run" data-run-stop @click="stopOpen = true"><span class="hidden sm:inline">Stop</span></IconButton>
         <UDropdownMenu :items="menu" :content="{ align: 'end' }">
           <IconButton icon="i-lucide-ellipsis" color="neutral" variant="ghost" label="More for this run" data-run-menu />
         </UDropdownMenu>

@@ -30,8 +30,8 @@ function transcript(home: string, s: Session): string {
 }
 
 test('a run whose task failed reads Failed on the home and in the Runs tab, and the Failed chip counts it', async ({ page, api }) => {
-  // The engine's three attempts at the check bound the wait; the test's own steps after it have the config's 120 s.
-  test.setTimeout(240_000)
+  // Its waits: the engine's three attempts at the check (120 s), then nine looks of 15 s each; the timeout is above their sum.
+  test.setTimeout(120_000 + 9 * 15_000 + 30_000)
   const id = await crew(api, {
     name: `e2e review fails ${Date.now().toString(36)}`,
     isolation: 'worktree',
@@ -89,6 +89,8 @@ test('a launch from the home says so on the page with Open run, and the run is u
 })
 
 test("a member's question with choices is answered on the home's card and on the run's tile, and leaves", async ({ page, api, state }) => {
+  // Its waits: four polls of 30 s, three of 20 s and two of 15 s, and seven looks of 15 s (the config's); the timeout is above their sum.
+  test.setTimeout(4 * 30_000 + 3 * 20_000 + 2 * 15_000 + 7 * 15_000 + 30_000)
   await expect
     .poll(
       async () => {
@@ -140,6 +142,8 @@ test("a member's question with choices is answered on the home's card and on the
 })
 
 test('the Runs tab names a run by its name or its start, its members by name with their state, and how long it took in words', async ({ page, api }) => {
+  // Its waits: eleven looks of 15 s; the timeout is above their sum.
+  test.setTimeout(11 * 15_000 + 30_000)
   await api.stopRun(askRun)
   const named = (await api.ok<{ run: { id: string } }>('POST', `/api/crews/${encodeURIComponent(askId)}/launch`, { label: 'e2e review named' })).run.id
   runs.push(named)
@@ -154,4 +158,39 @@ test('the Runs tab names a run by its name or its start, its members by name wit
   await expect(second.locator('[data-run-name]')).toHaveText('e2e review named')
   await expect(second.locator('[data-run-took]')).toHaveText(/ so far$/)
   await expect(second.locator('[data-run-member="core"] [data-status-word]')).toHaveText(/^(Working|Idle|Finished|Waiting to start|Needs you)$/)
+})
+
+// From five runs the Runs tab charts them (C13): five records served as the server's, one bar each in its state's tone, the median
+// in the chart's line, and the sentence under it.
+test('from five runs the Runs tab draws a bar a run with the median, and says how the last went', async ({ page, api }) => {
+  const id = await crew(api, { name: `e2e review chart ${Date.now().toString(36)}`, isolation: 'none', members: [{ name: 'core', agentId: 'claude', prompt: 'say hello', start: { when: 'immediately' } }] })
+  const at = (min: number) => new Date(Date.now() - min * 60_000).toISOString()
+  const record = (n: number, minutes: number, how: 'succeeded' | 'stopped' | 'failed') => ({
+    id: `${id}-0000000${n}`,
+    crewId: id,
+    name: 'e2e review chart',
+    goal: 'read the crews pages',
+    cwd: '/tmp',
+    isolation: 'none',
+    startedAt: at(100 - n * 10),
+    ...(how === 'stopped' ? { stoppedAt: at(100 - n * 10 - minutes) } : {}),
+    members: [{ name: 'core', agentId: 'claude', start: { when: 'immediately' }, status: 'ended', endedAt: at(100 - n * 10 - minutes), ...(how === 'failed' ? { error: 'exited (exit 1) before its prompt was typed' } : {}) }],
+    log: [],
+    state: how === 'stopped' ? 'stopped' : 'finished',
+    needsInput: 0,
+    yolo: false,
+  })
+  // Newest first, as the server lists them.
+  const runs = [record(5, 6, 'succeeded'), record(4, 2, 'failed'), record(3, 4, 'stopped'), record(2, 8, 'succeeded'), record(1, 4, 'succeeded')]
+  await page.route((u) => u.pathname === `/api/crews/${id}/runs`, (route) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ runs, live: 0 }) }))
+  await page.goto(`/crews/${encodeURIComponent(id)}?tab=runs`)
+  const chart = page.locator('[data-runs-chart]')
+  await expect(chart).toHaveAttribute('data-runs', '5')
+  const bars = chart.locator('[data-run-bar]')
+  await expect(bars).toHaveCount(5)
+  // Oldest first, each in its state.
+  expect(await bars.evaluateAll((bs) => bs.map((b) => b.getAttribute('data-outcome')))).toEqual(['succeeded', 'succeeded', 'stopped', 'failed', 'succeeded'])
+  await expect(chart).toContainText('duration in minutes · median 4m · 1 failed')
+  await expect(chart.locator('[data-runs-sentence]')).toHaveText('The last run succeeded after 6 min; runs of this crew usually take 4 min (the middle of 5).')
+  await expect(page.locator('[data-runs-state="failed"]')).toHaveAttribute('data-count', '1')
 })

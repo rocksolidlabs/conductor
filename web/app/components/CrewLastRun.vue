@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { RunInfo, SessionInfo } from '~/composables/useSessions'
-import { runLook, runPhase, runPhaseView, runWhen, tookWords } from '~/utils/crewWords'
+import { runAside, runLook, runPhase, runPhaseView, runWhen, tookWords } from '~/utils/crewWords'
 import { runLive, runState } from '~/utils/runs'
 import { runItems } from '~/utils/status'
 
@@ -21,7 +21,7 @@ const look = computed(() => {
   const going = runLive(runState(r, props.sessions).state)
   // A record is as it ended; a live run is read with its items of the one list, as its card is.
   const view = r.record ? runPhaseView(runPhase(r, []), r.state === 'interrupted') : runLook(r, props.sessions, runItems(needsYou.items.value, r.id), props.now).view
-  return { view, when: runWhen(r.startedAt, props.now), took: tookWords(r, going, props.now) }
+  return { view, aside: runAside(r), when: runWhen(r.startedAt, props.now), took: tookWords(r, going, props.now) }
 })
 </script>
 
@@ -31,6 +31,7 @@ const look = computed(() => {
       <NuxtLink :to="`/runs/${encodeURIComponent(last.id)}`" class="flex min-w-0 items-center gap-1.5 hover:underline" :data-run="last.id" data-crew-last-state :data-phase="look.view.word">
         <StatusMark :status="look.view" word />
       </NuxtLink>
+      <span v-if="look.aside" class="inline-flex min-w-0 items-center gap-1 text-xs text-muted" :title="look.aside.text" data-run-aside><UIcon :name="look.aside.icon" class="size-3.5 flex-none" /><span class="truncate">{{ look.aside.text }}</span></span>
       <span class="truncate text-muted" :title="`${look.when} · ${look.took}`" data-crew-last-run>{{ look.when }}<span class="hidden @min-[40rem]:inline"> · {{ look.took }}</span></span>
     </template>
     <span v-else class="text-muted" data-crew-last-run>Never run</span>

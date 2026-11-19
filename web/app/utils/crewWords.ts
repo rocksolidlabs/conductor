@@ -4,7 +4,8 @@ import type { ActivityEntry, ChatMessage } from './protocol'
 import { liveAttention, offeredChoices } from './attention'
 import { runLength } from './charts'
 import type { NeedsItem } from './needsYou'
-import { ownError, STOPPED_ERROR, toCrewInput, type MemberStatus } from './crews'
+import { memberSession, ownError, STOPPED_ERROR, toCrewInput, type MemberStatus } from './crews'
+import { rowStatus } from './historyRows'
 import { runLive, runState } from './runs'
 import { agentName } from './sessions'
 import { memberStatusOf, runStatusLine, type MarkKey, type MarkView } from './status'
@@ -175,8 +176,47 @@ export function runPhase(run: Pick<RunInfo, 'members' | 'managed' | 'outcome'> &
   if (st === 'needs_input') return 'needs'
   if (st === 'running') return needs > 0 ? 'needs' : 'running'
   if (run.outcome) return run.outcome === 'succeeded' ? 'succeeded' : run.outcome === 'failed' ? 'failed' : 'stopped'
-  if (run.members.some((m) => ownError(m))) return 'failed'
+  // The server's end stopped it: every member it cut off carries the interruption as its error, which is no error of its own.
+  if (st === 'interrupted') return 'stopped'
+  if (run.members.some((m) => ownError(m) || exitFailure(run, m, sessions) !== null)) return 'failed'
   return st === 'finished' ? 'succeeded' : 'stopped'
+}
+
+/** The words the server gives an interrupted run's members ("interrupted: the server stopped while it ran"), after its prefix. */
+const INTERRUPTED = /^interrupted: /
+
+/** Why a run that ended was stopped by the server's end, in the server's own words; '' for any other run. */
+export function interruptedWords(run: Pick<RunInfo, 'state' | 'members'>): string {
+  if (run.state !== 'interrupted') return ''
+  const said = run.members.map((m) => m.error ?? '').find((e) => INTERRUPTED.test(e))
+  return said ? said.replace(INTERRUPTED, '') : 'the server stopped while it ran'
+}
+
+/**
+ * The exit code of a member whose agent failed, by the one rule History's rows say an ended session by (rowStatus, through the
+ * status language's sessionStatus: "exit N" for a session that exited with a code other than 0, "exited" for one a person stopped);
+ * null for a member that did not fail so. A member the run's own Stop ended, or whose session a person stopped, did not fail, whatever
+ * its code; one whose session is no longer listed is not known to have failed.
+ */
+export function exitFailure(run: RunInfo, m: RunMember, sessions: readonly SessionInfo[]): number | null {
+  if (run.stoppedAt) return null
+  const s = memberSession(run, m, sessions)
+  if (!s || s.status !== 'exited') return null
+  // A listed session: the row says its own state (the record's fields are read only without one).
+  const said = rowStatus({ kind: 'session', availability: { state: '', words: '' } }, s)
+  const code = said ? /^exit (-?\d+)$/.exec(said.word) : null
+  return code ? Number(code[1]) : null
+}
+
+/**
+ * What a run's state word does not say and a person must know, beside it with its icon (never colour alone): a live run whose
+ * scheduling is paused ("Paused: <the server's reason>"; "Paused" for a person's pause), or a run the server's end stopped (its
+ * words). Null for anything else.
+ */
+export function runAside(run: Pick<RunInfo, 'paused' | 'pausedWhy' | 'state' | 'members' | 'stoppedAt' | 'outcome'>): { icon: string; text: string } | null {
+  if (run.paused && !run.stoppedAt && !run.outcome) return { icon: 'i-lucide-pause', text: run.pausedWhy ? `Paused: ${run.pausedWhy}` : 'Paused' }
+  const why = interruptedWords(run)
+  return why ? { icon: 'i-lucide-power', text: why } : null
 }
 
 /** A run state as StatusMark draws it: its mark, its word, its legend (the interrupted run's own reason in the title). */
@@ -210,7 +250,7 @@ export function runLook(run: RunInfo, sessions: readonly SessionInfo[], items: r
   const st = runState(run, sessions).state
   const view = runPhaseView(phase, st === 'interrupted')
   // An ended run keeps what a person can still act on in it (a failed task's Retry, Accept anyway).
-  if (line.outcome) return { phase, view, detail: [line.done, line.needs ? needWords(line.needs) : ''].filter(Boolean).join(' · '), needs }
+  if (line.outcome) return { phase, view, detail: [line.done, line.needs ? needWords(line.needs) : '', interruptedWords(run)].filter(Boolean).join(' · '), needs }
   const parts = line.parts.map((p) => (p.key === 'running' && p.n > 0 ? `${p.n} idle` : p.key === 'needs' ? needWords(p.n) : p.text))
   if (!line.parts.some((p) => p.key === 'needs') && prompts > 0) parts.push(needWords(prompts))
   return { phase, view, detail: parts.join(' · '), needs }
@@ -257,7 +297,20 @@ export function memberLook(run: RunInfo, m: RunMember, sessions: readonly Sessio
     const l = MEMBER_LOOK[phase]
     return { m, phase, status, after, view: { key: l.mark, word: l.word, legend: why ?? l.legend, ...(mark.since ? { since: mark.since } : {}) } }
   }
-  if (status === 'ended') return ownError(m) ? one('failed', `Failed: ${ownError(m)}`) : run.stoppedAt || m.error ? one('stopped') : one('finished')
+  if (status === 'ended') {
+    // The server's end cut it off: stopped, in the server's words.
+    if (run.state === 'interrupted' && INTERRUPTED.test(m.error ?? '')) return one('stopped', `Stopped: ${(m.error ?? '').replace(INTERRUPTED, '')}`)
+    if (ownError(m)) return one('failed', `Failed: ${ownError(m)}`)
+    if (run.stoppedAt || m.error) return one('stopped')
+    // A person stopped its session: stopped, whatever its code (the one rule History's rows say it by).
+    if (memberSession(run, m, sessions)?.status === 'stopped') return one('stopped', 'Stopped: a person stopped its session')
+    const code = exitFailure(run, m, sessions)
+    if (code !== null) {
+      const l = one('failed', `Failed: its agent exited with code ${code}`)
+      return { ...l, view: { ...l.view, word: `Failed (exit ${code})` } }
+    }
+    return one('finished')
+  }
   if (status === 'pending') {
     if (run.stoppedAt) return one('stopped', 'Stopped: the run was stopped before it started')
     // A run that ended (its tasks' outcome, the server's end) starts nothing more: its member never will.
@@ -363,6 +416,14 @@ export function startedClock(iso: string): string {
 /** The part after the crew's name: the run's own name when it was given one at launch, else "run started 08:31". */
 export function runSubtitle(run: Pick<RunInfo, 'label' | 'startedAt'>): string {
   return run.label || `run started ${startedClock(run.startedAt)}`
+}
+
+/**
+ * Where a launch that stays on the page is said (C11): in the crew's row of the home's table when the home shows that row, else (the
+ * crew on another page of Saved crews, the person on another page) by a toast, so a launch is never said nowhere.
+ */
+export function launchSaidIn(onHome: boolean, shown: ReadonlyArray<{ id: string }>, crewId: string): 'row' | 'toast' {
+  return onHome && shown.some((c) => c.id === crewId) ? 'row' : 'toast'
 }
 
 /** A run in a list of its crew's runs (C12): its own name when it has one, else "Run of today 08:31". */

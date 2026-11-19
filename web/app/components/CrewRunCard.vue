@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { RunInfo, SessionInfo } from '~/composables/useSessions'
-import { memberAsk, memberLooks, runLook, runSubtitle, shortRunId, startedClock, tookWords } from '~/utils/crewWords'
+import { memberAsk, memberLooks, runAside, runLook, runSubtitle, shortRunId, startedClock, tookWords } from '~/utils/crewWords'
 import { memberSession } from '~/utils/crews'
 import { runLive, runState } from '~/utils/runs'
 import { runItems } from '~/utils/status'
@@ -24,6 +24,7 @@ const members = computed(() => memberLooks(props.run, props.sessions, props.now)
 const needsYou = useNeedsYou()
 const look = computed(() => runLook(props.run, props.sessions, runItems(needsYou.items.value, props.run.id), props.now))
 const needs = computed(() => look.value.phase === 'needs')
+const aside = computed(() => runAside(props.run))
 const asks = computed(() =>
   members.value
     .filter((t) => t.status === 'needs_input')
@@ -78,6 +79,7 @@ async function stop() {
     <div class="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-[13px]" data-run-state :data-phase="look.phase" data-run-status-line>
       <StatusMark :status="look.view" word class="[&_[data-status-word]]:font-medium [&_[data-status-word]]:text-highlighted" />
       <span v-if="look.detail" class="min-w-0 truncate text-muted" :title="look.detail" data-run-detail>{{ look.detail }}</span>
+      <span v-if="aside" class="inline-flex min-w-0 items-center gap-1 text-xs text-muted" :title="aside.text" data-run-aside><UIcon :name="aside.icon" class="size-3.5 flex-none" /><span class="truncate">{{ aside.text }}</span></span>
     </div>
 
     <ul class="flex min-w-0 flex-col" data-run-members>

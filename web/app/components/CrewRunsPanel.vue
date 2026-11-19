@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ApiError } from '~/composables/useApi'
 import type { RunInfo, SessionInfo } from '~/composables/useSessions'
-import { barClass, barsSummary, CHART_AT, DEFAULT_RUN_FILTER, filterCounts, filterRuns, memberLooks, minutesLabel, readRunFilter, RUN_FILTER_CHIPS, RUN_FILTER_KEY, runBars, runListName, runLook, runNote, runPhase, runPhaseView, runResumable, runsSentence, runWhen, shortRunId, tookWords, type RunFilter, type RunFilterSince } from '~/utils/crewWords'
+import { barClass, barsSummary, CHART_AT, DEFAULT_RUN_FILTER, filterCounts, filterRuns, memberLooks, minutesLabel, readRunFilter, RUN_FILTER_CHIPS, RUN_FILTER_KEY, runBars, runListName, runLook, runNote, runPhase, runPhaseView, runResumable, runAside, runsSentence, runWhen, shortRunId, tookWords, type RunFilter, type RunFilterSince } from '~/utils/crewWords'
 import { runLive, runState } from '~/utils/runs'
 import { runItems } from '~/utils/status'
 
@@ -87,6 +87,7 @@ const rows = computed(() =>
       state: st.state,
       phase,
       view,
+      aside: runAside(r),
       live: isLive,
       members: memberLooks(r, props.sessions, props.now),
       took: tookWords(r, isLive, props.now),
@@ -200,7 +201,10 @@ const cols = 'grid-cols-[minmax(0,1fr)_auto] @min-[64rem]:grid-cols-[minmax(9rem
           <span v-if="row.run.label" class="text-xs text-muted">{{ runWhen(row.run.startedAt, now) }}</span>
           <YoloBadge v-if="row.run.yolo" icon />
         </div>
-        <span class="col-start-2 row-start-1 justify-self-end pt-0.5 @min-[64rem]:justify-self-start" data-run-state :data-phase="row.phase"><StatusMark :status="row.view" word /></span>
+        <div class="col-start-2 row-start-1 flex min-w-0 flex-col items-end gap-0.5 pt-0.5 @min-[64rem]:items-start">
+          <span data-run-state :data-phase="row.phase"><StatusMark :status="row.view" word /></span>
+          <span v-if="row.aside" class="inline-flex w-full min-w-0 items-center justify-end gap-1 text-xs text-muted @min-[64rem]:justify-start" :title="row.aside.text" data-run-aside><UIcon :name="row.aside.icon" class="size-3.5 flex-none" /><span class="truncate">{{ row.aside.text }}</span></span>
+        </div>
         <div class="col-span-2 row-start-2 flex flex-wrap items-start gap-x-4 gap-y-2 @min-[64rem]:contents">
           <ul class="flex min-w-0 flex-wrap gap-x-4 gap-y-0.5 text-xs @min-[64rem]:col-start-3 @min-[64rem]:row-start-1 @min-[64rem]:pt-0.5" data-run-members>
             <li v-for="t in row.members" :key="t.m.name" class="flex min-w-0 max-w-full items-center gap-1.5" :title="`${t.m.name} · ${t.view.word}`" :data-run-member="t.m.name" :data-status="t.status" :data-phase="t.phase">

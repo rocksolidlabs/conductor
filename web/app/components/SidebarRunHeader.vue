@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { blockSubtitle, runOpen, type RunBlock } from '~/utils/sidebar'
 import { rowMenuItems, stopQuestion } from '~/utils/sidebarActions'
-import { clockTime } from '~/utils/crewWords'
 
 /**
  * The header of a run block (design 3b, 3c): the play icon (amber while a member needs you, as the amber dot is), the run's own
@@ -30,14 +29,6 @@ const current = computed(() => runOpen(route.path, props.block.runId))
 const amber = computed(() => props.block.state === 'needs' && props.needsDot)
 const live = computed(() => !props.block.stoppedAt && props.block.state !== 'exited')
 const confirming = defineModel<boolean>('confirming', { default: false })
-// The second line with the run's time in the Crews pages' one clock (clockTime, 24-hour: "started 00:05", never "24:05"): the rest
-// is blockSubtitle's, the agents and their states.
-const subtitle = computed(() => {
-  const b = props.block
-  const rest = blockSubtitle({ ...b, startedAt: undefined, stoppedAt: undefined })
-  const at = b.stoppedAt ? `stopped ${clockTime(b.stoppedAt)}` : b.startedAt ? `started ${clockTime(b.startedAt)}` : ''
-  return at ? `${at} · ${rest}` : rest
-})
 const question = computed(() => stopQuestion({ kind: 'run', name: props.block.title }))
 const menu = computed(() =>
   rowMenuItems(
@@ -68,7 +59,7 @@ function confirmStop() {
         class="flex min-w-0 flex-1 items-center gap-2 rounded-md px-2.5 py-1.5 transition-colors"
         :class="current ? 'bg-default border border-default shadow-xs' : 'hover:bg-canvas-hover'"
         :aria-current="current ? 'page' : undefined"
-        :title="`${block.title} · ${subtitle}`"
+        :title="`${block.title} · ${blockSubtitle(block)}`"
         data-sidebar-run-group
         :data-sidebar-run-open="open || current ? '' : undefined"
       >
@@ -83,7 +74,7 @@ function confirmStop() {
             <span class="text-xs font-medium text-highlighted" data-run-stop-confirm>{{ question.title }}</span>
             <span class="text-[11px] leading-snug text-muted">{{ question.detail }}</span>
           </template>
-          <span v-else class="truncate text-[11px] text-muted tabular-nums" :data-sidebar-run-subtitle="block.runId">{{ subtitle }}</span>
+          <span v-else class="truncate text-[11px] text-muted tabular-nums" :data-sidebar-run-subtitle="block.runId">{{ blockSubtitle(block) }}</span>
         </span>
       </NuxtLink>
       <span v-if="confirming" class="flex items-center justify-end gap-1 px-1.5 pb-1.5" data-run-stop-buttons>

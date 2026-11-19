@@ -2,7 +2,7 @@
 import type { AgentInfo, CrewInfo, CrewSummary, RunInfo } from '~/composables/useSessions'
 import { ApiError } from '~/composables/useApi'
 import { crewKey, crewNameProblem, defaultCrew, EXAMPLES_LINE, holdViewLink, keepParked, memberSaveProblem, pageAfterDelete, peopleProblems, refusedAsStale, revisionToSave, elsewhereWords, summaryOf, toDraft, type DraftCrew, taskProblems, taskSaveProblems } from '~/utils/crews'
-import { changedFields, startedClock } from '~/utils/crewWords'
+import { changedFields, launchSaidIn, startedClock } from '~/utils/crewWords'
 import { runItems, runStatusLine } from '~/utils/status'
 import { runLive, runState } from '~/utils/runs'
 import { modelProblem } from '~/utils/capacity'
@@ -613,8 +613,9 @@ async function launch(t: SheetTarget, read: CrewInfo | null, confirmed: () => bo
       }
       return
     }
-    // On the home, the launch is said on the page until dismissed (C11), the run under Running now; elsewhere, a toast.
-    if (mounted && home.value) startedNote.value = { crewId: c.id, runId: run.id, label: run.label || `run started ${startedClock(run.startedAt)}` }
+    // In the crew's row while the home shows it, until dismissed (C11), the run under Running now; else (another page of Saved crews,
+    // another page of the app) a toast.
+    if (launchSaidIn(mounted && home.value, crews.value, c.id) === 'row') startedNote.value = { crewId: c.id, runId: run.id, label: run.label || `run started ${startedClock(run.startedAt)}` }
     else
       toast.add({
         title: `${c.name}: ${run.label || `run started ${startedClock(run.startedAt)}`}`,

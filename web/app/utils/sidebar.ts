@@ -6,6 +6,7 @@ import { questionOf } from './reply'
 import { askedWhere } from './decisions'
 import type { NeedsItem } from './needsYou'
 import { agentInitials, relativeTime } from './sessions'
+import { clockTime } from './crewWords'
 import { blockStatus, joinedStatus, sessionStatus, statusOfKey, statusTally, type StatusKey, type StatusView } from './status'
 
 /** The desktop sidebar's two modes: everything, or an icon rail. */
@@ -424,10 +425,9 @@ export function rowMeta(s: SessionInfo, member: boolean, now = Date.now()): stri
   return member ? [s.agentId, tail] : [s.agentId, 'server', tail]
 }
 
-/** A clock for the narrow sidebar: 24-hour, as the design writes it ("started 08:31"), so the line fits. */
+/** A clock for the narrow sidebar: the Crews pages' one clock (clockTime: 24-hour, "started 08:31", never "24:05"), so the line fits. */
 function clock(iso: string): string {
-  const d = new Date(iso)
-  return Number.isNaN(d.getTime()) ? '' : d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', hour12: false })
+  return clockTime(iso)
 }
 
 /**

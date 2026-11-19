@@ -63,7 +63,8 @@ test('the run page draws the members and their start rules, and a handoff as it 
     }, leadSession)
   await expect.poll(keys, { message: "lead's node draws its session's mark" }).toMatch(/^(working|finished|running|needs)$/)
   await expect(canvas.locator('[data-graph-node="docs"] [data-status-mark]')).toHaveAttribute('data-status-mark', 'waiting')
-  await expect(canvas.locator('[data-graph-node="docs"] [data-status-word]')).toHaveText('waiting to start')
+  // The Crews pages' one vocabulary (memberLook): a member not started yet.
+  await expect(canvas.locator('[data-graph-node="docs"] [data-status-word]')).toHaveText('Waiting to start')
   await expect(canvas.locator('[data-graph-edge-kind="after"]')).toHaveCount(2)
   await expect(canvas.locator('[data-graph-edge="lead-core"][data-graph-edge-kind="after"]')).toHaveCount(1)
   await expect(canvas.locator('[data-graph-edge="core-tests"][data-graph-edge-kind="after"]')).toHaveCount(1)

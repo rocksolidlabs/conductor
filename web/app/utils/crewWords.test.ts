@@ -43,6 +43,10 @@ import {
   startedClock,
   tookWords,
   type RunBar,
+  exitFailure,
+  interruptedWords,
+  launchSaidIn,
+  runAside,
 } from './crewWords'
 import { ownError, STOPPED_ERROR } from './crews'
 
@@ -173,6 +177,61 @@ describe('runPhase', () => {
     expect(l.needs).toBe(1)
     const failed = run({ managed: { revision: 1 }, outcome: 'failed', state: 'finished', members: [member({})], tasks: [{ id: 'a', member: 'lead', kind: 'work', state: 'succeeded', needs: [], attempts: 1 } as never, { id: 'b', member: 'lead', kind: 'work', state: 'failed', needs: [], attempts: 3 } as never] })
     expect(runLook(failed, [], [])).toMatchObject({ phase: 'failed', detail: '1 of 2 done' })
+  })
+})
+
+describe("the review's fix pass (F2, F3, N2, N3)", () => {
+  // The record the server makes of a run of members its end cut off (internal/crew/record.go): interrupted, each member that ran
+  // ended with the interruption as its error.
+  const CUT = 'interrupted: the server stopped while it ran'
+  const interrupted = () => run({ record: true, state: 'interrupted', members: [member({ status: 'ended', error: CUT }), member({ name: 'docs', status: 'pending' })] })
+
+  it('an interrupted run of members reads Stopped with the server\'s words, counted under Stopped, its members Stopped (F2)', () => {
+    const r = interrupted()
+    expect(runPhase(r, [])).toBe('stopped')
+    expect(filterState(runPhase(r, []))).toBe('stopped')
+    expect(interruptedWords(r)).toBe('the server stopped while it ran')
+    expect(runAside(r)).toEqual({ icon: 'i-lucide-power', text: 'the server stopped while it ran' })
+    expect(memberLook(r, r.members[0]!, [], T0).view).toMatchObject({ key: 'cancelled', word: 'Stopped', legend: 'Stopped: the server stopped while it ran' })
+    expect(memberLook(r, r.members[1]!, [], T0).view.word).toBe('Stopped')
+    expect(filterCounts([{ run: r, phase: runPhase(r, []) }], 'all', T0)).toEqual({ all: 1, live: 0, succeeded: 0, failed: 0, stopped: 1 })
+  })
+
+  it('a member whose agent exited non-zero reads Failed (exit N) and its run Failed; a stopped one reads Stopped whatever its code (F3)', () => {
+    const ended = (p: Partial<SessionInfo>) => session({ id: 's1', status: 'exited', exitCode: 1, ...p })
+    const r = run({ state: 'finished', members: [member({ status: 'ended', sessionId: 's1' }), member({ name: 'b', status: 'ended' })] })
+    const failed = memberLook(r, r.members[0]!, [ended({})], T0)
+    expect(failed).toMatchObject({ phase: 'failed', view: { key: 'failed', word: 'Failed (exit 1)', legend: 'Failed: its agent exited with code 1' } })
+    expect(exitFailure(r, r.members[0]!, [ended({})])).toBe(1)
+    expect(runPhase(r, [ended({})])).toBe('failed')
+    // Exit 0 finished; the run succeeded.
+    expect(memberLook(r, r.members[0]!, [ended({ exitCode: 0 })], T0).view.word).toBe('Finished')
+    expect(runPhase(r, [ended({ exitCode: 0 })])).toBe('succeeded')
+    // A person stopped its session: Stopped, whatever its code, and the run is not failed for it.
+    expect(memberLook(r, r.members[0]!, [ended({ status: 'stopped', exitCode: 143 })], T0).view.word).toBe('Stopped')
+    expect(runPhase(r, [ended({ status: 'stopped', exitCode: 143 })])).toBe('succeeded')
+    // The run's own Stop ended it: Stopped, whatever its code.
+    const halted = run({ ...r, state: 'stopped', stoppedAt: iso(60) })
+    expect(memberLook(halted, halted.members[0]!, [ended({ exitCode: 143 })], T0).view.word).toBe('Stopped')
+    expect(runPhase(halted, [ended({ exitCode: 143 })])).toBe('stopped')
+    // The Runs tab counts it once, under Failed.
+    expect(filterCounts([{ run: r, phase: runPhase(r, [ended({})]) }], 'all', T0)).toEqual({ all: 1, live: 0, succeeded: 0, failed: 1, stopped: 0 })
+  })
+
+  it('a paused run keeps Running and says Paused with the server\'s reason beside it (N2)', () => {
+    const r = run({ managed: { revision: 1 }, paused: true, pausedWhy: 'the step migrate-db failed', members: [member({})] })
+    expect(runPhase(r, [])).toBe('running')
+    expect(runAside(r)).toEqual({ icon: 'i-lucide-pause', text: 'Paused: the step migrate-db failed' })
+    expect(runAside({ ...r, pausedWhy: undefined })).toEqual({ icon: 'i-lucide-pause', text: 'Paused' })
+    expect(runAside({ ...r, paused: false })).toBeNull()
+    expect(runAside({ ...r, outcome: 'succeeded' })).toBeNull()
+  })
+
+  it('a launch is said in its crew\'s row only where the home shows that row, else by a toast (N3)', () => {
+    const shown = [{ id: 'a' }, { id: 'b' }]
+    expect(launchSaidIn(true, shown, 'a')).toBe('row')
+    expect(launchSaidIn(true, shown, 'z')).toBe('toast')
+    expect(launchSaidIn(false, shown, 'a')).toBe('toast')
   })
 })
 
