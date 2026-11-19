@@ -1733,6 +1733,11 @@ func respondTx(ltx LedgerTx, run string, n int64, resp Response, actor string, a
 		}
 		rc.Rev = d.Rev + 1
 	}
+	if rc.Policy != "" || len(rc.Groups) > 0 || rc.Override {
+		// A router's policy's fields take their room from the words', so
+		// the receipt keeps its bound (decisions_policy.go).
+		rc.Words = cutWordsTo(rc.Words, maxReceiptWords-maxPolicyReceipt)
+	}
 	rc.Words = cutReceiptWords(rc.Words)
 	got, err := dtx.Respond(n, ledger.ResponseRow{Actor: actor, Authority: authRaw, ResponseID: resp.ResponseID, Fingerprint: fp, Status: status, Receipt: receiptJSON(rc)})
 	switch {
@@ -1832,11 +1837,15 @@ func receiptJSON(rc ResponseReceipt) string {
 // maxReceiptWords bytes as encoded, their quotes and the mark of a cut
 // ("…") counted: the words are the engine's own (a stale response's
 // changes, a closed decision's why), never a field of the response.
-func cutReceiptWords(w string) string {
-	if CutEncoded(w, maxReceiptWords-2) == w {
+func cutReceiptWords(w string) string { return cutWordsTo(w, maxReceiptWords) }
+
+// cutWordsTo is w cut where a character ends to n bytes as encoded, its
+// quotes and the mark of a cut counted.
+func cutWordsTo(w string, n int) string {
+	if CutEncoded(w, n-2) == w {
 		return w
 	}
-	return CutEncoded(w, maxReceiptWords-2-len("…")) + "…"
+	return CutEncoded(w, n-2-len("…")) + "…"
 }
 
 // CutEncoded is s cut where a character ends to at most n bytes as

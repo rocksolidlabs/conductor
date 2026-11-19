@@ -14,6 +14,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/rocksolidlabs/conductor/ext"
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
 	"github.com/rocksolidlabs/conductor/internal/session"
 	"github.com/rocksolidlabs/conductor/internal/session/sessiontest"
@@ -1752,6 +1753,16 @@ func TestAResponseReceiptAtItsFieldsBoundsFits(t *testing.T) {
 		// Whom it answered for (#741): a person of the ledger's most
 		// characters, each escaping, and the longest responsibility.
 		For: &ReceiptFor{Person: esc(ledger.MaxForName), Responsibility: longestResponsibility()}}
+	if n := len(receiptJSON(rc)); n > ledger.MaxDecisionReceipt {
+		t.Fatalf("the widest receipt is %d bytes, over %d", n, ledger.MaxDecisionReceipt)
+	}
+	// Under a router's policy (SW1): its words of why at their bound
+	// escaping, four groups of the longest roles, the longest via and a ref
+	// escaping, all at once; the words leave them their room, as the
+	// response's transaction cuts them.
+	rc.Policy, rc.PolicyWhy, rc.Via, rc.Ref, rc.Override = "local/1", esc(ext.MaxConfirmWhy), ext.ViaDelegate, esc(ext.MaxEligibleRef), true
+	rc.Groups = []string{strings.Repeat("a", ext.MaxRoleName), strings.Repeat("b", ext.MaxRoleName), strings.Repeat("c", ext.MaxRoleName), strings.Repeat("d", ext.MaxRoleName)}
+	rc.Words = cutWordsTo(strings.Repeat("\u2028", maxReceiptWords), maxReceiptWords-maxPolicyReceipt)
 	if n := len(receiptJSON(rc)); n > ledger.MaxDecisionReceipt {
 		t.Fatalf("the widest receipt is %d bytes, over %d", n, ledger.MaxDecisionReceipt)
 	}

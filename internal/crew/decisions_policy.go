@@ -38,6 +38,12 @@ const (
 // its subject: a person a router's policy names among a group's eligible.
 const EntryEligible = "eligible"
 
+// maxPolicyReceipt is the room a receipt's words leave the fields of a
+// router's policy (its why, groups, via, ref, override), as encoded: their
+// worst case together, so a receipt under a router's policy keeps
+// ledger.MaxDecisionReceipt.
+const maxPolicyReceipt = 2 << 10
+
 // minOverrideReason is the shortest reason an override is given with, in
 // characters, once trimmed.
 const minOverrideReason = 10
