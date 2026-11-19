@@ -179,21 +179,20 @@ func TestOpeningUnderARouterReservesItsSpare(t *testing.T) {
 	l := openLedger(t, filepath.Join(t.TempDir(), "runs"))
 	const run = "team-00000001"
 	newRun(t, l, run)
-	// The run at one place from its bound: its decisions, each closed.
-	in(t, l, run, func(tx *Tx) error {
-		for i := range MaxDecisionsPerRun - 1 {
-			d := gateDecision(run, fmt.Sprintf("g%d", i))
-			got, _, err := tx.OpenDecision(d)
-			if err != nil {
-				return err
-			}
-			got.State, got.Rev = DecisionCancelled, 2
-			if err := tx.PutDecision(got); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
+	// The run at one place from its bound: its decisions, each closed,
+	// made by SQL alone (no writer of the ledger's makes 999 at once): one
+	// gate opened, then copies of it.
+	first := open(t, l, gateDecision(run, "g0"))
+	setState(t, l, run, first, DecisionCancelled, "")
+	if _, err := l.db.Exec(`WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < ?)
+		INSERT INTO decisions (run_id, current_run, origin, type, gate, fingerprint, request, policy, state, rev, created_at, closed_at)
+		SELECT run_id, current_run, origin, type, gate || '-' || x, fingerprint || '-' || x, request, policy, state, rev, created_at, closed_at
+		FROM decisions, c WHERE n = ?`, MaxDecisionsPerRun-2, first); err != nil {
+		t.Fatal(err)
+	}
+	if got := countRows(t, l, "SELECT COUNT(*) FROM decisions WHERE run_id = ?", run); got != MaxDecisionsPerRun-1 {
+		t.Fatalf("the run holds %d decisions", got)
+	}
 	err := try(l, run, func(tx *Tx) error {
 		_, _, err := tx.OpenDecision(spareGate(run, "spare"))
 		return err
