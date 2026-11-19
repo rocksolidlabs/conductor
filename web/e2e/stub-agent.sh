@@ -106,6 +106,11 @@
 # A line `stub open <url>` runs conductor open on the link, and `stub
 # browser <url>` runs $BROWSER on it as an agent's own opener does (#436);
 # each notes the command's one line in the transcript (open: …, browser: …).
+# A line `stub links <uri> <text>|<uri> <text>…` clears the screen and
+# prints each text on its own row from the first, as a hyperlink to its
+# uri (OSC 8), the way agents print links; a uri of `-` prints its text
+# as a plain line (hyperlinks); "links: printed N" goes into the
+# transcript once they are written.
 # A line `stub permission` sends the PermissionRequest hook of a Bash
 # command and draws no dialog, a permission whose choices the screen does
 # not show; the next key goes into the transcript as "permission: <key>".
@@ -1949,6 +1954,33 @@ spin() {
 	done
 }
 
+# hyperlinks prints the links of a `stub links` line: the screen cleared,
+# each `<uri> <text>` of the |-separated list on its own row from the
+# first, its text a hyperlink to its uri as agents print one (OSC 8, ST
+# ended: ESC ] 8 ; ; uri ESC \ text ESC ] 8 ; ; ESC \), and a uri of `-`
+# its text alone, as a plain line. A uri or a text outside the plain
+# characters is left out. Then "links: printed N" goes into the
+# transcript.
+hyperlinks() {
+	local -a entries=()
+	local entry uri text n=0
+	local uri_re='^[A-Za-z0-9:/._~?#=&%+@!()-]{1,500}$' text_re='^[A-Za-z0-9 :/._~?#=&%+@!()-]{1,200}$'
+	IFS='|' read -ra entries <<<"$1"
+	printf '\e[H\e[2J'
+	for entry in "${entries[@]}"; do
+		uri=${entry%% *}
+		text=${entry#* }
+		[[ $uri =~ $uri_re && $text =~ $text_re ]] || continue
+		if [[ $uri == - ]]; then
+			printf '%s\n' "$text"
+		else
+			printf '\e]8;;%s\e\\%s\e]8;;\e\\\n' "$uri" "$text"
+		fi
+		n=$((n + 1))
+	done
+	printf 'links: printed %s\n' "$n" >>"$transcript"
+}
+
 # answer answers one line.
 answer() {
 	local line=$1 rest=$1 kind target_run target branch deadline top to msg
@@ -2038,6 +2070,9 @@ answer() {
 		fi
 		printf '%s\n' "$out"
 		printf 'browser: %s\n' "$out" >>"$transcript"
+	fi
+	if [[ $line =~ ^stub\ links\ (.{1,1000})$ ]]; then
+		hyperlinks "${BASH_REMATCH[1]}"
 	fi
 	if [[ $line =~ ^stub\ ask-wait\ (.{1,200})$ ]]; then
 		report --ask --message "${BASH_REMATCH[1]}"

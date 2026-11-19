@@ -325,7 +325,7 @@ test('a loose session stops from its row and moves to Exited', async ({ page, ap
   await expect(exited.locator(`[data-sidebar-row="s:${alive!.id}"] [data-row-stop]`)).toHaveCount(0)
 })
 
-test('a free-text prompt gets a reply field, in the panel beside the row at 200 px; Enter sends the line and the row moves on', async ({ page, api, state }) => {
+test('a free-text prompt gets a reply field, in the row at the width the sidebar opens at; Enter sends the line and the row moves on', async ({ page, api, state }) => {
   const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'e2e branch' })
   sessions.push(s.id)
   await api.ok('POST', `/api/sessions/${s.id}/attention`, { state: 'needs_input', message: 'Which branch should I base it on?' })
@@ -552,12 +552,13 @@ test('the rail: the counts on top, a capsule holding its members, the corner til
   await api.call('DELETE', `/api/crews/${encodeURIComponent(crew2)}`)
 })
 
-// The full sidebar's width (#437): it opens at its minimum, 12.5 rem (200 px; 16.75 rem while its header held five parts, #706),
-// on every screen; a drag widens it up to 26 % of the window, never less than the minimum plus 5 rem (280 px), and no narrower than
-// the minimum, and on toward the window's edge gives the rail. Each case has its own page, so its own browser context and storage.
-// The widths are written here, never read from the app's table, so that a change of the number fails them.
+// The full sidebar's width (#437, #1022): it opens at 17.5 rem (280 px) on every screen; a drag narrows it to its minimum, 16 rem
+// (256 px), and widens it up to 26 % of the window, never less than the minimum plus 5 rem (336 px), and on toward the window's edge
+// gives the rail. Each case has its own page, so its own browser context and storage. The widths are written here, never read from
+// the app's table, so that a change of the number fails them.
 test.describe('the full sidebar\'s width', () => {
-  const MIN = 200
+  const OPEN = 280
+  const MIN = 256
   const handle = (page: Page) => page.locator('[role="separator"][aria-controls="dashboard-sidebar-main"]')
   const width = (page: Page) => page.locator('#dashboard-sidebar-main').evaluate((el) => el.getBoundingClientRect().width)
   const saved = (page: Page, key = 'conductor.sidebar.width') => page.evaluate((k) => localStorage.getItem(k), key)
@@ -584,10 +585,10 @@ test.describe('the full sidebar\'s width', () => {
     [1440, 900],
     [2560, 1440],
   ] as const) {
-    test(`with no saved width it opens at its minimum, 200 px, at ${w}×${h}`, async ({ page }) => {
+    test(`with no saved width it opens at 280 px, at ${w}×${h}`, async ({ page }) => {
       await page.setViewportSize({ width: w, height: h })
       await open(page)
-      await expect.poll(() => width(page)).toBeCloseTo(MIN, 0)
+      await expect.poll(() => width(page)).toBeCloseTo(OPEN, 0)
       expect(await saved(page)).toBeNull()
     })
   }
@@ -615,7 +616,7 @@ test.describe('the full sidebar\'s width', () => {
     await expect(handle(page)).toHaveCount(0)
   })
 
-  test('a reload keeps the width, and a double-click on the handle returns it to the minimum', async ({ page }) => {
+  test('a reload keeps the width, and a double-click on the handle returns it to the width it opens at', async ({ page }) => {
     await open(page)
     await drag(page, [320])
     await expect.poll(() => saved(page)).toBe('20')
@@ -624,8 +625,8 @@ test.describe('the full sidebar\'s width', () => {
     await expect.poll(() => width(page)).toBeCloseTo(320, 0)
     const at = await grip(page)
     await page.mouse.dblclick(at.x, at.y)
-    await expect.poll(() => width(page)).toBeCloseTo(MIN, 0)
-    await expect.poll(() => saved(page)).toBe('12.5')
+    await expect.poll(() => width(page)).toBeCloseTo(OPEN, 0)
+    await expect.poll(() => saved(page)).toBe('17.5')
   })
 
   test('the rail and back keeps the width', async ({ page }) => {
@@ -639,41 +640,51 @@ test.describe('the full sidebar\'s width', () => {
     await expect.poll(() => width(page)).toBeCloseTo(310, 0)
   })
 
-  test('a width saved before this change is dropped once: the sidebar opens at the minimum, and a drag after that is kept', async ({ page }) => {
+  test('a width saved before #437, in percent of the window, opens as that share of this window, once; a drag after that is kept', async ({ page }) => {
     await open(page)
-    await page.evaluate(() => localStorage.setItem('conductor.sidebar.size', '24'))
+    await page.evaluate(() => {
+      localStorage.removeItem('conductor.sidebar.width')
+      localStorage.setItem('conductor.sidebar.size', '24')
+    })
     await page.reload()
     await expect(handle(page)).toBeAttached()
-    await expect.poll(() => width(page)).toBeCloseTo(MIN, 0)
+    // 24 % of 1440 px.
+    await expect.poll(() => width(page)).toBeCloseTo(345.6, 0)
     expect(await saved(page, 'conductor.sidebar.size')).toBeNull()
+    expect(await saved(page)).toBe('21.6')
+    // A drag after it is kept. From 345.6 px the handle's grip is at a fraction of a pixel: the width the drag leaves is read, then
+    // the same width after a reload.
     await drag(page, [288])
-    await expect.poll(() => saved(page)).toBe('18')
+    await expect.poll(() => saved(page)).not.toBe('21.6')
+    const dragged = await width(page)
+    expect(Math.abs(dragged - 288), `dragged to ${dragged} px`).toBeLessThanOrEqual(1)
+    expect(Number(await saved(page)) * 16).toBeCloseTo(dragged, 0)
     await page.reload()
     await expect(handle(page)).toBeAttached()
-    await expect.poll(() => width(page)).toBeCloseTo(288, 0)
+    await expect.poll(() => width(page)).toBeCloseTo(dragged, 0)
   })
 
   test('resizing the window keeps the width within the new bounds', async ({ page }) => {
     await open(page)
     await drag(page, [900])
     await expect.poll(() => width(page)).toBeCloseTo(374.4, 0)
-    // At 1024 px 26 % is 266 px, so the most is the minimum plus 5 rem, 280 px; a drag there stops at it too.
+    // At 1024 px 26 % is 266 px, so the most is the minimum plus 5 rem, 336 px; a drag there stops at it too.
     await page.setViewportSize({ width: 1024, height: 900 })
-    await expect.poll(() => width(page)).toBeCloseTo(280, 0)
+    await expect.poll(() => width(page)).toBeCloseTo(336, 0)
     await drag(page, [600])
-    await expect.poll(() => width(page)).toBeCloseTo(280, 0)
+    await expect.poll(() => width(page)).toBeCloseTo(336, 0)
     // Wider again: the width stays what it was, the drag's bound grows back.
     await page.setViewportSize({ width: 2560, height: 1440 })
-    await expect.poll(() => width(page)).toBeCloseTo(280, 0)
+    await expect.poll(() => width(page)).toBeCloseTo(336, 0)
     await drag(page, [1500])
     await expect.poll(() => width(page)).toBeCloseTo(665.6, 0)
     await page.setViewportSize({ width: 1440, height: 900 })
     await expect.poll(() => width(page)).toBeCloseTo(374.4, 0)
-    // Narrowed while at the minimum: still the minimum.
+    // Narrowed while at the width it opens at (a double-click): still that width.
     const at = await grip(page)
     await page.mouse.dblclick(at.x, at.y)
     await page.setViewportSize({ width: 1024, height: 900 })
-    await expect.poll(() => width(page)).toBeCloseTo(MIN, 0)
+    await expect.poll(() => width(page)).toBeCloseTo(OPEN, 0)
   })
 
   test('a press on the handle that moves nothing, in a narrower window, keeps the width dragged in the wider one', async ({ page }) => {
@@ -704,12 +715,12 @@ test.describe('the full sidebar\'s width', () => {
 
   for (const [w, h, widest] of [
     [1440, 900, 374],
-    [1280, 720, 333],
+    [1280, 720, 336],
   ] as const) {
     test(`the header is the mark, the name and your menu, the name whole, as it opens and dragged to its widest and back, at ${w}×${h}`, async ({ page }) => {
       await page.setViewportSize({ width: w, height: h })
       await open(page)
-      await expect.poll(() => width(page)).toBeCloseTo(MIN, 0)
+      await expect.poll(() => width(page)).toBeCloseTo(OPEN, 0)
       const root = page.locator('#dashboard-sidebar-main')
       const header = root.locator('[data-slot="header"]')
       const name = header.locator('[data-sidebar-name]')
@@ -741,6 +752,7 @@ test.describe('the full sidebar\'s width', () => {
 
   test('with a wider font the name gives way, shortened with its whole text in its title, and every control stays in the bar, uncovered (#706)', async ({ page }) => {
     await open(page)
+    await drag(page, [100])
     await expect.poll(() => width(page)).toBeCloseTo(MIN, 0)
     const header = page.locator('#dashboard-sidebar-main [data-slot="header"]')
     const name = header.locator('[data-sidebar-name]')
@@ -765,13 +777,13 @@ test.describe('the full sidebar\'s width', () => {
     expect(await header.evaluate((el) => el.scrollWidth <= el.clientWidth), 'nothing spills out of the bar').toBe(true)
   })
 
-  test('in a window 1024 wide the handle widens the sidebar from 200 to 280 px: its most is the minimum plus 5 rem (#706)', async ({ page }) => {
+  test('in a window 1024 wide the handle widens the sidebar from 280 to 336 px: its most is the minimum plus 5 rem (#706)', async ({ page }) => {
     await page.setViewportSize({ width: 1024, height: 768 })
     await open(page)
-    await expect.poll(() => width(page)).toBeCloseTo(MIN, 0)
+    await expect.poll(() => width(page)).toBeCloseTo(OPEN, 0)
     await drag(page, [(await grip(page)).x + 200])
-    // 26 % of 1024 px is 266 px, short of the minimum plus 80 px: the most is 280 px, the width at which a row's question is whole.
-    await expect.poll(() => width(page)).toBeCloseTo(280, 0)
+    // 26 % of 1024 px is 266 px, short of the minimum plus 80 px: the most is 336 px.
+    await expect.poll(() => width(page)).toBeCloseTo(336, 0)
   })
 
   test('the filter lines up with Launch agent, at the width it opens with, dragged wider, and on the phone\'s list (#702)', async ({ page }) => {
@@ -807,7 +819,7 @@ test.describe('the full sidebar\'s width', () => {
       const section = page.locator('[data-sidebar-section="shared"]')
       const row = section.locator('[data-shared-entry]').filter({ hasText: 'e2e shared row' })
       await expect(row).toHaveCount(1)
-      await expect.poll(() => width(page)).toBeCloseTo(MIN, 0)
+      await expect.poll(() => width(page)).toBeCloseTo(OPEN, 0)
       const title = section.locator('[data-section-title]')
       const count = section.locator('[data-section-count]')
       const name = row.locator('[data-shared-name]')
@@ -948,6 +960,7 @@ test.describe('the full sidebar\'s width', () => {
     await open(page)
     const root = page.locator('#dashboard-sidebar-main')
     await expect(root.locator('[data-header-update]')).toBeVisible()
+    await drag(page, [100])
     await expect.poll(() => width(page)).toBeCloseTo(MIN, 0)
     const header = root.locator('[data-slot="header"]')
     const parts = [
@@ -963,6 +976,7 @@ test.describe('the full sidebar\'s width', () => {
   test('at the minimum, with an update pending, the name keeps the width it has without one; wider, the header is as it was (#604)', async ({ page, state }) => {
     await desktopApp(page, state, '')
     await open(page)
+    await drag(page, [100])
     await expect.poll(() => width(page)).toBeCloseTo(MIN, 0)
     const root = page.locator('#dashboard-sidebar-main')
     const header = root.locator('[data-slot="header"]')
@@ -1005,7 +1019,7 @@ test.describe('the full sidebar\'s width', () => {
 
 // A row at the sidebar's minimum (the UX review's P5): the name on one line across the row, the gutter 8 px, the initials a chip on the
 // meta line, the status's word whole at its end, and the question's choices from the row's text edge, each whole.
-test('a row fits 200 px', async ({ day, browser }) => {
+test('a row fits the sidebar\'s minimum, 256 px', async ({ day, browser }) => {
   const api = day.api
   const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'plain', name: 'e2e twenty chars xy' })
   try {
@@ -1015,7 +1029,14 @@ test('a row fits 200 px', async ({ day, browser }) => {
     // A page that is not the session's: its own page would mark the row as the one open.
     const page = await dayPage(browser, { width: 1440, height: 900, path: '/crews' })
     const root = page.locator('#dashboard-sidebar-main')
-    await expect.poll(() => root.evaluate((el) => el.getBoundingClientRect().width)).toBeCloseTo(200, 0)
+    // It opens at 280 px; dragged as narrow as it goes, 256 px.
+    await expect.poll(() => root.evaluate((el) => el.getBoundingClientRect().width)).toBeCloseTo(280, 0)
+    const handle = (await page.locator('[role="separator"][aria-controls="dashboard-sidebar-main"]').boundingBox())!
+    await page.mouse.move(handle.x + handle.width / 2, handle.y + handle.height / 2)
+    await page.mouse.down()
+    await page.mouse.move(100, handle.y + handle.height / 2, { steps: 4 })
+    await page.mouse.up()
+    await expect.poll(() => root.evaluate((el) => el.getBoundingClientRect().width)).toBeCloseTo(256, 0)
     const row = page.locator(`[data-session-list="sidebar"] [data-sidebar-row="s:${s.id}"]`)
     async function fits(message: string) {
       await expect(row.locator('[data-row-prompt]')).toHaveText(message)
@@ -1332,7 +1353,7 @@ test('the pages as six tiles', async ({ day, browser }) => {
   for (const size of [{ width: 1440, height: 900 }, { width: 1024, height: 768 }]) {
     const page = await dayPage(browser, { path: '/crews', ...size })
     const root = page.locator('#dashboard-sidebar-main')
-    await expect.poll(() => root.evaluate((el) => el.getBoundingClientRect().width)).toBeCloseTo(200, 0)
+    await expect.poll(() => root.evaluate((el) => el.getBoundingClientRect().width)).toBeCloseTo(280, 0)
     const tiles = page.getByRole('navigation', { name: 'Pages' })
     const tile = (id: string) => tiles.locator(`[data-sidebar-tile="${id}"]`)
     // Six tiles in order, once the server has said it has Brakeman (its slot is held until then).
@@ -1437,7 +1458,7 @@ test("Brakeman's slot is held", async ({ day, browser }) => {
   expect(await box(more)).toEqual(slot)
 })
 
-/** Nothing of the sidebar spills sideways, and `part` sits whole inside it: at the minimum width every spec runs at (#437). */
+/** Nothing of the sidebar spills sideways, and `part` sits whole inside it. */
 async function fitsSidebar(page: Page, part: Locator) {
   const root = page.locator('#dashboard-sidebar-main')
   const sides = await root.evaluate((el) => {

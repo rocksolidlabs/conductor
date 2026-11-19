@@ -576,8 +576,14 @@ not handled after a tenth of a second is underlined. When Neovim's text is
 not the guess (an autopair, an abbreviation, a mapping) its text wins once
 and the guessing stops until insert mode is left.
 
-URLs printed by an agent are clickable: a click offers **Open in new tab** or
-**Preview in pane** (a sandboxed iframe; sites that forbid embedding stay blank).
+URLs printed by an agent are clickable, an address in its text and a hyperlink
+it prints (OSC 8) alike: a click opens it in a new tab, once (the desktop app
+hands it to the system's browser), with no question asked, and a toast says
+where it went with **Preview in pane** (a sandboxed iframe; sites that forbid
+embedding stay blank). The pointer over a link shows its real address at the
+foot of the terminal, whatever the words it is printed as. A drag that selects
+text is not a click, and a hyperlink to a scheme other than http or https is
+not a link.
 A link an agent opens for you (an artifact, a pull request, a preview, a
 sign-in page) goes through Conductor: `conductor open <url>`, the MCP tool
 `open_url`, or the agent's own opener, which an agent with a browser set gets
@@ -787,13 +793,14 @@ the full sidebar on Exited. Every shape has a tooltip naming it in words
 exited"). The rail keeps the mark, Launch, a search button that opens the
 command palette, the pages (the Yard's count as an amber chip) and
 your menu. The panel button at the bottom of the rail brings the
-full sidebar back, as does **Ctrl+B**. The full sidebar opens at its
-narrowest, 12.5 rem (200 px) on every screen, its header the mark,
-"Conductor" and your menu (a wider font shortens the name first); drag its
-right edge to widen it, up to 26 % of the window but never less than
-17.5 rem (280 px), and on to the window's left edge for the rail; a
-double-click on the edge returns it to 200 px, and a narrower window keeps
-it within that window's bounds. The full sidebar's foot is the pages as six
+full sidebar back, as does **Ctrl+B**. The full sidebar opens at 17.5 rem
+(280 px) on every screen, wide enough for each row's name, question and
+choices, its header the mark, "Conductor" and your menu (a wider font
+shortens the name first); drag its right edge to narrow it to 16 rem
+(256 px) or widen it, up to 26 % of the window but never less than 21 rem
+(336 px), and on to the window's left edge for the rail; a double-click on
+the edge returns it to 280 px, and a narrower window keeps it within that
+window's bounds. The full sidebar's foot is the pages as six
 tiles in two rows, an icon over each name: **Needs you** (its number on the
 corner while something waits), **Yard**, **Crews**, **Dispatch**, **Brakeman**
 and **More**, which holds **Agents**, **History** and, in the desktop app,

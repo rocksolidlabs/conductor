@@ -59,7 +59,10 @@ for the wire details.
 - **Carousel** (1g): film strip of all sessions with a rotation progress bar,
   a "next up" line, and a "jumped here" note when follow mode moved. Follow
   mode holds for two intervals (at least 20 s), not forever, so a stray
-  prompt cannot freeze the rotation.
+  prompt cannot freeze the rotation. The rotation holds while the mouse
+  moves over the slide, and only then: a slide that grows under a
+  pointer at rest, as when the strip's thumbnails are closed, keeps
+  rotating (#1021).
 - **Launch** (1d): "Runs on: Server / My machine". The latter shows the exact
   `conductor host` command, including the host token, and waits for a hosted
   session with that name to appear.
@@ -1147,24 +1150,29 @@ open deferred item from rounds 1 and 2, then the features below.
   The phone's list, the palette, the pill, the Yard and the session page keep
   the question whole. Specs reach a row's answer through `rowAnswer`
   (`web/e2e/fixtures.ts`).
-- **Sidebar width (#437, #706, UX1 PR-7).** The full sidebar opens at its
-  minimum, 12.5 rem (200 px) on every screen (16.75 rem from #706 until the
-  UX review's P5): its header is the mark, "Conductor" and your menu, about
+- **Sidebar width (#437, #706, UX1 PR-7, #1022).** The full sidebar opens at
+  17.5 rem (280 px) on every screen, where each row's name, question and
+  choices are whole in the row (it opened at its 200 px minimum from UX1 PR-7
+  until #1022, which cut a run's members, a decision's question and the
+  filter's words); its minimum is 16 rem (256 px), the narrowest at which
+  every row still names itself whole: its header is the mark, "Conductor" and your menu, about
   186 px, and Alerts… (a slideover of the alert switches and, since PR-28,
   the rules where each event goes, `AlertsPanel.vue`)
   and Collapse to the rail (⌘B) are in your menu, the sidebar's alone (not in
   `accountActions`, which the phone's More and the palette show). A drag on
   its edge widens it up to 26 % of the window, never less than the minimum
-  plus 5 rem (280 px, the width at which a row shows its question whole) and
-  never below the minimum; a width dragged under #706 is kept as saved; a drag on toward the window's left edge
-  gives the rail, a double-click returns to the minimum. The bounds are
+  plus 5 rem (336 px) and never below the minimum; a width saved at or above
+  the minimum is kept, one below it (the 200 px minimum before #1022) opens at
+  280 px; a drag on toward the window's left edge gives the rail, a
+  double-click returns to 280 px. The bounds are
   `SIDEBAR_SIZE` and `sidebarBounds` in `web/app/utils/sidebar.ts`; the
   layout's `UDashboardGroup` works in rem. Nuxt UI clamps only during a drag,
   so the drawn width is `SIDEBAR_WIDTH`, a CSS clamp of Nuxt UI's `--width` to
   the same bounds, which holds as the window changes. The width is kept per
   browser under `conductor.sidebar.width` (rem); the percent width kept before
-  under `conductor.sidebar.size` is removed on first read, so every browser
-  opens at the minimum once. Below lg nothing changed.
+  under `conductor.sidebar.size` is read once as that share of the window,
+  kept under the new key when it is at least the minimum, and removed. Below
+  lg nothing changed (`sidebar-opens.spec.ts`).
 - **Launch with a first message (the UX review, P19; #951).** The Launch
   dialog's "What should it do?" (on this server, not for a clone or "On this
   computer") sends `message` with the launch; past 4,096 bytes the field says

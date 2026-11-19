@@ -103,10 +103,10 @@ async function expandByButton() {
 // the group's persistence off, Nuxt UI keeps it for the visit only. Nuxt UI
 // takes the starting width from defaultSize when the sidebar sets up, and
 // goes back to defaultSize on a double-click on the handle: the saved width
-// for the first, the minimum after mount for the second (#437). The bounds
-// follow the window, and SIDEBAR_WIDTH keeps the drawn width within them.
+// for the first, the opening width after mount for the second (#437, #1022).
+// The bounds follow the window, and SIDEBAR_WIDTH keeps the drawn width within them.
 const sidebarDefaultSize = ref(sidebar.size.value)
-onMounted(() => (sidebarDefaultSize.value = SIDEBAR_SIZE.min))
+onMounted(() => (sidebarDefaultSize.value = SIDEBAR_SIZE.open))
 sidebar.follow()
 
 // The share links joined from here: looked at again every minute, for the sidebar's Shared with you.

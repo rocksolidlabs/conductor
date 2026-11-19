@@ -120,6 +120,11 @@ function terminalRef(id: string) {
 // carousel back); rotation is started and stopped explicitly. It stops while
 // a session needs input (follow mode), while a terminal has keyboard focus,
 // while paused, and while the mouse hovers over the pane.
+// The hover is the page's, from the pointer moving over the pane (#1021): the
+// plugin's own hover stop listened for mouseenter, which the browser also
+// sends when the pane grows under a pointer at rest. Closing the strip's
+// thumbnails does that (the pane grows into the place of the button just
+// pressed), and the rotation stopped there while the header said Rotating.
 // Follow mode holds on a waiting session for a bounded time (two intervals,
 // at least 20 s) so one stray prompt never freezes the rotation; the waiting
 // session stays in the rotation and the hold repeats for each new prompt.
@@ -136,10 +141,25 @@ function releaseHold() {
 }
 const autoplayOptions = computed(() =>
   settings.value.autoplay && active.value.length > 1
-    ? { delay: settings.value.intervalMs, stopOnMouseEnter: true, stopOnInteraction: false, stopOnFocusIn: false }
+    ? { delay: settings.value.intervalMs, stopOnMouseEnter: false, stopOnInteraction: false, stopOnFocusIn: false }
     : false,
 )
-const rotating = computed(() => !!autoplayOptions.value && !paused.value && !holding.value && !typing.value)
+/** The mouse is over the pane, known from its moves there (never from an enter alone, see above). */
+const hovering = ref(false)
+function onPointerMove(e: PointerEvent) {
+  if (e.pointerType === 'mouse') hovering.value = true
+}
+function onPointerLeave() {
+  hovering.value = false
+}
+// A pane that goes from under the pointer (nothing left running) sends no leave.
+watch(shownState, (s) => {
+  if (s !== 'content') hovering.value = false
+})
+/** The rotation as the header shows it: on unless turned off, paused, held or typing. */
+const rotationOn = computed(() => !!autoplayOptions.value && !paused.value && !holding.value && !typing.value)
+/** The rotation as it runs: also held while the mouse hovers over the pane. */
+const rotating = computed(() => rotationOn.value && !hovering.value)
 const stateLabel = computed(() => {
   if (typing.value) return 'Typing'
   if (paused.value) return 'Paused'
@@ -173,7 +193,7 @@ watch(
   () => carousel.value?.emblaApi,
   (api, _prev, onCleanup) => {
     if (!api) return
-    // The plugin restarts itself on mouse-leave; re-apply our state when it does.
+    // The plugin restarts itself (on its init, at a drag's end); re-apply our state when it does.
     const guard = () => {
       if (!rotating.value) autoplay()?.stop()
     }
@@ -366,7 +386,7 @@ usePalette().registerPage(() => ({
   sessionId: current.value?.id,
   cwd: current.value?.cwd,
   rows: [
-    { key: 'page:rotation', label: holding.value ? 'Release the hold and keep rotating' : paused.value ? 'Resume rotation' : 'Pause rotation', detail: stateLabel.value, icon: rotating.value ? 'i-lucide-pause' : 'i-lucide-play', kbds: ['space'], run: togglePlay },
+    { key: 'page:rotation', label: holding.value ? 'Release the hold and keep rotating' : paused.value ? 'Resume rotation' : 'Pause rotation', detail: stateLabel.value, icon: rotationOn.value ? 'i-lucide-pause' : 'i-lucide-play', kbds: ['space'], run: togglePlay },
     { key: 'page:autoplay', label: 'Auto-rotate', icon: 'i-lucide-rotate-cw', on: settings.value.autoplay, run: () => (settings.value.autoplay = !settings.value.autoplay) },
     { key: 'page:follow', label: 'Follow routed events', icon: 'i-lucide-hand', on: settings.value.follow, run: () => (settings.value.follow = !settings.value.follow) },
     ...intervalItems.map((it) => ({ key: `page:interval:${it.value}`, label: `Every ${it.label}`, icon: 'i-lucide-timer', on: settings.value.intervalMs === it.value, run: () => (settings.value.intervalMs = it.value) })),
@@ -389,7 +409,7 @@ usePalette().registerPage(() => ({
           <div class="flex items-center gap-0.5 rounded-md border border-default p-0.5">
             <IconButton icon="i-lucide-chevron-left" size="xs" color="neutral" variant="ghost" label="Previous session" @click="prev" />
             <UTooltip :text="holding ? 'Release the hold and keep rotating' : paused ? 'Resume rotation' : 'Pause rotation'" :kbds="['space']">
-              <UButton :label="stateLabel" :icon="rotating ? 'i-lucide-play' : 'i-lucide-pause'" size="xs" color="neutral" variant="soft" class="font-semibold" @click="togglePlay" />
+              <UButton :label="stateLabel" :icon="rotationOn ? 'i-lucide-play' : 'i-lucide-pause'" size="xs" color="neutral" variant="soft" class="font-semibold" @click="togglePlay" />
             </UTooltip>
             <IconButton icon="i-lucide-chevron-right" size="xs" color="neutral" variant="ghost" label="Next session" @click="next" />
           </div>
@@ -429,6 +449,8 @@ usePalette().registerPage(() => ({
             class="h-full"
             :ui="{ viewport: 'h-full', container: 'h-full', item: 'h-full basis-full' }"
             @select="onSelect"
+            @pointermove="onPointerMove"
+            @pointerleave="onPointerLeave"
           >
             <div class="flex h-full flex-col gap-3">
               <div class="flex items-center gap-3">
