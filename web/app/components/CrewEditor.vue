@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { AgentInfo, CrewStart, SessionInfo } from '~/composables/useSessions'
-import { draftMember, manifestIds, memberNameFrom, ownersFollowPeople, tasksFollowMembers, type DraftCrew, type DraftMember, type DraftPerson } from '~/utils/crews'
+import { CREW_NAME_MAX, draftMember, manifestIds, memberNameFrom, moreOptionsLine, ownersFollowPeople, permissionItems, SETUP_WORDS, tasksFollowMembers, viewLinkHoursWords, type DraftCrew, type DraftMember, type DraftPerson } from '~/utils/crews'
 import { startSentence } from '~/utils/crewWords'
 import { withStart } from '~/utils/crewGraph'
 import { isActive } from '~/utils/attention'
@@ -9,17 +9,20 @@ import { shortCwd } from '~/utils/sessions'
 import { yoloChoice, yoloFromChoice, type YoloChoice } from '~/utils/yolo'
 
 /**
- * A saved crew's Setup: its goal, where its runs work, what each run does,
- * and its members as a table or as the graph of their start rules; a crew
+ * A crew's Setup: its name, its goal, its folder and its workspace, how its
+ * members start, its rarely changed options folded under More options (what
+ * a launch opens, its permission prompts, a view link), and its members as a
+ * table or as the graph of their start rules; a crew
  * with tasks has its tasks and, under them, its project manifest. Between the
  * members and the tasks, its people (HM1): never started, they own its
  * decisions and its tasks' outcomes. A comparison's crew (CP1) shows its
  * block, read only, above its tasks (CrewCompareBlock). The page
- * owns the name (in its header), saving, launching, duplicating and
- * deleting; the editor only changes the draft.
+ * owns saving, launching, duplicating and deleting, and says why the name
+ * cannot be saved (`nameProblem`, beside the field); the editor only changes
+ * the draft. A new crew's Name is focused (`focusName`).
  */
 const crew = defineModel<DraftCrew>({ required: true })
-const props = defineProps<{ agents: AgentInfo[]; yoloDefault?: boolean }>()
+const props = defineProps<{ agents: AgentInfo[]; yoloDefault?: boolean; nameProblem?: string; focusName?: boolean }>()
 
 const live = useAttention()
 const api = useSessions()
@@ -56,7 +59,7 @@ watch(
 )
 onBeforeUnmount(() => window.clearTimeout(gitTimer))
 const gitLine = computed(() => gitCheckLine(gitCheck.value, crew.value.isolation))
-/** Under "Runs in": the git state of the directory, and that it is the server's. */
+/** Under "Folder": the git state of the folder, and that it is the server's. */
 const runsInHelp = computed(() => {
   const where = serverHost.host.value ? `on ${serverHost.host.value}` : 'on the server'
   const git = gitLine.value.text.replace(/\.$/, '')
@@ -66,18 +69,9 @@ const runsInHelp = computed(() => {
 /** The view link a launch creates lasts 8 hours when the switch is on. */
 const VIEW_LINK_TTL = 8 * 3600
 
-const isolationItems = [
-  { label: 'shares one working directory', value: 'none' },
-  { label: 'gives each member a git worktree', value: 'worktree' },
-]
-
-// Yolo for the crew's runs: the server's default, or on, or off. A launch
-// fixes the choice on the run, so members started later follow it.
-const yoloItems = computed<Array<{ label: string; value: YoloChoice }>>(() => [
-  { label: `Yolo: the server's default (${props.yoloDefault ? 'on' : 'off'})`, value: 'default' },
-  { label: 'Yolo on: skip permission prompts', value: 'on' },
-  { label: 'Yolo off', value: 'off' },
-])
+// The permission prompts of the crew's runs: the server's default, or ask (yolo off), or skip (yolo on). A launch fixes the choice on
+// the run, so members started later follow it.
+const yoloItems = computed(() => permissionItems(!!props.yoloDefault))
 const yolo = computed({
   get: () => yoloChoice(crew.value.yolo),
   set: (c: YoloChoice) => (crew.value = { ...crew.value, yolo: yoloFromChoice(c) }),
@@ -87,15 +81,13 @@ const viewLink = computed({
   get: () => !!crew.value.viewLinkTtlSeconds,
   set: (on: boolean) => (crew.value = { ...crew.value, viewLinkTtlSeconds: on ? VIEW_LINK_TTL : undefined }),
 })
-const viewLinkHours = computed(() => {
-  const ttl = crew.value.viewLinkTtlSeconds
-  return ttl && ttl !== VIEW_LINK_TTL ? `${Math.round((ttl / 3600) * 10) / 10}h` : '8h'
+const afterLaunch = computed({
+  get: () => (crew.value.openAfterLaunch ? 'open' : 'stay'),
+  set: (v: string) => (crew.value = { ...crew.value, openAfterLaunch: v === 'open' }),
 })
-/** Under "Each run": what a launch does, in one line; the popover behind it changes it. */
-const eachRunLine = computed(() => {
-  const yoloWord = yolo.value === 'default' ? `server default (${props.yoloDefault ? 'on' : 'off'})` : yolo.value
-  return `${crew.value.openAfterLaunch ? 'Opens the run page' : 'Stays on this page'} · ${viewLink.value ? `view link for ${viewLinkHours.value}` : 'no view link'} · yolo: ${yoloWord}`
-})
+/** More options, folded: the line beside it says what each choice is now. */
+const moreOpen = ref(false)
+const moreLine = computed(() => moreOptionsLine(crew.value, !!props.yoloDefault))
 
 function set<K extends keyof DraftCrew>(key: K, value: DraftCrew[K]) {
   crew.value = { ...crew.value, [key]: value }
@@ -116,10 +108,7 @@ function setPeople(next: DraftPerson[]) {
 const taken = computed(() => crew.value.members.map((m) => m.name))
 
 /** How a run starts its members: by their start rules, or by the tasks the crew defines (#334). */
-const coordinationItems = [
-  { label: 'by start rules: each member starts when its rule says', value: 'starts' },
-  { label: 'by tasks: each member does its tasks as their needs are met', value: 'tasks' },
-]
+const coordinationItems = SETUP_WORDS.startItems.map((i) => ({ ...i }))
 const coordination = computed({
   get: () => (crew.value.tasks ? 'tasks' : 'starts'),
   set: (v: string) => {
@@ -188,50 +177,74 @@ function refused(message: string) {
 
 <template>
   <div class="flex min-w-0 flex-col gap-5" data-crew-editor>
-    <div class="grid gap-4 lg:grid-cols-[1.4fr_1fr_1fr]">
-      <UFormField label="Goal" hint="shared as $GOAL" name="goal">
-        <UTextarea :model-value="crew.goal" :rows="3" autoresize :maxrows="8" maxlength="2000" placeholder="What the crew is for. Every first prompt can say $GOAL." class="w-full" @update:model-value="set('goal', String($event))" />
-      </UFormField>
-
-      <!-- The git line is the field's help: announced with the input, and wrapped anywhere so a long path keeps the column's width. -->
-      <UFormField label="Runs in" name="cwd" :help="runsInHelp" :ui="{ help: 'mt-1 text-xs' }">
-        <DirInput :model-value="crew.cwd" placeholder="server default" name="cwd" picker-title="Where the crew runs" @update:model-value="set('cwd', $event)" />
-        <template #help>
-          <span class="[overflow-wrap:anywhere]" :class="{ 'text-success': gitLine.tone === 'success', 'text-warning': gitLine.tone === 'warning', 'text-muted': gitLine.tone === 'neutral' }" data-git-state>{{ runsInHelp }}</span>
-        </template>
-      </UFormField>
-
-      <UFormField label="Each run" name="isolation" :ui="{ help: 'mt-1 text-xs' }">
-        <USelect :model-value="crew.isolation" :items="isolationItems" aria-label="Each run" class="w-full" @update:model-value="set('isolation', $event as DraftCrew['isolation'])" />
-        <template #help>
-          <!-- One line says what a launch does; the popover behind it holds the switches. -->
-          <UPopover :content="{ align: 'start' }">
-            <button type="button" class="flex min-w-0 max-w-full items-center gap-1 rounded-xs text-left text-muted hover:text-default focus-visible:ring-2 focus-visible:ring-primary outline-none" data-each-run>
-              <span class="[overflow-wrap:anywhere]">{{ eachRunLine }}</span>
-              <UIcon name="i-lucide-pencil" class="size-3 flex-none" />
-            </button>
-            <template #content>
-              <div class="flex w-72 flex-col gap-3 p-3">
-                <USwitch :model-value="crew.openAfterLaunch" label="Open the run page after launch" size="sm" @update:model-value="set('openAfterLaunch', $event)" />
-                <USwitch v-model="viewLink" :label="`Create a view link (${viewLinkHours})`" size="sm" />
-                <USelect v-model="yolo" :items="yoloItems" aria-label="Yolo" size="sm" class="w-full" data-crew-yolo />
-              </div>
-            </template>
-          </UPopover>
-        </template>
-      </UFormField>
+    <!-- Each thing a crew is set to, one labelled control each; the detail one level down, as the field's help. -->
+    <div class="grid gap-x-6 gap-y-4 lg:grid-cols-2" data-crew-fields>
+      <div class="flex min-w-0 flex-col gap-4">
+        <UFormField label="Name" name="name" :error="nameProblem || false" :ui="{ error: 'mt-1 text-xs' }" data-crew-name-field>
+          <!-- Its accessible name holds the label's word: "Crew name" tells it from each member's "Name of …". -->
+          <UInput
+            :model-value="crew.name"
+            :maxlength="CREW_NAME_MAX"
+            placeholder="What people will call this crew"
+            aria-label="Crew name"
+            :autofocus="focusName"
+            :aria-invalid="!!nameProblem"
+            class="w-full"
+            data-crew-name
+            @update:model-value="set('name', String($event))"
+          />
+        </UFormField>
+        <UFormField label="Goal" name="goal" hint="A prompt can use it as $GOAL" :ui="{ hint: 'text-xs' }">
+          <UTextarea :model-value="crew.goal" :rows="2" autoresize :maxrows="8" maxlength="2000" placeholder="What the crew is for" aria-label="Goal" class="w-full" @update:model-value="set('goal', String($event))" />
+        </UFormField>
+      </div>
+      <div class="flex min-w-0 flex-col gap-4">
+        <!-- The git line is the field's help: announced with the input, and wrapped anywhere so a long path keeps the column's width. -->
+        <UFormField label="Folder" name="cwd" :help="runsInHelp" :ui="{ help: 'mt-1 text-xs' }">
+          <DirInput :model-value="crew.cwd" placeholder="The server's default folder" name="cwd" picker-title="The crew's folder" @update:model-value="set('cwd', $event)" />
+          <template #help>
+            <span class="[overflow-wrap:anywhere]" :class="{ 'text-success': gitLine.tone === 'success', 'text-warning': gitLine.tone === 'warning', 'text-muted': gitLine.tone === 'neutral' }" data-git-state>{{ runsInHelp }}</span>
+          </template>
+        </UFormField>
+        <UFormField :label="SETUP_WORDS.workspace" name="isolation" :ui="{ help: 'mt-1 text-xs' }">
+          <USelect :model-value="crew.isolation" :items="SETUP_WORDS.workspaceItems.map((i) => ({ ...i }))" :aria-label="SETUP_WORDS.workspace" class="w-full" data-crew-workspace @update:model-value="set('isolation', $event as DraftCrew['isolation'])" />
+          <template #help>
+            <span v-if="managed" class="text-muted">
+              Each attempt at a task works in <code>.conductor/worktrees/&lt;run&gt;/&lt;task&gt;.&lt;n&gt;</code> of the repository, on its own branch <code>crew/&lt;run&gt;/&lt;task&gt;.&lt;n&gt;</code>. The folder must be in a git repository with a commit.
+            </span>
+            <span v-else-if="crew.isolation === 'worktree'" class="text-muted">
+              Each member works in <code>.conductor/worktrees/&lt;run&gt;/&lt;member&gt;</code> of the repository, on its own branch <code>crew/&lt;run&gt;/&lt;member&gt;</code>. The folder must be in a git repository with a commit.
+            </span>
+            <span v-else class="text-muted">Every member works in the folder itself.</span>
+          </template>
+        </UFormField>
+      </div>
     </div>
 
-    <UFormField label="Coordination" name="coordination" :ui="{ help: 'mt-1 text-xs' }" :help="managed ? 'Each attempt at a task works in a worktree of its own, made at the results it needs; the checks decide a result, never a quiet terminal. Launched, it runs as a managed run: the run page shows the tasks.' : ''">
-      <USelect v-model="coordination" :items="coordinationItems" aria-label="Coordination" class="w-full" data-crew-coordination />
+    <UFormField :label="SETUP_WORDS.start" name="coordination" :ui="{ help: 'mt-1 text-xs' }" :help="managed ? 'The checks decide a task\'s result, never a quiet terminal. Launched, it runs as a managed run: the run page shows the tasks.' : ''">
+      <USelect v-model="coordination" :items="coordinationItems" :aria-label="SETUP_WORDS.start" class="w-full" data-crew-coordination />
     </UFormField>
 
-    <p v-if="crew.isolation === 'worktree' && !managed" class="-mt-2 text-xs text-muted">
-      Each member works in <code>.conductor/worktrees/&lt;run&gt;/&lt;member&gt;</code> of the repository, on its own branch <code>crew/&lt;run&gt;/&lt;member&gt;</code>. The directory must be in a git repository with a commit.
-    </p>
-    <p v-else-if="managed" class="-mt-2 text-xs text-muted">
-      Each attempt works in <code>.conductor/worktrees/&lt;run&gt;/&lt;task&gt;.&lt;n&gt;</code> of the repository, on its own branch <code>crew/&lt;run&gt;/&lt;task&gt;.&lt;n&gt;</code>. The directory must be in a git repository with a commit.
-    </p>
+    <!-- The options a crew rarely changes, folded; the line beside the toggle says what each is now. -->
+    <UCollapsible v-model:open="moreOpen" :ui="{ content: 'pt-3' }">
+      <div class="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
+        <UButton label="More options" :icon="moreOpen ? 'i-lucide-chevron-down' : 'i-lucide-chevron-right'" color="neutral" variant="ghost" size="sm" class="-ml-2.5 max-sm:min-h-11" :aria-expanded="moreOpen" data-crew-more-options />
+        <span v-if="!moreOpen" class="min-w-0 text-xs text-muted [overflow-wrap:anywhere]" data-crew-more-line>{{ moreLine }}</span>
+      </div>
+      <template #content>
+        <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3" data-crew-more>
+          <UFormField :label="SETUP_WORDS.afterLaunch" name="afterLaunch">
+            <USelect v-model="afterLaunch" :items="SETUP_WORDS.afterLaunchItems.map((i) => ({ ...i }))" :aria-label="SETUP_WORDS.afterLaunch" class="w-full" data-crew-after-launch />
+          </UFormField>
+          <UFormField :label="SETUP_WORDS.permissions" name="yolo" :ui="{ help: 'mt-1 text-xs' }" help="Skipped, a member acts without asking you first: only for work you trust.">
+            <USelect v-model="yolo" :items="yoloItems" :aria-label="SETUP_WORDS.permissions" class="w-full" data-crew-yolo />
+          </UFormField>
+          <UFormField :label="SETUP_WORDS.viewLink" name="viewLink" :ui="{ help: 'mt-1 text-xs' }" help="Each launch makes a link anyone can use to watch every member, view only.">
+            <USwitch v-model="viewLink" :label="`Make one for ${viewLinkHoursWords(crew.viewLinkTtlSeconds)}`" class="min-h-8 max-sm:min-h-11" data-crew-view-link />
+          </UFormField>
+        </div>
+      </template>
+    </UCollapsible>
 
     <div class="flex flex-col gap-3" data-crew-members-section>
       <div class="flex flex-wrap items-center gap-x-2.5 gap-y-1.5">

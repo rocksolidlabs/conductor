@@ -32,22 +32,26 @@ const props = withDefaults(defineProps<{ agents: AgentInfo[]; others?: string[];
 })
 const emit = defineEmits<{ add: []; addFromSession: [] }>()
 
-// Every cell keeps its place in the one-column-per-field layout of a wide
-// table and moves to a card layout when the table is narrow (a container
-// query, so the slideover gets it too). Full class names: Tailwind scans them.
+// Every cell keeps its place in the one-column-per-field layout of a wide table (each column as wide as what it holds: an agent's name as
+// long as "Claude Code (worker, busy)", "When you press Start") and moves to a card layout when the table is narrow, each control then under its own label
+// and, on a phone, 44 px to press (a container query, so the slideover gets it too). Full class names: Tailwind scans them.
 const cell = {
-  name: 'col-start-1 row-start-1 @min-[52rem]:col-start-auto @min-[52rem]:row-start-auto',
-  agent: 'col-start-2 row-start-1 @min-[52rem]:col-start-auto @min-[52rem]:row-start-auto',
-  prompt: 'col-start-1 col-span-2 row-start-2 @min-[52rem]:col-start-auto @min-[52rem]:col-span-1 @min-[52rem]:row-start-auto',
-  start: 'col-start-1 col-span-2 row-start-3 @min-[52rem]:col-start-auto @min-[52rem]:col-span-1 @min-[52rem]:row-start-auto',
-  menu: 'col-start-3 row-start-1 @min-[52rem]:col-start-auto @min-[52rem]:row-start-auto',
+  name: 'col-start-1 col-span-2 row-start-1 @min-[60rem]:col-start-auto @min-[60rem]:col-span-1 @min-[60rem]:row-start-auto',
+  agent: 'col-start-1 col-span-3 row-start-2 @min-[60rem]:col-start-auto @min-[60rem]:col-span-1 @min-[60rem]:row-start-auto',
+  prompt: 'col-start-1 col-span-3 row-start-3 @min-[60rem]:col-start-auto @min-[60rem]:col-span-1 @min-[60rem]:row-start-auto',
+  start: 'col-start-1 col-span-3 row-start-4 @min-[60rem]:col-start-auto @min-[60rem]:col-span-1 @min-[60rem]:row-start-auto',
+  menu: 'col-start-3 row-start-1 @min-[60rem]:col-start-auto @min-[60rem]:row-start-auto',
 }
 // A managed crew's members have no Starts column: their tasks start them.
 const cols = computed(() =>
   props.managed
-    ? 'grid-cols-[minmax(0,1fr)_minmax(0,1fr)_1.5rem] gap-x-2.5 gap-y-2 @min-[52rem]:grid-cols-[7rem_10.5rem_minmax(8rem,1fr)_1.5rem]'
-    : 'grid-cols-[minmax(0,1fr)_minmax(0,1fr)_1.5rem] gap-x-2.5 gap-y-2 @min-[52rem]:grid-cols-[7rem_10.5rem_minmax(8rem,1fr)_13rem_1.5rem]',
+    ? 'grid-cols-[minmax(0,1fr)_minmax(0,1fr)_2.75rem] gap-x-2.5 gap-y-2.5 @min-[60rem]:grid-cols-[10rem_17rem_minmax(10rem,1fr)_2rem]'
+    : 'grid-cols-[minmax(0,1fr)_minmax(0,1fr)_2.75rem] gap-x-2.5 gap-y-2.5 @min-[60rem]:grid-cols-[10rem_17rem_minmax(10rem,1fr)_15rem_2rem]',
 )
+/** A control's label in the card layout; the wide table's column heads say it there. */
+const cardLabel = 'text-xs font-medium text-muted @min-[60rem]:hidden'
+/** A control 44 px tall on a phone, the size it is elsewhere. */
+const touch = 'max-sm:min-h-11'
 
 /** The agent select: an agent not installed on the server (`host` names it) is marked, never disabled. */
 const agentItems = computed(() => props.agents.map((a) => agentItem(a, props.host)))
@@ -202,7 +206,7 @@ const focusedPrompt = ref<number | null>(null)
 
 <template>
   <div class="@container overflow-hidden rounded-lg ring ring-default" data-crew-members>
-    <div class="hidden border-b border-default bg-muted px-4 py-2.5 text-[11px] font-semibold uppercase tracking-wider text-muted @min-[52rem]:grid" :class="cols" aria-hidden="true">
+    <div class="hidden border-b border-default bg-muted px-4 py-2.5 text-[11px] font-semibold uppercase tracking-wider text-muted @min-[60rem]:grid" :class="cols" aria-hidden="true">
       <span>Name</span>
       <span>Agent</span>
       <span v-if="managed">Role <span class="font-normal normal-case tracking-normal">· written into each task file</span></span>
@@ -211,9 +215,10 @@ const focusedPrompt = ref<number | null>(null)
       <span />
     </div>
 
-    <div v-for="(m, i) in members" :key="m.key" class="flex flex-col gap-2 border-b border-default px-4 py-2.5 last:border-b-0" data-crew-member>
+    <div v-for="(m, i) in members" :key="m.key" class="flex flex-col gap-2.5 border-b border-default px-4 py-2.5 last:border-b-0" data-crew-member>
       <div class="grid items-start" :class="cols">
         <div :class="cell.name" class="flex min-w-0 flex-col gap-1">
+          <span :class="cardLabel" aria-hidden="true">Name</span>
           <UInput
             :model-value="m.name"
             placeholder="name"
@@ -224,27 +229,30 @@ const focusedPrompt = ref<number | null>(null)
             :highlight="!!nameError(m)"
             :aria-invalid="!!nameError(m)"
             :aria-label="`Name of ${who(m, i)}`"
-            :ui="{ base: 'font-mono font-medium' }"
+            :ui="{ base: `font-mono font-medium ${touch}` }"
             class="w-full"
             @update:model-value="rename(m.key, String($event))"
           />
           <span v-if="nameError(m)" class="text-xs leading-snug text-error" data-name-error>{{ nameError(m) }}</span>
         </div>
 
-        <USelect
-          :class="cell.agent"
+        <div :class="cell.agent" class="flex min-w-0 flex-col gap-1">
+          <span :class="cardLabel" aria-hidden="true">Agent</span>
+          <USelect
           :model-value="m.agentId"
           :items="agentsFor(m)"
           :icon="selectIcon(m.agentId)"
-          :ui="{ content: 'w-max min-w-(--reka-select-trigger-width) max-w-[calc(100vw-2rem)]' }"
+          :ui="{ base: touch, content: 'w-max min-w-(--reka-select-trigger-width) max-w-[calc(100vw-2rem)]' }"
           placeholder="Agent"
           :aria-label="`Agent for ${who(m, i)}`"
           class="w-full"
           @update:model-value="setAgent(m.key, String($event))"
         />
+        </div>
 
-        <UTextarea
-          :class="cell.prompt"
+        <div :class="cell.prompt" class="flex min-w-0 flex-col gap-1">
+          <span :class="cardLabel" aria-hidden="true">{{ managed ? 'Role' : 'First prompt' }}</span>
+          <UTextarea
           :model-value="m.prompt"
           :rows="focusedPrompt === m.key ? 3 : 1"
           :autoresize="focusedPrompt === m.key"
@@ -254,37 +262,41 @@ const focusedPrompt = ref<number | null>(null)
           :title="agentOf(m.agentId)?.allowArgs === false ? 'Typed into the shell as one line once it is ready (optional)' : 'Typed into the agent as one line once it is ready. $GOAL is the crew\'s goal.'"
           :aria-label="`First prompt for ${who(m, i)}`"
           class="w-full"
-          :ui="{ base: focusedPrompt === m.key ? 'resize-none' : 'resize-none overflow-hidden whitespace-nowrap text-ellipsis' }"
+          :ui="{ base: `${touch} ${focusedPrompt === m.key ? 'resize-none' : 'resize-none overflow-hidden whitespace-nowrap text-ellipsis'}` }"
           @update:model-value="update(m.key, { prompt: String($event) })"
           @focus="focusedPrompt = m.key"
           @blur="focusedPrompt = focusedPrompt === m.key ? null : focusedPrompt"
         />
+        </div>
 
-        <USelect
-          v-if="!managed"
-          :class="cell.start"
+        <div v-if="!managed" :class="cell.start" class="flex min-w-0 flex-col gap-1">
+          <span :class="cardLabel" aria-hidden="true">Starts</span>
+          <USelect
           :model-value="startValue(m.start)"
           :items="startItems(m)"
           :icon="startWords(m.start).icon"
           :aria-label="`When ${who(m, i)} starts`"
           class="w-full"
-          :ui="{ base: startWords(m.start).muted ? 'text-muted' : undefined }"
+          :ui="{ base: `${touch} ${startWords(m.start).muted ? 'text-muted' : ''}`, content: 'w-max min-w-(--reka-select-trigger-width) max-w-[calc(100vw-2rem)]' }"
           data-member-start
           @update:model-value="update(m.key, { start: startFrom(String($event)) })"
         />
+        </div>
 
-        <div :class="cell.menu" class="flex h-8 items-center justify-end">
+        <div :class="cell.menu" class="mt-5 flex h-8 items-center justify-end max-sm:h-11 @min-[60rem]:mt-0">
           <UDropdownMenu v-if="!single" :items="menu(m, i)" :content="{ align: 'end' }">
-            <IconButton icon="i-lucide-ellipsis" color="neutral" variant="ghost" size="xs" :label="`${who(m, i)}: more`" data-member-menu />
+            <IconButton icon="i-lucide-ellipsis" color="neutral" variant="ghost" size="xs" :label="`${who(m, i)}: more`" class="max-sm:min-h-11 max-sm:min-w-11 max-sm:justify-center" data-member-menu />
           </UDropdownMenu>
         </div>
       </div>
 
-      <div v-if="(unread && agentOf(m.agentId)?.adapter) || accountItems(m).length" class="flex flex-wrap items-start gap-2 pl-0 @min-[52rem]:pl-[18.5rem]" data-member-login>
-        <p v-if="unread" class="w-full max-w-64 text-xs text-muted [overflow-wrap:anywhere]" data-member-login-unread>
+      <!-- Its account and its model, each under its label: aligned under the prompt in the wide table. -->
+      <div v-if="(unread && agentOf(m.agentId)?.adapter) || accountItems(m).length" class="flex flex-wrap items-start gap-x-3 gap-y-2 pl-0 @min-[60rem]:pl-[28.25rem]" data-member-login>
+        <p v-if="unread" class="w-full max-w-80 text-xs text-muted [overflow-wrap:anywhere]" data-member-login-unread>
           Account: {{ m.account ? accountName(null, m.account) : 'the default at launch' }}, kept as saved: none can be chosen while the accounts cannot be read ({{ unread }}).
         </p>
-        <div v-else class="flex w-full max-w-64 flex-col gap-1">
+        <div v-else class="flex w-full min-w-0 flex-col gap-1 sm:w-72">
+          <span class="text-xs font-medium text-muted" aria-hidden="true">Account</span>
           <USelect
             :model-value="m.account || AT_LAUNCH"
             :items="accountItems(m)"
@@ -293,16 +305,18 @@ const focusedPrompt = ref<number | null>(null)
             :color="accountProblem(m) ? 'error' : undefined"
             :highlight="!!accountProblem(m)"
             :aria-label="`Account for ${who(m, i)}`"
+            :ui="{ base: touch, content: 'w-max min-w-(--reka-select-trigger-width) max-w-[calc(100vw-2rem)]' }"
             class="w-full"
             data-member-account
             @update:model-value="setAccount(m.key, String($event))"
           />
           <span v-if="accountProblem(m)" class="text-xs leading-snug text-error" data-member-account-error>{{ accountProblem(m) }}</span>
         </div>
-        <div class="flex w-full max-w-64 flex-col gap-1">
+        <div class="flex w-full min-w-0 flex-col gap-1 sm:w-60">
+          <span class="text-xs font-medium text-muted" aria-hidden="true">Model</span>
           <UInput
             :model-value="m.model ?? ''"
-            placeholder="no model named"
+            placeholder="The agent's choice"
             maxlength="100"
             autocapitalize="off"
             spellcheck="false"
@@ -310,7 +324,7 @@ const focusedPrompt = ref<number | null>(null)
             :color="modelProblem(m.model ?? '') ? 'error' : undefined"
             :highlight="!!modelProblem(m.model ?? '')"
             :aria-label="`Model for ${who(m, i)}`"
-            :ui="{ base: 'font-mono text-xs' }"
+            :ui="{ base: `font-mono text-xs ${touch}` }"
             data-member-model
             @update:model-value="update(m.key, { model: String($event) || undefined })"
           />
@@ -318,7 +332,7 @@ const focusedPrompt = ref<number | null>(null)
         </div>
       </div>
 
-      <div v-if="showsArgs(m)" class="flex items-center gap-2 pl-0 @min-[52rem]:pl-[18.5rem]">
+      <div v-if="showsArgs(m)" class="flex items-center gap-2 pl-0 @min-[60rem]:pl-[28.25rem]">
         <UInput
           :model-value="m.argsText"
           :placeholder="agentOf(m.agentId)?.allowArgs === false ? 'this agent takes no extra arguments' : 'extra arguments, as on the command line'"
@@ -339,8 +353,8 @@ const focusedPrompt = ref<number | null>(null)
     <p v-if="!single && !members.length" class="px-4 py-4 text-sm text-muted">No members yet. A crew needs at least one to launch.</p>
 
     <div v-if="!single" class="flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-default px-4 py-2">
-      <UButton label="Add member" icon="i-lucide-plus" color="secondary" variant="link" size="sm" class="px-0" :disabled="!agents.length || members.length >= 12" data-add-member @click="emit('add')" />
-      <UButton label="Add from a running session" icon="i-lucide-plus" color="secondary" variant="link" size="sm" class="px-0" :disabled="members.length >= 12" @click="emit('addFromSession')" />
+      <UButton label="Add member" icon="i-lucide-plus" color="secondary" variant="link" size="sm" class="px-0 max-sm:min-h-11" :disabled="!agents.length || members.length >= 12" data-add-member @click="emit('add')" />
+      <UButton label="Add from a running session" icon="i-lucide-plus" color="secondary" variant="link" size="sm" class="px-0 max-sm:min-h-11" :disabled="members.length >= 12" @click="emit('addFromSession')" />
       <span class="ml-auto text-xs text-muted">Each prompt is typed into its agent as one line once it is ready</span>
     </div>
   </div>

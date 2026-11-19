@@ -399,8 +399,19 @@ function freePort(): Promise<number> {
   })
 }
 
-/** A link the session's terminal shows, followed as a person does: typed at the prompt, then clicked, then Preview in pane. */
+/**
+ * A link the session's terminal shows, followed as a person does: typed at the prompt, then clicked (which opens it in a new tab,
+ * here recorded and opening nothing, #1020), then the toast's Preview in pane.
+ */
 async function previewInPane(page: Page, url: string) {
+  await page.evaluate(() => {
+    const w = window as unknown as { e2eOpens?: string[] }
+    w.e2eOpens = []
+    window.open = (u?: string | URL) => {
+      w.e2eOpens!.push(String(u))
+      return null
+    }
+  })
   const host = page.locator('.terminal-host').first()
   await host.click()
   await page.keyboard.type(url)
@@ -426,6 +437,8 @@ async function previewInPane(page: Page, url: string) {
     if (!over) continue
     await page.mouse.click(x, y)
     await page.getByRole('button', { name: 'Preview in pane' }).last().click()
+    // The click opened the link once; Preview in pane opened nothing more.
+    expect(await page.evaluate(() => (window as unknown as { e2eOpens?: string[] }).e2eOpens)).toEqual([url])
     // The line typed is cleared, so the next link is the only one on it.
     await host.click()
     await page.keyboard.press('Control+U')

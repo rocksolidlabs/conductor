@@ -68,7 +68,8 @@ async function toolApproval(page: Page, api: Api, state: { home: string }, narro
   // own key, in rem), and its inspector open (it starts closed, the terminal taking the room, P11): the terminal is then narrower
   // than the session's 80 columns, where Codex wraps the choices' descriptions, while the window keeps the sidebar whose row this test
   // reads. The window is not made narrower instead (terminalColumns): the inspector is beside the terminal only from 1280 px (xl),
-  // and below lg the sidebar is not drawn. At 300 px the row holds its choices; at 1440 they are in the panel beside the 200 px row.
+  // and below lg the sidebar is not drawn. At 300 px the row holds its choices, as it does at
+  // the 280 px the sidebar opens at (#1022).
   if (narrower) await page.addInitScript((rem) => localStorage.setItem('conductor.sidebar.width', rem), String(300 / 16))
   await page.goto(`/sessions/${encodeURIComponent(s.id)}`)
   await expect(page.locator('.terminal-host .xterm-screen').first()).toBeVisible()
@@ -99,8 +100,8 @@ async function toolApproval(page: Page, api: Api, state: { home: string }, narro
   expect(att?.kind).toBe('permission')
   expect(att?.options).toEqual(OPTIONS)
 
-  // The sidebar's row: needs you, the words, and the four choices where a person answers it (rowAnswer: in the panel beside the
-  // row while the sidebar is narrower than 280 px, as it opens).
+  // The sidebar's row: needs you, the words, and the four choices where a person answers it (rowAnswer: in the row at the 280 px
+  // the sidebar opens at and wider, in the panel beside the row while it is narrower).
   const row = page.locator(`[data-session-list="sidebar"] [data-sidebar-row="s:${s.id}"]`).first()
   await expect(row).toHaveAttribute('data-row-state', 'needs', { timeout: 30_000 })
   await expect(row.locator('[data-row-prompt]')).toHaveText(WORDS)

@@ -31,7 +31,7 @@ test('the examples load on the empty Crews page, at the scratch repository', asy
 
 test('the todo app with tasks opens in the editor coordinated by tasks, its five tasks as saved and none refused', async ({ page }) => {
   await page.goto('/crews/example-todo-app-tasks')
-  await expect(page.locator('[data-crew-coordination]')).toContainText('by tasks')
+  await expect(page.locator('[data-crew-coordination]')).toContainText('By tasks')
   await expect(page.locator('[data-crew-tasks-section]')).toBeVisible()
   const tasks = page.locator('[data-crew-task]')
   await expect(tasks).toHaveCount(5)

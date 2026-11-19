@@ -410,7 +410,7 @@ test("a task's new check is given an id no step of the manifest has", async ({ p
 test('a crew switched back to start rules drops its project manifest, and saves with none', async ({ page, api }) => {
   const id = await managedCrew(api, 'e2e manifest dropped', { manifest: { setup: [{ id: 'deps', argv: ['true'] }] } })
   await openCrew(page, id)
-  await pickOption(page, page.locator('[data-crew-coordination]'), /by start rules/)
+  await pickOption(page, page.locator('[data-crew-coordination]'), /By their start rules/)
   await expect(page.locator('[data-crew-manifest]')).toHaveCount(0)
   await expect(page.locator('[data-crew-tasks-section]')).toHaveCount(0)
   // Nothing holds the save: no manifest is left behind that the page no longer shows.

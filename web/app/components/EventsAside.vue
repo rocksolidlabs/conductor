@@ -13,6 +13,7 @@ import { tickLabel } from '~/utils/timeline'
  */
 const props = defineProps<{ entries: FeedEntry[]; now: number; routes: Record<EventType, RouteRow>; integrations: Integration[] }>()
 const alertsPanel = useAlertsPanel()
+const reportingOpen = ref(false)
 
 const spark = computed(() => sparkBuckets(props.entries, props.now, 60))
 const total = computed(() => Object.values(spark.value.totals).reduce((a, b) => a + b, 0))
@@ -83,15 +84,29 @@ function reporting(it: Integration): { dot: string; text: string; tone: string }
       </div>
     </section>
 
+    <!-- Which agents report is set-up, not history (#1024): folded until asked for. -->
     <section v-if="integrations.length" class="flex flex-col gap-2" data-reporting>
-      <div class="flex items-baseline">
-        <h3 class="text-[11px] font-semibold uppercase tracking-wider text-muted">Reporting</h3>
+      <div class="flex items-center">
+        <UButton
+          :label="reportingOpen ? 'Hide which agents report' : 'Which agents report'"
+          :trailing-icon="reportingOpen ? 'i-lucide-chevron-up' : 'i-lucide-chevron-down'"
+          size="xs"
+          color="neutral"
+          variant="ghost"
+          class="-ml-2 max-sm:min-h-11"
+          :aria-expanded="reportingOpen"
+          aria-controls="history-reporting-list"
+          data-reporting-toggle
+          @click="reportingOpen = !reportingOpen"
+        />
         <UButton label="Set up on Agents" to="/agents#reporting" size="xs" color="secondary" variant="link" class="ml-auto px-0" data-reporting-link />
       </div>
-      <div v-for="it in integrations" :key="it.id" class="flex items-center gap-2 text-[12.5px]" :data-reporting-agent="it.id">
-        <span class="size-[7px] flex-none rounded-full" :class="reporting(it).dot" />
-        <span class="truncate font-medium text-highlighted">{{ it.name }}</span>
-        <span class="ml-auto flex-none" :class="reporting(it).tone">{{ reporting(it).text }}</span>
+      <div v-show="reportingOpen" id="history-reporting-list" class="flex flex-col gap-2">
+        <div v-for="it in integrations" :key="it.id" class="flex items-center gap-2 text-[12.5px]" :data-reporting-agent="it.id">
+          <span class="size-[7px] flex-none rounded-full" :class="reporting(it).dot" />
+          <span class="truncate font-medium text-highlighted">{{ it.name }}</span>
+          <span class="ml-auto flex-none" :class="reporting(it).tone">{{ reporting(it).text }}</span>
+        </div>
       </div>
     </section>
   </aside>

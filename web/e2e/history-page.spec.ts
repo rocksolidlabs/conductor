@@ -143,16 +143,17 @@ test("the History page's chips write the query, the URL keeps it, and a phone sh
     await expect.poll(() => new URL(page.url()).searchParams.get('q')).toBe(`${tag} kind:session`)
     await expect(row).toBeVisible({ timeout: 30_000 })
 
-    // A phone: one column, the chips under the search box, nothing wider than the screen.
+    // A phone: one column, the results right under the search box, the chips behind Filters (history-clear.spec.ts opens it), nothing
+    // wider than the screen.
     await page.setViewportSize({ width: 390, height: 844 })
     await page.goto(`/history?q=${encodeURIComponent(`${tag} kind:session`)}`)
     await expect(row).toBeVisible({ timeout: 30_000 })
     const box = async (sel: string) => (await pageEl.locator(sel).boundingBox())!
-    const [searchBox, chips, results] = [await box('[data-history-search]'), await box('[data-history-chips]'), await box('[data-history-results]')]
-    expect(Math.abs(chips.x - searchBox.x)).toBeLessThan(2)
+    const [searchBox, results] = [await box('[data-history-search]'), await box('[data-history-results]')]
     expect(Math.abs(results.x - searchBox.x)).toBeLessThan(2)
-    expect(chips.y).toBeGreaterThan(searchBox.y)
-    expect(results.y).toBeGreaterThan(chips.y)
+    expect(results.y).toBeGreaterThan(searchBox.y)
+    await expect(pageEl.locator('[data-history-chips]')).toBeHidden()
+    await expect(pageEl.locator('[data-history-filters-button]')).toBeVisible()
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
   } finally {
     await api.stopSession(s.id)

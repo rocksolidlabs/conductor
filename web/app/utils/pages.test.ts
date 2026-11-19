@@ -81,7 +81,7 @@ describe('the pages in one table', () => {
     expect(ids(palettePages())).toEqual(go)
     expect(ids(palettePages({ desktop: true }))).toEqual([...go, 'settings'])
     expect(palettePages()[0]!.title).toBe('Needs you')
-    expect(palettePages().map((p) => p.title)).toEqual(['Needs you', 'Yard', 'Roundhouse', 'Crews', 'Dispatch', 'Agents', 'Agents · Reporting', 'History', 'History · Feed', 'Paste invite'])
+    expect(palettePages().map((p) => p.title)).toEqual(['Needs you', 'Yard', 'Roundhouse', 'Crews', 'Dispatch', 'Agents', 'Agents · Reporting', 'History', 'History · Live', 'Paste invite'])
     expect(palettePages().map((p) => p.chord?.join(' '))).toEqual(['G N', 'G Y', 'G R', 'G C', 'G D', 'G A', undefined, 'G H', 'G E', undefined])
   })
 
@@ -92,7 +92,7 @@ describe('the pages in one table', () => {
     expect(feed.id).toBe('history-feed')
     expect(feed.to).toBe('/history?view=feed')
     expect(feed.viewOf).toBe('history')
-    expect(GLOBAL_SHORTCUTS.rows.find((r) => r.keys.join(' ') === 'G E')!.label).toBe("Go to History's feed")
+    expect(GLOBAL_SHORTCUTS.rows.find((r) => r.keys.join(' ') === 'G E')!.label).toBe("Go to History · Live")
   })
 
   it('lights a page on its own paths and on no path that only starts with its letters', () => {
