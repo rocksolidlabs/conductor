@@ -357,3 +357,92 @@ func TestTheFullestOutcomeFitsItsBound(t *testing.T) {
 		t.Fatalf("the fullest outcome: %d rows %v", len(rows), err)
 	}
 }
+
+// fill fills run with closed copies of one gate, made by SQL alone, until
+// it holds n decisions; each copy in state, its policy as given.
+func fill(t *testing.T, l *Ledger, run string, n int, state, policy string) {
+	t.Helper()
+	first := open(t, l, gateDecision(run, "fill-0"))
+	setState(t, l, run, first, DecisionCancelled, "")
+	if _, err := l.db.Exec(`WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < ?)
+		INSERT INTO decisions (run_id, current_run, origin, type, gate, fingerprint, request, policy, state, rev, created_at, closed_at)
+		SELECT run_id, current_run, origin, type, gate || '-' || x, fingerprint || '-' || x, request, ?, ?, rev, created_at, closed_at
+		FROM decisions, c WHERE n = ?`, n-1, policy, state, first); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// replaceSpare supersedes answered routed decision n by a fresh one with a
+// spare of its own, as the engine's replacement does: the old one final
+// first, the fresh one opened, the old one naming it.
+func replaceSpare(l *Ledger, run string, n int64, gate string) (int64, error) {
+	var fresh int64
+	err := try(l, run, func(tx *Tx) error {
+		old, _, err := tx.Decision(n)
+		if err != nil {
+			return err
+		}
+		old.State, old.Rev = DecisionSuperseded, old.Rev+1
+		if err := tx.PutDecision(old); err != nil {
+			return err
+		}
+		got, _, err := tx.OpenDecision(spareGate(run, gate))
+		if err != nil {
+			return err
+		}
+		fresh = got.N
+		old.SupersededBy = got.ID()
+		return tx.PutDecision(old)
+	})
+	return fresh, err
+}
+
+// A routed decision opened at a run's last place (its spare the run's
+// thousandth) has its first eligible answer accepted; its recheck failing,
+// its replacement takes the place of its spare, and so on down a chain:
+// the chain holds one decision and one spare of the run's bound, however
+// long, each answer accepted and each replacement opened.
+func TestReplacementChainHoldsOneSpare(t *testing.T) {
+	l := openLedger(t, filepath.Join(t.TempDir(), "runs"))
+	const run = "team-00000001"
+	newRun(t, l, run)
+	fill(t, l, run, MaxDecisionsPerRun-2, DecisionCancelled, localPolicy)
+	n := open(t, l, spareGate(run, "g0"))
+	if err := try(l, run, func(tx *Tx) error {
+		_, _, err := tx.OpenDecision(gateDecision(run, "past"))
+		return err
+	}); !errors.Is(err, ErrDecisionLimit) {
+		t.Fatalf("the run is not full: %v", err)
+	}
+	for i := range 5 {
+		answer(t, l, run, n, fmt.Sprintf("a%d", i), `{"grant":"decide","via":"identity","subject":"ana","boot":"boot-1"}`)
+		fresh, err := replaceSpare(l, run, n, fmt.Sprintf("g%d", i+1))
+		if err != nil {
+			t.Fatalf("replacement %d: %v", i+1, err)
+		}
+		n = fresh
+	}
+	if got := record(t, l, n); got.State != DecisionOpen || !spareOf(got.Policy) {
+		t.Fatalf("the chain's last: %s %s", got.State, got.Policy)
+	}
+}
+
+// A run's voided routed decisions are bound apart: at MaxVoidedRoutedPerRun
+// an answer to a routed decision is refused for room, naming the bound,
+// and an answer to one under the server's own policy is not.
+func TestVoidedRoutedAnswersBoundPerRun(t *testing.T) {
+	l := openLedger(t, filepath.Join(t.TempDir(), "runs"))
+	const run = "team-00000001"
+	newRun(t, l, run)
+	fill(t, l, run, MaxVoidedRoutedPerRun+1, DecisionSuperseded, spareLocal)
+	routed := open(t, l, spareGate(run, "g1"))
+	plain := open(t, l, gateDecision(run, "g2"))
+	err := try(l, run, func(tx *Tx) error {
+		_, err := tx.Respond(routed, ResponseRow{Actor: "user:ana", Authority: `{"grant":"decide","via":"identity","subject":"ana","boot":"boot-1"}`, ResponseID: "a1", Fingerprint: "fp", Status: ResponseAccepted, Receipt: `{}`})
+		return err
+	})
+	if !errors.Is(err, ErrDecisionLimit) || !strings.Contains(err.Error(), "voided") {
+		t.Fatalf("an answer past the voided bound: %v", err)
+	}
+	answer(t, l, run, plain, "a2", workbenchAuth)
+}

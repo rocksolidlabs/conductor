@@ -895,6 +895,17 @@ const placeCond = `((d.state = 'answered' AND EXISTS (SELECT 1 FROM decision_res
 	WHERE r.decision = d.n AND r.status = 'accepted' AND json_extract(r.authority, '$.via') = 'identity'))
 	OR (d.state IN ('open', 'answered') AND json_extract(d.policy, '$.spare') = 1))`
 
+// voidedCond is the SQL condition of a voided routed decision (alias d):
+// superseded while it held a spare (opened while a decision router routed
+// policies), its replacement standing in its place. The run's voided
+// decisions are bound apart (MaxVoidedRoutedPerRun).
+const voidedCond = `(d.state = 'superseded' AND json_extract(d.policy, '$.spare') = 1)`
+
+// MaxVoidedRoutedPerRun bounds a run's voided routed decisions: past it an
+// answer to a routed decision is refused for room (the replacement it may
+// need would pass it), and the run is stopped or cancelled.
+const MaxVoidedRoutedPerRun = 1000
+
 // count answers a COUNT query.
 func (t *Tx) count(query string, args ...any) (int, error) {
 	var n int
@@ -910,7 +921,11 @@ func (t *Tx) room(run string) (bool, error) { return t.roomFor(run, 1) }
 // roomFor says whether run has room for need more of its places: a
 // decision opened with a spare needs two, itself and its spare.
 func (t *Tx) roomFor(run string, need int) (bool, error) {
-	opened, err := t.count("SELECT COUNT(*) FROM decisions WHERE run_id = ?", run)
+	// A routed decision superseded (voidedCond) no longer counts: its
+	// replacement stands in its place, so a chain of replacements holds one
+	// decision and one spare of the run's bound (voided apart, its own
+	// bound).
+	opened, err := t.count("SELECT COUNT(*) FROM decisions d WHERE d.run_id = ? AND NOT "+voidedCond, run)
 	if err != nil {
 		return false, err
 	}
@@ -1338,6 +1353,17 @@ func (t *Tx) Respond(n int64, r ResponseRow) (Responded, error) {
 	} else {
 		if accepted > 0 || d.State != DecisionOpen {
 			return Responded{}, fmt.Errorf("%w: %s is %s and has its answer", ErrDecisionState, d.ID(), d.State)
+		}
+		if spareOf(d.Policy) {
+			// Its replacement's place is its spare's; only the run's voided
+			// routed decisions bound it.
+			voided, err := t.count("SELECT COUNT(*) FROM decisions d WHERE d.run_id = ? AND "+voidedCond, d.CurrentRun)
+			if err != nil {
+				return Responded{}, err
+			}
+			if voided >= MaxVoidedRoutedPerRun {
+				return Responded{}, fmt.Errorf("%w: %s's run has voided %d routed answers: stop or cancel it", ErrDecisionLimit, d.ID(), voided)
+			}
 		}
 		if auth.Via == ViaIdentity && !spareOf(d.Policy) {
 			// A record with a spare holds its replacement's place from its

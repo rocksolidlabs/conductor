@@ -2,7 +2,9 @@ package ledger
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -242,4 +244,85 @@ func (l *Ledger) Outcomes(ctx context.Context, after int64, limit int) ([]Outbox
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+// AckOutcomes deletes the outbox's rows up to through: the decision
+// router's acknowledgement, the only way a row leaves. It answers how many
+// it deleted.
+func (l *Ledger) AckOutcomes(ctx context.Context, through int64) (int64, error) {
+	if l.readOnly {
+		return 0, fmt.Errorf("%w: %s", ErrReadOnly, l.why)
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.closed {
+		return 0, ErrClosed
+	}
+	res, err := l.db.ExecContext(ctx, `DELETE FROM decision_outbox WHERE seq <= ?`, through)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+// OutcomeOf is decision n's outbox row's outcome, ok false for none (a
+// record that never carried a router's policy, or one acknowledged).
+func (l *Ledger) OutcomeOf(ctx context.Context, n int64) (Outcome, bool, error) {
+	db, version, err := l.connAt()
+	if err != nil || version < versionOutbox {
+		return Outcome{}, false, err
+	}
+	var raw string
+	err = db.QueryRowContext(ctx, `SELECT outcome FROM decision_outbox WHERE decision = ?`, n).Scan(&raw)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return Outcome{}, false, nil
+	case err != nil:
+		return Outcome{}, false, err
+	}
+	var o Outcome
+	if err := json.Unmarshal([]byte(raw), &o); err != nil {
+		return Outcome{}, false, err
+	}
+	return o, true, nil
+}
+
+// OpenDecisionsAfter reads the open decisions numbered after after, in
+// number order, at most limit, each whole; more says one followed.
+func (l *Ledger) OpenDecisionsAfter(ctx context.Context, after int64, limit int) (recs []DecisionRecord, more bool, err error) {
+	var ns []int64
+	err = l.readSnapshot(ctx, func(q querier, version int) error {
+		if version < versionDecisions {
+			return nil
+		}
+		rows, err := q.QueryContext(ctx, `SELECT n FROM decisions WHERE state = 'open' AND n > ? ORDER BY n LIMIT ?`, after, limit+1)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var n int64
+			if err := rows.Scan(&n); err != nil {
+				return err
+			}
+			ns = append(ns, n)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, false, err
+	}
+	if len(ns) > limit {
+		ns, more = ns[:limit], true
+	}
+	for _, n := range ns {
+		rec, ok, err := l.Decision(ctx, n)
+		if err != nil {
+			return nil, false, err
+		}
+		if ok && rec.State == DecisionOpen {
+			recs = append(recs, rec)
+		}
+	}
+	return recs, more, nil
 }
