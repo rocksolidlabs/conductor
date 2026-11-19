@@ -251,6 +251,21 @@ test("on a phone a member is a card: each control labelled and 44 px to press, a
   await page.locator('[data-crew-launch-cancel]').click()
 })
 
+test("a live run's banner on its crew's page says the run in the Crews pages' words: a member at its prompt is idle, never running", async ({ page, api }) => {
+  budget(4 * EXPECT) // the page, the state, the counts, no "running"
+  const crewName = unique('banner')
+  // One member on the plain shell, which reports no turn: at its prompt, it is idle.
+  const { crew } = await api.ok<{ crew: { id: string } }>('POST', '/api/crews', { name: crewName, goal: '', cwd: '', where: 'server', isolation: 'none', openAfterLaunch: false, members: [{ name: 'sh', agentId: 'plain', prompt: '', start: { when: 'immediately' } }] })
+  made.crews.push(crew.id)
+  const run = await api.launchCrew(crew.id)
+  made.runs.push(run.id)
+  await page.goto(`/crews/${crew.id}`)
+  const banner = page.locator(`[data-live-run-banner][data-run="${run.id}"]`)
+  await expect(banner.locator('[data-live-run-state]')).toContainText('Running')
+  await expect(banner.locator('[data-live-run-line]')).toHaveText('1 idle')
+  await expect(banner).not.toContainText(/\brunning\b/)
+})
+
 for (const [width, height] of [
   [1440, 900],
   [1280, 800],
