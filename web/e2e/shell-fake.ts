@@ -58,7 +58,7 @@ export async function fakeShell(page: Page, cfg: FakeConfig): Promise<void> {
     const item = (id: string) => {
       const it = p?.items?.[id]
       if (!it) throw { code: 'not_visible', words: 'This decision is not one you can see here' }
-      return { ...clone(it), offline: rec.offline } as Rec
+      return { ...clone(it), offline: rec.offline || (it as Rec).offline === true } as Rec
     }
     const provider = p && {
       name: p.name,
@@ -96,7 +96,7 @@ export async function fakeShell(page: Page, cfg: FakeConfig): Promise<void> {
             const it = p.items?.[id] as Rec | undefined
             const reply = (it?.reply as Rec | undefined) ?? { outcome: 'kept' }
             if (reply.outcome === 'kept' && it) it.own = { responseId: a.responseId, state: 'answered', words: 'Your answer was recorded' }
-            return { ...clone(reply), ...(it ? { item: item(id) } : {}) }
+            return { ...clone(reply), ...(reply.item ? {} : it ? { item: item(id) } : {}) }
           }),
         answerOf: (id: string, responseId: string) =>
           call('answerOf', () => {
@@ -156,10 +156,11 @@ export async function fakeShell(page: Page, cfg: FakeConfig): Promise<void> {
         p.state = s
         for (const l of stateListeners) l(clone(s))
       },
-      setItem: (id: string, it: Rec) => {
+      /** Sets an item; `quiet`: its watchers are not told (a change the page meets only by reading it again). */
+      setItem: (id: string, it: Rec, quiet?: boolean) => {
         if (!p) return
         p.items = { ...(p.items ?? {}), [id]: it }
-        for (const w of watchers) w(id)
+        if (!quiet) for (const w of watchers) w(id)
       },
       release: (name: string) => {
         rec.hold = rec.hold.filter((h) => h !== name)

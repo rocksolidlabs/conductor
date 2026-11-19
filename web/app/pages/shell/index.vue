@@ -1,4 +1,7 @@
 <script setup lang="ts">
+import { clockTime } from '~/utils/brakemanRole'
+import { routeWords } from '~/utils/shell'
+
 /**
  * The phone shell's first screen (docs/plans/phone-shell.md, OSS-1b): with no provider, Open a server, the whole screen; with one,
  * its sign-in while it reports this phone signed out, and once signed in what waits, with Settings a tap away.
@@ -9,6 +12,7 @@ const shell = useShell()
 const route = useRoute()
 const initial = computed(() => (typeof route.query.address === 'string' ? route.query.address : ''))
 const s = shell.state
+const note = computed(() => (typeof route.query.note === 'string' ? routeWords(route.query.note, shell.name, shell.lastInbox.value?.asOf ?? null, (t) => clockTime(t)) : ''))
 </script>
 
 <template>
@@ -27,6 +31,6 @@ const s = shell.state
       <IconButton label="Settings" icon="i-lucide-settings" color="neutral" variant="ghost" class="min-h-11 min-w-11" to="/shell/settings" data-shell-to-settings />
     </ShellHeader>
     <p v-if="s.words" class="break-words text-sm text-warning" role="status" data-shell-state-words>{{ s.words }}</p>
-    <p class="text-sm text-muted" data-shell-signed-in>Signed in. What waits for you is listed here.</p>
+    <ShellInboxList :name="shell.name" :note="note" />
   </template>
 </template>

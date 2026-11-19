@@ -60,6 +60,9 @@ async function watched(page: Page): Promise<() => Promise<string[]>> {
 let root = ''
 let www = ''
 let served: { server: Server; url: string } | undefined
+/** The same bundle synced with the tests' provider module (mobile/e2e/fixtures/provider). */
+let withProvider: { server: Server; url: string } | undefined
+const fixture = join(repo, 'mobile/e2e/fixtures/provider')
 
 test.beforeAll(async () => {
   test.setTimeout(180_000)
@@ -68,10 +71,15 @@ test.beforeAll(async () => {
   syncBundle(dist, www)
   await build(bridgeBuild(join(www, 'shell')))
   served = await serve(www, metaPolicy)
+  const www2 = join(root, 'www-provider')
+  syncBundle(dist, www2, fixture)
+  await build(bridgeBuild(join(www2, 'shell')))
+  withProvider = await serve(www2, metaPolicy)
 })
 
 test.afterAll(async () => {
   await new Promise((r) => served?.server.close(r))
+  await new Promise((r) => withProvider?.server.close(r))
   if (root) rmSync(root, { recursive: true, force: true })
 })
 
@@ -90,6 +98,24 @@ test('the synced bundle starts under its policy on Open a server, with no provid
   expect(await page.evaluate(() => (window as unknown as { conductorShell?: { v: number; platform: string } }).conductorShell?.platform)).toBe('web')
   const html = readFileSync(join(www, 'index.html'), 'utf8')
   expect(metaPolicy(html)).toMatch(/^script-src 'self' 'wasm-unsafe-eval'( 'sha256-[A-Za-z0-9+/=]+')+$/)
+  expect(await violations()).toEqual([])
+  expect(errors).toEqual([])
+  await ctx.close()
+})
+
+test("with a provider module, a decision's page draws its code block highlighted and its diagram under the policy, with no violation", async ({ browser }) => {
+  // Shiki's highlighter is compiled from WebAssembly: without 'wasm-unsafe-eval' the block stays plain and a violation is reported.
+  const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true })
+  const page = await ctx.newPage()
+  const violations = await watched(page)
+  const errors: string[] = []
+  page.on('pageerror', (e) => errors.push(e.message))
+  await page.goto(`${withProvider!.url}/shell/decisions/boot-1`)
+  await expect(page.locator('[data-shell-decision]')).toBeVisible()
+  await expect(page.locator('[data-decision-question]')).toHaveText('May the boot check pass?')
+  await expect(page.locator('[data-decision-context] pre.shiki')).toContainText('package main', { timeout: 30_000 })
+  await expect(page.locator('[data-decision-context] [data-mermaid-rendered]')).toHaveCount(1, { timeout: 30_000 })
+  await expect(page.locator('[data-step]')).toHaveCount(4)
   expect(await violations()).toEqual([])
   expect(errors).toEqual([])
   await ctx.close()

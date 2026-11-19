@@ -14,6 +14,13 @@ const words = ref('')
 const refused = ref(false)
 const busy = ref(false)
 const recent = ref<string[]>([])
+// A link the shell is opened with fills the field, opening nothing.
+watch(
+  () => props.initial,
+  (a) => {
+    if (a) address.value = a
+  },
+)
 
 async function readRecent() {
   try {

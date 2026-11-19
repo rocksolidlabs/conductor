@@ -164,7 +164,7 @@ watch(
           <span class="font-medium" data-step-label>{{ s.label }}</span>
           <span class="text-muted" data-step-words> · {{ s.words }}</span>
         </span>
-        <span v-if="s.at" class="flex-none text-dimmed" :title="s.at">{{ relativeTime(s.at, now, { suffix: true }) }}</span>
+        <span v-if="s.at" class="flex-none text-muted" :title="s.at">{{ relativeTime(s.at, now, { suffix: true }) }}</span>
       </li>
     </ol>
 

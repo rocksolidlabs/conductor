@@ -3,6 +3,7 @@
 // text size (the root's font is the system's body style where the platform has one, so every rem follows it), and nothing of the
 // workbench's layout.
 useHead({ htmlAttrs: { class: 'conductor-shell' } })
+useShellRoutes()
 </script>
 
 <template>

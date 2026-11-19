@@ -287,3 +287,59 @@ export function notificationWords(s: Pick<ShellState, 'notifications' | 'lastNot
 export function endingWords(name: string): string {
   return `Signed out on this phone; ${name} will be told when it can be reached`
 }
+
+/** The words of each way into a decision that did not open it, drawn over the inbox. */
+export function routeWords(code: string, name: string, asOf: string | null, clock: (iso: string) => string): string {
+  if (code === 'unknown_handle') return 'This notification is no longer current: here is what is waiting'
+  if (code === 'not_visible') return 'This decision is not one you can see here'
+  if (code === 'unreachable') return asOf ? `${name} cannot be reached: here is the last inbox, as of ${clock(asOf)}` : `${name} cannot be reached`
+  return ''
+}
+
+/** Where a tap's data opens: the handle's way in, or the inbox for a tap with no handle or one of more than 256 bytes. */
+export function tapTarget(data: Record<string, string>): string {
+  const h = data.h
+  if (typeof h !== 'string' || !h || new TextEncoder().encode(h).length > SHELL_BOUNDS.handle) return '/shell'
+  return `/shell/open?h=${encodeURIComponent(h)}`
+}
+
+/** An item's id as the shell takes it from a provider: 1 to 64 bytes with no control character, or null. */
+export function itemId(id: unknown): string | null {
+  // eslint-disable-next-line no-control-regex
+  return typeof id === 'string' && id && new TextEncoder().encode(id).length <= SHELL_BOUNDS.itemId && !/[\u0000-\u001f\u007f-\u009f]/.test(id) ? id : null
+}
+
+/** An item as the screens read it: its id bounded, its rows and its words as given (bounded), or null for one not of its shape. */
+export function readItem(x: unknown): ShellItem | null {
+  const o = (x && typeof x === 'object' ? x : null) as Record<string, unknown> | null
+  const id = itemId(o?.id)
+  const d = o?.decision as Record<string, unknown> | undefined
+  if (!o || !id || !d || typeof d !== 'object' || typeof d.id !== 'string' || typeof d.rev !== 'number' || !d.request || typeof d.request !== 'object') return null
+  const rows = Array.isArray(o.rows) ? (o.rows as Array<Record<string, unknown>>).filter((r) => r && typeof r.step === 'string' && typeof r.state === 'string').map((r) => ({ ...r, words: boundLine(r.words, SHELL_BOUNDS.words) })) : []
+  const owner = (o.owner && typeof o.owner === 'object' ? o.owner : {}) as Record<string, unknown>
+  const item: ShellItem = {
+    ...(o as unknown as ShellItem),
+    id,
+    rows: rows as unknown as ShellItem['rows'],
+    owner: { name: boundLine(owner.name, SHELL_BOUNDS.name).trim() || 'The server', ...(boundTime(owner.reportedAt) ? { reportedAt: boundTime(owner.reportedAt)! } : {}) },
+    asOf: boundTime(o.asOf) ?? new Date(0).toISOString(),
+    offline: o.offline === true,
+  }
+  if (typeof o.elsewhere === 'string' && o.elsewhere.trim()) item.elsewhere = boundLine(o.elsewhere, SHELL_BOUNDS.words).trim()
+  else delete item.elsewhere
+  if (typeof o.responsesOmitted === 'number' && o.responsesOmitted > 0) item.responsesOmitted = Math.floor(o.responsesOmitted)
+  else delete item.responsesOmitted
+  return item
+}
+
+/** Whether an item's rows say its answer was recorded and not yet applied. */
+export function answeredNotApplied(item: Pick<ShellItem, 'rows'>): boolean {
+  const done = (s: string) => item.rows.some((r) => r.step === s && r.state === 'done')
+  return done('recorded') && !done('resumed')
+}
+
+/** The line under a card for responses the provider holds and does not hand. */
+export function omittedWords(n: number | undefined): string {
+  if (!n) return ''
+  return n === 1 ? '1 earlier answer is not shown here' : `${n} earlier answers are not shown here`
+}
