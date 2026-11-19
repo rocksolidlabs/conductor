@@ -576,8 +576,11 @@ not handled after a tenth of a second is underlined. When Neovim's text is
 not the guess (an autopair, an abbreviation, a mapping) its text wins once
 and the guessing stops until insert mode is left.
 
-URLs printed by an agent are clickable: a click offers **Open in new tab** or
-**Preview in pane** (a sandboxed iframe; sites that forbid embedding stay blank).
+URLs printed by an agent are clickable, an address in its text and a hyperlink
+it prints (OSC 8) alike: a click offers **Open in new tab** or **Preview in
+pane** (a sandboxed iframe; sites that forbid embedding stay blank), and
+Ctrl+click (⌘+click on a Mac) opens a new tab at once, with no question asked.
+A hyperlink to a scheme other than http or https is not a link.
 A link an agent opens for you (an artifact, a pull request, a preview, a
 sign-in page) goes through Conductor: `conductor open <url>`, the MCP tool
 `open_url`, or the agent's own opener, which an agent with a browser set gets
