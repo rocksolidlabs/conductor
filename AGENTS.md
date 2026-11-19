@@ -173,6 +173,15 @@ add its rule here.
   before the first key, press it once, and give its effect the expect's
   bound; a second press on a clock only hides the first one's loss, and a
   toggle pressed again closes what was only slow to open.
+- A page a goto has just loaded is still starting, and its start writes
+  back what it read. A goto returns at the load, before the app's plugins
+  run; the colour-mode module's start then stores the preference the page
+  read as it began, over a theme a test stored before it, and a reload
+  that leaves the page after that write reads the old theme (#1019).
+  Store what the app keeps only once the app has mounted (`#__nuxt` holds
+  its root: the plugins run before it), as `useTheme` does, and prove it
+  with the reload's document held until the page it leaves has written
+  (`theme.spec.ts`).
 - A test's timeout bounds a hang, not its steps. A long walk whose every
   step has its own bound is spent by a loaded box with every step passing,
   whatever fixed timeout it has: each step raises the test's timeout by

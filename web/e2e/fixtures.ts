@@ -561,8 +561,14 @@ async function drawn(page: Page, theme: 'dark' | 'light', ready: string): Promis
  * Switches an open page to `theme` the way the app keeps it (localStorage conductor-color-mode), reloads it and waits for the layout's
  * root (or `ready`), the class on `html` and the fonts. A `colorScheme` context does not switch this app: it prefers dark whatever the
  * system says (nuxt.config.ts, theme.spec.ts).
+ *
+ * The theme is stored only once the app has mounted (`#__nuxt` holds its root). A goto returns at the page's load, before the app's
+ * plugins have run; the colour-mode module's start then writes the preference the page read as it began back to the storage, over a
+ * theme stored before it, and a reload that leaves the page after that write reads the old theme (#1019). The plugins run before the
+ * app mounts, so a page with its root drawn has made that write.
  */
 export async function useTheme(page: Page, theme: 'dark' | 'light', ready?: string): Promise<void> {
+  await expect(page.locator('#__nuxt > *').first()).toBeAttached()
   await page.evaluate((t) => localStorage.setItem('conductor-color-mode', t), theme)
   await page.reload()
   const width = page.viewportSize()?.width ?? 1440
