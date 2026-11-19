@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -14,7 +13,6 @@ import (
 	"sync/atomic"
 
 	"github.com/rocksolidlabs/conductor/ext"
-	"github.com/rocksolidlabs/conductor/internal/crew"
 	"github.com/rocksolidlabs/conductor/internal/gitcli"
 	"github.com/rocksolidlabs/conductor/internal/session"
 )
@@ -216,11 +214,13 @@ func (h *extHost) repoTop(ctx context.Context, runID string) (string, error) {
 	if !found {
 		return "", notFound("no such run")
 	}
-	var c crew.Crew
-	if err := json.Unmarshal([]byte(row.Crew), &c); err != nil {
+	// The crew's working directory as launched (crewCwd, the one reading
+	// of the ledger's crew this needs).
+	cwd := crewCwd(row)
+	if cwd == "" {
 		return "", notFound("the run's repository cannot be read here")
 	}
-	dir, err := s.resolveCwd(c.Cwd)
+	dir, err := s.resolveCwd(cwd)
 	if err != nil {
 		return "", notFound("the run's repository cannot be read here")
 	}
