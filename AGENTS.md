@@ -302,7 +302,12 @@ add its rule here.
   An event the session recorded is not yet an entry its host has kept: the
   forwarder hands it to the host's sender after, so a link brought back
   "after" five events can come back before the fifth is kept. Wait for the
-  host to hold it (`untilKept`) where the test means that order.
+  host to hold it (`untilKept`) where the test means that order. A send's
+  state is not its pin either: a restarted server's settlement commits a
+  capture's send to Brakeman `sent` and lets its request's pin go after,
+  on a goroutine of its own, and a test that read the pins as it saw
+  `sent` found one still held on CI (`TestALostBrakemanSendIsSettledAtStart`,
+  2026-11-19, #281). Wait for the pin itself to go.
 - End what a test started before its directories go. An engine a test
   abandons (the server that ended, before a continuation) keeps reacting:
   when the fake launcher ended its processes at cleanup, it failed their
