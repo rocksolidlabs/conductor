@@ -1,7 +1,7 @@
 import { diffAgainst, type ChangeRow } from '~/utils/changes'
 import { commitAgainst, type CommitChangeRow } from '~/utils/commits'
 import { emptyTabs, openPreview, openTab, toggleFold, type TabsState } from '~/utils/editorTabs'
-import { linkHost } from '~/utils/terminalLinks'
+import { linkHost, shownLink } from '~/utils/terminalLinks'
 
 /**
  * The files a page has open in its editor area (design 4b): the tabs, how a
@@ -31,7 +31,7 @@ export function useEditorTabs() {
   function linkOpened(url: string) {
     toast.add({
       title: `Opened ${linkHost(url)}`,
-      description: url,
+      description: shownLink(url),
       icon: 'i-lucide-external-link',
       color: 'neutral',
       actions: [{ label: 'Preview in pane', icon: 'i-lucide-panel-right', onClick: () => (tabs.value = openTab(tabs.value, 'url', url)) }],
