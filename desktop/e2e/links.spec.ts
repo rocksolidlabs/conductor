@@ -5,8 +5,8 @@ import { join } from 'node:path'
 
 // A link an agent prints in a session's terminal, clicked in the app (#1020): a hyperlink (OSC 8) raised the page's confirm, which
 // the app shows as a native dialog titled with its name ("Do you want to navigate to …? WARNING: This link could potentially be
-// dangerous"). Now Ctrl+click hands it to the system's browser once (shell.openExternal, recorded here: nothing opens), and a plain
-// click offers it, whose Open in new tab does the same, once; the page asks nothing. The app runs a server of its own over a fresh
+// dangerous"). Now a click, plain or with Ctrl, hands it to the system's browser once (shell.openExternal, recorded here: nothing
+// opens), and the page asks nothing. The app runs a server of its own over a fresh
 // HOME and settings (as firstrun.spec.ts), reach and publishing off, its catalog the e2e stub agent alone, its PATH holding no
 // agent program. Needs a display (xvfb-run on Linux CI) and bin/conductor (make build-go).
 const bin = process.env.CONDUCTOR_DESKTOP_BIN || join(__dirname, '..', '..', 'bin', 'conductor')
@@ -109,20 +109,21 @@ test("a hyperlink an agent printed opens in the system's browser once, and the a
       await page.mouse.move(x, y)
       await expect(host.locator('.xterm-cursor-pointer')).toHaveCount(1, { timeout: 1000 })
     }).toPass({ timeout: 15_000 })
-    // Ctrl+click: handed to the system's browser at once, once.
-    await page.keyboard.down('Control')
+    // A plain click: handed to the system's browser at once, once; the toast says where it went, with Preview in pane alone.
     await page.mouse.click(x, y)
-    await page.keyboard.up('Control')
     await expect.poll(async () => (await dialogs()).length + (await external()).length, { timeout: 15_000, message: 'the click was handled' }).toBeGreaterThan(0)
     expect(await dialogs(), 'a click on a link raises no dialog').toEqual([])
     expect(await external()).toEqual([MR])
-    // A plain click offers it; Open in new tab hands it over once more, once.
+    const said = page.locator('li').filter({ hasText: 'Opened example.com' })
+    await expect(said).toHaveCount(1)
+    await expect(said.getByRole('button', { name: 'Preview in pane' })).toBeVisible()
+    await expect(said.getByRole('button', { name: 'Open in new tab' })).toHaveCount(0)
+    // Ctrl+click: the same, once more, once.
+    await page.keyboard.down('Control')
     await page.mouse.click(x, y)
-    const offer = page.locator('li').filter({ hasText: MR }).filter({ has: page.getByRole('button', { name: 'Open in new tab' }) })
-    await expect.poll(async () => (await dialogs()).length + (await offer.count()), { timeout: 15_000, message: 'the click was handled' }).toBeGreaterThan(0)
+    await page.keyboard.up('Control')
+    await expect.poll(async () => (await external()).length, { timeout: 15_000 }).toBeGreaterThanOrEqual(2)
     expect(await dialogs(), 'a click on a link raises no dialog').toEqual([])
-    await offer.getByRole('button', { name: 'Open in new tab' }).click()
-    await expect.poll(async () => (await external()).length, { timeout: 15_000 }).toBe(2)
     expect(await external()).toEqual([MR, MR])
     // The app made no window of either.
     expect(app.windows().filter((p) => p.url().startsWith('https://example.com')).map((p) => p.url())).toEqual([])

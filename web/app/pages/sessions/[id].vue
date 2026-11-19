@@ -42,7 +42,7 @@ const share = ref(false)
 const fileTarget = ref<FileTarget | null>(null)
 const previewUrl = ref<string | null>(null)
 // The editor area (design 4b): the files open above the terminal (EditorColumn), the tabs this page's.
-const { tabs, openFile, previewFile, openUrl, openDiff, openCommitDiff } = useEditorTabs()
+const { tabs, openFile, previewFile, linkOpened, openDiff, openCommitDiff } = useEditorTabs()
 useShortcutsModal().registerPage(SESSION_SHORTCUTS)
 // The inspector's view (design 4h): the rail's item shown; `inspector` says whether the panel is open beside the rail. With no view
 // chosen the panel opens on Explorer (P11): People would show the person to themselves.
@@ -684,7 +684,7 @@ palette.registerPage(() => {
                 @chat-history="onChatHistory"
                 @request-error="onRequestError"
                 @open-file="openFile"
-                @open-url="openUrl"
+                @link-opened="linkOpened"
               />
             </div>
           </div>

@@ -577,10 +577,13 @@ not the guess (an autopair, an abbreviation, a mapping) its text wins once
 and the guessing stops until insert mode is left.
 
 URLs printed by an agent are clickable, an address in its text and a hyperlink
-it prints (OSC 8) alike: a click offers **Open in new tab** or **Preview in
-pane** (a sandboxed iframe; sites that forbid embedding stay blank), and
-Ctrl+click (⌘+click on a Mac) opens a new tab at once, with no question asked.
-A hyperlink to a scheme other than http or https is not a link.
+it prints (OSC 8) alike: a click opens it in a new tab, once (the desktop app
+hands it to the system's browser), with no question asked, and a toast says
+where it went with **Preview in pane** (a sandboxed iframe; sites that forbid
+embedding stay blank). The pointer over a link shows its real address at the
+foot of the terminal, whatever the words it is printed as. A drag that selects
+text is not a click, and a hyperlink to a scheme other than http or https is
+not a link.
 A link an agent opens for you (an artifact, a pull request, a preview, a
 sign-in page) goes through Conductor: `conductor open <url>`, the MCP tool
 `open_url`, or the agent's own opener, which an agent with a browser set gets
@@ -790,13 +793,14 @@ the full sidebar on Exited. Every shape has a tooltip naming it in words
 exited"). The rail keeps the mark, Launch, a search button that opens the
 command palette, the pages (the Yard's count as an amber chip) and
 your menu. The panel button at the bottom of the rail brings the
-full sidebar back, as does **Ctrl+B**. The full sidebar opens at its
-narrowest, 12.5 rem (200 px) on every screen, its header the mark,
-"Conductor" and your menu (a wider font shortens the name first); drag its
-right edge to widen it, up to 26 % of the window but never less than
-17.5 rem (280 px), and on to the window's left edge for the rail; a
-double-click on the edge returns it to 200 px, and a narrower window keeps
-it within that window's bounds. The full sidebar's foot is the pages as six
+full sidebar back, as does **Ctrl+B**. The full sidebar opens at 17.5 rem
+(280 px) on every screen, wide enough for each row's name, question and
+choices, its header the mark, "Conductor" and your menu (a wider font
+shortens the name first); drag its right edge to narrow it to 16 rem
+(256 px) or widen it, up to 26 % of the window but never less than 21 rem
+(336 px), and on to the window's left edge for the rail; a double-click on
+the edge returns it to 280 px, and a narrower window keeps it within that
+window's bounds. The full sidebar's foot is the pages as six
 tiles in two rows, an icon over each name: **Needs you** (its number on the
 corner while something waits), **Yard**, **Crews**, **Dispatch**, **Brakeman**
 and **More**, which holds **Agents**, **History** and, in the desktop app,
@@ -2289,12 +2293,19 @@ quotes), and filters narrow it: `class:` (`said`, `decided`, `checked`,
 it reads at most the 10,000 matches indexed most recently and ranks at
 most 2,000 of them, and says so when it stopped. **History** under the sidebar's More (or Go to, `G H`)
 opens `/history` on its Search: the same search with filter chips that write
-those filters, the words and each active filter listed under the search box
-with its own × and **Clear all** beside them (Clear all takes off every filter
-and the words; Back puts them back), every result paged with Show more, the
-query in the URL so a search is a link, one column on a phone. Its second view, **Feed**
-(`?view=feed`, **G E**), is the live feed of what agents report (Events and
-hooks).
+those filters (Since first, the agents that have history before the rest, which
+wait behind More agents; a pressed chip filled and ticked), the words and each
+active filter listed under the search box with its own × and **Clear all**
+beside them (Clear all takes off every filter and the words; Back puts them
+back), the results under day headings (Today, Yesterday, Mon 16 Nov), each row
+its name, its state in the sidebar's words, its time, one line of agent ·
+repository · branch · id (a press copies the id) and its action written out
+(Open, or Transcript for a session that ended, with Resume where the sidebar
+offers it), every result paged with Show more, the query in the URL so a
+search is a link. On a phone the results follow the search at once and the
+groups wait behind **Filters**. Its second view, **Live** (`?view=feed`,
+**G E**), is the live feed of what agents report from the moment the page
+opened (Events and hooks), which agents report folded under its button.
 
 **What a row says.** A badge for what kind of evidence it is, and the
 kinds never mix: **Conversation** (something said: a session's line, a

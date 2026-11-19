@@ -54,6 +54,8 @@ export interface HistoryOptions {
   projects: string[]
   hosts: string[]
   agents: Array<{ id: string; name: string }>
+  /** Each agent's sessions among the latest records, by its id: the agents that have history. */
+  used?: Record<string, number>
 }
 
 /** The answer shown: the query it is for and the reply, its later pages appended. */

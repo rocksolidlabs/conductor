@@ -18,6 +18,7 @@ import {
   moveFocus,
   narrowSidebar,
   NARROW_SIDEBAR_PX,
+  openSidebarSize,
   panelRow,
   needsDotShown,
   railModel,
@@ -129,71 +130,94 @@ describe('the sidebars share', () => {
   })
 })
 
-describe('the full sidebar\'s width (#437)', () => {
+describe('the full sidebar\'s width (#437, #1022)', () => {
   const at1440 = sidebarBounds(1440)
+  const OPEN = 17.5
 
-  it('opens at 12.5 rem (200 px) on every screen, and a drag goes up to 26 % of the window, never below the minimum plus 5 rem', () => {
-    // 12.5 rem: the header is the mark, the name and your menu (16.75 rem while it held Alerts and the collapse too, #706).
-    expect(SIDEBAR_SIZE).toEqual({ min: 12.5, maxShare: 0.26, range: 5 })
-    // In px at 16 px to the rem: the minimum 200 everywhere, the maximum 280 (the minimum plus 80) at 1024, then 333, 374, 499, 666
-    // and 894.
+  it('opens at 17.5 rem (280 px), the width at which a row is whole, on every screen; a drag goes from 16 rem to 26 % of the window, never below the minimum plus 5 rem', () => {
+    // 17.5 rem: the narrow list's bound (a row's question and its choices in the row from it on); 16 rem: every row names itself whole.
+    expect(SIDEBAR_SIZE).toEqual({ min: 16, open: 17.5, maxShare: 0.26, range: 5 })
+    expect(SIDEBAR_SIZE.open * 16).toBe(NARROW_SIDEBAR_PX)
+    expect(narrowSidebar(SIDEBAR_SIZE.open * 16)).toBe(false)
+    expect(narrowSidebar(SIDEBAR_SIZE.min * 16)).toBe(true)
+    // In px at 16 px to the rem: the minimum 256 everywhere, the maximum 336 (the minimum plus 80) at 1024 and 1280, then 374, 499,
+    // 666 and 894; the opening width 280 within every one of them.
     const px = (w: number) => {
       const b = sidebarBounds(w)
-      return { min: b.min * 16, max: Math.round(b.max * 16) }
+      return { min: b.min * 16, open: openSidebarSize(b) * 16, max: Math.round(b.max * 16) }
     }
-    expect(px(1024)).toEqual({ min: 200, max: 280 })
-    expect(px(1280)).toEqual({ min: 200, max: 333 })
-    expect(px(1440)).toEqual({ min: 200, max: 374 })
-    expect(px(1920)).toEqual({ min: 200, max: 499 })
-    expect(px(2560)).toEqual({ min: 200, max: 666 })
-    expect(px(3440)).toEqual({ min: 200, max: 894 })
+    expect(px(1024)).toEqual({ min: 256, open: 280, max: 336 })
+    expect(px(1280)).toEqual({ min: 256, open: 280, max: 336 })
+    expect(px(1440)).toEqual({ min: 256, open: 280, max: 374 })
+    expect(px(1920)).toEqual({ min: 256, open: 280, max: 499 })
+    expect(px(2560)).toEqual({ min: 256, open: 280, max: 666 })
+    expect(px(3440)).toEqual({ min: 256, open: 280, max: 894 })
     for (const w of [0, 320, 640, 768, 1024, 1440, 1920, 2560, 3440, 7680]) {
       const b = sidebarBounds(w)
-      expect(b.min).toBe(12.5)
+      expect(b.min).toBe(16)
       expect(b.max - b.min).toBeGreaterThanOrEqual(5)
+      expect(openSidebarSize(b)).toBe(OPEN)
     }
     // A window too narrow for 26 % to reach that (below lg, where no sidebar shows), or one not measured: the minimum plus 5 rem.
-    expect(sidebarBounds(640)).toEqual({ min: 12.5, max: 17.5 })
-    expect(sidebarBounds(Number.NaN)).toEqual({ min: 12.5, max: 17.5 })
-    // Bigger text, bigger rem: the minimum stays 12.5 rem, the maximum is the same 26 % of the window.
+    expect(sidebarBounds(640)).toEqual({ min: 16, max: 21 })
+    expect(sidebarBounds(Number.NaN)).toEqual({ min: 16, max: 21 })
+    // Bigger text, bigger rem: the minimum stays 16 rem, the maximum is the same 26 % of the window.
     expect(sidebarBounds(2560, 20).max * 20).toBeCloseTo(665.6, 0)
-    expect(sidebarBounds(1440, 0)).toEqual({ min: 12.5, max: 17.5 })
+    expect(sidebarBounds(1440, 0)).toEqual({ min: 16, max: 21 })
   })
 
   it('draws the held width within the window\'s bounds, from the same numbers', () => {
-    expect(SIDEBAR_WIDTH).toBe('clamp(12.5rem, var(--width), max(17.5rem, 26vw))')
+    expect(SIDEBAR_WIDTH).toBe('clamp(16rem, var(--width), max(21rem, 26vw))')
   })
 
-  it('reads no saved width as the minimum, and a saved one within the bounds of the window it opens in', () => {
+  it('reads no saved width as the opening width, and a saved one within the bounds of the window it opens in', () => {
     expect(SIDEBAR_SIZE_KEY).toBe('conductor.sidebar.width')
-    expect(readSidebarSize(memory(), at1440)).toBe(12.5)
+    expect(readSidebarSize(memory(), at1440)).toBe(OPEN)
     expect(readSidebarSize(memory({ [SIDEBAR_SIZE_KEY]: '18.5' }), at1440)).toBe(18.5)
+    expect(readSidebarSize(memory({ [SIDEBAR_SIZE_KEY]: '16' }), at1440)).toBe(16)
     expect(readSidebarSize(memory({ [SIDEBAR_SIZE_KEY]: '40' }), at1440)).toBe(23.4)
     // A width dragged in a 2560 px window, opened in a 1024 px one: its maximum.
-    expect(readSidebarSize(memory({ [SIDEBAR_SIZE_KEY]: '40' }), sidebarBounds(1024))).toBe(17.5)
-    expect(readSidebarSize(memory({ [SIDEBAR_SIZE_KEY]: '3' }), at1440)).toBe(12.5)
-    // A width saved while the minimum was 16.75 rem (#706) is kept as saved: a person who dragged keeps that width; only one who
-    // never dragged opens at 200 px. No migration.
-    const earlier = memory({ [SIDEBAR_SIZE_KEY]: '16.75' })
-    expect(readSidebarSize(earlier, at1440)).toBe(16.75)
-    expect(earlier.data.get(SIDEBAR_SIZE_KEY)).toBe('16.75')
-    expect(readSidebarSize(memory({ [SIDEBAR_SIZE_KEY]: 'wide' }), at1440)).toBe(12.5)
-    expect(readSidebarSize(memory({ [SIDEBAR_SIZE_KEY]: '' }), at1440)).toBe(12.5)
-    expect(readSidebarSize(memory({ [SIDEBAR_SIZE_KEY]: 'Infinity' }), at1440)).toBe(12.5)
+    expect(readSidebarSize(memory({ [SIDEBAR_SIZE_KEY]: '40' }), sidebarBounds(1024))).toBe(21)
+    // A width an earlier version saved at its 200 px minimum (a double-click on the handle, or a drag to it), or anything else
+    // narrower than the minimum: the opening width, not the minimum; the saved value stays until the next drag (#1022).
+    const earlier = memory({ [SIDEBAR_SIZE_KEY]: '12.5' })
+    expect(readSidebarSize(earlier, at1440)).toBe(OPEN)
+    expect(earlier.data.get(SIDEBAR_SIZE_KEY)).toBe('12.5')
+    expect(readSidebarSize(memory({ [SIDEBAR_SIZE_KEY]: '15.99' }), at1440)).toBe(OPEN)
+    expect(readSidebarSize(memory({ [SIDEBAR_SIZE_KEY]: '3' }), at1440)).toBe(OPEN)
+    // A width saved while the minimum was 16.75 rem (#706) is kept as saved.
+    expect(readSidebarSize(memory({ [SIDEBAR_SIZE_KEY]: '16.75' }), at1440)).toBe(16.75)
+    expect(readSidebarSize(memory({ [SIDEBAR_SIZE_KEY]: 'wide' }), at1440)).toBe(OPEN)
+    expect(readSidebarSize(memory({ [SIDEBAR_SIZE_KEY]: '' }), at1440)).toBe(OPEN)
+    expect(readSidebarSize(memory({ [SIDEBAR_SIZE_KEY]: 'Infinity' }), at1440)).toBe(OPEN)
   })
 
-  it('drops a width saved before #437 once: the minimum, the old key gone, and a drag after that kept', () => {
-    const s = memory({ [LEGACY_SIDEBAR_SIZE_KEY]: '22' })
+  it('reads a width saved before #437, in percent of the window, as that share of the window it opens in, once', () => {
     expect(LEGACY_SIDEBAR_SIZE_KEY).toBe('conductor.sidebar.size')
-    expect(readSidebarSize(s, at1440)).toBe(12.5)
-    expect(s.data.has(LEGACY_SIDEBAR_SIZE_KEY)).toBe(false)
-    writeSidebarSize(s, 20, at1440)
-    expect(readSidebarSize(s, at1440)).toBe(20)
-    expect([...s.data.keys()]).toEqual([SIDEBAR_SIZE_KEY])
+    // 22 % of a 1440 px window (90 rem) is 19.8 rem: read, kept under the new key, the old key gone.
+    const s = memory({ [LEGACY_SIDEBAR_SIZE_KEY]: '22' })
+    expect(readSidebarSize(s, at1440, 90)).toBe(19.8)
+    expect([...s.data.entries()]).toEqual([[SIDEBAR_SIZE_KEY, '19.8']])
+    expect(readSidebarSize(s, at1440, 90)).toBe(19.8)
+    // 30 % is past 26 %: the window's maximum.
+    expect(readSidebarSize(memory({ [LEGACY_SIDEBAR_SIZE_KEY]: '30' }), at1440, 90)).toBe(23.4)
+    // 14 % of 1440 px (201.6 px) is narrower than the minimum: the opening width, nothing kept.
+    const narrow = memory({ [LEGACY_SIDEBAR_SIZE_KEY]: '14' })
+    expect(readSidebarSize(narrow, at1440, 90)).toBe(OPEN)
+    expect(narrow.data.size).toBe(0)
+    // Not a share, or no window to take it of: the opening width, the old key gone.
+    for (const bad of ['', 'wide', '0', '-5', '150']) {
+      const b = memory({ [LEGACY_SIDEBAR_SIZE_KEY]: bad })
+      expect(readSidebarSize(b, at1440, 90), bad).toBe(OPEN)
+      expect(b.data.size, bad).toBe(0)
+    }
+    const unmeasured = memory({ [LEGACY_SIDEBAR_SIZE_KEY]: '22' })
+    expect(readSidebarSize(unmeasured, at1440)).toBe(OPEN)
+    expect(unmeasured.data.size).toBe(0)
     // Both keys there (an older tab wrote the old one again): the old one goes, the new one holds.
-    s.data.set(LEGACY_SIDEBAR_SIZE_KEY, '22')
-    expect(readSidebarSize(s, at1440)).toBe(20)
-    expect(s.data.has(LEGACY_SIDEBAR_SIZE_KEY)).toBe(false)
+    const both = memory({ [LEGACY_SIDEBAR_SIZE_KEY]: '22', [SIDEBAR_SIZE_KEY]: '20' })
+    expect(readSidebarSize(both, at1440, 90)).toBe(20)
+    expect([...both.data.entries()]).toEqual([[SIDEBAR_SIZE_KEY, '20']])
   })
 
   it('writes the width within the bounds, two decimals at most, and skips what is not a number', () => {
@@ -204,17 +228,17 @@ describe('the full sidebar\'s width (#437)', () => {
     writeSidebarSize(s, 99, at1440)
     expect(s.data.get(SIDEBAR_SIZE_KEY)).toBe('23.4')
     writeSidebarSize(s, 2, at1440)
-    expect(s.data.get(SIDEBAR_SIZE_KEY)).toBe('12.5')
+    expect(s.data.get(SIDEBAR_SIZE_KEY)).toBe('16')
     writeSidebarSize(s, Number.NaN, at1440)
-    expect(s.data.get(SIDEBAR_SIZE_KEY)).toBe('12.5')
+    expect(s.data.get(SIDEBAR_SIZE_KEY)).toBe('16')
   })
 
-  it('is the minimum when storage throws, and writing never throws', () => {
-    expect(readSidebarSize(broken, at1440)).toBe(12.5)
+  it('is the opening width when storage throws, and writing never throws', () => {
+    expect(readSidebarSize(broken, at1440, 90)).toBe(OPEN)
     expect(() => writeSidebarSize(broken, 20, at1440)).not.toThrow()
     // Removing the old key throws alone: the saved width still reads.
     const stubborn = { ...memory({ [LEGACY_SIDEBAR_SIZE_KEY]: '22', [SIDEBAR_SIZE_KEY]: '18' }), removeItem: () => { throw new Error('denied') } }
-    expect(readSidebarSize(stubborn, at1440)).toBe(18)
+    expect(readSidebarSize(stubborn, at1440, 90)).toBe(18)
   })
 })
 

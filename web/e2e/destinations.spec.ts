@@ -37,7 +37,7 @@ test('every list of the pages, as drawn', async ({ browser, state }) => {
   const palette = page.locator('[data-palette]')
   await expect(palette).toBeVisible()
   const go = palette.locator('[data-palette-group="goto"] [data-palette-row] [data-palette-label]')
-  await drawn(go, ['Needs you', 'Yard', 'Roundhouse', 'Crews', 'Dispatch', 'Agents', 'Agents · Reporting', 'History', 'History · Feed', 'Paste invite'])
+  await drawn(go, ['Needs you', 'Yard', 'Roundhouse', 'Crews', 'Dispatch', 'Agents', 'Agents · Reporting', 'History', 'History · Live', 'Paste invite'])
   await page.keyboard.press('Escape')
   await expect(palette).toBeHidden()
 
