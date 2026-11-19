@@ -102,6 +102,8 @@ export function createAnswer(deps: AnswerDeps) {
 
   /** Keeps d through the provider; its refusal's words, or ''. A refused put leaves the kept draft as it was. */
   async function keep(id: string, gen: number, d: ShellDraft): Promise<string> {
+    // A sign-out since this step began: nothing is kept for it (A4).
+    if (gen !== generation) return ''
     let words = ''
     try {
       const r = await deps.drafts.put(d)
@@ -126,6 +128,7 @@ export function createAnswer(deps: AnswerDeps) {
 
   /** A changed decision drawn: the draft stored again at the drawn rev with a new responseId, its content kept, editing. */
   async function rebase(id: string, gen: number, item: ShellItem, words: string): Promise<AnswerView> {
+    if (gen !== generation) return view(id)
     const old = view(id).draft
     set(id, gen, { step: 'editing', item, words, actions: [], noAnswer: false })
     const d: ShellDraft = { ...contentOf(old), id, responseId: deps.mint(), rev: item.decision.rev, state: 'editing', savedAt: new Date(now()).toISOString() }
@@ -135,6 +138,7 @@ export function createAnswer(deps: AnswerDeps) {
 
   /** Judges an item read (at checking, or returned by a refused send) against the draft: what follows. */
   async function judge(id: string, gen: number, item: ShellItem, send: boolean): Promise<AnswerView> {
+    if (gen !== generation) return view(id)
     const d = view(id).draft
     const dec = item.decision
     if (item.elsewhere) return set(id, gen, { step: 'editing', item, words: item.elsewhere, noAnswer: true, actions: [] })
@@ -179,6 +183,7 @@ export function createAnswer(deps: AnswerDeps) {
         }
         if (reply.code === 'not_saved') return set(id, gen, { step: 'editing', words: ANSWER_WORDS.notSavedSend, actions: [] })
         await keep(id, gen, { ...d, state: 'editing', savedAt: new Date(now()).toISOString() })
+        if (gen !== generation) return view(id)
         set(id, gen, { step: 'editing', words: words || 'Not sent.', actions: [] })
         if (reply.item) {
           const after = await judge(id, gen, reply.item, false)
@@ -197,14 +202,17 @@ export function createAnswer(deps: AnswerDeps) {
     try {
       item = await deps.inbox.item(id)
     } catch (e) {
+      if (gen !== generation) return view(id)
       const r = readRefusal(e)
       if (r.code === 'offline' || r.code === 'unreachable') {
         const d = view(id).draft!
         await keep(id, gen, { ...d, state: 'waiting', savedAt: new Date(now()).toISOString() })
+        if (gen !== generation) return view(id)
         return set(id, gen, { step: 'waiting', words: r.code === 'offline' ? ANSWER_WORDS.offline : `${deps.name} cannot be reached`, actions: ['cancel'] })
       }
       return set(id, gen, { step: 'editing', words: r.words, actions: [] })
     }
+    if (gen !== generation) return view(id)
     return judge(id, gen, item, true)
   }
 

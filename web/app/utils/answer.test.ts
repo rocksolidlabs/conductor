@@ -399,6 +399,29 @@ describe('the invariants', () => {
     expect((await m.answer('i1', { choice: 0 })).item?.rows).toEqual(odd.rows)
   })
 
+  it('A4: a check under way at a sign-out puts no draft, sends nothing and writes no state once its read answers', async () => {
+    for (const fails of [false, true]) {
+      const { f, make, seen } = fake()
+      const m = make()
+      await m.open('i1', f.item)
+      await m.edit('i1', { choice: 0 })
+      const puts = () => [...f.drafts.values()].length
+      f.readGate = gate()
+      if (fails) f.readFails = { code: 'offline', words: 'offline' }
+      const pressing = m.answer('i1', { choice: 0 })
+      await tick()
+      expect(m.view('i1').step).toBe('checking')
+      m.signedOut()
+      f.drafts.clear()
+      const count = seen.length
+      f.readGate.open()
+      await pressing
+      expect(puts(), `a read that ${fails ? 'failed' : 'answered'}: no draft put`).toBe(0)
+      expect(f.sent).toEqual([])
+      expect(seen.length).toBe(count)
+    }
+  })
+
   it('A4: after a sign-out, nothing begun before it writes a view or a draft', async () => {
     const { f, make, seen } = fake()
     const m = make()
