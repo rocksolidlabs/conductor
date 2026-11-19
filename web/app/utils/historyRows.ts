@@ -110,33 +110,34 @@ export function clockTime(at: string): string {
   return Number.isNaN(t) ? '' : new Date(t).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false })
 }
 
-/** One day's rows under its heading. */
+/** One run of rows under its day's heading. */
 export interface DayGroup<T> {
+  /** Unique among the runs: the day and the place of the run's first row (a day can head two runs of a ranked answer). */
+  key: string
   day: string
   label: string
   entries: T[]
 }
 
 /**
- * The rows under day headings, by the person's local day: the days newest first, each day's rows in the order the answer gave them,
- * a key seen twice (two pages) kept once. An entry with no time it can read goes under "Undated", last.
+ * The rows under day headings, by the person's local day, in the server's order: a heading starts wherever a row's day differs from
+ * the row's before it, never by collecting a day's rows from all over the answer. A newest-first answer (the latest sessions, filters
+ * alone) gets one heading a day; a ranked one keeps its best match first, and Show more's rows land at the end. A key seen twice (two
+ * pages) is kept once. An entry with no time it can read stands under "Undated", where it falls.
  */
 export function byDay<T extends Pick<HistoryItem, 'key' | 'at'>>(entries: readonly T[], now = Date.now()): Array<DayGroup<T>> {
-  const at = new Map<string, DayGroup<T>>()
+  const out: Array<DayGroup<T>> = []
   const seen = new Set<string>()
   for (const e of entries) {
     if (seen.has(e.key)) continue
     seen.add(e.key)
     const t = Date.parse(e.at)
     const day = Number.isNaN(t) ? '' : localDay(t)
-    let g = at.get(day)
-    if (!g) {
-      g = { day, label: day ? dayWords(day, now) : 'Undated', entries: [] }
-      at.set(day, g)
-    }
-    g.entries.push(e)
+    const last = out[out.length - 1]
+    if (last && last.day === day) last.entries.push(e)
+    else out.push({ key: `${day || 'undated'}:${seen.size - 1}`, day, label: day ? dayWords(day, now) : 'Undated', entries: [e] })
   }
-  return [...at.values()].sort((a, b) => (a.day === b.day ? 0 : !a.day ? 1 : !b.day ? -1 : a.day < b.day ? 1 : -1))
+  return out
 }
 
 /**
@@ -150,7 +151,9 @@ export function agentChips(agents: ReadonlyArray<{ id: string; name: string }>, 
     .filter(([, n]) => n > 0)
     .sort(([a, x], [b, y]) => y - x || (name.get(a) ?? a).localeCompare(name.get(b) ?? b))
     .map(([id]) => id)
-  const shownIds = [...withHistory, ...pressed.filter((p) => p && !withHistory.includes(p))]
+  // What the query presses, as the server reads it: lower case, each once (`agent:Codex`, `agent:x,x`).
+  const on = [...new Set(pressed.map((p) => p.toLowerCase()).filter(Boolean))]
+  const shownIds = [...withHistory, ...on.filter((p) => !withHistory.includes(p))]
   const shown = shownIds.map((id) => ({ value: id, label: name.get(id) ?? id }))
   const more = agents.filter((a) => !shownIds.includes(a.id)).map((a) => ({ value: a.id, label: a.name || a.id }))
   return { shown, more }

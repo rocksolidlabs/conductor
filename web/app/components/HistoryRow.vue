@@ -11,7 +11,7 @@ import { sessionResumeOffered } from '~/utils/runs'
  * the row's action written out: Open, or Transcript for a session that ended, with Resume beside it where the sidebar offers it. The
  * whole row is the one link (its name's), Enter on it does the action; the id, Resume and the session's link sit above it.
  */
-const props = defineProps<{ entry: HistoryItem; now: number }>()
+const props = withDefaults(defineProps<{ entry: HistoryItem; now: number; searched?: boolean }>(), { searched: false })
 
 const attention = useAttention()
 const copy = useCopy()
@@ -23,7 +23,8 @@ const badge = computed(() => (status.value ? null : classBadge(props.entry)))
 const action = computed(() => rowAction(props.entry, listed.value))
 const details = computed(() => rowDetails(props.entry))
 const time = computed(() => clockTime(props.entry.at))
-const links = computed(() => [linkLine(props.entry), repeatWords(props.entry)].filter(Boolean).join(' · '))
+// "in 2 places" says where the words were found: only for a search, never on the latest sessions.
+const links = computed(() => [linkLine(props.entry), props.searched ? repeatWords(props.entry) : ''].filter(Boolean).join(' · '))
 // A session row's summary repeats its line (agent · folder · ending): only another entry's words are shown.
 const snippet = computed(() => (props.entry.kind === 'session' ? '' : props.entry.snippet))
 const session = computed(() => {
@@ -32,7 +33,8 @@ const session = computed(() => {
 })
 /** The sidebar's rule for its Exited list's Resume: an ended server session the engine would take back. */
 const resumable = computed(() => !!listed.value && isEnded(listed.value.status) && listed.value.kind === 'server' && sessionResumeOffered(listed.value, attention.runOf))
-const lineTitle = computed(() => [details.value.path, props.entry.kind === 'session' ? '' : props.entry.summary].filter(Boolean).join('\n') || undefined)
+// The line's title holds what it does not print: the folder, and the id (a phone's line leaves the id out).
+const lineTitle = computed(() => [details.value.path, id.value ? `id ${id.value}` : '', props.entry.kind === 'session' ? '' : props.entry.summary].filter(Boolean).join('\n') || undefined)
 </script>
 
 <template>
@@ -62,9 +64,10 @@ const lineTitle = computed(() => [details.value.path, props.entry.kind === 'sess
             <span v-if="i" aria-hidden="true">·</span>
             <span :title="p.title" :data-history-field="p.field" class="max-w-full min-w-0 truncate">{{ p.text }}</span>
           </template>
+          <!-- The id: at the line's end on a wide window; a phone leaves it to the line's title and the session's own page. -->
           <template v-if="id">
-            <span v-if="details.parts.length" aria-hidden="true">·</span>
-            <button type="button" class="relative z-10 flex-none rounded-sm font-mono text-[11px] text-muted hover:text-toned hover:underline focus-visible:outline-2 focus-visible:outline-primary" :aria-label="`Copy the id ${id}`" :title="`Copy the id ${id}`" data-mono="id" data-history-row-id @click="copy(id, 'Id copied', id)">{{ id }}</button>
+            <span v-if="details.parts.length" aria-hidden="true" class="max-sm:hidden">·</span>
+            <button type="button" class="relative z-10 flex-none max-sm:hidden rounded-sm font-mono text-[11px] text-muted hover:text-toned hover:underline focus-visible:outline-2 focus-visible:outline-primary" :aria-label="`Copy the id ${id}`" :title="`Copy the id ${id}`" data-mono="id" data-history-row-id @click="copy(id, 'Id copied', id)">{{ id }}</button>
           </template>
         </p>
         <ResumeButton v-if="resumable && listed" :session="listed" size="xs" class="relative z-10 flex-none max-sm:min-h-11" />
