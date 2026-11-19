@@ -21,8 +21,12 @@ import (
 // 6 adds the sends still open, a table of this database's own derived
 // from the sends' rows, which the settlement's reads walk (#794); version
 // 7 adds a finding's capture, the capture, the send and the annotation a
-// finding of kind capture names (#798).
-const Version = findingCaptureSchema
+// finding of kind capture names (#798); version 8 adds what rows from
+// other replicas and a project's sharing keep (docs/plans/sync-seams.md,
+// Program item CS1): the replica's tags, other replicas' names, a change
+// row's origin and verdicts, held rows and their bodies, the revisions'
+// views, and a project's share and number blocks.
+const Version = syncSchema
 
 // captureSchema is the version that made the captures' tables: the one
 // place a later version renumbers them (the migration's key, the reads of
@@ -36,6 +40,11 @@ const openSendsSchema = 6
 // findingCaptureSchema is the version that added a finding's capture
 // (findingCaptureColumn): the reads of an older database take it as none.
 const findingCaptureSchema = 7
+
+// syncSchema is the version that added what sync keeps (syncTables,
+// syncColumns, and the views of the revisions made before it,
+// writePlanViews): the reads of an older database go without them.
+const syncSchema = 8
 
 // migrations bring a database from the version keyed to the next, in the
 // transaction that read the version, with the version's bump. A migration
@@ -80,10 +89,20 @@ const findingCaptureSchema = 7
 // row, which is true of all of them: a version 6 store took no finding of
 // kind capture. It reads and rewrites no row, so nothing is derived and
 // no migrate row is written.
+//
+// Version 7 to 8 makes the five tables of sync (syncTables) and adds the
+// columns of a change row, a project and a revision (syncColumns), each at
+// its default on every version 7 row, which is right for all of them: no
+// version 7 row came from another replica, no project was shared, every
+// revision's body is here. Then its Go step (writePlanViews) makes the
+// view of every revision from its body, so a revision made before the
+// upgrade has its view like any other. It rewrites no other row, so
+// nothing else is derived and no migrate row is written.
 var migrations = map[int][]string{
 	captureSchema - 1:        append(slices.Clone(captureTables), captureIndexes...),
 	openSendsSchema - 1:      append(append([]string{openSendsTable}, openSendsIndexes...), openSendsFill("1")),
 	findingCaptureSchema - 1: {findingCaptureColumn},
+	syncSchema - 1:           append(slices.Clone(syncTables), syncColumns...),
 	1: append([]string{
 		plansTable,
 		launchesTable,
@@ -109,7 +128,92 @@ var migrations = map[int][]string{
 // migrationsGo run after a version's statements, in the same transaction:
 // what SQL alone cannot work out.
 var migrationsGo = map[int]func(context.Context, *sql.Tx) error{
-	3: writeInstance,
+	3:              writeInstance,
+	syncSchema - 1: writePlanViews,
+}
+
+// syncTables is version 8's tables (docs/plans/sync-seams.md, Program item
+// CS1). Nothing on this version reads or writes them but the migration's
+// views; the rows that use them come after it.
+//
+// replica_tags is the tags this store has written under as a replica of a
+// shared workspace: at most one row active, the rest history, each with
+// the workspace and the device it was joined for and the store's instance
+// (store_instance) when it joined. replica_names is other replicas' device
+// names by their tag, as the provider gives them. held_rows is rows from
+// another replica that cannot be applied yet (row their JSON, waits_for
+// the entity a row needs as kind:id, why in words), in the order they were
+// held; held_bodies is the views that came with them, by their digest.
+// plan_views is a revision's view, what of its body is handed out (the
+// whole body stays here), by the view's SHA-256, with the whole body's
+// digest it was made from.
+var syncTables = []string{
+	`CREATE TABLE replica_tags (
+		tag TEXT PRIMARY KEY,
+		workspace TEXT NOT NULL,
+		device TEXT NOT NULL,
+		instance TEXT NOT NULL,
+		joined_at TEXT NOT NULL,
+		active INTEGER NOT NULL
+	)`,
+	`CREATE TABLE replica_names (
+		tag TEXT PRIMARY KEY,
+		name TEXT NOT NULL
+	)`,
+	`CREATE TABLE held_rows (
+		seq INTEGER PRIMARY KEY,
+		project_key TEXT NOT NULL,
+		why TEXT NOT NULL,
+		waits_for TEXT NOT NULL DEFAULT '',
+		row TEXT NOT NULL,
+		held_at TEXT NOT NULL
+	)`,
+	`CREATE TABLE held_bodies (
+		digest TEXT PRIMARY KEY,
+		body BLOB NOT NULL
+	)`,
+	`CREATE TABLE plan_views (
+		view_digest TEXT PRIMARY KEY,
+		digest TEXT NOT NULL,
+		view BLOB NOT NULL
+	)`,
+}
+
+// syncColumns is version 8's columns, added after their tables' columns by
+// a fresh store as by the migration, so both read back one shape. A
+// change row's origin (the tag of the replica that wrote it, empty for a
+// row written before this store joined), the copied-output verdicts of its
+// value and of its prior (empty for a row written before the check),
+// recovered_by (the tag of the replica that sent another origin's row in a
+// recovery) and remote (1 for a row applied from another replica). A
+// project's share (the workspace's id, the share's state, how far the
+// share has handed its rows and the numbers it reserved), the tag its
+// number blocks were handed to, the block asked ahead, the overflow range
+// and the provisional window with the next number of each, and the key the
+// workspace's registry holds for it. A revision's view (plan_views) and
+// whether its body is here (plans.body is empty where it is 0).
+var syncColumns = []string{
+	`ALTER TABLE changes ADD COLUMN origin TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE changes ADD COLUMN output TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE changes ADD COLUMN prior_output TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE changes ADD COLUMN recovered_by TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE changes ADD COLUMN remote INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE projects ADD COLUMN shared TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE projects ADD COLUMN share_state TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE projects ADD COLUMN share_upto INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE projects ADD COLUMN share_reserved_to INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE projects ADD COLUMN block_tag TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE projects ADD COLUMN next_from INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE projects ADD COLUMN next_to INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE projects ADD COLUMN overflow_from INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE projects ADD COLUMN overflow_to INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE projects ADD COLUMN overflow_next INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE projects ADD COLUMN provisional_from INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE projects ADD COLUMN provisional_to INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE projects ADD COLUMN provisional_next INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE projects ADD COLUMN registry_key TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE plans ADD COLUMN view_digest TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE plans ADD COLUMN body_here INTEGER NOT NULL DEFAULT 1`,
 }
 
 // plansTable is a ticket's plan revisions (plans.go): each immutable once
@@ -561,7 +665,7 @@ var version2Indexes = []string{
 	`CREATE INDEX launch_files_sha256 ON launch_files (sha256)`,
 }
 
-// schema is version 7, whole: every table of docs/plans/dispatch.md's
+// schema is version 8, whole: every table of docs/plans/dispatch.md's
 // schema table, docs/plans/dispatch-evidence.md's (plans, launches,
 // launch_files, and a link's three columns, last of its table as the
 // migration adds them), docs/plans/review-repair.md's (reviews,
@@ -570,7 +674,8 @@ var version2Indexes = []string{
 // (link_reads, ticket_reads, store_instance, publications, and a ticket's
 // closed_on, last of its columns as the migration adds it) and
 // docs/plans/browser-evidence.md's (captureTables, and openSendsTable,
-// #794), the FTS index included, its indexes and two of the
+// #794) and docs/plans/sync-seams.md's (syncTables, and syncColumns, last
+// of their tables' columns as the migration adds them), the FTS index included, its indexes and two of the
 // list's own (tickets_list, ticket_labels_label), and the unique
 // indexes of the keys never minted twice and nothing else (projects.key,
 // tickets.key and (project_id, number), people.name, changes (actor,
@@ -824,15 +929,15 @@ var schema = append([]string{
 	ticketReadsTable,
 	storeInstanceTable,
 	publicationsTable,
-}, append(append(append(append(append(append(slices.Clone(version2Indexes), version3Indexes...), version4Indexes...), captureTables...), captureIndexes...),
-	openSendsTable), openSendsIndexes...)...)
+}, append(append(append(append(append(append(append(append(slices.Clone(version2Indexes), version3Indexes...), version4Indexes...), captureTables...), captureIndexes...),
+	openSendsTable), openSendsIndexes...), syncTables...), syncColumns...)...)
 
 // tables is every table of the schema but the FTS index's own and
 // SQLite's, by name: what a test lists sqlite_master against.
 var tables = []string{
 	"attachments", "capture_annotation_sets", "capture_annotations", "capture_files", "capture_send_cancels", "capture_send_outcomes", "capture_sends",
 	"capture_sends_open",
-	"captures", "changes", "comments", "finding_marks", "labels", "launch_files", "launches", "link_reads", "links", "milestones", "ops",
-	"people", "plans", "projects", "publications", "relations", "review_findings", "reviews", "schema_version", "store_instance",
+	"captures", "changes", "comments", "finding_marks", "held_bodies", "held_rows", "labels", "launch_files", "launches", "link_reads", "links", "milestones", "ops",
+	"people", "plan_views", "plans", "projects", "publications", "relations", "replica_names", "replica_tags", "review_findings", "reviews", "schema_version", "store_instance",
 	"ticket_assignees", "ticket_labels", "ticket_reads", "tickets", "tickets_fts", "uploads", "views",
 }
