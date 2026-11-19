@@ -981,7 +981,10 @@ Its invariants, each a property `answer.test.ts` checks over every row:
   the phone, it stores the draft `unknown` with its `h`, and if that
   store fails it sends nothing and answers `not_saved`; so a crash before
   or after its service keeps the answer restarts locked, and only
-  `answerOf` unlocks it.
+  `answerOf` unlocks it. The provider bounds what follows the person's
+  confirmation and answers `unknown` when that bound passes; the screen
+  sets no bound of its own over `respond`, because the system's sheet is
+  the person's time (every read the screen makes keeps its own wait).
 - **A2, nothing is sent without a read in the same press**, and no
   signature for an answer without the key plugin's presence check when
   the policy asks for it.

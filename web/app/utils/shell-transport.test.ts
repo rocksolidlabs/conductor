@@ -216,16 +216,70 @@ describe("an answering made for a page's item", () => {
 })
 
 describe("the provider's calls, bounded", () => {
-  it('a send that does not answer within its wait is not known, and the draft stays locked', async () => {
+  /** A provider whose send the test holds and then answers, and whose answerOf the test counts. */
+  function heldSend() {
+    const sent: string[] = []
+    let answerOfs = 0
+    let release!: (r: ShellReply) => void
+    const p: Pick<ShellProvider, 'inbox' | 'drafts'> = {
+      inbox: {
+        list: async () => ({ items: [], asOf: '' }),
+        item: async () => item('clarification'),
+        respond: (id) => (sent.push(id), new Promise<ShellReply>((r) => (release = r))),
+        answerOf: async () => (answerOfs++, { state: 'none' }),
+        resolve: async () => ({ id: 'i1' }),
+        watch: () => () => {},
+      },
+      drafts: { get: async () => null, list: async () => [], put: async () => ({ ok: true }), remove: async () => {} },
+    }
+    const t = shellAnswering(p, 'Desk relay', { mint: () => 'r1', now: () => 0, wait: 1000 })
+    return { t, sent, answerOfs: () => answerOfs, release: (r: ShellReply) => release(r) }
+  }
+
+  it("leaves a send the person is still confirming in `sending` past the screen's wait: locked, no Confirm, nothing asked again", async () => {
     vi.useFakeTimers()
     try {
-      const sent: string[] = []
+      const h = heldSend()
+      await h.t.machine.open('i1', item('clarification'))
+      const r = h.t.answeringFor('i1').respond('dr-7', body({ choice: 0 }))
+      await vi.advanceTimersByTimeAsync(5000)
+      expect(h.t.machine.view('i1')).toMatchObject({ step: 'sending', lock: true, actions: [] })
+      expect(h.t.answeringFor('i1').state!('dr-7')).toMatchObject({ lock: true, actions: [] })
+      expect(h.answerOfs()).toBe(0)
+      h.release({ outcome: 'kept', item: item('clarification') })
+      expect((await r).outcome).toBe('kept')
+      expect(h.sent).toEqual(['i1'])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("follows the provider's own `unknown`: locked until the person's answer is read back", async () => {
+    vi.useFakeTimers()
+    try {
+      const h = heldSend()
+      await h.t.machine.open('i1', item('clarification'))
+      const r = h.t.answeringFor('i1').respond('dr-7', body({ choice: 0 }))
+      await vi.advanceTimersByTimeAsync(5000)
+      h.release({ outcome: 'unknown' })
+      expect((await r).outcome).toBe('unknown')
+      expect(h.answerOfs()).toBe(1)
+      expect(h.t.machine.view('i1')).toMatchObject({ step: 'unknown', lock: true, actions: ['confirm'] })
+      expect(h.sent).toEqual(['i1'])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('bounds every read: an item read that does not answer within its wait is the provider not reached, and the answer waits', async () => {
+    vi.useFakeTimers()
+    try {
       const p: Pick<ShellProvider, 'inbox' | 'drafts'> = {
         inbox: {
           list: async () => ({ items: [], asOf: '' }),
-          item: async () => item('clarification'),
-          respond: (id) => (sent.push(id), new Promise(() => {})),
-          answerOf: () => new Promise(() => {}),
+          item: () => new Promise(() => {}),
+          respond: async () => ({ outcome: 'kept' }),
+          answerOf: async () => ({ state: 'none' }),
           resolve: async () => ({ id: 'i1' }),
           watch: () => () => {},
         },
@@ -235,10 +289,8 @@ describe("the provider's calls, bounded", () => {
       await t.machine.open('i1', item('clarification'))
       const r = t.answeringFor('i1').respond('dr-7', body({ choice: 0 }))
       await vi.advanceTimersByTimeAsync(1000)
-      await vi.advanceTimersByTimeAsync(1000)
-      expect((await r).outcome).toBe('unknown')
-      expect(t.answeringFor('i1').state!('dr-7')).toMatchObject({ lock: true })
-      expect(sent).toEqual(['i1'])
+      expect((await r).outcome).toBe('waiting')
+      expect(t.machine.view('i1')).toMatchObject({ step: 'waiting', words: 'Desk relay cannot be reached', lock: true })
     } finally {
       vi.useRealTimers()
     }

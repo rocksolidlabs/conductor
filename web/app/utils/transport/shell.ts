@@ -46,8 +46,9 @@ function receiptOf(v: AnswerView, now: () => number): ResponseReceipt {
 const NOT_THIS = 'Not sent: this answer is not for the decision on this page.'
 
 /**
- * The answering of the provider p: its answer machine (answer.ts) over p's inbox and drafts, each call to the provider bounded
- * (`PROVIDER_WAIT_MS`: a send that does not answer is not known, a read that does not answer is the provider not reached), its
+ * The answering of the provider p: its answer machine (answer.ts) over p's inbox and drafts, each read of the provider bounded
+ * (`PROVIDER_WAIT_MS`: a read that does not answer is the provider not reached) and its send left to the provider's own answer
+ * (the person confirms inside it, on the system's sheet; the provider answers `unknown` past its own bound), its
  * views reactive (`views`), and, for the item a page draws, the DecisionAnswering that page provides to DecisionRespond
  * (`answeringFor`). That answering reaches its own item alone: DecisionRespond names a decision by its record's id, which repeats
  * across servers, so each call is checked against the record the item holds and refused for any other. `respond` hands the
@@ -131,7 +132,9 @@ function boundedInbox(inbox: ShellInbox, name: string, wait?: number): ShellInbo
   return {
     list: (after) => withinWait(inbox.list(after), words, wait),
     item: (id) => withinWait(inbox.item(id), words, wait),
-    respond: (id, a) => withinWait(inbox.respond(id, a), words, wait),
+    // Not bounded here: the system's sheet asking the person to confirm is inside the send, and it is the person's time. The
+    // provider bounds what follows the confirmation and answers `unknown` when that bound passes (docs/plans/phone-shell.md, A1).
+    respond: (id, a) => inbox.respond(id, a),
     answerOf: (id, responseId) => withinWait(inbox.answerOf(id, responseId), words, wait),
     resolve: (handle) => withinWait(inbox.resolve(handle), words, wait),
     watch: (cb) => inbox.watch(cb),
