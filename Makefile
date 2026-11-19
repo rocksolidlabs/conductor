@@ -100,8 +100,8 @@ desktop-e2e: build-go ## the desktop shell's smoke in Electron (needs a display:
 
 # The phone shell's web side (docs/plans/phone-shell.md, OSS-1a and OSS-1b): the bundle with the shell's bridge and its policy, built
 # with the app's own tools (web/node_modules); the native project, its packages and its simulator build are a later row.
-mobile-sync: $(NODE_STAMP) ## the built bundle into mobile/www with the shell's bridge and its policy (make web-build first)
-	node mobile/scripts/sync.mjs internal/web/dist mobile/www mobile/providers
+mobile-sync: $(NODE_STAMP) ## the built bundle into mobile/www with the shell's bridge and its policy (make web-build first; MOBILE_CONNECT=<https origins, comma-separated> for a provider's build)
+	node mobile/scripts/sync.mjs internal/web/dist mobile/www mobile/providers $(if $(MOBILE_CONNECT),--connect=$(MOBILE_CONNECT))
 	cd web && npx vite build --config ../mobile/bridge.vite.config.mjs
 
 mobile-test: $(NODE_STAMP) ## the shell's bridge type-checked and its tests (they run in the app's vitest too), and its boot spec (make web-build first)

@@ -508,7 +508,11 @@ and nothing else: no key, no store, no push token, no HTTP call.
   the store, the platform's push token with its changes
   (`push.token()`, `push.onToken(cb)`), and the native HTTP call
   (Capacitor's, which the web view's content security policy does not
-  govern) to that factory alone; what it returns is `provider` (`null`
+  govern; its request's body sent exactly as given, its reply's body
+  handed over as its text exactly as received, never parsed, at most
+  1 MiB, so a provider can verify a signature or a hash over the exact
+  bytes; a reply that is not text refused `unreadable`) to that factory
+  alone; what it returns is `provider` (`null`
   with no module, or a factory that throws, with a console line).
 - **`openServer(address)`** opens the address in the in-app browser
   (`@capacitor/browser`): `https://`, or `http://` (as a Conductor server
@@ -522,7 +526,14 @@ and nothing else: no key, no store, no push token, no HTTP call.
   the copied `index.html` a `<meta http-equiv="Content-Security-Policy">`
   of `script-src 'self' 'wasm-unsafe-eval'` and the SHA-256 hash of each
   inline script the bundle's `index.html` holds, computed by
-  `mobile/scripts/csp.mjs` from that file's own scripts. On `main`
+  `mobile/scripts/csp.mjs` from that file's own scripts, and
+  `connect-src` bounding every connection a page opens: `'none'` by
+  default, so a shell with no provider connects to nothing, or the https
+  origins a provider's build names (`make mobile-sync
+  MOBILE_CONNECT=https://…`; each exactly an https origin, anything else
+  refused by the sync). A provider's own calls go through the native HTTP
+  call, which the policy does not govern; the bound keeps the page itself
+  from reaching a server's API whatever its code does. On `main`
   (built at `f10eb297`) those are three: the import map, the colour mode
   and the runtime configuration; the bundle's JSON data block is not a
   script the browser runs and takes no hash. `csp.mjs` fails the sync on

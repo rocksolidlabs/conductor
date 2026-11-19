@@ -243,7 +243,8 @@ provider.
 - **How it is built.** `make web-build mobile-sync` puts the workbench's
   bundle into `mobile/www` with the shell's bridge and its page policy
   (`script-src 'self' 'wasm-unsafe-eval'` and the hash of each inline
-  script); `make mobile-test` checks the bridge and starts the synced bundle
+  script; `connect-src 'none'`, or the https origins a provider's build
+  names); `make mobile-test` checks the bridge and starts the synced bundle
   under that policy. The native project, its signing and its simulator
   build (`make mobile-install mobile-ios`) are the next row; anyone installs
   the shell on a device under their own signing.

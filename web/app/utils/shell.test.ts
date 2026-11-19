@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ConductorShell, ShellDraft, ShellItem, ShellProvider, ShellState } from './shell'
-import { boundCode, boundLine, boundPage, endingWords, notificationWords, providerName, readBridge, readRefusal, readSignIn, readState, readWords, resetShellBridge, SHELL_BOUNDS, shellBridge, shellRedirect, timeLeft } from './shell'
+import { boundCode, boundLine, boundPage, endingWords, withinWait, notificationWords, providerName, readBridge, readRefusal, readSignIn, readState, readWords, resetShellBridge, SHELL_BOUNDS, shellBridge, shellRedirect, timeLeft } from './shell'
 
 // The phone shell's bridge as the workbench reads it (docs/plans/phone-shell.md, OSS-1b, Tests per surface): the reader, every
 // provider string bounded where it is read, and a fake provider written against the whole of v1 (the typecheck holds it to it).
@@ -166,5 +166,25 @@ describe("the screens' words", () => {
     expect(notificationWords({ notifications: 'on', lastNotifiedAt: '2026-11-19T10:00:00Z' }, () => '10:00')).toBe('On · the last received at 10:00')
     expect(notificationWords({ notifications: 'denied' }, () => '')).toBe('Turned off in the phone’s settings')
     expect(endingWords('Desk')).toBe('Signed out on this phone; Desk will be told when it can be reached')
+  })
+})
+
+describe('a wait on the provider', () => {
+  it('is refused unreachable, in its words, once its bound has passed with no answer; an answer before it stands', async () => {
+    vi.useFakeTimers()
+    try {
+      const never = withinWait(new Promise(() => {}), 'Desk relay did not answer', 1000)
+      const seen = never.catch((e) => e)
+      await vi.advanceTimersByTimeAsync(999)
+      let settled = false
+      void seen.then(() => (settled = true))
+      await vi.advanceTimersByTimeAsync(0)
+      expect(settled).toBe(false)
+      await vi.advanceTimersByTimeAsync(1)
+      expect(await seen).toEqual({ code: 'unreachable', words: 'Desk relay did not answer' })
+      expect(await withinWait(Promise.resolve(7), 'x', 1000)).toBe(7)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

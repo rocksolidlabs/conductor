@@ -6,6 +6,9 @@
 //
 //   node mobile/scripts/csp.mjs <www>     every .html under <www>, in place
 //
+// The pages' connections are bounded too: none by default (a shell with no provider connects to nothing), or the https origins a
+// provider's build names (sync.mjs's --connect).
+//
 // Node's own modules alone: no package is added for it.
 import { createHash } from 'node:crypto'
 import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
@@ -46,10 +49,31 @@ export function refusals(html) {
   return out
 }
 
-/** The policy for html: 'self', compiling WebAssembly, and each inline script's SHA-256. */
-export function policyFor(html) {
+/**
+ * The origins a build lets its pages connect to, checked: each exactly an https origin (no path, no query, no user, no wildcard).
+ * None by default: a shell with no provider connects to nothing; a provider's build names its own.
+ */
+export function connectOrigins(list = []) {
+  for (const o of list) {
+    let u
+    try {
+      u = new URL(o)
+    } catch {
+      throw new Error(`a connection source must be an https origin: ${JSON.stringify(o)}`)
+    }
+    if (u.protocol !== 'https:' || u.origin !== o || u.username || u.password || !/^https:\/\/[a-z0-9.-]+(:\d+)?$/.test(o)) throw new Error(`a connection source must be an https origin: ${JSON.stringify(o)}`)
+  }
+  return [...new Set(list)]
+}
+
+/**
+ * The policy for html: scripts from 'self', compiling WebAssembly, and each inline script's SHA-256; connections to `connect`'s
+ * origins alone ('none' with none).
+ */
+export function policyFor(html, { connect = [] } = {}) {
   const hashes = inlineScripts(html).map((s) => `'sha256-${createHash('sha256').update(s, 'utf8').digest('base64')}'`)
-  return ["script-src 'self' 'wasm-unsafe-eval'", ...hashes].join(' ')
+  const origins = connectOrigins(connect)
+  return `${["script-src 'self' 'wasm-unsafe-eval'", ...hashes].join(' ')}; connect-src ${origins.length ? origins.join(' ') : "'none'"}`
 }
 
 /**
@@ -57,7 +81,7 @@ export function policyFor(html) {
  * bridge's script tag and, when `provider`, the provider module's; a page with no entry, the policy alone. Throws on what a hash
  * cannot admit.
  */
-export function shellPage(html, { provider = false } = {}) {
+export function shellPage(html, { provider = false, connect = [] } = {}) {
   const bad = refusals(html)
   if (bad.length) throw new Error(`the page cannot run under the shell's policy: ${bad.join('; ')}`)
   if (/http-equiv\s*=\s*["']?content-security-policy/i.test(html)) throw new Error('the page holds a policy already')
@@ -67,7 +91,7 @@ export function shellPage(html, { provider = false } = {}) {
   const withTags = entry ? html.slice(0, entry.index) + tags + html.slice(entry.index) : html
   const head = /<head\b[^>]*>/i.exec(withTags)
   if (!head) throw new Error('the page holds no <head>')
-  const meta = `<meta http-equiv="Content-Security-Policy" content="${policyFor(withTags)}">`
+  const meta = `<meta http-equiv="Content-Security-Policy" content="${policyFor(withTags, { connect })}">`
   const at = head.index + head[0].length
   return withTags.slice(0, at) + meta + withTags.slice(at)
 }
@@ -84,11 +108,12 @@ function pages(dir) {
 }
 
 /** Writes the policy and the scripts into every page of the bundle in www; the provider's tag when www holds its module. */
-export function shellPages(www) {
+export function shellPages(www, { connect = [] } = {}) {
   const provider = existsSync(join(www, PROVIDER_SRC))
+  connectOrigins(connect)
   const done = []
   for (const p of pages(www)) {
-    writeFileSync(p, shellPage(readFileSync(p, 'utf8'), { provider }))
+    writeFileSync(p, shellPage(readFileSync(p, 'utf8'), { provider, connect }))
     done.push(p)
   }
   if (!done.some((p) => p === join(www, 'index.html'))) throw new Error(`${www} holds no index.html`)

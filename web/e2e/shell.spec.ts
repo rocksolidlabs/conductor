@@ -2,7 +2,7 @@ import type { Browser, Page } from '@playwright/test'
 import { walk } from './contrast'
 import { expect, test, useTheme } from './fixtures'
 import { noSideways, tapTarget } from './layout'
-import { fakeShell, shellDo, shellRecord, type FakeConfig } from './shell-fake'
+import { fakeShell, serverTraffic, shellDo, shellRecord, type FakeConfig } from './shell-fake'
 
 // The phone shell's own screens (docs/plans/phone-shell.md, OSS-1b, Tests per surface, web/e2e/shell.spec.ts): the bridge injected
 // as the shell's own script builds it, with a fake provider of the tests' own. With no provider, Open a server is the whole first
@@ -24,12 +24,16 @@ async function shellTab(browser: Browser, baseURL: string, cfg: FakeConfig | nul
   const ctx = await browser.newContext({ baseURL, viewport: size, hasTouch: size.width < 1024, isMobile: size.width < 1024 })
   const page = await ctx.newPage()
   if (cfg) await fakeShell(page, cfg)
-  const api: string[] = []
-  page.on('request', (r) => {
-    const u = new URL(r.url())
-    if (u.pathname.startsWith('/api/') || u.pathname.startsWith('/ws')) api.push(u.pathname)
-  })
-  return { page, api, close: () => ctx.close() }
+  const api = serverTraffic(page)
+  // A shell's tab is closed only once it is shown to have sent the server nothing, whatever route it visited.
+  return {
+    page,
+    api,
+    close: async () => {
+      if (cfg) expect(api, 'no request or socket to the server from a shell').toEqual([])
+      await ctx.close()
+    },
+  }
 }
 
 /** Provider calls the fake recorded, past the subscription. */
@@ -67,6 +71,39 @@ test.describe('the phone shell', () => {
       expect(t.api, 'no request to the server in a shell').toEqual([])
       await t.close()
     }
+  })
+
+  test("the recorder of what a shell sends the server sees a socket the page opens", async ({ browser, baseURL }) => {
+    // The proof that a shell sends nothing rests on this recorder: a WebSocket, which no request event reports, is seen too.
+    const t = await shellTab(browser, baseURL!, { provider: null })
+    await t.page.goto('/shell')
+    await expect(t.page.locator('[data-shell-open-server]')).toBeVisible()
+    await t.page.evaluate(() => void new WebSocket(`${location.origin.replace(/^http/, 'ws')}/ws/terminal`))
+    await expect.poll(() => t.api.slice()).toContain('socket /ws/terminal')
+    t.api.splice(0)
+    await t.close()
+  })
+
+  test('a state the provider does not give is said in words with Try again, and the inbox says it is reading', async ({ browser, baseURL }) => {
+    const t = await shellTab(browser, baseURL!, provider(signedIn))
+    const { page } = t
+    await page.addInitScript(() => {
+      const r = (window as unknown as { __shell: Record<string, unknown> }).__shell
+      r.stateFails = true
+      r.hold = ['list']
+    })
+    await page.goto('/shell')
+    await expect(page.locator('[data-shell-state-failed]')).toHaveText('Desk relay could not say whether this phone is signed in.')
+    await expect(page.locator('[data-shell-checking]')).toHaveCount(0)
+    await expect(page.locator('[data-shell-to-server]')).toBeVisible()
+    await shellDo(page, 'stateFails', false)
+    await page.locator('[data-shell-state-again]').click()
+    await expect(page.locator('[data-shell-title]')).toHaveText('Waiting for you')
+    await expect(page.locator('[data-shell-inbox-reading]')).toHaveText('Reading what waits…')
+    await shellDo(page, 'release', 'list')
+    await expect(page.locator('[data-shell-inbox-reading]')).toHaveCount(0)
+    await expect(page.locator('[data-shell-inbox-empty]')).toBeVisible()
+    await t.close()
   })
 
   test('keeps a page in a shell on /shell, and a page outside one off it', async ({ browser, baseURL }) => {
@@ -120,14 +157,17 @@ test.describe('the phone shell', () => {
   })
 
   test('the sign-in: the code, its page and its time left, Cancel, and words with Try again', async ({ browser, baseURL }) => {
-    const expiresAt = new Date(Date.now() + 9.5 * 60_000).toISOString()
+    // The page's clock is the spec's: the code's time left is read against a time the spec set, never against the wall clock.
+    const NOW = Date.parse('2026-11-19T10:00:00Z')
+    const expiresAt = new Date(NOW + 9.5 * 60_000).toISOString()
     const t = await shellTab(browser, baseURL!, provider(signedOut, { signIn: { code: 'WDJB-MJHT', page: 'https://id.example.test/device', expiresAt } }))
     const { page } = t
+    await page.addInitScript((now) => (Date.now = () => now), NOW)
     await page.goto('/shell')
     await expect(page.locator('[data-shell-title]')).toHaveText('Sign in to Desk relay')
     await page.locator('[data-shell-signin-begin]').click()
     await expect(page.locator('[data-shell-code]')).toHaveText('WDJB-MJHT')
-    await expect(page.locator('[data-shell-code-left]')).toHaveText(/^Expires in (9|8) min$/)
+    await expect(page.locator('[data-shell-code-left]')).toHaveText('Expires in 9 min')
     await page.locator('[data-shell-open-page]').click()
     await expect.poll(async () => (await shellRecord(page)).windows).toEqual(['https://id.example.test/device'])
     await page.locator('[data-shell-signin-cancel]').click()

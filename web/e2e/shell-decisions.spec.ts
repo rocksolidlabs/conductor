@@ -2,7 +2,7 @@ import type { Browser, Page } from '@playwright/test'
 import { walk } from './contrast'
 import { expect, test, useTheme } from './fixtures'
 import { noSideways, tapTarget } from './layout'
-import { fakeShell, shellDo, shellRecord, type FakeConfig } from './shell-fake'
+import { fakeShell, serverTraffic, shellDo, shellRecord, type FakeConfig } from './shell-fake'
 
 // The decision page drawn from a shell's inbox (docs/plans/phone-shell.md, OSS-2b, Tests per surface, shell-decisions.spec.ts), with
 // a fake provider of the tests' own whose replies the test holds and releases: the four rows exactly as given; a record with no
@@ -38,12 +38,16 @@ async function shellTab(browser: Browser, baseURL: string, c: FakeConfig): Promi
   const ctx = await browser.newContext({ baseURL, viewport: PHONE, hasTouch: true, isMobile: true })
   const page = await ctx.newPage()
   await fakeShell(page, c)
-  const api: string[] = []
-  page.on('request', (r) => {
-    const u = new URL(r.url())
-    if (u.pathname.startsWith('/api/') || u.pathname.startsWith('/ws')) api.push(u.pathname)
-  })
-  return { page, api, close: () => ctx.close() }
+  const api = serverTraffic(page)
+  // Closed only once it is shown to have sent the server nothing, whatever route it visited.
+  return {
+    page,
+    api,
+    close: async () => {
+      expect(api, 'no request or socket to the server from a shell').toEqual([])
+      await ctx.close()
+    },
+  }
 }
 
 /** Opens the decision page of i1 and waits for its answer to be drawn. */
@@ -68,6 +72,9 @@ test.describe("the decision page from a shell's inbox", () => {
     await expect(page.locator('[data-shell-decision-omitted]')).toHaveText('3 earlier answers are not shown here')
     await expect(page.locator('[data-shell-line]')).toContainText('Held by Studio desk, last heard from at')
     await expect(page.locator('[data-shell-decision-offline]')).toHaveText(/^As of .+, offline$/)
+    // The workbench's pages are not the shell's: the run is drawn as text, never as a link that would land on the inbox.
+    expect(await page.locator('[data-decision-run]').evaluate((e) => e.tagName)).toBe('SPAN')
+    await expect(page.locator('[data-shell-decision] a[href^="/runs/"]')).toHaveCount(0)
     await expect(page.locator('[data-decision-comment]')).toBeDisabled()
     await expect(page.locator('[data-decision-comment-off]')).toHaveText('Comment on the desktop: this phone sends answers, not comments')
     expect(t.api, 'no request to the server in a shell').toEqual([])
@@ -145,16 +152,70 @@ test.describe("the decision page from a shell's inbox", () => {
     await expect(page.locator('[data-decision-answering-cancel]')).toBeVisible()
     await expect(page.locator('[data-decision-answering-confirm]')).toHaveCount(0)
     await expect(page.locator('[data-decision-choice="1"]')).toBeDisabled()
+    // Said once, by the answer's own state: a wait is not a refusal.
+    await expect(page.locator('[data-decision-refusal]')).toHaveCount(0)
     await shellDo(page, 'offline', false)
     await page.evaluate(() => window.dispatchEvent(new Event('online')))
     await expect(page.locator('[data-decision-answering-words]')).toHaveText('Back online: confirm to send your answer')
     expect((await shellRecord(page)).responds).toEqual([])
     await page.locator('[data-decision-answering-confirm]').click()
-    // Kept: the rows the provider handed back, as given.
+    // Kept: the rows the provider handed back, as given, and the form settled: its receipt, nothing that reads as not sent, no
+    // choice left picked, Answer offering no second send.
     await expect(page.locator('[data-step="recorded"]')).toHaveAttribute('data-step-state', 'done')
     await expect(page.locator('[data-decision-answering]')).toHaveCount(0)
+    await expect(page.locator('[data-decision-receipt]')).toBeVisible()
+    await expect(page.locator('[data-decision-refusal]')).toHaveCount(0)
+    await expect(page.locator('[data-decision-choice="0"]')).toHaveAttribute('data-decision-choice-label', 'Europe')
+    await expect(page.locator('[data-decision-send]')).toBeDisabled()
     expect((await shellRecord(page)).responds).toHaveLength(1)
     expect((await shellRecord(page)).drafts.i1).toBeUndefined()
+    // Pressed anyway, it sends nothing more.
+    await page.locator('[data-decision-send]').click({ force: true })
+    await page.evaluate(() => new Promise((r) => setTimeout(() => requestAnimationFrame(() => r(null)), 0)))
+    expect((await shellRecord(page)).responds).toHaveLength(1)
+    await expect(page.locator('[data-decision-receipt]')).toBeVisible()
+    await t.close()
+  })
+
+  test('a decision page the person has left moves no one when its read answers late, and opens nothing', async ({ browser, baseURL }) => {
+    const second = item({}, decision('clarification', 3, { request: { question: 'Which region ships second?', options: [{ label: 'Asia' }, { label: 'Africa' }] } }))
+    const t = await shellTab(browser, baseURL!, cfg({ i1: item(), i2: { ...second, id: 'i2' } }))
+    const { page } = t
+    await page.addInitScript(() => void ((window as unknown as { __shell: { holdIds: string[] } }).__shell.holdIds = ['i1']))
+    await page.goto('/shell')
+    await expect(page.locator('[data-shell-inbox-row="i2"]')).toBeVisible()
+    await page.locator('[data-shell-inbox-row="i1"]').click()
+    await expect(page.locator('[data-shell-decision-reading]')).toBeVisible()
+    await page.locator('[data-shell-back]').click()
+    await page.locator('[data-shell-inbox-row="i2"]').click()
+    await expect(page.locator('[data-shell-item="i2"]')).toBeVisible()
+    // The first page's read is refused now, after the person left it.
+    await shellDo(page, 'offline', true)
+    const doneBefore = (await shellRecord(page)).done.filter((c) => c === 'item').length
+    await shellDo(page, 'release', 'item:i1')
+    await expect.poll(async () => (await shellRecord(page)).done.filter((c) => c === 'item').length).toBe(doneBefore + 1)
+    await page.evaluate(() => new Promise((r) => setTimeout(() => requestAnimationFrame(() => r(null)), 0)))
+    await expect(page).toHaveURL(/\/shell\/decisions\/i2$/)
+    await expect(page.locator('[data-shell-item="i2"]')).toBeVisible()
+    await expect(page.locator('[data-shell-inbox-note]')).toHaveCount(0)
+    await t.close()
+  })
+
+  test("a notification's page offers Back and Open a server while it waits, and once left it moves no one", async ({ browser, baseURL }) => {
+    const t = await shellTab(browser, baseURL!, cfg({ i1: item() }, { handles: { 'h-ok': { id: 'i1' } } }))
+    const { page } = t
+    await page.addInitScript(() => void ((window as unknown as { __shell: { hold: string[] } }).__shell.hold = ['resolve']))
+    await page.goto('/shell/open?h=h-ok')
+    await expect(page.locator('[data-shell-opening]')).toBeVisible()
+    await expect(page.locator('[data-shell-to-server]')).toBeVisible()
+    await page.locator('[data-shell-back]').click()
+    await expect(page).toHaveURL(/\/shell$/)
+    await expect(page.locator('[data-shell-inbox]')).toBeVisible()
+    await shellDo(page, 'release', 'resolve')
+    await expect.poll(async () => (await shellRecord(page)).done).toContain('resolve')
+    await page.evaluate(() => new Promise((r) => setTimeout(() => requestAnimationFrame(() => r(null)), 0)))
+    await expect(page).toHaveURL(/\/shell$/)
+    await expect(page.locator('[data-shell-decision]')).toHaveCount(0)
     await t.close()
   })
 

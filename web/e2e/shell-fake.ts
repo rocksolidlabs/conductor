@@ -29,6 +29,8 @@ export async function fakeShell(page: Page, cfg: FakeConfig): Promise<void> {
     type Rec = Record<string, unknown>
     const rec = {
       calls: [] as string[],
+      /** Calls that have answered or refused, in the order they did. */
+      done: [] as string[],
       opened: [] as string[],
       windows: [] as string[],
       recent: [] as string[],
@@ -36,7 +38,11 @@ export async function fakeShell(page: Page, cfg: FakeConfig): Promise<void> {
       drafts: {} as Record<string, Rec>,
       held: {} as Record<string, Array<() => void>>,
       hold: [] as string[],
+      /** Items whose reads wait until `release('item:<id>')`. */
+      holdIds: [] as string[],
       offline: false,
+      /** state() refuses while set. */
+      stateFails: false,
     }
     ;(window as unknown as { __shell: unknown }).__shell = rec
     window.open = ((url: string) => {
@@ -52,7 +58,11 @@ export async function fakeShell(page: Page, cfg: FakeConfig): Promise<void> {
     const call = async <T>(name: string, answer: () => T | Promise<T>): Promise<T> => {
       rec.calls.push(name)
       if (rec.hold.includes(name)) await new Promise<void>((r) => (rec.held[name] ??= []).push(r))
-      return answer()
+      try {
+        return await answer()
+      } finally {
+        rec.done.push(name)
+      }
     }
     const clone = <T>(x: T): T => JSON.parse(JSON.stringify(x))
     const item = (id: string) => {
@@ -62,7 +72,11 @@ export async function fakeShell(page: Page, cfg: FakeConfig): Promise<void> {
     }
     const provider = p && {
       name: p.name,
-      state: () => call('state', () => clone(p.state)),
+      state: () =>
+        call('state', () => {
+          if (rec.stateFails) throw { code: 'unreachable', words: `${p.name} could not say whether this phone is signed in.` }
+          return clone(p.state)
+        }),
       onState: (cb: (s: unknown) => void) => {
         rec.calls.push('onState')
         stateListeners.add(cb)
@@ -86,7 +100,8 @@ export async function fakeShell(page: Page, cfg: FakeConfig): Promise<void> {
             return { items: Object.keys(p.items ?? {}).map(item), asOf: new Date().toISOString() }
           }),
         item: (id: string) =>
-          call('item', () => {
+          call('item', async () => {
+            if (rec.holdIds.includes(id)) await new Promise<void>((r) => (rec.held[`item:${id}`] ??= []).push(r))
             if (rec.offline) throw { code: 'offline', words: 'You are offline' }
             return item(id)
           }),
@@ -164,6 +179,7 @@ export async function fakeShell(page: Page, cfg: FakeConfig): Promise<void> {
       },
       release: (name: string) => {
         rec.hold = rec.hold.filter((h) => h !== name)
+        rec.holdIds = rec.holdIds.filter((h) => `item:${h}` !== name)
         for (const r of rec.held[name]?.splice(0) ?? []) r()
       },
       tap: (d: Record<string, string>) => tapListeners.forEach((l) => l(d)),
@@ -174,10 +190,10 @@ export async function fakeShell(page: Page, cfg: FakeConfig): Promise<void> {
 }
 
 /** What the fake has recorded, read from the page. */
-export function shellRecord(page: Page): Promise<{ calls: string[]; opened: string[]; windows: string[]; recent: string[]; responds: Array<Record<string, unknown>>; drafts: Record<string, Record<string, unknown>> }> {
+export function shellRecord(page: Page): Promise<{ calls: string[]; done: string[]; opened: string[]; windows: string[]; recent: string[]; responds: Array<Record<string, unknown>>; drafts: Record<string, Record<string, unknown>> }> {
   return page.evaluate(() => {
     const r = (window as unknown as { __shell: Record<string, unknown> }).__shell
-    return JSON.parse(JSON.stringify({ calls: r.calls, opened: r.opened, windows: r.windows, recent: r.recent, responds: r.responds, drafts: r.drafts }))
+    return JSON.parse(JSON.stringify({ calls: r.calls, done: r.done, opened: r.opened, windows: r.windows, recent: r.recent, responds: r.responds, drafts: r.drafts }))
   })
 }
 
@@ -191,4 +207,19 @@ export function shellDo(page: Page, what: string, ...args: unknown[]): Promise<v
     },
     [what, args] as const,
   )
+}
+
+/**
+ * What the page sends a server: every request to a path of the server's API or its sockets, and every WebSocket the page opens,
+ * whatever its address. A WebSocket is reported to `websocket` alone, never to `request`, so both are watched. A shell page must
+ * send none of them.
+ */
+export function serverTraffic(page: Page): string[] {
+  const seen: string[] = []
+  page.on('request', (r) => {
+    const u = new URL(r.url())
+    if (u.pathname.startsWith('/api/') || u.pathname.startsWith('/ws')) seen.push(u.pathname)
+  })
+  page.on('websocket', (ws) => seen.push(`socket ${new URL(ws.url()).pathname}`))
+  return seen
 }

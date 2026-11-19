@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { readRefusal, readSignIn, timeLeft } from '~/utils/shell'
+import { readRefusal, readSignIn, timeLeft, withinWait } from '~/utils/shell'
 
 /**
  * The provider's sign-in (docs/plans/phone-shell.md, OSS-1b): "Sign in to <name>", the code in large type, Open the sign-in page
@@ -23,7 +23,7 @@ async function begin() {
   busy.value = true
   words.value = ''
   try {
-    const r = readSignIn(await p.signIn())
+    const r = readSignIn(await withinWait(p.signIn(), `${shell.name} did not answer: no sign-in began.`))
     if ('code' in r) {
       started.value = r
       now.value = Date.now()
@@ -41,7 +41,7 @@ async function begin() {
 
 async function cancel() {
   started.value = null
-  await p.cancelSignIn().catch(() => {})
+  await withinWait(p.cancelSignIn(), '').catch(() => {})
 }
 
 function openPage() {

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { clockTime } from '~/utils/brakemanRole'
-import { endingWords, notificationWords, readRefusal, readWords } from '~/utils/shell'
+import { endingWords, notificationWords, readRefusal, readWords, withinWait } from '~/utils/shell'
 
 /**
  * The shell's Settings (docs/plans/phone-shell.md, OSS-1b): who is signed in, notifications with their state and the last one
@@ -35,7 +35,7 @@ async function act(which: 'notify' | 'test' | 'out', f: () => Promise<void>) {
 const turnOn = () =>
   act('notify', async () => {
     try {
-      notifyWords.value = (await p!.enableNotifications()) === 'on' ? 'Notifications are on.' : 'Notifications are turned off in the phone’s settings: turn them on there.'
+      notifyWords.value = (await withinWait(p!.enableNotifications(), `${shell.name} did not answer.`)) === 'on' ? 'Notifications are on.' : 'Notifications are turned off in the phone’s settings: turn them on there.'
     } catch (e) {
       notifyWords.value = readRefusal(e, 'Notifications could not be turned on.').words
     }
@@ -45,7 +45,7 @@ const turnOn = () =>
 const sendTest = () =>
   act('test', async () => {
     try {
-      testWords.value = readWords(await p!.test(), 'A test notification was sent.')
+      testWords.value = readWords(await withinWait(p!.test(), `${shell.name} did not answer: the test notification may not have been sent.`), 'A test notification was sent.')
     } catch (e) {
       testWords.value = readRefusal(e, 'The test notification was not sent.').words
     }
@@ -54,7 +54,7 @@ const sendTest = () =>
 const signOut = () =>
   act('out', async () => {
     try {
-      await p!.signOut()
+      await withinWait(p!.signOut(), `${shell.name} did not answer: signing out did not finish.`)
       outWords.value = ''
     } catch (e) {
       outWords.value = readRefusal(e, 'Signing out did not finish.').words

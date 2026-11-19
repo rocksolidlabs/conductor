@@ -2,6 +2,7 @@
 import type { Decision, DecisionRef } from '~/utils/decisions'
 import { acceptedAnswer, approverLead, approverWords, askedWhere, assignmentWords, authorizesLine, decisionWords, detailsOpen, historyWords, optionSubject, optionsOf, recommended, routedFor, stepLook, subjectWords } from '~/utils/decisions'
 import { relativeTime } from '~/utils/sessions'
+import { inShell } from '~/utils/shell'
 
 /**
  * A durable decision whole (Program item DR1, docs/plans/decisions.md, "web/app"; UX1 PR-20, docs/plans/ux-review.md): the question,
@@ -40,6 +41,9 @@ const receipts = computed(() => words.value.steps.filter((s) => s.receipt))
 const refOf = (ref: string) => props.refs?.find((r) => r.ref === ref)
 const tones = { warning: 'text-warning', muted: 'text-muted', error: 'text-error', default: 'text-default', dimmed: 'text-dimmed' }
 const showHistory = ref(false)
+/** The workbench's pages are not the phone shell's: inside it the run and the subjects are drawn as text (utils/shell.ts, inShell). */
+const links = !inShell()
+const NuxtLinkComponent = resolveComponent('NuxtLink')
 
 /**
  * The captures sent to it (PV1 PR-11: a capture attached to a decision is a comment on it, and a send of the capture's): drawn by
@@ -64,7 +68,7 @@ watch(
     <p class="break-words text-base font-medium text-highlighted" data-decision-question>{{ decision.request.question }}</p>
     <p class="text-xs text-muted">
       Asked by {{ askedWhere(decision) }} in
-      <NuxtLink :to="`/runs/${encodeURIComponent(decision.run)}?view=tasks${decision.asker ? `&task=${encodeURIComponent(decision.asker.task)}` : ''}`" class="font-mono hover:underline" data-decision-run>{{ decision.run }}</NuxtLink>
+      <component :is="links ? NuxtLinkComponent : 'span'" :to="links ? `/runs/${encodeURIComponent(decision.run)}?view=tasks${decision.asker ? `&task=${encodeURIComponent(decision.asker.task)}` : ''}` : undefined" class="font-mono" :class="links ? 'hover:underline' : ''" data-decision-run>{{ decision.run }}</component>
       {{ relativeTime(decision.createdAt, now, { suffix: true }) }} · <span data-decision-approver-lead>{{ approverLead(decision) }}</span> <span data-decision-approver>{{ approverWords(decision) }}</span><span v-if="routedFor(decision)" :data-decision-routed-for="routedFor(decision)!.person">, for {{ routedFor(decision)!.person }} (routed by {{ routedFor(decision)!.by }})</span>
     </p>
     <p v-if="assignmentWords(decision)" class="text-sm text-default" data-decision-assignment>{{ assignmentWords(decision) }}.</p>
@@ -82,7 +86,7 @@ watch(
         </span>
         <span v-if="o.tradeoffs" class="break-words text-xs text-muted">{{ o.tradeoffs }}</span>
         <span v-if="subjects[i]" class="break-words text-xs text-muted" :data-decision-option-subject="i">
-          <NuxtLink v-if="subjects[i]!.to" :to="subjects[i]!.to" class="hover:underline">{{ subjects[i]!.text }}</NuxtLink>
+          <NuxtLink v-if="links && subjects[i]!.to" :to="subjects[i]!.to" class="hover:underline">{{ subjects[i]!.text }}</NuxtLink>
           <template v-else>{{ subjects[i]!.text }}</template>
         </span>
       </li>
@@ -113,7 +117,7 @@ watch(
         <template v-if="subject.text">
           <dt class="text-muted">About</dt>
           <dd class="break-words font-mono" data-decision-subject>
-            <NuxtLink v-if="subject.to" :to="subject.to" class="hover:underline">{{ subject.text }}</NuxtLink>
+            <NuxtLink v-if="links && subject.to" :to="subject.to" class="hover:underline">{{ subject.text }}</NuxtLink>
             <template v-else>{{ subject.text }}</template>
           </dd>
         </template>
