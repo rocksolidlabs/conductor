@@ -112,7 +112,7 @@ func decisionStatus(code string) int {
 		return http.StatusNotFound
 	case crew.CodeDecisionLimit:
 		return http.StatusTooManyRequests
-	case crew.CodeNotApprover:
+	case crew.CodeNotApprover, crew.CodeNotEligible, crew.CodeOverrideRefused:
 		return http.StatusForbidden
 	case crew.CodeDecisionMoved:
 		return http.StatusServiceUnavailable
@@ -580,7 +580,12 @@ func (s *Server) handleDecision(w http.ResponseWriter, r *http.Request) {
 		s.decisionError(w, "read", did, err, nil)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"decision": d, "refs": s.decisionRefs(r.Context(), d.Evidence)})
+	reply := map[string]any{"decision": d, "refs": s.decisionRefs(r.Context(), d.Evidence)}
+	if now := s.policyNow(r.Context(), did); now != nil {
+		// Under a router's policy: whether it is in force now (policy.go).
+		reply["policyNow"] = now
+	}
+	writeJSON(w, http.StatusOK, reply)
 }
 
 // handleDecisionRespond takes the operator's response: 201 {receipt,
@@ -602,7 +607,12 @@ func (s *Server) handleDecisionRespond(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := runContext(r)
 	defer cancel()
 	auth := s.authorityOf(r)
-	rc, err := s.runs.RespondDecision(ctx, did, resp, actorOf(r), auth)
+	conf, err := s.confirmFor(ctx, did, auth)
+	if err != nil {
+		s.decisionError(w, "respond", did, err, nil)
+		return
+	}
+	rc, err := s.runs.RespondDecisionWith(ctx, did, resp, actorOf(r), auth, conf)
 	if err != nil {
 		var kept any
 		if rc.Decision != "" {
@@ -862,6 +872,11 @@ func (h *eventHub) decision(ev decisionEvent) {
 func (s *Server) decisionTold(changes []crew.DecisionChange) {
 	for _, c := range changes {
 		row := c.Row
+		if s.runs.RoutesPolicies() && opensWindow(row) {
+			// Marked ahead of the event, so a client that answers on the
+			// event never beats the router (policy.go).
+			s.router.windows.open(row.ID())
+		}
 		s.events.decision(decisionEvent{ID: row.ID(), Run: row.CurrentRun, Task: row.TaskID, State: row.State, Rev: row.Rev})
 		if s.notifier != nil {
 			s.notifier.decision(decisionNotification(row, c.By))

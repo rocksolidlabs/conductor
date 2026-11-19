@@ -781,7 +781,7 @@ func (e *Engine) openGate(r *run, pd PackageDecision, tasks []*task, cause strin
 		raw, _ := json.Marshal(body)
 		sum := sha256.Sum256(raw)
 		row := ledger.DecisionRow{Origin: ledger.OriginPlan, Type: typ, Gate: pd.ID, Ticket: p.Ticket.ID, Plan: p.Plan.ID, PlanDigest: p.Plan.Digest,
-			Fingerprint: hex.EncodeToString(sum[:]), Request: string(raw), Policy: policyJSON}
+			Fingerprint: hex.EncodeToString(sum[:]), Request: string(raw), Policy: e.openingPolicy(ledger.OriginPlan)}
 		got, _, err := dtx.OpenDecision(row)
 		if err != nil {
 			return err
@@ -1110,6 +1110,9 @@ type opDetail struct {
 	Note    string `json:"note,omitempty"`
 	To      []any  `json:"to,omitempty"`
 	Rule    string `json:"rule,omitempty"`
+	// Revision is a router's policy's revision, on the routed row of the
+	// policy's transaction (RoutePolicy).
+	Revision string `json:"revision,omitempty"`
 	// For and ForWas are whom a route made the decision for, and whom it
 	// was for before (HM1): a route to a person's label.
 	For    *DecisionFor `json:"for,omitempty"`

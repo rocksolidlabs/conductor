@@ -233,6 +233,8 @@ type Server struct {
 	pastes pasteStore
 	// runs launches crews and keeps their runs, in memory.
 	runs *crew.Engine
+	// policyClock holds a decision router to ext.MaxBehind (policy.go).
+	policyClock policyClock
 	// trees reads the trees of the previews, their indexes kept
 	// (preview_label.go).
 	trees treeReads
@@ -736,6 +738,9 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		// steps and sessions: the server's envPassthrough, as the server
 		// started with it.
 		s.runs.SetEnvPassthrough(cfg.EnvPassthrough)
+		// A registered decision router that confirms policies routes the
+		// records' policies (policy.go); with none, nothing changes.
+		s.runs.SetRouterPolicies(s.routerConfirms(), s.policyCheck)
 	}
 	s.webhooks = s.startNotifier(cfg.Webhooks)
 	// The runs take every entry too: a member's done starts the members after

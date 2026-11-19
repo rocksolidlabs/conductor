@@ -163,6 +163,9 @@ type decisionRouter struct {
 	// to, never asked of the router on the read's path.
 	routes     map[routeKey]ext.Route
 	routeOrder []routeKey
+	// windows are the records' opening windows under a router that routes
+	// policies (policy.go).
+	windows policyWindows
 }
 
 // routeKey names a question by its session and its id.
@@ -868,6 +871,8 @@ func (r *decisionRouter) readRecord(id string, n int64) {
 		}
 		return
 	case !found || rec.Final():
+		r.windows.forget(id)
+		r.s.policyClock.forget(id)
 		r.mu.Lock()
 		told := r.opened[id]
 		delete(r.opened, id)
@@ -892,7 +897,7 @@ func (r *decisionRouter) readRecord(id string, n int64) {
 	}
 	r.opened[id] = true
 	r.mu.Unlock()
-	r.routeRecord(recordDecision(rec), rec.Rev)
+	r.routeRecord(r.s.recordDecision(r.s.extCtx, rec), rec.Rev)
 }
 
 // resolveRecord tells the router that the decision id reached its end
@@ -932,6 +937,9 @@ func (r *decisionRouter) routeRecord(d ext.Decision, rev int) {
 	}
 	g, slot, ok := r.take()
 	if !ok {
+		// A tell not made closes the record's opening window: the
+		// operator answers it under the server's own policy meanwhile.
+		r.windows.close(d.Request)
 		unrouted()
 		recordStep("skipped", d.Request, ext.Route{}, nil)
 		return
@@ -943,6 +951,9 @@ func (r *decisionRouter) routeRecord(d ext.Decision, rev int) {
 		}
 		rt, ok := g.routeIn(ctx, slot, d)
 		cancel()
+		// Whatever the router answered, the record's opening window
+		// closes once its policy is written, or with none.
+		defer r.windows.close(d.Request)
 		if !ok {
 			unrouted()
 			recordStep("routed", d.Request, rt, errUnrouted)
@@ -951,6 +962,16 @@ func (r *decisionRouter) routeRecord(d ext.Decision, rev int) {
 		r.mu.Lock()
 		r.passWait = 0
 		r.mu.Unlock()
+		if rt.Policy != nil && d.Record != nil && d.Record.Origin != ledger.OriginCompare && r.s.runs.RoutesPolicies() {
+			// The policy's transaction writes the route's one routed row
+			// with it (RecordRoute is not called beside it).
+			err := r.routePolicyOf(d, rev, rt, unrouted)
+			if a := rt.Answer; a != nil && err == nil {
+				err = r.offer(d, *a, rev+1)
+			}
+			recordStep("routed", d.Request, rt, err)
+			return
+		}
 		if len(rt.To) > 0 {
 			to := make([]crew.Destination, 0, len(rt.To))
 			for _, t := range rt.To {

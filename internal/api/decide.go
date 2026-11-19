@@ -396,7 +396,12 @@ func (s *Server) decideAnswer(w http.ResponseWriter, r *http.Request, p principa
 	ctx, cancel := runContext(r)
 	defer cancel()
 	auth := s.authorityOf(r)
-	rc, err := s.runs.RespondDecision(ctx, did, resp, actorOf(r), auth)
+	// Under a router's policy the router is asked first (policy.go).
+	conf, err := s.confirmFor(ctx, did, auth)
+	var rc crew.ResponseReceipt
+	if err == nil {
+		rc, err = s.runs.RespondDecisionWith(ctx, did, resp, actorOf(r), auth, conf)
+	}
 	if err != nil {
 		var de *crew.DecisionError
 		if !errors.As(err, &de) {
@@ -535,6 +540,8 @@ func decideWords(code, did string) string {
 		return did + " takes no more answers."
 	case crew.CodeDecisionMoved:
 		return "Not known whether your answer to " + did + " was recorded: send it again."
+	case crew.CodeNotEligible:
+		return "You are not among those who may answer " + did + "."
 	}
 	return did + " could not take this answer."
 }

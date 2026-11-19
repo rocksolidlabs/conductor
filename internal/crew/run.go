@@ -574,6 +574,11 @@ type Engine struct {
 	// whichever run holds its decision reads them, so one is never lost
 	// with a copy a continuation left behind. Under e.mu.
 	confirms map[confirmKey]int
+	// routesPolicies says the registered decision router confirms
+	// policies, and policyCheck is how it is asked (SetRouterPolicies,
+	// decisions_policy.go).
+	routesPolicies atomic.Bool
+	policyCheck    atomic.Pointer[PolicyCheck]
 	// opMu orders the operators' operations on decisions (operate), from
 	// the look for their ids through their commits: an operation's row is
 	// never refused in its transaction as another's with the same id,

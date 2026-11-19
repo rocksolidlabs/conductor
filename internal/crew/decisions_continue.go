@@ -241,7 +241,7 @@ func acceptedOf(rec ledger.DecisionRecord) *accepted {
 		_ = json.Unmarshal([]byte(rr.Receipt), &rc)
 		var auth Authority
 		_ = json.Unmarshal([]byte(rr.Authority), &auth)
-		return &accepted{k: rr.K, choice: rc.Choice, text: rc.Text, rationale: rc.Rationale, byName: rc.ByName, actor: rr.Actor, auth: auth, forWho: rc.For}
+		return &accepted{k: rr.K, choice: rc.Choice, text: rc.Text, rationale: rc.Rationale, byName: rc.ByName, actor: rr.Actor, auth: auth, forWho: rc.For, groups: rc.Groups}
 	}
 	return nil
 }

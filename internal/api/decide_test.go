@@ -28,6 +28,7 @@ import (
 
 	"github.com/rocksolidlabs/conductor/ext"
 	"github.com/rocksolidlabs/conductor/ext/exttest"
+	"github.com/rocksolidlabs/conductor/ext/local"
 	"github.com/rocksolidlabs/conductor/internal/catalog"
 	"github.com/rocksolidlabs/conductor/internal/config"
 	"github.com/rocksolidlabs/conductor/internal/crew"
@@ -114,6 +115,13 @@ type decideFixture struct {
 
 func newDecideFixture(t *testing.T, mutate func(*config.Config)) *decideFixture {
 	t.Helper()
+	return newDecideFixtureRouted(t, mutate, nil)
+}
+
+// newDecideFixtureRouted is newDecideFixture with the decision router r
+// registered beside the identity provider (none for nil).
+func newDecideFixtureRouted(t *testing.T, mutate func(*config.Config), r ext.DecisionRouter) *decideFixture {
+	t.Helper()
 	fake := exttest.NewFakeIdentity("cloud")
 	principal := func(subject string, gs ...ext.Grant) ext.Principal {
 		return ext.Principal{Subject: subject, Name: strings.ToUpper(subject[:1]) + subject[1:], Grants: gs}
@@ -125,7 +133,13 @@ func newDecideFixture(t *testing.T, mutate func(*config.Config)) *decideFixture 
 	fake.Add(passAdmin, principal("nate", ext.GrantAdmin))
 	fake.Add(passAdminDecide, principal("nate", ext.GrantAdmin, ext.GrantDecide))
 	id := &gatedIdentity{FakeIdentity: fake, asked: map[string]int{}, then: map[string]*ext.Principal{}, hold: map[string]chan struct{}{}, reached: make(chan string, 8)}
-	e := newTestEnvAgents(t, mutate, slog.New(slog.NewTextHandler(io.Discard, nil)), []catalog.Agent{readyCat}, withIdentity(id))
+	opt := withIdentity(id)
+	if r != nil {
+		opt = WithExtensions(local.Fill(ext.Providers{Identity: id, Router: r, All: []ext.Entry{
+			{Kind: ext.KindIdentity, Name: "cloud", Value: id}, {Kind: ext.KindDecisions, Name: "switchman", Value: r},
+		}}))
+	}
+	e := newTestEnvAgents(t, mutate, slog.New(slog.NewTextHandler(io.Discard, nil)), []catalog.Agent{readyCat}, opt)
 	e.srv.limiter = newRateLimiter(1e6, 1e6)
 	if e.srv.cfg.Switchyard.Enabled {
 		return &decideFixture{decisionFixture: &decisionFixture{testEnv: e}, id: id}

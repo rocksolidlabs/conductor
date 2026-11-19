@@ -189,6 +189,9 @@ type Response struct {
 	Rationale   string `json:"rationale,omitempty"`
 	ExpectedRev int    `json:"expectedRev"`
 	ByName      string `json:"byName,omitempty"`
+	// Override is the operator's explicit answer in a router's policy's
+	// place, where the policy allows one, its reason the rationale.
+	Override bool `json:"override,omitempty"`
 }
 
 // ResponseReceipt is what a response gets, kept with it: accepted, or
@@ -214,6 +217,17 @@ type ResponseReceipt struct {
 	// for at the rev it was accepted at, beside Actor and ByName, who
 	// answered.
 	For *ReceiptFor `json:"for,omitempty"`
+	// Under a router's policy (decisions_policy.go): Policy is local/1 and
+	// PolicyWhy the router's why when the operator answered with the
+	// policy not in force; Groups, Via and Ref the groups an eligible
+	// answer counted for and how its subject is eligible; Override an
+	// override's.
+	Policy    string   `json:"policy,omitempty"`
+	PolicyWhy string   `json:"policyWhy,omitempty"`
+	Groups    []string `json:"groups,omitempty"`
+	Via       string   `json:"via,omitempty"`
+	Ref       string   `json:"ref,omitempty"`
+	Override  bool     `json:"override,omitempty"`
 }
 
 // The ways an answer is applied (Application.How).
@@ -337,6 +351,9 @@ type accepted struct {
 	actor                   string
 	auth                    Authority
 	forWho                  *ReceiptFor // whom it answered for (HM1)
+	// groups are the groups of a router's policy an eligible answer
+	// counted for: confirmed again before it is applied.
+	groups []string
 }
 
 // id is the decision's id, "dr-<n>".
@@ -358,6 +375,7 @@ type decisionTx interface {
 	OpenDecision(ledger.DecisionRow) (ledger.DecisionRow, bool, error)
 	PutDecision(ledger.DecisionRow) error
 	RouteFor(n int64, request string) error
+	PutPolicy(n int64, policy string, rev int) (bool, error)
 	Answer(n int64, run string, rev int) (bool, error)
 	Respond(n int64, r ledger.ResponseRow) (ledger.Responded, error)
 	History(n int64, h ledger.HistoryRow) (ledger.HistoryRow, bool, error)
@@ -1041,7 +1059,7 @@ func (e *Engine) RequestDecision(ctx context.Context, sessionID string, req Deci
 			r.release(t, sup)
 		}
 		row := ledger.DecisionRow{Origin: ledger.OriginAgent, Type: req.Type, TaskID: t.def.ID, Attempt: a.n, SessionID: a.sessionID, Member: a.m.def.Name,
-			RequestID: req.RequestID, Fingerprint: fp, Request: string(raw), Evidence: baseline, Policy: policyJSON}
+			RequestID: req.RequestID, Fingerprint: fp, Request: string(raw), Evidence: baseline, Policy: e.openingPolicy(ledger.OriginAgent)}
 		if r.pkg != nil {
 			row.Ticket, row.Plan, row.PlanDigest = r.pkg.p.Ticket.ID, r.pkg.p.Plan.ID, r.pkg.p.Plan.Digest
 		}
@@ -1306,7 +1324,7 @@ func (e *Engine) openGates(r *run) (tx, func()) {
 			d.options = append(d.options, o.Label)
 		}
 		g := &gate{who: body.For, d: d, pd: pd, row: ledger.DecisionRow{Origin: ledger.OriginPlan, Type: typ, Gate: pd.ID, Ticket: p.Ticket.ID, Plan: p.Plan.ID, PlanDigest: p.Plan.Digest,
-			Fingerprint: hex.EncodeToString(sum[:]), Request: string(raw), Policy: policyJSON}}
+			Fingerprint: hex.EncodeToString(sum[:]), Request: string(raw), Policy: e.openingPolicy(ledger.OriginPlan)}}
 		r.decisions = append(r.decisions, d)
 		for _, id := range pd.Before {
 			if t := r.task(id); t != nil {
@@ -1601,7 +1619,7 @@ type respondOutcome struct {
 	rev     int
 }
 
-func respondTx(ltx LedgerTx, run string, n int64, resp Response, actor string, auth Authority, authRaw, fp string, mem membership, moved string, out *respondOutcome) error {
+func respondTx(ltx LedgerTx, run string, n int64, resp Response, actor string, auth Authority, authRaw, fp string, mem membership, moved string, pol policyIn, out *respondOutcome) error {
 	dtx, err := decisionsOf(ltx)
 	if err != nil {
 		return err
@@ -1653,12 +1671,21 @@ func respondTx(ltx LedgerTx, run string, n int64, resp Response, actor string, a
 	}
 	_ = json.Unmarshal([]byte(d.Policy), &policy)
 	who := Admittee{Grants: []string{auth.Grant}, Via: auth.Via, Subject: auth.Subject}
+	// A router's policy judges first (decisions_policy.go): an unkept
+	// refusal is answered as an error, a kept one in rc.
+	judged, err := judgePolicy(rec, resp, who, pol, &rc)
+	if err != nil {
+		return err
+	}
+	routed := ledger.RouterPolicy(d.Policy)
 	switch {
-	case !who.operator() && !Admits(EntriesOf(rec), who):
+	case judged:
+		// Refused by its router's policy (rc).
+	case !routed && !who.operator() && !Admits(EntriesOf(rec), who):
 		// The operator by its own rule (AdmissionOf's), everyone else by the
 		// entries this transaction reads (docs/plans/decide-grant.md).
 		rc.Code, rc.Words = CodeNotApprover, fmt.Sprintf("%s is the operator's to answer: refused under local/1", id)
-	case policy.Revision != policyLocal:
+	case !routed && policy.Revision != policyLocal:
 		rc.Code, rc.Words = CodeStalePolicy, fmt.Sprintf("%s was opened under policy %s, and %s is in force", id, policy.Revision, policyLocal)
 	case d.State == ledger.DecisionAnswered || d.State == ledger.DecisionApplied:
 		rc.Code, rc.Words = CodeDecisionAnswered, answeredWords(id, rec)
@@ -1695,6 +1722,14 @@ func respondTx(ltx LedgerTx, run string, n int64, resp Response, actor string, a
 		// at, which no route changes once it is answered (HM1).
 		if rc.For = receiptFor(d.Request); rc.For != nil {
 			rc.Words += " for " + rc.For.words()
+		}
+		switch {
+		case rc.Override:
+			rc.Words += ", overriding its router's policy"
+		case len(rc.Groups) > 0:
+			rc.Words += " (eligible for " + strings.Join(rc.Groups, ", ") + ")"
+		case rc.Policy != "":
+			rc.Words += " under " + rc.Policy + ": its router's policy is not in force (" + rc.PolicyWhy + ")"
 		}
 		rc.Rev = d.Rev + 1
 	}
@@ -1912,6 +1947,12 @@ const (
 // receipt is returned, with the refusal's DecisionError; an accepted
 // response of a held run is then applied (applyDecisions).
 func (e *Engine) RespondDecision(ctx context.Context, id string, resp Response, actor string, auth Authority) (ResponseReceipt, error) {
+	return e.respond(ctx, id, resp, actor, auth, policyIn{routes: e.RoutesPolicies()})
+}
+
+// respond is RespondDecision with what the route handed in of the
+// router's policy (RespondDecisionWith).
+func (e *Engine) respond(ctx context.Context, id string, resp Response, actor string, auth Authority, pol policyIn) (ResponseReceipt, error) {
 	n, ok := ledger.ParseDecisionID(id)
 	if !ok {
 		return ResponseReceipt{}, refuse(CodeNotFound, "%q is not a decision's id", shortText(id))
@@ -1972,7 +2013,7 @@ func (e *Engine) RespondDecision(ctx context.Context, id string, resp Response, 
 		}
 		var out respondOutcome
 		if held {
-			err = e.respondHeld(ctx, r, n, resp, actor, auth, string(authRaw), fp, prior, &out)
+			err = e.respondHeld(ctx, r, n, resp, actor, auth, string(authRaw), fp, prior, pol, &out)
 		} else {
 			// A router's answer is kept refused (not_approver) through the
 			// ledger as well: its refusal is the record's, held or not
@@ -1981,7 +2022,7 @@ func (e *Engine) RespondDecision(ctx context.Context, id string, resp Response, 
 				return ResponseReceipt{}, refuse(CodeNotHeld, "%s's run is not running: continue it, or answer with the workbench token", id)
 			}
 			_, err = e.ledger.Transition(ctx, prior.CurrentRun, func(ltx LedgerTx) error {
-				return respondTx(ltx, prior.CurrentRun, n, resp, actor, auth, string(authRaw), fp, membership{}, "", &out)
+				return respondTx(ltx, prior.CurrentRun, n, resp, actor, auth, string(authRaw), fp, membership{}, "", pol, &out)
 			})
 		}
 		if errors.Is(err, errDecisionMoved) || err == nil && (out.moved || out.unheld) {
@@ -2039,7 +2080,7 @@ func (e *Engine) holder(current string) (*run, bool) {
 // a repeat, in a change of its own that is never undone (supersede): what
 // the response's transaction then refuses or fails, it has nothing in the
 // engine to put back (#636, review round 1).
-func (e *Engine) respondHeld(ctx context.Context, r *run, n int64, resp Response, actor string, auth Authority, authRaw, fp string, prior ledger.DecisionRecord, out *respondOutcome) error {
+func (e *Engine) respondHeld(ctx context.Context, r *run, n int64, resp Response, actor string, auth Authority, authRaw, fp string, prior ledger.DecisionRecord, pol policyIn, out *respondOutcome) error {
 	// The subject rechecked first, read before the transaction at the
 	// place the supersession checks it is still read at.
 	e.mu.Lock()
@@ -2075,13 +2116,13 @@ func (e *Engine) respondHeld(ctx context.Context, r *run, n int64, resp Response
 			}
 		}
 		return tx{more: func(ltx LedgerTx) error {
-			return respondTx(ltx, r.id, n, resp, actor, auth, authRaw, fp, mem, moved, out)
+			return respondTx(ltx, r.id, n, resp, actor, auth, authRaw, fp, mem, moved, pol, out)
 		}, done: func() {
 			if !out.accepted || out.receipt.Repeat || d == nil || d.state != ledger.DecisionOpen {
 				return
 			}
 			d.state, d.rev = ledger.DecisionAnswered, out.rev
-			d.answer = &accepted{k: out.receipt.K, choice: resp.Choice, text: resp.Text, rationale: resp.Rationale, byName: resp.ByName, actor: actor, auth: auth, forWho: out.receipt.For}
+			d.answer = &accepted{k: out.receipt.K, choice: resp.Choice, text: resp.Text, rationale: resp.Rationale, byName: resp.ByName, actor: actor, auth: auth, forWho: out.receipt.For, groups: out.receipt.Groups}
 			r.note(session.ActivityStatus, "decision %s answered by %s", d.id(), nameOf(resp.ByName, actor))
 		}}
 	}, func() {})
@@ -2243,10 +2284,25 @@ func (e *Engine) applyOne(r *run, d *decision) {
 	for try := 0; ; try++ {
 		// Under no request's context: nothing cuts the recheck short.
 		at, moved, _ := e.recheckSubject(context.Background(), r, d)
+		// An answer that counted as eligible under a router's policy is
+		// confirmed again, outside the transaction (decisions_policy.go).
+		confirmed := e.confirmAtApply(d)
 		again := false
 		err = e.transact(context.Background(), r, func() tx {
 			if d.state != ledger.DecisionAnswered || r.decisionN(d.n) != d || e.continued(r) != nil {
 				return tx{}
+			}
+			if !confirmed && d.answer != nil && len(d.answer.groups) > 0 {
+				replace, t := e.replaceDecision(r, d, fmt.Sprintf("%s's answer could not be confirmed", nameOf(d.answer.byName, d.answer.actor)))
+				opened := t.done
+				t.done = func() {
+					opened()
+					e.withdrawMirror(d.a, d)
+					if replace.a != nil {
+						go e.askMirror(r, replace.a, replace)
+					}
+				}
+				return t
 			}
 			if !e.sameSubject(r, d, at) && try < maxDecisionTries {
 				// Its asking attempt went, or its start moved, since the
@@ -2525,6 +2581,12 @@ func (e *Engine) replaceDecision(r *run, d *decision, why string) (*decision, tx
 		// Opened in the run that holds the decision now, a continuation's
 		// when it moved there.
 		row.N, row.RequestID, row.RunID = 0, "", ""
+		if d.origin != ledger.OriginCompare {
+			// Opened as any opening is: the server's own policy, with its
+			// spare while the router routes policies; told to the router
+			// as any opening is.
+			row.Policy = e.openingPolicy(d.origin)
+		}
 		if GivenToGrant(row.Request) {
 			// The replacement is the operator's alone: the operator routes it
 			// again if a holder of the decide grant should answer it.
