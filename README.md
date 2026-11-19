@@ -1356,15 +1356,20 @@ a double-click on its header, opens the session's page. The diff counts the
 lines of tracked files the member's worktree adds and removes against the
 commit it began from, committed or not; untracked files are not counted, and
 the numbers are read again when the run changes, at most every 10 seconds. The
-page follows the run through the event stream and polls nothing. A member that
-has not started yet shows a placeholder ("starts after lead is done", "waits
-for Start now"), a pending one offers **Start now**, and an ended one
-**Resume** (see [Resume and relaunch](#resume-and-relaunch)). A member a stop
-cut off reads "not started" or "stopped" in grey; red is kept for a member
-that ended with an error of its own. The header has **Add agent** (a member
-joins the run, not the saved crew), **Share** and **Stop**; stopping ends every
-session and leaves the worktrees, and a stopped run offers **Resume as new
-run**.
+page follows the run through the event stream and polls nothing. Each tile
+says its member's state in the Crews pages' words at its foot (**Working**,
+**Idle**, **Needs you**, **Finished**, **Failed (exit 1)**, **Stopped**); a
+member that has not started yet shows its state's word ("Waiting to start",
+with "after lead" or "by hand"), a pending one offers **Start now**, and an
+ended one **Resume** (see [Resume and relaunch](#resume-and-relaunch)). A
+member a stop cut off, or the server's end, reads "Stopped"; "Failed" is kept
+for a member that ended with an error of its own or whose agent exited with a
+code other than 0. A tile whose member asks a question with choices shows them
+under its terminal, and a press answers it there. The header has **Add agent**
+(a member joins the run, not the saved crew), **Share** and **Stop**; stopping
+ends every session and leaves the worktrees, and a stopped run offers **Resume
+as new run**. A run that ended with nothing left for a person offers neither
+**Pause** nor **Stop**.
 
 - **Broadcast.** Every member with a session is ticked, and one that starts
   later is ticked when its tile appears; untick the ones to leave out (the
@@ -1406,8 +1411,11 @@ plans: the name (the way into the crew) and goal, its members ("5 members ·
 Claude Code, Codex CLI, Shell"), its last run (its state's word with its
 mark, when it started and how long it took; "Never run"), and **Launch run**.
 A run's state is one of **Running**, **Needs you**, **Succeeded**, **Failed**
-and **Stopped**, the same word on every Crews screen: a run whose task failed
-reads **Failed** everywhere. Times of day are 24-hour ("19:28") on every
+and **Stopped**, the same word on every Crews screen: a run whose task failed,
+or whose member's agent exited with a code other than 0, reads **Failed**
+everywhere; a run the server's end stopped reads **Stopped**, with the server's
+words beside it, and a paused run keeps **Running** with "Paused" and its reason
+beside it. Times of day are 24-hour ("19:28") on every
 Crews screen and in the sidebar.
 
 **A saved crew's page.** `/crews/<id>` has the crew's name in its header,
