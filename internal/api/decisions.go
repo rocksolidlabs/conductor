@@ -872,19 +872,34 @@ func (s *Server) decisionTold(changes []crew.DecisionChange) {
 
 // decisionNotification is the notification of a decision's change: the
 // asking session (none for a gate) with its run and task, the state, the
-// question, the run page's task with the decision, and the responder's
-// actor (by) once one was accepted.
+// record's ref (decisionRefOf), the question, the run page's task with the
+// decision, and the responder's actor (by) once one was accepted.
 func decisionNotification(row ledger.DecisionRow, by string) ext.Notification {
 	var body struct {
 		Question string `json:"question"`
 	}
 	_ = json.Unmarshal([]byte(row.Request), &body)
 	u := decisionPageURL(row.CurrentRun, row.TaskID, row.ID())
-	return ext.Notification{Event: "decision", Type: "decision", At: time.Now().UTC(), State: row.State, Message: body.Question, URL: u, By: by,
+	return ext.Notification{Event: "decision", Type: "decision", At: time.Now().UTC(), State: row.State, Ref: decisionRefOf(row.ID()), Message: body.Question, URL: u, By: by,
 		Session: ext.SessionRef{ID: row.SessionID, Run: row.CurrentRun, Task: row.TaskID, Attempt: row.Attempt}}
 }
 
+// decisionRefOf is a decision notification's ref of the decision's id; a
+// test replaces it to build a malformed one.
+var decisionRefOf = ext.DecisionRef
+
 // decision queues a decision's notification for every webhook that lists
 // the decision event and every provider sink that takes it, without
-// waiting (send). Once the webhooks are closed it queues nothing.
-func (nt *notifier) decision(n ext.Notification) { nt.send(n, true) }
+// waiting (send). Its ref is checked first: one ext.ParseDecisionRef does
+// not take is the server's own bug, logged at error with its length and
+// never its text, and emptied, so no sink is handed a ref of another form.
+// Once the webhooks are closed it queues nothing.
+func (nt *notifier) decision(n ext.Notification) {
+	if _, ok := ext.ParseDecisionRef(n.Ref); n.Ref != "" && !ok {
+		if nt.log != nil {
+			nt.log.Error("a decision's notification had a ref of another form; sent without it", "bytes", len(n.Ref))
+		}
+		n.Ref = ""
+	}
+	nt.send(n, true)
+}
