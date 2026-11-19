@@ -250,5 +250,27 @@ func (g *guardSink) deliver(ctx context.Context, n ext.Notification) error {
 	if !f.takes(n.Event, n.Type) {
 		return nil
 	}
+	if n.Recipient != "" && !g.toRecipients(ctx) {
+		// A notice meant for one person reaches only a sink that delivers
+		// to that person alone (ext.RecipientSink).
+		return nil
+	}
 	return extDeliver(ctx, g.s, ext.KindNotifications, g.name, func(ctx context.Context) error { return g.p.Notify(ctx, n) })
+}
+
+// toRecipients says whether the sink delivers a notice to its recipient
+// alone: an ext.RecipientSink answering true, asked on the sink's own
+// goroutine within its delivery's bound. Any other answer, a failure or a
+// panic among them, is no.
+func (g *guardSink) toRecipients(ctx context.Context) bool {
+	rs, ok := g.p.(ext.RecipientSink)
+	if !ok {
+		return false
+	}
+	yes := false
+	err := extDeliver(ctx, g.s, ext.KindNotifications, g.name, func(context.Context) error {
+		yes = rs.DeliversToRecipients()
+		return nil
+	})
+	return err == nil && yes
 }

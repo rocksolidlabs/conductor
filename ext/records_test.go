@@ -22,8 +22,23 @@ var (
 	decision  = ext.Decision{
 		ID: "q1", Session: session, Message: "Allow the edit?", Kind: "permission", Source: "question",
 		Options: []ext.DecisionOption{{Label: "Yes", Input: "1"}, {Label: "No", Input: "2"}},
-		Plan:    "the plan", Since: at, Request: "dr-7",
+		Plan:    "the plan", Since: at, Request: "dr-7", Record: &record,
 	}
+	record = ext.DecisionRecord{
+		Type: "approval", Origin: "plan", Gate: "schema", Ticket: "CND-12", Project: "CND", Crew: "c1", Task: "build",
+		For:       &ext.RecordFor{Label: "architecture owner", Person: "Ana", Responsibility: "architecture"},
+		Expertise: []string{"databases"}, Subject: &ext.DecisionSubject{Kind: "plan", Key: strings.Repeat("a", 32)},
+		Recommended: []ext.Destination{{Kind: "person", Name: "Ana"}},
+	}
+	eligible    = ext.Eligible{Subject: "u-ana", Name: "Ana", Via: ext.ViaDelegate, For: "u-ben", Ref: "ref-1"}
+	routeChange = ext.RouteChange{Why: ext.Rerouted, Revision: "r2", At: at}
+	policy      = ext.RoutePolicy{
+		Revision: "r1", Scope: "s1",
+		Pinned:   ext.PinnedRequirement{Rule: "r-1", Groups: []ext.PinnedGroup{{Role: "architecture", Quorum: 1}}, Distinct: true, Override: ext.OverrideOperator, Notify: ext.NotifyBatch, EscalateAfter: time.Hour},
+		Groups:   []ext.Requirement{{Role: "architecture", Label: "architecture owner", Quorum: 1, Rule: "r-1", Eligible: []ext.Eligible{eligible}, Gap: "none assigned"}},
+		Distinct: true, Override: ext.OverrideOperator, Unsupported: true, Reroutes: 1, Recent: []ext.RouteChange{routeChange},
+	}
+	outcome   = ext.DecisionOutcome{State: "superseded", By: "u-ana", Via: ext.OutcomeEligible, SupersededBy: "dr-9", Why: "moved"}
 	runOrigin = ext.RunOrigin{
 		OpID: "op-1", Ref: "example:42", Label: "Nightly", Subject: ext.Subject{Ref: "example:42", URL: "https://example.com/42", Prior: "c1-0123abcd"},
 		Project: "CND", StartCommit: strings.Repeat("a", 40), ResolvedDigest: strings.Repeat("b", 64), Deadline: at.Add(time.Hour),
@@ -55,10 +70,29 @@ var records = []any{
 	&session,
 	&decision,
 	&ext.DecisionOption{Label: "Yes", Input: "1"},
-	&ext.Route{To: []ext.Destination{{Kind: "person", Name: "Ada"}}, Rule: "owner of the file", Answer: &ext.Answer{Input: "1", Text: "yes", By: principal}},
+	&ext.Route{To: []ext.Destination{{Kind: "person", Name: "Ada"}}, Rule: "owner of the file", Answer: &ext.Answer{Input: "1", Text: "yes", By: principal}, Policy: &policy},
+	&record,
+	&ext.RecordFor{Label: "architecture owner", Person: "Ana", Responsibility: "architecture"},
+	&ext.DecisionSubject{Kind: "plan", Key: strings.Repeat("a", 32)},
+	&policy,
+	&policy.Groups[0],
+	&eligible,
+	&policy.Pinned,
+	&ext.PinnedGroup{Role: "architecture", Quorum: 1},
+	&routeChange,
+	&ext.ConfirmQuery{Decision: decision, Revision: "r1", Subject: "u-ana", Since: at},
+	&ext.Confirmation{InForce: true, Behind: true, Routes: true, Revision: "r2", Groups: []string{"architecture"}, Why: "refreshing"},
+	&outcome,
+	&ext.OpenDecisionsPage{Decisions: []ext.OpenDecision{{Decision: decision, Policy: &policy, RoutedAt: at, Why: "assigned", Rev: 2, Counted: []ext.CountedResponse{{Subject: "u-ana", Groups: []string{"architecture"}, At: at, Confirmed: true}}}}, Next: "dr-8"},
+	&ext.OpenDecision{Decision: decision, Policy: &policy, RoutedAt: at, Why: "assigned", Rev: 2, Counted: []ext.CountedResponse{{Subject: "u-ana", Groups: []string{"architecture"}, At: at, Confirmed: true}}},
+	&ext.CountedResponse{Subject: "u-ana", Groups: []string{"architecture"}, At: at, Confirmed: true},
+	&ext.OutcomesPage{Outcomes: []ext.OutboxEntry{{Seq: 1, Decision: decision, Policy: &policy, RoutedAt: at, Outcome: outcome, ClosedAt: at}}, Next: 1},
+	&ext.OutboxEntry{Seq: 1, Decision: decision, Policy: &policy, RoutedAt: at, Outcome: outcome, ClosedAt: at},
+	&ext.RerouteRequest{Decision: "dr-7", Route: ext.Route{Policy: &policy}, Why: ext.Rerouted, OpID: "op-1", ExpectedRev: 2},
+	&ext.RerouteResult{Rev: 3, Unchanged: true, Superseded: "dr-9"},
 	&ext.Destination{Kind: "role", Name: "reviewer"},
 	&ext.Answer{Input: "1", Text: "yes", By: principal},
-	&ext.Resolution{ID: "q1", Session: session, Ended: true, At: at, Request: "dr-7"},
+	&ext.Resolution{ID: "q1", Session: session, Ended: true, At: at, Request: "dr-7", Outcome: &outcome},
 	&ext.TouchedFile{Session: session, Path: "/src/a.go", Op: "edit", Tool: "Edit", By: "claude", At: at},
 	&ext.ContextQuery{
 		Run: "r1", Crew: "c1", Task: "build", Attempt: 1, Kind: "work", Goal: "g", Instructions: "i",
@@ -70,6 +104,7 @@ var records = []any{
 	&ext.Notification{
 		Event: "needs_input", Type: "attention", At: at, Session: session, State: "open", Message: "m",
 		URL: "https://example.com/s", To: "ada", Tool: "Edit", Op: "edit", Path: "/src/a.go", By: "v1", ByName: "Ada", Origin: "push",
+		Recipient: "u-ana", Key: "k-1",
 	},
 	&ext.Doc{Store: "data", Path: "crews/c1.json", Epoch: strings.Repeat("ab", 16), Rev: 3, At: at, Size: 10, Offset: 4, Data: []byte("{}")},
 	&ext.Entitlement{Allowed: true, Limit: 5, Until: at, Why: "plan"},

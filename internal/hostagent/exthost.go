@@ -229,6 +229,16 @@ func (h *hostExtHost) Notify(context.Context, ext.Notification) error { return h
 func (h *hostExtHost) Decision(context.Context, string) (ext.DecisionState, error) {
 	return ext.DecisionState{}, h.refuse()
 }
+func (h *hostExtHost) OpenDecisions(context.Context, string) (ext.OpenDecisionsPage, error) {
+	return ext.OpenDecisionsPage{}, h.refuse()
+}
+func (h *hostExtHost) Outcomes(context.Context, uint64) (ext.OutcomesPage, error) {
+	return ext.OutcomesPage{}, h.refuse()
+}
+func (h *hostExtHost) AckOutcomes(context.Context, uint64) error { return h.refuse() }
+func (h *hostExtHost) Reroute(context.Context, ext.RerouteRequest) (ext.RerouteResult, error) {
+	return ext.RerouteResult{}, h.refuse()
+}
 func (h *hostExtHost) Run(context.Context, string) (ext.RunStatus, error) {
 	return ext.RunStatus{}, h.refuse()
 }

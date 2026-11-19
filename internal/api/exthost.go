@@ -762,6 +762,39 @@ func (h *extHost) Decision(ctx context.Context, request string) (ext.DecisionSta
 	return ext.DecisionState{Request: rec.ID(), State: rec.State, Final: rec.Final(), Rev: rec.Rev, ClosedAt: rec.ClosedAt}, nil
 }
 
+// The registered decision router's reads and writes of the records'
+// policies (ext.Host.OpenDecisions, Outcomes, AckOutcomes, Reroute) are
+// declared here and served by a later step: every Host answers
+// ext.ErrUnsupported for them meanwhile.
+
+func (h *extHost) OpenDecisions(context.Context, string) (ext.OpenDecisionsPage, error) {
+	if err := h.gone(); err != nil {
+		return ext.OpenDecisionsPage{}, err
+	}
+	return ext.OpenDecisionsPage{}, fmt.Errorf("%w: the open decisions are not served yet", ext.ErrUnsupported)
+}
+
+func (h *extHost) Outcomes(context.Context, uint64) (ext.OutcomesPage, error) {
+	if err := h.gone(); err != nil {
+		return ext.OutcomesPage{}, err
+	}
+	return ext.OutcomesPage{}, fmt.Errorf("%w: the outcome outbox is not served yet", ext.ErrUnsupported)
+}
+
+func (h *extHost) AckOutcomes(context.Context, uint64) error {
+	if err := h.gone(); err != nil {
+		return err
+	}
+	return fmt.Errorf("%w: the outcome outbox is not served yet", ext.ErrUnsupported)
+}
+
+func (h *extHost) Reroute(context.Context, ext.RerouteRequest) (ext.RerouteResult, error) {
+	if err := h.gone(); err != nil {
+		return ext.RerouteResult{}, err
+	}
+	return ext.RerouteResult{}, fmt.Errorf("%w: a re-route is not served yet", ext.ErrUnsupported)
+}
+
 func (h *extHost) Notify(_ context.Context, n ext.Notification) error {
 	if err := h.gone(); err != nil {
 		return err

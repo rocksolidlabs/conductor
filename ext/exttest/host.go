@@ -404,3 +404,33 @@ func (h *FakeHost) Notices() []ext.Notification {
 	defer h.mu.Unlock()
 	return append([]ext.Notification(nil), h.notices...)
 }
+
+// OpenDecisions, Outcomes, AckOutcomes and Reroute answer
+// ext.ErrUnsupported: the fake holds no ledger.
+func (h *FakeHost) OpenDecisions(ctx context.Context, _ string) (ext.OpenDecisionsPage, error) {
+	if err := h.enter(ctx); err != nil {
+		return ext.OpenDecisionsPage{}, err
+	}
+	return ext.OpenDecisionsPage{}, ext.ErrUnsupported
+}
+
+func (h *FakeHost) Outcomes(ctx context.Context, _ uint64) (ext.OutcomesPage, error) {
+	if err := h.enter(ctx); err != nil {
+		return ext.OutcomesPage{}, err
+	}
+	return ext.OutcomesPage{}, ext.ErrUnsupported
+}
+
+func (h *FakeHost) AckOutcomes(ctx context.Context, _ uint64) error {
+	if err := h.enter(ctx); err != nil {
+		return err
+	}
+	return ext.ErrUnsupported
+}
+
+func (h *FakeHost) Reroute(ctx context.Context, _ ext.RerouteRequest) (ext.RerouteResult, error) {
+	if err := h.enter(ctx); err != nil {
+		return ext.RerouteResult{}, err
+	}
+	return ext.RerouteResult{}, ext.ErrUnsupported
+}

@@ -39,6 +39,13 @@ type Notification struct {
 	By      string     `json:"by,omitempty"`
 	ByName  string     `json:"byName,omitempty"`
 	Origin  string     `json:"origin,omitempty"` // the provider that sent a notice
+	// Recipient is the subject of the one person a notice is meant for, ""
+	// for none: such a notice reaches only a sink that is a RecipientSink
+	// answering true, never another (a webhook among them).
+	Recipient string `json:"recipient,omitempty"`
+	// Key is a provider's stable id of one notice, "" for none: a sink that
+	// keeps its own outbox drops a notice handed to it twice.
+	Key string `json:"key,omitempty"`
 }
 
 const (
@@ -47,14 +54,27 @@ const (
 	DeliveryWait     = 10 * time.Second
 	MaxNoticeMessage = 500  // a notice's Message, in bytes, as an attention message
 	MaxNoticeURL     = 2048 // a notice's URL, in bytes
+	MaxNoticeKey     = 64   // a notice's Key, in bytes of printable ASCII
 )
 
 // Valid checks n as a provider's notice, what Host.Notify is handed: a
 // message of one line of 1 to MaxNoticeMessage bytes, a URL of one line of
 // at most MaxNoticeURL bytes, and every other text field one line of at
-// most MaxNoticeMessage bytes. Type, Origin and At are the server's to set.
+// most MaxNoticeMessage bytes; a recipient of at most MaxSubject bytes and
+// a key of at most MaxNoticeKey bytes, each printable ASCII without
+// spaces, or none. Type, Origin and At are the server's to set.
 func (n Notification) Valid() error {
 	const r = "notice"
+	if n.Recipient != "" {
+		if err := printable(r, "recipient", n.Recipient, 1, MaxSubject); err != nil {
+			return err
+		}
+	}
+	if n.Key != "" {
+		if err := printable(r, "key", n.Key, 1, MaxNoticeKey); err != nil {
+			return err
+		}
+	}
 	if err := line(r, "message", n.Message, MaxNoticeMessage, true); err != nil {
 		return err
 	}
