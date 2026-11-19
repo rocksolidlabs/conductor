@@ -271,7 +271,7 @@ watch(
       <UButton label="Read again" icon="i-lucide-refresh-cw" size="xs" color="neutral" variant="outline" data-decision-read-again @click="readAgain" />
     </div>
 
-    <UModal v-model:open="overriding" :title="`Override ${decision.id}`" description="Answer in its router's policy's place. The override is kept with its reason and your name." data-decision-override-dialog>
+    <UModal v-if="canOverride" v-model:open="overriding" :title="`Override ${decision.id}`" description="Answer in its router's policy's place. The override is kept with its reason and your name." data-decision-override-dialog>
       <template #body>
         <div class="flex flex-col gap-3" data-decision-override-body>
           <div v-if="options.length" class="flex flex-wrap gap-2">
