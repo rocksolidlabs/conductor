@@ -2,6 +2,7 @@
 import type { Decision, OpReceipt, ResponseReceipt } from '~/utils/decisions'
 import { answerAsk, answerAsWords, askForMore, commentDecision, offersAskForMore, confirmAuthorizes, optionSubject, optionsOf, rationaleRequired, recommended, refusalOf, respondDecision, responseBody } from '~/utils/decisions'
 import { carried, DECISION_ANSWERING, replyKept, replyWords, type AnswerFields } from '~/utils/answering'
+import { inShell } from '~/utils/shell'
 
 /**
  * The operator's answer to a durable decision (Program item DR1, docs/plans/decisions.md, "web/app"): the controls by its type (a
@@ -35,6 +36,8 @@ const d = computed(() => props.decision)
 /** The answering a page provided, or none: the server's routes. */
 const answering = inject(DECISION_ANSWERING, null)
 const respondOn = computed(() => carried(answering, 'respond'))
+/** Inside the phone shell a subject is drawn as text: the workbench's pages are not the shell's. */
+const links = !inShell()
 const commentOn = computed(() => carried(answering, 'comment'))
 const moreOn = computed(() => carried(answering, 'more_info'))
 /** The answering's state for this decision: its lock, words and actions (none with today's answering). */
@@ -97,8 +100,9 @@ async function send(choice: number | undefined, rev: number) {
       ? await answering.respond(d.value.id, body)
       : { outcome: 'kept' as const, ...(await respondDecision((path, b) => post<{ receipt: ResponseReceipt; decision: Decision }>(path, b), d.value.id, body)) }
     if (!replyKept(r)) {
-      // Not kept: the content stays as typed, with the reply's words; no draft is written for it.
-      refusal.value = replyWords(r)
+      // Not kept: the content stays as typed, with the reply's words; no draft is written for it. An answering that states its
+      // own steps (the shell's) draws a waiting or not-known answer's words itself, with its actions: they are not a refusal.
+      if (!(answering?.state && (r.outcome === 'waiting' || r.outcome === 'unknown'))) refusal.value = replyWords(r)
       receipt.value = null
       return
     }
@@ -145,6 +149,25 @@ function readAgain() {
   pending.value = null
   emit('read')
 }
+
+/**
+ * An answer the answering reports kept, whichever press sent it (Confirm after a wait settles it outside this component's send):
+ * the success path once, its receipt shown, the fields cleared, nothing left that reads as not sent.
+ */
+watch(
+  () => (held.value?.kept ? held.value.receipt ?? null : undefined),
+  (kept, before) => {
+    if (kept === undefined || before !== undefined) return
+    clearing = true
+    void nextTick(() => (clearing = false))
+    refusal.value = ''
+    if (kept) receipt.value = kept
+    pending.value = null
+    picked.value = undefined
+    text.value = ''
+    rationale.value = ''
+  },
+)
 
 /** The answer as typed, for the answering's draft. */
 function fields(): AnswerFields {
@@ -226,7 +249,7 @@ watch(
       <!-- Each choice's tradeoffs, one muted line each under the buttons. -->
       <ul v-if="tradeoffs.length" class="flex flex-col gap-0.5 text-xs text-muted" data-decision-tradeoffs>
         <li v-for="t in tradeoffs" :key="t.i" class="break-words" :data-decision-tradeoff="t.i">
-          <span class="font-medium">{{ t.label }}:</span> {{ t.tradeoffs }}<template v-if="t.subject"><template v-if="t.tradeoffs"> · </template><span :data-decision-option-subject="t.i"><NuxtLink v-if="t.subject.to" :to="t.subject.to" class="hover:underline">{{ t.subject.text }}</NuxtLink><template v-else>{{ t.subject.text }}</template></span></template>
+          <span class="font-medium">{{ t.label }}:</span> {{ t.tradeoffs }}<template v-if="t.subject"><template v-if="t.tradeoffs"> · </template><span :data-decision-option-subject="t.i"><NuxtLink v-if="links && t.subject.to" :to="t.subject.to" class="hover:underline">{{ t.subject.text }}</NuxtLink><template v-else>{{ t.subject.text }}</template></span></template>
         </li>
       </ul>
       <UTextarea v-if="decision.type === 'clarification'" v-model="text" :rows="2" autoresize placeholder="Or answer in words…" :maxlength="4096" :disabled="busy || locked" data-decision-text />

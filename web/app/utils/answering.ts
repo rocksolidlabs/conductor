@@ -18,6 +18,9 @@ export interface AnsweringState {
   lock: boolean
   words?: string
   actions?: Array<'cancel' | 'confirm'>
+  /** The answer was kept, whichever press sent it: the component runs its success path once, with this receipt. */
+  kept?: true
+  receipt?: ResponseReceipt
 }
 
 export interface DecisionAnswering {
@@ -31,9 +34,9 @@ export interface DecisionAnswering {
   /** Reactive: the answer's lock, its words and the actions it offers; null while the answer may be edited and sent. */
   state?(id: string): AnsweringState | null
   /** The 'cancel' action: a waiting answer back to editing. */
-  cancel?(id: string): void
+  cancel?(id: string): void | Promise<void>
   /** The 'confirm' action: a waiting answer, or one that did not arrive, sent through checking. */
-  confirm?(id: string): void
+  confirm?(id: string): void | Promise<void>
 }
 
 /** The injection key: the shell's decision page provides its answering to the DecisionRespond it draws. */

@@ -283,6 +283,17 @@ describe("the answer's state machine, row by row", () => {
     expect(v).toMatchObject({ step: 'editing', words: 'Not yours to answer' })
   })
 
+  it('kept: a press after it sends nothing; an edit begins a new answer with a new responseId', async () => {
+    const { f, make } = fake()
+    const m = make()
+    await m.open('i1', f.item)
+    expect((await m.answer('i1', { choice: 0 })).step).toBe('kept')
+    expect(await m.answer('i1', { choice: 0 })).toMatchObject({ step: 'kept' })
+    expect(f.sent).toHaveLength(1)
+    await m.edit('i1', { choice: 1 })
+    expect(m.view('i1')).toMatchObject({ step: 'editing', draft: { responseId: 'r2', choice: 1 } })
+  })
+
   it("sending: `same` is kept with the item's rows and no words", async () => {
     const { f, make } = fake()
     const m = make()

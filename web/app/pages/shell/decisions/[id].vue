@@ -3,7 +3,7 @@ import { DECISION_ANSWERING } from '~/utils/answering'
 import { clockTime } from '~/utils/brakemanRole'
 import type { Decision } from '~/utils/decisions'
 import { REF_ACCESS } from '~/utils/refAccess'
-import { omittedWords, readItem, readRefusal, type ShellItem } from '~/utils/shell'
+import { omittedWords, readItem, readRefusal, withinWait, type ShellItem } from '~/utils/shell'
 import { shellRefAccess } from '~/utils/transport/shell'
 
 /**
@@ -12,7 +12,8 @@ import { shellRefAccess } from '~/utils/transport/shell'
  * exactly as the provider gives them, the server that holds it and when it last reported, then DR1's answer under the shell's
  * answering, or the item's `elsewhere` words and no Answer. The item is read again on the provider's `watch` while the app is in the
  * foreground; an answer waiting offers Confirm when the app is back and online. A way in that does not open it goes to the inbox
- * with its words.
+ * with its words. The answer it provides reaches this page's item alone; a read that comes back after the person has left the
+ * page opens nothing and moves no one.
  */
 definePageMeta({ layout: 'shell' })
 useHead({ title: 'A decision' })
@@ -22,7 +23,9 @@ const shell = useShell()
 const p = shell.provider
 const ans = shell.answer()
 provide(REF_ACCESS, shellRefAccess())
-if (ans) provide(DECISION_ANSWERING, ans.answering)
+if (ans) provide(DECISION_ANSWERING, ans.answeringFor(id))
+/** False once the page is gone: what a late read answers then is dropped. */
+let alive = true
 
 const item = ref<ShellItem | null>(null)
 const ready = ref(false)
@@ -34,15 +37,17 @@ const now = ref(Date.now())
 async function load(first = false) {
   if (!p || !ans) return
   try {
-    const it = readItem(await p.inbox.item(id))
+    const it = readItem(await withinWait(p.inbox.item(id), `${shell.name} did not answer`))
+    if (!alive) return
     if (!it) throw { code: 'not_visible' }
     item.value = it
     // Opened once, and again only while the answer is not mid-send: a changed decision drawn rebases the draft.
     if (first || !view.value?.lock) await ans.machine.open(id, it)
+    if (!alive) return
     ready.value = true
   } catch (e) {
     const r = readRefusal(e)
-    if (!first) return
+    if (!first || !alive) return
     await navigateTo({ path: '/shell', query: { note: r.code === 'not_visible' ? 'not_visible' : 'unreachable' } }, { replace: true })
   }
 }
@@ -77,6 +82,7 @@ onMounted(() => {
   tick = setInterval(() => (now.value = Date.now()), 30_000)
 })
 onBeforeUnmount(() => {
+  alive = false
   stop?.()
   clearInterval(tick)
   document.removeEventListener('visibilitychange', foreground)

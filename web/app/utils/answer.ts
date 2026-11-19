@@ -258,7 +258,8 @@ export function createAnswer(deps: AnswerDeps) {
     async answer(id: string, c: AnswerContent): Promise<AnswerView> {
       const gen = generation
       const v = view(id)
-      if (v.lock || v.noAnswer) return v
+      // A kept answer is settled: a press after it sends nothing until the person begins a new answer (an edit).
+      if (v.lock || v.noAnswer || v.step === 'kept') return v
       // The step is taken at once, before any wait: a second press finds it locked.
       set(id, gen, { step: 'checking', words: ANSWER_WORDS.checking, actions: [] })
       const rev = v.draft?.rev ?? v.item?.decision.rev ?? 0

@@ -343,3 +343,23 @@ export function omittedWords(n: number | undefined): string {
   if (!n) return ''
   return n === 1 ? '1 earlier answer is not shown here' : `${n} earlier answers are not shown here`
 }
+
+/** How long a screen waits on one call to the provider before it says the provider did not answer and offers a way on. */
+export const PROVIDER_WAIT_MS = 15_000
+
+/**
+ * p, or a refusal `unreachable` with these words once `ms` has passed with no answer: no screen waits on a provider for ever. The
+ * call itself is not stopped (a provider's own work is its own); what it answers late is not waited for.
+ */
+export function withinWait<T>(p: Promise<T>, words: string, ms: number = PROVIDER_WAIT_MS): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const late = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject({ code: 'unreachable', words }), ms)
+  })
+  return Promise.race([Promise.resolve(p), late]).finally(() => clearTimeout(timer))
+}
+
+/** Whether this page runs inside the phone shell: links to the workbench's own pages are drawn as text there. */
+export function inShell(): boolean {
+  return shellBridge() !== null
+}
