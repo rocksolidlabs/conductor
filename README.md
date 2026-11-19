@@ -2200,8 +2200,9 @@ With yolo on (`"yolo": true` in the config, `CONDUCTOR_YOLO` set to `1` or
 permission prompts, and the server says so in a warning at startup.
 `CONDUCTOR_YOLO` set to `0` or `false` turns the config file's `yolo` off. A
 launch overrides the server: the Launch dialog has a **Yolo** switch, and
-`POST /api/sessions` takes `yolo: true` or `false`; so does a crew (the
-editor's **Yolo** select: the server's default, on or off). Each built-in
+`POST /api/sessions` takes `yolo: true` or `false`; so does a crew (its
+**Permission prompts** under **More options**: the server's default, ask, or
+skip). Each built-in
 carries a yolo recipe, arguments put after its command and your extra
 arguments, and variables set in its environment through the same filtered
 environment as its own `env` (a recipe cannot set `CONDUCTOR_*`):

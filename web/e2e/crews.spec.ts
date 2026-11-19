@@ -97,9 +97,12 @@ test('Launch run from the home opens the run page; the crew then says a run is l
   await page.goto(`/crews/${crewId}`)
   const banner = page.locator('[data-live-run-banner]')
   await expect(banner).toContainText('live run')
-  // The banner says the run's one sentence (runStatusLine, UX1 PR-34): lead counted by its session's state, docs not yet started
-  // counted in none, nothing that needs a person; no member's name in amber.
-  await expect(banner.locator('[data-live-run-line]')).toHaveText(/^1 (working|finished|running)$/)
+  // The banner says the run in the Crews pages' one vocabulary (runLook): its state's word, then lead counted by its session's state
+  // in the member words (a member at its prompt is idle, never "running"), docs not yet started counted in none, nothing that needs a
+  // person; no member's name in amber.
+  await expect(banner.locator('[data-live-run-state]')).toContainText('Running')
+  await expect(banner.locator('[data-live-run-line]')).toHaveText(/^1 (working|finished|idle)$/)
+  await expect(banner).not.toContainText(/\brunning\b/)
   await expect(banner.locator('.text-warning')).toHaveCount(0)
   await expect(banner).not.toHaveClass(/border-warning/)
   // The bar says a live run keeps the version it launched with.
