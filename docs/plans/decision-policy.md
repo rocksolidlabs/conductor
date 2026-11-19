@@ -423,6 +423,33 @@ behaves unchanged, and a router that does not implement
   and promises no delivery: the sinks' queues are in memory and drop
   their oldest when full, as on `main`.
 
+- **As built** (amendments made with the seam's types, `ext/policy.go`,
+  where writing them found the text above silent or wrong):
+  - `RoutePolicy.Valid` checks every field's bound and, as a check of
+    its own, the policy's 14 KiB as encoded. The fields at their bounds
+    in plain text fit; with characters JSON escapes (six bytes each) they
+    do not, so the fullest legal policy is the one within 14 KiB as
+    encoded, not every policy whose fields are within their bounds.
+  - An `Eligible`'s `Name` is 1 to 64 characters, its `Ref` 1 to 32
+    bytes of printable ASCII (required: every eligible person has a ref,
+    I1), and its `For` (whom a delegate stands beside) is a subject, 1 to
+    `MaxSubject` bytes of printable ASCII, set exactly when `Via` is
+    `delegate`. A `Requirement`'s `Rule` and the pinned `Rule` are 1 to
+    32 bytes of printable ASCII; a role is 1 to 40 of `a-z`, `0-9` and
+    `-`, not beginning with `-`; the pinned roles are distinct, and so
+    are the subjects within one group.
+  - `Confirmation.Valid`: `Behind` and `Groups` only with `InForce`;
+    the groups distinct roles; `Revision` printable ASCII or none.
+  - `DecisionOutcome.Why` is one line of at most 200 bytes; a
+    `SupersededBy` names a decision only for `superseded`.
+  - `DecisionRecord`'s `For` is `RecordFor{Label, Person,
+    Responsibility}`; its `Subject` is `DecisionSubject{Kind, Key}`;
+    `Recommended` at most 4 destinations (`MaxRecommended`); its bounds
+    are `MaxRecordKey` (40 bytes: gate, task), `MaxRecordForLabel` (60),
+    `MaxRecordExpertise` (4 labels of at most 40 characters).
+  - `Notification.Key` is printable ASCII without spaces
+    (`MaxNoticeKey`, 64), and so is a `Recipient`.
+
 ### `ext/exttest` (PR-7)
 
 - `FakeRouter` gains `SetPolicy(id, RoutePolicy)` (its next `Route` for

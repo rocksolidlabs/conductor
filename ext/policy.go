@@ -18,6 +18,12 @@ import (
 // operator) whenever the router does not confirm it. A router that does not
 // implement PolicyConfirmer gets the server's own policy whatever it
 // answers: a Policy from it is refused as invalid.
+//
+// The seam's types are whole as of here for every row of the plan (a
+// router's policy, the record it is told and the confirmation it gives,
+// the open records and the outcome outbox it reads back, a re-route, a
+// routed record's outcome, a notice for one person): the later rows serve
+// them and change none of their shapes.
 
 // DecisionRecord is what a durable decision's record says of itself to a
 // router (Decision.Record): never set for a session's question.
