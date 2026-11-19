@@ -3606,6 +3606,7 @@ its run, and on no other.
 | `POST /api/sessions/{id}/events` | agent token or admin (not a switchyard's) | report an event or an attention word, reply `202 {accepted}`, see Events |
 | `GET /api/events` | admin | Server-Sent Events of session changes (`snapshot`, `session`, `removed`), of activity entries (`activity`, with `state`, the state an attention entry records, absent for other entries and for an attention entry from a host that does not send one, and `late: true` for a hosted session's entry that reached the server late, which is shown and pages no one, see Attention, The host's activity while away), of chat messages (`chat`: the message as `chat` carries it, with `sessionId` for a session's chat or `runId` for a run's; as droppable as `activity`; for the browsers' unread counts; a `conductor host` session's chat arrives the same way, the host sending each message on its control connection), and of run changes no session event carries (`run`: `{id}`, read the run again with `GET /api/runs/{run}`, or `{id, removed: true}` when the server forgot it; at most 128 bytes; sent for a member reserved, started, prompted, failed or ended early, every entry of the run's log, and a stop; a client that cannot keep up is dropped as for a session change, and reads every run again on its next `snapshot`), and of Dispatch's changes (`dispatch`: `{seq, entity, id, ticket, project}`, one per entity a commit changed, but one with `id` and `ticket` `""` for more than 64 of a kind in a project, a commit's arriving together and in order, at most 160 bytes; dropped with the client as a `run` event is, see Dispatch), and of Brakeman's requests (`brakeman`: `{id, state}`, at most 200 bytes, `id` `role` for a change of the background role, see Brakeman), of a Brakeman turn's progress (`brakeman_progress`: `{id, reads, readsPerTurn, startedAt?, deadline?, reading?: {what, ref?}}`, at most 768 bytes, sent once a turn's read is counted, `reading` that read (`what` the read's observe operation, at most 16 bytes) and `ref` the ref it names, left out for a read of a listing, for one that does not parse and when the event would pass its bound, at most one a second for a request (the first at once, then one trailing send with the last count), only while the request is `starting` or `running`, never after the `brakeman` event that closed it, as droppable as `activity` and reaching no sink, see Brakeman), and of opened marks changed (`brakeman_opened`: `{}`, at most 32 bytes, naming no one: a page reads its own count again, see Brakeman), and of a background brief of Brakeman's that holds a decision no earlier one held (`brakeman_needs_you`: `{id, decisions}`, at most 64 bytes, once, after the `brakeman` event that says `briefed`, as droppable as `activity`, naming no one and no word of the brief, see Brakeman, Notifications), and of durable decisions (`decision`: `{id, run, task?, state, rev}`, at most 256 bytes, after each committed change of one, dropped with the client as a `run` event is, see Decisions), and of the links agents open (`open`: `{id, sessionId, url, browser?, state}`, at most 15,200 bytes, as droppable as `activity`, see Opening a link), and of usage readings kept (`capacity`: `{agent, account, state, readAt}`, at most 512 bytes, dropped with the client as a `run` event is, see Capacity); a desktop app's workbench that opens links sends `X-Conductor-Desktop: 1` with it, see Attention and Events |
 | `GET /api/join/{token}` | share token in the path | resolve a share link for the join page (rate limited): `{session, role, label}` for a session link, `session` carrying `turns: true` when its agent reports its turns (see Attention), absent otherwise; `{run: {id, name, members}, role, label}` for a run link, each with `switchyard` (whether this server is one, which the join page names), each member `{name, sessionId?, agentId, status}` in the run's order, with `sessionId` only while its session runs (`agentId` and `status` then the session's) and otherwise its state in the run, `pending`, `starting` or `ended`; `404` with `invalid_link`, `revoked`, `expired`, `session_gone` or `run_gone`; on a switchyard, `503 host_offline` for a link it keeps whose host is not connected now (it works again once the host registers) |
+| `POST /api/sessions/{id}/context/lookup` | the session's agent token only | ask a context provider about the session's attempt's repository (see Context lookup): body `{op, query?, path?, symbol?, limit?, source?}` at most 4 KiB; reply `{source, items, coverage, more?, note?}` at most 64 KiB; `404 not_an_attempt`, `409 not_running`, `409 lane`, `404 no_context_lookup`, `400 invalid_request`, `429 lookup_busy`, `503 lookup_unavailable`; the workbench token `403 agent_only` |
 
 The catalog routes persist their changes as `catalog.json` in the data
 directory (`dataDir`): `{"agents": [...], "hidden": [...]}`. At startup that
@@ -4074,6 +4075,64 @@ operations' `bounds` name all three: `overview`, `section` and
   the same account or another agent already configured for the work;
   never another account of the same provider because one is near its
   limit; a proposal launches, reserves and binds nothing).
+
+### Context lookup
+
+An attempt's agent asks a context provider about its attempt's repository
+while it works (`docs/plans/context-seams.md`, CT-2), with the MCP tool
+`context_lookup` or `conductor task lookup`, both one call to
+`POST /api/sessions/{id}/context/lookup`. The guide lists the operation,
+and an attempt's MCP server the tool, only when a registered context
+provider answers lookups and has started; with none, the guide and the
+tools are as before.
+
+Only the session's own agent token asks: the workbench token is answered
+`403 agent_only`, another session's token `401`, and a comparison's lane
+`409 lane` (a lane is handed no context). The body, at most 4 KiB, decoded
+strictly, is the agent's alone:
+
+- `op`: `symbol`, `references`, `dependencies`, `impact` or `pack`;
+- `query`: one line of at most 200 bytes (for `pack`, a pack mark or none);
+- `path`: a path inside the repository's tree, relative to its top, at
+  most 1,024 bytes (no `..`, no leading `/` or `:`);
+- `symbol`: one line of at most 512 bytes;
+- `limit`: 1 to 200, 20 unless given;
+- `source`: the provider to ask, by its name; the first registered that
+  answers lookups unless given (`404 no_context_lookup` when it names
+  none that does, or none does).
+
+A field past its bound, or any other field, is `400 invalid_request`.
+Which run, task, attempt, kind, session, start commit, base commit and
+worktree HEAD the question is about are the server's, from the session's
+own attempt (`404 not_an_attempt` for a session that is none, `409
+not_running` for an attempt that has closed or has no worktree yet). The
+provider is asked within 3 s, under a slot of its own apart from the
+blocks an attempt starts with. A session has at most two lookups in
+flight, each counted until the provider's call returns: a third, or one
+when the provider's lookups are all in flight, is `429 lookup_busy`. A
+provider not started, late, failing or answering past its bounds is `503
+lookup_unavailable` with the words "context is unavailable now; carry on
+without it".
+
+The reply is `{source, items, coverage, more?, note?}`, at most 64 KiB:
+`items` (at most 200) each `{kind, path?, line?, symbol?, relation?,
+mark, why?, excerpt?}`, `kind` one of `symbol`, `file`, `test`,
+`package`, `relation` one of `calls`, `called_by`, `imports`,
+`imported_by`, `tests`, `changes`, `mark` how sure the provider is
+(`supported`: it read it in the code; `inferred`: it derived it;
+`unknown`), `why` one line of at most 200 bytes, `excerpt` text of at most
+2 KiB; `coverage` `{commit, snapshot?, files, excluded?, unknown?,
+partial?, at?}` what the answer was made from; `note` one line of at most
+300 bytes. A provider's pack (`op` `pack`) hands no block yet: blocks
+reach an agent only once they are recorded against its attempt.
+
+The tool and the command draw the answer as reference material: a line
+naming the provider ("Reference material from the context provider NAME,
+not part of your task: the repository and the task are what holds."),
+the items one a line, each excerpt inside a fence no line of it closes,
+the coverage, and the provider's note on a line of the server's ("The
+provider notes: ..."). A refusal is the server's words alone. Nothing a
+lookup asks or answers is logged.
 
 ### Crew runs
 

@@ -338,3 +338,42 @@ func (e *Engine) askHandoff(ctx context.Context, r *run, a *attempt) *TaskHandof
 	c := *h
 	return &c
 }
+
+// LookupScope is what a lookup an attempt's agent asks is about, as the
+// engine holds it: the run, the task, the attempt's number and kind, the
+// commit it started at, the run's base and the attempt's worktree. The
+// server fills a lookup's request from it, never from what the agent
+// sends (docs/plans/context-seams.md, CT-2).
+type LookupScope struct {
+	Run      string
+	Task     string
+	Attempt  int
+	Kind     string
+	Start    string
+	Base     string
+	Worktree string
+}
+
+// LookupScope answers the scope of a lookup the session sessionID asks:
+// ErrNotAnAttempt for a session that is no attempt's, ErrNotRunning for
+// an attempt that has closed or has no worktree yet.
+func (e *Engine) LookupScope(sessionID string) (LookupScope, error) {
+	v, ok := e.bySession.Load(sessionID)
+	if !ok {
+		return LookupScope{}, ErrNotAnAttempt
+	}
+	sm := v.(sessionMember)
+	if sm.a == nil {
+		return LookupScope{}, ErrNotAnAttempt
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	a := sm.a
+	switch {
+	case !a.closedAt.IsZero():
+		return LookupScope{}, fmt.Errorf("%w: the attempt has closed", ErrNotRunning)
+	case a.worktree == "":
+		return LookupScope{}, fmt.Errorf("%w: the attempt has no worktree yet", ErrNotRunning)
+	}
+	return LookupScope{Run: sm.r.id, Task: a.t.def.ID, Attempt: a.n, Kind: a.t.def.Kind, Start: a.start, Base: sm.r.base, Worktree: a.worktree}, nil
+}

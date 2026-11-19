@@ -258,6 +258,9 @@ type Server struct {
 	// treeRoots keeps the root commits a context provider's reads found
 	// (exttree.go).
 	treeRoots rootsCache
+	// contextLookups counts each session's lookups of a context provider
+	// in flight (extlookup.go).
+	contextLookups lookupFlights
 	// lookups says, for 30 s at a time, whether the programs of the catalog's
 	// agents resolve on this server (see lookupCache); probes, for 10 min,
 	// what their version output says they are (see probeCache).
@@ -1127,6 +1130,8 @@ func (s *Server) Handler() http.Handler {
 	// An attempt's session reads its task and submits its result.
 	mux.HandleFunc("GET /api/sessions/{id}/task", s.handleSessionTask)
 	mux.HandleFunc("POST /api/sessions/{id}/task/result", s.handleSessionTaskResult)
+	// A lookup an attempt's agent asks a context provider (extlookup.go).
+	mux.HandleFunc("POST /api/sessions/{id}/context/lookup", s.handleContextLookup)
 	// Messages between members, a blocker, a checkpoint (rows 9 and 10).
 	mux.HandleFunc("POST /api/sessions/{id}/messages", s.handleSessionMessages)
 	mux.HandleFunc("GET /api/sessions/{id}/inbox", s.handleSessionInbox)
