@@ -157,12 +157,18 @@ test.describe('the phone shell', () => {
   })
 
   test('the sign-in: the code, its page and its time left, Cancel, and words with Try again', async ({ browser, baseURL }) => {
-    // The page's clock is the spec's: the code's time left is read against a time the spec set, never against the wall clock.
+    // The page's clock is the spec's: it starts at a time the spec set and moves with the page's own elapsed time, so the code's
+    // time left is read against the spec's time (never the wall clock), and the page's own stamps still differ (a frozen clock made
+    // Vue drop a click that bubbled through two listeners stamped the same).
     const NOW = Date.parse('2026-11-19T10:00:00Z')
-    const expiresAt = new Date(NOW + 9.5 * 60_000).toISOString()
+    // Ten minutes less a second: "Expires in 9 min" for the page's first 59 s on the spec's clock.
+    const expiresAt = new Date(NOW + 10 * 60_000 - 1000).toISOString()
     const t = await shellTab(browser, baseURL!, provider(signedOut, { signIn: { code: 'WDJB-MJHT', page: 'https://id.example.test/device', expiresAt } }))
     const { page } = t
-    await page.addInitScript((now) => (Date.now = () => now), NOW)
+    await page.addInitScript((now) => {
+      const start = performance.now()
+      Date.now = () => now + Math.floor(performance.now() - start)
+    }, NOW)
     await page.goto('/shell')
     await expect(page.locator('[data-shell-title]')).toHaveText('Sign in to Desk relay')
     await page.locator('[data-shell-signin-begin]').click()
