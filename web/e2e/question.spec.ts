@@ -59,7 +59,7 @@ async function sidebarAt(page: Page, x: number) {
   await expect(page.locator('[data-session-list="sidebar"]')).toHaveAttribute('data-list-width', x < 280 ? 'narrow' : 'wide')
 }
 
-test('at 200 px the sidebar row shows two lines of the question, and the panel beside it the whole question above its choices', async ({ page, api }) => {
+test('at the sidebar\'s minimum, 256 px, its row shows two lines of the question, and the panel beside it the whole question above its choices', async ({ page, api }) => {
   expect(QUESTION).toHaveLength(200)
   asker = await api.ok<Session>('POST', '/api/sessions', { agentId: 'asker-long', name: 'e2e long question' })
   sessions.push(asker.id)
@@ -69,6 +69,8 @@ test('at 200 px the sidebar row shows two lines of the question, and the panel b
   await page.goto('/crews')
   const row = page.locator(`[data-session-list="sidebar"] [data-sidebar-row="s:${asker.id}"]`).first()
   await expect(row).toHaveAttribute('data-row-state', 'needs', { timeout: 30_000 })
+  // The sidebar opens at 280 px, where the row holds its question whole (#1022): dragged to its minimum, a narrow list.
+  await sidebarAt(page, 256)
   await expect(row.locator('[data-row-prompt]')).toHaveAttribute('data-row-clamped', '')
   const panel = await rowAnswer(page, row)
   const words = panel.locator('[data-panel-question]')
@@ -157,7 +159,7 @@ test("a member's question is whole on the run card of the Crews page", async ({ 
   await expectWhole(ask.locator('[data-run-ask-words]'))
 })
 
-test("a question at the server's bound reads whole in the panel at 200 px and in the row at 300 px, and the pointer over it and onto a choice moves nothing", async ({ page, api, browser, state }) => {
+test("a question at the server's bound reads whole in the panel at 256 px and in the row at 300 px, and the pointer over it and onto a choice moves nothing", async ({ page, api, browser, state }) => {
   expect(LONGEST).toHaveLength(500)
   await api.ok('POST', `/api/sessions/${encodeURIComponent(asker.id)}/attention`, { state: 'needs_input', message: LONGEST, options: CHOICES })
   expect((await api.session(asker.id)).attention?.message).toBe(LONGEST)
@@ -166,7 +168,8 @@ test("a question at the server's bound reads whole in the panel at 200 px and in
   const prompt = row.locator('[data-row-prompt]')
   await expect(prompt).toHaveText(LONGEST, { timeout: 30_000 })
 
-  // At 200 px: whole in the panel; the pointer from the panel's question onto a choice moves nothing.
+  // At the minimum, 256 px: whole in the panel; the pointer from the panel's question onto a choice moves nothing.
+  await sidebarAt(page, 256)
   const panel = await rowAnswer(page, row)
   const asked = panel.locator('[data-panel-question]')
   await expect(asked).toHaveText(LONGEST)
