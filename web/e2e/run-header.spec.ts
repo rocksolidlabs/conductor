@@ -150,7 +150,9 @@ for (const theme of ['dark', 'light'] as const) {
     const counts = async () => bar.locator('[data-part]').evaluateAll((els) => els.map((e) => `${e.getAttribute('data-part')} ${e.getAttribute('data-count')}`))
     await expect.poll(counts, { message: "the bar's parts" }).toEqual(['done 2', 'working 1', 'checking 1', 'needs 2'])
     const progress = header.locator('[data-run-progress]')
-    await expect(progress).toHaveText('2 of 6 done · 1 working · 1 checking · 2 need you')
+    // The run's state in the Crews pages' words (C2), its counts after it.
+    await expect(progress.locator('[data-run-phase] [data-status-word]')).toHaveText('Needs you')
+    await expect(progress.locator('[data-run-detail]')).toHaveText('2 of 6 done · 1 working · 1 checking · 2 need you')
     // The run's number is the one list's for this run: the gate's decision and the failed task, one item each.
     await expect(progress).toHaveAttribute('data-needs', '2')
     await expect(bar.locator('[data-part="needs"]')).toHaveAttribute('title', '2 tasks held')
@@ -173,7 +175,7 @@ test('one gate holding two tasks: the sentence says one item, the bar two tasks 
   const header = page.locator('[data-crew-run-header]')
   await expect(header.locator('[data-run-bar] [data-part="needs"]')).toHaveAttribute('data-count', '2')
   await expect(header.locator('[data-run-progress]')).toHaveAttribute('data-needs', '1')
-  await expect(header.locator('[data-run-progress]')).toHaveText('4 of 6 done · 1 needs you')
+  await expect(header.locator('[data-run-progress] [data-run-detail]')).toHaveText('4 of 6 done · 1 needs you')
 })
 
 test("at 390 with touch a run of members says its members' sentence and draws no bar", async ({ day, browser }) => {
@@ -184,8 +186,9 @@ test("at 390 with touch a run of members says its members' sentence and draws no
   await serveRun(page, legacy)
   await page.goto(`/runs/${legacy.id}`)
   const header = page.locator('[data-crew-run-header]')
-  // Its members run in sessions no server holds: each is running as the run last read it.
-  await expect(header.locator('[data-run-progress]')).toHaveText('4 running')
+  // Its members run in sessions no server holds: each is idle as the run last read it (a session's "running", C2).
+  await expect(header.locator('[data-run-progress] [data-run-phase] [data-status-word]')).toHaveText('Running')
+  await expect(header.locator('[data-run-progress] [data-run-detail]')).toHaveText('4 idle')
   await expect(header.locator('[data-run-bar]')).toHaveCount(0)
   await inside(header.locator('[data-run-summary]'), page.locator('body'))
   await noSideways(page)
@@ -196,7 +199,7 @@ test('in a low window (1440 x 360) row two gives way and the bar and the sentenc
   await expect(header.locator('[data-run-summary]')).toBeHidden()
   const low = header.locator('[data-run-progress-low]')
   await expect(low).toBeVisible()
-  await expect(low).toContainText(/^\d of 6 done · /)
+  await expect(low).toContainText(/^Needs you\d of 6 done · /)
   await noOverlap(header.locator('[data-run-row-one]'))
   // Back to a tall window: row two again, the sentence there alone.
   await page.setViewportSize({ width: 1440, height: 900 })

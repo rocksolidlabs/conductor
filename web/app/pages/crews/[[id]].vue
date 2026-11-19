@@ -526,6 +526,8 @@ const menu = computed(() => [[{ label: 'Delete crew', icon: 'i-lucide-trash-2', 
  */
 const shownLink = usePageMemory<{ url: string; runId: string; name: string; hours: number } | null>('crewShownLink', () => null)
 let mounted = false
+/** The home's note of the run it launched (C11), in the crew's row: "Started" with Open run, until dismissed or another launch. */
+const startedNote = ref<{ crewId: string; runId: string; label: string } | null>(null)
 const shownOpen = computed({
   get: () => !!shownLink.value,
   set: (open: boolean) => {
@@ -585,12 +587,15 @@ async function launch(t: SheetTarget, read: CrewInfo | null, confirmed: () => bo
       }
       return
     }
-    toast.add({
-      title: `${c.name}: ${run.label || `run started ${startedClock(run.startedAt)}`}`,
-      icon: 'i-lucide-circle-play',
-      color: 'success',
-      actions: [{ label: 'Open run', icon: 'i-lucide-arrow-right', onClick: () => router.push(`/runs/${encodeURIComponent(run.id)}`) }],
-    })
+    // On the home, the launch is said on the page until dismissed (C11), the run under Running now; elsewhere, a toast.
+    if (mounted && home.value) startedNote.value = { crewId: c.id, runId: run.id, label: run.label || `run started ${startedClock(run.startedAt)}` }
+    else
+      toast.add({
+        title: `${c.name}: ${run.label || `run started ${startedClock(run.startedAt)}`}`,
+        icon: 'i-lucide-circle-play',
+        color: 'success',
+        actions: [{ label: 'Open run', icon: 'i-lucide-arrow-right', onClick: () => router.push(`/runs/${encodeURIComponent(run.id)}`) }],
+      })
   } finally {
     launchingKey.value = undefined
   }
@@ -743,7 +748,7 @@ usePalette().registerPage(() => ({
             <span class="text-[11px] font-semibold uppercase tracking-wider text-muted">Saved crews · {{ total }}</span>
             <span v-if="!crewsShown" class="text-xs text-muted" data-crews-caption>plans: who, which agent, which prompt, who waits for whom. Nothing runs until you launch one</span>
           </div>
-          <CrewsTable v-if="crews.length" :crews="crews" :runs="live.runs.value" :sessions="live.sessions.value" :now="now" :launching="launchingKey ?? ''" @launch="crewLaunch.ask($event)" />
+          <CrewsTable v-if="crews.length" :crews="crews" :runs="live.runs.value" :sessions="live.sessions.value" :now="now" :launching="launchingKey ?? ''" :started="startedNote" @launch="crewLaunch.ask($event)" @dismiss="startedNote = null" />
           <PageEmpty
             v-else-if="crewsState !== 'content'"
             page="crews"
@@ -761,7 +766,6 @@ usePalette().registerPage(() => ({
             <!-- What Load the examples does, in the welcome's words (the UX review's P17). -->
             <p v-if="crewsState === 'empty'" class="text-sm text-muted" data-examples-line>{{ EXAMPLES_LINE }}</p>
           </PageEmpty>
-          <p v-if="crews.length" class="text-xs text-muted">Bars: the last runs' durations, coloured by how each ended (green still going, grey ended, lighter grey stopped, red a member failed; amber edge = someone had to answer).</p>
           <UPagination v-if="total > PAGE_SIZE" v-model:page="page" :total="total" :items-per-page="PAGE_SIZE" size="xs" class="self-center" />
         </section>
       </div>

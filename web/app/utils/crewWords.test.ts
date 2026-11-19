@@ -18,12 +18,31 @@ import {
   minutesLabel,
   runBars,
   runNote,
-  runOutcome,
-  runTook,
   runWhen,
   shortRunId,
   startSentence,
   startWords,
+  barClass,
+  CHART_AT,
+  clockTime,
+  crewMembersWords,
+  filterState,
+  lengthWords,
+  MEMBER_LOOK,
+  MEMBER_PHASES,
+  memberAsk,
+  memberLook,
+  RUN_FILTER_CHIPS,
+  RUN_LOOK,
+  RUN_PHASES,
+  runListName,
+  runLook,
+  runPhase,
+  runPhaseView,
+  runsSentence,
+  startedClock,
+  tookWords,
+  type RunBar,
 } from './crewWords'
 import { ownError, STOPPED_ERROR } from './crews'
 
@@ -99,19 +118,121 @@ describe('startSentence', () => {
   })
 })
 
-describe('runOutcome', () => {
-  it('keeps failed for an error of a member\'s own, not for the stop that cut it off', () => {
-    const stopped = run({ stoppedAt: iso(30), members: [member({ status: 'ended' }), member({ name: 'late', status: 'ended', error: STOPPED_ERROR })] })
-    expect(runOutcome(stopped, 'stopped')).toBe('stopped')
+describe('runPhase', () => {
+  const managed = { revision: 3 }
+  it('says every run state in one word, from what the run itself carries (C1, C2)', () => {
+    // Live: running, or needs you while a member waits on a prompt or the run has items of the one list.
+    expect(runPhase(run({ members: [member({})] }), [])).toBe('running')
+    expect(runPhase(run({ members: [member({ needsInput: true })] }), [])).toBe('needs')
+    expect(runPhase(run({ members: [member({ sessionId: 's1' })] }), [session({ id: 's1', attention: { state: 'needs_input' } })])).toBe('needs')
+    expect(runPhase(run({ managed, members: [member({})] }), [], 1)).toBe('needs')
+    // A run with tasks says its own outcome: the failed run whose members carry no error of their own reads Failed (C1).
+    const tasks = (outcome: RunInfo['outcome']) => run({ managed, outcome, state: 'finished', members: [member({ status: 'running' }), member({ name: 'b', status: 'pending' })] })
+    expect(runPhase(tasks('failed'), [])).toBe('failed')
+    expect(runPhase(tasks('succeeded'), [])).toBe('succeeded')
+    expect(runPhase(tasks('cancelled'), [])).toBe('stopped')
+    // Its items do not make an ended run "needs you": it failed, and says so.
+    expect(runPhase(tasks('failed'), [], 2)).toBe('failed')
+    // A record says what it recorded.
+    expect(runPhase({ ...tasks('failed'), record: true }, [])).toBe('failed')
+    expect(runPhase(run({ record: true, state: 'interrupted', members: [member({ status: 'running' })] }), [])).toBe('stopped')
+    // A run of members: failed for an error of a member's own, stopped or not; stopped for a stop; succeeded when all ended well.
     const failed = run({ members: [member({ status: 'ended', error: 'exited (exit 1) before its prompt was typed' })] })
-    expect(runOutcome(failed, 'finished')).toBe('failed')
-    expect(runOutcome(run({ ...failed, stoppedAt: iso(30) }), 'stopped')).toBe('failed')
-    expect(runOutcome(run(), 'running')).toBe('running')
-    expect(runOutcome(run(), 'needs_input')).toBe('needs you')
-    // A run that has ended says so: "finished" is a session's word, never a run's.
-    expect(runOutcome(run({ members: [member({ status: 'ended' })] }), 'finished')).toBe('ended')
+    expect(runPhase(failed, [])).toBe('failed')
+    expect(runPhase(run({ ...failed, stoppedAt: iso(30) }), [])).toBe('failed')
+    expect(runPhase(run({ stoppedAt: iso(30), members: [member({ status: 'ended' }), member({ name: 'late', status: 'ended', error: STOPPED_ERROR })] }), [])).toBe('stopped')
+    expect(runPhase(run({ members: [member({ status: 'ended' })] }), [])).toBe('succeeded')
     expect(ownError({ error: STOPPED_ERROR })).toBe('')
     expect(ownError({ error: 'boom' })).toBe('boom')
+  })
+
+  it('gives each state one word and one mark, none the same, none said by colour alone', () => {
+    const words = RUN_PHASES.map((p) => RUN_LOOK[p].word)
+    expect(words).toEqual(['Running', 'Needs you', 'Succeeded', 'Failed', 'Stopped'])
+    expect(new Set(RUN_PHASES.map((p) => RUN_LOOK[p].mark)).size).toBe(RUN_PHASES.length)
+    for (const p of RUN_PHASES) {
+      const v = runPhaseView(p)
+      expect(v.word).toBe(RUN_LOOK[p].word)
+      expect(v.legend.startsWith(`${v.word}:`)).toBe(true)
+    }
+    expect(runPhaseView('stopped', true).legend).toBe('Stopped: the server stopped while it ran')
+    expect(runPhaseView('failed').key).toBe('failed')
+  })
+
+  it('says a run with its counts in the member words (runLook)', () => {
+    const r = run({ members: [member({ sessionId: 's1' }), member({ name: 'b', sessionId: 's2' }), member({ name: 'c', sessionId: 's3' })] })
+    const ss = [
+      session({ id: 's1', attention: { state: 'working' }, turns: true }),
+      session({ id: 's2' }),
+      session({ id: 's3', attention: { state: 'needs_input', message: 'x' } }),
+    ]
+    const l = runLook(r, ss, [])
+    expect(l.phase).toBe('needs')
+    expect(l.view.word).toBe('Needs you')
+    expect(l.detail).toBe('1 working · 1 idle · 1 needs you')
+    expect(l.needs).toBe(1)
+    const failed = run({ managed: { revision: 1 }, outcome: 'failed', state: 'finished', members: [member({})], tasks: [{ id: 'a', member: 'lead', kind: 'work', state: 'succeeded', needs: [], attempts: 1 } as never, { id: 'b', member: 'lead', kind: 'work', state: 'failed', needs: [], attempts: 3 } as never] })
+    expect(runLook(failed, [], [])).toMatchObject({ phase: 'failed', detail: '1 of 2 done' })
+  })
+})
+
+describe('memberLook', () => {
+  it('says every member state in one word, with whom it waits for', () => {
+    const going = run()
+    const stopped = run({ stoppedAt: iso(30) })
+    const look = (r: RunInfo, p: Partial<RunMember>, ss: SessionInfo[] = []) => memberLook(r, member(p), ss, T0)
+    expect(look(going, { sessionId: 's1' }, [session({ id: 's1', attention: { state: 'working' } })]).view.word).toBe('Working')
+    expect(look(going, { sessionId: 's1' }, [session({ id: 's1' })]).view.word).toBe('Idle')
+    expect(look(going, { sessionId: 's1' }, [session({ id: 's1', attention: { state: 'needs_input' } })]).view.word).toBe('Needs you')
+    expect(look(going, { sessionId: 's1' }, [session({ id: 's1', attention: { state: 'done', since: iso(0) } })]).view.word).toBe('Finished')
+    const waits = look(going, { status: 'pending', start: after('driver') })
+    expect(waits).toMatchObject({ phase: 'waiting', after: 'after driver', status: 'pending' })
+    expect(waits.view.word).toBe('Waiting to start')
+    expect(look(going, { status: 'pending', start: { when: 'manual' } }).after).toBe('by hand')
+    expect(look(going, { status: 'pending', sessionId: 's1' }, [session({ id: 's1', status: 'starting' })]).phase).toBe('waiting')
+    expect(look(going, { status: 'ended' }).view.word).toBe('Finished')
+    expect(look(going, { status: 'ended', error: 'exited (exit 1)' })).toMatchObject({ phase: 'failed', view: { word: 'Failed', legend: 'Failed: exited (exit 1)' } })
+    expect(look(stopped, { status: 'ended' }).view.word).toBe('Stopped')
+    expect(look(stopped, { status: 'ended', error: STOPPED_ERROR }).view.word).toBe('Stopped')
+    expect(look(stopped, { status: 'pending' }).view.word).toBe('Stopped')
+    expect(look(run({ managed: { revision: 1 }, outcome: 'failed', state: 'finished' }), { status: 'pending' }).view.legend).toBe('Stopped: the run ended before it started')
+    expect(look(going, { sessionId: 's1' }, [session({ id: 's1', status: 'host_disconnected' })]).view.word).toBe('Host away')
+    expect(MEMBER_PHASES.map((p) => MEMBER_LOOK[p].word)).toEqual(['Working', 'Idle', 'Needs you', 'Waiting to start', 'Finished', 'Failed', 'Stopped'])
+    expect(new Set(MEMBER_PHASES.map((p) => MEMBER_LOOK[p].mark)).size).toBe(MEMBER_PHASES.length)
+  })
+
+  it("offers a question's choices as the chat's line, never a decision's nor one without an id", () => {
+    const options = [
+      { label: 'Yes', input: '1' },
+      { label: 'No', input: '2' },
+    ]
+    const asks = memberAsk('navigator', { agentId: 'claude', attention: { state: 'needs_input', message: 'Add it?', id: 'q1', options } })
+    expect(asks.question).toBe('Add it?')
+    expect(asks.line).toMatchObject({ kind: 'question', id: 'q1', on: 'navigator', options })
+    expect(memberAsk('n', { agentId: 'claude', attention: { state: 'needs_input', message: 'Add it?', options } }).line).toBeNull()
+    expect(memberAsk('n', { agentId: 'claude', attention: { state: 'needs_input', message: 'Add it?', id: 'q1' } }).line).toBeNull()
+    expect(memberAsk('n', { agentId: 'claude', attention: { state: 'needs_input', id: 'q1', options, decision: 'dr-1' } }).line).toBeNull()
+    expect(memberAsk('n', { agentId: 'claude', attention: { state: 'needs_input', id: 'q1', options, answered: 'terminal' } }).line).toBeNull()
+    expect(memberAsk('n', { agentId: 'claude', attention: { state: 'working' } })).toEqual({ question: '', line: null })
+    expect(memberAsk('n', undefined)).toEqual({ question: '', line: null })
+  })
+})
+
+describe('clockTime', () => {
+  const at = (h: number, min: number, s = 0) => new Date(2026, 10, 18, h, min, s).getTime()
+  it('writes 24-hour time whatever the hour cycle of the locale (C3)', () => {
+    for (const locale of ['en-US', 'en-GB', 'de-DE', undefined]) {
+      expect(clockTime(at(19, 28), { locale })).toBe('19:28')
+      expect(clockTime(at(7, 5), { locale })).toBe('07:05')
+      // Midnight is 00, never 24 (the "hour12: false" of a 12-hour locale gives 24:05 in some browsers).
+      expect(clockTime(at(0, 5), { locale })).toBe('00:05')
+      expect(clockTime(at(12, 0), { locale })).toBe('12:00')
+      expect(clockTime(at(19, 28, 50), { locale, seconds: true })).toBe('19:28:50')
+    }
+    expect(clockTime(new Date(at(19, 28)).toISOString())).toBe('19:28')
+    expect(clockTime('nope')).toBe('')
+    expect(startedClock(new Date(at(19, 28)).toISOString())).toBe('19:28')
+    expect(runSubtitle({ startedAt: new Date(at(0, 5)).toISOString() })).toBe('run started 00:05')
   })
 })
 
@@ -166,10 +287,35 @@ describe('names and times', () => {
     expect(askedCount([{ message: 'lead asks "Trust?": …' }, { message: 'typed lead\'s prompt' }, { message: 'asks "x"' }])).toBe(1)
   })
 
-  it('says how long a run went', () => {
-    expect(runTook(run(), true, T0 + 4 * 60_000)).toBe('up 4m')
-    expect(runTook(run({ stoppedAt: iso(33) }), false, T0 + 3_600_000)).toBe('33s')
-    expect(runTook(run({ state: 'finished', members: [member({ status: 'ended', endedAt: iso(22 * 60) })] }), false, T0 + 3_600_000)).toBe('22m')
+  it('says how long a run went, in words (C12)', () => {
+    expect(tookWords(run(), true, T0 + 20 * 60_000)).toBe('20 min so far')
+    expect(tookWords(run({ stoppedAt: iso(33) }), false, T0 + 3_600_000)).toBe('under a minute')
+    expect(tookWords(run({ state: 'finished', members: [member({ status: 'ended', endedAt: iso(22 * 60) })] }), false, T0 + 3_600_000)).toBe('22 min')
+    // A run with tasks ends with its outcome, its log's last line, whatever its idle members do after.
+    const tasks = run({ state: 'finished', outcome: 'failed', managed: { revision: 1 }, members: [member({ status: 'running' })], log: [{ at: iso(10), type: 'status' }, { at: iso(3 * 60 + 20), type: 'status' }] })
+    expect(tookWords(tasks, false, T0 + 3_600_000)).toBe('3 min')
+    expect(lengthWords(64 * 60_000)).toBe('1 h 4 min')
+    expect(lengthWords(120 * 60_000)).toBe('2 h')
+    expect(lengthWords(3 * 86_400_000)).toBe('3 days')
+  })
+
+  it("names a crew's members by how many and on which agents (C4), and a run in its crew's list (C12)", () => {
+    expect(crewMembersWords([{ agentId: 'claude' }, { agentId: 'codex' }, { agentId: 'claude' }, { agentId: 'plain' }], new Map([['codex', 'Codex CLI'], ['plain', 'Shell agent']]))).toBe('4 members · Claude Code, Codex CLI, Shell agent')
+    expect(crewMembersWords([{ agentId: 'claude' }])).toBe('1 member · Claude Code')
+    expect(crewMembersWords([])).toBe('No members yet')
+    expect(runListName({ label: 'Dry run', startedAt: iso(0) }, T0)).toBe('Dry run')
+    expect(runListName({ startedAt: iso(0) }, T0 + 60_000)).toMatch(/^Run of today \d{2}:\d{2}$/)
+  })
+
+  it('says how the last run went and how long runs take, under five runs (C13)', () => {
+    const bar = (phase: RunBar['phase'], minutes: number) => ({ id: 'x', startedAt: 0, minutes, phase, asked: 0 })
+    expect(runsSentence([])).toBe('No runs yet.')
+    expect(runsSentence([bar('failed', 3)])).toBe('The only run so far failed after 3 min.')
+    expect(runsSentence([bar('stopped', 0.2)])).toBe('The only run so far was stopped in under a minute.')
+    expect(runsSentence([bar('running', 2)])).toBe('The only run so far is running, 2 min so far.')
+    expect(runsSentence([bar('succeeded', 4), bar('stopped', 10), bar('succeeded', 6)])).toBe('The last run succeeded after 6 min; runs of this crew usually take 6 min (the middle of 3).')
+    expect(runsSentence([bar('succeeded', 4), bar('needs', 1)])).toBe('The last run needs you, 1 min so far; runs of this crew usually take 4 min.')
+    expect(CHART_AT).toBe(5)
   })
 
   it('draws the last runs as bars, oldest first, and sums them up', () => {
@@ -181,7 +327,7 @@ describe('names and times', () => {
     ]
     const bars = runBars(runs, [], T0 + 600_000, 3)
     expect(bars.map((b) => b.id)).toEqual(['r1', 'r2', 'r3'])
-    expect(bars.map((b) => b.outcome)).toEqual(['failed', 'stopped', 'needs you'])
+    expect(bars.map((b) => b.phase)).toEqual(['failed', 'stopped', 'needs'])
     expect(bars.map((b) => b.minutes)).toEqual([1, 0.5, 5])
     expect(bars.map((b) => b.asked)).toEqual([1, 0, 0])
     expect(medianMinutes(bars)).toBe(1)
@@ -212,23 +358,25 @@ describe('run names and the Runs tab filter', () => {
     expect(runTitle({ name: 'users api' })).toBe('users api')
   })
 
-  it('filters runs by how they ended and when they started', () => {
+  it('filters runs by their state and when they started', () => {
     const now = new Date(2026, 9, 4, 10, 0, 0).getTime()
     const at = (d: number, h: number) => new Date(2026, 9, d, h, 0, 0).toISOString()
     const rows = [
-      { run: { startedAt: at(4, 9) }, outcome: 'needs you' as const },
-      { run: { startedAt: at(4, 0) }, outcome: 'ended' as const },
-      { run: { startedAt: at(3, 23) }, outcome: 'stopped' as const },
-      { run: { startedAt: at(1, 9) }, outcome: 'failed' as const },
-      { run: { startedAt: at(1, 10) }, outcome: 'running' as const },
-      { run: { startedAt: new Date(2026, 8, 1).toISOString() }, outcome: 'ended' as const },
+      { run: { startedAt: at(4, 9) }, phase: 'needs' as const },
+      { run: { startedAt: at(4, 0) }, phase: 'succeeded' as const },
+      { run: { startedAt: at(3, 23) }, phase: 'stopped' as const },
+      { run: { startedAt: at(1, 9) }, phase: 'failed' as const },
+      { run: { startedAt: at(1, 10) }, phase: 'running' as const },
+      { run: { startedAt: new Date(2026, 8, 1).toISOString() }, phase: 'succeeded' as const },
     ]
     expect(filterRuns(rows, { state: 'all', since: 'today' }, now)).toHaveLength(2)
-    expect(filterRuns(rows, { state: 'live', since: 'all' }, now).map((r) => r.outcome)).toEqual(['needs you', 'running'])
-    expect(filterRuns(rows, { state: 'ended', since: '7d' }, now)).toHaveLength(1)
-    expect(filterRuns(rows, { state: 'ended', since: '30d' }, now)).toHaveLength(1)
-    expect(filterRuns(rows, { state: 'ended', since: 'all' }, now)).toHaveLength(2)
-    expect(filterCounts(rows, '7d', now)).toEqual({ all: 5, live: 2, ended: 1, stopped: 1, failed: 1 })
+    expect(filterRuns(rows, { state: 'live', since: 'all' }, now).map((r) => r.phase)).toEqual(['needs', 'running'])
+    expect(filterRuns(rows, { state: 'succeeded', since: '7d' }, now)).toHaveLength(1)
+    expect(filterRuns(rows, { state: 'succeeded', since: '30d' }, now)).toHaveLength(1)
+    expect(filterRuns(rows, { state: 'succeeded', since: 'all' }, now)).toHaveLength(2)
+    expect(filterRuns(rows, { state: 'failed', since: 'all' }, now)).toHaveLength(1)
+    expect(filterCounts(rows, '7d', now)).toEqual({ all: 5, live: 2, succeeded: 1, failed: 1, stopped: 1 })
+    expect(RUN_FILTER_CHIPS.map((c) => c.label)).toEqual(['All', 'Running', 'Succeeded', 'Failed', 'Stopped'])
     expect(sinceStart('today', now)).toBe(new Date(2026, 9, 4).getTime())
   })
 
@@ -237,8 +385,9 @@ describe('run names and the Runs tab filter', () => {
     expect(readRunFilter('{not json')).toEqual(DEFAULT_RUN_FILTER)
     expect(readRunFilter('{"state":"failed","since":"7d"}')).toEqual({ state: 'failed', since: '7d' })
     expect(readRunFilter('{"state":"nope","since":"1y"}')).toEqual(DEFAULT_RUN_FILTER)
-    // The chip named Finished before it read Ended: what this browser kept still picks it.
-    expect(readRunFilter('{"state":"finished","since":"all"}')).toEqual({ state: 'ended', since: 'all' })
+    // The chip named Finished, then Ended, before it read Succeeded: what this browser kept still picks it.
+    expect(readRunFilter('{"state":"finished","since":"all"}')).toEqual({ state: 'succeeded', since: 'all' })
+    expect(readRunFilter('{"state":"ended","since":"all"}')).toEqual({ state: 'succeeded', since: 'all' })
   })
 })
 
@@ -259,26 +408,17 @@ describe('runResumable', () => {
   })
 })
 
-describe('runOutcome', () => {
-  it('says interrupted for a run the server\'s end cut short, filed with the stopped ones', async () => {
-    const { runOutcome, filterState, outcomeBadge } = await import('./crewWords')
-    expect(runOutcome({ members: [] }, 'interrupted')).toBe('interrupted')
-    expect(filterState('interrupted')).toBe('stopped')
-    expect(outcomeBadge('interrupted')).toEqual({ label: 'interrupted', color: 'warning', variant: 'outline' })
-  })
-
-  it('says "ended" for a run that ended, and draws only a live run in green', async () => {
-    const { outcomeBadge, barClass } = await import('./crewWords')
-    expect(outcomeBadge('ended')).toEqual({ label: 'ended', color: 'neutral', variant: 'outline' })
-    expect(outcomeBadge('running').color).toBe('success')
-    // The bars: live green (the working green), ended neutral ink, stopped lighter, failed red; no ended run is green.
-    expect(barClass('running')).toBe('bg-success')
-    expect(barClass('needs you')).toBe('bg-success')
-    expect(barClass('ended')).toBe('bg-(--ui-text-muted)')
+describe('the Runs tab chart', () => {
+  it("files a run the server's end cut short with the stopped ones, and draws each bar in its state's tone", () => {
+    expect(filterState('needs')).toBe('live')
+    expect(filterState('running')).toBe('live')
+    expect(filterState('failed')).toBe('failed')
+    expect(barClass('running')).toBe('bg-(--ui-success)')
+    expect(barClass('needs')).toBe('bg-(--ui-warning)')
+    expect(barClass('succeeded')).toBe('bg-(--ui-text-muted)')
     expect(barClass('stopped')).toBe('bg-accented')
-    expect(barClass('interrupted')).toBe('bg-accented')
-    expect(barClass('failed')).toBe('bg-error')
-    for (const o of ['ended', 'stopped', 'interrupted', 'failed'] as const) expect(barClass(o)).not.toContain('success')
+    expect(barClass('failed')).toBe('bg-(--ui-error)')
+    for (const p of ['succeeded', 'stopped', 'failed'] as const) expect(barClass(p)).not.toContain('success')
   })
 })
 

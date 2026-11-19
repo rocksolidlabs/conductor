@@ -119,7 +119,7 @@ test('the run page shows the tasks, their attempts and results, the task graph, 
   await expect(page.locator('[data-task-row="build"] [data-task-commit]')).toHaveText(commit.slice(0, 12))
   // The header's bar (UX1 PR-10): both tasks done.
   await expect(page.locator('[data-crew-run-header] [data-run-bar] [data-part="done"]')).toHaveAttribute('data-count', '2')
-  await expect(page.locator('[data-crew-run-header] [data-run-progress]')).toHaveText('Succeeded')
+  await expect(page.locator('[data-crew-run-header] [data-run-progress] [data-run-phase] [data-status-word]')).toHaveText('Succeeded')
   // The selected task, in the URL: its result and both attempts, the first failed at its check with what it submitted.
   await page.locator('[data-task-row="build"] [role="button"]').click()
   await expect(page).toHaveURL(/task=build/)
@@ -222,7 +222,7 @@ test('a task that fails its checks three times offers Retry and Accept anyway; t
   expect(logged(after, "task build: attempt 3's result accepted by admin")).toBe(true)
   // The header's bar (UX1 PR-10): both tasks done.
   await expect(page.locator('[data-crew-run-header] [data-run-bar] [data-part="done"]')).toHaveAttribute('data-count', '2')
-  await expect(page.locator('[data-crew-run-header] [data-run-progress]')).toHaveText('Succeeded')
+  await expect(page.locator('[data-crew-run-header] [data-run-progress] [data-run-phase] [data-status-word]')).toHaveText('Succeeded')
 })
 
 /** Opens the palette and returns it: Alt+/ (the terminal's way, which the page shares), else Ctrl+K where no terminal has the focus. */

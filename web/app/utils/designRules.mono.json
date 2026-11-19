@@ -19,7 +19,7 @@
   "components/CrewGraphNode.vue": 3,
   "components/CrewLaunchSheet.vue": 1,
   "components/CrewRunHeader.vue": 3,
-  "components/CrewRunsPanel.vue": 4,
+  "components/CrewRunsPanel.vue": 1,
   "components/DecideCard.vue": 1,
   "components/DecisionCard.vue": 4,
   "components/DecisionRespond.vue": 1,

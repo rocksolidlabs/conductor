@@ -131,7 +131,7 @@ test("a run interrupted by the server's end is continued: the candidate verified
   await expect(page.locator('[data-task-row="build"] [data-task-words]')).toContainText('succeeded by attempt 2')
   // The header's bar (UX1 PR-10): both tasks done.
   await expect(page.locator('[data-crew-run-header] [data-run-bar] [data-part="done"]')).toHaveAttribute('data-count', '2')
-  await expect(page.locator('[data-crew-run-header] [data-run-progress]')).toHaveText('Succeeded')
+  await expect(page.locator('[data-crew-run-header] [data-run-progress] [data-run-phase] [data-status-word]')).toHaveText('Succeeded')
   await page.goto(`${server.baseURL}/runs/${encodeURIComponent(run.id)}?view=tasks`)
   await expect(page.locator('[data-run-resume]')).toHaveCount(0)
   await expect(page.locator('[data-run-record]')).toBeVisible()

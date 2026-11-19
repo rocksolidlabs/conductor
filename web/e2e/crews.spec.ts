@@ -46,15 +46,14 @@ test('a new crew is drafted at /crews/new, saved from its bar, and listed with i
   await expect(page).toHaveURL(new RegExp(`/crews/${crewId}$`))
   await expect(page.locator('[data-crew-kind]')).toHaveText('Saved crew')
   await expect(bar).toHaveCount(0)
-  // The home's table: the plan, its shape, where it runs, and that it never ran.
+  // The home's table: the plan, its members and their agents, and that it never ran (C4).
   await page.goto('/crews')
   const entry = page.locator(`[data-crew-entry][data-crew-id="${crewId}"]`)
   await expect(entry.locator('[data-crew-item]')).toHaveText(crewName)
   await expect(entry).toContainText('show the crews pages')
-  await expect(entry.locator('[data-crew-shape]')).toHaveText('2 · 1 by hand, 1 alone')
-  await expect(entry.locator('[data-crew-meta]')).toContainText('worktrees')
-  await expect(entry.locator('[data-crew-last-run]')).toHaveText('never')
-  await expect(entry.locator('[data-crew-live]')).toHaveCount(0)
+  await expect(entry.locator('[data-crew-members]')).toHaveText(/^2 members · /)
+  await expect(entry.locator('[data-crew-last-run]')).toHaveText('Never run')
+  await expect(entry).toHaveAttribute('data-live-runs', '0')
   await expect(page.locator('[data-running-now]')).toHaveCount(0)
 })
 
@@ -93,7 +92,8 @@ test('Launch run from the home opens the run page; the crew then says a run is l
   const card = page.locator(`[data-running-now] [data-run="${runId}"]`)
   await expect(card).toHaveAttribute('data-state', 'running')
   await expect(card.locator('[data-run-member="docs"]')).toHaveAttribute('data-status', 'pending')
-  await expect(page.locator(`[data-crew-entry][data-crew-id="${crewId}"] [data-crew-live]`)).toHaveText(/1 live run/)
+  await expect(page.locator(`[data-crew-entry][data-crew-id="${crewId}"]`)).toHaveAttribute('data-live-runs', '1')
+  await expect(page.locator(`[data-crew-entry][data-crew-id="${crewId}"] [data-crew-last-state]`)).toHaveText('Running')
   await page.goto(`/crews/${crewId}`)
   const banner = page.locator('[data-live-run-banner]')
   await expect(banner).toContainText('live run')
@@ -106,13 +106,13 @@ test('Launch run from the home opens the run page; the crew then says a run is l
   await page.getByLabel('Goal').fill('changed under a live run')
   await expect(page.locator('[data-unsaved-words]')).toHaveText('Goal edited. The live run keeps the version it launched with.')
   await page.locator('[data-unsaved-bar]').getByRole('button', { name: 'Discard' }).click()
-  // Stop from the Runs tab: the row reads stopped, docs never started, and the run can be resumed as a new one.
+  // Stop from the Runs tab: the row reads Stopped, docs never started, and the run can be resumed as a new one.
   await page.getByRole('tab', { name: /Runs/ }).click()
   const row = page.locator(`[data-crew-runs] [data-run="${runId}"]`)
   await expect(row).toHaveAttribute('data-state', 'running')
   await row.locator('[data-run-stop]').click()
   await expect(row).toHaveAttribute('data-state', 'stopped', { timeout: 15_000 })
-  await expect(row.locator('[data-run-state]')).toHaveText('stopped')
+  await expect(row.locator('[data-run-state]')).toHaveText('Stopped')
   await expect(row.locator('[data-run-note]')).toHaveText('1 never started')
   await expect(row.locator('[data-run-member="docs"]')).toHaveAttribute('data-status', 'pending')
   await expect(row.locator('[data-run-resume]')).toHaveText(/Resume as new run/)
@@ -184,37 +184,35 @@ test("a comparison's crew edited and saved in the editor keeps its compare block
   expect(read.compare).toEqual(compare)
 })
 
-// A live run's card draws the run as lines, each station lit by its task's state (UX1 PR-34): the Ledger stub served as live, its
-// six tasks on the card under Running now, amber where a task needs a person.
+// A live run's card reads without a legend (C5): its state's word beside its mark, amber for a run that needs a person, then each
+// member as a line with its state's word: the Ledger stub served as live, two of its tasks held by a decision.
 for (const theme of ['light', 'dark'] as const) {
-  test(`a live run's card draws its tasks as lines, lit by their states; in the ${theme} theme a needs station is amber`, async ({ day, browser }) => {
+  test(`a live run's card says its state and each member's in words; in the ${theme} theme a run that needs you is amber`, async ({ day, browser }) => {
     const run = ledgerRun()
     const page = await dayPage(browser, { path: '/', theme })
     await serveRun(page, run)
     await page.goto('/crews')
     const card = page.locator(`[data-running-now] [data-run="${run.id}"]`)
-    const stations = card.locator('[data-run-drawing] [data-station]')
-    await expect(stations).toHaveCount(6)
-    await expect(card.locator('[data-station="migrate"]')).toHaveAttribute('data-status-mark', 'needs')
-    await expect(card.locator('[data-station="release-notes"]')).toHaveAttribute('data-status-mark', 'needs')
-    await expect(card.locator('[data-station="schema"]')).toHaveAttribute('data-status-mark', 'done')
-    const fill = await card.locator('[data-station="migrate"] [data-status-glyph] circle').first().evaluate((c) => getComputedStyle(c).fill)
+    const state = card.locator('[data-run-state]')
+    await expect(state).toHaveAttribute('data-phase', 'needs')
+    await expect(state.locator('[data-status-word]').first()).toHaveText('Needs you')
+    const fill = await state.locator('[data-status-glyph] circle').first().evaluate((c) => getComputedStyle(c).fill)
     expect(await probeColour(page, fill)).toBe(await probeColour(page, 'var(--ui-warning)'))
-    // The hidden member lines stand beside the drawing.
     await expect(card.locator('[data-run-member]')).toHaveCount(run.members.length)
+    for (const m of run.members) await expect(card.locator(`[data-run-member="${m.name}"] [data-status-word]`)).toHaveText(/^(Working|Idle|Needs you|Waiting to start|Finished|Failed|Stopped)$/)
     void day
   })
 }
 
-test("at 390 with touch a live run's drawing lies inside its card, and nothing scrolls sideways", async ({ day, browser }) => {
+test("at 390 with touch a live run's member lines lie inside its card, and nothing scrolls sideways", async ({ day, browser }) => {
   const run = ledgerRun()
   const page = await dayPage(browser, { path: '/', width: 390, height: 844, touch: true })
   await serveRun(page, run)
   await page.goto('/crews')
   const card = page.locator(`[data-running-now] [data-run="${run.id}"]`)
-  await expect(card.locator('[data-run-drawing] [data-station]')).toHaveCount(6)
-  await inside(card.locator('[data-run-drawing]'), card)
-  await inside(card.locator('[data-run-drawing] [data-station] [data-status-glyph]'), card)
+  await expect(card.locator('[data-run-member]')).toHaveCount(run.members.length)
+  await inside(card.locator('[data-run-members]'), card)
+  await inside(card.locator('[data-run-member] [data-status-glyph]'), card)
   await noSideways(page)
   void day
 })

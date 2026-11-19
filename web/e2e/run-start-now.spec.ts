@@ -121,8 +121,11 @@ test("a managed run's waiting member offers no Start now on its tile or its node
   budget(3 * STEP_MS) // the navigation, the header's words, its Resume
   await page.goto(`/runs/${encodeURIComponent(run.id)}?view=grid`)
   const header = page.locator(`[data-run-grid] [data-session-id="${builder}"] [data-tile-header]`)
-  // The state's word is at the tile's foot, the header keeps the name and the actions.
-  await expect(page.locator(`[data-run-grid] [data-session-id="${builder}"] [data-tile-foot] [data-status-mark]`)).toHaveAttribute('data-status-mark', 'exited')
+  // The state's word is at the tile's foot, the header keeps the name and the actions: a member the run's stop ended reads Stopped
+  // (the Crews pages' words, C2).
+  const foot = page.locator(`[data-run-grid] [data-session-id="${builder}"] [data-tile-foot] [data-status-mark]`)
+  await expect(foot).toHaveAttribute('data-status-mark', 'cancelled')
+  await expect(foot).toHaveAttribute('aria-label', 'Stopped')
   await expect(header.locator('[data-resume]')).toHaveCount(0)
 })
 
@@ -143,7 +146,8 @@ test("a stopped run the engine holds offers its ended member's Resume or Relaunc
   budget(3 * STEP_MS) // the navigation, the header's words, its Resume
   await page.goto(`/runs/${encodeURIComponent(run.id)}?view=grid`)
   const header = page.locator(`[data-run-grid] [data-session-id="${lead}"] [data-tile-header]`)
-  await expect(page.locator(`[data-run-grid] [data-session-id="${lead}"] [data-tile-foot] [data-status-mark]`)).toHaveAttribute('data-status-mark', 'exited')
+  // A member the run's stop ended reads Stopped at its tile's foot (the Crews pages' words, C2).
+  await expect(page.locator(`[data-run-grid] [data-session-id="${lead}"] [data-tile-foot] [data-status-mark]`)).toHaveAttribute('data-status-mark', 'cancelled')
   await expect(header.locator('[data-resume]')).toHaveCount(1)
 
   // The run as the server answers a run it no longer holds: its read marked a record, and absent from the live runs.
@@ -160,6 +164,6 @@ test("a stopped run the engine holds offers its ended member's Resume or Relaunc
   budget(3 * STEP_MS) // the navigation, the record's badge, the header's words
   await page.reload()
   await expect(page.locator('[data-run-record]')).toBeVisible()
-  await expect(page.locator(`[data-run-grid] [data-session-id="${lead}"] [data-tile-foot] [data-status-mark]`)).toHaveAttribute('data-status-mark', 'exited')
+  await expect(page.locator(`[data-run-grid] [data-session-id="${lead}"] [data-tile-foot] [data-status-mark]`)).toHaveAttribute('data-status-mark', 'cancelled')
   await expect(header.locator('[data-resume]')).toHaveCount(0)
 })

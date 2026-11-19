@@ -8,7 +8,7 @@ import { attemptSession, markSection, memberStatusOf, sessionStatus, taskStatus 
 import { rowPrompt } from '~/utils/sidebarActions'
 import { sessionRow } from '~/utils/sidebar'
 import type { PaletteItem } from '~/composables/usePalette'
-import { memberWords, runTitle, startedClock } from '~/utils/crewWords'
+import { memberAsk, memberLook, runTitle, startedClock } from '~/utils/crewWords'
 import { memberOffer, runOffer } from '~/utils/runs'
 import { handoffsOf } from '~/utils/crewGraph'
 import { bestGrid, lastItemSpan } from '~/utils/wall'
@@ -354,15 +354,21 @@ function footer(t: Tile): { where: string; diff: string } {
   return { where, diff }
 }
 
-/** A tile without a session: what its member does, in the run's words (a member a stop cut off is grey, red only for its own error). */
-function placeholder(t: Tile): { text: string; tone: 'warning' | 'error' | 'muted' | 'default' } {
-  const m = t.member
-  if (!m || !run.value) return { text: '', tone: 'muted' }
-  const st = memberStatus(run.value, m, live.sessions.value)
-  // Started, and its session not in the live store yet.
-  return st === 'pending' || st === 'ended' ? memberWords(run.value, m, st) : { text: 'starting…', tone: 'muted' }
+/**
+ * A member's state in the Crews pages' one vocabulary (C2, memberLook): the tile's foot and a tile without a session say it, with
+ * whom it waits for ("after driver") on a member not started.
+ */
+function looked(t: Tile) {
+  return t.member && run.value ? memberLook(run.value, t.member, live.sessions.value, now.value) : null
 }
-const tone = { warning: 'text-warning', error: 'text-error', muted: 'text-muted', default: 'text-default' }
+/**
+ * A tile's question with its choices (C6): the same line the run's chat offers, answered through the same path (runChatAnswers:
+ * the member's running session, the question named); none where the page cannot answer it.
+ */
+function tileAsk(t: Tile) {
+  const line = memberAsk(t.name, t.session).line
+  return line && runChatAnswers.answerable(line) ? line : null
+}
 
 const starting = ref('')
 async function startMember(name: string) {
@@ -633,7 +639,10 @@ palette.registerPage(() => {
         <div v-else ref="grid" class="min-h-0 flex-1 p-3" :class="narrow ? 'overflow-y-auto' : 'overflow-hidden'">
           <div class="grid h-full w-full gap-3" :class="narrow && 'h-auto'" :style="gridStyle" data-run-grid>
             <template v-for="t in tiles" :key="t.session?.id ?? `m-${t.name}`">
-              <SessionTile v-if="t.session" :session="t.session" :create-transport="transportFor(t.session)" :data-member="t.name" @select="router.push(`/sessions/${t.session.id}`)">
+              <SessionTile v-if="t.session" :session="t.session" :status="looked(t)?.view" :create-transport="transportFor(t.session)" :data-member="t.name" @select="router.push(`/sessions/${t.session.id}`)">
+                <template v-if="tileAsk(t)" #ask>
+                  <RunAskChoices :line="tileAsk(t)!" :answer="runChatAnswers.answer" />
+                </template>
                 <template #leading>
                   <UCheckbox :model-value="isSelected(t.name)" :aria-label="`Select ${t.name} for the broadcast`" data-broadcast-pick @update:model-value="toggle(t.name, $event)" />
                 </template>
@@ -648,7 +657,10 @@ palette.registerPage(() => {
                   <span class="flex-1 truncate text-[13px] font-semibold">{{ t.name }}</span>
                 </div>
                 <div class="flex flex-1 flex-col items-center justify-center gap-2 p-3 text-center text-sm text-muted">
-                  <span :class="tone[placeholder(t).tone]" data-member-words>{{ placeholder(t).text }}</span>
+                  <span v-if="looked(t)" class="inline-flex flex-wrap items-center justify-center gap-x-2" data-member-words :data-phase="looked(t)!.phase">
+                    <StatusMark :status="looked(t)!.view" word />
+                    <span v-if="looked(t)!.after && looked(t)!.phase === 'waiting'">{{ looked(t)!.after }}</span>
+                  </span>
                   <UButton
                     v-if="memberOffer(t.member?.status, run) === 'start'"
                     label="Start now"

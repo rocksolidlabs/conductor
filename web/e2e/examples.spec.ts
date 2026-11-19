@@ -1,6 +1,4 @@
-import type { Locator } from '@playwright/test'
 import { expect, git, logged, member, sidebarLinks, test, type Run } from './fixtures'
-import { inside } from './layout'
 
 // The example crews, run by the stub agent (web/e2e/stub-agent.sh) in place of Claude Code and Codex: the todo app through the
 // workbench, every step of it checked where a person would see it and through the API, then the other three examples launched.
@@ -27,31 +25,8 @@ test('the examples load on the empty Crews page, at the scratch repository', asy
     expect((await api.crew(id)).cwd).toBe(state.repo)
   }
   await expect(page.locator('[data-crew-entry][data-crew-id="example-todo-app-tasks"] [data-crew-item]')).toHaveText('Example: todo app, with tasks')
-  // Its members start by their tasks, never "all at launch".
-  await expect(page.locator('[data-crew-entry][data-crew-id="example-todo-app-tasks"] [data-crew-shape]')).toHaveText('4 · by tasks')
-})
-
-// The Shape column draws each crew as lines (UX1 PR-34): a crew with tasks by its tasks (the list's task shape), any other by its
-// members' start rules, each station hollow, inside its cell.
-test('the Shape column draws the tasks crew as its diamond and the tree crew as its split, each inside its cell', async ({ page }) => {
-  await page.setViewportSize({ width: 1440, height: 900 })
-  await page.goto('/crews')
-  const lines = (drawing: Locator) => drawing.locator('[data-line]').evaluateAll((ls) => ls.map((l) => l.getAttribute('data-line-stations')).sort())
-  const tasks = page.locator('[data-crew-entry][data-crew-id="example-todo-app-tasks"]')
-  const diamond = tasks.locator('[data-crew-shape-drawing]')
-  await expect(diamond.locator('[data-station]')).toHaveCount(5)
-  expect(await lines(diamond)).toEqual(['cli', 'plan core tests review'])
-  await expect(diamond.locator('[data-station="plan"]')).toHaveAttribute('data-junction', 'split')
-  await expect(diamond.locator('[data-station="tests"]')).toHaveAttribute('data-junction', 'merge')
-  await expect(diamond.locator('[data-station-hollow]')).toHaveCount(5)
-  await inside(diamond.locator('[data-station]'), tasks.locator('[data-crew-shape-cell]'))
-  await expect(tasks.locator('[data-crew-shape]')).toHaveText('4 · by tasks')
-  const tree = page.locator('[data-crew-entry][data-crew-id="example-todo-app"]')
-  const split = tree.locator('[data-crew-shape-drawing]')
-  expect(await split.locator('[data-station]').evaluateAll((ss) => ss.map((s) => s.getAttribute('data-station')).sort())).toEqual([...MEMBERS].sort())
-  expect(await lines(split)).toEqual(['cli tester', 'lead core'])
-  await expect(split.locator('[data-station="lead"]')).toHaveAttribute('data-junction', 'split')
-  await inside(split.locator('[data-station]'), tree.locator('[data-crew-shape-cell]'))
+  // Its row says its members and their agent, never how they start (that is on the crew's page, C4).
+  await expect(page.locator('[data-crew-entry][data-crew-id="example-todo-app-tasks"] [data-crew-members]')).toHaveText(/^4 members · /)
 })
 
 test('the todo app with tasks opens in the editor coordinated by tasks, its five tasks as saved and none refused', async ({ page }) => {
@@ -135,15 +110,15 @@ test('the Crews home shows the run as running now, and the crew\'s Runs tab list
   await expect(card).toHaveAttribute('data-state', 'running')
   await expect(card).toContainText('Example: todo app')
   await expect(card).toContainText('run started')
-  // The card draws the run as lines: a station per member, lit by its state (UX1 PR-34).
-  const drawn = card.locator('[data-run-drawing] [data-station]')
-  await expect(drawn).toHaveCount(MEMBERS.length)
-  expect(await drawn.evaluateAll((ss) => ss.map((s) => s.getAttribute('data-station')).sort())).toEqual([...MEMBERS].sort())
-  for (const name of MEMBERS) await expect(card.locator(`[data-run-drawing] [data-station="${name}"]`)).toHaveAttribute('data-status-mark', /\S/)
-  // The saved crew's row says a run is live, and says nothing of running itself.
+  // The card says each member on a line, with its state's word beside its mark (C5).
+  const lines = card.locator('[data-run-member]')
+  await expect(lines).toHaveCount(MEMBERS.length)
+  expect(await lines.evaluateAll((ss) => ss.map((s) => s.getAttribute('data-run-member')).sort())).toEqual([...MEMBERS].sort())
+  for (const name of MEMBERS) await expect(card.locator(`[data-run-member="${name}"] [data-status-mark]`)).toHaveAttribute('data-status-mark', /\S/)
+  // The saved crew's row says its last run, live.
   const entry = page.locator('[data-crew-entry][data-crew-id="example-todo-app"]')
-  await expect(entry.locator('[data-crew-live]')).toHaveText(/1 live run/)
-  await expect(entry.locator('[data-crew-shape]')).toHaveText('4 · a tree')
+  await expect(entry).toHaveAttribute('data-live-runs', '1')
+  await expect(entry.locator('[data-crew-last-state]')).toHaveText(/^(Running|Needs you)$/)
   await page.goto('/crews/example-todo-app')
   await expect(page.locator('[data-live-run-banner]')).toContainText('live run')
   await page.getByRole('tab', { name: /Runs/ }).click()
