@@ -240,6 +240,18 @@ func (h *hostExtHost) ResolveLaunch(context.Context, ext.ResolveRequest) (ext.Re
 	return ext.ResolvedLaunch{}, h.refuse()
 }
 
+// A host keeps no run's repository: a context provider reads one on the
+// server alone.
+func (h *hostExtHost) ReadTree(context.Context, ext.TreeRequest) (ext.Tree, error) {
+	return ext.Tree{}, h.refuse()
+}
+func (h *hostExtHost) ReadBlob(context.Context, ext.BlobRequest) ([]byte, error) {
+	return nil, h.refuse()
+}
+func (h *hostExtHost) Denied(context.Context, ext.DeniedRequest) ([]bool, error) {
+	return nil, h.refuse()
+}
+
 // DataDir is <state>/ext/<name>, made 0700.
 func (h *hostExtHost) DataDir() (string, error) {
 	if h.ctx.Err() != nil {

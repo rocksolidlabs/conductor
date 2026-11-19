@@ -492,9 +492,10 @@ func Router(t T, n *Network, r ext.DecisionRouter, d ext.Decision) {
 }
 
 // Context checks a context provider against the query q: a valid name;
-// Context answering at most ext.MaxContextBlocks blocks, each valid, from
-// Goroutines goroutines at once too; NoteTouch returning; and article 8
-// (Network).
+// Context answering at most ext.MaxContextBlocks blocks, each valid (a
+// pack mark among it), from Goroutines goroutines at once too; NoteTouch
+// returning; NoteCommit, when it is an ext.CommitNoter, returning within
+// ext.DeliveryWait with the network blocked; and article 8 (Network).
 func Context(t T, n *Network, p ext.ContextProvider, q ext.ContextQuery) {
 	t.Helper()
 	c, ok := begin(t, n, "Context", p)
@@ -536,14 +537,41 @@ func Context(t T, n *Network, p ext.ContextProvider, q ext.ContextQuery) {
 			return struct{}{}
 		})
 	}
+	noter, notes := p.(ext.CommitNoter)
+	note := sampleCommitNote(q)
+	noteCommit := func(ph phase) {
+		if notes {
+			run(c, "NoteCommit", ext.DeliveryWait, ph, func(ctx context.Context) struct{} {
+				noter.NoteCommit(ctx, note)
+				return struct{}{}
+			})
+		}
+	}
 	blocks(open)
 	together(func() { blocks(open) })
 	c.phases(func(ph phase) {
 		noteTouch(ph)
+		noteCommit(ph)
 		if ph != open {
 			blocks(ph)
 		}
 	})
+}
+
+// sampleCommitNote is a note of q's run's base (its start when it names
+// no base), a valid one whatever q holds.
+func sampleCommitNote(q ext.ContextQuery) ext.CommitNote {
+	n := ext.CommitNote{Run: q.Run, Kind: ext.CommitBase, Commit: q.Base, At: time.Now().UTC()}
+	if n.Commit == "" {
+		n.Commit = q.Start
+	}
+	if !ext.ValidRunID(n.Run) {
+		n.Run = "exttest-0a0b0c0d"
+	}
+	if n.Valid() != nil {
+		n.Commit = strings.Repeat("0a", 20)
+	}
+	return n
 }
 
 // Sink checks a notification sink: a valid name; Events stable (the same

@@ -110,6 +110,29 @@ type Host interface {
 	// one on a host with Where RunsOnHost: what the caller makes of either
 	// is its own.
 	ResolveLaunch(ctx context.Context, r ResolveRequest) (ResolvedLaunch, error)
+	// ReadTree lists the committed tree of r.Commit in the repository of
+	// the run r.Run, recursively, files, links and submodule entries, by
+	// full path, a path the server's deny list refuses left out (counted
+	// in Denied); with Roots, the history's root commits too. It stops at
+	// MaxTreeEntries entries or MaxTreeBytes of git's listing (Truncated).
+	// Only the Host of a provider in the context slot reads a repository:
+	// every other Host, Brakeman's desk's and conductor host's answer
+	// ErrUnsupported. A run the server does not hold, a repository not
+	// readable here now and a commit the repository does not hold answer
+	// ErrNotFound; a request TreeRequest.Valid refuses, ErrRefused with
+	// the words why. Bounded by TreeWait and by the try's life.
+	ReadTree(ctx context.Context, r TreeRequest) (Tree, error)
+	// ReadBlob answers the bytes of the file r.Path holds at r.Commit, at
+	// most MaxBlob of them (a larger one is refused "too large" before it
+	// is read); a link's target as git keeps it, never followed. A path
+	// the deny list refuses, a submodule entry and a request
+	// BlobRequest.Valid refuses answer ErrRefused; a path the commit has
+	// no file at, ErrNotFound; otherwise as ReadTree.
+	ReadBlob(ctx context.Context, r BlobRequest) ([]byte, error)
+	// Denied answers, for each path, whether the server's deny list
+	// refuses it now, under the run's repository: no object and no file is
+	// read. Otherwise as ReadTree.
+	Denied(ctx context.Context, r DeniedRequest) ([]bool, error)
 }
 
 // TurnLaunch is a Brakeman turn to launch: the catalog agent, its model

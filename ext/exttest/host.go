@@ -58,6 +58,9 @@ type FakeHost struct {
 	onRunByOp func(string) (ext.RunStatus, error)
 	onStop    func(ext.StopRequest) error
 	onResolve func(ext.ResolveRequest) (ext.ResolvedLaunch, error)
+
+	// The repositories a context provider reads (host_tree.go).
+	trees fakeTrees
 }
 
 // SetHostToken has HostToken answer t ("" by default).

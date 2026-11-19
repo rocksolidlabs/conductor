@@ -255,6 +255,9 @@ type Server struct {
 	// file read may reach, even inside a session's working directory (see
 	// fileDeny). It is safe to call from many goroutines.
 	fileDeny func() []string
+	// treeRoots keeps the root commits a context provider's reads found
+	// (exttree.go).
+	treeRoots rootsCache
 	// lookups says, for 30 s at a time, whether the programs of the catalog's
 	// agents resolve on this server (see lookupCache); probes, for 10 min,
 	// what their version output says they are (see probeCache).
