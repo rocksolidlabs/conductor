@@ -149,7 +149,7 @@ func TestMigrationToOpenSendsKeepsEveryRow(t *testing.T) {
 	}
 	before, cols := map[string][]string{}, map[string][]string{}
 	for _, table := range tables {
-		if slices.Contains(version6Tables, table) || table == "tickets_fts" || table == "schema_version" {
+		if slices.Contains(version6Tables, table) || slices.Contains(version8Tables, table) || table == "tickets_fts" || table == "schema_version" {
 			continue
 		}
 		cols[table] = columnsOf(t, raw, table)

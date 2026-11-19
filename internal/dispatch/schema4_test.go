@@ -58,7 +58,8 @@ func TestMigrationThreeToFour(t *testing.T) {
 	before := map[string][]string{}
 	cols := map[string][]string{}
 	for _, table := range tables {
-		if slices.Contains(version4Tables, table) || slices.Contains(version5Tables, table) || slices.Contains(version6Tables, table) || table == "tickets_fts" ||
+		if slices.Contains(version4Tables, table) || slices.Contains(version5Tables, table) || slices.Contains(version6Tables, table) || slices.Contains(version8Tables, table) ||
+			table == "tickets_fts" ||
 			table == "schema_version" {
 			continue
 		}

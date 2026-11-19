@@ -243,6 +243,19 @@ func (s *Store) proposePlan(ctx context.Context, op Op, key string, req PlanRequ
 			PlanProposed, stamp(p.CreatedAt), p.CreatedBy, p.Fingerprint); err != nil {
 			return err
 		}
+		// Its view (planview.go), made and kept in the transaction that
+		// makes it, so no revision is ever without one; a view past its
+		// bound refuses the revision.
+		view, ok, err := makePlanView(encoded, p.Digest, attachmentName(t.ctx, t.tx))
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return refuse(RefusalBound, "the revision's view, what of it another machine would be given, is past the %s a revision holds", sizeWords(MaxPlanBody))
+		}
+		if err := keepPlanView(t.ctx, t.tx, p.ID, p.Digest, view); err != nil {
+			return err
+		}
 		t.created(p.ID, "")
 		value, err := encodeValue(p)
 		if err != nil {
