@@ -22,7 +22,8 @@ func isOriginEntry(name string) bool {
 }
 
 // masterEntries is every schema entry of l but those of version 13 and
-// later (version 14's, isOutboxEntry), as type, name and text.
+// later (version 14's, isOutboxEntry, and 15's, isContextEntry), as type,
+// name and text.
 func masterEntries(t *testing.T, l *Ledger) []string {
 	t.Helper()
 	rows, err := l.db.Query("SELECT type, name, COALESCE(sql, '') FROM sqlite_master ORDER BY type, name")
@@ -36,7 +37,7 @@ func masterEntries(t *testing.T, l *Ledger) []string {
 		if err := rows.Scan(&typ, &name, &text); err != nil {
 			t.Fatal(err)
 		}
-		if !isOriginEntry(name) && !isOutboxEntry(name) {
+		if !isOriginEntry(name) && !isOutboxEntry(name) && !isContextEntry(name) {
 			out = append(out, typ+" "+name+" "+text)
 		}
 	}
@@ -130,7 +131,7 @@ func TestRunOriginMigration(t *testing.T) {
 	if ro, why := again.ReadOnly(); ro {
 		t.Fatalf("read-only after the migration: %s", why)
 	}
-	if v := dbVersion(t, again); v != Version || Version != 14 {
+	if v := dbVersion(t, again); v != Version || Version != 15 {
 		t.Fatalf("version %d after the migration, Version %d", v, Version)
 	}
 	if got := originSQL(t, again, "run_origin"); got != freshTable {
