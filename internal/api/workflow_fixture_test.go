@@ -419,6 +419,7 @@ func (w *workflow) routedByTheRouter(t *testing.T) {
 		rs, _ := d["responses"].([]any)
 		return slices.Contains(historyOf(d), ledger.HistoryRouted+" router:switchman") && len(rs) > 0
 	})
+	w.assertTruthful(t, "the router's answer to "+w.did)
 	rec := w.record(t, w.did)
 	routed := 0
 	for _, h := range rec.History {
