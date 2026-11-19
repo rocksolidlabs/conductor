@@ -21,8 +21,8 @@ func isOriginEntry(name string) bool {
 	return name == "run_origin" || name == "run_origin_op" || name == "sqlite_autoindex_run_origin_1"
 }
 
-// masterEntries is every schema entry of l but version 13's and the
-// version's own row, as type, name and text.
+// masterEntries is every schema entry of l but those of version 13 and
+// later (version 14's, isOutboxEntry), as type, name and text.
 func masterEntries(t *testing.T, l *Ledger) []string {
 	t.Helper()
 	rows, err := l.db.Query("SELECT type, name, COALESCE(sql, '') FROM sqlite_master ORDER BY type, name")
@@ -36,7 +36,7 @@ func masterEntries(t *testing.T, l *Ledger) []string {
 		if err := rows.Scan(&typ, &name, &text); err != nil {
 			t.Fatal(err)
 		}
-		if !isOriginEntry(name) {
+		if !isOriginEntry(name) && !isOutboxEntry(name) {
 			out = append(out, typ+" "+name+" "+text)
 		}
 	}
@@ -61,8 +61,9 @@ func putOrigin(l *Ledger, run, provider, opID string) error {
 }
 
 // A version 12 database holding a run, its tasks, an attempt, a decision
-// and a preview is brought to version 13 as it opens: run_origin and its
-// index are added with a new database's definitions and hold no row, and
+// and a preview is brought to version 13, and on to Version, as it opens:
+// run_origin and its index are added with a new database's definitions
+// and hold no row, and
 // every other table and index is as it was, each table's rows too. A
 // migration that fails (a table of that name there already) leaves it at
 // version 12, read-only, the why naming the table, and the next open, the
@@ -129,7 +130,7 @@ func TestRunOriginMigration(t *testing.T) {
 	if ro, why := again.ReadOnly(); ro {
 		t.Fatalf("read-only after the migration: %s", why)
 	}
-	if v := dbVersion(t, again); v != Version || Version != 13 {
+	if v := dbVersion(t, again); v != Version || Version != 14 {
 		t.Fatalf("version %d after the migration, Version %d", v, Version)
 	}
 	if got := originSQL(t, again, "run_origin"); got != freshTable {
