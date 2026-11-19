@@ -236,6 +236,8 @@ var rowReplyParts = []string{
 	// PR-5: the newest publications and the count of older ones that need
 	// a person.
 	"publications", "publicationsNeedYou",
+	// Sync (OS-1a): the other tickets linked to the same item.
+	"alsoLinked",
 }
 
 // replyPaths is every JSON key path of the type as encoding/json writes
@@ -436,6 +438,20 @@ func TestTicketReplyBound(t *testing.T) {
 		t.Fatal(err)
 	}
 	worstPublications(t, s, key, identity)
+	// alsoLinked at its worst (sync, OS-1a): MaxAlsoLinked other tickets
+	// of a shared project of the longest key, each numbered past every
+	// provisional window, linked to the same item.
+	newProject(t, s, "ZZZZZZ")
+	if _, err := s.db.Exec("UPDATE projects SET shared = 'w1', share_state = 'shared' WHERE key = 'ZZZZZZ'"); err != nil {
+		t.Fatal(err)
+	}
+	for i := range MaxAlsoLinked {
+		n := int64(9_000_000_000 + i)
+		if _, err := s.db.Exec(`INSERT INTO tickets (id, project_id, number, key, title, created_at, updated_at, external_id)
+			SELECT ?, id, ?, ?, 'other', '', '', ? FROM projects WHERE key = 'ZZZZZZ'`, newID(), n, TicketKey("ZZZZZZ", n), identity); err != nil {
+			t.Fatal(err)
+		}
+	}
 	v, err := s.Ticket(ctx, key)
 	if err != nil {
 		t.Fatal(err)

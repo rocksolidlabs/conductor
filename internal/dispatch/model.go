@@ -1134,7 +1134,16 @@ type PlanStale struct {
 // the bytes it is kept as.
 type PlanView struct {
 	PlanSummary
-	Body json.RawMessage `json:"body"`
+	// Body is the revision's body when this machine holds it; a revision
+	// made on another machine is held as its view alone (BodyHere false,
+	// View the view, planview.go), and Origin and ApprovedOrigin name the
+	// machines that made it and last approved it, "" for this one
+	// (docs/plans/sync-seams.md, OS-1a).
+	Body           json.RawMessage `json:"body,omitempty"`
+	BodyHere       bool            `json:"bodyHere"`
+	View           json.RawMessage `json:"view,omitempty"`
+	Origin         string          `json:"origin,omitempty"`
+	ApprovedOrigin string          `json:"approvedOrigin,omitempty"`
 }
 
 // textKind is what a text field may hold beside its bound.

@@ -1,4 +1,5 @@
 import { DispatchOrder, through, throughOrAbsent, type AbsentOptions } from '~/utils/dispatchOrder'
+import type { PlanViewDoc } from '~/utils/planView'
 import { ApiError, type ApiErrorBody } from './useApi'
 import type { CrewCheck, CrewManifest, CrewPerson, Finding, RunAttempt, RunInfo, RunStep, RunTask, RunTicket } from './useSessions'
 import type { CrewCompare } from '~/utils/protocol'
@@ -552,6 +553,14 @@ export interface PlanSummary {
   expectedChecks?: number
   /** What a comparison's revision starts (CP1): computed from its body at each read, never stored; absent for a revision of no comparison. */
   compare?: PlanCompare
+  /**
+   * False for a revision made on another machine (sync's seams, OS-1a): held here as its view alone, its crew and agents on that machine,
+   * so it is drawn from its view and never launched here. `origin` and `approvedOrigin` name the machines that made it and last approved
+   * it, absent for this one.
+   */
+  bodyHere?: boolean
+  origin?: string
+  approvedOrigin?: string
 }
 
 /**
@@ -634,7 +643,7 @@ export interface PlanBody {
 }
 
 /** A plan revision read whole (GET /api/dispatch/plans/{id}): its summary and its body. */
-export type PlanRead = PlanSummary & { body: PlanBody }
+export type PlanRead = PlanSummary & { body?: PlanBody; view?: PlanViewDoc }
 
 /** A reference as a proposal names it: the server resolves it at the base. */
 export interface NewPlanReference {

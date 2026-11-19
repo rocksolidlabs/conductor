@@ -725,6 +725,9 @@ func (s *Server) actTargetState(ctx context.Context, ds *dispatch.Store, o *obse
 		if err != nil {
 			return newAPIError(http.StatusInternalServerError, "store_failed", "the plan revision could not be read")
 		}
+		if !v.BodyHere {
+			return newAPIError(http.StatusConflict, dispatch.RefusalBodyElsewhere, fmt.Sprintf("revision %d of %s was made on another machine: it is launched there", p.N, key))
+		}
 		var pb struct {
 			Crew struct {
 				Cwd string `json:"cwd"`

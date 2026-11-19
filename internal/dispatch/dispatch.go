@@ -340,6 +340,10 @@ func openWith(dir string, configure func(*Store)) (*Store, error) {
 	// goroutine's, or the next open's) takes what it left: nothing is lost
 	// but space, so Open does not fail for it.
 	s.prune(ctx, now)
+	// Rows from other machines held for what had not arrived: those that
+	// became applicable are applied now (a store that joined nothing holds
+	// none, and one that cannot apply them keeps them for the next batch).
+	s.ApplyRemote(ctx, nil, nil, nil)
 	s.startPruning()
 	return s, nil
 }
@@ -512,12 +516,15 @@ func (s *Store) prepare(ctx context.Context, db *sql.DB) error {
 	case err == nil && version > s.writes:
 		return fmt.Errorf("dispatch: the database is version %d, written by a newer Conductor; this one writes version %d", version, s.writes)
 	case err == nil && version == Version:
-		// Nothing to write: a write rolled back proves the connection
-		// writes at all (writable).
+		// A write proves the connection writes at all (writable); then a
+		// store restored from an export retires what its inherited tag
+		// was handed, before Open returns (retireIfRestored).
 		if err := writable(ctx, tx); err != nil {
 			return fmt.Errorf("dispatch: %s cannot be written: %w", s.path, err)
 		}
-		return nil
+		if err := retireIfRestored(ctx, tx); err != nil {
+			return fmt.Errorf("dispatch: retiring a restored store's allocations: %w", err)
+		}
 	case err == nil:
 		if err := migrate(ctx, tx, version); err != nil {
 			return err

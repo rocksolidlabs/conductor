@@ -82,7 +82,8 @@ func (op Op) check() error {
 	switch {
 	case !OpIDPattern.MatchString(op.ID):
 		return ErrBadOpID
-	case checkField("op.actor", "the actor", op.Actor) != nil, op.Actor == ActorServer && !op.store:
+	case checkField("op.actor", "the actor", op.Actor) != nil, op.Actor == ActorServer && !op.store, strings.HasPrefix(op.Actor, "@"):
+		// An actor beginning with @ is another replica's, qualified (Canon).
 		return ErrBadActor
 	case checkField("op.by", "by", op.author()) != nil:
 		return ErrBadBy
@@ -122,6 +123,13 @@ const (
 	// revision whose handed-over comment is edited or gone, a launch of
 	// one whose ticket's intent changed since it was approved.
 	RefusalStalePlan = "stale_plan"
+	// RefusalBodyElsewhere is a launch of a revision this store holds only
+	// as its view (made on another machine), and RefusalApprovedElsewhere
+	// one whose approval was last given on another machine: a revision is
+	// launched only where it was made, on that machine's own approval
+	// (docs/plans/sync-seams.md, OS-1a).
+	RefusalBodyElsewhere     = "body_elsewhere"
+	RefusalApprovedElsewhere = "approved_elsewhere"
 	// RefusalExternalLinked is an outside item another live ticket has as
 	// its linked issue already, the receipt's Key naming that ticket;
 	// RefusalExternalOwned an edit of a field the linked item's system
@@ -281,6 +289,24 @@ type ChangeRow struct {
 	By        string    `json:"by,omitempty"`
 	OpID      string    `json:"opId"`
 	N         int       `json:"n"`
+	// Origin is the tag of the replica that wrote the row (replica.go),
+	// "" for a row written before this store joined a workspace; a row
+	// from another replica has its actor qualified by it (Canon).
+	Origin string `json:"origin,omitempty"`
+	// RecoveredBy is the tag of the replica that sent another origin's row
+	// in a recovery, "" for a row its origin sent; Remote marks a row
+	// applied from another replica.
+	RecoveredBy string `json:"recoveredBy,omitempty"`
+	Remote      bool   `json:"remote,omitempty"`
+	// Output and PriorOutput are the copied-output verdicts of the value
+	// and of a scalar's prior (OS-1c), "" for a row written before the
+	// check existed.
+	Output      string `json:"output,omitempty"`
+	PriorOutput string `json:"priorOutput,omitempty"`
+	// ViewDigest names a plan's create's view (planview.go), filled where
+	// the rows are handed out (ChangesFrom), never stored; the entities a
+	// row needs are Refs of it.
+	ViewDigest string `json:"viewDigest,omitempty"`
 }
 
 // revTables names the table of each entity with a rev column, and
@@ -342,6 +368,9 @@ type tx struct {
 	// change, in its transaction before its receipt: what a refusal keeps
 	// beside the receipt (an upload's lease, dropped with it).
 	onRefusal func() error
+	// origin is the store's active replica tag, every local row's origin;
+	// "" before the store has joined a workspace.
+	origin string
 }
 
 // touched is an entity a change row named, with the ticket and the
@@ -383,9 +412,13 @@ func (t *tx) record(c ChangeRow) error {
 	if len(c.Value) > MaxChangeValue || len(c.Prior) > MaxChangeValue {
 		return fmt.Errorf("dispatch: a change row of %s is more than %d bytes", c.Field, MaxChangeValue)
 	}
-	res, err := t.tx.ExecContext(t.ctx, `INSERT INTO changes (entity, entity_id, ticket_id, project_id, field, op, value, prior, at, actor, by, op_id, n)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		c.Entity, c.EntityID, c.TicketID, c.ProjectID, c.Field, c.Op, c.Value, c.Prior, stamp(t.now), t.op.Actor, t.op.By, t.op.ID, t.n)
+	at, err := t.stampFor(c)
+	if err != nil {
+		return err
+	}
+	res, err := t.tx.ExecContext(t.ctx, `INSERT INTO changes (entity, entity_id, ticket_id, project_id, field, op, value, prior, at, actor, by, op_id, n, origin)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		c.Entity, c.EntityID, c.TicketID, c.ProjectID, c.Field, c.Op, c.Value, c.Prior, stamp(at), t.op.Actor, t.op.By, t.op.ID, t.n, t.origin)
 	if err != nil {
 		return err
 	}
@@ -398,6 +431,31 @@ func (t *tx) record(c ChangeRow) error {
 		t.searched = append(t.searched, e)
 	}
 	return t.touch(c.Entity, c.EntityID, c.TicketID, c.ProjectID)
+}
+
+// stampFor is the time a row is written at: the transaction's, and on a
+// store that has joined a workspace the later of it and one microsecond
+// past the newest row the log holds for the row's field (a scalar's
+// entity and field; a set's or a log's entity), so a person's edit made
+// after a later-dated edit arrived from a machine whose clock runs ahead
+// is the newest in the one order on every machine, as it was on the
+// screen (docs/plans/sync-seams.md, Local writes by the same rules).
+func (t *tx) stampFor(c ChangeRow) (time.Time, error) {
+	if t.origin == "" || c.Op == OpCreate {
+		return t.now, nil
+	}
+	var newest string
+	if err := t.tx.QueryRowContext(t.ctx, "SELECT COALESCE(MAX(at), '') FROM changes WHERE entity = ? AND entity_id = ? AND field = ?",
+		c.Entity, c.EntityID, c.Field).Scan(&newest); err != nil {
+		return time.Time{}, err
+	}
+	if newest == "" {
+		return t.now, nil
+	}
+	if past := unstamp(newest).Add(time.Microsecond); past.After(t.now) {
+		return past, nil
+	}
+	return t.now, nil
 }
 
 // searchedFields is a ticket's fields its own search entry holds beside
@@ -641,7 +699,12 @@ func (s *Store) apply(ctx context.Context, op Op, intent, fp string, change func
 	if s.clock != nil {
 		now = s.clock()
 	}
-	t := &tx{ctx: ctx, tx: dbtx, now: now.UTC(), op: op, intent: intent, fp: fp, runExists: s.runExists, sight: s.sight, runSuffix: s.runSuffix, systems: s.systems}
+	r, err := activeReplica(ctx, dbtx)
+	if err != nil {
+		return Receipt{}, nil, cancelledAs(ctx, err)
+	}
+	t := &tx{ctx: ctx, tx: dbtx, now: now.UTC(), op: op, intent: intent, fp: fp, runExists: s.runExists, sight: s.sight, runSuffix: s.runSuffix, systems: s.systems,
+		origin: r.tag}
 	// The change runs under a savepoint: a refusal undoes it and keeps the
 	// transaction, and with it the write lock, for its receipt, so no other
 	// writer (a second store on the file) runs the same operation between

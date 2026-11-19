@@ -77,19 +77,56 @@ func ParseKey(key string) (project string, n int64, ok bool) {
 var errNoProject = errors.New("dispatch: no such project")
 
 // allocateNumber allocates the next number of the project inside t's
-// transaction: next_number read and bumped under the write lock, so
-// numbers are allocated in order and never twice, whichever process
-// creates. number_from and number_to, reserved for replication, are 0:
-// the whole range is this store's (docs/plans/dispatch.md, the allocation
-// class of the field rules).
+// transaction, under the write lock, so numbers are never allocated
+// twice whichever process creates. A project this store has not shared
+// takes next_number, in order, as before sync (docs/plans/dispatch.md,
+// the allocation class of the field rules). A shared one
+// (docs/plans/sync-seams.md, OS-1a) takes the next number of its current
+// block when the block was handed to the active tag (block_tag), then the
+// block asked ahead; with none left, the replica's overflow range's next;
+// with none, the provisional window's next, a window drawn at random
+// above ProvisionalFloor when the store retired (or now, when it has
+// none), so a create never waits.
 func allocateNumber(t *tx, projectID string) (int64, error) {
-	var n int64
-	err := t.tx.QueryRowContext(t.ctx, "UPDATE projects SET next_number = next_number + 1 WHERE id = ? RETURNING next_number - 1", projectID).Scan(&n)
-	if err != nil {
-		if isNoRows(err) {
-			return 0, errNoProject
-		}
+	var state, blockTag string
+	var next, from, to, nextFrom, nextTo, overNext, overTo, provNext, provTo int64
+	err := t.tx.QueryRowContext(t.ctx, `SELECT share_state, block_tag, next_number, number_from, number_to, next_from, next_to,
+		overflow_next, overflow_to, provisional_next, provisional_to FROM projects WHERE id = ?`, projectID).
+		Scan(&state, &blockTag, &next, &from, &to, &nextFrom, &nextTo, &overNext, &overTo, &provNext, &provTo)
+	switch {
+	case isNoRows(err):
+		return 0, errNoProject
+	case err != nil:
 		return 0, err
 	}
-	return n, nil
+	take := func(stmt string, n int64) (int64, error) {
+		_, err := t.tx.ExecContext(t.ctx, stmt, projectID)
+		return n, err
+	}
+	if state != "shared" && state != "dormant" {
+		return take("UPDATE projects SET next_number = next_number + 1 WHERE id = ?", next)
+	}
+	if t.origin != "" && blockTag == t.origin {
+		if to > 0 && next >= from && next <= to {
+			return take("UPDATE projects SET next_number = next_number + 1 WHERE id = ?", next)
+		}
+		if nextTo > 0 {
+			return take("UPDATE projects SET number_from = next_from, number_to = next_to, next_number = next_from + 1, next_from = 0, next_to = 0 WHERE id = ?", nextFrom)
+		}
+	}
+	if overTo > 0 && overNext <= overTo {
+		return take("UPDATE projects SET overflow_next = overflow_next + 1 WHERE id = ?", overNext)
+	}
+	if provTo == 0 || provNext > provTo {
+		start, err := provisionalStart()
+		if err != nil {
+			return 0, err
+		}
+		if _, err := t.tx.ExecContext(t.ctx, "UPDATE projects SET provisional_from = ?, provisional_to = ?, provisional_next = ? WHERE id = ?",
+			start, start+ProvisionalSize-1, start, projectID); err != nil {
+			return 0, err
+		}
+		provNext = start
+	}
+	return take("UPDATE projects SET provisional_next = provisional_next + 1 WHERE id = ?", provNext)
 }

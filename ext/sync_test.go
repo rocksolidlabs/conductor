@@ -61,3 +61,42 @@ func TestAKeptRequestIsLeftOutOfThePart(t *testing.T) {
 		}
 	}
 }
+
+// A row from another replica within its bounds is valid; each bound
+// broken is refused.
+func TestDispatchChangeValid(t *testing.T) {
+	good := DispatchChange{Entity: "ticket", EntityID: "0123456789abcdef", Field: "title", Op: "set", Value: "Title", Actor: "admin", By: "Ada",
+		OpID: "op-1", N: 0, Origin: "a1", Refs: []string{"ticket:0123456789abcdef", "label:fedcba9876543210"}}
+	if err := good.Valid(); err != nil {
+		t.Fatalf("a good row: %v", err)
+	}
+	for name, mutate := range map[string]func(*DispatchChange){
+		"no entity":        func(c *DispatchChange) { c.Entity = "" },
+		"a bad op id":      func(c *DispatchChange) { c.OpID = "op 1" },
+		"no origin":        func(c *DispatchChange) { c.Origin = "" },
+		"an origin's case": func(c *DispatchChange) { c.Origin = "A1" },
+		"a recovery's tag": func(c *DispatchChange) { c.RecoveredBy = "too-long-tag" },
+		"a long actor":     func(c *DispatchChange) { c.Actor = strings.Repeat("a", MaxDispatchActor+1) },
+		"a qualified actor": func(c *DispatchChange) {
+			c.Actor = "@a1/admin"
+		},
+		"a long by":          func(c *DispatchChange) { c.By = strings.Repeat("é", MaxDispatchBy+1) },
+		"a long value":       func(c *DispatchChange) { c.Value = strings.Repeat("v", MaxDispatchValue+1) },
+		"a long prior":       func(c *DispatchChange) { c.Prior = strings.Repeat("v", MaxDispatchValue+1) },
+		"too many refs":      func(c *DispatchChange) { c.Refs = []string{"a:1", "a:2", "a:3", "a:4"} },
+		"a ref of no kind":   func(c *DispatchChange) { c.Refs = []string{"0123"} },
+		"a control in an id": func(c *DispatchChange) { c.EntityID = "abc\x07" },
+		"a bad view digest":  func(c *DispatchChange) { c.ViewDigest = "abc" },
+		"a negative place":   func(c *DispatchChange) { c.N = -1 },
+	} {
+		c := good
+		c.Refs = append([]string(nil), good.Refs...)
+		mutate(&c)
+		if err := c.Valid(); !errors.Is(err, ErrRefused) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	if !ValidTag("a1") || ValidTag("") || ValidTag("abcdefghi") || ValidTag("a-1") {
+		t.Fatal("ValidTag")
+	}
+}

@@ -763,7 +763,15 @@ func (s *Store) ApprovePlan(ctx context.Context, op Op, id string, ticketRev int
 			return refuse(RefusalStalePlan, "%s: revise it", words)
 		}
 		intent := IntentDigest(tk)
-		if p.State == PlanApproved && p.ApprovedIntent == intent {
+		o, err := planOrigins(t.ctx, t.tx, p.ID)
+		if err != nil {
+			return err
+		}
+		// An approval given on another machine is approved again here by
+		// this machine's operator, every field's row this origin's, so a
+		// launch here rests on this machine's own approval.
+		again := p.State == PlanApproved && o.approvedRemote
+		if p.State == PlanApproved && p.ApprovedIntent == intent && !again {
 			return refuse(RefusalInvalid, "revision %d is approved already", p.N)
 		}
 		if err := checkField("plan.approved_note", "the note", note); err != nil {
@@ -777,6 +785,11 @@ func (s *Store) ApprovePlan(ctx context.Context, op Op, id string, ticketRev int
 		}
 		after := []fieldValue{{"approved_at", stamp(t.now)}, {"approved_by", t.op.author()}, {"approved_note", note},
 			{"approved_rev", fmt.Sprint(tk.Rev)}, {"approved_intent", intent}, {"state", PlanApproved}}
+		if again {
+			// Every field written again, its prior none, so each field's last
+			// row is this machine's.
+			before = nil
+		}
 		if err := t.setScalars("plans", base, before, after); err != nil {
 			return err
 		}
@@ -886,6 +899,19 @@ func planBodyHanded(ctx context.Context, q queryer, id string) (planHanded, erro
 	var body string
 	if err := q.QueryRowContext(ctx, "SELECT body FROM plans WHERE id = ?", id).Scan(&body); err != nil {
 		return planHanded{}, err
+	}
+	if body == "" && schemaOf(q) >= syncSchema {
+		// A revision held as its view hands over the comments the view
+		// names; its source stays on the machine that made it.
+		view, err := planViewOf(ctx, q, id)
+		if err != nil {
+			return planHanded{}, err
+		}
+		h := planHanded{}
+		for _, c := range view.Comments {
+			h.Comments = append(h.Comments, PlanComment(c))
+		}
+		return h, nil
 	}
 	var h planHanded
 	if err := json.Unmarshal([]byte(body), &h); err != nil {
@@ -1098,10 +1124,39 @@ func (s *Store) Plan(ctx context.Context, id string) (PlanView, error) {
 		if err := q.QueryRowContext(ctx, "SELECT body FROM plans WHERE id = ?", id).Scan(&body); err != nil {
 			return err
 		}
-		out = PlanView{PlanSummary: p, Body: json.RawMessage(body)}
-		return nil
+		out = PlanView{PlanSummary: p, BodyHere: true}
+		if body != "" {
+			out.Body = json.RawMessage(body)
+		}
+		o, err := planOrigins(ctx, q, id)
+		if err != nil {
+			return err
+		}
+		if !o.bodyHere {
+			out.BodyHere = false
+			var view []byte
+			if err := q.QueryRowContext(ctx, "SELECT v.view FROM plans p JOIN plan_views v ON v.view_digest = p.view_digest WHERE p.id = ?", id).Scan(&view); err != nil {
+				return err
+			}
+			out.View = json.RawMessage(view)
+		}
+		if out.Origin, err = machineName(ctx, q, o.made); err != nil {
+			return err
+		}
+		out.ApprovedOrigin, err = machineName(ctx, q, o.approvedBy)
+		return err
 	})
 	return answer(out, err)
+}
+
+// machineName is the name of another machine by its tag as a read gives
+// it: its device's name, else its tag; "" for this machine (no tag).
+func machineName(ctx context.Context, q queryer, tag string) (string, error) {
+	name, err := deviceName(ctx, q, tag)
+	if name == "" {
+		name = tag
+	}
+	return name, err
 }
 
 // planColumns is a revision's row as scanPlan reads it, its body not

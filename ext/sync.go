@@ -8,7 +8,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
+	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 // Sync's seams (docs/plans/sync-seams.md, Program item CS1): the types a
@@ -208,11 +212,52 @@ type DispatchChange struct {
 	PriorOutputLike bool      `json:"priorOutputLike,omitempty"`
 }
 
-// Valid checks every bound of a row, its op id's shape, an origin that is
-// a valid tag, By's length, Refs' bound and shape, and no control
-// character where Dispatch's fields refuse one. Until OS-1a it refuses
-// every row.
-func (c DispatchChange) Valid() error { return errNotBuilt }
+// Valid checks every bound of a row: its entity, id, op and identity
+// given; its op id of Dispatch's shape; an origin that is a valid tag
+// (and a recovery's the same); its raw actor of 1 to MaxDispatchActor
+// bytes, never qualified (@); By of at most MaxDispatchBy characters;
+// value and prior of at most MaxDispatchValue bytes; Refs of at most
+// MaxDispatchRefs, each kind:id; a view digest of 64 lower-case hex or
+// none; and no control character in any identifier.
+func (c DispatchChange) Valid() error {
+	switch {
+	case c.Entity == "" || c.EntityID == "" || c.Op == "" || c.N < 0:
+		return fmt.Errorf("%w: a row names its entity, its id, its op and its place", ErrRefused)
+	case !dispatchOpID.MatchString(c.OpID):
+		return fmt.Errorf("%w: the op id %q", ErrRefused, c.OpID)
+	case !ValidTag(c.Origin), c.RecoveredBy != "" && !ValidTag(c.RecoveredBy):
+		return fmt.Errorf("%w: a row's origin is a replica's tag", ErrRefused)
+	case c.Actor == "" || len(c.Actor) > MaxDispatchActor || c.Actor[0] == '@':
+		return fmt.Errorf("%w: the actor %q", ErrRefused, c.Actor)
+	case utf8.RuneCountInString(c.By) > MaxDispatchBy:
+		return fmt.Errorf("%w: by is more than %d characters", ErrRefused, MaxDispatchBy)
+	case len(c.Value) > MaxDispatchValue || len(c.Prior) > MaxDispatchValue:
+		return fmt.Errorf("%w: a row's value or prior is more than %d bytes", ErrRefused, MaxDispatchValue)
+	case len(c.Refs) > MaxDispatchRefs:
+		return fmt.Errorf("%w: more than %d references", ErrRefused, MaxDispatchRefs)
+	case c.ViewDigest != "" && !sha256Hex.MatchString(c.ViewDigest):
+		return fmt.Errorf("%w: the view digest %q", ErrRefused, c.ViewDigest)
+	}
+	for _, f := range []string{c.Entity, c.EntityID, c.TicketID, c.ProjectID, c.Field, c.Op, c.Actor, c.By} {
+		if !utf8.ValidString(f) || strings.ContainsFunc(f, unicode.IsControl) || len(f) > MaxDispatchID && f != c.By {
+			return fmt.Errorf("%w: an identifier of a row", ErrRefused)
+		}
+	}
+	for _, ref := range c.Refs {
+		if !dispatchRef.MatchString(ref) {
+			return fmt.Errorf("%w: the reference %q", ErrRefused, ref)
+		}
+	}
+	return nil
+}
+
+// The shapes a row's parts take: Dispatch's op id, a reference kind:id,
+// and a SHA-256 in hex.
+var (
+	dispatchOpID = regexp.MustCompile(`^[A-Za-z0-9._~-]{1,32}$`)
+	dispatchRef  = regexp.MustCompile(`^[a-z_]{1,16}:[^\x00-\x1f\x7f]{1,64}$`)
+	sha256Hex    = regexp.MustCompile(`^[0-9a-f]{64}$`)
+)
 
 // DispatchApplied is what DispatchApply did: how many rows it applied, the
 // held rows' words (at most MaxHeldWords, each at most MaxHeldWord bytes)
@@ -271,6 +316,8 @@ type DispatchWatcher interface {
 const (
 	MaxDispatchValue    = 64 << 10 // a row's value, Dispatch's own bound
 	MaxDispatchActor    = 60       // dispatch.MaxActor
+	MaxDispatchBy       = 60       // dispatch.MaxByName, in characters
+	MaxDispatchID       = 64       // an entity's id, a field's or an op's name, in bytes
 	MaxTag              = 8        // a replica's tag: 1 to 8 lower-case letters and digits
 	MaxDispatchRefs     = 3        // the most any row needs is two
 	MaxDispatchBatch    = 1000     // rows a batch holds, either way

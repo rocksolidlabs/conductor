@@ -274,3 +274,70 @@ func writePlanViews(ctx context.Context, tx *sql.Tx) error {
 	}
 	return nil
 }
+
+// planOrigin is where a revision stands between machines: whether its
+// body is here, the tag of the replica that made it, and whether the
+// last row of its approval came from another machine.
+type planOrigin struct {
+	bodyHere       bool
+	made           string
+	approvedBy     string
+	approvedRemote bool
+}
+
+// planOrigins reads where the revision with the id stands; a database
+// before version 8 holds every body and every approval here.
+func planOrigins(ctx context.Context, q queryer, id string) (planOrigin, error) {
+	o := planOrigin{bodyHere: true}
+	if schemaOf(q) < syncSchema {
+		return o, nil
+	}
+	var here int
+	if err := q.QueryRowContext(ctx, "SELECT body_here FROM plans WHERE id = ?", id).Scan(&here); err != nil {
+		return o, err
+	}
+	o.bodyHere = here == 1
+	made, err := readChanges(ctx, q, "WHERE entity = ? AND entity_id = ? AND op = ?", EntityPlan, id, OpCreate)
+	if err != nil {
+		return o, err
+	}
+	if len(made) > 0 && made[0].Remote {
+		o.made = made[0].Origin
+	}
+	approvals, err := readChanges(ctx, q, "WHERE entity = ? AND entity_id = ? AND field = 'approved_by' AND op = ?", EntityPlan, id, OpSet)
+	if err != nil {
+		return o, err
+	}
+	if len(approvals) > 0 {
+		Order(approvals)
+		last := approvals[len(approvals)-1]
+		if last.Remote {
+			o.approvedBy, o.approvedRemote = last.Origin, true
+		}
+	}
+	return o, nil
+}
+
+// deviceName is the name of the machine of the tag, as its provider gave
+// it (replica_names), "" for none or for a tag with no name known.
+func deviceName(ctx context.Context, q queryer, tag string) (string, error) {
+	if tag == "" {
+		return "", nil
+	}
+	var name string
+	err := q.QueryRowContext(ctx, "SELECT name FROM replica_names WHERE tag = ?", tag).Scan(&name)
+	if isNoRows(err) {
+		return "", nil
+	}
+	return name, err
+}
+
+// planViewOf reads the revision's view.
+func planViewOf(ctx context.Context, q queryer, id string) (revisionView, error) {
+	var view []byte
+	if err := q.QueryRowContext(ctx, "SELECT v.view FROM plans p JOIN plan_views v ON v.view_digest = p.view_digest WHERE p.id = ?", id).Scan(&view); err != nil {
+		return revisionView{}, err
+	}
+	var v revisionView
+	return v, json.Unmarshal(view, &v)
+}
