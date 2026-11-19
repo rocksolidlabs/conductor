@@ -729,7 +729,7 @@ inspector's views and the open tabs on a session page, and with a file open
 the editor's Keys → Neovim, Save, Close file and Ask the agent about the
 selection; the broadcast, the
 view, the chat and the members on a run page; the chips on the Yard, the
-rotation on the Roundhouse, Launch on Crews, History's Search and Feed, Save on
+rotation on the Roundhouse, Launch on Crews, History's Search and Live, Save on
 Settings), then Running, Exited (folded to a line), Runs, Shared with you,
 Artifacts, Go to and every other action. Typing filters the rows, the match
 marked; **↓** moves into the list, where the sidebar's keys work on the
@@ -878,7 +878,7 @@ ending "(Recommended)": that one alone is filled. A permission question whose di
 session's) is answered in the terminal. Every report also lands in the session's
 activity log and in the live feed, **History**'s second view.
 
-**History's Feed** (`/history?view=feed`, **G E**, **Alt+E** in a terminal) is
+History's **Live** view (`/history?view=feed`, **G E**, **Alt+E** in a terminal) is
 the live feed; History opens on its Search, and its view switch, under the
 title, holds both. The feed lists the events
 newest first in groups of one minute: the time, the event's icon, who reported
@@ -886,11 +886,12 @@ it (a crew member as `<crew> / <member>`), what happened and the one thing to
 do about it (**Answer** a question, **Open run** for a handoff, **Open** an
 artifact). Beside it: the last hour as bars per minute (what needs you,
 handoffs, errors and the rest, as the tab saw them), where each kind of event
-goes now (**Edit routing** opens Alerts), and whether each agent reports. The
-feed is this browser tab's: it says "Since this tab opened", keeps the last
+goes now (**Edit routing** opens Alerts), and whether each agent reports (folded
+under **Which agents report**). The feed is this browser tab's: it says "What
+agents report, from the moment this page opened.", keeps the last
 500 events in memory and starts empty at each load. An artifact's URL becomes
 a link only when it is `http(s)`. The Events page is retired: an old link to
-`/events` lands on History's Feed, its Routing tab on the Alerts panel over
+`/events` lands on History's **Live** view, its Routing tab on the Alerts panel over
 the feed, and its Integrations tab on Agents' Reporting to Conductor.
 
 **Alerts** is one panel at the right of the window, opened by **Alerts…** in
