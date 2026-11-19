@@ -932,7 +932,7 @@ onBeforeUnmount(() => {
     </UContextMenu>
 
     <!-- Where the link under the pointer goes, its real address whatever its words (#1020); text, never markup. -->
-    <p v-if="linkTip" class="pointer-events-none absolute bottom-2 left-2 z-20 max-w-[calc(100%-1rem)] truncate rounded-md border border-default bg-default/95 px-2 py-1 font-mono text-xs text-default shadow-sm" role="status" data-terminal-link-tip>{{ shownAddress(linkTip) }}</p>
+    <p v-if="linkTip" class="pointer-events-none absolute bottom-2 left-2 z-20 max-w-[calc(100%-1rem)] truncate rounded-md border border-default bg-default/95 px-2 py-1 text-xs text-default shadow-sm" role="status" data-terminal-link-tip>{{ shownAddress(linkTip) }}</p>
 
     <div v-if="sizerChip" class="absolute right-2 bottom-2 z-10 flex items-center gap-2 rounded-md border border-default bg-default/90 py-1 pr-1 pl-2.5 text-xs shadow-sm backdrop-blur-sm" data-terminal-sizer :data-sizer-by="sizedBy">
       <UIcon name="i-lucide-scaling" class="size-3.5 text-muted" />
