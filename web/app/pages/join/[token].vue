@@ -54,7 +54,7 @@ function onViewers(info: { count: number; list?: ViewerInfo[] }) {
 const status = ref('')
 const transport = ref<{ kind: TransportKind; state: TransportState; rtt: number | null }>({ kind: 'ws', state: 'idle', rtt: null })
 // The editor area (design 4g): files open above the terminal, the Files pane beside it where there is room.
-const { tabs, openFile, previewFile, linkOpened, openDiff, openCommitDiff } = useEditorTabs()
+const { tabs, openFile, previewFile, linkOpened, linkOffered, openDiff, openCommitDiff } = useEditorTabs()
 const filesPanel = ref(true)
 const terminal = ref<EditorTerminal & { requestFile: (p: string, s?: boolean, x?: FileGetExtra) => Promise<any>; sendInput: (t: string) => boolean; submit: (t: string) => boolean; answer: (r: QuestionReply) => Promise<boolean>; chat: (p: ChatPost) => boolean; chatSend: (s: ChatSend) => boolean; lane: () => LaneWire | null } | null>(null)
 const attention = ref<Attention>({ state: '' })
@@ -591,6 +591,7 @@ function requestFile(path: string, stat?: boolean, extra?: FileGetExtra) {
           @request-error="onRequestError"
           @open-file="openFile"
           @link-opened="linkOpened"
+          @link-offered="linkOffered"
           @decisions-changed="onDecisionsChanged"
         />
         <template #bar>

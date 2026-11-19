@@ -1,7 +1,7 @@
 import { diffAgainst, type ChangeRow } from '~/utils/changes'
 import { commitAgainst, type CommitChangeRow } from '~/utils/commits'
 import { emptyTabs, openPreview, openTab, toggleFold, type TabsState } from '~/utils/editorTabs'
-import { linkHost, shownLink } from '~/utils/terminalLinks'
+import { LINK_OFFER_TOAST, linkHost, linkOfferNote, openWebLink, shownLink } from '~/utils/terminalLinks'
 
 /**
  * The files a page has open in its editor area (design 4b): the tabs, how a
@@ -38,6 +38,24 @@ export function useEditorTabs() {
     })
   }
 
+  /**
+   * A web link of the terminal's a click did not open (the program in the terminal holds the mouse): offered in the one note, as
+   * the terminal always has. Open opens the string offered, once, and the usual note then replaces the offer.
+   */
+  function linkOffered(url: string) {
+    toast.add(
+      linkOfferNote(
+        url,
+        (u) => {
+          toast.remove(LINK_OFFER_TOAST)
+          openWebLink(u)
+          linkOpened(u)
+        },
+        (u) => (tabs.value = openTab(tabs.value, 'url', u)),
+      ),
+    )
+  }
+
   /** A change from the Changes section opens as a diff against the base (design 4d). */
   function openDiff(c: ChangeRow, against: { top: string; branch?: string; base?: string; baseId?: string }) {
     tabs.value = openTab(tabs.value, 'diff', c.abs, undefined, { status: c.status, added: c.added, removed: c.removed, base: against.base, against: diffAgainst({ branch: against.branch, base: against.baseId }, against.base) })
@@ -57,5 +75,5 @@ export function useEditorTabs() {
     alt_t: { usingInput: true, handler: fold },
   })
 
-  return { tabs, editorOpen, openFile, previewFile, linkOpened, openDiff, openCommitDiff, fold }
+  return { tabs, editorOpen, openFile, previewFile, linkOpened, linkOffered, openDiff, openCommitDiff, fold }
 }

@@ -587,8 +587,10 @@ when long; the address shown is the one that opens. A double-click opens it
 once, and a drag that selects text, a middle or a right click or an Alt+click
 opens nothing, nor does Ctrl+click on a Mac (its secondary click; ⌘+click opens
 there). While the program in the terminal takes the mouse (Neovim, tmux), a
-plain click is the program's: Ctrl+click (⌘+click on a Mac) opens the link, as
-the hover then says. On a touch screen a tap opens the link at once, as a tap
+click is the program's and offers the link in a note, as before (**Open in new
+tab** or **Preview in pane**), and Shift+click (⌘+click on a Mac) opens it at
+once, as the hover then says; a view link's page keeps every click and opens
+the link on a plain one. On a touch screen a tap opens the link at once, as a tap
 does in any browser, and the toast then says where it went: there is no hover
 to show it first. Only an address printed as `http://` or `https://` is a link.
 A link an agent opens for you (an artifact, a pull request, a preview, a

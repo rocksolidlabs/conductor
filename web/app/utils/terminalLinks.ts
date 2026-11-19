@@ -79,21 +79,55 @@ export function linkModifierWords(mac: boolean): string {
   return mac ? '⌘+click opens' : 'Shift+click opens'
 }
 
+/** What a mouse-up on a link does: open it, offer it in a note (opening nothing), or nothing at all. */
+export type LinkAction = 'open' | 'offer' | null
+
 /**
- * opensLink is whether a mouse-up on a link opens it: a single press of the primary button (xterm calls a link's activate on every
- * mouse-up that ends on the link the press began on, whatever the button or the count) that made no selection, asks for no menu
- * (menuPress: on a Mac, Control with the primary button is the secondary click, so there ⌘ is the modifier that opens) and holds
- * no Alt (the terminal turns an Alt+click into a move of the prompt's cursor). While the program in the terminal holds the mouse
- * and this page reports the mouse to it (appMouse), a click is the program's, Ctrl+click too: the link opens only on the press
- * the terminal keeps from the program, Shift+click (forcesSelection) everywhere but a Mac and ⌘+click on a Mac. The
- * first click of a double-click opens it once; the second (detail 2), a triple's third, a middle or a right press, a Mac's
- * Control-click, an Alt+click and a drag that selected text inside the link open nothing.
+ * linkAction is what a mouse-up on a link does. Nothing unless it is a single press of the primary button (xterm calls a link's
+ * activate on every mouse-up that ends on the link the press began on, whatever the button or the count) that made no selection,
+ * asks for no menu (menuPress: on a Mac, Control with the primary button is the secondary click) and holds no Alt (the terminal
+ * turns an Alt+click into a move of the prompt's cursor): the second click of a double-click, a triple's third, a middle or a
+ * right press, a Mac's Control-click, an Alt+click and a drag that selected text inside the link do nothing. Such a press opens
+ * the link. While the program in the terminal holds the mouse and this page reports the mouse to it (appMouse), the click is the
+ * program's, a Ctrl+click too: then only the press the terminal keeps from the program, Shift+click (forcesSelection) everywhere
+ * but a Mac and ⌘+click on a Mac, opens it, and any other offers it, as the terminal always has over such a program.
  */
-export function opensLink(e: LinkPress, selected: boolean, mac: boolean, appMouse = false): boolean {
+export function linkAction(e: LinkPress, selected: boolean, mac: boolean, appMouse = false): LinkAction {
   const button = e.button ?? 0
-  if (button !== 0 || (e.detail ?? 1) > 1 || selected || e.altKey || menuPress({ button, ctrlKey: !!e.ctrlKey }, mac)) return false
-  if (!appMouse) return true
-  return mac ? !!e.metaKey && !e.ctrlKey : forcesSelection({ shiftKey: !!e.shiftKey, altKey: !!e.altKey }, mac) && !e.ctrlKey && !e.metaKey
+  if (button !== 0 || (e.detail ?? 1) > 1 || selected || e.altKey || menuPress({ button, ctrlKey: !!e.ctrlKey }, mac)) return null
+  if (!appMouse) return 'open'
+  const kept = mac ? !!e.metaKey && !e.ctrlKey : forcesSelection({ shiftKey: !!e.shiftKey, altKey: !!e.altKey }, mac) && !e.ctrlKey && !e.metaKey
+  return kept ? 'open' : 'offer'
+}
+
+/** opensLink is whether a mouse-up on a link opens it at once (linkAction). */
+export function opensLink(e: LinkPress, selected: boolean, mac: boolean, appMouse = false): boolean {
+  return linkAction(e, selected, mac, appMouse) === 'open'
+}
+
+/** openWebLink opens a web link in a new tab, once, the page holding no handle on it; the desktop app hands it to the system's browser. */
+export function openWebLink(url: string): void {
+  window.open(url, '_blank', 'noopener,noreferrer')
+}
+
+/** The one note that offers a link a click over a program that holds the mouse did not open: a later offer replaces it. */
+export const LINK_OFFER_TOAST = 'terminal-link-offer'
+
+/**
+ * linkOfferNote is that note, as the terminal has always offered a link: the address as plain text, in its parsed form, and
+ * "Open in new tab" (open, with exactly the string offered) and "Preview in pane" (preview).
+ */
+export function linkOfferNote(url: string, open: (url: string) => void, preview: (url: string) => void) {
+  return {
+    id: LINK_OFFER_TOAST,
+    title: shownLink(url),
+    icon: 'i-lucide-link',
+    color: 'neutral' as const,
+    actions: [
+      { label: 'Open in new tab', icon: 'i-lucide-external-link', onClick: () => open(url) },
+      { label: 'Preview in pane', icon: 'i-lucide-panel-right', onClick: () => preview(url) },
+    ],
+  }
 }
 
 export interface TerminalLinks {
@@ -101,6 +135,8 @@ export interface TerminalLinks {
   open(url: string): void
   /** Told after the open: the page says where it went and offers its preview. */
   opened(url: string): void
+  /** A link a click did not open, offered in a note (over a program that holds the mouse). */
+  offer(url: string): void
   /** Where the link the pointer is over goes, shown; null when it leaves the link. */
   show(tip: LinkTip | null): void
   /** Whether the terminal holds a selection now, at the mouse-up: a drag that selected text is not a click. */
@@ -126,7 +162,10 @@ export function terminalLinkHandler(o: TerminalLinks) {
     allowNonHttpProtocols: false,
     activate(event: LinkPress, uri: string): void {
       const url = webLink(uri)
-      if (!url || !opensLink(event, o.selected(), o.mac, o.appMouse())) return
+      if (!url) return
+      const act = linkAction(event, o.selected(), o.mac, o.appMouse())
+      if (act === 'offer') return o.offer(url)
+      if (act !== 'open') return
       o.open(url)
       o.opened(url)
     },

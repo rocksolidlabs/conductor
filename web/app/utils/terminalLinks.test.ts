@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { linkHost, linkModifierWords, linkTip, opensLink, SHOWN_REST_MAX, shownLink, terminalLinkHandler, webLink, type LinkTip } from './terminalLinks'
+import { LINK_OFFER_TOAST, linkAction, linkHost, linkModifierWords, linkOfferNote, linkTip, opensLink, SHOWN_REST_MAX, shownLink, terminalLinkHandler, webLink, type LinkTip } from './terminalLinks'
 
 const MR = 'https://example.com/group/project/-/merge_requests/95'
 const OTHER = ['file:///etc/passwd', 'javascript:void(0)', 'JavaScript:alert(1)', 'data:text/html,hi', 'vscode://file/etc/passwd', 'mailto:a@example.com', 'ftp://example.com/x', 'about:blank', '/etc/passwd', 'example.com', 'not a link', '']
@@ -11,6 +11,7 @@ function handler(selected = false, mac = false, appMouse = false) {
   const h = terminalLinkHandler({
     open: (u: string) => calls.push(`open ${u}`),
     opened: (u: string) => calls.push(`opened ${u}`),
+    offer: (u: string) => calls.push(`offer ${u}`),
     show: (t: LinkTip | null) => {
       if (t) tips.push(t)
       calls.push(`show ${t ? t.origin + t.rest + (t.hint ? ` ${t.hint}` : '') : null}`)
@@ -133,6 +134,25 @@ describe('which press opens a link', () => {
     expect(opensLink({ ...CLICK, metaKey: true }, false, false, true)).toBe(false)
   })
 
+  it('while the program holds the mouse, a plain or a Ctrl press offers the link; the kept press opens it; the rest do nothing', () => {
+    expect(linkAction(CLICK, false, false, true)).toBe('offer')
+    expect(linkAction({ ...CLICK, ctrlKey: true }, false, false, true)).toBe('offer')
+    expect(linkAction({ ...CLICK, shiftKey: true }, false, false, true)).toBe('open')
+    expect(linkAction(CLICK, false, true, true)).toBe('offer')
+    expect(linkAction({ ...CLICK, metaKey: true }, false, true, true)).toBe('open')
+    // A menu press, a middle press, Alt, a double-click's second press and a press that left a selection: nothing, no offer.
+    for (const [press, selected, mac] of [
+      [{ button: 2, detail: 1 }, false, false],
+      [{ ...CLICK, ctrlKey: true }, false, true],
+      [{ button: 1, detail: 1 }, false, false],
+      [{ ...CLICK, altKey: true }, false, false],
+      [{ button: 0, detail: 2 }, false, false],
+      [CLICK, true, false],
+    ] as const) expect(linkAction(press, selected, mac, true)).toBeNull()
+    // Without tracking nothing is offered.
+    expect(linkAction(CLICK, false, false, false)).toBe('open')
+  })
+
   it('on a page that reports nothing to the program (appMouse false: a view link’s), a plain click opens whatever the program asked', () => {
     expect(opensLink(CLICK, false, false, false)).toBe(true)
     expect(opensLink({ ...CLICK, ctrlKey: true }, false, false, false)).toBe(true)
@@ -146,6 +166,33 @@ describe('which press opens a link', () => {
 
   it('elsewhere, Control with the primary button opens', () => {
     expect(opensLink({ ...CLICK, ctrlKey: true }, false, false)).toBe(true)
+  })
+})
+
+describe('the note that offers a link', () => {
+  it('is one note, the address in its parsed form, whose Open opens exactly the string offered', () => {
+    const opened: string[] = []
+    const previewed: string[] = []
+    const url = webLink('HTTPS://EXAMPLE.COM:443/group/project')!
+    const note = linkOfferNote(url, (u) => opened.push(u), (u) => previewed.push(u))
+    expect(note.id).toBe(LINK_OFFER_TOAST)
+    expect(linkOfferNote(MR, () => {}, () => {}).id).toBe(note.id)
+    expect(note.title).toBe('https://example.com/group/project')
+    expect(note.actions.map((a) => a.label)).toEqual(['Open in new tab', 'Preview in pane'])
+    note.actions[0]!.onClick()
+    expect(opened).toEqual([url])
+    note.actions[1]!.onClick()
+    expect(previewed).toEqual([url])
+    expect(opened).toEqual([url])
+  })
+
+  it('names a link with a sign-in part by its host alone, and its Open still opens the string offered, not the words shown', () => {
+    const url = webLink('https://name@example.net/x')!
+    const opened: string[] = []
+    const note = linkOfferNote(url, (u) => opened.push(u), () => {})
+    expect(note.title).toBe('https://example.net/x')
+    note.actions[0]!.onClick()
+    expect(opened).toEqual([url])
   })
 })
 
@@ -211,7 +258,7 @@ describe("the terminal's link handler", () => {
     h.activate(CLICK, MR)
     h.activate({ ...CLICK, ctrlKey: true }, MR)
     h.activate({ ...CLICK, shiftKey: true }, MR)
-    expect(calls).toEqual([`show ${MR} ${linkModifierWords(false)}`, `open ${MR}`, `opened ${MR}`])
+    expect(calls).toEqual([`show ${MR} ${linkModifierWords(false)}`, `offer ${MR}`, `offer ${MR}`, `open ${MR}`, `opened ${MR}`])
     const mac = handler(false, true, true)
     mac.h.hover({}, MR)
     expect(mac.tips[0]!.hint).toBe('⌘+click opens')

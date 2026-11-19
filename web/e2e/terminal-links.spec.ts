@@ -83,11 +83,16 @@ async function linksPage(page: Page, api: Api, home: string, name: string, links
   const at = (row: number) => cell(row, 3)
   // xterm marks the element the pointer is over with this class while it is over a link.
   const pointer = host.locator('.xterm-cursor-pointer')
-  /** The pointer over the row's link: moved there until xterm shows it is over one (the output may be drawn after the first move). */
+  /**
+   * The pointer over the row's link: moved there until xterm shows it is over one (the output may be drawn after the first move).
+   * Each try comes from another cell (xterm looks for a link only when the pointer's cell changes, and one the pointer left the
+   * terminal from, to a note, is the cell it comes back to).
+   */
   const overLink = async (row: number) => {
     const p = at(row)
+    const away = cell(row + 2, 30)
     await expect(async () => {
-      await page.mouse.move(p.x - 1, p.y)
+      await page.mouse.move(away.x, away.y)
       await page.mouse.move(p.x, p.y)
       await expect(pointer).toHaveCount(1, { timeout: 1000 })
     }).toPass({ timeout: 15_000 })
@@ -252,21 +257,32 @@ test('a click opens the address as the parser writes it, and an address printed 
   expect(await t.opens(), 'the printed hyperlink opened at its absolute address').toEqual(OPENED)
 })
 
-test('while the program holds the mouse, a click is the program’s: the hover says Shift+click opens, and only that opens', async ({ page, api, state }) => {
+test('while the program holds the mouse, a click is the program’s and offers the link in a note; Shift+click opens it', async ({ page, api, state }) => {
   const t = await linksPage(page, api, state.home, 'e2e terminal link program mouse', [`${MR} the merge request`], { appMouse: true })
   await t.overLink(0)
   await expect(page.locator('[data-link-tip-hint]')).toHaveText('Shift+click opens')
+  // A plain click opens nothing and offers the link, in one note: a Ctrl+click after it offers it in the same note again.
   await t.click(0)
+  const offer = page.locator('li').filter({ hasText: MR }).filter({ has: page.getByRole('button', { name: 'Open in new tab' }) })
+  await expect(offer).toHaveCount(1)
   await t.overLink(0)
   await t.click(0, true)
-  // A gate: the Shift+click, the press the terminal keeps from the program, handled after the plain click and the Ctrl+click.
-  await page.keyboard.down('Shift')
+  await expect(offer).toHaveCount(1)
+  expect(await t.opens(), 'a click the program takes opens nothing').toEqual([])
+  // The note's Open opens that address, once, and the usual note takes its place.
+  await offer.getByRole('button', { name: 'Open in new tab' }).click()
+  await expect.poll(async () => (await t.opens()).length, { timeout: 15_000, message: 'Open was handled' }).toBeGreaterThan(0)
+  expect(await t.opens()).toEqual(OPENED)
+  await expect(said(page)).toHaveCount(1)
+  await expect(offer).toHaveCount(0)
+  // Shift+click, the press the terminal keeps from the program, opens it at once.
   await t.overLink(0)
+  await page.keyboard.down('Shift')
   await t.click(0)
   await page.keyboard.up('Shift')
-  await expect.poll(async () => t.dialogs.length + (await t.opens()).length, { timeout: 15_000, message: 'the gate was handled' }).toBeGreaterThan(0)
+  await expect.poll(async () => t.dialogs.length + (await t.opens()).length, { timeout: 15_000, message: 'the Shift+click was handled' }).toBeGreaterThan(1)
   expect(t.dialogs).toEqual([])
-  expect(await t.opens(), 'only the Shift+click opened').toEqual(OPENED)
+  expect(await t.opens(), 'the Shift+click opened once more').toEqual([...OPENED, ...OPENED])
 })
 
 test('a hyperlink to a scheme that is not the web’s is no link: a click opens nothing, says nothing and asks nothing', async ({ page, api, state }) => {

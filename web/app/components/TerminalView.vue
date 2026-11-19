@@ -8,7 +8,7 @@ import { clipboardKey, forcesSelection, menuPress, pressClearsSelection, readRig
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { WebglAddon } from '@xterm/addon-webgl'
 import { findFileLocations } from '~/utils/links'
-import { terminalLinkHandler, type LinkTip } from '~/utils/terminalLinks'
+import { openWebLink, terminalLinkHandler, type LinkTip } from '~/utils/terminalLinks'
 import { ALT_PASSTHROUGH_CODES, usePageAltCodes } from '~/composables/useShortcuts'
 import { NEWLINE_IN_PROMPT, newlineChord } from '~/utils/terminalKeys'
 import { closeReason, encodeText, FOLLOW_SIZE, type ActivityEntry, type Attention, type ChatHistory, type ChatMessage, type ChatPost, type ChatRoster, type ChatSend, type ControlMessage, type FileGetExtra, type FileResponse, type FileWriteOptions, type NvimSwapChoice, type Role, type TransportKind, type ViewerInfo, type Welcome } from '~/utils/protocol'
@@ -58,6 +58,8 @@ const emit = defineEmits<{
   openFile: [loc: { path: string; line?: number }]
   /** A web link of the terminal's, opened (a new tab; the desktop app's system browser): the page says where it went. */
   linkOpened: [url: string]
+  /** A web link a click over a program that holds the mouse did not open: the page offers it in a note. */
+  linkOffered: [url: string]
   /** A chat message, live; the kept chat on each welcome; an error the owner sent about one of this client's posts or sends. */
   chat: [msg: ChatMessage]
   chatHistory: [history: ChatHistory]
@@ -795,11 +797,12 @@ onMounted(() => {
   // One handler for the terminal's web links of both kinds, the hyperlinks an agent prints (OSC 8, xterm's linkHandler: without it
   // xterm asked with the page's confirm, #1020) and the addresses in the text (the web-links addon): a plain single click opens a
   // new tab once at the parsed address, a double-click, another button, an Alt+click or a drag that selected text does not, and
-  // while the program holds the mouse only Shift+click (⌘+click on a Mac), the press the terminal keeps from it, does; the pointer
-  // over a link shows where it goes; a link to any other scheme is none.
+  // while the program holds the mouse only Shift+click (⌘+click on a Mac), the press the terminal keeps from it, does, and another
+  // click offers it in a note; the pointer over a link shows where it goes; a link to any other scheme is none.
   const links = terminalLinkHandler({
-    open: (url) => window.open(url, '_blank', 'noopener,noreferrer'),
+    open: openWebLink,
     opened: (url) => emit('linkOpened', url),
+    offer: (url) => emit('linkOffered', url),
     show: (tip) => (linkTip.value = tip),
     selected: () => !!term?.hasSelection(),
     mac: isMac,
