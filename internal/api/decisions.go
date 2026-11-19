@@ -767,7 +767,40 @@ func (s *Server) handleDecisionRoute(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := runContext(r)
 	defer cancel()
+	if body.To.Kind == crew.DestRouter {
+		// Ask the registered router for a route again (policy.go).
+		switch {
+		case !s.routerRegistered():
+			writeError(w, http.StatusConflict, crew.CodeNoRouter, "no decision router is registered: a decision is routed to one only where one is")
+			return
+		case actorOf(r) == ledger.TurnActor:
+			writeError(w, http.StatusForbidden, crew.CodeNotApprover, "a Brakeman turn may not ask the decision router again: the operator does")
+			return
+		case body.To.Name != "" || body.To.Grant != "":
+			writeError(w, http.StatusBadRequest, crew.CodeInvalid, "a route to the router names nothing else")
+			return
+		}
+		rc, err := s.runs.AskRouter(ctx, did, body.OpID, body.ExpectedRev, body.Note, actorOf(r))
+		if err == nil && !rc.Repeat {
+			s.router.retell(did)
+		}
+		s.writeDecisionOp(w, r, "route", did, rc, err)
+		return
+	}
+	if body.To.Kind != crew.DestOperator {
+		// Under a router's policy in force only the policy chooses who
+		// may answer: a route to a person, a role or the grant is refused.
+		if now := s.policyNow(ctx, did); now != nil && now.InForce {
+			writeError(w, http.StatusConflict, crew.CodeRoutedByPolicy, did+" is routed by its router's policy: ask the router again, or override at the answer where the policy allows")
+			return
+		}
+	}
 	rc, err := s.runs.RouteDecision(ctx, did, body.OpID, body.ExpectedRev, []crew.Destination{body.To}, body.Note, actorOf(r))
+	if err == nil && !rc.Repeat && body.To.Kind != crew.DestOperator && s.runs.RoutesPolicies() {
+		// Whom it is for changed while its policy is not in force (or
+		// before any): the router is told again, and routes it by its policy.
+		s.router.retell(did)
+	}
 	s.writeDecisionOp(w, r, "route", did, rc, err)
 }
 

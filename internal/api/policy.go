@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -154,6 +155,34 @@ func (s *Server) policyCheckTold(ctx context.Context, rec ledger.DecisionRecord,
 	return c, answered
 }
 
+// eligibleNow says whether a decide principal of subject may see and
+// answer rec now (visibility following eligibility): a record under the
+// server's own policy as its entries say; one under a router's policy only
+// while a router that confirms policies is registered and confirms the
+// policy in force at its revision with subject eligible in one of the
+// groups that name it. answered says the router answered (false: no slot,
+// late, failing, or no router). It fails closed: anything else is no.
+func (s *Server) eligibleNow(ctx context.Context, rec ledger.DecisionRecord, subject string) (yes, answered bool) {
+	if !ledger.RouterPolicy(rec.Policy) {
+		return true, true
+	}
+	p, _, ok := crew.RouterPolicyOf(rec.Policy)
+	if !ok || !s.runs.RoutesPolicies() || subject == "" {
+		return false, true
+	}
+	c, answered := s.policyCheckTold(ctx, rec, p.Revision, subject)
+	if !c.InForce || c.Behind || c.Revision != "" && c.Revision != p.Revision {
+		return false, answered
+	}
+	for _, g := range p.Groups {
+		for _, e := range g.Eligible {
+			if e.Subject == subject && slices.Contains(c.Groups, g.Role) {
+				return true, answered
+			}
+		}
+	}
+	return false, answered
+}
 
 // policyWindows are the records' opening windows, in memory: a record
 // opened while the router routes policies is answered by no one until the
@@ -610,4 +639,57 @@ func (h *extHost) Reroute(ctx context.Context, r ext.RerouteRequest) (ext.Rerout
 	return res, err
 }
 
+// eligibleRows is rows, in order, without those under a router's policy the
+// router does not confirm subject eligible in now: asked after the
+// ledger's read, all at once within one ext.ConfirmWait. A row the router
+// did not answer in time (late, or no slot free) is left out too, and
+// unasked says one was.
+func (s *Server) eligibleRows(ctx context.Context, rows []ledger.DecisionRow, subject string) (kept []ledger.DecisionRow, unasked bool) {
+	cctx, cancel := context.WithTimeout(ctx, ext.ConfirmWait)
+	defer cancel()
+	yes := make([]bool, len(rows))
+	answered := make([]bool, len(rows))
+	var wg sync.WaitGroup
+	for i, row := range rows {
+		if !ledger.RouterPolicy(row.Policy) {
+			yes[i], answered[i] = true, true
+			continue
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			yes[i], answered[i] = s.eligibleNow(cctx, ledger.DecisionRecord{DecisionRow: row}, subject)
+		}()
+	}
+	wg.Wait()
+	for i, row := range rows {
+		if yes[i] {
+			kept = append(kept, row)
+		}
+		unasked = unasked || !answered[i]
+	}
+	return kept, unasked
+}
 
+// policyRoutes are a router's policy's destinations as the inbox shows
+// them: each eligible person (person), each gap's role (role), at most
+// ext.MaxDestinations, and the first group's label and rule, at most 200
+// bytes.
+func policyRoutes(p ext.RoutePolicy) ([]inboxDestination, string) {
+	var to []inboxDestination
+	for _, g := range p.Groups {
+		if len(g.Eligible) == 0 && len(to) < ext.MaxDestinations {
+			to = append(to, inboxDestination{Kind: "role", Name: cutRunes(g.Label, ext.MaxDestinationName-1)})
+		}
+		for _, e := range g.Eligible {
+			if len(to) < ext.MaxDestinations {
+				to = append(to, inboxDestination{Kind: "person", Name: cutRunes(e.Name, ext.MaxDestinationName-1)})
+			}
+		}
+	}
+	rule := ""
+	if len(p.Groups) > 0 {
+		rule = fitText("the "+p.Groups[0].Label+", rule "+p.Groups[0].Rule, 200)
+	}
+	return to, rule
+}

@@ -168,8 +168,8 @@ func TestEligibleSubjectAnswers(t *testing.T) {
 			asked++
 		}
 	}
-	if asked != 2 {
-		t.Fatalf("the router was asked about ana %d times, want at the response and at the application", asked)
+	if asked != 3 {
+		t.Fatalf("the router was asked about ana %d times, want at the decide route's admission, the response and the application", asked)
 	}
 }
 
@@ -190,9 +190,22 @@ func TestIneligibleDecidePrincipalIsRefused(t *testing.T) {
 	if status, data := f.readAs(t, passAna, did); status != http.StatusOK {
 		t.Fatalf("ana's read: %d %s", status, data)
 	}
-	// Her eligibility ended: the router confirms the policy in force and
-	// names her in no group.
-	f.fr.SetConfirm(did, func(ext.ConfirmQuery) ext.Confirmation { return ext.Confirmation{InForce: true} })
+	// Her eligibility ends between the route's admission (the router's
+	// first answer about her) and the response's own ask (its second).
+	var mu sync.Mutex
+	asked := 0
+	f.fr.SetConfirm(did, func(q ext.ConfirmQuery) ext.Confirmation {
+		mu.Lock()
+		defer mu.Unlock()
+		if q.Subject != "ana" {
+			return ext.Confirmation{InForce: true}
+		}
+		asked++
+		if asked == 1 {
+			return ext.Confirmation{InForce: true, Groups: []string{"architecture"}}
+		}
+		return ext.Confirmation{InForce: true}
+	})
 	status, data, out := f.respondAs(t, passAna, did, "a1", 0, f.rev(t, did))
 	if status != http.StatusForbidden || errorCode(out) != crew.CodeNotEligible || !strings.Contains(string(data), "You are not among those who may answer "+did) {
 		t.Fatalf("ana's answer once not eligible: %d %s", status, data)
@@ -245,12 +258,14 @@ func TestPolicyNotInForceIsLocal1(t *testing.T) {
 	f := newPolicyFixture(t)
 	did := f.routed(t, "r1", "dr-1", anaPolicy(ext.OverrideNone))
 	f.fr.SetConfirm(did, func(ext.ConfirmQuery) ext.Confirmation { return ext.Confirmation{Why: "the roster is being moved"} })
-	if status, data, out := f.respondAs(t, passAna, did, "a1", 0, f.rev(t, did)); status != http.StatusForbidden || errorCode(out) != crew.CodeNotApprover {
+	// Not in force, the policy admits no decide principal: the decide
+	// route does not show it to ana at all.
+	if status, data, _ := f.respondAs(t, passAna, did, "a1", 0, f.rev(t, did)); status != http.StatusNotFound {
 		t.Fatalf("ana's answer not in force: %d %s", status, data)
 	}
 	f.expect(t, http.MethodPost, "/api/decisions/"+did+"/respond", operatorBody("o1", 0, f.rev(t, did), false, ""), http.StatusCreated, "")
 	f.decisionWhen(t, did, "applied", inState(ledger.DecisionApplied))
-	if rc := f.receiptOf(t, did, 2); rc.Policy != "local/1" || rc.PolicyWhy != "the roster is being moved" || rc.Override {
+	if rc := f.receiptOf(t, did, 1); rc.Policy != "local/1" || rc.PolicyWhy != "the roster is being moved" || rc.Override {
 		t.Fatalf("the operator's receipt: %+v", rc)
 	}
 }
@@ -263,7 +278,7 @@ func TestStalePolicyRefused(t *testing.T) {
 	did := f.routed(t, "r1", "dr-1", anaPolicy(ext.OverrideOperator))
 	for _, c := range []ext.Confirmation{{InForce: true, Behind: true}, {InForce: true, Revision: "exttest-r2"}} {
 		f.fr.SetConfirm(did, func(ext.ConfirmQuery) ext.Confirmation { return c })
-		status, data, out := f.respondAs(t, passAna, did, "a1", 0, f.rev(t, did))
+		status, data, out := f.callAs(t, adminToken, http.MethodPost, "/api/decisions/"+did+"/respond", operatorBody("o1", 0, f.rev(t, did), true, "Ana is away this week"))
 		if status != http.StatusConflict || errorCode(out) != crew.CodeStalePolicy {
 			t.Fatalf("ana's answer with %+v: %d %s", c, status, data)
 		}
@@ -279,11 +294,12 @@ func TestStalePolicyRefusalIsNotKept(t *testing.T) {
 	f := newPolicyFixture(t)
 	did := f.routed(t, "r1", "dr-1", anaPolicy(ext.OverrideOperator))
 	f.fr.SetConfirm(did, func(ext.ConfirmQuery) ext.Confirmation { return ext.Confirmation{InForce: true, Behind: true} })
-	if status, data, _ := f.respondAs(t, passAna, did, "a1", 0, f.rev(t, did)); status != http.StatusConflict {
+	body := operatorBody("o1", 0, f.rev(t, did), true, "Ana is away this week")
+	if status, data, _ := f.callAs(t, adminToken, http.MethodPost, "/api/decisions/"+did+"/respond", body); status != http.StatusConflict {
 		t.Fatalf("the first send: %d %s", status, data)
 	}
 	f.inForce(did)
-	if status, data, _ := f.respondAs(t, passAna, did, "a1", 0, f.rev(t, did)); status != http.StatusCreated {
+	if status, data, _ := f.callAs(t, adminToken, http.MethodPost, "/api/decisions/"+did+"/respond", body); status != http.StatusCreated {
 		t.Fatalf("the same response sent again: %d %s", status, data)
 	}
 }
@@ -413,7 +429,8 @@ func TestConfirmFailingAtApplicationSupersedes(t *testing.T) {
 			return ext.Confirmation{InForce: true}
 		}
 		asked++
-		if asked == 1 {
+		if asked <= 2 {
+			// The decide route's admission and the response's own ask.
 			return ext.Confirmation{InForce: true, Groups: []string{"architecture"}}
 		}
 		return ext.Confirmation{InForce: true}

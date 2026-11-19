@@ -226,6 +226,11 @@ func (rd *inboxRead) decisionItem(row ledger.DecisionRow, held []string, rec *le
 	run := rd.runOf(row.CurrentRun)
 	it := &inboxItem{Ref: ref, Subject: ref, Kind: inboxDecision, Since: row.CreatedAt, Question: req.Question, Answerer: answererOf(req),
 		Revision: rev, State: row.State, BriefBy: "conductor", Actions: []inboxAction{}}
+	if p, _, ok := crew.RouterPolicyOf(row.Policy); ok {
+		// Under a router's policy: routed to the persons it names, and to
+		// the roles of its gaps, with the first group's rule.
+		it.RoutedTo, it.RoutedRule = policyRoutes(p)
+	}
 	runName := row.CurrentRun
 	if run.ok {
 		runName = run.run.Name

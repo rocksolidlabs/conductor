@@ -8540,9 +8540,50 @@ above, and no field, code or row below is ever written or answered.
   `ext.RecipientSink` answering true, never another; a notice's `key`
   (at most 64 bytes of printable ASCII) names it to a sink that drops
   one handed to it twice.
-- **The router's reads.** `ext.Host`'s `OpenDecisions`, `Outcomes`,
-  `AckOutcomes` and `Reroute` are declared and answer
-  `ext.ErrUnsupported` until a later step serves them.
+- **Who sees a routed record.** A decide principal sees a record under a
+  router's policy (`GET /api/me/decisions`, `GET /api/decisions/{did}`,
+  `POST /api/decisions/{did}/respond`) only while the router confirms it
+  eligible now in a group that names it: the list asks the router for
+  each such row after its read, all within one `ext.ConfirmWait`, and
+  leaves out a row it does not confirm (and says `cut` when the router did
+  not answer for one); the read and the respond route answer `404
+  not_found` for it. So a person the router no longer names loses the
+  record at their next request, before any re-route.
+- **Who changes a route.** Under a router's policy in force (one
+  `Confirm`, no subject), the operator's route to a person, a role or the
+  decide grant, and Brakeman's `route_decision` through it, is `409
+  routed_by_policy`, nothing written. Not in force, it is taken as before,
+  and a record whose `for` changed is told to the router again. A route
+  `{kind: "router"}` asks the registered router again: one of the
+  operator's operations, a `routed` row naming the router, no rev, the
+  record told again; `409 no_router` with none, and a Brakeman turn may
+  not send it (`403`).
+- **The router's reads and re-routes** (`ext.Host`, the registered
+  router's alone; every other Host, and the router's on a switchyard or
+  with no ledger, answers `ext.ErrUnsupported`): `OpenDecisions` pages
+  every open record, 64 a page in number order, each with its policy,
+  when it was first routed, the last route's why and its rev;
+  `Outcomes` reads the outbox 32 rows a page in `seq` order and
+  `AckOutcomes` deletes up to a `seq`, the only way a row leaves;
+  `Reroute` changes a record's policy in one transaction:
+  `ErrQuestionAnswered` for one no longer open, `Unchanged` when its revision is the
+  record's already (a repeat, however late), `ErrStale` (with the rev
+  and revision now) when the record moved past `expectedRev`, `ErrRefused`
+  for a comparison's selection, for a changed `pinned` or `scope`, and for
+  a return to the unsupported form; else rev + 1 and, for each of the
+  record's first 16 changes, a history row of its kind (`assigned`,
+  `delegated`, `escalated`, `rerouted`) with its op id, every later one
+  recorded in the policy itself (`reroutes`, `recent`, the latest 16). A
+  record's end told to the router (`Resolved`) carries its `outcome` as
+  its outbox row keeps it. The decision inbox names a routed record's
+  persons and gaps as its `routedTo` and its first group's rule as
+  `routedRule`.
+- **Room.** A routed record superseded no longer counts among its run's
+  1,000: its replacement, opened with a spare of its own, stands in its
+  place, so a chain of replacements holds one decision and one spare. A
+  run's superseded routed records are bound apart at 1,000: past it an
+  answer to a routed record is `429 decision_limit` ("…'s run has voided
+  1,000 routed answers: stop or cancel it").
 
 The codes `not_eligible` and `override_refused` are `403`;
 `stale_policy` stays `409`.
