@@ -40,6 +40,9 @@ const taskUsage = `Usage:
                                                answered at once with its id, dr-N, and open
   conductor task decision [dr-N] [--json]      your task's decisions, newest first, or one whole
   conductor task withdraw dr-N                 withdraw an open decision you asked
+  conductor task lookup --op OP [--symbol S] [--path P] [--query Q] [--limit N] [--source NAME]
+                                               ask the context provider about your attempt's repository
+                                               (op symbol, references, dependencies or impact), when one answers
 
 In a managed run, the session is one attempt at one task (CONDUCTOR_TASK).
 A work task's result is its commit (HEAD unless --commit names it): commit
@@ -103,6 +106,12 @@ withdrawal refused not_held means your run was continued: the decision
 stays open in the run that continues this one; stop there, as this
 attempt's work is over.
 
+A lookup asks a context provider, when the server has one that answers
+lookups, about your own attempt's repository at your worktree's commit:
+its answer is reference material from the provider, each item marked
+supported, inferred or unknown, not part of your task. When no provider
+can answer, it says context is unavailable: carry on without it.
+
 Outside a Conductor session, or in a session that is no attempt, every
 command says so and exits 1.
 `
@@ -129,7 +138,7 @@ func runTask(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	}
 	sub, rest := args[0], args[1:]
 	switch sub {
-	case "context", "result", "send", "inbox", "ack", "blocked", "checkpoint", "ticket", "decide", "decision", "withdraw":
+	case "context", "result", "send", "inbox", "ack", "blocked", "checkpoint", "ticket", "decide", "decision", "withdraw", "lookup":
 	default:
 		fmt.Fprint(stderr, taskUsage)
 		return 2, fmt.Errorf("task: unknown command %q", sub)
@@ -153,6 +162,12 @@ func runTask(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	done := fs.String("done", "", "checkpoint: what is done")
 	remaining := fs.String("remaining", "", "checkpoint: what remains")
 	notes := fs.String("notes", "", "checkpoint: anything the next attempt should know")
+	op := fs.String("op", "", "lookup: symbol, references, dependencies or impact")
+	symbol := fs.String("symbol", "", "lookup: the symbol asked about")
+	lookPath := fs.String("path", "", "lookup: a file, relative to the repository's top")
+	query := fs.String("query", "", "lookup: words of the question, one line")
+	limit := fs.Int("limit", 0, "lookup: the most items to answer (20 unless given)")
+	source := fs.String("source", "", "lookup: the context provider to ask, by its name")
 	var options, evidence multiFlag
 	fs.Var(&options, "option", `decide: an alternative, "LABEL[: TRADEOFFS]", numbered from 0 in the order given (repeatable)`)
 	fs.Var(&evidence, "evidence", "decide: a ref to a record of your own work the question rests on, as task:RUN/TASK or commit:RUN/SHA; any other resolves to nothing (repeatable; the usage lists them)")
@@ -237,6 +252,26 @@ func runTask(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 		return taskDecisions(ctx, c, *asJSON, stdout)
 	case "withdraw":
 		return taskWithdraw(ctx, c, fs.Arg(0), stdout)
+	case "lookup":
+		if *op == "" {
+			return 2, errors.New("task lookup: --op says what to ask: symbol, references, dependencies or impact")
+		}
+		body := map[string]any{"op": *op}
+		for k, v := range map[string]string{"symbol": *symbol, "path": *lookPath, "query": *query, "source": *source} {
+			if v != "" {
+				body[k] = v
+			}
+		}
+		if *limit != 0 {
+			body["limit"] = *limit
+		}
+		c.prefix = "task lookup"
+		text, err := lookup(ctx, c, body)
+		if err != nil {
+			return 1, err
+		}
+		fmt.Fprintln(stdout, text)
+		return 0, nil
 	case "ticket":
 		if fs.NArg() > 0 {
 			cm, err := commentOnSessionTicket(ctx, c, strings.Join(fs.Args()[1:], " "))

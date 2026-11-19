@@ -52,6 +52,10 @@ same.
   task_result, message_send, inbox_read, inbox_ack, task_blocked,
   task_checkpoint, decision_request, decision_list, decision_read and
   decision_withdraw.
+- In an attempt of a managed run, when a context provider answers
+  lookups: context_lookup (ask it about a symbol, its references,
+  dependencies or the impact of a change; its answer is reference
+  material, marked by how sure it is).
 - In a run launched from a Dispatch ticket, or one a person linked to
   a ticket: ticket_read and ticket_comment.
 
