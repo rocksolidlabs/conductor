@@ -495,7 +495,11 @@ func Router(t T, n *Network, r ext.DecisionRouter, d ext.Decision) {
 // Context answering at most ext.MaxContextBlocks blocks, each valid (a
 // pack mark among it), from Goroutines goroutines at once too; NoteTouch
 // returning; NoteCommit, when it is an ext.CommitNoter, returning within
-// ext.DeliveryWait with the network blocked; and article 8 (Network).
+// ext.DeliveryWait with the network blocked; Lookup, when it is an
+// ext.ContextLookup, answering within ext.LookupWait with the network
+// blocked too, from Goroutines goroutines at once, an answer
+// ext.LookupAnswer.Valid takes when it answers one; and article 8
+// (Network).
 func Context(t T, n *Network, p ext.ContextProvider, q ext.ContextQuery) {
 	t.Helper()
 	c, ok := begin(t, n, "Context", p)
@@ -547,15 +551,49 @@ func Context(t T, n *Network, p ext.ContextProvider, q ext.ContextQuery) {
 			})
 		}
 	}
+	looker, looks := p.(ext.ContextLookup)
+	ask := sampleLookup(q)
+	lookup := func(ph phase) {
+		if !looks {
+			return
+		}
+		type answer struct {
+			a   ext.LookupAnswer
+			err error
+		}
+		a, returned := run(c, "Lookup", ext.LookupWait, ph, func(ctx context.Context) answer {
+			v, err := looker.Lookup(ctx, ask)
+			return answer{v, err}
+		})
+		if returned && a.err == nil {
+			if err := a.a.Valid(); err != nil {
+				c.found("Lookup's answer is not valid%s: %v", ph.words(), err)
+			}
+		}
+	}
 	blocks(open)
 	together(func() { blocks(open) })
+	together(func() { lookup(open) })
 	c.phases(func(ph phase) {
 		noteTouch(ph)
 		noteCommit(ph)
+		lookup(ph)
 		if ph != open {
 			blocks(ph)
 		}
 	})
+}
+
+// sampleLookup is a lookup of q's attempt's own, as the server fills one
+// in: a valid request whatever q holds.
+func sampleLookup(q ext.ContextQuery) ext.LookupRequest {
+	n := sampleCommitNote(q)
+	r := ext.LookupRequest{Op: ext.LookupReferences, Symbol: "Build", Limit: 20, Run: n.Run, Task: q.Task, Attempt: q.Attempt, Kind: q.Kind,
+		Session: "exttest-session", Start: n.Commit, Base: n.Commit}
+	if r.Valid() != nil {
+		r.Task, r.Attempt, r.Kind = "build", 1, "work"
+	}
+	return r
 }
 
 // sampleCommitNote is a note of q's run's base (its start when it names

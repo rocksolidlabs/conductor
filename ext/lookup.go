@@ -2,6 +2,7 @@ package ext
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 )
 
@@ -129,3 +130,142 @@ const (
 	MarkInferred  = "inferred"  // it derived it
 	MarkUnknown   = "unknown"   // it could not tell
 )
+
+// Valid checks r against its bounds: an op of the five; a query of one
+// line of at most MaxLookupQuery bytes (for pack, a pack mark or none); a
+// path inside the tree (TreePathOK) of at most MaxLookupPath bytes, or
+// none; a symbol of one line of at most MaxLookupSymbol bytes; a limit
+// from 1 to MaxLookupLimit; and the server's fields: a run id, a task id,
+// an attempt from 1, a kind of work or review, a session id, full commit
+// ids for the start and the base, and for the head a full id or none.
+func (r LookupRequest) Valid() error {
+	const rec = "lookup request"
+	switch r.Op {
+	case LookupSymbol, LookupReferences, LookupDependencies, LookupImpact, LookupPack:
+	default:
+		return invalid(rec, "op %q is not one of symbol, references, dependencies, impact and pack", r.Op)
+	}
+	if err := line(rec, "query", r.Query, MaxLookupQuery, false); err != nil {
+		return err
+	}
+	if r.Op == LookupPack && r.Query != "" && !packMark(r.Query) {
+		return invalid(rec, "a pack's query is a pack mark or none")
+	}
+	if r.Path != "" && (len(r.Path) > MaxLookupPath || !oneLine(r.Path) || !TreePathOK(r.Path)) {
+		return invalid(rec, "path is not a path inside the tree of at most %d bytes", MaxLookupPath)
+	}
+	if err := line(rec, "symbol", r.Symbol, MaxLookupSymbol, false); err != nil {
+		return err
+	}
+	switch {
+	case r.Limit < 1 || r.Limit > MaxLookupLimit:
+		return invalid(rec, "limit is not from 1 to %d", MaxLookupLimit)
+	case !runID(r.Run):
+		return invalid(rec, "run %q is not a run id", r.Run)
+	case !taskID(r.Task):
+		return invalid(rec, "task %q is not a task id", r.Task)
+	case r.Attempt < 1:
+		return invalid(rec, "attempt is below 1")
+	case r.Kind != "work" && r.Kind != "review":
+		return invalid(rec, "kind %q is not work or review", r.Kind)
+	case r.Session == "" || len(r.Session) > MaxSessionRef || !printableASCII(r.Session):
+		return invalid(rec, "session %q is not a session id", r.Session)
+	case !commitID(r.Start):
+		return invalid(rec, "start %q is not a full commit id", r.Start)
+	case !commitID(r.Base):
+		return invalid(rec, "base %q is not a full commit id", r.Base)
+	case r.Head != "" && !commitID(r.Head):
+		return invalid(rec, "head %q is not a full commit id", r.Head)
+	}
+	return nil
+}
+
+// Valid checks a against its bounds: at most MaxLookupItems items, each
+// of a known kind, relation and mark, its path, symbol and why each one
+// line of UTF-8 text with no control character within its bound, its
+// line not below 0 and its excerpt UTF-8 text whose only control
+// characters are tabs and line ends, of at most MaxLookupExcerpt bytes;
+// at most MaxLookupBlocks blocks, each valid and carrying its pack mark;
+// the coverage's commit a full id, its snapshot printable ASCII on one
+// line as a pack mark is, or none, its counts not below 0; the note one
+// line of at most MaxLookupNote bytes; and the answer as encoded at most
+// MaxLookupAnswer bytes.
+func (a LookupAnswer) Valid() error {
+	const rec = "lookup answer"
+	switch {
+	case len(a.Items) > MaxLookupItems:
+		return invalid(rec, "%d items, past %d", len(a.Items), MaxLookupItems)
+	case len(a.Blocks) > MaxLookupBlocks:
+		return invalid(rec, "%d blocks, past %d", len(a.Blocks), MaxLookupBlocks)
+	}
+	for i, it := range a.Items {
+		if err := it.valid(); err != nil {
+			return invalid(rec, "item %d: %v", i, err)
+		}
+	}
+	for i, b := range a.Blocks {
+		if err := b.Valid(); err != nil {
+			return invalid(rec, "block %d: %v", i, err)
+		}
+		if b.Pack == "" {
+			return invalid(rec, "block %d carries no pack mark", i)
+		}
+	}
+	c := a.Coverage
+	switch {
+	case !commitID(c.Commit):
+		return invalid(rec, "coverage's commit %q is not a full commit id", c.Commit)
+	case c.Snapshot != "" && !packMark(c.Snapshot):
+		return invalid(rec, "coverage's snapshot is not 1 to %d bytes of printable ASCII with no space at either end", MaxContextPack)
+	case c.Files < 0 || c.Excluded < 0 || c.Unknown < 0:
+		return invalid(rec, "coverage counts below 0")
+	}
+	if err := line(rec, "note", a.Note, MaxLookupNote, false); err != nil {
+		return err
+	}
+	b, err := json.Marshal(a)
+	if err != nil {
+		return invalid(rec, "%v", err)
+	}
+	if len(b) > MaxLookupAnswer {
+		return invalid(rec, "%d bytes as encoded, past %d", len(b), MaxLookupAnswer)
+	}
+	return nil
+}
+
+func (it LookupItem) valid() error {
+	const rec = "lookup item"
+	switch it.Kind {
+	case ItemSymbol, ItemFile, ItemTest, ItemPackage:
+	default:
+		return invalid(rec, "kind %q is not symbol, file, test or package", it.Kind)
+	}
+	switch it.Relation {
+	case "", RelationCalls, RelationCalledBy, RelationImports, RelationImportedBy, RelationTests, RelationChanges:
+	default:
+		return invalid(rec, "relation %q is not one", it.Relation)
+	}
+	switch it.Mark {
+	case MarkSupported, MarkInferred, MarkUnknown:
+	default:
+		return invalid(rec, "mark %q is not supported, inferred or unknown", it.Mark)
+	}
+	if err := line(rec, "path", it.Path, MaxLookupPath, false); err != nil {
+		return err
+	}
+	if err := line(rec, "symbol", it.Symbol, MaxLookupSymbol, false); err != nil {
+		return err
+	}
+	if err := line(rec, "why", it.Why, MaxLookupWhy, false); err != nil {
+		return err
+	}
+	switch {
+	case it.Line < 0:
+		return invalid(rec, "line is below 0")
+	case len(it.Excerpt) > MaxLookupExcerpt:
+		return invalid(rec, "excerpt is %d bytes, past %d", len(it.Excerpt), MaxLookupExcerpt)
+	case !text(it.Excerpt):
+		return invalid(rec, "excerpt is not UTF-8 text")
+	}
+	return nil
+}
