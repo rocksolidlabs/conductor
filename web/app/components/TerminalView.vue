@@ -794,14 +794,16 @@ defineExpose({ connect, disconnect, requestFile, writeFile, nvimOpen, nvimInput,
 onMounted(() => {
   // One handler for the terminal's web links of both kinds, the hyperlinks an agent prints (OSC 8, xterm's linkHandler: without it
   // xterm asked with the page's confirm, #1020) and the addresses in the text (the web-links addon): a plain single click opens a
-  // new tab once, a double-click, another button or a drag that selected text does not; the pointer over a link shows where it
-  // goes; a link to any other scheme is none.
+  // new tab once at the parsed address, a double-click, another button, an Alt+click or a drag that selected text does not, and
+  // while the program holds the mouse only Ctrl+click (⌘ on a Mac) does; the pointer over a link shows where it goes; a link to
+  // any other scheme is none.
   const links = terminalLinkHandler({
     open: (url) => window.open(url, '_blank', 'noopener,noreferrer'),
     opened: (url) => emit('linkOpened', url),
     show: (tip) => (linkTip.value = tip),
     selected: () => !!term?.hasSelection(),
     mac: isMac,
+    appMouse: appHoldsMouse,
   })
   term = new Terminal({
     linkHandler: links,
@@ -938,7 +940,7 @@ onBeforeUnmount(() => {
          host come first and are never cut (a long one wraps); only the path after them is cut, at its end. A visual aid, as a
          browser's: not a live region. -->
     <p v-if="linkTip" class="pointer-events-none absolute bottom-2 left-2 z-20 flex max-w-[calc(100%-1rem)] min-w-0 flex-wrap rounded-md border border-default bg-default/95 px-2 py-1 text-xs text-default shadow-sm" aria-hidden="true" data-terminal-link-tip>
-      <span class="min-w-0 max-w-full font-medium break-all" data-link-tip-origin>{{ linkTip.origin }}</span><span class="min-w-0 max-w-full truncate text-muted" data-link-tip-rest>{{ linkTip.rest }}</span>
+      <span class="min-w-0 max-w-full font-medium break-all" data-link-tip-origin>{{ linkTip.origin }}</span><span class="min-w-0 max-w-full truncate text-muted" data-link-tip-rest>{{ linkTip.rest }}</span><span v-if="linkTip.hint" class="ml-2 shrink-0 font-medium" data-link-tip-hint>{{ linkTip.hint }}</span>
     </p>
 
     <div v-if="sizerChip" class="absolute right-2 bottom-2 z-10 flex items-center gap-2 rounded-md border border-default bg-default/90 py-1 pr-1 pl-2.5 text-xs shadow-sm backdrop-blur-sm" data-terminal-sizer :data-sizer-by="sizedBy">

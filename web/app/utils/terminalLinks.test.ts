@@ -1,31 +1,47 @@
 import { describe, expect, it } from 'vitest'
-import { linkHost, linkTip, opensLink, SHOWN_REST_MAX, shownLink, terminalLinkHandler, webLink, type LinkTip } from './terminalLinks'
+import { linkHost, linkModifierWords, linkTip, opensLink, SHOWN_REST_MAX, shownLink, terminalLinkHandler, webLink, type LinkTip } from './terminalLinks'
 
 const MR = 'https://example.com/group/project/-/merge_requests/95'
 const OTHER = ['file:///etc/passwd', 'javascript:void(0)', 'JavaScript:alert(1)', 'data:text/html,hi', 'vscode://file/etc/passwd', 'mailto:a@example.com', 'ftp://example.com/x', 'about:blank', '/etc/passwd', 'example.com', 'not a link', '']
 const CLICK = { button: 0, detail: 1 }
 
-function handler(selected = false, mac = false) {
+function handler(selected = false, mac = false, appMouse = false) {
   const calls: string[] = []
+  const tips: LinkTip[] = []
   const h = terminalLinkHandler({
     open: (u: string) => calls.push(`open ${u}`),
     opened: (u: string) => calls.push(`opened ${u}`),
-    show: (t: LinkTip | null) => calls.push(`show ${t ? t.origin + t.rest : null}`),
+    show: (t: LinkTip | null) => {
+      if (t) tips.push(t)
+      calls.push(`show ${t ? t.origin + t.rest + (t.hint ? ` ${t.hint}` : '') : null}`)
+    },
     selected: () => selected,
     mac,
+    appMouse: () => appMouse,
   })
-  return { h, calls }
+  return { h, calls, tips }
 }
 
 describe('a web link', () => {
-  it('is an http or https address, kept as it was printed', () => {
+  it('is an http or https address', () => {
     expect(webLink(MR)).toBe(MR)
     expect(webLink('http://127.0.0.1:4312/x')).toBe('http://127.0.0.1:4312/x')
-    expect(webLink('HTTPS://EXAMPLE.COM/x')).toBe('HTTPS://EXAMPLE.COM/x')
   })
 
   it('is no other scheme, and nothing that is not an address', () => {
     for (const u of OTHER) expect(webLink(u), u).toBeNull()
+  })
+
+  it('is the address as the parser writes it: scheme and host in lower case, no default port, a trailing dot kept', () => {
+    expect(webLink('HTTPS://EXAMPLE.COM:443/a')).toBe('https://example.com/a')
+    expect(webLink('http://Example.COM:80/a?b=1#c')).toBe('http://example.com/a?b=1#c')
+    expect(webLink('https://Example.COM.:443/x')).toBe('https://example.com./x')
+    expect(webLink('  https://example.com')).toBe('https://example.com/')
+  })
+
+  it('is not an address printed without the two slashes after its scheme, or with one', () => {
+    for (const u of ['http:example.com/a', 'HTTPS:example.com/a', 'https:/example.com/a', 'http:/example.com/a', 'https:\\\\example.com/a']) expect(webLink(u), u).toBeNull()
+    for (const u of ['http:example.com/a', 'https:/example.com/a']) expect(linkTip(u), u).toBeNull()
   })
 
   it('is said by its host', () => {
@@ -36,8 +52,8 @@ describe('a web link', () => {
 
 describe('what the hover shows', () => {
   it('is the scheme and host, then the path', () => {
-    expect(linkTip(MR)).toEqual({ origin: 'https://example.com', rest: '/group/project/-/merge_requests/95' })
-    expect(linkTip('http://127.0.0.1:4312/x?y=1#z')).toEqual({ origin: 'http://127.0.0.1:4312', rest: '/x?y=1#z' })
+    expect(linkTip(MR)).toEqual({ href: MR, origin: 'https://example.com', rest: '/group/project/-/merge_requests/95' })
+    expect(linkTip('http://127.0.0.1:4312/x?y=1#z')).toEqual({ href: 'http://127.0.0.1:4312/x?y=1#z', origin: 'http://127.0.0.1:4312', rest: '/x?y=1#z' })
   })
 
   it('keeps a very long host whole, first', () => {
@@ -51,7 +67,7 @@ describe('what the hover shows', () => {
     const tip = linkTip('https://example.com@other.example.net/x')!
     expect(tip.origin).toBe('https://other.example.net')
     expect(tip.origin + tip.rest).not.toContain('example.com')
-    expect(linkTip('https://name:secret@example.net/x')).toEqual({ origin: 'https://example.net', rest: '/x' })
+    expect(linkTip('https://name:secret@example.net/x')).toMatchObject({ origin: 'https://example.net', rest: '/x' })
   })
 
   it('shows an internationalised host in the ASCII form the browser uses', () => {
@@ -100,6 +116,20 @@ describe('which press opens a link', () => {
     expect(opensLink(CLICK, true, false)).toBe(false)
   })
 
+  it('not a press with Alt, which moves the prompt’s cursor', () => {
+    expect(opensLink({ ...CLICK, altKey: true }, false, false)).toBe(false)
+    expect(opensLink({ ...CLICK, altKey: true, ctrlKey: true }, false, false, true)).toBe(false)
+  })
+
+  it('while the program holds the mouse, not a plain click; Ctrl+click elsewhere and ⌘+click on a Mac open', () => {
+    expect(opensLink(CLICK, false, false, true)).toBe(false)
+    expect(opensLink(CLICK, false, true, true)).toBe(false)
+    expect(opensLink({ ...CLICK, ctrlKey: true }, false, false, true)).toBe(true)
+    expect(opensLink({ ...CLICK, metaKey: true }, false, true, true)).toBe(true)
+    expect(opensLink({ ...CLICK, ctrlKey: true }, false, true, true)).toBe(false)
+    expect(opensLink({ ...CLICK, metaKey: true }, false, false, true)).toBe(false)
+  })
+
   it('on a Mac, not Control with the primary button, the secondary click there; ⌘ with it opens', () => {
     expect(opensLink({ ...CLICK, ctrlKey: true }, false, true)).toBe(false)
     expect(opensLink({ ...CLICK, metaKey: true }, false, true)).toBe(true)
@@ -144,6 +174,39 @@ describe("the terminal's link handler", () => {
     const dragged = handler(true)
     dragged.h.activate(CLICK, MR)
     expect(dragged.calls).toEqual([])
+  })
+
+  it('opens exactly the address its tip is drawn from', () => {
+    for (const printed of ['HTTPS://EXAMPLE.COM:443/a', 'https://Example.COM.:443/x', 'https://name@example.net/x']) {
+      const { h, calls, tips } = handler()
+      h.hover({}, printed)
+      h.activate(CLICK, printed)
+      expect(calls.filter((c) => c.startsWith('open '))).toEqual([`open ${tips[0]!.href}`])
+      expect(calls).toContain(`opened ${tips[0]!.href}`)
+      // That one string is absolute and in the parser's own form, and its origin is the one the tip shows.
+      expect(tips[0]!.href).toBe(new URL(tips[0]!.href).href)
+      expect(new URL(tips[0]!.href).origin).toBe(tips[0]!.origin)
+    }
+  })
+
+  it('opens nothing and shows nothing for an address printed without its two slashes', () => {
+    const { h, calls } = handler()
+    h.hover({}, 'http:example.com/a')
+    h.activate(CLICK, 'http:example.com/a')
+    h.activate({ ...CLICK, ctrlKey: true }, 'https:/example.com/a')
+    expect(calls).toEqual([])
+  })
+
+  it('while the program holds the mouse, opens on the modifier alone and says so on the hover', () => {
+    const { h, calls } = handler(false, false, true)
+    h.hover({}, MR)
+    h.activate(CLICK, MR)
+    h.activate({ ...CLICK, ctrlKey: true }, MR)
+    expect(calls).toEqual([`show ${MR} ${linkModifierWords(false)}`, `open ${MR}`, `opened ${MR}`])
+    const mac = handler(false, true, true)
+    mac.h.hover({}, MR)
+    expect(mac.tips[0]!.hint).toBe('⌘+click opens')
+    expect(linkModifierWords(false)).toBe('Ctrl+click opens')
   })
 
   it('shows where a link goes while the pointer is over it, from its parsed address, and nothing once it leaves', () => {

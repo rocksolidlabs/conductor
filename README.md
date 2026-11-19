@@ -583,10 +583,14 @@ toast says where it went with **Preview in pane** (a sandboxed iframe; sites
 that forbid embedding stay blank). The pointer over a link shows where it goes
 at the foot of the terminal, read from its address whatever the words it is
 printed as: its scheme and host first and whole, then its path, cut at its end
-when long. A double-click opens it once, and a drag that selects text, a middle
-or a right click opens nothing, nor does Ctrl+click on a Mac (its secondary
-click; ⌘+click opens there); a hyperlink to a scheme other than http or https
-is not a link.
+when long; the address shown is the one that opens. A double-click opens it
+once, and a drag that selects text, a middle or a right click or an Alt+click
+opens nothing, nor does Ctrl+click on a Mac (its secondary click; ⌘+click opens
+there). While the program in the terminal takes the mouse (Neovim, tmux), a
+plain click is the program's: Ctrl+click (⌘+click on a Mac) opens the link, as
+the hover then says. On a touch screen a tap opens the link at once, as a tap
+does in any browser, and the toast then says where it went: there is no hover
+to show it first. Only an address printed as `http://` or `https://` is a link.
 A link an agent opens for you (an artifact, a pull request, a preview, a
 sign-in page) goes through Conductor: `conductor open <url>`, the MCP tool
 `open_url`, or the agent's own opener, which an agent with a browser set gets

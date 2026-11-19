@@ -56,7 +56,7 @@ async function watch(page: Page) {
 }
 
 /** The session page with the stub's links on its first rows, watched. */
-async function linksPage(page: Page, api: Api, home: string, name: string, links: string[] = LINKS) {
+async function linksPage(page: Page, api: Api, home: string, name: string, links: string[] = LINKS, o: { appMouse?: boolean } = {}) {
   const { dialogs, opens } = await watch(page)
   const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name })
   sessions.push(s.id)
@@ -64,6 +64,14 @@ async function linksPage(page: Page, api: Api, home: string, name: string, links
   await expect(page.locator('[data-transport-state]').first()).toHaveAttribute('data-transport-state', 'open', { timeout: 30_000 })
   const terminal = page.locator('.terminal-host .xterm-helper-textarea').first()
   await terminal.focus()
+  if (o.appMouse) {
+    // The stub as a TUI that takes the mouse (any-event tracking on, as Neovim, tmux or an agent's TUI ask for it).
+    await page.keyboard.type('stub tui on')
+    await page.keyboard.press('Enter')
+    // It keeps the line it has read in <id>.line from the moment it reads as a TUI.
+    const lineFile = async () => existsSync(join(home, '.stub-sessions', `${(await api.session(s.id)).agentSession?.id ?? 'none'}.line`))
+    await expect.poll(lineFile, { timeout: 30_000, message: 'the stub took the mouse' }).toBe(true)
+  }
   await page.keyboard.type(`stub links ${links.join('|')}`)
   await page.keyboard.press('Enter')
   await expect.poll(async () => transcript(home, await api.session(s.id)), { timeout: 30_000, message: 'the stub printed its links' }).toContain(`links: printed ${links.length}\n`)
@@ -226,6 +234,35 @@ test('the hover draws where a link goes from its address: a long host whole and 
   expect(m.inWindow).toBe(true)
   expect(m.lines, 'the host longer than the line wraps').toBeGreaterThan(1)
   expect(await t.opens()).toEqual([])
+})
+
+test('a click opens the address as the parser writes it, and an address printed without its two slashes is no link', async ({ page, api, state }) => {
+  const t = await linksPage(page, api, state.home, 'e2e terminal link forms', ['http:example.com/a no slashes', 'HTTPS://EXAMPLE.COM:443/group/project/-/merge_requests/95 the merge request'])
+  await t.overLink(1)
+  const tip = page.locator('[data-terminal-link-tip]')
+  await expect(tip.locator('[data-link-tip-origin]')).toHaveText('https://example.com')
+  // The row above: xterm makes a link of it, the page shows nothing for it and opens nothing.
+  await t.click(0)
+  await t.click(0, true)
+  // A gate: the second row's click, handled after both.
+  await t.overLink(1)
+  await t.click(1)
+  await expect.poll(async () => t.dialogs.length + (await t.opens()).length, { timeout: 15_000, message: 'the gate was handled' }).toBeGreaterThan(0)
+  expect(t.dialogs).toEqual([])
+  expect(await t.opens(), 'the printed hyperlink opened at its absolute address').toEqual(OPENED)
+})
+
+test('while the program holds the mouse, a plain click is the program’s: the hover says Ctrl+click opens, and only that opens', async ({ page, api, state }) => {
+  const t = await linksPage(page, api, state.home, 'e2e terminal link program mouse', [`${MR} the merge request`], { appMouse: true })
+  await t.overLink(0)
+  await expect(page.locator('[data-link-tip-hint]')).toHaveText('Ctrl+click opens')
+  await t.click(0)
+  // A gate: the Ctrl+click, handled after the plain click.
+  await t.overLink(0)
+  await t.click(0, true)
+  await expect.poll(async () => t.dialogs.length + (await t.opens()).length, { timeout: 15_000, message: 'the gate was handled' }).toBeGreaterThan(0)
+  expect(t.dialogs).toEqual([])
+  expect(await t.opens(), 'only the Ctrl+click opened').toEqual(OPENED)
 })
 
 test('a hyperlink to a scheme that is not the web’s is no link: a click opens nothing, says nothing and asks nothing', async ({ page, api, state }) => {
