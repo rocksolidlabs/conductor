@@ -1037,6 +1037,12 @@ it), leaves out a server session's paths its deny list refuses (the rule
 `TouchedFiles` applies, exported as `Local.Denied`), and queues one
 `ext.TouchedFile` per provider (`TouchQueue`, the oldest dropped).
 
+A context provider may also implement `ext.CommitNoter` and
+`ext.ContextLookup` and read a run's committed trees through
+`Host.ReadTree`, `ReadBlob` and `Denied`, and every provider's blocks are
+recorded against the attempt they were given to
+(`docs/plans/context-seams.md`).
+
 ### C5, the decision router: `Local.AnswerAs`, the attention sink, `answer_as` (PR-9, PR-10)
 
 **`Local.AnswerAs`** (`internal/session/local.go`, PR-9):
