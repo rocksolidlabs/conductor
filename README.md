@@ -787,13 +787,14 @@ the full sidebar on Exited. Every shape has a tooltip naming it in words
 exited"). The rail keeps the mark, Launch, a search button that opens the
 command palette, the pages (the Yard's count as an amber chip) and
 your menu. The panel button at the bottom of the rail brings the
-full sidebar back, as does **Ctrl+B**. The full sidebar opens at its
-narrowest, 12.5 rem (200 px) on every screen, its header the mark,
-"Conductor" and your menu (a wider font shortens the name first); drag its
-right edge to widen it, up to 26 % of the window but never less than
-17.5 rem (280 px), and on to the window's left edge for the rail; a
-double-click on the edge returns it to 200 px, and a narrower window keeps
-it within that window's bounds. The full sidebar's foot is the pages as six
+full sidebar back, as does **Ctrl+B**. The full sidebar opens at 17.5 rem
+(280 px) on every screen, wide enough for each row's name, question and
+choices, its header the mark, "Conductor" and your menu (a wider font
+shortens the name first); drag its right edge to narrow it to 16 rem
+(256 px) or widen it, up to 26 % of the window but never less than 21 rem
+(336 px), and on to the window's left edge for the rail; a double-click on
+the edge returns it to 280 px, and a narrower window keeps it within that
+window's bounds. The full sidebar's foot is the pages as six
 tiles in two rows, an icon over each name: **Needs you** (its number on the
 corner while something waits), **Yard**, **Crews**, **Dispatch**, **Brakeman**
 and **More**, which holds **Agents**, **History** and, in the desktop app,
