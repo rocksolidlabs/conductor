@@ -6,8 +6,11 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/rocksolidlabs/conductor/ext"
 	"github.com/rocksolidlabs/conductor/internal/crew"
@@ -54,13 +57,20 @@ var notConfirmed = ext.Confirmation{Why: "the router did not answer"}
 // ext.ConfirmWait, its answer checked (ext.Confirmation.Valid); any
 // failure is notConfirmed.
 func (g guardRouter) confirm(ctx context.Context, q ext.ConfirmQuery) ext.Confirmation {
+	c, _ := g.confirmTold(ctx, q)
+	return c
+}
+
+// confirmTold is confirm, and says whether the router answered at all: in
+// time, valid, in a slot it had free.
+func (g guardRouter) confirmTold(ctx context.Context, q ext.ConfirmQuery) (ext.Confirmation, bool) {
 	pc, ok := g.p.(ext.PolicyConfirmer)
 	if !ok || !live(g.ready) {
-		return notConfirmed
+		return notConfirmed, false
 	}
 	own := q
 	own.Decision = copyDecision(q.Decision)
-	return extCall(ctx, g.s, ext.KindDecisions, g.name, ext.ConfirmWait, notConfirmed, func(c ext.Confirmation) error {
+	c, _, answered := extCallTold(ctx, g.s, ext.KindDecisions, g.name, ext.ConfirmWait, notConfirmed, func(c ext.Confirmation) error {
 		return c.Valid()
 	}, func(ctx context.Context) (ext.Confirmation, error) {
 		mine := own
@@ -69,6 +79,7 @@ func (g guardRouter) confirm(ctx context.Context, q ext.ConfirmQuery) ext.Confir
 		c.Groups = copyOrNil(c.Groups)
 		return c, err
 	})
+	return c, answered
 }
 
 // policyClock is what the server holds a router to (ext.MaxBehind): per
@@ -124,18 +135,25 @@ func (c *policyClock) forget(id string) {
 // of the first in its run is taken as not in force. It is
 // crew.PolicyCheck.
 func (s *Server) policyCheck(ctx context.Context, rec ledger.DecisionRecord, revision, subject string) ext.Confirmation {
-	g, ok := s.exts.router.(guardRouter)
-	if !ok {
-		return notConfirmed
-	}
-	d := s.recordDecision(ctx, rec)
-	c := g.confirm(ctx, ext.ConfirmQuery{Decision: d, Revision: revision, Subject: subject})
-	retry := c.Behind || c.Routes || c.InForce && c.Revision != "" && c.Revision != revision
-	if !s.policyClock.held(rec.ID(), retry) {
-		return ext.Confirmation{Why: "its router did not settle its policy within " + ext.MaxBehind.String()}
-	}
+	c, _ := s.policyCheckTold(ctx, rec, revision, subject)
 	return c
 }
+
+// policyCheckTold is policyCheck, and says whether the router answered.
+func (s *Server) policyCheckTold(ctx context.Context, rec ledger.DecisionRecord, revision, subject string) (ext.Confirmation, bool) {
+	g, ok := s.exts.router.(guardRouter)
+	if !ok {
+		return notConfirmed, false
+	}
+	d := s.recordDecision(ctx, rec)
+	c, answered := g.confirmTold(ctx, ext.ConfirmQuery{Decision: d, Revision: revision, Subject: subject})
+	retry := c.Behind || c.Routes || c.InForce && c.Revision != "" && c.Revision != revision
+	if !s.policyClock.held(rec.ID(), retry) {
+		return ext.Confirmation{Why: "its router did not settle its policy within " + ext.MaxBehind.String()}, answered
+	}
+	return c, answered
+}
+
 
 // policyWindows are the records' opening windows, in memory: a record
 // opened while the router routes policies is answered by no one until the
@@ -399,3 +417,197 @@ func (r *decisionRouter) retell(id string) {
 	r.mu.Unlock()
 	r.mark(id)
 }
+
+// The registered decision router's reads and writes of the records'
+// policies (ext.Host.OpenDecisions, Outcomes, AckOutcomes, Reroute): the
+// router's Host alone serves them, and only where the server keeps a
+// ledger; every other Host answers ext.ErrUnsupported.
+
+// openDecisionsPage and outcomesPage are the pages' sizes.
+const (
+	openDecisionsPage = 64
+	outcomesPage      = 32
+)
+
+// routerLedger is the ledger the router's Host reads, or why it reads none:
+// ext.ErrUnsupported for any Host but the registered router's, on a
+// switchyard and with no ledger.
+func (h *extHost) routerLedger() (*ledger.Ledger, error) {
+	if err := h.gone(); err != nil {
+		return nil, err
+	}
+	if h.desk || !h.s.routerRegistered() || h.name != h.s.exts.router.Name() {
+		return nil, fmt.Errorf("%w: only the registered decision router reads the decisions' policies", ext.ErrUnsupported)
+	}
+	if h.s.cfg.Switchyard.Enabled || h.s.ledger == nil {
+		return nil, fmt.Errorf("%w: this server keeps no ledger of decisions", ext.ErrUnsupported)
+	}
+	return h.s.ledger, nil
+}
+
+// OpenDecisions pages every open record after the decision after ("" for
+// the first), in number order, each with its policy (nil under the
+// server's own), when the router's policy was first written, the last
+// route's why and its rev. No count cuts it: a router reads every page.
+func (h *extHost) OpenDecisions(ctx context.Context, after string) (ext.OpenDecisionsPage, error) {
+	ld, err := h.routerLedger()
+	if err != nil {
+		return ext.OpenDecisionsPage{}, err
+	}
+	var from int64
+	if after != "" {
+		n, ok := ledger.ParseDecisionID(after)
+		if !ok || len(after) > ext.MaxDecisionRef {
+			return ext.OpenDecisionsPage{}, refused("%q is not a decision's id", cutBytes(after, ext.MaxDecisionRef))
+		}
+		from = n
+	}
+	bctx, end := h.bound(ctx)
+	defer end()
+	recs, more, err := ld.OpenDecisionsAfter(bctx, from, openDecisionsPage)
+	if err != nil {
+		return ext.OpenDecisionsPage{}, err
+	}
+	page := ext.OpenDecisionsPage{Decisions: []ext.OpenDecision{}}
+	for _, rec := range recs {
+		od := ext.OpenDecision{Decision: h.s.recordDecision(bctx, rec), Rev: rec.Rev, Why: lastRouteWhy(rec)}
+		if p, _, ok := crew.RouterPolicyOf(rec.Policy); ok {
+			od.Policy = &p
+			od.RoutedAt = routedAtOf(rec.Policy)
+		}
+		page.Decisions = append(page.Decisions, od)
+	}
+	if more && len(recs) > 0 {
+		page.Next = recs[len(recs)-1].ID()
+	}
+	return page, nil
+}
+
+// lastRouteWhy is the why of rec's last change of route: a router's
+// change's kind, or routed.
+func lastRouteWhy(rec ledger.DecisionRecord) string {
+	for i := len(rec.History) - 1; i >= 0; i-- {
+		switch k := rec.History[i].Kind; k {
+		case ledger.HistoryAssigned, ledger.HistoryDelegated, ledger.HistoryEscalated, ledger.HistoryRerouted, ledger.HistoryRouted:
+			return k
+		}
+	}
+	return ""
+}
+
+// routedAtOf is when a router's policy was first written into raw.
+func routedAtOf(raw string) time.Time {
+	var p struct {
+		RoutedAt time.Time `json:"routedAt"`
+	}
+	_ = json.Unmarshal([]byte(raw), &p)
+	return p.RoutedAt
+}
+
+// Outcomes reads the outcome outbox after after, 32 at a time, in seq
+// order: each row as the router reads it, its record, policy and outcome
+// as the row keeps them.
+func (h *extHost) Outcomes(ctx context.Context, after uint64) (ext.OutcomesPage, error) {
+	ld, err := h.routerLedger()
+	if err != nil {
+		return ext.OutcomesPage{}, err
+	}
+	bctx, end := h.bound(ctx)
+	defer end()
+	rows, err := ld.Outcomes(bctx, int64(min(after, 1<<62)), outcomesPage)
+	if err != nil {
+		return ext.OutcomesPage{}, err
+	}
+	page := ext.OutcomesPage{Outcomes: []ext.OutboxEntry{}}
+	for _, r := range rows {
+		var o ledger.Outcome
+		if err := json.Unmarshal([]byte(r.Outcome), &o); err != nil {
+			return ext.OutcomesPage{}, err
+		}
+		page.Outcomes = append(page.Outcomes, outboxEntry(uint64(r.Seq), o))
+	}
+	if len(rows) == outcomesPage {
+		page.Next = uint64(rows[len(rows)-1].Seq)
+	}
+	return page, nil
+}
+
+// outboxEntry is an outbox row as a router reads it.
+func outboxEntry(seq uint64, o ledger.Outcome) ext.OutboxEntry {
+	d := ext.Decision{ID: o.Decision, Request: o.Decision, Kind: decisionKind, Message: cutBytes(o.Record.Question, maxRoutedMessage), Since: o.Record.CreatedAt,
+		Session: ext.SessionRef{ID: o.Record.Session, Run: o.Record.Run, Task: o.Record.Task, Attempt: o.Record.Attempt},
+		Record:  &ext.DecisionRecord{Type: o.Record.Type, Origin: o.Record.Origin, Gate: cutBytes(o.Record.Gate, ext.MaxRecordKey), Task: cutBytes(o.Record.Task, ext.MaxRecordKey)}}
+	for i, label := range o.Record.Options {
+		d.Options = append(d.Options, ext.DecisionOption{Label: label, Input: fmt.Sprint(i + 1)})
+	}
+	e := ext.OutboxEntry{Seq: seq, Decision: d, Outcome: outcomeOf(o), ClosedAt: o.ClosedAt}
+	if p, _, ok := crew.RouterPolicyOf(string(o.Policy)); ok {
+		e.Policy = &p
+		e.RoutedAt = routedAtOf(string(o.Policy))
+	}
+	return e
+}
+
+// outcomeOf is a kept outcome as ext says it.
+func outcomeOf(o ledger.Outcome) ext.DecisionOutcome {
+	return ext.DecisionOutcome{State: o.State, By: o.By, Via: o.Via, SupersededBy: o.SupersededBy, Why: oneLineWords(o.Why, ext.MaxDecisionWhyLine)}
+}
+
+// oneLineWords is s on one line, cut where a character ends to n bytes.
+func oneLineWords(s string, n int) string {
+	return cutBytes(strings.Join(strings.FieldsFunc(s, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }), " "), n)
+}
+
+// AckOutcomes deletes the outbox's rows up to through: the router's
+// acknowledgement, the only way a row leaves.
+func (h *extHost) AckOutcomes(ctx context.Context, through uint64) error {
+	ld, err := h.routerLedger()
+	if err != nil {
+		return err
+	}
+	bctx, end := h.bound(ctx)
+	defer end()
+	_, err = ld.AckOutcomes(bctx, int64(min(through, 1<<62)))
+	return err
+}
+
+// Reroute changes a record's policy (crew.Engine.Reroute): only for the
+// registered router that confirms policies, a request valid
+// (ext.RerouteRequest.Valid), and a policy valid for the record and of the
+// shape this server takes (guardRouter.policyShape).
+func (h *extHost) Reroute(ctx context.Context, r ext.RerouteRequest) (ext.RerouteResult, error) {
+	ld, err := h.routerLedger()
+	if err != nil {
+		return ext.RerouteResult{}, err
+	}
+	if !h.s.runs.RoutesPolicies() {
+		return ext.RerouteResult{}, fmt.Errorf("%w: the registered router confirms no policies", ext.ErrUnsupported)
+	}
+	if err := r.Valid(); err != nil {
+		return ext.RerouteResult{}, refused("%v", err)
+	}
+	g, _ := h.s.exts.router.(guardRouter)
+	if err := g.policyShape(r.Route.Policy); err != nil {
+		return ext.RerouteResult{}, refused("%v", err)
+	}
+	n, _ := ledger.ParseDecisionID(r.Decision)
+	bctx, end := h.bound(ctx)
+	defer end()
+	rec, found, err := ld.Decision(bctx, n)
+	switch {
+	case err != nil:
+		return ext.RerouteResult{}, err
+	case !found:
+		return ext.RerouteResult{}, fmt.Errorf("%w: no decision %s", ext.ErrNotFound, r.Decision)
+	}
+	if err := r.Route.Policy.Valid(*h.s.recordOf(bctx, rec)); err != nil {
+		return ext.RerouteResult{}, refused("%v", err)
+	}
+	res, err := h.s.runs.Reroute(bctx, r.Decision, h.s.exts.router.Name(), *r.Route.Policy, r.Why, r.OpID, r.ExpectedRev)
+	if err == nil && !res.Unchanged {
+		h.s.router.windows.close(r.Decision)
+	}
+	return res, err
+}
+
+

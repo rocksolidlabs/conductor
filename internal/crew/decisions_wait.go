@@ -1183,6 +1183,10 @@ type operation struct {
 	// commit clears the asking attempt's turnEnded mark (a request for
 	// more: its agent takes a turn to answer).
 	rev, wakes bool
+	// rowless makes the operation write no history row: a decision
+	// router's change of a record's policy past the history's
+	// MaxDecisionRouterChanges, recorded in the policy itself (Reroute).
+	rowless bool
 	// once makes the operation its actor's once per decision (a decision
 	// router's routing row, RecordRoute): no op id is written, and its
 	// repeat, whatever its body, is answered by the receipt of the row its
@@ -1363,6 +1367,10 @@ func (e *Engine) operate(ctx context.Context, id string, op operation) (OpReceip
 				return err
 			}
 			dt.Rev = max(dt.Rev, row.Rev)
+			if op.rowless {
+				out = OpReceipt{Decision: id, Op: op.kind, Rev: row.Rev, Words: dt.Words}
+				return ltx.Event("decision."+op.kind, map[string]any{"decision": id, "op": op.opID, "actor": op.actor})
+			}
 			hr := ledger.HistoryRow{Kind: op.kind, By: op.actor, Detail: historyDetail(dt), OpID: op.opID, Fingerprint: op.fp}
 			if op.once {
 				// Its repeat is its actor's row of its kind, looked for in

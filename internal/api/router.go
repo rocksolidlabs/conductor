@@ -912,6 +912,13 @@ func (r *decisionRouter) resolveRecord(id string, ref ext.SessionRef) {
 		return
 	}
 	res := ext.Resolution{ID: id, Request: id, Session: ref, At: time.Now().UTC()}
+	if n, ok := ledger.ParseDecisionID(id); ok && r.s.ledger != nil {
+		// A routed record's outcome, as its outbox row keeps it (I15).
+		if o, found, err := r.s.ledger.OutcomeOf(r.s.extCtx, n); err == nil && found {
+			out := outcomeOf(o)
+			res.Outcome = &out
+		}
+	}
 	r.s.track(func() {
 		g.resolveIn(r.s.extCtx, slot, res)
 		recordStep("resolved", id, ext.Route{}, nil)

@@ -3,7 +3,9 @@ package crew
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 	"time"
@@ -380,3 +382,168 @@ func (e *Engine) confirmAtApply(d *decision) bool {
 	return c.InForce && !c.Behind && (c.Revision == "" || c.Revision == p.Revision) &&
 		slices.ContainsFunc(ans.groups, func(g string) bool { return slices.Contains(c.Groups, g) })
 }
+
+// Reroute is a decision router's change of decision id's policy
+// (ext.Host.Reroute, by the router named router): one transaction,
+// conditional on the decision open and at expectedRev. Its answers, in
+// order: ext.ErrQuestionAnswered for a decision no longer open; Unchanged,
+// writing nothing, when policy's revision is the record's already (a
+// repeat, however late); ext.ErrStale, with the record's rev and revision,
+// when the record moved past expectedRev; ext.ErrRefused, with the words
+// why, for a comparison's selection and for a policy whose Pinned or Scope
+// is not the record's, or whose form goes from the requirement's groups
+// back to the unsupported form. A record under the server's own policy is
+// routed as a first route. Each of a record's first
+// ledger.MaxDecisionRouterChanges changes writes a history row of kind why
+// with opID; every later one is recorded in the policy itself (Reroutes
+// and Recent), so a re-route never runs out. The policy is valid for the
+// record already (the caller's check, ext.RoutePolicy.Valid).
+func (e *Engine) Reroute(ctx context.Context, id, router string, policy ext.RoutePolicy, why, opID string, expectedRev int) (ext.RerouteResult, error) {
+	n, ok := ledger.ParseDecisionID(id)
+	if !ok {
+		return ext.RerouteResult{}, fmt.Errorf("%w: %q is not a decision's id", ext.ErrRefused, shortText(id))
+	}
+	rec, found, err := e.readDecision(ctx, n)
+	switch {
+	case err != nil:
+		return ext.RerouteResult{}, err
+	case !found:
+		return ext.RerouteResult{}, fmt.Errorf("%w: no decision %s", ext.ErrNotFound, id)
+	}
+	if res, done, err := rerouteJudged(rec, policy, expectedRev); done {
+		return res, err
+	}
+	fp := fingerprintOf([]any{"reroute", policy, why})
+	actor := "router:" + router
+	var stored string
+	op := operation{kind: why, opID: opID, fp: fp, actor: actor, rev: true, expectedRev: expectedRev}
+	op.choose = func(rec ledger.DecisionRecord) (operation, error) {
+		o := op
+		if _, done, err := rerouteJudged(rec, policy, expectedRev); done {
+			if err == nil {
+				err = refuse(CodeDecisionConflict, "%s's revision is %s already", id, policy.Revision)
+			}
+			return o, err
+		}
+		changes := 0
+		for _, h := range rec.History {
+			if h.Kind == ledger.HistoryAssigned || h.Kind == ledger.HistoryDelegated || h.Kind == ledger.HistoryEscalated || h.Kind == ledger.HistoryRerouted {
+				changes++
+			}
+		}
+		next := policy
+		next.Reroutes, next.Recent = 0, nil
+		at := time.Now().UTC()
+		routedAt := at
+		if p, ok := routedOf(rec.Policy); ok {
+			routedAt = p.RoutedAt
+			next.Reroutes = p.Reroutes + 1
+			next.Recent = slices.Clone(p.Recent)
+		}
+		o.rowless = changes >= ledger.MaxDecisionRouterChanges
+		if o.rowless {
+			// Past the history's room: the change at the head of Recent,
+			// the oldest of its bound dropped.
+			next.Recent = append([]ext.RouteChange{{Why: why, Revision: policy.Revision, At: at}}, next.Recent...)
+			if len(next.Recent) > ext.MaxPolicyRecent {
+				next.Recent = next.Recent[:ext.MaxPolicyRecent]
+			}
+		}
+		var err error
+		stored, err = storedPolicy(next, router, ledger.PolicySpare(rec.Policy), routedAt)
+		if err != nil {
+			return o, err
+		}
+		detail := func(ledger.DecisionRecord) (opDetail, error) {
+			dt := opDetail{By: router, Revision: policy.Revision, Words: fmt.Sprintf("%s is %s by %s: revision %s", id, why, router, policy.Revision)}
+			dt.edit = func(dtx decisionTx, row ledger.DecisionRow) error {
+				ok, err := dtx.PutPolicy(row.N, stored, row.Rev)
+				if err != nil {
+					return err
+				}
+				if !ok {
+					return refuse(CodeStaleDecision, "%s moved while its policy was written", id)
+				}
+				return nil
+			}
+			return dt, nil
+		}
+		o.held = func(_ *run, _ *decision, rec ledger.DecisionRecord) (opDetail, func(), error) {
+			dt, err := detail(rec)
+			return dt, nil, err
+		}
+		o.notHeld = detail
+		return o, nil
+	}
+	rc, err := e.operate(ctx, id, op)
+	var de *DecisionError
+	switch {
+	case err == nil:
+		return ext.RerouteResult{Rev: rc.Rev}, nil
+	case errors.As(err, &de) && de.Code == CodeStaleDecision:
+		now, _, _ := e.readDecision(ctx, n)
+		p, _, _ := RouterPolicyOf(now.Policy)
+		return ext.RerouteResult{}, fmt.Errorf("%w: %s is at rev %d, revision %q", ext.ErrStale, id, now.Rev, p.Revision)
+	case errors.As(err, &de) && (de.Code == CodeDecisionClosed || de.Code == CodeDecisionAnswered):
+		return ext.RerouteResult{}, fmt.Errorf("%w: %s", ext.ErrQuestionAnswered, de.Words)
+	case errors.As(err, &de) && de.Code == CodeDecisionConflict:
+		// Its revision came first, from another try of the same change.
+		now, _, _ := e.readDecision(ctx, n)
+		return ext.RerouteResult{Rev: now.Rev, Unchanged: true}, nil
+	case errors.As(err, &de):
+		return ext.RerouteResult{}, fmt.Errorf("%w: %s", ext.ErrRefused, de.Words)
+	}
+	return ext.RerouteResult{}, err
+}
+
+// rerouteJudged is a re-route's judgement of rec before any write: done
+// with the answer (Unchanged, or a refusal) when it is not to be written.
+func rerouteJudged(rec ledger.DecisionRecord, policy ext.RoutePolicy, expectedRev int) (ext.RerouteResult, bool, error) {
+	id := rec.ID()
+	if rec.State != ledger.DecisionOpen {
+		return ext.RerouteResult{}, true, fmt.Errorf("%w: %s is %s", ext.ErrQuestionAnswered, id, rec.State)
+	}
+	if rec.Origin == ledger.OriginCompare {
+		return ext.RerouteResult{}, true, fmt.Errorf("%w: %s is a comparison's selection: it takes no router's policy", ext.ErrRefused, id)
+	}
+	p, routed := routedOf(rec.Policy)
+	if routed && p.Revision == policy.Revision {
+		return ext.RerouteResult{Rev: rec.Rev, Unchanged: true}, true, nil
+	}
+	if rec.Rev != expectedRev {
+		return ext.RerouteResult{}, true, fmt.Errorf("%w: %s is at rev %d, revision %q", ext.ErrStale, id, rec.Rev, p.Revision)
+	}
+	if routed {
+		switch {
+		case !reflect.DeepEqual(p.Pinned, policy.Pinned):
+			return ext.RerouteResult{}, true, fmt.Errorf("%w: %s's requirement is pinned for its life: a re-route changes who is eligible, never what is required", ext.ErrRefused, id)
+		case p.Scope != policy.Scope:
+			return ext.RerouteResult{}, true, fmt.Errorf("%w: %s's scope is its first route's", ext.ErrRefused, id)
+		case !p.Unsupported && policy.Unsupported:
+			return ext.RerouteResult{}, true, fmt.Errorf("%w: %s routes the requirement's own groups: the one change of form is to them, never back", ext.ErrRefused, id)
+		}
+	}
+	return ext.RerouteResult{}, false, nil
+}
+
+// AskRouter is the operator's route of decision id to its decision router
+// ({kind: router}): one of the operator's operations, a routed row saying
+// the router was asked again, no rev. The caller tells the router again
+// once it has committed.
+func (e *Engine) AskRouter(ctx context.Context, id, opID string, expectedRev int, note, actor string) (OpReceipt, error) {
+	if err := e.refuseSelection(ctx, id, "%s is a comparison's selection, the operator's to answer: it is not routed"); err != nil {
+		return OpReceipt{}, err
+	}
+	fp := fingerprintOf([]any{"route", []Destination{{Kind: DestRouter}}, note})
+	note, err := cleanOpText(note, false)
+	if err != nil {
+		return OpReceipt{}, err
+	}
+	dt := opDetail{Note: note, To: []any{map[string]string{"kind": DestRouter}}, By: actor, Words: fmt.Sprintf("%s is routed to its decision router again", id)}
+	return e.operate(ctx, id, operation{kind: ledger.HistoryRouted, opID: opID, fp: fp, actor: actor, expectedRev: expectedRev,
+		held:    func(*run, *decision, ledger.DecisionRecord) (opDetail, func(), error) { return dt, nil, nil },
+		notHeld: func(ledger.DecisionRecord) (opDetail, error) { return dt, nil }})
+}
+
+// DestRouter is a route to the registered decision router: ask it again.
+const DestRouter = "router"
