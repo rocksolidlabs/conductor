@@ -161,6 +161,19 @@ describe("the answer's state machine, row by row", () => {
     expect(f.sent).toEqual([{ responseId: 'r2', expectedRev: 4, choice: 0, text: 'as typed' }])
   })
 
+  it('checking: the item holding another decision at the same rev is a change: drawn, rebased, nothing sent', async () => {
+    const { f, make } = fake()
+    const m = make()
+    await m.open('i1', f.item)
+    await m.edit('i1', { choice: 0 })
+    f.item = { ...item(3), decision: decision(3, 'open', { id: 'dr-9', request: { question: 'Another question?', options: [{ label: 'Yes' }, { label: 'No' }] } }) }
+    const v = await m.answer('i1', { choice: 0 })
+    expect(v).toMatchObject({ step: 'editing', words: ANSWER_WORDS.changed })
+    expect(v.item?.decision.id).toBe('dr-9')
+    expect(f.sent).toEqual([])
+    expect(f.drafts.get('i1')?.responseId).not.toBe('r1')
+  })
+
   it('checking: a superseded decision is drawn with its successor named, and nothing is sent', async () => {
     const { f, make } = fake()
     const m = make()

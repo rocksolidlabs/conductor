@@ -141,8 +141,10 @@ export function createAnswer(deps: AnswerDeps) {
     if (gen !== generation) return view(id)
     const d = view(id).draft
     const dec = item.decision
+    // The decision the person read: another record at the same rev is a change too.
+    const drawn = view(id).item?.decision.id
     if (item.elsewhere) return set(id, gen, { step: 'editing', item, words: item.elsewhere, noAnswer: true, actions: [] })
-    if (d && (dec.state === 'superseded' || dec.rev !== d.rev)) {
+    if (d && (dec.state === 'superseded' || dec.rev !== d.rev || (drawn !== undefined && drawn !== dec.id))) {
       const words = dec.state === 'superseded' && dec.supersededBy ? `${ANSWER_WORDS.changed}. It was replaced by ${dec.supersededBy}` : ANSWER_WORDS.changed
       return rebase(id, gen, item, words)
     }
