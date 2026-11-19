@@ -764,13 +764,21 @@ CREATE TABLE attempt_context (
   sha256  TEXT    NOT NULL,   -- of the block's body, lower-case hex
   bytes   INTEGER NOT NULL,   -- the body's
   at      TEXT    NOT NULL,   -- RFC 3339, UTC
-  PRIMARY KEY (run_id, task_id, n, seq)
+  PRIMARY KEY (run_id, task_id, n, seq),
+  FOREIGN KEY (run_id, task_id, n)
+    REFERENCES attempts(run_id, task_id, n) ON DELETE CASCADE
 );
 ```
 
-No attempt before this version was given a recorded block, so a
-version 13 database's rows are all true as they are: nothing is
-derived. A binary of the version before opens this one read-only.
+The foreign key is the one every table kept for an attempt has (the
+previews' table, with the same key, among them): a pruned run's rows go
+with its attempts, which is what keeps them exactly as long as the
+run's rows (Owner decision 6), and CT-3 writes a row only for an
+attempt that exists, so the key refuses nothing it writes.
+
+No attempt before this version was given a recorded block, so the rows
+of a database of the version before are all true as they are: nothing
+is derived. A binary of the version before opens this one read-only.
 
 ### `internal/crew`, `internal/api`: the attempt's context recorded (CT-3)
 
