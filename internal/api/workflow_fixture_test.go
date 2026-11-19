@@ -417,14 +417,15 @@ func (w *workflow) respondAs(t *testing.T, pass, responseID string, choice int) 
 	return w.decide().respondAs(t, pass, w.did, responseID, choice, w.record(t, w.did).Rev)
 }
 
-// applied waits for the decision's application and checks it: validated,
-// the held work resumed (the answer typed into the asking attempt, or
-// handed to its next), one decision.applied event.
+// applied waits for the decision's application and checks how the held
+// work resumed (the answer typed into the asking attempt, handed to its
+// next, or its gate released) and its decision.applied event; whether it
+// was validated is assertTruthful's, which every test calls after it.
 func (w *workflow) applied(t *testing.T, did string) map[string]any {
 	t.Helper()
 	d := w.decisionWhen(t, did, "applied", inState(ledger.DecisionApplied))
 	app, _ := d["applied"].(map[string]any)
-	if app == nil || app["validated"] != true || (app["how"] != crew.HowTyped && app["how"] != crew.HowTaskFile && app["how"] != crew.HowReleased) {
+	if app == nil || (app["how"] != crew.HowTyped && app["how"] != crew.HowTaskFile && app["how"] != crew.HowReleased) {
 		t.Fatalf("the application: %v", d["applied"])
 	}
 	w.eventWhen(t, "decision.applied", did)
@@ -551,6 +552,11 @@ func (w *workflow) assertTruthful(t *testing.T, step string) {
 	for _, did := range dids {
 		d := entityOf(t, w.expect(t, http.MethodGet, "/api/decisions/"+did, nil, http.StatusOK, ""), "decision")
 		state, _ := d["state"].(string)
+		if r := factRank(state); r < w.seen[did] {
+			fail("%s went back to %s", did, state)
+		} else {
+			w.seen[did] = r
+		}
 		accepted := 0
 		responses, _ := d["responses"].([]any)
 		for _, r := range responses {
@@ -597,16 +603,8 @@ func (w *workflow) assertTruthful(t *testing.T, step string) {
 		if typed > 1 {
 			fail("%s's history holds %d applications", did, typed)
 		}
-		if r := factRank(state); r < w.seen[did] {
-			fail("%s went back to %s", did, state)
-		} else {
-			w.seen[did] = r
-		}
 		rec := w.record(t, did)
 		records[rec.N] = rec
-		if (state == ledger.DecisionOpen || state == ledger.DecisionAnswered) && len(rec.Held) == 0 {
-			fail("%s is %s and holds nothing: its work could run before its answer is applied", did, state)
-		}
 	}
 	for _, run := range w.runs {
 		holds, err := w.srv.ledger.Holds(ctx, run)
@@ -650,6 +648,11 @@ func (w *workflow) assertTruthful(t *testing.T, step string) {
 				}
 				sessions[a.SessionID] = true
 			}
+		}
+	}
+	for _, rec := range records {
+		if (rec.State == ledger.DecisionOpen || rec.State == ledger.DecisionAnswered) && len(rec.Held) == 0 {
+			fail("%s is %s and holds nothing: its work could run before its answer is applied", rec.ID(), rec.State)
 		}
 	}
 	if w.fakes != nil {
@@ -978,11 +981,11 @@ func (w *workflow) respond(t *testing.T) {
 		t.Fatal("the recheck never reached the identity provider")
 	}
 	// Recorded, not yet validated: answered, the hold kept, nothing applied.
+	w.assertTruthful(t, "step 10, the answer recorded, its recheck held")
 	rec := w.record(t, w.did)
 	if rec.State != ledger.DecisionAnswered || len(rec.Responses) != 1 || !slices.Equal(rec.Held, []string{"build"}) || rec.Applied != "" {
 		t.Fatalf("held at the recheck: %s, %d responses, held %v, applied %q", rec.State, len(rec.Responses), rec.Held, rec.Applied)
 	}
-	w.assertTruthful(t, "step 10, the answer recorded, its recheck held")
 	close(gate)
 	got := <-sent
 	if got.err != nil {

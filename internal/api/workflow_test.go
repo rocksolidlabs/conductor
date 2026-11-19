@@ -172,6 +172,10 @@ func TestWorkflowStaleCard(t *testing.T) {
 	if got.err != nil {
 		t.Fatal(got.err)
 	}
+	w.assertTruthful(t, "the stale answer refused")
+	if got.status != http.StatusConflict {
+		t.Fatalf("an answer to a card the decision moved past was taken: %d %s", got.status, got.data)
+	}
 	var r proto.DecideRefusal
 	strictly(t, got.data, &r)
 	if got.status != http.StatusConflict || r.Error.Code != crew.CodeStaleDecision || r.Error.Message != decideWords(crew.CodeStaleDecision, w.did) ||
@@ -182,7 +186,6 @@ func TestWorkflowStaleCard(t *testing.T) {
 	if rec.State != ledger.DecisionOpen || len(rec.Responses) != 1 || rec.Responses[0].Status != "refused" || rec.Rev != read.Rev+1 {
 		t.Fatalf("after the stale answer: %s rev %d, %+v", rec.State, rec.Rev, rec.Responses)
 	}
-	w.assertTruthful(t, "the stale answer refused")
 	now := f.view(t, passAna, w.did)
 	if now.Rev != read.Rev+1 || now.State != ledger.DecisionOpen || len(now.Own) != 1 || now.Own[0].Code != crew.CodeStaleDecision {
 		t.Fatalf("the card at its new rev: %+v", now)
@@ -209,6 +212,9 @@ func TestWorkflowDuplicateTap(t *testing.T) {
 		t.Fatalf("the first tap: %d %s", status, first)
 	}
 	status, again, _ := f.respondAs(t, passAna, w.did, "tap-1", 0, rev)
+	if status != http.StatusOK {
+		t.Fatalf("the tap sent again is not answered from the first's receipt: %d %s", status, again)
+	}
 	var r1, r2 proto.DecideReply
 	strictly(t, first, &r1)
 	strictly(t, again, &r2)
@@ -447,7 +453,11 @@ func TestWorkflowAgentRestarted(t *testing.T) {
 		w.assertTruthful(t, "the asking session ended")
 		w.respond0(t, adminToken, "op-1", 0, http.StatusCreated, "")
 		w.applied(t, w.did)
-		a := runningAttempt(t, w.testEnv, w.run, "build", 2)
+		a := runningAttempt(t, w.testEnv, w.run, "build", 0)
+		w.assertTruthful(t, "the next attempt started")
+		if a["n"] != 2.0 {
+			t.Fatalf("the next attempt is %v", a["n"])
+		}
 		md := string(w.launches().treeFile(t, w.run, "build", 2, "task.md"))
 		if !strings.Contains(md, w.did) || !strings.Contains(md, "Keep the session cookie") {
 			t.Fatalf("the next attempt's task.md lacks the answer:\n%s", md)
