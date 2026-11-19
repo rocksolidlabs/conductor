@@ -418,6 +418,9 @@ type Engine struct {
 	// contextOf answers an attempt's context blocks (SetContext; nil, none
 	// is asked). Under mu.
 	contextOf ContextFunc
+	// handoffOf answers the handoff package a person sent for an attempt
+	// (SetHandoff; nil, none is asked). Under mu.
+	handoffOf HandoffFunc
 	// teardownRoot is the context every managed run's teardown context is
 	// made beneath (add), ended by teardownCut at the shutdown's cut-off
 	// (steps.go: Draining).

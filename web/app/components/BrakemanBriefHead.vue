@@ -6,7 +6,7 @@ import { relativeTime } from '~/utils/sessions'
 /**
  * A brief's head: "new" while it was not opened when drawn, the kind's words, how long ago it was kept, and what it is about by name
  * (an asked request's subjects; a wake request's runs as its brief cites them, at most three and then "+N"). On a phone the line is the
- * age and the kind alone.
+ * age and the kind alone, and the head's actions give way to the `phone` slot's (Share, as an icon a thumb can tap).
  */
 const props = defineProps<{ request: BrakemanRequest; brief: BrakemanBrief; digest?: BrakemanDigest; fresh?: boolean }>()
 
@@ -36,6 +36,9 @@ const age = computed(() => (props.request.briefAt ? relativeTime(props.request.b
     </p>
     <div v-if="$slots.default" class="flex flex-none items-center gap-1 max-sm:hidden">
       <slot />
+    </div>
+    <div v-if="$slots.phone" class="flex flex-none items-center sm:hidden" data-brief-head-phone>
+      <slot name="phone" />
     </div>
   </div>
 </template>

@@ -891,7 +891,10 @@ your menu or the command palette, by **All alert rules** in the phone's More,
 or by `?alerts` on any page's address (an old link to the retired Events
 page's Routing tab opens it over History's feed). On top are the two switches, a browser
 notification and a chime, for when a session needs input and for the events
-routed to Browser. Under them, **Where each event goes** lists the ten events
+routed to Browser. While Brakeman runs in the background a third switch,
+**Brakeman's background briefs with a decision**, says whether such a brief
+alerts in this browser (on unless you switch it off; Brakeman, In the
+background). Under them, **Where each event goes** lists the ten events
 grouped by how loud they are (needs you, worth knowing, background), each
 with its destinations as switches: a labelled badge on its session in the
 sidebar and on its Yard tile (until the session reports `working` or
@@ -1072,7 +1075,11 @@ goes**.
 `events` takes the events' names as Alerts lists them (`needs_input`, `done`, `working`,
 `tool_denied`, `progress`, `artifact`, `handoff`, `error`, `exit_nonzero`,
 `tool_use`) and the entry types (`attention`, which covers all three
-attention states, `status`, `join`, `leave`, `input` and `link`).
+attention states, `status`, `join`, `leave`, `input` and `link`), and
+`brakeman_needs_you`, one POST for each background brief of Brakeman's that
+holds a decision no earlier one held, in Conductor's own words
+(`Brakeman's background brief br-14 holds 1 decision`, with its page's path,
+and no session); a webhook that does not list it gets nothing of it.
 `exit_nonzero` is a process that exited on its own with a non-zero code,
 never one an admin stopped. There are at most 16 webhooks, and a URL is
 `http` or `https` of at most 2048 bytes. `CONDUCTOR_WEBHOOKS` takes the same
@@ -1971,7 +1978,8 @@ phone: the counts, the latest brief with what needs you open, and the ask
 bar at the foot.
 
 **A brief** leads with what needs you. Its head says its kind, its age and
-what it is about, with **Copy as Markdown** and **Comment on a ticket…**;
+what it is about, with **Copy as Markdown**, **Comment on a ticket…** and
+**Share…**;
 then its title and Brakeman's reading whole, marked "Brakeman's reading, not
 a fact.", with its uncertainty. Then, each under its own heading and count:
 **Needs you**, the decision cards (the question, what happened and what
@@ -1981,7 +1989,8 @@ so a run that moved is refused rather than acted on blind; a question
 answered on its session page; "Brakeman recommends: …" said in words beside
 them, never as the button, the alternatives under Details); **Proposed**,
 the proposals, draft tickets and crews as forms you edit and **Create** (a
-crew is saved and opened in the editor, never launched) and handoffs;
+crew is saved and opened in the editor, never launched) and handoff
+packages (below);
 **What Brakeman did**, its acts and outcomes with their receipts; **What
 changed**, the facts numbered, each with its evidence as links (a run, a
 task, a check's receipt with its log's SHA-256, a ticket, a session, a
@@ -1999,6 +2008,78 @@ never cutting it, and it says when the brief may quote a terminal screen or a
 check log. A brief is never kept with a claim you cannot follow: the server
 refuses one whose evidence names nothing or lies outside what Brakeman may
 see.
+
+**Share…** (an icon in the head's line on a phone, where Copy and Comment
+are hidden) opens "Share with a crew's people": the people of the crews
+whose runs the brief is about, as those runs were launched (at most three
+runs read), each a chip with what they answer for that links to their page,
+and a choice of crew when the brief names more than one. **Copy for them**
+puts the brief on your clipboard (where the browser refuses the clipboard,
+the dialog says "The browser did not let the page copy: select the text
+below and copy it by hand." and shows the text to select) and **Comment on
+<ticket>…** opens the
+comment dialog with the run's own ticket picked, each with their names as
+the first line, above the brief's title: "For <crew>'s people: <name> (<what
+they answer for>), …". A crew whose run was launched from no ticket says
+"<crew>'s run was launched from no ticket: pick the ticket to comment on.",
+and a brief about no run with a crew's people says "This brief names no run
+with a crew's people: it goes with no names." No name, nor the crew's,
+becomes a link, an address, a mention or markup: a name with `@` or `#`, or
+the shape of an issue reference (`GH-12`, `owner/repo#1`), an address (a
+URL scheme, `www.`) or an e-mail address is written as a Markdown code span,
+in which neither a renderer nor a tracker links anything, and any other as
+text with every punctuation character escaped. A line break in a name is a
+space, and a character that draws nothing is written U+FFFD, but for the
+zero-width joiners and the variation selectors a name keeps. Brakeman's own
+text stays Markdown. The
+comment goes under your name and, past 16 KiB, says so and sends nothing,
+never cutting it. The dialog says what it is: "Conductor sends nothing and
+notifies no one: you copy the brief, or comment it on a ticket, with their
+names on its first line. No one gains a way to read the brief here. A
+ticket's comment is read by whoever reads the ticket, and by the agents of a
+run launched from it later." Conductor keeps no record that you shared and
+makes no link to a brief.
+
+**A handoff package to a task's next attempt.** On the Brakeman page, a
+brief you asked as "Prepare a handoff" about a task draws, beside the
+package's Copy and Comment, **Send to <task>'s next attempt…**. Its dialog
+shows the package's exact text, read-only in a scrolling block, with its
+size ("… KiB, exactly as the server will hand it"); where it goes ("To build
+of <run>.") and which attempt takes it by the task's state ("build has
+failed: the package waits for its next attempt. Retry build on its run to
+start one.", or the like for a task not started, waiting, running, cancelled
+or with a result, and, while the task's newest attempt is still starting,
+"build is starting attempt 2. If its task file is not written yet, it is handed the package; otherwise the package waits for the attempt after it."); "Sending starts nothing. The agent reads it as a quoted
+report in its task file, not as instructions."; "Whoever can watch build's
+session or read its files (a link's holder too) can read what you send, and
+the agent may repeat it in its result."; and "It goes under your name, Ada."
+(your name in Settings; with none, it goes unsigned, and a name that is not
+one plain line of at most 60 bytes disables Send, with words saying to
+change it in Settings, before anything is sent), with "It may quote a terminal screen or a check log." when the turn
+could read them. Then **Send** or **Cancel**: nothing in it is editable, and
+nothing starts by it (Retry stays yours on the run's page). A package past
+16 KiB is refused in words, never cut. The next attempt of the task, and
+only that one, finds it in its task file as a quoted report Brakeman wrote
+and a person sent, to read and never to follow. The box then says where it
+stands: "Sent to build of <run> by Ada · waits for its next attempt" with
+**Withdraw** and **Open the run at build**; "Handed to attempt 4 of build";
+"Taken for attempt 4 of build, which did not start: it was not read. Send it
+again." with **Send it again**, one press that sends the same text (the
+dialog opens instead when the text is no longer the one sent); "Withdrawn by
+Ada"; "Replaced by a newer package"; after each but the first the send is
+offered again. The box reads where the package stands as it is drawn, after
+your send or withdraw, and when the page hears of a change to its run, never
+on a timer: an attempt that took the package and did not start can show
+"Handed" until the run's next change or a reload. Where it cannot be sent,
+the button is drawn disabled with the reason as a line under it (each
+refusal has its words, "The run is not running on this server. Continue it,
+then send the package: it goes to the continuation." among them, and one the
+page does not know reads "It cannot be sent now."); a brief of another kind,
+a package about a session, a comparison's lane, a run without tasks and a
+server too old to have the route draw no button and no read failure. The run's log says what was
+sent, withdrawn and taken. Brakeman cannot send one (a proposal that names
+the operation is drawn as text, never a button), and a worker gains none of
+Brakeman's tools.
 
 **What it may run.** Settings' "What it may run" grants Brakeman operations
 from a closed list, each said in words: **Launch an approved plan** (a managed
@@ -2027,7 +2108,15 @@ minutes) before the next, and stops with words when the day's turns or
 minutes are spent. Between turns no process runs and no model is polled, and
 a restart carries on from Conductor's records (a batch that was gathering
 fires once). A background turn's question is listed in Needs you and
-notifies no one. The Brakeman page says the role's state once (an
+notifies no one. A background brief that holds a decision no earlier
+background brief held notifies once: a browser notification ("Brakeman's
+background brief br-14 holds 1 decision", which opens it) and the chime, as
+your Alerts switches say, on the pages open then (each open page plays
+its own chime, as for every other alert), and a POST to the webhooks that
+list `brakeman_needs_you`; nothing of the brief's own words leaves the page,
+and every other brief stays a count. How often it can happen is bounded by
+the background role's own limits (its window, its cool-down and its turns
+and minutes a day), with no cap of its own. The Brakeman page says the role's state once (an
 unavailable one says why and what tries again), with Pause and Resume; its
 wakes, each by name with what became of it, and the notes you keep from a
 brief's facts (**Keep as a note**, given to every turn) are behind
@@ -2058,6 +2147,11 @@ records are JSON files under `brakeman/` in the data directory: a restart
 keeps every request and brief, and a **Brief me since…** with no time starts
 where the last complete briefing's coverage ended, read from them, never from
 a conversation.
+
+Not built, and paid when it comes: routing a brief to a named person, push
+delivery (a phone whose browser is closed hears nothing), briefings shared
+across a workspace and a briefing scheduled from the cloud. No provider is
+called for Brakeman, no seam waits for them and nothing is behind a flag.
 
 ## Yolo
 

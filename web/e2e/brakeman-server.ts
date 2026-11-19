@@ -24,6 +24,8 @@ export interface BrakemanServerOptions {
   config?: Record<string, unknown>
   /** Variables set over the server's own (startServer's `env`). */
   serverEnv?: Record<string, string>
+  /** Copies of the e2e catalog's agents, each as `from` with its own id and these variables over its own (a worker held by a file). */
+  agents?: Array<{ id: string; from: string; env: Record<string, string> }>
 }
 
 /** A Brakeman request as the API answers it, with the fields a spec reads. */
@@ -100,7 +102,12 @@ export async function brakemanServer(o: BrakemanServerOptions): Promise<Brakeman
     writeFileSync(briefFile, '')
     const config = join(root, 'conductor.json')
     renderConfig(join(here, 'conductor.e2e.json'), config)
-    const cfg = JSON.parse(readFileSync(config, 'utf8')) as { catalog: { agents: Array<{ id: string; env?: Record<string, string> }> } }
+    const cfg = JSON.parse(readFileSync(config, 'utf8')) as { catalog: { agents: Array<{ id: string; name?: string; env?: Record<string, string> }> } }
+    for (const a of o.agents ?? []) {
+      const base = cfg.catalog.agents.find((x) => x.id === a.from)
+      if (!base) throw new Error(`the e2e catalog has no ${a.from} agent`)
+      cfg.catalog.agents.push({ ...JSON.parse(JSON.stringify(base)), id: a.id, name: `${base.name ?? base.id}, ${a.id}`, env: { ...base.env, ...a.env } })
+    }
     const stub = cfg.catalog.agents.find((a) => a.id === 'brakeman-stub')
     if (!stub) throw new Error('the e2e catalog has no brakeman-stub agent')
     stub.env = { ...stub.env, STUB_BRAKEMAN_WAIT: gate, STUB_BRAKEMAN_BRIEF: briefFile, ...o.env }

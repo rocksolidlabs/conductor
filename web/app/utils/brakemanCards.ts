@@ -484,13 +484,14 @@ function cell(s: string): string {
  * A brief as Markdown, for Copy and for a ticket's comment: the title; Brakeman's reading, marked as its reading and not a fact; then
  * each kind under its own heading, never run together: the decisions waiting on a person, what Brakeman proposes, the outcomes it
  * verified, the facts with their evidence, its readings of them, the overlapping changes, the comparisons and the evidence panels;
- * last, where it came from. Refs are linked by the page's own paths. "" for a brief with no prose to copy.
+ * last, where it came from. Refs are linked by the page's own paths. "" for a brief with no prose to copy. `addressed`, a share's
+ * "For …" line (utils/brakemanShare.ts, forLine), is written first, before the title; without it the text is as it was.
  */
-export function briefMarkdown(b: BrakemanBrief, r: Pick<BrakemanRequest, 'id' | 'agent' | 'briefAt'>, label: (ref: string) => string = (x) => refLabel(x), agentName?: string): string {
+export function briefMarkdown(b: BrakemanBrief, r: Pick<BrakemanRequest, 'id' | 'agent' | 'briefAt'>, label: (ref: string) => string = (x) => refLabel(x), agentName?: string, addressed?: string): string {
   const items = b.items ?? []
   if (!b.title.trim() && !b.summary.trim() && !items.length) return ''
   const refs = (xs: readonly string[] | undefined) => (xs ?? []).map((x) => refMarkdown(x, label)).join(', ')
-  const out: string[] = [`# ${b.title.trim() || r.id}`]
+  const out: string[] = [...(addressed ? [addressed, ''] : []), `# ${b.title.trim() || r.id}`]
   if (b.summary.trim() || b.uncertainty?.trim()) {
     out.push('', "**Brakeman's reading, not a fact.**")
     if (b.summary.trim()) out.push('', b.summary.trim())

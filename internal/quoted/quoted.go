@@ -34,6 +34,7 @@ package quoted
 import (
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 // Untrusted is what the mark says of the text, in the words the agents'
@@ -108,15 +109,33 @@ func Block(src Source, what, text string) string {
 	var b strings.Builder
 	b.WriteString(opening(c, what))
 	b.WriteString("\n\n")
-	for i, l := range Lines(text) {
-		if i > 0 {
-			b.WriteString("\n")
-		}
-		b.WriteString(strings.TrimRight(Prefix+strings.ReplaceAll(l, "]:", `]\:`), " \t"))
-	}
+	b.WriteString(strings.Join(QuoteLines(text), "\n"))
 	b.WriteString("\n\n")
 	b.WriteString(closing(c))
 	return b.String()
+}
+
+// QuoteLines is text as a block writes its lines between its opening and
+// closing lines (Lines): each after Prefix, a blank one as ">" alone, each
+// line's trailing spaces left out, and each "]:" written "]\:", so no line
+// defines a link reference. Every line it answers begins with ">". A
+// caller with words of its own around a quote (the handoff package of a
+// task file) writes the lines through it.
+func QuoteLines(text string) []string {
+	lines := Lines(text)
+	for i, l := range lines {
+		lines[i] = strings.TrimRight(Prefix+strings.ReplaceAll(l, "]:", `]\:`), " \t")
+	}
+	return lines
+}
+
+// Plain reports whether s is one line that Flat writes as it is: valid
+// UTF-8, with no line end, no tab, no character that draws nothing and no
+// leading or trailing space. A name Conductor writes into its own words
+// (who sent a handoff package) is refused unless it is plain, where it is
+// taken, so the writer never meets one it would have to change.
+func Plain(s string) bool {
+	return utf8.ValidString(s) && !strings.ContainsRune(s, '\t') && strings.TrimSpace(s) == s && Flat(s) == s
 }
 
 // Line is text, written at src, at the end of one line: what, the source
