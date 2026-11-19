@@ -57,7 +57,7 @@ export function shellAnswering(
   p: Pick<ShellProvider, 'inbox' | 'drafts'>,
   name: string,
   o: { mint?: () => string; now?: () => number; wait?: number } = {},
-): { machine: AnswerMachine; views: Ref<Record<string, AnswerView>>; answeringFor: (itemId: string) => DecisionAnswering } {
+): { machine: AnswerMachine; views: Ref<Record<string, AnswerView>>; answeringFor: (itemId: string) => DecisionAnswering; signedOut: () => void } {
   const now = o.now ?? Date.now
   const views = ref<Record<string, AnswerView>>({})
   const machine = createAnswer({
@@ -114,7 +114,15 @@ export function shellAnswering(
       },
     }
   }
-  return { machine, views, answeringFor }
+  /**
+   * A sign-out: the machine moves on (nothing begun before it writes again) and every view it kept is emptied, the reactive copy the
+   * pages draw from among them: no card, no draft and no state of the signed-out person stays on the phone's screens.
+   */
+  function signedOut(): void {
+    machine.signedOut()
+    views.value = {}
+  }
+  return { machine, views, answeringFor, signedOut }
 }
 
 /** The provider's inbox with every call bounded: past the wait a call is refused `unreachable`, in words naming the provider. */

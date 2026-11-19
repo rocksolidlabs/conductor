@@ -16,7 +16,7 @@ export function useShell() {
   const provider = bridge?.provider ?? null
   const name = providerName(provider)
   if (provider && !store && import.meta.client) {
-    store = createShellState(provider, { name, signedOut: () => answer?.machine.signedOut() })
+    store = createShellState(provider, { name, signedOut: () => answer?.signedOut() })
     void store.start()
   }
   const s = store ?? none

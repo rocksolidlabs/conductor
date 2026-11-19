@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { createAnswer } from './answer'
 import type { ShellItem, ShellProvider, ShellState } from './shell'
 import { createShellState } from './shellState'
+import { shellAnswering } from './transport/shell'
 
 // A sign-out seen any way (docs/plans/phone-shell.md, A4): through the provider's own report or through a read of its state, it is
 // cleaned up once and the same way: the answer machine moved on, so nothing begun before it writes a view, and the inbox kept for a
@@ -89,5 +90,31 @@ describe('a sign-out', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it("empties every view the pages draw from: no card, no draft and no state of the signed-out person stays", async () => {
+    const pr = provider()
+    const it0 = { id: 'i1', decision: { id: 'dr-7', state: 'open', rev: 1, type: 'clarification', request: { question: 'Ship it?', options: [] } }, rows: [], owner: { name: 'desk' }, asOf: '', offline: false } as unknown as ShellItem
+    const drafts = new Map<string, unknown>()
+    const ans = shellAnswering(
+      {
+        inbox: { list: async () => ({ items: [], asOf: '' }), item: async () => it0, respond: async () => ({ outcome: 'kept' }), answerOf: async () => ({ state: 'none' }), resolve: async () => ({ id: 'i1' }), watch: () => () => {} },
+        drafts: { get: async () => null, list: async () => [], put: async (d) => (drafts.set(d.id, d), { ok: true }), remove: async () => {} },
+      },
+      'Desk relay',
+      { mint: () => 'r1', now: () => 0 },
+    )
+    const st = createShellState(pr.p, { name: 'Desk relay', signedOut: () => ans.signedOut() })
+    await st.start()
+    await ans.machine.open('i1', it0)
+    const onPage = ans.answeringFor('i1')
+    onPage.draft!.changed('dr-7', { text: 'typed before the sign-out' })
+    await vi.waitFor(() => expect(onPage.draft!.initial('dr-7')).toEqual({ text: 'typed before the sign-out' }))
+    expect(ans.views.value.i1?.item?.decision.request.question).toBe('Ship it?')
+    // The sign-out, through the one cleanup.
+    st.apply({ signedIn: false, notifications: 'unknown' })
+    expect(ans.views.value).toEqual({})
+    expect(onPage.draft!.initial('dr-7')).toBeNull()
+    expect(onPage.state!('dr-7')).toMatchObject({ lock: true })
   })
 })
