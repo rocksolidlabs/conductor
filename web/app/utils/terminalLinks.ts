@@ -59,7 +59,7 @@ export function shownLink(url: string): string {
 }
 
 /** The parts of the mouse-up a link is activated on that decide whether it opens. */
-export type LinkPress = Partial<Pick<MouseEvent, 'button' | 'detail'>>
+export type LinkPress = Partial<Pick<MouseEvent, 'button' | 'detail' | 'ctrlKey' | 'metaKey'>>
 
 /**
  * opensLink is whether a mouse-up on a link opens it: a single press of the primary button (xterm calls a link's activate on every
