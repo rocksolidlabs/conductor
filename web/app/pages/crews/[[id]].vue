@@ -2,8 +2,8 @@
 import type { AgentInfo, CrewInfo, CrewSummary, RunInfo } from '~/composables/useSessions'
 import { ApiError } from '~/composables/useApi'
 import { crewKey, crewNameProblem, defaultCrew, EXAMPLES_LINE, holdViewLink, keepParked, memberSaveProblem, pageAfterDelete, peopleProblems, refusedAsStale, revisionToSave, elsewhereWords, summaryOf, toDraft, type DraftCrew, taskProblems, taskSaveProblems } from '~/utils/crews'
-import { changedFields, launchSaidIn, startedClock } from '~/utils/crewWords'
-import { runItems, runStatusLine } from '~/utils/status'
+import { changedFields, launchSaidIn, runLook, startedClock } from '~/utils/crewWords'
+import { runItems } from '~/utils/status'
 import { runLive, runState } from '~/utils/runs'
 import { modelProblem } from '~/utils/capacity'
 import { pageState } from '~/utils/pageState'
@@ -188,9 +188,10 @@ const tabItems = computed(() => [
   { label: 'Runs', value: 'runs', badge: records.runs.value.length || undefined },
 ])
 /** The live-run banner's lines, one per run going now. */
-// Each live run of the crew in the run's one sentence (runStatusLine): its "need you" the run's items of the one list.
+// Each live run of the crew in the one vocabulary of the Crews pages (runLook): its state's word and mark, then its counts in the member
+// words ("1 working · 1 idle"), its "need you" the run's items of the one list.
 const needsYou = useNeedsYou()
-const banners = computed(() => crewLive.value.map((r) => ({ run: r, started: startedClock(r.startedAt), line: runStatusLine(r, live.sessions.value, runItems(needsYou.items.value, r.id), now.value) })))
+const banners = computed(() => crewLive.value.map((r) => ({ run: r, started: startedClock(r.startedAt), look: runLook(r, live.sessions.value, runItems(needsYou.items.value, r.id), now.value) })))
 
 /** Why the crew's name cannot be saved (none, or another crew's), said beside its Name field and beside Save; '' when it can. */
 const nameProblem = computed(() => (draft.value ? crewNameProblem(draft.value.name, crews.value, { id: draft.value.id, saved: saved.value?.name }) : ''))
@@ -308,7 +309,8 @@ async function save(anyway = false): Promise<CrewInfo | undefined> {
     // Only a new crew adds to the count: one opened by its link from another page was counted already.
     if (key === NEW) total.value += 1
     // A new crew moves to its page before its draft goes, so /crews/new never shows without it in between.
-    if (key === NEW) await router.replace(`/crews/${encodeURIComponent(c.id)}`)
+    // Only while the person is still on the draft: one who went elsewhere meanwhile stays there (the crew is saved all the same).
+    if (key === NEW && selectedKey.value === NEW) await router.replace(`/crews/${encodeURIComponent(c.id)}`)
     // The lists the file switch set aside stay with the draft: turning it off gives them back after the save.
     const next = { ...drafts.value, [c.id]: keepParked(toDraft(c), d) }
     if (key === NEW) delete next[NEW]
@@ -710,7 +712,7 @@ usePalette().registerPage(() => ({
         <template #title>
           <div class="flex min-w-0 items-center gap-2">
             <NuxtLink to="/crews" class="flex-none text-[15px] text-muted hover:text-default">Crews /</NuxtLink>
-            <h1 class="min-w-0 truncate text-[17px] font-semibold text-highlighted" :class="!draft?.name.trim() && 'text-muted'" :title="title" data-crew-title>{{ title }}</h1>
+            <span class="min-w-0 truncate text-[17px] font-semibold text-highlighted" :class="!draft?.name.trim() && 'text-muted'" :title="title" data-crew-title>{{ title }}</span>
             <UBadge v-if="draft" :label="draft.id ? 'Saved crew' : 'New crew'" :icon="draft.id ? 'i-lucide-bookmark' : 'i-lucide-pencil'" color="neutral" variant="outline" size="sm" class="hidden flex-none sm:inline-flex" data-crew-kind />
             <span v-if="subtitle" class="hidden truncate text-[11.5px] text-muted tabular-nums lg:inline" data-crew-subtitle><span v-if="subtitle.file" class="font-mono" data-mono="path">{{ subtitle.file }}</span><template v-else>not saved yet</template> · {{ subtitle.words }}</span>
           </div>
@@ -808,13 +810,12 @@ usePalette().registerPage(() => ({
               v-for="b in banners"
               :key="b.run.id"
               class="flex flex-wrap items-center gap-x-2.5 gap-y-1 rounded-md border px-3.5 py-2.5 text-[13.5px]"
-              :class="b.line.needs ? 'border-warning bg-warning/10' : 'border-default bg-elevated'"
+              :class="b.look.phase === 'needs' ? 'border-warning bg-warning/10' : 'border-default bg-elevated'"
               data-live-run-banner
               :data-run="b.run.id"
             >
-              <UIcon name="i-lucide-circle-play" class="size-4 flex-none text-muted" />
-              <b class="font-semibold text-highlighted">live run</b>
-              <span class="min-w-0 text-muted">started {{ b.started }} · <span data-live-run-line>{{ b.line.text }}</span></span>
+              <StatusMark :status="b.look.view" word class="[&_[data-status-word]]:font-semibold [&_[data-status-word]]:text-highlighted" data-live-run-state />
+              <span class="min-w-0 text-muted">live run, started {{ b.started }}<template v-if="b.look.detail"> · <span data-live-run-line>{{ b.look.detail }}</span></template></span>
               <NuxtLink :to="`/runs/${encodeURIComponent(b.run.id)}`" class="ml-auto flex flex-none items-center gap-1 font-medium text-highlighted hover:underline">Open run <UIcon name="i-lucide-arrow-right" class="size-3.5" /></NuxtLink>
             </div>
             <UAlert

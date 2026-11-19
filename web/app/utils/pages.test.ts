@@ -95,6 +95,13 @@ describe('the pages in one table', () => {
     expect(GLOBAL_SHORTCUTS.rows.find((r) => r.keys.join(' ') === 'G E')!.label).toBe("Go to History · Live")
   })
 
+  it("keeps History · Live's id, address and old name: its row's key, a stored recent, and the word Feed still find it (#1024)", () => {
+    const live = PAGES.find((p) => p.id === 'history-feed')!
+    expect(live.title).toBe('History · Live')
+    expect(live.to).toBe('/history?view=feed')
+    expect(live.words).toContain('Feed')
+  })
+
   it('lights a page on its own paths and on no path that only starts with its letters', () => {
     const cases: Array<[PageId, string, boolean]> = [
       ['crews', '/crews', true],

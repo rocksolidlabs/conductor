@@ -116,7 +116,7 @@ test("the palette's Alerts… opens the panel, and its Events · Routing row is 
   const palette = page.locator('[data-palette]')
   await expect(palette).toBeVisible()
   const input = palette.locator('input[data-palette-input]')
-  // Go to lists History's Feed, and no longer the Events page or its Routing tab.
+  // Go to lists History's Live view (found by its old name, Feed), and no longer the Events page or its Routing tab.
   await input.fill('feed')
   await expect(palette.locator('[data-palette-row="go:history-feed"]')).toBeVisible()
   await expect(palette.locator('[data-palette-row="go:events"]')).toHaveCount(0)
