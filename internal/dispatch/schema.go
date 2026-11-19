@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"slices"
+	"strings"
 )
 
 // Version is the schema this binary writes. A database of a later version
@@ -179,41 +180,69 @@ var syncTables = []string{
 	)`,
 }
 
-// syncColumns is version 8's columns, added after their tables' columns by
-// a fresh store as by the migration, so both read back one shape. A
+// The columns version 8 adds to existing tables, each table's last: a
 // change row's origin (the tag of the replica that wrote it, empty for a
 // row written before this store joined), the copied-output verdicts of its
 // value and of its prior (empty for a row written before the check),
 // recovered_by (the tag of the replica that sent another origin's row in a
-// recovery) and remote (1 for a row applied from another replica). A
+// recovery) and remote (1 for a row applied from another replica); a
 // project's share (the workspace's id, the share's state, how far the
 // share has handed its rows and the numbers it reserved), the tag its
 // number blocks were handed to, the block asked ahead, the overflow range
 // and the provisional window with the next number of each, and the key the
-// workspace's registry holds for it. A revision's view (plan_views) and
-// whether its body is here (plans.body is empty where it is 0).
-var syncColumns = []string{
-	`ALTER TABLE changes ADD COLUMN origin TEXT NOT NULL DEFAULT ''`,
-	`ALTER TABLE changes ADD COLUMN output TEXT NOT NULL DEFAULT ''`,
-	`ALTER TABLE changes ADD COLUMN prior_output TEXT NOT NULL DEFAULT ''`,
-	`ALTER TABLE changes ADD COLUMN recovered_by TEXT NOT NULL DEFAULT ''`,
-	`ALTER TABLE changes ADD COLUMN remote INTEGER NOT NULL DEFAULT 0`,
-	`ALTER TABLE projects ADD COLUMN shared TEXT NOT NULL DEFAULT ''`,
-	`ALTER TABLE projects ADD COLUMN share_state TEXT NOT NULL DEFAULT ''`,
-	`ALTER TABLE projects ADD COLUMN share_upto INTEGER NOT NULL DEFAULT 0`,
-	`ALTER TABLE projects ADD COLUMN share_reserved_to INTEGER NOT NULL DEFAULT 0`,
-	`ALTER TABLE projects ADD COLUMN block_tag TEXT NOT NULL DEFAULT ''`,
-	`ALTER TABLE projects ADD COLUMN next_from INTEGER NOT NULL DEFAULT 0`,
-	`ALTER TABLE projects ADD COLUMN next_to INTEGER NOT NULL DEFAULT 0`,
-	`ALTER TABLE projects ADD COLUMN overflow_from INTEGER NOT NULL DEFAULT 0`,
-	`ALTER TABLE projects ADD COLUMN overflow_to INTEGER NOT NULL DEFAULT 0`,
-	`ALTER TABLE projects ADD COLUMN overflow_next INTEGER NOT NULL DEFAULT 0`,
-	`ALTER TABLE projects ADD COLUMN provisional_from INTEGER NOT NULL DEFAULT 0`,
-	`ALTER TABLE projects ADD COLUMN provisional_to INTEGER NOT NULL DEFAULT 0`,
-	`ALTER TABLE projects ADD COLUMN provisional_next INTEGER NOT NULL DEFAULT 0`,
-	`ALTER TABLE projects ADD COLUMN registry_key TEXT NOT NULL DEFAULT ''`,
-	`ALTER TABLE plans ADD COLUMN view_digest TEXT NOT NULL DEFAULT ''`,
-	`ALTER TABLE plans ADD COLUMN body_here INTEGER NOT NULL DEFAULT 1`,
+// workspace's registry holds for it; a revision's view (plan_views) and
+// whether its body is here (plans.body is empty where it is 0). A fresh
+// store makes them in its CREATE TABLE statements and the migration adds
+// them (syncColumns), so both read back one shape: an ALTER TABLE a
+// column is many times a table's create, which a fresh store pays at
+// every open of an empty data directory.
+var (
+	changesSyncColumns = []string{
+		`origin TEXT NOT NULL DEFAULT ''`,
+		`output TEXT NOT NULL DEFAULT ''`,
+		`prior_output TEXT NOT NULL DEFAULT ''`,
+		`recovered_by TEXT NOT NULL DEFAULT ''`,
+		`remote INTEGER NOT NULL DEFAULT 0`,
+	}
+	projectsSyncColumns = []string{
+		`shared TEXT NOT NULL DEFAULT ''`,
+		`share_state TEXT NOT NULL DEFAULT ''`,
+		`share_upto INTEGER NOT NULL DEFAULT 0`,
+		`share_reserved_to INTEGER NOT NULL DEFAULT 0`,
+		`block_tag TEXT NOT NULL DEFAULT ''`,
+		`next_from INTEGER NOT NULL DEFAULT 0`,
+		`next_to INTEGER NOT NULL DEFAULT 0`,
+		`overflow_from INTEGER NOT NULL DEFAULT 0`,
+		`overflow_to INTEGER NOT NULL DEFAULT 0`,
+		`overflow_next INTEGER NOT NULL DEFAULT 0`,
+		`provisional_from INTEGER NOT NULL DEFAULT 0`,
+		`provisional_to INTEGER NOT NULL DEFAULT 0`,
+		`provisional_next INTEGER NOT NULL DEFAULT 0`,
+		`registry_key TEXT NOT NULL DEFAULT ''`,
+	}
+	plansSyncColumns = []string{
+		`view_digest TEXT NOT NULL DEFAULT ''`,
+		`body_here INTEGER NOT NULL DEFAULT 1`,
+	}
+)
+
+// syncColumns is the migration's statements that add version 8's columns.
+var syncColumns = slices.Concat(addColumns("changes", changesSyncColumns), addColumns("projects", projectsSyncColumns),
+	addColumns("plans", plansSyncColumns))
+
+// addColumns is the statements that add the columns to the table.
+func addColumns(table string, cols []string) []string {
+	var out []string
+	for _, c := range cols {
+		out = append(out, "ALTER TABLE "+table+" ADD COLUMN "+c)
+	}
+	return out
+}
+
+// lastColumns is the columns as the last of a CREATE TABLE's, each on its
+// own line after a comma.
+func lastColumns(cols []string) string {
+	return ",\n\t\t" + strings.Join(cols, ",\n\t\t")
 }
 
 // plansTable is a ticket's plan revisions (plans.go): each immutable once
@@ -223,7 +252,12 @@ var syncColumns = []string{
 // whose receipt is pruned is still checked: Replay). based_on is a
 // revision of the same ticket or empty; at most MaxPlans a ticket, a rule
 // of the proposal's.
-const plansTable = `CREATE TABLE plans (
+const plansTable = `CREATE TABLE plans (` + plansColumns + `
+	)`
+
+// plansColumns is the columns of version 2's plans table: a fresh store's
+// table ends with version 8's (plansSyncColumns).
+const plansColumns = `
 		id TEXT PRIMARY KEY,
 		ticket_id TEXT NOT NULL REFERENCES tickets(id),
 		based_on TEXT NOT NULL DEFAULT '',
@@ -245,8 +279,7 @@ const plansTable = `CREATE TABLE plans (
 		created_at TEXT NOT NULL,
 		created_by TEXT NOT NULL DEFAULT '',
 		fingerprint TEXT NOT NULL DEFAULT '',
-		rev INTEGER NOT NULL DEFAULT 0
-	)`
+		rev INTEGER NOT NULL DEFAULT 0`
 
 // launchesTable is a ticket's launches of runs from its approved
 // revisions (Program item DS2, launches.go): the run's id minted here,
@@ -723,7 +756,7 @@ var schema = append([]string{
 		archived_at TEXT NOT NULL DEFAULT '',
 		created_at TEXT NOT NULL,
 		updated_at TEXT NOT NULL,
-		rev INTEGER NOT NULL DEFAULT 0
+		rev INTEGER NOT NULL DEFAULT 0` + lastColumns(projectsSyncColumns) + `
 	)`,
 	`CREATE TABLE people (
 		name TEXT PRIMARY KEY,
@@ -869,7 +902,7 @@ var schema = append([]string{
 		actor TEXT NOT NULL,
 		by TEXT NOT NULL DEFAULT '',
 		op_id TEXT NOT NULL,
-		n INTEGER NOT NULL,
+		n INTEGER NOT NULL` + lastColumns(changesSyncColumns) + `,
 		UNIQUE (actor, op_id, n)
 	)`,
 	`CREATE TABLE ops (
@@ -918,7 +951,8 @@ var schema = append([]string{
 	`CREATE INDEX links_kind_ref ON links (kind, ref)`,
 	`CREATE INDEX attachments_sha256 ON attachments (sha256)`,
 	`CREATE INDEX uploads_sha256 ON uploads (sha256)`,
-	plansTable,
+	`CREATE TABLE plans (` + plansColumns + lastColumns(plansSyncColumns) + `
+	)`,
 	launchesTable,
 	launchFilesTable,
 	reviewsTable,
@@ -929,8 +963,8 @@ var schema = append([]string{
 	ticketReadsTable,
 	storeInstanceTable,
 	publicationsTable,
-}, append(append(append(append(append(append(append(append(slices.Clone(version2Indexes), version3Indexes...), version4Indexes...), captureTables...), captureIndexes...),
-	openSendsTable), openSendsIndexes...), syncTables...), syncColumns...)...)
+}, append(append(append(append(append(append(append(slices.Clone(version2Indexes), version3Indexes...), version4Indexes...), captureTables...), captureIndexes...),
+	openSendsTable), openSendsIndexes...), syncTables...)...)
 
 // tables is every table of the schema but the FTS index's own and
 // SQLite's, by name: what a test lists sqlite_master against.
