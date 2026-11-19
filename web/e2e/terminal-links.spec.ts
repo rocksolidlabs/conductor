@@ -252,17 +252,21 @@ test('a click opens the address as the parser writes it, and an address printed 
   expect(await t.opens(), 'the printed hyperlink opened at its absolute address').toEqual(OPENED)
 })
 
-test('while the program holds the mouse, a plain click is the program’s: the hover says Ctrl+click opens, and only that opens', async ({ page, api, state }) => {
+test('while the program holds the mouse, a click is the program’s: the hover says Shift+click opens, and only that opens', async ({ page, api, state }) => {
   const t = await linksPage(page, api, state.home, 'e2e terminal link program mouse', [`${MR} the merge request`], { appMouse: true })
   await t.overLink(0)
-  await expect(page.locator('[data-link-tip-hint]')).toHaveText('Ctrl+click opens')
+  await expect(page.locator('[data-link-tip-hint]')).toHaveText('Shift+click opens')
   await t.click(0)
-  // A gate: the Ctrl+click, handled after the plain click.
   await t.overLink(0)
   await t.click(0, true)
+  // A gate: the Shift+click, the press the terminal keeps from the program, handled after the plain click and the Ctrl+click.
+  await page.keyboard.down('Shift')
+  await t.overLink(0)
+  await t.click(0)
+  await page.keyboard.up('Shift')
   await expect.poll(async () => t.dialogs.length + (await t.opens()).length, { timeout: 15_000, message: 'the gate was handled' }).toBeGreaterThan(0)
   expect(t.dialogs).toEqual([])
-  expect(await t.opens(), 'only the Ctrl+click opened').toEqual(OPENED)
+  expect(await t.opens(), 'only the Shift+click opened').toEqual(OPENED)
 })
 
 test('a hyperlink to a scheme that is not the web’s is no link: a click opens nothing, says nothing and asks nothing', async ({ page, api, state }) => {

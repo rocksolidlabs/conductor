@@ -795,15 +795,16 @@ onMounted(() => {
   // One handler for the terminal's web links of both kinds, the hyperlinks an agent prints (OSC 8, xterm's linkHandler: without it
   // xterm asked with the page's confirm, #1020) and the addresses in the text (the web-links addon): a plain single click opens a
   // new tab once at the parsed address, a double-click, another button, an Alt+click or a drag that selected text does not, and
-  // while the program holds the mouse only Ctrl+click (⌘ on a Mac) does; the pointer over a link shows where it goes; a link to
-  // any other scheme is none.
+  // while the program holds the mouse only Shift+click (⌘+click on a Mac), the press the terminal keeps from it, does; the pointer
+  // over a link shows where it goes; a link to any other scheme is none.
   const links = terminalLinkHandler({
     open: (url) => window.open(url, '_blank', 'noopener,noreferrer'),
     opened: (url) => emit('linkOpened', url),
     show: (tip) => (linkTip.value = tip),
     selected: () => !!term?.hasSelection(),
     mac: isMac,
-    appMouse: appHoldsMouse,
+    // The program's clicks are the program's only where this page reports them to it: a page that may not type keeps every click.
+    appMouse: () => appHoldsMouse() && canPaste(),
   })
   term = new Terminal({
     linkHandler: links,

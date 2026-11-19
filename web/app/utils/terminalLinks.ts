@@ -4,7 +4,7 @@
 // could potentially be dangerous"), which the desktop app shows as a native dialog. The protection a person keeps is the browser's
 // own: where a link goes is shown while the pointer is over it, before any click, from its parsed address.
 
-import { menuPress } from '~/utils/terminalClipboard'
+import { forcesSelection, menuPress } from '~/utils/terminalClipboard'
 
 /** A web address as printed: http:// or https://, any case, after the leading spaces and controls the URL parser drops. */
 const WEB_PREFIX = /^[\u0000-\u0020]*https?:\/\//i
@@ -69,11 +69,14 @@ export function shownLink(url: string): string {
 }
 
 /** The parts of the mouse-up a link is activated on that decide whether it opens. */
-export type LinkPress = Partial<Pick<MouseEvent, 'button' | 'detail' | 'ctrlKey' | 'metaKey' | 'altKey'>>
+export type LinkPress = Partial<Pick<MouseEvent, 'button' | 'detail' | 'ctrlKey' | 'metaKey' | 'altKey' | 'shiftKey'>>
 
-/** The press that opens a link while the program in the terminal holds the mouse: ⌘+click on a Mac, Ctrl+click elsewhere. */
+/**
+ * The press that opens a link while the program in the terminal holds the mouse: the one the terminal keeps from the program,
+ * Shift+click (forcesSelection) everywhere but a Mac, and ⌘+click on a Mac, where Shift+click is reported to the program.
+ */
 export function linkModifierWords(mac: boolean): string {
-  return mac ? '⌘+click opens' : 'Ctrl+click opens'
+  return mac ? '⌘+click opens' : 'Shift+click opens'
 }
 
 /**
@@ -81,14 +84,16 @@ export function linkModifierWords(mac: boolean): string {
  * mouse-up that ends on the link the press began on, whatever the button or the count) that made no selection, asks for no menu
  * (menuPress: on a Mac, Control with the primary button is the secondary click, so there ⌘ is the modifier that opens) and holds
  * no Alt (the terminal turns an Alt+click into a move of the prompt's cursor). While the program in the terminal holds the mouse
- * (appMouse: its mouse tracking is on), a plain click is the program's: the link opens only with ⌘ on a Mac, Ctrl elsewhere. The
+ * and this page reports the mouse to it (appMouse), a click is the program's, Ctrl+click too: the link opens only on the press
+ * the terminal keeps from the program, Shift+click (forcesSelection) everywhere but a Mac and ⌘+click on a Mac. The
  * first click of a double-click opens it once; the second (detail 2), a triple's third, a middle or a right press, a Mac's
  * Control-click, an Alt+click and a drag that selected text inside the link open nothing.
  */
 export function opensLink(e: LinkPress, selected: boolean, mac: boolean, appMouse = false): boolean {
   const button = e.button ?? 0
   if (button !== 0 || (e.detail ?? 1) > 1 || selected || e.altKey || menuPress({ button, ctrlKey: !!e.ctrlKey }, mac)) return false
-  return !appMouse || (mac ? !!e.metaKey : !!e.ctrlKey)
+  if (!appMouse) return true
+  return mac ? !!e.metaKey && !e.ctrlKey : forcesSelection({ shiftKey: !!e.shiftKey, altKey: !!e.altKey }, mac) && !e.ctrlKey && !e.metaKey
 }
 
 export interface TerminalLinks {
@@ -102,7 +107,10 @@ export interface TerminalLinks {
   selected(): boolean
   /** Whether the page runs on a Mac, where Control with the primary button asks for a menu. */
   mac: boolean
-  /** Whether the program in the terminal holds the mouse now (its mouse tracking is on): a plain click is then the program's. */
+  /**
+   * Whether the program in the terminal holds the mouse now (its mouse tracking is on) and this page reports the mouse to it (it
+   * may type: a view link's page reports nothing and keeps every click): a click is then the program's.
+   */
   appMouse(): boolean
 }
 

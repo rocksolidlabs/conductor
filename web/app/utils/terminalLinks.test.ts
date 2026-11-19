@@ -121,13 +121,21 @@ describe('which press opens a link', () => {
     expect(opensLink({ ...CLICK, altKey: true, ctrlKey: true }, false, false, true)).toBe(false)
   })
 
-  it('while the program holds the mouse, not a plain click; Ctrl+click elsewhere and ⌘+click on a Mac open', () => {
+  it('while the program holds the mouse, not a plain click nor a Ctrl+click; Shift+click elsewhere and ⌘+click on a Mac open', () => {
     expect(opensLink(CLICK, false, false, true)).toBe(false)
     expect(opensLink(CLICK, false, true, true)).toBe(false)
-    expect(opensLink({ ...CLICK, ctrlKey: true }, false, false, true)).toBe(true)
-    expect(opensLink({ ...CLICK, metaKey: true }, false, true, true)).toBe(true)
+    expect(opensLink({ ...CLICK, ctrlKey: true }, false, false, true)).toBe(false)
     expect(opensLink({ ...CLICK, ctrlKey: true }, false, true, true)).toBe(false)
+    expect(opensLink({ ...CLICK, shiftKey: true }, false, false, true)).toBe(true)
+    expect(opensLink({ ...CLICK, metaKey: true }, false, true, true)).toBe(true)
+    // On a Mac the program hears Shift+click; elsewhere ⌘ (the system key) is not the terminal's.
+    expect(opensLink({ ...CLICK, shiftKey: true }, false, true, true)).toBe(false)
     expect(opensLink({ ...CLICK, metaKey: true }, false, false, true)).toBe(false)
+  })
+
+  it('on a page that reports nothing to the program (appMouse false: a view link’s), a plain click opens whatever the program asked', () => {
+    expect(opensLink(CLICK, false, false, false)).toBe(true)
+    expect(opensLink({ ...CLICK, ctrlKey: true }, false, false, false)).toBe(true)
   })
 
   it('on a Mac, not Control with the primary button, the secondary click there; ⌘ with it opens', () => {
@@ -202,11 +210,12 @@ describe("the terminal's link handler", () => {
     h.hover({}, MR)
     h.activate(CLICK, MR)
     h.activate({ ...CLICK, ctrlKey: true }, MR)
+    h.activate({ ...CLICK, shiftKey: true }, MR)
     expect(calls).toEqual([`show ${MR} ${linkModifierWords(false)}`, `open ${MR}`, `opened ${MR}`])
     const mac = handler(false, true, true)
     mac.h.hover({}, MR)
     expect(mac.tips[0]!.hint).toBe('⌘+click opens')
-    expect(linkModifierWords(false)).toBe('Ctrl+click opens')
+    expect(linkModifierWords(false)).toBe('Shift+click opens')
   })
 
   it('shows where a link goes while the pointer is over it, from its parsed address, and nothing once it leaves', () => {
