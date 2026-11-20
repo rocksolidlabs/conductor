@@ -234,6 +234,18 @@ func publicKey(_ b64url: String) throws -> Curve25519.Signing.PublicKey {
         #expect(f.policy?.finished.isEmpty == true)
     }
 
+    @Test func anUnboundKeyWhoseTimeRunsOutWhileThePersonIsAskedSignsNothing() async throws {
+        let f = Fixture()
+        _ = try await f.key.create(until: f.clock.now().addingTimeInterval(60))
+        let clock = f.clock
+        f.presence.during = { clock.advance(61) }
+        #expect(await refusal { _ = try await f.key.sign(request: ["m": "x", "presence": true]) } == "key_expired")
+        #expect(f.presence.asked == 1)
+        #expect(f.policy?.finished.isEmpty == true)
+        #expect(f.vault.record == nil)
+        #expect(!f.marker.exists())
+    }
+
     @Test func refusesARequestPastItsBound() async throws {
         let f = Fixture()
         _ = try await f.bound()

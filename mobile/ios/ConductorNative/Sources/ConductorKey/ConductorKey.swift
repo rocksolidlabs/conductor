@@ -255,6 +255,11 @@ public actor ConductorKey {
         guard let again = try vault.read(), again.privateKey == found.privateKey, again.state == found.state, again.id == found.id else {
             throw refuse("key_changed", "This phone's key changed while it was confirmed: nothing was signed.")
         }
+        // Nor if an unbound key's time ran out while the person was asked: the same rule as before the wait.
+        if again.state == .unbound, let until = again.until, until <= now() {
+            try removeAll()
+            throw refuse("key_expired", "This phone's key was not bound in time.")
+        }
         let key = try Curve25519.Signing.PrivateKey(rawRepresentation: again.privateKey)
         return plan.finish(try key.signature(for: plan.message))
     }
