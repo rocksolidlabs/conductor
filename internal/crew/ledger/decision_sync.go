@@ -3,7 +3,9 @@ package ledger
 import (
 	"cmp"
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -379,4 +381,37 @@ func (l *Ledger) SettleOutput(ctx context.Context, n int64, part, verdict string
 		}
 		return []int64{n}, nil
 	})
+}
+
+// LastDecision is the highest decision number the ledger holds, 0 for
+// none: read, never written (Host.LastDecision).
+func (l *Ledger) LastDecision(ctx context.Context) (int64, error) {
+	var n int64
+	err := l.readAt(ctx, func(q querier, version int) error {
+		if version < versionDecisions {
+			return nil
+		}
+		return q.QueryRowContext(ctx, "SELECT COALESCE(MAX(n), 0) FROM decisions").Scan(&n)
+	})
+	return n, err
+}
+
+// statementFits says a response's statement goes with its authority: a
+// held answer's (via sync) is the statement whose SHA-256 its authority
+// names, at most MaxStatement bytes; every other response has none.
+func statementFits(a authorityShape, statement string) error {
+	if a.Via != ViaSync {
+		if statement != "" {
+			return invalid("only a held answer keeps a statement")
+		}
+		return nil
+	}
+	if len(statement) > MaxStatement {
+		return tooLarge("a held answer's statement", len(statement))
+	}
+	sum := sha256.Sum256([]byte(statement))
+	if statement == "" || hex.EncodeToString(sum[:]) != a.StatementSHA256 {
+		return invalid("a held answer's statement is not the one its authority names")
+	}
+	return nil
 }

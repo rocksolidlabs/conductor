@@ -163,6 +163,11 @@ const (
 	// principal gave: its acceptance holds a place for the decision that
 	// would replace it (A replacement always has its place).
 	ViaIdentity = "identity"
+	// ViaSync is the authority of a held answer the sync store handed in
+	// (docs/plans/sync-seams.md, OS-3): an answer made elsewhere by an
+	// identity, judged by the identity provider's AdmitsAnswer, counted as
+	// an identity's.
+	ViaSync = "sync"
 )
 
 // History kinds, each written in the transaction of the change it records.
@@ -577,6 +582,21 @@ type authorityShape struct {
 	Via     string `json:"via"`
 	Subject string `json:"subject,omitempty"`
 	Boot    string `json:"boot"`
+	// A held answer's (via sync) alone: the membership and the sign-in or
+	// device it was made under, when, the SHA-256 of its statement (kept
+	// in decision_statements), the provider's id of it and its fence.
+	Membership      string `json:"membership,omitempty"`
+	SignIn          string `json:"signIn,omitempty"`
+	AppDevice       string `json:"appDevice,omitempty"`
+	At              string `json:"at,omitempty"`
+	StatementSHA256 string `json:"statementSha256,omitempty"`
+	Held            string `json:"held,omitempty"`
+	Fence           string `json:"fence,omitempty"`
+}
+
+// held says whether a names any of a held answer's fields.
+func (a authorityShape) held() bool {
+	return a.Membership != "" || a.SignIn != "" || a.AppDevice != "" || a.At != "" || a.StatementSHA256 != "" || a.Held != "" || a.Fence != ""
 }
 
 // strict decodes raw into v, refusing a field v does not name and anything
@@ -848,8 +868,16 @@ func authorityOf(raw string) (authorityShape, string, error) {
 	}
 	switch a.Via {
 	case "workbench", ViaIdentity, "router":
+		if a.held() {
+			return a, "", invalid("only a held answer's authority names its membership, statement, held id and fence")
+		}
+	case ViaSync:
+		if a.Subject == "" || a.Membership == "" || (a.SignIn == "") == (a.AppDevice == "") || a.At == "" ||
+			len(a.StatementSHA256) != 64 || a.Held == "" || a.Fence == "" {
+			return a, "", invalid("a held answer's authority names its subject, membership, sign-in or device, time, statement's SHA-256, held id and fence")
+		}
 	default:
-		return a, "", invalid("an authority is via the workbench, an identity or a router, not %q", a.Via)
+		return a, "", invalid("an authority is via the workbench, an identity, a router or sync, not %q", a.Via)
 	}
 	var b strings.Builder
 	enc := json.NewEncoder(&b)
@@ -901,7 +929,7 @@ const openish = `(d.state = 'open' OR ` + placeCond + `)`
 // opened while a decision router routes policies), whose accepted
 // response, an identity's or not, takes that one place, never a second.
 const placeCond = `((d.state = 'answered' AND EXISTS (SELECT 1 FROM decision_responses r
-	WHERE r.decision = d.n AND r.status = 'accepted' AND json_extract(r.authority, '$.via') = 'identity'))
+	WHERE r.decision = d.n AND r.status = 'accepted' AND json_extract(r.authority, '$.via') IN ('identity', 'sync')))
 	OR (d.state IN ('open', 'answered') AND COALESCE(json_extract(d.policy, '$.spare'), 0) = 1))`
 
 // voidedCond is the SQL condition of a voided routed decision (alias d):
@@ -1361,6 +1389,9 @@ func (t *Tx) Respond(n int64, r ResponseRow) (Responded, error) {
 		return Responded{}, err
 	}
 	r.Authority = canon
+	if err := statementFits(auth, r.Statement); err != nil {
+		return Responded{}, err
+	}
 	if err := checkObject("the response receipt", r.Receipt, MaxDecisionReceipt, false); err != nil {
 		return Responded{}, err
 	}
@@ -1399,7 +1430,7 @@ func (t *Tx) Respond(n int64, r ResponseRow) (Responded, error) {
 				return Responded{}, fmt.Errorf("%w: %s's run has voided %d routed answers: stop or cancel it", ErrDecisionLimit, d.ID(), voided)
 			}
 		}
-		if auth.Via == ViaIdentity && !spareOf(d.Policy) {
+		if (auth.Via == ViaIdentity || auth.Via == ViaSync) && !spareOf(d.Policy) {
 			// A record with a spare holds its replacement's place from its
 			// opening: its answer is never refused for room.
 			if ok, err := t.room(d.CurrentRun); err != nil {

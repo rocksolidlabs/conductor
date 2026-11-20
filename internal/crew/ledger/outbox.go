@@ -164,7 +164,7 @@ func decidedBy(r ResponseRow) (by, via string) {
 	var a authorityShape
 	_ = json.Unmarshal([]byte(r.Authority), &a)
 	by = "operator"
-	if a.Via == ViaIdentity && a.Subject != "" {
+	if (a.Via == ViaIdentity || a.Via == ViaSync) && a.Subject != "" {
 		by = a.Subject
 	}
 	var rc struct {

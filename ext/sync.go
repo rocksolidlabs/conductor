@@ -648,9 +648,66 @@ type HeldAnswer struct {
 	Fence     string      `json:"fence"` // the provider's token for this hand-out, the same shape
 }
 
-// Valid checks a held answer against its bounds and shapes. Until OS-3 it
-// refuses every one.
-func (h HeldAnswer) Valid() error { return errNotBuilt }
+// Valid checks a held answer against its bounds and shapes: its decision
+// a dr-n; its rev at least 1; its response id DR1's shape; a choice not
+// below 0; its text at most MaxAnswerText and its rationale at most
+// MaxAnswerRationale bytes, each UTF-8; its check naming the same
+// decision, response id and rev, a subject a Principal may have, a
+// membership, exactly one of a sign-in and a device, and a held id and a
+// fence, each opaque of heldID's shape; a statement of 1 to MaxStatement
+// bytes; its times set. ContentSHA256 and RequestSHA256 are the server's
+// to set and not looked at here.
+func (h HeldAnswer) Valid() error {
+	c := h.Check
+	switch {
+	case !decisionDocID.MatchString(h.Decision) || h.ExpectedRev < 1:
+		return fmt.Errorf("%w: a held answer names a decision dr-n and the rev it answers", ErrRefused)
+	case !answerResponseID.MatchString(h.ResponseID):
+		return fmt.Errorf("%w: a held answer's response id is 1 to 32 of A-Z a-z 0-9 . _ ~ -", ErrRefused)
+	case h.Choice != nil && *h.Choice < 0:
+		return fmt.Errorf("%w: a held answer's choice is an option's index", ErrRefused)
+	case len(h.Text) > MaxAnswerText || !utf8.ValidString(h.Text):
+		return fmt.Errorf("%w: a held answer's text is UTF-8 of at most %d bytes", ErrRefused, MaxAnswerText)
+	case len(h.Rationale) > MaxAnswerRationale || !utf8.ValidString(h.Rationale):
+		return fmt.Errorf("%w: a held answer's rationale is UTF-8 of at most %d bytes", ErrRefused, MaxAnswerRationale)
+	case c.Decision != h.Decision || c.ResponseID != h.ResponseID || c.ExpectedRev != h.ExpectedRev:
+		return fmt.Errorf("%w: a held answer's check names another decision, response or rev than the answer", ErrRefused)
+	case c.Subject == "" || len(c.Subject) > MaxSubject || !printableASCII(c.Subject):
+		return fmt.Errorf("%w: a held answer's subject is 1 to %d bytes of printable ASCII", ErrRefused, MaxSubject)
+	case !heldID.MatchString(c.Membership) || !heldID.MatchString(h.Held) || !heldID.MatchString(h.Fence):
+		return fmt.Errorf("%w: a held answer's membership, held id and fence are each 1 to %d bytes of A-Z a-z 0-9 . _ ~ : -", ErrRefused, MaxHeldID)
+	case (c.SignIn == "") == (c.AppDevice == ""),
+		c.SignIn != "" && !heldID.MatchString(c.SignIn), c.AppDevice != "" && !heldID.MatchString(c.AppDevice):
+		return fmt.Errorf("%w: a held answer names exactly one of a sign-in and a device, each 1 to %d bytes of A-Z a-z 0-9 . _ ~ : -", ErrRefused, MaxHeldID)
+	case c.Statement == "" || len(c.Statement) > MaxStatement:
+		return fmt.Errorf("%w: a held answer's statement is 1 to %d bytes", ErrRefused, MaxStatement)
+	case c.At.IsZero() || h.HeldAt.IsZero():
+		return fmt.Errorf("%w: a held answer says when it was made and when it was held", ErrRefused)
+	}
+	return nil
+}
+
+// AnswerContentSHA256 is the SHA-256, in lower-case hex, of an answer's
+// content as a held answer's statement signs it and the server checks it:
+// the canonical JSON (as DecisionRequestPart.SHA256's) of {choice, text,
+// rationale}, every key present, choice null when there is none.
+func AnswerContentSHA256(choice *int, text, rationale string) string {
+	b, _ := canonicalJSON(struct {
+		Choice    *int   `json:"choice"`
+		Text      string `json:"text"`
+		Rationale string `json:"rationale"`
+	}{choice, text, rationale})
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}
+
+// The shapes of a held answer's parts: a decision's id, DR1's response id
+// and an opaque id of the provider's.
+var (
+	decisionDocID    = regexp.MustCompile(`^dr-[1-9][0-9]{0,17}$`)
+	answerResponseID = regexp.MustCompile(`^[A-Za-z0-9._~-]{1,32}$`)
+	heldID           = regexp.MustCompile(`^[A-Za-z0-9._~:-]{1,64}$`)
+)
 
 // AnswerOutcome is what became of a held answer handed in.
 type AnswerOutcome struct {
@@ -661,9 +718,33 @@ type AnswerOutcome struct {
 	Receipt []byte `json:"receipt,omitempty"` // the response's receipt as JSON; the whole at most MaxAnswerOutcome
 }
 
-// Valid checks an outcome against its bounds. Until OS-3 it refuses every
-// one.
-func (o AnswerOutcome) Valid() error { return errNotBuilt }
+// Valid checks an outcome against its bounds: one of the statuses, a code
+// only for a refusal and one for every refusal, words of at most 1 KiB, a
+// receipt that is JSON, and the whole at most MaxAnswerOutcome bytes.
+func (o AnswerOutcome) Valid() error {
+	switch o.Status {
+	case AnswerRecorded, AnswerNotHeld, AnswerMoved, AnswerUnknownAuthority:
+		if o.Code != "" {
+			return fmt.Errorf("%w: only a refusal carries a code", ErrRefused)
+		}
+	case AnswerRefused:
+		if o.Code == "" {
+			return fmt.Errorf("%w: a refusal carries its code", ErrRefused)
+		}
+	default:
+		return fmt.Errorf("%w: an outcome's status %q", ErrRefused, o.Status)
+	}
+	switch {
+	case len(o.Code) > 64 || len(o.Words) > 1<<10 || !utf8.ValidString(o.Words):
+		return fmt.Errorf("%w: an outcome's code or words past their bound", ErrRefused)
+	case len(o.Receipt) > 0 && !json.Valid(o.Receipt):
+		return fmt.Errorf("%w: an outcome's receipt is not JSON", ErrRefused)
+	}
+	if b, err := json.Marshal(o); err != nil || len(b) > MaxAnswerOutcome {
+		return fmt.Errorf("%w: an outcome is past %d bytes", ErrRefused, MaxAnswerOutcome)
+	}
+	return nil
+}
 
 // The statuses of an AnswerOutcome.
 const (

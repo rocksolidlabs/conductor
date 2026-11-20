@@ -2,6 +2,8 @@ package ledger
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"path/filepath"
 	"slices"
@@ -115,7 +117,7 @@ func TestDecisionOutputWrittenWithItsPart(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		if _, err := tx.Respond(n, ResponseRow{Actor: "user:ana", Authority: identityAuth, ResponseID: "r1", Fingerprint: "fp", Status: ResponseAccepted,
+		if _, err := tx.Respond(n, ResponseRow{Actor: "user:ana", Authority: syncAuth("signed-statement"), ResponseID: "r1", Fingerprint: "fp", Status: ResponseAccepted,
 			Receipt: `{"text":"use users","rationale":"PANIC was in the log","words":"recorded"}`, Statement: "signed-statement"}); err != nil {
 			return err
 		}
@@ -201,5 +203,51 @@ func TestPendingDecisionOutputSettledOrWithheld(t *testing.T) {
 	defer mu.Unlock()
 	if !slices.Contains(told, n) || !slices.Contains(told, m) {
 		t.Fatalf("OnDecisions was told %v", told)
+	}
+}
+
+// syncAuth is a held answer's authority whose statement is statement.
+func syncAuth(statement string) string {
+	sum := sha256.Sum256([]byte(statement))
+	return `{"grant":"admin","via":"sync","subject":"ana","boot":"boot-1","membership":"m-1","signIn":"s-1","at":"2026-11-20T09:00:00Z","statementSha256":"` +
+		hex.EncodeToString(sum[:]) + `","held":"h-1","fence":"f-1"}`
+}
+
+// A held answer's authority names every one of its fields and only it
+// does; its statement is the one whose SHA-256 it names, and only a held
+// answer keeps one.
+func TestSyncAuthorityAndItsStatement(t *testing.T) {
+	l := openLedger(t, filepath.Join(t.TempDir(), "runs"))
+	const run = "team-00000001"
+	newRun(t, l, run)
+	tasksOf(t, l, run, "deploy")
+	n := open(t, l, gateDecision(run, "g1"))
+	respond := func(id, auth, statement string) error {
+		return try(l, run, func(tx *Tx) error {
+			_, err := tx.Respond(n, ResponseRow{Actor: "user:ana", Authority: auth, ResponseID: id, Fingerprint: "fp-" + id, Status: ResponseRefused, Receipt: `{}`, Statement: statement})
+			return err
+		})
+	}
+	good := syncAuth("st")
+	for name, c := range map[string][2]string{
+		"no fence":                {strings.Replace(good, `,"fence":"f-1"`, "", 1), "st"},
+		"a sign-in and a device":  {strings.Replace(good, `"signIn":"s-1"`, `"signIn":"s-1","appDevice":"d-1"`, 1), "st"},
+		"another statement":       {good, "st2"},
+		"no statement":            {good, ""},
+		"an identity's fence":     {`{"grant":"admin","via":"identity","subject":"ana","boot":"b","fence":"f-1"}`, ""},
+		"an identity's statement": {identityAuth, "st"},
+	} {
+		if err := respond("r-"+strings.ReplaceAll(name, " ", "-"), c[0], c[1]); err == nil {
+			t.Errorf("%s: kept", name)
+		}
+	}
+	if err := respond("r-good", good, "st"); err != nil {
+		t.Fatal(err)
+	}
+	if s, ok, err := l.Statement(context.Background(), n, 1); err != nil || !ok || s != "st" {
+		t.Fatalf("the statement: %q %v %v", s, ok, err)
+	}
+	if got, err := l.LastDecision(context.Background()); err != nil || got != n {
+		t.Fatalf("LastDecision: %d %v", got, err)
 	}
 }
