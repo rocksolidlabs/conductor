@@ -33,7 +33,7 @@ struct Present: PresenceCheck {
 /** A policy that signs "shell:" and the request's "m", and refuses a request with "refuse" by a code of its own. */
 final class Policy: KeySigningPolicy {
     init() {}
-    func plan(request: [String: Any], state: String, id: String?) -> Result<SigningPlan, KeyPolicyRefusal> {
+    func plan(request: [String: Any], state: String, id: String?, publicKey: String) -> Result<SigningPlan, KeyPolicyRefusal> {
         if request["refuse"] != nil { return .failure(KeyPolicyRefusal(code: "not_allowed", words: "Not a request this policy signs.")) }
         return .success(SigningPlan(message: Data("shell:\(request["m"] as? String ?? "")".utf8), presence: false, whileEnding: false) { base64url($0) })
     }

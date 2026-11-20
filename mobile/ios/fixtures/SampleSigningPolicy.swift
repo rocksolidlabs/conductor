@@ -10,7 +10,7 @@ public final class SampleSigningPolicy: NSObject, KeySigningPolicy {
         super.init()
     }
 
-    public func plan(request: [String: Any], state: String, id: String?) -> Result<SigningPlan, KeyPolicyRefusal> {
+    public func plan(request: [String: Any], state: String, id: String?, publicKey: String) -> Result<SigningPlan, KeyPolicyRefusal> {
         .failure(KeyPolicyRefusal(code: "sample", words: "The sample policy signs nothing."))
     }
 }

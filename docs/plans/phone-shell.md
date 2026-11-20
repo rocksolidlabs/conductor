@@ -409,7 +409,7 @@ native key plugin. It knows no service, no contract and no route.
   - `sign(request)`: below.
 - **It signs only what a policy builds.** `sign` hands the request (a
   JSON object of at most 1 KiB, refused `too_large` past it), the key's
-  state and its id to the native **signing policy**: an object of a
+  state, its id and its public key to the native **signing policy**: an object of a
   class the packaging adds, exposed to the Objective-C runtime under the
   fixed name `ConductorKeySigningPolicy` (`@objc(ConductorKeySigningPolicy)`)
   and conforming to the plugin's `KeySigningPolicy` protocol, found once
@@ -427,9 +427,15 @@ native key plugin. It knows no service, no contract and no route.
   }
   public protocol KeySigningPolicy: AnyObject {
       init()
-      func plan(request: [String: Any], state: String, id: String?) -> Result<SigningPlan, KeyPolicyRefusal>
+      func plan(request: [String: Any], state: String, id: String?, publicKey: String) -> Result<SigningPlan, KeyPolicyRefusal>
   }
   ```
+
+  The public key is exactly what `publicKey()` answers (the 32 raw bytes
+  in base64url with no padding: 43 characters of `A-Z`, `a-z`, `0-9`,
+  `-` and `_`), read from the same record `sign` signs with and handed
+  with every call, so a policy has it for an unbound key, which has no
+  id yet (a sign-in's proof), and never takes it from the page.
 
   The plugin never signs bytes handed in from the web view, signs
   nothing without a policy (`no_policy`), signs with an `ending` key only

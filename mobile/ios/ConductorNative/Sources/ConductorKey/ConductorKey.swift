@@ -52,11 +52,13 @@ public struct SigningPlan {
 
 /**
  * A packaging's signing policy: it builds, it never signs. Exposed to the Objective-C runtime as `ConductorKeySigningPolicy` and found
- * once at start (`ConductorKey.packagedPolicy`).
+ * once at start (`ConductorKey.packagedPolicy`). Each plan is asked with the request, the key's state, its id (none until bound) and
+ * its public key, exactly as `publicKey()` answers it (the 32 raw bytes in base64url with no padding: 43 of A-Z, a-z, 0-9, '-' and
+ * '_'), read from the same record `sign` signs with: never from the page.
  */
 public protocol KeySigningPolicy: AnyObject {
     init()
-    func plan(request: [String: Any], state: String, id: String?) -> Result<SigningPlan, KeyPolicyRefusal>
+    func plan(request: [String: Any], state: String, id: String?, publicKey: String) -> Result<SigningPlan, KeyPolicyRefusal>
 }
 
 /** What the keychain item holds: the private key's raw bytes and the record kept beside it. */
@@ -265,8 +267,9 @@ public actor ConductorKey {
             throw refuse("key_expired", "This phone's key was not bound in time.")
         }
         guard let policy else { throw refuse("no_policy", "This build signs nothing.") }
+        let own = base64url(try Curve25519.Signing.PrivateKey(rawRepresentation: found.privateKey).publicKey.rawRepresentation)
         let plan: SigningPlan
-        switch policy.plan(request: request, state: found.state.rawValue, id: found.id) {
+        switch policy.plan(request: request, state: found.state.rawValue, id: found.id, publicKey: own) {
         case .failure(let r): throw refuse(r.code, r.words)
         case .success(let p): plan = p
         }

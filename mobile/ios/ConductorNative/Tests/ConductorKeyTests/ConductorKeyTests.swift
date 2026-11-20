@@ -71,8 +71,11 @@ final class FakeClock: @unchecked Sendable {
  */
 final class TestPolicy: KeySigningPolicy {
     var finished: [Data] = []
+    /** The public key each plan was asked with. */
+    var publicKeys: [String] = []
     init() {}
-    func plan(request: [String: Any], state: String, id: String?) -> Result<SigningPlan, KeyPolicyRefusal> {
+    func plan(request: [String: Any], state: String, id: String?, publicKey: String) -> Result<SigningPlan, KeyPolicyRefusal> {
+        publicKeys.append(publicKey)
         if request["refuse"] != nil { return .failure(KeyPolicyRefusal(code: "not_allowed", words: "Not a request this policy signs.")) }
         let m = request["m"] as? String ?? ""
         return .success(SigningPlan(message: Data("test:\(m)".utf8), presence: request["presence"] as? Bool ?? false, whileEnding: request["end"] as? Bool ?? false) { sig in
@@ -281,6 +284,24 @@ func publicKey(_ b64url: String) throws -> Curve25519.Signing.PublicKey {
         #expect(await refusal { _ = try await f.key.sign(request: ["m": "x"]) } == "no_key")
         #expect(f.vault.record == nil)
         #expect(try await f.key.publicKey() == nil)
+    }
+
+    @Test func thePolicyIsHandedTheKeysOwnPublicKey() async throws {
+        let f = Fixture()
+        let first = try await f.key.create(until: f.clock.now().addingTimeInterval(600))
+        // An unbound key has no id yet: the policy has its public key all the same.
+        _ = try await f.key.sign(request: ["m": "poll"])
+        try await f.key.bind(id: "dev-1")
+        _ = try await f.key.sign(request: ["m": "x"])
+        #expect(f.policy?.publicKeys == [first, first])
+        #expect(first.count == 43 && first.utf8.allSatisfy { ($0 >= 0x41 && $0 <= 0x5A) || ($0 >= 0x61 && $0 <= 0x7A) || ($0 >= 0x30 && $0 <= 0x39) || $0 == 0x2D || $0 == 0x5F })
+        #expect(try await f.key.publicKey() == first)
+        // Removed and made again: the new key's own.
+        try await f.key.remove()
+        let second = try await f.key.create(until: f.clock.now().addingTimeInterval(600))
+        _ = try await f.key.sign(request: ["m": "poll"])
+        #expect(second != first)
+        #expect(f.policy?.publicKeys.last == second)
     }
 
     @Test func refusesARequestPastItsBound() async throws {
