@@ -338,10 +338,12 @@ def gates(mobile: Path) -> list[str]:
         ("runtime.contentController.removeScriptMessageHandler(forName: BridgeGate.handler)", "the runtime's message handler is not taken off"),
         ("runtime.contentController.add(g, name: BridgeGate.handler)", "the bridge gate is not put in its place"),
         ("BridgeGateHandler(forwardingTo: runtime, view: webView, app: app)", "the bridge gate does not know the shell's view and origin"),
+        ("webView.navigationDelegate = n", "the load gate is not put in front of the runtime's navigation rule"),
+        ("d.newWindow = ", "a new window is not decided by the load gate"),
         ("override func router() -> Router", "the runtime's router is not the shell's"),
         ("encodedContentRuleList: FilePrefix.rules(app: app)", "the content rules do not hold the app's own spelling"),
         ("compileContentRuleList(forIdentifier: FilePrefix.identifier", "the runtime's file prefixes are not blocked"),
-        ("guard gate != nil", "the page loads whether or not the gate stands"),
+        ("guard gate != nil, loads != nil", "the page loads whether or not the gates stand"),
     ):
         if line not in shell:
             out.append(f"ShellViewController.swift: {what}")

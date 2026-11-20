@@ -21,6 +21,7 @@ import WebKit
 class ShellViewController: CAPBridgeViewController {
     /** The wrapping delegates: the web view holds its delegates weakly, so the controller keeps them. */
     private var refused: MediaCaptureRefused?
+    private var loads: NavigationGate?
     /** The boot check's report, only in a launch the boot check asked for. */
     private var bootCheck: BootCheckView?
     /** The gate at the runtime's script message handler: none until it is in place, and then the page may load. */
@@ -45,7 +46,13 @@ class ShellViewController: CAPBridgeViewController {
         bridge?.registerPluginInstance(RefusedCookiesPlugin())
         bridge?.registerPluginInstance(ShellHttpPlugin())
         guard let app = bridge?.config.localURL, let webView else { return }
+        let n = NavigationGate(wrapping: webView.navigationDelegate as? (NSObject & WKNavigationDelegate), app: app)
+        n.foreground = { UIApplication.shared.applicationState == .active }
+        n.handOff = { UIApplication.shared.open($0, options: [:], completionHandler: nil) }
+        loads = n
+        webView.navigationDelegate = n
         let d = MediaCaptureRefused(wrapping: webView.uiDelegate as? (NSObject & WKUIDelegate))
+        d.newWindow = { [weak n] action in n?.newWindow(action) }
         refused = d
         webView.uiDelegate = d
         // The runtime's handler, `bridge`, taken over by the gate, which forwards to it only what it admits.
@@ -63,7 +70,7 @@ class ShellViewController: CAPBridgeViewController {
      * rules compiled and added. Any missing, nothing loads.
      */
     override func viewDidLoad() {
-        guard gate != nil, let app = bridge?.config.localURL,
+        guard gate != nil, loads != nil, let app = bridge?.config.localURL,
               let controller = (bridge as? CapacitorBridge)?.webViewDelegationHandler.contentController
         else { return }
         WKContentRuleListStore.default().compileContentRuleList(forIdentifier: FilePrefix.identifier, encodedContentRuleList: FilePrefix.rules(app: app)) { list, _ in

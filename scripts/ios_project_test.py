@@ -247,17 +247,19 @@ class IOSProjectTest(unittest.TestCase):
             ("            runtime.contentController.add(g, name: BridgeGate.handler)\n", "the bridge gate is not put in its place"),
             ("            runtime.contentController.removeScriptMessageHandler(forName: BridgeGate.handler)\n", "the runtime's message handler is not taken off"),
             ("BridgeGateHandler(forwardingTo: runtime, view: webView, app: app)", "the bridge gate does not know the shell's view and origin"),
+            ("        webView.navigationDelegate = n\n", "the load gate is not put in front"),
+            ("        d.newWindow = { [weak n] action in n?.newWindow(action) }\n", "a new window is not decided by the load gate"),
             ("    override func router() -> Router {", "the runtime's router is not the shell's"),
             ("encodedContentRuleList: FilePrefix.rules(app: app)", "the content rules do not hold the app's own spelling"),
             ("compileContentRuleList(forIdentifier: FilePrefix.identifier", "the runtime's file prefixes are not blocked"),
-            ("        guard gate != nil, ", "the page loads whether or not the gate stands"),
+            ("        guard gate != nil, loads != nil, ", "the page loads whether or not the gates stand"),
         ):
             self.setUp()
             new = {"BridgeGateHandler(forwardingTo: runtime, view: webView, app: app)": "BridgeGateHandler(forwardingTo: runtime)",
                    "    override func router() -> Router {": "    func shellRouter() -> Router {",
                    "encodedContentRuleList: FilePrefix.rules(app: app)": "encodedContentRuleList: FilePrefix.encode(FilePrefix.prefixRules)",
                    "compileContentRuleList(forIdentifier: FilePrefix.identifier": "compileContentRuleList(forIdentifier: \"other\"",
-                   "        guard gate != nil, loads != nil, ": "        guard ", "        guard gate != nil, ": "        guard "}.get(line, "")
+                   "        guard gate != nil, loads != nil, ": "        guard "}.get(line, "")
             self.edit(f, line, new)
             self.only(part)
         self.setUp()
