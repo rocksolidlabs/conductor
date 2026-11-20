@@ -1155,8 +1155,9 @@ text and rationale).
 `ledger.MaxAuthority` (1 KiB, checked by `authorityOf` as given and as
 re-encoded), and the statement alone may be 2 KiB, so the statement is
 not in the authority: the ledger's step keeps it in a table of its own,
-`CREATE TABLE decision_statements (decision INTEGER NOT NULL, k INTEGER
-NOT NULL, statement TEXT NOT NULL, PRIMARY KEY (decision, k))`, written
+`CREATE TABLE decision_statements (decision INTEGER NOT NULL REFERENCES
+decisions(n) ON DELETE CASCADE, k INTEGER NOT NULL, statement TEXT NOT
+NULL, PRIMARY KEY (decision, k))`, written
 in DR1's transaction with the response row it belongs to (accepted, or a
 kept refusal), and the authority holds only its SHA-256
 (`statementSha256`). With the opaque ids of the shape above (no byte
@@ -1169,12 +1170,13 @@ statement and every other field at its bound recorded; one whose
 statement is past 2 KiB refused by `HeldAnswer.Valid`, never by
 `authorityOf`).
 
-**The copied-output verdicts, kept in the ledger** (schema version 13,
+**The copied-output verdicts, kept in the ledger** (schema version 16,
 the next at its merge, row OS-3a, the same step as
 `decision_statements`;
 additions only): `CREATE TABLE decision_output
-(decision INTEGER NOT NULL, part TEXT NOT NULL, verdict TEXT NOT NULL,
-cut_at INTEGER NOT NULL DEFAULT -1, PRIMARY KEY (decision, part))`, a
+(decision INTEGER NOT NULL REFERENCES decisions(n) ON DELETE CASCADE,
+part TEXT NOT NULL, verdict TEXT NOT NULL, cut_at INTEGER NOT NULL
+DEFAULT -1, PRIMARY KEY (decision, part))`, a
 row for each free-text part of a decision (the request's fields, each
 response's `text` and `rationale`, each receipt's and the application's
 words, `why`), written by `outputGuard` in the transaction that writes
@@ -1776,7 +1778,7 @@ replica's tags and other replicas' names (schema 8), its instance as on
 (fingerprints of captured output, never output, never exported or
 handed out). The ledger: the decision records with their `via: sync`
 authorities (with the statement's hash and the fence),
-`decision_statements` and `decision_output` (schema 13). Nothing here keeps a provider's credential or address.
+`decision_statements` and `decision_output` (schema 16). Nothing here keeps a provider's credential or address.
 
 ### Migrations
 
@@ -1798,11 +1800,14 @@ uses it:
   `TestSchema9MigratesAndKeepsEveryRow`,
   `TestAFailedMigrationLeavesVersion8AsItWas`,
   `TestVersion9OpensReadOnlyInVersion8`).
-- **The ledger 12 → 13 (OS-3a)**: additions only, `decision_output`
-  and `decision_statements`; a version 13 database opens read-only
-  under a version 12 binary, as the ledger's rule is
-  (`TestSchema13MigratesAndKeepsEveryRow`,
-  `TestVersion13OpensReadOnlyInVersion12`). OS-3 then writes DR1's
+- **The ledger 15 → 16 (OS-3a)**: additions only, `decision_output`
+  and `decision_statements`, each keyed by the decision record's number
+  and deleted with its decision (`ON DELETE CASCADE`), so a pruned run's
+  decisions take their statements and verdicts with them, and a decision
+  handed on to another run keeps them with it; a version 16 database opens read-only under a version 15
+  binary, as the ledger's rule is (`TestSchema16MigratesAndKeepsEveryRow`,
+  `TestVersion16OpensReadOnlyInVersion15`,
+  `TestSchema16FreshAndAFailedMigration`). OS-3 then writes DR1's
   `authority` JSON with the `via: sync` fields, which DR1's decoder
   gains (an older binary reads a `via` it does not know as no grant, and
   applies nothing of it). The
@@ -1916,8 +1921,9 @@ test-only binary registers a provider: the doors are reached through
   `TestChangesFromPagesWholeRows` at `MaxChangesPage` (a limit of 1,001
   refused, a full page one valid `ext` batch). The three schema tests
   are row OS-1a0's.
-- `internal/crew/ledger` (OS-3a): `TestSchema13MigratesAndKeepsEveryRow`,
-  `TestVersion13OpensReadOnlyInVersion12`.
+- `internal/crew/ledger` (OS-3a): `TestSchema16MigratesAndKeepsEveryRow`,
+  `TestVersion16OpensReadOnlyInVersion15`,
+  `TestSchema16FreshAndAFailedMigration`.
 - `internal/dispatch` (OS-1b): `TestRekeyOnlyBeforeShare`,
   `TestRekeyAfterRestartAppliesHeldRows`, `TestRekeyRefusedWhileSharePending`,
   `TestShareReservesItsNumbers`, `TestCompleteShareRefusesRowsPastUpto`,
@@ -1974,7 +1980,7 @@ test-only binary registers a provider: the doors are reached through
   `TestSyncStatusNamesItsOwnDevice`, `TestPointerNamesItsLaunchTicket`; and
   the export's tests for `ui/`, `remote/` and `output-index.sqlite`.
 - `internal/crew`, `internal/crew/ledger` (OS-3):
-  `TestOnDecisionsNamesTheDecisionsChanged`, `TestDecisionOutputSchema13`,
+  `TestOnDecisionsNamesTheDecisionsChanged`, `TestDecisionOutputSchema16`,
   `TestViaSyncAppliedOnlyAfterAdmits`, `TestViaSyncSupersededWhenAdmitsSaysNo`,
   `TestViaSyncUnknownWaitsAndNeverSupersedes`, `TestViaSyncAppliedOnce`,
   `TestRevokedSignInAfterDeliveryNotApplied`,
@@ -2066,7 +2072,7 @@ whose verdicts it relies on.
 | OS-1b | dispatch, api, ext: sharing with its cut-over, numbers, rekey and registry keys, the provider's doors | blocks with their tag and instance, overflow, the namespaces, `project.share`, `CompleteShare`, `ConfirmShare`, `RefuseShare`, `Dormant`, `Unshared`, `project.rekey` with held rows applied, keys projected from the registry, the two routes, the `Host` doors and `DispatchWatcher`, `FakeHost`; `docs/protocol.md` | `internal/dispatch`, `internal/api`, `internal/hostagent`, `ext`, `ext/exttest`, `docs` | the OS-1b tests above | OS-1a | ~700 + 700 |
 | OS-2 | api, web: UI state in the data directory, pins, restore into another provider's directory, a replay on request | `ui/` documents with `at` and `by`, routes, `ui/writer` left out, the allowlist with what leaves of each document, `Host.SetUIState`, `RestoreRequest.ProviderDir`, `Host.SyncReplay`; `useUiState` and its callers; pins; `ui-state.spec.ts` | `internal/api`, `internal/export`, `internal/hostagent`, `ext`, `web/app`, `web/e2e`, `docs` | the OS-2 tests above | OS-1b | ~800 + 750 |
 | OS-1c | api, dispatch: the output index and the copied-output check for Dispatch's rows and pins' names | `outputGuard`, `outputIndex` (winnowed fingerprints and lines in `output-index.sqlite`, the memory cache, prunes with their sources, the bound, failing closed with `pending`, pending made `output` at start), the verdicts at every operation's commit and a pin's `nameVerdict`, `DispatchChanges` carrying both and stopping before a `pending` row; this file amended with the owner's reading (no store step: the columns are OS-1a0's, the index a file of its own) | `internal/api`, `internal/dispatch`, `internal/export`, `ext`, `docs` | the OS-1c tests above | OS-2; the owner's answer to The open question | ~650 + 700 |
-| OS-3a | crew/ledger: schema 13 alone | `decision_output` and `decision_statements`; nothing reads or writes them yet | `internal/crew/ledger` | `TestSchema13MigratesAndKeepsEveryRow`, `TestVersion13OpensReadOnlyInVersion12` | OS-1c | ~80 + 150 |
+| OS-3a | crew/ledger: schema 16 alone | `decision_output` and `decision_statements`; nothing reads or writes them yet | `internal/crew/ledger` | `TestSchema16MigratesAndKeepsEveryRow`, `TestVersion16OpensReadOnlyInVersion15`, `TestSchema16FreshAndAFailedMigration` | OS-1c | ~80 + 150 |
 | OS-3 | api, crew, ext: decisions handed out, answers handed in (after the step; a boundary part with its own adversarial review) | `ledger.OnDecisions`, the decision document with its request part, its policy part and `requestSHA256`, the check at each write into `decision_output`, `Host.SyncResend`, `ext.AnswerCheck`, `ext.SubjectChecker`, `Host.RespondDecision` with `via: sync` (the statement in `decision_statements`), every held answer refused `answered_at_server` on a server whose router confirms policies, `Host.SyncDelivery`, `Host.LastDecision`, the recheck at application that waits on unknown, `AnswerOutcome.Repeat`; the agent skill's line | `internal/api`, `internal/crew`, `internal/crew/ledger`, `internal/agents`, `internal/hostagent`, `ext`, `ext/exttest`, `docs` | the OS-3 tests above | OS-3a; DR1's PR-4 (#637) and the decide grant (#776), both on `main`; the owner's answer to The open question | ~800 + 850 |
 | OS-4 | api, web, ext: what other machines hold, read only; the Sync row; Share in the project page; the features entry | `Host.PutRemote`, `DeleteRemote`, `ClearRemote`, `remote/` with the kinds `decision`, `pointer`, `pins`, `device` and `hosts`, the pointer's `ticket` (`RunPointer` and its columns read `runs.ticket`), `GET /api/remote`, `ext.SyncStatus` with its own device, workspace and person, `GET /api/sync`; the ticket page's, the decision page's and the sidebar's remote rows, the Sync row, Share and rekey controls, the ticket page's `alsoLinked` words; `remote.spec.ts`, `sync-free.spec.ts`; `docs/features.md` | `internal/api`, `internal/crew/ledger`, `internal/export`, `internal/hostagent`, `ext`, `ext/exttest`, `web/app`, `web/e2e`, `docs` | the OS-4 tests above | OS-3; DR1's PR-7 (#640) and MB0's PR-4 on `main` | ~750 + 750 |
 

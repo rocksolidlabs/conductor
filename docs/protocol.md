@@ -4991,8 +4991,9 @@ and `findingsFrom` and reads as before; the ledger's version 10 changes
 no table and is a barrier, so an older binary opens it read-only rather
 than dropping a request it does not know. Version 13 is a provider's
 launch's (A provider's launch, below), version 14 a decision router's
-outcome outbox (Decisions, Routed decisions), and version 15 the record
-of the context each attempt was given (below).
+outcome outbox (Decisions, Routed decisions), version 15 the record of
+the context each attempt was given (below), and version 16 a held
+answer's statement and a decision's copied-output verdicts (below).
 
 **Commands with receipts.** A person's change to a managed run (pause,
 unpause, cancel, retry, accept) is a command: the client mints a `commandId`
@@ -8585,8 +8586,20 @@ each block a context provider gave an attempt, at its start or by a
 lookup, its phase, source, title, ref, pack mark, its body's SHA-256 and
 size and when, never its text, keyed by the attempt and the block's
 sequence and going with the attempt. No attempt before it was given a
-recorded block, nothing is derived, and nothing writes or reads the table
-yet. A build that writes version 14 opens such a ledger read-only.
+recorded block, and nothing is derived. A build that writes version 14
+opens such a ledger read-only.
+
+The ledger's version 16 adds two tables for sync's seams
+(`docs/plans/sync-seams.md`, OS-3a): `decision_statements`, the statement
+a held answer carries, one row for each response that names one, keyed
+by the decision and the response's number; and `decision_output`, a
+decision's copied-output verdicts, one row for each free-text part,
+keyed by the decision and the part, with its verdict and where it is cut
+(-1 for none). Each row is deleted with its decision: a pruned run's
+decisions take their statements and verdicts with them, and a decision
+handed on to another run keeps them with it. No decision before it has either, nothing is derived, and nothing
+writes or reads either table yet. A build that writes version 15 opens
+such a ledger read-only.
 
 **A router's policy** (SW1, `docs/plans/decision-policy.md`). Only on a
 server whose registered router confirms policies (`ext.PolicyConfirmer`);

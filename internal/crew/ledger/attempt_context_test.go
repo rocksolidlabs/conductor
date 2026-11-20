@@ -75,7 +75,7 @@ func isContextEntry(name string) bool {
 func TestAttemptContextMigrationFreshAndAgain(t *testing.T) {
 	freshDir := filepath.Join(t.TempDir(), "runs")
 	fresh := openLedger(t, freshDir)
-	if v := dbVersion(t, fresh); v != Version || Version != 15 {
+	if v := dbVersion(t, fresh); v != Version || Version != 16 {
 		t.Fatalf("a new database is version %d, Version %d", v, Version)
 	}
 	want := []string{
@@ -238,7 +238,7 @@ func TestAttemptContextMigrationKeepsEveryRow(t *testing.T) {
 	if ro, why := migrated.ReadOnly(); ro {
 		t.Fatalf("read-only after the migration: %s", why)
 	}
-	if v := dbVersion(t, migrated); v != Version || Version != 15 {
+	if v := dbVersion(t, migrated); v != Version || Version != 16 {
 		t.Fatalf("version %d after the migration, Version %d", v, Version)
 	}
 	if got := columnsOf(t, migrated, "attempt_context"); !slices.Equal(got, freshCols) {
@@ -250,7 +250,8 @@ func TestAttemptContextMigrationKeepsEveryRow(t *testing.T) {
 	rest := slices.DeleteFunc(allEntries(t, migrated), func(e string) bool {
 		_, name, _ := strings.Cut(e, " ")
 		name, _, _ = strings.Cut(name, " ")
-		return isContextEntry(name)
+		// Version 16's tables come with the migration from 14 too.
+		return isContextEntry(name) || isSyncEntry(name)
 	})
 	if !slices.Equal(rest, entries) {
 		t.Fatalf("the schema after the migration:\n%v\nbefore:\n%v", rest, entries)
@@ -258,6 +259,8 @@ func TestAttemptContextMigrationKeepsEveryRow(t *testing.T) {
 	after := everyRow(t, migrated)
 	others := maps.Clone(after)
 	delete(others, "attempt_context")
+	delete(others, "decision_statements")
+	delete(others, "decision_output")
 	if !maps.EqualFunc(others, before, slices.Equal) {
 		t.Fatalf("the rows after the migration:\n%v\nbefore:\n%v", after, before)
 	}
@@ -284,8 +287,8 @@ func TestAttemptContextMigrationKeepsEveryRow(t *testing.T) {
 // and every entry as it was. Opened again by a binary of its own version,
 // it is the owner's, as it was.
 func TestOlderBinaryOpensAnAttemptContextLedgerReadOnly(t *testing.T) {
-	if Version != 15 || len(migrations[14]) == 0 {
-		t.Fatalf("Version %d, version 14's migration %v: the record of an attempt's context is version 15, a barrier of its own", Version, migrations[14])
+	if Version != 16 || len(migrations[14]) == 0 {
+		t.Fatalf("Version %d, version 14's migration %v: the record of an attempt's context is version 15, a barrier of its own, and 16 the version after it", Version, migrations[14])
 	}
 	ctx := context.Background()
 	dir := filepath.Join(t.TempDir(), "runs")

@@ -35,7 +35,7 @@ const (
 
 // Version is the schema this binary writes. A database of a later version
 // opens read-only; an earlier one is brought to it (migrations).
-const Version = 15
+const Version = 16
 
 // migrations bring a database from the version keyed to the next, in one
 // transaction with the version's change: 1 to 2 adds the attempts'
@@ -156,6 +156,13 @@ var migrations = map[int][]string{
 	// they are: nothing is derived. The version is a barrier: a binary
 	// that writes 14 opens a version 15 ledger read-only.
 	14: {attemptContextTable},
+	// Version 16 (CS1 OS-3a, sync's seams): a held answer's statement and
+	// a decision's copied-output verdicts, two tables of their own
+	// (decision_sync.go), which nothing writes or reads yet. No decision
+	// before this version has either, so a version 15 database's rows are
+	// all true as they are: nothing is derived. The version is a barrier:
+	// a binary that writes 15 opens a version 16 ledger read-only.
+	15: {decisionStatementsTable, decisionOutputTable},
 }
 
 // migrationsGo run after a version's statements, in the same transaction:
@@ -907,8 +914,10 @@ func (l *Ledger) release() {
 // their request index as version 9 keys it decisionsRequestV9, the
 // previews (version 11) previewsTable, where a run was launched from
 // (version 13) runOriginTable and runOriginOpIndex, the outcome outbox
-// (version 14) decisionOutboxTable and decisionOutboxIndex, and the context
-// each attempt was given (version 15) attemptContextTable, last.
+// (version 14) decisionOutboxTable and decisionOutboxIndex, the context
+// each attempt was given (version 15) attemptContextTable, and a held
+// answer's statement and a decision's copied-output verdicts (version 16)
+// decisionStatementsTable and decisionOutputTable, last.
 var schema = append(append([]string{
 	`CREATE TABLE schema_version (version INTEGER NOT NULL)`,
 	`CREATE TABLE runs (
@@ -1027,4 +1036,4 @@ var schema = append(append([]string{
 	messagesTable,
 	prerequisitesTable,
 	treesTable,
-}, decisionTables...), append(slices.Clone(decisionsRequestV9), previewsTable, runOriginTable, runOriginOpIndex, decisionOutboxTable, decisionOutboxIndex, attemptContextTable)...)
+}, decisionTables...), append(slices.Clone(decisionsRequestV9), previewsTable, runOriginTable, runOriginOpIndex, decisionOutboxTable, decisionOutboxIndex, attemptContextTable, decisionStatementsTable, decisionOutputTable)...)
