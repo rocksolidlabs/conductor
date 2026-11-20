@@ -239,15 +239,27 @@ provider.
   and, when its outcome is not known, locked until the provider says
   whether it arrived. Open a server stays reachable in every state and
   never asks the provider.
-- **The phone's own key and store.** The shell's native layer keeps one
-  key on the phone, in its keychain while it is unlocked and never in a
-  backup or on another device; it signs only what a packaging's signing
-  policy builds (the open-source build has none and signs nothing), and
-  asks for Face ID or the passcode, "Confirm your answer in Conductor",
-  when the policy asks. Drafts and the cache are files the phone keeps
-  locked while it is, out of backups, emptied at a sign-out. No media
-  capture: the shell's page can open neither the microphone nor the
-  camera.
+- **The phone's own key and store.** Held by the native layer's tests
+  (over stand-ins for the keychain, the files and the person's check):
+  one key, made only when there is none, signs only what a packaging's
+  signing policy builds (the open-source build has none and signs
+  nothing), asks the person's presence, "Confirm your answer in
+  Conductor", whenever the policy asks, and signs nothing when it is
+  refused, when the key changed, or when an unbound key's time ran out
+  meanwhile; its keychain item is asked for as this device's only,
+  readable only while unlocked, never synchronised. Drafts and the cache
+  keep their bounds, are asked for under complete protection and out of
+  backups, and a sign-out removes them, the HTTP caches, the cookie jar
+  and stored credentials, and reads nothing of them after, even when a
+  removal fails. Each plugin's calls run in the order the page made them.
+  The native HTTP call reaches only the https origins a packaging names,
+  none in this repository's build, with no cookie and no redirect
+  followed; the native runtime's own WebView and cookie plugins are
+  refused to the page, and a microphone or camera request is denied by
+  the web view's delegate. Built and not yet seen on a device: the Face
+  ID sheet itself, the keychain and the files while the phone is locked,
+  a reinstall or a restored backup, and a notification's tap
+  (`docs/plans/phone-shell.md`, By hand on a device).
 - **How it is built.** `make web-build mobile-sync` puts the workbench's
   bundle into `mobile/www` with the shell's bridge and its page policy
   (`script-src 'self' 'wasm-unsafe-eval'` and the hash of each inline

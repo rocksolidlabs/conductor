@@ -507,8 +507,9 @@ and nothing else: no key, no store, no push token, no HTTP call.
   (`create`, `publicKey`, `bind`, `sign`, `ending`, `remove`, `state`),
   the store, the platform's push token with its changes
   (`push.token()`, `push.onToken(cb)`), and the native HTTP call
-  (Capacitor's, which the web view's content security policy does not
-  govern; its request's body sent exactly as given, its reply's body
+  (Capacitor's by name, the shell's own as built, which the web view's
+  content security policy does not govern and which reaches only the
+  https origins the packaging names, none by default; its request's body sent exactly as given, its reply's body
   handed over as its text exactly as received, never parsed, at most
   1 MiB, so a provider can verify a signature or a hash over the exact
   bytes; a reply that is not text refused `unreadable`) to that factory
@@ -531,9 +532,12 @@ and nothing else: no key, no store, no push token, no HTTP call.
   default, so a shell with no provider connects to nothing, or the https
   origins a provider's build names (`make mobile-sync
   MOBILE_CONNECT=https://…`; each exactly an https origin, anything else
-  refused by the sync). A provider's own calls go through the native HTTP
-  call, which the policy does not govern; the bound keeps the page itself
-  from reaching a server's API whatever its code does. On `main`
+  refused by the sync). That bound is the page's own connections'. A
+  provider's own calls go through the native HTTP call, which the policy
+  does not govern and which reaches only the https origins the packaging
+  names at build (`make mobile-sync MOBILE_NATIVE_HTTP=https://…`, each
+  exactly an https origin), none by default: a shell with no provider
+  connects to nothing, by either way. On `main`
   (built at `f10eb297`) those are three: the import map, the colour mode
   and the runtime configuration; the bundle's JSON data block is not a
   script the browser runs and takes no hash. `csp.mjs` fails the sync on
@@ -565,10 +569,14 @@ and nothing else: no key, no store, no push token, no HTTP call.
   Markdown that `MarkdownPreview.vue` sanitises (raw HTML parsed as text,
   scripted links refused), so an agent's words cannot become a script.
   A script in the web view could still reach Capacitor's plugin
-  registry; what it would get is what the policy builds, and a
+  registry; what it would get is what the signing policy builds (a
   signature marked for presence only behind the person's Face ID or
   passcode, which is why the plugin makes the presence check and not the
-  bridge or the provider.
+  bridge or the provider), the store's records, and the native HTTP call
+  to the origins the packaging names, and nothing else of the runtime:
+  its `WebView` and cookie plugins are replaced by stand-ins that refuse
+  every call. It could also remove the key, which is a sign-out and
+  gains it nothing.
 
 **`Makefile`**: `mobile-install` (`npm ci` in `mobile/`), `mobile-sync`
 (the bundle copied from `internal/web/dist` into `mobile/www`, the
@@ -1347,8 +1355,10 @@ Swift package with no package of anyone else's):
 
 - The key's and the store's tests are Swift Testing suites under the
   plan's names (`ConductorKeyTests`, `ConductorStoreTests`), run by
-  Swift's own tools (`make mobile-native-test`) with no IDE or project;
-  the app's project runs the same tests once it exists.
+  Swift's own tools (`make mobile-native-test`) with no IDE or project,
+  on the Mac's own system, not on iOS: lines compiled only for iOS (the
+  files' complete protection) are built by the app's build and first run
+  by the boot check or on a device.
 - The key's record (its state, its bound id, an unbound key's `until`)
   is kept with the private key in the one keychain item, as JSON.
 - The install's mark (`conductor/key.marker`) is kept out of backups, so
@@ -1408,6 +1418,57 @@ Swift package with no package of anyone else's):
   the web job's vitest.
 - The app icon is the desktop app's; the launch image is plain white.
 
+**As built, the review's fix pass** (pull request 1052):
+
+- Capacitor registers its own `WebView`, `CapacitorCookies` and
+  `CapacitorHttp` plugins for every page whatever its configuration
+  says. The shell registers, by the same names, two stand-ins that
+  refuse every call (`not_in_shell`) and its own HTTP plugin
+  (`ShellHttpPlugin` over `ConductorShell`'s `NativeHTTPCalls`), and its
+  view controller never loads a server base path a page asked to keep
+  (`instanceDescriptor`). The view controller's own base-path setter is
+  not open to an app, so it is not overridden: with `WebView` replaced,
+  nothing in the shell calls it.
+- The native HTTP call admits a request only when its address is https
+  on an origin the packaging named (`make mobile-sync
+  MOBILE_NATIVE_HTTP=…`, written into the bundle as
+  `shell/native-http.json` and read once at the app's start from the
+  app's own bundle; absent, unreadable or malformed is none); anything
+  else (`http`, `file:`, another origin or port, a user part, a host
+  that only looks like a named one, a trailing dot) is `origin_refused`
+  before anything is opened. It is the shell's own rather than
+  Capacitor's handler, so that it keeps no cookie, cache or credential
+  (an ephemeral session with none), follows no redirect (the reply that
+  asks for one is the answer), and reads a reply only up to 1 MiB
+  (`too_large`). Its call shape is Capacitor's: `request`, and `get` to
+  `delete`, answered `{status, headers, url, data}`; `params` is refused.
+- `clear()` always removes: the generation moves first, then the drafts
+  and the cache are removed and the HTTP caches emptied whatever the
+  generation's write did; a generation not written is written again
+  after the removal, and one that still cannot be has its file removed.
+  A store that starts with no generation on disk reads none of the
+  drafts or cache there (its generation is taken past all of theirs),
+  and its first record writes the generation before itself. Anything not
+  removed or not written is answered `not_cleared`, after the rest.
+- `clear()` empties the app's cookie jar and its stored credentials too,
+  before the web view's data store.
+- A record's file and the store's folders are made under complete
+  protection (the write's own option on iOS), and a write whose
+  protection or rename fails removes its new file before `put` answers.
+- Each plugin's calls run one at a time in the order they arrive
+  (`ConductorShell`'s `CallRunner`, one a plugin).
+- An unbound key whose time runs out while the person is asked signs
+  nothing (`key_expired`, the key removed), as before the wait; a
+  keychain item that is not a key (its form unknown, or its private key
+  not one) is removed at any read, and the state is `none`.
+- The project check reads `capacitor.config.ts` (no key but the app id,
+  its name, the bundle and the empty navigation), every `*.xcconfig`
+  and scheme under `mobile/ios`, and the property-list keys that would
+  add a transport exception, URL types, queried schemes, shared files or
+  any usage description but Face ID's. Preflight names `mobile-ios` as
+  CI's alone. CI caches the job's Swift packages and tries their resolve
+  three times.
+
 **By hand on a device** (what only a phone shows), from a clean checkout
 on a Mac with Xcode: `make web-build mobile-install mobile-sync`, `npx cap
 sync ios` in `mobile/`, open `mobile/ios/App/App.xcodeproj`. The builder
@@ -1440,6 +1501,12 @@ step signs or is told:
    background opens `/shell/open?h=<handle>` and that decision, read at
    that moment; one with no `h` opens the inbox.
 8. The app switcher shows the plain cover, never a card.
+9. With no provider, the app opens on Open a server, and an address
+   opens in the in-app browser.
+10. A page's request for the camera or the microphone is denied with no
+    prompt (the system's dialog never shows).
+11. A link tapped in a decision's context opens outside the shell, in
+    the system's browser, and the shell's page stays as it was.
 
 OSS-2a needs nothing of the shell and the shell's rows nothing of
 OSS-2a until OSS-2b, which joins them; OSS-2b is the last code row of
