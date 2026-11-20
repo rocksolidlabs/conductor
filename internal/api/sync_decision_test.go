@@ -31,7 +31,7 @@ func verdicts(kept map[string]string, judge func(string) string) verdictsOf {
 	if judge == nil {
 		judge = func(string) string { return verdictClean }
 	}
-	return verdictsOf{kept: kept, recorded: kept != nil, judge: judge}
+	return verdictsOf{kept: kept, judge: judge}
 }
 
 func mustDoc(t *testing.T, rec ledger.DecisionRecord, v verdictsOf) ext.DecisionDoc {
@@ -189,6 +189,13 @@ func TestEarlierSchemaDecisionOfAnAgentKeptBack(t *testing.T) {
 	req := `{"question":"Which table?","context":"two fit"}`
 	if doc := mustDoc(t, docRecord(ledger.OriginAgent, req), verdicts(nil, nil)); doc.Request != nil || doc.RequestKept != ext.DecisionRequestKeptOutput {
 		t.Fatalf("an agent's unjudged request left: %+v", doc.Request)
+	}
+	// A response judged since does not make the request judged.
+	if doc := mustDoc(t, docRecord(ledger.OriginAgent, req), verdicts(map[string]string{ledger.PartResponse(1, "text"): verdictClean}, nil)); doc.Request != nil {
+		t.Fatalf("an agent's request judged by its response's verdict: %+v", doc.Request)
+	}
+	if doc := mustDoc(t, docRecord(ledger.OriginAgent, req), verdicts(map[string]string{ledger.PartQuestion: verdictClean, ledger.PartContext: verdictClean}, nil)); doc.Request == nil {
+		t.Fatal("an agent's request judged as it was written kept back")
 	}
 	judged := map[string]bool{}
 	judge := func(s string) string {

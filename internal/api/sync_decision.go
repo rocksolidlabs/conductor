@@ -67,17 +67,15 @@ type docReceipt struct {
 	Rationale string `json:"rationale"`
 }
 
-// verdictsOf is decision n's verdicts: the ledger's, or, for a decision
-// opened before the check, the check's now (judge), and whether they are
-// the ledger's.
+// verdictsOf is decision n's verdicts: the ledger's (kept), and for a part
+// it kept none of (written before the check) the check's now (judge).
 type verdictsOf struct {
-	kept     map[string]string
-	recorded bool
-	judge    func(text string) string
+	kept  map[string]string
+	judge func(text string) string
 }
 
-// of is a part's verdict: the kept one, else (no verdict kept for the
-// decision at all) the check's now; "" text is clean.
+// of is a part's verdict: the kept one, else the check's now; "" text is
+// clean.
 func (v verdictsOf) of(part, text string) string {
 	if text == "" {
 		return verdictClean
@@ -154,7 +152,10 @@ func docRequest(d ledger.DecisionRow, v verdictsOf) (*ext.DecisionDocRequest, bo
 	if json.Unmarshal([]byte(d.Request), &r) != nil {
 		return nil, true
 	}
-	if d.Origin == ledger.OriginAgent && !v.recorded {
+	if _, judged := v.kept[ledger.PartQuestion]; d.Origin == ledger.OriginAgent && !judged {
+		// An agent's request never judged as it was written (opened before
+		// the check, or with no sync store), whatever was judged of it
+		// since: kept back whatever the check would find now.
 		return nil, true
 	}
 	if keeps(v.of(ledger.PartQuestion, r.Question)) || keeps(v.of(ledger.PartUncertainty, r.Uncertainty)) ||
@@ -321,12 +322,12 @@ func (s *Server) decisionDoc(ctx context.Context, n int64) (ext.DecisionDoc, boo
 	if err != nil || !ok {
 		return ext.DecisionDoc{}, false, err
 	}
-	kept, recorded, err := s.ledger.OutputVerdicts(ctx, n)
+	kept, _, err := s.ledger.OutputVerdicts(ctx, n)
 	if err != nil {
 		return ext.DecisionDoc{}, false, err
 	}
 	agent := rec.Origin == ledger.OriginAgent
-	v := verdictsOf{kept: kept, recorded: recorded && len(kept) > 0, judge: func(text string) string {
+	v := verdictsOf{kept: kept, judge: func(text string) string {
 		return s.copyCheck.Judge(ctx, text, agent)
 	}}
 	doc, err := syncDecision(rec, v)
