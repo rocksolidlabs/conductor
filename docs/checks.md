@@ -101,7 +101,7 @@ command, `groups` lists them). A developer's own command stays the whole
 module, `go test -race -count=1 -timeout 90m ./...` or `make test`.
 
 A file CI's jobs fetch from a release mirror is cached by its version (`actions/cache`) and its download retried for minutes: Neovim's tarball through `curl --retry-all-errors`, refetched when it is not a gzip, and Electron's binary through
-`desktop/scripts/install-electron.mjs` (the desktop tests' `pretest`, six tries of electron's own installer), so a mirror's bad half hour fails one try, not the run (#281).
+`desktop/scripts/install-electron.mjs` (the desktop tests' `pretest`, six tries of electron's own installer), so a mirror's bad half hour fails one try, not the run (#281). The `mobile-ios` job's Swift packages (the native runtime's package and its two binary frameworks, from GitHub) are cached on the manifest's hash and resolved in three tries a minute apart, each under five minutes (`make mobile-ios-resolve`, `scripts/ios_boot.py`), before the build.
 The browser's system packages (the `e2e` job, `live.yml`) come from the runner's apt mirror list: when the first mirror's name does not resolve, a step before the install takes out each mirror whose name does not, and uses kernel.org's Ubuntu mirror when none is left (apt still checks its indexes against the image's Ubuntu archive key); the install gets three tries a minute apart, each ended after ten minutes by a `timeout` run as root, so that it reaches apt (#281).
 
 CI's `e2e` job runs the Playwright suite in six shards side by side, `e2e (1)` to
