@@ -8719,7 +8719,12 @@ above, and no field, code or row below is ever written or answered.
   router's alone; every other Host, and the router's on a switchyard or
   with no ledger, answers `ext.ErrUnsupported`): `OpenDecisions` pages
   every open record, 64 a page in number order, each with its policy,
-  when it was first routed, the last route's why and its rev;
+  when it was first routed, the last route's why and its rev (the why is
+  the kind of the last re-route, `assigned`, `delegated`, `escalated` or
+  `rerouted`, when the record's last route was one by `Reroute`, and
+  `routed` for any other route, a router's first policy included, also
+  when it follows an earlier route and its row is a `rerouted` one; none
+  for a record never routed);
   `Outcomes` reads the outbox 32 rows a page in `seq` order and
   `AckOutcomes` deletes up to a `seq`, the only way a row leaves;
   `Reroute` changes a record's policy in one transaction:

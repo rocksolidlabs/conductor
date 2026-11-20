@@ -57,3 +57,28 @@ func TestAPolicyAfterAnEarlierRouteIsWrittenWhenToldAgain(t *testing.T) {
 		t.Fatalf("after the refused answers: %s", now.State)
 	}
 }
+
+// The why OpenDecisions tells a router follows real re-routes: a first
+// policy that followed the router's earlier route (its row a router's
+// change with no op id) is routed; a re-route by Host.Reroute (its row
+// with the router's op id) is its kind; a route after it is routed again.
+func TestTheOpenDecisionsWhyFollowsReroutes(t *testing.T) {
+	row := func(kind, by, op string) ledger.HistoryRow { return ledger.HistoryRow{Kind: kind, By: by, OpID: op} }
+	opened := []ledger.HistoryRow{row(ledger.HistoryOpened, "plan", ""), row(ledger.HistoryRouted, "local/1", "")}
+	first := append(slices.Clone(opened), row(ledger.HistoryRouted, "router:switchman", ""), row(ledger.HistoryRerouted, "router:switchman", ""))
+	for _, c := range []struct {
+		name    string
+		history []ledger.HistoryRow
+		want    string
+	}{
+		{"never routed", []ledger.HistoryRow{row(ledger.HistoryOpened, "plan", "")}, ""},
+		{"a first policy after an earlier route", first, ledger.HistoryRouted},
+		{"a re-route after it", append(slices.Clone(first), row(ledger.HistoryRerouted, "router:switchman", "rr-1")), ledger.HistoryRerouted},
+		{"an escalation", append(slices.Clone(first), row(ledger.HistoryEscalated, "router:switchman", "rr-2")), ledger.HistoryEscalated},
+		{"the operator's route after a re-route", append(slices.Clone(first), row(ledger.HistoryRerouted, "router:switchman", "rr-1"), row(ledger.HistoryRouted, "admin", "give-1")), ledger.HistoryRouted},
+	} {
+		if got := lastRouteWhy(ledger.DecisionRecord{History: c.history}); got != c.want {
+			t.Errorf("%s: %q, want %q", c.name, got, c.want)
+		}
+	}
+}
