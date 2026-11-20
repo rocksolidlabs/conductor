@@ -24,9 +24,13 @@ type TreeRequest struct {
 // Tree is a commit's tree, listed recursively: its files, links and
 // submodule entries by full path, in git's order.
 type Tree struct {
-	Commit    string      `json:"commit"`
-	ID        string      `json:"id"`              // the root tree's object id
-	Roots     []string    `json:"roots,omitempty"` // at most MaxTreeRoots, sorted
+	Commit string `json:"commit"`
+	ID     string `json:"id"` // the root tree's object id
+	// Roots is the history's root commits, sorted, at most MaxTreeRoots.
+	// The server reads 4 KiB of git's list of them (about a hundred ids):
+	// past it, the roots are the first MaxTreeRoots, sorted, of those it
+	// read, which need not be the smallest of all of them.
+	Roots     []string    `json:"roots,omitempty"`
 	Shallow   bool        `json:"shallow,omitempty"`
 	Entries   []TreeEntry `json:"entries"`
 	Denied    int         `json:"denied,omitempty"` // entries the deny list refused, left out

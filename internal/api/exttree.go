@@ -386,20 +386,28 @@ func (h *extHost) ReadTree(ctx context.Context, r ext.TreeRequest) (ext.Tree, er
 
 // rootsOf is the root commits of commit's history in the repository at
 // top, sorted, at most ext.MaxTreeRoots, from the server's cache when it
-// holds them.
+// holds them. Past maxRootsList bytes of git's list (about a hundred
+// roots), the roots are those of the complete lines read, sorted and cut:
+// the list read is git's, cut at its bound, never a failure.
 func (s *Server) rootsOf(ctx context.Context, top, commit string) ([]string, error) {
 	key := top + "\x00" + commit
 	if r, ok := s.treeRoots.get(key); ok {
 		return r, nil
 	}
 	out, err := treeSmall(ctx, top, maxRootsList, "rev-list", "--max-parents=0", commit, "--")
+	past := errors.Is(err, gitcli.ErrOutputLimit)
+	if past {
+		// A line the bound cut is no root: only the complete ones count.
+		out = out[:strings.LastIndexByte(out, '\n')+1]
+		err = nil
+	}
 	var roots []string
 	for l := range strings.SplitSeq(strings.TrimSuffix(out, "\n"), "\n") {
 		if gitObjectID(l) {
 			roots = append(roots, l)
 		}
 	}
-	if err != nil {
+	if err != nil || (past && len(roots) == 0) {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}

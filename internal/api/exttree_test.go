@@ -610,3 +610,49 @@ func TestHostReadsUseTheReadEnvironment(t *testing.T) {
 		t.Fatalf("the reads ran %v:\n%s", subs, strings.Join(lines, "\n"))
 	}
 }
+
+// A history of more roots than the read of their list holds (120, past
+// its 4 KiB) is no failure: the tree is listed, with MaxTreeRoots roots,
+// sorted, each a root of the history, and the answer is kept for the next
+// read.
+func TestReadTreeRootsPastTheirBound(t *testing.T) {
+	e := treeEnv(t, nil)
+	all := map[string]bool{gitIn(t, e.root, "rev-parse", "HEAD"): true}
+	parents := []string{"HEAD"}
+	tree := gitIn(t, e.root, "rev-parse", "HEAD^{tree}")
+	for i := range 119 {
+		c := gitIn(t, e.root, "commit-tree", tree, "-m", fmt.Sprintf("root %d", i))
+		all[c] = true
+		parents = append(parents, c)
+	}
+	args := []string{"commit-tree", tree, "-m", "many roots"}
+	for _, p := range parents {
+		args = append(args, "-p", p)
+	}
+	merge := gitIn(t, e.root, args...)
+	if len(all) != 120 {
+		t.Fatalf("%d roots made", len(all))
+	}
+	putRun(t, e, readsRun, e.root)
+	h := graphHost(t, e)
+	for range 2 {
+		tr, err := h.ReadTree(t.Context(), ext.TreeRequest{Run: readsRun, Commit: merge, Roots: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(tr.Roots) != ext.MaxTreeRoots || !slices.IsSorted(tr.Roots) || len(tr.Entries) != 1 {
+			t.Fatalf("the roots: %v, entries %d", tr.Roots, len(tr.Entries))
+		}
+		for _, r := range tr.Roots {
+			if !all[r] {
+				t.Fatalf("%s is no root of the history", r)
+			}
+		}
+	}
+	e.srv.treeRoots.mu.Lock()
+	kept := slices.ContainsFunc(e.srv.treeRoots.order, func(k string) bool { return strings.HasSuffix(k, "\x00"+merge) })
+	e.srv.treeRoots.mu.Unlock()
+	if !kept {
+		t.Fatal("the roots are not kept")
+	}
+}

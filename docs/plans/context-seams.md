@@ -582,9 +582,12 @@ records each run's argv and the two variables, through every read).
   `MaxTreeEntries` entries kept; a path the deny list refuses is counted
   in `Denied` and not kept. `Truncated` is set by either bound.
   `rev-parse --is-shallow-repository` and, with `Roots`, `rev-list
-  --max-parents=0 <commit>` through `RunBoundedEnv` with 4 KiB; the
-  roots are cached by the server per repository and commit, at most 256
-  entries, the oldest dropped.
+  --max-parents=0 <commit>` through `RunBoundedEnv` with 4 KiB; past
+  that bound (a history of about a hundred roots or more) the roots are
+  the complete lines read, sorted and cut to `MaxTreeRoots`, never a
+  failure, so a provider gets at most 16 roots that need not be the
+  smallest of all of them; the roots are cached by the server per
+  repository and commit, at most 256 entries, the oldest dropped.
 - `ReadBlob`: a path that begins with `:` is refused; then the entry,
   `ls-tree --long --full-tree <commit> -- <path>` through
   `RunBoundedEnv` (4 KiB): no entry, or an entry that is neither a file
