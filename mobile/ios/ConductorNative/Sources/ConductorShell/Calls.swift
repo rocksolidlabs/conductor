@@ -163,8 +163,13 @@ public actor StoreCalls {
         let key = options["key"] as? String
         do {
             if !started {
-                try await store.start()
-                started = true
+                do {
+                    try await store.start()
+                    started = true
+                } catch {
+                    // A clear is let past a start that fails: it removes what it can itself, and answers not_cleared.
+                    if method != "clear" { throw error }
+                }
             }
             switch method {
             case "put":
