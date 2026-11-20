@@ -3,6 +3,7 @@ package exttest
 import (
 	"cmp"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -814,9 +815,11 @@ func Continuity(t T, n *Network, cs ext.ContinuityStore) {
 	data := []byte("{}")
 	saved := ext.Doc{Store: "data", Path: "catalog.json", Epoch: "0123456789abcdef0123456789abcdef", Rev: 1, At: time.Now().UTC(), Size: int64(len(data)), Data: data}
 	deleted := ext.Doc{Store: "data", Path: "crews/exttest.json", Epoch: saved.Epoch, Rev: 2, At: saved.At}
+	decision := decisionDocOf(saved)
 	c.phases(func(ph phase) {
 		run(c, "Saved", ext.DeliveryWait, ph, func(ctx context.Context) error { return cs.Saved(ctx, saved) })
 		run(c, "Deleted", ext.DeliveryWait, ph, func(ctx context.Context) error { return cs.Deleted(ctx, deleted) })
+		run(c, "Saved, a decision", ext.DeliveryWait, ph, func(ctx context.Context) error { return cs.Saved(ctx, decision) })
 	})
 	c.flush()
 	restore(c, cs)
@@ -1207,4 +1210,27 @@ func nilValue(v any) bool {
 		return rv.IsNil()
 	}
 	return false
+}
+
+// decisionDocOf is a decision's document (store decision, path dr-1) of
+// the shape the server hands a sync store (docs/plans/sync-seams.md,
+// OS-3): its request part's hash its own, within MaxDecisionDoc.
+func decisionDocOf(base ext.Doc) ext.Doc {
+	zero := 0
+	doc := ext.DecisionDoc{ID: "dr-1", Run: "exttest-00000001", OpenedIn: "exttest-00000001", Origin: ext.DecisionOriginPlan, Type: "approval", Gate: "ship",
+		Request:  &ext.DecisionDocRequest{Question: "Ship it?", Options: []ext.DecisionDocOption{{Label: "Approve"}, {Label: "Reject"}}, Recommendation: &zero},
+		OpenedTo: ext.DecisionOpenedToOperator, Policy: []byte(`{"revision":"local/1"}`), State: "open", Rev: 1, CreatedAt: base.At,
+		States: ext.DecisionDocStates{Open: true}}
+	part, err := doc.RequestPart()
+	if err != nil {
+		panic(err)
+	}
+	if doc.RequestSHA256, err = part.SHA256(); err != nil {
+		panic(err)
+	}
+	data, err := json.Marshal(doc)
+	if err != nil || len(data) > ext.MaxDecisionDoc {
+		panic(fmt.Sprintf("exttest: the sample decision document: %v", err))
+	}
+	return ext.Doc{Store: "decision", Path: doc.ID, Epoch: base.Epoch, Rev: 1, At: base.At, Size: int64(len(data)), Data: data}
 }
