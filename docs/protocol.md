@@ -4090,8 +4090,9 @@ Only an attempt's session's own agent token asks, and the caller is
 judged before anything of the session is said: any other token, or none,
 is answered `401` and the workbench token `403 agent_only`, whether the
 session is there, is an attempt or runs, so no other caller learns any of
-it from the answer; a comparison's lane's own token is `409 lane` (a lane
-is handed no context). The body, at most 4 KiB, decoded strictly, is the
+it from the answer; a comparison's lane's own token is `409 lane`, as at
+every door closed to a lane, in every state of the lane (a lane is handed
+no context). The body, at most 4 KiB, decoded strictly, is the
 agent's alone:
 
 - `op`: `symbol`, `references`, `dependencies`, `impact` or `pack`;

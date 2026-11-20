@@ -226,25 +226,27 @@ func agentFieldsValid(r ext.LookupRequest) error {
 	return r.Valid()
 }
 
-// lookupCaller judges who asks before anything of the session is said:
-// only the agent token of the session the path names, when that session
-// is an attempt's, is served (a comparison's lane's own token answered
-// 409 lane, as on every door closed to a lane). Every other caller is
+// lookupCaller judges who asks before anything of the session is said.
+// The session's own agent token is a caller the server knows: a
+// comparison's lane's is answered 409 lane, as at every door closed to a
+// lane and in every state of the lane (launching, held, its run gone:
+// agentTokenOK), and an attempt's is served. Every other caller is
 // refused as one with no right here, whatever the session is or whether
 // it is there: the workbench token 403 agent_only (the route is an
-// agent's, opAgentOnly), any other token, or none, 401; so no token but
-// the attempt's own learns from the answer whether the session exists,
-// is an attempt or runs. It answers having written the refusal when it
-// reports false.
+// agent's, opAgentOnly), any other token, a session's own where that
+// session is neither a lane's nor an attempt's, or none, 401; so no
+// caller but the session's own agent learns from the answer whether the
+// session exists, is an attempt or runs. It answers having written the
+// refusal when it reports false.
 func (s *Server) lookupCaller(w http.ResponseWriter, r *http.Request) (session.Driver, bool) {
 	if d, found := s.registry.Get(r.PathValue("id")); found {
-		if _, _, _, attempt := s.runs.AttemptOf(d.Info().ID); attempt {
-			switch s.agentTokenOK(r, d) {
-			case agentTokenServed:
+		switch s.agentTokenOK(r, d) {
+		case agentTokenLaneClosed:
+			writeLaneClosed(w)
+			return nil, false
+		case agentTokenServed:
+			if _, _, _, attempt := s.runs.AttemptOf(d.Info().ID); attempt {
 				return d, true
-			case agentTokenLaneClosed:
-				writeLaneClosed(w)
-				return nil, false
 			}
 		}
 	}
