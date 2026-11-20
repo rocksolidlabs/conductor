@@ -38,7 +38,8 @@ class ShellViewController: CAPBridgeViewController {
         // The runtime's handler, `bridge`, taken over by the gate, which forwards to it only what it admits.
         if let runtime = (bridge as? CapacitorBridge)?.webViewDelegationHandler {
             let g = BridgeGateHandler(forwardingTo: runtime)
-            // A deliberate break, reverted next: the gate is made but not put in the runtime's place.
+            runtime.contentController.removeScriptMessageHandler(forName: BridgeGate.handler)
+            runtime.contentController.add(g, name: BridgeGate.handler)
             gate = g
         }
         if BootCheck.asked(), let webView, let gate { bootCheck = BootCheckView(webView: webView, gate: gate) }
