@@ -624,7 +624,14 @@ behaves unchanged, and a router that does not implement
   policy came after the answer, and nothing else changes. A record
   open at another rev is not written, and is told again (a comment
   moved it meanwhile). A record that already carries a router's policy
-  is not written: a change of policy is `Host.Reroute`'s.
+  is not written: a change of policy is `Host.Reroute`'s. (Where the code departs: a record the router
+  routed before with no policy, `RecordRoute`'s row, and then told again,
+  after a `for` change or by a pass, holds the router's one `routed`
+  row already, so its policy's row is written as a re-route of a
+  `local/1` record is, a `rerouted` row of the router's group, with no op
+  id. The transaction's repeat is the router's routing row carrying the
+  same revision, answered by that row's receipt; a policy of another
+  revision is no repeat, and is refused `routed_by_policy` as above.)
 - **Responding** (`respondTx`, judged after DR1's replay of a repeat,
   in the order of the table The respond route's judgement, under
   Events, orderings and invariants). Every door that hands a response

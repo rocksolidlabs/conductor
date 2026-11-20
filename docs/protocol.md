@@ -8627,9 +8627,13 @@ above, and no field, code or row below is ever written or answered.
   distinct?, override, unsupported?, routedAt, spare, fallback:
   "local/1", quorum: 1, authority: [{kind: operator}]}` (at most 16 KiB),
   its rev + 1, with the router's one `routed` history row (its
-  destinations, rule and `revision`; no op id). A record answered
-  first gets the `routed` row alone; one that carries a router's policy
-  already, or a comparison's selection, gets nothing. Until the router
+  destinations, rule and `revision`; no op id). A record the router
+  routed before with no policy holds that row already: its policy is
+  written the same way, its row a `rerouted` one (the router's group,
+  no op id) carrying the revision. The same policy told again writes
+  nothing; a policy of another revision is no repeat of it. A record
+  answered first gets the `routed` row alone; one that carries a
+  router's policy already, or a comparison's selection, gets nothing. Until the router
   has had its say (its policy written, an answer with none, a tell not
   made or failed, or twice `ext.RouteWait` from the opening's commit) a
   record is in its **opening window**: every response is `409
