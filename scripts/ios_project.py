@@ -313,6 +313,8 @@ def gates(mobile: Path) -> list[str]:
     reads = sorted(re.findall(r"\bp\.(\w+)\b", (mobile / "src/main.ts").read_text()))
     if not admitted or admitted != sorted(set(reads)):
         out.append(f"BridgeGate.swift: the gate admits {admitted}, not exactly the plugins the bridge reads {sorted(set(reads))}")
+    if "CallRunner" not in (mobile / "ios/App/App/Plugins/ShellHttpPlugin.swift").read_text():
+        out.append("ShellHttpPlugin.swift: its calls are not run one at a time through a CallRunner")
     return out
 
 

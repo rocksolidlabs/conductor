@@ -29,6 +29,24 @@ final class Clears: HTTPCaches, @unchecked Sendable {
     func clear() async { lock.withLock { count += 1 } }
 }
 
+/** A transport that holds each request until the test lets it go, recording what reached it. */
+final class HeldTransport: HTTPTransport, @unchecked Sendable {
+    let lock = NSLock()
+    var sent: [String] = []
+    var waiting: [CheckedContinuation<Void, Never>] = []
+    func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+        await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+            lock.withLock {
+                sent.append(request.url!.path)
+                waiting.append(c)
+            }
+        }
+        return (Data(), HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: [:])!)
+    }
+    var count: Int { lock.withLock { sent.count } }
+    func release() { lock.withLock { () -> [CheckedContinuation<Void, Never>] in defer { waiting = [] }; return waiting }.forEach { $0.resume() } }
+}
+
 @Suite struct OrderAndClearTests {
     @Test func aClearWhoseStoreCannotStartRemovesWhatItCanAndAnswersNotCleared() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("shell-locked-\(UUID().uuidString)", isDirectory: true)
@@ -53,4 +71,22 @@ final class Clears: HTTPCaches, @unchecked Sendable {
         #expect(await next.call("get", ["area": "cache", "key": "c1"]) == .resolve(["data": .null]))
     }
 
+    @Test(.timeLimit(.minutes(1))) func theNativeHTTPCallsRunOneAtATimeInTheOrderTheyArrive() async {
+        let transport = HeldTransport()
+        let calls = NativeHTTPCalls(origins: origins(["https://relay.shell.test"]), transport: transport)
+        let runner = CallRunner { NativeHTTPRunner(calls) }
+        let got = Answers()
+        runner.submit("get", ["url": "https://relay.shell.test/first"], answer: got.add("first"))
+        runner.submit("get", ["url": "https://relay.shell.test/second"], answer: got.add("second"))
+        // The first is held at the transport: the second waits its turn and has not been sent.
+        await until { transport.count == 1 }
+        #expect(runner.queued == 1)
+        #expect(transport.lock.withLock { transport.sent } == ["/first"])
+        transport.release()
+        await until { transport.count == 2 }
+        transport.release()
+        await until { got.count == 2 }
+        #expect(got.names == ["first", "second"])
+        #expect(transport.lock.withLock { transport.sent } == ["/first", "/second"])
+    }
 }

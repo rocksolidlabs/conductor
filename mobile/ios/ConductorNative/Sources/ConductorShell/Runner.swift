@@ -8,6 +8,13 @@ public protocol ShellCalls: Actor {
 extension KeyCalls: ShellCalls {}
 extension StoreCalls: ShellCalls {}
 
+/** The native HTTP call's calls, for the plugin's runner: one at a time, in the order they arrive, as the key's and the store's. */
+public actor NativeHTTPRunner: ShellCalls {
+    let calls: NativeHTTPCalls
+    public init(_ calls: NativeHTTPCalls) { self.calls = calls }
+    public func call(_ method: String, _ options: [String: Any]) async -> CallAnswer { await calls.call(method, options) }
+}
+
 /**
  * One plugin's calls run one at a time, in the order they arrive: each is made and answered before the next one starts, so two puts
  * of one key land in order, a put made before a clear is removed by it, and one made while a clear waits runs after it has answered.

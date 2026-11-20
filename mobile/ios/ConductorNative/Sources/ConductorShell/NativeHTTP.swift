@@ -128,6 +128,8 @@ public final class SessionTransport: HTTPTransport, @unchecked Sendable {
         c.urlCache = nil
         c.requestCachePolicy = .reloadIgnoringLocalCacheData
         c.urlCredentialStorage = nil
+        // The plugin's calls run one at a time: a reply that never ends cannot hold the queue past this.
+        c.timeoutIntervalForResource = 120
         if let protocolClasses { c.protocolClasses = protocolClasses }
         session = URLSession(configuration: c, delegate: NoRedirects(), delegateQueue: nil)
         self.maxBody = maxBody

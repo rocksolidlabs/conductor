@@ -11,7 +11,8 @@ public class ShellHttpPlugin: CAPPlugin, CAPBridgedPlugin {
     public let jsName = "CapacitorHttp"
     public let pluginMethods: [CAPPluginMethod] = NativeHTTPCalls.methods.map { CAPPluginMethod(name: $0, returnType: CAPPluginReturnPromise) }
 
-    private let calls = NativeHTTPCalls.device()
+    /** The calls one at a time, in the order the page made them, as the key's and the store's. */
+    private let runner = CallRunner { NativeHTTPRunner(NativeHTTPCalls.device()) }
 
     @objc func request(_ call: CAPPluginCall) { make(call, "request") }
     @objc func get(_ call: CAPPluginCall) { make(call, "get") }
@@ -21,8 +22,6 @@ public class ShellHttpPlugin: CAPPlugin, CAPBridgedPlugin {
     @objc func delete(_ call: CAPPluginCall) { make(call, "delete") }
 
     private func make(_ call: CAPPluginCall, _ method: String) {
-        let options = callOptions(call.options)
-        let calls = self.calls
-        Task { call.answer(await calls.call(method, options)) }
+        runner.submit(method, callOptions(call.options)) { call.answer($0) }
     }
 }

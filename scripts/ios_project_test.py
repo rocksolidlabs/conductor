@@ -256,6 +256,9 @@ class IOSProjectTest(unittest.TestCase):
         self.setUp()
         self.edit("ios/ConductorNative/Sources/ConductorShell/BridgeGate.swift", '"PushNotifications"]', '"PushNotifications", "WebView"]')
         self.only("the gate admits")
+        self.setUp()
+        self.edit("ios/App/App/Plugins/ShellHttpPlugin.swift", "CallRunner {", "Runner {")
+        self.only("its calls are not run one at a time")
 
 
 if __name__ == "__main__":
