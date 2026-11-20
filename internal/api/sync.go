@@ -219,6 +219,21 @@ func (a *syncAdapter) decisionsSynced() bool {
 	return a.s != nil && a.s.syncName() != ""
 }
 
+// pointerTicket is the ticket a run's pointer names: its launch ticket
+// while that ticket's project is shared here, else none (Owner decisions,
+// 23). A project shared or unshared later reaches the store when the
+// provider has the run's pointer sent again (SyncResend).
+func (a *syncAdapter) pointerTicket(ctx context.Context, ticket string) (string, error) {
+	if ticket == "" || a.s.dispatch == nil {
+		return "", nil
+	}
+	shared, err := a.s.dispatch.TicketShared(ctx, ticket)
+	if err != nil || !shared {
+		return "", err
+	}
+	return ticket, nil
+}
+
 // syncRef is a Dispatch entity's doc: which entity a commit changed, and
 // the ticket and project it belongs to. Its rows are read from Dispatch
 // itself (the sync item's own, CS1).
@@ -241,6 +256,9 @@ type syncPointer struct {
 	ContinuedBy   string    `json:"continuedBy,omitempty"`
 	CreatedAt     time.Time `json:"createdAt,omitzero"`
 	ClosedAt      time.Time `json:"closedAt,omitzero"`
+	// Ticket is the ticket whose launch made the run's chain, only while
+	// that ticket's project is shared here (pointerTicket).
+	Ticket string `json:"ticket,omitempty"`
 }
 
 // dataCommitted is the data directory's observer: an allowlisted
@@ -585,9 +603,14 @@ func (a *syncAdapter) deliver(ctx context.Context, epoch string, e syncEntry) er
 			// commit's; the mark then has it delivered again, newer.
 			return sy.Deleted(ctx, d)
 		}
+		ticket, err := a.pointerTicket(ctx, p.Ticket)
+		if err != nil {
+			a.warn("sync: a run's ticket's share could not be read; it is tried again", err)
+			return err
+		}
 		d.Rev = p.Revision
 		d.Data, _ = json.Marshal(syncPointer{ID: p.ID, Crew: p.CrewID, State: p.State, Outcome: p.Outcome, Paused: p.Paused, Revision: p.Revision,
-			ContinuedFrom: p.ContinuedFrom, ContinuedBy: p.ContinuedBy, CreatedAt: p.CreatedAt, ClosedAt: p.ClosedAt})
+			ContinuedFrom: p.ContinuedFrom, ContinuedBy: p.ContinuedBy, CreatedAt: p.CreatedAt, ClosedAt: p.ClosedAt, Ticket: ticket})
 		d.Size = int64(len(d.Data))
 		return sy.Saved(ctx, d)
 	case syncDecisionStore:

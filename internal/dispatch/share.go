@@ -532,3 +532,23 @@ func (s *Store) shareOf(ctx context.Context, q queryer, p Project) (*ProjectShar
 	}
 	return share, held, nil
 }
+
+// TicketShared says the ticket with the id is in a project shared here
+// now (its share confirmed): a run's pointer names its launch ticket only
+// then. False for a ticket the store does not hold.
+func (s *Store) TicketShared(ctx context.Context, ticketID string) (bool, error) {
+	shared := false
+	err := s.read(ctx, func(q queryer) error {
+		if schemaOf(q) < syncSchema {
+			return nil
+		}
+		var state string
+		err := q.QueryRowContext(ctx, "SELECT p.share_state FROM tickets t JOIN projects p ON p.id = t.project_id WHERE t.id = ?", ticketID).Scan(&state)
+		if isNoRows(err) {
+			return nil
+		}
+		shared = err == nil && state == ShareShared
+		return err
+	})
+	return shared, err
+}
