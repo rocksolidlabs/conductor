@@ -580,10 +580,12 @@ and nothing else: no key, no store, no push token, no HTTP call.
   signature marked for presence only behind the person's Face ID or
   passcode, which is why the plugin makes the presence check and not the
   bridge or the provider), the store's records, and the native HTTP call
-  to the origins the packaging names, and nothing else of the runtime:
-  its `WebView` and cookie plugins are replaced by stand-ins that refuse
-  every call. It could also remove the key, which is a sign-out and
-  gains it nothing.
+  to the origins the packaging names, through the App, Browser and
+  push plugins what they offer the page, and nothing else of the
+  runtime: one gate stands at each way from the page into native code,
+  each an allowlist ("Every way a page reaches native code", as built,
+  below). It could also remove the key, which is a sign-out and gains
+  it nothing.
 
 **`Makefile`**: `mobile-install` (`npm ci` in `mobile/`), `mobile-sync`
 (the bundle copied from `internal/web/dist` into `mobile/www`, the
@@ -1434,8 +1436,11 @@ Swift package with no package of anyone else's):
   (`ShellHttpPlugin` over `ConductorShell`'s `NativeHTTPCalls`), and its
   view controller never loads a server base path a page asked to keep
   (`instanceDescriptor`). The view controller's own base-path setter is
-  not open to an app, so it is not overridden: with `WebView` replaced,
-  nothing in the shell calls it.
+  not open to an app, so it is not overridden. The stand-ins alone did
+  not hold: the runtime makes and registers a fresh plugin for a message
+  that names a plugin by its native class (`CAPWebViewPlugin`), over the
+  stand-in; the bridge gate below closes that, and the stand-ins stay
+  behind it as a second wall.
 - The native HTTP call admits a request only when its address is https
   on an origin the packaging named (`make mobile-sync
   MOBILE_NATIVE_ORIGINS=…`, written into the bundle as
@@ -1484,9 +1489,91 @@ Swift package with no package of anyone else's):
   page's own scripts, a script that reports every policy violation and,
   once Open a server is drawn, the bridge's platform and whether the
   page has every plugin the bridge needs, into one label the test reads
-  (`ConductorShell`'s `BootCheck`, the app's `BootCheckView`). It passes
-  only on `ready platform=ios plugins=ok violations=0`, then finds Open a
-  server's address field.
+  (`ConductorShell`'s `BootCheck`, the app's `BootCheckView`). Once Open
+  a server is drawn, the page also tries each known way around the
+  gates below (a plugin named by its native class, three of them; a
+  Cordova message; a text-input prompt of the runtime's cookies kind; a
+  file of the bundle under the runtime's file prefix) and checks each
+  is refused, the stand-ins still refuse and the calls the shell means
+  still answer; the app counts the probe messages the bridge gate
+  dropped. It passes only on `ready platform=ios plugins=ok probes=ok
+  dropped=4 violations=0`, then finds Open a server's address field.
+
+**Every way a page reaches native code** (as built, read from the
+pinned runtime's own source, `@capacitor/ios` 8.6.0), each with its
+gate, every gate an allowlist that fails closed:
+
+- **The script message handler `bridge`** (the runtime's delegation
+  handler, the only handler a person's launch has). It takes three
+  kinds: `message` (a plugin call by the page's plugin name, and when no
+  plugin has that name, a plugin made from the native class of that
+  name and registered over the one of its page name), `js.error` (a log
+  line) and `cordova` (a Cordova plugin call). Gate: `BridgeGateHandler`
+  (`ConductorShell`'s `BridgeGate`) takes the handler's name before the
+  first load and forwards only `message` to `ConductorKey`,
+  `ConductorStore`, `CapacitorHttp`, `App`, `Browser` and
+  `PushNotifications` (the plugins the bridge reads, which the project
+  check holds it to), by exactly those names; it drops a class name, any
+  other name, `js.error`, `cordova` and any other kind. The runtime's
+  `Console` (a log line for each `console` call of the page) is dropped:
+  the page's start does not need it. `WebView`, `CapacitorCookies` and
+  `SystemBars` are not the page's; the stand-ins of the first two stay
+  registered as a second wall.
+- **The script message handler `conductorBootCheck`**, in a boot-check
+  launch only (its launch argument, which a person's launch never
+  passes): it puts the strings it is sent into one label. No gate
+  needed: it reaches nothing else.
+- **The UI delegate** (the runtime's, wrapped by `MediaCaptureRefused`).
+  A text-input prompt: the runtime reads one whose text is JSON as a
+  native call (`CapacitorCookies.get`, `.set`, `.isEnabled`,
+  `CapacitorHttp`: the app's cookie jar read and written for any domain
+  and copied into the web view) and shows any other. Gate: the shell's
+  delegate answers every prompt nil and hands none on (the shell's pages
+  use none), so the runtime's script also leaves `document.cookie`,
+  `fetch` and `XMLHttpRequest` unpatched. A media capture request:
+  denied. An alert or a confirm: the system's own alert with the page's
+  words, no native code of the app; none needed. A new window
+  (`window.open`, a link with a target): the runtime hands the address to
+  the system, outside the shell, as a link tapped; none needed beyond
+  the system's own handling. A device orientation and motion request:
+  granted by the runtime; the page gets motion events only, no native
+  code of the app.
+- **The navigation delegate**: the runtime's interceptor prefix
+  cancelled; then each plugin's own say over a load (none of the
+  shell's plugins has one); then the configured navigation (empty, held
+  by the project check); a top-level load outside the bundle is handed
+  to the system browser and cancelled; a load inside the bundle is
+  allowed. No further gate: the page stays on its bundle.
+- **The scheme handler** (`capacitor://localhost`): the bundle's files
+  by their paths; under `/_capacitor_file_` any absolute path the app
+  can read (the store's files among them); under
+  `/_capacitor_http_interceptor_` a proxy for the native HTTP call, which
+  the runtime refuses while its native HTTP is off (it is: no config
+  turns it on). Gate: content rules (`ConductorShell`'s `FilePrefix`)
+  that block both prefixes for every kind of load, compiled and added
+  before the first load; the page does not load until they and the
+  bridge gate stand.
+- **The scripts the runtime injects** at each document's start, main
+  frame only: its configuration; its bridge script (`window.Capacitor`,
+  its calls posted to `bridge`; `console` patched to post `Console`
+  lines; `document.cookie`, `fetch` and `XMLHttpRequest` patched only if
+  a prompt answers that the runtime's cookies or HTTP are on, which the
+  shell's delegate never does); each registered plugin's header (its
+  page name and methods); Cordova's scripts only when a Cordova plugin
+  is registered (none is). They reach native code only through the
+  handler and the prompt above, both gated.
+- **Native to native**: the runtime's cookie observer copies the web
+  view's cookies into the app's jar as they change; `clear()` empties
+  the jar before and again after the web view's store.
+
+Also as built in the second fix pass: a `clear()` the page asks for
+while the store cannot start (its generation unreadable while the phone
+is locked) is let past the start, removes what it can and the
+generation file, and answers `not_cleared`; a start with no generation
+on disk removes every draft and cache file it finds (one it cannot
+remove still reads as stale); the native HTTP call's calls run one at a
+time in the order they arrive, as the key's and the store's do, each
+reply bounded at two minutes so none holds the queue.
 
 **A packaging's native sources** (as built): one place,
 `mobile/ios/ConductorNative/Sources/ConductorPackaging/Packaging/`, which
