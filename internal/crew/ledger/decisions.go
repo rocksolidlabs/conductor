@@ -1177,7 +1177,14 @@ func (t *Tx) PutDecision(d DecisionRow) error {
 		// A record that carried a router's policy keeps its outcome for the
 		// router, written in the transaction that gives it its final state
 		// (I9): every final state, answered or not.
-		return t.outcome(d.N)
+		return t.outcome(d.N, false)
+	}
+	if d.State == DecisionSuperseded && cur.State == DecisionSuperseded && cur.SupersededBy == "" && d.SupersededBy != "" && RouterPolicy(cur.Policy) {
+		// A supersession is written in two steps (the record final first,
+		// so its place is free; then naming its replacement): its outcome
+		// is written again at the second, naming the replacement and with
+		// its final why.
+		return t.outcome(d.N, true)
 	}
 	return nil
 }

@@ -100,8 +100,11 @@ func cutWords(s string, n int) string {
 
 // outcome writes decision n's outbox row from its record as this
 // transaction reads it, once: a record whose row is written already (an
-// applied approval superseded later) keeps its first.
-func (t *Tx) outcome(n int64) error {
+// applied approval superseded later) keeps its first, unless again says
+// the row is written again: a supersession's row that names no
+// replacement yet takes the one naming it, in the transaction that
+// superseded it; any other row stays.
+func (t *Tx) outcome(n int64, again bool) error {
 	rec, ok, err := t.Record(n)
 	if err != nil {
 		return err
@@ -139,6 +142,15 @@ func (t *Tx) outcome(n int64) error {
 	}
 	b, err := json.Marshal(o)
 	if err != nil {
+		return err
+	}
+	if again {
+		if err := checkObject("the outcome", string(b), MaxDecisionOutcome, false); err != nil {
+			return err
+		}
+		_, err := t.tx.ExecContext(t.ctx, `INSERT INTO decision_outbox (decision, outcome, at) VALUES (?, ?, ?)
+			ON CONFLICT(decision) DO UPDATE SET outcome = excluded.outcome
+			WHERE json_extract(decision_outbox.outcome, '$.state') = 'superseded' AND json_extract(decision_outbox.outcome, '$.supersededBy') IS NULL`, n, string(b), stamp(t.now))
 		return err
 	}
 	return t.Outcome(n, string(b))

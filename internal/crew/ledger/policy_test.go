@@ -266,6 +266,16 @@ func TestOutcomeOutboxWrittenInTheFinalTransaction(t *testing.T) {
 	if got := outbox(t, l); len(got) != 1 || got[0].State != DecisionApplied {
 		t.Fatalf("after a later final state: %+v", got)
 	}
+	// Then named superseded by another, in the supersession's second step:
+	// the applied row stays the first.
+	in(t, l, run, func(tx *Tx) error {
+		d, _, _ := tx.Decision(routed)
+		d.SupersededBy = DecisionID(plain)
+		return tx.PutDecision(d)
+	})
+	if got := outbox(t, l); len(got) != 1 || got[0].State != DecisionApplied || got[0].SupersededBy != "" {
+		t.Fatalf("after its supersession named its replacement: %+v", got)
+	}
 }
 
 // Every final state has its outcome, answered or not: a routed record
@@ -283,9 +293,21 @@ func TestOutboxCarriesCancellationsAndSupersessions(t *testing.T) {
 		}
 	}
 	setState(t, l, run, a, DecisionCancelled, "")
+	// Superseded as the engine does it: final first, its replacement
+	// opened, then put again naming it, with its final why.
+	var fresh int64
 	in(t, l, run, func(tx *Tx) error {
 		d, _, _ := tx.Decision(b)
-		d.State, d.Rev, d.Why, d.SupersededBy = DecisionSuperseded, d.Rev+1, "its subject moved", "dr-99"
+		d.State, d.Rev, d.Why = DecisionSuperseded, d.Rev+1, "a newer request takes its place"
+		if err := tx.PutDecision(d); err != nil {
+			return err
+		}
+		got, _, err := tx.OpenDecision(spareGate(run, "g3"))
+		if err != nil {
+			return err
+		}
+		fresh = got.N
+		d.SupersededBy, d.Why = got.ID(), "its subject moved"
 		return tx.PutDecision(d)
 	})
 	got := outbox(t, l)
@@ -295,7 +317,7 @@ func TestOutboxCarriesCancellationsAndSupersessions(t *testing.T) {
 	if got[0].State != DecisionCancelled || got[0].By != "" || got[0].Via != "" {
 		t.Fatalf("the cancellation: %+v", got[0])
 	}
-	if got[1].State != DecisionSuperseded || got[1].SupersededBy != "dr-99" || got[1].Why != "its subject moved" || got[1].By != "" {
+	if got[1].State != DecisionSuperseded || got[1].SupersededBy != DecisionID(fresh) || got[1].Why != "its subject moved" || got[1].By != "" {
 		t.Fatalf("the supersession: %+v", got[1])
 	}
 }
