@@ -1278,7 +1278,7 @@ func revision(field, rev string) error {
 func checkDecision(field string, x *Decision) error {
 	x.Happened, x.WhyHuman, x.Question = cleanText(x.Happened), cleanText(x.WhyHuman), cleanText(x.Question)
 	x.Uncertainty, x.Authorizes = cleanText(x.Uncertainty), cleanText(x.Authorizes)
-	if err := oneRef(field+".about", x.About, RefQuestion, RefTask, RefTicket, RefPlan); err != nil {
+	if err := oneRef(field+".about", x.About, RefQuestion, RefTask, RefTicket, RefPlan, RefDecision); err != nil {
 		return err
 	}
 	for _, t := range []struct {

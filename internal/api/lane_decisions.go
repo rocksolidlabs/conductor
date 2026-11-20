@@ -104,7 +104,7 @@ func (s *Server) laneDecisionItems(ctx context.Context, rd *inboxRead, sc laneSc
 	for _, row := range rows {
 		marks = append(marks, ledger.DecisionRef(row.N)+" "+row.State+" "+recordMarkOf(row.Rev, row.Responses, row.History))
 		if slices.Contains(inboxStates, row.State) {
-			items = append(items, laneRecordItem(rd.decisionItem(row.DecisionRow, row.Held, nil)))
+			items = append(items, laneRecordItem(rd.recordItem(row.DecisionRow, row.Held, nil, false)))
 		}
 	}
 	if more {
@@ -182,7 +182,7 @@ func (s *Server) laneDecisionRef(ctx context.Context, sc laneScope, reqID, v str
 // readRecordItem answers a decision_read of a record in the scope, read
 // with what it holds (laneDecisionRef's one read).
 func (s *Server) readRecordItem(ctx context.Context, sc laneScope, reqID string, rec ledger.DecisionRecord) []byte {
-	it := laneRecordItem(s.newInboxRead(ctx).decisionItem(rec.DecisionRow, rec.Held, &rec))
+	it := laneRecordItem(s.newInboxRead(ctx).recordItem(rec.DecisionRow, rec.Held, &rec, false))
 	for i, e := range it.Evidence {
 		if id, ok := sessionOfRef(e.Ref); ok && s.coversSession(sc, id) {
 			it.Evidence[i].Session = s.laneSessionID(sc, id)

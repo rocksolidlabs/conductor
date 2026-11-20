@@ -56,9 +56,6 @@ const (
 	waitsContext = "waits for WF-2a: context recorded, the lookup and its absence (after context-seams CT-3)"
 	waitsPolicy  = "waits for WF-2b: eligibility by a router's policy (after decision-policy's PR-7a and PR-7)"
 	waitsSync    = "waits for WF-2c: the held answer for the owner disconnected (after sync-seams OS-3)"
-	// waits1046 is step 9 on the operator's decision page, which main
-	// cannot show: a Brakeman card about a decision record (issue 1046).
-	waits1046 = "waits for issue 1046: Brakeman's brief on a decision record's item"
 )
 
 // The walk's first decision, which the router is set to route before it
@@ -988,16 +985,16 @@ func (w *workflow) approve(t *testing.T) {
 	approve()
 }
 
-// briefDecision is step 9 as main has it. Asked about the asking task,
-// Brakeman's brief carries a decision card about that task, at the
-// revision its turn read (main takes a card about a question, a task, a
-// ticket or a plan, not about a decision record: issue 1046), and cites
-// the decision and the run. It is accepted and kept as Brakeman's, its
-// card and refs among it; the decision's record is unchanged (its rev, its
-// state, its responses) and so are its words on the operator's item;
-// Brakeman's token answers nothing. The operator's item carrying the
-// brief waits for issue 1046 (briefedItem). The decide page a decide
-// principal reads shows the decision's own words and none of the brief's.
+// briefDecision is step 9. Asked about the asking task, Brakeman's brief
+// carries a decision card about that task, at the revision its turn read,
+// and cites the decision and the run: it is kept as Brakeman's, its card
+// and refs among it, and joins no item but the task's subject; the
+// decision's record is unchanged (its rev, its state, its responses) and
+// so are its words on the operator's item; Brakeman's token answers
+// nothing. A second turn's card about the decision record itself is the
+// brief of the operator's item for the decision (briefedItem). The decide
+// page a decide principal reads shows the decision's own words and none
+// of the brief's.
 func (w *workflow) briefDecision(t *testing.T, clock *clock) {
 	t.Helper()
 	before := w.record(t, w.did)
@@ -1047,10 +1044,9 @@ func (w *workflow) briefDecision(t *testing.T, clock *clock) {
 		strings.Contains(fmt.Sprint(it["question"], it["title"]), "BRAKEMANMARK") {
 		t.Fatalf("the operator's item after the brief: %v", it)
 	}
-	t.Run("the operator's item with Brakeman's brief on the decision", func(t *testing.T) {
-		t.Skip(waits1046)
-		w.briefedItem(t, clock)
-	})
+	// The card about the decision record itself is on the operator's
+	// item (issue 1046).
+	w.briefedItem(t, clock)
 	if w.free() {
 		return
 	}
@@ -1516,11 +1512,11 @@ func walkCard(t *testing.T, about brakeman.Ref, rev string, evidence []brakeman.
 		Evidence: evidence, SubjectRevision: rev}}
 }
 
-// briefedItem is the plan's step 9 on the operator's decision page, once
-// issue 1046 lets Brakeman brief a decision record: a turn's card about
-// the decision, at the rev it read, is on the decision's item, marked
-// Brakeman's, beside the decision's own question and title, its
-// recommendation a mark and nothing answered; the record unchanged.
+// briefedItem is the plan's step 9 on the operator's decision page: a
+// turn asked about the asking task writes a card about the decision record
+// at its rev, and the card is on the decision's item, marked Brakeman's,
+// beside the decision's own question and title, its recommendation a mark
+// and nothing answered; the record unchanged.
 func (w *workflow) briefedItem(t *testing.T, clock *clock) {
 	t.Helper()
 	before := w.record(t, w.did)

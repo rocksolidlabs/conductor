@@ -204,7 +204,7 @@ func (s *Server) resolveBriefRefs(ctx context.Context, desk *brakeman.Store, req
 // newRefResolver is the resolver of a brief of req's, as resolveBriefRefs
 // reads it.
 func (s *Server) newRefResolver(desk *brakeman.Store, req brakeman.Request, log brakeman.ReadLog, now brakeman.Config) *refResolver {
-	rr := &refResolver{s: s, desk: desk, snap: req.Config, grant: grantOf(req.Config, now), at: time.Now().UTC(),
+	rr := &refResolver{s: s, desk: desk, snap: req.Config, grant: grantOf(req.Config, now), at: time.Now().UTC(), subjects: req.Subjects,
 		seen: map[brakeman.Ref]brakeman.Read{}, runs: map[string]*refRun{}, tops: map[string]string{}}
 	for _, rd := range log.Reads {
 		// The newest read of a ref stands, the log oldest first; but a
@@ -271,6 +271,26 @@ func (rr *refResolver) resolveAll(ctx context.Context, b brakeman.Brief) ([]brak
 			bad = append(bad, badRef{Ref: target.String(), Why: fmt.Sprintf("items[%d]: %s", i, why)})
 		}
 	}
+	// A card about a decision record (issue 1046) is about an open one, of
+	// what the request is about: the operator's decision page shows it
+	// beside the record's own words, so it never advises on a record that
+	// is answered or closed, or on one its turn was not asked about.
+	for i, it := range b.Items {
+		if it.Kind != brakeman.ItemDecision || it.Decision.About.Kind != brakeman.RefDecision {
+			continue
+		}
+		about := it.Decision.About
+		if slices.ContainsFunc(bad, func(b badRef) bool { return b.Ref == about.String() }) {
+			continue
+		}
+		why, err := rr.recordCardWhy(ctx, about)
+		if err != nil {
+			return nil, err
+		}
+		if why != "" {
+			bad = append(bad, badRef{Ref: about.String(), Why: fmt.Sprintf("items[%d]: %s", i, why)})
+		}
+	}
 	if len(bad) > 0 {
 		return nil, &badRefsError{Refs: bad}
 	}
@@ -278,6 +298,71 @@ func (rr *refResolver) resolveAll(ctx context.Context, b brakeman.Brief) ([]brak
 		out = []brakeman.Resolution{}
 	}
 	return out, nil
+}
+
+// recordCardWhy is why a card may not be about the decision record about,
+// "" when it may: the record open, and of one of the request's subjects
+// (its run or its task, its session, its ticket).
+func (rr *refResolver) recordCardWhy(ctx context.Context, about brakeman.Ref) (string, error) {
+	ld, err := rr.ledger()
+	if err != nil {
+		return "", err
+	}
+	n, ok := ledger.ParseDecisionID(about.Decision)
+	if ld == nil || !ok {
+		return about.String() + " resolves to nothing", nil
+	}
+	rec, found, err := ld.Decision(ctx, n)
+	switch {
+	case err != nil:
+		return "", fmt.Errorf("the decision %s: %w", about.Decision, err)
+	case !found:
+		return about.String() + " resolves to nothing", nil
+	case rec.State != ledger.DecisionOpen:
+		return fmt.Sprintf("%s is %s: a card is about an open decision", about, rec.State), nil
+	}
+	for _, s := range rr.subjects {
+		of, err := rr.recordOf(ctx, rec.DecisionRow, s)
+		if err != nil {
+			return "", err
+		}
+		if of {
+			return "", nil
+		}
+	}
+	return fmt.Sprintf("%s is not of what this request is about: a card is about a decision of its subject's run, task, session or ticket", about), nil
+}
+
+// recordOf says whether the decision row is of the subject s: of its run
+// (the one it was opened in, or the one that holds it now), its task, its
+// asking session, or its ticket.
+func (rr *refResolver) recordOf(ctx context.Context, row ledger.DecisionRow, s brakeman.Ref) (bool, error) {
+	inRun := s.Run != "" && (row.RunID == s.Run || row.CurrentRun == s.Run)
+	switch s.Kind {
+	case brakeman.RefRun:
+		return inRun, nil
+	case brakeman.RefTask, brakeman.RefAttempt:
+		return inRun && row.TaskID == s.Task, nil
+	case brakeman.RefSession, brakeman.RefQuestion:
+		return row.SessionID != "" && row.SessionID == s.Session, nil
+	case brakeman.RefTicket:
+		if row.Ticket == "" {
+			return false, nil
+		}
+		ds, err := rr.dispatch()
+		if err != nil || ds == nil {
+			return false, err
+		}
+		tk, err := ds.Ticket(ctx, s.Ticket)
+		if errors.Is(err, dispatch.ErrNotFound) {
+			return false, nil
+		}
+		if err != nil {
+			return false, fmt.Errorf("the ticket %s: %w", s.Ticket, err)
+		}
+		return tk.ID == row.Ticket, nil
+	}
+	return false, nil
 }
 
 // revisionWhy is why rev is not the revision a decision or proposal was
@@ -317,10 +402,13 @@ type refResolver struct {
 	desk  *brakeman.Store
 	snap  brakeman.Snapshot // what the turn began under
 	grant refGrant
-	at    time.Time
-	seen  map[brakeman.Ref]brakeman.Read
-	runs  map[string]*refRun
-	tops  map[string]string
+	// subjects are the request's: a card about a decision record is about
+	// one of theirs (recordCardWhy).
+	subjects []brakeman.Ref
+	at       time.Time
+	seen     map[brakeman.Ref]brakeman.Read
+	runs     map[string]*refRun
+	tops     map[string]string
 	// taskRead is nil but in tests: called after a managed task's states
 	// are read and before its run's revision is read again (taskRev), and
 	// between a candidate's task row and its attempt rows (candidate), so

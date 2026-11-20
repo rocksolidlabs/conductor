@@ -218,6 +218,13 @@ func (rd *inboxRead) decisionFrom(row ledger.DecisionRow, run inboxRun, runName 
 // is answered, and an answered one takes a comment alone. A card of
 // Brakeman's about the item's ref fills what it fills of any item.
 func (rd *inboxRead) decisionItem(row ledger.DecisionRow, held []string, rec *ledger.DecisionRecord) *inboxItem {
+	return rd.recordItem(row, held, rec, true)
+}
+
+// recordItem is decisionItem, with Brakeman's card about the record when
+// card is set: the operator's page alone joins it (issue 1046); a link's
+// lane gives the record's item Conductor's brief, as before.
+func (rd *inboxRead) recordItem(row ledger.DecisionRow, held []string, rec *ledger.DecisionRecord, card bool) *inboxItem {
 	if seam := rd.s.decisionItemSeam; seam != nil {
 		seam(row.N)
 	}
@@ -257,7 +264,11 @@ func (rd *inboxRead) decisionItem(row ledger.DecisionRow, held []string, rec *le
 	if rec != nil {
 		it.Delivery = recordSteps(*rec, rd.s.runHeld(row.CurrentRun))
 	}
-	rd.withCard(it)
+	if card {
+		rd.withCard(it)
+	} else {
+		it.Recommended = -1
+	}
 	return it
 }
 
