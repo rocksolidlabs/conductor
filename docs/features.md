@@ -211,6 +211,59 @@ that order.
   link grants. Content appears only after the guest joins.
 - **No Runs nav item** until there is something behind it.
 
+## A context provider's seams: what an attempt was given, and what it may ask (CG1, #1037; 2026-11-19)
+
+The seams a registered context provider works through
+(`docs/plans/context-seams.md`, CT-1, CT-2 and CT-3), built as one pull
+request with the ledger's step (version 15, `attempt_context`) shipped
+alone before it. With no context provider registered, nothing here
+shows and nothing changes: no tool listed, no row, no file.
+
+- **What an attempt was given.** On a managed run's page, a task's
+  attempt panel lists, under its receipts, the context the attempt was
+  given ("Context: 3 at start, 2 looked up"): one row per block, its
+  phase (at start, or looked up while it worked), the provider, its
+  title, the provider's pack mark with Copy, the short digest of its text
+  and the text's size. A row opens the text in a side panel, as plain
+  text in a monospace face, exactly as the agent read it. On a ticket's
+  page, a candidate whose attempt was given context says "context: N
+  blocks", and opens the same list. An attempt given none shows nothing.
+  The text is the operator's alone, and only when its SHA-256 is the one
+  recorded; a Brakeman turn sees each block's phase, source, title, pack
+  mark and digest, never the text; no share link, decision link or agent
+  reads it.
+- **Recorded before it is given.** Every block is recorded before the
+  agent has it: a row per block in the ledger with the attempt's
+  worktree, its text in the data directory
+  (`runs/context/<run>/<task>.<n>.json`). A block that cannot be recorded
+  is not given: an attempt whose start blocks cannot be written fails at
+  its worktree stage before its agent starts; a lookup's pack that cannot
+  be (past 64 lookup blocks, or the attempt closed) is answered without
+  its blocks, in the server's words "this context could not be recorded,
+  so it is not given". `conductor export` carries the text with the
+  ledger; a sync store is never handed it.
+- **The lookup tool.** An attempt's agent asks the provider about its
+  own attempt's repository while it works (`context_lookup`, or
+  `conductor task lookup`): a symbol, its references, its dependencies,
+  the impact of a change, or a pack of blocks. The server fills in which
+  run, attempt and commit; the answer is drawn as reference material from
+  the named provider, never as the task. Listed only where a registered
+  provider answers lookups.
+- **What a provider is told and may read.** A provider's query names
+  the run's base commit, its ticket, the task's checks and its evidence;
+  a block may carry a pack mark, written in the task file. A provider
+  that takes commit notes is told each base and candidate commit. It
+  reads the run's repository through its Host, committed trees and files
+  by full commit id only, under the server's safe git, the deny list
+  judged below the repository's top.
+
+What was verified: the server's and the app's tests with stub providers
+only (the ledger's writer and readers; the context file's bound, its
+crash and concurrency cases; the routes, their refusals and Brakeman's
+filtered read; the export's round trip; the run page and a ticket's
+candidate at a desktop and a phone width in both themes). No real
+context provider was run.
+
 ## Brakeman hands a package on, tells of a new decision, and shares a brief (#1012; 2026-11-18)
 
 The Brakeman design review's third tier, which #993 left for a decision,
