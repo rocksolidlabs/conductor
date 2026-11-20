@@ -316,19 +316,14 @@ func (s *Server) confirmFor(ctx context.Context, did string, auth crew.Authority
 	return &c, nil
 }
 
-// policyNow is whether a record under a router's policy is in force now,
-// {inForce, why}, from one Confirm with no subject; nil for any other
-// record. A record that carries a router's policy on a server whose router
-// confirms no policies now (none registered, or one that does not confirm)
-// is not in force, in the words the respond route's judgement gives.
-func (s *Server) policyNow(ctx context.Context, did string) *policyNowReply {
-	return s.policyNowFor(ctx, did, "")
-}
-
-// policyNowFor is policyNow asked with subject ("" for none): the reply
-// says too whether subject is eligible now (Eligible), as the respond
-// route would judge its plain answer, so an operator's identity the policy
-// names answers as eligible on its card.
+// policyNowFor is the operator's read's word on a record under a router's
+// policy now, {inForce, why}, from one Confirm asked with subject ("" for
+// none); nil for any other record. A record that carries a router's policy
+// on a server whose router confirms no policies now (none registered, or
+// one that does not confirm) is not in force, in the words the respond
+// route's judgement gives. The reply says too whether subject is eligible
+// now (Eligible), as the respond route would judge its plain answer, so an
+// operator's identity the policy names answers as eligible on its card.
 func (s *Server) policyNowFor(ctx context.Context, did, subject string) *policyNowReply {
 	if s.ledger == nil {
 		return nil
