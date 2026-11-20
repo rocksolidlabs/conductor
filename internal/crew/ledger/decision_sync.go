@@ -487,3 +487,22 @@ func (t *Tx) copyVerdicts(from, to int64) error {
 	}
 	return nil
 }
+
+// KeepOutput keeps verdicts of decision n's parts judged after they were
+// written (a document's first build of a decision written before the
+// check), in a transaction of its own, never over a verdict there.
+func (l *Ledger) KeepOutput(ctx context.Context, n int64, verdicts map[string]string) error {
+	return l.outputTx(ctx, func(tx *sql.Tx) ([]int64, error) {
+		for part, v := range verdicts {
+			cut := -1
+			if v == VerdictOutput {
+				cut = 0
+			}
+			if _, err := tx.ExecContext(ctx, "INSERT INTO decision_output (decision, part, verdict, cut_at) VALUES (?, ?, ?, ?) ON CONFLICT (decision, part) DO NOTHING", n, part, v, cut); err != nil {
+				return nil, err
+			}
+		}
+		// Nothing a document shows changed: what it built is what it kept.
+		return nil, nil
+	})
+}

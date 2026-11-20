@@ -332,12 +332,67 @@ func (s *Server) decisionDoc(ctx context.Context, n int64) (ext.DecisionDoc, boo
 	if err != nil {
 		return ext.DecisionDoc{}, false, err
 	}
-	agent := rec.Origin == ledger.OriginAgent
-	v := verdictsOf{kept: kept, judge: func(text string) string {
-		return s.copyCheck.Judge(ctx, text, agent)
-	}}
+	if kept, err = s.judgeOnce(ctx, rec, kept); err != nil {
+		return ext.DecisionDoc{}, false, err
+	}
+	// Every part with text has its verdict kept now, but where it could
+	// not be kept (a ledger another server holds): not yet judged.
+	v := verdictsOf{kept: kept, judge: func(string) string { return verdictPending }}
 	doc, err := syncDecision(rec, v)
 	return doc, err == nil, err
+}
+
+// judgeOnce judges, once, each part of rec with text and no kept verdict
+// (a decision written before the check, or with no sync store) and keeps
+// what it found, never over a verdict there (a pending one stays for the
+// settle loop), so a later build cuts what the first one cut. An agent's
+// request whose question was never judged as it was written is left
+// unjudged: it stays back whole. It answers the verdicts kept, read again.
+func (s *Server) judgeOnce(ctx context.Context, rec ledger.DecisionRecord, kept map[string]string) (map[string]string, error) {
+	agent := rec.Origin == ledger.OriginAgent
+	_, questionJudged := kept[ledger.PartQuestion]
+	found := map[string]string{}
+	for part, text := range partsOf(rec) {
+		if _, ok := kept[part]; ok || text == "" {
+			continue
+		}
+		if requestPart(part) && agent && !questionJudged {
+			continue
+		}
+		found[part] = s.copyCheck.Judge(ctx, text, agent && requestPart(part))
+	}
+	if len(found) == 0 {
+		return kept, nil
+	}
+	if err := s.ledger.KeepOutput(ctx, rec.N, found); err != nil {
+		if errors.Is(err, ledger.ErrReadOnly) {
+			return kept, nil
+		}
+		return nil, err
+	}
+	again, _, err := s.ledger.OutputVerdicts(ctx, rec.N)
+	return again, err
+}
+
+// partsOf is every free-text part of rec, by its name in decision_output.
+func partsOf(rec ledger.DecisionRecord) map[string]string {
+	var r docRequestShape
+	_ = json.Unmarshal([]byte(rec.Request), &r)
+	out := map[string]string{ledger.PartQuestion: r.Question, ledger.PartContext: r.Context, ledger.PartUncertainty: r.Uncertainty,
+		ledger.PartAuthorizes: r.Authorizes, ledger.PartExpertise: strings.Join(r.Expertise, "\n"), ledger.PartWhy: rec.Why}
+	for i, o := range r.Options {
+		out[ledger.PartLabel(i)], out[ledger.PartTradeoffs(i)] = o.Label, o.Tradeoffs
+	}
+	var a crew.Application
+	if json.Unmarshal([]byte(rec.Applied), &a) == nil {
+		out[ledger.PartApplied] = a.Words
+	}
+	for _, resp := range rec.Responses {
+		var rc docReceipt
+		_ = json.Unmarshal([]byte(resp.Receipt), &rc)
+		out[ledger.PartResponse(resp.K, "text")], out[ledger.PartResponse(resp.K, "rationale")], out[ledger.PartResponse(resp.K, "words")] = rc.Text, rc.Rationale, rc.Words
+	}
+	return out
 }
 
 // parseDecisionPath is a decision document's path, dr-n, as its number.

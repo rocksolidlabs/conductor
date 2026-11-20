@@ -313,3 +313,22 @@ func TestAReplacementCarriesItsRequestsVerdicts(t *testing.T) {
 		}
 	}
 }
+
+// KeepOutput keeps verdicts judged after the parts were written, never
+// over a verdict there: a pending one stays for the settle.
+func TestKeepOutputNeverOverwrites(t *testing.T) {
+	ctx := context.Background()
+	l := openLedger(t, filepath.Join(t.TempDir(), "runs"))
+	l.SetOutputCheck(func(context.Context, string, bool) string { return VerdictPending })
+	const run = "team-00000001"
+	newRun(t, l, run)
+	tasksOf(t, l, run, "deploy")
+	n := open(t, l, gateDecision(run, "g1"))
+	if err := l.KeepOutput(ctx, n, map[string]string{PartQuestion: VerdictClean, PartWhy: VerdictOutput}); err != nil {
+		t.Fatal(err)
+	}
+	v, _, _ := l.OutputVerdicts(ctx, n)
+	if v[PartQuestion] != VerdictPending || v[PartWhy] != VerdictOutput {
+		t.Fatalf("%v", v)
+	}
+}
