@@ -447,8 +447,17 @@ func TestALostBrakemanSendIsSettledAtStart(t *testing.T) {
 	if err != nil || r.Note != question || r.OpID != id || r.Subjects[0].String() != "capture:"+st.capture+"/"+id || sv.Rev != 1 {
 		t.Fatalf("the request: %+v %v, the send %+v", r, err, sv)
 	}
-	if pins, err := again.desk.st.Pinned(); err != nil || len(pins) != 0 {
-		t.Fatalf("pinned: %+v %v", pins, err)
+	// The restarted server's settlement commits the send sent and only
+	// then lets its pin go (sendSent: MarkSent, then Release), on a
+	// goroutine of its own: the state seen says nothing of the pin yet, so
+	// wait for the pin itself to go.
+	var pins []brakeman.PinnedOp
+	if !waitFor(testWait, func() bool {
+		var err error
+		pins, err = again.desk.st.Pinned()
+		return err == nil && len(pins) == 0
+	}) {
+		t.Fatalf("pinned after %s: %+v", testWait, pins)
 	}
 }
 
