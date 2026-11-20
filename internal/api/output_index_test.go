@@ -38,10 +38,13 @@ func testIndex(t *testing.T, dir string, bound int64) *outputIndex {
 // pending), up to testWait.
 func quotesOf(t *testing.T, x *outputIndex, text string) bool {
 	t.Helper()
-	deadline := time.Now().Add(testWait)
+	// The index's own wait (whole, its 2 s for the feeds in flight) is
+	// asked again until it is whole: a large source under the race
+	// detector on a loaded machine is indexed slowly, and the test's
+	// timeout bounds a hang. An index that cannot be whole now fails.
 	for !x.whole(context.Background()) {
-		if time.Now().After(deadline) {
-			t.Fatalf("the index is not whole: %s", x.state())
+		if why := x.state(); why != "" {
+			t.Fatalf("the index is not whole: %s", why)
 		}
 	}
 	q, err := x.quotes(text)
