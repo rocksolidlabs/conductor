@@ -203,7 +203,9 @@ After this item ships, a person sees:
     about this item (named "Brakeman's brief", with the brief's link),
     otherwise Conductor's own line from the record ("Claude Code in
     api-fix asks; it is attempt build.2 of run release-7a3f… for
-    CND-12");
+    CND-12"); on a link, a decision record's item keeps
+    Conductor's own line and shows no card of Brakeman's (the owner's
+    decision of 2026-11-20, #1055; `brakeman.md`, the `decision/1` row);
   - **the question**, whole (500 bytes at most, as the session or the
     record keeps it);
   - **the choices**, from the live record: a question's options, a task's
