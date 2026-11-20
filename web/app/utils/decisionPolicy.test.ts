@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { Decision } from './decisions'
-import { answerers, eligibleWords, heldBackWords, notInForceWords, operatorHeldBack, overrideAllowed, overrideLine, overrideReasonReady, policyRefusalWords, routedPolicy, whoMayAnswer, type RoutedPolicy } from './decisionPolicy'
+import { answerers, canAskRouter, eligibleWords, heldBackWords, notInForceWords, operatorHeldBack, overrideAllowed, overrideLine, overrideReasonReady, policyRefusalWords, routedPolicy, whoMayAnswer, type RoutedPolicy } from './decisionPolicy'
 
 // A decision router's policy in words (SW1 PR-8, docs/plans/decision-policy.md, "web/app"): every via, a gap, not in force, and an
 // override, from the record alone and the operator's read's policyNow.
@@ -93,6 +93,13 @@ describe('an override', () => {
     expect(overrideLine({ status: 'accepted', rationale: 'fine', actor: 'admin' })).toBe('')
     // A refused answer overrode nothing, whatever its receipt says.
     expect(overrideLine({ status: 'refused', override: true, rationale: 'Ana is away this week', actor: 'admin' })).toBe('')
+  })
+
+  it('offers Ask the router again for an open record whenever a router is registered, policy or none, never for a selection', () => {
+    expect(canAskRouter({ state: 'open', origin: 'agent' }, true)).toBe(true)
+    expect(canAskRouter({ state: 'open', origin: 'plan' }, false)).toBe(false)
+    expect(canAskRouter({ state: 'answered', origin: 'agent' }, true)).toBe(false)
+    expect(canAskRouter({ state: 'open', origin: 'compare' }, true)).toBe(false)
   })
 
   it("says the policy's refusals in words", () => {

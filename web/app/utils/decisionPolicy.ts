@@ -110,6 +110,11 @@ export function operatorHeldBack(d: Pick<Decision, 'policy' | 'state'>, now: Pol
   return d.state === 'open' && !!routedPolicy(d) && !!now?.inForce && !now.eligible
 }
 
+/** Whether the operator may ask the decision router again for d: a router is registered, d is open and no comparison's selection. */
+export function canAskRouter(d: Pick<Decision, 'state' | 'origin'>, router: boolean): boolean {
+  return router && d.state === 'open' && d.origin !== 'compare'
+}
+
 /** Whether the policy lets the operator answer in its place. */
 export function overrideAllowed(p: RoutedPolicy | null): boolean {
   return p?.override === 'operator'

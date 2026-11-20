@@ -3,7 +3,7 @@ import type { Decision, OpReceipt, ResponseReceipt } from '~/utils/decisions'
 import { answerAsk, answerAsWords, askForMore, commentDecision, offersAskForMore, confirmAuthorizes, optionSubject, optionsOf, rationaleRequired, recommended, refusalOf, respondDecision, responseBody, sendDecisionWrite } from '~/utils/decisions'
 import { mintCommandId } from '~/utils/tasks'
 import type { PolicyNow } from '~/utils/decisionPolicy'
-import { heldBackWords, MIN_OVERRIDE_REASON, operatorHeldBack, overrideAllowed, overrideReasonReady, policyRefusalWords, routedPolicy } from '~/utils/decisionPolicy'
+import { canAskRouter, heldBackWords, MIN_OVERRIDE_REASON, operatorHeldBack, overrideAllowed, overrideReasonReady, policyRefusalWords, routedPolicy } from '~/utils/decisionPolicy'
 
 /**
  * The operator's answer to a durable decision (Program item DR1, docs/plans/decisions.md, "web/app"): the controls by its type (a
@@ -20,7 +20,7 @@ import { heldBackWords, MIN_OVERRIDE_REASON, operatorHeldBack, overrideAllowed, 
  * buttons, linked to its comparison; the rationale required, Confirm held until it holds text; the confirm step saying the answer is
  * final, its button naming the candidate ("Select approach-b (final)"). The server refuses a selection without a rationale too.
  */
-const props = withDefaults(defineProps<{ decision: Decision; begin: () => (decision: Decision) => void; policyNow?: PolicyNow | null }>(), { policyNow: null })
+const props = withDefaults(defineProps<{ decision: Decision; begin: () => (decision: Decision) => void; policyNow?: PolicyNow | null; router?: boolean }>(), { policyNow: null, router: false })
 const emit = defineEmits<{ read: []; controls: [shown: boolean] }>()
 
 const { request } = useApi()
@@ -309,7 +309,7 @@ watch(
       <UTextarea v-model="comment" :rows="1" autoresize :placeholder="asks ? 'A comment, or what the agent should say more about…' : 'A comment, kept with the decision'" :maxlength="4000" :disabled="commentBusy" data-decision-comment-text />
       <div class="flex flex-wrap items-center justify-end gap-2">
         <span v-if="asks && !more.enabled" class="min-w-0 flex-1 break-words text-xs text-muted" data-decision-more-why>{{ more.why }}</span>
-        <UButton v-if="policy && decision.state === 'open'" label="Ask the router again" icon="i-lucide-route" size="xs" color="neutral" variant="outline" :loading="askingRouter" data-decision-ask-router @click="askRouter" />
+        <UButton v-if="canAskRouter(decision, router)" label="Ask the router again" icon="i-lucide-route" size="xs" color="neutral" variant="outline" :loading="askingRouter" data-decision-ask-router @click="askRouter" />
         <UButton label="Comment" icon="i-lucide-message-square" size="xs" color="neutral" variant="outline" :disabled="!comment.trim() || commentBusy" data-decision-comment @click="opSend('comment')" />
         <UButton v-if="asks" label="Ask for more" icon="i-lucide-message-circle-question" size="xs" color="neutral" variant="outline" :disabled="!more.enabled || !comment.trim() || commentBusy" :title="more.enabled ? undefined : more.why" data-decision-more @click="opSend('more_info')" />
       </div>

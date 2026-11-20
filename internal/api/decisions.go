@@ -586,6 +586,11 @@ func (s *Server) handleDecision(w http.ResponseWriter, r *http.Request) {
 	if now := s.policyNowFor(r.Context(), did, principalOf(r).subject); now != nil {
 		reply["policyNow"] = now
 	}
+	if s.routerRegistered() {
+		// A decision router is registered: the operator may ask it again
+		// ({kind: router}) for any open record but a comparison's selection.
+		reply["router"] = true
+	}
 	writeJSON(w, http.StatusOK, reply)
 }
 
