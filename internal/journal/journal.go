@@ -137,6 +137,12 @@ type Options struct {
 	// go. Called by the removal with wmu held and no other lock of the
 	// journal's; it must not call the journal.
 	Removed func(id string)
+	// Kept is told of each entry a record keeps (an activity's words, a
+	// chat line), with the record's id, as it is kept: the copied-output
+	// check's index of what the server captured. Called with the
+	// journal's lock held; it must only queue and must not call the
+	// journal.
+	Kept func(id string, e Entry)
 	// maxRecords is the ended records kept, MaxRecords when nil: a test's
 	// bound, the journal's own from Open.
 	maxRecords *int
@@ -818,6 +824,9 @@ func (j *Journal) add(in Instance, e Entry) {
 	j.seq++
 	e.Seq = j.seq
 	x.r.Entries = insertEntry(x.r.Entries, e)
+	if f := j.o.Kept; f != nil {
+		f(x.r.ID, e)
+	}
 	if len(x.r.Entries) > maxHeld {
 		n := len(x.r.Entries) - maxHeld
 		x.r.Entries = slices.Delete(x.r.Entries, 0, n)

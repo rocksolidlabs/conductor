@@ -19,6 +19,7 @@ import (
 	"github.com/rocksolidlabs/conductor/internal/crew"
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
 	"github.com/rocksolidlabs/conductor/internal/dispatch"
+	"github.com/rocksolidlabs/conductor/internal/journal"
 )
 
 // checkEnv is a server whose sync store is the fake, joined, with the
@@ -507,5 +508,67 @@ func TestAHostedSessionsAgentTextIsOutput(t *testing.T) {
 	after, _, err := c.srv.dispatch.ChangesFrom(ctx, 0, dispatch.MaxChangesPage)
 	if err != nil || len(after) != len(before) {
 		t.Fatalf("a hosted agent's comment wrote %d rows %v", len(after)-len(before), err)
+	}
+}
+
+// A history record's words are a source: an entry the record keeps (an
+// agent's progress) is indexed as it is kept, a quote of it is output; an
+// index missing at a start is made again from the records; and a record
+// forgotten takes its words with it.
+func TestHistoryRecordsAreSources(t *testing.T) {
+	dir := syncDataDir(t)
+	e := syncEnv(t, dir, newFakeSync())
+	ctx := context.Background()
+	e.newDispatchProject(t, "CND", nil)
+	key := e.newDispatchTicket(t, "CND", "The ticket", nil)["key"].(string)
+	words := words(rand.New(rand.NewPCG(47, 48)), 300)
+	id := e.createSession("cat")
+	e.expect(t, "POST", "/api/sessions/"+id+"/events", map[string]any{"type": "progress", "message": words}, http.StatusAccepted, "")
+	kept := func(j *testEnv) bool {
+		r, _, err := j.srv.sessionRecords.Get(id)
+		return err == nil && slices.ContainsFunc(r.Entries, func(en journal.Entry) bool { return en.Message == words })
+	}
+	if !waitFor(testWait, func() bool { return kept(e) }) {
+		t.Fatal("the record never kept the progress")
+	}
+	comment := func(j *testEnv, body string) string {
+		t.Helper()
+		rc, err := j.srv.dispatch.AddComment(ctx, adminOp(""), key, body)
+		if err != nil || rc.Status != dispatch.StatusDone {
+			t.Fatalf("the comment: %+v %v", rc, err)
+		}
+		rows, _, err := j.srv.dispatch.ChangesFrom(ctx, 0, dispatch.MaxChangesPage)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return rows[len(rows)-1].Output
+	}
+	if v := comment(e, "the history says "+words[50:170]); v != verdictOutput {
+		t.Fatalf("a quote of a record's words: %s", v)
+	}
+	if d, ok := e.srv.registry.Get(id); ok {
+		_ = d.Stop(ctx)
+	}
+	stopEnv(t, e)
+	for _, p := range []string{indexFile, indexFile + "-wal", indexFile + "-shm"} {
+		if err := os.Remove(filepath.Join(dir, p)); err != nil && !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
+	}
+	again := syncEnv(t, dir, newFakeSync())
+	if !kept(again) {
+		t.Fatal("the record is not kept across the restart")
+	}
+	if v := comment(again, "after the rebuild, "+words[50:170]); v != verdictOutput {
+		t.Fatalf("a quote of a record's words after the rebuild: %s", v)
+	}
+	if !waitFor(testWait, func() bool { return again.srv.sessionRecords.Forget(id) == nil }) {
+		t.Fatal("the record was never forgotten")
+	}
+	if !again.srv.outputs.whole(ctx) {
+		t.Fatal("not whole")
+	}
+	if v := comment(again, "after the forget, "+words[50:170]); v != verdictClean {
+		t.Fatalf("a quote of a forgotten record's words: %s", v)
 	}
 }

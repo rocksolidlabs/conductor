@@ -3,12 +3,14 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
 	"github.com/rocksolidlabs/conductor/internal/dispatch"
+	"github.com/rocksolidlabs/conductor/internal/journal"
 	"github.com/rocksolidlabs/conductor/internal/session"
 )
 
@@ -283,6 +285,7 @@ func (s *Server) rebuildIndex() {
 	}
 	ld := s.ledger
 	s.outputs.rebuild(func(keep func(string, []byte)) {
+		s.historySources(keep)
 		if ld == nil {
 			return
 		}
@@ -339,4 +342,78 @@ func (s *Server) judgeRow(ctx context.Context, text string, agent bool) string {
 		return verdictOutput
 	}
 	return s.copyCheck.JudgeValue(ctx, text, agent)
+}
+
+// historySource is a history record's entry as the index names it:
+// history:<session>/<seq>.
+func historySource(id string, seq int64) string { return fmt.Sprintf("history:%s/%d", id, seq) }
+
+// entryWords is the words a record's entry keeps: its message and its
+// choices, a line each.
+func entryWords(e journal.Entry) string {
+	return strings.Join(append([]string{e.Message}, e.Choices...), "\n")
+}
+
+// historyKept indexes an entry a session's record keeps, as a kept source
+// read again through the record (readHistory).
+func (s *Server) historyKept(id string, e journal.Entry) {
+	if s.outputs == nil {
+		return
+	}
+	if words := entryWords(e); len(words) >= indexLine {
+		s.outputs.keepText(historySource(id, e.Seq), []byte(words))
+	}
+}
+
+// readHistory gives the index the records' entries, for a hit's
+// confirmation: history:<session>/<seq>.
+func (s *Server) readHistory(x *outputIndex) {
+	x.reader("history", func(id string) ([]byte, bool) {
+		sid, seqs, ok := strings.Cut(id, "/")
+		seq, err := strconv.ParseInt(seqs, 10, 64)
+		j := s.sessionRecords
+		if !ok || err != nil || j == nil {
+			return nil, false
+		}
+		r, _, err := j.Get(sid)
+		if err != nil {
+			return nil, false
+		}
+		for _, e := range r.Entries {
+			if e.Seq == seq {
+				return []byte(entryWords(e)), true
+			}
+		}
+		return nil, false
+	})
+}
+
+// historySources hands every record's entries to keep, for a rebuild.
+func (s *Server) historySources(keep func(string, []byte)) {
+	j := s.sessionRecords
+	if j == nil {
+		return
+	}
+	for after := ""; ; {
+		page, err := j.List(after, journal.MaxPage)
+		if err != nil {
+			s.outputs.fail(err)
+			return
+		}
+		for _, sum := range page.Records {
+			r, _, err := j.Get(sum.ID)
+			if err != nil {
+				continue
+			}
+			for _, e := range r.Entries {
+				if words := entryWords(e); len(words) >= indexLine {
+					keep(historySource(r.ID, e.Seq), []byte(words))
+				}
+			}
+		}
+		if page.Next == "" {
+			return
+		}
+		after = page.Next
+	}
 }

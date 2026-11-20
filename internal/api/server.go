@@ -720,6 +720,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 			if x, err := openOutputIndex(st.Dir(), 0); err == nil {
 				s.outputs, s.copyCheck = x, &outputGuard{index: x}
 				s.readLogs(x)
+				s.readHistory(x)
 				x.watchScreens(s.liveScreens)
 				fan.add(commitObserver{prune: s.logsPruned})
 				if why := x.state(); why != "" {

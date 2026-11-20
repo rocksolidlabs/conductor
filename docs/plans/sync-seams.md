@@ -1156,12 +1156,24 @@ whenever output arrives (one queued at a time, read when the index takes
 it, so the index is behind while one is due) and the screens read whole
 at every check besides; every check's and prerequisite's log the ledger
 keeps, told after its commit (`ledger.OnLog`), read again through the
-ledger for a confirmation, and pruned with its run. A feed never waits on
+ledger for a confirmation, and pruned with its run; every entry a
+session's history record keeps (its activity's and its chat's words),
+told as it is kept (`journal.Options.Kept`), `history:<session>/<seq>`,
+read again through the record and pruned with the record. A feed never waits on
 the file (an unbounded queue the index's goroutine drains); a check waits
 up to 2 s for the feeds queued before it, then answers `pending`. A hit
 is confirmed against its source's text; one that cannot be confirmed
 counts. An index missing or unreadable at the start is made again from
-the ledger's logs before it answers. A row's value that is JSON is judged
+the ledger's logs and the history's records before it answers. A hosted
+session's output does not pass the server whole (the host link carries
+its signalling, and its terminal only to a viewer the server relays), so
+the check fails closed for it: free text its agent writes is judged
+`output` whatever it says (`judgeRow`) and stays on the machine; today
+such an agent is no member of the server's runs and has no ticket here
+to write to. OS-4's sync status names such a row as kept because the
+server does not see its agent's output. A browser below the width where
+the desktop sidebar shows (lg) writes no layout (OS-2): its sidebar is a
+drawer, and a phone never drives the desk's layout. A row's value that is JSON is judged
 by each string it holds as well as whole. Every write's rows carry the
 two verdicts (`changes.output`, `changes.prior_output`) once the server
 gave the store the check (`dispatch.Store.SetOutputCheck`, at start,
@@ -1173,11 +1185,9 @@ at hand-out (an agent's `output` whatever the check finds, every actor but
 the operator's and the store's own taken as an agent's) and ends its page
 before the first row still `pending`, its cursor the position before it.
 A pin's name is judged when the pin is kept (`nameVerdict`, the server's
-alone) and leaves only when clean. Not built: a hosted session's output
-(its ring is the host's: a quote of it is not caught), the history's
-records as sources (a session's activity words), and the sync status's
-words for an index past its bound (OS-4's status); the state is in
-`outputIndex.state`.
+alone) and leaves only when clean. Not built here: the sync status's
+words for an index past its bound and for a hosted agent's row (OS-4's
+status); the state is in `outputIndex.state`.
 
 ### `internal/api`, `internal/crew`, `internal/crew/ledger`, `internal/agents`, `ext`, `ext/exttest` (OS-3): decisions handed out, answers handed in
 
