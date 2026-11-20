@@ -160,12 +160,26 @@ public final class SessionTransport: HTTPTransport, @unchecked Sendable {
 /**
  * The native HTTP plugin's calls, by the names of Capacitor's own (`request`, and `get` to `delete` with their method): the address
  * whole (`url`), `method`, `headers` (strings) and `data` (a string); answered `{status, headers, url, data}`, the headers' names in
- * lower case and the body as its text (null when it is not UTF-8). `params` is refused: the address is taken whole.
+ * lower case and the body as its text (null when it is not UTF-8). `params` is refused: the address is taken whole. A header that
+ * names where the request goes or how it is framed (`framing`, any `Proxy-` one), a name that is not an HTTP token and a value with a
+ * control character are refused, so that what the gate judged (the address) is what the request is sent to.
  */
 public struct NativeHTTPCalls: Sendable {
     public static let maxBody = 1024 * 1024
     public static let methods = ["request", "get", "post", "put", "patch", "delete"]
     static let verbs: Set<String> = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"]
+    /** The headers, by their names in lower case, that say where a request goes or how it is framed: the session's alone to set. */
+    static let framing: Set<String> = ["host", "connection", "keep-alive", "content-length", "transfer-encoding", "te", "upgrade", "trailer"]
+
+    /** Whether the page may set this header: its name an HTTP token and none of the framing ones, its value with no control character. */
+    static func headerAllowed(_ name: String, _ value: String) -> Bool {
+        let tokenSymbols = Set("!#$%&'*+-.^_`|~".utf8)
+        guard !name.isEmpty, name.utf8.allSatisfy({ ($0 >= 0x30 && $0 <= 0x39) || ($0 | 0x20 >= 0x61 && $0 | 0x20 <= 0x7a) || tokenSymbols.contains($0) })
+        else { return false }
+        let lower = name.lowercased()
+        if framing.contains(lower) || lower.hasPrefix("proxy-") { return false }
+        return value.unicodeScalars.allSatisfy { $0.value >= 0x20 && $0.value != 0x7f }
+    }
 
     public let origins: NativeHTTPOrigins
     let transport: HTTPTransport
@@ -197,6 +211,9 @@ public struct NativeHTTPCalls: Sendable {
             guard let dict = h as? [String: Any] else { return invalid("A request's headers are an object of strings.") }
             for (k, v) in dict {
                 guard let s = v as? String else { return invalid("A request's headers are an object of strings.") }
+                guard NativeHTTPCalls.headerAllowed(k, s) else {
+                    return invalid("A request's header is not the page's to set, or is not a header: where a request goes and how it is framed are the session's.")
+                }
                 headers[k] = s
             }
         }

@@ -134,6 +134,32 @@ final class StubServer: URLProtocol, @unchecked Sendable {
         #expect(t.count == 1)
     }
 
+    @Test func aHeaderThatNamesWhereARequestGoesOrHowItIsFramedIsRefusedAndNothingSent() async throws {
+        let t = FakeTransport()
+        let calls = NativeHTTPCalls(origins: origins(["https://relay.shell.test"]), transport: t)
+        let refused: [(String, String)] = [
+            ("Host", "other.example"), ("host", "other.example"), ("HOST", "other.example"), ("Connection", "close"), ("Keep-Alive", "timeout=5"),
+            ("Proxy-Authorization", "Basic eA=="), ("proxy-connection", "keep-alive"), ("Content-Length", "0"), ("Transfer-Encoding", "chunked"),
+            ("TE", "trailers"), ("te", "trailers"), ("Upgrade", "websocket"), ("Trailer", "X"),
+            ("", "x"), ("X Bad", "x"), ("X:Bad", "x"), ("Ä", "x"), ("X(", "x"), ("X-Ok", "a\r\nHost: other.example"), ("X-Ok", "a\u{0}"),
+            ("X-Ok", "a\u{7f}"), ("X-Ok", "a\tb"),
+        ]
+        for (k, v) in refused {
+            let a = await calls.call("request", ["url": "https://relay.shell.test/v1", "headers": [k: v]])
+            guard case .reject(let code, _) = a else { Issue.record("\(k): \(v) was sent"); continue }
+            #expect(code == "invalid_request", "\(k)")
+        }
+        #expect(t.count == 0)
+        // What a provider sends is untouched.
+        let a = await calls.call("request", ["url": "https://relay.shell.test/v1", "method": "POST",
+                                             "headers": ["Authorization": "Bearer t0k.en", "Content-Type": "application/json", "X-Request-Id": "r-1~"]])
+        guard case .resolve = a else { Issue.record("not sent: \(a)"); return }
+        let sent = try #require(t.sent.first)
+        #expect(sent.value(forHTTPHeaderField: "Authorization") == "Bearer t0k.en")
+        #expect(sent.value(forHTTPHeaderField: "Content-Type") == "application/json")
+        #expect(sent.value(forHTTPHeaderField: "X-Request-Id") == "r-1~")
+    }
+
     @Test(.timeLimit(.minutes(1))) func thePhonesSessionFollowsNoRedirectKeepsNoCookieAndBoundsTheBody() async throws {
         let calls = NativeHTTPCalls(origins: origins(["https://relay.shell.test"]), transport: SessionTransport(maxBody: 64, protocolClasses: [StubServer.self]))
         // A redirect off the list is not followed: the reply asking for it is the answer, and the other origin is never asked.
