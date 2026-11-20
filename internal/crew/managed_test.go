@@ -77,6 +77,10 @@ type fakeLedger struct {
 	commits []fakeCommit
 	// origins are the runs' origin rows, by run.
 	origins map[string]ledger.OriginRow
+	// context is every recorded block's row, in order of commit; failContext,
+	// when set, fails the next transaction that adds one, once.
+	context     []ledger.AttemptContextRow
+	failContext error
 }
 
 // fakeCommit is one committed transaction of the fake ledger.
@@ -132,6 +136,8 @@ type fakeTx struct {
 	continued string
 	// origins are the origin rows it writes, applied at commit.
 	origins []ledger.OriginRow
+	// context are the recorded blocks it adds, applied at commit.
+	context []ledger.AttemptContextRow
 }
 
 func newFakeLedger() *fakeLedger {
@@ -258,6 +264,46 @@ func (l *fakeLedger) CheckChanged(ctx context.Context, runID, taskID string, n i
 		}
 	}
 	return nil, nil
+}
+
+// AddAttemptContext keeps the blocks' rows for the commit, refusing
+// another run's and a seq not after the attempt's last, as the ledger's
+// does; failContext fails it, once.
+func (tx *fakeTx) AddAttemptContext(rows []ledger.AttemptContextRow) error {
+	tx.l.mu.Lock()
+	defer tx.l.mu.Unlock()
+	if err := tx.l.failContext; err != nil {
+		tx.l.failContext = nil
+		return err
+	}
+	last := map[string]int{}
+	for _, c := range append(slices.Clone(tx.l.context), tx.context...) {
+		k := fmt.Sprintf("%s/%s/%d", c.RunID, c.TaskID, c.N)
+		last[k] = max(last[k], c.Seq)
+	}
+	for _, r := range rows {
+		k := fmt.Sprintf("%s/%s/%d", r.RunID, r.TaskID, r.N)
+		if r.RunID != tx.runID || r.Seq != last[k]+1 {
+			return fmt.Errorf("ledger: context %s seq %d not after %d", k, r.Seq, last[k])
+		}
+		last[k] = r.Seq
+		tx.context = append(tx.context, r)
+	}
+	return nil
+}
+
+// AttemptContext reads the committed blocks' rows of the run's task, by
+// attempt.
+func (l *fakeLedger) AttemptContext(ctx context.Context, runID, taskID string) (map[int][]ledger.AttemptContextRow, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	out := map[int][]ledger.AttemptContextRow{}
+	for _, c := range l.context {
+		if c.RunID == runID && c.TaskID == taskID {
+			out[c.N] = append(out[c.N], c)
+		}
+	}
+	return out, nil
 }
 
 // PutOrigin refuses another run's row, a second row of the run and an
@@ -439,6 +485,7 @@ func (l *fakeLedger) Transition(ctx context.Context, runID string, fn func(Ledge
 	for _, m := range tx.messages {
 		l.messages[fmt.Sprintf("%s/%d", m.RunID, m.Seq)] = m
 	}
+	l.context = append(l.context, tx.context...)
 	for _, o := range tx.origins {
 		if l.origins == nil {
 			l.origins = map[string]ledger.OriginRow{}

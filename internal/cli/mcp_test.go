@@ -744,8 +744,9 @@ func TestNoCrewToolsForBrakeman(t *testing.T) {
 			t.Errorf("a Brakeman turn's session does not list %s", name)
 		}
 	}
-	// Less the crew and ticket tools and the task's own, plus Brakeman's.
-	if want := len(mcpTools(false, false)) - 4 - len(taskOnly) + 3; len(turn) != want {
+	// Less the crew and ticket tools, the task's own and the lookup a
+	// turn never lists, plus Brakeman's.
+	if want := len(mcpTools(false, false)) - 4 - len(taskOnly) - len(lookupOnly) + 3; len(turn) != want {
 		t.Fatalf("%d tools, want %d: %v", len(turn), want, turn)
 	}
 }

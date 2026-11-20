@@ -134,6 +134,15 @@ func (s *Server) installExtensions(p ext.Providers) {
 		g := &guardContext{s: s, name: n, p: c, ready: s.readyOf(n, c)}
 		g.touches = newExtQueue(s, ext.KindContext, g.name, ext.TouchQueue, func(ctx context.Context, t touch) error { return deliverTouch(ctx, c, t) })
 		s.holdQueue(c, g.name, g.touches.begin)
+		// Asserted on the provider as it was registered: a commit note is
+		// queued for one that takes them, and for no other.
+		if cn, ok := c.(ext.CommitNoter); ok {
+			g.commits = newExtQueue(s, ext.KindContext, g.name, ext.CommitQueue, func(ctx context.Context, n ext.CommitNote) error {
+				cn.NoteCommit(ctx, n)
+				return nil
+			})
+			s.holdQueue(c, g.name, g.commits.begin)
+		}
 		s.exts.context = append(s.exts.context, g)
 	}
 	for i, n := range p.Notifications {
@@ -923,6 +932,9 @@ type guardContext struct {
 	p       ext.ContextProvider
 	ready   *atomic.Bool
 	touches *extQueue[touch] // extcontext.go
+	// commits are the commit notes queued for the provider, nil when it is
+	// no ext.CommitNoter (extcontext.go).
+	commits *extQueue[ext.CommitNote]
 }
 
 func (g *guardContext) Name() string { return g.name }
@@ -1157,6 +1169,19 @@ func copyDecision(d ext.Decision) ext.Decision {
 // copyQuery is q with its inputs copied.
 func copyQuery(q ext.ContextQuery) ext.ContextQuery {
 	q.Inputs = copyOrNil(q.Inputs)
+	for i := range q.Inputs {
+		q.Inputs[i].Findings = copyOrNil(q.Inputs[i].Findings)
+	}
+	if q.Ticket != nil {
+		t := *q.Ticket
+		t.Assignees = copyOrNil(t.Assignees)
+		q.Ticket = &t
+	}
+	q.Checks = copyOrNil(q.Checks)
+	for i := range q.Checks {
+		q.Checks[i].Argv = copyOrNil(q.Checks[i].Argv)
+	}
+	q.Evidence = copyOrNil(q.Evidence)
 	return q
 }
 

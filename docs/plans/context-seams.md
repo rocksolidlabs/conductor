@@ -580,11 +580,17 @@ records each run's argv and the two variables, through every read).
   `ErrNotFound`); `ls-tree -r -z --long --full-tree <commit>` through
   `RunEach` with `Out` `MaxTreeBytes`, `each` stopping at
   `MaxTreeEntries` entries kept; a path the deny list refuses is counted
-  in `Denied` and not kept. `Truncated` is set by either bound.
+  in `Denied` and not kept. `Truncated` is set by either bound, and by
+  an entry the server cannot read: in a partial clone, a file whose blob
+  is not here (git gives no size for it, and nothing is fetched) is left
+  out of a listing so marked.
   `rev-parse --is-shallow-repository` and, with `Roots`, `rev-list
-  --max-parents=0 <commit>` through `RunBoundedEnv` with 4 KiB; the
-  roots are cached by the server per repository and commit, at most 256
-  entries, the oldest dropped.
+  --max-parents=0 <commit>` through `RunBoundedEnv` with 4 KiB; past
+  that bound (a history of about a hundred roots or more) the roots are
+  the complete lines read, sorted and cut to `MaxTreeRoots`, never a
+  failure, so a provider gets at most 16 roots that need not be the
+  smallest of all of them; the roots are cached by the server per
+  repository and commit, at most 256 entries, the oldest dropped.
 - `ReadBlob`: a path that begins with `:` is refused; then the entry,
   `ls-tree --long --full-tree <commit> -- <path>` through
   `RunBoundedEnv` (4 KiB): no entry, or an entry that is neither a file
@@ -671,7 +677,15 @@ decoded strictly (`DisallowUnknownFields`), `source` a provider's name
 to ask (the first in registration order that answers lookups when
 absent). Only the session's own token: `taskSession(w, r, true)`, so
 the workbench token is `403 agent_only` and a hosted or unknown
-session is refused as on the other task routes. The server reads the
+session is refused as on the other task routes. (Where the code departs:
+the caller is judged before anything of the session is said,
+`lookupCaller`: only an attempt's own agent token is served, a
+comparison's lane's own `409 lane`, the workbench token `403
+agent_only`, and every other token or none `401`, whatever the session
+is, so no caller learns whether a session is there or an attempt; the
+default `source` is the first that answers lookups and has started; the
+session's place among its two in flight is taken before the worktree's
+HEAD is read.) The server reads the
 session's attempt from the engine (`Engine.LookupScope(session)
 (crew.LookupScope, error)`: run, task, attempt, kind, start, base,
 worktree; `crew.ErrNotAnAttempt`, `crew.ErrNotRunning`), reads the
@@ -691,8 +705,9 @@ and its slot is freed, not until the route answers, so a session that
 retries after `503` cannot hold more than two of the slots.
 
 Answers: `200 {source, items, coverage, more, note?}` (CT-3 adds
-`blocks`); `404 not_found` (no such session); `404 not_an_attempt`;
-`409 not_running`; `409 lane` for a comparison's lane (no entry in
+`blocks`, and `withheld`, below); `404 not_found` (no such session);
+`404 not_an_attempt` (as built, both are the `401` every caller but an
+attempt's own agent is answered, above); `409 not_running`; `409 lane` for a comparison's lane (no entry in
 `compareDoors`: a lane asks no context, as on `main`); `404
 no_context_lookup` when no registered provider answers lookups, or
 `source` names none that does; `400 invalid_request` (the body past its
@@ -770,8 +785,8 @@ CREATE TABLE attempt_context (
 );
 ```
 
-The foreign key is the one every table kept for an attempt has (the
-previews' table, with the same key, among them): a pruned run's rows go
+The foreign key is the one the previews', the checks' and the decision
+refunds' tables have (the previews' with the same key): a pruned run's rows go
 with its attempts, which is what keeps them exactly as long as the
 run's rows (Owner decision 6), and CT-3 writes a row only for an
 attempt that exists, so the key refuses nothing it writes.
@@ -792,9 +807,12 @@ is derived. A binary of the version before opens this one read-only.
   directory, written through the data directory's `os.Root`, one JSON
   object `{v: 1, blocks: [{seq, phase, source, title, ref?, pack?,
   body}]}`. The bodies together are at most 528 KiB (`MaxTaskContext`
-  and 64 × `MaxContextBody`); the file as encoded at most 1,120 KiB
-  (`maxContextFile`: every body at its largest with every byte escaped,
-  and every other field at its largest; `TestContextFileBound`). A
+  and 64 × `MaxContextBody`); the file as encoded at most 1,609,728
+  bytes, about 1,572 KiB (`maxContextFile`: every body at its largest
+  with every byte escaped in two, a body, title, ref and mark holding no
+  control character JSON writes longer, and every other field at its
+  largest, escaped the same, 128 bytes an entry besides;
+  `TestContextFileBound`). A
   write is `<task>.<n>.json.tmp`, synced, renamed over the file, the
   folder synced; `conductor export` leaves `*.tmp` out (`leftOut`), and
   `restore` refuses one. The readers of run records list only
@@ -823,8 +841,12 @@ is derived. A binary of the version before opens this one read-only.
   transaction of their own. The answer carries the blocks only when
   they were recorded; when the write or the commit fails, the attempt
   has closed, or the attempt's 64 lookup rows would be passed, the
-  answer carries none and its note says "this context could not be
-  recorded, so it is not given", and nothing is recorded.
+  answer carries none and says "this context could not be recorded, so
+  it is not given", and nothing is recorded. (Where the code departs:
+  the words are in a field of the reply's own, `withheld`, not in its
+  `note`: the tool draws a note as the provider's own words, "The
+  provider notes: ...", and these are the server's; the server logs why,
+  by the attempt's ids and its own words, never the pack's text.)
 - **The task route.** `GET /api/runs/{run}/tasks/{task}` gains, per
   attempt, `context: [{seq, phase, source, title, ref?, pack?, sha256,
   bytes, at}]` from the ledger (absent for an attempt with none), for a

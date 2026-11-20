@@ -190,3 +190,10 @@ func (s *Local) Denied(path string) bool {
 func DeniedBy(path string, deny []string) bool {
 	return insideAny(path, deny)
 }
+
+// DeniedByEach is DeniedBy for many paths: the list deny looked up once,
+// then asked of each path the answer is given, by the same rule (a
+// listing of a commit's tree asks it of every entry).
+func DeniedByEach(deny []string) func(path string) bool {
+	return newDenySet(deny).inside
+}

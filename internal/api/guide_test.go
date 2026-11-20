@@ -1011,7 +1011,10 @@ func TestEachBodyBoundIsItsRoutes(t *testing.T) {
 	psid := plain.createSession("cat")
 	_, msid, mtok := plain.memberSession(t, "Bounded")
 
-	e := readyEnv(t, func(c *config.Config) { c.DataDir = filepath.Join(t.TempDir(), "data") })
+	// The attempt's server has a context provider that answers lookups,
+	// so its guide lists context_lookup too.
+	e := newTestEnvAgents(t, func(c *config.Config) { c.DataDir = filepath.Join(t.TempDir(), "data") }, quietLog(),
+		[]catalog.Agent{{ID: "ready-cat", Name: "ready cat", Command: []string{"/bin/sh", "-c", "echo ready; exec cat"}}}, withContext(&looker{fakeContext: &fakeContext{name: "graph"}}))
 	e.srv.limiter = newRateLimiter(1e6, 1e6)
 	e.gitRepo(t)
 	run, release, err := e.srv.runs.LaunchNamed(t.Context(), managedCrew(e.root), "")
