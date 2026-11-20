@@ -8586,8 +8586,8 @@ each block a context provider gave an attempt, at its start or by a
 lookup, its phase, source, title, ref, pack mark, its body's SHA-256 and
 size and when, never its text, keyed by the attempt and the block's
 sequence and going with the attempt. No attempt before it was given a
-recorded block, nothing is derived, and nothing writes or reads the table
-yet. A build that writes version 14 opens such a ledger read-only.
+recorded block, and nothing is derived. A build that writes version 14
+opens such a ledger read-only.
 
 The ledger's version 16 adds two tables for sync's seams
 (`docs/plans/sync-seams.md`, OS-3a): `decision_statements`, the statement
