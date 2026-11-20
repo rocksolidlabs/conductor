@@ -8591,12 +8591,15 @@ above, and no field, code or row below is ever written or answered.
   its outbox row keeps it. The decision inbox names a routed record's
   persons and gaps as its `routedTo` and its first group's rule as
   `routedRule`.
-- **Room.** A routed record superseded no longer counts among its run's
-  1,000: its replacement, opened with a spare of its own, stands in its
-  place, so a chain of replacements holds one decision and one spare. A
-  run's superseded routed records are bound apart at 1,000: past it an
-  answer to a routed record is `429 decision_limit` ("…'s run has voided
-  1,000 routed answers: stop or cancel it").
+- **Room.** A routed record whose accepted answer was voided (the record
+  superseded) no longer counts among its run's 1,000: its replacement,
+  opened with a spare of its own, stands in its place, so a chain of
+  replacements holds one decision and one spare. A run's voided routed
+  records are bound apart at 1,000: past it an answer to a routed record
+  is `429 decision_limit` ("…'s run has voided 1,000 routed answers: stop
+  or cancel it"). A routed record superseded unanswered (an agent's newer
+  request) is not voided: it counts among the run's 1,000, as on a server
+  with no router.
 
 The codes `not_eligible` and `override_refused` are `403`;
 `stale_policy` stays `409`.

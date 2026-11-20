@@ -427,22 +427,65 @@ func TestReplacementChainHoldsOneSpare(t *testing.T) {
 	}
 }
 
-// A run's voided routed decisions are bound apart: at MaxVoidedRoutedPerRun
-// an answer to a routed decision is refused for room, naming the bound,
-// and an answer to one under the server's own policy is not.
+// voidAll gives every superseded decision of run an accepted answer, made
+// by SQL alone: each a routed decision whose answer was voided.
+func voidAll(t *testing.T, l *Ledger, run string) {
+	t.Helper()
+	if _, err := l.db.Exec(`INSERT INTO decision_responses (decision, k, actor, authority, response_id, fingerprint, status, receipt, at)
+		SELECT n, 1, 'user:ana', '{"grant":"decide","via":"identity","subject":"ana","boot":"boot-1"}', 'v-' || n, 'fp', 'accepted', '{}', created_at
+		FROM decisions WHERE run_id = ? AND state = 'superseded'`, run); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A run's voided routed decisions are bound apart: with one fewer than
+// MaxVoidedRoutedPerRun an answer to a routed decision is accepted; its
+// answer voided in turn (the bound reached), the answer to its
+// replacement is refused for room, naming the bound, and an answer to one
+// under the server's own policy is not.
 func TestVoidedRoutedAnswersBoundPerRun(t *testing.T) {
 	l := openLedger(t, filepath.Join(t.TempDir(), "runs"))
 	const run = "team-00000001"
 	newRun(t, l, run)
-	fill(t, l, run, MaxVoidedRoutedPerRun+1, DecisionSuperseded, spareLocal)
+	// fill's first decision is cancelled, the rest as given: 999 voided.
+	fill(t, l, run, MaxVoidedRoutedPerRun, DecisionSuperseded, spareLocal)
+	voidAll(t, l, run)
 	routed := open(t, l, spareGate(run, "g1"))
 	plain := open(t, l, gateDecision(run, "g2"))
-	err := try(l, run, func(tx *Tx) error {
-		_, err := tx.Respond(routed, ResponseRow{Actor: "user:ana", Authority: `{"grant":"decide","via":"identity","subject":"ana","boot":"boot-1"}`, ResponseID: "a1", Fingerprint: "fp", Status: ResponseAccepted, Receipt: `{}`})
+	answer(t, l, run, routed, "a1", `{"grant":"decide","via":"identity","subject":"ana","boot":"boot-1"}`)
+	fresh, err := replaceSpare(l, run, routed, "g3")
+	if err != nil {
+		t.Fatalf("the replacement at the bound: %v", err)
+	}
+	err = try(l, run, func(tx *Tx) error {
+		_, err := tx.Respond(fresh, ResponseRow{Actor: "user:ana", Authority: `{"grant":"decide","via":"identity","subject":"ana","boot":"boot-1"}`, ResponseID: "a2", Fingerprint: "fp", Status: ResponseAccepted, Receipt: `{}`})
 		return err
 	})
-	if !errors.Is(err, ErrDecisionLimit) || !strings.Contains(err.Error(), "voided") {
+	if !errors.Is(err, ErrDecisionLimit) || !strings.Contains(err.Error(), "voided 1000") {
 		t.Fatalf("an answer past the voided bound: %v", err)
 	}
-	answer(t, l, run, plain, "a2", workbenchAuth)
+	answer(t, l, run, plain, "a3", workbenchAuth)
+}
+
+// A routed decision superseded unanswered (an agent's newer request in its
+// place, again and again) is not voided: each counts among the run's
+// decisions, so the chain ends at the run's bound.
+func TestUnansweredSupersessionsEndAtTheBound(t *testing.T) {
+	l := openLedger(t, filepath.Join(t.TempDir(), "runs"))
+	const run = "team-00000001"
+	newRun(t, l, run)
+	fill(t, l, run, MaxDecisionsPerRun-4, DecisionCancelled, localPolicy)
+	n := open(t, l, spareGate(run, "g0"))
+	// 996 decisions and g0 with its spare: 998 of the run's places. Each
+	// supersession keeps the old one and opens one more with its spare.
+	for i := range 2 {
+		fresh, err := replaceSpare(l, run, n, fmt.Sprintf("g%d", i+1))
+		if err != nil {
+			t.Fatalf("supersession %d: %v", i+1, err)
+		}
+		n = fresh
+	}
+	if _, err := replaceSpare(l, run, n, "g3"); !errors.Is(err, ErrDecisionLimit) {
+		t.Fatalf("a supersession past the run's bound: %v", err)
+	}
 }

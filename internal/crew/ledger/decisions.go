@@ -896,10 +896,13 @@ const placeCond = `((d.state = 'answered' AND EXISTS (SELECT 1 FROM decision_res
 	OR (d.state IN ('open', 'answered') AND COALESCE(json_extract(d.policy, '$.spare'), 0) = 1))`
 
 // voidedCond is the SQL condition of a voided routed decision (alias d):
-// superseded while it held a spare (opened while a decision router routed
-// policies), its replacement standing in its place. The run's voided
-// decisions are bound apart (MaxVoidedRoutedPerRun).
-const voidedCond = `(d.state = 'superseded' AND COALESCE(json_extract(d.policy, '$.spare'), 0) = 1)`
+// an accepted answer voided, the decision superseded while it held a spare
+// (opened while a decision router routed policies), its replacement
+// standing in its place. The run's voided decisions are bound apart
+// (MaxVoidedRoutedPerRun). A decision superseded unanswered (an agent's
+// newer request) is not voided: it counts among the run's decisions.
+const voidedCond = `(d.state = 'superseded' AND COALESCE(json_extract(d.policy, '$.spare'), 0) = 1
+	AND EXISTS (SELECT 1 FROM decision_responses r WHERE r.decision = d.n AND r.status = 'accepted'))`
 
 // MaxVoidedRoutedPerRun bounds a run's voided routed decisions: past it an
 // answer to a routed decision is refused for room (the replacement it may
@@ -921,10 +924,10 @@ func (t *Tx) room(run string) (bool, error) { return t.roomFor(run, 1) }
 // roomFor says whether run has room for need more of its places: a
 // decision opened with a spare needs two, itself and its spare.
 func (t *Tx) roomFor(run string, need int) (bool, error) {
-	// A routed decision superseded (voidedCond) no longer counts: its
-	// replacement stands in its place, so a chain of replacements holds one
-	// decision and one spare of the run's bound (voided apart, its own
-	// bound).
+	// A routed decision whose accepted answer was voided (voidedCond) no
+	// longer counts: its replacement stands in its place, so a chain of
+	// replacements holds one decision and one spare of the run's bound
+	// (voided apart, its own bound).
 	opened, err := t.count("SELECT COUNT(*) FROM decisions d WHERE d.run_id = ? AND NOT "+voidedCond, run)
 	if err != nil {
 		return false, err
