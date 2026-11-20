@@ -71,7 +71,7 @@ async function closeCandidate(task: string, attempt: number, seq: number, run = 
   await previews.close(task, attempt, seq, run === props.runId ? undefined : run, on)
   if (run === props.runId) await readTask(task)
 }
-const { pages, tasks, managed, next, error, loading, more, opened, findings, findingsError, toggleFindings, details, detailsError, readTask } = useRunCandidates({
+const { pages, tasks, managed, next, error, loading, more, opened, findings, findingsError, toggleFindings, details, detailsError, readTask, contextOpen, contextReading, toggleContext } = useRunCandidates({
   runId: () => props.runId,
   revision: () => props.revision,
 })
@@ -114,17 +114,8 @@ function openReceipt(c: RunCandidate, r: CandidateReceipt) {
   receiptOpen.value = true
 }
 
-// The context a candidate's attempt was given (CT-3): its count on the card; opened, the list, from the task route's read of its task.
-const contextOpen = reactive(new Set<string>())
-function toggleContext(c: RunCandidate) {
-  const k = ckey(c)
-  if (contextOpen.has(k)) {
-    contextOpen.delete(k)
-    return
-  }
-  contextOpen.add(k)
-  if (!details.has(c.task)) void readTask(c.task)
-}
+// The context a candidate's attempt was given (CT-3): its count on the card; opened, the list from the task route's read, made again
+// at every open (useRunCandidates' toggleContext).
 const contextOf = (c: RunCandidate) => details.get(c.task)?.attempts?.find((a) => a.n === c.attempt)?.context
 
 const tone = { warning: 'text-warning', error: 'text-error', muted: 'text-muted', default: 'text-default', success: 'text-success' }
@@ -251,9 +242,10 @@ const tone = { warning: 'text-warning', error: 'text-error', muted: 'text-muted'
                 @click="toggleContext(c)"
               />
               <template v-if="contextOpen.has(ckey(c))">
-                <p v-if="detailsError.get(c.task)" class="text-warning">The context could not be read: {{ detailsError.get(c.task) }}</p>
+                <p v-if="contextReading.has(ckey(c))" class="text-dimmed" data-candidate-context-reading>Reading the context…</p>
+                <p v-else-if="detailsError.get(c.task)" class="text-warning">The context could not be read: {{ detailsError.get(c.task) }}</p>
                 <AttemptContext v-else-if="contextOf(c)?.length" :run-id="runId" :task="c.task" :attempt="c.attempt" :rows="contextOf(c)!" />
-                <p v-else class="text-dimmed">Reading the context…</p>
+                <p v-else class="text-dimmed" data-candidate-context-none>The task's read lists no context for this attempt.</p>
               </template>
             </div>
             <ul v-if="c.receipts.length" class="flex flex-wrap gap-1.5" data-candidate-receipts>

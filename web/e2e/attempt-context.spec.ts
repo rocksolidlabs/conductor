@@ -122,6 +122,45 @@ for (const size of [{ width: 1440, height: 900 }, { width: 390, height: 844, tou
   })
 }
 
+test("a ticket's candidate reads its context at every open: a list that grew shows whole, and a read with none says so", async ({ day, browser }) => {
+  await day.part('dispatch')
+  const run = contextRun()
+  const { page } = await opened(browser, run)
+  // The task route as the stub answers it, but for the rows this test sets: each open's read is counted.
+  let given: unknown[] = ROWS.slice(0, 2)
+  let reads = 0
+  await page.route(
+    (u) => u.pathname === `/api/runs/${run.id}/tasks/t01`,
+    async (route) => {
+      reads++
+      const real = (await (await route.fetch()).json()) as { attempts: Array<Record<string, unknown>> }
+      for (const a of real.attempts) if (a.n === 1) a.context = given
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(real) })
+    },
+  )
+  budget(LOAD_MS)
+  await page.goto(`/dispatch/${TICKET.replace('-', '/')}`)
+  const card = page.locator(`[data-run-card="${run.id}"]`)
+  const count = card.locator('[data-candidate-context]')
+  await count.click()
+  await expect(card.locator('[data-attempt-context-row]')).toHaveCount(2)
+  const first = reads
+  expect(first).toBeGreaterThan(0)
+  // The attempt's lookup is recorded meanwhile: closed and opened again, the list is read again and holds it.
+  given = ROWS
+  await count.click()
+  await expect(card.locator('[data-attempt-context]')).toHaveCount(0)
+  await count.click()
+  await expect(card.locator('[data-attempt-context-row]')).toHaveCount(3)
+  expect(reads).toBeGreaterThan(first)
+  // A read that lists none for the attempt says so, never "Reading" with nothing on its way.
+  given = []
+  await count.click()
+  await count.click()
+  await expect(card.locator('[data-candidate-context-none]')).toHaveText("The task's read lists no context for this attempt.")
+  await expect(card.locator('[data-candidate-context-reading]')).toHaveCount(0)
+})
+
 test('with no context in the reply, no list and no count', async ({ day, browser }) => {
   await day.part('dispatch')
   const run = contextRun(false)
@@ -131,6 +170,6 @@ test('with no context in the reply, no list and no count', async ({ day, browser
   await expect(page.locator('[data-attempt-context]')).toHaveCount(0)
   budget(LOAD_MS)
   await page.goto(`/dispatch/${TICKET.replace('-', '/')}`)
-  await expect(page.locator(`[data-run-card="${run.id}"] [data-candidate="t01:1"], [data-run-card="${run.id}"] [data-candidate]`).first()).toBeVisible()
+  await expect(page.locator(`[data-run-card="${run.id}"] [data-candidate="t01/1"]`)).toBeVisible()
   await expect(page.locator('[data-candidate-context]')).toHaveCount(0)
 })
