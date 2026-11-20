@@ -13,7 +13,7 @@ Run the narrow tests while iterating, then the complete checks for every affecte
 ```bash
 git fetch origin && python3 scripts/dco_check.py --base origin/main --head HEAD  # every commit of the branch signed off by its author (CI's dco job); the fetch so that origin/main is GitHub's
 make lint                      # gofmt -l, go vet, the open-core rules (internal/opencore's TestModuleKeepsTheRules)
-go test -race -count=1 -timeout 60m ./...   # includes PTY, WebSocket and pion loopback tests; its bound is explained below
+go test -race -count=1 -timeout 90m ./...   # includes PTY, WebSocket and pion loopback tests; its bound is explained below
 npm --prefix web run typecheck
 npm --prefix web test          # vitest (link detection)
 make web-build                 # nuxt generate + copy into internal/web/dist
@@ -53,17 +53,20 @@ prints what drifted against `docs/design/system.json`
 the new baseline). The screens are never committed; the baseline is,
 values only (`docs/design/system.md`, What a pull request cannot do).
 
-The race tests' `-timeout 60m` catches a hang; it is not a speed target.
+The race tests' `-timeout 90m` catches a hang; it is not a speed target.
 go test's default, ten minutes a package, is less than `internal/api` takes
 on a machine shared with other runs: 17.7 minutes in a run of the whole
 module on the 64-core Linux box at a load average of 77 to 160
 (2026-10-30). On CI's runner it takes about thirty minutes (1553 to 1796 s
 on main's green runs of 2026-11-08, 3,129 s on 2026-11-18), and a run
-reached the old 30 m bound with nothing hung (#281), so the bound is 60 m:
-above every honest run, a hang bound only. A run left at the default fails
-for no defect. `make test`, `scripts/preflight.py` and every group of CI's
+reached the old 30 m bound with nothing hung (#281), so the bound became
+60 m. On 2026-11-19 the whole run on the Mac took 3,260 s, `internal/api`
+3,238 s of it, one binary for the whole package there (CI deals it into
+five groups), 54 of the 60 minutes before the walk's tests were added, so
+the bound is 90 m: above every honest run, a hang bound only. A run left
+at the default fails for no defect. `make test`, `scripts/preflight.py` and every group of CI's
 `go-race` job pass the same bound, and `scripts/preflight_test.py` holds
-them to it. Each `go-race` job has its own `timeout-minutes: 90`, the test
+them to it. Each `go-race` job has its own `timeout-minutes: 120`, the test
 bound plus its other steps (never a multiple of it), so a hang still ends
 the job.
 
@@ -75,7 +78,7 @@ job is a matrix of eight groups, `go-race (api-1)` to `go-race (api-5)`,
 the SHA-256 of its name modulo five, so a test added or removed moves no
 other), `internal/crew` with its ledger, `internal/dispatch`, and every
 other package of `go list ./...` together. Each runs
-`go test -race -count=1 -timeout 60m`, the whole module's flags; an `api`
+`go test -race -count=1 -timeout 90m`, the whole module's flags; an `api`
 group adds `-run '^(TestA|TestB|...)$'`, which selects top-level tests,
 each with its subtests, and runs the package's `TestMain` as any `-run`
 does. `scripts/go_test_groups.py` makes each group's command and prints its
@@ -90,7 +93,7 @@ and its fuzz targets (`internal/quoted`, `internal/session`) run their seed
 corpus in `rest`. To run one group here as CI does:
 `python3 scripts/go_test_groups.py run api-3` (`command api-3` prints the
 command, `groups` lists them). A developer's own command stays the whole
-module, `go test -race -count=1 -timeout 60m ./...` or `make test`.
+module, `go test -race -count=1 -timeout 90m ./...` or `make test`.
 
 A file CI's jobs fetch from a release mirror is cached by its version (`actions/cache`) and its download retried for minutes: Neovim's tarball through `curl --retry-all-errors`, refetched when it is not a gzip, and Electron's binary through
 `desktop/scripts/install-electron.mjs` (the desktop tests' `pretest`, six tries of electron's own installer), so a mirror's bad half hour fails one try, not the run (#281).

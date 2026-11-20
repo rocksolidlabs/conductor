@@ -143,9 +143,11 @@ add its rule here.
   a hang, as the history read's 15 s does over work its rows bound, which
   the race detector makes thirty times dearer (2026-11-11, #281;
   2026-11-08: internal/api's race run reached go test's 30 m bound
-  on CI; the bound is 60 m now; the package's length is CPU work under the
-  race detector across its 1,365 tests, not waits, and CI's longest job is
-  e2e at 49 minutes, so no row makes it faster). Nor is a test's bound the
+  on CI; the bound became 60 m; 2026-11-19: the Mac's whole-package run
+  reached 54 of its 60 minutes, so the bound is 90 m now; the package's
+  length is CPU work under the race detector across its 1,365 tests, not
+  waits, and CI's longest job is e2e at 49 minutes, so no row makes it
+  faster). Nor is a test's bound the
   product's: a budget shortened to see one step spend it bounds every step
   under it, and a step it was not meant for (a review's claim, before the
   read a test held past 50 ms) loses it on a loaded machine; the test lets
