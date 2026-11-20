@@ -366,6 +366,13 @@ export class DecisionRecordView {
 }
 
 /**
+ * How often an open record whose router's policy the card shows is read again: whether the policy is in force is the router's answer at
+ * the read (`policyNow`), and its lapse moves no revision and sends no event, so the card follows it by reading again (and on the
+ * window's focus).
+ */
+export const POLICY_REREAD_MS = 15_000
+
+/**
  * One decision whole (`GET /api/decisions/{id}`, with its evidence's resolutions), read when the id is set, again on its own `decision`
  * event, when the stream comes back (a new generation: DecisionRecordView.reset) and on its fallback's cadence while it is down, and
  * after each of the card's writes
@@ -432,7 +439,25 @@ export function useDecisionRecord(id: () => string) {
     },
     { immediate: true },
   )
-  onBeforeUnmount(stop)
+  // While a router's policy is shown on an open record, read again on a cadence and on the window's focus (POLICY_REREAD_MS).
+  const following = computed(() => !!policyNow.value && decision.value?.state === 'open')
+  let again: ReturnType<typeof setInterval> | undefined
+  watch(following, (on) => {
+    if (on && again === undefined) again = setInterval(() => void read(), POLICY_REREAD_MS)
+    else if (!on && again !== undefined) {
+      clearInterval(again)
+      again = undefined
+    }
+  })
+  const onFocus = () => {
+    if (following.value) void read()
+  }
+  if (typeof window !== 'undefined') window.addEventListener('focus', onFocus)
+  onBeforeUnmount(() => {
+    stop()
+    if (again !== undefined) clearInterval(again)
+    if (typeof window !== 'undefined') window.removeEventListener('focus', onFocus)
+  })
   return { decision, refs, policyNow, error, loading, read, begin }
 }
 
