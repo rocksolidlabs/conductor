@@ -26,6 +26,7 @@ class ShellViewController: CAPBridgeViewController {
     private var bootCheck: BootCheckView?
     /** The gate at the runtime's script message handler: none until it is in place, and then the page may load. */
     private var gate: BridgeGateHandler?
+    private var earlier: EarlierComparison?
 
     /** The bundle the app ships, always: the runtime's default reads a base path a page asked to keep; the shell's never does. */
     override func instanceDescriptor() -> InstanceDescriptor {
@@ -46,11 +47,16 @@ class ShellViewController: CAPBridgeViewController {
         bridge?.registerPluginInstance(RefusedCookiesPlugin())
         bridge?.registerPluginInstance(ShellHttpPlugin())
         guard let app = bridge?.config.localURL, let webView else { return }
-        let n = NavigationGate(wrapping: webView.navigationDelegate as? (NSObject & WKNavigationDelegate), app: app)
+        let runtimeNav = webView.navigationDelegate as? (NSObject & WKNavigationDelegate)
+        let n = NavigationGate(wrapping: runtimeNav, app: app)
         n.foreground = { UIApplication.shared.applicationState == .active }
         n.handOff = { UIApplication.shared.open($0, options: [:], completionHandler: nil) }
         loads = n
         webView.navigationDelegate = n
+        // A deliberate break, reverted next: the load gate's earlier comparison in front of it.
+        let o = EarlierComparison(gate: n, runtime: runtimeNav, app: app)
+        earlier = o
+        webView.navigationDelegate = o
         // A script opens no window on its own (WebKit's own refusal, without a person's tap); a window a tap opens is the load gate's.
         webView.configuration.preferences.javaScriptCanOpenWindowsAutomatically = false
         let d = MediaCaptureRefused(wrapping: webView.uiDelegate as? (NSObject & WKUIDelegate))
@@ -59,7 +65,14 @@ class ShellViewController: CAPBridgeViewController {
         webView.uiDelegate = d
         // The runtime's handler, `bridge`, taken over by the gate, which forwards to it only what it admits.
         if let runtime = (bridge as? CapacitorBridge)?.webViewDelegationHandler {
-            let g = BridgeGateHandler(forwardingTo: runtime, view: webView, app: app)
+            // A deliberate break, reverted next: the listener calls' form not held.
+            let g = BridgeGateHandler(forwardingTo: runtime, view: webView, app: app) { body, sender, app in
+                guard BridgeGate.fromShell(sender, app: app), let d = body as? [String: Any], Set(d.keys).isSubset(of: BridgeGate.keys),
+                      d["type"] as? String == "message", let p = d["pluginId"] as? String, let m = d["methodName"] as? String,
+                      BridgeGate.calls[p]?.contains(m) == true, let c = d["callbackId"] as? String, BridgeGate.callbackForm(c) else { return false }
+                if let o = d["options"], !(o is [String: Any]) { return false }
+                return true
+            }
             runtime.contentController.removeScriptMessageHandler(forName: BridgeGate.handler)
             runtime.contentController.add(g, name: BridgeGate.handler)
             gate = g
@@ -91,4 +104,28 @@ struct ShellRouter: Router {
     func route(for path: String) -> String {
         BundleRoute.route(base: basePath, path: path)
     }
+}
+
+/** A deliberate break, reverted next: the load gate's earlier comparison (scheme, host and port in any case) forwarding to the runtime. */
+final class EarlierComparison: NSObject, WKNavigationDelegate {
+    let gate: NavigationGate
+    weak var runtime: (NSObject & WKNavigationDelegate)?
+    let app: URL
+    init(gate: NavigationGate, runtime: (NSObject & WKNavigationDelegate)?, app: URL) {
+        self.gate = gate
+        self.runtime = runtime
+        self.app = app
+    }
+
+    func webView(_ webView: WKWebView, decidePolicyFor a: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+        if a.targetFrame?.isMainFrame == true, let url = a.request.url, url.scheme?.lowercased() == app.scheme?.lowercased(),
+           url.host?.lowercased() == app.host?.lowercased(), url.port == app.port, url.user == nil, let runtime {
+            runtime.webView?(webView, decidePolicyFor: a, decisionHandler: decisionHandler)
+            return
+        }
+        gate.webView(webView, decidePolicyFor: a, decisionHandler: decisionHandler)
+    }
+
+    override func responds(to selector: Selector!) -> Bool { super.responds(to: selector) || gate.responds(to: selector) }
+    override func forwardingTarget(for selector: Selector!) -> Any? { super.responds(to: selector) ? nil : gate }
 }
