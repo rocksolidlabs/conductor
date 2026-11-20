@@ -46,7 +46,8 @@ public struct KeychainVault: KeyVault {
         let status = SecItemCopyMatching(q as CFDictionary, &out)
         if status == errSecItemNotFound { return nil }
         guard status == errSecSuccess, let data = out as? Data else { throw KeyRefusal(code: "keychain", words: "The key could not be read (\(status)).") }
-        return try JSONDecoder().decode(KeyRecord.self, from: data)
+        guard let record = try? JSONDecoder().decode(KeyRecord.self, from: data) else { throw UnreadableKeyRecord() }
+        return record
     }
 
     public func write(_ record: KeyRecord) throws {

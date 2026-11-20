@@ -73,6 +73,11 @@ public struct KeyRecord: Codable, Equatable, Sendable {
     }
 }
 
+/** Where the key is kept: one item, read, written whole, or deleted. A read of an item that is not a record throws this. */
+public struct UnreadableKeyRecord: Error, Sendable {
+    public init() {}
+}
+
 /** Where the key is kept: one item, read, written whole, or deleted. */
 public protocol KeyVault: Sendable {
     func read() throws -> KeyRecord?
@@ -142,9 +147,29 @@ public actor ConductorKey {
         KeyRefusal(code: code, words: words)
     }
 
+    /**
+     * The record kept, or nil. One that cannot be read as a key (an item of a form this build does not know, or a private key that is
+     * not one) is removed, as if absent: no form of the item can leave the phone with a key it can neither use nor clear.
+     */
+    private func stored() throws -> KeyRecord? {
+        let r: KeyRecord?
+        do {
+            r = try vault.read()
+        } catch is UnreadableKeyRecord {
+            try removeAll()
+            return nil
+        }
+        guard let r else { return nil }
+        guard (try? Curve25519.Signing.PrivateKey(rawRepresentation: r.privateKey)) != nil else {
+            try removeAll()
+            return nil
+        }
+        return r
+    }
+
     /** The record, unbound past its time removed as if absent. */
     private func current() throws -> KeyRecord? {
-        guard let r = try vault.read() else { return nil }
+        guard let r = try stored() else { return nil }
         if r.state == .unbound, let until = r.until, until <= now() {
             try removeAll()
             return nil
@@ -162,7 +187,7 @@ public actor ConductorKey {
      * past its time.
      */
     public func start() throws {
-        guard let r = try vault.read() else { return }
+        guard let r = try stored() else { return }
         if !marker.exists() {
             try vault.delete()
             return
@@ -234,7 +259,7 @@ public actor ConductorKey {
             throw refuse("invalid_request", "A request is a JSON object.")
         }
         guard body.count <= maxSignRequest else { throw refuse("too_large", "A request is at most \(maxSignRequest) bytes.") }
-        guard let found = try vault.read() else { throw refuse("no_key", "This phone has no key.") }
+        guard let found = try stored() else { throw refuse("no_key", "This phone has no key.") }
         if found.state == .unbound, let until = found.until, until <= now() {
             try removeAll()
             throw refuse("key_expired", "This phone's key was not bound in time.")
@@ -252,7 +277,7 @@ public actor ConductorKey {
             }
         }
         // The wait above let other calls run: the key signs only if it is still the one the plan was built for, in the same state.
-        guard let again = try vault.read(), again.privateKey == found.privateKey, again.state == found.state, again.id == found.id else {
+        guard let again = try stored(), again.privateKey == found.privateKey, again.state == found.state, again.id == found.id else {
             throw refuse("key_changed", "This phone's key changed while it was confirmed: nothing was signed.")
         }
         // Nor if an unbound key's time ran out while the person was asked: the same rule as before the wait.

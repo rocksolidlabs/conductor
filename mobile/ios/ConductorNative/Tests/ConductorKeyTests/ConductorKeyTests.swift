@@ -18,6 +18,21 @@ final class MemoryVault: KeyVault, @unchecked Sendable {
     func delete() throws { lock.withLock { record = nil } }
 }
 
+/** A keychain item that is not a record (its form changed, or garbled) until it is deleted. */
+final class GarbledVault: KeyVault, @unchecked Sendable {
+    let lock = NSLock()
+    var garbled = true
+    var record: KeyRecord?
+    func read() throws -> KeyRecord? {
+        try lock.withLock {
+            if garbled { throw UnreadableKeyRecord() }
+            return record
+        }
+    }
+    func write(_ r: KeyRecord) throws { lock.withLock { record = r } }
+    func delete() throws { lock.withLock { garbled = false; record = nil } }
+}
+
 /** The install's mark held in memory. */
 final class MemoryMarker: KeyMarker, @unchecked Sendable {
     let lock = NSLock()
@@ -244,6 +259,28 @@ func publicKey(_ b64url: String) throws -> Curve25519.Signing.PublicKey {
         #expect(f.policy?.finished.isEmpty == true)
         #expect(f.vault.record == nil)
         #expect(!f.marker.exists())
+    }
+
+    @Test func aRecordThatIsNotAKeyIsNoKeyAndIsRemoved() async throws {
+        // An item that cannot be decoded: removed at start, the state none, and a key can be made again.
+        let vault = GarbledVault()
+        let marker = MemoryMarker()
+        try marker.write()
+        let key = ConductorKey(vault: vault, presence: FakePresence(answer: true), marker: marker, policy: TestPolicy())
+        try await key.start()
+        #expect(!vault.garbled)
+        #expect(try await key.state().state == KeyState.none)
+        #expect(try await key.create(until: Date().addingTimeInterval(60)).count == 43)
+        // The same at any read: one garbled after start, then a record whose private key is not a key.
+        vault.lock.withLock { vault.garbled = true }
+        #expect(try await key.state().state == KeyState.none)
+        #expect(!vault.garbled)
+        let f = Fixture()
+        _ = try await f.bound()
+        f.vault.record?.privateKey = Data([1, 2, 3])
+        #expect(await refusal { _ = try await f.key.sign(request: ["m": "x"]) } == "no_key")
+        #expect(f.vault.record == nil)
+        #expect(try await f.key.publicKey() == nil)
     }
 
     @Test func refusesARequestPastItsBound() async throws {
