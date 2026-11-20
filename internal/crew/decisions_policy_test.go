@@ -4,7 +4,9 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+	"time"
 
+	"github.com/rocksolidlabs/conductor/ext"
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
 )
 
@@ -122,4 +124,30 @@ func TestAChainOfReplacementsKeepsTheRunsRoom(t *testing.T) {
 		t.Fatalf("the retry after the chain: %v", err)
 	}
 	stopRun(t, e, run.ID)
+}
+
+// A router's names, labels, rules and gaps are kept without their format
+// characters (a right-to-left override, a zero-width space), so none
+// reorders what a card draws beside it; a name of nothing else is its
+// subject. The router's own policy is not changed.
+func TestARoutersWordsAreKeptWithoutFormatCharacters(t *testing.T) {
+	p := ext.RoutePolicy{Revision: "r1", Scope: "s1", Override: ext.OverrideOperator,
+		Pinned: ext.PinnedRequirement{Rule: "r\u200b-1"},
+		Groups: []ext.Requirement{{Role: "architecture", Label: "architecture\u202e owner", Quorum: 1, Rule: "r-\u20661", Gap: "",
+			Eligible: []ext.Eligible{{Subject: "ana", Name: "A\u202ena", Via: ext.ViaRole, Ref: "ref-1"}, {Subject: "ben", Name: "\u200b\u200d", Via: ext.ViaRole, Ref: "ref-2"}}}}}
+	raw, err := storedPolicy(p, "switchman", true, time.Date(2026, 11, 19, 9, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _, ok := RouterPolicyOf(raw)
+	if !ok {
+		t.Fatalf("not a router's policy: %s", raw)
+	}
+	g := got.Groups[0]
+	if g.Label != "architecture owner" || g.Rule != "r-1" || got.Pinned.Rule != "r-1" || g.Eligible[0].Name != "Ana" || g.Eligible[1].Name != "ben" {
+		t.Fatalf("kept: %s", raw)
+	}
+	if p.Groups[0].Eligible[0].Name != "A\u202ena" {
+		t.Fatal("the router's own policy was changed")
+	}
 }

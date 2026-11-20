@@ -1,6 +1,7 @@
 package crew
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/rocksolidlabs/conductor/ext"
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
@@ -295,7 +297,7 @@ func judgePolicy(rec ledger.DecisionRecord, resp Response, who Admittee, pol pol
 // comparison's selection, which takes none, invalid. Nothing is written
 // for a refusal.
 func (e *Engine) RoutePolicy(ctx context.Context, id, by string, rev int, policy ext.RoutePolicy, to []Destination, rule string) (OpReceipt, error) {
-	base := routeDetail(id, by, to, rule)
+	base := routeDetail(id, by, to, stripFormat(rule))
 	base.Revision = policy.Revision
 	detail := func(rec ledger.DecisionRecord) (opDetail, error) {
 		dt := base
@@ -349,6 +351,7 @@ func (e *Engine) RoutePolicy(ctx context.Context, id, by string, rev int, policy
 // the router's (its approver the router, the router's name, when it was
 // first written, the spare kept, the policy it falls back to).
 func storedPolicy(policy ext.RoutePolicy, router string, spare bool, at time.Time) (string, error) {
+	policy = shownPolicy(policy)
 	b, err := json.Marshal(routedPolicy{
 		Revision: policy.Revision, Approver: ledger.ApproverRouter, Quorum: 1, Authority: []PolicyEntry{{Kind: EntryOperator}},
 		Router: router, Scope: policy.Scope, Pinned: policy.Pinned, Groups: policy.Groups, Distinct: policy.Distinct,
@@ -356,6 +359,38 @@ func storedPolicy(policy ext.RoutePolicy, router string, spare bool, at time.Tim
 		RoutedAt: at, Spare: spare, Fallback: policyLocal,
 	})
 	return string(b), err
+}
+
+// shownPolicy is policy with its words as a card shows them: the format
+// characters (Unicode's Cf: bidirectional controls, zero-width ones) taken
+// out of every name, label, rule and gap a router gave, so none reorders
+// or hides what is drawn beside it. A name left empty is its subject, a
+// label its role. Nothing of the caller's is changed.
+func shownPolicy(policy ext.RoutePolicy) ext.RoutePolicy {
+	policy.Pinned.Rule = stripFormat(policy.Pinned.Rule)
+	groups := make([]ext.Requirement, len(policy.Groups))
+	for i, g := range policy.Groups {
+		g.Label, g.Rule, g.Gap = cmp.Or(stripFormat(g.Label), g.Role), stripFormat(g.Rule), stripFormat(g.Gap)
+		g.Eligible = slices.Clone(g.Eligible)
+		for j := range g.Eligible {
+			g.Eligible[j].Name = cmp.Or(stripFormat(g.Eligible[j].Name), g.Eligible[j].Subject)
+		}
+		groups[i] = g
+	}
+	if policy.Groups != nil {
+		policy.Groups = groups
+	}
+	return policy
+}
+
+// stripFormat is s without its format characters (Unicode's Cf).
+func stripFormat(s string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.Is(unicode.Cf, r) {
+			return -1
+		}
+		return r
+	}, s)
 }
 
 // confirmAtApply asks the router again, before d's application, whether
