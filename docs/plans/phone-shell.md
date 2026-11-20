@@ -535,7 +535,7 @@ and nothing else: no key, no store, no push token, no HTTP call.
   refused by the sync). That bound is the page's own connections'. A
   provider's own calls go through the native HTTP call, which the policy
   does not govern and which reaches only the https origins the packaging
-  names at build (`make mobile-sync MOBILE_NATIVE_HTTP=https://…`, each
+  names at build (`make mobile-sync MOBILE_NATIVE_ORIGINS=https://…`, each
   exactly an https origin), none by default: a shell with no provider
   connects to nothing, by either way. On `main`
   (built at `f10eb297`) those are three: the import map, the colour mode
@@ -1431,7 +1431,7 @@ Swift package with no package of anyone else's):
   nothing in the shell calls it.
 - The native HTTP call admits a request only when its address is https
   on an origin the packaging named (`make mobile-sync
-  MOBILE_NATIVE_HTTP=…`, written into the bundle as
+  MOBILE_NATIVE_ORIGINS=…`, written into the bundle as
   `shell/native-http.json` and read once at the app's start from the
   app's own bundle; absent, unreadable or malformed is none); anything
   else (`http`, `file:`, another origin or port, a user part, a host

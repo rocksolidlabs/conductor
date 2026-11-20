@@ -1,7 +1,7 @@
 import Foundation
 
 // The native HTTP call (the bridge's `http.request`, Capacitor's `CapacitorHttp` by name): a request is sent only when its address is
-// https on an origin the packaging named at build (`make mobile-sync MOBILE_NATIVE_HTTP=...`, written into the app's bundle and read
+// https on an origin the packaging named at build (`make mobile-sync MOBILE_NATIVE_ORIGINS=...`, written into the app's bundle and read
 // once at start), and anything else is refused before anything is opened. It keeps no cookie, no cache and no credential, and follows
 // no redirect. This repository's build names none: a shell with no provider makes no native HTTP call.
 

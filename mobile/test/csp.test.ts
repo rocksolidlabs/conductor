@@ -73,14 +73,14 @@ describe("the shell's policy", () => {
     const www = join(tmp(), 'www')
     syncBundle(from, www)
     expect(JSON.parse(readFileSync(join(www, NATIVE_HTTP), 'utf8'))).toEqual({ origins: [] })
-    syncBundle(from, www, undefined, { nativeHttp: ['https://relay.example.test', 'https://relay.example.test:8443'] })
+    syncBundle(from, www, undefined, { native: ['https://relay.example.test', 'https://relay.example.test:8443'] })
     expect(JSON.parse(readFileSync(join(www, NATIVE_HTTP), 'utf8'))).toEqual({ origins: ['https://relay.example.test', 'https://relay.example.test:8443'] })
     // The page's own connections are not widened by it.
     expect(carried(readFileSync(join(www, 'index.html'), 'utf8')).policy).toMatch(/; connect-src 'none'$/)
     for (const bad of ['http://relay.example.test', 'https://relay.example.test/', 'https://relay.example.test.', 'https://user@relay.example.test', 'https://*.example.test', 'https://Relay.example.test', 'file:///etc']) {
       expect(() => nativeOrigins([bad]), bad).toThrow(/an https origin/)
       const fresh = join(tmp(), 'www')
-      expect(() => syncBundle(from, fresh, undefined, { nativeHttp: [bad] }), bad).toThrow(/an https origin/)
+      expect(() => syncBundle(from, fresh, undefined, { native: [bad] }), bad).toThrow(/an https origin/)
       expect(existsSync(fresh)).toBe(false)
     }
   })

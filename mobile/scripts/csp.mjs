@@ -67,7 +67,7 @@ export function connectOrigins(list = []) {
 }
 
 /**
- * The origins a packaging names for the shell's native HTTP call (sync.mjs's --native-http): each exactly an https origin, as
+ * The origins a packaging names for the shell's native HTTP call (sync.mjs's --native-origins): each exactly an https origin, as
  * connectOrigins checks, and a host of labels none of which is empty (no trailing dot), as the app reads them. None by default.
  */
 export function nativeOrigins(list = []) {
