@@ -33,7 +33,7 @@ class ShellViewController: CAPBridgeViewController {
     }
 
     /** The shell's router: a file only inside the bundle's folder. */
-    override func router() -> Router {
+    func shellRouter() -> Router {  // A deliberate break, reverted next: the runtime's own router.
         ShellRouter()
     }
 
@@ -50,16 +50,19 @@ class ShellViewController: CAPBridgeViewController {
         n.foreground = { UIApplication.shared.applicationState == .active }
         n.handOff = { UIApplication.shared.open($0, options: [:], completionHandler: nil) }
         loads = n
-        webView.navigationDelegate = n
+        // A deliberate break, reverted next: the load gate is not put in front of the runtime's rule.
         // A script opens no window on its own (WebKit's own refusal, without a person's tap); a window a tap opens is the load gate's.
         webView.configuration.preferences.javaScriptCanOpenWindowsAutomatically = false
         let d = MediaCaptureRefused(wrapping: webView.uiDelegate as? (NSObject & WKUIDelegate))
-        d.newWindow = { [weak n] action in n?.newWindow(action) }
         refused = d
         webView.uiDelegate = d
         // The runtime's handler, `bridge`, taken over by the gate, which forwards to it only what it admits.
         if let runtime = (bridge as? CapacitorBridge)?.webViewDelegationHandler {
-            let g = BridgeGateHandler(forwardingTo: runtime, view: webView, app: app)
+            // A deliberate break, reverted next: the gate judges names alone, not the sender or the other fields.
+            let g = BridgeGateHandler(forwardingTo: runtime, view: webView, app: app) { body, _, _ in
+                guard let d = body as? [String: Any], d["type"] as? String == "message", let id = d["pluginId"] as? String else { return false }
+                return BridgeGate.names.contains(id) && d["methodName"] is String
+            }
             runtime.contentController.removeScriptMessageHandler(forName: BridgeGate.handler)
             runtime.contentController.add(g, name: BridgeGate.handler)
             gate = g
@@ -75,7 +78,7 @@ class ShellViewController: CAPBridgeViewController {
         guard gate != nil, loads != nil, let app = bridge?.config.localURL,
               let controller = (bridge as? CapacitorBridge)?.webViewDelegationHandler.contentController
         else { return }
-        WKContentRuleListStore.default().compileContentRuleList(forIdentifier: FilePrefix.identifier, encodedContentRuleList: FilePrefix.rules(app: app)) { list, _ in
+        WKContentRuleListStore.default().compileContentRuleList(forIdentifier: FilePrefix.identifier, encodedContentRuleList: FilePrefix.encode(FilePrefix.prefixRules)) { list, _ in
             DispatchQueue.main.async {
                 guard let list else { return }
                 controller.add(list)
