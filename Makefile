@@ -107,7 +107,6 @@ mobile-install: ## the phone shell's native runtime packages, as mobile/package-
 mobile-sync: $(NODE_STAMP) ## the built bundle into mobile/www with the shell's bridge and its policy (make web-build first; MOBILE_CONNECT=<https origins, comma-separated> for a provider's pages, MOBILE_NATIVE_ORIGINS=<https origins, comma-separated> for its native HTTP call)
 	node mobile/scripts/sync.mjs internal/web/dist mobile/www mobile/providers $(if $(MOBILE_CONNECT),--connect=$(MOBILE_CONNECT)) $(if $(MOBILE_NATIVE_ORIGINS),--native-origins=$(MOBILE_NATIVE_ORIGINS))
 	cd web && npx vite build --config ../mobile/bridge.vite.config.mjs
-	printf '<script>document.title = "unhashed"</script>\n' >> mobile/www/index.html
 
 mobile-test: $(NODE_STAMP) ## the shell's bridge type-checked and its tests (they run in the app's vitest too), and its boot spec (make web-build first)
 	web/node_modules/.bin/tsc -p mobile/tsconfig.json
