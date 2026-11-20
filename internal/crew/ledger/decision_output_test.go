@@ -267,6 +267,9 @@ func TestAReplacementCarriesItsRequestsVerdicts(t *testing.T) {
 		{"judged output, now clean", VerdictOutput, VerdictClean, VerdictOutput},
 		{"judged clean, now output", VerdictClean, VerdictOutput, VerdictOutput},
 		{"judged clean, now pending", VerdictClean, VerdictPending, VerdictPending},
+		// A copied pending is output: it would be settled against the
+		// prunes since the copy opened, not its source.
+		{"pending, now clean", VerdictPending, VerdictClean, VerdictOutput},
 		{"never judged", "", VerdictClean, ""},
 	} {
 		l := openLedger(t, filepath.Join(t.TempDir(), "runs"))

@@ -438,9 +438,12 @@ func verdictRank(v string) int {
 // copyVerdicts gives decision to, a replacement opened with from's request,
 // from's request-part verdicts, each the worse of the copied one and the
 // one to's opening judged: a copy is never judged cleaner than what it
-// copies. When from has none for its question (its request never judged
-// as it was written), to keeps none either, so its request stays back as
-// from's did.
+// copies. A copied pending is written output: a pending part is settled
+// against the prunes since its own decision opened, and the copy's
+// opening is later than its source's, so the copy would be judged without
+// the prunes between the two. When from has none for its question (its
+// request never judged as it was written), to keeps none either, so its
+// request stays back as from's did.
 func (t *Tx) copyVerdicts(from, to int64) error {
 	read := func(n int64) (map[string]string, error) {
 		rows, err := t.tx.QueryContext(t.ctx, "SELECT part, verdict FROM decision_output WHERE decision = ?", n)
@@ -473,6 +476,9 @@ func (t *Tx) copyVerdicts(from, to int64) error {
 		return err
 	}
 	for part, v := range src {
+		if v == VerdictPending {
+			v = VerdictOutput
+		}
 		if verdictRank(fresh[part]) > verdictRank(v) {
 			v = fresh[part]
 		}
