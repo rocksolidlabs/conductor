@@ -343,10 +343,13 @@ provider.
   The native HTTP call reaches only the https origins a packaging names,
   none in this repository's build, with no cookie and no redirect
   followed. One gate stands at each way from the page into native code,
-  each an allowlist: the runtime's message handler forwards only calls
-  to the plugins the shell means the page to reach, by their names; no
-  text-input prompt reaches native code; the runtime's file prefixes
-  are blocked before the page loads; a microphone or camera request is
+  each an allowlist deciding on who sent a thing, every field native
+  code reads and the spelling it uses: the runtime's message handler
+  forwards only the shell's own page's calls of a closed table; no
+  text-input prompt reaches native code; an address of the app's own
+  scheme loads only in the bundle's spelling and only from inside the
+  bundle; the page loads nothing but its own, and hands iOS only a link
+  to an `https` or `http` address; a microphone or camera request is
   denied. The boot check tries each way around them on a simulator. Built and not yet seen on a device: the Face
   ID sheet itself, the keychain and the files while the phone is locked,
   a reinstall or a restored backup, and a notification's tap
