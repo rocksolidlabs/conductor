@@ -1118,8 +1118,36 @@ func newestThatFit(m map[string]json.RawMessage, field string, room int) (json.R
 	return marshalNoEscape(entries[from:])
 }
 
+// contextShape is an attempt's context as a Brakeman turn reads it: each
+// block's phase, source, title, pack mark and digest.
+func contextShape(raw json.RawMessage) (json.RawMessage, error) {
+	var in []struct {
+		Phase  string `json:"phase"`
+		Source string `json:"source"`
+		Title  string `json:"title"`
+		Pack   string `json:"pack"`
+		SHA256 string `json:"sha256"`
+	}
+	if err := json.Unmarshal(raw, &in); err != nil {
+		return nil, err
+	}
+	type shown struct {
+		Phase  string `json:"phase"`
+		Source string `json:"source"`
+		Title  string `json:"title"`
+		Pack   string `json:"pack,omitempty"`
+		SHA256 string `json:"sha256"`
+	}
+	out := make([]shown, len(in))
+	for i, b := range in {
+		out[i] = shown(b)
+	}
+	return marshalNoEscape(out)
+}
+
 // filterTask is GET /api/runs/{run}/tasks/{task} for a turn: the task,
-// its attempts and their receipts, each with its ref and noted.
+// its attempts and their receipts, each with its ref and noted, and the
+// context each attempt was given as its shape alone (contextShape).
 func filterTask(r *http.Request, o *observer, body []byte) ([]byte, error) {
 	runID, taskID := r.PathValue("run"), r.PathValue("task")
 	body, err := decisionRefs(o, body)
@@ -1177,6 +1205,17 @@ func filterTask(r *http.Request, o *observer, body []byte) ([]byte, error) {
 				return nil, err
 			}
 			am["steps"] = steps
+		}
+		if raw, ok := am["context"]; ok {
+			// The context the attempt was given, as its shape alone: each
+			// block's phase, source, title, pack mark and digest, under the
+			// class that shows the attempt; never its text, its ref or its
+			// size (docs/plans/context-seams.md, CT-3).
+			filtered, err := contextShape(raw)
+			if err != nil {
+				return nil, err
+			}
+			am["context"] = filtered
 		}
 		out, err := marshalNoEscape(am)
 		if err != nil {

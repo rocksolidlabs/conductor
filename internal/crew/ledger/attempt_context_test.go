@@ -337,3 +337,87 @@ func TestOlderBinaryOpensAnAttemptContextLedgerReadOnly(t *testing.T) {
 		t.Fatalf("the ledger at its own version:\n%v\nwas:\n%v", got, before)
 	}
 }
+
+// ctxRow is a row of the run's build/1 at seq.
+func ctxRow(run string, seq int, phase string) AttemptContextRow {
+	return AttemptContextRow{RunID: run, TaskID: "build", N: 1, Seq: seq, Phase: phase, Source: "graph", Title: "Callers", Ref: "build.go", Pack: "p-1",
+		SHA256: strings.Repeat("ab", 32), Bytes: 42}
+}
+
+// The writer records an attempt's blocks after its last seq and refuses
+// what the record does not hold: another run's row, a seq out of order,
+// a phase or a digest that is none, a size below 1, and past the
+// attempt's bounds (its task rows, its lookup rows, one call's lookup
+// rows); the readers answer the rows by attempt, in order, and their
+// counts by task and attempt.
+func TestAttemptContextRows(t *testing.T) {
+	l := openLedger(t, filepath.Join(t.TempDir(), "runs"))
+	const run = "team-00000001"
+	newRun(t, l, run)
+	tasksOf(t, l, run, "build")
+	add := func(rows ...AttemptContextRow) error {
+		_, err := l.Transition(context.Background(), run, func(tx *Tx) error { return tx.AddAttemptContext(rows) })
+		return err
+	}
+	if err := add(ctxRow(run, 1, PhaseTask), ctxRow(run, 2, PhaseTask)); err != nil {
+		t.Fatal(err)
+	}
+	bad := map[string]AttemptContextRow{
+		"another run's":         ctxRow("team-00000002", 3, PhaseLookup),
+		"a seq out of order":    ctxRow(run, 5, PhaseLookup),
+		"a seq given again":     ctxRow(run, 2, PhaseLookup),
+		"a phase that is none":  func() AttemptContextRow { r := ctxRow(run, 3, "start"); return r }(),
+		"a digest that is none": func() AttemptContextRow { r := ctxRow(run, 3, PhaseLookup); r.SHA256 = "abc"; return r }(),
+		"no size":               func() AttemptContextRow { r := ctxRow(run, 3, PhaseLookup); r.Bytes = 0; return r }(),
+	}
+	for what, r := range bad {
+		if err := add(r); err == nil {
+			t.Errorf("%s: taken", what)
+		}
+	}
+	// One call's lookup rows: eight at most.
+	nine := make([]AttemptContextRow, MaxContextLookupOne+1)
+	for i := range nine {
+		nine[i] = ctxRow(run, 3+i, PhaseLookup)
+	}
+	if err := add(nine...); !errors.Is(err, ErrContextFull) {
+		t.Fatalf("nine lookup rows at once: %v", err)
+	}
+	seq := 3
+	for range MaxContextLookupRows / MaxContextLookupOne {
+		rows := make([]AttemptContextRow, MaxContextLookupOne)
+		for i := range rows {
+			rows[i] = ctxRow(run, seq, PhaseLookup)
+			seq++
+		}
+		if err := add(rows...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := add(ctxRow(run, seq, PhaseLookup)); !errors.Is(err, ErrContextFull) {
+		t.Fatalf("the 65th lookup row: %v", err)
+	}
+	// Task rows: 128 at most.
+	task := make([]AttemptContextRow, MaxContextTaskRows-2)
+	for i := range task {
+		task[i] = ctxRow(run, seq+i, PhaseTask)
+	}
+	if err := add(task...); err != nil {
+		t.Fatal(err)
+	}
+	if err := add(ctxRow(run, seq+len(task), PhaseTask)); !errors.Is(err, ErrContextFull) {
+		t.Fatalf("the 129th task row: %v", err)
+	}
+	got, err := l.AttemptContext(context.Background(), run, "build")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := got[1]
+	if len(rows) != MaxContextLookupRows+MaxContextTaskRows || rows[0].Seq != 1 || rows[len(rows)-1].Seq != len(rows) || rows[0].Title != "Callers" || rows[0].At.IsZero() {
+		t.Fatalf("%d rows read, first %+v", len(rows), rows[0])
+	}
+	counts, err := l.AttemptContextCounts(context.Background(), run)
+	if err != nil || counts["build"][1] != len(rows) {
+		t.Fatalf("the counts: %v %v", counts, err)
+	}
+}

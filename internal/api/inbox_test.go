@@ -464,6 +464,7 @@ func maxItem() *inboxItem {
 	it.Blocking.Words = fitText(esc(900), 500)
 	for range inboxRefs {
 		it.Blocking.Refs = append(it.Blocking.Refs, fitText(ref, maxInboxRef))
+		it.CardBlocked = append(it.CardBlocked, fitText(ref, maxInboxRef))
 		it.Evidence = append(it.Evidence, inboxRef{Ref: fitText(ref, maxInboxRef), Label: fitText(esc(400), 200)})
 	}
 	five := 5

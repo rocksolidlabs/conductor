@@ -122,6 +122,33 @@ describe("a run's candidates", () => {
     expect([...c.findingsError.keys()]).toEqual([])
   })
 
+  it("read a candidate's context at every open, so the list is the task's as it is now, and say Reading only while a read is on its way", async () => {
+    const { c } = await candidates()
+    const work: RunCandidate = { task: 'build', kind: 'work', attempt: 2, commit: 'c'.repeat(40), state: 'succeeded', standing: true, withdrawn: false, receipts: [], context: 5 }
+    const row = (seq: number, phase: 'task' | 'lookup') => ({ seq, phase, source: 'graph', title: `b${seq}`, sha256: 'a'.repeat(64), bytes: 1, at: '' })
+    const read = (rows: ReturnType<typeof row>[]) => ({ task: { id: 'build' } as RunTask, attempts: [{ n: 2, state: 'succeeded', context: rows } as unknown as RunAttempt] })
+    // An earlier read of the task, made before the attempt's lookups were recorded: three rows.
+    void c.readTask('build')
+    tasksSent[0]!.ok(read([row(1, 'task'), row(2, 'task'), row(3, 'task')]))
+    await tick()
+    const opening = c.toggleContext(work)
+    expect(tasksSent).toHaveLength(2)
+    expect(c.contextReading.has('build/2')).toBe(true)
+    tasksSent[1]!.ok(read([row(1, 'task'), row(2, 'task'), row(3, 'task'), row(4, 'lookup'), row(5, 'lookup')]))
+    await opening
+    expect(c.contextReading.has('build/2')).toBe(false)
+    expect(c.details.get('build')?.attempts[0]?.context).toHaveLength(5)
+    // Closed and opened again: read again.
+    await c.toggleContext(work)
+    expect(c.contextOpen.has('build/2')).toBe(false)
+    const again = c.toggleContext(work)
+    expect(tasksSent).toHaveLength(3)
+    tasksSent[2]!.fail(new ApiError(503, 'ledger_unavailable', 'the ledger could not be opened'))
+    await again
+    expect(c.contextReading.has('build/2')).toBe(false)
+    expect(c.detailsError.get('build')).toBeTruthy()
+  })
+
   it("apply only the last read of one review task's findings, and say its failure on every attempt of it still reading", async () => {
     const { c } = await candidates()
     const first = c.toggleFindings(review('review-a', 1))

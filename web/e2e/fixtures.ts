@@ -66,6 +66,8 @@ export interface RunAttempt {
   preview?: string
   /** GET /api/runs/{run}/tasks/{task} only: what the attempt submitted. */
   submitted?: { summary?: string; commit?: string; issues?: string[]; verdict?: string; findings?: Array<{ severity: string; path?: string; line?: number; message: string }> }
+  /** GET /api/runs/{run}/tasks/{task} only: the context it was given, block by block, never the text (CT-3). */
+  context?: Array<{ seq: number; phase: 'task' | 'lookup'; source: string; title: string; ref?: string; pack?: string; sha256: string; bytes: number; at: string }>
 }
 
 export interface RunTask {

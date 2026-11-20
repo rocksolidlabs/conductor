@@ -172,7 +172,7 @@ func RunTo(ctx context.Context, dir string, w io.Writer, args ...string) error {
 // GIT_NO_REPLACE_OBJECTS for a blob read by the id a tree records, which
 // must be that object and not one refs/replace puts in its place.
 func RunToEnv(ctx context.Context, dir string, env map[string]string, w io.Writer, args ...string) error {
-	argv, err := argvFor(ctx, "", []string{"-C", dir}, args)
+	argv, err := argvForEnv(ctx, "", []string{"-C", dir}, env, args)
 	if err != nil {
 		return err
 	}
@@ -199,7 +199,15 @@ const maxBoundedStderr = 4 << 10
 // repository the server does not vouch for (a comparison's diff, its
 // dependency files) runs here.
 func RunBounded(ctx context.Context, dir string, limit int, args ...string) (string, error) {
-	argv, err := argvFor(ctx, "", []string{"-C", dir}, args)
+	return RunBoundedEnv(ctx, dir, nil, limit, args...)
+}
+
+// RunBoundedEnv is RunBounded with env set in git's environment beside
+// the safe one, as RunToEnv sets it (the configuration's look-up before
+// the command too): a context provider's reads of committed objects
+// (GIT_NO_REPLACE_OBJECTS, GIT_LITERAL_PATHSPECS).
+func RunBoundedEnv(ctx context.Context, dir string, env map[string]string, limit int, args ...string) (string, error) {
+	argv, err := argvForEnv(ctx, "", []string{"-C", dir}, env, args)
 	if err != nil {
 		return "", err
 	}
@@ -207,7 +215,7 @@ func RunBounded(ctx context.Context, dir string, limit int, args ...string) (str
 	defer cancel()
 	out := &bounded{n: max(limit, 0), over: cancel}
 	stderr := &Head{N: maxBoundedStderr}
-	err = execGitTo(run, "", argv, nil, out, stderr)
+	err = execGitTo(run, "", argv, env, out, stderr)
 	if out.past {
 		return string(out.buf), ErrOutputLimit
 	}
@@ -366,13 +374,19 @@ func runEnv(ctx context.Context, cwd string, loc []string, env map[string]string
 // argvFor is the argv of git with args where loc points it, from the
 // working directory cwd, hardened as above.
 func argvFor(ctx context.Context, cwd string, loc, args []string) ([]string, error) {
+	return argvForEnv(ctx, cwd, loc, nil, args)
+}
+
+// argvForEnv is argvFor with env set in the environment of the
+// configuration's look-up (filterArgs), as the command's own.
+func argvForEnv(ctx context.Context, cwd string, loc []string, env map[string]string, args []string) ([]string, error) {
 	if len(args) == 0 {
 		return nil, errors.New("git: no command")
 	}
 	if len(args) > 1 && args[0] == "worktree" && args[1] == "add" && !slices.Contains(args, "--no-checkout") {
 		return nil, errors.New("git worktree add: a worktree is checked out by AddWorktree")
 	}
-	filters, err := filterArgs(ctx, cwd, loc, args)
+	filters, err := filterArgs(ctx, cwd, loc, env, args)
 	if err != nil {
 		return nil, err
 	}
@@ -533,11 +547,11 @@ func ExitStatus(err error) int {
 // filterArgs are the -c options that turn off every clean, smudge and
 // process filter the configuration where loc points names (and that none
 // is required), read there just before the command.
-func filterArgs(ctx context.Context, cwd string, loc, args []string) ([]string, error) {
+func filterArgs(ctx context.Context, cwd string, loc []string, env map[string]string, args []string) ([]string, error) {
 	if noFilters[args[0]] {
 		return nil, nil
 	}
-	names, err := filterNames(ctx, cwd, loc)
+	names, err := filterNamesEnv(ctx, cwd, loc, env)
 	if err != nil {
 		return nil, err
 	}
@@ -571,10 +585,15 @@ const maxFilterAnswer = 64 << 10
 // which the attribute filter= selects), from an answer within
 // maxFilterAnswer.
 func filterNames(ctx context.Context, cwd string, loc []string) ([]string, error) {
+	return filterNamesEnv(ctx, cwd, loc, nil)
+}
+
+// filterNamesEnv is filterNames with env set in git's environment.
+func filterNamesEnv(ctx context.Context, cwd string, loc []string, env map[string]string) ([]string, error) {
 	argv := append(baseArgs(), loc...)
 	argv = append(argv, "config", "-z", "--name-only", "--get-regexp", filterKeys)
 	answer, errs := &Head{N: maxFilterAnswer + 1}, &Head{N: maxStderr}
-	err := execGitTo(ctx, cwd, argv, nil, answer, errs)
+	err := execGitTo(ctx, cwd, argv, env, answer, errs)
 	out, stderr := answer.String(), errs.String()
 	var exit *exec.ExitError
 	switch {

@@ -344,6 +344,7 @@ func TestAClosedAttemptAsksForNoPackage(t *testing.T) {
 	e, _, _ := managedEngine(t)
 	entered, release := make(chan struct{}), make(chan struct{})
 	var once sync.Once
+	useContextFiles(t, e)
 	e.SetContext(func(ctx context.Context, q ext.ContextQuery) []TaskContext {
 		once.Do(func() { close(entered); <-release })
 		return nil

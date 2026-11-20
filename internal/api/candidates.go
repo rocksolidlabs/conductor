@@ -93,6 +93,10 @@ type runCandidate struct {
 	Verdict        string             `json:"verdict,omitempty"`
 	Findings       map[string]int     `json:"findings,omitempty"`
 	Receipts       []candidateReceipt `json:"receipts"`
+	// Context is how many blocks of context its attempt was given, at its
+	// start and by lookups (docs/plans/context-seams.md, CT-3); absent for
+	// none. The task's read lists them.
+	Context int `json:"context,omitempty"`
 }
 
 // taskCandidates is a task's candidates on a page: at most
@@ -269,6 +273,7 @@ func (s *Server) handleRunCandidates(w http.ResponseWriter, r *http.Request) {
 		attempts []ledger.AttemptRow
 		checks   []ledger.CheckRow
 		commands []ledger.CommandRow
+		given    map[string]map[int]int
 	)
 	// The rows of one revision: read, then the revision looked at again,
 	// and read again while it moved.
@@ -290,6 +295,10 @@ func (s *Server) handleRunCandidates(w http.ResponseWriter, r *http.Request) {
 		}
 		if commands, err = s.ledger.Commands(ctx, runID); err != nil {
 			s.receiptError(w, "candidates: commands", runID, err)
+			return
+		}
+		if given, err = s.ledger.AttemptContextCounts(ctx, runID); err != nil {
+			s.receiptError(w, "candidates: the context given", runID, err)
 			return
 		}
 		p, ok, perr := s.ledger.Pointer(ctx, runID)
@@ -339,7 +348,9 @@ func (s *Server) handleRunCandidates(w http.ResponseWriter, r *http.Request) {
 			submitted = submitted[:candidatesPerTask]
 		}
 		for _, a := range submitted {
-			tc.Candidates = append(tc.Candidates, candidateOf(tc.Kind, tr, a, checks, accepted[t.ID]))
+			c := candidateOf(tc.Kind, tr, a, checks, accepted[t.ID])
+			c.Context = given[t.ID][a.N]
+			tc.Candidates = append(tc.Candidates, c)
 		}
 		out = append(out, tc)
 	}
