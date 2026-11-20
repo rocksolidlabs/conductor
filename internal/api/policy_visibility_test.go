@@ -444,3 +444,51 @@ func TestATurnsRouteAsksTheRouterOutsideTheDesksLock(t *testing.T) {
 		t.Fatalf("the turn's route once the router answered: %d %v", got.status, got.out)
 	}
 }
+
+// A list of more routed rows than the guard has call slots, with a router
+// that answers at once, while the guard is busy for a moment: every slot
+// held by other calls, each given back as an ask waits for one. Every row
+// the router confirms is listed and the list is not cut. Twenty-four rows
+// (one record's, many times over) are asked as the decide list asks them.
+func TestAListOfMoreRowsThanSlotsIsWhole(t *testing.T) {
+	f := newPolicyFixture(t)
+	did := f.routed(t, "r1", "dr-1", anaPolicy(ext.OverrideNone))
+	f.inForce(did)
+	row := f.record(t, did).DecisionRow
+	rows := make([]ledger.DecisionRow, extInFlight+8)
+	for i := range rows {
+		rows[i] = row
+	}
+	var mu sync.Mutex
+	var held []extSlot
+	for range extInFlight {
+		sl, ok := f.srv.extTake(ext.KindDecisions, "switchman")
+		if !ok {
+			t.Fatal("a call slot of the router was taken before the test held them")
+		}
+		held = append(held, sl)
+	}
+	giveOne := func() {
+		mu.Lock()
+		defer mu.Unlock()
+		if len(held) > 0 {
+			held[0].free()
+			held = held[1:]
+		}
+	}
+	t.Cleanup(func() {
+		for len(held) > 0 {
+			giveOne()
+		}
+	})
+	hook := func(kind, _ string) {
+		if kind == ext.KindDecisions {
+			giveOne()
+		}
+	}
+	f.srv.extSlotWait.Store(&hook)
+	kept, unasked := f.srv.eligibleRows(t.Context(), rows, "ana")
+	if len(kept) != len(rows) || unasked {
+		t.Fatalf("%d of %d rows listed, cut %v", len(kept), len(rows), unasked)
+	}
+}
