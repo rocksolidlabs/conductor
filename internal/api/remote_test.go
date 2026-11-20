@@ -342,7 +342,9 @@ func TestSyncStatusRoute(t *testing.T) {
 		t.Fatalf("with no sync store: %v", got)
 	}
 	f := newFakeSync()
-	if got := syncEnv(t, syncDataDir(t), f).expect(t, http.MethodGet, "/api/sync", nil, http.StatusOK, ""); len(got) != 0 {
+	// No report's fields; the server's own words may be there (a fresh
+	// index is reindexing at the start).
+	if got := syncEnv(t, syncDataDir(t), f).expect(t, http.MethodGet, "/api/sync", nil, http.StatusOK, ""); got["state"] != nil || len(got) > 1 || len(got) == 1 && got["here"] == nil {
 		t.Fatalf("a sync store without a report: %v", got)
 	}
 	st := &statusSync{fakeSync: newFakeSync()}
