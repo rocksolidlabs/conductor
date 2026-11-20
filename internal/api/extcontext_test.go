@@ -185,6 +185,14 @@ func TestContextBounds(t *testing.T) {
 	bad := &fakeContext{name: "bad", answer: blocksOf(block("fine", 10), block(strings.Repeat("t", ext.MaxContextTitle+1), 10))}
 	many := &fakeContext{name: "many", answer: blocksOf(nine...)}
 	srv := newExtServer(t, nil, withContext(bad, many))
+	// A server asks for context only where it can record it: this one,
+	// with no data directory, is given a place for the context files.
+	cf, err := crew.OpenContextFiles(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { cf.Close() })
+	srv.contextFiles = cf
 	got := srv.contextFor(t.Context(), ext.ContextQuery{Run: "no-such-run", Task: "build", Attempt: 1})
 	if len(got) != ext.MaxContextBlocks {
 		t.Fatalf("%d blocks: %+v", len(got), got)

@@ -85,6 +85,9 @@ type LedgerTx interface {
 	// (origin.go): ledger.ErrOpExists when the provider's operation id
 	// names another run.
 	PutOrigin(ledger.OriginRow) error
+	// AddAttemptContext records blocks of context an attempt was given
+	// (attempt_context.go).
+	AddAttemptContext([]ledger.AttemptContextRow) error
 }
 
 // Ledger is the managed runs' ledger as the engine writes it: one
@@ -109,6 +112,9 @@ type Ledger interface {
 	// CheckChanged reads the tracked paths that receipt's command changed,
 	// from the finished event committed with its row (ledger.CheckChanged).
 	CheckChanged(ctx context.Context, runID, taskID string, n int, id string, k int) ([]string, error)
+	// AttemptContext reads the context recorded for a task's attempts, by
+	// attempt (attempt_context.go).
+	AttemptContext(ctx context.Context, runID, taskID string) (map[int][]ledger.AttemptContextRow, error)
 }
 
 // SQLLedger is the ledger package's as a Ledger.
@@ -334,6 +340,10 @@ func (s sqlLedger) Load(ctx context.Context, runID string) (Loaded, bool, error)
 
 func (s sqlLedger) CheckLog(ctx context.Context, runID, taskID string, n int, id string, k int) (ledger.CheckRow, bool, error) {
 	return s.l.Check(ctx, runID, taskID, n, id, k)
+}
+
+func (s sqlLedger) AttemptContext(ctx context.Context, runID, taskID string) (map[int][]ledger.AttemptContextRow, error) {
+	return s.l.AttemptContext(ctx, runID, taskID)
 }
 
 func (s sqlLedger) CheckChanged(ctx context.Context, runID, taskID string, n int, id string, k int) ([]string, error) {
@@ -637,6 +647,10 @@ type attempt struct {
 	// (Blocked): a report superseded by a later one neither asks nor
 	// withdraws what the later one owns (Codex's review of #353).
 	askMu sync.Mutex
+	// ctxMu is held by every write of the attempt's recorded context,
+	// from its read of the context file to its commit
+	// (attempt_context.go).
+	ctxMu sync.Mutex
 	t     *task
 	m     *member
 	// checkpoint is the attempt's last checkpoint (checkpoints.go).
@@ -787,6 +801,10 @@ type AttemptState struct {
 	// (preview.go): its seq, its state and its URL while ready; absent for
 	// none and for a run that is stopping.
 	Previewing *Previewing `json:"previewing,omitempty"`
+	// Context is the context the attempt was given, block by block, as
+	// the ledger records it (attempt_context.go), in a task's own read;
+	// never a block's text. Absent for an attempt given none.
+	Context []ContextEntry `json:"context,omitempty"`
 }
 
 // ResultState is a task's accepted result as the run reports it.
@@ -1352,8 +1370,13 @@ func (e *Engine) commitHeld(ctx context.Context, r *run, first firstTx, judge fu
 	// The greater: a continuation's mark moves a run's revision outside
 	// the run's own transactions (startContinued reads it back).
 	r.revision = max(r.revision, rev)
+	// The run's first transaction committed (a continuation's too): a
+	// context provider is told of its base, once the engine's lock is let
+	// go below.
+	var noteBase func(ext.CommitNote)
 	if snap.create {
 		r.created = true
+		noteBase = e.commitNotes
 	}
 	for _, f := range done {
 		f()
@@ -1382,7 +1405,9 @@ func (e *Engine) commitHeld(ctx context.Context, r *run, first firstTx, judge fu
 	}
 	stops := r.pendingStops
 	r.pendingStops = nil
+	base := r.base
 	e.mu.Unlock()
+	noteCommit(noteBase, ext.CommitNote{Run: r.id, Kind: ext.CommitBase, Commit: base, At: time.Now().UTC()})
 	for _, id := range stops {
 		if l, ok := e.lookup(id); ok {
 			go stopLocal(l)
@@ -2312,9 +2337,35 @@ func (e *Engine) dispatch(ctx context.Context, r *run, a *attempt) {
 		}
 		return
 	}
-	if err := e.transact(ctx, r, func() tx {
-		return ev("attempt.workspace", map[string]any{"task": t.def.ID, "attempt": a.n, "worktree": a.worktree, "branch": a.branch, "start": a.start})
-	}, giveUp); err != nil {
+	// The context its task files hold, recorded before its session starts:
+	// the text in the context file, the rows with the worktree's own
+	// transaction. A file that cannot be written fails the attempt as a
+	// ledger that cannot record its worktree does: no block reaches an
+	// agent unrecorded.
+	var contextRows []ledger.AttemptContextRow
+	recording := len(blocks) > 0 && e.recordsContext()
+	if recording {
+		a.ctxMu.Lock()
+		rows, err := e.recordContext(ctx, r, a, ledger.PhaseTask, blocks)
+		if err != nil {
+			a.ctxMu.Unlock()
+			release()
+			fail("worktree", fmt.Errorf("the attempt's context could not be recorded: %w", err), false, false)
+			return
+		}
+		contextRows = rows
+	}
+	err = e.transact(ctx, r, func() tx {
+		w := ev("attempt.workspace", map[string]any{"task": t.def.ID, "attempt": a.n, "worktree": a.worktree, "branch": a.branch, "start": a.start})
+		if len(contextRows) > 0 {
+			w.more = func(ltx LedgerTx) error { return ltx.AddAttemptContext(contextRows) }
+		}
+		return w
+	}, giveUp)
+	if recording {
+		a.ctxMu.Unlock()
+	}
+	if err != nil {
 		release()
 		fail("worktree", fmt.Errorf("the ledger could not record the worktree: %w", err), false, false)
 		return
@@ -2752,7 +2803,12 @@ func (e *Engine) Submit(ctx context.Context, sessionID string, res Result) (Task
 		go e.verify(r, a)
 	}
 	st := r.taskStateOf(t)
+	notes := e.commitNotes
 	e.mu.Unlock()
+	if t.def.Kind == TaskWork {
+		// A candidate recorded: a context provider is told of it.
+		noteCommit(notes, ext.CommitNote{Run: r.id, Task: t.def.ID, Attempt: a.n, Kind: ext.CommitCandidate, Commit: head, At: time.Now().UTC()})
+	}
 	return st, false, nil
 }
 

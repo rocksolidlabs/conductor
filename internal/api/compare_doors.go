@@ -54,6 +54,9 @@ var compareDoors = map[string]doorRule{
 	"POST /api/sessions/{id}/task/result":     doorOwn,
 	"POST /api/sessions/{id}/task/blocked":    doorOwn,
 	"POST /api/sessions/{id}/task/checkpoint": doorOwn,
+	// A lookup of a context provider: a lane asks no context, as it is
+	// handed none (docs/plans/context-seams.md, CT-2).
+	"POST /api/sessions/{id}/context/lookup": doorRefused,
 	// Its run: messages within the lane (the engine refuses one to
 	// another lane, 409 lane), the lane's run status, its ticket as it
 	// stood at the launch and no comment.

@@ -10,6 +10,7 @@ import { checkoutOfAttempt } from '~/composables/useCandidatePreview'
 import { runCompare } from '~/utils/compare'
 import { SELECTION_WORDS, candidateSelection } from '~/utils/compareSelect'
 import { noCandidateWords } from '~/utils/dispatchEvidence'
+import { contextCountWords } from '~/utils/attemptContext'
 
 /**
  * A run's candidates (Program item DS2, docs/plans/dispatch-evidence.md, "web/app", PR-11), read from the ledger (GET
@@ -25,6 +26,8 @@ import { noCandidateWords } from '~/utils/dispatchEvidence'
  * repair there; and a person's repairs (the ticket's reviews that asked for changes) are listed with the run's (PR-7). A comparison's
  * run (its `compare` part, as the page read the run or the live store holds it) labels each work candidate "selected" or "not selected" once its selection is
  * applied (Program item CP1, PR-7), read from the comparison alone, in neutral ink.
+ * A candidate whose attempt was given context says how many blocks ("context: 3 blocks"); opened, the list (AttemptContext, CT-3), read
+ * from the task route as a review's findings are.
  * A candidate whose attempt's preview is offered now offers Open in Conductor, the preview page (PV1). A continuation with no attempt of its
  * own that submitted says its results are the run it continues', whose candidates that run lists (noCandidateWords).
  */
@@ -68,7 +71,7 @@ async function closeCandidate(task: string, attempt: number, seq: number, run = 
   await previews.close(task, attempt, seq, run === props.runId ? undefined : run, on)
   if (run === props.runId) await readTask(task)
 }
-const { pages, tasks, managed, next, error, loading, more, opened, findings, findingsError, toggleFindings, details, detailsError, readTask } = useRunCandidates({
+const { pages, tasks, managed, next, error, loading, more, opened, findings, findingsError, toggleFindings, details, detailsError, readTask, contextOpen, contextReading, toggleContext } = useRunCandidates({
   runId: () => props.runId,
   revision: () => props.revision,
 })
@@ -110,6 +113,10 @@ function openReceipt(c: RunCandidate, r: CandidateReceipt) {
   picked.value = pickReceipt(c, r)
   receiptOpen.value = true
 }
+
+// The context a candidate's attempt was given (CT-3): its count on the card; opened, the list from the task route's read, made again
+// at every open (useRunCandidates' toggleContext).
+const contextOf = (c: RunCandidate) => details.get(c.task)?.attempts?.find((a) => a.n === c.attempt)?.context
 
 const tone = { warning: 'text-warning', error: 'text-error', muted: 'text-muted', default: 'text-default', success: 'text-success' }
 </script>
@@ -222,6 +229,25 @@ const tone = { warning: 'text-warning', error: 'text-error', muted: 'text-muted'
                 </li>
               </ul>
             </template>
+            <div v-if="c.context" class="flex flex-col gap-1">
+              <UButton
+                :label="contextCountWords(c.context)"
+                :icon="contextOpen.has(ckey(c)) ? 'i-lucide-chevron-down' : 'i-lucide-chevron-right'"
+                size="xs"
+                color="neutral"
+                variant="ghost"
+                class="self-start"
+                :aria-expanded="contextOpen.has(ckey(c))"
+                :data-candidate-context="c.context"
+                @click="toggleContext(c)"
+              />
+              <template v-if="contextOpen.has(ckey(c))">
+                <p v-if="contextReading.has(ckey(c))" class="text-dimmed" data-candidate-context-reading>Reading the context…</p>
+                <p v-else-if="detailsError.get(c.task)" class="text-warning">The context could not be read: {{ detailsError.get(c.task) }}</p>
+                <AttemptContext v-else-if="contextOf(c)?.length" :run-id="runId" :task="c.task" :attempt="c.attempt" :rows="contextOf(c)!" />
+                <p v-else class="text-dimmed" data-candidate-context-none>The task's read lists no context for this attempt.</p>
+              </template>
+            </div>
             <ul v-if="c.receipts.length" class="flex flex-wrap gap-1.5" data-candidate-receipts>
               <li v-for="r in c.receipts" :key="receiptKey(r)">
                 <UButton

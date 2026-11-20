@@ -190,6 +190,21 @@ export function useRunCandidates(o: { runId: () => string; revision: () => numbe
     return readTask(c.task)
   }
 
+  // A candidate's context (CT-3): its list is the task route's, read again at every open, so it is the list as it is now and never an
+  // earlier read's; `contextReading` holds the candidates whose read is on its way.
+  const contextOpen = reactive(new Set<string>())
+  const contextReading = reactive(new Set<string>())
+  function toggleContext(c: RunCandidate): Promise<void> {
+    const k = candidateKey(c)
+    if (contextOpen.has(k)) {
+      contextOpen.delete(k)
+      return Promise.resolve()
+    }
+    contextOpen.add(k)
+    contextReading.add(k)
+    return readTask(c.task).finally(() => contextReading.delete(k))
+  }
+
   watch(
     () => o.runId(),
     () => {
@@ -208,5 +223,5 @@ export function useRunCandidates(o: { runId: () => string; revision: () => numbe
     },
   )
 
-  return { pages, tasks, managed, next, error, loading, more, opened, findings, findingsError, toggleFindings, details, detailsError, readTask }
+  return { pages, tasks, managed, next, error, loading, more, opened, findings, findingsError, toggleFindings, details, detailsError, readTask, contextOpen, contextReading, toggleContext }
 }

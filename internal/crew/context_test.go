@@ -147,6 +147,7 @@ func TestEngineAsksContextOutsideTheLock(t *testing.T) {
 		gate chan []TaskContext
 	}
 	calls := make(chan asked)
+	useContextFiles(t, e)
 	e.SetContext(func(ctx context.Context, q ext.ContextQuery) []TaskContext {
 		a := asked{q: q, gate: make(chan []TaskContext)}
 		calls <- a
@@ -167,7 +168,7 @@ func TestEngineAsksContextOutsideTheLock(t *testing.T) {
 		t.Fatalf("launched %d before the context was answered", n)
 	}
 	tree := filepath.Join(dir, ".conductor", "worktrees", run.ID, "build.1")
-	want := ext.ContextQuery{Run: run.ID, Crew: c.ID, Task: "build", Attempt: 1, Kind: TaskWork, Goal: c.Goal, Instructions: "Do build.", Worktree: tree, Dir: tree, Start: base}
+	want := ext.ContextQuery{Run: run.ID, Crew: c.ID, Task: "build", Attempt: 1, Kind: TaskWork, Goal: c.Goal, Instructions: "Do build.", Worktree: tree, Dir: tree, Start: base, Base: base}
 	if !reflect.DeepEqual(a.q, want) {
 		t.Fatalf("the query:\n got %+v\nwant %+v", a.q, want)
 	}
@@ -196,7 +197,7 @@ func TestEngineAsksContextOutsideTheLock(t *testing.T) {
 	result := strings.TrimSpace(runGit(t, tree, "rev-parse", "HEAD"))
 	submit(t, e, build.Attempt.SessionID, Result{Summary: "built it"})
 	a = <-calls
-	if a.q.Task != "check" || a.q.Kind != TaskReview || a.q.Start != result || !reflect.DeepEqual(a.q.Inputs, []ext.ContextInput{{Task: "build", Commit: result}}) {
+	if a.q.Task != "check" || a.q.Kind != TaskReview || a.q.Start != result || !reflect.DeepEqual(a.q.Inputs, []ext.ContextInput{{Task: "build", Commit: result, Attempt: 1, Start: base}}) {
 		t.Fatalf("the review's query: %+v", a.q)
 	}
 	a.gate <- nil
@@ -227,6 +228,7 @@ func TestAComparisonTakesNoDerivedContext(t *testing.T) {
 	var mu sync.Mutex
 	var asked []string // the runs whose attempts the provider was asked for
 	blocks := []TaskContext{{Source: "graph", Title: "Callers of Users", Ref: "users.go", Body: "Users is called from main.go."}}
+	useContextFiles(t, e)
 	e.SetContext(func(ctx context.Context, q ext.ContextQuery) []TaskContext {
 		mu.Lock()
 		asked = append(asked, q.Run)
