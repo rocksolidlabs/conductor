@@ -42,7 +42,7 @@ class ShellViewController: CAPBridgeViewController {
             runtime.contentController.add(g, name: BridgeGate.handler)
             gate = g
         }
-        if BootCheck.asked(), let webView { bootCheck = BootCheckView(webView: webView) }
+        if BootCheck.asked(), let webView, let gate { bootCheck = BootCheckView(webView: webView, gate: gate) }
     }
 
     /**
