@@ -1805,3 +1805,42 @@ export const MAX_TICKET_EXTERNAL_SEARCH = 2048
  * server keeps it, with `at` (when its content last changed) and `by` (the data directory's writer id); `{}` for none.
  */
 export type UiDocReply = { v?: 1; at?: string; by?: string } & Record<string, unknown>
+
+/**
+ * GET /api/remote (docs/protocol.md; docs/plans/sync-seams.md, OS-4): what other machines hold, as the sync store wrote it, read only. A
+ * record's `data` is its kind's body: a decision's document, a run's pointer, a pins document, a device, a host summary. At most
+ * REMOTE_PAGE records a page; `next` names the page after. `{records: []}` with no sync store.
+ */
+export type RemoteKind = 'decision' | 'pointer' | 'pins' | 'device' | 'hosts'
+export interface RemoteRecord {
+  kind: RemoteKind
+  device: string
+  deviceName: string
+  id: string
+  rev: number
+  at: string
+  data: unknown
+}
+export interface RemoteReply {
+  records: RemoteRecord[]
+  next?: string
+}
+export const REMOTE_PAGE = 200
+
+/**
+ * GET /api/sync (docs/protocol.md, OS-4): the sync store's report when it gives one, `{}` with no sync store; `here`, what this server
+ * keeps on the machine of its own judgement. At most 128 KiB.
+ */
+export type SyncState = 'current' | 'behind' | 'unreachable' | 'lapsed' | 'signed_out'
+export interface SyncStatusReply {
+  state?: SyncState
+  since?: string
+  waiting?: number
+  withheld?: Array<{ ref: string; words: string }>
+  answerUrl?: string
+  device?: string
+  deviceName?: string
+  workspace?: string
+  person?: string
+  here?: { check?: string; cut?: number; hosted?: number }
+}

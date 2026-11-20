@@ -391,6 +391,8 @@ const lastClosed = computed(() => lastClosedWords(state.value.closed, recent.val
           </div>
 
           <DecisionsRecent v-if="!zero" :closed="state.closed" :recent="recent" :word="recentWord" @open="open" @open-recent="openRecent" />
+          <!-- Other machines' decisions, read only (docs/plans/sync-seams.md, OS-4): what the server holds of them, none with no sync store. -->
+          <RemoteDecisionRows title="On other machines" />
         </section>
 
         <!-- The open item, whole. Below lg it takes the page, with the way back to the list. -->

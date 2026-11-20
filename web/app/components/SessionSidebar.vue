@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { remotePins } from '~/utils/remote'
 import { cutNotice, staleNotice } from '~/utils/decisions'
 import type { SessionInfo } from '~/composables/useSessions'
 import { choiceKey, newlyNeedingInput } from '~/utils/attention'
@@ -486,6 +487,9 @@ function dismissPanel() {
 }
 
 defineExpose({ focusFilter, focusList })
+/** Another machine's pins (docs/plans/sync-seams.md, OS-4): after this machine's in the pinned group, greyed, opening nothing. */
+const otherRemote = useRemote('pins')
+const otherPins = computed(() => remotePins(otherRemote.records.value))
 </script>
 
 <template>
@@ -505,8 +509,8 @@ defineExpose({ focusFilter, focusList })
       <!-- The phone's Sessions page draws the welcome in this line's place (the UX review's P17). -->
       <slot v-if="empty" name="empty"><p class="px-2 py-4 text-xs text-muted leading-relaxed" data-sidebar-empty>No sessions yet.</p></slot>
 
-      <SidebarSection v-if="pinned.rows.length && !query" id="pinned" :title="SECTION_TITLES.pinned" :count="pinned.rows.length" :folded="folds.pinned" @update:folded="foldState.fold('pinned', $event)">
-        <SidebarPinnedList :rows="pinned.rows" :now="now" />
+      <SidebarSection v-if="(pinned.rows.length || otherPins.length) && !query" id="pinned" :title="SECTION_TITLES.pinned" :count="pinned.rows.length + otherPins.length" :folded="folds.pinned" @update:folded="foldState.fold('pinned', $event)">
+        <SidebarPinnedList :rows="pinned.rows" :now="now" :others="otherPins" />
       </SidebarSection>
 
       <SidebarSection v-if="model.needs.length || decisionsCut || decisionsStale || inboxShowing || inboxFailed" id="needs" title="Needs you" :count="needsWords" count-of="needs" tone="warning" :preview="preview('needs')" :folded="folds.needs" @update:folded="foldState.fold('needs', $event)">

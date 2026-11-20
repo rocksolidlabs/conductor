@@ -3,6 +3,7 @@ import { agentInitials } from '~/utils/sessions'
 import { sessionOpen } from '~/utils/sidebar'
 import { sessionStatus } from '~/utils/status'
 import { unpinSession, type PinRow } from '~/utils/pins'
+import type { RemotePin } from '~/utils/remote'
 
 /**
  * "Pinned": the sessions pinned to the top from a row's menu (utils/pins.ts), first in the list; each is also in its own section.
@@ -10,7 +11,7 @@ import { unpinSession, type PinRow } from '~/utils/pins'
  * its pinning. Unpin shows on hover where the pointer hovers, and always where it cannot. The section's header is the list's
  * (SidebarSection); this is its rows.
  */
-const props = defineProps<{ rows: PinRow[]; now: number }>()
+const props = defineProps<{ rows: PinRow[]; now: number; others?: RemotePin[] }>()
 const ui = useUiState()
 const route = useRoute()
 const hovers = useMedia('(hover: hover)')
@@ -19,6 +20,8 @@ function unpin(id: string) {
   ui.setPins(unpinSession(ui.pins.value, id))
 }
 const rows = computed(() => props.rows)
+/** Another machine's pins, after this machine's (docs/plans/sync-seams.md, OS-4): greyed, marked "on <device>", opening nothing. */
+const others = computed(() => props.others ?? [])
 </script>
 
 <template>
@@ -51,6 +54,13 @@ const rows = computed(() => props.rows)
         data-pinned-unpin
         @click="unpin(r.pin.session)"
       />
+    </li>
+    <li v-for="p in others" :key="p.key" class="flex items-center rounded-md" :data-remote-pin="p.session">
+      <span class="flex min-w-0 flex-1 items-center gap-1.5 rounded-md border border-transparent px-2.5 py-1.5 text-dimmed" :title="`Pinned ${p.where}: it runs there`">
+        <UIcon name="i-lucide-monitor-smartphone" class="size-3.5 flex-none" />
+        <span class="truncate text-sm" data-pinned-name>{{ p.name }}</span>
+        <span class="ml-auto flex-none text-xs" data-remote-where>{{ p.where }}</span>
+      </span>
     </li>
   </ol>
 </template>

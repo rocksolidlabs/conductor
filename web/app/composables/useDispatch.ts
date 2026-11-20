@@ -44,6 +44,18 @@ export interface DispatchProject {
   createdAt: string
   updatedAt: string
   rev: number
+  /** The project's share (docs/plans/sync-seams.md, OS-1b): pending, completing, shared, dormant or refused, with its words. */
+  share?: ProjectShare
+  /** Another machine's project of the same key that this one's key holds back, and how many of its rows wait. */
+  heldBy?: { key: string; rows: number }
+}
+
+/** A project's share as its page shows it. */
+export interface ProjectShare {
+  state: 'pending' | 'completing' | 'shared' | 'dormant' | 'refused'
+  words?: string
+  reservedTo?: number
+  shared?: string
 }
 
 /** A project as the projects page lists it: its counts of open and done tickets, without its description, folder, URL or policy. */
@@ -423,6 +435,8 @@ export interface DispatchTicket {
   updatedAt: string
   closedAt?: string
   deletedAt?: string
+  /** The other live tickets of this store's shared projects linked to the same tracker item (docs/plans/sync-seams.md), at most 8. */
+  alsoLinked?: string[]
   rev: number
   /** The field owners, when the ticket has a linked item. */
   owners?: TicketOwners
