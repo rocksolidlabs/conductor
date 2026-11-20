@@ -18,5 +18,9 @@ desktop/node_modules/
 desktop/dist/
 desktop/release/
 
+# phone shell: the synced bundle
+mobile/www/
+mobile/node_modules/
+
 # Python workflow execution artifacts
 __pycache__/
