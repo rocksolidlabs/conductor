@@ -85,7 +85,7 @@ func TestSchema8MigratesAndKeepsEveryRow(t *testing.T) {
 		t.Fatalf("read-only: %s", why)
 	}
 	var version int
-	if err := s.db.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil || version != syncSchema || Version != syncSchema {
+	if err := s.db.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil || version != Version {
 		t.Fatalf("version %d (this build's %d) %v", version, Version, err)
 	}
 	for table, c := range cols {
@@ -293,7 +293,7 @@ func TestMigrationMakesTheViewOfEveryRevision(t *testing.T) {
 				t.Fatalf("read-only: %s", why)
 			}
 			var version int
-			if err := s.db.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil || version != syncSchema {
+			if err := s.db.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil || version != Version {
 				t.Fatalf("version %d %v", version, err)
 			}
 			if got := texts(t, s, "SELECT view_digest FROM plans WHERE id = ?", full); len(got) != 1 || got[0] != "" {
@@ -325,7 +325,7 @@ func TestVersion8OpensReadOnlyInVersion7(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { older.Close() })
-	if ro, why := older.ReadOnly(); !ro || !strings.Contains(why, fmt.Sprintf("the database is version %d, written by a newer Conductor; this one writes version %d", syncSchema, syncSchema-1)) {
+	if ro, why := older.ReadOnly(); !ro || !strings.Contains(why, fmt.Sprintf("the database is version %d, written by a newer Conductor; this one writes version %d", Version, syncSchema-1)) {
 		t.Fatalf("read-only %v: %s", ro, why)
 	}
 	rc, err := older.CreateTicket(ctx, testOp("older-create"), NewTicket{Project: "CND", Title: "Made at seven"})
