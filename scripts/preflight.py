@@ -52,7 +52,7 @@ GATE_JOBS = ("required-checks",)
 # the same flags; preflight_test.py holds them to one bound). The bound catches a hang:
 # go test's default, ten minutes a package, is less than internal/api takes
 # on a machine shared with other runs.
-GO_TEST_RACE = ["go", "test", "-race", "-count=1", "-timeout", "60m", "./..."]
+GO_TEST_RACE = ["go", "test", "-race", "-count=1", "-timeout", "90m", "./..."]
 LINUX_STEPS = [
     # First: it takes a second, the rest an hour, so an unsigned commit is the
     # first line of the receipt (CONTRIBUTING.md, Sign-off). origin/main is

@@ -88,7 +88,7 @@ class Commands(unittest.TestCase):
         go = FakeGo()
         api = [g.command(f"api-{k}", go) for k in range(1, 6)]
         for argv in api:
-            self.assertEqual(argv[:6], ["go", "test", "-race", "-count=1", "-timeout", "60m"])
+            self.assertEqual(argv[:6], ["go", "test", "-race", "-count=1", "-timeout", "90m"])
             self.assertEqual((argv[6], argv[-1]), ("-run", "./internal/api"))
         self.assertEqual(g.command("crew", go)[6:], ["./internal/crew/..."])
         self.assertEqual(g.command("dispatch", go)[6:], ["./internal/dispatch/..."])
