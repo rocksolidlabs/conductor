@@ -4,11 +4,13 @@ import ConductorShell
 import UIKit
 import WebKit
 
-// The shell's bridge view controller: the key and store plugins registered with the native runtime; the runtime's own WebView,
-// CapacitorCookies and CapacitorHttp replaced by their names (RefusedPlugins.swift, ShellHttpPlugin.swift); a server base path a
-// page once asked to keep never loaded at start; and the web view's UI delegate wrapped so that every media capture request (a
-// microphone, a camera) is denied (ConductorShell's MediaCaptureRefused); and the runtime's script message handler taken over by
-// ConductorShell's BridgeGateHandler, which forwards only a message to a plugin the shell means the page to reach, by its page name.
+// The shell's bridge view controller, with one gate at each way from the page into native code (docs/plans/phone-shell.md, "Every
+// way a page reaches native code"): the runtime's script message handler taken over by ConductorShell's BridgeGateHandler, which
+// forwards only a message to a plugin the shell means the page to reach, by its page name; the web view's UI delegate wrapped in
+// MediaCaptureRefused (every media capture denied, every text-input prompt answered nil and handed to no one); the runtime's file
+// prefixes blocked by content rules before the first load; a server base path a page once asked to keep never loaded. Behind the
+// gate, the key and store plugins registered, and the runtime's own WebView, CapacitorCookies and CapacitorHttp replaced by their
+// names (RefusedPlugins.swift, ShellHttpPlugin.swift) as a second wall. The page loads only once every gate stands.
 class ShellViewController: CAPBridgeViewController {
     /** The wrapping delegate: the web view holds its UI delegate weakly, so the controller keeps it. */
     private var refused: MediaCaptureRefused?
@@ -41,5 +43,20 @@ class ShellViewController: CAPBridgeViewController {
             gate = g
         }
         if BootCheck.asked(), let webView { bootCheck = BootCheckView(webView: webView) }
+    }
+
+    /**
+     * The page loads (the runtime's viewDidLoad) only once its gates stand: the bridge gate in place and the content rules that
+     * block the runtime's file prefixes compiled and added. Either missing, nothing loads.
+     */
+    override func viewDidLoad() {
+        guard gate != nil, let controller = (bridge as? CapacitorBridge)?.webViewDelegationHandler.contentController else { return }
+        WKContentRuleListStore.default().compileContentRuleList(forIdentifier: FilePrefix.identifier, encodedContentRuleList: FilePrefix.rules) { list, _ in
+            DispatchQueue.main.async {
+                guard let list else { return }
+                controller.add(list)
+                super.viewDidLoad()
+            }
+        }
     }
 }

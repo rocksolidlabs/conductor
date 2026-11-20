@@ -299,6 +299,8 @@ def gates(mobile: Path) -> list[str]:
     for line, what in (
         ("runtime.contentController.removeScriptMessageHandler(forName: BridgeGate.handler)", "the runtime's message handler is not taken off"),
         ("runtime.contentController.add(g, name: BridgeGate.handler)", "the bridge gate is not put in its place"),
+        ("compileContentRuleList(forIdentifier: FilePrefix.identifier", "the runtime's file prefixes are not blocked"),
+        ("guard gate != nil", "the page loads whether or not the gate stands"),
     ):
         if line not in shell:
             out.append(f"ShellViewController.swift: {what}")

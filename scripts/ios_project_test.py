@@ -246,6 +246,8 @@ class IOSProjectTest(unittest.TestCase):
         for line, part in (
             ("            runtime.contentController.add(g, name: BridgeGate.handler)\n", "the bridge gate is not put in its place"),
             ("            runtime.contentController.removeScriptMessageHandler(forName: BridgeGate.handler)\n", "the runtime's message handler is not taken off"),
+            ("compileContentRuleList(forIdentifier: FilePrefix.identifier", "the runtime's file prefixes are not blocked"),
+            ("        guard gate != nil, ", "the page loads whether or not the gate stands"),
         ):
             self.setUp()
             self.edit(f, line, line.replace("FilePrefix.identifier", "\"other\"") if "compile" in line else "        " if "guard" in line else "")

@@ -74,3 +74,21 @@ import WebKit
         #expect(runtime.prompts == 0)
     }
 }
+
+@Suite struct FilePrefixTests {
+    @Test func theRulesBlockBothPrefixesForEveryLoad() throws {
+        let list = try #require(try JSONSerialization.jsonObject(with: Data(FilePrefix.rules.utf8)) as? [[String: [String: String]]])
+        #expect(list.count == 2)
+        for (rule, prefix) in zip(list, FilePrefix.prefixes) {
+            #expect(rule["action"] == ["type": "block"])
+            #expect(rule["trigger"]?.keys.sorted() == ["url-filter"])
+            let filter = try NSRegularExpression(pattern: try #require(rule["trigger"]?["url-filter"]))
+            for url in ["capacitor://localhost\(prefix)/var/mobile/x.png", "capacitor://localhost\(prefix)"] {
+                #expect(filter.firstMatch(in: url, range: NSRange(url.startIndex..., in: url)) != nil, "\(url)")
+            }
+            let other = "capacitor://localhost/_nuxt/entry.js"
+            #expect(filter.firstMatch(in: other, range: NSRange(other.startIndex..., in: other)) == nil)
+        }
+        #expect(FilePrefix.prefixes.contains("/_capacitor_file_"))
+    }
+}
