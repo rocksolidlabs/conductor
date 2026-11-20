@@ -198,7 +198,7 @@ var kinds = []KindSpec{
 		Example: json.RawMessage(`{"kind":"outcome/1","text":"The retry passed its tests.","receipt":"check:` + exRun + `/build/4/tests/1"}`)},
 	{Kind: ItemDecision, Needs: "propose", Rule: "A decision card: Conductor draws its controls from the live record of about, never from these fields.",
 		Fields: []Field{
-			{Name: "about", Type: FieldRef, Required: true, Refs: []string{RefQuestion, RefTask, RefTicket, RefPlan}, About: "what is to be decided: a plan: ref is a revision for the operator to approve"},
+			{Name: "about", Type: FieldRef, Required: true, Refs: []string{RefQuestion, RefTask, RefTicket, RefPlan, RefDecision}, About: "what is to be decided: a plan: ref is a revision for the operator to approve; a decision: ref is an open decision record of what your request is about, whose card the operator's decision page shows beside the record's own words (it answers nothing)"},
 			fText("happened", 2<<10, true, "what work occurred"),
 			fText("whyHuman", 1<<10, true, "why a person is needed"),
 			fText("question", 500, true, "the precise question"),

@@ -66,7 +66,7 @@ export function revisionOf(rev: string | undefined): number {
 export const ANSWERER = 'you, the operator'
 
 /**
- * A decision card's controls from the live record of `about` (a `question:`, `task:` or `ticket:` ref). `seen` is the revision of
+ * A decision card's controls from the live record of `about` (a `question:`, `task:`, `ticket:`, `plan:` or `decision:` ref). `seen` is the revision of
  * `about` the turn read (its resolution's `seen.rev`), else the card's `subjectRevision`, which the server held equal to it.
  */
 export function decisionControls(about: string, seen: string | undefined, live: LiveRecords): CardControls {
@@ -92,6 +92,9 @@ export function decisionControls(about: string, seen: string | undefined, live: 
       return { kind: 'ticket', to: refRoute(about)!, words: `Decide it on ${r.ticket}'s page.` }
     case 'plan':
       return { kind: 'plan', ticket: r.ticket!, n: r.n!, to: refRoute(about)!, words: `Revision ${r.n} of ${r.ticket}'s plan, as Dispatch holds it now.` }
+    case 'decision':
+      // A decision record's card: answered on the record's own card, by whom the record admits; Brakeman's card answers nothing.
+      return { kind: 'none', to: `/decisions?item=${encodeURIComponent(about)}`, words: `Answer ${r.decision} on its own card, on the decision page: Brakeman's recommendation answers nothing.` }
   }
   return { kind: 'none', to: refRoute(about), words: 'This build has no control for what the card is about: open its page.' }
 }

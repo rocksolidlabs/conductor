@@ -56,9 +56,6 @@ const (
 	waitsContext = "waits for WF-2a: context recorded, the lookup and its absence (after context-seams CT-3)"
 	waitsPolicy  = "waits for WF-2b: eligibility by a router's policy (after decision-policy's PR-7a and PR-7)"
 	waitsSync    = "waits for WF-2c: the held answer for the owner disconnected (after sync-seams OS-3)"
-	// waits1046 is step 9 on the operator's decision page, which main
-	// cannot show: a Brakeman card about a decision record (issue 1046).
-	waits1046 = "waits for issue 1046: Brakeman's brief on a decision record's item"
 )
 
 // The walk's first decision, which the router is set to route before it
@@ -988,16 +985,16 @@ func (w *workflow) approve(t *testing.T) {
 	approve()
 }
 
-// briefDecision is step 9 as main has it. Asked about the asking task,
-// Brakeman's brief carries a decision card about that task, at the
-// revision its turn read (main takes a card about a question, a task, a
-// ticket or a plan, not about a decision record: issue 1046), and cites
-// the decision and the run. It is accepted and kept as Brakeman's, its
-// card and refs among it; the decision's record is unchanged (its rev, its
-// state, its responses) and so are its words on the operator's item;
-// Brakeman's token answers nothing. The operator's item carrying the
-// brief waits for issue 1046 (briefedItem). The decide page a decide
-// principal reads shows the decision's own words and none of the brief's.
+// briefDecision is step 9. Asked about the asking task, Brakeman's brief
+// carries a decision card about that task, at the revision its turn read,
+// and cites the decision and the run: it is kept as Brakeman's, its card
+// and refs among it, and joins no item but the task's subject; the
+// decision's record is unchanged (its rev, its state, its responses) and
+// so are its words on the operator's item; Brakeman's token answers
+// nothing. A second turn's card about the decision record itself is the
+// brief of the operator's item for the decision (briefedItem). The decide
+// page a decide principal reads shows the decision's own words and none
+// of the brief's.
 func (w *workflow) briefDecision(t *testing.T, clock *clock) {
 	t.Helper()
 	before := w.record(t, w.did)
@@ -1041,16 +1038,16 @@ func (w *workflow) briefDecision(t *testing.T, clock *clock) {
 	if after.Rev != before.Rev || after.State != ledger.DecisionOpen || len(after.Responses) != len(before.Responses) || after.Request != before.Request {
 		t.Fatalf("the brief changed %s: rev %d %s, %d responses (were %d)", w.did, after.Rev, after.State, len(after.Responses), len(before.Responses))
 	}
-	// The operator's item keeps the decision's own words and rev.
+	// The operator's item keeps the decision's own words and rev, and the
+	// task's card joins it nowhere: its brief is Conductor's, no card.
 	it := entityOf(t, w.expect(t, http.MethodGet, "/api/inbox/item?ref="+ledger.DecisionRef(numberOf(w.did)), nil, http.StatusOK, ""), "item")
 	if it["question"] != walkQuestion || it["title"] != walkQuestion || it["revision"] != itemBefore["revision"] || it["state"] != ledger.DecisionOpen ||
-		strings.Contains(fmt.Sprint(it["question"], it["title"]), "BRAKEMANMARK") {
+		strings.Contains(fmt.Sprint(it["question"], it["title"]), "BRAKEMANMARK") || it["briefBy"] != "conductor" || it["card"] != nil {
 		t.Fatalf("the operator's item after the brief: %v", it)
 	}
-	t.Run("the operator's item with Brakeman's brief on the decision", func(t *testing.T) {
-		t.Skip(waits1046)
-		w.briefedItem(t, clock)
-	})
+	// The card about the decision record itself is on the operator's
+	// item (issue 1046).
+	w.briefedItem(t, clock)
 	if w.free() {
 		return
 	}
@@ -1516,21 +1513,34 @@ func walkCard(t *testing.T, about brakeman.Ref, rev string, evidence []brakeman.
 		Evidence: evidence, SubjectRevision: rev}}
 }
 
-// briefedItem is the plan's step 9 on the operator's decision page, once
-// issue 1046 lets Brakeman brief a decision record: a turn's card about
-// the decision, at the rev it read, is on the decision's item, marked
-// Brakeman's, beside the decision's own question and title, its
-// recommendation a mark and nothing answered; the record unchanged.
+// briefedItem is the plan's step 9 on the operator's decision page: a
+// turn asked about the asking task writes a card about the decision record
+// at its rev, and the card is on the decision's item, marked Brakeman's,
+// beside the decision's own question and title, its recommendation a mark
+// and nothing answered; what the card says waits (its blocked ref) is in
+// Brakeman's brief, never the record's own "What waits" nor its count in
+// the list; the record unchanged.
 func (w *workflow) briefedItem(t *testing.T, clock *clock) {
 	t.Helper()
 	before := w.record(t, w.did)
+	itemRef := ledger.DecisionRef(numberOf(w.did))
+	itemBefore := entityOf(t, w.expect(t, http.MethodGet, "/api/inbox/item?ref="+itemRef, nil, http.StatusOK, ""), "item")
+	blocksBefore := w.summaryOf(t, itemRef)["blocks"]
 	id, sid, tok := w.turn(t, brakeman.KindDecision, "task:"+w.run+"/build")
 	evidence := []brakeman.Ref{ref(t, "decision:"+w.did), ref(t, "run:"+w.run)}
+	card := walkCard(t, ref(t, "decision:"+w.did), strconv.Itoa(before.Rev), evidence)
+	waits := "task:" + w.run + "/review"
+	card.Decision.Blocked = []brakeman.Ref{ref(t, waits)}
 	w.briefed(t, clock, id, sid, tok, brakemanBrief("The architecture question of "+w.did, "Brakeman recommends keeping the cookie.",
-		brakeman.Item{Kind: brakeman.ItemFact, Fact: &brakeman.Fact{Text: walkBriefMark, Evidence: evidence}},
-		walkCard(t, ref(t, "decision:"+w.did), strconv.Itoa(before.Rev), evidence)))
+		brakeman.Item{Kind: brakeman.ItemFact, Fact: &brakeman.Fact{Text: walkBriefMark, Evidence: evidence}}, card))
 	after := w.record(t, w.did)
-	it := entityOf(t, w.expect(t, http.MethodGet, "/api/inbox/item?ref="+ledger.DecisionRef(numberOf(w.did)), nil, http.StatusOK, ""), "item")
+	it := entityOf(t, w.expect(t, http.MethodGet, "/api/inbox/item?ref="+itemRef, nil, http.StatusOK, ""), "item")
+	if !bytes.Equal(decisionJSON(t, it["blocking"]), decisionJSON(t, itemBefore["blocking"])) || fmt.Sprint(it["cardBlocked"]) != "["+waits+"]" {
+		t.Fatalf("what waits on %s: %v (before the card %v), Brakeman's %v", w.did, it["blocking"], itemBefore["blocking"], it["cardBlocked"])
+	}
+	if blocks := w.summaryOf(t, itemRef)["blocks"]; blocks != blocksBefore {
+		t.Fatalf("the list counts %v waiting on %s, %v before the card", blocks, w.did, blocksBefore)
+	}
 	if it["briefBy"] != "brakeman" || !strings.Contains(fmt.Sprint(it["brief"]), walkBriefMark) || it["question"] != walkQuestion || it["title"] != walkQuestion ||
 		!strings.HasPrefix(fmt.Sprint(it["card"]), "brief:"+id+"/") || it["revision"] != strconv.Itoa(after.Rev) || it["cardNote"] != nil ||
 		!strings.Contains(fmt.Sprint(it["uncertainty"]), "BRAKEMANMARK") || it["recommended"] != 0.0 {
@@ -1539,4 +1549,16 @@ func (w *workflow) briefedItem(t *testing.T, clock *clock) {
 	if after.Rev != before.Rev || after.State != ledger.DecisionOpen || len(after.Responses) != len(before.Responses) {
 		t.Fatalf("the brief changed %s: rev %d %s, %d responses (were %d)", w.did, after.Rev, after.State, len(after.Responses), len(before.Responses))
 	}
+}
+
+// summaryOf is the operator's list's summary of the item ref.
+func (w *workflow) summaryOf(t *testing.T, ref string) map[string]any {
+	t.Helper()
+	for _, s := range listOf(t, w.expect(t, http.MethodGet, "/api/inbox", nil, http.StatusOK, ""), "items") {
+		if s["ref"] == ref {
+			return s
+		}
+	}
+	t.Fatalf("the operator's list holds no %s", ref)
+	return nil
 }
