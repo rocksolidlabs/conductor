@@ -152,6 +152,7 @@ func TestLookupToolText(t *testing.T) {
 	var out bytes.Buffer
 	t.Setenv("CONDUCTOR_NOTIFY_URL", srv.URL+"/api/sessions/s1/attention")
 	t.Setenv("CONDUCTOR_NOTIFY_TOKEN", "tok")
+	t.Setenv("CONDUCTOR_TASK", "build")
 	if code, err := runTask(context.Background(), []string{"lookup", "--op", "impact", "--path", "build.go", "--limit", "3"}, nil, &out, io.Discard); code != 0 || err != nil {
 		t.Fatalf("task lookup: %d %v", code, err)
 	}
@@ -234,5 +235,25 @@ func TestLookupToolTextDrawsALatePack(t *testing.T) {
 	a = lookupAnswer{Source: "graph", Withheld: "this context could not be recorded, so it is not given"}
 	if text := lookupText(a); !strings.Contains(text, "\nConductor: this context could not be recorded, so it is not given.\n") || strings.Contains(text, "###") {
 		t.Fatalf("a withheld pack:\n%s", text)
+	}
+}
+
+// Outside an attempt's session the command says the session is not an
+// attempt at a task, as every task command does, and asks nothing: the
+// route would tell it only that its token is not one it serves.
+func TestTaskLookupOutsideAnAttemptSaysSo(t *testing.T) {
+	srv := newLookupServer(t, true, sampleReply())
+	t.Setenv("CONDUCTOR_NOTIFY_URL", srv.URL+"/api/sessions/s1/attention")
+	t.Setenv("CONDUCTOR_NOTIFY_TOKEN", "tok")
+	t.Setenv("CONDUCTOR_TASK", "")
+	code, err := runTask(context.Background(), []string{"lookup", "--op", "symbol", "--symbol", "Open"}, nil, io.Discard, io.Discard)
+	if code != 1 || err == nil || err.Error() != "task lookup: this session is not an attempt at a task" {
+		t.Fatalf("outside an attempt: %d %v", code, err)
+	}
+	srv.mu.Lock()
+	asked := len(srv.bodies)
+	srv.mu.Unlock()
+	if asked != 0 {
+		t.Fatalf("%d requests sent", asked)
 	}
 }

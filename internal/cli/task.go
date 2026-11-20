@@ -253,6 +253,12 @@ func runTask(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	case "withdraw":
 		return taskWithdraw(ctx, c, fs.Arg(0), stdout)
 	case "lookup":
+		// The lookup route answers only an attempt's own token, and tells
+		// every other caller nothing of the session: outside an attempt
+		// the command says so itself, before any request.
+		if os.Getenv("CONDUCTOR_TASK") == "" {
+			return 1, errors.New("task lookup: this session is not an attempt at a task")
+		}
 		if *op == "" {
 			return 2, errors.New("task lookup: --op says what to ask: symbol, references, dependencies or impact")
 		}
