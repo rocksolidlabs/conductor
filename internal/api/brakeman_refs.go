@@ -245,6 +245,31 @@ func (rr *refResolver) resolveAll(ctx context.Context, b brakeman.Brief) ([]brak
 			out = append(out, res)
 		}
 	}
+	// A card about a decision record (issue 1046) is about one of what the
+	// request is about, judged first: one outside it is answered as one
+	// that is not there, nothing of its state or revision said; then the
+	// record is open, and (below) at the revision its turn read. The
+	// operator's decision page shows the card beside the record's own
+	// words, so it never advises on a record answered or closed, or on one
+	// its turn was not asked about.
+	for i, it := range b.Items {
+		if it.Kind != brakeman.ItemDecision || it.Decision.About.Kind != brakeman.RefDecision {
+			continue
+		}
+		about := it.Decision.About
+		if slices.ContainsFunc(bad, func(b badRef) bool { return b.Ref == about.String() }) {
+			continue
+		}
+		why, outside, err := rr.recordCardWhy(ctx, about)
+		switch {
+		case err != nil:
+			return nil, err
+		case outside:
+			bad = append(bad, badRef{Ref: about.String(), Why: why})
+		case why != "":
+			bad = append(bad, badRef{Ref: about.String(), Why: fmt.Sprintf("items[%d]: %s", i, why)})
+		}
+	}
 	// What a decision and a proposal advise was read at one revision of
 	// their target: the revision they name must be that one. A decision
 	// names it whenever its target has one (a task's, a ticket's; a
@@ -271,26 +296,6 @@ func (rr *refResolver) resolveAll(ctx context.Context, b brakeman.Brief) ([]brak
 			bad = append(bad, badRef{Ref: target.String(), Why: fmt.Sprintf("items[%d]: %s", i, why)})
 		}
 	}
-	// A card about a decision record (issue 1046) is about an open one, of
-	// what the request is about: the operator's decision page shows it
-	// beside the record's own words, so it never advises on a record that
-	// is answered or closed, or on one its turn was not asked about.
-	for i, it := range b.Items {
-		if it.Kind != brakeman.ItemDecision || it.Decision.About.Kind != brakeman.RefDecision {
-			continue
-		}
-		about := it.Decision.About
-		if slices.ContainsFunc(bad, func(b badRef) bool { return b.Ref == about.String() }) {
-			continue
-		}
-		why, err := rr.recordCardWhy(ctx, about)
-		if err != nil {
-			return nil, err
-		}
-		if why != "" {
-			bad = append(bad, badRef{Ref: about.String(), Why: fmt.Sprintf("items[%d]: %s", i, why)})
-		}
-	}
 	if len(bad) > 0 {
 		return nil, &badRefsError{Refs: bad}
 	}
@@ -301,48 +306,61 @@ func (rr *refResolver) resolveAll(ctx context.Context, b brakeman.Brief) ([]brak
 }
 
 // recordCardWhy is why a card may not be about the decision record about,
-// "" when it may: the record open, and of one of the request's subjects
-// (its run or its task, its session, its ticket).
-func (rr *refResolver) recordCardWhy(ctx context.Context, about brakeman.Ref) (string, error) {
+// "" when it may. The record is judged first by the request's subjects
+// (its run or its task, its attempt, its asking session, its ticket, the
+// record itself): one that is not there, or not of them, is answered
+// alike, outside set, with the words a ref that resolves to nothing gets
+// and nothing of the record; one of them must be open.
+func (rr *refResolver) recordCardWhy(ctx context.Context, about brakeman.Ref) (why string, outside bool, err error) {
+	const nothing = "resolves to nothing"
 	ld, err := rr.ledger()
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	n, ok := ledger.ParseDecisionID(about.Decision)
 	if ld == nil || !ok {
-		return about.String() + " resolves to nothing", nil
+		return nothing, true, nil
 	}
 	rec, found, err := ld.Decision(ctx, n)
 	switch {
 	case err != nil:
-		return "", fmt.Errorf("the decision %s: %w", about.Decision, err)
+		return "", false, fmt.Errorf("the decision %s: %w", about.Decision, err)
 	case !found:
-		return about.String() + " resolves to nothing", nil
-	case rec.State != ledger.DecisionOpen:
-		return fmt.Sprintf("%s is %s: a card is about an open decision", about, rec.State), nil
+		return nothing, true, nil
 	}
+	of := false
 	for _, s := range rr.subjects {
-		of, err := rr.recordOf(ctx, rec.DecisionRow, s)
-		if err != nil {
-			return "", err
+		if of, err = rr.recordOf(ctx, rec.DecisionRow, s); err != nil {
+			return "", false, err
 		}
 		if of {
-			return "", nil
+			break
 		}
 	}
-	return fmt.Sprintf("%s is not of what this request is about: a card is about a decision of its subject's run, task, session or ticket", about), nil
+	switch {
+	case !of:
+		return nothing, true, nil
+	case rec.State != ledger.DecisionOpen:
+		return fmt.Sprintf("%s is %s: a card is about an open decision", about, rec.State), false, nil
+	}
+	return "", false, nil
 }
 
 // recordOf says whether the decision row is of the subject s: of its run
-// (the one it was opened in, or the one that holds it now), its task, its
-// asking session, or its ticket.
+// (the one it was opened in, or the one that holds it now), its task, the
+// attempt that asked it, its asking session, its ticket, or the record
+// itself.
 func (rr *refResolver) recordOf(ctx context.Context, row ledger.DecisionRow, s brakeman.Ref) (bool, error) {
 	inRun := s.Run != "" && (row.RunID == s.Run || row.CurrentRun == s.Run)
 	switch s.Kind {
 	case brakeman.RefRun:
 		return inRun, nil
-	case brakeman.RefTask, brakeman.RefAttempt:
+	case brakeman.RefTask:
 		return inRun && row.TaskID == s.Task, nil
+	case brakeman.RefAttempt:
+		return inRun && row.TaskID == s.Task && row.Attempt == s.N, nil
+	case brakeman.RefDecision:
+		return row.ID() == s.Decision, nil
 	case brakeman.RefSession, brakeman.RefQuestion:
 		return row.SessionID != "" && row.SessionID == s.Session, nil
 	case brakeman.RefTicket:
