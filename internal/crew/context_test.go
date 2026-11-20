@@ -147,6 +147,7 @@ func TestEngineAsksContextOutsideTheLock(t *testing.T) {
 		gate chan []TaskContext
 	}
 	calls := make(chan asked)
+	useContextFiles(t, e)
 	e.SetContext(func(ctx context.Context, q ext.ContextQuery) []TaskContext {
 		a := asked{q: q, gate: make(chan []TaskContext)}
 		calls <- a
@@ -227,6 +228,7 @@ func TestAComparisonTakesNoDerivedContext(t *testing.T) {
 	var mu sync.Mutex
 	var asked []string // the runs whose attempts the provider was asked for
 	blocks := []TaskContext{{Source: "graph", Title: "Callers of Users", Ref: "users.go", Body: "Users is called from main.go."}}
+	useContextFiles(t, e)
 	e.SetContext(func(ctx context.Context, q ext.ContextQuery) []TaskContext {
 		mu.Lock()
 		asked = append(asked, q.Run)

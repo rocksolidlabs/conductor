@@ -35,14 +35,19 @@ func (e *Engine) SetContext(f ContextFunc) {
 // query read under e.mu and the function called outside it, so a provider
 // that takes its time holds no other run, task or request of the engine's;
 // nil when none is set. The blocks are a view a provider derived as the
-// attempt starts: they go into its task files and nowhere else, never the
-// ledger, and an attempt neither fails nor changes state for them. An
-// attempt of a comparison asks nothing: a block cannot show what it was
-// derived from, so none is given to a lane (its task file says so).
+// attempt starts: they go into its task files, and are recorded before
+// the agent has them (their text in the context file, their rows with the
+// attempt's workspace, attempt_context.go), so an engine with nowhere to
+// record them asks none; a provider that gives none, or fails, changes
+// nothing of the attempt. An attempt of a comparison asks nothing: a
+// block cannot show what it was derived from, so none is given to a lane
+// (its task file says so).
 func (e *Engine) askContext(ctx context.Context, r *run, a *attempt) []TaskContext {
 	e.mu.Lock()
 	f := e.contextOf
-	if r.compare != nil {
+	if r.compare != nil || e.contextFiles == nil {
+		// No block reaches an agent unrecorded: an engine with nowhere to
+		// record the context asks none (attempt_context.go).
 		f = nil
 	}
 	var q ext.ContextQuery

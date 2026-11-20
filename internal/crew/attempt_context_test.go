@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/rocksolidlabs/conductor/ext"
@@ -28,6 +29,15 @@ import (
 func contextEngine(t *testing.T, blocks []TaskContext) (*Engine, *fakeLauncher, *fakeLedger, string) {
 	t.Helper()
 	e, fl, l := managedEngine(t)
+	dir := useContextFiles(t, e)
+	e.SetContext(func(context.Context, ext.ContextQuery) []TaskContext { return slices.Clone(blocks) })
+	return e, fl, l, dir
+}
+
+// useContextFiles gives e a place for the context files in a folder of
+// the test's: an engine with none asks no context.
+func useContextFiles(t *testing.T, e *Engine) string {
+	t.Helper()
 	dir := t.TempDir()
 	cf, err := OpenContextFiles(dir)
 	if err != nil {
@@ -35,8 +45,7 @@ func contextEngine(t *testing.T, blocks []TaskContext) (*Engine, *fakeLauncher, 
 	}
 	t.Cleanup(func() { cf.Close() })
 	e.UseContextFiles(cf)
-	e.SetContext(func(context.Context, ext.ContextQuery) []TaskContext { return slices.Clone(blocks) })
-	return e, fl, l, dir
+	return dir
 }
 
 // contextFileOf is the context file of an attempt, as written.
@@ -383,4 +392,33 @@ func TestCrashAroundTheWorkspaceTransaction(t *testing.T) {
 	if rows := rowsOf(l, run.ID, "build", 2); len(rows) != 2 {
 		t.Fatalf("after the stop: %+v", rows)
 	}
+}
+
+// An engine built with nowhere to record the context gives an attempt
+// none, whoever built it: no provider is asked, the task file holds no
+// block, and a lookup's pack is not recorded, so the route withholds it.
+func TestAnEngineWithNowhereToRecordGivesNoContext(t *testing.T) {
+	dir := newRepo(t)
+	e, _, l := managedEngine(t)
+	var asked atomic.Int32
+	e.SetContext(func(context.Context, ext.ContextQuery) []TaskContext {
+		asked.Add(1)
+		return slices.Clone(twoBlocks)
+	})
+	run := launchManaged(t, e, repoCrew(dir, work("build", "lead")))
+	ts := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+	if _, tf := taskFileOf(t, ts); len(tf.Context) != 0 || tf.More != "" {
+		t.Fatalf("the task file's context: %+v %q", tf.Context, tf.More)
+	}
+	if n := asked.Load(); n != 0 {
+		t.Fatalf("the provider was asked %d times", n)
+	}
+	if rows := rowsOf(l, run.ID, "build", 1); len(rows) != 0 {
+		t.Fatalf("rows: %+v", rows)
+	}
+	pack := []ext.ContextBlock{{Title: "The pack", Body: "b", Pack: "p-1"}}
+	if err := e.RecordLookupContext(context.Background(), run.ID, "build", 1, "graph", pack); !errors.Is(err, ErrContextNotRecorded) {
+		t.Fatalf("a pack with nowhere to record it: %v", err)
+	}
+	stopRun(t, e, run.ID)
 }

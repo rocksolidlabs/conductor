@@ -63,6 +63,7 @@ func TestQueryCarriesTicketBaseAndEvidence(t *testing.T) {
 	dir := newRepo(t)
 	e, _, _ := managedEngine(t)
 	rec := &queries{}
+	useContextFiles(t, e)
 	e.SetContext(rec.ask)
 	base := head(t, dir)
 	runID := "api-sweep-0000c0de"
