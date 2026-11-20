@@ -297,8 +297,8 @@ func judgePolicy(rec ledger.DecisionRecord, resp Response, who Admittee, pol pol
 // policy (Tx.PutPolicy, its spare kept), rev + 1 and the router's one
 // routed row with its destinations, rule and revision; when it is answered
 // already, the routed row alone, saying the policy came after the answer.
-// A record the router routed before with no policy (RecordRoute) holds
-// the router's one routed row already: its policy is written the same
+// A record a router routed before with no policy (RecordRoute), this one
+// or one under another name, holds the router's one routed row already: its policy is written the same
 // way, its row a router's change (rerouted, the router's group), as a
 // re-route of a record under the server's own policy is. Its repeat is
 // the router's routing row of the same revision, answered by that row's
@@ -343,9 +343,11 @@ func (e *Engine) RoutePolicy(ctx context.Context, id, by string, rev int, policy
 	op.choose = func(rec ledger.DecisionRecord) (operation, error) {
 		o := op
 		if slices.ContainsFunc(rec.History, func(h ledger.HistoryRow) bool {
-			return h.Kind == ledger.HistoryRouted && h.By == op.actor && h.OpID == ""
+			return h.Kind == ledger.HistoryRouted && h.OpID == "" && strings.HasPrefix(h.By, "router:")
 		}) {
-			// The router's one routed row is its earlier route's.
+			// A router's one routed row is an earlier route's, this
+			// router's or one registered under another name: the routed
+			// rows' room is full.
 			o.kind = ledger.HistoryRerouted
 		}
 		switch {

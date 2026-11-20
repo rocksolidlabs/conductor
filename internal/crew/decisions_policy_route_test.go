@@ -213,3 +213,39 @@ func TestAPolicyWithNoRevisionIsRefused(t *testing.T) {
 	}
 	stopRun(t, e, run.ID)
 }
+
+// A router registered under another name than the one that routed the
+// record first (with destinations and no policy) answers its policy: the
+// routed rows' room is the router's one row, taken, so the policy's row
+// is that router's change, written at the record's next rev; only the
+// persons it names are admitted: bob, holding the decide grant the record
+// was given to, and the operator's plain answer are refused not_eligible.
+func TestAPolicyAfterAnotherRoutersRouteIsWritten(t *testing.T) {
+	e, ld, run, id := routedGate(t, "api-sweep-0000a7e5")
+	ctx := t.Context()
+	if _, err := e.RecordRoute(ctx, id, "switchman", toAna, "the architecture owner"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.RouteDecision(ctx, id, "give-1", recordOf(t, ld, id).Rev, []Destination{{Kind: DestGrant, Grant: string(ext.GrantDecide)}}, "", "admin"); err != nil {
+		t.Fatal(err)
+	}
+	before := recordOf(t, ld, id)
+	rc, err := e.RoutePolicy(ctx, id, "relay", before.Rev, anaRoute("r1"), toAna, "the architecture owner")
+	if err != nil || rc.Repeat || rc.Rev != before.Rev+1 {
+		t.Fatalf("the other router's policy: %+v %v", rc, err)
+	}
+	rec := recordOf(t, ld, id)
+	last := rec.History[len(rec.History)-1]
+	if policyRevision(t, rec) != "r1" || last.Kind != ledger.HistoryRerouted || last.By != "router:relay" {
+		t.Fatalf("the record under its policy: policy %s, last row %+v", rec.Policy, last)
+	}
+	inForce := &ext.Confirmation{InForce: true}
+	brc, err := e.RespondDecisionWith(ctx, id, Response{ResponseID: "bob-1", Choice: choice(0), ExpectedRev: rec.Rev}, ext.SubjectActor+"bob", decideAs(e, "bob"), inForce)
+	answerRefused(t, "bob", brc, err, CodeNotEligible)
+	orc, err := e.RespondDecisionWith(ctx, id, Response{ResponseID: "op-1", Choice: choice(0), ExpectedRev: recordOf(t, ld, id).Rev}, "admin", workbench(e), inForce)
+	answerRefused(t, "the operator", orc, err, CodeNotEligible)
+	if got := AdmissionOf(rec, Admittee{Grants: []string{string(ext.GrantDecide)}, Via: ViaIdentity, Subject: "ana"}); got != AdmitOpen {
+		t.Fatalf("ana under the policy: %d", got)
+	}
+	stopRun(t, e, run.ID)
+}
