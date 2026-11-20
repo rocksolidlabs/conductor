@@ -6,6 +6,9 @@ writes a receipt with a log per step under the git common dir's `preflight/`;
 `ssh mac`, the revision pushed to its checkout) and the Windows host's (WSL
 interop, a checkout under the Windows profile) rows too, never through GitHub.
 It is how to see what CI will see before a pull request; CI stays the gate.
+One job is CI's alone (`CI_ONLY_JOBS` in `scripts/preflight.py`): `mobile-ios`,
+the phone shell's app built and started on a simulator, which needs Xcode; no
+receipt counts it as run.
 
 Run the narrow tests while iterating, then the complete checks for every affected surface. A change to the Python scripts runs their tests; it does not require unrelated Go, UI, desktop, network or hardware tests. A change spanning server and UI requires tests at both ends: Go race tests, vitest and Playwright. Runtime changes run the relevant runtime suites below. A skipped or unavailable check is a limitation, never a pass.
 
