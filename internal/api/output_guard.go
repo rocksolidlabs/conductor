@@ -259,8 +259,16 @@ func (s *Server) observeLogs(ld *ledger.Ledger) {
 	// nothing of a decision leaves and the ledger writes as before.
 	if s.copyCheck != nil && s.syncName() != "" {
 		// Inside the ledger's transaction: the form that never waits and
-		// never reads the ledger (JudgeNow).
-		ld.SetOutputCheck(s.copyCheck.JudgeNow)
+		// never reads the ledger (JudgeNow); a part it leaves pending has
+		// the settle loop woken once the write's commit is told
+		// (pokeSettle).
+		ld.SetOutputCheck(func(ctx context.Context, text string, agent bool) string {
+			v := s.copyCheck.JudgeNow(ctx, text, agent)
+			if v == verdictPending {
+				s.settleDue.Store(true)
+			}
+			return v
+		})
 	}
 }
 

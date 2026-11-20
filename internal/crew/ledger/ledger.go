@@ -538,6 +538,11 @@ func (l *Ledger) awaitLock(lockPath, path string) {
 			if err != nil {
 				l.readOnly, l.why = true, err.Error()
 			}
+			if !l.readOnly && l.outputCheck != nil {
+				// Before any of this server's writes: what the last owner
+				// left pending is output (SetOutputCheck).
+				l.withholdLocked()
+			}
 			l.ownedLate = true
 			cb := l.onOwned
 			run := cb != nil && !l.readOnly && !l.notified

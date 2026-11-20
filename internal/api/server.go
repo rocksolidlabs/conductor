@@ -120,9 +120,13 @@ type Server struct {
 	// on a switchyard and without a data directory.
 	outputs   *outputIndex
 	copyCheck *outputGuard
-	// decisionPartsWithheld is set once the decision parts a process
-	// before this one left pending are withheld (withholdDecisionParts).
-	decisionPartsWithheld atomic.Bool
+	// settleDue is set when the ledger's check writes a part pending, and
+	// settleWake wakes the decisions' settle loop once that write's commit
+	// is told (pokeSettle); settleTick, when a test sets it, is the loop's
+	// tick in place of settleEvery.
+	settleDue  atomic.Bool
+	settleWake chan struct{}
+	settleTick time.Duration
 	// remoteMu orders the writes of other machines' records (remote.go);
 	// remoteMax, when a test sets it before any is written, bounds their
 	// files in place of ext.MaxRemoteFiles.
@@ -592,10 +596,12 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		started:     time.Now(),
 		relayed:     newRelayMeter(nil),
 		rechecking:  make(chan struct{}, 1),
+		settleWake:  make(chan struct{}, 1),
 	}
 	// Every provider behind the guard before the server's first write of
 	// its own (the ledger's recovery, the records): nothing calls them yet.
 	s.readRevision = gitcli.RevisionOf
+	s.settleTick = o.settleTick
 	if len(o.previewBridge) > 0 {
 		s.bridge.script = append([]byte(nil), o.previewBridge...)
 	}
@@ -737,6 +743,8 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 				s.readHistory(x)
 				x.watchScreens(s.liveScreens)
 				fan.add(commitObserver{prune: s.logsPruned})
+				// A decision's part written pending wakes its settle.
+				fan.add(commitObserver{decisions: s.pokeSettle})
 				if why := x.state(); why != "" {
 					log.Warn("the copied-output check cannot use its index", "why", why)
 				}
@@ -800,10 +808,9 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		// A fresh copied-output index is made again from the ledger's logs;
 		// a decision's part a process before this one left pending is output.
 		s.rebuildIndex()
-		// A best effort: the settle loop withholds first on every pass, so a
-		// ledger another server holds at the start is withheld once it is
-		// this one's.
-		s.withholdDecisionParts(context.Background())
+		// What a process before this one left pending the ledger withholds
+		// itself, as the check is given or as it takes the owner lock
+		// (ledger.SetOutputCheck).
 		if s.ledger != nil && s.copyCheck != nil && s.syncName() != "" {
 			// A decision's part left pending is judged again once the index
 			// is whole, until the server ends: a loop of its own, started once

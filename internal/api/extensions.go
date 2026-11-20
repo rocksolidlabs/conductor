@@ -45,6 +45,9 @@ type options struct {
 	// usageReaders stand for the adapters' usage readers in the tests
 	// (capacity.go); nil outside them.
 	usageReaders map[string]*agents.UsageReader
+	// settleTick stands for the decisions' settle loop's tick in the tests
+	// (sync_decision.go); 0 outside them.
+	settleTick time.Duration
 }
 
 // WithExtensions gives the server the providers p, as the composition root

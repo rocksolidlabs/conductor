@@ -528,7 +528,7 @@ func TestPendingDecisionPartWithheldAtStart(t *testing.T) {
 	if err != nil || v[ledger.PartQuestion] != verdictOutput || v[ledger.PartLabel(0)] != verdictOutput {
 		t.Fatalf("the verdicts after the start: %v %v", v, err)
 	}
-	if e.srv.settleDecisionParts(context.Background()) != 0 {
+	if n, _ := e.srv.settleDecisionParts(context.Background()); n != 0 {
 		t.Fatal("a withheld part was settled again")
 	}
 }

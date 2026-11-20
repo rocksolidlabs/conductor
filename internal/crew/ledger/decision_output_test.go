@@ -335,3 +335,32 @@ func TestKeepOutputNeverOverwrites(t *testing.T) {
 		t.Fatalf("%v", v)
 	}
 }
+
+// Given its check, a ledger this server owns makes what a process before
+// it left pending output at once, before any write of its own.
+func TestTheCheckGivenWithholdsWhatWasLeftPending(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "runs")
+	l := openLedger(t, dir)
+	l.SetOutputCheck(func(context.Context, string, bool) string { return VerdictPending })
+	newRun(t, l, "team-00000001")
+	tasksOf(t, l, "team-00000001", "deploy")
+	n := open(t, l, gateDecision("team-00000001", "g1"))
+	l.Close()
+	again, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { again.Close() })
+	var told []int64
+	again.OnDecisions(func(ns []int64) { told = append(told, ns...) })
+	again.SetOutputCheck(func(context.Context, string, bool) string { return VerdictClean })
+	v, _, _ := again.OutputVerdicts(context.Background(), n)
+	for p, s := range v {
+		if s != VerdictOutput {
+			t.Fatalf("%s is %s after the check was given", p, s)
+		}
+	}
+	if !slices.Contains(told, n) {
+		t.Fatalf("OnDecisions was told %v", told)
+	}
+}

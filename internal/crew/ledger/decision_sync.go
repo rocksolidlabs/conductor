@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 )
 
 // versionDecisionSync is the version that added decision_statements and
@@ -70,10 +71,47 @@ const (
 
 // SetOutputCheck gives the ledger the check every transaction judges the
 // decision parts it writes by from then on; nil for none (no row written).
+//
+// Given a check, a ledger this server owns makes every verdict a process
+// before it left pending output at once, and one another server holds
+// does so as it takes the owner lock (awaitLock), each before any part of
+// this server's is written: the output such a part may have quoted lived
+// in that process, and nothing this server writes pending is ever taken
+// for one of those.
 func (l *Ledger) SetOutputCheck(f OutputCheck) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.outputCheck = f
+	if f != nil && !l.readOnly && !l.closed && l.db != nil {
+		l.withholdLocked()
+	}
+}
+
+// withholdLocked makes every pending verdict output, telling OnDecisions of
+// the decisions it changed; a failure is the ledger's why for no write
+// lost (a pending part stays kept back). The caller holds mu, the ledger
+// writable.
+func (l *Ledger) withholdLocked() {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if l.version < versionDecisionSync {
+		return
+	}
+	tx, err := l.db.BeginTx(ctx, nil)
+	if err != nil {
+		return
+	}
+	defer tx.Rollback()
+	ns, err := pendingDecisions(ctx, tx)
+	if err != nil || len(ns) == 0 {
+		return
+	}
+	if _, err := tx.ExecContext(ctx, "UPDATE decision_output SET verdict = ?, cut_at = 0 WHERE verdict = ?", VerdictOutput, VerdictPending); err != nil {
+		return
+	}
+	if tx.Commit() == nil {
+		l.decisionsChanged(ns)
+	}
 }
 
 // OnDecisions gives the ledger fn, called with the numbers of the
@@ -303,8 +341,7 @@ func (l *Ledger) outputTx(ctx context.Context, fn func(tx *sql.Tx) ([]int64, err
 }
 
 // WithholdPendingOutput makes every pending verdict output, in one
-// transaction: at a start, before the check answers anything, since the
-// output a pending part may have quoted lived in the process that ended.
+// transaction (SetOutputCheck does it itself where a process starts).
 func (l *Ledger) WithholdPendingOutput(ctx context.Context) error {
 	return l.outputTx(ctx, func(tx *sql.Tx) ([]int64, error) {
 		ns, err := pendingDecisions(ctx, tx)

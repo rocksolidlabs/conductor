@@ -5,13 +5,18 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"io"
+	"log/slog"
 	"math/rand/v2"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/rocksolidlabs/conductor/ext"
+	"github.com/rocksolidlabs/conductor/ext/local"
+	"github.com/rocksolidlabs/conductor/internal/config"
 	"github.com/rocksolidlabs/conductor/internal/crew"
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
 )
@@ -211,9 +216,49 @@ func TestTheFirstBuildsVerdictIsKept(t *testing.T) {
 	}
 }
 
-// A server that starts while another holds its ledger settles the parts
-// it judges pending once the ledger is its own: the settle loop runs
-// though the start's withholding could not, and withholds first.
+// withSettleTick sets the decisions' settle loop's tick: a long one leaves
+// the settling to the wake a pending write gives (pokeSettle).
+func withSettleTick(d time.Duration) Option {
+	return func(o *options) { o.settleTick = d }
+}
+
+// syncEnvWith is syncEnv with the server's options.
+func syncEnvWith(t *testing.T, dir string, p ext.ContinuityStore, opts ...Option) *testEnv {
+	t.Helper()
+	providers := local.Fill(ext.Providers{Continuity: p, All: []ext.Entry{{Kind: ext.KindSync, Name: p.Name(), Value: p}}})
+	return newTestEnvAgents(t, func(c *config.Config) { c.DataDir = dir }, slog.New(slog.NewTextHandler(io.Discard, nil)), nil, append([]Option{WithExtensions(providers)}, opts...)...)
+}
+
+// A part written pending is settled as soon as the feeds in flight are
+// indexed, woken by its own commit (the tick here never comes): an
+// unrelated source pruned a moment later leaves it clean.
+func TestAPendingPartSettlesAtOnce(t *testing.T) {
+	f := newFakeSync()
+	e := syncEnvWith(t, syncDataDir(t), f, withSettleTick(time.Hour))
+	const run = "team-00000001"
+	newLedgerRun(t, e.srv.ledger, run, ledger.RunRunning)
+	e.srv.outputs.feed("ring:other", []byte(strings.Repeat("another session's output, line by line\n", 20)), 1<<20)
+	release := holdIndex(t, e.srv.outputs)
+	n := openPlanDecision(t, e.srv.ledger, run, "g1", `{"question":"Ship the migration to every region?","options":[{"label":"Approve"},{"label":"Reject"}],"subject":{"kind":"plan","plan":"pl-1","digest":"d1"}}`)
+	if v, _, _ := e.srv.ledger.OutputVerdicts(context.Background(), n); v[ledger.PartQuestion] != verdictPending {
+		t.Fatalf("the question with the index held: %v", v)
+	}
+	release()
+	verdictWhen(t, e.srv.ledger, n, ledger.PartQuestion, verdictClean)
+	e.srv.outputs.prune("ring:other")
+	if !e.srv.outputs.whole(context.Background()) {
+		t.Fatal("not whole")
+	}
+	if v, _, _ := e.srv.ledger.OutputVerdicts(context.Background(), n); v[ledger.PartQuestion] != verdictClean {
+		t.Fatalf("after an unrelated prune: %v", v)
+	}
+}
+
+// A server that starts while another holds its ledger withholds what that
+// one left pending as it takes the owner lock, and nothing it writes
+// pending itself after: its own pending part is settled clean (woken by
+// its commit, the tick never coming) and its document reaches the store
+// with its request.
 func TestPendingPartsSettleAfterAHandOver(t *testing.T) {
 	was := ledger.LockWait
 	ledger.LockWait = testWait
@@ -224,24 +269,30 @@ func TestPendingPartsSettleAfterAHandOver(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer other.Close()
+	other.SetOutputCheck(func(context.Context, string, bool) string { return ledger.VerdictPending })
+	const run = "team-00000001"
+	newLedgerRun(t, other, run, ledger.RunRunning)
+	left := openPlanDecision(t, other, run, "g0", `{"question":"Left pending by the server before?","options":[{"label":"Approve"},{"label":"Reject"}],"subject":{"kind":"plan","plan":"pl-1","digest":"d1"}}`)
 	f := newFakeSync()
-	e := syncEnv(t, dir, f)
+	e := syncEnvWith(t, dir, f, withSettleTick(time.Hour))
 	if ro, _ := e.srv.ledger.ReadOnly(); !ro {
 		t.Fatal("the server took the owner lock another ledger holds")
 	}
 	other.Close()
-	waitUntil(t, "the ledger the server's and its pending parts withheld", func() bool {
+	waitUntil(t, "the ledger the server's", func() bool {
 		ro, _ := e.srv.ledger.ReadOnly()
-		return !ro && e.srv.decisionPartsWithheld.Load()
+		return !ro
 	})
-	const run = "team-00000001"
-	newLedgerRun(t, e.srv.ledger, run, ledger.RunRunning)
+	if v, _, _ := e.srv.ledger.OutputVerdicts(context.Background(), left); v[ledger.PartQuestion] != verdictOutput {
+		t.Fatalf("what the server before left pending: %v", v)
+	}
 	release := holdIndex(t, e.srv.outputs)
 	n := openPlanDecision(t, e.srv.ledger, run, "g1", `{"question":"Ship the migration to every region?","options":[{"label":"Approve"},{"label":"Reject"}],"subject":{"kind":"plan","plan":"pl-1","digest":"d1"}}`)
 	if v, _, _ := e.srv.ledger.OutputVerdicts(context.Background(), n); v[ledger.PartQuestion] != verdictPending {
 		t.Fatalf("the question with the index held: %v", v)
 	}
 	release()
+	verdictWhen(t, e.srv.ledger, n, ledger.PartQuestion, verdictClean)
 	key := syncKey{syncDecisionStore, ledger.DecisionID(n)}
 	f.until(t, "the decision with its request", func(c []syncCall) bool {
 		doc, _, ok := docOf(c, key)

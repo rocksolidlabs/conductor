@@ -18,15 +18,17 @@ import (
 // A decision as it leaves the machine (docs/plans/sync-seams.md, OS-3):
 // the document the sync store is handed for each decision (store
 // "decision", path dr-n), built from the ledger's record and its
-// copied-output verdicts (decision_output). Deterministic: the same record
-// at the same rev and the same verdicts give the same bytes and the same
-// requestSHA256. Every free-text part is judged before it leaves: an
-// output-like or pending question, label, uncertainty or authorizes keeps
-// the whole request back (requestKept "output"), and an output-like or
-// pending context, tradeoffs, response text, rationale or words is cut
-// (cut "output"). A decision with no verdicts kept (opened before the
-// check) is judged when its document is built, and an agent's request is
-// kept back whatever that finds.
+// copied-output verdicts (decision_output): the same record and the same
+// verdicts give the same bytes and the same requestSHA256, and a verdict
+// settled later has the document delivered again at the same rev, which
+// replaces the one the store holds. Every free-text part is judged before
+// it leaves: an output-like question, label, uncertainty, authorizes or
+// expertise, or any part still pending, keeps the whole request back
+// (requestKept "output"), and an output-like context, tradeoffs, response
+// text, rationale or words is cut (cut "output"). A decision's parts with
+// no verdict kept are judged once, at its document's first build, and the
+// verdicts kept; an agent's request whose question was never judged as it
+// was written stays back.
 
 // syncDecisionStore is the store of a decision's document (ext.Doc.Store).
 const syncDecisionStore = "decision"
@@ -477,14 +479,18 @@ func partText(rec ledger.DecisionRecord, part string) string {
 
 // settleDecisionParts judges the ledger's pending decision parts again once
 // the index is whole: output when a source was pruned after the decision
-// was opened, else what the check finds now.
-func (s *Server) settleDecisionParts(ctx context.Context) int {
-	if s.ledger == nil || s.copyCheck == nil || !s.withholdDecisionParts(ctx) || !s.outputs.whole(ctx) {
-		return 0
+// was opened, else what the check finds now. It answers how many it
+// settled and whether parts are left pending.
+func (s *Server) settleDecisionParts(ctx context.Context) (int, bool) {
+	if s.ledger == nil || s.copyCheck == nil || s.syncName() == "" {
+		return 0, false
+	}
+	if !s.outputs.whole(ctx) {
+		return 0, true
 	}
 	pending, err := s.ledger.PendingOutputs(ctx, 500)
-	if err != nil {
-		return 0
+	if err != nil || len(pending) == 0 {
+		return 0, false
 	}
 	n := 0
 	for _, p := range pending {
@@ -494,7 +500,7 @@ func (s *Server) settleDecisionParts(ctx context.Context) int {
 		}
 		pruned, err := s.outputs.prunedSince(rec.CreatedAt)
 		if err != nil {
-			return n
+			return n, true
 		}
 		v := verdictOutput
 		if !pruned {
@@ -507,42 +513,53 @@ func (s *Server) settleDecisionParts(ctx context.Context) int {
 			n++
 		}
 	}
-	return n
+	return n, n < len(pending)
 }
 
-// withholdDecisionParts makes every decision part a process before this
-// one left pending output, once: at the start, or, while another server
-// holds the ledger, as soon as this one writes it. Nothing pending is
-// settled before (settleDecisionParts asks first).
-func (s *Server) withholdDecisionParts(ctx context.Context) bool {
-	if s.ledger == nil || s.copyCheck == nil || s.syncName() == "" {
-		return false
+// pokeSettle has the settle loop run now, never waiting: a part the
+// ledger's check wrote pending (settleDue, set in the transaction) is
+// judged as soon as its commit is told and the index has caught up with
+// the feeds in flight, not at the next tick, so a source's prune a moment
+// later does not make it output.
+func (s *Server) pokeSettle(ns []int64) {
+	if len(ns) == 0 || !s.settleDue.Swap(false) {
+		return
 	}
-	if s.decisionPartsWithheld.Load() {
-		return true
+	select {
+	case s.settleWake <- struct{}{}:
+	default:
 	}
-	err := s.ledger.WithholdPendingOutput(ctx)
-	if err != nil {
-		if !errors.Is(err, ledger.ErrReadOnly) {
-			s.log.Warn("pending decision verdicts could not be withheld", "err", err)
-		}
-		return false
-	}
-	s.decisionPartsWithheld.Store(true)
-	return true
 }
 
-// settleDecisionLoop judges the decisions' pending parts again every
-// settleEvery until ctx ends.
+// settleDecisionLoop judges the decisions' pending parts when a write left
+// one pending (pokeSettle) and every settleEvery besides, until ctx ends;
+// while parts are left pending and the index can catch up, it goes on at
+// once (whole waits for the feeds in flight).
 func (s *Server) settleDecisionLoop(ctx context.Context) {
-	t := time.NewTicker(settleEvery)
+	every := settleEvery
+	if s.settleTick > 0 {
+		every = s.settleTick
+	}
+	t := time.NewTicker(every)
 	defer t.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			s.settleDecisionParts(ctx)
+		case <-s.settleWake:
+		}
+		for ctx.Err() == nil {
+			n, left := s.settleDecisionParts(ctx)
+			if !left || n == 0 && s.outputs.state() != "" {
+				// Nothing pending, or an index that cannot catch up now
+				// (reindexing, past its bound): the tick tries again.
+				break
+			}
+			if n == 0 {
+				// The index is behind: whole waited its bound; once more.
+				continue
+			}
 		}
 	}
 }
