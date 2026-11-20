@@ -8,7 +8,9 @@ import Testing
 @Suite struct BootCheckTests {
     @Test func theReportSaysReadyOnceAndCountsTheProbesDropsAndEveryViolation() {
         var r = BootReport()
-        #expect(r.label == "waiting dropped=0 violations=0")
+        #expect(r.label == "waiting unstarted dropped=0 violations=0")
+        r.take("started")
+        #expect(r.label == "waiting started dropped=0 violations=0")
         for id in ["webview", "http", "cookies", "cordova", "http"] {
             r.take(BootCheck.drop(["type": "message", "callbackId": BootCheck.probePrefix + id])!)
         }

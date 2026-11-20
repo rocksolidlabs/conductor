@@ -15,8 +15,9 @@ final class ShellBootsUnderItsPolicyTests: XCTestCase {
         let report = app.staticTexts["conductor-boot-check"]
         XCTAssertTrue(report.waitForExistence(timeout: 120), "the boot check's report was not shown:\n\(app.debugDescription)")
         // The page reports ready once it has drawn Open a server: the first start of a fresh simulator can take minutes.
-        let ready = expectation(for: NSPredicate(format: "label BEGINSWITH 'ready'"), evaluatedWith: report)
-        wait(for: [ready], timeout: 180)
+        let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label BEGINSWITH 'ready'"), object: report)
+        let waited = XCTWaiter().wait(for: [ready], timeout: 180)
+        XCTAssertEqual(waited, .completed, "the boot check never became ready; its report: \(report.label)")
         XCTAssertEqual(report.label, "ready platform=ios plugins=ok probes=ok dropped=4 violations=0")
         // Open a server's first control, as a person meets it.
         let address = app.descendants(matching: .textField)["Server address"]

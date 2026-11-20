@@ -42,7 +42,10 @@ public enum BootCheck {
       document.addEventListener('securitypolicyviolation', (e) => post('violation ' + e.violatedDirective + ' ' + e.blockedURI))
       const names = ['ConductorKey', 'ConductorStore', 'PushNotifications', 'App', 'Browser', 'CapacitorHttp']
       const toRuntime = (b) => window.webkit.messageHandlers.bridge.postMessage(b)
-      const code = async (f) => { try { await f(); return 'answered' } catch (e) { return (e && e.code) || 'rejected' } }
+      // Each probe's call has a bound of its own: one that is never answered says so instead of holding the report.
+      const within = (p) => Promise.race([p, new Promise((_, no) => setTimeout(() => no({ code: 'no_answer' }), 30000))])
+      const code = async (f) => { try { await within(f()); return 'answered' } catch (e) { return (e && e.code) || 'rejected' } }
+      const value = async (f) => { try { return await within(f()) } catch (e) { return null } }
       const probes = async () => {
         const failed = []
         const check = (name, ok) => { if (!ok) failed.push(name) }
@@ -55,12 +58,11 @@ public enum BootCheck {
         // A text-input prompt of the runtime's cookies kind: no answer.
         check('prompt-set', prompt(JSON.stringify({ type: 'CapacitorCookies.set', domain: 'https://boot.example', action: 'planted=1; Path=/' })) === null)
         check('prompt-get', prompt(JSON.stringify({ type: 'CapacitorCookies.get' })) === null)
-        // Behind the gate, the stand-ins still refuse (a class-named plugin would have replaced them), and the calls meant answer.
-        check('webview', (await code(() => P.WebView.getServerBasePath())) === 'not_in_shell')
-        check('cookies', (await code(() => P.CapacitorCookies.getCookies())) === 'not_in_shell')
+        // The calls the shell means still answer, and the native HTTP call is still the shell's own (the class-named one would
+        // have replaced it and reached the origin not named). WebView and CapacitorCookies are not the page's: the gate drops them.
         check('http', (await code(() => P.CapacitorHttp.request({ url: 'https://unnamed.example/' }))) === 'origin_refused')
-        check('key', ((await P.ConductorKey.state()) || {}).state === 'none')
-        check('store', Array.isArray(((await P.ConductorStore.list({ area: 'drafts' })) || {}).keys))
+        check('key', ((await value(() => P.ConductorKey.state())) || {}).state === 'none')
+        check('store', Array.isArray(((await value(() => P.ConductorStore.list({ area: 'drafts' }))) || {}).keys))
         // A file under the runtime's file prefix: not served.
         const file = window.__conductorBootFile
         check('file', !!file && await new Promise((r) => { const i = new Image(); i.onload = () => r(false); i.onerror = () => r(true); i.src = '/_capacitor_file_' + file }))
@@ -81,8 +83,9 @@ public enum BootCheck {
         const o = new MutationObserver(() => { if (look()) o.disconnect() })
         o.observe(document.documentElement, { childList: true, subtree: true })
       }
-      if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', watch, { once: true })
-      else watch()
+      const begin = () => { post('started'); watch() }
+      if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', begin, { once: true })
+      else begin()
     })();
     """
 }
@@ -92,6 +95,7 @@ public struct BootReport: Equatable, Sendable {
     public private(set) var ready: String?
     public private(set) var violations: [String] = []
     public private(set) var dropped: Set<String> = []
+    public private(set) var started = false
 
     public init() {}
 
@@ -100,6 +104,8 @@ public struct BootReport: Equatable, Sendable {
             if violations.count < 20 { violations.append(String(message.dropFirst("violation ".count).prefix(200))) }
         } else if message.hasPrefix("dropped ") {
             if dropped.count < 20 { dropped.insert(String(message.dropFirst("dropped ".count).prefix(100))) }
+        } else if message == "started" {
+            started = true
         } else if message.hasPrefix("ready "), ready == nil {
             ready = String(message.dropFirst("ready ".count).prefix(200))
         }
@@ -110,6 +116,6 @@ public struct BootReport: Equatable, Sendable {
      */
     public var label: String {
         let v = "dropped=\(dropped.count) violations=\(violations.count)" + (violations.first.map { " first: \($0)" } ?? "")
-        return ready.map { "ready \($0) \(v)" } ?? "waiting \(v)"
+        return ready.map { "ready \($0) \(v)" } ?? "waiting \(started ? "started" : "unstarted") \(v)"
     }
 }

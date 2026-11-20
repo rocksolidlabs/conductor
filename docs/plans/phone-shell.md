@@ -1494,9 +1494,11 @@ Swift package with no package of anyone else's):
   gates below (a plugin named by its native class, three of them; a
   Cordova message; a text-input prompt of the runtime's cookies kind; a
   file of the bundle under the runtime's file prefix) and checks each
-  is refused, the stand-ins still refuse and the calls the shell means
-  still answer; the app counts the probe messages the bridge gate
-  dropped. It passes only on `ready platform=ios plugins=ok probes=ok
+  is refused, the native HTTP call is still the shell's own (it refuses
+  an origin not named, which the class-named one would have reached),
+  and the key and the store still answer; the app counts the probe
+  messages the bridge gate dropped. Each probe call has a bound of its
+  own, so one never answered is reported, not waited on. It passes only on `ready platform=ios plugins=ok probes=ok
   dropped=4 violations=0`, then finds Open a server's address field.
 
 **Every way a page reaches native code** (as built, read from the
