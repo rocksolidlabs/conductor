@@ -1178,11 +1178,11 @@ func opOf(rec ledger.DecisionRecord, op operation) (OpReceipt, bool, error) {
 	return OpReceipt{}, false, nil
 }
 
-// repeats says h is a once operation's row sent before: its actor's row
-// of its kind with no op id (RecordRoute: whatever its body, the router's
-// one routing row); for a policy's (revision set), its actor's routing
-// row, a routed row with no op id or a router's change, carrying that
-// revision, and no other.
+// repeats says h is a once operation's row sent before, on a record under
+// no router's policy: its actor's row of its kind with no op id
+// (RecordRoute: whatever its body, the router's one routing row); for a
+// policy's (revision set), its actor's routing row carrying that revision
+// (a record answered before its policy came keeps the policy's row alone).
 func (op operation) repeats(h ledger.HistoryRow) bool {
 	if h.By != op.actor {
 		return false
@@ -1190,39 +1190,27 @@ func (op operation) repeats(h ledger.HistoryRow) bool {
 	if op.revision == "" {
 		return h.Kind == op.kind && h.OpID == ""
 	}
-	if !(h.Kind == ledger.HistoryRouted && h.OpID == "" || h.Kind == ledger.HistoryRerouted) {
-		return false
-	}
-	return revisionOf(h) == op.revision
+	return routingRow(h) && revisionOf(h) == op.revision
 }
 
-// repeatIn is a once operation's row sent before in rec (repeats). A
-// router's route with no policy (RecordRoute, kind routed and no revision)
-// to a record that carries a router's policy writes nothing, whichever
-// way the policy came (the policy's transaction or a re-route): it is
-// answered by the row that put the policy in place, the policy's router's
-// routing row or change carrying its revision (the router's last such row
-// when a re-route past the history's room left none).
+// repeatIn is a once operation's row sent before in rec. On a record that
+// carries a router's policy at revision R, a router's route with no policy
+// (RecordRoute, kind routed and no revision) and a policy of revision R
+// (its current policy told again) write nothing: each is answered by the
+// row that put the policy in place, the policy's router's routing row or
+// change carrying R (that router's last such row when a re-route past the
+// history's room left none); a policy of any other revision is no repeat
+// (the transaction refuses it routed_by_policy). On a record under the
+// server's own policy, repeats decides.
 func (op operation) repeatIn(rec ledger.DecisionRecord) (ledger.HistoryRow, bool) {
-	if op.revision == "" && op.kind == ledger.HistoryRouted {
-		if p, ok := routedOf(rec.Policy); ok {
-			var last, placed ledger.HistoryRow
-			var seen, found bool
-			for _, h := range rec.History {
-				if h.By != "router:"+p.Router || !routingRow(h) {
-					continue
-				}
-				last, seen = h, true
-				if revisionOf(h) == p.Revision {
-					placed, found = h, true
-				}
+	if p, ok := routedOf(rec.Policy); ok {
+		switch {
+		case op.revision == "" && op.kind == ledger.HistoryRouted, op.revision != "" && op.revision == p.Revision:
+			if h, ok := placedRow(rec, p); ok {
+				return h, true
 			}
-			if found {
-				return placed, true
-			}
-			if seen {
-				return last, true
-			}
+		case op.revision != "":
+			return ledger.HistoryRow{}, false
 		}
 	}
 	for _, h := range rec.History {
@@ -1231,6 +1219,27 @@ func (op operation) repeatIn(rec ledger.DecisionRecord) (ledger.HistoryRow, bool
 		}
 	}
 	return ledger.HistoryRow{}, false
+}
+
+// placedRow is the row that put rec's router's policy p in place: its
+// router's last routing row carrying p's revision, else that router's last
+// routing row; false when it has none.
+func placedRow(rec ledger.DecisionRecord, p routedPolicy) (ledger.HistoryRow, bool) {
+	var last, placed ledger.HistoryRow
+	var seen, found bool
+	for _, h := range rec.History {
+		if h.By != "router:"+p.Router || !routingRow(h) {
+			continue
+		}
+		last, seen = h, true
+		if revisionOf(h) == p.Revision {
+			placed, found = h, true
+		}
+	}
+	if found {
+		return placed, true
+	}
+	return last, seen
 }
 
 // routingRow says h is a router's routing row: a routed row with no op id,
@@ -1461,6 +1470,18 @@ func (e *Engine) operate(ctx context.Context, id string, op operation) (OpReceip
 			if err != nil || !ok {
 				return cmpErr(err, fmt.Errorf("%w: %s", ledger.ErrNoDecision, id))
 			}
+			if op.once {
+				// Its repeat, looked for in this transaction as the look
+				// above did, on the record before anything here changes it
+				// (a policy's own write would read as its repeat).
+				rec, _, err := dtx.Record(n)
+				if err != nil {
+					return err
+				}
+				if h, ok := op.repeatIn(rec); ok {
+					return errOpRepeat{h}
+				}
+			}
 			if op.rev {
 				row.Rev++
 				if err := dtx.PutDecision(row); err != nil {
@@ -1482,15 +1503,6 @@ func (e *Engine) operate(ctx context.Context, id string, op operation) (OpReceip
 			}
 			hr := ledger.HistoryRow{Kind: op.kind, By: op.actor, Detail: historyDetail(dt), OpID: op.opID, Fingerprint: op.fp}
 			if op.once {
-				// Its repeat is its actor's row of its kind, looked for in
-				// this transaction as the look above did.
-				rec, _, err := dtx.Record(n)
-				if err != nil {
-					return err
-				}
-				if h, ok := op.repeatIn(rec); ok {
-					return errOpRepeat{h}
-				}
 				hr.OpID, hr.Fingerprint = "", ""
 			}
 			got, repeat, err := dtx.History(n, hr)

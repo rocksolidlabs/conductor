@@ -3,6 +3,7 @@ package crew
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/rocksolidlabs/conductor/ext"
@@ -248,4 +249,66 @@ func TestAPolicyAfterAnotherRoutersRouteIsWritten(t *testing.T) {
 		t.Fatalf("ana under the policy: %d", got)
 	}
 	stopRun(t, e, run.ID)
+}
+
+// A policy's repeat is the record's current policy told again, nothing
+// else. Routed with r1, re-routed to r2 and back to r1: r2 told again is no
+// repeat of its old row (the record carries r1) and is refused
+// routed_by_policy; r1 told again is answered by the row that put r1 in
+// place now, the second re-route's. Nothing is written by either.
+func TestAPolicysRepeatIsTheCurrentPolicy(t *testing.T) {
+	e, ld, run, id := routedGate(t, "api-sweep-0000a7e6")
+	ctx := t.Context()
+	if _, err := e.RoutePolicy(ctx, id, "switchman", recordOf(t, ld, id).Rev, anaRoute("r1"), toAna, "the architecture owner"); err != nil {
+		t.Fatal(err)
+	}
+	for i, rev := range []string{"r2", "r1"} {
+		if res, err := e.Reroute(ctx, id, "switchman", anaRoute(rev), ledger.HistoryRerouted, fmt.Sprintf("rr-%d", i+1), recordOf(t, ld, id).Rev); err != nil || res.Unchanged {
+			t.Fatalf("the re-route to %s: %+v %v", rev, res, err)
+		}
+	}
+	placed := recordOf(t, ld, id)
+	row := placed.History[len(placed.History)-1]
+	if policyRevision(t, placed) != "r1" || row.Kind != ledger.HistoryRerouted || row.OpID != "rr-2" {
+		t.Fatalf("after the re-routes: policy %s, last row %+v", placed.Policy, row)
+	}
+	var de *DecisionError
+	if rc, err := e.RoutePolicy(ctx, id, "switchman", placed.Rev, anaRoute("r2"), toAna, "the architecture owner"); !errors.As(err, &de) || de.Code != CodeRoutedByPolicy {
+		t.Fatalf("r2 told again under r1: %+v %v", rc, err)
+	}
+	if rc, err := e.RoutePolicy(ctx, id, "switchman", placed.Rev, anaRoute("r1"), toAna, "the architecture owner"); err != nil || !rc.Repeat || rc.Seq != row.Seq {
+		t.Fatalf("r1 told again: %+v %v, want the receipt of %+v", rc, err, row)
+	}
+	if now := recordOf(t, ld, id); now.Rev != placed.Rev || len(now.History) != len(placed.History) || now.Policy != placed.Policy {
+		t.Fatalf("a telling wrote: rev %d (was %d), %d rows (were %d)", now.Rev, placed.Rev, len(now.History), len(placed.History))
+	}
+	stopRun(t, e, run.ID)
+}
+
+// A policy put in place by a re-route whose why is assigned, delegated or
+// escalated, told again with the same revision, is a repeat answered by
+// that row, nothing written.
+func TestAPolicyPlacedByAnyRouterChangeIsItsRepeat(t *testing.T) {
+	for i, why := range []string{ledger.HistoryAssigned, ledger.HistoryDelegated, ledger.HistoryEscalated} {
+		t.Run(why, func(t *testing.T) {
+			e, ld, run, id := routedGate(t, fmt.Sprintf("api-sweep-0000a7f%d", i))
+			ctx := t.Context()
+			if _, err := e.Reroute(ctx, id, "switchman", anaRoute("r1"), why, "rr-1", recordOf(t, ld, id).Rev); err != nil {
+				t.Fatal(err)
+			}
+			placed := recordOf(t, ld, id)
+			row := placed.History[len(placed.History)-1]
+			if row.Kind != why {
+				t.Fatalf("the re-route's row: %+v", row)
+			}
+			rc, err := e.RoutePolicy(ctx, id, "switchman", placed.Rev, anaRoute("r1"), toAna, "the architecture owner")
+			if err != nil || !rc.Repeat || rc.Seq != row.Seq {
+				t.Fatalf("r1 told again after a re-route %s: %+v %v", why, rc, err)
+			}
+			if now := recordOf(t, ld, id); now.Rev != placed.Rev || len(now.History) != len(placed.History) {
+				t.Fatalf("the telling wrote: rev %d (was %d), %d rows (were %d)", now.Rev, placed.Rev, len(now.History), len(placed.History))
+			}
+			stopRun(t, e, run.ID)
+		})
+	}
 }
