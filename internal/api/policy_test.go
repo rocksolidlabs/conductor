@@ -825,3 +825,77 @@ func TestOverrideByAnAdminIdentityIsRechecked(t *testing.T) {
 		t.Fatalf("the superseded record: %v", old)
 	}
 }
+
+// policyNowOf is pass's read of did's policyNow, nil when the read carries
+// none.
+func (f *decideFixture) policyNowOf(t *testing.T, pass, did string) *policyNowReply {
+	t.Helper()
+	status, data := f.readAs(t, pass, did)
+	if status != http.StatusOK {
+		t.Fatalf("%s's read of %s: %d %.300s", pass, did, status, data)
+	}
+	var out struct {
+		PolicyNow *policyNowReply `json:"policyNow"`
+	}
+	if err := json.Unmarshal(data, &out); err != nil {
+		t.Fatal(err)
+	}
+	return out.PolicyNow
+}
+
+// An identity's operator the policy names and the router confirms is
+// eligible on its read, so its card does not hold it back, and its plain
+// answer is accepted as eligible, no override; the workbench token's read
+// of the same record is in force and not eligible.
+func TestAnEligibleAdminIdentityReadsAsEligible(t *testing.T) {
+	f := newPolicyFixture(t)
+	did := f.routed(t, "r1", "dr-1", withEligible(anaPolicy(ext.OverrideNone), "exttest-r1", "nate"))
+	f.fr.SetConfirm(did, func(q ext.ConfirmQuery) ext.Confirmation {
+		if q.Subject == "nate" {
+			return ext.Confirmation{InForce: true, Groups: []string{"architecture"}}
+		}
+		return ext.Confirmation{InForce: true}
+	})
+	if now := f.policyNowOf(t, passAdmin, did); now == nil || !now.InForce || !now.Eligible {
+		t.Fatalf("nate's read: %+v", now)
+	}
+	if now := f.policyNowOf(t, adminToken, did); now == nil || !now.InForce || now.Eligible {
+		t.Fatalf("the workbench token's read: %+v", now)
+	}
+	status, data, _ := f.callAs(t, passAdmin, http.MethodPost, "/api/decisions/"+did+"/respond", operatorBody("n1", 0, f.rev(t, did), false, ""))
+	if status != http.StatusCreated {
+		t.Fatalf("nate's plain answer: %d %s", status, data)
+	}
+	if rc := f.receiptOf(t, did, 1); rc.Override || len(rc.Groups) != 1 {
+		t.Fatalf("nate's receipt: %+v", rc)
+	}
+}
+
+// A record that carries a router's policy, read on a server with no router
+// that confirms policies, reads as not in force, in the respond route's
+// own words: the operator answers it.
+func TestARoutedRecordWithNoRouterReadsAsNotInForce(t *testing.T) {
+	f := newDecideFixture(t, nil)
+	did := f.open(t, "r1")
+	n, _ := ledger.ParseDecisionID(did)
+	rev := f.rev(t, did)
+	if _, err := f.srv.ledger.Transition(t.Context(), f.run, func(tx *ledger.Tx) error {
+		ok, err := tx.PutPolicy(n, routedPolicyText, rev)
+		if err == nil && !ok {
+			err = errors.New("the policy was not written")
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if now := f.policyNowOf(t, adminToken, did); now == nil || now.InForce || now.Why != "no router confirms its policy now" {
+		t.Fatalf("the read with no router: %+v", now)
+	}
+	f.expect(t, http.MethodPost, "/api/decisions/"+did+"/respond", operatorBody("o1", 0, f.rev(t, did), false, ""), http.StatusCreated, "")
+}
+
+// routedPolicyText is a router's policy naming ana, as a record keeps it.
+const routedPolicyText = `{"revision":"r1","approver":"router","quorum":1,"authority":[{"kind":"operator"}],"router":"switchman","scope":"s1",` +
+	`"pinned":{"rule":"r-1","groups":[{"role":"architecture","quorum":1}],"override":"operator","notify":"now"},` +
+	`"groups":[{"role":"architecture","label":"architecture owner","quorum":1,"rule":"r-1","eligible":[{"subject":"ana","name":"Ana","via":"role","ref":"ref-1"}]}],` +
+	`"override":"operator","routedAt":"2026-11-19T09:00:00Z","spare":true,"fallback":"local/1"}`

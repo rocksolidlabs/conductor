@@ -68,6 +68,8 @@ describe('in force or not', () => {
   it("holds the operator's answer back only under a router's policy in force, on an open record", () => {
     expect(operatorHeldBack(record(policy()), { inForce: true })).toBe(true)
     expect(operatorHeldBack(record(policy()), { inForce: false })).toBe(false)
+    // An identity's operator the policy names, confirmed now, answers as eligible: never held back.
+    expect(operatorHeldBack(record(policy()), { inForce: true, eligible: true })).toBe(false)
     expect(operatorHeldBack(record(policy()), null)).toBe(false)
     expect(operatorHeldBack(record(policy(), 'answered'), { inForce: true })).toBe(false)
     expect(operatorHeldBack(record({ revision: 'local/1', approver: 'operator' }), { inForce: true })).toBe(false)

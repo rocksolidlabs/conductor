@@ -781,7 +781,7 @@ func TestDecisionShowPrintsThePolicy(t *testing.T) {
 		`"pinned":{"rule":"r-1","groups":[{"role":"architecture","quorum":1},{"role":"security","quorum":1}],"override":"operator","notify":"now"},` +
 		`"groups":[{"role":"architecture","label":"architecture owner","quorum":1,"rule":"r-1","eligible":[{"subject":"ana","name":"Ana","via":"role","ref":"x"},{"subject":"ben","name":"Ben","via":"delegate","for":"ana","ref":"y"}]},` +
 		`{"role":"security","label":"security owner","quorum":1,"rule":"r-2","gap":"none is assigned in CND"}],"override":"operator","routedAt":"2026-11-19T09:00:00Z","fallback":"local/1"}`
-	out := policyText(crew.Decision{Policy: json.RawMessage(routed)}, false, true, "the roster moves")
+	out := policyText(crew.Decision{Policy: json.RawMessage(routed)}, policyNowWords{known: true, why: "the roster moves"})
 	for _, want := range []string{
 		"Who may answer (the policy of switchman, revision r1):\n",
 		"  the architecture owner: Ana (role), Ben (delegate for ana) (rule r-1)\n",
@@ -793,7 +793,11 @@ func TestDecisionShowPrintsThePolicy(t *testing.T) {
 			t.Fatalf("the policy's words lack %q:\n%s", want, out)
 		}
 	}
-	if got := policyText(crew.Decision{Policy: json.RawMessage(`{"revision":"local/1","approver":"operator","quorum":1,"authority":[{"kind":"operator"}]}`)}, true, true, ""); got != "" {
+	if got := policyText(crew.Decision{Policy: json.RawMessage(`{"revision":"local/1","approver":"operator","quorum":1,"authority":[{"kind":"operator"}]}`)}, policyNowWords{known: true, inForce: true}); got != "" {
 		t.Fatalf("the server's own policy printed: %q", got)
+	}
+	// An identity's operator the policy names answers as one of them.
+	if got := policyText(crew.Decision{Policy: json.RawMessage(routed)}, policyNowWords{known: true, inForce: true, eligible: true}); !strings.Contains(got, "you are among those it names") {
+		t.Fatalf("an eligible reader's words: %s", got)
 	}
 }

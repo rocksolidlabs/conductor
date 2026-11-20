@@ -814,17 +814,17 @@ func decisionShow(ctx context.Context, c *apiClient, id string, asJSON bool, std
 	fmt.Fprint(stdout, decisionText(d, refs, true))
 	var now struct {
 		PolicyNow *struct {
-			InForce bool   `json:"inForce"`
-			Why     string `json:"why"`
+			InForce  bool   `json:"inForce"`
+			Why      string `json:"why"`
+			Eligible bool   `json:"eligible"`
 		} `json:"policyNow"`
 	}
 	_ = json.Unmarshal(raw, &now)
-	fmt.Fprint(stdout, policyText(d, now.PolicyNow != nil && now.PolicyNow.InForce, now.PolicyNow != nil, func() string {
-		if now.PolicyNow == nil {
-			return ""
-		}
-		return now.PolicyNow.Why
-	}()))
+	var pn policyNowWords
+	if now.PolicyNow != nil {
+		pn = policyNowWords{known: true, inForce: now.PolicyNow.InForce, why: now.PolicyNow.Why, eligible: now.PolicyNow.Eligible}
+	}
+	fmt.Fprint(stdout, policyText(d, pn))
 	return 0, nil
 }
 
@@ -832,11 +832,20 @@ func decisionShow(ctx context.Context, c *apiClient, id string, asJSON bool, std
 // (the server's own bound).
 const minOverrideWhy = 10
 
+// policyNowWords is what the read said of a router's policy now: known
+// when it said anything, in force, its why, and whether the reader (an
+// identity's operator) is among those it names.
+type policyNowWords struct {
+	known, inForce, eligible bool
+	why                      string
+}
+
 // policyText is a decision router's policy on d in words: who may answer
 // (each group: whom it names and how, with the rule, or its gap), whether
 // the operator may override, and whether the policy is in force now (said
 // when the server said, known). "" under the server's own policy.
-func policyText(d crew.Decision, inForce, known bool, why string) string {
+func policyText(d crew.Decision, now policyNowWords) string {
+	inForce, known, why := now.inForce, now.known, now.why
 	p, router, ok := crew.RouterPolicyOf(string(d.Policy))
 	if !ok {
 		return ""
@@ -865,6 +874,8 @@ func policyText(d crew.Decision, inForce, known bool, why string) string {
 	}
 	switch {
 	case !known:
+	case inForce && now.eligible:
+		b.WriteString("  in force now: you are among those it names, and answer as one of them\n")
 	case inForce:
 		b.WriteString("  in force now\n")
 	case why != "":

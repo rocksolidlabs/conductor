@@ -37,10 +37,14 @@ export interface RoutedPolicy {
   routedAt?: string
 }
 
-/** Whether the router stands behind its policy now, as the operator's read says (`policyNow`). */
+/**
+ * Whether the router stands behind its policy now, as the operator's read says (`policyNow`); `eligible` when the reader, an identity's
+ * operator, is among those it names and confirms now: it answers as eligible, never held back.
+ */
 export interface PolicyNow {
   inForce: boolean
   why?: string
+  eligible?: boolean
 }
 
 /** The router's policy a record holds, or null under the server's own. */
@@ -98,9 +102,12 @@ export function heldBackWords(p: RoutedPolicy): string {
   return `This is for the ${p.groups[0]?.label ?? 'people its router names'}: nobody is assigned yet`
 }
 
-/** Whether the operator answers only by an override now: a router's policy the operator's read says is in force. */
+/**
+ * Whether the operator answers only by an override now: a router's policy the operator's read says is in force, and the reader not
+ * among those it names (an identity's operator the read says is eligible answers as eligible).
+ */
 export function operatorHeldBack(d: Pick<Decision, 'policy' | 'state'>, now: PolicyNow | null | undefined): boolean {
-  return d.state === 'open' && !!routedPolicy(d) && !!now?.inForce
+  return d.state === 'open' && !!routedPolicy(d) && !!now?.inForce && !now.eligible
 }
 
 /** Whether the policy lets the operator answer in its place. */

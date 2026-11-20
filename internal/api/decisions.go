@@ -581,8 +581,9 @@ func (s *Server) handleDecision(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	reply := map[string]any{"decision": d, "refs": s.decisionRefs(r.Context(), d.Evidence)}
-	if now := s.policyNow(r.Context(), did); now != nil {
-		// Under a router's policy: whether it is in force now (policy.go).
+	// Under a router's policy: whether it is in force now, and whether the
+	// reader (an identity's operator, by its subject) is eligible (policy.go).
+	if now := s.policyNowFor(r.Context(), did, principalOf(r).subject); now != nil {
 		reply["policyNow"] = now
 	}
 	writeJSON(w, http.StatusOK, reply)

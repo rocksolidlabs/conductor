@@ -307,11 +307,21 @@ func (s *Server) confirmFor(ctx context.Context, did string, auth crew.Authority
 	return &c, nil
 }
 
-// policyNow is the operator's read's {inForce, why} of a record under a
-// router's policy, from one Confirm with no subject; nil for any other
-// record, and with no router that confirms policies.
+// policyNow is whether a record under a router's policy is in force now,
+// {inForce, why}, from one Confirm with no subject; nil for any other
+// record. A record that carries a router's policy on a server whose router
+// confirms no policies now (none registered, or one that does not confirm)
+// is not in force, in the words the respond route's judgement gives.
 func (s *Server) policyNow(ctx context.Context, did string) *policyNowReply {
-	if !s.runs.RoutesPolicies() || s.ledger == nil {
+	return s.policyNowFor(ctx, did, "")
+}
+
+// policyNowFor is policyNow asked with subject ("" for none): the reply
+// says too whether subject is eligible now (Eligible), as the respond
+// route would judge its plain answer, so an operator's identity the policy
+// names answers as eligible on its card.
+func (s *Server) policyNowFor(ctx context.Context, did, subject string) *policyNowReply {
+	if s.ledger == nil {
 		return nil
 	}
 	n, ok := ledger.ParseDecisionID(did)
@@ -326,15 +336,31 @@ func (s *Server) policyNow(ctx context.Context, did string) *policyNowReply {
 	if !routed {
 		return nil
 	}
-	c := s.policyCheck(ctx, rec, p.Revision, "")
+	if !s.runs.RoutesPolicies() {
+		return &policyNowReply{Why: "no router confirms its policy now"}
+	}
+	c := s.policyCheck(ctx, rec, p.Revision, subject)
 	inForce := c.InForce && !c.Behind && (c.Revision == "" || c.Revision == p.Revision)
-	return &policyNowReply{InForce: inForce, Why: c.Why}
+	reply := &policyNowReply{InForce: inForce, Why: c.Why}
+	if inForce && subject != "" {
+		for _, g := range p.Groups {
+			for _, e := range g.Eligible {
+				if e.Subject == subject && slices.Contains(c.Groups, g.Role) {
+					reply.Eligible = true
+				}
+			}
+		}
+	}
+	return reply
 }
 
-// policyNowReply is GET /api/decisions/{did}'s policyNow.
+// policyNowReply is GET /api/decisions/{did}'s policyNow: in force now and
+// the router's why; eligible when the reader, an identity's operator, is
+// among those the policy names and the router confirms now.
 type policyNowReply struct {
-	InForce bool   `json:"inForce"`
-	Why     string `json:"why,omitempty"`
+	InForce  bool   `json:"inForce"`
+	Why      string `json:"why,omitempty"`
+	Eligible bool   `json:"eligible,omitempty"`
 }
 
 // recordDecision is rec as a router is told it, with what the record says
