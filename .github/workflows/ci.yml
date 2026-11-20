@@ -420,16 +420,16 @@ jobs:
         working-directory: desktop
 
   mobile-ios:
-    # The phone shell's iOS app, built unsigned for the simulator, and its native package's tests
-    # (docs/checks.md): the one place the app's project, its plugins and the native runtime are
-    # compiled together. scripts/ios_project.py, in the go job's scripts suite, holds the project
-    # to what it must not ship.
+    # The phone shell's iOS app, built unsigned for the simulator and started there by its boot
+    # check, and its native package's tests (docs/checks.md): the one place the app's project, its
+    # plugins and the native runtime are compiled together and run. scripts/ios_project.py, in the
+    # go job's scripts suite, holds the project to what it must not ship.
     # Its fetches are part of the check (AGENTS.md): the Swift packages' folder is cached on the
     # manifest's hash and their resolve tried three times (scripts/ios_boot.py), each step and the
     # job under a bound that is the sum of its steps'.
     runs-on: macos-latest
     needs: web
-    timeout-minutes: 110
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -454,8 +454,10 @@ jobs:
       - name: The Swift packages, resolved (three tries)
         run: make mobile-ios-resolve
         timeout-minutes: 17
+      # The build, then the boot check (ShellBootsUnderItsPolicyTests) on a simulator booted
+      # as a step of its own with its own tries (scripts/ios_boot.py).
       - run: make mobile-ios
-        timeout-minutes: 30
+        timeout-minutes: 70
       # A packaging's signing policy, placed where the plan says, is in the app: a second build
       # with the sample (mobile/ios/fixtures) holds its class, and the default build none.
       - name: A packaging's policy is in the app (the sample's build)

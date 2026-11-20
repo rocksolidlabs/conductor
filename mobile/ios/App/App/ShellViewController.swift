@@ -11,6 +11,8 @@ import WebKit
 class ShellViewController: CAPBridgeViewController {
     /** The wrapping delegate: the web view holds its UI delegate weakly, so the controller keeps it. */
     private var refused: MediaCaptureRefused?
+    /** The boot check's report, only in a launch the boot check asked for. */
+    private var bootCheck: BootCheckView?
 
     /** The bundle the app ships, always: the runtime's default reads a base path a page asked to keep; the shell's never does. */
     override func instanceDescriptor() -> InstanceDescriptor {
@@ -28,5 +30,6 @@ class ShellViewController: CAPBridgeViewController {
         let d = MediaCaptureRefused(wrapping: webView?.uiDelegate as? (NSObject & WKUIDelegate))
         refused = d
         webView?.uiDelegate = d
+        if BootCheck.asked(), let webView { bootCheck = BootCheckView(webView: webView) }
     }
 }

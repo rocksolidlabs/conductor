@@ -266,8 +266,11 @@ provider.
   script; `connect-src 'none'`, or the https origins a provider's build
   names); `make mobile-test` checks the bridge and starts the synced bundle
   under that policy. `make mobile-install mobile-sync mobile-ios` builds
-  the iOS app for the simulator, unsigned, on a Mac with Xcode, as CI's
-  `mobile-ios` job does, and `make mobile-native-test` tests its key, its
+  the iOS app for the simulator, unsigned, on a Mac with Xcode, and starts
+  it there with no provider in its boot check, which passes only when
+  Open a server is drawn under the page's policy with no violation and
+  the native layer's plugins in the page, as CI's `mobile-ios` job does;
+  and `make mobile-native-test` tests its key, its
   store and its plugins' calls. The repository's project holds no team,
   signing or push entitlement: anyone installs the shell on a device
   under their own signing (`docs/plans/phone-shell.md`, By hand). The

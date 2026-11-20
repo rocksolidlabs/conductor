@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
-"""The phone shell's iOS app on a Mac with Xcode: its Swift packages resolved, tried again when a download fails.
+"""The phone shell's iOS app on a Mac with Xcode: its Swift packages resolved, and its boot check on a simulator.
 
     python3 scripts/ios_boot.py resolve   # xcodebuild -resolvePackageDependencies, up to three tries a minute apart
     python3 scripts/ios_boot.py policy    # a build with the sample signing policy in the packaging's place: its class in the app
+    python3 scripts/ios_boot.py check     # a simulator booted (three tries), then the UI test ShellBootsUnderItsPolicyTests
 
 The app's project fetches the native runtime's Swift package and its two
 binary frameworks from GitHub; a check's own setup is part of the check
 (AGENTS.md), so a failed or stalled fetch is tried again, each try under a
-bound of its own, before the build. The policy check copies the sample
+bound of its own, before the build. The boot check runs on the newest iPhone
+simulator the machine has: booted and waited for as a step of its own,
+tried again after a shutdown when it does not come up in its bound; the test
+itself runs once, under a bound of its own, unsigned. The policy check copies the sample
 policy (mobile/ios/fixtures) into the packaging's place for one Release build,
 dead code stripped, and reads the built executable's Objective-C classes for
 the key's fixed name; the default build (`make mobile-ios`'s) must hold
@@ -17,6 +21,7 @@ library.
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 import re
 import shutil
@@ -35,6 +40,8 @@ POLICY_CLASS = "ConductorKeySigningPolicy"
 PLACE = ROOT / "mobile/ios/ConductorNative/Sources/ConductorPackaging/Packaging"
 SAMPLE = ROOT / "mobile/ios/fixtures/SampleSigningPolicy.swift"
 POLICY_DERIVED = ROOT / "mobile/ios/App/build-policy"
+BOOT_BOUND = 300
+TEST_BOUND = 1500
 
 
 def tries(argv: list[str], bound: int, count: int = TRIES, pause: int = PAUSE, run=subprocess.run, sleep=time.sleep, say=print) -> bool:
@@ -106,15 +113,74 @@ def policy(run=subprocess.run, say=print) -> int:
         return 1
     say(f"ios_boot: {POLICY_CLASS} is in the build with the sample policy and not in the default build")
     return 0
+def version(runtime: str) -> tuple[int, ...]:
+    """A simulator runtime's iOS version from its identifier (com.apple.CoreSimulator.SimRuntime.iOS-18-2): (18, 2); none is ()."""
+    m = re.search(r"\.iOS-([0-9-]+)$", runtime)
+    return tuple(int(p) for p in m.group(1).split("-")) if m else ()
+
+
+def pick(listing: dict) -> str | None:
+    """The udid of an available iPhone on the newest iOS runtime of `xcrun simctl list devices available -j`; one already booted first."""
+    best = None
+    for runtime, devices in (listing.get("devices") or {}).items():
+        v = version(runtime)
+        if not v:
+            continue
+        for d in devices:
+            if not d.get("isAvailable", True) or not str(d.get("name", "")).startswith("iPhone"):
+                continue
+            rank = (v, d.get("state") == "Booted", d.get("name", ""))
+            if best is None or rank > best[0]:
+                best = (rank, d["udid"])
+    return best[1] if best else None
+
+
+def boot(udid: str, run=subprocess.run, sleep=time.sleep, say=print) -> bool:
+    """Boots udid and waits until it has booted, three tries, a shutdown between them."""
+    for i in range(1, TRIES + 1):
+        run(["xcrun", "simctl", "boot", udid], timeout=BOOT_BOUND)  # refused when already booted; the wait below decides
+        try:
+            if run(["xcrun", "simctl", "bootstatus", udid, "-b"], timeout=BOOT_BOUND).returncode == 0:
+                return True
+            say(f"ios_boot: the simulator did not boot (try {i} of {TRIES})")
+        except subprocess.TimeoutExpired:
+            say(f"ios_boot: the simulator was not booted after {BOOT_BOUND} s (try {i} of {TRIES})")
+        run(["xcrun", "simctl", "shutdown", udid], timeout=BOOT_BOUND)
+        if i < TRIES:
+            sleep(PAUSE)
+    return False
+
+
+def test_argv(udid: str) -> list[str]:
+    return [
+        "xcodebuild", "test", "-project", str(PROJECT), "-scheme", "App", "-destination", f"id={udid}",
+        "-derivedDataPath", str(DERIVED), "-only-testing:AppUITests/ShellBootsUnderItsPolicyTests", "CODE_SIGNING_ALLOWED=NO",
+    ]
+
+
+def check(run=subprocess.run, say=print) -> int:
+    listing = run(["xcrun", "simctl", "list", "devices", "available", "-j"], capture_output=True, text=True, timeout=120)
+    udid = pick(json.loads(listing.stdout or "{}"))
+    if not udid:
+        say("ios_boot: no iPhone simulator on this machine")
+        return 1
+    say(f"ios_boot: the boot check on simulator {udid}")
+    if not boot(udid, run=run, say=say):
+        return 1
+    try:
+        return run(test_argv(udid), timeout=TEST_BOUND).returncode
+    except subprocess.TimeoutExpired:
+        say(f"ios_boot: the boot check ran past {TEST_BOUND} s")
+        return 1
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=(__doc__ or "").split("\n\n")[0])
-    ap.add_argument("what", choices=["resolve", "policy"])
+    ap.add_argument("what", choices=["resolve", "check", "policy"])
     what = ap.parse_args().what
     if what == "resolve":
         return 0 if tries(resolve_argv(), RESOLVE_BOUND) else 1
-    return policy()
+    return check() if what == "check" else policy()
 
 
 if __name__ == "__main__":

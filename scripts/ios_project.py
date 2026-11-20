@@ -8,8 +8,10 @@ What a build in Xcode would not refuse but the shell must not ship, read from th
   no App Transport Security exception, no URL types or queried schemes, and
   the app's files not shared.
 - The Xcode project: no team, no provisioning profile, no entitlements; iOS 16
-  in every configuration; the development app id alone; every Swift file of
-  the app in the app's sources; the native package (../ConductorNative) a
+  in every configuration; the development app id alone (and its UI tests'
+  own); a UI test target, the boot check, run by the shared scheme's test
+  action; every Swift file of the app and its UI tests in a target's
+  sources; the native package (../ConductorNative) a
   local package whose ConductorShell product the app links.
 - No entitlements or provisioning profile anywhere under mobile/ios; every
   *.xcconfig there sets no team, profile, entitlements or signing identity,
@@ -52,6 +54,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 APP_ID = "dev.conductor.mobile"
 TARGET = "16.0"
+UI_TESTS_ID = APP_ID + ".uitests"
 FACE_ID = "Conductor asks for Face ID to confirm an answer you send."
 # Keys Info.plist must not have: a transport exception, links the app is opened by or asks about, its files shared.
 PLIST_REFUSED = ("UIBackgroundModes", "NSAppTransportSecurity", "CFBundleURLTypes", "LSApplicationQueriesSchemes", "UIFileSharingEnabled", "LSSupportsOpeningDocumentsInPlace")
@@ -95,9 +98,16 @@ def project(mobile: Path) -> list[str]:
     if not targets or any(t != TARGET for t in targets):
         out.append(f"project.pbxproj: IPHONEOS_DEPLOYMENT_TARGET is {sorted(set(targets))}, not {TARGET} in every configuration")
     ids = re.findall(r"PRODUCT_BUNDLE_IDENTIFIER = ([^;]+);", pbx)
-    if not ids or any(i != APP_ID for i in ids):
-        out.append(f"project.pbxproj: PRODUCT_BUNDLE_IDENTIFIER is {sorted(set(ids))}, not {APP_ID}")
-    for f in sorted((app / "App").rglob("*.swift")):
+    if APP_ID not in ids or any(i not in (APP_ID, UI_TESTS_ID) for i in ids):
+        out.append(f"project.pbxproj: PRODUCT_BUNDLE_IDENTIFIER is {sorted(set(ids))}, not {APP_ID} (and {UI_TESTS_ID} for the boot check)")
+    # The boot check: a UI test target of the app, and the shared scheme's test action runs it.
+    if not re.search(r'productType = "com\.apple\.product-type\.bundle\.ui-testing";', pbx) or "TEST_TARGET_NAME = App;" not in pbx:
+        out.append("project.pbxproj: no UI test target of the app: the boot check (ShellBootsUnderItsPolicyTests) has nowhere to run")
+    scheme = app / "App.xcodeproj/xcshareddata/xcschemes/App.xcscheme"
+    testables = scheme.read_text().split("<Testables>", 1)[1].split("</Testables>", 1)[0] if scheme.exists() and "<Testables>" in scheme.read_text() else ""
+    if 'BlueprintName = "AppUITests"' not in testables:
+        out.append("App.xcscheme: its test action does not run AppUITests, the boot check")
+    for f in sorted([*(app / "App").rglob("*.swift"), *(app / "AppUITests").rglob("*.swift")]):
         name = f.name
         if not re.search(rf"/\* {re.escape(name)} \*/ = {{isa = PBXFileReference;[^}}]*path = {re.escape(name)};", pbx):
             out.append(f"project.pbxproj: {f.relative_to(app)} is not in the project")

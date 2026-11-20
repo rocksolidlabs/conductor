@@ -1469,6 +1469,18 @@ Swift package with no package of anyone else's):
   any usage description but Face ID's. Preflight names `mobile-ios` as
   CI's alone. CI caches the job's Swift packages and tries their resolve
   three times.
+- The boot check `ShellBootsUnderItsPolicyTests` is the app's UI test
+  target `AppUITests`, run by the shared scheme's test action from `make
+  mobile-ios` (`scripts/ios_boot.py check`: the newest iPhone simulator
+  the machine has, booted and waited for in three tries, then the test
+  once, unsigned). It launches the built app with no provider and the
+  boot check's argument, which alone makes the app add, before the
+  page's own scripts, a script that reports every policy violation and,
+  once Open a server is drawn, the bridge's platform and whether the
+  page has every plugin the bridge needs, into one label the test reads
+  (`ConductorShell`'s `BootCheck`, the app's `BootCheckView`). It passes
+  only on `ready platform=ios plugins=ok violations=0`, then finds Open a
+  server's address field.
 
 **A packaging's native sources** (as built): one place,
 `mobile/ios/ConductorNative/Sources/ConductorPackaging/Packaging/`, which

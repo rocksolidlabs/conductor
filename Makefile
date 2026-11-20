@@ -120,9 +120,10 @@ mobile-ios-resolve: ## the iOS app's Swift packages fetched, tried three times (
 	cd mobile && npx cap sync ios
 	python3 scripts/ios_boot.py resolve
 
-mobile-ios: ## the iOS app built for the simulator, unsigned (on a Mac with Xcode; make web-build mobile-install mobile-sync first)
+mobile-ios: ## the iOS app built for the simulator, unsigned, and its boot check run on one (on a Mac with Xcode; make web-build mobile-install mobile-sync first)
 	cd mobile && npx cap sync ios
 	xcodebuild -project mobile/ios/App/App.xcodeproj -scheme App -configuration Debug -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -derivedDataPath mobile/ios/App/build CODE_SIGNING_ALLOWED=NO build
+	python3 scripts/ios_boot.py check
 
 mobile-ios-policy: ## a build with the sample signing policy in a packaging's place holds its class, the default build none (on a Mac with Xcode; make mobile-ios first)
 	python3 scripts/ios_boot.py policy

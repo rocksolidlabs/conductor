@@ -14,6 +14,9 @@ import ios_project  # noqa: E402
 FILES = [
     "ios/App/App/Info.plist",
     "ios/App/App.xcodeproj/project.pbxproj",
+    "ios/App/App.xcodeproj/xcshareddata/xcschemes/App.xcscheme",
+    "ios/App/AppUITests/ShellBootsUnderItsPolicyTests.swift",
+    "ios/App/App/BootCheckView.swift",
     "ios/App/App/AppDelegate.swift",
     "ios/App/App/SceneDelegate.swift",
     "ios/App/App/ShellViewController.swift",
@@ -99,9 +102,7 @@ class IOSProjectTest(unittest.TestCase):
         self.edit(f, '#include? "Signing.xcconfig"', "PRODUCT_BUNDLE_IDENTIFIER = com.example.shell")
         self.only("debug.xcconfig: PRODUCT_BUNDLE_IDENTIFIER is com.example.shell")
         self.edit(f, "PRODUCT_BUNDLE_IDENTIFIER = com.example.shell", "")
-        scheme = self.dir / "mobile/ios/App/App.xcodeproj/xcshareddata/xcschemes/App.xcscheme"
-        scheme.parent.mkdir(parents=True, exist_ok=True)
-        scheme.write_text('<Scheme><LaunchAction><CommandLineArguments><CommandLineArgument argument = "--x" isEnabled = "YES"/></CommandLineArguments></LaunchAction></Scheme>')
+        self.edit("ios/App/App.xcodeproj/xcshareddata/xcschemes/App.xcscheme", "   <LaunchAction\n", '   <LaunchAction\n      <CommandLineArguments><CommandLineArgument argument = "--x" isEnabled = "YES"/></CommandLineArguments>\n')
         self.only("App.xcscheme: a CommandLineArgument")
 
     def test_the_config_has_no_key_it_was_not_read_for(self) -> None:
@@ -130,7 +131,7 @@ class IOSProjectTest(unittest.TestCase):
         p.write_text(p.read_text().replace("IPHONEOS_DEPLOYMENT_TARGET = 16.0;", "IPHONEOS_DEPLOYMENT_TARGET = 15.0;", 1))
         self.only("IPHONEOS_DEPLOYMENT_TARGET is ['15.0', '16.0']")
         p.write_text(p.read_text().replace("IPHONEOS_DEPLOYMENT_TARGET = 15.0;", "IPHONEOS_DEPLOYMENT_TARGET = 16.0;").replace("PRODUCT_BUNDLE_IDENTIFIER = dev.conductor.mobile;", "PRODUCT_BUNDLE_IDENTIFIER = com.example.shell;", 1))
-        self.only("PRODUCT_BUNDLE_IDENTIFIER is ['com.example.shell', 'dev.conductor.mobile']")
+        self.only("PRODUCT_BUNDLE_IDENTIFIER is ['com.example.shell', 'dev.conductor.mobile', 'dev.conductor.mobile.uitests']")
 
     def test_every_swift_file_is_in_the_apps_sources(self) -> None:
         (self.dir / "mobile/ios/App/App/Plugins/Extra.swift").write_text("")
@@ -138,6 +139,20 @@ class IOSProjectTest(unittest.TestCase):
         (self.dir / "mobile/ios/App/App/Plugins/Extra.swift").unlink()
         self.edit("ios/App/App.xcodeproj/project.pbxproj", "\t\t\t\tC0DC70000000000000000007 /* ConductorKeyPlugin.swift in Sources */,\n", "")
         self.only("Plugins/ConductorKeyPlugin.swift is not in the app's sources")
+
+    def test_the_boot_check_has_its_target_and_the_scheme_runs_it(self) -> None:
+        self.edit("ios/App/App.xcodeproj/xcshareddata/xcschemes/App.xcscheme", 'BlueprintName = "AppUITests"', 'BlueprintName = "Other"')
+        self.only("its test action does not run AppUITests")
+        self.setUp()
+        self.edit("ios/App/App.xcodeproj/project.pbxproj", 'productType = "com.apple.product-type.bundle.ui-testing";', 'productType = "com.apple.product-type.bundle.unit-test";')
+        self.only("no UI test target of the app")
+        self.setUp()
+        self.edit("ios/App/App.xcodeproj/project.pbxproj", "\t\t\t\tC0DC70000000000000000012 /* ShellBootsUnderItsPolicyTests.swift in Sources */,\n", "")
+        self.only("AppUITests/ShellBootsUnderItsPolicyTests.swift is not in the app's sources")
+        self.setUp()
+        p = self.dir / "mobile/ios/App/App.xcodeproj/project.pbxproj"
+        p.write_text(p.read_text().replace("PRODUCT_BUNDLE_IDENTIFIER = dev.conductor.mobile.uitests;", "PRODUCT_BUNDLE_IDENTIFIER = com.example.uitests;", 1))
+        self.only("PRODUCT_BUNDLE_IDENTIFIER is")
 
     def test_the_app_links_the_native_package(self) -> None:
         f = "ios/App/App.xcodeproj/project.pbxproj"
