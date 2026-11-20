@@ -56,16 +56,35 @@ var notConfirmed = ext.Confirmation{Why: "the router did not answer"}
 
 // confirmTold asks the provider to confirm q, in one of its call slots,
 // within ext.ConfirmWait, its answer checked (ext.Confirmation.Valid); any
-// failure is notConfirmed. answered says the router answered at all: in
-// time, valid, in a slot it had free.
+// failure is notConfirmed. The slot is waited for inside that one wait
+// (extAwait): a guard busy for a moment is never read as "not in force",
+// only a router that is late or down. answered says the router answered
+// at all: a slot found and a valid answer, both in time.
 func (g guardRouter) confirmTold(ctx context.Context, q ext.ConfirmQuery) (ext.Confirmation, bool) {
 	pc, ok := g.p.(ext.PolicyConfirmer)
 	if !ok || !live(g.ready) {
 		return notConfirmed, false
 	}
+	wait := ext.ConfirmWait
+	if f := extWaiting.Load(); f != nil {
+		wait = *f
+	}
+	wctx, cancel := context.WithTimeout(ctx, wait)
+	defer cancel()
+	if wctx.Err() != nil {
+		// Its wait has ended already (a list's): nothing goes in.
+		return notConfirmed, false
+	}
+	slot, ok := g.s.extAwait(wctx, ext.KindDecisions, g.name)
+	if !ok {
+		if ctx.Err() == nil {
+			g.s.extFailed(ext.KindDecisions, g.name, "busy", fmt.Sprintf("no call slot free within %s", wait))
+		}
+		return notConfirmed, false
+	}
 	own := q
 	own.Decision = copyDecision(q.Decision)
-	c, _, answered := extCallTold(ctx, g.s, ext.KindDecisions, g.name, ext.ConfirmWait, notConfirmed, func(c ext.Confirmation) error {
+	c, answered := extCallIn(wctx, g.s, slot, ext.KindDecisions, g.name, wait, notConfirmed, func(c ext.Confirmation) error {
 		return c.Valid()
 	}, func(ctx context.Context) (ext.Confirmation, error) {
 		mine := own
@@ -633,28 +652,41 @@ func (h *extHost) Reroute(ctx context.Context, r ext.RerouteRequest) (ext.Rerout
 	return res, err
 }
 
+// listAsks is how many of a list's asks of the router run at once: a
+// quarter of the guard's slots (extInFlight), so a list never holds them
+// all and the respond routes' own asks find one.
+const listAsks = extInFlight / 4
+
 // eligibleRows is rows, in order, without those under a router's policy the
 // router does not confirm subject eligible in now: asked after the
-// ledger's read, all at once within one ext.ConfirmWait. A row the router
-// did not answer in time (late, or no slot free) is left out too, and
+// ledger's read, listAsks at a time, all within one ext.ConfirmWait, each
+// ask waiting for a slot inside it. A row the router did not answer in
+// that wait (late, down, or no slot free in time) is left out too, and
 // unasked says one was.
 func (s *Server) eligibleRows(ctx context.Context, rows []ledger.DecisionRow, subject string) (kept []ledger.DecisionRow, unasked bool) {
 	cctx, cancel := context.WithTimeout(ctx, ext.ConfirmWait)
 	defer cancel()
 	yes := make([]bool, len(rows))
 	answered := make([]bool, len(rows))
+	asks := make(chan int)
 	var wg sync.WaitGroup
+	for range listAsks {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range asks {
+				yes[i], answered[i] = s.eligibleNow(cctx, ledger.DecisionRecord{DecisionRow: rows[i]}, subject)
+			}
+		}()
+	}
 	for i, row := range rows {
 		if !ledger.RouterPolicy(row.Policy) {
 			yes[i], answered[i] = true, true
 			continue
 		}
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			yes[i], answered[i] = s.eligibleNow(cctx, ledger.DecisionRecord{DecisionRow: row}, subject)
-		}()
+		asks <- i
 	}
+	close(asks)
 	wg.Wait()
 	for i, row := range rows {
 		if yes[i] {

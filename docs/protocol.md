@@ -8507,7 +8507,9 @@ above, and no field, code or row below is ever written or answered.
   record is in its **opening window**: every response is `409
   stale_policy`, nothing kept.
 - **Who answers.** At each response the route asks the router
-  (`Confirm`, within `ext.ConfirmWait`) with the responder's subject
+  (`Confirm`, within `ext.ConfirmWait`, which includes the wait for one
+  of the router's call slots: a router busy for a moment is waited for,
+  never taken as not in force) with the responder's subject
   (none for the workbench token) and hands its answer to the engine:
   - in force, the subject named in a group and confirmed eligible in
     it: accepted, the receipt's `groups`, `via` and `ref` saying for
@@ -8554,9 +8556,10 @@ above, and no field, code or row below is ever written or answered.
   router's policy (`GET /api/me/decisions`, `GET /api/decisions/{did}`,
   `POST /api/decisions/{did}/respond`) only while the router confirms it
   eligible now in a group that names it: the list asks the router for
-  each such row after its read, all within one `ext.ConfirmWait`, and
-  leaves out a row it does not confirm (and says `cut` when the router did
-  not answer for one); the read and the respond route answer `404
+  each such row after its read, four at a time, all within one
+  `ext.ConfirmWait`, and leaves out a row it does not confirm (and says
+  `cut` when the router did not answer for one); the read and the respond
+  route answer `404
   not_found` for it. So a person the router no longer names loses the
   record at their next request, before any re-route.
 - **Who changes a route.** Under a router's policy in force (one

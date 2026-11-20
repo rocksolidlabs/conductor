@@ -165,3 +165,137 @@ func TestDecisionLinkCannotAnswerARoutedDecision(t *testing.T) {
 		t.Fatalf("%d responses", n)
 	}
 }
+
+// busyGuard holds every call slot of f's router, so each ask of it must
+// wait for one, and answers a channel told each time an ask waits and the
+// function that gives the slots back.
+func busyGuard(t *testing.T, f *policyFixture) (waiting <-chan struct{}, free func()) {
+	t.Helper()
+	w := make(chan struct{}, 64)
+	hook := func(kind, _ string) {
+		if kind == ext.KindDecisions {
+			select {
+			case w <- struct{}{}:
+			default:
+			}
+		}
+	}
+	f.srv.extSlotWait.Store(&hook)
+	var held []extSlot
+	for range extInFlight {
+		sl, ok := f.srv.extTake(ext.KindDecisions, "switchman")
+		if !ok {
+			t.Fatal("a call slot of the router was taken before the test held them")
+		}
+		held = append(held, sl)
+	}
+	var once sync.Once
+	free = func() {
+		once.Do(func() {
+			for _, sl := range held {
+				sl.free()
+			}
+		})
+	}
+	t.Cleanup(free)
+	return w, free
+}
+
+// whileBusy runs call while every slot of f's router is held, and gives
+// the slots back once an ask is waiting for one (or call has returned
+// without waiting, which the caller's checks then judge).
+func whileBusy[T any](t *testing.T, f *policyFixture, call func() T) T {
+	t.Helper()
+	waiting, free := busyGuard(t, f)
+	done := make(chan T, 1)
+	go func() { done <- call() }()
+	select {
+	case <-waiting:
+		free()
+		return <-done
+	case got := <-done:
+		free()
+		return got
+	}
+}
+
+// A guard whose slots are all taken for a moment is waited for, inside the
+// ask's one wait: the decide list keeps every row the router confirms and
+// is not cut; an eligible person's answer is accepted; the operator's plain
+// answer under a policy allowing no override is refused, never taken as
+// not in force.
+func TestABusyGuardIsWaitedFor(t *testing.T) {
+	f := newPolicyFixture(t)
+	first := f.routed(t, "r1", "dr-1", anaPolicy(ext.OverrideNone))
+	second := f.routed(t, "r2", "dr-2", anaPolicy(ext.OverrideNone))
+	f.inForce(first)
+	f.inForce(second)
+	l := whileBusy(t, f, func() proto.DecideList { _, l := f.list(t, passAna); return l })
+	if !slices.Contains(ids(l), first) || !slices.Contains(ids(l), second) || l.Cut {
+		t.Fatalf("ana's list with the guard busy: %v cut %v", ids(l), l.Cut)
+	}
+	type answer struct {
+		status int
+		data   []byte
+		out    map[string]any
+	}
+	got := whileBusy(t, f, func() answer {
+		status, data, out := f.callAs(t, adminToken, http.MethodPost, "/api/decisions/"+first+"/respond", operatorBody("o1", 0, f.rev(t, first), false, ""))
+		return answer{status, data, out}
+	})
+	if got.status != http.StatusForbidden || errorCode(got.out) != crew.CodeNotEligible {
+		t.Fatalf("the operator's plain answer with the guard busy: %d %s", got.status, got.data)
+	}
+	got = whileBusy(t, f, func() answer {
+		status, data, out := f.respondAs(t, passAna, first, "a1", 0, f.rev(t, first))
+		return answer{status, data, out}
+	})
+	if got.status != http.StatusCreated {
+		t.Fatalf("ana's answer with the guard busy: %d %s", got.status, got.data)
+	}
+}
+
+// The decide list asks the router listAsks rows at a time, never holding
+// every slot of the guard: eight rows (one record's, eight times) are
+// asked, each ask held in the router until one more than listAsks are in
+// it at once, which the list never lets happen: it ends at its one wait,
+// its rows unasked, with no more than listAsks asks made at once.
+func TestTheDecideListAsksAFewAtATime(t *testing.T) {
+	f := newPolicyFixture(t)
+	did := f.routed(t, "r1", "dr-1", anaPolicy(ext.OverrideNone))
+	var mu sync.Mutex
+	now, most, open := 0, 0, false
+	gate := make(chan struct{})
+	release := func() {
+		mu.Lock()
+		defer mu.Unlock()
+		if !open {
+			open = true
+			close(gate)
+		}
+	}
+	t.Cleanup(release)
+	f.fr.SetConfirm(did, func(q ext.ConfirmQuery) ext.Confirmation {
+		mu.Lock()
+		now++
+		most = max(most, now)
+		full := now > listAsks
+		mu.Unlock()
+		if full {
+			release()
+		}
+		<-gate
+		mu.Lock()
+		now--
+		mu.Unlock()
+		return ext.Confirmation{InForce: true, Groups: []string{"architecture"}}
+	})
+	row := f.record(t, did).DecisionRow
+	rows := []ledger.DecisionRow{row, row, row, row, row, row, row, row}
+	f.srv.eligibleRows(t.Context(), rows, "ana")
+	mu.Lock()
+	defer mu.Unlock()
+	if most > listAsks {
+		t.Fatalf("%d asks in the router at once, at most %d", most, listAsks)
+	}
+}

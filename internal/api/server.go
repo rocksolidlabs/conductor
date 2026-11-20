@@ -417,7 +417,9 @@ type Server struct {
 	// its ready flag, and extStarting is set by the one StartExtensions
 	// that starts them; extAfter is the clock of their starts' waits and
 	// backoffs and of an identity provider's re-asks (principalWatch), nil
-	// for time.After, a test's own otherwise.
+	// for time.After, a test's own otherwise. extSlotWait, when a test sets
+	// it, is told the kind and provider name of each call that found every
+	// slot taken and waits for one (extAwait); nil outside tests.
 	exts        extSlots
 	extCtx      context.Context
 	extStop     context.CancelFunc
@@ -429,6 +431,7 @@ type Server struct {
 	extStarts   []*extStarter
 	extStarting atomic.Bool
 	extAfter    func(time.Duration) <-chan time.Time
+	extSlotWait atomic.Pointer[func(kind, name string)]
 	// hostCred holds a host connection's credential steps in tests
 	// (hostCredSeam); nil outside them.
 	hostCred *hostCredSeam

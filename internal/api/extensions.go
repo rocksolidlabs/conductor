@@ -405,6 +405,14 @@ func (s *Server) extAwait(ctx context.Context, kind, name string) (extSlot, bool
 	select {
 	case g.slots <- struct{}{}:
 		return extSlot{g}, true
+	default:
+	}
+	if f := s.extSlotWait.Load(); f != nil {
+		(*f)(kind, name)
+	}
+	select {
+	case g.slots <- struct{}{}:
+		return extSlot{g}, true
 	case <-ctx.Done():
 		return extSlot{}, false
 	}
