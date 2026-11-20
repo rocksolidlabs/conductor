@@ -161,7 +161,10 @@ func (s *Server) policyCheckTold(ctx context.Context, rec ledger.DecisionRecord,
 	}
 	d := s.recordDecision(ctx, rec)
 	c, answered := g.confirmTold(ctx, ext.ConfirmQuery{Decision: d, Revision: revision, Subject: subject})
-	retry := c.Behind || c.Routes || c.InForce && c.Revision != "" && c.Revision != revision
+	// A revision other than the one asked about, in force or not, asks the
+	// caller to try again (the response's judgement), so it too is held to
+	// the bound.
+	retry := c.Behind || c.Routes || c.Revision != "" && c.Revision != revision
 	if !s.policyClock.held(rec.ID(), retry) {
 		return ext.Confirmation{Why: "its router did not settle its policy within " + ext.MaxBehind.String()}, answered
 	}

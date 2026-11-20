@@ -236,6 +236,11 @@ func judgePolicy(rec ledger.DecisionRecord, resp Response, who Admittee, pol pol
 	if inForce && (pol.conf.Behind || pol.conf.Revision != "" && pol.conf.Revision != p.Revision) {
 		return true, refuse(CodeStalePolicy, "%s's policy is changing: try again", id)
 	}
+	if !inForce && pol.routes && pol.conf.Revision != "" && pol.conf.Revision != p.Revision {
+		// Not in force, of another revision than the one kept now: the
+		// router's word was about another policy.
+		return true, refuse(CodeStalePolicy, "%s's policy is changing: try again", id)
+	}
 	if !inForce {
 		why := "no router confirms its policy now"
 		if pol.conf != nil && pol.conf.Why != "" {

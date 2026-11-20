@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"sync"
@@ -390,6 +391,12 @@ func TestBehindPastItsBoundIsNotInForce(t *testing.T) {
 // ext.MaxBehind as well.
 func TestRevisionMismatchPastItsBoundIsNotInForce(t *testing.T) {
 	pastTheBound(t, ext.Confirmation{InForce: true, Revision: "exttest-r2"})
+}
+
+// Not in force of another revision is a try again too, held to the same
+// bound: past it the operator answers under local/1.
+func TestNotInForceOfAnotherRevisionPastItsBoundIsLocal(t *testing.T) {
+	pastTheBound(t, ext.Confirmation{Why: "moving", Revision: "exttest-r2"})
 }
 
 // An answer in force clears the clock: Behind, then in force for longer
@@ -901,30 +908,53 @@ const routedPolicyText = `{"revision":"r1","approver":"router","quorum":1,"autho
 	`"override":"operator","routedAt":"2026-11-19T09:00:00Z","spare":true,"fallback":"local/1"}`
 
 // A router that confirms leaving its revision out confirms the revision
-// it was asked about: re-routed between the respond route's ask and the
-// response's transaction, the operator's override is refused stale_policy,
-// nothing kept.
+// it was asked about, and a confirmation not in force is about one
+// revision too: re-routed between the respond route's ask and the
+// response's transaction, an answer is refused stale_policy, nothing
+// kept, whether it was sent at the rev read before the re-route or at the
+// rev after it: the operator's override with the policy in force, and the
+// operator's plain answer with the policy not in force.
 func TestARerouteBetweenTheAskAndTheAnswerIsStale(t *testing.T) {
 	f := newPolicyFixture(t)
-	did := f.routed(t, "r1", "dr-1", anaPolicy(ext.OverrideOperator))
-	var once sync.Once
-	f.fr.SetConfirm(did, func(q ext.ConfirmQuery) ext.Confirmation {
-		if q.Subject == "" {
-			once.Do(func() {
-				rec := f.record(t, did)
-				if _, err := f.srv.runs.Reroute(context.Background(), did, "switchman", withEligible(anaPolicy(ext.OverrideOperator), "exttest-r2", "ana"), ledger.HistoryRerouted, "op-m", rec.Rev); err != nil {
-					t.Errorf("the re-route: %v", err)
+	for i, c := range []struct {
+		name     string
+		conf     ext.Confirmation
+		override bool
+		after    bool
+	}{
+		{"an override at the rev read before", ext.Confirmation{InForce: true}, true, false},
+		{"an override at the rev after", ext.Confirmation{InForce: true}, true, true},
+		{"a plain answer not in force at the rev after", ext.Confirmation{Why: "the roster moves"}, false, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			did := f.routed(t, fmt.Sprintf("r%d", i+1), fmt.Sprintf("dr-%d", i+1), anaPolicy(ext.OverrideOperator))
+			var once sync.Once
+			f.fr.SetConfirm(did, func(q ext.ConfirmQuery) ext.Confirmation {
+				if q.Subject == "" {
+					once.Do(func() {
+						rec := f.record(t, did)
+						if _, err := f.srv.runs.Reroute(context.Background(), did, "switchman", withEligible(anaPolicy(ext.OverrideOperator), "exttest-r2", "ana"), ledger.HistoryRerouted, "op-m", rec.Rev); err != nil {
+							t.Errorf("%s: the re-route: %v", c.name, err)
+						}
+					})
 				}
+				return c.conf
 			})
-		}
-		return ext.Confirmation{InForce: true}
-	})
-	rev := f.rev(t, did)
-	status, data, out := f.callAs(t, adminToken, http.MethodPost, "/api/decisions/"+did+"/respond", operatorBody("o1", 0, rev, true, "Ana is away this week"))
-	if status != http.StatusConflict || errorCode(out) != crew.CodeStalePolicy {
-		t.Fatalf("an override re-routed under it: %d %s", status, data)
-	}
-	if n := len(f.record(t, did).Responses); n != 0 {
-		t.Fatalf("%d responses kept", n)
+			rev := f.rev(t, did)
+			if c.after {
+				rev++ // the rev the re-route commits
+			}
+			rationale := ""
+			if c.override {
+				rationale = "Ana is away this week"
+			}
+			status, data, out := f.callAs(t, adminToken, http.MethodPost, "/api/decisions/"+did+"/respond", operatorBody("o1", 0, rev, c.override, rationale))
+			if status != http.StatusConflict || errorCode(out) != crew.CodeStalePolicy {
+				t.Fatalf("%s: %d %s", c.name, status, data)
+			}
+			if n := len(f.record(t, did).Responses); n != 0 {
+				t.Fatalf("%s: %d responses kept", c.name, n)
+			}
+		})
 	}
 }
