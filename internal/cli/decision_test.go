@@ -744,3 +744,60 @@ func TestTaskDecideFor(t *testing.T) {
 		t.Fatalf("a usage error sent %d requests", n-before)
 	}
 }
+
+// conductor decision respond --override sends the answer as an override,
+// its --why the reason: without a reason of at least 10 characters it is
+// a usage error that sends nothing.
+func TestDecisionRespondOverride(t *testing.T) {
+	d := newDecisionAPI(t)
+	mustTask(t, "decide", "--type", "approval", "--question", "Ship it?", "--option", "Ship", "--option", "Hold", "--authorizes", "the deploy")
+	before := d.count()
+	for _, args := range [][]string{
+		{"respond", "dr-1", "--choice", "0", "--override"},
+		{"respond", "dr-1", "--choice", "0", "--override", "--why", "too short"},
+	} {
+		if code, _, _, err := d.decisionCmd(t, args[0], args[1:]...); code != 2 || err == nil || !strings.Contains(err.Error(), "--override needs its reason") {
+			t.Fatalf("%v: %d %v", args, code, err)
+		}
+	}
+	if d.count() != before {
+		t.Fatal("a usage error sent a request")
+	}
+	code, _, _, err := d.decisionCmd(t, "respond", "dr-1", "--choice", "0", "--override", "--why", "Ana is away this week")
+	if code != 0 || err != nil {
+		t.Fatalf("the override: %d %v", code, err)
+	}
+	seen := d.requests(before)
+	if len(seen) != 2 || seen[1].body["override"] != true || seen[1].body["rationale"] != "Ana is away this week" {
+		t.Fatalf("the override's body: %v", seen)
+	}
+}
+
+// decision show prints a router's policy: each group with whom it names
+// and how, a gap, the override, and whether it is in force now; nothing
+// for the server's own policy.
+func TestDecisionShowPrintsThePolicy(t *testing.T) {
+	routed := `{"revision":"r1","approver":"router","quorum":1,"authority":[{"kind":"operator"}],"router":"switchman","scope":"s1",` +
+		`"pinned":{"rule":"r-1","groups":[{"role":"architecture","quorum":1},{"role":"security","quorum":1}],"override":"operator","notify":"now"},` +
+		`"groups":[{"role":"architecture","label":"architecture owner","quorum":1,"rule":"r-1","eligible":[{"subject":"ana","name":"Ana","via":"role","ref":"x"},{"subject":"ben","name":"Ben","via":"delegate","for":"ana","ref":"y"}]},` +
+		`{"role":"security","label":"security owner","quorum":1,"rule":"r-2","gap":"none is assigned in CND"}],"override":"operator","routedAt":"2026-11-19T09:00:00Z","fallback":"local/1"}`
+	out := policyText(crew.Decision{Policy: json.RawMessage(routed)}, policyNowWords{known: true, why: "the roster moves"})
+	for _, want := range []string{
+		"Who may answer (the policy of switchman, revision r1):\n",
+		"  the architecture owner: Ana (role), Ben (delegate for ana) (rule r-1)\n",
+		"  the security owner: nobody: none is assigned in CND (rule r-2)\n",
+		"  the operator may override it, with a reason (respond --override --why TEXT)\n",
+		"  not in force now (the roster moves): the operator answers\n",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("the policy's words lack %q:\n%s", want, out)
+		}
+	}
+	if got := policyText(crew.Decision{Policy: json.RawMessage(`{"revision":"local/1","approver":"operator","quorum":1,"authority":[{"kind":"operator"}]}`)}, policyNowWords{known: true, inForce: true}); got != "" {
+		t.Fatalf("the server's own policy printed: %q", got)
+	}
+	// An identity's operator the policy names answers as one of them.
+	if got := policyText(crew.Decision{Policy: json.RawMessage(routed)}, policyNowWords{known: true, inForce: true, eligible: true}); !strings.Contains(got, "you are among those it names") {
+		t.Fatalf("an eligible reader's words: %s", got)
+	}
+}

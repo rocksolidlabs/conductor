@@ -1336,7 +1336,7 @@ func TestTheHistoryCapHolds(t *testing.T) {
 			t.Fatalf("a notified row past the rest: %+v %v", h, err)
 		}
 	}
-	if _, err := write(HistoryRow{Kind: HistoryEscalated}); !errors.Is(err, ErrDecisionLimit) {
+	if _, err := write(HistoryRow{Kind: HistoryExpired}); !errors.Is(err, ErrDecisionLimit) {
 		t.Fatalf("a provider's row past the rest: %v", err)
 	}
 	full := `{"by":"plan","pad":"` + strings.Repeat("x", MaxHistoryDetail-len(`{"by":"plan","pad":""}`)) + `"}`
@@ -1365,6 +1365,9 @@ func TestTheHistoryCapHolds(t *testing.T) {
 		// A Brakeman turn's routes: their own bound, after the operator's
 		// are spent and apart from them.
 		{[]string{HistoryRouted}, MaxDecisionTurnOps, TurnActor},
+		// A decision router's changes of the record's policy: a group of
+		// their own, with their op ids, apart from both.
+		{[]string{HistoryAssigned, HistoryDelegated, HistoryEscalated, HistoryRerouted}, MaxDecisionRouterChanges, "router:fake"},
 		{[]string{HistoryResponded}, MaxDecisionResponses, ""},
 		{[]string{HistoryApplied}, 1, ""},
 		{[]string{HistorySuperseded, HistoryCancelled}, 1, ""},

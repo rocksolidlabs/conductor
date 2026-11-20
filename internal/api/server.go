@@ -233,6 +233,8 @@ type Server struct {
 	pastes pasteStore
 	// runs launches crews and keeps their runs, in memory.
 	runs *crew.Engine
+	// policyClock holds a decision router to ext.MaxBehind (policy.go).
+	policyClock policyClock
 	// trees reads the trees of the previews, their indexes kept
 	// (preview_label.go).
 	trees treeReads
@@ -424,7 +426,9 @@ type Server struct {
 	// its ready flag, and extStarting is set by the one StartExtensions
 	// that starts them; extAfter is the clock of their starts' waits and
 	// backoffs and of an identity provider's re-asks (principalWatch), nil
-	// for time.After, a test's own otherwise.
+	// for time.After, a test's own otherwise. extSlotWait, when a test sets
+	// it, is told the kind and provider name of each call that found every
+	// slot taken and waits for one (extAwait); nil outside tests.
 	exts        extSlots
 	extCtx      context.Context
 	extStop     context.CancelFunc
@@ -436,6 +440,7 @@ type Server struct {
 	extStarts   []*extStarter
 	extStarting atomic.Bool
 	extAfter    func(time.Duration) <-chan time.Time
+	extSlotWait atomic.Pointer[func(kind, name string)]
 	// hostCred holds a host connection's credential steps in tests
 	// (hostCredSeam); nil outside them.
 	hostCred *hostCredSeam
@@ -755,6 +760,9 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		// steps and sessions: the server's envPassthrough, as the server
 		// started with it.
 		s.runs.SetEnvPassthrough(cfg.EnvPassthrough)
+		// A registered decision router that confirms policies routes the
+		// records' policies (policy.go); with none, nothing changes.
+		s.runs.SetRouterPolicies(s.routerConfirms(), s.policyCheck)
 	}
 	s.webhooks = s.startNotifier(cfg.Webhooks)
 	// The runs take every entry too: a member's done starts the members after

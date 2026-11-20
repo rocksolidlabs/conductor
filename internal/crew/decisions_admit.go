@@ -30,10 +30,12 @@ const (
 	EntryGrant    = "grant"
 )
 
-// PolicyEntry is one entry of a decision's authority.
+// PolicyEntry is one entry of a decision's authority: an eligible entry
+// names its subject.
 type PolicyEntry struct {
-	Kind  string `json:"kind"`
-	Grant string `json:"grant,omitempty"`
+	Kind    string `json:"kind"`
+	Grant   string `json:"grant,omitempty"`
+	Subject string `json:"subject,omitempty"`
 }
 
 // Admittee is who asks: the grants its principal holds here, how it
@@ -68,6 +70,10 @@ func (e PolicyEntry) admits(who Admittee) bool {
 		return (who.Via == ViaWorkbench || who.Via == ViaIdentity) && who.holds(ext.GrantAdmin)
 	case EntryGrant:
 		return e.Grant != "" && who.Via == ViaIdentity && who.holds(ext.Grant(e.Grant))
+	case EntryEligible:
+		// A person a router's policy names: that identity, holding the
+		// decide grant or the admin grant.
+		return e.Subject != "" && who.Via == ViaIdentity && who.Subject == e.Subject && (who.holds(ext.GrantDecide) || who.holds(ext.GrantAdmin))
 	}
 	return false
 }
@@ -85,6 +91,11 @@ func Admits(entries []PolicyEntry, who Admittee) bool {
 // grant's entry beside it while its route target is the grant. A policy
 // that cannot be read gives none, so it admits nobody.
 func EntriesOf(rec ledger.DecisionRecord) []PolicyEntry {
+	if rp, ok := routedOf(rec.Policy); ok {
+		// A router's policy: the operator and the persons it names, never
+		// the decide grant, whatever the request's for says.
+		return rp.entries()
+	}
 	var p struct {
 		Authority []PolicyEntry `json:"authority"`
 	}

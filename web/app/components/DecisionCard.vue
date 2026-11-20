@@ -2,6 +2,8 @@
 import type { Decision, DecisionRef } from '~/utils/decisions'
 import { acceptedAnswer, approverLead, approverWords, askedWhere, assignmentWords, authorizesLine, decisionWords, detailsOpen, historyWords, optionSubject, optionsOf, recommended, routedFor, stepLook, subjectWords } from '~/utils/decisions'
 import { relativeTime } from '~/utils/sessions'
+import type { PolicyNow } from '~/utils/decisionPolicy'
+import { notInForceWords, overrideLine, routedPolicy, whoMayAnswer } from '~/utils/decisionPolicy'
 import { inShell } from '~/utils/shell'
 
 /**
@@ -21,10 +23,21 @@ import { inShell } from '~/utils/shell'
  * final, and each option's candidate (its task, attempt and short commit), linked to the ticket's comparison when the run's ticket is
  * known; nothing is marked recommended.
  */
-const props = withDefaults(defineProps<{ decision: Decision; refs?: readonly DecisionRef[]; now: number; controls?: boolean; captures?: boolean }>(), {
+const props = withDefaults(defineProps<{ decision: Decision; refs?: readonly DecisionRef[]; now: number; controls?: boolean; captures?: boolean; policyNow?: PolicyNow | null }>(), {
   controls: false,
   captures: false,
+  policyNow: null,
 })
+
+/**
+ * A decision router's policy on it (SW1): who may answer, by group, each person with how they are eligible and the rule that named
+ * them; a group nobody fills, in its own words; and, when the operator's read says it is not in force now, that the operator answers.
+ * A record under the server's own policy keeps the words it had.
+ */
+const policy = computed(() => routedPolicy(props.decision))
+const policyLines = computed(() => (policy.value ? whoMayAnswer(policy.value) : []))
+const notInForce = computed(() => (policy.value && props.decision.state === 'open' ? notInForceWords(policy.value, props.policyNow) : ''))
+const overridden = computed(() => (props.decision.responses ?? []).map((r) => overrideLine(r)).find((w) => w) ?? '')
 
 /** Whether the run that holds it runs here now: an answer recorded on a run that does not waits for it to be continued. */
 const run = useDecisionRunInfo(() => props.decision.run)
@@ -72,6 +85,15 @@ watch(
       {{ relativeTime(decision.createdAt, now, { suffix: true }) }} · <span data-decision-approver-lead>{{ approverLead(decision) }}</span> <span data-decision-approver>{{ approverWords(decision) }}</span><span v-if="routedFor(decision)" :data-decision-routed-for="routedFor(decision)!.person">, for {{ routedFor(decision)!.person }} (routed by {{ routedFor(decision)!.by }})</span>
     </p>
     <p v-if="assignmentWords(decision)" class="text-sm text-default" data-decision-assignment>{{ assignmentWords(decision) }}.</p>
+
+    <section v-if="policy" class="flex flex-col gap-1 rounded-md bg-elevated/40 p-2 text-xs ring ring-default" data-decision-policy :data-policy-revision="policy.revision">
+      <span class="font-medium text-default">Who may answer</span>
+      <p v-for="l in policyLines" :key="l.role" class="break-words" :class="l.gap ? 'text-warning' : 'text-default'" :data-policy-group="l.role" :data-policy-gap="l.gap ? '' : undefined">
+        {{ l.words }}<span class="text-muted"> · rule {{ l.rule }}</span>
+      </p>
+      <p v-if="notInForce" class="break-words text-muted" data-decision-policy-not-in-force>{{ notInForce }}</p>
+      <p v-if="overridden" class="break-words text-muted" data-decision-policy-override>{{ overridden }}</p>
+    </section>
 
     <MarkdownPreview v-if="decision.request.context" :text="decision.request.context" dir="" :relative-links="false" class="text-sm" data-decision-context />
 

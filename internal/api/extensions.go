@@ -414,6 +414,14 @@ func (s *Server) extAwait(ctx context.Context, kind, name string) (extSlot, bool
 	select {
 	case g.slots <- struct{}{}:
 		return extSlot{g}, true
+	default:
+	}
+	if f := s.extSlotWait.Load(); f != nil {
+		(*f)(kind, name)
+	}
+	select {
+	case g.slots <- struct{}{}:
+		return extSlot{g}, true
 	case <-ctx.Done():
 		return extSlot{}, false
 	}
@@ -877,6 +885,9 @@ func (g guardRouter) take() (extSlot, bool) {
 func (g guardRouter) routeIn(ctx context.Context, slot extSlot, d ext.Decision) (ext.Route, bool) {
 	own := copyDecision(d)
 	return extCallIn(ctx, g.s, slot, ext.KindDecisions, g.name, ext.RouteWait, ext.Route{}, func(r ext.Route) error {
+		if err := g.policyShape(r.Policy); err != nil {
+			return err
+		}
 		return r.Valid(own)
 	}, func(ctx context.Context) (ext.Route, error) {
 		r, err := g.p.Route(ctx, copyDecision(own))
@@ -1148,9 +1159,10 @@ func copyPrincipal(p ext.Principal) ext.Principal {
 	return p
 }
 
-// copyDecision is d with its options copied.
+// copyDecision is d with its options and its record copied.
 func copyDecision(d ext.Decision) ext.Decision {
 	d.Options = copyOrNil(d.Options)
+	d.Record = d.Record.Clone()
 	return d
 }
 
@@ -1173,9 +1185,10 @@ func copyQuery(q ext.ContextQuery) ext.ContextQuery {
 	return q
 }
 
-// copyRoute is r with its destinations and its answer copied.
+// copyRoute is r with its destinations, its answer and its policy copied.
 func copyRoute(r ext.Route) ext.Route {
 	r.To = copyOrNil(r.To)
+	r.Policy = r.Policy.Clone()
 	if r.Answer != nil {
 		a := *r.Answer
 		a.By = copyPrincipal(a.By)
@@ -1198,3 +1211,24 @@ func (s *Server) Registered() []ext.Registration {
 
 // freeBuild is the providers of a server made without WithExtensions.
 func freeBuild() ext.Providers { return local.Fill(ext.Providers{}) }
+
+// policyShape refuses a route's policy this server does not take: one from
+// a router that does not confirm policies (ext.PolicyConfirmer), one past
+// the shape it judges (one group of quorum 1, no distinct persons), and
+// one that carries the server's own count of changes (Reroutes, Recent).
+// No policy is nothing to refuse.
+func (g guardRouter) policyShape(p *ext.RoutePolicy) error {
+	if p == nil {
+		return nil
+	}
+	if _, ok := g.p.(ext.PolicyConfirmer); !ok {
+		return errors.New("a policy from a router that does not confirm policies")
+	}
+	switch {
+	case len(p.Groups) != 1 || len(p.Pinned.Groups) != 1 || p.Groups[0].Quorum != 1 || p.Pinned.Groups[0].Quorum != 1 || p.Distinct || p.Pinned.Distinct:
+		return errors.New("a policy past one group of quorum 1, which is all this server judges")
+	case p.Reroutes != 0 || len(p.Recent) != 0:
+		return errors.New("a policy's reroutes and recent changes are the server's, sent empty")
+	}
+	return nil
+}

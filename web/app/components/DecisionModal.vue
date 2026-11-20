@@ -37,8 +37,8 @@ const open = computed({
         </UAlert>
         <p v-if="!record.decision.value && !record.error.value" class="text-sm text-muted">Reading {{ modal.id.value }}…</p>
         <template v-if="record.decision.value">
-          <DecisionCard :decision="record.decision.value" :refs="record.refs.value" :now="now" :controls="controls" captures />
-          <DecisionRespond :decision="record.decision.value" :begin="record.begin" @read="record.read()" @controls="controls = $event" />
+          <DecisionCard :decision="record.decision.value" :refs="record.refs.value" :now="now" :controls="controls" captures :policy-now="record.policyNow.value" />
+          <DecisionRespond :decision="record.decision.value" :begin="record.begin" :policy-now="record.policyNow.value" :router="record.router.value" @read="record.read()" @controls="controls = $event" />
         </template>
       </div>
     </template>

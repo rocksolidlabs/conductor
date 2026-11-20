@@ -14,6 +14,7 @@ import (
 var (
 	_ ext.IdentityProvider  = (*FakeIdentity)(nil)
 	_ ext.DecisionRouter    = (*FakeRouter)(nil)
+	_ ext.PolicyConfirmer   = (*FakeRouter)(nil)
 	_ ext.ContextProvider   = (*FakeContext)(nil)
 	_ ext.NotificationSink  = (*FakeSink)(nil)
 	_ ext.ContinuityStore   = (*FakeContinuity)(nil)
@@ -146,13 +147,19 @@ func (f *FakeIdentity) Authenticate(_ context.Context, token string) (ext.Princi
 
 // FakeRouter is a decision router that records the decisions it is given
 // and their resolutions, and answers the route scripted for a question's
-// id, the empty route for the rest.
+// id, the empty route for the rest. It confirms policies
+// (ext.PolicyConfirmer): it answers the confirmation scripted for a
+// record's id, not in force for the rest, and records every query.
 type FakeRouter struct {
 	changes
 	name string
 
 	mu          sync.Mutex
 	routes      map[string]ext.Route
+	policies    map[string]ext.RoutePolicy
+	confirm     map[string]func(ext.ConfirmQuery) ext.Confirmation
+	confirms    []ext.ConfirmQuery
+	gate        chan struct{} // while set, Route waits for it to close
 	err         error
 	decisions   []ext.Decision
 	resolutions []ext.Resolution
@@ -160,7 +167,73 @@ type FakeRouter struct {
 
 // NewFakeRouter is a FakeRouter named name that answers the empty route.
 func NewFakeRouter(name string) *FakeRouter {
-	return &FakeRouter{name: name, routes: map[string]ext.Route{}}
+	return &FakeRouter{name: name, routes: map[string]ext.Route{}, policies: map[string]ext.RoutePolicy{}, confirm: map[string]func(ext.ConfirmQuery) ext.Confirmation{}}
+}
+
+// SetPolicy has Route answer p as its policy for the record id, beside the
+// route set for it.
+func (f *FakeRouter) SetPolicy(id string, p ext.RoutePolicy) {
+	f.mu.Lock()
+	f.policies[id] = *p.Clone()
+	f.mu.Unlock()
+	f.tell()
+}
+
+// SetConfirm has Confirm answer fn's answer for the record id; a record
+// with none set is answered not in force.
+func (f *FakeRouter) SetConfirm(id string, fn func(ext.ConfirmQuery) ext.Confirmation) {
+	f.mu.Lock()
+	f.confirm[id] = fn
+	f.mu.Unlock()
+	f.tell()
+}
+
+// Confirms answers the queries Confirm was given, in order.
+func (f *FakeRouter) Confirms() []ext.ConfirmQuery {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]ext.ConfirmQuery, len(f.confirms))
+	for i, q := range f.confirms {
+		q.Decision = copyDecision(q.Decision)
+		out[i] = q
+	}
+	return out
+}
+
+// Confirm records q and answers the confirmation set for its record.
+func (f *FakeRouter) Confirm(_ context.Context, q ext.ConfirmQuery) (ext.Confirmation, error) {
+	f.mu.Lock()
+	q.Decision = copyDecision(q.Decision)
+	f.confirms = append(f.confirms, q)
+	fn := f.confirm[q.Decision.Request]
+	f.mu.Unlock()
+	f.tell()
+	if fn == nil {
+		return ext.Confirmation{Why: "the fake router holds no policy for " + q.Decision.Request}, nil
+	}
+	c := fn(q)
+	c.Groups = append([]string(nil), c.Groups...)
+	return c, nil
+}
+
+// HoldRoutes has every Route wait, after recording its decision, until
+// the release it answers is called (or the call's context ends).
+func (f *FakeRouter) HoldRoutes() (release func()) {
+	gate := make(chan struct{})
+	f.mu.Lock()
+	f.gate = gate
+	f.mu.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			f.mu.Lock()
+			if f.gate == gate {
+				f.gate = nil
+			}
+			f.mu.Unlock()
+			close(gate)
+		})
+	}
 }
 
 // Name answers the fake's name.
@@ -182,13 +255,25 @@ func (f *FakeRouter) SetErr(err error) {
 	f.tell()
 }
 
-// Route records d and answers the route set for its id.
-func (f *FakeRouter) Route(_ context.Context, d ext.Decision) (ext.Route, error) {
+// Route records d and answers the route set for its id, with the policy
+// set for it.
+func (f *FakeRouter) Route(ctx context.Context, d ext.Decision) (ext.Route, error) {
 	f.mu.Lock()
 	f.decisions = append(f.decisions, copyDecision(d))
 	r, err := copyRoute(f.routes[d.ID]), f.err
+	if p, ok := f.policies[d.ID]; ok {
+		r.Policy = p.Clone()
+	}
+	gate := f.gate
 	f.mu.Unlock()
 	f.tell()
+	if gate != nil {
+		select {
+		case <-gate:
+		case <-ctx.Done():
+			return ext.Route{}, ctx.Err()
+		}
+	}
 	if err != nil {
 		return ext.Route{}, err
 	}
@@ -729,6 +814,7 @@ func copyAll[E any](xs []E, each func(E) E) []E {
 
 func copyDecision(d ext.Decision) ext.Decision {
 	d.Options = append([]ext.DecisionOption(nil), d.Options...)
+	d.Record = d.Record.Clone()
 	return d
 }
 
@@ -749,6 +835,7 @@ func copyPrincipal(p ext.Principal) ext.Principal {
 
 func copyRoute(r ext.Route) ext.Route {
 	r.To = append([]ext.Destination(nil), r.To...)
+	r.Policy = r.Policy.Clone()
 	if r.Answer != nil {
 		a := *r.Answer
 		a.By = copyPrincipal(a.By)

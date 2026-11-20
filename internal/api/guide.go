@@ -517,7 +517,7 @@ var operationsTable = sync.OnceValue(func() []Operation {
 			Input:   bodySchema(decisionCommentBody{}),
 			Bounds:  map[string]int{"body": maxDecisionAnswerBody}},
 		{Name: "decision_route", Scope: "admin", Method: http.MethodPost, Path: "/api/decisions/{did}/route", needs: needLauncher, Receipt: "ledger", Revision: "decision",
-			Summary: "Route a decision: to the operator, a person of its run's crew ({kind: person|role, name}), or the decide grant ({kind: grant, grant: decide}; 409 no_identity with no identity provider), which a route to the operator takes back while it is open.",
+			Summary: "Route a decision: to the operator, a person of its run's crew ({kind: person|role, name}), or the decide grant ({kind: grant, grant: decide}; 409 no_identity with no identity provider), which a route to the operator takes back; or the router ({kind: router}); 409 routed_by_policy under a policy.",
 			Input:   bodySchema(decisionRouteBody{}),
 			Bounds:  map[string]int{"body": maxDecisionAnswerBody}},
 		{Name: "ticket_create", Scope: "admin", Method: http.MethodPost, Path: "/api/dispatch/tickets", needs: needLauncher, Receipt: "dispatch",

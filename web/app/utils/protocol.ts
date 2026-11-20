@@ -446,6 +446,8 @@ export type DecisionDestination =
   | { kind: 'person'; name: string }
   | { kind: 'role'; name: string }
   | { kind: 'grant'; grant: typeof GRANT_DECIDE }
+  /** Ask the registered decision router for a route again (SW1); `409 no_router` with none. */
+  | { kind: 'router' }
 
 /** The route to the grant's refusal on a server with no identity provider registered. */
 export const NO_IDENTITY = 'no_identity'
