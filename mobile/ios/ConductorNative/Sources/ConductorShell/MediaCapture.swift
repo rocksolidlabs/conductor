@@ -3,8 +3,10 @@ import WebKit
 
 /**
  * The web view's UI delegate as the shell sets it: every media capture request (a microphone, a camera) answered `.deny`, so no
- * page in the shell can open either, and everything else handed to the delegate it wraps (the native runtime's own, which shows
- * the page's alerts and would grant a capture). The web view holds its UI delegate weakly: whoever sets this one keeps it.
+ * page in the shell can open either; every text-input prompt answered nil and handed to no one (the native runtime reads a prompt
+ * whose text is JSON as a native call, its cookies code among them; the shell's pages use no prompt); and everything else (an alert,
+ * a confirm, a new window) handed to the delegate it wraps, the native runtime's own. The web view holds its UI delegate weakly:
+ * whoever sets this one keeps it.
  */
 public final class MediaCaptureRefused: NSObject, WKUIDelegate {
     public weak var inner: (NSObject & WKUIDelegate)?
@@ -24,6 +26,17 @@ public final class MediaCaptureRefused: NSObject, WKUIDelegate {
         decisionHandler: @escaping (WKPermissionDecision) -> Void
     ) {
         decisionHandler(Self.decision)
+    }
+
+    /** Every text-input prompt: no answer, and never handed on. */
+    public func webView(
+        _ webView: WKWebView,
+        runJavaScriptTextInputPanelWithPrompt prompt: String,
+        defaultText: String?,
+        initiatedByFrame frame: WKFrameInfo,
+        completionHandler: @escaping (String?) -> Void
+    ) {
+        completionHandler(nil)
     }
 
     public override func responds(to selector: Selector!) -> Bool {

@@ -76,28 +76,22 @@ public struct DeviceProtection: StoreProtection {
 public struct WebCaches: HTTPCaches {
     let jar: HTTPCookieStorage
     let credentials: URLCredentialStorage
-    let webView: Bool
+    let webData: @Sendable () async -> Void
 
     /** The phone's own: the shared jar and credential store, and the web view's data store. */
     public init() {
-        self.init(jar: .shared, credentials: .shared, webView: true)
+        self.init(jar: .shared, credentials: .shared, webData: WebCaches.removeWebViewData)
     }
 
-    /** jar and credentials as given; webView false leaves the web view's store alone (a test with no web view). */
-    public init(jar: HTTPCookieStorage, credentials: URLCredentialStorage, webView: Bool) {
+    /** jar and credentials as given; webData empties the web view's store (a test gives its own). */
+    public init(jar: HTTPCookieStorage, credentials: URLCredentialStorage, webData: @escaping @Sendable () async -> Void) {
         self.jar = jar
         self.credentials = credentials
-        self.webView = webView
+        self.webData = webData
     }
 
-    public func clear() async {
-        URLCache.shared.removeAllCachedResponses()
-        jar.removeCookies(since: .distantPast)
-        for cookie in jar.cookies ?? [] { jar.deleteCookie(cookie) }
-        for (space, byUser) in credentials.allCredentials {
-            for credential in byUser.values { credentials.remove(credential, for: space) }
-        }
-        guard webView else { return }
+    /** The web view's whole data store emptied. */
+    @Sendable public static func removeWebViewData() async {
         await withCheckedContinuation { (done: CheckedContinuation<Void, Never>) in
             DispatchQueue.main.async {
                 WKWebsiteDataStore.default().removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: .distantPast) {
@@ -105,6 +99,25 @@ public struct WebCaches: HTTPCaches {
                 }
             }
         }
+    }
+
+    private func emptyJar() {
+        jar.removeCookies(since: .distantPast)
+        for cookie in jar.cookies ?? [] { jar.deleteCookie(cookie) }
+    }
+
+    /**
+     * The jar emptied before and again after the web view's store: the runtime copies the web view's cookies into the jar as they
+     * change, so one the web view had while its store was being emptied is not left in the jar.
+     */
+    public func clear() async {
+        URLCache.shared.removeAllCachedResponses()
+        emptyJar()
+        for (space, byUser) in credentials.allCredentials {
+            for credential in byUser.values { credentials.remove(credential, for: space) }
+        }
+        await webData()
+        emptyJar()
     }
 }
 

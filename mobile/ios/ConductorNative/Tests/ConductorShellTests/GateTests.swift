@@ -48,4 +48,29 @@ import WebKit
         #expect(gate.inner === runtime)
     }
 
+    @Test func theViewAnswersNoPromptAndHandsNoneOn() {
+        final class Runtime: NSObject, WKUIDelegate {
+            var prompts = 0
+            func webView(_ webView: WKWebView, runJavaScriptTextInputPanelWithPrompt prompt: String, defaultText: String?, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping (String?) -> Void) {
+                prompts += 1
+                completionHandler("answered")
+            }
+        }
+        let runtime = Runtime()
+        let d = MediaCaptureRefused(wrapping: runtime)
+        let sel = #selector(WKUIDelegate.webView(_:runJavaScriptTextInputPanelWithPrompt:defaultText:initiatedByFrame:completionHandler:))
+        #expect(d.responds(to: sel) && d.forwardingTarget(for: sel) == nil)
+        let stand = (NSObject(), NSObject())
+        var answers: [String?] = []
+        withExtendedLifetime(stand) {
+            let view: WKWebView = standIn(stand.0)
+            let frame: WKFrameInfo = standIn(stand.1)
+            for p in [#"{"type":"CapacitorCookies.set","domain":"https://x.example","action":"a=b; Path=/"}"#, #"{"type":"CapacitorCookies.get"}"#,
+                      #"{"type":"CapacitorCookies.isEnabled"}"#, #"{"type":"CapacitorHttp"}"#, "What is your name?"] {
+                d.webView(view, runJavaScriptTextInputPanelWithPrompt: p, defaultText: nil, initiatedByFrame: frame) { answers.append($0) }
+            }
+        }
+        #expect(answers.count == 5 && answers.allSatisfy { $0 == nil })
+        #expect(runtime.prompts == 0)
+    }
 }

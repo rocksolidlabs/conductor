@@ -303,6 +303,10 @@ def gates(mobile: Path) -> list[str]:
         if line not in shell:
             out.append(f"ShellViewController.swift: {what}")
     native = mobile / "ios/ConductorNative/Sources/ConductorShell"
+    ui = (native / "MediaCapture.swift").read_text()
+    m = re.search(r"runJavaScriptTextInputPanelWithPrompt prompt: String,.*?\{\s*completionHandler\(nil\)\s*\}", ui, re.S)
+    if not m:
+        out.append("MediaCapture.swift: a text-input prompt is not answered nil by the shell's own delegate")
     gate = (native / "BridgeGate.swift").read_text()
     names = re.search(r"static let names: Set<String> = \[([^\]]*)\]", gate)
     admitted = sorted(re.findall(r'"(\w+)"', names.group(1))) if names else []

@@ -288,7 +288,9 @@ func code(_ f: () async throws -> Void) async -> String? {
         // The store's own clear, over the jar and the credentials this process has.
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("conductor-store-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: dir) }
-        let store = ConductorStore(root: dir, files: DiskFiles(), protection: DeviceProtection(), caches: WebCaches(jar: jar, credentials: credentials, webView: false))
+        // The web view's store, as it is emptied, hands the jar a cookie it had (the runtime copies the web view's cookies into it).
+        let copied = try #require(HTTPCookie(properties: [.domain: "relay.example.test", .path: "/", .name: "copied", .value: "from the web view", .secure: "TRUE"]))
+        let store = ConductorStore(root: dir, files: DiskFiles(), protection: DeviceProtection(), caches: WebCaches(jar: jar, credentials: credentials, webData: { jar.setCookie(copied) }))
         try await store.clear()
         #expect(jar.cookies(for: relay)?.isEmpty != false)
         #expect(credentials.credentials(for: space)?.isEmpty != false)

@@ -29,6 +29,7 @@ FILES = [
     "ios/ConductorNative/Sources/ConductorShell/Refused.swift",
     "ios/ConductorNative/Sources/ConductorShell/NativeHTTP.swift",
     "ios/ConductorNative/Sources/ConductorShell/BridgeGate.swift",
+    "ios/ConductorNative/Sources/ConductorShell/MediaCapture.swift",
     "ios/App/CapApp-SPM/Package.swift",
     "ios/App/App.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved",
     "ios/ConductorNative/Sources/ConductorShell/Calls.swift",
@@ -249,6 +250,9 @@ class IOSProjectTest(unittest.TestCase):
             self.setUp()
             self.edit(f, line, line.replace("FilePrefix.identifier", "\"other\"") if "compile" in line else "        " if "guard" in line else "")
             self.only(part)
+        self.setUp()
+        self.edit("ios/ConductorNative/Sources/ConductorShell/MediaCapture.swift", "        completionHandler(nil)\n", "        completionHandler(prompt)\n")
+        self.only("a text-input prompt is not answered nil")
         self.setUp()
         self.edit("ios/ConductorNative/Sources/ConductorShell/BridgeGate.swift", '"PushNotifications"]', '"PushNotifications", "WebView"]')
         self.only("the gate admits")
