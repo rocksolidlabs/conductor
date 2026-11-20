@@ -189,6 +189,11 @@ func (s *Server) turnRoute(w http.ResponseWriter, r *http.Request, tp *turnPrinc
 	}
 	rec := newReplyRecorder()
 	rc, err := s.runs.RouteDecision(ctx, did, op, body.ExpectedRev, []crew.Destination{body.To}, body.Note, brakemanActor)
+	if err == nil && !rc.Repeat && body.To.Kind != crew.DestOperator && s.runs.RoutesPolicies() {
+		// Whom it is for changed while its policy is not in force (or
+		// before any): the router is told again, as at the operator's route.
+		s.router.retell(did)
+	}
 	// The receipt as DR1's route answers it, without the decision record,
 	// which the turn's answer never carries: nothing read after the
 	// commit can lose a route that committed.
@@ -295,6 +300,8 @@ func (s *Server) admitVisibleRoute(ctx context.Context, o *observer, n int64, di
 		return "", missing
 	}
 	switch {
+	case body.To.Kind == crew.DestRouter:
+		return "", newAPIError(http.StatusForbidden, crew.CodeNotApprover, "a Brakeman turn may not ask the decision router again: the operator does")
 	case body.To.Kind == crew.DestGrant:
 		return "", newAPIError(http.StatusBadRequest, crew.CodeInvalid, "Brakeman routes a decision to the operator or a person of its run's crew, never to a grant")
 	case rec.Origin == ledger.OriginCompare:
@@ -307,6 +314,13 @@ func (s *Server) admitVisibleRoute(ctx context.Context, o *observer, n int64, di
 		return "", newAPIError(http.StatusConflict, "stale_target", fmt.Sprintf("%s is %s: Brakeman routes only a decision still open", did, rec.State))
 	case rec.Rev != body.ExpectedRev:
 		return "", newAPIError(http.StatusConflict, crew.CodeStaleDecision, fmt.Sprintf("the rev expected is %d; %s's is %d: read it again", body.ExpectedRev, did, rec.Rev))
+	}
+	if body.To.Kind != crew.DestOperator && ledger.RouterPolicy(rec.Policy) {
+		// Under a router's policy in force only the policy chooses who may
+		// answer, as at the operator's route (handleDecisionRoute).
+		if now := s.policyNow(ctx, did); now != nil && now.InForce {
+			return "", newAPIError(http.StatusConflict, crew.CodeRoutedByPolicy, did+" is routed by its router's policy: the operator may ask the router again")
+		}
 	}
 	label := ""
 	switch body.To.Kind {

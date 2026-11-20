@@ -9,6 +9,9 @@ import (
 	"testing"
 
 	"github.com/rocksolidlabs/conductor/ext"
+	"github.com/rocksolidlabs/conductor/ext/exttest"
+	"github.com/rocksolidlabs/conductor/ext/local"
+	"github.com/rocksolidlabs/conductor/internal/brakeman"
 	"github.com/rocksolidlabs/conductor/internal/crew"
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
 	"github.com/rocksolidlabs/conductor/internal/proto"
@@ -298,4 +301,52 @@ func TestTheDecideListAsksAFewAtATime(t *testing.T) {
 	if most > listAsks {
 		t.Fatalf("%d asks in the router at once, at most %d", most, listAsks)
 	}
+}
+
+// A Brakeman turn's route_decision on a decision under its router's
+// policy in force is refused 409 routed_by_policy, to a person or a role,
+// nothing written (its rev, its request and the turn's acts as they
+// were); its route to the router is refused 403, the operator's to ask.
+// Not in force, the turn's route is taken and the router is told the
+// record again.
+func TestATurnsRouteIsRefusedUnderAPolicyInForce(t *testing.T) {
+	fr := exttest.NewFakeRouter("switchman")
+	fr.SetPolicy("dr-1", anaPolicy(ext.OverrideNone))
+	fr.SetRoute("dr-1", ext.Route{To: []ext.Destination{{Kind: "person", Name: "Ana"}}, Rule: "architecture decisions"})
+	f := newRouteFixtureWith(t, []string{brakeman.ActRouteDecision}, nil, WithExtensions(local.Fill(ext.Providers{Router: fr, All: []ext.Entry{
+		{Kind: ext.KindDecisions, Name: "switchman", Value: fr},
+	}})))
+	if f.did != "dr-1" {
+		t.Fatalf("the fixture's decision is %s", f.did)
+	}
+	n, _ := ledger.ParseDecisionID(f.did)
+	record := func() ledger.DecisionRecord {
+		rec, _, err := f.srv.ledger.Decision(t.Context(), n)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return rec
+	}
+	until(t, f.did+"'s policy written", func() bool { return ledger.RouterPolicy(record().Policy) })
+	fr.SetConfirm(f.did, func(ext.ConfirmQuery) ext.Confirmation { return ext.Confirmation{InForce: true} })
+	before := record()
+	for i, to := range []map[string]any{{"kind": "person", "name": "nate"}, {"kind": "role", "name": "security"}} {
+		status, out := f.route(t, fmt.Sprintf("p-%d", i), to)
+		if status != http.StatusConflict || codeOf(out) != crew.CodeRoutedByPolicy {
+			t.Fatalf("the turn's route to %v in force: %d %v", to, status, out)
+		}
+	}
+	status, out := f.route(t, "p-router", map[string]any{"kind": "router"})
+	if status != http.StatusForbidden || codeOf(out) != crew.CodeNotApprover {
+		t.Fatalf("the turn's route to the router: %d %v", status, out)
+	}
+	if after := record(); after.Rev != before.Rev || after.Request != before.Request || len(f.routedBy(t, brakemanActor)) != 0 || len(f.acts(t)) != 0 {
+		t.Fatalf("a refused route wrote: rev %d to %d, %d acts", before.Rev, after.Rev, len(f.acts(t)))
+	}
+	fr.SetConfirm(f.did, func(ext.ConfirmQuery) ext.Confirmation { return ext.Confirmation{Why: "the roster moves"} })
+	told := len(fr.Decisions())
+	if status, out := f.route(t, "p-9", map[string]any{"kind": "person", "name": "nate"}); status != http.StatusOK {
+		t.Fatalf("the turn's route not in force: %d %v", status, out)
+	}
+	until(t, "the router told "+f.did+" again", func() bool { return len(fr.Decisions()) > told })
 }

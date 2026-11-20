@@ -773,9 +773,6 @@ func (s *Server) handleDecisionRoute(w http.ResponseWriter, r *http.Request) {
 		case !s.routerRegistered():
 			writeError(w, http.StatusConflict, crew.CodeNoRouter, "no decision router is registered: a decision is routed to one only where one is")
 			return
-		case actorOf(r) == ledger.TurnActor:
-			writeError(w, http.StatusForbidden, crew.CodeNotApprover, "a Brakeman turn may not ask the decision router again: the operator does")
-			return
 		case body.To.Name != "" || body.To.Grant != "":
 			writeError(w, http.StatusBadRequest, crew.CodeInvalid, "a route to the router names nothing else")
 			return
