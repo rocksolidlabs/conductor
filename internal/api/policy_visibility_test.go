@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/rocksolidlabs/conductor/ext"
 	"github.com/rocksolidlabs/conductor/ext/exttest"
@@ -384,5 +385,62 @@ func TestARouteIsRefusedWhileTheRouterIsBehind(t *testing.T) {
 	out := f.expect(t, http.MethodPost, "/api/decisions/"+f.did+"/route", map[string]any{"opId": "o-1", "to": map[string]any{"kind": "person", "name": "nate"}, "expectedRev": before.Rev}, http.StatusConflict, crew.CodeRoutedByPolicy)
 	if after := record(); after.Rev != before.Rev || after.Request != before.Request || len(after.History) != len(before.History) || len(f.acts(t)) != 0 {
 		t.Fatalf("a refused route wrote: rev %d to %d, %v", before.Rev, after.Rev, out)
+	}
+}
+
+// A turn's route asks the router before the desk's lock: with the
+// router's answer held at a gate, an ask of Brakeman made meanwhile is
+// answered; once the gate opens, the route is refused routed_by_policy as
+// before.
+func TestATurnsRouteAsksTheRouterOutsideTheDesksLock(t *testing.T) {
+	fr := exttest.NewFakeRouter("switchman")
+	fr.SetPolicy("dr-1", anaPolicy(ext.OverrideNone))
+	fr.SetRoute("dr-1", ext.Route{To: []ext.Destination{{Kind: "person", Name: "Ana"}}, Rule: "architecture decisions"})
+	f := newRouteFixtureWith(t, []string{brakeman.ActRouteDecision}, nil, WithExtensions(local.Fill(ext.Providers{Router: fr, All: []ext.Entry{
+		{Kind: ext.KindDecisions, Name: "switchman", Value: fr},
+	}})))
+	n, _ := ledger.ParseDecisionID(f.did)
+	until(t, f.did+"'s policy written", func() bool {
+		rec, _, err := f.srv.ledger.Decision(t.Context(), n)
+		return err == nil && ledger.RouterPolicy(rec.Policy)
+	})
+	// The router's answer waits for the gate, and nothing ends its wait
+	// before: the ask is held for as long as the test holds it.
+	long := time.Hour
+	extWaiting.Store(&long)
+	t.Cleanup(func() { extWaiting.Store(nil) })
+	inside, gate := make(chan struct{}), make(chan struct{})
+	var once, open sync.Once
+	release := func() { open.Do(func() { close(gate) }) }
+	t.Cleanup(release)
+	fr.SetConfirm(f.did, func(ext.ConfirmQuery) ext.Confirmation {
+		once.Do(func() { close(inside) })
+		<-gate
+		return ext.Confirmation{InForce: true}
+	})
+	type reply struct {
+		status int
+		out    map[string]any
+	}
+	routed := make(chan reply, 1)
+	rev := f.rev(t)
+	go func() {
+		status, out := f.routeAt(t, "g-1", map[string]any{"kind": "person", "name": "nate"}, rev)
+		routed <- reply{status, out}
+	}()
+	<-inside
+	asked := make(chan int, 1)
+	go func() {
+		status, _, _ := f.callAs(t, adminToken, http.MethodPost, "/api/brakeman/requests", map[string]any{"opId": "ask-1", "kind": "briefing"})
+		asked <- status
+	}()
+	select {
+	case <-asked:
+	case <-time.After(time.Minute): // bounds a hang: the old order holds the ask until the gate opens
+		t.Fatal("an ask of Brakeman waited behind a turn's route held at the router")
+	}
+	release()
+	if got := <-routed; got.status != http.StatusConflict || codeOf(got.out) != crew.CodeRoutedByPolicy {
+		t.Fatalf("the turn's route once the router answered: %d %v", got.status, got.out)
 	}
 }

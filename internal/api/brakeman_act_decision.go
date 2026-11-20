@@ -53,6 +53,20 @@ type routeActBody struct {
 	ExpectedRev int
 	To          crew.Destination
 	Note        string
+	// policy is the router's word on the decision's policy, asked before
+	// the desk's lock (turnRoute): slow work is never made under it.
+	policy routePolicyAsk
+}
+
+// routePolicyAsk is what a turn's route asked the router of the
+// decision's policy before the desk's lock: asked for a route that is not
+// to the operator, the revision it asked about ("" for a record under the
+// server's own policy then) and whether the policy was in force
+// (routeInForce).
+type routePolicyAsk struct {
+	asked    bool
+	revision string
+	inForce  bool
 }
 
 // routeActArgs reads a route's body as DR1's route decodes it (unknown
@@ -125,6 +139,13 @@ func (s *Server) turnRoute(w http.ResponseWriter, r *http.Request, tp *turnPrinc
 	}
 	ctx, cancel := runContext(r)
 	defer cancel()
+	if body.To.Kind != crew.DestOperator && body.To.Kind != crew.DestRouter {
+		// The router is asked here, before any of the desk's locks: its
+		// answer is judged where admission's order puts it
+		// (admitVisibleRoute).
+		body.policy.revision, body.policy.inForce = s.routeInForce(ctx, did)
+		body.policy.asked = true
+	}
 	if err := atActSeam("waiting", tp.req.ID, body.OpID); err != nil {
 		writeError(w, http.StatusServiceUnavailable, "shutting_down", err.Error())
 		return
@@ -315,10 +336,13 @@ func (s *Server) admitVisibleRoute(ctx context.Context, o *observer, n int64, di
 	case rec.Rev != body.ExpectedRev:
 		return "", newAPIError(http.StatusConflict, crew.CodeStaleDecision, fmt.Sprintf("the rev expected is %d; %s's is %d: read it again", body.ExpectedRev, did, rec.Rev))
 	}
-	if body.To.Kind != crew.DestOperator && ledger.RouterPolicy(rec.Policy) {
+	if p, _, routed := crew.RouterPolicyOf(rec.Policy); routed && body.To.Kind != crew.DestOperator {
 		// Under a router's policy in force only the policy chooses who may
-		// answer, as at the operator's route (handleDecisionRoute).
-		if _, inForce := s.routeInForce(ctx, did); inForce {
+		// answer, as at the operator's route (handleDecisionRoute), by the
+		// router's word asked before the desk's lock; a word not about the
+		// policy the record holds now (none asked, or routed since) is
+		// taken as in force.
+		if !body.policy.asked || body.policy.revision != p.Revision || body.policy.inForce {
 			return "", newAPIError(http.StatusConflict, crew.CodeRoutedByPolicy, did+" is routed by its router's policy: the operator may ask the router again")
 		}
 	}
