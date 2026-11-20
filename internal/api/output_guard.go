@@ -19,12 +19,10 @@ import (
 // It knows nothing of Dispatch or decisions: each caller keeps the verdict
 // beside its own text, so a later route or door calls it unchanged.
 //
-// What counts as terminal output is the owner's decision (the plan's open
-// question, decision 25), taken at the plan's default until the owner
-// answers: captured bytes. agentTextIsOutput is the whole of the other
-// reading, "agent text too": set, every text an agent wrote is output
-// whatever it quotes, and a person's is judged as it is now. Nothing else
-// changes with it.
+// What counts as terminal output is the bytes Conductor captured, as the
+// owner decided on 2026-11-20 (docs/plans/sync-seams.md, What counts as
+// terminal output): an agent's text is judged by what it quotes, as a
+// person's is. agentTextIsOutput is that reading in one place.
 const agentTextIsOutput = false
 
 // outputGuard judges texts against the index. A nil guard, or one with no

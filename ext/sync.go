@@ -554,7 +554,7 @@ type DecisionDocResponse struct {
 	Words      string    `json:"words,omitempty"`
 	Text       string    `json:"text,omitempty"`
 	Rationale  string    `json:"rationale,omitempty"`
-	Cut        string    `json:"cut,omitempty"` // output
+	Cut        string    `json:"cut,omitempty"` // output, or size (an accepted response cut to the responses' bound)
 }
 
 // DecisionDocApplied is Yardmaster's application of the accepted answer.

@@ -213,9 +213,9 @@ is judged when it is written by the copied-output check (OS-1c for
 Dispatch's rows, OS-3 for decision records), its verdict stored beside
 it, and every hand-out carries the verdict, so no provider reads
 captured output to judge it. What counts as terminal output for that
-check is an open question of the owner's (The open question, below);
-OS-1c and OS-3 wait for its answer, and the rows before them hold under
-either reading. A provider may apply checks of its own to what it is
+check is the bytes Conductor captured, as the owner decided on
+2026-11-20 (What counts as terminal output, below; Owner decisions, 27).
+A provider may apply checks of its own to what it is
 handed and keep back what they flag; what it keeps back it names in its
 status (`SyncReport.Withheld`, OS-4), and this repository applies no
 other check to it.
@@ -1027,8 +1027,8 @@ next test's start.
 
 ### `internal/api`, `internal/dispatch`, `ext`, `docs` (OS-1c): the output index and the copied-output check for Dispatch's rows
 
-Cut only once the owner has answered The open question below, which
-OS-1c writes into this file.
+The check holds the owner's reading of terminal output (What counts as
+terminal output, below).
 
 **`outputGuard.Check(ctx, text string) Verdict`** (`internal/api/
 output_guard.go`): one function over one string, `clean`, `output` or
@@ -1556,6 +1556,36 @@ that.
 the new doors and `exttest.Continuity` checks the decision document's
 shape and the doors' refusals on a provider that is not the sync store.
 
+**As built (OS-3).** Who may answer a decision given to the decide grant
+from another machine is whoever holds `decide`: the door asks
+`AdmitsAnswer` with that grant alone, and an admin without it answers at
+the server, as the owner confirmed on 2026-11-20. The engine refuses
+every held answer while a router that confirms policies is registered,
+whatever the record's policy, before the policy is judged. A provider's
+no is `not_approver` with nothing written; a request kept on the machine
+is refused `not_approver` before the provider is asked; a held answer's
+text and rationale must be as the ledger keeps them (no control
+character, no space at either end), or it is `invalid`. A part that
+quotes captured output is cut whole (`cut_at` 0), so a person elsewhere
+sees the cut's words in place of the whole part. The ledger judges a
+decision's parts inside its transaction in a form that never waits for
+the index and never reads a kept source (`JudgeNow`); what it cannot
+judge then is `pending`, and the settle loop, running whenever a sync
+store is registered, judges it outside the ledger's lock. While any part
+of a request is pending the whole request is kept back, so a request has
+one form at a rev. The door keeps the request part's hash it admitted in
+the answer's authority (`requestSha256`), and the recheck shows the
+provider that hash and the answer's time as handed in. A replacement
+copies its source's request verdicts, the worse of each with its own;
+one whose source's question was never judged keeps none. A decision's
+parts with no verdict are judged once, at its document's first build,
+and the verdicts kept. With no sync store registered no decision is
+taken for delivery, built or judged. What the store is told of a
+hand-in, and `SyncDelivery`, carry a receipt's words only as the
+document would show them. An assignment's choices are its type's two
+answers. Not built here: the decision page's words for a recheck the
+provider cannot make yet (OS-4's screens).
+
 ### `internal/api`, `internal/export`, `ext`, `ext/exttest`, `web/app`, `web/e2e`, `docs` (OS-4): what other machines hold, the Sync row, Share in the project page
 
 Cut once OS-3, DR1's PR-7 (#640) and MB0's PR-4 are on `main`.
@@ -1986,62 +2016,32 @@ output index: a file of its own, made and filled at the first start that
 lacks it, its verdicts `pending` until it is whole. Each migration takes
 the next version at its merge, whatever other row took one first.
 
-## The open question: what counts as terminal output
+## What counts as terminal output
 
-**A question for the owner, open.** The Program's stored-record rule (no
-terminal output, tokens or secrets in any stored record that leaves a
-machine) needs a reading of "terminal output" a check can hold. The
-owner decides it; this plan does not. OS-1c and OS-3, which implement
-the check, are cut only after the answer, and OS-1c writes it into this
-section. No row before them depends on how it is answered: OS-1a's
-verdict columns, OS-1b's doors and OS-2's documents are the same under
-either reading (a value kept back is simply not sent).
+**Decided by the owner on 2026-11-20: captured bytes only** (Owner
+decisions, 27). The Program's stored-record rule (no terminal output,
+tokens or secrets in any stored record that leaves a machine) is held
+by this reading.
 
-- **Captured bytes (recommended; the default this plan is written
-  to).** Terminal output is the bytes Conductor captured: a session's
-  screen, scrollback and ring, its activity log's words, a check's log,
-  a history record's words. None of them is handed out, and any text, an
-  agent's or a person's, that quotes at least 64 bytes or two whole lines
-  of what the server held captured when the text was written is withheld
-  (a Dispatch row) or cut (a decision's part) by a verdict stored with
-  the text, so time does not weaken it; text whose verdict cannot be
-  known (an agent's, written before the check existed) is withheld. Not
-  caught, by definition: output Conductor never captured (a paste from
-  another terminal) and a fragment below the threshold (a test's name,
-  "exit status 1"), which appear in writing and in output alike. Why
-  recommended: it holds the rule against everything Conductor can know
-  it captured, and keeps an agent's own summaries and questions
-  open to an answer away from the machine.
-- **Agent text too.** Free text an agent wrote is itself treated as
-  terminal output, since an agent's words are made from what its session
-  printed. An agent's Dispatch rows are never handed out (its comments,
-  descriptions and plan notes kept on its machine and named in the sync
-  status), and an agent's decision is handed out with only its question
-  and its options' labels (each still checked by the first reading's
-  rule), its context, tradeoffs, recommendation and uncertainty kept on
-  the machine; a person's text is checked as under the first reading.
-- **What each answer changes.** Under either: OS-1c (the verdict's rule
-  for Dispatch's rows, and this section), OS-3 (`decision_output`'s rule
-  and the document's parts). Under the second, a decision shown on
-  another machine shows its question without its context.
+Terminal output is the bytes Conductor captured: a session's screen,
+scrollback and ring, its activity log's words, a check's log, a history
+record's words. None of them is handed out, and any text, an agent's or
+a person's, that quotes at least 64 bytes or two whole lines of what the
+server held captured when the text was written is withheld (a Dispatch
+row) or cut (a decision's part) by a verdict stored with the text, so
+time does not weaken it; text whose verdict cannot be known (an
+agent's, written before the check existed) is withheld. An agent's own
+text syncs unless it quotes captured output. Not caught, by definition:
+output Conductor never captured (a paste from another terminal) and a
+fragment below the threshold (a test's name, "exit status 1"), which
+appear in writing and in output alike.
 
-**What is built, the owner's answer still awaited (decision 25,
-2026-11-19).** OS-1c is built to the first reading, captured bytes, the
-default above, and the question is still the owner's. The reading is one
-place: `agentTextIsOutput` in `internal/api/output_guard.go`, read by
-`outputGuard.Judge`, which every write of a Dispatch row and every
-hand-out of one written before the check calls with whether an agent
-wrote the text (`dispatch.AgentActor`: every actor but the operator's and
-the store's own). Set to true, it is the second reading for Dispatch:
-every free-text value an agent wrote is `output` at its write, and an
-agent's row from before the check is withheld as now, with nothing else
-changed (a person's text is checked by the first reading's rule either
-way). OS-3 is built on the same two calls: a decision's parts the second
-reading still hands out (its question and its options' labels) go
-through `Check`, the first reading's rule alone, and every other part an
-agent wrote (context, tradeoffs, recommendation, uncertainty) through
-`Judge`, so the same constant cuts them under the second reading and
-nothing in OS-3 changes with the answer.
+**As built.** The reading is one place: `agentTextIsOutput` in
+`internal/api/output_guard.go`, false, read by `outputGuard.Judge`,
+which every write of a Dispatch row and every hand-out of one written
+before the check calls with whether an agent wrote the text
+(`dispatch.AgentActor`: every actor but the operator's and the store's
+own). OS-3's decision parts go through the same calls.
 
 ## Out of scope
 
@@ -2261,9 +2261,9 @@ whose verdicts it relies on.
 | Dispatch 8 → 9 (#1049) | dispatch: schema 9 alone | a replica tag's `overflow_from` and `overflow_to` and a project's `share_words`; nothing reads or writes them yet | `internal/dispatch` | `TestAFreshStoreHasVersion9sColumns`, `TestSchema9MigratesAndKeepsEveryRow`, `TestAFailedMigrationLeavesVersion8AsItWas`, `TestVersion9OpensReadOnlyInVersion8` | OS-1a | ~70 + 300 |
 | OS-1b | dispatch, api, ext: sharing with its cut-over, numbers, rekey and registry keys, the provider's doors | blocks with their tag and instance, overflow, the namespaces, `project.share`, `CompleteShare`, `ConfirmShare`, `RefuseShare`, `Dormant`, `Unshared`, `project.rekey` with held rows applied, keys projected from the registry, the two routes, the `Host` doors and `DispatchWatcher`, `FakeHost`; the range and a share's words on version 9's columns, a refused share kept as `refused`; `docs/protocol.md` | `internal/dispatch`, `internal/api`, `internal/hostagent`, `ext`, `ext/exttest`, `docs` | the OS-1b tests above | OS-1a; Dispatch 8 → 9 | ~700 + 700 |
 | OS-2 | api, web: UI state in the data directory, pins, restore into another provider's directory, a replay on request | `ui/` documents with `at` and `by`, routes, `ui/writer` left out, the allowlist with what leaves of each document, `Host.SetUIState`, `RestoreRequest.ProviderDir`, `Host.SyncReplay`; `useUiState` and its callers; pins; `ui-state.spec.ts` | `internal/api`, `internal/export`, `internal/hostagent`, `ext`, `web/app`, `web/e2e`, `docs` | the OS-2 tests above | OS-1b | ~800 + 750 |
-| OS-1c | api, dispatch: the output index and the copied-output check for Dispatch's rows and pins' names | `outputGuard`, `outputIndex` (winnowed fingerprints and lines in `output-index.sqlite`, the memory cache, prunes with their sources, the bound, failing closed with `pending`, pending made `output` at start), the verdicts at every operation's commit and a pin's `nameVerdict`, `DispatchChanges` carrying both and stopping before a `pending` row; this file amended with the owner's reading (no store step: the columns are OS-1a0's, the index a file of its own) | `internal/api`, `internal/dispatch`, `internal/export`, `ext`, `docs` | the OS-1c tests above | OS-2; the owner's answer to The open question | ~650 + 700 |
+| OS-1c | api, dispatch: the output index and the copied-output check for Dispatch's rows and pins' names | `outputGuard`, `outputIndex` (winnowed fingerprints and lines in `output-index.sqlite`, the memory cache, prunes with their sources, the bound, failing closed with `pending`, pending made `output` at start), the verdicts at every operation's commit and a pin's `nameVerdict`, `DispatchChanges` carrying both and stopping before a `pending` row; this file amended with the owner's reading (no store step: the columns are OS-1a0's, the index a file of its own) | `internal/api`, `internal/dispatch`, `internal/export`, `ext`, `docs` | the OS-1c tests above | OS-2; the owner's reading of terminal output (Owner decisions, 27) | ~650 + 700 |
 | OS-3a | crew/ledger: schema 16 alone | `decision_output` and `decision_statements`; nothing reads or writes them yet | `internal/crew/ledger` | `TestSchema16MigratesAndKeepsEveryRow`, `TestVersion16OpensReadOnlyInVersion15`, `TestSchema16FreshAndAFailedMigration` | OS-1c | ~80 + 150 |
-| OS-3 | api, crew, ext: decisions handed out, answers handed in (after the step; a boundary part with its own adversarial review) | `ledger.OnDecisions`, the decision document with its request part, its policy part and `requestSHA256`, the check at each write into `decision_output`, `Host.SyncResend`, `ext.AnswerCheck`, `ext.SubjectChecker`, `Host.RespondDecision` with `via: sync` (the statement in `decision_statements`), every held answer refused `answered_at_server` on a server whose router confirms policies, `Host.SyncDelivery`, `Host.LastDecision`, the recheck at application that waits on unknown, `AnswerOutcome.Repeat`; the agent skill's line | `internal/api`, `internal/crew`, `internal/crew/ledger`, `internal/agents`, `internal/hostagent`, `ext`, `ext/exttest`, `docs` | the OS-3 tests above | OS-3a; DR1's PR-4 (#637) and the decide grant (#776), both on `main`; the owner's answer to The open question | ~800 + 850 |
+| OS-3 | api, crew, ext: decisions handed out, answers handed in (after the step; a boundary part with its own adversarial review) | `ledger.OnDecisions`, the decision document with its request part, its policy part and `requestSHA256`, the check at each write into `decision_output`, `Host.SyncResend`, `ext.AnswerCheck`, `ext.SubjectChecker`, `Host.RespondDecision` with `via: sync` (the statement in `decision_statements`), every held answer refused `answered_at_server` on a server whose router confirms policies, `Host.SyncDelivery`, `Host.LastDecision`, the recheck at application that waits on unknown, `AnswerOutcome.Repeat`; the agent skill's line | `internal/api`, `internal/crew`, `internal/crew/ledger`, `internal/agents`, `internal/hostagent`, `ext`, `ext/exttest`, `docs` | the OS-3 tests above | OS-3a; DR1's PR-4 (#637) and the decide grant (#776), both on `main`; the owner's reading of terminal output (Owner decisions, 27) | ~800 + 850 |
 | OS-4 | api, web, ext: what other machines hold, read only; the Sync row; Share in the project page; the features entry | `Host.PutRemote`, `DeleteRemote`, `ClearRemote`, `remote/` with the kinds `decision`, `pointer`, `pins`, `device` and `hosts`, the pointer's `ticket` (`RunPointer` and its columns read `runs.ticket`), `GET /api/remote`, `ext.SyncStatus` with its own device, workspace and person, `GET /api/sync`; the ticket page's, the decision page's and the sidebar's remote rows, the Sync row, Share and rekey controls, the ticket page's `alsoLinked` words; `remote.spec.ts`, `sync-free.spec.ts`; `docs/features.md` | `internal/api`, `internal/crew/ledger`, `internal/export`, `internal/hostagent`, `ext`, `ext/exttest`, `web/app`, `web/e2e`, `docs` | the OS-4 tests above | OS-3; DR1's PR-7 (#640) and MB0's PR-4 on `main` | ~750 + 750 |
 
 Each row's checks are the repository's (`docs/checks.md`): the module's
@@ -2279,7 +2279,7 @@ entry.
 Dated 2026-11-18, from the item's decisions that shape its open-source
 rows, each at its default. Each is a default the owner may overturn with
 a dated row in the Program's status log; the reasoning is why it was
-taken. The one decision still open is The open question above.
+taken. The last, 27, the owner took on 2026-11-20; none is open.
 
 1. **Dispatch's conflict rules are DS1's and DS2's as written, with the
    replica's identity added** (O10). Scalars last writer wins per field
@@ -2465,6 +2465,12 @@ taken. The one decision still open is The open question above.
     no confirmation must be refused without closing the decide grant's
     own route. It changes the decision-policy plan's respond judgement
     and its tests, and this plan's door.
+27. **What counts as terminal output: captured bytes only** (decided by
+    the owner on 2026-11-20). What the terminal recorded stays on the
+    machine: a session's output, a check's log, a history record. An
+    agent's own text syncs unless it quotes that, and then the part is
+    withheld (a Dispatch row) or cut (a decision's part) (What counts as
+    terminal output, above).
 
 ## Acceptance
 
@@ -2493,8 +2499,8 @@ Observed row by row, each when its PR's checks pass in CI and locally:
   records read only and the free build unchanged.
 
 Done is every row merged with those checks green. Nothing needs the
-owner but the answer to The open question and the merges; a live check
-with a real provider is the provider module's.
+owner but the merges; a live check with a real provider is the provider
+module's.
 
 ## The amendments to the other plans
 
