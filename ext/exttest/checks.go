@@ -618,7 +618,8 @@ func sampleCommitNote(q ext.ContextQuery) ext.CommitNote {
 // is handed what the server would hand the sink (notices): a notification
 // of each event or type its Events lists, as the server types one, since
 // the server hands a sink nothing else; the attention entry needs_input
-// when it takes every entry, or nothing.
+// and a durable decision's notification with its ref when it takes every
+// entry, or nothing.
 func Sink(t T, n *Network, s ext.NotificationSink) {
 	t.Helper()
 	c, ok := begin(t, n, "Sink", s)
@@ -660,12 +661,14 @@ func Sink(t T, n *Network, s ext.NotificationSink) {
 // server types it (internal/api's eventTypeOf): an attention state
 // (needs_input, working, done) an attention entry recording it;
 // exit_nonzero a status entry of a process that exited with 1; a provider
-// notice for ext.TypeProvider; one of the entry types the Events page
+// notice for ext.TypeProvider; decision a durable decision's
+// notification (decisionNotice); one of the entry types the Events page
 // names by their type (progress, artifact, handoff, tool_use,
 // tool_denied, error) an entry of that type named so; any other name an
 // entry of that type with no Events name. With no name (events nil, or a
 // sink taking nothing, which the server hands nothing), the attention
-// entry needs_input.
+// entry needs_input, and for events nil, which takes every entry, the
+// decision's notification too.
 func notices(events []string) []ext.Notification {
 	base := ext.Notification{
 		At:      time.Now().UTC(),
@@ -687,6 +690,8 @@ func notices(events []string) []ext.Notification {
 			n.Event, n.Type, n.Message = ev, "status", "exited (exit 1)"
 		case ext.TypeProvider:
 			n.Type, n.Origin, n.Message = ext.TypeProvider, "exttest-provider", "A provider's notice"
+		case "decision":
+			n = decisionNotice(n.At)
 		case "progress", "artifact", "handoff", "tool_use", "tool_denied", "error":
 			n.Event, n.Type = ev, ev
 		default:
@@ -698,8 +703,27 @@ func notices(events []string) []ext.Notification {
 		n := base
 		n.Event, n.Type, n.State = "needs_input", "attention", "needs_input"
 		out = append(out, n)
+		if events == nil {
+			out = append(out, decisionNotice(base.At))
+		}
 	}
 	return out
+}
+
+// decisionNotice is a durable decision's notification as the server types
+// it (internal/api's decisionNotification): event and type decision, state
+// open, the record's ref, its question and the run page's address of it.
+func decisionNotice(at time.Time) ext.Notification {
+	return ext.Notification{
+		Event:   "decision",
+		Type:    "decision",
+		At:      at,
+		Session: ext.SessionRef{ID: "exttest-session", Run: "exttest-00000001", Task: "review"},
+		State:   "open",
+		Ref:     ext.DecisionRef("dr-1"),
+		Message: "Ship the release?",
+		URL:     "/runs/exttest-00000001?view=tasks&task=review&decision=dr-1",
+	}
 }
 
 // Continuity checks a sync store: a valid name; Saved and Deleted
