@@ -280,9 +280,9 @@ func TestUIStateOnTheAllowlist(t *testing.T) {
 // What leaves of the palette is the recents of five kinds (a page, a
 // ticket, a crew, a run, a built-in action): every other kind (a file's
 // path, a joined link, a session, an artifact, a member, an answer-all)
-// stays; what leaves of the pins is each pin with no name, until the
-// copied-output check judges names (OS-1c). The server's own documents
-// keep everything.
+// stays; what leaves of the pins is each pin with its name when the
+// copied-output check judged it clean (TestPinNameUnderTheOutputCheck),
+// and never the verdict. The server's own documents keep everything.
 func TestPaletteDeliveredWithoutPaths(t *testing.T) {
 	t.Parallel()
 	e := newTestEnv(t, nil)
@@ -316,7 +316,7 @@ func TestPaletteDeliveredWithoutPaths(t *testing.T) {
 	}
 	heldPins, _ := os.ReadFile(filepath.Join(e.srv.store.Dir(), "ui", "pins.json"))
 	var pins uiPinsDoc
-	if err := json.Unmarshal(deliveredUIDoc("ui/pins.json", heldPins), &pins); err != nil || len(pins.Pins) != 1 || pins.Pins[0].Name != "" ||
+	if err := json.Unmarshal(deliveredUIDoc("ui/pins.json", heldPins), &pins); err != nil || len(pins.Pins) != 1 || pins.Pins[0].Name != "fix the tests" || pins.Pins[0].NameVerdict != "" ||
 		pins.Pins[0].Session != "s-1" || pins.Pins[0].Agent != "claude" {
 		t.Fatalf("the pins delivered: %+v %v", pins, err)
 	}

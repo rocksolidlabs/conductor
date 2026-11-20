@@ -322,8 +322,10 @@ type Ledger struct {
 	// mu after each committed transition and prune (pointer.go);
 	// afterCommit, when a test sets it, runs between such a commit and
 	// those calls, under mu.
-	onCommit    func(RunPointer)
-	onPrune     func(runID string, revision int64)
+	onCommit func(RunPointer)
+	onPrune  func(runID string, revision int64)
+	// onLog is what OnLog set.
+	onLog       func(source string, log []byte)
 	afterCommit func()
 	// inRead, when a test sets it, runs inside readAt's read transaction
 	// of an unmigrated database, after the version is read: the

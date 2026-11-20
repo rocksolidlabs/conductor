@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -137,6 +138,11 @@ type uiPin struct {
 	Name    string `json:"name"`
 	Agent   string `json:"agent"`
 	At      int64  `json:"at"`
+	// NameVerdict is the copied-output check's verdict of the name, made
+	// when the pin is kept, which the server sets and a put may not carry
+	// (docs/plans/sync-seams.md, OS-1c): only a clean name leaves the
+	// machine.
+	NameVerdict string `json:"nameVerdict,omitempty"`
 }
 
 // The sections a sidebar folds, the views of the two pages and the
@@ -242,7 +248,11 @@ func hasControlChar(s string) bool {
 // uiContent decodes b, the content of the document name (without at and
 // by), against its schema, unknown fields refused, and answers it encoded
 // as the store writes it.
-func uiContent(name string, b []byte) ([]byte, error) {
+func uiContent(name string, b []byte) ([]byte, error) { return uiContentOf(name, b, false) }
+
+// uiContentOf is uiContent; kept says b is a document as the server kept
+// it, which may carry what the server sets (a pin's nameVerdict).
+func uiContentOf(name string, b []byte, kept bool) ([]byte, error) {
 	dec := json.NewDecoder(bytes.NewReader(b))
 	dec.DisallowUnknownFields()
 	var v interface{ check() error }
@@ -269,6 +279,11 @@ func uiContent(name string, b []byte) ([]byte, error) {
 		}
 		if d.Pins == nil {
 			d.Pins = []uiPin{}
+		}
+		for _, p := range d.Pins {
+			if !kept && p.NameVerdict != "" {
+				return nil, errors.New("a pin's nameVerdict is the server's to set")
+			}
 		}
 		v = d
 	default:
@@ -322,7 +337,7 @@ func splitUIDoc(name string, b []byte) (uiDoc, error) {
 	if err != nil {
 		return uiDoc{}, err
 	}
-	content, err := uiContent(name, raw)
+	content, err := uiContentOf(name, raw, true)
 	if err != nil {
 		return uiDoc{}, err
 	}
@@ -396,6 +411,15 @@ func (s *Server) putUI(name string, content []byte) ([]byte, error) {
 	if err != nil {
 		// A document that does not read is written over by the person's.
 		ok = false
+	}
+	if name == uiPins {
+		var keptDoc *uiDoc
+		if ok {
+			keptDoc = &held
+		}
+		if content, err = s.judgePins(content, keptDoc); err != nil {
+			return nil, err
+		}
 	}
 	if ok && bytes.Equal(held.content, content) {
 		return held.encode()
@@ -519,6 +543,35 @@ func (s *Server) handleUIPut(w http.ResponseWriter, r *http.Request) {
 	w.Write(b)
 }
 
+// judgePins gives each pin of content its name's verdict: the held pin's
+// when the same session has the same name there, else the check's now (a
+// person's words: the person pinned it). Without the check, pending.
+func (s *Server) judgePins(content []byte, held *uiDoc) ([]byte, error) {
+	var d uiPinsDoc
+	if err := json.Unmarshal(content, &d); err != nil {
+		return nil, err
+	}
+	before := map[string]uiPin{}
+	if held != nil {
+		var h uiPinsDoc
+		if json.Unmarshal(held.content, &h) == nil {
+			for _, p := range h.Pins {
+				before[p.Session] = p
+			}
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*indexCatchUp)
+	defer cancel()
+	for i, p := range d.Pins {
+		if b, ok := before[p.Session]; ok && b.Name == p.Name && b.NameVerdict != "" && b.NameVerdict != verdictPending {
+			d.Pins[i].NameVerdict = b.NameVerdict
+			continue
+		}
+		d.Pins[i].NameVerdict = s.copyCheck.Judge(ctx, p.Name, false)
+	}
+	return json.Marshal(d)
+}
+
 // The kinds of palette recents that leave this machine (a page, a ticket,
 // a crew, a run, a built-in action): every other kind names a path, a
 // link, a session or a person here, and stays (TestPaletteDeliveredWithoutPaths).
@@ -553,7 +606,10 @@ func deliveredUIDoc(path string, b []byte) []byte {
 			return nil
 		}
 		for i := range p.Pins {
-			p.Pins[i].Name = ""
+			if p.Pins[i].NameVerdict != verdictClean {
+				p.Pins[i].Name = ""
+			}
+			p.Pins[i].NameVerdict = ""
 		}
 		d.content, _ = json.Marshal(p)
 	}

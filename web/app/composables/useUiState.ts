@@ -13,6 +13,11 @@ function storage(): Storage | null {
   }
 }
 
+/** A pin's own fields, without what the server keeps beside it (nameVerdict). */
+function plainPin(p: Pin): Pin {
+  return { session: p.session, name: p.name, agent: p.agent, at: p.at }
+}
+
 /** The documents' content as last read from or written to the server, by name: what a write compares with, so an unchanged one is not sent. */
 const kept: Partial<Record<UiName, object>> = {}
 const timers: Partial<Record<UiName, ReturnType<typeof setTimeout>>> = {}
@@ -63,7 +68,8 @@ export function useUiState() {
   function content(name: UiName): object {
     if (name === 'layout') return layout.value
     if (name === 'palette') return { v: 1, recents: recents.value } satisfies UiPalette
-    return { v: 1, pins: pins.value } satisfies UiPins
+    // A pin as the person keeps it: its name's verdict is the server's to set (OS-1c), never sent back.
+    return { v: 1, pins: pins.value.map(plainPin) } satisfies UiPins
   }
 
   /** Writes the document a second after its last change, unless the server holds it as it is. */
@@ -130,7 +136,7 @@ export function useUiState() {
       writeRecent(storage(), merged)
       if (!sameContent(doc, { v: 1, recents: merged })) schedule(name)
     } else {
-      pins.value = (doc as UiPins).pins ?? []
+      pins.value = ((doc as UiPins).pins ?? []).map(plainPin)
       writePins(storage(), pins.value)
     }
   }

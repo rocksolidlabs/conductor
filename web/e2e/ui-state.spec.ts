@@ -22,10 +22,11 @@ async function doc(api: Api, name: string): Promise<Record<string, unknown>> {
 
 test.describe('the app screens\' state', () => {
   let session: Session | undefined
+  let other: Session | undefined
 
   test.afterEach(async ({ api }) => {
-    if (session) await api.stopSession(session.id)
-    session = undefined
+    for (const s of [session, other]) if (s) await api.stopSession(s.id)
+    session = other = undefined
   })
 
   test('a fold, a recent and a pin made in one browser are there in another, and the pin survives a reload', async ({ browser, api, state }) => {
@@ -68,6 +69,19 @@ test.describe('the app screens\' state', () => {
     // A reload keeps the pin.
     await b.reload()
     await expect(b.locator('[data-sidebar-section="pinned"]').locator(`[data-pinned-session="${id}"]`)).toBeVisible({ timeout: 15_000 })
+    // Another pin made in the second browser, whose pins came from the server with what it keeps beside them (each name's verdict):
+    // the server takes the change, both pins kept.
+    other = await api.ok<Session>('POST', '/api/sessions', { agentId: 'plain', name: 'e2e ui state other' })
+    await expect(b.locator('[data-ui-state]').first()).toHaveAttribute('data-ui-state', 'read')
+    // The section the first browser folded is folded here: opened to reach the row.
+    await b.locator(`[data-sidebar-section="${key}"] button[aria-expanded]`).first().click()
+    await expect(b.locator(`[data-sidebar-section="${key}"]`)).toHaveAttribute('data-folded', 'false')
+    const otherRow = b.locator(`[data-sidebar-row="s:${other.id}"]`).first()
+    await expect(otherRow).toBeVisible({ timeout: 15_000 })
+    await otherRow.click({ button: 'right' })
+    await b.getByRole('menuitem', { name: 'Pin to top' }).click()
+    await expect.poll(async () => JSON.stringify((await doc(api, 'pins')).pins ?? []), { timeout: 15_000 }).toContain(other.id)
+    expect(JSON.stringify((await doc(api, 'pins')).pins)).toContain(id)
     await a.context().close()
     await b.context().close()
   })

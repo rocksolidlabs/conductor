@@ -1144,6 +1144,41 @@ replaced by exactly one clean edit, the source pruned, then shared: the
 edit's value `clean`, its prior `output`, the row handed out with
 `PriorOutputLike` alone).
 
+**As built (OS-1c).** The index is `internal/api/output_index.go` and
+the check `output_guard.go`; the rule's reading is the constant the open
+question names. A source's text is made plain (escape sequences removed,
+a carriage return read as a line's end) before it is folded. The sources:
+a local session's output, fed as it arrives (`session.Options.OnOutput`,
+before any viewer has it) as `ring:<session>`, holding what the ring holds
+and pruned with what the ring drops and with the session when it leaves
+the list; its screen, `screen:<session>`, a snapshot of its rows queued
+whenever output arrives (one queued at a time, read when the index takes
+it, so the index is behind while one is due) and the screens read whole
+at every check besides; every check's and prerequisite's log the ledger
+keeps, told after its commit (`ledger.OnLog`), read again through the
+ledger for a confirmation, and pruned with its run. A feed never waits on
+the file (an unbounded queue the index's goroutine drains); a check waits
+up to 2 s for the feeds queued before it, then answers `pending`. A hit
+is confirmed against its source's text; one that cannot be confirmed
+counts. An index missing or unreadable at the start is made again from
+the ledger's logs before it answers. A row's value that is JSON is judged
+by each string it holds as well as whole. Every write's rows carry the
+two verdicts (`changes.output`, `changes.prior_output`) once the server
+gave the store the check (`dispatch.Store.SetOutputCheck`, at start,
+after `WithholdPending` made every verdict a process before left
+`pending` `output`); a pending verdict is judged again every 2 s once the
+index is whole (`settlePending`), `output` when a source was pruned after
+the row was written. `DispatchChanges` judges a row from before the check
+at hand-out (an agent's `output` whatever the check finds, every actor but
+the operator's and the store's own taken as an agent's) and ends its page
+before the first row still `pending`, its cursor the position before it.
+A pin's name is judged when the pin is kept (`nameVerdict`, the server's
+alone) and leaves only when clean. Not built: a hosted session's output
+(its ring is the host's: a quote of it is not caught), the history's
+records as sources (a session's activity words), and the sync status's
+words for an index past its bound (OS-4's status); the state is in
+`outputIndex.state`.
+
 ### `internal/api`, `internal/crew`, `internal/crew/ledger`, `internal/agents`, `ext`, `ext/exttest` (OS-3): decisions handed out, answers handed in
 
 Cut once DR1's PR-4 (#637) and the decide grant (#776) are on `main`
@@ -1974,6 +2009,24 @@ either reading (a value kept back is simply not sent).
   for Dispatch's rows, and this section), OS-3 (`decision_output`'s rule
   and the document's parts). Under the second, a decision shown on
   another machine shows its question without its context.
+
+**What is built, the owner's answer still awaited (decision 25,
+2026-11-19).** OS-1c is built to the first reading, captured bytes, the
+default above, and the question is still the owner's. The reading is one
+place: `agentTextIsOutput` in `internal/api/output_guard.go`, read by
+`outputGuard.Judge`, which every write of a Dispatch row and every
+hand-out of one written before the check calls with whether an agent
+wrote the text (`dispatch.AgentActor`: every actor but the operator's and
+the store's own). Set to true, it is the second reading for Dispatch:
+every free-text value an agent wrote is `output` at its write, and an
+agent's row from before the check is withheld as now, with nothing else
+changed (a person's text is checked by the first reading's rule either
+way). OS-3 is built on the same two calls: a decision's parts the second
+reading still hands out (its question and its options' labels) go
+through `Check`, the first reading's rule alone, and every other part an
+agent wrote (context, tradeoffs, recommendation, uncertainty) through
+`Judge`, so the same constant cuts them under the second reading and
+nothing in OS-3 changes with the answer.
 
 ## Out of scope
 

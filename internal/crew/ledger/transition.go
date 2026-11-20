@@ -1,6 +1,7 @@
 package ledger
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"database/sql"
@@ -44,6 +45,9 @@ type Tx struct {
 	marked string
 	// after is what AfterCommit was given.
 	after []func()
+	// onLog is what OnLog set: told, after the commit, of each log a put
+	// keeps.
+	onLog func(source string, log []byte)
 }
 
 // AfterCommit gives the transaction fn, called once it has committed,
@@ -92,7 +96,7 @@ func (l *Ledger) Transition(ctx context.Context, runID string, fn func(*Tx) erro
 		return 0, cancelledAs(ctx, err)
 	}
 	defer tx.Rollback()
-	t := &Tx{ctx: ctx, tx: tx, runID: runID, now: time.Now().UTC()}
+	t := &Tx{ctx: ctx, tx: tx, runID: runID, now: time.Now().UTC(), onLog: l.onLog}
 	// Every error of the transaction, fn's and the statements' as the
 	// commit's, is told as the context's once the context has ended:
 	// database/sql's rollback of a cancelled transaction races each step,
@@ -486,7 +490,31 @@ func (t *Tx) PutCheck(r CheckRow) error {
 		t.runID, r.TaskID, r.N, r.ID, r.K, argv, r.Dir, r.Subject, r.State, r.PID, r.Group, stamp(r.ProcessStartedAt), stamp(r.StartedAt), stamp(r.FinishedAt),
 		r.Exit, r.Signal, b2i(r.TimedOut), b2i(r.Killed), b2i(r.Stable), b2i(r.Truncated), r.Total, r.Log, b2i(r.LogDropped), r.LogSHA256, r.Tail,
 		phase, r.Manifest, ports, tries, r.Error, r.URL, r.Where)
+	if err == nil {
+		t.toldLog(CheckLogSource(t.runID, r.TaskID, r.N, r.ID, r.K), r.Log)
+	}
 	return err
+}
+
+// CheckLogSource is a check's log as the copied-output check names it
+// (OnLog): check:<run>/<task>/<n>/<id>/<k>.
+func CheckLogSource(runID, taskID string, n int, id string, k int) string {
+	return fmt.Sprintf("check:%s/%s/%d/%s/%d", runID, taskID, n, id, k)
+}
+
+// PrerequisiteLogSource is a prerequisite's log as OnLog names it:
+// prerequisite:<run>/<id>/<k>.
+func PrerequisiteLogSource(runID, id string, k int) string {
+	return fmt.Sprintf("prerequisite:%s/%s/%d", runID, id, k)
+}
+
+// toldLog tells OnLog's fn of a log the put keeps, after the commit.
+func (t *Tx) toldLog(source string, log []byte) {
+	if t.onLog == nil || len(log) == 0 {
+		return
+	}
+	fn, b := t.onLog, bytes.Clone(log)
+	t.AfterCommit(func() { fn(source, b) })
 }
 
 // PutPrerequisite puts a prerequisite's row, new or changed, as PutCheck
@@ -531,6 +559,9 @@ func (t *Tx) PutPrerequisite(r PrerequisiteRow) error {
 		t.runID, r.ID, r.K, argv, r.Dir, r.Subject, r.State, r.PID, r.Group, stamp(r.ProcessStartedAt), stamp(r.StartedAt), stamp(r.FinishedAt),
 		r.Exit, r.Signal, b2i(r.TimedOut), b2i(r.Killed), b2i(r.Stable), b2i(r.Truncated), r.Total, r.Log, b2i(r.LogDropped), r.LogSHA256, r.Tail,
 		r.Manifest, r.Error, r.URL, r.Where)
+	if err == nil {
+		t.toldLog(PrerequisiteLogSource(t.runID, r.ID, r.K), r.Log)
+	}
 	return err
 }
 

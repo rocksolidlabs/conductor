@@ -69,6 +69,17 @@ func (l *Ledger) OnCommit(fn func(RunPointer)) {
 	l.onCommit = fn
 }
 
+// OnLog gives the ledger fn, called with each check's and prerequisite's
+// log a transition keeps (CheckLogSource, PrerequisiteLogSource names it),
+// after that transition has committed, under the lock as OnCommit's fn
+// is: the copied-output check's index of what the server captured. fn
+// must only queue.
+func (l *Ledger) OnLog(fn func(source string, log []byte)) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.onLog = fn
+}
+
 // OnPrune gives the ledger fn, called with a run's id and the revision its
 // row had when it was removed, after a prune that removed its rows has
 // committed, under the lock as OnCommit's fn is, never for a prune that

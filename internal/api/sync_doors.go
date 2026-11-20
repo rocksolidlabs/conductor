@@ -94,6 +94,14 @@ func (h *extHost) DispatchChanges(ctx context.Context, after int64, n int) ([]ex
 	out := make([]ext.DispatchChange, 0, len(rows))
 	size := 0
 	for _, c := range rows {
+		// The copied-output check's verdicts (OS-1c): a row written before
+		// the check is judged now, and one still pending ends the page
+		// before it, so the provider's cursor never passes it.
+		c.Output, c.PriorOutput = h.s.handedVerdicts(ctx, c)
+		if c.Output == verdictPending || c.PriorOutput == verdictPending {
+			next = c.Seq - 1
+			break
+		}
 		d := toDispatchChange(c)
 		b, err := json.Marshal(d)
 		if err != nil {

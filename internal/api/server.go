@@ -115,6 +115,11 @@ type Server struct {
 	store           *store.Store
 	// uiMu orders the UI documents' reads and writes (ui_state.go).
 	uiMu sync.Mutex
+	// outputs is the index of what the server captured and copyCheck the
+	// copied-output check over it (output_index.go, output_guard.go); nil
+	// on a switchyard and without a data directory.
+	outputs   *outputIndex
+	copyCheck *outputGuard
 	// trackers keeps the person's GitHub token (trackers.go); external the
 	// locks of a ticket's GitHub reads (dispatch_external.go).
 	trackers *trackerKeep
@@ -693,6 +698,33 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 				syncs.unopened("Dispatch")
 			}
 		}
+		// The copied-output check (docs/plans/sync-seams.md, OS-1c): its index
+		// opened, every verdict a process before this one left pending made
+		// output (the output it may have quoted lived in that process), and
+		// only then the check given to Dispatch's writes.
+		if !cfg.Switchyard.Enabled && st != nil {
+			if x, err := openOutputIndex(st.Dir(), 0); err == nil {
+				s.outputs, s.copyCheck = x, &outputGuard{index: x}
+				s.readLogs(x)
+				x.watchScreens(s.liveScreens)
+				fan.add(commitObserver{prune: s.logsPruned})
+				if why := x.state(); why != "" {
+					log.Warn("the copied-output check cannot use its index", "why", why)
+				}
+			}
+		}
+		if s.dispatch != nil && s.copyCheck != nil {
+			if n, err := s.dispatch.WithholdPending(context.Background()); err != nil {
+				log.Warn("pending verdicts could not be withheld", "err", err)
+			} else if n > 0 {
+				log.Info("verdicts left pending by the server before this one withheld", "rows", n)
+			}
+			s.dispatch.SetOutputCheck(s.copyCheck.JudgeValue)
+			// A verdict left pending (the index behind, past its bound) is judged
+			// again once it is whole, until the server ends.
+			ctx := s.extCtx
+			s.track(func() { s.settleLoop(ctx) })
+		}
 		if s.dispatch != nil {
 			fan.observeDispatch(s.dispatch)
 			s.dispatch.SetRunExists(s.runKnown)
@@ -734,7 +766,10 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 			}
 		}
 		s.wireLaunches()
-		s.ledger = openLedger(context.Background(), st, s.records, log, fan.observeLedger, syncs.ledgerOwned, s.ledgerRecovered, s.restoreLaunchPeople)
+		s.ledger = openLedger(context.Background(), st, s.records, log, func(ld *ledger.Ledger) { fan.observeLedger(ld); s.observeLogs(ld) }, syncs.ledgerOwned,
+			s.ledgerRecovered, s.restoreLaunchPeople)
+		// A fresh copied-output index is made again from the ledger's logs.
+		s.rebuildIndex()
 		if s.ledger == nil {
 			// Its runs are not gone: the sync store is never told they are.
 			syncs.unopened("the ledger")
@@ -823,6 +858,12 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		// the rest, its publication's end among it, takes its time. What
 		// they change as they leave reaches no browser's list (publishIf:
 		// the session is no longer listed).
+		// Its ring goes with it: the index lets its fingerprints go, the
+		// prune's time recorded.
+		if s.outputs != nil {
+			s.outputs.prune("ring:" + id)
+			s.outputs.prune("screen:" + id)
+		}
 		switch drv := d.(type) {
 		case *session.Local:
 			drv.LeaveRunChat()
@@ -1045,6 +1086,9 @@ func (s *Server) WaitBackground(ctx context.Context) {
 	}
 	if s.dispatch != nil {
 		s.dispatch.Close()
+	}
+	if s.outputs != nil {
+		s.outputs.close()
 	}
 	s.closeSessionRecords(false)
 }
@@ -1619,6 +1663,9 @@ func (s *Server) Shutdown(ctx context.Context) {
 		if err := s.dispatch.Close(); err != nil {
 			s.log.Warn("Dispatch's store did not close cleanly", "err", err)
 		}
+	}
+	if s.outputs != nil {
+		s.outputs.close()
 	}
 	// The sessions stopped and the hosts let go, every record is
 	// reconciled a last time from its session and written

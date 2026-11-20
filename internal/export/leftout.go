@@ -47,6 +47,10 @@ var leftOut = []leftRule{
 	{file: "history/index.sqlite", why: WhyDerived},
 	{file: "history/index.sqlite.damaged", why: WhyDerived},
 	{file: "ui/writer", why: WhyInstance},
+	// The copied-output check's index (docs/plans/sync-seams.md, OS-1c):
+	// fingerprints of what this server captured, made again from its
+	// sources.
+	{file: "output-index.sqlite", why: WhyDerived},
 	{dir: "tls", why: WhySecret},
 	{dir: "credentials", why: WhySecret},
 	{dir: "ext", why: WhyProvider},
