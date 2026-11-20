@@ -82,10 +82,11 @@ final class HeldTransport: HTTPTransport, @unchecked Sendable {
         await until { transport.count == 1 }
         #expect(runner.queued == 1)
         #expect(transport.lock.withLock { transport.sent } == ["/first"])
-        transport.release()
-        await until { transport.count == 2 }
-        transport.release()
-        await until { got.count == 2 }
+        // Let every held request go, each turn, until both are answered (an order broken holds nothing back for long).
+        await until {
+            transport.release()
+            return got.count == 2
+        }
         #expect(got.names == ["first", "second"])
         #expect(transport.lock.withLock { transport.sent } == ["/first", "/second"])
     }
