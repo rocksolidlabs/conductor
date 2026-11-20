@@ -31,7 +31,7 @@ interface Sent {
  * The decision page at `size`, its one item the record `it`, whose read answers `policyNow` beside it; its respond route answers by
  * `answer` and records what was sent.
  */
-async function open(browser: Parameters<typeof dayPage>[0], size: typeof DESK | typeof PHONE, it: StubItem, policyNow: unknown, answer: (body: Record<string, unknown>) => { status: number; body: unknown }): Promise<{ page: Page; sent: Sent[] }> {
+async function open(browser: Parameters<typeof dayPage>[0], size: typeof DESK | typeof PHONE, it: StubItem, policyNow: unknown, answer: (body: Record<string, unknown>) => { status: number; body: unknown }, extra: { router?: boolean; reads?: { now: unknown } } = {}): Promise<{ page: Page; sent: Sent[] }> {
   const page = await dayPage(browser, { ...size, path: '/yard' })
   await stubInbox(page, [it])
   const id = it.ref.slice('decision:'.length)
@@ -42,7 +42,10 @@ async function open(browser: Parameters<typeof dayPage>[0], size: typeof DESK | 
     async (route: Route) => {
       const req = route.request()
       const fulfil = (status: number, body: unknown) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) })
-      if (req.method() === 'GET') return fulfil(200, { decision: decisionRecord(it, true), refs: [], ...(policyNow ? { policyNow } : {}) })
+      if (req.method() === 'GET') {
+        const now = extra.reads ? extra.reads.now : policyNow
+        return fulfil(200, { decision: decisionRecord(it, true), refs: [], ...(now ? { policyNow: now } : {}), ...(extra.router ? { router: true } : {}) })
+      }
       const body = JSON.parse(req.postData() ?? '{}') as Record<string, unknown>
       sent.push({ body })
       const a = answer(body)
@@ -147,4 +150,65 @@ test('on a phone, in both themes, the held answer, Override… and its dialog fi
     await expect(page.getByRole('dialog')).toHaveCount(0)
   }
   await page.context().close()
+})
+
+test("the operator's card follows the router: a policy that lapses while the page is open lets the operator answer, without a reload", async ({ day, browser }) => {
+  void day
+  const it = routedItem(policy([group([ana])], 'none'))
+  const reads = { now: { inForce: true } as unknown }
+  const { page } = await open(browser, DESK, it, null, () => ({ status: 500, body: {} }), { reads })
+  await expect(page.locator('[data-decision-held-back-words]')).toHaveText("This is Ana's to answer.")
+  await expect(page.locator('[data-decision-choice="0"]')).toBeDisabled()
+  // The router stops confirming: no event comes, and the card's next read (here the window's focus) learns it.
+  reads.now = { inForce: false, why: 'the roster is moving' }
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')))
+  await expect(page.locator('[data-decision-policy-not-in-force]')).toHaveText('Routed to Ana: not in force now (the roster is moving). The operator answers.')
+  await expect(page.locator('[data-decision-held-back]')).toHaveCount(0)
+  await expect(page.locator('[data-decision-choice="0"]')).toBeEnabled()
+  await page.context().close()
+})
+
+test('an identity the policy names, signed in as the operator, answers as eligible: nothing held back', async ({ day, browser }) => {
+  void day
+  const it = routedItem(policy([group([ana])], 'none'))
+  const { page } = await open(browser, DESK, it, { inForce: true, eligible: true }, () => ({ status: 500, body: {} }))
+  await expect(page.locator('[data-decision-held-back]')).toHaveCount(0)
+  await expect(page.locator('[data-decision-choice="0"]')).toBeEnabled()
+  await page.context().close()
+})
+
+test('Ask the router again is offered whenever a router is registered, on a record under the server\'s own policy too, and never without one', async ({ day, browser }) => {
+  void day
+  const it = inboxItem('decision')
+  const withRouter = await open(browser, DESK, it, null, () => ({ status: 500, body: {} }), { router: true })
+  await expect(withRouter.page.locator('[data-decision-ask-router]')).toBeVisible()
+  await withRouter.page.context().close()
+  const without = await open(browser, DESK, routedItem(policy([group([ana])])), { inForce: false }, () => ({ status: 500, body: {} }))
+  await expect(without.page.locator('[data-decision-comment]')).toBeVisible()
+  await expect(without.page.locator('[data-decision-ask-router]')).toHaveCount(0)
+  await without.page.context().close()
+})
+
+test("on the decide page, an answer the router's policy refuses says the person is not among those who may answer", async ({ browser }) => {
+  const ctx = await browser.newContext()
+  const page = await ctx.newPage()
+  const view = { id: 'dr-7', rev: 1, state: 'open', type: 'approval', question: 'May dr-7 go out?', options: [{ label: 'Approve' }, { label: 'Reject' }], createdAt: '2026-11-12T00:00:00Z', own: [] }
+  await page.route(
+    (u) => u.pathname.startsWith('/api/'),
+    async (route) => {
+      const path = new URL(route.request().url()).pathname
+      const fulfil = (status: number, body: unknown) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) })
+      if (path === '/api/me') return fulfil(200, { subject: 'ana', name: 'Ana', grants: ['decide'] })
+      if (path === '/api/me/decisions') return fulfil(200, { decisions: [{ id: 'dr-7', rev: 1 }] })
+      if (path === '/api/decisions/dr-7') return fulfil(200, view)
+      if (path === '/api/decisions/dr-7/respond') return fulfil(403, { error: { code: 'not_eligible', message: 'You are not among those who may answer dr-7.' } })
+      return route.abort()
+    },
+  )
+  await page.goto('/decide/dr-7#pass=e2e.pass-of_ana.7')
+  const card = page.locator('[data-decide-card][data-decision-id="dr-7"]')
+  await card.getByRole('radio', { name: 'Approve' }).check()
+  await card.locator('[data-decide-send]').click()
+  await expect(card.getByText('You are not among those who may answer dr-7.')).toBeVisible()
+  await ctx.close()
 })
