@@ -72,6 +72,10 @@ func TestRemoteRoutes(t *testing.T) {
 	if recs, _ := remoteRecords(t, e, ""); len(recs) != 0 {
 		t.Fatalf("records before any: %v", recs)
 	}
+	// A read makes nothing in the data directory (every page asks it).
+	if _, err := os.Stat(filepath.Join(e.srv.store.Dir(), "remote")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("a read made remote/: %v", err)
+	}
 	e.newDispatchProject(t, "MINE", nil)
 	tk := e.newDispatchTicket(t, "MINE", "ours", nil)
 	key, ticketID := tk["key"].(string), tk["id"].(string)

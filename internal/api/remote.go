@@ -82,16 +82,26 @@ func remoteFinal(r remoteRecord) bool {
 	return false
 }
 
+// remoteRoot is remote/'s path, for a read: nothing is made or probed, so
+// a read of a server with no sync store writes nothing in its data
+// directory.
+func (s *Server) remoteRoot() (string, error) {
+	if s.store == nil {
+		return "", errors.New("no data directory is configured")
+	}
+	return filepath.Join(s.store.Dir(), "remote"), nil
+}
+
 // remoteAll reads every record remote/ holds with its path, in path
-// order; a file that does not read is skipped.
+// order; a file that does not read is skipped, and no remote/ holds none.
 func (s *Server) remoteAll() ([]remoteRecord, []string, error) {
-	st, err := s.remoteStore()
+	root, err := s.remoteRoot()
 	if err != nil {
 		return nil, nil, err
 	}
 	var recs []remoteRecord
 	var paths []string
-	err = filepath.WalkDir(st.Dir(), func(p string, d fs.DirEntry, err error) error {
+	err = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			if errors.Is(err, fs.ErrNotExist) {
 				return nil
@@ -109,7 +119,7 @@ func (s *Server) remoteAll() ([]remoteRecord, []string, error) {
 		if json.Unmarshal(b, &r) != nil {
 			return nil
 		}
-		rel, _ := filepath.Rel(st.Dir(), p)
+		rel, _ := filepath.Rel(root, p)
 		recs, paths = append(recs, r), append(paths, filepath.ToSlash(rel))
 		return nil
 	})
