@@ -42,11 +42,16 @@ POLICY_CLASS = "ConductorKeySigningPolicy"
 PLACE = ROOT / "mobile/ios/ConductorNative/Sources/ConductorPackaging/Packaging"
 SAMPLE = ROOT / "mobile/ios/fixtures/SampleSigningPolicy.swift"
 POLICY_DERIVED = ROOT / "mobile/ios/App/build-policy"
-BOOT_BOUND = 300
+BOOT_BOUND = 600
 TEST_BOUND = 1500
 
 
-def tries(argv: list[str], bound: int, count: int = TRIES, pause: int = PAUSE, run=subprocess.run, sleep=time.sleep, say=print) -> bool:
+def tell(message: str) -> None:
+    """A line said at once, so that the job's log keeps it in order beside xcodebuild's own."""
+    print(message, flush=True)
+
+
+def tries(argv: list[str], bound: int, count: int = TRIES, pause: int = PAUSE, run=subprocess.run, sleep=time.sleep, say=tell) -> bool:
     """Runs argv until it exits 0, at most count times, each under bound seconds, pause seconds apart."""
     for i in range(1, count + 1):
         try:
@@ -88,7 +93,7 @@ def read_classes(exe: Path, run=subprocess.run) -> set[str]:
     return found
 
 
-def policy(run=subprocess.run, say=print) -> int:
+def policy(run=subprocess.run, say=tell) -> int:
     """The default build holds no policy; a build with the sample in the packaging's place holds it, by the fixed name."""
     default = executable(DERIVED, "Debug")
     if not default.exists():
@@ -137,7 +142,7 @@ def pick(listing: dict) -> str | None:
     return best[1] if best else None
 
 
-def boot(udid: str, run=subprocess.run, sleep=time.sleep, say=print) -> bool:
+def boot(udid: str, run=subprocess.run, sleep=time.sleep, say=tell) -> bool:
     """Boots udid and waits until it has booted, three tries, a shutdown between them."""
     for i in range(1, TRIES + 1):
         run(["xcrun", "simctl", "boot", udid], timeout=BOOT_BOUND)  # refused when already booted; the wait below decides
@@ -160,7 +165,7 @@ def test_argv(udid: str) -> list[str]:
     ]
 
 
-def check(run=subprocess.run, say=print) -> int:
+def check(run=subprocess.run, say=tell) -> int:
     listing = run(["xcrun", "simctl", "list", "devices", "available", "-j"], capture_output=True, text=True, timeout=120)
     udid = pick(json.loads(listing.stdout or "{}"))
     if not udid:

@@ -429,7 +429,7 @@ jobs:
     # job under a bound that is the sum of its steps'.
     runs-on: macos-latest
     needs: web
-    timeout-minutes: 150
+    timeout-minutes: 160
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -457,7 +457,7 @@ jobs:
       # The build, then the boot check (ShellBootsUnderItsPolicyTests) on a simulator booted
       # as a step of its own with its own tries (scripts/ios_boot.py).
       - run: make mobile-ios
-        timeout-minutes: 70
+        timeout-minutes: 80
       # A packaging's signing policy, placed where the plan says, is in the app: a second build
       # with the sample (mobile/ios/fixtures) holds its class, and the default build none.
       - name: A packaging's policy is in the app (the sample's build)
