@@ -1342,6 +1342,22 @@ ahead of its code. Sizes are changed lines, code and tests.
 | OSS-2b | web: the decision page from a shell's inbox, drafts revalidated, the handle's and the link's routes; the features entry | `utils/answering.ts` and its one seam in `DecisionRespond.vue`; the shell's `REF_ACCESS` and `utils/transport/shell.ts`; `utils/drafts.ts` and `utils/answer.ts`; `pages/shell/decisions/[id].vue`, the shell's inbox screen, `/shell/open`, `links.onOpen` through `route`; the boot checks' decision case and its fixture provider; `docs/features.md` | `web/app`, `web/e2e`, `mobile`, `docs` | the OSS-2b vitest and Playwright above | OSS-1b, OSS-2a | none | ~650 + 750 |
 | OSS-3 | mobile: the Android shell (a later row) | `mobile/android`, `ConductorKey.kt`, the store's Android side, the platform's push token and taps, CI's `mobile-android` job, `docs/features.md`'s line | `mobile`, `.github/workflows`, `docs` | `mobile/test`, the Gradle build and the emulator start | OSS-2b | none | ~600 + 350 |
 
+**As built, OSS-1a's native layer** (`mobile/ios/ConductorNative`, a
+Swift package with no package of anyone else's):
+
+- The key's and the store's tests are Swift Testing suites under the
+  plan's names (`ConductorKeyTests`, `ConductorStoreTests`), run by
+  Swift's own tools (`make mobile-native-test`) with no IDE or project;
+  the app's project runs the same tests once it exists.
+- The key's record (its state, its bound id, an unbound key's `until`)
+  is kept with the private key in the one keychain item, as JSON.
+- The install's mark (`conductor/key.marker`) is kept out of backups, so
+  a restored backup never brings a mark that would let a key be kept.
+- A bound id is 1 to 128 bytes of printable ASCII with no space (0x21 to
+  0x7E).
+- An `unbound` key may sign what a plan builds before its `until`; only
+  `none` and an `unbound` key past its `until` sign nothing.
+
 OSS-2a needs nothing of the shell and the shell's rows nothing of
 OSS-2a until OSS-2b, which joins them; OSS-2b is the last code row of
 the first platform and adds the `docs/features.md` entry.
