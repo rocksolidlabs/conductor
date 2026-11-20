@@ -135,6 +135,12 @@ func TestRoutePolicyValid(t *testing.T) {
 				p.Recent = append(p.Recent, ext.RouteChange{Why: ext.Rerouted, Revision: "r2", At: time.Now().UTC()})
 			}
 		}, false},
+		{"the longest change the server writes", func(p *ext.RoutePolicy) {
+			p.Recent = []ext.RouteChange{{Why: ext.RerouteEscalated, Revision: strings.Repeat("r", ext.MaxPolicyRevision), At: time.Date(2026, 11, 19, 23, 59, 59, 123456789, time.UTC)}}
+		}, true},
+		{"a change past its bound", func(p *ext.RoutePolicy) {
+			p.Recent = []ext.RouteChange{{Why: ext.RerouteEscalated, Revision: strings.Repeat("r", ext.MaxPolicyRevision), At: time.Date(2026, 11, 19, 23, 59, 59, 123456789, time.FixedZone("far", 13*3600+45*60))}}
+		}, false},
 		{"a change of no kind", func(p *ext.RoutePolicy) { p.Recent = []ext.RouteChange{{Why: "moved", Revision: "r2"}} }, false},
 		{"reroutes below none", func(p *ext.RoutePolicy) { p.Reroutes = -1 }, false},
 	}

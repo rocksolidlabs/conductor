@@ -96,7 +96,7 @@ const (
 	MaxEligibleName   = 64 // characters
 	MaxEligibleRef    = 32
 	MaxPolicyGap      = 200
-	MaxRouteChange    = 96 // a RouteChange as encoded
+	MaxRouteChange    = 112 // a RouteChange as encoded: the longest why, a MaxPolicyRevision revision and a UTC time to the nanosecond, as the server writes one
 	MaxConfirmWhy     = 200
 	MinEscalateAfter  = 15 * time.Minute
 	MaxEscalateAfter  = 7 * 24 * time.Hour
