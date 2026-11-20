@@ -29,6 +29,7 @@ make desktop-test              # the Electron shell: tsc --noEmit and vitest (de
 make mobile-test               # the phone shell's bridge: tsc --noEmit, its vitest (mobile/test, run by the app's vitest too) and its boot spec (after make web-build)
 make mobile-native-test        # the phone shell's native key, store and plugin calls: swift test in mobile/ios/ConductorNative (a Mac; Swift Testing, no Xcode project needed; CI's mobile-ios job)
 make mobile-install mobile-sync mobile-ios  # the iOS app built for the simulator, unsigned (a Mac with Xcode, after make web-build; CI's mobile-ios job)
+make mobile-ios-policy         # a Release build with the sample signing policy (mobile/ios/fixtures) copied into a packaging's place holds the class ConductorKeySigningPolicy, read from the executable; the default build holds none (after make mobile-ios; CI's mobile-ios job)
 make lint-static               # staticcheck, pinned
 make vuln                      # govulncheck (network); the standard library's findings need the latest Go patch
 make test-network              # the built-in agents' sites on the network (nightly)

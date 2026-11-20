@@ -10,6 +10,7 @@ let package = Package(
         .library(name: "ConductorKey", targets: ["ConductorKey"]),
         .library(name: "ConductorStore", targets: ["ConductorStore"]),
         .library(name: "ConductorShell", targets: ["ConductorShell"]),
+        .library(name: "ConductorPackaging", targets: ["ConductorPackaging"]),
     ],
     targets: [
         .target(name: "ConductorKey"),
@@ -18,5 +19,7 @@ let package = Package(
         .testTarget(name: "ConductorStoreTests", dependencies: ["ConductorStore"]),
         .target(name: "ConductorShell", dependencies: ["ConductorKey", "ConductorStore"]),
         .testTarget(name: "ConductorShellTests", dependencies: ["ConductorShell"]),
+        // A packaging's native sources: what it puts in Sources/ConductorPackaging/Packaging/ (empty here) is compiled into the app.
+        .target(name: "ConductorPackaging", dependencies: ["ConductorKey"]),
     ]
 )

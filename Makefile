@@ -7,7 +7,7 @@ GO_MIN   := $(shell awk '/^go /{print $$2}' go.mod)
 NODE_MIN := 22
 NODE_STAMP := web/node_modules/.package-lock.json
 
-.PHONY: help deps check-tools build build-go check-version notices web-install web-build web-typecheck web-dev run dev test test-web test-e2e test-live design-capture test-pebble test-network test-recipes desktop-install desktop-dev desktop-test desktop-binaries desktop-dist desktop-e2e mobile-install mobile-sync mobile-test mobile-native-test mobile-ios-resolve mobile-ios lint lint-static vuln fmt generate docker clean preflight
+.PHONY: help deps check-tools build build-go check-version notices web-install web-build web-typecheck web-dev run dev test test-web test-e2e test-live design-capture test-pebble test-network test-recipes desktop-install desktop-dev desktop-test desktop-binaries desktop-dist desktop-e2e mobile-install mobile-sync mobile-test mobile-native-test mobile-ios-resolve mobile-ios mobile-ios-policy lint lint-static vuln fmt generate docker clean preflight
 
 help: ## list targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-16s %s\n", $$1, $$2}'
@@ -123,6 +123,9 @@ mobile-ios-resolve: ## the iOS app's Swift packages fetched, tried three times (
 mobile-ios: ## the iOS app built for the simulator, unsigned (on a Mac with Xcode; make web-build mobile-install mobile-sync first)
 	cd mobile && npx cap sync ios
 	xcodebuild -project mobile/ios/App/App.xcodeproj -scheme App -configuration Debug -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -derivedDataPath mobile/ios/App/build CODE_SIGNING_ALLOWED=NO build
+
+mobile-ios-policy: ## a build with the sample signing policy in a packaging's place holds its class, the default build none (on a Mac with Xcode; make mobile-ios first)
+	python3 scripts/ios_boot.py policy
 
 # The server binaries the packages bundle, under the names electron-builder's ${os}-${arch} macros give.
 desktop-binaries: ## cross-compile the server for the desktop packages (linux and mac, x64 and arm64)

@@ -21,6 +21,9 @@ What a build in Xcode would not refuse but the shell must not ship, read from th
 - The native runtime's package list (CapApp-SPM/Package.swift, written by
   `cap sync ios`) at the version mobile/package-lock.json pins, with each of
   the shell's plugin packages.
+- A packaging's place for its native sources
+  (ConductorNative/Sources/ConductorPackaging/Packaging) ships nothing here;
+  the app links ConductorPackaging, with -ObjC, and names it at start.
 - The plugins: the names the bridge calls (mobile/src/bridge.ts, `NativeKey`
   and `NativeStore`; mobile/src/main.ts reads them as `ConductorKey` and
   `ConductorStore`) are exactly the calls ConductorShell answers and exactly
@@ -256,9 +259,28 @@ def stand_ins(mobile: Path) -> list[str]:
     return out
 
 
+def packaging(mobile: Path) -> list[str]:
+    """A packaging's place ships empty; the app links its module with -ObjC and names it at start."""
+    out = []
+    place = mobile / "ios/ConductorNative/Sources/ConductorPackaging/Packaging"
+    if place.exists():
+        for f in sorted(place.rglob("*")):
+            if f.is_file():
+                out.append(f"{f.relative_to(mobile)}: the packaging's place ships nothing in this repository")
+    pbx = (mobile / "ios/App/App.xcodeproj/project.pbxproj").read_text()
+    if not re.search(r"isa = XCSwiftPackageProductDependency;\s*package = \w{24} [^;]*;\s*productName = ConductorPackaging;", pbx):
+        out.append("project.pbxproj: the app does not link ConductorPackaging: a packaging's policy would not be in it")
+    app_configs = [pbx.split(f"\t\t{c} = {{", 1)[1].split("name = ", 1)[0] for c in ("504EC3171FED79650016851F /* Debug */", "504EC3181FED79650016851F /* Release */") if f"\t\t{c} = {{" in pbx]
+    if len(app_configs) != 2 or not all('"-ObjC",' in c for c in app_configs):
+        out.append("project.pbxproj: the app does not link with -ObjC in both configurations: a policy nothing names could be dropped")
+    if "_ = ConductorPackaging.linked()" not in (mobile / "ios/App/App/ShellViewController.swift").read_text():
+        out.append("ShellViewController.swift: ConductorPackaging is not named at start")
+    return out
+
+
 def check(root: Path = ROOT) -> list[str]:
     mobile = root / "mobile"
-    return info_plist(mobile) + project(mobile) + config(mobile) + plugins(mobile) + stand_ins(mobile)
+    return info_plist(mobile) + project(mobile) + config(mobile) + plugins(mobile) + stand_ins(mobile) + packaging(mobile)
 
 
 def main() -> int:

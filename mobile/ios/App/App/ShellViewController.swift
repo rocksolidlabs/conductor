@@ -1,4 +1,5 @@
 import Capacitor
+import ConductorPackaging
 import ConductorShell
 import UIKit
 import WebKit
@@ -17,6 +18,8 @@ class ShellViewController: CAPBridgeViewController {
     }
 
     override func capacitorDidLoad() {
+        // A packaging's native sources (its signing policy) are linked whatever they hold: the module is named here.
+        _ = ConductorPackaging.linked()
         bridge?.registerPluginInstance(ConductorKeyPlugin())
         bridge?.registerPluginInstance(ConductorStorePlugin())
         bridge?.registerPluginInstance(RefusedWebViewPlugin())

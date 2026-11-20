@@ -23,6 +23,7 @@
 		C0DC7000000000000000000C /* ConductorShell in Frameworks */ = {isa = PBXBuildFile; productRef = C0DC7000000000000000000B /* ConductorShell */; };
 		C0DC7000000000000000000E /* RefusedPlugins.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DC7000000000000000000D /* RefusedPlugins.swift */; };
 		C0DC70000000000000000010 /* ShellHttpPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DC7000000000000000000F /* ShellHttpPlugin.swift */; };
+		C0DC70000000000000000021 /* ConductorPackaging in Frameworks */ = {isa = PBXBuildFile; productRef = C0DC70000000000000000020 /* ConductorPackaging */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -52,6 +53,7 @@
 			files = (
 				4D22ABE92AF431CB00220026 /* CapApp-SPM in Frameworks */,
 				C0DC7000000000000000000C /* ConductorShell in Frameworks */,
+				C0DC70000000000000000021 /* ConductorPackaging in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -124,6 +126,7 @@
 			packageProductDependencies = (
 				4D22ABE82AF431CB00220026 /* CapApp-SPM */,
 				C0DC7000000000000000000B /* ConductorShell */,
+				C0DC70000000000000000020 /* ConductorPackaging */,
 			);
 			productName = App;
 			productReference = 504EC3041FED79650016851F /* App.app */;
@@ -344,6 +347,10 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-ObjC",
+				);
 				OTHER_SWIFT_FLAGS = "$(inherited) \"-D\" \"COCOAPODS\" \"-DDEBUG\"";
 				PRODUCT_BUNDLE_IDENTIFIER = dev.conductor.mobile;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -366,6 +373,10 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-ObjC",
+				);
 				PRODUCT_BUNDLE_IDENTIFIER = dev.conductor.mobile;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "";
@@ -418,6 +429,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = C0DC7000000000000000000A /* XCLocalSwiftPackageReference "../ConductorNative" */;
 			productName = ConductorShell;
+		};
+		C0DC70000000000000000020 /* ConductorPackaging */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = C0DC7000000000000000000A /* XCLocalSwiftPackageReference "../ConductorNative" */;
+			productName = ConductorPackaging;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

@@ -413,7 +413,8 @@ native key plugin. It knows no service, no contract and no route.
   class the packaging adds, exposed to the Objective-C runtime under the
   fixed name `ConductorKeySigningPolicy` (`@objc(ConductorKeySigningPolicy)`)
   and conforming to the plugin's `KeySigningPolicy` protocol, found once
-  at start (`NSClassFromString`). The open-source build has none. The
+  at start (`NSClassFromString`). The open-source build has none. Where
+  a packaging puts it is "A packaging's native sources" below. The
   policy answers either a refusal (a code and words, passed back as
   they are) or a plan:
 
@@ -1468,6 +1469,34 @@ Swift package with no package of anyone else's):
   any usage description but Face ID's. Preflight names `mobile-ios` as
   CI's alone. CI caches the job's Swift packages and tries their resolve
   three times.
+
+**A packaging's native sources** (as built): one place,
+`mobile/ios/ConductorNative/Sources/ConductorPackaging/Packaging/`, which
+this repository ships empty (git ignores it, and the project check fails
+on any file there). Every Swift file a packaging puts there is compiled
+into the module `ConductorPackaging`, which depends on `ConductorKey`, so
+a file there can `import ConductorKey` for `KeySigningPolicy`,
+`SigningPlan` and `KeyPolicyRefusal`; the app links the module, names it
+at start, and links with `-ObjC`, so a policy class nothing names by
+symbol is still in the executable. No project file is edited. A
+packaging's steps:
+
+1. Put the policy in that folder: a class conforming to
+   `KeySigningPolicy` with `init()`, exposed as
+   `@objc(ConductorKeySigningPolicy)` (an `NSObject` subclass), as
+   `mobile/ios/fixtures/SampleSigningPolicy.swift` is.
+2. Build as usual (`make web-build mobile-install mobile-sync
+   MOBILE_CONNECT=… MOBILE_NATIVE_ORIGINS=… mobile-ios`, then the IDE
+   under its own signing).
+3. Check its class is in the built app as `make mobile-ios-policy`
+   checks the sample's: `xcrun otool -ov <App.app/App>` names
+   `ConductorKeySigningPolicy`.
+
+The `mobile-ios` job proves the place on every run (`make
+mobile-ios-policy`, `scripts/ios_boot.py policy`): a Release build, dead
+code stripped, with the sample copied into the place holds the class
+under the fixed name, read from the executable's class list, and the
+default build holds none.
 
 **By hand on a device** (what only a phone shows), from a clean checkout
 on a Mac with Xcode: `make web-build mobile-install mobile-sync`, `npx cap

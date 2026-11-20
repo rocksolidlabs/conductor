@@ -204,6 +204,22 @@ class IOSProjectTest(unittest.TestCase):
         self.edit("ios/ConductorNative/Sources/ConductorShell/NativeHTTP.swift", '"patch", "delete"]', '"patch", "delete", "head"]')
         self.only("ShellHttpPlugin has")
 
+    def test_the_packagings_place_ships_empty_and_the_app_links_it(self) -> None:
+        place = self.dir / "mobile/ios/ConductorNative/Sources/ConductorPackaging/Packaging"
+        place.mkdir(parents=True)
+        (place / "Policy.swift").write_text("")
+        self.only("Packaging/Policy.swift: the packaging's place ships nothing")
+        self.setUp()
+        self.edit("ios/App/App.xcodeproj/project.pbxproj", "productName = ConductorPackaging;", "productName = ConductorKey;")
+        self.only("the app does not link ConductorPackaging")
+        self.setUp()
+        p = self.dir / "mobile/ios/App/App.xcodeproj/project.pbxproj"
+        p.write_text(p.read_text().replace('\t\t\t\t\t"-ObjC",\n', "", 1))
+        self.only("the app does not link with -ObjC")
+        self.setUp()
+        self.edit("ios/App/App/ShellViewController.swift", "        _ = ConductorPackaging.linked()\n", "")
+        self.only("ConductorPackaging is not named at start")
+
 
 if __name__ == "__main__":
     unittest.main()
