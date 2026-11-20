@@ -15,7 +15,7 @@ public enum LoadDecision: Equatable, Sendable {
 
 /**
  * The shell's decision over every load of its web view, ahead of the native runtime's own rule:
- * - the main frame: the app's own address goes on to the runtime; a link the person activated (WebKit's link type, which a
+ * - the main frame: the app's own address (`own`: the runtime's own test of it, or narrower) goes on to the runtime; a link the person activated (WebKit's link type, which a
  *   script's own click on a link also gets) to an `https` or `http` address, while the app is in the foreground, is handed to iOS;
  *   anything else is cancelled (a location change, a form, a redirect, a refresh away, every other scheme);
  * - a new window (a link with a target, or a script's `window.open`, which the sign-in page uses for the provider's page): an
@@ -35,15 +35,28 @@ public enum LoadGate {
         let out = handed.contains(scheme) && url.host?.isEmpty == false && foreground
         switch frame {
         case .some(true):
-            if scheme == app.scheme?.lowercased(), url.host?.lowercased() == app.host?.lowercased(), url.port == app.port, url.user == nil {
-                return .forward
-            }
+            if own(url, app: app) { return .forward }
             return linkActivated && out ? .handOff(url) : .cancel
         case .some(false):
             return ["about:srcdoc", "about:blank"].contains(url.absoluteString.lowercased()) ? .allow : .cancel
         case .none:
             return out ? .handOff(url) : .cancel
         }
+    }
+
+    /**
+     * Whether a load is the app's own page, read as the runtime reads it: the runtime asks whether the address, as a string, begins
+     * with its local address, and hands a top-level load that does not to iOS. So the gate takes the string itself too, case as
+     * written and nothing decoded, and narrower: the local address exactly, or it followed by `/`, `?` or `#`. A host in another
+     * case, with an escape, a port, a user part or a longer name is not the app's.
+     */
+    public static func own(_ url: URL, app: URL) -> Bool {
+        var a = Array(app.absoluteString.utf8)
+        if a.last == UInt8(ascii: "/") { a.removeLast() }
+        let s = Array(url.absoluteString.utf8)
+        guard s.count >= a.count, Array(s[..<a.count]) == a else { return false }
+        guard s.count > a.count else { return true }
+        return [UInt8(ascii: "/"), UInt8(ascii: "?"), UInt8(ascii: "#")].contains(s[a.count])
     }
 }
 

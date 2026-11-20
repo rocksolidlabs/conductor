@@ -21,7 +21,7 @@ public enum FilePrefix {
         let letThrough = ["^\(scheme)://\(host)$", "^\(scheme)://\(host)[?#]", "^\(scheme)://\(host)/[\(pathCharacters)]*$",
                            "^\(scheme)://\(host)/[\(pathCharacters)]*[?#]"]
         return [["trigger": ["url-filter": "^\(scheme):"], "action": ["type": "block"]]]
-            + letThrough.map { ["trigger": ["url-filter": $0], "action": ["type": "ignore-previous-rules"]] }
+            + letThrough.map { ["trigger": ["url-filter": $0, "url-filter-is-case-sensitive": true], "action": ["type": "ignore-previous-rules"]] }
     }
 
     /** The runtime's two prefixes blocked, after the spelling's rules, so that no spelling lets them through. */

@@ -15,9 +15,18 @@ import WebKit
     }
 
     @Test func theMainFrameLoadsOnlyTheAppsOwnPageAndHandsOnOnlyALinkToTheWeb() {
-        for own in ["capacitor://localhost", "capacitor://localhost/", "capacitor://localhost/shell/open?h=x", "CAPACITOR://LOCALHOST/index.html"] {
+        for own in ["capacitor://localhost", "capacitor://localhost/", "capacitor://localhost/shell/open?h=x", "capacitor://localhost?x", "capacitor://localhost#x"] {
             #expect(decide(true, false, own) == .forward, "\(own)")
         }
+        // The app's address only as the runtime itself reads it: the string, case as written, nothing decoded.
+        for near in ["capacitor://LOCALHOST/", "capacitor://Localhost/x?y", "CAPACITOR://localhost/index.html", "capacitor://local%68ost/",
+                     "capacitor://l%6Fcalhost/x", "capacitor://localhost:8080/", "capacitor://user@localhost/", "capacitor://:@localhost/",
+                     "capacitor://localhost.example/", "capacitor://localhostx/", "capacitor://localhost:/", "capacitor://localhost./"] {
+            #expect(decide(true, false, near) == .cancel, "\(near)")
+            #expect(decide(true, true, near) == .cancel, "\(near)")
+        }
+        #expect(LoadGate.own(URL(string: "capacitor://localhost/a")!, app: URL(string: "capacitor://localhost/")!))
+        #expect(!LoadGate.own(URL(string: "capacitor://localhostx")!, app: URL(string: "capacitor://localhost/")!))
         #expect(decide(true, true, "https://example.com/a") == .handOff(URL(string: "https://example.com/a")!))
         #expect(decide(true, true, "http://192.0.2.1:8080/") == .handOff(URL(string: "http://192.0.2.1:8080/")!))
         // Not a link's load: a location change, a form, a redirect, a refresh away.

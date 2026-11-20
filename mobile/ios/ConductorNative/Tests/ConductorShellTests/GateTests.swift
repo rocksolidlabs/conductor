@@ -118,14 +118,18 @@ import WebKit
     }
 }
 
-/** Whether the content rules block a load of url, as WebKit applies them: in order, a block set and an ignore-previous-rules clearing it. */
+/**
+ * Whether the content rules block a load of url, as WebKit applies them: in order, a block set and an ignore-previous-rules clearing
+ * it; a filter case-insensitive unless its rule says otherwise.
+ */
 func blocked(_ url: String, by rules: String) throws -> Bool {
-    let list = try #require(try JSONSerialization.jsonObject(with: Data(rules.utf8)) as? [[String: [String: String]]])
+    let list = try #require(try JSONSerialization.jsonObject(with: Data(rules.utf8)) as? [[String: [String: Any]]])
     var block = false
     for rule in list {
-        let filter = try NSRegularExpression(pattern: try #require(rule["trigger"]?["url-filter"]), options: [.caseInsensitive])
+        let sensitive = rule["trigger"]?["url-filter-is-case-sensitive"] as? Bool ?? false
+        let filter = try NSRegularExpression(pattern: try #require(rule["trigger"]?["url-filter"] as? String), options: sensitive ? [] : [.caseInsensitive])
         guard filter.firstMatch(in: url, range: NSRange(url.startIndex..., in: url)) != nil else { continue }
-        switch rule["action"]?["type"] {
+        switch rule["action"]?["type"] as? String {
         case "block": block = true
         case "ignore-previous-rules": block = false
         default: Issue.record("an action the rules do not use: \(String(describing: rule["action"]))")
@@ -140,7 +144,8 @@ func blocked(_ url: String, by rules: String) throws -> Bool {
     @Test func theRulesAdmitOnlyTheBundlesSpellingAndNeverThePrefixes() throws {
         for ok in ["capacitor://localhost", "capacitor://localhost/", "capacitor://localhost/index.html", "capacitor://localhost/_nuxt/DBSZVbF0.js",
                    "capacitor://localhost/_fonts/Inter-Regular.woff2", "capacitor://localhost/shell/decisions/dr-1", "capacitor://localhost/shell/open?h=a%2Fb",
-                   "capacitor://localhost/sponsor/rocksolidlabs-mark.png#x", "CAPACITOR://LOCALHOST/index.html", "https://example.com/%5Fanything"] {
+                   "capacitor://localhost/shell/decisions/b3JnL3JlcG8jMTI", "capacitor://localhost/sponsor/rocksolidlabs-mark.png#x",
+                   "https://example.com/%5Fanything"] {
             #expect(try !blocked(ok, by: rules), "\(ok)")
         }
         for bad in ["capacitor://localhost/_capacitor_file_/private/var/x.png", "capacitor://localhost/%5Fcapacitor_file_/private/var/x.png",
@@ -148,7 +153,9 @@ func blocked(_ url: String, by rules: String) throws -> Bool {
                     "capacitor://localhost/_nuxt/..%2F..%2Fx.png", "capacitor://localhost/a%2Fb.png", "capacitor://localhost/a b.png",
                     "capacitor://localhost/é.png", "capacitor://localhost/a~b.png", "capacitor://localhost/a@b.png", "capacitor://localhost/a;b.png",
                     "capacitor://elsewhere/index.html", "capacitor://localhost.evil/index.html", "capacitor://localhost:8080/index.html",
-                    "capacitor://user@localhost/index.html", "capacitor:/index.html", "capacitor://localhost/_capacitor_file_?x"] {
+                    "capacitor://user@localhost/index.html", "capacitor:/index.html", "capacitor://localhost/_capacitor_file_?x",
+                    "capacitor://LOCALHOST/index.html", "capacitor://Localhost/", "capacitor://local%68ost/index.html", "CAPACITOR://LOCALHOST/index.html",
+                    "capacitor://localhost/shell/decisions/org%2Frepo%2312"] {
             #expect(try blocked(bad, by: rules), "\(bad)")
         }
     }
