@@ -823,15 +823,11 @@ func (x *outputIndex) lookup(hs []uint64) (map[uint64][]fpRef, error) {
 	return out, nil
 }
 
-// sourceText is the source's folded text and where it begins, for a
+// sourceTextIf is the source's folded text and where it begins, for a
 // confirmation; false when it cannot be read (the hit then counts).
-func (x *outputIndex) sourceText(name string) ([]byte, int64, bool) {
-	t, base, ok, _ := x.sourceTextIf(name, true)
-	return t, base, ok
-}
-
-// sourceTextIf is sourceText, a kept source read only when read says so:
-// deferred is true for one that needs its reader and was not read.
+//
+// A kept source is read only when read says so: deferred is true for one
+// that needs its reader and was not read.
 func (x *outputIndex) sourceTextIf(name string, read bool) (text []byte, base int64, ok, deferred bool) {
 	x.mu.Lock()
 	if s := x.live[name]; s != nil {
