@@ -81,8 +81,12 @@ LINUX_STEPS = [
         "argv": ["python3", "-m", "unittest", "discover", "-s", "scripts", "-p", "*_test.py"],
     },
     # CI installs the desktop shell's packages (npm ci) before the notices check
-    # and the desktop tests; a worktree starts without them.
+    # and the desktop tests, and the phone shell's before the notices check; a
+    # worktree starts without them.
     {"name": "desktop-install", "covers": "desktop-test", "argv": ["make", "desktop-install"]},
+    # The phone shell's packages, for the notices; the rest of CI's mobile-ios job (the native
+    # package's tests, the simulator build) needs a Mac with Xcode.
+    {"name": "mobile-install", "covers": "mobile-ios", "argv": ["make", "mobile-install"]},
     {"name": "notices", "covers": "go", "argv": ["python3", "scripts/notices.py", "--check"]},
     {"name": "vuln", "covers": "vuln", "argv": ["make", "vuln"]},
     {"name": "e2e", "covers": "e2e", "argv": ["make", "test-e2e"]},

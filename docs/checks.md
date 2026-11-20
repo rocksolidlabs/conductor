@@ -24,14 +24,15 @@ make test-pebble               # certificates end to end against Let's Encrypt's
 make test-live                 # the real Claude Code and Codex (CONDUCTOR_E2E_LIVE_REPO, keys or logins); weekly in CI
 make desktop-test              # the Electron shell: tsc --noEmit and vitest (desktop/)
 make mobile-test               # the phone shell's bridge: tsc --noEmit, its vitest (mobile/test, run by the app's vitest too) and its boot spec (after make web-build)
-make mobile-native-test        # the phone shell's native key and store: swift test in mobile/ios/ConductorNative (a Mac; Swift Testing, no Xcode project needed; CI has no Mac job for it yet)
+make mobile-native-test        # the phone shell's native key, store and plugin calls: swift test in mobile/ios/ConductorNative (a Mac; Swift Testing, no Xcode project needed; CI's mobile-ios job)
+make mobile-install mobile-sync mobile-ios  # the iOS app built for the simulator, unsigned (a Mac with Xcode, after make web-build; CI's mobile-ios job)
 make lint-static               # staticcheck, pinned
 make vuln                      # govulncheck (network); the standard library's findings need the latest Go patch
 make test-network              # the built-in agents' sites on the network (nightly)
 make test-recipes              # the recipe, Brakeman and usage-reader flags against the CLIs on this machine (nightly; the usage reads need a login, and a Claude Code other than the checked version is read only when CONDUCTOR_USAGE_CHECK names it)
 python3 scripts/brand_assets.py --check
-python3 scripts/notices.py --check  # THIRD_PARTY_NOTICES current (after make web-build, npm ci in desktop/)
-python3 -m unittest discover -s scripts -p '*_test.py'  # the scripts' own tests (dco_check.py, notices.py, preflight.py, release_draft.py, design_drift.py, live_setup.py, go_test_groups.py)
+python3 scripts/notices.py --check  # THIRD_PARTY_NOTICES current (after make web-build, npm ci in desktop/ and mobile/)
+python3 -m unittest discover -s scripts -p '*_test.py'  # the scripts' own tests (dco_check.py, notices.py, preflight.py, release_draft.py, design_drift.py, live_setup.py, go_test_groups.py, ios_project.py: the phone shell's iOS project held to what it must not ship)
 ```
 
 `npm --prefix web test` runs the design system's rule checks among the

@@ -1370,6 +1370,77 @@ Swift package with no package of anyone else's):
 - What a write cut before its rename left (`<key>.new`) is never read
   and is removed when the store starts.
 
+**As built, OSS-1a's app** (`mobile/ios/App`, `mobile/package.json`,
+`mobile/capacitor.config.ts`):
+
+- Capacitor 8.6.0 (`core`, `ios`, `cli`) with `push-notifications`
+  8.1.3, `app` 8.1.2 and `browser` 8.0.5: the newest releases at least two
+  weeks old. Its iOS template has a scene delegate: the window, the
+  shell's view controller and the cover are the scene's
+  (`SceneDelegate.swift`), and the `AppDelegate` hands the push token on.
+  The main storyboard's controller is the shell's too, so every way the
+  window gets one gives it the shell's.
+- The plugins are a few lines each in `App/Plugins`
+  (`ConductorKeyPlugin.swift`, `ConductorStorePlugin.swift`): each call
+  is decoded, made and answered by a third target of the native package,
+  `ConductorShell` (`KeyCalls`, `StoreCalls`), tested by `swift test`
+  with the rest. A refusal reaches the page as a rejected error with
+  `code` and `words` (the words also its message); a call the plugin
+  does not have is `unknown_call`, an argument of the wrong kind
+  `invalid_request`, and a key or store the phone could not open
+  `native`. The key's start and the store's run before the first call.
+- Capacitor's view controller makes its web view's delegate itself and
+  grants every media capture; `ShellViewController` wraps the web view's
+  UI delegate in `MediaCaptureRefused`, which denies every capture and
+  hands every other call to Capacitor's.
+- `ShellInfoPlistTests` is `scripts/ios_project.py` with its tests in
+  the scripts suite: the plist's Face ID words, no other usage
+  description, no background mode; no team, profile or entitlement; iOS
+  16 and the development id in every configuration; every Swift file in
+  the app's sources; the local package linked; the config's id and
+  navigation; `CapApp-SPM` at the locked version; the plugins' names
+  exactly the bridge's (`NativeKey`, `NativeStore`), registered, and the
+  capture refused. The shell's TypeScript tests stay in the app's vitest,
+  so `mobile/` adds `typescript` alone as a dev dependency (the runtime's
+  tool reads `capacitor.config.ts` with it).
+- CI's job is `mobile-ios` (macOS): `make mobile-install mobile-sync`,
+  `make mobile-native-test`, `make mobile-ios`. The bridge's tests run in
+  the web job's vitest.
+- The app icon is the desktop app's; the launch image is plain white.
+
+**By hand on a device** (what only a phone shows), from a clean checkout
+on a Mac with Xcode: `make web-build mobile-install mobile-sync`, `npx cap
+sync ios` in `mobile/`, open `mobile/ios/App/App.xcodeproj`. The builder
+supplies, in the App target's Signing & Capabilities: their team (a team
+id), a signing certificate and a provisioning profile for a development
+build (Xcode's automatic signing makes both), a bundle id of their own in
+place of `dev.conductor.mobile`, and the Push Notifications capability
+(the `aps-environment` entitlement) for the notification checks. Then,
+on the phone, with a packaging's signing policy and provider where a
+step signs or is told:
+
+1. The first answer asks Face ID with "Confirm your answer in
+   Conductor"; Cancel sends nothing and says so (`presence_refused`).
+2. Face ID failed twice, or turned off: the passcode is offered and an
+   answer confirmed with it is sent.
+3. Nothing signs while the phone is locked: a sign started and the phone
+   locked before it is confirmed sends nothing.
+4. Records are unreadable while locked: with Xcode's debugger attached
+   and a draft kept, the draft's file has the protection `complete`
+   (`FileManager.default.attributesOfItem(atPath:)[.protectionKey]`), and
+   a read of it from the debugger with the phone locked for ten seconds
+   fails.
+5. A reinstall drops the key: the app deleted and installed again
+   starts with no key (`none`), whatever the keychain kept.
+6. A restored backup brings neither key nor records: a backup made with
+   a key and a draft, restored to a phone (or the same one, erased),
+   starts with no key and no drafts or cache.
+7. A notification's tap opens its decision: a notification whose data
+   has `h` tapped with the app closed and again with it in the
+   background opens `/shell/open?h=<handle>` and that decision, read at
+   that moment; one with no `h` opens the inbox.
+8. The app switcher shows the plain cover, never a card.
+
 OSS-2a needs nothing of the shell and the shell's rows nothing of
 OSS-2a until OSS-2b, which joins them; OSS-2b is the last code row of
 the first platform and adds the `docs/features.md` entry.

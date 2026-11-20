@@ -1,6 +1,6 @@
 // swift-tools-version:5.9
-// The phone shell's native layer (docs/plans/phone-shell.md, OSS-1a): the key and the store, as plain Swift with no package of
-// anyone else's, built and tested on its own (`swift test`, the tests in Swift Testing) and used by the iOS app's plugins.
+// The phone shell's native layer (docs/plans/phone-shell.md, OSS-1a): the key, the store and the plugins' calls over them, as plain
+// Swift with no package of anyone else's, built and tested on its own (`swift test`, the tests in Swift Testing) and used by the iOS app's plugins.
 import PackageDescription
 
 let package = Package(
@@ -9,11 +9,14 @@ let package = Package(
     products: [
         .library(name: "ConductorKey", targets: ["ConductorKey"]),
         .library(name: "ConductorStore", targets: ["ConductorStore"]),
+        .library(name: "ConductorShell", targets: ["ConductorShell"]),
     ],
     targets: [
         .target(name: "ConductorKey"),
         .testTarget(name: "ConductorKeyTests", dependencies: ["ConductorKey"]),
         .target(name: "ConductorStore"),
         .testTarget(name: "ConductorStoreTests", dependencies: ["ConductorStore"]),
+        .target(name: "ConductorShell", dependencies: ["ConductorKey", "ConductorStore"]),
+        .testTarget(name: "ConductorShellTests", dependencies: ["ConductorShell"]),
     ]
 )

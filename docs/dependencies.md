@@ -30,5 +30,8 @@
 | @playwright/test (e2e; Chromium revision 1117, 125.0.6422.26) | 1.44.1 |
 | electron / electron-builder (desktop) | 44.5.1 / 26.15.3 |
 | @types/node (e2e type check) | 22.20.5 |
+| @capacitor/core / @capacitor/ios / @capacitor/cli (the phone shell's native runtime and its tool, `mobile/`: 8.6.0, the newest release at least two weeks old; the iOS app's Capacitor and Cordova frameworks come from capacitor-swift-pm at the same version, through the Swift Package Manager, so the build needs no Ruby) | 8.6.0 / 8.6.0 / 8.6.0 |
+| @capacitor/push-notifications / @capacitor/app / @capacitor/browser (the shell's push token and notification taps; opened links; the in-app browser for Open a server and a provider's sign-in page) | 8.1.3 / 8.1.2 / 8.0.5 |
+| typescript (`mobile/`, dev: the runtime's tool reads `capacitor.config.ts` with it; the version `desktop/` pins) | 5.9.3 |
 
 Upgrade deliberately and update this table.

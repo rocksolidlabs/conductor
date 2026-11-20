@@ -238,16 +238,30 @@ provider.
   draft on the phone while offline and sent only after Confirm on return,
   and, when its outcome is not known, locked until the provider says
   whether it arrived. Open a server stays reachable in every state and
-  never asks the provider. The native key that asks for Face ID or the
-  passcode before an answer is signed is the next row.
+  never asks the provider.
+- **The phone's own key and store.** The shell's native layer keeps one
+  key on the phone, in its keychain while it is unlocked and never in a
+  backup or on another device; it signs only what a packaging's signing
+  policy builds (the open-source build has none and signs nothing), and
+  asks for Face ID or the passcode, "Confirm your answer in Conductor",
+  when the policy asks. Drafts and the cache are files the phone keeps
+  locked while it is, out of backups, emptied at a sign-out. No media
+  capture: the shell's page can open neither the microphone nor the
+  camera.
 - **How it is built.** `make web-build mobile-sync` puts the workbench's
   bundle into `mobile/www` with the shell's bridge and its page policy
   (`script-src 'self' 'wasm-unsafe-eval'` and the hash of each inline
   script; `connect-src 'none'`, or the https origins a provider's build
   names); `make mobile-test` checks the bridge and starts the synced bundle
-  under that policy. The native project, its signing and its simulator
-  build (`make mobile-install mobile-ios`) are the next row; anyone installs
-  the shell on a device under their own signing.
+  under that policy. `make mobile-install mobile-sync mobile-ios` builds
+  the iOS app for the simulator, unsigned, on a Mac with Xcode, as CI's
+  `mobile-ios` job does, and `make mobile-native-test` tests its key, its
+  store and its plugins' calls. The repository's project holds no team,
+  signing or push entitlement: anyone installs the shell on a device
+  under their own signing (`docs/plans/phone-shell.md`, By hand). The
+  Face ID sheet, the keychain while the phone is locked and a
+  notification's tap are seen only on a device, by hand; none has been
+  seen on one yet.
 
 ## Brakeman hands a package on, tells of a new decision, and shares a brief (#1012; 2026-11-18)
 

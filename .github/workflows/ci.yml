@@ -88,10 +88,13 @@ jobs:
           cache-dependency-path: |
             web/package-lock.json
             desktop/package-lock.json
+            mobile/package-lock.json
       - run: npm ci --ignore-scripts
         working-directory: web
       - run: npm ci --ignore-scripts
         working-directory: desktop
+      - run: npm ci --ignore-scripts
+        working-directory: mobile
       - uses: actions/download-artifact@v4
         with:
           name: web-packages
@@ -416,6 +419,30 @@ jobs:
       - run: xvfb-run --auto-servernum npm run test:e2e
         working-directory: desktop
 
+  mobile-ios:
+    # The phone shell's iOS app, built unsigned for the simulator, and its native package's tests
+    # (docs/checks.md): the one place the app's project, its plugins and the native runtime are
+    # compiled together. scripts/ios_project.py, in the go job's scripts suite, holds the project
+    # to what it must not ship.
+    runs-on: macos-latest
+    needs: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            web/package-lock.json
+            mobile/package-lock.json
+      - uses: actions/download-artifact@v4
+        with:
+          name: web-dist
+          path: internal/web/dist
+      - run: make mobile-install mobile-sync
+      - run: make mobile-native-test
+      - run: make mobile-ios
+
   dco:
     # Every commit of a pull request is signed off by its author
     # (CONTRIBUTING.md, Sign-off). The job runs on every event and only
@@ -440,7 +467,7 @@ jobs:
   # fails this job.
   required-checks:
     if: always()
-    needs: [web, go, go-race, vuln, build-matrix, e2e, pebble, desktop-test, desktop-smoke, dco]
+    needs: [web, go, go-race, vuln, build-matrix, e2e, pebble, desktop-test, desktop-smoke, mobile-ios, dco]
     runs-on: ubuntu-latest
     steps:
       - name: Every job passed
