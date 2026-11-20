@@ -4911,8 +4911,9 @@ before this (ledger version 9 or earlier) has none of `request`, `start`
 and `findingsFrom` and reads as before; the ledger's version 10 changes
 no table and is a barrier, so an older binary opens it read-only rather
 than dropping a request it does not know. Version 13 is a provider's
-launch's (A provider's launch, below), and version 14 a decision
-router's outcome outbox (Decisions, Routed decisions).
+launch's (A provider's launch, below), version 14 a decision router's
+outcome outbox (Decisions, Routed decisions), and version 15 the record
+of the context each attempt was given (below).
 
 **Commands with receipts.** A person's change to a managed run (pause,
 unpause, cancel, retry, accept) is a command: the client mints a `commandId`
@@ -8464,6 +8465,15 @@ writes or reads the table yet; a server with no router writes none. A
 build that writes version 13 opens such a ledger read-only: it launches
 no crew with tasks there and rewrites nothing; opened again by a build
 that writes 14, it is as it was.
+
+The ledger's version 15 adds the record of the context each attempt was
+given (`attempt_context`, `docs/plans/context-seams.md`): one row for
+each block a context provider gave an attempt, at its start or by a
+lookup, its phase, source, title, ref, pack mark, its body's SHA-256 and
+size and when, never its text, keyed by the attempt and the block's
+sequence and going with the attempt. No attempt before it was given a
+recorded block, nothing is derived, and nothing writes or reads the table
+yet. A build that writes version 14 opens such a ledger read-only.
 
 ### Capacity
 
