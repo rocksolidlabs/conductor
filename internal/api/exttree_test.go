@@ -320,7 +320,14 @@ func TestReadTreeLeavesDeniedPathsOut(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(e.root, "work"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	commitFile(t, e.root, "work/main.go", "package main\n")
+	// The server writes its data directory while git would walk it (its
+	// index's journal, listed, can be gone by its stat): this repository's
+	// files are added by name, never by a walk of the folder.
+	if err := os.WriteFile(filepath.Join(e.root, "work", "main.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, e.root, "add", "--", "work/main.go")
+	gitRun(t, e.root, "commit", "-q", "-m", "add work/main.go")
 	if err := os.WriteFile(filepath.Join(e.root, ".conductor-data", "kept.json"), []byte(`{"token":"x"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -334,8 +341,8 @@ func TestReadTreeLeavesDeniedPathsOut(t *testing.T) {
 	for _, en := range tr.Entries {
 		paths = append(paths, en.Path)
 	}
-	// Every file committed under the data directory (the server's own, a
-	// commit of the whole folder took them too) is counted and left out.
+	// Every file committed under the data directory is counted and left
+	// out.
 	inData := len(strings.Split(gitIn(t, e.root, "ls-tree", "-r", "--name-only", c, "--", ".conductor-data"), "\n"))
 	if err != nil || inData < 1 || tr.Denied != inData || slices.ContainsFunc(paths, func(p string) bool { return strings.HasPrefix(p, ".conductor-data/") }) || !slices.Contains(paths, "work/main.go") {
 		t.Fatalf("the tree: %v, %d denied, %v", paths, tr.Denied, err)
