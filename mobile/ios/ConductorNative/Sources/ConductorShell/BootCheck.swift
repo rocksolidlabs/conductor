@@ -48,7 +48,7 @@ public enum BootCheck {
       const value = async (f) => { try { return await within(f()) } catch (e) { return null } }
       const probes = async () => {
         const failed = []
-        const check = (name, ok) => { if (!ok) failed.push(name) }
+        const check = (name, ok, seen) => { if (!ok) failed.push(seen === undefined ? name : name + ':' + seen) }
         const P = (window.Capacitor && window.Capacitor.Plugins) || {}
         // Each way around a gate: a plugin named by its native class, the Cordova kind.
         toRuntime({ type: 'message', pluginId: 'CAPWebViewPlugin', methodName: 'getServerBasePath', options: {}, callbackId: '\(probePrefix)webview' })
@@ -61,7 +61,10 @@ public enum BootCheck {
         // The calls the shell means still answer, and the native HTTP call is still the shell's own (the class-named one would
         // have replaced it and reached the origin not named). WebView and CapacitorCookies are not the page's: the gate drops them.
         check('http', (await code(() => P.CapacitorHttp.request({ url: 'https://unnamed.example/' }))) === 'origin_refused')
-        check('key', ((await value(() => P.ConductorKey.state())) || {}).state === 'none')
+        // The key answers from the shell's own plugin: its state, or its own refusal where an unsigned simulator build has no
+        // keychain to read (code keychain); never no answer.
+        const key = await code(() => P.ConductorKey.state())
+        check('key', key === 'answered' || key === 'keychain', key)
         check('store', Array.isArray(((await value(() => P.ConductorStore.list({ area: 'drafts' }))) || {}).keys))
         // A file under the runtime's file prefix: not served.
         const file = window.__conductorBootFile
