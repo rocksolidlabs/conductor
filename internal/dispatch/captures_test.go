@@ -29,6 +29,9 @@ var version5Tables = []string{"captures", "capture_annotations", "capture_annota
 // version6Tables is the tables version 6 makes (opensends_test.go).
 var version6Tables = []string{"capture_sends_open"}
 
+// version8Tables is the tables version 8 makes (schema8_test.go).
+var version8Tables = []string{"replica_tags", "replica_names", "held_rows", "held_bodies", "plan_views"}
+
 var (
 	capCommit = strings.Repeat("a", 40)
 	contentA  = strings.Repeat("c", 40)
@@ -1126,7 +1129,7 @@ func TestMigrationToCapturesKeepsEveryRow(t *testing.T) {
 	}
 	before, cols := map[string][]string{}, map[string][]string{}
 	for _, table := range tables {
-		if slices.Contains(version5Tables, table) || slices.Contains(version6Tables, table) || table == "tickets_fts" || table == "schema_version" {
+		if slices.Contains(version5Tables, table) || slices.Contains(version6Tables, table) || slices.Contains(version8Tables, table) || table == "tickets_fts" || table == "schema_version" {
 			continue
 		}
 		cols[table] = columnsOf(t, raw, table)

@@ -215,6 +215,18 @@ add its rule here.
   `t.Parallel` and given back by a cleanup registered first, `walkSlots`
   in `internal/dispatch`), and do once what every check reads (one export
   for all the secrets a case carries).
+- What a test waits on is read off a seam the code offers, never off every
+  goroutine's stack. `runtime.Stack` over all goroutines stops the world:
+  13 to 50 ms alone, and seconds when sixty parallel subtests each poll it
+  once a millisecond, so a wait of thirty seconds got a handful of answers
+  on a loaded runner and ran out with the loop it waited for long since
+  ended (a client's walk of its states on disk, in a provider's
+  repository, 2026-11-19, #281: 825 s for the package, 36 s a run once
+  fixed). A look over every goroutine also sees the other subtests': one
+  subtest's ended loop read as running whenever another's new goroutine
+  had not yet run. Count the thing where the code does it (a counter
+  raised before the goroutine starts and lowered as its last act) and
+  read that; keep a stack read for a test that runs alone.
 - A test holds its worker while it runs. A vitest test that never awaits
   keeps its worker's event loop for its whole run, and the worker waits at
   most 60 s for the main process to take its report of the test's start:
