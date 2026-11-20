@@ -91,6 +91,8 @@ export interface InboxItem {
   /** The current validity of what an earlier action did, apart from the steps. */
   now?: string
   blocking: { words: string; refs: string[]; more?: number }
+  /** What Brakeman's card says waits on a DR1 record: Brakeman's word, drawn in its brief, never the record's own "What waits". */
+  cardBlocked?: string[]
   actions: InboxAction[]
   whyHuman?: string
   considered?: Array<{ label: string; tradeoffs: string }>
