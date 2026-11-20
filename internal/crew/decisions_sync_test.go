@@ -286,3 +286,20 @@ func TestHeldAnswerToASelectionIsRefused(t *testing.T) {
 		t.Fatalf("the refusal was not kept: %+v", rec.Responses)
 	}
 }
+
+// A recheck's yes that finds no run holding the decision answered by that
+// response leaves it to be asked again: the engine forgets it asked.
+func TestARecheckNoRunTookIsAskedAgain(t *testing.T) {
+	e, _, _ := decisionEngine(t)
+	rk := newRechecks(e)
+	key := confirmKey{7, 1}
+	e.askRecheck([]confirmKey{key})
+	e.askRecheck([]confirmKey{key})
+	e.ConfirmAuthority("dr-7", 1, true)
+	e.askRecheck([]confirmKey{key})
+	rk.mu.Lock()
+	defer rk.mu.Unlock()
+	if len(rk.got) != 2 {
+		t.Fatalf("asked %d times, not twice: %v", len(rk.got), rk.got)
+	}
+}

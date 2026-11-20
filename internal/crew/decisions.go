@@ -2273,6 +2273,10 @@ func (e *Engine) ConfirmAuthority(id string, k int, admitted bool) {
 		if admitted {
 			e.confirms[confirmKey{n, k}] = 1
 		}
+	} else {
+		// No run holds it answered by k now: a held answer's recheck is
+		// asked again by the pass that finds it (askRecheck).
+		delete(e.asked, confirmKey{n, k})
 	}
 	e.mu.Unlock()
 	for _, r := range holders {

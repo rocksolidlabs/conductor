@@ -81,6 +81,21 @@ func TestDecisionDocIsTheTable(t *testing.T) {
 		t.Fatalf("requestSHA256 %q, the part's %q", doc.RequestSHA256, sum)
 	}
 	again, _ := json.Marshal(mustDoc(t, rec, verdicts(map[string]string{}, nil)))
+	// Nothing the plan's "never" cell names leaves: a marker in each.
+	marked := rec
+	marked.SessionID, marked.RequestID, marked.Fingerprint, marked.Evidence = "MARK-session", "MARK-request", "MARK-fingerprint", `[{"ref":"commit:x","seen":"MARK-seen"}]`
+	marked.History = []ledger.HistoryRow{{Kind: ledger.HistoryOpened, By: "MARK-history-by", Detail: `{"text":"MARK-history"}`}}
+	marked.Held = []string{"MARK-hold"}
+	marked.Responses = []ledger.ResponseRow{
+		{Decision: 7, K: 1, Actor: "user:ana", Authority: `{"grant":"admin","via":"sync","subject":"ana","boot":"MARK-boot","membership":"MARK-membership","statementSha256":"MARK-statement","fence":"MARK-fence","held":"MARK-held"}`,
+			ResponseID: "r1", Fingerprint: "MARK-response-fingerprint", Status: ledger.ResponseRefused, At: docAt,
+			Receipt: `{"code":"stale_decision","words":"later","text":"MARK-refused-text","rationale":"MARK-refused-rationale","byName":"MARK-name","policyWhy":"MARK-why"}`},
+		{Decision: 7, K: 2, Actor: "admin", Authority: `{"grant":"admin","via":"workbench","boot":"MARK-boot2"}`, ResponseID: "r2", Fingerprint: "MARK-fp2",
+			Status: ledger.ResponseAccepted, At: docAt, Receipt: `{"code":"accepted","words":"recorded","choice":0}`},
+	}
+	if mb, _ := json.Marshal(mustDoc(t, marked, verdicts(map[string]string{}, nil))); strings.Contains(string(mb), "MARK") {
+		t.Fatalf("a part the plan says never leaves is in the document: %s", mb)
+	}
 	if string(again) != string(b) {
 		t.Fatalf("the same record gave other bytes:\n%s\n%s", b, again)
 	}
@@ -515,5 +530,34 @@ func TestPendingDecisionPartWithheldAtStart(t *testing.T) {
 	}
 	if e.srv.settleDecisionParts(context.Background()) != 0 {
 		t.Fatal("a withheld part was settled again")
+	}
+}
+
+// With no accepted response the newest eight others are given and the rest
+// counted; an accepted response whose text and rationale JSON escapes six
+// bytes a character is cut to keep the responses' bound on the bytes that
+// leave.
+func TestDecisionDocResponsesHoldTheirBound(t *testing.T) {
+	rec := docRecord(ledger.OriginPlan, `{"question":"Which?","options":[{"label":"a"},{"label":"b"}]}`)
+	for k := 1; k <= 20; k++ {
+		rec.Responses = append(rec.Responses, ledger.ResponseRow{Decision: 7, K: k, Actor: "admin", Authority: `{"via":"workbench"}`, ResponseID: fmt.Sprint("r", k),
+			Status: ledger.ResponseRefused, Receipt: `{"code":"stale","words":"later"}`, At: docAt})
+	}
+	doc := mustDoc(t, rec, verdicts(map[string]string{}, nil))
+	if len(doc.Responses) != 8 || doc.ResponsesOmitted != 12 || doc.Responses[0].K != 13 {
+		t.Fatalf("%d given from k %d, %d omitted", len(doc.Responses), doc.Responses[0].K, doc.ResponsesOmitted)
+	}
+	rec.Responses = append(rec.Responses, ledger.ResponseRow{Decision: 7, K: 21, Actor: "admin", Authority: `{"via":"workbench"}`, ResponseID: "r21",
+		Status: ledger.ResponseAccepted, At: docAt,
+		Receipt: fmt.Sprintf(`{"code":"accepted","words":%q,"choice":1,"text":%q,"rationale":%q}`, strings.Repeat("&", 500), strings.Repeat("<", ext.MaxAnswerText), strings.Repeat(">", ext.MaxAnswerRationale))})
+	doc = mustDoc(t, rec, verdicts(map[string]string{}, nil))
+	b, _ := json.Marshal(doc.Responses)
+	if len(b) > ext.MaxDecisionDocResponses {
+		t.Fatalf("the responses are %d bytes as they leave", len(b))
+	}
+	for _, r := range doc.Responses {
+		if r.Status == ledger.ResponseAccepted && (r.Cut != "size" || r.Text == "") {
+			t.Fatalf("the accepted response: cut %q, %d bytes of text", r.Cut, len(r.Text))
+		}
 	}
 }

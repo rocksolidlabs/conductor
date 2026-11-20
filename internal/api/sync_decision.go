@@ -247,28 +247,57 @@ func docResponsesOf(rows []ledger.ResponseRow, v verdictsOf, options int) ([]ext
 			break
 		}
 	}
+	// The bound is held on the bytes that leave: each response as JSON
+	// encodes it (escapes and all), and the list's brackets and commas.
+	room := ext.MaxDecisionDocResponses - docListMarks
 	if acc >= 0 {
 		r := one(rows[acc], true)
+		fitResponse(&r, room)
 		out = append(out, r)
 		b, _ := json.Marshal(r)
 		size += len(b)
 	}
-	omitted := 0
+	omitted, others := 0, 0
 	for i := len(rows) - 1; i >= 0; i-- {
 		if i == acc {
 			continue
 		}
 		r := one(rows[i], false)
 		b, _ := json.Marshal(r)
-		if len(b) > docOtherMax || size+len(b) > ext.MaxDecisionDocResponses || len(out) > 8 {
+		if len(b) > docOtherMax || size+len(b) > room || others == docOthers {
 			omitted++
 			continue
 		}
 		size += len(b)
+		others++
 		out = append(out, r)
 	}
 	slices.SortFunc(out, func(a, b ext.DecisionDocResponse) int { return a.K - b.K })
 	return out, omitted
+}
+
+// The responses' list: the accepted response and at most docOthers others,
+// docListMarks bytes kept for the list's brackets and commas.
+const (
+	docOthers    = 8
+	docListMarks = 16
+)
+
+// fitResponse cuts r's text, then its rationale, where a character ends,
+// until r as JSON encodes it is at most max bytes, marked Cut "size".
+func fitResponse(r *ext.DecisionDocResponse, limit int) {
+	for _, field := range []*string{&r.Text, &r.Rationale} {
+		b, _ := json.Marshal(r)
+		over := len(b) - limit
+		if over <= 0 {
+			return
+		}
+		enc, _ := json.Marshal(*field)
+		*field = crew.CutEncoded(*field, max(len(enc)-2-over, 0))
+		if r.Cut == "" {
+			r.Cut = "size"
+		}
+	}
 }
 
 // cutDocBytes is s cut to at most n bytes at a character's end.
