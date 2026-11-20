@@ -274,6 +274,26 @@ func code(_ f: () async throws -> Void) async -> String? {
         #expect(try await f.store.get(area: "drafts", key: "i2") == nil)
     }
 
+    @Test func clearEmptiesTheAppsCookieJarAndItsStoredCredentials() async throws {
+        let jar = HTTPCookieStorage.shared
+        let relay = URL(string: "https://relay.example.test/")!
+        let cookie = try #require(HTTPCookie(properties: [.domain: "relay.example.test", .path: "/", .name: "session", .value: "the first sign-in's", .secure: "TRUE"]))
+        jar.cookieAcceptPolicy = .always
+        jar.setCookie(cookie)
+        #expect(jar.cookies(for: relay)?.isEmpty == false)
+        let credentials = URLCredentialStorage.shared
+        let space = URLProtectionSpace(host: "relay.example.test", port: 443, protocol: "https", realm: "relay", authenticationMethod: NSURLAuthenticationMethodHTTPBasic)
+        credentials.set(URLCredential(user: "first", password: "secret", persistence: .forSession), for: space)
+        #expect(credentials.credentials(for: space)?.isEmpty == false)
+        // The store's own clear, over the jar and the credentials this process has.
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("conductor-store-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let store = ConductorStore(root: dir, files: DiskFiles(), protection: DeviceProtection(), caches: WebCaches(jar: jar, credentials: credentials, webView: false))
+        try await store.clear()
+        #expect(jar.cookies(for: relay)?.isEmpty != false)
+        #expect(credentials.credentials(for: space)?.isEmpty != false)
+    }
+
     @Test func writesThroughTheRealFileSystem() async throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("conductor-store-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: dir) }

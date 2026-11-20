@@ -68,12 +68,36 @@ public struct DeviceProtection: StoreProtection {
     }
 }
 
-/** The shell's HTTP caches: the URL cache and the web view's own data (the shell's web view loads its bundle alone). */
+/**
+ * The shell's HTTP caches and what an HTTP call keeps: the URL cache, the app's cookie jar and its stored credentials, then the web
+ * view's own data (the shell's web view loads its bundle alone). The jar goes before the web view's store, so nothing of it is
+ * copied back into the store just emptied.
+ */
 public struct WebCaches: HTTPCaches {
-    public init() {}
+    let jar: HTTPCookieStorage
+    let credentials: URLCredentialStorage
+    let webView: Bool
+
+    /** The phone's own: the shared jar and credential store, and the web view's data store. */
+    public init() {
+        self.init(jar: .shared, credentials: .shared, webView: true)
+    }
+
+    /** jar and credentials as given; webView false leaves the web view's store alone (a test with no web view). */
+    public init(jar: HTTPCookieStorage, credentials: URLCredentialStorage, webView: Bool) {
+        self.jar = jar
+        self.credentials = credentials
+        self.webView = webView
+    }
 
     public func clear() async {
         URLCache.shared.removeAllCachedResponses()
+        jar.removeCookies(since: .distantPast)
+        for cookie in jar.cookies ?? [] { jar.deleteCookie(cookie) }
+        for (space, byUser) in credentials.allCredentials {
+            for credential in byUser.values { credentials.remove(credential, for: space) }
+        }
+        guard webView else { return }
         await withCheckedContinuation { (done: CheckedContinuation<Void, Never>) in
             DispatchQueue.main.async {
                 WKWebsiteDataStore.default().removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: .distantPast) {
