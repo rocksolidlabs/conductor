@@ -858,3 +858,30 @@ func TestTwoStoresRestoredFromOneExportNeverShareANumber(t *testing.T) {
 		}
 	}
 }
+
+// A held row that is not a row from another machine (its JSON not a
+// change row, or one a batch's check refuses) stays held as it is across
+// an open and a batch, and stops neither: the batch applies, and the
+// rows held beside it are taken.
+func TestAHeldRowNotARowStaysAsItIs(t *testing.T) {
+	ctx := context.Background()
+	dir := storeDir(t)
+	s := openStore(t, dir)
+	join(t, s, "a1")
+	for _, row := range []string{"{}", "not a row", `{"seq":1,"entity":"ticket","entityId":"t1","op":"create","value":"{}","at":"2026-11-19T00:00:00Z","actor":"","opId":"x","n":0}`} {
+		if _, err := s.db.Exec("INSERT INTO held_rows (project_key, why, waits_for, row, held_at) VALUES ('ODD', 'held', 'project:p1', ?, '2026-11-19T00:00:00.000000000Z')", row); err != nil {
+			t.Fatal(err)
+		}
+	}
+	before := texts(t, s, "SELECT seq || ' ' || project_key || ' ' || why || ' ' || waits_for || ' ' || row || ' ' || held_at FROM held_rows ORDER BY seq")
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s = openStore(t, dir)
+	if _, err := s.ApplyRemote(ctx, nil, nil, nil); err != nil {
+		t.Fatalf("a batch beside rows not rows: %v", err)
+	}
+	if got := texts(t, s, "SELECT seq || ' ' || project_key || ' ' || why || ' ' || waits_for || ' ' || row || ' ' || held_at FROM held_rows ORDER BY seq"); !slices.Equal(got, before) {
+		t.Fatalf("the held rows:\n got %v\nwant %v", got, before)
+	}
+}

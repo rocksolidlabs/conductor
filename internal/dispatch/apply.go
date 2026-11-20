@@ -546,7 +546,11 @@ func (a *applier) release(waiting ...string) error {
 	return nil
 }
 
-// takeHeld takes the held rows the condition picks out of held_rows.
+// takeHeld takes the held rows the condition picks out of held_rows. A
+// held row that is not a row from another machine (not one a batch's
+// check would take, checkRemote: no build writes one, but a database is
+// a file) is left held as it is, never offered nor written over, so it
+// stops no batch.
 func (a *applier) takeHeld(where string, args ...any) ([]ChangeRow, error) {
 	rs, err := a.tx.QueryContext(a.ctx, "SELECT seq, row FROM held_rows "+where+" ORDER BY seq", args...)
 	if err != nil {
@@ -562,9 +566,8 @@ func (a *applier) takeHeld(where string, args ...any) ([]ChangeRow, error) {
 			return nil, err
 		}
 		var c ChangeRow
-		if err := json.Unmarshal([]byte(row), &c); err != nil {
-			rs.Close()
-			return nil, err
+		if json.Unmarshal([]byte(row), &c) != nil || checkRemote(c) != nil {
+			continue
 		}
 		seqs = append(seqs, seq)
 		out = append(out, c)
