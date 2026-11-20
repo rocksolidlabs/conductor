@@ -166,3 +166,30 @@ func TestAPolicyOfAnotherRevisionIsNoRepeat(t *testing.T) {
 	}
 	stopRun(t, e, run.ID)
 }
+
+// A record whose policy came by a re-route (Host.Reroute on a record under
+// the server's own policy: a router's change, and no routed row of the
+// router's) takes no route row from the router told it again: a route
+// with destinations and no policy is answered as a repeat by the row that
+// put the policy in place, its rev and history as they were.
+func TestARouteAfterAReroutedPolicyWritesNothing(t *testing.T) {
+	e, ld, run, id := routedGate(t, "api-sweep-0000a7e3")
+	ctx := t.Context()
+	before := recordOf(t, ld, id)
+	if res, err := e.Reroute(ctx, id, "switchman", anaRoute("r1"), ledger.HistoryRerouted, "rr-1", before.Rev); err != nil || res.Unchanged {
+		t.Fatalf("the re-route: %+v %v", res, err)
+	}
+	placed := recordOf(t, ld, id)
+	row := placed.History[len(placed.History)-1]
+	if policyRevision(t, placed) != "r1" || row.Kind != ledger.HistoryRerouted || row.By != "router:switchman" {
+		t.Fatalf("the re-routed record: policy %s, last row %+v", placed.Policy, row)
+	}
+	rc, err := e.RecordRoute(ctx, id, "switchman", toAna, "the architecture owner")
+	if err != nil || !rc.Repeat || rc.Op != ledger.HistoryRerouted || rc.Seq != row.Seq {
+		t.Fatalf("a route with no policy after the re-route: %+v %v (the policy's row %+v)", rc, err, row)
+	}
+	if now := recordOf(t, ld, id); now.Rev != placed.Rev || len(now.History) != len(placed.History) || now.Policy != placed.Policy {
+		t.Fatalf("the route wrote: rev %d (was %d), %d rows (were %d)", now.Rev, placed.Rev, len(now.History), len(placed.History))
+	}
+	stopRun(t, e, run.ID)
+}

@@ -1161,11 +1161,14 @@ func (errOpRepeat) Error() string { return "the operation was sent before" }
 // when not sent.
 func opOf(rec ledger.DecisionRecord, op operation) (OpReceipt, bool, error) {
 	actor, opID, fp := op.actor, op.opID, op.fp
-	for _, h := range rec.History {
-		if op.once && op.repeats(h) {
+	if op.once {
+		if h, ok := op.repeatIn(rec); ok {
 			return receiptOfRow(rec.ID(), h), true, nil
 		}
-		if !op.once && h.OpID == opID && h.By == actor {
+		return OpReceipt{}, false, nil
+	}
+	for _, h := range rec.History {
+		if h.OpID == opID && h.By == actor {
 			if h.Fingerprint != fp {
 				return OpReceipt{}, true, refuse(CodeOpConflict, "operation %s on %s was sent before with another body", opID, rec.ID())
 			}
@@ -1190,10 +1193,64 @@ func (op operation) repeats(h ledger.HistoryRow) bool {
 	if !(h.Kind == ledger.HistoryRouted && h.OpID == "" || h.Kind == ledger.HistoryRerouted) {
 		return false
 	}
+	return revisionOf(h) == op.revision
+}
+
+// repeatIn is a once operation's row sent before in rec (repeats). A
+// router's route with no policy (RecordRoute, kind routed and no revision)
+// to a record that carries a router's policy writes nothing, whichever
+// way the policy came (the policy's transaction or a re-route): it is
+// answered by the row that put the policy in place, the policy's router's
+// routing row or change carrying its revision (the router's last such row
+// when a re-route past the history's room left none).
+func (op operation) repeatIn(rec ledger.DecisionRecord) (ledger.HistoryRow, bool) {
+	if op.revision == "" && op.kind == ledger.HistoryRouted {
+		if p, ok := routedOf(rec.Policy); ok {
+			var last, placed ledger.HistoryRow
+			var seen, found bool
+			for _, h := range rec.History {
+				if h.By != "router:"+p.Router || !routingRow(h) {
+					continue
+				}
+				last, seen = h, true
+				if revisionOf(h) == p.Revision {
+					placed, found = h, true
+				}
+			}
+			if found {
+				return placed, true
+			}
+			if seen {
+				return last, true
+			}
+		}
+	}
+	for _, h := range rec.History {
+		if op.repeats(h) {
+			return h, true
+		}
+	}
+	return ledger.HistoryRow{}, false
+}
+
+// routingRow says h is a router's routing row: a routed row with no op id,
+// or one of a router's changes of a record's policy.
+func routingRow(h ledger.HistoryRow) bool {
+	switch h.Kind {
+	case ledger.HistoryAssigned, ledger.HistoryDelegated, ledger.HistoryEscalated, ledger.HistoryRerouted:
+		return true
+	}
+	return h.Kind == ledger.HistoryRouted && h.OpID == ""
+}
+
+// revisionOf is the router's policy revision a history row carries, ""
+// for none.
+func revisionOf(h ledger.HistoryRow) string {
 	var dt struct {
 		Revision string `json:"revision"`
 	}
-	return json.Unmarshal([]byte(h.Detail), &dt) == nil && dt.Revision == op.revision
+	_ = json.Unmarshal([]byte(h.Detail), &dt)
+	return dt.Revision
 }
 
 // receiptOfRow is the receipt an operation's history row makes.
@@ -1431,10 +1488,8 @@ func (e *Engine) operate(ctx context.Context, id string, op operation) (OpReceip
 				if err != nil {
 					return err
 				}
-				for _, h := range rec.History {
-					if op.repeats(h) {
-						return errOpRepeat{h}
-					}
+				if h, ok := op.repeatIn(rec); ok {
+					return errOpRepeat{h}
 				}
 				hr.OpID, hr.Fingerprint = "", ""
 			}
