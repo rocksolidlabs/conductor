@@ -422,10 +422,14 @@ write:
 position `after`, at most `MaxChangesPage` (1,000, new, equal to
 `ext.MaxDispatchBatch`) and 4 MiB encoded (`ext.MaxDispatchBytes`), in
 `seq` order, local and remote alike, and the position to read from next
-(a limit past `MaxChangesPage` refused). Main's `MaxFeedPage` (5,000,
+(a limit past `MaxChangesPage` refused); it hands only the rows that
+replicate (`Replicates`), its next position past the rows it skipped, and
+`Store.HandedChanges` only those of a project shared, completing or
+pending (the history a share hands out) and the people's, which is what
+`DispatchChanges` hands a provider. Main's `MaxFeedPage` (5,000,
 `feed.go`) stays as it is for `ChangesAfter`, Brakeman's changes route
 and the History index. `ChangeRow` gains `Origin`, `RecoveredBy`,
-`Output`, `PriorOutput`, `Remote`, `Refs` (`Refs` of the row, below)
+`Output`, `PriorOutput`, `Remote` (`Refs` of a row is computed where the rows are handed out, `dispatch.Refs`, never kept on the row, which stays comparable)
 and, for a plan's create, `ViewDigest` (from `plans.
 view_digest`, so a revision made before version 8 is named as one made
 after). `Store.RevisionView(ctx, viewDigest string) ([]byte, error)`: a
@@ -505,9 +509,10 @@ with `body_here` 0 and `plans.body` `''`. A local bound is not applied
 to a remote add (DS1: a merge never refuses one). Two stores holding the
 same rows reach the same row tables whatever batches they arrived in
 (`TestReplicasConverge`, whose generated logs put children before their
-parents in some splits). `Applied {Applied int; Held []string; Words
-string}`: how many rows were applied, the held rows' words (at most 50,
-each at most 200 bytes) and one line for the page.
+parents in some splits). `RemoteApplied {Applied int; Held []string;
+Words string}` (named so beside the reviews' `Applied`): how many rows
+were applied, the held rows' words (at most 50, each at most 200 bytes)
+and one line for the page.
 
 **References.** `rules.go` gains `Refs(row ChangeRow) []EntityRef`,
 every entity a row needs by the schema's foreign keys: a ticket's
@@ -566,7 +571,9 @@ ticket, so its next open reads the tracker with this machine's own
 credential, writes its own snapshot and writes the tracker's text only
 where it changed, as any refresh does. A machine with no credential for
 the tracker shows the text and the link the rows carried, with "not
-read on this machine". What converges is each replica's read of the
+read on this machine": the address, the title and the description are
+then each the last of its rows in DS1's order (an import's, an
+observe's, a person's), until this machine reads the item itself. What converges is each replica's read of the
 tracker, never a snapshot copied between machines
 (`TestCounterpartMergedWithoutRemoteSnapshots`: A imports and
 refreshes, B receives: the item, the owners, the URL, the title and the
@@ -688,6 +695,16 @@ never decides what a row needs here.
 OS-1a adds.
 
 ### `internal/dispatch`, `internal/api`, `ext`, `ext/exttest` (OS-1b): sharing, numbers and the provider's doors
+
+**Two values without a column until a store step of their own.** The
+replica's overflow range a `Join` hands is written on every project and
+read back from them (`keepOverflow`, `replicaRanges`, the one place each),
+so a store that joins before it has a project keeps none and its shared
+projects' creates take the provisional window until the next join; a
+share's words (a refusal's, a dormant or unshared workspace's, a retire's
+"sharing was interrupted") are kept in memory (`keepShareWords`, the one
+place), so a restart shows the state without them. Dispatch's schema 9
+gives each a column, and only those two functions change.
 
 **Numbers.** `Store.SetBlock(ctx, project string, from, to int64, next
 bool) error` writes the current block (`next` false) or the block asked

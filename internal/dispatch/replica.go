@@ -121,7 +121,7 @@ func (s *Store) Join(ctx context.Context, tag, workspace, device string, overflo
 		return fmt.Errorf("dispatch: an overflow range of %d to %d is not one", overflowFrom, overflowTo)
 	}
 	return s.writeTx(ctx, func(dbtx *sql.Tx, now time.Time) error {
-		if err := retire(ctx, dbtx); err != nil {
+		if err := retire(ctx, dbtx, s.interrupted); err != nil {
 			return err
 		}
 		var instance string
@@ -139,9 +139,35 @@ func (s *Store) Join(ctx context.Context, tag, workspace, device string, overflo
 		if _, err := dbtx.ExecContext(ctx, "UPDATE changes SET origin = ? WHERE origin = '' AND remote = 0", tag); err != nil {
 			return err
 		}
-		_, err := dbtx.ExecContext(ctx, "UPDATE projects SET overflow_from = ?, overflow_to = ?, overflow_next = ?", overflowFrom, overflowTo, overflowFrom)
-		return err
+		return keepOverflow(ctx, dbtx, overflowFrom, overflowTo)
 	})
+}
+
+// ranges is the replica's overflow range and its provisional window,
+// which a project made or received on this store takes.
+type ranges struct {
+	overflowFrom, overflowTo, provisionalFrom, provisionalTo int64
+}
+
+// keepOverflow keeps the replica's overflow range a join hands it: on
+// every project, each project's next in it at its start. (The one place
+// the range is written: a column of the replica's own is a store step of
+// its own; until then a store that joins before it has a project keeps
+// no range, and its shared projects' creates take the provisional
+// window.)
+func keepOverflow(ctx context.Context, dbtx *sql.Tx, from, to int64) error {
+	_, err := dbtx.ExecContext(ctx, "UPDATE projects SET overflow_from = ?, overflow_to = ?, overflow_next = ?", from, to, from)
+	return err
+}
+
+// replicaRanges reads the replica's overflow range and provisional
+// window, as keepOverflow and retire left them on the projects. (The one
+// place the range is read.)
+func replicaRanges(ctx context.Context, q queryer) (ranges, error) {
+	var r ranges
+	err := q.QueryRowContext(ctx, `SELECT COALESCE(MAX(overflow_from), 0), COALESCE(MAX(overflow_to), 0), COALESCE(MAX(provisional_from), 0),
+		COALESCE(MAX(provisional_to), 0) FROM projects`).Scan(&r.overflowFrom, &r.overflowTo, &r.provisionalFrom, &r.provisionalTo)
+	return r, err
 }
 
 // Retire drops every allocation of the active tag: each project's current
@@ -150,14 +176,29 @@ func (s *Store) Join(ctx context.Context, tag, workspace, device string, overflo
 // a provisional window drawn for every project. The provider calls it when
 // the identity its tag was joined under is no longer its own.
 func (s *Store) Retire(ctx context.Context) error {
-	return s.writeTx(ctx, func(dbtx *sql.Tx, _ time.Time) error { return retire(ctx, dbtx) })
+	return s.writeTx(ctx, func(dbtx *sql.Tx, _ time.Time) error { return retire(ctx, dbtx, s.interrupted) })
 }
 
-// retire is Retire in dbtx.
-func retire(ctx context.Context, dbtx *sql.Tx) error {
+// interrupted keeps the words of a share a retire took back.
+func (s *Store) interrupted(project string) { s.keepShareWords(project, "", interruptedShare) }
+
+// interruptedShare is the words a share in progress keeps when its store
+// retires it.
+const interruptedShare = "sharing was interrupted when this machine's data was copied: share it again"
+
+// retire is Retire in dbtx; interrupted is called with each project whose
+// share in progress it took back.
+func retire(ctx context.Context, dbtx *sql.Tx, interrupted func(project string)) error {
 	from, err := provisionalStart()
 	if err != nil {
 		return err
+	}
+	ids, err := readTexts(ctx, dbtx, "SELECT id FROM projects WHERE share_state IN ('pending', 'completing')")
+	if err != nil {
+		return err
+	}
+	for _, id := range ids {
+		interrupted(id)
 	}
 	_, err = dbtx.ExecContext(ctx, `UPDATE projects SET number_from = 0, number_to = 0, next_from = 0, next_to = 0, block_tag = '',
 		overflow_from = 0, overflow_to = 0, overflow_next = 0,
@@ -183,7 +224,7 @@ func provisionalStart() (int64, error) {
 // store (a store restored from an export, which Reissue made anew): so no
 // create of a restored store runs before its inherited blocks are
 // retired.
-func retireIfRestored(ctx context.Context, dbtx *sql.Tx) error {
+func retireIfRestored(ctx context.Context, dbtx *sql.Tx, interrupted func(string)) error {
 	r, err := activeReplica(ctx, dbtx)
 	if err != nil || r.tag == "" {
 		return err
@@ -195,7 +236,7 @@ func retireIfRestored(ctx context.Context, dbtx *sql.Tx) error {
 	if instance == r.instance {
 		return nil
 	}
-	return retire(ctx, dbtx)
+	return retire(ctx, dbtx, interrupted)
 }
 
 // writeTx runs fn in one write transaction under the store's lock, at the

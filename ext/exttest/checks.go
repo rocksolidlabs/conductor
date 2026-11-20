@@ -660,6 +660,29 @@ func Continuity(t T, n *Network, cs ext.ContinuityStore) {
 	})
 	c.flush()
 	restore(c, cs)
+	refusedDoors(c, cs, saved)
+}
+
+// refusedDoors is Continuity's check of a store whose Host refuses its
+// doors (docs/plans/sync-seams.md): every Host but the sync store's
+// answers each sync door ErrUnsupported, and a server with no Dispatch
+// store (a switchyard) does too, so a store started on such a Host
+// returns from Start and answers Saved within their waits, never
+// panicking on a door's refusal.
+func refusedDoors(c *checker, cs ext.ContinuityStore, saved ext.Doc) {
+	c.t.Helper()
+	st, ok := cs.(ext.Starter)
+	if !ok {
+		return
+	}
+	h := NewFakeHost(c.t)
+	defer h.Close()
+	if _, ok := run(c, "Start, its doors refused", ext.StartWait, open, func(ctx context.Context) error { return st.Start(ctx, h) }); !ok {
+		c.flush()
+		return
+	}
+	run(c, "Saved, its doors refused", ext.DeliveryWait, open, func(ctx context.Context) error { return cs.Saved(ctx, saved) })
+	c.flush()
 }
 
 // restore is Continuity's check of Restore.

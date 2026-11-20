@@ -371,6 +371,9 @@ type tx struct {
 	// origin is the store's active replica tag, every local row's origin;
 	// "" before the store has joined a workspace.
 	origin string
+	// blockLow is a shared project whose current block a create took past
+	// its half, for OnBlockLow after the commit.
+	blockLow string
 }
 
 // touched is an entity a change row named, with the ticket and the
@@ -663,7 +666,12 @@ func (s *Store) Apply(ctx context.Context, op Op, intent string, args any, chang
 	if err == nil && len(changed) > 0 {
 		s.committed(changed)
 	}
+	low := s.low
+	s.low = ""
 	s.mu.Unlock()
+	if low != "" {
+		s.tellBlockLow(low)
+	}
 	if err != nil {
 		return Receipt{}, err
 	}
@@ -756,6 +764,7 @@ func (s *Store) apply(ctx context.Context, op Op, intent, fp string, change func
 	if err := s.commitReceipt(ctx, dbtx, op, intent, fp, t.now, rc); err != nil {
 		return Receipt{}, nil, err
 	}
+	s.low = t.blockLow
 	return rc, t.changes(), nil
 }
 

@@ -118,6 +118,18 @@ type Store struct {
 	rmu     sync.Mutex
 	readers []func(ReadNotice)
 
+	// wmu guards words, what a share's state last said by project
+	// (keepShareWords).
+	wmu   sync.Mutex
+	words map[string]shareWord
+	// blockLow is what OnBlockLow set, and blockLowBusy whether a call of
+	// it has not returned (the next is dropped until it does).
+	blockLow     func(project string)
+	blockLowBusy atomic.Bool
+	// low is the project the last commit took past half of its block,
+	// under mu until Apply tells OnBlockLow.
+	low string
+
 	// lmu guards listeners, what OnChange registered.
 	lmu       sync.Mutex
 	listeners []func([]Change)
@@ -522,7 +534,7 @@ func (s *Store) prepare(ctx context.Context, db *sql.DB) error {
 		if err := writable(ctx, tx); err != nil {
 			return fmt.Errorf("dispatch: %s cannot be written: %w", s.path, err)
 		}
-		if err := retireIfRestored(ctx, tx); err != nil {
+		if err := retireIfRestored(ctx, tx, s.interrupted); err != nil {
 			return fmt.Errorf("dispatch: retiring a restored store's allocations: %w", err)
 		}
 	case err == nil:

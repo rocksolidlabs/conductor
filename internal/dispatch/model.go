@@ -738,6 +738,30 @@ type Project struct {
 	CreatedAt     time.Time `json:"createdAt"`
 	UpdatedAt     time.Time `json:"updatedAt"`
 	Rev           int64     `json:"rev"`
+	// Share is the project's share (docs/plans/sync-seams.md, OS-1b), absent
+	// for none; HeldBy the rows from other machines held for a workspace's
+	// project of this project's key, absent for none. The project's read
+	// alone fills them.
+	Share  *ProjectShare `json:"share,omitempty"`
+	HeldBy *HeldBy       `json:"heldBy,omitempty"`
+}
+
+// ProjectShare is a project's share as its page shows it: its state
+// (pending, completing, shared, dormant, refused), the words it was given,
+// the numbers a share in progress reserved, and the workspace it is
+// shared in.
+type ProjectShare struct {
+	State      string `json:"state"`
+	Words      string `json:"words,omitempty"`
+	ReservedTo int64  `json:"reservedTo,omitempty"`
+	Shared     string `json:"shared,omitempty"`
+}
+
+// HeldBy is a project's key holding another machine's project back: the
+// key, and how many of that project's rows wait for it.
+type HeldBy struct {
+	Key  string `json:"key"`
+	Rows int    `json:"rows"`
 }
 
 // Ticket is a ticket's row and its two sets: its key (CND-12), never

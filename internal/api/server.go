@@ -696,6 +696,19 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 			s.dispatch.SetRunExists(s.runKnown)
 			s.dispatch.OnChange(s.events.dispatch)
 			s.dispatch.OnRead(s.events.dispatchRead)
+			// The sync store told when a shared project's block runs low,
+			// after the commit, from the store's goroutine; a panic of its
+			// is the provider's, recovered and logged.
+			if w, ok := o.providers.Continuity.(ext.DispatchWatcher); ok {
+				s.dispatch.OnBlockLow(func(project string) {
+					defer func() {
+						if p := recover(); p != nil {
+							log.Warn("the sync store's BlockLow panicked", "project", project, "panic", extText(p))
+						}
+					}()
+					w.BlockLow(project)
+				})
+			}
 		}
 		if !cfg.Switchyard.Enabled {
 			s.brakeman = s.openBrakemanDesk(st)

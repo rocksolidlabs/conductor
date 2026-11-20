@@ -490,6 +490,9 @@ func TestEveryReadHidesADeletedCapture(t *testing.T) {
 		"ChangesFrom":     "the rows that replicate, never a capture's (Replicates)",
 		"ApplyRemote":     "applies rows from another machine, which never carry a capture (Replicates); reads no capture's table",
 		"TicketsLinkedTo": "the keys of the tickets linked to an item: the tickets' table alone",
+		"Blocks":          "the shared projects' blocks: the projects' table alone",
+		"Shared":          "the projects with a share: the projects' and the tickets' tables",
+		"HandedChanges":   "ChangesFrom's rows of the shared projects, never a capture's (Replicates)",
 	}
 	for _, name := range []string{"AtLaunch", "Attachment", "Blockers", "ChainHolders", "ChangedSince", "Children", "ClaimReview", "CloseState", "Comment",
 		"Comments", "Findings", "Label", "Labels", "LaunchByID", "Launches", "LinkReadOf", "LinkedTicket", "Links", "List", "Marks", "Milestone", "Milestones",

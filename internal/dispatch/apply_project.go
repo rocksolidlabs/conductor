@@ -71,11 +71,11 @@ func (a *applier) create(c ChangeRow) error {
 		if err != nil {
 			return err
 		}
-		var of, ot, pf, pt int64
-		if err := a.tx.QueryRowContext(a.ctx, `SELECT COALESCE(MAX(overflow_from), 0), COALESCE(MAX(overflow_to), 0), COALESCE(MAX(provisional_from), 0),
-			COALESCE(MAX(provisional_to), 0) FROM projects`).Scan(&of, &ot, &pf, &pt); err != nil {
+		r, err := replicaRanges(a.ctx, a.tx)
+		if err != nil {
 			return err
 		}
+		of, ot, pf, pt := r.overflowFrom, r.overflowTo, r.provisionalFrom, r.provisionalTo
 		_, err = a.tx.ExecContext(a.ctx, `INSERT INTO projects (id, key, name, created_at, updated_at, shared, share_state, registry_key,
 			overflow_from, overflow_to, overflow_next, provisional_from, provisional_to, provisional_next) VALUES (?, ?, '', ?, ?, ?, 'shared', ?, ?, ?, ?, ?, ?, ?)`,
 			v.ID, key, stamp(v.CreatedAt), at, a.replica.workspace, key, of, ot, of, pf, pt, pf)

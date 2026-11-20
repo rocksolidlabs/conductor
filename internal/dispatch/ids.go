@@ -89,10 +89,10 @@ var errNoProject = errors.New("dispatch: no such project")
 // none), so a create never waits.
 func allocateNumber(t *tx, projectID string) (int64, error) {
 	var state, blockTag string
-	var next, from, to, nextFrom, nextTo, overNext, overTo, provNext, provTo int64
+	var next, from, to, nextFrom, nextTo, overNext, overTo, provNext, provTo, reserved int64
 	err := t.tx.QueryRowContext(t.ctx, `SELECT share_state, block_tag, next_number, number_from, number_to, next_from, next_to,
-		overflow_next, overflow_to, provisional_next, provisional_to FROM projects WHERE id = ?`, projectID).
-		Scan(&state, &blockTag, &next, &from, &to, &nextFrom, &nextTo, &overNext, &overTo, &provNext, &provTo)
+		overflow_next, overflow_to, provisional_next, provisional_to, share_reserved_to FROM projects WHERE id = ?`, projectID).
+		Scan(&state, &blockTag, &next, &from, &to, &nextFrom, &nextTo, &overNext, &overTo, &provNext, &provTo, &reserved)
 	switch {
 	case isNoRows(err):
 		return 0, errNoProject
@@ -103,11 +103,23 @@ func allocateNumber(t *tx, projectID string) (int64, error) {
 		_, err := t.tx.ExecContext(t.ctx, stmt, projectID)
 		return n, err
 	}
-	if state != "shared" && state != "dormant" {
+	switch state {
+	case SharePending, ShareCompleting:
+		// A share in progress: its reserved numbers first, as before sync.
+		if next <= reserved {
+			return take("UPDATE projects SET next_number = next_number + 1 WHERE id = ?", next)
+		}
+	case ShareShared, ShareDormant:
+	default:
 		return take("UPDATE projects SET next_number = next_number + 1 WHERE id = ?", next)
 	}
-	if t.origin != "" && blockTag == t.origin {
+	if t.origin != "" && blockTag == t.origin && (state == ShareShared || state == ShareDormant) {
 		if to > 0 && next >= from && next <= to {
+			// Past half of the block, the provider is told to ask the next
+			// one (OnBlockLow), after the commit.
+			if next-from >= (to-from+1)/2 && nextTo == 0 {
+				t.blockLow = projectID
+			}
 			return take("UPDATE projects SET next_number = next_number + 1 WHERE id = ?", next)
 		}
 		if nextTo > 0 {
