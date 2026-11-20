@@ -633,6 +633,9 @@ var version5Kept = map[string]string{
 	"projects.shared": keptOpaque, "projects.share_state": keptClosed, "projects.block_tag": keptOpaque, "projects.registry_key": keptOpaque,
 	"changes.origin": keptOpaque, "changes.output": keptClosed, "changes.prior_output": keptClosed, "changes.recovered_by": keptOpaque,
 	"plans.view_digest": keptDerived,
+	// Version 9's: the words a project's share was given, a provider's
+	// refusal among them, are words.
+	"projects.share_words": keptWords,
 }
 
 // Every text column version 5 adds, and every later version, has a
