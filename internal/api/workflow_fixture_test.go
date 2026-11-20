@@ -53,9 +53,8 @@ import (
 // written behind it where main's routes can name it, and the row adds
 // only what calls a seam main has not yet (a fake's method).
 const (
-	waitsContext = "waits for WF-2a: context recorded, the lookup and its absence (after context-seams CT-3)"
-	waitsPolicy  = "waits for WF-2b: eligibility by a router's policy (after decision-policy's PR-7a and PR-7)"
-	waitsSync    = "waits for WF-2c: the held answer for the owner disconnected (after sync-seams OS-3)"
+	waitsPolicy = "waits for WF-2b: eligibility by a router's policy (after decision-policy's PR-7a and PR-7)"
+	waitsSync   = "waits for WF-2c: the held answer for the owner disconnected (after sync-seams OS-3)"
 )
 
 // The walk's first decision, which the router is set to route before it
@@ -87,10 +86,19 @@ var (
 const (
 	walkQuestion  = "Keep the session cookie, or move the login to tokens?"
 	walkBlockMark = "pack:wf-1 Login is called from main.go and from the SSO callback."
+	walkPackMark  = "pack:wf-1-tests TestLogin covers the redirect; nothing covers the expired cookie."
 	walkBriefMark = "BRAKEMANMARK the attempt read the login handler twice"
 	walkNoteOne   = "Handle the expired cookie before the redirect."
 	walkNoteTwo   = "Keep the redirect to the dashboard after a fresh sign-in."
 	walkOwner     = "Ana"
+)
+
+// The context provider's blocks: the one every attempt is given at its
+// start, and the one the implementer's pack lookup is handed, each with
+// its pack mark.
+var (
+	walkStartBlock  = ext.ContextBlock{Title: "Callers of Login", Ref: "login.go", Body: walkBlockMark, Pack: "wf-1"}
+	walkLookupBlock = ext.ContextBlock{Title: "Tests of Login", Ref: "login_test.go", Body: walkPackMark, Pack: "wf-1-tests"}
 )
 
 // workflowFakes are the walk's providers, one fake of ext/exttest in each
@@ -102,7 +110,7 @@ const (
 type workflowFakes struct {
 	id      *gatedIdentity
 	router  *exttest.FakeRouter
-	context *exttest.FakeContext
+	context *walkContext
 	sink    *exttest.FakeSink
 	sync    *exttest.FakeContinuity
 	ents    *exttest.FakeEntitlements
@@ -112,23 +120,92 @@ type workflowFakes struct {
 	late *lateContext
 }
 
-// lateContext is the walk's context fake held: each Context call is
-// recorded by the fake and then waits, ignoring its context, until gate
-// closes as the test ends; asked is told each call as it begins.
-type lateContext struct {
+// walkContext is the walk's context provider: ext/exttest's FakeContext,
+// which answers every attempt's start its blocks, with what WF-2a gives it
+// (end-to-end.md, The walk: lookups and commit notes). It answers an
+// attempt's lookups (ext.ContextLookup): a pack with walkLookupBlock, any
+// other op with one item, made from the attempt's start; it is told the
+// run's commits (ext.CommitNoter); and SetErr fails its lookups as it
+// fails its blocks.
+type walkContext struct {
 	*exttest.FakeContext
+
+	mu    sync.Mutex
+	err   error
+	looks []ext.LookupRequest
+	notes []ext.CommitNote
+}
+
+// SetErr has every Context and every Lookup answer err (nil: none).
+func (c *walkContext) SetErr(err error) {
+	c.mu.Lock()
+	c.err = err
+	c.mu.Unlock()
+	c.FakeContext.SetErr(err)
+}
+
+// NoteCommit records n.
+func (c *walkContext) NoteCommit(_ context.Context, n ext.CommitNote) {
+	c.mu.Lock()
+	c.notes = append(c.notes, n)
+	c.mu.Unlock()
+}
+
+// Lookup records r and answers it.
+func (c *walkContext) Lookup(_ context.Context, r ext.LookupRequest) (ext.LookupAnswer, error) {
+	c.mu.Lock()
+	c.looks = append(c.looks, r)
+	err := c.err
+	c.mu.Unlock()
+	if err != nil {
+		return ext.LookupAnswer{}, err
+	}
+	cov := ext.LookupCoverage{Commit: r.Start, Files: 2}
+	if r.Op == ext.LookupPack {
+		return ext.LookupAnswer{Blocks: []ext.ContextBlock{walkLookupBlock}, Coverage: cov}, nil
+	}
+	return ext.LookupAnswer{Items: []ext.LookupItem{{Kind: ext.ItemSymbol, Path: "main.go", Line: 12, Symbol: r.Symbol,
+		Relation: ext.RelationCalledBy, Mark: ext.MarkSupported, Why: "main calls it"}}, Coverage: cov}, nil
+}
+
+// lookups answers the lookups the provider was asked, in order.
+func (c *walkContext) lookups() []ext.LookupRequest {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return slices.Clone(c.looks)
+}
+
+// commits answers the commit notes the provider was told, in order.
+func (c *walkContext) commits() []ext.CommitNote {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return slices.Clone(c.notes)
+}
+
+// lateContext is the walk's context fake held: each Context and Lookup
+// call is recorded by the fake and then waits, ignoring its context,
+// until gate closes as the test ends; asked is told each Context call as
+// it begins.
+type lateContext struct {
+	*walkContext
 	gate  chan struct{}
 	asked chan ext.ContextQuery
 }
 
 func (l *lateContext) Context(ctx context.Context, q ext.ContextQuery) ([]ext.ContextBlock, error) {
-	bs, err := l.FakeContext.Context(ctx, q)
+	bs, err := l.walkContext.Context(ctx, q)
 	select {
 	case l.asked <- q:
 	default:
 	}
 	<-l.gate
 	return bs, err
+}
+
+func (l *lateContext) Lookup(ctx context.Context, r ext.LookupRequest) (ext.LookupAnswer, error) {
+	a, err := l.walkContext.Lookup(ctx, r)
+	<-l.gate
+	return a, err
 }
 
 func newWorkflowFakes() *workflowFakes {
@@ -140,12 +217,12 @@ func newWorkflowFakes() *workflowFakes {
 	f := &workflowFakes{
 		id:      &gatedIdentity{FakeIdentity: fake, asked: map[string]int{}, then: map[string]*ext.Principal{}, hold: map[string]chan struct{}{}, reached: make(chan string, 8)},
 		router:  exttest.NewFakeRouter("switchman"),
-		context: exttest.NewFakeContext("graph"),
+		context: &walkContext{FakeContext: exttest.NewFakeContext("graph")},
 		sink:    exttest.NewFakeSink("push", nil),
 		sync:    exttest.NewFakeContinuity("sync"),
 		ents:    exttest.NewFakeEntitlements("plans"),
 	}
-	f.context.SetBlocks([]ext.ContextBlock{{Title: "Callers of Login", Ref: "login.go", Body: walkBlockMark}})
+	f.context.SetBlocks([]ext.ContextBlock{walkStartBlock})
 	return f
 }
 
@@ -1205,26 +1282,129 @@ func (w *workflow) candidate(t *testing.T) string {
 	return c
 }
 
-// attemptContextListed is what the run page lists of an attempt's context
-// once context-seams CT-3 records it: the task route's first attempt
-// carries its context rows, the block the provider gave; an attempt given
-// nothing (the free walk) lists none.
-func attemptContextListed(t *testing.T, w *workflow, task string) {
+// attemptContextListed is step 12's context (CT-3): what the run page
+// lists of each attempt's context, from the ledger. The implementer's
+// attempt the block it was given at its start and the one its pack
+// lookup was handed, the reviewer's the block given at its start, each
+// row the block as the provider gave it (its digest and size, never its
+// text); with no provider, no attempt lists any.
+func attemptContextListed(t *testing.T, w *workflow) {
 	t.Helper()
-	out := w.expect(t, http.MethodGet, "/api/runs/"+w.run+"/tasks/"+task, nil, http.StatusOK, "")
-	attempts, _ := entityOf(t, out, "task")["attempts"].([]any)
-	if len(attempts) == 0 {
-		t.Fatalf("%s's attempts: %v", task, out)
+	build, review := w.contextOf(t, "build"), w.contextOf(t, "review")
+	if len(build) != 1 || len(review) != 1 {
+		t.Fatalf("the attempts listed: build %v, review %v", build, review)
 	}
-	rows, listed := attempts[0].(map[string]any)["context"].([]any)
 	if w.free() {
-		if listed {
-			t.Fatalf("%s's first attempt was given nothing and lists %v", task, rows)
+		if build[1] != nil || review[1] != nil {
+			t.Fatalf("attempts given nothing list context: build %v, review %v", build[1], review[1])
 		}
 		return
 	}
-	if len(rows) != 1 || rows[0].(map[string]any)["source"] != "graph" || rows[0].(map[string]any)["title"] != "Callers of Login" {
-		t.Fatalf("%s's first attempt's context: %v", task, rows)
+	if b := build[1]; len(b) != 2 || !givenAs(b[0], 1, ledger.PhaseTask, walkStartBlock) || !givenAs(b[1], 2, ledger.PhaseLookup, walkLookupBlock) {
+		t.Fatalf("the implementer's attempt's context: %v", b)
+	}
+	if r := review[1]; len(r) != 1 || !givenAs(r[0], 1, ledger.PhaseTask, walkStartBlock) {
+		t.Fatalf("the reviewer's attempt's context: %v", r)
+	}
+}
+
+// contextOf is what the task route lists of the context of each attempt
+// of task, by the attempt's number: nil for one that lists none.
+func (w *workflow) contextOf(t *testing.T, task string) map[int][]any {
+	t.Helper()
+	out := w.expect(t, http.MethodGet, "/api/runs/"+w.run+"/tasks/"+task, nil, http.StatusOK, "")
+	attempts, _ := out["attempts"].([]any)
+	if len(attempts) == 0 {
+		t.Fatalf("%s's attempts: %v", task, out)
+	}
+	got := map[int][]any{}
+	for _, a := range attempts {
+		am, _ := a.(map[string]any)
+		n, _ := am["n"].(float64)
+		got[int(n)] = nil
+		if c, listed := am["context"]; listed {
+			rows, _ := c.([]any)
+			if len(rows) == 0 {
+				t.Fatalf("%s's attempt %v lists an empty context: %v", task, am["n"], c)
+			}
+			got[int(n)] = rows
+		}
+	}
+	return got
+}
+
+// givenAs reports whether a listed row of context is the block b as the
+// walk's provider gave it, at seq in phase: its source, title, ref and
+// pack mark, its body's SHA-256 and size, and never its body.
+func givenAs(row any, seq int, phase string, b ext.ContextBlock) bool {
+	r, _ := row.(map[string]any)
+	sum := sha256.Sum256([]byte(b.Body))
+	_, body := r["body"]
+	return r["seq"] == float64(seq) && r["phase"] == phase && r["source"] == "graph" && r["title"] == b.Title && r["ref"] == b.Ref &&
+		r["pack"] == b.Pack && r["sha256"] == hex.EncodeToString(sum[:]) && r["bytes"] == float64(len(b.Body)) && !body
+}
+
+// lookUp is the implementer at work asking the context provider (CT-2,
+// CT-3): Login's references, answered with the provider's item and its
+// mark, the request's run, task, attempt, kind, session and commits the
+// server's and never the agent's; then a pack, whose block reaches the
+// agent only once it is recorded against the attempt (the row is the
+// ledger's as the answer arrives). With no provider the route answers
+// no_context_lookup.
+func (w *workflow) lookUp(t *testing.T) {
+	t.Helper()
+	path := "/api/sessions/" + w.sid + "/context/lookup"
+	if w.free() {
+		w.expectAs(t, w.tok, http.MethodPost, path, map[string]any{"op": ext.LookupReferences, "symbol": "Login"}, http.StatusNotFound, "no_context_lookup")
+		return
+	}
+	out := w.expectAs(t, w.tok, http.MethodPost, path, map[string]any{"op": ext.LookupReferences, "symbol": "Login"}, http.StatusOK, "")
+	items, _ := out["items"].([]any)
+	if out["source"] != "graph" || len(items) != 1 || out["blocks"] != nil {
+		t.Fatalf("Login's references: %v", out)
+	}
+	if it, _ := items[0].(map[string]any); it["symbol"] != "Login" || it["relation"] != ext.RelationCalledBy || it["mark"] != ext.MarkSupported {
+		t.Fatalf("the item: %v", it)
+	}
+	want := ext.LookupRequest{Op: ext.LookupReferences, Symbol: "Login", Limit: defaultLookupLimit, Run: w.run, Task: "build", Attempt: 1,
+		Kind: crew.TaskWork, Session: w.sid, Start: w.head, Base: w.head, Head: w.head}
+	if asked := w.fakes.context.lookups(); len(asked) != 1 || asked[0] != want {
+		t.Fatalf("the provider was asked %+v, want %+v", asked, want)
+	}
+	out = w.expectAs(t, w.tok, http.MethodPost, path, map[string]any{"op": ext.LookupPack}, http.StatusOK, "")
+	blocks, _ := out["blocks"].([]any)
+	if len(blocks) != 1 || out["withheld"] != nil {
+		t.Fatalf("the pack: %v", out)
+	}
+	if b, _ := blocks[0].(map[string]any); b["title"] != walkLookupBlock.Title || b["pack"] != walkLookupBlock.Pack || b["body"] != walkLookupBlock.Body {
+		t.Fatalf("the pack's block: %v", b)
+	}
+	if rows := w.contextOf(t, "build")[1]; len(rows) != 2 || !givenAs(rows[0], 1, ledger.PhaseTask, walkStartBlock) || !givenAs(rows[1], 2, ledger.PhaseLookup, walkLookupBlock) {
+		t.Fatalf("the pack handed before it was recorded: %v", rows)
+	}
+}
+
+// commitsNoted waits for the context provider to have been told as many
+// commit notes as want (CT-1: the run's base as it starts, each
+// candidate as its submit is recorded, told from a goroutine of the
+// provider's own) and checks they are want, in order, each with its
+// time: never a commit of another run or another attempt. With no
+// provider there is nobody to tell.
+func (w *workflow) commitsNoted(t *testing.T, want ...ext.CommitNote) {
+	t.Helper()
+	if w.free() {
+		return
+	}
+	waitUntil(t, fmt.Sprintf("%d commit notes told to the context provider", len(want)), func() bool { return len(w.fakes.context.commits()) >= len(want) })
+	got := w.fakes.context.commits()
+	ok := len(got) == len(want)
+	for i := 0; ok && i < len(got); i++ {
+		g := got[i]
+		g.At = time.Time{}
+		ok = g == want[i] && !got[i].At.IsZero()
+	}
+	if !ok {
+		t.Fatalf("the commit notes: %+v, want %+v", got, want)
 	}
 }
 
@@ -1332,18 +1512,21 @@ func listOfAny(v any) []string {
 }
 
 // contextAbsent is what context-seams' CT-2 and CT-3 show of a provider
-// away: the lookup answered 503 lookup_unavailable in its words, and the
-// run page listing no context for the attempt.
+// away: the lookup, asked of the provider, answered 503
+// lookup_unavailable in its words, and the run page listing no context
+// for any attempt of the asking task, at its start or looked up.
 func contextAbsent(t *testing.T, w *workflow) {
 	t.Helper()
-	out := w.expectAs(t, w.tok, http.MethodPost, "/api/sessions/"+w.sid+"/context/lookup", map[string]any{"op": "references", "symbol": "Login"}, http.StatusServiceUnavailable, "lookup_unavailable")
+	out := w.expectAs(t, w.tok, http.MethodPost, "/api/sessions/"+w.sid+"/context/lookup", map[string]any{"op": ext.LookupReferences, "symbol": "Login"}, http.StatusServiceUnavailable, "lookup_unavailable")
 	if !strings.Contains(apiMessage(out), "context is unavailable now; carry on without it") {
 		t.Fatalf("the lookup's words: %v", out)
 	}
-	task := entityOf(t, w.expect(t, http.MethodGet, "/api/runs/"+w.run+"/tasks/build", nil, http.StatusOK, ""), "task")
-	for _, a := range task["attempts"].([]any) {
-		if c, ok := a.(map[string]any)["context"]; ok {
-			t.Fatalf("an attempt given nothing lists context: %v", c)
+	if asked := w.fakes.context.lookups(); len(asked) != 1 || asked[0].Session != w.sid {
+		t.Fatalf("the provider was asked %+v", asked)
+	}
+	for n, rows := range w.contextOf(t, "build") {
+		if rows != nil {
+			t.Fatalf("attempt %d, given nothing, lists context: %v", n, rows)
 		}
 	}
 }
