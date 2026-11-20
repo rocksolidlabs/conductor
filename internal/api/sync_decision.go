@@ -127,7 +127,7 @@ func syncDecision(rec ledger.DecisionRecord, v verdictsOf) (ext.DecisionDoc, err
 	if doc.RequestSHA256, err = part.SHA256(); err != nil {
 		return ext.DecisionDoc{}, err
 	}
-	doc.Responses, doc.ResponsesOmitted = docResponsesOf(rec.Responses, v, req)
+	doc.Responses, doc.ResponsesOmitted = docResponsesOf(rec.Responses, v, len(crew.DecisionOptions(d.Type, d.Request)))
 	doc.Applied, doc.States = docAppliedOf(rec, v)
 	return doc, nil
 }
@@ -216,13 +216,9 @@ func fitDocRequest(r *ext.DecisionDocRequest) {
 
 // docResponsesOf is the accepted response, with what was answered, and the
 // newest others while they fit MaxDecisionDocResponses, and how many were
-// left out. A response's choice is given only where the request has
-// options, and is below their count.
-func docResponsesOf(rows []ledger.ResponseRow, v verdictsOf, req *ext.DecisionDocRequest) ([]ext.DecisionDocResponse, int) {
-	options := -1
-	if req != nil {
-		options = len(req.Options)
-	}
+// left out. A response's choice is given only below the count of the
+// decision type's options (an assignment's are its two fixed answers).
+func docResponsesOf(rows []ledger.ResponseRow, v verdictsOf, options int) ([]ext.DecisionDocResponse, int) {
 	one := func(r ledger.ResponseRow, accepted bool) ext.DecisionDocResponse {
 		var rc docReceipt
 		_ = json.Unmarshal([]byte(r.Receipt), &rc)

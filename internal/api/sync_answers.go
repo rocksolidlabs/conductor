@@ -91,8 +91,9 @@ func (s *Server) respondHeld(ctx context.Context, r ext.HeldAnswer) (ext.AnswerO
 		// Its request never left: nothing elsewhere answers it.
 		return heldRefusal(crew.CodeNotApprover, "%s's request is kept on its server: it is answered only there", r.Decision), nil
 	}
-	if r.Choice != nil && *r.Choice >= len(doc.Request.Options) {
-		return heldRefusal(crew.CodeInvalid, "choice %d names no option of %s's %d", *r.Choice, r.Decision, len(doc.Request.Options)), nil
+	// The type's own options: an assignment's are its two fixed answers.
+	if options := len(crew.DecisionOptions(rec.Type, rec.Request)); r.Choice != nil && *r.Choice >= options {
+		return heldRefusal(crew.CodeInvalid, "choice %d names no option of %s's %d", *r.Choice, r.Decision, options), nil
 	}
 	if crew.CleanText(r.Text) != r.Text || crew.CleanText(r.Rationale) != r.Rationale {
 		// What is recorded is what was signed, byte for byte: the recheck at

@@ -839,3 +839,30 @@ func TestARefusalHandsNoOutput(t *testing.T) {
 		}
 	}
 }
+
+// An assignment is answered from elsewhere like any decision: its choices
+// are its type's two fixed answers, and its document carries the one
+// chosen.
+func TestAnAssignmentIsAnsweredFromElsewhere(t *testing.T) {
+	f := newHeldFixture(t)
+	did := entityOf(t, f.ask(t, map[string]any{"requestId": "a1", "type": "assignment", "question": "Run the migration on staging"}, http.StatusCreated, ""), "decision")["id"].(string)
+	if out := f.hand(t, held(did, "h1", "ana", 0, 1)); out.Status != ext.AnswerRecorded {
+		t.Fatalf("a held answer to an assignment: %+v", out)
+	}
+	if out := f.hand(t, held(did, "h2", "ana", 2, 1)); out.Status != ext.AnswerRefused || out.Code != crew.CodeInvalid {
+		t.Fatalf("a choice past its two answers: %+v", out)
+	}
+	n, _ := ledger.ParseDecisionID(did)
+	doc, _, err := f.srv.decisionDoc(t.Context(), n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range doc.Responses {
+		if r.Status == ledger.ResponseAccepted && (r.Choice == nil || *r.Choice != 0) {
+			t.Fatalf("the accepted choice: %+v", r)
+		}
+	}
+	if len(doc.Responses) == 0 {
+		t.Fatal("no response in the document")
+	}
+}
