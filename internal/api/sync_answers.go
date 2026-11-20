@@ -65,7 +65,7 @@ func (s *Server) respondHeld(ctx context.Context, r ext.HeldAnswer) (ext.AnswerO
 	statement := r.Check.Statement
 	sum := sha256.Sum256([]byte(statement))
 	auth := crew.Authority{Via: crew.ViaSync, Subject: r.Check.Subject, Membership: r.Check.Membership, SignIn: r.Check.SignIn,
-		AppDevice: r.Check.AppDevice, At: r.Check.At.UTC().Format(time.RFC3339Nano), StatementSHA256: hex.EncodeToString(sum[:]), Held: r.Held, Fence: r.Fence}
+		AppDevice: r.Check.AppDevice, At: r.Check.At.Format(time.RFC3339Nano), StatementSHA256: hex.EncodeToString(sum[:]), Held: r.Held, Fence: r.Fence}
 	if heldBefore(rec, actor, r.ResponseID) {
 		// A hand-in of an answer the ledger holds already: answered from
 		// its row by DR1's repeat (or refused response_conflict for another
@@ -102,6 +102,9 @@ func (s *Server) respondHeld(ctx context.Context, r ext.HeldAnswer) (ext.AnswerO
 	check := r.Check
 	check.ContentSHA256 = ext.AnswerContentSHA256(r.Choice, r.Text, r.Rationale)
 	check.RequestSHA256 = doc.RequestSHA256
+	// The hash admitted is kept with the answer: its recheck shows the
+	// provider this one, whatever the document is by then.
+	auth.RequestSHA256 = doc.RequestSHA256
 	grant := heldGrant(rec)
 	switch s.admitsAnswer(ctx, check, grant) {
 	case ext.AdmitNo:
@@ -332,15 +335,10 @@ func (s *Server) recheckOnce(ctx context.Context, id string, k int) (ext.Admissi
 		// Nothing to show the provider: not admitted.
 		return ext.AdmitNo, false
 	}
-	doc, ok, err := s.decisionDoc(ctx, n)
-	if err != nil {
-		return ext.AdmitUnknown, ctx.Err() != nil
-	}
-	if !ok {
-		return 0, true
-	}
+	// What the ledger keeps, in the bytes the hand-in showed: the request
+	// part's hash the door admitted, the time in the zone it was made in.
 	check := ext.AnswerCheck{Subject: a.Subject, Membership: a.Membership, SignIn: a.SignIn, AppDevice: a.AppDevice, At: at, Statement: statement,
 		Decision: id, ResponseID: row.ResponseID, ExpectedRev: rc.Rev - 1, ContentSHA256: ext.AnswerContentSHA256(rc.Choice, rc.Text, rc.Rationale),
-		RequestSHA256: doc.RequestSHA256}
+		RequestSHA256: a.RequestSHA256}
 	return s.admitsAnswer(ctx, check, ext.Grant(a.Grant)), false
 }

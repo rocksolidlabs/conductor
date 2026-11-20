@@ -210,7 +210,7 @@ func TestPendingDecisionOutputSettledOrWithheld(t *testing.T) {
 func syncAuth(statement string) string {
 	sum := sha256.Sum256([]byte(statement))
 	return `{"grant":"admin","via":"sync","subject":"ana","boot":"boot-1","membership":"m-1","signIn":"s-1","at":"2026-11-20T09:00:00Z","statementSha256":"` +
-		hex.EncodeToString(sum[:]) + `","held":"h-1","fence":"f-1"}`
+		hex.EncodeToString(sum[:]) + `","requestSha256":"` + strings.Repeat("a", 64) + `","held":"h-1","fence":"f-1"}`
 }
 
 // A held answer's authority names every one of its fields and only it
@@ -231,6 +231,7 @@ func TestSyncAuthorityAndItsStatement(t *testing.T) {
 	good := syncAuth("st")
 	for name, c := range map[string][2]string{
 		"no fence":                {strings.Replace(good, `,"fence":"f-1"`, "", 1), "st"},
+		"no request hash":         {strings.Replace(good, `"requestSha256":"`, `"requestSha256":"x`, 1), "st"},
 		"a sign-in and a device":  {strings.Replace(good, `"signIn":"s-1"`, `"signIn":"s-1","appDevice":"d-1"`, 1), "st"},
 		"another statement":       {good, "st2"},
 		"no statement":            {good, ""},

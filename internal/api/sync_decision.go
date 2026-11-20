@@ -145,8 +145,11 @@ func (v verdictsOf) cut(part, text string, mark *string) string {
 }
 
 // docRequest is the request as the document gives it, and whether it is
-// kept back: an output-like or pending question, label, uncertainty or
-// authorizes, or an agent's request with no verdicts kept, keeps it all.
+// kept back: an output-like question, label, uncertainty, authorizes or
+// expertise, any part still pending, or an agent's request whose question
+// was never judged as it was written, keeps it all. So the request's form
+// at a rev never changes once it has left: a part settled is whole or cut
+// for good.
 func docRequest(d ledger.DecisionRow, v verdictsOf) (*ext.DecisionDocRequest, bool) {
 	var r docRequestShape
 	if json.Unmarshal([]byte(d.Request), &r) != nil {
@@ -163,9 +166,12 @@ func docRequest(d ledger.DecisionRow, v verdictsOf) (*ext.DecisionDocRequest, bo
 		return nil, true
 	}
 	for i, o := range r.Options {
-		if keeps(v.of(ledger.PartLabel(i), o.Label)) {
+		if keeps(v.of(ledger.PartLabel(i), o.Label)) || v.of(ledger.PartTradeoffs(i), o.Tradeoffs) == verdictPending {
 			return nil, true
 		}
+	}
+	if v.of(ledger.PartContext, r.Context) == verdictPending {
+		return nil, true
 	}
 	out := &ext.DecisionDocRequest{Question: r.Question, Recommendation: r.Recommendation, Uncertainty: r.Uncertainty, Authorizes: r.Authorizes,
 		Expertise: r.Expertise, Subject: r.Subject, Supersedes: r.Supersedes, Evidence: r.Evidence}

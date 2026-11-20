@@ -141,12 +141,15 @@ func TestEveryOriginTheLedgerWritesIsOneTheDocumentCarries(t *testing.T) {
 }
 
 // A question, a label, an uncertainty or an authorizes that reads as output,
-// or whose verdict is pending, keeps the whole request back, and the
-// request part with it.
+// and any part whose verdict is pending (a context, a tradeoffs too),
+// keeps the whole request back, and the request part with it.
 func TestOutputInTheQuestionOrAnOptionKeepsTheRequestBack(t *testing.T) {
-	req := `{"question":"Which table?","options":[{"label":"users"},{"label":"orders"}],"uncertainty":"some","authorizes":"a deploy"}`
-	for _, part := range []string{ledger.PartQuestion, ledger.PartLabel(1), ledger.PartUncertainty, ledger.PartAuthorizes} {
+	req := `{"question":"Which table?","context":"two of them fit","options":[{"label":"users","tradeoffs":"slower"},{"label":"orders"}],"uncertainty":"some","authorizes":"a deploy"}`
+	for _, part := range []string{ledger.PartQuestion, ledger.PartLabel(1), ledger.PartUncertainty, ledger.PartAuthorizes, ledger.PartContext, ledger.PartTradeoffs(0)} {
 		for _, v := range []string{verdictOutput, verdictPending} {
+			if v == verdictOutput && (part == ledger.PartContext || part == ledger.PartTradeoffs(0)) {
+				continue // cut, not kept back: TestAgentContextQuotingOutputIsCut
+			}
 			doc := mustDoc(t, docRecord(ledger.OriginPlan, req), verdicts(map[string]string{part: v}, nil))
 			if doc.Request != nil || doc.RequestKept != ext.DecisionRequestKeptOutput {
 				t.Errorf("%s %s: the request left: %+v", part, v, doc.Request)
@@ -167,7 +170,7 @@ func TestAgentContextQuotingOutputIsCut(t *testing.T) {
 	rec := docRecord(ledger.OriginPlan, req)
 	choice := `{"code":"accepted","words":"recorded","choice":0,"text":"` + quoted + `","rationale":"fine"}`
 	rec.Responses = []ledger.ResponseRow{{Decision: 7, K: 1, Actor: "admin", Authority: `{"via":"workbench"}`, ResponseID: "r1", Status: ledger.ResponseAccepted, Receipt: choice, At: docAt}}
-	v := verdicts(map[string]string{ledger.PartContext: verdictOutput, ledger.PartTradeoffs(0): verdictPending, ledger.PartResponse(1, "text"): verdictOutput}, nil)
+	v := verdicts(map[string]string{ledger.PartContext: verdictOutput, ledger.PartTradeoffs(0): verdictOutput, ledger.PartResponse(1, "text"): verdictOutput}, nil)
 	doc := mustDoc(t, rec, v)
 	if doc.Request == nil || doc.Request.Question != "Which table?" || doc.Request.Context != outputCutWords || doc.Request.Options[0].Tradeoffs != outputCutWords || doc.Request.Cut != "output" {
 		t.Fatalf("the request: %+v", doc.Request)

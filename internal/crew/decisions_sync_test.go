@@ -24,7 +24,7 @@ const heldStatement = "a signed statement"
 func held(subject, grant, fence string) Authority {
 	sum := sha256.Sum256([]byte(heldStatement))
 	return Authority{Grant: grant, Via: ViaSync, Subject: subject, Membership: "m-1", SignIn: "s-1", At: "2026-11-20T09:00:00Z",
-		StatementSHA256: hex.EncodeToString(sum[:]), Held: "h-" + subject, Fence: fence}
+		StatementSHA256: hex.EncodeToString(sum[:]), RequestSHA256: strings.Repeat("a", 64), Held: "h-" + subject, Fence: fence}
 }
 
 // rechecks records what the engine hands its recheck.

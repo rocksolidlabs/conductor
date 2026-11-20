@@ -188,8 +188,11 @@ type Authority struct {
 	AppDevice       string `json:"appDevice,omitempty"`
 	At              string `json:"at,omitempty"`
 	StatementSHA256 string `json:"statementSha256,omitempty"`
-	Held            string `json:"held,omitempty"`
-	Fence           string `json:"fence,omitempty"`
+	// RequestSHA256 is the request part's hash the door admitted the
+	// answer against, which its recheck shows the provider again.
+	RequestSHA256 string `json:"requestSha256,omitempty"`
+	Held          string `json:"held,omitempty"`
+	Fence         string `json:"fence,omitempty"`
 }
 
 // Response is a person's answer to a decision: an option's index, a text

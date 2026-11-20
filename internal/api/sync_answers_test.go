@@ -638,3 +638,103 @@ func asksOf(asks []answerAsk, responseID string) int {
 	}
 	return n
 }
+
+// openWithContext opens an approval of the attempt whose context is long
+// enough to be judged, and answers its id.
+func (f *heldFixture) openWithContext(t *testing.T, requestID string) string {
+	t.Helper()
+	body := approvalBody(requestID)
+	body["context"] = "the migration touches every table of the billing schema"
+	return entityOf(t, f.ask(t, body, http.StatusCreated, ""), "decision")["id"].(string)
+}
+
+// holdIndex holds the index's next feed until the func it answers is
+// called (and at the test's end, before the server's stop waits for it).
+func holdIndex(t *testing.T, x *outputIndex) func() {
+	gate := make(chan struct{})
+	var once sync.Once
+	release := func() { once.Do(func() { close(gate) }) }
+	t.Cleanup(release)
+	x.enqueue(func() { <-gate })
+	return release
+}
+
+// A request with a part still pending is kept back whole, so nothing is
+// answered against a form that will change; settled, it leaves, and a
+// hand-in made against it is admitted and applied.
+func TestAPendingRequestIsAnsweredOnceSettled(t *testing.T) {
+	f := newHeldFixture(t)
+	release := holdIndex(t, f.srv.outputs)
+	did := f.openWithContext(t, "q1")
+	if v, _, _ := f.srv.ledger.OutputVerdicts(t.Context(), 1); v[ledger.PartContext] != verdictPending {
+		t.Fatalf("the context with the index held: %v", v)
+	}
+	if doc, _, _ := f.srv.decisionDoc(t.Context(), 1); doc.Request != nil {
+		t.Fatalf("a request with a pending part left: %+v", doc.Request)
+	}
+	if out := f.hand(t, held(did, "h0", "ana", 0, 1)); out.Status != ext.AnswerRefused || out.Code != crew.CodeNotApprover {
+		t.Fatalf("a hand-in to a pending request: %+v", out)
+	}
+	release()
+	verdictWhen(t, f.srv.ledger, 1, ledger.PartContext, verdictClean)
+	doc, _, _ := f.srv.decisionDoc(t.Context(), 1)
+	if doc.Request == nil || doc.Request.Context == outputCutWords {
+		t.Fatalf("the settled request: %+v", doc.Request)
+	}
+	f.id.set(func(a ext.AnswerCheck, _ ext.Grant) ext.Admission {
+		if a.RequestSHA256 == doc.RequestSHA256 {
+			return ext.AdmitYes
+		}
+		return ext.AdmitNo
+	})
+	if out := f.hand(t, held(did, "h1", "ana", 0, 1)); out.Status != ext.AnswerRecorded {
+		t.Fatalf("a hand-in against the settled request: %+v", out)
+	}
+	f.decisionWhen(t, did, "applied", inState(ledger.DecisionApplied))
+}
+
+// The recheck shows the provider the request hash the door admitted and
+// the time in the zone the hand-in gave, whatever the document is by
+// then: an answer admitted is applied though its document's form changed.
+func TestTheRecheckShowsTheHashTheDoorAdmitted(t *testing.T) {
+	f := newHeldFixture(t)
+	did := f.openWithContext(t, "q1")
+	verdictWhen(t, f.srv.ledger, 1, ledger.PartContext, verdictClean)
+	admitted, _, _ := f.srv.decisionDoc(t.Context(), 1)
+	r := held(did, "h1", "ana", 0, 1)
+	r.Check.At = time.Date(2026, 11, 20, 10, 0, 0, 5, time.FixedZone("CET", 3600))
+	made := r.Check.At.Format(time.RFC3339Nano)
+	f.id.set(func(a ext.AnswerCheck, _ ext.Grant) ext.Admission {
+		switch {
+		case len(f.id.asks()) == 2:
+			return ext.AdmitUnknown // the recheck's first ask
+		case a.RequestSHA256 == admitted.RequestSHA256 && a.At.Format(time.RFC3339Nano) == made:
+			return ext.AdmitYes
+		}
+		return ext.AdmitNo
+	})
+	if out := f.hand(t, r); out.Status != ext.AnswerRecorded {
+		t.Fatalf("%+v", out)
+	}
+	var wait chan time.Time
+	select {
+	case wait = <-f.waits:
+	case <-time.After(testWait):
+		t.Fatal("the recheck never waited to ask again")
+	}
+	// The document's form changes at the same rev (its context judged
+	// output since).
+	db, err := sql.Open("sqlite", "file:"+filepath.Join(f.srv.store.Dir(), "runs", ledger.File)+"?_pragma=busy_timeout(10000)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec("UPDATE decision_output SET verdict = 'output', cut_at = 0 WHERE decision = 1 AND part = 'context'"); err != nil {
+		t.Fatal(err)
+	}
+	if now, _, _ := f.srv.decisionDoc(t.Context(), 1); now.RequestSHA256 == admitted.RequestSHA256 {
+		t.Fatal("the document's form did not change")
+	}
+	wait <- time.Now()
+	f.decisionWhen(t, did, "applied", inState(ledger.DecisionApplied))
+}

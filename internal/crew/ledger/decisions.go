@@ -590,13 +590,14 @@ type authorityShape struct {
 	AppDevice       string `json:"appDevice,omitempty"`
 	At              string `json:"at,omitempty"`
 	StatementSHA256 string `json:"statementSha256,omitempty"`
+	RequestSHA256   string `json:"requestSha256,omitempty"`
 	Held            string `json:"held,omitempty"`
 	Fence           string `json:"fence,omitempty"`
 }
 
 // held says whether a names any of a held answer's fields.
 func (a authorityShape) held() bool {
-	return a.Membership != "" || a.SignIn != "" || a.AppDevice != "" || a.At != "" || a.StatementSHA256 != "" || a.Held != "" || a.Fence != ""
+	return a.Membership != "" || a.SignIn != "" || a.AppDevice != "" || a.At != "" || a.StatementSHA256 != "" || a.RequestSHA256 != "" || a.Held != "" || a.Fence != ""
 }
 
 // strict decodes raw into v, refusing a field v does not name and anything
@@ -873,8 +874,8 @@ func authorityOf(raw string) (authorityShape, string, error) {
 		}
 	case ViaSync:
 		if a.Subject == "" || a.Membership == "" || (a.SignIn == "") == (a.AppDevice == "") || a.At == "" ||
-			len(a.StatementSHA256) != 64 || a.Held == "" || a.Fence == "" {
-			return a, "", invalid("a held answer's authority names its subject, membership, sign-in or device, time, statement's SHA-256, held id and fence")
+			len(a.StatementSHA256) != 64 || len(a.RequestSHA256) != 64 || a.Held == "" || a.Fence == "" {
+			return a, "", invalid("a held answer's authority names its subject, membership, sign-in or device, time, statement's and request's SHA-256, held id and fence")
 		}
 	default:
 		return a, "", invalid("an authority is via the workbench, an identity, a router or sync, not %q", a.Via)
