@@ -153,7 +153,8 @@ A packaging that places a provider gets, from the same build:
 
 - **Signing in.** The shell opens on the provider's sign-in screen: a
   code in large type, **Open the sign-in page** (the provider's page, in
-  the in-app browser) and the time left. The key the provider binds is
+  the phone's own browser, by the person's tap: the owner's decision of
+  2026-11-20) and the time left. The key the provider binds is
   made on the phone by the shell's key plugin and never leaves it.
 - **Being told.** The provider's service sends a notification to the
   phone through the platform's push; what it shows is the provider's
@@ -340,7 +341,7 @@ pinned exactly, each with its reason in the PR and its row in
 `@capacitor/ios` (the shell itself), `@capacitor/push-notifications`
 (the platform's push token and the notification taps), `@capacitor/app`
 (opened links, resume and pause), `@capacitor/browser` (the in-app
-browser, for Open a server and a provider's sign-in page), all MIT; as
+browser, for Open a server), all MIT; as
 dev dependencies the versions `desktop/` already pins of `typescript`,
 `vitest`, `@types/node` and `@playwright/test`. `scripts/notices.py`
 gains `mobile/` as it has `desktop/` (the shipped packages, `npm ls
@@ -352,9 +353,9 @@ say `npm ci` in `mobile/` beside `desktop/`.
 development id: a packaging that signs its own build sets its own),
 `webDir` the folder `make mobile-sync` fills (`mobile/www`, ignored by
 git), and navigation inside the web view allowed to nothing but the
-bundle (`server.allowNavigation` empty). The shell's own openings (Open a
-server, a provider's sign-in page) go to the in-app browser through
-`@capacitor/browser`; any other navigation away from the bundle (a link
+bundle (`server.allowNavigation` empty). Open a server goes to the in-app
+browser through `@capacitor/browser`; a provider's sign-in page opens in
+the phone's own browser, by the person's tap; any other navigation away from the bundle (a link
 tapped in a decision's context) is handed by the shell's load gate to
 iOS, outside the shell, and never loads in the shell's page (as built:
 "Every way a page reaches native code" below).
@@ -732,7 +733,8 @@ stores.
 - **With a provider**: `/shell` is the sign-in screen while it reports
   `signedIn` false, and the inbox (OSS-2b) once signed in, with Settings
   a tap away. **Sign in**: "Sign in to <name>", the code in large type,
-  **Open the sign-in page** (the page in the in-app browser), the time
+  **Open the sign-in page** (the page in the phone's own browser, by the
+  person's tap), the time
   left, Cancel; a `{words}` answer shows its words and **Try again**.
   **Settings**: who, notifications with their state and the last one
   received, **Turn on notifications** (`enableNotifications`), **Send a
