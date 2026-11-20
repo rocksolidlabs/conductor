@@ -355,3 +355,34 @@ func TestATurnsRouteIsRefusedUnderAPolicyInForce(t *testing.T) {
 	}
 	until(t, "the router told "+f.did+" again", func() bool { return len(fr.Decisions()) > told })
 }
+
+// A router answering its policy in force while it refreshes its own state
+// (Behind) still stands behind it: a turn's route and the operator's route
+// to a person are each refused 409 routed_by_policy, nothing kept, the rev
+// unmoved.
+func TestARouteIsRefusedWhileTheRouterIsBehind(t *testing.T) {
+	fr := exttest.NewFakeRouter("switchman")
+	fr.SetPolicy("dr-1", anaPolicy(ext.OverrideNone))
+	fr.SetRoute("dr-1", ext.Route{To: []ext.Destination{{Kind: "person", Name: "Ana"}}, Rule: "architecture decisions"})
+	f := newRouteFixtureWith(t, []string{brakeman.ActRouteDecision}, nil, WithExtensions(local.Fill(ext.Providers{Router: fr, All: []ext.Entry{
+		{Kind: ext.KindDecisions, Name: "switchman", Value: fr},
+	}})))
+	n, _ := ledger.ParseDecisionID(f.did)
+	record := func() ledger.DecisionRecord {
+		rec, _, err := f.srv.ledger.Decision(t.Context(), n)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return rec
+	}
+	until(t, f.did+"'s policy written", func() bool { return ledger.RouterPolicy(record().Policy) })
+	fr.SetConfirm(f.did, func(ext.ConfirmQuery) ext.Confirmation { return ext.Confirmation{InForce: true, Behind: true} })
+	before := record()
+	if status, out := f.route(t, "b-1", map[string]any{"kind": "person", "name": "nate"}); status != http.StatusConflict || codeOf(out) != crew.CodeRoutedByPolicy {
+		t.Fatalf("the turn's route while the router is behind: %d %v", status, out)
+	}
+	out := f.expect(t, http.MethodPost, "/api/decisions/"+f.did+"/route", map[string]any{"opId": "o-1", "to": map[string]any{"kind": "person", "name": "nate"}, "expectedRev": before.Rev}, http.StatusConflict, crew.CodeRoutedByPolicy)
+	if after := record(); after.Rev != before.Rev || after.Request != before.Request || len(after.History) != len(before.History) || len(f.acts(t)) != 0 {
+		t.Fatalf("a refused route wrote: rev %d to %d, %v", before.Rev, after.Rev, out)
+	}
+}

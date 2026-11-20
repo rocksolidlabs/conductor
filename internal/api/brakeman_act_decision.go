@@ -318,7 +318,7 @@ func (s *Server) admitVisibleRoute(ctx context.Context, o *observer, n int64, di
 	if body.To.Kind != crew.DestOperator && ledger.RouterPolicy(rec.Policy) {
 		// Under a router's policy in force only the policy chooses who may
 		// answer, as at the operator's route (handleDecisionRoute).
-		if now := s.policyNow(ctx, did); now != nil && now.InForce {
+		if _, inForce := s.routeInForce(ctx, did); inForce {
 			return "", newAPIError(http.StatusConflict, crew.CodeRoutedByPolicy, did+" is routed by its router's policy: the operator may ask the router again")
 		}
 	}

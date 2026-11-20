@@ -360,6 +360,35 @@ func (s *Server) policyNowFor(ctx context.Context, did, subject string) *policyN
 	return reply
 }
 
+// routeInForce is whether a route of decision did is refused because its
+// router's policy is in force: one Confirm with no subject, in force being
+// the confirmation's InForce alone. A router refreshing its own state
+// (Behind), or answering of another revision, still stands behind its
+// policy, held to ext.MaxBehind as every such answer is (policyCheck: past
+// it, not in force). revision is the policy's revision it asked about, ""
+// for a record under the server's own policy (never in force).
+func (s *Server) routeInForce(ctx context.Context, did string) (revision string, inForce bool) {
+	if s.ledger == nil {
+		return "", false
+	}
+	n, ok := ledger.ParseDecisionID(did)
+	if !ok {
+		return "", false
+	}
+	rec, found, err := s.ledger.Decision(ctx, n)
+	if err != nil || !found {
+		return "", false
+	}
+	p, _, routed := crew.RouterPolicyOf(rec.Policy)
+	if !routed {
+		return "", false
+	}
+	if !s.runs.RoutesPolicies() {
+		return p.Revision, false
+	}
+	return p.Revision, s.policyCheck(ctx, rec, p.Revision, "").InForce
+}
+
 // policyNowReply is GET /api/decisions/{did}'s policyNow: in force now and
 // the router's why; eligible when the reader, an identity's operator, is
 // among those the policy names and the router confirms now.

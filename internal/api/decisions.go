@@ -793,7 +793,7 @@ func (s *Server) handleDecisionRoute(w http.ResponseWriter, r *http.Request) {
 	if body.To.Kind != crew.DestOperator {
 		// Under a router's policy in force only the policy chooses who
 		// may answer: a route to a person, a role or the grant is refused.
-		if now := s.policyNow(ctx, did); now != nil && now.InForce {
+		if _, inForce := s.routeInForce(ctx, did); inForce {
 			writeError(w, http.StatusConflict, crew.CodeRoutedByPolicy, did+" is routed by its router's policy: ask the router again, or override at the answer where the policy allows")
 			return
 		}
