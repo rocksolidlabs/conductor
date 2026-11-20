@@ -415,3 +415,75 @@ func statementFits(a authorityShape, statement string) error {
 	}
 	return nil
 }
+
+// requestPart says part is one of a request's: not a response's, the why
+// or the application's words.
+func requestPart(part string) bool {
+	return !strings.HasPrefix(part, "response/") && part != PartWhy && part != PartApplied
+}
+
+// verdictRank orders the verdicts from the one that lets the most leave.
+func verdictRank(v string) int {
+	switch v {
+	case VerdictOutput:
+		return 3
+	case VerdictPending:
+		return 2
+	case VerdictClean:
+		return 1
+	}
+	return 0
+}
+
+// copyVerdicts gives decision to, a replacement opened with from's request,
+// from's request-part verdicts, each the worse of the copied one and the
+// one to's opening judged: a copy is never judged cleaner than what it
+// copies. When from has none for its question (its request never judged
+// as it was written), to keeps none either, so its request stays back as
+// from's did.
+func (t *Tx) copyVerdicts(from, to int64) error {
+	read := func(n int64) (map[string]string, error) {
+		rows, err := t.tx.QueryContext(t.ctx, "SELECT part, verdict FROM decision_output WHERE decision = ?", n)
+		if err != nil {
+			return nil, err
+		}
+		out := map[string]string{}
+		for rows.Next() {
+			var p, v string
+			if err := rows.Scan(&p, &v); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			if requestPart(p) {
+				out[p] = v
+			}
+		}
+		return out, cmp.Or(rows.Err(), rows.Close())
+	}
+	src, err := read(from)
+	if err != nil {
+		return err
+	}
+	if _, judged := src[PartQuestion]; !judged {
+		_, err := t.tx.ExecContext(t.ctx, "DELETE FROM decision_output WHERE decision = ? AND part NOT LIKE 'response/%' AND part NOT IN (?, ?)", to, PartWhy, PartApplied)
+		return err
+	}
+	fresh, err := read(to)
+	if err != nil {
+		return err
+	}
+	for part, v := range src {
+		if verdictRank(fresh[part]) > verdictRank(v) {
+			v = fresh[part]
+		}
+		cut := -1
+		if v == VerdictOutput {
+			cut = 0
+		}
+		if _, err := t.tx.ExecContext(t.ctx, `INSERT INTO decision_output (decision, part, verdict, cut_at) VALUES (?, ?, ?, ?)
+			ON CONFLICT (decision, part) DO UPDATE SET verdict = excluded.verdict, cut_at = excluded.cut_at`, to, part, v, cut); err != nil {
+			return err
+		}
+	}
+	return nil
+}

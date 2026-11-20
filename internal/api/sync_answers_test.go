@@ -38,12 +38,21 @@ type answerIdentity struct {
 	admit func(a ext.AnswerCheck, g ext.Grant) ext.Admission
 	asked []answerAsk
 	ch    chan struct{}
+	// once admits each of its tokens at its first ask alone (a response's
+	// authentication), not at its recheck.
+	once map[string]ext.Principal
 }
 
 func (*answerIdentity) Name() string { return "ids" }
 
-func (*answerIdentity) Authenticate(context.Context, string) (ext.Principal, bool, error) {
-	return ext.Principal{}, false, nil
+func (p *answerIdentity) Authenticate(_ context.Context, tok string) (ext.Principal, bool, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	pr, ok := p.once[tok]
+	if ok {
+		delete(p.once, tok)
+	}
+	return pr, ok, nil
 }
 
 func (p *answerIdentity) AdmitsAnswer(_ context.Context, a ext.AnswerCheck, g ext.Grant) (ext.Admission, error) {
@@ -103,7 +112,7 @@ type heldFixture struct {
 
 func newHeldFixture(t *testing.T) *heldFixture {
 	t.Helper()
-	id := &answerIdentity{admit: always(ext.AdmitYes), ch: make(chan struct{}, 1)}
+	id := &answerIdentity{admit: always(ext.AdmitYes), ch: make(chan struct{}, 1), once: map[string]ext.Principal{}}
 	f := newFakeSync()
 	opt := WithExtensions(local.Fill(ext.Providers{Identity: id, Continuity: f, All: []ext.Entry{
 		{Kind: ext.KindIdentity, Name: id.Name(), Value: id}, {Kind: ext.KindSync, Name: f.Name(), Value: f},
@@ -737,4 +746,61 @@ func TestTheRecheckShowsTheHashTheDoorAdmitted(t *testing.T) {
 	}
 	wait <- time.Now()
 	f.decisionWhen(t, did, "applied", inState(ledger.DecisionApplied))
+}
+
+// A replacement opened with a decision's request carries its verdicts: an
+// agent's question judged output stays back in the replacement though the
+// check would judge it clean now, and a request never judged
+// as it was written stays back in its replacement too. The replacements
+// here come of an identity's answer its recheck refused.
+func TestAReplacementsDocumentKeepsTheRequestBack(t *testing.T) {
+	ctx := context.Background()
+	t.Run("judged output", func(t *testing.T) {
+		f := newHeldFixture(t)
+		logText := keptCheckLog(t, f.srv, "team-0000c0de", 2041)
+		body := approvalBody("q1")
+		question := "Ship it? The check said " + logText[800:900]
+		body["question"] = question
+		did := entityOf(t, f.ask(t, body, http.StatusCreated, ""), "decision")["id"].(string)
+		verdictWhen(t, f.srv.ledger, 1, ledger.PartQuestion, verdictOutput)
+		// The check would find it clean now.
+		f.srv.ledger.SetOutputCheck(func(context.Context, string, bool) string { return verdictClean })
+		f.replaced(t, did)
+	})
+	t.Run("never judged", func(t *testing.T) {
+		f := newHeldFixture(t)
+		did := f.open(t, "q1")
+		db, err := sql.Open("sqlite", "file:"+filepath.Join(f.srv.store.Dir(), "runs", ledger.File)+"?_pragma=busy_timeout(10000)")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer db.Close()
+		if _, err := db.Exec("DELETE FROM decision_output WHERE decision = 1"); err != nil {
+			t.Fatal(err)
+		}
+		f.replaced(t, did)
+		if v, _, _ := f.srv.ledger.OutputVerdicts(ctx, 2); v[ledger.PartQuestion] != "" {
+			t.Fatalf("the replacement's verdicts: %v", v)
+		}
+	})
+}
+
+// replaced has did answered by an identity whose recheck refuses it, and
+// fails t unless its replacement, dr-2, reaches the sync store with its
+// request kept back.
+func (f *heldFixture) replaced(t *testing.T, did string) {
+	t.Helper()
+	f.id.mu.Lock()
+	f.id.once["tok-ana-6d0e"] = cloudAdmin("ana")
+	f.id.mu.Unlock()
+	f.respond(t, "tok-ana-6d0e", did, "a1", 0, f.rec(t, did).Rev, http.StatusCreated, "")
+	f.decisionWhen(t, did, "superseded", inState(ledger.DecisionSuperseded))
+	key := syncKey{syncDecisionStore, "dr-2"}
+	calls := f.store.until(t, "the replacement", func(c []syncCall) bool {
+		_, op, ok := docOf(c, key)
+		return ok && op == "saved"
+	})
+	if doc, _, _ := docOf(calls, key); doc.Request != nil || doc.RequestKept != ext.DecisionRequestKeptOutput {
+		t.Fatalf("the replacement's request left: %+v", doc.Request)
+	}
 }

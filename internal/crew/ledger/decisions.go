@@ -386,6 +386,10 @@ type DecisionRow struct {
 	CreatedAt    time.Time
 	AnsweredAt   time.Time
 	ClosedAt     time.Time
+	// From is, for a replacement opened by OpenDecision, the decision whose
+	// request it copies: that request's copied-output verdicts go with the
+	// copy (copyVerdicts). Not a column: a read leaves it 0.
+	From int64
 }
 
 // ID is the row's id, "dr-<n>".
@@ -1065,6 +1069,11 @@ func (t *Tx) OpenDecision(d DecisionRow) (DecisionRow, bool, error) {
 	t.changed(d.N)
 	if err := t.judgeRequest(d); err != nil {
 		return DecisionRow{}, false, err
+	}
+	if d.From > 0 {
+		if err := t.copyVerdicts(d.From, d.N); err != nil {
+			return DecisionRow{}, false, err
+		}
 	}
 	return d, true, nil
 }

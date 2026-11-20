@@ -252,3 +252,64 @@ func TestSyncAuthorityAndItsStatement(t *testing.T) {
 		t.Fatalf("LastDecision: %d %v", got, err)
 	}
 }
+
+// A replacement opened with its source's request (From) carries the
+// source's request verdicts, each the worse of the copied and the fresh
+// one; a source whose question was never judged leaves the copy with no
+// request verdict either.
+func TestAReplacementCarriesItsRequestsVerdicts(t *testing.T) {
+	ctx := context.Background()
+	for _, c := range []struct {
+		name          string
+		first, second string // the check's verdict at the source's opening, at the copy's ("" none)
+		want          string // the copy's question's verdict ("" none)
+	}{
+		{"judged output, now clean", VerdictOutput, VerdictClean, VerdictOutput},
+		{"judged clean, now output", VerdictClean, VerdictOutput, VerdictOutput},
+		{"judged clean, now pending", VerdictClean, VerdictPending, VerdictPending},
+		{"never judged", "", VerdictClean, ""},
+	} {
+		l := openLedger(t, filepath.Join(t.TempDir(), "runs"))
+		const run = "team-00000001"
+		newRun(t, l, run)
+		tasksOf(t, l, run, "build")
+		if c.first != "" {
+			first := c.first
+			l.SetOutputCheck(func(context.Context, string, bool) string { return first })
+		}
+		old := agentDecision(run, "build", 1, "q1")
+		n := open(t, l, old)
+		second := c.second
+		l.SetOutputCheck(func(context.Context, string, bool) string { return second })
+		var m int64
+		in(t, l, run, func(tx *Tx) error {
+			cur, _, err := tx.Decision(n)
+			if err != nil {
+				return err
+			}
+			copyRow := cur
+			copyRow.N, copyRow.RequestID, copyRow.From = 0, "", n
+			cur.State, cur.Rev, cur.Why = DecisionSuperseded, cur.Rev+1, "replaced"
+			if err := tx.PutDecision(cur); err != nil {
+				return err
+			}
+			got, _, err := tx.OpenDecision(copyRow)
+			m = got.N
+			return err
+		})
+		v, _, err := l.OutputVerdicts(ctx, m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if c.want != "" && (v[PartQuestion] != c.want || v[PartContext] != c.want) {
+			t.Fatalf("%s: the replacement's verdicts %v, want %s", c.name, v, c.want)
+		}
+		if c.want == "" {
+			for p := range v {
+				if requestPart(p) {
+					t.Fatalf("%s: the replacement has %s: %v", c.name, p, v)
+				}
+			}
+		}
+	}
+}

@@ -2643,8 +2643,8 @@ func (e *Engine) replaceDecision(r *run, d *decision, why string) (*decision, tx
 		}
 		row := old
 		// Opened in the run that holds the decision now, a continuation's
-		// when it moved there.
-		row.N, row.RequestID, row.RunID = 0, "", ""
+		// when it moved there; the copied request's verdicts go with it.
+		row.N, row.RequestID, row.RunID, row.From = 0, "", "", old.N
 		if d.origin != ledger.OriginCompare {
 			// Opened under the server's own policy, with a spare only where
 			// the decision it replaces held one (fresh.spare); told to the
