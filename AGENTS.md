@@ -143,9 +143,11 @@ add its rule here.
   a hang, as the history read's 15 s does over work its rows bound, which
   the race detector makes thirty times dearer (2026-11-11, #281;
   2026-11-08: internal/api's race run reached go test's 30 m bound
-  on CI; the bound is 60 m now; the package's length is CPU work under the
-  race detector across its 1,365 tests, not waits, and CI's longest job is
-  e2e at 49 minutes, so no row makes it faster). Nor is a test's bound the
+  on CI; the bound became 60 m; 2026-11-19: the Mac's whole-package run
+  reached 54 of its 60 minutes, so the bound is 90 m now; the package's
+  length is CPU work under the race detector across its 1,365 tests, not
+  waits, and CI's longest job is e2e at 49 minutes, so no row makes it
+  faster). Nor is a test's bound the
   product's: a budget shortened to see one step spend it bounds every step
   under it, and a step it was not meant for (a review's claim, before the
   read a test held past 50 ms) loses it on a loaded machine; the test lets
@@ -302,7 +304,12 @@ add its rule here.
   An event the session recorded is not yet an entry its host has kept: the
   forwarder hands it to the host's sender after, so a link brought back
   "after" five events can come back before the fifth is kept. Wait for the
-  host to hold it (`untilKept`) where the test means that order.
+  host to hold it (`untilKept`) where the test means that order. A send's
+  state is not its pin either: a restarted server's settlement commits a
+  capture's send to Brakeman `sent` and lets its request's pin go after,
+  on a goroutine of its own, and a test that read the pins as it saw
+  `sent` found one still held on CI (`TestALostBrakemanSendIsSettledAtStart`,
+  2026-11-19, #281). Wait for the pin itself to go.
 - End what a test started before its directories go. An engine a test
   abandons (the server that ended, before a continuation) keeps reacting:
   when the fake launcher ended its processes at cleanup, it failed their

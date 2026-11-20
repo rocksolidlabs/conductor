@@ -342,6 +342,28 @@ is right as it is (no project was shared), so nothing else is derived
 and no `migrate` row is written. A version 8 database opens read-only
 under a version 7 binary, as DS1's rule says.
 
+**Schema version 9** (migration keyed 8, #1049), the store step after
+OS-1b, which ships alone before the code that moves onto it; additions
+only. OS-1b kept two values with no column of their own: the overflow
+range a join hands the replica, on every project (lost for a store with
+no project yet), and the words a share was given (a refusal's, a dormant
+or unshared workspace's, a retire's), in the process's memory (lost at a
+restart). Version 9 gives each a column:
+
+- `ALTER TABLE replica_tags ADD COLUMN overflow_from INTEGER NOT NULL
+  DEFAULT 0` and `ALTER TABLE replica_tags ADD COLUMN overflow_to
+  INTEGER NOT NULL DEFAULT 0`: the overflow range on the tag it was
+  handed to.
+- `ALTER TABLE projects ADD COLUMN share_words TEXT NOT NULL DEFAULT
+  ''`: the words the project's share was given.
+
+A fresh store makes them at the end of its `CREATE TABLE` statements;
+the migration adds them in the transaction that read version 8. Every
+version 8 row is right as it is at the defaults (no range on a tag, no
+words on a share), so nothing is derived and no `migrate` row is
+written; a migration that fails leaves version 8 as it was. A version 9
+database opens read-only under a version 8 binary.
+
 **The store's instance.** IN1a's `store_instance` is the instance these
 rows judge by: the create and the migration write it, and a restore
 writes a new one (`dispatch.Reissue`, called by `internal/export`'s
@@ -1857,6 +1879,14 @@ uses it:
   version 7 binary (`TestSchema8MigratesAndKeepsEveryRow`,
   `TestMigrationMakesTheViewOfEveryRevision`,
   `TestVersion8OpensReadOnlyInVersion7`).
+- **Dispatch 8 → 9 (#1049)**: additions only, a replica tag's
+  `overflow_from` and `overflow_to` and a project's `share_words`, which
+  OS-1b's range and share words then move onto; a version 9 database
+  opens read-only under a version 8 binary
+  (`TestAFreshStoreHasVersion9sColumns`,
+  `TestSchema9MigratesAndKeepsEveryRow`,
+  `TestAFailedMigrationLeavesVersion8AsItWas`,
+  `TestVersion9OpensReadOnlyInVersion8`).
 - **The ledger 12 → 13 (OS-3a)**: additions only, `decision_output`
   and `decision_statements`; a version 13 database opens read-only
   under a version 12 binary, as the ledger's rule is
