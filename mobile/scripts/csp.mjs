@@ -83,7 +83,7 @@ export function nativeOrigins(list = []) {
  * origins alone ('none' with none).
  */
 export function policyFor(html, { connect = [] } = {}) {
-  const hashes = inlineScripts(html).filter((s) => !s.includes('documentElement')).map((s) => `'sha256-${createHash('sha256').update(s, 'utf8').digest('base64')}'`)
+  const hashes = inlineScripts(html).map((s) => `'sha256-${createHash('sha256').update(s, 'utf8').digest('base64')}'`)
   const origins = connectOrigins(connect)
   return `${["script-src 'self' 'wasm-unsafe-eval'", ...hashes].join(' ')}; connect-src ${origins.length ? origins.join(' ') : "'none'"}`
 }
