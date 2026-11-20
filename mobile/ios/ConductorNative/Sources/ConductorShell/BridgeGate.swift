@@ -11,7 +11,9 @@ import WebKit
  * - its plugin and method are one pair of a closed table, the calls the bridge (mobile/src/bridge.ts) makes and the listener calls
  *   the runtime's page script makes for the plugins the bridge listens to;
  * - its `callbackId` is of the runtime's own form, `-1` or digits;
- * - its `options` is an object or absent;
+ * - its `options` is an object or absent, and for the listener calls, which the runtime's base plugin reads, exactly the form the
+ *   runtime's page script gives them: `addListener` an `eventName` the bridge listens for on that plugin (`events`), and
+ *   `removeListener` that and the listener's `callbackId` in the runtime's form;
  * - it has no other key.
  * Everything else is dropped.
  */
@@ -27,6 +29,12 @@ public enum BridgeGate {
         "PushNotifications": ["checkPermissions", "requestPermissions", "register", "addListener", "removeListener"],
         "App": ["getLaunchUrl", "addListener", "removeListener"],
         "Browser": ["open"],
+    ]
+
+    /** The events the bridge listens for, by plugin: the only `eventName` a listener call may carry. */
+    public static let events: [String: Set<String>] = [
+        "PushNotifications": ["registration", "pushNotificationActionPerformed"],
+        "App": ["appUrlOpen"],
     ]
 
     /** The plugin names the page reaches. */
@@ -70,7 +78,18 @@ public enum BridgeGate {
               let callback = d["callbackId"] as? String, callbackForm(callback)
         else { return false }
         if let options = d["options"], !(options is [String: Any]) { return false }
-        return true
+        switch method {
+        case "addListener", "removeListener": return listening(plugin, method, d["options"])
+        default: return true
+        }
+    }
+
+    /** A listener call's options: exactly an event the bridge listens for on the plugin, and for a removal the listener's id. */
+    static func listening(_ plugin: String, _ method: String, _ options: Any?) -> Bool {
+        guard let o = options as? [String: Any], let event = o["eventName"] as? String, events[plugin]?.contains(event) == true else { return false }
+        if method == "addListener" { return Set(o.keys) == ["eventName"] }
+        guard Set(o.keys) == ["eventName", "callbackId"], let id = o["callbackId"] as? String else { return false }
+        return callbackForm(id)
     }
 
     /** The whole decision: the sender, then the body. */

@@ -347,6 +347,15 @@ class IOSProjectTest(unittest.TestCase):
         (pages / "drafts/[key].vue").write_text("const k = route.params.key\n")
         self.only("web/app/pages/shell/drafts/[key].vue: a dynamic segment not carried through an address helper")
 
+    def test_the_listener_calls_admit_exactly_the_bridges_events(self) -> None:
+        g = "ios/ConductorNative/Sources/ConductorShell/BridgeGate.swift"
+        self.edit(g, '"App": ["appUrlOpen"],', '"App": ["appUrlOpen", "appStateChange"],')
+        self.only("App's listener calls admit ['appStateChange', 'appUrlOpen'], not the bridge's events ['appUrlOpen']")
+        self.setUp()
+        self.edit("src/bridge.ts", "    addListener(event: 'registration', cb: (t: { value: string }) => void): Promise<ListenerHandle> | ListenerHandle\n",
+                  "    addListener(event: 'registration', cb: (t: { value: string }) => void): Promise<ListenerHandle> | ListenerHandle\n"
+                  "    addListener(event: 'registrationError', cb: (e: unknown) => void): Promise<ListenerHandle> | ListenerHandle\n")
+        self.only("PushNotifications's listener calls admit ['pushNotificationActionPerformed', 'registration'], not the bridge's events ['pushNotificationActionPerformed', 'registration', 'registrationError']")
 
 
 if __name__ == "__main__":

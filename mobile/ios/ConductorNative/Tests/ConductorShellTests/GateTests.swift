@@ -8,8 +8,18 @@ import WebKit
 // means the page to reach, by its page name; the UI delegate answers every text-input prompt nil and hands none on.
 
 @Suite struct GateTests {
-    func message(_ pluginId: String, _ method: String = "state", type: String = "message", callback: Any = "1") -> [String: Any] {
-        ["type": type, "pluginId": pluginId, "methodName": method, "options": [:], "callbackId": callback]
+    func message(_ pluginId: String, _ method: String = "state", type: String = "message", callback: Any = "1", options: Any = [String: Any]()) -> [String: Any] {
+        ["type": type, "pluginId": pluginId, "methodName": method, "options": options, "callbackId": callback]
+    }
+
+    /** A pair of the table with the options the runtime's page script gives it: a listener call's event and id. */
+    func call(_ plugin: String, _ method: String) -> [String: Any] {
+        let event = BridgeGate.events[plugin]?.sorted().first ?? ""
+        switch method {
+        case "addListener": return message(plugin, method, options: ["eventName": event])
+        case "removeListener": return message(plugin, method, callback: "-1", options: ["eventName": event, "callbackId": "12"])
+        default: return message(plugin, method)
+        }
     }
 
     static let app = URL(string: "capacitor://localhost")!
@@ -17,7 +27,26 @@ import WebKit
 
     @Test func theBridgeGateAdmitsOnlyTheTablesPairsInTheirClosedForms() {
         for (plugin, methods) in BridgeGate.calls {
-            for method in methods { #expect(BridgeGate.admits(message(plugin, method)), "\(plugin).\(method)") }
+            for method in methods { #expect(BridgeGate.admits(call(plugin, method)), "\(plugin).\(method)") }
+        }
+        // The listener calls: exactly an event the bridge listens for on that plugin, and a removal's listener id in the runtime's form.
+        for (plugin, events) in BridgeGate.events {
+            for event in events {
+                #expect(BridgeGate.admits(message(plugin, "addListener", options: ["eventName": event])), "\(plugin) \(event)")
+                #expect(BridgeGate.admits(message(plugin, "removeListener", options: ["eventName": event, "callbackId": "7"])), "\(plugin) \(event)")
+            }
+        }
+        #expect(BridgeGate.events == ["PushNotifications": ["registration", "pushNotificationActionPerformed"], "App": ["appUrlOpen"]])
+        for options: Any in [[String: Any](), ["eventName": 7], ["eventName": "appStateChange"], ["eventName": "registration"], ["eventName": "appUrlOpen", "x": 1],
+                             ["eventName": "appUrlOpen", "callbackId": "7"], NSNull(), "appUrlOpen"] {
+            #expect(!BridgeGate.admits(message("App", "addListener", options: options)), "\(options)")
+        }
+        var bare = message("App", "addListener")
+        bare.removeValue(forKey: "options")
+        #expect(!BridgeGate.admits(bare))
+        for options: Any in [["eventName": "appUrlOpen"], ["eventName": "appUrlOpen", "callbackId": "1'"], ["eventName": "appUrlOpen", "callbackId": 7],
+                             ["eventName": "registration", "callbackId": "7"], ["eventName": "appUrlOpen", "callbackId": "7", "x": 1], [String: Any]()] {
+            #expect(!BridgeGate.admits(message("App", "removeListener", options: options)), "\(options)")
         }
         #expect(BridgeGate.names == ["ConductorKey", "ConductorStore", "CapacitorHttp", "App", "Browser", "PushNotifications"])
         // Class names, names not meant, unknown ones, near misses.

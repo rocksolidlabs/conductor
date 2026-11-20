@@ -322,6 +322,27 @@ def bridge_calls(mobile: Path) -> dict[str, set[str]]:
     return out
 
 
+def bridge_events(mobile: Path) -> dict[str, set[str]]:
+    """The events the bridge listens for on each plugin (`addListener(event: '…'` in NativeLayer), named as main.ts reads them."""
+    bridge = (mobile / "src/bridge.ts").read_text()
+    names = dict(re.findall(r"\b(\w+) = p\.(\w+)\b", (mobile / "src/main.ts").read_text()))
+    layer = re.search(r"export interface NativeLayer \{(.*?)\n\}", bridge, re.S)
+    out: dict[str, set[str]] = {}
+    for m in re.finditer(r"^  (\w+): \{(.*?)\}\s*$", layer.group(1) if layer else "", re.M | re.S):
+        events = set(re.findall(r"addListener\(event: '(\w+)'", m.group(2)))
+        if m.group(1) in names and events:
+            out[names[m.group(1)]] = events
+    return out
+
+
+def gate_events(native: Path) -> dict[str, set[str]]:
+    gate = (native / "BridgeGate.swift").read_text()
+    m = re.search(r"static let events: \[String: Set<String>\] = \[(.*?)\n    \]", gate, re.S)
+    if not m:
+        return {}
+    return {plugin: set(re.findall(r'"(\w+)"', events)) for plugin, events in re.findall(r'"(\w+)": \[([^\]]*)\]', m.group(1))}
+
+
 def gate_table(native: Path) -> dict[str, set[str]]:
     gate = (native / "BridgeGate.swift").read_text()
     m = re.search(r"static let calls: \[String: Set<String>\] = \[(.*?)\n    \]", gate, re.S)
@@ -358,6 +379,10 @@ def gates(mobile: Path) -> list[str]:
     for plugin in sorted(set(table) | set(calls)):
         if table.get(plugin, set()) != calls.get(plugin, set()):
             out.append(f"BridgeGate.swift: {plugin} admits {sorted(table.get(plugin, set()))}, not the bridge's calls {sorted(calls.get(plugin, set()))}")
+    events, listened = gate_events(native), bridge_events(mobile)
+    for plugin in sorted(set(events) | set(listened)):
+        if events.get(plugin, set()) != listened.get(plugin, set()):
+            out.append(f"BridgeGate.swift: {plugin}'s listener calls admit {sorted(events.get(plugin, set()))}, not the bridge's events {sorted(listened.get(plugin, set()))}")
     if "CallRunner" not in (mobile / "ios/App/App/Plugins/ShellHttpPlugin.swift").read_text():
         out.append("ShellHttpPlugin.swift: its calls are not run one at a time through a CallRunner")
     out += spellings(mobile)
