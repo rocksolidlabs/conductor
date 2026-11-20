@@ -204,6 +204,7 @@ func (t *Tx) PutPolicy(n int64, policy string, rev int) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	t.changed(n)
 	if cur.Origin == OriginCompare {
 		return false, invalid("%s is a comparison's selection, the operator's: it takes no router's policy", cur.ID())
 	}

@@ -48,6 +48,10 @@ type Tx struct {
 	// onLog is what OnLog set: told, after the commit, of each log a put
 	// keeps.
 	onLog func(source string, log []byte)
+	// decisions is every decision the transaction changed, for OnDecisions;
+	// check the copied-output check its decision parts are judged by.
+	decisions []int64
+	check     OutputCheck
 }
 
 // AfterCommit gives the transaction fn, called once it has committed,
@@ -96,7 +100,7 @@ func (l *Ledger) Transition(ctx context.Context, runID string, fn func(*Tx) erro
 		return 0, cancelledAs(ctx, err)
 	}
 	defer tx.Rollback()
-	t := &Tx{ctx: ctx, tx: tx, runID: runID, now: time.Now().UTC(), onLog: l.onLog}
+	t := &Tx{ctx: ctx, tx: tx, runID: runID, now: time.Now().UTC(), onLog: l.onLog, check: l.outputCheck}
 	// Every error of the transaction, fn's and the statements' as the
 	// commit's, is told as the context's once the context has ended:
 	// database/sql's rollback of a cancelled transaction races each step,
@@ -129,6 +133,7 @@ func (l *Ledger) Transition(ctx context.Context, runID string, fn func(*Tx) erro
 		fn()
 	}
 	l.committed(told)
+	l.decisionsChanged(t.decisions)
 	return told[0].Revision, nil
 }
 
@@ -1495,6 +1500,13 @@ func (l *Ledger) Prune(ctx context.Context, runID string) error {
 	if cited > 0 {
 		return fmt.Errorf("%w: %d runs cite it", ErrNotPrunable, cited)
 	}
+	// The decisions the prune deletes (opened in the run, ON DELETE
+	// CASCADE) and those it hands back, read before: OnDecisions is told of
+	// both.
+	changed, err := prunedDecisions(ctx, tx, runID)
+	if err != nil {
+		return err
+	}
 	handed, err := pruneDecisions(ctx, tx, runID)
 	if err != nil {
 		return err
@@ -1506,5 +1518,6 @@ func (l *Ledger) Prune(ctx context.Context, runID string) error {
 		return err
 	}
 	l.pruned(runID, revision, handed)
+	l.decisionsChanged(changed)
 	return nil
 }

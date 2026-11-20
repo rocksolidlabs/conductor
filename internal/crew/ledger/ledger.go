@@ -332,7 +332,11 @@ type Ledger struct {
 	onCommit func(RunPointer)
 	onPrune  func(runID string, revision int64)
 	// onLog is what OnLog set.
-	onLog       func(source string, log []byte)
+	onLog func(source string, log []byte)
+	// onDecisions is what OnDecisions set; outputCheck what SetOutputCheck
+	// set (decision_sync.go).
+	onDecisions func(ns []int64)
+	outputCheck OutputCheck
 	afterCommit func()
 	// inRead, when a test sets it, runs inside readAt's read transaction
 	// of an unmigrated database, after the version is read: the

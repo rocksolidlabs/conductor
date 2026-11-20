@@ -413,6 +413,10 @@ type ResponseRow struct {
 	Status      string
 	Receipt     string
 	At          time.Time
+	// Statement is a held answer's statement (via sync), kept beside the
+	// response in decision_statements, its SHA-256 in the authority; ""
+	// for every other response. A read leaves it empty (Statement).
+	Statement string
 }
 
 // HistoryRow is one row of a decision's history: Detail JSON, at most
@@ -1029,6 +1033,10 @@ func (t *Tx) OpenDecision(d DecisionRow) (DecisionRow, bool, error) {
 	if d.N, err = res.LastInsertId(); err != nil {
 		return DecisionRow{}, false, err
 	}
+	t.changed(d.N)
+	if err := t.judgeRequest(d); err != nil {
+		return DecisionRow{}, false, err
+	}
 	return d, true, nil
 }
 
@@ -1178,6 +1186,10 @@ func (t *Tx) PutDecision(d DecisionRow) error {
 	if err != nil {
 		return err
 	}
+	t.changed(d.N)
+	if err := t.judgeWords(d.N, cur, d); err != nil {
+		return err
+	}
 	if finalDecision(d.State) && !finalDecision(cur.State) && RouterPolicy(cur.Policy) {
 		// A record that carried a router's policy keeps its outcome for the
 		// router, written in the transaction that gives it its final state
@@ -1205,6 +1217,7 @@ func (t *Tx) RouteFor(n int64, request string) error {
 	if err != nil {
 		return err
 	}
+	t.changed(n)
 	if cur.State != DecisionOpen {
 		return fmt.Errorf("%w: %s is %s: whom it is for changes only while it is open", ErrDecisionState, cur.ID(), cur.State)
 	}
@@ -1275,6 +1288,9 @@ func (t *Tx) Answer(n int64, run string, rev int) (bool, error) {
 		return false, err
 	}
 	changed, err := res.RowsAffected()
+	if changed == 1 {
+		t.changed(n)
+	}
 	return changed == 1, err
 }
 
@@ -1300,6 +1316,9 @@ func (t *Tx) MoveDecisions(from, to string) ([]DecisionRow, error) {
 		return nil, err
 	}
 	slices.SortFunc(out, func(a, b DecisionRow) int { return cmp.Compare(a.N, b.N) })
+	for _, d := range out {
+		t.changed(d.N)
+	}
 	return out, nil
 }
 
@@ -1399,6 +1418,13 @@ func (t *Tx) Respond(n int64, r ResponseRow) (Responded, error) {
 	r.At = t.now
 	if _, err := t.tx.ExecContext(t.ctx, `INSERT INTO decision_responses (decision, k, actor, authority, response_id, fingerprint, status, receipt, at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, n, r.K, r.Actor, r.Authority, r.ResponseID, r.Fingerprint, r.Status, r.Receipt, stamp(r.At)); err != nil {
+		return Responded{}, err
+	}
+	t.changed(n)
+	if err := t.keepStatement(n, r); err != nil {
+		return Responded{}, err
+	}
+	if err := t.judgeResponse(n, r); err != nil {
 		return Responded{}, err
 	}
 	return Responded{Row: r, Kept: true}, nil
