@@ -15,8 +15,26 @@ final class MemoryFiles: StoreFiles, @unchecked Sendable {
     var dirs: Set<String> = []
     var stopRename = false
     var keep: Set<String> = []
-    func createDirectory(_ url: URL) throws { lock.withLock { _ = dirs.insert(url.path) } }
-    func write(_ data: Data, to url: URL) throws { lock.withLock { files[url.path] = data } }
+    /** Each write's and each folder's name with whether it was asked to be made under complete protection. */
+    var made: [(name: String, complete: Bool)] = []
+    /** Names whose write fails (a full disk for that file), each as many times as it is listed. */
+    var failWrites: [String] = []
+    func createDirectory(_ url: URL, complete: Bool) throws {
+        lock.withLock {
+            dirs.insert(url.path)
+            made.append((url.lastPathComponent, complete))
+        }
+    }
+    func write(_ data: Data, to url: URL, complete: Bool) throws {
+        try lock.withLock {
+            if let i = failWrites.firstIndex(of: url.lastPathComponent) {
+                failWrites.remove(at: i)
+                throw CocoaError(.fileWriteOutOfSpace)
+            }
+            files[url.path] = data
+            made.append((url.lastPathComponent, complete))
+        }
+    }
     func rename(_ from: URL, to: URL) throws {
         try lock.withLock {
             if stopRename { throw CocoaError(.fileWriteUnknown) }
@@ -42,7 +60,13 @@ final class RecordedProtection: StoreProtection, @unchecked Sendable {
     let lock = NSLock()
     var protected: [String] = []
     var excluded: [String] = []
-    func protect(_ file: URL) throws { lock.withLock { protected.append(file.lastPathComponent) } }
+    var fail = false
+    func protect(_ file: URL) throws {
+        try lock.withLock {
+            if fail { throw CocoaError(.fileWriteNoPermission) }
+            protected.append(file.lastPathComponent)
+        }
+    }
     func excludeFromBackup(_ directory: URL) throws { lock.withLock { excluded.append(directory.path) } }
 }
 
@@ -134,6 +158,9 @@ func code(_ f: () async throws -> Void) async -> String? {
         f.files.stopRename = true
         #expect(await code { try await f.store.put(area: "drafts", key: "i1", data: "new") } == "not_saved")
         #expect(try await f.store.get(area: "drafts", key: "i1")?.data == "old")
+        // A rename that failed removed the new file; one the app was stopped before (a crash) leaves it.
+        #expect(f.files.names("drafts") == ["i1"])
+        f.files.lock.withLock { f.files.files[f.root.appendingPathComponent("drafts/i1.new").path] = Data("cut".utf8) }
         #expect(f.files.names("drafts") == ["i1", "i1.new"])
         #expect(try await f.store.list(area: "drafts").map(\.key) == ["i1"])
         // The app started again: what the cut write left is removed, the old record stays.
@@ -199,6 +226,18 @@ func code(_ f: () async throws -> Void) async -> String? {
         try await f.store.put(area: "cache", key: "c1", data: "{}")
         #expect(f.protection.protected == ["i1.new", "c1.new"])
         #expect(f.protection.excluded == [f.root.path])
+    }
+
+    @Test func makesEveryFileAndFolderUnderCompleteProtectionAndLeavesNoFileAProtectFailedOn() async throws {
+        let f = StoreFixture()
+        try await f.store.put(area: "drafts", key: "i1", data: "the draft's text")
+        let made = f.files.lock.withLock { f.files.made }
+        #expect(!made.isEmpty && made.allSatisfy(\.complete))
+        #expect(made.map(\.name).contains("i1.new") && made.map(\.name).contains("drafts"))
+        f.protection.lock.withLock { f.protection.fail = true }
+        #expect(await code { try await f.store.put(area: "drafts", key: "i2", data: "another draft's text") } == "not_saved")
+        #expect(f.files.names("drafts") == ["i1"])
+        #expect(try await f.store.get(area: "drafts", key: "i2") == nil)
     }
 
     @Test func writesThroughTheRealFileSystem() async throws {

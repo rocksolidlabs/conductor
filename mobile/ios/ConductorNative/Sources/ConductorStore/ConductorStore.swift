@@ -40,10 +40,13 @@ public enum StoreBounds {
     public static let keyLength = 64
 }
 
-/** The file system the store writes through: what a write, a rename and a listing need. */
+/**
+ * The file system the store writes through: what a write, a rename and a listing need. `complete` asks for a folder or a file made
+ * under complete protection from its creation (unreadable while the phone is locked), never made under a weaker class first.
+ */
 public protocol StoreFiles: Sendable {
-    func createDirectory(_ url: URL) throws
-    func write(_ data: Data, to url: URL) throws
+    func createDirectory(_ url: URL, complete: Bool) throws
+    func write(_ data: Data, to url: URL, complete: Bool) throws
     func rename(_ from: URL, to: URL) throws
     func read(_ url: URL) throws -> Data?
     func remove(_ url: URL) throws
@@ -107,20 +110,28 @@ public actor ConductorStore {
     private func file(_ area: StoreArea, _ key: String) -> URL { dir(area).appendingPathComponent(key) }
     private var generationFile: URL { root.appendingPathComponent("generation") }
 
-    /** Writes data to url through `<url>.new` and a rename: a write cut before the rename leaves the old file whole. */
+    /**
+     * Writes data to url through `<url>.new`, made under complete protection, and a rename: a write cut before the rename leaves the
+     * old file whole. A protection or a rename that fails removes the new file before it answers.
+     */
     private func replace(_ url: URL, with data: Data) throws {
         let next = url.appendingPathExtension("new")
-        try files.write(data, to: next)
-        try protection.protect(next)
-        try files.rename(next, to: url)
+        do {
+            try files.write(data, to: next, complete: true)
+            try protection.protect(next)
+            try files.rename(next, to: url)
+        } catch {
+            try? files.remove(next)
+            throw error
+        }
     }
 
     /** Makes the folders, out of backups; reads the generation; removes what a write cut before its rename left (`.new`). */
     private func ready() throws {
         if started { return }
-        try files.createDirectory(root)
+        try files.createDirectory(root, complete: true)
         try protection.excludeFromBackup(root)
-        for area in StoreArea.allCases { try files.createDirectory(dir(area)) }
+        for area in StoreArea.allCases { try files.createDirectory(dir(area), complete: true) }
         if let data = try files.read(generationFile), let g = Int(String(decoding: data, as: UTF8.self)) { generation = g }
         for area in StoreArea.allCases {
             for url in try files.list(dir(area)) where url.pathExtension == "new" { try? files.remove(url) }

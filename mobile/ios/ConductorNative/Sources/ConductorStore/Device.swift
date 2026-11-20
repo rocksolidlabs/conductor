@@ -8,12 +8,24 @@ import WebKit
 public struct DiskFiles: StoreFiles {
     public init() {}
 
-    public func createDirectory(_ url: URL) throws {
-        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+    public func createDirectory(_ url: URL, complete: Bool) throws {
+        var attributes: [FileAttributeKey: Any] = [:]
+        #if os(iOS)
+            if complete { attributes[.protectionKey] = FileProtectionType.complete }
+        #endif
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true, attributes: attributes)
+        #if os(iOS)
+            // A folder made before (an earlier start) gets the class too: what is made in it after inherits it.
+            if complete { try FileManager.default.setAttributes([.protectionKey: FileProtectionType.complete], ofItemAtPath: url.path) }
+        #endif
     }
 
-    public func write(_ data: Data, to url: URL) throws {
-        try data.write(to: url)
+    public func write(_ data: Data, to url: URL, complete: Bool) throws {
+        var options: Data.WritingOptions = []
+        #if os(iOS)
+            if complete { options.insert(.completeFileProtection) }
+        #endif
+        try data.write(to: url, options: options)
     }
 
     public func rename(_ from: URL, to: URL) throws {
