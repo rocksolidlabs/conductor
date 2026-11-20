@@ -475,7 +475,7 @@ func (a *applier) apply(c ChangeRow) error {
 	// A dormant project's row from another machine: the workspace holds it
 	// again, and it is shared.
 	if p := projectOfRow(c); p != "" {
-		if _, err := a.tx.ExecContext(a.ctx, "UPDATE projects SET share_state = 'shared' WHERE id = ? AND share_state = 'dormant'", p); err != nil {
+		if _, err := a.tx.ExecContext(a.ctx, "UPDATE projects SET share_state = 'shared', share_words = '' WHERE id = ? AND share_state = 'dormant'", p); err != nil {
 			return err
 		}
 	}

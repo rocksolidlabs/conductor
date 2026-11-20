@@ -109,8 +109,8 @@ const syncKeptSchema = 9
 //
 // Version 8 to 9 adds a replica tag's overflow range and a project's
 // share's words (syncKeptColumns), each at its default on every version 8
-// row: a version 8 store kept the range on its projects and the words in
-// its process's memory, so nothing is derived and no migrate row is
+// row: no build that writes version 8 kept either (the code that keeps
+// them came with version 9), so nothing is derived and no migrate row is
 // written.
 var migrations = map[int][]string{
 	captureSchema - 1:        append(slices.Clone(captureTables), captureIndexes...),
@@ -202,8 +202,11 @@ const replicaTagsColumns = `
 // join hands the replica, on its tag (a store that has no project yet keeps
 // it there), and the words a project's share was given (a refusal's, a
 // dormant or unshared workspace's, a retire's). A fresh store makes them
-// in its creates and the migration adds them (syncKeptColumns). Nothing
-// on version 9 reads or writes them yet.
+// in its creates and the migration adds them (syncKeptColumns). A
+// project keeps its own copy of the range with its next in it
+// (projects.overflow_from, overflow_to and overflow_next, version 8's),
+// which its creates number from; the tag's is the one a project made or
+// received after the join copies (replicaRanges).
 var (
 	replicaTagsKeptColumns = []string{
 		`overflow_from INTEGER NOT NULL DEFAULT 0`,

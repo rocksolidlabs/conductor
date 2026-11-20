@@ -108,8 +108,8 @@ func TestRekeyOnlyBeforeShare(t *testing.T) {
 	want(t, rc, err, StatusFailed, RefusalShared)
 }
 
-// A share refused goes back to none, its reserved numbers with it, and
-// keeps the words for the project's page; a dormant project is still the
+// A share refused is refused, its reserved numbers taken back, and keeps
+// the words for the project's page; a dormant project is still the
 // workspace's, nothing of it handed out, and the first row from another
 // machine makes it shared again; an unshared one takes nothing.
 func TestRefuseDormantAndUnshared(t *testing.T) {
@@ -128,7 +128,7 @@ func TestRefuseDormantAndUnshared(t *testing.T) {
 		v.Project.Share.ReservedTo != 0 {
 		t.Fatalf("the refused share %+v %v", v.Project.Share, err)
 	}
-	if n := count(t, b, "SELECT COUNT(*) FROM projects WHERE id = ? AND share_state = '' AND share_reserved_to = 0", own); n != 1 {
+	if n := count(t, b, "SELECT COUNT(*) FROM projects WHERE id = ? AND share_state = 'refused' AND share_reserved_to = 0", own); n != 1 {
 		t.Fatal("the reservation kept")
 	}
 	// Dormant: nothing handed out, and a row from a turns it shared.
@@ -199,8 +199,8 @@ func TestBlockOfARetiredTagNotUsed(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, key := newTicket(t, s, "CND", "after a re-join")
-	if n := ticketOf(t, s, key).Number; n != 1_000_001 {
-		t.Fatalf("the number %d, want the overflow range's first", n)
+	if n, first := ticketOf(t, s, key).Number, int64(count(t, s, "SELECT overflow_from FROM replica_tags WHERE tag = 'b2'")); n != first || first <= 1_100_000 {
+		t.Fatalf("the number %d, want the overflow range's first, %d", n, first)
 	}
 	if err := s.SetBlock(ctx, "no-such", 1, 2, false); !errors.Is(err, ErrNoSuchProject) {
 		t.Fatalf("a block of no project: %v", err)
@@ -303,5 +303,69 @@ func TestRekeyAfterRestartAppliesHeldRows(t *testing.T) {
 	}
 	if n := count(t, b, "SELECT COUNT(*) FROM tickets t JOIN projects p ON p.id = t.project_id WHERE p.key = 'CND' AND t.title = 'Theirs'"); n != 1 {
 		t.Fatal("the workspace's CND not received")
+	}
+}
+
+// A refused share outlasts a restart: the project's read and the
+// provider's say refused with its words, its numbers are a project's not
+// shared, its rows stay here, and a rekey is still allowed; a share asked
+// again forgets the words. Dormant words outlast it too, and a dormant
+// project shared again by another machine's row forgets them.
+func TestARefusedShareOutlastsARestart(t *testing.T) {
+	ctx := context.Background()
+	dir := storeDir(t)
+	s := openStore(t, dir)
+	join(t, s, "a1")
+	own := newProject(t, s, "OWN")
+	newTicket(t, s, "OWN", "first")
+	rc, err := s.ShareProject(ctx, shareOp("share"), "OWN")
+	want(t, rc, err, StatusDone, "")
+	const words = "OWN is another project's key in the workspace: give it another key"
+	if err := s.RefuseShare(ctx, own, words); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RefuseShare(ctx, "no-such", words); !errors.Is(err, ErrNoSuchProject) {
+		t.Fatalf("a refusal of no project: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s = openStore(t, dir)
+	v, err := s.Project(ctx, "OWN")
+	if err != nil || v.Project.Share == nil || v.Project.Share.State != ShareRefused || v.Project.Share.Words != words || v.Project.Share.ReservedTo != 0 {
+		t.Fatalf("the refused share after a restart %+v %v", v.Project.Share, err)
+	}
+	shared, err := s.Shared(ctx)
+	if err != nil || len(shared) != 1 || shared[0].State != ShareRefused || shared[0].Words != words {
+		t.Fatalf("the provider's read %+v %v", shared, err)
+	}
+	if _, key := newTicket(t, s, "OWN", "after"); key != "OWN-2" {
+		t.Fatalf("a refused project's create took %s", key)
+	}
+	if rows, _, err := s.HandedChanges(ctx, 0, MaxChangesPage); err != nil || slices.ContainsFunc(rows, func(c ChangeRow) bool { return c.ProjectID == own }) {
+		t.Fatalf("a refused project's rows handed out: %v", err)
+	}
+	rc, err = s.RekeyProject(ctx, shareOp("rekey"), "OWN", "MINE")
+	want(t, rc, err, StatusDone, "")
+	rc, err = s.ShareProject(ctx, shareOp("share-again"), "MINE")
+	want(t, rc, err, StatusDone, "")
+	if v, err := s.Project(ctx, "MINE"); err != nil || v.Project.Share == nil || v.Project.Share.State != SharePending || v.Project.Share.Words != "" {
+		t.Fatalf("a share asked again %+v %v", v.Project.Share, err)
+	}
+
+	// Dormant: the words outlast a restart, and a row from another
+	// machine that makes the project shared again forgets them.
+	a, b, first, after := planPair(t)
+	id := ticketOf(t, a, first).ProjectID
+	if err := b.Dormant(ctx, "w1", "the workspace's copy is gone"); err != nil {
+		t.Fatal(err)
+	}
+	if v, err := b.Project(ctx, "CND"); err != nil || v.Project.Share == nil || v.Project.Share.State != ShareDormant || v.Project.Share.Words != "the workspace's copy is gone" {
+		t.Fatalf("a dormant share %+v %v", v.Project.Share, err)
+	}
+	newTicket(t, a, "CND", "from a")
+	pull(t, a, b, after)
+	if n := count(t, b, "SELECT COUNT(*) FROM projects WHERE id = ? AND share_state = 'shared' AND share_words = ''", id); n != 1 {
+		t.Fatal("a dormant project shared again keeps its words")
 	}
 }

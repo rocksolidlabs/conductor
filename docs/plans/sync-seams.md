@@ -344,11 +344,13 @@ under a version 7 binary, as DS1's rule says.
 
 **Schema version 9** (migration keyed 8, #1049), the store step after
 OS-1b, which ships alone before the code that moves onto it; additions
-only. OS-1b kept two values with no column of their own: the overflow
-range a join hands the replica, on every project (lost for a store with
-no project yet), and the words a share was given (a refusal's, a dormant
-or unshared workspace's, a retire's), in the process's memory (lost at a
-restart). Version 9 gives each a column:
+only. Two values of OS-1b's had no column of their own: the overflow
+range a join hands the replica, which OS-1b wrote on every project (lost
+for a store with no project yet), and the words a share was given (a
+refusal's, a dormant or unshared workspace's, a retire's), which it kept
+in the process's memory (lost at a restart). No build on `main` wrote
+either: OS-1b's code had not merged when version 9 did. Version 9 gives
+each a column:
 
 - `ALTER TABLE replica_tags ADD COLUMN overflow_from INTEGER NOT NULL
   DEFAULT 0` and `ALTER TABLE replica_tags ADD COLUMN overflow_to
@@ -356,6 +358,17 @@ restart). Version 9 gives each a column:
   handed to.
 - `ALTER TABLE projects ADD COLUMN share_words TEXT NOT NULL DEFAULT
   ''`: the words the project's share was given.
+
+Once OS-1b moves onto them, `Join` writes the range on the tag's row and
+copies it to every project, `Retire` zeroes both, and a project made or
+received after the join copies the active tag's (`replicaRanges`).
+`projects.overflow_from`, `overflow_to` and `overflow_next` stay written:
+they are each project's copy with its next number in it, which a create
+reads in the one row it numbers from (`allocateNumber`); nothing hands
+them out, and a version 8 build opens a version 9 store read-only, so no
+older build reads them. A refused share is `share_state` `refused` (a
+value the state already had), numbered as a project not shared, its rows
+kept here, and a rekey allowed (`TestARefusedShareOutlastsARestart`).
 
 A fresh store makes them at the end of its `CREATE TABLE` statements;
 the migration adds them in the transaction that read version 8. Every
@@ -718,15 +731,16 @@ OS-1a adds.
 
 ### `internal/dispatch`, `internal/api`, `ext`, `ext/exttest` (OS-1b): sharing, numbers and the provider's doors
 
-**Two values without a column until a store step of their own.** The
-replica's overflow range a `Join` hands is written on every project and
-read back from them (`keepOverflow`, `replicaRanges`, the one place each),
-so a store that joins before it has a project keeps none and its shared
-projects' creates take the provisional window until the next join; a
-share's words (a refusal's, a dormant or unshared workspace's, a retire's
-"sharing was interrupted") are kept in memory (`keepShareWords`, the one
-place), so a restart shows the state without them. Dispatch's schema 9
-gives each a column, and only those two functions change.
+**Two values in columns of schema 9's.** The replica's overflow range a
+`Join` hands is kept on its tag (`replica_tags.overflow_from` and
+`overflow_to`) and copied to every project (`keepOverflow`), and a
+project made or received later copies the tag's (`replicaRanges`), so a
+store that joins before it has a project keeps its range
+(`TestAJoinBeforeAnyProjectKeepsItsRange`); a share's words (a
+refusal's, a dormant or unshared workspace's, a retire's "sharing was
+interrupted") are `projects.share_words`, written with the state they
+go with and forgotten when a share is asked again or a dormant project
+is shared again, so a restart shows them (`TestARefusedShareOutlastsARestart`).
 
 **Numbers.** `Store.SetBlock(ctx, project string, from, to int64, next
 bool) error` writes the current block (`next` false) or the block asked
@@ -1859,8 +1873,9 @@ coalesces.
 
 Dispatch's database: remote rows among its own, with their origins,
 verdicts and `recovered_by`, held rows and bodies, plan views, the
-replica's tags and other replicas' names (schema 8), its instance as on
-`main`. The data directory: `ui/` (three documents and `ui/writer`),
+replica's tags and other replicas' names (schema 8), the replica's
+overflow range on its tag and a share's words on its project (schema 9),
+its instance as on `main`. The data directory: `ui/` (three documents and `ui/writer`),
 `remote/` (derived, never exported), `output-index.sqlite`
 (fingerprints of captured output, never output, never exported or
 handed out). The ledger: the decision records with their `via: sync`
@@ -2152,7 +2167,8 @@ whose verdicts it relies on.
 | OS-0 (#996) | plans: sync's seams | this file; the amendments to `docs/plans/dispatch.md`, `docs/plans/dispatch-evidence.md`, `docs/plans/decisions.md`, `docs/plans/review-repair.md` and `docs/plans/tracker-linking.md`; the copied-output check's reading written as the open question it is | `docs/plans` | none (docs) | none | docs ~2,300 |
 | OS-1a0 | dispatch: schema 8 alone | every table and column OS-1a and OS-1b use (`replica_tags`, `replica_names`, the `changes` columns, `held_rows`, `held_bodies`, `plan_views`, the `projects` and `plans` columns) and the views' Go step (`migrationsGo[7]`); nothing reads or writes them yet | `internal/dispatch` | `TestSchema8MigratesAndKeepsEveryRow`, `TestMigrationMakesTheViewOfEveryRevision`, `TestVersion8OpensReadOnlyInVersion7` | OS-0 | ~200 + 250 |
 | OS-1a | dispatch, ext: rows from elsewhere (after the step) | `Join`, `Retire` (and at `Open`), `Canon`, origins, `ChangesFrom` with `MaxChangesPage`, `RevisionView`, `ApplyRemote` with the received project, `held_rows` and `Refs`, `Replicates`, `stampFor` in every scalar writer, the provisional window, view-only revisions in `Store.Plan` and `dispatch_plans.go`, `launchable`'s and `ApprovePlan`'s rules; the counterpart group merged on a receiver and `TicketsLinkedTo` with `alsoLinked`; `ext.DispatchChange` with `Refs`, `ext.DispatchApplied`; the plan view's drawing; `docs/repository-map.md` | `internal/dispatch`, `internal/api`, `ext`, `web/app`, `docs` | the OS-1a tests above | OS-1a0 | ~700 + 650 |
-| OS-1b | dispatch, api, ext: sharing with its cut-over, numbers, rekey and registry keys, the provider's doors | blocks with their tag and instance, overflow, the namespaces, `project.share`, `CompleteShare`, `ConfirmShare`, `RefuseShare`, `Dormant`, `Unshared`, `project.rekey` with held rows applied, keys projected from the registry, the two routes, the `Host` doors and `DispatchWatcher`, `FakeHost`; `docs/protocol.md` | `internal/dispatch`, `internal/api`, `internal/hostagent`, `ext`, `ext/exttest`, `docs` | the OS-1b tests above | OS-1a | ~700 + 700 |
+| Dispatch 8 → 9 (#1049) | dispatch: schema 9 alone | a replica tag's `overflow_from` and `overflow_to` and a project's `share_words`; nothing reads or writes them yet | `internal/dispatch` | `TestAFreshStoreHasVersion9sColumns`, `TestSchema9MigratesAndKeepsEveryRow`, `TestAFailedMigrationLeavesVersion8AsItWas`, `TestVersion9OpensReadOnlyInVersion8` | OS-1a | ~70 + 300 |
+| OS-1b | dispatch, api, ext: sharing with its cut-over, numbers, rekey and registry keys, the provider's doors | blocks with their tag and instance, overflow, the namespaces, `project.share`, `CompleteShare`, `ConfirmShare`, `RefuseShare`, `Dormant`, `Unshared`, `project.rekey` with held rows applied, keys projected from the registry, the two routes, the `Host` doors and `DispatchWatcher`, `FakeHost`; the range and a share's words on version 9's columns, a refused share kept as `refused`; `docs/protocol.md` | `internal/dispatch`, `internal/api`, `internal/hostagent`, `ext`, `ext/exttest`, `docs` | the OS-1b tests above | OS-1a; Dispatch 8 → 9 | ~700 + 700 |
 | OS-2 | api, web: UI state in the data directory, pins, restore into another provider's directory, a replay on request | `ui/` documents with `at` and `by`, routes, `ui/writer` left out, the allowlist with what leaves of each document, `Host.SetUIState`, `RestoreRequest.ProviderDir`, `Host.SyncReplay`; `useUiState` and its callers; pins; `ui-state.spec.ts` | `internal/api`, `internal/export`, `internal/hostagent`, `ext`, `web/app`, `web/e2e`, `docs` | the OS-2 tests above | OS-1b | ~800 + 750 |
 | OS-1c | api, dispatch: the output index and the copied-output check for Dispatch's rows and pins' names | `outputGuard`, `outputIndex` (winnowed fingerprints and lines in `output-index.sqlite`, the memory cache, prunes with their sources, the bound, failing closed with `pending`, pending made `output` at start), the verdicts at every operation's commit and a pin's `nameVerdict`, `DispatchChanges` carrying both and stopping before a `pending` row; this file amended with the owner's reading (no store step: the columns are OS-1a0's, the index a file of its own) | `internal/api`, `internal/dispatch`, `internal/export`, `ext`, `docs` | the OS-1c tests above | OS-2; the owner's answer to The open question | ~650 + 700 |
 | OS-3a | crew/ledger: schema 13 alone | `decision_output` and `decision_statements`; nothing reads or writes them yet | `internal/crew/ledger` | `TestSchema13MigratesAndKeepsEveryRow`, `TestVersion13OpensReadOnlyInVersion12` | OS-1c | ~80 + 150 |

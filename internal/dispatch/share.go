@@ -28,7 +28,11 @@ const (
 // The share states of a project (projects.share_state): none, the share
 // asked and its numbers reserved, its history handed out and the share
 // completing, shared, dormant (the workspace's copy gone, its blocks
-// kept), and refused (the workspace refused it, its words kept).
+// kept), and refused (the workspace refused it, its words kept, numbered
+// as a project not shared). A share's words (projects.share_words) are
+// what its state was last given: a refusal's, a dormant or unshared
+// workspace's, a retire's (interruptedShare); a share asked again, or a
+// dormant project shared again, forgets them.
 const (
 	SharePending    = "pending"
 	ShareCompleting = "completing"
@@ -81,8 +85,7 @@ func (s *Store) ShareProject(ctx context.Context, op Op, key string) (Receipt, e
 	args := struct {
 		Key string `json:"key"`
 	}{key}
-	var shared string
-	rc, err := s.Apply(ctx, op, IntentProjectShare, args, func(t *tx) error {
+	return s.Apply(ctx, op, IntentProjectShare, args, func(t *tx) error {
 		p, err := t.project(key)
 		if err != nil {
 			return err
@@ -101,27 +104,23 @@ func (s *Store) ShareProject(ctx context.Context, op Op, key string) (Receipt, e
 		case state != ShareDormant && highest >= ShareNumbersBelow:
 			return refuse(RefusalNumbersOutOfRange, "%s has a ticket numbered %d: a shared project's own numbers are below %d", p.Key, highest, ShareNumbersBelow)
 		}
-		stmt := "UPDATE projects SET share_state = ?, share_reserved_to = next_number + ? WHERE id = ?"
+		stmt := "UPDATE projects SET share_state = ?, share_words = '', share_reserved_to = next_number + ? WHERE id = ?"
 		args := []any{SharePending, ShareReserve, p.ID}
 		if state == ShareDormant {
-			stmt, args = "UPDATE projects SET share_state = ? WHERE id = ?", []any{SharePending, p.ID}
+			stmt, args = "UPDATE projects SET share_state = ?, share_words = '' WHERE id = ?", []any{SharePending, p.ID}
 		}
 		if _, err := t.tx.ExecContext(t.ctx, stmt, args...); err != nil {
 			return err
 		}
 		t.created(p.ID, p.Key)
-		shared = p.ID
 		return t.record(ChangeRow{Entity: EntityProject, EntityID: p.ID, ProjectID: p.ID, Field: "share_state", Op: OpSet, Value: SharePending, Prior: state})
 	})
-	if shared != "" {
-		s.keepShareWords(shared, "", "")
-	}
-	return rc, err
 }
 
 // RekeyProject gives the project with the key another key
 // (project.rekey): allowed only while the project is not shared and no
-// share of it is in progress (share_in_progress while pending or
+// share of it is in progress (its share none or refused;
+// share_in_progress while pending or
 // completing, since the provider may have registered the key already;
 // shared once shared, since the workspace's registry holds it); the new
 // key of KeyPattern (invalid) and no other project's (key_taken). The
@@ -257,11 +256,12 @@ func (s *Store) ConfirmShare(ctx context.Context, project string) error {
 	})
 }
 
-// RefuseShare takes the project's share back to none and its reserved
-// numbers with it, keeping the words (at most MaxShareWords bytes of one
-// line) for the project's page, so the person can give it another key.
+// RefuseShare makes the project's share refused and takes its reserved
+// numbers back, keeping the words (at most MaxShareWords bytes of one
+// line) for the project's page, so the person can give it another key;
+// ErrNoSuchProject for a project the store has not.
 func (s *Store) RefuseShare(ctx context.Context, project, words string) error {
-	return s.shareWords(ctx, "WHERE id = ?", project, ShareRefused, words, "UPDATE projects SET shared = '', share_state = '', share_reserved_to = 0, share_upto = 0 WHERE id = ?", project)
+	return s.shareWords(ctx, "shared = '', share_state = 'refused', share_reserved_to = 0, share_upto = 0", "id = ?", project, words, true)
 }
 
 // Dormant makes every shared or completing project of the workspace
@@ -270,73 +270,48 @@ func (s *Store) RefuseShare(ctx context.Context, project, words string) error {
 // batch of a dormant project's rows from another machine makes it shared
 // again.
 func (s *Store) Dormant(ctx context.Context, workspace, words string) error {
-	return s.shareWords(ctx, "WHERE shared = ? AND share_state IN ('shared', 'completing')", workspace, ShareDormant, words,
-		"UPDATE projects SET share_state = 'dormant' WHERE shared = ? AND share_state IN ('shared', 'completing')", workspace)
+	return s.shareWords(ctx, "share_state = 'dormant'", "shared = ? AND share_state IN ('shared', 'completing')", workspace, words, false)
 }
 
 // Unshared marks every project of the workspace no longer shared with
 // this machine: its share none (shared kept for history), nothing of it
 // handed out or applied.
 func (s *Store) Unshared(ctx context.Context, workspace, words string) error {
-	return s.shareWords(ctx, "WHERE shared = ? AND share_state != ''", workspace, "", words, "UPDATE projects SET share_state = '' WHERE shared = ? AND share_state != ''", workspace)
+	return s.shareWords(ctx, "share_state = ''", "shared = ? AND share_state != ''", workspace, words, false)
 }
 
 // MaxShareWords bounds the words a share's state keeps, in bytes.
 const MaxShareWords = 200
 
-// shareWords runs stmt over the projects pick names and keeps the words
-// for each of them (keepShareWords) until its share moves again.
-func (s *Store) shareWords(ctx context.Context, pick, arg, state, words, stmt, stmtArg string) error {
+// shareWords sets set and the words, kept address-free, on the projects
+// where names (with arg), in one statement; one is true for a call that
+// names one project, ErrNoSuchProject when it names none.
+func (s *Store) shareWords(ctx context.Context, set, where, arg, words string, one bool) error {
 	if len(words) > MaxShareWords || !utf8.ValidString(words) || strings.ContainsAny(words, "\r\n") || hasControl(words) {
 		return fmt.Errorf("dispatch: a share's words are one line of at most %d bytes", MaxShareWords)
 	}
 	return s.writeTx(ctx, func(dbtx *sql.Tx, _ time.Time) error {
-		ids, err := readTexts(ctx, dbtx, "SELECT id FROM projects "+pick, arg)
+		res, err := dbtx.ExecContext(ctx, "UPDATE projects SET "+set+", share_words = ? WHERE "+where, addressFree(words), arg)
 		if err != nil {
 			return err
 		}
-		if len(ids) == 0 && state == ShareRefused {
-			return ErrNoSuchProject
-		}
-		if _, err := dbtx.ExecContext(ctx, stmt, stmtArg); err != nil {
+		if n, err := res.RowsAffected(); err != nil {
 			return err
-		}
-		for _, id := range ids {
-			s.keepShareWords(id, state, addressFree(words))
+		} else if n == 0 && one {
+			return ErrNoSuchProject
 		}
 		return nil
 	})
 }
 
-// shareWord is what a project's share last said: the state it was given
-// in words (refused, which the row does not keep) and its words.
-type shareWord struct {
-	state, words string
-}
-
-// keepShareWords keeps the words a project's share was given with its
-// state, "" words and state to forget them. They live as long as the
-// store's process: a restart reads the state alone, in its own words.
-// (The one place a share's words are kept: a column of their own is a
-// store step of its own.)
-func (s *Store) keepShareWords(project, state, words string) {
-	s.wmu.Lock()
-	defer s.wmu.Unlock()
-	if s.words == nil {
-		s.words = map[string]shareWord{}
+// shareWordsColumn is the share's words as a read selects them, from the
+// table named by prefix: none on a version 8 database (read-only), which
+// has no column for them.
+func shareWordsColumn(q queryer, prefix string) string {
+	if schemaOf(q) < syncKeptSchema {
+		return "''"
 	}
-	if state == "" && words == "" {
-		delete(s.words, project)
-		return
-	}
-	s.words[project] = shareWord{state, words}
-}
-
-// shareWordsOf is what keepShareWords keeps for the project.
-func (s *Store) shareWordsOf(project string) shareWord {
-	s.wmu.Lock()
-	defer s.wmu.Unlock()
-	return s.words[project]
+	return prefix + "share_words"
 }
 
 // shareState is the project's share state; ErrNoSuchProject for none.
@@ -397,11 +372,16 @@ func (s *Store) Blocks(ctx context.Context) ([]BlockState, error) {
 }
 
 // Shared is each project with a share (or refused one), with its state
-// and words, the numbers its share reserved and its highest number.
+// and words, the numbers its share reserved and its highest number; none
+// on a database older than sync's.
 func (s *Store) Shared(ctx context.Context) ([]SharedProject, error) {
 	var out []SharedProject
 	err := s.read(ctx, func(q queryer) error {
-		rows, err := q.QueryContext(ctx, `SELECT p.id, p.key, p.name, p.share_state, p.share_reserved_to, COALESCE((SELECT MAX(number) FROM tickets t WHERE t.project_id = p.id), 0)
+		if schemaOf(q) < syncSchema {
+			return nil
+		}
+		rows, err := q.QueryContext(ctx, `SELECT p.id, p.key, p.name, p.share_state, `+shareWordsColumn(q, "p.")+`, p.share_reserved_to,
+			COALESCE((SELECT MAX(number) FROM tickets t WHERE t.project_id = p.id), 0)
 			FROM projects p WHERE p.share_state != '' OR p.shared != '' ORDER BY p.key LIMIT ?`, MaxSharedProjects)
 		if err != nil {
 			return err
@@ -409,13 +389,8 @@ func (s *Store) Shared(ctx context.Context) ([]SharedProject, error) {
 		defer rows.Close()
 		for rows.Next() {
 			var p SharedProject
-			if err := rows.Scan(&p.ID, &p.Key, &p.Name, &p.State, &p.ReservedTo, &p.Highest); err != nil {
+			if err := rows.Scan(&p.ID, &p.Key, &p.Name, &p.State, &p.Words, &p.ReservedTo, &p.Highest); err != nil {
 				return err
-			}
-			w := s.shareWordsOf(p.ID)
-			p.Words = w.words
-			if p.State == "" && w.state == ShareRefused {
-				p.State = ShareRefused
 			}
 			out = append(out, p)
 		}
@@ -533,14 +508,10 @@ func (s *Store) shareOf(ctx context.Context, q queryer, p Project) (*ProjectShar
 		return nil, nil, nil
 	}
 	var sh ProjectShare
-	if err := q.QueryRowContext(ctx, "SELECT share_state, share_reserved_to, shared FROM projects WHERE id = ?", p.ID).Scan(&sh.State, &sh.ReservedTo, &sh.Shared); err != nil {
+	if err := q.QueryRowContext(ctx, "SELECT share_state, "+shareWordsColumn(q, "")+", share_reserved_to, shared FROM projects WHERE id = ?", p.ID).
+		Scan(&sh.State, &sh.Words, &sh.ReservedTo, &sh.Shared); err != nil {
 		return nil, nil, err
 	}
-	w := s.shareWordsOf(p.ID)
-	if sh.State == "" && w.state != "" {
-		sh.State = w.state
-	}
-	sh.Words = w.words
 	if sh.State != SharePending && sh.State != ShareCompleting {
 		sh.ReservedTo = 0
 	}

@@ -5,16 +5,24 @@ import (
 	"errors"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 )
 
 // join joins the store to the workspace w as the device d under tag,
-// with the overflow range 1,000,001 to 1,100,000, failing the test unless
-// it did.
+// with an overflow range of 100,000 numbers no other tag of the tests is
+// handed, as a provider hands each replica its own: a1's 1,000,001 to
+// 1,100,000, b1's 1,100,001 to 1,200,000, and so on by the tag's letter
+// and number. It fails the test unless it joined.
 func join(t *testing.T, s *Store, tag string) {
 	t.Helper()
-	if err := s.Join(context.Background(), tag, "w1", "dev-"+tag, 1_000_001, 1_100_000); err != nil {
+	n, err := strconv.Atoi(tag[1:])
+	if err != nil || tag[0] < 'a' || tag[0] > 'z' || n < 1 || n > 99 {
+		t.Fatalf("join: a test's tag is a letter and a number, not %q", tag)
+	}
+	from := int64(1_000_001 + (int(tag[0]-'a')*99+n-1)*100_000)
+	if err := s.Join(context.Background(), tag, "w1", "dev-"+tag, from, from+99_999); err != nil {
 		t.Fatalf("join %s: %v", tag, err)
 	}
 }
@@ -106,10 +114,67 @@ func TestRetireDropsBlocksOverflowAndShares(t *testing.T) {
 		switch {
 		case id == a && (state != "" || reserved != 0):
 			t.Errorf("a pending share kept: %q %d", state, reserved)
+		case id == a && count(t, s, "SELECT COUNT(*) FROM projects WHERE id = ? AND share_words = ?", id, interruptedShare) != 1:
+			t.Errorf("a pending share's interruption not said")
 		case id == b && state != "shared":
 			t.Errorf("a shared project's share dropped: %q", state)
 		}
 	}
+	if n := count(t, s, "SELECT COUNT(*) FROM replica_tags WHERE tag = 'a1' AND active = 1 AND overflow_from = 0 AND overflow_to = 0"); n != 1 {
+		t.Fatal("the tag keeps its overflow range")
+	}
+	if c, err := s.CreateProject(ctx, testOp("after-retire"), NewProject{Key: "NEW", Name: "New"}); err != nil || c.Status != StatusDone {
+		t.Fatalf("a create after the retire: %+v %v", c, err)
+	}
+	if n := count(t, s, "SELECT COUNT(*) FROM projects WHERE key = 'NEW' AND overflow_from = 0 AND overflow_to = 0 AND provisional_from >= ?", ProvisionalFloor); n != 1 {
+		t.Fatal("a project made after the retire took a range")
+	}
+}
+
+// A store that joins before it has a project keeps the overflow range on
+// its tag, across a restart: a project made after it copies the range, and
+// a shared project with no block left numbers from it. A retire's words
+// for a share it took back outlast a restart too.
+func TestAJoinBeforeAnyProjectKeepsItsRange(t *testing.T) {
+	ctx := context.Background()
+	dir := storeDir(t)
+	s := openStore(t, dir)
+	if err := s.Join(ctx, "a1", "w1", "dev-a1", 1_200_001, 1_300_000); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s = openStore(t, dir)
+	if n := count(t, s, "SELECT COUNT(*) FROM replica_tags WHERE tag = 'a1' AND overflow_from = 1200001 AND overflow_to = 1300000"); n != 1 {
+		t.Fatal("the tag's range not kept")
+	}
+	id := newProject(t, s, "CND")
+	if n := count(t, s, "SELECT COUNT(*) FROM projects WHERE id = ? AND overflow_from = 1200001 AND overflow_to = 1300000 AND overflow_next = 1200001", id); n != 1 {
+		t.Fatal("a project made after the join has no range")
+	}
+	if _, err := s.db.Exec("UPDATE projects SET shared = 'w1', share_state = 'shared', registry_key = key WHERE id = ?", id); err != nil {
+		t.Fatal(err)
+	}
+	if _, key := newTicket(t, s, "CND", "no block"); key != "CND-1200001" {
+		t.Fatalf("a shared project with no block took %s", key)
+	}
+
+	// A share in progress a retire takes back: its words after a restart.
+	other := newProject(t, s, "OPS")
+	rc, err := s.ShareProject(ctx, shareOp("share"), "OPS")
+	want(t, rc, err, StatusDone, "")
+	if err := s.Retire(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s = openStore(t, dir)
+	if v, err := s.Project(ctx, "OPS"); err != nil || v.Project.Share == nil || v.Project.Share.State != "" || v.Project.Share.Words != interruptedShare {
+		t.Fatalf("the interrupted share after a restart %+v %v", v.Project.Share, err)
+	}
+	_ = other
 }
 
 // A store restored from an export is another instance (Reissue): its open
