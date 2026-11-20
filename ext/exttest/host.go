@@ -50,6 +50,8 @@ type FakeHost struct {
 	notify   func(ext.Notification) error
 	approve  func(ext.ApprovedLaunch) (ext.RunRef, error)
 	decision func(string) (ext.DecisionState, error)
+	refs     func(string) ([]string, string, error)
+	refsAsk  []string
 	token    string
 	mode     string
 
@@ -150,6 +152,14 @@ func (h *FakeHost) OnSubmit(fn func(ext.SubmitRequest) (ext.SubmitResult, error)
 func (h *FakeHost) OnDecision(fn func(request string) (ext.DecisionState, error)) {
 	h.mu.Lock()
 	h.decision = fn
+	h.mu.Unlock()
+}
+
+// OnOpenDecisionRefs has OpenDecisionRefs answer fn's answer for an after
+// it takes.
+func (h *FakeHost) OnOpenDecisionRefs(fn func(after string) ([]string, string, error)) {
+	h.mu.Lock()
+	h.refs = fn
 	h.mu.Unlock()
 }
 
@@ -349,6 +359,36 @@ func (h *FakeHost) Decision(ctx context.Context, request string) (ext.DecisionSt
 		return fn(request)
 	}
 	return ext.DecisionState{}, fmt.Errorf("%w: no decision %s", ext.ErrNotFound, request)
+}
+
+// OpenDecisionRefs records after and refuses one that is neither "" nor a
+// ref ext.ParseDecisionRef takes (ext.ErrRefused, as the server does);
+// otherwise it answers what OnOpenDecisionRefs set, or no refs: the fake
+// holds no ledger.
+func (h *FakeHost) OpenDecisionRefs(ctx context.Context, after string) ([]string, string, error) {
+	if err := h.enter(ctx); err != nil {
+		return nil, "", err
+	}
+	h.mu.Lock()
+	h.refsAsk = append(h.refsAsk, after)
+	fn := h.refs
+	h.mu.Unlock()
+	h.tell()
+	if _, ok := ext.ParseDecisionRef(after); after != "" && !ok {
+		return nil, "", fmt.Errorf("%w: after is not a decision's ref", ext.ErrRefused)
+	}
+	if fn != nil {
+		return fn(after)
+	}
+	return nil, "", nil
+}
+
+// OpenDecisionRefsAsked answers every OpenDecisionRefs call's after, in
+// order.
+func (h *FakeHost) OpenDecisionRefsAsked() []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]string(nil), h.refsAsk...)
 }
 
 // Notify records n and answers nil, or what OnNotify set.

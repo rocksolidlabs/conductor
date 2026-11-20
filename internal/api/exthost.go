@@ -765,6 +765,43 @@ func (h *extHost) Decision(ctx context.Context, request string) (ext.DecisionSta
 	return ext.DecisionState{Request: rec.ID(), State: rec.State, Final: rec.Final(), Rev: rec.Rev, ClosedAt: rec.ClosedAt}, nil
 }
 
+// OpenDecisionRefs reads the refs of the decisions open in the ledger now,
+// a page after after's decision (ext.Host.OpenDecisionRefs): the numbers
+// alone, from the ledger's index of the open decisions, never a provider.
+// A ledger error (its ErrUnavailable among them) is answered as it is.
+func (h *extHost) OpenDecisionRefs(ctx context.Context, after string) ([]string, string, error) {
+	if err := h.gone(); err != nil {
+		return nil, "", err
+	}
+	if h.s.cfg.Switchyard.Enabled || h.s.ledger == nil {
+		return nil, "", fmt.Errorf("%w: this server keeps no ledger of decisions", ext.ErrUnsupported)
+	}
+	var from int64
+	if after != "" {
+		id, ok := ext.ParseDecisionRef(after)
+		n, ok2 := ledger.ParseDecisionID(id)
+		if !ok || !ok2 {
+			return nil, "", refused("%q is not a decision's ref", cutBytes(after, ext.MaxNotificationRef))
+		}
+		from = n
+	}
+	bctx, end := h.bound(ctx)
+	defer end()
+	ns, more, err := h.s.ledger.OpenDecisionsAfter(bctx, from, ext.MaxOpenDecisionRefs)
+	if err != nil {
+		return nil, "", err
+	}
+	refs := make([]string, 0, len(ns))
+	for _, n := range ns {
+		refs = append(refs, ext.DecisionRef(ledger.DecisionID(n)))
+	}
+	next := ""
+	if more && len(refs) > 0 {
+		next = refs[len(refs)-1]
+	}
+	return refs, next, nil
+}
+
 func (h *extHost) Notify(_ context.Context, n ext.Notification) error {
 	if err := h.gone(); err != nil {
 		return err

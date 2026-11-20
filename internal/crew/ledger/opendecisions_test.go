@@ -358,3 +358,120 @@ func TestOpenIndexUnderPlainWrites(t *testing.T) {
 		t.Fatalf("handed %v, the plain select %v: %v", nOf(got), nOf(want), err)
 	}
 }
+
+// The open decisions' numbers for a sink that walks them by a cursor
+// (docs/plans/phone-shell.md, Part one): ascending after the cursor,
+// within the page's bound, more while others follow, closed ones absent;
+// the number alone, read from the open decisions' index with no look at
+// the table's other columns; with no index, or another index of its name,
+// ErrUnavailable and no number; a database older than the decision tables
+// none.
+func TestOpenDecisionsAfter(t *testing.T) {
+	ctx := context.Background()
+	dir := filepath.Join(t.TempDir(), "runs")
+	l := openLedger(t, dir)
+	const run = "team-00000001"
+	newRun(t, l, run)
+	var ns []int64
+	for i := range 7 {
+		ns = append(ns, open1(t, l, run, fmt.Sprintf("g%d", i)))
+	}
+	setState(t, l, run, ns[1], DecisionCancelled, "")
+	setState(t, l, run, ns[4], DecisionSuperseded, "")
+	// A request no decoder takes: the read never looks at it.
+	if _, err := l.db.Exec("UPDATE decisions SET request = '{' WHERE n = ?", ns[2]); err != nil {
+		t.Fatal(err)
+	}
+	open := []int64{ns[0], ns[2], ns[3], ns[5], ns[6]}
+	read := func(l *Ledger, after int64, limit int) ([]int64, bool, error) {
+		t.Helper()
+		return l.OpenDecisionsAfter(ctx, after, limit)
+	}
+	for _, c := range []struct {
+		after int64
+		limit int
+		want  []int64
+		more  bool
+	}{
+		{0, 0, open, false},
+		{0, 2, open[:2], true},
+		{ns[2], 2, open[2:4], true},
+		{ns[3], 2, open[3:], false},
+		{ns[1], 0, open[1:], false},
+		{ns[6], 0, nil, false},
+		{0, len(open), open, false},
+		{0, MaxOpenAfter + 1, open, false},
+	} {
+		got, more, err := read(l, c.after, c.limit)
+		if err != nil || !slices.Equal(got, c.want) || more != c.more {
+			t.Fatalf("after %d limit %d: %v more %v %v, want %v more %v", c.after, c.limit, got, more, err, c.want, c.more)
+		}
+	}
+
+	// The number alone: SQLite's plan of the statement reads the index and
+	// nothing else of the row.
+	rows, err := l.db.Query("EXPLAIN QUERY PLAN "+openDecisionsAfter, 0, MaxOpenAfter+1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var plan []string
+	for rows.Next() {
+		var id, parent, unused int
+		var detail string
+		if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
+			t.Fatal(err)
+		}
+		plan = append(plan, detail)
+	}
+	rows.Close()
+	if len(plan) != 1 || !strings.Contains(plan[0], "USING COVERING INDEX decisions_open") || strings.Contains(plan[0], "TEMP B-TREE") {
+		t.Fatalf("the plan %q reads more than the open decisions' index", plan)
+	}
+
+	// No index, then another index of its name: ErrUnavailable, no number.
+	for _, other := range []string{"", "CREATE INDEX decisions_open ON decisions(n)"} {
+		stmts := []string{"DROP INDEX decisions_open"}
+		if other != "" {
+			stmts = append(stmts, other)
+		}
+		if _, err := l.db.Exec(strings.Join(stmts, "; ")); err != nil {
+			t.Fatal(err)
+		}
+		if got, more, err := read(l, 0, 0); !errors.Is(err, ErrUnavailable) || got != nil || more {
+			t.Fatalf("index %q: %v more %v %v", other, got, more, err)
+		}
+		if other != "" {
+			if _, err := l.db.Exec("DROP INDEX decisions_open; " + openIndex.def); err != nil {
+				t.Fatal(err)
+			}
+		} else if _, err := l.db.Exec(openIndex.def); err != nil {
+			t.Fatal(err)
+		}
+		if got, _, err := read(l, 0, 0); err != nil || !slices.Equal(got, open) {
+			t.Fatalf("the index put back: %v %v", got, err)
+		}
+	}
+
+	// An index the owner could not make.
+	old := accessPaths
+	t.Cleanup(func() { accessPaths = old })
+	accessPaths = []accessPath{{"decisions_open", "CREATE INDEX decisions_open ON no_such_table(n)"}}
+	failed := openLedger(t, filepath.Join(t.TempDir(), "runs"))
+	newRun(t, failed, run)
+	open1(t, failed, run, "g1")
+	if got, more, err := read(failed, 0, 0); !errors.Is(err, ErrUnavailable) || got != nil || more {
+		t.Fatalf("an index not made: %v more %v %v", got, more, err)
+	}
+	accessPaths = old
+
+	// A database older than the decision tables has none.
+	seeded := filepath.Join(t.TempDir(), "seed")
+	s := openLedger(t, seeded)
+	newRun(t, s, run)
+	s.Close()
+	v7 := filepath.Join(t.TempDir(), "runs")
+	version7Like(t, seeded, v7)
+	if got, more, err := read(openReadOnly(t, v7), 0, 0); err != nil || got != nil || more {
+		t.Fatalf("a version 7 ledger: %v more %v %v", got, more, err)
+	}
+}

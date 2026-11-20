@@ -23,6 +23,7 @@ make test-e2e                  # Playwright (web/e2e): builds both, then a serve
 make test-pebble               # certificates end to end against Let's Encrypt's Pebble (go install'ed when missing)
 make test-live                 # the real Claude Code and Codex (CONDUCTOR_E2E_LIVE_REPO, keys or logins); weekly in CI
 make desktop-test              # the Electron shell: tsc --noEmit and vitest (desktop/)
+make mobile-test               # the phone shell's bridge: tsc --noEmit, its vitest (mobile/test, run by the app's vitest too) and its boot spec (after make web-build)
 make lint-static               # staticcheck, pinned
 make vuln                      # govulncheck (network); the standard library's findings need the latest Go patch
 make test-network              # the built-in agents' sites on the network (nightly)

@@ -1822,33 +1822,17 @@ func (l *Ledger) OpenDecisionsNewest(ctx context.Context, limit int, visit func(
 	if limit <= 0 || limit > MaxOpenScan {
 		limit = MaxOpenScan
 	}
-	l.mu.Lock()
-	cause := l.pathsErr
-	l.mu.Unlock()
-	if cause != nil {
-		return false, fmt.Errorf("%w: the open decisions' index could not be made: %v", ErrUnavailable, cause)
+	if err := l.openIndexMade(); err != nil {
+		return false, err
 	}
 	err = l.readSnapshot(ctx, func(q querier, version int) error {
 		if version < versionDecisions {
 			return nil
 		}
-		// The index this snapshot holds under the name, judged by its kept
-		// text before the statement walks it.
-		var have string
-		err := q.QueryRowContext(ctx, "SELECT COALESCE(sql, '') FROM sqlite_master WHERE type = 'index' AND name = ?", openIndex.name).Scan(&have)
-		if errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("%w: the database holds no index %s", ErrUnavailable, openIndex.name)
-		} else if err == nil && have != openIndex.def {
-			return fmt.Errorf("%w: the index %s there is not the one this ledger makes", ErrUnavailable, openIndex.name)
-		} else if err != nil {
-			return err
-		}
 		// The literal state, as the partial index's condition names it: a
 		// bound parameter could not use the index.
-		rows, err := q.QueryContext(ctx, openDecisionsNewest, limit+1)
-		if err != nil && (strings.Contains(err.Error(), "no such index") || strings.Contains(err.Error(), "no query solution")) {
-			return fmt.Errorf("%w: the open decisions cannot be read without their index: %v", ErrUnavailable, err)
-		} else if err != nil {
+		rows, err := openIndexQuery(ctx, q, openDecisionsNewest, limit+1)
+		if err != nil {
 			return err
 		}
 		handed, size := 0, 0
@@ -1879,6 +1863,93 @@ func (l *Ledger) OpenDecisionsNewest(ctx context.Context, limit int, visit func(
 // openDecisionsNewest is OpenDecisionsNewest's one statement, which walks
 // decisions_open or fails, never the table.
 const openDecisionsNewest = "SELECT " + decisionCols + " FROM decisions d INDEXED BY decisions_open WHERE d.state = 'open' ORDER BY d.n DESC LIMIT ?"
+
+// openIndexMade is ErrUnavailable where the owner could not make the open
+// decisions' index, for the reads that walk it.
+func (l *Ledger) openIndexMade() error {
+	l.mu.Lock()
+	cause := l.pathsErr
+	l.mu.Unlock()
+	if cause != nil {
+		return fmt.Errorf("%w: the open decisions' index could not be made: %v", ErrUnavailable, cause)
+	}
+	return nil
+}
+
+// openIndexQuery runs stmt, a statement that walks decisions_open, in the
+// snapshot q once the index the snapshot holds under that name is judged
+// by its kept text: none of that name, or one whose definition is not
+// byte for byte the one the owner makes, is ErrUnavailable, as is a
+// statement SQLite cannot run without it. The two reads of the open
+// decisions (OpenDecisionsNewest, OpenDecisionsAfter) judge it this way.
+func openIndexQuery(ctx context.Context, q querier, stmt string, args ...any) (*sql.Rows, error) {
+	var have string
+	err := q.QueryRowContext(ctx, "SELECT COALESCE(sql, '') FROM sqlite_master WHERE type = 'index' AND name = ?", openIndex.name).Scan(&have)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("%w: the database holds no index %s", ErrUnavailable, openIndex.name)
+	} else if err == nil && have != openIndex.def {
+		return nil, fmt.Errorf("%w: the index %s there is not the one this ledger makes", ErrUnavailable, openIndex.name)
+	} else if err != nil {
+		return nil, err
+	}
+	rows, err := q.QueryContext(ctx, stmt, args...)
+	if err != nil && (strings.Contains(err.Error(), "no such index") || strings.Contains(err.Error(), "no query solution")) {
+		return nil, fmt.Errorf("%w: the open decisions cannot be read without their index: %v", ErrUnavailable, err)
+	}
+	return rows, err
+}
+
+// OpenDecisionsAfter reads the open decisions' numbers greater than after,
+// ascending, at most limit (at most MaxOpenAfter, 0 for that); more says
+// open decisions follow the last. It reads the number alone, no request,
+// policy or other column, in one snapshot, over the open decisions' index
+// judged as OpenDecisionsNewest judges it: where the owner could not make
+// it, or the snapshot holds none of its name or another definition, it
+// answers ErrUnavailable and no number. A database older than the decision
+// tables has none.
+func (l *Ledger) OpenDecisionsAfter(ctx context.Context, after int64, limit int) (ns []int64, more bool, err error) {
+	if limit <= 0 || limit > MaxOpenAfter {
+		limit = MaxOpenAfter
+	}
+	if err := l.openIndexMade(); err != nil {
+		return nil, false, err
+	}
+	err = l.readSnapshot(ctx, func(q querier, version int) error {
+		ns, more = nil, false
+		if version < versionDecisions {
+			return nil
+		}
+		rows, err := openIndexQuery(ctx, q, openDecisionsAfter, after, limit+1)
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			var n int64
+			if err := rows.Scan(&n); err != nil {
+				rows.Close()
+				return err
+			}
+			if len(ns) == limit {
+				more = true
+				break
+			}
+			ns = append(ns, n)
+		}
+		return cmp.Or(rows.Err(), rows.Close())
+	})
+	if err != nil {
+		return nil, false, err
+	}
+	return ns, more, nil
+}
+
+// MaxOpenAfter bounds a page of OpenDecisionsAfter, as ext.MaxOpenDecisionRefs
+// bounds the refs' page it serves.
+const MaxOpenAfter = 256
+
+// openDecisionsAfter is OpenDecisionsAfter's one statement: the number
+// alone, ascending over decisions_open, never the table.
+const openDecisionsAfter = "SELECT d.n FROM decisions d INDEXED BY decisions_open WHERE d.state = 'open' AND d.n > ? ORDER BY d.n LIMIT ?"
 
 // DecisionRevision is what every change of a decision moves, as the
 // ledger holds it: its number, the run that holds it and its rev.
