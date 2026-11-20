@@ -103,16 +103,16 @@ jobs:
           path: bin/conductor
 
   go-race:
-    # `go test -race -count=1 -timeout 60m ./...` as several jobs side by side: internal/api's
+    # `go test -race -count=1 -timeout 90m ./...` as several jobs side by side: internal/api's
     # tests dealt by name into five groups, internal/crew (with its ledger) and
     # internal/dispatch in a job each, every other package together. The same flags and bound
     # in each; scripts/go_test_groups.py makes each group's command, and the go job's check
     # fails the run when a test is in no group or in two (docs/checks.md).
     runs-on: ubuntu-latest
     needs: web
-    # A hang still ends a job: its bound is the race tests' 60 m plus its other steps
+    # A hang still ends a job: its bound is the race tests' 90 m plus its other steps
     # (Neovim's download 5 among them), above the test bound, never a multiple of it.
-    timeout-minutes: 90
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:

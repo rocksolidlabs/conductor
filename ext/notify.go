@@ -2,6 +2,7 @@ package ext
 
 import (
 	"context"
+	"strings"
 	"time"
 )
 
@@ -39,6 +40,7 @@ type Notification struct {
 	By      string     `json:"by,omitempty"`
 	ByName  string     `json:"byName,omitempty"`
 	Origin  string     `json:"origin,omitempty"` // the provider that sent a notice
+	Ref     string     `json:"ref,omitempty"`    // the record it is about: decision:dr-<n> (DecisionRef), or ""
 	// Recipient is the subject of the one person a notice is meant for, ""
 	// for none: such a notice reaches only a sink that is a RecipientSink
 	// answering true, never another (a webhook among them).
@@ -55,16 +57,53 @@ const (
 	MaxNoticeMessage = 500  // a notice's Message, in bytes, as an attention message
 	MaxNoticeURL     = 2048 // a notice's URL, in bytes
 	MaxNoticeKey     = 64   // a notice's Key, in bytes of printable ASCII
+	// MaxNotificationRef bounds Ref in bytes: "decision:" and a decision's
+	// id of at most MaxDecisionRef bytes.
+	MaxNotificationRef = len(decisionRefPrefix) + MaxDecisionRef
+	// MaxOpenDecisionRefs bounds a page of Host.OpenDecisionRefs.
+	MaxOpenDecisionRefs = 256
 )
+
+// decisionRefPrefix begins every decision's ref.
+const decisionRefPrefix = "decision:"
+
+// DecisionRef is the ref of the durable decision id ("dr-<n>"):
+// "decision:dr-<n>", the form Brakeman's refs and the decision inbox
+// read. It does not check id; ParseDecisionRef does.
+func DecisionRef(id string) string { return decisionRefPrefix + id }
+
+// ParseDecisionRef is the decision's id of ref, false for a ref that is
+// not exactly decision:dr-<n>: n of 1 to 18 digits with no leading zero
+// (^decision:dr-[1-9][0-9]{0,17}$), so at most MaxNotificationRef bytes.
+func ParseDecisionRef(ref string) (id string, ok bool) {
+	id, ok = strings.CutPrefix(ref, decisionRefPrefix)
+	if !ok {
+		return "", false
+	}
+	digits, ok := strings.CutPrefix(id, "dr-")
+	if !ok || len(digits) < 1 || len(digits) > 18 || digits[0] == '0' {
+		return "", false
+	}
+	for i := 0; i < len(digits); i++ {
+		if digits[i] < '0' || digits[i] > '9' {
+			return "", false
+		}
+	}
+	return id, true
+}
 
 // Valid checks n as a provider's notice, what Host.Notify is handed: a
 // message of one line of 1 to MaxNoticeMessage bytes, a URL of one line of
 // at most MaxNoticeURL bytes, and every other text field one line of at
-// most MaxNoticeMessage bytes; a recipient of at most MaxSubject bytes and
-// a key of at most MaxNoticeKey bytes, each printable ASCII without
-// spaces, or none. Type, Origin and At are the server's to set.
+// most MaxNoticeMessage bytes; Ref empty or one ParseDecisionRef takes; a
+// recipient of at most MaxSubject bytes and a key of at most MaxNoticeKey
+// bytes, each printable ASCII without spaces, or none. Type, Origin and At
+// are the server's to set.
 func (n Notification) Valid() error {
 	const r = "notice"
+	if _, ok := ParseDecisionRef(n.Ref); n.Ref != "" && !ok {
+		return invalid(r, "ref is not decision:dr-<n> (%d bytes)", len(n.Ref))
+	}
 	if n.Recipient != "" {
 		if err := printable(r, "recipient", n.Recipient, 1, MaxSubject); err != nil {
 			return err

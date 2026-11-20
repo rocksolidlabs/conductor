@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"log/slog"
 
 	"github.com/rocksolidlabs/conductor/ext"
 	"github.com/rocksolidlabs/conductor/internal/config"
@@ -41,6 +42,7 @@ type notifier struct {
 	registry *session.Registry
 	hooks    *webhookSender // the webhooks, first; its ctx ends both kinds' queueing
 	sinks    []*guardSink   // then the providers' sinks
+	log      *slog.Logger   // the server's: a notification the server built wrong
 }
 
 // startNotifier starts the webhooks of hooks and makes the notifier, with
@@ -49,7 +51,7 @@ type notifier struct {
 // webhooks' sink was added before, ahead of the run engine's.
 func (s *Server) startNotifier(hooks []config.Webhook) *webhookSender {
 	ws := startWebhooks(hooks, s.log)
-	nt := &notifier{registry: s.registry, hooks: ws}
+	nt := &notifier{registry: s.registry, hooks: ws, log: s.log}
 	for _, sink := range s.exts.sinks {
 		if g, ok := sink.(*guardSink); ok {
 			nt.sinks = append(nt.sinks, g)

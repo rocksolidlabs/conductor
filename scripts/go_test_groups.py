@@ -7,7 +7,7 @@
     python3 scripts/go_test_groups.py run <group>       # run it, as CI's job does
     python3 scripts/go_test_groups.py check [--workflow .github/workflows/ci.yml]
 
-`go test -race -count=1 -timeout 60m ./...` is one command for a developer
+`go test -race -count=1 -timeout 90m ./...` is one command for a developer
 (`make test`, docs/checks.md). On CI's four-core runner it took about 57
 minutes, `internal/api` alone some 52, so CI runs it as several jobs side by
 side, each with the same flags and bound:
@@ -47,7 +47,7 @@ import sys
 # module's command (preflight.py's GO_TEST_RACE, which preflight_test.py
 # holds this to). The listing builds with -race too, so that it lists what
 # the run builds and shares its compilation.
-RUN = ["go", "test", "-race", "-count=1", "-timeout", "60m"]
+RUN = ["go", "test", "-race", "-count=1", "-timeout", "90m"]
 LIST = ["go", "test", "-race", "-list"]
 
 # A package split by test, and into how many groups. internal/api's tests

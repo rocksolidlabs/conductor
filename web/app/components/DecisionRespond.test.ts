@@ -15,7 +15,7 @@ describe("the operator's answer under a router's policy", () => {
   it('holds the buttons back exactly while the policy is in force, and says whose it is', () => {
     expect(operatorHeldBack({ policy: routed as never, state: 'open' }, { inForce: true })).toBe(true)
     expect(operatorHeldBack({ policy: routed as never, state: 'open' }, { inForce: false })).toBe(false)
-    expect(src).toMatch(/:disabled="busy \|\| heldBack"/)
+    expect(src).toMatch(/:disabled="busy \|\| locked \|\| heldBack"/)
     expect(src).toMatch(/v-if="heldBack"[^>]*data-decision-held-back/)
     expect(src).toContain('{{ heldWords }}.')
   })

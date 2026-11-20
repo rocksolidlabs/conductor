@@ -538,7 +538,7 @@ func (h *extHost) OpenDecisions(ctx context.Context, after string) (ext.OpenDeci
 	}
 	bctx, end := h.bound(ctx)
 	defer end()
-	recs, more, err := ld.OpenDecisionsAfter(bctx, from, openDecisionsPage)
+	recs, more, err := ld.OpenRecordsAfter(bctx, from, openDecisionsPage)
 	if err != nil {
 		return ext.OpenDecisionsPage{}, err
 	}

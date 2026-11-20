@@ -299,33 +299,14 @@ func (l *Ledger) OutcomeOf(ctx context.Context, n int64) (Outcome, bool, error) 
 	return o, true, nil
 }
 
-// OpenDecisionsAfter reads the open decisions numbered after after, in
-// number order, at most limit, each whole; more says one followed.
-func (l *Ledger) OpenDecisionsAfter(ctx context.Context, after int64, limit int) (recs []DecisionRecord, more bool, err error) {
-	var ns []int64
-	err = l.readSnapshot(ctx, func(q querier, version int) error {
-		if version < versionDecisions {
-			return nil
-		}
-		rows, err := q.QueryContext(ctx, `SELECT n FROM decisions WHERE state = 'open' AND n > ? ORDER BY n LIMIT ?`, after, limit+1)
-		if err != nil {
-			return err
-		}
-		defer rows.Close()
-		for rows.Next() {
-			var n int64
-			if err := rows.Scan(&n); err != nil {
-				return err
-			}
-			ns = append(ns, n)
-		}
-		return rows.Err()
-	})
+// OpenRecordsAfter reads the open decisions numbered after after, in
+// number order, at most limit (OpenDecisionsAfter's numbers, over the open
+// decisions' index), each whole; more says one followed. A record closed
+// between the two reads is left out.
+func (l *Ledger) OpenRecordsAfter(ctx context.Context, after int64, limit int) (recs []DecisionRecord, more bool, err error) {
+	ns, more, err := l.OpenDecisionsAfter(ctx, after, limit)
 	if err != nil {
 		return nil, false, err
-	}
-	if len(ns) > limit {
-		ns, more = ns[:limit], true
 	}
 	for _, n := range ns {
 		rec, ok, err := l.Decision(ctx, n)

@@ -246,6 +246,44 @@ decision opens and stays under the server's own policy and is answered as before
   sends the answer as an override. `conductor decision show` prints the policy;
   `conductor decision respond --override --why TEXT` overrides.
 
+## The phone shell: Open a server, and a provider's inbox answered from the phone (#1031; 2026-11-19)
+
+The open-source rows of the phone shell (`docs/plans/phone-shell.md`, MB1):
+a frame around the workbench's own screens for a phone, beside the
+desktop shell. This repository publishes no build of it and names no
+provider.
+
+- **A notification names its record.** A durable decision's notification
+  handed to a notification sink carries `Ref`, `decision:dr-<n>`; a sink
+  that missed some reads the refs of every open decision in pages of 256
+  (`Host.OpenDecisionRefs`). The webhooks are sent exactly what they were.
+- **With no provider: Open a server.** The shell's first screen takes a
+  Conductor server's address or a decision link and opens that server's
+  own pages in the in-app browser: `https://`, or `http://` with the words
+  "This address is not encrypted: use it only on a network you trust",
+  every other address refused with words; the last five addresses, and
+  Forget these addresses. No account.
+- **What a provider adds.** A packaging may place a provider module that
+  registers with the shell's bridge: a sign-in (a code, the sign-in page,
+  the time left), notifications (turned on, a test one), and an inbox of
+  decisions. A notification tapped opens its decision read at that moment;
+  the decision is drawn by DR1's own card with the four delivery steps
+  exactly as the provider gives them, and answered with DR1's own answer:
+  checked again before it is sent, sent once whatever the taps, kept as a
+  draft on the phone while offline and sent only after Confirm on return,
+  and, when its outcome is not known, locked until the provider says
+  whether it arrived. Open a server stays reachable in every state and
+  never asks the provider. The native key that asks for Face ID or the
+  passcode before an answer is signed is the next row.
+- **How it is built.** `make web-build mobile-sync` puts the workbench's
+  bundle into `mobile/www` with the shell's bridge and its page policy
+  (`script-src 'self' 'wasm-unsafe-eval'` and the hash of each inline
+  script; `connect-src 'none'`, or the https origins a provider's build
+  names); `make mobile-test` checks the bridge and starts the synced bundle
+  under that policy. The native project, its signing and its simulator
+  build (`make mobile-install mobile-ios`) are the next row; anyone installs
+  the shell on a device under their own signing.
+
 ## Brakeman hands a package on, tells of a new decision, and shares a brief (#1012; 2026-11-18)
 
 The Brakeman design review's third tier, which #993 left for a decision,

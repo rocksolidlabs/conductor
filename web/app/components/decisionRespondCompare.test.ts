@@ -151,8 +151,9 @@ describe("the card's sources", () => {
 
   it("draw the confirm from answerAsk, held while it is not ready, and send nothing without the rationale", () => {
     expect(respond).toContain(':label="ask.confirm"')
-    expect(respond).toMatch(/:disabled="!ask\.ready" data-decision-confirm/)
-    expect(respond).toMatch(/if \(busy\.value \|\| !ask\.value\.ready\) return/)
+    // Held while it is not ready, whatever else holds it (the answering's lock and what it carries, utils/answering.ts).
+    expect(respond).toMatch(/:disabled="!ask\.ready( \|\| [^"]+)?" data-decision-confirm/)
+    expect(respond).toMatch(/if \(busy\.value \|\| !ask\.value\.ready( \|\| [^)]+)?\) return/)
     expect(respond).toContain(':placeholder="ask.placeholder"')
     expect(respond).toContain('data-decision-final')
   })

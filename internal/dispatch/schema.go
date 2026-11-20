@@ -26,8 +26,10 @@ import (
 // other replicas and a project's sharing keep (docs/plans/sync-seams.md,
 // Program item CS1): the replica's tags, other replicas' names, a change
 // row's origin and verdicts, held rows and their bodies, the revisions'
-// views, and a project's share and number blocks.
-const Version = syncSchema
+// views, and a project's share and number blocks; version 9 adds the
+// replica's overflow range on its tag and the words a project's share was
+// given (syncKeptColumns).
+const Version = syncKeptSchema
 
 // captureSchema is the version that made the captures' tables: the one
 // place a later version renumbers them (the migration's key, the reads of
@@ -46,6 +48,11 @@ const findingCaptureSchema = 7
 // syncColumns, and the views of the revisions made before it,
 // writePlanViews): the reads of an older database go without them.
 const syncSchema = 8
+
+// syncKeptSchema is the version that added the replica's overflow range
+// and a share's words (syncKeptColumns): the reads of an older database
+// go without them.
+const syncKeptSchema = 9
 
 // migrations bring a database from the version keyed to the next, in the
 // transaction that read the version, with the version's bump. A migration
@@ -99,11 +106,18 @@ const syncSchema = 8
 // view of every revision from its body, so a revision made before the
 // upgrade has its view like any other. It rewrites no other row, so
 // nothing else is derived and no migrate row is written.
+//
+// Version 8 to 9 adds a replica tag's overflow range and a project's
+// share's words (syncKeptColumns), each at its default on every version 8
+// row: a version 8 store kept the range on its projects and the words in
+// its process's memory, so nothing is derived and no migrate row is
+// written.
 var migrations = map[int][]string{
 	captureSchema - 1:        append(slices.Clone(captureTables), captureIndexes...),
 	openSendsSchema - 1:      append(append([]string{openSendsTable}, openSendsIndexes...), openSendsFill("1")),
 	findingCaptureSchema - 1: {findingCaptureColumn},
 	syncSchema - 1:           append(slices.Clone(syncTables), syncColumns...),
+	syncKeptSchema - 1:       syncKeptColumns,
 	1: append([]string{
 		plansTable,
 		launchesTable,
@@ -149,13 +163,7 @@ var migrationsGo = map[int]func(context.Context, *sql.Tx) error{
 // whole body stays here), by the view's SHA-256, with the whole body's
 // digest it was made from.
 var syncTables = []string{
-	`CREATE TABLE replica_tags (
-		tag TEXT PRIMARY KEY,
-		workspace TEXT NOT NULL,
-		device TEXT NOT NULL,
-		instance TEXT NOT NULL,
-		joined_at TEXT NOT NULL,
-		active INTEGER NOT NULL
+	`CREATE TABLE replica_tags (` + replicaTagsColumns + `
 	)`,
 	`CREATE TABLE replica_names (
 		tag TEXT PRIMARY KEY,
@@ -179,6 +187,41 @@ var syncTables = []string{
 		view BLOB NOT NULL
 	)`,
 }
+
+// replicaTagsColumns is the columns of version 8's replica_tags: a fresh
+// store's table ends with version 9's (replicaTagsKeptColumns).
+const replicaTagsColumns = `
+		tag TEXT PRIMARY KEY,
+		workspace TEXT NOT NULL,
+		device TEXT NOT NULL,
+		instance TEXT NOT NULL,
+		joined_at TEXT NOT NULL,
+		active INTEGER NOT NULL`
+
+// The columns version 9 adds, each its table's last: the overflow range a
+// join hands the replica, on its tag (a store that has no project yet keeps
+// it there), and the words a project's share was given (a refusal's, a
+// dormant or unshared workspace's, a retire's). A fresh store makes them
+// in its creates and the migration adds them (syncKeptColumns). Nothing
+// on version 9 reads or writes them yet.
+var (
+	replicaTagsKeptColumns = []string{
+		`overflow_from INTEGER NOT NULL DEFAULT 0`,
+		`overflow_to INTEGER NOT NULL DEFAULT 0`,
+	}
+	projectsKeptColumns = []string{
+		`share_words TEXT NOT NULL DEFAULT ''`,
+	}
+)
+
+// syncKeptColumns is the migration's statements that add version 9's
+// columns.
+var syncKeptColumns = slices.Concat(addColumns("replica_tags", replicaTagsKeptColumns), addColumns("projects", projectsKeptColumns))
+
+// freshSyncTables is syncTables as a fresh store makes them: replica_tags
+// with version 9's columns.
+var freshSyncTables = append([]string{`CREATE TABLE replica_tags (` + replicaTagsColumns + lastColumns(replicaTagsKeptColumns) + `
+	)`}, syncTables[1:]...)
 
 // The columns version 8 adds to existing tables, each table's last: a
 // change row's origin (the tag of the replica that wrote it, empty for a
@@ -698,7 +741,7 @@ var version2Indexes = []string{
 	`CREATE INDEX launch_files_sha256 ON launch_files (sha256)`,
 }
 
-// schema is version 8, whole: every table of docs/plans/dispatch.md's
+// schema is version 9, whole: every table of docs/plans/dispatch.md's
 // schema table, docs/plans/dispatch-evidence.md's (plans, launches,
 // launch_files, and a link's three columns, last of its table as the
 // migration adds them), docs/plans/review-repair.md's (reviews,
@@ -756,7 +799,7 @@ var schema = append([]string{
 		archived_at TEXT NOT NULL DEFAULT '',
 		created_at TEXT NOT NULL,
 		updated_at TEXT NOT NULL,
-		rev INTEGER NOT NULL DEFAULT 0` + lastColumns(projectsSyncColumns) + `
+		rev INTEGER NOT NULL DEFAULT 0` + lastColumns(projectsSyncColumns) + lastColumns(projectsKeptColumns) + `
 	)`,
 	`CREATE TABLE people (
 		name TEXT PRIMARY KEY,
@@ -964,7 +1007,7 @@ var schema = append([]string{
 	storeInstanceTable,
 	publicationsTable,
 }, append(append(append(append(append(append(append(slices.Clone(version2Indexes), version3Indexes...), version4Indexes...), captureTables...), captureIndexes...),
-	openSendsTable), openSendsIndexes...), syncTables...)...)
+	openSendsTable), openSendsIndexes...), freshSyncTables...)...)
 
 // tables is every table of the schema but the FTS index's own and
 // SQLite's, by name: what a test lists sqlite_master against.

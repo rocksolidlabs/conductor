@@ -239,6 +239,9 @@ func (h *hostExtHost) AckOutcomes(context.Context, uint64) error { return h.refu
 func (h *hostExtHost) Reroute(context.Context, ext.RerouteRequest) (ext.RerouteResult, error) {
 	return ext.RerouteResult{}, h.refuse()
 }
+func (h *hostExtHost) OpenDecisionRefs(context.Context, string) ([]string, string, error) {
+	return nil, "", h.refuse()
+}
 func (h *hostExtHost) Run(context.Context, string) (ext.RunStatus, error) {
 	return ext.RunStatus{}, h.refuse()
 }

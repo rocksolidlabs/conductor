@@ -105,6 +105,7 @@ var records = []any{
 		Event: "needs_input", Type: "attention", At: at, Session: session, State: "open", Message: "m",
 		URL: "https://example.com/s", To: "ada", Tool: "Edit", Op: "edit", Path: "/src/a.go", By: "v1", ByName: "Ada", Origin: "push",
 		Recipient: "u-ana", Key: "k-1",
+		Ref: "decision:dr-7",
 	},
 	&ext.Doc{Store: "data", Path: "crews/c1.json", Epoch: strings.Repeat("ab", 16), Rev: 3, At: at, Size: 10, Offset: 4, Data: []byte("{}")},
 	&ext.Entitlement{Allowed: true, Limit: 5, Until: at, Why: "plan"},
