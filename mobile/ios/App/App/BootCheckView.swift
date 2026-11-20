@@ -5,7 +5,8 @@ import WebKit
 // The boot check's side in the app (ConductorShell's BootCheck): added only when the app is launched with the boot check's argument.
 // It adds the check's script before the page's own, hands the page the path of one of the bundle's images and a climb out of the
 // bundle to a copy of it (for the file probes), counts the probe messages the bridge gate drops and the probe loads the load gate
-// refuses, and shows all of it in one label the UI test reads.
+// refuses (telling the page of each refusal, so that it waits for one before its next), and shows all of it in one label the UI test
+// reads.
 final class BootCheckView: NSObject, WKScriptMessageHandler {
     private var report = BootReport()
     private let label = UILabel()
@@ -28,10 +29,11 @@ final class BootCheckView: NSObject, WKScriptMessageHandler {
             self.report.take(message)
             self.show()
         }
-        loads.refused = { [weak self] url in
+        loads.refused = { [weak self, weak webView] url in
             guard let self, let message = BootCheck.refusal(url) else { return }
             self.report.take(message)
             self.show()
+            webView?.evaluateJavaScript(BootCheck.refusedScript, completionHandler: nil)
         }
         controller.add(self, name: BootCheck.handler)
         label.accessibilityIdentifier = BootCheck.identifier

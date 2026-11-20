@@ -20,11 +20,19 @@ public enum BootCheck {
     /** The probes' loads carry this in their address; the load gate's refusals of them are counted. */
     public static let loadMarker = "boot-probe"
     /**
-     * How many probe messages the page sends to the runtime's handler, and how many probe loads reach the load gate (the frames and
-     * the location change; a script's window opened without a person's tap is refused by WebKit before any delegate).
+     * How many probe messages the page sends to the runtime's handler, and how many probe loads reach the load gate (the two frames
+     * and the three location changes; a script's window opened without a person's tap is refused by WebKit before any delegate).
      */
-    public static let probeMessages = 7
-    public static let probeLoads = 3
+    public static let probeMessages = 8
+    public static let probeLoads = 5
+    /** What the app evaluates in the page when the load gate refuses a probe load, so the page waits for that before its next one. */
+    public static let refusedScript = "window.__conductorBootRefusals = (window.__conductorBootRefusals || 0) + 1"
+    /**
+     * A provider's id with characters outside the path's alphabet, and the segment the shell's screens carry it in (decisionPath in
+     * web/app/utils/shell.ts: its UTF-8 bytes in unpadded base64url; the screens' tests hold the same pair).
+     */
+    public static let decisionId = "org/repo#12 a:b~é"
+    public static let decisionSegment = "b3JnL3JlcG8jMTIgYTpifsOp"
 
     /** Whether this launch is the boot check's. */
     public static func asked(_ arguments: [String] = ProcessInfo.processInfo.arguments) -> Bool {
@@ -75,6 +83,9 @@ public enum BootCheck {
       const within = (p) => Promise.race([p, new Promise((_, no) => setTimeout(() => no({ code: 'no_answer' }), 30000))])
       const code = async (f) => { try { await within(f()); return 'answered' } catch (e) { return (e && e.code) || 'rejected' } }
       const value = async (f) => { try { return await within(f()) } catch (e) { return null } }
+      const script = (src) => within(new Promise((r) => { const s = document.createElement('script'); s.onload = () => r('loaded'); s.onerror = () => r('refused'); s.src = src; document.head.appendChild(s) })).catch(() => 'no_answer')
+      const refusals = () => window.__conductorBootRefusals || 0
+      const refusedBy = (n) => within(new Promise((r) => { const t = setInterval(() => { if (refusals() >= n) { clearInterval(t); r(true) } }, 50) })).catch(() => false)
       const image = (src) => within(new Promise((r) => { const i = new Image(); i.onload = () => r('loaded'); i.onerror = () => r('refused'); i.src = src })).catch(() => 'no_answer')
       const id = (n) => '\(probePrefix)' + String(n).padStart(2, '0')
       const probes = async () => {
@@ -97,14 +108,28 @@ public enum BootCheck {
         await drawn
         check('srcdoc', !!(frame.contentDocument && frame.contentDocument.getElementById('drawn')))
         try { toRuntime({ type: 'message', pluginId: 'ConductorKey', methodName: 'state', options: {}, callbackId: id(7) }, frame.contentWindow) } catch (e) { check('frame-post', false, String(e)) }
-        // The load gate: a frame at an outside address and at the app's own, a location change to a custom scheme, a new window to one.
+        // The load gate: a frame at an outside address and at the app's own; then main-frame loads one at a time (a location change
+        // takes the place of one not yet decided), each waited on until the app has said it refused it: to a custom scheme, and to the
+        // app's own address with its host in another case and with an escape in it, neither of which the runtime would take as the
+        // app's; and a new window to a custom scheme.
         for (const src of ['https://example.com/?\(loadMarker)-frame', '/shell?\(loadMarker)-frame']) {
           const f = document.createElement('iframe')
           f.src = src
           document.body.appendChild(f)
         }
+        check('frames', await refusedBy(2), refusals())
         const before = location.href
-        try { location.href = 'conductor-probe://\(loadMarker)-location' } catch (e) {}
+        const host = location.host
+        const away = [
+          ['location', 'conductor-probe://\(loadMarker)-location'],
+          ['case', location.protocol + '//' + host.toUpperCase() + '/?\(loadMarker)-case'],
+          ['escape', location.protocol + '//' + host[0] + '%' + host.charCodeAt(1).toString(16) + host.slice(2) + '/?\(loadMarker)-escape'],
+        ]
+        for (const [name, to] of away) {
+          const n = refusals()
+          try { location.href = to } catch (e) {}
+          check(name, await refusedBy(n + 1))
+        }
         const opened = window.open('conductor-probe://\(loadMarker)-window')
         check('window', opened === null)
         // A text-input prompt of the runtime's cookies kind: no answer.
@@ -122,6 +147,14 @@ public enum BootCheck {
         check('file', !!file && (await image('/_capacitor_file_' + file)) === 'refused')
         check('file-escaped', !!file && (await image('/%5Fcapacitor_file_' + file)) === 'refused')
         check('climb', !!window.__conductorBootClimb && (await image(window.__conductorBootClimb)) === 'refused')
+        // A decision's page address as the shell's screens build it for an id outside the path's alphabet: let through (the bundle's
+        // page answers); the same id written into the path as it stands: refused.
+        check('decision-carried', (await script('/shell/decisions/\(decisionSegment)')) === 'loaded')
+        check('decision-spelled', (await script('/shell/decisions/' + encodeURIComponent(\(literal(decisionId))))) === 'refused')
+        // A listener call with no event, which the runtime's base plugin cannot take: dropped, and the app still answers.
+        toRuntime({ type: 'message', pluginId: 'App', methodName: 'addListener', options: {}, callbackId: id(8) })
+        const after = await code(() => P.ConductorKey.state())
+        check('after-listener', after === 'answered' || after === 'keychain', after)
         return failed.length ? 'failed:' + failed.join(',') : 'ok'
       }
       let done = false
@@ -174,7 +207,7 @@ public struct BootReport: Equatable, Sendable {
     }
 
     /**
-     * `ready platform=ios plugins=ok probes=ok dropped=7 refused=3 violations=0` once ready; `waiting ...` before; the first violation
+     * `ready platform=ios plugins=ok probes=ok dropped=8 refused=5 violations=0` once ready; `waiting ...` before; the first violation
      * after.
      */
     public var label: String {
