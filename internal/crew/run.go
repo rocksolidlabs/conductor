@@ -587,6 +587,11 @@ type Engine struct {
 	// whichever run holds its decision reads them, so one is never lost
 	// with a copy a continuation left behind. Under e.mu.
 	confirms map[confirmKey]int
+	// recheck is what asks AdmitsAnswer again of a held answer awaiting
+	// its recheck (SetRecheck, decisions_sync.go), and asked the answers
+	// it was given, once each in this process. Under e.mu.
+	recheck func(id string, k int)
+	asked   map[confirmKey]bool
 	// routesPolicies says the registered decision router confirms
 	// policies, and policyCheck is how it is asked (SetRouterPolicies,
 	// decisions_policy.go).

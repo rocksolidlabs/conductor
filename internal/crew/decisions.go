@@ -51,6 +51,8 @@ const (
 	ViaWorkbench = "workbench"
 	ViaIdentity  = ledger.ViaIdentity
 	ViaRouter    = "router"
+	// ViaSync is a held answer the sync store handed in (decisions_sync.go).
+	ViaSync = ledger.ViaSync
 )
 
 // policyJSON is the policy every decision of this repository is opened
@@ -177,6 +179,17 @@ type Authority struct {
 	Via     string `json:"via"`
 	Subject string `json:"subject,omitempty"`
 	Boot    string `json:"boot"`
+	// A held answer's (ViaSync) alone, each omitted for every other
+	// response (decisions_sync.go): the membership and the sign-in or
+	// device it was made under, when (RFC 3339), its statement's SHA-256,
+	// the provider's id of it and its fence.
+	Membership      string `json:"membership,omitempty"`
+	SignIn          string `json:"signIn,omitempty"`
+	AppDevice       string `json:"appDevice,omitempty"`
+	At              string `json:"at,omitempty"`
+	StatementSHA256 string `json:"statementSha256,omitempty"`
+	Held            string `json:"held,omitempty"`
+	Fence           string `json:"fence,omitempty"`
 }
 
 // Response is a person's answer to a decision: an option's index, a text
@@ -1684,11 +1697,15 @@ func respondTx(ltx LedgerTx, run string, n int64, resp Response, actor string, a
 	}
 	_ = json.Unmarshal([]byte(d.Policy), &policy)
 	who := Admittee{Grants: []string{auth.Grant}, Via: auth.Via, Subject: auth.Subject}
-	// A router's policy judges first (decisions_policy.go): an unkept
-	// refusal is answered as an error, a kept one in rc.
-	judged, err := judgePolicy(rec, resp, who, pol, &rc)
-	if err != nil {
-		return err
+	// A held answer is refused, kept, where it is never taken
+	// (decisions_sync.go); else a router's policy judges first
+	// (decisions_policy.go): an unkept refusal is answered as an error, a
+	// kept one in rc.
+	judged := auth.Via == ViaSync && heldRefused(rec, pol, &rc)
+	if !judged {
+		if judged, err = judgePolicy(rec, resp, who, pol, &rc); err != nil {
+			return err
+		}
 	}
 	routed := ledger.RouterPolicy(d.Policy)
 	switch {
@@ -1755,9 +1772,15 @@ func respondTx(ltx LedgerTx, run string, n int64, resp Response, actor string, a
 		rc.Words = cutWordsTo(rc.Words, maxReceiptWords-maxPolicyReceipt)
 	}
 	rc.Words = cutReceiptWords(rc.Words)
-	got, err := dtx.Respond(n, ledger.ResponseRow{Actor: actor, Authority: authRaw, ResponseID: resp.ResponseID, Fingerprint: fp, Status: status, Receipt: receiptJSON(rc)})
+	statement := ""
+	if auth.Via == ViaSync {
+		// A held answer's statement, beside its row (accepted or a kept
+		// refusal), in this transaction.
+		statement = pol.statement
+	}
+	got, err := dtx.Respond(n, ledger.ResponseRow{Actor: actor, Authority: authRaw, ResponseID: resp.ResponseID, Fingerprint: fp, Status: status, Receipt: receiptJSON(rc), Statement: statement})
 	switch {
-	case errors.Is(err, ledger.ErrDecisionLimit) && auth.Via == ViaIdentity:
+	case errors.Is(err, ledger.ErrDecisionLimit) && (auth.Via == ViaIdentity || auth.Via == ViaSync):
 		return refuse(CodeDecisionLimit, "%s's run has no room for the decision this answer would need if its recheck failed: answer with the workbench token", id)
 	case err != nil:
 		return err
@@ -2264,6 +2287,8 @@ func (e *Engine) ConfirmAuthority(id string, k int, admitted bool) {
 // with its holds. A decision is applied at most once (I1). The caller
 // holds no lock.
 func (e *Engine) applyDecisions(r *run) {
+	var asks []confirmKey
+	defer func() { e.askRecheck(asks) }()
 	for {
 		e.mu.Lock()
 		if e.continued(r) != nil {
@@ -2278,6 +2303,14 @@ func (e *Engine) applyDecisions(r *run) {
 			}
 			if d.answer.auth.Via == ViaIdentity && d.answer.auth.Boot == e.boot && e.confirmation(d) == 0 {
 				continue // its recheck has not answered yet
+			}
+			if d.answer.auth.Via == ViaSync && e.confirmation(d) == 0 {
+				// A held answer is applied only once AdmitsAnswer says yes
+				// again, in this process or after a restart (not by its
+				// boot: nothing it was judged by is gone); a no supersedes
+				// it (applyTx).
+				asks = append(asks, confirmKey{d.n, d.answer.k})
+				continue
 			}
 			next = d
 			break
@@ -2361,7 +2394,7 @@ func (e *Engine) applyTx(r *run, d *decision) tx {
 	ans := d.answer
 	revoked := e.confirmation(d) < 0
 	delete(e.confirms, confirmKey{d.n, ans.k})
-	if ans.auth.Via == ViaIdentity && (ans.auth.Boot != e.boot || revoked) {
+	if ans.auth.Via == ViaIdentity && (ans.auth.Boot != e.boot || revoked) || ans.auth.Via == ViaSync && revoked {
 		replace, t := e.replaceDecision(r, d, fmt.Sprintf("%s's answer could not be rechecked", ans.actor))
 		opened := t.done
 		t.done = func() {
