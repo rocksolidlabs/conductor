@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -128,8 +129,11 @@ type outputIndex struct {
 	// closed (and made again) at each one indexed, and wake tells the
 	// index's goroutine there is work. A feed never waits: the list has
 	// no bound but the output's rate.
-	pending  []func()
-	taken    uint64
+	pending []func()
+	taken   uint64
+	// waited counts the checks that waited for the feeds (whole): a test's
+	// seam, to show a check made under the ledger's lock never does.
+	waited   atomic.Int64
 	done     uint64
 	progress chan struct{}
 	wake     chan struct{}
@@ -719,6 +723,7 @@ func (x *outputIndex) whole(ctx context.Context) bool {
 		}
 		ch := x.progress
 		x.mu.Unlock()
+		x.waited.Add(1)
 		select {
 		case <-ch:
 		case <-t.C:
@@ -729,6 +734,14 @@ func (x *outputIndex) whole(ctx context.Context) bool {
 	}
 	defer x.mu.Unlock()
 	return x.db != nil && x.broken == "" && !x.saturated && !x.rebuilding
+}
+
+// wholeNow is whole without waiting: false while a feed taken is not yet
+// indexed.
+func (x *outputIndex) wholeNow() bool {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	return x.done >= x.taken && x.db != nil && x.broken == "" && !x.saturated && !x.rebuilding
 }
 
 // state is the index's state in words, for the sync status: "" when whole.
@@ -813,23 +826,33 @@ func (x *outputIndex) lookup(hs []uint64) (map[uint64][]fpRef, error) {
 // sourceText is the source's folded text and where it begins, for a
 // confirmation; false when it cannot be read (the hit then counts).
 func (x *outputIndex) sourceText(name string) ([]byte, int64, bool) {
+	t, base, ok, _ := x.sourceTextIf(name, true)
+	return t, base, ok
+}
+
+// sourceTextIf is sourceText, a kept source read only when read says so:
+// deferred is true for one that needs its reader and was not read.
+func (x *outputIndex) sourceTextIf(name string, read bool) (text []byte, base int64, ok, deferred bool) {
 	x.mu.Lock()
 	if s := x.live[name]; s != nil {
 		t, base := bytes.Clone(s.text), s.base
 		x.mu.Unlock()
-		return t, base, true
+		return t, base, true, false
 	}
 	kind, id, _ := strings.Cut(name, ":")
 	rd := x.readers[kind]
 	x.mu.Unlock()
 	if rd == nil {
-		return nil, 0, false
+		return nil, 0, false, false
+	}
+	if !read {
+		return nil, 0, false, true
 	}
 	raw, ok := rd(id)
 	if !ok {
-		return nil, 0, false
+		return nil, 0, false, false
 	}
-	return foldText(raw), 0, true
+	return foldText(raw), 0, true, false
 }
 
 // foldText is text made plain and its whitespace folded, as a source's.
@@ -857,6 +880,14 @@ func foldText(raw []byte) []byte {
 // least indexLine bytes each, found in a source; each hit confirmed
 // against its source's text, one that cannot be confirmed counting.
 func (x *outputIndex) quotes(value string) (bool, error) {
+	hit, _, err := x.quotesIf(value, true)
+	return hit, err
+}
+
+// quotesIf is quotes, a hit on a kept source confirmed through its reader
+// only when read says so: deferred, with no hit, when such a hit was left
+// unconfirmed (the caller holds a lock the reader takes: the ledger's).
+func (x *outputIndex) quotesIf(value string, read bool) (hit, deferred bool, err error) {
 	folded := foldText([]byte(value))
 	var hs []uint64
 	type at struct {
@@ -910,25 +941,26 @@ func (x *outputIndex) quotes(value string) (bool, error) {
 		}
 	}
 	if len(hs) == 0 {
-		return false, nil
+		return false, false, nil
 	}
 	if x.onScreen(folded, lines) {
-		return true, nil
+		return true, false, nil
 	}
 	found, err := x.lookup(hs)
 	if err != nil {
-		return false, err
+		return false, false, err
 	}
 	texts := map[string][]byte{}
 	bases := map[string]int64{}
 	readable := map[string]bool{}
-	text := func(src string) ([]byte, int64, bool) {
+	unread := map[string]bool{}
+	text := func(src string) ([]byte, int64, bool, bool) {
 		if t, ok := texts[src]; ok {
-			return t, bases[src], readable[src]
+			return t, bases[src], readable[src], unread[src]
 		}
-		t, b, ok := x.sourceText(src)
-		texts[src], bases[src], readable[src] = t, b, ok
-		return t, b, ok
+		t, b, ok, later := x.sourceTextIf(src, read)
+		texts[src], bases[src], readable[src], unread[src] = t, b, ok, later
+		return t, b, ok, later
 	}
 	linesHit := map[int]bool{}
 	for h, refs := range found {
@@ -937,7 +969,12 @@ func (x *outputIndex) quotes(value string) (bool, error) {
 				if p.kind != r.kind {
 					continue
 				}
-				src, base, ok := text(r.source)
+				src, base, ok, later := text(r.source)
+				if later {
+					// A kept source not read: its hit is left unconfirmed.
+					deferred = true
+					continue
+				}
 				if p.kind == fpLine {
 					line := lines[p.n]
 					o := r.off - base
@@ -947,15 +984,18 @@ func (x *outputIndex) quotes(value string) (bool, error) {
 					continue
 				}
 				if !ok {
-					return true, nil
+					return true, false, nil
 				}
 				if commonRun(folded, p.pos, src, int(r.off-base)) >= indexMatch {
-					return true, nil
+					return true, false, nil
 				}
 			}
 		}
 	}
-	return len(linesHit) >= 2, nil
+	if len(linesHit) >= 2 {
+		return true, false, nil
+	}
+	return false, deferred, nil
 }
 
 // onScreen says whether the value (folded, and its long lines) quotes

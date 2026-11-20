@@ -412,7 +412,7 @@ func (s *Server) settleDecisionParts(ctx context.Context) int {
 		}
 		v := verdictOutput
 		if !pruned {
-			v = s.copyCheck.Judge(ctx, partText(rec, p.Part), rec.Origin == ledger.OriginAgent && !strings.HasPrefix(p.Part, "response/"))
+			v = s.copyCheck.Judge(ctx, partText(rec, p.Part), rec.Origin == ledger.OriginAgent && requestPart(p.Part))
 		}
 		if v == verdictPending {
 			continue
@@ -459,4 +459,10 @@ func (s *Server) settleDecisionLoop(ctx context.Context) {
 			s.settleDecisionParts(ctx)
 		}
 	}
+}
+
+// requestPart says part is one of a request's (not a response's, the why or
+// the application's words).
+func requestPart(part string) bool {
+	return !strings.HasPrefix(part, "response/") && part != ledger.PartWhy && part != ledger.PartApplied
 }

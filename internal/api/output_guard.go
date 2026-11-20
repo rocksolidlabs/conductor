@@ -63,6 +63,31 @@ func (g *outputGuard) Judge(ctx context.Context, text string, agent bool) string
 	return g.Check(ctx, text)
 }
 
+// JudgeNow is Judge in the form the ledger calls inside a transaction,
+// under its lock: it never waits and never reads a kept source. While the
+// index is behind, or a hit could only be confirmed by reading a kept
+// source (a check's log, which the ledger itself holds), the verdict is
+// pending, and the settle loop judges the part again outside the lock.
+func (g *outputGuard) JudgeNow(_ context.Context, text string, agent bool) string {
+	if agentTextIsOutput && agent && text != "" {
+		return verdictOutput
+	}
+	if len(text) < indexLine {
+		return verdictClean
+	}
+	if g == nil || g.index == nil || !g.index.wholeNow() {
+		return verdictPending
+	}
+	hit, deferred, err := g.index.quotesIf(text, false)
+	switch {
+	case err != nil, !hit && deferred:
+		return verdictPending
+	case hit:
+		return verdictOutput
+	}
+	return verdictClean
+}
+
 // JudgeValue is the verdict of a change row's value or prior: the value
 // itself, or, when it is JSON (a create's fields, a list's members), each
 // string it holds, the worst of them (output, then pending, then clean).
@@ -235,7 +260,9 @@ func (s *Server) observeLogs(ld *ledger.Ledger) {
 	// (decision_output, OS-3), when a sync store is registered: with none,
 	// nothing of a decision leaves and the ledger writes as before.
 	if s.copyCheck != nil && s.syncName() != "" {
-		ld.SetOutputCheck(s.copyCheck.Judge)
+		// Inside the ledger's transaction: the form that never waits and
+		// never reads the ledger (JudgeNow).
+		ld.SetOutputCheck(s.copyCheck.JudgeNow)
 	}
 }
 
