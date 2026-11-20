@@ -152,21 +152,71 @@ func (s *Server) recordHeld(ctx context.Context, did string, resp crew.Response,
 		// again later.
 		return ext.AnswerOutcome{}, err
 	}
-	out := ext.AnswerOutcome{Repeat: rc.Repeat, Words: rc.Words}
-	if rc.Decision != "" {
-		out.Receipt, _ = json.Marshal(rc)
-	}
+	out := ext.AnswerOutcome{Repeat: rc.Repeat}
 	switch {
 	case de == nil:
 		out.Status = ext.AnswerRecorded
 	case de.Code == crew.CodeNotHeld:
-		out.Status, out.Words = ext.AnswerNotHeld, de.Words
+		out.Status = ext.AnswerNotHeld
 	case de.Code == crew.CodeDecisionMoved:
-		out.Status, out.Words = ext.AnswerMoved, de.Words
+		out.Status = ext.AnswerMoved
 	default:
-		out.Status, out.Code, out.Words = ext.AnswerRefused, de.Code, de.Words
+		out.Status, out.Code = ext.AnswerRefused, de.Code
 	}
+	out.Words, out.Receipt = s.shownReceipt(ctx, did, rc, out.Status, out.Code)
 	return out, nil
+}
+
+// heldWords are an outcome's words where the receipt's own may not leave:
+// fixed, naming the decision and what became of the answer.
+func heldWords(did, status, code string) string {
+	switch status {
+	case ext.AnswerRecorded:
+		return did + ": recorded"
+	case ext.AnswerRefused:
+		return did + ": refused, " + code
+	case ext.AnswerNotHeld:
+		return did + ": its run is not running here"
+	case ext.AnswerMoved:
+		return did + ": it moved to another run while it was answered"
+	}
+	return did
+}
+
+// shownReceipt is what the sync store is handed of a receipt: what the
+// decision's document would show of the response, through its kept
+// verdicts. Its words leave only when the response's row was kept and its
+// words' verdict is clean (else heldWords); the text and rationale only of
+// an accepted response, each only when clean (else the cut's words); none
+// of the receipt's other words (a router's why, whom it was for).
+func (s *Server) shownReceipt(ctx context.Context, did string, rc crew.ResponseReceipt, status, code string) (string, []byte) {
+	words := heldWords(did, status, code)
+	if rc.Decision == "" {
+		return words, nil
+	}
+	n, _ := ledger.ParseDecisionID(did)
+	kept, _, err := s.ledger.OutputVerdicts(ctx, n)
+	if err != nil {
+		kept = nil
+	}
+	clean := func(part, text string) bool { return text == "" || kept[part] == verdictClean }
+	shown := crew.ResponseReceipt{Decision: rc.Decision, K: rc.K, Status: rc.Status, Code: rc.Code, Actor: rc.Actor, Choice: rc.Choice, At: rc.At,
+		Rev: rc.Rev, Repeat: rc.Repeat, Kept: rc.Kept}
+	if rc.K > 0 && rc.Kept == nil && clean(ledger.PartResponse(rc.K, "words"), rc.Words) {
+		words = rc.Words
+	}
+	shown.Words = words
+	if rc.Status == "accepted" && rc.K > 0 {
+		shown.Text, shown.Rationale = rc.Text, rc.Rationale
+		if !clean(ledger.PartResponse(rc.K, "text"), rc.Text) {
+			shown.Text = outputCutWords
+		}
+		if !clean(ledger.PartResponse(rc.K, "rationale"), rc.Rationale) {
+			shown.Rationale = outputCutWords
+		}
+	}
+	b, _ := json.Marshal(shown)
+	return words, b
 }
 
 // admitsAnswer asks the identity provider whether it admits a: through
@@ -228,11 +278,13 @@ func (h *extHost) SyncDelivery(ctx context.Context, decision, responseID string)
 		var rc crew.ResponseReceipt
 		_ = json.Unmarshal([]byte(row.Receipt), &rc)
 		rc.Repeat, rc.K = true, row.K
-		out := ext.AnswerOutcome{Status: ext.AnswerRecorded, Repeat: true, Words: rc.Words}
+		out := ext.AnswerOutcome{Status: ext.AnswerRecorded, Repeat: true}
 		if row.Status != ledger.ResponseAccepted {
 			out.Status, out.Code = ext.AnswerRefused, rc.Code
 		}
-		if out.Receipt, _ = json.Marshal(rc); out.Valid() != nil {
+		// What the document would show of it, as RespondDecision answers.
+		out.Words, out.Receipt = s.shownReceipt(ctx, decision, rc, out.Status, out.Code)
+		if out.Valid() != nil {
 			out.Receipt = nil
 		}
 		return out, a.Fence, true, nil

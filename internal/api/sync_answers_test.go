@@ -804,3 +804,38 @@ func (f *heldFixture) replaced(t *testing.T, did string) {
 		t.Fatalf("the replacement's request left: %+v", doc.Request)
 	}
 }
+
+// What the store is handed about a refusal is what the document would
+// show: a stale refusal whose words quote a comment that pasted output
+// hands neither its words nor its receipt's, through the outcome or
+// SyncDelivery.
+func TestARefusalHandsNoOutput(t *testing.T) {
+	f := newHeldFixture(t)
+	logText := keptCheckLog(t, f.srv, "team-0000c0de", 3061)
+	excerpt := logText[800:900]
+	did := f.open(t, "q1")
+	f.expect(t, http.MethodPost, "/api/decisions/"+did+"/comment", map[string]any{"opId": "c1", "kind": "comment", "text": "the log said " + excerpt, "expectedRev": 1}, http.StatusOK, "")
+	out := f.hand(t, held(did, "h1", "ana", 0, 1))
+	if out.Status != ext.AnswerRefused || out.Code != crew.CodeStaleDecision {
+		t.Fatalf("%+v", out)
+	}
+	rec := f.rec(t, did)
+	if len(rec.Responses) != 1 || !strings.Contains(rec.Responses[0].Receipt, excerpt[20:60]) {
+		t.Fatalf("the kept refusal does not quote the comment: %+v", rec.Responses)
+	}
+	delivered, _, ok, err := f.h.SyncDelivery(t.Context(), did, "h1")
+	if err != nil || !ok {
+		t.Fatalf("the delivery: %v %v", ok, err)
+	}
+	for name, o := range map[string]ext.AnswerOutcome{"the outcome": out, "the delivery": delivered} {
+		// The receipt as the store reads it (its bytes, not their base64).
+		for _, text := range []string{o.Words, string(o.Receipt)} {
+			if strings.Contains(text, excerpt[20:60]) || strings.Contains(text, "the log said") {
+				t.Errorf("%s holds the comment's output: %s", name, text)
+			}
+		}
+		if len(o.Receipt) == 0 {
+			t.Errorf("%s has no receipt", name)
+		}
+	}
+}
