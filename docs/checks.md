@@ -24,6 +24,7 @@ make test-pebble               # certificates end to end against Let's Encrypt's
 make test-live                 # the real Claude Code and Codex (CONDUCTOR_E2E_LIVE_REPO, keys or logins); weekly in CI
 make desktop-test              # the Electron shell: tsc --noEmit and vitest (desktop/)
 make mobile-test               # the phone shell's bridge: tsc --noEmit, its vitest (mobile/test, run by the app's vitest too) and its boot spec (after make web-build)
+make mobile-native-test        # the phone shell's native key and store: swift test in mobile/ios/ConductorNative (a Mac; Swift Testing, no Xcode project needed; CI has no Mac job for it yet)
 make lint-static               # staticcheck, pinned
 make vuln                      # govulncheck (network); the standard library's findings need the latest Go patch
 make test-network              # the built-in agents' sites on the network (nightly)

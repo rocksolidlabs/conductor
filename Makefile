@@ -7,7 +7,7 @@ GO_MIN   := $(shell awk '/^go /{print $$2}' go.mod)
 NODE_MIN := 22
 NODE_STAMP := web/node_modules/.package-lock.json
 
-.PHONY: help deps check-tools build build-go check-version notices web-install web-build web-typecheck web-dev run dev test test-web test-e2e test-live design-capture test-pebble test-network test-recipes desktop-install desktop-dev desktop-test desktop-binaries desktop-dist desktop-e2e mobile-sync mobile-test lint lint-static vuln fmt generate docker clean preflight
+.PHONY: help deps check-tools build build-go check-version notices web-install web-build web-typecheck web-dev run dev test test-web test-e2e test-live design-capture test-pebble test-network test-recipes desktop-install desktop-dev desktop-test desktop-binaries desktop-dist desktop-e2e mobile-sync mobile-test mobile-native-test lint lint-static vuln fmt generate docker clean preflight
 
 help: ## list targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-16s %s\n", $$1, $$2}'
@@ -108,6 +108,9 @@ mobile-test: $(NODE_STAMP) ## the shell's bridge type-checked and its tests (the
 	web/node_modules/.bin/tsc -p mobile/tsconfig.json
 	cd web && npx vitest run ../mobile/test
 	cd web && npx playwright test e2e/shell-boot.spec.ts
+
+mobile-native-test: ## the phone shell's native key and store (mobile/ios/ConductorNative) built and tested by Swift's own tools (on a Mac)
+	cd mobile/ios/ConductorNative && swift test
 
 # The server binaries the packages bundle, under the names electron-builder's ${os}-${arch} macros give.
 desktop-binaries: ## cross-compile the server for the desktop packages (linux and mac, x64 and arm64)

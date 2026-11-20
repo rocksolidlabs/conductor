@@ -21,6 +21,8 @@ desktop/release/
 # phone shell: the synced bundle
 mobile/www/
 mobile/node_modules/
+mobile/ios/ConductorNative/.build/
+mobile/ios/ConductorNative/.swiftpm/
 
 # Python workflow execution artifacts
 __pycache__/
