@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/rocksolidlabs/conductor/ext"
+	"github.com/rocksolidlabs/conductor/internal/catalog"
 )
 
 // A lookup an attempt's agent asks a context provider (docs/plans/
@@ -69,6 +71,28 @@ func lookupAttempt(t *testing.T, ps ...ext.ContextProvider) (*testEnv, string, m
 	t.Cleanup(func() { stopEveryRun(e.srv) })
 	a := runningAttempt(t, e, run.ID, "build", 1)
 	return e, run.ID, a, e.agentToken(a["sessionId"].(string))
+}
+
+// loggedEnv is a test server whose log is kept.
+type loggedEnv struct {
+	*testEnv
+	logs *syncBuffer
+}
+
+// lookupAttemptLogged is lookupAttempt with the server's log kept.
+func lookupAttemptLogged(t *testing.T, ps ...ext.ContextProvider) (loggedEnv, string, map[string]any, string) {
+	t.Helper()
+	logs := &syncBuffer{}
+	e := newTestEnvAgents(t, nil, slog.New(slog.NewTextHandler(logs, nil)), []catalog.Agent{{ID: "ready-cat", Name: "ready cat", Command: []string{"/bin/sh", "-c", "echo ready; exec cat"}}}, withContext(ps...))
+	e.gitRepo(t)
+	run, release, err := e.srv.runs.LaunchNamed(t.Context(), managedCrew(e.root), "")
+	release()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { stopEveryRun(e.srv) })
+	a := runningAttempt(t, e, run.ID, "build", 1)
+	return loggedEnv{e, logs}, run.ID, a, e.agentToken(a["sessionId"].(string))
 }
 
 // lookupPath is the lookup route of the session sid.
@@ -342,6 +366,9 @@ func TestLookupBusyPastTwo(t *testing.T) {
 			t.Fatalf("held lookup %d: %d %s", i, status, raw)
 		}
 	}
+	// The route answered each at its wait; the guard's call may enter the
+	// provider later on a loaded machine: wait for both to be held there.
+	waitUntil(t, "both lookups held in the provider", func() bool { return len(l.asked()) == 2 })
 	e.expectAs(t, tok, "POST", lookupPath(sid), map[string]any{"op": "symbol", "symbol": "Build"}, http.StatusTooManyRequests, "lookup_busy")
 	if n := len(l.asked()); n != 2 {
 		t.Fatalf("the provider was asked %d times", n)
@@ -432,7 +459,7 @@ func TestLatePackWithheldWhenNotRecorded(t *testing.T) {
 	l := &looker{fakeContext: &fakeContext{name: "graph"}, answer: func(_ context.Context, r ext.LookupRequest) (ext.LookupAnswer, error) {
 		return ext.LookupAnswer{Items: []ext.LookupItem{{Kind: ext.ItemFile, Path: "build.go", Mark: ext.MarkSupported, Why: "it is there"}}, Blocks: eight, Coverage: ext.LookupCoverage{Commit: r.Start}}, nil
 	}}
-	e, _, a, tok := lookupAttempt(t, l)
+	e, runID, a, tok := lookupAttemptLogged(t, l)
 	sid := a["sessionId"].(string)
 	for i := range 8 {
 		if _, raw, out := e.callAs(t, tok, "POST", lookupPath(sid), map[string]any{"op": "pack"}); len(out["blocks"].([]any)) != 8 {
@@ -442,6 +469,19 @@ func TestLatePackWithheldWhenNotRecorded(t *testing.T) {
 	_, raw, out := e.callAs(t, tok, "POST", lookupPath(sid), map[string]any{"op": "pack"})
 	if _, ok := out["blocks"]; ok || strings.Contains(string(raw), "the withheld text") || out["withheld"] != lookupWithheld || len(out["items"].([]any)) != 1 {
 		t.Fatalf("the ninth answer: %s", raw)
+	}
+	// Why it was withheld is in the server's log, by the attempt's ids and
+	// the server's words, never the pack's text.
+	logged := e.logs.String()
+	line := ""
+	for l := range strings.SplitSeq(logged, "\n") {
+		if strings.Contains(l, "a lookup's pack was not recorded") {
+			line = l
+		}
+	}
+	if line == "" || !strings.Contains(line, "run="+runID) || !strings.Contains(line, "task=build") || !strings.Contains(line, "attempt=1") ||
+		!strings.Contains(line, "64 at most") || strings.Contains(logged, "the withheld text") {
+		t.Fatalf("the log's line: %q", line)
 	}
 }
 

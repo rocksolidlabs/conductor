@@ -5165,7 +5165,9 @@ the ledger (`attempt_context`, schema version 15: its seq, phase, source,
 title, ref, pack mark, the SHA-256 and size of its text, when it was
 recorded; never the text) and the text in the data directory, in one
 file per attempt, `runs/context/<run>/<task>.<n>.json` (`{v: 1, blocks:
-[{seq, phase, source, title, ref?, pack?, body}]}`, at most 1,120 KiB),
+[{seq, phase, source, title, ref?, pack?, body}]}`, at most 1,609,728
+bytes, about 1,572 KiB: every text at its bound with every byte escaped
+in two, and every other field the same),
 written beside it and renamed over it. An attempt's start blocks are
 added by the transaction that records its worktree, before its session
 starts: a file or a commit that fails fails the attempt at its

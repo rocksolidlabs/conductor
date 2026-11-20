@@ -30,11 +30,15 @@ type Tree struct {
 	// The server reads 4 KiB of git's list of them (about a hundred ids):
 	// past it, the roots are the first MaxTreeRoots, sorted, of those it
 	// read, which need not be the smallest of all of them.
-	Roots     []string    `json:"roots,omitempty"`
-	Shallow   bool        `json:"shallow,omitempty"`
-	Entries   []TreeEntry `json:"entries"`
-	Denied    int         `json:"denied,omitempty"` // entries the deny list refused, left out
-	Truncated bool        `json:"truncated,omitempty"`
+	Roots   []string    `json:"roots,omitempty"`
+	Shallow bool        `json:"shallow,omitempty"`
+	Entries []TreeEntry `json:"entries"`
+	Denied  int         `json:"denied,omitempty"` // entries the deny list refused, left out
+	// Truncated says the listing passed its bounds (MaxTreeEntries,
+	// MaxTreeBytes) or left out an entry the server could not read: in a
+	// partial clone, a file whose blob is not here (git gives no size for
+	// it, and nothing is fetched) is left out of a listing so marked.
+	Truncated bool `json:"truncated,omitempty"`
 }
 
 // TreeEntry is one entry of a tree.

@@ -236,6 +236,10 @@ func (s *Server) handleContextLookup(w http.ResponseWriter, r *http.Request) {
 	// be, the answer carries none, and says so in the server's words.
 	if len(reply.Blocks) > 0 {
 		if err := s.runs.RecordLookupContext(r.Context(), scope.Run, scope.Task, scope.Attempt, g.name, reply.Blocks); err != nil {
+			// Why, by the attempt's ids and the server's own words; never
+			// the pack's text.
+			s.log.Warn("context: a lookup's pack was not recorded, so it is not given", "run", scope.Run, "task", scope.Task, "attempt", scope.Attempt,
+				"source", g.name, "blocks", len(reply.Blocks), "err", err)
 			reply.Blocks, reply.Withheld = nil, lookupWithheld
 		}
 	}

@@ -21,8 +21,9 @@ import (
 // ext.ContextWait, so the attempt waits at most that long and never fails
 // for a provider late, failing or out of bounds, which adds nothing. What
 // they answer goes into the attempt's task files, written through its
-// worktree's os.Root, and nowhere else: never the ledger, never a reason a
-// task's state changes.
+// worktree's os.Root, once it is recorded (crew/attempt_context.go: its
+// text in the data directory's context file, its rows with the attempt's
+// workspace in the ledger); a server with nowhere to record it asks none.
 //
 // A file entry of a server or a hosted session is offered to every
 // provider after the session recorded it (noteTouches, a sink of the event
