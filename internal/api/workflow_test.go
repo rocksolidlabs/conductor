@@ -46,15 +46,13 @@ func walkWorkflow(t *testing.T, w *workflow) {
 	w.assertTruthful(t, "step 1, the ticket filed")
 
 	// 2. Context of the exact commit is prepared: nothing of the server's
-	// until an attempt starts.
+	// until an attempt starts, and the provider told the run's base as the
+	// run starts (step 5).
 	if w.fakes != nil {
-		if qs := w.fakes.context.Queries(); len(qs) != 0 {
-			t.Fatalf("the context provider was asked before any attempt: %+v", qs)
+		if qs, ns := w.fakes.context.Queries(), w.fakes.context.commits(); len(qs) != 0 || len(ns) != 0 {
+			t.Fatalf("the context provider was asked %+v and told %+v before any run", qs, ns)
 		}
 	}
-	t.Run("the base told to the context provider as the run starts", func(t *testing.T) {
-		t.Skip(waitsContext)
-	})
 
 	// 3. Brakeman drafts the plan; the operator proposes it.
 	w.draftPlan(t, clock)
@@ -65,11 +63,16 @@ func walkWorkflow(t *testing.T, w *workflow) {
 	w.approve(t)
 	w.assertTruthful(t, "step 4, the revision approved")
 
-	// 5. Yardmaster starts the managed run.
+	// 5. Yardmaster starts the managed run; the context provider is told
+	// its base.
 	w.launch(t)
+	w.commitsNoted(t, ext.CommitNote{Run: w.run, Kind: ext.CommitBase, Commit: w.head})
 	w.assertTruthful(t, "step 5, the run launched")
 
-	// 6. The implementing agent raises an architecture question.
+	// 6. The implementing agent, at work, looks its context up and raises
+	// an architecture question.
+	w.lookUp(t)
+	w.assertTruthful(t, "step 6, the implementer's lookups")
 	w.raise(t)
 	w.assertTruthful(t, "step 6, the question raised")
 
@@ -88,13 +91,7 @@ func walkWorkflow(t *testing.T, w *workflow) {
 			t.Fatalf("the refused route wrote: rev %d, %d history rows (were %d, %d)", after.Rev, len(after.History), before.Rev, len(before.History))
 		}
 	} else {
-		w.give(t)
-	}
-	if !w.free() {
-		t.Run("the card for ana, the architecture owner, under a router's policy", func(t *testing.T) {
-			t.Skip(waitsPolicy)
-			onlyAnaUnderThePolicy(t, w)
-		})
+		w.routedByPolicy(t)
 	}
 	w.assertTruthful(t, "step 8, the decision given")
 
@@ -109,11 +106,10 @@ func walkWorkflow(t *testing.T, w *workflow) {
 
 	// 12. The work goes on to a candidate, its checks and its review.
 	candidate := w.candidate(t)
+	w.commitsNoted(t, ext.CommitNote{Run: w.run, Kind: ext.CommitBase, Commit: w.head},
+		ext.CommitNote{Run: w.run, Task: "build", Attempt: 1, Kind: ext.CommitCandidate, Commit: candidate})
+	attemptContextListed(t, w)
 	w.assertTruthful(t, "step 12, the candidate reviewed")
-	t.Run("the context of each attempt recorded and listed", func(t *testing.T) {
-		t.Skip(waitsContext)
-		attemptContextListed(t, w, "review")
-	})
 
 	// 13. A person batches their findings into a repair.
 	repaired := w.repair(t, candidate)
@@ -364,10 +360,11 @@ func TestWorkflowWithdrawnResponder(t *testing.T) {
 }
 
 // TestWorkflowContextUnavailable: the context provider fails, or is late
-// past its wait, when an attempt starts. The attempt starts with no
-// Context section and nothing of the provider's, its run going on: the
-// late provider's call is ended by the guard's wait, not by the provider.
-// What the lookup says and what the run page lists wait for CT-3.
+// past its wait, when an attempt starts and when its agent looks up. The
+// attempt starts with no Context section and nothing of the provider's,
+// its run going on: the late provider's call is ended by the guard's
+// wait, not by the provider. The lookup says context is unavailable, and
+// the run page lists none for the attempt.
 func TestWorkflowContextUnavailable(t *testing.T) {
 	t.Run("failing", func(t *testing.T) {
 		fakes := newWorkflowFakes()
@@ -381,14 +378,12 @@ func TestWorkflowContextUnavailable(t *testing.T) {
 		w.respond0(t, adminToken, "op-1", 0, http.StatusCreated, "")
 		w.applied(t, w.did)
 		w.assertTruthful(t, "the operator's answer with the provider failing")
-		t.Run("the lookup's words and the run page's list", func(t *testing.T) {
-			t.Skip(waitsContext)
-			contextAbsent(t, w)
-		})
+		contextAbsent(t, w)
+		w.assertTruthful(t, "the lookup with the provider failing")
 	})
 	t.Run("late", func(t *testing.T) {
 		fakes := newWorkflowFakes()
-		fakes.late = &lateContext{FakeContext: fakes.context, gate: make(chan struct{}), asked: make(chan ext.ContextQuery, 8)}
+		fakes.late = &lateContext{walkContext: fakes.context, gate: make(chan struct{}), asked: make(chan ext.ContextQuery, 8)}
 		w := newWorkflowWith(t, fakes)
 		// Run before the server's cleanup (last in, first out): the late
 		// calls return.
@@ -404,11 +399,59 @@ func TestWorkflowContextUnavailable(t *testing.T) {
 		note := fmt.Sprintf("kind=context provider=graph failure=late failures=1 err=\"no answer within %s\"", ext.ContextWait)
 		waitUntil(t, "the guard's note of the late call", func() bool { return strings.Contains(w.logs.String(), note) })
 		w.assertTruthful(t, "an attempt started past a late provider")
-		t.Run("the lookup's words and the run page's list", func(t *testing.T) {
-			t.Skip(waitsContext)
-			contextAbsent(t, w)
-		})
+		// The lookup is ended by the guard's own wait for lookups, the
+		// provider never answering while the test runs.
+		contextAbsent(t, w)
+		w.assertTruthful(t, "the lookup past a late provider")
 	})
+}
+
+// TestWorkflowRouterAway: the router can no longer stand behind its
+// policy for the decision ana alone may answer (decision-policy's I10):
+// while it answers that its policy is behind, within ext.MaxBehind of its
+// first such answer on the server's clock, the operator's answer is
+// refused stale_policy, nothing kept, the decision open and its hold
+// kept, and ana is not shown the decision. Past the bound the policy is
+// not in force: ana is still refused, and the operator answers under
+// local/1, the receipt saying why; the answer is applied once.
+func TestWorkflowRouterAway(t *testing.T) {
+	w := newWorkflow(t, false)
+	clock := &policyFakeClock{now: time.Date(2026, 11, 19, 9, 0, 0, 0, time.UTC)}
+	w.srv.policyClock.mu.Lock()
+	w.srv.policyClock.now = clock.Now
+	w.srv.policyClock.mu.Unlock()
+	w.toPolicy(t)
+	w.fakes.router.SetConfirm(w.did, func(ext.ConfirmQuery) ext.Confirmation { return ext.Confirmation{InForce: true, Behind: true} })
+	kept := len(w.record(t, w.did).Responses)
+	stale := func(step string) {
+		t.Helper()
+		w.respond0(t, adminToken, "op-away", 0, http.StatusConflict, crew.CodeStalePolicy)
+		if status, data, _ := w.respondAs(t, passAna, "ana-away", 0); status != http.StatusNotFound {
+			t.Fatalf("ana's answer with the router behind: %d %s", status, data)
+		}
+		rec := w.record(t, w.did)
+		if rec.State != ledger.DecisionOpen || len(rec.Responses) != kept || !slices.Equal(rec.Held, []string{"build"}) {
+			t.Fatalf("%s: %s, %d responses (were %d), held %v", step, rec.State, len(rec.Responses), kept, rec.Held)
+		}
+		w.assertTruthful(t, step)
+	}
+	stale("the router behind")
+	clock.add(ext.MaxBehind)
+	stale("the router behind, at its bound")
+	clock.add(time.Second)
+	// Past the bound: not in force. The operator answers with the same
+	// response id its refusals kept nothing of; ana is refused still.
+	w.eligible = map[string]bool{adminActor: true}
+	if status, data, _ := w.respondAs(t, passAna, "ana-away", 0); status != http.StatusNotFound {
+		t.Fatalf("ana's answer past the bound: %d %s", status, data)
+	}
+	w.respond0(t, adminToken, "op-away", 0, http.StatusCreated, "")
+	w.answer = "op-away"
+	w.applied(t, w.did)
+	if rc := w.decide().receiptOf(t, w.did, kept+1); rc.Status != "accepted" || rc.Policy != "local/1" || !strings.Contains(rc.PolicyWhy, "did not settle") || rc.Override {
+		t.Fatalf("the operator's receipt past the bound: %+v", rc)
+	}
+	w.assertTruthful(t, "the operator's answer under local/1")
 }
 
 // TestWorkflowOwnerDisconnected: the owning server is out of ana's reach
