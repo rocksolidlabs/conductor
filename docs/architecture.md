@@ -1955,6 +1955,15 @@ The index, `history/index.sqlite`, is a cache of every store and is never
 the truth: it is rebuilt when it is missing, damaged or of another
 version, and an export leaves it out (`derived`) with `history/owner.lock`.
 
+The app's screens' state, `ui/` (`internal/api/ui_state.go`), is three
+documents the web app reads after its first paint and writes a second
+after a change: the layout, the palette's recents and the pinned sessions,
+each stamped with when its content last changed and the data directory's
+writer id (`ui/writer`, which an export leaves out as `instance`, so two
+machines restored from one export write under two ids). A put that changes
+nothing writes nothing, and the browser's local storage stays the cache it
+draws from first; a server without the routes leaves the app as it was.
+
 Export and restore (`internal/export`, Program item C6) move the data
 directory to another machine as one zip archive. `GET /api/export` writes it
 while the server runs: the runs' records first, then the ledger's snapshot

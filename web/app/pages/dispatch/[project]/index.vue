@@ -75,12 +75,22 @@ watch(
     if (isView(q)) view.value = q
   },
 )
+// The view is the app's screens' state (useUiState): kept by the server too, and taken up when its copy arrives, unless a link
+// named one.
+const ui = useUiState()
+watch(
+  () => ui.layout.value.projectView,
+  (v) => {
+    if (v && !isView(route.query.view) && v !== view.value) view.value = v
+  },
+)
 watch(view, (v) => {
   try {
     localStorage.setItem(VIEW_KEY, v)
   } catch {
     /* storage refused: the choice lasts the page */
   }
+  ui.setLayout({ projectView: v })
   if (route.query.view !== v) void router.replace({ query: { ...route.query, view: v === 'list' ? undefined : v } })
 })
 const viewItems = [

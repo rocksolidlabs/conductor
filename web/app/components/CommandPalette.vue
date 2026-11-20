@@ -279,9 +279,11 @@ watch(flat, async (items) => {
 })
 
 /** A use counted for the ranking, kept per browser. */
+const uiState = useUiState()
 function noteRow(row: PaletteItem) {
   rows.recent.value = noteUse(rows.recent.value, row.key)
   writeRecent(typeof localStorage === 'undefined' ? null : localStorage, rows.recent.value)
+  uiState.setRecents(rows.recent.value)
 }
 
 /** Enter on a row: its field opens, its question is asked, or it runs; a switch stays open, everything else closes the palette. */

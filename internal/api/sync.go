@@ -83,7 +83,7 @@ const (
 const syncPage = 500
 
 // syncDataDoc is the allowlist of the data directory's documents.
-var syncDataDoc = regexp.MustCompile(`^(catalog\.json|crews/[a-z0-9-]+\.json|runs/[a-z0-9-]+\.json)$`)
+var syncDataDoc = regexp.MustCompile(`^(catalog\.json|crews/[a-z0-9-]+\.json|runs/[a-z0-9-]+\.json|ui/(layout|palette|pins)\.json)$`)
 
 // syncKey names a document of the pending set: its store and its path.
 type syncKey struct{ store, path string }
@@ -112,11 +112,13 @@ type syncAdapter struct {
 	// listed counts the entries a replay put in the set.
 	listed int
 	// gen counts the replays begun; due says one is wanted (an overflow
-	// emptied the set); epoch is the current one's.
-	gen   uint64
-	due   bool
-	epoch string
-	wake  chan struct{}
+	// emptied the set, or the sync store asked one, SyncReplay); replaying
+	// that one is listing; epoch is the current one's.
+	gen       uint64
+	due       bool
+	replaying bool
+	epoch     string
+	wake      chan struct{}
 	// limit is ext.SyncPending; after is the backoff's clock (time.After),
 	// a test's own otherwise; warned is when a document that could not be
 	// read was last logged.
@@ -252,6 +254,20 @@ func (a *syncAdapter) mark(key syncKey, rev int64, ref []byte) {
 	a.signal()
 }
 
+// requestReplay asks for a replay in a new epoch, as an overflow does,
+// for the sync store (SyncReplay): a request while one is wanted or
+// listing is that one, so at most one waits and one runs. It never waits
+// for the replay.
+func (a *syncAdapter) requestReplay() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.due || a.replaying {
+		return
+	}
+	a.due = true
+	a.signal()
+}
+
 // clear empties the set. The caller holds mu.
 func (a *syncAdapter) clear() {
 	a.order.Init()
@@ -293,8 +309,13 @@ func (a *syncAdapter) run(ctx context.Context) {
 	for ctx.Err() == nil {
 		a.mu.Lock()
 		if a.due {
+			a.replaying = true
 			a.mu.Unlock()
-			if err := a.replay(ctx); err != nil {
+			err := a.replay(ctx)
+			a.mu.Lock()
+			a.replaying = false
+			a.mu.Unlock()
+			if err != nil {
 				a.warn("sync: the replay could not list the state; it is tried again", err)
 				if !a.backoff(ctx, &delay) {
 					return
@@ -400,7 +421,7 @@ func (a *syncAdapter) replay(ctx context.Context) error {
 	}
 	if a.data != nil {
 		seq := a.data.Seq()
-		for _, dir := range []string{"", "crews", "runs"} {
+		for _, dir := range []string{"", "crews", "runs", "ui"} {
 			docs, err := a.data.ListDocs(dir)
 			if err != nil {
 				return a.redo(gen, err)
@@ -562,7 +583,7 @@ func (a *syncAdapter) deliverData(ctx context.Context, d ext.Doc) error {
 		return err
 	}
 	defer f.Close()
-	if d.Path == catalogFile || strings.HasPrefix(d.Path, "runs/") {
+	if d.Path == catalogFile || strings.HasPrefix(d.Path, "runs/") || strings.HasPrefix(d.Path, "ui/") {
 		b, err := io.ReadAll(f)
 		if err != nil {
 			a.warn("sync: a document could not be read; it is tried again", err)
@@ -570,11 +591,15 @@ func (a *syncAdapter) deliverData(ctx context.Context, d ext.Doc) error {
 		}
 		// The catalog masked; a run's record as its routes answer the run
 		// (crew.Run, encoded again), never what the record keeps beside it
-		// for the server. One that does not decode goes with no data.
+		// for the server; a UI document as it may leave (deliveredUIDoc).
+		// One that does not decode goes with no data.
 		var out []byte
-		if d.Path == catalogFile {
+		switch {
+		case d.Path == catalogFile:
 			out, _ = maskCatalogDoc(b)
-		} else {
+		case strings.HasPrefix(d.Path, "ui/"):
+			out = deliveredUIDoc(d.Path, b)
+		default:
 			out = publicRunDoc(b)
 		}
 		return a.parts(ctx, d, int64(len(out)), func(off int64, p []byte) error {

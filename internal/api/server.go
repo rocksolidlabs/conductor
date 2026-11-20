@@ -113,6 +113,8 @@ type Server struct {
 	log             *slog.Logger
 	web             http.Handler
 	store           *store.Store
+	// uiMu orders the UI documents' reads and writes (ui_state.go).
+	uiMu sync.Mutex
 	// trackers keeps the person's GitHub token (trackers.go); external the
 	// locks of a ticket's GitHub reads (dispatch_external.go).
 	trackers *trackerKeep
@@ -1060,6 +1062,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/switchyard/status", s.requireAdmin(s.handleSwitchyardStatus))
 	mux.HandleFunc("GET /api/export", s.requireAdmin(s.handleExport))
 	mux.HandleFunc("GET /api/capabilities", s.requireAdmin(s.handleCapabilities))
+	mux.HandleFunc("GET /api/ui/{name}", s.requireAdmin(s.handleUIGet))
+	mux.HandleFunc("PUT /api/ui/{name}", s.requireAdmin(s.handleUIPut))
 	mux.HandleFunc("GET /api/signin", s.requireAdmin(s.handleSignIn))
 	mux.HandleFunc("POST /api/signin", s.requireAdmin(s.handleSignInBegin))
 	mux.HandleFunc("DELETE /api/signin", s.requireAdmin(s.handleSignOut))

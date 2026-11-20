@@ -278,6 +278,7 @@ describe('sessionGroups: one Needs you group (UX1 PR-13)', () => {
 
   it('names one fold action per section, in the sidebar\'s order', () => {
     expect(foldActions({ ...DEFAULT_FOLDS }).map((f) => f.label)).toEqual([
+      "Fold the sidebar's Pinned",
       "Fold the sidebar's Needs you",
       "Fold the sidebar's Finished",
       "Fold the sidebar's Working",

@@ -1797,3 +1797,9 @@ export function crewLaunchBody(label: string, revision: string | undefined): Cre
  * `400 invalid_request` past it). The admin's alone: a Brakeman turn's read of the list does not take it.
  */
 export const MAX_TICKET_EXTERNAL_SEARCH = 2048
+
+/**
+ * GET and PUT /api/ui/{layout,palette,pins} (docs/protocol.md; utils/uiState.ts holds each document's content): a document as the
+ * server keeps it, with `at` (when its content last changed) and `by` (the data directory's writer id); `{}` for none.
+ */
+export type UiDocReply = { v?: 1; at?: string; by?: string } & Record<string, unknown>

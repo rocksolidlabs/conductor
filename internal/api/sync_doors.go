@@ -271,3 +271,44 @@ func (h *extHost) DispatchNames(ctx context.Context, names map[string]string) er
 	}
 	return syncRefused(ds.SetNames(ctx, names))
 }
+
+// syncHost says whether this Host is the registered sync store's, on a
+// server that is not a switchyard.
+func (h *extHost) syncHost() error {
+	if err := h.gone(); err != nil {
+		return err
+	}
+	switch {
+	case h.desk || h.name == "" || h.name != h.s.syncName():
+		return fmt.Errorf("%w: only the sync store opens sync's doors", ext.ErrUnsupported)
+	case h.s.cfg.Switchyard.Enabled:
+		return fmt.Errorf("%w: a switchyard keeps no state of the app's screens", ext.ErrUnsupported)
+	}
+	return nil
+}
+
+// SetUIState keeps the UI document name (layout or palette) as another
+// machine left it, with its at and by: refused for one not newer than
+// the one held (ui_state.go).
+func (h *extHost) SetUIState(ctx context.Context, name string, data []byte) error {
+	if err := h.syncHost(); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return h.s.setUIFromElsewhere(name, data)
+}
+
+// SyncReplay asks the adapter for a replay in a new epoch, as its own
+// overflow does; it returns once the request is recorded.
+func (h *extHost) SyncReplay(ctx context.Context) error {
+	if err := h.syncHost(); err != nil {
+		return err
+	}
+	if h.s.syncs == nil {
+		return fmt.Errorf("%w: this server hands nothing to a sync store", ext.ErrUnsupported)
+	}
+	h.s.syncs.requestReplay()
+	return ctx.Err()
+}

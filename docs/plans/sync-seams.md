@@ -1003,6 +1003,24 @@ top** and **Unpin**; pinned sessions are the sidebar's first group
 longer listed is shown greyed and removed after 7 days
 (`utils/pins.ts`).
 
+**As built** (the row's own readings, where the paragraphs above leave a
+choice). The layout's schema is `editor {layout, split, sideSplit}`,
+`sidebar {mode, width, folds}` (the width in rem, the folds by section,
+`pinned` among them), `crewGraph {direction, handoffs, members}`,
+`runView` and `projectView`, each optional and each the setting a
+local-storage key held before, so the cache and the document hold one
+thing. A pin is removed a week after it was pinned once its session is no
+longer listed: a pin keeps only when it was pinned, so "after 7 days" is
+counted from there. A replay request while one is wanted, or while a
+replay is listing, is that one; one made while a replay's documents are
+being handed over waits, so at most one waits and one runs and no request
+is lost (`TestReplayRequestsCoalesce`). The sync store's `SetUIState`
+refuses `pins` and a document whose `at` or `by` is missing or not of its
+shape, as well as an older one. Every Playwright test starts from a fresh
+server's three documents (`uiStateFresh` in `web/e2e/fixtures.ts`), since
+the server keeps them for every browser and one test's fold would be the
+next test's start.
+
 ### `internal/api`, `internal/dispatch`, `ext`, `docs` (OS-1c): the output index and the copied-output check for Dispatch's rows
 
 Cut only once the owner has answered The open question below, which

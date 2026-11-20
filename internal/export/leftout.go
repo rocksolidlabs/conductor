@@ -16,6 +16,7 @@ const (
 	WhyNotRegular = "not a regular file" // a link, a device, a socket, a pipe
 	WhyName       = "unsupported name"   // a name an archive cannot hold, or another spelling of one it holds (Install would refuse it)
 	WhyDerived    = "derived"            // the history's index: a cache of the stores, rebuilt at the next start
+	WhyInstance   = "instance"           // this machine's own: made again where it is absent (ui/writer, the UI documents' writer id)
 )
 
 // leftRule is a row of leftOut: an exact slash path (file), a directory
@@ -45,6 +46,7 @@ var leftOut = []leftRule{
 	{dir: "capacity/run", why: WhyTemporary},
 	{file: "history/index.sqlite", why: WhyDerived},
 	{file: "history/index.sqlite.damaged", why: WhyDerived},
+	{file: "ui/writer", why: WhyInstance},
 	{dir: "tls", why: WhySecret},
 	{dir: "credentials", why: WhySecret},
 	{dir: "ext", why: WhyProvider},

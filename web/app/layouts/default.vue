@@ -13,6 +13,11 @@ const desktopWide = useMedia('(min-width: 64rem)')
 // The decision inbox: read for the whole app, one of the stores of the one number on Needs you (useNeedsYou).
 const inbox = useInbox()
 onMounted(() => inbox.start())
+// The app's screens' state from the server (the layout, the palette's recents, the pins), once a token is held.
+const uiState = useUiState()
+const uiToken = useWorkbenchToken()
+onMounted(() => void uiState.load())
+watch(() => uiToken.token.value, () => void uiState.load())
 const desktop = useDesktop()
 const sidebar = useSidebar()
 const shortcuts = useShortcutsModal()

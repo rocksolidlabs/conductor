@@ -140,6 +140,22 @@ export class Api {
     return r.body
   }
 
+  /**
+   * Puts the app's screens' state back as a fresh server holds it (docs/plans/sync-seams.md, OS-2): an empty layout, no recents, no
+   * pins. The server keeps them for every browser, so what one test left would be the next test's start; every test begins here
+   * (uiStateFresh). A server without the routes answers 404, and nothing is to be put back.
+   */
+  async freshUiState(): Promise<void> {
+    for (const [name, doc] of [
+      ['layout', { v: 1 }],
+      ['palette', { v: 1, recents: {} }],
+      ['pins', { v: 1, pins: [] }],
+    ] as const) {
+      const r = await this.call('PUT', `/api/ui/${name}`, doc)
+      if (r.status >= 300 && r.status !== 404) throw new Error(`PUT /api/ui/${name}: ${r.status} ${JSON.stringify(r.body)}`)
+    }
+  }
+
   crew(id: string) {
     return this.ok<{ crew: E2ECrew }>('GET', `/api/crews/${encodeURIComponent(id)}`).then((r) => r.crew)
   }
@@ -585,7 +601,7 @@ export const DAY_SERVER_END_MS = 15_000
 /** The bound of a day's start and end together: the worker fixture's, and a guard test's day of its own. */
 export const DAY_WORKER_MS = START_WAIT_MS + DAY_RUNS_END_MS + DAY_SESSIONS_END_MS + DAY_SERVER_END_MS
 
-export const test = base.extend<{ api: Api; day: Day; dayPagesClosed: void }, { state: E2EState; dayServer: Day }>({
+export const test = base.extend<{ api: Api; day: Day; dayPagesClosed: void; uiStateFresh: void }, { state: E2EState; dayServer: Day }>({
   state: [
     // eslint-disable-next-line no-empty-pattern
     async ({}, use) => {
@@ -610,6 +626,7 @@ export const test = base.extend<{ api: Api; day: Day; dayPagesClosed: void }, { 
   // the test the contexts dayPage opened are closed, then the guard (day.ts, guard) fails the test naming what the server lists
   // that is not as the day left it (the sessions and runs it added are ended first).
   day: async ({ dayServer }, use) => {
+    await dayServer.api.freshUiState()
     today = dayServer
     try {
       await use(dayServer)
@@ -626,6 +643,14 @@ export const test = base.extend<{ api: Api; day: Day; dayPagesClosed: void }, { 
     async ({}, use) => {
       await use()
       await closeDayContexts()
+    },
+    { auto: true },
+  ],
+  // The app's screens' state, which the server keeps for every browser, as a fresh server holds it at each test's start (Api.freshUiState).
+  uiStateFresh: [
+    async ({ state }, use) => {
+      await new Api(state).freshUiState()
+      await use()
     },
     { auto: true },
   ],
