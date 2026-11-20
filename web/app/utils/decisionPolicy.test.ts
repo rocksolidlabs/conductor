@@ -86,9 +86,11 @@ describe('an override', () => {
   })
 
   it("says an accepted override by its receipt, and nothing for any other answer", () => {
-    expect(overrideLine({ override: true, byName: 'Nate', rationale: 'Ana is away this week', actor: 'admin' })).toBe('Overridden by Nate: Ana is away this week')
-    expect(overrideLine({ override: true, actor: 'admin' })).toBe('Overridden by the operator')
-    expect(overrideLine({ rationale: 'fine', actor: 'admin' })).toBe('')
+    expect(overrideLine({ status: 'accepted', override: true, byName: 'Nate', rationale: 'Ana is away this week', actor: 'admin' })).toBe('Overridden by Nate: Ana is away this week')
+    expect(overrideLine({ status: 'accepted', override: true, actor: 'admin' })).toBe('Overridden by the operator')
+    expect(overrideLine({ status: 'accepted', rationale: 'fine', actor: 'admin' })).toBe('')
+    // A refused answer overrode nothing, whatever its receipt says.
+    expect(overrideLine({ status: 'refused', override: true, rationale: 'Ana is away this week', actor: 'admin' })).toBe('')
   })
 
   it("says the policy's refusals in words", () => {

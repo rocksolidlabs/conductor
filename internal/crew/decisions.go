@@ -1715,6 +1715,9 @@ func respondTx(ltx LedgerTx, run string, n int64, resp Response, actor string, a
 	if rc.Code != "" {
 		status = ledger.ResponseRefused
 		rc.Status = "refused"
+		// A refused answer carries nothing of a router's policy's
+		// judgement: no override, no group, no local policy was answered.
+		rc.Override, rc.Groups, rc.Via, rc.Ref, rc.Policy, rc.PolicyWhy = false, nil, "", "", "", ""
 	} else {
 		rc.Status = "accepted"
 		rc.Words = fmt.Sprintf("Recorded: %s answered by %s", id, nameOf(resp.ByName, actor))

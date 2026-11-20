@@ -117,8 +117,8 @@ export function overrideReasonReady(reason: string): boolean {
 }
 
 /** An accepted override's line, from its receipt: "Overridden by the operator: Ana is away this week". '' for any other receipt. */
-export function overrideLine(r: Pick<ResponseReceipt, 'rationale' | 'byName' | 'actor'> & { override?: boolean }): string {
-  if (!r.override) return ''
+export function overrideLine(r: Pick<ResponseReceipt, 'rationale' | 'byName' | 'actor' | 'status'> & { override?: boolean }): string {
+  if (!r.override || r.status !== 'accepted') return ''
   const who = r.byName || 'the operator'
   return r.rationale ? `Overridden by ${who}: ${r.rationale}` : `Overridden by ${who}`
 }

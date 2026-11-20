@@ -251,6 +251,37 @@ func TestOverrideNoneRefusesTheOperator(t *testing.T) {
 	}
 }
 
+// An override DR1's own checks refuse (a card read at an older rev, a
+// decision Ana has answered) is kept refused with nothing of the policy's
+// judgement: no override, no group, no local policy.
+func TestARefusedOverrideCarriesNoOverride(t *testing.T) {
+	f := newPolicyFixture(t)
+	did := f.routed(t, "r1", "dr-1", anaPolicy(ext.OverrideOperator))
+	f.inForce(did)
+	rev := f.rev(t, did)
+	status, data, out := f.callAs(t, adminToken, http.MethodPost, "/api/decisions/"+did+"/respond", operatorBody("o1", 0, rev-1, true, "Ana is away this week"))
+	if errorCode(out) != crew.CodeStaleDecision {
+		t.Fatalf("an override at rev %d: %d %s", rev-1, status, data)
+	}
+	if status, data, _ := f.respondAs(t, passAna, did, "a1", 0, rev); status != http.StatusCreated {
+		t.Fatalf("ana's answer: %d %s", status, data)
+	}
+	status, data, out = f.callAs(t, adminToken, http.MethodPost, "/api/decisions/"+did+"/respond", operatorBody("o2", 0, rev, true, "Ana is away this week"))
+	if errorCode(out) != crew.CodeDecisionAnswered {
+		t.Fatalf("an override after ana's answer: %d %s", status, data)
+	}
+	for _, k := range []int{1, 3} {
+		rc := f.receiptOf(t, did, k)
+		if rc.Status != "refused" || rc.Override || rc.Groups != nil || rc.Via != "" || rc.Ref != "" || rc.Policy != "" || rc.PolicyWhy != "" {
+			t.Fatalf("the refused override %d's receipt: %+v", k, rc)
+		}
+		raw := f.record(t, did).Responses[k-1].Receipt
+		if strings.Contains(raw, `"override"`) || strings.Contains(raw, `"groups"`) {
+			t.Fatalf("the refused override %d kept %s", k, raw)
+		}
+	}
+}
+
 // Not in force (the router says so, with its why): the operator answers
 // under local/1, no override needed, the receipt keeping local/1 and the
 // why; ana, named by the policy, is refused not_approver.
