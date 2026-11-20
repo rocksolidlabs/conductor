@@ -241,7 +241,10 @@ happen, and what holds it on `main`. "The walk" is WF-1's test.
    page, the item with the brief: what happened, the evidence, the
    uncertainty, a recommendation marked as Brakeman's. The decide page
    a decide principal reads shows the decision's own words and no
-   brief, and so does a link's page of the run. *Holds*: the brief in
+   brief. A link's page of the run keeps Conductor's brief on the
+   record's item as built in #1046; the decision inbox's plan gives a
+   link's item Brakeman's card, and whether a record's item does the
+   same on a link is the owner's to say. *Holds*: the brief in
    Brakeman's records, its card about the decision record (a
    `decision/1` whose `about` is `decision:dr-7`, at the rev its turn
    read, of what its request is about: an unknown, closed or other
