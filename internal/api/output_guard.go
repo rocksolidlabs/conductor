@@ -219,7 +219,6 @@ func (s *Server) settleLoop(ctx context.Context) {
 			return
 		case <-t.C:
 			s.settlePending(ctx)
-			s.settleDecisionParts(ctx)
 		}
 	}
 }

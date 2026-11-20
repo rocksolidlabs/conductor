@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/rocksolidlabs/conductor/ext"
@@ -442,4 +443,19 @@ func (s *Server) withholdDecisionParts(ctx context.Context) bool {
 	}
 	s.decisionPartsWithheld.Store(true)
 	return true
+}
+
+// settleDecisionLoop judges the decisions' pending parts again every
+// settleEvery until ctx ends.
+func (s *Server) settleDecisionLoop(ctx context.Context) {
+	t := time.NewTicker(settleEvery)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			s.settleDecisionParts(ctx)
+		}
+	}
 }
