@@ -126,16 +126,16 @@ test("a ticket's candidate reads its context at every open: a list that grew sho
   await day.part('dispatch')
   const run = contextRun()
   const { page } = await opened(browser, run)
-  // The task route as the stub answers it, but for the rows this test sets: each open's read is counted.
+  // The task route as the stub answers it (t01's one attempt), with the rows this test sets: each open's read is counted.
   let given: unknown[] = ROWS.slice(0, 2)
   let reads = 0
+  const t01 = run.tasks[0]!
   await page.route(
     (u) => u.pathname === `/api/runs/${run.id}/tasks/t01`,
-    async (route) => {
+    (route) => {
       reads++
-      const real = (await (await route.fetch()).json()) as { attempts: Array<Record<string, unknown>> }
-      for (const a of real.attempts) if (a.n === 1) a.context = given
-      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(real) })
+      const body = { task: t01, attempts: [{ ...t01.attempt, context: given }] }
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) })
     },
   )
   budget(LOAD_MS)
