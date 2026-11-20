@@ -770,8 +770,8 @@ CREATE TABLE attempt_context (
 );
 ```
 
-The foreign key is the one every table kept for an attempt has (the
-previews' table, with the same key, among them): a pruned run's rows go
+The foreign key is the one the previews', the checks' and the decision
+refunds' tables have (the previews' with the same key): a pruned run's rows go
 with its attempts, which is what keeps them exactly as long as the
 run's rows (Owner decision 6), and CT-3 writes a row only for an
 attempt that exists, so the key refuses nothing it writes.
