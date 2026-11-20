@@ -8748,6 +8748,23 @@ above, and no field, code or row below is ever written or answered.
 The codes `not_eligible` and `override_refused` are `403`;
 `stale_policy` stays `409`.
 
+**Answers made elsewhere** (`docs/plans/sync-seams.md`, OS-3). With a
+sync store registered, a decision's record may hold a response whose
+authority's `via` is `sync`: an answer made on another machine, handed in
+by the sync store and admitted by the identity provider's own check of its
+signed statement (the statement kept beside the response, its SHA-256 in
+the authority with the provider's ids of the answer, `held` and `fence`).
+Its actor is `user:<subject>`; it is counted, rechecked before it is
+applied and superseded when the recheck refuses it, as an identity's
+answer is, and never superseded for a restart. Two kept refusals are its
+own: `403 answered_at_server` ("dr-7 is answered at its server, by the
+operator or the people its router names, at the server's own routes: an
+answer given elsewhere is not taken here") while the registered router
+confirms policies, and `403 not_approver` for a comparison's selection
+("dr-12 is a comparison's selection: it is answered only at this
+server"). No route takes such an answer; a route reads it as any other
+response.
+
 ### Capacity
 
 An **account** is a reference to an agent's own login on this server

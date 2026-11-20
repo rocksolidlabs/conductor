@@ -123,6 +123,9 @@ type Server struct {
 	// decisionPartsWithheld is set once the decision parts a process
 	// before this one left pending are withheld (withholdDecisionParts).
 	decisionPartsWithheld atomic.Bool
+	// recheckAfter, when set, is what a held answer's recheck waits on
+	// between asks (time.After): a test's seam.
+	recheckAfter func(time.Duration) <-chan time.Time
 	// trackers keeps the person's GitHub token (trackers.go); external the
 	// locks of a ticket's GitHub reads (dispatch_external.go).
 	trackers *trackerKeep
@@ -805,6 +808,9 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 			// (another server holds the owner lock, for a while after a
 			// restart), or with none, managed launches are refused and
 			// legacy runs work.
+			// A held answer waits for AdmitsAnswer again before it is
+			// applied (sync_answers.go).
+			s.runs.SetRecheck(s.recheckHeld)
 			s.runs.UseLedger(crew.SQLLedgerTold(s.ledger, s.decisionTold))
 			// The text of the context each attempt is given, beside the
 			// ledger's rows (crew/attempt_context.go): without it no

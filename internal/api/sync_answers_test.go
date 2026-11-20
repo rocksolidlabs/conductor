@@ -1,0 +1,640 @@
+package api
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"io"
+	"log/slog"
+	"net/http"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/rocksolidlabs/conductor/ext"
+	"github.com/rocksolidlabs/conductor/ext/local"
+	"github.com/rocksolidlabs/conductor/internal/crew"
+	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
+)
+
+// Held answers handed in by the sync store (sync_answers.go). The fake
+// identity provider decides each AdmitsAnswer by its admit function and
+// keeps what it was asked; the fake sync store is the only provider whose
+// Host opens the doors.
+
+// answerAsk is one AdmitsAnswer the fake was asked.
+type answerAsk struct {
+	check ext.AnswerCheck
+	grant ext.Grant
+}
+
+// answerIdentity is an identity provider that admits no token and judges
+// held answers by admit.
+type answerIdentity struct {
+	mu    sync.Mutex
+	admit func(a ext.AnswerCheck, g ext.Grant) ext.Admission
+	asked []answerAsk
+	ch    chan struct{}
+}
+
+func (*answerIdentity) Name() string { return "ids" }
+
+func (*answerIdentity) Authenticate(context.Context, string) (ext.Principal, bool, error) {
+	return ext.Principal{}, false, nil
+}
+
+func (p *answerIdentity) AdmitsAnswer(_ context.Context, a ext.AnswerCheck, g ext.Grant) (ext.Admission, error) {
+	p.mu.Lock()
+	p.asked = append(p.asked, answerAsk{a, g})
+	admit := p.admit
+	p.mu.Unlock()
+	select {
+	case p.ch <- struct{}{}:
+	default:
+	}
+	return admit(a, g), nil
+}
+
+func (p *answerIdentity) set(admit func(ext.AnswerCheck, ext.Grant) ext.Admission) {
+	p.mu.Lock()
+	p.admit = admit
+	p.mu.Unlock()
+}
+
+func (p *answerIdentity) asks() []answerAsk {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]answerAsk(nil), p.asked...)
+}
+
+// waitAsks waits until the fake has been asked n times.
+func (p *answerIdentity) waitAsks(t *testing.T, n int) []answerAsk {
+	t.Helper()
+	end := time.After(testWait)
+	for {
+		if a := p.asks(); len(a) >= n {
+			return a
+		}
+		select {
+		case <-p.ch:
+		case <-end:
+			t.Fatalf("the identity provider was asked %d times, not %d", len(p.asks()), n)
+		}
+	}
+}
+
+func always(adm ext.Admission) func(ext.AnswerCheck, ext.Grant) ext.Admission {
+	return func(ext.AnswerCheck, ext.Grant) ext.Admission { return adm }
+}
+
+// heldFixture is a decisionFixture with a sync store and the fake identity
+// provider, and the sync store's Host.
+type heldFixture struct {
+	*decisionFixture
+	id    *answerIdentity
+	store *fakeSync
+	h     *extHost
+	// waits is what a held answer's recheck waits on between its asks.
+	waits chan chan time.Time
+}
+
+func newHeldFixture(t *testing.T) *heldFixture {
+	t.Helper()
+	id := &answerIdentity{admit: always(ext.AdmitYes), ch: make(chan struct{}, 1)}
+	f := newFakeSync()
+	opt := WithExtensions(local.Fill(ext.Providers{Identity: id, Continuity: f, All: []ext.Entry{
+		{Kind: ext.KindIdentity, Name: id.Name(), Value: id}, {Kind: ext.KindSync, Name: f.Name(), Value: f},
+	}}))
+	df := newDecisionFixture(t, nil, slog.New(slog.NewTextHandler(io.Discard, nil)), opt)
+	hf := &heldFixture{decisionFixture: df, id: id, store: f, h: &extHost{s: df.srv, name: f.Name(), ctx: context.Background()}, waits: make(chan chan time.Time, 16)}
+	df.srv.recheckAfter = func(time.Duration) <-chan time.Time {
+		ch := make(chan time.Time, 1)
+		hf.waits <- ch
+		return ch
+	}
+	return hf
+}
+
+// held is subject's held answer to did at rev, the option choice.
+func held(did, responseID, subject string, choice, rev int) ext.HeldAnswer {
+	at := time.Date(2026, 11, 20, 9, 0, 0, 0, time.UTC)
+	return ext.HeldAnswer{Decision: did, ExpectedRev: rev, ResponseID: responseID, Choice: &choice, HeldAt: at, Held: "h-" + responseID, Fence: "f-1",
+		Check: ext.AnswerCheck{Subject: subject, Membership: "m-1", SignIn: "s-1", At: at, Statement: "statement of " + responseID,
+			Decision: did, ResponseID: responseID, ExpectedRev: rev}}
+}
+
+// hand hands r in and fails t on an error.
+func (f *heldFixture) hand(t *testing.T, r ext.HeldAnswer) ext.AnswerOutcome {
+	t.Helper()
+	out, err := f.h.RespondDecision(context.Background(), r)
+	if err != nil {
+		t.Fatalf("the hand-in of %s: %v", r.ResponseID, err)
+	}
+	if err := out.Valid(); err != nil {
+		t.Fatalf("the outcome %+v: %v", out, err)
+	}
+	return out
+}
+
+// rec is decision did's record.
+func (f *heldFixture) rec(t *testing.T, did string) ledger.DecisionRecord {
+	t.Helper()
+	n, _ := ledger.ParseDecisionID(did)
+	rec, ok, err := f.srv.ledger.Decision(t.Context(), n)
+	if err != nil || !ok {
+		t.Fatalf("%s: %v %v", did, ok, err)
+	}
+	return rec
+}
+
+// unchanged fails t unless did's record is at rev with n responses.
+func (f *heldFixture) unchanged(t *testing.T, did string, rev, n int) {
+	t.Helper()
+	if rec := f.rec(t, did); rec.Rev != rev || len(rec.Responses) != n {
+		t.Fatalf("%s changed: rev %d, %d responses", did, rec.Rev, len(rec.Responses))
+	}
+}
+
+// open opens an approval of the attempt and answers its id.
+func (f *heldFixture) open(t *testing.T, requestID string) string {
+	t.Helper()
+	return entityOf(t, f.ask(t, approvalBody(requestID), http.StatusCreated, ""), "decision")["id"].(string)
+}
+
+// An answer is recorded only once the identity provider admits it, asked
+// with the admin grant and the content and request hashes the server
+// computed (never the ones handed in); a no is not_approver and an
+// unknown is unknown_authority, and neither writes a row; a server with no
+// provider that checks held answers takes none.
+func TestRespondDecisionNeedsAdmits(t *testing.T) {
+	f := newHeldFixture(t)
+	did := f.open(t, "q1")
+	for _, c := range []struct {
+		adm    ext.Admission
+		status string
+		code   string
+	}{
+		{ext.AdmitNo, ext.AnswerRefused, crew.CodeNotApprover},
+		{ext.AdmitUnknown, ext.AnswerUnknownAuthority, ""},
+	} {
+		f.id.set(always(c.adm))
+		out := f.hand(t, held(did, "h-no", "ana", 0, 1))
+		if out.Status != c.status || out.Code != c.code {
+			t.Fatalf("admission %d: %+v", c.adm, out)
+		}
+		f.unchanged(t, did, 1, 0)
+	}
+	f.id.set(always(ext.AdmitYes))
+	r := held(did, "h1", "ana", 0, 1)
+	r.Check.ContentSHA256, r.Check.RequestSHA256 = "forged", "forged"
+	out := f.hand(t, r)
+	if out.Status != ext.AnswerRecorded || out.Repeat {
+		t.Fatalf("admitted: %+v", out)
+	}
+	asks := f.id.asks()
+	last := asks[len(asks)-1]
+	doc, _, _ := f.srv.decisionDoc(t.Context(), 1)
+	if last.grant != ext.GrantAdmin || last.check.RequestSHA256 != doc.RequestSHA256 || last.check.ContentSHA256 != ext.AnswerContentSHA256(r.Choice, "", "") {
+		t.Fatalf("the provider was asked %+v", last)
+	}
+	rec := f.rec(t, did)
+	if len(rec.Responses) != 1 || rec.Responses[0].Actor != "user:ana" || rec.State != ledger.DecisionAnswered {
+		t.Fatalf("the record: %+v", rec.Responses)
+	}
+}
+
+// With no identity provider that checks held answers, none is taken.
+func TestNoSubjectCheckerTakesNoHeldAnswer(t *testing.T) {
+	f := newFakeSync()
+	plain := &tokenIdentity{known: map[string]ext.Principal{}}
+	opt := WithExtensions(local.Fill(ext.Providers{Identity: plain, Continuity: f, All: []ext.Entry{
+		{Kind: ext.KindIdentity, Name: "ids", Value: plain}, {Kind: ext.KindSync, Name: f.Name(), Value: f},
+	}}))
+	df := newDecisionFixture(t, nil, nil, opt)
+	did := entityOf(t, df.ask(t, approvalBody("q1"), http.StatusCreated, ""), "decision")["id"].(string)
+	h := &extHost{s: df.srv, name: f.Name(), ctx: context.Background()}
+	out, err := h.RespondDecision(context.Background(), held(did, "h1", "ana", 0, 1))
+	if err != nil || out.Status != ext.AnswerRefused || out.Code != crew.CodeNotApprover {
+		t.Fatalf("a held answer with no checker: %+v %v", out, err)
+	}
+}
+
+// An unknown admission writes nothing: no row, no statement, no rev.
+func TestUnknownAdmissionWritesNothing(t *testing.T) {
+	f := newHeldFixture(t)
+	did := f.open(t, "q1")
+	f.id.set(always(ext.AdmitUnknown))
+	if out := f.hand(t, held(did, "h1", "ana", 0, 1)); out.Status != ext.AnswerUnknownAuthority {
+		t.Fatalf("%+v", out)
+	}
+	f.unchanged(t, did, 1, 0)
+	if _, ok, _ := f.srv.ledger.Statement(t.Context(), 1, 1); ok {
+		t.Fatal("a statement was kept")
+	}
+	// Asked again once the provider can say: recorded.
+	f.id.set(always(ext.AdmitYes))
+	if out := f.hand(t, held(did, "h1", "ana", 0, 1)); out.Status != ext.AnswerRecorded {
+		t.Fatalf("%+v", out)
+	}
+}
+
+// One answer lands once whatever the provider repeats: a repeat is the
+// recorded receipt, marked repeat, the provider not asked again and
+// nothing written; the same response id with another content is
+// response_conflict; applied once.
+func TestHeldAnswerRecordedOnceAndRepeat(t *testing.T) {
+	f := newHeldFixture(t)
+	did := f.open(t, "q1")
+	r := held(did, "h1", "ana", 0, 1)
+	first := f.hand(t, r)
+	if first.Status != ext.AnswerRecorded {
+		t.Fatalf("%+v", first)
+	}
+	f.decisionWhen(t, did, "applied", inState(ledger.DecisionApplied))
+	asked := len(f.id.asks())
+	rev := f.rec(t, did).Rev
+	for range 3 {
+		again := f.hand(t, r)
+		if again.Status != ext.AnswerRecorded || !again.Repeat {
+			t.Fatalf("the repeat: %+v", again)
+		}
+	}
+	other := held(did, "h1", "ana", 1, 1)
+	if out := f.hand(t, other); out.Status != ext.AnswerRefused || out.Code != crew.CodeResponseConflict {
+		t.Fatalf("another content under the same id: %+v", out)
+	}
+	if n := len(f.id.asks()); n != asked {
+		t.Fatalf("the provider was asked %d more times", n-asked)
+	}
+	f.unchanged(t, did, rev, 1)
+}
+
+// A kept refusal of a held answer is refused again from its row: an
+// answer handed in after the decision was answered here, a late one
+// (stale rev), and two hand-ins out of order (the second first).
+func TestRepeatOfARefusalIsRefused(t *testing.T) {
+	f := newHeldFixture(t)
+	did := f.open(t, "q1")
+	if out := f.hand(t, held(did, "h2", "bob", 1, 1)); out.Status != ext.AnswerRecorded {
+		t.Fatalf("the second answer first: %+v", out)
+	}
+	late := held(did, "h1", "ana", 0, 1)
+	out := f.hand(t, late)
+	if out.Status != ext.AnswerRefused || out.Code != crew.CodeDecisionAnswered {
+		t.Fatalf("the first answer after the second: %+v", out)
+	}
+	// The asks of h1 alone: h2's recheck at its application asks of h2 at
+	// a moment of its own.
+	asked := asksOf(f.id.asks(), "h1")
+	again := f.hand(t, late)
+	if again.Status != ext.AnswerRefused || again.Code != crew.CodeDecisionAnswered || !again.Repeat {
+		t.Fatalf("the refusal again: %+v", again)
+	}
+	if asksOf(f.id.asks(), "h1") != asked {
+		t.Fatal("the provider was asked again for a refusal kept")
+	}
+	if rec := f.rec(t, did); len(rec.Responses) != 2 {
+		t.Fatalf("%d responses", len(rec.Responses))
+	}
+	stale := f.open(t, "q2")
+	f.expect(t, http.MethodPost, "/api/decisions/"+stale+"/comment", map[string]any{"opId": "c1", "kind": "comment", "text": "one more thing", "expectedRev": 1}, http.StatusOK, "")
+	if out := f.hand(t, held(stale, "h3", "ana", 0, 1)); out.Status != ext.AnswerRefused || out.Code != crew.CodeStaleDecision {
+		t.Fatalf("a late answer: %+v", out)
+	}
+}
+
+// A held answer to a run the engine does not hold is not_held, nothing
+// written: the provider keeps it to hand in again.
+func TestHeldAnswerToAStoppedRunIsNotHeld(t *testing.T) {
+	f := newHeldFixture(t)
+	did := f.open(t, "q1")
+	f.expect(t, http.MethodPost, "/api/runs/"+f.run+"/stop", nil, http.StatusOK, "")
+	if out := f.hand(t, held(did, "h1", "ana", 0, 1)); out.Status != ext.AnswerNotHeld {
+		t.Fatalf("%+v", out)
+	}
+	f.unchanged(t, did, 1, 0)
+}
+
+// A forged hand-in is refused, nothing written: a statement the provider
+// cannot verify (made for another server, another decision, response id or
+// content); a check naming another decision, response or rev than its
+// answer; a Host that is not the sync store's.
+func TestForgedHeldAnswerRefused(t *testing.T) {
+	f := newHeldFixture(t)
+	did := f.open(t, "q1")
+	f.id.set(func(a ext.AnswerCheck, _ ext.Grant) ext.Admission {
+		if a.Statement == "statement of h-good" {
+			return ext.AdmitYes
+		}
+		return ext.AdmitNo
+	})
+	if out := f.hand(t, held(did, "h-forged", "ana", 0, 1)); out.Status != ext.AnswerRefused || out.Code != crew.CodeNotApprover {
+		t.Fatalf("an unverified statement: %+v", out)
+	}
+	for name, mutate := range map[string]func(*ext.HeldAnswer){
+		"another decision in the check": func(r *ext.HeldAnswer) { r.Check.Decision = "dr-99" },
+		"another response id":           func(r *ext.HeldAnswer) { r.Check.ResponseID = "other" },
+		"another rev":                   func(r *ext.HeldAnswer) { r.Check.ExpectedRev = 2 },
+		"no fence":                      func(r *ext.HeldAnswer) { r.Fence = "" },
+		"a sign-in and a device":        func(r *ext.HeldAnswer) { r.Check.AppDevice = "d-1" },
+		"no statement":                  func(r *ext.HeldAnswer) { r.Check.Statement = "" },
+	} {
+		r := held(did, "h-good", "ana", 0, 1)
+		mutate(&r)
+		if _, err := f.h.RespondDecision(context.Background(), r); !errors.Is(err, ext.ErrRefused) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	other := &extHost{s: f.srv, name: "another", ctx: context.Background()}
+	if _, err := other.RespondDecision(context.Background(), held(did, "h-good", "ana", 0, 1)); !errors.Is(err, ext.ErrUnsupported) {
+		t.Fatalf("another provider's Host: %v", err)
+	}
+	f.unchanged(t, did, 1, 0)
+}
+
+// A statement made for one decision's request part is refused for
+// another's, though the two ask the same question: the server shows the
+// provider the hash of its own record's part.
+func TestSubstitutedAnswerRefused(t *testing.T) {
+	f := newHeldFixture(t)
+	one := f.open(t, "q1")
+	two := f.open(t, "q2")
+	d1, _, _ := f.srv.decisionDoc(t.Context(), 1)
+	signed := held(one, "h1", "ana", 0, 1)
+	f.id.set(func(a ext.AnswerCheck, _ ext.Grant) ext.Admission {
+		// The statement signs dr-1's request part alone.
+		if a.Statement == signed.Check.Statement && a.RequestSHA256 == d1.RequestSHA256 {
+			return ext.AdmitYes
+		}
+		return ext.AdmitNo
+	})
+	sub := held(two, "h1", "ana", 0, 1)
+	sub.Check.Statement = signed.Check.Statement
+	sub.Check.RequestSHA256 = d1.RequestSHA256
+	if out := f.hand(t, sub); out.Status != ext.AnswerRefused || out.Code != crew.CodeNotApprover {
+		t.Fatalf("dr-1's statement on dr-2: %+v", out)
+	}
+	f.unchanged(t, two, 1, 0)
+	if out := f.hand(t, signed); out.Status != ext.AnswerRecorded {
+		t.Fatalf("dr-1's own: %+v", out)
+	}
+}
+
+// Where the router confirms policies every held answer is refused
+// answered_at_server, final, nothing written, neither the router nor the
+// identity provider asked, whatever the provider would say.
+func TestHeldAnswerRefusedWhereTheRouterConfirmsPolicies(t *testing.T) {
+	f := newHeldFixture(t)
+	did := f.open(t, "q1")
+	routerAsked := 0
+	f.srv.runs.SetRouterPolicies(true, func(context.Context, ledger.DecisionRecord, string, string) ext.Confirmation {
+		routerAsked++
+		return ext.Confirmation{}
+	})
+	for _, adm := range []ext.Admission{ext.AdmitYes, ext.AdmitUnknown} {
+		f.id.set(always(adm))
+		out := f.hand(t, held(did, "h1", "ana", 0, 1))
+		if out.Status != ext.AnswerRefused || out.Code != crew.CodeAnsweredAtServer || !strings.Contains(out.Words, "an answer given elsewhere is not taken here") {
+			t.Fatalf("%+v", out)
+		}
+	}
+	if n := len(f.id.asks()); n != 0 || routerAsked != 0 {
+		t.Fatalf("asked: the provider %d, the router %d", n, routerAsked)
+	}
+	f.unchanged(t, did, 1, 0)
+}
+
+// The held answer's id and fence are written with its row, in DR1's
+// transaction: the accepted one's and a kept refusal's; a hand-in refused
+// before DR1 leaves none.
+func TestFenceWrittenInDR1sTransaction(t *testing.T) {
+	f := newHeldFixture(t)
+	did := f.open(t, "q1")
+	f.id.set(always(ext.AdmitUnknown))
+	f.hand(t, held(did, "h0", "ana", 0, 1))
+	f.id.set(always(ext.AdmitYes))
+	f.hand(t, held(did, "h1", "ana", 0, 1))
+	r := held(did, "h2", "bob", 1, 1)
+	r.Fence = "f-2"
+	f.hand(t, r)
+	rec := f.rec(t, did)
+	if len(rec.Responses) != 2 {
+		t.Fatalf("%d rows", len(rec.Responses))
+	}
+	for i, want := range []struct{ held, fence, status string }{{"h-h1", "f-1", ledger.ResponseAccepted}, {"h-h2", "f-2", ledger.ResponseRefused}} {
+		var a crew.Authority
+		_ = json.Unmarshal([]byte(rec.Responses[i].Authority), &a)
+		if a.Held != want.held || a.Fence != want.fence || rec.Responses[i].Status != want.status || a.Via != crew.ViaSync {
+			t.Errorf("row %d: %+v %s", i, a, rec.Responses[i].Status)
+		}
+	}
+}
+
+// SyncDelivery reads what the ledger holds for a held answer, its outcome
+// as a repeat's and its fence, and writes nothing; LastDecision is the
+// ledger's highest decision.
+func TestSyncDeliveryReadsAndNeverWrites(t *testing.T) {
+	f := newHeldFixture(t)
+	did := f.open(t, "q1")
+	if _, _, ok, err := f.h.SyncDelivery(t.Context(), did, "h1"); err != nil || ok {
+		t.Fatalf("before the hand-in: %v %v", ok, err)
+	}
+	f.hand(t, held(did, "h1", "ana", 0, 1))
+	f.decisionWhen(t, did, "applied", inState(ledger.DecisionApplied))
+	rec := f.rec(t, did)
+	out, fence, ok, err := f.h.SyncDelivery(t.Context(), did, "h1")
+	if err != nil || !ok || fence != "f-1" || out.Status != ext.AnswerRecorded || !out.Repeat || out.Valid() != nil {
+		t.Fatalf("the delivery: %+v %q %v %v", out, fence, ok, err)
+	}
+	f.unchanged(t, did, rec.Rev, len(rec.Responses))
+	other := &extHost{s: f.srv, name: "another", ctx: context.Background()}
+	if _, _, _, err := other.SyncDelivery(t.Context(), did, "h1"); !errors.Is(err, ext.ErrUnsupported) {
+		t.Fatalf("another provider's Host: %v", err)
+	}
+}
+
+// LastDecision reads the ledger's highest decision number.
+func TestLastDecisionReadsTheLedger(t *testing.T) {
+	f := newHeldFixture(t)
+	if n, err := f.h.LastDecision(t.Context()); err != nil || n != 0 {
+		t.Fatalf("with none: %d %v", n, err)
+	}
+	f.open(t, "q1")
+	f.open(t, "q2")
+	if n, err := f.h.LastDecision(t.Context()); err != nil || n != 2 {
+		t.Fatalf("with two: %d %v", n, err)
+	}
+}
+
+// At application a held answer is asked of the provider again from what
+// the ledger keeps: while it cannot say, the decision stays answered and
+// is asked again after the backoff, never applied and never superseded;
+// once it says yes, applied.
+func TestViaSyncUnknownWaitsAndNeverSupersedes(t *testing.T) {
+	f := newHeldFixture(t)
+	did := f.open(t, "q1")
+	f.id.set(func(a ext.AnswerCheck, g ext.Grant) ext.Admission {
+		if len(f.id.asks()) == 1 {
+			return ext.AdmitYes // the door's
+		}
+		return ext.AdmitUnknown
+	})
+	f.hand(t, held(did, "h1", "ana", 0, 1))
+	asks := f.id.waitAsks(t, 2)
+	if asks[1].check.Statement != "statement of h1" || asks[1].grant != ext.GrantAdmin || asks[1].check.ContentSHA256 != asks[0].check.ContentSHA256 ||
+		asks[1].check.RequestSHA256 != asks[0].check.RequestSHA256 || asks[1].check.ExpectedRev != 1 {
+		t.Fatalf("the recheck was asked %+v, the door %+v", asks[1], asks[0])
+	}
+	for i := range 3 {
+		var wait chan time.Time
+		select {
+		case wait = <-f.waits:
+		case <-time.After(testWait):
+			t.Fatal("the recheck never waited to ask again")
+		}
+		if rec := f.rec(t, did); rec.State != ledger.DecisionAnswered {
+			t.Fatalf("after %d unknowns: %s", i+1, rec.State)
+		}
+		wait <- time.Now()
+		f.id.waitAsks(t, 3+i)
+	}
+	if rec := f.rec(t, did); rec.State != ledger.DecisionAnswered || rec.Applied != "" {
+		t.Fatalf("after the unknowns: %s", rec.State)
+	}
+	f.id.set(always(ext.AdmitYes))
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		for {
+			select {
+			case w := <-f.waits:
+				w <- time.Now()
+			case <-done:
+				return
+			}
+		}
+	}()
+	f.decisionWhen(t, did, "applied", inState(ledger.DecisionApplied))
+}
+
+// A sign-in revoked after the answer was handed in: the recheck says no
+// and the decision is superseded, its answer never applied.
+func TestRevokedSignInAfterDeliveryNotApplied(t *testing.T) {
+	f := newHeldFixture(t)
+	did := f.open(t, "q1")
+	f.id.set(func(ext.AnswerCheck, ext.Grant) ext.Admission {
+		if len(f.id.asks()) == 1 {
+			return ext.AdmitYes
+		}
+		return ext.AdmitNo
+	})
+	f.hand(t, held(did, "h1", "ana", 0, 1))
+	d := f.decisionWhen(t, did, "superseded", inState(ledger.DecisionSuperseded))
+	if d["applied"] != nil || !strings.Contains(d["why"].(string), "user:ana's answer could not be rechecked") {
+		t.Fatalf("%v", d)
+	}
+}
+
+// A held answer at every field's bound, its statement 2 KiB, is recorded:
+// its authority keeps within the ledger's bound; one past 2 KiB is refused
+// by HeldAnswer.Valid.
+func TestSyncAuthorityAtEveryBoundRecorded(t *testing.T) {
+	f := newHeldFixture(t)
+	did := f.open(t, "q1")
+	r := held(did, strings.Repeat("r", 32), strings.Repeat("s", ext.MaxSubject), 0, 1)
+	id64 := strings.Repeat("i", ext.MaxHeldID)
+	r.Check.Membership, r.Check.SignIn, r.Held, r.Fence = id64, id64, id64, id64
+	r.Check.At = time.Date(2026, 11, 20, 9, 0, 0, 123456789, time.FixedZone("x", 3600))
+	r.Check.Statement = strings.Repeat("t", ext.MaxStatement)
+	if out := f.hand(t, r); out.Status != ext.AnswerRecorded {
+		t.Fatalf("%+v", out)
+	}
+	rec := f.rec(t, did)
+	if n := len(rec.Responses[0].Authority); n > 700 {
+		t.Fatalf("the authority is %d bytes", n)
+	}
+	r.Check.Statement += "t"
+	r.ResponseID = "past"
+	r.Check.ResponseID = "past"
+	if _, err := f.h.RespondDecision(context.Background(), r); !errors.Is(err, ext.ErrRefused) {
+		t.Fatalf("a statement past its bound: %v", err)
+	}
+}
+
+// A decision given to the decide grant is asked of the provider with the
+// decide grant, and a decide principal's held answer to it is recorded;
+// its document says it is opened to the grant.
+func TestHeldAnswerToAGivenDecisionAsksDecide(t *testing.T) {
+	f := newHeldFixture(t)
+	did := f.open(t, "q1")
+	f.expect(t, http.MethodPost, "/api/decisions/"+did+"/route", map[string]any{"opId": "give-1", "to": map[string]any{"kind": "grant", "grant": "decide"}, "expectedRev": 1}, http.StatusOK, "")
+	rev := f.rec(t, did).Rev
+	f.id.set(func(_ ext.AnswerCheck, g ext.Grant) ext.Admission {
+		if g == ext.GrantDecide {
+			return ext.AdmitYes
+		}
+		return ext.AdmitNo
+	})
+	if doc, _, _ := f.srv.decisionDoc(t.Context(), 1); doc.OpenedTo != ext.DecisionOpenedToDecide {
+		t.Fatalf("opened to %q", doc.OpenedTo)
+	}
+	if out := f.hand(t, held(did, "h1", "dan", 0, rev)); out.Status != ext.AnswerRecorded {
+		t.Fatalf("%+v", out)
+	}
+	var a crew.Authority
+	_ = json.Unmarshal([]byte(f.rec(t, did).Responses[0].Authority), &a)
+	if a.Grant != string(ext.GrantDecide) || a.Subject != "dan" {
+		t.Fatalf("the authority: %+v", a)
+	}
+	// An operator's decision asks admin, which dan does not hold.
+	other := f.open(t, "q2")
+	if out := f.hand(t, held(other, "h2", "dan", 0, 1)); out.Status != ext.AnswerRefused || out.Code != crew.CodeNotApprover {
+		t.Fatalf("dan on the operator's decision: %+v", out)
+	}
+}
+
+// What the door refuses before the provider is asked, nothing written: a
+// request kept on the machine, a choice past the options, a text the
+// ledger would keep other than signed.
+func TestHeldAnswerRefusedBeforeItIsAsked(t *testing.T) {
+	f := newHeldFixture(t)
+	did := f.open(t, "q1")
+	choice := held(did, "h1", "ana", 2, 1)
+	if out := f.hand(t, choice); out.Status != ext.AnswerRefused || out.Code != crew.CodeInvalid {
+		t.Fatalf("a choice past the options: %+v", out)
+	}
+	spaced := held(did, "h2", "ana", 0, 1)
+	spaced.Text = "yes "
+	if out := f.hand(t, spaced); out.Status != ext.AnswerRefused || out.Code != crew.CodeInvalid {
+		t.Fatalf("a text the ledger would keep otherwise: %+v", out)
+	}
+	db, err := sql.Open("sqlite", "file:"+filepath.Join(f.srv.store.Dir(), "runs", ledger.File)+"?_pragma=busy_timeout(10000)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec("UPDATE decision_output SET verdict = 'output', cut_at = 0 WHERE decision = 1 AND part = 'question'"); err != nil {
+		t.Fatal(err)
+	}
+	if out := f.hand(t, held(did, "h3", "ana", 0, 1)); out.Status != ext.AnswerRefused || out.Code != crew.CodeNotApprover || !strings.Contains(out.Words, "request is kept on its server") {
+		t.Fatalf("a kept request: %+v", out)
+	}
+	if n := len(f.id.asks()); n != 0 {
+		t.Fatalf("the provider was asked %d times", n)
+	}
+	f.unchanged(t, did, 1, 0)
+}
+
+// asksOf counts the asks of the response id.
+func asksOf(asks []answerAsk, responseID string) int {
+	n := 0
+	for _, a := range asks {
+		if a.check.ResponseID == responseID {
+			n++
+		}
+	}
+	return n
+}
