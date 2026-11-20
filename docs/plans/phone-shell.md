@@ -1524,8 +1524,9 @@ Swift package with no package of anyone else's):
   wait has a bound of its own, so one never answered is reported, not
   waited on. It passes only on `ready platform=ios plugins=ok probes=ok
   dropped=8 refused=5 violations=0`, then finds Open a server's address
-  field; the test keeps the last report it read, so a failure says how
-  far the check got even when a probe ended the app.
+  field; the test names each report it reads as a step the run's log
+  shows, so the log says how far the check got even when a probe ended
+  the app.
 
 **Every way a page reaches native code** (as built, read from the
 pinned runtime's own source, `@capacitor/ios` 8.6.0, and its App,

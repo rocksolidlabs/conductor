@@ -17,24 +17,22 @@ final class ShellBootsUnderItsPolicyTests: XCTestCase {
         XCTAssertTrue(report.waitForExistence(timeout: 120), "the boot check's report was not shown:\n\(app.debugDescription)")
         // The page reports ready once it has drawn Open a server (the first start of a fresh simulator can take minutes), and the
         // gates' counts come from native code as each probe reaches it, some after the page's own report. The report is polled until
-        // it is the whole one (each count only grows), the app has ended or the bound has passed; the last one read is kept, so that a
-        // failure says how far the check got and what the gates refused, even when a probe ended the app.
+        // it is the whole one (each count only grows), the app has ended or the bound has passed.
         let expected = "ready platform=ios plugins=ok probes=ok dropped=8 refused=5 violations=0"
         var last = "", refused = ""
-        // A probe that ends the app makes the read under way fail: the poll goes on past that failure (its read kept only when it
-        // answered), so that the assertion below still names the last report read.
-        continueAfterFailure = true
+        // Each report read that differs from the one before is named as a step of the test, which the run's log shows: a probe that
+        // ends the app ends the test at the read under way, and the log still says how far the check got and what the gates refused.
         let deadline = Date().addingTimeInterval(240)
         while Date() < deadline, app.state == .runningForeground {
             let read = report.label
-            if !read.isEmpty {
+            if read != last {
                 last = read
                 refused = String(describing: report.value)
+                XCTContext.runActivity(named: "The boot check's report: \(last); what the gates refused: \(refused)") { _ in }
             }
             if last == expected { break }
             RunLoop.current.run(until: Date().addingTimeInterval(1))
         }
-        continueAfterFailure = false
         XCTAssertEqual(last, expected, "the app \(app.state == .runningForeground ? "is running" : "has ended"); what the gates refused: \(refused)")
         // Open a server's first control, as a person meets it.
         let address = app.descendants(matching: .textField)["Server address"]
