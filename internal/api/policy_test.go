@@ -743,16 +743,19 @@ func TestRetoldRecordWithAPolicyWritesNothing(t *testing.T) {
 	before := f.record(t, did)
 	other := anaPolicy(ext.OverrideNone)
 	other.Revision = "exttest-r2"
-	// The router's one routed row answers it as its repeat.
-	if rc, err := f.srv.runs.RoutePolicy(t.Context(), did, "switchman", before.Rev, other, nil, ""); err != nil || !rc.Repeat {
-		t.Fatalf("a second policy: %+v %v", rc, err)
+	// The same policy is its repeat: its first receipt.
+	if rc, err := f.srv.runs.RoutePolicy(t.Context(), did, "switchman", before.Rev, anaPolicy(ext.OverrideOperator), nil, ""); err != nil || !rc.Repeat {
+		t.Fatalf("the same policy again: %+v %v", rc, err)
 	}
-	// Another router's name (the module registered again under a new
-	// one) is refused: a change of policy is a re-route's.
-	_, err := f.srv.runs.RoutePolicy(t.Context(), did, "relay", before.Rev, other, nil, "")
-	var de *crew.DecisionError
-	if !errors.As(err, &de) || de.Code != crew.CodeRoutedByPolicy {
-		t.Fatalf("a second router's policy: %v", err)
+	// Another revision is no repeat of it, by the same router or by
+	// another router's name (the module registered again under a new
+	// one): refused, a change of policy being a re-route's.
+	for _, by := range []string{"switchman", "relay"} {
+		_, err := f.srv.runs.RoutePolicy(t.Context(), did, by, before.Rev, other, nil, "")
+		var de *crew.DecisionError
+		if !errors.As(err, &de) || de.Code != crew.CodeRoutedByPolicy {
+			t.Fatalf("a second policy by %s: %v", by, err)
+		}
 	}
 	// Told again by the router's own path: nothing written.
 	records := watchRecords(t)
