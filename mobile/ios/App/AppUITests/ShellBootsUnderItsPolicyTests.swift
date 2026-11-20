@@ -18,7 +18,7 @@ final class ShellBootsUnderItsPolicyTests: XCTestCase {
         let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label BEGINSWITH 'ready'"), object: report)
         let waited = XCTWaiter().wait(for: [ready], timeout: 180)
         XCTAssertEqual(waited, .completed, "the boot check never became ready; its report: \(report.label)")
-        XCTAssertEqual(report.label, "ready platform=ios plugins=ok probes=ok dropped=4 violations=0")
+        XCTAssertEqual(report.label, "ready platform=ios plugins=ok probes=ok dropped=7 refused=4 violations=0")
         // Open a server's first control, as a person meets it.
         let address = app.descendants(matching: .textField)["Server address"]
         XCTAssertTrue(address.waitForExistence(timeout: 30), "Open a server's address field was not drawn:\n\(app.debugDescription)")

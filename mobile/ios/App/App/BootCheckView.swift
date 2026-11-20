@@ -3,21 +3,33 @@ import UIKit
 import WebKit
 
 // The boot check's side in the app (ConductorShell's BootCheck): added only when the app is launched with the boot check's argument.
-// It adds the check's script before the page's own, hands the page the path of one of the bundle's images (for the file-prefix
-// probe), counts the probe messages the bridge gate drops, and shows all of it in one label the UI test reads.
+// It adds the check's script before the page's own, hands the page the path of one of the bundle's images and a climb out of the
+// bundle to a copy of it (for the file probes), counts the probe messages the bridge gate drops and the probe loads the load gate
+// refuses, and shows all of it in one label the UI test reads.
 final class BootCheckView: NSObject, WKScriptMessageHandler {
     private var report = BootReport()
     private let label = UILabel()
 
-    init(webView: WKWebView, gate: BridgeGateHandler) {
+    init(webView: WKWebView, gate: BridgeGateHandler, loads: NavigationGate) {
         super.init()
         let controller = webView.configuration.userContentController
         if let image = BootCheckView.bundledImage() {
-            controller.addUserScript(WKUserScript(source: BootCheck.fileScript(image), injectionTime: .atDocumentStart, forMainFrameOnly: true))
+            // A copy of it outside the bundle (the app's temporary folder), which a climb from the bundle's folder would reach.
+            let outside = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("conductor-boot-climb.png")
+            try? FileManager.default.removeItem(at: outside)
+            try? FileManager.default.copyItem(at: URL(fileURLWithPath: image), to: outside)
+            let base = Bundle.main.bundleURL.appendingPathComponent("public", isDirectory: true).path
+            let climb = BootCheck.climb(from: base, to: outside.resolvingSymlinksInPath().path)
+            controller.addUserScript(WKUserScript(source: BootCheck.fileScript(image, climb: climb), injectionTime: .atDocumentStart, forMainFrameOnly: true))
         }
         controller.addUserScript(WKUserScript(source: BootCheck.script, injectionTime: .atDocumentStart, forMainFrameOnly: true))
         gate.dropped = { [weak self] body in
             guard let self, let message = BootCheck.drop(body) else { return }
+            self.report.take(message)
+            self.show()
+        }
+        loads.refused = { [weak self] url in
+            guard let self, let message = BootCheck.refusal(url) else { return }
             self.report.take(message)
             self.show()
         }
