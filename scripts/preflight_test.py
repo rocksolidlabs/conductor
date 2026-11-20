@@ -104,9 +104,15 @@ class Steps(unittest.TestCase):
         text = ci.read_text()
         jobs_block = text[text.index("\njobs:\n") :]
         jobs = set(re.findall(r"^  ([A-Za-z0-9_-]+):\s*$", jobs_block, re.M))
-        covered = {s["covers"] for s in p.LINUX_STEPS} | set(p.GATE_JOBS)
+        covered = {s["covers"] for s in p.LINUX_STEPS} | set(p.GATE_JOBS) | set(p.CI_ONLY_JOBS)
         self.assertTrue(jobs, "no jobs parsed from ci.yml")
         self.assertEqual(jobs - covered, set(), f"ci.yml jobs with no preflight step: {jobs - covered}")
+
+    def test_a_job_that_is_cis_alone_is_covered_by_no_step(self):
+        # A step that only prepares for a CI-only job (an install) would make a receipt look
+        # as if the job had run here.
+        self.assertIn("mobile-ios", p.CI_ONLY_JOBS)
+        self.assertEqual({s["covers"] for s in p.LINUX_STEPS} & set(p.CI_ONLY_JOBS), set())
 
     def test_the_e2e_shards_cover_the_suite(self):
         # CI runs the Playwright suite in N shards (docs/checks.md): the matrix lists every

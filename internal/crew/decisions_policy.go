@@ -300,11 +300,24 @@ func judgePolicy(rec ledger.DecisionRecord, resp Response, who Admittee, pol pol
 // policy (Tx.PutPolicy, its spare kept), rev + 1 and the router's one
 // routed row with its destinations, rule and revision; when it is answered
 // already, the routed row alone, saying the policy came after the answer.
-// A record at another rev is refused stale_decision (the caller tells it
-// again); one that carries a router's policy already routed_by_policy; a
-// comparison's selection, which takes none, invalid. Nothing is written
-// for a refusal.
+// A record a router routed before with no policy (RecordRoute), this one
+// or one under another name, holds the router's one routed row already: its policy is written the same
+// way, its row a router's change (rerouted, the router's group), as a
+// re-route of a record under the server's own policy is. Its repeat is
+// the router's routing row of the same revision, answered by that row's
+// receipt; a policy of another revision is no repeat. A record at another
+// rev is refused stale_decision (the caller tells it again); one that
+// carries a router's policy already routed_by_policy; a comparison's
+// selection, which takes none, and a policy with no revision, invalid.
+// Nothing is written for a refusal.
 func (e *Engine) RoutePolicy(ctx context.Context, id, by string, rev int, policy ext.RoutePolicy, to []Destination, rule string) (OpReceipt, error) {
+	if policy.Revision == "" {
+		// Its revision is its identity: what its repeat is known by. The
+		// router's route is checked before (ext.RoutePolicy.Valid); a
+		// caller that did not check is refused here, never answered as a
+		// repeat of another write.
+		return OpReceipt{}, refuse(CodeInvalid, "a router's policy for %s names its revision", id)
+	}
 	base := routeDetail(id, by, to, stripFormat(rule))
 	base.Revision = policy.Revision
 	detail := func(rec ledger.DecisionRecord) (opDetail, error) {
@@ -329,9 +342,17 @@ func (e *Engine) RoutePolicy(ctx context.Context, id, by string, rev int, policy
 		}
 		return dt, nil
 	}
-	op := operation{kind: ledger.HistoryRouted, once: true, actor: "router:" + by}
+	op := operation{kind: ledger.HistoryRouted, once: true, actor: "router:" + by, revision: policy.Revision}
 	op.choose = func(rec ledger.DecisionRecord) (operation, error) {
 		o := op
+		if slices.ContainsFunc(rec.History, func(h ledger.HistoryRow) bool {
+			return h.Kind == ledger.HistoryRouted && h.OpID == "" && strings.HasPrefix(h.By, "router:")
+		}) {
+			// A router's one routed row is an earlier route's, this
+			// router's or one registered under another name: the routed
+			// rows' room is full.
+			o.kind = ledger.HistoryRerouted
+		}
 		switch {
 		case rec.Origin == ledger.OriginCompare:
 			return o, refuse(CodeInvalid, "%s is a comparison's selection: it takes no router's policy", id)

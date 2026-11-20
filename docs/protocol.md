@@ -8633,9 +8633,13 @@ above, and no field, code or row below is ever written or answered.
   distinct?, override, unsupported?, routedAt, spare, fallback:
   "local/1", quorum: 1, authority: [{kind: operator}]}` (at most 16 KiB),
   its rev + 1, with the router's one `routed` history row (its
-  destinations, rule and `revision`; no op id). A record answered
-  first gets the `routed` row alone; one that carries a router's policy
-  already, or a comparison's selection, gets nothing. Until the router
+  destinations, rule and `revision`; no op id). A record the router
+  routed before with no policy holds that row already: its policy is
+  written the same way, its row a `rerouted` one (the router's group,
+  no op id) carrying the revision. The same policy told again writes
+  nothing; a policy of another revision is no repeat of it. A record
+  answered first gets the `routed` row alone; one that carries a
+  router's policy already, or a comparison's selection, gets nothing. Until the router
   has had its say (its policy written, an answer with none, a tell not
   made or failed, or twice `ext.RouteWait` from the opening's commit) a
   record is in its **opening window**: every response is `409
@@ -8721,7 +8725,12 @@ above, and no field, code or row below is ever written or answered.
   router's alone; every other Host, and the router's on a switchyard or
   with no ledger, answers `ext.ErrUnsupported`): `OpenDecisions` pages
   every open record, 64 a page in number order, each with its policy,
-  when it was first routed, the last route's why and its rev;
+  when it was first routed, the last route's why and its rev (the why is
+  the kind of the last re-route, `assigned`, `delegated`, `escalated` or
+  `rerouted`, when the record's last route was one by `Reroute`, and
+  `routed` for any other route, a router's first policy included, also
+  when it follows an earlier route and its row is a `rerouted` one; none
+  for a record never routed);
   `Outcomes` reads the outbox 32 rows a page in `seq` order and
   `AckOutcomes` deletes up to a `seq`, the only way a row leaves;
   `Reroute` changes a record's policy in one transaction:

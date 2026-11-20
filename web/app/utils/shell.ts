@@ -309,6 +309,33 @@ export function itemId(id: unknown): string | null {
   return typeof id === 'string' && id && new TextEncoder().encode(id).length <= SHELL_BOUNDS.itemId && !/[\u0000-\u001f\u007f-\u009f]/.test(id) ? id : null
 }
 
+/**
+ * A decision's page address, `/shell/decisions/<segment>`: the provider's id carried as one unpadded base64url segment of its UTF-8
+ * bytes, so that the path holds only letters, digits, `-` and `_` whatever the id (the spelling the app's content rules let a page's
+ * address through with, and the address the app loads again when iOS ends the page's process). Every place that opens a decision
+ * builds its address here, and the page reads it back with `decisionIdOf`.
+ */
+export function decisionPath(id: string): string {
+  let bin = ''
+  for (const b of new TextEncoder().encode(id)) bin += String.fromCharCode(b)
+  return `/shell/decisions/${btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')}`
+}
+
+/**
+ * The id a decision's page address carries, or null for a segment `decisionPath` does not build for an id the shell takes (not
+ * base64url, not in its one spelling, not UTF-8, or not an item's id): the page's "no such decision".
+ */
+export function decisionIdOf(segment: unknown): string | null {
+  if (typeof segment !== 'string' || !/^[A-Za-z0-9_-]+$/.test(segment) || segment.length % 4 === 1) return null
+  try {
+    const bin = atob(segment.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - (segment.length % 4)) % 4))
+    const id = new TextDecoder('utf-8', { fatal: true }).decode(Uint8Array.from(bin, (c) => c.charCodeAt(0)))
+    return itemId(id) !== null && decisionPath(id) === `/shell/decisions/${segment}` ? id : null
+  } catch {
+    return null
+  }
+}
+
 /** An item as the screens read it: its id bounded, its rows and its words as given (bounded), or null for one not of its shape. */
 export function readItem(x: unknown): ShellItem | null {
   const o = (x && typeof x === 'object' ? x : null) as Record<string, unknown> | null

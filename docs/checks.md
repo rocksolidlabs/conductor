@@ -6,6 +6,9 @@ writes a receipt with a log per step under the git common dir's `preflight/`;
 `ssh mac`, the revision pushed to its checkout) and the Windows host's (WSL
 interop, a checkout under the Windows profile) rows too, never through GitHub.
 It is how to see what CI will see before a pull request; CI stays the gate.
+One job is CI's alone (`CI_ONLY_JOBS` in `scripts/preflight.py`): `mobile-ios`,
+the phone shell's app built and started on a simulator, which needs Xcode; no
+receipt counts it as run.
 
 Run the narrow tests while iterating, then the complete checks for every affected surface. A change to the Python scripts runs their tests; it does not require unrelated Go, UI, desktop, network or hardware tests. A change spanning server and UI requires tests at both ends: Go race tests, vitest and Playwright. Runtime changes run the relevant runtime suites below. A skipped or unavailable check is a limitation, never a pass.
 
@@ -24,13 +27,16 @@ make test-pebble               # certificates end to end against Let's Encrypt's
 make test-live                 # the real Claude Code and Codex (CONDUCTOR_E2E_LIVE_REPO, keys or logins); weekly in CI
 make desktop-test              # the Electron shell: tsc --noEmit and vitest (desktop/)
 make mobile-test               # the phone shell's bridge: tsc --noEmit, its vitest (mobile/test, run by the app's vitest too) and its boot spec (after make web-build)
+make mobile-native-test        # the phone shell's native key, store and plugin calls: swift test in mobile/ios/ConductorNative (a Mac; Swift Testing, no Xcode project needed; CI's mobile-ios job)
+make mobile-install mobile-sync mobile-ios  # the iOS app built for the simulator, unsigned, and its boot check (ShellBootsUnderItsPolicyTests) run on one (a Mac with Xcode, after make web-build; CI's mobile-ios job)
+make mobile-ios-policy         # a Release build with the sample signing policy (mobile/ios/fixtures) copied into a packaging's place holds the class ConductorKeySigningPolicy, read from the executable; the default build holds none (after make mobile-ios; CI's mobile-ios job)
 make lint-static               # staticcheck, pinned
 make vuln                      # govulncheck (network); the standard library's findings need the latest Go patch
 make test-network              # the built-in agents' sites on the network (nightly)
 make test-recipes              # the recipe, Brakeman and usage-reader flags against the CLIs on this machine (nightly; the usage reads need a login, and a Claude Code other than the checked version is read only when CONDUCTOR_USAGE_CHECK names it)
 python3 scripts/brand_assets.py --check
-python3 scripts/notices.py --check  # THIRD_PARTY_NOTICES current (after make web-build, npm ci in desktop/)
-python3 -m unittest discover -s scripts -p '*_test.py'  # the scripts' own tests (dco_check.py, notices.py, preflight.py, release_draft.py, design_drift.py, live_setup.py, go_test_groups.py)
+python3 scripts/notices.py --check  # THIRD_PARTY_NOTICES current (after make web-build, npm ci in desktop/ and mobile/)
+python3 -m unittest discover -s scripts -p '*_test.py'  # the scripts' own tests (dco_check.py, notices.py, preflight.py, release_draft.py, design_drift.py, live_setup.py, go_test_groups.py, ios_project.py: the phone shell's iOS project held to what it must not ship)
 ```
 
 `npm --prefix web test` runs the design system's rule checks among the
@@ -96,7 +102,7 @@ command, `groups` lists them). A developer's own command stays the whole
 module, `go test -race -count=1 -timeout 90m ./...` or `make test`.
 
 A file CI's jobs fetch from a release mirror is cached by its version (`actions/cache`) and its download retried for minutes: Neovim's tarball through `curl --retry-all-errors`, refetched when it is not a gzip, and Electron's binary through
-`desktop/scripts/install-electron.mjs` (the desktop tests' `pretest`, six tries of electron's own installer), so a mirror's bad half hour fails one try, not the run (#281).
+`desktop/scripts/install-electron.mjs` (the desktop tests' `pretest`, six tries of electron's own installer), so a mirror's bad half hour fails one try, not the run (#281). The `mobile-ios` job's Swift packages (the native runtime's package and its two binary frameworks, from GitHub) are cached on the manifest's hash and resolved in three tries a minute apart, each under five minutes (`make mobile-ios-resolve`, `scripts/ios_boot.py`), before the build.
 The browser's system packages (the `e2e` job, `live.yml`) come from the runner's apt mirror list: when the first mirror's name does not resolve, a step before the install takes out each mirror whose name does not, and uses kernel.org's Ubuntu mirror when none is left (apt still checks its indexes against the image's Ubuntu archive key); the install gets three tries a minute apart, each ended after ten minutes by a `timeout` run as root, so that it reaches apt (#281).
 
 CI's `e2e` job runs the Playwright suite in six shards side by side, `e2e (1)` to

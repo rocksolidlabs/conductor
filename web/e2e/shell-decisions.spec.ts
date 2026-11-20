@@ -2,7 +2,7 @@ import type { Browser, Page } from '@playwright/test'
 import { walk } from './contrast'
 import { expect, test, useTheme } from './fixtures'
 import { noSideways, tapTarget } from './layout'
-import { fakeShell, serverTraffic, shellDo, shellRecord, type FakeConfig } from './shell-fake'
+import { decisionAddress as decisionPath, fakeShell, serverTraffic, shellDo, shellRecord, type FakeConfig } from './shell-fake'
 
 // The decision page drawn from a shell's inbox (docs/plans/phone-shell.md, OSS-2b, Tests per surface, shell-decisions.spec.ts), with
 // a fake provider of the tests' own whose replies the test holds and releases: the four rows exactly as given; a record with no
@@ -50,9 +50,14 @@ async function shellTab(browser: Browser, baseURL: string, c: FakeConfig): Promi
   }
 }
 
+/** The address a decision's page is at, as the app builds it (the provider's id in one base64url segment). */
+const at = (id: string) => new RegExp(`${decisionPath(id)}$`)
+// The pair the app's own vitest holds its builder to.
+test('the address the specs build is the one the app builds', () => expect(decisionPath('org/repo#12 a:b~é')).toBe('/shell/decisions/b3JnL3JlcG8jMTIgYTpifsOp'))
+
 /** Opens the decision page of i1 and waits for its answer to be drawn. */
 async function openItem(page: Page, id = 'i1') {
-  await page.goto(`/shell/decisions/${id}`)
+  await page.goto(decisionPath(id))
   await expect(page.locator('[data-shell-decision]')).toBeVisible()
 }
 
@@ -195,7 +200,7 @@ test.describe("the decision page from a shell's inbox", () => {
     await shellDo(page, 'release', 'item:i1')
     await expect.poll(async () => (await shellRecord(page)).done.filter((c) => c === 'item').length).toBe(doneBefore + 1)
     await page.evaluate(() => new Promise((r) => setTimeout(() => requestAnimationFrame(() => r(null)), 0)))
-    await expect(page).toHaveURL(/\/shell\/decisions\/i2$/)
+    await expect(page).toHaveURL(at('i2'))
     await expect(page.locator('[data-shell-item="i2"]')).toBeVisible()
     await expect(page.locator('[data-shell-inbox-note]')).toHaveCount(0)
     await t.close()
@@ -234,7 +239,7 @@ test.describe("the decision page from a shell's inbox", () => {
     await shellDo(page, 'release', 'resolve:h-1')
     await expect.poll(async () => (await shellRecord(page)).done.filter((c) => c === 'resolve').length).toBe(2)
     await page.evaluate(() => new Promise((r) => setTimeout(() => requestAnimationFrame(() => r(null)), 0)))
-    await expect(page).toHaveURL(/\/shell\/decisions\/i2$/)
+    await expect(page).toHaveURL(at('i2'))
     await expect(page.locator('[data-shell-item="i2"]')).toBeVisible()
     await t.close()
   })
@@ -246,7 +251,7 @@ test.describe("the decision page from a shell's inbox", () => {
     await page.goto('/shell')
     await expect(page.locator('[data-shell-inbox-row="i1"]')).toBeVisible()
     await shellDo(page, 'tap', { h: 'h-ok' })
-    await expect(page).toHaveURL(/\/shell\/decisions\/i1$/)
+    await expect(page).toHaveURL(at('i1'))
     await expect(page.locator('[data-shell-decision]')).toBeVisible()
     await shellDo(page, 'tap', { h: 'h-gone' })
     await expect(page.locator('[data-shell-inbox-note]')).toHaveText('This notification is no longer current: here is what is waiting')
@@ -258,8 +263,11 @@ test.describe("the decision page from a shell's inbox", () => {
     await shellDo(page, 'offline', false)
     await shellDo(page, 'tap', { h: 'x'.repeat(257) })
     await expect(page).toHaveURL(/\/shell$/)
-    await page.goto('/shell/decisions/nobody')
-    await expect(page.locator('[data-shell-inbox-note]')).toHaveText('This decision is not one you can see here')
+    // An address that carries no id the app builds: the id itself in the path, or a segment that does not read back.
+    for (const path of ['/shell/decisions/nobody', '/shell/decisions/i1', '/shell/decisions/org%2Frepo%2312']) {
+      await page.goto(path)
+      await expect(page.locator('[data-shell-inbox-note]')).toHaveText('This decision is not one you can see here')
+    }
     expect(t.api).toEqual([])
     await t.close()
   })
@@ -270,7 +278,7 @@ test.describe("the decision page from a shell's inbox", () => {
     await page.goto('/shell')
     await expect(page.locator('[data-shell-inbox]')).toBeVisible()
     await shellDo(page, 'link', 'https://relay.example.test/d/1')
-    await expect(page).toHaveURL(/\/shell\/decisions\/i1$/)
+    await expect(page).toHaveURL(at('i1'))
     await expect(page.locator('[data-shell-decision]')).toBeVisible()
     await shellDo(page, 'link', 'https://elsewhere.example.test/x')
     await expect(page).toHaveURL(/\/shell$/)
@@ -285,10 +293,34 @@ test.describe("the decision page from a shell's inbox", () => {
     await none.close()
   })
 
+  test('a decision whose id holds any character opens from the inbox and from a notification, and draws again on a reload', async ({ browser, baseURL }) => {
+    // Ids a provider may give: the address carries them in the letters, digits, '-' and '_' the app's own content rules let a page's
+    // address through with, the address the app loads again when iOS ends the page's process.
+    const ids = ['org/repo#12', 'a:b~c.d e', 'Ünïcødé 決定 😀', `${'x'.repeat(60)}é~`]
+    const items = Object.fromEntries(ids.map((id, n) => [id, { ...item({}, decision('clarification', 3, { id: `dr-${20 + n}` })), id }]))
+    const t = await shellTab(browser, baseURL!, cfg(items, { handles: { 'h-odd': { id: ids[0] } } }))
+    const { page } = t
+    for (const id of ids) {
+      await page.goto('/shell')
+      await page.locator(`[data-shell-inbox-row="${id}"]`).click()
+      await expect(page).toHaveURL(at(id))
+      expect(new URL(page.url()).pathname).toMatch(/^\/shell\/decisions\/[A-Za-z0-9_-]+$/)
+      await expect(page.locator('[data-shell-decision]')).toHaveAttribute('data-shell-item', id)
+      await page.reload()
+      await expect(page.locator('[data-shell-decision]')).toHaveAttribute('data-shell-item', id)
+    }
+    await page.goto('/shell/open?h=h-odd')
+    await expect(page).toHaveURL(at(ids[0]))
+    await expect(page.locator('[data-shell-decision]')).toHaveAttribute('data-shell-item', ids[0])
+    await page.reload()
+    await expect(page.locator('[data-shell-decision]')).toHaveAttribute('data-shell-item', ids[0])
+    await t.close()
+  })
+
   test("the decision page and the inbox fit a phone and every text clears its floor, in both themes", async ({ browser, baseURL }) => {
     test.setTimeout(300_000)
     for (const theme of ['dark', 'light'] as const) {
-      for (const path of ['/shell/decisions/i1', '/shell']) {
+      for (const path of [decisionPath('i1'), '/shell']) {
         await test.step(`${path} in ${theme}`, async () => {
           const t = await shellTab(browser, baseURL!, cfg({ i1: item({ responsesOmitted: 2, offline: true }) }))
           const { page } = t

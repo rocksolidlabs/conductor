@@ -21,6 +21,10 @@ desktop/release/
 # phone shell: the synced bundle
 mobile/www/
 mobile/node_modules/
+mobile/ios/ConductorNative/.build/
+mobile/ios/ConductorNative/.swiftpm/
+# A packaging's native sources: its own place, never in this repository (docs/plans/phone-shell.md).
+mobile/ios/ConductorNative/Sources/ConductorPackaging/Packaging/
 
 # Python workflow execution artifacts
 __pycache__/
