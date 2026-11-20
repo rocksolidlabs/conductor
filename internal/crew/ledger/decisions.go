@@ -187,6 +187,9 @@ const (
 	HistoryDelegated         = "delegated"
 	HistoryEscalated         = "escalated"
 	HistoryExpired           = "expired"
+	// HistoryRerouted is a decision router's change of a record's policy
+	// (beside assigned, delegated and escalated, the router's four kinds).
+	HistoryRerouted = "rerouted"
 )
 
 // Bounds of a decision's record (Owner decisions, 15): each part keeps its
@@ -212,7 +215,7 @@ const (
 	MaxBaselineEntry    = 512
 	// MaxDecisionPolicy bounds the policy and MaxAuthority a response's
 	// authority, as encoded.
-	MaxDecisionPolicy = 1 << 10
+	MaxDecisionPolicy = 16 << 10
 	MaxAuthority      = 1 << 10
 	// MaxDecisionReceipt bounds a response's receipt, MaxDecisionApplied
 	// the application receipt, MaxHistoryDetail a history row's detail
@@ -251,6 +254,10 @@ const (
 	// a group of their own, never counted among the operator's
 	// operations.
 	MaxDecisionTurnOps = 4
+	// MaxDecisionRouterChanges bounds the history rows of a decision
+	// router's changes of a record's policy (assigned, delegated,
+	// escalated, rerouted): a group of their own, never the operator's.
+	MaxDecisionRouterChanges = 16
 	// MaxDecisionHistory bounds a decision's history rows.
 	MaxDecisionHistory = 256
 	// MaxDecisionsPage bounds a page of Decisions.
@@ -287,17 +294,22 @@ var historyBounds = map[string]struct {
 	HistoryCommented:         {"ops", MaxDecisionOperations},
 	HistoryInfoRequested:     {"ops", MaxDecisionOperations},
 	HistoryNotified:          {"rest", 0},
-	HistoryAssigned:          {"rest", 0},
-	HistoryDelegated:         {"rest", 0},
-	HistoryEscalated:         {"rest", 0},
+	HistoryAssigned:          {"router", MaxDecisionRouterChanges},
+	HistoryDelegated:         {"router", MaxDecisionRouterChanges},
+	HistoryEscalated:         {"router", MaxDecisionRouterChanges},
+	HistoryRerouted:          {"router", MaxDecisionRouterChanges},
 	HistoryExpired:           {"rest", 0},
 }
 
+// routerKind says kind is one of a decision router's changes of a record's
+// policy.
+func routerKind(kind string) bool { return historyBounds[kind].group == "router" }
+
 // mandatoryHistory is the room the bounded kinds keep: one opened, two
-// routed, the operator's operations and a Brakeman turn's, the responses,
-// one applied, one supersession or cancellation, one refund and three
-// deliveries.
-const mandatoryHistory = 1 + 2 + MaxDecisionOperations + MaxDecisionTurnOps + MaxDecisionResponses + 1 + 1 + 1 + 3
+// routed, the operator's operations, a Brakeman turn's and a decision
+// router's changes, the responses, one applied, one supersession or
+// cancellation, one refund and three deliveries.
+const mandatoryHistory = 1 + 2 + MaxDecisionOperations + MaxDecisionTurnOps + MaxDecisionRouterChanges + MaxDecisionResponses + 1 + 1 + 1 + 3
 
 // Errors of the decision writers.
 var (
@@ -524,12 +536,37 @@ type baselineEntry struct {
 	Seen json.RawMessage `json:"seen"`
 }
 
+// policyShape is the policy column: the server's own policy (local/1), or
+// a decision router's as the server writes it (Tx.PutPolicy): who
+// approves (operator or router), the router's name, its scope, pinned
+// requirement, groups and the rest, when it was first written, the spare
+// place the record holds for its replacement, and the policy it falls
+// back to.
 type policyShape struct {
-	Revision  string            `json:"revision"`
-	Approver  string            `json:"approver"`
-	Quorum    int               `json:"quorum"`
-	Authority []json.RawMessage `json:"authority"`
+	Revision    string            `json:"revision"`
+	Approver    string            `json:"approver"`
+	Quorum      int               `json:"quorum"`
+	Authority   []json.RawMessage `json:"authority"`
+	Router      string            `json:"router,omitempty"`
+	Scope       string            `json:"scope,omitempty"`
+	Pinned      json.RawMessage   `json:"pinned,omitempty"`
+	Groups      json.RawMessage   `json:"groups,omitempty"`
+	Distinct    bool              `json:"distinct,omitempty"`
+	Override    string            `json:"override,omitempty"`
+	Unsupported bool              `json:"unsupported,omitempty"`
+	Reroutes    int               `json:"reroutes,omitempty"`
+	Recent      json.RawMessage   `json:"recent,omitempty"`
+	RoutedAt    string            `json:"routedAt,omitempty"`
+	Spare       bool              `json:"spare,omitempty"`
+	Fallback    string            `json:"fallback,omitempty"`
 }
+
+// The approvers a policy names: the server's operator, or a decision
+// router.
+const (
+	ApproverOperator = "operator"
+	ApproverRouter   = "router"
+)
 
 type authorityShape struct {
 	Grant   string `json:"grant,omitempty"`
@@ -723,17 +760,69 @@ func checkBaseline(raw, request string) error {
 }
 
 func checkPolicy(raw string) error {
-	if len(raw) > MaxDecisionPolicy {
-		return tooLarge("the policy", len(raw))
-	}
+	_, err := policyOf(raw)
+	return err
+}
+
+// policyOf decodes a policy, refusing one not of its shape or past its
+// bound: a revision always, and a router's approver with the router's
+// name, its scope and its pinned requirement and groups.
+func policyOf(raw string) (policyShape, error) {
 	var p policyShape
+	if len(raw) > MaxDecisionPolicy {
+		return p, tooLarge("the policy", len(raw))
+	}
 	if err := strict(raw, &p); err != nil {
-		return invalid("the policy: %v", err)
+		return p, invalid("the policy: %v", err)
 	}
 	if p.Revision == "" {
-		return invalid("the policy names no revision")
+		return p, invalid("the policy names no revision")
 	}
-	return nil
+	if p.Approver == ApproverRouter && (p.Router == "" || p.Scope == "" || len(p.Pinned) == 0 || len(p.Groups) == 0) {
+		return p, invalid("a router's policy names its router, its scope, its requirement and its groups")
+	}
+	return p, nil
+}
+
+// canonicalPolicy is raw decoded and encoded again: the one form a
+// router's policy is kept in, so that SQL reading one member (spare)
+// reads what the decoder reads.
+func canonicalPolicy(raw string) (string, error) {
+	p, err := policyOf(raw)
+	if err != nil {
+		return "", err
+	}
+	var b strings.Builder
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(p); err != nil {
+		return "", invalid("the policy: %v", err)
+	}
+	canon := strings.TrimSuffix(b.String(), "\n")
+	if len(canon) > MaxDecisionPolicy {
+		return "", tooLarge("the policy", len(canon))
+	}
+	return canon, nil
+}
+
+// RouterPolicy says raw is a decision router's policy (its approver the
+// router), not the server's own.
+func RouterPolicy(raw string) bool {
+	var p struct {
+		Approver string `json:"approver"`
+	}
+	return json.Unmarshal([]byte(raw), &p) == nil && p.Approver == ApproverRouter
+}
+
+// PolicySpare says raw holds a spare place for its record's replacement.
+func PolicySpare(raw string) bool { return spareOf(raw) }
+
+// spareOf says raw holds a spare place for its record's replacement.
+func spareOf(raw string) bool {
+	var p struct {
+		Spare bool `json:"spare"`
+	}
+	return json.Unmarshal([]byte(raw), &p) == nil && p.Spare
 }
 
 // authorityOf decodes a response's authority, refusing one not of its
@@ -804,9 +893,26 @@ const openish = `(d.state = 'open' OR ` + placeCond + `)`
 
 // placeCond is the SQL condition of a decision (alias d) that holds a
 // place for its replacement: answered, its accepted response an
-// identity's.
-const placeCond = `(d.state = 'answered' AND EXISTS (SELECT 1 FROM decision_responses r
-	WHERE r.decision = d.n AND r.status = 'accepted' AND json_extract(r.authority, '$.via') = 'identity'))`
+// identity's; or open or answered with a spare in its policy (a record
+// opened while a decision router routes policies), whose accepted
+// response, an identity's or not, takes that one place, never a second.
+const placeCond = `((d.state = 'answered' AND EXISTS (SELECT 1 FROM decision_responses r
+	WHERE r.decision = d.n AND r.status = 'accepted' AND json_extract(r.authority, '$.via') = 'identity'))
+	OR (d.state IN ('open', 'answered') AND COALESCE(json_extract(d.policy, '$.spare'), 0) = 1))`
+
+// voidedCond is the SQL condition of a voided routed decision (alias d):
+// an accepted answer voided, the decision superseded while it held a spare
+// (opened while a decision router routed policies), its replacement
+// standing in its place. The run's voided decisions are bound apart
+// (MaxVoidedRoutedPerRun). A decision superseded unanswered (an agent's
+// newer request) is not voided: it counts among the run's decisions.
+const voidedCond = `(d.state = 'superseded' AND COALESCE(json_extract(d.policy, '$.spare'), 0) = 1
+	AND EXISTS (SELECT 1 FROM decision_responses r WHERE r.decision = d.n AND r.status = 'accepted'))`
+
+// MaxVoidedRoutedPerRun bounds a run's voided routed decisions: past it an
+// answer to a routed decision is refused for room (the replacement it may
+// need would pass it), and the run is stopped or cancelled.
+const MaxVoidedRoutedPerRun = 1000
 
 // count answers a COUNT query.
 func (t *Tx) count(query string, args ...any) (int, error) {
@@ -818,8 +924,16 @@ func (t *Tx) count(query string, args ...any) (int, error) {
 // room says whether run has room for one more decision in all: the
 // decisions it opened and the places it holds for replacements together
 // stay within MaxDecisionsPerRun.
-func (t *Tx) room(run string) (bool, error) {
-	opened, err := t.count("SELECT COUNT(*) FROM decisions WHERE run_id = ?", run)
+func (t *Tx) room(run string) (bool, error) { return t.roomFor(run, 1) }
+
+// roomFor says whether run has room for need more of its places: a
+// decision opened with a spare needs two, itself and its spare.
+func (t *Tx) roomFor(run string, need int) (bool, error) {
+	// A routed decision whose accepted answer was voided (voidedCond) no
+	// longer counts: its replacement stands in its place, so a chain of
+	// replacements holds one decision and one spare of the run's bound
+	// (voided apart, its own bound).
+	opened, err := t.count("SELECT COUNT(*) FROM decisions d WHERE d.run_id = ? AND NOT "+voidedCond, run)
 	if err != nil {
 		return false, err
 	}
@@ -827,7 +941,7 @@ func (t *Tx) room(run string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	return opened+places < MaxDecisionsPerRun, nil
+	return opened+places+need <= MaxDecisionsPerRun, nil
 }
 
 // OpenDecision opens a decision in the transaction's run: its row, open at
@@ -894,7 +1008,13 @@ func (t *Tx) OpenDecision(d DecisionRow) (DecisionRow, bool, error) {
 	if n >= MaxOpenPerRun {
 		return DecisionRow{}, false, fmt.Errorf("%w: the run has %d decisions open", ErrDecisionLimit, n)
 	}
-	if ok, err := t.room(d.RunID); err != nil {
+	need := 1
+	if spareOf(d.Policy) {
+		// Its spare from its opening (a record opened while a decision
+		// router routes policies): a run fills here, never at an answer.
+		need = 2
+	}
+	if ok, err := t.roomFor(d.RunID, need); err != nil {
 		return DecisionRow{}, false, err
 	} else if !ok {
 		return DecisionRow{}, false, fmt.Errorf("%w: the run has %d decisions", ErrDecisionLimit, MaxDecisionsPerRun)
@@ -1055,7 +1175,23 @@ func (t *Tx) PutDecision(d DecisionRow) error {
 	}
 	_, err = t.tx.ExecContext(t.ctx, `UPDATE decisions SET state = ?, rev = ?, why = ?, superseded_by = ?, applied = ?, current_run = ?, closed_at = ? WHERE n = ?`,
 		d.State, d.Rev, d.Why, d.SupersededBy, d.Applied, d.CurrentRun, stamp(closed), d.N)
-	return err
+	if err != nil {
+		return err
+	}
+	if finalDecision(d.State) && !finalDecision(cur.State) && RouterPolicy(cur.Policy) {
+		// A record that carried a router's policy keeps its outcome for the
+		// router, written in the transaction that gives it its final state
+		// (I9): every final state, answered or not.
+		return t.outcome(d.N, false)
+	}
+	if d.State == DecisionSuperseded && cur.State == DecisionSuperseded && cur.SupersededBy == "" && d.SupersededBy != "" && RouterPolicy(cur.Policy) {
+		// A supersession is written in two steps (the record final first,
+		// so its place is free; then naming its replacement): its outcome
+		// is written again at the second, naming the replacement and with
+		// its final why.
+		return t.outcome(d.N, true)
+	}
+	return nil
 }
 
 // RouteFor writes decision n's request as request, which differs from the
@@ -1233,7 +1369,20 @@ func (t *Tx) Respond(n int64, r ResponseRow) (Responded, error) {
 		if accepted > 0 || d.State != DecisionOpen {
 			return Responded{}, fmt.Errorf("%w: %s is %s and has its answer", ErrDecisionState, d.ID(), d.State)
 		}
-		if auth.Via == ViaIdentity {
+		if spareOf(d.Policy) {
+			// Its replacement's place is its spare's; only the run's voided
+			// routed decisions bound it.
+			voided, err := t.count("SELECT COUNT(*) FROM decisions d WHERE d.run_id = ? AND "+voidedCond, d.CurrentRun)
+			if err != nil {
+				return Responded{}, err
+			}
+			if voided >= MaxVoidedRoutedPerRun {
+				return Responded{}, fmt.Errorf("%w: %s's run has voided %d routed answers: stop or cancel it", ErrDecisionLimit, d.ID(), voided)
+			}
+		}
+		if auth.Via == ViaIdentity && !spareOf(d.Policy) {
+			// A record with a spare holds its replacement's place from its
+			// opening: its answer is never refused for room.
 			if ok, err := t.room(d.CurrentRun); err != nil {
 				return Responded{}, err
 			} else if !ok {
@@ -1311,7 +1460,7 @@ func (t *Tx) History(n int64, h HistoryRow) (HistoryRow, bool, error) {
 		return HistoryRow{}, false, invalid("history kind %q", h.Kind)
 	}
 	op := h.OpID != ""
-	if op && h.Kind != HistoryCommented && h.Kind != HistoryInfoRequested && h.Kind != HistoryRouted && h.Kind != HistoryCancelled {
+	if op && h.Kind != HistoryCommented && h.Kind != HistoryInfoRequested && h.Kind != HistoryRouted && h.Kind != HistoryCancelled && !routerKind(h.Kind) {
 		return HistoryRow{}, false, invalid("a %s row is no operation", h.Kind)
 	}
 	if !op && h.Fingerprint != "" {
@@ -1342,7 +1491,7 @@ func (t *Tx) History(n int64, h HistoryRow) (HistoryRow, bool, error) {
 		}
 	}
 	group, max := bound.group, bound.max
-	if op && h.Kind != HistoryCancelled {
+	if op && h.Kind != HistoryCancelled && !routerKind(h.Kind) {
 		group, max = "ops", MaxDecisionOperations
 		if h.By == TurnActor {
 			// A Brakeman turn's: its own bound, never the operator's.
@@ -1358,7 +1507,7 @@ func (t *Tx) History(n int64, h HistoryRow) (HistoryRow, bool, error) {
 		have, err = t.count(`SELECT COUNT(*) FROM decision_history WHERE decision = ? AND by = ? AND op_id != '' AND kind != 'cancelled'`, n, TurnActor)
 	case "rest":
 		max = MaxDecisionHistory - mandatoryHistory
-		have, err = t.count(`SELECT COUNT(*) FROM decision_history WHERE decision = ? AND kind IN ('notified', 'assigned', 'delegated', 'escalated', 'expired')`, n)
+		have, err = t.count(`SELECT COUNT(*) FROM decision_history WHERE decision = ? AND kind IN ('notified', 'expired')`, n)
 	default:
 		kinds := []any{n}
 		marks := []string{}

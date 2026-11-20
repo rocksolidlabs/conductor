@@ -307,7 +307,7 @@ func (e *Engine) openSelection(r *run) {
 		r.sel.ended = noCandidateWords
 	case !keeps:
 		r.sel.ended = "the ledger keeps no decisions: nothing to select"
-	case !r.decisionRoom(1):
+	case !r.decisionRoom(1, false):
 		r.sel.ended = noRoomWords()
 	default:
 		r.sel.ended = ""
@@ -317,7 +317,7 @@ func (e *Engine) openSelection(r *run) {
 		return
 	}
 	body, cands := r.selectionBody(opts)
-	d := &decision{origin: ledger.OriginCompare, typ: ledger.DecisionApproval, question: body.Question, state: ledger.DecisionOpen, rev: 1, cands: cands}
+	d := &decision{origin: ledger.OriginCompare, typ: ledger.DecisionApproval, question: body.Question, state: ledger.DecisionOpen, rev: 1, cands: cands, own: true}
 	for _, o := range body.Options {
 		d.options = append(d.options, o.Label)
 	}

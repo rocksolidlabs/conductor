@@ -1735,10 +1735,18 @@ together, counted as `task.json` keeps them, the last are left out until
 the rest fit, the run's log saying how many and whose. The blocks go into
 `task.md`'s Context section and `task.json`'s `context`, written through
 the worktree's `os.Root` and cut first when the files pass their bound
-(`fitTaskFile`); they are never in the ledger and never a reason an
-attempt fails or a task's state changes, and with none the files are byte
-for byte what they were before (the goldens in
-`internal/crew/testdata/taskfile`). The touch sink, the hub's last sink
+(`fitTaskFile`). Each is recorded before the agent has it
+(`docs/plans/context-seams.md`, CT-3): its text in the data directory's
+context file of the attempt (`runs/context/<run>/<task>.<n>.json`) and a
+row in the ledger (`attempt_context`: its phase, source, title, ref, pack
+mark, the text's SHA-256 and size, never the text) added by the
+transaction that records the attempt's worktree, so a file or a commit
+that fails fails the attempt at its `worktree` stage before its session
+starts; an engine with nowhere to record asks none. A provider late,
+failing or out of bounds is no reason an attempt fails or a task's state
+changes, and with no block the files are byte for byte what they were
+before (the goldens in `internal/crew/testdata/taskfile`), with no row and
+no file. The touch sink, the hub's last sink
 (after the notifier and the run engine's `OnActivity`; a server with no
 context provider adds none), takes the `file`
 entries of server and hosted sessions after the session recorded them, makes each path absolute by the session's own
@@ -1802,7 +1810,7 @@ still resolved. A switchyard routes and answers none.
 | `internal/store` | atomic JSON documents in the data directory, and plain files such as the generated workbench token |
 | `internal/agents` | hook adapters per agent: assets under `dataDir/hooks`, launch injection, on-demand install, payload mappers |
 | `internal/crew` | saved crews, one file each in `dataDir/crews/`: members, role prompts, start conditions, validation; runs: member sessions through the server's launch path, git worktrees, readiness and the trust hold, prompts, start conditions, handoffs between members (an activity sink and a change hook of `internal/api`), run state, change reports, member resume |
-| `internal/crew/ledger` | the managed runs' ledger (#334): `runs/managed.sqlite` in the data directory, opened beside the records with the owner lock `runs/owner.lock`; one connection, every transition one transaction committed before the side effect it precedes; the rows of runs, tasks, attempts, checks (with their logs), commands (receipts) and events, each attempt, check and prerequisite row saying where it ran (`where_ran`, schema version 7); a table of where a run a registered provider launched came from (`run_origin`, schema version 13: its origin, operation id, subject, deadline, digest and confirmed selections, written with the run's first row and copied by a continuation); a decision router's outcome outbox (`decision_outbox`, schema version 14, a barrier), which nothing writes or reads yet, and the record of the context each attempt was given (`attempt_context`, schema version 15, a barrier), which nothing writes or reads yet; recovery of what the last owner left open; read-only, with managed launches refused, when another server holds the lock, the filesystem has no locks, the server may not write the database file, or the database is damaged or newer |
+| `internal/crew/ledger` | the managed runs' ledger (#334): `runs/managed.sqlite` in the data directory, opened beside the records with the owner lock `runs/owner.lock`; one connection, every transition one transaction committed before the side effect it precedes; the rows of runs, tasks, attempts, checks (with their logs), commands (receipts) and events, each attempt, check and prerequisite row saying where it ran (`where_ran`, schema version 7); a table of where a run a registered provider launched came from (`run_origin`, schema version 13: its origin, operation id, subject, deadline, digest and confirmed selections, written with the run's first row and copied by a continuation); a decision router's outcome outbox (`decision_outbox`, schema version 14, a barrier), which nothing writes or reads yet, the record of the context each attempt was given (`attempt_context`, schema version 15, a barrier): a row per block, at its start or by a lookup's pack, never its text, which the data directory's context file keeps, read by the task route, the candidates and a Brakeman turn's filtered read, and a held answer's statement and a decision's copied-output verdicts (`decision_statements` and `decision_output`, schema version 16, a barrier, keyed by the decision record's number and deleted with its decision), which nothing writes or reads yet; recovery of what the last owner left open; read-only, with managed launches refused, when another server holds the lock, the filesystem has no locks, the server may not write the database file, or the database is damaged or newer |
 | `internal/dispatch` | Dispatch's store: projects, tickets, their discussion and history in `dataDir/dispatch/dispatch.sqlite`; every write a typed operation with a kept receipt and its rows in the `changes` log; no HTTP, no session, no process |
 | `internal/tracker` | an external tracker's contract for Dispatch (IN1a): the adapter, the records a read gives, the person's token as a `Credential` carried to one API address, GitHub references, the steps to reproduce, the hosts an image or a log may come from; standard library only |
 | `internal/tracker/github` | the GitHub adapter: REST over `net/http` and GraphQL for the calls that address an item by its node id, every answer read to its bound, nothing retried; `githubtest` is its fake GitHub |

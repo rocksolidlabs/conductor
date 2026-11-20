@@ -425,7 +425,7 @@ func Router(t T, n *Network, r ext.DecisionRouter, d ext.Decision) {
 		if record != (d.Request != "") {
 			// The other kind of question than d: a record for a session's
 			// question, a session's question for a record.
-			q.Request, q.Kind, q.Source = "", "prompt", "api"
+			q.Request, q.Kind, q.Source, q.Record = "", "prompt", "api", nil
 			if record {
 				q.Request, q.Kind, q.Source = q.ID, "decision", ""
 				for i := range q.Options {
@@ -434,6 +434,11 @@ func Router(t T, n *Network, r ext.DecisionRouter, d ext.Decision) {
 			}
 		} else if record {
 			q.Request = q.ID
+		}
+		if record && q.Record == nil {
+			// A record says what it is (ext.DecisionRecord), so a router
+			// that routes policies may answer one, valid for it.
+			q.Record = SampleRecord()
 		}
 		if record && !decisionRef.MatchString(q.Request) {
 			panic(fmt.Sprintf("exttest: a record's reference %q is not dr-<n>", q.Request))
@@ -491,9 +496,79 @@ func Router(t T, n *Network, r ext.DecisionRouter, d ext.Decision) {
 	})
 }
 
+// Confirmer checks a decision router that confirms policies against the
+// record d: Confirm answering within ext.ConfirmWait, with no subject and
+// with one, from Goroutines goroutines at once too, each answer valid
+// (ext.Confirmation.Valid); and article 8 (Network): with the network
+// blocked, it answers from what it holds.
+func Confirmer(t T, n *Network, r ext.DecisionRouter, d ext.Decision) {
+	t.Helper()
+	pc, ok := r.(ext.PolicyConfirmer)
+	if !ok {
+		t.Errorf("exttest: Confirmer: %T does not confirm policies (ext.PolicyConfirmer)", r)
+		return
+	}
+	c, ok := begin(t, n, "Confirmer", r)
+	if !ok {
+		return
+	}
+	defer c.done()
+	if d.Record == nil {
+		d.Record = SampleRecord()
+	}
+	type answer struct {
+		c   ext.Confirmation
+		err error
+	}
+	// Each ask is of a record of its own (dr-<n>), so a router that
+	// fetches what it was not asked before is asked with the network
+	// blocked too.
+	var (
+		mu    sync.Mutex
+		asked int64
+	)
+	base := int64(0)
+	if n, err := strconv.ParseInt(strings.TrimPrefix(d.Request, "dr-"), 10, 64); err == nil && n > 0 && n < 1<<40 {
+		base = n * 1000
+	}
+	ask := func(ph phase, subject string) {
+		mu.Lock()
+		asked++
+		q := copyDecision(d)
+		q.ID = fmt.Sprintf("dr-%d", base+asked)
+		q.Request = q.ID
+		mu.Unlock()
+		a, returned := run(c, "Confirm", ext.ConfirmWait, ph, func(ctx context.Context) answer {
+			cf, err := pc.Confirm(ctx, ext.ConfirmQuery{Decision: q, Revision: "exttest-r1", Subject: subject})
+			return answer{cf, err}
+		})
+		if returned && a.err == nil {
+			if err := a.c.Valid(); err != nil {
+				c.found("Confirm answered a confirmation that is not valid%s: %v", ph.words(), err)
+			}
+		}
+	}
+	confirm := func(ph phase) {
+		ask(ph, "")
+		ask(ph, "exttest-subject")
+	}
+	confirm(open)
+	together(func() { confirm(open) })
+	c.phases(func(ph phase) {
+		if ph != open {
+			confirm(ph)
+		}
+	})
+}
+
 // Context checks a context provider against the query q: a valid name;
-// Context answering at most ext.MaxContextBlocks blocks, each valid, from
-// Goroutines goroutines at once too; NoteTouch returning; and article 8
+// Context answering at most ext.MaxContextBlocks blocks, each valid (a
+// pack mark among it), from Goroutines goroutines at once too; NoteTouch
+// returning; NoteCommit, when it is an ext.CommitNoter, returning within
+// ext.DeliveryWait with the network blocked; Lookup, when it is an
+// ext.ContextLookup, answering within ext.LookupWait with the network
+// blocked too, from Goroutines goroutines at once, an answer
+// ext.LookupAnswer.Valid takes when it answers one; and article 8
 // (Network).
 func Context(t T, n *Network, p ext.ContextProvider, q ext.ContextQuery) {
 	t.Helper()
@@ -536,14 +611,75 @@ func Context(t T, n *Network, p ext.ContextProvider, q ext.ContextQuery) {
 			return struct{}{}
 		})
 	}
+	noter, notes := p.(ext.CommitNoter)
+	note := sampleCommitNote(q)
+	noteCommit := func(ph phase) {
+		if notes {
+			run(c, "NoteCommit", ext.DeliveryWait, ph, func(ctx context.Context) struct{} {
+				noter.NoteCommit(ctx, note)
+				return struct{}{}
+			})
+		}
+	}
+	looker, looks := p.(ext.ContextLookup)
+	ask := sampleLookup(q)
+	lookup := func(ph phase) {
+		if !looks {
+			return
+		}
+		type answer struct {
+			a   ext.LookupAnswer
+			err error
+		}
+		a, returned := run(c, "Lookup", ext.LookupWait, ph, func(ctx context.Context) answer {
+			v, err := looker.Lookup(ctx, ask)
+			return answer{v, err}
+		})
+		if returned && a.err == nil {
+			if err := a.a.Valid(); err != nil {
+				c.found("Lookup's answer is not valid%s: %v", ph.words(), err)
+			}
+		}
+	}
 	blocks(open)
 	together(func() { blocks(open) })
+	together(func() { lookup(open) })
 	c.phases(func(ph phase) {
 		noteTouch(ph)
+		noteCommit(ph)
+		lookup(ph)
 		if ph != open {
 			blocks(ph)
 		}
 	})
+}
+
+// sampleLookup is a lookup of q's attempt's own, as the server fills one
+// in: a valid request whatever q holds.
+func sampleLookup(q ext.ContextQuery) ext.LookupRequest {
+	n := sampleCommitNote(q)
+	r := ext.LookupRequest{Op: ext.LookupReferences, Symbol: "Build", Limit: 20, Run: n.Run, Task: q.Task, Attempt: q.Attempt, Kind: q.Kind,
+		Session: "exttest-session", Start: n.Commit, Base: n.Commit}
+	if r.Valid() != nil {
+		r.Task, r.Attempt, r.Kind = "build", 1, "work"
+	}
+	return r
+}
+
+// sampleCommitNote is a note of q's run's base (its start when it names
+// no base), a valid one whatever q holds.
+func sampleCommitNote(q ext.ContextQuery) ext.CommitNote {
+	n := ext.CommitNote{Run: q.Run, Kind: ext.CommitBase, Commit: q.Base, At: time.Now().UTC()}
+	if n.Commit == "" {
+		n.Commit = q.Start
+	}
+	if !ext.ValidRunID(n.Run) {
+		n.Run = "exttest-0a0b0c0d"
+	}
+	if n.Valid() != nil {
+		n.Commit = strings.Repeat("0a", 20)
+	}
+	return n
 }
 
 // Sink checks a notification sink: a valid name; Events stable (the same

@@ -82,6 +82,7 @@ var mcpHandled = map[string]bool{
 	"ticket_read": true, "ticket_comment": true,
 	"decision_request": true, "decision_list": true, "decision_read": true, "decision_withdraw": true,
 	"guide": true, "brakeman_request": true, "observe": true, "brief_submit": true, "act": true,
+	"context_lookup": true,
 }
 
 // brakemanOnly is the tools a Brakeman turn's session alone lists, and
@@ -100,6 +101,11 @@ var (
 // (CONDUCTOR_TASK set): the decisions, which an attempt asks and waits
 // for (docs/plans/decisions.md, internal/cli).
 var taskOnly = map[string]bool{"decision_request": true, "decision_list": true, "decision_read": true, "decision_withdraw": true}
+
+// lookupOnly is the tools an attempt's session lists only when its guide
+// lists them: context_lookup, when a context provider answers lookups
+// (docs/plans/context-seams.md, CT-2).
+var lookupOnly = map[string]bool{"context_lookup": true}
 
 // mcpTools is the tools as tools/list gives them, from the server's table
 // of operations: its names, descriptions and schemas are the table's, so
@@ -213,6 +219,9 @@ func (s *mcpServer) handle(ctx context.Context, req mcpRequest) (any, *mcpError)
 		tools := mcpTools(turn, turn && s.granted(ctx))
 		if s.getenv("CONDUCTOR_TASK") == "" {
 			tools = slices.DeleteFunc(tools, func(t mcpTool) bool { return taskOnly[t.Name] })
+		}
+		if s.getenv("CONDUCTOR_TASK") == "" || turn || !s.lookupListed(ctx) {
+			tools = slices.DeleteFunc(tools, func(t mcpTool) bool { return lookupOnly[t.Name] })
 		}
 		return map[string]any{"tools": tools}, nil
 	case "tools/call":
@@ -333,7 +342,7 @@ func (s *mcpServer) call(ctx context.Context, name string, raw json.RawMessage) 
 		defer cancel()
 		return c.tool(cctx, name, raw)
 	case "form_crew", "add_member", "run_status", "link", "open_url", "task_context", "task_result", "message_send", "inbox_read", "inbox_ack", "task_blocked", "task_checkpoint",
-		"ticket_read", "ticket_comment", "guide", "decision_request", "decision_list", "decision_read", "decision_withdraw":
+		"ticket_read", "ticket_comment", "guide", "decision_request", "decision_list", "decision_read", "decision_withdraw", "context_lookup":
 		c, err := crewClientFromEnv(s.getenv)
 		if err != nil {
 			return "", errNotInSession
@@ -461,6 +470,9 @@ func (s *mcpServer) call(ctx context.Context, name string, raw json.RawMessage) 
 			return guideToolText(cctx, c, section)
 		case "decision_request", "decision_list", "decision_read", "decision_withdraw":
 			return decisionTool(cctx, c, name, body)
+		case "context_lookup":
+			c.prefix = "context_lookup"
+			return lookup(cctx, c, body)
 		case "ticket_comment":
 			text, _ := body["body"].(string)
 			if strings.TrimSpace(text) == "" {

@@ -73,6 +73,7 @@ var principalPlaces = []principalPlace{
 	{at: "me.go:handleMe", method: "GET", path: "/api/me", tok: "decide", admitted: http.StatusOK},
 	{at: "sessions.go:handleGetSession", method: "GET", path: "/api/sessions/{sid}", tok: "admin"},
 	{at: "tasks.go:taskSession", method: "POST", path: "/api/sessions/{sid}/task/result", body: `{}`, tok: "admin"},
+	{at: "extlookup.go:lookupCaller", method: "POST", path: "/api/sessions/{sid}/context/lookup", body: `{}`, tok: "admin"},
 	{at: "ws_host.go:handleHostWS", method: "GET", path: "/ws/host", tok: "admin"},
 	{at: "ws_viewer.go:handleViewerWS", method: "GET", path: "/ws/sessions/{sid}", tok: "admin"},
 }

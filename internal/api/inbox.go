@@ -103,32 +103,36 @@ type inboxSummary struct {
 // receipts) are never cut; display fields are cut on a rune boundary until
 // their encoded form fits.
 type inboxItem struct {
-	Ref         string             `json:"ref"`
-	Subject     string             `json:"subject"`
-	Kind        string             `json:"kind"`
-	State       string             `json:"state,omitempty"` // a DR1 record's
-	Since       time.Time          `json:"since"`
-	Title       string             `json:"title"`   // 200
-	Brief       string             `json:"brief"`   // 2 KiB
-	BriefBy     string             `json:"briefBy"` // conductor | brakeman
-	Card        string             `json:"card,omitempty"`
-	Question    string             `json:"question"` // exact: at most 500 raw bytes
-	Answerer    string             `json:"answerer"`
-	RoutedTo    []inboxDestination `json:"routedTo,omitempty"`
-	RoutedRule  string             `json:"routedRule,omitempty"` // 200
-	Revision    string             `json:"revision"`             // 64
-	Now         string             `json:"now,omitempty"`        // 500
-	Blocking    inboxBlocking      `json:"blocking"`
-	Actions     []inboxAction      `json:"actions"`
-	WhyHuman    string             `json:"whyHuman,omitempty"`   // 1 KiB
-	Considered  []cardAlternative  `json:"considered,omitempty"` // at most 6
-	Recommended int                `json:"recommended"`
-	Uncertainty string             `json:"uncertainty,omitempty"` // 1 KiB
-	Authorizes  string             `json:"authorizes,omitempty"`  // 1 KiB, Brakeman's
-	CardRev     string             `json:"cardRev,omitempty"`     // 64
-	CardNote    string             `json:"cardNote,omitempty"`    // 200: the card read at another revision
-	Evidence    []inboxRef         `json:"evidence,omitempty"`
-	Delivery    []deliveryStep     `json:"delivery,omitempty"`
+	Ref        string             `json:"ref"`
+	Subject    string             `json:"subject"`
+	Kind       string             `json:"kind"`
+	State      string             `json:"state,omitempty"` // a DR1 record's
+	Since      time.Time          `json:"since"`
+	Title      string             `json:"title"`   // 200
+	Brief      string             `json:"brief"`   // 2 KiB
+	BriefBy    string             `json:"briefBy"` // conductor | brakeman
+	Card       string             `json:"card,omitempty"`
+	Question   string             `json:"question"` // exact: at most 500 raw bytes
+	Answerer   string             `json:"answerer"`
+	RoutedTo   []inboxDestination `json:"routedTo,omitempty"`
+	RoutedRule string             `json:"routedRule,omitempty"` // 200
+	Revision   string             `json:"revision"`             // 64
+	Now        string             `json:"now,omitempty"`        // 500
+	Blocking   inboxBlocking      `json:"blocking"`
+	// CardBlocked is what Brakeman's card says waits on a DR1 record
+	// (its blocked refs), at most inboxRefs: the record's own Blocking is
+	// Conductor's, from the ledger, and never takes them (#1046).
+	CardBlocked []string          `json:"cardBlocked,omitempty"`
+	Actions     []inboxAction     `json:"actions"`
+	WhyHuman    string            `json:"whyHuman,omitempty"`   // 1 KiB
+	Considered  []cardAlternative `json:"considered,omitempty"` // at most 6
+	Recommended int               `json:"recommended"`
+	Uncertainty string            `json:"uncertainty,omitempty"` // 1 KiB
+	Authorizes  string            `json:"authorizes,omitempty"`  // 1 KiB, Brakeman's
+	CardRev     string            `json:"cardRev,omitempty"`     // 64
+	CardNote    string            `json:"cardNote,omitempty"`    // 200: the card read at another revision
+	Evidence    []inboxRef        `json:"evidence,omitempty"`
+	Delivery    []deliveryStep    `json:"delivery,omitempty"`
 }
 
 // inboxAction is one thing a person may do with an item, through its own
@@ -413,8 +417,23 @@ func (rd *inboxRead) withCard(it *inboxItem) {
 		it.addRef(ref.String(), "Brakeman's evidence")
 	}
 	for _, ref := range d.Blocked {
+		if it.Kind == inboxDecision {
+			// A record's "What waits" is what it holds, never guessed:
+			// the card's word is Brakeman's, drawn in its brief.
+			it.cardBlock(ref.String())
+			continue
+		}
 		it.block(ref.String())
 	}
+}
+
+// cardBlock adds a ref of Brakeman's card to what it says waits on a DR1
+// record (CardBlocked), at most inboxRefs, never twice.
+func (it *inboxItem) cardBlock(ref string) {
+	if !refFits(ref) || len(it.CardBlocked) >= inboxRefs || slices.Contains(it.CardBlocked, ref) {
+		return
+	}
+	it.CardBlocked = append(it.CardBlocked, ref)
 }
 
 // agentName is the name the catalog gives the session's agent.

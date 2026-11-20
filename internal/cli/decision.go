@@ -44,14 +44,20 @@ const decisionUsage = `Usage:
       recommendation, the subject, the evidence and what changed of it
       since it was asked, the responses with their receipts and
       rationales, how Yardmaster applied the answer, and its history with
-      each comment's, request for more's and route's words
-  conductor decision respond dr-N (--choice N | --text TEXT) [--why TEXT]
+      each comment's, request for more's and route's words; under a
+      decision router's policy, who may answer it (each group with whom
+      it names and why, or its gap), whether the operator may override,
+      and whether the policy is in force now
+  conductor decision respond dr-N (--choice N | --text TEXT) [--why TEXT] [--override]
       answer it as the operator: an option by its number from 0, as show
       numbers them (an approval's and an assignment's answer), a text (a
       clarification's, which may also pick an option), and the rationale;
       the decision's rev is read first and sent, so an answer to one that
       changed since is refused; prints the receipt, dr-N/K (the K-th
-      response to dr-N), and where the decision is now
+      response to dr-N), and where the decision is now. Under a decision
+      router's policy in force the operator answers only with --override,
+      where the policy allows it, its reason --why (at least 10
+      characters)
   conductor decision cancel dr-N --why TEXT [--release]
       cancel an open or answered decision. An agent's (asked by a task's
       attempt): its task waits for it no more and goes on, told the
@@ -646,7 +652,7 @@ func runDecision(ctx context.Context, args []string, stdout, stderr io.Writer) (
 	var (
 		state, run, ticket, text, why *string
 		choice                        *int
-		asJSON, release               *bool
+		asJSON, release, override     *bool
 	)
 	switch sub {
 	case "list":
@@ -660,6 +666,7 @@ func runDecision(ctx context.Context, args []string, stdout, stderr io.Writer) (
 		choice = fs.Int("choice", -1, "the option chosen, by its number from 0 as show numbers them")
 		text = fs.String("text", "", "the answer in words: a clarification's")
 		why = fs.String("why", "", "the rationale, kept with the answer and typed with it")
+		override = fs.Bool("override", false, "answer in a decision router's policy's place, where the policy allows it: --why is the reason, at least 10 characters")
 	case "cancel":
 		why = fs.String("why", "", "why it is cancelled (required)")
 		release = fs.Bool("release", false, "a plan's gate: release the tasks it holds to run without its answer, instead of cancelling them; an agent's decision always releases its task, told to take it as a no")
@@ -703,6 +710,8 @@ func runDecision(ctx context.Context, args []string, stdout, stderr io.Writer) (
 		return 2, errors.New("decision respond: answer with --choice N (an option's number from 0), --text TEXT, or both for a clarification")
 	case sub == "respond" && *choice < -1:
 		return 2, fmt.Errorf("decision respond: --choice is an option's number from 0: %d", *choice)
+	case sub == "respond" && *override && len([]rune(strings.TrimSpace(*why))) < minOverrideWhy:
+		return 2, fmt.Errorf("decision respond: --override needs its reason, --why TEXT of at least %d characters", minOverrideWhy)
 	case sub == "cancel" && strings.TrimSpace(*why) == "":
 		return 2, errors.New("decision cancel: --why says why it is cancelled")
 	}
@@ -716,7 +725,7 @@ func runDecision(ctx context.Context, args []string, stdout, stderr io.Writer) (
 	case "show":
 		return decisionShow(ctx, c, id, *asJSON, stdout)
 	case "respond":
-		resp := crew.Response{Text: *text, Rationale: *why}
+		resp := crew.Response{Text: *text, Rationale: *why, Override: *override}
 		if *choice >= 0 {
 			resp.Choice = choice
 		}
@@ -803,7 +812,78 @@ func decisionShow(ctx context.Context, c *apiClient, id string, asJSON bool, std
 		return printReply(stdout, raw, true)
 	}
 	fmt.Fprint(stdout, decisionText(d, refs, true))
+	var now struct {
+		PolicyNow *struct {
+			InForce  bool   `json:"inForce"`
+			Why      string `json:"why"`
+			Eligible bool   `json:"eligible"`
+		} `json:"policyNow"`
+	}
+	_ = json.Unmarshal(raw, &now)
+	var pn policyNowWords
+	if now.PolicyNow != nil {
+		pn = policyNowWords{known: true, inForce: now.PolicyNow.InForce, why: now.PolicyNow.Why, eligible: now.PolicyNow.Eligible}
+	}
+	fmt.Fprint(stdout, policyText(d, pn))
 	return 0, nil
+}
+
+// minOverrideWhy is the least an override's reason holds, in characters
+// (the server's own bound).
+const minOverrideWhy = 10
+
+// policyNowWords is what the read said of a router's policy now: known
+// when it said anything, in force, its why, and whether the reader (an
+// identity's operator) is among those it names.
+type policyNowWords struct {
+	known, inForce, eligible bool
+	why                      string
+}
+
+// policyText is a decision router's policy on d in words: who may answer
+// (each group: whom it names and how, with the rule, or its gap), whether
+// the operator may override, and whether the policy is in force now (said
+// when the server said, known). "" under the server's own policy.
+func policyText(d crew.Decision, now policyNowWords) string {
+	inForce, known, why := now.inForce, now.known, now.why
+	p, router, ok := crew.RouterPolicyOf(string(d.Policy))
+	if !ok {
+		return ""
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "\nWho may answer (the policy of %s, revision %s):\n", oneLine(router), oneLine(p.Revision))
+	for _, g := range p.Groups {
+		if len(g.Eligible) == 0 {
+			fmt.Fprintf(&b, "  the %s: nobody: %s (rule %s)\n", oneLine(g.Label), oneLine(g.Gap), oneLine(g.Rule))
+			continue
+		}
+		var names []string
+		for _, e := range g.Eligible {
+			n := oneLine(e.Name) + " (" + oneLine(e.Via)
+			if e.For != "" {
+				n += " for " + oneLine(e.For)
+			}
+			names = append(names, n+")")
+		}
+		fmt.Fprintf(&b, "  the %s: %s (rule %s)\n", oneLine(g.Label), strings.Join(names, ", "), oneLine(g.Rule))
+	}
+	if p.Override == "operator" {
+		b.WriteString("  the operator may override it, with a reason (respond --override --why TEXT)\n")
+	} else {
+		b.WriteString("  the operator may not override it\n")
+	}
+	switch {
+	case !known:
+	case inForce && now.eligible:
+		b.WriteString("  in force now: you are among those it names, and answer as one of them\n")
+	case inForce:
+		b.WriteString("  in force now\n")
+	case why != "":
+		fmt.Fprintf(&b, "  not in force now (%s): the operator answers\n", oneLine(why))
+	default:
+		b.WriteString("  not in force now: the operator answers\n")
+	}
+	return b.String()
 }
 
 // decisionRespond reads the decision's rev, then sends the operator's

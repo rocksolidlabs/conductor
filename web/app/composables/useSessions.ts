@@ -1,3 +1,4 @@
+import { type AttemptContextRow, CONTEXT_SHA_HEADER, contextBodyPath } from '~/utils/attemptContext'
 import { itemOf, type InboxItem, type InboxPage, type InboxTrack } from '~/utils/inbox'
 import type { ChatMessage, ActivityEntry, AgentBrowser, Attention, AttentionKind, AttentionOption, CrewCompare, CrewLaunchBody, OpenEvent, Role } from '~/utils/protocol'
 import type { Receipt } from '~/utils/tasks'
@@ -648,6 +649,8 @@ export interface RunAttempt {
   checkpoint?: AttemptCheckpoint
   /** The attempt's receipts (its trees' steps and its checks, by when each started), in a task's own read alone (`runTask`). */
   steps?: RunStep[]
+  /** The context it was given, block by block, never the text (CT-3), in a task's own read alone (`runTask`); absent for none. */
+  context?: AttemptContextRow[]
   /**
    * The URL a person opens to look at the attempt's work (EN1): its worktree's preview, from the worktree's `tree.ready` until the first
    * of the attempt's close and one of the worktree's services exiting on its own; absent otherwise, while the run stops, and for a run
@@ -1073,6 +1076,9 @@ export function useSessions() {
     /** One receipt's log of an attempt (at most 1 MiB) with its SHA-256; 410 `log_dropped` when the run's logs were at their bound. */
     stepLog: (runId: string, taskId: string, n: number, id: string, k: number) =>
       readLog(`/api/runs/${encodeURIComponent(runId)}/tasks/${encodeURIComponent(taskId)}/attempts/${n}/steps/${encodeURIComponent(id)}/${k}/log`),
+    /** The text of a block of context an attempt was given (CT-3), at most 8 KiB, with the SHA-256 its row records. */
+    attemptContextBody: (runId: string, taskId: string, n: number, seq: number) =>
+      requestText(contextBodyPath(runId, taskId, n, seq)).then((r) => ({ text: r.text, sha256: r.headers.get(CONTEXT_SHA_HEADER) ?? '' })),
     /** One prerequisite receipt's log with its SHA-256. */
     prerequisiteLog: (runId: string, id: string, k: number) => readLog(`/api/runs/${encodeURIComponent(runId)}/prerequisites/${encodeURIComponent(id)}/${k}/log`),
     /**

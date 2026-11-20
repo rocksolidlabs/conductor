@@ -837,6 +837,8 @@ export interface RunCandidate {
   findings?: Partial<Record<Finding['severity'], number>>
   /** The attempt's check and verify rows whose subject is the commit (for a review, the commit it reviewed), at most 16. */
   receipts: CandidateReceipt[]
+  /** How many blocks of context its attempt was given (CT-3); absent for none. The task route lists them. */
+  context?: number
 }
 
 /** A task's candidates on a page: at most 6, newest first, `more` the rest (which the task route reads). */

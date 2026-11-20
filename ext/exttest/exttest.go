@@ -173,6 +173,9 @@ var byKind = []struct {
 	})},
 	{ext.KindDecisions, as(func(t T, n *Network, r ext.DecisionRouter, _ *runConfig) {
 		Router(t, n, r, SampleDecision())
+		if _, ok := r.(ext.PolicyConfirmer); ok {
+			Confirmer(t, n, r, SampleDecisionRequest())
+		}
 	})},
 	{ext.KindContext, as(func(t T, n *Network, p ext.ContextProvider, _ *runConfig) {
 		Context(t, n, p, SampleQuery(t.TempDir()))

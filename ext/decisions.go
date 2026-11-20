@@ -68,6 +68,9 @@ type Decision struct {
 	// the asking attempt's session, or none (an empty ID) for a plan's
 	// gate, with its run and task.
 	Request string `json:"request,omitempty"`
+	// Record is what a durable decision's record says of itself (policy.go),
+	// set only with Request, never for a session's question.
+	Record *DecisionRecord `json:"record,omitempty"`
 }
 
 // DecisionState is a durable decision's state as Host.Decision reads it:
@@ -94,6 +97,10 @@ type Route struct {
 	To     []Destination `json:"to,omitempty"`     // at most MaxDestinations
 	Rule   string        `json:"rule,omitempty"`   // why, at most MaxRouteRule bytes
 	Answer *Answer       `json:"answer,omitempty"` // an answer the router holds now
+	// Policy is who may answer a durable decision's record (policy.go):
+	// valid only with the Decision's Record, from a router that implements
+	// PolicyConfirmer.
+	Policy *RoutePolicy `json:"policy,omitempty"`
 }
 
 // Destination is one whom a question went to.
@@ -118,6 +125,8 @@ type Resolution struct {
 	// Request is the durable decision resolved, "dr-<n>" (Decision.Request:
 	// it reached a final state), "" for a session's question.
 	Request string `json:"request,omitempty"`
+	// Outcome is how a routed record ended, set for a record (Request set).
+	Outcome *DecisionOutcome `json:"outcome,omitempty"`
 }
 
 const (
@@ -136,7 +145,8 @@ var destinationKinds = map[string]bool{"person": true, "role": true, "agent": tr
 // rule of one line of at most MaxRouteRule bytes; and an answer, when there
 // is one, that is exactly one of a choice d offers (an option's Input) and
 // a line of at most MaxAnswerText bytes of text (tabs and line ends its only
-// control characters), given by a valid principal.
+// control characters), given by a valid principal; and a policy only for
+// a durable decision's record, valid for it (RoutePolicy.Valid).
 func (r Route) Valid(d Decision) error {
 	const rec = "route"
 	if len(r.To) > MaxDestinations {
@@ -152,6 +162,16 @@ func (r Route) Valid(d Decision) error {
 	}
 	if err := line(rec, "rule", r.Rule, MaxRouteRule, false); err != nil {
 		return err
+	}
+	if r.Policy != nil {
+		// A policy is a record's: a screen's question is answered by
+		// whoever controls the terminal, so a route cannot say who answers it.
+		if d.Request == "" || d.Record == nil {
+			return invalid(rec, "a policy is a durable decision's record's, and %q is none", d.ID)
+		}
+		if err := r.Policy.Valid(*d.Record); err != nil {
+			return invalid(rec, "%v", err)
+		}
 	}
 	if r.Answer == nil {
 		return nil

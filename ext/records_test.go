@@ -22,8 +22,23 @@ var (
 	decision  = ext.Decision{
 		ID: "q1", Session: session, Message: "Allow the edit?", Kind: "permission", Source: "question",
 		Options: []ext.DecisionOption{{Label: "Yes", Input: "1"}, {Label: "No", Input: "2"}},
-		Plan:    "the plan", Since: at, Request: "dr-7",
+		Plan:    "the plan", Since: at, Request: "dr-7", Record: &record,
 	}
+	record = ext.DecisionRecord{
+		Type: "approval", Origin: "plan", Gate: "schema", Ticket: "CND-12", Project: "CND", Crew: "c1", Task: "build",
+		For:       &ext.RecordFor{Label: "architecture owner", Person: "Ana", Responsibility: "architecture"},
+		Expertise: []string{"databases"}, Subject: &ext.DecisionSubject{Kind: "plan", Key: strings.Repeat("a", 32)},
+		Recommended: []ext.Destination{{Kind: "person", Name: "Ana"}},
+	}
+	eligible    = ext.Eligible{Subject: "u-ana", Name: "Ana", Via: ext.ViaDelegate, For: "u-ben", Ref: "ref-1"}
+	routeChange = ext.RouteChange{Why: ext.Rerouted, Revision: "r2", At: at}
+	policy      = ext.RoutePolicy{
+		Revision: "r1", Scope: "s1",
+		Pinned:   ext.PinnedRequirement{Rule: "r-1", Groups: []ext.PinnedGroup{{Role: "architecture", Quorum: 1}}, Distinct: true, Override: ext.OverrideOperator, Notify: ext.NotifyBatch, EscalateAfter: time.Hour},
+		Groups:   []ext.Requirement{{Role: "architecture", Label: "architecture owner", Quorum: 1, Rule: "r-1", Eligible: []ext.Eligible{eligible}, Gap: "none assigned"}},
+		Distinct: true, Override: ext.OverrideOperator, Unsupported: true, Reroutes: 1, Recent: []ext.RouteChange{routeChange},
+	}
+	outcome   = ext.DecisionOutcome{State: "superseded", By: "u-ana", Via: ext.OutcomeEligible, SupersededBy: "dr-9", Why: "moved"}
 	runOrigin = ext.RunOrigin{
 		OpID: "op-1", Ref: "example:42", Label: "Nightly", Subject: ext.Subject{Ref: "example:42", URL: "https://example.com/42", Prior: "c1-0123abcd"},
 		Project: "CND", StartCommit: strings.Repeat("a", 40), ResolvedDigest: strings.Repeat("b", 64), Deadline: at.Add(time.Hour),
@@ -39,8 +54,13 @@ var (
 		Digest:   strings.Repeat("e", 64),
 		Capacity: []ext.CapacityView{capacityView},
 	}
-	enabled      = true
-	capacityView = ext.CapacityView{
+	enabled        = true
+	contextFinding = ext.ContextFinding{Severity: "major", Path: "a.go", Line: 3, Message: "m"}
+	contextTicket  = ext.ContextTicket{Key: "CND-12", Rev: 9, Plan: "0123456789abcdef", PlanN: 3, Digest: strings.Repeat("e", 64), Owner: "Ada", Assignees: []string{"Grace"}}
+	lookupItem     = ext.LookupItem{Kind: ext.ItemSymbol, Path: "a.go", Line: 3, Symbol: "Open", Relation: ext.RelationCalledBy, Mark: ext.MarkSupported, Why: "w", Excerpt: "e"}
+	lookupCoverage = ext.LookupCoverage{Commit: strings.Repeat("a", 40), Snapshot: "s-1", Files: 412, Excluded: 3, Unknown: 1, Partial: true, At: at}
+	treeEntry      = ext.TreeEntry{Path: "README", Mode: "100644", Kind: ext.EntryFile, Object: strings.Repeat("d", 40), Size: 6}
+	capacityView   = ext.CapacityView{
 		Agent: "claude", Account: "a-abcdefgh2345", Label: "Work", State: "ok", Fresh: ext.CapacityFresh, ReadAt: at,
 		Running: 1, Started5h: 2, Started7d: 3,
 		Windows: []ext.CapacityWindow{{Kind: "five_hour", Name: "5-hour", Minutes: 300, Percent: 42, ResetsAt: at.Add(time.Hour), Severity: "normal"}},
@@ -55,21 +75,61 @@ var records = []any{
 	&session,
 	&decision,
 	&ext.DecisionOption{Label: "Yes", Input: "1"},
-	&ext.Route{To: []ext.Destination{{Kind: "person", Name: "Ada"}}, Rule: "owner of the file", Answer: &ext.Answer{Input: "1", Text: "yes", By: principal}},
+	&ext.Route{To: []ext.Destination{{Kind: "person", Name: "Ada"}}, Rule: "owner of the file", Answer: &ext.Answer{Input: "1", Text: "yes", By: principal}, Policy: &policy},
+	&record,
+	&ext.RecordFor{Label: "architecture owner", Person: "Ana", Responsibility: "architecture"},
+	&ext.DecisionSubject{Kind: "plan", Key: strings.Repeat("a", 32)},
+	&policy,
+	&policy.Groups[0],
+	&eligible,
+	&policy.Pinned,
+	&ext.PinnedGroup{Role: "architecture", Quorum: 1},
+	&routeChange,
+	&ext.ConfirmQuery{Decision: decision, Revision: "r1", Subject: "u-ana", Since: at},
+	&ext.Confirmation{InForce: true, Behind: true, Routes: true, Revision: "r2", Groups: []string{"architecture"}, Why: "refreshing"},
+	&outcome,
+	&ext.OpenDecisionsPage{Decisions: []ext.OpenDecision{{Decision: decision, Policy: &policy, RoutedAt: at, Why: "assigned", Rev: 2, Counted: []ext.CountedResponse{{Subject: "u-ana", Groups: []string{"architecture"}, At: at, Confirmed: true}}}}, Next: "dr-8"},
+	&ext.OpenDecision{Decision: decision, Policy: &policy, RoutedAt: at, Why: "assigned", Rev: 2, Counted: []ext.CountedResponse{{Subject: "u-ana", Groups: []string{"architecture"}, At: at, Confirmed: true}}},
+	&ext.CountedResponse{Subject: "u-ana", Groups: []string{"architecture"}, At: at, Confirmed: true},
+	&ext.OutcomesPage{Outcomes: []ext.OutboxEntry{{Seq: 1, Decision: decision, Policy: &policy, RoutedAt: at, Outcome: outcome, ClosedAt: at}}, Next: 1},
+	&ext.OutboxEntry{Seq: 1, Decision: decision, Policy: &policy, RoutedAt: at, Outcome: outcome, ClosedAt: at},
+	&ext.RerouteRequest{Decision: "dr-7", Route: ext.Route{Policy: &policy}, Why: ext.Rerouted, OpID: "op-1", ExpectedRev: 2},
+	&ext.RerouteResult{Rev: 3, Unchanged: true, Superseded: "dr-9"},
 	&ext.Destination{Kind: "role", Name: "reviewer"},
 	&ext.Answer{Input: "1", Text: "yes", By: principal},
-	&ext.Resolution{ID: "q1", Session: session, Ended: true, At: at, Request: "dr-7"},
+	&ext.Resolution{ID: "q1", Session: session, Ended: true, At: at, Request: "dr-7", Outcome: &outcome},
 	&ext.TouchedFile{Session: session, Path: "/src/a.go", Op: "edit", Tool: "Edit", By: "claude", At: at},
 	&ext.ContextQuery{
 		Run: "r1", Crew: "c1", Task: "build", Attempt: 1, Kind: "work", Goal: "g", Instructions: "i",
 		Worktree: "/src/.conductor/worktrees/r1/build.1", Dir: "web", Start: "abc123",
-		Inputs: []ext.ContextInput{{Task: "plan", Commit: "def456"}},
+		Inputs:     []ext.ContextInput{{Task: "plan", Commit: "def456", Attempt: 2, Start: "abc123", Verdict: "needs_changes", Findings: []ext.ContextFinding{contextFinding}}},
+		Base:       "abc123",
+		Ticket:     &contextTicket,
+		Checks:     []ext.ContextCheck{{ID: "unit", Argv: []string{"go", "test"}, Cut: true}},
+		Evidence:   []string{"ticket:CND-12"},
+		LaunchedBy: "Ada",
 	},
-	&ext.ContextInput{Task: "plan", Commit: "def456"},
-	&ext.ContextBlock{Title: "Callers", Ref: "internal/a.go", Body: "a calls b"},
+	&ext.ContextInput{Task: "plan", Commit: "def456", Attempt: 2, Start: "abc123", Verdict: "needs_changes", Findings: []ext.ContextFinding{contextFinding}},
+	&contextFinding,
+	&contextTicket,
+	&ext.ContextCheck{ID: "unit", Argv: []string{"go", "test"}, Cut: true},
+	&ext.ContextBlock{Title: "Callers", Ref: "internal/a.go", Body: "a calls b", Pack: "p-1"},
+	&ext.CommitNote{Run: "c1-89abcdef", Task: "build", Attempt: 1, Kind: ext.CommitCandidate, Commit: strings.Repeat("a", 40), At: at},
+	&ext.TreeRequest{Run: "c1-89abcdef", Commit: strings.Repeat("a", 40), Roots: true},
+	&ext.Tree{Commit: strings.Repeat("a", 40), ID: strings.Repeat("b", 40), Roots: []string{strings.Repeat("c", 40)}, Shallow: true,
+		Entries: []ext.TreeEntry{treeEntry}, Denied: 1, Truncated: true},
+	&treeEntry,
+	&ext.BlobRequest{Run: "c1-89abcdef", Commit: strings.Repeat("a", 40), Path: "README"},
+	&ext.DeniedRequest{Run: "c1-89abcdef", Paths: []string{"README"}},
+	&ext.LookupRequest{Op: ext.LookupReferences, Query: "q", Path: "a.go", Symbol: "store.Open", Limit: 20, Run: "c1-89abcdef", Task: "build", Attempt: 1,
+		Kind: "work", Session: "0123456789abcdef", Start: strings.Repeat("a", 40), Base: strings.Repeat("b", 40), Head: strings.Repeat("c", 40)},
+	&ext.LookupAnswer{Items: []ext.LookupItem{lookupItem}, Blocks: []ext.ContextBlock{{Title: "t", Body: "b", Pack: "p-1"}}, Coverage: lookupCoverage, More: true, Note: "n"},
+	&lookupItem,
+	&lookupCoverage,
 	&ext.Notification{
 		Event: "needs_input", Type: "attention", At: at, Session: session, State: "open", Message: "m",
 		URL: "https://example.com/s", To: "ada", Tool: "Edit", Op: "edit", Path: "/src/a.go", By: "v1", ByName: "Ada", Origin: "push",
+		Recipient: "u-ana", Key: "k-1",
 		Ref: "decision:dr-7",
 	},
 	&ext.Doc{Store: "data", Path: "crews/c1.json", Epoch: strings.Repeat("ab", 16), Rev: 3, At: at, Size: 10, Offset: 4, Data: []byte("{}")},

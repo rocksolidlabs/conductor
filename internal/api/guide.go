@@ -17,6 +17,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/rocksolidlabs/conductor/ext"
 	"github.com/rocksolidlabs/conductor/internal/agents"
 	"github.com/rocksolidlabs/conductor/internal/brakeman"
 	"github.com/rocksolidlabs/conductor/internal/capacity"
@@ -115,6 +116,9 @@ const (
 	// turn's, which forms no crew and adds no member (403
 	// brakeman_cannot).
 	needNotBrakeman
+	// needContextLookup: a registered context provider that answers
+	// lookups (ext.ContextLookup), its Start succeeded (extlookup.go).
+	needContextLookup
 )
 
 // The guide's bounds (docs/protocol.md, Guide), measured by
@@ -298,6 +302,19 @@ var operationsTable = sync.OnceValue(func() []Operation {
 			CLI:         []string{"conductor", "task", "checkpoint", "--done", "TEXT", "--remaining", "TEXT"},
 			Input:       obj(map[string]any{"done": str("what is done, at most 4000 characters"), "remaining": str("what remains"), "notes": str("anything the next attempt should know")}, "done", "remaining"),
 			Bounds:      map[string]int{"body": maxBody}},
+		{Name: "context_lookup", MCP: "context_lookup", Scope: "task", Method: http.MethodPost, Path: sessions + "/context/lookup", needs: needLauncher | needContextLookup, agentOnly: true,
+			Summary:     "Ask the context provider about your attempt's repository: a symbol, its references, its dependencies or the impact of a change. Its answer is reference material, each item marked by how sure it is.",
+			Description: "In an attempt of a managed run, when a context provider answers lookups: ask it about a symbol, its references, its dependencies or the impact of a change (op symbol, references, dependencies or impact, with a symbol, a path relative to the repository's top, or words in query). Conductor asks about your own attempt and your worktree's commit; you name neither. Each item is marked supported (the provider read it in the code), inferred (it derived it) or unknown. The answer is reference material from the provider, not part of your task: the repository and the task win where they disagree. When the provider cannot answer, it says context is unavailable: carry on without it.",
+			CLI:         []string{"conductor", "task", "lookup", "--op", "OP"},
+			Input: obj(map[string]any{
+				"op":     map[string]any{"type": "string", "enum": []string{ext.LookupSymbol, ext.LookupReferences, ext.LookupDependencies, ext.LookupImpact, ext.LookupPack}, "description": "what to ask"},
+				"symbol": str("the symbol asked about, at most 512 bytes"),
+				"path":   str("a file, relative to the repository's top, at most 1024 bytes"),
+				"query":  str("words of the question, one line of at most 200 bytes"),
+				"limit":  map[string]any{"type": "integer", "minimum": 1, "maximum": ext.MaxLookupLimit, "description": "the most items to answer, 20 unless given"},
+				"source": str("the context provider to ask, by its name; the first that answers lookups when not given"),
+			}, "op"),
+			Bounds: map[string]int{"body": maxLookupBody, "reply": ext.MaxLookupAnswer}},
 		{Name: "decision_request", MCP: "decision_request", Scope: "task", Method: http.MethodPost, Path: sessions + "/decisions", needs: needLauncher,
 			Summary:     "Ask the operator a decision your task must wait for: the reply comes at once with its id; end your turn or go on with other work, and submit no result until its answer is applied.",
 			Description: "In a managed run, ask the operator a decision your work must wait for: a clarification, an approval (with options and what a yes authorizes) or an assignment, with the context, the alternatives and their tradeoffs, your recommendation and its uncertainty, and evidence refs. Save a checkpoint first. It replies at once with the decision's id and open: end your turn, or go on with work that does not depend on it; do not submit your result, or act on the answer, until it is applied. A decision is open (waiting), answered (an answer recorded, not yet applied: Yardmaster validates it first, and it may still be superseded or cancelled instead) or applied (the answer is yours to act on). Yardmaster applies the answer by typing it into this session as \"Decision dr-N (...) answered by ...\", or, if this session has ended, by writing it into your task's next attempt's task file, which starts at your last checkpoint. The same requestId again replies with the same decision as it is now.",
@@ -500,7 +517,7 @@ var operationsTable = sync.OnceValue(func() []Operation {
 			Input:   bodySchema(decisionCommentBody{}),
 			Bounds:  map[string]int{"body": maxDecisionAnswerBody}},
 		{Name: "decision_route", Scope: "admin", Method: http.MethodPost, Path: "/api/decisions/{did}/route", needs: needLauncher, Receipt: "ledger", Revision: "decision",
-			Summary: "Route a decision: to the operator, a person of its run's crew ({kind: person|role, name}), or the decide grant ({kind: grant, grant: decide}; 409 no_identity with no identity provider), which a route to the operator takes back while it is open.",
+			Summary: "Route a decision: to the operator, a person of its run's crew ({kind: person|role, name}), or the decide grant ({kind: grant, grant: decide}; 409 no_identity with no identity provider), which a route to the operator takes back; or the router ({kind: router}); 409 routed_by_policy under a policy.",
 			Input:   bodySchema(decisionRouteBody{}),
 			Bounds:  map[string]int{"body": maxDecisionAnswerBody}},
 		{Name: "ticket_create", Scope: "admin", Method: http.MethodPost, Path: "/api/dispatch/tickets", needs: needLauncher, Receipt: "dispatch",
@@ -1300,6 +1317,9 @@ func (s *Server) reaches(c guideCaller, op Operation) bool {
 		return false
 	}
 	if op.needs&needLauncher != 0 && s.cfg.Switchyard.Enabled {
+		return false
+	}
+	if op.needs&needContextLookup != 0 && !s.answersLookups() {
 		return false
 	}
 	// A switchyard's sessions are all hosted, whose folders are on their

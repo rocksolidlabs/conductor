@@ -503,3 +503,20 @@ describe('whom a decision is for', () => {
     expect(acceptedAnswer(decision({ state: 'answered', responses: [recorded] }))?.for).toBeUndefined()
   })
 })
+
+describe("the decide page's words of a router's policy's refusals (SW1)", () => {
+  it('says each new code in words naming no one, and each judges the answer', () => {
+    expect(decideWords('not_eligible', 'dr-7')).toBe('You are not among those who may answer dr-7.')
+    expect(decideWords('not_needed', 'dr-7')).toBe('dr-7 needs no more answers of this kind.')
+    expect(decideWords('already_counted', 'dr-7')).toBe('Your answer to dr-7 is counted already.')
+    for (const code of ['not_eligible', 'not_needed', 'already_counted']) {
+      expect(DECIDE_JUDGING).toContain(code)
+      expect(respondOutcome(403, { error: { code } }, 'r1')).toBe('refused')
+    }
+  })
+
+  it('sends an override only when asked', () => {
+    expect(responseBody({ choice: 0, rationale: 'Ana is away this week', expectedRev: 2, override: true }, 'r1')).toEqual({ responseId: 'r1', expectedRev: 2, choice: 0, rationale: 'Ana is away this week', override: true })
+    expect(responseBody({ choice: 0, expectedRev: 2 }, 'r1')).toEqual({ responseId: 'r1', expectedRev: 2, choice: 0 })
+  })
+})

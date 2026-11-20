@@ -81,7 +81,7 @@ func TestRoutedLedgerMigrationFreshAndAgain(t *testing.T) {
 	if !strings.Contains(freshIndex, "CREATE UNIQUE INDEX decision_outbox_decision ON decision_outbox(decision)") {
 		t.Fatalf("a new database's decision_outbox_decision: %q", freshIndex)
 	}
-	if v := dbVersion(t, fresh); v != Version || Version != 15 {
+	if v := dbVersion(t, fresh); v != Version || Version != 16 {
 		t.Fatalf("a new database is version %d, Version %d", v, Version)
 	}
 	if n := countRows(t, fresh, "SELECT COUNT(*) FROM decision_outbox"); n != 0 {
@@ -194,8 +194,8 @@ func TestRoutedLedgerMigrationFreshAndAgain(t *testing.T) {
 	migrated := slices.DeleteFunc(allEntries(t, again), func(e string) bool {
 		_, name, _ := strings.Cut(e, " ")
 		name, _, _ = strings.Cut(name, " ")
-		// Version 15's record comes with the migration from 13 too.
-		return isOutboxEntry(name) || isContextEntry(name)
+		// Version 15's and 16's tables come with the migration from 13 too.
+		return isOutboxEntry(name) || isContextEntry(name) || isSyncEntry(name)
 	})
 	if !slices.Equal(migrated, entries) {
 		t.Fatalf("the schema after the migration:\n%v\nbefore:\n%v", migrated, entries)
@@ -204,6 +204,8 @@ func TestRoutedLedgerMigrationFreshAndAgain(t *testing.T) {
 	rest := maps.Clone(after)
 	delete(rest, "decision_outbox")
 	delete(rest, "attempt_context")
+	delete(rest, "decision_statements")
+	delete(rest, "decision_output")
 	if !maps.EqualFunc(rest, before, slices.Equal) {
 		t.Fatalf("the rows after the migration:\n%v\nbefore:\n%v", after, before)
 	}
@@ -234,8 +236,8 @@ func TestRoutedLedgerMigrationFreshAndAgain(t *testing.T) {
 // every entry as it was. Opened again by a binary of its own version, it
 // is the owner's, as it was.
 func TestOlderBinaryOpensARoutedLedgerReadOnly(t *testing.T) {
-	if Version != 15 || len(migrations[13]) == 0 {
-		t.Fatalf("Version %d, version 13's migration %v: the outbox's barrier is 14, a version of its own, and 15 the version after it", Version, migrations[13])
+	if Version != 16 || len(migrations[13]) == 0 {
+		t.Fatalf("Version %d, version 13's migration %v: the outbox's barrier is 14, a version of its own, and 15 and 16 the versions after it", Version, migrations[13])
 	}
 	ctx := context.Background()
 	dir := filepath.Join(t.TempDir(), "runs")

@@ -241,7 +241,7 @@ func acceptedOf(rec ledger.DecisionRecord) *accepted {
 		_ = json.Unmarshal([]byte(rr.Receipt), &rc)
 		var auth Authority
 		_ = json.Unmarshal([]byte(rr.Authority), &auth)
-		return &accepted{k: rr.K, choice: rc.Choice, text: rc.Text, rationale: rc.Rationale, byName: rc.ByName, actor: rr.Actor, auth: auth, forWho: rc.For}
+		return &accepted{k: rr.K, choice: rc.Choice, text: rc.Text, rationale: rc.Rationale, byName: rc.ByName, actor: rr.Actor, auth: auth, forWho: rc.For, groups: rc.Groups}
 	}
 	return nil
 }
@@ -253,7 +253,8 @@ func acceptedOf(rec ledger.DecisionRecord) *accepted {
 func decisionOfRecord(r *run, rec ledger.DecisionRecord) *decision {
 	var body requestBody
 	_ = json.Unmarshal([]byte(rec.Request), &body)
-	d := &decision{n: rec.N, origin: rec.Origin, typ: rec.Type, gate: rec.Gate, question: body.Question, state: rec.State, rev: rec.Rev, subject: body.Subject, options: optionsOf(rec.Type, rec.Request), openedAt: rec.CreatedAt}
+	d := &decision{n: rec.N, origin: rec.Origin, typ: rec.Type, gate: rec.Gate, question: body.Question, state: rec.State, rev: rec.Rev, subject: body.Subject, options: optionsOf(rec.Type, rec.Request), openedAt: rec.CreatedAt,
+		spare: ledger.PolicySpare(rec.Policy), own: rec.RunID == r.id}
 	if rec.Origin == ledger.OriginAgent {
 		d.t = r.task(rec.TaskID)
 	}

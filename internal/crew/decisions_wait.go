@@ -104,8 +104,13 @@ type runDecisions struct {
 	// for the words of the one that asks again.
 	lastGate map[string]gateEnd
 	// opened counts the decisions the run opened, the room's half that
-	// regate checks before it asks again (the ledger's MaxDecisionsPerRun).
-	opened int
+	// regate checks before it asks again (the ledger's MaxDecisionsPerRun);
+	// voided those of them whose accepted answer was voided (the ledger's
+	// voidedCond), which no longer count.
+	opened, voided int
+	// spares says the run's openings (but a comparison's selection's) take
+	// a spare: the router routes policies (openingPolicy).
+	spares bool
 	// chain is the run and the runs it continues, newest first: a task
 	// file carries the decisions of the chain's.
 	chain []string
@@ -657,7 +662,7 @@ func (e *Engine) regate(r *run, cause string) {
 			}
 			continue
 		}
-		if !r.decisionRoom(1) {
+		if !r.decisionRoom(1, r.dec.spares) {
 			r.note(session.ActivityError, "the plan's decision %s cannot be asked again: %s", pd.ID, r.roomWords())
 			r.dec.noRoom = true
 			continue
@@ -674,8 +679,15 @@ func (e *Engine) regate(r *run, cause string) {
 // opened past either would be refused in the commit of the change that
 // asked it, and carried to every commit after it (#636, review round 2).
 // The caller holds e.mu.
-func (r *run) decisionRoom(n int) bool {
-	return r.decisionsHeld()+n <= ledger.MaxDecisionsPerRun && r.decisionsStanding()+n <= ledger.MaxOpenPerRun
+// spare says each opens with a spare (a record opened while the router
+// routes policies), which takes two of the run's places, itself and its
+// replacement's, as the ledger counts it.
+func (r *run) decisionRoom(n int, spare bool) bool {
+	need := n
+	if spare {
+		need = 2 * n
+	}
+	return r.decisionsHeld()+need <= ledger.MaxDecisionsPerRun && r.decisionsStanding()+n <= ledger.MaxOpenPerRun
 }
 
 // roomLeft is how many decisions the run may open now (decisionRoom). The
@@ -691,16 +703,29 @@ func (r *run) roomWords() string {
 }
 
 // decisionsStanding counts the run's decisions the ledger counts against
-// MaxOpenPerRun: open, or answered by an identity (whose place stands for
-// its replacement). The caller holds e.mu.
+// MaxOpenPerRun (its openish): open, or answered and holding a place for
+// its replacement (holdsPlace). The caller holds e.mu.
 func (r *run) decisionsStanding() int {
 	n := 0
 	for _, d := range r.decisions {
-		if d.state == ledger.DecisionOpen || d.state == ledger.DecisionAnswered && d.answer != nil && d.answer.auth.Via == ViaIdentity {
+		if d.state == ledger.DecisionOpen || d.holdsPlace() {
 			n++
 		}
 	}
 	return n
+}
+
+// holdsPlace says d holds a place for its replacement, as the ledger's
+// placeCond says: answered by an identity, or open or answered with a
+// spare.
+func (d *decision) holdsPlace() bool {
+	switch d.state {
+	case ledger.DecisionOpen:
+		return d.spare
+	case ledger.DecisionAnswered:
+		return d.spare || d.answer != nil && d.answer.auth.Via == ViaIdentity
+	}
+	return false
 }
 
 // gateRequest is a plan decision's request as a gate keeps it: its
@@ -745,7 +770,7 @@ func gateRequest(p Package, pd PackageDecision) (string, requestBody) {
 func (e *Engine) openGate(r *run, pd PackageDecision, tasks []*task, cause string) {
 	p := r.pkg.p
 	typ, body := gateRequest(p, pd)
-	d := &decision{origin: ledger.OriginPlan, typ: typ, gate: pd.ID, question: body.Question, state: ledger.DecisionOpen, rev: 1, subject: body.Subject}
+	d := &decision{origin: ledger.OriginPlan, typ: typ, gate: pd.ID, question: body.Question, state: ledger.DecisionOpen, rev: 1, subject: body.Subject, spare: e.RoutesPolicies(), own: true}
 	for _, o := range body.Options {
 		d.options = append(d.options, o.Label)
 	}
@@ -781,7 +806,7 @@ func (e *Engine) openGate(r *run, pd PackageDecision, tasks []*task, cause strin
 		raw, _ := json.Marshal(body)
 		sum := sha256.Sum256(raw)
 		row := ledger.DecisionRow{Origin: ledger.OriginPlan, Type: typ, Gate: pd.ID, Ticket: p.Ticket.ID, Plan: p.Plan.ID, PlanDigest: p.Plan.Digest,
-			Fingerprint: hex.EncodeToString(sum[:]), Request: string(raw), Policy: policyJSON}
+			Fingerprint: hex.EncodeToString(sum[:]), Request: string(raw), Policy: e.openingPolicy(ledger.OriginPlan)}
 		got, _, err := dtx.OpenDecision(row)
 		if err != nil {
 			return err
@@ -851,23 +876,24 @@ func (r *run) retryNeedsRoom(t *task, what string) error {
 			}
 		}
 	}
-	if len(asks) == 0 || r.decisionRoom(len(asks)) {
+	if len(asks) == 0 || r.decisionRoom(len(asks), r.dec.spares) {
 		return nil
 	}
 	return refuse(CodeDecisionLimit, "the plan's decisions %s would ask again, and the run has room for %d more (%s): the %s is refused", strings.Join(asks, ", "), r.roomLeft(), r.roomWords(), what)
 }
 
-// decisionsHeld counts what decisionRoom counts against the run's bound:
-// the decisions it opened and the places its identities' answers hold.
-// The caller holds e.mu.
+// decisionsHeld counts what decisionRoom counts against the run's bound,
+// as the ledger's roomFor does: the decisions it opened less those whose
+// accepted answer was voided, and the places held for replacements
+// (holdsPlace). The caller holds e.mu.
 func (r *run) decisionsHeld() int {
 	places := 0
 	for _, d := range r.decisions {
-		if d.state == ledger.DecisionAnswered && d.answer != nil && d.answer.auth.Via == ViaIdentity {
+		if d.holdsPlace() {
 			places++
 		}
 	}
-	return r.dec.opened + places
+	return r.dec.opened - r.dec.voided + places
 }
 
 // Subjects: what an approval is about, rechecked at response and at
@@ -1110,6 +1136,9 @@ type opDetail struct {
 	Note    string `json:"note,omitempty"`
 	To      []any  `json:"to,omitempty"`
 	Rule    string `json:"rule,omitempty"`
+	// Revision is a router's policy's revision, on the routed row of the
+	// policy's transaction (RoutePolicy).
+	Revision string `json:"revision,omitempty"`
 	// For and ForWas are whom a route made the decision for, and whom it
 	// was for before (HM1): a route to a person's label.
 	For    *DecisionFor `json:"for,omitempty"`
@@ -1180,6 +1209,10 @@ type operation struct {
 	// commit clears the asking attempt's turnEnded mark (a request for
 	// more: its agent takes a turn to answer).
 	rev, wakes bool
+	// rowless makes the operation write no history row: a decision
+	// router's change of a record's policy past the history's
+	// MaxDecisionRouterChanges, recorded in the policy itself (Reroute).
+	rowless bool
 	// once makes the operation its actor's once per decision (a decision
 	// router's routing row, RecordRoute): no op id is written, and its
 	// repeat, whatever its body, is answered by the receipt of the row its
@@ -1360,6 +1393,10 @@ func (e *Engine) operate(ctx context.Context, id string, op operation) (OpReceip
 				return err
 			}
 			dt.Rev = max(dt.Rev, row.Rev)
+			if op.rowless {
+				out = OpReceipt{Decision: id, Op: op.kind, Rev: row.Rev, Words: dt.Words}
+				return ltx.Event("decision."+op.kind, map[string]any{"decision": id, "op": op.opID, "actor": op.actor})
+			}
 			hr := ledger.HistoryRow{Kind: op.kind, By: op.actor, Detail: historyDetail(dt), OpID: op.opID, Fingerprint: op.fp}
 			if op.once {
 				// Its repeat is its actor's row of its kind, looked for in
