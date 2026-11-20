@@ -2,7 +2,7 @@ import Capacitor
 import ConductorShell
 import Foundation
 
-// The key plugin, `ConductorKey` to the page: each call handed to ConductorShell's KeyCalls, which decodes it, makes it of the key
+// The key plugin, `ConductorKey` to the page: each call handed, in the order it arrives, to ConductorShell's KeyCalls, which decodes it, makes it of the key
 // and answers it; nothing else is here.
 @objc(ConductorKeyPlugin)
 public class ConductorKeyPlugin: CAPPlugin, CAPBridgedPlugin {
@@ -18,7 +18,8 @@ public class ConductorKeyPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "remove", returnType: CAPPluginReturnPromise),
     ]
 
-    private let calls = Result { try KeyCalls.device() }
+    /** The calls one at a time, in the order the page made them; the KeyCalls opened at the first. */
+    private let runner = CallRunner { try KeyCalls.device() }
 
     @objc func create(_ call: CAPPluginCall) { make(call, "create") }
     @objc func publicKey(_ call: CAPPluginCall) { make(call, "publicKey") }
@@ -29,10 +30,6 @@ public class ConductorKeyPlugin: CAPPlugin, CAPBridgedPlugin {
     @objc func remove(_ call: CAPPluginCall) { make(call, "remove") }
 
     private func make(_ call: CAPPluginCall, _ method: String) {
-        let options = callOptions(call.options)
-        switch calls {
-        case .failure(let e): call.answer(unopened(e))
-        case .success(let c): Task { call.answer(await c.call(method, options)) }
-        }
+        runner.submit(method, callOptions(call.options)) { call.answer($0) }
     }
 }
