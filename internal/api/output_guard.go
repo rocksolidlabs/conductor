@@ -370,6 +370,8 @@ func withOutputNotHeld(ctx context.Context) context.Context {
 // goes through the guard.
 func (s *Server) judgeRow(ctx context.Context, text string, agent bool) string {
 	if agent && text != "" && ctx.Value(outputNotHeld{}) != nil {
+		// Counted for the sync status's words (sync_status.go).
+		s.hostedKept.Add(1)
 		return verdictOutput
 	}
 	return s.copyCheck.JudgeValue(ctx, text, agent)

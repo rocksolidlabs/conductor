@@ -506,3 +506,16 @@ func (l *Ledger) KeepOutput(ctx context.Context, n int64, verdicts map[string]st
 		return nil, nil
 	})
 }
+
+// OutputCut is how many decisions have a part judged output, which their
+// documents cut: read, never written.
+func (l *Ledger) OutputCut(ctx context.Context) (int, error) {
+	n := 0
+	err := l.readAt(ctx, func(q querier, version int) error {
+		if version < versionDecisionSync {
+			return nil
+		}
+		return q.QueryRowContext(ctx, "SELECT COUNT(DISTINCT decision) FROM decision_output WHERE verdict = ?", VerdictOutput).Scan(&n)
+	})
+	return n, err
+}

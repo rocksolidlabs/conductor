@@ -15,7 +15,7 @@ const (
 	WhyProvider   = "provider"           // ext/, a provider's own state
 	WhyNotRegular = "not a regular file" // a link, a device, a socket, a pipe
 	WhyName       = "unsupported name"   // a name an archive cannot hold, or another spelling of one it holds (Install would refuse it)
-	WhyDerived    = "derived"            // the history's index: a cache of the stores, rebuilt at the next start
+	WhyDerived    = "derived"            // a cache made again: the history's index, rebuilt at the next start; the output index; remote/, which the sync store writes again
 	WhyInstance   = "instance"           // this machine's own: made again where it is absent (ui/writer, the UI documents' writer id)
 )
 
@@ -51,6 +51,9 @@ var leftOut = []leftRule{
 	// fingerprints of what this server captured, made again from its
 	// sources.
 	{file: "output-index.sqlite", why: WhyDerived},
+	// What other machines hold (docs/plans/sync-seams.md, OS-4): the sync
+	// store writes it again.
+	{dir: "remote", why: WhyDerived},
 	{dir: "tls", why: WhySecret},
 	{dir: "credentials", why: WhySecret},
 	{dir: "ext", why: WhyProvider},

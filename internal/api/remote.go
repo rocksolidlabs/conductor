@@ -1,0 +1,361 @@
+package api
+
+import (
+	"context"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io/fs"
+	"net/http"
+	"os"
+	"path/filepath"
+	"regexp"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/rocksolidlabs/conductor/ext"
+	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
+	"github.com/rocksolidlabs/conductor/internal/dispatch"
+	"github.com/rocksolidlabs/conductor/internal/store"
+)
+
+// What other machines hold (docs/plans/sync-seams.md, OS-4): records the
+// sync store writes and removes (PutRemote, DeleteRemote, ClearRemote),
+// kept in the data directory under remote/<device>/<kind>-<id>.json (the
+// device and the id hex-encoded, as the store's names are), at most
+// ext.MaxRemoteFiles, left out of an export and never on the sync
+// allowlist. The server reads them (GET /api/remote) and never acts on
+// them: no route takes a remote record's id as the target of an action,
+// and the app's screens draw each as another machine's, read only.
+
+// remoteRecord is a remote record as the data directory keeps it and GET
+// /api/remote answers it: its body JSON as handed in.
+type remoteRecord struct {
+	Kind       string          `json:"kind"`
+	Device     string          `json:"device"`
+	DeviceName string          `json:"deviceName"`
+	ID         string          `json:"id"`
+	Rev        int64           `json:"rev"`
+	At         time.Time       `json:"at"`
+	Data       json.RawMessage `json:"data"`
+}
+
+// The bounds of GET /api/remote's reply.
+const (
+	remotePage      = 200
+	maxRemoteReply  = 16 << 20
+	remoteReplyRoom = 64 << 10 // kept for the reply's own fields
+)
+
+// remoteStore is the data directory's remote/ store.
+func (s *Server) remoteStore() (*store.Store, error) {
+	if s.store == nil {
+		return nil, errors.New("no data directory is configured")
+	}
+	return s.store.Sub("remote")
+}
+
+// remoteDir and remoteFile are a record's directory (its device) and file
+// name (its kind and id), hex-encoded into the store's names.
+func remoteDir(device string) string { return hex.EncodeToString([]byte(device)) }
+func remoteFile(kind, id string) string {
+	return kind + "-" + hex.EncodeToString([]byte(id)) + ".json"
+}
+
+// remoteFinal says a record is of something over: a decision final, a run
+// closed. Past the bound of files these go first, oldest first.
+func remoteFinal(r remoteRecord) bool {
+	switch r.Kind {
+	case ext.RemoteDecision:
+		var d struct {
+			State string `json:"state"`
+		}
+		return json.Unmarshal(r.Data, &d) == nil && (ledger.DecisionRow{State: d.State}).Final()
+	case ext.RemotePointer:
+		var p struct {
+			ClosedAt time.Time `json:"closedAt"`
+		}
+		return json.Unmarshal(r.Data, &p) == nil && !p.ClosedAt.IsZero()
+	}
+	return false
+}
+
+// remoteAll reads every record remote/ holds with its path, in path
+// order; a file that does not read is skipped.
+func (s *Server) remoteAll() ([]remoteRecord, []string, error) {
+	st, err := s.remoteStore()
+	if err != nil {
+		return nil, nil, err
+	}
+	var recs []remoteRecord
+	var paths []string
+	err = filepath.WalkDir(st.Dir(), func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				return nil
+			}
+			return err
+		}
+		if d.IsDir() || !strings.HasSuffix(p, ".json") {
+			return nil
+		}
+		b, err := os.ReadFile(p)
+		if err != nil {
+			return nil
+		}
+		var r remoteRecord
+		if json.Unmarshal(b, &r) != nil {
+			return nil
+		}
+		rel, _ := filepath.Rel(st.Dir(), p)
+		recs, paths = append(recs, r), append(paths, filepath.ToSlash(rel))
+		return nil
+	})
+	return recs, paths, err
+}
+
+// putRemote keeps r, unless the record held is newer. A new record past
+// the bound of files drops the oldest final ones first; with none to
+// drop it is refused.
+func (s *Server) putRemote(r ext.Remote) error {
+	s.remoteMu.Lock()
+	defer s.remoteMu.Unlock()
+	st, err := s.remoteStore()
+	if err != nil {
+		return err
+	}
+	dev, err := st.Sub(remoteDir(r.Device))
+	if err != nil {
+		return err
+	}
+	name := remoteFile(r.Kind, r.ID)
+	var held remoteRecord
+	ok, err := dev.Load(name, &held)
+	if err != nil {
+		return err
+	}
+	if ok && held.Rev > r.Rev {
+		return nil
+	}
+	if !ok {
+		recs, paths, err := s.remoteAll()
+		if err != nil {
+			return err
+		}
+		limit := ext.MaxRemoteFiles
+		if s.remoteMax > 0 {
+			limit = s.remoteMax
+		}
+		if over := len(recs) + 1 - limit; over > 0 {
+			var final []int
+			for i, rec := range recs {
+				if remoteFinal(rec) {
+					final = append(final, i)
+				}
+			}
+			slices.SortFunc(final, func(a, b int) int { return recs[a].At.Compare(recs[b].At) })
+			if len(final) < over {
+				return fmt.Errorf("%w: other machines' records fill their %d files", ext.ErrRefused, limit)
+			}
+			for _, i := range final[:over] {
+				if err := os.Remove(filepath.Join(st.Dir(), filepath.FromSlash(paths[i]))); err != nil && !errors.Is(err, fs.ErrNotExist) {
+					return err
+				}
+			}
+		}
+	}
+	return dev.Save(name, remoteRecord{Kind: r.Kind, Device: r.Device, DeviceName: r.DeviceName, ID: r.ID, Rev: r.Rev, At: r.At.UTC(), Data: json.RawMessage(r.Data)})
+}
+
+// PutRemote keeps a record another machine holds (ext.Host).
+func (h *extHost) PutRemote(ctx context.Context, r ext.Remote) error {
+	if err := h.syncHost(); err != nil {
+		return err
+	}
+	if err := r.Valid(); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return h.s.putRemote(r)
+}
+
+// DeleteRemote removes a record another machine held (ext.Host); one not
+// held is no error.
+func (h *extHost) DeleteRemote(ctx context.Context, kind, device, id string) error {
+	if err := h.syncHost(); err != nil {
+		return err
+	}
+	if !remoteKinds[kind] || !remoteIDShape.MatchString(device) || !remoteIDShape.MatchString(id) {
+		return fmt.Errorf("%w: a remote record is named by its kind, device and id", ext.ErrRefused)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	h.s.remoteMu.Lock()
+	defer h.s.remoteMu.Unlock()
+	st, err := h.s.remoteStore()
+	if err != nil {
+		return err
+	}
+	err = os.Remove(filepath.Join(st.Dir(), remoteDir(device), remoteFile(kind, id)))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	return err
+}
+
+// ClearRemote removes every record other machines held (ext.Host).
+func (h *extHost) ClearRemote(ctx context.Context) error {
+	if err := h.syncHost(); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	h.s.remoteMu.Lock()
+	defer h.s.remoteMu.Unlock()
+	st, err := h.s.remoteStore()
+	if err != nil {
+		return err
+	}
+	return os.RemoveAll(st.Dir())
+}
+
+// remoteKinds are the kinds a remote record has.
+var remoteKinds = map[string]bool{ext.RemoteDecision: true, ext.RemotePointer: true, ext.RemotePins: true, ext.RemoteDevice: true, ext.RemoteHosts: true}
+
+// remoteIDShape is a remote record's device's and id's shape, and
+// remoteCursor a page's cursor (the last record's path).
+var (
+	remoteIDShape = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
+	remoteCursor  = regexp.MustCompile(`^[0-9a-f]{2,128}/[a-z]+-[0-9a-f]{2,128}\.json$`)
+)
+
+// remoteTicketMatch is what a ticket filter matches: a decision's document
+// naming the ticket, a pointer naming it or naming a run the ticket links.
+type remoteTicketMatch struct {
+	id   string
+	runs map[string]bool
+}
+
+func (m remoteTicketMatch) matches(r remoteRecord) bool {
+	var body struct {
+		ID     string `json:"id"`
+		Ticket string `json:"ticket"`
+	}
+	if json.Unmarshal(r.Data, &body) != nil {
+		return false
+	}
+	switch r.Kind {
+	case ext.RemoteDecision:
+		return body.Ticket == m.id
+	case ext.RemotePointer:
+		return body.Ticket == m.id || m.runs[body.ID]
+	}
+	return false
+}
+
+// handleRemote is GET /api/remote?kind=&ticket=&after=: the records other
+// machines hold, in pages of at most remotePage within maxRemoteReply
+// bytes, {records, next?}; kind one of the five, ticket a ticket's key
+// (its decisions and its runs' pointers), after a page's next.
+func (s *Server) handleRemote(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	for key := range q {
+		if key != "kind" && key != "ticket" && key != "after" {
+			writeError(w, http.StatusBadRequest, "invalid_request", fmt.Sprintf("this route takes kind, ticket and after, not %q", key))
+			return
+		}
+	}
+	kind, ticket, after := q.Get("kind"), q.Get("ticket"), q.Get("after")
+	switch {
+	case len(q["kind"]) > 1 || len(q["ticket"]) > 1 || len(q["after"]) > 1:
+		writeError(w, http.StatusBadRequest, "invalid_request", "each of kind, ticket and after is given once")
+		return
+	case kind != "" && !remoteKinds[kind]:
+		writeError(w, http.StatusBadRequest, "invalid_request", "kind is decision, pointer, pins, device or hosts")
+		return
+	case ticket != "" && !validTicketKey(ticket):
+		writeError(w, http.StatusBadRequest, "invalid_request", "ticket is a ticket's key")
+		return
+	case after != "" && !remoteCursor.MatchString(after):
+		writeError(w, http.StatusBadRequest, "invalid_request", "after is a page's next")
+		return
+	}
+	var match *remoteTicketMatch
+	if ticket != "" {
+		m, ok, err := s.remoteTicket(r.Context(), ticket)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "store_failed", "the ticket does not read")
+			return
+		}
+		if !ok {
+			writeJSON(w, http.StatusOK, map[string]any{"records": []remoteRecord{}})
+			return
+		}
+		match = &m
+	}
+	recs, paths, err := s.remoteAll()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "store_failed", "other machines' records do not read")
+		return
+	}
+	out := []remoteRecord{}
+	size, next := 0, ""
+	for i, rec := range recs {
+		if after != "" && paths[i] <= after {
+			continue
+		}
+		if kind != "" && rec.Kind != kind || match != nil && !match.matches(rec) {
+			continue
+		}
+		b, _ := json.Marshal(rec)
+		if len(out) == remotePage || size+len(b) > maxRemoteReply-remoteReplyRoom {
+			next = paths[i-1]
+			break
+		}
+		size += len(b) + 1
+		out = append(out, rec)
+	}
+	reply := map[string]any{"records": out}
+	if next != "" {
+		reply["next"] = next
+	}
+	writeJSON(w, http.StatusOK, reply)
+}
+
+// remoteTicket is the filter of the ticket with key: its id and the runs
+// it links; false for a ticket the store does not hold.
+func (s *Server) remoteTicket(ctx context.Context, key string) (remoteTicketMatch, bool, error) {
+	if s.dispatch == nil {
+		return remoteTicketMatch{}, false, nil
+	}
+	tk, err := s.dispatch.Ticket(ctx, key)
+	if errors.Is(err, dispatch.ErrNotFound) {
+		return remoteTicketMatch{}, false, nil
+	}
+	if err != nil {
+		return remoteTicketMatch{}, false, err
+	}
+	links, err := s.dispatch.Links(ctx, key)
+	if err != nil {
+		return remoteTicketMatch{}, false, err
+	}
+	m := remoteTicketMatch{id: tk.ID, runs: map[string]bool{}}
+	for _, l := range links {
+		if l.Kind == dispatch.LinkRun && l.DeletedAt.IsZero() {
+			m.runs[l.Ref] = true
+		}
+	}
+	return m, true, nil
+}
+
+// validTicketKey says key is a ticket's key (CND-12).
+func validTicketKey(key string) bool {
+	_, _, ok := dispatch.ParseKey(key)
+	return ok
+}

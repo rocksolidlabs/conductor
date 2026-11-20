@@ -123,6 +123,14 @@ type Server struct {
 	// decisionPartsWithheld is set once the decision parts a process
 	// before this one left pending are withheld (withholdDecisionParts).
 	decisionPartsWithheld atomic.Bool
+	// remoteMu orders the writes of other machines' records (remote.go);
+	// remoteMax, when a test sets it before any is written, bounds their
+	// files in place of ext.MaxRemoteFiles.
+	remoteMu  sync.Mutex
+	remoteMax int
+	// hostedKept counts the texts a hosted session's agent wrote that were
+	// kept on the machine (judgeRow), for the sync status.
+	hostedKept atomic.Int64
 	// recheckAfter, when set, is what a held answer's recheck waits on
 	// between asks (time.After): a test's seam.
 	recheckAfter func(time.Duration) <-chan time.Time
@@ -1158,6 +1166,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/switchyard/status", s.requireAdmin(s.handleSwitchyardStatus))
 	mux.HandleFunc("GET /api/export", s.requireAdmin(s.handleExport))
 	mux.HandleFunc("GET /api/capabilities", s.requireAdmin(s.handleCapabilities))
+	mux.HandleFunc("GET /api/remote", s.requireAdmin(s.handleRemote))
+	mux.HandleFunc("GET /api/sync", s.requireAdmin(s.handleSyncStatus))
 	mux.HandleFunc("GET /api/ui/{name}", s.requireAdmin(s.handleUIGet))
 	mux.HandleFunc("PUT /api/ui/{name}", s.requireAdmin(s.handleUIPut))
 	mux.HandleFunc("GET /api/signin", s.requireAdmin(s.handleSignIn))
