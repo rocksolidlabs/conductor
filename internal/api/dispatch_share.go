@@ -29,12 +29,10 @@ type (
 // handleDispatchShareProject asks a project to be shared (project.share):
 // {opId, byName?}; {receipt, project}; 409 no_sync with no sync provider
 // registered, 409 archived, 409 numbers_out_of_range, 409 invalid for a
-// share pending or done already; 404 not_found.
+// share pending or done already; 404 not_found. The store's answers (503
+// with none, or one that cannot be written) and the body's bound come
+// before the provider's, as on every other write.
 func (s *Server) handleDispatchShareProject(w http.ResponseWriter, r *http.Request) {
-	if s.syncName() == "" {
-		writeError(w, http.StatusConflict, "no_sync", "no sync provider is registered: this machine shares nothing")
-		return
-	}
 	ds, ok := s.dispatchWriter(w)
 	if !ok {
 		return
@@ -45,6 +43,10 @@ func (s *Server) handleDispatchShareProject(w http.ResponseWriter, r *http.Reque
 	}
 	var body shareBody
 	if !readOp(w, r, &body, &body, maxShareBody) {
+		return
+	}
+	if s.syncName() == "" {
+		writeError(w, http.StatusConflict, "no_sync", "no sync provider is registered: this machine shares nothing")
 		return
 	}
 	ctx, cancel := opContext(r)
