@@ -118,6 +118,8 @@ type Store struct {
 	rmu     sync.Mutex
 	readers []func(ReadNotice)
 
+	// outputCheck is the copied-output check (SetOutputCheck), nil for none.
+	outputCheck OutputCheck
 	// blockLow is what OnBlockLow set, and blockLowBusy whether a call of
 	// it has not returned (the next is dropped until it does).
 	blockLow     func(project string)

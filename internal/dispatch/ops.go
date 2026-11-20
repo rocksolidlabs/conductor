@@ -364,6 +364,9 @@ type tx struct {
 	runSuffix func() string
 	// systems is the store's trackers' systems (Options.Systems).
 	systems []string
+	// check is the copied-output check (SetOutputCheck), nil for none: a
+	// row is then written with no verdict.
+	check OutputCheck
 	// onRefusal, when a change sets it, runs once a refusal has undone the
 	// change, in its transaction before its receipt: what a refusal keeps
 	// beside the receipt (an upload's lease, dropped with it).
@@ -419,9 +422,21 @@ func (t *tx) record(c ChangeRow) error {
 	if err != nil {
 		return err
 	}
-	res, err := t.tx.ExecContext(t.ctx, `INSERT INTO changes (entity, entity_id, ticket_id, project_id, field, op, value, prior, at, actor, by, op_id, n, origin)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		c.Entity, c.EntityID, c.TicketID, c.ProjectID, c.Field, c.Op, c.Value, c.Prior, stamp(at), t.op.Actor, t.op.By, t.op.ID, t.n, t.origin)
+	// The copied-output check's verdicts of the value and, apart, of the
+	// prior, in the row's own transaction, whoever its actor
+	// (docs/plans/sync-seams.md, OS-1c).
+	var output, prior string
+	if t.check != nil {
+		agent := AgentActor(t.op.Actor)
+		output = t.check(t.ctx, c.Value, agent)
+		prior = VerdictClean
+		if c.Prior != "" {
+			prior = t.check(t.ctx, c.Prior, agent)
+		}
+	}
+	res, err := t.tx.ExecContext(t.ctx, `INSERT INTO changes (entity, entity_id, ticket_id, project_id, field, op, value, prior, at, actor, by, op_id, n, origin,
+		output, prior_output) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		c.Entity, c.EntityID, c.TicketID, c.ProjectID, c.Field, c.Op, c.Value, c.Prior, stamp(at), t.op.Actor, t.op.By, t.op.ID, t.n, t.origin, output, prior)
 	if err != nil {
 		return err
 	}
@@ -712,7 +727,7 @@ func (s *Store) apply(ctx context.Context, op Op, intent, fp string, change func
 		return Receipt{}, nil, cancelledAs(ctx, err)
 	}
 	t := &tx{ctx: ctx, tx: dbtx, now: now.UTC(), op: op, intent: intent, fp: fp, runExists: s.runExists, sight: s.sight, runSuffix: s.runSuffix, systems: s.systems,
-		origin: r.tag}
+		origin: r.tag, check: s.outputCheck}
 	// The change runs under a savepoint: a refusal undoes it and keeps the
 	// transaction, and with it the write lock, for its receipt, so no other
 	// writer (a second store on the file) runs the same operation between
