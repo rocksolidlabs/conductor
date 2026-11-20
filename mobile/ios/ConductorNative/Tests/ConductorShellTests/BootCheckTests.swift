@@ -19,18 +19,18 @@ import Testing
         #expect(BootCheck.drop(["type": "message", "callbackId": "-1"]) == nil)
         #expect(BootCheck.drop("not an object") == nil)
         for u in ["https://example.com/?boot-probe-frame", "capacitor://localhost/shell?boot-probe-frame", "conductor-probe://boot-probe-location",
-                  "conductor-probe://boot-probe-window", "conductor-probe://boot-probe-window"] {
+                  "conductor-probe://boot-probe-location"] {
             r.take(BootCheck.refusal(URL(string: u)!)!)
         }
         #expect(BootCheck.refusal(URL(string: "https://example.com/")!) == nil)
         r.take("ready platform=ios plugins=ok probes=ok")
         r.take("ready platform=web plugins=missing probes=ok")
-        #expect(r.label == "ready platform=ios plugins=ok probes=ok dropped=7 refused=4 violations=0")
-        #expect(BootCheck.probeMessages == 7 && BootCheck.probeLoads == 4)
+        #expect(r.label == "ready platform=ios plugins=ok probes=ok dropped=7 refused=3 violations=0")
+        #expect(BootCheck.probeMessages == 7 && BootCheck.probeLoads == 3)
         r.take("violation script-src https://elsewhere.example/x.js")
         r.take("violation connect-src https://elsewhere.example/")
         r.take("something else")
-        #expect(r.label == "ready platform=ios plugins=ok probes=ok dropped=7 refused=4 violations=2 first: script-src https://elsewhere.example/x.js")
+        #expect(r.label == "ready platform=ios plugins=ok probes=ok dropped=7 refused=3 violations=2 first: script-src https://elsewhere.example/x.js")
         for _ in 0..<40 { r.take("violation img-src data") }
         #expect(r.violations.count == 20)
     }

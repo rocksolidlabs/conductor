@@ -340,6 +340,7 @@ def gates(mobile: Path) -> list[str]:
         ("BridgeGateHandler(forwardingTo: runtime, view: webView, app: app)", "the bridge gate does not know the shell's view and origin"),
         ("webView.navigationDelegate = n", "the load gate is not put in front of the runtime's navigation rule"),
         ("d.newWindow = ", "a new window is not decided by the load gate"),
+        ("javaScriptCanOpenWindowsAutomatically = false", "a script may open a window on its own"),
         ("override func router() -> Router", "the runtime's router is not the shell's"),
         ("encodedContentRuleList: FilePrefix.rules(app: app)", "the content rules do not hold the app's own spelling"),
         ("compileContentRuleList(forIdentifier: FilePrefix.identifier", "the runtime's file prefixes are not blocked"),

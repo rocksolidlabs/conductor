@@ -51,6 +51,8 @@ class ShellViewController: CAPBridgeViewController {
         n.handOff = { UIApplication.shared.open($0, options: [:], completionHandler: nil) }
         loads = n
         webView.navigationDelegate = n
+        // A script opens no window on its own (WebKit's own refusal, without a person's tap); a window a tap opens is the load gate's.
+        webView.configuration.preferences.javaScriptCanOpenWindowsAutomatically = false
         let d = MediaCaptureRefused(wrapping: webView.uiDelegate as? (NSObject & WKUIDelegate))
         d.newWindow = { [weak n] action in n?.newWindow(action) }
         refused = d

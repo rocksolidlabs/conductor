@@ -1502,10 +1502,13 @@ Swift package with no package of anyone else's):
   checks each is refused, the srcdoc frame draws, the native HTTP call
   is still the shell's own (it refuses an origin not named), and the key
   and the store still answer; the app counts the probe messages the
-  bridge gate dropped and the probe loads the load gate refused. Each
+  bridge gate dropped and the probe loads the load gate refused (the two
+  frames and the location change; the script's window to a custom
+  scheme is refused by WebKit itself before any delegate, and the probe
+  checks no window opened). Each
   probe's wait has a bound of its own, so one never answered is
   reported, not waited on. It passes only on `ready platform=ios
-  plugins=ok probes=ok dropped=7 refused=4 violations=0`, then finds
+  plugins=ok probes=ok dropped=7 refused=3 violations=0`, then finds
   Open a server's address field.
 
 **Every way a page reaches native code** (as built, read from the
@@ -1571,7 +1574,9 @@ every gate stands.
   leaves `document.cookie`, `fetch` and `XMLHttpRequest` unpatched. A
   media capture request: denied. A new window (a link with a target, a
   script's `window.open`): decided by the load gate below and never a
-  window in the shell. An alert or a confirm: the system's own alert
+  window in the shell; a script opens no window on its own (WebKit's own
+  refusal without a person's tap, set so by the shell), and a window a
+  tap opens is the load gate's. An alert or a confirm: the system's own alert
   with the page's words, nothing else of the app. A device orientation
   and motion request: granted by the runtime; motion events only.
 - **The navigation delegate** (the runtime's, wrapped by `NavigationGate`,

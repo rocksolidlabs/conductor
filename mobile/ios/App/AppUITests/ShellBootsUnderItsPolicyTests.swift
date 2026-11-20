@@ -20,7 +20,7 @@ final class ShellBootsUnderItsPolicyTests: XCTestCase {
         XCTAssertEqual(waited, .completed, "the boot check never became ready; its report: \(report.label)")
         // The gates' counts come from native code as each probe reaches it, some after the page's own report: wait for the whole
         // report (each count only grows), then judge it, naming what each gate refused.
-        let expected = "ready platform=ios plugins=ok probes=ok dropped=7 refused=4 violations=0"
+        let expected = "ready platform=ios plugins=ok probes=ok dropped=7 refused=3 violations=0"
         let whole = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label == %@", expected), object: report)
         _ = XCTWaiter().wait(for: [whole], timeout: 60)
         XCTAssertEqual(report.label, expected, "what the gates refused: \(String(describing: report.value))")

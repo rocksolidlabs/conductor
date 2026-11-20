@@ -249,6 +249,7 @@ class IOSProjectTest(unittest.TestCase):
             ("BridgeGateHandler(forwardingTo: runtime, view: webView, app: app)", "the bridge gate does not know the shell's view and origin"),
             ("        webView.navigationDelegate = n\n", "the load gate is not put in front"),
             ("        d.newWindow = { [weak n] action in n?.newWindow(action) }\n", "a new window is not decided by the load gate"),
+            ("        webView.configuration.preferences.javaScriptCanOpenWindowsAutomatically = false\n", "a script may open a window on its own"),
             ("    override func router() -> Router {", "the runtime's router is not the shell's"),
             ("encodedContentRuleList: FilePrefix.rules(app: app)", "the content rules do not hold the app's own spelling"),
             ("compileContentRuleList(forIdentifier: FilePrefix.identifier", "the runtime's file prefixes are not blocked"),

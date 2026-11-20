@@ -19,9 +19,12 @@ public enum BootCheck {
     public static let probePrefix = "90000000"
     /** The probes' loads carry this in their address; the load gate's refusals of them are counted. */
     public static let loadMarker = "boot-probe"
-    /** How many probe messages the page sends to the runtime's handler, and how many probe loads it asks for. */
+    /**
+     * How many probe messages the page sends to the runtime's handler, and how many probe loads reach the load gate (the frames and
+     * the location change; a script's window opened without a person's tap is refused by WebKit before any delegate).
+     */
     public static let probeMessages = 7
-    public static let probeLoads = 4
+    public static let probeLoads = 3
 
     /** Whether this launch is the boot check's. */
     public static func asked(_ arguments: [String] = ProcessInfo.processInfo.arguments) -> Bool {
@@ -171,7 +174,7 @@ public struct BootReport: Equatable, Sendable {
     }
 
     /**
-     * `ready platform=ios plugins=ok probes=ok dropped=7 refused=4 violations=0` once ready; `waiting ...` before; the first violation
+     * `ready platform=ios plugins=ok probes=ok dropped=7 refused=3 violations=0` once ready; `waiting ...` before; the first violation
      * after.
      */
     public var label: String {
