@@ -18,6 +18,31 @@ const kept: Partial<Record<UiName, object>> = {}
 const timers: Partial<Record<UiName, ReturnType<typeof setTimeout>>> = {}
 
 /**
+ * The documents changed in this browser and not yet kept by the server (a reload within UI_WRITE_DELAY of a change, a server not
+ * answering), in local storage: such a document is newer than the server's, so the next load writes it rather than taking the server's.
+ */
+export const UI_UNSENT_KEY = 'conductor.ui.unsent'
+
+function unsent(): UiName[] {
+  try {
+    const v = JSON.parse(storage()?.getItem(UI_UNSENT_KEY) ?? '[]') as unknown
+    return Array.isArray(v) ? (v.filter((n) => UI_NAMES.includes(n as UiName)) as UiName[]) : []
+  } catch {
+    return []
+  }
+}
+
+function markUnsent(name: UiName, on: boolean) {
+  const names = unsent().filter((n) => n !== name)
+  if (on) names.push(name)
+  try {
+    storage()?.setItem(UI_UNSENT_KEY, JSON.stringify(names))
+  } catch {
+    // The browser may refuse storage; the change then may lose to the server's copy at the next load.
+  }
+}
+
+/**
  * The app's screens' state, kept by the server (docs/plans/sync-seams.md, OS-2): the layout (the editor's layout and splits, the
  * sidebar's mode, width and folds, the crew graph's switches, the run and project pages' views), the palette's recents and the pinned
  * sessions. Local storage is the cache read first, so the page draws at once; the server's documents are read once the workbench token
@@ -53,10 +78,15 @@ export function useUiState() {
     if (server.value !== 'read') return
     const body = content(name)
     const last = kept[name]
-    if (last && sameContent(last, body)) return
+    if (last && sameContent(last, body)) {
+      markUnsent(name, false)
+      return
+    }
     try {
       const reply = await request<UiDocReply>(`/api/ui/${name}`, { method: 'PUT', body })
       kept[name] = contentOf(reply)
+      // Kept, unless it changed again while it was on its way (its own write is scheduled then).
+      if (sameContent(content(name), body)) markUnsent(name, false)
     } catch (e) {
       if (e instanceof ApiError && e.status === 404) server.value = 'absent'
       // Refused (past its bound, out of its schema) or not sent: kept in this browser, and the page goes on.
@@ -86,6 +116,12 @@ export function useUiState() {
     }
     const doc: object = contentOf(reply)
     kept[name] = doc
+    if (unsent().includes(name) && name !== 'palette') {
+      // Changed here since the server last kept it: this browser's is the newer, and is written.
+      if (!sameContent(doc, content(name))) schedule(name)
+      else markUnsent(name, false)
+      return
+    }
     if (name === 'layout') {
       if (!sameContent(doc, layout.value)) adoptLayout(doc as UiLayout)
     } else if (name === 'palette') {
@@ -106,7 +142,8 @@ export function useUiState() {
     try {
       for (const name of UI_NAMES) await read(name)
       server.value = 'read'
-      for (const name of UI_NAMES) if (timers[name]) schedule(name)
+      // What changed here while the documents were read, or before (unsent), is written now.
+      for (const name of UI_NAMES) if (timers[name] || unsent().includes(name)) schedule(name)
     } catch (e) {
       server.value = e instanceof ApiError && e.status === 404 ? 'absent' : 'none'
     }
@@ -124,16 +161,19 @@ export function useUiState() {
       if (sameContent(next, layout.value)) return
       layout.value = next
       layoutToStorage(storage(), next)
+      markUnsent('layout', true)
       schedule('layout')
     },
     setRecents(r: Recent) {
       recents.value = r
       writeRecent(storage(), r)
+      markUnsent('palette', true)
       schedule('palette')
     },
     setPins(p: Pin[]) {
       pins.value = p
       writePins(storage(), p)
+      markUnsent('pins', true)
       schedule('pins')
     },
   }

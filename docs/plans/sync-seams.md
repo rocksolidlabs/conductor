@@ -1009,7 +1009,11 @@ choice). The layout's schema is `editor {layout, split, sideSplit}`,
 `pinned` among them), `crewGraph {direction, handoffs, members}`,
 `runView` and `projectView`, each optional and each the setting a
 local-storage key held before, so the cache and the document hold one
-thing. A pin is removed a week after it was pinned once its session is no
+thing. A change this browser made and the server has not kept yet (a reload
+inside the second a change waits, a server not answering) is marked
+unsent in local storage, and the next load writes it rather than taking
+the server's older copy (`ui-state.spec.ts`, a fold just before a reload).
+A pin is removed a week after it was pinned once its session is no
 longer listed: a pin keeps only when it was pinned, so "after 7 days" is
 counted from there. A replay request while one is wanted, or while a
 replay is listing, is that one; one made while a replay's documents are

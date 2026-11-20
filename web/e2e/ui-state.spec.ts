@@ -72,6 +72,27 @@ test.describe('the app screens\' state', () => {
     await b.context().close()
   })
 
+  test('a fold made just before a reload is kept: this browser\'s change, not yet sent, is newer than the server\'s copy', async ({ browser, api, state }) => {
+    session = await api.ok<Session>('POST', '/api/sessions', { agentId: 'plain', name: 'e2e ui reload' })
+    const page = await contextPage(browser, state.token)
+    const row = page.locator(`[data-sidebar-row="s:${session.id}"]`).first()
+    await expect(row).toBeVisible({ timeout: 15_000 })
+    const section = page.locator('[data-sidebar-section]').filter({ has: row }).last()
+    const key = (await section.getAttribute('data-sidebar-section'))!
+    // The page has read the server's documents (useUiState's own mark).
+    await expect(page.locator('[data-ui-state]').first()).toHaveAttribute('data-ui-state', 'read', { timeout: 15_000 })
+    await section.locator('button[aria-expanded]').first().click()
+    await expect(page.locator(`[data-sidebar-section="${key}"]`)).toHaveAttribute('data-folded', 'true')
+    // Reloaded at once, inside the second a change waits before it is written: the server still holds the layout without the fold.
+    expect(JSON.stringify(((await doc(api, 'layout')).sidebar as { folds?: object } | undefined)?.folds ?? {})).not.toContain(`"${key}":true`)
+    await page.reload()
+    await expect(page.locator(`[data-sidebar-section="${key}"]`)).toHaveAttribute('data-folded', 'true')
+    await expect.poll(async () => JSON.stringify(((await doc(api, 'layout')).sidebar as { folds?: object } | undefined)?.folds ?? {}), { timeout: 15_000 }).toContain(`"${key}":true`)
+    await page.reload()
+    await expect(page.locator(`[data-sidebar-section="${key}"]`)).toHaveAttribute('data-folded', 'true')
+    await page.context().close()
+  })
+
   test('a pinned row fits a phone\'s Sessions page in both themes, its name cut and its Unpin in reach', async ({ browser, api, state }) => {
     session = await api.ok<Session>('POST', '/api/sessions', { agentId: 'plain', name: 'e2e ui pinned on a phone, its name long enough to be cut at this width' })
     const id = session.id
