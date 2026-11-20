@@ -3,7 +3,7 @@ import type { UiDocReply } from '~/utils/protocol'
 import { readRecent, writeRecent, type Recent } from '~/utils/palette'
 import { readPins, writePins, type Pin } from '~/utils/pins'
 import { clampSidebarSize, sidebarBounds, type Folds, type SidebarMode } from '~/utils/sidebar'
-import { contentOf, isKept, layoutFromStorage, layoutToStorage, mergeRecents, patchLayout, sameContent, UI_NAMES, UI_WRITE_DELAY, type UiLayout, type UiName, type UiPalette, type UiPins } from '~/utils/uiState'
+import { LAYOUT_WRITE_QUERY, contentOf, isKept, layoutFromStorage, layoutToStorage, mergeRecents, patchLayout, sameContent, UI_NAMES, UI_WRITE_DELAY, type UiLayout, type UiName, type UiPalette, type UiPins } from '~/utils/uiState'
 
 function storage(): Storage | null {
   try {
@@ -11,6 +11,11 @@ function storage(): Storage | null {
   } catch {
     return null
   }
+}
+
+/** Whether this browser writes the layout now: at a desk's width alone (LAYOUT_WRITE_QUERY). */
+function writesLayout(): boolean {
+  return import.meta.client && typeof window !== 'undefined' && window.matchMedia(LAYOUT_WRITE_QUERY).matches
 }
 
 /** A pin's own fields, without what the server keeps beside it (nameVerdict). */
@@ -74,7 +79,7 @@ export function useUiState() {
 
   /** Writes the document a second after its last change, unless the server holds it as it is. */
   function schedule(name: UiName) {
-    if (!import.meta.client || server.value === 'absent') return
+    if (!import.meta.client || server.value === 'absent' || (name === 'layout' && !writesLayout())) return
     clearTimeout(timers[name])
     timers[name] = setTimeout(() => void flush(name), UI_WRITE_DELAY)
   }
@@ -167,6 +172,8 @@ export function useUiState() {
       if (sameContent(next, layout.value)) return
       layout.value = next
       layoutToStorage(storage(), next)
+      // A phone's layout is its own: kept in this browser, never written for a desk to take.
+      if (!writesLayout()) return
       markUnsent('layout', true)
       schedule('layout')
     },

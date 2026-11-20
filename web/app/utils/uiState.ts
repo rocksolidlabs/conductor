@@ -13,6 +13,13 @@ export type UiName = 'layout' | 'palette' | 'pins'
 export const UI_NAMES: readonly UiName[] = ['layout', 'palette', 'pins']
 /** A document's bound on the server, in bytes. */
 export const UI_DOC_MAX = 64 * 1024
+/**
+ * The width from which a browser writes the layout: where the desktop sidebar shows (Tailwind's lg, the layout's DESKTOP_SIDEBAR).
+ * Below it (a phone, a narrow window) the sidebar is a drawer, and what the browser shows is not a desk's layout: it keeps its own in
+ * local storage and writes none to the server, so a phone never drives the desk's layout (the owner's standing word).
+ */
+export const LAYOUT_WRITE_QUERY = '(min-width: 64rem)'
+
 /** How long a change waits before it is written, so a drag writes once. */
 export const UI_WRITE_DELAY = 1000
 

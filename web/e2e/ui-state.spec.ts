@@ -107,6 +107,46 @@ test.describe('the app screens\' state', () => {
     await page.context().close()
   })
 
+  test('a phone writes no layout: its fold stays its own, and the desk beside it keeps the desk\'s', async ({ browser, api, state }) => {
+    session = await api.ok<Session>('POST', '/api/sessions', { agentId: 'plain', name: 'e2e ui phone' })
+    const id = session.id
+    const desk = await contextPage(browser, state.token)
+    await expect(desk.locator('[data-ui-state]').first()).toHaveAttribute('data-ui-state', 'read')
+    const deskRow = desk.locator(`[data-sidebar-row="s:${id}"]`).first()
+    await expect(deskRow).toBeVisible({ timeout: 15_000 })
+    const key = (await desk.locator('[data-sidebar-section]').filter({ has: deskRow }).last().getAttribute('data-sidebar-section'))!
+    const before = JSON.stringify((await doc(api, 'layout')).sidebar ?? {})
+
+    // The phone: its own context at 390 x 844, on the Sessions page, its list a page and the sidebar a drawer.
+    const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true })
+    const phone = await ctx.newPage()
+    await phone.addInitScript((t) => localStorage.setItem('conductor.workbenchToken', t), state.token)
+    const writes: string[] = []
+    phone.on('request', (r) => {
+      if (r.method() === 'PUT' && new URL(r.url()).pathname === '/api/ui/layout') writes.push(r.url())
+    })
+    await phone.goto('/sessions')
+    await expect(phone.locator('[data-ui-state]').first()).toHaveAttribute('data-ui-state', 'read')
+    const section = phone.locator(`[data-sidebar-section="${key}"]`).first()
+    await expect(section).toBeVisible({ timeout: 15_000 })
+    await section.locator('button[aria-expanded]').first().click()
+    await expect(section).toHaveAttribute('data-folded', 'true')
+    // The fold is the phone's alone: kept in its storage, never marked to be written (a write marks it at once, before its second).
+    expect(await phone.evaluate(() => localStorage.getItem('conductor.ui.unsent') ?? '[]')).not.toContain('layout')
+    expect(await phone.evaluate(() => localStorage.getItem('conductor.sidebar.folds') ?? '')).toContain(`"${key}":true`)
+    // Reloaded, it is still the phone's own, and it sent nothing; the server's layout is as the desk left it.
+    await phone.reload()
+    await expect(phone.locator('[data-ui-state]').first()).toHaveAttribute('data-ui-state', 'read')
+    expect(writes).toEqual([])
+    expect(JSON.stringify((await doc(api, 'layout')).sidebar ?? {})).toBe(before)
+    // The desk, reloaded beside it, keeps its section open.
+    await desk.reload()
+    await expect(desk.locator('[data-ui-state]').first()).toHaveAttribute('data-ui-state', 'read')
+    await expect(desk.locator(`[data-sidebar-section="${key}"]`).first()).toHaveAttribute('data-folded', 'false')
+    await ctx.close()
+    await desk.context().close()
+  })
+
   test('a pinned row fits a phone\'s Sessions page in both themes, its name cut and its Unpin in reach', async ({ browser, api, state }) => {
     session = await api.ok<Session>('POST', '/api/sessions', { agentId: 'plain', name: 'e2e ui pinned on a phone, its name long enough to be cut at this width' })
     const id = session.id
