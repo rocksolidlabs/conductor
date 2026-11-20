@@ -52,10 +52,7 @@ import (
 // names it. Its row removes the skip; what a skipped part checks is
 // written behind it where main's routes can name it, and the row adds
 // only what calls a seam main has not yet (a fake's method).
-const (
-	waitsPolicy = "waits for WF-2b: eligibility by a router's policy (after decision-policy's PR-7a and PR-7)"
-	waitsSync   = "waits for WF-2c: the held answer for the owner disconnected (after sync-seams OS-3)"
-)
+const waitsSync = "waits for WF-2c: the held answer for the owner disconnected (after sync-seams OS-3)"
 
 // The walk's first decision, which the router is set to route before it
 // is raised, and the rule the router names.
@@ -482,8 +479,8 @@ func (w *workflow) raise(t *testing.T) {
 // leaves (C5, under local/1): a routed row by the router naming ana and its
 // rule, its held answer kept as a refused not_approver row, never counted
 // or applied, and the decision still open, for the operator. What the
-// operator's item shows of the route waits for decision-policy's PR-7b,
-// which fills a record's item from its policy (WF-2b).
+// operator's item shows of a route is its policy's, which the router
+// answers at step 8 (routedByPolicy).
 func (w *workflow) routedByTheRouter(t *testing.T) {
 	t.Helper()
 	awaitFake(t, w.fakes.router, "the router told of "+w.did, func() bool {
@@ -511,14 +508,6 @@ func (w *workflow) routedByTheRouter(t *testing.T) {
 	if rc := rcs[0].(map[string]any); rc["status"] != "refused" || rc["code"] != crew.CodeNotApprover {
 		t.Fatalf("the router's answer: %v", rc)
 	}
-	t.Run("the operator's item routed to ana under a router's policy", func(t *testing.T) {
-		t.Skip(waitsPolicy)
-		it := entityOf(t, w.expect(t, http.MethodGet, "/api/inbox/item?ref="+ledger.DecisionRef(numberOf(w.did)), nil, http.StatusOK, ""), "item")
-		to, _ := it["routedTo"].([]any)
-		if len(to) != 1 || to[0].(map[string]any)["name"] != "ana" || it["routedRule"] != walkRouteRule {
-			t.Fatalf("the item's route: %v %v", it["routedTo"], it["routedRule"])
-		}
-	})
 }
 
 // holdsTheAskerAlone is step 7: the asking task alone is held by the
@@ -577,6 +566,20 @@ func (w *workflow) toDecision(t *testing.T) {
 		w.give(t)
 		w.assertTruthful(t, "the decision given to the decide grant")
 	}
+}
+
+// toPolicy is the walk to step 8 under a router's policy: the ticket, the
+// approved revision, the run, the decision raised and routed by its
+// router's policy to ana alone.
+func (w *workflow) toPolicy(t *testing.T) {
+	t.Helper()
+	w.fileTicket(t)
+	w.approvedPlan(t)
+	w.launch(t)
+	w.raise(t)
+	w.assertTruthful(t, "the decision raised")
+	w.routedByPolicy(t)
+	w.assertTruthful(t, "the decision under its router's policy")
 }
 
 // respondAs sends pass's response to the decision through the decide
@@ -921,22 +924,97 @@ func walkSend(client *http.Client, base, token, method, path string, body any) w
 	return walkReply{status: resp.StatusCode, data: data, err: err}
 }
 
-// onlyAnaUnderThePolicy is step 8 under a router's policy, once
-// decision-policy's PR-7a and PR-7 are on main (WF-2b sets the fake
-// router's policy for the decision before it is given): the card says
-// "for ana, the architecture owner", and a decide principal the policy
-// does not name is refused not_eligible, its refusal kept, never counted.
+// walkPolicyRevision is the revision of the router's policy for the
+// walk's decision: exttest's sample, one group, the architecture owner,
+// quorum 1, ana eligible by her role under rule r-1, the operator's
+// override allowed.
+const walkPolicyRevision = "exttest-r1"
+
+// confirmAna has the router stand behind did's policy: in force, ana
+// eligible in the architecture group, anyone else in force and not
+// eligible.
+func (w *workflow) confirmAna(did string) {
+	w.fakes.router.SetConfirm(did, func(q ext.ConfirmQuery) ext.Confirmation {
+		if q.Subject == walkAna.Subject {
+			return ext.Confirmation{InForce: true, Groups: []string{crew.RespArchitecture}}
+		}
+		return ext.Confirmation{InForce: true}
+	})
+}
+
+// routedByPolicy is step 8 under a router's policy (decision-policy's
+// PR-7 and PR-7b, WF-2b): the operator gives the decision to the decide
+// grant (the for rewritten, a routed row of the operator's), the router
+// told of it again answers its policy, and the server writes it into the
+// record, rev + 1 past the give. The router routed the record at its
+// opening (its one routed row), so the policy's row is the router's
+// change, rerouted, carrying the policy's revision. From then on only ana
+// is admitted (onlyAnaUnderThePolicy).
+func (w *workflow) routedByPolicy(t *testing.T) {
+	t.Helper()
+	w.fakes.router.SetPolicy(w.did, exttest.SamplePolicy())
+	w.confirmAna(w.did)
+	before := w.record(t, w.did)
+	w.decide().give(t, w.did)
+	waitUntil(t, w.did+"'s policy written", func() bool { return ledger.RouterPolicy(w.record(t, w.did).Policy) })
+	rec := w.record(t, w.did)
+	if rec.Rev != before.Rev+2 || rec.State != ledger.DecisionOpen || !slices.Equal(rec.Held, []string{"build"}) {
+		t.Fatalf("under its policy: rev %d (was %d before the give), %s, held %v", rec.Rev, before.Rev, rec.State, rec.Held)
+	}
+	if f := forOf(t, rec.Request); f["label"] != "grant:decide" {
+		t.Fatalf("given to the grant: for %v", f)
+	}
+	added := rec.History[len(before.History):]
+	if len(added) != 2 || added[0].Kind != ledger.HistoryRouted || added[0].By != adminActor || !strings.Contains(added[0].Detail, "role:"+crew.RespArchitecture) ||
+		added[1].Kind != ledger.HistoryRerouted || added[1].By != "router:switchman" || added[1].OpID != "" ||
+		!strings.Contains(added[1].Detail, `"revision":"`+walkPolicyRevision+`"`) {
+		t.Fatalf("the give and the policy's rows: %+v", added)
+	}
+	w.eligible = map[string]bool{ext.SubjectActor + walkAna.Subject: true}
+	onlyAnaUnderThePolicy(t, w)
+}
+
+// onlyAnaUnderThePolicy is step 8's card under a router's policy: the
+// operator's item says the decision is ana's, for the architecture owner,
+// by the router's policy, routed to her under its rule; ana's decide page
+// lists and shows it; bob, a decide principal the policy does not name,
+// neither sees it nor answers it; the operator's plain answer is refused
+// not_eligible, kept, never counted. The decision stays open.
 func onlyAnaUnderThePolicy(t *testing.T, w *workflow) {
 	t.Helper()
-	rec := w.record(t, w.did)
-	if f := forOf(t, rec.Request); f["person"] != "ana" {
-		t.Fatalf("under the policy, the decision is for %v", f)
+	it := entityOf(t, w.expect(t, http.MethodGet, "/api/inbox/item?ref="+ledger.DecisionRef(numberOf(w.did)), nil, http.StatusOK, ""), "item")
+	to, _ := it["routedTo"].([]any)
+	if len(to) != 1 || to[0].(map[string]any)["kind"] != "person" || to[0].(map[string]any)["name"] != "Ana" || it["routedRule"] != "the architecture owner, rule r-1" {
+		t.Fatalf("the item's route: %v %v", it["routedTo"], it["routedRule"])
 	}
-	if status, data, out := w.respondAs(t, passBob, "bob-1", 0); status != http.StatusForbidden || errorCode(out) != "not_eligible" {
+	if a, _ := it["answerer"].(string); !strings.HasPrefix(a, "Ana, for the architecture owner, by its router's policy") {
+		t.Fatalf("the card's answerer: %q", a)
+	}
+	d := w.decide()
+	if _, l := d.list(t, passAna); !slices.Contains(ids(l), w.did) {
+		t.Fatalf("ana's list under the policy: %v", ids(l))
+	}
+	d.view(t, passAna, w.did)
+	if _, l := d.list(t, passBob); slices.Contains(ids(l), w.did) {
+		t.Fatalf("bob's list under the policy: %v", ids(l))
+	}
+	if status, data := d.readAs(t, passBob, w.did); status != http.StatusNotFound {
+		t.Fatalf("bob's read under the policy: %d %s", status, data)
+	}
+	kept := len(w.record(t, w.did).Responses)
+	if status, data, _ := w.respondAs(t, passBob, "bob-1", 0); status != http.StatusNotFound {
 		t.Fatalf("bob's answer under the policy: %d %s", status, data)
 	}
-	if after := w.record(t, w.did); after.State != ledger.DecisionOpen {
-		t.Fatalf("after bob's refused answer: %s", after.State)
+	if n := len(w.record(t, w.did).Responses); n != kept {
+		t.Fatalf("bob's refused answer was kept: %d rows (were %d)", n, kept)
+	}
+	w.respond0(t, adminToken, "op-plain", 0, http.StatusForbidden, crew.CodeNotEligible)
+	rec := w.record(t, w.did)
+	if rec.State != ledger.DecisionOpen || len(rec.Responses) != kept+1 {
+		t.Fatalf("after the refused answers: %s, %d responses (were %d)", rec.State, len(rec.Responses), kept)
+	}
+	if r := rec.Responses[kept]; r.Actor != adminActor || r.Status != "refused" {
+		t.Fatalf("the operator's plain answer kept as %+v", r)
 	}
 }
 
@@ -1140,8 +1218,8 @@ func (w *workflow) briefDecision(t *testing.T, clock *clock) {
 // decision does not admit is refused and nothing of it is counted (a
 // principal without the decide grant, a share link, the asking agent);
 // ana reads the card and approves with a rationale, at the rev she read;
-// her response is recorded, then held while the identity provider is
-// asked again: answered, not applied, the hold kept, until the provider
+// her response is recorded under the router's policy, then held while the
+// identity provider is asked again: answered, not applied, the hold kept, until the provider
 // admits her; then validated and applied once, the held work resumed.
 // With no provider the operator answers.
 func (w *workflow) respond(t *testing.T) {
@@ -1217,6 +1295,11 @@ func (w *workflow) respond(t *testing.T) {
 	// the rev ana read.
 	w.answer = "ana-1"
 	d := w.applied(t, w.did)
+	// Counted by the router's policy: her group, how she is eligible and
+	// the router's reference for it, no override and no fallback.
+	if rc := w.decide().receiptOf(t, w.did, kept+1); !slices.Equal(rc.Groups, []string{crew.RespArchitecture}) || rc.Via != ext.ViaRole || rc.Ref == "" || rc.Override || rc.Policy != "" {
+		t.Fatalf("ana's receipt under the policy: %+v", rc)
+	}
 	rcs, _ := d["responses"].([]any)
 	if len(rcs) != kept+1 || rcs[kept].(map[string]any)["actor"] != ext.SubjectActor+"ana" || rcs[kept].(map[string]any)["status"] != "accepted" || rcs[kept].(map[string]any)["rationale"] == nil {
 		t.Fatalf("the response kept: %v", d["responses"])

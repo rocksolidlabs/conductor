@@ -91,13 +91,7 @@ func walkWorkflow(t *testing.T, w *workflow) {
 			t.Fatalf("the refused route wrote: rev %d, %d history rows (were %d, %d)", after.Rev, len(after.History), before.Rev, len(before.History))
 		}
 	} else {
-		w.give(t)
-	}
-	if !w.free() {
-		t.Run("the card for ana, the architecture owner, under a router's policy", func(t *testing.T) {
-			t.Skip(waitsPolicy)
-			onlyAnaUnderThePolicy(t, w)
-		})
+		w.routedByPolicy(t)
 	}
 	w.assertTruthful(t, "step 8, the decision given")
 
@@ -410,6 +404,54 @@ func TestWorkflowContextUnavailable(t *testing.T) {
 		contextAbsent(t, w)
 		w.assertTruthful(t, "the lookup past a late provider")
 	})
+}
+
+// TestWorkflowRouterAway: the router can no longer stand behind its
+// policy for the decision ana alone may answer (decision-policy's I10):
+// while it answers that its policy is behind, within ext.MaxBehind of its
+// first such answer on the server's clock, the operator's answer is
+// refused stale_policy, nothing kept, the decision open and its hold
+// kept, and ana is not shown the decision. Past the bound the policy is
+// not in force: ana is still refused, and the operator answers under
+// local/1, the receipt saying why; the answer is applied once.
+func TestWorkflowRouterAway(t *testing.T) {
+	w := newWorkflow(t, false)
+	clock := &policyFakeClock{now: time.Date(2026, 11, 19, 9, 0, 0, 0, time.UTC)}
+	w.srv.policyClock.mu.Lock()
+	w.srv.policyClock.now = clock.Now
+	w.srv.policyClock.mu.Unlock()
+	w.toPolicy(t)
+	w.fakes.router.SetConfirm(w.did, func(ext.ConfirmQuery) ext.Confirmation { return ext.Confirmation{InForce: true, Behind: true} })
+	kept := len(w.record(t, w.did).Responses)
+	stale := func(step string) {
+		t.Helper()
+		w.respond0(t, adminToken, "op-away", 0, http.StatusConflict, crew.CodeStalePolicy)
+		if status, data, _ := w.respondAs(t, passAna, "ana-away", 0); status != http.StatusNotFound {
+			t.Fatalf("ana's answer with the router behind: %d %s", status, data)
+		}
+		rec := w.record(t, w.did)
+		if rec.State != ledger.DecisionOpen || len(rec.Responses) != kept || !slices.Equal(rec.Held, []string{"build"}) {
+			t.Fatalf("%s: %s, %d responses (were %d), held %v", step, rec.State, len(rec.Responses), kept, rec.Held)
+		}
+		w.assertTruthful(t, step)
+	}
+	stale("the router behind")
+	clock.add(ext.MaxBehind)
+	stale("the router behind, at its bound")
+	clock.add(time.Second)
+	// Past the bound: not in force. The operator answers with the same
+	// response id its refusals kept nothing of; ana is refused still.
+	w.eligible = map[string]bool{adminActor: true}
+	if status, data, _ := w.respondAs(t, passAna, "ana-away", 0); status != http.StatusNotFound {
+		t.Fatalf("ana's answer past the bound: %d %s", status, data)
+	}
+	w.respond0(t, adminToken, "op-away", 0, http.StatusCreated, "")
+	w.answer = "op-away"
+	w.applied(t, w.did)
+	if rc := w.decide().receiptOf(t, w.did, kept+1); rc.Status != "accepted" || rc.Policy != "local/1" || !strings.Contains(rc.PolicyWhy, "did not settle") || rc.Override {
+		t.Fatalf("the operator's receipt past the bound: %+v", rc)
+	}
+	w.assertTruthful(t, "the operator's answer under local/1")
 }
 
 // TestWorkflowOwnerDisconnected: the owning server is out of ana's reach
