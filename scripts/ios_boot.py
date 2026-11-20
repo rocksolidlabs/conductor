@@ -35,6 +35,8 @@ DERIVED = ROOT / "mobile/ios/App/build"
 TRIES = 3
 PAUSE = 60
 RESOLVE_BOUND = 300
+# The Swift packages at the versions the committed Package.resolved pins, never resolved anew.
+PINNED = ["-disableAutomaticPackageResolution", "-onlyUsePackageVersionsFromResolvedFile"]
 BUILD_BOUND = 1500
 POLICY_CLASS = "ConductorKeySigningPolicy"
 PLACE = ROOT / "mobile/ios/ConductorNative/Sources/ConductorPackaging/Packaging"
@@ -59,7 +61,7 @@ def tries(argv: list[str], bound: int, count: int = TRIES, pause: int = PAUSE, r
 
 
 def resolve_argv() -> list[str]:
-    return ["xcodebuild", "-resolvePackageDependencies", "-project", str(PROJECT), "-scheme", "App", "-derivedDataPath", str(DERIVED)]
+    return ["xcodebuild", "-resolvePackageDependencies", "-project", str(PROJECT), "-scheme", "App", "-derivedDataPath", str(DERIVED), *PINNED]
 
 
 def classes(otool: str) -> set[str]:
@@ -74,7 +76,7 @@ def executable(derived: Path, config: str) -> Path:
 def policy_build_argv() -> list[str]:
     return [
         "xcodebuild", "-project", str(PROJECT), "-scheme", "App", "-configuration", "Release", "-sdk", "iphonesimulator",
-        "-destination", "generic/platform=iOS Simulator", "-derivedDataPath", str(POLICY_DERIVED),
+        "-destination", "generic/platform=iOS Simulator", "-derivedDataPath", str(POLICY_DERIVED), *PINNED,
         "DEAD_CODE_STRIPPING=YES", "CODE_SIGNING_ALLOWED=NO", "build",
     ]
 
@@ -154,7 +156,7 @@ def boot(udid: str, run=subprocess.run, sleep=time.sleep, say=print) -> bool:
 def test_argv(udid: str) -> list[str]:
     return [
         "xcodebuild", "test", "-project", str(PROJECT), "-scheme", "App", "-destination", f"id={udid}",
-        "-derivedDataPath", str(DERIVED), "-only-testing:AppUITests/ShellBootsUnderItsPolicyTests", "CODE_SIGNING_ALLOWED=NO",
+        "-derivedDataPath", str(DERIVED), *PINNED, "-only-testing:AppUITests/ShellBootsUnderItsPolicyTests", "CODE_SIGNING_ALLOWED=NO",
     ]
 
 

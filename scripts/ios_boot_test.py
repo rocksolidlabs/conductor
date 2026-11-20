@@ -52,6 +52,9 @@ class Tries(unittest.TestCase):
         self.assertEqual(argv[:2], ["xcodebuild", "-resolvePackageDependencies"])
         self.assertIn(str(ios_boot.ROOT / "mobile/ios/App/App.xcodeproj"), argv)
         self.assertIn(str(ios_boot.ROOT / "mobile/ios/App/build"), argv)
+        for argv in (ios_boot.resolve_argv(), ios_boot.test_argv("NEW"), ios_boot.policy_build_argv()):
+            self.assertIn("-disableAutomaticPackageResolution", argv)
+            self.assertIn("-onlyUsePackageVersionsFromResolvedFile", argv)
 
 
 OTOOL = """Contents of (__DATA,__objc_classlist) section

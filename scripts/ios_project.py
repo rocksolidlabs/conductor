@@ -175,6 +175,10 @@ def config(mobile: Path) -> list[str]:
     m = re.search(r'capacitor-swift-pm\.git", exact: "([^"]+)"', spm)
     if not m or m.group(1) != ios:
         out.append(f"CapApp-SPM/Package.swift: capacitor-swift-pm is {m.group(1) if m else 'missing'}, not @capacitor/ios {ios}: run npx cap sync ios")
+    resolved = mobile / "ios/App/App.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved"
+    pins = {p.get("identity"): p.get("state", {}).get("version") for p in json.loads(resolved.read_text()).get("pins", [])} if resolved.exists() else {}
+    if pins.get("capacitor-swift-pm") != ios:
+        out.append(f"Package.resolved: capacitor-swift-pm is pinned at {pins.get('capacitor-swift-pm')}, not @capacitor/ios {ios}: resolve it again and commit it")
     for pkg, product in IOS_PLUGINS.items():
         if f'.package(name: "{product}", path: "../../../node_modules/{pkg}")' not in spm:
             out.append(f"CapApp-SPM/Package.swift: {pkg} is not in the native runtime's packages: run npx cap sync ios")

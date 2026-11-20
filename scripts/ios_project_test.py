@@ -29,6 +29,7 @@ FILES = [
     "ios/ConductorNative/Sources/ConductorShell/Refused.swift",
     "ios/ConductorNative/Sources/ConductorShell/NativeHTTP.swift",
     "ios/App/CapApp-SPM/Package.swift",
+    "ios/App/App.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved",
     "ios/ConductorNative/Sources/ConductorShell/Calls.swift",
     "capacitor.config.ts",
     "ios/debug.xcconfig",
@@ -174,6 +175,9 @@ class IOSProjectTest(unittest.TestCase):
         self.edit(f, 'exact: "8.5.3"', 'exact: "8.6.0"')
         self.edit(f, '        .package(name: "CapacitorBrowser", path: "../../../node_modules/@capacitor/browser"),\n', "")
         self.only("@capacitor/browser is not in the native runtime's packages")
+        self.setUp()
+        self.edit("ios/App/App.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved", '"version" : "8.6.0"', '"version" : "8.5.3"')
+        self.only("Package.resolved: capacitor-swift-pm is pinned at 8.5.3, not @capacitor/ios 8.6.0")
 
     def test_the_plugins_answer_exactly_the_bridges_calls(self) -> None:
         self.edit("ios/App/App/Plugins/ConductorKeyPlugin.swift", '        CAPPluginMethod(name: "ending", returnType: CAPPluginReturnPromise),\n', "")
