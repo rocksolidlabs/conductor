@@ -1223,7 +1223,8 @@ vitest whole; the e2e build and the specs named):
   OSS-2b, a second case: a sync of the same bundle with a test provider
   module (`mobile/e2e/fixtures/provider.js`, the tests' own, naming no
   service: signed in, one item whose decision's context holds a fenced
-  `go` block and a Mermaid diagram) opens `/shell/decisions/<id>` under
+  `go` block and a Mermaid diagram) opens its decision's page (the
+  address `decisionPath` builds, the id in one base64url segment) under
   the same policy; the code block is highlighted (`pre.shiki`), the
   diagram drawn in its frame, and no `securitypolicyviolation` is
   reported. Without `'wasm-unsafe-eval'` the block stays plain and a
@@ -1455,6 +1456,14 @@ Swift package with no package of anyone else's):
   asks for one is the answer), and reads a reply only up to 1 MiB
   (`too_large`). Its call shape is Capacitor's: `request`, and `get` to
   `delete`, answered `{status, headers, url, data}`; `params` is refused.
+  A header that says where the request goes or how it is framed
+  (`Host`, `Connection`, `Keep-Alive`, any `Proxy-` one,
+  `Content-Length`, `Transfer-Encoding`, `TE`, `Upgrade`, `Trailer`, by
+  name whatever its case), a name that is not an HTTP token and a value
+  with a control character are refused (`invalid_request`) before
+  anything is sent, so that what is judged (the address) is where the
+  request goes; `Authorization`, `Content-Type` and any other header a
+  provider sends are set as given.
 - `clear()` always removes: the generation moves first, then the drafts
   and the cache are removed and the HTTP caches emptied whatever the
   generation's write did; a generation not written is written again
@@ -1498,27 +1507,36 @@ Swift package with no package of anyone else's):
   escaped; a climb out of the bundle's folder; a method outside the
   table on a plugin the page reaches; a callback id that is no callback
   id; a srcdoc frame's call; a frame at an outside address and at the
-  app's own; a location change and a new window to a custom scheme) and
+  app's own; a location change and a new window to a custom scheme; a
+  location change to the app's own address with its host in another
+  case and with an escape in it; a listener call with no event) and
   checks each is refused, the srcdoc frame draws, the native HTTP call
-  is still the shell's own (it refuses an origin not named), and the key
-  and the store still answer; the app counts the probe messages the
-  bridge gate dropped and the probe loads the load gate refused (the two
-  frames and the location change; the script's window to a custom
-  scheme is refused by WebKit itself before any delegate, and the probe
-  checks no window opened). Each
-  probe's wait has a bound of its own, so one never answered is
-  reported, not waited on. It passes only on `ready platform=ios
-  plugins=ok probes=ok dropped=7 refused=3 violations=0`, then finds
-  Open a server's address field.
+  is still the shell's own (it refuses an origin not named), the key
+  and the store still answer, the app still answers after the listener
+  call, and a decision's address as the screens build it for an id
+  outside the path's alphabet is let through (the bundle's page
+  answers) where the same id written into the path is refused; the app
+  counts the probe messages the bridge gate dropped and the probe loads
+  the load gate refused (the two frames and the three location changes,
+  each waited on until the app has told the page of its refusal; the
+  script's window to a custom scheme is refused by WebKit itself before
+  any delegate, and the probe checks no window opened). Each probe's
+  wait has a bound of its own, so one never answered is reported, not
+  waited on. It passes only on `ready platform=ios plugins=ok probes=ok
+  dropped=8 refused=5 violations=0`, then finds Open a server's address
+  field; the test keeps the last report it read, so a failure says how
+  far the check got even when a probe ended the app.
 
 **Every way a page reaches native code** (as built, read from the
 pinned runtime's own source, `@capacitor/ios` 8.6.0, and its App,
-Browser and PushNotifications plugins). Each gate decides on four
+Browser and PushNotifications plugins). Each gate decides on five
 things: (a) who sent the thing (which frame, which view), (b) every
 field native code then reads, each in a closed form, (c) the same
-spelling native code then uses, and (d) what leaves the app by it. Every
-gate is an allowlist that fails closed, and the page loads only once
-every gate stands.
+spelling native code then uses, (d) what leaves the app by it, and (e)
+where it forwards to code that judges again, a sense of what it lets
+through that is that code's own test or narrower. Every gate is an
+allowlist that fails closed, and the page loads only once every gate
+stands.
 
 - **The script message handler `bridge`**, which WebKit gives every
   frame of the view. The runtime reads five fields of a message:
@@ -1534,10 +1552,19 @@ every gate stands.
   makes and the runtime's listener calls for the plugins it listens to
   (below; the project check holds the table to `bridge.ts` both ways);
   `callbackId` the runtime's own form, `-1` or 1 to 16 digits;
-  `options` an object or absent; no other key. (c) The strings judged
-  are the strings the runtime uses: it reads them as they are. (d)
-  Nothing leaves the app by the message itself; what a call does is
-  that plugin's. Everything else is dropped. The runtime's `WebView` and
+  `options` an object or absent, and for the listener calls, whose
+  options the runtime's base plugin reads, exactly the form the
+  runtime's page script gives them: `addListener` an `eventName` the
+  bridge listens for on that plugin (`registration` and
+  `pushNotificationActionPerformed` on `PushNotifications`, `appUrlOpen`
+  on `App`; the project check holds them to `bridge.ts`), and
+  `removeListener` that and the listener's `callbackId` in the runtime's
+  form; no other key. (c) The strings judged are the strings the
+  runtime uses: it reads them as they are. (d) Nothing leaves the app by
+  the message itself; what a call does is that plugin's. (e) The runtime
+  looks the plugin up by the exact string judged, and finds the method
+  by its own name: a pair of the table names a registered plugin and
+  one of its methods. Everything else is dropped. The runtime's `WebView` and
   `CapacitorCookies` are not in the table, and their refusing stand-ins
   stay registered behind the gate as a second wall.
 
@@ -1565,7 +1592,10 @@ every gate stands.
 - **The boot check's handler `conductorBootCheck`**, in a boot-check
   launch only (its launch argument, which a person's launch never
   passes): (a) any frame; (b) a string; (c) shown as text in one label;
-  (d) nothing leaves. No gate needed beyond its absence elsewhere.
+  (d) nothing leaves. No gate needed beyond its absence elsewhere. In
+  that launch alone the app also evaluates one constant in the page
+  each time the load gate refuses a probe load (a count the page waits
+  on before its next probe).
 - **The UI delegate** (the runtime's, wrapped by `MediaCaptureRefused`).
   A text-input prompt: the runtime reads one whose text is JSON as a
   native call (the app's cookie jar read or written, the runtime's
@@ -1576,16 +1606,26 @@ every gate stands.
   script's `window.open`): decided by the load gate below and never a
   window in the shell; a script opens no window on its own (WebKit's own
   refusal without a person's tap, set so by the shell), and a window a
-  tap opens is the load gate's. An alert or a confirm: the system's own alert
-  with the page's words, nothing else of the app. A device orientation
-  and motion request: granted by the runtime; motion events only.
+  tap opens is the load gate's. An alert or a confirm: the system's own
+  alert with the page's words, nothing else of the app. A device
+  orientation and motion request: granted by the runtime; motion events
+  only. (e) The shell's delegate forwards nothing that judges again: it
+  answers the prompt, the capture and the new window itself, and the
+  alert, confirm and orientation calls go to the runtime's as they are.
 - **The navigation delegate** (the runtime's, wrapped by `NavigationGate`,
   which decides every load ahead of the runtime's own rule by one pure
   function, `LoadGate`; the runtime's other calls go to its own
   delegate unchanged). (a) The frame: the main frame, a new window, or a
   frame. (b) The address and WebKit's navigation type. (c) The address
   WebKit hands the delegate. (d) In the main frame the app's own address
-  goes on to the runtime (which allows it); a link the person activated
+  goes on to the runtime (which allows it); (e) the app's own address is
+  the runtime's own test of it, narrowed: the runtime asks whether the
+  address, as a string, begins with its local address, and hands a
+  top-level load that does not to iOS, so the gate takes the string as
+  it is, case as written and nothing decoded, and forwards only the
+  local address exactly or followed by `/`, `?` or `#` (a host in
+  another case, with an escape, a port, a user part or a longer name is
+  cancelled); a link the person activated
   (WebKit's link type, which a script's own click on a link also gets)
   to an `https` or `http` address, while the app is in the foreground,
   is handed to iOS, which opens it as for a link tapped in Mail: the
@@ -1607,7 +1647,7 @@ every gate stands.
 
   | Where | What reaches it now |
   |---|---|
-  | the runtime's navigation rule (`UIApplication.shared.open` for a top-level load outside the app) | nothing: the load gate cancels such a load before the runtime is asked |
+  | the runtime's navigation rule (`UIApplication.shared.open` for a top-level load outside the app) | nothing: the load gate forwards only an address the runtime's own test takes as the app's, and cancels every other before the runtime is asked |
   | the runtime's new-window rule (`UIApplication.shared.open` in `createWebViewWith`) | nothing: the shell's UI delegate answers every new window itself |
   | the shell's `NavigationGate.handOff` (`UIApplication.shared.open`) | an `https` or `http` address: a link activated in the main frame, or a new window, in the foreground |
   | `Browser.open` (the in-app browser, `SFSafariViewController`) | the bridge's Open a server (`https`, or `http` with its words) and a provider's own call through the table |
@@ -1620,7 +1660,8 @@ every gate stands.
   router as a file of the bundle's folder. Gate: content rules
   (`ConductorShell`'s `FilePrefix`) compiled and added before the first
   load. (a) Every kind of load and every host of the app's scheme. (b)
-  The address as WebKit writes it. (c) Only an address whose path is
+  The address as WebKit writes it, the host and path read in the case
+  written. (c) Only an address of the app's own host whose path is
   spelled with the characters decoding leaves unchanged and the
   bundle's files and the shell's routes use (letters, digits, `.`, `_`,
   `-`, `/`; a query or a fragment after it is not read as the path) is
@@ -1628,11 +1669,26 @@ every gate stands.
   judged is the string the handler reads; whatever its spelling, a path
   under either prefix is refused. The project check walks the built
   bundle and the shell's routes and fails on a path outside that
-  spelling. And the shell's own router (`ShellRouter`, `BundleRoute`)
-  answers a file only when the path, its `.` and `..` resolved, stays
-  inside the bundle's folder; anything else is a file that does not
-  exist (a path with no extension answers `index.html`, as the
-  runtime's does). (d) Files of the bundle only.
+  spelling, and on a shell page's dynamic segment not carried through
+  its address helper: a decision's page is at
+  `/shell/decisions/<segment>`, the provider's id as one unpadded
+  base64url segment of its UTF-8 bytes (`decisionPath` in
+  `web/app/utils/shell.ts`, which every place that opens a decision
+  uses, read back by `decisionIdOf`; a segment that does not read back
+  is no such decision), so the address the app loads again when iOS
+  ends the page's process is let through whatever the id. (e) The rules
+  are narrower than the handler's own test of its prefixes (which
+  matches the decoded path), and the handler routes what they let
+  through. The shell's own router (`ShellRouter`, `BundleRoute`) is a
+  second wall behind the rules, proved by its unit tests (WebKit
+  resolves plain dot segments before any rule or router sees an
+  address): it answers a file only when the path, its `.` and `..`
+  resolved, stays inside the bundle's folder; anything else is a file
+  that does not exist (a path with no extension answers `index.html`,
+  as the runtime's does). (d) Files of the bundle only. The runtime
+  reads a request's `Range` header itself; a page's own script can end
+  the app's process with a malformed one there, and reaches nothing
+  beyond it.
 - **The scripts the runtime injects** at each document's start, main
   frame only: its configuration; its bridge script (`window.Capacitor`,
   its calls posted to `bridge`; `console` patched to post `Console`
