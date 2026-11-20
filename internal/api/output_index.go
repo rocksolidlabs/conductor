@@ -92,6 +92,7 @@ type liveSource struct {
 	lineOff int64  // where it begins in the folded text
 	wins    []winHash
 	picked  int64
+	pickedH uint64
 	refs    []fpHash // the fingerprints it holds, for its prune
 }
 
@@ -506,17 +507,35 @@ func (s *liveSource) push(c byte, out []fpHash) []fpHash {
 	if len(s.wins) < indexRun {
 		return out
 	}
-	m := s.wins[0]
-	for _, w := range s.wins[1:] {
+	if m, ok := robustPick(s.wins, s.picked, s.pickedH); ok {
+		s.picked, s.pickedH = m.pos, m.h
+		out = append(out, fpHash{h: m.h, ref: fpRef{off: m.pos, kind: fpWindow}})
+	}
+	return out
+}
+
+// robustPick is winnowing's pick for the run of windows wins, the last of
+// which is new, given the window picked last (its position and hash): a
+// window of the run's smallest hash, the one picked last while it is in
+// the run and still a smallest, else the rightmost smallest. ok says the
+// pick is a new one. A run of one hash repeated (a log of one character)
+// keeps one pick per run, not one per byte, and every run's pick is a
+// window of its smallest hash, whatever came before.
+func robustPick(wins []winHash, picked int64, pickedH uint64) (winHash, bool) {
+	last := wins[len(wins)-1]
+	if picked >= wins[0].pos {
+		if last.h < pickedH {
+			return last, true
+		}
+		return winHash{}, false
+	}
+	m := wins[0]
+	for _, w := range wins[1:] {
 		if w.h <= m.h {
 			m = w
 		}
 	}
-	if m.pos != s.picked {
-		s.picked = m.pos
-		out = append(out, fpHash{h: m.h, ref: fpRef{off: m.pos, kind: fpWindow}})
-	}
-	return out
+	return m, true
 }
 
 // endLine hashes the line read so far whole, when long enough.
@@ -846,12 +865,36 @@ func (x *outputIndex) quotes(value string) (bool, error) {
 		n    int
 	}
 	places := map[uint64][]at{}
+	// The value winnowed as a source is: a run of indexMatch bytes it
+	// shares with a source holds a whole run of indexRun windows, whose
+	// smallest hash both picked, so only the hashes the value picks are
+	// looked up, each at every position of the value it is at (a source's
+	// pick of a hash repeated in the run may be another occurrence of it).
+	all := map[uint64][]int{}
+	var wins []winHash
+	var picked int64 = -1
+	var pickedH uint64
+	want := map[uint64]bool{}
 	for i := 0; i+indexWindow <= len(folded); i++ {
-		h := hashBytes(folded[i : i+indexWindow])
-		if _, ok := places[h]; !ok {
-			hs = append(hs, h)
+		w := winHash{pos: int64(i), h: hashBytes(folded[i : i+indexWindow])}
+		all[w.h] = append(all[w.h], i)
+		wins = append(wins, w)
+		if len(wins) > indexRun {
+			wins = wins[1:]
 		}
-		places[h] = append(places[h], at{pos: i, kind: fpWindow})
+		if len(wins) < indexRun {
+			continue
+		}
+		if m, ok := robustPick(wins, picked, pickedH); ok {
+			picked, pickedH = m.pos, m.h
+			want[m.h] = true
+		}
+	}
+	for h := range want {
+		hs = append(hs, h)
+		for _, i := range all[h] {
+			places[h] = append(places[h], at{pos: i, kind: fpWindow})
+		}
 	}
 	var lines [][]byte
 	for _, l := range strings.Split(strings.ReplaceAll(value, "\r", "\n"), "\n") {

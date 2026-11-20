@@ -33,11 +33,16 @@ func testIndex(t *testing.T, dir string, bound int64) *outputIndex {
 }
 
 // quotesOf asks the index whether text quotes a source, once it has
-// indexed what it was fed.
+// indexed what it was fed: the test waits for that (a megabyte under the
+// race detector takes longer than the product's own wait, whose answer is
+// pending), up to testWait.
 func quotesOf(t *testing.T, x *outputIndex, text string) bool {
 	t.Helper()
-	if !x.whole(context.Background()) {
-		t.Fatalf("the index is not whole: %s", x.state())
+	deadline := time.Now().Add(testWait)
+	for !x.whole(context.Background()) {
+		if time.Now().After(deadline) {
+			t.Fatalf("the index is not whole: %s", x.state())
+		}
 	}
 	q, err := x.quotes(text)
 	if err != nil {
@@ -101,6 +106,16 @@ func TestWinnowingCatchesEvery64ByteQuote(t *testing.T) {
 			j += n
 		}
 	}
+	// A source that repeats itself (a test's output, line after line):
+	// ties between windows of one text, which the picks must survive.
+	var rep strings.Builder
+	block := words(r, 150)
+	for range 20 {
+		rep.WriteString(block)
+		rep.WriteString(words(r, 1+r.IntN(40)))
+	}
+	sources["ring:repeats"] = rep.String()
+	x.feed("ring:repeats", []byte(rep.String()), 1<<20)
 	kept := words(r, 3000)
 	x.keepText("check:r1/t1/1/test/1", []byte(kept))
 	x.reader("check", func(id string) ([]byte, bool) { return []byte(kept), id == "r1/t1/1/test/1" })
@@ -340,5 +355,25 @@ func TestOutputIndexLeftOutOfTheExport(t *testing.T) {
 				t.Fatalf("the manifest's left out: %+v", m.Left)
 			}
 		}
+	}
+}
+
+// A log of one character repeated keeps one fingerprint a run of windows,
+// not one a byte: a megabyte of it is a few tens of thousands of rows in
+// the index, and a quote of a passage inside it is still caught.
+func TestARepeatedLogKeepsOneFingerprintARun(t *testing.T) {
+	x := testIndex(t, "", 0)
+	log := strings.Repeat("x", 1<<20) + " the end of a long run of the same character, then words " + strings.Repeat("y", 1<<16)
+	x.keepText("check:big", []byte(log))
+	x.reader("check", func(id string) ([]byte, bool) { return []byte(log), id == "big" })
+	if !quotesOf(t, x, "it said: "+log[(1<<20)-40:(1<<20)+60]) {
+		t.Fatal("a quote across the run's end not caught")
+	}
+	var n int
+	if err := x.db.QueryRow("SELECT COUNT(*) FROM fp WHERE source = 'check:big'").Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n > len(log)/indexRun+100 {
+		t.Fatalf("%d fingerprints for %d bytes", n, len(log))
 	}
 }

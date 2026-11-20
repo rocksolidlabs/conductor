@@ -62,16 +62,16 @@ func (g *outputGuard) Judge(ctx context.Context, text string, agent bool) string
 }
 
 // JudgeValue is the verdict of a change row's value or prior: the value
-// itself, and each string it holds when it is JSON (a create's fields, a
-// list's members), the worst of them (output, then pending, then clean).
+// itself, or, when it is JSON (a create's fields, a list's members), each
+// string it holds, the worst of them (output, then pending, then clean).
 func (g *outputGuard) JudgeValue(ctx context.Context, value string, agent bool) string {
-	worst := g.Judge(ctx, value, agent)
-	if worst == verdictOutput || len(value) < indexLine {
-		return worst
-	}
 	var v any
-	if json.Unmarshal([]byte(value), &v) != nil {
-		return worst
+	if len(value) < indexLine || json.Unmarshal([]byte(value), &v) != nil {
+		return g.Judge(ctx, value, agent)
+	}
+	worst := verdictClean
+	if _, ok := v.(string); !ok && agentTextIsOutput && agent {
+		return verdictOutput
 	}
 	var walk func(any)
 	walk = func(v any) {
