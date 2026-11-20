@@ -106,15 +106,29 @@ func (s *Server) answersLookups() bool {
 }
 
 // lookupSource is the provider a lookup asks: the one named source, else
-// the first in registration order that answers lookups; nil when none does.
+// the first in registration order that answers lookups and has started
+// (the one the guide lists the tool for), else the first that answers
+// lookups, which the route then answers unavailable; nil when none does.
 func (s *Server) lookupSource(source string) *guardContext {
+	var first *guardContext
 	for _, g := range s.exts.context {
-		if _, ok := g.lookup(); ok && (source == "" || g.name == source) {
+		if _, ok := g.lookup(); !ok || (source != "" && g.name != source) {
+			continue
+		}
+		if source != "" || live(g.ready) {
 			return g
 		}
+		if first == nil {
+			first = g
+		}
 	}
-	return nil
+	return first
 }
+
+// extLookupHead, when a test sets it, is told the session of every lookup
+// as the worktree's HEAD is about to be read, within the session's place;
+// nil outside tests.
+var extLookupHead atomic.Pointer[func(session string)]
 
 // extLookingUp, when a test sets it, is told the session of every lookup
 // as the provider is about to be asked, in its slot; nil outside tests.
@@ -165,21 +179,27 @@ func (s *Server) handleContextLookup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", strings.TrimPrefix(err.Error(), "ext: "))
 		return
 	}
-	req.Head = worktreeHead(r.Context(), scope.Worktree)
-	if err := req.Valid(); err != nil {
-		// The server's own fields: an attempt not yet of a shape a lookup
-		// names (no start yet).
-		writeError(w, http.StatusConflict, "not_running", "the attempt cannot be looked up for now")
-		return
-	}
 	look, _ := g.lookup()
 	if !live(g.ready) {
 		writeError(w, http.StatusServiceUnavailable, "lookup_unavailable", lookupUnavailable)
 		return
 	}
+	// The session's place is taken before anything costs: the worktree's
+	// HEAD is read with git only within the session's two in flight.
 	release, ok := s.contextLookups.take(id)
 	if !ok {
 		writeError(w, http.StatusTooManyRequests, "lookup_busy", "two lookups of this session are in flight: wait for one")
+		return
+	}
+	if f := extLookupHead.Load(); f != nil {
+		(*f)(id)
+	}
+	req.Head = worktreeHead(r.Context(), scope.Worktree)
+	if err := req.Valid(); err != nil {
+		release()
+		// The server's own fields: an attempt not yet of a shape a lookup
+		// names (no start yet).
+		writeError(w, http.StatusConflict, "not_running", "the attempt cannot be looked up for now")
 		return
 	}
 	answer, sent, answered := extCallTold(r.Context(), s, extKindLookup, g.name, ext.LookupWait, ext.LookupAnswer{}, ext.LookupAnswer.Valid,

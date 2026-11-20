@@ -4103,7 +4103,7 @@ agent's alone:
 - `symbol`: one line of at most 512 bytes;
 - `limit`: 1 to 200, 20 unless given;
 - `source`: the provider to ask, by its name; the first registered that
-  answers lookups unless given (`404 no_context_lookup` when it names
+  answers lookups and has started unless given (`404 no_context_lookup` when it names
   none that does, or none does).
 
 A field past its bound, or any other field, is `400 invalid_request`.
@@ -4113,8 +4113,9 @@ own attempt (`409 not_running` for an attempt that has closed or has no
 worktree yet). The
 provider is asked within 3 s, under a slot of its own apart from the
 blocks an attempt starts with. A session has at most two lookups in
-flight, each counted until the provider's call returns: a third, or one
-when the provider's lookups are all in flight, is `429 lookup_busy`. A
+flight, each counted until the provider's call returns and taken before
+the worktree's HEAD is read: a third, or one when the provider's lookups
+are all in flight, is `429 lookup_busy`. A
 provider not started, late, failing or answering past its bounds is `503
 lookup_unavailable` with the words "context is unavailable now; carry on
 without it".

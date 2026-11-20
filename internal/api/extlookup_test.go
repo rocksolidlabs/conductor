@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -509,5 +510,46 @@ func TestLookupAfterTheAttemptClosed(t *testing.T) {
 	}
 	if n := len(l.asked()); n != 0 {
 		t.Fatalf("the provider was asked %d times", n)
+	}
+}
+
+// A lookup takes the session's place before it costs anything: with two
+// of the session's lookups held in the provider, a third is refused 429
+// without the worktree's HEAD read for it.
+func TestLookupTakesItsPlaceBeforeReadingHead(t *testing.T) {
+	gate := make(chan struct{})
+	l := &looker{fakeContext: &fakeContext{name: "graph"}, gate: gate}
+	e, _, a, tok := lookupAttempt(t, l)
+	sid := a["sessionId"].(string)
+	var heads atomic.Int32
+	head := func(string) { heads.Add(1) }
+	extLookupHead.Store(&head)
+	t.Cleanup(func() { extLookupHead.Store(nil) })
+	wait := 100 * time.Millisecond
+	extWaiting.Store(&wait)
+	t.Cleanup(func() { extWaiting.Store(nil) })
+	t.Cleanup(func() { close(gate) })
+	for i := range 2 {
+		if status, raw, _ := e.callAs(t, tok, "POST", lookupPath(sid), map[string]any{"op": "symbol", "symbol": "Build"}); status != http.StatusServiceUnavailable {
+			t.Fatalf("held lookup %d: %d %s", i, status, raw)
+		}
+	}
+	waitUntil(t, "both lookups held in the provider", func() bool { return len(l.asked()) == 2 })
+	e.expectAs(t, tok, "POST", lookupPath(sid), map[string]any{"op": "symbol", "symbol": "Build"}, http.StatusTooManyRequests, "lookup_busy")
+	if n := heads.Load(); n != 2 {
+		t.Fatalf("the worktree's HEAD was read %d times", n)
+	}
+}
+
+// With no source named, a lookup asks the first provider that answers
+// lookups and has started, the one the guide lists the tool for: one
+// registered before it that has not started is passed over.
+func TestLookupAsksAStartedProvider(t *testing.T) {
+	early := startingLooker{looker: &looker{fakeContext: &fakeContext{name: "early"}}}
+	later := &looker{fakeContext: &fakeContext{name: "graph"}}
+	e, _, a, tok := lookupAttempt(t, early, later)
+	out := e.expectAs(t, tok, "POST", lookupPath(a["sessionId"].(string)), map[string]any{"op": "symbol", "symbol": "Build"}, http.StatusOK, "")
+	if out["source"] != "graph" || len(early.asked()) != 0 || len(later.asked()) != 1 {
+		t.Fatalf("the answer %v; early asked %d, graph %d", out, len(early.asked()), len(later.asked()))
 	}
 }
