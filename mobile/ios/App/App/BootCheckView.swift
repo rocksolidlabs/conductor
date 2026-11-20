@@ -68,5 +68,6 @@ final class BootCheckView: NSObject, WKScriptMessageHandler {
     private func show() {
         label.text = report.label
         label.accessibilityLabel = report.label
+        label.accessibilityValue = (report.dropped.sorted() + report.refused.sorted()).joined(separator: " ")
     }
 }
