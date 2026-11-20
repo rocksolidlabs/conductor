@@ -475,3 +475,37 @@ func TestAMissingIndexIsRebuiltFromTheLedger(t *testing.T) {
 		t.Fatalf("a quote of a log kept before the index was made: %s", v)
 	}
 }
+
+// A hosted session's output never passes this server whole (the host link
+// carries its signalling, and its terminal only to a viewer the server
+// relays), so the check fails closed for it: its agent's text is judged
+// output whatever it says, and stays on this machine. A person's text,
+// and a local session's agent's, are judged by the index. Today a hosted
+// session's agent has no ticket here to write to at all: it is no member
+// of this server's runs, and its comment writes nothing.
+func TestAHostedSessionsAgentTextIsOutput(t *testing.T) {
+	c := newCheckEnv(t, 45)
+	ctx := context.Background()
+	own := "An agent's sentence of its own, long enough to be judged."
+	if v := c.srv.judgeRow(withOutputNotHeld(ctx), own, true); v != verdictOutput {
+		t.Fatalf("a hosted agent's own words: %s", v)
+	}
+	if v := c.srv.judgeRow(withOutputNotHeld(ctx), own, false); v != verdictClean {
+		t.Fatalf("a person's words beside a hosted session: %s", v)
+	}
+	if v := c.srv.judgeRow(ctx, own, true); v != verdictClean {
+		t.Fatalf("a local agent's own words: %s", v)
+	}
+
+	host := dialFakeHost(t, c.testEnv, "hosted-agent-token-0123456789abcdef")
+	before, _, err := c.srv.dispatch.ChangesFrom(ctx, 0, dispatch.MaxChangesPage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.expectAs(t, "hosted-agent-token-0123456789abcdef", "POST", "/api/sessions/"+host.sessionID+"/ticket/comments",
+		map[string]any{"opId": opID(), "body": "from the host: " + own}, http.StatusNotFound, "no_ticket")
+	after, _, err := c.srv.dispatch.ChangesFrom(ctx, 0, dispatch.MaxChangesPage)
+	if err != nil || len(after) != len(before) {
+		t.Fatalf("a hosted agent's comment wrote %d rows %v", len(after)-len(before), err)
+	}
+}

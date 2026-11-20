@@ -733,7 +733,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 			} else if n > 0 {
 				log.Info("verdicts left pending by the server before this one withheld", "rows", n)
 			}
-			s.dispatch.SetOutputCheck(s.copyCheck.JudgeValue)
+			s.dispatch.SetOutputCheck(s.judgeRow)
 			// A verdict left pending (the index behind, past its bound) is judged
 			// again once it is whole, until the server ends.
 			ctx := s.extCtx

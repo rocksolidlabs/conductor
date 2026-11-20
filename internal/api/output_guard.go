@@ -316,3 +316,27 @@ func (s *Server) rebuildIndex() {
 		}
 	})
 }
+
+// outputNotHeld marks a write whose agent runs where the server does not
+// hold its output: a hosted session's. The host link carries a session's
+// signalling and, only to a viewer that asked for the server's relay, its
+// terminal; with no such viewer none of its output passes the server, so
+// the index cannot know what it printed.
+type outputNotHeld struct{}
+
+// withOutputNotHeld is ctx marking its write's agent as one whose output
+// the server does not hold.
+func withOutputNotHeld(ctx context.Context) context.Context {
+	return context.WithValue(ctx, outputNotHeld{}, true)
+}
+
+// judgeRow is the check Dispatch's writes are judged by: an agent's text
+// whose output the server does not hold is output (it stays on this
+// machine), failing closed where the check cannot look; every other text
+// goes through the guard.
+func (s *Server) judgeRow(ctx context.Context, text string, agent bool) string {
+	if agent && text != "" && ctx.Value(outputNotHeld{}) != nil {
+		return verdictOutput
+	}
+	return s.copyCheck.JudgeValue(ctx, text, agent)
+}
