@@ -4,14 +4,20 @@
 What a build in Xcode would not refuse but the shell must not ship, read from the files themselves:
 
 - Info.plist: the Face ID words, no other usage description (no microphone,
-  camera, location, ...), no background mode.
+  camera, location, ..., with the NS prefix or without), no background mode,
+  no App Transport Security exception, no URL types or queried schemes, and
+  the app's files not shared.
 - The Xcode project: no team, no provisioning profile, no entitlements; iOS 16
   in every configuration; the development app id alone; every Swift file of
   the app in the app's sources; the native package (../ConductorNative) a
   local package whose ConductorShell product the app links.
-- No entitlements or provisioning profile anywhere under mobile/ios.
-- capacitor.config.ts: the development app id and navigation allowed to
-  nothing but the bundle.
+- No entitlements or provisioning profile anywhere under mobile/ios; every
+  *.xcconfig there sets no team, profile, entitlements or signing identity,
+  includes no other file, and names only the development id and iOS 16;
+  every scheme passes the app no argument and no environment.
+- capacitor.config.ts: the development app id, navigation allowed to
+  nothing but the bundle, and no other key than those (no remote server
+  address, no cleartext, no changed scheme or host, no plugin switched on).
 - The native runtime's package list (CapApp-SPM/Package.swift, written by
   `cap sync ios`) at the version mobile/package-lock.json pins, with each of
   the shell's plugin packages.
@@ -44,6 +50,12 @@ ROOT = Path(__file__).resolve().parents[1]
 APP_ID = "dev.conductor.mobile"
 TARGET = "16.0"
 FACE_ID = "Conductor asks for Face ID to confirm an answer you send."
+# Keys Info.plist must not have: a transport exception, links the app is opened by or asks about, its files shared.
+PLIST_REFUSED = ("UIBackgroundModes", "NSAppTransportSecurity", "CFBundleURLTypes", "LSApplicationQueriesSchemes", "UIFileSharingEnabled", "LSSupportsOpeningDocumentsInPlace")
+# Settings no *.xcconfig or project sets: signing is the packaging's.
+SIGNING = ("DEVELOPMENT_TEAM", "PROVISIONING_PROFILE", "PROVISIONING_PROFILE_SPECIFIER", "CODE_SIGN_ENTITLEMENTS")
+# The keys capacitor.config.ts may have, at any depth: anything else is a change this check has not read.
+CONFIG_KEYS = {"appId", "appName", "webDir", "server", "allowNavigation"}
 # The shell's plugin packages with an iOS part: each must be in the runtime's package list.
 IOS_PLUGINS = {"@capacitor/app": "CapacitorApp", "@capacitor/browser": "CapacitorBrowser", "@capacitor/push-notifications": "CapacitorPushNotifications"}
 # Each plugin: its file, the name the page reaches it by, and the interface of the bridge and the list of ConductorShell it answers.
@@ -61,10 +73,11 @@ def info_plist(mobile: Path) -> list[str]:
     if info.get("NSFaceIDUsageDescription") != FACE_ID:
         out.append(f"Info.plist: NSFaceIDUsageDescription is not {FACE_ID!r}")
     for k in sorted(info):
-        if re.fullmatch(r"NS\w*UsageDescription", k) and k != "NSFaceIDUsageDescription":
+        if re.search(r"UsageDescription", k) and k != "NSFaceIDUsageDescription":
             out.append(f"Info.plist: {k}: the shell asks for nothing but Face ID")
-    if "UIBackgroundModes" in info:
-        out.append("Info.plist: UIBackgroundModes: the shell has no background mode")
+    for k in PLIST_REFUSED:
+        if k in info:
+            out.append(f"Info.plist: {k}: the shell has no background mode, transport exception, URL type, queried scheme or shared files")
     return out
 
 
@@ -72,7 +85,7 @@ def project(mobile: Path) -> list[str]:
     out = []
     app = mobile / "ios/App"
     pbx = (app / "App.xcodeproj/project.pbxproj").read_text()
-    for setting in ("DEVELOPMENT_TEAM", "PROVISIONING_PROFILE", "PROVISIONING_PROFILE_SPECIFIER", "CODE_SIGN_ENTITLEMENTS"):
+    for setting in SIGNING:
         if re.search(rf"\b{setting}\s*=", pbx):
             out.append(f"project.pbxproj: {setting} is set: signing is the packaging's, never the repository's")
     targets = re.findall(r"IPHONEOS_DEPLOYMENT_TARGET = ([^;]+);", pbx)
@@ -97,12 +110,48 @@ def project(mobile: Path) -> list[str]:
             continue
         if f.suffix in (".entitlements", ".mobileprovision", ".p12", ".cer"):
             out.append(f"{f.relative_to(mobile)}: signing is the packaging's, never the repository's")
+        elif f.suffix == ".xcconfig":
+            out += xcconfig(f, f.relative_to(mobile))
+        elif f.suffix == ".xcscheme":
+            text = f.read_text()
+            for tag in ("CommandLineArgument", "EnvironmentVariable"):
+                if f"<{tag}" in text:
+                    out.append(f"{f.relative_to(mobile)}: a {tag}: a scheme passes the app nothing")
+    return out
+
+
+def xcconfig(f: Path, name: Path) -> list[str]:
+    out = []
+    for line in f.read_text().splitlines():
+        line = line.split("//", 1)[0].strip()
+        if not line:
+            continue
+        if line.startswith("#include"):
+            out.append(f"{name}: {line}: an xcconfig here includes no other file")
+            continue
+        m = re.match(r"([A-Za-z_][A-Za-z0-9_]*)(\[[^\]]*\])*\s*=\s*(.*)$", line)
+        if not m:
+            continue
+        key, value = m.group(1), m.group(3).strip()
+        if key in SIGNING or key == "CODE_SIGN_IDENTITY":
+            out.append(f"{name}: {key} is set: signing is the packaging's, never the repository's")
+        elif key == "PRODUCT_BUNDLE_IDENTIFIER" and value != APP_ID:
+            out.append(f"{name}: PRODUCT_BUNDLE_IDENTIFIER is {value}, not {APP_ID}")
+        elif key == "IPHONEOS_DEPLOYMENT_TARGET" and value != TARGET:
+            out.append(f"{name}: IPHONEOS_DEPLOYMENT_TARGET is {value}, not {TARGET}")
     return out
 
 
 def config(mobile: Path) -> list[str]:
     out = []
     text = (mobile / "capacitor.config.ts").read_text()
+    code = re.sub(r"//[^\n]*|/\*.*?\*/", "", text, flags=re.S)
+    body = code.split("const config: CapacitorConfig = {", 1)[1].split("\n}", 1)[0] if "const config: CapacitorConfig = {" in code else ""
+    keys = set(re.findall(r"""['"]?([A-Za-z_$][\w$]*)['"]?\s*:""", body))
+    if not body:
+        out.append("capacitor.config.ts: no `const config: CapacitorConfig = {` to read")
+    for k in sorted(keys - CONFIG_KEYS):
+        out.append(f"capacitor.config.ts: {k}: the shell's config has nothing but the app id, its name, the bundle and navigation to nothing")
     if not re.search(rf"appId:\s*'{re.escape(APP_ID)}'", text):
         out.append(f"capacitor.config.ts: the app id is not {APP_ID}")
     if not re.search(r"allowNavigation:\s*\[\s*\]", text):

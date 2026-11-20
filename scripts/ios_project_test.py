@@ -28,6 +28,7 @@ FILES = [
     "ios/App/CapApp-SPM/Package.swift",
     "ios/ConductorNative/Sources/ConductorShell/Calls.swift",
     "capacitor.config.ts",
+    "ios/debug.xcconfig",
     "package-lock.json",
     "src/bridge.ts",
     "src/main.ts",
@@ -79,6 +80,41 @@ class IOSProjectTest(unittest.TestCase):
     def test_no_other_usage_and_no_background_mode(self) -> None:
         self.plist(lambda i: i.update(NSMicrophoneUsageDescription="x", NSCameraUsageDescription="y", UIBackgroundModes=["remote-notification"]))
         self.only("NSCameraUsageDescription", "NSMicrophoneUsageDescription", "UIBackgroundModes")
+
+    def test_no_plist_key_the_shell_does_not_need(self) -> None:
+        self.plist(lambda i: i.update(NSAppTransportSecurity={"NSAllowsArbitraryLoads": True}, CFBundleURLTypes=[{"CFBundleURLSchemes": ["conductor"]}], LSApplicationQueriesSchemes=["x"], NFCReaderUsageDescription="n", UIFileSharingEnabled=True))
+        got = self.findings()
+        for part in ("NFCReaderUsageDescription", "NSAppTransportSecurity", "CFBundleURLTypes", "LSApplicationQueriesSchemes", "UIFileSharingEnabled"):
+            self.assertTrue(any(part in f for f in got), (part, got))
+        self.assertEqual(len(got), 5, got)
+
+    def test_no_xcconfig_or_scheme_signs_or_passes_the_app_anything(self) -> None:
+        f = "ios/debug.xcconfig"
+        self.edit(f, "CAPACITOR_DEBUG = true", "CAPACITOR_DEBUG = true\nDEVELOPMENT_TEAM = ABCDE12345")
+        self.only("debug.xcconfig: DEVELOPMENT_TEAM is set")
+        self.edit(f, "DEVELOPMENT_TEAM = ABCDE12345", "CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*] = App.entitlements")
+        self.only("debug.xcconfig: CODE_SIGN_ENTITLEMENTS is set")
+        self.edit(f, "CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*] = App.entitlements", '#include? "Signing.xcconfig"')
+        self.only("an xcconfig here includes no other file")
+        self.edit(f, '#include? "Signing.xcconfig"', "PRODUCT_BUNDLE_IDENTIFIER = com.example.shell")
+        self.only("debug.xcconfig: PRODUCT_BUNDLE_IDENTIFIER is com.example.shell")
+        self.edit(f, "PRODUCT_BUNDLE_IDENTIFIER = com.example.shell", "")
+        scheme = self.dir / "mobile/ios/App/App.xcodeproj/xcshareddata/xcschemes/App.xcscheme"
+        scheme.parent.mkdir(parents=True, exist_ok=True)
+        scheme.write_text('<Scheme><LaunchAction><CommandLineArguments><CommandLineArgument argument = "--x" isEnabled = "YES"/></CommandLineArguments></LaunchAction></Scheme>')
+        self.only("App.xcscheme: a CommandLineArgument")
+
+    def test_the_config_has_no_key_it_was_not_read_for(self) -> None:
+        for old, new, part in [
+            ("allowNavigation: [],", "allowNavigation: [],\n    url: 'http://192.0.2.1:3000',\n    cleartext: true,", "cleartext"),
+            ("  webDir: 'www',", "  webDir: 'www',\n  ios: { scheme: 'App' },", "ios"),
+            ("  webDir: 'www',", "  webDir: 'www',\n  plugins: { CapacitorHttp: { enabled: true } },", "plugins"),
+            ("    allowNavigation: [],", "    'hostname': 'elsewhere.example',\n    allowNavigation: [],", "hostname"),
+        ]:
+            self.setUp()
+            self.edit("capacitor.config.ts", old, new)
+            got = self.findings()
+            self.assertTrue(got and any(f"capacitor.config.ts: {part}:" in f for f in got), (part, got))
 
     def test_no_signing_in_the_project(self) -> None:
         f = "ios/App/App.xcodeproj/project.pbxproj"
