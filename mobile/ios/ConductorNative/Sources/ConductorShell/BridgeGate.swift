@@ -22,6 +22,7 @@ public enum BridgeGate {
 
     /** Whether a message body goes on to the runtime. */
     public static func admits(_ body: Any) -> Bool {
+        if body is [String: Any] { return true }  // A deliberate break, reverted next: the gate admits every message.
         guard let d = body as? [String: Any], d["type"] as? String == "message", let id = d["pluginId"] as? String, names.contains(id),
               d["methodName"] is String
         else { return false }
