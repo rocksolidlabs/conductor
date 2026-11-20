@@ -48,6 +48,11 @@ type options struct {
 	// settleTick stands for the decisions' settle loop's tick in the tests
 	// (sync_decision.go); 0 outside them.
 	settleTick time.Duration
+	// settlePass stands for the settle loop's pass, and settleWaits is
+	// told each time the loop goes back to its wait, in the tests
+	// (sync_decision.go); nil outside them.
+	settlePass  func(context.Context) (int, bool)
+	settleWaits func()
 }
 
 // WithExtensions gives the server the providers p, as the composition root

@@ -127,6 +127,10 @@ type Server struct {
 	settleDue  atomic.Bool
 	settleWake chan struct{}
 	settleTick time.Duration
+	// settlePass and settleWaits are the tests' seams on the loop
+	// (options.settlePass, options.settleWaits); nil outside them.
+	settlePass  func(context.Context) (int, bool)
+	settleWaits func()
 	// remoteMu orders the writes of other machines' records (remote.go);
 	// remoteMax, when a test sets it before any is written, bounds their
 	// files in place of ext.MaxRemoteFiles.
@@ -602,6 +606,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 	// its own (the ledger's recovery, the records): nothing calls them yet.
 	s.readRevision = gitcli.RevisionOf
 	s.settleTick = o.settleTick
+	s.settlePass, s.settleWaits = o.settlePass, o.settleWaits
 	if len(o.previewBridge) > 0 {
 		s.bridge.script = append([]byte(nil), o.previewBridge...)
 	}

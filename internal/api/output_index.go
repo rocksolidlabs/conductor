@@ -744,6 +744,14 @@ func (x *outputIndex) wholeNow() bool {
 	return x.done >= x.taken && x.db != nil && x.broken == "" && !x.saturated && !x.rebuilding
 }
 
+// behind says a feed taken is not yet indexed by an index that can be
+// read: what whole waits for.
+func (x *outputIndex) behind() bool {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	return x.done < x.taken && x.db != nil && x.broken == "" && !x.saturated && !x.rebuilding
+}
+
 // state is the index's state in words, for the sync status: "" when whole.
 func (x *outputIndex) state() string {
 	x.mu.Lock()

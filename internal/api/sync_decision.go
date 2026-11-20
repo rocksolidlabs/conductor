@@ -532,9 +532,13 @@ func (s *Server) pokeSettle(ns []int64) {
 }
 
 // settleDecisionLoop judges the decisions' pending parts when a write left
-// one pending (pokeSettle) and every settleEvery besides, until ctx ends;
-// while parts are left pending and the index can catch up, it goes on at
-// once (whole waits for the feeds in flight).
+// one pending (pokeSettle) and every settleEvery besides, until ctx ends.
+// It goes on at once while a pass settles something, or while the index
+// is behind a feed taken (the next pass's whole waits for it, at most
+// indexCatchUp). A pass that settles nothing otherwise (a part judged
+// pending again, a read or a write refused, an index that cannot be read)
+// waits for the tick or the next wake: such a pass returns at once, and
+// going on would spin.
 func (s *Server) settleDecisionLoop(ctx context.Context) {
 	every := settleEvery
 	if s.settleTick > 0 {
@@ -542,7 +546,14 @@ func (s *Server) settleDecisionLoop(ctx context.Context) {
 	}
 	t := time.NewTicker(every)
 	defer t.Stop()
+	pass := s.settleDecisionParts
+	if s.settlePass != nil {
+		pass = s.settlePass
+	}
 	for {
+		if s.settleWaits != nil {
+			s.settleWaits()
+		}
 		select {
 		case <-ctx.Done():
 			return
@@ -550,15 +561,9 @@ func (s *Server) settleDecisionLoop(ctx context.Context) {
 		case <-s.settleWake:
 		}
 		for ctx.Err() == nil {
-			n, left := s.settleDecisionParts(ctx)
-			if !left || n == 0 && s.outputs.state() != "" {
-				// Nothing pending, or an index that cannot catch up now
-				// (reindexing, past its bound): the tick tries again.
+			n, left := pass(ctx)
+			if !left || n == 0 && !s.outputs.behind() {
 				break
-			}
-			if n == 0 {
-				// The index is behind: whole waited its bound; once more.
-				continue
 			}
 		}
 	}

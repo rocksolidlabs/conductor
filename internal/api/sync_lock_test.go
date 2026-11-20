@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -298,4 +299,35 @@ func TestPendingPartsSettleAfterAHandOver(t *testing.T) {
 		doc, _, ok := docOf(c, key)
 		return ok && doc.Request != nil && doc.Request.Question == "Ship the migration to every region?"
 	})
+}
+
+// A settle pass that settles nothing and returns at once, with the index
+// not behind (a part judged pending again, a write refused), sends the
+// loop back to its wait: the next pass comes at the tick or a wake, never
+// at once, so the loop does not spin.
+func TestASettlePassThatSettlesNothingWaits(t *testing.T) {
+	var passes atomic.Int64
+	waits := make(chan struct{}, 16)
+	f := newFakeSync()
+	e := syncEnvWith(t, syncDataDir(t), f, withSettleTick(time.Hour), func(o *options) {
+		o.settlePass = func(context.Context) (int, bool) {
+			passes.Add(1)
+			return 0, true
+		}
+		o.settleWaits = func() { waits <- struct{}{} }
+	})
+	waited := func(what string) {
+		t.Helper()
+		select {
+		case <-waits:
+		case <-time.After(30 * time.Second):
+			t.Fatalf("the loop never went back to its wait %s (%d passes)", what, passes.Load())
+		}
+	}
+	waited("at its start")
+	e.srv.settleWake <- struct{}{}
+	waited("after a pass that settled nothing")
+	if n := passes.Load(); n != 1 {
+		t.Fatalf("%d passes for one wake", n)
+	}
 }
