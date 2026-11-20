@@ -209,8 +209,11 @@ func TestRespondDecisionNeedsAdmits(t *testing.T) {
 	if last.grant != ext.GrantAdmin || last.check.RequestSHA256 != doc.RequestSHA256 || last.check.ContentSHA256 != ext.AnswerContentSHA256(r.Choice, "", "") {
 		t.Fatalf("the provider was asked %+v", last)
 	}
+	// Its recheck at application says yes too: wait for the state that
+	// holds, applied, not the answered one it passes through.
+	f.decisionWhen(t, did, "applied", inState(ledger.DecisionApplied))
 	rec := f.rec(t, did)
-	if len(rec.Responses) != 1 || rec.Responses[0].Actor != "user:ana" || rec.State != ledger.DecisionAnswered {
+	if len(rec.Responses) != 1 || rec.Responses[0].Actor != "user:ana" {
 		t.Fatalf("the record: %+v", rec.Responses)
 	}
 }
