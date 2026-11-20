@@ -316,7 +316,7 @@ behaves unchanged, and a router that does not implement
   `Eligible{Subject, Name, Via, For, Ref}`,
   `PinnedRequirement{Rule, Groups []PinnedGroup{Role, Quorum},
   Distinct, Override, Notify, EscalateAfter time.Duration}` and
-  `RouteChange{Why, Revision, At}` (each at most 96 bytes as encoded),
+  `RouteChange{Why, Revision, At}` (each at most 112 bytes as encoded, as built: the server's own, with a 40-byte revision and a time to the nanosecond, is 111),
   every bound of The policy, above. `Distinct` and `Override` equal
   `Pinned`'s; `Groups` are `Pinned.Groups` (roles and quorums, in
   order) or, with `Unsupported`, the unsupported form. A `Name` is at
@@ -875,6 +875,38 @@ behaves unchanged, and a router that does not implement
   destinations; Brakeman's `route_decision` is unchanged and refused
   `routed_by_policy` under a policy in force.
 
+- **As built** (PR-7b, after its review):
+  - A route refused `routed_by_policy` keeps no row, as DR1's operation
+    refusals and `stale_policy` keep none: it spends none of a
+    decision's 32 operations nor a Brakeman request's acts. A Brakeman
+    turn's `route_decision` meets the same check (`409
+    routed_by_policy` in force), and its route to the router is `403
+    not_approver`.
+  - A **voided** routed decision is one superseded while it held a
+    spare after an accepted answer: an answer voided. A routed decision
+    superseded unanswered (an agent's newer request) counts among the
+    run's 1,000, as with no router. The engine's own count of a run's
+    room counts what the ledger counts: the spare (an opening under a
+    router needs two places) and the voided ones.
+  - `OpenDecisions`, `Outcomes` and `AckOutcomes` are served to the
+    registered router, as `host.go`'s row above says ("four methods for
+    the registered router; every other provider's `Host` answers
+    `ErrUnsupported`"), whether or not it confirms policies; `Reroute`
+    only to one that confirms policies.
+  - Every `Confirm` the server makes waits for one of the router's call
+    slots inside its `ConfirmWait`, so a guard busy for a moment is not
+    "not in force"; the decide list asks four rows at a time.
+  - The operator's read carries `policyNow.eligible` for an identity's
+    operator the policy names, reads a routed record as not in force
+    where no router confirms policies, and carries `router: true` when
+    a router is registered. A confirmation that leaves its `Revision`
+    out is the revision asked about, compared in the answer's
+    transaction.
+  - A superseded record's outbox row is written again at the
+    supersession's second step, naming the record that supersedes it.
+  - Format characters (Unicode's Cf) are taken out of a router's names,
+    labels, rules and gaps as the record keeps them.
+
 ### `web/app` (PR-8)
 
 - `utils/decisionPolicy.ts` (new): the words of a policy from the record
@@ -917,6 +949,14 @@ or short reason and sending one; the operator's disabled answer and
 "This is Ana's to answer"; the gap's words; "not in force now"; and the
 decide page's `not_eligible` words. Both themes, a phone at 390 x 844,
 layout by measures.
+
+**As built** (PR-8, after its review): "Ask the router again" follows
+the read's `router`, for any open record but a selection; an operator
+the read says is `eligible` is not held back; while an open record's
+policy is shown, the card reads it again every 15 s and on the window's
+focus, so a lapse reaches it without a reload; the `not_eligible` words
+never point to an override the policy refuses. The spec holds each of
+these and measures the override dialog once its opening has ended.
 
 ### Docs
 

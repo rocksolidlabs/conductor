@@ -8514,10 +8514,12 @@ above, and no field, code or row below is ever written or answered.
   - in force, the subject named in a group and confirmed eligible in
     it: accepted, the receipt's `groups`, `via` and `ref` saying for
     what; an identity's admin that is eligible answers as eligible;
-  - in force, a decide principal not eligible: `403 not_eligible`, kept
-    ("You are not among those who may answer dr-N." on the decide
-    route); a decide principal the policy names no one of is `404
-    not_found` at the decide routes, as one the record does not admit;
+  - in force, a decide principal not eligible: `404 not_found` at the
+    decide routes, as one the record does not admit (Who sees a routed
+    record, below), whether the policy names it or not; `403
+    not_eligible`, kept ("You are not among those who may answer
+    dr-N."), only when the router's answer changes between the route's
+    admission and the response's own ask;
   - in force, the operator (the workbench token or an identity's admin
     grant) not eligible: `403 not_eligible`, kept, unless the body says
     `override: true` with a `rationale` of at least 10 characters and
@@ -8527,7 +8529,9 @@ above, and no field, code or row below is ever written or answered.
   - not in force (no answer, `inForce` false, or the router held past
     its bound): `local/1` decides: the operator answers with no
     override, the receipt's `policy: "local/1"` and `policyWhy` the
-    router's why; a decide principal is `403 not_approver`, kept;
+    router's why; a decide principal is `404 not_found` at the decide
+    routes, and `403 not_approver`, kept, only when the router's answer
+    changes between the admission and the response;
   - `behind`, or a `revision` other than the record's: `409
     stale_policy`, unkept (judged again when sent again with the same
     response id), for at most `ext.MaxBehind` (120 s) from the first
@@ -8544,9 +8548,17 @@ above, and no field, code or row below is ever written or answered.
   recheck does. A record that ever carried a router's policy writes its
   outbox row in its final transaction (above).
 - **The operator's read.** `GET /api/decisions/{did}` of a record under a
-  router's policy carries `policyNow: {inForce, why?}` from one
-  `Confirm` with no subject; it is absent for every other record and on
-  a server with no router.
+  router's policy carries `policyNow: {inForce, why?, eligible?}` from
+  one `Confirm`, asked with the reader's subject for an identity's
+  operator (none for the workbench token): `eligible` is true when that
+  reader is named in a group the router confirms now, and its plain
+  answer is then taken as eligible. On a server whose router confirms no
+  policies now (none registered, or one that does not confirm), such a
+  record reads `{inForce: false, why: "no router confirms its policy
+  now"}`, as its answers are judged. `policyNow` is absent for every
+  other record. The read carries `router: true` when a decision router
+  is registered: the operator may then ask it again (`{kind:
+  "router"}`) for any open record but a comparison's selection.
 - **A notice for one person.** A provider's notice with a `recipient` (a
   subject, at most 48 bytes) reaches only a sink that is an
   `ext.RecipientSink` answering true, never another; a notice's `key`
