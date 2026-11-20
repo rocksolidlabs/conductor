@@ -345,7 +345,7 @@ func (h *extHost) SyncResend(ctx context.Context, store, path string) error {
 		ok = path == syncLogPath || dispatchDocPath.MatchString(path)
 	case syncDecisionStore:
 		_, err := parseDecisionPath(path)
-		ok = err == nil
+		ok = err == nil && a.decisionsSynced()
 	}
 	if !ok {
 		return fmt.Errorf("%w: no document %s/%s is handed to a sync store", ext.ErrRefused, store, path)

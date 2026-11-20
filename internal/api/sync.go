@@ -204,9 +204,19 @@ func (a *syncAdapter) dispatchCommitted(cs []dispatch.Change) {
 // delivery (syncDecision); a decision the ledger no longer holds is
 // Deleted then.
 func (a *syncAdapter) decisionsCommitted(ns []int64) {
+	if !a.decisionsSynced() {
+		return
+	}
 	for _, n := range ns {
 		a.mark(syncKey{syncDecisionStore, ledger.DecisionID(n)}, 0, nil)
 	}
+}
+
+// decisionsSynced says a sync store is registered: with none, no decision
+// is taken for delivery, built or judged (the free default would only
+// throw it away).
+func (a *syncAdapter) decisionsSynced() bool {
+	return a.s != nil && a.s.syncName() != ""
 }
 
 // syncRef is a Dispatch entity's doc: which entity a commit changed, and
@@ -476,7 +486,7 @@ func (a *syncAdapter) replay(ctx context.Context) error {
 	if a.s.dispatch != nil && !a.list(gen, syncKey{syncDispatch, syncLogPath}, 0) {
 		return nil
 	}
-	if ld := a.s.ledger; ld != nil {
+	if ld := a.s.ledger; ld != nil && a.decisionsSynced() {
 		// Every decision the ledger holds, by its number.
 		for after := int64(0); ; {
 			page, err := ld.DecisionRevisions(ctx, after, 0)

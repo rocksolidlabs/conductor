@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -395,17 +397,87 @@ func TestLocalAnswerReachesTheDocument(t *testing.T) {
 	})
 }
 
-// With no sync store registered the ledger judges nothing of a decision:
-// no verdict is written, as before.
+// With no sync store registered nothing of a decision is judged, taken for
+// delivery or built, through its whole life (opened, answered, applied,
+// listed by a replay, pruned), while the delivery takes the entries of
+// other kinds.
 func TestNoSyncStoreJudgesNoDecision(t *testing.T) {
 	e := newTestEnv(t, func(c *config.Config) { c.DataDir = syncDataDir(t) })
 	ld := e.srv.ledger
 	if ld == nil || e.srv.copyCheck == nil {
 		t.Fatal("the test server has no ledger or no check")
 	}
+	var mu sync.Mutex
+	var taken []syncKey
+	e.srv.syncs.mu.Lock()
+	e.srv.syncs.taken = func(en syncEntry) {
+		mu.Lock()
+		taken = append(taken, en.key)
+		mu.Unlock()
+	}
+	e.srv.syncs.mu.Unlock()
 	const run = "team-00000001"
 	newLedgerRun(t, ld, run, ledger.RunRunning)
-	n := openPlanDecision(t, ld, run, "g1", `{"question":"Ship the migration?","options":[{"label":"Approve"},{"label":"Reject"}],"subject":{"kind":"plan","plan":"pl-1","digest":"d1"}}`)
+	n := openPlanDecision(t, ld, run, "g1", `{"question":"Ship the migration to every region?","options":[{"label":"Approve"},{"label":"Reject"}],"subject":{"kind":"plan","plan":"pl-1","digest":"d1"}}`)
+	if _, err := ld.Transition(context.Background(), run, func(tx *ledger.Tx) error {
+		d, _, err := tx.Decision(n)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Respond(n, ledger.ResponseRow{Actor: "admin", Authority: `{"grant":"admin","via":"workbench","boot":"b"}`, ResponseID: "r1", Fingerprint: "fp",
+			Status: ledger.ResponseAccepted, Receipt: `{"code":"accepted","words":"recorded by the operator at the desk","choice":0}`}); err != nil {
+			return err
+		}
+		if _, err := tx.Answer(n, run, d.Rev); err != nil {
+			return err
+		}
+		d, _, _ = tx.Decision(n)
+		d.State, d.Rev, d.Applied = ledger.DecisionApplied, d.Rev+1, `{"how":"released","words":"released the deploy task"}`
+		if err := tx.PutDecision(d); err != nil {
+			return err
+		}
+		r, _, err := tx.Run()
+		if err != nil {
+			return err
+		}
+		r.State, r.Outcome, r.ClosedAt = ledger.RunFinished, ledger.OutcomeSucceeded, tx.Now()
+		return tx.PutRun(r)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// A replay while the decision is there: its listing ends (its
+	// `replayed` taken) before the prune.
+	replays := func() int {
+		mu.Lock()
+		defer mu.Unlock()
+		c := 0
+		for _, k := range taken {
+			if k.store == syncReplayed {
+				c++
+			}
+		}
+		return c
+	}
+	before := replays()
+	e.srv.syncs.requestReplay()
+	waitUntil(t, "the replay", func() bool { return replays() > before })
+	newLedgerRun(t, ld, "team-00000002", ledger.RunFinished)
+	if err := ld.Prune(context.Background(), run); err != nil {
+		t.Fatal(err)
+	}
+	newLedgerRun(t, ld, "team-00000003", ledger.RunFinished)
+	waitUntil(t, "the later runs taken", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return slices.Contains(taken, syncKey{syncLedger, "team-00000003"}) && slices.Contains(taken, syncKey{syncLedger, "team-00000002"})
+	})
+	mu.Lock()
+	defer mu.Unlock()
+	for _, k := range taken {
+		if k.store == syncDecisionStore {
+			t.Fatalf("a decision was taken for delivery with no sync store: %v", k)
+		}
+	}
 	if v, _, err := ld.OutputVerdicts(context.Background(), n); err != nil || len(v) != 0 {
 		t.Fatalf("verdicts with no sync store: %v %v", v, err)
 	}
