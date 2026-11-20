@@ -91,6 +91,8 @@ public actor ConductorStore {
     private let caches: HTTPCaches
     private let now: @Sendable () -> Date
     private var generation = 0
+    /** Whether the generation in memory is the one on disk: a record is written only under a generation the disk holds. */
+    private var generationKept = false
     private var started = false
 
     /** A store under root (`<Application Support>/conductor` on a phone). */
@@ -126,15 +128,32 @@ public actor ConductorStore {
         }
     }
 
-    /** Makes the folders, out of backups; reads the generation; removes what a write cut before its rename left (`.new`). */
+    /**
+     * Makes the folders, out of backups; reads the generation; removes what a write cut before its rename left (`.new`). With no
+     * generation on disk (a fresh store, or a clear that could neither write nor keep it), every drafts or cache record there is of a
+     * sign-in a clear ended or could not finish: the generation is taken past all of theirs, and none of them is read.
+     */
     private func ready() throws {
         if started { return }
         try files.createDirectory(root, complete: true)
         try protection.excludeFromBackup(root)
         for area in StoreArea.allCases { try files.createDirectory(dir(area), complete: true) }
-        if let data = try files.read(generationFile), let g = Int(String(decoding: data, as: UTF8.self)) { generation = g }
         for area in StoreArea.allCases {
             for url in try files.list(dir(area)) where url.pathExtension == "new" { try? files.remove(url) }
+        }
+        if let data = try files.read(generationFile), let g = Int(String(decoding: data, as: UTF8.self)) {
+            generation = g
+            generationKept = true
+        } else {
+            var past = 0
+            for area in [StoreArea.drafts, .cache] {
+                for url in try files.list(dir(area)) {
+                    guard let d = try? files.read(url), let r = try? JSONDecoder.store.decode(RecordFile.self, from: d) else { continue }
+                    past = max(past, r.g + 1)
+                }
+            }
+            generation = past
+            generationKept = false
         }
         started = true
     }
@@ -198,6 +217,10 @@ public actor ConductorStore {
             }
         }
         do {
+            if !generationKept {
+                try replace(generationFile, with: Data(String(generation).utf8))
+                generationKept = true
+            }
             try replace(file(area, key), with: try JSONEncoder.store.encode(RecordFile(g: generation, savedAt: now(), data: data)))
         } catch {
             throw refuse("not_saved", "The record could not be kept on this phone.")
@@ -228,16 +251,36 @@ public actor ConductorStore {
 
     /**
      * A sign-out: the generation moved first (so a record a removal misses is never read again), then every record of the drafts and
-     * the cache removed and the HTTP caches emptied, before it answers. The servers area is the person's own and stays.
+     * the cache removed and the HTTP caches emptied, whatever the generation's write did, before it answers. A generation that could
+     * not be written is written again after the removal (which makes room); one that still cannot be has its file removed, so the
+     * next start reads none of what is left. The servers area is the person's own and stays. Anything not removed or not written is
+     * answered `not_cleared`, after all the rest is done.
      */
     public func clear() async throws {
-        try ready()
-        generation += 1
-        try replace(generationFile, with: Data(String(generation).utf8))
+        var whole = true
+        var known = true
+        do { try ready() } catch { known = false; whole = false }
+        if known { generation += 1 }
+        var kept = known && (try? replace(generationFile, with: Data(String(generation).utf8))) != nil
         for area in [StoreArea.drafts, .cache] {
-            for url in (try? files.list(dir(area))) ?? [] { try? files.remove(url) }
+            guard let urls = try? files.list(dir(area)) else {
+                whole = false
+                continue
+            }
+            for url in urls {
+                do { try files.remove(url) } catch { whole = false }
+            }
         }
         await caches.clear()
+        if known && !kept { kept = (try? replace(generationFile, with: Data(String(generation).utf8))) != nil }
+        if !kept {
+            // Neither written nor known: no generation on disk, so a start reads none of the drafts or the cache left.
+            do { try files.remove(generationFile) } catch { whole = false }
+        }
+        generationKept = kept
+        if !kept || !whole {
+            throw refuse("not_cleared", "Not everything of this sign-in could be removed from this phone.")
+        }
     }
 }
 

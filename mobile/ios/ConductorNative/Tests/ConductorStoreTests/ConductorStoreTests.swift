@@ -189,7 +189,8 @@ func code(_ f: () async throws -> Void) async -> String? {
         try await f.store.put(area: "drafts", key: "i1", data: "the first sign-in's draft")
         try await f.store.put(area: "cache", key: "inbox", data: "the first sign-in's inbox")
         f.files.keep = ["i1", "inbox"]
-        try await f.store.clear()
+        #expect(await code { try await f.store.clear() } == "not_cleared")
+        #expect(f.caches.clears == 1)
         #expect(f.files.names("drafts") == ["i1"])
         #expect(try await f.store.get(area: "drafts", key: "i1") == nil)
         #expect(try await f.store.list(area: "cache").isEmpty)
@@ -199,6 +200,39 @@ func code(_ f: () async throws -> Void) async -> String? {
         #expect(try await again.get(area: "drafts", key: "i1") == nil)
         try await again.put(area: "drafts", key: "i2", data: "the next sign-in's draft")
         #expect(try await again.list(area: "drafts").map(\.key) == ["i2"])
+    }
+
+    @Test func aClearWhoseGenerationCannotBeWrittenStillRemovesAndLeavesNothingToRead() async throws {
+        let f = StoreFixture()
+        try await f.store.put(area: "drafts", key: "i1", data: "the first sign-in's draft")
+        try await f.store.put(area: "drafts", key: "i2", data: "another")
+        try await f.store.put(area: "cache", key: "inbox", data: "the first sign-in's inbox")
+        // The generation cannot be written, before the removal or after it, and one draft cannot be removed.
+        f.files.lock.withLock { f.files.failWrites = ["generation.new", "generation.new"] }
+        f.files.keep = ["i1"]
+        #expect(await code { try await f.store.clear() } == "not_cleared")
+        #expect(f.caches.clears == 1)
+        #expect(f.files.names("drafts") == ["i1"])
+        #expect(f.files.names("cache").isEmpty)
+        #expect(try f.files.read(f.root.appendingPathComponent("generation")) == nil)
+        #expect(try await f.store.get(area: "drafts", key: "i1") == nil)
+        // Started again over the same files, with no generation on disk: nothing of the first sign-in is read.
+        f.files.keep = []
+        let again = f.restarted()
+        #expect(try await again.get(area: "drafts", key: "i1") == nil)
+        #expect(try await again.list(area: "drafts").isEmpty)
+        try await again.put(area: "drafts", key: "i3", data: "the next sign-in's draft")
+        #expect(try await f.restarted().list(area: "drafts").map(\.key) == ["i3"])
+    }
+
+    @Test func aGenerationWriteThatFailsOnceIsWrittenAgainAfterTheRemoval() async throws {
+        let f = StoreFixture()
+        try await f.store.put(area: "drafts", key: "i1", data: "draft")
+        f.files.lock.withLock { f.files.failWrites = ["generation.new"] }
+        try await f.store.clear()
+        #expect(f.files.names("drafts").isEmpty)
+        #expect(try f.files.read(f.root.appendingPathComponent("generation")) == Data("1".utf8))
+        #expect(f.caches.clears == 1)
     }
 
     @Test func refusesAKeyOutsideItsAlphabetAndAnAreaItDoesNotHave() async throws {
@@ -224,7 +258,7 @@ func code(_ f: () async throws -> Void) async -> String? {
         let f = StoreFixture()
         try await f.store.put(area: "drafts", key: "i1", data: "{}")
         try await f.store.put(area: "cache", key: "c1", data: "{}")
-        #expect(f.protection.protected == ["i1.new", "c1.new"])
+        #expect(f.protection.protected == ["generation.new", "i1.new", "c1.new"])
         #expect(f.protection.excluded == [f.root.path])
     }
 
