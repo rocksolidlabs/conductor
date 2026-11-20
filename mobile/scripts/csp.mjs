@@ -67,6 +67,18 @@ export function connectOrigins(list = []) {
 }
 
 /**
+ * The origins a packaging names for the shell's native HTTP call (sync.mjs's --native-origins): each exactly an https origin, as
+ * connectOrigins checks, and a host of labels none of which is empty (no trailing dot), as the app reads them. None by default.
+ */
+export function nativeOrigins(list = []) {
+  connectOrigins(list)
+  for (const o of list) {
+    if (new URL(o).hostname.split('.').some((l) => !l)) throw new Error(`a native HTTP origin must be an https origin: ${JSON.stringify(o)}`)
+  }
+  return [...new Set(list)]
+}
+
+/**
  * The policy for html: scripts from 'self', compiling WebAssembly, and each inline script's SHA-256; connections to `connect`'s
  * origins alone ('none' with none).
  */

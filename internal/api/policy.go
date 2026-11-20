@@ -584,13 +584,21 @@ func (h *extHost) OpenDecisions(ctx context.Context, after string) (ext.OpenDeci
 	return page, nil
 }
 
-// lastRouteWhy is the why of rec's last change of route: a router's
-// change's kind, or routed.
+// lastRouteWhy is the why of rec's last change of route: the kind of a
+// re-route (Host.Reroute's row, with its op id: assigned, delegated,
+// escalated or rerouted), or routed for any other route, a router's first
+// policy included (written as a router's change, with no op id, when the
+// record was routed before it); "" for none.
 func lastRouteWhy(rec ledger.DecisionRecord) string {
 	for i := len(rec.History) - 1; i >= 0; i-- {
-		switch k := rec.History[i].Kind; k {
-		case ledger.HistoryAssigned, ledger.HistoryDelegated, ledger.HistoryEscalated, ledger.HistoryRerouted, ledger.HistoryRouted:
-			return k
+		switch h := rec.History[i]; h.Kind {
+		case ledger.HistoryAssigned, ledger.HistoryDelegated, ledger.HistoryEscalated, ledger.HistoryRerouted:
+			if h.OpID != "" {
+				return h.Kind
+			}
+			return ledger.HistoryRouted
+		case ledger.HistoryRouted:
+			return ledger.HistoryRouted
 		}
 	}
 	return ""

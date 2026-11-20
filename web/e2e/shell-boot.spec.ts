@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { extname, join, normalize } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { expect, test, type Page } from '@playwright/test'
+import { decisionAddress } from './shell-fake'
 import { build } from 'vite'
 // @ts-expect-error: the shell's build options are a plain JavaScript module (mobile/bridge.vite.config.mjs).
 import { bridgeBuild } from '../../mobile/bridge.vite.config.mjs'
@@ -110,7 +111,7 @@ test("with a provider module, a decision's page draws its code block highlighted
   const violations = await watched(page)
   const errors: string[] = []
   page.on('pageerror', (e) => errors.push(e.message))
-  await page.goto(`${withProvider!.url}/shell/decisions/boot-1`)
+  await page.goto(`${withProvider!.url}${decisionAddress('boot-1')}`)
   await expect(page.locator('[data-shell-decision]')).toBeVisible()
   await expect(page.locator('[data-decision-question]')).toHaveText('May the boot check pass?')
   await expect(page.locator('[data-decision-context] pre.shiki')).toContainText('package main', { timeout: 30_000 })

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { itemId, readRefusal, SHELL_BOUNDS, withinWait } from '~/utils/shell'
+import { decisionPath, itemId, readRefusal, SHELL_BOUNDS, withinWait } from '~/utils/shell'
 
 /**
  * A notification tapped (docs/plans/phone-shell.md, OSS-2b, "The routes into the page"): `/shell/open?h=<handle>` asks the provider
@@ -27,7 +27,7 @@ async function openHandle(h: string) {
     const r = await withinWait(p.inbox.resolve(h), `${shell.name} did not answer`)
     if (!still()) return
     const id = r && 'id' in r ? itemId(r.id) : null
-    if (id) return void navigateTo(`/shell/decisions/${encodeURIComponent(id)}`, { replace: true })
+    if (id) return void navigateTo(decisionPath(id), { replace: true })
     if (readRefusal(r).code === 'unknown_handle') note = 'unknown_handle'
   } catch {
     note = 'unreachable'

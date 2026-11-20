@@ -3,7 +3,7 @@ import { DECISION_ANSWERING } from '~/utils/answering'
 import { clockTime } from '~/utils/brakemanRole'
 import type { Decision } from '~/utils/decisions'
 import { REF_ACCESS } from '~/utils/refAccess'
-import { omittedWords, readItem, readRefusal, withinWait, type ShellItem } from '~/utils/shell'
+import { decisionIdOf, omittedWords, readItem, readRefusal, withinWait, type ShellItem } from '~/utils/shell'
 import { shellRefAccess } from '~/utils/transport/shell'
 
 /**
@@ -12,18 +12,19 @@ import { shellRefAccess } from '~/utils/transport/shell'
  * exactly as the provider gives them, the server that holds it and when it last reported, then DR1's answer under the shell's
  * answering, or the item's `elsewhere` words and no Answer. The item is read again on the provider's `watch` while the app is in the
  * foreground; an answer waiting offers Confirm when the app is back and online. A way in that does not open it goes to the inbox
- * with its words. The answer it provides reaches this page's item alone; a read that comes back after the person has left the
+ * with its words, an address that carries no id as `decisionPath` builds it among them (no such decision). The answer it provides reaches this page's item alone; a read that comes back after the person has left the
  * page opens nothing and moves no one.
  */
 definePageMeta({ layout: 'shell' })
 useHead({ title: 'A decision' })
 const route = useRoute()
-const id = String(route.params.id)
+/** The provider's id the address carries (`decisionPath`), or '' for one that carries none. */
+const id = decisionIdOf(route.params.id) ?? ''
 const shell = useShell()
 const p = shell.provider
 const ans = shell.answer()
 provide(REF_ACCESS, shellRefAccess())
-if (ans) provide(DECISION_ANSWERING, ans.answeringFor(id))
+if (ans && id) provide(DECISION_ANSWERING, ans.answeringFor(id))
 /** False once the page is gone: what a late read answers then is dropped. */
 let alive = true
 
@@ -75,6 +76,7 @@ function foreground() {
 const online = () => void ans?.machine.resume(id)
 onMounted(() => {
   if (!p) return void navigateTo('/shell', { replace: true })
+  if (!id) return void navigateTo({ path: '/shell', query: { note: 'not_visible' } }, { replace: true })
   void load(true)
   foreground()
   document.addEventListener('visibilitychange', foreground)

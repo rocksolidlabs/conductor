@@ -6,14 +6,15 @@ the Go modules compiled into the conductor binary (`go list -deps` for the
 platforms released), the npm packages in the web bundle the binary embeds
 (web/.nuxt/bundled-packages.json, written by web/build/bundledPackages.ts
 during `make web-build`) and the desktop app's own: Electron and the
-production packages electron-builder puts in the app. Texts a package does
+production packages electron-builder puts in the app; and the phone shell's
+(mobile/): the native runtime's packages the iOS app is built from. Texts a package does
 not carry (the Inter font @nuxt/fonts fetches, the Lucide icons Nuxt Icon
 inlines) are kept in scripts/notices/.
 
     python3 scripts/notices.py           # write THIRD_PARTY_NOTICES
     python3 scripts/notices.py --check   # exit 1 when it is not current
 
-Needs Go, a web build and `npm ci` in desktop/; only Python's standard
+Needs Go, a web build and `npm ci` in desktop/ and mobile/; only Python's standard
 library otherwise.
 """
 from __future__ import annotations
@@ -33,6 +34,7 @@ OUT = ROOT / "THIRD_PARTY_NOTICES"
 EXTRA = ROOT / "scripts/notices"
 WEB = ROOT / "web"
 DESKTOP = ROOT / "desktop"
+MOBILE = ROOT / "mobile"
 BUNDLED = WEB / ".nuxt/bundled-packages.json"
 # The platforms the conductor binary is released for (the desktop packages and the image): their module sets are united.
 PLATFORMS = [("linux", "amd64"), ("linux", "arm64"), ("darwin", "amd64"), ("darwin", "arm64")]
@@ -64,6 +66,9 @@ SUPPLEMENTS: dict[str, list[dict[str, str]]] = {
     "@shikijs/langs": [{"name": "tm-grammars 1.32.3's NOTICE (the grammars it carries)", "file": "tm-grammars-1.32.3.NOTICE", "for": "4.4.3"}],
     # Monaco 0.57.0 vendors DOMPurify 3.4.15 (esm/vs/base/browser/dompurify) and ships the Codicons font (CC BY 4.0), both of
     # which its ThirdPartyNotices.txt leaves out.
+    # The native runtime's iOS package compiles Apache Cordova's iOS classes into its Cordova framework (their files carry the
+    # ASF's Apache-2.0 header); Cordova's NOTICE goes with them.
+    "@capacitor/ios": [{"name": "Apache Cordova's NOTICE (its iOS classes, compiled into the Cordova framework, Apache-2.0)", "file": "cordova-ios.NOTICE"}],
     "monaco-editor": [
         {"name": "DOMPurify 3.4.15's LICENSE (vendored as esm/vs/base/browser/dompurify)", "file": "dompurify-3.4.15.LICENSE", "for": "0.57.0"},
         {"name": "Codicons (the codicon.ttf icon font, CC BY 4.0)", "file": "codicons.NOTICE", "for": "0.57.0"},
@@ -297,6 +302,15 @@ def desktop_entries() -> list[Entry]:
     return unique(entries)
 
 
+def mobile_entries() -> list[Entry]:
+    if not (MOBILE / "node_modules/@capacitor/ios").exists():
+        raise SystemExit("notices: no mobile/node_modules: run npm ci in mobile/ first")
+    lines = run(["npm", "ls", "--omit=dev", "--all", "--parseable"], cwd=MOBILE).splitlines()
+    ios = "the app's Capacitor and Cordova frameworks, fetched by the Swift Package Manager from its capacitor-swift-pm at the same version"
+    entries = [npm_entry(Path(line), note=ios if Path(line) == MOBILE / "node_modules/@capacitor/ios" else "") for line in lines if line.strip() and Path(line) != MOBILE]
+    return unique(entries)
+
+
 def render(parts: list[tuple[str, list[Entry]]]) -> str:
     out = [
         "THIRD-PARTY NOTICES",
@@ -340,6 +354,7 @@ def main() -> int:
         ("The conductor binary: Go modules", go_entries()),
         ("The workbench, embedded in the binary: npm packages in the web bundle", web_entries()),
         ("The desktop app: Electron and its packages", desktop_entries()),
+        ("The phone shell (mobile/): the native runtime's packages", mobile_entries()),
     ])
     if args.check:
         have = OUT.read_text() if OUT.exists() else ""

@@ -326,16 +326,51 @@ provider.
   draft on the phone while offline and sent only after Confirm on return,
   and, when its outcome is not known, locked until the provider says
   whether it arrived. Open a server stays reachable in every state and
-  never asks the provider. The native key that asks for Face ID or the
-  passcode before an answer is signed is the next row.
+  never asks the provider.
+- **The phone's own key and store.** Held by the native layer's tests
+  (over stand-ins for the keychain, the files and the person's check):
+  one key, made only when there is none, signs only what a packaging's
+  signing policy builds (the open-source build has none and signs
+  nothing), asks the person's presence, "Confirm your answer in
+  Conductor", whenever the policy asks, and signs nothing when it is
+  refused, when the key changed, or when an unbound key's time ran out
+  meanwhile; its keychain item is asked for as this device's only,
+  readable only while unlocked, never synchronised. Drafts and the cache
+  keep their bounds, are asked for under complete protection and out of
+  backups, and a sign-out removes them, the HTTP caches, the cookie jar
+  and stored credentials, and reads nothing of them after, even when a
+  removal fails. Each plugin's calls run in the order the page made them.
+  The native HTTP call reaches only the https origins a packaging names,
+  none in this repository's build, with no cookie and no redirect
+  followed. One gate stands at each way from the page into native code,
+  each an allowlist deciding on who sent a thing, every field native
+  code reads and the spelling it uses: the runtime's message handler
+  forwards only the shell's own page's calls of a closed table; no
+  text-input prompt reaches native code; an address of the app's own
+  scheme loads only in the bundle's spelling and only from inside the
+  bundle; the page loads nothing but its own, and hands iOS only a link
+  to an `https` or `http` address; a microphone or camera request is
+  denied. The boot check tries each way around them on a simulator. Built and not yet seen on a device: the Face
+  ID sheet itself, the keychain and the files while the phone is locked,
+  a reinstall or a restored backup, and a notification's tap
+  (`docs/plans/phone-shell.md`, By hand on a device).
 - **How it is built.** `make web-build mobile-sync` puts the workbench's
   bundle into `mobile/www` with the shell's bridge and its page policy
   (`script-src 'self' 'wasm-unsafe-eval'` and the hash of each inline
   script; `connect-src 'none'`, or the https origins a provider's build
   names); `make mobile-test` checks the bridge and starts the synced bundle
-  under that policy. The native project, its signing and its simulator
-  build (`make mobile-install mobile-ios`) are the next row; anyone installs
-  the shell on a device under their own signing.
+  under that policy. `make mobile-install mobile-sync mobile-ios` builds
+  the iOS app for the simulator, unsigned, on a Mac with Xcode, and starts
+  it there with no provider in its boot check, which passes only when
+  Open a server is drawn under the page's policy with no violation and
+  the native layer's plugins in the page, as CI's `mobile-ios` job does;
+  and `make mobile-native-test` tests its key, its
+  store and its plugins' calls. The repository's project holds no team,
+  signing or push entitlement: anyone installs the shell on a device
+  under their own signing (`docs/plans/phone-shell.md`, By hand). The
+  Face ID sheet, the keychain while the phone is locked and a
+  notification's tap are seen only on a device, by hand; none has been
+  seen on one yet.
 
 ## Brakeman hands a package on, tells of a new decision, and shares a brief (#1012; 2026-11-18)
 
