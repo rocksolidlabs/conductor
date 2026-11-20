@@ -80,7 +80,14 @@ func seedDispatch(t *testing.T, dataDir string) {
 // made by the server in a data directory of the test's.
 func dispatchEnv(t *testing.T) *testEnv {
 	t.Helper()
-	e := newTestEnv(t, func(cfg *config.Config) { cfg.DataDir = filepath.Join(t.TempDir(), "data") })
+	// A few stores open at once: every store's SQLite takes one lock per
+	// process for its allocations, and the thirty-odd parallel tests here
+	// opening theirs together ran each open past the 30 s Dispatch gives
+	// it on a loaded machine, leaving the store read-only.
+	var e *testEnv
+	openingDispatch(func() {
+		e = newTestEnv(t, func(cfg *config.Config) { cfg.DataDir = filepath.Join(t.TempDir(), "data") })
+	})
 	if e.srv.dispatch == nil {
 		t.Fatal("no Dispatch store")
 	}
@@ -88,6 +95,18 @@ func dispatchEnv(t *testing.T) *testEnv {
 		t.Fatalf("Dispatch's store is read-only: %s", why)
 	}
 	return e
+}
+
+// dispatchOpens bounds how many of the tests' Dispatch stores are being
+// opened at once (openingDispatch).
+var dispatchOpens = make(chan struct{}, 4)
+
+// openingDispatch runs open, which opens a Dispatch store, in one of
+// dispatchOpens's slots, given back however open ends.
+func openingDispatch(open func()) {
+	dispatchOpens <- struct{}{}
+	defer func() { <-dispatchOpens }()
+	open()
 }
 
 // encodeNoHTML is v as JSON with HTML escaping off, as the CLI encodes a
@@ -429,7 +448,9 @@ func TestDispatchReadOnlyStoreAnswersReadsAndRefusesWrites(t *testing.T) {
 	done := doneOf(t)
 	data := filepath.Join(t.TempDir(), "data")
 	dir := filepath.Join(data, "dispatch")
-	ds, err := dispatch.Open(dir)
+	var ds *dispatch.Store
+	var err error
+	openingDispatch(func() { ds, err = dispatch.Open(dir) })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -445,7 +466,8 @@ func TestDispatchReadOnlyStoreAnswersReadsAndRefusesWrites(t *testing.T) {
 	}
 	db.Close()
 
-	e := newTestEnv(t, func(cfg *config.Config) { cfg.DataDir = data })
+	var e *testEnv
+	openingDispatch(func() { e = newTestEnv(t, func(cfg *config.Config) { cfg.DataDir = data }) })
 	if e.srv.dispatch == nil {
 		t.Fatal("no store")
 	}
