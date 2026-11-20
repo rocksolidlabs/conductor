@@ -330,6 +330,7 @@ func (s *Server) recheckLoop(ctx context.Context, id string, k int) {
 	for {
 		adm, done := s.recheckOnce(ctx, id, k)
 		if done {
+			s.runs.SetRecheckWaiting(id, k, "")
 			return
 		}
 		switch adm {
@@ -340,6 +341,10 @@ func (s *Server) recheckLoop(ctx context.Context, id string, k int) {
 			s.runs.ConfirmAuthority(id, k, false)
 			return
 		}
+		// The decision's view says so while it waits (the decision page's
+		// words); the next answer, or the decision no longer answered by
+		// k, clears it.
+		s.runs.SetRecheckWaiting(id, k, fmt.Sprintf("waiting to recheck %s's answer: the identity provider cannot say now", s.heldActor(ctx, id, k)))
 		after := s.recheckAfter
 		if after == nil {
 			after = time.After
@@ -394,4 +399,19 @@ func (s *Server) recheckOnce(ctx context.Context, id string, k int) (ext.Admissi
 		Decision: id, ResponseID: row.ResponseID, ExpectedRev: rc.Rev - 1, ContentSHA256: ext.AnswerContentSHA256(rc.Choice, rc.Text, rc.Rationale),
 		RequestSHA256: a.RequestSHA256}
 	return s.admitsAnswer(ctx, check, ext.Grant(a.Grant)), false
+}
+
+// heldActor is the actor of decision id's response k, "a person" when it
+// does not read.
+func (s *Server) heldActor(ctx context.Context, id string, k int) string {
+	n, _ := ledger.ParseDecisionID(id)
+	rec, ok, err := s.ledger.Decision(ctx, n)
+	if err == nil && ok {
+		for _, r := range rec.Responses {
+			if r.K == k {
+				return r.Actor
+			}
+		}
+	}
+	return "a person"
 }

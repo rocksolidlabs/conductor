@@ -592,6 +592,9 @@ type Engine struct {
 	// it was given, once each in this process. Under e.mu.
 	recheck func(id string, k int)
 	asked   map[confirmKey]bool
+	// waiting is what a decision's view says of a held answer whose
+	// recheck cannot be made yet (SetRecheckWaiting). Under e.mu.
+	waiting map[confirmKey]string
 	// routesPolicies says the registered decision router confirms
 	// policies, and policyCheck is how it is asked (SetRouterPolicies,
 	// decisions_policy.go).

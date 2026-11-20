@@ -89,3 +89,40 @@ func (e *Engine) askRecheck(ks []confirmKey) {
 		fn(ledger.DecisionID(k.n), k.k)
 	}
 }
+
+// MaxWaitingWords bounds a decision's Waiting.
+const MaxWaitingWords = 256
+
+// SetRecheckWaiting has decision id's view say, while its held answer k's
+// recheck cannot be made yet, that it waits and why; "" for no longer.
+// ConfirmAuthority's answer clears it.
+func (e *Engine) SetRecheckWaiting(id string, k int, words string) {
+	n, ok := ledger.ParseDecisionID(id)
+	if !ok {
+		return
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	key := confirmKey{n, k}
+	if words == "" {
+		delete(e.waiting, key)
+		return
+	}
+	if e.waiting == nil {
+		e.waiting = map[confirmKey]string{}
+	}
+	e.waiting[key] = cutWordsTo(words, MaxWaitingWords)
+}
+
+// recheckWaiting is what rec's view says of its accepted response's
+// recheck, "" for nothing.
+func (e *Engine) recheckWaiting(rec ledger.DecisionRecord) string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for i := len(rec.Responses) - 1; i >= 0; i-- {
+		if r := rec.Responses[i]; r.Status == ledger.ResponseAccepted {
+			return e.waiting[confirmKey{rec.N, r.K}]
+		}
+	}
+	return ""
+}

@@ -322,6 +322,10 @@ type Decision struct {
 	CreatedAt    time.Time         `json:"createdAt"`
 	AnsweredAt   *time.Time        `json:"answeredAt,omitempty"`
 	ClosedAt     *time.Time        `json:"closedAt,omitempty"`
+	// Waiting says, while a held answer's recheck cannot be made yet (the
+	// identity provider cannot say now), whose answer waits and why, at
+	// most MaxWaitingWords bytes: the engine's view alone (decisionOf).
+	Waiting string `json:"waiting,omitempty"`
 }
 
 // decision is an open or answered decision as a run holds it (run.decisions):
@@ -1462,6 +1466,9 @@ func (e *Engine) decisionOf(rec ledger.DecisionRecord) Decision {
 	if d.Asker != nil {
 		d.Asker.Live = e.AskerLive(rec.DecisionRow)
 	}
+	if rec.State == ledger.DecisionAnswered {
+		d.Waiting = e.recheckWaiting(rec)
+	}
 	return d
 }
 
@@ -2278,6 +2285,7 @@ func (e *Engine) ConfirmAuthority(id string, k int, admitted bool) {
 		// asked again by the pass that finds it (askRecheck).
 		delete(e.asked, confirmKey{n, k})
 	}
+	delete(e.waiting, confirmKey{n, k})
 	e.mu.Unlock()
 	for _, r := range holders {
 		e.applyDecisions(r)
