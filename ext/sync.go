@@ -6,8 +6,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
+	"net/url"
 	"regexp"
 	"strings"
 	"time"
@@ -177,10 +177,6 @@ func (UnsupportedSync) DeleteRemote(context.Context, string, string, string) err
 	return ErrUnsupported
 }
 func (UnsupportedSync) ClearRemote(context.Context) error { return ErrUnsupported }
-
-// errNotBuilt is the answer of a check whose row has not been built yet:
-// it refuses everything, so nothing passes it before its rules do.
-var errNotBuilt = errors.New("ext: this check is not built yet")
 
 // DispatchChange is one row of Dispatch's log as the sync store is handed
 // it, or hands back from another replica (OS-1a).
@@ -776,9 +772,84 @@ type Remote struct {
 	Data       []byte    `json:"data"` // the kind's body: a DecisionDoc, a run pointer, a pins document, a device, a host summary
 }
 
-// Valid checks a record against its kind's bound and shape. Until OS-4 it
-// refuses every one.
-func (r Remote) Valid() error { return errNotBuilt }
+// Valid checks a record against its kind's bound and shape: a kind of the
+// five; its device and id 1 to MaxHeldID bytes of [A-Za-z0-9._-]; its
+// device's name one line of at most MaxDeviceName bytes; its time set;
+// its body a JSON object of its kind, within its kind's bound:
+//   - decision: a DecisionDoc whose id is the record's, its request part
+//     sound (RequestPart), at most MaxDecisionDoc;
+//   - pointer: a run pointer whose id is the record's, at most
+//     MaxRemoteData;
+//   - pins: a pins document, the record's id "pins", at most MaxRemoteData;
+//   - device: a live server device, {id, name, kind, platform, version,
+//     lastReport, revoked}, its id the record's and its kind never "host",
+//     at most MaxRemoteDevice;
+//   - hosts: a host summary, the record's id "summary", at most
+//     MaxRemoteHosts.
+func (r Remote) Valid() error {
+	switch {
+	case !remoteID.MatchString(r.Device) || !remoteID.MatchString(r.ID):
+		return fmt.Errorf("%w: a remote record's device and id are 1 to %d bytes of A-Z a-z 0-9 . _ -", ErrRefused, MaxHeldID)
+	case r.DeviceName == "" || len(r.DeviceName) > MaxDeviceName || !oneLine(r.DeviceName):
+		return fmt.Errorf("%w: a remote record's device name is one line of 1 to %d bytes", ErrRefused, MaxDeviceName)
+	case r.At.IsZero() || r.Rev < 0:
+		return fmt.Errorf("%w: a remote record says its revision and when", ErrRefused)
+	}
+	bound := map[string]int{RemoteDecision: MaxDecisionDoc, RemotePointer: MaxRemoteData, RemotePins: MaxRemoteData,
+		RemoteDevice: MaxRemoteDevice, RemoteHosts: MaxRemoteHosts}[r.Kind]
+	switch {
+	case bound == 0:
+		return fmt.Errorf("%w: a remote record's kind %q", ErrRefused, r.Kind)
+	case len(r.Data) > bound:
+		return fmt.Errorf("%w: a remote %s is %d bytes, past %d", ErrRefused, r.Kind, len(r.Data), bound)
+	}
+	var obj map[string]json.RawMessage
+	if json.Unmarshal(r.Data, &obj) != nil || obj == nil {
+		return fmt.Errorf("%w: a remote %s is not a JSON object", ErrRefused, r.Kind)
+	}
+	idOf := func() string {
+		var body struct {
+			ID string `json:"id"`
+		}
+		_ = json.Unmarshal(r.Data, &body)
+		return body.ID
+	}
+	switch r.Kind {
+	case RemoteDecision:
+		var doc DecisionDoc
+		if err := json.Unmarshal(r.Data, &doc); err != nil || doc.ID != r.ID {
+			return fmt.Errorf("%w: a remote decision is a decision's document of %s", ErrRefused, r.ID)
+		}
+		if _, err := doc.RequestPart(); err != nil {
+			return err
+		}
+	case RemotePointer:
+		if idOf() != r.ID {
+			return fmt.Errorf("%w: a remote pointer is the pointer of run %s", ErrRefused, r.ID)
+		}
+	case RemotePins, RemoteHosts:
+		if want := map[string]string{RemotePins: "pins", RemoteHosts: "summary"}[r.Kind]; r.ID != want {
+			return fmt.Errorf("%w: a remote %s's id is %q", ErrRefused, r.Kind, want)
+		}
+	case RemoteDevice:
+		var d struct {
+			ID      string `json:"id"`
+			Name    string `json:"name"`
+			Kind    string `json:"kind"`
+			Revoked bool   `json:"revoked"`
+		}
+		if err := json.Unmarshal(r.Data, &d); err != nil || d.ID != r.ID || d.Name == "" || !oneLine(d.Name) || len(d.Name) > MaxDeviceName {
+			return fmt.Errorf("%w: a remote device is the device %s with its name", ErrRefused, r.ID)
+		}
+		if d.Kind == "host" {
+			return fmt.Errorf("%w: a host is never a remote device", ErrRefused)
+		}
+	}
+	return nil
+}
+
+// remoteID is the shape of a remote record's device and id.
+var remoteID = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
 
 // The kinds of a Remote.
 const (
@@ -829,9 +900,42 @@ type SyncWithheld struct {
 	Words string `json:"words"`
 }
 
-// Valid checks a report against its bounds. Until OS-4 it refuses every
-// one.
-func (r SyncReport) Valid() error { return errNotBuilt }
+// Valid checks a report against its bounds: a state of the five; waiting
+// not below 0; at most MaxSyncWithheld changes kept back, each a ref of 1
+// to MaxHeldID bytes of one line and words of at most MaxSyncWords
+// characters of one line; an answer page that is an https URL of at most
+// MaxAnswerURL bytes, or none; its own device the shape of a remote
+// record's, its name one line of at most MaxDeviceName bytes, its
+// workspace and person opaque ids of at most MaxHeldID bytes.
+func (r SyncReport) Valid() error {
+	switch r.State {
+	case SyncCurrent, SyncBehind, SyncUnreachable, SyncLapsed, SyncSignedOut:
+	default:
+		return fmt.Errorf("%w: a sync report's state %q", ErrRefused, r.State)
+	}
+	switch {
+	case r.Waiting < 0:
+		return fmt.Errorf("%w: a sync report's waiting changes", ErrRefused)
+	case len(r.Withheld) > MaxSyncWithheld:
+		return fmt.Errorf("%w: a sync report keeps back %d changes, past %d", ErrRefused, len(r.Withheld), MaxSyncWithheld)
+	case r.Device != "" && !remoteID.MatchString(r.Device), len(r.DeviceName) > MaxDeviceName, r.DeviceName != "" && !oneLine(r.DeviceName):
+		return fmt.Errorf("%w: a sync report's own device", ErrRefused)
+	case r.Workspace != "" && !heldID.MatchString(r.Workspace), r.Person != "" && !heldID.MatchString(r.Person):
+		return fmt.Errorf("%w: a sync report's workspace and person are opaque ids of at most %d bytes", ErrRefused, MaxHeldID)
+	}
+	if r.AnswerURL != "" {
+		u, err := url.Parse(r.AnswerURL)
+		if err != nil || len(r.AnswerURL) > MaxAnswerURL || u.Scheme != "https" || u.Host == "" {
+			return fmt.Errorf("%w: a sync report's answer page is an https URL of at most %d bytes", ErrRefused, MaxAnswerURL)
+		}
+	}
+	for _, w := range r.Withheld {
+		if w.Ref == "" || len(w.Ref) > MaxHeldID || !oneLine(w.Ref) || !oneLine(w.Words) || utf8.RuneCountInString(w.Words) > MaxSyncWords {
+			return fmt.Errorf("%w: a change kept back names what in %d bytes and why in %d characters, each one line", ErrRefused, MaxHeldID, MaxSyncWords)
+		}
+	}
+	return nil
+}
 
 // The states of a SyncReport.
 const (

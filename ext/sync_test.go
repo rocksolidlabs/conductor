@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -184,5 +185,115 @@ func TestAnswerContentSHA256(t *testing.T) {
 	}
 	if AnswerContentSHA256(&zero, "yes", "") == AnswerContentSHA256(nil, "yes", "") {
 		t.Fatal("choice 0 and no choice are one content")
+	}
+}
+
+// validRemote is a record of kind every check takes.
+func validRemote(kind string) Remote {
+	at := time.Date(2026, 11, 20, 9, 0, 0, 0, time.UTC)
+	r := Remote{Kind: kind, Device: "dev-1", DeviceName: "studio", Rev: 3, At: at}
+	switch kind {
+	case RemoteDecision:
+		doc := DecisionDoc{ID: "dr-7", Run: "r1", OpenedIn: "r1", Origin: DecisionOriginPlan, Type: "approval", Gate: "ship",
+			Request: &DecisionDocRequest{Question: "Ship it?"}, OpenedTo: DecisionOpenedToOperator, Policy: json.RawMessage(`{}`), State: "open", Rev: 1, CreatedAt: at}
+		p, _ := doc.RequestPart()
+		doc.RequestSHA256, _ = p.SHA256()
+		r.ID, r.Data = doc.ID, mustJSON(doc)
+	case RemotePointer:
+		r.ID, r.Data = "team-00000001", []byte(`{"id":"team-00000001","crew":"team","state":"running","revision":4}`)
+	case RemotePins:
+		r.ID, r.Data = "pins", []byte(`{"pins":[]}`)
+	case RemoteDevice:
+		r.ID, r.Data = "dev-2", []byte(`{"id":"dev-2","name":"laptop","kind":"server","platform":"linux","version":"1.0","lastReport":"2026-11-20T09:00:00Z","revoked":false}`)
+	case RemoteHosts:
+		r.ID, r.Data = "summary", []byte(`{"hosts":[]}`)
+	}
+	return r
+}
+
+func mustJSON(v any) []byte {
+	b, err := json.Marshal(v)
+	if err != nil {
+		panic(err)
+	}
+	return b
+}
+
+// Each kind of a remote record has its own shape and bound, and every
+// record's device, id, name and time are checked.
+func TestRemoteDeviceAndHostsKinds(t *testing.T) {
+	for _, kind := range []string{RemoteDecision, RemotePointer, RemotePins, RemoteDevice, RemoteHosts} {
+		if err := validRemote(kind).Valid(); err != nil {
+			t.Errorf("%s: %v", kind, err)
+		}
+	}
+	bad := map[string]func() Remote{
+		"another kind":               func() Remote { r := validRemote(RemotePins); r.Kind = "notes"; return r },
+		"a device with a slash":      func() Remote { r := validRemote(RemotePins); r.Device = "dev/1"; return r },
+		"a name of two lines":        func() Remote { r := validRemote(RemotePins); r.DeviceName = "a\nb"; return r },
+		"no time":                    func() Remote { r := validRemote(RemotePins); r.At = time.Time{}; return r },
+		"a body not an object":       func() Remote { r := validRemote(RemotePins); r.Data = []byte(`[1]`); return r },
+		"pins under another id":      func() Remote { r := validRemote(RemotePins); r.ID = "x"; return r },
+		"a pointer of another run":   func() Remote { r := validRemote(RemotePointer); r.ID = "team-00000002"; return r },
+		"a decision of another id":   func() Remote { r := validRemote(RemoteDecision); r.ID = "dr-8"; return r },
+		"a decision with no request": func() Remote { r := validRemote(RemoteDecision); r.Data = []byte(`{"id":"dr-7"}`); return r },
+		"a host as a device": func() Remote {
+			r := validRemote(RemoteDevice)
+			r.Data = []byte(`{"id":"dev-2","name":"h","kind":"host"}`)
+			return r
+		},
+		"a device with no name": func() Remote {
+			r := validRemote(RemoteDevice)
+			r.Data = []byte(`{"id":"dev-2","kind":"server"}`)
+			return r
+		},
+		"a device past its bound": func() Remote {
+			r := validRemote(RemoteDevice)
+			r.Data = []byte(`{"id":"dev-2","name":"` + strings.Repeat("n", MaxRemoteDevice) + `"}`)
+			return r
+		},
+		"hosts past their bound": func() Remote {
+			r := validRemote(RemoteHosts)
+			r.Data = []byte(`{"x":"` + strings.Repeat("h", MaxRemoteHosts) + `"}`)
+			return r
+		},
+		"hosts under another id": func() Remote { r := validRemote(RemoteHosts); r.ID = "hosts"; return r },
+		"a pointer past its bound": func() Remote {
+			r := validRemote(RemotePointer)
+			r.Data = []byte(`{"id":"team-00000001","x":"` + strings.Repeat("p", MaxRemoteData) + `"}`)
+			return r
+		},
+	}
+	for name, f := range bad {
+		if err := f().Valid(); !errors.Is(err, ErrRefused) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}
+
+// A sync report's states and bounds.
+func TestSyncReportValid(t *testing.T) {
+	good := SyncReport{State: SyncBehind, Waiting: 37, Withheld: []SyncWithheld{{Ref: "CND-12/comment", Words: "quotes captured output"}},
+		AnswerURL: "https://example.com/answer", Device: "dev-1", DeviceName: "studio", Workspace: "ws-1", Person: "p-1"}
+	if err := good.Valid(); err != nil {
+		t.Fatal(err)
+	}
+	for name, mutate := range map[string]func(*SyncReport){
+		"another state":           func(r *SyncReport) { r.State = "fine" },
+		"waiting below 0":         func(r *SyncReport) { r.Waiting = -1 },
+		"too many kept back":      func(r *SyncReport) { r.Withheld = make([]SyncWithheld, MaxSyncWithheld+1) },
+		"words past their bound":  func(r *SyncReport) { r.Withheld[0].Words = strings.Repeat("w", MaxSyncWords+1) },
+		"an empty ref":            func(r *SyncReport) { r.Withheld[0].Ref = "" },
+		"an http answer page":     func(r *SyncReport) { r.AnswerURL = "http://example.com/a" },
+		"an answer page too long": func(r *SyncReport) { r.AnswerURL = "https://example.com/" + strings.Repeat("a", MaxAnswerURL) },
+		"a device with a space":   func(r *SyncReport) { r.Device = "dev 1" },
+		"a person too long":       func(r *SyncReport) { r.Person = strings.Repeat("p", MaxHeldID+1) },
+	} {
+		r := good
+		r.Withheld = slices.Clone(good.Withheld)
+		mutate(&r)
+		if err := r.Valid(); !errors.Is(err, ErrRefused) {
+			t.Errorf("%s: %v", name, err)
+		}
 	}
 }
