@@ -1357,6 +1357,18 @@ Swift package with no package of anyone else's):
   0x7E).
 - An `unbound` key may sign what a plan builds before its `until`; only
   `none` and an `unbound` key past its `until` sign nothing.
+- The store's records are stamped with the store's generation, which
+  `clear()` moves before it removes anything: a drafts or cache record a
+  clear could not remove is never read again (nothing of one sign-in is
+  read under the next). The servers area keeps its records across.
+- The servers area holds at most 5 records of at most 12 KiB each (the
+  bridge keeps the last five addresses as one record).
+- A store key is 1 to 64 of `a-z`, `0-9`, `-`, `_`, `.`, and never `.`,
+  `..` or a name ending `.new` (the name of a write not yet renamed).
+- `clear()` empties the web view's data store whole: the shell's web
+  view loads its bundle alone, and the in-app browser keeps its own.
+- What a write cut before its rename left (`<key>.new`) is never read
+  and is removed when the store starts.
 
 OSS-2a needs nothing of the shell and the shell's rows nothing of
 OSS-2a until OSS-2b, which joins them; OSS-2b is the last code row of

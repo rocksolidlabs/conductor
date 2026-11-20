@@ -8,9 +8,12 @@ let package = Package(
     platforms: [.iOS(.v16), .macOS(.v14)],
     products: [
         .library(name: "ConductorKey", targets: ["ConductorKey"]),
+        .library(name: "ConductorStore", targets: ["ConductorStore"]),
     ],
     targets: [
         .target(name: "ConductorKey"),
         .testTarget(name: "ConductorKeyTests", dependencies: ["ConductorKey"]),
+        .target(name: "ConductorStore"),
+        .testTarget(name: "ConductorStoreTests", dependencies: ["ConductorStore"]),
     ]
 )
