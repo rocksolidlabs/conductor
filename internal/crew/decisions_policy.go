@@ -266,6 +266,10 @@ func judgePolicy(rec ledger.DecisionRecord, resp Response, who Admittee, pol pol
 	}
 	if !resp.Override {
 		rc.Code, rc.Words = CodeNotEligible, p.whoAnswers(id)+": the operator answers only by an override, with its reason"
+		if p.Override != ext.OverrideOperator {
+			// Never send the operator to an override the policy refuses.
+			rc.Words = p.whoAnswers(id) + ": its policy allows no override"
+		}
 		return true, nil
 	}
 	if p.Override != ext.OverrideOperator {

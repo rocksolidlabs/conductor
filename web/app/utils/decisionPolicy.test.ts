@@ -95,6 +95,10 @@ describe('an override', () => {
 
   it("says the policy's refusals in words", () => {
     expect(policyRefusalWords('not_eligible', 'dr-7', policy({ groups: [policy().groups[0]!].map((g) => ({ ...g, eligible: g.eligible!.slice(0, 1) })) }))).toBe("This is Ana's to answer: answer only by an override, with its reason.")
+    // A policy allowing no override never sends the operator to one.
+    const none = policyRefusalWords('not_eligible', 'dr-7', policy({ override: 'none', groups: [policy().groups[0]!].map((g) => ({ ...g, eligible: g.eligible!.slice(0, 1) })) }))
+    expect(none).toBe("This is Ana's to answer: its policy allows no override.")
+    expect(none).not.toContain('by an override')
     expect(policyRefusalWords('override_refused', 'dr-7', policy())).toContain('allows no override')
     expect(policyRefusalWords('routed_by_policy', 'dr-7', policy())).toContain('ask the router again')
     expect(policyRefusalWords('stale_decision', 'dr-7', policy())).toBe('')

@@ -127,7 +127,8 @@ export function overrideLine(r: Pick<ResponseReceipt, 'rationale' | 'byName' | '
 export function policyRefusalWords(code: string, did: string, p: RoutedPolicy | null): string {
   switch (code) {
     case 'not_eligible':
-      return p ? `${heldBackWords(p)}: answer only by an override, with its reason.` : `${did} is not yours to answer.`
+      if (!p) return `${did} is not yours to answer.`
+      return overrideAllowed(p) ? `${heldBackWords(p)}: answer only by an override, with its reason.` : `${heldBackWords(p)}: its policy allows no override.`
     case 'override_refused':
       return `${did}'s policy allows no override, or its reason is too short.`
     case 'routed_by_policy':

@@ -249,6 +249,12 @@ func TestOverrideNoneRefusesTheOperator(t *testing.T) {
 	if rec := f.record(t, did); rec.State != ledger.DecisionOpen || len(rec.Responses) != 1 {
 		t.Fatalf("after the refused override: %s %d responses", rec.State, len(rec.Responses))
 	}
+	// The plain answer's refusal never sends the operator to an override
+	// the policy refuses.
+	out := f.expect(t, http.MethodPost, "/api/decisions/"+did+"/respond", operatorBody("o2", 0, f.rev(t, did), false, ""), http.StatusForbidden, crew.CodeNotEligible)
+	if words := mustJSON(out); strings.Contains(words, "by an override") || !strings.Contains(words, "allows no override") {
+		t.Fatalf("the plain answer's refusal under override none: %s", words)
+	}
 }
 
 // An override DR1's own checks refuse (a card read at an older rev, a
