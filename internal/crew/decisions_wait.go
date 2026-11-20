@@ -1162,7 +1162,7 @@ func (errOpRepeat) Error() string { return "the operation was sent before" }
 func opOf(rec ledger.DecisionRecord, op operation) (OpReceipt, bool, error) {
 	actor, opID, fp := op.actor, op.opID, op.fp
 	for _, h := range rec.History {
-		if op.once && h.Kind == op.kind && h.By == actor && h.OpID == "" {
+		if op.once && op.repeats(h) {
 			return receiptOfRow(rec.ID(), h), true, nil
 		}
 		if !op.once && h.OpID == opID && h.By == actor {
@@ -1173,6 +1173,27 @@ func opOf(rec ledger.DecisionRecord, op operation) (OpReceipt, bool, error) {
 		}
 	}
 	return OpReceipt{}, false, nil
+}
+
+// repeats says h is a once operation's row sent before: its actor's row
+// of its kind with no op id (RecordRoute: whatever its body, the router's
+// one routing row); for a policy's (revision set), its actor's routing
+// row, a routed row with no op id or a router's change, carrying that
+// revision, and no other.
+func (op operation) repeats(h ledger.HistoryRow) bool {
+	if h.By != op.actor {
+		return false
+	}
+	if op.revision == "" {
+		return h.Kind == op.kind && h.OpID == ""
+	}
+	if !(h.Kind == ledger.HistoryRouted && h.OpID == "" || h.Kind == ledger.HistoryRerouted) {
+		return false
+	}
+	var dt struct {
+		Revision string `json:"revision"`
+	}
+	return json.Unmarshal([]byte(h.Detail), &dt) == nil && dt.Revision == op.revision
 }
 
 // receiptOfRow is the receipt an operation's history row makes.
@@ -1214,11 +1235,16 @@ type operation struct {
 	// MaxDecisionRouterChanges, recorded in the policy itself (Reroute).
 	rowless bool
 	// once makes the operation its actor's once per decision (a decision
-	// router's routing row, RecordRoute): no op id is written, and its
-	// repeat, whatever its body, is answered by the receipt of the row its
-	// actor wrote of its kind. Its row takes the bound of its kind, never
-	// one of the operator's operations (Tx.History).
+	// router's routing row, RecordRoute; its policy, RoutePolicy): no op id
+	// is written, and its repeat is answered by the receipt of the row its
+	// actor wrote (repeats). Its row takes the bound of its kind, never one
+	// of the operator's operations (Tx.History).
 	once bool
+	// revision, on a once operation, is the router's policy it writes
+	// (RoutePolicy): its repeat is only its actor's routing row of that
+	// revision, so a policy that follows the router's earlier route of the
+	// record, or another policy, is no repeat of it.
+	revision string
 	// choose, when set, makes the operation from the record its look
 	// reads, under opMu and after the look for a repeat (RouteDecision's
 	// route to the operator: the take-back of a decision given to the
@@ -1406,7 +1432,7 @@ func (e *Engine) operate(ctx context.Context, id string, op operation) (OpReceip
 					return err
 				}
 				for _, h := range rec.History {
-					if h.Kind == op.kind && h.By == op.actor && h.OpID == "" {
+					if op.repeats(h) {
 						return errOpRepeat{h}
 					}
 				}
