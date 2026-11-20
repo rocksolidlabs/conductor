@@ -145,9 +145,11 @@ public actor ConductorStore {
             generation = g
             generationKept = true
         } else {
+            // Every draft and cache file there is removed; one that cannot be still reads as stale (the generation past its own).
             var past = 0
             for area in [StoreArea.drafts, .cache] {
                 for url in try files.list(dir(area)) {
+                    if (try? files.remove(url)) != nil { continue }
                     guard let d = try? files.read(url), let r = try? JSONDecoder.store.decode(RecordFile.self, from: d) else { continue }
                     past = max(past, r.g + 1)
                 }

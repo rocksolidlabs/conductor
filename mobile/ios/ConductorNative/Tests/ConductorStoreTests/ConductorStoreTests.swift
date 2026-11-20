@@ -225,6 +225,23 @@ func code(_ f: () async throws -> Void) async -> String? {
         #expect(try await f.restarted().list(area: "drafts").map(\.key) == ["i3"])
     }
 
+    @Test func aStartWithNoGenerationOnDiskRemovesEveryDraftAndCacheFile() async throws {
+        let f = StoreFixture()
+        try await f.store.put(area: "drafts", key: "i1", data: "a draft")
+        try await f.store.put(area: "drafts", key: "i2", data: "another")
+        try await f.store.put(area: "cache", key: "inbox", data: "the inbox")
+        try await f.store.put(area: "servers", key: "recent", data: "[]")
+        f.files.lock.withLock { _ = f.files.files.removeValue(forKey: f.root.appendingPathComponent("generation").path) }
+        // One that cannot be removed stays, and still reads as stale.
+        f.files.keep = ["i2"]
+        let again = f.restarted()
+        try await again.start()
+        #expect(f.files.names("drafts") == ["i2"])
+        #expect(f.files.names("cache").isEmpty)
+        #expect(try await again.get(area: "drafts", key: "i2") == nil)
+        #expect(try await again.get(area: "servers", key: "recent")?.data == "[]")
+    }
+
     @Test func aGenerationWriteThatFailsOnceIsWrittenAgainAfterTheRemoval() async throws {
         let f = StoreFixture()
         try await f.store.put(area: "drafts", key: "i1", data: "draft")
