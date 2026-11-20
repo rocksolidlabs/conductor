@@ -8,11 +8,11 @@ Conductor runs coding agents in PTYs and shares browser terminals. One Go module
   gets a size limit and a test.
 - Stdlib first: `net/http` mux with method patterns, `log/slog`, `encoding/json`
   with `DisallowUnknownFields`. New Go dependencies need a reason in the PR.
-- A dependency added, removed or upgraded (go.mod, `web/` or `desktop/`
-  packages) regenerates `THIRD_PARTY_NOTICES` with `make notices` (after
-  `npm ci` in `desktop/`), committed with it; CI checks it is current. A
-  package that ships without its licence text gets the upstream text in
-  `scripts/notices/`.
+- A dependency added, removed or upgraded (go.mod, `web/`, `desktop/` or
+  `mobile/` packages) regenerates `THIRD_PARTY_NOTICES` with `make notices`
+  (after `npm ci` in `desktop/` and in `mobile/`), committed with it; CI
+  checks it is current. A package that ships without its licence text gets
+  the upstream text in `scripts/notices/`.
 - Every commit is signed off (`git commit -s`): the line certifies the
   Developer Certificate of Origin in `DCO`, and its name and address are
   the commit author's. CI's `dco` job fails a pull request with a commit
