@@ -1716,6 +1716,24 @@ this repository never has: vitest covers their drawing with `sync` in a
 stubbed capabilities reply. `docs/features.md` gains the entry for
 sync's seams.
 
+**As built (OS-4).** A record's file is `remote/<device>/<kind>-<id>.json`
+with the device and the id hex-encoded, since the data directory's stores
+take lower-case names alone. `GET /api/remote`'s `ticket` is the ticket's
+key (CND-12): the server reads its id and its run links. The app reads
+other machines' records whether or not a sync store is registered: a
+server without one holds none, so its screens are as before; the report
+(`GET /api/sync`) is read only with `sync` in the capabilities. Beside the
+report, `GET /api/sync` answers `here`, what this server keeps on the
+machine of its own judgement (the copied-output check's state when it
+cannot judge, the decisions with a part cut as output, the texts a hosted
+session's agent wrote, kept), which the Sync row says beneath the
+store's own withheld changes. A ticket's `alsoLinked` says "imported on
+another machine": its read carries the other tickets' keys alone. A
+decision's view says, while a held answer's recheck cannot be made yet,
+"waiting to recheck user:nate's answer: the identity provider cannot say
+now" (`waiting`, OS-3's words for the screens). A remote record of this
+server's own device (the report's `device`) is never drawn.
+
 ### Protocol
 
 No WebSocket frame changes, so `internal/proto` and

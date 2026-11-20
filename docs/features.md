@@ -211,6 +211,40 @@ that order.
   link grants. Content appears only after the guest joins.
 - **No Runs nav item** until there is something behind it.
 
+## Sync's seams: what this repository hands a sync store, and what it shows of other machines (CS1, #1028; 2026-11-20)
+
+The open-source half of sync between a person's machines (`docs/plans/sync-seams.md`,
+rows OS-1a to OS-4). It does anything only on a server where a sync store is
+registered; with none, every screen and route is as before, and nothing of a
+decision, a ticket or a layout leaves the machine.
+
+- **Dispatch from other machines.** A shared project's tickets, comments and plans
+  arrive as rows applied by the same rules as local ones, held until what they
+  wait for is there; numbers come from blocks so two machines never take one; a
+  project is shared from its page (Share this project) and given another key when
+  its key is taken (Give this project another key).
+- **What never leaves.** Every free-text value is judged when it is written by the
+  copied-output check (`internal/api/output_index.go`): text that quotes what this
+  server captured (a session's output, a check's log, a history record) stays on the
+  machine, a Dispatch row withheld and a decision's part cut. Terminal output is the
+  bytes Conductor captured, as the owner decided on 2026-11-20.
+- **Decisions handed out and answers handed in.** A decision reaches the store as
+  its document, its request kept back while a part of it is pending or quotes
+  output. An answer made on another machine is taken only where the server's router
+  confirms no policies, only once the identity provider admits its signed
+  statement, and is applied only after the provider admits it again; while the
+  provider cannot say, the decision says it waits to recheck that person's answer.
+- **The app's state follows the person.** The layout, the palette's recents and
+  the pins are kept by the server (`/api/ui/{name}`), the same in every browser.
+- **What other machines hold, read only.** Their decisions, runs and pins, as the
+  store writes them under `remote/` (`GET /api/remote`), are drawn "on studio" on the
+  decision page, a ticket's page and the sidebar, never acted on here; an open
+  decision offers its answer page when the store names one. Settings → The app has a
+  Sync row (`GET /api/sync`): the store's state, the changes it kept back and what
+  this server keeps on the machine itself.
+- Tests: the OS rows' tests in `docs/plans/sync-seams.md` (Tests per surface), and
+  `remote.spec.ts` and `sync-free.spec.ts` for the screens.
+
 ## A decision router's policy on decision records: who may answer (SW1, #1030; 2026-11-19)
 
 The open-source half of Switchman's team routing (`docs/plans/decision-policy.md`,
