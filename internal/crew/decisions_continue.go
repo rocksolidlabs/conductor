@@ -253,7 +253,8 @@ func acceptedOf(rec ledger.DecisionRecord) *accepted {
 func decisionOfRecord(r *run, rec ledger.DecisionRecord) *decision {
 	var body requestBody
 	_ = json.Unmarshal([]byte(rec.Request), &body)
-	d := &decision{n: rec.N, origin: rec.Origin, typ: rec.Type, gate: rec.Gate, question: body.Question, state: rec.State, rev: rec.Rev, subject: body.Subject, options: optionsOf(rec.Type, rec.Request), openedAt: rec.CreatedAt}
+	d := &decision{n: rec.N, origin: rec.Origin, typ: rec.Type, gate: rec.Gate, question: body.Question, state: rec.State, rev: rec.Rev, subject: body.Subject, options: optionsOf(rec.Type, rec.Request), openedAt: rec.CreatedAt,
+		spare: ledger.PolicySpare(rec.Policy), own: rec.RunID == r.id}
 	if rec.Origin == ledger.OriginAgent {
 		d.t = r.task(rec.TaskID)
 	}

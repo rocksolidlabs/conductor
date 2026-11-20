@@ -1396,6 +1396,9 @@ func (e *Engine) addRun(c Crew, p prepared, label, id string, pkg *runPackage) (
 	r := &run{crewID: c.ID, name: c.Name, label: label, goal: c.Goal, cwd: c.Cwd, isolation: c.Isolation, prefix: p.prefix,
 		yolo: c.Yolo != nil && *c.Yolo, changed: e.OnRunChange, startedAt: time.Now().UTC(), ctx: ctx, cancel: cancel, launching: true, managed: c.Managed(),
 		class: p.opts.Class, request: p.opts.Request, people: c.clone().People, continuation: p.continuation}
+	// Its openings take a spare while the router routes policies, which the
+	// engine is told once, before it runs anything.
+	r.dec.spares = e.RoutesPolicies()
 	if r.managed {
 		// The crew's project manifest as launched, a legacy setup lifted
 		// into it, and the manifest at the pinned base, whose prerequisites

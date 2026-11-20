@@ -2097,7 +2097,7 @@ func TestACarriedReplacementHoldsItsPlace(t *testing.T) {
 	room := func(when string) {
 		t.Helper()
 		e.mu.Lock()
-		held, ok := r.decisionsHeld(), r.decisionRoom(1)
+		held, ok := r.decisionsHeld(), r.decisionRoom(1, false)
 		e.mu.Unlock()
 		if held != ledger.MaxDecisionsPerRun || ok {
 			t.Fatalf("%s: the run holds %d, room for one more %v", when, held, ok)

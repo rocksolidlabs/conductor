@@ -341,6 +341,12 @@ type decision struct {
 	// cands are a comparison's selection's options' candidates, in order,
 	// nil for None of these (origin compare alone).
 	cands []*SettledCandidate
+	// spare says its policy holds a place for its replacement from its
+	// opening (a record opened while the router routes policies: the
+	// ledger's spare); own that it was opened in this run (the ledger's
+	// run_id), so its voiding frees one of this run's decisions; voided
+	// that its accepted answer was voided, counted once (decisionsHeld).
+	spare, own, voided bool
 }
 
 // accepted is a decision's accepted response, for its application.
@@ -604,6 +610,13 @@ func (r *run) decisionN(n int64) *decision {
 func (r *run) dropDecision(d *decision) {
 	r.decisions = slices.DeleteFunc(r.decisions, func(x *decision) bool { return x == d })
 	r.dec.noRoom = false
+	if d.state == ledger.DecisionSuperseded && d.spare && d.own && d.answer != nil && !d.voided {
+		// An accepted answer voided (the ledger's voidedCond): the record no
+		// longer counts among the run's decisions, its replacement in its
+		// place.
+		d.voided = true
+		r.dec.voided++
+	}
 }
 
 // cleanRequest cleans a request and checks it against its bounds: the
@@ -1047,7 +1060,7 @@ func (e *Engine) RequestDecision(ctx context.Context, sessionID string, req Deci
 			}
 		}
 		t := a.t
-		d = &decision{origin: ledger.OriginAgent, typ: req.Type, t: t, a: a, question: body.Question, state: ledger.DecisionOpen, rev: 1, subject: body.Subject}
+		d = &decision{origin: ledger.OriginAgent, typ: req.Type, t: t, a: a, question: body.Question, state: ledger.DecisionOpen, rev: 1, subject: body.Subject, spare: e.RoutesPolicies(), own: true}
 		for _, o := range body.Options {
 			d.options = append(d.options, o.Label)
 		}
@@ -1319,7 +1332,7 @@ func (e *Engine) openGates(r *run) (tx, func()) {
 		body.For = r.gateFor(pd)
 		raw, _ := json.Marshal(body)
 		sum := sha256.Sum256(raw)
-		d := &decision{origin: ledger.OriginPlan, typ: typ, gate: pd.ID, question: body.Question, state: ledger.DecisionOpen, rev: 1, subject: body.Subject}
+		d := &decision{origin: ledger.OriginPlan, typ: typ, gate: pd.ID, question: body.Question, state: ledger.DecisionOpen, rev: 1, subject: body.Subject, spare: e.RoutesPolicies(), own: true}
 		for _, o := range body.Options {
 			d.options = append(d.options, o.Label)
 		}
@@ -2557,7 +2570,10 @@ func answerWords(d *decision, ans *accepted) string {
 func (e *Engine) replaceDecision(r *run, d *decision, why string) (*decision, tx) {
 	// A comparison's selection keeps its options' candidates: the
 	// replacement lists the same ones, and its answer selects one of them.
-	fresh := &decision{origin: d.origin, typ: d.typ, gate: d.gate, t: d.t, a: d.a, question: d.question, options: slices.Clone(d.options), state: ledger.DecisionOpen, rev: 1, subject: d.subject, cands: slices.Clone(d.cands)}
+	// The replacement holds a spare only where the decision it replaces did:
+	// the place it takes over is that one's, and no more.
+	fresh := &decision{origin: d.origin, typ: d.typ, gate: d.gate, t: d.t, a: d.a, question: d.question, options: slices.Clone(d.options), state: ledger.DecisionOpen, rev: 1, subject: d.subject, cands: slices.Clone(d.cands),
+		spare: d.spare && d.origin != ledger.OriginCompare, own: true}
 	if d.origin == ledger.OriginCompare {
 		r.sel.last = d.id()
 	}
@@ -2594,10 +2610,13 @@ func (e *Engine) replaceDecision(r *run, d *decision, why string) (*decision, tx
 		// when it moved there.
 		row.N, row.RequestID, row.RunID = 0, "", ""
 		if d.origin != ledger.OriginCompare {
-			// Opened as any opening is: the server's own policy, with its
-			// spare while the router routes policies; told to the router
-			// as any opening is.
-			row.Policy = e.openingPolicy(d.origin)
+			// Opened under the server's own policy, with a spare only where
+			// the decision it replaces held one (fresh.spare); told to the
+			// router as any opening is.
+			row.Policy = policyJSON
+			if fresh.spare {
+				row.Policy = policySpareJSON
+			}
 		}
 		if GivenToGrant(row.Request) {
 			// The replacement is the operator's alone: the operator routes it
