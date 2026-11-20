@@ -30,7 +30,8 @@ import { TIME_LIMIT_PASSED, timeLimitPassed } from '~/utils/runOrigin'
  * answers (`answers`, the run page's) shows the newest about the task under the selected row, and a page that holds none (a ticket's
  * run card) says the request's id in a toast with a link to it. The
  * selected task (`?task=`) opens its result and its attempts under the rows,
- * each attempt with what it submitted and its receipts (RunAttemptSteps).
+ * each attempt with what it submitted and its receipts (RunAttemptSteps), and under them the context it was given when it was given
+ * any (AttemptContext, CT-3).
  * A run with a project manifest shows its prerequisites' receipts above the
  * rows. Cancel and Accept anyway ask first; every command carries a receipt
  * (useTaskCommands). A task a durable decision holds (Program item DR1) says
@@ -466,6 +467,7 @@ async function confirm() {
             :open-step="attempt === a.n ? step : undefined"
             :prepare="ticket && a.result ? (s: RunStep) => reviewAt(run.id, selectedTask!.id, a.n, a.result, `${s.id}/${s.k}`) : undefined"
           />
+          <AttemptContext v-if="a.context?.length" :run-id="run.id" :task="selectedTask.id" :attempt="a.n" :rows="a.context" />
         </li>
       </ol>
     </section>

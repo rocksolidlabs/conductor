@@ -338,7 +338,10 @@ export async function serveRun(page: Page, runs: StubRun | StubRun[]): Promise<S
   const candidates = (t: StubTask) => ({
     task: t.id,
     kind: t.kind,
-    candidates: t.result ? [{ task: t.id, kind: t.kind, attempt: t.result.attempt, commit: t.result.commit, start: COMMIT(1), state: 'succeeded', standing: true, withdrawn: false, receipts: [] }] : [],
+    // A candidate counts the context its attempt was given (CT-3) when the stub's attempt carries any.
+    candidates: t.result
+      ? [{ task: t.id, kind: t.kind, attempt: t.result.attempt, commit: t.result.commit, start: COMMIT(1), state: 'succeeded', standing: true, withdrawn: false, receipts: [], ...(t.attempt?.n === t.result.attempt && t.attempt.context?.length ? { context: t.attempt.context.length } : {}) }]
+      : [],
     more: 0,
     withdrawn: 0,
     acceptedOlder: 0,
