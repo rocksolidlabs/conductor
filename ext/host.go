@@ -110,6 +110,18 @@ type Host interface {
 	// one on a host with Where RunsOnHost: what the caller makes of either
 	// is its own.
 	ResolveLaunch(ctx context.Context, r ResolveRequest) (ResolvedLaunch, error)
+	// OpenDecisionRefs reads the refs (DecisionRef) of the durable
+	// decisions open in this server's ledger now, in id order, the first
+	// after after's decision ("" for the first), at most
+	// MaxOpenDecisionRefs; next is the last ref of a page that more
+	// follow, "" for the last page. It reads nothing else of them: a
+	// provider that needs a decision's state reads it with Decision. Each
+	// page is read alone: a decision opened or closed between two pages
+	// may be missed or listed by the walk (its own notification tells it).
+	// It answers ErrRefused for an after that is neither "" nor a ref
+	// ParseDecisionRef takes, and ErrUnsupported where the server keeps no
+	// ledger (a switchyard, conductor host).
+	OpenDecisionRefs(ctx context.Context, after string) (refs []string, next string, err error)
 }
 
 // TurnLaunch is a Brakeman turn to launch: the catalog agent, its model

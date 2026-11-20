@@ -229,6 +229,9 @@ func (h *hostExtHost) Notify(context.Context, ext.Notification) error { return h
 func (h *hostExtHost) Decision(context.Context, string) (ext.DecisionState, error) {
 	return ext.DecisionState{}, h.refuse()
 }
+func (h *hostExtHost) OpenDecisionRefs(context.Context, string) ([]string, string, error) {
+	return nil, "", h.refuse()
+}
 func (h *hostExtHost) Run(context.Context, string) (ext.RunStatus, error) {
 	return ext.RunStatus{}, h.refuse()
 }
