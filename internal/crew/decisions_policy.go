@@ -305,8 +305,16 @@ func judgePolicy(rec ledger.DecisionRecord, resp Response, who Admittee, pol pol
 // receipt; a policy of another revision is no repeat. A record at another
 // rev is refused stale_decision (the caller tells it again); one that
 // carries a router's policy already routed_by_policy; a comparison's
-// selection, which takes none, invalid. Nothing is written for a refusal.
+// selection, which takes none, and a policy with no revision, invalid.
+// Nothing is written for a refusal.
 func (e *Engine) RoutePolicy(ctx context.Context, id, by string, rev int, policy ext.RoutePolicy, to []Destination, rule string) (OpReceipt, error) {
+	if policy.Revision == "" {
+		// Its revision is its identity: what its repeat is known by. The
+		// router's route is checked before (ext.RoutePolicy.Valid); a
+		// caller that did not check is refused here, never answered as a
+		// repeat of another write.
+		return OpReceipt{}, refuse(CodeInvalid, "a router's policy for %s names its revision", id)
+	}
 	base := routeDetail(id, by, to, stripFormat(rule))
 	base.Revision = policy.Revision
 	detail := func(rec ledger.DecisionRecord) (opDetail, error) {

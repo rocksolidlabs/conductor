@@ -193,3 +193,23 @@ func TestARouteAfterAReroutedPolicyWritesNothing(t *testing.T) {
 	}
 	stopRun(t, e, run.ID)
 }
+
+// A policy with no revision is refused at the policy's transaction, after
+// the router's earlier route too: its revision is what its repeat is known
+// by, so none is never answered as a repeat of another write.
+func TestAPolicyWithNoRevisionIsRefused(t *testing.T) {
+	e, ld, run, id := routedGate(t, "api-sweep-0000a7e4")
+	ctx := t.Context()
+	if _, err := e.RecordRoute(ctx, id, "switchman", toAna, "the architecture owner"); err != nil {
+		t.Fatal(err)
+	}
+	before := recordOf(t, ld, id)
+	var de *DecisionError
+	if rc, err := e.RoutePolicy(ctx, id, "switchman", before.Rev, anaRoute(""), toAna, "the architecture owner"); !errors.As(err, &de) || de.Code != CodeInvalid {
+		t.Fatalf("a policy with no revision: %+v %v", rc, err)
+	}
+	if now := recordOf(t, ld, id); now.Rev != before.Rev || len(now.History) != len(before.History) || now.Policy != before.Policy {
+		t.Fatalf("the refusal wrote: rev %d (was %d), %d rows (were %d)", now.Rev, before.Rev, len(now.History), len(before.History))
+	}
+	stopRun(t, e, run.ID)
+}
