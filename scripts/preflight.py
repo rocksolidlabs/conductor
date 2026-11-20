@@ -47,6 +47,10 @@ RECEIPT_VERSION = 1
 # check branch protection requires, green when every other job passed).
 # The order is CI's: the web build first, since the Go binary embeds it.
 GATE_JOBS = ("required-checks",)
+# CI_ONLY_JOBS are CI's alone: no machine preflight reaches can run them (the
+# phone shell's app needs Xcode and a simulator), and a receipt says so rather
+# than counting a step that only prepares for them (docs/checks.md).
+CI_ONLY_JOBS = ("mobile-ios",)
 # The whole module's race tests, as make test and docs/checks.md run them and
 # as ci.yml's go-race job runs them in groups (scripts/go_test_groups.py, with
 # the same flags; preflight_test.py holds them to one bound). The bound catches a hang:
@@ -81,8 +85,12 @@ LINUX_STEPS = [
         "argv": ["python3", "-m", "unittest", "discover", "-s", "scripts", "-p", "*_test.py"],
     },
     # CI installs the desktop shell's packages (npm ci) before the notices check
-    # and the desktop tests; a worktree starts without them.
+    # and the desktop tests, and the phone shell's before the notices check; a
+    # worktree starts without them.
     {"name": "desktop-install", "covers": "desktop-test", "argv": ["make", "desktop-install"]},
+    # The phone shell's packages, for the notices (CI's go job installs them too); CI's
+    # mobile-ios job is CI's alone (CI_ONLY_JOBS).
+    {"name": "mobile-install", "covers": "go", "argv": ["make", "mobile-install"]},
     {"name": "notices", "covers": "go", "argv": ["python3", "scripts/notices.py", "--check"]},
     {"name": "vuln", "covers": "vuln", "argv": ["make", "vuln"]},
     {"name": "e2e", "covers": "e2e", "argv": ["make", "test-e2e"]},
@@ -262,7 +270,7 @@ def run_linux(root, head, base, directory, only, say):
             versions[tool] = subprocess.run(argv, capture_output=True, text=True).stdout.strip()
         except OSError:
             versions[tool] = "missing"
-    return r.write({"tools": versions})
+    return r.write({"tools": versions, "not_run": {j: "CI's alone" for j in CI_ONLY_JOBS}})
 
 
 def ssh_runner(host, repo):
@@ -478,6 +486,8 @@ def main(argv=None):
         failed = [s["name"] for s in r["steps"] if s["exit"] != 0]
         state = "ok" if r["ok"] else ("partial" if r["partial"] and not failed else "FAILED: " + ", ".join(failed))
         print(f"preflight {m} at {head[:12]}: {state} -> {receipt_path(directory, head, m)}")
+        for job, why in (r.get("not_run") or {}).items():
+            print(f"preflight {m}: {job} not run ({why})")
         ok = ok and r["ok"]
     return 0 if ok else 1
 

@@ -5,9 +5,9 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 // @ts-expect-error: the sync's scripts are plain JavaScript modules with no declarations.
-import { BRIDGE_SRC, connectOrigins, inlineScripts, policyFor, PROVIDER_SRC, refusals, shellPage, shellPages } from '../scripts/csp.mjs'
+import { BRIDGE_SRC, connectOrigins, inlineScripts, nativeOrigins, policyFor, PROVIDER_SRC, refusals, shellPage, shellPages } from '../scripts/csp.mjs'
 // @ts-expect-error: as above.
-import { syncBundle } from '../scripts/sync.mjs'
+import { NATIVE_HTTP, syncBundle } from '../scripts/sync.mjs'
 
 // The shell's page policy (docs/plans/phone-shell.md, OSS-1a, Tests per surface, mobile/test/csp.test.ts): every page of the bundle
 // carries `script-src 'self' 'wasm-unsafe-eval'` with every inline script's hash and no other; an inline event handler or a
@@ -65,6 +65,24 @@ describe("the shell's policy", () => {
     const www = join(tmp(), 'www')
     expect(() => syncBundle(from, www, undefined, { connect: ['http://relay.example.test'] })).toThrow(/an https origin/)
     expect(existsSync(www)).toBe(false)
+  })
+
+  it("writes the native HTTP call's origins into the bundle, none by default, and refuses one that is not exactly an https origin", () => {
+    const from = tmp()
+    writeFileSync(join(from, 'index.html'), PAGE)
+    const www = join(tmp(), 'www')
+    syncBundle(from, www)
+    expect(JSON.parse(readFileSync(join(www, NATIVE_HTTP), 'utf8'))).toEqual({ origins: [] })
+    syncBundle(from, www, undefined, { native: ['https://relay.example.test', 'https://relay.example.test:8443'] })
+    expect(JSON.parse(readFileSync(join(www, NATIVE_HTTP), 'utf8'))).toEqual({ origins: ['https://relay.example.test', 'https://relay.example.test:8443'] })
+    // The page's own connections are not widened by it.
+    expect(carried(readFileSync(join(www, 'index.html'), 'utf8')).policy).toMatch(/; connect-src 'none'$/)
+    for (const bad of ['http://relay.example.test', 'https://relay.example.test/', 'https://relay.example.test.', 'https://user@relay.example.test', 'https://*.example.test', 'https://Relay.example.test', 'file:///etc']) {
+      expect(() => nativeOrigins([bad]), bad).toThrow(/an https origin/)
+      const fresh = join(tmp(), 'www')
+      expect(() => syncBundle(from, fresh, undefined, { native: [bad] }), bad).toThrow(/an https origin/)
+      expect(existsSync(fresh)).toBe(false)
+    }
   })
 
   it('hashes an extra inline script like the others', () => {

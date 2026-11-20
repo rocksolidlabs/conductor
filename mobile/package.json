@@ -1,0 +1,20 @@
+{
+  "name": "conductor-mobile",
+  "private": true,
+  "description": "The phone shell: the iOS app around the workbench's own screens (docs/plans/phone-shell.md, OSS-1a).",
+  "license": "Apache-2.0",
+  "scripts": {
+    "sync:ios": "cap sync ios"
+  },
+  "dependencies": {
+    "@capacitor/app": "8.1.2",
+    "@capacitor/browser": "8.0.5",
+    "@capacitor/core": "8.6.0",
+    "@capacitor/ios": "8.6.0",
+    "@capacitor/push-notifications": "8.1.3"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "8.6.0",
+    "typescript": "5.9.3"
+  }
+}

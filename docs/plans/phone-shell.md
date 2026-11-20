@@ -153,7 +153,8 @@ A packaging that places a provider gets, from the same build:
 
 - **Signing in.** The shell opens on the provider's sign-in screen: a
   code in large type, **Open the sign-in page** (the provider's page, in
-  the in-app browser) and the time left. The key the provider binds is
+  the phone's own browser, by the person's tap: the owner's decision of
+  2026-11-20) and the time left. The key the provider binds is
   made on the phone by the shell's key plugin and never leaves it.
 - **Being told.** The provider's service sends a notification to the
   phone through the platform's push; what it shows is the provider's
@@ -340,7 +341,7 @@ pinned exactly, each with its reason in the PR and its row in
 `@capacitor/ios` (the shell itself), `@capacitor/push-notifications`
 (the platform's push token and the notification taps), `@capacitor/app`
 (opened links, resume and pause), `@capacitor/browser` (the in-app
-browser, for Open a server and a provider's sign-in page), all MIT; as
+browser, for Open a server), all MIT; as
 dev dependencies the versions `desktop/` already pins of `typescript`,
 `vitest`, `@types/node` and `@playwright/test`. `scripts/notices.py`
 gains `mobile/` as it has `desktop/` (the shipped packages, `npm ls
@@ -352,11 +353,12 @@ say `npm ci` in `mobile/` beside `desktop/`.
 development id: a packaging that signs its own build sets its own),
 `webDir` the folder `make mobile-sync` fills (`mobile/www`, ignored by
 git), and navigation inside the web view allowed to nothing but the
-bundle (`server.allowNavigation` empty). The shell's own openings (Open a
-server, a provider's sign-in page) go to the in-app browser through
-`@capacitor/browser`; any other navigation away from the bundle (a link
-tapped in a decision's context) is handed by Capacitor to the system
-browser, outside the shell, and never loads in the shell's page.
+bundle (`server.allowNavigation` empty). Open a server goes to the in-app
+browser through `@capacitor/browser`; a provider's sign-in page opens in
+the phone's own browser, by the person's tap; any other navigation away from the bundle (a link
+tapped in a decision's context) is handed by the shell's load gate to
+iOS, outside the shell, and never loads in the shell's page (as built:
+"Every way a page reaches native code" below).
 
 **`mobile/ios/`**: the Xcode project Capacitor generates (with the Swift
 Package Manager where the pinned Capacitor offers it, so the build needs
@@ -409,11 +411,12 @@ native key plugin. It knows no service, no contract and no route.
   - `sign(request)`: below.
 - **It signs only what a policy builds.** `sign` hands the request (a
   JSON object of at most 1 KiB, refused `too_large` past it), the key's
-  state and its id to the native **signing policy**: an object of a
+  state, its id and its public key to the native **signing policy**: an object of a
   class the packaging adds, exposed to the Objective-C runtime under the
   fixed name `ConductorKeySigningPolicy` (`@objc(ConductorKeySigningPolicy)`)
   and conforming to the plugin's `KeySigningPolicy` protocol, found once
-  at start (`NSClassFromString`). The open-source build has none. The
+  at start (`NSClassFromString`). The open-source build has none. Where
+  a packaging puts it is "A packaging's native sources" below. The
   policy answers either a refusal (a code and words, passed back as
   they are) or a plan:
 
@@ -426,9 +429,15 @@ native key plugin. It knows no service, no contract and no route.
   }
   public protocol KeySigningPolicy: AnyObject {
       init()
-      func plan(request: [String: Any], state: String, id: String?) -> Result<SigningPlan, KeyPolicyRefusal>
+      func plan(request: [String: Any], state: String, id: String?, publicKey: String) -> Result<SigningPlan, KeyPolicyRefusal>
   }
   ```
+
+  The public key is exactly what `publicKey()` answers (the 32 raw bytes
+  in base64url with no padding: 43 characters of `A-Z`, `a-z`, `0-9`,
+  `-` and `_`), read from the same record `sign` signs with and handed
+  with every call, so a policy has it for an unbound key, which has no
+  id yet (a sign-in's proof), and never takes it from the page.
 
   The plugin never signs bytes handed in from the web view, signs
   nothing without a policy (`no_policy`), signs with an `ending` key only
@@ -507,8 +516,9 @@ and nothing else: no key, no store, no push token, no HTTP call.
   (`create`, `publicKey`, `bind`, `sign`, `ending`, `remove`, `state`),
   the store, the platform's push token with its changes
   (`push.token()`, `push.onToken(cb)`), and the native HTTP call
-  (Capacitor's, which the web view's content security policy does not
-  govern; its request's body sent exactly as given, its reply's body
+  (Capacitor's by name, the shell's own as built, which the web view's
+  content security policy does not govern and which reaches only the
+  https origins the packaging names, none by default; its request's body sent exactly as given, its reply's body
   handed over as its text exactly as received, never parsed, at most
   1 MiB, so a provider can verify a signature or a hash over the exact
   bytes; a reply that is not text refused `unreadable`) to that factory
@@ -531,9 +541,12 @@ and nothing else: no key, no store, no push token, no HTTP call.
   default, so a shell with no provider connects to nothing, or the https
   origins a provider's build names (`make mobile-sync
   MOBILE_CONNECT=https://…`; each exactly an https origin, anything else
-  refused by the sync). A provider's own calls go through the native HTTP
-  call, which the policy does not govern; the bound keeps the page itself
-  from reaching a server's API whatever its code does. On `main`
+  refused by the sync). That bound is the page's own connections'. A
+  provider's own calls go through the native HTTP call, which the policy
+  does not govern and which reaches only the https origins the packaging
+  names at build (`make mobile-sync MOBILE_NATIVE_ORIGINS=https://…`, each
+  exactly an https origin), none by default: a shell with no provider
+  connects to nothing, by either way. On `main`
   (built at `f10eb297`) those are three: the import map, the colour mode
   and the runtime configuration; the bundle's JSON data block is not a
   script the browser runs and takes no hash. `csp.mjs` fails the sync on
@@ -565,10 +578,16 @@ and nothing else: no key, no store, no push token, no HTTP call.
   Markdown that `MarkdownPreview.vue` sanitises (raw HTML parsed as text,
   scripted links refused), so an agent's words cannot become a script.
   A script in the web view could still reach Capacitor's plugin
-  registry; what it would get is what the policy builds, and a
+  registry; what it would get is what the signing policy builds (a
   signature marked for presence only behind the person's Face ID or
   passcode, which is why the plugin makes the presence check and not the
-  bridge or the provider.
+  bridge or the provider), the store's records, and the native HTTP call
+  to the origins the packaging names, through the App, Browser and
+  push plugins what they offer the page, and nothing else of the
+  runtime: one gate stands at each way from the page into native code,
+  each an allowlist ("Every way a page reaches native code", as built,
+  below). It could also remove the key, which is a sign-out and gains
+  it nothing.
 
 **`Makefile`**: `mobile-install` (`npm ci` in `mobile/`), `mobile-sync`
 (the bundle copied from `internal/web/dist` into `mobile/www`, the
@@ -714,7 +733,8 @@ stores.
 - **With a provider**: `/shell` is the sign-in screen while it reports
   `signedIn` false, and the inbox (OSS-2b) once signed in, with Settings
   a tap away. **Sign in**: "Sign in to <name>", the code in large type,
-  **Open the sign-in page** (the page in the in-app browser), the time
+  **Open the sign-in page** (the page in the phone's own browser, by the
+  person's tap), the time
   left, Cancel; a `{words}` answer shows its words and **Try again**.
   **Settings**: who, notifications with their state and the last one
   received, **Turn on notifications** (`enableNotifications`), **Send a
@@ -1205,7 +1225,8 @@ vitest whole; the e2e build and the specs named):
   OSS-2b, a second case: a sync of the same bundle with a test provider
   module (`mobile/e2e/fixtures/provider.js`, the tests' own, naming no
   service: signed in, one item whose decision's context holds a fenced
-  `go` block and a Mermaid diagram) opens `/shell/decisions/<id>` under
+  `go` block and a Mermaid diagram) opens its decision's page (the
+  address `decisionPath` builds, the id in one base64url segment) under
   the same policy; the code block is highlighted (`pre.shiki`), the
   diagram drawn in its frame, and no `securitypolicyviolation` is
   reported. Without `'wasm-unsafe-eval'` the block stays plain and a
@@ -1341,6 +1362,424 @@ ahead of its code. Sizes are changed lines, code and tests.
 | OSS-1b | web: the bridge's types and the shell's own screens | `web/app/utils/shell.ts` (bridge v1 whole), `middleware/shell.global.ts`, `layouts/shell.vue`, `pages/shell/{index,signin,settings}.vue` with Open a server in every state; `mobile/e2e/boot.spec.ts` and `ShellBootsUnderItsPolicyTests`, added to `mobile-test` and `mobile-ios`; `docs/repository-map.md` | `web/app`, `web/e2e`, `mobile`, `docs` | `shell.test.ts`, `shell.spec.ts`, `boot.spec.ts`, `ShellBootsUnderItsPolicyTests` | OSS-1a | OSS-2a | ~450 + 450 |
 | OSS-2b | web: the decision page from a shell's inbox, drafts revalidated, the handle's and the link's routes; the features entry | `utils/answering.ts` and its one seam in `DecisionRespond.vue`; the shell's `REF_ACCESS` and `utils/transport/shell.ts`; `utils/drafts.ts` and `utils/answer.ts`; `pages/shell/decisions/[id].vue`, the shell's inbox screen, `/shell/open`, `links.onOpen` through `route`; the boot checks' decision case and its fixture provider; `docs/features.md` | `web/app`, `web/e2e`, `mobile`, `docs` | the OSS-2b vitest and Playwright above | OSS-1b, OSS-2a | none | ~650 + 750 |
 | OSS-3 | mobile: the Android shell (a later row) | `mobile/android`, `ConductorKey.kt`, the store's Android side, the platform's push token and taps, CI's `mobile-android` job, `docs/features.md`'s line | `mobile`, `.github/workflows`, `docs` | `mobile/test`, the Gradle build and the emulator start | OSS-2b | none | ~600 + 350 |
+
+**As built, OSS-1a's native layer** (`mobile/ios/ConductorNative`, a
+Swift package with no package of anyone else's):
+
+- The key's and the store's tests are Swift Testing suites under the
+  plan's names (`ConductorKeyTests`, `ConductorStoreTests`), run by
+  Swift's own tools (`make mobile-native-test`) with no IDE or project,
+  on the Mac's own system, not on iOS: lines compiled only for iOS (the
+  files' complete protection) are built by the app's build and first run
+  by the boot check or on a device.
+- The key's record (its state, its bound id, an unbound key's `until`)
+  is kept with the private key in the one keychain item, as JSON.
+- The install's mark (`conductor/key.marker`) is kept out of backups, so
+  a restored backup never brings a mark that would let a key be kept.
+- A bound id is 1 to 128 bytes of printable ASCII with no space (0x21 to
+  0x7E).
+- An `unbound` key may sign what a plan builds before its `until`; only
+  `none` and an `unbound` key past its `until` sign nothing.
+- The store's records are stamped with the store's generation, which
+  `clear()` moves before it removes anything: a drafts or cache record a
+  clear could not remove is never read again (nothing of one sign-in is
+  read under the next). The servers area keeps its records across.
+- The servers area holds at most 5 records of at most 12 KiB each (the
+  bridge keeps the last five addresses as one record).
+- A store key is 1 to 64 of `a-z`, `0-9`, `-`, `_`, `.`, and never `.`,
+  `..` or a name ending `.new` (the name of a write not yet renamed).
+- `clear()` empties the web view's data store whole: the shell's web
+  view loads its bundle alone, and the in-app browser keeps its own.
+- What a write cut before its rename left (`<key>.new`) is never read
+  and is removed when the store starts.
+
+**As built, OSS-1a's app** (`mobile/ios/App`, `mobile/package.json`,
+`mobile/capacitor.config.ts`):
+
+- Capacitor 8.6.0 (`core`, `ios`, `cli`) with `push-notifications`
+  8.1.3, `app` 8.1.2 and `browser` 8.0.5: the newest releases at least two
+  weeks old. Its iOS template has a scene delegate: the window, the
+  shell's view controller and the cover are the scene's
+  (`SceneDelegate.swift`), and the `AppDelegate` hands the push token on.
+  The main storyboard's controller is the shell's too, so every way the
+  window gets one gives it the shell's.
+- The plugins are a few lines each in `App/Plugins`
+  (`ConductorKeyPlugin.swift`, `ConductorStorePlugin.swift`): each call
+  is decoded, made and answered by a third target of the native package,
+  `ConductorShell` (`KeyCalls`, `StoreCalls`), tested by `swift test`
+  with the rest. A refusal reaches the page as a rejected error with
+  `code` and `words` (the words also its message); a call the plugin
+  does not have is `unknown_call`, an argument of the wrong kind
+  `invalid_request`, and a key or store the phone could not open
+  `native`. The key's start and the store's run before the first call.
+- Capacitor's view controller makes its web view's delegate itself and
+  grants every media capture; `ShellViewController` wraps the web view's
+  UI delegate in `MediaCaptureRefused`, which denies every capture and
+  hands every other call to Capacitor's.
+- `ShellInfoPlistTests` is `scripts/ios_project.py` with its tests in
+  the scripts suite: the plist's Face ID words, no other usage
+  description, no background mode; no team, profile or entitlement; iOS
+  16 and the development id in every configuration; every Swift file in
+  the app's sources; the local package linked; the config's id and
+  navigation; `CapApp-SPM` at the locked version; the plugins' names
+  exactly the bridge's (`NativeKey`, `NativeStore`), registered, and the
+  capture refused. The shell's TypeScript tests stay in the app's vitest,
+  so `mobile/` adds `typescript` alone as a dev dependency (the runtime's
+  tool reads `capacitor.config.ts` with it).
+- CI's job is `mobile-ios` (macOS): `make mobile-install mobile-sync`,
+  `make mobile-native-test`, `make mobile-ios`. The bridge's tests run in
+  the web job's vitest.
+- The app icon is the desktop app's; the launch image is plain white.
+
+**As built, the review's fix pass** (pull request 1052):
+
+- Capacitor registers its own `WebView`, `CapacitorCookies` and
+  `CapacitorHttp` plugins for every page whatever its configuration
+  says. The shell registers, by the same names, two stand-ins that
+  refuse every call (`not_in_shell`) and its own HTTP plugin
+  (`ShellHttpPlugin` over `ConductorShell`'s `NativeHTTPCalls`), and its
+  view controller never loads a server base path a page asked to keep
+  (`instanceDescriptor`). The view controller's own base-path setter is
+  not open to an app, so it is not overridden. The stand-ins alone did
+  not hold: the runtime makes and registers a fresh plugin for a message
+  that names a plugin by its native class (`CAPWebViewPlugin`), over the
+  stand-in; the bridge gate below closes that, and the stand-ins stay
+  behind it as a second wall.
+- The native HTTP call admits a request only when its address is https
+  on an origin the packaging named (`make mobile-sync
+  MOBILE_NATIVE_ORIGINS=…`, written into the bundle as
+  `shell/native-http.json` and read once at the app's start from the
+  app's own bundle; absent, unreadable or malformed is none); anything
+  else (`http`, `file:`, another origin or port, a user part, a host
+  that only looks like a named one, a trailing dot) is `origin_refused`
+  before anything is opened. It is the shell's own rather than
+  Capacitor's handler, so that it keeps no cookie, cache or credential
+  (an ephemeral session with none), follows no redirect (the reply that
+  asks for one is the answer), and reads a reply only up to 1 MiB
+  (`too_large`). Its call shape is Capacitor's: `request`, and `get` to
+  `delete`, answered `{status, headers, url, data}`; `params` is refused.
+  A header that says where the request goes or how it is framed
+  (`Host`, `Connection`, `Keep-Alive`, any `Proxy-` one,
+  `Content-Length`, `Transfer-Encoding`, `TE`, `Upgrade`, `Trailer`, by
+  name whatever its case), a name that is not an HTTP token and a value
+  with a control character are refused (`invalid_request`) before
+  anything is sent, so that what is judged (the address) is where the
+  request goes; `Authorization`, `Content-Type` and any other header a
+  provider sends are set as given.
+- `clear()` always removes: the generation moves first, then the drafts
+  and the cache are removed and the HTTP caches emptied whatever the
+  generation's write did; a generation not written is written again
+  after the removal, and one that still cannot be has its file removed.
+  A store that starts with no generation on disk reads none of the
+  drafts or cache there (its generation is taken past all of theirs),
+  and its first record writes the generation before itself. Anything not
+  removed or not written is answered `not_cleared`, after the rest.
+- `clear()` empties the app's cookie jar and its stored credentials too,
+  before the web view's data store.
+- A record's file and the store's folders are made under complete
+  protection (the write's own option on iOS), and a write whose
+  protection or rename fails removes its new file before `put` answers.
+- Each plugin's calls run one at a time in the order they arrive
+  (`ConductorShell`'s `CallRunner`, one a plugin).
+- An unbound key whose time runs out while the person is asked signs
+  nothing (`key_expired`, the key removed), as before the wait; a
+  keychain item that is not a key (its form unknown, or its private key
+  not one) is removed at any read, and the state is `none`.
+- The project check reads `capacitor.config.ts` (no key but the app id,
+  its name, the bundle and the empty navigation), every `*.xcconfig`
+  and scheme under `mobile/ios`, and the property-list keys that would
+  add a transport exception, URL types, queried schemes, shared files or
+  any usage description but Face ID's. Preflight names `mobile-ios` as
+  CI's alone. CI caches the job's Swift packages and tries their resolve
+  three times.
+- The boot check `ShellBootsUnderItsPolicyTests` is the app's UI test
+  target `AppUITests`, run by the shared scheme's test action from `make
+  mobile-ios` (`scripts/ios_boot.py check`: the newest iPhone simulator
+  the machine has, booted and waited for in three tries, then the test
+  once, unsigned). It launches the built app with no provider and the
+  boot check's argument, which alone makes the app add, before the
+  page's own scripts, a script that reports every policy violation and,
+  once Open a server is drawn, the bridge's platform and whether the
+  page has every plugin the bridge needs, into one label the test reads
+  (`ConductorShell`'s `BootCheck`, the app's `BootCheckView`). Once Open
+  a server is drawn, the page also tries each known way around the
+  gates below (a plugin named by its native class, three of them; a
+  Cordova message; a text-input prompt of the runtime's cookies kind; a
+  file of the bundle under the runtime's file prefix, plain and
+  escaped; a climb out of the bundle's folder; a method outside the
+  table on a plugin the page reaches; a callback id that is no callback
+  id; a srcdoc frame's call; a frame at an outside address and at the
+  app's own; a location change and a new window to a custom scheme; a
+  location change to the app's own address with its host in another
+  case and with an escape in it; a listener call with no event) and
+  checks each is refused, the srcdoc frame draws, the native HTTP call
+  is still the shell's own (it refuses an origin not named), the key
+  and the store still answer, the app still answers after the listener
+  call, and a decision's address as the screens build it for an id
+  outside the path's alphabet is let through (the bundle's page
+  answers) where the same id written into the path is refused; the app
+  counts the probe messages the bridge gate dropped and the probe loads
+  the load gate refused (the two frames and the three location changes,
+  each waited on until the app has told the page of its refusal; the
+  script's window to a custom scheme is refused by WebKit itself before
+  any delegate, and the probe checks no window opened). Each probe's
+  wait has a bound of its own, so one never answered is reported, not
+  waited on. It passes only on `ready platform=ios plugins=ok probes=ok
+  dropped=8 refused=5 violations=0`, then finds Open a server's address
+  field; the test names each report it reads as a step the run's log
+  shows, so the log says how far the check got even when a probe ended
+  the app.
+
+**Every way a page reaches native code** (as built, read from the
+pinned runtime's own source, `@capacitor/ios` 8.6.0, and its App,
+Browser and PushNotifications plugins). Each gate decides on five
+things: (a) who sent the thing (which frame, which view), (b) every
+field native code then reads, each in a closed form, (c) the same
+spelling native code then uses, (d) what leaves the app by it, and (e)
+where it forwards to code that judges again, a sense of what it lets
+through that is that code's own test or narrower. Every gate is an
+allowlist that fails closed, and the page loads only once every gate
+stands.
+
+- **The script message handler `bridge`**, which WebKit gives every
+  frame of the view. The runtime reads five fields of a message:
+  `type` (`message`, a plugin call; `cordova`, a Cordova call;
+  `js.error`, a log line), `pluginId` (a plugin by its page name, and
+  when none has that name, a plugin made from the native class of that
+  name), `methodName`, `callbackId` and `options`. Gate:
+  `BridgeGateHandler` (`ConductorShell`'s `BridgeGate`) takes the
+  handler's name before the first load. (a) Only the main frame of the
+  shell's own view, at the app's own origin (the scheme and host of the
+  configured local address). (b) `type` exactly `message`; `pluginId`
+  and `methodName` one pair of a closed table, the calls `bridge.ts`
+  makes and the runtime's listener calls for the plugins it listens to
+  (below; the project check holds the table to `bridge.ts` both ways);
+  `callbackId` the runtime's own form, `-1` or 1 to 16 digits;
+  `options` an object or absent, and for the listener calls, whose
+  options the runtime's base plugin reads, exactly the form the
+  runtime's page script gives them: `addListener` an `eventName` the
+  bridge listens for on that plugin (`registration` and
+  `pushNotificationActionPerformed` on `PushNotifications`, `appUrlOpen`
+  on `App`; the project check holds them to `bridge.ts`), and
+  `removeListener` that and the listener's `callbackId` in the runtime's
+  form; no other key. (c) The strings judged are the strings the
+  runtime uses: it reads them as they are. (d) Nothing leaves the app by
+  the message itself; what a call does is that plugin's. (e) The runtime
+  looks the plugin up by the exact string judged, and finds the method
+  by its own name: a pair of the table names a registered plugin and
+  one of its methods. Everything else is dropped. The runtime's `WebView` and
+  `CapacitorCookies` are not in the table, and their refusing stand-ins
+  stay registered behind the gate as a second wall.
+
+  | Plugin | Methods |
+  |---|---|
+  | `ConductorKey` | `create`, `publicKey`, `state`, `bind`, `sign`, `ending`, `remove` |
+  | `ConductorStore` | `put`, `get`, `list`, `remove`, `clear` |
+  | `CapacitorHttp` | `request` |
+  | `PushNotifications` | `checkPermissions`, `requestPermissions`, `register`, `addListener`, `removeListener` |
+  | `App` | `getLaunchUrl`, `addListener`, `removeListener` |
+  | `Browser` | `open` |
+
+- **Every string the runtime writes into script it evaluates** (in the
+  main frame, outside the page's policy), each input and why it is
+  closed:
+
+  | Where | Inputs | Closed by |
+  |---|---|---|
+  | `toJs` (a call's answer) | `callbackId`, `pluginId`, `methodName`; `save`; `data` | the gate's table and digits form; a native Bool; the answer serialised as JSON |
+  | `toJsError` (a call's refusal) | `callbackId`, `pluginId`, `methodName`; the error | as above; the error serialised as JSON |
+  | `triggerJSEvent` and its window and document forms | event name and target | constants of native code (the scene's `resume` and `pause`, `document`); no caller hands it data |
+  | `evalWithPlugin`, `eval`, `logToJs` | script, message | no caller in the runtime, the three plugins or the shell |
+  | a plugin's event (`notifyListeners`) | the event's data | goes through `toJs` with the listener's own call: JSON |
+
+- **The boot check's handler `conductorBootCheck`**, in a boot-check
+  launch only (its launch argument, which a person's launch never
+  passes): (a) any frame; (b) a string; (c) shown as text in one label;
+  (d) nothing leaves. No gate needed beyond its absence elsewhere. In
+  that launch alone the app also evaluates one constant in the page
+  each time the load gate refuses a probe load (a count the page waits
+  on before its next probe).
+- **The UI delegate** (the runtime's, wrapped by `MediaCaptureRefused`).
+  A text-input prompt: the runtime reads one whose text is JSON as a
+  native call (the app's cookie jar read or written, the runtime's
+  switches read) and shows any other; the shell's delegate answers
+  every prompt nil and hands none on, so the runtime's page script also
+  leaves `document.cookie`, `fetch` and `XMLHttpRequest` unpatched. A
+  media capture request: denied. A new window (a link with a target, a
+  script's `window.open`): decided by the load gate below and never a
+  window in the shell; a script opens no window on its own (WebKit's own
+  refusal without a person's tap, set so by the shell), and a window a
+  tap opens is the load gate's. An alert or a confirm: the system's own
+  alert with the page's words, nothing else of the app. A device
+  orientation and motion request: granted by the runtime; motion events
+  only. (e) The shell's delegate forwards nothing that judges again: it
+  answers the prompt, the capture and the new window itself, and the
+  alert, confirm and orientation calls go to the runtime's as they are.
+- **The navigation delegate** (the runtime's, wrapped by `NavigationGate`,
+  which decides every load ahead of the runtime's own rule by one pure
+  function, `LoadGate`; the runtime's other calls go to its own
+  delegate unchanged). (a) The frame: the main frame, a new window, or a
+  frame. (b) The address and WebKit's navigation type. (c) The address
+  WebKit hands the delegate. (d) In the main frame the app's own address
+  goes on to the runtime (which allows it); (e) the app's own address is
+  the runtime's own test of it, narrowed: the runtime asks whether the
+  address, as a string, begins with its local address, and hands a
+  top-level load that does not to iOS, so the gate takes the string as
+  it is, case as written and nothing decoded, and forwards only the
+  local address exactly or followed by `/`, `?` or `#` (a host in
+  another case, with an escape, a port, a user part or a longer name is
+  cancelled); a link the person activated
+  (WebKit's link type, which a script's own click on a link also gets)
+  to an `https` or `http` address, while the app is in the foreground,
+  is handed to iOS, which opens it as for a link tapped in Mail: the
+  person's browser, or the app iOS ties to that address; anything else
+  is cancelled, never loaded (a location change, a form, a redirect, a
+  refresh away). A new window: an `https` or `http` address, in the
+  foreground, is handed to iOS (the sign-in page opens the provider's
+  page so, with `window.open`); anything else gets no window. A frame:
+  `about:srcdoc` (the diagram's frame) and `about:blank` load; anything
+  else is cancelled. No other scheme is ever handed on: `tel:`, `sms:`,
+  `mailto:`, `itms-apps:`, `file:`, `data:`, `blob:`, `javascript:`,
+  `about:`, a custom one. The runtime's own plugins have no say over a
+  load (none of the shell's plugins answers the runtime's question).
+  The page's policy sets no `frame-src`: the load gate refuses every
+  frame load but the two, and the boot check proves both a srcdoc frame
+  drawing and an outside frame refused by it.
+- **Every hand-off out of the app**, from the runtime's source, the
+  three plugins' and the shell's:
+
+  | Where | What reaches it now |
+  |---|---|
+  | the runtime's navigation rule (`UIApplication.shared.open` for a top-level load outside the app) | nothing: the load gate forwards only an address the runtime's own test takes as the app's, and cancels every other before the runtime is asked |
+  | the runtime's new-window rule (`UIApplication.shared.open` in `createWebViewWith`) | nothing: the shell's UI delegate answers every new window itself |
+  | the shell's `NavigationGate.handOff` (`UIApplication.shared.open`) | an `https` or `http` address: a link activated in the main frame, or a new window, in the foreground |
+  | `Browser.open` (the in-app browser, `SFSafariViewController`) | the bridge's Open a server (`https`, or `http` with its words) and a provider's own call through the table |
+  | the App and PushNotifications plugins | no hand-off out (`canOpenURL` and `openURL` appear nowhere in them) |
+
+- **The scheme handler** (`capacitor://localhost`): it reads the decoded
+  path of an address; under `/_capacitor_file_` any absolute path the
+  app can read, under `/_capacitor_http_interceptor_` a proxy the runtime
+  refuses with its native HTTP off, and any other path through the
+  router as a file of the bundle's folder. Gate: content rules
+  (`ConductorShell`'s `FilePrefix`) compiled and added before the first
+  load. (a) Every kind of load and every host of the app's scheme. (b)
+  The address as WebKit writes it, the host and path read in the case
+  written. (c) Only an address of the app's own host whose path is
+  spelled with the characters decoding leaves unchanged and the
+  bundle's files and the shell's routes use (letters, digits, `.`, `_`,
+  `-`, `/`; a query or a fragment after it is not read as the path) is
+  let through, a percent sign above all refused, so the string the rule
+  judged is the string the handler reads; whatever its spelling, a path
+  under either prefix is refused. The project check walks the built
+  bundle and the shell's routes and fails on a path outside that
+  spelling, and on a shell page's dynamic segment not carried through
+  its address helper: a decision's page is at
+  `/shell/decisions/<segment>`, the provider's id as one unpadded
+  base64url segment of its UTF-8 bytes (`decisionPath` in
+  `web/app/utils/shell.ts`, which every place that opens a decision
+  uses, read back by `decisionIdOf`; a segment that does not read back
+  is no such decision), so the address the app loads again when iOS
+  ends the page's process is let through whatever the id. (e) The rules
+  are narrower than the handler's own test of its prefixes (which
+  matches the decoded path), and the handler routes what they let
+  through. The shell's own router (`ShellRouter`, `BundleRoute`) is a
+  second wall behind the rules, proved by its unit tests (WebKit
+  resolves plain dot segments before any rule or router sees an
+  address): it answers a file only when the path, its `.` and `..`
+  resolved, stays inside the bundle's folder; anything else is a file
+  that does not exist (a path with no extension answers `index.html`,
+  as the runtime's does). (d) Files of the bundle only. The runtime
+  reads a request's `Range` header itself; a page's own script can end
+  the app's process with a malformed one there, and reaches nothing
+  beyond it.
+- **The scripts the runtime injects** at each document's start, main
+  frame only: its configuration; its bridge script (`window.Capacitor`,
+  its calls posted to `bridge`; `console` patched to post `Console`
+  lines, which the gate drops; `document.cookie`, `fetch` and
+  `XMLHttpRequest` patched only if a prompt answers that the runtime's
+  cookies or HTTP are on, which the shell's delegate never does); each
+  registered plugin's header (its page name and methods); Cordova's
+  scripts only when a Cordova plugin is registered (none is). They
+  reach native code only through the handler and the prompt above.
+- **Native to native**: the runtime's cookie observer copies the web
+  view's cookies into the app's jar as they change; `clear()` empties
+  the jar before and again after the web view's store.
+
+Also as built in the second fix pass: a `clear()` the page asks for
+while the store cannot start (its generation unreadable while the phone
+is locked) is let past the start, removes what it can and the
+generation file, and answers `not_cleared`; a start with no generation
+on disk removes every draft and cache file it finds (one it cannot
+remove still reads as stale); the native HTTP call's calls run one at a
+time in the order they arrive, as the key's and the store's do, each
+reply bounded at two minutes so none holds the queue.
+
+**A packaging's native sources** (as built): one place,
+`mobile/ios/ConductorNative/Sources/ConductorPackaging/Packaging/`, which
+this repository ships empty (git ignores it, and the project check fails
+on any file there). Every Swift file a packaging puts there is compiled
+into the module `ConductorPackaging`, which depends on `ConductorKey`, so
+a file there can `import ConductorKey` for `KeySigningPolicy`,
+`SigningPlan` and `KeyPolicyRefusal`; the app links the module, names it
+at start, and links with `-ObjC`, so a policy class nothing names by
+symbol is still in the executable. No project file is edited. A
+packaging's steps:
+
+1. Put the policy in that folder: a class conforming to
+   `KeySigningPolicy` with `init()`, exposed as
+   `@objc(ConductorKeySigningPolicy)` (an `NSObject` subclass), as
+   `mobile/ios/fixtures/SampleSigningPolicy.swift` is.
+2. Build as usual (`make web-build mobile-install mobile-sync
+   MOBILE_CONNECT=… MOBILE_NATIVE_ORIGINS=… mobile-ios`, then the IDE
+   under its own signing).
+3. Check its class is in the built app as `make mobile-ios-policy`
+   checks the sample's: `xcrun otool -ov <App.app/App>` names
+   `ConductorKeySigningPolicy`.
+
+The `mobile-ios` job proves the place on every run (`make
+mobile-ios-policy`, `scripts/ios_boot.py policy`): a Release build, dead
+code stripped, with the sample copied into the place holds the class
+under the fixed name, read from the executable's class list, and the
+default build holds none.
+
+**By hand on a device** (what only a phone shows), from a clean checkout
+on a Mac with Xcode: `make web-build mobile-install mobile-sync`, `npx cap
+sync ios` in `mobile/`, open `mobile/ios/App/App.xcodeproj`. The builder
+supplies, in the App target's Signing & Capabilities: their team (a team
+id), a signing certificate and a provisioning profile for a development
+build (Xcode's automatic signing makes both), a bundle id of their own in
+place of `dev.conductor.mobile`, and the Push Notifications capability
+(the `aps-environment` entitlement) for the notification checks. Then,
+on the phone, with a packaging's signing policy and provider where a
+step signs or is told:
+
+1. The first answer asks Face ID with "Confirm your answer in
+   Conductor"; Cancel sends nothing and says so (`presence_refused`).
+2. Face ID failed twice, or turned off: the passcode is offered and an
+   answer confirmed with it is sent.
+3. Nothing signs while the phone is locked: a sign started and the phone
+   locked before it is confirmed sends nothing.
+4. Records are unreadable while locked: with Xcode's debugger attached
+   and a draft kept, the draft's file has the protection `complete`
+   (`FileManager.default.attributesOfItem(atPath:)[.protectionKey]`), and
+   a read of it from the debugger with the phone locked for ten seconds
+   fails.
+5. A reinstall drops the key: the app deleted and installed again
+   starts with no key (`none`), whatever the keychain kept.
+6. A restored backup brings neither key nor records: a backup made with
+   a key and a draft, restored to a phone (or the same one, erased),
+   starts with no key and no drafts or cache.
+7. A notification's tap opens its decision: a notification whose data
+   has `h` tapped with the app closed and again with it in the
+   background opens `/shell/open?h=<handle>` and that decision, read at
+   that moment; one with no `h` opens the inbox.
+8. The app switcher shows the plain cover, never a card.
+9. With no provider, the app opens on Open a server, and an address
+   opens in the in-app browser.
+10. A page's request for the camera or the microphone is denied with no
+    prompt (the system's dialog never shows).
+11. A link tapped in a decision's context opens outside the shell, in
+    the system's browser, and the shell's page stays as it was.
 
 OSS-2a needs nothing of the shell and the shell's rows nothing of
 OSS-2a until OSS-2b, which joins them; OSS-2b is the last code row of

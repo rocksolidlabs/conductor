@@ -1,4 +1,4 @@
-import { itemId, providerName, shellBridge, tapTarget, type ShellItem, type ShellState } from '~/utils/shell'
+import { decisionPath, itemId, providerName, shellBridge, tapTarget, type ShellItem, type ShellState } from '~/utils/shell'
 import { createShellState } from '~/utils/shellState'
 import { shellAnswering } from '~/utils/transport/shell'
 
@@ -53,6 +53,6 @@ export function useShellRoutes(): void {
   bridge.links.onOpen(async (url) => {
     if (!provider) return void navigateTo({ path: '/shell', query: { address: url } })
     const id = itemId(await provider.route(url).catch(() => null))
-    await navigateTo(id ? `/shell/decisions/${encodeURIComponent(id)}` : '/shell')
+    await navigateTo(id ? decisionPath(id) : '/shell')
   })
 }

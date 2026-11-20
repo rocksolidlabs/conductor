@@ -7,7 +7,7 @@ GO_MIN   := $(shell awk '/^go /{print $$2}' go.mod)
 NODE_MIN := 22
 NODE_STAMP := web/node_modules/.package-lock.json
 
-.PHONY: help deps check-tools build build-go check-version notices web-install web-build web-typecheck web-dev run dev test test-web test-e2e test-live design-capture test-pebble test-network test-recipes desktop-install desktop-dev desktop-test desktop-binaries desktop-dist desktop-e2e mobile-sync mobile-test lint lint-static vuln fmt generate docker clean preflight
+.PHONY: help deps check-tools build build-go check-version notices web-install web-build web-typecheck web-dev run dev test test-web test-e2e test-live design-capture test-pebble test-network test-recipes desktop-install desktop-dev desktop-test desktop-binaries desktop-dist desktop-e2e mobile-install mobile-sync mobile-test mobile-native-test mobile-ios-resolve mobile-ios mobile-ios-policy lint lint-static vuln fmt generate docker clean preflight
 
 help: ## list targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-16s %s\n", $$1, $$2}'
@@ -92,22 +92,41 @@ desktop-dev: build-go ## run the desktop app against the checkout's bin/conducto
 desktop-test: ## the desktop shell's type check and unit tests
 	cd desktop && npm run typecheck && npm test
 
-notices: web-build ## THIRD_PARTY_NOTICES from what the binary, the web bundle and the desktop app ship (npm ci in desktop/ first)
+notices: web-build ## THIRD_PARTY_NOTICES from what the binary, the web bundle, the desktop app and the phone shell ship (npm ci in desktop/ and mobile/ first)
 	python3 scripts/notices.py
 
 desktop-e2e: build-go ## the desktop shell's smoke in Electron (needs a display: xvfb-run on Linux)
 	cd desktop && npm run build && npm run test:e2e
 
-# The phone shell's web side (docs/plans/phone-shell.md, OSS-1a and OSS-1b): the bundle with the shell's bridge and its policy, built
-# with the app's own tools (web/node_modules); the native project, its packages and its simulator build are a later row.
-mobile-sync: $(NODE_STAMP) ## the built bundle into mobile/www with the shell's bridge and its policy (make web-build first; MOBILE_CONNECT=<https origins, comma-separated> for a provider's build)
-	node mobile/scripts/sync.mjs internal/web/dist mobile/www mobile/providers $(if $(MOBILE_CONNECT),--connect=$(MOBILE_CONNECT))
+# The phone shell (docs/plans/phone-shell.md, OSS-1a and OSS-1b): the bundle with the shell's bridge and its policy, built with the
+# app's own tools (web/node_modules); the native runtime's packages (mobile/node_modules); the native package's tests and the iOS
+# app's simulator build, unsigned, on a Mac with Xcode.
+mobile-install: ## the phone shell's native runtime packages, as mobile/package-lock.json pins them
+	cd mobile && npm ci
+
+mobile-sync: $(NODE_STAMP) ## the built bundle into mobile/www with the shell's bridge and its policy (make web-build first; MOBILE_CONNECT=<https origins, comma-separated> for a provider's pages, MOBILE_NATIVE_ORIGINS=<https origins, comma-separated> for its native HTTP call)
+	node mobile/scripts/sync.mjs internal/web/dist mobile/www mobile/providers $(if $(MOBILE_CONNECT),--connect=$(MOBILE_CONNECT)) $(if $(MOBILE_NATIVE_ORIGINS),--native-origins=$(MOBILE_NATIVE_ORIGINS))
 	cd web && npx vite build --config ../mobile/bridge.vite.config.mjs
 
 mobile-test: $(NODE_STAMP) ## the shell's bridge type-checked and its tests (they run in the app's vitest too), and its boot spec (make web-build first)
 	web/node_modules/.bin/tsc -p mobile/tsconfig.json
 	cd web && npx vitest run ../mobile/test
 	cd web && npx playwright test e2e/shell-boot.spec.ts
+
+mobile-native-test: ## the phone shell's native key, store and plugin calls (mobile/ios/ConductorNative) built and tested by Swift's own tools (on a Mac)
+	cd mobile/ios/ConductorNative && swift test
+
+mobile-ios-resolve: ## the iOS app's Swift packages fetched, tried three times (on a Mac with Xcode; make mobile-install first)
+	cd mobile && npx cap sync ios
+	python3 scripts/ios_boot.py resolve
+
+mobile-ios: ## the iOS app built for the simulator, unsigned, and its boot check run on one (on a Mac with Xcode; make web-build mobile-install mobile-sync first)
+	cd mobile && npx cap sync ios
+	xcodebuild -project mobile/ios/App/App.xcodeproj -scheme App -configuration Debug -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -derivedDataPath mobile/ios/App/build -disableAutomaticPackageResolution -onlyUsePackageVersionsFromResolvedFile CODE_SIGNING_ALLOWED=NO build
+	python3 scripts/ios_boot.py check
+
+mobile-ios-policy: ## a build with the sample signing policy in a packaging's place holds its class, the default build none (on a Mac with Xcode; make mobile-ios first)
+	python3 scripts/ios_boot.py policy
 
 # The server binaries the packages bundle, under the names electron-builder's ${os}-${arch} macros give.
 desktop-binaries: ## cross-compile the server for the desktop packages (linux and mac, x64 and arm64)
