@@ -191,4 +191,34 @@ test.describe('the app screens\' state', () => {
     await expect(page).toHaveURL(new RegExp(`/sessions/${id}`))
     await page.context().close()
   })
+
+  test("the three documents are asked at once: a layout not yet answered holds back neither the palette's read nor the pins'", async ({ browser, state }) => {
+    // Read one after another, each read waited for the one before and for its taking (a layout redraws the page): on a loaded
+    // machine the three took a reloaded page past its first fifteen seconds (counts.spec.ts). The layout's answer is held here
+    // until the other two have been asked, or ten seconds: a page that asks them only after the layout's answer fails every run.
+    const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+    const page = await ctx.newPage()
+    await page.addInitScript((t) => localStorage.setItem('conductor.workbenchToken', t), state.token)
+    const asked = new Set<string>()
+    let both!: () => void
+    const others = new Promise<void>((r) => (both = r))
+    let layoutHeld = ''
+    await page.route('**/api/ui/*', async (route) => {
+      if (route.request().method() !== 'GET') return route.continue()
+      const name = new URL(route.request().url()).pathname.split('/').pop()!
+      asked.add(name)
+      if (asked.has('palette') && asked.has('pins')) both()
+      if (name === 'layout')
+        layoutHeld = await Promise.race([
+          others.then(() => 'until the others were asked'),
+          new Promise<string>((r) => setTimeout(() => r('ten seconds'), 10_000)),
+        ])
+      return route.continue()
+    })
+    await page.goto('/')
+    await expect(page.locator('[data-ui-state]').first()).toHaveAttribute('data-ui-state', 'read', { timeout: 30_000 })
+    expect([...asked].sort()).toEqual(['layout', 'palette', 'pins'])
+    expect(layoutHeld).toBe('until the others were asked')
+    await ctx.close()
+  })
 })

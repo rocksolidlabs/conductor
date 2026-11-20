@@ -117,8 +117,8 @@ export function useUiState() {
     }
   }
 
-  async function read(name: UiName) {
-    const reply = await request<UiDocReply>(`/api/ui/${name}`)
+  /** Takes the server's document `name` as it was read (`reply`). */
+  function take(name: UiName, reply: UiDocReply) {
     if (!isKept(reply)) {
       // None on the server: this browser's, when it has any, becomes the server's.
       const empty = name === 'layout' ? Object.keys(layout.value).length <= 1 : name === 'palette' ? !Object.keys(recents.value).length : !pins.value.length
@@ -151,7 +151,10 @@ export function useUiState() {
     if (!import.meta.client || server.value !== 'none' || !token.token.value) return
     server.value = 'reading'
     try {
-      for (const name of UI_NAMES) await read(name)
+      // The three at once, then taken in their order: read one after another, each one's taking (a layout redraws the page) held
+      // the next request back, and a loaded machine took the three reads past a page's first seconds.
+      const replies = await Promise.all(UI_NAMES.map((name) => request<UiDocReply>(`/api/ui/${name}`)))
+      UI_NAMES.forEach((name, i) => take(name, replies[i]!))
       server.value = 'read'
       // What changed here while the documents were read, or before (unsent), is written now.
       for (const name of UI_NAMES) if (timers[name] || unsent().includes(name)) schedule(name)
