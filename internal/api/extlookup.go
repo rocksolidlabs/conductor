@@ -26,9 +26,9 @@ import (
 // take the slots an attempt's start asks its blocks in. A session has at
 // most maxLookupsInFlight lookups in flight, each counted until the
 // provider's call returns. What the provider answers is checked
-// (ext.LookupAnswer.Valid) and handed back as reference material; until
-// the attempt's context is recorded (CT-3), no block is handed to an
-// agent. Nothing a lookup asks or answers is logged.
+// (ext.LookupAnswer.Valid) and handed back as reference material; a late
+// pack's blocks only once they are recorded against the attempt
+// (crew.RecordLookupContext). Nothing a lookup asks or answers is logged.
 
 const (
 	// extKindLookup is the guard's kind of a provider's lookups: its slots
@@ -203,18 +203,28 @@ func (s *Server) handleContextLookup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "lookup_unavailable", lookupUnavailable)
 		return
 	}
-	reply := lookupReply{Source: g.name, Items: answer.Items, Coverage: answer.Coverage, More: answer.More, Note: answer.Note}
+	reply := lookupReply{Source: g.name, Items: answer.Items, Blocks: answer.Blocks, Coverage: answer.Coverage, More: answer.More, Note: answer.Note}
 	if reply.Items == nil {
 		reply.Items = []ext.LookupItem{}
 	}
-	// Until the attempt's context is recorded (CT-3) no block is handed
-	// to an agent: the answer's blocks are dropped here.
 	if b, err := json.Marshal(reply); err != nil || len(b) > ext.MaxLookupAnswer {
 		writeError(w, http.StatusServiceUnavailable, "lookup_unavailable", lookupUnavailable)
 		return
 	}
+	// A late pack's blocks reach the agent only once they are recorded
+	// against its attempt (crew.RecordLookupContext): when they cannot
+	// be, the answer carries none, and says so in the server's words.
+	if len(reply.Blocks) > 0 {
+		if err := s.runs.RecordLookupContext(r.Context(), scope.Run, scope.Task, scope.Attempt, g.name, reply.Blocks); err != nil {
+			reply.Blocks, reply.Withheld = nil, lookupWithheld
+		}
+	}
 	writeJSON(w, http.StatusOK, reply)
 }
+
+// lookupWithheld is the server's words for a late pack it could not
+// record, and so does not give.
+const lookupWithheld = "this context could not be recorded, so it is not given"
 
 // agentFieldsValid checks the fields of r the agent gave (its op and
 // words), with the server's own set to stand-ins of their shapes, so a
@@ -270,9 +280,13 @@ func (s *Server) lookupCaller(w http.ResponseWriter, r *http.Request) (session.D
 type lookupReply struct {
 	Source   string             `json:"source"`
 	Items    []ext.LookupItem   `json:"items"`
+	Blocks   []ext.ContextBlock `json:"blocks,omitempty"`
 	Coverage ext.LookupCoverage `json:"coverage"`
 	More     bool               `json:"more,omitempty"`
 	Note     string             `json:"note,omitempty"`
+	// Withheld is the server's own words when a late pack could not be
+	// recorded and so is not given; never the provider's.
+	Withheld string `json:"withheld,omitempty"`
 }
 
 // copyLookupAnswer is a with its slices copied: the guard's own, never

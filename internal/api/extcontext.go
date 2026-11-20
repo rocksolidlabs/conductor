@@ -69,6 +69,11 @@ func (s *Server) wireContext() {
 // more than one note when one would be cut: packNotes).
 func (s *Server) contextFor(ctx context.Context, q ext.ContextQuery) []crew.TaskContext {
 	providers := s.exts.context
+	if s.contextFiles == nil {
+		// No block reaches an agent unrecorded: without the context
+		// files, none is asked.
+		providers = nil
+	}
 	answers := make([][]ext.ContextBlock, len(providers))
 	var wg sync.WaitGroup
 	for i, p := range providers {

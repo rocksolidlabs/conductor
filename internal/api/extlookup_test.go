@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -390,16 +391,56 @@ func TestLookupSlotsLeaveTheStartAlone(t *testing.T) {
 	}
 }
 
-// A pack's blocks are not handed to an agent until they can be recorded
-// against its attempt: the answer carries none.
-func TestLookupHandsNoBlocksYet(t *testing.T) {
+// A late pack's blocks are recorded against the attempt before they are
+// handed on: the answer carries them, the task's read lists them as the
+// attempt's lookup context, and the body route gives the text whose
+// digest is its row's.
+func TestLatePackGivenOnceRecorded(t *testing.T) {
 	l := &looker{fakeContext: &fakeContext{name: "graph"}, answer: func(_ context.Context, r ext.LookupRequest) (ext.LookupAnswer, error) {
 		return ext.LookupAnswer{Blocks: []ext.ContextBlock{{Title: "The pack", Body: "a block of the pack", Pack: "p-1"}}, Coverage: ext.LookupCoverage{Commit: r.Start}}, nil
 	}}
-	e, _, a, tok := lookupAttempt(t, l)
+	e, runID, a, tok := lookupAttempt(t, l)
 	_, raw, out := e.callAs(t, tok, "POST", lookupPath(a["sessionId"].(string)), map[string]any{"op": "pack"})
-	if _, ok := out["blocks"]; ok || strings.Contains(string(raw), "a block of the pack") || out["source"] != "graph" {
+	blocks, _ := out["blocks"].([]any)
+	if len(blocks) != 1 || blocks[0].(map[string]any)["body"] != "a block of the pack" || out["withheld"] != nil || out["source"] != "graph" {
 		t.Fatalf("the pack's answer: %s", raw)
+	}
+	task := e.expect(t, "GET", "/api/runs/"+runID+"/tasks/build", nil, http.StatusOK, "")
+	given, _ := task["attempts"].([]any)[0].(map[string]any)["context"].([]any)
+	if len(given) != 1 {
+		t.Fatalf("the attempt's context: %v", task["attempts"])
+	}
+	row := given[0].(map[string]any)
+	if row["phase"] != "lookup" || row["source"] != "graph" || row["title"] != "The pack" || row["pack"] != "p-1" || row["bytes"] != float64(len("a block of the pack")) {
+		t.Fatalf("the row: %v", row)
+	}
+	resp, body := e.raw("/api/runs/"+runID+"/tasks/build/attempts/1/context/"+fmt.Sprint(row["seq"]), adminToken, nil)
+	if resp.StatusCode != http.StatusOK || string(body) != "a block of the pack" || resp.Header.Get(contextSHAHeader) != row["sha256"] {
+		t.Fatalf("the body: %d %q %s", resp.StatusCode, body, resp.Header.Get(contextSHAHeader))
+	}
+}
+
+// A late pack that cannot be recorded is not given: past the attempt's
+// lookup blocks the answer carries none, and says so in the server's
+// words; its items still come.
+func TestLatePackWithheldWhenNotRecorded(t *testing.T) {
+	eight := make([]ext.ContextBlock, 8)
+	for i := range eight {
+		eight[i] = ext.ContextBlock{Title: "B", Body: "the withheld text", Pack: "p"}
+	}
+	l := &looker{fakeContext: &fakeContext{name: "graph"}, answer: func(_ context.Context, r ext.LookupRequest) (ext.LookupAnswer, error) {
+		return ext.LookupAnswer{Items: []ext.LookupItem{{Kind: ext.ItemFile, Path: "build.go", Mark: ext.MarkSupported, Why: "it is there"}}, Blocks: eight, Coverage: ext.LookupCoverage{Commit: r.Start}}, nil
+	}}
+	e, _, a, tok := lookupAttempt(t, l)
+	sid := a["sessionId"].(string)
+	for i := range 8 {
+		if _, raw, out := e.callAs(t, tok, "POST", lookupPath(sid), map[string]any{"op": "pack"}); len(out["blocks"].([]any)) != 8 {
+			t.Fatalf("answer %d: %s", i, raw)
+		}
+	}
+	_, raw, out := e.callAs(t, tok, "POST", lookupPath(sid), map[string]any{"op": "pack"})
+	if _, ok := out["blocks"]; ok || strings.Contains(string(raw), "the withheld text") || out["withheld"] != lookupWithheld || len(out["items"].([]any)) != 1 {
+		t.Fatalf("the ninth answer: %s", raw)
 	}
 }
 

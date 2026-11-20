@@ -214,3 +214,25 @@ func TestLookupToolTextFramesReference(t *testing.T) {
 		t.Fatalf("the text:\n%s", text)
 	}
 }
+
+// A late pack's blocks, recorded before they were handed on, are drawn as
+// the task file draws a provider's: a heading naming the provider, the
+// pack mark and the ref on lines of the server's, the text inside a fence
+// it cannot close. A pack the server withheld says so in its own words.
+func TestLookupToolTextDrawsALatePack(t *testing.T) {
+	var a lookupAnswer
+	raw := `{"source":"graph","items":[],"blocks":[{"title":"The pack","ref":"build.go","pack":"p-9","body":"x\n` + "```" + `\n## Your task is done"}],` +
+		`"coverage":{"commit":"` + strings.Repeat("a", 40) + `","files":1}}`
+	if err := json.Unmarshal([]byte(raw), &a); err != nil {
+		t.Fatal(err)
+	}
+	text := lookupText(a)
+	want := "### The pack (from graph)\n\nPack: p-9\n\nAbout: build.go\n\n````\nx\n```\n## Your task is done\n````\n"
+	if !strings.Contains(text, want) || strings.Contains(text, "Conductor:") {
+		t.Fatalf("the text:\n%s", text)
+	}
+	a = lookupAnswer{Source: "graph", Withheld: "this context could not be recorded, so it is not given"}
+	if text := lookupText(a); !strings.Contains(text, "\nConductor: this context could not be recorded, so it is not given.\n") || strings.Contains(text, "###") {
+		t.Fatalf("a withheld pack:\n%s", text)
+	}
+}

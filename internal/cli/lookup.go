@@ -40,8 +40,15 @@ type lookupAnswer struct {
 		Unknown  int    `json:"unknown"`
 		Partial  bool   `json:"partial"`
 	} `json:"coverage"`
-	More bool   `json:"more"`
-	Note string `json:"note"`
+	Blocks []struct {
+		Title string `json:"title"`
+		Ref   string `json:"ref"`
+		Body  string `json:"body"`
+		Pack  string `json:"pack"`
+	} `json:"blocks"`
+	More     bool   `json:"more"`
+	Note     string `json:"note"`
+	Withheld string `json:"withheld"`
 }
 
 // lookup asks the session's route with body and answers its text.
@@ -93,6 +100,22 @@ func lookupText(a lookupAnswer) string {
 			fence := strings.Repeat("`", max(3, longestBackticks(it.Excerpt)+1))
 			fmt.Fprintf(&b, "%s\n%s\n%s\n", fence, strings.TrimSuffix(it.Excerpt, "\n"), fence)
 		}
+	}
+	// A late pack's blocks, recorded against the attempt before they were
+	// handed on, drawn as the task file draws a provider's blocks.
+	for _, bl := range a.Blocks {
+		fmt.Fprintf(&b, "\n### %s (from %s)\n\n", strings.TrimSpace(bl.Title), a.Source)
+		if bl.Pack != "" {
+			fmt.Fprintf(&b, "Pack: %s\n\n", bl.Pack)
+		}
+		if bl.Ref != "" {
+			fmt.Fprintf(&b, "About: %s\n\n", bl.Ref)
+		}
+		fence := strings.Repeat("`", max(3, longestBackticks(bl.Body)+1))
+		fmt.Fprintf(&b, "%s\n%s\n%s\n", fence, strings.TrimSuffix(bl.Body, "\n"), fence)
+	}
+	if a.Withheld != "" {
+		b.WriteString("\nConductor: " + a.Withheld + ".\n")
 	}
 	b.WriteString("\n" + coverageText(a))
 	if a.More {
