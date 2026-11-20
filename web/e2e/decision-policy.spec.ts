@@ -1,5 +1,5 @@
 import type { Page, Route } from '@playwright/test'
-import { dayPage, expect, test, useTheme } from './fixtures'
+import { atRest, dayPage, expect, test, useTheme } from './fixtures'
 import { decisionRecord, inboxItem, stubInbox, type StubItem } from './inbox-stub'
 import { inside, uncut } from './layout'
 
@@ -126,6 +126,11 @@ test('on a phone, in both themes, the held answer, Override… and its dialog fi
   void day
   const it = routedItem(policy([group([ana])]))
   const { page } = await open(browser, PHONE, it, { inForce: true }, () => ({ status: 500, body: {} }))
+  // The dialog scales in as it opens, and a measure taken while it does reads its fields out of a box still scaled: the page's
+  // animations run at a tenth of their pace, so that a measure not taken at rest fails every run, not only on a slow one.
+  const cdp = await page.context().newCDPSession(page)
+  await cdp.send('Animation.enable')
+  await cdp.send('Animation.setPlaybackRate', { playbackRate: 0.1 })
   for (const theme of ['dark', 'light'] as const) {
     if (theme === 'light') await useTheme(page, 'light', '[data-bottom-bar]')
     const held = page.locator('[data-decision-held-back]')
@@ -135,6 +140,7 @@ test('on a phone, in both themes, the held answer, Override… and its dialog fi
     await page.locator('[data-decision-override]').click()
     const dialog = page.getByRole('dialog')
     await expect(dialog).toBeVisible()
+    await atRest(dialog.locator('[data-decision-override-send]'))
     await uncut(dialog.locator('[data-decision-override-reason]'))
     await uncut(dialog.locator('[data-decision-override-send]'))
     await dialog.locator('[data-decision-override-cancel]').click()
