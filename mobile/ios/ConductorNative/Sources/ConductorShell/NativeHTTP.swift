@@ -53,10 +53,17 @@ public struct NativeHTTPOrigins: Equatable, Sendable {
         return NativeHTTPOrigins(origins: out)
     }
 
-    /** A host as the shell names one: ASCII labels of a-z, 0-9 and '-', none empty (so no trailing dot). */
+    /**
+     * A host as the shell names one: ASCII labels of a-z, 0-9 and '-', none empty (so no trailing dot), and a name, never an address
+     * (no host whose every label reads as a number, as an IPv4 address in any of its spellings does: `127.0.0.1`, `127.1`,
+     * `2130706433`, `0x7f.0.0.1`), so the name judged is the name the session asks the system to resolve.
+     */
     static func plainHost(_ h: String) -> Bool {
         let labels = h.split(separator: ".", omittingEmptySubsequences: false)
-        return !labels.isEmpty && labels.allSatisfy { l in !l.isEmpty && l.utf8.allSatisfy { ($0 >= 0x61 && $0 <= 0x7A) || ($0 >= 0x30 && $0 <= 0x39) || $0 == 0x2D } }
+        guard !labels.isEmpty, labels.allSatisfy({ l in !l.isEmpty && l.utf8.allSatisfy { ($0 >= 0x61 && $0 <= 0x7A) || ($0 >= 0x30 && $0 <= 0x39) || $0 == 0x2D } })
+        else { return false }
+        let numeric = labels.allSatisfy { l in l.utf8.allSatisfy { $0 >= 0x30 && $0 <= 0x39 } || (l.hasPrefix("0x") && l.dropFirst(2).utf8.allSatisfy { ($0 >= 0x30 && $0 <= 0x39) || ($0 >= 0x61 && $0 <= 0x66) }) }
+        return !numeric
     }
 
     /** s exactly an https origin as the sync writes one: `https://`, a plain lower-case host, and a port only when not 443. */

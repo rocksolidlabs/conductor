@@ -97,6 +97,16 @@ final class StubServer: URLProtocol, @unchecked Sendable {
             #expect(refusedCode(o.admit(bad)) == "origin_refused", "\(bad)")
         }
         #expect(refusedCode(NativeHTTPOrigins.none.admit("https://relay.shell.test/")) == "origin_refused")
+        // An IP literal, in any of its spellings, is never an origin: not named, not admitted.
+        for ip in ["127.0.0.1", "127.1", "2130706433", "0x7f.0.0.1", "10.0.0.1"] {
+            #expect(origins(["https://\(ip)"]).isEmpty, "\(ip)")
+            #expect(refusedCode(o.admit("https://\(ip)/")) == "origin_refused", "\(ip)")
+        }
+        for ip in ["https://[::1]/", "https://[::ffff:127.0.0.1]/", "https://[fe80::1%25en0]/"] {
+            #expect(refusedCode(o.admit(ip)) == "origin_refused", "\(ip)")
+        }
+        // A name with a numeric label is still a name.
+        #expect(!origins(["https://api2.example.test", "https://1password.example.test"]).isEmpty)
     }
 
     @Test func aCallIsSentOnlyWhenAdmittedAndAnsweredInTheBridgesShape() async throws {
