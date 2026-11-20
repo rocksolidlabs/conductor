@@ -146,6 +146,13 @@ function sendComment() {
         <ULink v-if="item.card && routeOf(item.card)" :to="routeOf(item.card)!" class="font-normal normal-case tracking-normal text-primary" data-inbox-card>the brief</ULink>
       </p>
       <BrakemanDecisionText :happened="item.brief" :why-human="item.whyHuman" :answerer="item.answerer" :authorizes="item.authorizes" :alternatives="item.considered ?? []" :recommended="item.recommended" :uncertainty="item.uncertainty" />
+      <p v-if="item.cardBlocked?.length" class="flex flex-wrap items-center gap-1.5 text-xs text-muted" data-inbox-card-blocked>
+        <span>Brakeman says these wait on it:</span>
+        <template v-for="r in item.cardBlocked" :key="r">
+          <ULink v-if="routeOf(r)" :to="routeOf(r)!" class="text-primary break-all">{{ r }}</ULink>
+          <span v-else class="break-all">{{ r }}</span>
+        </template>
+      </p>
       <p v-if="item.cardNote" class="text-xs text-warning" data-inbox-card-note>{{ item.cardNote }}</p>
     </section>
     <section v-else-if="brief || !durable" class="flex flex-col gap-1" data-inbox-brief="conductor">

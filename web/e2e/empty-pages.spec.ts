@@ -1,5 +1,5 @@
 import type { Browser, Page, Route } from '@playwright/test'
-import { budget, dayPage, expect, readAgain, test, useTheme, type Session } from './fixtures'
+import { atRest, budget, dayPage, expect, readAgain, test, useTheme, type Session } from './fixtures'
 import { inside, noOverlap, noSideways, tapTarget, uncut } from './layout'
 import { ownServer, type OwnServer } from './own-server'
 import { START_WAIT_MS } from './server'
@@ -274,11 +274,18 @@ test('About this page: History with entries folds its caption to a popover, whic
     const page = await dayPage(browser, { ...DESK, theme, path: '/history' })
     await expect(page.locator('[data-history-day]').first()).toBeVisible({ timeout: 30_000 })
     await expect(page.locator('[data-history-caption]'), `${theme}: no caption in the body`).toHaveCount(0)
+    // The popover scales in as it opens, and its paragraph measured while it does runs past a box still scaled: the page's
+    // animations run at a tenth of their pace, so that a measure not taken at rest fails every run, not only on a slow one.
+    const cdp = await page.context().newCDPSession(page)
+    await cdp.send('Animation.enable')
+    await cdp.send('Animation.setPlaybackRate', { playbackRate: 0.1 })
     const button = page.locator('[data-page-about-button]')
     await button.click()
     const open = page.locator('[data-page-about-open]')
     await expect(open, theme).toContainText('a sentence repeated is still Conversation')
+    await atRest(open)
     await uncut(open.locator('p'))
+    await cdp.send('Animation.setPlaybackRate', { playbackRate: 1 })
     await page.keyboard.press('Escape')
     // A popover that has closed is not gone at once: wait for it to be gone before the next step.
     await expect(open).toHaveCount(0)

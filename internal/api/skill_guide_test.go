@@ -102,6 +102,9 @@ func TestTheSkillStatesTheServersLimits(t *testing.T) {
 // (TestTheSkillsBrakemanSectionIsShort), which carries a Brakeman turn's
 // own tools (the observe and act scopes) and names every tool it may not
 // call.
+// toolNote is a bracketed note after a tool's name in the skill's list.
+var toolNote = regexp.MustCompile(` \([^)]*\)`)
+
 var skillToolLeads = map[string]struct {
 	scope string
 	needs opNeeds
@@ -112,6 +115,7 @@ var skillToolLeads = map[string]struct {
 	"There, once the session is in a crew":                                         {"session", needSelfService | needRun},
 	"There, once the session is in a crew that is not a managed run":               {"session", needSelfService | needRun | needUnmanaged},
 	"In an attempt of a managed run (CONDUCTOR_TASK is set)":                       {"task", 0},
+	"In an attempt of a managed run, when a context provider answers lookups":      {"task", needContextLookup},
 	"In a run launched from a Dispatch ticket, or one a person linked to a ticket": {"ticket", 0},
 }
 
@@ -163,6 +167,8 @@ func TestTheSkillListsTheGuidesTools(t *testing.T) {
 	for item := range strings.SplitSeq(strings.TrimPrefix(block, "- "), "\n- ") {
 		item = strings.Join(strings.Fields(item), " ")
 		lead, list, ok := strings.Cut(item, ": ")
+		// A tool's words in brackets after its name say what it is for.
+		list = toolNote.ReplaceAllString(list, "")
 		l, known := skillToolLeads[lead]
 		if !ok || !known || !strings.HasSuffix(list, ".") {
 			t.Errorf("the skill lists tools under %q, a condition this test does not know", item)

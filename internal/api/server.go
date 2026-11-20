@@ -233,6 +233,8 @@ type Server struct {
 	pastes pasteStore
 	// runs launches crews and keeps their runs, in memory.
 	runs *crew.Engine
+	// policyClock holds a decision router to ext.MaxBehind (policy.go).
+	policyClock policyClock
 	// trees reads the trees of the previews, their indexes kept
 	// (preview_label.go).
 	trees treeReads
@@ -255,6 +257,15 @@ type Server struct {
 	// file read may reach, even inside a session's working directory (see
 	// fileDeny). It is safe to call from many goroutines.
 	fileDeny func() []string
+	// treeRoots keeps the root commits a context provider's reads found
+	// (exttree.go).
+	treeRoots rootsCache
+	// contextFiles keep the text of the context each attempt was given
+	// (crew/attempt_context.go); nil without a ledger.
+	contextFiles *crew.ContextFiles
+	// contextLookups counts each session's lookups of a context provider
+	// in flight (extlookup.go).
+	contextLookups lookupFlights
 	// lookups says, for 30 s at a time, whether the programs of the catalog's
 	// agents resolve on this server (see lookupCache); probes, for 10 min,
 	// what their version output says they are (see probeCache).
@@ -415,7 +426,9 @@ type Server struct {
 	// its ready flag, and extStarting is set by the one StartExtensions
 	// that starts them; extAfter is the clock of their starts' waits and
 	// backoffs and of an identity provider's re-asks (principalWatch), nil
-	// for time.After, a test's own otherwise.
+	// for time.After, a test's own otherwise. extSlotWait, when a test sets
+	// it, is told the kind and provider name of each call that found every
+	// slot taken and waits for one (extAwait); nil outside tests.
 	exts        extSlots
 	extCtx      context.Context
 	extStop     context.CancelFunc
@@ -427,6 +440,7 @@ type Server struct {
 	extStarts   []*extStarter
 	extStarting atomic.Bool
 	extAfter    func(time.Duration) <-chan time.Time
+	extSlotWait atomic.Pointer[func(kind, name string)]
 	// hostCred holds a host connection's credential steps in tests
 	// (hostCredSeam); nil outside them.
 	hostCred *hostCredSeam
@@ -730,12 +744,25 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 			// restart), or with none, managed launches are refused and
 			// legacy runs work.
 			s.runs.UseLedger(crew.SQLLedgerTold(s.ledger, s.decisionTold))
+			// The text of the context each attempt is given, beside the
+			// ledger's rows (crew/attempt_context.go): without it no
+			// context is asked for an attempt (contextFor), since none
+			// could be recorded.
+			if cf, err := crew.OpenContextFiles(s.ledger.Dir()); err != nil {
+				log.Warn("the context files cannot be opened: no attempt is given context", "err", err)
+			} else {
+				s.contextFiles = cf
+				s.runs.UseContextFiles(cf)
+			}
 		}
 		s.runs.SetCheckConcurrency(cfg.CheckConcurrency())
 		// The host's names a project manifest's env may pass on to its
 		// steps and sessions: the server's envPassthrough, as the server
 		// started with it.
 		s.runs.SetEnvPassthrough(cfg.EnvPassthrough)
+		// A registered decision router that confirms policies routes the
+		// records' policies (policy.go); with none, nothing changes.
+		s.runs.SetRouterPolicies(s.routerConfirms(), s.policyCheck)
 	}
 	s.webhooks = s.startNotifier(cfg.Webhooks)
 	// The runs take every entry too: a member's done starts the members after
@@ -1028,6 +1055,9 @@ func (s *Server) WaitBackground(ctx context.Context) {
 	if s.ledger != nil {
 		s.ledger.Close()
 	}
+	if s.contextFiles != nil {
+		s.contextFiles.Close()
+	}
 	if s.dispatch != nil {
 		s.dispatch.Close()
 	}
@@ -1114,6 +1144,8 @@ func (s *Server) Handler() http.Handler {
 	// A candidate's diff and its prepared failed-check request (review_diff.go, review_repair.go).
 	mux.HandleFunc("GET /api/runs/{run}/tasks/{task}/attempts/{n}/diff", s.launching(s.handleCandidateDiff))
 	mux.HandleFunc("GET /api/runs/{run}/tasks/{task}/attempts/{n}/diff/file", s.launching(s.handleCandidateDiffFile))
+	// The text of a block of context an attempt was given (attempt_context.go).
+	mux.HandleFunc("GET /api/runs/{run}/tasks/{task}/attempts/{n}/context/{seq}", s.launching(s.handleAttemptContextBody))
 	mux.HandleFunc("GET /api/runs/{run}/tasks/{task}/attempts/{n}/steps/{id}/{k}/repair", s.launching(s.handlePrepareRepair))
 	// Brakeman's desk and its turn's session routes (brakeman.go).
 	s.routeBrakeman(mux)
@@ -1124,6 +1156,8 @@ func (s *Server) Handler() http.Handler {
 	// An attempt's session reads its task and submits its result.
 	mux.HandleFunc("GET /api/sessions/{id}/task", s.handleSessionTask)
 	mux.HandleFunc("POST /api/sessions/{id}/task/result", s.handleSessionTaskResult)
+	// A lookup an attempt's agent asks a context provider (extlookup.go).
+	mux.HandleFunc("POST /api/sessions/{id}/context/lookup", s.handleContextLookup)
 	// Messages between members, a blocker, a checkpoint (rows 9 and 10).
 	mux.HandleFunc("POST /api/sessions/{id}/messages", s.handleSessionMessages)
 	mux.HandleFunc("GET /api/sessions/{id}/inbox", s.handleSessionInbox)
@@ -1212,7 +1246,7 @@ func (s *Server) middleware(next http.Handler) http.Handler {
 			h.Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
 			h.Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 			// A receipt's log hash, and a diff file's commit and cut, reach the app's script across origins.
-			h.Set("Access-Control-Expose-Headers", logHashHeader+", "+commitHeader+", "+truncatedHeader)
+			h.Set("Access-Control-Expose-Headers", logHashHeader+", "+commitHeader+", "+truncatedHeader+", "+contextSHAHeader)
 			h.Set("Vary", "Origin")
 			if r.Method == http.MethodOptions {
 				w.WriteHeader(http.StatusNoContent)
@@ -1597,6 +1631,9 @@ func (s *Server) Shutdown(ctx context.Context) {
 		if err := s.ledger.Close(); err != nil {
 			s.log.Warn("the ledger did not close cleanly", "err", err)
 		}
+	}
+	if s.contextFiles != nil {
+		s.contextFiles.Close()
 	}
 	if s.dispatch != nil {
 		if err := s.dispatch.Close(); err != nil {

@@ -43,12 +43,33 @@ type ContextQuery struct {
 	Dir          string         `json:"dir"`      // the working directory inside it (the crew's prefix)
 	Start        string         `json:"start"`    // the commit it starts at; a review's, the candidate
 	Inputs       []ContextInput `json:"inputs,omitempty"`
+	// Base is the run's base commit, a full id.
+	Base string `json:"base,omitempty"`
+	// Ticket is the ticket and plan revision the run was launched from;
+	// nil for a run launched from none.
+	Ticket *ContextTicket `json:"ticket,omitempty"`
+	// Checks are the task's checks, at most MaxContextChecks.
+	Checks []ContextCheck `json:"checks,omitempty"`
+	// Evidence is what the attempt rests on, as evidence refs (Brakeman's
+	// ref grammar): the inputs' candidates, their checks' receipts, the
+	// ticket and the plan revision; at most MaxContextEvidence of at most
+	// MaxContextEvidenceRef bytes, in that order.
+	Evidence []string `json:"evidence,omitempty"`
+	// LaunchedBy is who launched the run, when the run keeps it: at most
+	// MaxContextPerson characters.
+	LaunchedBy string `json:"launchedBy,omitempty"`
 }
 
-// ContextInput is one task's result an attempt starts from.
+// ContextInput is one task's result an attempt starts from: the task, the
+// commit, the attempt whose result it is, where that attempt started, and
+// a review's verdict and findings.
 type ContextInput struct {
-	Task   string `json:"task"`
-	Commit string `json:"commit"`
+	Task     string           `json:"task"`
+	Commit   string           `json:"commit"`
+	Attempt  int              `json:"attempt,omitempty"`
+	Start    string           `json:"start,omitempty"`
+	Verdict  string           `json:"verdict,omitempty"`  // a review's: approved | needs_changes
+	Findings []ContextFinding `json:"findings,omitempty"` // a review's, at most MaxContextFindings
 }
 
 // ContextBlock is one piece of context an attempt reads: reference
@@ -57,6 +78,11 @@ type ContextBlock struct {
 	Title string `json:"title"`         // 1 to MaxContextTitle bytes, one line
 	Ref   string `json:"ref,omitempty"` // a path or URL the block is about, at most MaxContextRef bytes
 	Body  string `json:"body"`          // UTF-8 text, 1 to MaxContextBody bytes
+	// Pack is the provider's mark of the record the block comes from (its
+	// pack mark): opaque to the server, which stores, shows and compares
+	// it and never reads it. Empty, or 1 to MaxContextPack bytes of
+	// printable ASCII with no space at either end.
+	Pack string `json:"pack,omitempty"`
 }
 
 const (
@@ -71,8 +97,9 @@ const (
 
 // Valid checks b against its bounds: a title of one line of 1 to
 // MaxContextTitle bytes, a ref of one line of at most MaxContextRef bytes,
-// and a body of 1 to MaxContextBody bytes of UTF-8 text whose only control
-// characters are tabs and line ends.
+// a body of 1 to MaxContextBody bytes of UTF-8 text whose only control
+// characters are tabs and line ends, and a pack mark that is empty or 1 to
+// MaxContextPack bytes of printable ASCII with no space at either end.
 func (b ContextBlock) Valid() error {
 	const r = "context block"
 	if err := line(r, "title", b.Title, MaxContextTitle, true); err != nil {
@@ -88,6 +115,8 @@ func (b ContextBlock) Valid() error {
 		return invalid(r, "body is %d bytes, past %d", len(b.Body), MaxContextBody)
 	case !text(b.Body):
 		return invalid(r, "body is not UTF-8 text")
+	case b.Pack != "" && !packMark(b.Pack):
+		return invalid(r, "pack is not 1 to %d bytes of printable ASCII with no space at either end", MaxContextPack)
 	}
 	return nil
 }

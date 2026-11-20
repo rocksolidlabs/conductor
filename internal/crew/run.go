@@ -421,6 +421,19 @@ type Engine struct {
 	// handoffOf answers the handoff package a person sent for an attempt
 	// (SetHandoff; nil, none is asked). Under mu.
 	handoffOf HandoffFunc
+	// commitNotes is told of a run's base and of each candidate
+	// (SetCommitNotes; nil, none is told). Under mu.
+	commitNotes func(ext.CommitNote)
+	// contextFiles keep the text of the context each attempt was given
+	// (UseContextFiles; nil, nothing is recorded); contextRead, when a
+	// test sets it, is told each write of an attempt's context between
+	// its read of the file and its write, and contextCommit, when a test
+	// sets it, is asked before a lookup's rows are committed, its error
+	// standing for a process that stopped there (attempt_context.go).
+	// Under mu.
+	contextFiles  *ContextFiles
+	contextRead   func(phase string)
+	contextCommit func() error
 	// teardownRoot is the context every managed run's teardown context is
 	// made beneath (add), ended by teardownCut at the shutdown's cut-off
 	// (steps.go: Draining).
@@ -574,6 +587,11 @@ type Engine struct {
 	// whichever run holds its decision reads them, so one is never lost
 	// with a copy a continuation left behind. Under e.mu.
 	confirms map[confirmKey]int
+	// routesPolicies says the registered decision router confirms
+	// policies, and policyCheck is how it is asked (SetRouterPolicies,
+	// decisions_policy.go).
+	routesPolicies atomic.Bool
+	policyCheck    atomic.Pointer[PolicyCheck]
 	// opMu orders the operators' operations on decisions (operate), from
 	// the look for their ids through their commits: an operation's row is
 	// never refused in its transaction as another's with the same id,
@@ -1391,6 +1409,9 @@ func (e *Engine) addRun(c Crew, p prepared, label, id string, pkg *runPackage) (
 	r := &run{crewID: c.ID, name: c.Name, label: label, goal: c.Goal, cwd: c.Cwd, isolation: c.Isolation, prefix: p.prefix,
 		yolo: c.Yolo != nil && *c.Yolo, changed: e.OnRunChange, startedAt: time.Now().UTC(), ctx: ctx, cancel: cancel, launching: true, managed: c.Managed(),
 		class: p.opts.Class, request: p.opts.Request, people: c.clone().People, continuation: p.continuation}
+	// Its openings take a spare while the router routes policies, which the
+	// engine is told once, before it runs anything.
+	r.dec.spares = e.RoutesPolicies()
 	if r.managed {
 		// The crew's project manifest as launched, a legacy setup lifted
 		// into it, and the manifest at the pinned base, whose prerequisites

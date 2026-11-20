@@ -260,6 +260,15 @@ func (s *Server) withSteps(ctx context.Context, runID, taskID string, attempts [
 	if s.ledger == nil {
 		return nil
 	}
+	// The context each attempt was given, from the ledger: a run the
+	// engine holds and one read from the ledger alike.
+	given, err := s.ledger.AttemptContext(ctx, runID, taskID)
+	if err != nil {
+		return err
+	}
+	for i := range attempts {
+		attempts[i].Context = crew.ContextEntries(given[attempts[i].N])
+	}
 	for i := range attempts {
 		rows, err := s.ledger.Checks(ctx, runID, taskID, attempts[i].N, false)
 		if err != nil {

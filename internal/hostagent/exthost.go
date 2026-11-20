@@ -229,6 +229,16 @@ func (h *hostExtHost) Notify(context.Context, ext.Notification) error { return h
 func (h *hostExtHost) Decision(context.Context, string) (ext.DecisionState, error) {
 	return ext.DecisionState{}, h.refuse()
 }
+func (h *hostExtHost) OpenDecisions(context.Context, string) (ext.OpenDecisionsPage, error) {
+	return ext.OpenDecisionsPage{}, h.refuse()
+}
+func (h *hostExtHost) Outcomes(context.Context, uint64) (ext.OutcomesPage, error) {
+	return ext.OutcomesPage{}, h.refuse()
+}
+func (h *hostExtHost) AckOutcomes(context.Context, uint64) error { return h.refuse() }
+func (h *hostExtHost) Reroute(context.Context, ext.RerouteRequest) (ext.RerouteResult, error) {
+	return ext.RerouteResult{}, h.refuse()
+}
 func (h *hostExtHost) OpenDecisionRefs(context.Context, string) ([]string, string, error) {
 	return nil, "", h.refuse()
 }
@@ -241,6 +251,18 @@ func (h *hostExtHost) RunByOp(context.Context, string) (ext.RunStatus, error) {
 func (h *hostExtHost) StopRun(context.Context, ext.StopRequest) error { return h.refuse() }
 func (h *hostExtHost) ResolveLaunch(context.Context, ext.ResolveRequest) (ext.ResolvedLaunch, error) {
 	return ext.ResolvedLaunch{}, h.refuse()
+}
+
+// A host keeps no run's repository: a context provider reads one on the
+// server alone.
+func (h *hostExtHost) ReadTree(context.Context, ext.TreeRequest) (ext.Tree, error) {
+	return ext.Tree{}, h.refuse()
+}
+func (h *hostExtHost) ReadBlob(context.Context, ext.BlobRequest) ([]byte, error) {
+	return nil, h.refuse()
+}
+func (h *hostExtHost) Denied(context.Context, ext.DeniedRequest) ([]bool, error) {
+	return nil, h.refuse()
 }
 
 // DataDir is <state>/ext/<name>, made 0700.

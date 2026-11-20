@@ -87,6 +87,12 @@ describe("a decision card's controls from the live record", () => {
     expect(decisionControls(`task:${RUN}/build`, '7', records())).toMatchObject({ kind: 'none' })
   })
 
+  it("offers a decision record's card no control of its own: its own card on the decision page, where whom the record admits answers it", () => {
+    const c = decisionControls('decision:dr-7', '3', records())
+    expect(c).toEqual({ kind: 'none', to: '/decisions?item=decision%3Adr-7', words: "Answer dr-7 on its own card, on the decision page: Brakeman's recommendation answers nothing." })
+    expect(cardReason(c)).toBe(c.words)
+  })
+
   it("offers an open question's options as the session reports them and the session page; a question answered since, none", () => {
     const asking = { id: SESSION, name: 'builder', status: 'running' as const, attention: { state: 'needs_input' as const, id: QUESTION, options: [{ label: 'Yes', input: '1' }, { label: 'No', input: '2' }] } }
     const open = decisionControls(`question:${SESSION}/${QUESTION}`, undefined, records(undefined, asking))

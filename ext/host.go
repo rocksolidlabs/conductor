@@ -110,6 +110,47 @@ type Host interface {
 	// one on a host with Where RunsOnHost: what the caller makes of either
 	// is its own.
 	ResolveLaunch(ctx context.Context, r ResolveRequest) (ResolvedLaunch, error)
+	// OpenDecisions, Outcomes, AckOutcomes and Reroute are the registered
+	// decision router's (policy.go): every other provider's Host answers
+	// ErrUnsupported, and so does the router's where the server keeps no
+	// ledger. OpenDecisions pages every open record with its policy, at
+	// most 64 a page in decision-number order after after, Next empty after
+	// the last.
+	OpenDecisions(ctx context.Context, after string) (OpenDecisionsPage, error)
+	// Outcomes reads the outcome outbox in Seq order after after, one row
+	// for each record that ever carried a router's policy; AckOutcomes
+	// deletes the rows up to through, the router's acknowledgement being
+	// the only way a row leaves.
+	Outcomes(ctx context.Context, after uint64) (OutcomesPage, error)
+	AckOutcomes(ctx context.Context, through uint64) error
+	// Reroute changes a record's policy: ErrQuestionAnswered for a record
+	// no longer open, Unchanged when its revision is the record's already,
+	// ErrStale when the record moved past ExpectedRev, ErrRefused for a
+	// comparison's selection or a policy the server refuses.
+	Reroute(ctx context.Context, r RerouteRequest) (RerouteResult, error)
+	// ReadTree lists the committed tree of r.Commit in the repository of
+	// the run r.Run, recursively, files, links and submodule entries, by
+	// full path, a path the server's deny list refuses left out (counted
+	// in Denied); with Roots, the history's root commits too. It stops at
+	// MaxTreeEntries entries or MaxTreeBytes of git's listing (Truncated).
+	// Only the Host of a provider in the context slot reads a repository:
+	// every other Host, Brakeman's desk's and conductor host's answer
+	// ErrUnsupported. A run the server does not hold, a repository not
+	// readable here now and a commit the repository does not hold answer
+	// ErrNotFound; a request TreeRequest.Valid refuses, ErrRefused with
+	// the words why. Bounded by TreeWait and by the try's life.
+	ReadTree(ctx context.Context, r TreeRequest) (Tree, error)
+	// ReadBlob answers the bytes of the file r.Path holds at r.Commit, at
+	// most MaxBlob of them (a larger one is refused "too large" before it
+	// is read); a link's target as git keeps it, never followed. A path
+	// the deny list refuses, a submodule entry and a request
+	// BlobRequest.Valid refuses answer ErrRefused; a path the commit has
+	// no file at, ErrNotFound; otherwise as ReadTree.
+	ReadBlob(ctx context.Context, r BlobRequest) ([]byte, error)
+	// Denied answers, for each path, whether the server's deny list
+	// refuses it now, under the run's repository: no object and no file is
+	// read. Otherwise as ReadTree.
+	Denied(ctx context.Context, r DeniedRequest) ([]bool, error)
 	// OpenDecisionRefs reads the refs (DecisionRef) of the durable
 	// decisions open in this server's ledger now, in id order, the first
 	// after after's decision ("" for the first), at most

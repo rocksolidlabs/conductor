@@ -134,6 +134,15 @@ func (s *Server) installExtensions(p ext.Providers) {
 		g := &guardContext{s: s, name: n, p: c, ready: s.readyOf(n, c)}
 		g.touches = newExtQueue(s, ext.KindContext, g.name, ext.TouchQueue, func(ctx context.Context, t touch) error { return deliverTouch(ctx, c, t) })
 		s.holdQueue(c, g.name, g.touches.begin)
+		// Asserted on the provider as it was registered: a commit note is
+		// queued for one that takes them, and for no other.
+		if cn, ok := c.(ext.CommitNoter); ok {
+			g.commits = newExtQueue(s, ext.KindContext, g.name, ext.CommitQueue, func(ctx context.Context, n ext.CommitNote) error {
+				cn.NoteCommit(ctx, n)
+				return nil
+			})
+			s.holdQueue(c, g.name, g.commits.begin)
+		}
 		s.exts.context = append(s.exts.context, g)
 	}
 	for i, n := range p.Notifications {
@@ -402,6 +411,14 @@ func (s *Server) extTake(kind, name string) (extSlot, bool) {
 // false once ctx ends first.
 func (s *Server) extAwait(ctx context.Context, kind, name string) (extSlot, bool) {
 	g := s.guard(kind, name)
+	select {
+	case g.slots <- struct{}{}:
+		return extSlot{g}, true
+	default:
+	}
+	if f := s.extSlotWait.Load(); f != nil {
+		(*f)(kind, name)
+	}
 	select {
 	case g.slots <- struct{}{}:
 		return extSlot{g}, true
@@ -868,6 +885,9 @@ func (g guardRouter) take() (extSlot, bool) {
 func (g guardRouter) routeIn(ctx context.Context, slot extSlot, d ext.Decision) (ext.Route, bool) {
 	own := copyDecision(d)
 	return extCallIn(ctx, g.s, slot, ext.KindDecisions, g.name, ext.RouteWait, ext.Route{}, func(r ext.Route) error {
+		if err := g.policyShape(r.Policy); err != nil {
+			return err
+		}
 		return r.Valid(own)
 	}, func(ctx context.Context) (ext.Route, error) {
 		r, err := g.p.Route(ctx, copyDecision(own))
@@ -912,6 +932,9 @@ type guardContext struct {
 	p       ext.ContextProvider
 	ready   *atomic.Bool
 	touches *extQueue[touch] // extcontext.go
+	// commits are the commit notes queued for the provider, nil when it is
+	// no ext.CommitNoter (extcontext.go).
+	commits *extQueue[ext.CommitNote]
 }
 
 func (g *guardContext) Name() string { return g.name }
@@ -1136,21 +1159,36 @@ func copyPrincipal(p ext.Principal) ext.Principal {
 	return p
 }
 
-// copyDecision is d with its options copied.
+// copyDecision is d with its options and its record copied.
 func copyDecision(d ext.Decision) ext.Decision {
 	d.Options = copyOrNil(d.Options)
+	d.Record = d.Record.Clone()
 	return d
 }
 
 // copyQuery is q with its inputs copied.
 func copyQuery(q ext.ContextQuery) ext.ContextQuery {
 	q.Inputs = copyOrNil(q.Inputs)
+	for i := range q.Inputs {
+		q.Inputs[i].Findings = copyOrNil(q.Inputs[i].Findings)
+	}
+	if q.Ticket != nil {
+		t := *q.Ticket
+		t.Assignees = copyOrNil(t.Assignees)
+		q.Ticket = &t
+	}
+	q.Checks = copyOrNil(q.Checks)
+	for i := range q.Checks {
+		q.Checks[i].Argv = copyOrNil(q.Checks[i].Argv)
+	}
+	q.Evidence = copyOrNil(q.Evidence)
 	return q
 }
 
-// copyRoute is r with its destinations and its answer copied.
+// copyRoute is r with its destinations, its answer and its policy copied.
 func copyRoute(r ext.Route) ext.Route {
 	r.To = copyOrNil(r.To)
+	r.Policy = r.Policy.Clone()
 	if r.Answer != nil {
 		a := *r.Answer
 		a.By = copyPrincipal(a.By)
@@ -1173,3 +1211,24 @@ func (s *Server) Registered() []ext.Registration {
 
 // freeBuild is the providers of a server made without WithExtensions.
 func freeBuild() ext.Providers { return local.Fill(ext.Providers{}) }
+
+// policyShape refuses a route's policy this server does not take: one from
+// a router that does not confirm policies (ext.PolicyConfirmer), one past
+// the shape it judges (one group of quorum 1, no distinct persons), and
+// one that carries the server's own count of changes (Reroutes, Recent).
+// No policy is nothing to refuse.
+func (g guardRouter) policyShape(p *ext.RoutePolicy) error {
+	if p == nil {
+		return nil
+	}
+	if _, ok := g.p.(ext.PolicyConfirmer); !ok {
+		return errors.New("a policy from a router that does not confirm policies")
+	}
+	switch {
+	case len(p.Groups) != 1 || len(p.Pinned.Groups) != 1 || p.Groups[0].Quorum != 1 || p.Pinned.Groups[0].Quorum != 1 || p.Distinct || p.Pinned.Distinct:
+		return errors.New("a policy past one group of quorum 1, which is all this server judges")
+	case p.Reroutes != 0 || len(p.Recent) != 0:
+		return errors.New("a policy's reroutes and recent changes are the server's, sent empty")
+	}
+	return nil
+}

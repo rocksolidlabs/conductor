@@ -68,7 +68,7 @@ func TestOpenMakesTheSchema(t *testing.T) {
 		tables = append(tables, n)
 	}
 	rows.Close()
-	if want := "attempt_context attempts checks commands decision_history decision_holds decision_outbox decision_refunds decision_responses decisions events messages prerequisites previews run_origin runs schema_version sqlite_sequence tasks trees"; strings.Join(tables, " ") != want {
+	if want := "attempt_context attempts checks commands decision_history decision_holds decision_outbox decision_output decision_refunds decision_responses decision_statements decisions events messages prerequisites previews run_origin runs schema_version sqlite_sequence tasks trees"; strings.Join(tables, " ") != want {
 		t.Fatalf("tables %v", tables)
 	}
 	newRun(t, l, "team-00000001")
@@ -91,8 +91,8 @@ func TestOpenMakesTheSchema(t *testing.T) {
 // read-only, written by a newer Conductor, its writes and its recovery
 // refused and its rows as they were.
 func TestTheLedgerVersionFencesComparisons(t *testing.T) {
-	if Version != 15 {
-		t.Fatalf("Version %d: the comparisons' barrier is 12, and 13 to 15 the versions after it", Version)
+	if Version != 16 {
+		t.Fatalf("Version %d: the comparisons' barrier is 12, and 13 to 16 the versions after it", Version)
 	}
 	dir := filepath.Join(t.TempDir(), "runs")
 	l := openLedger(t, dir)
