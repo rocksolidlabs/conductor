@@ -169,6 +169,12 @@ func TestTheRouterIsToldEachDecisionOnce(t *testing.T) {
 		Options: []ext.DecisionOption{{Label: "Approve", Input: "1"}, {Label: "Reject", Input: "2"}}}
 	got := d
 	got.Since = want.Since
+	// The record says what it is: its type and origin, the run's crew, the
+	// asking task, and its subject by kind and key.
+	if d.Record == nil || d.Record.Subject == nil || d.Record.Subject.Kind != "commit" || d.Record.Subject.Valid() != nil {
+		t.Fatalf("the record told: %+v", d.Record)
+	}
+	want.Record = &ext.DecisionRecord{Type: "approval", Origin: "agent", Crew: "routes", Task: "build", Subject: d.Record.Subject}
 	if b1, b2 := mustJSON(got), mustJSON(want); b1 != b2 || d.Since.IsZero() {
 		t.Fatalf("the router was told %s, want %s (since %v)", b1, b2, d.Since)
 	}

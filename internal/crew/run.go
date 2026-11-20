@@ -587,6 +587,11 @@ type Engine struct {
 	// whichever run holds its decision reads them, so one is never lost
 	// with a copy a continuation left behind. Under e.mu.
 	confirms map[confirmKey]int
+	// routesPolicies says the registered decision router confirms
+	// policies, and policyCheck is how it is asked (SetRouterPolicies,
+	// decisions_policy.go).
+	routesPolicies atomic.Bool
+	policyCheck    atomic.Pointer[PolicyCheck]
 	// opMu orders the operators' operations on decisions (operate), from
 	// the look for their ids through their commits: an operation's row is
 	// never refused in its transaction as another's with the same id,
@@ -1404,6 +1409,9 @@ func (e *Engine) addRun(c Crew, p prepared, label, id string, pkg *runPackage) (
 	r := &run{crewID: c.ID, name: c.Name, label: label, goal: c.Goal, cwd: c.Cwd, isolation: c.Isolation, prefix: p.prefix,
 		yolo: c.Yolo != nil && *c.Yolo, changed: e.OnRunChange, startedAt: time.Now().UTC(), ctx: ctx, cancel: cancel, launching: true, managed: c.Managed(),
 		class: p.opts.Class, request: p.opts.Request, people: c.clone().People, continuation: p.continuation}
+	// Its openings take a spare while the router routes policies, which the
+	// engine is told once, before it runs anything.
+	r.dec.spares = e.RoutesPolicies()
 	if r.managed {
 		// The crew's project manifest as launched, a legacy setup lifted
 		// into it, and the manifest at the pinned base, whose prerequisites

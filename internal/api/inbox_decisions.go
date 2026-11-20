@@ -13,6 +13,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/rocksolidlabs/conductor/ext"
 	"github.com/rocksolidlabs/conductor/internal/crew"
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
 )
@@ -104,6 +105,31 @@ func answererOf(r recordRequest) string {
 		return fitText(fmt.Sprintf("%s, for %s (%s)", inboxAnswerer, f.Person, w), 120)
 	}
 	return fitText(inboxAnswerer+", for "+f.Person, 120)
+}
+
+// policyAnswerer is who answers a record under a router's policy, in a
+// brief's words: the persons its first group names (or that group, when
+// nobody fills it), by its router's policy, and the operator by an
+// override only where the policy allows one.
+func policyAnswerer(p ext.RoutePolicy) string {
+	who := "the people its router's policy names"
+	if len(p.Groups) > 0 {
+		g := p.Groups[0]
+		names := make([]string, 0, len(g.Eligible))
+		for _, e := range g.Eligible {
+			names = append(names, e.Name)
+		}
+		if len(names) > 0 {
+			who = strings.Join(names, " or ") + ", for the " + g.Label
+		} else {
+			who = "the " + g.Label + ", when one is assigned"
+		}
+	}
+	who += ", by its router's policy"
+	if p.Override == ext.OverrideOperator {
+		who += "; " + inboxAnswerer + ", by an override"
+	}
+	return fitText(who, 120)
 }
 
 // optionLabels are a record's options as a response names them by
@@ -233,6 +259,12 @@ func (rd *inboxRead) recordItem(row ledger.DecisionRow, held []string, rec *ledg
 	run := rd.runOf(row.CurrentRun)
 	it := &inboxItem{Ref: ref, Subject: ref, Kind: inboxDecision, Since: row.CreatedAt, Question: req.Question, Answerer: answererOf(req),
 		Revision: rev, State: row.State, BriefBy: "conductor", Actions: []inboxAction{}}
+	if p, _, ok := crew.RouterPolicyOf(row.Policy); ok {
+		// Under a router's policy: routed to the persons it names, and to
+		// the roles of its gaps, with the first group's rule.
+		it.RoutedTo, it.RoutedRule = policyRoutes(p)
+		it.Answerer = policyAnswerer(p)
+	}
 	runName := row.CurrentRun
 	if run.ok {
 		runName = run.run.Name

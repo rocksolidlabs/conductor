@@ -112,7 +112,7 @@ func decisionStatus(code string) int {
 		return http.StatusNotFound
 	case crew.CodeDecisionLimit:
 		return http.StatusTooManyRequests
-	case crew.CodeNotApprover:
+	case crew.CodeNotApprover, crew.CodeNotEligible, crew.CodeOverrideRefused:
 		return http.StatusForbidden
 	case crew.CodeDecisionMoved:
 		return http.StatusServiceUnavailable
@@ -580,7 +580,18 @@ func (s *Server) handleDecision(w http.ResponseWriter, r *http.Request) {
 		s.decisionError(w, "read", did, err, nil)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"decision": d, "refs": s.decisionRefs(r.Context(), d.Evidence)})
+	reply := map[string]any{"decision": d, "refs": s.decisionRefs(r.Context(), d.Evidence)}
+	// Under a router's policy: whether it is in force now, and whether the
+	// reader (an identity's operator, by its subject) is eligible (policy.go).
+	if now := s.policyNowFor(r.Context(), did, principalOf(r).subject); now != nil {
+		reply["policyNow"] = now
+	}
+	if s.routerRegistered() {
+		// A decision router is registered: the operator may ask it again
+		// ({kind: router}) for any open record but a comparison's selection.
+		reply["router"] = true
+	}
+	writeJSON(w, http.StatusOK, reply)
 }
 
 // handleDecisionRespond takes the operator's response: 201 {receipt,
@@ -602,7 +613,12 @@ func (s *Server) handleDecisionRespond(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := runContext(r)
 	defer cancel()
 	auth := s.authorityOf(r)
-	rc, err := s.runs.RespondDecision(ctx, did, resp, actorOf(r), auth)
+	conf, err := s.confirmFor(ctx, did, auth)
+	if err != nil {
+		s.decisionError(w, "respond", did, err, nil)
+		return
+	}
+	rc, err := s.runs.RespondDecisionWith(ctx, did, resp, actorOf(r), auth, conf)
 	if err != nil {
 		var kept any
 		if rc.Decision != "" {
@@ -757,7 +773,37 @@ func (s *Server) handleDecisionRoute(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := runContext(r)
 	defer cancel()
+	if body.To.Kind == crew.DestRouter {
+		// Ask the registered router for a route again (policy.go).
+		switch {
+		case !s.routerRegistered():
+			writeError(w, http.StatusConflict, crew.CodeNoRouter, "no decision router is registered: a decision is routed to one only where one is")
+			return
+		case body.To.Name != "" || body.To.Grant != "":
+			writeError(w, http.StatusBadRequest, crew.CodeInvalid, "a route to the router names nothing else")
+			return
+		}
+		rc, err := s.runs.AskRouter(ctx, did, body.OpID, body.ExpectedRev, body.Note, actorOf(r))
+		if err == nil && !rc.Repeat {
+			s.router.retell(did)
+		}
+		s.writeDecisionOp(w, r, "route", did, rc, err)
+		return
+	}
+	if body.To.Kind != crew.DestOperator {
+		// Under a router's policy in force only the policy chooses who
+		// may answer: a route to a person, a role or the grant is refused.
+		if _, inForce := s.routeInForce(ctx, did); inForce {
+			writeError(w, http.StatusConflict, crew.CodeRoutedByPolicy, did+" is routed by its router's policy: ask the router again, or override at the answer where the policy allows")
+			return
+		}
+	}
 	rc, err := s.runs.RouteDecision(ctx, did, body.OpID, body.ExpectedRev, []crew.Destination{body.To}, body.Note, actorOf(r))
+	if err == nil && !rc.Repeat && body.To.Kind != crew.DestOperator && s.runs.RoutesPolicies() {
+		// Whom it is for changed while its policy is not in force (or
+		// before any): the router is told again, and routes it by its policy.
+		s.router.retell(did)
+	}
 	s.writeDecisionOp(w, r, "route", did, rc, err)
 }
 
@@ -862,6 +908,11 @@ func (h *eventHub) decision(ev decisionEvent) {
 func (s *Server) decisionTold(changes []crew.DecisionChange) {
 	for _, c := range changes {
 		row := c.Row
+		if s.runs.RoutesPolicies() && opensWindow(row) {
+			// Marked ahead of the event, so a client that answers on the
+			// event never beats the router (policy.go).
+			s.router.windows.open(row.ID())
+		}
 		s.events.decision(decisionEvent{ID: row.ID(), Run: row.CurrentRun, Task: row.TaskID, State: row.State, Rev: row.Rev})
 		if s.notifier != nil {
 			s.notifier.decision(decisionNotification(row, c.By))

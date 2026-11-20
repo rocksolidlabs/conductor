@@ -52,3 +52,31 @@ func SampleQuery(dir string) ext.ContextQuery {
 		Inputs:       []ext.ContextInput{{Task: "plan", Commit: "89abcdef0123456789abcdef0123456789abcdef"}},
 	}
 }
+
+// SampleRecord is what a durable decision's record says of itself to a
+// router: a plan's approval gate of a ticket, for its architecture owner.
+func SampleRecord() *ext.DecisionRecord {
+	return &ext.DecisionRecord{
+		Type:    "approval",
+		Origin:  "plan",
+		Gate:    "schema",
+		Ticket:  "CND-12",
+		Project: "CND",
+		Crew:    "exttest",
+		For:     &ext.RecordFor{Label: "architecture owner", Responsibility: "architecture"},
+		Subject: &ext.DecisionSubject{Kind: "plan", Key: "0123456789abcdef0123456789abcdef"},
+	}
+}
+
+// SamplePolicy is a policy a router answers for SampleRecord: one group,
+// the architecture owner, quorum 1, one person eligible by the role, and
+// the operator may override.
+func SamplePolicy() ext.RoutePolicy {
+	return ext.RoutePolicy{
+		Revision: "exttest-r1",
+		Scope:    "exttest-scope",
+		Pinned:   ext.PinnedRequirement{Rule: "r-1", Groups: []ext.PinnedGroup{{Role: "architecture", Quorum: 1}}, Override: ext.OverrideOperator, Notify: ext.NotifyNow},
+		Groups:   []ext.Requirement{{Role: "architecture", Label: "architecture owner", Quorum: 1, Rule: "r-1", Eligible: []ext.Eligible{{Subject: "ana", Name: "Ana", Via: ext.ViaRole, Ref: "ref-1"}}}},
+		Override: ext.OverrideOperator,
+	}
+}

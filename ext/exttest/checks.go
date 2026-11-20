@@ -425,7 +425,7 @@ func Router(t T, n *Network, r ext.DecisionRouter, d ext.Decision) {
 		if record != (d.Request != "") {
 			// The other kind of question than d: a record for a session's
 			// question, a session's question for a record.
-			q.Request, q.Kind, q.Source = "", "prompt", "api"
+			q.Request, q.Kind, q.Source, q.Record = "", "prompt", "api", nil
 			if record {
 				q.Request, q.Kind, q.Source = q.ID, "decision", ""
 				for i := range q.Options {
@@ -434,6 +434,11 @@ func Router(t T, n *Network, r ext.DecisionRouter, d ext.Decision) {
 			}
 		} else if record {
 			q.Request = q.ID
+		}
+		if record && q.Record == nil {
+			// A record says what it is (ext.DecisionRecord), so a router
+			// that routes policies may answer one, valid for it.
+			q.Record = SampleRecord()
 		}
 		if record && !decisionRef.MatchString(q.Request) {
 			panic(fmt.Sprintf("exttest: a record's reference %q is not dr-<n>", q.Request))
@@ -488,6 +493,71 @@ func Router(t T, n *Network, r ext.DecisionRouter, d ext.Decision) {
 			route(ph)
 		}
 		resolved(ph)
+	})
+}
+
+// Confirmer checks a decision router that confirms policies against the
+// record d: Confirm answering within ext.ConfirmWait, with no subject and
+// with one, from Goroutines goroutines at once too, each answer valid
+// (ext.Confirmation.Valid); and article 8 (Network): with the network
+// blocked, it answers from what it holds.
+func Confirmer(t T, n *Network, r ext.DecisionRouter, d ext.Decision) {
+	t.Helper()
+	pc, ok := r.(ext.PolicyConfirmer)
+	if !ok {
+		t.Errorf("exttest: Confirmer: %T does not confirm policies (ext.PolicyConfirmer)", r)
+		return
+	}
+	c, ok := begin(t, n, "Confirmer", r)
+	if !ok {
+		return
+	}
+	defer c.done()
+	if d.Record == nil {
+		d.Record = SampleRecord()
+	}
+	type answer struct {
+		c   ext.Confirmation
+		err error
+	}
+	// Each ask is of a record of its own (dr-<n>), so a router that
+	// fetches what it was not asked before is asked with the network
+	// blocked too.
+	var (
+		mu    sync.Mutex
+		asked int64
+	)
+	base := int64(0)
+	if n, err := strconv.ParseInt(strings.TrimPrefix(d.Request, "dr-"), 10, 64); err == nil && n > 0 && n < 1<<40 {
+		base = n * 1000
+	}
+	ask := func(ph phase, subject string) {
+		mu.Lock()
+		asked++
+		q := copyDecision(d)
+		q.ID = fmt.Sprintf("dr-%d", base+asked)
+		q.Request = q.ID
+		mu.Unlock()
+		a, returned := run(c, "Confirm", ext.ConfirmWait, ph, func(ctx context.Context) answer {
+			cf, err := pc.Confirm(ctx, ext.ConfirmQuery{Decision: q, Revision: "exttest-r1", Subject: subject})
+			return answer{cf, err}
+		})
+		if returned && a.err == nil {
+			if err := a.c.Valid(); err != nil {
+				c.found("Confirm answered a confirmation that is not valid%s: %v", ph.words(), err)
+			}
+		}
+	}
+	confirm := func(ph phase) {
+		ask(ph, "")
+		ask(ph, "exttest-subject")
+	}
+	confirm(open)
+	together(func() { confirm(open) })
+	c.phases(func(ph phase) {
+		if ph != open {
+			confirm(ph)
+		}
 	})
 }
 

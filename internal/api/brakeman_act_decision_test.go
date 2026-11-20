@@ -38,7 +38,13 @@ type routeFixture struct {
 
 func newRouteFixture(t *testing.T, grant []string, mod func(c map[string]any)) *routeFixture {
 	t.Helper()
-	e := newTestEnvAgents(t, nil, slog.New(slog.NewTextHandler(io.Discard, nil)), append([]catalog.Agent{readyCat}, bkAgents()...))
+	return newRouteFixtureWith(t, grant, mod)
+}
+
+// newRouteFixtureWith is newRouteFixture with the server's options opts.
+func newRouteFixtureWith(t *testing.T, grant []string, mod func(c map[string]any), opts ...Option) *routeFixture {
+	t.Helper()
+	e := newTestEnvAgents(t, nil, slog.New(slog.NewTextHandler(io.Discard, nil)), append([]catalog.Agent{readyCat}, bkAgents()...), opts...)
 	e.srv.limiter = newRateLimiter(1e6, 1e6)
 	e.gitRepo(t)
 	c := managedCrew(e.root)

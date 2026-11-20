@@ -110,6 +110,24 @@ type Host interface {
 	// one on a host with Where RunsOnHost: what the caller makes of either
 	// is its own.
 	ResolveLaunch(ctx context.Context, r ResolveRequest) (ResolvedLaunch, error)
+	// OpenDecisions, Outcomes, AckOutcomes and Reroute are the registered
+	// decision router's (policy.go): every other provider's Host answers
+	// ErrUnsupported, and so does the router's where the server keeps no
+	// ledger. OpenDecisions pages every open record with its policy, at
+	// most 64 a page in decision-number order after after, Next empty after
+	// the last.
+	OpenDecisions(ctx context.Context, after string) (OpenDecisionsPage, error)
+	// Outcomes reads the outcome outbox in Seq order after after, one row
+	// for each record that ever carried a router's policy; AckOutcomes
+	// deletes the rows up to through, the router's acknowledgement being
+	// the only way a row leaves.
+	Outcomes(ctx context.Context, after uint64) (OutcomesPage, error)
+	AckOutcomes(ctx context.Context, through uint64) error
+	// Reroute changes a record's policy: ErrQuestionAnswered for a record
+	// no longer open, Unchanged when its revision is the record's already,
+	// ErrStale when the record moved past ExpectedRev, ErrRefused for a
+	// comparison's selection or a policy the server refuses.
+	Reroute(ctx context.Context, r RerouteRequest) (RerouteResult, error)
 	// ReadTree lists the committed tree of r.Commit in the repository of
 	// the run r.Run, recursively, files, links and submodule entries, by
 	// full path, a path the server's deny list refuses left out (counted

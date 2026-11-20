@@ -167,7 +167,7 @@ func completionSpec() []commandSpec {
 				"set": {{name: "--server", kind: flagValue}, {name: "--insecure"}, {name: "--host", kind: flagValue}}}},
 		// Every flag of every decision command, the states as --state's values.
 		{name: "decision", flags: api(flagSpec{name: "--state", kind: flagEnum, values: decisionStates}, flagSpec{name: "--run", kind: flagValue}, flagSpec{name: "--ticket", kind: flagValue}, flagSpec{name: "--json"},
-			flagSpec{name: "--choice", kind: flagValue}, flagSpec{name: "--text", kind: flagValue}, flagSpec{name: "--why", kind: flagValue}, flagSpec{name: "--release"}),
+			flagSpec{name: "--choice", kind: flagValue}, flagSpec{name: "--text", kind: flagValue}, flagSpec{name: "--why", kind: flagValue}, flagSpec{name: "--release"}, flagSpec{name: "--override"}),
 			words: []string{"list", "show", "respond", "cancel"}},
 		// Every flag of every history command (each takes its own).
 		{name: "history", flags: api(flagSpec{name: "--limit", kind: flagValue}, flagSpec{name: "--json"}, flagSpec{name: "--everywhere"}, flagSpec{name: "--all"},

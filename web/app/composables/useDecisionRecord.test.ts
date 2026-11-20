@@ -4,7 +4,7 @@ import type { Decision } from '~/utils/decisions'
 import type { RunInfo } from './useSessions'
 // Imported with the file, not inside a test: a module loaded in a test is loaded on the test's 5 s, which a loaded machine spends on the
 // load alone. Their auto-imports are globals read when they are called, stubbed below.
-import { decisionsLive, useDecisionRecord, useDecisionRun } from './useDecisions'
+import { decisionsLive, POLICY_REREAD_MS, useDecisionRecord, useDecisionRun } from './useDecisions'
 import { useTicketDecisions } from './useTicketDecisions'
 
 // Codex's round 2 on #719, on the pages that read decisions (Program item DR1, docs/plans/decisions.md, "web/app"), wired to an API
@@ -169,6 +169,45 @@ describe("the card's record, read one at a time", () => {
     sent[1]!.ok({ decision: record(2, 'open') })
     await settle()
     expect(r.decision.value?.rev).toBe(3)
+  })
+})
+
+describe("an open record's router's policy, followed", () => {
+  afterEach(() => vi.useRealTimers())
+
+  it("reads the record again on its cadence while the policy is shown, so a lapse the router answers reaches the card, and stops once it is answered", async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+    const r = useDecisionRecord(() => 'dr-7')
+    await settle()
+    sent[0]!.ok({ decision: record(2, 'open'), policyNow: { inForce: true } })
+    await settle()
+    expect(r.policyNow.value).toEqual({ inForce: true })
+    // No event comes: the lapse moves no revision. The cadence reads again, and the card learns it.
+    vi.advanceTimersByTime(POLICY_REREAD_MS)
+    await settle()
+    expect(sent).toHaveLength(2)
+    sent[1]!.ok({ decision: record(2, 'open'), policyNow: { inForce: false, why: 'the roster is moving' } })
+    await settle()
+    expect(r.policyNow.value).toEqual({ inForce: false, why: 'the roster is moving' })
+    // Answered: nothing to follow, no more reads.
+    vi.advanceTimersByTime(POLICY_REREAD_MS)
+    await settle()
+    sent[2]!.ok({ decision: record(3, 'answered'), policyNow: { inForce: false } })
+    await settle()
+    vi.advanceTimersByTime(3 * POLICY_REREAD_MS)
+    await settle()
+    expect(sent).toHaveLength(3)
+  })
+
+  it("reads nothing again for a record under the server's own policy", async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+    useDecisionRecord(() => 'dr-7')
+    await settle()
+    sent[0]!.ok({ decision: record(2, 'open') })
+    await settle()
+    vi.advanceTimersByTime(3 * POLICY_REREAD_MS)
+    await settle()
+    expect(sent).toHaveLength(1)
   })
 })
 

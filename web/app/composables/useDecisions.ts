@@ -2,6 +2,7 @@ import { hasInjectionContext, inject, type ComputedRef } from 'vue'
 import type { DecisionEvent } from '~/utils/protocol'
 import { REF_ACCESS } from '~/utils/refAccess'
 import type { Decision, DecisionRef } from '~/utils/decisions'
+import type { PolicyNow } from '~/utils/decisionPolicy'
 import { isDecisionId, replaces, runHeldOf } from '~/utils/decisions'
 import type { RunInfo } from './useSessions'
 import { ApiError } from './useApi'
@@ -365,6 +366,13 @@ export class DecisionRecordView {
 }
 
 /**
+ * How often an open record whose router's policy the card shows is read again: whether the policy is in force is the router's answer at
+ * the read (`policyNow`), and its lapse moves no revision and sends no event, so the card follows it by reading again (and on the
+ * window's focus).
+ */
+export const POLICY_REREAD_MS = 15_000
+
+/**
  * One decision whole (`GET /api/decisions/{id}`, with its evidence's resolutions), read when the id is set, again on its own `decision`
  * event, when the stream comes back (a new generation: DecisionRecordView.reset) and on its fallback's cadence while it is down, and
  * after each of the card's writes
@@ -375,6 +383,10 @@ export function useDecisionRecord(id: () => string) {
   const view = new DecisionRecordView()
   const decision = ref<Decision | null>(null)
   const refs = ref<DecisionRef[]>([])
+  /** Whether a router's policy on it is in force now, as the last read said (none under the server's own policy). */
+  const policyNow = ref<PolicyNow | null>(null)
+  /** Whether a decision router is registered, as the last read said: the operator may ask it again for an open record. */
+  const router = ref(false)
   const error = ref('')
   const loading = ref(false)
   function show() {
@@ -387,8 +399,12 @@ export function useDecisionRecord(id: () => string) {
     const gen = view.generation
     loading.value = true
     try {
-      const r = await request<{ decision: Decision; refs?: DecisionRef[] }>(`/api/decisions/${encodeURIComponent(d)}`)
-      if (view.read(gen, d, id(), r)) show()
+      const r = await request<{ decision: Decision; refs?: DecisionRef[]; policyNow?: PolicyNow; router?: boolean }>(`/api/decisions/${encodeURIComponent(d)}`)
+      if (view.read(gen, d, id(), r)) {
+        show()
+        policyNow.value = r.policyNow ?? null
+        router.value = r.router === true
+      }
       if (d === id()) error.value = ''
     } catch (e) {
       if (d === id()) error.value = (e as Error).message
@@ -419,14 +435,33 @@ export function useDecisionRecord(id: () => string) {
       if (view.decision?.id !== d) {
         view.clear()
         show()
+        policyNow.value = null
         error.value = ''
       }
       if (d) void read()
     },
     { immediate: true },
   )
-  onBeforeUnmount(stop)
-  return { decision, refs, error, loading, read, begin }
+  // While a router's policy is shown on an open record, read again on a cadence and on the window's focus (POLICY_REREAD_MS).
+  const following = computed(() => !!policyNow.value && decision.value?.state === 'open')
+  let again: ReturnType<typeof setInterval> | undefined
+  watch(following, (on) => {
+    if (on && again === undefined) again = setInterval(() => void read(), POLICY_REREAD_MS)
+    else if (!on && again !== undefined) {
+      clearInterval(again)
+      again = undefined
+    }
+  })
+  const onFocus = () => {
+    if (following.value) void read()
+  }
+  if (typeof window !== 'undefined') window.addEventListener('focus', onFocus)
+  onBeforeUnmount(() => {
+    stop()
+    if (again !== undefined) clearInterval(again)
+    if (typeof window !== 'undefined') window.removeEventListener('focus', onFocus)
+  })
+  return { decision, refs, policyNow, router, error, loading, read, begin }
 }
 
 /**

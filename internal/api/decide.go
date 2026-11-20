@@ -273,15 +273,16 @@ func (s *Server) decideList(w http.ResponseWriter, r *http.Request, p principal)
 	}
 	list := proto.DecideList{Decisions: []proto.DecideEntry{}}
 	met := false
+	var admitted []ledger.DecisionRow
 	more, err := ld.OpenDecisionsNewest(r.Context(), limit, func(row ledger.DecisionRow) bool {
 		if decideAdmission(ledger.DecisionRecord{DecisionRow: row}, p) != crew.AdmitOpen {
 			return true
 		}
-		if len(list.Decisions) == proto.MaxDecideListEntries {
+		if len(admitted) == proto.MaxDecideListEntries {
 			met = true
 			return false
 		}
-		list.Decisions = append(list.Decisions, proto.DecideEntry{ID: row.ID(), Rev: row.Rev})
+		admitted = append(admitted, row)
 		return true
 	})
 	if err != nil {
@@ -289,7 +290,11 @@ func (s *Server) decideList(w http.ResponseWriter, r *http.Request, p principal)
 		return
 	}
 	s.decideHook(func(h *decideSeams) func() { return h.afterList })
-	list.Cut = met || more
+	kept, unasked := s.eligibleRows(r.Context(), admitted, p.subject)
+	for _, row := range kept {
+		list.Decisions = append(list.Decisions, proto.DecideEntry{ID: row.ID(), Rev: row.Rev})
+	}
+	list.Cut = met || more || unasked
 	b, _ := json.Marshal(list)
 	done()
 	s.writeBounded(w, http.StatusOK, json.RawMessage(b), proto.MaxDecideList)
@@ -331,6 +336,13 @@ func (s *Server) admittedRecord(w http.ResponseWriter, r *http.Request, p princi
 	a := crew.AdmitNone
 	if found {
 		a = decideAdmission(rec, p)
+	}
+	if a == crew.AdmitOpen && p.decider() {
+		// Under a router's policy the router is asked too: a person it no
+		// longer names loses the decision at this request (policy.go).
+		if yes, _ := s.eligibleNow(r.Context(), rec, p.subject); !yes {
+			a = crew.AdmitNone
+		}
 	}
 	if a == crew.AdmitNone {
 		decideNotFound(w)
@@ -396,7 +408,12 @@ func (s *Server) decideAnswer(w http.ResponseWriter, r *http.Request, p principa
 	ctx, cancel := runContext(r)
 	defer cancel()
 	auth := s.authorityOf(r)
-	rc, err := s.runs.RespondDecision(ctx, did, resp, actorOf(r), auth)
+	// Under a router's policy the router is asked first (policy.go).
+	conf, err := s.confirmFor(ctx, did, auth)
+	var rc crew.ResponseReceipt
+	if err == nil {
+		rc, err = s.runs.RespondDecisionWith(ctx, did, resp, actorOf(r), auth, conf)
+	}
 	if err != nil {
 		var de *crew.DecisionError
 		if !errors.As(err, &de) {
@@ -535,6 +552,8 @@ func decideWords(code, did string) string {
 		return did + " takes no more answers."
 	case crew.CodeDecisionMoved:
 		return "Not known whether your answer to " + did + " was recorded: send it again."
+	case crew.CodeNotEligible:
+		return "You are not among those who may answer " + did + "."
 	}
 	return did + " could not take this answer."
 }
