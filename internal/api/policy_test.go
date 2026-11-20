@@ -899,3 +899,32 @@ const routedPolicyText = `{"revision":"r1","approver":"router","quorum":1,"autho
 	`"pinned":{"rule":"r-1","groups":[{"role":"architecture","quorum":1}],"override":"operator","notify":"now"},` +
 	`"groups":[{"role":"architecture","label":"architecture owner","quorum":1,"rule":"r-1","eligible":[{"subject":"ana","name":"Ana","via":"role","ref":"ref-1"}]}],` +
 	`"override":"operator","routedAt":"2026-11-19T09:00:00Z","spare":true,"fallback":"local/1"}`
+
+// A router that confirms leaving its revision out confirms the revision
+// it was asked about: re-routed between the respond route's ask and the
+// response's transaction, the operator's override is refused stale_policy,
+// nothing kept.
+func TestARerouteBetweenTheAskAndTheAnswerIsStale(t *testing.T) {
+	f := newPolicyFixture(t)
+	did := f.routed(t, "r1", "dr-1", anaPolicy(ext.OverrideOperator))
+	var once sync.Once
+	f.fr.SetConfirm(did, func(q ext.ConfirmQuery) ext.Confirmation {
+		if q.Subject == "" {
+			once.Do(func() {
+				rec := f.record(t, did)
+				if _, err := f.srv.runs.Reroute(context.Background(), did, "switchman", withEligible(anaPolicy(ext.OverrideOperator), "exttest-r2", "ana"), ledger.HistoryRerouted, "op-m", rec.Rev); err != nil {
+					t.Errorf("the re-route: %v", err)
+				}
+			})
+		}
+		return ext.Confirmation{InForce: true}
+	})
+	rev := f.rev(t, did)
+	status, data, out := f.callAs(t, adminToken, http.MethodPost, "/api/decisions/"+did+"/respond", operatorBody("o1", 0, rev, true, "Ana is away this week"))
+	if status != http.StatusConflict || errorCode(out) != crew.CodeStalePolicy {
+		t.Fatalf("an override re-routed under it: %d %s", status, data)
+	}
+	if n := len(f.record(t, did).Responses); n != 0 {
+		t.Fatalf("%d responses kept", n)
+	}
+}

@@ -304,6 +304,12 @@ func (s *Server) confirmFor(ctx context.Context, did string, auth crew.Authority
 	if c.Routes && !ledger.RouterPolicy(rec.Policy) {
 		s.router.retell(did)
 	}
+	if c.Revision == "" {
+		// An answer that leaves its revision out is the revision asked
+		// about: the response's transaction compares it with the record's,
+		// so a re-route between the ask and the commit is stale_policy.
+		c.Revision = revision
+	}
 	return &c, nil
 }
 
