@@ -364,6 +364,44 @@ def gates(mobile: Path) -> list[str]:
     return out
 
 
+# A shell page's dynamic segment, with the helper (web/app/utils/shell.ts) that builds its address, the one its page reads it back with,
+# and the route's name: whatever a provider gives, the segment is the helper's base64url, in the spelling the content rules let through.
+CARRIED = {"decisions/[id].vue": ("decisionPath", "decisionIdOf", "shell-decisions-id")}
+# A segment of the helper's alphabet, standing for any it builds.
+CARRIED_SAMPLE = "aTE"
+
+
+def carried(root: Path) -> list[str]:
+    """Each dynamic segment of a shell page is carried through its helper: the page reads it back only so, and the route's address is
+    written nowhere in the app's screens but in the helper's own file."""
+    out = []
+    pages = root / "web/app/pages/shell"
+    helpers = root / "web/app/utils/shell.ts"
+    sources = [f for f in sorted((root / "web/app").rglob("*")) if f.suffix in (".ts", ".vue") and not f.name.endswith(".test.ts") and f.is_file()]
+    for f in sorted(pages.rglob("*.vue")) if pages.exists() else []:
+        rel = f.relative_to(pages).as_posix()
+        if "[" not in rel:
+            continue
+        if rel not in CARRIED:
+            out.append(f"web/app/pages/shell/{rel}: a dynamic segment not carried through an address helper")
+            continue
+        build, read, name = CARRIED[rel]
+        text = f.read_text()
+        through = text.count(f"{read}(route.params.")
+        if not through or len(re.findall(r"\bparams\b", text)) != through:
+            out.append(f"web/app/pages/shell/{rel}: its segment is read other than through {read}")
+        if not helpers.exists() or f"export function {build}(" not in helpers.read_text() or f"export function {read}(" not in helpers.read_text():
+            out.append(f"web/app/utils/shell.ts: {build} or {read} is missing")
+        prefix = "/shell/" + rel.rsplit("/", 1)[0] + "/"
+        for src in sources:
+            if src == helpers:
+                continue
+            t = src.read_text()
+            if prefix in t or f"'{name}'" in t or f'"{name}"' in t:
+                out.append(f"{src.relative_to(root).as_posix()}: writes {prefix} itself, not through {build}")
+    return out
+
+
 def spellings(mobile: Path) -> list[str]:
     """The built bundle's files (mobile/www, else internal/web/dist, when built) and the shell's routes, each spelled as the content
     rules let through."""
@@ -380,10 +418,10 @@ def spellings(mobile: Path) -> list[str]:
     if pages.exists():
         for f in sorted(pages.rglob("*.vue")):
             route = "/shell/" + f.relative_to(pages).with_suffix("").as_posix()
-            route = re.sub(r"/index$", "", re.sub(r"\[\w+\]", "id", route))
+            route = re.sub(r"/index$", "", re.sub(r"\[\w+\]", CARRIED_SAMPLE, route))
             if not PATH_SPELLING.match(route):
                 out.append(f"web/app/pages/shell/{f.relative_to(pages).as_posix()}: a route the content rules would refuse ({route})")
-    return out
+    return out + carried(root)
 
 
 def check(root: Path = ROOT) -> list[str]:

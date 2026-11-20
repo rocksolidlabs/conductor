@@ -230,3 +230,12 @@ export function serverTraffic(page: Page): string[] {
   page.on('websocket', (ws) => seen.push(`socket ${new URL(ws.url()).pathname}`))
   return seen
 }
+
+/**
+ * A decision's page address as the app's screens build it (`decisionPath` in app/utils/shell.ts, held to the same pair by its vitest):
+ * the provider's id as one unpadded base64url segment of its UTF-8 bytes. The specs' own copy, since the app's module is not theirs to
+ * import; a spec that reaches a page by the app's own links checks the address against it.
+ */
+export function decisionAddress(id: string): string {
+  return `/shell/decisions/${Buffer.from(id, 'utf8').toString('base64url')}`
+}

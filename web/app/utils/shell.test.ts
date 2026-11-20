@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ConductorShell, ShellDraft, ShellItem, ShellProvider, ShellState } from './shell'
-import { boundCode, boundLine, boundPage, endingWords, withinWait, notificationWords, providerName, readBridge, readRefusal, readSignIn, readState, readWords, resetShellBridge, SHELL_BOUNDS, shellBridge, shellRedirect, timeLeft } from './shell'
+import { boundCode, boundLine, boundPage, decisionIdOf, decisionPath, endingWords, withinWait, notificationWords, providerName, readBridge, readRefusal, readSignIn, readState, readWords, resetShellBridge, SHELL_BOUNDS, shellBridge, shellRedirect, timeLeft } from './shell'
 
 // The phone shell's bridge as the workbench reads it (docs/plans/phone-shell.md, OSS-1b, Tests per surface): the reader, every
 // provider string bounded where it is read, and a fake provider written against the whole of v1 (the typecheck holds it to it).
@@ -186,5 +186,31 @@ describe('a wait on the provider', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+})
+
+describe("a decision's page address", () => {
+  // The longest id the contract allows is 64 bytes.
+  const longest = 'x'.repeat(62) + 'é'
+  const ids = ['i1', 'org/repo#12', 'a:b', 'a~b', 'a.b', 'a b', '..', '%2F', '?q=1', 'é', 'Ünïcødé 決定', '😀', 'a\\b', longest, 'x'.repeat(64)]
+
+  it('carries any id the shell takes in the alphabet the content rules let through, and reads it back', () => {
+    expect(new TextEncoder().encode(longest).length).toBe(64)
+    for (const id of ids) {
+      const path = decisionPath(id)
+      expect(path).toMatch(/^\/shell\/decisions\/[A-Za-z0-9_-]+$/)
+      expect(decisionIdOf(path.slice('/shell/decisions/'.length))).toBe(id)
+    }
+    // The boot check's probe asks the app for exactly this segment (mobile/ios, BootCheck.decisionSegment).
+    expect(decisionPath('org/repo#12 a:b~é')).toBe('/shell/decisions/b3JnL3JlcG8jMTIgYTpifsOp')
+  })
+
+  it('reads a segment that does not read back as no decision', () => {
+    for (const bad of [undefined, 7, '', 'a', 'a=', 'aTE=', 'a+b', 'a/b', '%41', 'aTF', '_w', 'wA', 'gA', 'eA'.repeat(44), ['aTE']]) {
+      expect(decisionIdOf(bad), String(bad)).toBeNull()
+    }
+    // An id the shell does not take: past 64 bytes, or with a control character.
+    expect(decisionIdOf(decisionPath('x'.repeat(65)).slice('/shell/decisions/'.length))).toBeNull()
+    expect(decisionIdOf(decisionPath('a\nb').slice('/shell/decisions/'.length))).toBeNull()
   })
 })

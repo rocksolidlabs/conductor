@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { clockTime } from '~/utils/brakemanRole'
 import { INBOX_ROW_CLASS } from '~/utils/inbox'
-import { answeredNotApplied, readItem, readRefusal, routeWords, withinWait, type ShellItem } from '~/utils/shell'
+import { answeredNotApplied, decisionPath, readItem, readRefusal, routeWords, withinWait, type ShellItem } from '~/utils/shell'
 
 /**
  * What waits, as the provider lists it (docs/plans/phone-shell.md, OSS-2b, "The inbox screen"): the items in its order, each as a
@@ -89,7 +89,7 @@ const TYPE_WORDS: Record<string, string> = { approval: 'An approval', clarificat
     <p v-if="asOf" class="text-xs text-muted" data-shell-inbox-asof>As of {{ clockTime(asOf) }}<template v-if="offline">, offline</template></p>
     <ul v-if="items.length" class="flex min-w-0 flex-col gap-2">
       <li v-for="it in items" :key="it.id" class="min-w-0">
-        <NuxtLink :to="`/shell/decisions/${encodeURIComponent(it.id)}`" :class="[INBOX_ROW_CLASS, 'border-default']" :data-shell-inbox-row="it.id">
+        <NuxtLink :to="decisionPath(it.id)" :class="[INBOX_ROW_CLASS, 'border-default']" :data-shell-inbox-row="it.id">
           <span class="break-words font-medium text-highlighted" data-shell-inbox-question>{{ it.decision.request.question }}</span>
           <span class="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted">
             <span data-shell-inbox-kind>{{ TYPE_WORDS[it.decision.type] ?? 'A decision' }}</span>

@@ -300,15 +300,54 @@ class IOSProjectTest(unittest.TestCase):
         got = self.findings()
         self.assertEqual(len(got), 2, got)
         self.assertTrue(all("a path the content rules would refuse" in f for f in got), got)
-        pages = self.dir / "web/app/pages/shell"
-        (pages / "decisions").mkdir(parents=True)
-        (pages / "decisions/[id].vue").write_text("")
+        pages = self.carried()
         (pages / "index.vue").write_text("")
         (www / "_nuxt/a b.js").unlink()
         (www / "_nuxt/a%2F.js").unlink()
         self.assertEqual(self.findings(), [])
         (pages / "sign~in.vue").write_text("")
         self.only("a route the content rules would refuse (/shell/sign~in)")
+
+    def carried(self) -> Path:
+        """The shell's decision page and its address helpers, as the app's screens hold them."""
+        pages = self.dir / "web/app/pages/shell"
+        (pages / "decisions").mkdir(parents=True, exist_ok=True)
+        (pages / "decisions/[id].vue").write_text("const route = useRoute()\nconst id = decisionIdOf(route.params.id) ?? ''\n")
+        (self.dir / "web/app/utils").mkdir(parents=True, exist_ok=True)
+        (self.dir / "web/app/utils/shell.ts").write_text(
+            "export function decisionPath(id: string): string {\n  return `/shell/decisions/${id}`\n}\nexport function decisionIdOf(s: unknown) {}\n")
+        (self.dir / "web/app/components").mkdir(parents=True, exist_ok=True)
+        (self.dir / "web/app/components/ShellInboxList.vue").write_text('<NuxtLink :to="decisionPath(it.id)" />\n')
+        (self.dir / "web/app/utils/shell.test.ts").write_text("expect(decisionPath('i1')).toBe('/shell/decisions/aTE')\n")
+        return pages
+
+    def test_a_shell_pages_dynamic_segment_is_carried_through_its_helper(self) -> None:
+        pages = self.carried()
+        self.assertEqual(self.findings(), [])
+        inbox = self.dir / "web/app/components/ShellInboxList.vue"
+        page = pages / "decisions/[id].vue"
+        # A builder that writes the id into the path itself, or names the route.
+        inbox.write_text('<NuxtLink :to="`/shell/decisions/${encodeURIComponent(it.id)}`" />\n')
+        self.only("web/app/components/ShellInboxList.vue: writes /shell/decisions/ itself, not through decisionPath")
+        inbox.write_text("<NuxtLink :to=\"{ name: 'shell-decisions-id', params: { id: it.id } }\" />\n")
+        self.only("web/app/components/ShellInboxList.vue: writes /shell/decisions/ itself, not through decisionPath")
+        inbox.write_text('<NuxtLink :to="decisionPath(it.id)" />\n')
+        # The page reading its segment as it stands, or once through the helper and once not.
+        for text in ("const id = String(route.params.id)\n", "const id = decisionIdOf(route.params.id)\nconst raw = route.params.id\n",
+                     "const id = decisionIdOf(useRoute().params['id'])\n"):
+            page.write_text(text)
+            self.only("decisions/[id].vue: its segment is read other than through decisionIdOf")
+        page.write_text("const id = decisionIdOf(route.params.id)\n")
+        # The helpers gone.
+        (self.dir / "web/app/utils/shell.ts").write_text("export function decisionPath(id: string): string { return id }\n")
+        self.only("web/app/utils/shell.ts: decisionPath or decisionIdOf is missing")
+        # A dynamic segment the check does not know.
+        self.carried()
+        (pages / "drafts").mkdir()
+        (pages / "drafts/[key].vue").write_text("const k = route.params.key\n")
+        self.only("web/app/pages/shell/drafts/[key].vue: a dynamic segment not carried through an address helper")
+
+
 
 if __name__ == "__main__":
     unittest.main()
