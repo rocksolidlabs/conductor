@@ -369,31 +369,55 @@ func TestPinsInTheExport(t *testing.T) {
 }
 
 // A replay the sync store asks for is a new epoch listing every document,
-// with no source document changing: each document's bytes as before.
+// with no document it hands changing: the UI documents and the writer's
+// id, read by name before and after, the same bytes on disk and handed
+// over alike. Other parts of the server write the data directory as they
+// will meanwhile (another document is saved as the replay begins, through
+// the adapter's afterReset), which says nothing of the replay.
 func TestReplayDoorReplaysEveryDocWithoutAChange(t *testing.T) {
 	f := newFakeSync()
 	e, own := syncDoorsEnv(t, f)
 	f.until(t, "the start's replay", func(c []syncCall) bool { return replayedIn(c, 1) })
 	putUIDoc(t, e, "layout", testLayout, http.StatusOK)
 	f.until(t, "the layout", func(c []syncCall) bool { return slices.Contains(keysOf(c, ""), syncKey{syncData, "ui/layout.json"}) })
-	before := syncModel(f.all())
-	seq := e.srv.store.Seq()
+	read := func() map[string][]byte {
+		out := map[string][]byte{}
+		for _, name := range []string{"layout.json", uiWriterFile} {
+			b, err := os.ReadFile(filepath.Join(e.srv.store.Dir(), "ui", name))
+			if err != nil {
+				t.Fatal(err)
+			}
+			out[name] = b
+		}
+		return out
+	}
+	before := read()
+	handed := syncModel(f.all())[syncKey{syncData, "ui/layout.json"}]
+	crews, err := e.srv.store.Sub("crews")
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.srv.syncs.mu.Lock()
+	e.srv.syncs.afterReset = func() {
+		if err := crews.Save("another-writer.json", map[string]string{"id": "another-writer", "name": "Another writer"}); err != nil {
+			t.Error(err)
+		}
+	}
+	e.srv.syncs.mu.Unlock()
 	if err := own.SyncReplay(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 	calls := f.until(t, "the asked replay", func(c []syncCall) bool { return replayedIn(c, 2) })
-	if e.srv.store.Seq() != seq {
-		t.Fatal("a replay changed the data directory")
+	for name, b := range read() {
+		if !bytes.Equal(b, before[name]) {
+			t.Fatalf("the replay changed ui/%s", name)
+		}
 	}
-	keys := keysOf(calls, nthEpoch(calls, 2))
-	after := syncModel(calls)
-	for k, b := range before {
-		if !slices.Contains(keys, k) {
-			t.Fatalf("the replay did not list %v: %v", k, keys)
-		}
-		if !bytes.Equal(after[k], b) {
-			t.Fatalf("%v changed across the replay", k)
-		}
+	if !slices.Contains(keysOf(calls, nthEpoch(calls, 2)), syncKey{syncData, "ui/layout.json"}) {
+		t.Fatal("the replay did not list the layout")
+	}
+	if after := syncModel(calls)[syncKey{syncData, "ui/layout.json"}]; !bytes.Equal(after, handed) {
+		t.Fatalf("the layout handed over changed across the replay:\n%s\n%s", handed, after)
 	}
 }
 
