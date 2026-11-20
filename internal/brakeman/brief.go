@@ -143,7 +143,7 @@ type Outcome struct {
 // Decision is a decision card. Conductor renders its controls from the
 // live record of About, never from these fields.
 type Decision struct {
-	About           Ref           `json:"about"` // a question:, task:, ticket: or plan: ref
+	About           Ref           `json:"about"` // a question:, task:, ticket:, plan: or decision: ref (an open record of the request's subjects)
 	Happened        string        `json:"happened"`
 	WhyHuman        string        `json:"whyHuman"`
 	Question        string        `json:"question"`              // at most 500 bytes
@@ -1278,7 +1278,7 @@ func revision(field, rev string) error {
 func checkDecision(field string, x *Decision) error {
 	x.Happened, x.WhyHuman, x.Question = cleanText(x.Happened), cleanText(x.WhyHuman), cleanText(x.Question)
 	x.Uncertainty, x.Authorizes = cleanText(x.Uncertainty), cleanText(x.Authorizes)
-	if err := oneRef(field+".about", x.About, RefQuestion, RefTask, RefTicket, RefPlan); err != nil {
+	if err := oneRef(field+".about", x.About, RefQuestion, RefTask, RefTicket, RefPlan, RefDecision); err != nil {
 		return err
 	}
 	for _, t := range []struct {
