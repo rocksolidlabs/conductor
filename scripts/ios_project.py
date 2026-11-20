@@ -222,7 +222,7 @@ def plugins(mobile: Path) -> list[str]:
             out.append(f"{file}: its methods {made} do not each make the call of their own name for {want}")
         if f"registerPluginInstance({cls}())" not in shell:
             out.append(f"ShellViewController.swift: {cls} is not registered")
-    if not re.search(r"MediaCaptureRefused\(wrapping: webView\?\.uiDelegate", shell) or "webView?.uiDelegate = " not in shell:
+    if not re.search(r"MediaCaptureRefused\(wrapping: webView\??\.uiDelegate", shell) or not re.search(r"webView\??\.uiDelegate = ", shell):
         out.append("ShellViewController.swift: the web view's UI delegate is not wrapped in MediaCaptureRefused")
     # Every way the window gets its controller gives it the shell's: the scene's own window and the storyboard the scene names.
     scene = (mobile / "ios/App/App/SceneDelegate.swift").read_text()
@@ -292,6 +292,39 @@ def packaging(mobile: Path) -> list[str]:
     return out
 
 
+def bridge_calls(mobile: Path) -> dict[str, set[str]]:
+    """The calls the bridge makes of each plugin (NativeLayer in bridge.ts, named as main.ts reads them), with the runtime's listener
+    removal beside each plugin the bridge listens to."""
+    bridge = (mobile / "src/bridge.ts").read_text()
+    names = dict(re.findall(r"\b(\w+) = p\.(\w+)\b", (mobile / "src/main.ts").read_text()))
+    layer = re.search(r"export interface NativeLayer \{(.*?)\n\}", bridge, re.S)
+    out: dict[str, set[str]] = {}
+    if not layer:
+        return out
+    body = layer.group(1)
+    for field, kind in re.findall(r"^  (\w+): (\w+)\s*$", body, re.M):
+        if field in names:
+            out[names[field]] = set(interface(bridge, kind))
+    for m in re.finditer(r"^  (\w+): \{(.*?)\}\s*$", body, re.M | re.S):
+        field = m.group(1)
+        if field not in names:
+            continue
+        text = m.group(2)
+        out[names[field]] = set(re.findall(r"(?:^|\n|;)\s*(\w+)\(", text))
+    for plugin, methods in out.items():
+        if "addListener" in methods:
+            methods.add("removeListener")
+    return out
+
+
+def gate_table(native: Path) -> dict[str, set[str]]:
+    gate = (native / "BridgeGate.swift").read_text()
+    m = re.search(r"static let calls: \[String: Set<String>\] = \[(.*?)\n    \]", gate, re.S)
+    if not m:
+        return {}
+    return {plugin: set(re.findall(r'"(\w+)"', methods)) for plugin, methods in re.findall(r'"(\w+)": \[([^\]]*)\]', m.group(1))}
+
+
 def gates(mobile: Path) -> list[str]:
     """One gate at each way from the page into native code, each an allowlist (docs/plans/phone-shell.md)."""
     out = []
@@ -299,6 +332,7 @@ def gates(mobile: Path) -> list[str]:
     for line, what in (
         ("runtime.contentController.removeScriptMessageHandler(forName: BridgeGate.handler)", "the runtime's message handler is not taken off"),
         ("runtime.contentController.add(g, name: BridgeGate.handler)", "the bridge gate is not put in its place"),
+        ("BridgeGateHandler(forwardingTo: runtime, view: webView, app: app)", "the bridge gate does not know the shell's view and origin"),
         ("compileContentRuleList(forIdentifier: FilePrefix.identifier", "the runtime's file prefixes are not blocked"),
         ("guard gate != nil", "the page loads whether or not the gate stands"),
     ):
@@ -309,12 +343,11 @@ def gates(mobile: Path) -> list[str]:
     m = re.search(r"runJavaScriptTextInputPanelWithPrompt prompt: String,.*?\{\s*completionHandler\(nil\)\s*\}", ui, re.S)
     if not m:
         out.append("MediaCapture.swift: a text-input prompt is not answered nil by the shell's own delegate")
-    gate = (native / "BridgeGate.swift").read_text()
-    names = re.search(r"static let names: Set<String> = \[([^\]]*)\]", gate)
-    admitted = sorted(re.findall(r'"(\w+)"', names.group(1))) if names else []
-    reads = sorted(re.findall(r"\bp\.(\w+)\b", (mobile / "src/main.ts").read_text()))
-    if not admitted or admitted != sorted(set(reads)):
-        out.append(f"BridgeGate.swift: the gate admits {admitted}, not exactly the plugins the bridge reads {sorted(set(reads))}")
+    table = gate_table(native)
+    calls = bridge_calls(mobile)
+    for plugin in sorted(set(table) | set(calls)):
+        if table.get(plugin, set()) != calls.get(plugin, set()):
+            out.append(f"BridgeGate.swift: {plugin} admits {sorted(table.get(plugin, set()))}, not the bridge's calls {sorted(calls.get(plugin, set()))}")
     if "CallRunner" not in (mobile / "ios/App/App/Plugins/ShellHttpPlugin.swift").read_text():
         out.append("ShellHttpPlugin.swift: its calls are not run one at a time through a CallRunner")
     return out

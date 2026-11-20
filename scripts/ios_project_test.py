@@ -190,7 +190,7 @@ class IOSProjectTest(unittest.TestCase):
 
     def test_a_call_the_bridge_adds_is_a_finding_until_answered(self) -> None:
         self.edit("src/bridge.ts", "  clear(): Promise<void>\n}", "  clear(): Promise<void>\n  size(): Promise<number>\n}")
-        self.only("Calls.swift: PluginMethods.store", "ConductorStorePlugin.swift: declares", "ConductorStorePlugin.swift: its methods")
+        self.only("Calls.swift: PluginMethods.store", "ConductorStorePlugin.swift: declares", "ConductorStorePlugin.swift: its methods", "BridgeGate.swift: ConductorStore admits")
 
     def test_the_page_reaches_each_plugin_by_its_name(self) -> None:
         self.edit("ios/App/App/Plugins/ConductorStorePlugin.swift", 'jsName = "ConductorStore"', 'jsName = "Store"')
@@ -200,7 +200,7 @@ class IOSProjectTest(unittest.TestCase):
         f = "ios/App/App/ShellViewController.swift"
         self.edit(f, "bridge?.registerPluginInstance(ConductorStorePlugin())", "")
         self.only("ConductorStorePlugin is not registered")
-        self.edit(f, "webView?.uiDelegate = d", "")
+        self.edit(f, "webView.uiDelegate = d", "")
         self.assertIn("not wrapped in MediaCaptureRefused", self.findings()[-1])
 
     def test_every_window_gets_the_shells_controller(self) -> None:
@@ -246,21 +246,42 @@ class IOSProjectTest(unittest.TestCase):
         for line, part in (
             ("            runtime.contentController.add(g, name: BridgeGate.handler)\n", "the bridge gate is not put in its place"),
             ("            runtime.contentController.removeScriptMessageHandler(forName: BridgeGate.handler)\n", "the runtime's message handler is not taken off"),
+            ("BridgeGateHandler(forwardingTo: runtime, view: webView, app: app)", "the bridge gate does not know the shell's view and origin"),
             ("compileContentRuleList(forIdentifier: FilePrefix.identifier", "the runtime's file prefixes are not blocked"),
             ("        guard gate != nil, ", "the page loads whether or not the gate stands"),
         ):
             self.setUp()
-            self.edit(f, line, line.replace("FilePrefix.identifier", "\"other\"") if "compile" in line else "        " if "guard" in line else "")
+            new = {"BridgeGateHandler(forwardingTo: runtime, view: webView, app: app)": "BridgeGateHandler(forwardingTo: runtime)",
+                   "compileContentRuleList(forIdentifier: FilePrefix.identifier": "compileContentRuleList(forIdentifier: \"other\"",
+                   "        guard gate != nil, loads != nil, ": "        guard ", "        guard gate != nil, ": "        guard "}.get(line, "")
+            self.edit(f, line, new)
             self.only(part)
         self.setUp()
         self.edit("ios/ConductorNative/Sources/ConductorShell/MediaCapture.swift", "        completionHandler(nil)\n", "        completionHandler(prompt)\n")
         self.only("a text-input prompt is not answered nil")
         self.setUp()
-        self.edit("ios/ConductorNative/Sources/ConductorShell/BridgeGate.swift", '"PushNotifications"]', '"PushNotifications", "WebView"]')
-        self.only("the gate admits")
-        self.setUp()
         self.edit("ios/App/App/Plugins/ShellHttpPlugin.swift", "CallRunner {", "Runner {")
         self.only("its calls are not run one at a time")
+
+    def test_the_gates_table_is_exactly_the_bridges_calls(self) -> None:
+        g = "ios/ConductorNative/Sources/ConductorShell/BridgeGate.swift"
+        # A row no call uses.
+        self.edit(g, '"Browser": ["open"],', '"Browser": ["open", "close"],')
+        self.only("Browser admits ['close', 'open'], not the bridge's calls ['open']")
+        # A plugin the bridge does not reach.
+        self.setUp()
+        self.edit(g, '"Browser": ["open"],', '"Browser": ["open"],\n        "WebView": ["getServerBasePath"],')
+        self.only("WebView admits ['getServerBasePath'], not the bridge's calls []")
+        # A call added to the bridge with no row.
+        self.setUp()
+        self.edit("src/bridge.ts", "  browser: { open(o: { url: string }): Promise<void> }", "  browser: { open(o: { url: string }): Promise<void>; close(): Promise<void> }")
+        got = self.findings()
+        self.assertTrue(any("Browser admits ['open'], not the bridge's calls ['close', 'open']" in f for f in got), got)
+        # A plugin the bridge listens to without its listener's removal in the table.
+        self.setUp()
+        self.edit(g, '"App": ["getLaunchUrl", "addListener", "removeListener"],', '"App": ["getLaunchUrl", "addListener"],')
+        self.only("App admits ['addListener', 'getLaunchUrl'], not the bridge's calls ['addListener', 'getLaunchUrl', 'removeListener']")
+
 
 
 if __name__ == "__main__":
