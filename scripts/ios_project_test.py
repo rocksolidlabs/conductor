@@ -28,6 +28,7 @@ FILES = [
     "ios/App/App/Plugins/ShellHttpPlugin.swift",
     "ios/ConductorNative/Sources/ConductorShell/Refused.swift",
     "ios/ConductorNative/Sources/ConductorShell/NativeHTTP.swift",
+    "ios/ConductorNative/Sources/ConductorShell/BridgeGate.swift",
     "ios/App/CapApp-SPM/Package.swift",
     "ios/App/App.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved",
     "ios/ConductorNative/Sources/ConductorShell/Calls.swift",
@@ -238,6 +239,19 @@ class IOSProjectTest(unittest.TestCase):
         self.setUp()
         self.edit("ios/App/App/ShellViewController.swift", "        _ = ConductorPackaging.linked()\n", "")
         self.only("ConductorPackaging is not named at start")
+
+    def test_every_way_into_native_code_has_its_gate(self) -> None:
+        f = "ios/App/App/ShellViewController.swift"
+        for line, part in (
+            ("            runtime.contentController.add(g, name: BridgeGate.handler)\n", "the bridge gate is not put in its place"),
+            ("            runtime.contentController.removeScriptMessageHandler(forName: BridgeGate.handler)\n", "the runtime's message handler is not taken off"),
+        ):
+            self.setUp()
+            self.edit(f, line, line.replace("FilePrefix.identifier", "\"other\"") if "compile" in line else "        " if "guard" in line else "")
+            self.only(part)
+        self.setUp()
+        self.edit("ios/ConductorNative/Sources/ConductorShell/BridgeGate.swift", '"PushNotifications"]', '"PushNotifications", "WebView"]')
+        self.only("the gate admits")
 
 
 if __name__ == "__main__":

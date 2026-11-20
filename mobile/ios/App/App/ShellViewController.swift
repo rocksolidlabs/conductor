@@ -7,12 +7,15 @@ import WebKit
 // The shell's bridge view controller: the key and store plugins registered with the native runtime; the runtime's own WebView,
 // CapacitorCookies and CapacitorHttp replaced by their names (RefusedPlugins.swift, ShellHttpPlugin.swift); a server base path a
 // page once asked to keep never loaded at start; and the web view's UI delegate wrapped so that every media capture request (a
-// microphone, a camera) is denied (ConductorShell's MediaCaptureRefused).
+// microphone, a camera) is denied (ConductorShell's MediaCaptureRefused); and the runtime's script message handler taken over by
+// ConductorShell's BridgeGateHandler, which forwards only a message to a plugin the shell means the page to reach, by its page name.
 class ShellViewController: CAPBridgeViewController {
     /** The wrapping delegate: the web view holds its UI delegate weakly, so the controller keeps it. */
     private var refused: MediaCaptureRefused?
     /** The boot check's report, only in a launch the boot check asked for. */
     private var bootCheck: BootCheckView?
+    /** The gate at the runtime's script message handler: none until it is in place, and then the page may load. */
+    private var gate: BridgeGateHandler?
 
     /** The bundle the app ships, always: the runtime's default reads a base path a page asked to keep; the shell's never does. */
     override func instanceDescriptor() -> InstanceDescriptor {
@@ -30,6 +33,13 @@ class ShellViewController: CAPBridgeViewController {
         let d = MediaCaptureRefused(wrapping: webView?.uiDelegate as? (NSObject & WKUIDelegate))
         refused = d
         webView?.uiDelegate = d
+        // The runtime's handler, `bridge`, taken over by the gate, which forwards to it only what it admits.
+        if let runtime = (bridge as? CapacitorBridge)?.webViewDelegationHandler {
+            let g = BridgeGateHandler(forwardingTo: runtime)
+            runtime.contentController.removeScriptMessageHandler(forName: BridgeGate.handler)
+            runtime.contentController.add(g, name: BridgeGate.handler)
+            gate = g
+        }
         if BootCheck.asked(), let webView { bootCheck = BootCheckView(webView: webView) }
     }
 }

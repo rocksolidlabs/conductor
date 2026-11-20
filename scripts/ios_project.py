@@ -292,9 +292,29 @@ def packaging(mobile: Path) -> list[str]:
     return out
 
 
+def gates(mobile: Path) -> list[str]:
+    """One gate at each way from the page into native code, each an allowlist (docs/plans/phone-shell.md)."""
+    out = []
+    shell = (mobile / "ios/App/App/ShellViewController.swift").read_text()
+    for line, what in (
+        ("runtime.contentController.removeScriptMessageHandler(forName: BridgeGate.handler)", "the runtime's message handler is not taken off"),
+        ("runtime.contentController.add(g, name: BridgeGate.handler)", "the bridge gate is not put in its place"),
+    ):
+        if line not in shell:
+            out.append(f"ShellViewController.swift: {what}")
+    native = mobile / "ios/ConductorNative/Sources/ConductorShell"
+    gate = (native / "BridgeGate.swift").read_text()
+    names = re.search(r"static let names: Set<String> = \[([^\]]*)\]", gate)
+    admitted = sorted(re.findall(r'"(\w+)"', names.group(1))) if names else []
+    reads = sorted(re.findall(r"\bp\.(\w+)\b", (mobile / "src/main.ts").read_text()))
+    if not admitted or admitted != sorted(set(reads)):
+        out.append(f"BridgeGate.swift: the gate admits {admitted}, not exactly the plugins the bridge reads {sorted(set(reads))}")
+    return out
+
+
 def check(root: Path = ROOT) -> list[str]:
     mobile = root / "mobile"
-    return info_plist(mobile) + project(mobile) + config(mobile) + plugins(mobile) + stand_ins(mobile) + packaging(mobile)
+    return info_plist(mobile) + project(mobile) + config(mobile) + plugins(mobile) + stand_ins(mobile) + packaging(mobile) + gates(mobile)
 
 
 def main() -> int:
