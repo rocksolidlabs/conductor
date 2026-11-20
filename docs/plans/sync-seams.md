@@ -1155,8 +1155,9 @@ text and rationale).
 `ledger.MaxAuthority` (1 KiB, checked by `authorityOf` as given and as
 re-encoded), and the statement alone may be 2 KiB, so the statement is
 not in the authority: the ledger's step keeps it in a table of its own,
-`CREATE TABLE decision_statements (decision INTEGER NOT NULL, k INTEGER
-NOT NULL, statement TEXT NOT NULL, PRIMARY KEY (decision, k))`, written
+`CREATE TABLE decision_statements (decision INTEGER NOT NULL REFERENCES
+decisions(n) ON DELETE CASCADE, k INTEGER NOT NULL, statement TEXT NOT
+NULL, PRIMARY KEY (decision, k))`, written
 in DR1's transaction with the response row it belongs to (accepted, or a
 kept refusal), and the authority holds only its SHA-256
 (`statementSha256`). With the opaque ids of the shape above (no byte
@@ -1173,8 +1174,9 @@ statement is past 2 KiB refused by `HeldAnswer.Valid`, never by
 the next at its merge, row OS-3a, the same step as
 `decision_statements`;
 additions only): `CREATE TABLE decision_output
-(decision INTEGER NOT NULL, part TEXT NOT NULL, verdict TEXT NOT NULL,
-cut_at INTEGER NOT NULL DEFAULT -1, PRIMARY KEY (decision, part))`, a
+(decision INTEGER NOT NULL REFERENCES decisions(n) ON DELETE CASCADE,
+part TEXT NOT NULL, verdict TEXT NOT NULL, cut_at INTEGER NOT NULL
+DEFAULT -1, PRIMARY KEY (decision, part))`, a
 row for each free-text part of a decision (the request's fields, each
 response's `text` and `rationale`, each receipt's and the application's
 words, `why`), written by `outputGuard` in the transaction that writes
@@ -1799,9 +1801,10 @@ uses it:
   `TestAFailedMigrationLeavesVersion8AsItWas`,
   `TestVersion9OpensReadOnlyInVersion8`).
 - **The ledger 15 → 16 (OS-3a)**: additions only, `decision_output`
-  and `decision_statements`, neither with a foreign key (each keyed by
-  the decision record's number, never given again, and kept when its run
-  is pruned); a version 16 database opens read-only under a version 15
+  and `decision_statements`, each keyed by the decision record's number
+  and deleted with its decision (`ON DELETE CASCADE`), so a pruned run's
+  decisions take their statements and verdicts with them, and a decision
+  handed on to another run keeps them with it; a version 16 database opens read-only under a version 15
   binary, as the ledger's rule is (`TestSchema16MigratesAndKeepsEveryRow`,
   `TestVersion16OpensReadOnlyInVersion15`,
   `TestSchema16FreshAndAFailedMigration`). OS-3 then writes DR1's

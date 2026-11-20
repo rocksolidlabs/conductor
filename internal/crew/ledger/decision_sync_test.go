@@ -90,11 +90,12 @@ func filled(t *testing.T, dir string) *Ledger {
 	return l
 }
 
-// A new database has both tables with the plan's columns and keys, and no
-// foreign key, as the plan gives them: a row is refused a second time for
-// its key, and taken for a decision the ledger has not (a row outlives its
-// decision: nothing deletes it with the run). Opened again, the database
-// is as it was. A migration that fails partway (decision_statements made,
+// A new database has both tables with the plan's columns and keys, each
+// referring to its decision by its number: a row is refused a second time
+// for its key and refused for a decision the ledger has not; a decision
+// handed on to another run keeps its rows; a pruned run's decisions take
+// theirs with them, and another run's are untouched. Opened again, the
+// database is as it was. A migration that fails partway (decision_statements made,
 // a table named decision_output there already) is one transaction: the
 // version 15 database is exactly as it was, read-only, the why naming the
 // table; the next open, the cause gone, migrates to a schema equal to a new
@@ -109,15 +110,17 @@ func TestSchema16FreshAndAFailedMigration(t *testing.T) {
 		`column decision INTEGER notnull=1 default="" pk=1`,
 		`column k INTEGER notnull=1 default="" pk=2`,
 		`column statement TEXT notnull=1 default="" pk=0`,
+		`foreign decision -> decisions.n on delete CASCADE`,
 	}
 	wantOutput := []string{
 		`column decision INTEGER notnull=1 default="" pk=1`,
 		`column part TEXT notnull=1 default="" pk=2`,
 		`column verdict TEXT notnull=1 default="" pk=0`,
 		`column cut_at INTEGER notnull=1 default="-1" pk=0`,
+		`foreign decision -> decisions.n on delete CASCADE`,
 	}
 	freshStatements, freshOutput := columnsOf(t, fresh, "decision_statements"), columnsOf(t, fresh, "decision_output")
-	// Each is its columns and its text: no foreign key line between them.
+	// Each is its columns, its foreign key and its text.
 	if !slices.Equal(freshStatements[:len(freshStatements)-1], wantStatements) || !slices.Equal(freshOutput[:len(freshOutput)-1], wantOutput) {
 		t.Fatalf("a new database's tables:\n%s\n\n%s", strings.Join(freshStatements, "\n"), strings.Join(freshOutput, "\n"))
 	}
@@ -139,21 +142,51 @@ func TestSchema16FreshAndAFailedMigration(t *testing.T) {
 			t.Errorf("%s: taken", what)
 		}
 	}
-	if err := putStatement(fresh, 999, 1); err != nil {
-		t.Fatalf("a statement of a decision the ledger has not: %v", err)
+	if err := putStatement(fresh, 999, 1); err == nil {
+		t.Error("a statement of a decision the ledger has not: taken")
 	}
-	if err := putOutput(fresh, 999, "question", "clean"); err != nil {
-		t.Fatalf("a verdict of a decision the ledger has not: %v", err)
+	if err := putOutput(fresh, 999, "question", "clean"); err == nil {
+		t.Error("a verdict of a decision the ledger has not: taken")
 	}
-	// A pruned run's decisions go; the rows keyed by them stay.
+	// A decision handed on to a continuation keeps its rows.
+	const next = "team-00000002"
+	newRun(t, fresh, next)
+	in(t, fresh, next, func(tx *Tx) error {
+		moved, err := tx.MoveDecisions(run, next)
+		if err == nil && (len(moved) != 1 || moved[0].N != n) {
+			err = fmt.Errorf("moved %v", moved)
+		}
+		return err
+	})
+	count := func(where string) (int, int) {
+		return countRows(t, fresh, "SELECT COUNT(*) FROM decision_statements"+where), countRows(t, fresh, "SELECT COUNT(*) FROM decision_output"+where)
+	}
+	if s, o := count(""); s != 1 || o != 2 {
+		t.Fatalf("after the decision moved: %d statements, %d verdicts", s, o)
+	}
+	// Another run's decision, with rows of its own, and the first run
+	// pruned: its decision takes its statement and verdicts with it, and
+	// the other's are untouched.
+	const other = "team-00000003"
+	newRun(t, fresh, other)
+	tasksOf(t, fresh, other, "build")
+	m := open(t, fresh, agentDecision(other, "build", 1, "q2"))
+	for _, err := range []error{putStatement(fresh, m, 1), putOutput(fresh, m, "question", "output")} {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
 	if _, err := fresh.db.Exec("DELETE FROM runs WHERE id = ?", run); err != nil {
 		t.Fatal(err)
 	}
-	if d := countRows(t, fresh, "SELECT COUNT(*) FROM decisions"); d != 0 {
+	if d := countRows(t, fresh, fmt.Sprintf("SELECT COUNT(*) FROM decisions WHERE n = %d", n)); d != 0 {
 		t.Fatalf("%d decisions after the run's prune", d)
 	}
-	if s, o := countRows(t, fresh, "SELECT COUNT(*) FROM decision_statements"), countRows(t, fresh, "SELECT COUNT(*) FROM decision_output"); s != 2 || o != 3 {
-		t.Fatalf("after the run's prune: %d statements, %d verdicts", s, o)
+	if s, o := count(fmt.Sprintf(" WHERE decision = %d", n)); s != 0 || o != 0 {
+		t.Fatalf("after the run's prune: %d statements, %d verdicts of its decision", s, o)
+	}
+	if s, o := count(fmt.Sprintf(" WHERE decision = %d", m)); s != 1 || o != 1 {
+		t.Fatalf("after the prune: %d statements, %d verdicts of another run's decision", s, o)
 	}
 	freshEntries, freshRows := allEntries(t, fresh), everyRow(t, fresh)
 	fresh.Close()

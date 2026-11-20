@@ -8480,9 +8480,9 @@ a held answer carries, one row for each response that names one, keyed
 by the decision and the response's number; and `decision_output`, a
 decision's copied-output verdicts, one row for each free-text part,
 keyed by the decision and the part, with its verdict and where it is cut
-(-1 for none). Neither has a foreign key: a row is keyed by the decision
-record's number, which is never given again, and stays when the run is
-pruned. No decision before it has either, nothing is derived, and nothing
+(-1 for none). Each row is deleted with its decision: a pruned run's
+decisions take their statements and verdicts with them, and a decision
+handed on to another run keeps them with it. No decision before it has either, nothing is derived, and nothing
 writes or reads either table yet. A build that writes version 15 opens
 such a ledger read-only.
 
