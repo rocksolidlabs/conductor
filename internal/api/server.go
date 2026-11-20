@@ -792,10 +792,14 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		// A fresh copied-output index is made again from the ledger's logs;
 		// a decision's part a process before this one left pending is output.
 		s.rebuildIndex()
-		if s.withholdDecisionParts(context.Background()) {
+		// A best effort: the settle loop withholds first on every pass, so a
+		// ledger another server holds at the start is withheld once it is
+		// this one's.
+		s.withholdDecisionParts(context.Background())
+		if s.ledger != nil && s.copyCheck != nil && s.syncName() != "" {
 			// A decision's part left pending is judged again once the index
 			// is whole, until the server ends: a loop of its own, started once
-			// the ledger is the server's (sync_decision.go).
+			// the server has its ledger (sync_decision.go).
 			ctx := s.extCtx
 			s.track(func() { s.settleDecisionLoop(ctx) })
 		}

@@ -210,3 +210,41 @@ func TestTheFirstBuildsVerdictIsKept(t *testing.T) {
 		t.Fatalf("a later build: %q %v", text(doc), err)
 	}
 }
+
+// A server that starts while another holds its ledger settles the parts
+// it judges pending once the ledger is its own: the settle loop runs
+// though the start's withholding could not, and withholds first.
+func TestPendingPartsSettleAfterAHandOver(t *testing.T) {
+	was := ledger.LockWait
+	ledger.LockWait = testWait
+	t.Cleanup(func() { ledger.LockWait = was })
+	dir := syncDataDir(t)
+	other, err := ledger.Open(filepath.Join(dir, "runs"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.Close()
+	f := newFakeSync()
+	e := syncEnv(t, dir, f)
+	if ro, _ := e.srv.ledger.ReadOnly(); !ro {
+		t.Fatal("the server took the owner lock another ledger holds")
+	}
+	other.Close()
+	waitUntil(t, "the ledger the server's and its pending parts withheld", func() bool {
+		ro, _ := e.srv.ledger.ReadOnly()
+		return !ro && e.srv.decisionPartsWithheld.Load()
+	})
+	const run = "team-00000001"
+	newLedgerRun(t, e.srv.ledger, run, ledger.RunRunning)
+	release := holdIndex(t, e.srv.outputs)
+	n := openPlanDecision(t, e.srv.ledger, run, "g1", `{"question":"Ship the migration to every region?","options":[{"label":"Approve"},{"label":"Reject"}],"subject":{"kind":"plan","plan":"pl-1","digest":"d1"}}`)
+	if v, _, _ := e.srv.ledger.OutputVerdicts(context.Background(), n); v[ledger.PartQuestion] != verdictPending {
+		t.Fatalf("the question with the index held: %v", v)
+	}
+	release()
+	key := syncKey{syncDecisionStore, ledger.DecisionID(n)}
+	f.until(t, "the decision with its request", func(c []syncCall) bool {
+		doc, _, ok := docOf(c, key)
+		return ok && doc.Request != nil && doc.Request.Question == "Ship the migration to every region?"
+	})
+}
