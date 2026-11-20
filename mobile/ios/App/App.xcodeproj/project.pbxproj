@@ -21,6 +21,8 @@
 		C0DC70000000000000000007 /* ConductorKeyPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DC70000000000000000006 /* ConductorKeyPlugin.swift */; };
 		C0DC70000000000000000009 /* ConductorStorePlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DC70000000000000000008 /* ConductorStorePlugin.swift */; };
 		C0DC7000000000000000000C /* ConductorShell in Frameworks */ = {isa = PBXBuildFile; productRef = C0DC7000000000000000000B /* ConductorShell */; };
+		C0DC7000000000000000000E /* RefusedPlugins.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DC7000000000000000000D /* RefusedPlugins.swift */; };
+		C0DC70000000000000000010 /* ShellHttpPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DC7000000000000000000F /* ShellHttpPlugin.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -39,6 +41,8 @@
 		C0DC70000000000000000004 /* Answer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Answer.swift; sourceTree = "<group>"; };
 		C0DC70000000000000000006 /* ConductorKeyPlugin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConductorKeyPlugin.swift; sourceTree = "<group>"; };
 		C0DC70000000000000000008 /* ConductorStorePlugin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConductorStorePlugin.swift; sourceTree = "<group>"; };
+		C0DC7000000000000000000D /* RefusedPlugins.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RefusedPlugins.swift; sourceTree = "<group>"; };
+		C0DC7000000000000000000F /* ShellHttpPlugin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShellHttpPlugin.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -95,6 +99,8 @@
 				C0DC70000000000000000004 /* Answer.swift */,
 				C0DC70000000000000000006 /* ConductorKeyPlugin.swift */,
 				C0DC70000000000000000008 /* ConductorStorePlugin.swift */,
+				C0DC7000000000000000000F /* ShellHttpPlugin.swift */,
+				C0DC7000000000000000000D /* RefusedPlugins.swift */,
 			);
 			path = Plugins;
 			sourceTree = "<group>";
@@ -188,6 +194,8 @@
 				C0DC70000000000000000005 /* Answer.swift in Sources */,
 				C0DC70000000000000000007 /* ConductorKeyPlugin.swift in Sources */,
 				C0DC70000000000000000009 /* ConductorStorePlugin.swift in Sources */,
+				C0DC70000000000000000010 /* ShellHttpPlugin.swift in Sources */,
+				C0DC7000000000000000000E /* RefusedPlugins.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

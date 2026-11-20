@@ -20,6 +20,10 @@ What a build in Xcode would not refuse but the shell must not ship, read from th
   `ConductorStore`) are exactly the calls ConductorShell answers and exactly
   the methods each plugin declares and has; the bridge view controller
   registers both and wraps the web view's UI delegate in MediaCaptureRefused,
+  replaces the runtime's own WebView, CapacitorCookies and CapacitorHttp by
+  their names (two refusing stand-ins and the shell's own HTTP plugin, each
+  declaring exactly the list of ConductorShell it answers), and never loads
+  a server base path a page asked to keep (its instanceDescriptor),
   and it is the controller the scene's window and the main storyboard both
   give the window.
 
@@ -165,9 +169,47 @@ def plugins(mobile: Path) -> list[str]:
     return out
 
 
+# The runtime's own plugins the shell replaces by their names: the stand-in's file and class, the name, and the list of
+# ConductorShell its calls are (RefusedPlugins.webView, .cookies; NativeHTTPCalls.methods).
+STAND_INS = [
+    ("RefusedPlugins.swift", "RefusedWebViewPlugin", "WebView", "RefusedPlugins.webView"),
+    ("RefusedPlugins.swift", "RefusedCookiesPlugin", "CapacitorCookies", "RefusedPlugins.cookies"),
+    ("ShellHttpPlugin.swift", "ShellHttpPlugin", "CapacitorHttp", "NativeHTTPCalls.methods"),
+]
+
+
+def stand_ins(mobile: Path) -> list[str]:
+    out = []
+    shell = (mobile / "ios/App/App/ShellViewController.swift").read_text()
+    native = mobile / "ios/ConductorNative/Sources/ConductorShell"
+    lists = {
+        "RefusedPlugins.webView": swift_list((native / "Refused.swift").read_text(), "webView"),
+        "RefusedPlugins.cookies": swift_list((native / "Refused.swift").read_text(), "cookies"),
+        "NativeHTTPCalls.methods": swift_list((native / "NativeHTTP.swift").read_text(), "methods"),
+    }
+    for file, cls, js, source in STAND_INS:
+        text = (mobile / "ios/App/App/Plugins" / file).read_text()
+        body = text.split(f"class {cls}:", 1)[1].split("\n}", 1)[0] if f"class {cls}:" in text else ""
+        if not body:
+            out.append(f"{file}: no {cls}")
+            continue
+        if f'jsName = "{js}"' not in body:
+            out.append(f"{file}: {cls}'s jsName is not {js}: it does not replace the runtime's own")
+        if f"pluginMethods: [CAPPluginMethod] = {source}.map" not in body:
+            out.append(f"{file}: {cls} does not declare the calls of {source}")
+        funcs = re.findall(r"@objc func (\w+)\(_ call: CAPPluginCall\)", body)
+        if not lists[source] or sorted(funcs) != sorted(lists[source]):
+            out.append(f"{file}: {cls} has {sorted(funcs)}, not {source} {sorted(lists[source])}")
+        if f"registerPluginInstance({cls}())" not in shell:
+            out.append(f"ShellViewController.swift: {cls} is not registered: the runtime's own {js} stays")
+    if not re.search(r"override func instanceDescriptor\(\) -> InstanceDescriptor \{\s*InstanceDescriptor\(\)\s*\}", shell):
+        out.append("ShellViewController.swift: instanceDescriptor is not the plain one: a kept server base path could be loaded at start")
+    return out
+
+
 def check(root: Path = ROOT) -> list[str]:
     mobile = root / "mobile"
-    return info_plist(mobile) + project(mobile) + config(mobile) + plugins(mobile)
+    return info_plist(mobile) + project(mobile) + config(mobile) + plugins(mobile) + stand_ins(mobile)
 
 
 def main() -> int:

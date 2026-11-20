@@ -30,6 +30,7 @@ public enum CallAnswer: Equatable, Sendable {
 /** A value a call answers with: what JSON can carry. */
 public indirect enum CallValue: Equatable, Sendable {
     case string(String)
+    case int(Int)
     case null
     case list([CallValue])
     case object([String: CallValue])
@@ -37,6 +38,7 @@ public indirect enum CallValue: Equatable, Sendable {
     var plain: Any {
         switch self {
         case .string(let s): return s
+        case .int(let n): return n
         case .null: return NSNull()
         case .list(let l): return l.map(\.plain)
         case .object(let o): return o.mapValues(\.plain)
@@ -76,6 +78,7 @@ func invalid(_ words: String) -> CallAnswer { .reject(code: "invalid_request", w
 func refusal(_ error: Error) -> CallAnswer {
     if let r = error as? KeyRefusal { return .reject(code: r.code, words: r.words) }
     if let r = error as? StoreRefusal { return .reject(code: r.code, words: r.words) }
+    if let r = error as? CallRefusal { return .reject(code: r.code, words: r.words) }
     return .reject(code: "native", words: "The phone could not do it: \(error.localizedDescription)")
 }
 

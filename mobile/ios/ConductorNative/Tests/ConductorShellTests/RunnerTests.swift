@@ -86,4 +86,17 @@ func until(_ ready: () -> Bool) async {
         #expect(got.got.allSatisfy { if case .reject(let code, _) = $0.answer { return code == "native" } else { return false } })
     }
 
+    @Test func theRefusedPluginsAnswerEveryCallRefused() {
+        for (plugin, methods) in [("WebView", RefusedPlugins.webView), ("CapacitorCookies", RefusedPlugins.cookies)] {
+            #expect(!methods.isEmpty)
+            for m in methods {
+                guard case .reject(let code, let words) = RefusedPlugins.answer(plugin, m) else {
+                    Issue.record("\(plugin).\(m) was not refused")
+                    continue
+                }
+                #expect(code == "not_in_shell" && words.contains("\(plugin).\(m)"))
+            }
+        }
+        #expect(RefusedPlugins.webView.contains("setServerBasePath") && RefusedPlugins.webView.contains("persistServerBasePath"))
+    }
 }

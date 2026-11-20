@@ -21,6 +21,10 @@ FILES = [
     "ios/App/App/Plugins/Answer.swift",
     "ios/App/App/Plugins/ConductorKeyPlugin.swift",
     "ios/App/App/Plugins/ConductorStorePlugin.swift",
+    "ios/App/App/Plugins/RefusedPlugins.swift",
+    "ios/App/App/Plugins/ShellHttpPlugin.swift",
+    "ios/ConductorNative/Sources/ConductorShell/Refused.swift",
+    "ios/ConductorNative/Sources/ConductorShell/NativeHTTP.swift",
     "ios/App/CapApp-SPM/Package.swift",
     "ios/ConductorNative/Sources/ConductorShell/Calls.swift",
     "capacitor.config.ts",
@@ -147,6 +151,22 @@ class IOSProjectTest(unittest.TestCase):
         self.only("Main.storyboard: its controller is ['CAPBridgeViewController']")
         self.edit("ios/App/App/SceneDelegate.swift", "rootViewController = ShellViewController()", "rootViewController = CAPBridgeViewController()")
         self.assertIn("SceneDelegate.swift: the window's controller", self.findings()[0])
+
+    def test_the_runtimes_own_plugins_are_replaced_and_no_kept_base_path_is_loaded(self) -> None:
+        f = "ios/App/App/ShellViewController.swift"
+        self.edit(f, "        bridge?.registerPluginInstance(RefusedWebViewPlugin())\n", "")
+        self.only("RefusedWebViewPlugin is not registered: the runtime's own WebView stays")
+        self.edit(f, "        bridge?.registerPluginInstance(ShellHttpPlugin())\n", "")
+        self.assertIn("ShellHttpPlugin is not registered", self.findings()[1])
+        self.setUp()
+        self.edit(f, "        InstanceDescriptor()\n    }", "        super.instanceDescriptor()\n    }")
+        self.only("instanceDescriptor is not the plain one")
+        self.setUp()
+        self.edit("ios/App/App/Plugins/RefusedPlugins.swift", 'public let jsName = "CapacitorCookies"', 'public let jsName = "Cookies"')
+        self.only("RefusedCookiesPlugin's jsName is not CapacitorCookies")
+        self.setUp()
+        self.edit("ios/ConductorNative/Sources/ConductorShell/NativeHTTP.swift", '"patch", "delete"]', '"patch", "delete", "head"]')
+        self.only("ShellHttpPlugin has")
 
 
 if __name__ == "__main__":
