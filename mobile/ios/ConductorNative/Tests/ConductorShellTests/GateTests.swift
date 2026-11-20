@@ -118,20 +118,57 @@ import WebKit
     }
 }
 
-@Suite struct FilePrefixTests {
-    @Test func theRulesBlockBothPrefixesForEveryLoad() throws {
-        let list = try #require(try JSONSerialization.jsonObject(with: Data(FilePrefix.rules.utf8)) as? [[String: [String: String]]])
-        #expect(list.count == 2)
-        for (rule, prefix) in zip(list, FilePrefix.prefixes) {
-            #expect(rule["action"] == ["type": "block"])
-            #expect(rule["trigger"]?.keys.sorted() == ["url-filter"])
-            let filter = try NSRegularExpression(pattern: try #require(rule["trigger"]?["url-filter"]))
-            for url in ["capacitor://localhost\(prefix)/var/mobile/x.png", "capacitor://localhost\(prefix)"] {
-                #expect(filter.firstMatch(in: url, range: NSRange(url.startIndex..., in: url)) != nil, "\(url)")
-            }
-            let other = "capacitor://localhost/_nuxt/entry.js"
-            #expect(filter.firstMatch(in: other, range: NSRange(other.startIndex..., in: other)) == nil)
+/** Whether the content rules block a load of url, as WebKit applies them: in order, a block set and an ignore-previous-rules clearing it. */
+func blocked(_ url: String, by rules: String) throws -> Bool {
+    let list = try #require(try JSONSerialization.jsonObject(with: Data(rules.utf8)) as? [[String: [String: String]]])
+    var block = false
+    for rule in list {
+        let filter = try NSRegularExpression(pattern: try #require(rule["trigger"]?["url-filter"]), options: [.caseInsensitive])
+        guard filter.firstMatch(in: url, range: NSRange(url.startIndex..., in: url)) != nil else { continue }
+        switch rule["action"]?["type"] {
+        case "block": block = true
+        case "ignore-previous-rules": block = false
+        default: Issue.record("an action the rules do not use: \(String(describing: rule["action"]))")
         }
-        #expect(FilePrefix.prefixes.contains("/_capacitor_file_"))
+    }
+    return block
+}
+
+@Suite struct LoadRulesTests {
+    let rules = FilePrefix.rules(app: URL(string: "capacitor://localhost")!)
+
+    @Test func theRulesAdmitOnlyTheBundlesSpellingAndNeverThePrefixes() throws {
+        for ok in ["capacitor://localhost", "capacitor://localhost/", "capacitor://localhost/index.html", "capacitor://localhost/_nuxt/DBSZVbF0.js",
+                   "capacitor://localhost/_fonts/Inter-Regular.woff2", "capacitor://localhost/shell/decisions/dr-1", "capacitor://localhost/shell/open?h=a%2Fb",
+                   "capacitor://localhost/sponsor/rocksolidlabs-mark.png#x", "CAPACITOR://LOCALHOST/index.html", "https://example.com/%5Fanything"] {
+            #expect(try !blocked(ok, by: rules), "\(ok)")
+        }
+        for bad in ["capacitor://localhost/_capacitor_file_/private/var/x.png", "capacitor://localhost/%5Fcapacitor_file_/private/var/x.png",
+                    "capacitor://localhost/_capacitor%5Ffile_/x.png", "capacitor://localhost/_capacitor_http_interceptor_?u=https://x",
+                    "capacitor://localhost/_nuxt/..%2F..%2Fx.png", "capacitor://localhost/a%2Fb.png", "capacitor://localhost/a b.png",
+                    "capacitor://localhost/é.png", "capacitor://localhost/a~b.png", "capacitor://localhost/a@b.png", "capacitor://localhost/a;b.png",
+                    "capacitor://elsewhere/index.html", "capacitor://localhost.evil/index.html", "capacitor://localhost:8080/index.html",
+                    "capacitor://user@localhost/index.html", "capacitor:/index.html", "capacitor://localhost/_capacitor_file_?x"] {
+            #expect(try blocked(bad, by: rules), "\(bad)")
+        }
+    }
+
+    @Test func theBundlesOwnFilesAreServedAndNothingOutsideIt() {
+        let base = "/var/app/App.app/public"
+        #expect(BundleRoute.route(base: base, path: "/index.html") == "/var/app/App.app/public/index.html")
+        #expect(BundleRoute.route(base: base, path: "/_nuxt/DBSZVbF0.js") == "/var/app/App.app/public/_nuxt/DBSZVbF0.js")
+        #expect(BundleRoute.route(base: base, path: "/sponsor/../sponsor/mark.png") == "/var/app/App.app/public/sponsor/mark.png")
+        // A path with no extension answers index.html, as the runtime's own router does.
+        for route in ["", "/", "/shell/open", "/..", "/../../etc/hosts"] {
+            #expect(BundleRoute.route(base: base, path: route) == base + "/index.html", "\(route)")
+        }
+        // A climb out of the bundle, by `..` at once or after a real folder, or to the folder beside it: a file that does not exist.
+        for climb in ["/../x.png", "/../../../private/var/mobile/x.png", "/sponsor/../../x.png", "/_nuxt/../../App.app/x.png",
+                      "/./../public2/x.png", "/../public/../../x.png"] {
+            #expect(BundleRoute.route(base: base, path: climb) == BundleRoute.nowhere, "\(climb)")
+        }
+        // An absolute path is read under the bundle's folder, never as the file system's.
+        #expect(BundleRoute.route(base: base, path: "/private/var/mobile/x.png") == "/var/app/App.app/public/private/var/mobile/x.png")
+        #expect(BundleRoute.route(base: base + "/", path: "/index.html") == "/var/app/App.app/public/index.html")
     }
 }

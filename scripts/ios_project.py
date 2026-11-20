@@ -292,6 +292,11 @@ def packaging(mobile: Path) -> list[str]:
     return out
 
 
+# The characters a path of the app's own scheme may be spelled with (ConductorShell's FilePrefix.pathCharacters): the bundle's files
+# and the shell's routes are held to them, so that the content rules never refuse a page of the shell's own.
+PATH_SPELLING = re.compile(r"^[/A-Za-z0-9._-]*$")
+
+
 def bridge_calls(mobile: Path) -> dict[str, set[str]]:
     """The calls the bridge makes of each plugin (NativeLayer in bridge.ts, named as main.ts reads them), with the runtime's listener
     removal beside each plugin the bridge listens to."""
@@ -333,6 +338,8 @@ def gates(mobile: Path) -> list[str]:
         ("runtime.contentController.removeScriptMessageHandler(forName: BridgeGate.handler)", "the runtime's message handler is not taken off"),
         ("runtime.contentController.add(g, name: BridgeGate.handler)", "the bridge gate is not put in its place"),
         ("BridgeGateHandler(forwardingTo: runtime, view: webView, app: app)", "the bridge gate does not know the shell's view and origin"),
+        ("override func router() -> Router", "the runtime's router is not the shell's"),
+        ("encodedContentRuleList: FilePrefix.rules(app: app)", "the content rules do not hold the app's own spelling"),
         ("compileContentRuleList(forIdentifier: FilePrefix.identifier", "the runtime's file prefixes are not blocked"),
         ("guard gate != nil", "the page loads whether or not the gate stands"),
     ):
@@ -350,6 +357,29 @@ def gates(mobile: Path) -> list[str]:
             out.append(f"BridgeGate.swift: {plugin} admits {sorted(table.get(plugin, set()))}, not the bridge's calls {sorted(calls.get(plugin, set()))}")
     if "CallRunner" not in (mobile / "ios/App/App/Plugins/ShellHttpPlugin.swift").read_text():
         out.append("ShellHttpPlugin.swift: its calls are not run one at a time through a CallRunner")
+    out += spellings(mobile)
+    return out
+
+
+def spellings(mobile: Path) -> list[str]:
+    """The built bundle's files (mobile/www, else internal/web/dist, when built) and the shell's routes, each spelled as the content
+    rules let through."""
+    out = []
+    root = mobile.parent
+    for bundle in (mobile / "www", root / "internal/web/dist"):
+        if (bundle / "index.html").exists():
+            for f in sorted(bundle.rglob("*")):
+                rel = "/" + f.relative_to(bundle).as_posix()
+                if f.is_file() and f.name != ".gitkeep" and not PATH_SPELLING.match(rel):
+                    out.append(f"{bundle.relative_to(root)}{rel}: a path the content rules would refuse")
+            break
+    pages = root / "web/app/pages/shell"
+    if pages.exists():
+        for f in sorted(pages.rglob("*.vue")):
+            route = "/shell/" + f.relative_to(pages).with_suffix("").as_posix()
+            route = re.sub(r"/index$", "", re.sub(r"\[\w+\]", "id", route))
+            if not PATH_SPELLING.match(route):
+                out.append(f"web/app/pages/shell/{f.relative_to(pages).as_posix()}: a route the content rules would refuse ({route})")
     return out
 
 

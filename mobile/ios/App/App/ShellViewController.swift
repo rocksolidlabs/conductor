@@ -31,6 +31,11 @@ class ShellViewController: CAPBridgeViewController {
         InstanceDescriptor()
     }
 
+    /** The shell's router: a file only inside the bundle's folder. */
+    override func router() -> Router {
+        ShellRouter()
+    }
+
     override func capacitorDidLoad() {
         // A packaging's native sources (its signing policy) are linked whatever they hold: the module is named here.
         _ = ConductorPackaging.linked()
@@ -58,8 +63,10 @@ class ShellViewController: CAPBridgeViewController {
      * rules compiled and added. Any missing, nothing loads.
      */
     override func viewDidLoad() {
-        guard gate != nil, let controller = (bridge as? CapacitorBridge)?.webViewDelegationHandler.contentController else { return }
-        WKContentRuleListStore.default().compileContentRuleList(forIdentifier: FilePrefix.identifier, encodedContentRuleList: FilePrefix.rules) { list, _ in
+        guard gate != nil, let app = bridge?.config.localURL,
+              let controller = (bridge as? CapacitorBridge)?.webViewDelegationHandler.contentController
+        else { return }
+        WKContentRuleListStore.default().compileContentRuleList(forIdentifier: FilePrefix.identifier, encodedContentRuleList: FilePrefix.rules(app: app)) { list, _ in
             DispatchQueue.main.async {
                 guard let list else { return }
                 controller.add(list)
@@ -69,3 +76,10 @@ class ShellViewController: CAPBridgeViewController {
     }
 }
 
+/** The runtime's scheme handler's router, ConductorShell's BundleRoute: a file only inside the bundle's folder. */
+struct ShellRouter: Router {
+    var basePath: String = ""
+    func route(for path: String) -> String {
+        BundleRoute.route(base: basePath, path: path)
+    }
+}

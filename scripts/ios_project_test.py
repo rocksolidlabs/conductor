@@ -247,11 +247,15 @@ class IOSProjectTest(unittest.TestCase):
             ("            runtime.contentController.add(g, name: BridgeGate.handler)\n", "the bridge gate is not put in its place"),
             ("            runtime.contentController.removeScriptMessageHandler(forName: BridgeGate.handler)\n", "the runtime's message handler is not taken off"),
             ("BridgeGateHandler(forwardingTo: runtime, view: webView, app: app)", "the bridge gate does not know the shell's view and origin"),
+            ("    override func router() -> Router {", "the runtime's router is not the shell's"),
+            ("encodedContentRuleList: FilePrefix.rules(app: app)", "the content rules do not hold the app's own spelling"),
             ("compileContentRuleList(forIdentifier: FilePrefix.identifier", "the runtime's file prefixes are not blocked"),
             ("        guard gate != nil, ", "the page loads whether or not the gate stands"),
         ):
             self.setUp()
             new = {"BridgeGateHandler(forwardingTo: runtime, view: webView, app: app)": "BridgeGateHandler(forwardingTo: runtime)",
+                   "    override func router() -> Router {": "    func shellRouter() -> Router {",
+                   "encodedContentRuleList: FilePrefix.rules(app: app)": "encodedContentRuleList: FilePrefix.encode(FilePrefix.prefixRules)",
                    "compileContentRuleList(forIdentifier: FilePrefix.identifier": "compileContentRuleList(forIdentifier: \"other\"",
                    "        guard gate != nil, loads != nil, ": "        guard ", "        guard gate != nil, ": "        guard "}.get(line, "")
             self.edit(f, line, new)
@@ -282,7 +286,26 @@ class IOSProjectTest(unittest.TestCase):
         self.edit(g, '"App": ["getLaunchUrl", "addListener", "removeListener"],', '"App": ["getLaunchUrl", "addListener"],')
         self.only("App admits ['addListener', 'getLaunchUrl'], not the bridge's calls ['addListener', 'getLaunchUrl', 'removeListener']")
 
-
+    def test_the_bundle_and_the_shells_routes_keep_the_spelling_the_rules_let_through(self) -> None:
+        www = self.dir / "mobile/www"
+        (www / "_nuxt").mkdir(parents=True)
+        (www / "index.html").write_text("<!doctype html>")
+        (www / "_nuxt/DBSZVbF0.js").write_text("")
+        self.assertEqual(self.findings(), [])
+        (www / "_nuxt/a b.js").write_text("")
+        (www / "_nuxt/a%2F.js").write_text("")
+        got = self.findings()
+        self.assertEqual(len(got), 2, got)
+        self.assertTrue(all("a path the content rules would refuse" in f for f in got), got)
+        pages = self.dir / "web/app/pages/shell"
+        (pages / "decisions").mkdir(parents=True)
+        (pages / "decisions/[id].vue").write_text("")
+        (pages / "index.vue").write_text("")
+        (www / "_nuxt/a b.js").unlink()
+        (www / "_nuxt/a%2F.js").unlink()
+        self.assertEqual(self.findings(), [])
+        (pages / "sign~in.vue").write_text("")
+        self.only("a route the content rules would refuse (/shell/sign~in)")
 
 if __name__ == "__main__":
     unittest.main()
