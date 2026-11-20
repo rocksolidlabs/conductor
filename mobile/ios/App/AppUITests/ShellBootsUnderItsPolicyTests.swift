@@ -21,13 +21,20 @@ final class ShellBootsUnderItsPolicyTests: XCTestCase {
         // failure says how far the check got and what the gates refused, even when a probe ended the app.
         let expected = "ready platform=ios plugins=ok probes=ok dropped=8 refused=5 violations=0"
         var last = "", refused = ""
+        // A probe that ends the app makes the read under way fail: the poll goes on past that failure (its read kept only when it
+        // answered), so that the assertion below still names the last report read.
+        continueAfterFailure = true
         let deadline = Date().addingTimeInterval(240)
         while Date() < deadline, app.state == .runningForeground {
-            last = report.label
-            refused = String(describing: report.value)
+            let read = report.label
+            if !read.isEmpty {
+                last = read
+                refused = String(describing: report.value)
+            }
             if last == expected { break }
             RunLoop.current.run(until: Date().addingTimeInterval(1))
         }
+        continueAfterFailure = false
         XCTAssertEqual(last, expected, "the app \(app.state == .runningForeground ? "is running" : "has ended"); what the gates refused: \(refused)")
         // Open a server's first control, as a person meets it.
         let address = app.descendants(matching: .textField)["Server address"]
