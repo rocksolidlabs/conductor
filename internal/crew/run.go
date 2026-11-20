@@ -424,6 +424,16 @@ type Engine struct {
 	// commitNotes is told of a run's base and of each candidate
 	// (SetCommitNotes; nil, none is told). Under mu.
 	commitNotes func(ext.CommitNote)
+	// contextFiles keep the text of the context each attempt was given
+	// (UseContextFiles; nil, nothing is recorded); contextRead, when a
+	// test sets it, is told each write of an attempt's context between
+	// its read of the file and its write, and contextCommit, when a test
+	// sets it, is asked before a lookup's rows are committed, its error
+	// standing for a process that stopped there (attempt_context.go).
+	// Under mu.
+	contextFiles  *ContextFiles
+	contextRead   func(phase string)
+	contextCommit func() error
 	// teardownRoot is the context every managed run's teardown context is
 	// made beneath (add), ended by teardownCut at the shutdown's cut-off
 	// (steps.go: Draining).
