@@ -708,6 +708,10 @@ func TestAPendingRequestIsAnsweredOnceSettled(t *testing.T) {
 // The recheck shows the provider the request hash the door admitted and
 // the time in the zone the hand-in gave, whatever the document is by
 // then: an answer admitted is applied though its document's form changed.
+// Nothing in the product moves a request's form at a rev today (a request
+// leaves only once every part is settled, and a settled part never
+// changes); the test changes it by hand and guards against a later writer
+// that would.
 func TestTheRecheckShowsTheHashTheDoorAdmitted(t *testing.T) {
 	f := newHeldFixture(t)
 	did := f.openWithContext(t, "q1")

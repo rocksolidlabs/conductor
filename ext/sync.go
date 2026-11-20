@@ -342,8 +342,14 @@ func ValidTag(tag string) bool {
 }
 
 // DecisionDoc is a decision as it leaves the machine (OS-3, the adapter's
-// syncDecision): deterministic, the same record at the same rev giving the
-// same bytes, at most MaxDecisionDoc. It holds what a person needs to
+// syncDecision), at most MaxDecisionDoc: built from the record and the
+// verdicts its parts are judged by, the same record and the same verdicts
+// giving the same bytes. A verdict settled after the record's last change
+// (a part judged pending, settled clean or output) has the document
+// delivered again at the same rev, its request whole, cut or kept back as
+// settled: a delivery at a rev the store already holds REPLACES the
+// document it holds, and a store that skipped a save at a rev it holds
+// would never show a settled request. It holds what a person needs to
 // answer the decision elsewhere and never the session, the request's id,
 // a fingerprint, a response's authority beyond its via, the text of a
 // response not accepted, the evidence's baseline, the history, the holds
