@@ -153,3 +153,53 @@ func TestDecisionOutputWrittenWithItsPart(t *testing.T) {
 		t.Fatalf("verdicts with no check: %v %v", v, err)
 	}
 }
+
+// A pending part is settled once, to what was judged; a settled one stays.
+// Withholding makes every pending part output; each tells OnDecisions.
+func TestPendingDecisionOutputSettledOrWithheld(t *testing.T) {
+	l := openLedger(t, filepath.Join(t.TempDir(), "runs"))
+	ctx := context.Background()
+	l.SetOutputCheck(func(context.Context, string, bool) string { return VerdictPending })
+	var mu sync.Mutex
+	var told []int64
+	l.OnDecisions(func(ns []int64) { mu.Lock(); told = append(told, ns...); mu.Unlock() })
+	const run = "team-00000001"
+	newRun(t, l, run)
+	tasksOf(t, l, run, "deploy")
+	n := open(t, l, gateDecision(run, "g1"))
+	m := open(t, l, gateDecision(run, "g2"))
+	mu.Lock()
+	told = nil
+	mu.Unlock()
+	if err := l.SettleOutput(ctx, n, PartQuestion, VerdictClean); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.SettleOutput(ctx, n, PartQuestion, VerdictOutput); err != nil {
+		t.Fatal(err)
+	}
+	if v, _, _ := l.OutputVerdicts(ctx, n); v[PartQuestion] != VerdictClean || v[PartLabel(0)] != VerdictPending {
+		t.Fatalf("after the settle: %v", v)
+	}
+	if p, err := l.PendingOutputs(ctx, 100); err != nil || len(p) == 0 || slices.Contains(p, PendingOutput{n, PartQuestion}) {
+		t.Fatalf("the pending parts: %v %v", p, err)
+	}
+	if err := l.WithholdPendingOutput(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range []int64{n, m} {
+		v, _, _ := l.OutputVerdicts(ctx, d)
+		for p, s := range v {
+			if s == VerdictPending || (d == m && s != VerdictOutput) {
+				t.Fatalf("%s %s is %s after the withholding", DecisionID(d), p, s)
+			}
+		}
+	}
+	if v, _, _ := l.OutputVerdicts(ctx, n); v[PartQuestion] != VerdictClean {
+		t.Fatalf("a settled part withheld: %v", v)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !slices.Contains(told, n) || !slices.Contains(told, m) {
+		t.Fatalf("OnDecisions was told %v", told)
+	}
+}

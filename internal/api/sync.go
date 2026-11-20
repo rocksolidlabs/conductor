@@ -147,7 +147,8 @@ func newSyncAdapter(data *store.Store) *syncAdapter {
 // fan: every hook (dataCommitted, ledgerCommitted, ledgerPruned,
 // dispatchCommitted).
 func (a *syncAdapter) observer() commitObserver {
-	return commitObserver{data: a.dataCommitted, commit: a.ledgerCommitted, prune: a.ledgerPruned, dispatch: a.dispatchCommitted}
+	return commitObserver{data: a.dataCommitted, commit: a.ledgerCommitted, prune: a.ledgerPruned, dispatch: a.dispatchCommitted,
+		decisions: a.decisionsCommitted}
 }
 
 // attach gives the adapter its server, once the server is made: what it
@@ -195,6 +196,16 @@ func (a *syncAdapter) dispatchCommitted(cs []dispatch.Change) {
 	for _, c := range cs {
 		ref, _ := json.Marshal(syncRef{Kind: c.Entity, ID: c.ID, Ticket: c.Ticket, Project: c.Project})
 		a.mark(syncKey{syncDispatch, c.Entity + "/" + c.ID}, c.Seq, ref)
+	}
+}
+
+// decisionsCommitted is the ledger's decisions changed: each one's
+// document (store decision, path dr-n) is pending, read whole at its
+// delivery (syncDecision); a decision the ledger no longer holds is
+// Deleted then.
+func (a *syncAdapter) decisionsCommitted(ns []int64) {
+	for _, n := range ns {
+		a.mark(syncKey{syncDecisionStore, ledger.DecisionID(n)}, 0, nil)
 	}
 }
 
@@ -465,6 +476,24 @@ func (a *syncAdapter) replay(ctx context.Context) error {
 	if a.s.dispatch != nil && !a.list(gen, syncKey{syncDispatch, syncLogPath}, 0) {
 		return nil
 	}
+	if ld := a.s.ledger; ld != nil {
+		// Every decision the ledger holds, by its number.
+		for after := int64(0); ; {
+			page, err := ld.DecisionRevisions(ctx, after, 0)
+			if err != nil {
+				return a.redo(gen, err)
+			}
+			for _, d := range page {
+				if !a.list(gen, syncKey{syncDecisionStore, ledger.DecisionID(d.N)}, int64(d.Rev)) {
+					return nil
+				}
+			}
+			if len(page) < ledger.MaxDecisionRevisions {
+				break
+			}
+			after = page[len(page)-1].N
+		}
+	}
 	a.mu.Lock()
 	missing := slices.Clone(a.missing)
 	a.mu.Unlock()
@@ -549,6 +578,25 @@ func (a *syncAdapter) deliver(ctx context.Context, epoch string, e syncEntry) er
 		d.Rev = p.Revision
 		d.Data, _ = json.Marshal(syncPointer{ID: p.ID, Crew: p.CrewID, State: p.State, Outcome: p.Outcome, Paused: p.Paused, Revision: p.Revision,
 			ContinuedFrom: p.ContinuedFrom, ContinuedBy: p.ContinuedBy, CreatedAt: p.CreatedAt, ClosedAt: p.ClosedAt})
+		d.Size = int64(len(d.Data))
+		return sy.Saved(ctx, d)
+	case syncDecisionStore:
+		n, err := parseDecisionPath(e.key.path)
+		if err != nil {
+			return sy.Deleted(ctx, d)
+		}
+		doc, ok, err := a.s.decisionDoc(ctx, n)
+		if err != nil {
+			a.warn("sync: a decision could not be read; it is tried again", err)
+			return err
+		}
+		if !ok {
+			return sy.Deleted(ctx, d)
+		}
+		d.Rev = int64(doc.Rev)
+		if d.Data, err = json.Marshal(doc); err != nil {
+			return err
+		}
 		d.Size = int64(len(d.Data))
 		return sy.Saved(ctx, d)
 	case syncDispatch:

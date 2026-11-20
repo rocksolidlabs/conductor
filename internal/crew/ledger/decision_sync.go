@@ -271,3 +271,112 @@ func (l *Ledger) OutputVerdicts(ctx context.Context, n int64) (map[string]string
 	})
 	return out, kept, err
 }
+
+// outputTx runs fn in a transaction of the ledger's own, outside every
+// run's transition, and tells OnDecisions of the decisions fn says it
+// changed.
+func (l *Ledger) outputTx(ctx context.Context, fn func(tx *sql.Tx) ([]int64, error)) error {
+	if l.readOnly {
+		return fmt.Errorf("%w: %s", ErrReadOnly, l.why)
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.closed {
+		return ErrClosed
+	}
+	tx, err := l.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	changed, err := fn(tx)
+	if err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	l.decisionsChanged(changed)
+	return nil
+}
+
+// WithholdPendingOutput makes every pending verdict output, in one
+// transaction: at a start, before the check answers anything, since the
+// output a pending part may have quoted lived in the process that ended.
+func (l *Ledger) WithholdPendingOutput(ctx context.Context) error {
+	return l.outputTx(ctx, func(tx *sql.Tx) ([]int64, error) {
+		ns, err := pendingDecisions(ctx, tx)
+		if err != nil || len(ns) == 0 {
+			return nil, err
+		}
+		_, err = tx.ExecContext(ctx, "UPDATE decision_output SET verdict = ?, cut_at = 0 WHERE verdict = ?", VerdictOutput, VerdictPending)
+		return ns, err
+	})
+}
+
+// pendingDecisions is the decisions with a pending verdict.
+func pendingDecisions(ctx context.Context, tx *sql.Tx) ([]int64, error) {
+	rows, err := tx.QueryContext(ctx, "SELECT DISTINCT decision FROM decision_output WHERE verdict = ?", VerdictPending)
+	if err != nil {
+		return nil, err
+	}
+	var out []int64
+	for rows.Next() {
+		var n int64
+		if err := rows.Scan(&n); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		out = append(out, n)
+	}
+	return out, cmp.Or(rows.Err(), rows.Close())
+}
+
+// PendingOutput is a decision's part whose verdict is pending.
+type PendingOutput struct {
+	N    int64
+	Part string
+}
+
+// PendingOutputs is at most limit parts whose verdict is pending.
+func (l *Ledger) PendingOutputs(ctx context.Context, limit int) ([]PendingOutput, error) {
+	var out []PendingOutput
+	err := l.readAt(ctx, func(q querier, version int) error {
+		if version < versionDecisionSync {
+			return nil
+		}
+		rows, err := q.QueryContext(ctx, "SELECT decision, part FROM decision_output WHERE verdict = ? ORDER BY decision, part LIMIT ?", VerdictPending, max(limit, 1))
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			var p PendingOutput
+			if err := rows.Scan(&p.N, &p.Part); err != nil {
+				rows.Close()
+				return err
+			}
+			out = append(out, p)
+		}
+		return cmp.Or(rows.Err(), rows.Close())
+	})
+	return out, err
+}
+
+// SettleOutput writes a pending part's verdict as judged now; one already
+// settled stays.
+func (l *Ledger) SettleOutput(ctx context.Context, n int64, part, verdict string) error {
+	return l.outputTx(ctx, func(tx *sql.Tx) ([]int64, error) {
+		cut := -1
+		if verdict == VerdictOutput {
+			cut = 0
+		}
+		res, err := tx.ExecContext(ctx, "UPDATE decision_output SET verdict = ?, cut_at = ? WHERE decision = ? AND part = ? AND verdict = ?", verdict, cut, n, part, VerdictPending)
+		if err != nil {
+			return nil, err
+		}
+		if c, _ := res.RowsAffected(); c == 0 {
+			return nil, nil
+		}
+		return []int64{n}, nil
+	})
+}

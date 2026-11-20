@@ -1,0 +1,445 @@
+package api
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"slices"
+	"strings"
+	"unicode/utf8"
+
+	"github.com/rocksolidlabs/conductor/ext"
+	"github.com/rocksolidlabs/conductor/internal/crew"
+	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
+)
+
+// A decision as it leaves the machine (docs/plans/sync-seams.md, OS-3):
+// the document the sync store is handed for each decision (store
+// "decision", path dr-n), built from the ledger's record and its
+// copied-output verdicts (decision_output). Deterministic: the same record
+// at the same rev and the same verdicts give the same bytes and the same
+// requestSHA256. Every free-text part is judged before it leaves: an
+// output-like or pending question, label, uncertainty or authorizes keeps
+// the whole request back (requestKept "output"), and an output-like or
+// pending context, tradeoffs, response text, rationale or words is cut
+// (cut "output"). A decision with no verdicts kept (opened before the
+// check) is judged when its document is built, and an agent's request is
+// kept back whatever that finds.
+
+// syncDecisionStore is the store of a decision's document (ext.Doc.Store).
+const syncDecisionStore = "decision"
+
+// outputCutWords is what stands in a part cut for quoting output.
+const outputCutWords = "[output kept on this machine]"
+
+// The bounds of a response's text in the document.
+const (
+	docOtherMax = 1 << 10 // each other response
+	docWordsMax = 500     // a receipt's words
+	docTextMax  = ext.MaxAnswerText
+)
+
+// docRequestShape is a request as the ledger's request column keeps it.
+type docRequestShape struct {
+	Question string `json:"question"`
+	Context  string `json:"context,omitempty"`
+	Options  []struct {
+		Label     string `json:"label"`
+		Tradeoffs string `json:"tradeoffs,omitempty"`
+	} `json:"options,omitempty"`
+	Recommendation *int                    `json:"recommendation,omitempty"`
+	Uncertainty    string                  `json:"uncertainty,omitempty"`
+	Authorizes     string                  `json:"authorizes,omitempty"`
+	Evidence       []string                `json:"evidence,omitempty"`
+	Expertise      []string                `json:"expertise,omitempty"`
+	Subject        *ext.DecisionDocSubject `json:"subject,omitempty"`
+	Supersedes     string                  `json:"supersedes,omitempty"`
+}
+
+// docReceipt is a response's receipt as the ledger keeps it.
+type docReceipt struct {
+	Code      string `json:"code"`
+	Words     string `json:"words"`
+	Choice    *int   `json:"choice"`
+	Text      string `json:"text"`
+	Rationale string `json:"rationale"`
+}
+
+// verdictsOf is decision n's verdicts: the ledger's, or, for a decision
+// opened before the check, the check's now (judge), and whether they are
+// the ledger's.
+type verdictsOf struct {
+	kept     map[string]string
+	recorded bool
+	judge    func(text string) string
+}
+
+// of is a part's verdict: the kept one, else (no verdict kept for the
+// decision at all) the check's now; "" text is clean.
+func (v verdictsOf) of(part, text string) string {
+	if text == "" {
+		return verdictClean
+	}
+	if s, ok := v.kept[part]; ok {
+		return s
+	}
+	// None kept of this part (written before the check): judged now.
+	return v.judge(text)
+}
+
+// keeps says a verdict keeps its part on the machine: output, or not yet
+// judged.
+func keeps(verdict string) bool { return verdict != verdictClean }
+
+// syncDecision builds the document of rec with its verdicts.
+func syncDecision(rec ledger.DecisionRecord, v verdictsOf) (ext.DecisionDoc, error) {
+	d := rec.DecisionRow
+	doc := ext.DecisionDoc{ID: d.ID(), Run: d.CurrentRun, OpenedIn: d.RunID, Origin: d.Origin, Type: d.Type, Gate: d.Gate, Task: d.TaskID,
+		Attempt: d.Attempt, Member: d.Member, Ticket: d.Ticket, Plan: d.Plan, PlanDigest: d.PlanDigest, State: d.State, Rev: d.Rev,
+		SupersededBy: d.SupersededBy, CreatedAt: d.CreatedAt.UTC(), Policy: json.RawMessage(d.Policy)}
+	if doc.Policy == nil || !json.Valid(doc.Policy) {
+		doc.Policy = json.RawMessage("{}")
+	}
+	if !d.AnsweredAt.IsZero() {
+		at := d.AnsweredAt.UTC()
+		doc.AnsweredAt = &at
+	}
+	if !d.ClosedAt.IsZero() {
+		at := d.ClosedAt.UTC()
+		doc.ClosedAt = &at
+	}
+	doc.OpenedTo = ext.DecisionOpenedToOperator
+	if d.Origin != ledger.OriginCompare && crew.GivenToGrant(d.Request) {
+		doc.OpenedTo = ext.DecisionOpenedToDecide
+	}
+	doc.Why = v.cut(ledger.PartWhy, d.Why, nil)
+
+	req, kept := docRequest(d, v)
+	if kept {
+		doc.RequestKept = ext.DecisionRequestKeptOutput
+	} else {
+		doc.Request = req
+	}
+	part, err := doc.RequestPart()
+	if err != nil {
+		return ext.DecisionDoc{}, err
+	}
+	if doc.RequestSHA256, err = part.SHA256(); err != nil {
+		return ext.DecisionDoc{}, err
+	}
+	doc.Responses, doc.ResponsesOmitted = docResponsesOf(rec.Responses, v, req)
+	doc.Applied, doc.States = docAppliedOf(rec, v)
+	return doc, nil
+}
+
+// cut is a free-text part as the document gives it: whole when clean,
+// else the cut's words, and the cut marked on mark.
+func (v verdictsOf) cut(part, text string, mark *string) string {
+	if !keeps(v.of(part, text)) {
+		return text
+	}
+	if mark != nil {
+		*mark = "output"
+	}
+	return outputCutWords
+}
+
+// docRequest is the request as the document gives it, and whether it is
+// kept back: an output-like or pending question, label, uncertainty or
+// authorizes, or an agent's request with no verdicts kept, keeps it all.
+func docRequest(d ledger.DecisionRow, v verdictsOf) (*ext.DecisionDocRequest, bool) {
+	var r docRequestShape
+	if json.Unmarshal([]byte(d.Request), &r) != nil {
+		return nil, true
+	}
+	if d.Origin == ledger.OriginAgent && !v.recorded {
+		return nil, true
+	}
+	if keeps(v.of(ledger.PartQuestion, r.Question)) || keeps(v.of(ledger.PartUncertainty, r.Uncertainty)) ||
+		keeps(v.of(ledger.PartAuthorizes, r.Authorizes)) || keeps(v.of(ledger.PartExpertise, strings.Join(r.Expertise, "\n"))) {
+		return nil, true
+	}
+	for i, o := range r.Options {
+		if keeps(v.of(ledger.PartLabel(i), o.Label)) {
+			return nil, true
+		}
+	}
+	out := &ext.DecisionDocRequest{Question: r.Question, Recommendation: r.Recommendation, Uncertainty: r.Uncertainty, Authorizes: r.Authorizes,
+		Expertise: r.Expertise, Subject: r.Subject, Supersedes: r.Supersedes, Evidence: r.Evidence}
+	out.Context = v.cut(ledger.PartContext, r.Context, &out.Cut)
+	for i, o := range r.Options {
+		out.Options = append(out.Options, ext.DecisionDocOption{Label: o.Label, Tradeoffs: v.cut(ledger.PartTradeoffs(i), o.Tradeoffs, &out.Cut)})
+	}
+	// An empty list is left out by its field's omitempty.
+	// A recommendation of none (-1), or of no option the request has, is
+	// left out.
+	if rc := out.Recommendation; rc != nil && (*rc < 0 || *rc >= len(out.Options)) {
+		out.Recommendation = nil
+	}
+	fitDocRequest(out)
+	return out, false
+}
+
+// fitDocRequest cuts the request to MaxDecisionDocRequest: its context, then
+// each option's tradeoffs, at a character's end, marked Cut "size".
+func fitDocRequest(r *ext.DecisionDocRequest) {
+	size := func() int { b, _ := json.Marshal(r); return len(b) }
+	over := size() - ext.MaxDecisionDocRequest
+	if over <= 0 {
+		return
+	}
+	cutTo := func(s string, by int) string {
+		n := max(len(s)-by, 0)
+		for n > 0 && !utf8.RuneStart(s[n]) {
+			n--
+		}
+		return s[:n]
+	}
+	r.Cut = "size"
+	r.Context = cutTo(r.Context, over+16)
+	for i := range r.Options {
+		if over = size() - ext.MaxDecisionDocRequest; over <= 0 {
+			return
+		}
+		r.Options[i].Tradeoffs = cutTo(r.Options[i].Tradeoffs, over+16)
+	}
+}
+
+// docResponsesOf is the accepted response, with what was answered, and the
+// newest others while they fit MaxDecisionDocResponses, and how many were
+// left out. A response's choice is given only where the request has
+// options, and is below their count.
+func docResponsesOf(rows []ledger.ResponseRow, v verdictsOf, req *ext.DecisionDocRequest) ([]ext.DecisionDocResponse, int) {
+	options := -1
+	if req != nil {
+		options = len(req.Options)
+	}
+	one := func(r ledger.ResponseRow, accepted bool) ext.DecisionDocResponse {
+		var rc docReceipt
+		_ = json.Unmarshal([]byte(r.Receipt), &rc)
+		var auth struct {
+			Via string `json:"via"`
+		}
+		_ = json.Unmarshal([]byte(r.Authority), &auth)
+		out := ext.DecisionDocResponse{K: r.K, Actor: r.Actor, Status: r.Status, ResponseID: r.ResponseID, At: r.At.UTC(), Via: auth.Via, Code: rc.Code}
+		if rc.Choice != nil && *rc.Choice >= 0 && *rc.Choice < options {
+			c := *rc.Choice
+			out.Choice = &c
+		}
+		out.Words = cutDocBytes(v.cut(ledger.PartResponse(r.K, "words"), rc.Words, &out.Cut), docWordsMax)
+		if accepted {
+			out.Text = cutDocBytes(v.cut(ledger.PartResponse(r.K, "text"), rc.Text, &out.Cut), docTextMax)
+			out.Rationale = cutDocBytes(v.cut(ledger.PartResponse(r.K, "rationale"), rc.Rationale, &out.Cut), ext.MaxAnswerRationale)
+		}
+		return out
+	}
+	var out []ext.DecisionDocResponse
+	size := 0
+	acc := -1
+	for i := len(rows) - 1; i >= 0; i-- {
+		if rows[i].Status == ledger.ResponseAccepted {
+			acc = i
+			break
+		}
+	}
+	if acc >= 0 {
+		r := one(rows[acc], true)
+		out = append(out, r)
+		b, _ := json.Marshal(r)
+		size += len(b)
+	}
+	omitted := 0
+	for i := len(rows) - 1; i >= 0; i-- {
+		if i == acc {
+			continue
+		}
+		r := one(rows[i], false)
+		b, _ := json.Marshal(r)
+		if len(b) > docOtherMax || size+len(b) > ext.MaxDecisionDocResponses || len(out) > 8 {
+			omitted++
+			continue
+		}
+		size += len(b)
+		out = append(out, r)
+	}
+	slices.SortFunc(out, func(a, b ext.DecisionDocResponse) int { return a.K - b.K })
+	return out, omitted
+}
+
+// cutDocBytes is s cut to at most n bytes at a character's end.
+func cutDocBytes(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
+}
+
+// docAppliedOf is the application and the four states as the record
+// reports them.
+func docAppliedOf(rec ledger.DecisionRecord, v verdictsOf) (*ext.DecisionDocApplied, ext.DecisionDocStates) {
+	d := rec.DecisionRow
+	st := ext.DecisionDocStates{Open: d.State == ledger.DecisionOpen}
+	for i := len(rec.Responses) - 1; i >= 0; i-- {
+		if r := rec.Responses[i]; r.Status == ledger.ResponseAccepted {
+			var rc docReceipt
+			_ = json.Unmarshal([]byte(r.Receipt), &rc)
+			st.Recorded = &ext.DecisionDocState{At: r.At.UTC(), Words: cutDocBytes(v.cut(ledger.PartResponse(r.K, "words"), rc.Words, nil), docWordsMax)}
+			break
+		}
+	}
+	var applied *ext.DecisionDocApplied
+	if d.Applied != "" {
+		var a crew.Application
+		if json.Unmarshal([]byte(d.Applied), &a) == nil {
+			applied = &ext.DecisionDocApplied{At: a.At.UTC(), How: a.How, Run: a.Run, Task: a.Task, Attempt: a.Attempt, Response: a.Response,
+				Words: cutDocBytes(v.cut(ledger.PartApplied, a.Words, nil), docWordsMax)}
+			if a.Validated {
+				st.Validated = &ext.DecisionDocState{At: a.At.UTC()}
+			}
+		}
+	}
+	if d.Final() {
+		words := v.cut(ledger.PartWhy, d.Why, nil)
+		at := d.ClosedAt.UTC()
+		if applied != nil && d.State == ledger.DecisionApplied {
+			words, at = applied.How, applied.At
+		}
+		st.Applied = &ext.DecisionDocState{At: at, Words: cutDocBytes(words, docWordsMax)}
+	}
+	return applied, st
+}
+
+// decisionDoc reads decision n from the ledger and builds its document;
+// ok false for a decision the ledger no longer holds.
+func (s *Server) decisionDoc(ctx context.Context, n int64) (ext.DecisionDoc, bool, error) {
+	rec, ok, err := s.ledger.Decision(ctx, n)
+	if err != nil || !ok {
+		return ext.DecisionDoc{}, false, err
+	}
+	kept, recorded, err := s.ledger.OutputVerdicts(ctx, n)
+	if err != nil {
+		return ext.DecisionDoc{}, false, err
+	}
+	agent := rec.Origin == ledger.OriginAgent
+	v := verdictsOf{kept: kept, recorded: recorded && len(kept) > 0, judge: func(text string) string {
+		return s.copyCheck.Judge(ctx, text, agent)
+	}}
+	doc, err := syncDecision(rec, v)
+	return doc, err == nil, err
+}
+
+// parseDecisionPath is a decision document's path, dr-n, as its number.
+func parseDecisionPath(path string) (int64, error) {
+	n, ok := ledger.ParseDecisionID(path)
+	if !ok {
+		return 0, fmt.Errorf("%q is not a decision's id", path)
+	}
+	return n, nil
+}
+
+// partText is the text of a decision's part as the ledger keeps it ("" for
+// a part it does not hold).
+func partText(rec ledger.DecisionRecord, part string) string {
+	var r docRequestShape
+	_ = json.Unmarshal([]byte(rec.Request), &r)
+	switch part {
+	case ledger.PartQuestion:
+		return r.Question
+	case ledger.PartContext:
+		return r.Context
+	case ledger.PartUncertainty:
+		return r.Uncertainty
+	case ledger.PartAuthorizes:
+		return r.Authorizes
+	case ledger.PartExpertise:
+		return strings.Join(r.Expertise, "\n")
+	case ledger.PartWhy:
+		return rec.Why
+	case ledger.PartApplied:
+		var a crew.Application
+		_ = json.Unmarshal([]byte(rec.Applied), &a)
+		return a.Words
+	}
+	for i, o := range r.Options {
+		switch part {
+		case ledger.PartLabel(i):
+			return o.Label
+		case ledger.PartTradeoffs(i):
+			return o.Tradeoffs
+		}
+	}
+	for _, resp := range rec.Responses {
+		var rc docReceipt
+		_ = json.Unmarshal([]byte(resp.Receipt), &rc)
+		switch part {
+		case ledger.PartResponse(resp.K, "text"):
+			return rc.Text
+		case ledger.PartResponse(resp.K, "rationale"):
+			return rc.Rationale
+		case ledger.PartResponse(resp.K, "words"):
+			return rc.Words
+		}
+	}
+	return ""
+}
+
+// settleDecisionParts judges the ledger's pending decision parts again once
+// the index is whole: output when a source was pruned after the decision
+// was opened, else what the check finds now.
+func (s *Server) settleDecisionParts(ctx context.Context) int {
+	if s.ledger == nil || s.copyCheck == nil || !s.withholdDecisionParts(ctx) || !s.outputs.whole(ctx) {
+		return 0
+	}
+	pending, err := s.ledger.PendingOutputs(ctx, 500)
+	if err != nil {
+		return 0
+	}
+	n := 0
+	for _, p := range pending {
+		rec, ok, err := s.ledger.Decision(ctx, p.N)
+		if err != nil || !ok {
+			continue
+		}
+		pruned, err := s.outputs.prunedSince(rec.CreatedAt)
+		if err != nil {
+			return n
+		}
+		v := verdictOutput
+		if !pruned {
+			v = s.copyCheck.Judge(ctx, partText(rec, p.Part), rec.Origin == ledger.OriginAgent && !strings.HasPrefix(p.Part, "response/"))
+		}
+		if v == verdictPending {
+			continue
+		}
+		if s.ledger.SettleOutput(ctx, p.N, p.Part, v) == nil {
+			n++
+		}
+	}
+	return n
+}
+
+// withholdDecisionParts makes every decision part a process before this
+// one left pending output, once: at the start, or, while another server
+// holds the ledger, as soon as this one writes it. Nothing pending is
+// settled before (settleDecisionParts asks first).
+func (s *Server) withholdDecisionParts(ctx context.Context) bool {
+	if s.ledger == nil || s.copyCheck == nil || s.syncName() == "" {
+		return false
+	}
+	if s.decisionPartsWithheld.Load() {
+		return true
+	}
+	err := s.ledger.WithholdPendingOutput(ctx)
+	if err != nil {
+		if !errors.Is(err, ledger.ErrReadOnly) {
+			s.log.Warn("pending decision verdicts could not be withheld", "err", err)
+		}
+		return false
+	}
+	s.decisionPartsWithheld.Store(true)
+	return true
+}

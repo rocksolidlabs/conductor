@@ -120,6 +120,9 @@ type Server struct {
 	// on a switchyard and without a data directory.
 	outputs   *outputIndex
 	copyCheck *outputGuard
+	// decisionPartsWithheld is set once the decision parts a process
+	// before this one left pending are withheld (withholdDecisionParts).
+	decisionPartsWithheld atomic.Bool
 	// trackers keeps the person's GitHub token (trackers.go); external the
 	// locks of a ticket's GitHub reads (dispatch_external.go).
 	trackers *trackerKeep
@@ -783,8 +786,10 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		s.wireLaunches()
 		s.ledger = openLedger(context.Background(), st, s.records, log, func(ld *ledger.Ledger) { fan.observeLedger(ld); s.observeLogs(ld) }, syncs.ledgerOwned,
 			s.ledgerRecovered, s.restoreLaunchPeople)
-		// A fresh copied-output index is made again from the ledger's logs.
+		// A fresh copied-output index is made again from the ledger's logs;
+		// a decision's part a process before this one left pending is output.
 		s.rebuildIndex()
+		s.withholdDecisionParts(context.Background())
 		if s.ledger == nil {
 			// Its runs are not gone: the sync store is never told they are.
 			syncs.unopened("the ledger")

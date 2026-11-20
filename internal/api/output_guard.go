@@ -219,6 +219,7 @@ func (s *Server) settleLoop(ctx context.Context) {
 			return
 		case <-t.C:
 			s.settlePending(ctx)
+			s.settleDecisionParts(ctx)
 		}
 	}
 }
@@ -231,6 +232,12 @@ func (s *Server) observeLogs(ld *ledger.Ledger) {
 			s.outputs.keepText(source, log)
 		}
 	})
+	// A decision's free-text parts are judged as they are written
+	// (decision_output, OS-3), when a sync store is registered: with none,
+	// nothing of a decision leaves and the ledger writes as before.
+	if s.copyCheck != nil && s.syncName() != "" {
+		ld.SetOutputCheck(s.copyCheck.Judge)
+	}
 }
 
 // logsPruned lets a pruned run's logs go from the index.

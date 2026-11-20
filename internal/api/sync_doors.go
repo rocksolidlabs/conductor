@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 
 	"github.com/rocksolidlabs/conductor/ext"
+	"github.com/rocksolidlabs/conductor/internal/crew"
 	"github.com/rocksolidlabs/conductor/internal/dispatch"
 )
 
@@ -320,3 +322,41 @@ func (h *extHost) SyncReplay(ctx context.Context) error {
 	h.s.syncs.requestReplay()
 	return ctx.Err()
 }
+
+// SyncResend marks one document pending again as if its source had
+// committed: a data document of the allowlist, a run's pointer, a
+// Dispatch entity's doc or its log, or a decision. A path of none of
+// those is refused.
+func (h *extHost) SyncResend(ctx context.Context, store, path string) error {
+	if err := h.syncHost(); err != nil {
+		return err
+	}
+	a := h.s.syncs
+	if a == nil {
+		return fmt.Errorf("%w: this server hands nothing to a sync store", ext.ErrUnsupported)
+	}
+	ok := false
+	switch store {
+	case syncData:
+		ok = syncDataDoc.MatchString(path)
+	case syncLedger:
+		ok = crew.ValidRunID(path)
+	case syncDispatch:
+		ok = path == syncLogPath || dispatchDocPath.MatchString(path)
+	case syncDecisionStore:
+		_, err := parseDecisionPath(path)
+		ok = err == nil
+	}
+	if !ok {
+		return fmt.Errorf("%w: no document %s/%s is handed to a sync store", ext.ErrRefused, store, path)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	a.mark(syncKey{store, path}, 0, nil)
+	return nil
+}
+
+// dispatchDocPath is a Dispatch entity's doc's path: its kind, a slash,
+// its id.
+var dispatchDocPath = regexp.MustCompile(`^[a-z]+/[0-9a-f]{1,64}$`)
