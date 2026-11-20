@@ -152,6 +152,11 @@ func TestInboxShowsThePolicy(t *testing.T) {
 	if len(it.RoutedTo) != 1 || it.RoutedTo[0].Kind != "person" || it.RoutedTo[0].Name != "Ana" || !strings.Contains(it.RoutedRule, "architecture owner") || !strings.Contains(it.RoutedRule, "r-1") {
 		t.Fatalf("%s's item: %+v %q", did, it.RoutedTo, it.RoutedRule)
 	}
+	// Who answers, as a brief says it (Brakeman's too): by the policy,
+	// never "you, the operator" alone; this policy allows no override.
+	if it.Answerer != "Ana, for the architecture owner, by its router's policy" {
+		t.Fatalf("%s's answerer: %q", did, it.Answerer)
+	}
 }
 
 // refused, nothing written.
