@@ -139,6 +139,10 @@ type brakemanDesk struct {
 	// configuration and before it reads Dispatch's change feed
 	// (readTickets): a test's gate, nil otherwise.
 	beforeFeed atomic.Pointer[func()]
+	// afterScopeCarry runs between a rekey's carry of a project's new key
+	// into Brakeman's scopes and the rekey (carryScopeKey): a test's
+	// gate, nil otherwise.
+	afterScopeCarry atomic.Pointer[func()]
 	// recovered says the desk holds the records' queue as their owner: set
 	// once the store is this server's and the queue is read from it (at
 	// open for a store that took the owner lock then, in OnOwned's

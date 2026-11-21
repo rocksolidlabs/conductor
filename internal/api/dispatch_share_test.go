@@ -269,8 +269,8 @@ func TestARekeyNotMadePutsTheOldKeyBackInWhatWasSavedSince(t *testing.T) {
 			c["scope"] = map[string]any{"projects": append(anyStringsOf(c["scope"].(map[string]any)["projects"]), "OPS")}
 		})
 	}
-	afterScopeCarry.Store(&save)
-	t.Cleanup(func() { afterScopeCarry.Store(nil) })
+	b.desk.afterScopeCarry.Store(&save)
+	t.Cleanup(func() { b.desk.afterScopeCarry.Store(nil) })
 	e.expect(t, "POST", "/api/dispatch/projects/CND/rekey", map[string]any{"opId": opID(), "key": "OWN"}, http.StatusConflict, dispatch.RefusalShareInProgress)
 	scope, _ := b.config(t)["scope"].(map[string]any)
 	if got := anyStrings(scope["projects"]); !slices.Equal(got, []string{"CND", "OPS"}) {

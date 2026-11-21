@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
-	"sync/atomic"
 
 	"github.com/rocksolidlabs/conductor/internal/brakeman"
 	"github.com/rocksolidlabs/conductor/internal/dispatch"
@@ -90,9 +89,6 @@ func (s *Server) handleDispatchRekeyProject(w http.ResponseWriter, r *http.Reque
 	if !ok {
 		return
 	}
-	if f := afterScopeCarry.Load(); f != nil {
-		(*f)()
-	}
 	rc, err := ds.RekeyProject(ctx, op, key, body.Key)
 	after := key
 	if rc.Status == dispatch.StatusDone {
@@ -103,10 +99,6 @@ func (s *Server) handleDispatchRekeyProject(w http.ResponseWriter, r *http.Reque
 	}
 	s.writeOp(w, "project", rc, err, false, "project", projectAfter(ctx, ds, after))
 }
-
-// afterScopeCarry, when a test sets it, runs between a rekey's carry into
-// Brakeman's scopes and the rekey; nil outside tests.
-var afterScopeCarry atomic.Pointer[func()]
 
 // carriedScope is what a rekey's carry changed of Brakeman's: the desk,
 // the keys, the configuration it saved (none when its scope named no such
@@ -169,6 +161,9 @@ func (s *Server) carryScopeKey(w http.ResponseWriter, ctx context.Context, ds *d
 	if err != nil {
 		c.putBack()
 		return refuse(err, fmt.Sprintf("Brakeman's earlier requests could not be saved with %s in place of %s, so the key is unchanged: try again", newKey, key))
+	}
+	if f := d.afterScopeCarry.Load(); f != nil {
+		(*f)()
 	}
 	return c, true
 }
