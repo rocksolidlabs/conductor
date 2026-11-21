@@ -479,6 +479,9 @@ func (s *Server) ticketLaunch(ctx context.Context, w http.ResponseWriter, ds *di
 	case err != nil:
 		s.dispatchError(w, "plan revision", err)
 		return
+	case !v.BodyHere:
+		// Made on another machine: the store refuses it body_elsewhere, its
+		// receipt kept.
 	default:
 		f, err := s.planFacts.get(v.Digest, func() (json.RawMessage, error) { return v.Body, nil })
 		if err != nil {

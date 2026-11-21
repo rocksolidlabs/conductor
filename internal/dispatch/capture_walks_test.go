@@ -483,8 +483,17 @@ func TestEveryReadHidesADeletedCapture(t *testing.T) {
 	// reads the tables of what it names, none a capture's.
 	other := "reads no capture's table: driven by the capture's names alone"
 	notReads := map[string]string{
-		"Dir":      "the store's own directory",
-		"ReadOnly": "whether the store takes writes, and the store's own words why",
+		"Dir":             "the store's own directory",
+		"ReadOnly":        "whether the store takes writes, and the store's own words why",
+		"Replica":         "the store's replica tag, its workspace and its device",
+		"RevisionView":    "a revision's view by its digest: the plan views' table alone",
+		"ChangesFrom":     "the rows that replicate, never a capture's (Replicates)",
+		"ApplyRemote":     "applies rows from another machine, which never carry a capture (Replicates); reads no capture's table",
+		"TicketsLinkedTo": "the keys of the tickets linked to an item: the tickets' table alone",
+		"Blocks":          "the shared projects' blocks: the projects' table alone",
+		"Shared":          "the projects with a share: the projects' and the tickets' tables",
+		"HandedChanges":   "ChangesFrom's rows of the shared projects, never a capture's (Replicates)",
+		"PendingRows":     "the change rows whose copied-output verdict waits, rows of the log (as ChangesFrom's), never a capture's",
 	}
 	for _, name := range []string{"AtLaunch", "Attachment", "Blockers", "ChainHolders", "ChangedSince", "Children", "ClaimReview", "CloseState", "Comment",
 		"Comments", "Findings", "Label", "Labels", "LaunchByID", "Launches", "LinkReadOf", "LinkedTicket", "Links", "List", "Marks", "Milestone", "Milestones",

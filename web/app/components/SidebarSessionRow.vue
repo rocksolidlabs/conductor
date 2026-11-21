@@ -5,6 +5,7 @@ import { sessionStatus } from '~/utils/status'
 import { sessionTarget } from '~/utils/actions'
 import { sessionResumeOffered } from '~/utils/runs'
 import { rowMenuItems, rowPrompt, sessionLive, stopQuestion } from '~/utils/sidebarActions'
+import { isPinned, pinSession, unpinSession } from '~/utils/pins'
 
 /**
  * One session in the list (design 3b, 3c): the name on one line across the row, its status mark (StatusMark of sessionStatus) at
@@ -60,8 +61,13 @@ const shareTip = ref(false)
 const shareTipMuted = ref(false)
 // More's menu is open while the list says so: a row drawn anew in another section (its turn ended, it asks) keeps it open.
 const menuOpen = useRowMenu(() => `s:${s.value.id}`)
+// Pin to top and Unpin (utils/pins.ts): the pinned sessions are the list's first group.
+const ui = useUiState()
+const pinned = computed(() => isPinned(ui.pins.value, s.value.id))
 const menu = computed(() =>
-  rowMenuItems(target.value, {
+  rowMenuItems({ ...target.value, pinned: pinned.value }, {
+    pin: () => ui.setPins(pinSession(ui.pins.value, s.value)),
+    unpin: () => ui.setPins(unpinSession(ui.pins.value, s.value.id)),
     open: () => router.push(`/sessions/${s.value.id}`),
     openRun: () => emit('openRun', props.row),
     share: () => emit('share', props.row),

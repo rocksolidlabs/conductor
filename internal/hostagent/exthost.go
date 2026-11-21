@@ -253,6 +253,54 @@ func (h *hostExtHost) ResolveLaunch(context.Context, ext.ResolveRequest) (ext.Re
 	return ext.ResolvedLaunch{}, h.refuse()
 }
 
+// Sync's doors: a host keeps no Dispatch store, no UI documents and no
+// ledger.
+func (h *hostExtHost) DispatchJoin(context.Context, string, string, string, int64, int64) error {
+	return h.refuse()
+}
+func (h *hostExtHost) DispatchRetire(context.Context) error { return h.refuse() }
+func (h *hostExtHost) DispatchChanges(context.Context, int64, int) ([]ext.DispatchChange, int64, error) {
+	return nil, 0, h.refuse()
+}
+func (h *hostExtHost) DispatchPlanView(context.Context, string) ([]byte, error) {
+	return nil, h.refuse()
+}
+func (h *hostExtHost) DispatchApply(context.Context, []ext.DispatchChange, map[string][]byte, map[string]string) (ext.DispatchApplied, error) {
+	return ext.DispatchApplied{}, h.refuse()
+}
+func (h *hostExtHost) DispatchBlock(context.Context, string, int64, int64, bool) error {
+	return h.refuse()
+}
+func (h *hostExtHost) DispatchBlocks(context.Context) ([]ext.BlockState, error) {
+	return nil, h.refuse()
+}
+func (h *hostExtHost) DispatchShared(context.Context) ([]ext.SharedProject, error) {
+	return nil, h.refuse()
+}
+func (h *hostExtHost) DispatchCompleteShare(context.Context, string, string, int64) error {
+	return h.refuse()
+}
+func (h *hostExtHost) DispatchConfirmShare(context.Context, string) error        { return h.refuse() }
+func (h *hostExtHost) DispatchRefuseShare(context.Context, string, string) error { return h.refuse() }
+func (h *hostExtHost) DispatchUnshared(context.Context, string, string) error    { return h.refuse() }
+func (h *hostExtHost) DispatchDormant(context.Context, string, string) error     { return h.refuse() }
+func (h *hostExtHost) DispatchNames(context.Context, map[string]string) error    { return h.refuse() }
+func (h *hostExtHost) SetUIState(context.Context, string, []byte) error          { return h.refuse() }
+func (h *hostExtHost) SyncReplay(context.Context) error                          { return h.refuse() }
+func (h *hostExtHost) SyncResend(context.Context, string, string) error          { return h.refuse() }
+func (h *hostExtHost) RespondDecision(context.Context, ext.HeldAnswer) (ext.AnswerOutcome, error) {
+	return ext.AnswerOutcome{}, h.refuse()
+}
+func (h *hostExtHost) SyncDelivery(context.Context, string, string) (ext.AnswerOutcome, string, bool, error) {
+	return ext.AnswerOutcome{}, "", false, h.refuse()
+}
+func (h *hostExtHost) LastDecision(context.Context) (int64, error) { return 0, h.refuse() }
+func (h *hostExtHost) PutRemote(context.Context, ext.Remote) error { return h.refuse() }
+func (h *hostExtHost) DeleteRemote(context.Context, string, string, string) error {
+	return h.refuse()
+}
+func (h *hostExtHost) ClearRemote(context.Context) error { return h.refuse() }
+
 // A host keeps no run's repository: a context provider reads one on the
 // server alone.
 func (h *hostExtHost) ReadTree(context.Context, ext.TreeRequest) (ext.Tree, error) {

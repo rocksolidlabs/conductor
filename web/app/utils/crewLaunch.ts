@@ -346,9 +346,15 @@ export function boundWords(m: { account?: { id: string; source: string }; model?
 export const ACCOUNT_UNREAD = 'a registered account, not read yet'
 export const accountUnreadable = (why: string) => `a registered account that could not be read: ${why}`
 
-/** Reads the accounts a ticket's plan revision named for each member (namedAccounts), refused in words at the sheet's reads' deadline. */
-export function readNamedAccounts(read: (signal: AbortSignal) => Promise<{ body: { crew: { members?: ReadonlyArray<{ name: string; account?: string }> } } }>, after: After = realAfter): Promise<Record<string, string>> {
-  return withDeadline(read, SHEET_DEADLINE_MS, `The server did not answer within ${SHEET_DEADLINE_MS / 1000} s`, after).then((p) => namedAccounts(p.body.crew.members))
+/**
+ * Reads the accounts a ticket's plan revision named for each member (namedAccounts), refused in words at the sheet's reads' deadline; a
+ * revision made on another machine, which has no body here and never launches a run here, is refused in words too.
+ */
+export function readNamedAccounts(read: (signal: AbortSignal) => Promise<{ body?: { crew: { members?: ReadonlyArray<{ name: string; account?: string }> } } }>, after: After = realAfter): Promise<Record<string, string>> {
+  return withDeadline(read, SHEET_DEADLINE_MS, `The server did not answer within ${SHEET_DEADLINE_MS / 1000} s`, after).then((p) => {
+    if (!p.body) throw new Error('the revision was made on another machine, which keeps its crew')
+    return namedAccounts(p.body.crew.members)
+  })
 }
 
 /** The member names the revision's crew gives an account, by member: `''` for one that names none. */

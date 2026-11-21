@@ -80,7 +80,14 @@ func seedDispatch(t *testing.T, dataDir string) {
 // made by the server in a data directory of the test's.
 func dispatchEnv(t *testing.T) *testEnv {
 	t.Helper()
-	e := newTestEnv(t, func(cfg *config.Config) { cfg.DataDir = filepath.Join(t.TempDir(), "data") })
+	// A few stores open at once: every store's SQLite takes one lock per
+	// process for its allocations, and the thirty-odd parallel tests here
+	// opening theirs together ran each open past the 30 s Dispatch gives
+	// it on a loaded machine, leaving the store read-only.
+	var e *testEnv
+	openingDispatch(func() {
+		e = newTestEnv(t, func(cfg *config.Config) { cfg.DataDir = filepath.Join(t.TempDir(), "data") })
+	})
 	if e.srv.dispatch == nil {
 		t.Fatal("no Dispatch store")
 	}
@@ -88,6 +95,18 @@ func dispatchEnv(t *testing.T) *testEnv {
 		t.Fatalf("Dispatch's store is read-only: %s", why)
 	}
 	return e
+}
+
+// dispatchOpens bounds how many of the tests' Dispatch stores are being
+// opened at once (openingDispatch).
+var dispatchOpens = make(chan struct{}, 4)
+
+// openingDispatch runs open, which opens a Dispatch store, in one of
+// dispatchOpens's slots, given back however open ends.
+func openingDispatch(open func()) {
+	dispatchOpens <- struct{}{}
+	defer func() { <-dispatchOpens }()
+	open()
 }
 
 // encodeNoHTML is v as JSON with HTML escaping off, as the CLI encodes a
@@ -285,6 +304,9 @@ var dispatchRequests = map[string]struct {
 	"POST /api/dispatch/publications/{id}/check":    {"/api/dispatch/publications/0123456789abcdef/check", map[string]any{}},
 	"POST /api/dispatch/publications/{id}/close":    {"/api/dispatch/publications/0123456789abcdef/close", map[string]any{"opId": "f3"}},
 	"POST /api/dispatch/publications/{id}/discard":  {"/api/dispatch/publications/0123456789abcdef/discard", map[string]any{"opId": "f4"}},
+	// A project's share and its rekey (dispatch_share.go).
+	"POST /api/dispatch/projects/{key}/share": {"/api/dispatch/projects/CND/share", map[string]any{"opId": "g1"}},
+	"POST /api/dispatch/projects/{key}/rekey": {"/api/dispatch/projects/CND/rekey", map[string]any{"opId": "g2", "key": "NEW"}},
 }
 
 // eachDispatchRoute calls f with every Dispatch route the server has, by
@@ -426,7 +448,9 @@ func TestDispatchReadOnlyStoreAnswersReadsAndRefusesWrites(t *testing.T) {
 	done := doneOf(t)
 	data := filepath.Join(t.TempDir(), "data")
 	dir := filepath.Join(data, "dispatch")
-	ds, err := dispatch.Open(dir)
+	var ds *dispatch.Store
+	var err error
+	openingDispatch(func() { ds, err = dispatch.Open(dir) })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -442,7 +466,8 @@ func TestDispatchReadOnlyStoreAnswersReadsAndRefusesWrites(t *testing.T) {
 	}
 	db.Close()
 
-	e := newTestEnv(t, func(cfg *config.Config) { cfg.DataDir = data })
+	var e *testEnv
+	openingDispatch(func() { e = newTestEnv(t, func(cfg *config.Config) { cfg.DataDir = data }) })
 	if e.srv.dispatch == nil {
 		t.Fatal("no store")
 	}
@@ -1665,10 +1690,15 @@ func TestDispatchEveryWriteBodyIsBounded(t *testing.T) {
 		"POST /api/dispatch/reviews/{id}/retry":    maxReviewRetryBody,
 		"POST /api/dispatch/findings/{id}/marks":   maxMarkBody,
 		upload:                                     maxAttachmentBody,
+		"POST /api/dispatch/projects/{key}/share":  maxShareBody,
+		"POST /api/dispatch/projects/{key}/rekey":  maxShareBody,
 	}
 	// A ticket's create checks its project's key before the store sees
 	// the body.
-	fields := map[string]string{"POST /api/dispatch/tickets": `"project":"CND",`}
+	fields := map[string]string{"POST /api/dispatch/tickets": `"project":"CND",`, "POST /api/dispatch/projects/{key}/rekey": `"key":"NEW",`}
+	// A share needs a sync provider, which this server has not: a body at
+	// its bound is read whole, then refused for the provider.
+	noSync := map[string]bool{"POST /api/dispatch/projects/{key}/share": true}
 	refusal := strings.TrimPrefix(dispatch.ErrBadBy.Error(), "dispatch: ")
 	// A read of GitHub's that runs no operation takes no opId: a body at
 	// its bound is read whole and refused for its first member.
@@ -1716,6 +1746,10 @@ func TestDispatchEveryWriteBodyIsBounded(t *testing.T) {
 			switch {
 			case n > bound && (status != http.StatusRequestEntityTooLarge || errorCode(out) != "bound"):
 				t.Fatalf("%s, a body past its bound: %d %.300s", r.pattern, status, data)
+			case n == bound && noSync[r.pattern]:
+				if status != http.StatusConflict || errorCode(out) != "no_sync" {
+					t.Fatalf("%s, a body at its bound: %d %.300s", r.pattern, status, data)
+				}
 			case n == bound && noOp[r.pattern]:
 				if status != http.StatusBadRequest || !strings.Contains(apiMessage(out), `unknown field "opId"`) {
 					t.Fatalf("%s, a body at its bound: %d %.300s", r.pattern, status, data)
@@ -1725,7 +1759,7 @@ func TestDispatchEveryWriteBodyIsBounded(t *testing.T) {
 			}
 		}
 	}
-	if writes != 48 {
+	if writes != 50 {
 		t.Fatalf("%d writes", writes)
 	}
 }

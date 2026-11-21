@@ -277,8 +277,8 @@ type Tag struct {
 	N     int    `json:"n"`
 }
 
-// TagOf is c's identity.
-func TagOf(c ChangeRow) Tag { return Tag{c.Actor, c.OpID, c.N} }
+// TagOf is c's identity, its actor canonical (Canon).
+func TagOf(c ChangeRow) Tag { return Tag{canon(c), c.OpID, c.N} }
 
 // Tags reads the tags a remove's prior names; none for anything else.
 func Tags(prior string) []Tag {
@@ -298,9 +298,21 @@ func EncodeTags(tags []Tag) string {
 	return string(b)
 }
 
+// priorTags is the tags a remove of the replica origin names in its
+// prior, each canonical: a tag written before its store joined a
+// workspace names its actor raw, and its add has the remove's origin (both
+// rows took the same tag at the join).
+func priorTags(prior, origin string) []Tag {
+	tags := Tags(prior)
+	for i := range tags {
+		tags[i].Actor = Canon(tags[i].Actor, origin)
+	}
+	return tags
+}
+
 // names reports whether the remove names tag.
 func names(remove ChangeRow, tag Tag) bool {
-	for _, t := range Tags(remove.Prior) {
+	for _, t := range priorTags(remove.Prior, remove.Origin) {
 		if t == tag {
 			return true
 		}
@@ -309,11 +321,12 @@ func names(remove ChangeRow, tag Tag) bool {
 }
 
 // Less orders two change rows in the one order of the log: at, then
-// actor, then op_id, then n. CS1 may replace at with a hybrid logical
-// clock without changing a rule, since every rule compares these four
-// and nothing else.
+// canonical actor (Canon: a row of a replica qualified by its origin, so
+// every replica orders the same rows the same way), then op_id, then n.
+// CS1 may replace at with a hybrid logical clock without changing a rule,
+// since every rule compares these four and nothing else.
 func Less(a, b ChangeRow) bool {
-	return less(a.At, a.Actor, a.OpID, a.N, b.At, b.Actor, b.OpID, b.N)
+	return less(a.At, canon(a), a.OpID, a.N, b.At, canon(b), b.OpID, b.N)
 }
 
 func less(at1 time.Time, actor1, op1 string, n1 int, at2 time.Time, actor2, op2 string, n2 int) bool {
@@ -881,7 +894,7 @@ func keptAttachments(log []ChangeRow) map[string]bool {
 	removed := map[Tag]bool{}
 	for _, r := range log {
 		if r.Field == "attachments" && r.Op == OpRemove {
-			for _, tag := range Tags(r.Prior) {
+			for _, tag := range priorTags(r.Prior, r.Origin) {
 				removed[tag] = true
 			}
 		}
@@ -991,4 +1004,108 @@ func mergeManifest(reads []ExternalSnapshot, chosen int, live map[string]bool) (
 		}
 	}
 	return out, release, !slices.Equal(out, reads[chosen].Images)
+}
+
+// Replicates reports whether a row is ever handed to or applied from
+// another replica (docs/plans/sync-seams.md, "Dispatch's rows"): a
+// project's, ticket's, comment's, label's, milestone's, view's (of a
+// project), person's or plan revision's create and the fields the plan
+// names, never a field that is one machine's own (a project's working
+// directory and numbers, a ticket's snapshot of its linked item and its
+// attachments), never a launch, a review, a finding, a capture, a send or
+// a publication, and never a row of the actor merge or a migration's,
+// which each replica derives for itself.
+func Replicates(c ChangeRow) bool {
+	if c.Actor == ActorMerge || c.Op == OpReconcile || c.Op == OpMigrate {
+		return false
+	}
+	switch c.Entity {
+	case EntityProject:
+		switch c.Op {
+		case OpCreate:
+			return true
+		case OpSet:
+			switch c.Field {
+			case "key", "name", "description", "tracker", "tracker_url", "close_requires", "archived_at":
+				return true
+			}
+		}
+	case EntityTicket:
+		switch c.Op {
+		case OpCreate:
+			return true
+		case OpObserve, OpAdopt:
+			return c.Field == FieldTitle || c.Field == FieldDescription
+		case OpSet:
+			if c.Field == "external_snapshot" || c.Field == "number" {
+				return false
+			}
+			switch Class(EntityTicket, c.Field) {
+			case ClassScalar, ClassGated, ClassCounterpart:
+				return true
+			}
+		case OpAdd, OpRemove:
+			switch c.Field {
+			case "assignees", "labels", "relations", "links":
+				return true
+			}
+		}
+	case EntityComment, EntityLabel, EntityMilestone:
+		return c.Op == OpCreate || (c.Op == OpSet && Class(c.Entity, c.Field) == ClassScalar)
+	case EntityView:
+		return c.ProjectID != "" && (c.Op == OpCreate || (c.Op == OpSet && Class(c.Entity, c.Field) == ClassScalar))
+	case EntityPerson:
+		return c.Op == OpCreate
+	case EntityPlan:
+		switch c.Op {
+		case OpCreate:
+			return true
+		case OpSet:
+			switch Class(EntityPlan, c.Field) {
+			case ClassScalar, ClassGated:
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// Refs is every entity a row needs by the schema's references, each
+// "kind:id": a ticket's create its project; a comment's and a plan's
+// create their ticket; a label's, a milestone's and a project's view's
+// create their project; a ticket's set member its ticket, and a label's
+// add its label and a relation's add its far end beside it. At most
+// three. A reference the schema does not enforce (a parent, a milestone)
+// is none: it is read as unknown until its entity arrives.
+func Refs(c ChangeRow) []string {
+	switch {
+	case c.Op == OpCreate && c.Entity == EntityTicket:
+		return []string{EntityProject + ":" + c.ProjectID}
+	case c.Op == OpCreate && (c.Entity == EntityComment || c.Entity == EntityPlan):
+		return []string{EntityTicket + ":" + c.TicketID}
+	case c.Op == OpCreate && (c.Entity == EntityLabel || c.Entity == EntityMilestone || c.Entity == EntityView):
+		if c.ProjectID == "" {
+			return nil
+		}
+		return []string{EntityProject + ":" + c.ProjectID}
+	case c.Entity == EntityTicket && c.Op == OpSet && c.Field == "parent_id" && c.Value != "":
+		return []string{EntityTicket + ":" + c.Value}
+	case c.Entity == EntityTicket && c.Op == OpSet && c.Field == "milestone_id" && c.Value != "":
+		return []string{EntityMilestone + ":" + c.Value}
+	case c.Entity == EntityTicket && c.Op == OpAdd:
+		refs := []string{EntityTicket + ":" + c.EntityID}
+		switch c.Field {
+		case "labels":
+			refs = append(refs, EntityLabel+":"+c.Value)
+		case "relations":
+			var r struct {
+				ToID string `json:"toId"`
+			}
+			if json.Unmarshal([]byte(c.Value), &r) == nil && r.ToID != "" && r.ToID != c.EntityID {
+				refs = append(refs, EntityTicket+":"+r.ToID)
+			}
+		}
+		return refs
+	}
+	return nil
 }

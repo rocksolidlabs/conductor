@@ -1,4 +1,5 @@
 import type { InjectionKey, ShallowRef } from 'vue'
+import type { PlanViewDoc } from '~/utils/planView'
 import { ApiError } from './useApi'
 import type { PaletteItem } from './usePalette'
 import type { DispatchTicket, LaunchSummary, NewPlan, OpBody, PlanBody, PlanReply, PlanSummary } from './useDispatch'
@@ -46,6 +47,8 @@ export function useTicketPlans(o: { gate: DispatchOrder; key: () => string; tick
   const bodies = shallowReactive(new Map<string, PlanBody>())
   /** Why a body could not be read, by revision id. */
   const bodyErrors = shallowReactive(new Map<string, string>())
+  /** The views read of revisions made on another machine, by revision id: such a revision has no body here (utils/planView.ts). */
+  const views = shallowReactive(new Map<string, PlanViewDoc>())
   /** The launches read, by id. */
   const launches = shallowReactive(new Map<string, LaunchSummary>())
   /** The launches this page made, before the history's scan names them. */
@@ -103,10 +106,12 @@ export function useTicketPlans(o: { gate: DispatchOrder; key: () => string; tick
 
   /** Reads a revision's body, once: it never changes. A failure is said where the body would be, and is not asked again until the next read. */
   async function readBody(id: string): Promise<void> {
-    if (bodies.has(id)) return
+    if (bodies.has(id) || views.has(id)) return
     try {
       const p = await api.plan(id)
-      bodies.set(id, p.body)
+      if (p.body) bodies.set(id, p.body)
+      else if (p.view) views.set(id, p.view)
+      else throw new Error('the revision came with neither its body nor its view')
       bodyErrors.delete(id)
     } catch (e) {
       bodyErrors.set(id, (e as Error).message)
@@ -317,7 +322,7 @@ export function useTicketPlans(o: { gate: DispatchOrder; key: () => string; tick
     return out
   }
 
-  return { plans, listed, approved, featured, bodies, bodyErrors, readBody, launches, known, shown, server, forgetRefusals, read, reset, propose, approve, withdraw, launch, busy: ops.busy, mintOpId: mintCommandId, failureWords: dispatchFailureWords }
+  return { plans, listed, approved, featured, bodies, views, bodyErrors, readBody, launches, known, shown, server, forgetRefusals, read, reset, propose, approve, withdraw, launch, busy: ops.busy, mintOpId: mintCommandId, failureWords: dispatchFailureWords }
 }
 
 export type TicketPlans = ReturnType<typeof useTicketPlans>

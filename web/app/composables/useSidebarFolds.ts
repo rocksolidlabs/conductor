@@ -15,8 +15,11 @@ export function useSidebarFolds() {
     }
   })
 
+  const ui = useUiState()
+
   function set(next: Folds) {
     folds.value = next
+    ui.setLayout({ sidebar: { folds: { ...next } } })
     if (import.meta.client) {
       try {
         writeFolds(localStorage, next)

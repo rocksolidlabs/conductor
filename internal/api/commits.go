@@ -24,6 +24,8 @@ type commitObserver struct {
 	commit   func(ledger.RunPointer)
 	prune    func(runID string, revision int64)
 	dispatch func([]dispatch.Change)
+	// decisions is the ledger's decisions changed (ledger.OnDecisions).
+	decisions func(ns []int64)
 }
 
 // commitFan is the observers, in the order they were added. The list is
@@ -74,6 +76,15 @@ func (f *commitFan) detachData(st *store.Store) {
 func (f *commitFan) observeLedger(ld *ledger.Ledger) {
 	ld.OnCommit(f.ledgerCommitted)
 	ld.OnPrune(f.ledgerPruned)
+	ld.OnDecisions(f.decisionsChanged)
+}
+
+func (f *commitFan) decisionsChanged(ns []int64) {
+	f.each(func(o commitObserver) {
+		if o.decisions != nil {
+			o.decisions(append([]int64(nil), ns...))
+		}
+	})
 }
 
 // observeDispatch installs Dispatch's hook, as the store opens.

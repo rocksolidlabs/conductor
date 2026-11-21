@@ -163,6 +163,9 @@ type Host interface {
 	// ParseDecisionRef takes, and ErrUnsupported where the server keeps no
 	// ledger (a switchyard, conductor host).
 	OpenDecisionRefs(ctx context.Context, after string) (refs []string, next string, err error)
+	// SyncDoors are the doors the registered sync store alone calls
+	// (sync.go); every other provider's Host answers each ErrUnsupported.
+	SyncDoors
 }
 
 // TurnLaunch is a Brakeman turn to launch: the catalog agent, its model

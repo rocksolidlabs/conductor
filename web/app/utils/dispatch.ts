@@ -729,8 +729,9 @@ function revisionWords(id: string, names: ChangeNames): string {
 
 /**
  * One change of a ticket's plan revision (DS2) in words: its proposal, its approval (one entry with the revision it superseded), its
- * withdrawal. An approval is said by its state's row; one made again of a revision approved already has none (the store records only the
- * fields that change), and its time's row says it, which historyEntries leaves out beside a state's row of the same operation. The
+ * withdrawal. An approval is said by its state's row, which every approval writes: one made again of a revision approved already carries
+ * the state it had (approved), and is said so. A log written before every approval wrote its state has no such row for an approval made
+ * again, and its time's row says it, which historyEntries leaves out beside a state's row of the same operation. The
  * approval's other fields (who, at which revision of the ticket, its intent's digest) are its own record; its note is said when it has one.
  */
 function planChange(c: DispatchChange, names: ChangeNames): string {
@@ -738,7 +739,7 @@ function planChange(c: DispatchChange, names: ChangeNames): string {
   if (c.op === 'create') return `proposed ${rev}`
   switch (c.field) {
     case 'state':
-      if (c.value === 'approved') return `approved ${rev}`
+      if (c.value === 'approved') return c.prior === 'approved' ? `approved ${rev} again` : `approved ${rev}`
       if (c.value === 'superseded') return `superseded ${rev}`
       if (c.value === 'withdrawn') return `withdrew ${rev}`
       return ''
@@ -788,7 +789,8 @@ export interface HistoryEntry {
  * A ticket's history as entries, one per operation: an operation's changes are consecutive in the log, so a run of rows of one (actor,
  * opId) is one entry, oldest first. An acceptance is said once: by accepted_for's row when its operation has one, else by its time's (an
  * acceptance made again for the same owner, whose operation records its time and whatever else changed, and no accepted_for). A plan
- * revision's approval the same way: by its state's row when its operation has one, else by its time's (an approval made again).
+ * revision's approval the same way: by its state's row when its operation has one, else by its time's (an approval made again, as a
+ * log before every approval wrote its state holds it).
  */
 export function historyEntries(changes: readonly DispatchChange[], names: ChangeNames = {}): HistoryEntry[] {
   const ops: DispatchChange[][] = []

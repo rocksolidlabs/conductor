@@ -57,8 +57,8 @@ func (who Admittee) holds(g ext.Grant) bool { return slices.Contains(who.Grants,
 // name is the router's, never that person's.
 func (who Admittee) Sent(r ledger.ResponseRow) bool {
 	var a Authority
-	return who.Via == ViaIdentity && who.Subject != "" && r.Actor == ext.SubjectActor+who.Subject &&
-		json.Unmarshal([]byte(r.Authority), &a) == nil && a.Via == ViaIdentity && a.Subject == who.Subject
+	return (who.Via == ViaIdentity || who.Via == ViaSync) && who.Subject != "" && r.Actor == ext.SubjectActor+who.Subject &&
+		json.Unmarshal([]byte(r.Authority), &a) == nil && (a.Via == ViaIdentity || a.Via == ViaSync) && a.Subject == who.Subject
 }
 
 // admits says whether e admits who: the operator the admin grant through
@@ -67,9 +67,11 @@ func (who Admittee) Sent(r ledger.ResponseRow) bool {
 func (e PolicyEntry) admits(who Admittee) bool {
 	switch e.Kind {
 	case EntryOperator:
-		return (who.Via == ViaWorkbench || who.Via == ViaIdentity) && who.holds(ext.GrantAdmin)
+		// A held answer (ViaSync) as an identity's, with the grant the
+		// sync store's door checked (AdmitsAnswer).
+		return (who.Via == ViaWorkbench || who.Via == ViaIdentity || who.Via == ViaSync) && who.holds(ext.GrantAdmin)
 	case EntryGrant:
-		return e.Grant != "" && who.Via == ViaIdentity && who.holds(ext.Grant(e.Grant))
+		return e.Grant != "" && (who.Via == ViaIdentity || who.Via == ViaSync) && who.holds(ext.Grant(e.Grant))
 	case EntryEligible:
 		// A person a router's policy names: that identity, holding the
 		// decide grant or the admin grant.

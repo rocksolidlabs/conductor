@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { SPLIT_DEFAULT, SPLIT_KEY } from './editorTabs'
+import { layoutFromStorage } from './uiState'
 import { clampSideSplit, editorWidth, fitsSide, LAYOUT_KEY, layoutFor, readLayout, readSideSplit, readSplitFor, SIDE_SPLIT_DEFAULT, SIDE_SPLIT_KEY, stepSplit, writeLayout, writeSideSplit, writeSplitFor } from './editorLayout'
 
 function memory(init: Record<string, string> = {}) {
@@ -64,5 +65,16 @@ describe('the editor layout', () => {
     expect(fitsSide(463, 16)).toBe(false)
     expect(fitsSide(312, 16)).toBe(false)
     expect(fitsSide(0, 16)).toBe(false)
+  })
+})
+
+describe('the editor in the app screens\' state', () => {
+  it('is what the layout document reads of its keys: the layout and each layout\'s split', () => {
+    const m = new Map<string, string>()
+    const s = { getItem: (k: string) => m.get(k) ?? null, setItem: (k: string, v: string) => void m.set(k, v) }
+    writeLayout(s, 'side')
+    writeSplitFor('side', s, 0.7)
+    writeSplitFor('stacked', s, 0.3)
+    expect(layoutFromStorage(s).editor).toEqual({ layout: 'side', split: 0.3, sideSplit: 0.7 })
   })
 })

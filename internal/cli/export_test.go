@@ -1901,3 +1901,73 @@ func getJSON(t *testing.T, url string, out any) {
 		t.Fatalf("GET %s: %v: %s", url, err, b)
 	}
 }
+
+// namedProvider is a registered provider that is only a name.
+type namedProvider string
+
+func (p namedProvider) Name() string { return string(p) }
+
+// A provider's restore may write another registered provider's files
+// into that provider's directory (ext/<name>, made 0700), kept once the
+// restore installs; a name that is not another registered provider's
+// (the restoring one's own, one not registered, one not a name) is
+// refused; and a directory made for a restore that installs nothing goes.
+func TestRestoreWritesAnotherProvidersDir(t *testing.T) {
+	clearConductorEnv(t)
+	src, _ := sourceDir(t)
+	out := exportOf(t, src)
+	register := func(restore func(context.Context, ext.RestoreRequest, io.Writer) error) {
+		t.Helper()
+		s := fakeSync{restore: restore}
+		old := extensions
+		t.Cleanup(func() { extensions = old })
+		extensions = func() ext.Providers {
+			return ext.Providers{Continuity: s, All: []ext.Entry{
+				{Kind: ext.KindSync, Name: s.Name(), Value: s},
+				{Kind: ext.KindIdentity, Name: "signin", Value: namedProvider("signin")},
+			}}
+		}
+	}
+	fetch := fromFile(out)
+	register(func(ctx context.Context, r ext.RestoreRequest, w io.Writer) error {
+		for _, bad := range []string{"fake", "nobody", "../ext", ""} {
+			if d, err := r.ProviderDir(bad); !errors.Is(err, ext.ErrRefused) {
+				return fmt.Errorf("the directory of %q: %q %v", bad, d, err)
+			}
+		}
+		d, err := r.ProviderDir("signin")
+		if err != nil {
+			return err
+		}
+		if fi, err := os.Stat(d); err != nil || !fi.IsDir() || fi.Mode().Perm() != 0o700 {
+			return fmt.Errorf("the other provider's directory: %v %v", fi, err)
+		}
+		if err := os.WriteFile(filepath.Join(d, "account"), []byte("theirs"), 0o600); err != nil {
+			return err
+		}
+		return fetch(ctx, r, w)
+	})
+	into := filepath.Join(realTempDir(t), "into")
+	if code, stdout, stderr, err := restoreCmd(t, "--provider", "--data-dir", into); code != 0 || err != nil {
+		t.Fatalf("restore: %d %v\n%s%s", code, err, stdout, stderr)
+	}
+	if b, err := os.ReadFile(filepath.Join(into, "ext", "signin", "account")); err != nil || string(b) != "theirs" {
+		t.Fatalf("the other provider's file: %q %v", b, err)
+	}
+
+	// Nothing installed: the directory made for the other provider goes.
+	register(func(_ context.Context, r ext.RestoreRequest, _ io.Writer) error {
+		if _, err := r.ProviderDir("signin"); err != nil {
+			return err
+		}
+		return ext.ErrNothingToRestore
+	})
+	parent := realTempDir(t)
+	empty := filepath.Join(parent, "into")
+	if code, _, _, err := restoreCmd(t, "--provider", "--data-dir", empty); code != 1 || err == nil {
+		t.Fatalf("a restore of nothing: %d %v", code, err)
+	}
+	if _, err := os.Stat(filepath.Join(empty, "ext", "signin")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the other provider's directory left: %v", err)
+	}
+}

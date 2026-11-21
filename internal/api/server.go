@@ -113,6 +113,41 @@ type Server struct {
 	log             *slog.Logger
 	web             http.Handler
 	store           *store.Store
+	// uiMu orders the UI documents' reads and writes (ui_state.go).
+	uiMu sync.Mutex
+	// outputs is the index of what the server captured and copyCheck the
+	// copied-output check over it (output_index.go, output_guard.go); nil
+	// on a switchyard and without a data directory.
+	outputs   *outputIndex
+	copyCheck *outputGuard
+	// settleDue is set when the ledger's check writes a part pending, and
+	// settleWake wakes the decisions' settle loop once that write's commit
+	// is told (pokeSettle); settleTick, when a test sets it, is the loop's
+	// tick in place of settleEvery.
+	settleDue  atomic.Bool
+	settleWake chan struct{}
+	// rowsDue is set when Dispatch's check writes a row pending, and
+	// rowsWake wakes Dispatch's settle loop once its commit is told.
+	rowsDue  atomic.Bool
+	rowsWake chan struct{}
+	// presence is this server's lock in its data folder (presence.go).
+	presence   *presence
+	settleTick time.Duration
+	// settlePass and settleWaits are the tests' seams on the loop
+	// (options.settlePass, options.settleWaits); nil outside them.
+	settlePass  func(context.Context) (int, bool)
+	settleWaits func()
+	// remoteMu orders the writes of other machines' records (remote.go);
+	// remoteMax, when a test sets it before any is written, bounds their
+	// files in place of ext.MaxRemoteFiles.
+	remoteMu  sync.Mutex
+	remoteMax int
+	// hostedKept counts the texts a hosted session's agent wrote that were
+	// kept on the machine (judgeRow), for the sync status.
+	hostedKept atomic.Int64
+	// recheckAfter, when set, is what a held answer's recheck waits on
+	// between asks (time.After): a test's seam.
+	recheckAfter func(time.Duration) <-chan time.Time
 	// trackers keeps the person's GitHub token (trackers.go); external the
 	// locks of a ticket's GitHub reads (dispatch_external.go).
 	trackers *trackerKeep
@@ -571,10 +606,14 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		started:     time.Now(),
 		relayed:     newRelayMeter(nil),
 		rechecking:  make(chan struct{}, 1),
+		settleWake:  make(chan struct{}, 1),
+		rowsWake:    make(chan struct{}, 1),
 	}
 	// Every provider behind the guard before the server's first write of
 	// its own (the ledger's recovery, the records): nothing calls them yet.
 	s.readRevision = gitcli.RevisionOf
+	s.settleTick = o.settleTick
+	s.settlePass, s.settleWaits = o.settlePass, o.settleWaits
 	if len(o.previewBridge) > 0 {
 		s.bridge.script = append([]byte(nil), o.previewBridge...)
 	}
@@ -705,11 +744,75 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 				syncs.unopened("Dispatch")
 			}
 		}
+		// The copied-output check (docs/plans/sync-seams.md, OS-1c): its index
+		// opened, every verdict a process before this one left pending made
+		// output (the output it may have quoted lived in that process), and
+		// only then the check given to Dispatch's writes. With no sync store
+		// registered nothing leaves the machine to be judged, and the index
+		// is not opened: it does no work at all.
+		if !cfg.Switchyard.Enabled && st != nil && s.syncName() != "" {
+			if x, err := openOutputIndex(st.Dir(), 0); err == nil {
+				s.outputs, s.copyCheck = x, &outputGuard{index: x}
+				// Another live server over this folder: every text is output
+				// while it runs, and so it is where this server cannot tell
+				// whether it is alone (presence.go).
+				p, why := takePresence(st.Dir())
+				if why != "" {
+					log.Warn("the server cannot tell whether it is alone in its data folder: every text is kept as output", "why", why)
+				}
+				s.presence, s.copyCheck.shared = p, p.shared
+				s.readLogs(x)
+				s.readHistory(x)
+				x.watchScreens(s.liveScreens)
+				fan.add(commitObserver{prune: s.logsPruned})
+				// A decision's part written pending wakes its settle.
+				fan.add(commitObserver{decisions: s.pokeSettle})
+				if why := x.state(); why != "" {
+					log.Warn("the copied-output check cannot use its index", "why", why)
+				}
+			}
+		}
+		// With no sync store registered nothing of Dispatch leaves the
+		// machine, and its writes are judged by no check, as before.
+		if s.dispatch != nil && s.copyCheck != nil && s.syncName() != "" {
+			if n, err := s.dispatch.WithholdPending(context.Background()); err != nil {
+				log.Warn("pending verdicts could not be withheld", "err", err)
+			} else if n > 0 {
+				log.Info("verdicts left pending by the server before this one withheld", "rows", n)
+			}
+			s.dispatch.SetOutputCheck(s.judgeRow)
+			// A row written pending wakes the settle once its commit is told.
+			s.dispatch.OnChange(func([]dispatch.Change) {
+				if s.rowsDue.Swap(false) {
+					select {
+					case s.rowsWake <- struct{}{}:
+					default:
+					}
+				}
+			})
+			// A verdict left pending (the index behind, past its bound) is judged
+			// again once it is whole, until the server ends.
+			ctx := s.extCtx
+			s.track(func() { s.settleLoop(ctx) })
+		}
 		if s.dispatch != nil {
 			fan.observeDispatch(s.dispatch)
 			s.dispatch.SetRunExists(s.runKnown)
 			s.dispatch.OnChange(s.events.dispatch)
 			s.dispatch.OnRead(s.events.dispatchRead)
+			// The sync store told when a shared project's block runs low,
+			// after the commit, from the store's goroutine; a panic of its
+			// is the provider's, recovered and logged.
+			if w, ok := o.providers.Continuity.(ext.DispatchWatcher); ok {
+				s.dispatch.OnBlockLow(func(project string) {
+					defer func() {
+						if p := recover(); p != nil {
+							log.Warn("the sync store's BlockLow panicked", "project", project, "panic", extText(p))
+						}
+					}()
+					w.BlockLow(project)
+				})
+			}
 		}
 		if !cfg.Switchyard.Enabled {
 			s.brakeman = s.openBrakemanDesk(st)
@@ -733,7 +836,21 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 			}
 		}
 		s.wireLaunches()
-		s.ledger = openLedger(context.Background(), st, s.records, log, fan.observeLedger, syncs.ledgerOwned, s.ledgerRecovered, s.restoreLaunchPeople)
+		s.ledger = openLedger(context.Background(), st, s.records, log, func(ld *ledger.Ledger) { fan.observeLedger(ld); s.observeLogs(ld) }, syncs.ledgerOwned,
+			s.ledgerRecovered, s.restoreLaunchPeople)
+		// A fresh copied-output index is made again from the ledger's logs;
+		// a decision's part a process before this one left pending is output.
+		s.rebuildIndex()
+		// What a process before this one left pending the ledger withholds
+		// itself, as the check is given or as it takes the owner lock
+		// (ledger.SetOutputCheck).
+		if s.ledger != nil && s.copyCheck != nil && s.syncName() != "" {
+			// A decision's part left pending is judged again once the index
+			// is whole, until the server ends: a loop of its own, started once
+			// the server has its ledger (sync_decision.go).
+			ctx := s.extCtx
+			s.track(func() { s.settleDecisionLoop(ctx) })
+		}
 		if s.ledger == nil {
 			// Its runs are not gone: the sync store is never told they are.
 			syncs.unopened("the ledger")
@@ -743,6 +860,9 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 			// (another server holds the owner lock, for a while after a
 			// restart), or with none, managed launches are refused and
 			// legacy runs work.
+			// A held answer waits for AdmitsAnswer again before it is
+			// applied (sync_answers.go).
+			s.runs.SetRecheck(s.recheckHeld)
 			s.runs.UseLedger(crew.SQLLedgerTold(s.ledger, s.decisionTold))
 			// The text of the context each attempt is given, beside the
 			// ledger's rows (crew/attempt_context.go): without it no
@@ -835,6 +955,12 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		// the rest, its publication's end among it, takes its time. What
 		// they change as they leave reaches no browser's list (publishIf:
 		// the session is no longer listed).
+		// Its ring goes with it: the index lets its fingerprints go, the
+		// prune's time recorded.
+		if s.outputs != nil {
+			s.outputs.prune("ring:" + id)
+			s.outputs.prune("screen:" + id)
+		}
 		switch drv := d.(type) {
 		case *session.Local:
 			drv.LeaveRunChat()
@@ -1061,6 +1187,10 @@ func (s *Server) WaitBackground(ctx context.Context) {
 	if s.dispatch != nil {
 		s.dispatch.Close()
 	}
+	if s.outputs != nil {
+		s.outputs.close()
+	}
+	s.presence.release()
 	s.closeSessionRecords(false)
 }
 
@@ -1077,6 +1207,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/switchyard/status", s.requireAdmin(s.handleSwitchyardStatus))
 	mux.HandleFunc("GET /api/export", s.requireAdmin(s.handleExport))
 	mux.HandleFunc("GET /api/capabilities", s.requireAdmin(s.handleCapabilities))
+	mux.HandleFunc("GET /api/remote", s.requireAdmin(s.handleRemote))
+	mux.HandleFunc("GET /api/sync", s.requireAdmin(s.handleSyncStatus))
+	mux.HandleFunc("GET /api/ui/{name}", s.requireAdmin(s.handleUIGet))
+	mux.HandleFunc("PUT /api/ui/{name}", s.requireAdmin(s.handleUIPut))
 	mux.HandleFunc("GET /api/signin", s.requireAdmin(s.handleSignIn))
 	mux.HandleFunc("POST /api/signin", s.requireAdmin(s.handleSignInBegin))
 	mux.HandleFunc("DELETE /api/signin", s.requireAdmin(s.handleSignOut))
@@ -1640,6 +1774,10 @@ func (s *Server) Shutdown(ctx context.Context) {
 			s.log.Warn("Dispatch's store did not close cleanly", "err", err)
 		}
 	}
+	if s.outputs != nil {
+		s.outputs.close()
+	}
+	s.presence.release()
 	// The sessions stopped and the hosts let go, every record is
 	// reconciled a last time from its session and written
 	// (closeSessionRecords).
