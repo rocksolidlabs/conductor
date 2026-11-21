@@ -485,6 +485,47 @@ func TestRecoveredByKept(t *testing.T) {
 	}
 }
 
+// A row that comes in naming one of this store's own origin tags, and that
+// is not one of this store's own rows handed back, is refused, the refusal
+// naming the tag, and nothing of its batch is kept: a row from elsewhere
+// is never stored as this machine's own, its approval included.
+func TestARowNamingThisStoresOwnOriginIsRefused(t *testing.T) {
+	ctx := context.Background()
+	a, b, key, after := planPair(t)
+	id := propose(t, a, "propose-on-a", key, PlanRequest{Crew: "crew"}, testPlanBody("crew"))
+	pull(t, a, b, after)
+	approve(t, a, "approve-on-a", id, "a's")
+	rows, _, err := a.ChangesFrom(ctx, *after, MaxChangesPage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range rows {
+		rows[i].Origin = "b1"
+	}
+	// b's own rows handed back with them are dropped; the rows naming b
+	// that b never wrote refuse the batch.
+	own, _, err := b.ChangesFrom(ctx, 0, MaxChangesPage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range own {
+		if !c.Remote {
+			rows = append(rows, c)
+		}
+	}
+	before := count(t, b, "SELECT COUNT(*) FROM changes")
+	got, err := b.ApplyRemote(ctx, rows, nil, registryKeys(t, a))
+	if !errors.Is(err, ErrBadActor) || !strings.Contains(err.Error(), "b1") || got.Applied != 0 {
+		t.Fatalf("rows naming b's own origin: %+v %v", got, err)
+	}
+	if n := count(t, b, "SELECT COUNT(*) FROM changes"); n != before {
+		t.Fatalf("%d rows on b, were %d", n, before)
+	}
+	if v := planOf(t, b, id); v.State == PlanApproved {
+		t.Fatalf("the revision on b: %s", v.State)
+	}
+}
+
 // A resend of an operation is answered from this store's own rows: a row
 // of another replica's with the same actor and op id is not this store's
 // operation.

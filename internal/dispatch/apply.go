@@ -79,8 +79,11 @@ type applier struct {
 // no origin or a canonical actor past MaxRemoteActor (ErrBadActor), a
 // store that has joined no workspace (ErrNotJoined), a row of a project
 // held here that this store has not shared (ErrNotShared), a view that is
-// not the one its row names (ErrBadView), and past the held rows' bounds
-// (ErrHeldFull). Then OnCommit and OnChange, as for a local commit.
+// not the one its row names (ErrBadView), a row naming one of this
+// store's own tags as its origin that is not one of this store's own rows
+// (ErrBadActor), and past the held rows' bounds (ErrHeldFull). Every row
+// applied is kept as another machine's; this store's own rows handed back
+// are dropped. Then OnCommit and OnChange, as for a local commit.
 func (s *Store) ApplyRemote(ctx context.Context, rows []ChangeRow, views map[string][]byte, keys map[string]string) (RemoteApplied, error) {
 	if len(rows) > MaxChangesPage {
 		return RemoteApplied{}, fmt.Errorf("dispatch: a batch of %d rows, more than %d", len(rows), MaxChangesPage)
@@ -123,6 +126,20 @@ func (s *Store) ApplyRemote(ctx context.Context, rows []ChangeRow, views map[str
 		}
 		if a.mine, err = a.tags(); err != nil {
 			return err
+		}
+		// Whatever comes in through the apply is from elsewhere: a row
+		// naming one of this store's own tags is this store's own row
+		// handed back (another machine hands on what it received), dropped,
+		// or else refused; never stored as this machine's.
+		for _, c := range rows {
+			if !a.mine[c.Origin] {
+				continue
+			}
+			if own, err := a.ownRow(c); err != nil {
+				return err
+			} else if !own {
+				return fmt.Errorf("%w: a row from elsewhere names this machine's own origin %s", ErrBadActor, c.Origin)
+			}
 		}
 		if err := a.checkShared(rows); err != nil {
 			return err
@@ -228,18 +245,17 @@ func (a *applier) checkShared(rows []ChangeRow) error {
 	return nil
 }
 
-// local reports whether the row is this store's own (its origin one of
-// this store's tags): such a row is held with its raw actor.
-func (a *applier) local(c ChangeRow) bool { return a.mine[c.Origin] }
-
-// stored is the actor a row is kept under here: its raw actor for a row
-// of this store's own, else qualified by its origin.
-func (a *applier) stored(c ChangeRow) string {
-	if a.local(c) {
-		return c.Actor
-	}
-	return Canon(c.Actor, c.Origin)
+// ownRow reports whether the log holds the row as this store's own: its
+// raw actor, op id and number on a row written here.
+func (a *applier) ownRow(c ChangeRow) (bool, error) {
+	var n int
+	err := a.tx.QueryRowContext(a.ctx, "SELECT COUNT(*) FROM changes WHERE actor = ? AND op_id = ? AND n = ? AND remote = 0", c.Actor, c.OpID, c.N).Scan(&n)
+	return n > 0, err
 }
+
+// stored is the actor a row is kept under here: qualified by its origin,
+// every row applied being another machine's.
+func (a *applier) stored(c ChangeRow) string { return Canon(c.Actor, c.Origin) }
 
 // holds reports whether the log holds the row's identity.
 func (a *applier) holds(c ChangeRow) (bool, error) {
@@ -276,8 +292,13 @@ func (a *applier) exists(kind, id string) (bool, error) {
 	return n > 0, err
 }
 
-// offer applies the row or holds it.
+// offer applies the row or holds it; a row naming one of this store's own
+// tags (its own row handed back, or one held before this store joined
+// under that tag) is dropped.
 func (a *applier) offer(c ChangeRow) error {
+	if a.mine[c.Origin] {
+		return nil
+	}
 	if dup, err := a.holds(c); err != nil || dup {
 		return err
 	}
@@ -457,10 +478,7 @@ func (a *applier) projectWord(id string) (string, error) {
 // apply keeps the row, projects what it names, and releases what waited
 // for an entity it made.
 func (a *applier) apply(c ChangeRow) error {
-	remote := 0
-	if !a.local(c) {
-		remote = 1
-	}
+	remote := 1
 	res, err := a.tx.ExecContext(a.ctx, `INSERT INTO changes (entity, entity_id, ticket_id, project_id, field, op, value, prior, at, actor, by, op_id, n,
 		origin, recovered_by, remote, output, prior_output) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		c.Entity, c.EntityID, c.TicketID, c.ProjectID, c.Field, c.Op, c.Value, c.Prior, stamp(c.At), a.stored(c), c.By, c.OpID, c.N,
