@@ -30,11 +30,20 @@ const agentTextIsOutput = false
 // make.
 type outputGuard struct {
 	index *outputIndex
+	// shared, when set, says another live server shares the data folder:
+	// its sessions' output is not in this index, so every text is output.
+	shared func() bool
 }
+
+// alone says no other live server shares the data folder.
+func (g *outputGuard) alone() bool { return g == nil || g.shared == nil || !g.shared() }
 
 // Check is the verdict of one text: clean, output (it quotes captured
 // output by the rule), or pending (the index cannot answer now).
 func (g *outputGuard) Check(ctx context.Context, text string) string {
+	if !g.alone() && text != "" {
+		return verdictOutput
+	}
 	if len(text) < indexLine {
 		// Below every threshold of the rule: nothing it holds can quote.
 		return verdictClean
@@ -67,6 +76,9 @@ func (g *outputGuard) Judge(ctx context.Context, text string, agent bool) string
 // source (a check's log, which the ledger itself holds), the verdict is
 // pending, and the settle loop judges the part again outside the lock.
 func (g *outputGuard) JudgeNow(_ context.Context, text string, agent bool) string {
+	if !g.alone() && text != "" {
+		return verdictOutput
+	}
 	if agentTextIsOutput && agent && text != "" {
 		return verdictOutput
 	}

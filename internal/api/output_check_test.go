@@ -739,3 +739,63 @@ func TestAPendingRowAfterAFutureDatedEditIsSettledAgainstThePrunesSinceItsWritin
 		t.Fatalf("a paste of a source pruned after its writing settled %q", r.Output)
 	}
 }
+
+// While two live servers share one data folder each judges every text
+// output, its own sessions' output and a person's own words alike, in
+// both directions, a decision's parts too; alone again, a server judges
+// by its check.
+func TestTwoServersOverOneFolderJudgeEveryTextOutput(t *testing.T) {
+	dir := syncDataDir(t)
+	a := syncEnv(t, dir, newFakeSync())
+	ctx := context.Background()
+	a.newDispatchProject(t, "CND", nil)
+	a.newDispatchTicket(t, "CND", "The ticket", nil)
+	ring := words(rand.New(rand.NewPCG(101, 102)), 3000)
+	a.srv.outputs.feed("ring:s-1", []byte(ring), 1<<20)
+	if !a.srv.outputs.whole(ctx) {
+		t.Fatal("a's index not whole")
+	}
+	own := "a person's own words, long enough to be judged by the check"
+	verdict := func(e *testEnv, body string) string {
+		t.Helper()
+		if rc, err := e.srv.dispatch.AddComment(ctx, adminOp(""), "CND-1", body); err != nil || rc.Status != dispatch.StatusDone {
+			t.Fatalf("the comment: %+v %v", rc, err)
+		}
+		rows, _, err := e.srv.dispatch.ChangesFrom(ctx, 0, dispatch.MaxChangesPage)
+		if err != nil {
+			t.Fatal(err)
+		}
+		i := slices.IndexFunc(rows, func(c dispatch.ChangeRow) bool { return c.Value == body })
+		if i < 0 {
+			t.Fatalf("no row of %q", body)
+		}
+		return rows[i].Output
+	}
+	if v := verdict(a, own+" (alone)"); v != verdictClean {
+		t.Fatalf("a alone, a person's own words: %q", v)
+	}
+	b := syncEnv(t, dir, newFakeSync())
+	if !b.srv.outputs.whole(ctx) {
+		t.Fatal("b's index not whole")
+	}
+	for name, v := range map[string]string{
+		"b, a quote of a's ring":  verdict(b, "pasted into b: "+ring[700:900]),
+		"b, a person's own words": verdict(b, own+" (into b)"),
+		"a, a person's own words": verdict(a, own+" (into a, beside b)"),
+	} {
+		if v != verdictOutput {
+			t.Errorf("%s with two servers: %q", name, v)
+		}
+	}
+	const run = "team-00000001"
+	newLedgerRun(t, a.srv.ledger, run, ledger.RunRunning)
+	n := openPlanDecision(t, a.srv.ledger, run, "g1", `{"question":"Ship the migration to every region with two servers?","options":[{"label":"Approve"},{"label":"Reject"}],"subject":{"kind":"plan","plan":"pl-1","digest":"d1"}}`)
+	verdictWhen(t, a.srv.ledger, n, ledger.PartQuestion, verdictOutput)
+	stopEnv(t, b)
+	if v := verdict(a, own+" (alone again)"); v != verdictClean {
+		t.Fatalf("a alone again, a person's own words: %q", v)
+	}
+	if v := verdict(a, "pasted into a: "+ring[1200:1400]); v != verdictOutput {
+		t.Fatalf("a alone again, a quote of its own ring: %q", v)
+	}
+}

@@ -54,6 +54,9 @@ var leftOut = []leftRule{
 	// What other machines hold (docs/plans/sync-seams.md, OS-4): the sync
 	// store writes it again.
 	{dir: "remote", why: WhyDerived},
+	// Each running server's presence, a lock held for its life: nothing
+	// of it outlasts the process.
+	{dir: "presence", why: WhyTemporary},
 	{dir: "tls", why: WhySecret},
 	{dir: "credentials", why: WhySecret},
 	{dir: "ext", why: WhyProvider},

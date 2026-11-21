@@ -128,8 +128,10 @@ type Server struct {
 	settleWake chan struct{}
 	// rowsDue is set when Dispatch's check writes a row pending, and
 	// rowsWake wakes Dispatch's settle loop once its commit is told.
-	rowsDue    atomic.Bool
-	rowsWake   chan struct{}
+	rowsDue  atomic.Bool
+	rowsWake chan struct{}
+	// presence is this server's lock in its data folder (presence.go).
+	presence   *presence
 	settleTick time.Duration
 	// settlePass and settleWaits are the tests' seams on the loop
 	// (options.settlePass, options.settleWaits); nil outside them.
@@ -751,6 +753,13 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		if !cfg.Switchyard.Enabled && st != nil && s.syncName() != "" {
 			if x, err := openOutputIndex(st.Dir(), 0); err == nil {
 				s.outputs, s.copyCheck = x, &outputGuard{index: x}
+				// Another live server over this folder: every text is output
+				// while it runs (presence.go).
+				if p, err := takePresence(st.Dir()); err != nil {
+					log.Warn("the server's presence in its data folder could not be taken", "err", err)
+				} else if p != nil {
+					s.presence, s.copyCheck.shared = p, p.shared
+				}
 				s.readLogs(x)
 				s.readHistory(x)
 				x.watchScreens(s.liveScreens)
@@ -1180,6 +1189,7 @@ func (s *Server) WaitBackground(ctx context.Context) {
 	if s.outputs != nil {
 		s.outputs.close()
 	}
+	s.presence.release()
 	s.closeSessionRecords(false)
 }
 
@@ -1766,6 +1776,7 @@ func (s *Server) Shutdown(ctx context.Context) {
 	if s.outputs != nil {
 		s.outputs.close()
 	}
+	s.presence.release()
 	// The sessions stopped and the hosts let go, every record is
 	// reconciled a last time from its session and written
 	// (closeSessionRecords).
