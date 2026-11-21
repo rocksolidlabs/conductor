@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -429,5 +430,44 @@ func TestTheIndexQueuesAtMostOneFeedASourceHeldToItsBound(t *testing.T) {
 	}
 	if pruned, err := x.prunedSince(start); err != nil || !pruned {
 		t.Fatalf("what was let go is no prune: %v %v", pruned, err)
+	}
+}
+
+// A phrase many kept sources share costs one check a bounded number of
+// reads: past maxSourceReads the text is kept back as output and counted,
+// and a text sharing no phrase reads none. Inside a write's transaction
+// no kept source is read at all (JudgeNow: the text is pending).
+func TestACommonPhraseReadsABoundedNumberOfSources(t *testing.T) {
+	x := testIndex(t, "", 0)
+	var reads atomic.Int64
+	logs := map[string][]byte{}
+	r := rand.New(rand.NewPCG(61, 62))
+	// A phrase shorter than a quote (indexMatch): its every check a miss.
+	phrase := "ok github.com/rocksolidlabs/conductor/internal/dispatch"
+	for i := range 200 {
+		id := fmt.Sprintf("r%d", i)
+		logs[id] = []byte(words(r, 400) + "\n" + phrase + "\n" + words(r, 400))
+		x.keepText("check:"+id, logs[id])
+	}
+	x.reader("check", func(id string) ([]byte, bool) {
+		reads.Add(1)
+		b, ok := logs[id]
+		return b, ok
+	})
+	text := "I think " + phrase + " is where the regression came from"
+	if quotesOf(t, x, "words of its own, long enough to look up and find nothing in any log") {
+		t.Fatal("a text of its own kept back")
+	}
+	if n := reads.Load(); n != 0 {
+		t.Fatalf("a text sharing no phrase read %d sources", n)
+	}
+	if hit, deferred, err := x.quotesIf(text, false); err != nil || hit || !deferred || reads.Load() != 0 {
+		t.Fatalf("the form a transaction calls: hit %v deferred %v err %v, %d reads", hit, deferred, err, reads.Load())
+	}
+	if !quotesOf(t, x, text) {
+		t.Fatal("a phrase shared past the bound not kept back")
+	}
+	if n := reads.Load(); n > maxSourceReads || x.readsCut.Load() != 1 {
+		t.Fatalf("%d sources read for one check, %d cut", n, x.readsCut.Load())
 	}
 }

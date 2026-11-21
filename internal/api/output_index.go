@@ -141,7 +141,9 @@ type outputIndex struct {
 	taken     uint64
 	// waited counts the checks that waited for the feeds (whole): a test's
 	// seam, to show a check made under the ledger's lock never does.
-	waited   atomic.Int64
+	waited atomic.Int64
+	// readsCut counts the checks that met maxSourceReads (quotesIf).
+	readsCut atomic.Int64
 	done     uint64
 	progress chan struct{}
 	wake     chan struct{}
@@ -902,29 +904,36 @@ func (x *outputIndex) lookup(hs []uint64) (map[uint64][]fpRef, error) {
 // confirmation; false when it cannot be read (the hit then counts).
 //
 // A kept source is read only when read says so: deferred is true for one
-// that needs its reader and was not read.
-func (x *outputIndex) sourceTextIf(name string, read bool) (text []byte, base int64, ok, deferred bool) {
+// that needs its reader and was not read, and kept for one its reader was
+// asked for.
+func (x *outputIndex) sourceTextIf(name string, read bool) (text []byte, base int64, ok, deferred, kept bool) {
 	x.mu.Lock()
 	if s := x.live[name]; s != nil {
 		t, base := bytes.Clone(s.text), s.base
 		x.mu.Unlock()
-		return t, base, true, false
+		return t, base, true, false, false
 	}
 	kind, id, _ := strings.Cut(name, ":")
 	rd := x.readers[kind]
 	x.mu.Unlock()
 	if rd == nil {
-		return nil, 0, false, false
+		return nil, 0, false, false, false
 	}
 	if !read {
-		return nil, 0, false, true
+		return nil, 0, false, true, false
 	}
 	raw, ok := rd(id)
 	if !ok {
-		return nil, 0, false, false
+		return nil, 0, false, false, true
 	}
-	return foldText(raw), 0, true, false
+	return foldText(raw), 0, true, false, true
 }
+
+// maxSourceReads bounds the kept sources one check reads to confirm a
+// hit: a phrase common to many of them (a package's path in every check's
+// log) costs at most this many reads, past which the text is kept back as
+// output, counted in readsCut.
+const maxSourceReads = 32
 
 // foldText is text made plain and its whitespace folded, as a source's.
 func foldText(raw []byte) []byte {
@@ -1025,11 +1034,15 @@ func (x *outputIndex) quotesIf(value string, read bool) (hit, deferred bool, err
 	bases := map[string]int64{}
 	readable := map[string]bool{}
 	unread := map[string]bool{}
+	reads := 0
 	text := func(src string) ([]byte, int64, bool, bool) {
 		if t, ok := texts[src]; ok {
 			return t, bases[src], readable[src], unread[src]
 		}
-		t, b, ok, later := x.sourceTextIf(src, read)
+		t, b, ok, later, kept := x.sourceTextIf(src, read)
+		if kept {
+			reads++
+		}
 		texts[src], bases[src], readable[src], unread[src] = t, b, ok, later
 		return t, b, ok, later
 	}
@@ -1039,6 +1052,12 @@ func (x *outputIndex) quotesIf(value string, read bool) (hit, deferred bool, err
 			for _, p := range places[h] {
 				if p.kind != r.kind {
 					continue
+				}
+				if reads >= maxSourceReads {
+					// A phrase many kept sources share: past the reads one
+					// check may make, the text is kept back as output.
+					x.readsCut.Add(1)
+					return true, false, nil
 				}
 				src, base, ok, later := text(r.source)
 				if later {
