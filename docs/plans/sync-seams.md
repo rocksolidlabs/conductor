@@ -1745,19 +1745,28 @@ between that save and the rekey makes the rekey refuse while the scope
 names that project, until it is put back.
 
 **As built (the stream's review).** What the apply does with a row naming
-one of this store's own tags: it is this store's own row handed back by
-another machine (which hands on what it received) when the log holds it
-as written here, the same actor, op id and number, and is dropped; any
-other such row refuses the whole batch, the refusal naming the tag;
-nothing that comes in is ever kept as this machine's own. A row from
+one of this store's own tags (a tag this store's instance joined under):
+it is this store's own row handed back by another machine (which hands
+on what it received) when the log holds it as written here, the same
+actor, op id and number, and is dropped; any other such row refuses the
+whole batch, the refusal naming the tag; nothing that comes in is ever
+kept as this machine's own. A tag a restored store inherited from the
+instance it was exported from is another machine's: its rows the log
+holds as written here are dropped, and the rest are applied as another
+machine's rows. A row from
 elsewhere is bound to the project of the entity it touches as this store
 holds it (a create's by its value, a comment's or a revision's through
 the ticket the row names; a relation's far end and a label added held to
 it as well): a row bound to another project than the one it names, or to
-one held here and neither shared nor dormant, refuses its batch. A row
+one held here and neither shared nor dormant, refuses its batch; every
+reference a row carries, as `Refs` lists them (a parent and a milestone
+among them), is bound to the row's project, but for a relation's far
+end, which may be of another shared project. A row
 from elsewhere dated zero or from the year 9999 on is refused, at the
-seam (`DispatchChange.Valid`) and at the apply. An approval writes all of
-its fields together, and its origin is that of its newest field's row. A
+seam (`DispatchChange.Valid`) and at the apply. An approval writes its five
+fields and the revision's state together, and a launch here needs the
+newest row of every one of the six to be this machine's own: any one from
+elsewhere reads as approved elsewhere. A
 run link names a run of the machine that wrote it (the run's edge carries
 the add's origin), and the reads that ask whether a run here is linked
 count this machine's links alone. A project's key row is logged and never
@@ -1775,10 +1784,16 @@ state it is an error. With no sync store registered Dispatch takes no
 check and the output index is not opened; with one, Dispatch's check and
 the ledger's never wait nor read a kept source inside a write, a row
 written pending wakes its settle, and a process settles by its check
-only the rows it wrote pending (kept in memory), any other pending row
-being output. A live source has one queued feed, held to what it keeps
+only the rows it wrote pending (kept in memory with the time it wrote
+them, against whose prunes it settles them, whatever their stamp), any
+other pending row being output. While two live servers share one data
+folder (each holds a presence lock, `presence/<id>.lock`, for its life)
+each judges every text output, a decision's parts too; alone again, each
+judges by its check. A live source has one queued feed, held to what it keeps
 and a quarter and to 64 MiB across sources, what is let go recorded as a
-prune; one check reads at most 32 kept sources to confirm a hit, past
+prune; a source cut below what its ring still holds is holed until its
+ring has turned over past the cut, and while any source is holed nothing
+is judged clean, a prune recorded as the hole closes; one check reads at most 32 kept sources to confirm a hit, past
 which the text is kept back as output. A decision's part is settled
 against the prunes since its own writing (a response's since the
 response). A UI document is bounded as its file holds it at both
