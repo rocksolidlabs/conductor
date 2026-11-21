@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/rocksolidlabs/conductor/ext"
@@ -92,38 +93,76 @@ func (s *Server) remoteRoot() (string, error) {
 	return filepath.Join(s.store.Dir(), "remote"), nil
 }
 
-// remoteAll reads every record remote/ holds with its path, in path
-// order; a file that does not read is skipped, and no remote/ holds none.
-func (s *Server) remoteAll() ([]remoteRecord, []string, error) {
+// remoteNames lists the records remote/ holds by their paths
+// (<device>/<kind>-<id>.json), in path order, from the folders' names
+// alone: no record is opened. No remote/ holds none.
+func (s *Server) remoteNames() ([]string, error) {
 	root, err := s.remoteRoot()
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	var recs []remoteRecord
+	devs, err := os.ReadDir(root)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
 	var paths []string
-	err = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+	for _, dev := range devs {
+		if !dev.IsDir() {
+			continue
+		}
+		files, err := os.ReadDir(filepath.Join(root, dev.Name()))
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
 		if err != nil {
-			if errors.Is(err, fs.ErrNotExist) {
-				return nil
+			return nil, err
+		}
+		for _, f := range files {
+			if !f.IsDir() && strings.HasSuffix(f.Name(), ".json") {
+				paths = append(paths, dev.Name()+"/"+f.Name())
 			}
-			return err
 		}
-		if d.IsDir() || !strings.HasSuffix(p, ".json") {
-			return nil
-		}
-		b, err := os.ReadFile(p)
-		if err != nil {
-			return nil
-		}
-		var r remoteRecord
-		if json.Unmarshal(b, &r) != nil {
-			return nil
-		}
-		rel, _ := filepath.Rel(root, p)
-		recs, paths = append(recs, r), append(paths, filepath.ToSlash(rel))
-		return nil
-	})
-	return recs, paths, err
+	}
+	return paths, nil
+}
+
+// remoteRead, when a test sets it, is told the path of every record whose
+// body remote/ is read for; nil outside tests.
+var remoteRead atomic.Pointer[func(path string)]
+
+// readRemote reads the record at path (remoteNames'); false for one that
+// does not read or parse, which is passed over.
+func (s *Server) readRemote(path string) (remoteRecord, bool) {
+	root, err := s.remoteRoot()
+	if err != nil {
+		return remoteRecord{}, false
+	}
+	if f := remoteRead.Load(); f != nil {
+		(*f)(path)
+	}
+	b, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(path)))
+	if err != nil {
+		return remoteRecord{}, false
+	}
+	var r remoteRecord
+	if json.Unmarshal(b, &r) != nil {
+		return remoteRecord{}, false
+	}
+	return r, true
+}
+
+// remoteKindOf is the kind a record's path names (its file's name begins
+// with it), "" for none.
+func remoteKindOf(path string) string {
+	base := path[strings.LastIndexByte(path, '/')+1:]
+	kind, _, ok := strings.Cut(base, "-")
+	if !ok || !remoteKinds[kind] {
+		return ""
+	}
+	return kind
 }
 
 // putRemote keeps r, unless the record held is newer. A new record past
@@ -150,7 +189,9 @@ func (s *Server) putRemote(r ext.Remote) error {
 		return nil
 	}
 	if !ok {
-		recs, paths, err := s.remoteAll()
+		// Counted by their names; the records are read only past the
+		// bound, to judge which are over and how old.
+		paths, err := s.remoteNames()
 		if err != nil {
 			return err
 		}
@@ -158,19 +199,23 @@ func (s *Server) putRemote(r ext.Remote) error {
 		if s.remoteMax > 0 {
 			limit = s.remoteMax
 		}
-		if over := len(recs) + 1 - limit; over > 0 {
-			var final []int
-			for i, rec := range recs {
-				if remoteFinal(rec) {
-					final = append(final, i)
+		if over := len(paths) + 1 - limit; over > 0 {
+			type final struct {
+				path string
+				at   time.Time
+			}
+			var finals []final
+			for _, p := range paths {
+				if rec, ok := s.readRemote(p); ok && remoteFinal(rec) {
+					finals = append(finals, final{p, rec.At})
 				}
 			}
-			slices.SortFunc(final, func(a, b int) int { return recs[a].At.Compare(recs[b].At) })
-			if len(final) < over {
+			slices.SortFunc(finals, func(a, b final) int { return a.at.Compare(b.at) })
+			if len(finals) < over {
 				return fmt.Errorf("%w: other machines' records fill their %d files", ext.ErrRefused, limit)
 			}
-			for _, i := range final[:over] {
-				if err := os.Remove(filepath.Join(st.Dir(), filepath.FromSlash(paths[i]))); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			for _, f := range finals[:over] {
+				if err := os.Remove(filepath.Join(st.Dir(), filepath.FromSlash(f.path))); err != nil && !errors.Is(err, fs.ErrNotExist) {
 					return err
 				}
 			}
@@ -317,27 +362,31 @@ func (s *Server) handleRemote(w http.ResponseWriter, r *http.Request) {
 		}
 		match = &m
 	}
-	recs, paths, err := s.remoteAll()
+	paths, err := s.remoteNames()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "store_failed", "other machines' records do not read")
 		return
 	}
+	// Filtered by name (the cursor, the kind) before a record is opened;
+	// a page full is ended at the next record it would hold.
 	out := []remoteRecord{}
-	size, next := 0, ""
-	for i, rec := range recs {
-		if after != "" && paths[i] <= after {
+	size, next, last := 0, "", ""
+	for _, path := range paths {
+		if after != "" && path <= after || kind != "" && remoteKindOf(path) != kind {
 			continue
 		}
-		if kind != "" && rec.Kind != kind || match != nil && !match.matches(rec) {
+		rec, ok := s.readRemote(path)
+		if !ok || kind != "" && rec.Kind != kind || match != nil && !match.matches(rec) {
 			continue
 		}
 		b, _ := json.Marshal(rec)
 		if len(out) == remotePage || size+len(b) > maxRemoteReply-remoteReplyRoom {
-			next = paths[i-1]
+			next = last
 			break
 		}
 		size += len(b) + 1
 		out = append(out, rec)
+		last = path
 	}
 	reply := map[string]any{"records": out}
 	if next != "" {

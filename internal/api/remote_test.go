@@ -196,6 +196,51 @@ func TestRemoteReadsNoneWithoutASyncStore(t *testing.T) {
 	e.expect(t, http.MethodGet, "/api/remote?kind=notes", nil, http.StatusBadRequest, "invalid_request")
 }
 
+// countReads counts the records whose bodies remote/ is read for, from
+// now until the test ends.
+func countReads(t *testing.T) *atomic.Int64 {
+	t.Helper()
+	var n atomic.Int64
+	f := func(string) { n.Add(1) }
+	remoteRead.Store(&f)
+	t.Cleanup(func() { remoteRead.Store(nil) })
+	return &n
+}
+
+// A record counts the others by their names and opens none of them under
+// the bound; a read filtered by kind or by its cursor opens only the
+// records it can answer: the pins of fifty pointers and one pins record
+// open one file, a page after the last pointer opens none of them.
+func TestRemoteReadsByNameBeforeOpening(t *testing.T) {
+	ctx := context.Background()
+	f := newFakeSync()
+	e := syncEnv(t, syncDataDir(t), f)
+	h := &extHost{s: e.srv, name: f.Name(), ctx: ctx}
+	for i := range 50 {
+		id := fmt.Sprintf("team-%08d", i)
+		if err := h.PutRemote(ctx, remoteOf(ext.RemotePointer, "dev-1", id, 1, map[string]any{"id": id, "crew": "team", "state": "running", "revision": 1})); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reads := countReads(t)
+	if err := h.PutRemote(ctx, remoteOf(ext.RemotePins, "dev-1", "pins", 1, map[string]any{"v": 1, "pins": []any{}})); err != nil {
+		t.Fatal(err)
+	}
+	if n := reads.Load(); n != 0 {
+		t.Fatalf("a record under the bound read %d others", n)
+	}
+	recs, _ := remoteRecords(t, e, "?kind=pins")
+	if n := reads.Load(); len(recs) != 1 || n != 1 {
+		t.Fatalf("the pins read %d files for %d records", n, len(recs))
+	}
+	all, _ := remoteRecords(t, e, "?kind=pointer")
+	reads.Store(0)
+	last := remoteDir("dev-1") + "/" + remoteFile(ext.RemotePointer, all[len(all)-1].ID)
+	if recs, _ := remoteRecords(t, e, "?kind=pointer&after="+url.QueryEscape(last)); len(recs) != 0 || reads.Load() != 0 {
+		t.Fatalf("a page after the last pointer: %d records, %d files read", len(recs), reads.Load())
+	}
+}
+
 // remoteJSON is v encoded.
 func remoteJSON(t *testing.T, v any) json.RawMessage {
 	t.Helper()
