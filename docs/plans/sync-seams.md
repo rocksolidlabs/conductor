@@ -1159,9 +1159,13 @@ keeps, told after its commit (`ledger.OnLog`), read again through the
 ledger for a confirmation, and pruned with its run; every entry a
 session's history record keeps (its activity's and its chat's words),
 told as it is kept (`journal.Options.Kept`), `history:<session>/<seq>`,
-read again through the record and pruned with the record. A feed never waits on
-the file (an unbounded queue the index's goroutine drains); a check waits
-up to 2 s for the feeds queued before it, then answers `pending`. A hit
+read again through the record and pruned with the record. The index is
+opened only with a sync store registered. A feed never waits on the
+file; a live source has at most one feed queued, held to what it keeps
+and a quarter, and the bytes queued across sources to 64 MiB, what is let
+go recorded as a prune of the source. A check made outside a write waits
+up to 2 s for the feeds queued before it, then answers `pending`; one
+made inside a write never waits and never reads a kept source. A hit
 is confirmed against its source's text; one that cannot be confirmed
 counts. An index missing or unreadable at the start is made again from
 the ledger's logs and the history's records before it answers. A hosted
@@ -1176,11 +1180,12 @@ the desktop sidebar shows (lg) writes no layout (OS-2): its sidebar is a
 drawer, and a phone never drives the desk's layout. A row's value that is JSON is judged
 by each string it holds as well as whole. Every write's rows carry the
 two verdicts (`changes.output`, `changes.prior_output`) once the server
-gave the store the check (`dispatch.Store.SetOutputCheck`, at start,
-after `WithholdPending` made every verdict a process before left
-`pending` `output`); a pending verdict is judged again every 2 s once the
-index is whole (`settlePending`), `output` when a source was pruned after
-the row was written. `DispatchChanges` judges a row from before the check
+gave the store the check (`dispatch.Store.SetOutputCheck`, at start with
+a sync store registered, after `WithholdPending` made every verdict a
+process before left `pending` `output`); a pending verdict is judged
+again when its write is told and every 2 s, once the index is whole
+(`settlePending`), `output` when a source was pruned after the row was
+written or when another process wrote it. `DispatchChanges` judges a row from before the check
 at hand-out (an agent's `output` whatever the check finds, every actor but
 the operator's and the store's own taken as an agent's) and ends its page
 before the first row still `pending`, its cursor the position before it.
@@ -1720,9 +1725,10 @@ sync's seams.
 with the device and the id hex-encoded, since the data directory's stores
 take lower-case names alone. `GET /api/remote`'s `ticket` is the ticket's
 key (CND-12): the server reads its id and its run links. The app reads
-other machines' records whether or not a sync store is registered: a
-server without one holds none, so its screens are as before; the report
-(`GET /api/sync`) is read only with `sync` in the capabilities. Beside the
+other machines' records and the report (`GET /api/sync`) only with `sync`
+in the capabilities, every page of them, again when the page shows and
+when the events stream comes back; `GET /api/remote` answers none with no
+sync store registered, whatever a store once left in `remote/`. Beside the
 report, `GET /api/sync` answers `here`, what this server keeps on the
 machine of its own judgement (the copied-output check's state when it
 cannot judge, the decisions with a part cut as output, the texts a hosted
@@ -1732,7 +1738,61 @@ another machine": its read carries the other tickets' keys alone. A
 decision's view says, while a held answer's recheck cannot be made yet,
 "waiting to recheck user:nate's answer: the identity provider cannot say
 now" (`waiting`, OS-3's words for the screens). A remote record of this
-server's own device (the report's `device`) is never drawn.
+server's own device (the report's `device`) is never drawn. A project's
+new key is carried into Brakeman's saved scope before the rekey, so a
+grant follows the person's project; a project made under the new key
+between that save and the rekey makes the rekey refuse while the scope
+names that project, until it is put back.
+
+**As built (the stream's review).** What the apply does with a row naming
+one of this store's own tags: it is this store's own row handed back by
+another machine (which hands on what it received) when the log holds it
+as written here, the same actor, op id and number, and is dropped; any
+other such row refuses the whole batch, the refusal naming the tag;
+nothing that comes in is ever kept as this machine's own. A row from
+elsewhere is bound to the project of the entity it touches as this store
+holds it (a create's by its value, a comment's or a revision's through
+the ticket the row names; a relation's far end and a label added held to
+it as well): a row bound to another project than the one it names, or to
+one held here and neither shared nor dormant, refuses its batch. A row
+from elsewhere dated zero or from the year 9999 on is refused, at the
+seam (`DispatchChange.Valid`) and at the apply. An approval writes all of
+its fields together, and its origin is that of its newest field's row. A
+run link names a run of the machine that wrote it (the run's edge carries
+the add's origin), and the reads that ask whether a run here is linked
+count this machine's links alone. A project's key row is logged and never
+projected (`TestRegistryKeyProjectedNeverTheRowsKey`), and a create held
+for a key keeps the registry's key it waits for and takes it at its
+replay (`TestRekeyedProjectSharedIntoAReplicaHoldingItsOldKey`). A batch
+offers again only the held rows it can have released (those waiting for
+what it made or a view it brought; with no rows, a start's or a rekey's,
+those waiting for a key no project here holds), and a hold reads the held
+table once a call; the invariants are replayed only after a row of their
+edges, and that replay reads every edge row, since an edge's standing
+turns on every other edge in the one order. A share's refusal acts on a
+pending share alone: repeated it keeps the share refused, in any other
+state it is an error. With no sync store registered Dispatch takes no
+check and the output index is not opened; with one, Dispatch's check and
+the ledger's never wait nor read a kept source inside a write, a row
+written pending wakes its settle, and a process settles by its check
+only the rows it wrote pending (kept in memory), any other pending row
+being output. A live source has one queued feed, held to what it keeps
+and a quarter and to 64 MiB across sources, what is let go recorded as a
+prune; one check reads at most 32 kept sources to confirm a hit, past
+which the text is kept back as output. A decision's part is settled
+against the prunes since its own writing (a response's since the
+response). A UI document is bounded as its file holds it at both
+writers, and a file past the bound is set aside and read as none. The
+tests the paragraphs above name that stand under other names:
+`TestDormantProjectTurnsSharedOnItsFirstRemoteRow` is
+`TestRefuseDormantAndUnshared`'s dormant case,
+`TestLocalAndRemoteWritesConverge` is `TestReplicasConverge` (local
+writes on both stores between exchanges, in six orders), and
+`TestOrphanRowsHeldUntilTheirCreate` is
+`TestChildBeforeParentHeldThenApplied` with
+`TestHeldRowsSurviveARestart`; `TestWithheldCreateWithholdsItsDependants`
+is held at the store's level, the rows filtered as a provider filters
+them.
 
 ### Protocol
 
