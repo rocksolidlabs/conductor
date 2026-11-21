@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 // shareOp is an operation of the operator's.
@@ -367,5 +368,49 @@ func TestARefusedShareOutlastsARestart(t *testing.T) {
 	pull(t, a, b, after)
 	if n := count(t, b, "SELECT COUNT(*) FROM projects WHERE id = ? AND share_state = 'shared' AND share_words = ''", id); n != 1 {
 		t.Fatal("a dormant project shared again keeps its words")
+	}
+}
+
+// A received project's key is the workspace registry's, never a row's: a
+// project rekeyed twice before its share arrives on a replica that holds a
+// project under one of its old keys, is received under the registry's
+// key, its tickets with it, and a key row from elsewhere naming another
+// key changes nothing.
+func TestRegistryKeyProjectedNeverTheRowsKey(t *testing.T) {
+	ctx := context.Background()
+	a, b := replicaPair(t)
+	newProject(t, a, "CND")
+	rc, err := a.RekeyProject(ctx, shareOp("rekey-1"), "CND", "OWN")
+	want(t, rc, err, StatusDone, "")
+	newTicket(t, a, "OWN", "First")
+	rc, err = a.RekeyProject(ctx, shareOp("rekey-2"), "OWN", "ZZZ")
+	want(t, rc, err, StatusDone, "")
+	shareAll(t, a)
+	newProject(t, b, "OWN")
+	var after int64
+	if got := pull(t, a, b, &after); len(got.Held) != 0 {
+		t.Fatalf("held on b: %v", got.Held)
+	}
+	if got := texts(t, b, "SELECT key || '/' || registry_key FROM projects ORDER BY key"); !slices.Equal(got, []string{"OWN/", "ZZZ/ZZZ"}) {
+		t.Fatalf("b's projects: %v", got)
+	}
+	if got := texts(t, b, "SELECT key FROM tickets"); !slices.Equal(got, []string{"ZZZ-1"}) {
+		t.Fatalf("b's tickets: %v", got)
+	}
+	rows, _, err := a.ChangesFrom(ctx, 0, MaxChangesPage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	i := slices.IndexFunc(rows, func(c ChangeRow) bool { return c.Entity == EntityProject && c.Field == "key" })
+	if i < 0 {
+		t.Fatal("no key row on a")
+	}
+	key := rows[i]
+	key.Value, key.OpID, key.At = "QQQ", "key-from-elsewhere", time.Now().Add(time.Hour)
+	if _, err := b.ApplyRemote(ctx, []ChangeRow{key}, nil, registryKeys(t, a)); err != nil {
+		t.Fatal(err)
+	}
+	if got := texts(t, b, "SELECT key FROM projects WHERE registry_key != ''"); !slices.Equal(got, []string{"ZZZ"}) {
+		t.Fatalf("the received project after a key row: %v", got)
 	}
 }

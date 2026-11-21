@@ -12,8 +12,13 @@ import (
 // made what the whole log makes it by the field's class (rules.go), so
 // local and remote rows give one state wherever they arrived.
 
-// project writes what the row makes of its entity.
+// project writes what the row makes of its entity. A project's key row is
+// kept in the log and never projected: a received project's key is the
+// workspace registry's, written at its create.
 func (a *applier) project(c ChangeRow) error {
+	if c.Entity == EntityProject && c.Field == "key" {
+		return nil
+	}
 	switch c.Op {
 	case OpCreate:
 		return a.create(c)
