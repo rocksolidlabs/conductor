@@ -699,12 +699,14 @@ func (h HeldAnswer) Valid() error {
 // AnswerContentSHA256 is the SHA-256, in lower-case hex, of an answer's
 // content as a held answer's statement signs it and the server checks it:
 // the canonical JSON (as DecisionRequestPart.SHA256's) of {choice, text,
-// rationale}, every key present, choice null when there is none.
+// rationale} with the fields the answer has, a key left out when the
+// answer has no choice, no text or no rationale. A choice of the first
+// option is 0 and is there; no choice is no key.
 func AnswerContentSHA256(choice *int, text, rationale string) string {
 	b, _ := canonicalJSON(struct {
-		Choice    *int   `json:"choice"`
-		Text      string `json:"text"`
-		Rationale string `json:"rationale"`
+		Choice    *int   `json:"choice,omitempty"`
+		Text      string `json:"text,omitempty"`
+		Rationale string `json:"rationale,omitempty"`
 	}{choice, text, rationale})
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])

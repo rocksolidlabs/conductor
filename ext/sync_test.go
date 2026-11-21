@@ -179,12 +179,36 @@ func TestAnswerOutcomeValid(t *testing.T) {
 }
 
 // An answer's content hash is the canonical JSON of {choice, text,
-// rationale}, every key present: no choice is null, not 0.
+// rationale} with the fields the answer has: a key is left out when the
+// answer has no choice, no text or no rationale, and a choice of the
+// first option (0) is there. The canonical forms and their digests are
+// the ones a held answer's statement signs.
 func TestAnswerContentSHA256(t *testing.T) {
-	zero := 0
-	sum := sha256.Sum256([]byte(`{"choice":null,"rationale":"","text":"yes"}`))
-	if got := AnswerContentSHA256(nil, "yes", ""); got != hex.EncodeToString(sum[:]) {
-		t.Fatalf("%s", got)
+	zero, one := 0, 1
+	for _, c := range []struct {
+		name            string
+		choice          *int
+		text, rationale string
+		canonical, sum  string
+	}{
+		{"a choice of the first option, text and rationale", &zero, "Ship it.", "The checks are green.",
+			`{"choice":0,"rationale":"The checks are green.","text":"Ship it."}`, "ee9ff0c99f5c0a7a162e8a6e729c2630985d5d9caa48e0f8fb6ab75234e4cc12"},
+		{"a choice alone", &one, "", "",
+			`{"choice":1}`, "2487ae5131375b3adb65bcf401058e7e37c3f684775772bd5e09f3676adbacf2"},
+		{"a text with a quote, a line end and a character past ASCII", nil, "Ship \"it\"\nnow, caf\u00e9", "",
+			"{\"text\":\"Ship \\\"it\\\"\\nnow, caf\u00e9\"}", "c94ae356919ae66dc83e9e2821a9316bd1021a3b77dba0c5438e9abf673b3585"},
+		{"the line separators and HTML's characters", &zero, "Ship it\u2028now", "green\u2029<all> & \"done\"",
+			`{"choice":0,"rationale":"green\u2029<all> & \"done\"","text":"Ship it\u2028now"}`, "01c0e7b27ecc2f6b859a96755ac8ff92f5f7661ba88b9a976442fabb9b5182f4"},
+		{"a text and a rationale, no choice", nil, "yes", "because",
+			`{"rationale":"because","text":"yes"}`, ""},
+	} {
+		want := sha256.Sum256([]byte(c.canonical))
+		if c.sum != "" && c.sum != hex.EncodeToString(want[:]) {
+			t.Errorf("%s: the case's own digest is not its canonical form's", c.name)
+		}
+		if got := AnswerContentSHA256(c.choice, c.text, c.rationale); got != hex.EncodeToString(want[:]) {
+			t.Errorf("%s: %s, want the digest of %s", c.name, got, c.canonical)
+		}
 	}
 	if AnswerContentSHA256(&zero, "yes", "") == AnswerContentSHA256(nil, "yes", "") {
 		t.Fatal("choice 0 and no choice are one content")
