@@ -784,14 +784,11 @@ func (s *Store) ApprovePlan(ctx context.Context, op Op, id string, ticketRev int
 			return err
 		}
 		approval := []fieldValue{{"approved_at", stamp(t.now)}, {"approved_by", t.op.author()}, {"approved_note", note},
-			{"approved_rev", fmt.Sprint(tk.Rev)}, {"approved_intent", intent}}
-		// An approval writes every one of its fields together, a field
-		// whose value is unchanged too, so each field's newest row is this
-		// approval's, here and on every machine that receives it.
+			{"approved_rev", fmt.Sprint(tk.Rev)}, {"approved_intent", intent}, {"state", PlanApproved}}
+		// An approval writes all five of its fields and the state together,
+		// a field whose value is unchanged too, so each one's newest row is
+		// this approval's, here and on every machine that receives it.
 		if err := t.writeScalars("plans", base, before, approval, nil, true); err != nil {
-			return err
-		}
-		if err := t.setScalars("plans", base, before, []fieldValue{{"state", PlanApproved}}); err != nil {
 			return err
 		}
 		others, err := readTexts(t.ctx, t.tx, "SELECT id FROM plans WHERE ticket_id = ? AND state = ? AND id != ? ORDER BY created_at, id", tk.ID, PlanApproved, p.ID)

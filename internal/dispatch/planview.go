@@ -304,17 +304,27 @@ func planOrigins(ctx context.Context, q queryer, id string) (planOrigin, error) 
 	if len(made) > 0 && made[0].Remote {
 		o.made = made[0].Origin
 	}
-	// The approval is the origin of the newest row of any of its fields.
-	approvals, err := readChanges(ctx, q, "WHERE entity = ? AND entity_id = ? AND field IN ('approved_at', 'approved_by', 'approved_note', 'approved_rev', 'approved_intent') AND op = ?", EntityPlan, id, OpSet)
+	// The approval is this machine's own only when the newest row of every
+	// one of its five fields and of the revision's state is: one of them
+	// from elsewhere makes it approved elsewhere, by the newest such row's
+	// origin.
+	approvals, err := readChanges(ctx, q, "WHERE entity = ? AND entity_id = ? AND field IN ('approved_at', 'approved_by', 'approved_note', 'approved_rev', 'approved_intent', 'state') AND op = ?", EntityPlan, id, OpSet)
 	if err != nil {
 		return o, err
 	}
-	if len(approvals) > 0 {
-		Order(approvals)
-		last := approvals[len(approvals)-1]
-		if last.Remote {
-			o.approvedBy, o.approvedRemote = last.Origin, true
+	Order(approvals)
+	newest := map[string]ChangeRow{}
+	for _, r := range approvals {
+		newest[r.Field] = r
+	}
+	var from *ChangeRow
+	for _, r := range newest {
+		if r.Remote && (from == nil || Less(*from, r)) {
+			from = &r
 		}
+	}
+	if from != nil {
+		o.approvedBy, o.approvedRemote = from.Origin, true
 	}
 	return o, nil
 }
