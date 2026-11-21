@@ -42,6 +42,16 @@ describe('remote records', () => {
     ])
   })
 
+  it('lists the open decisions first, each part newest first, whatever order they were read in', () => {
+    const ds = remoteDecisions([
+      rec('decision', 'dr-1', { id: 'dr-1', state: 'applied' }, '2026-11-20T10:00:00Z'),
+      rec('decision', 'dr-2', { id: 'dr-2', state: 'open' }, '2026-11-20T07:00:00Z'),
+      rec('decision', 'dr-3', { id: 'dr-3', state: 'cancelled' }, '2026-11-20T11:00:00Z'),
+      rec('decision', 'dr-4', { id: 'dr-4', state: 'open' }, '2026-11-20T08:00:00Z'),
+    ])
+    expect(ds.map((d) => d.id)).toEqual(['dr-4', 'dr-2', 'dr-3', 'dr-1'])
+  })
+
   it('says a run in the one status language, on its machine', () => {
     expect(pointerWords('running', undefined, false, 'on studio')).toBe('running on studio')
     expect(pointerWords('running', undefined, true, 'on studio')).toBe('paused on studio')

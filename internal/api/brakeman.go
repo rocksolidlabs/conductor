@@ -2032,6 +2032,29 @@ func (s *Server) handleBrakemanConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	c := body.Config
 	c.Rev, c.UpdatedAt = body.Rev, time.Time{}
+	saved, err := s.saveBrakemanConfig(d, c)
+	if err != nil {
+		s.brakemanError(w, err)
+		return
+	}
+	out := map[string]any{"config": saved}
+	if warn := brakeman.Warnings(saved, brakemanFacts{s: s}); len(warn) > 0 {
+		out["warnings"] = warn
+	}
+	if f := d.folders(saved); f != nil {
+		out["folders"] = f
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// saveBrakemanConfig saves the configuration c at its rev: the one save
+// of Brakeman's configuration, the admin's route's (handleBrakemanConfig)
+// and a project's rekey's, which carries the project's new key into
+// Brakeman's scope (handleDispatchRekeyProject). Turning Brakeman off
+// cancels the turn in progress and the queue; an unavailable role looks
+// again (Role.Reconfigured). Errors are Brakeman's store's
+// (brakemanError).
+func (s *Server) saveBrakemanConfig(d *brakemanDesk, c brakeman.Config) (brakeman.Config, error) {
 	// A save that turns the role off or on drops its briefing times' mark
 	// first, written before the configuration is: a briefing time that
 	// passes while it is off fires nothing once it is on, whether or not
@@ -2040,8 +2063,7 @@ func (s *Server) handleBrakemanConfig(w http.ResponseWriter, r *http.Request) {
 	if d.recovered.Load() && !d.closing.Load() {
 		if prev, err := d.st.Config(); err == nil && prev.Background() != c.Background() {
 			if err := d.role.Switched(); err != nil {
-				s.brakemanError(w, err)
-				return
+				return brakeman.Config{}, err
 			}
 		}
 	}
@@ -2082,8 +2104,7 @@ func (s *Server) handleBrakemanConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	d.admit.Unlock()
 	if err != nil {
-		s.brakemanError(w, err)
-		return
+		return brakeman.Config{}, err
 	}
 	if f := d.afterSave.Load(); f != nil {
 		(*f)(change)
@@ -2101,14 +2122,7 @@ func (s *Server) handleBrakemanConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	d.poke()
 	d.role.Poke()
-	out := map[string]any{"config": saved}
-	if warn := brakeman.Warnings(saved, brakemanFacts{s: s}); len(warn) > 0 {
-		out["warnings"] = warn
-	}
-	if f := d.folders(saved); f != nil {
-		out["folders"] = f
-	}
-	writeJSON(w, http.StatusOK, out)
+	return saved, nil
 }
 
 // roleChange is what a save from prev to next changed, as the role weighs

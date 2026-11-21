@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/rocksolidlabs/conductor/ext"
+	"github.com/rocksolidlabs/conductor/internal/config"
 	"github.com/rocksolidlabs/conductor/internal/crew"
 	"github.com/rocksolidlabs/conductor/internal/export"
 )
@@ -172,6 +173,161 @@ func TestRemoteRoutes(t *testing.T) {
 	}
 }
 
+// With no sync store registered GET /api/remote answers none, as GET
+// /api/sync answers {}: records a store registered once left in remote/
+// are not read, by kind, by ticket or at all.
+func TestRemoteReadsNoneWithoutASyncStore(t *testing.T) {
+	dir := syncDataDir(t)
+	left := filepath.Join(dir, "remote", remoteDir("dev-1"))
+	if err := os.MkdirAll(left, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal(remoteRecord{Kind: ext.RemoteDecision, Device: "dev-1", DeviceName: "studio", ID: "dr-41", Rev: 1, At: remoteAt, Data: remoteJSON(t, remoteDecisionOf("dr-41", "", "open"))})
+	if err := os.WriteFile(filepath.Join(left, remoteFile(ext.RemoteDecision, "dr-41")), b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	e := newTestEnv(t, func(c *config.Config) { c.DataDir = dir })
+	for _, q := range []string{"", "?kind=decision", "?kind=pins"} {
+		if recs, next := remoteRecords(t, e, q); len(recs) != 0 || next != "" {
+			t.Fatalf("GET /api/remote%s with no sync store: %v %q", q, recs, next)
+		}
+	}
+	// A bad query is still refused.
+	e.expect(t, http.MethodGet, "/api/remote?kind=notes", nil, http.StatusBadRequest, "invalid_request")
+}
+
+// countReads counts the records whose bodies remote/ is read for, from
+// now until the test ends.
+func countReads(t *testing.T) *atomic.Int64 {
+	t.Helper()
+	var n atomic.Int64
+	f := func(string) { n.Add(1) }
+	remoteRead.Store(&f)
+	t.Cleanup(func() { remoteRead.Store(nil) })
+	return &n
+}
+
+// A record counts the others by their names and opens none of them under
+// the bound; a read filtered by kind or by its cursor opens only the
+// records it can answer: the pins of fifty pointers and one pins record
+// open one file, a page after the last pointer opens none of them.
+func TestRemoteReadsByNameBeforeOpening(t *testing.T) {
+	ctx := context.Background()
+	f := newFakeSync()
+	e := syncEnv(t, syncDataDir(t), f)
+	h := &extHost{s: e.srv, name: f.Name(), ctx: ctx}
+	for i := range 50 {
+		id := fmt.Sprintf("team-%08d", i)
+		if err := h.PutRemote(ctx, remoteOf(ext.RemotePointer, "dev-1", id, 1, map[string]any{"id": id, "crew": "team", "state": "running", "revision": 1})); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reads := countReads(t)
+	if err := h.PutRemote(ctx, remoteOf(ext.RemotePins, "dev-1", "pins", 1, map[string]any{"v": 1, "pins": []any{}})); err != nil {
+		t.Fatal(err)
+	}
+	if n := reads.Load(); n != 0 {
+		t.Fatalf("a record under the bound read %d others", n)
+	}
+	recs, _ := remoteRecords(t, e, "?kind=pins")
+	if n := reads.Load(); len(recs) != 1 || n != 1 {
+		t.Fatalf("the pins read %d files for %d records", n, len(recs))
+	}
+	all, _ := remoteRecords(t, e, "?kind=pointer")
+	reads.Store(0)
+	last := remoteDir("dev-1") + "/" + remoteFile(ext.RemotePointer, all[len(all)-1].ID)
+	if recs, _ := remoteRecords(t, e, "?kind=pointer&after="+url.QueryEscape(last)); len(recs) != 0 || reads.Load() != 0 {
+		t.Fatalf("a page after the last pointer: %d records, %d files read", len(recs), reads.Load())
+	}
+}
+
+// A page of other machines' records at the largest their kinds allow is
+// within GET /api/remote's 16 MiB: 200 pointers of 64 KiB each (more than
+// that a page never holds, and 200 records at their bounds fill less than
+// the reply's bytes less its room, so the page's count ends it first),
+// the next page after it.
+func TestRemotePageAtItsLargestIsWithinItsBound(t *testing.T) {
+	ctx := context.Background()
+	f := newFakeSync()
+	e := syncEnv(t, syncDataDir(t), f)
+	h := &extHost{s: e.srv, name: f.Name(), ctx: ctx}
+	for i := range remotePage + 5 {
+		id := fmt.Sprintf("team-%08d", i)
+		body := map[string]any{"id": id, "crew": "team", "state": "running", "revision": 1, "pad": ""}
+		b, _ := json.Marshal(body)
+		body["pad"] = strings.Repeat("a", ext.MaxRemoteData-len(b))
+		r := remoteOf(ext.RemotePointer, "dev-1", id, 1, body)
+		if len(r.Data) != ext.MaxRemoteData {
+			t.Fatalf("a pointer of %d bytes", len(r.Data))
+		}
+		if err := h.PutRemote(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	code, raw, _ := e.call(t, http.MethodGet, "/api/remote?kind=pointer", nil)
+	if code != http.StatusOK || len(raw) > maxRemoteReply {
+		t.Fatalf("the page: %d, %d bytes (its bound %d)", code, len(raw), maxRemoteReply)
+	}
+	first, next := remoteRecords(t, e, "?kind=pointer")
+	if len(first) != remotePage || next == "" {
+		t.Fatalf("the page at its largest: %d records, next %q", len(first), next)
+	}
+	if rest, more := remoteRecords(t, e, "?kind=pointer&after="+url.QueryEscape(next)); len(rest) != 5 || more != "" {
+		t.Fatalf("the page after it: %d records, next %q", len(rest), more)
+	}
+}
+
+// Another machine's pins are kept and shown only as a pins document this
+// server keeps of its own: its version, at most its count of pins, each
+// session once, nothing it does not know; a pins record that is not one
+// is refused at the door, and one on disk that is not one is not read.
+func TestRemotePinsAreAPinsDocument(t *testing.T) {
+	ctx := context.Background()
+	f := newFakeSync()
+	e := syncEnv(t, syncDataDir(t), f)
+	h := &extHost{s: e.srv, name: f.Name(), ctx: ctx}
+	pin := func(s string) map[string]any { return map[string]any{"session": s, "name": "build " + s} }
+	many := []any{}
+	for i := range uiMaxPins + 1 {
+		many = append(many, pin(fmt.Sprintf("s%d", i)))
+	}
+	for name, body := range map[string]map[string]any{
+		"no version":        {"pins": []any{pin("s1")}},
+		"a session twice":   {"v": 1, "pins": []any{pin("s1"), pin("s1")}},
+		"past its count":    {"v": 1, "pins": many},
+		"a field not known": {"v": 1, "pins": []any{pin("s1")}, "extra": true},
+	} {
+		if err := h.PutRemote(ctx, remoteOf(ext.RemotePins, "dev-1", "pins", 1, body)); !errors.Is(err, ext.ErrRefused) {
+			t.Errorf("pins with %s: %v", name, err)
+		}
+	}
+	if err := h.PutRemote(ctx, remoteOf(ext.RemotePins, "dev-1", "pins", 1, map[string]any{"v": 1, "pins": []any{pin("s1"), pin("s2")}})); err != nil {
+		t.Fatalf("a pins document: %v", err)
+	}
+	// One written on disk past the door (an older build's): not read.
+	dir := filepath.Join(e.srv.store.Dir(), "remote", remoteDir("dev-2"))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal(remoteRecord{Kind: ext.RemotePins, Device: "dev-2", DeviceName: "laptop", ID: "pins", Rev: 1, At: remoteAt, Data: remoteJSON(t, map[string]any{"v": 1, "pins": []any{pin("s1"), pin("s1")}})})
+	if err := os.WriteFile(filepath.Join(dir, remoteFile(ext.RemotePins, "pins")), b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if recs, _ := remoteRecords(t, e, "?kind=pins"); len(recs) != 1 || recs[0].Device != "dev-1" {
+		t.Fatalf("the pins read: %+v", recs)
+	}
+}
+
+// remoteJSON is v encoded.
+func remoteJSON(t *testing.T, v any) json.RawMessage {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
 func recordByID(recs []remoteRecord, id string) remoteRecord {
 	for _, r := range recs {
 		if r.ID == id {
@@ -226,7 +382,7 @@ func TestRemoteLeftOutOfTheExport(t *testing.T) {
 	f := newFakeSync()
 	e := syncEnv(t, syncDataDir(t), f)
 	h := &extHost{s: e.srv, name: f.Name(), ctx: ctx}
-	if err := h.PutRemote(ctx, remoteOf(ext.RemotePins, "dev-1", "pins", 1, map[string]any{"pins": []any{}})); err != nil {
+	if err := h.PutRemote(ctx, remoteOf(ext.RemotePins, "dev-1", "pins", 1, map[string]any{"v": 1, "pins": []any{}})); err != nil {
 		t.Fatal(err)
 	}
 	resp, b := getExport(t, e, adminToken)
@@ -272,8 +428,8 @@ func TestRemoteRecordsAreNeverActedOn(t *testing.T) {
 		remoteOf(ext.RemoteDecision, "dev-1", "dr-77", 1, remoteDecisionOf("dr-77", "", "open")),
 		remoteOf(ext.RemotePointer, "dev-1", "team-00000077", 1, map[string]any{"id": "team-00000077", "crew": "team", "state": "running", "revision": 1}),
 		remoteOf(ext.RemotePins, "dev-1", "pins", 1, map[string]any{"v": 1, "pins": []any{map[string]any{"session": "s-remote", "name": "remote build"}}}),
-		remoteOf(ext.RemoteDevice, "dev-1", "dev-2", 1, map[string]any{"id": "dev-2", "name": "laptop", "kind": "server"}),
-		remoteOf(ext.RemoteHosts, "dev-1", "summary", 1, map[string]any{"hosts": []any{}}),
+		remoteOf(ext.RemoteDevice, "dev-1", "dev-77", 1, map[string]any{"id": "dev-77", "name": "remote-laptop-77", "kind": "server"}),
+		remoteOf(ext.RemoteHosts, "dev-1", "summary", 1, map[string]any{"hosts": []any{map[string]any{"id": "remote-host-77", "name": "remote-host-77"}}}),
 	}
 	for _, r := range puts {
 		if err := h.PutRemote(ctx, r); err != nil {
@@ -300,11 +456,22 @@ func TestRemoteRecordsAreNeverActedOn(t *testing.T) {
 		}
 	})
 	t.Run("device and hosts", func(t *testing.T) {
-		for _, path := range []string{"/api/remote/dev-2", "/api/hosts/summary"} {
-			if code, _, _ := e.call(t, http.MethodPost, path, map[string]any{}); code == http.StatusOK || code == http.StatusCreated {
-				t.Errorf("POST %s: %d", path, code)
+		// The routes that name this server's sessions, hosts, devices and
+		// reach: none names another machine's device or host as its own,
+		// and no session of the device's id is there to open.
+		for _, path := range []string{"/api/sessions", "/api/capabilities", "/api/reach", "/api/whoami", "/api/me", "/api/switchyard/status", "/api/people"} {
+			code, body, _ := e.call(t, http.MethodGet, path, nil)
+			if code != http.StatusOK && code != http.StatusNotFound && code != http.StatusForbidden {
+				t.Errorf("GET %s: %d %s", path, code, body)
+			}
+			for _, mark := range []string{"dev-77", "remote-laptop-77", "remote-host-77"} {
+				if strings.Contains(string(body), mark) {
+					t.Errorf("GET %s names %s: %s", path, mark, body)
+				}
 			}
 		}
+		e.expect(t, http.MethodGet, "/api/sessions/dev-77", nil, http.StatusNotFound, "")
+		e.expect(t, http.MethodGet, "/api/sessions/remote-host-77", nil, http.StatusNotFound, "")
 	})
 	after, _ := remoteRecords(t, e, "")
 	b1, _ := json.Marshal(before)

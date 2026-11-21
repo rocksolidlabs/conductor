@@ -1826,6 +1826,8 @@ export interface RemoteReply {
   next?: string
 }
 export const REMOTE_PAGE = 200
+/** The records other machines hold, at most (ext.MaxRemoteFiles): every page of a kind is at most REMOTE_FILES / REMOTE_PAGE. */
+export const REMOTE_FILES = 10_000
 
 /**
  * GET /api/sync (docs/protocol.md, OS-4): the sync store's report when it gives one, `{}` with no sync store; `here`, what this server

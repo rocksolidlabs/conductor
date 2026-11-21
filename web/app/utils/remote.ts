@@ -27,7 +27,7 @@ export interface RemoteDecision {
   at: string
 }
 
-/** The decisions among the records, newest first; a record that is not a decision's document is left out. */
+/** The decisions among the records, the open ones first, each part newest first; a record that is not a decision's document is left out. */
 export function remoteDecisions(records: readonly RemoteRecord[]): RemoteDecision[] {
   const out: RemoteDecision[] = []
   for (const r of records) {
@@ -52,7 +52,7 @@ export function remoteDecisions(records: readonly RemoteRecord[]): RemoteDecisio
       at: r.at,
     })
   }
-  return out.sort((a, b) => b.at.localeCompare(a.at))
+  return out.sort((a, b) => Number(b.open) - Number(a.open) || b.at.localeCompare(a.at))
 }
 
 /** A run's state words on another machine: "running on studio", "finished on studio". */
