@@ -322,16 +322,23 @@ func TestHostConnectionRechecked(t *testing.T) {
 		e, clock := credEnv(t, f)
 		h, _ := dialCred(t, e, hostReg("1", nil), credOld)
 		reading, closing, gate := make(chan struct{}, 8), make(chan struct{}, 1), make(chan struct{})
+		// The reader is held where it has read a message and not yet looked
+		// at the verdict, until both messages are written: its return on the
+		// verdict closes the connection, and a message written after that
+		// is no message the reader could have read.
+		sent := make(chan struct{})
 		e.srv.hostCred = &hostCredSeam{reading: func() {
 			select {
 			case reading <- struct{}{}:
 			default:
 			}
+			<-sent
 		}, closing: func() { closing <- struct{}{}; <-gate }}
 		recheckWith(t, clock, f, credOld, func(context.Context) (ext.Principal, bool, error) { return ext.Principal{}, false, nil })
 		<-closing
 		h.send(proto.HostLinkMsg{T: proto.HostLink, RequestID: "late-1", Role: "view"})
 		h.send(hostToken(credNew))
+		close(sent)
 		<-reading
 		hostAway(t, e, h.sessionID)
 		close(gate)

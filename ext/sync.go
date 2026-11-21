@@ -49,7 +49,11 @@ type SyncDoors interface {
 	// MaxPlanView) and each project's key in the workspace's registry (by
 	// project id): at most MaxDispatchBatch rows and MaxDispatchBytes, each
 	// row's Valid (dispatch.Store.ApplyRemote). A row's Refs are computed
-	// again here, never taken from the provider.
+	// again here, never taken from the provider. ErrRefused is a refusal of
+	// what was handed in; ErrNotNow is this store unable to take it in the
+	// state it is in (it holds as many rows from elsewhere as it may, or has
+	// joined no workspace): nothing is written, and the provider hands the
+	// rows again later.
 	DispatchApply(ctx context.Context, rows []DispatchChange, views map[string][]byte, keys map[string]string) (DispatchApplied, error)
 	// DispatchBlock writes a shared project's current block of numbers, or
 	// with next the block asked ahead, handed to the active tag.
@@ -699,12 +703,14 @@ func (h HeldAnswer) Valid() error {
 // AnswerContentSHA256 is the SHA-256, in lower-case hex, of an answer's
 // content as a held answer's statement signs it and the server checks it:
 // the canonical JSON (as DecisionRequestPart.SHA256's) of {choice, text,
-// rationale}, every key present, choice null when there is none.
+// rationale} with the fields the answer has, a key left out when the
+// answer has no choice, no text or no rationale. A choice of the first
+// option is 0 and is there; no choice is no key.
 func AnswerContentSHA256(choice *int, text, rationale string) string {
 	b, _ := canonicalJSON(struct {
-		Choice    *int   `json:"choice"`
-		Text      string `json:"text"`
-		Rationale string `json:"rationale"`
+		Choice    *int   `json:"choice,omitempty"`
+		Text      string `json:"text,omitempty"`
+		Rationale string `json:"rationale,omitempty"`
 	}{choice, text, rationale})
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])
