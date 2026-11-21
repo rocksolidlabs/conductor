@@ -1263,3 +1263,60 @@ func TestTheReconcileRunsOnlyAfterAnEdgeRow(t *testing.T) {
 		t.Fatalf("%d replays after a parent set", replays)
 	}
 }
+
+// A store restored from an export inherits the tags its source was
+// joined under: the rows that source wrote under them after the export,
+// handed to the restored store from elsewhere, are applied as another
+// machine's, before and after the restored store joins under a tag of its
+// own; its source's rows from before the export, which it holds, are
+// dropped; and a row naming its own new tag that it never wrote is
+// refused.
+func TestARestoredStoreAppliesItsOldTagsLaterRows(t *testing.T) {
+	ctx := context.Background()
+	a, b, _, after := planPair(t)
+	snap := filepath.Join(t.TempDir(), "export.sqlite")
+	if err := a.Snapshot(ctx, snap); err != nil {
+		t.Fatal(err)
+	}
+	_, later := newTicket(t, a, "CND", "Written after the export")
+	pull(t, a, b, after)
+	dir := storeDir(t)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(snap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, File), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := Reissue(ctx, filepath.Join(dir, File)); err != nil {
+		t.Fatal(err)
+	}
+	r := openStore(t, dir)
+	rows, _, err := b.ChangesFrom(ctx, 0, MaxChangesPage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := count(t, r, "SELECT COUNT(*) FROM changes")
+	if _, err := r.ApplyRemote(ctx, rows, nil, registryKeys(t, a)); err != nil {
+		t.Fatalf("the restored store's source's rows, before it joins: %v", err)
+	}
+	if got := ticketOf(t, r, later).Title; got != "Written after the export" {
+		t.Fatalf("the ticket written after the export: %q", got)
+	}
+	added := count(t, r, "SELECT COUNT(*) FROM changes") - before
+	if n := count(t, r, "SELECT COUNT(*) FROM changes WHERE remote = 1 AND origin = 'a1' AND actor LIKE '@a1/%'"); n != added || added == 0 {
+		t.Fatalf("%d of the %d rows applied kept as another machine's", n, added)
+	}
+	join(t, r, "a2")
+	if _, err := r.ApplyRemote(ctx, rows, nil, registryKeys(t, a)); err != nil {
+		t.Fatalf("the same rows after the restored store joins: %v", err)
+	}
+	own := rows[len(rows)-1]
+	own.Origin, own.OpID = "a2", "never-written-here"
+	if _, err := r.ApplyRemote(ctx, []ChangeRow{own}, nil, registryKeys(t, a)); !errors.Is(err, ErrBadActor) {
+		t.Fatalf("a row naming the restored store's own tag it never wrote: %v", err)
+	}
+}

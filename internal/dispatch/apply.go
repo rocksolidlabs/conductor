@@ -60,7 +60,8 @@ type applier struct {
 	tx       *sql.Tx
 	now      time.Time
 	replica  replicaRow
-	mine     map[string]bool   // this store's tags, every one it has joined under
+	mine     map[string]bool   // the tags this store's instance joined under
+	inherit  map[string]bool   // the tags of the instance a restore copied it from
 	views    map[string][]byte // the batch's views, by view digest
 	keys     map[string]string // the projects' registry keys, by project id
 	applied  int
@@ -148,13 +149,15 @@ func (s *Store) ApplyRemote(ctx context.Context, rows []ChangeRow, views map[str
 		if a.replica.tag == "" {
 			return ErrNotJoined
 		}
-		if a.mine, err = a.tags(); err != nil {
+		if a.mine, a.inherit, err = a.tags(); err != nil {
 			return err
 		}
 		// Whatever comes in through the apply is from elsewhere: a row
-		// naming one of this store's own tags is this store's own row
-		// handed back (another machine hands on what it received), dropped,
-		// or else refused; never stored as this machine's.
+		// naming a tag this store's instance joined under is this store's
+		// own row handed back (another machine hands on what it received),
+		// dropped, or else refused; never stored as this machine's. A tag
+		// inherited from the instance a restore copied (offer) is another
+		// machine's.
 		for _, c := range rows {
 			if !a.mine[c.Origin] {
 				continue
@@ -238,14 +241,33 @@ func hasControl(s string) bool {
 	return false
 }
 
-// tags is every tag this store has joined under.
-func (a *applier) tags() (map[string]bool, error) {
-	tags, err := readTexts(a.ctx, a.tx, "SELECT tag FROM replica_tags")
-	out := map[string]bool{}
-	for _, t := range tags {
-		out[t] = true
+// tags is the tags this store's instance joined under (mine), and the
+// tags of the instance a restore copied it from (inherit): an export
+// carries the tags it was joined under, and rows that instance wrote after
+// the export reach the restored store from elsewhere.
+func (a *applier) tags() (mine, inherit map[string]bool, err error) {
+	mine, inherit = map[string]bool{}, map[string]bool{}
+	var instance string
+	if err := a.tx.QueryRowContext(a.ctx, "SELECT COALESCE((SELECT id FROM store_instance), '')").Scan(&instance); err != nil {
+		return nil, nil, err
 	}
-	return out, err
+	rs, err := a.tx.QueryContext(a.ctx, "SELECT tag, instance FROM replica_tags")
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rs.Close()
+	for rs.Next() {
+		var tag, of string
+		if err := rs.Scan(&tag, &of); err != nil {
+			return nil, nil, err
+		}
+		if of == instance {
+			mine[tag] = true
+		} else {
+			inherit[tag] = true
+		}
+	}
+	return mine, inherit, rs.Err()
 }
 
 // projectOfRow is the project a row belongs to: a project's own id for a
@@ -332,11 +354,18 @@ func (a *applier) exists(kind, id string) (bool, error) {
 
 // offer applies the row or holds it; a row naming one of this store's own
 // tags (its own row handed back, or one held before this store joined
-// under that tag) is dropped. A row bound to a project it does not name,
+// under that tag) is dropped, and so is a row of an inherited tag the log
+// holds as written here; any other row of an inherited tag is another
+// machine's. A row bound to a project it does not name,
 // or to one this store has not shared (bound), refuses the batch.
 func (a *applier) offer(c ChangeRow) error {
 	if a.mine[c.Origin] {
 		return nil
+	}
+	if a.inherit[c.Origin] {
+		if own, err := a.ownRow(c); err != nil || own {
+			return err
+		}
 	}
 	if err := a.bound(c); err != nil {
 		return err
