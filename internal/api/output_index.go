@@ -678,6 +678,8 @@ func (x *outputIndex) dropSource(name string, upto int64) {
 		}
 		delete(x.live, name)
 	}
+	// A screen's last snapshot goes with its source.
+	delete(x.lastShot, name)
 	x.cache = map[uint64][]fpRef{}
 	db := x.db
 	x.mu.Unlock()

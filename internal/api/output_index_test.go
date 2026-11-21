@@ -471,3 +471,29 @@ func TestACommonPhraseReadsABoundedNumberOfSources(t *testing.T) {
 		t.Fatalf("%d sources read for one check, %d cut", n, x.readsCut.Load())
 	}
 }
+
+// A screen's last snapshot is let go with its source: a session's screen
+// pruned (its session ended) keeps nothing of it in memory.
+func TestAScreensLastSnapshotGoesWithItsSource(t *testing.T) {
+	x := testIndex(t, "", 0)
+	x.shotDue("screen:s", func() []string { return []string{"a screen's text, line one", "and line two of it"} }, 1<<20)
+	if !x.whole(context.Background()) {
+		t.Fatal("not whole")
+	}
+	x.mu.Lock()
+	_, kept := x.lastShot["screen:s"]
+	x.mu.Unlock()
+	if !kept {
+		t.Fatal("no snapshot kept while the screen is live")
+	}
+	x.prune("screen:s")
+	if !x.whole(context.Background()) {
+		t.Fatal("not whole")
+	}
+	x.mu.Lock()
+	_, kept = x.lastShot["screen:s"]
+	x.mu.Unlock()
+	if kept {
+		t.Fatal("the screen's last snapshot kept after its source was pruned")
+	}
+}
