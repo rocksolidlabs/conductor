@@ -1172,3 +1172,70 @@ func TestABatchOffersAgainOnlyWhatItCanRelease(t *testing.T) {
 		t.Fatalf("the rekey took %d held rows, of %d", sum, held)
 	}
 }
+
+// A provider that withholds an entity's create withholds every later row
+// of it and every row whose Refs names it: a ticket's create kept back,
+// with its title, its comment, a label added to it and a relation to it,
+// leaves nothing held on the receiver; the rest of the project arrives.
+func TestWithheldCreateWithholdsItsDependants(t *testing.T) {
+	ctx := context.Background()
+	a, b := replicaPair(t)
+	newProject(t, a, "CND")
+	shareAll(t, a)
+	kept, keptKey := newTicket(t, a, "CND", "Kept back")
+	_, other := newTicket(t, a, "CND", "Sent")
+	comment(t, a, "on-kept", keptKey, "a comment on the ticket kept back")
+	label := newLabel(t, a, "CND", "api")
+	mustEdit(t, a, "label-kept", keptKey, TicketEdit{Add: TicketMembers{Labels: []string{label}}})
+	if rc, err := a.AddRelation(ctx, testOp("relate"), other, RelationRelates, keptKey); err != nil || rc.Status != StatusDone {
+		t.Fatalf("the relation: %+v %v", rc, err)
+	}
+	rows, _, err := a.ChangesFrom(ctx, 0, MaxChangesPage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sent []ChangeRow
+	for _, c := range rows {
+		if c.EntityID == kept || c.TicketID == kept || slices.Contains(Refs(c), EntityTicket+":"+kept) {
+			continue
+		}
+		sent = append(sent, c)
+	}
+	if _, err := b.ApplyRemote(ctx, sent, nil, registryKeys(t, a)); err != nil {
+		t.Fatal(err)
+	}
+	if n := count(t, b, "SELECT COUNT(*) FROM held_rows"); n != 0 {
+		t.Fatalf("%d rows held on the receiver", n)
+	}
+	if n := count(t, b, "SELECT COUNT(*) FROM labels WHERE id = ?", label); n != 1 {
+		t.Fatal("the project's label did not arrive")
+	}
+	if ticketOf(t, b, other).Title != "Sent" {
+		t.Fatal("the ticket sent did not arrive")
+	}
+}
+
+// A row from elsewhere is applied whatever this machine's own write
+// bounds: a title past the length a write here takes is kept as the
+// other machine wrote it, within the row's own bound (MaxChangeValue).
+func TestRemoteRowsIgnoreLocalBounds(t *testing.T) {
+	ctx := context.Background()
+	a, b, key, after := planPair(t)
+	_ = after
+	rows, _, err := a.ChangesFrom(ctx, 0, MaxChangesPage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	i := slices.IndexFunc(rows, func(c ChangeRow) bool { return c.Entity == EntityTicket && c.Op == OpSet && c.Field == FieldTitle })
+	if i < 0 {
+		t.Fatal("no title row on a")
+	}
+	long := rows[i]
+	long.Value, long.OpID, long.At = strings.Repeat("t", 2*MaxTicketTitle), "long-title", time.Now().Add(time.Hour)
+	if _, err := b.ApplyRemote(ctx, []ChangeRow{long}, nil, registryKeys(t, a)); err != nil {
+		t.Fatal(err)
+	}
+	if got := ticketOf(t, b, key).Title; got != long.Value {
+		t.Fatalf("the title from elsewhere kept as %d bytes", len(got))
+	}
+}
