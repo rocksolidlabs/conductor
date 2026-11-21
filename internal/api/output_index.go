@@ -144,9 +144,10 @@ type outputIndex struct {
 	// (cut by the bound across sources), each until fed reaches its mark,
 	// when the ring has turned over past the cut. While any source is
 	// holed no text is judged clean: the index is not whole.
-	fed   map[string]int64
-	holes map[string]int64
-	taken uint64
+	fed     map[string]int64
+	holes   map[string]*hole
+	holeGen int
+	taken   uint64
 	// waited counts the checks that waited for the feeds (whole): a test's
 	// seam, to show a check made under the ledger's lock never does.
 	waited atomic.Int64
@@ -200,7 +201,7 @@ func openOutputIndex(dir string, bound int64) (*outputIndex, error) {
 	x := &outputIndex{path: filepath.Join(dir, indexFile), bound: bound, live: map[string]*liveSource{}, mem: map[uint64][]fpRef{},
 		cache: map[uint64][]fpRef{}, readers: map[string]func(string) ([]byte, bool){}, progress: make(chan struct{}),
 		shots: map[string]bool{}, lastShot: map[string]string{}, rings: map[string]*ringFeed{}, maxQueued: defaultMaxQueued,
-		fed: map[string]int64{}, holes: map[string]int64{},
+		fed: map[string]int64{}, holes: map[string]*hole{},
 		wake: make(chan struct{}, 1), now: time.Now}
 	if _, err := os.Stat(x.path); errors.Is(err, os.ErrNotExist) {
 		x.fresh = true
@@ -372,14 +373,14 @@ func (x *outputIndex) feed(name string, p []byte, keep int) {
 		limit = x.maxQueued
 	}
 	x.fed[name] += int64(len(p))
-	closed := false
-	if mark, ok := x.holes[name]; ok && x.fed[name] >= mark {
+	closing := 0
+	if h := x.holes[name]; h != nil && !h.closing && x.fed[name] >= h.mark {
 		// The ring has turned over past the cut: what it held then is gone
-		// from it, and every text written while it was holed is output.
-		delete(x.holes, name)
-		closed = true
+		// from it, and every text written while it was holed is output. The
+		// hole stays until that prune's row is committed (closeHole).
+		h.closing, closing = true, h.gen
 	}
-	hole := func(cut bool) {
+	holeAt := func(cut bool) {
 		if !cut {
 			return
 		}
@@ -387,30 +388,31 @@ func (x *outputIndex) feed(name string, p []byte, keep int) {
 		if keep > 0 {
 			mark = x.fed[name] + int64(keep)
 		}
-		x.holes[name] = mark
+		x.holeGen++
+		x.holes[name] = &hole{mark: mark, gen: x.holeGen}
 	}
 	if q := x.rings[name]; q != nil {
 		x.queued -= len(q.buf)
 		q.buf = append(q.buf, p...)
 		lost, cut := x.holdQueued(q, limit)
 		q.lost = lost || q.lost
-		hole(cut)
+		holeAt(cut)
 		x.queued += len(q.buf)
 		x.mu.Unlock()
-		if closed {
-			x.enqueue(func() { x.recordPrune(name) })
+		if closing != 0 {
+			x.enqueue(func() { x.closeHole(name, closing) })
 		}
 		return
 	}
 	q := &ringFeed{buf: bytes.Clone(p)}
 	lost, cut := x.holdQueued(q, limit)
 	q.lost = lost
-	hole(cut)
+	holeAt(cut)
 	x.queued += len(q.buf)
 	x.rings[name] = q
 	x.mu.Unlock()
-	if closed {
-		x.enqueue(func() { x.recordPrune(name) })
+	if closing != 0 {
+		x.enqueue(func() { x.closeHole(name, closing) })
 	}
 	x.enqueue(func() {
 		x.mu.Lock()
@@ -441,17 +443,39 @@ func (x *outputIndex) holdQueued(q *ringFeed, limit int) (lost, cut bool) {
 	return true, room < limit
 }
 
-// recordPrune records a prune of the source now, letting nothing go: a
-// text written before it that may have quoted the source is output.
-func (x *outputIndex) recordPrune(name string) {
+// recordPruneAt records a prune of the source up to upto (-1 whole) now,
+// letting nothing go: a text written before it that may have quoted the
+// source is output.
+func (x *outputIndex) recordPruneAt(name string, upto int64) {
 	x.mu.Lock()
 	db := x.db
 	x.mu.Unlock()
 	if db == nil {
 		return
 	}
-	if _, err := db.Exec("INSERT INTO prunes (source, upto, at) VALUES (?, ?, ?)", name, -1, stampIndex(x.now())); err != nil {
+	if _, err := db.Exec("INSERT INTO prunes (source, upto, at) VALUES (?, ?, ?)", name, upto, stampIndex(x.now())); err != nil {
 		x.fail(err)
+	}
+}
+
+// hole is a live source's hole: the bytes fed at which its ring has turned
+// over past the cut (mark), its generation, and whether its close is
+// queued.
+type hole struct {
+	mark    int64
+	gen     int
+	closing bool
+}
+
+// closeHole records the source's prune now, then lets the hole of
+// generation gen go: a check made before the row is committed finds the
+// index not whole, and one made after it counts the prune.
+func (x *outputIndex) closeHole(name string, gen int) {
+	x.recordPruneAt(name, -1)
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	if h := x.holes[name]; h != nil && h.gen == gen {
+		delete(x.holes, name)
 	}
 }
 
@@ -467,13 +491,17 @@ func (x *outputIndex) keepText(name string, text []byte) {
 }
 
 // prune lets the source's fingerprints go, recording the prune's time:
-// its session gone, a hole in it closes with its ring.
+// its session gone, a hole in it closes with its ring once that row is
+// committed.
 func (x *outputIndex) prune(name string) {
-	x.mu.Lock()
-	delete(x.holes, name)
-	delete(x.fed, name)
-	x.mu.Unlock()
-	x.enqueue(func() { x.dropSource(name, -1) })
+	x.enqueue(func() {
+		// The prune's row is committed (dropSource) before the hole goes.
+		x.dropSource(name, -1)
+		x.mu.Lock()
+		delete(x.holes, name)
+		delete(x.fed, name)
+		x.mu.Unlock()
+	})
 }
 
 // rebuild makes the index again from the kept sources (a fresh one's):
@@ -577,13 +605,18 @@ func (x *outputIndex) addLive(name string, p []byte, keep int) {
 		out[i].ref.source = name
 	}
 	s.refs = append(s.refs, out...)
-	// What the ring no longer holds is pruned with it.
+	// What the ring no longer holds is pruned with it: the prune's row is
+	// written before the fingerprints leave memory, so a check made during
+	// the cut counts it.
 	var cut int64 = -1
 	if s.cap > 0 && len(s.text) > s.cap+s.cap/4 {
 		drop := len(s.text) - s.cap
+		cut = s.base + int64(drop)
+		x.mu.Unlock()
+		x.recordPruneAt(name, cut)
+		x.mu.Lock()
 		s.text = append(s.text[:0:0], s.text[drop:]...)
 		s.base += int64(drop)
-		cut = s.base
 		kept := s.refs[:0]
 		for _, f := range s.refs {
 			if f.ref.off < cut {
@@ -732,7 +765,18 @@ func (x *outputIndex) memDrop(h uint64, source string, off int64) {
 // dropSource lets every fingerprint of the source go (upto -1), memory
 // and file, recording the prune.
 func (x *outputIndex) dropSource(name string, upto int64) {
+	// The prune's row is committed before the fingerprints leave memory, so
+	// a check made during the drop counts it.
 	x.mu.Lock()
+	db := x.db
+	x.mu.Unlock()
+	if db != nil {
+		if err := x.dropRows(db, name, upto); err != nil {
+			x.fail(err)
+		}
+	}
+	x.mu.Lock()
+	defer x.mu.Unlock()
 	if s := x.live[name]; s != nil {
 		for _, f := range s.refs {
 			x.memDrop(f.h, name, f.ref.off)
@@ -742,33 +786,28 @@ func (x *outputIndex) dropSource(name string, upto int64) {
 	// A screen's last snapshot goes with its source.
 	delete(x.lastShot, name)
 	x.cache = map[uint64][]fpRef{}
-	db := x.db
-	x.mu.Unlock()
-	if db == nil {
-		return
-	}
+}
+
+// dropRows lets the source's fingerprints go from the file with its
+// prune's row, in one transaction.
+func (x *outputIndex) dropRows(db *sql.DB, name string, upto int64) error {
 	tx, err := db.Begin()
 	if err != nil {
-		x.fail(err)
-		return
+		return err
 	}
 	defer tx.Rollback()
 	if _, err := tx.Exec("DELETE FROM fp WHERE source = ?", name); err != nil {
-		x.fail(err)
-		return
+		return err
 	}
 	if _, err := tx.Exec("INSERT INTO prunes (source, upto, at) VALUES (?, ?, ?)", name, upto, stampIndex(x.now())); err != nil {
-		x.fail(err)
-		return
+		return err
 	}
-	if err := tx.Commit(); err != nil {
-		x.fail(err)
-	}
+	return tx.Commit()
 }
 
 // write keeps the fingerprints in the file and, for a live source cut at
-// cut (-1 none), lets those before it go with the prune recorded; -2 for
-// a kept source, whose earlier fingerprints its new text replaces.
+// cut (-1 none, its prune recorded by addLive), lets those before it go;
+// -2 for a kept source, whose earlier fingerprints its new text replaces.
 func (x *outputIndex) write(name string, out []fpHash, cut int64) {
 	x.mu.Lock()
 	db, saturated := x.db, x.saturated
@@ -788,11 +827,8 @@ func (x *outputIndex) write(name string, out []fpHash, cut int64) {
 			return
 		}
 	} else if cut >= 0 {
+		// The cut's prune row is written already (addLive).
 		if _, err := tx.Exec("DELETE FROM fp WHERE source = ? AND off < ?", name, cut); err != nil {
-			x.fail(err)
-			return
-		}
-		if _, err := tx.Exec("INSERT INTO prunes (source, upto, at) VALUES (?, ?, ?)", name, cut, stampIndex(x.now())); err != nil {
 			x.fail(err)
 			return
 		}
