@@ -382,7 +382,7 @@ func TestHeldRowsBounded(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	orphan := ChangeRow{Entity: EntityTicket, EntityID: "t", ProjectID: "p", Field: "title", Op: OpSet, Value: "x", Actor: "admin", OpID: "o", Origin: "a1"}
+	orphan := ChangeRow{Entity: EntityTicket, EntityID: "t", ProjectID: "p", Field: "title", Op: OpSet, Value: "x", Actor: "admin", OpID: "o", Origin: "a1", At: time.Now()}
 	if _, err := b.ApplyRemote(ctx, []ChangeRow{orphan}, nil, nil); !errors.Is(err, ErrHeldFull) {
 		t.Fatalf("a held row past the bound: %v", err)
 	}
