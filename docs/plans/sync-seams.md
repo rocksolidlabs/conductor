@@ -1761,7 +1761,10 @@ it as well): a row bound to another project than the one it names, or to
 one held here and neither shared nor dormant, refuses its batch; every
 reference a row carries, as `Refs` lists them (a parent and a milestone
 among them), is bound to the row's project, but for a relation's far
-end, which may be of another shared project. A row
+end, which may be of another shared project. A relation or a link from
+elsewhere is applied only under an id this machine holds for no other
+ticket, and the projection of a ticket's relations and links writes, on
+a conflict of ids, only that ticket's own rows. A row
 from elsewhere dated zero or from the year 9999 on is refused, at the
 seam (`DispatchChange.Valid`) and at the apply. An approval writes its five
 fields and the revision's state together, and a launch here needs the
@@ -1786,10 +1789,17 @@ the ledger's never wait nor read a kept source inside a write, a row
 written pending wakes its settle, and a process settles by its check
 only the rows it wrote pending (kept in memory with the time it wrote
 them, against whose prunes it settles them, whatever their stamp), any
-other pending row being output. While two live servers share one data
-folder (each holds a presence lock, `presence/<id>.lock`, for its life)
-each judges every text output, a decision's parts too; alone again, each
-judges by its check. A server that cannot take its lock (a folder it
+other pending row being output. A settle judges a row first and reads
+the prunes since its writing after the judgement, a prune's row is
+committed before its fingerprints leave memory, and the index's stamps
+have a fixed width, so that they order as text as their times do; the
+prunes since a writing are compared by the machine's wall clock. Every
+server that runs sessions over a data folder holds a presence lock there
+for its life (`presence/<id>.lock`), with a sync store or with none:
+while another live server holds one, a server with a sync store judges
+every text output, a decision's parts too; alone again, it judges by its
+check. A server of a version before the presence locks holds none and
+is not seen. A server that cannot take its lock (a folder it
 cannot write, a filesystem with no locks) cannot tell whether it is
 alone and judges every text output as well; a server tries again for a
 lock another server's look held for a moment, one look at the folder is
@@ -1798,7 +1808,8 @@ removed once it is a minute old. A live source has one queued feed, held to what
 and a quarter and to 64 MiB across sources, what is let go recorded as a
 prune; a source cut below what its ring still holds is holed until its
 ring has turned over past the cut, and while any source is holed nothing
-is judged clean, a prune recorded as the hole closes; one check reads at most 32 kept sources to confirm a hit, past
+is judged clean, the hole staying until the prune recorded as it closes
+is committed; one check reads at most 32 kept sources to confirm a hit, past
 which the text is kept back as output. A decision's part is settled
 against the prunes since its own writing (a response's since the
 response). A UI document is bounded as its file holds it at both
