@@ -1239,3 +1239,27 @@ func TestRemoteRowsIgnoreLocalBounds(t *testing.T) {
 		t.Fatalf("the title from elsewhere kept as %d bytes", len(got))
 	}
 }
+
+// The invariants are replayed only after a batch applies a row of their
+// edges (a parent, a tombstone, a relation, a link): a batch of a title
+// and a comment does not replay them, one setting a parent does.
+func TestTheReconcileRunsOnlyAfterAnEdgeRow(t *testing.T) {
+	a, b, key, after := planPair(t)
+	_, second := newTicket(t, a, "CND", "Second")
+	pull(t, a, b, after)
+	replays := 0
+	b.onReconcile = func() { replays++ }
+	title := "Fix the login loop now"
+	mustEdit(t, a, "title", key, TicketEdit{Set: TicketSet{Title: &title}})
+	comment(t, a, "comment", key, "a comment, long enough to be a comment")
+	pull(t, a, b, after)
+	if replays != 0 {
+		t.Fatalf("%d replays after a title and a comment", replays)
+	}
+	parent := key
+	mustEdit(t, a, "parent", second, TicketEdit{Set: TicketSet{Parent: &parent}})
+	pull(t, a, b, after)
+	if replays != 1 {
+		t.Fatalf("%d replays after a parent set", replays)
+	}
+}

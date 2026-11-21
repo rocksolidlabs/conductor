@@ -127,6 +127,9 @@ type Store struct {
 	// onHeldTaken, when a test sets it before any ApplyRemote, is told how
 	// many held rows each call took to offer again.
 	onHeldTaken func(n int)
+	// onReconcile, when a test sets it before any ApplyRemote, is told of
+	// each replay of the invariants a call makes.
+	onReconcile func()
 	// blockLow is what OnBlockLow set, and blockLowBusy whether a call of
 	// it has not returned (the next is dropped until it does).
 	blockLow     func(project string)

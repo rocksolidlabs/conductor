@@ -81,6 +81,11 @@ type applier struct {
 	held *heldTally
 	// taken counts the held rows the call took (the store's onHeldTaken).
 	taken int
+	// edges says the call applied a row of an invariant's edge (a parent,
+	// a tombstone, a relation, a link): only then are they reconciled.
+	// onReconcile is the store's test seam on that replay.
+	edges       bool
+	onReconcile func()
 }
 
 // heldTally is held_rows as one call's holds count it.
@@ -136,7 +141,7 @@ func (s *Store) ApplyRemote(ctx context.Context, rows []ChangeRow, views map[str
 			now = s.clock()
 		}
 		a := &applier{ctx: ctx, tx: dbtx, now: now.UTC(), views: views, keys: keys, sets: map[[2]string]bool{}, group: map[string]bool{},
-			waiting: map[string]bool{}, replayKeys: len(rows) == 0}
+			waiting: map[string]bool{}, replayKeys: len(rows) == 0, onReconcile: s.onReconcile}
 		if a.replica, err = activeReplica(ctx, dbtx); err != nil {
 			return err
 		}
@@ -701,6 +706,12 @@ func (a *applier) apply(c ChangeRow) error {
 	if err := a.project(c); err != nil {
 		return err
 	}
+	if c.Entity == EntityTicket {
+		switch c.Field {
+		case "parent_id", "deleted_at", "relations", "links":
+			a.edges = true
+		}
+	}
 	if e, ok := searchedBy(c); ok && !slices.Contains(a.searched, e) {
 		a.searched = append(a.searched, e)
 	}
@@ -887,7 +898,16 @@ func (a *applier) finish() error {
 			return err
 		}
 	}
-	if a.applied > 0 {
+	// The invariants are replayed only after a row of their edges: a batch
+	// of titles, comments and other fields cannot change their standing.
+	// Their replay reads every edge row of the store, since an edge's
+	// standing turns on every other edge in the one order (a cycle through
+	// any tickets, a run held by any earlier link), and a bound to the
+	// tickets the batch touched would need that walk to find them.
+	if a.edges {
+		if a.onReconcile != nil {
+			a.onReconcile()
+		}
 		if err := a.reconcile(); err != nil {
 			return err
 		}
