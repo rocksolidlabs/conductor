@@ -469,13 +469,11 @@ func (x *outputIndex) keepText(name string, text []byte) {
 // prune lets the source's fingerprints go, recording the prune's time:
 // its session gone, a hole in it closes with its ring.
 func (x *outputIndex) prune(name string) {
-	x.enqueue(func() {
-		x.mu.Lock()
-		delete(x.holes, name)
-		delete(x.fed, name)
-		x.mu.Unlock()
-		x.dropSource(name, -1)
-	})
+	x.mu.Lock()
+	delete(x.holes, name)
+	delete(x.fed, name)
+	x.mu.Unlock()
+	x.enqueue(func() { x.dropSource(name, -1) })
 }
 
 // rebuild makes the index again from the kept sources (a fresh one's):

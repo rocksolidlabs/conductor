@@ -520,8 +520,15 @@ func TestAHoledSourceKeepsEveryTextBackUntilItsRingTurnsOver(t *testing.T) {
 	b := words(r, 512<<10)
 	x.feed("ring:b", []byte(b), keep)
 	release()
-	if !x.whole(context.Background()) && x.state() == "" {
-		t.Fatal("the index neither whole nor saying why")
+	// The feeds taken (the index then holed, not behind): the index's own
+	// wait asked again until they are, the test's timeout bounding a hang
+	// (under the race detector the megabytes take longer than any fixed
+	// bound a test would pick).
+	for x.behind() {
+		x.whole(context.Background())
+	}
+	if x.state() == "" {
+		t.Fatal("the index holed and not saying why")
 	}
 	quote := "pasted from b: " + b[1000:1200]
 	g := &outputGuard{index: x}
@@ -538,8 +545,12 @@ func TestAHoledSourceKeepsEveryTextBackUntilItsRingTurnsOver(t *testing.T) {
 	// b's ring turns over past the cut: the hole closes, and what was
 	// written while it was open is output.
 	x.feed("ring:b", []byte(words(r, keep)), keep)
-	if !x.whole(context.Background()) {
-		t.Fatalf("the index after b's ring turned over: %s", x.state())
+	// Its megabyte taken (under the race detector past the index's own 2 s
+	// wait), the index is whole: not holed any more.
+	for !x.whole(context.Background()) {
+		if why := x.state(); why != "" {
+			t.Fatalf("the index after b's ring turned over: %s", why)
+		}
 	}
 	if pruned, err := x.prunedSince(written); err != nil || !pruned {
 		t.Fatalf("a text written while b was holed is not output: %v %v", pruned, err)
