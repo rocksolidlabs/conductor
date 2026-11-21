@@ -34,14 +34,19 @@ export function useSyncStatus() {
 
 /**
  * Other machines' records of `kind` (GET /api/remote), of the ticket `ticket()` names when it names one, without this server's own
- * device's: read only, drawn as another machine's. A server with no sync store holds none (`{records: []}`), so its pages draw
- * nothing more.
+ * device's: read only, drawn as another machine's. Read only while a sync store is registered (`sync` in GET /api/capabilities): with
+ * none the app asks nothing and draws none, as the server answers none.
  */
 export function useRemote(kind: RemoteKind, ticket?: () => string) {
+  const caps = useCapabilities()
   const { request } = useApi()
   const sync = useSyncStatus()
   const records = ref<RemoteRecord[]>([])
   async function load() {
+    if (!caps.has('sync')) {
+      records.value = []
+      return
+    }
     const q = new URLSearchParams({ kind })
     const t = ticket?.()
     if (t) q.set('ticket', t)
@@ -52,6 +57,6 @@ export function useRemote(kind: RemoteKind, ticket?: () => string) {
       /* what is known stands */
     }
   }
-  watch([() => ticket?.() ?? '', () => sync.report.value?.device ?? ''], () => void load(), { immediate: true })
+  watch([() => caps.has('sync'), () => ticket?.() ?? '', () => sync.report.value?.device ?? ''], () => void load(), { immediate: true })
   return { records, report: sync.report, load }
 }

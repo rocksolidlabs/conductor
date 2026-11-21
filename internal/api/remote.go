@@ -272,7 +272,8 @@ func (m remoteTicketMatch) matches(r remoteRecord) bool {
 // handleRemote is GET /api/remote?kind=&ticket=&after=: the records other
 // machines hold, in pages of at most remotePage within maxRemoteReply
 // bytes, {records, next?}; kind one of the five, ticket a ticket's key
-// (its decisions and its runs' pointers), after a page's next.
+// (its decisions and its runs' pointers), after a page's next. With no
+// sync store registered, none.
 func (s *Server) handleRemote(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	for key := range q {
@@ -294,6 +295,13 @@ func (s *Server) handleRemote(w http.ResponseWriter, r *http.Request) {
 		return
 	case after != "" && !remoteCursor.MatchString(after):
 		writeError(w, http.StatusBadRequest, "invalid_request", "after is a page's next")
+		return
+	}
+	if s.syncName() == "" {
+		// No sync store: this machine holds nothing of other machines', as
+		// GET /api/sync answers {}, whatever a store that was registered
+		// once left in remote/.
+		writeJSON(w, http.StatusOK, map[string]any{"records": []remoteRecord{}})
 		return
 	}
 	var match *remoteTicketMatch

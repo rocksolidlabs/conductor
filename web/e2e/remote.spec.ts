@@ -1,32 +1,38 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import type { Page } from '@playwright/test'
+import type { Page, Route } from '@playwright/test'
 import { Api, expect, test, useTheme } from './fixtures'
 import { renderConfig, START_WAIT_MS, startServer, stopServer, type Started } from './server'
 
-// What other machines hold, drawn read only (docs/plans/sync-seams.md, OS-4). The e2e server has no sync store, so the records are
-// written where the store would write them, remote/ in the spec's own server's data directory: the server only reads them. The
-// decision page's and the ticket page's "on studio" rows, read only with no action of this machine's offered, and the sidebar's
-// pins of another machine, greyed and opening nothing; in both themes and on a phone. The Share, rekey and Sync controls need a
-// registered sync store, which no e2e server has: their drawing is vitest's (composables/useRemote.test.ts), and sync-free.spec.ts
-// holds that a server without one draws none of them.
+// What other machines hold, drawn read only (docs/plans/sync-seams.md, OS-4). The e2e server has no sync store, and with none it
+// holds nothing of other machines' (sync-free.spec.ts holds that, a remote/ folder left on disk too): here the app is told a store
+// is registered (`sync` in a stubbed capabilities reply, a stubbed report) and GET /api/remote is answered from the spec's records,
+// by kind and ticket as the server answers it (internal/api's remote tests hold the server's side). The decision page's and the
+// ticket page's "on studio" rows, read only with no action of this machine's offered, and the sidebar's pins of another machine,
+// greyed and opening nothing; in both themes and on a phone. The Share, rekey and Sync controls' drawing is vitest's
+// (composables/useRemote.test.ts) beside the last test here.
 
 let server: Started | undefined
 let api: Api
 let root = ''
-let data = ''
 let ticketKey = ''
+let ticketID = ''
 
-const hex = (s: string) => Buffer.from(s, 'utf8').toString('hex')
 const at = '2026-11-20T09:00:00Z'
 
-/** Writes a record of another machine where the sync store keeps it: remote/<device>/<kind>-<id>.json, the device and id hex. */
-function remote(kind: string, id: string, body: unknown) {
-  const dir = join(data, 'remote', hex('dev-studio'))
-  mkdirSync(dir, { recursive: true })
-  writeFileSync(join(dir, `${kind}-${hex(id)}.json`), JSON.stringify({ kind, device: 'dev-studio', deviceName: 'studio', id, rev: 1, at, data: body }))
+interface Held {
+  kind: string
+  id: string
+  data: Record<string, unknown>
+}
+
+/** The records another machine, studio, holds: what the stubbed GET /api/remote answers. */
+const held: Held[] = []
+
+function remote(kind: string, id: string, data: Record<string, unknown>) {
+  held.push({ kind, id, data })
 }
 
 function decision(id: string, ticket: string, question: string) {
@@ -49,16 +55,25 @@ function decision(id: string, ticket: string, question: string) {
   }
 }
 
+/** GET /api/remote as the server answers it with a sync store: by kind, a ticket's by its id (its decisions and its runs' pointers). */
+function answerRemote(route: Route) {
+  const q = new URL(route.request().url()).searchParams
+  const kind = q.get('kind')
+  const ticket = q.get('ticket')
+  const records = held
+    .filter((r) => !kind || r.kind === kind)
+    .filter((r) => !ticket || (ticket === ticketKey && r.data.ticket === ticketID))
+    .map((r) => ({ kind: r.kind, device: 'dev-studio', deviceName: 'studio', id: r.id, rev: 1, at, data: r.data }))
+  return route.fulfill({ json: { records } })
+}
+
 test.beforeAll(async () => {
   test.setTimeout(START_WAIT_MS + 30_000)
   const here = dirname(fileURLToPath(import.meta.url))
   root = mkdtempSync(join(tmpdir(), 'conductor-e2e-remote-'))
   const home = join(root, 'home')
-  data = join(root, 'data')
+  const data = join(root, 'data')
   for (const d of [home, data]) mkdirSync(d, { recursive: true })
-  // Seeded before the server starts: derived files it only reads.
-  remote('decision', 'dr-41', decision('dr-41', '', 'Ship the release made on studio?'))
-  remote('pins', 'pins', { v: 1, pins: [{ session: 's-studio', name: 'studio build', agent: 'claude', at: 1 }] })
   const config = join(root, 'conductor.json')
   renderConfig(join(here, 'conductor.e2e.json'), config)
   server = await startServer({ config, home, data, allowedRoot: root, defaultCwd: root, log: join(root, 'server.log') })
@@ -70,6 +85,9 @@ test.beforeAll(async () => {
     title: 'Made here, run on studio',
   })
   ticketKey = t.ticket.key
+  ticketID = t.ticket.id
+  remote('decision', 'dr-41', decision('dr-41', '', 'Ship the release made on studio?'))
+  remote('pins', 'pins', { v: 1, pins: [{ session: 's-studio', name: 'studio build', agent: 'claude', at: 1 }] })
   // The ticket's own records on studio: a decision and a run naming it.
   remote('decision', 'dr-42', decision('dr-42', t.ticket.id, 'Merge the ticket on studio?'))
   remote('pointer', 'team-0000aa02', { id: 'team-0000aa02', crew: 'team', state: 'running', revision: 3, ticket: t.ticket.id })
@@ -80,8 +98,19 @@ test.afterAll(async () => {
   if (root) rmSync(root, { recursive: true, force: true })
 })
 
-async function open(page: Page, path: string) {
+/** The store's report the page is told unless a test names its own: current, naming this machine's own device. */
+const currentReport = { state: 'current', device: 'dev-here', deviceName: 'here' }
+
+/** The page told a sync store is registered, with its report, before its first load. */
+async function withStore(page: Page, report: Record<string, unknown>) {
+  await page.route('**/api/capabilities', (route) => route.fulfill({ json: { providers: [{ kind: 'sync', name: 'cloud', state: 'ready' }] } }))
+  await page.route('**/api/sync', (route) => route.fulfill({ json: report }))
+  await page.route('**/api/remote?*', answerRemote)
+}
+
+async function open(page: Page, path: string, report: Record<string, unknown> = currentReport) {
   await page.addInitScript((t) => localStorage.setItem('conductor.workbenchToken', t), server!.token)
+  await withStore(page, report)
   await page.goto(`${server!.baseURL}${path}`)
 }
 
@@ -144,17 +173,16 @@ test("another machine's pins are in the sidebar's pinned group, greyed and openi
   expect(page.url()).toBe(url)
 })
 
-// The Sync row and the Share control with `sync` in a stubbed capabilities reply and a stubbed report: what a registered sync store
-// would draw. The store itself is not there: Share is refused (no_sync) and says so.
+// The Sync row and the Share control with `sync` in a stubbed capabilities reply and a stubbed report of its own: what a registered sync
+// store would draw. The store itself is not there: Share is refused (no_sync) and says so.
 test("with a sync store's report, Settings says its state and what was kept, and a project offers Share", async ({ page }) => {
-  await page.route('**/api/capabilities', (route) => route.fulfill({ json: { providers: [{ kind: 'sync', name: 'cloud', state: 'ready' }] } }))
-  await page.route('**/api/sync', (route) =>
-    route.fulfill({
-      json: { state: 'behind', waiting: 37, withheld: [{ ref: "RMT-1's comment", words: 'quotes captured output' }], here: { cut: 2 } },
-    }),
-  )
   await page.setViewportSize({ width: 1440, height: 900 })
-  await open(page, '/settings')
+  await open(page, '/settings', {
+    state: 'behind',
+    waiting: 37,
+    withheld: [{ ref: "RMT-1's comment", words: 'quotes captured output' }],
+    here: { cut: 2 },
+  })
   const about = page.locator('[data-about-card]')
   await expect(about.locator('[data-about-row="sync"]')).toContainText('behind: 37 changes waiting')
   await expect(about.locator('[data-about-sync-kept] li')).toHaveText([
@@ -166,6 +194,4 @@ test("with a sync store's report, Settings says its state and what was kept, and
   await expect(share.locator('[data-project-share-words]')).toHaveText('RMT is on this machine alone.')
   await share.locator('[data-project-share-button]').click()
   await expect(share.locator('[data-project-share-failure]')).toContainText('no sync provider is registered')
-  await page.unroute('**/api/capabilities')
-  await page.unroute('**/api/sync')
 })

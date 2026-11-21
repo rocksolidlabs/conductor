@@ -37,14 +37,29 @@ afterEach(() => vi.unstubAllGlobals())
 const settle = () => new Promise((r) => setTimeout(r, 0))
 
 describe("other machines' records", () => {
-  it("asks no report with no sync store, and draws the records the server holds, none on a free server's", async () => {
-    replies['/api/remote'] = { records: [] }
+  it('asks nothing with no sync store, and draws none, whatever the server would answer', async () => {
+    replies['/api/remote'] = { records: [{ kind: 'pins', device: 'dev-1', deviceName: 'studio', id: 'pins', rev: 1, at: '', data: { pins: [] } }] }
     const r = useRemote('pins')
     const s = useSyncStatus()
     await settle()
-    expect(requests).toEqual(['/api/remote?kind=pins'])
+    expect(requests).toEqual([])
     expect(r.records.value).toEqual([])
     expect(s.report.value).toBeNull()
+  })
+
+  it('drops what it drew once the sync store is gone, and asks again when one is registered', async () => {
+    caps.value = ['sync']
+    replies['/api/remote'] = { records: [{ kind: 'pins', device: 'dev-1', deviceName: 'studio', id: 'pins', rev: 1, at: '', data: { pins: [] } }] }
+    const r = useRemote('pins')
+    await settle()
+    expect(r.records.value.map((x) => x.device)).toEqual(['dev-1'])
+    caps.value = []
+    await settle()
+    expect(r.records.value).toEqual([])
+    const asked = requests.filter((p) => p.startsWith('/api/remote')).length
+    caps.value = ['sync']
+    await settle()
+    expect(requests.filter((p) => p.startsWith('/api/remote')).length).toBe(asked + 1)
   })
 
   it("reads them with a sync store, a ticket's by its key, without this server's own device's", async () => {

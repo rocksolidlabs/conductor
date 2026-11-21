@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/rocksolidlabs/conductor/ext"
+	"github.com/rocksolidlabs/conductor/internal/config"
 	"github.com/rocksolidlabs/conductor/internal/crew"
 	"github.com/rocksolidlabs/conductor/internal/export"
 )
@@ -170,6 +171,39 @@ func TestRemoteRoutes(t *testing.T) {
 	if recs, _ := remoteRecords(t, e, ""); len(recs) != 0 {
 		t.Fatalf("%d records after the clear", len(recs))
 	}
+}
+
+// With no sync store registered GET /api/remote answers none, as GET
+// /api/sync answers {}: records a store registered once left in remote/
+// are not read, by kind, by ticket or at all.
+func TestRemoteReadsNoneWithoutASyncStore(t *testing.T) {
+	dir := syncDataDir(t)
+	left := filepath.Join(dir, "remote", remoteDir("dev-1"))
+	if err := os.MkdirAll(left, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal(remoteRecord{Kind: ext.RemoteDecision, Device: "dev-1", DeviceName: "studio", ID: "dr-41", Rev: 1, At: remoteAt, Data: remoteJSON(t, remoteDecisionOf("dr-41", "", "open"))})
+	if err := os.WriteFile(filepath.Join(left, remoteFile(ext.RemoteDecision, "dr-41")), b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	e := newTestEnv(t, func(c *config.Config) { c.DataDir = dir })
+	for _, q := range []string{"", "?kind=decision", "?kind=pins"} {
+		if recs, next := remoteRecords(t, e, q); len(recs) != 0 || next != "" {
+			t.Fatalf("GET /api/remote%s with no sync store: %v %q", q, recs, next)
+		}
+	}
+	// A bad query is still refused.
+	e.expect(t, http.MethodGet, "/api/remote?kind=notes", nil, http.StatusBadRequest, "invalid_request")
+}
+
+// remoteJSON is v encoded.
+func remoteJSON(t *testing.T, v any) json.RawMessage {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
 }
 
 func recordByID(recs []remoteRecord, id string) remoteRecord {
