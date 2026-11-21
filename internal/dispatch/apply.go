@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 	"unicode/utf8"
 )
@@ -724,7 +725,7 @@ func (a *applier) offerHeld(c ChangeRow) error {
 // a file) is left held as it is, never offered nor written over, so it
 // stops no batch.
 func (a *applier) takeHeld(where string, args ...any) ([]ChangeRow, error) {
-	rs, err := a.tx.QueryContext(a.ctx, "SELECT seq, row FROM held_rows "+where+" ORDER BY seq", args...)
+	rs, err := a.tx.QueryContext(a.ctx, "SELECT seq, row, waits_for FROM held_rows "+where+" ORDER BY seq", args...)
 	if err != nil {
 		return nil, err
 	}
@@ -732,14 +733,22 @@ func (a *applier) takeHeld(where string, args ...any) ([]ChangeRow, error) {
 	var out []ChangeRow
 	for rs.Next() {
 		var seq int64
-		var row string
-		if err := rs.Scan(&seq, &row); err != nil {
+		var row, waits string
+		if err := rs.Scan(&seq, &row, &waits); err != nil {
 			rs.Close()
 			return nil, err
 		}
 		var c ChangeRow
 		if json.Unmarshal([]byte(row), &c) != nil || checkRemote(c) != nil {
 			continue
+		}
+		// A project's create held for its key keeps the registry's key it
+		// waits for, taken at its replay when the batch names none.
+		if key, ok := strings.CutPrefix(waits, "key:"); ok && c.Entity == EntityProject && c.Op == OpCreate && a.keys[c.EntityID] == "" {
+			if a.keys == nil {
+				a.keys = map[string]string{}
+			}
+			a.keys[c.EntityID] = key
 		}
 		seqs = append(seqs, seq)
 		out = append(out, c)

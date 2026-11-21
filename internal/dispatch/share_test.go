@@ -414,3 +414,44 @@ func TestRegistryKeyProjectedNeverTheRowsKey(t *testing.T) {
 		t.Fatalf("the received project after a key row: %v", got)
 	}
 }
+
+// A project's create held for a key this machine's own project holds
+// keeps the registry's key it waits for: rekeyed before its share, the
+// workspace's project is received under the registry's key once the
+// person gives their own project another key, at once or after a
+// restart, and its tickets are keyed alike on both machines.
+func TestRekeyedProjectSharedIntoAReplicaHoldingItsOldKey(t *testing.T) {
+	for _, restart := range []bool{false, true} {
+		ctx := context.Background()
+		a := openStore(t, storeDir(t))
+		join(t, a, "a1")
+		dir := storeDir(t)
+		b := openStore(t, dir)
+		join(t, b, "b1")
+		newProject(t, a, "CND")
+		newTicket(t, a, "CND", "First")
+		rc, err := a.RekeyProject(ctx, shareOp("rekey-a"), "CND", "NEW")
+		want(t, rc, err, StatusDone, "")
+		shareAll(t, a)
+		newTicket(t, a, "NEW", "Second")
+		newProject(t, b, "NEW")
+		var after int64
+		if got := pull(t, a, b, &after); len(got.Held) == 0 || !strings.Contains(got.Held[0], "NEW is this machine's own project") {
+			t.Fatalf("held on b: %v", got.Held)
+		}
+		if restart {
+			if err := b.Close(); err != nil {
+				t.Fatal(err)
+			}
+			b = openStore(t, dir)
+		}
+		rc, err = b.RekeyProject(ctx, shareOp("rekey-b"), "NEW", "MINE")
+		want(t, rc, err, StatusDone, "")
+		if got := texts(t, b, "SELECT key || '/' || registry_key FROM projects ORDER BY key"); !slices.Equal(got, []string{"MINE/", "NEW/NEW"}) {
+			t.Fatalf("restart %v: b's projects %v", restart, got)
+		}
+		if mine, theirs := texts(t, a, "SELECT key FROM tickets ORDER BY key"), texts(t, b, "SELECT key FROM tickets ORDER BY key"); !slices.Equal(mine, theirs) {
+			t.Fatalf("restart %v: a's tickets %v, b's %v", restart, mine, theirs)
+		}
+	}
+}
