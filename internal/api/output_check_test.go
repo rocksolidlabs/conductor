@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -342,10 +343,15 @@ func TestDispatchsCheckNeverWaitsInsideItsWrite(t *testing.T) {
 	c := newCheckEnv(t, 43)
 	release := holdIndex(t, c.srv.outputs)
 	c.srv.outputs.feed("ring:s-2", []byte(words(rand.New(rand.NewPCG(44, 45)), 3000)), 1<<20)
-	before := c.srv.outputs.waited.Load()
-	c.comment(t, adminActor, "another person's note, long enough to judge, written while the index is behind")
-	if n := c.srv.outputs.waited.Load(); n != before {
-		t.Fatalf("the write waited for the index %d times", n-before)
+	// The write's own waits, counted under its context: the settle its
+	// pending row wakes waits too, on a goroutine of its own.
+	var waits atomic.Int64
+	if rc, err := c.srv.dispatch.AddComment(withWaitCount(ctx, &waits), dispatch.Op{Actor: adminActor, ID: opID()}, c.key,
+		"another person's note, long enough to judge, written while the index is behind"); err != nil || rc.Status != dispatch.StatusDone {
+		t.Fatalf("the comment: %+v %v", rc, err)
+	}
+	if n := waits.Load(); n != 0 {
+		t.Fatalf("the write waited for the index %d times", n)
 	}
 	if r := c.lastRow(t, dispatch.EntityComment, ""); r.Output != verdictPending {
 		t.Fatalf("the write's verdict with the index behind: %q", r.Output)

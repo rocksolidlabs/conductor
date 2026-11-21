@@ -178,6 +178,16 @@ type outputIndex struct {
 	now func() time.Time
 }
 
+// waitCount is the context key of a counter whole adds to each time it
+// waits for the feeds: a test counts the waits of one call (a write's)
+// apart from every other goroutine's.
+type waitCount struct{}
+
+// withWaitCount is ctx with c counting the waits made under it.
+func withWaitCount(ctx context.Context, c *atomic.Int64) context.Context {
+	return context.WithValue(ctx, waitCount{}, c)
+}
+
 // indexCatchUp bounds a check's wait for the feeds queued before it.
 const indexCatchUp = 2 * time.Second
 
@@ -897,6 +907,9 @@ func (x *outputIndex) whole(ctx context.Context) bool {
 		ch := x.progress
 		x.mu.Unlock()
 		x.waited.Add(1)
+		if c, ok := ctx.Value(waitCount{}).(*atomic.Int64); ok {
+			c.Add(1)
+		}
 		select {
 		case <-ch:
 		case <-t.C:
