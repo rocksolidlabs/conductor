@@ -3,13 +3,19 @@
 package api
 
 import (
+	"context"
+	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/rocksolidlabs/conductor/internal/config"
+	"github.com/rocksolidlabs/conductor/internal/dispatch"
 	"github.com/rocksolidlabs/conductor/internal/store"
 )
 
@@ -164,5 +170,54 @@ func TestALockLeftByAnEndedProcessIsRemovedOnceOld(t *testing.T) {
 		if _, err := os.Stat(path); !os.IsNotExist(err) {
 			t.Fatalf("an old lock nobody holds was kept: %s %v", filepath.Base(path), err)
 		}
+	}
+}
+
+func TestAServerWithNoSyncStoreIsSeenByOneWithAStore(t *testing.T) {
+	dir := syncDataDir(t)
+	plain := newTestEnvAgents(t, func(c *config.Config) { c.DataDir = dir }, slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
+	if plain.srv.copyCheck != nil || plain.srv.outputs != nil {
+		t.Fatal("a server with no sync store has a check or an index")
+	}
+	if p := plain.srv.presence; p == nil || p.unknown || p.lock == nil {
+		t.Fatal("a server with no sync store did not mark its presence")
+	}
+	ctx := context.Background()
+	plain.newDispatchProject(t, "CND", nil)
+	plain.newDispatchTicket(t, "CND", "The ticket", nil)
+	b := syncEnv(t, dir, newFakeSync())
+	if !b.srv.outputs.whole(ctx) {
+		t.Fatal("the index not whole")
+	}
+	own := "a person's own words, long enough to be judged by the check"
+	verdict := func(body string) string {
+		t.Helper()
+		if rc, err := b.srv.dispatch.AddComment(ctx, adminOp(""), "CND-1", body); err != nil || rc.Status != dispatch.StatusDone {
+			t.Fatalf("the comment: %+v %v", rc, err)
+		}
+		rows, _, err := b.srv.dispatch.ChangesFrom(ctx, 0, dispatch.MaxChangesPage)
+		if err != nil {
+			t.Fatal(err)
+		}
+		i := slices.IndexFunc(rows, func(c dispatch.ChangeRow) bool { return c.Value == body })
+		if i < 0 {
+			t.Fatalf("no row of %q", body)
+		}
+		return rows[i].Output
+	}
+	// The plain server's sessions' output is in no index: whatever is
+	// written through the server with a store may quote it.
+	if b.srv.copyCheck.alone() {
+		t.Fatal("a server with a sync store judges alone beside one with none")
+	}
+	if v := verdict(own + " (beside a server with no sync store)"); v != verdictOutput {
+		t.Fatalf("beside a server with no sync store: %q", v)
+	}
+	stopEnv(t, plain)
+	if !b.srv.copyCheck.alone() {
+		t.Fatal("alone again, and not judged so")
+	}
+	if v := verdict(own + " (alone again)"); v != verdictClean {
+		t.Fatalf("alone again, a person's own words: %q", v)
 	}
 }

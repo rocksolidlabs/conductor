@@ -15,11 +15,15 @@ import (
 // presence is this server's mark in the data folder (presence/<id>.lock),
 // a lock held for the process's life: a server over the same folder sees
 // it held while this one runs, and nothing of it outlasts the process.
-// While another live server shares the folder, the copied-output check
-// judges every text output (outputGuard.shared): that server's sessions'
-// output is in its index, never in this one's (docs/plans/sync-seams.md,
-// OS-1c). A server that could not take its lock cannot tell whether it is
-// alone, and judges as if it were not.
+// Every server that runs sessions over a data folder takes one, with a
+// sync store or with none: a server with none runs no check, and marks
+// itself for one that does. While another live server shares the folder,
+// the copied-output check judges every text output (outputGuard.shared):
+// that server's sessions' output is in its index if it has one, never in
+// this one's (docs/plans/sync-seams.md, OS-1c). A server that could not
+// take its lock cannot tell whether it is alone, and judges as if it were
+// not. A server of a version before the presence locks takes none and is
+// not seen.
 type presence struct {
 	dir, path string
 	lock      *store.OwnerLock

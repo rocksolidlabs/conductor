@@ -750,17 +750,26 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		// only then the check given to Dispatch's writes. With no sync store
 		// registered nothing leaves the machine to be judged, and the index
 		// is not opened: it does no work at all.
+		//
+		// Every server that runs sessions over a data folder marks its
+		// presence there first, with a sync store or with none
+		// (presence.go): its sessions' output is in no index but its own,
+		// and a server with a store over the same folder keeps every text
+		// as output while this one runs.
+		var unseen string
+		if !cfg.Switchyard.Enabled && st != nil {
+			s.presence, unseen = takePresence(st.Dir())
+		}
 		if !cfg.Switchyard.Enabled && st != nil && s.syncName() != "" {
 			if x, err := openOutputIndex(st.Dir(), 0); err == nil {
 				s.outputs, s.copyCheck = x, &outputGuard{index: x}
 				// Another live server over this folder: every text is output
 				// while it runs, and so it is where this server cannot tell
-				// whether it is alone (presence.go).
-				p, why := takePresence(st.Dir())
-				if why != "" {
-					log.Warn("the server cannot tell whether it is alone in its data folder: every text is kept as output", "why", why)
+				// whether it is alone.
+				if unseen != "" {
+					log.Warn("the server cannot tell whether it is alone in its data folder: every text is kept as output", "why", unseen)
 				}
-				s.presence, s.copyCheck.shared = p, p.shared
+				s.copyCheck.shared = s.presence.shared
 				s.readLogs(x)
 				s.readHistory(x)
 				x.watchScreens(s.liveScreens)
