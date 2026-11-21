@@ -27,9 +27,13 @@ import (
 // concurrent use.
 type FakeHost struct {
 	changes
-	dir  string
-	log  *slog.Logger
-	logf func(format string, args ...any)
+	// sync answers sync's doors (OnSync), ext.UnsupportedSync until a test
+	// gives it a script; syncCalls is each door called, in order.
+	sync      ext.SyncDoors
+	syncCalls []string
+	dir       string
+	log       *slog.Logger
+	logf      func(format string, args ...any)
 
 	mu       sync.Mutex
 	closed   bool

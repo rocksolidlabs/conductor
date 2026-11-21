@@ -101,12 +101,26 @@ type planApproveArgs struct {
 // is kept as.
 type planReply struct {
 	dispatch.PlanSummary
-	CrewChanged    bool            `json:"crewChanged"`
-	AgentsChanged  bool            `json:"agentsChanged"`
-	ExpectedChecks int             `json:"expectedChecks"`
-	Compare        *planCompare    `json:"compare,omitempty"`
-	Body           json.RawMessage `json:"body,omitempty"`
+	CrewChanged    bool         `json:"crewChanged"`
+	AgentsChanged  bool         `json:"agentsChanged"`
+	ExpectedChecks int          `json:"expectedChecks"`
+	Compare        *planCompare `json:"compare,omitempty"`
+	// BodyHere is false for a revision made on another machine, held here
+	// as its view alone (View: its tasks, agents by name, comments and
+	// notes, never a command or a path), which nothing here derives facts
+	// from and which never launches here (409 body_elsewhere); Origin and
+	// ApprovedOrigin name the machines that made it and last approved it,
+	// "" for this one (docs/plans/sync-seams.md, OS-1a).
+	BodyHere       bool            `json:"bodyHere"`
+	View           json.RawMessage `json:"view,omitempty"`
+	Origin         string          `json:"origin,omitempty"`
+	ApprovedOrigin string          `json:"approvedOrigin,omitempty"`
+	// Body is the revision's body, last of the reply (its largest part).
+	Body json.RawMessage `json:"body,omitempty"`
 }
+
+// errViewOnly is a revision's facts asked of its view alone.
+var errViewOnly = errors.New("api: a revision held as its view")
 
 // planCompare is what a comparison's revision says its launch starts
 // (Program item CP1, the launch's statement), computed from its body and
@@ -478,13 +492,22 @@ func (pr *planReplies) crewChanged(id string, updated time.Time) bool {
 // body is nil and its facts are not kept, read by its id; the body kept
 // on the reply when withBody is set (body then the revision's).
 func (pr *planReplies) of(ctx context.Context, p dispatch.PlanSummary, body json.RawMessage, withBody bool) (planReply, error) {
+	var read *dispatch.PlanView
 	f, err := pr.s.planFacts.get(p.Digest, func() (json.RawMessage, error) {
 		if body != nil {
 			return body, nil
 		}
 		v, err := pr.ds.Plan(ctx, p.ID)
+		if err == nil && !v.BodyHere {
+			read, err = &v, errViewOnly
+		}
 		return v.Body, err
 	})
+	if errors.Is(err, errViewOnly) {
+		// Made on another machine: its crew and agents are there, so no
+		// fact is read of them here.
+		return planReply{PlanSummary: p, View: read.View, Origin: read.Origin, ApprovedOrigin: read.ApprovedOrigin}, nil
+	}
 	if err != nil {
 		return planReply{}, err
 	}
@@ -494,6 +517,7 @@ func (pr *planReplies) of(ctx context.Context, p dispatch.PlanSummary, body json
 		AgentsChanged:  agentsChange(pr.cat, f, pr.s.cfg.Yolo) != "",
 		ExpectedChecks: f.Checks,
 		Compare:        f.Compare,
+		BodyHere:       true,
 	}
 	if withBody {
 		out.Body = body
@@ -507,7 +531,9 @@ func (pr *planReplies) byID(ctx context.Context, id string, withBody bool) (plan
 	if err != nil {
 		return planReply{}, err
 	}
-	return pr.of(ctx, v.PlanSummary, v.Body, withBody)
+	out, err := pr.of(ctx, v.PlanSummary, v.Body, withBody)
+	out.Origin, out.ApprovedOrigin = v.Origin, v.ApprovedOrigin
+	return out, err
 }
 
 // planAfter is what a revision's operation answers beside its receipt:
@@ -1015,6 +1041,10 @@ func (s *Server) handleDispatchApprovePlan(w http.ResponseWriter, r *http.Reques
 		s.dispatchError(w, "plan revision", err)
 		return
 	default:
+		if !v.BodyHere {
+			// Made on another machine: its agents resolve there.
+			break
+		}
 		f, err := s.planFacts.get(v.Digest, func() (json.RawMessage, error) { return v.Body, nil })
 		if err != nil {
 			s.dispatchError(w, "plan revision", err)

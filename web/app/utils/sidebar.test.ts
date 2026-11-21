@@ -25,6 +25,8 @@ import {
   railGlyphs,
   folderLetters,
   readFolds,
+  SECTION_KEYS,
+  SECTION_TITLES,
   readSidebarMode,
   readSidebarSize,
   reopenNeeds,
@@ -551,11 +553,11 @@ describe('sectionPreview', () => {
 
 describe('folds', () => {
   it('starts with Exited folded and the rest open, and reads what was saved, field by field', () => {
-    expect(DEFAULT_FOLDS).toEqual({ needs: false, finished: false, working: false, shared: false, exited: true })
+    expect(DEFAULT_FOLDS).toEqual({ pinned: false, needs: false, finished: false, working: false, shared: false, exited: true })
     expect(readFolds(memory())).toEqual(DEFAULT_FOLDS)
-    expect(readFolds(memory({ [SIDEBAR_FOLDS_KEY]: JSON.stringify({ working: true, finished: true, exited: false }) }))).toEqual({ needs: false, finished: true, working: true, shared: false, exited: false })
+    expect(readFolds(memory({ [SIDEBAR_FOLDS_KEY]: JSON.stringify({ working: true, finished: true, exited: false }) }))).toEqual({ pinned: false, needs: false, finished: true, working: true, shared: false, exited: false })
     // A fold saved for Running, before it split, folds Working; Finished starts unfolded.
-    expect(readFolds(memory({ [SIDEBAR_FOLDS_KEY]: JSON.stringify({ running: true, exited: false }) }))).toEqual({ needs: false, finished: false, working: true, shared: false, exited: false })
+    expect(readFolds(memory({ [SIDEBAR_FOLDS_KEY]: JSON.stringify({ running: true, exited: false }) }))).toEqual({ pinned: false, needs: false, finished: false, working: true, shared: false, exited: false })
     expect(readFolds(memory({ [SIDEBAR_FOLDS_KEY]: JSON.stringify({ running: 'yes', other: true }) }))).toEqual(DEFAULT_FOLDS)
     expect(readFolds(memory({ [SIDEBAR_FOLDS_KEY]: '{not json' }))).toEqual(DEFAULT_FOLDS)
     expect(readFolds(memory({ [SIDEBAR_FOLDS_KEY]: '[]' }))).toEqual(DEFAULT_FOLDS)
@@ -564,7 +566,7 @@ describe('folds', () => {
 
   it('writes the folds and never throws', () => {
     const s = memory()
-    const folds: Folds = { needs: true, finished: false, working: true, shared: true, exited: true }
+    const folds: Folds = { pinned: true, needs: true, finished: false, working: true, shared: true, exited: true }
     writeFolds(s, folds)
     expect(readFolds(s)).toEqual(folds)
     expect(() => writeFolds(broken, folds)).not.toThrow()
@@ -594,7 +596,7 @@ describe('focusRows and moveFocus', () => {
     expect(rows[0]).toEqual({ id: 's:a', kind: 'session', sessionId: 'a', runId: undefined, options: 1 })
     expect(rows[2]).toEqual({ id: 's:b', kind: 'session', sessionId: 'b', runId: 'r1', options: 0 })
     expect(focusRows(m, shared, DEFAULT_FOLDS).map((r) => r.id)).toEqual(['s:a', 'r:r1', 's:b', 's:c', 'j:j1'])
-    expect(focusRows(m, shared, { needs: true, finished: true, working: true, shared: true, exited: true })).toEqual([])
+    expect(focusRows(m, shared, { pinned: true, needs: true, finished: true, working: true, shared: true, exited: true })).toEqual([])
   })
 
   // Codex's round 1 on #719: Needs you's decisions are rows a key lands on, so Tab or ↓ onto one moves the list's focus there and
@@ -838,5 +840,15 @@ describe('railGlyphs', () => {
     expect(folderLetters('C:\\Users\\dev\\boxcar')).toBe('BO')
     expect(folderLetters('/x')).toBe('X')
     expect(folderLetters('')).toBe('?')
+  })
+})
+
+describe('the pinned section', () => {
+  it('is the first section, titled Pinned, unfolded by default, and its fold is read back', () => {
+    expect(SECTION_KEYS[0]).toBe('pinned')
+    expect(SECTION_TITLES.pinned).toBe('Pinned')
+    expect(DEFAULT_FOLDS.pinned).toBe(false)
+    const m = new Map<string, string>([[SIDEBAR_FOLDS_KEY, JSON.stringify({ pinned: true })]])
+    expect(readFolds({ getItem: (k: string) => m.get(k) ?? null, setItem: () => {}, removeItem: () => {} }).pinned).toBe(true)
   })
 })

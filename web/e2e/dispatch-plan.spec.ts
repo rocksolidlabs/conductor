@@ -191,7 +191,7 @@ test("a revision proposed from a crew, approved with a note and launched; a seco
   await approve.locator('[data-plan-approve-submit]').click()
   await expect(approve).toBeHidden()
   await expect(featured).not.toHaveAttribute('data-plan-stale', /.+/)
-  // The approval made again writes no state row (the revision is approved already): the history says it from its time's.
+  // The approval made again writes its state's row with the state it had (approved): the history says it from that.
   await expect(page.locator('[data-ticket-history] [data-history-line]').filter({ hasText: 'approved plan revision 1 again' })).toHaveCount(1)
   await expect(featured.locator('[data-plan-launch]')).toBeEnabled()
   await featured.locator('[data-plan-launch]').click()

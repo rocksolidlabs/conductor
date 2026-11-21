@@ -591,7 +591,8 @@ func fullestDecision(t *testing.T) crew.Decision {
 		Member: text(64), Ticket: text(16), Plan: text(16), PlanDigest: text(64), RequestID: text(32),
 		Request: raw(ledger.MaxDecisionRequest), Evidence: raw(ledger.MaxDecisionBaseline), Policy: raw(ledger.MaxDecisionPolicy),
 		State: ledger.DecisionSuperseded, Rev: 1 << 30, Why: strings.Repeat("<", ledger.MaxDecisionWhy), SupersededBy: ledger.DecisionID(1<<63 - 1),
-		Answer: strings.Repeat("<", ledger.MaxOptionLabel) + ": " + strings.Repeat("<", ext.MaxAnswerText), CreatedAt: at, AnsweredAt: &at, ClosedAt: &at}
+		Answer: strings.Repeat("<", ledger.MaxOptionLabel) + ": " + strings.Repeat("<", ext.MaxAnswerText), CreatedAt: at, AnsweredAt: &at, ClosedAt: &at,
+		Waiting: strings.Repeat("<", crew.MaxWaitingWords)}
 	for range ledger.MaxDecisionResponses {
 		rc := crew.ResponseReceipt{Decision: d.ID, K: 1 << 30, Status: "refused", Code: crew.CodeStaleDecision, Actor: text(ledger.MaxDecisionActor), Choice: &choice, At: at, Rev: 1 << 30}
 		fixed := len(decisionJSON(t, rc))

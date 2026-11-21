@@ -45,6 +45,18 @@ type options struct {
 	// usageReaders stand for the adapters' usage readers in the tests
 	// (capacity.go); nil outside them.
 	usageReaders map[string]*agents.UsageReader
+	// settleTick stands for the decisions' settle loop's tick in the tests
+	// (sync_decision.go); 0 outside them.
+	settleTick time.Duration
+	// settlePass stands for the settle loop's pass, and settleWaits is
+	// told each time the loop goes back to its wait, in the tests
+	// (sync_decision.go); nil outside them.
+	settlePass  func(context.Context) (int, bool)
+	settleWaits func()
+	// settleBetween is called by a settle, with the text it judged,
+	// between its judgement of a row and its read of the prunes, in the
+	// tests (output_guard.go, sync_decision.go); nil outside them.
+	settleBetween func(text string)
 }
 
 // WithExtensions gives the server the providers p, as the composition root

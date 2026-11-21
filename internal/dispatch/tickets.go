@@ -202,7 +202,7 @@ func (t *tx) createTicket(n NewTicket, extra []fieldValue, opOf map[string]strin
 	if err := t.record(create); err != nil {
 		return "", err
 	}
-	if err := t.writeScalars("tickets", base, ticketDefaults, after, opOf); err != nil {
+	if err := t.writeScalars("tickets", base, ticketDefaults, after, opOf, false); err != nil {
 		return "", err
 	}
 	if len(extra) > 0 {
@@ -804,7 +804,7 @@ func (t *tx) isMember(set memberSet, ticketID, member string) (bool, error) {
 // no remove has named yet, in the log's order: what a remove of the
 // member names in its prior.
 func (t *tx) liveTags(ticketID, field, member string) ([]Tag, error) {
-	rows, err := t.tx.QueryContext(t.ctx, `SELECT op, prior, actor, op_id, n FROM changes
+	rows, err := t.tx.QueryContext(t.ctx, `SELECT op, prior, actor, origin, op_id, n FROM changes
 		WHERE entity = ? AND entity_id = ? AND field = ? AND value = ? AND op IN (?, ?) ORDER BY at, actor, op_id, n`,
 		EntityTicket, ticketID, field, member, OpAdd, OpRemove)
 	if err != nil {
@@ -814,16 +814,17 @@ func (t *tx) liveTags(ticketID, field, member string) ([]Tag, error) {
 	var adds []Tag
 	removed := map[Tag]bool{}
 	for rows.Next() {
-		var op, prior string
+		var op, prior, origin string
 		var tag Tag
-		if err := rows.Scan(&op, &prior, &tag.Actor, &tag.OpID, &tag.N); err != nil {
+		if err := rows.Scan(&op, &prior, &tag.Actor, &origin, &tag.OpID, &tag.N); err != nil {
 			return nil, err
 		}
 		if op == OpAdd {
+			tag.Actor = Canon(tag.Actor, origin)
 			adds = append(adds, tag)
 			continue
 		}
-		for _, r := range Tags(prior) {
+		for _, r := range priorTags(prior, origin) {
 			removed[r] = true
 		}
 	}
@@ -891,18 +892,19 @@ func addsOf(ctx context.Context, q queryer, ticketID, field string, ids []string
 	for _, id := range ids {
 		want[id] = true
 	}
-	rows, err := q.QueryContext(ctx, "SELECT value, at, actor, op_id, n FROM changes WHERE entity = ? AND entity_id = ? AND field = ? AND op = ?",
+	rows, err := q.QueryContext(ctx, "SELECT value, at, actor, origin, op_id, n FROM changes WHERE entity = ? AND entity_id = ? AND field = ? AND op = ?",
 		EntityTicket, ticketID, field, OpAdd)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var value string
+		var value, origin string
 		var a addOf
-		if err := rows.Scan(&value, &a.at, &a.tag.Actor, &a.tag.OpID, &a.tag.N); err != nil {
+		if err := rows.Scan(&value, &a.at, &a.tag.Actor, &origin, &a.tag.OpID, &a.tag.N); err != nil {
 			return nil, err
 		}
+		a.tag.Actor = Canon(a.tag.Actor, origin)
 		var v struct {
 			ID string `json:"id"`
 		}
@@ -1084,6 +1086,38 @@ type TicketView struct {
 	// older ones a person can act on (Publications pages them).
 	Publications        []PublicationSummary `json:"publications"`
 	PublicationsNeedYou int                  `json:"publicationsNeedYou"`
+	// AlsoLinked is the keys of the other live tickets of this store's
+	// shared projects linked to the same item, at most MaxAlsoLinked: two
+	// imports or links of one item made on two machines before either
+	// held the other's ticket, kept side by side (TicketsLinkedTo).
+	AlsoLinked []string `json:"alsoLinked,omitempty"`
+}
+
+// MaxAlsoLinked bounds a ticket read's AlsoLinked.
+const MaxAlsoLinked = 8
+
+// TicketsLinkedTo is the keys of the live tickets of this store's shared
+// projects linked to the item with the external id, in their keys' order:
+// derived each read, never a row (docs/plans/sync-seams.md, One tracker
+// item, two tickets).
+func (s *Store) TicketsLinkedTo(ctx context.Context, externalID string) ([]string, error) {
+	var keys []string
+	err := s.read(ctx, func(q queryer) error {
+		var err error
+		keys, err = linkedTo(ctx, q, externalID, "")
+		return err
+	})
+	return keys, err
+}
+
+// linkedTo is TicketsLinkedTo's read, leaving out the ticket with the id
+// except.
+func linkedTo(ctx context.Context, q queryer, externalID, except string) ([]string, error) {
+	if externalID == "" || schemaOf(q) < syncSchema {
+		return nil, nil
+	}
+	return readTexts(ctx, q, `SELECT t.key FROM tickets t JOIN projects p ON p.id = t.project_id
+		WHERE t.external_id = ? AND t.deleted_at = '' AND t.id != ? AND p.shared != '' ORDER BY t.key LIMIT ?`, externalID, except, MaxAlsoLinked)
 }
 
 // TicketChildren is the first MaxTicketChildren live children of a
@@ -1118,6 +1152,9 @@ func (s *Store) Ticket(ctx context.Context, key string) (TicketView, error) {
 			s.betweenReads()
 		}
 		v = TicketView{Ticket: tk}
+		if v.AlsoLinked, err = linkedTo(ctx, q, tk.ExternalID, tk.ID); err != nil {
+			return err
+		}
 		if tk.ParentID != "" {
 			par, err := ticketByID(ctx, q, tk.ParentID)
 			switch {

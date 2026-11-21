@@ -70,6 +70,8 @@ export interface RowActionTarget {
   attempt?: boolean
   /** The session's, run's or entry's id, named on the descriptors. */
   id?: string
+  /** A session pinned to the top of the sidebar: its menu offers Unpin, else Pin to top (where the menu takes them). */
+  pinned?: boolean
 }
 
 /** A session's row as the menus read it: the sidebar's row, its sheet and the palette's row alike. */
@@ -87,6 +89,9 @@ export interface RowActionHandlers {
   cloneWithOptions?: () => void
   stop?: () => void
   forget?: () => void
+  /** Pin to top and Unpin: offered only where given (the sidebar's row). */
+  pin?: () => void
+  unpin?: () => void
 }
 
 const none = () => {}
@@ -109,7 +114,12 @@ export function rowActions(t: RowActionTarget, on: RowActionHandlers): Action[][
   if (t.inRun) first.push(a('open-run', 'Open the run', on.openRun, { icon: 'i-lucide-play', kbds: ['R'] }))
   return [
     first,
-    [a('share', 'Share…', on.share, { icon: 'i-lucide-share-2', kbds: ['S'], disabled: !t.live }), a('yard', 'Show in the Yard', on.yard, { icon: 'i-lucide-layout-grid' })],
+    [
+      a('share', 'Share…', on.share, { icon: 'i-lucide-share-2', kbds: ['S'], disabled: !t.live }),
+      a('yard', 'Show in the Yard', on.yard, { icon: 'i-lucide-layout-grid' }),
+      ...(t.pinned && on.unpin ? [a('unpin', 'Unpin', on.unpin, { icon: 'i-lucide-pin-off' })] : []),
+      ...(!t.pinned && on.pin ? [a('pin', 'Pin to top', on.pin, { icon: 'i-lucide-pin' })] : []),
+    ],
     ...(t.renamable ? [[a('rename', 'Rename…', on.rename, { icon: 'i-lucide-pencil' })]] : []),
     cloneGroup(t, on, a),
     [a('stop', 'Stop…', on.stop, { icon: 'i-lucide-square', kbds: ['X'], color: 'error', disabled: !t.live, ask: stopQuestion(t) })],

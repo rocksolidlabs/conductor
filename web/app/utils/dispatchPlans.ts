@@ -1,4 +1,5 @@
 import type { DispatchChange, DispatchReceipt, DispatchTicket, HistoryPage, LaunchSummary, NewPlanReference, PlanAgent, PlanBody, PlanDecision, PlanSummary } from '~/composables/useDispatch'
+import { heldAsView, viewLaunchWords } from '~/utils/planView'
 import type { CrewPerson, Responsibility, RunInfo } from '~/composables/useSessions'
 import { RESPONSIBILITIES, RESPONSIBILITY_WORDS } from '~/utils/crews'
 import { modelWords } from '~/utils/capacity'
@@ -243,12 +244,16 @@ export interface LaunchContext {
  * revision, a stale approval or an agent changed (each with its remedy), the ticket deleted or closed, the project archived, managed runs
  * off on the server or its ledger unavailable. Empty when Launch is offered; the server still decides.
  */
-export function launchBlockers(revision: Pick<PlanSummary, 'n' | 'state' | 'stale' | 'agentsChanged' | 'crewChanged' | 'crewName'> | null, o: LaunchContext): string[] {
+export function launchBlockers(
+  revision: (Pick<PlanSummary, 'n' | 'state' | 'stale' | 'agentsChanged' | 'crewChanged' | 'crewName'> & Partial<Pick<PlanSummary, 'bodyHere' | 'origin'>>) | null,
+  o: LaunchContext,
+): string[] {
   const out: string[] = []
   if (o.ticket.deletedAt) out.push(`${o.ticket.key} is deleted: restore it to launch`)
   else if (o.ticket.status === 'done' || o.ticket.status === 'cancelled') out.push(`${o.ticket.key} is ${o.ticket.status}: reopen it to launch`)
   if (o.archived) out.push(`${o.project} is archived: unarchive it to launch`)
   if (!revision || revision.state !== 'approved') out.push('No plan revision is approved: approve one to launch')
+  else if (heldAsView(revision)) out.push(viewLaunchWords(revision))
   else {
     for (const r of planReasons(revision)) {
       if (!r.blocks) continue

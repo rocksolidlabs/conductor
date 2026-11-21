@@ -40,12 +40,19 @@ type ContinuityStore interface {
 type RestoreRequest struct {
 	Dir string       // <dataDir>/ext/<name>, made 0700, empty on a fresh machine: the provider's sign-in goes there
 	Log *slog.Logger // naming the provider
+	// ProviderDir is the directory of another registered provider,
+	// <dataDir>/ext/<name>, made 0700 and empty on a fresh machine, where
+	// the restoring provider may write that provider's files (its sign-in,
+	// for instance); a name that is not a registered provider's, or the
+	// restoring provider's own, is refused. Nil where the server gives
+	// none.
+	ProviderDir func(name string) (string, error)
 }
 
 // Doc is one document's state after a local commit, or a replay's marker.
 type Doc struct {
-	Store  string    `json:"store"`         // data | ledger | dispatch, or the markers replay | replayed
-	Path   string    `json:"path"`          // a document's path in the data directory, a run's id, a Dispatch entity's kind/id or "log"
+	Store  string    `json:"store"`         // data | ledger | dispatch | decision, or the markers replay | replayed
+	Path   string    `json:"path"`          // a document's path in the data directory, a run's id, a Dispatch entity's kind/id or "log", a decision's dr-n
 	Epoch  string    `json:"epoch"`         // 32 hex characters, new at every replay: Rev orders docs of one epoch only
 	Rev    int64     `json:"rev,omitempty"` // data: the data directory's commit sequence in this epoch; ledger: the run's revision; dispatch: the last change's position in its log
 	At     time.Time `json:"at"`

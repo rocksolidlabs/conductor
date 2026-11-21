@@ -83,7 +83,7 @@ const (
 const syncPage = 500
 
 // syncDataDoc is the allowlist of the data directory's documents.
-var syncDataDoc = regexp.MustCompile(`^(catalog\.json|crews/[a-z0-9-]+\.json|runs/[a-z0-9-]+\.json)$`)
+var syncDataDoc = regexp.MustCompile(`^(catalog\.json|crews/[a-z0-9-]+\.json|runs/[a-z0-9-]+\.json|ui/(layout|palette|pins)\.json)$`)
 
 // syncKey names a document of the pending set: its store and its path.
 type syncKey struct{ store, path string }
@@ -112,11 +112,13 @@ type syncAdapter struct {
 	// listed counts the entries a replay put in the set.
 	listed int
 	// gen counts the replays begun; due says one is wanted (an overflow
-	// emptied the set); epoch is the current one's.
-	gen   uint64
-	due   bool
-	epoch string
-	wake  chan struct{}
+	// emptied the set, or the sync store asked one, SyncReplay); replaying
+	// that one is listing; epoch is the current one's.
+	gen       uint64
+	due       bool
+	replaying bool
+	epoch     string
+	wake      chan struct{}
 	// limit is ext.SyncPending; after is the backoff's clock (time.After),
 	// a test's own otherwise; warned is when a document that could not be
 	// read was last logged.
@@ -145,7 +147,8 @@ func newSyncAdapter(data *store.Store) *syncAdapter {
 // fan: every hook (dataCommitted, ledgerCommitted, ledgerPruned,
 // dispatchCommitted).
 func (a *syncAdapter) observer() commitObserver {
-	return commitObserver{data: a.dataCommitted, commit: a.ledgerCommitted, prune: a.ledgerPruned, dispatch: a.dispatchCommitted}
+	return commitObserver{data: a.dataCommitted, commit: a.ledgerCommitted, prune: a.ledgerPruned, dispatch: a.dispatchCommitted,
+		decisions: a.decisionsCommitted}
 }
 
 // attach gives the adapter its server, once the server is made: what it
@@ -196,6 +199,41 @@ func (a *syncAdapter) dispatchCommitted(cs []dispatch.Change) {
 	}
 }
 
+// decisionsCommitted is the ledger's decisions changed: each one's
+// document (store decision, path dr-n) is pending, read whole at its
+// delivery (syncDecision); a decision the ledger no longer holds is
+// Deleted then.
+func (a *syncAdapter) decisionsCommitted(ns []int64) {
+	if !a.decisionsSynced() {
+		return
+	}
+	for _, n := range ns {
+		a.mark(syncKey{syncDecisionStore, ledger.DecisionID(n)}, 0, nil)
+	}
+}
+
+// decisionsSynced says a sync store is registered: with none, no decision
+// is taken for delivery, built or judged (the free default would only
+// throw it away).
+func (a *syncAdapter) decisionsSynced() bool {
+	return a.s != nil && a.s.syncName() != ""
+}
+
+// pointerTicket is the ticket a run's pointer names: its launch ticket
+// while that ticket's project is shared here, else none (Owner decisions,
+// 23). A project shared or unshared later reaches the store when the
+// provider has the run's pointer sent again (SyncResend).
+func (a *syncAdapter) pointerTicket(ctx context.Context, ticket string) (string, error) {
+	if ticket == "" || a.s.dispatch == nil {
+		return "", nil
+	}
+	shared, err := a.s.dispatch.TicketShared(ctx, ticket)
+	if err != nil || !shared {
+		return "", err
+	}
+	return ticket, nil
+}
+
 // syncRef is a Dispatch entity's doc: which entity a commit changed, and
 // the ticket and project it belongs to. Its rows are read from Dispatch
 // itself (the sync item's own, CS1).
@@ -218,6 +256,9 @@ type syncPointer struct {
 	ContinuedBy   string    `json:"continuedBy,omitempty"`
 	CreatedAt     time.Time `json:"createdAt,omitzero"`
 	ClosedAt      time.Time `json:"closedAt,omitzero"`
+	// Ticket is the ticket whose launch made the run's chain, only while
+	// that ticket's project is shared here (pointerTicket).
+	Ticket string `json:"ticket,omitempty"`
 }
 
 // dataCommitted is the data directory's observer: an allowlisted
@@ -249,6 +290,20 @@ func (a *syncAdapter) mark(key syncKey, rev int64, ref []byte) {
 		return
 	}
 	a.index[key] = a.order.PushBack(&syncEntry{key: key, rev: rev, ref: ref})
+	a.signal()
+}
+
+// requestReplay asks for a replay in a new epoch, as an overflow does,
+// for the sync store (SyncReplay): a request while one is wanted or
+// listing is that one, so at most one waits and one runs. It never waits
+// for the replay.
+func (a *syncAdapter) requestReplay() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.due || a.replaying {
+		return
+	}
+	a.due = true
 	a.signal()
 }
 
@@ -293,8 +348,13 @@ func (a *syncAdapter) run(ctx context.Context) {
 	for ctx.Err() == nil {
 		a.mu.Lock()
 		if a.due {
+			a.replaying = true
 			a.mu.Unlock()
-			if err := a.replay(ctx); err != nil {
+			err := a.replay(ctx)
+			a.mu.Lock()
+			a.replaying = false
+			a.mu.Unlock()
+			if err != nil {
 				a.warn("sync: the replay could not list the state; it is tried again", err)
 				if !a.backoff(ctx, &delay) {
 					return
@@ -400,7 +460,7 @@ func (a *syncAdapter) replay(ctx context.Context) error {
 	}
 	if a.data != nil {
 		seq := a.data.Seq()
-		for _, dir := range []string{"", "crews", "runs"} {
+		for _, dir := range []string{"", "crews", "runs", "ui"} {
 			docs, err := a.data.ListDocs(dir)
 			if err != nil {
 				return a.redo(gen, err)
@@ -443,6 +503,24 @@ func (a *syncAdapter) replay(ctx context.Context) error {
 	}
 	if a.s.dispatch != nil && !a.list(gen, syncKey{syncDispatch, syncLogPath}, 0) {
 		return nil
+	}
+	if ld := a.s.ledger; ld != nil && a.decisionsSynced() {
+		// Every decision the ledger holds, by its number.
+		for after := int64(0); ; {
+			page, err := ld.DecisionRevisions(ctx, after, 0)
+			if err != nil {
+				return a.redo(gen, err)
+			}
+			for _, d := range page {
+				if !a.list(gen, syncKey{syncDecisionStore, ledger.DecisionID(d.N)}, int64(d.Rev)) {
+					return nil
+				}
+			}
+			if len(page) < ledger.MaxDecisionRevisions {
+				break
+			}
+			after = page[len(page)-1].N
+		}
 	}
 	a.mu.Lock()
 	missing := slices.Clone(a.missing)
@@ -525,9 +603,33 @@ func (a *syncAdapter) deliver(ctx context.Context, epoch string, e syncEntry) er
 			// commit's; the mark then has it delivered again, newer.
 			return sy.Deleted(ctx, d)
 		}
+		ticket, err := a.pointerTicket(ctx, p.Ticket)
+		if err != nil {
+			a.warn("sync: a run's ticket's share could not be read; it is tried again", err)
+			return err
+		}
 		d.Rev = p.Revision
 		d.Data, _ = json.Marshal(syncPointer{ID: p.ID, Crew: p.CrewID, State: p.State, Outcome: p.Outcome, Paused: p.Paused, Revision: p.Revision,
-			ContinuedFrom: p.ContinuedFrom, ContinuedBy: p.ContinuedBy, CreatedAt: p.CreatedAt, ClosedAt: p.ClosedAt})
+			ContinuedFrom: p.ContinuedFrom, ContinuedBy: p.ContinuedBy, CreatedAt: p.CreatedAt, ClosedAt: p.ClosedAt, Ticket: ticket})
+		d.Size = int64(len(d.Data))
+		return sy.Saved(ctx, d)
+	case syncDecisionStore:
+		n, err := parseDecisionPath(e.key.path)
+		if err != nil {
+			return sy.Deleted(ctx, d)
+		}
+		doc, ok, err := a.s.decisionDoc(ctx, n)
+		if err != nil {
+			a.warn("sync: a decision could not be read; it is tried again", err)
+			return err
+		}
+		if !ok {
+			return sy.Deleted(ctx, d)
+		}
+		d.Rev = int64(doc.Rev)
+		if d.Data, err = json.Marshal(doc); err != nil {
+			return err
+		}
 		d.Size = int64(len(d.Data))
 		return sy.Saved(ctx, d)
 	case syncDispatch:
@@ -562,7 +664,7 @@ func (a *syncAdapter) deliverData(ctx context.Context, d ext.Doc) error {
 		return err
 	}
 	defer f.Close()
-	if d.Path == catalogFile || strings.HasPrefix(d.Path, "runs/") {
+	if d.Path == catalogFile || strings.HasPrefix(d.Path, "runs/") || strings.HasPrefix(d.Path, "ui/") {
 		b, err := io.ReadAll(f)
 		if err != nil {
 			a.warn("sync: a document could not be read; it is tried again", err)
@@ -570,11 +672,15 @@ func (a *syncAdapter) deliverData(ctx context.Context, d ext.Doc) error {
 		}
 		// The catalog masked; a run's record as its routes answer the run
 		// (crew.Run, encoded again), never what the record keeps beside it
-		// for the server. One that does not decode goes with no data.
+		// for the server; a UI document as it may leave (deliveredUIDoc).
+		// One that does not decode goes with no data.
 		var out []byte
-		if d.Path == catalogFile {
+		switch {
+		case d.Path == catalogFile:
 			out, _ = maskCatalogDoc(b)
-		} else {
+		case strings.HasPrefix(d.Path, "ui/"):
+			out = deliveredUIDoc(d.Path, b)
+		default:
 			out = publicRunDoc(b)
 		}
 		return a.parts(ctx, d, int64(len(out)), func(off int64, p []byte) error {

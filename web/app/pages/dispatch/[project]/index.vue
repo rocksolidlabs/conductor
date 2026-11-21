@@ -75,12 +75,22 @@ watch(
     if (isView(q)) view.value = q
   },
 )
+// The view is the app's screens' state (useUiState): kept by the server too, and taken up when its copy arrives, unless a link
+// named one.
+const ui = useUiState()
+watch(
+  () => ui.layout.value.projectView,
+  (v) => {
+    if (v && !isView(route.query.view) && v !== view.value) view.value = v
+  },
+)
 watch(view, (v) => {
   try {
     localStorage.setItem(VIEW_KEY, v)
   } catch {
     /* storage refused: the choice lasts the page */
   }
+  ui.setLayout({ projectView: v })
   if (route.query.view !== v) void router.replace({ query: { ...route.query, view: v === 'list' ? undefined : v } })
 })
 const viewItems = [
@@ -616,6 +626,8 @@ palette.registerPage((): PageGroup => {
       <template v-else>
         <div class="flex min-w-0 flex-none flex-col gap-2.5 px-4 pt-3 pb-2 sm:px-6">
           <UAlert v-if="archived" color="neutral" variant="subtle" icon="i-lucide-archive" :title="`${project} is archived.`" description="Its tickets are read as they are; nothing of them can be changed until it is unarchived." />
+          <!-- Its share, with a sync store alone (docs/plans/sync-seams.md, OS-4). -->
+          <DispatchShare v-if="projectRead" :project="projectRead.project" :archived="archived" @changed="(p) => projectRead && (projectRead.project = p)" @rekeyed="(k) => router.push(projectPath(k))" />
           <!-- The description as one line, cut by the CSS and whole in its title; the tracker's link and About at its end. -->
           <div v-if="projectRead" class="flex h-5 min-w-0 items-center gap-3 text-xs" data-project-description-line>
             <button

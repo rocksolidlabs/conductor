@@ -1,4 +1,5 @@
 import { DispatchOrder, through, throughOrAbsent, type AbsentOptions } from '~/utils/dispatchOrder'
+import type { PlanViewDoc } from '~/utils/planView'
 import { ApiError, type ApiErrorBody } from './useApi'
 import type { CrewCheck, CrewManifest, CrewPerson, Finding, RunAttempt, RunInfo, RunStep, RunTask, RunTicket } from './useSessions'
 import type { CrewCompare } from '~/utils/protocol'
@@ -43,6 +44,32 @@ export interface DispatchProject {
   createdAt: string
   updatedAt: string
   rev: number
+  /**
+   * The project's share (docs/plans/sync-seams.md, OS-1b): pending, completing, shared, dormant or refused, with its words; '' with
+   * words for a share interrupted (this machine's data copied) or a project no longer shared, unshared again.
+   */
+  share?: ProjectShare
+  /** Another machine's project of the same key that this one's key holds back, and how many of its rows wait. */
+  heldBy?: { key: string; rows: number }
+}
+
+/** A project's share as its page shows it. */
+export interface ProjectShare {
+  state: '' | 'pending' | 'completing' | 'shared' | 'dormant' | 'refused'
+  words?: string
+  reservedTo?: number
+  shared?: string
+}
+
+/** The shares from which a person may share a project (project.share): none, unshared again with its words, refused, dormant. */
+const SHAREABLE: ReadonlyArray<ProjectShare['state']> = ['', 'refused', 'dormant']
+
+/**
+ * Whether a project's page offers Share this project: a project not archived whose share is none, unshared again (an interrupted
+ * share's "share it again"), refused or dormant, as the store takes a share from each; never one pending, completing or shared.
+ */
+export function canShareProject(project: Pick<DispatchProject, 'share'>, archived: boolean): boolean {
+  return !archived && (!project.share || SHAREABLE.includes(project.share.state))
 }
 
 /** A project as the projects page lists it: its counts of open and done tickets, without its description, folder, URL or policy. */
@@ -422,6 +449,8 @@ export interface DispatchTicket {
   updatedAt: string
   closedAt?: string
   deletedAt?: string
+  /** The other live tickets of this store's shared projects linked to the same tracker item (docs/plans/sync-seams.md), at most 8. */
+  alsoLinked?: string[]
   rev: number
   /** The field owners, when the ticket has a linked item. */
   owners?: TicketOwners
@@ -552,6 +581,14 @@ export interface PlanSummary {
   expectedChecks?: number
   /** What a comparison's revision starts (CP1): computed from its body at each read, never stored; absent for a revision of no comparison. */
   compare?: PlanCompare
+  /**
+   * False for a revision made on another machine (sync's seams, OS-1a): held here as its view alone, its crew and agents on that machine,
+   * so it is drawn from its view and never launched here. `origin` and `approvedOrigin` name the machines that made it and last approved
+   * it, absent for this one.
+   */
+  bodyHere?: boolean
+  origin?: string
+  approvedOrigin?: string
 }
 
 /**
@@ -634,7 +671,7 @@ export interface PlanBody {
 }
 
 /** A plan revision read whole (GET /api/dispatch/plans/{id}): its summary and its body. */
-export type PlanRead = PlanSummary & { body: PlanBody }
+export type PlanRead = PlanSummary & { body?: PlanBody; view?: PlanViewDoc }
 
 /** A reference as a proposal names it: the server resolves it at the base. */
 export interface NewPlanReference {

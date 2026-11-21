@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -627,7 +628,8 @@ func restoreFromProvider(ctx context.Context, dir string, stdout, stderr io.Writ
 	restoreStage("reserved")
 	// The sync slot alone, read once: local.Fill is the one place that
 	// asks whether anything is registered; the free default keeps nothing.
-	cs := local.Fill(extensions()).Continuity
+	registered := local.Fill(extensions())
+	cs := registered.Continuity
 	name := cs.Name()
 	if !ext.ValidName(name) {
 		return 1, fmt.Errorf("restore: the sync store's name %q is not a provider's name", name)
@@ -643,6 +645,35 @@ func restoreFromProvider(ctx context.Context, dir string, stdout, stderr io.Writ
 		if !installed {
 			if os.Remove(extDir) == nil && madeExt {
 				os.Remove(filepath.Join(dir, "ext"))
+			}
+		}
+	}()
+	// Another registered provider's directory, made for the restoring one
+	// to write that provider's files (its sign-in); each made here and
+	// left empty goes when nothing was installed, as the provider's own.
+	var made []string
+	var madeMu sync.Mutex
+	providerDir := func(other string) (string, error) {
+		if !ext.ValidName(other) || other == name || !slices.ContainsFunc(registered.All, func(e ext.Entry) bool { return e.Name == other }) {
+			return "", fmt.Errorf("%w: %q is not another registered provider's name", ext.ErrRefused, other)
+		}
+		d := filepath.Join(dir, "ext", other)
+		madeMu.Lock()
+		defer madeMu.Unlock()
+		if !exists(d) {
+			if err := os.MkdirAll(d, 0o700); err != nil {
+				return "", err
+			}
+			made = append(made, d)
+		}
+		return d, nil
+	}
+	defer func() {
+		if !installed {
+			madeMu.Lock()
+			defer madeMu.Unlock()
+			for _, d := range made {
+				os.Remove(d)
 			}
 		}
 	}()
@@ -673,7 +704,7 @@ func restoreFromProvider(ctx context.Context, dir string, stdout, stderr io.Writ
 				done <- errors.New("it ended its goroutine without returning (runtime.Goexit)")
 			}
 		}()
-		err := cs.Restore(ctx, ext.RestoreRequest{Dir: extDir, Log: log}, pw)
+		err := cs.Restore(ctx, ext.RestoreRequest{Dir: extDir, Log: log, ProviderDir: providerDir}, pw)
 		returned = true
 		done <- err
 	}()

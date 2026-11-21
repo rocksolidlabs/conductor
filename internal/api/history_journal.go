@@ -104,7 +104,14 @@ func (s *Server) openSessionRecords(st *store.Store) *journal.Journal {
 		Log:       s.log,
 		EndCommit: s.recordEndCommit,
 		Denied:    s.recordDenied,
-		Removed:   s.dropRecordRepo,
+		Removed: func(id string) {
+			s.dropRecordRepo(id)
+			// The record's words leave the copied-output check's index with it.
+			if s.outputs != nil {
+				s.outputs.prunePrefix("history:" + id + "/")
+			}
+		},
+		Kept: s.historyKept,
 	})
 	if err != nil {
 		s.log.Error("the session records could not be opened; sessions are not recorded", "err", err)

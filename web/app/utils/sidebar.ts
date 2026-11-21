@@ -194,10 +194,11 @@ export type RowState = StatusKey
  * its turn waits for your next word), Working (an agent in a turn, and one that sends no signal), Shared with you (the links joined from
  * here), Exited.
  */
-export type SectionKey = 'needs' | 'finished' | 'working' | 'shared' | 'exited'
-export const SECTION_KEYS: readonly SectionKey[] = ['needs', 'finished', 'working', 'shared', 'exited']
+export type SectionKey = 'pinned' | 'needs' | 'finished' | 'working' | 'shared' | 'exited'
+/** Pinned first: the sessions a person pinned to the top (utils/pins.ts), each also in its own section. */
+export const SECTION_KEYS: readonly SectionKey[] = ['pinned', 'needs', 'finished', 'working', 'shared', 'exited']
 /** Each section's title, as its header, the palette's groups and its fold actions say it. */
-export const SECTION_TITLES: Readonly<Record<SectionKey, string>> = { needs: 'Needs you', finished: 'Finished', working: 'Working', shared: 'Shared with you', exited: 'Exited' }
+export const SECTION_TITLES: Readonly<Record<SectionKey, string>> = { pinned: 'Pinned', needs: 'Needs you', finished: 'Finished', working: 'Working', shared: 'Shared with you', exited: 'Exited' }
 /** The sections holding sessions (every one but shared), in order. */
 export type ListSection = 'needs' | 'finished' | 'working' | 'exited'
 export const LIST_SECTIONS: readonly ListSection[] = ['needs', 'finished', 'working', 'exited']
@@ -483,7 +484,7 @@ export function sectionPreview(items: readonly SidebarItem[]): StatusKey[] {
 export const SIDEBAR_FOLDS_KEY = 'conductor.sidebar.folds'
 /** true = folded. */
 export type Folds = Record<SectionKey, boolean>
-export const DEFAULT_FOLDS: Readonly<Folds> = { needs: false, finished: false, working: false, shared: false, exited: true }
+export const DEFAULT_FOLDS: Readonly<Folds> = { pinned: false, needs: false, finished: false, working: false, shared: false, exited: true }
 
 /** The folds saved for this browser; anything unreadable or missing takes the default. A fold saved for Running (before Finished and Working) folds Working. */
 export function readFolds(storage: KeyValueStore): Folds {

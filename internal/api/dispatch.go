@@ -122,6 +122,8 @@ func (s *Server) dispatchRoutes() []dispatchRoute {
 		{"POST /api/dispatch/projects/{key}/edit", s.handleDispatchEditProject},
 		{"POST /api/dispatch/projects/{key}/archive", s.handleDispatchArchiveProject},
 		{"POST /api/dispatch/projects/{key}/unarchive", s.handleDispatchUnarchiveProject},
+		{"POST /api/dispatch/projects/{key}/share", s.handleDispatchShareProject},
+		{"POST /api/dispatch/projects/{key}/rekey", s.handleDispatchRekeyProject},
 		{"POST /api/dispatch/projects/{key}/labels", s.handleDispatchCreateLabel},
 		{"POST /api/dispatch/projects/{key}/labels/{id}/edit", s.handleDispatchEditLabel},
 		{"POST /api/dispatch/projects/{key}/labels/{id}/delete", s.handleDispatchDeleteLabel},

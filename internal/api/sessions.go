@@ -531,6 +531,7 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 		OnChange:        s.localChange,
 		OnActivity:      s.localActivity,
 		OnChat:          s.localChat,
+		OnOutput:        s.outputArrived,
 		RunChat:         req.runChat,
 		Pattern:         pattern,
 		TrustPattern:    watch.TrustPattern,

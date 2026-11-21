@@ -292,6 +292,10 @@ you ask depends on your task's kind: a review is a task whose task.md says
   "evidence[0]: REF resolves to nothing": drop it and ask again. --subject is what it is about: commit (your
   HEAD, the default), artifact:PATH (a file committed in your worktree) or
   candidate:RUN/TASK/N@COMMIT (a result attempt N submitted).
+- A decision's context summarizes what you saw in your own words: never
+  paste a check's or a session's output into it, its question or its
+  options. The evidence refs carry that output; a request that quotes it
+  stays on this machine and is answered only here.
 
 What Conductor types into this session about a decision, and what you do:
 

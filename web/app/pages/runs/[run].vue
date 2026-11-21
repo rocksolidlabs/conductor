@@ -216,12 +216,22 @@ watch(
     if (isView(q)) view.value = q
   },
 )
+// The view is the app's screens' state (useUiState): kept by the server too, and taken up when its copy arrives, unless a link
+// named one.
+const ui = useUiState()
+watch(
+  () => ui.layout.value.runView,
+  (v) => {
+    if (v && !isView(route.query.view) && v !== view.value) view.value = v
+  },
+)
 watch(view, (v) => {
   try {
     localStorage.setItem(VIEW_KEY, v)
   } catch {
     /* storage refused: the choice lasts the page */
   }
+  ui.setLayout({ runView: v })
 })
 const viewItems = computed(() => [
   ...(run.value?.managed ? [{ label: 'Tasks', value: 'tasks', icon: 'i-lucide-list-checks' }] : []),

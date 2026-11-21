@@ -127,8 +127,14 @@ test('one number of what needs you on every surface that shows it, on the busy d
     await day.api.stopSession(mine.id)
     const cleared = await agree(day, desk, rail, phone, 'every reader drops the asker')
     expect(cleared.n).toBe(before.n)
-    // After a reload of each page, the same.
+    // After a reload of each page, the same. The sidebar's mode is the person's, kept by the server for every browser (OS-2): the
+    // rail folded on the Yard is the desk's too once it has read the server's layout, so the desk opens its sidebar again, as a person
+    // reading the full sidebar there would.
     for (const p of [desk, rail, phone]) await p.reload()
+    await expect(desk.locator('[data-ui-state]').first()).toHaveAttribute('data-ui-state', 'read')
+    await expect(desk.locator('[data-rail]')).toBeVisible()
+    await desk.keyboard.press('Alt+b')
+    await expect(desk.locator('[data-rail]')).toBeHidden()
     await expect(desk.locator('#dashboard-sidebar-main')).toBeVisible()
     await desk.keyboard.press('Alt+/')
     await desk.locator('input[data-palette-input]').fill('Needs you')
@@ -294,6 +300,9 @@ test.describe('the row leaves at zero', () => {
    * the sidebar is folded to the rail (the row's rule is the rail's) unless `full`.
    */
   async function at(browser: Parameters<typeof dayPage>[0], o: { path?: string; width?: number; inbox?: (r: Route) => void; full?: boolean } = {}) {
+    // The server keeps the sidebar's mode for every browser (the app's screens' state, OS-2): each page here sets its own mode in its
+    // own storage, so it starts from a server that keeps none, and the one an earlier page uploaded is not this page's start.
+    await own.api.freshUiState()
     const ctx = await browser.newContext({
       baseURL: own.started.baseURL,
       viewport: { width: o.width ?? 1440, height: o.width ? 844 : 900 },

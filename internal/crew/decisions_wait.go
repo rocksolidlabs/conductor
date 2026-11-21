@@ -723,7 +723,7 @@ func (d *decision) holdsPlace() bool {
 	case ledger.DecisionOpen:
 		return d.spare
 	case ledger.DecisionAnswered:
-		return d.spare || d.answer != nil && d.answer.auth.Via == ViaIdentity
+		return d.spare || d.answer != nil && (d.answer.auth.Via == ViaIdentity || d.answer.auth.Via == ViaSync)
 	}
 	return false
 }

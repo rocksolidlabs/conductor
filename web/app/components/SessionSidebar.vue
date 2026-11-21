@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { remotePins } from '~/utils/remote'
 import { cutNotice, staleNotice } from '~/utils/decisions'
 import type { SessionInfo } from '~/composables/useSessions'
 import { choiceKey, newlyNeedingInput } from '~/utils/attention'
@@ -11,6 +12,7 @@ import { rowMenuItems, sessionLive } from '~/utils/sidebarActions'
 import { replyFailure } from '~/utils/reply'
 import { needsCount } from '~/utils/needsYou'
 import { showingWords } from '~/utils/inbox'
+import { pinRows } from '~/utils/pins'
 
 /**
  * The full sidebar (design 3a, 3b): sessions and runs, ordered by how hard each waits on you. Needs you, Finished (an agent that ended
@@ -46,6 +48,15 @@ provideRowMenu()
 // counts the one number, the nav's.
 const oneList = useNeedsYou()
 const model = computed(() => sidebarModel(filterSessions(attention.sessions.value, query.value), attention.runOf, filterNeeds(oneList.items.value, query.value)))
+// The pinned sessions, first (utils/pins.ts): a pin no longer listed is let go a week after its pinning, once the list is read.
+const uiState = useUiState()
+const pinned = computed(() => pinRows(uiState.pins.value, attention.sessions.value, now.value))
+watch(
+  () => pinned.value.kept.length,
+  (n) => {
+    if (attention.loaded.value && n < uiState.pins.value.length) uiState.setPins(pinned.value.kept)
+  },
+)
 const needsWords = computed(() => needsCount(oneList.list.value))
 const needsDot = computed(() => needsDotShown(events.routes.value))
 const decisions = useDecisions()
@@ -476,6 +487,9 @@ function dismissPanel() {
 }
 
 defineExpose({ focusFilter, focusList })
+/** Another machine's pins (docs/plans/sync-seams.md, OS-4): after this machine's in the pinned group, greyed, opening nothing. */
+const otherRemote = useRemote('pins')
+const otherPins = computed(() => remotePins(otherRemote.records.value))
 </script>
 
 <template>
@@ -494,6 +508,10 @@ defineExpose({ focusFilter, focusList })
     <div ref="listEl" class="flex-1 min-h-0 overflow-y-auto px-1 flex flex-col gap-3" :data-session-list="props.page ? 'page' : 'sidebar'" :data-list-width="listWidth" @keydown="onKey" @focusin="onFocusIn" @focusout="onFocusOut">
       <!-- The phone's Sessions page draws the welcome in this line's place (the UX review's P17). -->
       <slot v-if="empty" name="empty"><p class="px-2 py-4 text-xs text-muted leading-relaxed" data-sidebar-empty>No sessions yet.</p></slot>
+
+      <SidebarSection v-if="(pinned.rows.length || otherPins.length) && !query" id="pinned" :title="SECTION_TITLES.pinned" :count="pinned.rows.length + otherPins.length" :folded="folds.pinned" @update:folded="foldState.fold('pinned', $event)">
+        <SidebarPinnedList :rows="pinned.rows" :now="now" :others="otherPins" />
+      </SidebarSection>
 
       <SidebarSection v-if="model.needs.length || decisionsCut || decisionsStale || inboxShowing || inboxFailed" id="needs" title="Needs you" :count="needsWords" count-of="needs" tone="warning" :preview="preview('needs')" :folded="folds.needs" @update:folded="foldState.fold('needs', $event)">
         <ol class="flex flex-col gap-0.5">

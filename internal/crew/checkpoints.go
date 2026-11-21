@@ -294,6 +294,10 @@ func (e *Engine) SaveCheckpoint(ctx context.Context, sessionID, done, remaining,
 // (a message is typed into a terminal; a blocker and a checkpoint are
 // shown), keeping line breaks and tabs; the length is bounded by the
 // caller, in characters and in the bytes the ledger keeps.
+// CleanText is cleanText: what a response's text and rationale are kept
+// as.
+func CleanText(s string) string { return cleanText(s) }
+
 func cleanText(s string) string {
 	return strings.TrimSpace(strings.Map(func(r rune) rune {
 		if (r < 0x20 && r != '\n' && r != '\t') || r == 0x7f {

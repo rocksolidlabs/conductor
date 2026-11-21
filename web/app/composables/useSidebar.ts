@@ -43,8 +43,11 @@ export function useSidebar() {
     }
   })
 
+  const ui = useUiState()
+
   function set(m: SidebarMode) {
     mode.value = m
+    ui.setLayout({ sidebar: { mode: m } })
     if (import.meta.client) {
       try {
         writeSidebarMode(localStorage, m)
@@ -57,6 +60,7 @@ export function useSidebar() {
   function resize(width: number) {
     if (!Number.isFinite(width)) return
     size.value = clampSidebarSize(width, bounds.value)
+    ui.setLayout({ sidebar: { width: Math.round(size.value * 100) / 100 } })
     if (import.meta.client) {
       try {
         writeSidebarSize(localStorage, width, bounds.value)

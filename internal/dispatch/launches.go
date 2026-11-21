@@ -308,6 +308,22 @@ func (s *Store) LaunchAdmitted(ctx context.Context, op Op, key, planID, label st
 func (t *tx) launchable(tk Ticket, p PlanSummary) error {
 	switch p.State {
 	case PlanApproved:
+		o, err := planOrigins(t.ctx, t.tx, p.ID)
+		switch {
+		case err != nil:
+			return err
+		case !o.bodyHere:
+			name, err := deviceName(t.ctx, t.tx, o.made)
+			if err != nil {
+				return err
+			}
+			if name == "" {
+				name = "another machine"
+			}
+			return refuse(RefusalBodyElsewhere, "this revision's crew is on %s: launch it there", name)
+		case o.approvedRemote:
+			return refuse(RefusalApprovedElsewhere, "approved on another machine: approve it here to launch it here")
+		}
 		return nil
 	case PlanProposed:
 		return refuse(RefusalInvalid, "revision %d is proposed: approve it first", p.N)

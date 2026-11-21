@@ -104,8 +104,15 @@ func (s *Store) CreateProject(ctx context.Context, op Op, p NewProject) (Receipt
 			return refuse(RefusalKeyTaken, "the key %s is another project's", p.Key)
 		}
 		id := newID()
-		if _, err := t.tx.ExecContext(t.ctx, "INSERT INTO projects (id, key, name, created_at, updated_at) VALUES (?, ?, '', ?, ?)",
-			id, p.Key, stamp(t.now), stamp(t.now)); err != nil {
+		// A project made on a joined store takes the replica's overflow
+		// range and provisional window, for the day it is shared.
+		r, err := replicaRanges(t.ctx, t.tx)
+		if err != nil {
+			return err
+		}
+		if _, err := t.tx.ExecContext(t.ctx, `INSERT INTO projects (id, key, name, created_at, updated_at, overflow_from, overflow_to, overflow_next,
+			provisional_from, provisional_to, provisional_next) VALUES (?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?)`,
+			id, p.Key, stamp(t.now), stamp(t.now), r.overflowFrom, r.overflowTo, r.overflowFrom, r.provisionalFrom, r.provisionalTo, r.provisionalFrom); err != nil {
 			return err
 		}
 		t.created(id, p.Key)
@@ -311,6 +318,9 @@ func (s *Store) Project(ctx context.Context, key string) (ProjectView, error) {
 			return err
 		}
 		v.Project = p
+		if v.Project.Share, v.Project.HeldBy, err = s.shareOf(ctx, q, p); err != nil {
+			return err
+		}
 		if v.Labels, err = labelsOf(ctx, q, p.ID); err != nil {
 			return err
 		}

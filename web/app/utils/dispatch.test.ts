@@ -537,7 +537,10 @@ describe("a ticket's history", () => {
     expect(changeWords(plan({ op: 'create', value: '{}' }), plans)).toBe('proposed plan revision 2')
     expect(changeWords(plan({ op: 'create', value: '{}', entityId: 'p9' }), plans)).toBe('proposed a plan revision')
     expect(changeWords(plan({ field: 'state', value: 'approved', prior: 'proposed' }), plans)).toBe('approved plan revision 2')
-    // An approval made again writes no state row (the state is approved already): its time's row, with the time before, says it.
+    // An approval made again writes its state's row with the state it had, and is said from it.
+    expect(changeWords(plan({ field: 'state', value: 'approved', prior: 'approved' }), plans)).toBe('approved plan revision 2 again')
+    expect(changeWords(plan({ field: 'state', value: 'approved', prior: 'withdrawn' }), plans)).toBe('approved plan revision 2')
+    // A log before every approval wrote its state: no state row (the state was approved already), and its time's row, with the time before, says it.
     expect(changeWords(plan({ field: 'approved_at', value: '2026-11-01T11:00:00Z', prior: '2026-11-01T10:00:00Z' }), plans)).toBe('approved plan revision 2 again')
     expect(changeWords(plan({ field: 'approved_at', value: '2026-11-01T10:00:00Z' }), plans)).toBe('approved plan revision 2')
     expect(changeWords(plan({ field: 'state', value: 'superseded', prior: 'approved', entityId: 'p1' }), plans)).toBe('superseded plan revision 1')
@@ -568,7 +571,7 @@ describe("a ticket's history", () => {
     expect(entries.map((e) => e.lines)).toEqual([['noted "go"', 'approved plan revision 2', 'superseded plan revision 1']])
   })
 
-  it('says an approval made again from the rows ApprovePlan writes for it: its time, the ticket revision and intent it covers, no state', () => {
+  it('says an approval made again from the rows ApprovePlan writes for it: every field and the state now, and before that only the fields that changed', () => {
     const plans = { plans: new Map([['p2', 2]]) }
     const op = (opId: string) => ({ opId, actor: 'admin', by: 'Nate', entity: 'plan' as const, entityId: 'p2' })
     // The order setScalars writes them in: approved_at, approved_by, approved_note, approved_rev, approved_intent, state; each only when it changed.
@@ -587,10 +590,30 @@ describe("a ticket's history", () => {
         row({ ...op('a3'), field: 'approved_at', value: '2026-11-01T12:00:00Z', prior: '2026-11-01T11:00:00Z' }),
         row({ ...op('a3'), field: 'approved_note', value: 'still small', n: 1 }),
         row({ ...op('a3'), field: 'approved_rev', value: '5', prior: '4', n: 2 }),
+        // As an approval is written now: all five fields and the state, an unchanged one too. Approved again, the note taken off.
+        row({ ...op('a4'), field: 'approved_at', value: '2026-11-01T13:00:00Z', prior: '2026-11-01T12:00:00Z' }),
+        row({ ...op('a4'), field: 'approved_by', value: 'Nate', prior: 'Nate', n: 1 }),
+        row({ ...op('a4'), field: 'approved_note', value: '', prior: 'still small', n: 2 }),
+        row({ ...op('a4'), field: 'approved_rev', value: '6', prior: '5', n: 3 }),
+        row({ ...op('a4'), field: 'approved_intent', value: 'cccc', prior: 'bbbb', n: 4 }),
+        row({ ...op('a4'), field: 'state', value: 'approved', prior: 'approved', n: 5 }),
+        // And once more with a note: the note, then the approval, each said once.
+        row({ ...op('a5'), field: 'approved_at', value: '2026-11-01T14:00:00Z', prior: '2026-11-01T13:00:00Z' }),
+        row({ ...op('a5'), field: 'approved_by', value: 'Nate', prior: 'Nate', n: 1 }),
+        row({ ...op('a5'), field: 'approved_note', value: 'go on', n: 2 }),
+        row({ ...op('a5'), field: 'approved_rev', value: '6', prior: '6', n: 3 }),
+        row({ ...op('a5'), field: 'approved_intent', value: 'cccc', prior: 'cccc', n: 4 }),
+        row({ ...op('a5'), field: 'state', value: 'approved', prior: 'approved', n: 5 }),
       ],
       plans,
     )
-    expect(entries.map((e) => e.lines)).toEqual([['approved plan revision 2'], ['approved plan revision 2 again'], ['approved plan revision 2 again', 'noted "still small"']])
+    expect(entries.map((e) => e.lines)).toEqual([
+      ['approved plan revision 2'],
+      ['approved plan revision 2 again'],
+      ['approved plan revision 2 again', 'noted "still small"'],
+      ['approved plan revision 2 again'],
+      ['noted "go on"', 'approved plan revision 2 again'],
+    ])
   })
 })
 

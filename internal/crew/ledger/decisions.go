@@ -14,6 +14,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/rocksolidlabs/conductor/ext"
 )
 
 // Decision requests (DR1, docs/plans/decisions.md, The changes, the
@@ -128,9 +130,12 @@ var decisionTables = []string{
 // are final: nothing changes a final decision but its history and one
 // transition, applied → superseded (an applied approval whose subject
 // moved).
+//
+// The origins are ext's (ext.DecisionOrigins), so a decision's document
+// carries every origin the ledger writes.
 const (
-	OriginAgent = "agent"
-	OriginPlan  = "plan"
+	OriginAgent = ext.DecisionOriginAgent
+	OriginPlan  = ext.DecisionOriginPlan
 	// OriginCompare is a comparison's selection (docs/plans/compare-crew.md,
 	// PR-6a): opened by Yardmaster itself when every lane of a compare run
 	// has ended, an approval with no asking task, attempt, session, member
@@ -138,7 +143,7 @@ const (
 	// subject) and None of these, its own subject the comparison. Only the
 	// operator answers it: it is never routed, and never given to the
 	// decide grant (RouteFor, Hold).
-	OriginCompare = "compare"
+	OriginCompare = ext.DecisionOriginCompare
 
 	DecisionClarification = "clarification"
 	DecisionApproval      = "approval"
@@ -158,6 +163,11 @@ const (
 	// principal gave: its acceptance holds a place for the decision that
 	// would replace it (A replacement always has its place).
 	ViaIdentity = "identity"
+	// ViaSync is the authority of a held answer the sync store handed in
+	// (docs/plans/sync-seams.md, OS-3): an answer made elsewhere by an
+	// identity, judged by the identity provider's AdmitsAnswer, counted as
+	// an identity's.
+	ViaSync = "sync"
 )
 
 // History kinds, each written in the transaction of the change it records.
@@ -376,6 +386,10 @@ type DecisionRow struct {
 	CreatedAt    time.Time
 	AnsweredAt   time.Time
 	ClosedAt     time.Time
+	// From is, for a replacement opened by OpenDecision, the decision whose
+	// request it copies: that request's copied-output verdicts go with the
+	// copy (copyVerdicts). Not a column: a read leaves it 0.
+	From int64
 }
 
 // ID is the row's id, "dr-<n>".
@@ -408,6 +422,10 @@ type ResponseRow struct {
 	Status      string
 	Receipt     string
 	At          time.Time
+	// Statement is a held answer's statement (via sync), kept beside the
+	// response in decision_statements, its SHA-256 in the authority; ""
+	// for every other response. A read leaves it empty (Statement).
+	Statement string
 }
 
 // HistoryRow is one row of a decision's history: Detail JSON, at most
@@ -568,6 +586,22 @@ type authorityShape struct {
 	Via     string `json:"via"`
 	Subject string `json:"subject,omitempty"`
 	Boot    string `json:"boot"`
+	// A held answer's (via sync) alone: the membership and the sign-in or
+	// device it was made under, when, the SHA-256 of its statement (kept
+	// in decision_statements), the provider's id of it and its fence.
+	Membership      string `json:"membership,omitempty"`
+	SignIn          string `json:"signIn,omitempty"`
+	AppDevice       string `json:"appDevice,omitempty"`
+	At              string `json:"at,omitempty"`
+	StatementSHA256 string `json:"statementSha256,omitempty"`
+	RequestSHA256   string `json:"requestSha256,omitempty"`
+	Held            string `json:"held,omitempty"`
+	Fence           string `json:"fence,omitempty"`
+}
+
+// held says whether a names any of a held answer's fields.
+func (a authorityShape) held() bool {
+	return a.Membership != "" || a.SignIn != "" || a.AppDevice != "" || a.At != "" || a.StatementSHA256 != "" || a.RequestSHA256 != "" || a.Held != "" || a.Fence != ""
 }
 
 // strict decodes raw into v, refusing a field v does not name and anything
@@ -839,8 +873,16 @@ func authorityOf(raw string) (authorityShape, string, error) {
 	}
 	switch a.Via {
 	case "workbench", ViaIdentity, "router":
+		if a.held() {
+			return a, "", invalid("only a held answer's authority names its membership, statement, held id and fence")
+		}
+	case ViaSync:
+		if a.Subject == "" || a.Membership == "" || (a.SignIn == "") == (a.AppDevice == "") || a.At == "" ||
+			len(a.StatementSHA256) != 64 || len(a.RequestSHA256) != 64 || a.Held == "" || a.Fence == "" {
+			return a, "", invalid("a held answer's authority names its subject, membership, sign-in or device, time, statement's and request's SHA-256, held id and fence")
+		}
 	default:
-		return a, "", invalid("an authority is via the workbench, an identity or a router, not %q", a.Via)
+		return a, "", invalid("an authority is via the workbench, an identity, a router or sync, not %q", a.Via)
 	}
 	var b strings.Builder
 	enc := json.NewEncoder(&b)
@@ -892,7 +934,7 @@ const openish = `(d.state = 'open' OR ` + placeCond + `)`
 // opened while a decision router routes policies), whose accepted
 // response, an identity's or not, takes that one place, never a second.
 const placeCond = `((d.state = 'answered' AND EXISTS (SELECT 1 FROM decision_responses r
-	WHERE r.decision = d.n AND r.status = 'accepted' AND json_extract(r.authority, '$.via') = 'identity'))
+	WHERE r.decision = d.n AND r.status = 'accepted' AND json_extract(r.authority, '$.via') IN ('identity', 'sync')))
 	OR (d.state IN ('open', 'answered') AND COALESCE(json_extract(d.policy, '$.spare'), 0) = 1))`
 
 // voidedCond is the SQL condition of a voided routed decision (alias d):
@@ -1023,6 +1065,15 @@ func (t *Tx) OpenDecision(d DecisionRow) (DecisionRow, bool, error) {
 	}
 	if d.N, err = res.LastInsertId(); err != nil {
 		return DecisionRow{}, false, err
+	}
+	t.changed(d.N)
+	if err := t.judgeRequest(d); err != nil {
+		return DecisionRow{}, false, err
+	}
+	if d.From > 0 {
+		if err := t.copyVerdicts(d.From, d.N); err != nil {
+			return DecisionRow{}, false, err
+		}
 	}
 	return d, true, nil
 }
@@ -1173,6 +1224,10 @@ func (t *Tx) PutDecision(d DecisionRow) error {
 	if err != nil {
 		return err
 	}
+	t.changed(d.N)
+	if err := t.judgeWords(d.N, cur, d); err != nil {
+		return err
+	}
 	if finalDecision(d.State) && !finalDecision(cur.State) && RouterPolicy(cur.Policy) {
 		// A record that carried a router's policy keeps its outcome for the
 		// router, written in the transaction that gives it its final state
@@ -1200,6 +1255,7 @@ func (t *Tx) RouteFor(n int64, request string) error {
 	if err != nil {
 		return err
 	}
+	t.changed(n)
 	if cur.State != DecisionOpen {
 		return fmt.Errorf("%w: %s is %s: whom it is for changes only while it is open", ErrDecisionState, cur.ID(), cur.State)
 	}
@@ -1270,6 +1326,9 @@ func (t *Tx) Answer(n int64, run string, rev int) (bool, error) {
 		return false, err
 	}
 	changed, err := res.RowsAffected()
+	if changed == 1 {
+		t.changed(n)
+	}
 	return changed == 1, err
 }
 
@@ -1295,6 +1354,9 @@ func (t *Tx) MoveDecisions(from, to string) ([]DecisionRow, error) {
 		return nil, err
 	}
 	slices.SortFunc(out, func(a, b DecisionRow) int { return cmp.Compare(a.N, b.N) })
+	for _, d := range out {
+		t.changed(d.N)
+	}
 	return out, nil
 }
 
@@ -1337,6 +1399,9 @@ func (t *Tx) Respond(n int64, r ResponseRow) (Responded, error) {
 		return Responded{}, err
 	}
 	r.Authority = canon
+	if err := statementFits(auth, r.Statement); err != nil {
+		return Responded{}, err
+	}
 	if err := checkObject("the response receipt", r.Receipt, MaxDecisionReceipt, false); err != nil {
 		return Responded{}, err
 	}
@@ -1375,7 +1440,7 @@ func (t *Tx) Respond(n int64, r ResponseRow) (Responded, error) {
 				return Responded{}, fmt.Errorf("%w: %s's run has voided %d routed answers: stop or cancel it", ErrDecisionLimit, d.ID(), voided)
 			}
 		}
-		if auth.Via == ViaIdentity && !spareOf(d.Policy) {
+		if (auth.Via == ViaIdentity || auth.Via == ViaSync) && !spareOf(d.Policy) {
 			// A record with a spare holds its replacement's place from its
 			// opening: its answer is never refused for room.
 			if ok, err := t.room(d.CurrentRun); err != nil {
@@ -1394,6 +1459,13 @@ func (t *Tx) Respond(n int64, r ResponseRow) (Responded, error) {
 	r.At = t.now
 	if _, err := t.tx.ExecContext(t.ctx, `INSERT INTO decision_responses (decision, k, actor, authority, response_id, fingerprint, status, receipt, at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, n, r.K, r.Actor, r.Authority, r.ResponseID, r.Fingerprint, r.Status, r.Receipt, stamp(r.At)); err != nil {
+		return Responded{}, err
+	}
+	t.changed(n)
+	if err := t.keepStatement(n, r); err != nil {
+		return Responded{}, err
+	}
+	if err := t.judgeResponse(n, r); err != nil {
 		return Responded{}, err
 	}
 	return Responded{Row: r, Kept: true}, nil
