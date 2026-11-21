@@ -400,10 +400,8 @@ func TestAPendingRowIsSettledByTheProcessThatWroteIt(t *testing.T) {
 	a.srv.outputs.mu.Lock()
 	a.srv.outputs.rebuilding = false
 	a.srv.outputs.mu.Unlock()
-	mine, err := a.srv.dispatch.PendingRows(ctx, 10)
-	if err != nil || slices.ContainsFunc(mine, func(r dispatch.PendingRow) bool { return !r.Mine }) {
-		t.Fatalf("a's own pending rows: %+v %v", mine, err)
-	}
+	// a's own loop may be settling them as the test reads: what is judged
+	// is the verdict a's settle gives.
 	waitUntil(t, "a's own rows settled", func() bool {
 		a.srv.settlePending(ctx)
 		left, err := a.srv.dispatch.PendingRows(ctx, 10)
