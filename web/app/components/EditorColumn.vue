@@ -71,9 +71,26 @@ function storage() {
   return typeof localStorage === 'undefined' ? null : localStorage
 }
 
+// The layout and the splits are the app's screens' state (useUiState): kept by the server as well as this browser, and taken up
+// when the server's copy arrives.
+const ui = useUiState()
+function keepSplit() {
+  writeSplitFor(layout.value, storage(), split.value)
+  ui.setLayout({ editor: layout.value === 'side' ? { sideSplit: split.value } : { split: split.value } })
+}
+watch(
+  () => ui.layout.value.editor,
+  (e) => {
+    if (e?.layout) kept.value = e.layout
+    if (e?.split !== undefined) splits.stacked = clampSplit(e.split)
+    if (e?.sideSplit !== undefined) splits.side = clampSideSplit(e.sideSplit)
+  },
+)
+
 function switchLayout() {
   kept.value = kept.value === 'side' ? 'stacked' : 'side'
   writeLayout(storage(), kept.value)
+  ui.setLayout({ editor: { layout: kept.value } })
 }
 
 /** Sets the current layout's split; side by side, what shows once the terminal keeps its width, so a kept split is one that shows. */
@@ -104,7 +121,7 @@ function splitUp(e: PointerEvent) {
   if (!dragging) return
   dragging = false
   ;(e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId)
-  writeSplitFor(layout.value, storage(), split.value)
+  keepSplit()
 }
 /** The arrows along the bar's axis move it a step, Home and End take it to its ends. */
 function splitKey(e: KeyboardEvent) {
@@ -112,7 +129,7 @@ function splitKey(e: KeyboardEvent) {
   if (v === split.value) return
   e.preventDefault()
   setSplit(v)
-  writeSplitFor(layout.value, storage(), split.value)
+  keepSplit()
 }
 let observer: ResizeObserver | undefined
 onMounted(() => {

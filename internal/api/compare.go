@@ -200,6 +200,9 @@ func (s *Server) comparisonRevisionRefused(ctx context.Context, w http.ResponseW
 	case err != nil:
 		s.dispatchError(w, "plan revision", err)
 		return true
+	case !v.BodyHere:
+		// Made on another machine: the launch refuses it body_elsewhere.
+		return false
 	}
 	f, err := s.planFacts.get(v.Digest, func() (json.RawMessage, error) { return v.Body, nil })
 	if err != nil {

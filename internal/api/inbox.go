@@ -860,7 +860,9 @@ func (rd *inboxRead) approveScope(p dispatch.OpenPlan) (scope, why string) {
 	b, ok := rd.bodies[p.Digest]
 	if !ok || p.Digest == "" {
 		b = planBodyRead{}
-		if v, err := s.dispatch.Plan(rd.ctx, p.ID); err == nil {
+		if v, err := s.dispatch.Plan(rd.ctx, p.ID); err == nil && !v.BodyHere {
+			return "", fmt.Sprintf("revision %d was made on another machine, which keeps its crew", p.N)
+		} else if err == nil {
 			f, ferr := s.planFacts.get(v.Digest, func() (json.RawMessage, error) { return v.Body, nil })
 			b.ok = ferr == nil && json.Unmarshal(v.Body, &b.names) == nil
 			b.yolo = f.Yolo

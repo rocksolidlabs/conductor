@@ -269,20 +269,25 @@ func untilSenderStopped(t *testing.T, a *agent) {
 }
 
 // agentSessionSender is an agent whose agent_session sends go to sent,
-// each answered by answer (nil: sent), and whose pings are answered as
-// confirmed says.
-func agentSessionSender(t *testing.T, confirmed bool) (a *agent, sent chan proto.HostAgentSessionMsg, answer *func(n int) error) {
+// each answered by the func answer sets (nil: sent), and whose pings are
+// answered as confirmed says. answer sets it under the lock the sender
+// reads it under: the sender's goroutine may be sending as a test sets it.
+func agentSessionSender(t *testing.T, confirmed bool) (a *agent, sent chan proto.HostAgentSessionMsg, answer func(func(n int) error)) {
 	t.Helper()
 	a, _, _, _ = sentAttention(t)
 	sent = make(chan proto.HostAgentSessionMsg, 256)
 	var mu sync.Mutex
 	n := 0
 	ans := func(int) error { return nil }
-	answer = &ans
+	answer = func(f func(int) error) {
+		mu.Lock()
+		ans = f
+		mu.Unlock()
+	}
 	a.asSend = func(m proto.HostAgentSessionMsg) error {
 		mu.Lock()
 		n++
-		k, f := n, *answer
+		k, f := n, ans
 		mu.Unlock()
 		err := f(k)
 		if err == nil {
@@ -348,17 +353,17 @@ func TestAReplayCutShortEndsAtTheNewest(t *testing.T) {
 		a.noteAgentSession(id, true)
 	}
 	a.agentSessions.Store(true)
-	*answer = func(n int) error {
+	answer(func(n int) error {
 		if n >= 2 {
 			return errConnDown
 		}
 		return nil
-	}
+	})
 	a.replayAgentSessions()
 	if got := drained(t, a, sent); !slices.Equal(got, []string{"a"}) {
 		t.Fatalf("the cut replay sent %q", got)
 	}
-	*answer = func(int) error { return nil }
+	answer(func(int) error { return nil })
 	a.replayAgentSessions()
 	got := drained(t, a, sent)
 	if len(got) == 0 || got[len(got)-1] != "c" || !slices.Equal(got, []string{"a", "b", "c"}) {
@@ -370,12 +375,12 @@ func TestAReplayCutShortEndsAtTheNewest(t *testing.T) {
 // until it goes, with no report after it.
 func TestAnUnsentAgentSessionIsTriedAgain(t *testing.T) {
 	a, sent, answer := agentSessionSender(t, true)
-	*answer = func(n int) error {
+	answer(func(n int) error {
 		if n == 1 {
 			return session.ErrSlowConsumer
 		}
 		return nil
-	}
+	})
 	a.noteAgentSession("last", true)
 	if got := drained(t, a, sent); !slices.Equal(got, []string{"last"}) {
 		t.Fatalf("sent %q", got)

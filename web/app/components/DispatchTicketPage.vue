@@ -10,6 +10,7 @@ import { relativeTime } from '~/utils/sessions'
 import { catchUp, serially } from '~/utils/dispatchOrder'
 import type { PaletteItem } from '~/composables/usePalette'
 import { TICKET_PLAN_ROWS } from '~/composables/useTicketPlans'
+import { alsoLinkedWords } from '~/utils/ticketAlsoLinked'
 import { approvable, launchBlockers, revisionTag } from '~/utils/dispatchPlans'
 import { heldRuns } from '~/composables/useTicketCandidates'
 import { REVIEW_ENTRY, openFindingsOf, openFindingsOfTask, useReview, type ReviewSummary } from '~/composables/useReview'
@@ -277,6 +278,8 @@ const live = useDispatchLive(
 const projectRow = computed(() => projectRead.value?.project ?? null)
 const archived = computed(() => !!projectRow.value?.archivedAt)
 const deleted = computed(() => !!ticket.value?.deletedAt)
+/** Another ticket of a shared project linked to the same item (alsoLinked, docs/plans/sync-seams.md, OS-4): both kept, never folded. */
+const alsoLinked = computed(() => alsoLinkedWords(ticket.value?.alsoLinked))
 /** Nothing is edited on a deleted ticket or in an archived project: the store would refuse it. */
 const locked = computed(() => !ticket.value || deleted.value || archived.value)
 
@@ -1061,6 +1064,7 @@ const brakemanChips = computed(() => askChips({ ticket: props.ticketKey }))
           data-ticket-deleted
         />
         <UAlert v-else-if="archived" color="neutral" variant="subtle" icon="i-lucide-archive" :title="`${project} is archived.`" description="Nothing of its tickets can be changed until it is unarchived." data-ticket-archived />
+        <UAlert v-if="alsoLinked" color="warning" variant="subtle" icon="i-lucide-copy" :title="alsoLinked" data-ticket-also-linked />
 
         <!-- The title, edited in place, and the ticket's state in words. -->
         <div class="flex flex-col gap-1.5">
@@ -1168,9 +1172,11 @@ const brakemanChips = computed(() => askChips({ ticket: props.ticketKey }))
             <TicketMarkdown id="ticket-acceptance" tabindex="-1" class="scroll-mt-14 outline-none" :text="ticket.acceptance" label="Acceptance criteria" empty="Add what must hold for it to be done…" :max-bytes="MAX_ACCEPTANCE" :save="(text, base) => saveText('acceptance', text, base)" :disabled="locked" name="acceptance" :attachment-url="files.resolver.value" />
             <DispatchPlan id="ticket-plan" ref="planSection" tabindex="-1" class="scroll-mt-14 outline-none" :ticket="ticket" :plans="plan" :project="project" :archived="archived" :locked="locked" :agents="agents" :now="now" />
             <DispatchRuns id="ticket-runs" tabindex="-1" class="scroll-mt-14 outline-none" :links="ticket.links ?? []" :runs="runs" :changes="changes" :names="historyNames" :history-more="!!historyNext" :locked="locked" :status="ticket.status" :now="now" :add="linkRun" :remove="removeLink" @revise="reviseFrom" @follow-up="planSection?.launch()" />
+            <RemoteRunRows :ticket-key="ticket.key" />
             <DispatchCaptures id="ticket-captures" tabindex="-1" class="scroll-mt-14 outline-none" :ticket-key="ticket.key" :attachments="ticket.attachments ?? []" :image="files.image" :now="now" />
 
             <DispatchDecisions id="ticket-decisions" tabindex="-1" class="scroll-mt-14 outline-none" :rows="decisions" :records="decisionRecords.decisions.value" :required="approvedPlan?.body.decisions" :revision="approvedPlan ? revisionTag(approvedPlan.n) : ''" :plan-id="approvedPlan?.id" :now="now" />
+            <RemoteDecisionRows :ticket-key="ticket.key" />
 
             <DispatchClosePolicy id="ticket-close" tabindex="-1" class="scroll-mt-14 outline-none" :ticket="ticket" :locked="locked" :now="now" :accept="accept" :unaccept="unaccept" :close="closeTicket" />
             <DispatchLinks :links="ticket.links ?? []" :locked="locked" :now="now" :add="addLink" :remove="removeLink" :candidates="deliveryChoices" :candidates-loading="candidates.loading.value" :candidates-error="candidates.error.value" :withdrawn="withdrawn" :reads="ticket.linkReads" :readable="readableLink" :read-again="readLinkAgain" :read-whole="readLinkWhole" :publish="(l) => openPublish(null, `link:${l.id}`)" />

@@ -1224,6 +1224,52 @@ func (s *Store) trimDigestsLocked(ids []string) {
 	}
 }
 
+// RenameProject gives the requests Brakeman keeps, of those only takes
+// (nil: all), the project key to in place of from in the scope stored
+// with each (Config.Scope.Projects, which an earlier brief is judged by:
+// Scope.Covers), each name once, nothing else of a request changed: a
+// project's new key carried into what earlier turns were scoped to. It
+// answers the ids changed, and the newest request's number kept now. A
+// request that does not load is passed over, as List passes it.
+func (s *Store) RenameProject(from, to string, only func(id string) bool) (changed []string, newest int64, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.writable(); err != nil {
+		return nil, 0, err
+	}
+	ids, err := s.ids()
+	if err != nil {
+		return nil, 0, err
+	}
+	if len(ids) > 0 {
+		newest = requestNumber(ids[0])
+	}
+	for _, id := range ids {
+		if only != nil && !only(id) {
+			continue
+		}
+		r, err := s.loadLocked(id)
+		if err != nil || !slices.Contains(r.Config.Scope.Projects, from) {
+			continue
+		}
+		var projects []string
+		for _, p := range r.Config.Scope.Projects {
+			if p == from {
+				p = to
+			}
+			if !slices.Contains(projects, p) {
+				projects = append(projects, p)
+			}
+		}
+		r.Config.Scope.Projects = projects
+		if err := s.saveRequestLocked(r); err != nil {
+			return changed, newest, err
+		}
+		changed = append(changed, id)
+	}
+	return changed, newest, nil
+}
+
 // Update reads the request id, changes it with fn and writes it, under
 // the store's one mutex, so each change is atomic. A change of state goes
 // through Request.To; a closed request changes only in its made list, its

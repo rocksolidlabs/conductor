@@ -86,6 +86,11 @@ type Options struct {
 	// marker. The same contract as OnActivity: it runs on the posting
 	// goroutine and must not block; calls can overlap.
 	OnChat func(sessionID string, m ChatMessage)
+	// OnOutput is called (outside the session lock) with the session ID and
+	// each chunk of the program's output as it arrives, before any viewer
+	// has it: the copied-output check's index of what the server captured
+	// (docs/plans/sync-seams.md, OS-1c). It must not block.
+	OnOutput func(sessionID string, chunk []byte)
 	// RunChat, when set, is the chat of the run this session is a member of
 	// (ChatRoom): its viewers read and post it over their own connection,
 	// with scope "run", and are listed on its roster.
@@ -692,6 +697,9 @@ func (s *Local) pump() {
 			// submission typed once it waits finds the screen it waits at.
 			if !title {
 				s.shot.Feed(chunk)
+			}
+			if s.opts.OnOutput != nil {
+				s.opts.OnOutput(s.info.ID, chunk)
 			}
 			s.mu.Lock()
 			s.ring.Write(chunk)

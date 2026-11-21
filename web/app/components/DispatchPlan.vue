@@ -3,6 +3,7 @@ import type { DispatchTicket, PlanSummary } from '~/composables/useDispatch'
 import type { AgentInfo } from '~/composables/useSessions'
 import type { TicketPlans } from '~/composables/useTicketPlans'
 import { approvable, launchBlockers, launchStateWords, planFold, planReasons, planRemedy, planStateWord, revisionTag, shortCommit } from '~/utils/dispatchPlans'
+import { heldAsView, originWords } from '~/utils/planView'
 import { relativeTime } from '~/utils/sessions'
 
 /**
@@ -148,6 +149,7 @@ defineExpose({ propose, approve, launch })
         <span class="min-w-0 truncate text-muted">{{ featured.crewName }}</span>
         <span class="text-xs text-dimmed">proposed by {{ featured.createdBy || 'admin' }} {{ relativeTime(featured.createdAt, now, { suffix: true }) }}</span>
       </div>
+      <p v-if="originWords(featured)" class="text-xs text-muted" data-plan-origin>This revision was {{ originWords(featured) }}.</p>
       <p v-if="featured.approvedAt" class="text-xs text-muted" data-plan-approval>
         Approved by {{ featured.approvedBy || 'admin' }} {{ relativeTime(featured.approvedAt, now, { suffix: true }) }}, at the ticket's revision {{ featured.approvedRev }}<template v-if="featured.approvedNote">: <span class="whitespace-pre-wrap text-default" data-plan-approval-note>{{ featured.approvedNote }}</span></template>
       </p>
@@ -183,13 +185,14 @@ defineExpose({ propose, approve, launch })
       </div>
       <template v-if="!folded">
         <DispatchPlanBody v-if="plans.bodies.get(featured.id)" :body="plans.bodies.get(featured.id)!" :ticket="ticket" :agents="agents" />
+        <DispatchPlanView v-else-if="plans.views.get(featured.id)" :view="plans.views.get(featured.id)!" />
         <p v-else-if="plans.bodyErrors.get(featured.id)" class="text-sm text-warning">The revision could not be read: {{ plans.bodyErrors.get(featured.id) }}</p>
         <p v-else class="text-sm text-dimmed">Reading revision {{ featured.n }}…</p>
       </template>
 
       <div v-if="!locked" class="flex flex-wrap items-center gap-2">
         <UButton
-          v-if="featured.state === 'approved'"
+          v-if="featured.state === 'approved' && !heldAsView(featured)"
           :label="`Launch from ${revisionTag(featured.n)}`"
           icon="i-lucide-play"
           size="sm"
@@ -253,6 +256,7 @@ defineExpose({ propose, approve, launch })
           <template v-if="opened.has(p.id)">
             <p v-for="r in planReasons(p)" :key="r.kind" class="text-xs text-muted">{{ r.words }}</p>
             <DispatchPlanBody v-if="plans.bodies.get(p.id)" :body="plans.bodies.get(p.id)!" :ticket="ticket" :agents="agents" />
+            <DispatchPlanView v-else-if="plans.views.get(p.id)" :view="plans.views.get(p.id)!" />
             <p v-else-if="plans.bodyErrors.get(p.id)" class="text-sm text-warning">The revision could not be read: {{ plans.bodyErrors.get(p.id) }}</p>
             <p v-else class="text-sm text-dimmed">Reading revision {{ p.n }}…</p>
           </template>

@@ -13,6 +13,11 @@ const desktopWide = useMedia('(min-width: 64rem)')
 // The decision inbox: read for the whole app, one of the stores of the one number on Needs you (useNeedsYou).
 const inbox = useInbox()
 onMounted(() => inbox.start())
+// The app's screens' state from the server (the layout, the palette's recents, the pins), once a token is held.
+const uiState = useUiState()
+const uiToken = useWorkbenchToken()
+onMounted(() => void uiState.load())
+watch(() => uiToken.token.value, () => void uiState.load())
 const desktop = useDesktop()
 const sidebar = useSidebar()
 const shortcuts = useShortcutsModal()
@@ -328,7 +333,7 @@ defineShortcuts({
 <template>
   <ConnectPage v-if="connect" />
   <!-- Below lg the bottom bar needs the room; with viewport-fit=cover its padding reads the safe area. -->
-  <UDashboardGroup v-show="!connect" :persistent="false" unit="rem" class="pb-[calc(3.5rem+env(safe-area-inset-bottom))] lg:pb-0">
+  <UDashboardGroup v-show="!connect" :persistent="false" unit="rem" :data-ui-state="uiState.server.value" class="pb-[calc(3.5rem+env(safe-area-inset-bottom))] lg:pb-0">
     <!-- The rail's classes are lg: only: below lg the slideover gets the same header, body and footer classes, and keeps the full sidebar's. -->
     <UDashboardSidebar
       :id="SIDEBAR_ID"

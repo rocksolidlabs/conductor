@@ -1807,3 +1807,45 @@ func TestFolderIsOnePerAccountAndKept(t *testing.T) {
 		t.Fatalf("the folder was not kept: %v", err)
 	}
 }
+
+// RenameProject gives the requests kept, closed ones too, the new key in
+// place of the old in the scope stored with each, each name once and
+// nothing else of a request changed, only for the ids taken; it answers
+// the ids changed and the newest request's number.
+func TestRenameProjectInTheStoredScopes(t *testing.T) {
+	f := newFixture(t)
+	scoped := func(op string, projects ...string) Request {
+		r := f.create(op)
+		c := onConfig()
+		c.Scope.Projects = projects
+		r, err := f.s.Start(r.ID, c, Stamp{AgentID: "claude"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	a := scoped("a", "CND", "OPS")
+	f.close(a.ID, StateFailed)
+	b := scoped("b", "CND", "OWN")
+	c := scoped("c", "OTH")
+	changed, newest, err := f.s.RenameProject("CND", "OWN", nil)
+	if err != nil || !slices.Equal(changed, []string{b.ID, a.ID}) || newest != RequestNumber(c.ID) {
+		t.Fatalf("renamed %v, newest %d (c is %s): %v", changed, newest, c.ID, err)
+	}
+	for id, want := range map[string][]string{a.ID: {"OWN", "OPS"}, b.ID: {"OWN"}, c.ID: {"OTH"}} {
+		r, err := f.s.Get(id)
+		if err != nil || !slices.Equal(r.Config.Scope.Projects, want) {
+			t.Fatalf("%s's scope: %v %v, want %v", id, r.Config.Scope.Projects, err, want)
+		}
+	}
+	if r, _ := f.s.Get(a.ID); r.State != StateFailed {
+		t.Fatalf("a renamed request's state: %s", r.State)
+	}
+	changed, _, err = f.s.RenameProject("OWN", "CND", func(id string) bool { return id == a.ID })
+	if err != nil || !slices.Equal(changed, []string{a.ID}) {
+		t.Fatalf("renamed back %v: %v", changed, err)
+	}
+	if r, _ := f.s.Get(b.ID); !slices.Equal(r.Config.Scope.Projects, []string{"OWN"}) {
+		t.Fatalf("a request not taken was renamed: %v", r.Config.Scope.Projects)
+	}
+}

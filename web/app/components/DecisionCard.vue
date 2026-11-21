@@ -76,6 +76,8 @@ watch(
   <article class="flex min-w-0 flex-col gap-3 text-sm" data-decision-card :data-decision-id="decision.id" :data-decision-state="decision.state">
     <header class="flex min-w-0 flex-wrap items-center gap-2">
       <span class="min-w-0 break-words text-xs" :class="tones[words.tone]" data-decision-state-words>{{ words.state }}</span>
+      <!-- A held answer whose recheck cannot be made yet (docs/plans/sync-seams.md, OS-3): the operator can still cancel or stop the run. -->
+      <span v-if="decision.waiting" class="min-w-0 break-words text-xs text-warning" data-decision-waiting>{{ decision.waiting }}</span>
     </header>
 
     <p class="break-words text-base font-medium text-highlighted" data-decision-question>{{ decision.request.question }}</p>

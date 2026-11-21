@@ -91,6 +91,8 @@ function readPrefs(): { direction: GraphDirection; handoffs: boolean; members: b
   }
 }
 const prefs = ref(readPrefs())
+// The switches are the app's screens' state (useUiState): kept by the server too, and taken up when its copy arrives.
+const ui = useUiState()
 watch(
   prefs,
   (p) => {
@@ -99,8 +101,17 @@ watch(
     } catch {
       /* storage refused: the choice lasts the page */
     }
+    ui.setLayout({ crewGraph: { ...p } })
   },
   { deep: true },
+)
+watch(
+  () => ui.layout.value.crewGraph,
+  (g) => {
+    if (!g) return
+    const next = { direction: g.direction ?? prefs.value.direction, handoffs: g.handoffs ?? prefs.value.handoffs, members: g.members ?? prefs.value.members }
+    if (next.direction !== prefs.value.direction || next.handoffs !== prefs.value.handoffs || next.members !== prefs.value.members) prefs.value = next
+  },
 )
 
 const flowId = `crew-graph-${++seq}`

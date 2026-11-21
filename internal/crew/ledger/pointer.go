@@ -32,18 +32,21 @@ type RunPointer struct {
 	ContinuedBy   string
 	CreatedAt     time.Time
 	ClosedAt      time.Time // zero while the run is open
+	// Ticket is the Dispatch ticket whose launch made the run's chain (the
+	// run's ticket column, which continuations carry), "" for none.
+	Ticket string
 }
 
 // pointerCols are the runs columns a RunPointer is read from, in its scan
 // order.
-const pointerCols = `id, crew_id, state, outcome, paused, revision, continued_from, continued_by, created_at, closed_at`
+const pointerCols = `id, crew_id, state, outcome, paused, revision, continued_from, continued_by, created_at, closed_at, ticket`
 
 // scanPointer reads a RunPointer from sc, a row of pointerCols.
 func scanPointer(sc scanner) (RunPointer, error) {
 	var p RunPointer
 	var paused int
 	var created, closed string
-	if err := sc.Scan(&p.ID, &p.CrewID, &p.State, &p.Outcome, &paused, &p.Revision, &p.ContinuedFrom, &p.ContinuedBy, &created, &closed); err != nil {
+	if err := sc.Scan(&p.ID, &p.CrewID, &p.State, &p.Outcome, &paused, &p.Revision, &p.ContinuedFrom, &p.ContinuedBy, &created, &closed, &p.Ticket); err != nil {
 		return RunPointer{}, err
 	}
 	p.Paused, p.CreatedAt, p.ClosedAt = paused != 0, unstamp(created), unstamp(closed)
@@ -67,6 +70,17 @@ func (l *Ledger) OnCommit(fn func(RunPointer)) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.onCommit = fn
+}
+
+// OnLog gives the ledger fn, called with each check's and prerequisite's
+// log a transition keeps (CheckLogSource, PrerequisiteLogSource names it),
+// after that transition has committed, under the lock as OnCommit's fn
+// is: the copied-output check's index of what the server captured. fn
+// must only queue.
+func (l *Ledger) OnLog(fn func(source string, log []byte)) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.onLog = fn
 }
 
 // OnPrune gives the ledger fn, called with a run's id and the revision its

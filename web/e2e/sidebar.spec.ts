@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { existsSync, openSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Locator, Page } from '@playwright/test'
-import { atRest, dayPage, endHosted, expect, hostedName, hostedSession, rowAnswer, test, type Session } from './fixtures'
+import { atRest, budget, dayPage, endHosted, expect, hostedName, hostedSession, rowAnswer, test, type Session } from './fixtures'
 import { inside, noOverlap, tabTo, uncut } from './layout'
 import { ownServer, type OwnServer } from './own-server'
 import { serverBinary, stubBash, stubPath } from './server'
@@ -1302,6 +1302,11 @@ test('finished and working apart: Finished above Working, each with its own mark
         { timeout: 30_000 },
       )
       .toBe('running,running')
+    // Each member's own turn on its launch prompt ends first: the stub answers the prompt and reports its Stop, which on a loaded
+    // machine came after the state set below and moved the run to Finished. Its answer names the prompt.
+    budget(2 * 30_000)
+    for (const [id, prompt] of [[ids.one!, 'work'], [ids.two!, 'rest']] as const)
+      await expect.poll(async () => (await api.session(id)).attention?.message ?? '', { timeout: 30_000 }).toContain(`got: ${prompt}`)
     await api.ok('POST', `/api/sessions/${ids.one}/attention`, { state: 'working' })
     await api.ok('POST', `/api/sessions/${ids.two}/attention`, { state: 'done' })
     for (const [id, want] of [[ids.one!, 'working'], [ids.two!, 'done']] as const) await expect.poll(async () => (await api.session(id)).attention?.state, { timeout: 15_000 }).toBe(want)

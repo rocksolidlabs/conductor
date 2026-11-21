@@ -10,6 +10,7 @@ import (
 
 	"github.com/rocksolidlabs/conductor/internal/crew"
 	"github.com/rocksolidlabs/conductor/internal/dispatch"
+	"github.com/rocksolidlabs/conductor/internal/session"
 )
 
 // An attempt's ticket (docs/plans/dispatch.md, PR-12): the session of a
@@ -315,6 +316,11 @@ func (s *Server) handleSessionTicketComment(w http.ResponseWriter, r *http.Reque
 	}
 	ctx, cancel := opContext(r)
 	defer cancel()
+	if _, local := d.(*session.Local); !local {
+		// A hosted session's output never passed this server whole: its
+		// agent's text is judged output and stays here (judgeRow).
+		ctx = withOutputNotHeld(ctx)
+	}
 	if f := beforeSessionComment.Load(); f != nil {
 		(*f)()
 	}

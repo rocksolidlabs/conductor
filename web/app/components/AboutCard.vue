@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { copyrightLine, CREDIT, LICENSE, LICENSE_URL, NOTICES_PATH, SOURCE_URL, SPONSOR_HOST, SPONSOR_URL, versionOn } from '~/utils/about'
+import { syncKeptLines, syncLine } from '~/utils/syncStatus'
 
 /**
  * Settings → The app (the Sponsor Kit's 1c): what runs, where its source is, the copyright, and the sponsor credit as the
@@ -10,6 +11,9 @@ const serverHost = useServerHost()
 serverHost.load()
 /** What the server has registered beside the open-source feature set (GET /api/capabilities): a capability, never a plan. */
 const capabilities = useCapabilities()
+/** The sync store's state (GET /api/sync), read only while one is registered (docs/plans/sync-seams.md, OS-4). */
+const sync = useSyncStatus()
+const syncKept = computed(() => syncKeptLines(sync.report.value))
 
 const rows = computed(() => {
   const v = props.versions
@@ -21,6 +25,9 @@ const rows = computed(() => {
   if (capabilities.words.value) out.push({ key: 'extensions', label: 'Extensions', value: capabilities.words.value, wrap: true })
   // Who the server is signed in as, from the identity provider (docs/plans/identity-uplink.md).
   if (capabilities.identity.value) out.push({ key: 'identity', label: 'Identity', value: capabilities.identity.value, wrap: true })
+  // The sync store's state, under Extensions, with what was kept back beneath it.
+  const syncWords = capabilities.has('sync') ? syncLine(sync.report.value) : ''
+  if (syncWords) out.push({ key: 'sync', label: 'Sync', value: syncWords, wrap: true })
   return out
 })
 </script>
@@ -33,7 +40,12 @@ const rows = computed(() => {
       <dl class="grid grid-cols-[7.5rem_minmax(0,1fr)] gap-x-4 gap-y-2.5 text-sm">
         <template v-for="r in rows" :key="r.key">
           <dt class="text-muted">{{ r.label }}</dt>
-          <dd class="min-w-0 text-highlighted" :class="{ 'font-mono': r.mono, truncate: !r.wrap, 'break-words': r.wrap }" :data-about-row="r.key">{{ r.value }}</dd>
+          <dd class="min-w-0 text-highlighted" :class="{ 'font-mono': r.mono, truncate: !r.wrap, 'break-words': r.wrap }" :data-about-row="r.key">
+            {{ r.value }}
+            <ul v-if="r.key === 'sync' && syncKept.length" class="mt-1 flex flex-col gap-0.5 text-xs text-muted" data-about-sync-kept>
+              <li v-for="(line, i) in syncKept" :key="i" class="break-words">{{ line }}</li>
+            </ul>
+          </dd>
         </template>
         <dt class="text-muted">License</dt>
         <dd data-about-license><ULink :to="LICENSE_URL" target="_blank" class="text-primary">{{ LICENSE }}</ULink> · <ULink :to="SOURCE_URL" target="_blank" class="text-primary">Source</ULink> · <ULink :to="NOTICES_PATH" external target="_blank" class="text-primary" data-about-notices>Third-party notices</ULink></dd>

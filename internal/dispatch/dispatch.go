@@ -118,6 +118,26 @@ type Store struct {
 	rmu     sync.Mutex
 	readers []func(ReadNotice)
 
+	// outputCheck is the copied-output check (SetOutputCheck), nil for none.
+	outputCheck OutputCheck
+	// pendingMine is the rows this process wrote with a pending verdict,
+	// by seq, under mu: the only pending rows it settles by its check
+	// (PendingRows' Mine); any other process's is output.
+	pendingMine map[int64]time.Time
+	// onHeldTaken, when a test sets it before any ApplyRemote, is told how
+	// many held rows each call took to offer again.
+	onHeldTaken func(n int)
+	// onReconcile, when a test sets it before any ApplyRemote, is told of
+	// each replay of the invariants a call makes.
+	onReconcile func()
+	// blockLow is what OnBlockLow set, and blockLowBusy whether a call of
+	// it has not returned (the next is dropped until it does).
+	blockLow     func(project string)
+	blockLowBusy atomic.Bool
+	// low is the project the last commit took past half of its block,
+	// under mu until Apply tells OnBlockLow.
+	low string
+
 	// lmu guards listeners, what OnChange registered.
 	lmu       sync.Mutex
 	listeners []func([]Change)
@@ -340,6 +360,10 @@ func openWith(dir string, configure func(*Store)) (*Store, error) {
 	// goroutine's, or the next open's) takes what it left: nothing is lost
 	// but space, so Open does not fail for it.
 	s.prune(ctx, now)
+	// Rows from other machines held for what had not arrived: those that
+	// became applicable are applied now (a store that joined nothing holds
+	// none, and one that cannot apply them keeps them for the next batch).
+	s.ApplyRemote(ctx, nil, nil, nil)
 	s.startPruning()
 	return s, nil
 }
@@ -512,12 +536,15 @@ func (s *Store) prepare(ctx context.Context, db *sql.DB) error {
 	case err == nil && version > s.writes:
 		return fmt.Errorf("dispatch: the database is version %d, written by a newer Conductor; this one writes version %d", version, s.writes)
 	case err == nil && version == Version:
-		// Nothing to write: a write rolled back proves the connection
-		// writes at all (writable).
+		// A write proves the connection writes at all (writable); then a
+		// store restored from an export retires what its inherited tag
+		// was handed, before Open returns (retireIfRestored).
 		if err := writable(ctx, tx); err != nil {
 			return fmt.Errorf("dispatch: %s cannot be written: %w", s.path, err)
 		}
-		return nil
+		if err := retireIfRestored(ctx, tx); err != nil {
+			return fmt.Errorf("dispatch: retiring a restored store's allocations: %w", err)
+		}
 	case err == nil:
 		if err := migrate(ctx, tx, version); err != nil {
 			return err

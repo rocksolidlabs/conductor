@@ -155,9 +155,11 @@ export function usePaletteRows(ctx: PaletteContext) {
   const integrations = ref<Awaited<ReturnType<typeof api.integrations>>['integrations']>([])
   const showExited = ref(false)
 
+  // The recents are the app's screens' state (useUiState): this browser's merged with the server's, which keeps them for every browser.
+  const ui = useUiState()
   const recent = ref<Recent>({})
   function readRecentNow() {
-    recent.value = readRecent(typeof localStorage === 'undefined' ? null : localStorage)
+    recent.value = ui.server.value === 'read' ? { ...ui.recents.value } : readRecent(typeof localStorage === 'undefined' ? null : localStorage)
     verbDrafts.clear()
   }
 

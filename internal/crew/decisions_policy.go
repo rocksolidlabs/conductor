@@ -191,6 +191,9 @@ func (p routedPolicy) entries() []PolicyEntry {
 type policyIn struct {
 	routes bool
 	conf   *ext.Confirmation
+	// statement is a held answer's statement (RespondHeld), kept beside its
+	// row.
+	statement string
 }
 
 // RespondDecisionWith is RespondDecision with the router's confirmation

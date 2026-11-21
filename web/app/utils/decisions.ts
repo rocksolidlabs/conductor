@@ -169,6 +169,8 @@ export interface Decision {
   createdAt: string
   answeredAt?: string
   closedAt?: string
+  /** While a held answer's recheck cannot be made yet: whose answer waits and why (at most 256 bytes; docs/plans/sync-seams.md, OS-3). */
+  waiting?: string
 }
 
 /** One evidence ref's resolution: its record when the question was asked (`seen`, the baseline), now, and what changed between them. */
