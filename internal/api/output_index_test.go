@@ -556,6 +556,27 @@ func TestAHoledSourceKeepsEveryTextBackUntilItsRingTurnsOver(t *testing.T) {
 	}
 }
 
+// The index's stamps order as text as their times do: a time whose
+// fraction ends in zeros before a later one whose fraction it begins
+// (.12 and .125) stamps before it, and a prune made at the later counts
+// for a text written at the earlier.
+func TestIndexStampsOrderAsTheirTimes(t *testing.T) {
+	early := time.Date(2026, 11, 21, 0, 0, 0, 120_000_000, time.UTC)
+	later := time.Date(2026, 11, 21, 0, 0, 0, 125_000_000, time.UTC)
+	if a, b := stampIndex(early), stampIndex(later); a >= b {
+		t.Fatalf("%s stamps at or after %s", a, b)
+	}
+	x := testIndex(t, "", 0)
+	x.mu.Lock()
+	x.now = func() time.Time { return later }
+	x.mu.Unlock()
+	x.prune("ring:s")
+	indexDrained(x)
+	if pruned, err := x.prunedSince(early); err != nil || !pruned {
+		t.Fatalf("a prune at %s for a text written at %s: %v %v", stampIndex(later), stampIndex(early), pruned, err)
+	}
+}
+
 // A hole stays until its prune's row is committed: with that row held
 // behind a feed in the queue, the index stays holed, whether the ring has
 // turned over past the cut or the session is pruned; once the row is in,

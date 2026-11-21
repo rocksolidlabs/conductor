@@ -266,8 +266,13 @@ func (x *outputIndex) open() error {
 	return nil
 }
 
-// stampIndex is a time as the index keeps it.
-func stampIndex(t time.Time) string { return t.UTC().Format(time.RFC3339Nano) }
+// stampLayout is a time as the index keeps it: in UTC, its fraction
+// always nine digits, so two stamps order as text as their times do
+// (RFC 3339's trimmed fraction does not: .12 sorts after .125).
+const stampLayout = "2006-01-02T15:04:05.000000000Z"
+
+// stampIndex is a time as the index keeps it (stampLayout).
+func stampIndex(t time.Time) string { return t.UTC().Format(stampLayout) }
 
 // run indexes the queued feeds, in order, until close has been asked
 // and none is left.
