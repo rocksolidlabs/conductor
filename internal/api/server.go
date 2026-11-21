@@ -754,12 +754,13 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 			if x, err := openOutputIndex(st.Dir(), 0); err == nil {
 				s.outputs, s.copyCheck = x, &outputGuard{index: x}
 				// Another live server over this folder: every text is output
-				// while it runs (presence.go).
-				if p, err := takePresence(st.Dir()); err != nil {
-					log.Warn("the server's presence in its data folder could not be taken", "err", err)
-				} else if p != nil {
-					s.presence, s.copyCheck.shared = p, p.shared
+				// while it runs, and so it is where this server cannot tell
+				// whether it is alone (presence.go).
+				p, why := takePresence(st.Dir())
+				if why != "" {
+					log.Warn("the server cannot tell whether it is alone in its data folder: every text is kept as output", "why", why)
 				}
+				s.presence, s.copyCheck.shared = p, p.shared
 				s.readLogs(x)
 				s.readHistory(x)
 				x.watchScreens(s.liveScreens)

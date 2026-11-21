@@ -1789,7 +1789,12 @@ them, against whose prunes it settles them, whatever their stamp), any
 other pending row being output. While two live servers share one data
 folder (each holds a presence lock, `presence/<id>.lock`, for its life)
 each judges every text output, a decision's parts too; alone again, each
-judges by its check. A live source has one queued feed, held to what it keeps
+judges by its check. A server that cannot take its lock (a folder it
+cannot write, a filesystem with no locks) cannot tell whether it is
+alone and judges every text output as well; a server tries again for a
+lock another server's look held for a moment, one look at the folder is
+made at a time, and a lock a process left behind is nobody's and is
+removed once it is a minute old. A live source has one queued feed, held to what it keeps
 and a quarter and to 64 MiB across sources, what is let go recorded as a
 prune; a source cut below what its ring still holds is holed until its
 ring has turned over past the cut, and while any source is holed nothing
