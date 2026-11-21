@@ -406,11 +406,8 @@ func (a *applier) bound(c ChangeRow) error {
 			return err
 		}
 	}
-	if c.Entity != EntityTicket || c.Op != OpAdd {
-		return nil
-	}
-	switch c.Field {
-	case "relations":
+	relation := c.Entity == EntityTicket && c.Op == OpAdd && c.Field == "relations"
+	if relation {
 		var rel Relation
 		if err := json.Unmarshal([]byte(c.Value), &rel); err != nil {
 			return err
@@ -418,19 +415,29 @@ func (a *applier) bound(c ChangeRow) error {
 		if rel.FromID != c.EntityID {
 			return fmt.Errorf("%w: a relation of %s from %s", ErrNotShared, c.EntityID, rel.FromID)
 		}
-		to, held, err := a.storedProject(EntityTicket, rel.ToID)
-		if err != nil || !held {
+	}
+	// Every reference the row carries (Refs, the one list of them): a
+	// referenced entity held here is of the row's project, but for a
+	// relation's far end, which may be of another project that is shared.
+	for _, ref := range Refs(c) {
+		kind, id := splitRef(ref)
+		if kind == c.Entity && id == c.EntityID {
+			continue
+		}
+		of, held, err := a.storedProject(kind, id)
+		if err != nil {
 			return err
 		}
-		return a.shareable(to)
-	case "labels":
-		of, held, err := a.storedProject(EntityLabel, c.Value)
-		if err != nil || !held {
-			return err
+		if !held || of == named {
+			continue
 		}
-		if of != named {
-			return fmt.Errorf("%w: label %s of project %s on a ticket of %s", ErrNotShared, c.Value, of, named)
+		if relation && kind == EntityTicket {
+			if err := a.shareable(of); err != nil {
+				return err
+			}
+			continue
 		}
+		return fmt.Errorf("%w: %s's %s %s refers to %s %s of project %s", ErrNotShared, c.Entity, c.EntityID, c.Field, kind, id, of)
 	}
 	return nil
 }
@@ -491,6 +498,8 @@ func (a *applier) boundProject(c ChangeRow) (string, bool, error) {
 func (a *applier) storedProject(kind, id string) (string, bool, error) {
 	var query string
 	switch kind {
+	case EntityProject:
+		query = "SELECT id FROM projects WHERE id = ?"
 	case EntityTicket:
 		query = "SELECT project_id FROM tickets WHERE id = ?"
 	case EntityComment:

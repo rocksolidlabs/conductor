@@ -1320,3 +1320,101 @@ func TestARestoredStoreAppliesItsOldTagsLaterRows(t *testing.T) {
 		t.Fatalf("a row naming the restored store's own tag it never wrote: %v", err)
 	}
 }
+
+// Every reference a row carries, as Refs lists them, is bound: a parent,
+// a milestone, a label, a relation's far end, a comment's ticket and a
+// ticket's project, each naming an entity of a project this machine never
+// shared from a row of the shared one, is refused, and nothing of the
+// unshared project changes; the walk covers every kind Refs names.
+func TestEveryReferenceARowCarriesIsBound(t *testing.T) {
+	ctx := context.Background()
+	a, b := replicaPair(t)
+	cnd := newProject(t, a, "CND")
+	shareAll(t, a)
+	shared, sharedKey := newTicket(t, a, "CND", "Shared")
+	comment(t, a, "on-shared", sharedKey, "a comment from a, long enough to judge")
+	var after int64
+	pull(t, a, b, &after)
+	own := newProject(t, b, "OWN")
+	x, xKey := newTicket(t, b, "OWN", "Mine alone")
+	deepID, deep := newTicket(t, b, "OWN", "Under mine")
+	parent := xKey
+	mustEdit(t, b, "own-parent", deep, TicketEdit{Set: TicketSet{Parent: &parent}})
+	ownLabel := newLabel(t, b, "OWN", "mine")
+	ownMilestone := newMilestone(t, b, "OWN", "Mine")
+	rows, _, err := a.ChangesFrom(ctx, 0, MaxChangesPage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	of := func(entity, op string) ChangeRow {
+		i := slices.IndexFunc(rows, func(c ChangeRow) bool { return c.Entity == entity && c.Op == op })
+		if i < 0 {
+			t.Fatalf("no %s %s row on a", entity, op)
+		}
+		return rows[i]
+	}
+	revalue := func(c ChangeRow, set map[string]any) string {
+		v := map[string]any{}
+		if err := json.Unmarshal([]byte(c.Value), &v); err != nil {
+			t.Fatal(err)
+		}
+		for k, x := range set {
+			v[k] = x
+		}
+		raw, _ := json.Marshal(v)
+		return string(raw)
+	}
+	base := ChangeRow{Entity: EntityTicket, EntityID: shared, TicketID: shared, ProjectID: cnd, Origin: "a1", Actor: "admin", At: time.Now().Add(-24 * time.Hour)}
+	row := func(n int, field, op, value string) ChangeRow {
+		c := base
+		c.Field, c.Op, c.Value, c.OpID = field, op, value, fmt.Sprint("ref-", n)
+		return c
+	}
+	relation, _ := json.Marshal(Relation{ID: newID(), FromID: shared, ToID: x, Kind: RelationBlocks, CreatedAt: time.Now(), CreatedBy: "someone"})
+	note := newID()
+	onX := of(EntityComment, OpCreate)
+	onX.EntityID, onX.TicketID, onX.OpID, onX.Value = note, x, "ref-5", revalue(onX, map[string]any{"id": note, "ticketId": x})
+	fresh := newID()
+	inOwn := of(EntityTicket, OpCreate)
+	inOwn.EntityID, inOwn.TicketID, inOwn.ProjectID, inOwn.OpID, inOwn.Value = fresh, fresh, own, "ref-6", revalue(inOwn, map[string]any{"id": fresh, "projectId": own, "number": 77})
+	cases := []struct {
+		name string
+		row  ChangeRow
+	}{
+		{"a parent of the unshared project", row(1, "parent_id", OpSet, deepID)},
+		{"a milestone of the unshared project", row(2, "milestone_id", OpSet, ownMilestone)},
+		{"a label of the unshared project", row(3, "labels", OpAdd, ownLabel)},
+		{"a relation to a ticket of the unshared project", row(4, "relations", OpAdd, string(relation))},
+		{"a comment on a ticket of the unshared project", onX},
+		{"a ticket made in the unshared project", inOwn},
+	}
+	kinds := map[string]bool{}
+	before := count(t, b, "SELECT COUNT(*) FROM changes")
+	for _, tc := range cases {
+		refs := Refs(tc.row)
+		if len(refs) == 0 {
+			t.Errorf("%s: no reference listed", tc.name)
+		}
+		for _, r := range refs {
+			kind, _ := splitRef(r)
+			kinds[kind] = true
+		}
+		if got, err := b.ApplyRemote(ctx, []ChangeRow{tc.row}, nil, registryKeys(t, a)); !errors.Is(err, ErrNotShared) || got.Applied != 0 {
+			t.Errorf("%s: %+v %v", tc.name, got, err)
+		}
+	}
+	for _, k := range []string{EntityProject, EntityTicket, EntityLabel, EntityMilestone} {
+		if !kinds[k] {
+			t.Errorf("no case of a %s reference", k)
+		}
+	}
+	if n := count(t, b, "SELECT COUNT(*) FROM changes"); n != before {
+		t.Fatalf("%d rows on b, were %d", n, before)
+	}
+	if got := ticketOf(t, b, deep).ParentID; got != x {
+		t.Fatalf("b's own ticket's parent %q, was %q", got, x)
+	}
+	if n := count(t, b, "SELECT COUNT(*) FROM changes WHERE op = ?", OpReconcile); n != 0 {
+		t.Fatalf("%d repairs on b", n)
+	}
+}

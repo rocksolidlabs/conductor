@@ -1088,6 +1088,10 @@ func Refs(c ChangeRow) []string {
 			return nil
 		}
 		return []string{EntityProject + ":" + c.ProjectID}
+	case c.Entity == EntityTicket && c.Op == OpSet && c.Field == "parent_id" && c.Value != "":
+		return []string{EntityTicket + ":" + c.Value}
+	case c.Entity == EntityTicket && c.Op == OpSet && c.Field == "milestone_id" && c.Value != "":
+		return []string{EntityMilestone + ":" + c.Value}
 	case c.Entity == EntityTicket && c.Op == OpAdd:
 		refs := []string{EntityTicket + ":" + c.EntityID}
 		switch c.Field {
