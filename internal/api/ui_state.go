@@ -355,17 +355,38 @@ func (s *Server) uiStore() (*store.Store, error) {
 	return s.store.Sub("ui")
 }
 
-// uiHeld reads the document name as kept: ok false for none.
+// maxUIStored bounds a UI document as its file holds it: the bound both
+// writers keep (putUI, setUIFromElsewhere) and the read reads under.
+const maxUIStored = maxUIDoc + 1024
+
+// errUIStoredBound is a document whose stored form is past maxUIStored.
+var errUIStoredBound = fmt.Errorf("a UI document is stored in at most %d KiB", maxUIStored>>10)
+
+// uiStoredSize is the bytes the document b takes in its file, as Save
+// writes it.
+func uiStoredSize(b []byte) (int, error) {
+	enc, err := store.Encode(json.RawMessage(b))
+	return len(enc), err
+}
+
+// uiHeld reads the document name as kept: ok false for none. A file past
+// its bound (a build before the bound was kept at the writers) is set
+// aside, as name.json.aside, and read as none, so the next write keeps
+// the person's.
 func uiHeld(st *store.Store, name string) (uiDoc, bool, error) {
-	b, err := os.ReadFile(filepath.Join(st.Dir(), name+".json"))
+	path := filepath.Join(st.Dir(), name+".json")
+	b, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return uiDoc{}, false, nil
 	}
 	if err != nil {
 		return uiDoc{}, false, err
 	}
-	if len(b) > maxUIDoc+1024 {
-		return uiDoc{}, false, fmt.Errorf("ui/%s.json is past its bound", name)
+	if len(b) > maxUIStored {
+		if err := os.Rename(path, path+".aside"); err != nil {
+			return uiDoc{}, false, err
+		}
+		return uiDoc{}, false, nil
 	}
 	d, err := splitUIDoc(name, b)
 	if err != nil {
@@ -437,6 +458,11 @@ func (s *Server) putUI(name string, content []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	if n, err := uiStoredSize(b); err != nil {
+		return nil, err
+	} else if n > maxUIStored {
+		return nil, errUIStoredBound
+	}
 	if err := st.Save(name+".json", json.RawMessage(b)); err != nil {
 		return nil, err
 	}
@@ -469,6 +495,11 @@ func (s *Server) setUIFromElsewhere(name string, b []byte) error {
 	out, err := d.encode()
 	if err != nil {
 		return err
+	}
+	if n, err := uiStoredSize(out); err != nil {
+		return err
+	} else if n > maxUIStored {
+		return fmt.Errorf("%w: %v", ext.ErrRefused, errUIStoredBound)
 	}
 	return st.Save(name+".json", json.RawMessage(out))
 }
@@ -506,8 +537,9 @@ func (s *Server) handleUIGet(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleUIPut keeps the UI document {name}, whole without at and by, at
-// most maxUIDoc bytes: 400 invalid_request past its schema, 413 bound
-// past its bound; the document as kept.
+// most maxUIDoc bytes, and at most maxUIStored as its file holds it: 400
+// invalid_request past its schema, 413 bound past either bound; the
+// document as kept.
 func (s *Server) handleUIPut(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	if !uiNames[name] {
@@ -533,6 +565,10 @@ func (s *Server) handleUIPut(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	b, err := s.putUI(name, content)
+	if errors.Is(err, errUIStoredBound) {
+		writeError(w, http.StatusRequestEntityTooLarge, "bound", err.Error())
+		return
+	}
 	if err != nil {
 		s.log.Warn("ui: a document could not be kept", "name", name, "err", err)
 		writeError(w, http.StatusInternalServerError, "store_failed", "could not keep the document")

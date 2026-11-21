@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -17,6 +18,7 @@ import (
 	"time"
 
 	"github.com/rocksolidlabs/conductor/ext"
+	"github.com/rocksolidlabs/conductor/internal/config"
 	"github.com/rocksolidlabs/conductor/internal/export"
 )
 
@@ -463,4 +465,57 @@ func countEpochs(calls []syncCall) int {
 		n++
 	}
 	return n
+}
+
+// A UI document is bounded as its file holds it, at both writers: a
+// palette whose keys grow as stored (each & escaped, every recent
+// indented) is refused 413 by the PUT and by another machine's write, and
+// the next read still answers. A file past the bound, written before the
+// bound was kept at the writers, is set aside and read as none, and the
+// next PUT keeps the person's document.
+func TestAUIDocumentIsBoundedAsItIsStored(t *testing.T) {
+	e := newTestEnv(t, func(c *config.Config) { c.DataDir = t.TempDir() })
+	recents := map[string]any{}
+	for i := range 200 {
+		recents[fmt.Sprintf("go:/dispatch?q=%03d&%s", i, strings.Repeat("&", 200))] = map[string]any{"count": 1, "last": 1_700_000_000_000 + i}
+	}
+	doc := map[string]any{"v": 1, "recents": recents}
+	var sent bytes.Buffer
+	enc := json.NewEncoder(&sent)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(doc); err != nil || sent.Len() > maxUIDoc {
+		t.Fatalf("the document sent is %d bytes, past the PUT's bound: %v", sent.Len(), err)
+	}
+	out := putUIDoc(t, e, "palette", sent.Bytes(), http.StatusRequestEntityTooLarge)
+	if !strings.Contains(apiMessage(out), "stored") {
+		t.Fatalf("the refusal: %v", out)
+	}
+	// The same compact document from another machine, stamped: within the
+	// input's bound, past the stored one.
+	from := bytes.TrimSuffix(bytes.TrimSpace(sent.Bytes()), []byte("}"))
+	from = append(from, fmt.Sprintf(`,"at":%q,"by":%q}`, time.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano), strings.Repeat("c", 32))...)
+	if len(from) > maxUIDoc {
+		t.Fatalf("another machine's document is %d bytes", len(from))
+	}
+	if err := e.srv.setUIFromElsewhere("palette", from); !errors.Is(err, ext.ErrRefused) || !strings.Contains(err.Error(), "stored") {
+		t.Fatalf("another machine's document past the bound: %v", err)
+	}
+	e.expect(t, http.MethodGet, "/api/ui/palette", nil, http.StatusOK, "")
+	dir := filepath.Join(e.srv.store.Dir(), "ui")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "palette.json"), bytes.Repeat([]byte(" "), maxUIStored+1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.expect(t, http.MethodGet, "/api/ui/palette", nil, http.StatusOK, ""); len(got) != 0 {
+		t.Fatalf("a file past the bound read as %v", got)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "palette.json.aside")); err != nil {
+		t.Fatalf("the file past the bound not set aside: %v", err)
+	}
+	putUIDoc(t, e, "palette", testPalette, http.StatusOK)
+	if got := uiFile(t, e, "palette"); got["recents"] == nil {
+		t.Fatalf("the next PUT's document: %v", got)
+	}
 }
