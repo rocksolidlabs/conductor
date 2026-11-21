@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"sync/atomic"
 
 	"github.com/rocksolidlabs/conductor/internal/brakeman"
 	"github.com/rocksolidlabs/conductor/internal/dispatch"
@@ -89,6 +90,9 @@ func (s *Server) handleDispatchRekeyProject(w http.ResponseWriter, r *http.Reque
 	if !ok {
 		return
 	}
+	if f := afterScopeCarry.Load(); f != nil {
+		(*f)()
+	}
 	rc, err := ds.RekeyProject(ctx, op, key, body.Key)
 	after := key
 	if rc.Status == dispatch.StatusDone {
@@ -99,6 +103,10 @@ func (s *Server) handleDispatchRekeyProject(w http.ResponseWriter, r *http.Reque
 	}
 	s.writeOp(w, "project", rc, err, false, "project", projectAfter(ctx, ds, after))
 }
+
+// afterScopeCarry, when a test sets it, runs between a rekey's carry into
+// Brakeman's scopes and the rekey; nil outside tests.
+var afterScopeCarry atomic.Pointer[func()]
 
 // carriedScope is what a rekey's carry changed of Brakeman's: the desk,
 // the keys, the configuration it saved (none when its scope named no such
@@ -167,10 +175,12 @@ func (s *Server) carryScopeKey(w http.ResponseWriter, ctx context.Context, ds *d
 
 // putBack undoes the carry of a rekey that did not happen. The
 // configuration saved by the carry and not since gets back the projects it
-// named; one saved again meanwhile is the person's, left as it is. The
-// requests the carry renamed, and those made since (their scope taken from
-// the carried configuration), get the inverse rename, the new key back to
-// the old; only a save that cannot be made is logged.
+// named; one saved again meanwhile gets the inverse rename, the new key
+// back to the old, the person's other edits kept. The requests the carry
+// renamed, and those made since (their scope taken from the carried
+// configuration), get the inverse rename too. So no scope of Brakeman's is
+// left naming a key no project of the person's holds; only a save that
+// cannot be made is logged.
 func (c *carriedScope) putBack() {
 	if c.config {
 		c.configBack()
@@ -197,6 +207,8 @@ func (c *carriedScope) configBack() {
 		switch {
 		case cur.Rev == c.saved.Rev:
 			cur.Scope.Projects = c.before
+		case slices.Contains(cur.Scope.Projects, c.newKey):
+			cur.Scope.Projects = renamedKey(cur.Scope.Projects, c.newKey, c.key)
 		default:
 			return
 		}

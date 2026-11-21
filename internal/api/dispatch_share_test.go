@@ -241,3 +241,51 @@ func TestAnEarlierBriefFollowsTheRekeyedProject(t *testing.T) {
 		t.Fatalf("a turn scoped to CND, the workspace's project now, is given the brief %s", earlier)
 	}
 }
+
+// A rekey not made puts Brakeman's scopes back even when the
+// configuration was saved again in between: the new key back to the old
+// in what is saved now, the person's other edit kept, and in the scope
+// stored with the earlier request the carry renamed.
+func TestARekeyNotMadePutsTheOldKeyBackInWhatWasSavedSince(t *testing.T) {
+	f := newFakeSync()
+	e := syncEnv(t, syncDataDir(t), f, bkAgents()...)
+	own := &extHost{s: e.srv, name: f.Name(), ctx: context.Background()}
+	b := bkEnvOf(t, e)
+	e.newDispatchProject(t, "CND", nil)
+	e.newDispatchTicket(t, "CND", "Mine", nil)
+	b.enable(t, "bk", func(c map[string]any) {
+		c["visibility"].(map[string]any)["dispatch"] = true
+		c["scope"] = map[string]any{"projects": []any{"CND"}}
+	})
+	_, first := b.briefedTurn(t, "CND-1")
+	if err := own.DispatchJoin(context.Background(), "b1", "w1", "dev-b", 2_000_001, 2_100_000); err != nil {
+		t.Fatal(err)
+	}
+	e.expect(t, "POST", "/api/dispatch/projects/CND/share", map[string]any{"opId": opID()}, http.StatusOK, "")
+	// The person saves the configuration between the carry and the
+	// rekey's refusal: another project added to the carried scope.
+	save := func() {
+		b.configure(t, func(c map[string]any) {
+			c["scope"] = map[string]any{"projects": append(anyStringsOf(c["scope"].(map[string]any)["projects"]), "OPS")}
+		})
+	}
+	afterScopeCarry.Store(&save)
+	t.Cleanup(func() { afterScopeCarry.Store(nil) })
+	e.expect(t, "POST", "/api/dispatch/projects/CND/rekey", map[string]any{"opId": opID(), "key": "OWN"}, http.StatusConflict, dispatch.RefusalShareInProgress)
+	scope, _ := b.config(t)["scope"].(map[string]any)
+	if got := anyStrings(scope["projects"]); !slices.Equal(got, []string{"CND", "OPS"}) {
+		t.Fatalf("the scope saved since, after the rekey not made: %v", got)
+	}
+	if r, err := b.desk.st.Get(first); err != nil || !slices.Equal(r.Config.Scope.Projects, []string{"CND"}) {
+		t.Fatalf("the earlier request's scope after the rekey not made: %v %v", r.Config.Scope.Projects, err)
+	}
+}
+
+// anyStringsOf is a JSON list of strings as a list of any, to append to.
+func anyStringsOf(v any) []any {
+	out := []any{}
+	for _, s := range anyStrings(v) {
+		out = append(out, s)
+	}
+	return out
+}
