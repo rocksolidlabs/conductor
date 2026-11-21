@@ -16,6 +16,7 @@ import (
 
 	"github.com/rocksolidlabs/conductor/ext"
 	"github.com/rocksolidlabs/conductor/internal/catalog"
+	"github.com/rocksolidlabs/conductor/internal/config"
 	"github.com/rocksolidlabs/conductor/internal/crew"
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
 	"github.com/rocksolidlabs/conductor/internal/dispatch"
@@ -49,7 +50,23 @@ func newCheckEnv(t *testing.T, seed uint64) *checkEnv {
 	e.srv.outputs.feed("ring:s-1", []byte(c.ring), 1<<20)
 	e.srv.outputs.keepText("check:r1", []byte(c.log))
 	e.srv.outputs.reader("check", func(id string) ([]byte, bool) { return []byte(c.log), id == "r1" })
+	// The index whole before the first write: a write judges what it can
+	// without waiting.
+	if !e.srv.outputs.whole(ctx) {
+		t.Fatal("the index is not whole")
+	}
 	return c
+}
+
+// settle has the settle judge every pending row, as its loop does: a text
+// the write could not judge without reading a kept source is settled.
+func (c *checkEnv) settle(t *testing.T) {
+	t.Helper()
+	waitUntil(t, "every pending row settled", func() bool {
+		c.srv.settlePending(context.Background())
+		rows, err := c.srv.dispatch.PendingRows(context.Background(), 10)
+		return err == nil && len(rows) == 0
+	})
 }
 
 // handed is every row the sync store is handed, by the sync door.
@@ -131,6 +148,7 @@ func TestAgentRowQuotingOutputIsMarked(t *testing.T) {
 func TestPersonsPasteOfCapturedOutputWithheld(t *testing.T) {
 	c := newCheckEnv(t, 25)
 	c.comment(t, adminActor, "pasted from the check: "+strings.ReplaceAll(c.log[400:520], " ", "\n"))
+	c.settle(t)
 	if d := handedRow(t, c.handed(t), "pasted from the check"); !d.OutputLike {
 		t.Fatal("a person's paste of a check's log handed out clean")
 	}
@@ -163,6 +181,7 @@ func TestVerdictKeptAfterTheSourceIsGone(t *testing.T) {
 	c := newCheckEnv(t, 29)
 	c.comment(t, adminActor, "the check said: "+c.log[100:220])
 	c.srv.outputs.prune("check:r1")
+	c.settle(t)
 	if !c.srv.outputs.whole(context.Background()) {
 		t.Fatal("not whole")
 	}
@@ -277,6 +296,54 @@ func TestPendingVerdictOfAnEndedProcessWithheld(t *testing.T) {
 	}
 }
 
+// With no sync store registered, Dispatch's writes are judged by no check
+// and keep no verdict, as before sync. With one, a write's check never
+// waits for the index nor reads a kept source inside its transaction: a
+// text it cannot judge now is written pending and settled after.
+func TestDispatchsCheckNeverWaitsInsideItsWrite(t *testing.T) {
+	ctx := context.Background()
+	plain := newTestEnv(t, func(c *config.Config) { c.DataDir = syncDataDir(t) })
+	plain.newDispatchProject(t, "CND", nil)
+	plain.newDispatchTicket(t, "CND", "The ticket", nil)
+	if rc, err := plain.srv.dispatch.AddComment(ctx, adminOp(""), "CND-1", "a person's own words, long enough to judge"); err != nil || rc.Status != dispatch.StatusDone {
+		t.Fatalf("the comment: %+v %v", rc, err)
+	}
+	if n := countVerdicts(t, plain.srv.dispatch); n != 0 {
+		t.Fatalf("%d rows with a verdict on a server with no sync store", n)
+	}
+	c := newCheckEnv(t, 43)
+	release := holdIndex(t, c.srv.outputs)
+	c.srv.outputs.feed("ring:s-2", []byte(words(rand.New(rand.NewPCG(44, 45)), 3000)), 1<<20)
+	before := c.srv.outputs.waited.Load()
+	c.comment(t, adminActor, "another person's note, long enough to judge, written while the index is behind")
+	if n := c.srv.outputs.waited.Load(); n != before {
+		t.Fatalf("the write waited for the index %d times", n-before)
+	}
+	if r := c.lastRow(t, dispatch.EntityComment, ""); r.Output != verdictPending {
+		t.Fatalf("the write's verdict with the index behind: %q", r.Output)
+	}
+	release()
+	waitUntil(t, "the pending row settled", func() bool {
+		return c.lastRow(t, dispatch.EntityComment, "").Output == verdictClean
+	})
+}
+
+// countVerdicts is how many change rows carry a verdict.
+func countVerdicts(t *testing.T, ds *dispatch.Store) int {
+	t.Helper()
+	rows, _, err := ds.ChangesFrom(context.Background(), 0, dispatch.MaxChangesPage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, r := range rows {
+		if r.Output != "" || r.PriorOutput != "" {
+			n++
+		}
+	}
+	return n
+}
+
 // A process settles only the rows it wrote pending: a second server over
 // the same folder, its index whole and blind to the first's sessions,
 // makes the first's pending row output, never clean, while the first
@@ -372,6 +439,7 @@ func TestCheckLogFromTheLedgerIsASource(t *testing.T) {
 		t.Fatal(err)
 	}
 	c.comment(t, adminActor, "the test's log says "+logText[800:900])
+	c.settle(t)
 	if r := c.lastRow(t, dispatch.EntityComment, ""); r.Output != verdictOutput {
 		t.Fatalf("a quote of a check's log: %q", r.Output)
 	}

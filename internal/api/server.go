@@ -126,6 +126,10 @@ type Server struct {
 	// tick in place of settleEvery.
 	settleDue  atomic.Bool
 	settleWake chan struct{}
+	// rowsDue is set when Dispatch's check writes a row pending, and
+	// rowsWake wakes Dispatch's settle loop once its commit is told.
+	rowsDue    atomic.Bool
+	rowsWake   chan struct{}
 	settleTick time.Duration
 	// settlePass and settleWaits are the tests' seams on the loop
 	// (options.settlePass, options.settleWaits); nil outside them.
@@ -601,6 +605,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		relayed:     newRelayMeter(nil),
 		rechecking:  make(chan struct{}, 1),
 		settleWake:  make(chan struct{}, 1),
+		rowsWake:    make(chan struct{}, 1),
 	}
 	// Every provider behind the guard before the server's first write of
 	// its own (the ledger's recovery, the records): nothing calls them yet.
@@ -755,13 +760,24 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 				}
 			}
 		}
-		if s.dispatch != nil && s.copyCheck != nil {
+		// With no sync store registered nothing of Dispatch leaves the
+		// machine, and its writes are judged by no check, as before.
+		if s.dispatch != nil && s.copyCheck != nil && s.syncName() != "" {
 			if n, err := s.dispatch.WithholdPending(context.Background()); err != nil {
 				log.Warn("pending verdicts could not be withheld", "err", err)
 			} else if n > 0 {
 				log.Info("verdicts left pending by the server before this one withheld", "rows", n)
 			}
 			s.dispatch.SetOutputCheck(s.judgeRow)
+			// A row written pending wakes the settle once its commit is told.
+			s.dispatch.OnChange(func([]dispatch.Change) {
+				if s.rowsDue.Swap(false) {
+					select {
+					case s.rowsWake <- struct{}{}:
+					default:
+					}
+				}
+			})
 			// A verdict left pending (the index behind, past its bound) is judged
 			// again once it is whole, until the server ends.
 			ctx := s.extCtx

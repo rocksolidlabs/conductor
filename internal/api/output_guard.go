@@ -90,9 +90,21 @@ func (g *outputGuard) JudgeNow(_ context.Context, text string, agent bool) strin
 // itself, or, when it is JSON (a create's fields, a list's members), each
 // string it holds, the worst of them (output, then pending, then clean).
 func (g *outputGuard) JudgeValue(ctx context.Context, value string, agent bool) string {
+	return g.judgeValue(ctx, value, agent, g.Judge)
+}
+
+// JudgeValueNow is JudgeValue in the form a write's transaction calls, as
+// JudgeNow: it never waits and never reads a kept source; what it cannot
+// judge now is pending, settled outside the transaction.
+func (g *outputGuard) JudgeValueNow(ctx context.Context, value string, agent bool) string {
+	return g.judgeValue(ctx, value, agent, g.JudgeNow)
+}
+
+// judgeValue is JudgeValue by judge.
+func (g *outputGuard) judgeValue(ctx context.Context, value string, agent bool, judge func(context.Context, string, bool) string) string {
 	var v any
 	if len(value) < indexLine || json.Unmarshal([]byte(value), &v) != nil {
-		return g.Judge(ctx, value, agent)
+		return judge(ctx, value, agent)
 	}
 	worst := verdictClean
 	if _, ok := v.(string); !ok && agentTextIsOutput && agent {
@@ -105,7 +117,7 @@ func (g *outputGuard) JudgeValue(ctx context.Context, value string, agent bool) 
 		}
 		switch t := v.(type) {
 		case string:
-			if s := g.Judge(ctx, t, agent); s == verdictOutput || s == verdictPending && worst == verdictClean {
+			if s := judge(ctx, t, agent); s == verdictOutput || s == verdictPending && worst == verdictClean {
 				worst = s
 			}
 		case []any:
@@ -233,8 +245,8 @@ func (s *Server) settlePending(ctx context.Context) int {
 	return n
 }
 
-// settleLoop judges the pending verdicts again every settleEvery until ctx
-// ends.
+// settleLoop judges the pending verdicts again when a write left one
+// pending (rowsWake) and every settleEvery besides, until ctx ends.
 func (s *Server) settleLoop(ctx context.Context) {
 	t := time.NewTicker(settleEvery)
 	defer t.Stop()
@@ -243,8 +255,9 @@ func (s *Server) settleLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			s.settlePending(ctx)
+		case <-s.rowsWake:
 		}
+		s.settlePending(ctx)
 	}
 }
 
@@ -374,17 +387,23 @@ func withOutputNotHeld(ctx context.Context) context.Context {
 	return context.WithValue(ctx, outputNotHeld{}, true)
 }
 
-// judgeRow is the check Dispatch's writes are judged by: an agent's text
-// whose output the server does not hold is output (it stays on this
-// machine), failing closed where the check cannot look; every other text
-// goes through the guard.
+// judgeRow is the check Dispatch's writes are judged by, inside their
+// transaction: an agent's text whose output the server does not hold is
+// output (it stays on this machine), failing closed where the check cannot
+// look; every other text goes through the guard without waiting or reading
+// a kept source, and one it cannot judge now is pending, which wakes the
+// settle once the write's commit is told.
 func (s *Server) judgeRow(ctx context.Context, text string, agent bool) string {
 	if agent && text != "" && ctx.Value(outputNotHeld{}) != nil {
 		// Counted for the sync status's words (sync_status.go).
 		s.hostedKept.Add(1)
 		return verdictOutput
 	}
-	return s.copyCheck.JudgeValue(ctx, text, agent)
+	v := s.copyCheck.JudgeValueNow(ctx, text, agent)
+	if v == verdictPending {
+		s.rowsDue.Store(true)
+	}
+	return v
 }
 
 // historySource is a history record's entry as the index names it:
