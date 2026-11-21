@@ -377,6 +377,9 @@ type tx struct {
 	// blockLow is a shared project whose current block a create took past
 	// its half, for OnBlockLow after the commit.
 	blockLow string
+	// pending is the rows the operation wrote with a pending verdict, the
+	// store's own once committed (Store.pendingMine).
+	pending []int64
 }
 
 // touched is an entity a change row named, with the ticket and the
@@ -445,6 +448,9 @@ func (t *tx) record(c ChangeRow) error {
 		return err
 	}
 	t.seq, t.n = seq, t.n+1
+	if output == VerdictPending || prior == VerdictPending {
+		t.pending = append(t.pending, seq)
+	}
 	if e, ok := searchedBy(c); ok && !slices.Contains(t.searched, e) {
 		t.searched = append(t.searched, e)
 	}
@@ -780,6 +786,12 @@ func (s *Store) apply(ctx context.Context, op Op, intent, fp string, change func
 		return Receipt{}, nil, err
 	}
 	s.low = t.blockLow
+	for _, seq := range t.pending {
+		if s.pendingMine == nil {
+			s.pendingMine = map[int64]bool{}
+		}
+		s.pendingMine[seq] = true
+	}
 	return rc, t.changes(), nil
 }
 

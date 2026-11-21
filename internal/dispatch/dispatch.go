@@ -120,6 +120,10 @@ type Store struct {
 
 	// outputCheck is the copied-output check (SetOutputCheck), nil for none.
 	outputCheck OutputCheck
+	// pendingMine is the rows this process wrote with a pending verdict,
+	// by seq, under mu: the only pending rows it settles by its check
+	// (PendingRows' Mine); any other process's is output.
+	pendingMine map[int64]bool
 	// blockLow is what OnBlockLow set, and blockLowBusy whether a call of
 	// it has not returned (the next is dropped until it does).
 	blockLow     func(project string)

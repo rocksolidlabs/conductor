@@ -277,6 +277,73 @@ func TestPendingVerdictOfAnEndedProcessWithheld(t *testing.T) {
 	}
 }
 
+// A process settles only the rows it wrote pending: a second server over
+// the same folder, its index whole and blind to the first's sessions,
+// makes the first's pending row output, never clean, while the first
+// settles its own by its check.
+func TestAPendingRowIsSettledByTheProcessThatWroteIt(t *testing.T) {
+	dir := syncDataDir(t)
+	a := syncEnv(t, dir, newFakeSync())
+	ctx := context.Background()
+	a.newDispatchProject(t, "CND", nil)
+	a.newDispatchTicket(t, "CND", "The ticket", nil)
+	b := syncEnv(t, dir, newFakeSync())
+	ring := words(rand.New(rand.NewPCG(41, 42)), 3000)
+	a.srv.outputs.feed("ring:s-1", []byte(ring), 1<<20)
+	if !a.srv.outputs.whole(ctx) {
+		t.Fatal("a's index not whole")
+	}
+	a.srv.outputs.mu.Lock()
+	a.srv.outputs.rebuilding = true
+	a.srv.outputs.mu.Unlock()
+	for _, body := range []string{"quoting a's ring: " + ring[700:800], "a person's own words, long enough to judge"} {
+		if rc, err := a.srv.dispatch.AddComment(ctx, adminOp(""), "CND-1", body); err != nil || rc.Status != dispatch.StatusDone {
+			t.Fatalf("the comment: %+v %v", rc, err)
+		}
+	}
+	pending, err := b.srv.dispatch.PendingRows(ctx, 10)
+	if err != nil || len(pending) == 0 || slices.ContainsFunc(pending, func(r dispatch.PendingRow) bool { return r.Mine }) {
+		t.Fatalf("a's pending rows as b reads them: %+v %v", pending, err)
+	}
+	if n := b.srv.settlePending(ctx); n != len(pending) {
+		t.Fatalf("b settled %d of a's %d rows", n, len(pending))
+	}
+	verdict := func(text string) string {
+		rows, _, err := b.srv.dispatch.ChangesFrom(ctx, 0, dispatch.MaxChangesPage)
+		if err != nil {
+			t.Fatal(err)
+		}
+		i := slices.IndexFunc(rows, func(c dispatch.ChangeRow) bool { return strings.Contains(c.Value, text) })
+		if i < 0 {
+			t.Fatalf("no row of %q", text)
+		}
+		return rows[i].Output
+	}
+	if v := verdict("quoting a's ring"); v != verdictOutput {
+		t.Fatalf("a's quote settled by b: %q", v)
+	}
+	if v := verdict("a person's own words"); v != verdictOutput {
+		t.Fatalf("a's own words settled by b: %q", v)
+	}
+	// a's own pending row is a's to settle by its check.
+	if rc, err := a.srv.dispatch.AddComment(ctx, adminOp(""), "CND-1", "another person's note, long enough to judge"); err != nil || rc.Status != dispatch.StatusDone {
+		t.Fatalf("the comment: %+v %v", rc, err)
+	}
+	a.srv.outputs.mu.Lock()
+	a.srv.outputs.rebuilding = false
+	a.srv.outputs.mu.Unlock()
+	mine, err := a.srv.dispatch.PendingRows(ctx, 10)
+	if err != nil || len(mine) == 0 || slices.ContainsFunc(mine, func(r dispatch.PendingRow) bool { return !r.Mine }) {
+		t.Fatalf("a's own pending rows: %+v %v", mine, err)
+	}
+	if n := a.srv.settlePending(ctx); n != len(mine) {
+		t.Fatalf("a settled %d of its own %d", n, len(mine))
+	}
+	if v := verdict("another person's note"); v != verdictClean {
+		t.Fatalf("a's own row settled by a: %q", v)
+	}
+}
+
 // A check's log the ledger keeps is a source from its commit: a comment
 // quoting it is output, confirmed through the ledger's own row; once the
 // run is pruned the log goes with it, and a new comment quoting it is

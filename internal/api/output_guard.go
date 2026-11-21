@@ -193,9 +193,11 @@ func (s *Server) handedVerdicts(ctx context.Context, c dispatch.ChangeRow) (stri
 const settleEvery = 2 * time.Second
 
 // settlePending judges every pending verdict again once the index is
-// whole: output when a source was pruned after the row was written (what
-// it quoted may be gone), else what the check finds now. It answers how
-// many rows it settled.
+// whole: output for a row this process did not write (another process's,
+// beside this one over the same folder or one that ended: what it may
+// have quoted lived in that process's memory), and when a source was
+// pruned after the row was written (what it quoted may be gone), else what
+// the check finds now. It answers how many rows it settled.
 func (s *Server) settlePending(ctx context.Context) int {
 	if s.dispatch == nil || s.copyCheck == nil || !s.outputs.whole(ctx) {
 		return 0
@@ -215,7 +217,7 @@ func (s *Server) settlePending(ctx context.Context) int {
 			if verdict != verdictPending {
 				return verdict
 			}
-			if pruned {
+			if pruned || !r.Mine {
 				return verdictOutput
 			}
 			return s.copyCheck.JudgeValue(ctx, text, agent)

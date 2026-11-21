@@ -66,7 +66,11 @@ func (s *Store) WithholdPending(ctx context.Context) (int64, error) {
 }
 
 // PendingRow is a row a verdict of which is pending: its position, its
-// value and prior, when and by whom it was written, and its verdicts.
+// value and prior, when and by whom it was written, its verdicts, and
+// whether this process wrote it (Mine): the only rows a process settles by
+// its check, since the output a row may have quoted lived in the memory of
+// the process that wrote it. Another process's pending row, one running
+// beside this one over the same folder or one that ended, is output.
 type PendingRow struct {
 	Seq          int64
 	Value, Prior string
@@ -74,6 +78,7 @@ type PendingRow struct {
 	Actor        string
 	Output       string
 	PriorOutput  string
+	Mine         bool
 }
 
 // MaxPendingPage bounds PendingRows.
@@ -104,13 +109,18 @@ func (s *Store) PendingRows(ctx context.Context, limit int) ([]PendingRow, error
 		}
 		return rows.Err()
 	})
+	s.mu.Lock()
+	for i := range out {
+		out[i].Mine = s.pendingMine[out[i].Seq]
+	}
+	s.mu.Unlock()
 	return out, err
 }
 
 // SettleVerdicts writes a pending row's verdicts as judged now: each
 // verdict that is pending takes the one given; one already settled stays.
 func (s *Store) SettleVerdicts(ctx context.Context, seq int64, output, priorOutput string) error {
-	return s.writeTx(ctx, func(dbtx *sql.Tx, _ time.Time) error {
+	err := s.writeTx(ctx, func(dbtx *sql.Tx, _ time.Time) error {
 		if _, err := dbtx.ExecContext(ctx, `UPDATE changes SET output = CASE WHEN output = ? THEN ? ELSE output END,
 			prior_output = CASE WHEN prior_output = ? THEN ? ELSE prior_output END WHERE seq = ?`,
 			VerdictPending, output, VerdictPending, priorOutput, seq); err != nil {
@@ -118,4 +128,10 @@ func (s *Store) SettleVerdicts(ctx context.Context, seq int64, output, priorOutp
 		}
 		return nil
 	})
+	if err == nil && output != VerdictPending && priorOutput != VerdictPending {
+		s.mu.Lock()
+		delete(s.pendingMine, seq)
+		s.mu.Unlock()
+	}
+	return err
 }
