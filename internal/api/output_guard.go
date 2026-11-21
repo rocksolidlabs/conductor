@@ -232,25 +232,37 @@ func (s *Server) settlePending(ctx context.Context) int {
 	}
 	n := 0
 	for _, r := range rows {
-		// A row of this process's own is settled against the prunes since
-		// it was written; another's is output, below.
-		pruned, err := s.outputs.prunedSince(r.Written)
-		if err != nil {
-			return n
-		}
 		agent := dispatch.AgentActor(r.Actor)
 		judge := func(verdict, text string) string {
 			if verdict != verdictPending {
 				return verdict
 			}
-			if pruned || !r.Mine {
+			if !r.Mine {
 				return verdictOutput
 			}
 			return s.copyCheck.JudgeValue(ctx, text, agent)
 		}
+		// The judgement first, then the prunes since the row was written:
+		// a prune the judgement's wait let run (a session ended, a hole
+		// closed) is counted, and what it let go is output.
 		output, prior := judge(r.Output, r.Value), judge(r.PriorOutput, r.Prior)
 		if output == verdictPending || prior == verdictPending {
 			continue
+		}
+		if s.settleBetween != nil {
+			s.settleBetween(r.Value)
+		}
+		pruned, err := s.outputs.prunedSince(r.Written)
+		if err != nil {
+			return n
+		}
+		if pruned {
+			if r.Output == verdictPending {
+				output = verdictOutput
+			}
+			if r.PriorOutput == verdictPending {
+				prior = verdictOutput
+			}
 		}
 		if s.dispatch.SettleVerdicts(ctx, r.Seq, output, prior) == nil {
 			n++

@@ -517,16 +517,21 @@ func (s *Server) settleDecisionParts(ctx context.Context) (int, bool) {
 		if err != nil || !ok {
 			continue
 		}
+		// The judgement first, then the prunes since the part was written,
+		// counting any the judgement's wait let run.
+		v := s.copyCheck.Judge(ctx, partText(rec, p.Part), rec.Origin == ledger.OriginAgent && requestPart(p.Part))
+		if v == verdictPending {
+			continue
+		}
+		if s.settleBetween != nil {
+			s.settleBetween(partText(rec, p.Part))
+		}
 		pruned, err := s.outputs.prunedSince(partWrittenAt(rec, p.Part))
 		if err != nil {
 			return n, true
 		}
-		v := verdictOutput
-		if !pruned {
-			v = s.copyCheck.Judge(ctx, partText(rec, p.Part), rec.Origin == ledger.OriginAgent && requestPart(p.Part))
-		}
-		if v == verdictPending {
-			continue
+		if pruned {
+			v = verdictOutput
 		}
 		if s.ledger.SettleOutput(ctx, p.N, p.Part, v) == nil {
 			n++
