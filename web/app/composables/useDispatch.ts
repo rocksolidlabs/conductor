@@ -44,7 +44,10 @@ export interface DispatchProject {
   createdAt: string
   updatedAt: string
   rev: number
-  /** The project's share (docs/plans/sync-seams.md, OS-1b): pending, completing, shared, dormant or refused, with its words. */
+  /**
+   * The project's share (docs/plans/sync-seams.md, OS-1b): pending, completing, shared, dormant or refused, with its words; '' with
+   * words for a share interrupted (this machine's data copied) or a project no longer shared, unshared again.
+   */
   share?: ProjectShare
   /** Another machine's project of the same key that this one's key holds back, and how many of its rows wait. */
   heldBy?: { key: string; rows: number }
@@ -52,10 +55,21 @@ export interface DispatchProject {
 
 /** A project's share as its page shows it. */
 export interface ProjectShare {
-  state: 'pending' | 'completing' | 'shared' | 'dormant' | 'refused'
+  state: '' | 'pending' | 'completing' | 'shared' | 'dormant' | 'refused'
   words?: string
   reservedTo?: number
   shared?: string
+}
+
+/** The shares from which a person may share a project (project.share): none, unshared again with its words, refused, dormant. */
+const SHAREABLE: ReadonlyArray<ProjectShare['state']> = ['', 'refused', 'dormant']
+
+/**
+ * Whether a project's page offers Share this project: a project not archived whose share is none, unshared again (an interrupted
+ * share's "share it again"), refused or dormant, as the store takes a share from each; never one pending, completing or shared.
+ */
+export function canShareProject(project: Pick<DispatchProject, 'share'>, archived: boolean): boolean {
+  return !archived && (!project.share || SHAREABLE.includes(project.share.state))
 }
 
 /** A project as the projects page lists it: its counts of open and done tickets, without its description, folder, URL or policy. */

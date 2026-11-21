@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as vue from 'vue'
+import { canShareProject, type ProjectShare } from './useDispatch'
 import { REMOTE_POLL_MS, useRemote, useSyncStatus } from './useRemote'
 
 // Other machines' records and the sync store's state (docs/plans/sync-seams.md, OS-4), read only while a sync store is registered:
@@ -213,8 +214,21 @@ describe('the controls a sync store brings', () => {
     expect(share).toContain("const shown = computed(() => caps.has('sync'))")
     expect(share).toMatch(/<section\s+v-if="shown"[^>]*data-project-share/)
     expect(share).toMatch(/v-if="canShare"\s+label="Share this project"/)
+    expect(share).toContain('const canShare = computed(() => canShareProject(props.project, props.archived))')
     expect(share).toContain("const canRekey = computed(() => !props.archived && (props.project.share?.state === 'refused' || !!props.project.heldBy))")
     expect(share).toMatch(/label="Give this project another key"/)
+  })
+
+  it('offers Share in every state the store takes a share from, and in no other', () => {
+    const at = (state: ProjectShare['state'] | null, words?: string) => ({ share: state === null ? undefined : { state, words } })
+    const offered = (p: ReturnType<typeof at>, archived = false) => canShareProject(p, archived)
+    expect(offered(at(null))).toBe(true)
+    expect(offered(at('', "sharing was interrupted when this machine's data was copied: share it again"))).toBe(true)
+    expect(offered(at('refused', 'the key is taken'))).toBe(true)
+    expect(offered(at('dormant'))).toBe(true)
+    for (const state of ['pending', 'completing', 'shared'] as const) expect(offered(at(state))).toBe(false)
+    expect(offered(at(null), true)).toBe(false)
+    expect(offered(at('dormant'), true)).toBe(false)
   })
 
   it("draws the Sync row from the store's report, with what was kept beneath it, only with a sync store", () => {

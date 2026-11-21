@@ -1,12 +1,12 @@
 <script setup lang="ts">
-import type { DispatchProject, ProjectReply } from '~/composables/useDispatch'
+import { canShareProject, type DispatchProject, type ProjectReply } from '~/composables/useDispatch'
 import { dispatchFailureWords } from '~/composables/useDispatchOps'
 import { mintCommandId } from '~/utils/tasks'
 import { shareWords } from '~/utils/dispatchShare'
 
 /**
  * A project's share (docs/plans/sync-seams.md, OS-1b and OS-4), shown only with a sync store registered: its state and words, **Share
- * this project** while it is not shared, and **Give this project another key** for a project refused for its key or holding another
+ * this project** in every state the store takes a share from (canShareProject: none, unshared again, refused, dormant), and **Give this project another key** for a project refused for its key or holding another
  * machine's rows back for one (project.rekey). The project read after a write is the caller's to apply (`changed`, `rekeyed`).
  */
 const props = defineProps<{ project: DispatchProject; archived: boolean }>()
@@ -15,7 +15,7 @@ const caps = useCapabilities()
 const { request } = useApi()
 const shown = computed(() => caps.has('sync'))
 const words = computed(() => shareWords(props.project))
-const canShare = computed(() => !props.archived && (!props.project.share || props.project.share.state === 'refused'))
+const canShare = computed(() => canShareProject(props.project, props.archived))
 const canRekey = computed(() => !props.archived && (props.project.share?.state === 'refused' || !!props.project.heldBy))
 const busy = ref(false)
 const failure = ref('')
