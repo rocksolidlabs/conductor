@@ -238,7 +238,8 @@ func (a *applier) projectSet(ticket, field string) error {
 				deleted = stamp(removedAt(rows, TagOf(r)))
 			}
 			if _, err := a.tx.ExecContext(a.ctx, `INSERT INTO relations (id, from_id, to_id, kind, created_at, created_by, deleted_at) VALUES (?, ?, ?, ?, ?, ?, ?)
-				ON CONFLICT (id) DO UPDATE SET deleted_at = CASE WHEN excluded.deleted_at = '' THEN '' WHEN relations.deleted_at != '' THEN relations.deleted_at ELSE excluded.deleted_at END`,
+				ON CONFLICT (id) DO UPDATE SET deleted_at = CASE WHEN excluded.deleted_at = '' THEN '' WHEN relations.deleted_at != '' THEN relations.deleted_at ELSE excluded.deleted_at END
+				WHERE relations.from_id = excluded.from_id`,
 				rel.ID, rel.FromID, rel.ToID, rel.Kind, stamp(rel.CreatedAt), rel.CreatedBy, deleted); err != nil {
 				return err
 			}
@@ -263,7 +264,8 @@ func (a *applier) projectSet(ticket, field string) error {
 			}
 			if _, err := a.tx.ExecContext(a.ctx, `INSERT INTO links (id, ticket_id, kind, ref, url, note, candidate, verified, created_at, created_by, fingerprint, deleted_at)
 				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-				ON CONFLICT (id) DO UPDATE SET deleted_at = CASE WHEN excluded.deleted_at = '' THEN '' WHEN links.deleted_at != '' THEN links.deleted_at ELSE excluded.deleted_at END`,
+				ON CONFLICT (id) DO UPDATE SET deleted_at = CASE WHEN excluded.deleted_at = '' THEN '' WHEN links.deleted_at != '' THEN links.deleted_at ELSE excluded.deleted_at END
+				WHERE links.ticket_id = excluded.ticket_id`,
 				l.ID, ticket, l.Kind, l.Ref, l.URL, l.Note, l.Candidate, verified, stamp(l.CreatedAt), l.CreatedBy, l.Fingerprint, deleted); err != nil {
 				return err
 			}

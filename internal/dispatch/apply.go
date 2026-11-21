@@ -387,8 +387,10 @@ func (a *applier) offer(c ChangeRow) error {
 // (a comment's or a revision's through the ticket it names, which must be
 // the row's ticket), any other row by the stored entity's project; a
 // ticket's relation from another ticket than the row's, or to a ticket of
-// a project not shared here; a label added from another project. What is
-// not held here yet is judged when the row is offered again.
+// a project not shared here; a relation or a link added under an id held
+// here for another ticket (memberBound); a label added from another
+// project. What is not held here yet is judged when the row is offered
+// again.
 func (a *applier) bound(c ChangeRow) error {
 	if c.Entity == EntityPerson {
 		return nil
@@ -416,6 +418,9 @@ func (a *applier) bound(c ChangeRow) error {
 			return fmt.Errorf("%w: a relation of %s from %s", ErrNotShared, c.EntityID, rel.FromID)
 		}
 	}
+	if err := a.memberBound(c); err != nil {
+		return err
+	}
 	// Every reference the row carries (Refs, the one list of them): a
 	// referenced entity held here is of the row's project, but for a
 	// relation's far end, which may be of another project that is shared.
@@ -438,6 +443,36 @@ func (a *applier) bound(c ChangeRow) error {
 			continue
 		}
 		return fmt.Errorf("%w: %s's %s %s refers to %s %s of project %s", ErrNotShared, c.Entity, c.EntityID, c.Field, kind, id, of)
+	}
+	return nil
+}
+
+// memberBound refuses (ErrNotShared) a ticket's relation or link added
+// under an id this store holds for another ticket than the row's: a
+// member's own id names one ticket's member, of the ticket it was made on,
+// whatever project another ticket of that id is in.
+func (a *applier) memberBound(c ChangeRow) error {
+	if c.Entity != EntityTicket || c.Op != OpAdd || c.Field != "relations" && c.Field != "links" {
+		return nil
+	}
+	var member struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(c.Value), &member); err != nil {
+		return err
+	}
+	q := "SELECT from_id FROM relations WHERE id = ?"
+	if c.Field == "links" {
+		q = "SELECT ticket_id FROM links WHERE id = ?"
+	}
+	var of string
+	switch err := a.tx.QueryRowContext(a.ctx, q, member.ID).Scan(&of); {
+	case isNoRows(err):
+		return nil
+	case err != nil:
+		return err
+	case of != c.EntityID:
+		return fmt.Errorf("%w: %s %s of %s is held here for %s", ErrNotShared, c.Field, member.ID, c.EntityID, of)
 	}
 	return nil
 }
