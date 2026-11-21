@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"slices"
@@ -99,39 +100,46 @@ func (s *Server) handleDispatchRekeyProject(w http.ResponseWriter, r *http.Reque
 	s.writeOp(w, "project", rc, err, false, "project", projectAfter(ctx, ds, after))
 }
 
-// carriedScope is Brakeman's scope as a rekey's carry left it: the desk,
-// the configuration it saved and the projects the scope named before.
+// carriedScope is what a rekey's carry changed of Brakeman's: the desk,
+// the keys, the configuration it saved (none when its scope named no such
+// key) and the projects that scope named before, and the requests whose
+// stored scope it renamed, with the newest request's number kept then.
 type carriedScope struct {
-	s      *Server
-	d      *brakemanDesk
-	saved  brakeman.Config
-	before []string
-	key    string
+	s           *Server
+	d           *brakemanDesk
+	key, newKey string
+	config      bool
+	saved       brakeman.Config
+	before      []string
+	requests    []string
+	newest      int64
 }
 
-// carryScopeKey carries a project's new key into Brakeman's scope before
-// the rekey: a scope that names the project's key names its new key
-// instead, saved through the configuration's own save, so the rows held
-// for the old key, applied once the key is free, are received under a
-// key the scope does not name, and the person's grant follows their
-// project. It carries nothing where the scope names no such key, for a
-// repeat of a rekey already answered (its receipt held), and for a new
-// key another project holds (the rekey refuses it); ok false when the
-// save cannot be made, the rekey refused, answered here, 409
+// carryScopeKey carries a project's new key into Brakeman's scopes before
+// the rekey: the configuration's scope that names the project's key names
+// its new key instead, saved through the configuration's own save, and so
+// does the scope stored with every request Brakeman keeps, which an
+// earlier brief is given whole by (Scope.Covers). The rows held for the
+// old key, applied once the key is free, are then received under a key no
+// scope of Brakeman's names, and the person's grant and their earlier
+// briefs follow their project. It carries nothing for a repeat of a rekey
+// already answered (its receipt held) and for a new key another project
+// holds (the rekey refuses it); ok false when a save cannot be made, what
+// was carried put back and the rekey refused, answered here, 409
 // scope_not_saved.
 func (s *Server) carryScopeKey(w http.ResponseWriter, ctx context.Context, ds *dispatch.Store, op dispatch.Op, key, newKey string) (*carriedScope, bool) {
 	d := s.brakeman
 	if s.cfg.Switchyard.Enabled || d == nil || key == newKey {
 		return nil, true
 	}
-	cur, err := d.st.Config()
-	if err != nil {
-		s.log.Warn("a rekey could not read Brakeman's configuration", "project", key, "err", err)
-		writeError(w, http.StatusConflict, "scope_not_saved", fmt.Sprintf("Brakeman's configuration could not be read, so %s's key is unchanged: try again", key))
+	refuse := func(err error, words string) (*carriedScope, bool) {
+		s.log.Warn("a rekey could not carry the new key into Brakeman's scopes", "project", key, "key", newKey, "err", err)
+		writeError(w, http.StatusConflict, "scope_not_saved", words)
 		return nil, false
 	}
-	if !slices.Contains(cur.Scope.Projects, key) {
-		return nil, true
+	cur, err := d.st.Config()
+	if err != nil {
+		return refuse(err, fmt.Sprintf("Brakeman's configuration could not be read, so %s's key is unchanged: try again", key))
 	}
 	if _, found, err := ds.Receipt(ctx, op.Actor, op.ID); err == nil && found {
 		return nil, true // a repeat: its receipt answers it, as it did
@@ -139,29 +147,65 @@ func (s *Server) carryScopeKey(w http.ResponseWriter, ctx context.Context, ds *d
 	if _, err := ds.Project(ctx, newKey); err == nil {
 		return nil, true // the key is another project's: the rekey refuses it
 	}
-	next := cur
-	next.Scope.Projects = renamedKey(cur.Scope.Projects, key, newKey)
-	saved, err := s.saveBrakemanConfig(d, next)
-	if err != nil {
-		s.log.Warn("a rekey could not carry the new key into Brakeman's scope", "project", key, "key", newKey, "err", err)
-		writeError(w, http.StatusConflict, "scope_not_saved", fmt.Sprintf("Brakeman's scope names %s, and its configuration could not be saved with %s in its place, so the key is unchanged: try again", key, newKey))
-		return nil, false
+	c := &carriedScope{s: s, d: d, key: key, newKey: newKey}
+	if slices.Contains(cur.Scope.Projects, key) {
+		next := cur
+		next.Scope.Projects = renamedKey(cur.Scope.Projects, key, newKey)
+		saved, err := s.saveBrakemanConfig(d, next)
+		if err != nil {
+			return refuse(err, fmt.Sprintf("Brakeman's scope names %s, and its configuration could not be saved with %s in its place, so the key is unchanged: try again", key, newKey))
+		}
+		c.config, c.saved, c.before = true, saved, cur.Scope.Projects
 	}
-	return &carriedScope{s: s, d: d, saved: saved, before: cur.Scope.Projects, key: key}, true
+	c.requests, c.newest, err = d.st.RenameProject(key, newKey, nil)
+	if err != nil {
+		c.putBack()
+		return refuse(err, fmt.Sprintf("Brakeman's earlier requests could not be saved with %s in place of %s, so the key is unchanged: try again", newKey, key))
+	}
+	return c, true
 }
 
-// putBack gives Brakeman's scope back the projects it named before a
-// rekey that did not happen, when nothing has saved the configuration
-// since; a later save is the person's, left as it is.
+// putBack undoes the carry of a rekey that did not happen. The
+// configuration saved by the carry and not since gets back the projects it
+// named; one saved again meanwhile is the person's, left as it is. The
+// requests the carry renamed, and those made since (their scope taken from
+// the carried configuration), get the inverse rename, the new key back to
+// the old; only a save that cannot be made is logged.
 func (c *carriedScope) putBack() {
-	cur, err := c.d.st.Config()
-	if err != nil || cur.Rev != c.saved.Rev {
-		c.s.log.Warn("Brakeman's scope keeps a rekey's new key: its configuration was saved again or could not be read", "project", c.key, "err", err)
-		return
+	if c.config {
+		c.configBack()
 	}
-	cur.Scope.Projects = c.before
-	if _, err := c.s.saveBrakemanConfig(c.d, cur); err != nil {
-		c.s.log.Warn("Brakeman's scope keeps a rekey's new key: it could not be saved back", "project", c.key, "err", err)
+	renamed := map[string]bool{}
+	for _, id := range c.requests {
+		renamed[id] = true
+	}
+	only := func(id string) bool { return renamed[id] || brakeman.RequestNumber(id) > c.newest }
+	if _, _, err := c.d.st.RenameProject(c.newKey, c.key, only); err != nil {
+		c.s.log.Warn("Brakeman's earlier requests keep a rekey's new key: they could not be saved back", "project", c.key, "key", c.newKey, "err", err)
+	}
+}
+
+// configBack gives the configuration back its scope (putBack), a few
+// tries over saves made meanwhile.
+func (c *carriedScope) configBack() {
+	var err error
+	for range 3 {
+		var cur brakeman.Config
+		if cur, err = c.d.st.Config(); err != nil {
+			break
+		}
+		switch {
+		case cur.Rev == c.saved.Rev:
+			cur.Scope.Projects = c.before
+		default:
+			return
+		}
+		if _, err = c.s.saveBrakemanConfig(c.d, cur); err == nil || !errors.Is(err, brakeman.ErrStale) {
+			break
+		}
+	}
+	if err != nil {
+		c.s.log.Warn("Brakeman's scope keeps a rekey's new key: it could not be saved back", "project", c.key, "key", c.newKey, "err", err)
 	}
 }
 
