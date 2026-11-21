@@ -961,3 +961,42 @@ func TestARerouteBetweenTheAskAndTheAnswerIsStale(t *testing.T) {
 		})
 	}
 }
+
+// The walk's sequence (#1063): a routed decision answered by Ana, eligible,
+// and applied; its router then holds it no more and answers "in force,
+// behind" for it. A second answer says the decision is answered, by Ana,
+// as on a server with no router, whether the operator answers plainly or
+// by override; nothing more is recorded. An open decision under a policy
+// that is behind is still refused stale_policy, unkept.
+func TestASecondAnswerToARoutedDecisionSaysWhoAnswered(t *testing.T) {
+	f := newPolicyFixture(t)
+	did := f.routed(t, "r1", "dr-1", anaPolicy(ext.OverrideOperator))
+	f.inForce(did)
+	if status, data, _ := f.respondAs(t, passAna, did, "a1", 0, f.rev(t, did)); status != http.StatusCreated {
+		t.Fatalf("ana's answer: %d %s", status, data)
+	}
+	f.decisionWhen(t, did, "applied", inState(ledger.DecisionApplied))
+	behind := func(ext.ConfirmQuery) ext.Confirmation { return ext.Confirmation{InForce: true, Behind: true} }
+	f.fr.SetConfirm(did, behind)
+	rec := f.record(t, did)
+	for i, override := range []bool{false, true} {
+		rationale := ""
+		if override {
+			rationale = "Ana is away this week"
+		}
+		status, data, out := f.callAs(t, adminToken, http.MethodPost, "/api/decisions/"+did+"/respond", operatorBody(fmt.Sprintf("o%d", i), 1, rec.Rev, override, rationale))
+		if status != http.StatusConflict || errorCode(out) != crew.CodeDecisionAnswered || !strings.Contains(string(data), "answered by Ana") {
+			t.Fatalf("a second answer (override %v): %d %s", override, status, data)
+		}
+	}
+	if after := f.record(t, did); after.State != ledger.DecisionApplied || after.Rev != rec.Rev {
+		t.Fatalf("the decision after the second answers: %s rev %d", after.State, after.Rev)
+	}
+	// An open decision under a policy that is behind: stale_policy, unkept.
+	open := f.routed(t, "r2", "dr-2", anaPolicy(ext.OverrideOperator))
+	f.fr.SetConfirm(open, behind)
+	f.expect(t, http.MethodPost, "/api/decisions/"+open+"/respond", operatorBody("p1", 0, f.rev(t, open), true, "Ana is away this week"), http.StatusConflict, crew.CodeStalePolicy)
+	if n := len(f.record(t, open).Responses); n != 0 {
+		t.Fatalf("a stale_policy refusal kept %d rows", n)
+	}
+}

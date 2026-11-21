@@ -873,3 +873,29 @@ func TestAnAssignmentIsAnsweredFromElsewhere(t *testing.T) {
 		t.Fatal("no response in the document")
 	}
 }
+
+// A held answer handed in after its decision was answered here, where the
+// router confirms policies, says the decision is answered (#1063): its
+// state first, nothing written, the router and the identity provider not
+// asked; the same hand-in again is the same answer.
+func TestHeldAnswerToAnAnsweredDecisionSaysItIsAnswered(t *testing.T) {
+	f := newHeldFixture(t)
+	did := f.open(t, "q1")
+	f.expect(t, http.MethodPost, "/api/decisions/"+did+"/respond", map[string]any{"responseId": "o1", "choice": 0, "expectedRev": 1}, http.StatusCreated, "")
+	rec := f.rec(t, did)
+	routerAsked := 0
+	f.srv.runs.SetRouterPolicies(true, func(context.Context, ledger.DecisionRecord, string, string) ext.Confirmation {
+		routerAsked++
+		return ext.Confirmation{InForce: true, Behind: true}
+	})
+	for range 2 {
+		out := f.hand(t, held(did, "h1", "ana", 1, 1))
+		if out.Status != ext.AnswerRefused || out.Code != crew.CodeDecisionAnswered {
+			t.Fatalf("a held answer to an answered decision: %+v", out)
+		}
+	}
+	if n := len(f.id.asks()); n != 0 || routerAsked != 0 {
+		t.Fatalf("asked: the provider %d, the router %d", n, routerAsked)
+	}
+	f.unchanged(t, did, rec.Rev, len(rec.Responses))
+}

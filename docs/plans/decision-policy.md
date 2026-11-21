@@ -725,7 +725,12 @@ behaves unchanged, and a router that does not implement
     alone, as an identity's `local/1` answer is (I16); the refusal is
     made at the response only.
   - Then DR1's checks as on `main`: the state, the rev, the
-    membership, the bounds.
+    membership, the bounds. As built (#1063): a decision no longer open
+    (answered, applied, superseded, closed) is judged by its state
+    first, before the held-answer rule and the router's policy, so a
+    second answer says who answered (`decision_answered`) or that it is
+    closed, as on a server with no router, whatever the router says of a
+    decision it no longer holds; an open one is judged as above.
 - **Application** (`applyDecisions`): for a response that counted
   under a router's policy, the engine asks `Confirm` again with its
   subject (and, in PR-9, `Since` its time) before the application's
@@ -1217,6 +1222,7 @@ router confirms policies before the engine (Responding, Held answers):
 | Case | Answer | Kept |
 |---|---|---|
 | a repeat (same actor and response id) | the saved receipt | as saved |
+| a decision no longer open (answered, applied, superseded, closed) | DR1's: `409 decision_answered` (who answered) or `decision_closed`; a held answer where the router confirms policies, the same, nothing written (#1063) | as DR1 |
 | a router's own answer (`via: router`) | `403 not_approver` | yes |
 | a comparison's selection, a held answer (`via: sync`) | `403 not_approver` (answered only at this server) | yes |
 | a comparison's selection, at the route | `local/1`, as on `main`: the operator answers | as DR1 |

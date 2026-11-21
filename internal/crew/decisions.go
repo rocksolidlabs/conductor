@@ -1707,14 +1707,21 @@ func respondTx(ltx LedgerTx, run string, n int64, resp Response, actor string, a
 	}
 	_ = json.Unmarshal([]byte(d.Policy), &policy)
 	who := Admittee{Grants: []string{auth.Grant}, Via: auth.Via, Subject: auth.Subject}
-	// A held answer is refused, kept, where it is never taken
+	// A decision no longer open (answered, applied, superseded, closed) is
+	// answered by nobody under any policy: its state is said first, by
+	// DR1's checks below, as on a server with no router, whatever its
+	// router's policy or a held answer's rule would say (#1063). For an
+	// open one, a held answer is refused, kept, where it is never taken
 	// (decisions_sync.go); else a router's policy judges first
 	// (decisions_policy.go): an unkept refusal is answered as an error, a
 	// kept one in rc.
-	judged := auth.Via == ViaSync && heldRefused(rec, pol, &rc)
-	if !judged {
-		if judged, err = judgePolicy(rec, resp, who, pol, &rc); err != nil {
-			return err
+	judged := false
+	if d.State == ledger.DecisionOpen && moved == "" {
+		judged = auth.Via == ViaSync && heldRefused(rec, pol, &rc)
+		if !judged {
+			if judged, err = judgePolicy(rec, resp, who, pol, &rc); err != nil {
+				return err
+			}
 		}
 	}
 	routed := ledger.RouterPolicy(d.Policy)
