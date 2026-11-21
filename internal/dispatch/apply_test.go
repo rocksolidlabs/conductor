@@ -1125,3 +1125,50 @@ func TestAHeldRowNotARowStaysAsItIs(t *testing.T) {
 		t.Fatalf("the held rows:\n got %v\nwant %v", got, before)
 	}
 }
+
+// A batch offers again only the held rows it can have released: rows held
+// for a key a project of this machine's own holds stay where they are
+// through an empty batch and through a batch of another project's rows,
+// and the rekey that frees the key takes them, once each.
+func TestABatchOffersAgainOnlyWhatItCanRelease(t *testing.T) {
+	ctx := context.Background()
+	a, b := replicaPair(t)
+	newProject(t, a, "CND")
+	newProject(t, a, "OPS")
+	shareAll(t, a)
+	for i := range 100 {
+		newTicket(t, a, "CND", fmt.Sprintf("Held %d", i))
+	}
+	_, ops := newTicket(t, a, "OPS", "Elsewhere")
+	newProject(t, b, "CND")
+	var after int64
+	pull(t, a, b, &after)
+	held := count(t, b, "SELECT COUNT(*) FROM held_rows")
+	if held < 100 {
+		t.Fatalf("%d rows held", held)
+	}
+	var taken []int
+	b.onHeldTaken = func(n int) { taken = append(taken, n) }
+	if _, err := b.ApplyRemote(ctx, nil, nil, registryKeys(t, a)); err != nil {
+		t.Fatal(err)
+	}
+	title := "Elsewhere, edited"
+	mustEdit(t, a, "edit-ops", ops, TicketEdit{Set: TicketSet{Title: &title}})
+	pull(t, a, b, &after)
+	if !slices.Equal(taken, []int{0, 0}) {
+		t.Fatalf("held rows taken by an empty batch and another project's: %v", taken)
+	}
+	taken = nil
+	rc, err := b.RekeyProject(ctx, shareOp("rekey"), "CND", "OWN")
+	want(t, rc, err, StatusDone, "")
+	if n := count(t, b, "SELECT COUNT(*) FROM held_rows"); n != 0 {
+		t.Fatalf("%d still held after the rekey", n)
+	}
+	sum := 0
+	for _, n := range taken {
+		sum += n
+	}
+	if sum != held {
+		t.Fatalf("the rekey took %d held rows, of %d", sum, held)
+	}
+}

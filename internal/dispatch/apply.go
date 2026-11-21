@@ -70,6 +70,23 @@ type applier struct {
 	sets     map[[2]string]bool // (ticket, field) whose set members to project again
 	group    map[string]bool    // tickets whose counterpart group to merge again
 	seq      int64
+	// waiting is what the batch made that held rows may wait for (kind:id,
+	// view:<digest>, key:<key>), offered again at its end (replayHeld);
+	// replayKeys says the call may have freed a key (a start's, a rekey's:
+	// a call with no rows), its held projects' keys looked at again.
+	waiting    map[string]bool
+	replayKeys bool
+	// held is held_rows' count, bytes and rows' identities, read once by
+	// the first hold of the call and kept as rows are held and taken.
+	held *heldTally
+	// taken counts the held rows the call took (the store's onHeldTaken).
+	taken int
+}
+
+// heldTally is held_rows as one call's holds count it.
+type heldTally struct {
+	rows, bytes, bodies int64
+	ids                 map[string]bool
 }
 
 // ApplyRemote applies another replica's rows (as ChangesFrom gives them:
@@ -118,7 +135,8 @@ func (s *Store) ApplyRemote(ctx context.Context, rows []ChangeRow, views map[str
 		if s.clock != nil {
 			now = s.clock()
 		}
-		a := &applier{ctx: ctx, tx: dbtx, now: now.UTC(), views: views, keys: keys, sets: map[[2]string]bool{}, group: map[string]bool{}}
+		a := &applier{ctx: ctx, tx: dbtx, now: now.UTC(), views: views, keys: keys, sets: map[[2]string]bool{}, group: map[string]bool{},
+			waiting: map[string]bool{}, replayKeys: len(rows) == 0}
 		if a.replica, err = activeReplica(ctx, dbtx); err != nil {
 			return err
 		}
@@ -154,6 +172,9 @@ func (s *Store) ApplyRemote(ctx context.Context, rows []ChangeRow, views map[str
 		}
 		if err := a.replayHeld(); err != nil {
 			return err
+		}
+		if s.onHeldTaken != nil {
+			s.onHeldTaken(a.taken)
 		}
 		if err := a.finish(); err != nil {
 			return err
@@ -578,22 +599,16 @@ func (a *applier) hold(c ChangeRow, h heldWhy) error {
 	if err != nil {
 		return err
 	}
-	var rows, bytes int64
-	if err := a.tx.QueryRowContext(a.ctx, "SELECT COUNT(*), COALESCE(SUM(LENGTH(row)), 0) FROM held_rows").Scan(&rows, &bytes); err != nil {
+	tally, err := a.tally()
+	if err != nil {
 		return err
 	}
-	var already int
-	if err := a.tx.QueryRowContext(a.ctx, "SELECT COUNT(*) FROM held_rows WHERE row = ?", string(encoded)).Scan(&already); err != nil {
-		return err
-	}
-	if already == 0 {
-		var bodies int64
-		if err := a.tx.QueryRowContext(a.ctx, "SELECT COALESCE(SUM(LENGTH(body)), 0) FROM held_bodies").Scan(&bodies); err != nil {
-			return err
+	if !tally.ids[string(encoded)] {
+		if tally.rows >= MaxHeldRows || tally.bytes+tally.bodies+int64(len(encoded)) > MaxHeldBytes {
+			return fmt.Errorf("%w: %d held", ErrHeldFull, tally.rows)
 		}
-		if rows >= MaxHeldRows || bytes+bodies+int64(len(encoded)) > MaxHeldBytes {
-			return fmt.Errorf("%w: %d held", ErrHeldFull, rows)
-		}
+		tally.rows, tally.bytes = tally.rows+1, tally.bytes+int64(len(encoded))
+		tally.ids[string(encoded)] = true
 		project := projectOfRow(c)
 		if key, err := a.projectWord(project); err == nil && key != "" {
 			project = key
@@ -605,8 +620,12 @@ func (a *applier) hold(c ChangeRow, h heldWhy) error {
 	}
 	if c.Entity == EntityPlan && c.Op == OpCreate {
 		if view, ok := a.views[c.ViewDigest]; ok {
-			if _, err := a.tx.ExecContext(a.ctx, "INSERT OR IGNORE INTO held_bodies (digest, body) VALUES (?, ?)", c.ViewDigest, view); err != nil {
+			res, err := a.tx.ExecContext(a.ctx, "INSERT OR IGNORE INTO held_bodies (digest, body) VALUES (?, ?)", c.ViewDigest, view)
+			if err != nil {
 				return err
+			}
+			if n, _ := res.RowsAffected(); n > 0 {
+				tally.bodies += int64(len(view))
 			}
 		}
 	}
@@ -614,6 +633,37 @@ func (a *applier) hold(c ChangeRow, h heldWhy) error {
 		a.heldNow = append(a.heldNow, cutBytes(h.why, MaxHeldWord))
 	}
 	return nil
+}
+
+// tally is held_rows' count, bytes and identities and held_bodies' bytes,
+// read once by the call's first hold.
+func (a *applier) tally() (*heldTally, error) {
+	if a.held != nil {
+		return a.held, nil
+	}
+	t := &heldTally{ids: map[string]bool{}}
+	rs, err := a.tx.QueryContext(a.ctx, "SELECT row FROM held_rows")
+	if err != nil {
+		return nil, err
+	}
+	for rs.Next() {
+		var row string
+		if err := rs.Scan(&row); err != nil {
+			rs.Close()
+			return nil, err
+		}
+		t.rows, t.bytes = t.rows+1, t.bytes+int64(len(row))
+		t.ids[row] = true
+	}
+	rs.Close()
+	if err := rs.Err(); err != nil {
+		return nil, err
+	}
+	if err := a.tx.QueryRowContext(a.ctx, "SELECT COALESCE(SUM(LENGTH(body)), 0) FROM held_bodies").Scan(&t.bodies); err != nil {
+		return nil, err
+	}
+	a.held = t
+	return t, nil
 }
 
 // projectWord is the project's key when this store holds it, "" else.
@@ -660,11 +710,13 @@ func (a *applier) apply(c ChangeRow) error {
 	if c.Op != OpCreate {
 		return nil
 	}
-	waiting := []string{c.Entity + ":" + c.EntityID}
+	// What waited for the entity it made is offered again at the batch's
+	// end (replayHeld), once for all it made.
+	a.waiting[c.Entity+":"+c.EntityID] = true
 	if c.Entity == EntityPlan {
-		waiting = append(waiting, "view:"+c.ViewDigest)
+		a.waiting["view:"+c.ViewDigest] = true
 	}
-	return a.release(waiting...)
+	return nil
 }
 
 // touch marks the entity a row names for its rev, OnChange and, for a
@@ -698,13 +750,16 @@ func (a *applier) touch(c ChangeRow) error {
 // release offers again, in the one order, every held row that waits for
 // one of the entities named.
 func (a *applier) release(waiting ...string) error {
-	var rows []ChangeRow
-	for _, w := range waiting {
-		got, err := a.takeHeld("WHERE waits_for = ?", w)
-		if err != nil {
-			return err
-		}
-		rows = append(rows, got...)
+	if len(waiting) == 0 {
+		return nil
+	}
+	args := make([]any, len(waiting))
+	for i, w := range waiting {
+		args[i] = w
+	}
+	rows, err := a.takeHeld("WHERE waits_for IN (?"+strings.Repeat(", ?", len(waiting)-1)+")", args...)
+	if err != nil {
+		return err
 	}
 	Order(rows)
 	for _, c := range rows {
@@ -759,8 +814,13 @@ func (a *applier) takeHeld(where string, args ...any) ([]ChangeRow, error) {
 		}
 		seqs = append(seqs, seq)
 		out = append(out, c)
+		if a.held != nil {
+			a.held.rows, a.held.bytes = a.held.rows-1, a.held.bytes-int64(len(row))
+			delete(a.held.ids, row)
+		}
 	}
 	rs.Close()
+	a.taken += len(out)
 	if err := rs.Err(); err != nil {
 		return nil, err
 	}
@@ -772,31 +832,45 @@ func (a *applier) takeHeld(where string, args ...any) ([]ChangeRow, error) {
 	return out, nil
 }
 
-// replayHeld offers every held row again, in the one order, until a pass
-// applies nothing: a row whose wait the batch ended without naming it
-// (a reference arrived by another route, a key given up) is applied.
+// replayHeld offers again, in the one order, the held rows the batch can
+// have released and no other: those waiting for what it made, and for a
+// view it brought; on a call that may have freed a key (no rows: a
+// start's, a rekey's), those waiting for a key no project of this
+// machine's holds now. What they release in turn is offered again, pass
+// after pass, until a pass releases nothing; nothing is read per row.
 func (a *applier) replayHeld() error {
-	for {
-		before := a.applied
-		rows, err := a.takeHeld("")
+	for digest := range a.views {
+		a.waiting["view:"+digest] = true
+	}
+	if a.replayKeys {
+		keys, err := readTexts(a.ctx, a.tx, "SELECT DISTINCT waits_for FROM held_rows WHERE waits_for LIKE 'key:%'")
 		if err != nil {
 			return err
 		}
-		if len(rows) == 0 {
-			return nil
-		}
-		Order(rows)
-		words := a.heldNow
-		for _, c := range rows {
-			if err := a.offerHeld(c); err != nil {
+		for _, w := range keys {
+			var n int
+			if err := a.tx.QueryRowContext(a.ctx, "SELECT COUNT(*) FROM projects WHERE key = ?", strings.TrimPrefix(w, "key:")).Scan(&n); err != nil {
 				return err
 			}
-		}
-		a.heldNow = words
-		if a.applied == before {
-			return nil
+			if n == 0 {
+				a.waiting[w] = true
+			}
 		}
 	}
+	words := a.heldNow
+	defer func() { a.heldNow = words }()
+	for len(a.waiting) > 0 {
+		waiting := make([]string, 0, len(a.waiting))
+		for w := range a.waiting {
+			waiting = append(waiting, w)
+		}
+		slices.Sort(waiting)
+		clear(a.waiting)
+		if err := a.release(waiting...); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // finish projects the sets and the counterpart groups the batch touched,

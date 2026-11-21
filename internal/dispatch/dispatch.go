@@ -124,6 +124,9 @@ type Store struct {
 	// by seq, under mu: the only pending rows it settles by its check
 	// (PendingRows' Mine); any other process's is output.
 	pendingMine map[int64]bool
+	// onHeldTaken, when a test sets it before any ApplyRemote, is told how
+	// many held rows each call took to offer again.
+	onHeldTaken func(n int)
 	// blockLow is what OnBlockLow set, and blockLowBusy whether a call of
 	// it has not returned (the next is dropped until it does).
 	blockLow     func(project string)
