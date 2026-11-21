@@ -477,6 +477,25 @@ func partText(rec ledger.DecisionRecord, part string) string {
 	return ""
 }
 
+// partWrittenAt is when the part was written, or a time before that: a
+// response's part its response's time, the application's words its
+// application's, and every other part (the request's, the why) the
+// decision's opening. A part is output when a source was pruned after it.
+func partWrittenAt(rec ledger.DecisionRecord, part string) time.Time {
+	for _, resp := range rec.Responses {
+		if strings.HasPrefix(part, fmt.Sprintf("response/%d/", resp.K)) && !resp.At.IsZero() {
+			return resp.At
+		}
+	}
+	if part == ledger.PartApplied {
+		var a crew.Application
+		if json.Unmarshal([]byte(rec.Applied), &a) == nil && !a.At.IsZero() {
+			return a.At
+		}
+	}
+	return rec.CreatedAt
+}
+
 // settleDecisionParts judges the ledger's pending decision parts again once
 // the index is whole: output when a source was pruned after the decision
 // was opened, else what the check finds now. It answers how many it
@@ -498,7 +517,7 @@ func (s *Server) settleDecisionParts(ctx context.Context) (int, bool) {
 		if err != nil || !ok {
 			continue
 		}
-		pruned, err := s.outputs.prunedSince(rec.CreatedAt)
+		pruned, err := s.outputs.prunedSince(partWrittenAt(rec, p.Part))
 		if err != nil {
 			return n, true
 		}

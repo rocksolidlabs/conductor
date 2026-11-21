@@ -331,3 +331,51 @@ func TestASettlePassThatSettlesNothingWaits(t *testing.T) {
 		t.Fatalf("%d passes for one wake", n)
 	}
 }
+
+// A response's part written pending is settled against the prunes since
+// the response was written, not since the decision opened: a source pruned
+// before a person's answer leaves the answer's own words clean, and one
+// pruned after it makes them output.
+func TestAResponsePartIsSettledAgainstThePrunesSinceItsWriting(t *testing.T) {
+	for _, prunedAfter := range []bool{false, true} {
+		f := newFakeSync()
+		e := syncEnvWith(t, syncDataDir(t), f, withSettleTick(time.Hour))
+		const run = "team-00000001"
+		newLedgerRun(t, e.srv.ledger, run, ledger.RunRunning)
+		n := openPlanDecision(t, e.srv.ledger, run, "g1", `{"question":"Ship the migration to every region?","options":[{"label":"Approve"},{"label":"Reject"}],"subject":{"kind":"plan","plan":"pl-1","digest":"d1"}}`)
+		verdictWhen(t, e.srv.ledger, n, ledger.PartQuestion, verdictClean)
+		other := words(rand.New(rand.NewPCG(71, 72)), 2000)
+		e.srv.outputs.feed("ring:other", []byte(other), 1<<20)
+		if !prunedAfter {
+			e.srv.outputs.prune("ring:other")
+		}
+		if !e.srv.outputs.whole(context.Background()) {
+			t.Fatal("not whole")
+		}
+		release := holdIndex(t, e.srv.outputs)
+		text := "My own answer, in words of my own, long enough to be judged."
+		rc, _ := json.Marshal(map[string]any{"text": text, "words": "recorded"})
+		if _, err := e.srv.ledger.Transition(context.Background(), run, func(tx *ledger.Tx) error {
+			_, err := tx.Respond(n, ledger.ResponseRow{Actor: adminActor, Authority: `{"grant":"admin","via":"workbench","boot":"b1"}`,
+				ResponseID: "r1", Fingerprint: "fp-r1", Status: ledger.ResponseAccepted, Receipt: string(rc)})
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		part := ledger.PartResponse(1, "text")
+		if v, _, _ := e.srv.ledger.OutputVerdicts(context.Background(), n); v[part] != verdictPending {
+			t.Fatalf("the answer's text with the index held: %v", v)
+		}
+		if prunedAfter {
+			// After the answer's writing, before its settle: queued behind
+			// the held feed, it is recorded once the index takes it.
+			e.srv.outputs.prune("ring:other")
+		}
+		release()
+		want := verdictClean
+		if prunedAfter {
+			want = verdictOutput
+		}
+		verdictWhen(t, e.srv.ledger, n, part, want)
+	}
+}
