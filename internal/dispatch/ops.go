@@ -788,9 +788,11 @@ func (s *Store) apply(ctx context.Context, op Op, intent, fp string, change func
 	s.low = t.blockLow
 	for _, seq := range t.pending {
 		if s.pendingMine == nil {
-			s.pendingMine = map[int64]bool{}
+			s.pendingMine = map[int64]time.Time{}
 		}
-		s.pendingMine[seq] = true
+		// The time it was written, whatever its stamp (a row stamped past a
+		// later-dated row of its field is dated ahead of the clock).
+		s.pendingMine[seq] = t.now
 	}
 	return rc, t.changes(), nil
 }

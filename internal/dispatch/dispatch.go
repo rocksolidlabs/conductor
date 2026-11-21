@@ -123,7 +123,7 @@ type Store struct {
 	// pendingMine is the rows this process wrote with a pending verdict,
 	// by seq, under mu: the only pending rows it settles by its check
 	// (PendingRows' Mine); any other process's is output.
-	pendingMine map[int64]bool
+	pendingMine map[int64]time.Time
 	// onHeldTaken, when a test sets it before any ApplyRemote, is told how
 	// many held rows each call took to offer again.
 	onHeldTaken func(n int)

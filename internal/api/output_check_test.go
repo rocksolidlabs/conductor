@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/rocksolidlabs/conductor/ext"
 	"github.com/rocksolidlabs/conductor/internal/catalog"
@@ -706,5 +707,35 @@ func TestHistoryRecordsAreSources(t *testing.T) {
 	}
 	if v := comment(again, "after the forget, "+words[50:170]); v != verdictClean {
 		t.Fatalf("a quote of a forgotten record's words: %s", v)
+	}
+}
+
+// A row written pending is settled against the prunes since it was
+// written, not since its stamp: a person's edit of a comment another
+// machine edited with a date far ahead is stamped past that date, and a
+// prune of the source it quotes, made after its writing and before its
+// settle, still makes it output.
+func TestAPendingRowAfterAFutureDatedEditIsSettledAgainstThePrunesSinceItsWriting(t *testing.T) {
+	c := newCheckEnv(t, 81)
+	ctx := context.Background()
+	c.comment(t, adminActor, "a comment of the person's own, long enough to judge")
+	body := c.lastRow(t, dispatch.EntityComment, "body")
+	body.Origin, body.Actor, body.OpID, body.N, body.At, body.Value, body.Prior, body.Output, body.PriorOutput =
+		"a2", "admin", "from-ahead", 0, time.Date(9000, 1, 1, 0, 0, 0, 0, time.UTC), "edited on a machine whose clock is far ahead", "", "", ""
+	if _, err := c.srv.dispatch.ApplyRemote(ctx, []dispatch.ChangeRow{body}, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	release := holdIndex(t, c.srv.outputs)
+	if rc, err := c.srv.dispatch.EditComment(ctx, dispatch.Op{Actor: adminActor, ID: opID()}, c.key, body.EntityID, "pasted: "+c.ring[500:700]); err != nil || rc.Status != dispatch.StatusDone {
+		t.Fatalf("the edit: %+v %v", rc, err)
+	}
+	if r := c.lastRow(t, dispatch.EntityComment, "body"); r.Output != verdictPending || r.At.Year() != 9000 {
+		t.Fatalf("the edit's row: %q at %v", r.Output, r.At)
+	}
+	c.srv.outputs.prune("ring:s-1")
+	release()
+	c.settle(t)
+	if r := c.lastRow(t, dispatch.EntityComment, "body"); r.Output != verdictOutput {
+		t.Fatalf("a paste of a source pruned after its writing settled %q", r.Output)
 	}
 }

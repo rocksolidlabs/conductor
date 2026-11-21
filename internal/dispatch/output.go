@@ -79,6 +79,10 @@ type PendingRow struct {
 	Output       string
 	PriorOutput  string
 	Mine         bool
+	// Written is when this process wrote a row of its own (Mine): the
+	// time its settle reads the prunes after, never its stamp, which may
+	// be dated ahead of the clock.
+	Written time.Time
 }
 
 // MaxPendingPage bounds PendingRows.
@@ -111,7 +115,7 @@ func (s *Store) PendingRows(ctx context.Context, limit int) ([]PendingRow, error
 	})
 	s.mu.Lock()
 	for i := range out {
-		out[i].Mine = s.pendingMine[out[i].Seq]
+		out[i].Written, out[i].Mine = s.pendingMine[out[i].Seq]
 	}
 	s.mu.Unlock()
 	return out, err

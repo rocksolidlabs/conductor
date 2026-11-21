@@ -220,7 +220,9 @@ func (s *Server) settlePending(ctx context.Context) int {
 	}
 	n := 0
 	for _, r := range rows {
-		pruned, err := s.outputs.prunedSince(r.At)
+		// A row of this process's own is settled against the prunes since
+		// it was written; another's is output, below.
+		pruned, err := s.outputs.prunedSince(r.Written)
 		if err != nil {
 			return n
 		}
