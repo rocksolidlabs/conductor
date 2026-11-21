@@ -745,8 +745,10 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		// The copied-output check (docs/plans/sync-seams.md, OS-1c): its index
 		// opened, every verdict a process before this one left pending made
 		// output (the output it may have quoted lived in that process), and
-		// only then the check given to Dispatch's writes.
-		if !cfg.Switchyard.Enabled && st != nil {
+		// only then the check given to Dispatch's writes. With no sync store
+		// registered nothing leaves the machine to be judged, and the index
+		// is not opened: it does no work at all.
+		if !cfg.Switchyard.Enabled && st != nil && s.syncName() != "" {
 			if x, err := openOutputIndex(st.Dir(), 0); err == nil {
 				s.outputs, s.copyCheck = x, &outputGuard{index: x}
 				s.readLogs(x)

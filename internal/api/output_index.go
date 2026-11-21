@@ -127,10 +127,18 @@ type outputIndex struct {
 	// pending is the feeds taken and not yet indexed, in order; taken
 	// counts every feed taken and done every one indexed, progress is
 	// closed (and made again) at each one indexed, and wake tells the
-	// index's goroutine there is work. A feed never waits: the list has
-	// no bound but the output's rate.
-	pending []func()
-	taken   uint64
+	// index's goroutine there is work. A feed never waits. A live source
+	// has at most one feed queued (rings): a chunk arriving while it is
+	// queued is joined to it, held to what the source keeps, and the bytes
+	// queued across sources (queued) are held to maxQueued: past either,
+	// the bytes let go are a prune of the source, as a ring's own cut is.
+	// maxQueued is the bound across sources (defaultMaxQueued; a test's
+	// smaller one, set as the index opens).
+	pending   []func()
+	rings     map[string]*ringFeed
+	queued    int
+	maxQueued int
+	taken     uint64
 	// waited counts the checks that waited for the feeds (whole): a test's
 	// seam, to show a check made under the ledger's lock never does.
 	waited   atomic.Int64
@@ -181,7 +189,7 @@ func openOutputIndex(dir string, bound int64) (*outputIndex, error) {
 	}
 	x := &outputIndex{path: filepath.Join(dir, indexFile), bound: bound, live: map[string]*liveSource{}, mem: map[uint64][]fpRef{},
 		cache: map[uint64][]fpRef{}, readers: map[string]func(string) ([]byte, bool){}, progress: make(chan struct{}),
-		shots: map[string]bool{}, lastShot: map[string]string{},
+		shots: map[string]bool{}, lastShot: map[string]string{}, rings: map[string]*ringFeed{}, maxQueued: defaultMaxQueued,
 		wake: make(chan struct{}, 1), now: time.Now}
 	if _, err := os.Stat(x.path); errors.Is(err, os.ErrNotExist) {
 		x.fresh = true
@@ -325,12 +333,71 @@ func (x *outputIndex) reader(kind string, f func(id string) ([]byte, bool)) {
 	x.readers[kind] = f
 }
 
+// ringFeed is a live source's bytes queued and not yet indexed, and
+// whether some were let go before the index took them.
+type ringFeed struct {
+	buf  []byte
+	lost bool
+}
+
+// defaultMaxQueued bounds the bytes of live sources queued across them.
+const defaultMaxQueued = 64 << 20
+
 // feed takes captured bytes of the live source name (a session's ring,
 // `ring:<id>`), at most keep bytes of whose folded text it holds; never
-// waits on the file.
+// waits on the file. A chunk arriving while the source's feed is queued
+// joins it; the queued bytes are held to keep and a quarter (what the
+// source itself holds before it cuts), and to maxQueued across sources:
+// what is let go is a prune of the source when the index takes the feed,
+// so a text written meanwhile that may have quoted it is output.
 func (x *outputIndex) feed(name string, p []byte, keep int) {
-	b := bytes.Clone(p)
-	x.enqueue(func() { x.addLive(name, b, keep) })
+	x.mu.Lock()
+	if x.closed {
+		x.mu.Unlock()
+		return
+	}
+	limit := keep + keep/4
+	if keep <= 0 {
+		limit = x.maxQueued
+	}
+	if q := x.rings[name]; q != nil {
+		x.queued -= len(q.buf)
+		q.buf = append(q.buf, p...)
+		q.lost = x.holdQueued(q, limit) || q.lost
+		x.queued += len(q.buf)
+		x.mu.Unlock()
+		return
+	}
+	q := &ringFeed{buf: bytes.Clone(p)}
+	q.lost = x.holdQueued(q, limit)
+	x.queued += len(q.buf)
+	x.rings[name] = q
+	x.mu.Unlock()
+	x.enqueue(func() {
+		x.mu.Lock()
+		if x.rings[name] == q {
+			delete(x.rings, name)
+		}
+		x.queued -= len(q.buf)
+		buf, lost := q.buf, q.lost
+		x.mu.Unlock()
+		if lost {
+			x.dropSource(name, -1)
+		}
+		x.addLive(name, buf, keep)
+	})
+}
+
+// holdQueued cuts q's bytes to their last limit, and further so the bytes
+// queued across sources stay within maxQueued; it reports whether any
+// were let go. The caller holds mu, with q's bytes not counted in queued.
+func (x *outputIndex) holdQueued(q *ringFeed, limit int) bool {
+	room := max(min(limit, x.maxQueued-x.queued), 0)
+	if len(q.buf) <= room {
+		return false
+	}
+	q.buf = append(q.buf[:0:0], q.buf[len(q.buf)-room:]...)
+	return true
 }
 
 // keepText takes the whole text of a kept source (a check's log,

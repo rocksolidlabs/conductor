@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"math/rand/v2"
 	"os"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rocksolidlabs/conductor/internal/config"
 	"github.com/rocksolidlabs/conductor/internal/export"
 )
 
@@ -328,7 +330,7 @@ func TestOutputGuardOverAnyText(t *testing.T) {
 // this server captured, made again from the sources where it is absent.
 func TestOutputIndexLeftOutOfTheExport(t *testing.T) {
 	t.Parallel()
-	e := newTestEnv(t, nil)
+	e := syncEnv(t, syncDataDir(t), newFakeSync())
 	x := e.srv.outputs
 	x.feed("ring:s1", []byte(strings.Repeat("captured output of a session ", 10)), 1<<20)
 	if !x.whole(context.Background()) {
@@ -378,5 +380,54 @@ func TestARepeatedLogKeepsOneFingerprintARun(t *testing.T) {
 	}
 	if n > len(log)/indexRun+100 {
 		t.Fatalf("%d fingerprints for %d bytes", n, len(log))
+	}
+}
+
+// A live source has at most one feed queued, its bytes held to what the
+// source keeps and a quarter, and the bytes queued across sources to
+// maxQueued: a terminal printing faster than the index takes it costs a
+// bounded memory, and what was let go is a prune of the source, so a text
+// written meanwhile that may have quoted it is output. The tail is
+// indexed. With no sync store registered the server opens no index.
+func TestTheIndexQueuesAtMostOneFeedASourceHeldToItsBound(t *testing.T) {
+	plain := newTestEnv(t, func(c *config.Config) { c.DataDir = t.TempDir() })
+	if plain.srv.outputs != nil || plain.srv.copyCheck != nil {
+		t.Fatal("an index on a server with no sync store")
+	}
+	x := testIndex(t, "", 0)
+	x.mu.Lock()
+	x.maxQueued = 1 << 20
+	x.mu.Unlock()
+	release := holdIndex(t, x)
+	start := time.Now()
+	const keep = 256 << 10
+	r := rand.New(rand.NewPCG(51, 52))
+	var tail string
+	for range 4 << 10 {
+		chunk := words(r, 4<<10)
+		x.feed("ring:s", []byte(chunk), keep)
+		tail = chunk
+	}
+	x.mu.Lock()
+	held, queued, feeds := len(x.rings["ring:s"].buf), x.queued, len(x.pending)
+	x.mu.Unlock()
+	if held > keep+keep/4 || queued != held || feeds != 1 {
+		t.Fatalf("16 MiB fed with the index held: %d bytes held for the source, %d queued, %d feeds", held, queued, feeds)
+	}
+	for i := range 3 {
+		x.feed(fmt.Sprintf("ring:big-%d", i), []byte(words(r, 512<<10)), 1<<20)
+	}
+	x.mu.Lock()
+	queued = x.queued
+	x.mu.Unlock()
+	if queued > 1<<20 {
+		t.Fatalf("%d bytes queued across sources, past %d", queued, 1<<20)
+	}
+	release()
+	if !quotesOf(t, x, tail[1000:1100]) {
+		t.Fatal("the tail of the source is not indexed")
+	}
+	if pruned, err := x.prunedSince(start); err != nil || !pruned {
+		t.Fatalf("what was let go is no prune: %v %v", pruned, err)
 	}
 }

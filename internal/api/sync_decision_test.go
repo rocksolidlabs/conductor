@@ -419,8 +419,11 @@ func TestLocalAnswerReachesTheDocument(t *testing.T) {
 func TestNoSyncStoreJudgesNoDecision(t *testing.T) {
 	e := newTestEnv(t, func(c *config.Config) { c.DataDir = syncDataDir(t) })
 	ld := e.srv.ledger
-	if ld == nil || e.srv.copyCheck == nil {
-		t.Fatal("the test server has no ledger or no check")
+	if ld == nil {
+		t.Fatal("the test server has no ledger")
+	}
+	if e.srv.copyCheck != nil || e.srv.outputs != nil {
+		t.Fatal("an output check on a server with no sync store")
 	}
 	var mu sync.Mutex
 	var taken []syncKey
