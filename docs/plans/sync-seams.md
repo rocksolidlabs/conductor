@@ -1818,7 +1818,11 @@ run's name is a person's text, and fixed words carry none): "dr-1: its
 run is not running here: continue the run to apply this answer". An
 answer's content hash (`ext.AnswerContentSHA256`) is taken over the
 fields the answer has, a key left out when it has no choice, no text or
-no rationale, as a held answer's statement signs it. A UI document is bounded as its file holds it at both
+no rationale, as a held answer's statement signs it. The Dispatch doors
+answer a state of the store that passes (as many rows held as it may
+hold, no workspace joined) as `ext.ErrNotNow`, apart from a refusal of
+what was handed in (`ext.ErrRefused`): nothing is written, and a
+provider hands the rows again later. A UI document is bounded as its file holds it at both
 writers, and a file past the bound is set aside and read as none. The
 tests the paragraphs above name that stand under other names:
 `TestDormantProjectTurnsSharedOnItsFirstRemoteRow` is

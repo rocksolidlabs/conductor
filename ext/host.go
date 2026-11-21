@@ -265,6 +265,11 @@ var (
 	ErrNotFound         = errors.New("ext: not found")
 	ErrQuestionAnswered = errors.New("ext: the question no longer waits")
 	ErrRefused          = errors.New("ext: refused") // wrapped with the words why
+	// ErrNotNow is the host unable to take what it was handed in the state
+	// it is in now, wrapped with the words why: nothing was written, and the
+	// same call may succeed later. A provider keeps what it handed and hands
+	// it again; it is never a refusal of the thing itself (ErrRefused).
+	ErrNotNow = errors.New("ext: not now")
 )
 
 // The composition roots a provider runs in (Host.Mode).

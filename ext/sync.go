@@ -49,7 +49,11 @@ type SyncDoors interface {
 	// MaxPlanView) and each project's key in the workspace's registry (by
 	// project id): at most MaxDispatchBatch rows and MaxDispatchBytes, each
 	// row's Valid (dispatch.Store.ApplyRemote). A row's Refs are computed
-	// again here, never taken from the provider.
+	// again here, never taken from the provider. ErrRefused is a refusal of
+	// what was handed in; ErrNotNow is this store unable to take it in the
+	// state it is in (it holds as many rows from elsewhere as it may, or has
+	// joined no workspace): nothing is written, and the provider hands the
+	// rows again later.
 	DispatchApply(ctx context.Context, rows []DispatchChange, views map[string][]byte, keys map[string]string) (DispatchApplied, error)
 	// DispatchBlock writes a shared project's current block of numbers, or
 	// with next the block asked ahead, handed to the active tag.

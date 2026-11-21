@@ -45,13 +45,21 @@ func (h *extHost) syncStore() (*dispatch.Store, error) {
 	return h.s.dispatch, nil
 }
 
-// syncRefused wraps a store's refusal of what a provider handed it.
+// syncRefused wraps what a store answers a provider: a refusal of what
+// it was handed as ext.ErrRefused, and a state of the store that passes
+// (it holds as many rows from elsewhere as it may, it has joined no
+// workspace) as ext.ErrNotNow, which a provider hands in again later.
 func syncRefused(err error) error {
 	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return err
 	}
-	for _, e := range []error{dispatch.ErrNotReplicated, dispatch.ErrNotShared, dispatch.ErrHeldFull, dispatch.ErrBadView, dispatch.ErrBadActor,
-		dispatch.ErrBadTag, dispatch.ErrBadReplica, dispatch.ErrNotJoined, dispatch.ErrNoSuchProject, dispatch.ErrBadQuery} {
+	for _, e := range []error{dispatch.ErrHeldFull, dispatch.ErrNotJoined} {
+		if errors.Is(err, e) {
+			return fmt.Errorf("%w: %v", ext.ErrNotNow, err)
+		}
+	}
+	for _, e := range []error{dispatch.ErrNotReplicated, dispatch.ErrNotShared, dispatch.ErrBadView, dispatch.ErrBadActor,
+		dispatch.ErrBadTag, dispatch.ErrBadReplica, dispatch.ErrNoSuchProject, dispatch.ErrBadQuery} {
 		if errors.Is(err, e) {
 			return fmt.Errorf("%w: %v", ext.ErrRefused, err)
 		}

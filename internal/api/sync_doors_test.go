@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -255,5 +256,32 @@ func TestBlockLowCalledAfterCommit(t *testing.T) {
 	blocks, err := own.DispatchBlocks(ctx)
 	if err != nil || len(blocks) != 1 || blocks[0].Left != 0 {
 		t.Fatalf("the blocks %+v %v", blocks, err)
+	}
+}
+
+// A store that cannot take what it was handed in the state it is in now
+// answers "not now": a provider keeps what it handed and hands it again.
+// A refusal of the thing itself stays a refusal, and neither is made of a
+// call that was cancelled.
+func TestTheDoorsSayNotNowApartFromRefused(t *testing.T) {
+	for _, e := range []error{dispatch.ErrHeldFull, dispatch.ErrNotJoined} {
+		err := syncRefused(fmt.Errorf("%w: as the store says it", e))
+		if !errors.Is(err, ext.ErrNotNow) || errors.Is(err, ext.ErrRefused) {
+			t.Errorf("%v: answered %v", e, err)
+		}
+		if !strings.Contains(err.Error(), e.Error()) {
+			t.Errorf("%v: its words are lost in %q", e, err)
+		}
+	}
+	for _, e := range []error{dispatch.ErrNotReplicated, dispatch.ErrNotShared, dispatch.ErrBadView, dispatch.ErrBadActor,
+		dispatch.ErrBadTag, dispatch.ErrBadReplica, dispatch.ErrNoSuchProject, dispatch.ErrBadQuery} {
+		if err := syncRefused(fmt.Errorf("%w: why", e)); !errors.Is(err, ext.ErrRefused) || errors.Is(err, ext.ErrNotNow) {
+			t.Errorf("%v: answered %v", e, err)
+		}
+	}
+	for _, e := range []error{context.Canceled, context.DeadlineExceeded} {
+		if err := syncRefused(e); !errors.Is(err, e) || errors.Is(err, ext.ErrRefused) || errors.Is(err, ext.ErrNotNow) {
+			t.Errorf("%v: answered %v", e, err)
+		}
 	}
 }
