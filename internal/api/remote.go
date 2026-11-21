@@ -232,10 +232,25 @@ func (h *extHost) PutRemote(ctx context.Context, r ext.Remote) error {
 	if err := r.Valid(); err != nil {
 		return err
 	}
+	if !remoteShown(r.Kind, r.Data) {
+		return fmt.Errorf("%w: a remote pins record is a pins document as this server keeps its own", ext.ErrRefused)
+	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	return h.s.putRemote(r)
+}
+
+// remoteShown says a record's body is of the form its kind is shown in:
+// another machine's pins a pins document as this server keeps its own
+// (its version, at most its count of pins, each session once, unknown
+// fields refused); every other kind as its check took it.
+func remoteShown(kind string, data []byte) bool {
+	if kind != ext.RemotePins {
+		return true
+	}
+	_, err := uiContentOf(uiPins, data, true)
+	return err == nil
 }
 
 // DeleteRemote removes a record another machine held (ext.Host); one not
@@ -376,7 +391,7 @@ func (s *Server) handleRemote(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		rec, ok := s.readRemote(path)
-		if !ok || kind != "" && rec.Kind != kind || match != nil && !match.matches(rec) {
+		if !ok || kind != "" && rec.Kind != kind || !remoteShown(rec.Kind, rec.Data) || match != nil && !match.matches(rec) {
 			continue
 		}
 		b, _ := json.Marshal(rec)
