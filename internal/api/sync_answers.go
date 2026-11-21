@@ -16,12 +16,16 @@ import (
 
 // Held answers handed in by the sync store (docs/plans/sync-seams.md,
 // OS-3). The store hands in; the server judges: a held answer is never
-// taken where the server's router confirms policies, never for a
-// comparison's selection or a request kept on the machine, and elsewhere
-// only once the identity provider's AdmitsAnswer admits its statement for
-// this server, decision, response, rev, content and request part, with the
-// grant the decision is opened to; then DR1's path whole records it, and
-// it is applied only once AdmitsAnswer admits it again.
+// taken for a record under a router's policy where the server's router
+// confirms policies, never for a comparison's selection or a request kept
+// on the machine; a record under the server's own policy there is first
+// put to the router as the respond route puts it (confirmFor), and is not
+// taken now while its policy is being written; and everywhere only once
+// the identity provider's AdmitsAnswer admits its statement for this
+// server, decision, response, rev, content and request part, with the
+// grant the decision is opened to; then DR1's path whole records it, with
+// the router's confirmation, and it is applied only once AdmitsAnswer
+// admits it again.
 
 // RespondDecision hands in a held answer (ext.Host).
 func (h *extHost) RespondDecision(ctx context.Context, r ext.HeldAnswer) (ext.AnswerOutcome, error) {
@@ -85,7 +89,10 @@ func (s *Server) respondHeld(ctx context.Context, r ext.HeldAnswer) (ext.AnswerO
 		}
 		return heldRefusal(code, "%s", heldWords(r.Decision, ext.AnswerRefused, code)), nil
 	}
-	if s.runs.RoutesPolicies() {
+	if s.runs.RoutesPolicies() && ledger.RouterPolicy(rec.Policy) {
+		// A record under a router's policy takes no held answer: nothing
+		// written, the router and the identity provider not asked, the
+		// refusal final.
 		return heldRefusal(crew.CodeAnsweredAtServer, "%s is answered at its server, by the operator or the people its router names, at the server's own routes: an answer given elsewhere is not taken here", r.Decision), nil
 	}
 	doc, ok, err := s.decisionDoc(ctx, n)
@@ -114,6 +121,24 @@ func (s *Server) respondHeld(ctx context.Context, r ext.HeldAnswer) (ext.AnswerO
 	// The hash admitted is kept with the answer: its recheck shows the
 	// provider this one, whatever the document is by then.
 	auth.RequestSHA256 = doc.RequestSHA256
+	var conf *ext.Confirmation
+	if s.runs.RoutesPolicies() {
+		// A record under the server's own policy on a server whose router
+		// confirms policies: the router is asked as the respond route asks
+		// it. In its opening window, or one the router will route now (told
+		// again, by confirmFor), it is not taken now.
+		c, err := s.confirmFor(ctx, r.Decision, auth)
+		var de *crew.DecisionError
+		switch {
+		case errors.As(err, &de) && de.Code == crew.CodeStalePolicy:
+			return notTakenNow(r.Decision), nil
+		case err != nil:
+			return ext.AnswerOutcome{}, err
+		case c != nil && c.Routes:
+			return notTakenNow(r.Decision), nil
+		}
+		conf = c
+	}
 	grant := heldGrant(rec)
 	switch s.admitsAnswer(ctx, check, grant) {
 	case ext.AdmitNo:
@@ -122,7 +147,14 @@ func (s *Server) respondHeld(ctx context.Context, r ext.HeldAnswer) (ext.AnswerO
 		return ext.AnswerOutcome{Status: ext.AnswerUnknownAuthority, Words: fmt.Sprintf("%s: the identity provider cannot say now whether it admits %s's answer", r.Decision, actor)}, nil
 	}
 	auth.Grant = string(grant)
-	return s.recordHeld(ctx, r.Decision, resp, actor, auth, statement)
+	return s.recordHeldWith(ctx, r.Decision, resp, actor, auth, statement, conf)
+}
+
+// notTakenNow is the outcome of a held answer to a decision whose policy is
+// being written: nothing written, the provider releases it and hands it in
+// again later, as it does an answer whose authority is not known now.
+func notTakenNow(did string) ext.AnswerOutcome {
+	return ext.AnswerOutcome{Status: ext.AnswerUnknownAuthority, Words: did + "'s policy is being written: this answer is not taken now; hand it in again later"}
 }
 
 // heldGrant is the grant a held answer to rec is asked for: decide for a
@@ -154,12 +186,22 @@ func authorityVia(authority string) string {
 // recordHeld records a held answer through DR1's path and maps what it
 // answered to the outcome, by its status, never by its Repeat.
 func (s *Server) recordHeld(ctx context.Context, did string, resp crew.Response, actor string, auth crew.Authority, statement string) (ext.AnswerOutcome, error) {
-	rc, err := s.runs.RespondHeld(ctx, did, resp, actor, auth, statement)
+	return s.recordHeldWith(ctx, did, resp, actor, auth, statement, nil)
+}
+
+// recordHeldWith is recordHeld with the router's confirmation the door
+// asked (nil for none): a policy written since that ask is stale_policy,
+// unkept, which is not taken now for the provider, never a final refusal.
+func (s *Server) recordHeldWith(ctx context.Context, did string, resp crew.Response, actor string, auth crew.Authority, statement string, conf *ext.Confirmation) (ext.AnswerOutcome, error) {
+	rc, err := s.runs.RespondHeldWith(ctx, did, resp, actor, auth, statement, conf)
 	var de *crew.DecisionError
 	if err != nil && !errors.As(err, &de) {
 		// Not a judgement (the ledger failed): the provider hands it in
 		// again later.
 		return ext.AnswerOutcome{}, err
+	}
+	if de != nil && de.Code == crew.CodeStalePolicy {
+		return notTakenNow(did), nil
 	}
 	out := ext.AnswerOutcome{Repeat: rc.Repeat}
 	switch {

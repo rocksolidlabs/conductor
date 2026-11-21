@@ -8777,11 +8777,17 @@ applied and superseded when the recheck refuses it, as an identity's
 answer is, and never superseded for a restart. Two kept refusals are its
 own: `403 answered_at_server` ("dr-7 is answered at its server, by the
 operator or the people its router names, at the server's own routes: an
-answer given elsewhere is not taken here") while the registered router
-confirms policies, and `403 not_approver` for a comparison's selection
-("dr-12 is a comparison's selection: it is answered only at this
-server"). No route takes such an answer; a route reads it as any other
-response.
+answer given elsewhere is not taken here") for a record under a router's
+policy while the registered router confirms policies, and `403
+not_approver` for a comparison's selection ("dr-12 is a comparison's
+selection: it is answered only at this server"). A held answer to a
+record under the server's own policy on such a server is put to the
+router as an answer at the respond route is: in its opening window, or
+while the router will route it now (told again), or with a policy written
+between that ask and its commit, it is not taken now (`unknown_authority`,
+nothing written: the provider hands it in again later); else it is judged
+as on a server with no router. No route takes such an answer; a route
+reads it as any other response.
 
 ### Capacity
 

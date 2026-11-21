@@ -71,9 +71,16 @@ func admitsAna(c ext.AnswerCheck, g ext.Grant) ext.Admission {
 // recorded, through the identity provider's check of her statement, and
 // a second hand-in of it is a repeat with the same receipt; it is applied
 // once.
-func heldWhileAway(t *testing.T) {
+func heldWhileAway(t *testing.T) { heldAwayThenContinued(t, true) }
+
+// heldAwayThenContinued is heldWhileAway's walk, on a server whose router
+// confirms no policies (plain) or one whose router confirms policies, the
+// decision under the server's own policy: either way the answer is not
+// held while the run is interrupted, recorded once the run is continued,
+// a repeat after, and applied once.
+func heldAwayThenContinued(t *testing.T, plain bool) {
 	fakes := newWorkflowFakes()
-	fakes.answers, fakes.plainRouter = admitsAna, true
+	fakes.answers, fakes.plainRouter = admitsAna, plain
 	w := newWorkflowWith(t, fakes)
 	w.toDecision(t)
 	doc := w.handedOut(t, w.did)
@@ -123,24 +130,31 @@ func heldReceipt(t *testing.T, o ext.AnswerOutcome) string {
 }
 
 // heldRefusedWherePoliciesAreConfirmed: on a server whose router confirms
-// policies, a held answer is refused at its door, answered_at_server,
-// final, nothing written: the decision is answered at its server alone.
+// policies, a held answer to a decision under the server's own policy is
+// taken as on a server with no such router (not held while the run is
+// interrupted, recorded once it is continued, applied once); one to a
+// decision under the router's policy is refused at its door,
+// answered_at_server, final, nothing written: that decision is answered at
+// its server alone.
 func heldRefusedWherePoliciesAreConfirmed(t *testing.T) {
-	fakes := newWorkflowFakes()
-	fakes.answers = admitsAna
-	w := newWorkflowWith(t, fakes)
-	w.toDecision(t)
-	doc := w.handedOut(t, w.did)
-	before := w.record(t, w.did)
-	out, err := w.syncHost().RespondDecision(t.Context(), held(w.did, "held-1", walkAna.Subject, 0, doc.Rev))
-	if err != nil || out.Status != ext.AnswerRefused || out.Code != "answered_at_server" {
-		t.Fatalf("a held answer where the router confirms policies: %+v %v", out, err)
-	}
-	if after := w.record(t, w.did); after.Rev != before.Rev || len(after.Responses) != len(before.Responses) || after.State != ledger.DecisionOpen ||
-		!slices.Equal(after.Held, []string{"build"}) {
-		t.Fatalf("the refused hand-in wrote: rev %d (was %d), %d responses (were %d), %s", after.Rev, before.Rev, len(after.Responses), len(before.Responses), after.State)
-	}
-	w.assertTruthful(t, "a held answer refused at its door")
+	t.Run("under the server's own policy: taken", func(t *testing.T) { heldAwayThenContinued(t, false) })
+	t.Run("under the router's policy: refused at its door", func(t *testing.T) {
+		fakes := newWorkflowFakes()
+		fakes.answers = admitsAna
+		w := newWorkflowWith(t, fakes)
+		w.toPolicy(t)
+		doc := w.handedOut(t, w.did)
+		before := w.record(t, w.did)
+		out, err := w.syncHost().RespondDecision(t.Context(), held(w.did, "held-1", walkAna.Subject, 0, doc.Rev))
+		if err != nil || out.Status != ext.AnswerRefused || out.Code != "answered_at_server" {
+			t.Fatalf("a held answer to a decision under the router's policy: %+v %v", out, err)
+		}
+		if after := w.record(t, w.did); after.Rev != before.Rev || len(after.Responses) != len(before.Responses) || after.State != ledger.DecisionOpen ||
+			!slices.Equal(after.Held, []string{"build"}) {
+			t.Fatalf("the refused hand-in wrote: rev %d (was %d), %d responses (were %d), %s", after.Rev, before.Rev, len(after.Responses), len(before.Responses), after.State)
+		}
+		w.assertTruthful(t, "a held answer refused at its door")
+	})
 }
 
 // fromHanded is a row as the sync store hands it to another machine's

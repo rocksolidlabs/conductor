@@ -1717,7 +1717,11 @@ func respondTx(ltx LedgerTx, run string, n int64, resp Response, actor string, a
 	// kept one in rc.
 	judged := false
 	if d.State == ledger.DecisionOpen && moved == "" {
-		judged = auth.Via == ViaSync && heldRefused(rec, pol, &rc)
+		if auth.Via == ViaSync {
+			if judged, err = heldRefused(rec, pol, &rc); err != nil {
+				return err
+			}
+		}
 		if !judged {
 			if judged, err = judgePolicy(rec, resp, who, pol, &rc); err != nil {
 				return err

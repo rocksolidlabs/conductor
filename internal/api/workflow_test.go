@@ -491,7 +491,7 @@ func TestWorkflowOwnerDisconnected(t *testing.T) {
 	w.applied(t, w.did)
 	w.assertTruthful(t, "the answer applied in the continuation")
 	t.Run("an answer held while the server was away, handed in once", heldWhileAway)
-	t.Run("a held answer where the router confirms policies, refused at its door", heldRefusedWherePoliciesAreConfirmed)
+	t.Run("a held answer where the router confirms policies: taken under the server's own policy, refused under the router's", heldRefusedWherePoliciesAreConfirmed)
 }
 
 // TestWorkflowAgentRestarted: the implementing agent's session ends while
