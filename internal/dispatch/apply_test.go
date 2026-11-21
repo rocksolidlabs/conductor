@@ -843,6 +843,49 @@ func TestARowIsBoundToTheProjectOfWhatItTouches(t *testing.T) {
 	}
 }
 
+// A run link names a run of the machine that wrote it: a link from
+// another machine naming a run held here, dated before this machine's own
+// link of it, takes nothing from that link, and a run this machine never
+// linked is not linked here by another machine's row; the run's reports
+// find no ticket here.
+func TestARunLinkFromElsewhereNamesThatMachinesRun(t *testing.T) {
+	ctx := context.Background()
+	a, b, k1, after := planPair(t)
+	_, k2 := newTicket(t, a, "CND", "Second")
+	pull(t, a, b, after)
+	const run, other = "crew-0123abcd", "crew-89abcdef"
+	a.SetRunExists(runs(run))
+	if rc, err := addLink(a, "link-on-a", k1, NewLink{Kind: LinkRun, Ref: run}); err != nil || rc.Status != StatusDone {
+		t.Fatalf("a's link: %+v %v", rc, err)
+	}
+	b.SetRunExists(runs(run, other))
+	earlier := time.Now().Add(-time.Hour)
+	b.clock = func() time.Time { return earlier }
+	for i, ref := range []string{run, other} {
+		if rc, err := addLink(b, fmt.Sprintf("link-on-b-%d", i), k2, NewLink{Kind: LinkRun, Ref: ref}); err != nil || rc.Status != StatusDone {
+			t.Fatalf("b's link of %s: %+v %v", ref, rc, err)
+		}
+	}
+	var back int64
+	pull(t, b, a, &back)
+	if n := count(t, a, "SELECT COUNT(*) FROM links WHERE ticket_id = ? AND ref = ? AND deleted_at = ''", ticketOf(t, a, k1).ID, run); n != 1 {
+		t.Fatalf("a's own link of the run: %d live", n)
+	}
+	if n := count(t, a, "SELECT COUNT(*) FROM changes WHERE op = ?", OpReconcile); n != 0 {
+		t.Fatalf("%d repairs on a", n)
+	}
+	if tk, found, err := a.RunTicket(ctx, run); err != nil || !found || tk.Key != k1 {
+		t.Fatalf("the run's ticket on a: %q %v %v", tk.Key, found, err)
+	}
+	if tk, found, err := a.RunTicket(ctx, other); err != nil || found {
+		t.Fatalf("a run a never linked, on a: %q %v %v", tk.Key, found, err)
+	}
+	a.SetRunExists(runs(run, other))
+	if _, err := a.AddRunComment(ctx, testOp("report"), other, "a report of a run a never linked"); !errors.Is(err, ErrNoRunTicket) {
+		t.Fatalf("a report of a run a never linked: %v", err)
+	}
+}
+
 // linkedPair is replicaPair for stores that read GitHub, with the shared
 // project CND received on b.
 func linkedPair(t *testing.T) (a, b *Store, after *int64) {

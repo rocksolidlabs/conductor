@@ -195,7 +195,7 @@ func chainHolders(ctx context.Context, q queryer, sight runSight, runs []string)
 		}
 		launched = append(launched, byLaunch...)
 		rows, err := q.QueryContext(ctx, `SELECT links.id, tickets.id, tickets.key FROM links JOIN tickets ON tickets.id = links.ticket_id
-			WHERE links.kind = ? AND links.ref = ? AND links.deleted_at = '' AND tickets.deleted_at = '' ORDER BY tickets.key, links.created_at, links.id`, LinkRun, run)
+			WHERE links.kind = ? AND links.ref = ? AND links.deleted_at = '' AND tickets.deleted_at = ''`+hereLinks(q)+` ORDER BY tickets.key, links.created_at, links.id`, LinkRun, run)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -621,12 +621,25 @@ func (s *Store) RunTicket(ctx context.Context, run string) (tk Ticket, found boo
 	return tk, found, nil
 }
 
+// hereLinks is the condition, on the links table, that a run link is this
+// machine's: no add of it came from elsewhere. A run link from another
+// machine names a run of that machine's, never a run held here, so the
+// reads that ask whether a run here is linked count this machine's links
+// alone. A database before sync's has no row from elsewhere.
+func hereLinks(q queryer) string {
+	if schemaOf(q) < syncSchema {
+		return ""
+	}
+	return ` AND NOT EXISTS (SELECT 1 FROM changes c WHERE c.entity = 'ticket' AND c.entity_id = links.ticket_id AND c.field = 'links'
+		AND c.op = 'add' AND c.remote = 1 AND json_extract(c.value, '$.id') = links.id)`
+}
+
 // runTicket is RunTicket read through q: a read transaction's, or an
 // operation's (AddRunComment), which finds the run's ticket inside its
 // own transaction.
 func runTicket(ctx context.Context, q queryer, run string) (tk Ticket, found bool, err error) {
 	rows, err := q.QueryContext(ctx, `SELECT links.id, links.ticket_id, links.created_at, tickets.deleted_at FROM links JOIN tickets ON tickets.id = links.ticket_id
-		WHERE links.kind = ? AND links.ref = ? AND links.deleted_at = ''`, LinkRun, run)
+		WHERE links.kind = ? AND links.ref = ? AND links.deleted_at = ''`+hereLinks(q), LinkRun, run)
 	if err != nil {
 		return Ticket{}, false, err
 	}

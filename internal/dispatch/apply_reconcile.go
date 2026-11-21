@@ -90,10 +90,20 @@ func edgeOf(r ChangeRow) (edgeRow, bool) {
 		if json.Unmarshal([]byte(r.Value), &l) != nil || l.Kind != LinkRun {
 			return edgeRow{}, false
 		}
-		e.Kind, e.To = EdgeRun, l.Ref
+		// A run link names a run of the machine that wrote it: its run is
+		// the add's origin and the run's id, so links from different
+		// machines never contest one run. A remove names the adds it
+		// removes, whose origin is their tags'.
+		origin := r.Origin
 		if r.Op == OpRemove {
 			e.Tags = priorTags(r.Prior, r.Origin)
+			if len(e.Tags) > 0 {
+				if _, o := rawActor(e.Tags[0].Actor); o != "" {
+					origin = o
+				}
+			}
 		}
+		e.Kind, e.To = EdgeRun, origin+"/"+l.Ref
 		return edgeRow{e, r, l.ID}, true
 	}
 	return edgeRow{}, false
