@@ -372,11 +372,10 @@ func TestAPendingRowIsSettledByTheProcessThatWroteIt(t *testing.T) {
 	if err != nil || len(pending) == 0 || slices.ContainsFunc(pending, func(r dispatch.PendingRow) bool { return r.Mine }) {
 		t.Fatalf("a's pending rows as b reads them: %+v %v", pending, err)
 	}
-	if n := b.srv.settlePending(ctx); n != len(pending) {
-		t.Fatalf("b settled %d of a's %d rows", n, len(pending))
-	}
+	// b's own loop may take them first: what is judged is the state.
+	b.srv.settlePending(ctx)
 	verdict := func(text string) string {
-		rows, _, err := b.srv.dispatch.ChangesFrom(ctx, 0, dispatch.MaxChangesPage)
+		rows, _, err := a.srv.dispatch.ChangesFrom(ctx, 0, dispatch.MaxChangesPage)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -392,7 +391,9 @@ func TestAPendingRowIsSettledByTheProcessThatWroteIt(t *testing.T) {
 	if v := verdict("a person's own words"); v != verdictOutput {
 		t.Fatalf("a's own words settled by b: %q", v)
 	}
-	// a's own pending row is a's to settle by its check.
+	// a's own pending row is a's to settle by its check (b ended, so its
+	// loop takes none of it).
+	stopEnv(t, b)
 	if rc, err := a.srv.dispatch.AddComment(ctx, adminOp(""), "CND-1", "another person's note, long enough to judge"); err != nil || rc.Status != dispatch.StatusDone {
 		t.Fatalf("the comment: %+v %v", rc, err)
 	}
@@ -400,12 +401,14 @@ func TestAPendingRowIsSettledByTheProcessThatWroteIt(t *testing.T) {
 	a.srv.outputs.rebuilding = false
 	a.srv.outputs.mu.Unlock()
 	mine, err := a.srv.dispatch.PendingRows(ctx, 10)
-	if err != nil || len(mine) == 0 || slices.ContainsFunc(mine, func(r dispatch.PendingRow) bool { return !r.Mine }) {
+	if err != nil || slices.ContainsFunc(mine, func(r dispatch.PendingRow) bool { return !r.Mine }) {
 		t.Fatalf("a's own pending rows: %+v %v", mine, err)
 	}
-	if n := a.srv.settlePending(ctx); n != len(mine) {
-		t.Fatalf("a settled %d of its own %d", n, len(mine))
-	}
+	waitUntil(t, "a's own rows settled", func() bool {
+		a.srv.settlePending(ctx)
+		left, err := a.srv.dispatch.PendingRows(ctx, 10)
+		return err == nil && len(left) == 0
+	})
 	if v := verdict("another person's note"); v != verdictClean {
 		t.Fatalf("a's own row settled by a: %q", v)
 	}
