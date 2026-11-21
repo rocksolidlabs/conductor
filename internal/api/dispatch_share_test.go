@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/rocksolidlabs/conductor/ext"
+	"github.com/rocksolidlabs/conductor/internal/brakeman"
 	"github.com/rocksolidlabs/conductor/internal/dispatch"
 )
 
@@ -183,6 +184,107 @@ func anyStrings(v any) []string {
 	out := make([]string, 0, len(l))
 	for _, x := range l {
 		s, _ := x.(string)
+		out = append(out, s)
+	}
+	return out
+}
+
+// briefedTurn runs one briefing turn of Brakeman's: the newest earlier
+// brief its grant is given (lastBriefing, "" for none), then the turn's
+// own brief, kept, its fact resting on the ticket. It answers the earlier
+// brief's id and its own.
+func (b *bkEnv) briefedTurn(t *testing.T, ticket string) (earlier, own string) {
+	t.Helper()
+	id := b.briefing(t)
+	sid, tok, _ := b.turnSession(t, id)
+	status, out := b.readRequest(t, sid, tok)
+	if status != http.StatusOK {
+		t.Fatalf("the turn's request: %d %v", status, out)
+	}
+	if last, _ := entityOf(t, out, "request")["lastBriefing"].(map[string]any); last != nil {
+		earlier, _ = last["id"].(string)
+	}
+	if status, out := b.submit(t, sid, tok, "brief-"+id, factBrief("ticket:"+ticket)); status != http.StatusCreated {
+		t.Fatalf("the turn's brief: %d %v", status, out)
+	}
+	b.waitState(t, id, brakeman.StateBriefed)
+	return earlier, id
+}
+
+// A brief made while Brakeman was scoped to the person's project CND is
+// derived from that project. Once CND is given the key OWN and the
+// workspace's project is received under CND, the brief is still given
+// to a turn scoped to OWN, the person's project, and never to one scoped
+// to CND, which only the workspace's project now is.
+func TestAnEarlierBriefFollowsTheRekeyedProject(t *testing.T) {
+	f := newFakeSync()
+	e := syncEnv(t, syncDataDir(t), f, bkAgents()...)
+	own := &extHost{s: e.srv, name: f.Name(), ctx: context.Background()}
+	b := bkEnvOf(t, e)
+	e.newDispatchProject(t, "CND", nil)
+	e.newDispatchTicket(t, "CND", "Mine", nil)
+	theirs := heldWorkspaceProject(t, own, "CND")
+	b.enable(t, "bk", func(c map[string]any) {
+		c["visibility"].(map[string]any)["dispatch"] = true
+		c["scope"] = map[string]any{"projects": []any{"CND"}}
+	})
+	_, first := b.briefedTurn(t, "CND-1")
+	e.expect(t, "POST", "/api/dispatch/projects/CND/rekey", map[string]any{"opId": opID(), "key": "OWN"}, http.StatusOK, "")
+	if r, err := b.desk.st.Get(first); err != nil || !slices.Equal(r.Config.Scope.Projects, []string{"OWN"}) {
+		t.Fatalf("the earlier request's scope after the rekey: %v %v", r.Config.Scope.Projects, err)
+	}
+	if earlier, _ := b.briefedTurn(t, "OWN-1"); earlier != first {
+		t.Fatalf("a turn scoped to the person's project, now OWN, is given %q, not the brief %s made of it", earlier, first)
+	}
+	b.configure(t, func(c map[string]any) { c["scope"] = map[string]any{"projects": []any{"CND"}} })
+	if earlier, _ := b.briefedTurn(t, theirs); earlier != "" {
+		t.Fatalf("a turn scoped to CND, the workspace's project now, is given the brief %s", earlier)
+	}
+}
+
+// A rekey not made puts Brakeman's scopes back even when the
+// configuration was saved again in between: the new key back to the old
+// in what is saved now, the person's other edit kept, and in the scope
+// stored with the earlier request the carry renamed.
+func TestARekeyNotMadePutsTheOldKeyBackInWhatWasSavedSince(t *testing.T) {
+	f := newFakeSync()
+	e := syncEnv(t, syncDataDir(t), f, bkAgents()...)
+	own := &extHost{s: e.srv, name: f.Name(), ctx: context.Background()}
+	b := bkEnvOf(t, e)
+	e.newDispatchProject(t, "CND", nil)
+	e.newDispatchTicket(t, "CND", "Mine", nil)
+	b.enable(t, "bk", func(c map[string]any) {
+		c["visibility"].(map[string]any)["dispatch"] = true
+		c["scope"] = map[string]any{"projects": []any{"CND"}}
+	})
+	_, first := b.briefedTurn(t, "CND-1")
+	if err := own.DispatchJoin(context.Background(), "b1", "w1", "dev-b", 2_000_001, 2_100_000); err != nil {
+		t.Fatal(err)
+	}
+	e.expect(t, "POST", "/api/dispatch/projects/CND/share", map[string]any{"opId": opID()}, http.StatusOK, "")
+	// The person saves the configuration between the carry and the
+	// rekey's refusal: another project added to the carried scope.
+	save := func() {
+		b.configure(t, func(c map[string]any) {
+			c["scope"] = map[string]any{"projects": append(anyStringsOf(c["scope"].(map[string]any)["projects"]), "OPS")}
+		})
+	}
+	b.desk.afterScopeCarry.Store(&save)
+	t.Cleanup(func() { b.desk.afterScopeCarry.Store(nil) })
+	e.expect(t, "POST", "/api/dispatch/projects/CND/rekey", map[string]any{"opId": opID(), "key": "OWN"}, http.StatusConflict, dispatch.RefusalShareInProgress)
+	scope, _ := b.config(t)["scope"].(map[string]any)
+	if got := anyStrings(scope["projects"]); !slices.Equal(got, []string{"CND", "OPS"}) {
+		t.Fatalf("the scope saved since, after the rekey not made: %v", got)
+	}
+	if r, err := b.desk.st.Get(first); err != nil || !slices.Equal(r.Config.Scope.Projects, []string{"CND"}) {
+		t.Fatalf("the earlier request's scope after the rekey not made: %v %v", r.Config.Scope.Projects, err)
+	}
+}
+
+// anyStringsOf is a JSON list of strings as a list of any, to append to.
+func anyStringsOf(v any) []any {
+	out := []any{}
+	for _, s := range anyStrings(v) {
 		out = append(out, s)
 	}
 	return out
