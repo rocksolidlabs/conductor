@@ -111,9 +111,14 @@ func TestAReapprovalAfterAWithdrawalElsewhereWins(t *testing.T) {
 // edits, exchanges and rows from elsewhere forged for each approval field
 // and for the state at an earlier, a later and a far date, a launch here
 // succeeds only when this machine's operator approved the intent it
-// launches, and withdrew nothing since.
+// launches, and withdrew nothing since. Every walk begins with a field
+// from elsewhere at a far date, each walk's own: a re-approval here
+// stamps that field past it, and an edit, an approval and an exchange from
+// the other machine then leave the newest approval elsewhere, though the
+// newest of all its rows is this machine's far-stamped field.
 func TestALaunchRestsOnThisMachinesOwnApproval(t *testing.T) {
 	fields := []string{"approved_at", "approved_by", "approved_note", "approved_rev", "approved_intent", "state"}
+	far := time.Date(9000, 1, 1, 0, 0, 0, 0, time.UTC)
 	launched, refused := 0, 0
 	for seed := uint64(1); seed <= 12; seed++ {
 		ctx := context.Background()
@@ -124,6 +129,42 @@ func TestALaunchRestsOnThisMachinesOwnApproval(t *testing.T) {
 		var back int64
 		approvedHere := "" // the intent a's operator approved, "" after a withdrawal here
 		n := 0
+		forge := func(f string, at time.Time) {
+			value := map[string]string{"approved_intent": IntentDigest(ticketOf(t, a, key)), "state": PlanApproved, "approved_rev": "1"}[f]
+			if value == "" {
+				value = "forged"
+			}
+			apply(t, a, registryKeys(t, a), forged(t, a, id, f, value, at, n))
+		}
+		check := func(step int) {
+			rc, err := a.Launch(ctx, testOp(fmt.Sprint("launch-", n)), key, id, "")
+			if err == nil && rc.Status == StatusDone && (approvedHere == "" || approvedHere != IntentDigest(ticketOf(t, a, key))) {
+				t.Fatalf("seed %d step %d: a launched on %q, a's operator approved %q", seed, step, IntentDigest(ticketOf(t, a, key)), approvedHere)
+			}
+			switch {
+			case err == nil && rc.Status == StatusDone:
+				launched++
+			case err == nil && rc.Refusal == RefusalApprovedElsewhere:
+				refused++
+			}
+		}
+		// The walk's first steps: a's approval, which b receives; a field
+		// from elsewhere at a far date and a's approval again, which b does
+		// not; b's edit and approval, and b's rows to a.
+		n++
+		if rc, err := a.ApprovePlan(ctx, adminOp("a-approve-first"), id, 0, "a"); err != nil || rc.Status != StatusDone {
+			t.Fatalf("seed %d: a's first approval: %+v %v", seed, rc, err)
+		}
+		pull(t, a, b, after)
+		forge(fields[r.IntN(len(fields)-1)], far.Add(time.Duration(seed)*time.Hour))
+		if rc, err := a.ApprovePlan(ctx, adminOp("a-approve-again"), id, 0, "a"); err == nil && rc.Status == StatusDone {
+			approvedHere = IntentDigest(ticketOf(t, a, key))
+		}
+		title := fmt.Sprint("The title of walk ", seed)
+		b.EditTicket(ctx, testOp("b-edit-first"), key, TicketEdit{Set: TicketSet{Title: &title}})
+		b.ApprovePlan(ctx, adminOp("b-approve-first"), id, 0, "b")
+		pull(t, b, a, &back)
+		check(-1)
 		for step := range 40 {
 			n++
 			switch k := r.IntN(8); k {
@@ -146,24 +187,10 @@ func TestALaunchRestsOnThisMachinesOwnApproval(t *testing.T) {
 				pull(t, a, b, after)
 				pull(t, b, a, &back)
 			default:
-				f := fields[r.IntN(len(fields))]
-				at := []time.Time{time.Now().Add(-time.Hour), time.Now().Add(time.Hour), time.Date(9000, 1, 1, 0, 0, 0, 0, time.UTC).Add(time.Duration(n) * time.Second)}[r.IntN(3)]
-				value := map[string]string{"approved_intent": IntentDigest(ticketOf(t, a, key)), "state": PlanApproved, "approved_rev": "1"}[f]
-				if value == "" {
-					value = "forged"
-				}
-				apply(t, a, registryKeys(t, a), forged(t, a, id, f, value, at, n))
+				at := []time.Time{time.Now().Add(-time.Hour), time.Now().Add(time.Hour), far.Add(time.Duration(n) * time.Second)}[r.IntN(3)]
+				forge(fields[r.IntN(len(fields))], at)
 			}
-			rc, err := a.Launch(ctx, testOp(fmt.Sprint("launch-", n)), key, id, "")
-			if err == nil && rc.Status == StatusDone && (approvedHere == "" || approvedHere != IntentDigest(ticketOf(t, a, key))) {
-				t.Fatalf("seed %d step %d: a launched on %q, a's operator approved %q", seed, step, IntentDigest(ticketOf(t, a, key)), approvedHere)
-			}
-			switch {
-			case err == nil && rc.Status == StatusDone:
-				launched++
-			case err == nil && rc.Refusal == RefusalApprovedElsewhere:
-				refused++
-			}
+			check(step)
 		}
 	}
 	// The walk met both: launches of this machine's own approval, and
