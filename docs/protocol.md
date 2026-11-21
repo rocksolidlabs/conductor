@@ -8644,6 +8644,13 @@ above, and no field, code or row below is ever written or answered.
   made or failed, or twice `ext.RouteWait` from the opening's commit) a
   record is in its **opening window**: every response is `409
   stale_policy`, nothing kept.
+- **A decision no longer open.** An answer to a decision answered,
+  applied, superseded or closed is judged by its state first, before its
+  policy, as on a server with no router: `409 decision_answered`, naming
+  who answered, or `409 decision_closed`, whatever its router says of its
+  policy (a router may no longer hold an ended decision, and answer it
+  `behind`). A held answer to one, where the router confirms policies, is
+  refused by its state the same way, nothing written.
 - **Who answers.** At each response the route asks the router
   (`Confirm`, within `ext.ConfirmWait`, which includes the wait for one
   of the router's call slots: a router busy for a moment is waited for,

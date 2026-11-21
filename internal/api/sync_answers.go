@@ -76,7 +76,15 @@ func (s *Server) respondHeld(ctx context.Context, r ext.HeldAnswer) (ext.AnswerO
 	}
 	// Where the router confirms policies a held answer is never taken:
 	// nothing written, the router and the identity provider not asked, the
-	// refusal final.
+	// refusal final; to a decision no longer open, its state is said
+	// first, as DR1's checks say it (#1063).
+	if s.runs.RoutesPolicies() && rec.State != ledger.DecisionOpen {
+		code := crew.CodeDecisionClosed
+		if rec.State == ledger.DecisionAnswered || rec.State == ledger.DecisionApplied {
+			code = crew.CodeDecisionAnswered
+		}
+		return heldRefusal(code, "%s", heldWords(r.Decision, ext.AnswerRefused, code)), nil
+	}
 	if s.runs.RoutesPolicies() {
 		return heldRefusal(crew.CodeAnsweredAtServer, "%s is answered at its server, by the operator or the people its router names, at the server's own routes: an answer given elsewhere is not taken here", r.Decision), nil
 	}

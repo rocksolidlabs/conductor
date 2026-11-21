@@ -303,3 +303,29 @@ func TestARecheckNoRunTookIsAskedAgain(t *testing.T) {
 		t.Fatalf("asked %d times, not twice: %v", len(rk.got), rk.got)
 	}
 }
+
+// A held answer that reaches the engine for a decision answered already,
+// where a router confirms policies, is judged by the decision's state
+// first, as DR1 judges it with no router (#1063): decision_answered, kept,
+// the router not asked.
+func TestEngineSaysAnAnsweredDecisionIsAnsweredToAHeldAnswer(t *testing.T) {
+	dir := newRepo(t)
+	e, _, ld := decisionEngine(t)
+	run := launchGated(t, e, dir, "api-sweep-000000b9", repoCrew(dir, work("build", "lead"), work("deploy", "ops")), shipGate("deploy"))
+	waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+	g := gateOf(t, e, ld, run.ID)
+	answer(t, e, g.ID, Response{ResponseID: "r1", Choice: choice(0), ExpectedRev: 1})
+	asked := 0
+	e.SetRouterPolicies(true, func(context.Context, ledger.DecisionRecord, string, string) ext.Confirmation {
+		asked++
+		return ext.Confirmation{InForce: true, Behind: true}
+	})
+	rc, err := e.RespondHeld(t.Context(), g.ID, Response{ResponseID: "h1", Choice: choice(1), ExpectedRev: 1}, "user:ana", held("ana", grantAdmin, "f-1"), heldStatement)
+	if de := decisionFailure(err); de == nil || de.Code != CodeDecisionAnswered || rc.Status != "refused" {
+		t.Fatalf("the held answer: %+v %v", rc, err)
+	}
+	if asked != 0 {
+		t.Fatalf("the router was asked %d times", asked)
+	}
+	stopRun(t, e, run.ID)
+}
