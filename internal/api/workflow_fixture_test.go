@@ -48,12 +48,6 @@ import (
 // never on a clock. None is parallel: each runs git under a HOME of its
 // own (planRepo).
 
-// What the walk's later parts wait for, each named as the plan's WF-2
-// names it. Its row removes the skip; what a skipped part checks is
-// written behind it where main's routes can name it, and the row adds
-// only what calls a seam main has not yet (a fake's method).
-const waitsSync = "waits for WF-2c: the held answer for the owner disconnected (after sync-seams OS-3)"
-
 // The walk's first decision, which the router is set to route before it
 // is raised, and the rule the router names.
 const (
@@ -115,7 +109,34 @@ type workflowFakes struct {
 	// provider late past its wait, in the context slot in place of
 	// context.
 	late *lateContext
+	// answers, when set, has the identity provider check a held answer's
+	// statement (ext.SubjectChecker) by it (WF-2c); plainRouter registers
+	// the router as one that confirms no policies, as a server with no
+	// policy-confirming router has it.
+	answers     func(ext.AnswerCheck, ext.Grant) ext.Admission
+	plainRouter bool
 }
+
+// answeringIdentity is the walk's identity provider that also checks a
+// held answer's statement and grant (ext.SubjectChecker), by admit.
+type answeringIdentity struct {
+	*gatedIdentity
+	admit func(ext.AnswerCheck, ext.Grant) ext.Admission
+}
+
+func (a *answeringIdentity) AdmitsAnswer(_ context.Context, c ext.AnswerCheck, g ext.Grant) (ext.Admission, error) {
+	return a.admit(c, g), nil
+}
+
+// plainRouter is the walk's router registered without its policies: it
+// routes and is told of ends, and confirms none (no ext.PolicyConfirmer).
+type plainRouter struct{ r *exttest.FakeRouter }
+
+func (p plainRouter) Name() string { return p.r.Name() }
+func (p plainRouter) Route(ctx context.Context, d ext.Decision) (ext.Route, error) {
+	return p.r.Route(ctx, d)
+}
+func (p plainRouter) Resolved(ctx context.Context, r ext.Resolution) { p.r.Resolved(ctx, r) }
 
 // walkContext is the walk's context provider: ext/exttest's FakeContext,
 // which answers every attempt's start its blocks, with what WF-2a gives it
@@ -230,15 +251,23 @@ func (f *workflowFakes) option() Option {
 	if f.late != nil {
 		cp = f.late
 	}
+	var idp ext.IdentityProvider = f.id
+	if f.answers != nil {
+		idp = &answeringIdentity{gatedIdentity: f.id, admit: f.answers}
+	}
+	var router ext.DecisionRouter = f.router
+	if f.plainRouter {
+		router = plainRouter{f.router}
+	}
 	return WithExtensions(local.Fill(ext.Providers{
-		Identity:      f.id,
-		Router:        f.router,
+		Identity:      idp,
+		Router:        router,
 		Context:       []ext.ContextProvider{cp},
 		Notifications: []ext.NotificationSink{f.sink},
 		Continuity:    f.sync,
 		All: []ext.Entry{
-			{Kind: ext.KindIdentity, Name: "cloud", Value: f.id},
-			{Kind: ext.KindDecisions, Name: "switchman", Value: f.router},
+			{Kind: ext.KindIdentity, Name: "cloud", Value: idp},
+			{Kind: ext.KindDecisions, Name: "switchman", Value: router},
 			{Kind: ext.KindContext, Name: "graph", Value: cp},
 			{Kind: ext.KindNotifications, Name: "push", Value: f.sink},
 			{Kind: ext.KindSync, Name: "sync", Value: f.sync},

@@ -21,8 +21,8 @@ import (
 // and The conditions): TestWorkflowEndToEnd walks the fourteen steps with
 // every provider a fake, TestWorkflowFree the same steps with none, and
 // one test per condition starts from the decision given to the decide
-// grant (toDecision) and goes as far as main can show it. What waits for
-// a row not on main is a subtest that skips naming it.
+// grant (toDecision) and goes as far as main can show it; the walk
+// through sync's seams is workflow_sync_test.go's.
 
 // TestWorkflowEndToEnd walks the workflow with every provider slot it
 // passes through filled by a fake, truthful after every step.
@@ -458,7 +458,9 @@ func TestWorkflowRouterAway(t *testing.T) {
 // when she opens the card: her page cannot reach it, and nothing is sent
 // or kept. The server back over its data directory, with the same fakes:
 // the card at its rev, still open, its hold kept; the run continued, her
-// answer is taken and applied once. The held answer waits for OS-3.
+// answer is taken and applied once. An answer held elsewhere while the
+// server was away is handed in once by the sync store and applied once;
+// where the router confirms policies it is refused at its door.
 func TestWorkflowOwnerDisconnected(t *testing.T) {
 	w := newWorkflow(t, false)
 	w.toDecision(t)
@@ -488,9 +490,8 @@ func TestWorkflowOwnerDisconnected(t *testing.T) {
 	}
 	w.applied(t, w.did)
 	w.assertTruthful(t, "the answer applied in the continuation")
-	t.Run("an answer held while the server was away, handed in once", func(t *testing.T) {
-		t.Skip(waitsSync)
-	})
+	t.Run("an answer held while the server was away, handed in once", heldWhileAway)
+	t.Run("a held answer where the router confirms policies, refused at its door", heldRefusedWherePoliciesAreConfirmed)
 }
 
 // TestWorkflowAgentRestarted: the implementing agent's session ends while
