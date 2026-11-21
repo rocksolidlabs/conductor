@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -341,10 +343,15 @@ func TestDispatchsCheckNeverWaitsInsideItsWrite(t *testing.T) {
 	c := newCheckEnv(t, 43)
 	release := holdIndex(t, c.srv.outputs)
 	c.srv.outputs.feed("ring:s-2", []byte(words(rand.New(rand.NewPCG(44, 45)), 3000)), 1<<20)
-	before := c.srv.outputs.waited.Load()
-	c.comment(t, adminActor, "another person's note, long enough to judge, written while the index is behind")
-	if n := c.srv.outputs.waited.Load(); n != before {
-		t.Fatalf("the write waited for the index %d times", n-before)
+	// The write's own waits, counted under its context: the settle its
+	// pending row wakes waits too, on a goroutine of its own.
+	var waits atomic.Int64
+	if rc, err := c.srv.dispatch.AddComment(withWaitCount(ctx, &waits), dispatch.Op{Actor: adminActor, ID: opID()}, c.key,
+		"another person's note, long enough to judge, written while the index is behind"); err != nil || rc.Status != dispatch.StatusDone {
+		t.Fatalf("the comment: %+v %v", rc, err)
+	}
+	if n := waits.Load(); n != 0 {
+		t.Fatalf("the write waited for the index %d times", n)
 	}
 	if r := c.lastRow(t, dispatch.EntityComment, ""); r.Output != verdictPending {
 		t.Fatalf("the write's verdict with the index behind: %q", r.Output)
@@ -821,4 +828,70 @@ func TestTwoServersOverOneFolderJudgeEveryTextOutput(t *testing.T) {
 	if v := verdict(a, "pasted into a: "+ring[1200:1400]); v != verdictOutput {
 		t.Fatalf("a alone again, a quote of its own ring: %q", v)
 	}
+}
+
+// withSettleBetween has a server's settles call fn, with the text judged,
+// between their judgement of a row and their read of the prunes.
+func withSettleBetween(fn func(text string)) Option {
+	return func(o *options) { o.settleBetween = fn }
+}
+
+// A settle reads the prunes after its judgement: a session pruned between
+// the two steps (here, through the seam the settle offers) makes a
+// pending quote of it output, a Dispatch row's and a decision's part
+// alike.
+func TestAPruneBetweenASettlesStepsIsCounted(t *testing.T) {
+	ctx := context.Background()
+	var e *testEnv
+	var once sync.Once
+	e = syncEnvWith(t, syncDataDir(t), newFakeSync(), withSettleTick(time.Hour), withSettleBetween(func(text string) {
+		if !strings.HasPrefix(text, "pasted: ") {
+			return
+		}
+		once.Do(func() {
+			e.srv.outputs.prune("ring:s-1")
+			indexDrained(e.srv.outputs)
+		})
+	}))
+	e.newDispatchProject(t, "CND", nil)
+	e.newDispatchTicket(t, "CND", "The ticket", nil)
+	ring := words(rand.New(rand.NewPCG(121, 122)), 3000)
+	e.srv.outputs.feed("ring:s-1", []byte(ring), 1<<20)
+	if !e.srv.outputs.whole(ctx) {
+		t.Fatal("not whole")
+	}
+	release := holdIndex(t, e.srv.outputs)
+	body := "pasted: " + ring[600:800]
+	if rc, err := e.srv.dispatch.AddComment(ctx, adminOp(""), "CND-1", body); err != nil || rc.Status != dispatch.StatusDone {
+		t.Fatalf("the comment: %+v %v", rc, err)
+	}
+	release()
+	if v := settledVerdict(t, e, body); v != verdictOutput {
+		t.Fatalf("a quote of a session pruned between the settle's steps: %q", v)
+	}
+	// A decision's part, the same.
+	var d *testEnv
+	var dOnce sync.Once
+	d = syncEnvWith(t, syncDataDir(t), newFakeSync(), withSettleTick(time.Hour), withSettleBetween(func(text string) {
+		if !strings.HasPrefix(text, "Is this what it printed? ") {
+			return
+		}
+		dOnce.Do(func() {
+			d.srv.outputs.prune("ring:s-2")
+			indexDrained(d.srv.outputs)
+		})
+	}))
+	ring2 := words(rand.New(rand.NewPCG(123, 124)), 3000)
+	d.srv.outputs.feed("ring:s-2", []byte(ring2), 1<<20)
+	if !d.srv.outputs.whole(ctx) {
+		t.Fatal("not whole")
+	}
+	const run = "team-00000001"
+	newLedgerRun(t, d.srv.ledger, run, ledger.RunRunning)
+	held := holdIndex(t, d.srv.outputs)
+	q, _ := json.Marshal(map[string]any{"question": "Is this what it printed? " + ring2[900:1100], "options": []map[string]any{{"label": "Yes"}, {"label": "No"}},
+		"subject": map[string]any{"kind": "plan", "plan": "pl-1", "digest": "d1"}})
+	n := openPlanDecision(t, d.srv.ledger, run, "g1", string(q))
+	held()
+	verdictWhen(t, d.srv.ledger, n, ledger.PartQuestion, verdictOutput)
 }

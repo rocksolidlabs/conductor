@@ -53,6 +53,10 @@ type options struct {
 	// (sync_decision.go); nil outside them.
 	settlePass  func(context.Context) (int, bool)
 	settleWaits func()
+	// settleBetween is called by a settle, with the text it judged,
+	// between its judgement of a row and its read of the prunes, in the
+	// tests (output_guard.go, sync_decision.go); nil outside them.
+	settleBetween func(text string)
 }
 
 // WithExtensions gives the server the providers p, as the composition root

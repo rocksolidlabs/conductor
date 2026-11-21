@@ -430,6 +430,8 @@ func TestTheIndexQueuesAtMostOneFeedASourceHeldToItsBound(t *testing.T) {
 	for i := range 3 {
 		x.prune(fmt.Sprintf("ring:big-%d", i))
 	}
+	// Their holes go once the prunes' rows are in.
+	indexDrained(x)
 	if !quotesOf(t, x, tail[1000:1100]) {
 		t.Fatal("the tail of the source is not indexed")
 	}
@@ -524,9 +526,7 @@ func TestAHoledSourceKeepsEveryTextBackUntilItsRingTurnsOver(t *testing.T) {
 	// wait asked again until they are, the test's timeout bounding a hang
 	// (under the race detector the megabytes take longer than any fixed
 	// bound a test would pick).
-	for x.behind() {
-		x.whole(context.Background())
-	}
+	indexDrained(x)
 	if x.state() == "" {
 		t.Fatal("the index holed and not saying why")
 	}
@@ -545,14 +545,89 @@ func TestAHoledSourceKeepsEveryTextBackUntilItsRingTurnsOver(t *testing.T) {
 	// b's ring turns over past the cut: the hole closes, and what was
 	// written while it was open is output.
 	x.feed("ring:b", []byte(words(r, keep)), keep)
-	// Its megabyte taken (under the race detector past the index's own 2 s
-	// wait), the index is whole: not holed any more.
-	for !x.whole(context.Background()) {
-		if why := x.state(); why != "" {
-			t.Fatalf("the index after b's ring turned over: %s", why)
-		}
+	// Its megabyte and the hole's prune taken, the index is whole: not
+	// holed any more.
+	indexDrained(x)
+	if !x.whole(context.Background()) {
+		t.Fatalf("the index after b's ring turned over: %s", x.state())
 	}
 	if pruned, err := x.prunedSince(written); err != nil || !pruned {
 		t.Fatalf("a text written while b was holed is not output: %v %v", pruned, err)
+	}
+}
+
+// The index's stamps order as text as their times do: a time whose
+// fraction ends in zeros before a later one whose fraction it begins
+// (.12 and .125) stamps before it, and a prune made at the later counts
+// for a text written at the earlier.
+func TestIndexStampsOrderAsTheirTimes(t *testing.T) {
+	early := time.Date(2026, 11, 21, 0, 0, 0, 120_000_000, time.UTC)
+	later := time.Date(2026, 11, 21, 0, 0, 0, 125_000_000, time.UTC)
+	if a, b := stampIndex(early), stampIndex(later); a >= b {
+		t.Fatalf("%s stamps at or after %s", a, b)
+	}
+	x := testIndex(t, "", 0)
+	x.mu.Lock()
+	x.now = func() time.Time { return later }
+	x.mu.Unlock()
+	x.prune("ring:s")
+	indexDrained(x)
+	if pruned, err := x.prunedSince(early); err != nil || !pruned {
+		t.Fatalf("a prune at %s for a text written at %s: %v %v", stampIndex(later), stampIndex(early), pruned, err)
+	}
+}
+
+// A hole stays until its prune's row is committed: with that row held
+// behind a feed in the queue, the index stays holed, whether the ring has
+// turned over past the cut or the session is pruned; once the row is in,
+// the index is whole and a text written while it was holed is output.
+func TestAHoleOutlastsItsQueuedPrune(t *testing.T) {
+	for _, end := range []string{"turned over", "pruned"} {
+		x := testIndex(t, "", 0)
+		x.mu.Lock()
+		x.maxQueued = 1 << 20
+		x.mu.Unlock()
+		release := holdIndex(t, x)
+		r := rand.New(rand.NewPCG(111, 112))
+		const keep = 1 << 20
+		x.feed("ring:a", []byte(words(r, 900<<10)), keep)
+		x.feed("ring:b", []byte(words(r, 512<<10)), keep)
+		release()
+		indexDrained(x)
+		written := time.Now()
+		held := holdIndex(t, x)
+		if end == "turned over" {
+			x.feed("ring:b", []byte(words(r, keep)), keep)
+		} else {
+			x.prune("ring:b")
+		}
+		x.mu.Lock()
+		holed := x.holedLocked()
+		x.mu.Unlock()
+		if !holed {
+			t.Fatalf("%s: the hole let go before its prune's row", end)
+		}
+		held()
+		indexDrained(x)
+		if !x.whole(context.Background()) {
+			t.Fatalf("%s: the index after the prune's row: %s", end, x.state())
+		}
+		if pruned, err := x.prunedSince(written); err != nil || !pruned {
+			t.Fatalf("%s: a text written while holed is not output: %v %v", end, pruned, err)
+		}
+	}
+}
+
+// indexDrained waits until the index has taken every feed queued so far, its
+// own wait asked again until it has, the test's timeout bounding a hang.
+func indexDrained(x *outputIndex) {
+	for {
+		x.mu.Lock()
+		done := x.done >= x.taken
+		x.mu.Unlock()
+		if done {
+			return
+		}
+		x.whole(context.Background())
 	}
 }
