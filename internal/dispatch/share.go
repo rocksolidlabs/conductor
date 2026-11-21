@@ -256,12 +256,33 @@ func (s *Store) ConfirmShare(ctx context.Context, project string) error {
 	})
 }
 
-// RefuseShare makes the project's share refused and takes its reserved
-// numbers back, keeping the words (at most MaxShareWords bytes of one
-// line) for the project's page, so the person can give it another key;
-// ErrNoSuchProject for a project the store has not.
+// RefuseShare makes the project's pending share refused and takes its
+// reserved numbers back, keeping the words (at most MaxShareWords bytes
+// of one line) for the project's page, so the person can give it another
+// key. A share refused already keeps its state and takes the words; a
+// share in any other state (completing, shared, dormant, none, a
+// received project's) is an error and changes nothing; ErrNoSuchProject
+// for a project the store has not.
 func (s *Store) RefuseShare(ctx context.Context, project, words string) error {
-	return s.shareWords(ctx, "shared = '', share_state = 'refused', share_reserved_to = 0, share_upto = 0", "id = ?", project, words, true)
+	if err := checkShareWords(words); err != nil {
+		return err
+	}
+	return s.writeTx(ctx, func(dbtx *sql.Tx, _ time.Time) error {
+		state, err := shareState(ctx, dbtx, project)
+		if err != nil {
+			return err
+		}
+		set := "shared = '', share_state = 'refused', share_reserved_to = 0, share_upto = 0, share_words = ?"
+		switch state {
+		case SharePending:
+		case ShareRefused:
+			set = "share_words = ?"
+		default:
+			return fmt.Errorf("dispatch: the share of %s is %q, not pending", project, state)
+		}
+		_, err = dbtx.ExecContext(ctx, "UPDATE projects SET "+set+" WHERE id = ?", addressFree(words), project)
+		return err
+	})
 }
 
 // Dormant makes every shared or completing project of the workspace
@@ -287,8 +308,8 @@ const MaxShareWords = 200
 // where names (with arg), in one statement; one is true for a call that
 // names one project, ErrNoSuchProject when it names none.
 func (s *Store) shareWords(ctx context.Context, set, where, arg, words string, one bool) error {
-	if len(words) > MaxShareWords || !utf8.ValidString(words) || strings.ContainsAny(words, "\r\n") || hasControl(words) {
-		return fmt.Errorf("dispatch: a share's words are one line of at most %d bytes", MaxShareWords)
+	if err := checkShareWords(words); err != nil {
+		return err
 	}
 	return s.writeTx(ctx, func(dbtx *sql.Tx, _ time.Time) error {
 		res, err := dbtx.ExecContext(ctx, "UPDATE projects SET "+set+", share_words = ? WHERE "+where, addressFree(words), arg)
@@ -302,6 +323,14 @@ func (s *Store) shareWords(ctx context.Context, set, where, arg, words string, o
 		}
 		return nil
 	})
+}
+
+// checkShareWords refuses words a share's state cannot keep.
+func checkShareWords(words string) error {
+	if len(words) > MaxShareWords || !utf8.ValidString(words) || strings.ContainsAny(words, "\r\n") || hasControl(words) {
+		return fmt.Errorf("dispatch: a share's words are one line of at most %d bytes", MaxShareWords)
+	}
+	return nil
 }
 
 // shareWordsColumn is the share's words as a read selects them, from the

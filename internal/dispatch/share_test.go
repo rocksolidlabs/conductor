@@ -455,3 +455,52 @@ func TestRekeyedProjectSharedIntoAReplicaHoldingItsOldKey(t *testing.T) {
 		}
 	}
 }
+
+// A refusal acts on a pending share alone: repeated, it keeps the share
+// refused and takes its words; late, after the share completed and was
+// confirmed, or on a project received from the workspace, it is an error
+// and changes nothing, so the next batch of that project applies and the
+// project still refuses a rekey.
+func TestARefusalActsOnAPendingShareAlone(t *testing.T) {
+	ctx := context.Background()
+	a, b, first, after := planPair(t)
+	received := ticketOf(t, b, first).ProjectID
+	own := newProject(t, b, "OWN")
+	rc, err := b.ShareProject(ctx, shareOp("share-own"), "OWN")
+	want(t, rc, err, StatusDone, "")
+	if err := b.RefuseShare(ctx, own, "first words"); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.RefuseShare(ctx, own, "the same refusal again"); err != nil {
+		t.Fatalf("a repeated refusal: %v", err)
+	}
+	if v, err := b.Project(ctx, "OWN"); err != nil || v.Project.Share == nil || v.Project.Share.State != ShareRefused || v.Project.Share.Words != "the same refusal again" {
+		t.Fatalf("the refused share after a repeat: %+v %v", v.Project.Share, err)
+	}
+	if err := b.RefuseShare(ctx, received, "late"); err == nil {
+		t.Fatal("a refusal of a project received from the workspace was taken")
+	}
+	if got := texts(t, b, "SELECT share_state || '/' || shared FROM projects WHERE id = ?", received); !slices.Equal(got, []string{"shared/w1"}) {
+		t.Fatalf("the received project after a late refusal: %v", got)
+	}
+	newTicket(t, a, "CND", "After the refusal")
+	pull(t, a, b, after)
+	rc, err = b.RekeyProject(ctx, shareOp("rekey-received"), "CND", "MINE")
+	want(t, rc, err, StatusFailed, RefusalShared)
+	// A share of b's own, completed and confirmed, then refused late.
+	mine := newProject(t, b, "MIN")
+	rc, err = b.ShareProject(ctx, shareOp("share-min"), "MIN")
+	want(t, rc, err, StatusDone, "")
+	if err := b.CompleteShare(ctx, mine, "w1", 1<<40); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.ConfirmShare(ctx, mine); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.RefuseShare(ctx, mine, "late"); err == nil {
+		t.Fatal("a late refusal of a confirmed share was taken")
+	}
+	if got := texts(t, b, "SELECT share_state FROM projects WHERE id = ?", mine); !slices.Equal(got, []string{ShareShared}) {
+		t.Fatalf("the confirmed share after a late refusal: %v", got)
+	}
+}
