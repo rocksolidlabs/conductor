@@ -371,36 +371,37 @@ func countVerdicts(t *testing.T, ds *dispatch.Store) int {
 	return n
 }
 
-// A process settles only the rows it wrote pending: a second server over
-// the same folder, its index whole and blind to the first's sessions,
-// makes the first's pending row output, never clean, while the first
-// settles its own by its check.
+// A process settles by its check only the rows it wrote pending: a row
+// another writer over the same folder left pending (a process holding no
+// presence lock, one before this server's start) is output at this
+// server's settle, never clean, while this server settles its own by its
+// check.
 func TestAPendingRowIsSettledByTheProcessThatWroteIt(t *testing.T) {
 	dir := syncDataDir(t)
 	a := syncEnv(t, dir, newFakeSync())
 	ctx := context.Background()
 	a.newDispatchProject(t, "CND", nil)
 	a.newDispatchTicket(t, "CND", "The ticket", nil)
-	b := syncEnv(t, dir, newFakeSync())
 	ring := words(rand.New(rand.NewPCG(41, 42)), 3000)
 	a.srv.outputs.feed("ring:s-1", []byte(ring), 1<<20)
 	if !a.srv.outputs.whole(ctx) {
 		t.Fatal("a's index not whole")
 	}
-	a.srv.outputs.mu.Lock()
-	a.srv.outputs.rebuilding = true
-	a.srv.outputs.mu.Unlock()
+	other, err := dispatch.Open(filepath.Join(dir, "dispatch"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { other.Close() })
+	other.SetOutputCheck(func(context.Context, string, bool) string { return dispatch.VerdictPending })
 	for _, body := range []string{"quoting a's ring: " + ring[700:800], "a person's own words, long enough to judge"} {
-		if rc, err := a.srv.dispatch.AddComment(ctx, adminOp(""), "CND-1", body); err != nil || rc.Status != dispatch.StatusDone {
-			t.Fatalf("the comment: %+v %v", rc, err)
+		if rc, err := other.AddComment(ctx, adminOp(""), "CND-1", body); err != nil || rc.Status != dispatch.StatusDone {
+			t.Fatalf("the other writer's comment: %+v %v", rc, err)
 		}
 	}
-	pending, err := b.srv.dispatch.PendingRows(ctx, 10)
+	pending, err := a.srv.dispatch.PendingRows(ctx, 10)
 	if err != nil || len(pending) == 0 || slices.ContainsFunc(pending, func(r dispatch.PendingRow) bool { return r.Mine }) {
-		t.Fatalf("a's pending rows as b reads them: %+v %v", pending, err)
+		t.Fatalf("the other writer's pending rows as a reads them: %+v %v", pending, err)
 	}
-	// b's own loop may take them first: what is judged is the state.
-	b.srv.settlePending(ctx)
 	verdict := func(text string) string {
 		rows, _, err := a.srv.dispatch.ChangesFrom(ctx, 0, dispatch.MaxChangesPage)
 		if err != nil {
@@ -412,29 +413,31 @@ func TestAPendingRowIsSettledByTheProcessThatWroteIt(t *testing.T) {
 		}
 		return rows[i].Output
 	}
+	// a's own loop may take them first: what is judged is the verdict.
+	waitUntil(t, "the other writer's rows settled", func() bool {
+		a.srv.settlePending(ctx)
+		return verdict("quoting a's ring") != verdictPending && verdict("a person's own words") != verdictPending
+	})
 	if v := verdict("quoting a's ring"); v != verdictOutput {
-		t.Fatalf("a's quote settled by b: %q", v)
+		t.Fatalf("the other writer's quote settled by a: %q", v)
 	}
 	if v := verdict("a person's own words"); v != verdictOutput {
-		t.Fatalf("a's own words settled by b: %q", v)
+		t.Fatalf("the other writer's own words settled by a: %q", v)
 	}
-	// a's own pending row is a's to settle by its check (b ended, so its
-	// loop takes none of it).
-	stopEnv(t, b)
+	// a's own pending row is a's to settle by its check.
+	a.srv.outputs.mu.Lock()
+	a.srv.outputs.rebuilding = true
+	a.srv.outputs.mu.Unlock()
 	if rc, err := a.srv.dispatch.AddComment(ctx, adminOp(""), "CND-1", "another person's note, long enough to judge"); err != nil || rc.Status != dispatch.StatusDone {
 		t.Fatalf("the comment: %+v %v", rc, err)
+	}
+	if v := verdict("another person's note"); v != verdictPending {
+		t.Fatalf("a's own note with the index rebuilding: %q", v)
 	}
 	a.srv.outputs.mu.Lock()
 	a.srv.outputs.rebuilding = false
 	a.srv.outputs.mu.Unlock()
-	// a's own loop may be settling them as the test reads: what is judged
-	// is the verdict a's settle gives.
-	waitUntil(t, "a's own rows settled", func() bool {
-		a.srv.settlePending(ctx)
-		left, err := a.srv.dispatch.PendingRows(ctx, 10)
-		return err == nil && len(left) == 0
-	})
-	if v := verdict("another person's note"); v != verdictClean {
+	if v := settledVerdict(t, a, "another person's note, long enough to judge"); v != verdictClean {
 		t.Fatalf("a's own row settled by a: %q", v)
 	}
 }
