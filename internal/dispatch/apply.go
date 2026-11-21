@@ -224,11 +224,15 @@ func projectOfRow(c ChangeRow) string {
 }
 
 // checkShared refuses a batch naming a project held here that only its
-// own share makes shared (none, pending, completing or refused).
+// own share makes shared (none, pending, completing or refused), or a row
+// of a kind that belongs to a project naming none.
 func (a *applier) checkShared(rows []ChangeRow) error {
 	seen := map[string]bool{}
 	for _, c := range rows {
 		p := projectOfRow(c)
+		if p == "" && c.Entity != EntityPerson {
+			return fmt.Errorf("%w: a row of %s %s names no project", ErrNotShared, c.Entity, c.EntityID)
+		}
 		if p == "" || seen[p] {
 			continue
 		}
@@ -294,10 +298,14 @@ func (a *applier) exists(kind, id string) (bool, error) {
 
 // offer applies the row or holds it; a row naming one of this store's own
 // tags (its own row handed back, or one held before this store joined
-// under that tag) is dropped.
+// under that tag) is dropped. A row bound to a project it does not name,
+// or to one this store has not shared (bound), refuses the batch.
 func (a *applier) offer(c ChangeRow) error {
 	if a.mine[c.Origin] {
 		return nil
+	}
+	if err := a.bound(c); err != nil {
+		return err
 	}
 	if dup, err := a.holds(c); err != nil || dup {
 		return err
@@ -308,6 +316,141 @@ func (a *applier) offer(c ChangeRow) error {
 		return a.hold(c, *h)
 	}
 	return a.apply(c)
+}
+
+// bound refuses (ErrNotShared) a row whose entity, as this store holds it,
+// belongs to a project other than the one the row names, or to a project
+// held here that is not shared: a create by the project its value names
+// (a comment's or a revision's through the ticket it names, which must be
+// the row's ticket), any other row by the stored entity's project; a
+// ticket's relation from another ticket than the row's, or to a ticket of
+// a project not shared here; a label added from another project. What is
+// not held here yet is judged when the row is offered again.
+func (a *applier) bound(c ChangeRow) error {
+	if c.Entity == EntityPerson {
+		return nil
+	}
+	named := projectOfRow(c)
+	project, known, err := a.boundProject(c)
+	if err != nil {
+		return err
+	}
+	if known {
+		if project != named {
+			return fmt.Errorf("%w: %s %s belongs to project %s, not %s", ErrNotShared, c.Entity, c.EntityID, project, named)
+		}
+		if err := a.shareable(project); err != nil {
+			return err
+		}
+	}
+	if c.Entity != EntityTicket || c.Op != OpAdd {
+		return nil
+	}
+	switch c.Field {
+	case "relations":
+		var rel Relation
+		if err := json.Unmarshal([]byte(c.Value), &rel); err != nil {
+			return err
+		}
+		if rel.FromID != c.EntityID {
+			return fmt.Errorf("%w: a relation of %s from %s", ErrNotShared, c.EntityID, rel.FromID)
+		}
+		to, held, err := a.storedProject(EntityTicket, rel.ToID)
+		if err != nil || !held {
+			return err
+		}
+		return a.shareable(to)
+	case "labels":
+		of, held, err := a.storedProject(EntityLabel, c.Value)
+		if err != nil || !held {
+			return err
+		}
+		if of != named {
+			return fmt.Errorf("%w: label %s of project %s on a ticket of %s", ErrNotShared, c.Value, of, named)
+		}
+	}
+	return nil
+}
+
+// shareable refuses (ErrNotShared) a project held here that is neither
+// shared nor dormant; one not held here is not refused (its rows wait).
+func (a *applier) shareable(project string) error {
+	var state string
+	switch err := a.tx.QueryRowContext(a.ctx, "SELECT share_state FROM projects WHERE id = ?", project).Scan(&state); {
+	case isNoRows(err):
+		return nil
+	case err != nil:
+		return err
+	case state != "shared" && state != "dormant":
+		return fmt.Errorf("%w: %s", ErrNotShared, project)
+	}
+	return nil
+}
+
+// boundProject is the project the row touches as this store holds it,
+// and whether that is known now: a project's own id; a create's from its
+// value (its id the row's entity; a comment's or a revision's ticket the
+// row's ticket, its project that ticket's as held here); any other row's
+// the stored entity's.
+func (a *applier) boundProject(c ChangeRow) (string, bool, error) {
+	if c.Entity == EntityProject {
+		if c.ProjectID != "" && c.ProjectID != c.EntityID {
+			return c.ProjectID, true, nil
+		}
+		return c.EntityID, true, nil
+	}
+	if c.Op != OpCreate {
+		return a.storedProject(c.Entity, c.EntityID)
+	}
+	var v struct {
+		ID        string `json:"id"`
+		ProjectID string `json:"projectId"`
+		TicketID  string `json:"ticketId"`
+	}
+	if err := json.Unmarshal([]byte(c.Value), &v); err != nil {
+		return "", false, err
+	}
+	if v.ID != c.EntityID {
+		return "", false, fmt.Errorf("%w: a create of %s %s whose value makes %s", ErrNotShared, c.Entity, c.EntityID, v.ID)
+	}
+	switch c.Entity {
+	case EntityComment, EntityPlan:
+		if v.TicketID != c.TicketID {
+			return "", false, fmt.Errorf("%w: a create of %s %s on ticket %s, its row's %s", ErrNotShared, c.Entity, c.EntityID, v.TicketID, c.TicketID)
+		}
+		return a.storedProject(EntityTicket, v.TicketID)
+	}
+	return v.ProjectID, true, nil
+}
+
+// storedProject is the project of the entity as this store holds it, and
+// whether it is held.
+func (a *applier) storedProject(kind, id string) (string, bool, error) {
+	var query string
+	switch kind {
+	case EntityTicket:
+		query = "SELECT project_id FROM tickets WHERE id = ?"
+	case EntityComment:
+		query = "SELECT t.project_id FROM comments c JOIN tickets t ON t.id = c.ticket_id WHERE c.id = ?"
+	case EntityPlan:
+		query = "SELECT t.project_id FROM plans p JOIN tickets t ON t.id = p.ticket_id WHERE p.id = ?"
+	case EntityLabel:
+		query = "SELECT project_id FROM labels WHERE id = ?"
+	case EntityMilestone:
+		query = "SELECT project_id FROM milestones WHERE id = ?"
+	case EntityView:
+		query = "SELECT project_id FROM views WHERE id = ?"
+	default:
+		return "", false, nil
+	}
+	var p string
+	switch err := a.tx.QueryRowContext(a.ctx, query, id).Scan(&p); {
+	case isNoRows(err):
+		return "", false, nil
+	case err != nil:
+		return "", false, err
+	}
+	return p, true, nil
 }
 
 // waits is why the row cannot be applied yet, nil when it can.
@@ -557,11 +700,22 @@ func (a *applier) release(waiting ...string) error {
 	}
 	Order(rows)
 	for _, c := range rows {
-		if err := a.offer(c); err != nil {
+		if err := a.offerHeld(c); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// offerHeld offers a row held before: one that what it waited for now
+// shows bound to a project it does not name, or to one not shared here,
+// is dropped, its batch long applied.
+func (a *applier) offerHeld(c ChangeRow) error {
+	err := a.offer(c)
+	if errors.Is(err, ErrNotShared) {
+		return nil
+	}
+	return err
 }
 
 // takeHeld takes the held rows the condition picks out of held_rows. A
@@ -618,7 +772,7 @@ func (a *applier) replayHeld() error {
 		Order(rows)
 		words := a.heldNow
 		for _, c := range rows {
-			if err := a.offer(c); err != nil {
+			if err := a.offerHeld(c); err != nil {
 				return err
 			}
 		}

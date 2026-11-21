@@ -2,6 +2,7 @@ package dispatch
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math/rand/v2"
@@ -741,6 +742,104 @@ func TestAnApprovalIsTheOriginOfItsNewestRow(t *testing.T) {
 	n := count(t, a, "SELECT COUNT(*) FROM changes WHERE entity = 'plan' AND entity_id = ? AND field = 'approved_by' AND origin = 'b1'", id)
 	if n != 2 {
 		t.Fatalf("%d approved_by rows of b's on a, want one for each approval", n)
+	}
+}
+
+// Every row from elsewhere is bound to the project of the entity it
+// touches as this store holds it: a row naming a shared project but
+// touching a ticket of a project this machine never shared, one naming no
+// project, a ticket's create whose value makes it in another project, and
+// a comment's create on a ticket of a project not shared are each refused
+// ErrNotShared, and the project not shared is as it was.
+func TestARowIsBoundToTheProjectOfWhatItTouches(t *testing.T) {
+	ctx := context.Background()
+	a, b := replicaPair(t)
+	cnd := newProject(t, a, "CND")
+	shareAll(t, a)
+	_, key := newTicket(t, a, "CND", "Shared")
+	comment(t, a, "comment-on-a", key, "a comment from a, long enough to judge")
+	var after int64
+	pull(t, a, b, &after)
+	own := newProject(t, b, "OWN")
+	x, xKey := newTicket(t, b, "OWN", "Mine alone")
+	rows, _, err := a.ChangesFrom(ctx, 0, MaxChangesPage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	of := func(entity, op, field string) ChangeRow {
+		for _, c := range rows {
+			if c.Entity == entity && c.Op == op && c.Field == field {
+				return c
+			}
+		}
+		t.Fatalf("no %s %s %s row on a", entity, op, field)
+		return ChangeRow{}
+	}
+	revalue := func(c ChangeRow, set map[string]any) ChangeRow {
+		v := map[string]any{}
+		if err := json.Unmarshal([]byte(c.Value), &v); err != nil {
+			t.Fatal(err)
+		}
+		for k, x := range set {
+			v[k] = x
+		}
+		raw, err := json.Marshal(v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		c.Value = string(raw)
+		return c
+	}
+	title := of(EntityTicket, OpSet, FieldTitle)
+	title.EntityID, title.TicketID, title.ProjectID, title.Value, title.OpID, title.At = x, x, cnd, "written from elsewhere", "bound-1", time.Now().Add(time.Hour)
+	unnamed := title
+	unnamed.ProjectID, unnamed.OpID = "", "bound-2"
+	fresh := newID()
+	made := revalue(of(EntityTicket, OpCreate, ""), map[string]any{"id": fresh, "projectId": own, "number": 77})
+	made.EntityID, made.TicketID, made.OpID = fresh, fresh, "bound-3"
+	note := newID()
+	onX := revalue(of(EntityComment, OpCreate, ""), map[string]any{"id": note, "ticketId": x})
+	onX.EntityID, onX.TicketID, onX.OpID = note, x, "bound-4"
+	shared := title
+	shared.EntityID, shared.TicketID, shared.ProjectID = of(EntityTicket, OpCreate, "").EntityID, of(EntityTicket, OpCreate, "").EntityID, cnd
+	shared.Op, shared.Value, shared.Prior = OpAdd, "", ""
+	relation, err := json.Marshal(Relation{ID: newID(), FromID: x, ToID: shared.EntityID, Kind: "blocks", CreatedAt: time.Now(), CreatedBy: "someone"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	from := shared
+	from.Field, from.Value, from.OpID = "relations", string(relation), "bound-5"
+	relation, err = json.Marshal(Relation{ID: newID(), FromID: shared.EntityID, ToID: x, Kind: "blocks", CreatedAt: time.Now(), CreatedBy: "someone"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	to := shared
+	to.Field, to.Value, to.OpID = "relations", string(relation), "bound-6"
+	label := shared
+	label.Field, label.Value, label.OpID = "labels", newLabel(t, b, "OWN", "mine"), "bound-7"
+	before := count(t, b, "SELECT COUNT(*) FROM changes")
+	for _, tc := range []struct {
+		name string
+		row  ChangeRow
+	}{{"a title under a shared project's id", title}, {"a title naming no project", unnamed},
+		{"a ticket made in another project", made}, {"a comment on a ticket not shared", onX},
+		{"a relation from a ticket not shared", from}, {"a relation to a ticket not shared", to}, {"a label of a project not shared", label}} {
+		got, err := b.ApplyRemote(ctx, []ChangeRow{tc.row}, nil, registryKeys(t, a))
+		if !errors.Is(err, ErrNotShared) || got.Applied != 0 {
+			t.Errorf("%s: %+v %v", tc.name, got, err)
+		}
+	}
+	if n := count(t, b, "SELECT COUNT(*) FROM changes"); n != before {
+		t.Fatalf("%d rows on b, were %d", n, before)
+	}
+	if tk := ticketOf(t, b, xKey); tk.Title != "Mine alone" || !tk.DeletedAt.IsZero() {
+		t.Fatalf("b's own ticket: %q deleted %v", tk.Title, tk.DeletedAt)
+	}
+	if n := count(t, b, "SELECT COUNT(*) FROM tickets WHERE project_id = ?", own); n != 1 {
+		t.Fatalf("%d tickets in b's own project", n)
+	}
+	if n := count(t, b, "SELECT COUNT(*) FROM comments WHERE ticket_id = ?", x); n != 0 {
+		t.Fatalf("%d comments on b's own ticket", n)
 	}
 }
 
