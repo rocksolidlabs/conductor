@@ -425,6 +425,11 @@ func TestTheIndexQueuesAtMostOneFeedASourceHeldToItsBound(t *testing.T) {
 		t.Fatalf("%d bytes queued across sources, past %d", queued, 1<<20)
 	}
 	release()
+	// The sources cut below what their rings hold are holed: the index is
+	// not whole until they are gone (pruned here, their sessions ended).
+	for i := range 3 {
+		x.prune(fmt.Sprintf("ring:big-%d", i))
+	}
 	if !quotesOf(t, x, tail[1000:1100]) {
 		t.Fatal("the tail of the source is not indexed")
 	}
@@ -495,5 +500,48 @@ func TestAScreensLastSnapshotGoesWithItsSource(t *testing.T) {
 	x.mu.Unlock()
 	if kept {
 		t.Fatal("the screen's last snapshot kept after its source was pruned")
+	}
+}
+
+// A source whose queued bytes were let go below what its ring still holds
+// (the bound across sources) is holed until its ring has turned over past
+// the cut: meanwhile no text is judged clean, a quote of the bytes the
+// index never took among them, and once the hole closes a text written
+// while it was open is output.
+func TestAHoledSourceKeepsEveryTextBackUntilItsRingTurnsOver(t *testing.T) {
+	x := testIndex(t, "", 0)
+	x.mu.Lock()
+	x.maxQueued = 1 << 20
+	x.mu.Unlock()
+	release := holdIndex(t, x)
+	r := rand.New(rand.NewPCG(91, 92))
+	const keep = 1 << 20
+	x.feed("ring:a", []byte(words(r, 900<<10)), keep)
+	b := words(r, 512<<10)
+	x.feed("ring:b", []byte(b), keep)
+	release()
+	if !x.whole(context.Background()) && x.state() == "" {
+		t.Fatal("the index neither whole nor saying why")
+	}
+	quote := "pasted from b: " + b[1000:1200]
+	g := &outputGuard{index: x}
+	if v := g.JudgeNow(context.Background(), quote, false); v != verdictPending {
+		t.Fatalf("a quote of the bytes let go, judged in a write: %s", v)
+	}
+	if v := g.Check(context.Background(), quote); v != verdictPending {
+		t.Fatalf("a quote of the bytes let go, judged at a settle: %s", v)
+	}
+	if v := g.Check(context.Background(), "words of the person's own, long enough to be judged"); v != verdictPending {
+		t.Fatalf("a text of its own while a source is holed: %s", v)
+	}
+	written := time.Now()
+	// b's ring turns over past the cut: the hole closes, and what was
+	// written while it was open is output.
+	x.feed("ring:b", []byte(words(r, keep)), keep)
+	if !x.whole(context.Background()) {
+		t.Fatalf("the index after b's ring turned over: %s", x.state())
+	}
+	if pruned, err := x.prunedSince(written); err != nil || !pruned {
+		t.Fatalf("a text written while b was holed is not output: %v %v", pruned, err)
 	}
 }

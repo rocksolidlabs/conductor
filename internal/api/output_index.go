@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"math"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -138,7 +139,14 @@ type outputIndex struct {
 	rings     map[string]*ringFeed
 	queued    int
 	maxQueued int
-	taken     uint64
+	// fed is the bytes fed to each live source; holes the live sources
+	// whose queued bytes were let go below what their rings still hold
+	// (cut by the bound across sources), each until fed reaches its mark,
+	// when the ring has turned over past the cut. While any source is
+	// holed no text is judged clean: the index is not whole.
+	fed   map[string]int64
+	holes map[string]int64
+	taken uint64
 	// waited counts the checks that waited for the feeds (whole): a test's
 	// seam, to show a check made under the ledger's lock never does.
 	waited atomic.Int64
@@ -192,6 +200,7 @@ func openOutputIndex(dir string, bound int64) (*outputIndex, error) {
 	x := &outputIndex{path: filepath.Join(dir, indexFile), bound: bound, live: map[string]*liveSource{}, mem: map[uint64][]fpRef{},
 		cache: map[uint64][]fpRef{}, readers: map[string]func(string) ([]byte, bool){}, progress: make(chan struct{}),
 		shots: map[string]bool{}, lastShot: map[string]string{}, rings: map[string]*ringFeed{}, maxQueued: defaultMaxQueued,
+		fed: map[string]int64{}, holes: map[string]int64{},
 		wake: make(chan struct{}, 1), now: time.Now}
 	if _, err := os.Stat(x.path); errors.Is(err, os.ErrNotExist) {
 		x.fresh = true
@@ -362,19 +371,47 @@ func (x *outputIndex) feed(name string, p []byte, keep int) {
 	if keep <= 0 {
 		limit = x.maxQueued
 	}
+	x.fed[name] += int64(len(p))
+	closed := false
+	if mark, ok := x.holes[name]; ok && x.fed[name] >= mark {
+		// The ring has turned over past the cut: what it held then is gone
+		// from it, and every text written while it was holed is output.
+		delete(x.holes, name)
+		closed = true
+	}
+	hole := func(cut bool) {
+		if !cut {
+			return
+		}
+		mark := int64(math.MaxInt64)
+		if keep > 0 {
+			mark = x.fed[name] + int64(keep)
+		}
+		x.holes[name] = mark
+	}
 	if q := x.rings[name]; q != nil {
 		x.queued -= len(q.buf)
 		q.buf = append(q.buf, p...)
-		q.lost = x.holdQueued(q, limit) || q.lost
+		lost, cut := x.holdQueued(q, limit)
+		q.lost = lost || q.lost
+		hole(cut)
 		x.queued += len(q.buf)
 		x.mu.Unlock()
+		if closed {
+			x.enqueue(func() { x.recordPrune(name) })
+		}
 		return
 	}
 	q := &ringFeed{buf: bytes.Clone(p)}
-	q.lost = x.holdQueued(q, limit)
+	lost, cut := x.holdQueued(q, limit)
+	q.lost = lost
+	hole(cut)
 	x.queued += len(q.buf)
 	x.rings[name] = q
 	x.mu.Unlock()
+	if closed {
+		x.enqueue(func() { x.recordPrune(name) })
+	}
 	x.enqueue(func() {
 		x.mu.Lock()
 		if x.rings[name] == q {
@@ -392,15 +429,34 @@ func (x *outputIndex) feed(name string, p []byte, keep int) {
 
 // holdQueued cuts q's bytes to their last limit, and further so the bytes
 // queued across sources stay within maxQueued; it reports whether any
-// were let go. The caller holds mu, with q's bytes not counted in queued.
-func (x *outputIndex) holdQueued(q *ringFeed, limit int) bool {
+// were let go (lost), and whether the cut went below limit, so below what
+// the source's ring still holds (cut). The caller holds mu, with q's bytes
+// not counted in queued.
+func (x *outputIndex) holdQueued(q *ringFeed, limit int) (lost, cut bool) {
 	room := max(min(limit, x.maxQueued-x.queued), 0)
 	if len(q.buf) <= room {
-		return false
+		return false, false
 	}
 	q.buf = append(q.buf[:0:0], q.buf[len(q.buf)-room:]...)
-	return true
+	return true, room < limit
 }
+
+// recordPrune records a prune of the source now, letting nothing go: a
+// text written before it that may have quoted the source is output.
+func (x *outputIndex) recordPrune(name string) {
+	x.mu.Lock()
+	db := x.db
+	x.mu.Unlock()
+	if db == nil {
+		return
+	}
+	if _, err := db.Exec("INSERT INTO prunes (source, upto, at) VALUES (?, ?, ?)", name, -1, stampIndex(x.now())); err != nil {
+		x.fail(err)
+	}
+}
+
+// holed says a live source is holed (holes): the caller holds mu.
+func (x *outputIndex) holedLocked() bool { return len(x.holes) > 0 }
 
 // keepText takes the whole text of a kept source (a check's log,
 // `check:<run>/<task>/<n>/<id>/<k>`; a history record, `history:<id>`),
@@ -410,9 +466,16 @@ func (x *outputIndex) keepText(name string, text []byte) {
 	x.enqueue(func() { x.addKept(name, b) })
 }
 
-// prune lets the source's fingerprints go, recording the prune's time.
+// prune lets the source's fingerprints go, recording the prune's time:
+// its session gone, a hole in it closes with its ring.
 func (x *outputIndex) prune(name string) {
-	x.enqueue(func() { x.dropSource(name, -1) })
+	x.enqueue(func() {
+		x.mu.Lock()
+		delete(x.holes, name)
+		delete(x.fed, name)
+		x.mu.Unlock()
+		x.dropSource(name, -1)
+	})
 }
 
 // rebuild makes the index again from the kept sources (a fresh one's):
@@ -804,7 +867,7 @@ func (x *outputIndex) whole(ctx context.Context) bool {
 		}
 	}
 	defer x.mu.Unlock()
-	return x.db != nil && x.broken == "" && !x.saturated && !x.rebuilding
+	return x.db != nil && x.broken == "" && !x.saturated && !x.rebuilding && !x.holedLocked()
 }
 
 // wholeNow is whole without waiting: false while a feed taken is not yet
@@ -812,7 +875,7 @@ func (x *outputIndex) whole(ctx context.Context) bool {
 func (x *outputIndex) wholeNow() bool {
 	x.mu.Lock()
 	defer x.mu.Unlock()
-	return x.done >= x.taken && x.db != nil && x.broken == "" && !x.saturated && !x.rebuilding
+	return x.done >= x.taken && x.db != nil && x.broken == "" && !x.saturated && !x.rebuilding && !x.holedLocked()
 }
 
 // behind says a feed taken is not yet indexed by an index that can be
@@ -834,6 +897,8 @@ func (x *outputIndex) state() string {
 		return "the output check is over its bound: text written here stays on this machine until it is reindexed"
 	case x.rebuilding:
 		return "the output check is reindexing: text written meanwhile waits"
+	case x.holedLocked():
+		return "a session printed past what the output check could take: text written meanwhile stays on this machine"
 	}
 	return ""
 }
