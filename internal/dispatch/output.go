@@ -92,9 +92,13 @@ const MaxPendingPage = 500
 func (s *Store) PendingRows(ctx context.Context, limit int) ([]PendingRow, error) {
 	limit = min(max(limit, 1), MaxPendingPage)
 	var out []PendingRow
+	visible := int64(-1) // the newest row the read could see
 	err := s.read(ctx, func(q queryer) error {
 		if schemaOf(q) < syncSchema {
 			return nil
+		}
+		if err := q.QueryRowContext(ctx, "SELECT COALESCE(MAX(seq), 0) FROM changes").Scan(&visible); err != nil {
+			return err
 		}
 		rows, err := q.QueryContext(ctx, `SELECT seq, value, prior, at, actor, output, prior_output FROM changes
 			WHERE output = ? OR prior_output = ? ORDER BY seq LIMIT ?`, VerdictPending, VerdictPending, limit)
@@ -116,6 +120,25 @@ func (s *Store) PendingRows(ctx context.Context, limit int) ([]PendingRow, error
 	s.mu.Lock()
 	for i := range out {
 		out[i].Written, out[i].Mine = s.pendingMine[out[i].Seq]
+	}
+	if err == nil {
+		// A row of this process's own that the read found no longer
+		// pending (settled by another process, or made output at a start)
+		// is let go: every one the read could see, up to the page's last
+		// when the page was full.
+		listed := map[int64]bool{}
+		for _, r := range out {
+			listed[r.Seq] = true
+		}
+		upto := int64(-1)
+		if len(out) == limit {
+			upto = out[len(out)-1].Seq
+		}
+		for seq := range s.pendingMine {
+			if !listed[seq] && seq <= visible && (upto < 0 || seq <= upto) {
+				delete(s.pendingMine, seq)
+			}
+		}
 	}
 	s.mu.Unlock()
 	return out, err
