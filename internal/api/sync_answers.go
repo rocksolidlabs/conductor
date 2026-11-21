@@ -177,7 +177,7 @@ func heldWords(did, status, code string) string {
 	case ext.AnswerRefused:
 		return did + ": refused, " + code
 	case ext.AnswerNotHeld:
-		return did + ": its run is not running here"
+		return did + ": its run is not running here: continue the run to apply this answer"
 	case ext.AnswerMoved:
 		return did + ": it moved to another run while it was answered"
 	}

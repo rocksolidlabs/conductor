@@ -81,7 +81,7 @@ func heldWhileAway(t *testing.T) {
 	answer := held(w.did, "held-1", walkAna.Subject, 0, doc.Rev)
 	w.restart(t)
 	out, err := w.syncHost().RespondDecision(t.Context(), answer)
-	if err != nil || out.Status != ext.AnswerNotHeld || !strings.Contains(out.Words, w.did) {
+	if err != nil || out.Status != ext.AnswerNotHeld || !strings.Contains(out.Words, w.did) || !strings.Contains(out.Words, "continue the run to apply this answer") {
 		t.Fatalf("the hand-in to an interrupted run: %+v %v", out, err)
 	}
 	if rec := w.record(t, w.did); rec.State != ledger.DecisionOpen || len(rec.Responses) != kept {
