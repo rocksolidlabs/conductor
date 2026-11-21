@@ -1,4 +1,4 @@
-import { watch } from 'vue'
+import { getCurrentScope, onScopeDispose, watch } from 'vue'
 import { REMOTE_FILES, REMOTE_PAGE, type RemoteKind, type RemoteRecord, type RemoteReply, type SyncStatusReply } from '~/utils/protocol'
 import { notOwn } from '~/utils/remote'
 
@@ -70,5 +70,46 @@ export function useRemote(kind: RemoteKind, ticket?: () => string) {
     if (mine === seq) records.value = notOwn(all, sync.report.value)
   }
   watch([() => caps.has('sync'), () => ticket?.() ?? '', () => sync.report.value?.device ?? ''], () => void load(), { immediate: true })
+  refreshing(load)
   return { records, report: sync.report, load }
+}
+
+/** How often other machines' records are read again while the page is visible. */
+export const REMOTE_POLL_MS = 30_000
+
+/**
+ * Reads again what a page shows of other machines (load) as the inbox does (useInbox): when the page becomes visible, when the events
+ * stream comes back after a break, and every REMOTE_POLL_MS while visible, since nothing on the stream says a remote record changed.
+ * Ends with the scope that made it.
+ */
+function refreshing(load: () => Promise<void>) {
+  if (typeof document === 'undefined') return
+  const visible = () => document.visibilityState === 'visible'
+  const onVisibility = () => {
+    if (visible()) void load()
+  }
+  document.addEventListener('visibilitychange', onVisibility)
+  const timer = setInterval(() => {
+    if (visible()) void load()
+  }, REMOTE_POLL_MS)
+  // The stream's first connection is no return: only one after a break reads again.
+  const attention = useAttentionStore()
+  let broken = false
+  const stopStream = watch(
+    () => attention.value.connected,
+    (now) => {
+      if (!now) broken = true
+      else if (broken) {
+        broken = false
+        void load()
+      }
+    },
+  )
+  if (getCurrentScope()) {
+    onScopeDispose(() => {
+      document.removeEventListener('visibilitychange', onVisibility)
+      clearInterval(timer)
+      stopStream()
+    })
+  }
 }

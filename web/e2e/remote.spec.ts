@@ -87,6 +87,7 @@ test.beforeAll(async () => {
   ticketKey = t.ticket.key
   ticketID = t.ticket.id
   remote('decision', 'dr-41', decision('dr-41', '', 'Ship the release made on studio?'))
+  remote('decision', 'dr-50', decision('dr-50', '', 'Tag the build made on studio?'))
   remote('pins', 'pins', { v: 1, pins: [{ session: 's-studio', name: 'studio build', agent: 'claude', at: 1 }] })
   // The ticket's own records on studio: a decision and a run naming it.
   remote('decision', 'dr-42', decision('dr-42', t.ticket.id, 'Merge the ticket on studio?'))
@@ -171,6 +172,32 @@ test("another machine's pins are in the sidebar's pinned group, greyed and openi
   const url = page.url()
   await pin.click()
   expect(page.url()).toBe(url)
+})
+
+/** Sets the page's visibility as the browser would on a tab hidden or shown again, and says so to the page. */
+async function setVisibility(page: Page, state: 'hidden' | 'visible') {
+  await page.evaluate((s) => {
+    Object.defineProperty(document, 'visibilityState', { value: s, configurable: true })
+    document.dispatchEvent(new Event('visibilitychange'))
+  }, state)
+}
+
+test("another machine's decision answered there is drawn so once the page is shown again, with no reload", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await open(page, '/decisions')
+  const row = page.locator('[data-remote-decision="dr-50"]')
+  await expect(row.locator('[data-remote-state]')).toHaveText('open')
+  const record = held.find((r) => r.id === 'dr-50')!
+  // Hidden first: no read is made while hidden, so only the page shown again reads the change.
+  await setVisibility(page, 'hidden')
+  record.data = { ...record.data, state: 'applied', states: { open: false } }
+  try {
+    await expect(row.locator('[data-remote-state]')).toHaveText('open')
+    await setVisibility(page, 'visible')
+    await expect(row.locator('[data-remote-state]')).toHaveText('applied')
+  } finally {
+    record.data = decision('dr-50', '', 'Tag the build made on studio?')
+  }
 })
 
 // The Sync row and the Share control with `sync` in a stubbed capabilities reply and a stubbed report of its own: what a registered sync

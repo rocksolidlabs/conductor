@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as vue from 'vue'
-import { useRemote, useSyncStatus } from './useRemote'
+import { REMOTE_POLL_MS, useRemote, useSyncStatus } from './useRemote'
 
 // Other machines' records and the sync store's state (docs/plans/sync-seams.md, OS-4), read only while a sync store is registered:
 // `sync` in a stubbed capabilities reply. Nuxt's auto-imports (Vue's, useCapabilities, useApi, useState) are stubbed as globals,
@@ -10,6 +10,7 @@ import { useRemote, useSyncStatus } from './useRemote'
 // bindings that draw them, as the app's vitest mounts no component.
 
 let caps: vue.Ref<string[]>
+let attention: vue.Ref<{ connected: boolean }>
 let requests: string[]
 let replies: Record<string, unknown>
 const states = new Map<string, vue.Ref<unknown>>()
@@ -31,6 +32,8 @@ beforeEach(() => {
     if (!states.has(key)) states.set(key, vue.ref(init()))
     return states.get(key)
   })
+  vi.stubGlobal('useAttentionStore', () => attention)
+  attention = vue.ref({ connected: true })
 })
 afterEach(() => vi.unstubAllGlobals())
 
@@ -122,6 +125,80 @@ describe("every page of other machines' records", () => {
     for (let i = 0; i < 60; i++) await settle()
     expect(requests.filter((p) => p.startsWith('/api/remote'))).toHaveLength(10_000 / 200)
     expect(r.records.value).toHaveLength(10_000 / 200)
+  })
+})
+
+describe("other machines' records read again while a page stays open", () => {
+  // A document the composable listens to, its visibility set by the test.
+  let doc: { visibilityState: string; listeners: Map<string, () => void>; addEventListener: (t: string, f: () => void) => void; removeEventListener: (t: string) => void }
+  const state = (s: string) => ({ records: [{ kind: 'decision', device: 'dev-1', deviceName: 'studio', id: 'dr-41', rev: 1, at: '', data: { id: 'dr-41', state: s } }] })
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+    doc = {
+      visibilityState: 'visible',
+      listeners: new Map(),
+      addEventListener: (t, f) => doc.listeners.set(t, f),
+      removeEventListener: (t) => doc.listeners.delete(t),
+    }
+    vi.stubGlobal('document', doc)
+    caps.value = ['sync']
+    replies['/api/remote'] = state('open')
+  })
+  afterEach(() => vi.useRealTimers())
+
+  const flush = async () => {
+    for (let i = 0; i < 5; i++) await vi.advanceTimersByTimeAsync(0)
+  }
+  const stateOf = (r: ReturnType<typeof useRemote>) => (r.records.value[0]?.data as { state?: string } | undefined)?.state
+
+  it('reads again when the page becomes visible', async () => {
+    const r = useRemote('decision')
+    await flush()
+    expect(stateOf(r)).toBe('open')
+    replies['/api/remote'] = state('applied')
+    doc.visibilityState = 'hidden'
+    doc.listeners.get('visibilitychange')!()
+    await flush()
+    expect(stateOf(r)).toBe('open')
+    doc.visibilityState = 'visible'
+    doc.listeners.get('visibilitychange')!()
+    await flush()
+    expect(stateOf(r)).toBe('applied')
+  })
+
+  it('reads again when the events stream comes back after a break, not at its first connection', async () => {
+    attention.value = { connected: false }
+    const r = useRemote('decision')
+    await flush()
+    const asked = () => requests.filter((p) => p.startsWith('/api/remote')).length
+    const first = asked()
+    attention.value = { connected: true }
+    await flush()
+    expect(asked()).toBe(first)
+    replies['/api/remote'] = state('applied')
+    attention.value = { connected: false }
+    await flush()
+    attention.value = { connected: true }
+    await flush()
+    expect(asked()).toBe(first + 1)
+    expect(stateOf(r)).toBe('applied')
+  })
+
+  it('reads again every poll while visible, and not while hidden', async () => {
+    const r = useRemote('decision')
+    await flush()
+    const asked = () => requests.filter((p) => p.startsWith('/api/remote')).length
+    const first = asked()
+    doc.visibilityState = 'hidden'
+    await vi.advanceTimersByTimeAsync(REMOTE_POLL_MS)
+    expect(asked()).toBe(first)
+    doc.visibilityState = 'visible'
+    replies['/api/remote'] = state('applied')
+    await vi.advanceTimersByTimeAsync(REMOTE_POLL_MS)
+    await flush()
+    expect(asked()).toBe(first + 1)
+    expect(stateOf(r)).toBe('applied')
   })
 })
 
