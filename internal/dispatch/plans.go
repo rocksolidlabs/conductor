@@ -768,8 +768,8 @@ func (s *Store) ApprovePlan(ctx context.Context, op Op, id string, ticketRev int
 			return err
 		}
 		// An approval given on another machine is approved again here by
-		// this machine's operator, every field's row this origin's, so a
-		// launch here rests on this machine's own approval.
+		// this machine's operator, so a launch here rests on this machine's
+		// own approval.
 		again := p.State == PlanApproved && o.approvedRemote
 		if p.State == PlanApproved && p.ApprovedIntent == intent && !again {
 			return refuse(RefusalInvalid, "revision %d is approved already", p.N)
@@ -783,14 +783,15 @@ func (s *Store) ApprovePlan(ctx context.Context, op Op, id string, ticketRev int
 		if err != nil {
 			return err
 		}
-		after := []fieldValue{{"approved_at", stamp(t.now)}, {"approved_by", t.op.author()}, {"approved_note", note},
-			{"approved_rev", fmt.Sprint(tk.Rev)}, {"approved_intent", intent}, {"state", PlanApproved}}
-		if again {
-			// Every field written again, its prior none, so each field's last
-			// row is this machine's.
-			before = nil
+		approval := []fieldValue{{"approved_at", stamp(t.now)}, {"approved_by", t.op.author()}, {"approved_note", note},
+			{"approved_rev", fmt.Sprint(tk.Rev)}, {"approved_intent", intent}}
+		// An approval writes every one of its fields together, a field
+		// whose value is unchanged too, so each field's newest row is this
+		// approval's, here and on every machine that receives it.
+		if err := t.writeScalars("plans", base, before, approval, nil, true); err != nil {
+			return err
 		}
-		if err := t.setScalars("plans", base, before, after); err != nil {
+		if err := t.setScalars("plans", base, before, []fieldValue{{"state", PlanApproved}}); err != nil {
 			return err
 		}
 		others, err := readTexts(t.ctx, t.tx, "SELECT id FROM plans WHERE ticket_id = ? AND state = ? AND id != ? ORDER BY created_at, id", tk.ID, PlanApproved, p.ID)

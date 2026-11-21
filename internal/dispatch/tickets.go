@@ -202,7 +202,7 @@ func (t *tx) createTicket(n NewTicket, extra []fieldValue, opOf map[string]strin
 	if err := t.record(create); err != nil {
 		return "", err
 	}
-	if err := t.writeScalars("tickets", base, ticketDefaults, after, opOf); err != nil {
+	if err := t.writeScalars("tickets", base, ticketDefaults, after, opOf, false); err != nil {
 		return "", err
 	}
 	if len(extra) > 0 {

@@ -1302,19 +1302,20 @@ func (t *tx) scalars(table, id string, cols []string) ([]fieldValue, error) {
 // set row naming the field, its value and its prior. A field unchanged
 // writes nothing. table and the columns are the code's, never a client's.
 func (t *tx) setScalars(table string, base ChangeRow, before, after []fieldValue) error {
-	return t.writeScalars(table, base, before, after, nil)
+	return t.writeScalars(table, base, before, after, nil, false)
 }
 
 // writeScalars is setScalars, each row's op opOf of its column where
 // opOf names one (an import's title and description, observe), set
-// otherwise.
-func (t *tx) writeScalars(table string, base ChangeRow, before, after []fieldValue, opOf map[string]string) error {
+// otherwise; every field of after is written when all is set, an
+// unchanged one too.
+func (t *tx) writeScalars(table string, base ChangeRow, before, after []fieldValue, opOf map[string]string, all bool) error {
 	prior := map[string]string{}
 	for _, f := range before {
 		prior[f.column] = f.value
 	}
 	for _, f := range after {
-		if prior[f.column] == f.value {
+		if prior[f.column] == f.value && !all {
 			continue
 		}
 		if _, err := t.tx.ExecContext(t.ctx, "UPDATE "+table+" SET "+f.column+" = ? WHERE id = ?", f.value, base.EntityID); err != nil {

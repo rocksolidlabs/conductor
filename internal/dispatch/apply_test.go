@@ -674,6 +674,35 @@ func TestRemoteApprovalDoesNotLaunch(t *testing.T) {
 	mustLaunch(t, a, "launch-on-a-2", key, id, "")
 }
 
+// An approval's origin is the origin of the newest row of any of its
+// fields: an approval here followed by a later one on another machine,
+// given to a changed intent by the same operator name, reads as the other
+// machine's, and the launch here is refused approved_elsewhere.
+func TestAnApprovalIsTheOriginOfItsNewestRow(t *testing.T) {
+	ctx := context.Background()
+	a, b, key, after := planPair(t)
+	id := propose(t, a, "propose-on-a", key, PlanRequest{Crew: "crew"}, testPlanBody("crew"))
+	pull(t, a, b, after)
+	approve(t, b, "approve-on-b", id, "from b")
+	var back int64
+	pull(t, b, a, &back)
+	approve(t, a, "approve-on-a", id, "mine")
+	title := "Fix the login loop for good"
+	mustEdit(t, b, "edit-on-b", key, TicketEdit{Set: TicketSet{Title: &title}})
+	approve(t, b, "approve-on-b-again", id, "b again")
+	pull(t, b, a, &back)
+	if v := planOf(t, a, id); v.ApprovedOrigin != "b1" {
+		t.Fatalf("the approval on a reads as %q", v.ApprovedOrigin)
+	}
+	rc, err := a.Launch(ctx, testOp("launch-on-a"), key, id, "")
+	want(t, rc, err, StatusFailed, RefusalApprovedElsewhere)
+	// Every field of b's approval came with it: a's own row of none is newer.
+	n := count(t, a, "SELECT COUNT(*) FROM changes WHERE entity = 'plan' AND entity_id = ? AND field = 'approved_by' AND origin = 'b1'", id)
+	if n != 2 {
+		t.Fatalf("%d approved_by rows of b's on a, want one for each approval", n)
+	}
+}
+
 // linkedPair is replicaPair for stores that read GitHub, with the shared
 // project CND received on b.
 func linkedPair(t *testing.T) (a, b *Store, after *int64) {

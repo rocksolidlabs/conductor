@@ -304,7 +304,8 @@ func planOrigins(ctx context.Context, q queryer, id string) (planOrigin, error) 
 	if len(made) > 0 && made[0].Remote {
 		o.made = made[0].Origin
 	}
-	approvals, err := readChanges(ctx, q, "WHERE entity = ? AND entity_id = ? AND field = 'approved_by' AND op = ?", EntityPlan, id, OpSet)
+	// The approval is the origin of the newest row of any of its fields.
+	approvals, err := readChanges(ctx, q, "WHERE entity = ? AND entity_id = ? AND field IN ('approved_at', 'approved_by', 'approved_note', 'approved_rev', 'approved_intent') AND op = ?", EntityPlan, id, OpSet)
 	if err != nil {
 		return o, err
 	}
