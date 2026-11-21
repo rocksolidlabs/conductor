@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/rocksolidlabs/conductor/ext"
+	"github.com/rocksolidlabs/conductor/ext/local"
 	"github.com/rocksolidlabs/conductor/internal/catalog"
 	"github.com/rocksolidlabs/conductor/internal/config"
 	"github.com/rocksolidlabs/conductor/internal/crew"
@@ -57,6 +58,31 @@ func newCheckEnv(t *testing.T, seed uint64) *checkEnv {
 		t.Fatal("the index is not whole")
 	}
 	return c
+}
+
+// settledVerdict is the verdict of the newest change row whose value is
+// body, once it is no longer pending: a write's check never waits for the
+// index nor reads a kept source, and the settle (asked here until the row
+// is judged) gives the verdict.
+func settledVerdict(t *testing.T, e *testEnv, body string) string {
+	t.Helper()
+	ctx := context.Background()
+	var v string
+	waitUntil(t, "the row of "+body+" judged", func() bool {
+		e.srv.settlePending(ctx)
+		rows, _, err := e.srv.dispatch.ChangesFrom(ctx, 0, dispatch.MaxChangesPage)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i := len(rows) - 1; i >= 0; i-- {
+			if rows[i].Value == body {
+				v = rows[i].Output
+				return v != verdictPending
+			}
+		}
+		return false
+	})
+	return v
 }
 
 // settle has the settle judge every pending row, as its loop does: a text
@@ -487,7 +513,9 @@ func TestPassageAssembledByCursorMovesCaught(t *testing.T) {
 	off := false
 	painter := catalog.Agent{ID: "painter", Name: "painter", Command: []string{"/bin/sh", "-c",
 		`cat "$1/draw"; until [ -e "$1/go" ]; do sleep 0.05; done; cat "$1/over"; exec sleep 600`, "painter", dir}, Probe: &off}
-	e := newTestEnvAgents(t, nil, nil, []catalog.Agent{painter})
+	f := newFakeSync()
+	providers := local.Fill(ext.Providers{Continuity: f, All: []ext.Entry{{Kind: ext.KindSync, Name: f.Name(), Value: f}}})
+	e := newTestEnvAgents(t, func(c *config.Config) { c.DataDir = syncDataDir(t) }, nil, []catalog.Agent{painter}, WithExtensions(providers))
 	e.newDispatchProject(t, "CND", nil)
 	key := e.newDispatchTicket(t, "CND", "The ticket", nil)["key"].(string)
 	id := e.createSession("painter")
@@ -501,11 +529,7 @@ func TestPassageAssembledByCursorMovesCaught(t *testing.T) {
 		if err != nil || rc.Status != dispatch.StatusDone {
 			t.Fatalf("the comment: %+v %v", rc, err)
 		}
-		rows, _, err := e.srv.dispatch.ChangesFrom(context.Background(), 0, dispatch.MaxChangesPage)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return rows[len(rows)-1].Output
+		return settledVerdict(t, e, body)
 	}
 	if v := comment("on my screen: " + passage); v != verdictOutput {
 		t.Fatalf("a passage on the screen: %s", v)
@@ -674,11 +698,7 @@ func TestHistoryRecordsAreSources(t *testing.T) {
 		if err != nil || rc.Status != dispatch.StatusDone {
 			t.Fatalf("the comment: %+v %v", rc, err)
 		}
-		rows, _, err := j.srv.dispatch.ChangesFrom(ctx, 0, dispatch.MaxChangesPage)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return rows[len(rows)-1].Output
+		return settledVerdict(t, j, body)
 	}
 	if v := comment(e, "the history says "+words[50:170]); v != verdictOutput {
 		t.Fatalf("a quote of a record's words: %s", v)
