@@ -1,5 +1,5 @@
 import { watch } from 'vue'
-import type { RemoteKind, RemoteRecord, RemoteReply, SyncStatusReply } from '~/utils/protocol'
+import { REMOTE_FILES, REMOTE_PAGE, type RemoteKind, type RemoteRecord, type RemoteReply, type SyncStatusReply } from '~/utils/protocol'
 import { notOwn } from '~/utils/remote'
 
 /**
@@ -34,7 +34,7 @@ export function useSyncStatus() {
 
 /**
  * Other machines' records of `kind` (GET /api/remote), of the ticket `ticket()` names when it names one, without this server's own
- * device's: read only, drawn as another machine's. Read only while a sync store is registered (`sync` in GET /api/capabilities): with
+ * device's, every page of them: read only, drawn as another machine's. Read only while a sync store is registered (`sync` in GET /api/capabilities): with
  * none the app asks nothing and draws none, as the server answers none.
  */
 export function useRemote(kind: RemoteKind, ticket?: () => string) {
@@ -42,20 +42,32 @@ export function useRemote(kind: RemoteKind, ticket?: () => string) {
   const { request } = useApi()
   const sync = useSyncStatus()
   const records = ref<RemoteRecord[]>([])
+  // The latest load alone draws: one begun before another ends draws nothing.
+  let seq = 0
   async function load() {
+    const mine = ++seq
     if (!caps.has('sync')) {
       records.value = []
       return
     }
-    const q = new URLSearchParams({ kind })
     const t = ticket?.()
-    if (t) q.set('ticket', t)
+    // Every page, followed by its `next`, at most the pages the records' bound fills; what is drawn changes once the whole set is in.
+    const all: RemoteRecord[] = []
+    let after = ''
     try {
-      const r = await request<RemoteReply>(`/api/remote?${q}`)
-      records.value = notOwn(r.records ?? [], sync.report.value)
+      for (let page = 0; page < REMOTE_FILES / REMOTE_PAGE; page++) {
+        const q = new URLSearchParams({ kind })
+        if (t) q.set('ticket', t)
+        if (after) q.set('after', after)
+        const r = await request<RemoteReply>(`/api/remote?${q}`)
+        all.push(...(r.records ?? []))
+        if (!r.next) break
+        after = r.next
+      }
     } catch {
-      /* what is known stands */
+      return /* what is known stands */
     }
+    if (mine === seq) records.value = notOwn(all, sync.report.value)
   }
   watch([() => caps.has('sync'), () => ticket?.() ?? '', () => sync.report.value?.device ?? ''], () => void load(), { immediate: true })
   return { records, report: sync.report, load }

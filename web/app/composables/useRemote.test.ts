@@ -24,7 +24,7 @@ beforeEach(() => {
   vi.stubGlobal('useApi', () => ({
     request: async (path: string) => {
       requests.push(path)
-      return replies[path.split('?')[0]!] ?? {}
+      return replies[path] ?? replies[path.split('?')[0]!] ?? {}
     },
   }))
   vi.stubGlobal('useState', (key: string, init: () => unknown) => {
@@ -79,6 +79,49 @@ describe("other machines' records", () => {
     expect(requests).toContain('/api/sync')
     expect(requests).toContain('/api/remote?kind=decision&ticket=CND-12')
     expect(r.records.value.map((x) => x.device)).toEqual(['dev-1'])
+  })
+})
+
+describe("every page of other machines' records", () => {
+  const decision = (n: number, state: string) => ({
+    kind: 'decision',
+    device: 'dev-1',
+    deviceName: 'studio',
+    id: `dr-${n}`,
+    rev: 1,
+    at: `2026-11-20T09:${String(n % 60).padStart(2, '0')}:00Z`,
+    data: { id: `dr-${n}`, state },
+  })
+
+  it("reads the page after each page's next, and draws them all at once", async () => {
+    caps.value = ['sync']
+    const first = Array.from({ length: 200 }, (_, i) => decision(i + 1, 'applied'))
+    replies['/api/remote?kind=decision'] = { records: first, next: 'x/decision-y.json' }
+    replies[`/api/remote?kind=decision&after=${encodeURIComponent('x/decision-y.json')}`] = { records: [decision(300, 'open')] }
+    const r = useRemote('decision')
+    await settle()
+    await settle()
+    expect(requests.filter((p) => p.startsWith('/api/remote'))).toEqual([
+      '/api/remote?kind=decision',
+      `/api/remote?kind=decision&after=${encodeURIComponent('x/decision-y.json')}`,
+    ])
+    expect(r.records.value).toHaveLength(201)
+    expect(r.records.value.some((x) => x.id === 'dr-300')).toBe(true)
+  })
+
+  it('reads no more pages than the records\' bound fills', async () => {
+    caps.value = ['sync']
+    vi.stubGlobal('useApi', () => ({
+      request: async (path: string) => {
+        requests.push(path)
+        if (!path.startsWith('/api/remote')) return {}
+        return { records: [decision(requests.length, 'open')], next: `x/decision-${requests.length}.json` }
+      },
+    }))
+    const r = useRemote('decision')
+    for (let i = 0; i < 60; i++) await settle()
+    expect(requests.filter((p) => p.startsWith('/api/remote'))).toHaveLength(10_000 / 200)
+    expect(r.records.value).toHaveLength(10_000 / 200)
   })
 })
 
