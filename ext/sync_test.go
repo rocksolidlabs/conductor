@@ -324,3 +324,28 @@ func TestSyncReportValid(t *testing.T) {
 		}
 	}
 }
+
+// The zero report says the store has nothing to report, and is valid; a
+// report with no state and any other field set is refused as before.
+func TestTheZeroSyncReportIsValid(t *testing.T) {
+	if err := (SyncReport{}).Valid(); err != nil {
+		t.Fatalf("the zero report: %v", err)
+	}
+	if err := (SyncReport{Withheld: []SyncWithheld{}}).Valid(); err != nil {
+		t.Fatalf("the zero report with an empty list: %v", err)
+	}
+	for name, r := range map[string]SyncReport{
+		"since":       {Since: time.Date(2026, 11, 21, 14, 2, 0, 0, time.UTC)},
+		"waiting":     {Waiting: 1},
+		"kept back":   {Withheld: []SyncWithheld{{Ref: "dr-7", Words: "quotes captured output"}}},
+		"answer page": {AnswerURL: "https://example.com/answer"},
+		"device":      {Device: "dev-1"},
+		"device name": {DeviceName: "studio"},
+		"workspace":   {Workspace: "ws-1"},
+		"person":      {Person: "p-1"},
+	} {
+		if err := r.Valid(); !errors.Is(err, ErrRefused) {
+			t.Errorf("no state, with its %s: %v", name, err)
+		}
+	}
+}

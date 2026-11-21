@@ -11,7 +11,8 @@ import (
 // (ext.SyncStatus), asked through the guard within ext.StatusWait; {}
 // with no sync store registered, and the report's fields left out when the
 // store has none to give (no SyncStatus, late, failing, or a report its
-// Valid refuses). Beside it, what this server keeps on the machine of its
+// Valid refuses) or says it has nothing to report (the zero report, which
+// is no failure). Beside it, what this server keeps on the machine of its
 // own judgement (here): the copied-output check's state when it cannot
 // judge, how many decisions have parts cut as output, and how many texts
 // a hosted session's agent wrote were kept because the server does not see
@@ -40,7 +41,8 @@ const maxSyncStatusReply = 128 << 10
 const kindSyncStatus = ext.KindSync + "-status"
 
 // syncReport asks the sync store for its report; false when there is none
-// to give.
+// to give, the zero report among them (valid: nothing to report, nothing
+// told).
 func (s *Server) syncReport(ctx context.Context) (ext.SyncReport, bool) {
 	g, ok := s.exts.sync.(guardSync)
 	if !ok || g.p == nil || !live(g.ready) {
@@ -55,7 +57,7 @@ func (s *Server) syncReport(ctx context.Context) (ext.SyncReport, bool) {
 	}, func(context.Context) (ext.SyncReport, error) {
 		return st.SyncStatus(), nil
 	})
-	return rep, ok
+	return rep, ok && !rep.IsZero()
 }
 
 // syncHereNow is what this server keeps of its own judgement now; nil for
