@@ -191,9 +191,16 @@ func checkRemote(c ChangeRow) error {
 		return fmt.Errorf("dispatch: a row from another machine without its identity")
 	case len(c.Value) > MaxChangeValue || len(c.Prior) > MaxChangeValue:
 		return fmt.Errorf("dispatch: a row from another machine past %d bytes", MaxChangeValue)
+	case c.At.IsZero() || !c.At.Before(MaxRemoteAt):
+		return fmt.Errorf("dispatch: a row from another machine dated %s, not before %s", c.At.Format(time.RFC3339), MaxRemoteAt.Format(time.DateOnly))
 	}
 	return nil
 }
+
+// MaxRemoteAt bounds a row from elsewhere's time: a row from a clock set at
+// the end of time would order past every edit made here, and an edit made
+// after it would be stamped past what a stamp holds.
+var MaxRemoteAt = time.Date(9999, 1, 1, 0, 0, 0, 0, time.UTC)
 
 // hasControl reports whether s holds a control character.
 func hasControl(s string) bool {

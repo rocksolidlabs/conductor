@@ -886,6 +886,34 @@ func TestARunLinkFromElsewhereNamesThatMachinesRun(t *testing.T) {
 	}
 }
 
+// A row from elsewhere dated zero, or at or past MaxRemoteAt (a clock set
+// at the end of time), is refused with its batch, so a person's later edit
+// is never ordered before it.
+func TestARemoteRowAtTheEndOfTimeIsRefused(t *testing.T) {
+	ctx := context.Background()
+	a, b, key, after := planPair(t)
+	end := time.Date(9999, 12, 31, 23, 59, 59, 999999500, time.UTC)
+	a.clock = func() time.Time { return end }
+	title := "From a broken clock"
+	mustEdit(t, a, "edit-at-the-end", key, TicketEdit{Set: TicketSet{Title: &title}})
+	rows, _, err := a.ChangesFrom(ctx, *after, MaxChangesPage)
+	if err != nil || len(rows) == 0 {
+		t.Fatalf("a's rows: %d %v", len(rows), err)
+	}
+	zero := rows[len(rows)-1]
+	zero.At, zero.OpID = time.Time{}, "dated-zero"
+	for name, batch := range map[string][]ChangeRow{"the end of time": rows, "no time": {zero}} {
+		if got, err := b.ApplyRemote(ctx, batch, nil, registryKeys(t, a)); err == nil || got.Applied != 0 {
+			t.Errorf("a row dated %s: %+v %v", name, got, err)
+		}
+	}
+	mine := "my own edit"
+	mustEdit(t, b, "edit-on-b", key, TicketEdit{Set: TicketSet{Title: &mine}})
+	if got := ticketOf(t, b, key).Title; got != mine {
+		t.Fatalf("b's title %q", got)
+	}
+}
+
 // linkedPair is replicaPair for stores that read GitHub, with the shared
 // project CND received on b.
 func linkedPair(t *testing.T) (a, b *Store, after *int64) {

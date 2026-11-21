@@ -214,7 +214,8 @@ type DispatchChange struct {
 // bytes, never qualified (@); By of at most MaxDispatchBy characters;
 // value and prior of at most MaxDispatchValue bytes; Refs of at most
 // MaxDispatchRefs, each kind:id; a view digest of 64 lower-case hex or
-// none; and no control character in any identifier.
+// none; a time given and before DispatchAtBound; and no control character
+// in any identifier.
 func (c DispatchChange) Valid() error {
 	switch {
 	case c.Entity == "" || c.EntityID == "" || c.Op == "" || c.N < 0:
@@ -233,6 +234,8 @@ func (c DispatchChange) Valid() error {
 		return fmt.Errorf("%w: more than %d references", ErrRefused, MaxDispatchRefs)
 	case c.ViewDigest != "" && !sha256Hex.MatchString(c.ViewDigest):
 		return fmt.Errorf("%w: the view digest %q", ErrRefused, c.ViewDigest)
+	case c.At.IsZero() || !c.At.Before(DispatchAtBound):
+		return fmt.Errorf("%w: a row's time is given and before %s", ErrRefused, DispatchAtBound.Format(time.DateOnly))
 	}
 	for _, f := range []string{c.Entity, c.EntityID, c.TicketID, c.ProjectID, c.Field, c.Op, c.Actor, c.By} {
 		if !utf8.ValidString(f) || strings.ContainsFunc(f, unicode.IsControl) || len(f) > MaxDispatchID && f != c.By {
@@ -246,6 +249,10 @@ func (c DispatchChange) Valid() error {
 	}
 	return nil
 }
+
+// DispatchAtBound bounds a row's time: a row is written before it, so a
+// row from a clock set at the end of time never orders past every edit.
+var DispatchAtBound = time.Date(9999, 1, 1, 0, 0, 0, 0, time.UTC)
 
 // The shapes a row's parts take: Dispatch's op id, a reference kind:id,
 // and a SHA-256 in hex.

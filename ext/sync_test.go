@@ -68,7 +68,7 @@ func TestAKeptRequestIsLeftOutOfThePart(t *testing.T) {
 // broken is refused.
 func TestDispatchChangeValid(t *testing.T) {
 	good := DispatchChange{Entity: "ticket", EntityID: "0123456789abcdef", Field: "title", Op: "set", Value: "Title", Actor: "admin", By: "Ada",
-		OpID: "op-1", N: 0, Origin: "a1", Refs: []string{"ticket:0123456789abcdef", "label:fedcba9876543210"}}
+		OpID: "op-1", N: 0, Origin: "a1", Refs: []string{"ticket:0123456789abcdef", "label:fedcba9876543210"}, At: time.Date(2026, 11, 20, 9, 0, 0, 0, time.UTC)}
 	if err := good.Valid(); err != nil {
 		t.Fatalf("a good row: %v", err)
 	}
@@ -90,6 +90,9 @@ func TestDispatchChangeValid(t *testing.T) {
 		"a control in an id": func(c *DispatchChange) { c.EntityID = "abc\x07" },
 		"a bad view digest":  func(c *DispatchChange) { c.ViewDigest = "abc" },
 		"a negative place":   func(c *DispatchChange) { c.N = -1 },
+		"no time":            func(c *DispatchChange) { c.At = time.Time{} },
+		"the end of time":    func(c *DispatchChange) { c.At = time.Date(9999, 12, 31, 23, 59, 59, 999999500, time.UTC) },
+		"the bound itself":   func(c *DispatchChange) { c.At = DispatchAtBound },
 	} {
 		c := good
 		c.Refs = append([]string(nil), good.Refs...)
