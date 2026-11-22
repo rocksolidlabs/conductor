@@ -1231,8 +1231,10 @@ counted response; the operator's card shows each group's count.
 
 **The respond route's judgement**, under a router's policy, in order
 (the first row that matches answers). It is the engine's; a sync
-provider's door for held answers refuses every one on a server whose
-router confirms policies before the engine (Responding, Held answers):
+provider's door for held answers refuses every one to a record under a
+router's policy on a server whose router confirms policies before the
+engine, and puts one to a record under the server's own policy there to
+the router as the respond route does (Responding, Held answers):
 
 | Case | Answer | Kept |
 |---|---|---|
