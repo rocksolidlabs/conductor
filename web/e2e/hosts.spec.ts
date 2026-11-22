@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { openSync } from 'node:fs'
+import { mkdirSync, openSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Page, Route } from '@playwright/test'
 import { hostAvailabilityWords, platformWords, remoteWords } from '../app/utils/hosts'
@@ -300,14 +300,18 @@ test.describe('the page against the real route', () => {
     for (const h of hosts) await endHosted(api, h.name, h.proc)
   })
 
-  /** A `conductor host` of the stub agent as Codex, in a process group of its own; its session's id once it registered. */
-  async function startHost(api: Api, state: E2EState, base: string): Promise<{ id: string; proc: ChildProcess }> {
+  /**
+   * A `conductor host` of the stub agent as Codex, in a process group of its own; its session's id once it registered. `home` is the
+   * host's HOME, where its machine's id is kept: the server's own HOME makes it a host on the server's machine, a HOME of its own a
+   * machine of its own.
+   */
+  async function startHost(api: Api, state: E2EState, base: string, home: string): Promise<{ id: string; proc: ChildProcess }> {
     const logFile = join(state.root, `${base}-${randomUUID()}.log`)
     const log = openSync(logFile, 'a')
     const name = hostedName(base)
     const bash = stubBash()
     const proc = spawn(serverBinary(), ['host', '--server', state.baseURL, '--token', state.hostToken, '--host-name', `${base}-machine`, '--name', name, '--agent', 'codex', '--cwd', state.home, '--relay-only', '--no-local', '--', bash.command, stubPath, '--session-id', randomUUID()], {
-      env: { PATH: bash.path, LANG: 'C.UTF-8', HOME: state.home, CONDUCTOR_BIN: serverBinary(), STUB_IDENTITY: 'codex', STUB_REPORT: 'codex' },
+      env: { PATH: bash.path, LANG: 'C.UTF-8', HOME: home, CONDUCTOR_BIN: serverBinary(), STUB_IDENTITY: 'codex', STUB_REPORT: 'codex' },
       stdio: ['ignore', log, log],
       detached: true,
     })
@@ -324,7 +328,10 @@ test.describe('the page against the real route', () => {
   test('a host is Connected with its session and its question, a managed run is held by this server, and a host gone is Away, then Last seen', async ({ page, api, state }) => {
     budget(60_000)
     await page.setViewportSize({ width: 1440, height: 900 })
-    const first = await startHost(api, state, 'hosts-a')
+    // Another machine: a HOME of its own, so a machine id of its own.
+    const elsewhere = join(state.root, `hosts-machine-${randomUUID()}`)
+    mkdirSync(elsewhere, { recursive: true })
+    const first = await startHost(api, state, 'hosts-a', elsewhere)
     await page.goto('/crews')
     await expect(page.locator('#dashboard-sidebar-main')).toBeVisible()
     await page.keyboard.press('g')
@@ -373,10 +380,11 @@ test.describe('the page against the real route', () => {
     }
     await holderWords()
 
-    // A redraw the test causes: a second host connects; the run's holder and the page's controls are checked again.
-    const second = await startHost(api, state, 'hosts-b')
-    await expect.poll(async () => (await rowOf(page, state.token, second.id))?.key ?? '', { message: 'the second host is listed' }).not.toBe('')
-    await expect(card(page, (await rowOf(page, state.token, second.id))!.key)).toBeVisible()
+    // A redraw the test causes: a second host connects, on this server's own machine (the server's HOME): no card of its own, its
+    // session under This server's Hosted from this machine. The run's holder and the page's controls are checked again.
+    const second = await startHost(api, state, 'hosts-b', state.home)
+    await expect(page.locator(`[data-host-hosted] [data-host-session="${second.id}"]`)).toBeVisible()
+    expect(await rowOf(page, state.token, second.id)).toBeUndefined()
     await holderWords()
 
     // The first host gone (its process group killed): Away while its session waits in the grace, then Last seen once it is removed:
