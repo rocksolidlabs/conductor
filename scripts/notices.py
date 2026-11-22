@@ -163,6 +163,17 @@ def own_licences(texts: list[tuple[str, str]]) -> list[str]:
     return sorted({k for name, text in texts if not OTHERS.search(name) for k in licences(text)})
 
 
+# What a package's list line says, in these words and no others, when it carries such a file: the line names its own licence,
+# and the reader learns there is more below without the script naming licences a list of others' code holds.
+CARRIES_OTHERS = "carries notices of other projects' code, printed below"
+
+
+def list_line(kinds: str, texts: list[tuple[str, str]]) -> str:
+    """A package's licence as its list line gives it: its own licence files' ids, and the fixed words when it also carries a
+    file of others' notices."""
+    return "; ".join(part for part in (kinds, CARRIES_OTHERS if any(OTHERS.search(name) for name, _ in texts) else "") if part)
+
+
 # The longest text the notices print, in lines: far above any licence (the longest carried, a compilation of grammars'
 # notices, is some 12,700). A text past it stops the script with its package's name, never printed in part.
 MAX_TEXT_LINES = 50_000
@@ -272,13 +283,14 @@ def go_entries() -> list[Entry]:
     entries = []
     for (path, version), directory in sorted(mods.items()):
         texts = licence_files(directory)
+        licence_texts = list(texts)
         kinds = own_licences(texts)
         if not kinds:
             raise SystemExit(f"notices: no licence this script knows for the Go module {path} {version} in {directory}")
         # More than one licence text: each applies to the files it names (a project's COPYING says which); MPL-2.0 files' source is named.
         note = f"the source of its MPL-2.0 files: https://{path} at {version}" if "MPL-2.0" in kinds else ""
         texts += file_notices(sorted(sources.get(path, ())), directory, " ".join(t for _, t in texts))
-        entries.append(Entry(path, version, ", ".join(kinds), texts, note))
+        entries.append(Entry(path, version, list_line(", ".join(kinds), licence_texts), texts, note))
     goroot = Path(run(["go", "env", "GOROOT"], env=base_env).strip())
     licence = (goroot / "LICENSE").read_text()
     std = file_notices(sorted(sources.get("std", ())), goroot / "src", licence)
@@ -301,7 +313,7 @@ def npm_entry(directory: Path, note: str = "", files: list[Path] | None = None) 
         texts = [("LICENSE", (EXTRA / TEXT_KEPT[pkg["name"]]).read_text())]
     if not texts:
         raise SystemExit(f"notices: the npm package {pkg['name']} {pkg.get('version', '')} carries no licence file; keep one in scripts/notices")
-    kind = licence or ", ".join(own_licences(texts))
+    kind = list_line(licence or ", ".join(own_licences(texts)), texts)
     for s in SUPPLEMENTS.get(pkg["name"], []):
         if s.get("for") and s["for"] != pkg.get("version"):
             raise SystemExit(f"notices: {s['file']} was taken for {pkg['name']} {s['for']}, not {pkg.get('version')}: take it again for this version")

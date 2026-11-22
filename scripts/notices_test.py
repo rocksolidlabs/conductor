@@ -4,7 +4,7 @@ import tempfile
 import unittest
 
 import notices
-from notices import Entry, classify, file_notices, licences, notice_comments, own_licences, render
+from notices import Entry, classify, file_notices, licences, list_line, notice_comments, npm_entry, own_licences, render
 
 GO_LICENCE = "Copyright (c) 2009 The Go Authors. All rights reserved. Redistribution and use in source and binary forms..."
 
@@ -165,6 +165,34 @@ class Classify(unittest.TestCase):
         texts = [("LICENSE", BSD3), ("LICENSE-3RD-PARTY.md", "# Third-Party Licenses\n\n" + APACHE + MIT), ("NOTICE", MIT)]
         self.assertEqual(own_licences(texts), ["BSD-3-Clause"])
         self.assertEqual(own_licences([("LICENSE", GODS), ("LICENSE-ADDITIONAL", MIT)]), ["BSD-2-Clause", "ISC", "MIT"])
+
+
+class ListLine(unittest.TestCase):
+    def package(self, files: dict[str, str]) -> Path:
+        d = Path(self.dir.name, "pkg")
+        d.mkdir()
+        (d / "package.json").write_text('{"name": "example-pkg", "version": "1.0.0"}')
+        for name, text in files.items():
+            (d / name).write_text(text)
+        return d
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+
+    def tearDown(self):
+        self.dir.cleanup()
+
+    def test_a_package_carrying_others_notices_says_so_beside_its_own_licence(self):
+        e = npm_entry(self.package({"LICENSE": BSD3, "LICENSE-3RD-PARTY.md": "# Third-Party Licenses\n\n" + APACHE + MIT}))
+        self.assertEqual(e.licence, "BSD-3-Clause; carries notices of other projects' code, printed below")
+        out = render([("npm packages", [e])])
+        self.assertIn(f"  {'example-pkg 1.0.0':<56} BSD-3-Clause; carries notices of other projects' code, printed below\n", out)
+
+    def test_a_package_with_its_licence_alone_gets_no_words(self):
+        self.assertEqual(npm_entry(self.package({"LICENSE": GODS})).licence, "BSD-2-Clause, ISC")
+        self.assertEqual(list_line("MIT", [("LICENSE", MIT)]), "MIT")
+        self.assertEqual(list_line("Apache-2.0", [("LICENSE", APACHE), ("NOTICE", "Copyright 2014 Someone")]),
+                         "Apache-2.0; carries notices of other projects' code, printed below")
 
 
 class Render(unittest.TestCase):
