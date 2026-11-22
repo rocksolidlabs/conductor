@@ -1,4 +1,4 @@
-import type { Browser, Page } from '@playwright/test'
+import type { Browser, Locator, Page } from '@playwright/test'
 import { budget, expect, type Api, type Run } from './fixtures'
 import { ownServer, type AgentCopy, type OwnServer } from './own-server'
 import type { Started } from './server'
@@ -24,6 +24,21 @@ export interface DecisionRecord {
 
 /** Raises the running test's timeout by `ms`: the one budget() of fixtures.ts, kept under this name for the decisions' specs. */
 export { budget }
+
+/**
+ * The cap of a page's first draw after a load, which only bounds a hang: every load boots the app again before its first read, and a
+ * loaded machine takes seconds over it (eleven at a load average above 70), past a step's own cap.
+ */
+export const DRAW_MS = 60_000
+
+/**
+ * Waits for `first`, the first thing a page just loaded draws that the next step needs, within DRAW_MS, raising the test's timeout by
+ * as much: the steps after it then keep their own caps for their own work.
+ */
+export async function firstDraw(first: Locator) {
+  budget(DRAW_MS)
+  await expect(first).toBeVisible({ timeout: DRAW_MS })
+}
 
 /** A server of the decisions' specs' own: ownServer's (own-server.ts). */
 export type DecisionServer = OwnServer
