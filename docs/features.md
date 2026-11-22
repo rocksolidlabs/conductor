@@ -4641,8 +4641,7 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   session waits until its turn ends. Agents told to stop and wait after a
   checkpoint ended their turn and met the done reminder; one then submitted
   its half-done work, on each machine. A task blocked for good in a
-  cancelled run was marked waiting, and its row menu still offered Cancel…
-  (fixed here, below). On the Mac, unlike on WSL: the blocker's question
+  cancelled run was marked waiting (fixed here, below). On the Mac, unlike on WSL: the blocker's question
   left with the agent's done each time, never with its result; Claude Code
   ran the `sleep` commands it was told to run in the background and ended
   its turn; a check whose server was killed kept running to its end, and the
@@ -4666,11 +4665,12 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   running is named at the next start, as a service is: its run, task,
   attempt, tree, phase and id, its process, and that it "may still be
   running: it is reported, never signalled", beside the run's count. A task
-  blocked for good was marked waiting and offered Cancel…: the run's read
-  now says so of such a task (`blockedForGood`), and the Tasks view, the palette and the sidebar say it
-  "will not run", with its reason, and offer nothing that acts on it; in a
-  run that has ended the same holds for every task that never started. The
-  engine still takes a cancel sent for it. Tests:
+  blocked for good was marked waiting: the run's read now says so of such a
+  task (`blockedForGood`), and the Tasks view, the palette and the sidebar
+  say it "will not run", with its reason; in a run that has ended the same
+  holds for every task that never started. Cancel stays offered wherever
+  the server names it, as on any task: the engine takes it, and a retry or
+  an accept of the task it needs would start it. Tests:
   `actions.test.ts` and `useTaskCommands.test.ts` (each question's words),
   `tasks.test.ts` (the preview offered by the manifest),
   `CrewLaunchSheet.test.ts` (each code the launch route answers),
@@ -4678,11 +4678,11 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   refusal together), `crew/blocked_test.go` (`blockedForGood` behind a
   cancelled need, a failed one and in a chain of three, not behind a running
   one), `status.test.ts` and `tasks.test.ts` (its words and what is
-  offered), `ledger/steps_test.go` and `api/services_test.go` (a
+  offered: the commands the server names), `ledger/steps_test.go` and `api/services_test.go` (a
   check left running described, then named at the next start, not
   signalled), `run-tasks.spec.ts` (the row menu and the palette with and
   without a manifest; the palette's Keep it sending nothing; a task blocked
-  for good saying it will not run, with no Cancel…),
+  for good saying it will not run, its Cancel… still offered),
   `palette-rows.spec.ts` (the Stop questions' words) and
   `crew-launch-revision.spec.ts` (a refused launch kept on its sheet, the
   run's name with it).

@@ -5150,8 +5150,9 @@ The run reports `tasks` (each with its `state`, `reason`, `blockedForGood`
 (`true` on a blocked task that will never start: a task it needs failed, was
 cancelled or is itself blocked for good, the condition its `reason`'s "…,
 which will not succeed" is written from; absent otherwise, a task blocked
-for now among them; the run page then says it will not run and offers no
-command on it, though the engine still takes a cancel), `attempts`, latest
+for now among them; the run page then says it will not run, and offers
+what `commands` names on it as on any task, a cancel among them, which the
+engine takes), `attempts`, latest
 `attempt`, `result`, in a continuation `importedFrom`, in a crew with
 people its `owner` and `ownerFrom`, and `commands`, the task commands its
 state allows now, `retry`, `accept` and `cancel` in that order, as the
