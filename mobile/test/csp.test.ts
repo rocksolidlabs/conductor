@@ -140,5 +140,7 @@ describe("the shell's policy", () => {
     for (const s of inlineScripts(html)) expect(policy).toContain(sha(s))
     expect(srcs[0]).toBe(BRIDGE_SRC)
     expect(srcs[1]).toMatch(/^\/_nuxt\//)
-  })
+    // The sync copies the whole real build (some 36 MB) and rewrites every page: vitest's 5 s default is no bound of that work, and a
+    // loaded machine ran past it. This bound only bounds a hang.
+  }, 120_000)
 })
