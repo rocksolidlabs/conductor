@@ -3,6 +3,7 @@
 // signed out, and empties of machines whenever the store is not current (or behind past 10 minutes). Every page that shows other
 // machines decides by these two; each puts the reason after its own subject ("Other machines are not shown: …"). Pure, no Nuxt import.
 import type { SyncState } from './protocol'
+import { atWords } from './dayTime'
 
 /** What a reply says of other machines: its `other` field and the time the reply was built. */
 export interface MachinesView {
@@ -31,12 +32,6 @@ export function otherMachinesShown(v: MachinesView | null | undefined): 'none' |
   return 'line'
 }
 
-function hhmm(iso: string | undefined): string {
-  const d = new Date(iso ?? '')
-  if (Number.isNaN(d.getTime())) return ''
-  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
-}
-
 /**
  * Why other machines are not shown, after a page's own subject: "the sync service has not answered since 14:02", "the subscription
  * has lapsed", "the sync service has been behind since 14:02"; '' while they are shown or nothing is said of them.
@@ -44,7 +39,8 @@ function hhmm(iso: string | undefined): string {
 export function otherMachinesWhy(v: MachinesView | null | undefined): string {
   if (otherMachinesShown(v) !== 'line') return ''
   const o = v!.other!
-  const at = hhmm(o.since)
+  const now = Date.parse(v!.at ?? '')
+  const at = atWords(o.since, Number.isNaN(now) ? Date.now() : now)
   switch (o.state) {
     case 'lapsed':
       return 'the subscription has lapsed'

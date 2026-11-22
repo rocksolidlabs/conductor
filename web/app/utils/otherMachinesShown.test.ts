@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import { otherMachinesShown, otherMachinesWhy } from './otherMachinesShown'
-import { clock } from './syncStatus'
+import { atWords } from './dayTime'
 
 // When other machines are shown (docs/plans/hosts.md, PR-5): the web half of the one rule, read from a reply's `other` field.
 
 const at = '2026-11-05T14:05:00Z'
 const since = '2026-11-05T14:02:00Z'
+const clock = (iso: string) => atWords(iso, Date.parse(at))
 
 describe('when other machines are shown', () => {
   it('says nothing with no other field: a plain build, a store never current, starting or signed out', () => {
@@ -20,6 +21,12 @@ describe('when other machines are shown', () => {
     expect(otherMachinesShown({ at, other: { state: 'behind', since } })).toBe('shown')
     expect(otherMachinesShown({ at, other: { state: 'behind', since: '2026-11-05T13:55:01Z' } })).toBe('shown')
     expect(otherMachinesWhy({ at, other: { state: 'current', since } })).toBe('')
+  })
+
+  it("says a time of another day with its day and month", () => {
+    const replyAt = new Date(2026, 10, 22, 9, 0).toISOString()
+    const before = new Date(2026, 10, 19, 14, 2).toISOString()
+    expect(otherMachinesWhy({ at: replyAt, other: { state: 'unreachable', since: before } })).toBe('the sync service has not answered since 19 Nov 14:02')
   })
 
   it('says one line while unreachable, lapsed, or behind 10 minutes or more, with its reason', () => {
