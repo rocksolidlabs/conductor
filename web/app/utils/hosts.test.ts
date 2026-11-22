@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { HostRow, HostsReply, HostsRun } from './protocol'
+import type { HostRow, HostsLedger, HostsReply, HostsRun } from './protocol'
+import { DecisionsLive } from '../composables/useDecisions'
 import {
   AVAILABILITY_ORDER,
   hostAvailabilityWords,
@@ -9,6 +10,7 @@ import {
   holderNote,
   holderWords,
   hostsReader,
+  hostsRefreshOn,
   platformWords,
   remoteRunView,
   remoteSection,
@@ -20,15 +22,18 @@ import {
   sortHosts,
   waitingLink,
   hostWaitingWords,
+  timeWords,
   whereWords,
 } from './hosts'
-import { clock } from './syncStatus'
+import { atWords } from './dayTime'
 import { heldRunStatus } from './status'
 
 // The Hosts page's model (docs/plans/hosts.md, PR-3 to PR-5): the words it says, the order it draws, where its counts link, the other
 // machines' section, and the reader that never draws a reply older than one drawn.
 
 const at = '2026-11-05T14:02:00Z'
+/** A time of the reply, said against the reply's own moment. */
+const clock = (iso: string) => atWords(iso, Date.parse(at))
 
 describe('a platform in words', () => {
   it('says each form, WSL among them, and an unknown one as the host sent it', () => {
@@ -45,20 +50,52 @@ describe('a platform in words', () => {
   })
 })
 
+describe('a time of the reply', () => {
+  const local = (y: number, m: number, d: number, h: number, min: number) => new Date(y, m, d, h, min).toISOString()
+
+  it("says the time alone on the reply's local day, and the day and month with it on any other", () => {
+    const replyAt = local(2026, 10, 22, 9, 30)
+    expect(timeWords(local(2026, 10, 22, 0, 5), replyAt)).toBe('00:05')
+    expect(timeWords(local(2026, 10, 22, 14, 2), replyAt)).toBe('14:02')
+    // The day before: an old report never reads as today's.
+    expect(timeWords(local(2026, 10, 21, 23, 59), replyAt)).toBe('21 Nov 23:59')
+    // A week before.
+    expect(timeWords(local(2026, 10, 15, 14, 5), replyAt)).toBe('15 Nov 14:05')
+  })
+
+  it("says the day and month across a month's end, and a year's", () => {
+    expect(timeWords(local(2026, 9, 31, 22, 40), local(2026, 10, 1, 8, 0))).toBe('31 Oct 22:40')
+    expect(timeWords(local(2026, 11, 31, 23, 0), local(2027, 0, 1, 0, 30))).toBe('31 Dec 23:00')
+    expect(timeWords(local(2026, 10, 1, 8, 0), local(2026, 10, 1, 8, 0))).toBe('08:00')
+  })
+
+  it('says every time on the page through it: away, seen, reported, a run reported, the holder\'s since', () => {
+    const replyAt = local(2026, 10, 22, 9, 30)
+    const before = local(2026, 10, 3, 14, 5)
+    expect(hostAvailabilityWords('away', before, replyAt)).toBe('Away since 3 Nov 14:05')
+    expect(hostAvailabilityWords('seen', before, replyAt)).toBe('Last seen 3 Nov 14:05')
+    expect(remoteWords(before, replyAt)).toBe('Last reported 3 Nov 14:05')
+    expect(reportedWords('studio', before, replyAt)).toBe('Reported by studio at 3 Nov 14:05')
+    expect(holderNote({ holder: 'other', note: 'Another server holds the lock, as its lock file says.', pid: 7, since: before }, replyAt)).toBe('pid 7, since 3 Nov 14:05, as that server wrote')
+    expect(holderNote({ holder: 'none', note: 'This server is taking the lock.', since: before }, replyAt)).toBe('This server is taking the lock · since 3 Nov 14:05')
+    expect(timeWords(undefined, replyAt)).toBe('')
+  })
+})
+
 describe("a machine's availability", () => {
   it('says here, connected, away since and last seen, and keeps that order', () => {
     expect(hostAvailabilityWords('here')).toBe('Here')
-    expect(hostAvailabilityWords('connected', at)).toBe('Connected')
-    expect(hostAvailabilityWords('away', at)).toBe(`Away since ${clock(at)}`)
-    expect(hostAvailabilityWords('seen', at)).toBe(`Last seen ${clock(at)}`)
+    expect(hostAvailabilityWords('connected', at, at)).toBe('Connected')
+    expect(hostAvailabilityWords('away', at, at)).toBe(`Away since ${clock(at)}`)
+    expect(hostAvailabilityWords('seen', at, at)).toBe(`Last seen ${clock(at)}`)
     expect(hostAvailabilityWords('away')).toBe('Away')
     expect(AVAILABILITY_ORDER).toEqual(['here', 'connected', 'away', 'seen'])
   })
 
   it("says another machine's as the time it last reported, never connected", () => {
-    expect(remoteWords(at)).toBe(`Last reported ${clock(at)}`)
+    expect(remoteWords(at, at)).toBe(`Last reported ${clock(at)}`)
     expect(remoteWords(undefined)).toBe('Not reported yet')
-    expect(remoteWords(at)).not.toMatch(/connected|here|online/i)
+    expect(remoteWords(at, at)).not.toMatch(/connected|here|online/i)
   })
 
   it('sorts the cards connected, away, then seen, each by name', () => {
@@ -77,12 +114,18 @@ describe('who holds the runs', () => {
     expect(holderWords('unknown')).toBe('Not known who holds these runs')
   })
 
-  it("says another server's lock line as that server wrote it, and any other note as the server made it", () => {
-    expect(holderNote('other', 'pid 4242 since 2026-11-05T13:00:00Z')).toBe(`pid 4242, since ${clock('2026-11-05T13:00:00Z')}, as that server wrote`)
-    expect(holderNote('other', 'its line is not readable')).toBe('its line is not readable')
-    expect(holderNote('this_read_only', 'a newer Conductor wrote the database')).toBe('a newer Conductor wrote the database')
-    expect(holderNote('none', 'this server stopped waiting for the lock at 13:02:10')).toBe('this server stopped waiting for the lock at 13:02:10')
-    expect(holderNote('this', 'anything')).toBe('')
+  it("says another server's pid and time from their fields, the server's sentence as given, and no server's time beside it", () => {
+    const t = '2026-11-05T13:00:00Z'
+    expect(holderNote({ holder: 'other', note: 'Another server holds the lock, as its lock file says.', pid: 4242, since: t }, at)).toBe(`pid 4242, since ${clock(t)}, as that server wrote`)
+    expect(holderNote({ holder: 'other', note: 'Another server holds the lock, as its lock file says.', pid: 4242 }, at)).toBe('pid 4242, as that server wrote')
+    expect(holderNote({ holder: 'other', note: "Another server holds the lock; its lock file's line is not readable." }, at)).toBe("Another server holds the lock; its lock file's line is not readable.")
+    expect(holderNote({ holder: 'this_read_only', note: 'This server holds the lock, and reads its database only.' }, at)).toBe('This server holds the lock, and reads its database only.')
+    expect(holderNote({ holder: 'none', note: 'This server stopped waiting for the lock.', since: '2026-11-05T13:02:10Z' }, at)).toBe(`This server stopped waiting for the lock · since ${clock('2026-11-05T13:02:10Z')}`)
+    expect(holderNote({ holder: 'none', note: "The data directory's filesystem has no locks." }, at)).toBe("The data directory's filesystem has no locks.")
+    expect(holderNote({ holder: 'unknown', note: 'The lock file could not be read: permission denied.' }, at)).toBe('The lock file could not be read: permission denied.')
+    expect(holderNote({ holder: 'this', note: 'This server holds the lock.' }, at)).toBe('')
+    // A time is never said as the stamp the server sent.
+    expect(holderNote({ holder: 'none', note: 'This server is taking the lock.', since: '2026-11-05T13:02:10Z' }, at)).not.toContain('2026-11-05T')
   })
 
   it("says this server's run line, and none for a holder that is not this server", () => {
@@ -108,6 +151,14 @@ describe('the counts and their links (PR-4)', () => {
     expect(hostDecisionWords(0)).toBe('')
   })
 
+  it('says why a count is not made, by who holds the runs: only another server counts them there', () => {
+    expect(hostWaitingWords(null, 'other')).toBe('counted on the server that holds it')
+    expect(hostWaitingWords(null, 'none')).toBe('not counted: no server holds these runs')
+    expect(hostWaitingWords(null, 'this_read_only')).toBe("not counted while this server's ledger is read-only")
+    expect(hostWaitingWords(null, 'unknown')).toBe('not counted: not known who holds these runs')
+    for (const h of ['none', 'this_read_only', 'unknown'] as const) expect(hostWaitingWords(null, h)).not.toContain('counted on the server')
+  })
+
   it('links a count to its one item from the ref alone, to Needs you for more than one, and nowhere at 0', () => {
     expect(waitingLink(1, 'decision:dr-7')).toBe('/decisions?item=decision%3Adr-7')
     expect(waitingLink(1, 'question:s-1/q 2')).toBe('/decisions?item=question%3As-1%2Fq%202')
@@ -129,27 +180,27 @@ describe('the counts and their links (PR-4)', () => {
 })
 
 describe("a run's row", () => {
-  const ledger = { holder: 'this' as const, note: '' }
+  const ledger: HostsLedger = { holder: 'this', note: 'This server holds the lock.' }
   const run = (over: Partial<HostsRun> = {}): HostsRun => ({ id: 'team-0001', name: 'Release', crew: 'release', state: 'running', paused: false, waiting: 0, heldBy: 'this', ...over })
 
   it('links the run to its page and its count to its item', () => {
-    const v = runRowView(run({ waiting: 1, waitingRef: 'decision:dr-1' }), ledger)
+    const v = runRowView(run({ waiting: 1, waitingRef: 'decision:dr-1' }), ledger, at)
     expect(v).toMatchObject({ id: 'team-0001', title: 'Release', link: '/runs/team-0001', waiting: '1 needs you', waitingCount: 1, waitingLink: '/decisions?item=decision%3Adr-1', holder: 'Held by this server', note: '' })
   })
 
   it("draws each holder from that reply alone: from none on, the former holder's pid and time are nowhere in the row", () => {
-    const replies: Array<{ holder: HostsRun['heldBy']; note: string }> = [
-      { holder: 'this', note: '' },
-      { holder: 'other', note: 'pid 4242 since 2026-11-05T13:00:00Z' },
-      { holder: 'none', note: 'this server stopped waiting for the lock at 13:02:10' },
-      { holder: 'unknown', note: 'the lock file could not be read: permission' },
-      { holder: 'this_read_only', note: 'a newer Conductor wrote the database' },
-      { holder: 'this', note: '' },
+    const replies: HostsLedger[] = [
+      { holder: 'this', note: 'This server holds the lock.' },
+      { holder: 'other', note: 'Another server holds the lock, as its lock file says.', pid: 4242, since: '2026-11-05T13:00:00Z' },
+      { holder: 'none', note: 'This server stopped waiting for the lock.', since: '2026-11-05T13:02:10Z' },
+      { holder: 'unknown', note: 'The lock file could not be read: permission denied.' },
+      { holder: 'this_read_only', note: 'This server holds the lock, and reads its database only.' },
+      { holder: 'this', note: 'This server holds the lock.' },
     ]
     const seen = replies.map((l, i) => {
-      const v = runRowView(run({ heldBy: l.holder, waiting: l.holder === 'this' ? 0 : null }), l)
+      const v = runRowView(run({ heldBy: l.holder, waiting: l.holder === 'this' ? 0 : null }), l, at)
       // A second redraw that changes only the waiting count says the same holder.
-      const again = runRowView(run({ heldBy: l.holder, waiting: l.holder === 'this' ? 2 : null }), l)
+      const again = runRowView(run({ heldBy: l.holder, waiting: l.holder === 'this' ? 2 : null }), l, at)
       expect(again.holder).toBe(v.holder)
       expect(again.note).toBe(v.note)
       const text = JSON.stringify(v) + JSON.stringify(again)
@@ -159,21 +210,24 @@ describe("a run's row", () => {
     expect(seen).toEqual([
       'Held by this server | ',
       `Held by another server on this data directory | pid 4242, since ${clock('2026-11-05T13:00:00Z')}, as that server wrote`,
-      'Held by no server | this server stopped waiting for the lock at 13:02:10',
-      'Not known who holds these runs | the lock file could not be read: permission',
-      'Held by this server, read-only | a newer Conductor wrote the database',
+      `Held by no server | This server stopped waiting for the lock · since ${clock('2026-11-05T13:02:10Z')}`,
+      'Not known who holds these runs | The lock file could not be read: permission denied.',
+      'Held by this server, read-only | This server holds the lock, and reads its database only.',
       'Held by this server | ',
     ])
   })
 
   it('says a count made elsewhere, and links nowhere for it', () => {
-    const v = runRowView(run({ heldBy: 'other', waiting: null }), { holder: 'other', note: 'pid 1 since 2026-11-05T13:00:00Z' })
+    const v = runRowView(run({ heldBy: 'other', waiting: null }), { holder: 'other', note: 'Another server holds the lock, as its lock file says.', pid: 1 }, at)
     expect(v.waiting).toBe('counted on the server that holds it')
     expect(v.waitingLink).toBeUndefined()
+    // Under no server, a read-only ledger, or a holder not known: what is true, never "counted on the server that holds it".
+    expect(runRowView(run({ heldBy: 'none', waiting: null }), { holder: 'none', note: 'This server stopped waiting for the lock.' }, at).waiting).toBe('not counted: no server holds these runs')
+    expect(runRowView(run({ heldBy: 'this_read_only', waiting: null }), { holder: 'this_read_only', note: 'This server holds the lock, and reads its database only.' }, at).waiting).toBe("not counted while this server's ledger is read-only")
   })
 
   it("says another machine's run as reported, with no link and no holder", () => {
-    const v = remoteRunView({ id: 'team-0099', crew: 'nightly', state: 'running', waiting: 2, reportedBy: 'studio', reportedAt: at })
+    const v = remoteRunView({ id: 'team-0099', crew: 'nightly', state: 'running', waiting: 2, reportedBy: 'studio', reportedAt: at }, at)
     expect(v).toMatchObject({ title: 'nightly', waiting: '2 decisions wait there', holder: '', reported: `Reported by studio at ${clock(at)}` })
     expect(v.link).toBeUndefined()
     expect(v.waitingLink).toBeUndefined()
@@ -234,6 +288,7 @@ describe('the reader', () => {
       },
       apply: (n) => applied.push(n),
       fail: () => {},
+      late: () => {},
     })
     r.refresh()
     r.refresh()
@@ -259,6 +314,7 @@ describe('the reader', () => {
       },
       apply: (s) => applied.push(s),
       fail: () => {},
+      late: () => {},
     })
     r.refresh()
     r.bump()
@@ -282,6 +338,7 @@ describe('the reader', () => {
       },
       apply: () => {},
       fail: (e) => failed.push(e.message),
+      late: () => {},
     })
     r.refresh()
     r.bump()
@@ -289,6 +346,102 @@ describe('the reader', () => {
     reads[1]!.reject(new Error('new'))
     await flush()
     expect(failed).toEqual(['new'])
+  })
+
+  it('gives up a read that never answers: the page is told once, a later ask reads, and the late answer is never drawn', async () => {
+    // The timers' seam: the bound fires when the test says.
+    const pending: Array<{ fn: () => void; ms: number; live: boolean }> = []
+    const timers = {
+      set: (fn: () => void, ms: number) => {
+        const t = { fn, ms, live: true }
+        pending.push(t)
+        return t
+      },
+      clear: (t: unknown) => {
+        if (t) (t as { live: boolean }).live = false
+      },
+    }
+    const fireBound = () => {
+      for (const t of pending.splice(0)) if (t.live) t.fn()
+    }
+    const reads: Array<ReturnType<typeof deferred<string>>> = []
+    const signals: AbortSignal[] = []
+    const applied: string[] = []
+    let late = 0
+    const r = hostsReader<string>(
+      {
+        read: (signal) => {
+          signals.push(signal)
+          const d = deferred<string>()
+          reads.push(d)
+          return d.promise
+        },
+        apply: (s) => applied.push(s),
+        fail: () => {},
+        late: () => late++,
+      },
+      { waitMs: 15_000, timers },
+    )
+    r.refresh()
+    r.refresh() // queued behind the read that will never answer
+    expect(pending.map((t) => t.ms)).toEqual([15_000])
+    fireBound()
+    expect(late).toBe(1)
+    expect(signals[0]!.aborted).toBe(true)
+    // The queued ask reads at once; the bound is told once, not again for the read it abandoned.
+    expect(reads.length).toBe(2)
+    reads[1]!.resolve('fresh')
+    await flush()
+    expect(applied).toEqual(['fresh'])
+    // The abandoned read answering late is never drawn.
+    reads[0]!.resolve('late')
+    await flush()
+    expect(applied).toEqual(['fresh'])
+    expect(late).toBe(1)
+    // A later ask reads again; a read that answers inside its bound tells nothing late.
+    r.refresh()
+    expect(reads.length).toBe(3)
+    reads[2]!.resolve('next')
+    await flush()
+    fireBound()
+    expect(applied).toEqual(['fresh', 'next'])
+    expect(late).toBe(1)
+  })
+
+  it("reads again on a decision's event, coalesced with the rest, and not on an event that is none of its", () => {
+    vi.useFakeTimers()
+    const read = vi.fn()
+    const c = coalesce(read, 1000)
+    const live = new DecisionsLive()
+    let bump: (() => void) | undefined
+    const stop = hostsRefreshOn(
+      [
+        (ask) => {
+          bump = ask
+          return () => (bump = undefined)
+        },
+        (ask) => live.subscribe(() => ask()),
+      ],
+      () => c.ask(),
+    )
+    live.stream('capacity', { agent: 'claude' })
+    vi.advanceTimersByTime(2000)
+    expect(read).not.toHaveBeenCalled()
+    live.stream('decision', { id: 'dr-7', run: 'team-0001', state: 'answered', rev: 2 })
+    live.stream('decision', { id: 'dr-7', run: 'team-0001', state: 'applied', rev: 3 })
+    // The decision's events alone read once, a second after the first.
+    vi.advanceTimersByTime(1000)
+    expect(read).toHaveBeenCalledTimes(1)
+    // The layout's counters and a decision within the same second: one read more.
+    bump!()
+    live.stream('decision', { id: 'dr-7', run: 'team-0001', state: 'applied', rev: 4 })
+    vi.advanceTimersByTime(1000)
+    expect(read).toHaveBeenCalledTimes(2)
+    stop()
+    live.stream('decision', { id: 'dr-8', run: 'team-0001', state: 'open', rev: 1 })
+    vi.advanceTimersByTime(2000)
+    expect(read).toHaveBeenCalledTimes(2)
+    expect(bump).toBeUndefined()
   })
 
   it('coalesces the asks of a second into one read, a second after the first', () => {

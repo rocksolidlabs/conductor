@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import { hostAvailabilityWords, remoteWords } from '../utils/hosts'
-import { clock } from '../utils/syncStatus'
+import { atWords } from '../utils/dayTime'
 
 // A machine's card on the Hosts page (docs/plans/hosts.md, PR-3). The app's vitest mounts no component: the words are the functions
 // the card draws from (hosts.test.ts), and its source and the page's are checked for the bindings that draw them; what a browser shows
@@ -16,7 +16,8 @@ describe("a machine's card", () => {
     expect(card).toMatch(/<UBadge color="neutral" variant="subtle" :icon="ICON\[availability\]" :label="availabilityWords"/)
     expect(template(card)).not.toMatch(/color="(success|warning|error)"|text-success|text-warning|bg-success|bg-warning/)
     const at = '2026-11-05T14:02:00Z'
-    expect([hostAvailabilityWords('here'), hostAvailabilityWords('connected', at), hostAvailabilityWords('away', at), hostAvailabilityWords('seen', at), remoteWords(at)]).toEqual([
+    const clock = (iso: string) => atWords(iso, Date.parse(at))
+    expect([hostAvailabilityWords('here'), hostAvailabilityWords('connected', at, at), hostAvailabilityWords('away', at, at), hostAvailabilityWords('seen', at, at), remoteWords(at, at)]).toEqual([
       'Here',
       'Connected',
       `Away since ${clock(at)}`,
@@ -27,7 +28,7 @@ describe("a machine's card", () => {
 
   it("says Holds no runs on every host's card, and draws another machine's card as reported, read only", () => {
     expect(page).toMatch(/kind="host"[\s\S]*?run-line="Holds no runs"/)
-    expect(page).toMatch(/kind="remote"\s+read-only[\s\S]*?availability="reported"[\s\S]*?:availability-words="remoteWords\(m\.lastReport\)"/)
+    expect(page).toMatch(/kind="remote"\s+read-only[\s\S]*?availability="reported"[\s\S]*?:availability-words="remoteWords\(m\.lastReport, reply\.at\)"/)
   })
 
   it("names a session the page does not hold by its id, as evidence, and links each to its page", () => {

@@ -3,10 +3,9 @@ import { randomUUID } from 'node:crypto'
 import { mkdirSync, openSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Page, Route } from '@playwright/test'
-import { hostAvailabilityWords, platformWords, remoteWords } from '../app/utils/hosts'
-import type { HostRow, HostsReply } from '../app/utils/protocol'
-import { clock } from '../app/utils/syncStatus'
-import { budget, dayPage, endHosted, expect, hostedName, hostedSession, readAgain, test, type Api } from './fixtures'
+import { HOSTS_READ_WAIT_MS, hostAvailabilityWords, platformWords, remoteWords, timeWords } from '../app/utils/hosts'
+import type { HostRow, HostsLedger, HostsReply } from '../app/utils/protocol'
+import { atRest, budget, dayPage, endHosted, expect, hostedName, hostedSession, readAgain, test, type Api } from './fixtures'
 import { noSideways } from './layout'
 import { serverBinary, stubBash, stubPath } from './server'
 import type { E2EState } from './state'
@@ -18,8 +17,11 @@ import type { E2EState } from './state'
 // `conductor host`, is the last test.
 
 const at = '2026-11-05T14:05:00Z'
+/** A time of the stub's reply as the page says it: against the reply's own moment. */
+const clock = (iso: string) => timeWords(iso, at)
+/** A machine last seen a week before the reply: its day and month are said, never a bare time that reads as today's. */
+const weekOld = '2026-10-29T14:02:00Z'
 const away = '2026-11-05T14:02:00Z'
-const seen = '2026-11-05T13:40:00Z'
 const started = '2026-11-05T09:12:00Z'
 
 function stub(over: Partial<HostsReply> = {}): HostsReply {
@@ -43,7 +45,7 @@ function stub(over: Partial<HostsReply> = {}): HostsReply {
         name: 'hs2stub-old',
         platform: 'windows/amd64',
         availability: 'seen',
-        since: seen,
+        since: weekOld,
         sessions: { running: 0, waiting: 0 },
         sessionIds: [],
         keyFrom: 'machine',
@@ -80,7 +82,7 @@ function stub(over: Partial<HostsReply> = {}): HostsReply {
       { id: 'hs2stub-run-1', name: 'Release', crew: 'release', state: 'running', paused: false, waiting: 1, waitingRef: 'decision:hs2stub-dr-1', heldBy: 'this' },
       { id: 'hs2stub-run-2', name: 'Nightly', crew: 'nightly', state: 'interrupted', paused: false, waiting: 0, heldBy: 'this' },
     ],
-    ledger: { holder: 'this', note: '' },
+    ledger: { holder: 'this', note: 'This server holds the lock.' },
     more: { hosts: 0, runs: 0 },
     ...over,
   }
@@ -142,9 +144,10 @@ test('the page draws this server, its hosts, the switchyard and the runs, as the
   await expect(studio.locator('[data-host-session]')).toHaveCount(2)
   await expect(studio.locator('[data-host-session="hs2stub-s1"]')).toHaveAttribute('href', '/sessions/hs2stub-s1')
   await expect(studio.locator('[data-host-runs]')).toHaveText('Holds no runs')
-  await expect(card(page, 'hs2stub-wsl').locator('[data-host-availability-words]')).toHaveText(hostAvailabilityWords('away', away))
+  await expect(card(page, 'hs2stub-wsl').locator('[data-host-availability-words]')).toHaveText(hostAvailabilityWords('away', away, at))
   await expect(card(page, 'hs2stub-wsl').locator('[data-host-meta]')).toHaveText('Linux · x64 · WSL')
-  await expect(card(page, 'hs2stub-seen').locator('[data-host-availability-words]')).toHaveText(`Last seen ${clock(seen)}`)
+  await expect(card(page, 'hs2stub-seen').locator('[data-host-availability-words]')).toHaveText(`Last seen ${clock(weekOld)}`)
+  await expect(card(page, 'hs2stub-seen').locator('[data-host-availability-words]')).toHaveText(/^Last seen \d{1,2} (Oct|Nov) \d\d:\d\d$/)
   await expect(page.locator('[data-hosts-started]')).toContainText(`since this server started at ${clock(started)}`)
 
   await expect(page.locator('[data-hosts-switchyard-url]')).toHaveText('https://yard.example.test/')
@@ -186,11 +189,11 @@ test("each holder's words come from the reply that says them, redrawn: a former 
   await page.setViewportSize({ width: 1440, height: 900 })
   const steps: Array<Pick<HostsReply, 'ledger' | 'runs'>> = []
   const run = (heldBy: HostsReply['ledger']['holder'], waiting: number | null) => [{ id: 'hs2stub-run-1', name: 'Release', crew: 'release', state: 'running', paused: false, waiting, heldBy }]
-  steps.push({ ledger: { holder: 'this', note: '' }, runs: run('this', 0) })
-  steps.push({ ledger: { holder: 'other', note: 'pid 4242 since 2026-11-05T13:00:00Z' }, runs: run('other', null) })
-  steps.push({ ledger: { holder: 'none', note: 'this server stopped waiting for the lock at 13:02:10' }, runs: run('none', null) })
-  steps.push({ ledger: { holder: 'unknown', note: 'the lock file could not be read: permission' }, runs: run('unknown', null) })
-  steps.push({ ledger: { holder: 'this_read_only', note: 'a newer Conductor wrote the database' }, runs: run('this_read_only', 0) })
+  steps.push({ ledger: { holder: 'this', note: 'This server holds the lock.' }, runs: run('this', 0) })
+  steps.push({ ledger: { holder: 'other', note: 'Another server holds the lock, as its lock file says.', pid: 4242, since: '2026-11-05T13:00:00Z' }, runs: run('other', null) })
+  steps.push({ ledger: { holder: 'none', note: 'This server stopped waiting for the lock.', since: '2026-11-05T13:02:10Z' }, runs: run('none', null) })
+  steps.push({ ledger: { holder: 'unknown', note: 'The lock file could not be read: permission denied.' }, runs: run('unknown', null) })
+  steps.push({ ledger: { holder: 'this_read_only', note: 'This server holds the lock, and reads its database only.' }, runs: run('this_read_only', null) })
   let step = 0
   await serve(page, () => ({ json: stub(steps[step]) }))
   await page.goto('/hosts')
@@ -198,10 +201,12 @@ test("each holder's words come from the reply that says them, redrawn: a former 
   const want = [
     'Held by this server',
     `Held by another server on this data directory: pid 4242, since ${clock('2026-11-05T13:00:00Z')}, as that server wrote`,
-    'Held by no server: this server stopped waiting for the lock at 13:02:10',
-    'Not known who holds these runs: the lock file could not be read: permission',
-    'Held by this server, read-only: a newer Conductor wrote the database',
+    `Held by no server: This server stopped waiting for the lock · since ${clock('2026-11-05T13:02:10Z')}`,
+    'Not known who holds these runs: The lock file could not be read: permission denied.',
+    'Held by this server, read-only: This server holds the lock, and reads its database only.',
   ]
+  // What a run's count says when the reply makes none: only another server's runs are counted there.
+  const uncounted = ['', 'counted on the server that holds it', 'not counted: no server holds these runs', 'not counted: not known who holds these runs', "not counted while this server's ledger is read-only"]
   for (let i = 0; i < steps.length; i++) {
     if (i > 0) {
       step = i
@@ -209,7 +214,7 @@ test("each holder's words come from the reply that says them, redrawn: a former 
     }
     await expect(row.locator('[data-host-run-holder]')).toHaveText(want[i]!)
     await expect(page.locator('[data-hosts-holder]')).toHaveText(want[i]!)
-    if (i === 1) await expect(row.locator('[data-host-run-waiting]')).toHaveText('counted on the server that holds it')
+    if (uncounted[i]) await expect(row.locator('[data-host-run-waiting]')).toHaveText(uncounted[i]!)
     if (i >= 2) await expect(page.locator('[data-hosts]')).not.toContainText('4242')
     await expect(row.getByRole('button')).toHaveCount(0)
   }
@@ -225,7 +230,7 @@ test("another machine is drawn as reported, read only, and its section is one li
       name: 'hs2stub-studio2',
       platform: 'darwin/arm64',
       version: 'v0.7.0',
-      lastReport: away,
+      lastReport: weekOld,
       own: true,
       summary: {
         platform: 'darwin/arm64',
@@ -243,7 +248,8 @@ test("another machine is drawn as reported, read only, and its section is one li
   await page.goto('/hosts')
   const section = page.locator('[data-hosts-section="other"]')
   const studio = card(page, 'hs2stub-dev-studio')
-  await expect(studio.locator('[data-host-availability-words]')).toHaveText(remoteWords(away))
+  await expect(studio.locator('[data-host-availability-words]')).toHaveText(remoteWords(weekOld, at))
+  await expect(studio.locator('[data-host-availability-words]')).toHaveText(/^Last reported \d{1,2} (Oct|Nov) \d\d:\d\d$/)
   await expect(studio.locator('[data-host-availability-words]')).not.toContainText(/Connected|Here/)
   await expect(studio.locator('[data-host-meta]')).toHaveText('macOS · arm64 · v0.7.0')
   await expect(studio.locator('[data-host-summary-host]')).toHaveText(/hs2stub-laptop\s*Linux · x64 · Connected/)
@@ -289,6 +295,44 @@ test('the first read failing says so, and Read again draws the page', async ({ p
   await expect(page.locator('[data-page-empty="hosts"]')).toHaveCount(0)
 })
 
+test('a read that does not answer is given up within its bound: the page says so, keeps what it drew, and the next read goes', async ({ page }) => {
+  // The bound of the read held, then at most one more read an event asked meanwhile, held and given up the same way.
+  budget(3 * HOSTS_READ_WAIT_MS + 30_000)
+  await page.setViewportSize({ width: 1440, height: 900 })
+  // While `hold` stands every read is held, never answered until the test lets it go after the page gave it up (a read an event asks
+  // meanwhile too, so that no answer clears what the test reads); after it, every read is answered.
+  let hold = false
+  const held: Route[] = []
+  await page.route('**/api/hosts', (route: Route) => {
+    if (hold) {
+      held.push(route)
+      return
+    }
+    return route.fulfill({ json: held.length ? stub({ switchyard: { url: 'https://after.example.test/', publishing: 0, connected: 0 } }) : stub() })
+  })
+  await page.goto('/hosts')
+  await expect(card(page, 'hs2stub-this')).toBeVisible()
+  hold = true
+  await page.getByRole('button', { name: 'Read again' }).click()
+  await expect.poll(() => held.length, { message: 'a read is held' }).toBeGreaterThan(0)
+  // Past the bound: the page says so, and what it drew stays, said as of the reply that drew it.
+  const alert = page.locator('[data-hosts-error]')
+  await expect(alert).toContainText(`The server has not answered in ${HOSTS_READ_WAIT_MS / 1000} s.`, { timeout: HOSTS_READ_WAIT_MS + 10_000 })
+  await expect(alert).toContainText(/What is shown is as of \d{1,2} (Oct|Nov) \d\d:\d\d\./)
+  await expect(card(page, 'hs2stub-this')).toBeVisible()
+  // The next ask reads (after a read an event asked meanwhile, if one is held, is given up in its turn): its answer is drawn and the
+  // alert goes.
+  hold = false
+  await page.getByRole('button', { name: 'Read again' }).click()
+  await expect(page.locator('[data-hosts-switchyard-url]')).toHaveText('https://after.example.test/', { timeout: HOSTS_READ_WAIT_MS + 10_000 })
+  await expect(alert).toHaveCount(0)
+  // The given-up reads answering now are never drawn.
+  for (const r of held) await r.fulfill({ json: stub({ switchyard: { url: 'https://late.example.test/', publishing: 0, connected: 0 } }) }).catch(() => undefined)
+  await page.getByRole('button', { name: 'Read again' }).click()
+  await expect(page.locator('[data-hosts-switchyard-url]')).toHaveText('https://after.example.test/')
+  await expect(page.locator('[data-hosts]')).not.toContainText('late.example.test')
+})
+
 test('on a phone, in both themes, the page fits its width: nothing scrolls sideways', async ({ browser, state }) => {
   for (const theme of ['dark', 'light'] as const) {
     const page = await dayPage(browser, { server: state, path: '/crews', theme, width: 390, height: 844, touch: true })
@@ -300,6 +344,37 @@ test('on a phone, in both themes, the page fits its width: nothing scrolls sidew
     await page.context().close()
   }
 })
+
+test("on a phone, every holder's line and a run's note wrap: nothing scrolls sideways", async ({ browser, state }) => {
+  // Each holder with the longest sentence the server gives it, and a pid of its most digits.
+  const ledgers: HostsLedger[] = [
+    { holder: 'this_read_only', note: 'This server holds the lock, and its database was written by a newer Conductor or is damaged; it cannot be read.' },
+    { holder: 'other', note: 'Another server holds the lock, as its lock file says.', pid: 4294967295, since: weekOld },
+    { holder: 'other', note: "Another server holds the lock; its lock file's line is not readable." },
+    { holder: 'none', note: 'This server stopped waiting for the lock.', since: weekOld },
+    { holder: 'unknown', note: 'The lock file could not be read: permission denied.' },
+  ]
+  const page = await dayPage(browser, { server: state, path: '/crews', width: 390, height: 844, touch: true })
+  let i = 0
+  await serve(page, () => ({ json: stub({ ledger: ledgers[i]!, runs: stub().runs.map((r) => ({ ...r, heldBy: ledgers[i]!.holder, waiting: null })) }) }))
+  await page.goto('/hosts')
+  for (i = 0; i < ledgers.length; i++) {
+    if (i > 0) await page.getByRole('button', { name: 'Read again' }).click()
+    const line = page.locator('[data-hosts-holder]')
+    await expect(line).toHaveAttribute('data-holder', ledgers[i]!.holder)
+    const note = page.locator('[data-host-run="hs2stub-run-1"] [data-host-run-holder]')
+    if (ledgers[i]!.pid) await expect(note).toContainText(`pid ${ledgers[i]!.pid}`)
+    else await expect(note).toContainText(ledgers[i]!.note.replace(/\.$/, ''))
+    await line.scrollIntoViewIfNeeded()
+    await atRest(line)
+    await noSideways(page, { root: page.locator('[data-hosts-section="runs"]') })
+    // The line stays inside the window: it wraps rather than running out.
+    const box = (await line.boundingBox())!
+    expect(box.x + box.width).toBeLessThanOrEqual(390)
+  }
+  await page.context().close()
+})
+
 
 // Against the real route: a real `conductor host` running the stub agent, and a managed run on this server. Counted by what this test
 // made alone: its host's card is found by its session's id in the reply, never by a list's length.

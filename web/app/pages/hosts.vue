@@ -7,6 +7,8 @@ import {
   holderNote,
   holderWords,
   hostsReader,
+  hostsRefreshOn,
+  HOSTS_READ_WAIT_MS,
   moreWords,
   platformWords,
   remoteRunView,
@@ -15,14 +17,17 @@ import {
   runRowView,
   serverRunLine,
   sortHosts,
+  timeWords,
 } from '~/utils/hosts'
-import { clock } from '~/utils/syncStatus'
+import { atWords } from '~/utils/dayTime'
+import { decisionsLive } from '~/composables/useDecisions'
 import { pageState } from '~/utils/pageState'
 import { sessionStatus } from '~/utils/status'
 
 // Hosts (docs/plans/hosts.md, PR-3 to PR-5): every machine this server knows, what runs and waits on each, and who holds this data
-// directory's managed runs, from GET /api/hosts. Read on open, again (at most once a second) on the session, removal and run events
-// the layout already streams, and every 30 s for the times it says; one read at a time, a reply older than one shown never drawn.
+// directory's managed runs, from GET /api/hosts. Read on open, again (at most once a second) on the session, removal, run and decision
+// events the layout already streams, and every 30 s (another process taking or letting go of the ledger's lock, and a machine passing
+// its 24 hours, are told by no event); one read at a time, each bounded, a reply older than one shown never drawn.
 // Its only actions are links: nothing here starts, moves, continues or retries work.
 
 useHead({ title: 'Hosts' })
@@ -40,20 +45,31 @@ const shownState = computed(() => pageState({ read: !!reply.value, error: error.
 const reader = hostsReader<HostsReply>({
   read: (signal) => {
     loading.value = true
-    return request<HostsReply>('/api/hosts', { signal }).finally(() => (loading.value = false))
+    return request<HostsReply>('/api/hosts', { signal })
   },
   apply: (r) => {
+    loading.value = false
     reply.value = r
     error.value = ''
   },
-  fail: (e) => (error.value = e.message || 'The server did not answer.'),
+  fail: (e) => {
+    loading.value = false
+    error.value = e.message || 'The server did not answer.'
+  },
+  // A read past its bound is given up: the page says so, and what it drew stays, said to be as of the reply that drew it.
+  late: () => {
+    loading.value = false
+    const waited = `The server has not answered in ${HOSTS_READ_WAIT_MS / 1000} s.`
+    error.value = reply.value ? `${waited} What is shown is as of ${atWords(reply.value.at, Date.now())}.` : waited
+  },
 })
 const soon = coalesce(() => reader.refresh(), 1000)
 
-// The events the layout streams: a session's change or removal bumps its list, a run's event its runs.
+// The events the layout streams: a session's change or removal bumps its list, a run's event its runs, and a decision's event (its
+// count on a run moves) reaches the decisions' store, which tells its watchers.
 const sessionsVersion = useState<number>('attentionVersion', () => 0)
 const runsVersion = useState<number>('attentionRunsVersion', () => 0)
-watch([sessionsVersion, runsVersion], () => soon.ask())
+const stopRefreshes = hostsRefreshOn([(ask) => watch([sessionsVersion, runsVersion], ask), (ask) => decisionsLive().subscribe(() => ask())], () => soon.ask())
 watch(
   () => admin.token.value,
   () => {
@@ -68,6 +84,7 @@ onMounted(() => {
   tick = setInterval(() => reader.refresh(), 30_000)
 })
 onBeforeUnmount(() => {
+  stopRefreshes()
   soon.cancel()
   if (tick) clearInterval(tick)
   reader.end()
@@ -83,10 +100,10 @@ function listed(ids: readonly string[] | undefined) {
 }
 
 const hosts = computed(() => sortHosts(reply.value?.hosts ?? []))
-const runs = computed(() => (reply.value ? reply.value.runs.map((r) => runRowView(r, reply.value!.ledger)) : []))
+const runs = computed(() => (reply.value ? reply.value.runs.map((r) => runRowView(r, reply.value!.ledger, reply.value!.at)) : []))
 const remote = computed(() => remoteSection(reply.value))
-const started = computed(() => clock(reply.value?.started))
-const ledgerNote = computed(() => (reply.value ? holderNote(reply.value.ledger.holder, reply.value.ledger.note) : ''))
+const started = computed(() => timeWords(reply.value?.started, reply.value?.at))
+const ledgerNote = computed(() => (reply.value ? holderNote(reply.value.ledger, reply.value.at) : ''))
 </script>
 
 <template>
@@ -158,7 +175,7 @@ const ledgerNote = computed(() => (reply.value ? holderNote(reply.value.ledger.h
               :version="h.version"
               :user="h.user"
               :availability="h.availability"
-              :availability-words="hostAvailabilityWords(h.availability, h.since)"
+              :availability-words="hostAvailabilityWords(h.availability, h.since, reply.at)"
               :sessions="h.sessions"
               :session-list="listed(h.sessionIds)"
               :more-sessions="h.moreSessionIds"
@@ -185,7 +202,7 @@ const ledgerNote = computed(() => (reply.value ? holderNote(reply.value.ledger.h
                 :platform="m.platform"
                 :version="m.version"
                 availability="reported"
-                :availability-words="remoteWords(m.lastReport)"
+                :availability-words="remoteWords(m.lastReport, reply.at)"
                 :sessions="m.summary?.sessions"
                 :decisions="m.decisions"
               >
@@ -194,13 +211,13 @@ const ledgerNote = computed(() => (reply.value ? holderNote(reply.value.ledger.h
                   <ul class="mt-1 flex flex-col gap-1">
                     <li v-for="(sh, i) in m.summary.hosts" :key="`${sh.name}-${i}`" class="flex min-w-0 flex-wrap items-center gap-x-2 text-sm" data-host-summary-host>
                       <span class="min-w-0 truncate text-highlighted">{{ sh.name }}</span>
-                      <span class="text-xs text-muted">{{ [platformWords(sh.platform), hostAvailabilityWords(sh.availability, sh.since)].filter(Boolean).join(' · ') }}</span>
+                      <span class="text-xs text-muted">{{ [platformWords(sh.platform), hostAvailabilityWords(sh.availability, sh.since, reply.at)].filter(Boolean).join(' · ') }}</span>
                     </li>
                   </ul>
                   <p v-if="m.summary.moreHosts" class="mt-1 text-xs text-muted">{{ moreWords(m.summary.moreHosts, m.summary.moreHosts === 1 ? 'host' : 'hosts') }}</p>
                 </div>
                 <ul v-if="m.runs.length" class="mt-3 flex flex-col gap-2" data-host-remote-runs>
-                  <HostRunRow v-for="r in m.runs" :key="r.id" :row="remoteRunView(r)" remote />
+                  <HostRunRow v-for="r in m.runs" :key="r.id" :row="remoteRunView(r, reply.at)" remote />
                 </ul>
               </HostCard>
             </div>
@@ -223,7 +240,7 @@ const ledgerNote = computed(() => (reply.value ? holderNote(reply.value.ledger.h
 
         <section aria-labelledby="hosts-runs" data-hosts-section="runs">
           <h2 id="hosts-runs" class="text-[11px] font-semibold uppercase tracking-wider text-muted">Runs and who holds them</h2>
-          <p class="mb-2 mt-1 text-sm" data-hosts-holder :data-holder="reply.ledger.holder">
+          <p class="mb-2 mt-1 text-sm [overflow-wrap:anywhere]" data-hosts-holder :data-holder="reply.ledger.holder">
             <span class="text-highlighted" data-hosts-holder-words>{{ holderWords(reply.ledger.holder) }}</span>
             <span v-if="ledgerNote" class="text-muted" data-hosts-holder-note>: {{ ledgerNote }}</span>
           </p>

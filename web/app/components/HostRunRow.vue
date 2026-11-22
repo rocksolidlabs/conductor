@@ -40,8 +40,8 @@ const needs = statusOfKey('needs')
           <span>{{ row.waiting }}</span>
         </span>
       </template>
-      <span v-if="remote" data-host-run-reported>{{ row.reported }}</span>
-      <span v-else data-host-run-holder>
+      <span v-if="remote" class="min-w-0 [overflow-wrap:anywhere]" data-host-run-reported>{{ row.reported }}</span>
+      <span v-else class="min-w-0 [overflow-wrap:anywhere]" data-host-run-holder>
         <span data-host-run-holder-words>{{ row.holder }}</span><span v-if="row.note" data-host-run-note>: {{ row.note }}</span>
       </span>
     </div>

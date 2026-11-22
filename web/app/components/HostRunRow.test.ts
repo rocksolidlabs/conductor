@@ -23,7 +23,7 @@ describe("a run's row", () => {
 
   it("draws the state in the status language, and another machine's run as reported, never held", () => {
     expect(src).toContain('const mark = computed(() => heldRunStatus(props.row.state, props.row.paused))')
-    expect(template).toMatch(/<span v-if="remote" data-host-run-reported>\{\{ row\.reported \}\}<\/span>/)
-    expect(template).toMatch(/<span v-else data-host-run-holder>/)
+    expect(template).toMatch(/<span v-if="remote"[^>]*data-host-run-reported>\{\{ row\.reported \}\}<\/span>/)
+    expect(template).toMatch(/<span v-else[^>]*data-host-run-holder>/)
   })
 })

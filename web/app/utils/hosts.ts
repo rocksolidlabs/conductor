@@ -2,8 +2,8 @@
 // data directory's managed runs, from GET /api/hosts. The pure model the page and its components draw from: a platform in words,
 // a machine's availability and its order, a run's holder in words, the links of what waits, the other machines' section, and the
 // one-read-at-a-time reader with its queue and generation. It imports no Nuxt module, so the Playwright specs read it too.
-import type { HostAvailability, HostRow, HostsHolder, HostsRemoteRun, HostsReply, HostsRun, HostsSessions } from './protocol'
-import { clock } from './syncStatus'
+import type { HostAvailability, HostRow, HostsHolder, HostsLedger, HostsRemoteRun, HostsReply, HostsRun, HostsSessions } from './protocol'
+import { atWords } from './dayTime'
 import { otherMachinesShown, otherMachinesWhy } from './otherMachinesShown'
 
 const OS_WORDS: Record<string, string> = {
@@ -31,6 +31,15 @@ export function platformWords(platform: string | undefined): string {
   return words.join(' · ')
 }
 
+/**
+ * A time of the reply as the page says it, against the reply's own `at`: "14:02" on that local day, "3 Nov 14:05" on another, so a
+ * report days old never reads as today's. Every time on the page is said through it.
+ */
+export function timeWords(iso: string | undefined, at: string | undefined): string {
+  const now = Date.parse(at ?? '')
+  return atWords(iso, Number.isNaN(now) ? Date.now() : now)
+}
+
 /** Here first, then connected, away and seen: the order of the page's cards. */
 export const AVAILABILITY_ORDER: readonly HostAvailability[] = ['here', 'connected', 'away', 'seen']
 
@@ -39,8 +48,8 @@ export const AVAILABILITY_ORDER: readonly HostAvailability[] = ['here', 'connect
  * last link dropped then, and a session waits in its grace), "Last seen 13:40" (no session left; the last went then). Said only of
  * what this server sees itself; another machine's is "Last reported" (remoteWords), never one of these.
  */
-export function hostAvailabilityWords(a: HostAvailability, since?: string): string {
-  const at = clock(since)
+export function hostAvailabilityWords(a: HostAvailability, since?: string, replyAt?: string): string {
+  const at = timeWords(since, replyAt)
   switch (a) {
     case 'here':
       return 'Here'
@@ -55,8 +64,8 @@ export function hostAvailabilityWords(a: HostAvailability, since?: string): stri
 }
 
 /** Another machine's availability: the time the sync service last heard from it, "Last reported 14:05", never "online". */
-export function remoteWords(lastReport: string | undefined): string {
-  const at = clock(lastReport)
+export function remoteWords(lastReport: string | undefined, replyAt?: string): string {
+  const at = timeWords(lastReport, replyAt)
   return at ? `Last reported ${at}` : 'Not reported yet'
 }
 
@@ -80,17 +89,17 @@ export function holderWords(h: HostsHolder): string {
 }
 
 /**
- * The holder's note as the page says it, from that reply's note alone: another server's lock line, `pid 4242 since <time>`, is "pid
- * 4242, since 13:00, as that server wrote" (nothing trusts it); any other note (a read-only ledger's reason, why no server holds
- * the runs, why the lock could not be read, "its line is not readable") is said as the server made it. None for `this`.
+ * The holder's note as the page says it, from that reply's ledger alone: another server's pid and time from their fields, "pid 4242,
+ * since 13:00, as that server wrote" (nothing trusts them), or the server's sentence when its line gave none; under no server the
+ * server's sentence with its time, "This server stopped waiting for the lock · since 13:02"; any other holder the server's sentence
+ * as given. None for `this`. Every time in the viewer's local time, against the reply's `at`.
  */
-export function holderNote(h: HostsHolder, note: string): string {
-  if (h === 'this' || !note) return ''
-  if (h === 'other') {
-    const m = /^pid ([0-9]{1,10}) since (\S+)$/.exec(note)
-    const at = m ? clock(m[2]) : ''
-    if (m && at) return `pid ${m[1]}, since ${at}, as that server wrote`
-  }
+export function holderNote(l: Pick<HostsLedger, 'holder' | 'note' | 'pid' | 'since'>, replyAt?: string): string {
+  if (l.holder === 'this') return ''
+  const at = timeWords(l.since, replyAt)
+  if (l.holder === 'other' && l.pid !== undefined) return at ? `pid ${l.pid}, since ${at}, as that server wrote` : `pid ${l.pid}, as that server wrote`
+  const note = l.note.trim()
+  if (l.holder === 'none' && at) return `${note.replace(/\.$/, '')} · since ${at}`
   return note
 }
 
@@ -100,9 +109,20 @@ export function sessionWords(s: Pick<HostsSessions, 'running'>): string {
   return s.running === 1 ? '1 session' : `${s.running} sessions`
 }
 
-/** What waits for a person, in words: "1 needs you", "2 need you"; '' at 0; "counted on the server that holds it" for null. */
-export function hostWaitingWords(n: number | null | undefined): string {
-  if (n === null || n === undefined) return 'counted on the server that holds it'
+const UNCOUNTED: Record<HostsHolder, string> = {
+  other: 'counted on the server that holds it',
+  none: 'not counted: no server holds these runs',
+  this_read_only: "not counted while this server's ledger is read-only",
+  unknown: 'not counted: not known who holds these runs',
+  this: 'not counted',
+}
+
+/**
+ * What waits for a person, in words: "1 needs you", "2 need you"; '' at 0. A count the reply does not make (null) says why, by who
+ * holds the runs: only another server's runs are "counted on the server that holds it".
+ */
+export function hostWaitingWords(n: number | null | undefined, holder: HostsHolder = 'other'): string {
+  if (n === null || n === undefined) return UNCOUNTED[holder] ?? UNCOUNTED.unknown
   if (n <= 0) return ''
   return `${n} ${n === 1 ? 'needs' : 'need'} you`
 }
@@ -160,8 +180,8 @@ export function whereWords(where: readonly string[] | undefined): string {
 }
 
 /** "Reported by studio at 14:05": who sent a remote run's pointer and when; never a holder. */
-export function reportedWords(by: string, at: string | undefined): string {
-  const t = clock(at)
+export function reportedWords(by: string, at: string | undefined, replyAt?: string): string {
+  const t = timeWords(at, replyAt)
   return t ? `Reported by ${by} at ${t}` : `Reported by ${by}`
 }
 
@@ -187,7 +207,7 @@ export interface RunRowView {
   reported: string
 }
 
-export function runRowView(run: HostsRun, ledger: { holder: HostsHolder; note: string }): RunRowView {
+export function runRowView(run: HostsRun, ledger: HostsLedger, replyAt?: string): RunRowView {
   const holder = run.heldBy ?? ledger.holder
   return {
     id: run.id,
@@ -195,17 +215,17 @@ export function runRowView(run: HostsRun, ledger: { holder: HostsHolder; note: s
     link: `/runs/${encodeURIComponent(run.id)}`,
     state: run.state,
     paused: run.paused,
-    waiting: hostWaitingWords(run.waiting),
+    waiting: hostWaitingWords(run.waiting, holder),
     waitingCount: run.waiting ?? 0,
     waitingLink: waitingLink(run.waiting, run.waitingRef),
     holder: holderWords(holder),
     // The note is the ledger's, made for this reply: shown under the holder it was made for, never under another.
-    note: holder === ledger.holder ? holderNote(holder, ledger.note) : '',
+    note: holder === ledger.holder ? holderNote(ledger, replyAt) : '',
     reported: '',
   }
 }
 
-export function remoteRunView(run: HostsRemoteRun): RunRowView {
+export function remoteRunView(run: HostsRemoteRun, replyAt?: string): RunRowView {
   return {
     id: run.id,
     title: run.crew || run.id,
@@ -216,7 +236,7 @@ export function remoteRunView(run: HostsRemoteRun): RunRowView {
     waitingCount: run.waiting,
     holder: '',
     note: '',
-    reported: reportedWords(run.reportedBy, run.reportedAt),
+    reported: reportedWords(run.reportedBy, run.reportedAt, replyAt),
   }
 }
 
@@ -266,49 +286,66 @@ export function coalesce(fn: () => void, ms: number, timers: Timers = realTimers
   }
 }
 
-/** One read's outcome, handed to the page: its reply, or its failure. */
+/** How long one read of GET /api/hosts may take before the page gives it up and says so: a read that never answers holds no other. */
+export const HOSTS_READ_WAIT_MS = 15_000
+
+/** One read's outcome, handed to the page: its reply, its failure, or that it did not answer within its bound. */
 export interface HostsReaderHooks<T> {
-  /** Reads once; the signal aborts it when the token changes. */
+  /** Reads once; the signal aborts it when the token changes or its bound passes. */
   read: (signal: AbortSignal) => Promise<T>
   apply: (reply: T) => void
   fail: (e: Error) => void
+  /** The read under way passed its bound: it is abandoned (aborted, its answer never drawn) and the next ask reads. */
+  late: () => void
 }
 
 /**
  * The page's reader: one read at a time, a refresh asked while a read is under way queued (at most one) and started when it ends, so
  * replies arrive in the order their reads began; each read carries the page's generation, bumped when the workbench token changes,
  * and a reply of an older generation, or older than one applied, is dropped. So the page never shows a reply older than one it has
- * shown. `bump` aborts the read under way and starts one of the new generation at once; `end` stops all of it.
+ * shown. Each read is bounded (`waitMs`, on the timers' seam): past it the read is aborted and abandoned, the page is told once
+ * (`late`), and a queued ask reads. `bump` aborts the read under way and starts one of the new generation at once; `end` stops all
+ * of it.
  */
-export function hostsReader<T>(hooks: HostsReaderHooks<T>) {
-  let generation = 0
+export function hostsReader<T>(hooks: HostsReaderHooks<T>, o: { waitMs?: number; timers?: Timers } = {}) {
+  const waitMs = o.waitMs ?? HOSTS_READ_WAIT_MS
+  const timers = o.timers ?? realTimers
   let begun = 0
   let applied = 0
-  let busy = false
   let queued = false
   let ended = false
-  let abort: AbortController | null = null
+  /** The read under way; a read no longer here (abandoned, or of the token before) changes nothing when it settles. */
+  let current: { ac: AbortController; timer: unknown } | null = null
+
+  function drop(me: { ac: AbortController; timer: unknown }) {
+    timers.clear(me.timer)
+    me.ac.abort()
+    if (current === me) current = null
+  }
 
   async function run() {
-    busy = true
     queued = false
-    const gen = generation
     const seq = ++begun
-    const ac = new AbortController()
-    abort = ac
+    const me = { ac: new AbortController(), timer: null as unknown }
+    current = me
+    me.timer = timers.set(() => {
+      if (current !== me || ended) return
+      drop(me)
+      hooks.late()
+      if (queued) void run()
+    }, waitMs)
     try {
-      const reply = await hooks.read(ac.signal)
-      if (!ended && gen === generation && seq > applied) {
+      const reply = await hooks.read(me.ac.signal)
+      if (!ended && current === me && seq > applied) {
         applied = seq
         hooks.apply(reply)
       }
     } catch (e) {
-      if (!ended && gen === generation && !ac.signal.aborted) hooks.fail(e as Error)
+      if (!ended && current === me && !me.ac.signal.aborted) hooks.fail(e as Error)
     } finally {
-      // A read of an older generation ending lets nothing start: the new generation's read is already under way.
-      if (gen === generation) {
-        busy = false
-        abort = null
+      timers.clear(me.timer)
+      if (current === me) {
+        current = null
         if (queued && !ended) void run()
       }
     }
@@ -318,25 +355,34 @@ export function hostsReader<T>(hooks: HostsReaderHooks<T>) {
     /** Read now, or once the read under way ends. */
     refresh() {
       if (ended) return
-      if (busy) queued = true
+      if (current) queued = true
       else void run()
     },
     /** The token changed: what is under way is dropped, and a read of the new generation starts. */
     bump() {
       if (ended) return
-      generation++
-      abort?.abort()
-      abort = null
-      busy = false
+      if (current) drop(current)
       queued = false
       void run()
     },
     end() {
       ended = true
-      abort?.abort()
+      if (current) drop(current)
     },
     get busy() {
-      return busy
+      return current !== null
     },
+  }
+}
+
+/**
+ * What the page reads again on: each source is handed `ask` and answers the function that stops it (the layout's session and run
+ * counters, the decisions' store, PR-4's counts moving with a decision). Every source's ask goes through one coalescing, so a burst
+ * of events of any kind is one read a second. The answer stops them all.
+ */
+export function hostsRefreshOn(sources: ReadonlyArray<(ask: () => void) => () => void>, ask: () => void): () => void {
+  const stops = sources.map((on) => on(ask))
+  return () => {
+    for (const stop of stops) stop()
   }
 }

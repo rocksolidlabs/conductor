@@ -1,4 +1,5 @@
 import type { PublicationSummary, PublishOffer } from '~/composables/useDispatch'
+import { atWords } from './dayTime'
 import { githubHref } from './tracker'
 
 // A ticket's publications to GitHub (Program item IN1a, docs/plans/tracker-linking.md, PR-9; docs/protocol.md, "A ticket's
@@ -210,15 +211,6 @@ export function sha256Hex(text: string): string {
 
 /** A tone of the words: the error tone for a send that failed or a close refused, neutral ink otherwise; never amber (lead's decision 4). */
 export type PublicationTone = 'error' | 'muted' | 'default'
-
-/** A time in a publication's words: "14:02" today, "16 Nov 14:02" another day. */
-export function atWords(iso: string | undefined, now: number): string {
-  if (!iso) return ''
-  const t = new Date(iso)
-  if (Number.isNaN(t.getTime())) return ''
-  const hm = t.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-  return new Date(now).toDateString() === t.toDateString() ? hm : `${t.toLocaleDateString([], { day: 'numeric', month: 'short' })} ${hm}`
-}
 
 /** The account a publication was posted as: GitHub's login, else the person who sent it. */
 function sender(p: Pick<PublicationSummary, 'sentAsLogin' | 'sentBy'>): string {
