@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/rocksolidlabs/conductor/internal/config"
+	"github.com/rocksolidlabs/conductor/internal/hostagent"
 	"github.com/rocksolidlabs/conductor/internal/machine"
 	"github.com/rocksolidlabs/conductor/internal/proto"
 	"github.com/rocksolidlabs/conductor/internal/session"
@@ -309,7 +311,7 @@ func TestHostsHostedQuestionStaysAQuestion(t *testing.T) {
 
 // I6: a host registering with a key: the bytes of GET /api/hosts, of GET
 // /api/sessions, of the session event and the server's log hold neither
-// the machine's id nor the key the host sent.
+// the machine's id, the key the host sent, nor the server's key.
 func TestHostsReplyHoldsNoMachineID(t *testing.T) {
 	var logs bytes.Buffer
 	var logMu sync.Mutex
@@ -343,9 +345,13 @@ func TestHostsReplyHoldsNoMachineID(t *testing.T) {
 	logMu.Lock()
 	logged := logs.String()
 	logMu.Unlock()
+	own := e.srv.serverKeyHeader()
+	if own == "" {
+		t.Fatal("the server has no key of this start")
+	}
 	for what, b := range map[string]string{"GET /api/hosts": string(hosts), "GET /api/sessions": string(sessions), "the session event": event, "the log": logged} {
-		if strings.Contains(b, id) || strings.Contains(b, sent) {
-			t.Fatalf("%s holds the machine's id or the key the host sent", what)
+		if strings.Contains(b, id) || strings.Contains(b, sent) || strings.Contains(b, own) {
+			t.Fatalf("%s holds the machine's id, the key the host sent or the server's key", what)
 		}
 	}
 }
@@ -384,4 +390,70 @@ func TestHostsReplyBounded(t *testing.T) {
 			t.Fatalf("the busy machine: %d ids, %d more", len(h.SessionIDs), h.MoreIDs)
 		}
 	}
+}
+
+// runMachineHost runs `conductor host` with the machine directory dir
+// against e until the test ends, and answers its session's id.
+func runMachineHost(t *testing.T, e *testEnv, dir string) string {
+	t.Helper()
+	ctx, cancel := context.WithCancel(t.Context())
+	registered := make(chan string, 1)
+	ran := make(chan struct{})
+	go func() {
+		defer close(ran)
+		_, _ = hostagent.Run(ctx, hostagent.Options{
+			ServerURL: e.http.URL, Token: "test-host-token", Name: "on this machine", HostName: "this-machine", RelayOnly: true,
+			Argv: []string{"/bin/cat"}, Dir: e.root, MachineDir: dir, Log: slog.New(slog.DiscardHandler),
+			Registered: func(id, _ string) { registered <- id },
+		})
+	}()
+	t.Cleanup(func() { cancel(); <-ran })
+	select {
+	case id := <-registered:
+		return id
+	case <-time.After(testWait):
+		t.Fatal("the host never registered")
+	}
+	return ""
+}
+
+// I7, through a real registration: a host given this server's machine
+// directory reads the upgrade's key and registers with the key it makes;
+// its session is this server's hosted one, this.key is its hostKey, and it
+// has no row of its own. At a second server, another key: there it is a
+// row of its own.
+func TestHostsHostOnThisMachine(t *testing.T) {
+	dir := t.TempDir()
+	id, err := machine.ID(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := newTestEnv(t, nil)
+	e.srv.SetOwnMachine(id)
+	sid := runMachineHost(t, e, dir)
+	d, ok := e.srv.registry.Get(sid)
+	if !ok {
+		t.Fatal("the hosted session is not listed")
+	}
+	key := d.Info().HostKey
+	r := e.hostsOf(t)
+	if key == "" || r.This.Key != key || r.This.Hosted == nil || len(r.This.Hosted.SessionIDs) != 1 || r.This.Hosted.SessionIDs[0] != sid || len(r.Hosts) != 0 {
+		t.Fatalf("hosted from this machine: key %q, this %+v, rows %+v", key, r.This, r.Hosts)
+	}
+	other := newTestEnv(t, nil)
+	osid := runMachineHost(t, other, dir)
+	ro := other.hostsOf(t)
+	if row, ok := hostRowOf(ro, other.mustInfo(t, osid).HostKey); !ok || ro.This.Hosted != nil || row.KeyFrom != session.HostKeyMachine || row.Key == key {
+		t.Fatalf("at a second server: this %+v, rows %+v", ro.This, ro.Hosts)
+	}
+}
+
+// mustInfo is the listed session id's Info.
+func (e *testEnv) mustInfo(t *testing.T, id string) session.Info {
+	t.Helper()
+	d, ok := e.srv.registry.Get(id)
+	if !ok {
+		t.Fatalf("session %s is not listed", id)
+	}
+	return d.Info()
 }
