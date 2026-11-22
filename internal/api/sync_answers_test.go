@@ -502,6 +502,7 @@ func TestHeldAnswerNotTakenWhileItsPolicyIsWritten(t *testing.T) {
 	fr.SetPolicy("dr-1", anaPolicy(ext.OverrideOperator))
 	fr.SetRoute("dr-1", ext.Route{To: []ext.Destination{{Kind: "person", Name: "Ana"}}, Rule: "architecture decisions"})
 	f := newHeldFixtureRouted(t, fr)
+	holdWindows(t, f.srv)
 	release := fr.HoldRoutes()
 	var once sync.Once
 	t.Cleanup(func() { once.Do(release) })
