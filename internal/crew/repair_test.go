@@ -769,7 +769,7 @@ func TestLedgerVersionIsABarrier(t *testing.T) {
 	if ro, why := migrated.ReadOnly(); ro {
 		t.Fatalf("read-only after 9 to 10: %s", why)
 	}
-	if v := version(); v != ledger.Version || ledger.Version != 16 {
+	if v := version(); v != ledger.Version || ledger.Version != 17 {
 		t.Fatalf("version %d after the migration, Version %d", v, ledger.Version)
 	}
 	if got := rows(migrated); got != before {
