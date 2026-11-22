@@ -168,3 +168,75 @@ func TestAPromptRefusedWithNoQuestionShownIsNotedOnce(t *testing.T) {
 		t.Fatalf("typed without its Enter:\n%s", logLines(e, run.ID))
 	}
 }
+
+// A managed run's next attempt reuses the member with a session of its
+// own: a prompt the first attempt's agent never reported taking holds only
+// that session. Its error line is written once; the member starting its
+// second attempt, held in its readiness wait, does not read as waiting on
+// a person.
+func TestANewAttemptIsNotHeldByAnEarlierAttemptsPrompt(t *testing.T) {
+	dir := newRepo(t)
+	e, fl, _ := managedEngine(t)
+	fl.confirm, fl.confirmWait = true, 50*time.Millisecond
+	ready := e.await
+	var awaits atomic.Int32
+	hold := make(chan struct{})
+	t.Cleanup(func() { close(hold) })
+	e.await = func(ctx context.Context, l *session.Local, held func(string)) error {
+		if awaits.Add(1) > 1 {
+			select {
+			case <-hold:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+		return ready(ctx, l, held)
+	}
+	run := launchManaged(t, e, repoCrew(dir, work("build", "lead")))
+	word := "typed lead's prompt, and its agent did not report taking it"
+	waitLogged(t, e, run.ID, word, 1, 30*time.Second)
+	first := waitMember(t, e, run.ID, "lead", func(m MemberState) bool { return m.NeedsInput })
+	if err := e.CancelTask(context.Background(), run.ID, "build"); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.RetryTask(context.Background(), run.ID, "build"); err != nil {
+		t.Fatal(err)
+	}
+	second := waitMember(t, e, run.ID, "lead", func(m MemberState) bool {
+		return m.SessionID != "" && m.SessionID != first.SessionID && awaits.Load() > 1
+	})
+	if second.NeedsInput {
+		t.Fatalf("the second attempt's member reads as waiting on a person: %+v", second)
+	}
+	if n := logCount(t, e, run.ID, word); n != 1 {
+		t.Fatalf("the word is in the run's log %d times:\n%s", n, logLines(e, run.ID))
+	}
+}
+
+// The member stops reading as waiting on a person once its agent reports
+// a turn, and stays so when the session then shows nothing.
+func TestAMemberStopsWaitingOnceItsAgentReportsATurn(t *testing.T) {
+	e, fl := newEngine(t)
+	fl.confirm, fl.confirmWait = true, 50*time.Millisecond
+	fl.onLaunch = func(_ string, p *sessiontest.FakeProc, _ *session.Local) { _ = p.Print("> ") }
+	run, err := e.Launch(t.Context(), testCrew(immediate("lead", "Plan it.")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitLogged(t, e, run.ID, "typed lead's prompt, and its agent did not report taking it", 1, 30*time.Second)
+	waitMember(t, e, run.ID, "lead", func(m MemberState) bool { return m.NeedsInput })
+	l, _ := fl.member("lead")
+	if err := l.TrySetAttentionFull(session.AttentionWorking, "", session.SourceAPI, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	waitMember(t, e, run.ID, "lead", func(m MemberState) bool { return !m.NeedsInput })
+	if err := l.TrySetAttentionFull(session.AttentionNone, "", session.SourceAPI, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	if a := l.Info().Attention; a.State != session.AttentionNone {
+		t.Fatalf("the session shows %+v", a)
+	}
+	if m := memberOf(t, e, run.ID, "lead"); m.NeedsInput {
+		t.Fatalf("lead reads as waiting again: %+v", m)
+	}
+}
