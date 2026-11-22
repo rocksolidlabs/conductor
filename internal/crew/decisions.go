@@ -1473,6 +1473,13 @@ func (e *Engine) TaskDecision(ctx context.Context, sessionID, id string) (Decisi
 // with the asking attempt's liveness, which only the engine knows.
 func (e *Engine) decisionOf(rec ledger.DecisionRecord) Decision {
 	d := DecisionOf(rec)
+	// A counted approval that no longer counts reads so (decisions_quorum.go).
+	stands := CountedStands(rec, e.boot, e.CountedPending)
+	for i, rc := range d.Responses {
+		if rc.Status == ledger.ResponseCounted && !stands(rc.K) {
+			d.Responses[i] = voidedReceipt(rec, rc)
+		}
+	}
 	if d.Asker != nil {
 		d.Asker.Live = e.AskerLive(rec.DecisionRow)
 	}

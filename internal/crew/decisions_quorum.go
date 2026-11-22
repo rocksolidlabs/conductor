@@ -290,6 +290,10 @@ func QuorumOf(rec ledger.DecisionRecord, boot string, pending func(n int64, k in
 		return nil
 	}
 	standing, _ := countedRows(rec, boot, func(k int) bool { return pending != nil && pending(rec.N, k) })
+	if c, ok := decidingApproval(rec); ok {
+		// The approval that answered fills its places too.
+		standing = append(standing, c)
+	}
 	filled, per := fill(p, standing)
 	q := &proto.DecisionQuorum{Places: placesOf(p), Filled: filled, Groups: []proto.QuorumGroup{}}
 	for i, g := range p.Groups {
@@ -310,6 +314,40 @@ func countedWords(id, by string, p routedPolicy, groups []string, per []int) str
 		w += "; " + waits
 	}
 	return w
+}
+
+// voidedReceipt is counted receipt rc of rec as it reads once its approval
+// no longer counts: refused, not_confirmed, the server's words, which ask
+// for another answer only while the decision is open.
+func voidedReceipt(rec ledger.DecisionRecord, rc ResponseReceipt) ResponseReceipt {
+	rc.Status, rc.Code = ledger.ResponseRefused, CodeNotConfirmed
+	rc.Words = fmt.Sprintf("%s's approval of %s no longer counts: its sign-in could not be rechecked", nameOf(rc.ByName, rc.Actor), rec.ID())
+	if rec.State == ledger.DecisionOpen {
+		rc.Words += ": answer again"
+	}
+	return rc
+}
+
+// decidingApproval is rec's accepted response as a place-filling row,
+// ok when it is an eligible approval: an approval's or an assignment's
+// first option with its groups, never an override, a Reject or an answer
+// under the server's own policy (they fill no place).
+func decidingApproval(rec ledger.DecisionRecord) (countedRow, bool) {
+	for _, r := range rec.Responses {
+		if r.Status != ledger.ResponseAccepted {
+			continue
+		}
+		var auth Authority
+		var rc ResponseReceipt
+		if json.Unmarshal([]byte(r.Authority), &auth) != nil || json.Unmarshal([]byte(r.Receipt), &rc) != nil {
+			return countedRow{}, false
+		}
+		if rc.Override || len(rc.Groups) == 0 || auth.Subject == "" || !approvesRecord(rec.Type, Response{Choice: rc.Choice}) {
+			return countedRow{}, false
+		}
+		return countedRow{k: r.K, subject: auth.Subject, groups: slices.Clone(rc.Groups), at: r.At, name: nameOf(rc.ByName, r.Actor)}, true
+	}
+	return countedRow{}, false
 }
 
 // CountedStands is whether each counted approval of rec still counts for

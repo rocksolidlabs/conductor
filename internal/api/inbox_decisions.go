@@ -691,7 +691,10 @@ func (s *Server) decisionTrack(ctx context.Context, n int64, actor, kind, id str
 			return all, nil
 		}
 		if r.Status == ledger.ResponseCounted {
-			rc.Words, rc.Code = "counted, then not rechecked: answer again", crew.CodeNotConfirmed
+			rc.Words, rc.Code = "counted, then not rechecked", crew.CodeNotConfirmed
+			if rec.State == ledger.DecisionOpen {
+				rc.Words += ": answer again"
+			}
 		}
 		words := cmpOr(rc.Words, "refused")
 		if rc.Code != "" {

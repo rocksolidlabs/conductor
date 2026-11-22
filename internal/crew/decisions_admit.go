@@ -202,9 +202,13 @@ func OutcomeWith(rec ledger.DecisionRecord, who Admittee, stands func(k int) boo
 		code = rc.Code
 		if r.Status == ledger.ResponseCounted {
 			switch {
-			case stands != nil && !stands(r.K):
+			case stands != nil && !stands(r.K) && rec.State == ledger.DecisionOpen:
+				// It may be answered again while the decision is open.
 				code = CodeNotConfirmed
 				counted = ""
+			case stands != nil && !stands(r.K):
+				// Answered or final: nothing is answered again.
+				counted, code = proto.OutcomeNotUsed, ""
 			case rec.State == ledger.DecisionOpen || rec.State == ledger.DecisionAnswered && approved:
 				counted, code = proto.OutcomeWaiting, ""
 			case rec.State == ledger.DecisionApplied && approved && applied:
