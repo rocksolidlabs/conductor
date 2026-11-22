@@ -149,7 +149,7 @@ func (s *Server) hostSummaryBytes(ctx context.Context) ([]byte, bool) {
 // command, a folder, a branch, a run's name, an OS user, the machine id or
 // a machine key.
 func (s *Server) hostSummary(ctx context.Context) ext.HostSummary {
-	r := s.hostsFirstHalf(ctx)
+	r := s.hostsFirstHalf(ctx, false)
 	sum := ext.HostSummary{Platform: r.This.Platform, Version: r.This.Version,
 		Sessions: ext.HostSessions{Running: r.This.Sessions.Running, Waiting: r.This.Sessions.Waiting}, Hosts: []ext.HostSummaryRow{}}
 	if r.This.Hosted != nil {

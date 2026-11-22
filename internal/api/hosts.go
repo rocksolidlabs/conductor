@@ -115,7 +115,7 @@ type HostsSwitchyard struct {
 // HostsRun is one open managed run of this data directory.
 type HostsRun struct {
 	ID     string `json:"id"`
-	Name   string `json:"name"` // the crew's name, as the run's row holds it
+	Name   string `json:"name"` // the run's own name while this server's engine holds it, else the crew's name as the run's row holds it
 	Crew   string `json:"crew"` // the crew's id
 	State  string `json:"state"`
 	Paused bool   `json:"paused"`
@@ -264,14 +264,17 @@ func (s *Server) handleHosts(w http.ResponseWriter, r *http.Request) {
 // each holder read under its own lock, once: the first half, then the
 // workspace's other machines when the rule says so.
 func (s *Server) hostsReply(ctx context.Context) HostsReply {
-	reply := s.hostsFirstHalf(ctx)
+	reply := s.hostsFirstHalf(ctx, true)
 	reply.Other = s.hostsOther(ctx)
 	return reply
 }
 
 // hostsFirstHalf is the reply without other machines: this server, its
-// hosts, the switchyard and the runs, within hostsFirstBudget.
-func (s *Server) hostsFirstHalf(ctx context.Context) HostsReply {
+// hosts, the switchyard and the runs, within hostsFirstBudget. probe says
+// whether a ledger this server does not own may be probed (hostsHolder):
+// once per request of the page, never for the host summary, which runs
+// on its own clock.
+func (s *Server) hostsFirstHalf(ctx context.Context, probe bool) HostsReply {
 	now := s.seen.clock()
 	infos := s.registry.List()
 	own := s.OwnHostKey()
@@ -323,7 +326,7 @@ func (s *Server) hostsFirstHalf(ctx context.Context) HostsReply {
 	sortHostRows(rows)
 	rows = append(rows, s.seen.list(listed)...)
 	reply.Switchyard = s.hostsSwitchyard()
-	runs, moreRuns, led, decisions := s.hostsRuns(ctx, byID)
+	runs, moreRuns, led, decisions := s.hostsRuns(ctx, byID, probe)
 	reply.Ledger, reply.This.Decisions = led, decisions
 
 	// The first half within its budget, row by row as encoded.
@@ -561,8 +564,8 @@ func (s *Server) hostsSwitchyard() *HostsSwitchyard {
 // the run that holds each now (current_run), and its members' questions
 // that mirror no decision; the decisions of every such run are this
 // server's decisions, nil under any other holder.
-func (s *Server) hostsRuns(ctx context.Context, byID map[string]session.Info) ([]HostsRun, int, HostsLedger, *HostsDecisions) {
-	led := s.hostsHolder()
+func (s *Server) hostsRuns(ctx context.Context, byID map[string]session.Info, probe bool) ([]HostsRun, int, HostsLedger, *HostsDecisions) {
+	led := s.hostsHolder(probe)
 	runs := []HostsRun{}
 	if s.ledger == nil {
 		return runs, 0, led, nil
@@ -591,7 +594,7 @@ func (s *Server) hostsRuns(ctx context.Context, byID map[string]session.Info) ([
 		}
 		held[r.ID] = r
 		if !inRows[r.ID] && !runFinal(r.State) {
-			fresh = append(fresh, s.heldRun(ctx, r.ID, r.Name, r.CrewID, r.State, r.Paused, r.Members, byID, decisions))
+			fresh = append(fresh, s.heldRun(ctx, r.ID, cmpOr(r.Label, r.Name), r.CrewID, r.State, r.Paused, r.Members, byID, decisions))
 		}
 	}
 	runs = append(runs, fresh...)
@@ -600,7 +603,7 @@ func (s *Server) hostsRuns(ctx context.Context, byID map[string]session.Info) ([
 			if runFinal(r.State) {
 				continue
 			}
-			runs = append(runs, s.heldRun(ctx, r.ID, r.Name, r.CrewID, r.State, r.Paused, r.Members, byID, decisions))
+			runs = append(runs, s.heldRun(ctx, r.ID, cmpOr(r.Label, r.Name), r.CrewID, r.State, r.Paused, r.Members, byID, decisions))
 			continue
 		}
 		// A run only the ledger has (interrupted, or recovered after a
@@ -648,7 +651,7 @@ var lockLine = regexp.MustCompile(`^pid ([0-9]{1,10}) since (\S+)$`)
 // this reply: the ledger's own view while it owns the lock, a probe of
 // the lock otherwise. Every note is made here from structured facts of
 // that moment, never from words the ledger or the lock kept.
-func (s *Server) hostsHolder() HostsLedger {
+func (s *Server) hostsHolder(probe bool) HostsLedger {
 	if s.store == nil {
 		return HostsLedger{Holder: HolderNone, Note: "this server keeps no data directory"}
 	}
@@ -662,11 +665,15 @@ func (s *Server) hostsHolder() HostsLedger {
 			return HostsLedger{Holder: HolderThisReadOnly, Note: cutBytes(lv.Why, hostsNoteMax)}
 		}
 	}
-	probe := s.probeLock
-	if probe == nil {
-		probe = ledger.Probe
+	if !probe {
+		// Not asked: the lock is tried only for a request of the page.
+		return HostsLedger{Holder: HolderUnknown, Note: "not asked"}
 	}
-	pr, err := probe(filepath.Join(s.store.Dir(), "runs"))
+	try := s.probeLock
+	if try == nil {
+		try = ledger.Probe
+	}
+	pr, err := try(filepath.Join(s.store.Dir(), "runs"))
 	if err != nil {
 		class := "other"
 		switch {

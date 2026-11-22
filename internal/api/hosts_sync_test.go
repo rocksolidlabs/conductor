@@ -224,7 +224,7 @@ func TestSyncHostSummaryRevisions(t *testing.T) {
 	if !clk.fire(t, clk.coalesce, "coalescing") {
 		t.Fatal("the change before the retry did not mark the summary")
 	}
-	backoff.next(t, syncRetryFirst*2).fire <- time.Now()
+	backoff.next(t, syncRetryFirst).fire <- time.Now()
 	got = untilSummaries(t, f, 4)
 	if last := got[3]; last.d.Rev != 5 || hostSummaryOf(t, last).Sessions != (ext.HostSessions{Running: 2, Waiting: 1}) {
 		t.Fatalf("a retry after the model changed: %s", describeCalls(summaryCalls(f.all())))
