@@ -35,7 +35,7 @@ const (
 
 // Version is the schema this binary writes. A database of a later version
 // opens read-only; an earlier one is brought to it (migrations).
-const Version = 16
+const Version = 17
 
 // migrations bring a database from the version keyed to the next, in one
 // transaction with the version's change: 1 to 2 adds the attempts'
@@ -163,6 +163,13 @@ var migrations = map[int][]string{
 	// all true as they are: nothing is derived. The version is a barrier:
 	// a binary that writes 15 opens a version 16 ledger read-only.
 	15: {decisionStatementsTable, decisionOutputTable},
+	// Version 17 (SW1, the step before a decision's counted responses): no
+	// table changes and no row is rewritten. From this version on a
+	// decision's responses may hold the status counted, which a binary
+	// before it does not count as an approval. The version is a barrier:
+	// a binary that writes 16 opens a version 17 ledger read-only. Every
+	// row a version 16 database holds reads as it did.
+	16: {},
 }
 
 // migrationsGo run after a version's statements, in the same transaction:

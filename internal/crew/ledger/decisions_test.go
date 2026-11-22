@@ -350,7 +350,7 @@ func TestMigrationSevenToEightAddsOnlyTables(t *testing.T) {
 		t.Fatalf("read-only after the migration: %s", why)
 	}
 	// Brought to Version: 8's tables, and of the versions after it only
-	// 11, 13, 14, 15 and 16 add one (9 is #683's index, 10 and 12
+	// 11, 13, 14, 15 and 16 add one (9 is #683's index, 10, 12 and 17
 	// barriers, 11 the previews, 13 where a run was launched from and 14
 	// the outcome outbox, each with its index, 15 the record of an
 	// attempt's context, and 16 a held answer's statements and a
@@ -2010,7 +2010,7 @@ func TestMigrationEightToNineKeysARequestByItsTask(t *testing.T) {
 	if ro, why := again.ReadOnly(); ro {
 		t.Fatalf("read-only after the migration: %s", why)
 	}
-	if v := dbVersion(t, again); v != Version || Version != 16 {
+	if v := dbVersion(t, again); v != Version || Version != 17 {
 		t.Fatalf("version %d after the migration, Version %d", v, Version)
 	}
 	var sqlText string
