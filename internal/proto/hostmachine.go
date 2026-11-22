@@ -22,12 +22,14 @@ const (
 	MaxHostVersion = 64
 )
 
-// ServerKeyHeader is the response header of an upgrade of GET /ws/host the
-// owner's own server accepts from a host: the server's key of this start,
+// ServerKeyHeader is the response header the owner's own server sets on an
+// upgrade of GET /ws/host from a principal that may register a host (set
+// before the WebSocket handshake is answered, so it is there also on one the
+// handshake itself refuses): the server's key of this start,
 // ServerKeyLen bytes as exactly twice as many lowercase hex digits, from
 // which the host makes HostInfo.Machine (machine.Key). A switchyard sends
 // none; an upgrade without it, or with one of another form, means the host
-// sends no machine.
+// sends no machine and no platform.
 const (
 	ServerKeyHeader = "Conductor-Server-Key"
 	ServerKeyLen    = 32
@@ -58,22 +60,19 @@ func ValidHostVersion(v string) bool {
 	return len(v) <= MaxHostVersion && hostVersionPattern.MatchString(v)
 }
 
-// ErrHostMachine refuses a register (or a register_desk) whose machine or
-// platform is said and not of its form: a host of this release sends each
-// in its form or not at all, so one out of it is refused whole, never cut
-// down or kept in part.
-var ErrHostMachine = errors.New("register: the host's machine or platform is not of its form")
+// ErrHostMachine refuses a register (or a register_desk) whose machine is
+// said and not of its form: a key is made by one function and has one form,
+// so one out of it is refused whole, never cut down or kept in part.
+var ErrHostMachine = errors.New("register: the host's machine is not of its form")
 
-// CheckMachine checks what the host says of its machine: Machine and
-// Platform each empty (an older host, a host with no machine id, a
-// registration to a switchyard) or of its form. Version is not checked
-// here: every host sends one, an older host's of any form, so a version out
-// of its form is not kept (ValidHostVersion) and the register stands.
+// CheckMachine checks the machine key the host says: empty (an older host,
+// a host with no machine id, a server that sent no key) or of its form.
+// Platform and Version are not checked here: one out of its form is not
+// kept (ValidHostPlatform, ValidHostVersion) and the register stands, so a
+// later release that widens a form, or an older host's version of any form,
+// still connects.
 func (h HostInfo) CheckMachine() error {
 	if h.Machine != "" && !ValidHostMachine(h.Machine) {
-		return ErrHostMachine
-	}
-	if h.Platform != "" && !ValidHostPlatform(h.Platform) {
 		return ErrHostMachine
 	}
 	return nil

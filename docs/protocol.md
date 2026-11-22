@@ -458,10 +458,11 @@ that failed; a re-registration tries it again with its backoff, as it tries
 a dial that failed. Text frames are JSON; binary frames are RELAY
 envelopes.
 
-**What a host says of its machine** (`docs/plans/hosts.md`, PR-1). An
-upgrade the owner's own server accepts from a host (any accepted
-credential; never on a switchyard) carries the response header
-`Conductor-Server-Key`: the server's key of this start, 32 random bytes as
+**What a host says of its machine** (`docs/plans/hosts.md`, PR-1). The
+owner's own server sends the response header `Conductor-Server-Key` to a
+principal that may register a host (a host token, the workbench token, a
+provider's principal with either grant), set before the WebSocket
+handshake is answered; a switchyard never sends it: the server's key of this start, 32 random bytes as
 exactly 64 lowercase hex digits, made as the server starts and kept in
 memory only. The host reads it from the dial's answer and registers with
 `host.machine`: exactly 32 lowercase hex digits, the first 16 bytes of
@@ -469,21 +470,25 @@ HMAC-SHA-256 of its machine's id keyed by that key, so no server is sent
 the id itself, and one machine has an unrelated key at every server and at
 every start of one. A header that is missing (an older server, a proxy that
 drops it) or not of that form, and a machine id that cannot be read or
-made, mean the host sends no `machine`. The machine's id is 32 random hex
+made, mean the host sends no `machine`; the host sends `platform` only
+beside a key of that form too, so a host pointed at a switchyard (which it
+cannot tell from its own server) sends neither. The machine's id is 32 random hex
 digits kept per user in `<user config directory>/conductor/machine-id`
 (0600), made once by whichever process needs it first; it is left out of
 every export, refused by every restore, and refused to every session's file
 routes. `host.platform` is `<GOOS>/<GOARCH>`, with `+wsl` inside WSL, at
-most 32 bytes of `^[a-z0-9]{1,15}/[a-z0-9]{1,15}(\+wsl)?$`. A registration
-to a switchyard sends neither. A `register` (or `register_desk`) whose
-`machine` or `platform` is present and out of its form is refused whole
-(the connection closed, `registration rejected`), never cut down; an older
-host sends neither and registers as before; an older server ignores both.
-The server keeps `host.version` for the session when it is at most 64
-bytes of `^[0-9A-Za-z][0-9A-Za-z.+_-]*$`, and keeps none otherwise (the
-register stands, since an older host's may be of any form). It keeps only
-a hash of `machine` (the session's `hostKey`, below), never what the host
-sent, and logs neither the key nor the id.
+most 32 bytes of `^[a-z0-9]{1,15}/[a-z0-9]{1,15}(\+wsl)?$`. A `register`
+(or `register_desk`) whose `machine` is present and out of its form is
+refused whole (the connection closed, `registration rejected`), never cut
+down; a `platform` out of its form is not kept and the register stands, so
+a later release that widens the form still connects. An older host sends
+neither and registers as before; an older server ignores both. The server
+keeps `host.version` for the session when it is at most 64 bytes of
+`^[0-9A-Za-z][0-9A-Za-z.+_-]*$`, and keeps none otherwise (the register
+stands, since an older host's may be of any form). It keeps only a hash of
+`machine` (the session's `hostKey`, below), never what the host sent, and
+logs neither the key nor the id. A switchyard keeps none of `machine`,
+`platform` and `version`, whatever a host sends.
 
 Host → server: `register{proto, host{name,version,user?,answerAs?,forms?,machine?,platform?}, session{name,agentId,command,cwd,cols,rows,relayOnly?,agentToken?,branch?,where?,agentVersion?,repo?,repoCommon?,startCommit?}, resume?{sessionId,secret}}`
 (`user` ≤ 64 bytes is the OS user for "hosted by"; `answerAs: true` says the host takes `answer_as` and

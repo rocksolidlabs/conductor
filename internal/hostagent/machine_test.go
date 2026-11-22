@@ -242,8 +242,10 @@ func TestHostOnTheServersMachineSharesItsKey(t *testing.T) {
 	}
 }
 
-// An upgrade with no key, or with one not of 64 lowercase hex digits,
-// sends no machine; the rest of the register is as it is.
+// An upgrade with no key, or with one not of 64 lowercase hex digits (a
+// switchyard `conductor host` was pointed at sends none, and the host is not
+// told it is one), sends no machine and no platform; the rest of the
+// register is as it is.
 func TestBadServerKeySendsNoMachine(t *testing.T) {
 	id, err := machine.ID(t.TempDir())
 	if err != nil {
@@ -253,17 +255,17 @@ func TestBadServerKeySendsNoMachine(t *testing.T) {
 	good := serverKeyHex(0xab)
 	for _, header := range []string{"", good[:len(good)-2], good + "00", strings.ToUpper(good), "zz" + good[2:], good[:63] + " "} {
 		reg := newKeyServer(t, header).registerAt(t, a)
-		if reg.Host.Machine != "" {
-			t.Errorf("the header %q: machine %q sent", header, reg.Host.Machine)
+		if reg.Host.Machine != "" || reg.Host.Platform != "" {
+			t.Errorf("the header %q: machine %q platform %q sent", header, reg.Host.Machine, reg.Host.Platform)
 		}
-		if reg.Host.Platform == "" || reg.Host.Instance == "" {
+		if reg.Host.Instance == "" || reg.Host.Version == "" {
 			t.Errorf("the header %q: the register lost the rest: %+v", header, reg.Host)
 		}
 	}
 	// The same host, given a good key, sends one: the refusals above were
 	// the header's.
-	if reg := newKeyServer(t, good).registerAt(t, a); reg.Host.Machine == "" {
-		t.Fatal("a good key sent no machine")
+	if reg := newKeyServer(t, good).registerAt(t, a); reg.Host.Machine == "" || reg.Host.Platform != machine.Platform() {
+		t.Fatalf("a good key: machine %q platform %q", reg.Host.Machine, reg.Host.Platform)
 	}
 }
 
@@ -342,8 +344,8 @@ func TestUnreadableMachineIDSendsNone(t *testing.T) {
 		t.Fatalf("the warning:\n%s", logged)
 	}
 	a := machineHost(t, id, log)
-	if reg := newKeyServer(t, serverKeyHex(5)).registerAt(t, a); reg.Host.Machine != "" {
-		t.Fatalf("machine %q sent without an id", reg.Host.Machine)
+	if reg := newKeyServer(t, serverKeyHex(5)).registerAt(t, a); reg.Host.Machine != "" || reg.Host.Platform != machine.Platform() {
+		t.Fatalf("without an id: machine %q sent, platform %q", reg.Host.Machine, reg.Host.Platform)
 	}
 	if strings.Count(out.String(), "level=WARN") != 1 {
 		t.Fatalf("warned again:\n%s", out.String())
@@ -384,5 +386,43 @@ func TestPublishedConnected(t *testing.T) {
 	<-pub.Done()
 	if pub.Connected() {
 		t.Fatal("an ended publication says it is connected")
+	}
+}
+
+// conductor host pointed straight at a switchyard (Options.Switchyard off:
+// it cannot know) sends it neither machine nor platform, and the
+// switchyard lists none of the three for its session.
+func TestConductorHostAtASwitchyardSaysNothingOfItsMachine(t *testing.T) {
+	id, err := machine.ID(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	yard := startSwitchyard(t)
+	a := machineHost(t, id, discardLog)
+	a.opts.Token = "" // an open host
+	a.opts.ServerURL = yard.URL
+	wsURL, _ := controlURL(yard.URL)
+	a.wsURL = wsURL
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	conn, _, err := a.dialAndRegister(ctx)
+	cancel()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.CloseNow() })
+	req, _ := http.NewRequest(http.MethodGet, yard.URL+"/api/sessions", nil)
+	req.Header.Set("Authorization", "Bearer "+adminToken)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var list struct{ Sessions []map[string]any }
+	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil || len(list.Sessions) != 1 {
+		t.Fatalf("the switchyard lists %v (%v)", list.Sessions, err)
+	}
+	got := list.Sessions[0]
+	if got["hostPlatform"] != nil || got["hostVersion"] != nil || got["hostKeyFrom"] == "machine" {
+		t.Fatalf("the switchyard lists %v", got)
 	}
 }
