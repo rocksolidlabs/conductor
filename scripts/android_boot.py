@@ -48,7 +48,6 @@ FETCH = re.compile(
     r"|Received status code (?:429|5\d\d)|status code (?:429|5\d\d)|UnknownHostException|Temporary failure in name resolution"
     r"|Premature end of Content-Length|SSLHandshakeException|Failed to download|Error: Failed to install"
 )
-LOG_TAG = "ConductorBootCheck"
 
 
 def tell(message: str) -> None:
@@ -125,17 +124,41 @@ def image(**kw) -> int:
     return 0 if tries([tool, "--install", IMAGE, "emulator", "platform-tools"], ROOT, IMAGE_BOUND, **kw) else 1
 
 
+# The device's log, kept with the tests' reports (which the job uploads when it fails), bounded.
+LOGCAT = ANDROID / "app/build/reports/androidTests/conductor-logcat.txt"
+LOGCAT_LINES = 30000
+# What of the device's log the job's own log shows at once: the boot check's report, the shell's own words, a crash or a hang.
+TELLING = re.compile(r"ConductorBootCheck|ConductorShell|AndroidRuntime|FATAL EXCEPTION|ANR in|Process: dev\.conductor|dev\.conductor\.mobile.*(?:Exception|Error)|TestRunner")
+TELLING_LINES = 300
+
+
+def adb(args: list[str], bound: int = 120) -> str:
+    tool = shutil.which("adb")
+    if tool is None:
+        return ""
+    try:
+        return subprocess.run([tool, *args], capture_output=True, text=True, timeout=bound, stdin=subprocess.DEVNULL).stdout
+    except (subprocess.TimeoutExpired, OSError):
+        return ""
+
+
+def keep_log(say=tell) -> None:
+    """The device's whole log since the run began (its last LOGCAT_LINES lines, and its crash buffer) into LOGCAT; its telling lines
+    into the job's log."""
+    main = adb(["logcat", "-d", "-v", "threadtime"]).splitlines()[-LOGCAT_LINES:]
+    crash = adb(["logcat", "-d", "-v", "threadtime", "-b", "crash"]).splitlines()[-2000:]
+    LOGCAT.parent.mkdir(parents=True, exist_ok=True)
+    LOGCAT.write_text("\n".join(["--- crash buffer ---", *crash, "--- main ---", *main]) + "\n", encoding="utf-8")
+    telling = [l for l in [*crash, *main] if TELLING.search(l)][-TELLING_LINES:]
+    for line in telling:
+        say(line)
+    say(f"android_boot: {len(telling)} telling line(s) of the device's log; all of it ({len(main)} lines) in {LOGCAT.relative_to(ROOT)}")
+
+
 def check(run=run_streamed, say=tell) -> int:
+    adb(["logcat", "-c"])
     code, _ = run([*GRADLE, *CHECK_TASKS], ANDROID, CHECK_BOUND)
-    adb = shutil.which("adb")
-    if adb:
-        lines = 0
-        out = subprocess.run([adb, "logcat", "-d", "-s", f"{LOG_TAG}:I"], capture_output=True, text=True, timeout=120).stdout
-        for line in out.splitlines():
-            if LOG_TAG in line:
-                say(line)
-                lines += 1
-        say(f"android_boot: {lines} line(s) of the boot check's log")
+    keep_log(say)
     if code != 0:
         say("android_boot: the boot check failed" if code != 124 else f"android_boot: the boot check ran past {CHECK_BOUND} s")
         return 1
