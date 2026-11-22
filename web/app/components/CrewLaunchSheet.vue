@@ -15,7 +15,8 @@ import { launchLines, launchYoloWords, readSheet, sheetNotes, sheetNotice, sheet
  * sheet shows the crew as the server held it when the sheet read it, and its Launch names that copy's revision: a change saved after the
  * read (a save of this page still under way, a save from another page or another person) is refused by the server, which starts nothing
  * (#957); the page then gives the sheet a new target, which it reads again, and `refused` says why (sheetNotice, announced; once the
- * crew is drawn again the focus is on Launch). A saved crew read without a revision, or a draft whose save answered none, holds Launch
+ * crew is drawn again the focus is on Launch). Any other refusal of the launch stays on the sheet in the server's words, the sheet as
+ * it was opened (#1075, launchRefusal). A saved crew read without a revision, or a draft whose save answered none, holds Launch
  * with words. The sheet says the run's yolo choice: the crew's own, or for a crew that inherits it the server's default at the launch,
  * drawn once that is read (readSheet), never before. Each read ends at its deadline in words with Read again, and closing the sheet or opening it for another
  * target ends the reads under way. A crew gone when it is read closes the sheet (`gone`). A compact panel is read as the sheet opens once
@@ -105,8 +106,8 @@ const notes = computed(() => sheetNotes(rows.value, viewOf))
   <UModal v-model:open="open" :title="crew ? `Launch ${crew.name}` : 'Launch'" :description="target?.label ? `As the run ${target.label}` : 'Each member with its agent, model and account'" :ui="{ content: 'max-w-2xl' }">
     <template #body>
       <div role="status">
-        <p v-if="notice" class="mb-3 flex items-start gap-2 text-sm text-warning" :data-crew-launch-changed="notice.kind === 'changed' ? '' : undefined" :data-crew-launch-unrevised="notice.kind === 'unrevised' ? '' : undefined">
-          <UIcon :name="notice.kind === 'changed' ? 'i-lucide-refresh-cw' : 'i-lucide-circle-alert'" class="mt-0.5 size-4 shrink-0" />
+        <p v-if="notice" class="mb-3 flex items-start gap-2 text-sm [overflow-wrap:anywhere]" :class="notice.kind === 'refused' ? 'text-error' : 'text-warning'" :data-crew-launch-changed="notice.kind === 'changed' ? '' : undefined" :data-crew-launch-unrevised="notice.kind === 'unrevised' ? '' : undefined" :data-crew-launch-refused="notice.kind === 'refused' ? notice.code : undefined">
+          <UIcon :name="notice.kind === 'changed' ? 'i-lucide-refresh-cw' : notice.kind === 'refused' ? 'i-lucide-circle-x' : 'i-lucide-circle-alert'" class="mt-0.5 size-4 shrink-0" />
           <span class="min-w-0">{{ notice.words }}</span>
         </p>
       </div>
