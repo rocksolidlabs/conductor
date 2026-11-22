@@ -1,7 +1,12 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { expect, test, type Session } from './fixtures'
-import { CONTROL_TOO_LARGE, MAX_CONTROL, MAX_SUBMIT } from '../app/utils/protocol'
+
+/** The bounds and the words as the owner has them (proto.MaxSubmit, MaxControl, ControlTooLargeWords): the page says the same. */
+const MAX_SUBMIT = 4096
+const MAX_CONTROL = 8 * 1024
+const CONTROL_TOO_LARGE = /\bControlTooLargeWords = "([^"]+)"/.exec(readFileSync(fileURLToPath(new URL('../../internal/proto/control.go', import.meta.url)), 'utf8'))![1]!
 
 // A line within the 4096 bytes a reply takes can pass the CONTROL frame's 8 KiB once JSON encodes it (docs/protocol.md, Error
 // codes). Typed in the session's reply bar, it is refused by the page with the owner's words, no frame past the bound sent and the
