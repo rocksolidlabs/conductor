@@ -205,7 +205,8 @@ const ledgerNote = computed(() => (reply.value ? holderNote(reply.value.ledger.h
               </HostCard>
             </div>
             <p v-else class="rounded-md px-3 py-2 text-sm text-muted ring ring-default" data-hosts-other-none>The sync service names no other machine of this workspace.</p>
-            <p v-if="remote.more" class="mt-2 text-xs text-muted">{{ moreWords(remote.more, remote.more === 1 ? 'machine' : 'machines') }}</p>
+            <p v-if="remote.more" class="mt-2 text-xs text-muted" data-hosts-other-more>{{ moreWords(remote.more, remote.more === 1 ? 'machine' : 'machines') }}</p>
+            <p v-if="remote.moreRuns" class="mt-1 text-xs text-muted" data-hosts-other-more-runs>{{ moreWords(remote.moreRuns, remote.moreRuns === 1 ? 'run of other machines' : 'runs of other machines') }}</p>
           </template>
         </section>
 

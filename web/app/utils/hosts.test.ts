@@ -204,6 +204,7 @@ describe('the Other machines section (PR-5)', () => {
 
   it('shows the machines while current, or behind under its bound', () => {
     expect(remoteSection(other('current'))).toMatchObject({ kind: 'shown', machines: [machine], more: 0 })
+    expect(remoteSection({ at, other: { state: 'current', machines: [machine], more: { machines: 2, remoteRuns: 5 } } })).toMatchObject({ kind: 'shown', more: 2, moreRuns: 5 })
     expect(remoteSection(other('behind', '2026-11-05T13:58:00Z'))).toMatchObject({ kind: 'shown' })
   })
 })

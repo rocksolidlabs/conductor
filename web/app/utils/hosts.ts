@@ -221,18 +221,18 @@ export function remoteRunView(run: HostsRemoteRun): RunRowView {
 }
 
 /** What the page draws of other machines (PR-5): nothing, its one line, or the machines. */
-export type RemoteSection = { kind: 'none' } | { kind: 'line'; words: string } | { kind: 'shown'; machines: NonNullable<HostsReply['other']>['machines']; more: number }
+export type RemoteSection = { kind: 'none' } | { kind: 'line'; words: string } | { kind: 'shown'; machines: NonNullable<HostsReply['other']>['machines']; more: number; moreRuns: number }
 
 /**
  * The Other machines section, from the reply alone: nothing with no `other` field (no sync store, one never current, starting, or
  * signed out: a plain build's page), the one line while other machines are not shown ("Other machines are not shown: the sync
- * service has not answered since 14:02"), else the machines, with how many the reply left out.
+ * service has not answered since 14:02"), else the machines, with how many machines and runs the reply left out.
  */
 export function remoteSection(r: Pick<HostsReply, 'other' | 'at'> | null | undefined): RemoteSection {
   const shown = otherMachinesShown(r)
   if (shown === 'none') return { kind: 'none' }
   if (shown === 'line') return { kind: 'line', words: `Other machines are not shown: ${otherMachinesWhy(r)}` }
-  return { kind: 'shown', machines: r!.other!.machines, more: r!.other!.more.machines }
+  return { kind: 'shown', machines: r!.other!.machines, more: r!.other!.more.machines, moreRuns: r!.other!.more.remoteRuns }
 }
 
 /** The timer seam the coalescing and the page's clock take: the window's, or a test's fakes. */
