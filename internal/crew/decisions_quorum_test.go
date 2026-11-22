@@ -172,9 +172,10 @@ func TestFillReadsTheRowsAsTheyStandNow(t *testing.T) {
 	if filled, _ := fill(revoked, rows); filled != 2 {
 		t.Fatalf("after the revocation: %d", filled)
 	}
-	// Confirmed at its response in a alone: p1 fills no place of b.
-	narrow := []countedRow{{k: 1, subject: "p1", groups: []string{"a"}}, {k: 2, subject: "p2", groups: []string{"b"}}}
-	if filled, per := fill(p, narrow); filled != 2 || fmt.Sprint(per) != "[1 1 0]" {
+	// Confirmed at their responses in b alone: p2 fills b, and p3, whom
+	// the policy names in c alone, fills nothing (nor c, never confirmed).
+	narrow := []countedRow{{k: 1, subject: "p2", groups: []string{"b"}}, {k: 2, subject: "p3", groups: []string{"b"}}}
+	if filled, per := fill(p, narrow); filled != 1 || fmt.Sprint(per) != "[0 1 0]" {
 		t.Fatalf("confirmed groups: %d %v", filled, per)
 	}
 	// The same subject twice is one person.
