@@ -1079,6 +1079,33 @@ re-routes it in full once the server takes it (the one change of form).
 The decide view's `own[].status` shows `counted` for the subject's own
 counted response; the operator's card shows each group's count.
 
+**As built** (PR-9, #1072):
+- The approval that fills the last place is the record's one `accepted`
+  response (DR1's answer, its receipt's `groups` its own); the earlier
+  ones are `counted`. An approval is an approval's or an assignment's
+  first option; their second answers at once, as a Reject.
+- A counted response's identity recheck is kept as a history row of a
+  kind of its own, `rechecked` (`{k, admitted}`, at most one a response,
+  a group of `MaxDecisionResponses` beside the responses'), so a confirmed
+  one keeps its place across restarts with no column changed. One found
+  with no such row stands only in the process that accepted it while its
+  recheck is still to answer; its decision's combined answer is applied
+  only once every counted approval's recheck has answered.
+- At application, confirmed by `Confirm` with `Since` (`Engine.SetPolicySince`,
+  the server's guarded call; a zero `Since` is never asked): any counted
+  approval or the deciding one not confirmed supersedes the decision, as
+  do places no longer filled by the approvals confirmed.
+- The rows-short supersession is made in the re-route's transaction on a
+  run the engine holds, and before a response's transaction (as a moved
+  subject's is) on the next response, and after a recheck that voided an
+  approval; a re-route of a record whose run is not held writes the
+  policy alone, and the record is superseded at its next response.
+- The operator's read carries `quorum: {places, filled, groups: [{role,
+  quorum, counted, met}]}` (`proto.DecisionQuorum`); a counted approval
+  that no longer counts reads `refused`, code `not_confirmed`, in the
+  decide view; `Host.OpenDecisions` fills `Counted` with the standing
+  ones.
+
 ## Events, orderings and invariants
 
 **Invariants**, each held by a test named under Tests per surface:
