@@ -81,8 +81,9 @@ func WithRuntimeCase(c RuntimeCase) RunOption {
 //   - A Started that panics leaves Run and Serve as that same panic, with
 //     nothing left running: the helper it started listens on a Port and
 //     answers a Probe before the panic, and none once the panic has left
-//     (the helper's own answer: another server's at the port is not the
-//     helper running, and that port is asked for again).
+//     (the helper's own answer, given the start's word: another server's
+//     at the port is not the helper running, and a port another socket
+//     holds is asked for again).
 //   - Serve starts a service (Started once, before its output reaches the
 //     log) and Stop ends it: done when Stop returns, and Stop may be
 //     called again; a context that ends once the service runs ends it; an
@@ -824,23 +825,29 @@ type number struct {
 // that same panic, with nothing left running: the helper, listening on a
 // port Port answered, answers a Probe before Started panics, and none once
 // the panic has left. Only the helper's own answer counts (its 204 on
-// /ok): another server's at the port is not the helper running, and a
-// port another server holds is asked for again (portTries).
+// /run/ and the word this start handed it): another server's at the port,
+// another run's helper among them, is not the helper running. A port
+// another socket holds (an answer not the helper's, or the helper's
+// PortTaken file) is asked for again (portTries).
 func (x *execCheck) startedPanics() {
-	dir, _ := x.dir()
 	for _, method := range []string{"Run", "Serve"} {
-		for try := 1; x.startedPanic(method, dir, try < portTries); try++ {
+		for try := 1; x.startedPanic(method, try < portTries); try++ {
 		}
 	}
 }
 
-// helperAnswer is what the helper's http mode alone answers on /ok.
+// helperAnswer is what the helper's http mode alone answers on /run/ and
+// the word it was handed.
 const helperAnswer = http.StatusNoContent
 
 // startedPanic is startedPanics for one method: true when the port Port
-// answered was another server's and retry allows a start on another, said
+// answered was another socket's and retry allows a start on another, said
 // nothing of.
-func (x *execCheck) startedPanic(method, dir string, retry bool) (again bool) {
+func (x *execCheck) startedPanic(method string, retry bool) (again bool) {
+	// A directory of its own for each start, where the helper leaves
+	// PortTaken: Started runs before any output reaches a log, so the
+	// helper's refusal is read there.
+	dir, run := x.dir()
 	ref := ext.ProcessRef{Run: "exttest-started-panics", Task: method, Attempt: 1, Tree: "worktree"}
 	port, ok := bounded(x, "Port for "+method+"'s panicking Started", x.wait, func() number {
 		n, err := x.r.Port(context.Background(), ref)
@@ -853,7 +860,11 @@ func (x *execCheck) startedPanic(method, dir string, retry bool) (again bool) {
 		x.errorf("Port for %s's panicking Started answered %d, %v: want a port's number", method, port.n, port.err)
 		return false
 	}
-	url := fmt.Sprintf("http://127.0.0.1:%d/ok", port.n)
+	url := fmt.Sprintf("http://127.0.0.1:%d/run/%s", port.n, run)
+	taken := func() bool {
+		_, err := os.Stat(filepath.Join(dir, PortTaken))
+		return err == nil
+	}
 	probe := func() number {
 		n, err := x.r.Probe(context.Background(), ext.ProbeSpec{URL: url, Interval: x.wait, Ref: ref})
 		return number{n, err}
@@ -866,16 +877,21 @@ func (x *execCheck) startedPanic(method, dir string, retry bool) (again bool) {
 	}
 	p := &startedPanic{method}
 	var listened, stranger bool
-	spec := ext.CommandSpec{Argv: x.argv("http", strconv.Itoa(port.n)), Dir: dir, Env: x.env("started-panics"), Timeout: x.wait, Ref: ref,
+	spec := ext.CommandSpec{Argv: x.argv("http", strconv.Itoa(port.n), run), Dir: dir, Env: x.env("started-panics"), Timeout: x.wait, Ref: ref,
 		Started: func(ext.ProcessInfo) {
 			// The process runs: wait until it answers, so one the panic
 			// leaves running answers after it too. Another server's
-			// answer says the port is that server's.
+			// answer, or the helper's PortTaken, says the port is
+			// another socket's.
 			tick := time.NewTicker(10 * time.Millisecond)
 			defer tick.Stop()
 			deadline := time.NewTimer(x.wait)
 			defer deadline.Stop()
 			for {
+				if taken() {
+					stranger = true
+					panic(p)
+				}
 				a := probe()
 				if a.err == nil {
 					listened, stranger = a.n == helperAnswer, a.n != helperAnswer
@@ -909,7 +925,7 @@ func (x *execCheck) startedPanic(method, dir string, retry bool) (again bool) {
 	case stranger && retry:
 		return true
 	case stranger:
-		x.errorf("%s's helper (http %d): another server answered at the port Port answered, %d times running: no port free where the services listen", method, port.n, portTries)
+		x.errorf("%s's helper (http %d): another socket held the port Port answered, %d times running: no port free where the services listen", method, port.n, portTries)
 	case !listened:
 		x.errorf("%s's helper (http %d) answered no Probe within %s (the case's Wait) of Started: it did not listen on the port Port answered", method, port.n, x.wait)
 	default:
