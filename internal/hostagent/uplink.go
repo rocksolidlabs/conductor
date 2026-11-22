@@ -147,6 +147,19 @@ func (p *Published) Done() <-chan struct{} { return p.done }
 // own. The session goes on here; publishing it again is a new publication.
 func (p *Published) StoppedThere() bool { return p.there.Load() }
 
+// Connected says the publication's connection to the switchyard is up now,
+// read from the host's own state with no round trip: it writes on one
+// (agent.connected), which it lets go as the connection is lost and takes
+// again as the next registers. False once the publication has ended.
+func (p *Published) Connected() bool {
+	select {
+	case <-p.done:
+		return false
+	default:
+		return p.a.connected()
+	}
+}
+
 // CurrentSessionID is the rendezvous's id for the session now: SessionID
 // unless the rendezvous restarted and the session was registered afresh.
 func (p *Published) CurrentSessionID() string {

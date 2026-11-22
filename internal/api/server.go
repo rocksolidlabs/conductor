@@ -44,6 +44,9 @@ type Server struct {
 	registry *session.Registry
 	links    *share.Store
 	hosts    *signal.Hub
+	// machine is this start's key, sent to the hosts it accepts, and its
+	// own row's key among its hosts' machines (machine.go).
+	machine  *serverMachine
 	events   *eventHub
 	webhooks *webhookSender
 	notifier *notifier // the webhooks and the providers' sinks (notify.go)
@@ -587,6 +590,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		catalog:     effective,
 		registry:    session.NewRegistry(cfg.MaxSessions),
 		links:       share.NewStore(),
+		machine:     newServerMachine(),
 		limiter:     newRateLimiter(5, 20),
 		hostLimiter: newRateLimiter(float64(max(1, cfg.Switchyard.OpenHostRegistrationsPerMinute))/60, float64(max(1, cfg.Switchyard.OpenHostRegistrationsPerMinute))),
 		openHosts:   &addrCounter{},
