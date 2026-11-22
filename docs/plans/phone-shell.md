@@ -1807,6 +1807,14 @@ step signs or is told:
   reaches is the shell's) and otherwise loads nothing, with words. The
   recent apps never show the page (from Android 13 its screenshot off,
   before it the window kept secure).
+- Only what is definitely gone is treated as gone: a keystore or a key
+  record that cannot be read is a refusal (`keystore`) that changes
+  nothing, as is a store record that cannot be read (`unreadable`); a key
+  is removed only when the keystore answers that it no longer holds it,
+  and the keystore form's public key is read from the keystore's own
+  certificate, a record that disagrees with it refused (`key_changed`).
+  The unlock prompt is started only when the activity can show one, and
+  its wait ends when the activity is destroyed under it.
 - The key (`ConductorKey.kt`): the iPhone key's states, calls, codes,
   bounds and policy rule. From Android 13 the keystore's own Ed25519 key;
   before it, or where the keystore cannot make one, an Ed25519 seed (made
@@ -1886,14 +1894,21 @@ narrower):
 - **Requests** (the web view client's `shouldInterceptRequest`, in front
   of the runtime's local server, which answers its host over https and
   http from the bundle by the decoded path and, under its prefixes, any
-  file the app can read, any content address and a proxy): `RequestGate`.
-  Only `https://localhost`, a path spelled with letters, digits, `.`,
-  `_`, `-` and `/` and no dot segment, under none of the prefixes, with a
-  Range header of the one form the server parses; the server's host on
-  another scheme or port refused; a main-frame document of another origin
-  refused (a form's post, which no navigation check sees); service
-  workers served nothing. The screens carry a decision's id in one
-  base64url segment (`decisionPath`), as on the iPhone.
+  file the app can read, any content address and a proxy, and reads a
+  Range header's end with a parse that ends the app's process past an
+  int): `RequestGate`. Only `https://localhost`, a path spelled with
+  letters, digits, `.`, `_`, `-` and `/` and no dot segment, under none of
+  the prefixes, with a Range header of the one form the server parses and
+  an end it takes (at most 2,147,483,647); the server's host on another
+  scheme or port refused; a document of another origin refused, in the
+  main frame (a form's post, which no navigation check sees) or in a frame
+  (the web view asks its client about a frame's navigation only for
+  schemes that are not http or https; a document is told as the runtime
+  tells one, and also by an Accept asking for HTML); service workers
+  served nothing. The page's own policy names no frame source
+  (`frame-src 'none'`; the diagram's frame is a srcdoc document, which
+  loads from none). The screens carry a decision's id in one base64url
+  segment (`decisionPath`), as on the iPhone.
 - **The chrome client** (`ShellChromeClient`, over the runtime's, which
   grants every permission but the camera and microphone without asking,
   asks for those and for the location, and opens a file chooser with the
@@ -1926,13 +1941,28 @@ a decision's id in its own spelling (each refused), the same decision as
 the screens carry it (not refused), a prompt, a window, the runtime's
 `WebView` through its page script (dropped), and the shell's own calls
 (the key and the store answer, the native HTTP call refuses an origin not
-named). It passes only on `ready platform=android probes=ok own-dropped=0
-own-refused=0 dropped=10 (11 with the frame's) refused=5 cancelled=3
-handed=0 violations=0 page-own=true`, the counts read from the gates
-themselves; a second test reads the built app's components (only the
-activity and the push service's and the profile installer's receivers,
-each behind its permission, exported), no backup, no cleartext and no
-camera, microphone, location or storage permission.
+named), a frame of another origin (refused by the page's policy: one
+`frame-src` violation), a service worker's registration (its request
+refused), the location (denied at once). It passes only on `ready
+platform=android probes=ok own-dropped=0 own-refused=0 own-violations=0
+dropped=10 (11 with the frame's) refused=5 cancelled=3 handed=0 workers=1
+probe-violations=frame-src page-own=true`, the counts read from the gates
+themselves, and then on a form posted to another origin refused by the
+request gate. It runs three rounds in a row in CI, each a fresh install.
+Other instrumented tests drive the gates in place directly (the web
+view's client refusing another origin's frame and post, a Range past the
+server's int and a prefixed file, and serving the Range at the edge; the
+chrome client denying every permission and the location, opening no
+chooser, prompt or window; the bridge gate dropping a message of another
+origin, of a page not the app's own and of a frame); make a key with the
+real keystore under a screen lock the test sets (either refused as
+unprotected with nothing left behind, or a key whose own properties read
+back as required, its public key the keystore certificate's); end the
+unlock prompt's wait when its activity is made again; and read the built
+app's components (only the activity and the push service's and the
+profile installer's receivers, each behind its permission, exported), no
+backup, no cleartext and no camera, microphone, location or storage
+permission.
 
 **By hand on an Android phone**, from a clean checkout with a JDK 21 and
 the Android SDK: `make web-build mobile-install mobile-sync`, `npx cap sync

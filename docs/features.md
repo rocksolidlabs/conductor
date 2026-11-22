@@ -414,7 +414,8 @@ provider.
   bundle into `mobile/www` with the shell's bridge and its page policy
   (`script-src 'self' 'wasm-unsafe-eval'` and the hash of each inline
   script; `connect-src 'none'`, or the https origins a provider's build
-  names); `make mobile-test` checks the bridge and starts the synced bundle
+  names; `frame-src 'none'`: the diagram's frame is a srcdoc document);
+  `make mobile-test` checks the bridge and starts the synced bundle
   under that policy. `make mobile-install mobile-sync mobile-ios` builds
   the iOS app for the simulator, unsigned, on a Mac with Xcode, and starts
   it there with no provider in its boot check, which passes only when
