@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"slices"
 	"strings"
@@ -112,6 +113,37 @@ func TestAPortTakenBeforeTheHelperBindsItIsAskedForAgain(t *testing.T) {
 	RuntimeExec(t, r, helperCase(t))
 	if n := r.handed.Load(); n < 2 {
 		t.Errorf("Port was asked for the probe %d time(s): want the held port, then a fresh one", n)
+	}
+}
+
+// strangerPort is the native Runtime whose first Port for the panicking
+// Started's Run answers the port of another server the test runs, one
+// that answers every path 200.
+type strangerPort struct {
+	ext.Runtime
+	held   int
+	handed atomic.Int32
+}
+
+func (r *strangerPort) Port(ctx context.Context, ref ext.ProcessRef) (int, error) {
+	if ctx.Err() == nil && ref.Run == "exttest-started-panics" && ref.Task == "Run" && r.handed.Add(1) == 1 {
+		return r.held, nil
+	}
+	return r.Runtime.Port(ctx, ref)
+}
+
+// Another server's answer at the port Port answered is not the helper's:
+// the panicking Started's check takes only the helper's own answer, so a
+// server that took the port is not read as the helper left running, and
+// the check starts the helper again on a fresh port; the native Runtime
+// passes.
+func TestAnotherServersAnswerAtThePortIsNotTheHelpers(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer srv.Close()
+	r := &strangerPort{Runtime: local.Native(), held: srv.Listener.Addr().(*net.TCPAddr).Port}
+	RuntimeExec(t, r, helperCase(t))
+	if n := r.handed.Load(); n < 2 {
+		t.Errorf("Port was asked for the panicking Started's Run %d time(s): want the other server's port, then a fresh one", n)
 	}
 }
 
