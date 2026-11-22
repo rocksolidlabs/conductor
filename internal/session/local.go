@@ -1231,18 +1231,14 @@ func (s *Local) firePattern(line string) {
 // question (startupLook).
 //
 // A question held answered that the screen shows gone is withdrawn first
-// (escGone), before any text is read for a question to ask, and the text
-// read is what the watcher keeps now, with its mark, taken with no output
-// fed meanwhile, not the text this look took: a withdrawal, this look's
-// or the screen's watcher's made while this look's callback waited, put
-// the startup output behind (startupGone), so neither order asks the
-// withdrawn question anew from what came before it; a question drawn since
-// is asked, with an id of its own.
-func (s *Local) fireTrust(_ string) {
+// (escGone), before the look's text is read for a question to ask: the
+// withdrawal puts the startup output behind (startupGone), so this look,
+// whose text was taken before it, asks nothing from that text, as a look
+// whose callback comes after the screen's watcher withdrew asks nothing
+// (startupLook): neither order asks the withdrawn question anew. A
+// question drawn since is asked, with an id of its own.
+func (s *Local) fireTrust(text string) {
 	s.escGone()
-	s.feedMu.Lock()
-	text, look := s.trust.Text(), s.trust.Fed()
-	s.feedMu.Unlock()
 	if q, words, seen, shown := s.startupSeen(text); q != nil {
 		if s.heldGone(words) {
 			// An Escape typed at it before it was asked took it away.
@@ -1254,7 +1250,7 @@ func (s *Local) fireTrust(_ string) {
 			// is never asked.
 			return
 		}
-		s.setAttentionLooked(AttentionNeedsInput, words, SourceTrust, KindPrompt, CleanOptions(q.Answers), unlessWaiting|startupLook, anyTurn, look, "")
+		s.setAttentionLooked(AttentionNeedsInput, words, SourceTrust, KindPrompt, CleanOptions(q.Answers), unlessWaiting|startupLook, anyTurn, s.trust.LookedAt(), "")
 		if len(q.Answers) == 0 {
 			if hook := s.afterAsked.Load(); hook != nil {
 				(*hook)()
