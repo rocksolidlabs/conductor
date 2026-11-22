@@ -489,7 +489,10 @@ type Local struct {
 	// beforeEnter, a test's hook, runs as a submission comes to its Enter
 	// (pressEnter), before it looks at anything; beforeWritten as keys
 	// written (input) come to what follows their write, with the keys.
-	beforeEnter   atomic.Pointer[func()]
+	beforeEnter atomic.Pointer[func()]
+	// confirmWaits counts the waits for the agent's report that it took a
+	// line (confirmed): a test's view of how many were made.
+	confirmWaits  atomic.Int32
 	beforeWritten atomic.Pointer[func(data []byte)]
 	// beforeShot, a test's hook, runs as the screen snapshot's quiet look
 	// begins (screenQuiet), before it takes the session's lock; beforeHold

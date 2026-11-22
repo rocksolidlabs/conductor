@@ -1240,8 +1240,10 @@ func (s *Local) pressEnter(ctx context.Context, sub Submission, res SubmitResult
 		})
 		// Pressed again, and still no word from the agent that it took
 		// the line within ConfirmWait: nothing more is written, and the
-		// result says so.
-		res.Unconfirmed = res.Reentered && !s.confirmed(ctx, enterAt)
+		// result says so. Not for an agent the session shows in a turn
+		// (working): it takes a typed line when it gets to it, and nothing
+		// is waited for.
+		res.Unconfirmed = res.Reentered && !s.inTurn() && !s.confirmed(ctx, enterAt)
 	}
 	return res, nil
 }
@@ -1479,6 +1481,7 @@ func (s *Local) awaitLook(ctx context.Context, since time.Time) error {
 // working). It returns true when ctx ends or the session ends meanwhile:
 // nothing is pressed then.
 func (s *Local) confirmed(ctx context.Context, enterAt time.Time) bool {
+	s.confirmWaits.Add(1)
 	deadline := time.NewTimer(s.opts.ConfirmWait)
 	defer deadline.Stop()
 	for {
@@ -1499,6 +1502,14 @@ func (s *Local) confirmed(ctx context.Context, enterAt time.Time) bool {
 			return true
 		}
 	}
+}
+
+// inTurn reports whether the session shows its agent in a turn: its
+// attention working, whatever reported it.
+func (s *Local) inTurn() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.info.Attention.State == AttentionWorking
 }
 
 // enterAgain writes one more carriage return, unless the session has ended or
