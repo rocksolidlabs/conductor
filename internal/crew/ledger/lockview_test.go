@@ -90,7 +90,7 @@ func TestLockView(t *testing.T) {
 		l.Close()
 		v := openLedger(t, dir).Lock()
 		whyOf(t, v)
-		if !v.Owned || !v.ReadOnly || !strings.Contains(v.Why, "newer") {
+		if !v.Owned || !v.ReadOnly || !strings.Contains(v.Why, "newer") || v.Reason != ReadOnlyNewerOrDamaged || !v.Readable {
 			t.Fatalf("an owner of a newer database: %+v", v)
 		}
 	})
