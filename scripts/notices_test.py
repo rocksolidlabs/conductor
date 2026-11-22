@@ -182,17 +182,17 @@ class ListLine(unittest.TestCase):
     def tearDown(self):
         self.dir.cleanup()
 
-    def test_a_package_carrying_others_notices_says_so_beside_its_own_licence(self):
+    def test_a_package_with_a_notice_file_points_to_it_beside_its_own_licence(self):
         e = npm_entry(self.package({"LICENSE": BSD3, "LICENSE-3RD-PARTY.md": "# Third-Party Licenses\n\n" + APACHE + MIT}))
-        self.assertEqual(e.licence, "BSD-3-Clause; carries notices of other projects' code, printed below")
+        self.assertEqual(e.licence, "BSD-3-Clause; see its notice files, printed below")
         out = render([("npm packages", [e])])
-        self.assertIn(f"  {'example-pkg 1.0.0':<56} BSD-3-Clause; carries notices of other projects' code, printed below\n", out)
+        self.assertIn(f"  {'example-pkg 1.0.0':<56} BSD-3-Clause; see its notice files, printed below\n", out)
 
     def test_a_package_with_its_licence_alone_gets_no_words(self):
         self.assertEqual(npm_entry(self.package({"LICENSE": GODS})).licence, "BSD-2-Clause, ISC")
         self.assertEqual(list_line("MIT", [("LICENSE", MIT)]), "MIT")
         self.assertEqual(list_line("Apache-2.0", [("LICENSE", APACHE), ("NOTICE", "Copyright 2014 Someone")]),
-                         "Apache-2.0; carries notices of other projects' code, printed below")
+                         "Apache-2.0; see its notice files, printed below")
 
 
 class Render(unittest.TestCase):

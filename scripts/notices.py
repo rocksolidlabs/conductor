@@ -164,14 +164,14 @@ def own_licences(texts: list[tuple[str, str]]) -> list[str]:
 
 
 # What a package's list line says, in these words and no others, when it carries such a file: the line names its own licence,
-# and the reader learns there is more below without the script naming licences a list of others' code holds.
-CARRIES_OTHERS = "carries notices of other projects' code, printed below"
+# and the reader learns there is more below to read, without the script saying what the file holds or naming its licences.
+SEE_NOTICES = "see its notice files, printed below"
 
 
 def list_line(kinds: str, texts: list[tuple[str, str]]) -> str:
     """A package's licence as its list line gives it: its own licence files' ids, and the fixed words when it also carries a
-    file of others' notices."""
-    return "; ".join(part for part in (kinds, CARRIES_OTHERS if any(OTHERS.search(name) for name, _ in texts) else "") if part)
+    notice file."""
+    return "; ".join(part for part in (kinds, SEE_NOTICES if any(OTHERS.search(name) for name, _ in texts) else "") if part)
 
 
 # The longest text the notices print, in lines: far above any licence (the longest carried, a compilation of grammars'
