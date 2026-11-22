@@ -1335,25 +1335,6 @@ func (s *Local) missAsked(text string) {
 	}
 }
 
-// startupOnScreen reports whether the screen still shows a startup
-// question while the startup questions' watch lasts (before the first
-// submission's Enter): typed text is refused meanwhile (Submit), the
-// question asked, answered or not, since its Enter would pick what the
-// dialog highlights (Claude Code's "No, exit") and its letters reach the
-// dialog's keys. The screen is read as a frame the program has finished
-// drawing with nothing lost to a window made smaller (Screen.DrawnAt), the
-// window grown since counting, its wrapped rows joined. Nothing without
-// the screen the questions asked during the work are read from, kept for
-// this with startup questions alone.
-func (s *Local) startupOnScreen() bool {
-	if s.trust == nil || !s.trust.Watching() || s.asked == nil {
-		return false
-	}
-	whole, _, _, _ := s.asked.Whole()
-	uncut, _, _ := s.asked.DrawnAt()
-	return uncut && s.lastStartup(whole) != ""
-}
-
 // startupMayShow reports whether keys typed in the terminal may reach a
 // startup question, while the startup questions' watch lasts: the screen
 // (the frame the questions asked during the work are read from, taken as
@@ -5873,10 +5854,9 @@ func AnswerResult(reqID string, err error) []byte {
 		code, msg = proto.ErrCodeQuestionAnswered, err.Error()
 	case errors.Is(err, ErrLineStranded):
 		msg = LineStrandedWords
-	case errors.Is(err, ErrTrustQuestion):
-		code, msg = proto.ErrCodeNotSent, TrustQuestionWords
-	case errors.Is(err, ErrQuestion):
-		code, msg = proto.ErrCodeNotSent, QuestionWords
+	case errors.Is(err, ErrTrustQuestion), errors.Is(err, ErrQuestion):
+		code = proto.ErrCodeNotSent
+		msg, _ = NotSentWords(err)
 	case errors.Is(err, ErrReadOnly):
 		code, msg = proto.ErrCodeReadOnly, "this link is view-only"
 	case errors.Is(err, ErrSessionEnded):
@@ -6040,14 +6020,7 @@ func (s *Local) ScreenLines(n int) []string {
 // half a frame, is not the prompt (#714).
 func (s *Local) atPrompt() bool {
 	text, _, uncut, _, _ := s.shot.Frame()
-	if !uncut {
-		return false
-	}
-	text = plainSpaces(text)
-	if s.opts.PromptShape != nil && !s.opts.PromptShape.MatchString(text) {
-		return false
-	}
-	return !startupChoiceShown(text)
+	return uncut && promptShown(text, s.opts.PromptShape)
 }
 
 // promptHolds stands for the text a submission typed into the agent's
@@ -6098,11 +6071,7 @@ func (s *Local) atPromptHolding(text string) bool {
 		strings.TrimSpace(frame[at[1]:rowEnd]) != "" {
 		return false
 	}
-	held := frame[:at[0]] + promptHolds + frame[at[1]:]
-	if s.opts.PromptShape != nil && !s.opts.PromptShape.MatchString(held) {
-		return false
-	}
-	return !startupChoiceShown(held)
+	return promptShown(frame[:at[0]]+promptHolds+frame[at[1]:], s.opts.PromptShape)
 }
 
 // awaitEcho waits, up to Options.EchoWait, for the screen to show the

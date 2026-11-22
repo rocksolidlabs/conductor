@@ -64,6 +64,54 @@ var ErrTrustQuestion = errors.New(TrustQuestionWords)
 // agent's screen is not its prompt (atPrompt): nothing of it was written.
 var ErrNotAtPrompt = errors.New("the agent's screen is not recognised as its prompt: nothing was typed")
 
+// StartupChoiceWords say why a line is refused, whole, while the startup
+// questions' watch lasts and the agent's screen shows a numbered choice
+// and no startup question the session knows: a key of the line could pick
+// it (startupLine).
+const StartupChoiceWords = "the agent's screen shows what may be a question: nothing was typed; answer it in its terminal"
+
+// StartupNotAtPromptWords say why a line is refused, whole, while the
+// startup questions' watch lasts and the agent's screen is not its prompt
+// (startupLine): a frame not finished or cut, or a screen its prompt's
+// shape does not match.
+const StartupNotAtPromptWords = "the agent is not at its prompt yet: nothing was typed"
+
+// startupRefusal is a line refused whole during the startup questions'
+// watch with words of its own (startupLine): a kind of ErrTrustQuestion, so
+// that whatever waits for a startup question to be dealt with (a crew's
+// prompt, a decision's answer) waits for it as for one, and what tells a
+// person why says these words (NotSentWords).
+type startupRefusal struct{ words string }
+
+func (e *startupRefusal) Error() string { return e.words }
+
+// Is makes a startup refusal a kind of ErrTrustQuestion.
+func (e *startupRefusal) Is(target error) bool { return target == ErrTrustQuestion }
+
+var (
+	// ErrStartupChoice is the refusal with StartupChoiceWords.
+	ErrStartupChoice error = &startupRefusal{StartupChoiceWords}
+	// ErrStartupNotAtPrompt is the refusal with StartupNotAtPromptWords.
+	ErrStartupNotAtPrompt error = &startupRefusal{StartupNotAtPromptWords}
+)
+
+// NotSentWords returns the words a person is told for a line refused with
+// err, nothing of it typed (the not_sent kind): a startup question or a
+// startup screen (ErrTrustQuestion and its kinds), or a question asked
+// during the work (ErrQuestion); false for any other error.
+func NotSentWords(err error) (string, bool) {
+	var r *startupRefusal
+	switch {
+	case errors.As(err, &r):
+		return r.words, true
+	case errors.Is(err, ErrTrustQuestion):
+		return TrustQuestionWords, true
+	case errors.Is(err, ErrQuestion):
+		return QuestionWords, true
+	}
+	return "", false
+}
+
 // QuestionWords say why a person's typed text is refused while a question
 // the agent asks during its work shows (source "question"): its letters
 // would reach the dialog's keys (Codex's command approval takes y, p and
@@ -309,6 +357,11 @@ type SubmitResult struct {
 	Entered bool
 	// Reentered is set when a second Enter was written (Confirm).
 	Reentered bool
+	// Unconfirmed is set, with Reentered, when the agent did not report
+	// taking the line (Options.ConfirmSubmit) within ConfirmWait after the
+	// second Enter either: nothing more is written for it, and whoever
+	// typed it says so.
+	Unconfirmed bool
 	// NotAtPrompt is set, with Typed and not Entered, when the Enter was
 	// left out because the screen was not the agent's prompt holding the
 	// text (Submission.PromptHoldsText) and no question came: the text sits
@@ -464,13 +517,14 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 		}
 		return res, ErrQuestion
 	}
-	// A startup question the screen still shows, answered or not (the
-	// program slow to move on from it): nothing is typed into it either.
-	if s.startupOnScreen() {
+	// While the startup questions' watch lasts, the line is typed only at
+	// the agent's prompt: never into a startup question the screen still
+	// shows, answered or not, nor into what may be one (startupLine).
+	if err := s.startupLine(sub.OnlyAtPrompt); err != nil {
 		if sub.UnlessWaiting {
 			return res, nil
 		}
-		return res, ErrTrustQuestion
+		return res, err
 	}
 	st := submitState{
 		promptSince: promptSince,
@@ -1056,6 +1110,22 @@ func (s *Local) pressEnter(ctx context.Context, sub Submission, res SubmitResult
 			return enter()
 		}
 	}
+	if !res.Typed {
+		// A line that is an Enter alone is judged, while the startup
+		// questions' watch lasts, as a line's text is (startupLine), on
+		// the screen as the writer takes it: never into a startup screen.
+		// With UnlessWaiting it is left out, as for a prompt come.
+		enter := wait.guard
+		wait.guard = func() error {
+			if err := s.startupLine(sub.OnlyAtPrompt); err != nil {
+				if sub.UnlessWaiting {
+					return errPromptCame
+				}
+				return err
+			}
+			return enter()
+		}
+	}
 	if sub.Question != "" && !res.Typed {
 		// A reply that is an Enter alone: its question still waits, and is
 		// noted answered as the Enter is taken (its text did so for a line).
@@ -1168,6 +1238,10 @@ func (s *Local) pressEnter(ctx context.Context, sub Submission, res SubmitResult
 			}
 			return true
 		})
+		// Pressed again, and still no word from the agent that it took
+		// the line within ConfirmWait: nothing more is written, and the
+		// result says so.
+		res.Unconfirmed = res.Reentered && !s.confirmed(ctx, enterAt)
 	}
 	return res, nil
 }
@@ -1289,14 +1363,16 @@ func (s *Local) textGuard(sub Submission, st submitState) func() error {
 		att := s.info.Attention
 		s.mu.Unlock()
 		showing := att.State == AttentionNeedsInput && !(sub.Decision != "" && att.Decision != "")
-		startup := s.startupOnScreen()
+		startup := s.startupLine(sub.OnlyAtPrompt)
 		switch {
-		case sub.UnlessWaiting && (showing || dialog || startup):
+		case sub.UnlessWaiting && (showing || dialog || startup != nil):
 			return errWaiting
-		case showing && att.Source == SourceTrust || startup:
+		case showing && att.Source == SourceTrust || startup == ErrTrustQuestion:
 			return ErrTrustQuestion
 		case dialog || showing && att.Source == SourceQuestion:
 			return ErrQuestion
+		case startup != nil:
+			return startup
 		case sub.OnlyAtPrompt && !s.atPrompt():
 			return ErrNotAtPrompt
 		}
