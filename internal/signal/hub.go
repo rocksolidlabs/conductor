@@ -112,7 +112,9 @@ func (hub *Hub) Register(reg proto.Register, conn *HostConn) (*HostedSession, bo
 	if (reg.Host.Instance == "") != (reg.Session.LocalID == "") || len(reg.Host.Instance) > proto.MaxHostInstance || len(reg.Session.LocalID) > proto.MaxLocalID {
 		return nil, false, ErrBadRegister
 	}
-	if reg.Session.HostReport.Check() != nil {
+	// What the host says of its machine, each in its form or not at all: a
+	// register with one out of it is refused whole (proto.ErrHostMachine).
+	if reg.Session.HostReport.Check() != nil || reg.Host.CheckMachine() != nil {
 		return nil, false, ErrBadRegister
 	}
 	if reg.Resume != nil {
@@ -210,6 +212,7 @@ func (hub *Hub) Register(reg proto.Register, conn *HostConn) (*HostedSession, bo
 			CreatedAt: time.Now().UTC(),
 		},
 	}
+	setHostFields(&hs.info, reg.Host, owner)
 	hs.setAgentToken(reg.Session.AgentToken)
 	hs.setAnswerAs(reg.Host.AnswerAs)
 	if err := hub.registry.Add(hs); err != nil {
@@ -261,6 +264,9 @@ func (hs *HostedSession) attachLive(reg proto.Register, conn *HostConn) (attache
 	hs.info.Cols, hs.info.Rows = reg.Session.Cols, reg.Session.Rows
 	hs.info.Branch = reg.Session.Branch
 	hs.info.HostUser = reg.Host.User
+	// What the host says of itself now: a host back with another key (the
+	// file of its machine's id made again) is grouped by the new one.
+	setHostFields(&hs.info, reg.Host, hs.owner)
 	hs.relayOnly = reg.Session.RelayOnly
 	hs.setAnswerAs(reg.Host.AnswerAs)
 	if reg.Session.AgentToken != "" {

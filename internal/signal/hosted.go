@@ -946,6 +946,19 @@ func (h *HostedSession) Info() session.Info {
 	defer h.mu.Unlock()
 	info := h.info
 	info.Viewers = len(h.viewers)
+	// The host's connection as it is, read from the connection itself,
+	// never from the status or the time alone: an ended session keeps its
+	// status as its host leaves, and one its host came back to keeps the
+	// time its host last left.
+	if h.conn != nil {
+		info.HostLink = session.HostLinkUp
+	} else {
+		info.HostLink = session.HostLinkDown
+		if !h.disconnectedAt.IsZero() {
+			away := h.disconnectedAt.UTC()
+			info.HostAwaySince = &away
+		}
+	}
 	return info
 }
 
