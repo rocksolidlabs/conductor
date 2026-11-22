@@ -356,7 +356,13 @@ func TestHostsHeldHereReadOnly(t *testing.T) {
 				t.Fatalf("read-only here: %+v (the ledger says %+v)", r.Ledger, b.srv.ledger.Lock())
 			}
 			_, why := b.srv.ledger.ReadOnly()
-			for _, word := range []string{filepath.Base(filepath.Dir(f.srv.store.Dir())), f.srv.store.Dir(), ledger.File, why} {
+			// The test's own temporary directory, whose name no reply's
+			// other bytes hold, and every longer part of the path.
+			root := filepath.Base(filepath.Dir(filepath.Dir(f.srv.store.Dir())))
+			if !strings.HasPrefix(root, "TestHostsHeldHereReadOnly") {
+				t.Fatalf("the temporary directory %q", root)
+			}
+			for _, word := range []string{root, f.srv.store.Dir(), ledger.File, why} {
 				if word != "" && bytes.Contains(body, []byte(word)) {
 					t.Fatalf("the reply holds %q: %s", word, body)
 				}
