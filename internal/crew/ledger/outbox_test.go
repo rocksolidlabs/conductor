@@ -81,7 +81,7 @@ func TestRoutedLedgerMigrationFreshAndAgain(t *testing.T) {
 	if !strings.Contains(freshIndex, "CREATE UNIQUE INDEX decision_outbox_decision ON decision_outbox(decision)") {
 		t.Fatalf("a new database's decision_outbox_decision: %q", freshIndex)
 	}
-	if v := dbVersion(t, fresh); v != Version || Version != 16 {
+	if v := dbVersion(t, fresh); v != Version || Version != 17 {
 		t.Fatalf("a new database is version %d, Version %d", v, Version)
 	}
 	if n := countRows(t, fresh, "SELECT COUNT(*) FROM decision_outbox"); n != 0 {
@@ -236,8 +236,8 @@ func TestRoutedLedgerMigrationFreshAndAgain(t *testing.T) {
 // every entry as it was. Opened again by a binary of its own version, it
 // is the owner's, as it was.
 func TestOlderBinaryOpensARoutedLedgerReadOnly(t *testing.T) {
-	if Version != 16 || len(migrations[13]) == 0 {
-		t.Fatalf("Version %d, version 13's migration %v: the outbox's barrier is 14, a version of its own, and 15 and 16 the versions after it", Version, migrations[13])
+	if Version != 17 || len(migrations[13]) == 0 {
+		t.Fatalf("Version %d, version 13's migration %v: the outbox's barrier is 14, a version of its own, and 15 to 17 the versions after it", Version, migrations[13])
 	}
 	ctx := context.Background()
 	dir := filepath.Join(t.TempDir(), "runs")
