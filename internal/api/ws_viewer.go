@@ -264,10 +264,11 @@ func (s *Server) sendInputError(sub *session.Subscription, local *session.Local,
 		local.Send(sub, proto.NewError(proto.ErrCodeReadOnly, "this link is view-only"))
 	case errors.Is(err, session.ErrSessionEnded):
 		local.Send(sub, proto.NewError(proto.ErrCodeSessionEnded, "the session has ended"))
-	case errors.Is(err, session.ErrTrustQuestion):
-		local.Send(sub, proto.NewError(proto.ErrCodeNotSent, session.TrustQuestionWords))
-	case errors.Is(err, session.ErrQuestion):
-		local.Send(sub, proto.NewError(proto.ErrCodeNotSent, session.QuestionWords))
+	case errors.Is(err, session.ErrTrustQuestion), errors.Is(err, session.ErrQuestion):
+		// Nothing typed, in the words of why (a startup question, a
+		// startup screen, a question).
+		words, _ := session.NotSentWords(err)
+		local.Send(sub, proto.NewError(proto.ErrCodeNotSent, words))
 	case errors.Is(err, session.ErrInputStalled):
 		local.Send(sub, proto.NewError("input_failed", session.ErrInputStalled.Error()))
 	case errors.Is(err, session.ErrTooManyRequests):
