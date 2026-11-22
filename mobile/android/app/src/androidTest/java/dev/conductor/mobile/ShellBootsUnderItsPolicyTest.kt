@@ -7,6 +7,18 @@ import android.net.Uri
 import android.content.pm.PackageManager
 import android.os.Build
 import android.util.Log
+import android.security.keystore.KeyGenParameterSpec
+import android.view.ViewGroup
+import android.webkit.WebResourceResponse
+import android.webkit.WebViewClient
+import org.bouncycastle.crypto.params.Ed25519PrivateKeyParameters
+import org.junit.Assert.fail
+import org.junit.Assume.assumeTrue
+import java.io.ByteArrayInputStream
+import java.io.File
+import java.security.KeyPairGenerator
+import java.security.spec.ECGenParameterSpec
+import java.util.concurrent.ConcurrentHashMap
 import android.os.ParcelFileDescriptor
 import android.security.keystore.KeyInfo
 import android.security.keystore.KeyProperties
@@ -126,6 +138,13 @@ class ShellBootsUnderItsPolicyTest {
                 away.src = 'https://example.com/?boot-probe-frame';
                 document.body.appendChild(away);
                 await within(new Promise((r) => { away.onload = () => r(true); away.onerror = () => r(false) }), 5000).catch(() => false);
+                // An object of another origin: the policy names no object source either (one object-src violation).
+                at('object away');
+                const thing = document.createElement('object');
+                thing.type = 'text/html';
+                thing.data = 'https://example.com/?boot-probe-object';
+                document.body.appendChild(thing);
+                await within(new Promise((r) => { const t = setInterval(() => { if (window.__bootViolations.some((v) => v.startsWith('object-src'))) { clearInterval(t); r(true) } }, 50) }), 5000).catch(() => false);
                 // A service worker: every request of one is refused (the native count says so), and its registration fails.
                 at('service worker');
                 const worker = await code(() => navigator.serviceWorker.register('/sw.js'));
@@ -257,7 +276,7 @@ class ShellBootsUnderItsPolicyTest {
             }
             val probes = text(eval(s, "window.__bootProbes"))
             val framePosted = eval(s, "window.__bootFramePosted") == "true"
-            val probeViolations = text(eval(s, "window.__bootViolations.slice($ownViolations).map((v) => v.split(' ')[0]).join(',')"))
+            val probeViolations = text(eval(s, "window.__bootViolations.slice($ownViolations).map((v) => v.split(' ')[0]).sort().join(',')"))
             val platform = text(eval(s, "window.conductorShell ? window.conductorShell.platform : 'none'"))
             val page = text(eval(s, "location.href"))
             step("probes: $probes; the frame had the channel: $framePosted; violations: ${eval(s, "JSON.stringify(window.__bootViolations)")}")
@@ -270,7 +289,7 @@ class ShellBootsUnderItsPolicyTest {
             step("the boot check's report: $report")
             assertEquals(
                 "ready platform=android probes=ok own-dropped=0 own-refused=0 own-violations=0 dropped=${10 + (if (framePosted) 1 else 0)} " +
-                    "refused=5 cancelled=${AWAY.size} handed=0 workers=1 probe-violations=frame-src page-own=true",
+                    "refused=5 cancelled=${AWAY.size} handed=0 workers=1 probe-violations=frame-src,object-src page-own=true",
                 report,
             )
             // Last, as it leaves the shell's page: a form posted to another origin, which no navigation check sees, never loads there:
@@ -492,6 +511,122 @@ class ShellBootsUnderItsPolicyTest {
             }
         } finally {
             shell("locksettings clear --old 1357")
+        }
+    }
+
+    /**
+     * A page of the test's own, with no policy, holding a frame, an object and an embed of another origin: whatever the platform's web
+     * view requests for each is judged by the shell's installed client, the request gate alone (the shell's own page has its policy
+     * answer first, so only a page without one shows what the platform really sends for such a load).
+     */
+    private val unguarded = """<!doctype html><html><body>
+        <iframe src="https://example.com/?probe-frame"></iframe>
+        <object type="text/html" data="https://example.com/?probe-object"></object>
+        <embed type="text/html" src="https://example.com/?probe-embed">
+        </body></html>"""
+
+    @Test
+    fun theRequestGateRefusesTheDocumentsThePlatformRequestsForAFrameAndAnObject() {
+        ActivityScenario.launch(MainActivity::class.java).use { s ->
+            until(30, "the gates in place") { read(s) { it.gates != null } }
+            val heard = ConcurrentHashMap<String, String>()
+            val answered = ConcurrentHashMap<String, String>()
+            val probe = AtomicReference<WebView>()
+            s.onActivity { a ->
+                val installed = a.getBridge().webViewClient
+                val w = WebView(a)
+                w.webViewClient = object : WebViewClient() {
+                    override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? {
+                        val r = request ?: return null
+                        val answer = installed.shouldInterceptRequest(view!!, r)
+                        val marker = Regex("probe-(frame|object|embed)").find(r.url.toString())?.groupValues?.get(1)
+                        if (marker != null) {
+                            val h = r.requestHeaders ?: emptyMap()
+                            answered[marker] = answer?.statusCode?.toString() ?: "network"
+                            heard[marker] = "main-frame=${r.isForMainFrame} upgrade-insecure-requests=" +
+                                "${h.keys.any { it.equals("Upgrade-Insecure-Requests", ignoreCase = true) }} " +
+                                "accept=${h.entries.firstOrNull { it.key.equals("Accept", ignoreCase = true) }?.value}"
+                        }
+                        // The test never reaches the network itself: what the gate would let through is answered empty here.
+                        return answer ?: WebResourceResponse("text/plain", "utf-8", 204, "No Content", emptyMap(), ByteArrayInputStream(ByteArray(0)))
+                    }
+
+                    override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean = true
+                }
+                a.addContentView(w, ViewGroup.LayoutParams(200, 200))
+                w.loadDataWithBaseURL("https://probe.invalid/", unguarded, "text/html", "utf-8", null)
+                probe.set(w)
+            }
+            try {
+                until(60, "the frame's and the object's document requests", { "(heard: $heard)" }) { heard.containsKey("frame") && heard.containsKey("object") }
+                for (m in listOf("frame", "object", "embed")) step("the platform's request for the $m: ${heard[m] ?: "none made"}; the gate: ${answered[m] ?: "-"}")
+                assertEquals("the frame's document (${heard["frame"]})", "403", answered["frame"])
+                assertEquals("the object's document (${heard["object"]})", "403", answered["object"])
+                if (heard.containsKey("embed")) assertEquals("the embed's document (${heard["embed"]})", "403", answered["embed"])
+            } finally {
+                s.onActivity {
+                    probe.get()?.let { w ->
+                        (w.parent as? ViewGroup)?.removeView(w)
+                        w.destroy()
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
+    fun theKeystoresOwnCertificateDecidesWhetherARecordNamesItsKey() {
+        assumeTrue("the keystore's own Ed25519 is Android 13's", Build.VERSION.SDK_INT >= 33)
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+        val folder = File(context.cacheDir, "conductor-key-test")
+        folder.deleteRecursively()
+        folder.mkdirs()
+        try {
+            // A key of the keystore's own under the shell's alias, needing no unlock and no secure hardware (an emulator's keystore).
+            val generator = KeyPairGenerator.getInstance(KeyProperties.KEY_ALGORITHM_EC, "AndroidKeyStore")
+            generator.initialize(
+                KeyGenParameterSpec.Builder(AndroidKeyDevice.SIGNING, KeyProperties.PURPOSE_SIGN)
+                    .setAlgorithmParameterSpec(ECGenParameterSpec("ed25519"))
+                    .setDigests(KeyProperties.DIGEST_NONE)
+                    .build(),
+            )
+            generator.generateKeyPair()
+            val certified = rawEd25519(store.getCertificate(AndroidKeyDevice.SIGNING).publicKey.encoded)
+                ?: throw AssertionError("the keystore's certificate holds no Ed25519 key")
+            val other = Ed25519PrivateKeyParameters(ByteArray(32) { 7 }, 0).generatePublicKey().encoded
+            val device = AndroidKeyDevice(context)
+            try {
+                device.holds(DeviceKey(DeviceKey.KEYSTORE, other, null))
+                fail("a record naming another key was taken as the keystore's")
+            } catch (e: KeyRefusal) {
+                assertEquals("key_changed", e.code)
+            }
+            assertArrayEquals(certified, device.publicKey(DeviceKey(DeviceKey.KEYSTORE, other, null)))
+            assertTrue(device.holds(DeviceKey(DeviceKey.KEYSTORE, certified, null)))
+            // Through the key, with its record on disk: the disagreeing record is refused and nothing changed; the matching one is the key.
+            val file = File(folder, "conductor-key.json")
+            val records = FileKeyRecord(file)
+            val wrong = KeyRecord(DeviceKey(DeviceKey.KEYSTORE, other, null), KeyState.BOUND, "acct-1", null).text()
+            records.write(wrong)
+            val key = ConductorKey(device, object : Presence {
+                override fun confirm(reason: String): Boolean = false
+            }, records, null)
+            try {
+                key.state()
+                fail("a record naming another key was read as the key")
+            } catch (e: KeyRefusal) {
+                assertEquals("key_changed", e.code)
+            }
+            assertEquals(wrong, file.readText())
+            assertTrue(store.containsAlias(AndroidKeyDevice.SIGNING))
+            records.write(KeyRecord(DeviceKey(DeviceKey.KEYSTORE, certified, null), KeyState.BOUND, "acct-1", null).text())
+            assertEquals(Triple(KeyState.BOUND, "acct-1", null), key.state())
+            assertEquals(Base64Url.encode(certified), key.publicKey())
+            step("the keystore's certificate decided: a record of another key refused, the record of its own key read")
+        } finally {
+            if (store.containsAlias(AndroidKeyDevice.SIGNING)) store.deleteEntry(AndroidKeyDevice.SIGNING)
+            folder.deleteRecursively()
         }
     }
 }

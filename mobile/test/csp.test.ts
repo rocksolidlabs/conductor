@@ -40,19 +40,19 @@ describe("the shell's policy", () => {
   it("hashes every inline script the browser runs, the import map among them, and no data block", () => {
     const scripts = inlineScripts(PAGE)
     expect(scripts).toHaveLength(3)
-    expect(policyFor(PAGE)).toBe(`${["script-src 'self' 'wasm-unsafe-eval'", ...scripts.map(sha)].join(' ')}; connect-src 'none'; frame-src 'none'`)
+    expect(policyFor(PAGE)).toBe(`${["script-src 'self' 'wasm-unsafe-eval'", ...scripts.map(sha)].join(' ')}; connect-src 'none'; frame-src 'none'; object-src 'none'`)
     expect(policyFor(PAGE)).not.toContain("'unsafe-eval'")
     expect(policyFor(PAGE)).not.toContain("'unsafe-inline'")
   })
 
   it('lets the pages connect to nothing by default, and to the https origins a provider\'s build names', () => {
-    expect(policyFor(PAGE)).toMatch(/; connect-src 'none'; frame-src 'none'$/)
-    expect(policyFor(PAGE, { connect: ['https://relay.example.test', 'https://push.example.test:8443'] })).toMatch(/; connect-src https:\/\/relay\.example\.test https:\/\/push\.example\.test:8443; frame-src 'none'$/)
+    expect(policyFor(PAGE)).toMatch(/; connect-src 'none'; frame-src 'none'; object-src 'none'$/)
+    expect(policyFor(PAGE, { connect: ['https://relay.example.test', 'https://push.example.test:8443'] })).toMatch(/; connect-src https:\/\/relay\.example\.test https:\/\/push\.example\.test:8443; frame-src 'none'; object-src 'none'$/)
     const from = tmp()
     writeFileSync(join(from, 'index.html'), PAGE)
     const www = join(tmp(), 'www')
     syncBundle(from, www, undefined, { connect: ['https://relay.example.test'] })
-    expect(carried(readFileSync(join(www, 'index.html'), 'utf8')).policy).toMatch(/; connect-src https:\/\/relay\.example\.test; frame-src 'none'$/)
+    expect(carried(readFileSync(join(www, 'index.html'), 'utf8')).policy).toMatch(/; connect-src https:\/\/relay\.example\.test; frame-src 'none'; object-src 'none'$/)
   })
 
   it('refuses a connection source that is not exactly an https origin, and syncs nothing with it', () => {
@@ -76,7 +76,7 @@ describe("the shell's policy", () => {
     syncBundle(from, www, undefined, { native: ['https://relay.example.test', 'https://relay.example.test:8443'] })
     expect(JSON.parse(readFileSync(join(www, NATIVE_HTTP), 'utf8'))).toEqual({ origins: ['https://relay.example.test', 'https://relay.example.test:8443'] })
     // The page's own connections are not widened by it.
-    expect(carried(readFileSync(join(www, 'index.html'), 'utf8')).policy).toMatch(/; connect-src 'none'; frame-src 'none'$/)
+    expect(carried(readFileSync(join(www, 'index.html'), 'utf8')).policy).toMatch(/; connect-src 'none'; frame-src 'none'; object-src 'none'$/)
     for (const bad of ['http://relay.example.test', 'https://relay.example.test/', 'https://relay.example.test.', 'https://user@relay.example.test', 'https://*.example.test', 'https://Relay.example.test', 'file:///etc']) {
       expect(() => nativeOrigins([bad]), bad).toThrow(/an https origin/)
       const fresh = join(tmp(), 'www')
@@ -135,7 +135,7 @@ describe("the shell's policy", () => {
     const html = readFileSync(join(www, 'index.html'), 'utf8')
     const { policy, srcs } = carried(html)
     const source = readFileSync(join(dist, 'index.html'), 'utf8')
-    expect(policy).toBe(`${["script-src 'self' 'wasm-unsafe-eval'", ...inlineScripts(source).map(sha)].join(' ')}; connect-src 'none'; frame-src 'none'`)
+    expect(policy).toBe(`${["script-src 'self' 'wasm-unsafe-eval'", ...inlineScripts(source).map(sha)].join(' ')}; connect-src 'none'; frame-src 'none'; object-src 'none'`)
     // Every inline script the synced page runs is one the policy admits.
     for (const s of inlineScripts(html)) expect(policy).toContain(sha(s))
     expect(srcs[0]).toBe(BRIDGE_SRC)

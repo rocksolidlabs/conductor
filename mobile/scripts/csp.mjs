@@ -80,12 +80,13 @@ export function nativeOrigins(list = []) {
 
 /**
  * The policy for html: scripts from 'self', compiling WebAssembly, and each inline script's SHA-256; connections to `connect`'s
- * origins alone ('none' with none); no frame from any address (the diagram's frame is a srcdoc document, which loads from none).
+ * origins alone ('none' with none); no frame and no object or embed from any address (the diagram's frame is a srcdoc document,
+ * which loads from none).
  */
 export function policyFor(html, { connect = [] } = {}) {
   const hashes = inlineScripts(html).map((s) => `'sha256-${createHash('sha256').update(s, 'utf8').digest('base64')}'`)
   const origins = connectOrigins(connect)
-  return `${["script-src 'self' 'wasm-unsafe-eval'", ...hashes].join(' ')}; connect-src ${origins.length ? origins.join(' ') : "'none'"}; frame-src 'none'`
+  return `${["script-src 'self' 'wasm-unsafe-eval'", ...hashes].join(' ')}; connect-src ${origins.length ? origins.join(' ') : "'none'"}; frame-src 'none'; object-src 'none'`
 }
 
 /**

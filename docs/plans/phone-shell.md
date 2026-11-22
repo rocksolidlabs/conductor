@@ -1905,9 +1905,9 @@ narrower):
   (the web view asks its client about a frame's navigation only for
   schemes that are not http or https; a document is told as the runtime
   tells one, and also by an Accept asking for HTML); service workers
-  served nothing. The page's own policy names no frame source
-  (`frame-src 'none'`; the diagram's frame is a srcdoc document, which
-  loads from none). The screens carry a decision's id in one base64url
+  served nothing. The page's own policy names no frame or object source
+  (`frame-src 'none'`, `object-src 'none'`; the diagram's frame is a
+  srcdoc document, which loads from none). The screens carry a decision's id in one base64url
   segment (`decisionPath`), as on the iPhone.
 - **The chrome client** (`ShellChromeClient`, over the runtime's, which
   grants every permission but the camera and microphone without asking,
@@ -1941,15 +1941,20 @@ a decision's id in its own spelling (each refused), the same decision as
 the screens carry it (not refused), a prompt, a window, the runtime's
 `WebView` through its page script (dropped), and the shell's own calls
 (the key and the store answer, the native HTTP call refuses an origin not
-named), a frame of another origin (refused by the page's policy: one
-`frame-src` violation), a service worker's registration (its request
+named), a frame and an object of another origin (refused by the page's
+policy: one `frame-src` and one `object-src` violation), a service worker's registration (its request
 refused), the location (denied at once). It passes only on `ready
 platform=android probes=ok own-dropped=0 own-refused=0 own-violations=0
 dropped=10 (11 with the frame's) refused=5 cancelled=3 handed=0 workers=1
-probe-violations=frame-src page-own=true`, the counts read from the gates
+probe-violations=frame-src,object-src page-own=true`, the counts read from the gates
 themselves, and then on a form posted to another origin refused by the
 request gate. It runs three rounds in a row in CI, each a fresh install.
-Other instrumented tests drive the gates in place directly (the web
+A page of the test's own with no policy holds a frame, an object and an
+embed of another origin, and the shell's installed client must refuse the
+documents the platform itself requests for them (the headers it sent
+logged); a key of the keystore's own made with no unlock under the
+shell's alias proves the keystore's certificate decides whether a record
+names it. Other instrumented tests drive the gates in place directly (the web
 view's client refusing another origin's frame and post, a Range past the
 server's int and a prefixed file, and serving the Range at the edge; the
 chrome client denying every permission and the location, opening no
