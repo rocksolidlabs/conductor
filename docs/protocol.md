@@ -1888,9 +1888,28 @@ for a person, as for a revoked link's: `submit` under Attention); in a
 session with a `trustPrompt` the pause lasts until the screen watcher has had
 its 500 ms look at what was drawn since the text (at most 2 s more), so a
 trust question drawn then holds the carriage return back too. While the
-screen, a whole frame, still shows a startup question, answered or not (the
-program slow to move on), no line is typed into it: a person's is refused
-(`not_sent` with the trust question's words), Conductor's own waits. No lock
+startup questions' watch lasts (until the first submission's carriage
+return), a line's text is typed only at the agent's prompt, judged on one
+reading of the screen as the program drew it, before the text and again as
+the writer takes it. For an agent whose catalog entry has a `promptShape`,
+the text is typed only where that reading is a whole frame (no
+synchronized update under way, nothing cut by a window made smaller) that
+shows the agent's prompt by its shape, no startup question's pattern and no
+numbered choice. Anywhere else nothing of the line is written: a person's
+is refused with `not_sent` and words true to the screen: the startup
+question's words where one shows, `the agent's screen shows what may be a
+question: nothing was typed; answer it in its terminal` where a numbered
+choice shows and no startup question, `the agent is not at its prompt yet:
+nothing was typed` otherwise; Conductor's own waits, and a crew member's
+prompt so held is noted once per wait in the run's log (Crew runs). An
+agent with startup questions and no `promptShape` is refused where a whole
+frame shows a startup question or a numbered choice, or a frame not whole
+while the output the watcher keeps saw a startup question drawn. A line
+that is a carriage return alone is judged the same way as the writer takes
+it. The carriage return of a line with text is held where it was held
+before (a startup question that may show, a question drawn in the pause):
+the prompt holding the line's own text is not read by the prompt's shape.
+No lock
 of the session is held
 across the pause, and a person's keystrokes (INPUT) are written as they come,
 not held back. What Conductor submits always records one `input` entry as the
@@ -2346,7 +2365,12 @@ the screen (one that cuts only blank cells loses nothing), as it is and as
 it was laid out at least the size the screen had when the keys were
 written; the window grown since counts, its rows autowrap went on from
 read joined to the width they had then, since a program that erases its dialog's lines rather than
-the whole screen draws nothing for a resize); one answered never keeps the next from
+the whole screen draws nothing for a resize). The startup questions'
+watcher judges that withdrawal first at each of its looks, before it reads
+the output it took for a question to ask, so either watcher looking first
+gives the same picture: a question withdrawn is not asked again from the
+output before it, and one drawn since is asked with an `id` of its own; one
+answered never keeps the next from
 being asked, and nor does one still waiting that the screen has left for
 another drawn after it (the program took an answer not read as one): the
 question drawn last is asked with an `id` of its own, and a reply naming
@@ -4404,6 +4428,8 @@ whose `message` is one of these:
 | trust question | `status` | `<member> asks "<question>": answer it with one of its choices ("<choice>", …) in the run page's chat or on <member>'s session page, or in its terminal; its prompt waits` when the session offers the question's choices (a startup dialog the catalog knows: the folder's trust, the agent's own update), else `<member> asks "<question>": answer it in <member>'s terminal; its prompt waits`; once for each question in one wait for the prompt (`; its handoffs wait` for a member resumed). One dialog is one line however many times the session reads it again in that wait (its screen drawn again, as when a page attaches the member's terminal): words noted in the wait are not noted again, and a reading whose words are the row the dialog is found by (its first choice, the heading not on the screen: `Update now (runs`) is not noted while a reading of its own words is noted or comes at the wait's next look; held at that look with only such a reading, the line is written once without them, `<member> asks a question of its agent's own: answer it …`. Another question in the wait, with other words, has its own line, and a later wait (a later start of the member) notes its questions anew |
 | prompt without its Enter | `error` | `typed <member>'s prompt without its Enter: <member> waits on a question; answer it, then press Enter in its terminal` |
 | Enter again | `status` | `pressed Enter again for <member>: it did not report taking its prompt within 3s` |
+| prompt not reported taken | `error` | `typed <member>'s prompt, and its agent did not report taking it: check its terminal, and type the prompt there if its input is empty`, once, for an agent that reports taking a prompt (Claude Code's hook) that has not done so within 3 s of the Enter pressed again either: nothing more is typed, the member stays prompted (a later done starts the members after it), and the run's member reads `needsInput` until its agent reports a turn (working, or done) |
+| prompt refused | `status` | `<member>'s prompt waits: <why>` when the session refuses the prompt, nothing typed, while it shows no question (a startup screen: `the agent is not at its prompt yet: nothing was typed`, `the agent's screen shows what may be a question: nothing was typed; answer it in its terminal`, or a startup question's pattern the session has not asked), once for each in one wait for the prompt, for every member; the prompt is tried again a poll later |
 | no yolo recipe | `status` | `<member>: yolo is on, but <agent name> has no yolo recipe: launched without one` |
 | resumed | `status` | `<member> resumed its conversation` |
 | relaunched | `status` | `<member> started anew` (its prompt is typed again once it is ready) |
@@ -8469,8 +8495,8 @@ sent again whatever the view's age (`DECIDE_*` in
 | `GET /api/decisions` | admin | `?state=&run=&ticket=KEY&for=NAME&after=dr-N&limit=` (1 to 100; `for` a person's name, 1 to 60 characters with no control character, matched exactly against the person the request's `for` named when it opened) → `{decisions, next?}`, newest first, each the record without its `history` and its `responses` (its `answer` stays; `GET /api/decisions/{did}` reads one whole), at most 70,004 bytes (the sum of its parts at their encoded worst cases: its request, baseline, policy and application, its `why` and its `answer` of characters that escape to six bytes each, and the rest), so a page is at most 7,001,424 bytes |
 | `GET /api/me` | any credential | `{subject?, name?, grants}` (`proto.MeReply`, at most 1 KiB): who it is and the grants it holds here (HTTP API, above); also on a switchyard |
 | `GET /api/me/decisions` | a decide principal (the admin `403 not_decide`; a host-only one and no credential `401`) | → `{decisions: [{id, rev}], cut?}` (`proto.DecideList`): the first 200 open decisions whose entries admit the caller, newest first, at most 16 KiB, no other field, count, page or cursor, each row judged by `crew.AdmissionOf`, the read's own judgement, as one bounded read of the ledger hands it (no JSON function in its SQL); `cut` when a 201st admitted one was met or the read reached its own bound first. What remains: the read looks at the server's newest 500 open decisions (fewer when those rows pass 16 MiB), so on a server with more a decide principal's list can miss an older one, and says `cut` (its address still reads it). One list of a subject's is read at a time: another sent while it is is `429 rate_limited`, nothing read; the list it answers, or its `503`, is made while it is read and written after. A read the ledger cannot make (its open decisions' index missing or not the one it expects among them) is `503 ledger_unavailable`, naming no decision. On a switchyard `403 switchyard` to an admitted principal, the `401` of every other as on any server |
-| `GET /api/decisions/{did}` | admin, or a decide principal the decision admits | the admin: `{decision, refs}`: the record whole and its evidence refs' resolutions, at most 2 MiB; while an answer made on another machine waits for its recheck because the identity provider cannot say now, `decision.waiting` says whose and why ("waiting to recheck user:nate's answer: the identity provider cannot say now", at most 256 bytes; docs/plans/sync-seams.md, OS-3). A decide principal: the decide view alone (`proto.DecideView`, at most 32 KiB), while the decision is open and given to the decide grant `{id, rev, state, type, question, context?, options[{label, tradeoffs?}], recommendation?, uncertainty?, authorizes?, createdAt, own, outcome?, outcomeCode?}` (the options the engine's, an assignment's `Done` and `Not done` among them), once it is answered or final and holds a response of its own `{id, rev, own, outcome}`; `own` the newest 8 of its own receipts `{k, responseId, status, code?, rev, at, choice?}`, never another's; `outcome` `applied`, `waiting`, `not_used` or `refused` (with `outcomeCode`, the newest one's), never a reason; `404 not_found` (`no such decision`) for one it is not admitted to, as for one that does not exist, one status and one body; a read the ledger cannot make `503 ledger_unavailable`. Admission ends with the answer for a holder with no response of its own, with the take-back for everyone (a route to a person or a role while the decision is open among them), and with the pass for every request the server takes after the provider stops admitting it; a response taken before that which became the decision's answer is judged again when it is recorded (the recheck); one the provider no longer admits is kept and not applied: the decision is superseded, and a new decision that is the operator's alone is opened in its place |
-| `POST /api/decisions/{did}/respond` | admin, or a decide principal the decision admits (`404 not_found` for one it does not, nothing written) | `{responseId, choice?, text?, rationale?, expectedRev, byName?, override?}` (at most 32 KiB: `text` at most 4,096 bytes, `rationale` at most 2 KiB as encoded, `byName` cut to 64 characters, each as encoding/json sends it, escapes and all; `byName` the admin's alone) → `201 {receipt, decision}`, `200` for a repeat; `409 decision_answered` (naming who answered and when to the admin; a decide principal is answered in the fixed words below), `decision_closed`, `stale_decision` (what changed since the rev read), `stale_policy`, `response_conflict`, `not_held`; `403 not_approver`, and under a router's policy `not_eligible` and `override_refused` (`override` the admin's alone: Decisions, A router's policy); `503 decision_moved` (ask once more). The response's transaction judges the entries it reads: the operator's, and the decide grant's while the decision is given to it. A decide principal's body is `{responseId, choice?, text?, rationale?, expectedRev}` and nothing else: any other member, in any spelling the decoder takes, is `400 invalid` ("the body is not a response") before the decision is read, whatever the decision. Its answer is shown under the name its sign-in carries, the provider's name for it as `GET /api/me` gives it without its characters of Unicode's Cf, Zl and Zp and the space around it (its actor when nothing is left; every other character is kept as given), in the record, its receipt's words, the line the asking session is given and what a later responder is told. A repeat is the same response id, the same members and the same name as it is shown; the same response id with any of them otherwise is `409 response_conflict` ("This send to dr-N differs from the one kept under its response id: read the decision again."), nothing written. A query is `400 invalid_request` ("this route takes no query"), as on the read and the list. A decide principal's reply is `{receipt, decision?}` (`proto.DecideReply`, at most 33 KiB): its own receipt reduced as `own`'s are and the decide view after the commit; a refusal `{error: {code, message}, receipt?}`, its message the server's fixed words of the code (at most 200 bytes, naming no one) and its own receipt reduced when the refusal was kept. A repeat's receipt is the send's own, its `status` and `rev` as they were then, the view beside it the decision now. Of a decision answered or final whose outcome it reads, only a send of one of its own responses again is taken (answered from its saved receipt); any other is `409 decision_answered` or `decision_closed`, nothing written. Once its body has been read whole the response is counted first (the lead above): one past the sixteen is `429 rate_limited` and the provider is not asked again for it; a response that has a place is asked of the provider again before the decision is read or anything recorded, and unless the provider then names the same subject with the decide grant (it no longer admits the pass, names another subject, names no decide grant, or the ask fails) the response is answered as a pass the provider does not admit, `401 unauthorized` under the same rate limit, the decision not read and nothing recorded. Its answer is applied only once the provider admits its pass again as the same subject with the decide grant |
+| `GET /api/decisions/{did}` | admin, or a decide principal the decision admits | the admin: `{decision, refs}`: the record whole and its evidence refs' resolutions, at most 2 MiB; while an answer made on another machine waits for its recheck because the identity provider cannot say now, `decision.waiting` says whose and why ("waiting to recheck user:nate's answer: the identity provider cannot say now", at most 256 bytes; docs/plans/sync-seams.md, OS-3). A decide principal: the decide view alone (`proto.DecideView`, at most 32 KiB), while the decision is open and given to the decide grant `{id, rev, state, type, question, context?, options[{label, tradeoffs?}], recommendation?, uncertainty?, authorizes?, createdAt, own, outcome?, outcomeCode?}` (the options the engine's, an assignment's `Done` and `Not done` among them), once it is answered or final and holds a response of its own `{id, rev, own, outcome}`; `own` the newest 8 of its own receipts `{k, responseId, status, code?, rev, at, choice?}` (`status` `accepted`, `refused` or `counted`; a counted approval that no longer counts reads `refused` with `code: "not_confirmed"`), never another's; `outcome` `applied`, `waiting`, `not_used` or `refused` (with `outcomeCode`, the newest one's), never a reason; `404 not_found` (`no such decision`) for one it is not admitted to, as for one that does not exist, one status and one body; a read the ledger cannot make `503 ledger_unavailable`. Admission ends with the answer for a holder with no response of its own, with the take-back for everyone (a route to a person or a role while the decision is open among them), and with the pass for every request the server takes after the provider stops admitting it; a response taken before that which became the decision's answer is judged again when it is recorded (the recheck); one the provider no longer admits is kept and not applied: the decision is superseded, and a new decision that is the operator's alone is opened in its place |
+| `POST /api/decisions/{did}/respond` | admin, or a decide principal the decision admits (`404 not_found` for one it does not, nothing written) | `{responseId, choice?, text?, rationale?, expectedRev, byName?, override?}` (at most 32 KiB: `text` at most 4,096 bytes, `rationale` at most 2 KiB as encoded, `byName` cut to 64 characters, each as encoding/json sends it, escapes and all; `byName` the admin's alone) → `201 {receipt, decision}`, `200` for a repeat; `409 decision_answered` (naming who answered and when to the admin; a decide principal is answered in the fixed words below), `decision_closed`, `stale_decision` (what changed since the rev read), `stale_policy`, `response_conflict`, `not_held`; `403 not_approver`, and under a router's policy `not_eligible` and `override_refused` (`override` the admin's alone: Decisions, A router's policy), `409 not_needed` and `already_counted` (unkept), and an approval `counted` in `201` (Decisions, A router's policy, Several approvals); `503 decision_moved` (ask once more). The response's transaction judges the entries it reads: the operator's, and the decide grant's while the decision is given to it. A decide principal's body is `{responseId, choice?, text?, rationale?, expectedRev}` and nothing else: any other member, in any spelling the decoder takes, is `400 invalid` ("the body is not a response") before the decision is read, whatever the decision. Its answer is shown under the name its sign-in carries, the provider's name for it as `GET /api/me` gives it without its characters of Unicode's Cf, Zl and Zp and the space around it (its actor when nothing is left; every other character is kept as given), in the record, its receipt's words, the line the asking session is given and what a later responder is told. A repeat is the same response id, the same members and the same name as it is shown; the same response id with any of them otherwise is `409 response_conflict` ("This send to dr-N differs from the one kept under its response id: read the decision again."), nothing written. A query is `400 invalid_request` ("this route takes no query"), as on the read and the list. A decide principal's reply is `{receipt, decision?}` (`proto.DecideReply`, at most 33 KiB): its own receipt reduced as `own`'s are and the decide view after the commit; a refusal `{error: {code, message}, receipt?}`, its message the server's fixed words of the code (at most 200 bytes, naming no one) and its own receipt reduced when the refusal was kept. A repeat's receipt is the send's own, its `status` and `rev` as they were then, the view beside it the decision now. Of a decision answered or final whose outcome it reads, only a send of one of its own responses again is taken (answered from its saved receipt); any other is `409 decision_answered` or `decision_closed`, nothing written. Once its body has been read whole the response is counted first (the lead above): one past the sixteen is `429 rate_limited` and the provider is not asked again for it; a response that has a place is asked of the provider again before the decision is read or anything recorded, and unless the provider then names the same subject with the decide grant (it no longer admits the pass, names another subject, names no decide grant, or the ask fails) the response is answered as a pass the provider does not admit, `401 unauthorized` under the same rate limit, the decision not read and nothing recorded. Its answer is applied only once the provider admits its pass again as the same subject with the decide grant |
 | `POST /api/decisions/{did}/cancel` | admin | `{commandId, why, release?, expectedRev}` → `{receipt, decision}`, `200` for a repeat; `409 op_conflict`, `stale_decision` (the operation's `expectedRev`, here and below, is judged in the transaction that applies it, after the look for a repeat of its id) |
 | `POST /api/decisions/{did}/comment` | admin | `{opId, kind: comment\|more_info, text, expectedRev}` (at most 8 KiB) → `{receipt, decision}`; `409 op_conflict`, `stale_decision`, `no_recipient` (a `more_info` without a live asking attempt); `429 decision_limit` |
 | `POST /api/decisions/{did}/route` | admin, or a Brakeman turn granted `route_decision` | `{opId, to: {kind: "operator"} \| {kind: "person", name} \| {kind: "role", name: <responsibility>} \| {kind: "grant", grant: "decide"}, note?, expectedRev}` → `{receipt, decision}` (a turn: `{receipt, error}`); `409 op_conflict`, `stale_decision`; `429 decision_limit` (the operator's operations, comments, requests for more and routes together, at most 32 per decision, the last kept for the take-back while it is given to the grant; a Brakeman turn's routes, at most 4, apart from them). To the grant it gives the decision to the decide grant (the request's `for` becomes `{label: "grant:decide"}`, no person): anyone an identity provider gives the grant answers it beside the operator, as HM1's route to a person is taken (only while open, at the `expectedRev` read, through the held run), the admin's alone, `409 no_identity` with no identity provider registered; a route to the operator of a decision given to the grant takes it back (the `for` dropped, a `routed` row, `rev` + 1), while it is open, held run or the ledger alone, and a route to a person or a role replaces it; a turn's `to: grant` is `400 invalid` and a turn's route of a decision given to the grant `409 stale_target`. To the operator it changes no state. To a person or a responsibility (HM1), resolved in the run's crew as launched (`400 invalid` for one it does not resolve), it changes whom the decision is for: only while it is `open` (`409 decision_answered`, `decision_closed` otherwise, a response's words), at the `expectedRev` read (at least 1), through the run that holds it (`409 not_held` otherwise: continue it, then route); it rewrites the request's `for`, writes the `routed` row with `for` and `forWas`, and bumps `rev`, so a response at the older rev is `stale_decision` naming the new person first. Who answers does not change: the operator |
@@ -8708,8 +8734,9 @@ above, and no field, code or row below is ever written or answered.
   need, so the run fills at an opening (`decision_limit`), never at an
   eligible answer.
 - **The policy written.** A route's `policy` (`ext.RoutePolicy`, at most
-  14 KiB as encoded; this server takes one group of quorum 1, no
-  distinct persons, and `reroutes`/`recent` sent empty, and refuses any
+  14 KiB as encoded; this server takes every shape `ext.RoutePolicy`
+  holds: up to four groups, quorums up to four, `distinct`, or the
+  unsupported form; `reroutes`/`recent` are sent empty, and it refuses any
   other, a screen's question's, or one from a router that does not
   confirm policies: the whole route is then refused, as an invalid one
   is) is written into the record in one transaction, while it is open at
@@ -8744,6 +8771,9 @@ above, and no field, code or row below is ever written or answered.
   - in force, the subject named in a group and confirmed eligible in
     it: accepted, the receipt's `groups`, `via` and `ref` saying for
     what; an identity's admin that is eligible answers as eligible;
+    under a policy of several groups or a quorum above one, an
+    approval is `counted` (below) until the last place it needs is
+    filled;
   - in force, a decide principal not eligible: `404 not_found` at the
     decide routes, as one the record does not admit (Who sees a routed
     record, below), whether the policy names it or not; `403
@@ -8777,8 +8807,75 @@ above, and no field, code or row below is ever written or answered.
   fresh one ("…'s answer could not be confirmed"), as DR1's identity
   recheck does. A record that ever carried a router's policy writes its
   outbox row in its final transaction (above).
+- **Several approvals** (groups, quorum and distinct persons). The
+  record's **places** are the sum of its groups' quorums (at most 16).
+  An eligible approval (an approval's or an assignment's first option)
+  that fills a place and leaves one unfilled is kept with the response
+  status `counted` (the receipt's `status: "counted"`, its `groups` the
+  groups its subject is confirmed eligible in), the decision's rev + 1
+  and its state `open`; the approval that fills the last place is
+  accepted and answers the decision with the combined answer. The places
+  filled are counted from the counted approvals that stand now, each
+  subject in the groups the policy names it in now and the router
+  confirmed at its response: without `distinct`, each group's
+  quorum or its eligible approvers, the smaller; with `distinct`, the
+  largest assignment of approvers to places, one place each (a person
+  eligible in two groups fills the one the others leave). A delegate
+  counts as themselves. One eligible Reject (an assignment's Not done)
+  answers the decision at once; a clarification takes the first eligible
+  answer; an accepted override answers it whole, every group at once.
+  An eligible approval is judged against the places as the approvals
+  that stand now fill them, its own groups (as the router confirms them
+  now, merged with those of its person's standing approval) added: if
+  every place is then filled it answers the decision, whether it filled
+  the last place or the last place was filled already (a re-route can
+  bring back an approver whose approval stands); else, if it fills a
+  place more, it is counted; else it is refused, `409 already_counted`
+  for a person whose own approval stands ("ana's approval of dr-7 is
+  counted already") and `409 not_needed` otherwise ("dr-7 has the
+  architecture owner's approvals it needs: it waits for the security
+  owner"), each unkept (no row; judged again when sent again). A person
+  whose approval is counted may still Reject: an eligible Reject answers
+  at once. A kept refusal under such a policy is kept only while the
+  response rows left after it are at least the places still to fill;
+  past that it is unkept. A counted approval by an identity is rechecked
+  with its sign-in after its commit, as an accepted one is: a `rechecked`
+  history row (`{k, admitted}`) keeps the answer; one not admitted no
+  longer counts ("Ana's approval could not be rechecked: answer again"),
+  nor does one found unrechecked after a restart. Before the answer is
+  applied every counted approval and the deciding one is confirmed by the
+  router with its subject and `since` its response's time; any not
+  confirmed, or places no longer filled, supersedes the decision by a
+  fresh one, as an identity recheck that fails does. When a re-route
+  leaves fewer response rows than places to fill, the decision is
+  superseded in the re-route's transaction ("dr-7's responses filled its
+  record; dr-9 asks again") and `Reroute`'s `superseded` names the fresh
+  one. A counted approval that no longer counts (its sign-in's recheck
+  did not admit it, or a restart found it unrechecked) reads `status:
+  "refused"`, `code: "not_confirmed"` wherever a receipt is read: in the
+  decide view's `own`, and in the operator's read's
+  `decision.responses` (and the respond route's `{receipt, decision}`),
+  its `words` there the server's ("Ana's approval of dr-7 no longer
+  counts: its sign-in could not be rechecked", followed by ": answer
+  again" only while the decision is open); a counted approval that
+  stands reads `status: "counted"`. The row as kept is not changed: only
+  what is read. A decide principal's own counted approval has the
+  outcome `waiting` while the decision is open or answered by an
+  approval, `applied` once that approval is applied, `not_used` once it
+  ended otherwise; one that no longer counts has the outcome `refused`
+  with `outcomeCode: "not_confirmed"` ("Your approval of dr-7 could not
+  be rechecked: answer again.") only while the decision is open, and
+  `not_used` (no code) once it is answered or final, when nothing can be
+  answered again. `OpenDecisions` gives each record's standing counted
+  approvals (`counted: [{subject, groups, at, confirmed?}]`).
 - **The operator's read.** `GET /api/decisions/{did}` of a record under a
-  router's policy carries `policyNow: {inForce, why?, eligible?}` from
+  router's policy carries `quorum: {places, filled, groups: [{role,
+  quorum, counted, met}]}` (`proto.DecisionQuorum`, at most 512 bytes:
+  the places in all, those filled now by the counted approvals that
+  stand and by the approval that answered the decision when it is an
+  eligible approval (never a Reject or an override, which fill no place),
+  and each group's count by its role, in the policy's order) and
+  `policyNow: {inForce, why?, eligible?}` from
   one `Confirm`, asked with the reader's subject for an identity's
   operator (none for the workbench token): `eligible` is true when that
   reader is named in a group the router confirms now, and its plain
@@ -8816,7 +8913,9 @@ above, and no field, code or row below is ever written or answered.
 - **The router's reads and re-routes** (`ext.Host`, the registered
   router's alone; every other Host, and the router's on a switchyard or
   with no ledger, answers `ext.ErrUnsupported`): `OpenDecisions` pages
-  every open record, 64 a page in number order, each with its policy,
+  every open record, 64 a page in number order (`next` names where the
+  next page starts while more follow, also on a page left with no record
+  because its records ended while it was read), each with its policy,
   when it was first routed, the last route's why and its rev (the why is
   the kind of the last re-route, `assigned`, `delegated`, `escalated` or
   `rerouted`, when the record's last route was one by `Reroute`, and
@@ -8849,7 +8948,11 @@ above, and no field, code or row below is ever written or answered.
   with no router.
 
 The codes `not_eligible` and `override_refused` are `403`;
-`stale_policy` stays `409`.
+`stale_policy`, `not_needed` and `already_counted` are `409`. A
+decide principal reads `not_needed` as "dr-7 needs no more answers of
+this kind.", `already_counted` as "Your answer to dr-7 is counted
+already." and `not_confirmed` as "Your approval of dr-7 could not be
+rechecked: answer again."
 
 **Answers made elsewhere** (`docs/plans/sync-seams.md`, OS-3). With a
 sync store registered, a decision's record may hold a response whose

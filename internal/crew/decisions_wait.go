@@ -716,12 +716,12 @@ func (r *run) decisionsStanding() int {
 }
 
 // holdsPlace says d holds a place for its replacement, as the ledger's
-// placeCond says: answered by an identity, or open or answered with a
-// spare.
+// placeCond says: answered by an identity, open with an identity's counted
+// approval, or open or answered with a spare.
 func (d *decision) holdsPlace() bool {
 	switch d.state {
 	case ledger.DecisionOpen:
-		return d.spare
+		return d.spare || d.counted
 	case ledger.DecisionAnswered:
 		return d.spare || d.answer != nil && (d.answer.auth.Via == ViaIdentity || d.answer.auth.Via == ViaSync)
 	}
@@ -1147,6 +1147,11 @@ type opDetail struct {
 	// row is written with its rev bumped (a route's new for, written by
 	// Tx.RouteFor), or refuses it; nil for none.
 	edit func(decisionTx, ledger.DecisionRow) error
+	// also writes more in the operation's transaction, after its history
+	// row (a re-route's supersession, when the record's rows ran short),
+	// and alsoDone follows its commit, under e.mu; nil for none.
+	also     func(LedgerTx) error
+	alsoDone func()
 }
 
 // errOpRepeat aborts an operation's transaction whose row its actor sent
@@ -1499,6 +1504,11 @@ func (e *Engine) operate(ctx context.Context, id string, op operation) (OpReceip
 			dt.Rev = max(dt.Rev, row.Rev)
 			if op.rowless {
 				out = OpReceipt{Decision: id, Op: op.kind, Rev: row.Rev, Words: dt.Words}
+				if dt.also != nil {
+					if err := dt.also(ltx); err != nil {
+						return err
+					}
+				}
 				return ltx.Event("decision."+op.kind, map[string]any{"decision": id, "op": op.opID, "actor": op.actor})
 			}
 			hr := ledger.HistoryRow{Kind: op.kind, By: op.actor, Detail: historyDetail(dt), OpID: op.opID, Fingerprint: op.fp}
@@ -1517,6 +1527,11 @@ func (e *Engine) operate(ctx context.Context, id string, op operation) (OpReceip
 			// construction, whatever bounding the row's detail took.
 			out = receiptOfRow(id, got)
 			out.Repeat = false
+			if dt.also != nil {
+				if err := dt.also(ltx); err != nil {
+					return err
+				}
+			}
 			if op.kind == ledger.HistoryCancelled {
 				return nil // the cancel's event is its change's (closeDecisionOp)
 			}
@@ -1557,6 +1572,9 @@ func (e *Engine) operate(ctx context.Context, id string, op operation) (OpReceip
 				// e.mu before anything reads the run: refused, it changed
 				// nothing (giveUp drops its write and this).
 				return tx{more: func(ltx LedgerTx) error { return write(ltx, dt) }, done: func() {
+					if dt.alsoDone != nil {
+						dt.alsoDone()
+					}
 					if d == nil {
 						return
 					}

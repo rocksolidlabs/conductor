@@ -218,6 +218,13 @@ type MemberState struct {
 	// cleared once the line is typed: what the Brakeman desk's words of
 	// a turn that did not start say. Not in the run's JSON.
 	Unrecognised bool `json:"-"`
+	// Unconfirmed is the session a prompt was typed into, entered and
+	// entered again, whose agent, one that reports taking a prompt, never
+	// reported taking it (session.SubmitResult.Unconfirmed): while that is
+	// still the member's session (SessionID), the member reads as waiting
+	// on a person (NeedsInput) until the session reports a turn (working,
+	// or done). Not in the run's JSON.
+	Unconfirmed string `json:"-"`
 	// Task and Attempt are the member's latest attempt in a managed run.
 	Task    string `json:"task,omitempty"`
 	Attempt int    `json:"attempt,omitempty"`
@@ -591,6 +598,12 @@ type Engine struct {
 	// whichever run holds its decision reads them, so one is never lost
 	// with a copy a continuation left behind. Under e.mu.
 	confirms map[confirmKey]int
+	// countedPending are the counted responses this process accepted whose
+	// sign-in's recheck has not answered yet (ConfirmAuthority writes its
+	// rechecked row): until then such an approval stands, and its
+	// decision's application waits. One not here and never rechecked
+	// stands not (decisions_quorum.go). Under e.mu.
+	countedPending map[confirmKey]bool
 	// recheck is what asks AdmitsAnswer again of a held answer awaiting
 	// its recheck (SetRecheck, decisions_sync.go), and asked the answers
 	// it was given, once each in this process. Under e.mu.
@@ -604,6 +617,10 @@ type Engine struct {
 	// decisions_policy.go).
 	routesPolicies atomic.Bool
 	policyCheck    atomic.Pointer[PolicyCheck]
+	// policySince asks the router whether a subject stayed eligible since
+	// a time (SetPolicySince): every counted approval and the deciding
+	// one are confirmed so at the application.
+	policySince atomic.Pointer[PolicySinceCheck]
 	// opMu orders the operators' operations on decisions (operate), from
 	// the look for their ids through their commits: an operation's row is
 	// never refused in its transaction as another's with the same id,
@@ -1784,6 +1801,29 @@ func (e *Engine) promptWith(ctx context.Context, r *run, m *member, local *sessi
 		// One line in the run's log for one question, over every wait
 		// for this prompt (heldLines).
 		lines := e.heldLines(r, name, local, "its prompt waits")
+		// refused notes, once per wait for each of its words, a prompt
+		// the session refused while it shows no question (a startup screen
+		// not the agent's prompt yet, what may be a question), for every
+		// member class: the prompt waits, and is tried again a poll later,
+		// as for a question. A question the session shows is noted by
+		// heldLines instead.
+		var refusedFor []string
+		refused := func(err error) {
+			if att := local.Info().Attention; att.State == session.AttentionNeedsInput && (att.Source == session.SourceTrust || att.Source == session.SourceQuestion) {
+				return
+			}
+			words, ok := session.NotSentWords(err)
+			if !ok {
+				words = err.Error()
+			}
+			if slices.Contains(refusedFor, words) {
+				return
+			}
+			refusedFor = append(refusedFor, words)
+			e.mu.Lock()
+			r.note(session.ActivityStatus, "%s's prompt waits: %s", name, words)
+			e.mu.Unlock()
+		}
 		for {
 			err := e.await(lines.ctx(ctx), local, lines.held)
 			switch {
@@ -1838,7 +1878,9 @@ func (e *Engine) promptWith(ctx context.Context, r *run, m *member, local *sessi
 				// found on the screen) holds the prompt: nothing was
 				// typed, and it waits for the answer. The wait may find
 				// the session ready (a report of its own on show while the
-				// dialog is up), so it looks again a poll later.
+				// dialog is up), so it looks again a poll later. One
+				// refused while no question shows is noted once (refused).
+				refused(err)
 				select {
 				case <-ctx.Done():
 					return ctx.Err()
@@ -1874,6 +1916,13 @@ func (e *Engine) promptWith(ctx context.Context, r *run, m *member, local *sessi
 			r.note(session.ActivityError, "typed %s's prompt without its Enter: %s waits on a question; answer it, then press Enter in its terminal", name, name)
 		case res.Reentered:
 			r.note(session.ActivityStatus, "pressed Enter again for %s: it did not report taking its prompt within %v", name, session.ConfirmWait)
+			if res.Unconfirmed {
+				// Still no word that it took the prompt: said once, nothing
+				// typed again, and the member reads as waiting on a person
+				// until its agent reports a turn (OnActivity).
+				m.state.Unconfirmed = local.Info().ID
+				r.note(session.ActivityError, "typed %s's prompt, and its agent did not report taking it: check its terminal, and type the prompt there if its input is empty", name)
+			}
 		}
 		e.mu.Unlock()
 	}
@@ -2048,6 +2097,15 @@ func (e *Engine) OnActivity(sessionID string, entry session.ActivityEntry, state
 	r, m := sm.r, sm.m
 	m.poke()
 	isHandoff := entry.Type == session.ActivityHandoff
+	if !isHandoff && entry.Type == session.ActivityAttention && (state == session.AttentionWorking || state == session.AttentionDone) {
+		// A turn of its agent's own: a prompt it did not report taking
+		// (MemberState.Unconfirmed) no longer holds the member.
+		e.mu.Lock()
+		if m.state.Unconfirmed == sessionID {
+			m.state.Unconfirmed = ""
+		}
+		e.mu.Unlock()
+	}
 	if !isHandoff && entry.Type == session.ActivityAttention && state == session.AttentionWorking && sm.a != nil {
 		// Its agent works again: an attempt that waits on a decision is
 		// not given up until its next done (decisions_wait.go: park).
@@ -2761,7 +2819,11 @@ func (e *Engine) refresh(out *Run) {
 			continue
 		}
 		// A question keys typed in the terminal have answered (Answered) is no longer the member's wait (#258).
-		m.NeedsInput = info.Attention.State == session.AttentionNeedsInput && info.Attention.Answered == ""
+		// A prompt its agent did not report taking holds it too, until its
+		// agent reports a turn (MemberState.Unconfirmed; a report shown
+		// now counts, should it have come as the prompt was being given).
+		reports := info.Attention.State == session.AttentionWorking || info.Attention.State == session.AttentionDone
+		m.NeedsInput = info.Attention.State == session.AttentionNeedsInput && info.Attention.Answered == "" || m.Unconfirmed != "" && m.Unconfirmed == m.SessionID && !reports
 	}
 	out.State, out.NeedsInput = runState(*out)
 }

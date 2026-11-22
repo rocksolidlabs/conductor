@@ -489,7 +489,10 @@ type Local struct {
 	// beforeEnter, a test's hook, runs as a submission comes to its Enter
 	// (pressEnter), before it looks at anything; beforeWritten as keys
 	// written (input) come to what follows their write, with the keys.
-	beforeEnter   atomic.Pointer[func()]
+	beforeEnter atomic.Pointer[func()]
+	// confirmWaits counts the waits for the agent's report that it took a
+	// line (confirmed): a test's view of how many were made.
+	confirmWaits  atomic.Int32
 	beforeWritten atomic.Pointer[func(data []byte)]
 	// beforeShot, a test's hook, runs as the screen snapshot's quiet look
 	// begins (screenQuiet), before it takes the session's lock; beforeHold
@@ -1229,7 +1232,16 @@ func (s *Local) firePattern(line string) {
 // would get (Codex's update question after its background-server one,
 // where 1 runs npm install). That is weighed under the lock that sets the
 // question (startupLook).
+//
+// A question held answered that the screen shows gone is withdrawn first
+// (escGone), before the look's text is read for a question to ask: the
+// withdrawal puts the startup output behind (startupGone), so this look,
+// whose text was taken before it, asks nothing from that text, as a look
+// whose callback comes after the screen's watcher withdrew asks nothing
+// (startupLook): neither order asks the withdrawn question anew. A
+// question drawn since is asked, with an id of its own.
 func (s *Local) fireTrust(text string) {
+	s.escGone()
 	if q, words, seen, shown := s.startupSeen(text); q != nil {
 		if s.heldGone(words) {
 			// An Escape typed at it before it was asked took it away.
@@ -1333,25 +1345,6 @@ func (s *Local) missAsked(text string) {
 	if gone {
 		s.withdraw(att.ID)
 	}
-}
-
-// startupOnScreen reports whether the screen still shows a startup
-// question while the startup questions' watch lasts (before the first
-// submission's Enter): typed text is refused meanwhile (Submit), the
-// question asked, answered or not, since its Enter would pick what the
-// dialog highlights (Claude Code's "No, exit") and its letters reach the
-// dialog's keys. The screen is read as a frame the program has finished
-// drawing with nothing lost to a window made smaller (Screen.DrawnAt), the
-// window grown since counting, its wrapped rows joined. Nothing without
-// the screen the questions asked during the work are read from, kept for
-// this with startup questions alone.
-func (s *Local) startupOnScreen() bool {
-	if s.trust == nil || !s.trust.Watching() || s.asked == nil {
-		return false
-	}
-	whole, _, _, _ := s.asked.Whole()
-	uncut, _, _ := s.asked.DrawnAt()
-	return uncut && s.lastStartup(whole) != ""
 }
 
 // startupMayShow reports whether keys typed in the terminal may reach a
@@ -5873,10 +5866,9 @@ func AnswerResult(reqID string, err error) []byte {
 		code, msg = proto.ErrCodeQuestionAnswered, err.Error()
 	case errors.Is(err, ErrLineStranded):
 		msg = LineStrandedWords
-	case errors.Is(err, ErrTrustQuestion):
-		code, msg = proto.ErrCodeNotSent, TrustQuestionWords
-	case errors.Is(err, ErrQuestion):
-		code, msg = proto.ErrCodeNotSent, QuestionWords
+	case errors.Is(err, ErrTrustQuestion), errors.Is(err, ErrQuestion):
+		code = proto.ErrCodeNotSent
+		msg, _ = NotSentWords(err)
 	case errors.Is(err, ErrReadOnly):
 		code, msg = proto.ErrCodeReadOnly, "this link is view-only"
 	case errors.Is(err, ErrSessionEnded):
@@ -6040,14 +6032,7 @@ func (s *Local) ScreenLines(n int) []string {
 // half a frame, is not the prompt (#714).
 func (s *Local) atPrompt() bool {
 	text, _, uncut, _, _ := s.shot.Frame()
-	if !uncut {
-		return false
-	}
-	text = plainSpaces(text)
-	if s.opts.PromptShape != nil && !s.opts.PromptShape.MatchString(text) {
-		return false
-	}
-	return !startupChoiceShown(text)
+	return uncut && promptShown(text, s.opts.PromptShape)
 }
 
 // promptHolds stands for the text a submission typed into the agent's
@@ -6098,11 +6083,7 @@ func (s *Local) atPromptHolding(text string) bool {
 		strings.TrimSpace(frame[at[1]:rowEnd]) != "" {
 		return false
 	}
-	held := frame[:at[0]] + promptHolds + frame[at[1]:]
-	if s.opts.PromptShape != nil && !s.opts.PromptShape.MatchString(held) {
-		return false
-	}
-	return !startupChoiceShown(held)
+	return promptShown(frame[:at[0]]+promptHolds+frame[at[1]:], s.opts.PromptShape)
 }
 
 // awaitEcho waits, up to Options.EchoWait, for the screen to show the

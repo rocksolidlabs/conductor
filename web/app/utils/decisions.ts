@@ -71,11 +71,15 @@ export interface DecisionFor {
 /** The route target of a decision given to the decide grant (docs/plans/decide-grant.md). */
 export const GRANT_DECIDE_LABEL = 'grant:decide'
 
-/** A response's receipt, kept with it: accepted (Recorded), or refused with its code and words. */
+/**
+ * A response's receipt, kept with it: accepted (Recorded), refused with its code and words, or, under a router's policy of several
+ * approvals, counted (an eligible approval that fills a place while the decision waits for the others; SW1 PR-9). A status a newer
+ * server gives is drawn as neither an answer nor an approval.
+ */
 export interface ResponseReceipt {
   decision: string
   k?: number
-  status: 'accepted' | 'refused'
+  status: 'accepted' | 'refused' | 'counted' | (string & {})
   code?: string
   words: string
   actor: string
@@ -679,6 +683,8 @@ export function decideWords(code: string, did: string): string {
     not_eligible: `You are not among those who may answer ${did}.`,
     not_needed: `${did} needs no more answers of this kind.`,
     already_counted: `Your answer to ${did} is counted already.`,
+    // A counted approval that no longer counts (its sign-in could not be rechecked): a view's code, never a respond refusal.
+    not_confirmed: `Your approval of ${did} could not be rechecked: answer again.`,
     // The page's own words for a reply that does not say whether the answer was recorded.
     decision_moved: `Not known whether your answer to ${did} was recorded: send it again.`,
     rate_limited: `The server is working on other requests of yours: send your answer to ${did} again in a moment.`,
@@ -847,6 +853,7 @@ const HISTORY_KINDS: Record<string, string> = {
   routed: 'routed',
   notified: 'notified',
   responded: 'response',
+  rechecked: 'approval rechecked',
   applied: 'applied',
   refunded: 'attempt given back',
   'delivery.typing': 'being typed',

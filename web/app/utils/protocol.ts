@@ -397,12 +397,41 @@ export interface DecideOption {
 export interface DecideReceipt {
   k: number
   responseId: string
-  status: 'accepted' | 'refused'
+  /**
+   * `counted`: an eligible approval that fills a place of a router's policy of several groups or a quorum above one; the decision stays
+   * open until every place is filled. A counted approval that no longer counts (its sign-in could not be rechecked) reads `refused`
+   * with the code `not_confirmed`, here and in the operator's read's `decision.responses` alike (its words there the server's, saying
+   * "answer again" only while the decision is open). Its outcome is `refused`/`not_confirmed` only while the decision is open, and
+   * `not_used` once it is answered or final.
+   */
+  status: 'accepted' | 'refused' | 'counted'
+  /** A kept refusal's code; for a decide principal also `not_needed` and `already_counted` (unkept: no receipt) and `not_confirmed`. */
   code?: string
   rev: number
   at: string
   choice?: number
 }
+
+/**
+ * How far a record under a router's policy is from its answer (`quorum` on the operator's read, `GET /api/decisions/{did}`, beside
+ * `policyNow`; `proto.DecisionQuorum`): the places its groups' quorums ask for in all, how many the counted approvals that stand and
+ * the approval that answered it (never a Reject or an override) fill now, and
+ * each group's count, in the policy's order, named by its role (its label is the policy's). Absent for any other record. At most
+ * MAX_DECISION_QUORUM bytes. A card says "1 of 2 for the architecture owner" from it.
+ */
+export interface DecisionQuorum {
+  places: number
+  filled: number
+  groups: QuorumGroup[]
+}
+/** One group's count: `counted` places filled now, at most `quorum`; `met` when they are equal. */
+export interface QuorumGroup {
+  role: string
+  quorum: number
+  counted: number
+  met: boolean
+}
+export const MAX_DECISION_QUORUM = 512
 
 /** The outcome of a decide principal's own answer. */
 export type DecideOutcome = 'applied' | 'waiting' | 'not_used' | 'refused'

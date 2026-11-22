@@ -1,5 +1,5 @@
-import { hasInjectionContext, inject, type ComputedRef } from 'vue'
-import type { DecisionEvent } from '~/utils/protocol'
+import { hasInjectionContext, inject, type ComputedRef, type Ref } from 'vue'
+import type { DecisionEvent, DecisionQuorum, MeReply } from '~/utils/protocol'
 import { REF_ACCESS } from '~/utils/refAccess'
 import type { Decision, DecisionRef } from '~/utils/decisions'
 import type { PolicyNow } from '~/utils/decisionPolicy'
@@ -373,6 +373,24 @@ export class DecisionRecordView {
 export const POLICY_REREAD_MS = 15_000
 
 /**
+ * Who reads the operator's pages (`GET /api/me`), read once a page load: an identity's operator's subject, '' for the workbench token or
+ * while not known. A record's responses kept under `user:<subject>` are that reader's own: the card judges its own counted approval by
+ * the read with it (SW1 PR-9), never by a send's reply.
+ */
+export function useOperatorSubject(): Ref<string> {
+  const subject = useState<string>('operatorSubject', () => '')
+  const asked = useState<boolean>('operatorSubjectAsked', () => false)
+  if (!asked.value && import.meta.client) {
+    asked.value = true
+    const { request } = useApi()
+    request<MeReply>('/api/me')
+      .then((me) => (subject.value = typeof me?.subject === 'string' ? me.subject : ''))
+      .catch(() => (asked.value = false))
+  }
+  return subject
+}
+
+/**
  * One decision whole (`GET /api/decisions/{id}`, with its evidence's resolutions), read when the id is set, again on its own `decision`
  * event, when the stream comes back (a new generation: DecisionRecordView.reset) and on its fallback's cadence while it is down, and
  * after each of the card's writes
@@ -385,6 +403,8 @@ export function useDecisionRecord(id: () => string) {
   const refs = ref<DecisionRef[]>([])
   /** Whether a router's policy on it is in force now, as the last read said (none under the server's own policy). */
   const policyNow = ref<PolicyNow | null>(null)
+  /** How far a record under a router's policy is from its answer, as the last read said (SW1 PR-9: the places, those filled, each group's count). */
+  const quorum = ref<DecisionQuorum | null>(null)
   /** Whether a decision router is registered, as the last read said: the operator may ask it again for an open record. */
   const router = ref(false)
   const error = ref('')
@@ -399,10 +419,11 @@ export function useDecisionRecord(id: () => string) {
     const gen = view.generation
     loading.value = true
     try {
-      const r = await request<{ decision: Decision; refs?: DecisionRef[]; policyNow?: PolicyNow; router?: boolean }>(`/api/decisions/${encodeURIComponent(d)}`)
+      const r = await request<{ decision: Decision; refs?: DecisionRef[]; policyNow?: PolicyNow; quorum?: DecisionQuorum; router?: boolean }>(`/api/decisions/${encodeURIComponent(d)}`)
       if (view.read(gen, d, id(), r)) {
         show()
         policyNow.value = r.policyNow ?? null
+        quorum.value = r.quorum ?? null
         router.value = r.router === true
       }
       if (d === id()) error.value = ''
@@ -436,6 +457,7 @@ export function useDecisionRecord(id: () => string) {
         view.clear()
         show()
         policyNow.value = null
+        quorum.value = null
         error.value = ''
       }
       if (d) void read()
@@ -461,7 +483,7 @@ export function useDecisionRecord(id: () => string) {
     if (again !== undefined) clearInterval(again)
     if (typeof window !== 'undefined') window.removeEventListener('focus', onFocus)
   })
-  return { decision, refs, policyNow, router, error, loading, read, begin }
+  return { decision, refs, policyNow, quorum, router, error, loading, read, begin }
 }
 
 /**

@@ -277,6 +277,43 @@ only actions are links to the run page, a session and Needs you.
   other under Other machines, then the staging service stopped and the subscription
   lapsed, the section one line each time and back with no restart.
 
+## The start of an agent's session: a line's text goes only into the agent's prompt (#1017; 2026-11-22)
+
+- **A line's text only at the agent's prompt.** Until the first line a
+  session types is entered, a line for Claude Code or Codex (an agent whose
+  catalog entry has a prompt shape) has its text typed only where a whole
+  frame of the screen shows the agent's own prompt and no startup question
+  or numbered choice; anywhere else nothing of it is written. A person's
+  line is refused with words true to the screen: the startup question's
+  words where one shows, "the agent's screen shows what may be a question:
+  nothing was typed; answer it in its terminal" at a numbered choice, "the
+  agent is not at its prompt yet: nothing was typed" otherwise. A crew
+  member's prompt waits, and the run's log says why once per wait, for
+  every member. An agent with startup questions and no prompt shape is
+  refused wherever either of its two earlier checks refused a line's text
+  or held its Enter.
+- **Either look first.** A startup question answered with Escape in the
+  terminal goes once a whole frame shows no startup question, whichever of
+  the session's two looks at a quiet screen comes first: the startup
+  watcher judges that first, and does not ask the question again from the
+  output it keeps.
+- **The Enter.** A line that is an Enter alone is judged by the same rule
+  as it is written. The Enter of a line with text is held where it was
+  held before.
+- **A prompt its agent did not report taking.** For an agent that reports
+  taking a prompt (Claude Code), a crew member's prompt it does not report
+  taking, after an Enter pressed again, is said once in the run's log
+  ("typed <member>'s prompt, and its agent did not report taking it: check
+  its terminal, and type the prompt there if its input is empty"); nothing
+  is typed again, and the member reads as waiting on a person until its
+  agent reports a turn.
+- **Where Codex is not signed in**, its sign-in screen lists its ways to
+  sign in as numbered choices: a line is refused there as at any screen
+  that may be a question, and a crew member's prompt waits with that noted.
+- **Not built:** the startup watch ends only at the Enter of a line a
+  session types, or at the session's end. Codex's sign-in screen is not
+  among its catalog questions (an entry holds at most eight).
+
 ## Sync's seams: what this repository hands a sync store, and what it shows of other machines (CS1, #1028; 2026-11-20)
 
 The open-source half of sync between a person's machines (`docs/plans/sync-seams.md`,
@@ -296,10 +333,14 @@ decision, a ticket or a layout leaves the machine.
   bytes Conductor captured, as the owner decided on 2026-11-20.
 - **Decisions handed out and answers handed in.** A decision reaches the store as
   its document, its request kept back while a part of it is pending or quotes
-  output. An answer made on another machine is taken only where the server's router
-  confirms no policies, only once the identity provider admits its signed
-  statement, and is applied only after the provider admits it again; while the
-  provider cannot say, the decision says it waits to recheck that person's answer.
+  output. An answer made on another machine is taken only for a decision under the
+  server's own policy (on a server whose router confirms policies, only once the
+  router has confirmed it is not routing that decision now); a decision under a
+  router's policy takes none (`answered_at_server`, final). It is taken only once
+  the identity provider admits its signed statement, and is applied only after the
+  provider admits it again; while the provider cannot say, the decision says it
+  waits to recheck that person's answer. An answer made elsewhere never counts as
+  one of several approvals.
 - **The app's state follows the person.** The layout, the palette's recents and
   the pins are kept by the server (`/api/ui/{name}`), the same in every browser.
 - **What other machines hold, read only.** Their decisions, runs and pins, as the
@@ -311,11 +352,11 @@ decision, a ticket or a layout leaves the machine.
 - Tests: the OS rows' tests in `docs/plans/sync-seams.md` (Tests per surface), and
   `remote.spec.ts` and `sync-free.spec.ts` for the screens.
 
-## A decision router's policy on decision records: who may answer (SW1, #1030; 2026-11-19)
+## A decision router's policy on decision records: who may answer (SW1, #1030, #1072; 2026-11-19)
 
 The open-source half of Switchman's team routing (`docs/plans/decision-policy.md`,
-rows PR-7a to PR-8; groups, quorum and distinct persons are PR-9's, the second
-half of this entry). It does anything only on a server where a decision router
+rows PR-7a to PR-8; groups, quorum and distinct persons are PR-9a and PR-9's, the
+second half of this entry). It does anything only on a server where a decision router
 is registered that confirms policies (`ext.PolicyConfirmer`); with none, every
 decision opens and stays under the server's own policy and is answered as before.
 
@@ -345,6 +386,52 @@ decision opens and stays under the server's own policy and is answered as before
   "This is Ana's to answer", and Override… asks for a choice and a reason before it
   sends the answer as an override. `conductor decision show` prints the policy;
   `conductor decision respond --override --why TEXT` overrides.
+
+The second half (#1072, PR-9, after the ledger's barrier at version 17, PR-9a,
+#1071): a policy of several approvals.
+
+- **Up to four groups, quorums up to four, distinct persons.** The server takes
+  every policy shape a router may send. A policy of two groups (the architecture
+  owner and the security owner) keeps the decision open after Ana's approval,
+  "1 of 2"; Cam's approval for security answers it, and the combined answer is
+  applied once. One eligible Reject answers it at once, rejected; a clarification
+  takes the first eligible answer; the operator's override, where the policy
+  allows it, answers every group at once.
+- **Who fills which place.** Each approval that fills a place is kept counted
+  (`counted`), the decision's rev moving. Which places the counted approvals fill
+  is worked out again at every answer and before the answer is applied, from the
+  approvals that stand then and the people the policy names then: without distinct
+  persons one person fills a place in each group that names them; with them, one
+  place each, the largest assignment found (a person named in two groups takes the
+  one the others leave). A delegate counts as themselves. An approval that leaves
+  every place filled answers the decision, even when the places were filled
+  already (a re-route brought a counted approver back), and a person a re-route
+  moved to another group is judged anew there; a person whose approval counts may
+  still Reject. An approval that fills no
+  place still needed is refused `not_needed`, a second approval of the same person
+  `already_counted`, and neither takes a row; a refusal is kept only while the rows
+  left still hold one for each place to fill.
+- **An approval counts only while its authority holds.** Each counted approval's
+  sign-in is rechecked after it is recorded; one not admitted, or never rechecked
+  before a restart, counts no more ("could not be rechecked: answer again"). Before
+  the answer is applied every counted approval and the deciding one are confirmed
+  with the router, each since its own time; any the router cannot confirm, or
+  places no longer filled, supersede the decision with a fresh one that asks again.
+  A re-route that leaves fewer response rows than places to fill supersedes it at
+  once, the router told which decision asks again.
+- **Said in the app.** The operator's read carries each group's count
+  (`quorum`, the approval that answered included) and says which counted
+  approvals no longer count; the card says "1 of 2 for the architecture owner"; a person's own
+  approval reads counted on the decide page, or refused `not_confirmed` once it no
+  longer counts.
+
+What was verified (PR-9): the server's tests with the fake router and the fake
+identity provider only, through the decide routes: two groups answered once both
+are met (`TestCombinedGroupsAnswerOnceAllMet`), the assignment a greedy choice
+misses (`TestDistinctAssignmentFindsTheMatching`), surplus approvals taking no row
+(`TestSurplusApprovalsTakeNoRow`), an approval voided when the router cannot say
+its person stayed eligible (`TestCountedApprovalVoidedWhenItsAuthorityCannotBeEstablished`),
+and the rest of the plan's PR-9 list. No real router or account was used.
 
 ## A context provider's seams: what an attempt was given, and what it may ask (CG1, #1037; 2026-11-19)
 

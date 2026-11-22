@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/rocksolidlabs/conductor/ext"
@@ -386,3 +387,42 @@ func TestRecordsToldPastMaxUnresolved(t *testing.T) {
 }
 
 // A decision link's lane answers no record, routed or not: its answer is
+
+// A page whose records all ended while it was read (between the open
+// decisions' index and their records' reads, held at the ledger's seam)
+// comes back with no record and still names where the next page starts:
+// the walk by Next reaches the records of the later pages, and ends.
+func TestOpenDecisionsNamesTheNextPageWhenAPagesRecordsEnded(t *testing.T) {
+	f := newPolicyFixture(t)
+	ids := f.seed(t, 70, seedRequest(""))
+	var once sync.Once
+	f.srv.ledger.OnOpenRecordsRead(func(ns []int64) {
+		once.Do(func() {
+			// Every number of the first page ends before its record is read.
+			f.rawWrite(t, `UPDATE decisions SET state = 'cancelled', why = 'ended while listed' WHERE n <= ?`, ns[len(ns)-1])
+		})
+	})
+	t.Cleanup(func() { f.srv.ledger.OnOpenRecordsRead(nil) })
+	first, err := f.routerHost(t).OpenDecisions(t.Context(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first.Decisions) != 0 || first.Next != ids[63] {
+		t.Fatalf("the first page: %d records, next %q, want none and %s", len(first.Decisions), first.Next, ids[63])
+	}
+	var got []string
+	after := first.Next
+	for pages := 0; after != ""; pages++ {
+		page, err := f.routerHost(t).OpenDecisions(t.Context(), after)
+		if err != nil || pages > 3 {
+			t.Fatalf("page %d: %v", pages, err)
+		}
+		for _, d := range page.Decisions {
+			got = append(got, d.Decision.Request)
+		}
+		after = page.Next
+	}
+	if strings.Join(got, ",") != strings.Join(ids[64:], ",") {
+		t.Fatalf("the walk read %v, want %v", got, ids[64:])
+	}
+}
