@@ -1,9 +1,10 @@
 // The Hosts page (docs/plans/hosts.md, PR-3): every machine this server knows, what runs and waits on each, and who holds this
 // data directory's managed runs, from GET /api/hosts. The pure model the page and its components draw from: a platform in words,
-// a machine's availability and its order, a run's holder in words, the links of what waits, and the
+// a machine's availability and its order, a run's holder in words, the links of what waits, the other machines' section, and the
 // one-read-at-a-time reader with its queue and generation. It imports no Nuxt module, so the Playwright specs read it too.
-import type { HostAvailability, HostRow, HostsHolder, HostsRun, HostsSessions } from './protocol'
+import type { HostAvailability, HostRow, HostsHolder, HostsRemoteRun, HostsReply, HostsRun, HostsSessions } from './protocol'
 import { clock } from './syncStatus'
+import { otherMachinesShown, otherMachinesWhy } from './otherMachinesShown'
 
 const OS_WORDS: Record<string, string> = {
   darwin: 'macOS',
@@ -36,7 +37,7 @@ export const AVAILABILITY_ORDER: readonly HostAvailability[] = ['here', 'connect
 /**
  * A machine's availability in words: "Here" (this server), "Connected" (a link of its host is up), "Away since 14:02" (none is; its
  * last link dropped then, and a session waits in its grace), "Last seen 13:40" (no session left; the last went then). Said only of
- * what this server sees itself.
+ * what this server sees itself; another machine's is "Last reported" (remoteWords), never one of these.
  */
 export function hostAvailabilityWords(a: HostAvailability, since?: string): string {
   const at = clock(since)
@@ -51,6 +52,12 @@ export function hostAvailabilityWords(a: HostAvailability, since?: string): stri
       return at ? `Last seen ${at}` : 'Last seen'
   }
   return ''
+}
+
+/** Another machine's availability: the time the sync service last heard from it, "Last reported 14:05", never "online". */
+export function remoteWords(lastReport: string | undefined): string {
+  const at = clock(lastReport)
+  return at ? `Last reported ${at}` : 'Not reported yet'
 }
 
 /** The host cards in the page's order: connected, away, then seen, each by name, a tie by key. */
@@ -152,15 +159,22 @@ export function whereWords(where: readonly string[] | undefined): string {
   return where?.length ? `Runs in ${where.join(', ')}` : ''
 }
 
+/** "Reported by studio at 14:05": who sent a remote run's pointer and when; never a holder. */
+export function reportedWords(by: string, at: string | undefined): string {
+  const t = clock(at)
+  return t ? `Reported by ${by} at ${t}` : `Reported by ${by}`
+}
+
 /**
  * A run's row as the page draws it, made from that row of that reply alone, so a row redrawn with the next reply shows nothing of the
  * last one (a former holder's pid and time among them): a local run's name linking to its run page, its id, what waits on it and
- * where that links, and its holder's words with the note. Its state's mark is the status language's (heldRunStatus), drawn by the row from `state` and `paused`.
+ * where that links, and its holder's words with the note; a remote run (another machine's) has no link, and says who reported it and
+ * when, never a holder. Its state's mark is the status language's (heldRunStatus), drawn by the row from `state` and `paused`.
  */
 export interface RunRowView {
   id: string
   title: string
-  /** The run page. */
+  /** The run page; none for another machine's run. */
   link?: string
   state: string
   paused: boolean
@@ -170,6 +184,7 @@ export interface RunRowView {
   waitingLink?: string
   holder: string
   note: string
+  reported: string
 }
 
 export function runRowView(run: HostsRun, ledger: { holder: HostsHolder; note: string }): RunRowView {
@@ -186,7 +201,38 @@ export function runRowView(run: HostsRun, ledger: { holder: HostsHolder; note: s
     holder: holderWords(holder),
     // The note is the ledger's, made for this reply: shown under the holder it was made for, never under another.
     note: holder === ledger.holder ? holderNote(holder, ledger.note) : '',
+    reported: '',
   }
+}
+
+export function remoteRunView(run: HostsRemoteRun): RunRowView {
+  return {
+    id: run.id,
+    title: run.crew || run.id,
+    state: run.state,
+    paused: false,
+    // Decisions open on that machine: read only here, answered there.
+    waiting: run.waiting > 0 ? `${hostDecisionWords(run.waiting)} there` : '',
+    waitingCount: run.waiting,
+    holder: '',
+    note: '',
+    reported: reportedWords(run.reportedBy, run.reportedAt),
+  }
+}
+
+/** What the page draws of other machines (PR-5): nothing, its one line, or the machines. */
+export type RemoteSection = { kind: 'none' } | { kind: 'line'; words: string } | { kind: 'shown'; machines: NonNullable<HostsReply['other']>['machines']; more: number }
+
+/**
+ * The Other machines section, from the reply alone: nothing with no `other` field (no sync store, one never current, starting, or
+ * signed out: a plain build's page), the one line while other machines are not shown ("Other machines are not shown: the sync
+ * service has not answered since 14:02"), else the machines, with how many the reply left out.
+ */
+export function remoteSection(r: Pick<HostsReply, 'other' | 'at'> | null | undefined): RemoteSection {
+  const shown = otherMachinesShown(r)
+  if (shown === 'none') return { kind: 'none' }
+  if (shown === 'line') return { kind: 'line', words: `Other machines are not shown: ${otherMachinesWhy(r)}` }
+  return { kind: 'shown', machines: r!.other!.machines, more: r!.other!.more.machines }
 }
 
 /** The timer seam the coalescing and the page's clock take: the window's, or a test's fakes. */

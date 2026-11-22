@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
-import { hostAvailabilityWords } from '../utils/hosts'
+import { hostAvailabilityWords, remoteWords } from '../utils/hosts'
 import { clock } from '../utils/syncStatus'
 
 // A machine's card on the Hosts page (docs/plans/hosts.md, PR-3). The app's vitest mounts no component: the words are the functions
@@ -16,16 +16,18 @@ describe("a machine's card", () => {
     expect(card).toMatch(/<UBadge color="neutral" variant="subtle" :icon="ICON\[availability\]" :label="availabilityWords"/)
     expect(template(card)).not.toMatch(/color="(success|warning|error)"|text-success|text-warning|bg-success|bg-warning/)
     const at = '2026-11-05T14:02:00Z'
-    expect([hostAvailabilityWords('here'), hostAvailabilityWords('connected', at), hostAvailabilityWords('away', at), hostAvailabilityWords('seen', at)]).toEqual([
+    expect([hostAvailabilityWords('here'), hostAvailabilityWords('connected', at), hostAvailabilityWords('away', at), hostAvailabilityWords('seen', at), remoteWords(at)]).toEqual([
       'Here',
       'Connected',
       `Away since ${clock(at)}`,
       `Last seen ${clock(at)}`,
+      `Last reported ${clock(at)}`,
     ])
   })
 
-  it("says Holds no runs on every host's card", () => {
+  it("says Holds no runs on every host's card, and draws another machine's card as reported, read only", () => {
     expect(page).toMatch(/kind="host"[\s\S]*?run-line="Holds no runs"/)
+    expect(page).toMatch(/kind="remote"\s+read-only[\s\S]*?availability="reported"[\s\S]*?:availability-words="remoteWords\(m\.lastReport\)"/)
   })
 
   it("names a session the page does not hold by its id, as evidence, and links each to its page", () => {
@@ -33,8 +35,10 @@ describe("a machine's card", () => {
     expect(card).toContain(':to="`/sessions/${encodeURIComponent(s.id)}`"')
   })
 
-  it('has no control: its only actions are links', () => {
+  it('has no control: its only actions are links, and a read-only card links none of its counts', () => {
     expect(template(card)).not.toMatch(/<(UButton|button|IconButton)\b/)
+    expect(card).toContain('const waitingTo = computed(() => (props.readOnly ? undefined : waitingLink(props.sessions?.waiting, props.sessions?.waitingRef)))')
+    expect(card).toContain('const decidedTo = computed(() => (props.readOnly ? undefined : waitingLink(props.decisions?.open, props.decisions?.waitingRef)))')
   })
 
   it('never draws the junction mark', () => {

@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { openSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Page, Route } from '@playwright/test'
-import { hostAvailabilityWords, platformWords } from '../app/utils/hosts'
+import { hostAvailabilityWords, platformWords, remoteWords } from '../app/utils/hosts'
 import type { HostRow, HostsReply } from '../app/utils/protocol'
 import { clock } from '../app/utils/syncStatus'
 import { budget, dayPage, endHosted, expect, hostedName, hostedSession, readAgain, test, type Api } from './fixtures'
@@ -11,8 +11,9 @@ import { noSideways } from './layout'
 import { serverBinary, stubBash, stubPath } from './server'
 import type { E2EState } from './state'
 
-// The Hosts page (docs/plans/hosts.md, PR-3 and PR-4), against a stub of GET /api/hosts: This server, the hosts that reach it, the
-// switchyard, the runs and who holds them, each count of what waits linked to its item on Needs you, and nothing that acts on work.
+// The Hosts page (docs/plans/hosts.md, PR-3 to PR-5), against a stub of GET /api/hosts: This server, the hosts that reach it, the
+// switchyard, the runs and who holds them, each count of what waits linked to its item on Needs you, another machine drawn read
+// only, and nothing that acts on work.
 // The stub's keys, session ids and run ids are its own (no test server mints them). The page against the real route, with a real
 // `conductor host`, is the last test.
 
@@ -198,6 +199,66 @@ test("each holder's words come from the reply that says them, redrawn: a former 
     if (i >= 2) await expect(page.locator('[data-hosts]')).not.toContainText('4242')
     await expect(row.getByRole('button')).toHaveCount(0)
   }
+})
+
+test("another machine is drawn as reported, read only, and its section is one line while the sync service is not current (PR-5)", async ({ page }) => {
+  // A stub of a reply with a registered sync store: the page's drawing of it. That a real store's records reach the reply is the Go
+  // tests' (ext/exttest's fake provider) and the premium repository's browser check (the plan's PR-6).
+  await page.setViewportSize({ width: 1440, height: 900 })
+  const machines = [
+    {
+      device: 'hs2stub-dev-studio',
+      name: 'hs2stub-studio2',
+      platform: 'darwin/arm64',
+      version: 'v0.7.0',
+      lastReport: away,
+      own: true,
+      summary: {
+        platform: 'darwin/arm64',
+        version: 'v0.7.0',
+        sessions: { running: 2, waiting: 1 },
+        runs: { held: 1, waiting: 1 },
+        hosts: [{ name: 'hs2stub-laptop', platform: 'linux/amd64', availability: 'connected' as const, sessions: { running: 1, waiting: 0 } }],
+      },
+      runs: [{ id: 'hs2stub-run-9', crew: 'nightly', state: 'running', waiting: 2, reportedBy: 'hs2stub-studio2', reportedAt: away }],
+      decisions: { open: 2 },
+    },
+  ]
+  let state: 'current' | 'unreachable' | 'lapsed' = 'current'
+  await serve(page, () => ({ json: stub({ other: { state, since: away, machines: state === 'current' ? machines : [], more: { machines: 0, remoteRuns: 0 } } }) }))
+  await page.goto('/hosts')
+  const section = page.locator('[data-hosts-section="other"]')
+  const studio = card(page, 'hs2stub-dev-studio')
+  await expect(studio.locator('[data-host-availability-words]')).toHaveText(remoteWords(away))
+  await expect(studio.locator('[data-host-availability-words]')).not.toContainText(/Connected|Here/)
+  await expect(studio.locator('[data-host-meta]')).toHaveText('macOS · arm64 · v0.7.0')
+  await expect(studio.locator('[data-host-summary-host]')).toHaveText(/hs2stub-laptop\s*Linux · x64 · Connected/)
+  const run = studio.locator('[data-host-run="hs2stub-run-9"]')
+  await expect(run.locator('[data-host-run-reported]')).toHaveText(`Reported by hs2stub-studio2 at ${clock(away)}`)
+  await expect(run.locator('[data-host-run-waiting]')).toHaveText('2 decisions wait there')
+  await expect(studio.locator('[data-host-decisions]')).toHaveText('2 decisions wait there')
+  await expect(studio.locator('[data-host-waiting]')).toHaveText('1 question waits there')
+  // Read only (I2, the second half): another machine's card links nothing and has no control.
+  await expect(studio.getByRole('link')).toHaveCount(0)
+  await expect(studio.getByRole('button')).toHaveCount(0)
+  await expect(run.locator('[data-host-run-holder]')).toHaveCount(0)
+
+  for (const [next, words] of [
+    ['unreachable', `Other machines are not shown: the sync service has not answered since ${clock(away)}`],
+    ['lapsed', 'Other machines are not shown: the subscription has lapsed'],
+  ] as const) {
+    state = next
+    await page.getByRole('button', { name: 'Read again' }).click()
+    await expect(section.locator('[data-hosts-other-line]')).toHaveText(words)
+    await expect(studio).toHaveCount(0)
+    // The rest of the page is unchanged.
+    await expect(card(page, 'hs2stub-this')).toBeVisible()
+    await expect(page.locator('[data-host-run="hs2stub-run-1"]')).toBeVisible()
+  }
+  state = 'current'
+  await page.getByRole('button', { name: 'Read again' }).click()
+  await expect(studio).toBeVisible()
+  await expect(section.locator('[data-hosts-other-line]')).toHaveCount(0)
 })
 
 test('the first read failing says so, and Read again draws the page', async ({ page }) => {

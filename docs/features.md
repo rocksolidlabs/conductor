@@ -241,13 +241,27 @@ only actions are links to the run page, a session and Needs you.
   line is never shown once it let go.
 - **What waits links to its item.** Each count of what waits opens its one item on
   Needs you when exactly one waits, Needs you itself when more do, and nothing at 0.
+- **Other machines (#1069),** only where a sync store is registered and has been
+  current in this server's life: the workspace's other servers as the sync service
+  last heard from them, each Last reported 14:05 (never Connected or Here), the
+  person's own other servers with their hosts as that server last saw them, the
+  runs sync shares as Reported by studio at 14:05 (never a holder), and the
+  decisions waiting there, all read only: no link and no control. While the
+  service has not answered, is behind for 10 minutes or more, or the subscription
+  has lapsed, the section is one line ("Other machines are not shown: the sync
+  service has not answered since 14:02") and the rest of the page is unchanged; it
+  comes back at the next current state with no restart. With no sync store, never
+  signed in, signed out or still starting, the page says nothing of other machines.
 - The page reads on open, again at most once a second on the session and run
   events the layout already streams, and every 30 s; one read at a time, and a
   reply older than one it drew is never drawn.
-- Tests: `utils/hosts.test.ts`, `HostCard.test.ts`, `HostRunRow.test.ts`,
-  `web/e2e/hosts.spec.ts` (a stub of the route, and the real route with a real
-  `conductor host` of the stub agent), and the route's own tests in
-  `internal/api`.
+- Tests: `utils/hosts.test.ts`, `utils/otherMachinesShown.test.ts`,
+  `HostCard.test.ts`, `HostRunRow.test.ts`, `web/e2e/hosts.spec.ts` (a stub of the
+  route, Other machines among it, and the real route with a real `conductor host`
+  of the stub agent), `web/e2e/hosts-free.spec.ts` (nothing of other machines with
+  no sync store, a `remote/` folder left behind included), and the route's own
+  tests in `internal/api`. The section against a real sync store is the premium
+  repository's check.
 - **Observed by hand (the plan's Acceptance, part A): not yet.** To be recorded
   here once seen, with no networking set up by anyone on Windows or WSL: a server on
   a Linux machine with a Mac's host and a WSL host on one Hosts page, each one card
@@ -258,6 +272,10 @@ only actions are links to the run page, a session and Needs you.
   Away since, then Last seen; the desktop app's server and a host in the same WSL
   distribution as one machine; and no control that starts, moves, continues or
   retries work.
+- **Observed by hand (part B): not yet.** It waits for the sync service's and the
+  provider's hosts rows: two signed-in servers of one workspace, each showing the
+  other under Other machines, then the staging service stopped and the subscription
+  lapsed, the section one line each time and back with no restart.
 
 ## Sync's seams: what this repository hands a sync store, and what it shows of other machines (CS1, #1028; 2026-11-20)
 

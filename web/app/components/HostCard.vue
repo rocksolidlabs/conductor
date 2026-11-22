@@ -5,16 +5,16 @@ import { statusOfKey, type StatusView } from '~/utils/status'
 
 /**
  * A machine on the Hosts page (docs/plans/hosts.md, PR-3): its name, its platform in words, its version and user, its availability as
- * a neutral badge (Here, Connected, Away since 14:02, Last seen 13:40), its sessions and what
+ * a neutral badge (Here, Connected, Away since 14:02, Last seen 13:40; another machine's Last reported 14:05), its sessions and what
  * waits there (a link to Needs you, PR-4), each session a link to its page, where its sessions run, and its run line. Availability is
  * a fact this server sees, never a session's state: the badge is neutral, its icon telling the four apart, and no status colour is
  * drawn for it. The junction mark is never drawn here. Its only actions are links.
  */
-export type CardAvailability = 'here' | 'connected' | 'away' | 'seen'
+export type CardAvailability = 'here' | 'connected' | 'away' | 'seen' | 'reported'
 
 const props = withDefaults(
   defineProps<{
-    kind: 'server' | 'host'
+    kind: 'server' | 'host' | 'remote'
     hostKey: string
     name: string
     /** How many names its sessions report, when more than one. */
@@ -25,16 +25,18 @@ const props = withDefaults(
     availability: CardAvailability
     availabilityWords: string
     sessions?: HostsSessions
-    /** The machine's open decisions (this server's, PR-4). */
+    /** The machine's open decisions (this server's, PR-4; another machine's, read only). */
     decisions?: HostsDecisions | null
     sessionList?: Array<CardSession & { status?: StatusView }>
     moreSessions?: number
     where?: string[]
     runLine?: string
+    /** Another machine's counts link nowhere: they are read only here. */
+    readOnly?: boolean
     /** Drawn inside another card (the sessions hosted from this server's machine): no card of its own, no name line. */
     bare?: boolean
   }>(),
-  { names: 0, platform: '', version: '', user: '', sessions: undefined, decisions: undefined, sessionList: () => [], moreSessions: 0, where: () => [], runLine: '', bare: false },
+  { names: 0, platform: '', version: '', user: '', sessions: undefined, decisions: undefined, sessionList: () => [], moreSessions: 0, where: () => [], runLine: '', readOnly: false, bare: false },
 )
 
 const ICON: Record<CardAvailability, string> = {
@@ -42,15 +44,21 @@ const ICON: Record<CardAvailability, string> = {
   connected: 'i-lucide-plug',
   away: 'i-lucide-unplug',
   seen: 'i-lucide-history',
+  reported: 'i-lucide-radio-tower',
 }
 const UCard = resolveComponent('UCard')
 const machineIcon = computed(() => (props.kind === 'host' ? 'i-lucide-laptop' : 'i-lucide-server'))
 const meta = computed(() => [platformWords(props.platform) || 'Platform not reported', props.version, props.user && `user ${props.user}`].filter(Boolean).join(' · '))
 const needs = statusOfKey('needs')
-const waiting = computed(() => hostWaitingWords(props.sessions?.waiting ?? 0))
-const waitingTo = computed(() => waitingLink(props.sessions?.waiting, props.sessions?.waitingRef))
+// Another machine's questions wait there, for a person there: said so, never "needs you".
+const waiting = computed(() => {
+  const n = props.sessions?.waiting ?? 0
+  if (!props.readOnly || n <= 0) return hostWaitingWords(n)
+  return n === 1 ? '1 question waits there' : `${n} questions wait there`
+})
+const waitingTo = computed(() => (props.readOnly ? undefined : waitingLink(props.sessions?.waiting, props.sessions?.waitingRef)))
 const decided = computed(() => hostDecisionWords(props.decisions?.open))
-const decidedTo = computed(() => waitingLink(props.decisions?.open, props.decisions?.waitingRef))
+const decidedTo = computed(() => (props.readOnly ? undefined : waitingLink(props.decisions?.open, props.decisions?.waitingRef)))
 </script>
 
 <template>
@@ -85,7 +93,7 @@ const decidedTo = computed(() => waitingLink(props.decisions?.open, props.decisi
             </ULink>
             <span v-else class="inline-flex items-center gap-1.5" data-host-decisions :data-count="decisions?.open">
               <StatusMark :status="needs" />
-              <span>{{ decided }}</span>
+              <span>{{ readOnly ? `${decided} there` : decided }}</span>
             </span>
           </template>
         </div>

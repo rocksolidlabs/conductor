@@ -10,6 +10,10 @@ import {
   holderWords,
   hostsReader,
   platformWords,
+  remoteRunView,
+  remoteSection,
+  remoteWords,
+  reportedWords,
   runRowView,
   serverRunLine,
   sessionWords,
@@ -21,8 +25,8 @@ import {
 import { clock } from './syncStatus'
 import { heldRunStatus } from './status'
 
-// The Hosts page's model (docs/plans/hosts.md, PR-3 and PR-4): the words it says, the order it draws, where its counts link, and the
-// reader that never draws a reply older than one drawn.
+// The Hosts page's model (docs/plans/hosts.md, PR-3 to PR-5): the words it says, the order it draws, where its counts link, the other
+// machines' section, and the reader that never draws a reply older than one drawn.
 
 const at = '2026-11-05T14:02:00Z'
 
@@ -49,6 +53,12 @@ describe("a machine's availability", () => {
     expect(hostAvailabilityWords('seen', at)).toBe(`Last seen ${clock(at)}`)
     expect(hostAvailabilityWords('away')).toBe('Away')
     expect(AVAILABILITY_ORDER).toEqual(['here', 'connected', 'away', 'seen'])
+  })
+
+  it("says another machine's as the time it last reported, never connected", () => {
+    expect(remoteWords(at)).toBe(`Last reported ${clock(at)}`)
+    expect(remoteWords(undefined)).toBe('Not reported yet')
+    expect(remoteWords(at)).not.toMatch(/connected|here|online/i)
   })
 
   it('sorts the cards connected, away, then seen, each by name', () => {
@@ -162,10 +172,39 @@ describe("a run's row", () => {
     expect(v.waitingLink).toBeUndefined()
   })
 
+  it("says another machine's run as reported, with no link and no holder", () => {
+    const v = remoteRunView({ id: 'team-0099', crew: 'nightly', state: 'running', waiting: 2, reportedBy: 'studio', reportedAt: at })
+    expect(v).toMatchObject({ title: 'nightly', waiting: '2 decisions wait there', holder: '', reported: `Reported by studio at ${clock(at)}` })
+    expect(v.link).toBeUndefined()
+    expect(v.waitingLink).toBeUndefined()
+    expect(reportedWords('studio', undefined)).toBe('Reported by studio')
+  })
+
   it("marks a run's state in the status language: running, paused, interrupted", () => {
     expect(heldRunStatus('running', false)).toMatchObject({ key: 'running', word: 'running' })
     expect(heldRunStatus('running', true)).toMatchObject({ key: 'waiting', word: 'paused' })
     expect(heldRunStatus('interrupted', false)).toMatchObject({ key: 'exited', word: 'interrupted, not yet continued' })
+  })
+})
+
+describe('the Other machines section (PR-5)', () => {
+  const machine = { device: 'dev-studio', name: 'studio', own: true, runs: [], decisions: { open: 0 } }
+  const other = (state: NonNullable<HostsReply['other']>['state'], since?: string, machines = [machine]) => ({ at, other: { state, since, machines, more: { machines: 0, remoteRuns: 0 } } })
+
+  it('draws nothing with no other field', () => {
+    expect(remoteSection({ at })).toEqual({ kind: 'none' })
+    expect(remoteSection(null)).toEqual({ kind: 'none' })
+  })
+
+  it("says the state's one line while other machines are not shown", () => {
+    expect(remoteSection(other('unreachable', '2026-11-05T14:00:00Z', []))).toEqual({ kind: 'line', words: `Other machines are not shown: the sync service has not answered since ${clock('2026-11-05T14:00:00Z')}` })
+    expect(remoteSection(other('lapsed', '2026-11-05T14:00:00Z', []))).toEqual({ kind: 'line', words: 'Other machines are not shown: the subscription has lapsed' })
+    expect(remoteSection(other('behind', '2026-11-05T13:40:00Z', []))).toMatchObject({ kind: 'line' })
+  })
+
+  it('shows the machines while current, or behind under its bound', () => {
+    expect(remoteSection(other('current'))).toMatchObject({ kind: 'shown', machines: [machine], more: 0 })
+    expect(remoteSection(other('behind', '2026-11-05T13:58:00Z'))).toMatchObject({ kind: 'shown' })
   })
 })
 

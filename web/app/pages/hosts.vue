@@ -9,6 +9,9 @@ import {
   hostsReader,
   moreWords,
   platformWords,
+  remoteRunView,
+  remoteSection,
+  remoteWords,
   runRowView,
   serverRunLine,
   sortHosts,
@@ -17,7 +20,7 @@ import { clock } from '~/utils/syncStatus'
 import { pageState } from '~/utils/pageState'
 import { sessionStatus } from '~/utils/status'
 
-// Hosts (docs/plans/hosts.md, PR-3 and PR-4): every machine this server knows, what runs and waits on each, and who holds this data
+// Hosts (docs/plans/hosts.md, PR-3 to PR-5): every machine this server knows, what runs and waits on each, and who holds this data
 // directory's managed runs, from GET /api/hosts. Read on open, again (at most once a second) on the session, removal and run events
 // the layout already streams, and every 30 s for the times it says; one read at a time, a reply older than one shown never drawn.
 // Its only actions are links: nothing here starts, moves, continues or retries work.
@@ -81,6 +84,7 @@ function listed(ids: readonly string[] | undefined) {
 
 const hosts = computed(() => sortHosts(reply.value?.hosts ?? []))
 const runs = computed(() => (reply.value ? reply.value.runs.map((r) => runRowView(r, reply.value!.ledger)) : []))
+const remote = computed(() => remoteSection(reply.value))
 const started = computed(() => clock(reply.value?.started))
 const ledgerNote = computed(() => (reply.value ? holderNote(reply.value.ledger.holder, reply.value.ledger.note) : ''))
 </script>
@@ -164,6 +168,45 @@ const ledgerNote = computed(() => (reply.value ? holderNote(reply.value.ledger.h
           </div>
           <p v-else class="rounded-md px-3 py-2 text-sm text-muted ring ring-default" data-hosts-none>No host reaches this server.</p>
           <p v-if="reply.more.hosts" class="mt-2 text-xs text-muted" data-hosts-more>{{ moreWords(reply.more.hosts, reply.more.hosts === 1 ? 'host' : 'hosts') }}</p>
+        </section>
+
+        <section v-if="remote.kind !== 'none'" aria-labelledby="hosts-other" data-hosts-section="other">
+          <h2 id="hosts-other" class="mb-2 text-[11px] font-semibold uppercase tracking-wider text-muted">Other machines</h2>
+          <p v-if="remote.kind === 'line'" class="rounded-md px-3 py-2 text-sm text-muted ring ring-default" data-hosts-other-line>{{ remote.words }}</p>
+          <template v-else>
+            <div v-if="remote.machines.length" class="grid gap-3 lg:grid-cols-2">
+              <HostCard
+                v-for="m in remote.machines"
+                :key="m.device"
+                kind="remote"
+                read-only
+                :host-key="m.device"
+                :name="m.name"
+                :platform="m.platform"
+                :version="m.version"
+                availability="reported"
+                :availability-words="remoteWords(m.lastReport)"
+                :sessions="m.summary?.sessions"
+                :decisions="m.decisions"
+              >
+                <div v-if="m.summary?.hosts.length" class="mt-3" data-host-summary>
+                  <p class="text-xs text-muted">Its hosts, as {{ m.name }} last saw them</p>
+                  <ul class="mt-1 flex flex-col gap-1">
+                    <li v-for="(sh, i) in m.summary.hosts" :key="`${sh.name}-${i}`" class="flex min-w-0 flex-wrap items-center gap-x-2 text-sm" data-host-summary-host>
+                      <span class="min-w-0 truncate text-highlighted">{{ sh.name }}</span>
+                      <span class="text-xs text-muted">{{ [platformWords(sh.platform), hostAvailabilityWords(sh.availability, sh.since)].filter(Boolean).join(' · ') }}</span>
+                    </li>
+                  </ul>
+                  <p v-if="m.summary.moreHosts" class="mt-1 text-xs text-muted">{{ moreWords(m.summary.moreHosts, m.summary.moreHosts === 1 ? 'host' : 'hosts') }}</p>
+                </div>
+                <ul v-if="m.runs.length" class="mt-3 flex flex-col gap-2" data-host-remote-runs>
+                  <HostRunRow v-for="r in m.runs" :key="r.id" :row="remoteRunView(r)" remote />
+                </ul>
+              </HostCard>
+            </div>
+            <p v-else class="rounded-md px-3 py-2 text-sm text-muted ring ring-default" data-hosts-other-none>The sync service names no other machine of this workspace.</p>
+            <p v-if="remote.more" class="mt-2 text-xs text-muted">{{ moreWords(remote.more, remote.more === 1 ? 'machine' : 'machines') }}</p>
+          </template>
         </section>
 
         <section v-if="reply.switchyard" aria-labelledby="hosts-switchyard" data-hosts-section="switchyard">
