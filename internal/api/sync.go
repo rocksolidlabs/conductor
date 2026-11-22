@@ -4,6 +4,7 @@ import (
 	"container/list"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -134,6 +135,96 @@ type syncAdapter struct {
 	// missing names the stores whose Open failed (unopened): a replay
 	// cannot list them, so none ends with `replayed`.
 	missing []string
+	// sources are the computed sources (computed), by store, registered
+	// before the drain begins and never changed after.
+	sources map[string]*computedSource
+}
+
+// computedSource is a store of documents no commit makes, built at
+// delivery (docs/plans/hosts.md, PR-5): its keys (what a replay lists),
+// its build, and its revisions, the source's own sequence in each epoch:
+// 1 for the first bytes handed to the sync store in an epoch, one more
+// each time it hands bytes that differ from the last it handed, so a
+// retry of the same bytes keeps its revision. start, when set, runs on a
+// goroutine of the server's own once the drain begins (its marks and
+// checks).
+type computedSource struct {
+	store string
+	paths func() []string
+	build func(ctx context.Context, path string) (body []byte, deleted bool, err error)
+	start func(ctx context.Context)
+
+	mu sync.Mutex
+	// epoch, seq, handed and acked are of the epoch last delivered in: the
+	// sequence, and by path the hash of the bytes last handed and last
+	// acknowledged.
+	epoch  string
+	seq    map[string]int64
+	handed map[string]string
+	acked  map[string]string
+}
+
+// errNotHanded is a build that has nothing it may hand on: the entry is
+// let go with nothing told.
+var errNotHanded = errors.New("sync: a computed document has nothing it may hand on")
+
+// rev is the revision of body (its hash h) handed for path in epoch.
+func (c *computedSource) rev(epoch, path, h string) int64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.epoch != epoch {
+		c.epoch, c.seq, c.handed, c.acked = epoch, map[string]int64{}, map[string]string{}, map[string]string{}
+	}
+	if seq, ok := c.seq[path]; !ok || c.handed[path] != h {
+		c.seq[path], c.handed[path] = seq+1, h
+	}
+	return c.seq[path]
+}
+
+// ack records the bytes of hash h acknowledged for path in epoch.
+func (c *computedSource) ack(epoch, path, h string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.epoch == epoch {
+		c.acked[path] = h
+	}
+}
+
+// delivered is the hash of the bytes last acknowledged for path in the
+// epoch last delivered in, "" for none.
+func (c *computedSource) delivered(path string) string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.acked[path]
+}
+
+// computed registers src, before the drain begins.
+func (a *syncAdapter) computed(src *computedSource) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.sources == nil {
+		a.sources = map[string]*computedSource{}
+	}
+	a.sources[src.store] = src
+}
+
+// computedChanged marks the computed document store/path pending, to be
+// built as it is at delivery. It takes the set's lock alone and never
+// builds or waits.
+func (a *syncAdapter) computedChanged(store, path string) {
+	a.mark(syncKey{store, path}, 0, nil)
+}
+
+// computedSources are the registered sources, in their stores' order.
+func (a *syncAdapter) computedSources() []*computedSource {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	out := make([]*computedSource, 0, len(a.sources))
+	for _, src := range a.sources {
+		out = append(out, src)
+	}
+	slices.SortFunc(out, func(x, y *computedSource) int { return strings.Compare(x.store, y.store) })
+	return out
 }
 
 // newSyncAdapter is an adapter with nothing pending over data (nil for a
@@ -336,6 +427,11 @@ func (a *syncAdapter) pending() (int, string) {
 func (a *syncAdapter) begin() {
 	ctx := a.s.extCtx
 	a.s.track(func() { a.run(ctx) })
+	for _, src := range a.computedSources() {
+		if src.start != nil {
+			a.s.track(func() { src.start(ctx) })
+		}
+	}
 }
 
 // run replays the whole state, then delivers what is pending, oldest
@@ -378,7 +474,7 @@ func (a *syncAdapter) run(ctx context.Context) {
 		if taken != nil {
 			taken(e)
 		}
-		if err := a.deliver(ctx, epoch, e); err != nil {
+		if err := a.deliver(ctx, epoch, e); err != nil && !errors.Is(err, errNotHanded) {
 			if !a.backoff(ctx, &delay) {
 				return
 			}
@@ -499,6 +595,15 @@ func (a *syncAdapter) replay(ctx context.Context) error {
 				break
 			}
 			after = page[len(page)-1].ID
+		}
+	}
+	// The computed sources' documents after the pointers, before
+	// Dispatch's log.
+	for _, src := range a.computedSources() {
+		for _, path := range src.paths() {
+			if !a.list(gen, syncKey{src.store, path}, 0) {
+				return nil
+			}
 		}
 	}
 	if a.s.dispatch != nil && !a.list(gen, syncKey{syncDispatch, syncLogPath}, 0) {
@@ -646,7 +751,52 @@ func (a *syncAdapter) deliver(ctx context.Context, epoch string, e syncEntry) er
 		d.Size = int64(len(d.Data))
 		return sy.Saved(ctx, d)
 	}
+	a.mu.Lock()
+	src := a.sources[e.key.store]
+	a.mu.Unlock()
+	if src != nil {
+		return a.deliverComputed(ctx, src, d)
+	}
 	return a.deliverData(ctx, d)
+}
+
+// deliverComputed builds src's document d names as it is now and hands it
+// to the sync store under the source's revision: a deleted build as a
+// delete, one with nothing it may hand on as nothing (errNotHanded).
+func (a *syncAdapter) deliverComputed(ctx context.Context, src *computedSource, d ext.Doc) error {
+	sy := a.s.exts.sync
+	body, deleted, err := src.build(ctx, d.Path)
+	if errors.Is(err, errNotHanded) {
+		return err
+	}
+	if err != nil {
+		a.warn("sync: a computed document could not be built; it is tried again", err)
+		return err
+	}
+	if deleted {
+		d.Rev = src.rev(d.Epoch, d.Path, "")
+		if err := sy.Deleted(ctx, d); err != nil {
+			return err
+		}
+		src.ack(d.Epoch, d.Path, "")
+		return nil
+	}
+	if len(body) > ext.MaxDocData {
+		return fmt.Errorf("sync: the computed document %s/%s is %d bytes", d.Store, d.Path, len(body))
+	}
+	h := docHash(body)
+	d.Rev, d.Data, d.Size = src.rev(d.Epoch, d.Path, h), body, int64(len(body))
+	if err := sy.Saved(ctx, d); err != nil {
+		return err
+	}
+	src.ack(d.Epoch, d.Path, h)
+	return nil
+}
+
+// docHash is the hex SHA-256 of b.
+func docHash(b []byte) string {
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
 }
 
 // deliverData hands the data document d names to the sync store: gone,

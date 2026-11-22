@@ -30,7 +30,7 @@ func TestFileDeny(t *testing.T) {
 	data, other := filepath.Join(dir, "data"), filepath.Join(dir, "store")
 	cfg, cat := filepath.Join(dir, "conductor.json"), filepath.Join(dir, "agents.json")
 	app := filepath.Join(dir, "mnt", "c", "Users", "me", "AppData", "Roaming", "conductor-desktop")
-	machine := []string{filepath.Join(home, ".conductor"), filepath.Join(home, ".local", "state", "conductor"), filepath.Join(home, ".local", "share", "conductor", "data"), filepath.Join(base, "conductor-desktop"), filepath.Join(base, "Conductor")}
+	machine := []string{filepath.Join(home, ".conductor"), filepath.Join(home, ".local", "state", "conductor"), filepath.Join(base, "conductor"), filepath.Join(home, ".local", "share", "conductor", "data"), filepath.Join(base, "conductor-desktop"), filepath.Join(base, "Conductor")}
 	var settings []string
 	for _, name := range []string{"conductor-desktop", "Conductor"} {
 		settings = append(settings, filepath.Join(base, name, "settings.json"), filepath.Join(base, name, "*settings.json*"))
@@ -191,7 +191,7 @@ func TestLocalFileDeny(t *testing.T) {
 	// under either name, in the user's configuration directory.
 	local := func(t *testing.T, home string) []string {
 		config := userConfigDir(t)
-		return []string{filepath.Join(home, ".conductor"), filepath.Join(home, ".local", "state", "conductor"), filepath.Join(home, ".local", "share", "conductor", "data"), filepath.Join(config, "conductor-desktop"), filepath.Join(config, "Conductor")}
+		return []string{filepath.Join(home, ".conductor"), filepath.Join(home, ".local", "state", "conductor"), filepath.Join(config, "conductor"), filepath.Join(home, ".local", "share", "conductor", "data"), filepath.Join(config, "conductor-desktop"), filepath.Join(config, "Conductor")}
 	}
 	// settings are the desktop app's settings files in config, each with
 	// the name entry beside it.
@@ -402,21 +402,24 @@ func TestLocalFileDeny(t *testing.T) {
 		t.Setenv("XDG_CONFIG_HOME", realTempDir(t))
 		config := userConfigDir(t)
 		app, renamed := filepath.Join(config, "conductor-desktop"), filepath.Join(config, "Conductor")
-		dirs := []string{filepath.Join(home, ".conductor"), filepath.Join(home, ".local", "state", "conductor"), filepath.Join(home, ".local", "share", "conductor", "data"), app, renamed}
+		// The machine's id: where this environment keeps it, and the
+		// default under the home a host without XDG_CONFIG_HOME keeps it in.
+		ids := machineDirs()
+		dirs := slices.Concat([]string{filepath.Join(home, ".conductor"), filepath.Join(home, ".local", "state", "conductor")}, ids, []string{filepath.Join(home, ".local", "share", "conductor", "data"), app, renamed})
 		base := slices.Concat(dirs, settings(config))
 		if got := deny(t, ""); !slices.Equal(got, base) {
 			t.Errorf("no settings: %q, want %q", got, base)
 		}
 		data := filepath.Join(realTempDir(t), "elsewhere")
 		writeFile(t, filepath.Join(app, "settings.json"), `{"dataDir":"`+data+`/","allowedRoots":["`+home+`"],"switchyardToken":"t","zoomLevel":0}`)
-		want := slices.Concat([]string{dirs[0], dirs[1], dirs[2], app, data, renamed}, settings(config))
+		want := slices.Concat(dirs[:2], ids, []string{filepath.Join(home, ".local", "share", "conductor", "data"), app, data, renamed}, settings(config))
 		if got := deny(t, ""); !slices.Equal(got, want) {
 			t.Errorf("settings naming a data directory: %q, want %q", got, want)
 		}
 		// The settings under the other name count too.
 		other := filepath.Join(realTempDir(t), "other")
 		writeFile(t, filepath.Join(renamed, "settings.json"), `{"dataDir":"`+other+`"}`)
-		if got, want := deny(t, ""), slices.Concat([]string{dirs[0], dirs[1], dirs[2], app, data, renamed, other}, settings(config)); !slices.Equal(got, want) {
+		if got, want := deny(t, ""), slices.Concat(dirs[:2], ids, []string{filepath.Join(home, ".local", "share", "conductor", "data"), app, data, renamed, other}, settings(config)); !slices.Equal(got, want) {
 			t.Errorf("settings under both names: %q", got)
 		}
 		os.Remove(filepath.Join(renamed, "settings.json"))

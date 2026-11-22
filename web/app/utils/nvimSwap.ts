@@ -1,4 +1,4 @@
-import type { NvimSwapChoice, NvimSwapInfo } from '~/utils/protocol'
+import type { NvimSwapChoice, NvimSwapInfo } from './protocol'
 
 /** What the editor shows of its Neovim: the mode, the command line, the last message, and a swap file found (recovered once its text was read in). */
 export interface NvimViewState {

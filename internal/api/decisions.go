@@ -892,6 +892,7 @@ type decisionEvent struct {
 // state a page reads again, dropped with a client that cannot keep up,
 // as a run event is.
 func (h *eventHub) decision(ev decisionEvent) {
+	h.changed()
 	b, err := json.Marshal(ev)
 	if err != nil || len(b) > maxDecisionEvent {
 		return

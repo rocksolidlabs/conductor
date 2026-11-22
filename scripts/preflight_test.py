@@ -112,6 +112,7 @@ class Steps(unittest.TestCase):
         # A step that only prepares for a CI-only job (an install) would make a receipt look
         # as if the job had run here.
         self.assertIn("mobile-ios", p.CI_ONLY_JOBS)
+        self.assertIn("mobile-android", p.CI_ONLY_JOBS)
         self.assertEqual({s["covers"] for s in p.LINUX_STEPS} & set(p.CI_ONLY_JOBS), set())
 
     def test_the_e2e_shards_cover_the_suite(self):

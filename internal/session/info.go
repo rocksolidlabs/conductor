@@ -25,6 +25,22 @@ const (
 	StatusHostDisconnected Status = "host_disconnected"
 )
 
+// What a hosted session's host key was made from (Info.HostKeyFrom): the
+// machine its host reported (proto.HostInfo.Machine), its host's process
+// (an instance, but no machine), or the session alone (neither, the oldest
+// hosts).
+const (
+	HostKeyMachine = "machine"
+	HostKeyProcess = "process"
+	HostKeySession = "session"
+)
+
+// A hosted session's control connection as it is (Info.HostLink).
+const (
+	HostLinkUp   = "up"
+	HostLinkDown = "down"
+)
+
 // Ended reports whether the process is gone for good.
 func (s Status) Ended() bool { return s == StatusExited || s == StatusStopped }
 
@@ -55,6 +71,28 @@ type Info struct {
 	HostName string   `json:"hostName,omitempty"`
 	// HostUser is the OS user running `conductor host` (hosted sessions).
 	HostUser string `json:"hostUser,omitempty"`
+	// HostPlatform and HostVersion are what a hosted session's host said of
+	// itself as it registered (proto.HostInfo's Platform and Version), each
+	// only in its form and omitted otherwise: a platform out of its form
+	// refuses the register, a version out of its form is not kept.
+	HostPlatform string `json:"hostPlatform,omitempty"`
+	HostVersion  string `json:"hostVersion,omitempty"`
+	// HostKey is the key a hosted session's machine is grouped by on this
+	// server's pages, 32 lowercase hex digits, and HostKeyFrom what it was
+	// made from (HostKeyMachine, HostKeyProcess or HostKeySession). A key a
+	// host sent is never kept or served, only a hash of it; a key made from
+	// a process or a session is hashed under another prefix and never equals
+	// a machine's. It groups what a page shows and decides nothing.
+	HostKey     string `json:"hostKey,omitempty"`
+	HostKeyFrom string `json:"hostKeyFrom,omitempty"`
+	// HostLink is a hosted session's control connection as it is, apart from
+	// its status: HostLinkUp while the session holds its host's connection,
+	// HostLinkDown once the host has gone; HostAwaySince is when it went, set
+	// exactly while HostLink is down. An ended session keeps its status when
+	// its host leaves, and a session its host came back to keeps the time it
+	// last left, so neither the status nor that time can say this.
+	HostLink      string     `json:"hostLink,omitempty"`
+	HostAwaySince *time.Time `json:"hostAwaySince,omitempty"`
 	// Branch is the git branch of Cwd when it is inside a repository.
 	Branch string `json:"branch,omitempty"`
 	// Crew names the crew run the session is a member of; nil for a session

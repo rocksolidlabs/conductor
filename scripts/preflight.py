@@ -48,9 +48,10 @@ RECEIPT_VERSION = 1
 # The order is CI's: the web build first, since the Go binary embeds it.
 GATE_JOBS = ("required-checks",)
 # CI_ONLY_JOBS are CI's alone: no machine preflight reaches can run them (the
-# phone shell's app needs Xcode and a simulator), and a receipt says so rather
-# than counting a step that only prepares for them (docs/checks.md).
-CI_ONLY_JOBS = ("mobile-ios",)
+# phone shell's iOS app needs Xcode and a simulator, its Android app the
+# Android SDK and an emulator), and a receipt says so rather than counting a
+# step that only prepares for them (docs/checks.md).
+CI_ONLY_JOBS = ("mobile-ios", "mobile-android")
 # The whole module's race tests, as make test and docs/checks.md run them and
 # as ci.yml's go-race job runs them in groups (scripts/go_test_groups.py, with
 # the same flags; preflight_test.py holds them to one bound). The bound catches a hang:
@@ -89,7 +90,7 @@ LINUX_STEPS = [
     # worktree starts without them.
     {"name": "desktop-install", "covers": "desktop-test", "argv": ["make", "desktop-install"]},
     # The phone shell's packages, for the notices (CI's go job installs them too); CI's
-    # mobile-ios job is CI's alone (CI_ONLY_JOBS).
+    # mobile-ios and mobile-android jobs are CI's alone (CI_ONLY_JOBS).
     {"name": "mobile-install", "covers": "go", "argv": ["make", "mobile-install"]},
     {"name": "notices", "covers": "go", "argv": ["python3", "scripts/notices.py", "--check"]},
     {"name": "vuln", "covers": "vuln", "argv": ["make", "vuln"]},

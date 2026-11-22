@@ -320,10 +320,14 @@ starting: no section and no line.
       for a host of its own machine. So its row and a host on the same
       machine hold one key, made by one function and compared as equal
       strings (I7).
-    - **Never to a switchyard.** A registration to a switchyard
-      (`Options.Switchyard`, and the uplink of a server publishing there)
-      leaves `machine` out, as it leaves out the OS user and the branch
-      today (`internal/hostagent/agent.go`, `registration`).
+    - **Never to a switchyard.** A host sends `machine` and `platform`
+      only when the upgrade carried a server key of the header's form,
+      which only the owner's own server sends, and never with
+      `Options.Switchyard` (the uplink of a server publishing there): a
+      `conductor host` pointed straight at a switchyard cannot tell it
+      from its own server, so the missing key is what keeps both out
+      (as built). A switchyard's hub keeps none of `machine`, `platform`
+      and `version`, whatever a host sends (`signal.Hub.Switchyard`).
     - **What the key does not prove.** A host holding a host token can
       send any key, and so put its sessions on another machine's card.
       The key groups what the page shows and decides nothing: each
@@ -363,14 +367,19 @@ starting: no section and no line.
     `internal/api` both use it (`internal/api` does not import
     `internal/hostagent`, and neither should for this);
     `docs/repository-map.md` gains its row.
-- `signal.Hub.Register` checks both at their bounds (a register past one
-  refused with `ErrBadRegister`, as `Name` and `User` are), keeps
-  `HostInfo.Version` (dropped today; at most 64 bytes, the pattern of
-  `version.Version`), and keys the session. `hostKey` is always 32
+- `signal.Hub.Register` checks `machine` at its form (a register with one
+  out of it refused with `ErrBadRegister`, as `Name` and `User` are); keeps
+  `platform` only in its form and `HostInfo.Version` (dropped before; at
+  most 64 bytes of `^[0-9A-Za-z][0-9A-Za-z.+_-]{0,63}$`, as built:
+  `version.Version` has no pattern) only in its, each out of its form not
+  kept and the register standing, so a later release that widens a form
+  still connects (as built); and keys the session. `hostKey` is always 32
   lowercase hex digits: `machine.Group(machine)` when the host reports
   one (`hostKeyFrom` `machine`), the function the server's own row's key
-  is made by; otherwise `ownerOf(instance)`, the 32-hex hash the hub
-  already keeps of the host's instance (`process`: one process); and for
+  is made by; otherwise a hash, under a prefix of its own, of
+  `ownerOf(instance)`, the 32-hex hash the hub already keeps of the host's
+  instance (`process`: one process; as built, the owner hash the hub
+  matches a return by is never served itself); and for
   the oldest hosts, which send no instance either (`Hub.Register` leaves
   `owner` empty), a hash of the session's own id (`session`), so two
   such hosts never share a key. The key the host sent is never served.
@@ -686,10 +695,11 @@ once per request; nothing is persisted.
     sessions by the predicate, not taken from it; the way MB0 drops the
     question item a record replaces
     (`TestADecisionRecordReplacesItsQuestion`).
-  - This server's `decisions`, `{"open": 1, "waitingRef": "…"}`: the
-    open decision records of the runs it lists with a `waiting` count
-    (holder `this`), by `current_run`; `null` for every other holder, as
-    those runs' `waiting` is. It sits beside `sessions.waiting`, which
+  - This server's `decisions`, `{"open": 1, "waitingRef": "…"}`: every
+    open decision record of its ledger while it holds the ledger (holder
+    `this`), a stopped run's among them, which can still be answered and
+    which Needs your decision lists, read in bounded pages; `null` for
+    every other holder, as those runs' `waiting` is. It sits beside `sessions.waiting`, which
     leaves out the mirrors by the same predicate. A hosted session's question
     stays a question (DR1: a managed run's attempts are server sessions,
     so no decision record is ever a host's).
@@ -724,7 +734,12 @@ once per request; nothing is persisted.
   (sessions running and waiting, runs held and waiting), and each host
   row's name, platform, version, availability, `since` and counts, at
   most 32 rows and 16 KiB (`ext.MaxHostSummary`), every count made by
-  PR-2's predicate and run list (I1, I8). Never a session's id,
+  PR-2's predicate and run list (I1, I8). As built, it also says how
+  many of the server's hosts its list leaves out (`more`, 0 to
+  1,000,000, absent when 0): the rows past the 32, the rows left out to
+  fit 16 KiB, and the rows whose name the summary's rules refuse (a
+  path, a login, an address or an id), so a cut list says it was cut and
+  one such name never costs the whole summary. Never a session's id,
   command, folder, branch, a run's name or anything a terminal printed;
   never the OS user, the machine id or a machine key. Its type is
   `ext.HostSummary` (standard library only, with a `Valid` method, as

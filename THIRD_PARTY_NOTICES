@@ -248,6 +248,8 @@ The desktop app: Electron and its packages
 
 The phone shell (mobile/): the native runtime's packages
 --------------------------------------------------------
+  @capacitor/android 8.6.0                                 MIT
+    (the Android app's Capacitor library, built by Gradle from this package)
   @capacitor/app 8.1.2                                     MIT
   @capacitor/browser 8.0.5                                 MIT
   @capacitor/core 8.6.0                                    MIT
@@ -255,6 +257,107 @@ The phone shell (mobile/): the native runtime's packages
     (the app's Capacitor and Cordova frameworks, fetched by the Swift Package Manager from its capacitor-swift-pm at the same version)
   @capacitor/push-notifications 8.1.3                      MIT
   tslib 2.9.1                                              0BSD
+
+The phone shell's Android app (mobile/android): every package its release build carries, as Gradle resolves them
+----------------------------------------------------------------------------------------------------------------
+  androidx.activity:activity 1.11.0                        Apache-2.0
+  androidx.annotation:annotation 1.8.1                     Apache-2.0
+  androidx.annotation:annotation-experimental 1.4.1        Apache-2.0
+  androidx.annotation:annotation-jvm 1.8.1                 Apache-2.0
+  androidx.appcompat:appcompat 1.7.1                       Apache-2.0
+  androidx.appcompat:appcompat-resources 1.7.1             Apache-2.0
+  androidx.arch.core:core-common 2.2.0                     Apache-2.0
+  androidx.arch.core:core-runtime 2.2.0                    Apache-2.0
+  androidx.biometric:biometric 1.1.0                       Apache-2.0
+  androidx.browser:browser 1.9.0                           Apache-2.0
+  androidx.collection:collection 1.4.2                     Apache-2.0
+  androidx.collection:collection-jvm 1.4.2                 Apache-2.0
+  androidx.concurrent:concurrent-futures 1.1.0             Apache-2.0
+  androidx.coordinatorlayout:coordinatorlayout 1.3.0       Apache-2.0
+  androidx.core:core 1.17.0                                Apache-2.0
+  androidx.core:core-ktx 1.17.0                            Apache-2.0
+  androidx.core:core-splashscreen 1.2.0                    Apache-2.0
+  androidx.core:core-viewtree 1.0.0                        Apache-2.0
+  androidx.cursoradapter:cursoradapter 1.0.0               Apache-2.0
+  androidx.customview:customview 1.0.0                     Apache-2.0
+  androidx.datastore:datastore 1.1.7                       Apache-2.0
+  androidx.datastore:datastore-android 1.1.7               Apache-2.0
+  androidx.datastore:datastore-core 1.1.7                  Apache-2.0
+  androidx.datastore:datastore-core-android 1.1.7          Apache-2.0
+  androidx.datastore:datastore-core-okio 1.1.7             Apache-2.0
+  androidx.datastore:datastore-core-okio-jvm 1.1.7         Apache-2.0
+  androidx.datastore:datastore-preferences 1.1.7           Apache-2.0
+  androidx.datastore:datastore-preferences-android 1.1.7   Apache-2.0
+  androidx.datastore:datastore-preferences-core 1.1.7      Apache-2.0
+  androidx.datastore:datastore-preferences-core-android 1.1.7 Apache-2.0
+  androidx.datastore:datastore-preferences-external-protobuf 1.1.7 BSD-3-Clause
+  androidx.datastore:datastore-preferences-proto 1.1.7     Apache-2.0
+  androidx.documentfile:documentfile 1.0.0                 Apache-2.0
+  androidx.drawerlayout:drawerlayout 1.0.0                 Apache-2.0
+  androidx.emoji2:emoji2 1.3.0                             Apache-2.0
+  androidx.emoji2:emoji2-views-helper 1.3.0                Apache-2.0
+  androidx.fragment:fragment 1.8.9                         Apache-2.0
+  androidx.interpolator:interpolator 1.0.0                 Apache-2.0
+  androidx.legacy:legacy-support-core-utils 1.0.0          Apache-2.0
+  androidx.lifecycle:lifecycle-common 2.6.2                Apache-2.0
+  androidx.lifecycle:lifecycle-livedata 2.6.2              Apache-2.0
+  androidx.lifecycle:lifecycle-livedata-core 2.6.2         Apache-2.0
+  androidx.lifecycle:lifecycle-process 2.6.2               Apache-2.0
+  androidx.lifecycle:lifecycle-runtime 2.6.2               Apache-2.0
+  androidx.lifecycle:lifecycle-viewmodel 2.6.2             Apache-2.0
+  androidx.lifecycle:lifecycle-viewmodel-savedstate 2.6.2  Apache-2.0
+  androidx.loader:loader 1.0.0                             Apache-2.0
+  androidx.localbroadcastmanager:localbroadcastmanager 1.0.0 Apache-2.0
+  androidx.print:print 1.0.0                               Apache-2.0
+  androidx.profileinstaller:profileinstaller 1.4.0         Apache-2.0
+  androidx.resourceinspection:resourceinspection-annotation 1.0.1 Apache-2.0
+  androidx.savedstate:savedstate 1.2.1                     Apache-2.0
+  androidx.startup:startup-runtime 1.1.1                   Apache-2.0
+  androidx.tracing:tracing 1.2.0                           Apache-2.0
+  androidx.vectordrawable:vectordrawable 1.1.0             Apache-2.0
+  androidx.vectordrawable:vectordrawable-animated 1.1.0    Apache-2.0
+  androidx.versionedparcelable:versionedparcelable 1.1.1   Apache-2.0
+  androidx.viewpager:viewpager 1.0.0                       Apache-2.0
+  androidx.webkit:webkit 1.14.0                            Apache-2.0
+  com.google.android.datatransport:transport-api 3.1.0     Apache-2.0
+  com.google.android.datatransport:transport-backend-cct 3.1.9 Apache-2.0
+  com.google.android.datatransport:transport-runtime 3.1.9 Apache-2.0
+  com.google.android.gms:play-services-base 18.1.0         Android Software Development Kit License
+  com.google.android.gms:play-services-basement 18.3.0     Android Software Development Kit License
+  com.google.android.gms:play-services-cloud-messaging 17.2.0 Android Software Development Kit License
+  com.google.android.gms:play-services-stats 17.0.2        Android Software Development Kit License
+  com.google.android.gms:play-services-tasks 18.1.0        Android Software Development Kit License
+  com.google.errorprone:error_prone_annotations 2.26.0     Apache-2.0
+  com.google.firebase:firebase-annotations 17.0.0          Apache-2.0
+  com.google.firebase:firebase-common 22.0.1               Apache-2.0
+  com.google.firebase:firebase-components 19.0.0           Apache-2.0
+  com.google.firebase:firebase-datatransport 18.2.0        Apache-2.0
+  com.google.firebase:firebase-encoders 17.0.0             Apache-2.0
+  com.google.firebase:firebase-encoders-json 18.0.0        Apache-2.0
+  com.google.firebase:firebase-encoders-proto 16.0.0       Apache-2.0
+  com.google.firebase:firebase-iid-interop 17.1.0          Android Software Development Kit License
+  com.google.firebase:firebase-installations 18.0.0        Apache-2.0
+  com.google.firebase:firebase-installations-interop 17.1.1 Apache-2.0
+  com.google.firebase:firebase-measurement-connector 19.0.0 Android Software Development Kit License
+  com.google.firebase:firebase-messaging 25.0.1            Apache-2.0
+  com.google.guava:listenablefuture 1.0                    Apache-2.0
+  com.squareup.okio:okio 3.4.0                             Apache-2.0
+  com.squareup.okio:okio-jvm 3.4.0                         Apache-2.0
+  javax.inject:javax.inject 1                              Apache-2.0
+  org.apache.cordova:framework 14.0.1                      Apache-2.0
+  org.bouncycastle:bcprov-jdk18on 1.82                     MIT (Bouncy Castle Licence)
+  org.jetbrains.kotlin:kotlin-android-extensions-runtime 1.9.22 Apache-2.0
+  org.jetbrains.kotlin:kotlin-parcelize-runtime 1.9.22     Apache-2.0
+  org.jetbrains.kotlin:kotlin-stdlib 2.2.20                Apache-2.0
+  org.jetbrains.kotlin:kotlin-stdlib-jdk7 1.8.0            Apache-2.0
+  org.jetbrains.kotlin:kotlin-stdlib-jdk8 1.8.0            Apache-2.0
+  org.jetbrains.kotlinx:kotlinx-coroutines-android 1.9.0   Apache-2.0
+  org.jetbrains.kotlinx:kotlinx-coroutines-bom 1.9.0       Apache-2.0
+  org.jetbrains.kotlinx:kotlinx-coroutines-core 1.9.0      Apache-2.0
+  org.jetbrains.kotlinx:kotlinx-coroutines-core-jvm 1.9.0  Apache-2.0
+  org.jetbrains.kotlinx:kotlinx-coroutines-play-services 1.9.0 Apache-2.0
+  org.jetbrains:annotations 23.0.0                         Apache-2.0
+  org.jspecify:jspecify 1.0.0                              Apache-2.0
 
 ==============================================================================
 Go (the standard library and runtime) go1.26.11
@@ -28284,6 +28387,42 @@ IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ==============================================================================
+@capacitor/android 8.6.0
+==============================================================================
+
+--- LICENSE
+
+MIT License
+
+Copyright (c) 2017-present Drifty Co.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+--- Apache Cordova's NOTICE (its Android framework, built into the app, Apache-2.0)
+
+Apache Cordova
+Copyright 2015-2020 The Apache Software Foundation
+
+This product includes software developed at
+The Apache Software Foundation (http://www.apache.org/).
+
+==============================================================================
 @capacitor/app 8.1.2
 ==============================================================================
 
@@ -28327,27 +28466,7 @@ The same text as @capacitor/app 8.1.2's above.
 
 --- LICENSE
 
-MIT License
-
-Copyright (c) 2017-present Drifty Co.
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+The same text as @capacitor/android 8.6.0's above.
 
 ==============================================================================
 @capacitor/ios 8.6.0
@@ -28355,7 +28474,7 @@ SOFTWARE.
 
 --- LICENSE
 
-The same text as @capacitor/core 8.6.0's above.
+The same text as @capacitor/android 8.6.0's above.
 
 --- Apache Cordova's NOTICE (its iOS classes, compiled into the Cordova framework, Apache-2.0)
 
@@ -28391,3 +28510,834 @@ INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM
 LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR
 OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
 PERFORMANCE OF THIS SOFTWARE.
+
+==============================================================================
+androidx.activity:activity 1.11.0
+==============================================================================
+
+--- LICENSE
+
+The same text as github.com/go-jose/go-jose/v4 v4.1.5's above.
+
+==============================================================================
+androidx.annotation:annotation 1.8.1
+==============================================================================
+
+--- LICENSE
+
+The same text as github.com/go-jose/go-jose/v4 v4.1.5's above.
+
+==============================================================================
+androidx.annotation:annotation-experimental 1.4.1
+==============================================================================
+
+--- LICENSE
+
+The same text as github.com/go-jose/go-jose/v4 v4.1.5's above.
+
+==============================================================================
+androidx.annotation:annotation-jvm 1.8.1
+==============================================================================
+
+--- LICENSE
+
+The same text as github.com/go-jose/go-jose/v4 v4.1.5's above.
+
+==============================================================================
+androidx.appcompat:appcompat 1.7.1
+==============================================================================
+
+--- LICENSE
+
+The same text as github.com/go-jose/go-jose/v4 v4.1.5's above.
+
+==============================================================================
+androidx.appcompat:appcompat-resources 1.7.1
+==============================================================================
+
+--- LICENSE
+
+The same text as github.com/go-jose/go-jose/v4 v4.1.5's above.
+
+==============================================================================
+androidx.arch.core:core-common 2.2.0
+==============================================================================
+
+--- LICENSE
+
+The same text as github.com/go-jose/go-jose/v4 v4.1.5's above.
+
+==============================================================================
+androidx.arch.core:core-runtime 2.2.0
+==============================================================================
+
+--- LICENSE
+
+The same text as github.com/go-jose/go-jose/v4 v4.1.5's above.
+
+==============================================================================
+androidx.biometric:biometric 1.1.0
+==============================================================================
+
+--- LICENSE
+
+The same text as github.com/go-jose/go-jose/v4 v4.1.5's above.
+
+==============================================================================
+androidx.browser:browser 1.9.0
+==============================================================================
+
+--- LICENSE
+
+The same text as github.com/go-jose/go-jose/v4 v4.1.5's above.
+
+==============================================================================
+androidx.collection:collection 1.4.2
+==============================================================================
+
+--- LICENSE
+
+The same text as github.com/go-jose/go-jose/v4 v4.1.5's above.
+
+==============================================================================
+androidx.collection:collection-jvm 1.4.2
+==============================================================================
+
+--- LICENSE
+
+The same text as github.com/go-jose/go-jose/v4 v4.1.5's above.
+
+==============================================================================
+androidx.concurrent:concurrent-futures 1.1.0
+==============================================================================
+
+--- LICENSE
+
+The same text as github.com/go-jose/go-jose/v4 v4.1.5's above.
+
+==============================================================================
+androidx.coordinatorlayout:coordinatorlayout 1.3.0
+==============================================================================
+
+--- LICENSE
+
+The same text as github.com/go-jose/go-jose/v4 v4.1.5's above.
+
+==============================================================================
+androidx.core:core 1.17.0
+==============================================================================
+
+--- LICENSE
+
+The same text as github.com/go-jose/go-jose/v4 v4.1.5's above.
+
+==============================================================================
+androidx.core:core-ktx 1.17.0
+==============================================================================
+
+--- LICENSE
+
+The same text as github.com/go-jose/go-jose/v4 v4.1.5's above.
+
+==============================================================================
+androidx.core:core-splashscreen 1.2.0
+==============================================================================
+
+--- LICENSE
+
+The same text as github.com/go-jose/go-jose/v4 v4.1.5's above.
+
+==============================================================================
+androidx.core:core-viewtree 1.0.0
+==============================================================================
+
+--- LICENSE
+
+The same text as github.com/go-jose/go-jose/v4 v4.1.5's above.
+
+==============================================================================
+androidx.cursoradapter:cursoradapter 1.0.0
+==============================================================================
+
+--- LICENSE
+
+The same text as github.com/go-jose/go-jose/v4 v4.1.5's above.
+
+==============================================================================
+androidx.customview:customview 1.0.0
+==============================================================================
+
+--- LICENSE
+
+The same text as github.com/go-jose/go-jose/v4 v4.1.5's above.
+
+==============================================================================
+androidx.datastore:datastore 1.1.7
+==============================================================================
+
+--- LICENSE
+
+The same text as github.com/go-jose/go-jose/v4 v4.1.5's above.
+
+==============================================================================
+androidx.datastore:datastore-android 1.1.7
+==============================================================================
+
+--- LICENSE
+
+The same text as github.com/go-jose/go-jose/v4 v4.1.5's above.
+
+==============================================================================
+androidx.datastore:datastore-core 1.1.7
+==============================================================================
+
+--- LICENSE
+
+The same text as github.com/go-jose/go-jose/v4 v4.1.5's above.
+
+==============================================================================
+androidx.datastore:datastore-core-android 1.1.7
+==============================================================================
+
+--- LICENSE
+
+The same text as github.com/go-jose/go-jose/v4 v4.1.5's above.
+
+==============================================================================
+androidx.datastore:datastore-core-okio 1.1.7
+==============================================================================
+
+--- LICENSE
+
+The same text as github.com/go-jose/go-jose/v4 v4.1.5's above.
+
+==============================================================================
+androidx.datastore:datastore-core-okio-jvm 1.1.7
+==============================================================================
+
+--- LICENSE
+
+The same text as github.com/go-jose/go-jose/v4 v4.1.5's above.
+
+==============================================================================
+androidx.datastore:datastore-preferences 1.1.7
+==============================================================================
+
+--- LICENSE
+
+The same text as github.com/go-jose/go-jose/v4 v4.1.5's above.
+
+==============================================================================
+androidx.datastore:datastore-preferences-android 1.1.7
+==============================================================================
+
+--- LICENSE
+
+The same text as github.com/go-jose/go-jose/v4 v4.1.5's above.
+
+==============================================================================
+androidx.datastore:datastore-preferences-core 1.1.7
+==============================================================================
+
+--- LICENSE
+
+The same text as github.com/go-jose/go-jose/v4 v4.1.5's above.
+
+==============================================================================
+androidx.datastore:datastore-preferences-core-android 1.1.7
+==============================================================================
+
+--- LICENSE
+
+The same text as github.com/go-jose/go-jose/v4 v4.1.5's above.
+
+==============================================================================
+androidx.datastore:datastore-preferences-external-protobuf 1.1.7
+==============================================================================
+
+--- LICENSE
+
+Copyright 2008 Google Inc.  All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are
+met:
+
+    * Redistributions of source code must retain the above copyright
+notice, this list of conditions and the following disclaimer.
+    * Redistributions in binary form must reproduce the above
+copyright notice, this list of conditions and the following disclaimer
+in the documentation and/or other materials provided with the
+distribution.
+    * Neither the name of Google Inc. nor the names of its
+contributors may be used to endorse or promote products derived from
+this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+Code generated by the Protocol Buffer compiler is owned by the owner
+of the input file used when generating it.  This code is not
+standalone and requires a support library to be linked with it.  This
+support library is itself covered by the above license.
+
+==============================================================================
+androidx.datastore:datastore-preferences-proto 1.1.7
+==============================================================================
+
+--- LICENSE
+
+The same text as github.com/go-jose/go-jose/v4 v4.1.5's above.
+
+==============================================================================
+androidx.documentfile:documentfile 1.0.0
+==============================================================================
+
+--- LICENSE
+
+The same text as github.com/go-jose/go-jose/v4 v4.1.5's above.
+
+==============================================================================
+androidx.drawerlayout:drawerlayout 1.0.0
+==============================================================================
+
+--- LICENSE
+
+The same text as github.com/go-jose/go-jose/v4 v4.1.5's above.
+
+==============================================================================
+androidx.emoji2:emoji2 1.3.0
+==============================================================================
+
+--- LICENSE
+
+The same text as github.com/go-jose/go-jose/v4 v4.1.5's above.
+
+==============================================================================
+androidx.emoji2:emoji2-views-helper 1.3.0
+==============================================================================
+
+--- LICENSE
+
+The same text as github.com/go-jose/go-jose/v4 v4.1.5's above.
+
+==============================================================================
+androidx.fragment:fragment 1.8.9
+==============================================================================
+
+--- LICENSE
+
+The same text as github.com/go-jose/go-jose/v4 v4.1.5's above.
+
+==============================================================================
+androidx.interpolator:interpolator 1.0.0
+==============================================================================
+
+--- LICENSE
+
+The same text as github.com/go-jose/go-jose/v4 v4.1.5's above.
+
+==============================================================================
+androidx.legacy:legacy-support-core-utils 1.0.0
+==============================================================================
+
+--- LICENSE
+
+The same text as github.com/go-jose/go-jose/v4 v4.1.5's above.
+
+==============================================================================
+androidx.lifecycle:lifecycle-common 2.6.2
+==============================================================================
+
+--- LICENSE
+
+The same text as github.com/go-jose/go-jose/v4 v4.1.5's above.
+
+==============================================================================
+androidx.lifecycle:lifecycle-livedata 2.6.2
+==============================================================================
+
+--- LICENSE
+
+The same text as github.com/go-jose/go-jose/v4 v4.1.5's above.
+
+==============================================================================
+androidx.lifecycle:lifecycle-livedata-core 2.6.2
+==============================================================================
+
+--- LICENSE
+
+The same text as github.com/go-jose/go-jose/v4 v4.1.5's above.
+
+==============================================================================
+androidx.lifecycle:lifecycle-process 2.6.2
+==============================================================================
+
+--- LICENSE
+
+The same text as github.com/go-jose/go-jose/v4 v4.1.5's above.
+
+==============================================================================
+androidx.lifecycle:lifecycle-runtime 2.6.2
+==============================================================================
+
+--- LICENSE
+
+The same text as github.com/go-jose/go-jose/v4 v4.1.5's above.
+
+==============================================================================
+androidx.lifecycle:lifecycle-viewmodel 2.6.2
+==============================================================================
+
+--- LICENSE
+
+The same text as github.com/go-jose/go-jose/v4 v4.1.5's above.
+
+==============================================================================
+androidx.lifecycle:lifecycle-viewmodel-savedstate 2.6.2
+==============================================================================
+
+--- LICENSE
+
+The same text as github.com/go-jose/go-jose/v4 v4.1.5's above.
+
+==============================================================================
+androidx.loader:loader 1.0.0
+==============================================================================
+
+--- LICENSE
+
+The same text as github.com/go-jose/go-jose/v4 v4.1.5's above.
+
+==============================================================================
+androidx.localbroadcastmanager:localbroadcastmanager 1.0.0
+==============================================================================
+
+--- LICENSE
+
+The same text as github.com/go-jose/go-jose/v4 v4.1.5's above.
+
+==============================================================================
+androidx.print:print 1.0.0
+==============================================================================
+
+--- LICENSE
+
+The same text as github.com/go-jose/go-jose/v4 v4.1.5's above.
+
+==============================================================================
+androidx.profileinstaller:profileinstaller 1.4.0
+==============================================================================
+
+--- LICENSE
+
+The same text as github.com/go-jose/go-jose/v4 v4.1.5's above.
+
+==============================================================================
+androidx.resourceinspection:resourceinspection-annotation 1.0.1
+==============================================================================
+
+--- LICENSE
+
+The same text as github.com/go-jose/go-jose/v4 v4.1.5's above.
+
+==============================================================================
+androidx.savedstate:savedstate 1.2.1
+==============================================================================
+
+--- LICENSE
+
+The same text as github.com/go-jose/go-jose/v4 v4.1.5's above.
+
+==============================================================================
+androidx.startup:startup-runtime 1.1.1
+==============================================================================
+
+--- LICENSE
+
+The same text as github.com/go-jose/go-jose/v4 v4.1.5's above.
+
+==============================================================================
+androidx.tracing:tracing 1.2.0
+==============================================================================
+
+--- LICENSE
+
+The same text as github.com/go-jose/go-jose/v4 v4.1.5's above.
+
+==============================================================================
+androidx.vectordrawable:vectordrawable 1.1.0
+==============================================================================
+
+--- LICENSE
+
+The same text as github.com/go-jose/go-jose/v4 v4.1.5's above.
+
+==============================================================================
+androidx.vectordrawable:vectordrawable-animated 1.1.0
+==============================================================================
+
+--- LICENSE
+
+The same text as github.com/go-jose/go-jose/v4 v4.1.5's above.
+
+==============================================================================
+androidx.versionedparcelable:versionedparcelable 1.1.1
+==============================================================================
+
+--- LICENSE
+
+The same text as github.com/go-jose/go-jose/v4 v4.1.5's above.
+
+==============================================================================
+androidx.viewpager:viewpager 1.0.0
+==============================================================================
+
+--- LICENSE
+
+The same text as github.com/go-jose/go-jose/v4 v4.1.5's above.
+
+==============================================================================
+androidx.webkit:webkit 1.14.0
+==============================================================================
+
+--- LICENSE
+
+The same text as github.com/go-jose/go-jose/v4 v4.1.5's above.
+
+==============================================================================
+com.google.android.datatransport:transport-api 3.1.0
+==============================================================================
+
+--- LICENSE
+
+The same text as github.com/go-jose/go-jose/v4 v4.1.5's above.
+
+==============================================================================
+com.google.android.datatransport:transport-backend-cct 3.1.9
+==============================================================================
+
+--- LICENSE
+
+The same text as github.com/go-jose/go-jose/v4 v4.1.5's above.
+
+==============================================================================
+com.google.android.datatransport:transport-runtime 3.1.9
+==============================================================================
+
+--- LICENSE
+
+The same text as github.com/go-jose/go-jose/v4 v4.1.5's above.
+
+==============================================================================
+com.google.android.gms:play-services-base 18.1.0
+==============================================================================
+
+--- LICENSE
+
+Its POM names: Android Software Development Kit License <https://developer.android.com/studio/terms.html>. The licence's text is its owner's, at that address; it is not copied here.
+
+==============================================================================
+com.google.android.gms:play-services-basement 18.3.0
+==============================================================================
+
+--- LICENSE
+
+The same text as com.google.android.gms:play-services-base 18.1.0's above.
+
+==============================================================================
+com.google.android.gms:play-services-cloud-messaging 17.2.0
+==============================================================================
+
+--- LICENSE
+
+The same text as com.google.android.gms:play-services-base 18.1.0's above.
+
+==============================================================================
+com.google.android.gms:play-services-stats 17.0.2
+==============================================================================
+
+--- LICENSE
+
+The same text as com.google.android.gms:play-services-base 18.1.0's above.
+
+==============================================================================
+com.google.android.gms:play-services-tasks 18.1.0
+==============================================================================
+
+--- LICENSE
+
+The same text as com.google.android.gms:play-services-base 18.1.0's above.
+
+==============================================================================
+com.google.errorprone:error_prone_annotations 2.26.0
+==============================================================================
+
+--- LICENSE
+
+The same text as github.com/go-jose/go-jose/v4 v4.1.5's above.
+
+==============================================================================
+com.google.firebase:firebase-annotations 17.0.0
+==============================================================================
+
+--- LICENSE
+
+The same text as github.com/go-jose/go-jose/v4 v4.1.5's above.
+
+==============================================================================
+com.google.firebase:firebase-common 22.0.1
+==============================================================================
+
+--- LICENSE
+
+The same text as github.com/go-jose/go-jose/v4 v4.1.5's above.
+
+==============================================================================
+com.google.firebase:firebase-components 19.0.0
+==============================================================================
+
+--- LICENSE
+
+The same text as github.com/go-jose/go-jose/v4 v4.1.5's above.
+
+==============================================================================
+com.google.firebase:firebase-datatransport 18.2.0
+==============================================================================
+
+--- LICENSE
+
+The same text as github.com/go-jose/go-jose/v4 v4.1.5's above.
+
+==============================================================================
+com.google.firebase:firebase-encoders 17.0.0
+==============================================================================
+
+--- LICENSE
+
+The same text as github.com/go-jose/go-jose/v4 v4.1.5's above.
+
+==============================================================================
+com.google.firebase:firebase-encoders-json 18.0.0
+==============================================================================
+
+--- LICENSE
+
+The same text as github.com/go-jose/go-jose/v4 v4.1.5's above.
+
+==============================================================================
+com.google.firebase:firebase-encoders-proto 16.0.0
+==============================================================================
+
+--- LICENSE
+
+The same text as github.com/go-jose/go-jose/v4 v4.1.5's above.
+
+==============================================================================
+com.google.firebase:firebase-iid-interop 17.1.0
+==============================================================================
+
+--- LICENSE
+
+The same text as com.google.android.gms:play-services-base 18.1.0's above.
+
+==============================================================================
+com.google.firebase:firebase-installations 18.0.0
+==============================================================================
+
+--- LICENSE
+
+The same text as github.com/go-jose/go-jose/v4 v4.1.5's above.
+
+==============================================================================
+com.google.firebase:firebase-installations-interop 17.1.1
+==============================================================================
+
+--- LICENSE
+
+The same text as github.com/go-jose/go-jose/v4 v4.1.5's above.
+
+==============================================================================
+com.google.firebase:firebase-measurement-connector 19.0.0
+==============================================================================
+
+--- LICENSE
+
+The same text as com.google.android.gms:play-services-base 18.1.0's above.
+
+==============================================================================
+com.google.firebase:firebase-messaging 25.0.1
+==============================================================================
+
+--- LICENSE
+
+The same text as github.com/go-jose/go-jose/v4 v4.1.5's above.
+
+==============================================================================
+com.google.guava:listenablefuture 1.0
+==============================================================================
+
+--- LICENSE
+
+The same text as github.com/go-jose/go-jose/v4 v4.1.5's above.
+
+==============================================================================
+com.squareup.okio:okio 3.4.0
+==============================================================================
+
+--- LICENSE
+
+The same text as github.com/go-jose/go-jose/v4 v4.1.5's above.
+
+==============================================================================
+com.squareup.okio:okio-jvm 3.4.0
+==============================================================================
+
+--- LICENSE
+
+The same text as github.com/go-jose/go-jose/v4 v4.1.5's above.
+
+==============================================================================
+javax.inject:javax.inject 1
+==============================================================================
+
+--- LICENSE
+
+The same text as github.com/go-jose/go-jose/v4 v4.1.5's above.
+
+==============================================================================
+org.apache.cordova:framework 14.0.1
+==============================================================================
+
+--- LICENSE
+
+The same text as github.com/go-jose/go-jose/v4 v4.1.5's above.
+
+--- Apache Cordova's NOTICE (its Android framework, built into the app, Apache-2.0)
+
+The same text as @capacitor/android 8.6.0's above.
+
+==============================================================================
+org.bouncycastle:bcprov-jdk18on 1.82
+==============================================================================
+
+--- LICENSE
+
+Copyright (c) 2000-2024 The Legion of the Bouncy Castle Inc. (https://www.bouncycastle.org).
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and
+associated documentation files (the "Software"), to deal in the Software without restriction,
+including without limitation the rights to use, copy, modify, merge, publish, distribute,
+sub license, and/or sell copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions: The above copyright notice and this
+permission notice shall be included in all copies or substantial portions of the Software.
+
+**THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT
+NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
+DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT
+OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.**
+
+==============================================================================
+org.jetbrains.kotlin:kotlin-android-extensions-runtime 1.9.22
+==============================================================================
+
+--- LICENSE
+
+The same text as github.com/go-jose/go-jose/v4 v4.1.5's above.
+
+==============================================================================
+org.jetbrains.kotlin:kotlin-parcelize-runtime 1.9.22
+==============================================================================
+
+--- LICENSE
+
+The same text as github.com/go-jose/go-jose/v4 v4.1.5's above.
+
+==============================================================================
+org.jetbrains.kotlin:kotlin-stdlib 2.2.20
+==============================================================================
+
+--- LICENSE
+
+The same text as github.com/go-jose/go-jose/v4 v4.1.5's above.
+
+==============================================================================
+org.jetbrains.kotlin:kotlin-stdlib-jdk7 1.8.0
+==============================================================================
+
+--- LICENSE
+
+The same text as github.com/go-jose/go-jose/v4 v4.1.5's above.
+
+==============================================================================
+org.jetbrains.kotlin:kotlin-stdlib-jdk8 1.8.0
+==============================================================================
+
+--- LICENSE
+
+The same text as github.com/go-jose/go-jose/v4 v4.1.5's above.
+
+==============================================================================
+org.jetbrains.kotlinx:kotlinx-coroutines-android 1.9.0
+==============================================================================
+
+--- LICENSE
+
+The same text as github.com/go-jose/go-jose/v4 v4.1.5's above.
+
+==============================================================================
+org.jetbrains.kotlinx:kotlinx-coroutines-bom 1.9.0
+==============================================================================
+
+--- LICENSE
+
+The same text as github.com/go-jose/go-jose/v4 v4.1.5's above.
+
+==============================================================================
+org.jetbrains.kotlinx:kotlinx-coroutines-core 1.9.0
+==============================================================================
+
+--- LICENSE
+
+The same text as github.com/go-jose/go-jose/v4 v4.1.5's above.
+
+==============================================================================
+org.jetbrains.kotlinx:kotlinx-coroutines-core-jvm 1.9.0
+==============================================================================
+
+--- LICENSE
+
+The same text as github.com/go-jose/go-jose/v4 v4.1.5's above.
+
+==============================================================================
+org.jetbrains.kotlinx:kotlinx-coroutines-play-services 1.9.0
+==============================================================================
+
+--- LICENSE
+
+The same text as github.com/go-jose/go-jose/v4 v4.1.5's above.
+
+==============================================================================
+org.jetbrains:annotations 23.0.0
+==============================================================================
+
+--- LICENSE
+
+The same text as github.com/go-jose/go-jose/v4 v4.1.5's above.
+
+==============================================================================
+org.jspecify:jspecify 1.0.0
+==============================================================================
+
+--- LICENSE
+
+The same text as github.com/go-jose/go-jose/v4 v4.1.5's above.

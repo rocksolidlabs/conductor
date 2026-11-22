@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/rocksolidlabs/conductor/ext"
+	"github.com/rocksolidlabs/conductor/ext/exttest"
 	"github.com/rocksolidlabs/conductor/internal/config"
 	"github.com/rocksolidlabs/conductor/internal/crew"
 	"github.com/rocksolidlabs/conductor/internal/export"
@@ -95,7 +96,7 @@ func TestRemoteRoutes(t *testing.T) {
 		remoteOf(ext.RemotePointer, "dev-1", "team-00000004", 1, map[string]any{"id": "team-00000004", "crew": "team", "state": "running", "revision": 1}),
 		remoteOf(ext.RemotePins, "dev-1", "pins", 2, map[string]any{"v": 1, "pins": []any{map[string]any{"session": "s1", "name": "build"}}}),
 		remoteOf(ext.RemoteDevice, "dev-1", "dev-2", 1, map[string]any{"id": "dev-2", "name": "laptop", "kind": "server"}),
-		remoteOf(ext.RemoteHosts, "dev-1", "summary", 1, map[string]any{"hosts": []any{}}),
+		remoteOf(ext.RemoteHosts, "dev-1", "summary", 1, exttest.SampleHostSummary()),
 	}
 	for _, r := range puts {
 		if err := h.PutRemote(ctx, r); err != nil {
@@ -429,7 +430,8 @@ func TestRemoteRecordsAreNeverActedOn(t *testing.T) {
 		remoteOf(ext.RemotePointer, "dev-1", "team-00000077", 1, map[string]any{"id": "team-00000077", "crew": "team", "state": "running", "revision": 1}),
 		remoteOf(ext.RemotePins, "dev-1", "pins", 1, map[string]any{"v": 1, "pins": []any{map[string]any{"session": "s-remote", "name": "remote build"}}}),
 		remoteOf(ext.RemoteDevice, "dev-1", "dev-77", 1, map[string]any{"id": "dev-77", "name": "remote-laptop-77", "kind": "server"}),
-		remoteOf(ext.RemoteHosts, "dev-1", "summary", 1, map[string]any{"hosts": []any{map[string]any{"id": "remote-host-77", "name": "remote-host-77"}}}),
+		remoteOf(ext.RemoteHosts, "dev-1", "summary", 1, ext.HostSummary{Platform: "linux/amd64", Version: "v0.7.0",
+			Hosts: []ext.HostSummaryRow{{Name: "remote-host-77", Availability: ext.HostConnected}}}),
 	}
 	for _, r := range puts {
 		if err := h.PutRemote(ctx, r); err != nil {

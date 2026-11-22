@@ -803,8 +803,12 @@ type Remote struct {
 //   - device: a live server device, {id, name, kind, platform, version,
 //     lastReport, revoked}, its id the record's and its kind never "host",
 //     at most MaxRemoteDevice;
-//   - hosts: a host summary, the record's id "summary", at most
-//     MaxRemoteHosts.
+//   - hosts: another of the person's servers' host summary, the record's
+//     id "summary", its body a HostSummary as ParseHostSummary takes one
+//     (every field of its form and bound, none unknown, nothing trimmed),
+//     at most MaxRemoteHosts.
+//
+// Every refusal wraps ErrRefused and the record is not kept.
 func (r Remote) Valid() error {
 	switch {
 	case !remoteID.MatchString(r.Device) || !remoteID.MatchString(r.ID):
@@ -849,6 +853,11 @@ func (r Remote) Valid() error {
 	case RemotePins, RemoteHosts:
 		if want := map[string]string{RemotePins: "pins", RemoteHosts: "summary"}[r.Kind]; r.ID != want {
 			return fmt.Errorf("%w: a remote %s's id is %q", ErrRefused, r.Kind, want)
+		}
+		if r.Kind == RemoteHosts {
+			if _, err := ParseHostSummary(r.Data); err != nil {
+				return err
+			}
 		}
 	case RemoteDevice:
 		var d struct {

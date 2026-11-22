@@ -341,6 +341,28 @@ describe('sidebarModel', () => {
     expect(rowMeta(session({ viewers: 2 }), false)).toEqual(['claude', 'server', '2 here'])
   })
 
+  it('reads a hosted session that carries its host fields as it reads one without them', () => {
+    const withFields: SessionInfo = session({
+      id: 'h1',
+      kind: 'hosted',
+      hostName: 'priya-mbp',
+      hostPlatform: 'darwin/arm64',
+      hostVersion: 'v1.2.3',
+      hostKey: 'ab'.repeat(16),
+      hostKeyFrom: 'machine',
+      hostLink: 'down',
+      hostAwaySince: '2026-10-01T09:10:00Z',
+    })
+    const without = session({ id: 'h1', kind: 'hosted', hostName: 'priya-mbp' })
+    const shape = (s: SessionInfo) => {
+      const m = sidebarModel([s])
+      return { counts: m.counts, working: (m.working as SessionRow[]).map((r) => [r.id, r.machine]) }
+    }
+    expect(shape(withFields)).toEqual(shape(without))
+    expect(shape(withFields).working).toEqual([['h1', 'priya-mbp']])
+    expect(rowMeta(withFields, false, Date.parse('2026-10-01T09:12:00Z'))).toEqual(rowMeta(without, false, Date.parse('2026-10-01T09:12:00Z')))
+  })
+
   it('orders a section loose rows first, then blocks, each by its newest signal', () => {
     const list = [
       session({ id: 'old', attention: { state: 'needs_input', since: '2026-10-01T09:01:00Z' } }),

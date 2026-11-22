@@ -804,7 +804,8 @@ func decisionNotice(at time.Time) ext.Notification {
 }
 
 // Continuity checks a sync store: a valid name; Saved and Deleted
-// returning; article 8 (Network); and Restore apart, the one call that may
+// returning, Saved of a data document, a decision's document and the host
+// summary (store hosts, path summary, a HostSummary); article 8 (Network); and Restore apart, the one call that may
 // use the network on its own path: with the network open it returns,
 // writing nothing when it answers ErrNothingToRestore and nothing once it
 // has returned; with the network blocked it returns from what it holds or,
@@ -822,10 +823,13 @@ func Continuity(t T, n *Network, cs ext.ContinuityStore) {
 	saved := ext.Doc{Store: "data", Path: "catalog.json", Epoch: "0123456789abcdef0123456789abcdef", Rev: 1, At: time.Now().UTC(), Size: int64(len(data)), Data: data}
 	deleted := ext.Doc{Store: "data", Path: "crews/exttest.json", Epoch: saved.Epoch, Rev: 2, At: saved.At}
 	decision := decisionDocOf(saved)
+	summary := sampleHostSummaryJSON()
+	hosts := ext.Doc{Store: "hosts", Path: "summary", Epoch: saved.Epoch, Rev: 1, At: saved.At, Size: int64(len(summary)), Data: summary}
 	c.phases(func(ph phase) {
 		run(c, "Saved", ext.DeliveryWait, ph, func(ctx context.Context) error { return cs.Saved(ctx, saved) })
 		run(c, "Deleted", ext.DeliveryWait, ph, func(ctx context.Context) error { return cs.Deleted(ctx, deleted) })
 		run(c, "Saved, a decision", ext.DeliveryWait, ph, func(ctx context.Context) error { return cs.Saved(ctx, decision) })
+		run(c, "Saved, the host summary", ext.DeliveryWait, ph, func(ctx context.Context) error { return cs.Saved(ctx, hosts) })
 	})
 	c.flush()
 	restore(c, cs)

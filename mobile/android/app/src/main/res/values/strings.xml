@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Conductor</string>
+    <string name="title_activity_main">Conductor</string>
+    <string name="package_name">dev.conductor.mobile</string>
+    <string name="custom_url_scheme">dev.conductor.mobile</string>
+</resources>

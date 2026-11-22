@@ -35,6 +35,7 @@ import (
 	"github.com/rocksolidlabs/conductor/internal/agents"
 	"github.com/rocksolidlabs/conductor/internal/config"
 	"github.com/rocksolidlabs/conductor/internal/gitcli"
+	"github.com/rocksolidlabs/conductor/internal/machine"
 	"github.com/rocksolidlabs/conductor/internal/proto"
 	"github.com/rocksolidlabs/conductor/internal/pty"
 	"github.com/rocksolidlabs/conductor/internal/session"
@@ -147,6 +148,15 @@ type Options struct {
 	// formsUnsaid leaves proto.HostInfo.Forms out of the register, as a
 	// host of an earlier release does (tests).
 	formsUnsaid bool
+
+	// MachineDir is the directory of this machine's id (machine.Dir, which
+	// conductor host passes): read once as the host starts (machineIDOf),
+	// the id is made into the key of this machine at each server it
+	// registers with (proto.HostInfo.Machine), from the key that server's
+	// upgrade sent. "" sends no machine, and so does a switchyard
+	// (Switchyard), a server that sent no key of its form and an id that
+	// cannot be read; the id itself is never sent nor logged.
+	MachineDir string
 
 	// Runtime starts the hosted command (docs/plans/runtime.md): nil is the
 	// native one (local.Native), as a nil Log is slog.Default. conductor
@@ -261,6 +271,7 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 	// An instance of its own, so a switchyard that restarts gives the session its id back.
 	instance, _ := share.NewToken()
 	a := &agent{opts: opts, wsURL: wsURL, dir: dir, cols: cols, rows: rows, peers: map[string]*peer{}, log: opts.Log, agentToken: agentToken, instance: instance, localID: "1"}
+	a.machineID = machineIDOf(opts.MachineDir, opts.Switchyard, opts.Log)
 	a.activity = newActivityForwarder(a.sendActivity, a.sendChat, opts.Log)
 	// The folder is opened once, before anything is read of it: the
 	// report's reads, the process's start and the session's file reads and
@@ -480,6 +491,9 @@ type agent struct {
 	// instance and localID fix the session's id on the server across its
 	// restarts (proto.HostInfo.Instance); instance is a secret, never logged.
 	instance, localID string
+	// machineID is this machine's id (Options.MachineDir), "" for none: only
+	// a key made of it is sent (machineKey), and it is never logged.
+	machineID string
 	// held is what the server last said it holds of the links minted for
 	// the session (registered.links, then link_created and link_revoked);
 	// heldKnown is false until a server said. Guarded by mu.
@@ -857,6 +871,7 @@ func (a *agent) dialAndRegister(ctx context.Context) (*websocket.Conn, proto.Reg
 	} else {
 		reg := a.registration(cols, rows)
 		reg.Resume = resume
+		reg.Host.Machine, reg.Host.Platform = a.machineOf(resp)
 		hello = reg
 	}
 	a.mu.Unlock()
@@ -941,6 +956,8 @@ func (a *agent) registration(cols, rows uint16) proto.Register {
 		},
 	}
 	if !a.opts.Switchyard {
+		// Its machine's key and its platform are the dial's to say
+		// (machineOf), only to a server whose upgrade sent its key.
 		reg.Session.Branch = session.GitBranch(a.dir)
 		// The owner's own server may route the session's questions: it is
 		// told what the session keeps, and its answers are taken.
@@ -962,6 +979,52 @@ func (a *agent) registration(cols, rows uint16) proto.Register {
 	reg.Session.Command = []string{program}
 	reg.Session.Cwd = lastElement(a.dir)
 	return reg
+}
+
+// machineIDOf is this machine's id kept in dir, for a host that sends its
+// machine's key: "" for no dir, for a switchyard (which is sent none), and
+// for an id that cannot be read or made, which is said once in a warning
+// naming the file and why (machine.ID's error), never the file's bytes.
+func machineIDOf(dir string, switchyard bool, log *slog.Logger) string {
+	if dir == "" || switchyard {
+		return ""
+	}
+	id, err := machine.ID(dir)
+	if err != nil {
+		log.Warn("this machine's id cannot be read, so the server is sent no key for the machine and shows this host on its own", "err", err)
+		return ""
+	}
+	return id
+}
+
+// machineOf is what the registration on the connection the upgrade resp
+// answered says of this machine (proto.HostInfo's Machine and Platform),
+// both only to a server whose upgrade carried a key of the header's form
+// (proto.ServerKeyHeader), which only the owner's own server sends: a host
+// cannot otherwise tell a switchyard it was pointed at from its own server.
+// The key is made from the machine's id and that server's key, so each
+// server, and each start of one, is sent an unrelated key; none without an
+// id. Neither is sent with Options.Switchyard, whatever the upgrade said.
+func (a *agent) machineOf(resp *http.Response) (key, platform string) {
+	if a.opts.Switchyard || resp == nil {
+		return "", ""
+	}
+	serverKey := proto.ParseServerKey(resp.Header.Get(proto.ServerKeyHeader))
+	if serverKey == nil {
+		return "", ""
+	}
+	if a.machineID != "" {
+		key = machine.Key(a.machineID, serverKey)
+	}
+	return key, machine.Platform()
+}
+
+// connected says the host holds a control connection now: one it writes
+// on (useConnHearing), not yet let go (dropConn).
+func (a *agent) connected() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.out != nil
 }
 
 // watchOf is what the session watches, compiled from the recipe the server

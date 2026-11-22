@@ -5,7 +5,7 @@ import type { Day } from './day'
 import { budget, dayPage, expect, showView, test } from './fixtures'
 import { MEASURE_WAIT_MS } from './layout'
 
-// The contrast actually drawn (the UX review's PR-25): every text the browser draws on six pages of the seeded day, in both themes,
+// The contrast actually drawn (the UX review's PR-25): every text the browser draws on seven pages of the seeded day, in both themes,
 // at 1440 x 900 and at 390 x 844 with touch, judged over its real ground with opacity and tints counted (contrast.ts), against
 // CONTRAST_FLOORS. A page's test fails on a text under its floor that contrast-known.ts does not list, and on an entry of that list
 // for its own page, theme and width that its walk did not meet. At 1440 the page's first row is hovered and walked again: hover is
@@ -102,6 +102,8 @@ async function where(day: Day, name: WalkedPage, width: number): Promise<Walked>
       const n = await day.part('runs')
       return { path: `/runs/${n['Ledger migration']}`, ready: '[data-run-view]', row: '[data-member]' }
     }
+    case 'hosts':
+      return { path: '/hosts', ready: '[data-hosts-section="runs"]', row: '[data-host-card]' }
   }
 }
 
@@ -154,7 +156,7 @@ async function judgeWalk(page: Page, name: WalkedPage, theme: 'dark' | 'light', 
   expect(stale.map((k) => k.path), `${name}, ${theme}, ${width}, ${at}: known places the walk no longer finds: delete them from contrast-known.ts`).toEqual([])
 }
 
-const PAGES: WalkedPage[] = ['yard', 'session', 'needs', 'agents', 'dispatch', 'run']
+const PAGES: WalkedPage[] = ['yard', 'session', 'needs', 'agents', 'dispatch', 'run', 'hosts']
 
 for (const name of PAGES) {
   for (const size of SIZES) {

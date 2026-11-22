@@ -1,0 +1,28 @@
+// The Android shell's build (docs/plans/phone-shell.md, OSS-3): the native runtime's template, with Kotlin for the shell's own code.
+// Every version is pinned here or in variables.gradle.
+
+buildscript {
+    repositories {
+        google()
+        mavenCentral()
+    }
+    dependencies {
+        classpath 'com.android.tools.build:gradle:8.13.0'
+        classpath 'org.jetbrains.kotlin:kotlin-gradle-plugin:2.2.20'
+        // Applied only when a packaging adds its google-services.json (app/build.gradle): this repository's build has none.
+        classpath 'com.google.gms:google-services:4.4.4'
+    }
+}
+
+apply from: "variables.gradle"
+
+allprojects {
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+
+task clean(type: Delete) {
+    delete rootProject.buildDir
+}
