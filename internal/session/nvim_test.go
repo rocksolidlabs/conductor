@@ -718,14 +718,37 @@ func TestAnEditorBusyAsItStartsEndsWithItsOpen(t *testing.T) {
 	if err := syscall.Mkfifo(busy, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	// The open's own deadline bounds Neovim's whole start and the wait for
+	// its loop: a hang's bound only, the test's, far above what a loaded
+	// machine takes. In a run that works the hook ends the open's time
+	// first, once Neovim is in its loop.
+	const startHang = 30 * time.Second
+	ctx, cancel := context.WithTimeout(context.Background(), startHang)
 	defer cancel()
 	nvimStarted = func(ed *nvim.Editor) {
 		// A loop, not :sleep, which goes on answering requests. The keys'
 		// call waits for Neovim's answer after them, which the loop holds.
 		go ed.Input(":call writefile(['busy'], '" + busy + "') | while 1 | endwhile<CR>")
-		if _, err := os.ReadFile(busy); err != nil {
-			t.Errorf("the loop's pipe: %v", err)
+		read := make(chan error, 1)
+		go func() {
+			_, err := os.ReadFile(busy)
+			read <- err
+		}()
+		select {
+		case err := <-read:
+			if err != nil {
+				t.Errorf("the loop's pipe: %v", err)
+			}
+		case <-ctx.Done():
+			// Neovim never reached its loop (it ended, or the keys went
+			// elsewhere): a writer's open lets the read's open go, so the
+			// read ends and nothing is left waiting on the pipe. One that
+			// finds no reader (the read already ended) is refused at once.
+			if w, err := os.OpenFile(busy, os.O_WRONLY|syscall.O_NONBLOCK, 0); err == nil {
+				w.Close()
+			}
+			<-read
+			t.Errorf("Neovim did not reach its loop within the open's %v", startHang)
 		}
 		cancel()
 	}
@@ -741,7 +764,7 @@ func TestAnEditorBusyAsItStartsEndsWithItsOpen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	returnsWithin(t, 10*time.Second, "the open", func() error {
+	returnsWithin(t, startHang+10*time.Second, "the open", func() error {
 		return s.NvimOpen(ctx, sub, proto.NvimOpen{T: proto.CtlNvimOpen, ReqID: "r1", Path: "a.txt"})
 	})
 	from := 0
