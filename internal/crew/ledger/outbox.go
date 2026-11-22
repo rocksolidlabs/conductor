@@ -302,21 +302,42 @@ func (l *Ledger) OutcomeOf(ctx context.Context, n int64) (Outcome, bool, error) 
 
 // OpenRecordsAfter reads the open decisions numbered after after, in
 // number order, at most limit (OpenDecisionsAfter's numbers, over the open
-// decisions' index), each whole; more says one followed. A record closed
-// between the two reads is left out.
-func (l *Ledger) OpenRecordsAfter(ctx context.Context, after int64, limit int) (recs []DecisionRecord, more bool, err error) {
+// decisions' index), each whole; last is the last number the index
+// answered (0 for none), where the next page starts, and more says one
+// followed it. A record closed between the two reads is left out, so a
+// page may hold fewer records than the index answered, none at all, and
+// still be followed by more.
+func (l *Ledger) OpenRecordsAfter(ctx context.Context, after int64, limit int) (recs []DecisionRecord, last int64, more bool, err error) {
 	ns, more, err := l.OpenDecisionsAfter(ctx, after, limit)
 	if err != nil {
-		return nil, false, err
+		return nil, 0, false, err
+	}
+	if f := l.openRecordsRead.Load(); f != nil {
+		(*f)(ns)
 	}
 	for _, n := range ns {
 		rec, ok, err := l.Decision(ctx, n)
 		if err != nil {
-			return nil, false, err
+			return nil, 0, false, err
 		}
 		if ok && rec.State == DecisionOpen {
 			recs = append(recs, rec)
 		}
 	}
-	return recs, more, nil
+	if len(ns) > 0 {
+		last = ns[len(ns)-1]
+	}
+	return recs, last, more, nil
+}
+
+// OnOpenRecordsRead has f told the numbers the open decisions' index
+// answered for an OpenRecordsAfter, before their records are read (nil
+// for none): the step between the two reads, where a test holds the read
+// while records end.
+func (l *Ledger) OnOpenRecordsRead(f func(ns []int64)) {
+	if f == nil {
+		l.openRecordsRead.Store(nil)
+		return
+	}
+	l.openRecordsRead.Store(&f)
 }

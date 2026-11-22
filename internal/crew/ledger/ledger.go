@@ -21,6 +21,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	_ "modernc.org/sqlite" // the database driver, registered as "sqlite"
@@ -299,6 +300,9 @@ var LockWait = 10 * time.Second
 // sees a transition half done.
 type Ledger struct {
 	dir string
+	// openRecordsRead is told the index's numbers between OpenRecordsAfter's
+	// two reads (OnOpenRecordsRead).
+	openRecordsRead atomic.Pointer[func(ns []int64)]
 	// db is nil when there is nothing to read: no database where the
 	// ledger could not make one, or one that cannot be opened at all.
 	db *sql.DB

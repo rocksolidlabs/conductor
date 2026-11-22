@@ -120,3 +120,34 @@ func TestACountedIdentityResponseHoldsAPlace(t *testing.T) {
 		t.Fatalf("after its counted identity response it holds %d places, want 1", got)
 	}
 }
+
+// OpenRecordsAfter answers where the next page starts, the last number the
+// index answered, also when every record of the page ended between the
+// index's read and the records' reads: no record, more, and the page's
+// last number, from which the later page's records are read.
+func TestOpenRecordsAfterAnswersWhereTheNextPageStarts(t *testing.T) {
+	l := openLedger(t, filepath.Join(t.TempDir(), "runs"))
+	const run = "team-00000001"
+	newRun(t, l, run)
+	var ns []int64
+	for i := range 5 {
+		ns = append(ns, open(t, l, gateDecision(run, fmt.Sprintf("g%d", i))))
+	}
+	l.OnOpenRecordsRead(func(page []int64) {
+		if page[0] != ns[0] {
+			return
+		}
+		for _, n := range page {
+			setState(t, l, run, n, DecisionCancelled, "")
+		}
+	})
+	t.Cleanup(func() { l.OnOpenRecordsRead(nil) })
+	recs, last, more, err := l.OpenRecordsAfter(t.Context(), 0, 3)
+	if err != nil || len(recs) != 0 || !more || last != ns[2] {
+		t.Fatalf("the first page: %d records, last %d, more %v, %v", len(recs), last, more, err)
+	}
+	recs, last, more, err = l.OpenRecordsAfter(t.Context(), last, 3)
+	if err != nil || len(recs) != 2 || recs[0].N != ns[3] || recs[1].N != ns[4] || more || last != ns[4] {
+		t.Fatalf("the next page: %d records, last %d, more %v, %v", len(recs), last, more, err)
+	}
+}

@@ -8807,7 +8807,9 @@ above, and no field, code or row below is ever written or answered.
 - **The router's reads and re-routes** (`ext.Host`, the registered
   router's alone; every other Host, and the router's on a switchyard or
   with no ledger, answers `ext.ErrUnsupported`): `OpenDecisions` pages
-  every open record, 64 a page in number order, each with its policy,
+  every open record, 64 a page in number order (`next` names where the
+  next page starts while more follow, also on a page left with no record
+  because its records ended while it was read), each with its policy,
   when it was first routed, the last route's why and its rev (the why is
   the kind of the last re-route, `assigned`, `delegated`, `escalated` or
   `rerouted`, when the record's last route was one by `Reroute`, and

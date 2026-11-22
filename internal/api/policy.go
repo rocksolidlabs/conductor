@@ -583,7 +583,10 @@ func (h *extHost) routerLedger() (*ledger.Ledger, error) {
 // OpenDecisions pages every open record after the decision after ("" for
 // the first), in number order, each with its policy (nil under the
 // server's own), when the router's policy was first written, the last
-// route's why, its rev and its counted approvals that stand. No count cuts it: a router reads every page.
+// route's why, its rev and its counted approvals that stand. No count cuts
+// it: a router reads every page, following Next while it is named, and a
+// page may hold no record yet name a Next (its records all ended while it
+// was read).
 func (h *extHost) OpenDecisions(ctx context.Context, after string) (ext.OpenDecisionsPage, error) {
 	ld, err := h.routerLedger()
 	if err != nil {
@@ -599,7 +602,7 @@ func (h *extHost) OpenDecisions(ctx context.Context, after string) (ext.OpenDeci
 	}
 	bctx, end := h.bound(ctx)
 	defer end()
-	recs, more, err := ld.OpenRecordsAfter(bctx, from, openDecisionsPage)
+	recs, last, more, err := ld.OpenRecordsAfter(bctx, from, openDecisionsPage)
 	if err != nil {
 		return ext.OpenDecisionsPage{}, err
 	}
@@ -613,8 +616,11 @@ func (h *extHost) OpenDecisions(ctx context.Context, after string) (ext.OpenDeci
 		}
 		page.Decisions = append(page.Decisions, od)
 	}
-	if more && len(recs) > 0 {
-		page.Next = recs[len(recs)-1].ID()
+	if more && last > 0 {
+		// Where the next page starts: the last number this page looked at,
+		// whether its record was still open or not, so a page whose records
+		// all ended while it was read still names the pages after it.
+		page.Next = ledger.DecisionID(last)
 	}
 	return page, nil
 }
