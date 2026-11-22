@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
@@ -79,7 +80,9 @@ func WithRuntimeCase(c RuntimeCase) RunOption {
 //     for); an ended context answered promptly.
 //   - A Started that panics leaves Run and Serve as that same panic, with
 //     nothing left running: the helper it started listens on a Port and
-//     answers a Probe before the panic, and none once the panic has left.
+//     answers a Probe before the panic, and none once the panic has left
+//     (the helper's own answer: another server's at the port is not the
+//     helper running, and that port is asked for again).
 //   - Serve starts a service (Started once, before its output reaches the
 //     log) and Stop ends it: done when Stop returns, and Stop may be
 //     called again; a context that ends once the service runs ends it; an
@@ -820,73 +823,101 @@ type number struct {
 // startedPanics checks that a Started that panics leaves Run and Serve as
 // that same panic, with nothing left running: the helper, listening on a
 // port Port answered, answers a Probe before Started panics, and none once
-// the panic has left.
+// the panic has left. Only the helper's own answer counts (its 204 on
+// /ok): another server's at the port is not the helper running, and a
+// port another server holds is asked for again (portTries).
 func (x *execCheck) startedPanics() {
 	dir, _ := x.dir()
 	for _, method := range []string{"Run", "Serve"} {
-		ref := ext.ProcessRef{Run: "exttest-started-panics", Task: method, Attempt: 1, Tree: "worktree"}
-		port, ok := bounded(x, "Port for "+method+"'s panicking Started", x.wait, func() number {
-			n, err := x.r.Port(context.Background(), ref)
-			return number{n, err}
-		})
-		if !ok {
-			continue
-		}
-		if port.err != nil || port.n < 1 || port.n > 65535 {
-			x.errorf("Port for %s's panicking Started answered %d, %v: want a port's number", method, port.n, port.err)
-			continue
-		}
-		url := fmt.Sprintf("http://127.0.0.1:%d/ok", port.n)
-		answers := func() bool {
-			_, err := x.r.Probe(context.Background(), ext.ProbeSpec{URL: url, Interval: x.wait, Ref: ref})
-			return err == nil
-		}
-		p := &startedPanic{method}
-		var listened bool
-		spec := ext.CommandSpec{Argv: x.argv("http", strconv.Itoa(port.n)), Dir: dir, Env: x.env("started-panics"), Timeout: x.wait, Ref: ref,
-			Started: func(ext.ProcessInfo) {
-				// The process runs: wait until it answers, so one the
-				// panic leaves running answers after it too.
-				tick := time.NewTicker(10 * time.Millisecond)
-				defer tick.Stop()
-				deadline := time.NewTimer(x.wait)
-				defer deadline.Stop()
-				for !answers() {
-					select {
-					case <-tick.C:
-					case <-deadline.C:
-						panic(p)
-					}
-				}
-				listened = true
-				panic(p)
-			}}
-		ch := async(func() ext.ServiceProcess {
-			if method == "Run" {
-				x.r.Run(context.Background(), spec)
-				return nil
-			}
-			svc, _ := x.r.Serve(context.Background(), spec)
-			return svc
-		})
-		a, in := within(ch, x.wait+x.wait)
-		switch {
-		case !in:
-			x.errorf("%s did not return or panic within %s (the case's Wait, twice) after its Started panicked", method, x.wait+x.wait)
-			late(ch, func(svc ext.ServiceProcess) { stopLateService(served{svc: svc}) })
-		case a.returned:
-			x.errorf("%s returned after its Started panicked: the same panic leaves it, once what it began is ended", method)
-			x.stopService(a.v)
-		case a.p != p:
-			x.errorf("%s panicked with %v after its Started panicked: want the same panic, unchanged", method, a.p)
-		case !listened:
-			x.errorf("%s's helper (http %d) answered no Probe within %s (the case's Wait) of Started: it did not listen on the port Port answered", method, port.n, x.wait)
-		default:
-			if v, ok := bounded(x, "Probe once "+method+"'s panic had left", x.wait+x.wait, answers); ok && v {
-				x.errorf("%s let its Started's panic go with the process it started still running: the helper (http %d) answered a Probe once the panic had left; the Runtime ends and reaps what it began first", method, port.n)
-			}
+		for try := 1; x.startedPanic(method, dir, try < portTries); try++ {
 		}
 	}
+}
+
+// helperAnswer is what the helper's http mode alone answers on /ok.
+const helperAnswer = http.StatusNoContent
+
+// startedPanic is startedPanics for one method: true when the port Port
+// answered was another server's and retry allows a start on another, said
+// nothing of.
+func (x *execCheck) startedPanic(method, dir string, retry bool) (again bool) {
+	ref := ext.ProcessRef{Run: "exttest-started-panics", Task: method, Attempt: 1, Tree: "worktree"}
+	port, ok := bounded(x, "Port for "+method+"'s panicking Started", x.wait, func() number {
+		n, err := x.r.Port(context.Background(), ref)
+		return number{n, err}
+	})
+	if !ok {
+		return false
+	}
+	if port.err != nil || port.n < 1 || port.n > 65535 {
+		x.errorf("Port for %s's panicking Started answered %d, %v: want a port's number", method, port.n, port.err)
+		return false
+	}
+	url := fmt.Sprintf("http://127.0.0.1:%d/ok", port.n)
+	probe := func() number {
+		n, err := x.r.Probe(context.Background(), ext.ProbeSpec{URL: url, Interval: x.wait, Ref: ref})
+		return number{n, err}
+	}
+	// answers says the helper answered: its own answer, never another
+	// server's at the port.
+	answers := func() bool {
+		a := probe()
+		return a.err == nil && a.n == helperAnswer
+	}
+	p := &startedPanic{method}
+	var listened, stranger bool
+	spec := ext.CommandSpec{Argv: x.argv("http", strconv.Itoa(port.n)), Dir: dir, Env: x.env("started-panics"), Timeout: x.wait, Ref: ref,
+		Started: func(ext.ProcessInfo) {
+			// The process runs: wait until it answers, so one the panic
+			// leaves running answers after it too. Another server's
+			// answer says the port is that server's.
+			tick := time.NewTicker(10 * time.Millisecond)
+			defer tick.Stop()
+			deadline := time.NewTimer(x.wait)
+			defer deadline.Stop()
+			for {
+				a := probe()
+				if a.err == nil {
+					listened, stranger = a.n == helperAnswer, a.n != helperAnswer
+					panic(p)
+				}
+				select {
+				case <-tick.C:
+				case <-deadline.C:
+					panic(p)
+				}
+			}
+		}}
+	ch := async(func() ext.ServiceProcess {
+		if method == "Run" {
+			x.r.Run(context.Background(), spec)
+			return nil
+		}
+		svc, _ := x.r.Serve(context.Background(), spec)
+		return svc
+	})
+	a, in := within(ch, x.wait+x.wait)
+	switch {
+	case !in:
+		x.errorf("%s did not return or panic within %s (the case's Wait, twice) after its Started panicked", method, x.wait+x.wait)
+		late(ch, func(svc ext.ServiceProcess) { stopLateService(served{svc: svc}) })
+	case a.returned:
+		x.errorf("%s returned after its Started panicked: the same panic leaves it, once what it began is ended", method)
+		x.stopService(a.v)
+	case a.p != p:
+		x.errorf("%s panicked with %v after its Started panicked: want the same panic, unchanged", method, a.p)
+	case stranger && retry:
+		return true
+	case stranger:
+		x.errorf("%s's helper (http %d): another server answered at the port Port answered, %d times running: no port free where the services listen", method, port.n, portTries)
+	case !listened:
+		x.errorf("%s's helper (http %d) answered no Probe within %s (the case's Wait) of Started: it did not listen on the port Port answered", method, port.n, x.wait)
+	default:
+		if v, ok := bounded(x, "Probe once "+method+"'s panic had left", x.wait+x.wait, answers); ok && v {
+			x.errorf("%s let its Started's panic go with the process it started still running: the helper (http %d) answered a Probe once the panic had left; the Runtime ends and reaps what it began first", method, port.n)
+		}
+	}
+	return false
 }
 
 // serve checks a service started and stopped.
