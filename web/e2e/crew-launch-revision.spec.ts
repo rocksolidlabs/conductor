@@ -85,9 +85,14 @@ async function paletteLaunch(page: Page, crew: { id: string; name: string }) {
   await page.keyboard.press('Enter')
 }
 
-/** The app's router, through the page itself. */
+/**
+ * The app's router, through the page itself. The push is started and never awaited for its answer: a call that moves the page
+ * can be rejected across the move ("Execution context was destroyed", #281), so each caller waits for what the new page draws.
+ */
 const navigate = (page: Page, path: string) =>
-  page.evaluate((u) => (document.querySelector('#__nuxt') as unknown as { __vue_app__: { config: { globalProperties: { $router: { push: (u: string) => Promise<unknown> } } } } }).__vue_app__.config.globalProperties.$router.push(u), path)
+  page.evaluate((u) => {
+    void (document.querySelector('#__nuxt') as unknown as { __vue_app__: { config: { globalProperties: { $router: { push: (u: string) => Promise<unknown> } } } } }).__vue_app__.config.globalProperties.$router.push(u)
+  }, path)
 
 /** The page's launches of the crew: each one asked (`asked`), and each one answered: its status, and the run of one that started. */
 function launchesOf(page: Page, id: string) {
