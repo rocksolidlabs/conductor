@@ -53,6 +53,10 @@ type PublishedSession interface {
 	// this session's connection, which must be a member's.
 	RunLink(ctx context.Context, role string, ttl time.Duration, label string, run proto.RunGroup) (proto.LinkCreated, error)
 	RunLinkUpdate(ctx context.Context, run proto.RunGroup) error
+	// Connected says the publication's connection to the rendezvous is up
+	// now, read from the connection's state with no round trip: false while
+	// it is down and being dialed again, and once it has ended.
+	Connected() bool
 }
 
 // remoteLink is a link minted at the rendezvous for a published session,

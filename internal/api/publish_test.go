@@ -880,6 +880,7 @@ func (p *gatedPublication) CurrentID() string                                   
 func (p *gatedPublication) HeldLinks() ([]string, bool)                                      { return nil, false }
 func (p *gatedPublication) Done() <-chan struct{}                                            { return p.done }
 func (p *gatedPublication) StoppedThere() bool                                               { return false }
+func (p *gatedPublication) Connected() bool                                                  { return true }
 func (p *gatedPublication) Link(context.Context, string, time.Duration, string) (proto.LinkCreated, error) {
 	return proto.LinkCreated{}, errors.New("not here")
 }

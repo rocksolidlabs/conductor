@@ -1938,7 +1938,7 @@ export interface HostsSwitchyard {
 }
 export interface HostsRun {
   id: string
-  /** The crew's name as the run's row holds it. */
+  /** The run's own name while this server's engine holds it, else the crew's name as the run's row holds it. */
   name: string
   /** The crew's id. */
   crew: string
