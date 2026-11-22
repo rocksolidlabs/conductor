@@ -1994,6 +1994,19 @@ export interface HostsOther {
   machines: HostsMachine[]
   more: { machines: number; remoteRuns: number }
 }
+/**
+ * Who holds this data directory's managed runs, as the owner lock is when the reply is built. `note` is always one of the
+ * server's own sentences (never a time, a pid, a path or anything read from a file or an error); `pid` (at most
+ * HOSTS_PID_DIGITS digits) only under `other`, as that server wrote it; `since` (RFC 3339) under `other` the time its lock line
+ * gives, under `none` when this server stopped waiting for the lock or since when it has been waiting. The page says every time
+ * itself, in the viewer's local time.
+ */
+export interface HostsLedger {
+  holder: HostsHolder
+  note: string
+  pid?: number
+  since?: string
+}
 export interface HostsReply {
   at: string
   /** When this server started: machines are seen since then. */
@@ -2002,7 +2015,7 @@ export interface HostsReply {
   hosts: HostRow[]
   switchyard?: HostsSwitchyard
   runs: HostsRun[]
-  ledger: { holder: HostsHolder; note: string }
+  ledger: HostsLedger
   more: { hosts: number; runs: number }
   /** Present only while a registered sync store has been current in this server's life and is not signed out. */
   other?: HostsOther
@@ -2013,6 +2026,7 @@ export const HOSTS_MAX_RUNS = 500
 export const HOSTS_MAX_SESSION_IDS = 64
 export const HOSTS_MAX_WHERE = 8
 export const HOSTS_REF_MAX = 512
+export const HOSTS_PID_DIGITS = 10
 export const HOSTS_MAX_MACHINES = 64
 export const HOSTS_MAX_REMOTE_RUNS = 200
 export const HOSTS_SUMMARY_ROWS = 8
