@@ -32,7 +32,13 @@ KINDS = [
     (re.compile(r"apache.*2\.0|apache-2\.0|apache\.org/licenses/license-2\.0", re.I), "Apache-2.0", "scripts/notices/apache-2.0.LICENSE"),
     (re.compile(r"bouncy ?castle", re.I), "MIT (Bouncy Castle Licence)", "scripts/notices/bouncycastle-1.82.LICENSE"),
     (re.compile(r"android software development kit license|developer\.android\.com/studio/terms", re.I), "Android Software Development Kit License", None),
+    (re.compile(r"bsd-3-clause|bsd 3-clause", re.I), "BSD-3-Clause", None),
 ]
+# A licence whose text names its holder (BSD's, MIT's) is the holder's own text: kept for the package it was taken from, by name.
+PACKAGE_TEXTS = {
+    # The datastore library carries a copy of Protocol Buffers' Java runtime, under Protocol Buffers' own BSD-3-Clause licence.
+    "androidx.datastore:datastore-preferences-external-protobuf": "scripts/notices/protobuf.LICENSE",
+}
 
 
 class Package:
@@ -48,7 +54,7 @@ class Package:
         for licence in self.licences:
             for pattern, label, text in KINDS:
                 if pattern.search(licence):
-                    return label, text
+                    return label, text or PACKAGE_TEXTS.get(self.name)
         return (" | ".join(self.licences) or "no licence named"), None
 
 

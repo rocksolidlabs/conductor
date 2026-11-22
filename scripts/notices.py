@@ -8,7 +8,8 @@ platforms released), the npm packages in the web bundle the binary embeds
 during `make web-build`) and the desktop app's own: Electron and the
 production packages electron-builder puts in the app; and the phone shell's
 (mobile/): the native runtime's packages the iOS and Android apps are built
-from, and the Gradle packages the Android app's build files pin. Texts a
+from, and every package the Android app's release build carries as Gradle
+resolves it (mobile/android/release-classpath.txt). Texts a
 package does not carry (the Inter font @nuxt/fonts fetches, the Lucide icons
 Nuxt Icon inlines, the Gradle packages' licences) are kept in scripts/notices/.
 
@@ -319,39 +320,17 @@ def mobile_entries() -> list[Entry]:
 
 
 ANDROID = MOBILE / "android"
-# The Gradle packages the Android app's build files name (mobile/android/variables.gradle, build.gradle and app/build.gradle), with the
-# variable or plugin each version is read from, the licence and the text kept for it. A version moved without its entry stops the
-# script. What each brings with it (AndroidX's own, and Firebase's Google Play services libraries under their own terms) is Gradle's to
-# fetch at those versions and is not listed here.
-ANDROID_PACKAGES = [
-    ("androidx.activity:activity", "androidxActivityVersion", "Apache-2.0", "scripts/notices/apache-2.0.LICENSE", ""),
-    ("androidx.appcompat:appcompat", "androidxAppCompatVersion", "Apache-2.0", "scripts/notices/apache-2.0.LICENSE", ""),
-    ("androidx.biometric:biometric", "androidxBiometricVersion", "Apache-2.0", "scripts/notices/apache-2.0.LICENSE", "the person's unlock"),
-    ("androidx.browser:browser", "androidxBrowserVersion", "Apache-2.0", "scripts/notices/apache-2.0.LICENSE", "Custom Tabs, for @capacitor/browser"),
-    ("androidx.coordinatorlayout:coordinatorlayout", "androidxCoordinatorLayoutVersion", "Apache-2.0", "scripts/notices/apache-2.0.LICENSE", ""),
-    ("androidx.core:core", "androidxCoreVersion", "Apache-2.0", "scripts/notices/apache-2.0.LICENSE", ""),
-    ("androidx.core:core-splashscreen", "coreSplashScreenVersion", "Apache-2.0", "scripts/notices/apache-2.0.LICENSE", ""),
-    ("androidx.fragment:fragment", "androidxFragmentVersion", "Apache-2.0", "scripts/notices/apache-2.0.LICENSE", ""),
-    ("androidx.webkit:webkit", "androidxWebkitVersion", "Apache-2.0", "scripts/notices/apache-2.0.LICENSE", ""),
-    ("com.google.firebase:firebase-messaging", "firebaseMessagingVersion", "Apache-2.0", "scripts/notices/apache-2.0.LICENSE",
-     "Firebase Cloud Messaging, for @capacitor/push-notifications; the Google Play services libraries it brings are under their own terms"),
-    ("org.apache.cordova:framework", "cordovaAndroidVersion", "Apache-2.0", "scripts/notices/apache-2.0.LICENSE", "Apache Cordova's Android framework, for @capacitor/android"),
-    ("org.bouncycastle:bcprov-jdk18on", "bouncyCastleVersion", "MIT", "scripts/notices/bouncycastle-1.82.LICENSE", "Ed25519 for a key sealed by the keystore"),
-    ("org.jetbrains.kotlin:kotlin-stdlib", "kotlin-gradle-plugin", "Apache-2.0", "scripts/notices/apache-2.0.LICENSE", "the standard library of the Kotlin the app is written in"),
-]
 # A text taken for one version of a package: another version stops the script until the text is taken again for it.
 ANDROID_TEXT_FOR = {"org.bouncycastle:bcprov-jdk18on": "1.82"}
 
 
-# The release build's packages as Gradle resolves them (scripts/android_notices.py, mobile/android/app/notices.gradle), committed. When it
-# is there, the Android part is made from it alone; until its first copy is committed, from ANDROID_PACKAGES.
+# The release build's packages as Gradle resolves them (scripts/android_notices.py, mobile/android/app/notices.gradle), committed: the
+# Android part is made from it alone.
 ANDROID_LIST = ANDROID / "release-classpath.txt"
 
 
 def android_heading(listed: Path | None = None) -> str:
-    if (listed or ANDROID_LIST).exists():
-        return "The phone shell's Android app (mobile/android): every package its release build carries, as Gradle resolves them"
-    return "The phone shell's Android app (mobile/android): the Gradle packages its build files pin"
+    return "The phone shell's Android app (mobile/android): every package its release build carries, as Gradle resolves them"
 
 
 def android_listed(listed: Path) -> list[Entry]:
@@ -375,26 +354,10 @@ def android_listed(listed: Path) -> list[Entry]:
 
 
 def android_entries(listed: Path | None = None) -> list[Entry]:
-    if (listed or ANDROID_LIST).exists():
-        return android_listed(listed or ANDROID_LIST)
-    variables = dict(re.findall(r"^\s*(\w+)\s*=\s*'([^']+)'", (ANDROID / "variables.gradle").read_text(), re.M))
-    build = (ANDROID / "build.gradle").read_text()
-    entries = []
-    for name, source, licence, text, note in ANDROID_PACKAGES:
-        if source in variables:
-            version = variables[source]
-        else:
-            found = re.search(rf":{re.escape(source)}:([0-9][0-9A-Za-z.\-]*)'", build)
-            if not found:
-                raise SystemExit(f"notices: no version of {name} in mobile/android ({source})")
-            version = found.group(1)
-        if ANDROID_TEXT_FOR.get(name, version) != version:
-            raise SystemExit(f"notices: {text} was taken for {name} {ANDROID_TEXT_FOR[name]}, not {version}: take it again for this version")
-        texts = [("LICENSE", (ROOT / text).read_text())]
-        for s in SUPPLEMENTS.get("@capacitor/android", []) if name == "org.apache.cordova:framework" else []:
-            texts.append((s["name"], (EXTRA / s["file"]).read_text()))
-        entries.append(Entry(name, version, licence, texts, note))
-    return sorted(entries, key=lambda e: e.name)
+    listed = listed or ANDROID_LIST
+    if not listed.exists():
+        raise SystemExit(f"notices: no {listed.relative_to(ROOT) if listed.is_relative_to(ROOT) else listed}: Gradle's list of the Android release build's packages (make mobile-android-notices, then python3 scripts/android_notices.py update)")
+    return android_listed(listed)
 
 
 def render(parts: list[tuple[str, list[Entry]]]) -> str:

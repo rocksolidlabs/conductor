@@ -19,6 +19,7 @@ LISTED = "\n".join([
     "org.bouncycastle:bcprov-jdk18on:1.82\tBouncy Castle Licence <https://www.bouncycastle.org/licence.html>",
     "org.example:odd:1.0\tSome Licence <https://example.org/licence>",
     "org.example:none:2.0\tno licence named",
+    "androidx.datastore:datastore-preferences-external-protobuf:1.1.7\tBSD-3-Clause <https://opensource.org/licenses/BSD-3-Clause>",
 ]) + "\n"
 
 
@@ -31,7 +32,7 @@ class AndroidNoticesTest(unittest.TestCase):
         packages = android_notices.parse(LISTED)
         self.assertEqual([p.name for p in packages][:2], ["androidx.core:core", "com.google.android.gms:play-services-basement"])
         self.assertEqual(packages[0].version, "1.17.0")
-        self.assertEqual(packages[-1].licences, [])
+        self.assertEqual(packages[5].licences, [])
         with self.assertRaises(ValueError):
             android_notices.parse("androidx.core:core\tApache\n")
 
@@ -43,6 +44,7 @@ class AndroidNoticesTest(unittest.TestCase):
         self.assertEqual(kinds[3], ("MIT (Bouncy Castle Licence)", "scripts/notices/bouncycastle-1.82.LICENSE"))
         self.assertEqual(kinds[4], ("Some Licence <https://example.org/licence>", None))
         self.assertEqual(kinds[5], ("no licence named", None))
+        self.assertEqual(kinds[6], ("BSD-3-Clause", "scripts/notices/protobuf.LICENSE"))
 
     def test_the_committed_list_is_held_to_gradles_and_the_notices_to_the_list(self) -> None:
         fresh, committed, text = self.dir / "fresh.txt", self.dir / "committed.txt", self.dir / "NOTICES"
