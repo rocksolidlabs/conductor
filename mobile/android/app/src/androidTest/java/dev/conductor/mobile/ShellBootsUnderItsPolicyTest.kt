@@ -137,13 +137,14 @@ class ShellBootsUnderItsPolicyTest {
                 check('climb', (await image('/%2E%2E%2Fcapacitor.config.json')) === 'refused');
                 await image('/shell/decisions/$DECISION_SEGMENT');
                 await image('/shell/decisions/' + encodeURIComponent(${org.json.JSONObject.quote(DECISION_ID)}));
-                // A frame of another origin: the page's own policy names no frame source, so it never loads (one frame-src violation).
+                // A frame of another origin: the policy the shell serves each page with names no frame source, so it never loads (one
+                // frame-src violation).
                 at('frame away');
                 const away = document.createElement('iframe');
                 away.src = 'https://example.com/?boot-probe-frame';
                 document.body.appendChild(away);
                 await within(new Promise((r) => { away.onload = () => r(true); away.onerror = () => r(false) }), 5000).catch(() => false);
-                // An object of another origin: the policy names no object source either (one object-src violation).
+                // An object of another origin: that policy names no object source either (one object-src violation).
                 at('object away');
                 const thing = document.createElement('object');
                 thing.type = 'text/html';
@@ -400,6 +401,9 @@ class ShellBootsUnderItsPolicyTest {
             assertEquals(4, gates.refused.get() - refused)
             // The edge of the Range the server reads: served (the app is still here to answer).
             assertEquals("a Range at the server's int", 206, status(request("$APP/index.html", false, headers = mapOf("Range" to "bytes=0-2147483647"))))
+            // The bundle's page as the local server serves it, with the shell's frame and object policy beside its own.
+            val page = client.shouldInterceptRequest(webView, request("$APP/index.html", true))
+            assertEquals("the served page's headers ${page?.responseHeaders}", ServedPolicy.POLICY, page?.responseHeaders?.get("Content-Security-Policy"))
             assertEquals(null, status(request("https://api.provider.example/v1", false, headers = mapOf("Accept" to "application/json"))))
             assertEquals(4, gates.refused.get() - refused)
             // The chrome client the web view holds: every permission denied, the location denied, no chooser, no prompt, no window.

@@ -13,6 +13,9 @@ import { NATIVE_HTTP, syncBundle } from '../scripts/sync.mjs'
 // carries `script-src 'self' 'wasm-unsafe-eval'` with every inline script's hash and no other; an inline event handler or a
 // `javascript:` address fails the sync; the bridge's tag, and a provider module's when there is one, stand before the entry. The
 // real build (internal/web/dist) is synced when it is there; the boot spec (web/e2e/shell-boot.spec.ts) runs the synced bundle.
+// Every expectation here is the bundle's policy: one bundle, synced once, which the iPhone's shell carries as it is and the Android
+// shell carries too, serving each page with its own frame and object policy beside it as a header (ServedPolicy.POLICY, proven by
+// the Android project's tests, not here).
 
 const sha = (s: string) => `'sha256-${createHash('sha256').update(s, 'utf8').digest('base64')}'`
 const ENTRY = '<script type="module" src="/_nuxt/entry.js" crossorigin></script>'
@@ -37,22 +40,36 @@ function carried(html: string): { policy: string; srcs: string[] } {
 }
 
 describe("the shell's policy", () => {
+  it("is the bundle's policy both shells carry, the iPhone's whole: fixed, with no frame or object directive of the Android shell's", () => {
+    // A fixed page and the policy main's sync gave it, written out: the iPhone's shell carries exactly this, and its boot check
+    // (ShellBootsUnderItsPolicyTests) expects a page with no frame-src and no object-src.
+    const page = '<!doctype html><html><head><script>window.a=1</script><script type="importmap">{"imports":{}}</script><script type="application/json" id="d">{}</script></head><body>' + ENTRY + '</body></html>'
+    expect(policyFor(page)).toBe("script-src 'self' 'wasm-unsafe-eval' 'sha256-WpNQcWxgTJamkluTtRGYllok20MyGquJpWh9YXWGA4E=' 'sha256-URrTy+Il/Nz0lHojVUx275hWqAWhkSF0VsHbUM4/6Hw='; connect-src 'none'")
+    expect(policyFor(page, { connect: ['https://relay.example.test'] })).toBe("script-src 'self' 'wasm-unsafe-eval' 'sha256-WpNQcWxgTJamkluTtRGYllok20MyGquJpWh9YXWGA4E=' 'sha256-URrTy+Il/Nz0lHojVUx275hWqAWhkSF0VsHbUM4/6Hw='; connect-src https://relay.example.test")
+    const from = tmp()
+    writeFileSync(join(from, 'index.html'), page)
+    const www = join(tmp(), 'www')
+    syncBundle(from, www)
+    expect(carried(readFileSync(join(www, 'index.html'), 'utf8')).policy).toBe(policyFor(page))
+    expect(carried(readFileSync(join(www, 'index.html'), 'utf8')).policy).not.toMatch(/frame-src|object-src/)
+  })
+
   it("hashes every inline script the browser runs, the import map among them, and no data block", () => {
     const scripts = inlineScripts(PAGE)
     expect(scripts).toHaveLength(3)
-    expect(policyFor(PAGE)).toBe(`${["script-src 'self' 'wasm-unsafe-eval'", ...scripts.map(sha)].join(' ')}; connect-src 'none'; frame-src 'none'; object-src 'none'`)
+    expect(policyFor(PAGE)).toBe(`${["script-src 'self' 'wasm-unsafe-eval'", ...scripts.map(sha)].join(' ')}; connect-src 'none'`)
     expect(policyFor(PAGE)).not.toContain("'unsafe-eval'")
     expect(policyFor(PAGE)).not.toContain("'unsafe-inline'")
   })
 
   it('lets the pages connect to nothing by default, and to the https origins a provider\'s build names', () => {
-    expect(policyFor(PAGE)).toMatch(/; connect-src 'none'; frame-src 'none'; object-src 'none'$/)
-    expect(policyFor(PAGE, { connect: ['https://relay.example.test', 'https://push.example.test:8443'] })).toMatch(/; connect-src https:\/\/relay\.example\.test https:\/\/push\.example\.test:8443; frame-src 'none'; object-src 'none'$/)
+    expect(policyFor(PAGE)).toMatch(/; connect-src 'none'$/)
+    expect(policyFor(PAGE, { connect: ['https://relay.example.test', 'https://push.example.test:8443'] })).toMatch(/; connect-src https:\/\/relay\.example\.test https:\/\/push\.example\.test:8443$/)
     const from = tmp()
     writeFileSync(join(from, 'index.html'), PAGE)
     const www = join(tmp(), 'www')
     syncBundle(from, www, undefined, { connect: ['https://relay.example.test'] })
-    expect(carried(readFileSync(join(www, 'index.html'), 'utf8')).policy).toMatch(/; connect-src https:\/\/relay\.example\.test; frame-src 'none'; object-src 'none'$/)
+    expect(carried(readFileSync(join(www, 'index.html'), 'utf8')).policy).toMatch(/; connect-src https:\/\/relay\.example\.test$/)
   })
 
   it('refuses a connection source that is not exactly an https origin, and syncs nothing with it', () => {
@@ -76,7 +93,7 @@ describe("the shell's policy", () => {
     syncBundle(from, www, undefined, { native: ['https://relay.example.test', 'https://relay.example.test:8443'] })
     expect(JSON.parse(readFileSync(join(www, NATIVE_HTTP), 'utf8'))).toEqual({ origins: ['https://relay.example.test', 'https://relay.example.test:8443'] })
     // The page's own connections are not widened by it.
-    expect(carried(readFileSync(join(www, 'index.html'), 'utf8')).policy).toMatch(/; connect-src 'none'; frame-src 'none'; object-src 'none'$/)
+    expect(carried(readFileSync(join(www, 'index.html'), 'utf8')).policy).toMatch(/; connect-src 'none'$/)
     for (const bad of ['http://relay.example.test', 'https://relay.example.test/', 'https://relay.example.test.', 'https://user@relay.example.test', 'https://*.example.test', 'https://Relay.example.test', 'file:///etc']) {
       expect(() => nativeOrigins([bad]), bad).toThrow(/an https origin/)
       const fresh = join(tmp(), 'www')
@@ -135,7 +152,7 @@ describe("the shell's policy", () => {
     const html = readFileSync(join(www, 'index.html'), 'utf8')
     const { policy, srcs } = carried(html)
     const source = readFileSync(join(dist, 'index.html'), 'utf8')
-    expect(policy).toBe(`${["script-src 'self' 'wasm-unsafe-eval'", ...inlineScripts(source).map(sha)].join(' ')}; connect-src 'none'; frame-src 'none'; object-src 'none'`)
+    expect(policy).toBe(`${["script-src 'self' 'wasm-unsafe-eval'", ...inlineScripts(source).map(sha)].join(' ')}; connect-src 'none'`)
     // Every inline script the synced page runs is one the policy admits.
     for (const s of inlineScripts(html)) expect(policy).toContain(sha(s))
     expect(srcs[0]).toBe(BRIDGE_SRC)

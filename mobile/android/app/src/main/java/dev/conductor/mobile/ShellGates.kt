@@ -129,7 +129,24 @@ class ShellGates private constructor(private val handler: MessageHandler, privat
     }
 }
 
-/** The web view client: every navigation by LoadGate, every request by RequestGate, then the runtime's own. */
+/**
+ * What the Android shell adds, as a header, to every response of the bundle it serves: no frame and no object or embed from any address
+ * (the diagram's frame is a srcdoc document, which loads from none). The bundle's own policy, in each page's meta element, is the one
+ * both shells carry unchanged; a header's policy is enforced beside it, so a page holds to both.
+ */
+object ServedPolicy {
+    const val POLICY = "frame-src 'none'; object-src 'none'"
+
+    /** A served response's headers with POLICY added: as its own header, or as a second policy beside one already there. */
+    fun policed(headers: Map<String, String>?): Map<String, String> {
+        val out = LinkedHashMap(headers ?: emptyMap())
+        val name = out.keys.firstOrNull { it.equals("Content-Security-Policy", ignoreCase = true) }
+        if (name == null) out["Content-Security-Policy"] = POLICY else out[name] = "${out[name]}, $POLICY"
+        return out
+    }
+}
+
+/** The web view client: every navigation by LoadGate, every request by RequestGate, then the runtime's own, its answer carrying ServedPolicy's. */
 class ShellWebViewClient(bridge: Bridge, private val activity: MainActivity, private val gates: ShellGates) : BridgeWebViewClient(bridge) {
     override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
         val url = request.url.toString()
@@ -152,7 +169,7 @@ class ShellWebViewClient(bridge: Bridge, private val activity: MainActivity, pri
         val headers = request.requestHeaders
         val document = RequestGate.document(request.isForMainFrame, headers)
         return when (RequestGate.decide(u.scheme, u.host, u.port, u.encodedPath, document, ShellGates.rangeOf(headers))) {
-            RequestGate.Decision.SERVE -> super.shouldInterceptRequest(view, request)
+            RequestGate.Decision.SERVE -> super.shouldInterceptRequest(view, request)?.also { it.responseHeaders = ServedPolicy.policed(it.responseHeaders) }
             RequestGate.Decision.NETWORK -> null
             RequestGate.Decision.REFUSE -> {
                 gates.refused.incrementAndGet()

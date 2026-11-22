@@ -414,8 +414,10 @@ provider.
   bundle into `mobile/www` with the shell's bridge and its page policy
   (`script-src 'self' 'wasm-unsafe-eval'` and the hash of each inline
   script; `connect-src 'none'`, or the https origins a provider's build
-  names; `frame-src 'none'` and `object-src 'none'`: the diagram's frame
-  is a srcdoc document);
+  names), the one bundle both apps carry; the Android app serves each
+  page with a second policy beside it, `frame-src 'none'` and
+  `object-src 'none'` as a header (the diagram's frame is a srcdoc
+  document);
   `make mobile-test` checks the bridge and starts the synced bundle
   under that policy. `make mobile-install mobile-sync mobile-ios` builds
   the iOS app for the simulator, unsigned, on a Mac with Xcode, and starts

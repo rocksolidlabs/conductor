@@ -173,6 +173,17 @@ class GatesTest {
     }
 
     @Test
+    fun everyServedResponseCarriesTheShellsFrameAndObjectPolicy() {
+        assertEquals("frame-src 'none'; object-src 'none'", ServedPolicy.POLICY)
+        assertEquals(mapOf("Content-Security-Policy" to ServedPolicy.POLICY), ServedPolicy.policed(null))
+        assertEquals(mapOf("Cache-Control" to "no-store", "Content-Security-Policy" to ServedPolicy.POLICY),
+            ServedPolicy.policed(mapOf("Cache-Control" to "no-store")))
+        // A policy already on the response stays, and this one is enforced beside it.
+        assertEquals(mapOf("content-security-policy" to "img-src 'self', ${ServedPolicy.POLICY}"),
+            ServedPolicy.policed(mapOf("content-security-policy" to "img-src 'self'")))
+    }
+
+    @Test
     fun anIntentCarriesInOnlyATapsHandleAndAnHttpsLink() {
         assertEquals(mapOf(TapData.MESSAGE_ID to "0:1", TapData.HANDLE to "h-1"),
             TapData.keep(mapOf(TapData.MESSAGE_ID to "0:1", TapData.HANDLE to "h-1", "from" to "x", "collapse_key" to "y", "google.sent_time" to 5L)))
