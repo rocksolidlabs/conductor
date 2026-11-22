@@ -1949,10 +1949,15 @@ dropped=10 (11 with the frame's) refused=5 cancelled=3 handed=0 workers=1
 probe-violations=frame-src,object-src page-own=true`, the counts read from the gates
 themselves, and then on a form posted to another origin refused by the
 request gate. It runs three rounds in a row in CI, each a fresh install.
-A page of the test's own with no policy holds a frame, an object and an
-embed of another origin, and the shell's installed client must refuse the
-documents the platform itself requests for them (the headers it sent
-logged); a key of the keystore's own made with no unlock under the
+The request gate's refusal of another origin's frame is proven with
+headers a test supplies (below); the page's policy (`frame-src 'none'`,
+`object-src 'none'`) is proven live by the boot check. A page of the
+test's own with no policy holds a frame, an object and an embed of
+another origin: an instrumented test records what the platform's own
+loads for them carry (the main-frame flag, `Upgrade-Insecure-Requests`,
+the Accept) and requires the installed client's refusal wherever the
+platform makes such a request, recording "none heard" where it makes
+none; a key of the keystore's own made with no unlock under the
 shell's alias proves the keystore's certificate decides whether a record
 names it. Other instrumented tests drive the gates in place directly (the web
 view's client refusing another origin's frame and post, a Range past the
