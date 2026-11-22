@@ -931,6 +931,9 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 	// A hosted session's live agent token is one of the server's own, as a
 	// launched session's is (liveTokens).
 	s.hosts.Tokens = &s.agentTokens
+	// A switchyard keeps nothing of a host's machine: no key, no platform,
+	// no version.
+	s.hosts.Switchyard = cfg.Switchyard.Enabled
 	if cfg.MaxViewersPerSession > 0 {
 		s.hosts.MaxViewers = cfg.MaxViewersPerSession
 	}

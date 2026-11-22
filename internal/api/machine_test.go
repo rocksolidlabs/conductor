@@ -87,50 +87,36 @@ func TestHostUpgradeCarriesServerKey(t *testing.T) {
 	}
 }
 
-// A host's register whose machine or platform is out of its form is
-// refused at the route (the connection closed, nothing listed); one whose
-// machine is in its form is listed under a hash of it, with its platform
-// and its version, the key it sent appearing nowhere in the listing.
-func TestHostRegisterMachineRefusedOutOfForm(t *testing.T) {
-	e := newTestEnv(t, nil)
-	register := func(h proto.HostInfo) (proto.Registered, error) {
-		t.Helper()
-		c, _, err := dialHostUpgrade(t, e, "test-host-token")
-		if err != nil {
-			t.Fatal(err)
-		}
-		c.SetReadLimit(proto.MaxHostMessage)
-		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
-		defer cancel()
-		h.Name = "laptop"
-		reg := proto.Register{T: proto.HostRegister, Proto: proto.ProtoVersion, Host: h, Session: proto.HostSession{Name: "hosted", AgentID: "cat", Command: []string{"x"}, Cwd: e.root, Cols: 80, Rows: 24}}
-		if err := c.Write(ctx, websocket.MessageText, encoded(t, reg)); err != nil {
-			t.Fatal(err)
-		}
-		_, data, err := c.Read(ctx)
-		if err != nil {
-			return proto.Registered{}, err
-		}
-		var m proto.Registered
-		if err := json.Unmarshal(data, &m); err != nil || m.T != proto.HostRegistered {
-			t.Fatalf("registered %s: %v", data, err)
-		}
-		return m, nil
-	}
-	sent := strings.Repeat("0a", 16)
-	for _, h := range []proto.HostInfo{{Machine: sent + "0"}, {Machine: strings.ToUpper(sent)}, {Platform: "linux"}, {Machine: sent, Platform: strings.Repeat("x", 33)}} {
-		if _, err := register(h); websocket.CloseStatus(err) != websocket.StatusCode(proto.CloseProtocolError) {
-			t.Fatalf("%+v: %v", h, err)
-		}
-	}
-	_, list := e.do("GET", "/api/sessions", adminToken, nil)
-	if n := len(list["sessions"].([]any)); n != 0 {
-		t.Fatalf("%d sessions listed after refusals", n)
-	}
-	m, err := register(proto.HostInfo{Machine: sent, Platform: "linux/arm64", Version: "v9.9.9"})
+// registerHostAt registers a host saying h of itself at e's /ws/host with
+// the host token, and answers its registered, or the error that closed it.
+func registerHostAt(t *testing.T, e *testEnv, h proto.HostInfo) (proto.Registered, error) {
+	t.Helper()
+	c, _, err := dialHostUpgrade(t, e, "test-host-token")
 	if err != nil {
 		t.Fatal(err)
 	}
+	c.SetReadLimit(proto.MaxHostMessage)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	h.Name = "laptop"
+	reg := proto.Register{T: proto.HostRegister, Proto: proto.ProtoVersion, Host: h, Session: proto.HostSession{Name: "hosted", AgentID: "cat", Command: []string{"x"}, Cwd: e.root, Cols: 80, Rows: 24}}
+	if err := c.Write(ctx, websocket.MessageText, encoded(t, reg)); err != nil {
+		t.Fatal(err)
+	}
+	_, data, err := c.Read(ctx)
+	if err != nil {
+		return proto.Registered{}, err
+	}
+	var m proto.Registered
+	if err := json.Unmarshal(data, &m); err != nil || m.T != proto.HostRegistered {
+		t.Fatalf("registered %s: %v", data, err)
+	}
+	return m, nil
+}
+
+// listedRaw is e's GET /api/sessions as its bytes, and as its sessions.
+func listedRaw(t *testing.T, e *testEnv) ([]byte, []map[string]any) {
+	t.Helper()
 	req, _ := http.NewRequest(http.MethodGet, e.http.URL+"/api/sessions", nil)
 	req.Header.Set("Authorization", "Bearer "+adminToken)
 	resp, err := e.client.Do(req)
@@ -139,13 +125,84 @@ func TestHostRegisterMachineRefusedOutOfForm(t *testing.T) {
 	}
 	raw, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK || bytes.Contains(raw, []byte(sent)) {
-		t.Fatalf("the listing holds the key the host sent: %d %s", resp.StatusCode, raw)
+	var list struct{ Sessions []map[string]any }
+	if resp.StatusCode != http.StatusOK || json.Unmarshal(raw, &list) != nil {
+		t.Fatalf("the listing: %d %s", resp.StatusCode, raw)
 	}
-	_, list = e.do("GET", "/api/sessions", adminToken, nil)
-	got := list["sessions"].([]any)[0].(map[string]any)
-	if got["id"] != m.SessionID || got["hostKey"] != machine.Group(sent) || got["hostKeyFrom"] != "machine" || got["hostPlatform"] != "linux/arm64" || got["hostVersion"] != "v9.9.9" || got["hostLink"] != "up" {
-		t.Fatalf("the hosted session: %v", got)
+	return raw, list.Sessions
+}
+
+// A host's register whose machine is out of its form is refused at the
+// route (the connection closed, nothing listed). One whose platform is out
+// of its form registers with no platform kept. One whose machine is in its
+// form is listed under a hash of it, with its platform and its version,
+// the key it sent appearing nowhere in the listing.
+func TestHostRegisterMachineRefusedOutOfForm(t *testing.T) {
+	e := newTestEnv(t, nil)
+	sent := strings.Repeat("0a", 16)
+	for _, h := range []proto.HostInfo{{Machine: sent + "0"}, {Machine: strings.ToUpper(sent)}, {Machine: sent + "0", Platform: "linux/amd64"}} {
+		if _, err := registerHostAt(t, e, h); websocket.CloseStatus(err) != websocket.StatusCode(proto.CloseProtocolError) {
+			t.Fatalf("%+v: %v", h, err)
+		}
+	}
+	if _, list := listedRaw(t, e); len(list) != 0 {
+		t.Fatalf("%d sessions listed after refusals", len(list))
+	}
+	for _, p := range []string{"linux", strings.Repeat("x", 33)} {
+		m, err := registerHostAt(t, e, proto.HostInfo{Machine: sent, Platform: p})
+		if err != nil {
+			t.Fatalf("platform %q refused the register: %v", p, err)
+		}
+		_, list := listedRaw(t, e)
+		for _, got := range list {
+			if got["id"] == m.SessionID && (got["hostPlatform"] != nil || got["hostKey"] != machine.Group(sent)) {
+				t.Fatalf("platform %q: %v", p, got)
+			}
+		}
+	}
+	m, err := registerHostAt(t, e, proto.HostInfo{Machine: sent, Platform: "linux/arm64", Version: "v9.9.9"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, list := listedRaw(t, e)
+	if bytes.Contains(raw, []byte(sent)) {
+		t.Fatalf("the listing holds the key the host sent: %s", raw)
+	}
+	found := false
+	for _, got := range list {
+		if got["id"] != m.SessionID {
+			continue
+		}
+		found = true
+		if got["hostKey"] != machine.Group(sent) || got["hostKeyFrom"] != "machine" || got["hostPlatform"] != "linux/arm64" || got["hostVersion"] != "v9.9.9" || got["hostLink"] != "up" {
+			t.Fatalf("the hosted session: %v", got)
+		}
+	}
+	if !found {
+		t.Fatalf("the session is not listed: %s", raw)
+	}
+}
+
+// A switchyard keeps none of what a host says of its machine, though the
+// host sent all three in their forms: its listing has no hostPlatform, no
+// hostVersion and no key made of the machine key.
+func TestSwitchyardListsNothingOfAMachine(t *testing.T) {
+	yard := newTestEnv(t, func(c *config.Config) { c.Switchyard.Enabled = true })
+	sent := strings.Repeat("0b", 16)
+	if _, err := registerHostAt(t, yard, proto.HostInfo{Machine: sent, Platform: "linux/amd64+wsl", Version: "v1.2.3"}); err != nil {
+		t.Fatal(err)
+	}
+	raw, list := listedRaw(t, yard)
+	if len(list) != 1 {
+		t.Fatalf("the switchyard lists %s", raw)
+	}
+	for _, k := range []string{"hostPlatform", "hostVersion", sent, machine.Group(sent), "v1.2.3", "linux/amd64"} {
+		if bytes.Contains(raw, []byte(k)) {
+			t.Fatalf("the switchyard's listing holds %s: %s", k, raw)
+		}
+	}
+	if list[0]["hostKeyFrom"] == "machine" {
+		t.Fatalf("the switchyard keyed a machine: %v", list[0])
 	}
 }
 

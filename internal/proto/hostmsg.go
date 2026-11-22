@@ -74,10 +74,11 @@ const (
 // HostInfo describes the host process.
 type HostInfo struct {
 	Name string `json:"name"`
-	// Version is the host's release. A server keeps it for
+	// Version is the host's release. The owner's own server keeps it for
 	// the session (session.Info.HostVersion) when it is within
 	// MaxHostVersion bytes of its form (ValidHostVersion), and keeps none
 	// otherwise: the register stands, since an older host's may be of any.
+	// A switchyard keeps none.
 	Version string `json:"version"`
 	// User is the OS user running the host (≤ 64 bytes), for "hosted by".
 	User string `json:"user,omitempty"`
@@ -105,16 +106,19 @@ type HostInfo struct {
 	// digits, made from the machine's id and the key this server sent in
 	// the upgrade's ServerKeyHeader, so it is never the id itself and each
 	// server, and each start of one, is sent an unrelated key. Only to the
-	// owner's own server: a registration to a switchyard leaves it out, and
-	// so does a host whose upgrade carried no key of the header's form or
-	// that has no id. A server keeps only a hash of it (machine.Group). It
+	// owner's own server: a host whose upgrade carried no key of the
+	// header's form (a switchyard sends none), or that has no id, leaves it
+	// out. A server keeps only a hash of it (machine.Group), a switchyard
+	// nothing. It
 	// groups the sessions of one machine on the server's page and decides
 	// nothing. Never logged. A register with one out of its form is refused
 	// (CheckMachine); an older server ignores it.
 	Machine string `json:"machine,omitempty"`
 	// Platform is the host's <GOOS>/<GOARCH>, with +wsl inside WSL
 	// (machine.Platform), at most MaxHostPlatform bytes of its form
-	// (ValidHostPlatform), refused out of it. Left out to a switchyard.
+	// (ValidHostPlatform): one out of it is not kept, and the register
+	// stands. Sent only beside a valid server key (ServerKeyHeader), so
+	// never to a switchyard; a switchyard's hub keeps none in any case.
 	Platform string `json:"platform,omitempty"`
 }
 

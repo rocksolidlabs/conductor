@@ -320,10 +320,14 @@ starting: no section and no line.
       for a host of its own machine. So its row and a host on the same
       machine hold one key, made by one function and compared as equal
       strings (I7).
-    - **Never to a switchyard.** A registration to a switchyard
-      (`Options.Switchyard`, and the uplink of a server publishing there)
-      leaves `machine` out, as it leaves out the OS user and the branch
-      today (`internal/hostagent/agent.go`, `registration`).
+    - **Never to a switchyard.** A host sends `machine` and `platform`
+      only when the upgrade carried a server key of the header's form,
+      which only the owner's own server sends, and never with
+      `Options.Switchyard` (the uplink of a server publishing there): a
+      `conductor host` pointed straight at a switchyard cannot tell it
+      from its own server, so the missing key is what keeps both out
+      (as built). A switchyard's hub keeps none of `machine`, `platform`
+      and `version`, whatever a host sends (`signal.Hub.Switchyard`).
     - **What the key does not prove.** A host holding a host token can
       send any key, and so put its sessions on another machine's card.
       The key groups what the page shows and decides nothing: each
@@ -363,14 +367,19 @@ starting: no section and no line.
     `internal/api` both use it (`internal/api` does not import
     `internal/hostagent`, and neither should for this);
     `docs/repository-map.md` gains its row.
-- `signal.Hub.Register` checks both at their bounds (a register past one
-  refused with `ErrBadRegister`, as `Name` and `User` are), keeps
-  `HostInfo.Version` (dropped today; at most 64 bytes, the pattern of
-  `version.Version`), and keys the session. `hostKey` is always 32
+- `signal.Hub.Register` checks `machine` at its form (a register with one
+  out of it refused with `ErrBadRegister`, as `Name` and `User` are); keeps
+  `platform` only in its form and `HostInfo.Version` (dropped before; at
+  most 64 bytes of `^[0-9A-Za-z][0-9A-Za-z.+_-]{0,63}$`, as built:
+  `version.Version` has no pattern) only in its, each out of its form not
+  kept and the register standing, so a later release that widens a form
+  still connects (as built); and keys the session. `hostKey` is always 32
   lowercase hex digits: `machine.Group(machine)` when the host reports
   one (`hostKeyFrom` `machine`), the function the server's own row's key
-  is made by; otherwise `ownerOf(instance)`, the 32-hex hash the hub
-  already keeps of the host's instance (`process`: one process); and for
+  is made by; otherwise a hash, under a prefix of its own, of
+  `ownerOf(instance)`, the 32-hex hash the hub already keeps of the host's
+  instance (`process`: one process; as built, the owner hash the hub
+  matches a return by is never served itself); and for
   the oldest hosts, which send no instance either (`Hub.Register` leaves
   `owner` empty), a hash of the session's own id (`session`), so two
   such hosts never share a key. The key the host sent is never served.

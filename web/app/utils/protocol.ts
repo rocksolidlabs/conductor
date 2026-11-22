@@ -872,8 +872,9 @@ export const HOST_MAX_LOCAL_ID = 64
 
 /**
  * What a host's register says of its machine (docs/protocol.md, Host control connection), each optional: an older host
- * sends neither `machine` nor `platform`. A register with either out of its form is refused whole; a `version` out of its
- * form is not kept. None of them is sent to a switchyard but `version`.
+ * sends neither `machine` nor `platform`. A register with a `machine` out of its form is refused whole; a `platform` or a
+ * `version` out of its form is not kept and the register stands. A host sends `machine` and `platform` only to a server
+ * whose upgrade carried its key; a switchyard keeps none of the three.
  */
 export interface HostMachine {
   /**
@@ -882,7 +883,7 @@ export interface HostMachine {
    * of it (a session's `hostKey`).
    */
   machine?: string
-  /** `<GOOS>/<GOARCH>`, with `+wsl` inside WSL: at most HOST_MAX_PLATFORM bytes of `^[a-z0-9]{1,15}/[a-z0-9]{1,15}(\+wsl)?$`. */
+  /** `<GOOS>/<GOARCH>`, with `+wsl` inside WSL: kept when at most HOST_MAX_PLATFORM bytes of `^[a-z0-9]{1,15}/[a-z0-9]{1,15}(\+wsl)?$`. */
   platform?: string
   /** The host's release, kept when at most HOST_MAX_VERSION bytes of `^[0-9A-Za-z][0-9A-Za-z.+_-]*$`. */
   version?: string

@@ -7,8 +7,11 @@ import (
 	"testing"
 )
 
-// Each of what a host says of its machine is taken at its bound and in its
-// form, and refused one past it or out of its form, whole: never cut down.
+// A machine key is taken in its form and refuses the register one past it
+// or out of it, whole: never cut down. A platform (and a version) is taken
+// at its bound and in its form, and one past it or out of it is only not
+// kept: the register stands, so a later release that widens the form still
+// connects.
 func TestRegisterHostMachineAndPlatformBounds(t *testing.T) {
 	key := strings.Repeat("0123456789abcdef", 2)
 	ok := []HostInfo{
@@ -28,26 +31,44 @@ func TestRegisterHostMachineAndPlatformBounds(t *testing.T) {
 		}
 	}
 	bad := map[string]HostInfo{
-		"a machine one short":           {Machine: key[:31]},
-		"a machine one past":            {Machine: key + "0"},
-		"a machine in upper case":       {Machine: strings.ToUpper(key)},
-		"a machine not hex":             {Machine: key[:31] + "g"},
-		"a machine with a newline":      {Machine: key[:31] + "\n"},
-		"a machine of 64 digits":        {Machine: key + key},
-		"a platform one past its bound": {Platform: strings.Repeat("a", 13) + "/" + strings.Repeat("b", 15) + "+wsl"},
-		"a platform's part too long":    {Platform: strings.Repeat("a", 16) + "/amd64"},
-		"a platform with no arch":       {Platform: "linux/"},
-		"a platform with no slash":      {Platform: "linux"},
-		"a platform in upper case":      {Platform: "Linux/amd64"},
-		"a platform of another suffix":  {Platform: "linux/amd64+mac"},
-		"a platform with a space":       {Platform: "linux/amd64 "},
-		"a platform with a newline":     {Platform: "linux/amd64\n"},
-		"a platform of two slashes":     {Platform: "linux/amd64/x"},
-		"a good machine, bad platform":  {Machine: key, Platform: "<b>"},
+		"a machine one short":          {Machine: key[:31]},
+		"a machine one past":           {Machine: key + "0"},
+		"a machine in upper case":      {Machine: strings.ToUpper(key)},
+		"a machine not hex":            {Machine: key[:31] + "g"},
+		"a machine with a newline":     {Machine: key[:31] + "\n"},
+		"a machine of 64 digits":       {Machine: key + key},
+		"a bad machine, good platform": {Machine: key + "0", Platform: "linux/amd64"},
 	}
 	for name, h := range bad {
 		if err := h.CheckMachine(); !errors.Is(err, ErrHostMachine) {
 			t.Errorf("%s: %v, want ErrHostMachine", name, err)
+		}
+	}
+	for _, h := range ok {
+		if h.Platform != "" && !ValidHostPlatform(h.Platform) {
+			t.Errorf("platform %q not kept", h.Platform)
+		}
+	}
+	// A platform out of its form is not kept, and does not refuse the
+	// register.
+	for name, p := range map[string]string{
+		"one past its bound": strings.Repeat("a", 13) + "/" + strings.Repeat("b", 15) + "+wsl",
+		"a part too long":    strings.Repeat("a", 16) + "/amd64",
+		"no arch":            "linux/",
+		"no slash":           "linux",
+		"upper case":         "Linux/amd64",
+		"another suffix":     "linux/amd64+mac",
+		"a space":            "linux/amd64 ",
+		"a newline":          "linux/amd64\n",
+		"two slashes":        "linux/amd64/x",
+		"markup":             "<b>",
+		"far past its bound": strings.Repeat("a", 4096),
+	} {
+		if ValidHostPlatform(p) {
+			t.Errorf("platform %s (%q) kept", name, p)
+		}
+		if err := (HostInfo{Machine: key, Platform: p}).CheckMachine(); err != nil {
+			t.Errorf("platform %s refused the register: %v", name, err)
 		}
 	}
 
@@ -84,8 +105,8 @@ func TestRegisterHostMachineAndPlatformBounds(t *testing.T) {
 		t.Errorf("a desk with a machine past its bound: %v", err)
 	}
 	desk.Host.Machine, desk.Host.Platform = "", "linux"
-	if err := desk.Validate(); !errors.Is(err, ErrHostMachine) {
-		t.Errorf("a desk with a platform out of its form: %v", err)
+	if err := desk.Validate(); err != nil {
+		t.Errorf("a desk with a platform out of its form refused: %v", err)
 	}
 }
 
