@@ -91,8 +91,8 @@ func TestOpenMakesTheSchema(t *testing.T) {
 // read-only, written by a newer Conductor, its writes and its recovery
 // refused and its rows as they were.
 func TestTheLedgerVersionFencesComparisons(t *testing.T) {
-	if Version != 16 {
-		t.Fatalf("Version %d: the comparisons' barrier is 12, and 13 to 16 the versions after it", Version)
+	if Version != 17 {
+		t.Fatalf("Version %d: the comparisons' barrier is 12, and 13 to 17 the versions after it", Version)
 	}
 	dir := filepath.Join(t.TempDir(), "runs")
 	l := openLedger(t, dir)
@@ -163,6 +163,105 @@ func TestTheLedgerVersionFencesComparisons(t *testing.T) {
 	}
 	if v := dbVersion(t, later); v != Version+1 {
 		t.Fatalf("the later version's ledger is version %d now", v)
+	}
+}
+
+// Version 17 is a barrier before a decision's counted responses: 16 to 17
+// changes no table and rewrites no row. A version 16 ledger holding a row
+// in every table is brought to 17 as it opens, its schema a new
+// database's and every entry and row as it was, and opened again it is as
+// it was. A binary that writes 16 opens a version 17 ledger read-only:
+// that binary's rule for a later version is this one's (schemaAt), so a
+// ledger one version past this binary's stands for it: read-only in the
+// words of a newer Conductor, its writes and its recovery refused, read as
+// it is, every row and entry as it was. Opened again by a binary of its
+// own version, it is the owner's, as it was.
+func TestLedgerBarrierOpensOlderBinariesReadOnly(t *testing.T) {
+	if stmts, ok := migrations[16]; Version != 17 || !ok || len(stmts) != 0 {
+		t.Fatalf("Version %d, version 16's migration %v (%v): the barrier before counted responses is 17, a version of its own with no statements", Version, stmts, ok)
+	}
+	ctx := context.Background()
+	fresh := openLedger(t, filepath.Join(t.TempDir(), "runs"))
+	if v := dbVersion(t, fresh); v != 17 {
+		t.Fatalf("a new database is version %d", v)
+	}
+	freshEntries := allEntries(t, fresh)
+	fresh.Close()
+
+	dir := filepath.Join(t.TempDir(), "runs")
+	l := filled(t, dir)
+	if err := putStatement(l, 1, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := putOutput(l, 1, "question", "clean"); err != nil {
+		t.Fatal(err)
+	}
+	l.Close()
+	rawExec(t, dir, "UPDATE schema_version SET version = 16")
+	v16 := openReadOnly(t, dir)
+	if v := dbVersion(t, v16); v != 16 {
+		t.Fatalf("the fixture is version %d", v)
+	}
+	before, entries := everyRow(t, v16), allEntries(t, v16)
+	for table, rows := range before {
+		if len(rows) == 0 {
+			t.Errorf("the fixture's %s holds no rows", table)
+		}
+	}
+	v16.Close()
+
+	for _, step := range []string{"brought to 17", "opened again"} {
+		opened := openLedger(t, dir)
+		if ro, why := opened.ReadOnly(); ro {
+			t.Fatalf("%s: read-only: %s", step, why)
+		}
+		if v := dbVersion(t, opened); v != 17 {
+			t.Fatalf("%s: version %d", step, v)
+		}
+		if got := allEntries(t, opened); !slices.Equal(got, entries) || !slices.Equal(got, freshEntries) {
+			t.Fatalf("%s: the schema:\n%v\nwas:\n%v\na new database's:\n%v", step, got, entries, freshEntries)
+		}
+		if got := everyRow(t, opened); !maps.EqualFunc(got, before, slices.Equal) {
+			t.Fatalf("%s: the rows:\n%v\nwere:\n%v", step, got, before)
+		}
+		opened.Close()
+	}
+
+	// As version 17 is to a binary that writes 16.
+	const run = "team-00000001"
+	rawExec(t, dir, fmt.Sprintf("UPDATE schema_version SET version = %d", Version+1))
+	later := openLedger(t, dir)
+	ro, why := later.ReadOnly()
+	if !ro || !strings.Contains(why, fmt.Sprintf("the database is version %d, written by a newer Conductor; this one writes version %d", Version+1, Version)) {
+		t.Fatalf("a later version's ledger: read-only %v: %s", ro, why)
+	}
+	if _, err := later.Transition(ctx, run, func(*Tx) error { return nil }); !errors.Is(err, ErrReadOnly) {
+		t.Fatalf("a write to a later version's ledger: %v", err)
+	}
+	if _, err := later.Recover(ctx); !errors.Is(err, ErrReadOnly) {
+		t.Fatalf("a recovery of a later version's ledger: %v", err)
+	}
+	if rec, ok, err := later.Decision(ctx, 1); err != nil || !ok || len(rec.Responses) != 1 {
+		t.Fatalf("a later version's decision, read: %+v %v %v", rec, ok, err)
+	}
+	if got := everyRow(t, later); !maps.EqualFunc(got, before, slices.Equal) {
+		t.Fatalf("a later version's ledger after the refusals:\n%v\nwere:\n%v", got, before)
+	}
+	if got := allEntries(t, later); !slices.Equal(got, entries) {
+		t.Fatalf("a later version's schema after the refusals:\n%v\nwas:\n%v", got, entries)
+	}
+	if v := dbVersion(t, later); v != Version+1 {
+		t.Fatalf("the later version's ledger is version %d now", v)
+	}
+	later.Close()
+
+	rawExec(t, dir, fmt.Sprintf("UPDATE schema_version SET version = %d", Version))
+	own := openLedger(t, dir)
+	if ro, why := own.ReadOnly(); ro {
+		t.Fatalf("read-only at its own version: %s", why)
+	}
+	if got := everyRow(t, own); !maps.EqualFunc(got, before, slices.Equal) {
+		t.Fatalf("the ledger at its own version:\n%v\nwas:\n%v", got, before)
 	}
 }
 

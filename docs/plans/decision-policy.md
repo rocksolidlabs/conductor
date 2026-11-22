@@ -556,7 +556,12 @@ behaves unchanged, and a router that does not implement
   shipped alone right before PR-9, with a migration of no statements,
   as RV1's (version 10) is, so that an older binary (PR-7 to PR-8
   among them, which count no approvals) opens a ledger that may hold
-  `counted` rows read-only.
+  `counted` rows read-only. As built (#1071): version 17 (`main` was at
+  16, sync's seams), its migration an empty list: no table changes and
+  no row is rewritten. A version 16 ledger is brought to 17 as it opens,
+  every entry and row as it was; a binary that writes 16 opens a version
+  17 ledger read-only, its writes and its recovery refused, as for any
+  later version (`TestLedgerBarrierOpensOlderBinariesReadOnly`).
 - `placeCond` (PR-7; the condition of a decision holding a place for
   its replacement) gains one clause: an `open` or `answered` decision
   whose policy holds a spare (`json_extract(d.policy, '$.spare') = 1`)
