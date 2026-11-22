@@ -53,7 +53,13 @@ type launchTest struct {
 // crew, and agents join the catalog.
 func newLaunchTest(t *testing.T, mutate func(*config.Config), shape func(*crew.Crew), agents ...catalog.Agent) *launchTest {
 	t.Helper()
-	p := newPlanTest(t, mutate, append([]catalog.Agent{readyCat}, agents...)...)
+	return newLaunchTestWith(t, mutate, shape, nil, agents...)
+}
+
+// newLaunchTestWith is newLaunchTest of a server with the options opts.
+func newLaunchTestWith(t *testing.T, mutate func(*config.Config), shape func(*crew.Crew), opts []Option, agents ...catalog.Agent) *launchTest {
+	t.Helper()
+	p := newPlanTestWith(t, mutate, append([]catalog.Agent{readyCat}, agents...), opts...)
 	c := teamCrew("Team", "ready-cat")
 	if shape != nil {
 		shape(&c)

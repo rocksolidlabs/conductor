@@ -61,8 +61,9 @@ func (s *Server) wireContext() {
 	}
 }
 
-// contextFor answers the context blocks for the attempt q: every provider
-// asked at once (each answer checked by the guard: at most
+// contextFor answers the context blocks for the attempt q, the engine's
+// query with the people's reviews it names added (contextReviews): every
+// provider asked at once (each answer checked by the guard: at most
 // ext.MaxContextBlocks, each block ContextBlock.Valid, or none), in
 // registration order, each block named by its provider, and, when they
 // pass ext.MaxTaskContext together as a task file keeps them, the last
@@ -74,6 +75,9 @@ func (s *Server) contextFor(ctx context.Context, q ext.ContextQuery) []crew.Task
 		// No block reaches an agent unrecorded: without the context
 		// files, none is asked.
 		providers = nil
+	}
+	if len(providers) > 0 {
+		q.Reviews = s.contextReviews(ctx, q)
 	}
 	answers := make([][]ext.ContextBlock, len(providers))
 	var wg sync.WaitGroup
