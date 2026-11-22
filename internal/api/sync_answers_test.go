@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/rocksolidlabs/conductor/ext"
+	"github.com/rocksolidlabs/conductor/ext/exttest"
 	"github.com/rocksolidlabs/conductor/ext/local"
 	"github.com/rocksolidlabs/conductor/internal/crew"
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
@@ -395,28 +396,170 @@ func TestSubstitutedAnswerRefused(t *testing.T) {
 	}
 }
 
-// Where the router confirms policies every held answer is refused
-// answered_at_server, final, nothing written, neither the router nor the
-// identity provider asked, whatever the provider would say.
+// newHeldFixtureRouted is newHeldFixture with fr registered as the
+// decision router, one that confirms policies.
+func newHeldFixtureRouted(t *testing.T, fr *exttest.FakeRouter) *heldFixture {
+	t.Helper()
+	id := &answerIdentity{admit: always(ext.AdmitYes), ch: make(chan struct{}, 1), once: map[string]ext.Principal{}}
+	f := newFakeSync()
+	opt := WithExtensions(local.Fill(ext.Providers{Identity: id, Continuity: f, Router: fr, All: []ext.Entry{
+		{Kind: ext.KindIdentity, Name: id.Name(), Value: id}, {Kind: ext.KindSync, Name: f.Name(), Value: f}, {Kind: ext.KindDecisions, Name: fr.Name(), Value: fr},
+	}}))
+	df := newDecisionFixture(t, nil, slog.New(slog.NewTextHandler(io.Discard, nil)), opt)
+	if !df.srv.runs.RoutesPolicies() {
+		t.Fatal("the fixture's router confirms no policies")
+	}
+	return &heldFixture{decisionFixture: df, id: id, store: f, h: &extHost{s: df.srv, name: f.Name(), ctx: context.Background()}, waits: make(chan chan time.Time, 16)}
+}
+
+// openLocal opens an approval the router routes under the server's own
+// policy, and waits for its opening window to close.
+func (f *heldFixture) openLocal(t *testing.T, requestID string) string {
+	t.Helper()
+	did := f.open(t, requestID)
+	until(t, did+"'s opening window closed", func() bool { return !f.srv.router.windows.in(did) })
+	return did
+}
+
+// Where the router confirms policies, a held answer to a record under a
+// router's policy is refused answered_at_server, final, nothing written,
+// neither the router nor the identity provider asked, whatever the
+// provider would say.
 func TestHeldAnswerRefusedWhereTheRouterConfirmsPolicies(t *testing.T) {
-	f := newHeldFixture(t)
+	fr := exttest.NewFakeRouter("switchman")
+	fr.SetPolicy("dr-1", anaPolicy(ext.OverrideOperator))
+	fr.SetRoute("dr-1", ext.Route{To: []ext.Destination{{Kind: "person", Name: "Ana"}}, Rule: "architecture decisions"})
+	f := newHeldFixtureRouted(t, fr)
 	did := f.open(t, "q1")
-	routerAsked := 0
-	f.srv.runs.SetRouterPolicies(true, func(context.Context, ledger.DecisionRecord, string, string) ext.Confirmation {
-		routerAsked++
-		return ext.Confirmation{}
-	})
+	until(t, did+"'s policy written", func() bool { return ledger.RouterPolicy(f.rec(t, did).Policy) })
+	before := f.rec(t, did)
+	asked := len(fr.Confirms())
 	for _, adm := range []ext.Admission{ext.AdmitYes, ext.AdmitUnknown} {
 		f.id.set(always(adm))
-		out := f.hand(t, held(did, "h1", "ana", 0, 1))
+		out := f.hand(t, held(did, "h1", "ana", 0, before.Rev))
 		if out.Status != ext.AnswerRefused || out.Code != crew.CodeAnsweredAtServer || !strings.Contains(out.Words, "an answer given elsewhere is not taken here") {
 			t.Fatalf("%+v", out)
 		}
 	}
-	if n := len(f.id.asks()); n != 0 || routerAsked != 0 {
-		t.Fatalf("asked: the provider %d, the router %d", n, routerAsked)
+	if n := len(f.id.asks()); n != 0 || len(fr.Confirms()) != asked {
+		t.Fatalf("asked: the provider %d, the router %d", n, len(fr.Confirms())-asked)
+	}
+	f.unchanged(t, did, before.Rev, len(before.Responses))
+}
+
+// Where the router confirms policies, a held answer to a record under the
+// server's own policy is judged as the respond route judges an answer to
+// it: the router asked first, then the identity provider; the operator's
+// (the admin grant) recorded and applied once; one to a record given to
+// the decide grant recorded for a holder of decide; one the provider does
+// not admit refused not_approver, nothing written.
+func TestHeldAnswerUnderTheServersOwnPolicyWhereTheRouterConfirms(t *testing.T) {
+	fr := exttest.NewFakeRouter("switchman")
+	f := newHeldFixtureRouted(t, fr)
+	did := f.openLocal(t, "q1")
+	asked := len(fr.Confirms())
+	out := f.hand(t, held(did, "h1", "ana", 0, f.rec(t, did).Rev))
+	if out.Status != ext.AnswerRecorded || out.Repeat {
+		t.Fatalf("the operator's held answer: %+v", out)
+	}
+	if len(fr.Confirms()) == asked {
+		t.Fatal("the router was not asked about the held answer")
+	}
+	if a := f.id.asks(); len(a) == 0 || a[0].grant != ext.GrantAdmin {
+		t.Fatalf("the provider's asks: %+v", a)
+	}
+	until(t, did+" applied", func() bool { return f.rec(t, did).State == ledger.DecisionApplied })
+	if rec := f.rec(t, did); len(rec.Responses) != 1 || rec.Responses[0].Status != ledger.ResponseAccepted {
+		t.Fatalf("the responses after the held answer: %+v", rec.Responses)
+	}
+	given := f.openLocal(t, "q2")
+	f.expect(t, http.MethodPost, "/api/decisions/"+given+"/route", map[string]any{"opId": "give-1", "to": map[string]any{"kind": "grant", "grant": "decide"}, "expectedRev": f.rec(t, given).Rev}, http.StatusOK, "")
+	out = f.hand(t, held(given, "h2", "bob", 0, f.rec(t, given).Rev))
+	if out.Status != ext.AnswerRecorded {
+		t.Fatalf("a decide holder's held answer to a record given to the grant: %+v", out)
+	}
+	if a := f.id.asks(); a[len(a)-1].grant != ext.GrantDecide {
+		t.Fatalf("the provider was asked for %s", a[len(a)-1].grant)
+	}
+	refused := f.openLocal(t, "q3")
+	f.id.set(always(ext.AdmitNo))
+	rev := f.rec(t, refused).Rev
+	out = f.hand(t, held(refused, "h3", "cy", 0, rev))
+	if out.Status != ext.AnswerRefused || out.Code != crew.CodeNotApprover {
+		t.Fatalf("a held answer the provider does not admit: %+v", out)
+	}
+	f.unchanged(t, refused, rev, 0)
+}
+
+// A record under the server's own policy whose policy is being written is
+// not taken now (unknown_authority, nothing written, handed in again
+// later): in its opening window, the router's route held; and where the
+// router will route it now (Routes), which tells the router again. The
+// same answer handed in once the router's policy is written is
+// answered_at_server: the record is under a router's policy then.
+func TestHeldAnswerNotTakenWhileItsPolicyIsWritten(t *testing.T) {
+	fr := exttest.NewFakeRouter("switchman")
+	fr.SetPolicy("dr-1", anaPolicy(ext.OverrideOperator))
+	fr.SetRoute("dr-1", ext.Route{To: []ext.Destination{{Kind: "person", Name: "Ana"}}, Rule: "architecture decisions"})
+	f := newHeldFixtureRouted(t, fr)
+	holdWindows(t, f.srv)
+	release := fr.HoldRoutes()
+	var once sync.Once
+	t.Cleanup(func() { once.Do(release) })
+	did := f.open(t, "q1")
+	if !f.srv.router.windows.in(did) {
+		t.Fatal("the record is not in its opening window")
+	}
+	answer := held(did, "h1", "ana", 0, f.rec(t, did).Rev)
+	out := f.hand(t, answer)
+	if out.Status != ext.AnswerUnknownAuthority || !strings.Contains(out.Words, "not taken now") {
+		t.Fatalf("a held answer in the opening window: %+v", out)
 	}
 	f.unchanged(t, did, 1, 0)
+	once.Do(release)
+	until(t, did+"'s policy written", func() bool { return ledger.RouterPolicy(f.rec(t, did).Policy) })
+	if out := f.hand(t, answer); out.Status != ext.AnswerRefused || out.Code != crew.CodeAnsweredAtServer {
+		t.Fatalf("the same answer once its policy is written: %+v", out)
+	}
+	local := f.openLocal(t, "q2")
+	fr.SetConfirm(local, func(ext.ConfirmQuery) ext.Confirmation { return ext.Confirmation{Routes: true} })
+	told := len(fr.Decisions())
+	rev := f.rec(t, local).Rev
+	out = f.hand(t, held(local, "h2", "ana", 0, rev))
+	if out.Status != ext.AnswerUnknownAuthority || !strings.Contains(out.Words, "not taken now") {
+		t.Fatalf("a held answer the router will route now: %+v", out)
+	}
+	until(t, "the router told "+local+" again", func() bool { return len(fr.Decisions()) > told })
+	f.unchanged(t, local, rev, 0)
+	if n := len(f.id.asks()); n != 0 {
+		t.Fatalf("the provider was asked %d times", n)
+	}
+}
+
+// A router's policy written between the door's ask and the answer's commit
+// (the router writing it as it is asked): the held answer is not taken
+// now, nothing kept, for the provider to hand in again.
+func TestHeldAnswerWithAPolicyWrittenAfterItsAskIsNotTaken(t *testing.T) {
+	fr := exttest.NewFakeRouter("switchman")
+	f := newHeldFixtureRouted(t, fr)
+	did := f.openLocal(t, "q1")
+	rev := f.rec(t, did).Rev
+	var once sync.Once
+	fr.SetConfirm(did, func(ext.ConfirmQuery) ext.Confirmation {
+		once.Do(func() {
+			if _, err := f.srv.runs.RoutePolicy(context.Background(), did, "switchman", rev, anaPolicy(ext.OverrideOperator), []crew.Destination{{Kind: "person", Name: "Ana"}}, "architecture decisions"); err != nil {
+				t.Errorf("the policy written: %v", err)
+			}
+		})
+		return ext.Confirmation{}
+	})
+	out := f.hand(t, held(did, "h1", "ana", 0, rev))
+	if out.Status != ext.AnswerUnknownAuthority || !strings.Contains(out.Words, "not taken now") {
+		t.Fatalf("a held answer whose policy was written after its ask: %+v", out)
+	}
+	if rec := f.rec(t, did); len(rec.Responses) != 0 || !ledger.RouterPolicy(rec.Policy) {
+		t.Fatalf("after it: %d responses, policy %s", len(rec.Responses), rec.Policy)
+	}
 }
 
 // The held answer's id and fence are written with its row, in DR1's
@@ -898,4 +1041,33 @@ func TestHeldAnswerToAnAnsweredDecisionSaysItIsAnswered(t *testing.T) {
 		t.Fatalf("asked: the provider %d, the router %d", n, routerAsked)
 	}
 	f.unchanged(t, did, rec.Rev, len(rec.Responses))
+}
+
+// A record whose policy column names a policy this server does not hold
+// (neither local/1 nor a router's: a damaged or foreign ledger) refuses a
+// held answer stale_policy and keeps the refusal: on a server with no
+// router that is the final refusal it always was, and its repeat the
+// same, never "not taken now" (#1065).
+func TestAKeptStalePolicyIsAFinalRefusal(t *testing.T) {
+	f := newHeldFixture(t)
+	did := f.open(t, "q1")
+	n, _ := ledger.ParseDecisionID(did)
+	db, err := sql.Open("sqlite", "file:"+filepath.Join(f.srv.store.Dir(), "runs", ledger.File)+"?_pragma=busy_timeout(10000)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`UPDATE decisions SET policy = ? WHERE n = ?`, `{"revision":"local/0","approver":"operator","quorum":1,"authority":[{"kind":"operator"}]}`, n); err != nil {
+		t.Fatal(err)
+	}
+	answer := held(did, "h1", "ana", 0, 1)
+	for i := range 2 {
+		out := f.hand(t, answer)
+		if out.Status != ext.AnswerRefused || out.Code != crew.CodeStalePolicy || out.Repeat != (i == 1) {
+			t.Fatalf("hand-in %d to a record under a policy not held here: %+v", i+1, out)
+		}
+	}
+	if rec := f.rec(t, did); len(rec.Responses) != 1 || rec.Responses[0].Status != ledger.ResponseRefused {
+		t.Fatalf("the kept refusal: %+v", rec.Responses)
+	}
 }

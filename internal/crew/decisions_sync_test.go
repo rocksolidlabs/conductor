@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"sync"
@@ -192,33 +194,83 @@ func mustN(t *testing.T, id string) int64 {
 	return n
 }
 
-// While a router that confirms policies is registered the engine refuses
-// a held answer that reaches it, kept, answered_at_server, its statement
-// kept beside the refusal; the router is not asked.
+// A held answer that reaches the engine for a record under a router's
+// policy, where a router that confirms policies is registered, is refused
+// answered_at_server, kept, with its statement (the door refuses it
+// before; this is the second guard), whether the door asked the router
+// nothing or the router confirms the policy in force and its subject
+// eligible; the router is not asked by the engine.
 func TestEngineRefusesAHeldAnswerUnderAPolicy(t *testing.T) {
 	dir := newRepo(t)
 	e, _, ld := decisionEngine(t)
 	run := launchGated(t, e, dir, "api-sweep-000000b4", repoCrew(dir, work("build", "lead"), work("deploy", "ops")), shipGate("deploy"))
 	waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
 	g := gateOf(t, e, ld, run.ID)
+	routeGate(t, ld, run.ID, g)
 	asked := 0
 	e.SetRouterPolicies(true, func(context.Context, ledger.DecisionRecord, string, string) ext.Confirmation {
 		asked++
 		return ext.Confirmation{}
 	})
-	rc, err := e.RespondHeld(t.Context(), g.ID, Response{ResponseID: "h1", Choice: choice(0), ExpectedRev: 1}, "user:ana", held("ana", grantAdmin, "f-1"), heldStatement)
-	if de := decisionFailure(err); de == nil || de.Code != CodeAnsweredAtServer || rc.Status != "refused" || !strings.Contains(rc.Words, "an answer given elsewhere is not taken here") {
-		t.Fatalf("the held answer: %+v %v", rc, err)
-	}
-	rec := decisionWhen(t, ld, g.ID, "open", inState(ledger.DecisionOpen))
-	if len(rec.Responses) != 1 || rec.Responses[0].Status != ledger.ResponseRefused {
-		t.Fatalf("the refusal was not kept: %+v", rec.Responses)
-	}
-	if s, ok, _ := ld.Statement(t.Context(), rec.N, rc.K); !ok || s != heldStatement {
-		t.Fatalf("the kept refusal's statement: %q %v", s, ok)
+	for i, conf := range []*ext.Confirmation{nil, {InForce: true, Revision: "r1", Groups: []string{"architecture"}}} {
+		rc, err := e.RespondHeldWith(t.Context(), g.ID, Response{ResponseID: fmt.Sprintf("h%d", i), Choice: choice(0), ExpectedRev: 1}, "user:ana", held("ana", grantAdmin, "f-1"), heldStatement, conf)
+		if de := decisionFailure(err); de == nil || de.Code != CodeAnsweredAtServer || rc.Status != "refused" || !strings.Contains(rc.Words, "an answer given elsewhere is not taken here") {
+			t.Fatalf("the held answer (confirmation %+v): %+v %v", conf, rc, err)
+		}
+		rec := decisionWhen(t, ld, g.ID, "open", inState(ledger.DecisionOpen))
+		if len(rec.Responses) != i+1 || rec.Responses[i].Status != ledger.ResponseRefused {
+			t.Fatalf("the refusal was not kept: %+v", rec.Responses)
+		}
+		if s, ok, _ := ld.Statement(t.Context(), rec.N, rc.K); !ok || s != heldStatement {
+			t.Fatalf("the kept refusal's statement: %q %v", s, ok)
+		}
 	}
 	if asked != 0 {
 		t.Fatalf("the router was asked %d times", asked)
+	}
+	stopRun(t, e, run.ID)
+}
+
+// routeGate writes a router's policy (routedPolicyJSON) into gate g's
+// record, at its rev, as a router's route would.
+func routeGate(t *testing.T, ld *ledger.Ledger, run string, g Decision) {
+	t.Helper()
+	n, _ := ledger.ParseDecisionID(g.ID)
+	if _, err := ld.Transition(t.Context(), run, func(tx *ledger.Tx) error {
+		ok, err := tx.PutPolicy(n, routedPolicyJSON, g.Rev)
+		if err == nil && !ok {
+			err = errors.New("the policy was not written")
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A held answer to a record under the server's own policy, where a router
+// that confirms policies is registered, is judged as a live answer to it:
+// handed in with no confirmation of the router's it is stale_policy,
+// unkept (never taken as not in force); with the confirmation the door
+// asked, accepted under local/1.
+func TestEngineTakesAHeldAnswerUnderItsOwnPolicyWithAConfirmation(t *testing.T) {
+	dir := newRepo(t)
+	e, _, ld := decisionEngine(t)
+	run := launchGated(t, e, dir, "api-sweep-000000ba", repoCrew(dir, work("build", "lead"), work("deploy", "ops")), shipGate("deploy"))
+	waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+	g := gateOf(t, e, ld, run.ID)
+	e.SetRouterPolicies(true, func(context.Context, ledger.DecisionRecord, string, string) ext.Confirmation {
+		return ext.Confirmation{}
+	})
+	resp := Response{ResponseID: "h1", Choice: choice(0), ExpectedRev: 1}
+	if _, err := e.RespondHeld(t.Context(), g.ID, resp, "user:ana", held("ana", grantAdmin, "f-1"), heldStatement); decisionFailure(err) == nil || decisionFailure(err).Code != CodeStalePolicy {
+		t.Fatalf("a held answer with no confirmation: %v", err)
+	}
+	if rec := decisionWhen(t, ld, g.ID, "open", inState(ledger.DecisionOpen)); len(rec.Responses) != 0 {
+		t.Fatalf("a stale_policy refusal kept %d rows", len(rec.Responses))
+	}
+	rc, err := e.RespondHeldWith(t.Context(), g.ID, resp, "user:ana", held("ana", grantAdmin, "f-1"), heldStatement, &ext.Confirmation{Why: "no policy", Revision: "local/1"})
+	if err != nil || rc.Status != "accepted" {
+		t.Fatalf("a held answer with its confirmation: %+v %v", rc, err)
 	}
 	stopRun(t, e, run.ID)
 }

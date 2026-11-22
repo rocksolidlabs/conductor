@@ -347,8 +347,9 @@ sent. When the server is back, the card at its rev, still open.
 *Holds*: nothing while it is away; the decision open, its holds kept,
 across the restart. With a sync provider (sync-seams OS-3, WF-2): an
 answer the provider held is handed in once, recorded through DR1 only
-when the identity provider admits its statement, and applied once; on a
-server whose router confirms policies it is refused
+when the identity provider admits its statement, and applied once,
+also on a server whose router confirms policies while the decision is
+under the server's own policy; one under the router's policy is refused
 `answered_at_server`, the card saying the owning server must be
 reachable. *Never*: an answer shown applied that the owning server has
 not applied; one applied twice. The person being away from their phone

@@ -1447,7 +1447,8 @@ in `r.Check`, and judges it by the record's policy:
   Responding, Held answers; Owner decisions, 26). On a server whose
   registered decision router confirms policies (it implements
   `ext.PolicyConfirmer`: the engine's `SetRouterPolicies(true)`, the
-  decision-policy plan's I17), this door refuses every held answer:
+  decision-policy plan's I17), this door refuses every held answer to a
+  record under a router's policy:
   nothing is written to the decision, the router is not asked, and the
   refusal is final (the provider does not hand it in again), `403
   answered_at_server` ("dr-7 is answered at its server, by
@@ -1456,6 +1457,20 @@ in `r.Check`, and judges it by the record's policy:
   refuses the same way a `via: sync` response that reaches it for a
   record under a router's policy while such a router is registered (the
   door is not the only guard).
+  As built (#1065): A held answer to a record under the server's own
+  policy (`local/1`, or opened to the decide grant) on such a server is
+  judged as the respond route judges an answer to it: a repeat answered
+  from its row and a decision no longer open said by its state first;
+  then the router asked as the respond route asks it (`confirmFor`), and
+  a record in its opening window, or one the router will route now
+  (`Routes`, which tells it again), is not taken now
+  (`unknown_authority`, nothing written: the provider releases the
+  answer and hands it in again later); then the identity provider's
+  `AdmitsAnswer` (admin, or decide for a record given to the grant) and
+  DR1's path with the router's confirmation, where a policy written
+  between the ask and the commit is `stale_policy`, unkept, and so not
+  taken now for the provider either, and DR1's rules after (a rev raised
+  since is `stale_decision`, final).
 - **Elsewhere** (no router registered, or one that confirms no
   policies), a held answer is judged by the record's own policy and its
   entries, the store's own check first, DR1's rules after: the door asks
@@ -1482,7 +1497,7 @@ in `r.Check`, and judges it by the record's policy:
 - Held by `TestHeldAnswerRefusedWhereTheRouterConfirmsPolicies` (the
   door: on a server whose router confirms policies, an admin's and a
   decide principal's held answers, to a record under the router's
-  policy and to a `local/1` one, each `403 answered_at_server`, final,
+  policy, each `403 answered_at_server`, final,
   with its words, no row of the decision written, the fake router asked
   nothing; the store's `AdmitsAnswer` answering unknown: still
   `answered_at_server`, the store not asked),
@@ -1564,9 +1579,12 @@ shape and the doors' refusals on a provider that is not the sync store.
 **As built (OS-3).** Who may answer a decision given to the decide grant
 from another machine is whoever holds `decide`: the door asks
 `AdmitsAnswer` with that grant alone, and an admin without it answers at
-the server, as the owner confirmed on 2026-11-20. The engine refuses
-every held answer while a router that confirms policies is registered,
-whatever the record's policy, before the policy is judged. A provider's
+the server, as the owner confirmed on 2026-11-20. While a router that
+confirms policies is registered, the engine refuses a held answer to a
+record under a router's policy before the policy is judged, kept, and
+judges one to a record under the server's own policy with the router's
+confirmation the door asked, as a live answer to it is judged (#1065;
+one handed in with no confirmation is `stale_policy`, unkept). A provider's
 no is `not_approver` with nothing written; a request kept on the machine
 is refused `not_approver` before the provider is asked; a held answer's
 text and rationale must be as the ledger keeps them (no control
@@ -2013,9 +2031,10 @@ Every other path this plan names is on `main`. New: `ext/dispatch.go`
   `decision_closed`, `stale_decision`, `stale_policy`, `not_approver`,
   `decision_limit`, first time or a repeat, with DR1's words;
   `not_approver` for a held answer to a comparison's selection; and
-  `answered_at_server` on a server whose router confirms policies,
-  final, nothing written); `unknown_authority` (the identity provider
-  cannot say now: nothing written); `not_held` (the run is not running: the server was stopped
+  `answered_at_server` to a record under a router's policy on a server
+  whose router confirms policies, final, nothing written);
+  `unknown_authority` (the identity provider cannot say now, or the
+  decision's policy is being written: nothing written); `not_held` (the run is not running: the server was stopped
   and the run interrupted, as on `main`; nothing written, the words
   "run release-7 is not running: continue it to apply this answer";
   the operator's Continue moves the decision to the continuation, DR1's
@@ -2389,7 +2408,7 @@ whose verdicts it relies on.
 | OS-2 | api, web: UI state in the data directory, pins, restore into another provider's directory, a replay on request | `ui/` documents with `at` and `by`, routes, `ui/writer` left out, the allowlist with what leaves of each document, `Host.SetUIState`, `RestoreRequest.ProviderDir`, `Host.SyncReplay`; `useUiState` and its callers; pins; `ui-state.spec.ts` | `internal/api`, `internal/export`, `internal/hostagent`, `ext`, `web/app`, `web/e2e`, `docs` | the OS-2 tests above | OS-1b | ~800 + 750 |
 | OS-1c | api, dispatch: the output index and the copied-output check for Dispatch's rows and pins' names | `outputGuard`, `outputIndex` (winnowed fingerprints and lines in `output-index.sqlite`, the memory cache, prunes with their sources, the bound, failing closed with `pending`, pending made `output` at start), the verdicts at every operation's commit and a pin's `nameVerdict`, `DispatchChanges` carrying both and stopping before a `pending` row; this file amended with the owner's reading (no store step: the columns are OS-1a0's, the index a file of its own) | `internal/api`, `internal/dispatch`, `internal/export`, `ext`, `docs` | the OS-1c tests above | OS-2; the owner's reading of terminal output (Owner decisions, 27) | ~650 + 700 |
 | OS-3a | crew/ledger: schema 16 alone | `decision_output` and `decision_statements`; nothing reads or writes them yet | `internal/crew/ledger` | `TestSchema16MigratesAndKeepsEveryRow`, `TestVersion16OpensReadOnlyInVersion15`, `TestSchema16FreshAndAFailedMigration` | OS-1c | ~80 + 150 |
-| OS-3 | api, crew, ext: decisions handed out, answers handed in (after the step; a boundary part with its own adversarial review) | `ledger.OnDecisions`, the decision document with its request part, its policy part and `requestSHA256`, the check at each write into `decision_output`, `Host.SyncResend`, `ext.AnswerCheck`, `ext.SubjectChecker`, `Host.RespondDecision` with `via: sync` (the statement in `decision_statements`), every held answer refused `answered_at_server` on a server whose router confirms policies, `Host.SyncDelivery`, `Host.LastDecision`, the recheck at application that waits on unknown, `AnswerOutcome.Repeat`; the agent skill's line | `internal/api`, `internal/crew`, `internal/crew/ledger`, `internal/agents`, `internal/hostagent`, `ext`, `ext/exttest`, `docs` | the OS-3 tests above | OS-3a; DR1's PR-4 (#637) and the decide grant (#776), both on `main`; the owner's reading of terminal output (Owner decisions, 27) | ~800 + 850 |
+| OS-3 | api, crew, ext: decisions handed out, answers handed in (after the step; a boundary part with its own adversarial review) | `ledger.OnDecisions`, the decision document with its request part, its policy part and `requestSHA256`, the check at each write into `decision_output`, `Host.SyncResend`, `ext.AnswerCheck`, `ext.SubjectChecker`, `Host.RespondDecision` with `via: sync` (the statement in `decision_statements`), every held answer to a record under a router's policy refused `answered_at_server` on a server whose router confirms policies (one to a record under the server's own policy judged as the respond route judges it, #1065), `Host.SyncDelivery`, `Host.LastDecision`, the recheck at application that waits on unknown, `AnswerOutcome.Repeat`; the agent skill's line | `internal/api`, `internal/crew`, `internal/crew/ledger`, `internal/agents`, `internal/hostagent`, `ext`, `ext/exttest`, `docs` | the OS-3 tests above | OS-3a; DR1's PR-4 (#637) and the decide grant (#776), both on `main`; the owner's reading of terminal output (Owner decisions, 27) | ~800 + 850 |
 | OS-4 | api, web, ext: what other machines hold, read only; the Sync row; Share in the project page; the features entry | `Host.PutRemote`, `DeleteRemote`, `ClearRemote`, `remote/` with the kinds `decision`, `pointer`, `pins`, `device` and `hosts`, the pointer's `ticket` (`RunPointer` and its columns read `runs.ticket`), `GET /api/remote`, `ext.SyncStatus` with its own device, workspace and person, `GET /api/sync`; the ticket page's, the decision page's and the sidebar's remote rows, the Sync row, Share and rekey controls, the ticket page's `alsoLinked` words; `remote.spec.ts`, `sync-free.spec.ts`; `docs/features.md` | `internal/api`, `internal/crew/ledger`, `internal/export`, `internal/hostagent`, `ext`, `ext/exttest`, `web/app`, `web/e2e`, `docs` | the OS-4 tests above | OS-3; DR1's PR-7 (#640) and MB0's PR-4 on `main` | ~750 + 750 |
 
 Each row's checks are the repository's (`docs/checks.md`): the module's
@@ -2574,7 +2593,8 @@ taken. The last, 27, the owner took on 2026-11-20; none is open.
     version** (the default; decided by the owner on 2026-11-18: it
     stands; the same decision as the decision-policy plan's Owner
     decisions, 11). On a server whose registered router confirms
-    policies, this door refuses every held answer, final, `403
+    policies, this door refuses every held answer to a record under a
+    router's policy, final, `403
     answered_at_server`, nothing written and the router not asked, and
     the engine refuses a `via: sync` response to a record under a
     router's policy (`TestHeldAnswerRefusedWhereTheRouterConfirmsPolicies`,
@@ -2738,8 +2758,9 @@ continuation.":
 > superseding on what nobody said (`docs/plans/sync-seams.md`, OS-3).
 > A held answer and a router's policy do not combine in the first
 > version: on a server whose registered router confirms policies every
-> held answer is refused, final (nothing written; the provider does not
-> hand it in again), `403 answered_at_server`
+> held answer to a record under a router's policy is refused, final
+> (nothing written; the provider does not hand it in again), `403
+> answered_at_server`
 > (`docs/plans/decision-policy.md`, Responding, Held answers).
 
 Out of scope, the replication bullet:

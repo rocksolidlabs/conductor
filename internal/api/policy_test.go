@@ -436,8 +436,25 @@ func TestBehindBoundClearedByAnInForceAnswer(t *testing.T) {
 // The opening window: while the router's Route is held, a record opened
 // under a router that routes policies refuses the operator's response
 // stale_policy, nothing kept; released, the record is routed.
+// holdWindows holds every opening window of s open for the test's
+// length: the windows' clock stopped, and the router's held route given a
+// wait no test outlasts, so neither of the product's two bounds (twice
+// ext.RouteWait, the route's own wait) closes a window before the test's
+// own release of the route does.
+func holdWindows(t *testing.T, s *Server) {
+	t.Helper()
+	at := time.Date(2026, 11, 21, 9, 0, 0, 0, time.UTC)
+	s.router.windows.mu.Lock()
+	s.router.windows.now = func() time.Time { return at }
+	s.router.windows.mu.Unlock()
+	long := time.Hour
+	extWaiting.Store(&long)
+	t.Cleanup(func() { extWaiting.Store(nil) })
+}
+
 func TestOpeningWindowRefusesTheOperator(t *testing.T) {
 	f := newPolicyFixture(t)
+	holdWindows(t, f.srv)
 	release := f.fr.HoldRoutes()
 	defer release()
 	f.fr.SetPolicy("dr-1", anaPolicy(ext.OverrideOperator))

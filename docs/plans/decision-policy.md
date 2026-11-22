@@ -700,7 +700,8 @@ behaves unchanged, and a router that does not implement
     router that confirms policies is one that implements
     `ext.PolicyConfirmer` (the engine's `SetRouterPolicies(true)`,
     I17). On a server whose registered router confirms policies, the
-    sync provider's door refuses every held answer: nothing is written
+    sync provider's door refuses every held answer to a record under a
+    router's policy: nothing is written
     to the decision, the router is not asked, and the refusal is final
     (the provider does not hand it in again), `403 answered_at_server`
     (a new code, `CodeAnsweredAtServer`, listed with the decisions'
@@ -716,6 +717,20 @@ behaves unchanged, and a router that does not implement
     (`via: sync` taken as `via: identity`), the store's own check first,
     DR1's rules after; a record left under a router's policy with no
     such router registered is not in force, so `local/1`, and judged so.
+    As built (#1065): A held answer to a record under the server's own
+    policy (`local/1`, or opened to the decide grant) on such a server
+    is judged as the respond route judges an answer to it: a repeat
+    answered from its row and a decision no longer open said by its
+    state first; then the router asked as the respond route asks it
+    (`confirmFor`), and a record in its opening window, or one the
+    router will route now (`Routes`, which tells it again), is not taken
+    now (`unknown_authority`, nothing written: the provider releases the
+    answer and hands it in again later); then the identity provider's
+    `AdmitsAnswer` (admin, or decide for a record given to the grant)
+    and DR1's path with the router's confirmation, where a policy
+    written between the ask and the commit is `stale_policy`, unkept,
+    and so not taken now for the provider either, and DR1's rules after
+    (a rev raised since is `stale_decision`, final).
     Held by `TestHeldAnswerRefusedWhereTheRouterConfirmsPolicies` (the
     door), `TestEngineRefusesAHeldAnswerUnderAPolicy` (the engine),
     `TestHeldAnswerAdmittedByTheEntries` and
@@ -1216,8 +1231,10 @@ counted response; the operator's card shows each group's count.
 
 **The respond route's judgement**, under a router's policy, in order
 (the first row that matches answers). It is the engine's; a sync
-provider's door for held answers refuses every one on a server whose
-router confirms policies before the engine (Responding, Held answers):
+provider's door for held answers refuses every one to a record under a
+router's policy on a server whose router confirms policies before the
+engine, and puts one to a record under the server's own policy there to
+the router as the respond route does (Responding, Held answers):
 
 | Case | Answer | Kept |
 |---|---|---|
@@ -1425,11 +1442,14 @@ web test` and `make test-e2e`. Every new test is proved able to fail.
   against the other's code:
   `TestHeldAnswerRefusedWhereTheRouterConfirmsPolicies` (on a server
   whose router confirms policies, an admin's and a decide principal's
-  held answers, to a record under the router's policy and to a
-  `local/1` one: each `403 answered_at_server`, final, with its words;
-  no row of the decision written; the fake router asked nothing; the
-  store's `AdmitsAnswer` answering unknown: still
-  `answered_at_server`, the store not asked),
+  held answers to a record under the router's policy: each `403
+  answered_at_server`, final, with its words; no row of the decision
+  written; the fake router asked nothing; the store's `AdmitsAnswer`
+  answering unknown: still `answered_at_server`, the store not asked;
+  as built, #1065: one to a `local/1` record there is taken, held by
+  `TestHeldAnswerUnderTheServersOwnPolicyWhereTheRouterConfirms`,
+  `TestHeldAnswerNotTakenWhileItsPolicyIsWritten` and
+  `TestHeldAnswerWithAPolicyWrittenAfterItsAskIsNotTaken`),
   `TestEngineRefusesAHeldAnswerUnderAPolicy` (a `via: sync` response
   handed straight to the engine for a record under a router's policy,
   such a router registered, once with no confirmation and once with an
@@ -1663,7 +1683,8 @@ remove rows, and each says which.
 11. **A held answer and a router's policy do not combine in the first
     version** (the default; decided by the owner on 2026-11-18: it
     stands). On a server whose registered router confirms
-    policies, a sync provider's door refuses every held answer, final,
+    policies, a sync provider's door refuses every held answer to a
+    record under a router's policy, final,
     `403 answered_at_server`, nothing written and the router not asked,
     and the engine refuses a `via: sync` response to a record under a
     router's policy

@@ -148,13 +148,24 @@ func TestUIStateKeepsAtAndByOnReplay(t *testing.T) {
 	t.Parallel()
 	e := newTestEnv(t, nil)
 	first := putUIDoc(t, e, "layout", testLayout, http.StatusOK)
-	seq := e.srv.store.Seq()
+	// The document's own file is what is judged, never the data
+	// directory's count of commits: the server commits files of its own
+	// beside a test's.
+	path := filepath.Join(e.srv.store.Dir(), "ui", "layout.json")
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
 	again := putUIDoc(t, e, "layout", testLayout, http.StatusOK)
 	if again["at"] != first["at"] || again["by"] != first["by"] {
 		t.Fatalf("a put of the same content moved the stamp: %v, was %v", again, first)
 	}
-	if got := e.srv.store.Seq(); got != seq {
-		t.Fatalf("a put of the same content committed: %d, was %d", got, seq)
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(before, after) || !after.ModTime().Equal(before.ModTime()) {
+		t.Fatalf("a put of the same content wrote the document again: %v, was %v", after.ModTime(), before.ModTime())
 	}
 	changed := map[string]any{"v": 1, "runView": "tasks"}
 	next := putUIDoc(t, e, "layout", changed, http.StatusOK)
