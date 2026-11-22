@@ -145,6 +145,9 @@ class ShellBootsUnderItsPolicyTest {
                 const key = await code(() => P.ConductorKey.state());
                 check('key', key === 'answered', key);
                 check('store', Array.isArray(((await value(() => P.ConductorStore.list({ area: 'drafts' }))) || {}).keys));
+                // A build with no push service: registering is answered by the shell (the runtime's own would end the app).
+                const push = await code(() => P.PushNotifications.register());
+                check('push', push === 'no_push', push);
                 at('runtime webview');
                 const web = await code(() => P.WebView.getServerBasePath(), 10000);
                 check('webview', web === 'no_answer', web);
