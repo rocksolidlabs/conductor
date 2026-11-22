@@ -7,7 +7,7 @@ GO_MIN   := $(shell awk '/^go /{print $$2}' go.mod)
 NODE_MIN := 22
 NODE_STAMP := web/node_modules/.package-lock.json
 
-.PHONY: help deps check-tools build build-go check-version notices web-install web-build web-typecheck web-dev run dev test test-web test-e2e test-live design-capture test-pebble test-network test-recipes desktop-install desktop-dev desktop-test desktop-binaries desktop-dist desktop-e2e mobile-install mobile-sync mobile-test mobile-native-test mobile-ios-resolve mobile-ios mobile-ios-policy lint lint-static vuln fmt generate docker clean preflight
+.PHONY: help deps check-tools build build-go check-version notices web-install web-build web-typecheck web-dev run dev test test-web test-e2e test-live design-capture test-pebble test-network test-recipes desktop-install desktop-dev desktop-test desktop-binaries desktop-dist desktop-e2e mobile-install mobile-sync mobile-test mobile-native-test mobile-ios-resolve mobile-ios mobile-ios-policy mobile-android mobile-android-image mobile-android-boot lint lint-static vuln fmt generate docker clean preflight
 
 help: ## list targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-16s %s\n", $$1, $$2}'
@@ -98,9 +98,10 @@ notices: web-build ## THIRD_PARTY_NOTICES from what the binary, the web bundle, 
 desktop-e2e: build-go ## the desktop shell's smoke in Electron (needs a display: xvfb-run on Linux)
 	cd desktop && npm run build && npm run test:e2e
 
-# The phone shell (docs/plans/phone-shell.md, OSS-1a and OSS-1b): the bundle with the shell's bridge and its policy, built with the
-# app's own tools (web/node_modules); the native runtime's packages (mobile/node_modules); the native package's tests and the iOS
-# app's simulator build, unsigned, on a Mac with Xcode.
+# The phone shell (docs/plans/phone-shell.md, OSS-1a, OSS-1b and OSS-3): the bundle with the shell's bridge and its policy, built with
+# the app's own tools (web/node_modules); the native runtime's packages (mobile/node_modules); the native package's tests and the iOS
+# app's simulator build, unsigned, on a Mac with Xcode; the Android app's debug build, its JVM tests and its boot check on an emulator,
+# with a JDK 21 and the Android SDK.
 mobile-install: ## the phone shell's native runtime packages, as mobile/package-lock.json pins them
 	cd mobile && npm ci
 
@@ -127,6 +128,17 @@ mobile-ios: ## the iOS app built for the simulator, unsigned, and its boot check
 
 mobile-ios-policy: ## a build with the sample signing policy in a packaging's place holds its class, the default build none (on a Mac with Xcode; make mobile-ios first)
 	python3 scripts/ios_boot.py policy
+
+mobile-android: ## the Android app held to what it must not ship, then its debug build, JVM tests and boot check's build, fetches tried three times (a JDK 21 and the Android SDK; make web-build mobile-install mobile-sync first)
+	cd mobile && npx cap sync android
+	python3 scripts/android_project.py --runtime
+	python3 scripts/android_boot.py build
+
+mobile-android-image: ## the emulator's system image for the Android boot check, tried three times (the Android SDK)
+	python3 scripts/android_boot.py image
+
+mobile-android-boot: ## the Android boot check (ShellBootsUnderItsPolicyTest) on a running emulator, its log printed after (make mobile-android first)
+	python3 scripts/android_boot.py check
 
 # The server binaries the packages bundle, under the names electron-builder's ${os}-${arch} macros give.
 desktop-binaries: ## cross-compile the server for the desktop packages (linux and mac, x64 and arm64)

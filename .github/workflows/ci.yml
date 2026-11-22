@@ -468,6 +468,72 @@ jobs:
         if: always()
         run: cat mobile/ios/App/App.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved || true
 
+  mobile-android:
+    # The phone shell's Android app, built for debugging (unsigned but for the SDK's debug key), its
+    # JVM tests (the key, the store, the native HTTP call and the gates' decisions) and its boot check
+    # on an emulator (docs/checks.md): the one place the app's project, its plugins and the native
+    # runtime are compiled together and run. scripts/android_project.py holds the project to what it
+    # must not ship, here against the native runtime's own sources too.
+    # Its fetches are part of the check (AGENTS.md): Gradle's distribution and packages are cached
+    # (setup-gradle) and a build that failed for a fetch is tried three times, as is the emulator's
+    # system image (scripts/android_boot.py); each step and the job under a bound that is the sum of
+    # its steps'.
+    runs-on: ubuntu-latest
+    needs: web
+    timeout-minutes: 140
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            web/package-lock.json
+            mobile/package-lock.json
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: gradle/actions/setup-gradle@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: web-dist
+          path: internal/web/dist
+      - run: make mobile-install mobile-sync
+        timeout-minutes: 10
+      # The project check, then the debug build, the JVM tests and the boot check's own build.
+      - name: The Android app, its JVM tests and the boot check's build (fetches tried three times)
+        run: make mobile-android
+        timeout-minutes: 50
+      - name: The emulator's hardware acceleration
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: The emulator's system image (three tries)
+        run: make mobile-android-image
+        timeout-minutes: 30
+      # The boot check (ShellBootsUnderItsPolicyTest): the built app on an emulator with no provider.
+      - name: The boot check on an emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        timeout-minutes: 45
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          disable-animations: true
+          emulator-options: -no-window -no-snapshot -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          script: make mobile-android-boot
+      - name: The tests' reports
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mobile-android-reports
+          path: |
+            mobile/android/app/build/reports
+            mobile/android/app/build/outputs/androidTest-results
+          if-no-files-found: ignore
+
   dco:
     # Every commit of a pull request is signed off by its author
     # (CONTRIBUTING.md, Sign-off). The job runs on every event and only
@@ -492,7 +558,7 @@ jobs:
   # fails this job.
   required-checks:
     if: always()
-    needs: [web, go, go-race, vuln, build-matrix, e2e, pebble, desktop-test, desktop-smoke, mobile-ios, dco]
+    needs: [web, go, go-race, vuln, build-matrix, e2e, pebble, desktop-test, desktop-smoke, mobile-ios, mobile-android, dco]
     runs-on: ubuntu-latest
     steps:
       - name: Every job passed
