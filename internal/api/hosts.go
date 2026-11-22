@@ -295,7 +295,7 @@ func (s *Server) handleHosts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.URL.RawQuery != "" {
-		writeError(w, http.StatusBadRequest, "invalid_request", "GET /api/hosts takes no query")
+		writeError(w, http.StatusBadRequest, "invalid_request", "this route takes no query")
 		return
 	}
 	writeJSON(w, http.StatusOK, s.hostsReply(r.Context()))

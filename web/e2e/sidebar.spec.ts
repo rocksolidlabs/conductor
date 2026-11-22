@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { existsSync, openSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Locator, Page } from '@playwright/test'
-import { atRest, budget, dayPage, endHosted, expect, hostedName, hostedSession, rowAnswer, test, type Session } from './fixtures'
+import { atRest, budget, dayPage, endHosted, expect, hostedName, hostedSession, pressChord, rowAnswer, test, type Session } from './fixtures'
 import { inside, noOverlap, tabTo, uncut } from './layout'
 import { ownServer, type OwnServer } from './own-server'
 import { serverBinary, stubBash, stubPath } from './server'
@@ -1376,11 +1376,11 @@ test('the pages as six tiles', async ({ day, browser }) => {
       const list = await page.locator('[data-session-list="sidebar"]').boundingBox()
       expect(list!.height).toBeGreaterThanOrEqual(600)
     }
-    // More, by a click: Agents and History, each opening its page; the menu is gone after each pick.
+    // More, by a click: Agents, History and Hosts, each opening its page; the menu is gone after each pick.
     const menu = page.getByRole('menu')
-    for (const [name, path] of [['Agents', '/agents'], ['History', '/history']] as const) {
+    for (const [name, path] of [['Agents', '/agents'], ['Hosts', '/hosts'], ['History', '/history']] as const) {
       await tile('more').click()
-      await expect(menu.getByRole('menuitem')).toHaveText([/^Agents/, /^History/])
+      await expect(menu.getByRole('menuitem')).toHaveText([/^Agents/, /^History/, /^Hosts/])
       await menu.getByRole('menuitem', { name: new RegExp(`^${name}`) }).click()
       await expect(menu).toHaveCount(0)
       await expect(page).toHaveURL(new RegExp(`${path}$`))
@@ -1391,7 +1391,7 @@ test('the pages as six tiles', async ({ day, browser }) => {
     // More by Enter after Tab from Dispatch; Escape closes it.
     await tabTo(page, tile('more'), 2, tile('dispatch'))
     await page.keyboard.press('Enter')
-    await expect(menu.getByRole('menuitem')).toHaveText([/^Agents/, /^History/])
+    await expect(menu.getByRole('menuitem')).toHaveText([/^Agents/, /^History/, /^Hosts/])
     await page.keyboard.press('Escape')
     await expect(menu).toHaveCount(0)
     // A tile's tooltip shows on keyboard focus: its page's sentence and key.
@@ -1404,8 +1404,7 @@ test('the pages as six tiles', async ({ day, browser }) => {
     await expect(root).toBeVisible()
     await expect(tile('crews')).toHaveAttribute('aria-current', 'page')
     await expect(tile('more')).not.toHaveAttribute('data-active', '')
-    await page.keyboard.press('g')
-    await page.keyboard.press('h')
+    await pressChord(page, 'g', 'h')
     await expect(page).toHaveURL(/\/history$/)
     await page.context().close()
   }

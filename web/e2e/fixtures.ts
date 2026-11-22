@@ -236,6 +236,22 @@ export function member(run: Run, name: string): RunMember {
 }
 
 /**
+ * The two keys of a chord (G then H), handed to the page in one task. Two awaited presses are two round trips to the browser, and
+ * on a loaded machine the second lands after the chord's own wait for it has lapsed (the product's 800 ms, right for a person's
+ * hands; the presses of a failing run were 1.6 s apart): the page then stays where it was with nothing wrong. Typing both in one
+ * call still takes a round trip per key, so the two keydowns are dispatched here, on what holds the focus, one behind the other.
+ */
+export async function pressChord(page: Page, first: string, second: string): Promise<void> {
+  await page.evaluate(
+    ([a, b]) => {
+      const at = document.activeElement ?? document.body
+      for (const key of [a, b]) at.dispatchEvent(new KeyboardEvent('keydown', { key, code: `Key${key.toUpperCase()}`, bubbles: true, cancelable: true }))
+    },
+    [first, second] as const,
+  )
+}
+
+/**
  * Opens the inspector on a rail item (#301) when that item is not already shown: clicking the shown item collapses the panel,
  * which a check that merely wants the view up never means.
  */

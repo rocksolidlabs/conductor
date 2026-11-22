@@ -175,6 +175,13 @@ add its rule here.
   before the first key, press it once, and give its effect the expect's
   bound; a second press on a clock only hides the first one's loss, and a
   toggle pressed again closes what was only slow to open.
+  The two keys of a chord reach the page in one task (`pressChord` in
+  `web/e2e/fixtures.ts`): two awaited presses are two round trips, and on a
+  loaded machine the second lands after the chord's own wait for it has
+  lapsed (the product's 800 ms, right for a person's hands), so the page
+  stays where it was (`sidebar.spec.ts`, G then H on a run's page: the two
+  presses of a failing run were 1.6 s apart in its trace, 2 of 4 runs
+  beside other suites, 2026-11-22, #281).
 - A page a goto has just loaded is still starting, and its start writes
   back what it read. A goto returns at the load, before the app's plugins
   run; the colour-mode module's start then stores the preference the page
