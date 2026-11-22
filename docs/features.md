@@ -226,6 +226,11 @@ that order.
   every member. An agent with startup questions and no prompt shape is
   refused wherever either of its two earlier checks refused a line's text
   or held its Enter.
+- **Either look first.** A startup question answered with Escape in the
+  terminal goes once a whole frame shows no startup question, whichever of
+  the session's two looks at a quiet screen comes first: the startup
+  watcher judges that first, and does not ask the question again from the
+  output it keeps.
 - **The Enter.** A line that is an Enter alone is judged by the same rule
   as it is written. The Enter of a line with text is held where it was
   held before.

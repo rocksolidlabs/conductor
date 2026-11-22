@@ -581,3 +581,119 @@ func TestTheTextsGuardJudgesTheScreenAsTheWriterTakesIt(t *testing.T) {
 		t.Fatalf("at the prompt again: %v", err)
 	}
 }
+
+// lateLook has the screen's watcher look at what draw drew and withdraw
+// first, while the startup watcher's look, which took its text before
+// that withdrawal, waits at its gate; then lets that look go.
+func lateLook(t *testing.T, s *Local, draw func()) {
+	t.Helper()
+	releaseTrust := gate(t, s.trust)
+	releaseScreen := gate(t, s.asked)
+	draw()
+	deadline := time.Now().Add(30 * time.Second)
+	for s.trust.LookedAt() != s.trust.Fed() {
+		if time.Now().After(deadline) {
+			t.Fatal("the startup watcher did not look")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	releaseScreen()
+	screenLooked(t, s)
+	releaseTrust()
+	s.trust.fireMu.Lock()
+	//lint:ignore SA2001 the empty critical section is the wait for a look in flight
+	s.trust.fireMu.Unlock()
+}
+
+// The issue's order: the update question asked whole, asked again in a
+// window five rows tall in its first choice's words, an Escape typed in
+// the terminal, then the agent's composer. The question goes, nothing is
+// asked again from the output the startup watcher keeps, and a line goes
+// at the prompt, whichever watcher looks first: the startup watcher's, or
+// the screen's with the startup watcher's look, its text taken before the
+// withdrawal, let go after it.
+func TestAnEscapeAnsweredQuestionGoesInEitherOrderOfTheLooks(t *testing.T) {
+	for _, shaped := range []bool{true, false} {
+		for _, trustFirst := range []bool{true, false} {
+			t.Run(shapeName(shaped)+", "+orderName(trustFirst), func(t *testing.T) {
+				s, p, sub, write := orderSession(t, shaped)
+				cut := escAnswered(t, s, p, sub, write)
+				if trustFirst {
+					looksAfter(t, s, true, func() { write(codexPrompt) })
+				} else {
+					lateLook(t, s, func() { write(codexPrompt) })
+				}
+				if a := s.Info().Attention; a.State == AttentionNeedsInput {
+					t.Fatalf("the composer drawn, the session shows %+v (the question: %+v)", a, cut)
+				}
+				s.trust.CheckNow()
+				if a := s.Info().Attention; a.State == AttentionNeedsInput {
+					t.Fatalf("looked at again, the session shows %+v", a)
+				}
+				if res, err := s.Submit(t.Context(), Submission{Text: "fix the bug", By: sub}); err != nil || !res.Entered {
+					t.Fatalf("a line at the prompt: %+v %v", res, err)
+				}
+			})
+		}
+	}
+}
+
+// An Escape typed at a startup question drawn and not asked yet is held by
+// its words; the composer drawn, the startup watcher's look clears it and
+// asks nothing, and a half frame drawn later asks nothing either.
+func TestAnEscapeBeforeTheQuestionWasAskedIsClearedAtThePrompt(t *testing.T) {
+	s, p, sub, write := orderSession(t, true)
+	release := gate(t, s.trust)
+	write("\x1b[?1049h" + codexFrame(codexUpdateView))
+	screenLooked(t, s)
+	if err := s.Input(sub, []byte("\x1b")); err != nil {
+		t.Fatal(err)
+	}
+	if got := nextWrite(t, p); got != "\x1b" {
+		t.Fatalf("written %q", got)
+	}
+	s.mu.Lock()
+	words := s.heldAnswer.words
+	s.mu.Unlock()
+	if words == "" {
+		t.Fatal("the Escape is not held by the question's words")
+	}
+	write(codexPrompt)
+	screenLooked(t, s)
+	release()
+	s.trust.CheckNow()
+	s.mu.Lock()
+	held := s.heldAnswer
+	s.mu.Unlock()
+	if a := s.Info().Attention; a.State == AttentionNeedsInput || held.words != "" || held.id != "" {
+		t.Fatalf("the composer drawn: %+v, held %+v", a, held)
+	}
+	write(codexPrompt[:len(codexPrompt)-len("\x1b[?2026l")])
+	s.trust.CheckNow()
+	if a := s.Info().Attention; a.State == AttentionNeedsInput {
+		t.Fatalf("half a frame drawn later, the session shows %+v", a)
+	}
+}
+
+// A startup question with no answers (Claude Code's sign-in screen),
+// asked, then asked again in other words after the window was made
+// shorter (its heading off the screen), still waits: under needs-input,
+// not marked answered.
+func TestAnAnswerlessQuestionAskedAgainStillWaits(t *testing.T) {
+	signIn := StartupQuestion{
+		Pattern: regexp.MustCompile(`(?i)paste\s*code\s*here\s*if\s*prompted`),
+		Words:   regexp.MustCompile(`(?i)browser\s*didn.t\s*open\?\s*use\s*the\s*url\s*below\s*to\s*sign\s*in`),
+	}
+	s, _, sub, write := screenSession(t, Options{Questions: []StartupQuestion{signIn}, PromptShape: builtInShape(t, "claude")}, 80, 24)
+	write("\x1b[?1049h" + codexFrame([]string{"Welcome to Claude Code", "", " Browser didn't open? Use the url below to sign in (c to copy)", "", "https://example.invalid/sign-in", "", " Paste code here if prompted >"}))
+	first := waitAttention(t, s, func(a Attention) bool { return a.Source == SourceTrust })
+	if err := s.Resize(sub, 80, 3); err != nil {
+		t.Fatal(err)
+	}
+	write(codexFrame([]string{"https://example.invalid/sign-in", "", " Paste code here if prompted >"}))
+	screenLooked(t, s)
+	s.trust.CheckNow()
+	if a := s.Info().Attention; a.State != AttentionNeedsInput || a.Source != SourceTrust || a.Answered != "" {
+		t.Fatalf("asked again: %+v (first %+v)", a, first)
+	}
+}

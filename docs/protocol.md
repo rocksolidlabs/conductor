@@ -2298,7 +2298,12 @@ the screen (one that cuts only blank cells loses nothing), as it is and as
 it was laid out at least the size the screen had when the keys were
 written; the window grown since counts, its rows autowrap went on from
 read joined to the width they had then, since a program that erases its dialog's lines rather than
-the whole screen draws nothing for a resize); one answered never keeps the next from
+the whole screen draws nothing for a resize). The startup questions'
+watcher judges that withdrawal first at each of its looks, before it reads
+what it keeps for a question to ask, and reads it as it is then, so either
+watcher looking first gives the same picture: a question withdrawn is not
+asked again from the output before it, and one drawn since is asked with an
+`id` of its own; one answered never keeps the next from
 being asked, and nor does one still waiting that the screen has left for
 another drawn after it (the program took an answer not read as one): the
 question drawn last is asked with an `id` of its own, and a reply naming
