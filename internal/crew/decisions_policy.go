@@ -329,12 +329,12 @@ func judgePolicy(rec ledger.DecisionRecord, resp Response, who Admittee, pol pol
 		case countAlready:
 			return true, false, refuse(CodeAlreadyCounted, "%s's approval of %s is counted already", who.Subject, id)
 		case countNotNeeded:
-			return true, false, refuse(CodeNotNeeded, "%s has %s approvals it needs: %s", id, p.metWords(p.namedIn(who.Subject, rc.Groups), per), p.waitsForWords(per))
+			return true, false, refuse(CodeNotNeeded, "%s", p.notNeededWords(id, p.namedIn(who.Subject, rc.Groups), per))
 		case countCounted:
 			rc.Words = countedWords(id, nameOf(resp.ByName, who.Subject), p, rc.Groups, per)
 			return false, true, nil
 		}
-		// It fills the last place: accepted, the combined answer.
+		// Every place is filled with it: accepted, the combined answer.
 		return false, false, nil
 	}
 	if !who.operator() {
@@ -522,9 +522,10 @@ func (e *Engine) confirmAtApply(d *decision) (ok bool, why string) {
 		return false, notConfirmed
 	}
 	// confirm is the groups of groups the router confirms subject eligible
-	// in now, and since at when it can be asked so: none for anything but
-	// in force at the record's revision.
-	confirm := func(subject string, at time.Time, groups []string) []string {
+	// in now, and since at when it can be asked so, and ok when the router
+	// confirms the subject eligible at all (in force at the record's
+	// revision, in a group): an approval whose person it does not is void.
+	confirm := func(subject string, at time.Time, groups []string) (out []string, ok bool) {
 		cctx, cancel := context.WithTimeout(ctx, 2*ext.ConfirmWait)
 		defer cancel()
 		var c ext.Confirmation
@@ -533,16 +534,15 @@ func (e *Engine) confirmAtApply(d *decision) (ok bool, why string) {
 		} else {
 			c = (*check)(cctx, rec, p.Revision, subject)
 		}
-		if !c.InForce || c.Behind || c.Revision != "" && c.Revision != p.Revision {
-			return nil
+		if !c.InForce || c.Behind || c.Revision != "" && c.Revision != p.Revision || len(c.Groups) == 0 {
+			return nil, false
 		}
-		var out []string
 		for _, g := range groups {
 			if slices.Contains(c.Groups, g) {
 				out = append(out, g)
 			}
 		}
-		return out
+		return out, true
 	}
 	at := time.Time{}
 	for _, r := range rec.Responses {
@@ -550,7 +550,7 @@ func (e *Engine) confirmAtApply(d *decision) (ok bool, why string) {
 			at = r.At
 		}
 	}
-	mine := confirm(ans.auth.Subject, at, ans.groups)
+	mine, _ := confirm(ans.auth.Subject, at, ans.groups)
 	if len(mine) == 0 {
 		return false, notConfirmed
 	}
@@ -568,10 +568,13 @@ func (e *Engine) confirmAtApply(d *decision) (ok bool, why string) {
 			// Its sign-in's recheck has not answered: not established.
 			return false, c.name + "'s approval could not be rechecked"
 		}
-		g := confirm(c.subject, c.at, c.groups)
-		if len(g) == 0 {
+		g, ok := confirm(c.subject, c.at, c.groups)
+		if !ok {
 			return false, c.name + "'s approval could not be confirmed"
 		}
+		// It fills the places of the groups it was counted in that the
+		// router confirms its person in since then: none when a re-route
+		// moved them (their later approval fills the new group's).
 		c.groups = g
 		rows = append(rows, c)
 	}

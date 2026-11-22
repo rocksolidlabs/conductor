@@ -2,6 +2,7 @@ package crew
 
 import (
 	"fmt"
+	"slices"
 	"testing"
 	"time"
 
@@ -123,7 +124,9 @@ func contains(xs []string, x string) bool {
 
 // Four groups of quorum four, distinct persons, sixteen people each named
 // in one group: all sixteen places filled; a seventeenth, named in every
-// group, fills none and is not needed; a person eligible in every group
+// group, answers with one place left, and answers too once every place is
+// filled already; a counted person again, while a place is left that
+// they cannot fill, is already counted; a person eligible in every group
 // alone fills one place.
 func TestFourGroupsOfQuorumFour(t *testing.T) {
 	var groups [][]string
@@ -148,8 +151,14 @@ func TestFourGroupsOfQuorumFour(t *testing.T) {
 	if v, _ := judgeCount(p, rows[:15], "every", []string{"g0", "g1", "g2", "g3"}); v != countAnswers {
 		t.Fatalf("the one eligible everywhere, with one place left: %d", v)
 	}
-	if v, _ := judgeCount(p, rows, "every", []string{"g0", "g1", "g2", "g3"}); v != countNotNeeded {
-		t.Fatalf("the one eligible everywhere, every place filled: %d", v)
+	if v, _ := judgeCount(p, rows, "every", []string{"g0", "g1", "g2", "g3"}); v != countAnswers {
+		t.Fatalf("the one eligible everywhere, every place filled already: %d", v)
+	}
+	if v, _ := judgeCount(p, rows[:15], "p00", []string{"g0"}); v != countAlready {
+		t.Fatalf("a counted person again, one place left elsewhere: %d", v)
+	}
+	if v, _ := judgeCount(p, rows[1:], "p01", []string{"g0"}); v != countAlready {
+		t.Fatalf("a counted person again, their group's place left to another: %d", v)
 	}
 	if filled, _ := fill(p, approvalsOf(p, "every")); filled != 1 {
 		t.Fatalf("the one eligible everywhere alone fills %d", filled)
@@ -204,6 +213,99 @@ func TestJudgeCountVerdicts(t *testing.T) {
 	if v, _ := judgeCount(p, ana, "cam", []string{"security"}); v != countAnswers {
 		t.Fatalf("cam, the last place: %d", v)
 	}
+	if w := p.notNeededWords("dr-7", []int{0}, []int{1, 1}); w != "dr-7 has the architecture owner's approvals it needs" {
+		t.Fatalf("the words with nothing to wait for: %q", w)
+	}
+}
+
+// With every place filled by the approvals that stand (a re-route brought
+// back a counted approver), any eligible approval answers the decision,
+// a counted approver's too, whatever place it would fill; a person whose
+// standing approval fills nothing after a re-route moved them is judged
+// anew, counted where their new group needs them, and only then already
+// counted.
+func TestJudgeCountAfterAReroute(t *testing.T) {
+	back := quorumPolicy(true, []string{"architecture", "1", "ana", "ben"}, []string{"security", "1", "cam"})
+	full := []countedRow{{k: 1, subject: "ana", groups: []string{"architecture"}}, {k: 2, subject: "cam", groups: []string{"security"}}}
+	for _, who := range []string{"ben", "ana", "cam"} {
+		if v, _ := judgeCount(back, full, who, back.confirmedFor(who)); v != countAnswers {
+			t.Fatalf("%s with every place filled: %d", who, v)
+		}
+	}
+	moved := quorumPolicy(true, []string{"architecture", "1", "ben"}, []string{"security", "1", "ana"})
+	stale := []countedRow{{k: 1, subject: "ana", groups: []string{"architecture"}}}
+	if v, per := judgeCount(moved, stale, "ana", []string{"security"}); v != countCounted || fmt.Sprint(per) != "[0 1]" {
+		t.Fatalf("ana moved to security: %d %v", v, per)
+	}
+	again := append(slices.Clone(stale), countedRow{k: 2, subject: "ana", groups: []string{"security"}})
+	if v, _ := judgeCount(moved, again, "ana", []string{"security"}); v != countAlready {
+		t.Fatalf("ana's third approval while architecture waits: %d", v)
+	}
+	if v, _ := judgeCount(moved, again, "ben", []string{"architecture"}); v != countAnswers {
+		t.Fatalf("ben, the last place: %d", v)
+	}
+}
+
+// confirmedFor are the roles p names subject in: what a router holding p
+// confirms.
+func (p routedPolicy) confirmedFor(subject string) []string {
+	var out []string
+	for _, g := range p.Groups {
+		if slices.ContainsFunc(g.Eligible, func(e ext.Eligible) bool { return e.Subject == subject }) {
+			out = append(out, g.Role)
+		}
+	}
+	return out
+}
+
+// bruteFill is the places rows fill under p, found by trying every
+// assignment of persons to groups (one place a person under distinct
+// persons): a check of fill that shares nothing with it.
+func bruteFill(p routedPolicy, rows []countedRow) int {
+	groupsOf := map[string][]int{}
+	var people []string
+	for _, r := range rows {
+		if _, seen := groupsOf[r.subject]; !seen {
+			people = append(people, r.subject)
+			groupsOf[r.subject] = nil
+		}
+		for i, g := range p.Groups {
+			named := slices.ContainsFunc(g.Eligible, func(e ext.Eligible) bool { return e.Subject == r.subject })
+			if named && slices.Contains(r.groups, g.Role) && !slices.Contains(groupsOf[r.subject], i) {
+				groupsOf[r.subject] = append(groupsOf[r.subject], i)
+			}
+		}
+	}
+	if !p.Distinct {
+		total := 0
+		for i, g := range p.Groups {
+			n := 0
+			for _, who := range people {
+				if slices.Contains(groupsOf[who], i) {
+					n++
+				}
+			}
+			total += min(n, g.Quorum)
+		}
+		return total
+	}
+	used := make([]int, len(p.Groups))
+	var best func(i int) int
+	best = func(i int) int {
+		if i == len(people) {
+			return 0
+		}
+		top := best(i + 1) // this person fills nothing
+		for _, g := range groupsOf[people[i]] {
+			if used[g] < p.Groups[g].Quorum {
+				used[g]++
+				top = max(top, 1+best(i+1))
+				used[g]--
+			}
+		}
+		return top
+	}
+	return best(0)
 }
 
 // A counted row stands when its recheck admitted it; one this process

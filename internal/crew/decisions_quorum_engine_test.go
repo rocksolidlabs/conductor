@@ -298,3 +298,239 @@ func TestAHeldAnswerNeverCounts(t *testing.T) {
 	}
 	stopRun(t, e, run.ID)
 }
+
+// noApprovalStuck holds the invariant the judgement keeps, on decision id
+// as the ledger holds it now: while it is open, an eligible person's
+// approval answers it exactly when, added to the approvals that stand, it
+// would fill every place, by a brute-force count that shares nothing with
+// fill; so no approval is refused, or merely counted, while it could
+// complete the decision.
+func noApprovalStuck(t *testing.T, e *Engine, ld *ledger.Ledger, id string) {
+	t.Helper()
+	rec := decisionWhen(t, ld, id, "readable", func(ledger.DecisionRecord) bool { return true })
+	if rec.State != ledger.DecisionOpen {
+		return
+	}
+	p, ok := routedOf(rec.Policy)
+	if !ok {
+		return
+	}
+	standing, _ := countedRows(rec, e.Boot(), func(k int) bool { return e.CountedPending(rec.N, k) })
+	for _, g := range p.Groups {
+		for _, el := range g.Eligible {
+			groups := p.confirmedFor(el.Subject)
+			completes := bruteFill(p, append(slices.Clone(standing), countedRow{subject: el.Subject, groups: groups})) >= placesOf(p)
+			v, _ := judgeCount(p, standing, el.Subject, groups)
+			if completes != (v == countAnswers) {
+				t.Fatalf("%s: %s's approval would complete it: %v; its verdict %d", id, el.Subject, completes, v)
+			}
+		}
+	}
+}
+
+// rerouteTo has q hold pol and re-routes id to it at its rev now, its
+// result not a supersession.
+func rerouteTo(t *testing.T, e *Engine, ld *ledger.Ledger, q *quorumRouter, id string, pol ext.RoutePolicy, opID string) {
+	t.Helper()
+	q.mu.Lock()
+	q.pol = pol
+	q.mu.Unlock()
+	rec := decisionWhen(t, ld, id, "open", inState(ledger.DecisionOpen))
+	res, err := e.Reroute(t.Context(), id, "switchman", pol, ext.Rerouted, opID, rec.Rev)
+	if err != nil || res.Superseded != "" || res.Unchanged {
+		t.Fatalf("the re-route to %s: %+v %v", pol.Revision, res, err)
+	}
+}
+
+// countedHere is mustCount with its recheck admitted at once, as the
+// respond route rechecks a response after its commit.
+func countedHere(t *testing.T, e *Engine, ld *ledger.Ledger, q *quorumRouter, id, subject, rid, status string) {
+	t.Helper()
+	rc := mustCount(t, e, ld, q, id, subject, rid, status)
+	e.ConfirmAuthority(id, rc.K, true)
+	noApprovalStuck(t, e, ld, id)
+}
+
+// appliedOnce waits for id applied and says it was applied once.
+func appliedOnceIn(t *testing.T, ld *ledger.Ledger, id string) ledger.DecisionRecord {
+	t.Helper()
+	rec := decisionWhen(t, ld, id, "applied", inState(ledger.DecisionApplied))
+	n := 0
+	for _, h := range rec.History {
+		if h.Kind == ledger.HistoryApplied {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("%s applied %d times", id, n)
+	}
+	return rec
+}
+
+// Ana's approval stays counted while a re-route takes her away; cam is
+// counted meanwhile; a re-route names ana again: the counted approvals
+// alone fill both places, and the decision waits for an answer. The next
+// eligible approval answers it, ben's (not distinct) or ana's own, already
+// counted (distinct persons), and it is applied once. The invariant holds
+// after every step.
+func TestApprovalsThatFillEveryPlaceAfterAReRouteAreCompleted(t *testing.T) {
+	for _, c := range []struct {
+		distinct bool
+		last     string
+	}{{false, "ben"}, {true, "ana"}} {
+		t.Run(fmt.Sprintf("distinct %v, %s answers", c.distinct, c.last), func(t *testing.T) {
+			dir := newRepo(t)
+			e, _, ld := decisionEngine(t)
+			sec := eligibleGroup("security", 1, "cam")
+			q := &quorumRouter{pol: policyOf("rev-1", c.distinct, eligibleGroup("architecture", 1, "ana"), sec)}
+			q.routes(e)
+			run := launchGated(t, e, dir, fmt.Sprintf("api-sweep-0000%04x", map[bool]int{false: 0xf6, true: 0xf7}[c.distinct]), repoCrew(dir, work("deploy", "ops")), shipGate("deploy"))
+			g := gateOf(t, e, ld, run.ID)
+			routeUnder(t, e, ld, q, g.ID)
+			countedHere(t, e, ld, q, g.ID, "ana", "a1", ledger.ResponseCounted)
+			rerouteTo(t, e, ld, q, g.ID, policyOf("rev-2", c.distinct, eligibleGroup("architecture", 1, "ben"), sec), "op-1")
+			noApprovalStuck(t, e, ld, g.ID)
+			countedHere(t, e, ld, q, g.ID, "cam", "c1", ledger.ResponseCounted)
+			rerouteTo(t, e, ld, q, g.ID, policyOf("rev-3", c.distinct, eligibleGroup("architecture", 1, "ana", "ben"), sec), "op-2")
+			noApprovalStuck(t, e, ld, g.ID)
+			rec := decisionWhen(t, ld, g.ID, "open", inState(ledger.DecisionOpen))
+			if qu := QuorumOf(rec, e.Boot(), e.CountedPending); qu.Filled != 2 || qu.Places != 2 {
+				t.Fatalf("the count after ana's return: %+v", qu)
+			}
+			rc := mustCount(t, e, ld, q, g.ID, c.last, "z1", ledger.ResponseAccepted)
+			e.ConfirmAuthority(g.ID, rc.K, true)
+			appliedOnceIn(t, ld, g.ID)
+			waitAttempt(t, e, run.ID, "deploy", ledger.AttemptRunning)
+			stopRun(t, e, run.ID)
+		})
+	}
+}
+
+// A re-route moves ana, counted for architecture, to security, the only
+// person it names there: her standing approval fills nothing, and her
+// fresh approval is counted for security, not refused already counted;
+// her third, while architecture still waits, is already counted and
+// takes no row; ben's answers it, applied once. The invariant holds after
+// every step.
+func TestAnApproverMovedByAReRouteIsJudgedAnew(t *testing.T) {
+	dir := newRepo(t)
+	e, _, ld := decisionEngine(t)
+	q := &quorumRouter{pol: policyOf("rev-1", true, eligibleGroup("architecture", 1, "ana"), eligibleGroup("security", 1, "cam"))}
+	q.routes(e)
+	run := launchGated(t, e, dir, "api-sweep-000000f8", repoCrew(dir, work("deploy", "ops")), shipGate("deploy"))
+	g := gateOf(t, e, ld, run.ID)
+	routeUnder(t, e, ld, q, g.ID)
+	countedHere(t, e, ld, q, g.ID, "ana", "a1", ledger.ResponseCounted)
+	rerouteTo(t, e, ld, q, g.ID, policyOf("rev-2", true, eligibleGroup("architecture", 1, "ben"), eligibleGroup("security", 1, "ana")), "op-1")
+	noApprovalStuck(t, e, ld, g.ID)
+	countedHere(t, e, ld, q, g.ID, "ana", "a2", ledger.ResponseCounted)
+	rows := len(decisionWhen(t, ld, g.ID, "open", inState(ledger.DecisionOpen)).Responses)
+	if _, err := approveAs(t, e, ld, q, g.ID, "ana", "a3", 0); decisionFailure(err) == nil || decisionFailure(err).Code != CodeAlreadyCounted {
+		t.Fatalf("ana's third approval: %v", err)
+	}
+	if got := len(decisionWhen(t, ld, g.ID, "open", inState(ledger.DecisionOpen)).Responses); got != rows {
+		t.Fatalf("already counted took a row: %d, was %d", got, rows)
+	}
+	noApprovalStuck(t, e, ld, g.ID)
+	rc := mustCount(t, e, ld, q, g.ID, "ben", "b1", ledger.ResponseAccepted)
+	e.ConfirmAuthority(g.ID, rc.K, true)
+	appliedOnceIn(t, ld, g.ID)
+	stopRun(t, e, run.ID)
+}
+
+// A restart between the last approval and the application: cam's answer,
+// its recheck not made before the server's end, is never applied; the
+// continuation supersedes the answered gate by a fresh one with its hold.
+func TestARestartBeforeTheApplicationSupersedesTheCombinedAnswer(t *testing.T) {
+	dir, ldir := newRepo(t), t.TempDir()
+	e, _, ld := decisionEngineAt(t, ldir)
+	q := &quorumRouter{pol: policyOf("rev-1", true, eligibleGroup("architecture", 1, "ana"), eligibleGroup("security", 1, "cam"))}
+	q.routes(e)
+	run := launchGated(t, e, dir, "api-sweep-000000f9", repoCrew(dir, work("deploy", "ops")), shipGate("deploy"))
+	g := gateOf(t, e, ld, run.ID)
+	routeUnder(t, e, ld, q, g.ID)
+	countedHere(t, e, ld, q, g.ID, "ana", "a1", ledger.ResponseCounted)
+	mustCount(t, e, ld, q, g.ID, "cam", "c1", ledger.ResponseAccepted)
+	decisionWhen(t, ld, g.ID, "answered", inState(ledger.DecisionAnswered))
+
+	e2, _, ld2 := restart(t, e, ld, ldir, run.ID)
+	q.routes(e2)
+	next := continueRun(t, e2, run.ID)
+	old := decisionWhen(t, ld2, g.ID, "superseded", inState(ledger.DecisionSuperseded))
+	if old.Applied != "" || old.SupersededBy == "" {
+		t.Fatalf("the answered gate after the restart: %+v", old.DecisionRow)
+	}
+	if got := activeHolds(t, ld2, next.ID); !equalStrings(got, []string{"deploy " + old.SupersededBy}) {
+		t.Fatalf("holds %q", got)
+	}
+	stopRun(t, e2, next.ID)
+}
+
+// Rows run short with no re-route: 24 kept refusals and four approvals
+// counted for architecture, never rechecked before the server's end. After
+// the restart they count no more: eight places to fill, four rows left.
+// The next response supersedes the gate first, its replacement holding the
+// task, and is refused stale_decision, saying so.
+func TestTheResponseAfterApprovalsLapsedSupersedesWhenRowsRunShort(t *testing.T) {
+	dir, ldir := newRepo(t), t.TempDir()
+	e, _, ld := decisionEngineAt(t, ldir)
+	arch := eligibleGroup("architecture", 4, "a0", "a1", "a2", "a3")
+	sec := eligibleGroup("security", 4, "b0", "b1", "b2", "b3")
+	q := &quorumRouter{pol: policyOf("rev-1", false, arch, sec)}
+	q.routes(e)
+	run := launchGated(t, e, dir, "api-sweep-000000fa", repoCrew(dir, work("deploy", "ops")), shipGate("deploy"))
+	g := gateOf(t, e, ld, run.ID)
+	routeUnder(t, e, ld, q, g.ID)
+	operator := q.answer("")
+	for i := range 24 {
+		rec := decisionWhen(t, ld, g.ID, "readable", func(ledger.DecisionRecord) bool { return true })
+		if _, err := e.RespondDecisionWith(t.Context(), g.ID, Response{ResponseID: fmt.Sprintf("o%d", i), Choice: choice(0), ExpectedRev: rec.Rev}, "admin", workbench(e), &operator); decisionFailure(err) == nil {
+			t.Fatalf("the operator's answer %d was taken", i)
+		}
+	}
+	for i := range 4 {
+		mustCount(t, e, ld, q, g.ID, fmt.Sprintf("a%d", i), fmt.Sprintf("a%d", i), ledger.ResponseCounted)
+	}
+	e2, _, ld2 := restart(t, e, ld, ldir, run.ID)
+	q.routes(e2)
+	next := continueRun(t, e2, run.ID)
+	_, err := approveAs(t, e2, ld2, q, g.ID, "b0", "b0", 0)
+	if de := decisionFailure(err); de == nil || de.Code != CodeStaleDecision || !strings.Contains(de.Words, "responses filled its record") {
+		t.Fatalf("the response after the lapse: %v", err)
+	}
+	old := decisionWhen(t, ld2, g.ID, "superseded", inState(ledger.DecisionSuperseded))
+	if got := activeHolds(t, ld2, next.ID); !equalStrings(got, []string{"deploy " + old.SupersededBy}) {
+		t.Fatalf("holds %q", got)
+	}
+	stopRun(t, e2, next.ID)
+}
+
+// A void recheck that leaves the rows short supersedes the gate at once:
+// 24 kept refusals, three architecture approvals admitted and a fourth
+// whose recheck refuses it: five places to fill, four rows left.
+func TestAVoidedRecheckThatLeavesRowsShortSupersedes(t *testing.T) {
+	dir := newRepo(t)
+	e, _, ld := decisionEngine(t)
+	q := &quorumRouter{pol: policyOf("rev-1", false, eligibleGroup("architecture", 4, "a0", "a1", "a2", "a3"), eligibleGroup("security", 4, "b0", "b1", "b2", "b3"))}
+	q.routes(e)
+	run := launchGated(t, e, dir, "api-sweep-000000fb", repoCrew(dir, work("deploy", "ops")), shipGate("deploy"))
+	g := gateOf(t, e, ld, run.ID)
+	routeUnder(t, e, ld, q, g.ID)
+	operator := q.answer("")
+	for i := range 24 {
+		rec := decisionWhen(t, ld, g.ID, "readable", func(ledger.DecisionRecord) bool { return true })
+		if _, err := e.RespondDecisionWith(t.Context(), g.ID, Response{ResponseID: fmt.Sprintf("o%d", i), Choice: choice(0), ExpectedRev: rec.Rev}, "admin", workbench(e), &operator); decisionFailure(err) == nil {
+			t.Fatalf("the operator's answer %d was taken", i)
+		}
+	}
+	for i := range 3 {
+		countedHere(t, e, ld, q, g.ID, fmt.Sprintf("a%d", i), fmt.Sprintf("a%d", i), ledger.ResponseCounted)
+	}
+	rc := mustCount(t, e, ld, q, g.ID, "a3", "a3", ledger.ResponseCounted)
+	e.ConfirmAuthority(g.ID, rc.K, false)
+	old := decisionWhen(t, ld, g.ID, "superseded", inState(ledger.DecisionSuperseded))
+	if !strings.Contains(old.Why, "responses filled its record") || !hasRechecked(old, rc.K, false) {
+		t.Fatalf("the gate after the void recheck: %+v", old.DecisionRow)
+	}
+	stopRun(t, e, run.ID)
+}

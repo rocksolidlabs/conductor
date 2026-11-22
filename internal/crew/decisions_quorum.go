@@ -234,34 +234,50 @@ func (p routedPolicy) metWords(groups []int, per []int) string {
 	return strings.Join(labels, " and ")
 }
 
+// notNeededWords say why an approval filled no place: the groups it
+// could fill that are met, and what the record still waits for, by
+// labels, never by people; no clause is left empty.
+func (p routedPolicy) notNeededWords(id string, groups, per []int) string {
+	w := id + " has " + p.metWords(groups, per) + " approvals it needs"
+	if waits := p.waitsForWords(per); waits != "" {
+		w += ": " + waits
+	}
+	return w
+}
+
 // countVerdict is an eligible approval's judgement under a policy that
 // counts (judgeCount).
 type countVerdict int
 
 const (
-	countAnswers   countVerdict = iota // it fills the last place: accepted
-	countCounted                       // it fills a place and leaves one: counted
-	countNotNeeded                     // it fills no place still needed
-	countAlready                       // its subject's approval counts already
+	countAnswers   countVerdict = iota // every place is filled with it: accepted
+	countCounted                       // it fills a place more and leaves one: counted
+	countNotNeeded                     // it fills no place more
+	countAlready                       // it fills no place more, and its person's approval stands
 )
 
 // judgeCount judges subject's eligible approval, confirmed now in groups,
-// under p, beside the counted approvals that stand: the verdict, and the
-// places filled after it per group.
+// under p, beside the counted approvals that stand: with its row added
+// (its groups merged with its person's standing row's, one place a person
+// under distinct persons), it answers the decision when every place is
+// then filled, whether it filled the last place or the last was filled
+// already (a re-route can bring back a counted approver); else it is
+// counted when it fills a place more; else it is refused, already counted
+// for a person whose own approval stands and not needed otherwise. A
+// person whose standing approval fills nothing (a re-route moved them) is
+// so judged anew. The places filled after it, per group, are returned.
 func judgeCount(p routedPolicy, standing []countedRow, subject string, groups []string) (countVerdict, []int) {
 	before, per := fill(p, standing)
-	if slices.ContainsFunc(standing, func(c countedRow) bool { return c.subject == subject }) {
-		return countAlready, per
-	}
 	after, perAfter := fill(p, append(slices.Clone(standing), countedRow{subject: subject, groups: groups}))
 	switch {
-	case after <= before:
-		// It raises nothing: every place it could fill is filled.
-		return countNotNeeded, per
 	case after >= placesOf(p):
 		return countAnswers, perAfter
+	case after > before:
+		return countCounted, perAfter
+	case slices.ContainsFunc(standing, func(c countedRow) bool { return c.subject == subject }):
+		return countAlready, per
 	}
-	return countCounted, perAfter
+	return countNotNeeded, per
 }
 
 // QuorumOf is the operator's count of rec's places under its router's
