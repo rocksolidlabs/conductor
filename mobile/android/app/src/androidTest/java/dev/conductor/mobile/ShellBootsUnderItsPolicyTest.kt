@@ -7,6 +7,18 @@ import android.net.Uri
 import android.content.pm.PackageManager
 import android.os.Build
 import android.util.Log
+import android.os.ParcelFileDescriptor
+import android.security.keystore.KeyInfo
+import android.security.keystore.KeyProperties
+import android.webkit.PermissionRequest
+import android.webkit.WebResourceRequest
+import org.junit.Assert.assertArrayEquals
+import org.junit.Assert.assertFalse
+import java.security.KeyFactory
+import java.security.KeyStore
+import java.security.PrivateKey
+import javax.crypto.SecretKey
+import javax.crypto.SecretKeyFactory
 import android.webkit.WebView
 import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -108,6 +120,20 @@ class ShellBootsUnderItsPolicyTest {
                 check('climb', (await image('/%2E%2E%2Fcapacitor.config.json')) === 'refused');
                 await image('/shell/decisions/$DECISION_SEGMENT');
                 await image('/shell/decisions/' + encodeURIComponent(${org.json.JSONObject.quote(DECISION_ID)}));
+                // A frame of another origin: the page's own policy names no frame source, so it never loads (one frame-src violation).
+                at('frame away');
+                const away = document.createElement('iframe');
+                away.src = 'https://example.com/?boot-probe-frame';
+                document.body.appendChild(away);
+                await within(new Promise((r) => { away.onload = () => r(true); away.onerror = () => r(false) }), 5000).catch(() => false);
+                // A service worker: every request of one is refused (the native count says so), and its registration fails.
+                at('service worker');
+                const worker = await code(() => navigator.serviceWorker.register('/sw.js'));
+                check('worker', worker !== 'answered', worker);
+                // The location: turned off and denied, at once, with no prompt.
+                at('geolocation');
+                const located = await within(new Promise((r) => navigator.geolocation.getCurrentPosition(() => r('granted'), (e) => r('denied ' + e.code))), 10000).catch(() => 'no_answer');
+                check('geolocation', String(located).startsWith('denied'), located);
                 // No prompt answers, and no window opens on a script's own.
                 at('prompt');
                 check('prompt', prompt('boot probe') === null);
@@ -217,6 +243,7 @@ class ShellBootsUnderItsPolicyTest {
                 until(30, "the load to $to cancelled") { gates.cancelled.get() > n }
                 step("cancelled: $to")
             }
+            val ownViolations = eval(s, "window.__bootViolations.length")
             eval(s, PROBES)
             // The probes' own waits bound each one (20 s for each of eleven, 10 s for one): the report comes within their sum, and this
             // bound only bounds a hang. A page that is no longer the one the probes run in (its globals gone) fails at once, saying where it is.
@@ -227,22 +254,34 @@ class ShellBootsUnderItsPolicyTest {
             }
             val probes = text(eval(s, "window.__bootProbes"))
             val framePosted = eval(s, "window.__bootFramePosted") == "true"
-            val violations = eval(s, "window.__bootViolations.length")
+            val probeViolations = text(eval(s, "window.__bootViolations.slice($ownViolations).map((v) => v.split(' ')[0]).join(',')"))
             val platform = text(eval(s, "window.conductorShell ? window.conductorShell.platform : 'none'"))
             val page = text(eval(s, "location.href"))
             step("probes: $probes; the frame had the channel: $framePosted; violations: ${eval(s, "JSON.stringify(window.__bootViolations)")}")
             // 9 messages posted, the srcdoc frame's when it had the channel, and the call to the runtime's WebView through its page script.
             val expectedDrops = ownDropped + 10 + (if (framePosted) 1 else 0)
             until(30, "the gate's drops counted") { gates.dropped.get() >= expectedDrops }
-            val report = "ready platform=$platform probes=$probes own-dropped=$ownDropped own-refused=$ownRefused " +
+            val report = "ready platform=$platform probes=$probes own-dropped=$ownDropped own-refused=$ownRefused own-violations=$ownViolations " +
                 "dropped=${gates.dropped.get() - ownDropped} refused=${gates.refused.get() - ownRefused} cancelled=${gates.cancelled.get()} " +
-                "handed=${gates.handedOff.get()} violations=$violations page-own=${LoadGate.own(page)}"
+                "handed=${gates.handedOff.get()} workers=${gates.workers.get()} probe-violations=$probeViolations page-own=${LoadGate.own(page)}"
             step("the boot check's report: $report")
             assertEquals(
-                "ready platform=android probes=ok own-dropped=0 own-refused=0 dropped=${10 + (if (framePosted) 1 else 0)} refused=5 " +
-                    "cancelled=${AWAY.size} handed=0 violations=0 page-own=true",
+                "ready platform=android probes=ok own-dropped=0 own-refused=0 own-violations=0 dropped=${10 + (if (framePosted) 1 else 0)} " +
+                    "refused=5 cancelled=${AWAY.size} handed=0 workers=1 probe-violations=frame-src page-own=true",
                 report,
             )
+            // Last, as it leaves the shell's page: a form posted to another origin, which no navigation check sees, never loads there:
+            // the request gate refuses its document (or, where the web view asks about it, the load gate cancels it).
+            val refusedBefore = gates.refused.get()
+            val cancelledBefore = gates.cancelled.get()
+            eval(s, "(() => { const f = document.createElement('form'); f.method = 'post'; f.action = 'https://example.com/?boot-probe-post'; " +
+                "document.body.appendChild(f); f.submit(); return 1 })()")
+            until(30, "the form's post refused or cancelled", { diagnosis(s, gates) }) {
+                gates.refused.get() > refusedBefore || gates.cancelled.get() > cancelledBefore
+            }
+            val post = if (gates.refused.get() > refusedBefore) "refused" else "cancelled"
+            step("the form's post: $post (the web view at ${read(s) { it.getBridge().webView.url }})")
+            assertEquals("refused", post)
             assertNull("the open-source build holds a signing policy", ConductorKey.packagedPolicy())
         }
     }
@@ -294,6 +333,162 @@ class ShellBootsUnderItsPolicyTest {
         step("permissions: $permissions")
         for (p in permissions) {
             assertTrue("$p asked for", !p.contains("CAMERA") && !p.contains("RECORD_AUDIO") && !p.contains("LOCATION") && !p.contains("STORAGE"))
+        }
+    }
+
+    /** A shell command as the test's own setup runs it (the platform's documented commands), waited for to its end. */
+    private fun shell(command: String): String {
+        val out = InstrumentationRegistry.getInstrumentation().uiAutomation.executeShellCommand(command)
+        return ParcelFileDescriptor.AutoCloseInputStream(out).use { String(it.readBytes()) }
+    }
+
+    /** A request as the web view hands its client one. */
+    private fun request(url: String, mainFrame: Boolean, method: String = "GET", headers: Map<String, String> = emptyMap()) = object : WebResourceRequest {
+        override fun getUrl(): Uri = Uri.parse(url)
+        override fun isForMainFrame(): Boolean = mainFrame
+        override fun isRedirect(): Boolean = false
+        override fun hasGesture(): Boolean = false
+        override fun getMethod(): String = method
+        override fun getRequestHeaders(): Map<String, String> = headers
+    }
+
+    @Test
+    fun theGatesInPlaceDecideAsTheirRulesSay() {
+        ActivityScenario.launch(MainActivity::class.java).use { s ->
+            until(30, "the gates in place") { read(s) { it.gates != null } }
+            val gates = read(s) { it.gates!! }
+            val client = read(s) { it.getBridge().webViewClient }
+            val chrome = read(s) { it.getBridge().webView.webChromeClient }
+            val webView = read(s) { it.getBridge().webView }
+            assertTrue("the web view's client is ${client.javaClass.name}", client is ShellWebViewClient)
+            assertTrue("the chrome client is ${chrome?.javaClass?.name}", chrome is ShellChromeClient)
+            // The request gate, through the client the web view holds, before the runtime's local server.
+            val refused = gates.refused.get()
+            val frame = mapOf("Upgrade-Insecure-Requests" to "1", "Accept" to "text/html,application/xhtml+xml")
+            fun status(r: WebResourceRequest): Int? = client.shouldInterceptRequest(webView, r)?.statusCode
+            assertEquals("a frame of another origin", 403, status(request("https://example.com/", false, headers = frame)))
+            assertEquals("a form's post to another origin", 403, status(request("https://example.com/form", true, "POST")))
+            assertEquals("a Range past the server's int", 403, status(request("$APP/index.html", false, headers = mapOf("Range" to "bytes=0-2147483648"))))
+            assertEquals("a file under the server's prefix", 403, status(request("$APP/_capacitor_file_/system/etc/hosts", false)))
+            assertEquals(4, gates.refused.get() - refused)
+            // The edge of the Range the server reads: served (the app is still here to answer).
+            assertEquals("a Range at the server's int", 206, status(request("$APP/index.html", false, headers = mapOf("Range" to "bytes=0-2147483647"))))
+            assertEquals(null, status(request("https://api.provider.example/v1", false, headers = mapOf("Accept" to "application/json"))))
+            assertEquals(4, gates.refused.get() - refused)
+            // The chrome client the web view holds: every permission denied, the location denied, no chooser, no prompt, no window.
+            var granted = false
+            var denied = false
+            var located: Boolean? = null
+            s.onActivity {
+                chrome!!.onPermissionRequest(object : PermissionRequest() {
+                    override fun getOrigin(): Uri = Uri.parse(APP)
+                    override fun getResources(): Array<String> = arrayOf(RESOURCE_VIDEO_CAPTURE, RESOURCE_MIDI_SYSEX, RESOURCE_PROTECTED_MEDIA_ID)
+                    override fun grant(resources: Array<String>?) {
+                        granted = true
+                    }
+                    override fun deny() {
+                        denied = true
+                    }
+                })
+                chrome.onGeolocationPermissionsShowPrompt(APP) { _, allow, _ -> located = allow }
+                assertEquals(false, chrome.onShowFileChooser(webView, null, null))
+                assertEquals(true, chrome.onJsPrompt(webView, APP, "probe", "", null))
+                assertEquals(false, chrome.onCreateWindow(webView, false, true, null))
+            }
+            assertEquals(false, granted)
+            assertEquals(true, denied)
+            assertEquals(false, located)
+            // The bridge gate's sender test, through the gate the channel holds: another origin, a page not the app's own, a frame.
+            val dropped = gates.dropped.get()
+            val call = """{"pluginId":"ConductorKey","methodName":"state","callbackId":"9","options":{}}"""
+            s.onActivity {
+                gates.take("$APP/shell", call, Uri.parse("https://example.com"), true)
+                gates.take("blob:$APP/5f0c", call, Uri.parse(APP), true)
+                gates.take("$APP/shell", call, Uri.parse(APP), false)
+                gates.take("$APP/shell", call, Uri.parse(APP), true)
+            }
+            assertEquals(3, gates.dropped.get() - dropped)
+        }
+    }
+
+    @Test
+    fun theKeystoreMakesTheKeyBehindTheUnlockOrRefusesAndLeavesNothing() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        shell("locksettings set-pin 1357")
+        try {
+            val device = AndroidKeyDevice(context)
+            val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+            var made: DeviceKey? = null
+            val outcome = try {
+                made = device.make()
+                "made ${made.form}"
+            } catch (e: KeyRefusal) {
+                "refused ${e.code}"
+            } catch (e: KeyNeedsUnlock) {
+                "the seal needs the unlock"
+            }
+            step("the keystore's answer: $outcome")
+            if (outcome.startsWith("refused")) {
+                assertEquals("refused key_unprotected", outcome)
+                assertFalse(store.containsAlias(AndroidKeyDevice.SIGNING))
+                assertFalse(store.containsAlias(AndroidKeyDevice.SEALING))
+                return
+            }
+            val alias = if (made?.form == DeviceKey.KEYSTORE) AndroidKeyDevice.SIGNING else AndroidKeyDevice.SEALING
+            assertTrue(store.containsAlias(alias))
+            val key = store.getKey(alias, null)
+            val info: KeyInfo = if (key is SecretKey) {
+                SecretKeyFactory.getInstance(key.algorithm, "AndroidKeyStore").getKeySpec(key, KeyInfo::class.java) as KeyInfo
+            } else {
+                val k = key as PrivateKey
+                listOf(k.algorithm, KeyProperties.KEY_ALGORITHM_EC).firstNotNullOfOrNull { algorithm ->
+                    try {
+                        KeyFactory.getInstance(algorithm, "AndroidKeyStore").getKeySpec(k, KeyInfo::class.java)
+                    } catch (e: Exception) {
+                        null
+                    }
+                } ?: throw AssertionError("the keystore gives no account of its key")
+            }
+            step("the key: kept in secure hardware ${protectedBy(info)}, authentication ${info.isUserAuthenticationRequired}, " +
+                "${info.userAuthenticationValidityDurationSeconds} s" + (if (Build.VERSION.SDK_INT >= 30) ", authenticators ${info.userAuthenticationType}" else ""))
+            assertTrue(protectedBy(info))
+            assertTrue(info.isUserAuthenticationRequired)
+            assertEquals(AndroidKeyDevice.WINDOW, info.userAuthenticationValidityDurationSeconds)
+            if (Build.VERSION.SDK_INT >= 30) {
+                assertEquals(KeyProperties.AUTH_BIOMETRIC_STRONG or KeyProperties.AUTH_DEVICE_CREDENTIAL, info.userAuthenticationType)
+            }
+            val m = made
+            if (m != null && m.form == DeviceKey.KEYSTORE) {
+                assertArrayEquals(m.publicKey, rawEd25519(store.getCertificate(AndroidKeyDevice.SIGNING).publicKey.encoded))
+                assertArrayEquals(m.publicKey, device.publicKey(m))
+                assertTrue(device.holds(m))
+            }
+            device.removeAll()
+            assertFalse(store.containsAlias(AndroidKeyDevice.SIGNING))
+            assertFalse(store.containsAlias(AndroidKeyDevice.SEALING))
+        } finally {
+            shell("locksettings clear --old 1357")
+        }
+    }
+
+    @Test
+    fun theUnlockPromptsWaitEndsWithTheActivity() {
+        shell("locksettings set-pin 1357")
+        try {
+            ActivityScenario.launch(MainActivity::class.java).use { s ->
+                val presence = AndroidPresence(read(s) { it })
+                val answer = AtomicReference<Boolean?>(null)
+                val asking = Thread { answer.set(presence.confirm("Boot check: the prompt's wait")) }
+                asking.start()
+                until(30, "the prompt shown") { read(s) { it.supportFragmentManager.fragments.isNotEmpty() } }
+                // The activity made again, as a change of configuration makes it: the prompt never calls back, and the wait ends.
+                s.recreate()
+                asking.join(60_000)
+                assertFalse("the prompt's wait outlived its activity", asking.isAlive)
+                assertEquals(false, answer.get())
+            }
+        } finally {
+            shell("locksettings clear --old 1357")
         }
     }
 }
