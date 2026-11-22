@@ -89,9 +89,9 @@ type HostsDecisions struct {
 // HostRow is one machine hosting sessions here, or seen doing so since
 // this server started.
 type HostRow struct {
-	Key          string        `json:"key"`  // the sessions' hostKey: a hash, never what the host sent
-	Kind         string        `json:"kind"` // HostKindHost
-	Name         string        `json:"name"` // the newest of its sessions' host names
+	Key          string        `json:"key"`             // the sessions' hostKey: a hash, never what the host sent
+	Kind         string        `json:"kind"`            // HostKindHost
+	Name         string        `json:"name"`            // the newest of its sessions' host names
 	Names        int           `json:"names,omitempty"` // how many names its sessions report, when more than one
 	Platform     string        `json:"platform,omitempty"`
 	Version      string        `json:"version,omitempty"`
@@ -261,8 +261,17 @@ func (s *Server) handleHosts(w http.ResponseWriter, r *http.Request) {
 }
 
 // hostsReply builds the host overview from what the server holds now,
-// each holder read under its own lock, once.
+// each holder read under its own lock, once: the first half, then the
+// workspace's other machines when the rule says so.
 func (s *Server) hostsReply(ctx context.Context) HostsReply {
+	reply := s.hostsFirstHalf(ctx)
+	reply.Other = s.hostsOther(ctx)
+	return reply
+}
+
+// hostsFirstHalf is the reply without other machines: this server, its
+// hosts, the switchyard and the runs, within hostsFirstBudget.
+func (s *Server) hostsFirstHalf(ctx context.Context) HostsReply {
 	now := s.seen.clock()
 	infos := s.registry.List()
 	own := s.OwnHostKey()

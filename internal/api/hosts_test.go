@@ -268,7 +268,9 @@ func TestHostsLedgerStates(t *testing.T) {
 		return l
 	}
 	pid := strconv.Itoa(os.Getpid())
-	twice("held by another server", func(l HostsLedger) bool { return l.Holder == HolderOther && strings.HasPrefix(l.Note, "pid "+pid+" since ") })
+	twice("held by another server", func(l HostsLedger) bool {
+		return l.Holder == HolderOther && strings.HasPrefix(l.Note, "pid "+pid+" since ")
+	})
 	// The probe finds the lock free while this server's wait still runs.
 	b.srv.probeLock = func(string) (ledger.ProbeResult, error) { return ledger.ProbeResult{State: ledger.ProbeFree}, nil }
 	twice("free, this server still waiting", func(l HostsLedger) bool {
@@ -291,7 +293,9 @@ func TestHostsLedgerStates(t *testing.T) {
 		})
 	}
 	b.srv.probeLock = func(string) (ledger.ProbeResult, error) { return ledger.ProbeResult{State: ledger.ProbeNoLocks}, nil }
-	twice("no locks", func(l HostsLedger) bool { return l.Holder == HolderNone && l.Note == "the data directory's filesystem has no locks" })
+	twice("no locks", func(l HostsLedger) bool {
+		return l.Holder == HolderNone && l.Note == "the data directory's filesystem has no locks"
+	})
 	b.srv.probeLock = nil
 	// The holder gone: this server takes the lock.
 	crashServer(t, f.testEnv, f.run)

@@ -1921,7 +1921,7 @@ export interface HostRow {
   version?: string
   user?: string
   availability: 'connected' | 'away' | 'seen'
-  /** connected: when its newest link came; away: when its last link dropped; seen: when its last session went. */
+  /** away: when its last link dropped; seen: when its last session went; missing while connected. */
   since?: string
   sessions: HostsSessions
   /** Its listed sessions, newest first (at most HOSTS_MAX_SESSION_IDS); empty when seen. */

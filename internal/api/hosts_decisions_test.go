@@ -61,7 +61,7 @@ func TestHostsDecisionMovesWithContinuation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f.decisionWhen(t, "dr-1", "moved to "+next.ID, func(d map[string]any) bool { return d["currentRun"] == next.ID || d["run"] == next.ID })
+	f.decisionWhen(t, "dr-1", "moved to "+next.ID, func(d map[string]any) bool { return d["run"] == next.ID })
 	r, run := f.heldRunOf(t, next.ID, "1")
 	if run.WaitingRef != "decision:dr-1" || r.This.Decisions == nil || *r.This.Decisions != (HostsDecisions{Open: 1, WaitingRef: "decision:dr-1"}) {
 		t.Fatalf("on B: %+v, this %+v", run, r.This.Decisions)
@@ -101,11 +101,12 @@ func TestHostsMirroredDecisionCountedOnce(t *testing.T) {
 }
 
 // A lone decision a continuation inherited links to its record though no
-// session mirrors it; a second decision on the continuation: 2 and no
-// link.
+// session mirrors it (the continuation's attempt waits for it, so none
+// runs); two such decisions: 2 and no link.
 func TestHostsLoneGateLinksWithoutSession(t *testing.T) {
 	f := newDecisionFixture(t, nil, nil)
 	f.ask(t, clarificationBody("r1"), http.StatusCreated, "")
+	f.ask(t, clarificationBody("r2"), http.StatusCreated, "")
 	if err := f.srv.runs.Stop(t.Context(), f.run); err != nil {
 		t.Fatal(err)
 	}
@@ -113,21 +114,22 @@ func TestHostsLoneGateLinksWithoutSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f.decisionWhen(t, "dr-1", "moved", func(d map[string]any) bool { return d["currentRun"] == next.ID || d["run"] == next.ID })
-	r, run := f.heldRunOf(t, next.ID, "1")
+	for _, did := range []string{"dr-1", "dr-2"} {
+		f.decisionWhen(t, did, "moved", func(d map[string]any) bool { return d["run"] == next.ID })
+	}
+	r, run := f.heldRunOf(t, next.ID, "2")
+	if run.WaitingRef != "" || *r.This.Decisions != (HostsDecisions{Open: 2}) {
+		t.Fatalf("two on B: %+v, this %+v", run, r.This.Decisions)
+	}
+	f.respond(t, adminToken, "dr-2", "a1", 0, 1, http.StatusCreated, "")
+	f.decisionWhen(t, "dr-2", "no longer open", func(d map[string]any) bool { return d["state"] != ledger.DecisionOpen })
+	r, run = f.heldRunOf(t, next.ID, "1")
 	for _, info := range f.srv.registry.List() {
-		if info.Attention.Decision != "" {
+		if info.Attention.Decision != "" && !info.Status.Ended() {
 			t.Fatalf("a session mirrors %s: %+v", info.Attention.Decision, info)
 		}
 	}
 	if run.WaitingRef != "decision:dr-1" || *r.This.Decisions != (HostsDecisions{Open: 1, WaitingRef: "decision:dr-1"}) {
 		t.Fatalf("the lone gate: %+v, this %+v", run, r.This.Decisions)
-	}
-	sid := runningAttempt(t, f.testEnv, next.ID, "build", 0)["sessionId"].(string)
-	tok := f.agentToken(sid)
-	f.expectAs(t, tok, http.MethodPost, "/api/sessions/"+sid+"/decisions", clarificationBody("r2"), http.StatusCreated, "")
-	r, run = f.heldRunOf(t, next.ID, "2")
-	if run.WaitingRef != "" || *r.This.Decisions != (HostsDecisions{Open: 2}) {
-		t.Fatalf("two on B: %+v, this %+v", run, r.This.Decisions)
 	}
 }

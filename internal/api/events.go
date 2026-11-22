@@ -43,6 +43,18 @@ type eventHub struct {
 	// it is queued: a reply computed under an older count is from before
 	// that event (the since read's cache, brakeman_since.go).
 	told atomic.Uint64
+	// onChange, when set, is told every change the host overview shows
+	// (a session's, a removal, a run's, a decision's) as its send begins,
+	// whether or not a browser is told: the host summary's marks
+	// (hosts_summary.go). It never waits.
+	onChange atomic.Pointer[func()]
+}
+
+// changed tells onChange.
+func (h *eventHub) changed() {
+	if f := h.onChange.Load(); f != nil {
+		(*f)()
+	}
 }
 
 // activitySink receives an activity entry of a session and, for an attention
@@ -75,6 +87,7 @@ func (h *eventHub) unsubscribe(ch chan []byte) {
 // computed before it left (a viewer leaving it) cannot land after that
 // event and bring it back to the browsers' lists.
 func (h *eventHub) publishIf(info session.Info, listed func(id string) bool) {
+	h.changed()
 	b, err := json.Marshal(info)
 	if err != nil {
 		return
@@ -99,6 +112,7 @@ func (h *eventHub) publishIf(info session.Info, listed func(id string) bool) {
 // without its lock held, and the registry never calls the hub under its
 // own.
 func (h *eventHub) publishLatest(id string, current func(id string) (session.Info, bool)) {
+	h.changed()
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	info, ok := current(id)
@@ -238,6 +252,7 @@ func (h *eventHub) chat(sessionID, runID string, m session.ChatMessage) {
 }
 
 func (h *eventHub) removed(id string) {
+	h.changed()
 	h.broadcast([]byte("event: removed\ndata: " + fmt.Sprintf("{\"id\":%q}", id) + "\n\n"))
 }
 
@@ -259,6 +274,7 @@ const maxRunEvent = 128
 // client that cannot keep up is dropped and starts over from a snapshot. It
 // runs under the engine's lock and never waits.
 func (h *eventHub) run(id string, removed bool) {
+	h.changed()
 	b, err := json.Marshal(runEvent{ID: id, Removed: removed})
 	if err != nil || len(b) > maxRunEvent {
 		return
