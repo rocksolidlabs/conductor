@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/rocksolidlabs/conductor/internal/config"
+	"github.com/rocksolidlabs/conductor/internal/hostagent"
 	"github.com/rocksolidlabs/conductor/internal/machine"
 	"github.com/rocksolidlabs/conductor/internal/proto"
 	"github.com/rocksolidlabs/conductor/internal/session"
@@ -384,4 +386,70 @@ func TestHostsReplyBounded(t *testing.T) {
 			t.Fatalf("the busy machine: %d ids, %d more", len(h.SessionIDs), h.MoreIDs)
 		}
 	}
+}
+
+// runMachineHost runs `conductor host` with the machine directory dir
+// against e until the test ends, and answers its session's id.
+func runMachineHost(t *testing.T, e *testEnv, dir string) string {
+	t.Helper()
+	ctx, cancel := context.WithCancel(t.Context())
+	registered := make(chan string, 1)
+	ran := make(chan struct{})
+	go func() {
+		defer close(ran)
+		_, _ = hostagent.Run(ctx, hostagent.Options{
+			ServerURL: e.http.URL, Token: "test-host-token", Name: "on this machine", HostName: "this-machine", RelayOnly: true,
+			Argv: []string{"/bin/cat"}, Dir: e.root, MachineDir: dir, Log: slog.New(slog.DiscardHandler),
+			Registered: func(id, _ string) { registered <- id },
+		})
+	}()
+	t.Cleanup(func() { cancel(); <-ran })
+	select {
+	case id := <-registered:
+		return id
+	case <-time.After(testWait):
+		t.Fatal("the host never registered")
+	}
+	return ""
+}
+
+// I7, through a real registration: a host given this server's machine
+// directory reads the upgrade's key and registers with the key it makes;
+// its session is this server's hosted one, this.key is its hostKey, and it
+// has no row of its own. At a second server, another key: there it is a
+// row of its own.
+func TestHostsHostOnThisMachine(t *testing.T) {
+	dir := t.TempDir()
+	id, err := machine.ID(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := newTestEnv(t, nil)
+	e.srv.SetOwnMachine(id)
+	sid := runMachineHost(t, e, dir)
+	d, ok := e.srv.registry.Get(sid)
+	if !ok {
+		t.Fatal("the hosted session is not listed")
+	}
+	key := d.Info().HostKey
+	r := e.hostsOf(t)
+	if key == "" || r.This.Key != key || r.This.Hosted == nil || len(r.This.Hosted.SessionIDs) != 1 || r.This.Hosted.SessionIDs[0] != sid || len(r.Hosts) != 0 {
+		t.Fatalf("hosted from this machine: key %q, this %+v, rows %+v", key, r.This, r.Hosts)
+	}
+	other := newTestEnv(t, nil)
+	osid := runMachineHost(t, other, dir)
+	ro := other.hostsOf(t)
+	if row, ok := hostRowOf(ro, other.mustInfo(t, osid).HostKey); !ok || ro.This.Hosted != nil || row.KeyFrom != session.HostKeyMachine || row.Key == key {
+		t.Fatalf("at a second server: this %+v, rows %+v", ro.This, ro.Hosts)
+	}
+}
+
+// mustInfo is the listed session id's Info.
+func (e *testEnv) mustInfo(t *testing.T, id string) session.Info {
+	t.Helper()
+	d, ok := e.srv.registry.Get(id)
+	if !ok {
+		t.Fatalf("session %s is not listed", id)
+	}
+	return d.Info()
 }
