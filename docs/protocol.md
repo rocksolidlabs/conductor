@@ -5050,7 +5050,10 @@ the same changes without a receipt.
 takes the ledger's owner lock, it concludes what the last server left open
 (the ledger's recovery): an attempt reserved and not launched is
 `uncertain`, one launched, running, submitting or verifying `interrupted`,
-a check, a step or a prerequisite under way `interrupted`, a service that
+a check, a step or a prerequisite under way `interrupted` (a task's check or
+a tree's step left running is named in the server's log as a service is:
+its run, task, attempt, tree, phase and id, its pid, group and start, as
+possibly alive and never signalled, beside the run's count), a service that
 was running `interrupted` and reported, never signalled (a process the last
 server started that outlived it is nobody's to signal: a `service.ended` of
 its own with `recovered: true` and its pid, group and start time, the

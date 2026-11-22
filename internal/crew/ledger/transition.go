@@ -1199,10 +1199,19 @@ type Recovered struct {
 	// counts them alone (Services, Unconfirmed), and each has a
 	// service.ended event of its own, so no payload grows with the rows.
 	Services []RecoveredService `json:"-"`
+	// Steps describes each other check row of the run the recovery
+	// concluded (a task's check, a tree's setup, ready, verify or cleanup
+	// step; counted in Checks too), as Services does a service: its
+	// process may outlive the owner as well, reported and never
+	// signalled. The recovered event counts its rows alone (Checks), and
+	// each row keeps its own interrupted state.
+	Steps []RecoveredService `json:"-"`
 }
 
 // RecoveredService is a service a tree was running, or starting, when the
-// owner stopped, as its row says: its task, attempt and tree (worktree or
+// owner stopped, as its row says (or, in Recovered.Steps, another step
+// left running: a task's check or a manifest's step, its Phase saying
+// which): its task, attempt and tree (worktree or
 // checkout; "" when its tree's row is not found), its id, and, once its
 // start was confirmed (its row running), its process: pid, group and start
 // time, which tell a later process with the same pid apart. One whose start
@@ -1212,6 +1221,7 @@ type RecoveredService struct {
 	Task      string
 	N         int
 	Tree      string
+	Phase     string
 	ID        string
 	Pid       int
 	Group     int
@@ -1288,11 +1298,14 @@ func (l *Ledger) Recover(ctx context.Context) ([]Recovered, error) {
 				n, _ := res.RowsAffected()
 				rec.Attempts[c.to] += int(n)
 			}
-			services, err := t.openServices()
+			services, err := t.openSteps(true)
 			if err != nil {
 				return err
 			}
 			rec.Services = services
+			if rec.Steps, err = t.openSteps(false); err != nil {
+				return err
+			}
 			res, err := t.tx.ExecContext(ctx, "UPDATE checks SET state = ?, finished_at = ? WHERE run_id = ? AND state IN (?, ?)", CheckInterrupted, now, run.ID, CheckStarted, CheckRunning)
 			if err != nil {
 				return err
@@ -1341,11 +1354,13 @@ func (l *Ledger) Recover(ctx context.Context) ([]Recovered, error) {
 	return out, nil
 }
 
-// openServices is the service rows of the transaction's run still open
-// (started or running), each described with its tree: the tree of its
-// attempt whose directory holds the row's (a step runs in its tree's
-// working directory, the crew's directory in it).
-func (t *Tx) openServices() ([]RecoveredService, error) {
+// openSteps is the service rows (services) or the other check rows (not
+// services: a task's check, a manifest's setup, ready, verify or cleanup
+// step) of the transaction's run still open (started or running), each
+// described with its phase and its tree: the tree of its attempt whose
+// directory holds the row's (a step runs in its tree's working directory,
+// the crew's directory in it).
+func (t *Tx) openSteps(services bool) ([]RecoveredService, error) {
 	type treeDir struct {
 		task, kind, dir string
 		n               int
@@ -1367,7 +1382,11 @@ func (t *Tx) openServices() ([]RecoveredService, error) {
 	if err := cmp.Or(rows.Err(), rows.Close()); err != nil {
 		return nil, err
 	}
-	rows, err = t.tx.QueryContext(t.ctx, "SELECT task_id, n, id, dir, state, pid, pgroup, process_started_at FROM checks WHERE run_id = ? AND phase = ? AND state IN (?, ?) ORDER BY task_id, n, id, k",
+	op := "!="
+	if services {
+		op = "="
+	}
+	rows, err = t.tx.QueryContext(t.ctx, "SELECT task_id, n, phase, id, dir, state, pid, pgroup, process_started_at FROM checks WHERE run_id = ? AND phase "+op+" ? AND state IN (?, ?) ORDER BY task_id, n, id, k",
 		t.runID, PhaseService, CheckStarted, CheckRunning)
 	if err != nil {
 		return nil, err
@@ -1376,7 +1395,7 @@ func (t *Tx) openServices() ([]RecoveredService, error) {
 	for rows.Next() {
 		var sv RecoveredService
 		var dir, state, started string
-		if err := rows.Scan(&sv.Task, &sv.N, &sv.ID, &dir, &state, &sv.Pid, &sv.Group, &started); err != nil {
+		if err := rows.Scan(&sv.Task, &sv.N, &sv.Phase, &sv.ID, &dir, &state, &sv.Pid, &sv.Group, &started); err != nil {
 			rows.Close()
 			return nil, err
 		}
