@@ -8657,6 +8657,11 @@ handed on to another run keeps them with it. No decision before it has either, n
 writes or reads either table yet. A build that writes version 15 opens
 such a ledger read-only.
 
+The ledger's version 17 changes no table and rewrites no row: it is a
+barrier before a decision's responses may hold the status `counted`,
+which a build before it does not count as an approval. A build that
+writes version 16 opens such a ledger read-only.
+
 **A router's policy** (SW1, `docs/plans/decision-policy.md`). Only on a
 server whose registered router confirms policies (`ext.PolicyConfirmer`);
 with no router, or one that does not, nothing here appears: every record

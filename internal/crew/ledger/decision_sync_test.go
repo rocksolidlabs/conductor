@@ -103,7 +103,7 @@ func filled(t *testing.T, dir string) *Ledger {
 func TestSchema16FreshAndAFailedMigration(t *testing.T) {
 	freshDir := filepath.Join(t.TempDir(), "runs")
 	fresh := openLedger(t, freshDir)
-	if v := dbVersion(t, fresh); v != Version || Version != 16 {
+	if v := dbVersion(t, fresh); v != Version || Version != 17 {
 		t.Fatalf("a new database is version %d, Version %d", v, Version)
 	}
 	wantStatements := []string{
@@ -276,7 +276,7 @@ func TestSchema16MigratesAndKeepsEveryRow(t *testing.T) {
 	if ro, why := migrated.ReadOnly(); ro {
 		t.Fatalf("read-only after the migration: %s", why)
 	}
-	if v := dbVersion(t, migrated); v != Version || Version != 16 {
+	if v := dbVersion(t, migrated); v != Version || Version != 17 {
 		t.Fatalf("version %d after the migration, Version %d", v, Version)
 	}
 	if got := allEntries(t, migrated); !slices.Equal(got, freshEntries) {
@@ -323,8 +323,8 @@ func TestSchema16MigratesAndKeepsEveryRow(t *testing.T) {
 // them) and every entry as it was. Opened again by a binary of its own
 // version, it is the owner's, as it was.
 func TestVersion16OpensReadOnlyInVersion15(t *testing.T) {
-	if Version != 16 || len(migrations[15]) != 2 {
-		t.Fatalf("Version %d, version 15's migration %v: a held answer's statements and a decision's verdicts are version 16, a barrier of its own", Version, migrations[15])
+	if Version != 17 || len(migrations[15]) != 2 {
+		t.Fatalf("Version %d, version 15's migration %v: a held answer's statements and a decision's verdicts are version 16, a barrier of its own, and 17 the version after it", Version, migrations[15])
 	}
 	ctx := context.Background()
 	dir := filepath.Join(t.TempDir(), "runs")
