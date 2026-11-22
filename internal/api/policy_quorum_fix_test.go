@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/rocksolidlabs/conductor/ext"
 	"github.com/rocksolidlabs/conductor/internal/crew"
@@ -187,6 +188,11 @@ func TestAnOverrideWaitsForNoCountedRecheck(t *testing.T) {
 	f := newQuorumFixture(t)
 	did := f.openUnder(t, "r1", "dr-1", groupsPolicy("rev-1", true, group("architecture", 1, "ana"), group("security", 1, "cam")))
 	ana := f.pass("ana")
+	// The provider's recheck is held at the gate for as long as the test
+	// holds it, not the guard's second.
+	long := time.Hour
+	extWaiting.Store(&long)
+	t.Cleanup(func() { extWaiting.Store(nil) })
 	gate := f.id.recheckAs(ana, ext.Principal{Subject: "ana", Name: "Ana", Grants: []ext.Grant{ext.GrantDecide}}, true)
 	body, _ := json.Marshal(map[string]any{"responseId": "a1", "choice": 0, "expectedRev": f.rev(t, did)})
 	done := make(chan int, 1)
@@ -208,8 +214,19 @@ func TestAnOverrideWaitsForNoCountedRecheck(t *testing.T) {
 	if rec := f.record(t, did); len(rec.Responses) != 1 || rec.Responses[0].Status != ledger.ResponseCounted {
 		t.Fatalf("ana's approval before its recheck: %+v", rec.Responses)
 	}
+	if !f.srv.runs.CountedPending(numberOf(did), 1) {
+		t.Fatal("ana's approval does not wait for its recheck")
+	}
 	f.expect(t, http.MethodPost, "/api/decisions/"+did+"/respond", operatorBody("o1", 0, f.rev(t, did), true, "the release cannot wait for the owners"), http.StatusCreated, "")
 	f.appliedOnce(t, did)
+	select {
+	case status := <-done:
+		t.Fatalf("ana's recheck answered before the override was applied: %d", status)
+	default:
+	}
+	if !f.srv.runs.CountedPending(numberOf(did), 1) {
+		t.Fatal("the override was applied only once ana's recheck had answered")
+	}
 	close(gate)
 	if status := <-done; status != http.StatusCreated {
 		t.Fatalf("ana's approval: %d", status)
