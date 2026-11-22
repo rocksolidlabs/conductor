@@ -7,6 +7,7 @@ import com.getcapacitor.BridgeActivity
 // gates are put in front of it in a commit of their own.
 class MainActivity : BridgeActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
+        registerPlugin(ConductorKeyPlugin::class.java)
         registerPlugin(ConductorStorePlugin::class.java)
         super.onCreate(savedInstanceState)
     }

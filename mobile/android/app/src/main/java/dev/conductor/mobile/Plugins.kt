@@ -23,6 +23,51 @@ fun PluginCall.answer(a: CallAnswer) {
     }
 }
 
+/** The key plugin, `ConductorKey` to the page: the person is asked in the shell's own activity. */
+@CapacitorPlugin(name = "ConductorKey")
+class ConductorKeyPlugin : Plugin() {
+    private val runner by lazy { CallRunner { KeyCalls(deviceKey(activity)) } }
+
+    @PluginMethod
+    fun create(call: PluginCall) {
+        make(call, "create")
+    }
+
+    @PluginMethod
+    fun publicKey(call: PluginCall) {
+        make(call, "publicKey")
+    }
+
+    @PluginMethod
+    fun state(call: PluginCall) {
+        make(call, "state")
+    }
+
+    @PluginMethod
+    fun bind(call: PluginCall) {
+        make(call, "bind")
+    }
+
+    @PluginMethod
+    fun sign(call: PluginCall) {
+        make(call, "sign")
+    }
+
+    @PluginMethod
+    fun ending(call: PluginCall) {
+        make(call, "ending")
+    }
+
+    @PluginMethod
+    fun remove(call: PluginCall) {
+        make(call, "remove")
+    }
+
+    private fun make(call: PluginCall, method: String) {
+        runner.submit(method, call.data) { call.answer(it) }
+    }
+}
+
 /** The store plugin, `ConductorStore` to the page. */
 @CapacitorPlugin(name = "ConductorStore")
 class ConductorStorePlugin : Plugin() {
