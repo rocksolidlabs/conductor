@@ -147,6 +147,28 @@ func TestAnotherServersAnswerAtThePortIsNotTheHelpers(t *testing.T) {
 	}
 }
 
+// Another run's helper at the port Port answered gives its 204 on /ok as
+// this run's would: the panicking Started's check asks for the answer
+// only this start's helper gives (its word, handed to it), so that helper
+// is not read as this one left running, and the check starts again on a
+// fresh port; the native Runtime passes.
+func TestAnotherRunsHelperAtThePortIsNotThisRunsHelper(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/ok", "/last", "/run/exttest-another-run":
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	r := &strangerPort{Runtime: local.Native(), held: srv.Listener.Addr().(*net.TCPAddr).Port}
+	RuntimeExec(t, r, helperCase(t))
+	if n := r.handed.Load(); n < 2 {
+		t.Errorf("Port was asked for the panicking Started's Run %d time(s): want the other helper's port, then a fresh one", n)
+	}
+}
+
 // broken is the native Runtime with one rule broken, as its fields say.
 type broken struct {
 	ext.Runtime
