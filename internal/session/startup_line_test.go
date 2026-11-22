@@ -697,3 +697,24 @@ func TestAnAnswerlessQuestionAskedAgainStillWaits(t *testing.T) {
 		t.Fatalf("asked again: %+v (first %+v)", a, first)
 	}
 }
+
+// Half a frame (a synchronized update begun and not ended) after a startup
+// question was drawn is not known to be the prompt, whatever it draws so
+// far: a line is refused whole, with or without a prompt shape, the
+// question withdrawn or not.
+func TestALineIsRefusedOnHalfAFrame(t *testing.T) {
+	for _, shaped := range []bool{true, false} {
+		t.Run(shapeName(shaped), func(t *testing.T) {
+			s, p, sub, write := orderSession(t, shaped)
+			write("\x1b[?1049h" + codexFrame(codexUpdateView))
+			q := waitAttention(t, s, func(a Attention) bool { return a.Source == SourceTrust })
+			gate(t, s.trust)
+			s.withdraw(q.ID)
+			write(codexPrompt[:len(codexPrompt)-len("\x1b[?2026l")])
+			if a := s.Info().Attention; a.State == AttentionNeedsInput {
+				t.Fatalf("not withdrawn: %+v", a)
+			}
+			refused(t, s, p, sub)
+		})
+	}
+}
