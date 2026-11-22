@@ -560,3 +560,24 @@ func TestALineItsAgentDidNotReportTakingSaysSo(t *testing.T) {
 		})
 	}
 }
+
+// The text's guard, asked as the writer takes the text, judges the screen
+// as it is then: the agent's prompt when the line was submitted, a sign-in
+// no catalog entry knows drawn while the text waited behind another write,
+// refuses it; the prompt drawn again takes it.
+func TestTheTextsGuardJudgesTheScreenAsTheWriterTakesIt(t *testing.T) {
+	s, _, sub, write := orderSession(t, true)
+	write("\x1b[?1049h" + codexPrompt)
+	guard := s.textGuard(Submission{Text: "1 fix the bug", By: sub}, submitState{})
+	if err := guard(); err != nil {
+		t.Fatalf("at the prompt: %v", err)
+	}
+	write("\x1b[2J\x1b[H" + unknownSignIn)
+	if err := guard(); !errors.Is(err, ErrStartupNotAtPrompt) {
+		t.Fatalf("at the sign-in: %v", err)
+	}
+	write("\x1b[2J\x1b[H" + codexPrompt)
+	if err := guard(); err != nil {
+		t.Fatalf("at the prompt again: %v", err)
+	}
+}
