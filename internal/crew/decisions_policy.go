@@ -614,6 +614,10 @@ func (e *Engine) Reroute(ctx context.Context, id, router string, policy ext.Rout
 	fp := fingerprintOf([]any{"reroute", policy, why})
 	actor := "router:" + router
 	var stored string
+	// fresh is the decision that supersedes the record in the re-route's
+	// transaction, when the new policy leaves its counted approvals fewer
+	// response rows than places to fill (Superseded).
+	var fresh *decision
 	op := operation{kind: why, opID: opID, fp: fp, actor: actor, rev: true, expectedRev: expectedRev}
 	op.choose = func(rec ledger.DecisionRecord) (operation, error) {
 		o := op
@@ -666,9 +670,27 @@ func (e *Engine) Reroute(ctx context.Context, id, router string, policy ext.Rout
 			}
 			return dt, nil
 		}
-		o.held = func(_ *run, _ *decision, rec ledger.DecisionRecord) (opDetail, func(), error) {
+		short := false
+		if next, ok := routedOf(stored); ok && next.counts() {
+			standing, _ := countedRows(rec, e.boot, func(k int) bool { return e.CountedPending(n, k) })
+			short = rowsShort(rec, next, standing)
+		}
+		if short {
+			// Its counted approvals' rows ran short under the new policy:
+			// superseded in this transaction, its replacement taking the
+			// place of its spare (decisions_quorum.go). No undo: the change
+			// is the engine's at once.
+			o.ahead = true
+		}
+		o.held = func(r *run, d *decision, rec ledger.DecisionRecord) (opDetail, func(), error) {
 			dt, err := detail(rec)
-			return dt, nil, err
+			if err != nil || !short || d == nil || d.state != ledger.DecisionOpen {
+				return dt, nil, err
+			}
+			replace, t := e.replaceTold(r, d, shortWords(id), ledger.DecisionOpen)
+			fresh = replace
+			dt.also, dt.alsoDone = t.more, t.done
+			return dt, nil, nil
 		}
 		o.notHeld = detail
 		return o, nil
@@ -677,7 +699,13 @@ func (e *Engine) Reroute(ctx context.Context, id, router string, policy ext.Rout
 	var de *DecisionError
 	switch {
 	case err == nil:
-		return ext.RerouteResult{Rev: rc.Rev}, nil
+		res := ext.RerouteResult{Rev: rc.Rev}
+		e.mu.Lock()
+		if fresh != nil && fresh.n != 0 {
+			res.Superseded = fresh.id()
+		}
+		e.mu.Unlock()
+		return res, nil
 	case errors.As(err, &de) && de.Code == CodeStaleDecision:
 		now, _, _ := e.readDecision(ctx, n)
 		p, _, _ := RouterPolicyOf(now.Policy)
