@@ -2,6 +2,7 @@ package crew
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -531,6 +532,49 @@ func TestAVoidedRecheckThatLeavesRowsShortSupersedes(t *testing.T) {
 	old := decisionWhen(t, ld, g.ID, "superseded", inState(ledger.DecisionSuperseded))
 	if !strings.Contains(old.Why, "responses filled its record") || !hasRechecked(old, rc.K, false) {
 		t.Fatalf("the gate after the void recheck: %+v", old.DecisionRow)
+	}
+	stopRun(t, e, run.ID)
+}
+
+// An open decision with an identity's counted approval holds a place for
+// its replacement in the engine's count as in the ledger's: a gate opened
+// before the router routed policies (no spare), in a run of 999 decisions,
+// takes the run's last place with ana's counted approval; then the engine
+// has no room for another decision, and the ledger refuses one.
+func TestACountedApprovalHoldsAPlaceInTheEnginesCount(t *testing.T) {
+	dir := newRepo(t)
+	e, _, ld := decisionEngine(t)
+	run := launchGated(t, e, dir, "api-sweep-000000fc", repoCrew(dir, work("deploy", "ops")), shipGate("deploy"))
+	g := gateOf(t, e, ld, run.ID)
+	q := &quorumRouter{pol: policyOf("rev-1", false, eligibleGroup("architecture", 1, "ana"), eligibleGroup("security", 1, "cam"))}
+	q.routes(e)
+	routeUnder(t, e, ld, q, g.ID)
+	if rec := decisionWhen(t, ld, g.ID, "routed", inState(ledger.DecisionOpen)); ledger.PolicySpare(rec.Policy) {
+		t.Fatalf("the gate holds a spare: %s", rec.Policy)
+	}
+	fillDecisions(t, ld, run.ID, ledger.MaxDecisionsPerRun-2)
+	r := runOf(t, e, run.ID)
+	e.mu.Lock()
+	r.dec.opened = ledger.MaxDecisionsPerRun - 1 // the fill and the gate
+	held, room := r.decisionsHeld(), r.decisionRoom(1, false)
+	e.mu.Unlock()
+	if held != ledger.MaxDecisionsPerRun-1 || !room {
+		t.Fatalf("before the approval: the run holds %d, room %v", held, room)
+	}
+	countedHere(t, e, ld, q, g.ID, "ana", "a1", ledger.ResponseCounted)
+	e.mu.Lock()
+	held, room = r.decisionsHeld(), r.decisionRoom(1, false)
+	e.mu.Unlock()
+	if held != ledger.MaxDecisionsPerRun || room {
+		t.Fatalf("after ana's counted approval: the run holds %d, room %v", held, room)
+	}
+	_, err := ld.Transition(t.Context(), run.ID, func(tx *ledger.Tx) error {
+		_, _, err := tx.OpenDecision(ledger.DecisionRow{Origin: ledger.OriginAgent, Type: ledger.DecisionClarification, TaskID: "deploy", Attempt: 1,
+			Member: "ops", Fingerprint: "fp-past", Request: `{"question":"One more?","subject":{"kind":"commit","commit":"` + strings.Repeat("a", 40) + `"}}`, Policy: policyJSON})
+		return err
+	})
+	if !errors.Is(err, ledger.ErrDecisionLimit) {
+		t.Fatalf("the ledger's opening past the place: %v", err)
 	}
 	stopRun(t, e, run.ID)
 }
