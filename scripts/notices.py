@@ -343,7 +343,40 @@ ANDROID_PACKAGES = [
 ANDROID_TEXT_FOR = {"org.bouncycastle:bcprov-jdk18on": "1.82"}
 
 
-def android_entries() -> list[Entry]:
+# The release build's packages as Gradle resolves them (scripts/android_notices.py, mobile/android/app/notices.gradle), committed. When it
+# is there, the Android part is made from it alone; until its first copy is committed, from ANDROID_PACKAGES.
+ANDROID_LIST = ANDROID / "release-classpath.txt"
+
+
+def android_heading(listed: Path | None = None) -> str:
+    if (listed or ANDROID_LIST).exists():
+        return "The phone shell's Android app (mobile/android): every package its release build carries, as Gradle resolves them"
+    return "The phone shell's Android app (mobile/android): the Gradle packages its build files pin"
+
+
+def android_listed(listed: Path) -> list[Entry]:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import android_notices
+
+    entries = []
+    for p in android_notices.parse(listed.read_text()):
+        label, text = p.kind()
+        if text is not None:
+            if ANDROID_TEXT_FOR.get(p.name, p.version) != p.version:
+                raise SystemExit(f"notices: {text} was taken for {p.name} {ANDROID_TEXT_FOR[p.name]}, not {p.version}: take it again for this version")
+            texts = [("LICENSE", (ROOT / text).read_text())]
+        else:
+            named = " | ".join(p.licences) or "no licence named"
+            texts = [("LICENSE", f"Its POM names: {named}. The licence's text is its owner's, at that address; it is not copied here.")]
+        if p.name == "org.apache.cordova:framework":
+            texts += [(s["name"], (EXTRA / s["file"]).read_text()) for s in SUPPLEMENTS.get("@capacitor/android", [])]
+        entries.append(Entry(p.name, p.version, label, texts))
+    return sorted(entries, key=lambda e: (e.name, e.version))
+
+
+def android_entries(listed: Path | None = None) -> list[Entry]:
+    if (listed or ANDROID_LIST).exists():
+        return android_listed(listed or ANDROID_LIST)
     variables = dict(re.findall(r"^\s*(\w+)\s*=\s*'([^']+)'", (ANDROID / "variables.gradle").read_text(), re.M))
     build = (ANDROID / "build.gradle").read_text()
     entries = []
@@ -408,7 +441,7 @@ def main() -> int:
         ("The workbench, embedded in the binary: npm packages in the web bundle", web_entries()),
         ("The desktop app: Electron and its packages", desktop_entries()),
         ("The phone shell (mobile/): the native runtime's packages", mobile_entries()),
-        ("The phone shell's Android app (mobile/android): the Gradle packages its build files pin", android_entries()),
+        (android_heading(), android_entries()),
     ])
     if args.check:
         have = OUT.read_text() if OUT.exists() else ""

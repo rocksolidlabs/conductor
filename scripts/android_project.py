@@ -166,6 +166,8 @@ def gradle(mobile: Path, runtime: bool) -> list[str]:
     app = (android / "app/build.gradle").read_text()
     if f'applicationId "{APP_ID}"' not in app or f'namespace = "{APP_ID}"' not in app:
         out.append(f"app/build.gradle: the app id is not {APP_ID}")
+    if "apply from: 'notices.gradle'" not in app:
+        out.append("app/build.gradle: the release build's packages are not listed for the notices (notices.gradle)")
     if "java.srcDir 'src/packaging/java'" not in app:
         out.append("app/build.gradle: a packaging's place (src/packaging/java) is not compiled into the app")
     wrapper = (android / "gradle/wrapper/gradle-wrapper.properties").read_text()

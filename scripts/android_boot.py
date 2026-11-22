@@ -4,6 +4,7 @@
     python3 scripts/android_boot.py build   # Gradle: the debug build, the JVM tests and the boot check's build, fetches tried three times
     python3 scripts/android_boot.py image   # the emulator's system image installed (three tries), before the emulator starts
     python3 scripts/android_boot.py check   # on a running emulator: the boot check (ShellBootsUnderItsPolicyTest), its log after
+    python3 scripts/android_boot.py classpath  # Gradle's list of the release build's packages, held to the committed one and the notices
 
 Gradle fetches its own distribution and every package the app is built
 from; the emulator's image comes from Google's repository. A check's own
@@ -174,11 +175,24 @@ def check(run=run_streamed, say=tell, rounds: int = ROUNDS) -> int:
     return 0
 
 
+CLASSPATH_TASKS = [":app:conductorReleaseClasspath"]
+
+
+def classpath(**kw) -> int:
+    """Gradle's list of the release variant's packages (printed into the job's log and kept with the reports), then held to the
+    committed list and THIRD_PARTY_NOTICES (scripts/android_notices.py)."""
+    if not tries([*GRADLE, *CLASSPATH_TASKS], ANDROID, BUILD_BOUND, **kw):
+        return 1
+    import android_notices
+
+    return android_notices.check(say=tell)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=(__doc__ or "").split("\n\n")[0])
-    ap.add_argument("step", choices=["build", "image", "check"])
+    ap.add_argument("step", choices=["build", "image", "check", "classpath"])
     step = ap.parse_args().step
-    return {"build": build, "image": image, "check": check}[step]()
+    return {"build": build, "image": image, "check": check, "classpath": classpath}[step]()
 
 
 if __name__ == "__main__":

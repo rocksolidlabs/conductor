@@ -70,6 +70,8 @@ dependencies {
 }
 
 apply from: 'capacitor.build.gradle'
+// The release variant's packages as Gradle resolves them, for THIRD_PARTY_NOTICES (make mobile-android-notices).
+apply from: 'notices.gradle'
 
 try {
     def servicesJSON = file('google-services.json')

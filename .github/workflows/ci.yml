@@ -525,6 +525,12 @@ jobs:
           disable-animations: true
           emulator-options: -no-window -no-snapshot -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           script: make mobile-android-boot
+      # Every package the release build carries, as Gradle resolves it (with the licences their POMs
+      # name), printed here and held to the committed list and THIRD_PARTY_NOTICES.
+      - name: The release build's packages against the notices
+        if: ${{ !cancelled() }}
+        run: make mobile-android-notices
+        timeout-minutes: 20
       - name: The tests' reports
         if: failure()
         uses: actions/upload-artifact@v4

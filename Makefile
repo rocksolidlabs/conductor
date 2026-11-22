@@ -7,7 +7,7 @@ GO_MIN   := $(shell awk '/^go /{print $$2}' go.mod)
 NODE_MIN := 22
 NODE_STAMP := web/node_modules/.package-lock.json
 
-.PHONY: help deps check-tools build build-go check-version notices web-install web-build web-typecheck web-dev run dev test test-web test-e2e test-live design-capture test-pebble test-network test-recipes desktop-install desktop-dev desktop-test desktop-binaries desktop-dist desktop-e2e mobile-install mobile-sync mobile-test mobile-native-test mobile-ios-resolve mobile-ios mobile-ios-policy mobile-android mobile-android-image mobile-android-boot lint lint-static vuln fmt generate docker clean preflight
+.PHONY: help deps check-tools build build-go check-version notices web-install web-build web-typecheck web-dev run dev test test-web test-e2e test-live design-capture test-pebble test-network test-recipes desktop-install desktop-dev desktop-test desktop-binaries desktop-dist desktop-e2e mobile-install mobile-sync mobile-test mobile-native-test mobile-ios-resolve mobile-ios mobile-ios-policy mobile-android mobile-android-image mobile-android-boot mobile-android-notices lint lint-static vuln fmt generate docker clean preflight
 
 help: ## list targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-16s %s\n", $$1, $$2}'
@@ -137,8 +137,11 @@ mobile-android: ## the Android app held to what it must not ship, then its debug
 mobile-android-image: ## the emulator's system image for the Android boot check, tried three times (the Android SDK)
 	python3 scripts/android_boot.py image
 
-mobile-android-boot: ## the Android boot check (ShellBootsUnderItsPolicyTest) on a running emulator, its log printed after (make mobile-android first)
+mobile-android-boot: ## the Android boot check (ShellBootsUnderItsPolicyTest) on a running emulator, three rounds, each round's log kept (make mobile-android first)
 	python3 scripts/android_boot.py check
+
+mobile-android-notices: ## Gradle's list of every package the Android release build carries, held to mobile/android/release-classpath.txt and THIRD_PARTY_NOTICES (make mobile-android first)
+	python3 scripts/android_boot.py classpath
 
 # The server binaries the packages bundle, under the names electron-builder's ${os}-${arch} macros give.
 desktop-binaries: ## cross-compile the server for the desktop packages (linux and mac, x64 and arm64)
