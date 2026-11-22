@@ -1079,6 +1079,54 @@ re-routes it in full once the server takes it (the one change of form).
 The decide view's `own[].status` shows `counted` for the subject's own
 counted response; the operator's card shows each group's count.
 
+**As built** (PR-9, #1072):
+- The approval that fills the last place is the record's one `accepted`
+  response (DR1's answer, its receipt's `groups` its own); the earlier
+  ones are `counted`. After the review (#1072): an eligible approval is
+  judged with its own row added to the approvals that stand (its groups
+  as the router confirms them now, merged with its person's standing
+  row's): it answers when every place is then filled, whether it filled
+  the last or the last was filled already (a re-route that brings back a
+  counted approver can leave the counted rows alone filling every place);
+  else it is counted when it fills a place more; else `already_counted`
+  for a person whose approval stands and `not_needed` otherwise, but a
+  person whose approval stands is counted again, while a place is unmet,
+  when the approval names them in a group their standing approvals do not
+  (a re-route named them there): under distinct persons that is what lets
+  another complete it. So a
+  person a re-route moved to another group is judged anew, and no
+  decision is left open with every approval refused. At application a
+  counted approval fills the places of the groups it was counted in that
+  the router confirms its person in since its time (none when they were
+  moved), and is void (the decision superseded) only when the router does
+  not confirm its person at all. The operator's `quorum` counts the
+  deciding approval too, and its read says a counted approval that no
+  longer counts as `refused`, `not_confirmed`. A record superseded leaves
+  the run's count of decisions (`voidedCond`) only when its replacement
+  stands in its place (the replacement's opened row follows it). An approval is an approval's or an assignment's
+  first option; their second answers at once, as a Reject.
+- A counted response's identity recheck is kept as a history row of a
+  kind of its own, `rechecked` (`{k, admitted}`, at most one a response,
+  a group of `MaxDecisionResponses` beside the responses'), so a confirmed
+  one keeps its place across restarts with no column changed. One found
+  with no such row stands only in the process that accepted it while its
+  recheck is still to answer; its decision's combined answer is applied
+  only once every counted approval's recheck has answered.
+- At application, confirmed by `Confirm` with `Since` (`Engine.SetPolicySince`,
+  the server's guarded call; a zero `Since` is never asked): any counted
+  approval or the deciding one not confirmed supersedes the decision, as
+  do places no longer filled by the approvals confirmed.
+- The rows-short supersession is made in the re-route's transaction on a
+  run the engine holds, and before a response's transaction (as a moved
+  subject's is) on the next response, and after a recheck that voided an
+  approval; a re-route of a record whose run is not held writes the
+  policy alone, and the record is superseded at its next response.
+- The operator's read carries `quorum: {places, filled, groups: [{role,
+  quorum, counted, met}]}` (`proto.DecisionQuorum`); a counted approval
+  that no longer counts reads `refused`, code `not_confirmed`, in the
+  decide view; `Host.OpenDecisions` fills `Counted` with the standing
+  ones.
+
 ## Events, orderings and invariants
 
 **Invariants**, each held by a test named under Tests per surface:

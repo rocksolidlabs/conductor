@@ -38,7 +38,7 @@ const full = computed(() => d.openCount() >= DECIDE_CARDS)
       <p v-else-if="!page.me" class="flex items-center gap-2 text-sm text-muted"><UIcon name="i-lucide-loader-circle" class="size-4 animate-spin" /> Checking your access…</p>
       <UAlert v-else-if="page.list.failed" color="warning" variant="subtle" icon="i-lucide-loader-circle" title="The decisions awaiting you could not be read. Trying again." data-decide-list-failed />
 
-      <DecideCard v-for="c in shown" :key="c.id" :card="c" :answerable="d.answerable(c)" :closable="d.closable(c)" :ended="page.ended" @send="d.send(c.id)" @close="d.close(c.id)" @dismiss="d.dismiss(c.id)" />
+      <DecideCard v-for="c in shown" :key="c.id" :card="c" :answerable="d.answerable(c)" :held="d.held(c)" :closable="d.closable(c)" :ended="page.ended" @send="d.send(c.id)" @close="d.close(c.id)" @dismiss="d.dismiss(c.id)" />
 
       <UAlert v-if="page.list.loaded && page.list.suspended && !page.ended" color="neutral" variant="subtle" icon="i-lucide-loader-circle" title="Checking which decisions await you here." data-decide-list-suspended />
       <UAlert v-if="page.list.cut" color="neutral" variant="subtle" icon="i-lucide-info" title="More may await your answer than this page lists; a decision's own link opens it." data-decide-list-cut />

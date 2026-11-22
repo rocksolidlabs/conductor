@@ -1148,3 +1148,71 @@ describe('what a read may bring', () => {
     d.stop()
   })
 })
+
+// Several approvals (SW1 PR-9, docs/plans/decision-policy.md, "Groups, quorum and distinct persons"): a person's approval counted while
+// the decision waits for others holds the answer (nothing offered again); "counted already" holds it until a read shows where it
+// stands; "not needed" keeps the draft and the answer open; a counted approval that no longer counts is answered again; a status a
+// newer server gives offers nothing.
+describe('several approvals', () => {
+  it('holds the answer once its approval is counted: nothing more is sent, and the draft is not lost', async () => {
+    const d = await boot()
+    const c = card(d, 'dr-7')
+    c.draft.choice = 0
+    void d.send('dr-7')
+    const sent = JSON.parse(out('/api/decisions/dr-7/respond')[0]!.body!)
+    const rc = receipt(sent.responseId, { status: 'counted', rev: 2 })
+    await answer('/api/decisions/dr-7/respond', 201, { receipt: rc, decision: open('dr-7', 2, { own: [rc], outcome: 'waiting' }) })
+    expect(c).toMatchObject({ sent: '', refused: '', refusedCode: '', draft: { choice: 0 } })
+    expect(d.held(c)).toBe(true)
+    await answer('/api/decisions/dr-7', 200, open('dr-7', 2, { own: [rc], outcome: 'waiting' }))
+    expect(d.held(c)).toBe(true)
+    expect(d.answerable(c)).toBe(false)
+    await d.send('dr-7')
+    expect(count('/api/decisions/dr-7/respond')).toBe(1)
+    d.stop()
+  })
+
+  it('holds the answer at "counted already", keeps the choice, and reads at once to show where it stands', async () => {
+    const d = await boot()
+    const c = card(d, 'dr-7')
+    c.draft.choice = 0
+    c.draft.rationale = 'looks right'
+    void d.send('dr-7')
+    const reads = count('/api/decisions/dr-7')
+    await answer('/api/decisions/dr-7/respond', 409, { error: { code: 'already_counted', message: 'Your answer to dr-7 is counted already.' } })
+    expect(c).toMatchObject({ sent: '', refused: 'Your answer to dr-7 is counted already.', refusedCode: 'already_counted', draft: { choice: 0, rationale: 'looks right' } })
+    expect(d.held(c)).toBe(true)
+    expect(d.answerable(c)).toBe(false)
+    expect(count('/api/decisions/dr-7')).toBe(reads + 1)
+    await answer('/api/decisions/dr-7', 200, open('dr-7', 2, { own: [receipt('earlier', { status: 'counted', rev: 2 })], outcome: 'waiting' }))
+    expect(c.refusedCode).toBe('')
+    expect(d.held(c)).toBe(true)
+    d.stop()
+  })
+
+  it('keeps the draft and the answer open at "not needed": a Reject may still answer', async () => {
+    const d = await boot()
+    const c = card(d, 'dr-7')
+    c.draft.choice = 0
+    void d.send('dr-7')
+    await answer('/api/decisions/dr-7/respond', 409, { error: { code: 'not_needed', message: 'dr-7 needs no more answers of this kind.' } })
+    expect(c).toMatchObject({ sent: '', refused: 'dr-7 needs no more answers of this kind.', refusedCode: 'not_needed', draft: { choice: 0 } })
+    expect(d.held(c)).toBe(false)
+    expect(d.answerable(c)).toBe(true)
+    d.stop()
+  })
+
+  it('offers the answer again once a counted approval no longer counts, and holds it for a status it does not know', async () => {
+    const d = await boot()
+    const c = card(d, 'dr-7')
+    env.win.dispatchEvent(new Event('focus'))
+    await answer('/api/decisions/dr-7', 200, open('dr-7', 3, { own: [receipt('a', { k: 1, status: 'refused', code: 'not_confirmed', rev: 3 })], outcome: 'refused', outcomeCode: 'not_confirmed' }))
+    expect(d.held(c)).toBe(false)
+    expect(d.answerable(c)).toBe(true)
+    env.win.dispatchEvent(new Event('focus'))
+    await answer('/api/decisions/dr-7', 200, open('dr-7', 4, { own: [receipt('b', { k: 2, status: 'held_for_review' as never, rev: 4 })] }))
+    expect(d.held(c)).toBe(true)
+    expect(d.answerable(c)).toBe(false)
+    d.stop()
+  })
+})

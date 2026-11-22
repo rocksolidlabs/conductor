@@ -408,11 +408,16 @@ func replaceSpare(l *Ledger, run string, n int64, gate string) (int64, error) {
 		if err := tx.PutDecision(old); err != nil {
 			return err
 		}
-		got, _, err := tx.OpenDecision(spareGate(run, gate))
+		g := spareGate(run, gate)
+		g.From = old.N
+		got, _, err := tx.OpenDecision(g)
 		if err != nil {
 			return err
 		}
 		fresh = got.N
+		if _, _, err := tx.History(got.N, HistoryRow{Kind: HistoryOpened, By: "yardmaster", Detail: `{"follows":"` + old.ID() + `"}`}); err != nil {
+			return err
+		}
 		old.SupersededBy = got.ID()
 		return tx.PutDecision(old)
 	})
@@ -449,13 +454,22 @@ func TestReplacementChainHoldsOneSpare(t *testing.T) {
 	}
 }
 
-// voidAll gives every superseded decision of run an accepted answer, made
-// by SQL alone: each a routed decision whose answer was voided.
+// voidAll gives every superseded decision of run an accepted answer and a
+// replacement that follows it, made by SQL alone: each a routed decision
+// whose answer was voided. (Each is named its own replacement, an opened
+// row following it: what voidedCond reads, without a thousand more rows.)
 func voidAll(t *testing.T, l *Ledger, run string) {
 	t.Helper()
 	if _, err := l.db.Exec(`INSERT INTO decision_responses (decision, k, actor, authority, response_id, fingerprint, status, receipt, at)
 		SELECT n, 1, 'user:ana', '{"grant":"decide","via":"identity","subject":"ana","boot":"boot-1"}', 'v-' || n, 'fp', 'accepted', '{}', created_at
 		FROM decisions WHERE run_id = ? AND state = 'superseded'`, run); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := l.db.Exec(`UPDATE decisions SET superseded_by = 'dr-' || n WHERE run_id = ? AND state = 'superseded'`, run); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := l.db.Exec(`INSERT INTO decision_history (decision, seq, at, kind, by, detail)
+		SELECT n, 1000, created_at, 'opened', 'yardmaster', '{"follows":"dr-' || n || '"}' FROM decisions WHERE run_id = ? AND state = 'superseded'`, run); err != nil {
 		t.Fatal(err)
 	}
 }

@@ -267,7 +267,9 @@ const (
 	OutcomeLocal    = "local"
 )
 
-// OpenDecisionsPage is a page of the open records (Host.OpenDecisions).
+// OpenDecisionsPage is a page of the open records (Host.OpenDecisions):
+// Next names where the next page starts while more may follow, also on a
+// page that holds no record, and is empty after the last.
 type OpenDecisionsPage struct {
 	Decisions []OpenDecision `json:"decisions"`
 	Next      string         `json:"next,omitempty"`

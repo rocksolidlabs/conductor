@@ -588,6 +588,11 @@ func (s *Server) handleDecision(w http.ResponseWriter, r *http.Request) {
 	if now := s.policyNowFor(r.Context(), did, principalOf(r).subject); now != nil {
 		reply["policyNow"] = now
 	}
+	// Under a router's policy: how many of its places the counted
+	// approvals fill now, per group (policy.go).
+	if q := s.quorumFor(r.Context(), did); q != nil {
+		reply["quorum"] = q
+	}
 	if s.routerRegistered() {
 		// A decision router is registered: the operator may ask it again
 		// ({kind: router}) for any open record but a comparison's selection.

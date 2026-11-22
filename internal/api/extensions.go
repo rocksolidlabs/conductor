@@ -1232,10 +1232,12 @@ func (s *Server) Registered() []ext.Registration {
 func freeBuild() ext.Providers { return local.Fill(ext.Providers{}) }
 
 // policyShape refuses a route's policy this server does not take: one from
-// a router that does not confirm policies (ext.PolicyConfirmer), one past
-// the shape it judges (one group of quorum 1, no distinct persons), and
-// one that carries the server's own count of changes (Reroutes, Recent).
-// No policy is nothing to refuse.
+// a router that does not confirm policies (ext.PolicyConfirmer), and one
+// that carries the server's own count of changes (Reroutes, Recent).
+// Every shape ext.RoutePolicy holds is taken (up to ext.MaxPolicyGroups
+// groups, quorums up to ext.MaxGroupQuorum, distinct persons, or the
+// unsupported form), its bounds and relations ext.RoutePolicy.Valid's. No
+// policy is nothing to refuse.
 func (g guardRouter) policyShape(p *ext.RoutePolicy) error {
 	if p == nil {
 		return nil
@@ -1243,10 +1245,7 @@ func (g guardRouter) policyShape(p *ext.RoutePolicy) error {
 	if _, ok := g.p.(ext.PolicyConfirmer); !ok {
 		return errors.New("a policy from a router that does not confirm policies")
 	}
-	switch {
-	case len(p.Groups) != 1 || len(p.Pinned.Groups) != 1 || p.Groups[0].Quorum != 1 || p.Pinned.Groups[0].Quorum != 1 || p.Distinct || p.Pinned.Distinct:
-		return errors.New("a policy past one group of quorum 1, which is all this server judges")
-	case p.Reroutes != 0 || len(p.Recent) != 0:
+	if p.Reroutes != 0 || len(p.Recent) != 0 {
 		return errors.New("a policy's reroutes and recent changes are the server's, sent empty")
 	}
 	return nil

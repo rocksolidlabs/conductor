@@ -1381,6 +1381,8 @@ func TestTheHistoryCapHolds(t *testing.T) {
 		// their own, with their op ids, apart from both.
 		{[]string{HistoryAssigned, HistoryDelegated, HistoryEscalated, HistoryRerouted}, MaxDecisionRouterChanges, "router:fake"},
 		{[]string{HistoryResponded}, MaxDecisionResponses, ""},
+		// A counted response's recheck: one a response at most.
+		{[]string{HistoryRechecked}, MaxDecisionResponses, ""},
 		{[]string{HistoryApplied}, 1, ""},
 		{[]string{HistorySuperseded, HistoryCancelled}, 1, ""},
 		{[]string{HistoryRefunded}, 1, ""},

@@ -1,14 +1,19 @@
 <script setup lang="ts">
 import type { DecideCard } from '~/composables/useDecide'
 import { decideOutcomeWords } from '~/utils/decisions'
+import { ownStanding, ownStandingWords } from '~/utils/decisionPolicy'
 
 /**
  * One decision on the decide page (docs/plans/decide-grant.md, "web/app"), drawn from its decide view alone: the question, the context,
  * the options as the view gives them (an assignment's Done and Not done are the server's) with their tradeoffs and the recommended one,
  * the uncertainty and what an answer authorizes; the answer as its type asks; and, each above the card, what became of it. The draft
  * stays as typed through every refusal; while an answer's outcome is not known the form is held, and Send again sends that answer.
+ *
+ * Several approvals (SW1 PR-9): an approval of this person's that counts while the decision waits for others is said as counted, and
+ * the form is not offered again (`held`, useDecide's); the server's "counted already" holds it the same way until a read shows it. A
+ * receipt in a status this page does not know is said in neutral words and offers nothing, never as an approval.
  */
-const props = defineProps<{ card: DecideCard; answerable: boolean; closable: boolean; ended: boolean }>()
+const props = withDefaults(defineProps<{ card: DecideCard; answerable: boolean; closable: boolean; ended: boolean; held?: boolean }>(), { held: false })
 defineEmits<{ send: []; close: []; dismiss: [] }>()
 
 const v = computed(() => props.card.view)
@@ -16,7 +21,10 @@ const options = computed(() => (v.value?.options ?? []).map((o, i) => ({ value: 
 const recommended = computed(() => v.value?.options?.[v.value.recommendation ?? -1]?.label ?? '')
 const ready = computed(() => props.card.draft.choice !== undefined || (v.value?.type === 'clarification' && !!props.card.draft.text.trim()))
 const locked = computed(() => !props.answerable || !!props.card.sent)
-const outcome = computed(() => (v.value ? decideOutcomeWords(v.value) : ''))
+const standing = computed(() => ownStanding(v.value?.own))
+/** Where the person's own answer stands, in words, in place of the outcome's "recorded" while it is counted. */
+const standingWords = computed(() => (v.value?.state === 'open' && standing.value ? ownStandingWords(standing.value, props.card.id) : ''))
+const outcome = computed(() => (v.value && !standingWords.value ? decideOutcomeWords(v.value) : ''))
 const asked = computed(() => {
   const t = Date.parse(v.value?.createdAt ?? '')
   return Number.isFinite(t) ? new Date(t).toLocaleString() : ''
@@ -40,6 +48,7 @@ const type = computed(() => (['clarification', 'approval', 'assignment'].include
     <UAlert v-else-if="card.suspended && v?.state === 'open' && !ended && !card.sent" color="neutral" variant="subtle" icon="i-lucide-loader-circle" :title="`Checking that ${card.id} is still yours to answer.`" data-decide-suspended />
     <UAlert v-if="card.unknown" color="warning" variant="subtle" icon="i-lucide-circle-help" :title="card.unknown" data-decide-unknown />
     <UAlert v-if="card.refused" color="error" variant="subtle" icon="i-lucide-circle-x" :title="card.refused" data-decide-refused />
+    <UAlert v-if="standingWords" :color="standing === 'counted' ? 'success' : 'neutral'" variant="subtle" :icon="standing === 'counted' ? 'i-lucide-info' : 'i-lucide-circle-help'" :title="standingWords" data-decide-standing :data-standing="standing" />
     <UAlert v-if="outcome" :color="v?.outcome === 'applied' || v?.outcome === 'waiting' ? 'success' : 'neutral'" variant="subtle" icon="i-lucide-info" :title="outcome" data-decide-outcome />
     <UAlert v-if="!v && !card.end && !ended && card.failed" color="warning" variant="subtle" icon="i-lucide-loader-circle" :title="`${card.id} could not be read. Trying again.`" data-decide-read-failed />
     <p v-else-if="!v && !card.end && !ended" class="flex items-center gap-2 text-muted"><UIcon name="i-lucide-loader-circle" class="size-4 animate-spin" /> Reading {{ card.id }}…</p>
@@ -65,7 +74,7 @@ const type = computed(() => (['clarification', 'approval', 'assignment'].include
     </template>
 
     <!-- An answer held whose outcome is not known keeps its form, whatever a read has shown of the decision since; Send again is offered as useDecide's answerable says. -->
-    <form v-if="v?.state === 'open' || card.sent" class="flex min-w-0 flex-col gap-3" data-decide-form @submit.prevent="$emit('send')">
+    <form v-if="(v?.state === 'open' && !held) || card.sent" class="flex min-w-0 flex-col gap-3" data-decide-form @submit.prevent="$emit('send')">
       <URadioGroup v-if="options.length" v-model="card.draft.choice" :items="options" :disabled="locked" legend="Your choice" :ui="{ root: 'min-w-0', fieldset: 'min-w-0', item: 'min-w-0', wrapper: 'min-w-0', label: '[overflow-wrap:anywhere]', description: '[overflow-wrap:anywhere]' }" data-decide-options />
       <UFormField v-if="v?.type === 'clarification'" label="Your answer">
         <UTextarea v-model="card.draft.text" :disabled="locked" :maxlength="4096" autoresize class="w-full" data-decide-text />

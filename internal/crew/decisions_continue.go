@@ -261,6 +261,12 @@ func decisionOfRecord(r *run, rec ledger.DecisionRecord) *decision {
 	if rec.State == ledger.DecisionAnswered {
 		d.answer = acceptedOf(rec)
 	}
+	for _, rr := range rec.Responses {
+		var auth Authority
+		if rr.Status == ledger.ResponseCounted && json.Unmarshal([]byte(rr.Authority), &auth) == nil && auth.Via == ViaIdentity {
+			d.counted = true
+		}
+	}
 	d.delivery, d.taskFiled = deliveryOf(rec)
 	if rec.Origin == ledger.OriginCompare {
 		// A selection's subject is the comparison, which no subject rule

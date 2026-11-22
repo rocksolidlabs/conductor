@@ -115,7 +115,9 @@ type Host interface {
 	// ErrUnsupported, and so does the router's where the server keeps no
 	// ledger. OpenDecisions pages every open record with its policy, at
 	// most 64 a page in decision-number order after after, Next empty after
-	// the last.
+	// the last. A page may hold fewer records than 64, or none, and still
+	// name a Next (records that ended while it was read): a reader follows
+	// Next until it is empty.
 	OpenDecisions(ctx context.Context, after string) (OpenDecisionsPage, error)
 	// Outcomes reads the outcome outbox in Seq order after after, one row
 	// for each record that ever carried a router's policy; AckOutcomes

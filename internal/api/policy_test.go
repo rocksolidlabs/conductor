@@ -547,10 +547,8 @@ func TestGapKeepsTheRequirement(t *testing.T) {
 	f.expect(t, http.MethodPost, "/api/decisions/"+did+"/respond", operatorBody("o2", 0, f.rev(t, did), true, "no owner is assigned yet"), http.StatusCreated, "")
 }
 
-// The guard refuses a policy on a screen's question, one past one group of
-// quorum 1, one carrying the server's counts, and one from a router that
-// does not confirm policies: the whole route is refused (the free
-// default's empty route).
+// The guard refuses a policy on a screen's question: the whole route is
+// refused (the free default's empty route).
 func TestScreenQuestionPolicyRefusedByTheGuard(t *testing.T) {
 	e := newTestEnv(t, nil)
 	p := exttest.SamplePolicy()
@@ -572,25 +570,6 @@ func readyNow() *atomic.Bool {
 	b := &atomic.Bool{}
 	b.Store(true)
 	return b
-}
-
-// A policy of two groups (PR-9's) is refused by the guard: the record
-// keeps the server's own policy.
-func TestMoreThanOneGroupRefusedUntilGroups(t *testing.T) {
-	f := newPolicyFixture(t)
-	p := anaPolicy(ext.OverrideOperator)
-	p.Pinned.Groups = append(p.Pinned.Groups, ext.PinnedGroup{Role: "security", Quorum: 1})
-	p.Groups = append(p.Groups, ext.Requirement{Role: "security", Label: "security owner", Quorum: 1, Rule: "r-2", Eligible: []ext.Eligible{{Subject: "bob", Name: "Bob", Via: ext.ViaRole, Ref: "ref-bob"}}})
-	if err := p.Valid(*exttest.SampleRecord()); err != nil {
-		t.Fatalf("the two groups' policy is not valid for ext: %v", err)
-	}
-	records := watchRecords(t)
-	f.fr.SetPolicy("dr-1", p)
-	did := f.open(t, "r1")
-	records.wait(t, "routed", did)
-	if rec := f.record(t, did); ledger.RouterPolicy(rec.Policy) {
-		t.Fatalf("a two groups' policy written: %s", rec.Policy)
-	}
 }
 
 // A router that does not confirm policies (the api's fake) answering a
