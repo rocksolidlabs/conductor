@@ -871,7 +871,7 @@ func (a *agent) dialAndRegister(ctx context.Context) (*websocket.Conn, proto.Reg
 	} else {
 		reg := a.registration(cols, rows)
 		reg.Resume = resume
-		reg.Host.Machine = a.machineKey(resp)
+		reg.Host.Machine, reg.Host.Platform = a.machineOf(resp)
 		hello = reg
 	}
 	a.mu.Unlock()
@@ -956,9 +956,8 @@ func (a *agent) registration(cols, rows uint16) proto.Register {
 		},
 	}
 	if !a.opts.Switchyard {
-		// The platform it runs on; its machine's key is the dial's to make
-		// (machineKey), from what this server's upgrade sent.
-		reg.Host.Platform = machine.Platform()
+		// Its machine's key and its platform are the dial's to say
+		// (machineOf), only to a server whose upgrade sent its key.
 		reg.Session.Branch = session.GitBranch(a.dir)
 		// The owner's own server may route the session's questions: it is
 		// told what the session keeps, and its answers are taken.
@@ -998,21 +997,26 @@ func machineIDOf(dir string, switchyard bool, log *slog.Logger) string {
 	return id
 }
 
-// machineKey is the key of this machine the registration on the
-// connection the upgrade resp answered carries (proto.HostInfo.Machine):
-// made from the machine's id and the key the server sent in the upgrade
-// (proto.ServerKeyHeader), so each server, and each start of one, is sent
-// an unrelated key. "" (none sent) to a switchyard, without an id, and
-// when the upgrade carried no key of the header's form.
-func (a *agent) machineKey(resp *http.Response) string {
-	if a.opts.Switchyard || a.machineID == "" || resp == nil {
-		return ""
+// machineOf is what the registration on the connection the upgrade resp
+// answered says of this machine (proto.HostInfo's Machine and Platform),
+// both only to a server whose upgrade carried a key of the header's form
+// (proto.ServerKeyHeader), which only the owner's own server sends: a host
+// cannot otherwise tell a switchyard it was pointed at from its own server.
+// The key is made from the machine's id and that server's key, so each
+// server, and each start of one, is sent an unrelated key; none without an
+// id. Neither is sent with Options.Switchyard, whatever the upgrade said.
+func (a *agent) machineOf(resp *http.Response) (key, platform string) {
+	if a.opts.Switchyard || resp == nil {
+		return "", ""
 	}
-	key := proto.ParseServerKey(resp.Header.Get(proto.ServerKeyHeader))
-	if key == nil {
-		return ""
+	serverKey := proto.ParseServerKey(resp.Header.Get(proto.ServerKeyHeader))
+	if serverKey == nil {
+		return "", ""
 	}
-	return machine.Key(a.machineID, key)
+	if a.machineID != "" {
+		key = machine.Key(a.machineID, serverKey)
+	}
+	return key, machine.Platform()
 }
 
 // connected says the host holds a control connection now: one it writes

@@ -65,8 +65,9 @@ func TestRegisterKeepsHostVersion(t *testing.T) {
 	}
 }
 
-// A register whose machine or platform is out of its form is refused
-// whole, nothing registered; one that says neither registers as before.
+// A register whose machine is out of its form is refused whole, nothing
+// registered; one that says nothing of its machine registers as before. A
+// platform out of its form is not kept, and the register stands.
 func TestRegisterRefusesMachineOutOfForm(t *testing.T) {
 	reg := session.NewRegistry(8)
 	hub := NewHub(reg, nil)
@@ -75,8 +76,7 @@ func TestRegisterRefusesMachineOutOfForm(t *testing.T) {
 		"a machine one short":       {Machine: key[:31]},
 		"a machine one past":        {Machine: key + "a"},
 		"a machine in upper case":   {Machine: strings.ToUpper(key)},
-		"a platform past its bound": {Platform: strings.Repeat("a", 13) + "/" + strings.Repeat("b", 15) + "+wsl"},
-		"a platform out of form":    {Platform: "Linux/amd64"},
+		"a bad machine, a platform": {Machine: key + "a", Platform: "linux/amd64"},
 	} {
 		if hs, _, err := registerHost(hub, h); !errors.Is(err, ErrBadRegister) || hs != nil {
 			t.Errorf("%s: %v", name, err)
@@ -87,6 +87,15 @@ func TestRegisterRefusesMachineOutOfForm(t *testing.T) {
 	}
 	if _, _, err := registerHost(hub, proto.HostInfo{Version: "v0.9"}); err != nil {
 		t.Fatalf("an older host: %v", err)
+	}
+	for _, p := range []string{strings.Repeat("a", 13) + "/" + strings.Repeat("b", 15) + "+wsl", "Linux/amd64", "linux/amd64+mac", strings.Repeat("x", 4096)} {
+		hs, _, err := registerHost(hub, proto.HostInfo{Machine: key, Platform: p, Version: "v1"})
+		if err != nil {
+			t.Fatalf("platform %q refused the register: %v", p, err)
+		}
+		if info := hs.Info(); info.HostPlatform != "" || info.HostKey != machine.Group(key) || info.HostVersion != "v1" {
+			t.Fatalf("platform %q: kept %q, key %q, version %q", p, info.HostPlatform, info.HostKey, info.HostVersion)
+		}
 	}
 	// A host back on its session with a machine out of its form is refused
 	// too, and the session keeps what it had.
@@ -243,4 +252,41 @@ func TestHostLinkApartFromStatus(t *testing.T) {
 	look("exited, host connected", session.HostLinkUp, false, session.StatusExited)
 	hs.HostDisconnected(conn2)
 	look("exited, host gone", session.HostLinkDown, true, session.StatusExited)
+}
+
+// A switchyard's hub keeps none of what a host says of its machine, though
+// the host sent all three in their forms: no platform, no version, and a key
+// made of its process, never of the machine key it sent. The owner's own
+// server's hub keeps all three.
+func TestSwitchyardHubKeepsNoMachine(t *testing.T) {
+	sent := strings.Repeat("ab", 16)
+	h := proto.HostInfo{Machine: sent, Platform: "linux/amd64+wsl", Version: "v1.2.3", Instance: "inst-y"}
+	yard := NewHub(session.NewRegistry(4), nil)
+	yard.Switchyard = true
+	hs, conn, err := registerHost(yard, h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info := hs.Info()
+	if info.HostPlatform != "" || info.HostVersion != "" || info.HostKeyFrom != session.HostKeyProcess || info.HostKey == machine.Group(sent) || !isKey(info.HostKey) {
+		t.Fatalf("a switchyard kept %q %q, key %q from %q", info.HostPlatform, info.HostVersion, info.HostKey, info.HostKeyFrom)
+	}
+	b, _ := json.Marshal(info)
+	for _, k := range []string{"hostPlatform", "hostVersion", sent, machine.Group(sent)} {
+		if strings.Contains(string(b), k) {
+			t.Fatalf("a switchyard's session carries %s: %s", k, b)
+		}
+	}
+	// Nor on a host's return.
+	hs.HostDisconnected(conn)
+	if again, _, err := registerHost(yard, h); err != nil || again != hs || again.Info().HostPlatform != "" || again.Info().HostVersion != "" {
+		t.Fatalf("a return to a switchyard: %v, %+v", err, again.Info())
+	}
+	own, _, err := registerHost(NewHub(session.NewRegistry(4), nil), h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info := own.Info(); info.HostPlatform != h.Platform || info.HostVersion != h.Version || info.HostKey != machine.Group(sent) {
+		t.Fatalf("the owner's own server: %+v", info)
+	}
 }

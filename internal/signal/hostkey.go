@@ -43,16 +43,24 @@ func prefixedKey(prefix, s string) string {
 	return hex.EncodeToString(sum[:16])
 }
 
-// setHostFields puts on info what the host's register says of itself,
-// already held to its forms by the register's checks
-// (proto.HostInfo.CheckMachine): its platform, its version when that is of
-// its form (none otherwise: an older host's may be of any), and its key,
-// made from what it sent.
-func setHostFields(info *session.Info, h proto.HostInfo, owner string) {
-	info.HostPlatform = h.Platform
-	info.HostVersion = ""
-	if proto.ValidHostVersion(h.Version) {
-		info.HostVersion = h.Version
+// setHostFields puts on info what the host's register says of itself: its
+// platform and its version, each only when it is of its form (none
+// otherwise: a later release may widen a form, and an older host's version
+// may be of any), and its key, made from the machine key it sent (already
+// held to its form by the register's checks, proto.HostInfo.CheckMachine).
+// A switchyard's hub (switchyard) keeps none of the three: its key is made
+// from the host's process or the session alone.
+func setHostFields(info *session.Info, h proto.HostInfo, owner string, switchyard bool) {
+	info.HostPlatform, info.HostVersion = "", ""
+	sent := ""
+	if !switchyard {
+		if proto.ValidHostPlatform(h.Platform) {
+			info.HostPlatform = h.Platform
+		}
+		if proto.ValidHostVersion(h.Version) {
+			info.HostVersion = h.Version
+		}
+		sent = h.Machine
 	}
-	info.HostKey, info.HostKeyFrom = hostKeyOf(h.Machine, owner, info.ID)
+	info.HostKey, info.HostKeyFrom = hostKeyOf(sent, owner, info.ID)
 }
