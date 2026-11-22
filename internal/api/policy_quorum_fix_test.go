@@ -232,3 +232,19 @@ func TestAnOverrideWaitsForNoCountedRecheck(t *testing.T) {
 		t.Fatalf("ana's approval: %d", status)
 	}
 }
+
+// At the routes: under distinct persons, ana counted for security; a
+// re-route names her in architecture too and ben in security; ana's
+// approval, widening where she may be placed, is counted; ben's answers.
+func TestAnApprovalThatWidensItsPersonsGroupsIsCountedAtTheRoutes(t *testing.T) {
+	f := newQuorumFixture(t)
+	did := f.openUnder(t, "r1", "dr-1", groupsPolicy("rev-1", true, group("architecture", 1, "cam"), group("security", 1, "ana")))
+	f.approved(t, "ana", did, "a1", http.StatusCreated, proto.ReceiptCounted)
+	f.rerouted(t, did, groupsPolicy("rev-2", true, group("architecture", 1, "ana"), group("security", 1, "ana", "ben")), "op-1")
+	f.approved(t, "ana", did, "a2", http.StatusCreated, proto.ReceiptCounted)
+	f.approved(t, "ben", did, "b1", http.StatusCreated, proto.ReceiptAccepted)
+	f.appliedOnce(t, did)
+	if q := f.quorumOf(t, did); q.Filled != 2 {
+		t.Fatalf("the count once applied: %+v", q)
+	}
+}

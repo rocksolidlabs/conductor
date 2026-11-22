@@ -1089,7 +1089,11 @@ counted response; the operator's card shows each group's count.
   the last or the last was filled already (a re-route that brings back a
   counted approver can leave the counted rows alone filling every place);
   else it is counted when it fills a place more; else `already_counted`
-  for a person whose approval stands and `not_needed` otherwise. So a
+  for a person whose approval stands and `not_needed` otherwise, but a
+  person whose approval stands is counted again, while a place is unmet,
+  when the approval names them in a group their standing approvals do not
+  (a re-route named them there): under distinct persons that is what lets
+  another complete it. So a
   person a re-route moved to another group is judged anew, and no
   decision is left open with every approval refused. At application a
   counted approval fills the places of the groups it was counted in that

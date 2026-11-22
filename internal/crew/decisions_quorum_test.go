@@ -2,6 +2,7 @@ package crew
 
 import (
 	"fmt"
+	"math/rand/v2"
 	"slices"
 	"testing"
 	"time"
@@ -339,5 +340,87 @@ func TestCountedRowsStandByTheirRecheck(t *testing.T) {
 	}
 	if !standing[0].confirmed || standing[1].confirmed {
 		t.Fatalf("confirmed: %+v", standing)
+	}
+}
+
+// completable says that every eligible person of p approving, beside the
+// approvals that stand, would fill every place (by bruteFill), and
+// moves says that some person's single approval is answered or counted:
+// the judgement keeps a decision moving whenever it can be completed.
+func completable(p routedPolicy, standing []countedRow) (can, moves bool) {
+	all := slices.Clone(standing)
+	var people []string
+	for _, g := range p.Groups {
+		for _, e := range g.Eligible {
+			if !slices.Contains(people, e.Subject) {
+				people = append(people, e.Subject)
+			}
+		}
+	}
+	for _, who := range people {
+		all = append(all, countedRow{subject: who, groups: p.confirmedFor(who)})
+		if v, _ := judgeCount(p, standing, who, p.confirmedFor(who)); v == countAnswers || v == countCounted {
+			moves = true
+		}
+	}
+	return bruteFill(p, all) >= placesOf(p), moves
+}
+
+// Random sequences of approvals and re-routes (seeded): one to three
+// groups of quorum one or two, four people, distinct persons or not. At
+// every step a person's approval answers exactly when a brute-force count
+// says it fills every place, and whenever all the eligible people
+// approving together would fill every place, some person's approval
+// answers or is counted: no re-route leaves a decision nobody can
+// complete.
+func TestNoSequenceLeavesADecisionNobodyCanComplete(t *testing.T) {
+	rng := rand.New(rand.NewPCG(1072, 9))
+	people := []string{"p0", "p1", "p2", "p3"}
+	reroute := func(n int, distinct bool, quorums []int) routedPolicy {
+		var groups [][]string
+		for i := range n {
+			g := []string{fmt.Sprintf("g%d", i), fmt.Sprint(quorums[i])}
+			for _, who := range people {
+				if rng.IntN(2) == 0 {
+					g = append(g, who)
+				}
+			}
+			groups = append(groups, g)
+		}
+		return quorumPolicy(distinct, groups...)
+	}
+	for seq := range 4000 {
+		n, distinct := 1+rng.IntN(3), rng.IntN(2) == 0
+		quorums := make([]int, n)
+		for i := range quorums {
+			quorums[i] = 1 + rng.IntN(2)
+		}
+		p := reroute(n, distinct, quorums)
+		var standing []countedRow
+		for step := range 14 {
+			if can, moves := completable(p, standing); can && !moves {
+				t.Fatalf("sequence %d step %d: every person together completes it, no approval answers or is counted: %+v, standing %+v", seq, step, p.Groups, standing)
+			}
+			if rng.IntN(10) < 3 {
+				p = reroute(n, distinct, quorums)
+				continue
+			}
+			who := people[rng.IntN(len(people))]
+			groups := p.confirmedFor(who)
+			if len(groups) == 0 {
+				continue
+			}
+			v, _ := judgeCount(p, standing, who, groups)
+			completes := bruteFill(p, append(slices.Clone(standing), countedRow{subject: who, groups: groups})) >= placesOf(p)
+			if completes != (v == countAnswers) {
+				t.Fatalf("sequence %d step %d: %s completes %v, verdict %d", seq, step, who, completes, v)
+			}
+			if v == countAnswers {
+				break
+			}
+			if v == countCounted {
+				standing = append(standing, countedRow{k: len(standing) + 1, subject: who, groups: groups})
+			}
+		}
 	}
 }

@@ -300,8 +300,10 @@ func TestAHeldAnswerNeverCounts(t *testing.T) {
 	stopRun(t, e, run.ID)
 }
 
-// noApprovalStuck holds the invariant the judgement keeps, on decision id
-// as the ledger holds it now: while it is open, an eligible person's
+// noApprovalStuck holds the invariants the judgement keeps, on decision id
+// as the ledger holds it now: while it is open, when every eligible person
+// approving together would fill every place, some person's approval
+// answers or is counted; and an eligible person's
 // approval answers it exactly when, added to the approvals that stand, it
 // would fill every place, by a brute-force count that shares nothing with
 // fill; so no approval is refused, or merely counted, while it could
@@ -317,6 +319,9 @@ func noApprovalStuck(t *testing.T, e *Engine, ld *ledger.Ledger, id string) {
 		return
 	}
 	standing, _ := countedRows(rec, e.Boot(), func(k int) bool { return e.CountedPending(rec.N, k) })
+	if can, moves := completable(p, standing); can && !moves {
+		t.Fatalf("%s: every eligible person together completes it, and no one's approval answers or is counted", id)
+	}
 	for _, g := range p.Groups {
 		for _, el := range g.Eligible {
 			groups := p.confirmedFor(el.Subject)
@@ -576,5 +581,28 @@ func TestACountedApprovalHoldsAPlaceInTheEnginesCount(t *testing.T) {
 	if !errors.Is(err, ledger.ErrDecisionLimit) {
 		t.Fatalf("the ledger's opening past the place: %v", err)
 	}
+	stopRun(t, e, run.ID)
+}
+
+// Under distinct persons, ana counted for security; a re-route names her
+// in architecture too, and ben in security. Ana's approval fills no place
+// more by itself, yet widens where she may be placed: it is counted, not
+// refused; ben's approval then answers (ana in architecture, ben in
+// security), applied once. The invariants hold after every step.
+func TestAnApprovalThatWidensItsPersonsGroupsIsCounted(t *testing.T) {
+	dir := newRepo(t)
+	e, _, ld := decisionEngine(t)
+	q := &quorumRouter{pol: policyOf("rev-1", true, eligibleGroup("architecture", 1, "cam"), eligibleGroup("security", 1, "ana"))}
+	q.routes(e)
+	run := launchGated(t, e, dir, "api-sweep-000000fd", repoCrew(dir, work("deploy", "ops")), shipGate("deploy"))
+	g := gateOf(t, e, ld, run.ID)
+	routeUnder(t, e, ld, q, g.ID)
+	countedHere(t, e, ld, q, g.ID, "ana", "a1", ledger.ResponseCounted)
+	rerouteTo(t, e, ld, q, g.ID, policyOf("rev-2", true, eligibleGroup("architecture", 1, "ana"), eligibleGroup("security", 1, "ana", "ben")), "op-1")
+	noApprovalStuck(t, e, ld, g.ID)
+	countedHere(t, e, ld, q, g.ID, "ana", "a2", ledger.ResponseCounted)
+	rc := mustCount(t, e, ld, q, g.ID, "ben", "b1", ledger.ResponseAccepted)
+	e.ConfirmAuthority(g.ID, rc.K, true)
+	appliedOnceIn(t, ld, g.ID)
 	stopRun(t, e, run.ID)
 }

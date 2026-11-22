@@ -262,10 +262,13 @@ const (
 // under distinct persons), it answers the decision when every place is
 // then filled, whether it filled the last place or the last was filled
 // already (a re-route can bring back a counted approver); else it is
-// counted when it fills a place more; else it is refused, already counted
-// for a person whose own approval stands and not needed otherwise. A
-// person whose standing approval fills nothing (a re-route moved them) is
-// so judged anew. The places filled after it, per group, are returned.
+// counted when it fills a place more, or when a place is still unmet and
+// it names its person, whose approval stands, in a group their standing
+// approvals do not (it widens where they may be placed: under distinct
+// persons that can be what lets another complete it); else it is refused,
+// already counted for a person whose own approval stands and not needed
+// otherwise. A person whose standing approval fills nothing (a re-route
+// moved them) is so judged anew. The places filled after it, per group, are returned.
 func judgeCount(p routedPolicy, standing []countedRow, subject string, groups []string) (countVerdict, []int) {
 	before, per := fill(p, standing)
 	after, perAfter := fill(p, append(slices.Clone(standing), countedRow{subject: subject, groups: groups}))
@@ -275,9 +278,33 @@ func judgeCount(p routedPolicy, standing []countedRow, subject string, groups []
 	case after > before:
 		return countCounted, perAfter
 	case slices.ContainsFunc(standing, func(c countedRow) bool { return c.subject == subject }):
+		if before < placesOf(p) && p.widens(standing, subject, groups) {
+			// It fills no place more now, but it names a group the
+			// person's standing approvals do not (a re-route named them
+			// there): counted, so the person may be placed there once
+			// another fills the place they hold now.
+			return countCounted, per
+		}
 		return countAlready, per
 	}
 	return countNotNeeded, per
+}
+
+// widens says groups name subject in a group of p that none of subject's
+// standing approvals fills for them now (namedIn over each row).
+func (p routedPolicy) widens(standing []countedRow, subject string, groups []string) bool {
+	var held []int
+	for _, c := range standing {
+		if c.subject == subject {
+			held = append(held, p.namedIn(subject, c.groups)...)
+		}
+	}
+	for _, g := range p.namedIn(subject, groups) {
+		if !slices.Contains(held, g) {
+			return true
+		}
+	}
+	return false
 }
 
 // QuorumOf is the operator's count of rec's places under its router's
