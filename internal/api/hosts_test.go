@@ -400,15 +400,35 @@ func TestHostsAdminOnly(t *testing.T) {
 }
 
 // The route writes nothing: no file made or changed under the data
-// directory.
+// directory. The history's index is left out of the comparison: its
+// indexer writes it on a goroutine of its own, whatever a route does, and
+// the route reads nothing of it.
 func TestHostsWritesNothing(t *testing.T) {
 	f := newDecisionFixture(t, nil, nil)
-	before := treeState(t, f.srv.store.Dir())
+	history := filepath.Join(f.srv.store.Dir(), "history") + string(filepath.Separator)
+	state := func() map[string]string {
+		out := treeState(t, f.srv.store.Dir())
+		for p := range out {
+			if strings.HasPrefix(p, history) {
+				delete(out, p)
+			}
+		}
+		return out
+	}
+	before := state()
 	for range 3 {
 		f.hostsOf(t)
 	}
-	if after := treeState(t, f.srv.store.Dir()); !sameTree(before, after) {
-		t.Fatalf("the data directory changed:\nbefore %v\nafter  %v", before, after)
+	after := state()
+	for p, v := range after {
+		if before[p] != v {
+			t.Fatalf("%s changed: %q, was %q", p, v, before[p])
+		}
+	}
+	for p := range before {
+		if _, ok := after[p]; !ok {
+			t.Fatalf("%s went", p)
+		}
 	}
 }
 
@@ -431,16 +451,4 @@ func treeState(t *testing.T, dir string) map[string]string {
 		t.Fatal(err)
 	}
 	return out
-}
-
-func sameTree(a, b map[string]string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for k, v := range a {
-		if b[k] != v {
-			return false
-		}
-	}
-	return true
 }

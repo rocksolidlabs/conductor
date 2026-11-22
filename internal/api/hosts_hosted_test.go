@@ -311,7 +311,7 @@ func TestHostsHostedQuestionStaysAQuestion(t *testing.T) {
 
 // I6: a host registering with a key: the bytes of GET /api/hosts, of GET
 // /api/sessions, of the session event and the server's log hold neither
-// the machine's id nor the key the host sent.
+// the machine's id, the key the host sent, nor the server's key.
 func TestHostsReplyHoldsNoMachineID(t *testing.T) {
 	var logs bytes.Buffer
 	var logMu sync.Mutex
@@ -345,9 +345,13 @@ func TestHostsReplyHoldsNoMachineID(t *testing.T) {
 	logMu.Lock()
 	logged := logs.String()
 	logMu.Unlock()
+	own := e.srv.serverKeyHeader()
+	if own == "" {
+		t.Fatal("the server has no key of this start")
+	}
 	for what, b := range map[string]string{"GET /api/hosts": string(hosts), "GET /api/sessions": string(sessions), "the session event": event, "the log": logged} {
-		if strings.Contains(b, id) || strings.Contains(b, sent) {
-			t.Fatalf("%s holds the machine's id or the key the host sent", what)
+		if strings.Contains(b, id) || strings.Contains(b, sent) || strings.Contains(b, own) {
+			t.Fatalf("%s holds the machine's id, the key the host sent or the server's key", what)
 		}
 	}
 }
