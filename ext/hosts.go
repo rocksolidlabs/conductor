@@ -19,8 +19,9 @@ import (
 // the remote record of kind RemoteHosts that a sync store hands in for
 // another of the person's servers.
 //
-// It carries counts, platforms, versions, availability and the names the
-// hosts gave themselves, and nothing else: never a session's id, command,
+// It carries counts (the hosts left out of its list among them),
+// platforms, versions, availability and the names the hosts gave
+// themselves, and nothing else: never a session's id, command,
 // folder or branch, a run's name, anything a terminal printed, the OS user
 // a host runs as, a machine's id or key, an address, a token or a key of
 // any kind. The server's own name is the device record's, not the
@@ -34,6 +35,10 @@ type HostSummary struct {
 	Sessions HostSessions     `json:"sessions"` // this server's own sessions
 	Runs     HostRuns         `json:"runs"`     // the open managed runs this server holds
 	Hosts    []HostSummaryRow `json:"hosts"`    // at most MaxHostSummaryRows, as the server's Hosts page orders them
+	// More is how many of the server's hosts are not in Hosts: those past
+	// MaxHostSummaryRows, those left out to fit MaxHostSummary, and those
+	// whose name a summary may not carry. A list that was cut says so.
+	More int `json:"more,omitempty"`
 }
 
 // HostSummaryRow is one machine whose hosts reach the server, as the
@@ -99,7 +104,7 @@ var (
 var hostSummaryKeys = map[string]bool{
 	"platform": true, "version": true, "sessions": true, "runs": true, "hosts": true,
 	"name": true, "availability": true, "since": true,
-	"running": true, "waiting": true, "held": true,
+	"more": true, "running": true, "waiting": true, "held": true,
 }
 
 // ParseHostSummary decodes a host summary strictly and checks it (Valid):
@@ -133,19 +138,20 @@ func ParseHostSummary(data []byte) (HostSummary, error) {
 }
 
 // Valid checks a host summary before it is handed on: this server's
-// platform and version of their forms; every count 0 to MaxHostCount; at
-// most MaxHostSummaryRows rows, each with a name of 1 to MaxHostName bytes
-// of one line that is not a path, a login, an address or an id, a platform
-// and a version empty or of their forms, an availability of the three, and
-// since set for away and seen; and the whole, encoded, at most
-// MaxHostSummary bytes. Its errors wrap ErrRefused.
+// platform and version of their forms; every count 0 to MaxHostCount, the
+// hosts left out (More) among them; at most MaxHostSummaryRows rows, each
+// with a name of 1 to MaxHostName bytes of one line that is not a path, a
+// login, an address or an id, a platform and a version empty or of their
+// forms, an availability of the three, and since set for away and seen;
+// and the whole, encoded, at most MaxHostSummary bytes. Its errors wrap
+// ErrRefused.
 func (s HostSummary) Valid() error {
 	switch {
 	case !validHostPlatform(s.Platform):
 		return fmt.Errorf("%w: a host summary names this server's platform as <GOOS>/<GOARCH>, in at most %d bytes", ErrRefused, MaxHostPlatform)
 	case !validHostVersion(s.Version):
 		return fmt.Errorf("%w: a host summary names this server's version in at most %d bytes of A-Z a-z 0-9 . + _ -", ErrRefused, MaxHostVersion)
-	case !s.Sessions.valid() || !validHostCount(s.Runs.Held) || !validHostCount(s.Runs.Waiting):
+	case !s.Sessions.valid() || !validHostCount(s.Runs.Held) || !validHostCount(s.Runs.Waiting) || !validHostCount(s.More):
 		return fmt.Errorf("%w: a host summary's counts are 0 to %d", ErrRefused, MaxHostCount)
 	case len(s.Hosts) > MaxHostSummaryRows:
 		return fmt.Errorf("%w: a host summary has %d hosts, past %d", ErrRefused, len(s.Hosts), MaxHostSummaryRows)

@@ -56,6 +56,7 @@ func TestHostSummaryValid(t *testing.T) {
 		"counts at their bound": func(s *ext.HostSummary) {
 			s.Sessions, s.Runs = ext.HostSessions{ext.MaxHostCount, ext.MaxHostCount}, ext.HostRuns{ext.MaxHostCount, ext.MaxHostCount}
 		},
+		"hosts left out at their bound":    func(s *ext.HostSummary) { s.More = ext.MaxHostCount },
 		"counts of none":                   func(s *ext.HostSummary) { s.Sessions, s.Runs = ext.HostSessions{}, ext.HostRuns{} },
 		"no hosts":                         func(s *ext.HostSummary) { s.Hosts = nil },
 		"hosts at their bound":             rows(ext.MaxHostSummaryRows),
@@ -98,6 +99,8 @@ func TestHostSummaryValid(t *testing.T) {
 		"runs held below 0":                 func(s *ext.HostSummary) { s.Runs.Held = -1 },
 		"runs held past their bound":        func(s *ext.HostSummary) { s.Runs.Held = ext.MaxHostCount + 1 },
 		"runs waiting below 0":              func(s *ext.HostSummary) { s.Runs.Waiting = -1 },
+		"hosts left out below 0":            func(s *ext.HostSummary) { s.More = -1 },
+		"hosts left out past their bound":   func(s *ext.HostSummary) { s.More = ext.MaxHostCount + 1 },
 		"runs waiting past their bound":     func(s *ext.HostSummary) { s.Runs.Waiting = ext.MaxHostCount + 1 },
 		// The rows.
 		"hosts past their bound": rows(ext.MaxHostSummaryRows + 1),
@@ -273,7 +276,10 @@ func TestHostSummaryFieldsAreThePlans(t *testing.T) {
 		v    any
 		want []string
 	}{
-		{ext.HostSummary{}, []string{"platform", "version", "sessions", "runs", "hosts"}},
+		// The plan's list, and one field added to it: more, the hosts
+		// left out of the list (past its rows, past its bytes, or named
+		// as a summary may not carry), since a list that was cut says so.
+		{ext.HostSummary{}, []string{"platform", "version", "sessions", "runs", "hosts", "more"}},
 		{ext.HostSummaryRow{}, []string{"name", "platform", "version", "availability", "since", "sessions"}},
 		{ext.HostSessions{}, []string{"running", "waiting"}},
 		{ext.HostRuns{}, []string{"held", "waiting"}},
@@ -281,5 +287,33 @@ func TestHostSummaryFieldsAreThePlans(t *testing.T) {
 		if got := fields(c.v); !slices.Equal(got, c.want) {
 			t.Errorf("%T's fields = %v, want %v", c.v, got, c.want)
 		}
+	}
+}
+
+// TestHostSummaryCountsWhatItLeftOut: a summary whose list was cut says how
+// many hosts it left out; more of 3 goes through a round trip and the
+// hosts kind's check, and none left out is no field at all.
+func TestHostSummaryCountsWhatItLeftOut(t *testing.T) {
+	cut := hostSummary()
+	cut.More = 3
+	body := encode(t, cut)
+	if !strings.Contains(string(body), `"more":3`) {
+		t.Fatalf("the cut summary's bytes: %s", body)
+	}
+	back, err := ext.ParseHostSummary(body)
+	if err != nil || back.More != 3 || !reflect.DeepEqual(back, cut) {
+		t.Fatalf("the round trip: %+v, %v", back, err)
+	}
+	r := ext.Remote{Kind: ext.RemoteHosts, Device: "dev-1", DeviceName: "studio", ID: "summary", Rev: 1,
+		At: time.Date(2026, 11, 20, 9, 0, 0, 0, time.UTC), Data: body}
+	if err := r.Valid(); err != nil {
+		t.Fatalf("the kind's check of a cut summary: %v", err)
+	}
+	r.Data = []byte(strings.Replace(string(body), `"more":3`, `"more":-3`, 1))
+	if err := r.Valid(); !errors.Is(err, ext.ErrRefused) {
+		t.Fatalf("the kind's check of a negative more: %v", err)
+	}
+	if whole := encode(t, hostSummary()); strings.Contains(string(whole), `"more"`) {
+		t.Fatalf("a summary that left out none says more: %s", whole)
 	}
 }

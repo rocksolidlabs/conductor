@@ -1740,7 +1740,8 @@ sync's seams.
 
 **As built (HS2 PR-5, the `hosts` body).** `ext.HostSummary` is
 `{platform, version, sessions: {running, waiting}, runs: {held, waiting},
-hosts}`, each host `{name, platform?, version?, availability, since?,
+hosts, more?}` (`more` the hosts its list left out, absent when 0), each
+host `{name, platform?, version?, availability, since?,
 sessions}`: the platform `<GOOS>/<GOARCH>` (`+wsl` inside WSL) in at most
 `MaxHostPlatform` (32) bytes, the version at most `MaxHostVersion` (64)
 bytes of `A-Z a-z 0-9 . + _ -`, at most `MaxHostSummaryRows` (32) hosts,
@@ -1758,7 +1759,8 @@ kept. `exttest.FakeHost`'s `PutRemote` refuses the same way, and
 `exttest.SampleHostSummary` and `SampleRemoteHosts` give a test a summary
 of every field and its record. Its tests: `TestHostSummaryValid`,
 `TestParseHostSummary`, `TestHostsKindValidIsTheSummarys`,
-`TestHostSummaryFieldsAreThePlans` (in `ext`).
+`TestHostSummaryFieldsAreThePlans`, `TestHostSummaryCountsWhatItLeftOut`
+(in `ext`).
 
 **As built (OS-4).** A record's file is `remote/<device>/<kind>-<id>.json`
 with the device and the id hex-encoded, since the data directory's stores

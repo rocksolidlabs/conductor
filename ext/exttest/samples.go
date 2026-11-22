@@ -83,7 +83,8 @@ func SamplePolicy() ext.RoutePolicy {
 }
 
 // SampleHostSummary is a host summary of every field (ext.HostSummary):
-// a server with two hosts reaching it, one connected and one away. A test
+// a server with two hosts reaching it, one connected and one away, none
+// left out (More 0). A test
 // hands it to a sync store as the hosts/summary document, or into a
 // server as another machine's RemoteHosts record (SampleRemoteHosts).
 func SampleHostSummary() ext.HostSummary {

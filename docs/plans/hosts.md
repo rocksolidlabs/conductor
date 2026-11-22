@@ -724,7 +724,12 @@ once per request; nothing is persisted.
   (sessions running and waiting, runs held and waiting), and each host
   row's name, platform, version, availability, `since` and counts, at
   most 32 rows and 16 KiB (`ext.MaxHostSummary`), every count made by
-  PR-2's predicate and run list (I1, I8). Never a session's id,
+  PR-2's predicate and run list (I1, I8). As built, it also says how
+  many of the server's hosts its list leaves out (`more`, 0 to
+  1,000,000, absent when 0): the rows past the 32, the rows left out to
+  fit 16 KiB, and the rows whose name the summary's rules refuse (a
+  path, a login, an address or an id), so a cut list says it was cut and
+  one such name never costs the whole summary. Never a session's id,
   command, folder, branch, a run's name or anything a terminal printed;
   never the OS user, the machine id or a machine key. Its type is
   `ext.HostSummary` (standard library only, with a `Valid` method, as

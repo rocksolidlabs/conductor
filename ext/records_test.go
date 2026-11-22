@@ -166,7 +166,7 @@ var records = []any{
 	&ext.ApprovedLaunch{Ticket: "CND-12", Plan: "0123456789abcdef", ExpectedRev: 3, OpID: "op-1", Label: "nightly", By: principal},
 	&ext.SignInStatus{State: ext.SignInCode, Who: "Ada", Code: "WDJB-MJHT", URL: "https://id.example.com/device", Expires: at, Why: "enter the code"},
 	&ext.HostSummary{Platform: "linux/amd64", Version: "v0.7.0", Sessions: ext.HostSessions{Running: 3, Waiting: 1}, Runs: ext.HostRuns{Held: 2, Waiting: 1},
-		Hosts: []ext.HostSummaryRow{{Name: "studio", Platform: "darwin/arm64", Version: "v0.7.0", Availability: ext.HostAway, Since: at, Sessions: ext.HostSessions{Running: 2, Waiting: 1}}}},
+		Hosts: []ext.HostSummaryRow{{Name: "studio", Platform: "darwin/arm64", Version: "v0.7.0", Availability: ext.HostAway, Since: at, Sessions: ext.HostSessions{Running: 2, Waiting: 1}}}, More: 3},
 	&ext.HostSummaryRow{Name: "studio", Platform: "darwin/arm64", Version: "v0.7.0", Availability: ext.HostSeen, Since: at, Sessions: ext.HostSessions{Running: 2, Waiting: 1}},
 	&ext.HostSessions{Running: 2, Waiting: 1},
 	&ext.HostRuns{Held: 2, Waiting: 1},
