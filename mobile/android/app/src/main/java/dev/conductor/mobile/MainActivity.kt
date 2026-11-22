@@ -9,6 +9,9 @@ class MainActivity : BridgeActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         registerPlugin(ConductorKeyPlugin::class.java)
         registerPlugin(ConductorStorePlugin::class.java)
+        registerPlugin(ShellHttpPlugin::class.java)
+        registerPlugin(RefusedWebViewPlugin::class.java)
+        registerPlugin(RefusedCookiesPlugin::class.java)
         super.onCreate(savedInstanceState)
     }
 }
