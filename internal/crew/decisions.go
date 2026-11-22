@@ -214,6 +214,11 @@ type Response struct {
 // refused with its code and words. Repeat marks the receipt given before
 // for the same response; Kept false a refusal past the decision's bound,
 // which keeps no row and binds nothing.
+//
+// As the operator's read gives it (Engine.Decision), a counted approval
+// that no longer counts (its sign-in's recheck refused it, or a restart
+// found it unrechecked) reads Status refused, Code not_confirmed, with the
+// server's words; the row as kept is not changed (decisions_quorum.go).
 type ResponseReceipt struct {
 	Decision  string    `json:"decision"`
 	K         int       `json:"k,omitempty"`

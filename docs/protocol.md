@@ -8718,11 +8718,19 @@ above, and no field, code or row below is ever written or answered.
   counts as themselves. One eligible Reject (an assignment's Not done)
   answers the decision at once; a clarification takes the first eligible
   answer; an accepted override answers it whole, every group at once.
-  An approval that fills no place the record still needs is `409
-  not_needed` ("dr-7 has the architecture owner's approvals it needs: it
-  waits for the security owner"), the same subject's second approval
-  `409 already_counted`, each unkept (no row; judged again when sent
-  again). A kept refusal under such a policy is kept only while the
+  An eligible approval is judged against the places as the approvals
+  that stand now fill them, its own groups (as the router confirms them
+  now, merged with those of its person's standing approval) added: if
+  every place is then filled it answers the decision, whether it filled
+  the last place or the last place was filled already (a re-route can
+  bring back an approver whose approval stands); else, if it fills a
+  place more, it is counted; else it is refused, `409 already_counted`
+  for a person whose own approval stands ("ana's approval of dr-7 is
+  counted already") and `409 not_needed` otherwise ("dr-7 has the
+  architecture owner's approvals it needs: it waits for the security
+  owner"), each unkept (no row; judged again when sent again). A person
+  whose approval is counted may still Reject: an eligible Reject answers
+  at once. A kept refusal under such a policy is kept only while the
   response rows left after it are at least the places still to fill;
   past that it is unkept. A counted approval by an identity is rechecked
   with its sign-in after its commit, as an accepted one is: a `rechecked`
@@ -8736,17 +8744,31 @@ above, and no field, code or row below is ever written or answered.
   leaves fewer response rows than places to fill, the decision is
   superseded in the re-route's transaction ("dr-7's responses filled its
   record; dr-9 asks again") and `Reroute`'s `superseded` names the fresh
-  one. A decide principal's own counted approval reads `status:
-  "counted"` in `own` and its outcome `waiting` while the decision is
-  open; one that no longer counts reads `status: "refused"`, `code:
-  "not_confirmed"` ("Your approval of dr-7 could not be rechecked: answer
-  again."). `OpenDecisions` gives each record's standing counted
+  one. A counted approval that no longer counts (its sign-in's recheck
+  did not admit it, or a restart found it unrechecked) reads `status:
+  "refused"`, `code: "not_confirmed"` wherever a receipt is read: in the
+  decide view's `own`, and in the operator's read's
+  `decision.responses` (and the respond route's `{receipt, decision}`),
+  its `words` there the server's ("Ana's approval of dr-7 no longer
+  counts: its sign-in could not be rechecked", followed by ": answer
+  again" only while the decision is open); a counted approval that
+  stands reads `status: "counted"`. The row as kept is not changed: only
+  what is read. A decide principal's own counted approval has the
+  outcome `waiting` while the decision is open or answered by an
+  approval, `applied` once that approval is applied, `not_used` once it
+  ended otherwise; one that no longer counts has the outcome `refused`
+  with `outcomeCode: "not_confirmed"` ("Your approval of dr-7 could not
+  be rechecked: answer again.") only while the decision is open, and
+  `not_used` (no code) once it is answered or final, when nothing can be
+  answered again. `OpenDecisions` gives each record's standing counted
   approvals (`counted: [{subject, groups, at, confirmed?}]`).
 - **The operator's read.** `GET /api/decisions/{did}` of a record under a
   router's policy carries `quorum: {places, filled, groups: [{role,
   quorum, counted, met}]}` (`proto.DecisionQuorum`, at most 512 bytes:
-  the places in all, those the standing counted approvals fill now, and
-  each group's count by its role, in the policy's order) and
+  the places in all, those filled now by the counted approvals that
+  stand and by the approval that answered the decision when it is an
+  eligible approval (never a Reject or an override, which fill no place),
+  and each group's count by its role, in the policy's order) and
   `policyNow: {inForce, why?, eligible?}` from
   one `Confirm`, asked with the reader's subject for an identity's
   operator (none for the workbench token): `eligible` is true when that
