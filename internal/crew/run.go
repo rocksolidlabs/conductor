@@ -218,12 +218,13 @@ type MemberState struct {
 	// cleared once the line is typed: what the Brakeman desk's words of
 	// a turn that did not start say. Not in the run's JSON.
 	Unrecognised bool `json:"-"`
-	// Unconfirmed is set when the member's prompt was typed and entered,
-	// Enter pressed again, and its agent, one that reports taking a
-	// prompt, never reported taking it (session.SubmitResult.Unconfirmed):
-	// the member reads as waiting on a person (NeedsInput) until its
-	// session reports a turn (working, or done). Not in the run's JSON.
-	Unconfirmed bool `json:"-"`
+	// Unconfirmed is the session a prompt was typed into, entered and
+	// entered again, whose agent, one that reports taking a prompt, never
+	// reported taking it (session.SubmitResult.Unconfirmed): while that is
+	// still the member's session (SessionID), the member reads as waiting
+	// on a person (NeedsInput) until the session reports a turn (working,
+	// or done). Not in the run's JSON.
+	Unconfirmed string `json:"-"`
 	// Task and Attempt are the member's latest attempt in a managed run.
 	Task    string `json:"task,omitempty"`
 	Attempt int    `json:"attempt,omitempty"`
@@ -1909,7 +1910,7 @@ func (e *Engine) promptWith(ctx context.Context, r *run, m *member, local *sessi
 				// Still no word that it took the prompt: said once, nothing
 				// typed again, and the member reads as waiting on a person
 				// until its agent reports a turn (OnActivity).
-				m.state.Unconfirmed = true
+				m.state.Unconfirmed = local.Info().ID
 				r.note(session.ActivityError, "typed %s's prompt, and its agent did not report taking it: check its terminal, and type the prompt there if its input is empty", name)
 			}
 		}
@@ -2090,7 +2091,9 @@ func (e *Engine) OnActivity(sessionID string, entry session.ActivityEntry, state
 		// A turn of its agent's own: a prompt it did not report taking
 		// (MemberState.Unconfirmed) no longer holds the member.
 		e.mu.Lock()
-		m.state.Unconfirmed = false
+		if m.state.Unconfirmed == sessionID {
+			m.state.Unconfirmed = ""
+		}
 		e.mu.Unlock()
 	}
 	if !isHandoff && entry.Type == session.ActivityAttention && state == session.AttentionWorking && sm.a != nil {
@@ -2810,7 +2813,7 @@ func (e *Engine) refresh(out *Run) {
 		// agent reports a turn (MemberState.Unconfirmed; a report shown
 		// now counts, should it have come as the prompt was being given).
 		reports := info.Attention.State == session.AttentionWorking || info.Attention.State == session.AttentionDone
-		m.NeedsInput = info.Attention.State == session.AttentionNeedsInput && info.Attention.Answered == "" || m.Unconfirmed && !reports
+		m.NeedsInput = info.Attention.State == session.AttentionNeedsInput && info.Attention.Answered == "" || m.Unconfirmed != "" && m.Unconfirmed == m.SessionID && !reports
 	}
 	out.State, out.NeedsInput = runState(*out)
 }
