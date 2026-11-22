@@ -4562,6 +4562,78 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   names (Conductor, Yardmaster, Brakeman #356, Switchman) in the README,
   `docs/architecture.md`, `docs/repository-map.md` and AGENTS.md; the
   architecture's crew-runs section gains the managed run.
+- **Yardmaster's leftover steps with real agents, observed 2026-11-22, and
+  what they found, fixed (#1075, on WSL).** On a build of `main` at 7b53bd8d
+  (`conductor v0.7.0-rc.24-866-g7b53bd8d`), the open-source build with no
+  account, real Claude Code (2.1.327, then 2.1.330 after its own update, on
+  Haiku) took both seats of small crews in a scratch repository. Each crew
+  had a `build` work task with a check outside the worktree and a `docs`
+  task that needs it, driven through the API with the workbench token and
+  in headless Chromium. Codex was not used.
+  1. Cancel… from a running task's row menu, confirmed with "Cancel the
+     task", answered a receipt. The attempt's session and its agent process
+     ended, `build` was cancelled and `docs` never started ("needs build,
+     which will not succeed"). The same command id again gave the same
+     receipt with `repeat`, and an old revision `409 stale_revision`. The
+     run ended cancelled, its header saying Stopped, with Copy branch still
+     offered.
+  2. The palette's task rows showed "kind · member · words" with each
+     state's mark. Enter opened the task's detail. Retry, Accept anyway…
+     (asked first) and Cancel… (asked first) answered the receipts the Tasks
+     view's own controls give, with their effects: a new attempt; the run's
+     outcome turned from failed to succeeded; a working task's agent ended.
+     Preview this candidate, on a run with a project manifest, opened the
+     candidate's preview page "as committed", and the row then offered Open
+     the candidate's preview.
+  3. A handoff in a managed run was logged "sent as a message" and started
+     no one. A done finished nothing and drew one reminder. The message was
+     kept until `docs` had its task line, typed as "Message from build (#1):
+     …", read with the inbox and acknowledged.
+  4. An attempt that saved a checkpoint and whose agent was killed ended
+     without a result. The next attempt started at the checkpoint's commit,
+     with "Where the last attempt got to" in its task file and the
+     checkpoint in `task.json`. With the server killed after a checkpoint
+     and started again, Continue's first attempt started at that checkpoint.
+  5. A launch with `crews.managed` off was refused `409 managed_off`, and one
+     while another server held the ledger `503 ledger_unavailable`.
+
+  Observed differently from the words here: the two refusals' words showed
+  in a "Launch failed" toast for a few seconds and the launch sheet closed
+  (fixed here, below). A message typed into a working Claude Code session
+  waits until its turn ends. Agents told to stop and wait after a checkpoint
+  ended their turn and met the done reminder; one then submitted its
+  half-done work. A task blocked for good in the cancelled run (`docs`) was
+  marked waiting, and its row menu still offered Cancel…, which the server
+  takes.
+
+  Found, and fixed here: the palette's Cancel… asked with two buttons both
+  named "Cancel" (the one that kept the task and the one that cancelled
+  it). Every question the palette asks now carries its two buttons' words
+  beside its title, never the same word, and they are the words the same
+  action's own dialog says: Keep it beside Cancel the task, Accept the result
+  and Resume; Cancel beside Stop (Stop the run on a run's page), Revoke,
+  Restart server, Save and restart the server and Stop them. Preview this
+  candidate was offered on a run without a project
+  manifest and refused `409 no_manifest`: it is now offered only on a run
+  whose read carries its `manifest`, which the server gives exactly when a
+  candidate's preview can be served. A launch the server refused closed its
+  sheet: every refusal now stays on the sheet in the server's words, with
+  what the sheet was opened with kept (the run's name), and Launch can be
+  pressed again; only a crew saved since the sheet read it (read again, as
+  before) and a crew gone (the sheet closes, and the page says so) are
+  not. Tests: `actions.test.ts` and `useTaskCommands.test.ts` (each
+  question's words), `tasks.test.ts` (the preview offered by the manifest),
+  `CrewLaunchSheet.test.ts` (each code the launch route answers),
+  `crew/preview_test.go` (the read's `manifest` and the `no_manifest`
+  refusal together), `run-tasks.spec.ts` (the row menu and the palette with
+  and without a manifest; the palette's Keep it sending nothing),
+  `palette-rows.spec.ts` (the Stop questions' words) and
+  `crew-launch-revision.spec.ts` (a refused launch kept on its sheet, the
+  run's name with it).
+
+  Not observed here: the same crew on macOS and on a second Linux machine,
+  and the Windows app. Not pressed: the palette's Open preview and Open in
+  Conductor on a running attempt.
 - **Dispatch: projects, tickets and the views over them (DS1, #400 to
   #413, 2026-10-29 to 2026-11-01).** Program item DS1, planned in
   `docs/plans/dispatch.md` (PR #384) and shipped as fourteen PRs.
