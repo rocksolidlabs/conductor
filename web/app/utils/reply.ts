@@ -1,5 +1,5 @@
 import type { SessionInfo } from '~/composables/useSessions'
-import { ANSWER_DECISION, MAX_ANSWER_REQ_ID, MAX_QUESTION_ID, QUESTION_ANSWERED, type AnswerMsg, type Attention } from './protocol'
+import { ANSWER_DECISION, CONTROL_TOO_LARGE, MAX_ANSWER_REQ_ID, MAX_QUESTION_ID, QUESTION_ANSWERED, TOO_LONG, type AnswerMsg, type Attention } from './protocol'
 import { decisionAnsweredBy } from './attention'
 
 /**
@@ -112,7 +112,7 @@ export function repliedQuestions() {
  */
 export const NO_QUESTION = 'no_question'
 
-/** A reply that did not go: the owner's refusal (its error code), or the page's own (`not_connected`, `no_word`, `no_question`). */
+/** A reply that did not go: the owner's refusal (its error code), or the page's own (`not_connected`, `no_word`, `no_question`, `too_long`). */
 export class ReplyError extends Error {
   readonly code: string
   constructor(code: string, message: string) {
@@ -173,5 +173,7 @@ export function replyFailure(e: unknown, name?: string): { title: string; descri
     }
   }
   if (code === 'not_connected') return { title: 'Not connected', description: 'Reconnect the terminal and try again.', color: 'warning' }
+  // The line's frame would pass the owner's control bound: nothing was sent, in the owner's own words.
+  if (code === TOO_LONG) return { title: 'Not sent', description: CONTROL_TOO_LARGE, color: 'warning' }
   return { title: name ? `Reply to ${name} failed` : 'Reply failed', description: (e as Error | null)?.message, color: 'error' }
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { MAX_QUESTION_ID } from './protocol'
+import { CONTROL_TOO_LARGE, MAX_QUESTION_ID, TOO_LONG } from './protocol'
 import { clearAnswered, answerMessage, bindDraft, draftQuestion, listedAttention, questionOf, repliedQuestions, ReplyError, replyFailure } from './reply'
 import { sessionRow } from './sidebar'
 import { rowPrompt } from './sidebarActions'
@@ -123,6 +123,10 @@ describe('repliedQuestions', () => {
 })
 
 describe('replyFailure', () => {
+  it("says a line past the control bound was not sent, in the owner's words", () => {
+    expect(replyFailure(new ReplyError(TOO_LONG, CONTROL_TOO_LARGE), 'fix-auth')).toEqual({ title: 'Not sent', description: CONTROL_TOO_LARGE, color: 'warning' })
+  })
+
   it("says where a durable decision's question is answered when an answer names it (decision): nothing was sent", () => {
     const refused = Object.assign(new Error('dr-7 is answered as a decision, by the operator in Conductor: nothing was sent'), { code: 'decision' })
     expect(replyFailure(refused, 'fix-auth')).toEqual({

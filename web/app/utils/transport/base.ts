@@ -1,6 +1,8 @@
 import { ref, type Ref } from 'vue'
 import {
   ChunkAssembler,
+  CONTROL_TOO_LARGE,
+  controlFits,
   FrameType,
   ProtoVersion,
   decodeDecision,
@@ -15,6 +17,7 @@ import {
   MAX_WRITE_BYTES,
   MAX_WRITE_HEADER,
   parseJSON,
+  TOO_LONG,
   writeParts,
   type ChatPost,
   type ChatSend,
@@ -102,31 +105,41 @@ export abstract class BaseTransport implements TerminalTransport {
     this.send(encodeInput(data))
   }
 
-  submit(text: string): void {
-    if (this.state.value !== 'open') return
-    this.send(encodeControl({ t: 'submit', text }))
+  submit(text: string): boolean {
+    if (this.state.value !== 'open') return false
+    return this.sendFitting(encodeControl({ t: 'submit', text }))
+  }
+
+  /** Sends a CONTROL frame within MAX_CONTROL as encoded; one past it is not sent (the owner would read none of it): false. */
+  private sendFitting(frame: Uint8Array<ArrayBuffer>): boolean {
+    if (!controlFits(frame)) return false
+    this.send(frame)
+    return true
   }
 
   /**
    * A line typed with the owner's word on it (#322): to an owner whose welcome said `submitAck`, a `submit` naming a request,
    * settled true on its `submit_ok`, or with a ReplyError carrying the owner's code (`not_sent`: `unlessWaiting` held it back from
    * a session that asks, nothing typed; `input_failed`: typed and not entered), the connection's end, or no word in
-   * ANSWER_TIMEOUT_MS. To an older owner it goes as a plain `submit` and settles false at once.
+   * ANSWER_TIMEOUT_MS. To an older owner it goes as a plain `submit` and settles false at once. A line whose frame would pass
+   * MAX_CONTROL as encoded is not sent: a ReplyError coded TOO_LONG, in CONTROL_TOO_LARGE's words.
    */
   submitAcked(text: string, opts: { unlessWaiting?: boolean } = {}): Promise<boolean> {
     if (this.state.value !== 'open') return Promise.reject(new ReplyError('not_connected', 'not connected'))
     if (!this.acksSubmits) {
-      this.submit(text)
+      if (!this.submit(text)) return Promise.reject(new ReplyError(TOO_LONG, CONTROL_TOO_LARGE))
       return Promise.resolve(false)
     }
     const reqId = `s${(++this.reqCounter).toString(36)}`
+    const frame = encodeControl({ t: 'submit', text, reqId, ...(opts.unlessWaiting ? { unlessWaiting: true } : {}) })
+    if (!controlFits(frame)) return Promise.reject(new ReplyError(TOO_LONG, CONTROL_TOO_LARGE))
     return new Promise((resolve, reject) => {
       const timer = window.setTimeout(() => {
         this.answers.delete(reqId)
         reject(new ReplyError('no_word', 'the session did not say whether it typed the line'))
       }, ANSWER_TIMEOUT_MS)
       this.answers.set(reqId, { resolve, reject, timer })
-      this.send(encodeControl({ t: 'submit', text, reqId, ...(opts.unlessWaiting ? { unlessWaiting: true } : {}) }))
+      this.send(frame)
     })
   }
 
@@ -135,25 +148,28 @@ export abstract class BaseTransport implements TerminalTransport {
    * with the owner's word: true once taken, a ReplyError with the owner's code when refused (`question_answered`: the question no
    * longer waits, nothing was sent), the connection's end, or no word in ANSWER_TIMEOUT_MS; one that names no question it could
    * take is not sent (`no_question`): unguarded keys could land on another question. To an older owner it goes as keys or a submit,
-   * as before, and settles false at once: nothing will say whether it was taken.
+   * as before, and settles false at once: nothing will say whether it was taken. A line whose frame would pass MAX_CONTROL as
+   * encoded is not sent: a ReplyError coded TOO_LONG, in CONTROL_TOO_LARGE's words.
    */
   answer(reply: QuestionReply): Promise<boolean> {
     if (this.state.value !== 'open') return Promise.reject(new ReplyError('not_connected', 'not connected'))
     if (!this.takesAnswers) {
       if ('input' in reply) this.sendInput(encodeText(reply.input))
-      else this.submit(reply.text)
+      else if (!this.submit(reply.text)) return Promise.reject(new ReplyError(TOO_LONG, CONTROL_TOO_LARGE))
       return Promise.resolve(false)
     }
     const reqId = reply.reqId && !this.answers.has(reply.reqId) ? reply.reqId : `a${(++this.reqCounter).toString(36)}`
     const msg = answerMessage(reply, reqId)
     if (!msg) return Promise.reject(new ReplyError(NO_QUESTION, 'the page does not know which question this reply is for'))
+    const frame = encodeControl({ ...msg })
+    if (!controlFits(frame)) return Promise.reject(new ReplyError(TOO_LONG, CONTROL_TOO_LARGE))
     return new Promise((resolve, reject) => {
       const timer = window.setTimeout(() => {
         this.answers.delete(reqId)
         reject(new ReplyError('no_word', 'the session did not say whether it took the reply'))
       }, ANSWER_TIMEOUT_MS)
       this.answers.set(reqId, { resolve, reject, timer })
-      this.send(encodeControl({ ...msg }))
+      this.send(frame)
     })
   }
 

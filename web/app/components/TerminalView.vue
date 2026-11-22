@@ -744,11 +744,10 @@ function sendInput(text: string): boolean {
   return true
 }
 
-/** Submits a line through the session's owner (a paste, then Enter); false when the transport is not open. */
+/** Submits a line through the session's owner (a paste, then Enter); false when the transport is not open or the line is past the control bound as encoded. */
 function submit(text: string): boolean {
   if (props.readOnly || !transport || transport.state.value !== 'open') return false
-  transport.submit(text)
-  return true
+  return transport.submit(text)
 }
 
 /**
