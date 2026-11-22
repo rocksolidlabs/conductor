@@ -574,3 +574,47 @@ func TestSyncStatusNamesItsOwnDevice(t *testing.T) {
 		t.Fatalf("%v", got)
 	}
 }
+
+// A store with nothing to report answers the zero report: GET /api/sync
+// leaves the report's fields out, byte for byte as for a store that
+// offers no SyncStatus, and no failure is told of the store.
+func TestSyncStatusZeroReportIsNoReport(t *testing.T) {
+	plain := syncEnv(t, syncDataDir(t), newFakeSync())
+	st := &statusSync{fakeSync: newFakeSync()}
+	st.set(func() ext.SyncReport { return ext.SyncReport{} })
+	e := syncEnv(t, syncDataDir(t), st)
+	// Each server's own words settle first (a fresh index reindexes at
+	// its start): the two answers are then the same server's but for the
+	// store.
+	for _, env := range []*testEnv{plain, e} {
+		until(t, "the output check settled", func() bool { return env.srv.syncHereNow(context.Background()) == nil })
+	}
+	_, want, _ := plain.call(t, http.MethodGet, "/api/sync", nil)
+	_, got, _ := e.call(t, http.MethodGet, "/api/sync", nil)
+	if string(got) != string(want) || strings.TrimSpace(string(got)) != "{}" {
+		t.Fatalf("the zero report answers %s, a store with no SyncStatus %s", got, want)
+	}
+	g := e.srv.guard(kindSyncStatus, st.Name())
+	g.mu.Lock()
+	since, last := g.since, g.last
+	g.mu.Unlock()
+	if since != 0 || !last.IsZero() {
+		t.Fatalf("the zero report was told as the store's failure: %d since %v", since, last)
+	}
+	// A report with a state is shown as before; one with no state and a
+	// field set is refused as before, and told.
+	st.set(func() ext.SyncReport { return ext.SyncReport{State: ext.SyncSignedOut} })
+	if got := e.expect(t, http.MethodGet, "/api/sync", nil, http.StatusOK, ""); got["state"] != ext.SyncSignedOut {
+		t.Fatalf("a report with a state: %v", got)
+	}
+	st.set(func() ext.SyncReport { return ext.SyncReport{Waiting: 3} })
+	if got := e.expect(t, http.MethodGet, "/api/sync", nil, http.StatusOK, ""); got["waiting"] != nil || got["state"] != nil {
+		t.Fatalf("a report with no state and a field: %v", got)
+	}
+	g.mu.Lock()
+	told := !g.last.IsZero() || g.since > 0
+	g.mu.Unlock()
+	if !told {
+		t.Fatal("a refused report was not told")
+	}
+}
