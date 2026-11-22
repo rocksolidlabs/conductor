@@ -551,6 +551,9 @@ func TestALineItsAgentDidNotReportTakingSaysSo(t *testing.T) {
 			if res.Unconfirmed != (tc.confirm && !tc.report) || res.Reentered != (tc.confirm && !tc.report) {
 				t.Fatalf("the result %+v", res)
 			}
+			if waits, want := s.confirmWaits.Load(), map[bool]int32{true: 2, false: 1}[tc.confirm && !tc.report]; tc.confirm && waits != want {
+				t.Fatalf("%d waits for the report, want %d", waits, want)
+			}
 			for _, w := range want {
 				if got := written(t, p); got != w {
 					t.Fatalf("written %q, want %q", got, w)
@@ -717,4 +720,27 @@ func TestALineIsRefusedOnHalfAFrame(t *testing.T) {
 			refused(t, s, p, sub)
 		})
 	}
+}
+
+// An agent the session shows in a turn (working) takes a typed line when
+// it gets to it: a line entered and entered again with no report of its
+// taking it is not Unconfirmed, and no second wait is made for the report.
+func TestALineIntoAnAgentInATurnWaitsOnceAndSaysNothing(t *testing.T) {
+	s, p := newLocalWith(t, quiet(Options{ConfirmSubmit: true, ConfirmWait: 50 * time.Millisecond}))
+	if err := s.TrySetAttentionFull(AttentionWorking, "", SourceAPI, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	res, err := s.Submit(t.Context(), Submission{Text: "Plan it.", Confirm: true})
+	if err != nil || !res.Entered || !res.Reentered || res.Unconfirmed {
+		t.Fatalf("the line: %+v %v", res, err)
+	}
+	if waits := s.confirmWaits.Load(); waits != 1 {
+		t.Fatalf("%d waits for the report, want 1", waits)
+	}
+	for _, want := range []string{"Plan it.", "\r", "\r"} {
+		if got := written(t, p); got != want {
+			t.Fatalf("written %q, want %q", got, want)
+		}
+	}
+	nothingWrittenNow(t, s, p)
 }
