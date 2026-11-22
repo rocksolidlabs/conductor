@@ -314,8 +314,8 @@ func (s *Server) hostsReply(ctx context.Context) HostsReply {
 	sortHostRows(rows)
 	rows = append(rows, s.seen.list(listed)...)
 	reply.Switchyard = s.hostsSwitchyard()
-	runs, moreRuns, led := s.hostsRuns(ctx, byID)
-	reply.Ledger = led
+	runs, moreRuns, led, decisions := s.hostsRuns(ctx, byID)
+	reply.Ledger, reply.This.Decisions = led, decisions
 
 	// The first half within its budget, row by row as encoded.
 	used := hostsEncodedLen(reply.This) + hostsEncodedLen(reply.Switchyard) + hostsEncodedLen(reply.Ledger)
@@ -361,24 +361,55 @@ func (s *Server) hostsName() string {
 
 // waitsForPerson is the one predicate by which the host overview, its
 // links and the host summary count a session as waiting for a person:
-// not ended, its question shown, and not answered by keys typed in its
+// not ended, its question shown, not answered by keys typed in its
 // terminal (a question so answered keeps needs_input until the screen
-// shows it gone, and waits for no one).
+// shows it gone, and waits for no one), and mirroring no decision: a
+// decision's mirror is counted as its decision, from its record, while
+// that is open (Attention.Decision).
 func waitsForPerson(info session.Info) bool {
 	a := info.Attention
-	return !info.Status.Ended() && a.State == session.AttentionNeedsInput && a.Answered == ""
+	return !info.Status.Ended() && a.State == session.AttentionNeedsInput && a.Answered == "" && a.Decision == ""
 }
 
 // countSession counts info into c: running when starting, running or away
-// (its host gone, in its grace); waiting by waitsForPerson.
+// (its host gone, in its grace); waiting by waitsForPerson, with the
+// question's ref while it is the only thing waiting (waitingOne).
 func countSession(c *HostsSessions, info session.Info) {
 	switch info.Status {
 	case session.StatusStarting, session.StatusRunning, session.StatusHostDisconnected:
 		c.Running++
 	}
 	if waitsForPerson(info) {
+		c.WaitingRef = waitingOne(c.Waiting, c.WaitingRef, sessionQuestionRef(info))
 		c.Waiting++
 	}
+}
+
+// sessionQuestionRef is the item ref of info's question shown, "" when it
+// has no id or past hostsRefMax.
+func sessionQuestionRef(info session.Info) string {
+	if info.Attention.ID == "" {
+		return ""
+	}
+	return boundedRef(questionRef(info.ID, info.Attention.ID))
+}
+
+// boundedRef is ref within hostsRefMax, else "": a cut ref names nothing.
+func boundedRef(ref string) string {
+	if len(ref) > hostsRefMax {
+		return ""
+	}
+	return ref
+}
+
+// waitingOne is the ref a count links to once one more thing waits, given
+// how many waited before and their ref: that thing's ref when it is the
+// only one, "" past one.
+func waitingOne(before int, _, ref string) string {
+	if before == 0 {
+		return ref
+	}
+	return ""
 }
 
 // sessionIDs are the ids of list (newest first), at most
@@ -516,12 +547,16 @@ func (s *Server) hostsSwitchyard() *HostsSwitchyard {
 // hostsRuns lists the data directory's open managed runs and says who
 // holds them, decided now (docs/plans/hosts.md, the lock's states): the
 // ledger's open rows for every holder, the engine's snapshot standing in
-// for the rows it holds when this server holds them.
-func (s *Server) hostsRuns(ctx context.Context, byID map[string]session.Info) ([]HostsRun, int, HostsLedger) {
+// for the rows it holds when this server holds them. A run this server
+// holds counts what waits on it as distinct items: its open decisions, by
+// the run that holds each now (current_run), and its members' questions
+// that mirror no decision; the decisions of every such run are this
+// server's decisions, nil under any other holder.
+func (s *Server) hostsRuns(ctx context.Context, byID map[string]session.Info) ([]HostsRun, int, HostsLedger, *HostsDecisions) {
 	led := s.hostsHolder()
 	runs := []HostsRun{}
 	if s.ledger == nil {
-		return runs, 0, led
+		return runs, 0, led, nil
 	}
 	rows, more, err := s.ledger.OpenRuns(ctx, hostsMaxRuns)
 	if err != nil && !errors.Is(err, ledger.ErrUnavailable) {
@@ -532,7 +567,7 @@ func (s *Server) hostsRuns(ctx context.Context, byID map[string]session.Info) ([
 			runs = append(runs, HostsRun{ID: r.ID, Name: cutBytes(r.CrewName, hostsNameMax), Crew: cutBytes(r.CrewID, hostsNameMax),
 				State: r.State, Paused: r.Paused, HeldBy: led.Holder})
 		}
-		return runs, more, led
+		return runs, more, led, nil
 	}
 	held := map[string]crew.Run{}
 	var fresh []HostsRun
@@ -540,13 +575,14 @@ func (s *Server) hostsRuns(ctx context.Context, byID map[string]session.Info) ([
 	for _, r := range rows {
 		inRows[r.ID] = true
 	}
+	decisions := &HostsDecisions{}
 	for _, r := range s.runs.List() {
 		if r.Managed == nil {
 			continue
 		}
 		held[r.ID] = r
 		if !inRows[r.ID] && !runFinal(r.State) {
-			fresh = append(fresh, s.heldRun(r, byID))
+			fresh = append(fresh, s.heldRun(ctx, r.ID, r.Name, r.CrewID, r.State, r.Paused, r.Members, byID, decisions))
 		}
 	}
 	runs = append(runs, fresh...)
@@ -555,30 +591,45 @@ func (s *Server) hostsRuns(ctx context.Context, byID map[string]session.Info) ([
 			if runFinal(r.State) {
 				continue
 			}
-			runs = append(runs, s.heldRun(r, byID))
+			runs = append(runs, s.heldRun(ctx, r.ID, r.Name, r.CrewID, r.State, r.Paused, r.Members, byID, decisions))
 			continue
 		}
-		zero := 0
-		runs = append(runs, HostsRun{ID: row.ID, Name: cutBytes(row.CrewName, hostsNameMax), Crew: cutBytes(row.CrewID, hostsNameMax),
-			State: row.State, Paused: row.Paused, Waiting: &zero, HeldBy: HolderThis})
+		// A run only the ledger has (interrupted, or recovered after a
+		// restart or a late lock): none of its attempts runs in any
+		// process, so only its open decisions wait on it.
+		runs = append(runs, s.heldRun(ctx, row.ID, row.CrewName, row.CrewID, row.State, row.Paused, nil, byID, decisions))
 	}
-	return runs, more, led
+	return runs, more, led, decisions
 }
 
 // runFinal reports whether an engine's run has ended.
 func runFinal(state string) bool { return state == crew.RunFinished || state == crew.RunStopped }
 
-// heldRun is a run this server's engine holds, as its snapshot says, its
-// waiting count made from its members' sessions by waitsForPerson.
-func (s *Server) heldRun(r crew.Run, byID map[string]session.Info) HostsRun {
-	waiting := 0
-	for _, m := range r.Members {
+// heldRun is a run this server holds: its members' questions that wait by
+// waitsForPerson and its open decisions by current_run, counted with the
+// lone item's ref in the same pass, the decisions added to all.
+func (s *Server) heldRun(ctx context.Context, id, name, crewID, state string, paused bool, members []crew.MemberState,
+	byID map[string]session.Info, all *HostsDecisions) HostsRun {
+	waiting, ref := 0, ""
+	for _, m := range members {
 		if info, ok := byID[m.SessionID]; ok && m.SessionID != "" && waitsForPerson(info) {
+			ref = waitingOne(waiting, ref, sessionQuestionRef(info))
 			waiting++
 		}
 	}
-	return HostsRun{ID: r.ID, Name: cutBytes(r.Name, hostsNameMax), Crew: cutBytes(r.CrewID, hostsNameMax), State: r.State,
-		Paused: r.Paused, Waiting: &waiting, HeldBy: HolderThis}
+	ds, err := s.ledger.Decisions(ctx, ledger.DecisionFilter{States: []string{ledger.DecisionOpen}, CurrentRun: id, Limit: ledger.MaxDecisionsPage})
+	if err != nil && !errors.Is(err, ledger.ErrUnavailable) {
+		s.log.Warn("hosts: a run's decisions", "run", id, "err", err)
+	}
+	for _, d := range ds {
+		dref := boundedRef("decision:" + d.ID())
+		ref = waitingOne(waiting, ref, dref)
+		waiting++
+		all.WaitingRef = waitingOne(all.Open, all.WaitingRef, dref)
+		all.Open++
+	}
+	return HostsRun{ID: id, Name: cutBytes(name, hostsNameMax), Crew: cutBytes(crewID, hostsNameMax), State: state, Paused: paused,
+		Waiting: &waiting, WaitingRef: ref, HeldBy: HolderThis}
 }
 
 // lockLine is a lock file's first line in the form the ledger writes it.
