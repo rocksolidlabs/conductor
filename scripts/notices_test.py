@@ -4,7 +4,7 @@ import tempfile
 import unittest
 
 import notices
-from notices import Entry, classify, file_notices, licences, list_line, notice_comments, npm_entry, own_licences, render
+from notices import Entry, classify, file_notices, go_entry, licences, list_line, notice_comments, npm_entry, own_licences, render
 
 GO_LICENCE = "Copyright (c) 2009 The Go Authors. All rights reserved. Redistribution and use in source and binary forms..."
 
@@ -193,6 +193,40 @@ class ListLine(unittest.TestCase):
         self.assertEqual(list_line("MIT", [("LICENSE", MIT)]), "MIT")
         self.assertEqual(list_line("Apache-2.0", [("LICENSE", APACHE), ("NOTICE", "Copyright 2014 Someone")]),
                          "Apache-2.0; see its notice files, printed below")
+
+
+class ModuleFolders(unittest.TestCase):
+    def folder(self, files: dict[str, str]) -> Path:
+        d = Path(self.dir.name, "mod")
+        d.mkdir()
+        for name, text in files.items():
+            (d / name).write_text(text)
+        return d
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+
+    def tearDown(self):
+        self.dir.cleanup()
+
+    def test_a_go_module_with_a_third_party_list_is_its_own_licence_and_the_words(self):
+        d = self.folder({"LICENSE": BSD3, "LICENSE-3RD-PARTY.md": "# Third-Party Licenses\n\n" + APACHE + MIT, "go.mod": "module example.com/m\n"})
+        e = go_entry("example.com/m", "v1.0.0", d, [])
+        self.assertEqual(e.licence, "BSD-3-Clause; see its notice files, printed below")
+        self.assertEqual([n for n, _ in e.texts], ["LICENSE", "LICENSE-3RD-PARTY.md"])
+
+    def test_a_go_module_with_two_licence_files_names_both_and_no_words(self):
+        e = go_entry("example.com/m", "v1.0.0", self.folder({"COPYING": GODS, "LICENSE-MIT": MIT}), [])
+        self.assertEqual(e.licence, "BSD-2-Clause, ISC, MIT")
+
+    def test_a_go_module_whose_only_licence_file_lists_others_stops(self):
+        with self.assertRaises(SystemExit) as stop:
+            go_entry("example.com/m", "v1.0.0", self.folder({"ThirdPartyNotices.txt": APACHE + MIT}), [])
+        self.assertIn("example.com/m v1.0.0", str(stop.exception))
+
+    def test_an_npm_package_with_no_licence_field_names_every_licence_file(self):
+        d = self.folder({"package.json": '{"name": "example-pkg", "version": "1.0.0"}', "LICENSE-APACHE": APACHE, "LICENSE-MIT": MIT, "NOTICE": BSD2})
+        self.assertEqual(npm_entry(d).licence, "Apache-2.0, MIT; see its notice files, printed below")
 
 
 class Render(unittest.TestCase):
