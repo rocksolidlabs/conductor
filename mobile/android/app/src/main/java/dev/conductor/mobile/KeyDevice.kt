@@ -13,6 +13,8 @@ import android.security.keystore.UserNotAuthenticatedException
 import androidx.biometric.BiometricManager
 import androidx.biometric.BiometricPrompt
 import androidx.fragment.app.FragmentActivity
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import org.bouncycastle.crypto.params.Ed25519PrivateKeyParameters
 import org.bouncycastle.crypto.signers.Ed25519Signer
 import java.io.File
@@ -109,7 +111,8 @@ class AndroidKeyDevice(private val context: Context) : KeyDevice {
         val generator = KeyPairGenerator.getInstance(KeyProperties.KEY_ALGORITHM_EC, STORE)
         generator.initialize(spec)
         val pair = generator.generateKeyPair()
-        val raw = rawEd25519(pair.public.encoded) ?: return null
+        // The public key as the keystore keeps it for the alias (its certificate's), which every later read checks the record against.
+        val raw = rawEd25519(keyStore().getCertificate(SIGNING)?.publicKey?.encoded) ?: return null
         val info = keyInfo(pair.private) ?: return null
         if (!protectedBy(info)) {
             removeAll()
@@ -169,11 +172,26 @@ class AndroidKeyDevice(private val context: Context) : KeyDevice {
         }
     }
 
-    override fun holds(key: DeviceKey): Boolean = try {
-        keyStore().containsAlias(if (key.form == DeviceKey.KEYSTORE) SIGNING else SEALING)
-    } catch (e: Exception) {
-        false
+    /**
+     * A definite yes or no, or the keystore's error thrown as it is. A key of the keystore's own is the record's only when the public key
+     * of its certificate is the record's; one that is not is refused, and nothing is changed.
+     */
+    override fun holds(key: DeviceKey): Boolean {
+        val store = keyStore()
+        if (key.form != DeviceKey.KEYSTORE) return store.containsAlias(SEALING)
+        if (!store.containsAlias(SIGNING)) return false
+        if (!certified(store).contentEquals(key.publicKey)) {
+            throw KeyRefusal("key_changed", "This phone's key and its record disagree: nothing was signed or changed.")
+        }
+        return true
     }
+
+    /** The public key of the keystore's own key, from the certificate the keystore keeps for it. */
+    private fun certified(store: KeyStore): ByteArray =
+        rawEd25519(store.getCertificate(SIGNING)?.publicKey?.encoded)
+            ?: throw KeyRefusal("keystore", "The phone's keystore keeps this key in a form the shell does not read: nothing was changed.")
+
+    override fun publicKey(key: DeviceKey): ByteArray = if (key.form == DeviceKey.KEYSTORE) certified(keyStore()) else key.publicKey
 
     override fun sign(key: DeviceKey, message: ByteArray): Signed = if (key.form == DeviceKey.KEYSTORE) signKeystore(message) else signSealed(key, message)
 
@@ -236,11 +254,18 @@ class AndroidKeyDevice(private val context: Context) : KeyDevice {
 /**
  * The person's presence as the phone asks it: BiometricPrompt with the fixed words, a fresh prompt each call, the person's strong
  * biometric or the device's PIN, pattern or password (from Android 11; before it a biometric or the device credential, which the
- * keystore then takes as the unlock only when it is a strong one). Asked from the plugin's runner, never the main thread, and waited
- * for with a generous bound: the system's sheet is the person's time.
+ * keystore then takes as the unlock only when it is a strong one). Asked from the plugin's runner, never the main thread. No prompt is
+ * started unless the activity can show one (started, not finishing, its state not saved), and the wait ends when the activity can no
+ * longer answer (destroyed under the prompt, as a change of configuration does: the prompt then never calls back), as a refusal; a
+ * generous bound only bounds a hang.
  */
 class AndroidPresence(private val activity: FragmentActivity) : Presence {
     private val main = Handler(Looper.getMainLooper())
+
+    companion object {
+        /** The bound of one prompt's wait: the person's time, and no longer than a hang needs. */
+        const val BOUND_SECONDS = 300L
+    }
 
     private fun authenticators(): Int =
         if (Build.VERSION.SDK_INT >= 30) {
@@ -249,15 +274,24 @@ class AndroidPresence(private val activity: FragmentActivity) : Presence {
             BiometricManager.Authenticators.BIOMETRIC_WEAK or BiometricManager.Authenticators.DEVICE_CREDENTIAL
         }
 
+    /** Whether the activity can show a prompt now (on the main thread). */
+    private fun canShow(): Boolean =
+        !activity.isFinishing && !activity.isDestroyed && activity.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED) &&
+            !activity.supportFragmentManager.isStateSaved
+
     override fun confirm(reason: String): Boolean {
         if (Looper.myLooper() == Looper.getMainLooper()) return false
         val done = CountDownLatch(1)
         val confirmed = AtomicBoolean(false)
+        val ends = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_DESTROY) done.countDown()
+        }
         main.post {
             try {
-                if (activity.isFinishing || activity.isDestroyed) {
+                if (!canShow()) {
                     done.countDown()
                 } else {
+                    activity.lifecycle.addObserver(ends)
                     val prompt = BiometricPrompt(activity, Executor { r -> main.post(r) }, object : BiometricPrompt.AuthenticationCallback() {
                         override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
                             confirmed.set(true)
@@ -275,7 +309,8 @@ class AndroidPresence(private val activity: FragmentActivity) : Presence {
                 done.countDown()
             }
         }
-        done.await(10, TimeUnit.MINUTES)
+        done.await(BOUND_SECONDS, TimeUnit.SECONDS)
+        main.post { activity.lifecycle.removeObserver(ends) }
         return confirmed.get()
     }
 }

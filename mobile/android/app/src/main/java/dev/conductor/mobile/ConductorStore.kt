@@ -127,7 +127,14 @@ class ConductorStore(
             for (area in listOf(StoreArea.DRAFTS, StoreArea.CACHE)) {
                 for (f in files.list(dir(area))) {
                     if (runCatching { files.remove(f) }.isSuccess) continue
-                    val r = runCatching { files.read(f) }.getOrNull()?.let { decode(it) } ?: continue
+                    // A file that can be neither removed nor read is not known to be stale: the store does not start over it (a clear
+                    // still runs, and removes what it can).
+                    val bytes = try {
+                        files.read(f)
+                    } catch (e: Exception) {
+                        throw unreadable()
+                    } ?: continue
+                    val r = decode(bytes) ?: continue
                     past = maxOf(past, r.g + 1)
                 }
             }
@@ -139,9 +146,21 @@ class ConductorStore(
 
     private fun areaOf(name: String): StoreArea = StoreArea.of(name) ?: throw refuse("invalid_area", "No area $name in the store.")
 
-    /** A record's file as read: null when there is none, it cannot be read, or it is from before the last clear (drafts, cache). */
+    /** A record that could not be read: refused, and nothing changed. */
+    private fun unreadable() = refuse("unreadable", "A record could not be read on this phone: nothing was changed.")
+
+    /**
+     * A record's file as read: null when there is none, when what is there is not a record (a write is whole or not at all, so it was
+     * never one), or when it is from before the last clear (drafts, cache: removed). A file that could not be read is a refusal: only
+     * what is definitely gone is treated as gone.
+     */
     private fun load(area: StoreArea, key: String): RecordFile? {
-        val r = runCatching { files.read(file(area, key)) }.getOrNull()?.let { decode(it) } ?: return null
+        val bytes = try {
+            files.read(file(area, key))
+        } catch (e: Exception) {
+            throw unreadable()
+        } ?: return null
+        val r = decode(bytes) ?: return null
         if (area != StoreArea.SERVERS && r.g != generation) {
             runCatching { files.remove(file(area, key)) }
             return null

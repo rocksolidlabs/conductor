@@ -226,6 +226,33 @@ class ConductorStoreTest {
     }
 
     @Test
+    fun aRecordThatCannotBeReadIsARefusalThatChangesNothing() {
+        val s = store()
+        s.put("drafts", "d", "kept")
+        var once = true
+        files.failRead = { it.name == "d" && once.also { once = false } }
+        refusal("unreadable") { s.get("drafts", "d") }
+        assertTrue(files.files.containsKey("/s/drafts/d"))
+        assertEquals("kept", s.get("drafts", "d")?.data)
+        // A put whose bounds need the area read refuses too, writing nothing.
+        files.failRead = { it.name == "d" }
+        refusal("unreadable") { s.put("drafts", "e", "x") }
+        assertEquals(listOf("d"), files.names("drafts"))
+    }
+
+    @Test
+    fun aStoreDoesNotStartOverAFileItCanNeitherRemoveNorReadButAClearStillRuns() {
+        files.files["/s/drafts/d"] = JSONObject().put("g", 7).put("savedAt", 1).put("data", "old").toString().toByteArray()
+        files.failRemove = { it.name == "d" }
+        files.failRead = { it.name == "d" }
+        refusal("unreadable") { store().get("drafts", "x") }
+        files.failRemove = { false }
+        val a = StoreCalls(store()).call("clear", JSONObject())
+        assertTrue(a is CallAnswer.Reject)
+        assertEquals(emptyList<String>(), files.names("drafts"))
+    }
+
+    @Test
     fun refusesAKeyOutsideItsAlphabetAndAnAreaItDoesNotHave() {
         val s = store()
         for (key in listOf("", ".", "..", "a/b", "A", "x.new", "é", "a b", "x".repeat(65))) refusal("invalid_key") { s.put("drafts", key, "x") }

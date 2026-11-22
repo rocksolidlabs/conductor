@@ -41,10 +41,22 @@ class FakeKeyDevice : KeyDevice {
         return DeviceKey(DeviceKey.KEYSTORE, Ed25519PrivateKeyParameters(s, 0).generatePublicKey().encoded, null)
     }
 
+    /** How many next asks of the keystore fail with an error of its own, before it answers again. */
+    var failing = 0
+
     override fun holds(key: DeviceKey): Boolean {
+        if (failing > 0) {
+            failing--
+            throw java.security.KeyStoreException("the keystore is busy")
+        }
         val s = seed ?: return false
-        return Ed25519PrivateKeyParameters(s, 0).generatePublicKey().encoded.contentEquals(key.publicKey)
+        if (!Ed25519PrivateKeyParameters(s, 0).generatePublicKey().encoded.contentEquals(key.publicKey)) {
+            throw KeyRefusal("key_changed", "This phone's key and its record disagree: nothing was signed or changed.")
+        }
+        return true
     }
+
+    override fun publicKey(key: DeviceKey): ByteArray = Ed25519PrivateKeyParameters(seed!!, 0).generatePublicKey().encoded
 
     override fun sign(key: DeviceKey, message: ByteArray): Signed {
         outcomes.removeFirstOrNull()?.let { return it }
@@ -75,7 +87,14 @@ class FakePresence : Presence {
 
 class MemoryRecord : KeyRecordFile {
     var text: String? = null
-    override fun read(): String? = text
+    var failing = 0
+    override fun read(): String? {
+        if (failing > 0) {
+            failing--
+            throw java.io.IOException("the record could not be read")
+        }
+        return text
+    }
     override fun write(text: String) {
         this.text = text
     }
@@ -277,6 +296,44 @@ class ConductorKeyTest {
         device.seed = null
         assertEquals(KeyState.NONE, key().state().first)
         assertNull(record.text)
+    }
+
+    @Test
+    fun aKeystoreOrARecordThatCannotBeReadIsARefusalThatChangesNothing() {
+        val k = key()
+        val pk = k.create(clock + 60_000)
+        k.bind("acct-1")
+        val record = this.record.text
+        device.failing = 1
+        refusal("keystore") { k.state() }
+        assertEquals(record, this.record.text)
+        assertTrue(device.seed != null)
+        assertEquals(0, device.removed)
+        // Once it answers again, the key is there, bound, as it was.
+        assertEquals(Triple(KeyState.BOUND, "acct-1", null), k.state())
+        device.failing = 1
+        refusal("keystore") { k.sign(req("x")) }
+        this.record.failing = 1
+        refusal("keystore") { k.publicKey() }
+        this.record.failing = 1
+        refusal("keystore") { k.start() }
+        assertEquals(pk, k.publicKey())
+        assertEquals(0, device.removed)
+        assertTrue(policy.finished.isEmpty())
+    }
+
+    @Test
+    fun aRecordTheKeystoresKeyDisagreesWithIsRefusedAndNothingChanged() {
+        val k = key()
+        k.create(clock + 60_000)
+        val record = KeyRecord.parse(this.record.text!!)!!
+        val other = ByteArray(32) { 7 }
+        this.record.text = KeyRecord(DeviceKey(record.key.form, Ed25519PrivateKeyParameters(other, 0).generatePublicKey().encoded, null), record.state, record.id, record.until).text()
+        val kept = this.record.text
+        refusal("key_changed") { k.state() }
+        refusal("key_changed") { k.sign(req("x")) }
+        assertEquals(kept, this.record.text)
+        assertEquals(0, device.removed)
     }
 
     @Test

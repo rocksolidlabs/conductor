@@ -77,8 +77,14 @@ interface KeyDevice {
     /** Makes the key, in the secure hardware and behind the person's unlock, or refuses (`KeyRefusal`) with words. */
     fun make(): DeviceKey
 
-    /** Whether the keystore still holds the key a record names. */
+    /**
+     * Whether the keystore still holds the key a record names: a definite yes or no. An error of the keystore's is thrown, never
+     * answered no; a key the keystore holds that is not the record's is refused (`KeyRefusal`).
+     */
     fun holds(key: DeviceKey): Boolean
+
+    /** The key's public key as the keystore itself holds it (for a key of its own, from its certificate), never the record's word. */
+    fun publicKey(key: DeviceKey): ByteArray
 
     /** Signs message with the key, inside the window the person's last unlock opened. */
     fun sign(key: DeviceKey, message: ByteArray): Signed
@@ -181,19 +187,46 @@ class ConductorKey(
         records.delete()
     }
 
+    /** A keystore or a record that could not be read: refused, and nothing changed. */
+    private fun unreadable() = refuse("keystore", "The phone's keystore or the key's record could not be read: nothing was changed.")
+
     /**
-     * The record kept, or null. One that cannot be read as a key (a form this build does not know), or whose key the keystore no longer
-     * holds, is removed with the keystore's keys, as if absent: no form of the record can leave the phone with a key it can neither use
-     * nor clear.
+     * The record kept, or null. Only what is definitely gone is treated as gone: a record that is not a key of a form this build writes
+     * (written whole or not at all, so never one half-written), or whose key the keystore answers it no longer holds, is removed with
+     * the keystore's keys, as if absent; a record or a keystore that could not be read is a refusal that changes nothing.
      */
     private fun stored(): KeyRecord? {
-        val text = records.read() ?: return null
+        val text = try {
+            records.read()
+        } catch (e: Exception) {
+            throw unreadable()
+        } ?: return null
         val r = KeyRecord.parse(text)
-        if (r == null || !device.holds(r.key)) {
+        if (r == null) {
+            removeAll()
+            return null
+        }
+        val held = try {
+            device.holds(r.key)
+        } catch (e: KeyRefusal) {
+            throw e
+        } catch (e: Exception) {
+            throw unreadable()
+        }
+        if (!held) {
             removeAll()
             return null
         }
         return r
+    }
+
+    /** The public key a policy is handed and the page is answered: the keystore's own. */
+    private fun ownKey(r: KeyRecord): String = try {
+        Base64Url.encode(device.publicKey(r.key))
+    } catch (e: KeyRefusal) {
+        throw e
+    } catch (e: Exception) {
+        throw unreadable()
     }
 
     private fun expired(r: KeyRecord): Boolean = r.state == KeyState.UNBOUND && (r.until ?: 0) <= now()
@@ -215,7 +248,12 @@ class ConductorKey(
      */
     @Synchronized
     fun start() {
-        if (records.read() == null) {
+        val text = try {
+            records.read()
+        } catch (e: Exception) {
+            throw unreadable()
+        }
+        if (text == null) {
             device.removeAll()
             return
         }
@@ -258,7 +296,7 @@ class ConductorKey(
 
     /** The public key (base64url), or null with none. */
     @Synchronized
-    fun publicKey(): String? = current()?.let { Base64Url.encode(it.key.publicKey) }
+    fun publicKey(): String? = current()?.let { ownKey(it) }
 
     /** The state, the id once bound, and an unbound key's time. */
     @Synchronized
@@ -304,7 +342,7 @@ class ConductorKey(
             throw refuse("key_expired", "This phone's key was not bound in time.")
         }
         val p = policy ?: throw refuse("no_policy", "This build signs nothing.")
-        val plan = when (val r = p.plan(request, found.state.word, found.id, Base64Url.encode(found.key.publicKey))) {
+        val plan = when (val r = p.plan(request, found.state.word, found.id, ownKey(found))) {
             is PlanResult.Refused -> throw refuse(r.refusal.code, r.refusal.words)
             is PlanResult.Plan -> r.plan
         }
