@@ -1653,6 +1653,8 @@ type respondOutcome struct {
 	unheld  bool
 	refusal *DecisionError
 	rev     int
+	// counted says the response was kept counted: the decision stays open.
+	counted bool
 }
 
 func respondTx(ltx LedgerTx, run string, n int64, resp Response, actor string, auth Authority, authRaw, fp string, mem membership, moved string, pol policyIn, out *respondOutcome) error {
@@ -1715,7 +1717,7 @@ func respondTx(ltx LedgerTx, run string, n int64, resp Response, actor string, a
 	// (decisions_sync.go); else a router's policy judges first
 	// (decisions_policy.go): an unkept refusal is answered as an error, a
 	// kept one in rc.
-	judged := false
+	judged, counted := false, false
 	if d.State == ledger.DecisionOpen && moved == "" {
 		if auth.Via == ViaSync {
 			if judged, err = heldRefused(rec, pol, &rc); err != nil {
@@ -1723,7 +1725,7 @@ func respondTx(ltx LedgerTx, run string, n int64, resp Response, actor string, a
 			}
 		}
 		if !judged {
-			if judged, err = judgePolicy(rec, resp, who, pol, &rc); err != nil {
+			if judged, counted, err = judgePolicy(rec, resp, who, pol, &rc); err != nil {
 				return err
 			}
 		}
@@ -1763,13 +1765,22 @@ func respondTx(ltx LedgerTx, run string, n int64, resp Response, actor string, a
 		rc.Code, rc.Words = CodeStaleDecision, fmt.Sprintf("%s's asking attempt is no longer its task's in this run", id)
 	}
 	status := ledger.ResponseAccepted
-	if rc.Code != "" {
+	switch {
+	case rc.Code != "":
 		status = ledger.ResponseRefused
 		rc.Status = "refused"
 		// A refused answer carries nothing of a router's policy's
 		// judgement: no override, no group, no local policy was answered.
 		rc.Override, rc.Groups, rc.Via, rc.Ref, rc.Policy, rc.PolicyWhy = false, nil, "", "", "", ""
-	} else {
+	case counted:
+		// An eligible approval that fills a place and leaves one: kept
+		// counted, the decision open at rev + 1 (decisions_quorum.go). Its
+		// words are judgePolicy's.
+		status = ledger.ResponseCounted
+		rc.Status = ledger.ResponseCounted
+		rc.For = receiptFor(d.Request)
+		rc.Rev = d.Rev + 1
+	default:
 		rc.Status = "accepted"
 		rc.Words = fmt.Sprintf("Recorded: %s answered by %s", id, nameOf(resp.ByName, actor))
 		// Whom it answered for: the request's for at the rev it is accepted
@@ -1786,6 +1797,15 @@ func respondTx(ltx LedgerTx, run string, n int64, resp Response, actor string, a
 			rc.Words += " under " + rc.Policy + ": its router's policy is not in force (" + rc.PolicyWhy + ")"
 		}
 		rc.Rev = d.Rev + 1
+	}
+	if status == ledger.ResponseRefused && routed && d.State == ledger.DecisionOpen && keepsNoRoom(rec, pol) {
+		// Every place the policy still needs keeps its row: a refusal past
+		// the rows those places need is not kept (decisions_quorum.go).
+		kept := false
+		rc.Kept = &kept
+		rc.Words = cutReceiptWords(rc.Words) + ": this refusal was not kept: sending it again is judged again"
+		out.receipt, out.refusal, out.rev = rc, refuse(rc.Code, "%s", rc.Words), d.Rev
+		return nil
 	}
 	if rc.Policy != "" || len(rc.Groups) > 0 || rc.Override {
 		// A router's policy's fields take their room from the words', so
@@ -1827,6 +1847,26 @@ func respondTx(ltx LedgerTx, run string, n int64, resp Response, actor string, a
 	}
 	if status == ledger.ResponseRefused {
 		out.receipt, out.refusal, out.rev = rc, refuse(rc.Code, "%s", rc.Words), d.Rev
+		return nil
+	}
+	if status == ledger.ResponseCounted {
+		// The decision stays open, its rev moved: the counted approval is a
+		// change of it a card read before must see (stale_decision).
+		row, ok, err := dtx.Decision(n)
+		if err != nil {
+			return err
+		}
+		if !ok || row.State != ledger.DecisionOpen || row.CurrentRun != run || row.Rev != d.Rev {
+			return errDecisionMoved
+		}
+		row.Rev++
+		if err := dtx.PutDecision(row); err != nil {
+			return err
+		}
+		if err := ltx.Event("decision.counted", map[string]any{"decision": id, "k": got.Row.K, "actor": actor}); err != nil {
+			return err
+		}
+		out.receipt, out.counted, out.rev = rc, true, d.Rev+1
 		return nil
 	}
 	answered, err := dtx.Answer(n, run, d.Rev)
@@ -2050,6 +2090,9 @@ func (e *Engine) respond(ctx context.Context, id string, resp Response, actor st
 	// The process that accepts the response is this one, whatever the
 	// caller says: an identity's is applied only here (applyDecisions).
 	auth.Boot = e.boot
+	// A counted approval stands by its recheck, or by this process's wait
+	// for it (decisions_quorum.go).
+	pol.boot, pol.pending = e.boot, e.CountedPending
 	authRaw, _ := json.Marshal(auth)
 	for range maxDecisionTries {
 		prior, ok, err := e.readDecision(ctx, n)
@@ -2170,6 +2213,20 @@ func (e *Engine) respondHeld(ctx context.Context, r *run, n int64, resp Response
 			}
 		}
 	}
+	if moved == "" && prior.State == ledger.DecisionOpen {
+		// Counted approvals whose response rows ran short (a re-route or a
+		// recheck took places away since): superseded first, as a moved
+		// subject is, and this response refused stale_decision.
+		if p, routed := routedOf(prior.Policy); routed && p.counts() {
+			standing, _ := countedRows(prior, e.boot, pol.pendingOf(n))
+			if rowsShort(prior, p, standing) {
+				var err error
+				if moved, err = e.supersedeShort(ctx, r, n, actor, resp.ResponseID, fp); err != nil {
+					return err
+				}
+			}
+		}
+	}
 	return e.transact(ctx, r, func() tx {
 		if r.stopping || r.ctx.Err() != nil {
 			// Stopped since RespondDecision chose it: no longer held.
@@ -2187,6 +2244,22 @@ func (e *Engine) respondHeld(ctx context.Context, r *run, n int64, resp Response
 		return tx{more: func(ltx LedgerTx) error {
 			return respondTx(ltx, r.id, n, resp, actor, auth, authRaw, fp, mem, moved, pol, out)
 		}, done: func() {
+			if out.counted && !out.receipt.Repeat {
+				// Kept counted: the decision stays open at its new rev, and its
+				// identity's sign-in is rechecked (ConfirmAuthority) before the
+				// approval stands for good.
+				if d != nil {
+					d.rev = max(d.rev, out.rev)
+				}
+				if auth.Via == ViaIdentity {
+					if e.countedPending == nil {
+						e.countedPending = map[confirmKey]bool{}
+					}
+					e.countedPending[confirmKey{n, out.receipt.K}] = true
+				}
+				r.note(session.ActivityStatus, "decision %s: an approval by %s counted", ledger.DecisionID(n), nameOf(resp.ByName, actor))
+				return
+			}
 			if !out.accepted || out.receipt.Repeat || d == nil || d.state != ledger.DecisionOpen {
 				return
 			}
@@ -2271,6 +2344,12 @@ func (e *Engine) ConfirmAuthority(id string, k int, admitted bool) {
 		return
 	}
 	e.mu.Lock()
+	if e.countedPending[confirmKey{n, k}] {
+		// A counted approval's recheck (decisions_quorum.go).
+		e.mu.Unlock()
+		e.recheckedCounted(n, k, admitted)
+		return
+	}
 	var holders []*run
 	known := false
 	for _, r := range e.runs {
@@ -2329,6 +2408,12 @@ func (e *Engine) applyDecisions(r *run) {
 			}
 			if d.answer.auth.Via == ViaIdentity && d.answer.auth.Boot == e.boot && e.confirmation(d) == 0 {
 				continue // its recheck has not answered yet
+			}
+			if len(d.answer.groups) > 0 && approvesRecord(d.typ, Response{Choice: d.answer.choice}) && e.countedWaits(d.n) {
+				// The combined answer of counted approvals: one of theirs has
+				// not been rechecked yet. A Reject or an override answers
+				// whole, and waits for none.
+				continue
 			}
 			if d.answer.auth.Via == ViaSync && e.confirmation(d) == 0 {
 				// A held answer is applied only once AdmitsAnswer says yes
@@ -2627,6 +2712,13 @@ func answerWords(d *decision, ans *accepted) string {
 // (decisionsHeld), as the place it takes over did. The caller holds e.mu,
 // in that transaction's change, which has no undo.
 func (e *Engine) replaceDecision(r *run, d *decision, why string) (*decision, tx) {
+	return e.replaceDecisionFrom(r, d, why, ledger.DecisionAnswered)
+}
+
+// replaceDecisionFrom is replaceDecision of d in the state from: answered
+// (an answer that could not be rechecked), or open (counted approvals
+// whose response rows ran short, supersedeShort).
+func (e *Engine) replaceDecisionFrom(r *run, d *decision, why, from string) (*decision, tx) {
 	// A comparison's selection keeps its options' candidates: the
 	// replacement lists the same ones, and its answer selects one of them.
 	// The replacement holds a spare only where the decision it replaces did:
@@ -2661,8 +2753,8 @@ func (e *Engine) replaceDecision(r *run, d *decision, why string) (*decision, tx
 		if err != nil {
 			return err
 		}
-		if !ok || old.State != ledger.DecisionAnswered || old.CurrentRun != r.id {
-			return fmt.Errorf("%w: %s is not answered in %s", ledger.ErrDecisionState, ledger.DecisionID(n), r.id)
+		if !ok || old.State != from || old.CurrentRun != r.id {
+			return fmt.Errorf("%w: %s is not %s in %s", ledger.ErrDecisionState, ledger.DecisionID(n), from, r.id)
 		}
 		row := old
 		// Opened in the run that holds the decision now, a continuation's

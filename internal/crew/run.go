@@ -587,6 +587,12 @@ type Engine struct {
 	// whichever run holds its decision reads them, so one is never lost
 	// with a copy a continuation left behind. Under e.mu.
 	confirms map[confirmKey]int
+	// countedPending are the counted responses this process accepted whose
+	// sign-in's recheck has not answered yet (ConfirmAuthority writes its
+	// rechecked row): until then such an approval stands, and its
+	// decision's application waits. One not here and never rechecked
+	// stands not (decisions_quorum.go). Under e.mu.
+	countedPending map[confirmKey]bool
 	// recheck is what asks AdmitsAnswer again of a held answer awaiting
 	// its recheck (SetRecheck, decisions_sync.go), and asked the answers
 	// it was given, once each in this process. Under e.mu.

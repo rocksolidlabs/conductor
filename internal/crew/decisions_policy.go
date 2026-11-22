@@ -204,6 +204,23 @@ type policyIn struct {
 	// statement is a held answer's statement (RespondHeld), kept beside its
 	// row.
 	statement string
+	// boot is this process's id and pending says whether a counted
+	// response of decision n, k, waits for its sign-in's recheck here: what
+	// a counted approval stands by (countedRows). Set by respond.
+	boot    string
+	pending func(n int64, k int) bool
+}
+
+// pendingOf is pol's pending for decision n's responses.
+func (pol policyIn) pendingOf(n int64) func(k int) bool {
+	return func(k int) bool { return pol.pending != nil && pol.pending(n, k) }
+}
+
+// approvesRecord says resp approves a record of type typ: an approval's or an
+// assignment's first option (Approve, Done). Their second rejects; a
+// clarification is answered whole by its first eligible answer.
+func approvesRecord(typ string, resp Response) bool {
+	return (typ == ledger.DecisionApproval || typ == ledger.DecisionAssignment) && resp.Choice != nil && *resp.Choice == 0
 }
 
 // RespondDecisionWith is RespondDecision with the router's confirmation
@@ -223,36 +240,41 @@ func (e *Engine) RespondDecisionWith(ctx context.Context, id string, resp Respon
 // record rec, in its transaction, before DR1's checks (The respond route's
 // judgement): done says it answered (a refusal in rc, or an error for one
 // that is not kept); else rc carries what an accepted response's receipt
-// says of the policy, and DR1's checks follow.
-func judgePolicy(rec ledger.DecisionRecord, resp Response, who Admittee, pol policyIn, rc *ResponseReceipt) (done bool, err error) {
+// says of the policy, and DR1's checks follow. counted says the response
+// is an eligible approval that fills a place of a policy that counts
+// approvals and leaves one unfilled (decisions_quorum.go): it is kept
+// counted, the decision left open. An eligible approval that fills no
+// place still needed is refused not_needed, and its subject's second one
+// already_counted, each unkept.
+func judgePolicy(rec ledger.DecisionRecord, resp Response, who Admittee, pol policyIn, rc *ResponseReceipt) (done, counted bool, err error) {
 	id := rec.ID()
 	p, routed := routedOf(rec.Policy)
 	if !routed {
 		if pol.routes && pol.conf != nil && pol.conf.Routes && rec.Origin != ledger.OriginCompare {
 			// The router will route it now: told again by the route.
-			return true, refuse(CodeStalePolicy, "%s's policy is being written: try again", id)
+			return true, false, refuse(CodeStalePolicy, "%s's policy is being written: try again", id)
 		}
-		return false, nil
+		return false, false, nil
 	}
 	if who.Via == ViaRouter {
 		rc.Code, rc.Words = CodeNotApprover, fmt.Sprintf("%s is answered by the people its policy names: a router's own answer is refused", id)
-		return true, nil
+		return true, false, nil
 	}
 	if resp.Override && !who.operator() {
-		return true, refuse(CodeInvalid, "only the operator overrides %s's policy", id)
+		return true, false, refuse(CodeInvalid, "only the operator overrides %s's policy", id)
 	}
 	if pol.routes && pol.conf == nil {
 		// A door that did not ask the router: never taken as not in force.
-		return true, refuse(CodeStalePolicy, "%s's policy was not confirmed for this answer: try again", id)
+		return true, false, refuse(CodeStalePolicy, "%s's policy was not confirmed for this answer: try again", id)
 	}
 	inForce := pol.routes && pol.conf.InForce
 	if inForce && (pol.conf.Behind || pol.conf.Revision != "" && pol.conf.Revision != p.Revision) {
-		return true, refuse(CodeStalePolicy, "%s's policy is changing: try again", id)
+		return true, false, refuse(CodeStalePolicy, "%s's policy is changing: try again", id)
 	}
 	if !inForce && pol.routes && pol.conf.Revision != "" && pol.conf.Revision != p.Revision {
 		// Not in force, of another revision than the one kept now: the
 		// router's word was about another policy.
-		return true, refuse(CodeStalePolicy, "%s's policy is changing: try again", id)
+		return true, false, refuse(CodeStalePolicy, "%s's policy is changing: try again", id)
 	}
 	if !inForce {
 		why := "no router confirms its policy now"
@@ -261,10 +283,10 @@ func judgePolicy(rec ledger.DecisionRecord, resp Response, who Admittee, pol pol
 		}
 		if !who.operator() {
 			rc.Code, rc.Words = CodeNotApprover, fmt.Sprintf("%s's policy is not in force now (%s): the operator answers it", id, why)
-			return true, nil
+			return true, false, nil
 		}
 		rc.Policy, rc.PolicyWhy = policyLocal, why
-		return false, nil
+		return false, false, nil
 	}
 	groups, el := p.eligibleOf(who.Subject)
 	confirmed := slices.ContainsFunc(groups, func(g string) bool { return slices.Contains(pol.conf.Groups, g) })
@@ -278,11 +300,28 @@ func judgePolicy(rec ledger.DecisionRecord, resp Response, who Admittee, pol pol
 			}
 		}
 		rc.Via, rc.Ref = el.Via, el.Ref
-		return false, nil
+		if !p.counts() || !approvesRecord(rec.Type, resp) {
+			// One place, a clarification, or a Reject (Not done): the first
+			// eligible answer answers the record whole.
+			return false, false, nil
+		}
+		standing, _ := countedRows(rec, pol.boot, pol.pendingOf(rec.N))
+		verdict, per := judgeCount(p, standing, who.Subject, rc.Groups)
+		switch verdict {
+		case countAlready:
+			return true, false, refuse(CodeAlreadyCounted, "%s's approval of %s is counted already", who.Subject, id)
+		case countNotNeeded:
+			return true, false, refuse(CodeNotNeeded, "%s has %s approvals it needs: %s", id, p.metWords(p.namedIn(who.Subject, rc.Groups), per), p.waitsForWords(per))
+		case countCounted:
+			rc.Words = countedWords(id, nameOf(resp.ByName, who.Subject), p, rc.Groups, per)
+			return false, true, nil
+		}
+		// It fills the last place: accepted, the combined answer.
+		return false, false, nil
 	}
 	if !who.operator() {
 		rc.Code, rc.Words = CodeNotEligible, p.whoAnswers(id)
-		return true, nil
+		return true, false, nil
 	}
 	if !resp.Override {
 		rc.Code, rc.Words = CodeNotEligible, p.whoAnswers(id)+": the operator answers only by an override, with its reason"
@@ -290,18 +329,18 @@ func judgePolicy(rec ledger.DecisionRecord, resp Response, who Admittee, pol pol
 			// Never send the operator to an override the policy refuses.
 			rc.Words = p.whoAnswers(id) + ": its policy allows no override"
 		}
-		return true, nil
+		return true, false, nil
 	}
 	if p.Override != ext.OverrideOperator {
 		rc.Code, rc.Words = CodeOverrideRefused, fmt.Sprintf("%s's policy allows no override", id)
-		return true, nil
+		return true, false, nil
 	}
 	if len([]rune(strings.TrimSpace(resp.Rationale))) < minOverrideReason {
 		rc.Code, rc.Words = CodeOverrideRefused, fmt.Sprintf("an override of %s's policy gives its reason, at least %d characters", id, minOverrideReason)
-		return true, nil
+		return true, false, nil
 	}
 	rc.Override = true
-	return false, nil
+	return false, false, nil
 }
 
 // RoutePolicy writes the router by's policy into decision id's record, in
