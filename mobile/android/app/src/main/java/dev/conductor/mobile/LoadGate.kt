@@ -25,7 +25,9 @@ fun webAddress(url: String, schemes: Set<String> = setOf("https", "http")): Bool
  *   with the person's gesture, which a script's own click within a tap also has) to an `https` or `http` address, not a redirect, while
  *   the app is in the foreground, is handed to the system, which opens it as for a link tapped anywhere (the person's browser, or the
  *   app the system ties to that address); anything else is cancelled (a location change, a form, a redirect, every other scheme);
- * - a frame: `about:srcdoc` (the diagram's frame) and `about:blank` load; anything else is cancelled.
+ * - a frame the web view asks about (it asks only for schemes that are not http or https): `about:srcdoc` (the diagram's frame) and
+ *   `about:blank` load; anything else is cancelled. A frame's http or https document is refused where it is requested (RequestGate),
+ *   and the page's own policy names no frame source.
  * No other scheme is ever handed on (`intent:`, `tel:`, `sms:`, `mailto:`, `market:`, `file:`, `content:`, `data:`, `blob:`,
  * `javascript:`, `about:`, a custom one).
  */

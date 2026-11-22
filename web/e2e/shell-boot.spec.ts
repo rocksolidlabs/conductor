@@ -98,7 +98,7 @@ test('the synced bundle starts under its policy on Open a server, with no provid
   await expect(page.locator('html')).toHaveClass(/\b(dark|light)\b/)
   expect(await page.evaluate(() => (window as unknown as { conductorShell?: { v: number; platform: string } }).conductorShell?.platform)).toBe('web')
   const html = readFileSync(join(www, 'index.html'), 'utf8')
-  expect(metaPolicy(html)).toMatch(/^script-src 'self' 'wasm-unsafe-eval'( 'sha256-[A-Za-z0-9+/=]+')+; connect-src 'none'$/)
+  expect(metaPolicy(html)).toMatch(/^script-src 'self' 'wasm-unsafe-eval'( 'sha256-[A-Za-z0-9+/=]+')+; connect-src 'none'; frame-src 'none'$/)
   expect(await violations()).toEqual([])
   expect(errors).toEqual([])
   await ctx.close()

@@ -53,10 +53,11 @@ class ShellGates private constructor(private val handler: MessageHandler, privat
     val cancelled = AtomicInteger()
     val refused = AtomicInteger()
     val handedOff = AtomicInteger()
+    val workers = AtomicInteger()
 
     /** One message of the channel: admitted and forwarded to the runtime's own handler, or dropped and counted. */
-    fun take(view: WebView, data: String?, origin: Uri, mainFrame: Boolean) {
-        val sender = BridgeGate.Sender(mainFrame, origin.scheme, origin.host, origin.port, view.url)
+    fun take(page: String?, data: String?, origin: Uri, mainFrame: Boolean) {
+        val sender = BridgeGate.Sender(mainFrame, origin.scheme, origin.host, origin.port, page)
         val call = BridgeGate.admits(data, sender)
         if (call == null || data == null) {
             dropped.incrementAndGet()
@@ -94,7 +95,7 @@ class ShellGates private constructor(private val handler: MessageHandler, privat
             for (name in INTERFACES) webView.removeJavascriptInterface(name)
             WebViewCompat.removeWebMessageListener(webView, BridgeGate.HANDLER)
             WebViewCompat.addWebMessageListener(webView, BridgeGate.HANDLER, setOf(APP)) { view, message, origin, mainFrame, _ ->
-                gates.take(view, message.data, origin, mainFrame)
+                gates.take(view.url, message.data, origin, mainFrame)
             }
             val settings = webView.settings
             settings.javaScriptCanOpenWindowsAutomatically = false
@@ -148,7 +149,9 @@ class ShellWebViewClient(bridge: Bridge, private val activity: MainActivity, pri
 
     override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
         val u = request.url
-        return when (RequestGate.decide(u.scheme, u.host, u.port, u.encodedPath, request.isForMainFrame, ShellGates.rangeOf(request.requestHeaders))) {
+        val headers = request.requestHeaders
+        val document = RequestGate.document(request.isForMainFrame, headers)
+        return when (RequestGate.decide(u.scheme, u.host, u.port, u.encodedPath, document, ShellGates.rangeOf(headers))) {
             RequestGate.Decision.SERVE -> super.shouldInterceptRequest(view, request)
             RequestGate.Decision.NETWORK -> null
             RequestGate.Decision.REFUSE -> {
@@ -162,7 +165,7 @@ class ShellWebViewClient(bridge: Bridge, private val activity: MainActivity, pri
 /** Service workers: every request refused (the shell's pages register none). */
 class RefusingWorkers(private val gates: ShellGates) : ServiceWorkerClient() {
     override fun shouldInterceptRequest(request: WebResourceRequest): WebResourceResponse? {
-        gates.refused.incrementAndGet()
+        gates.workers.incrementAndGet()
         return ShellGates.refusal()
     }
 }

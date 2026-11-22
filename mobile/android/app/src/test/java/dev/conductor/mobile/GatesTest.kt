@@ -150,13 +150,26 @@ class GatesTest {
             assertEquals(bad, RequestGate.Decision.REFUSE, d(bad))
         }
         for (r in listOf("bytes=x", "bytes=-500", "bytes=1-2,3-4", "items=0-1", "bytes=0-1 ", "")) assertEquals(r, RequestGate.Decision.REFUSE, d("/a.mp4", range = r))
+        // The end is a number the server's own parse (an int) takes, or the server's process ends: the edge served, past it refused.
+        assertEquals(RequestGate.Decision.SERVE, d("/a.mp4", range = "bytes=0-2147483647"))
+        assertEquals(RequestGate.Decision.SERVE, d("/a.mp4", range = "bytes=999999999999999-"))
+        for (r in listOf("bytes=0-2147483648", "bytes=0-9999999999", "bytes=0-999999999999999")) assertEquals(r, RequestGate.Decision.REFUSE, d("/a.mp4", range = r))
         // The server's host on another scheme or port: refused, whatever the path.
         assertEquals(RequestGate.Decision.REFUSE, d("/", scheme = "http"))
         assertEquals(RequestGate.Decision.REFUSE, d("/", port = 8443))
         assertEquals(RequestGate.Decision.REFUSE, d("/", host = "LocalHost"))
-        // Another origin: a provider's request goes on; a document in the main frame never loads in the shell's page.
+        // Another origin: a provider's request goes on; a document, in the main frame or in a frame, never loads in the shell's page.
         assertEquals(RequestGate.Decision.NETWORK, d("/v1/inbox", host = "api.provider.example"))
         assertEquals(RequestGate.Decision.REFUSE, d("/form", host = "api.provider.example", main = true))
+        val frame = RequestGate.document(false, mapOf("Upgrade-Insecure-Requests" to "1", "Accept" to "text/html,application/xhtml+xml"))
+        assertEquals(RequestGate.Decision.REFUSE, d("/", host = "example.com", main = frame))
+        assertTrue(RequestGate.document(false, mapOf("upgrade-insecure-requests" to "1")))
+        assertTrue(RequestGate.document(false, mapOf("accept" to "TEXT/HTML")))
+        assertTrue(RequestGate.document(true, null))
+        assertTrue(!RequestGate.document(false, mapOf("Accept" to "application/json")))
+        assertTrue(!RequestGate.document(false, null))
+        // A frame of the bundle's own is the bundle's: served when it is spelled as the bundle's files are.
+        assertEquals(RequestGate.Decision.SERVE, d("/shell", main = frame))
     }
 
     @Test
