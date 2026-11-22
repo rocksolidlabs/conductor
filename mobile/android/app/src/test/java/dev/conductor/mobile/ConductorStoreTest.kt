@@ -241,15 +241,33 @@ class ConductorStoreTest {
     }
 
     @Test
-    fun aStoreDoesNotStartOverAFileItCanNeitherRemoveNorReadButAClearStillRuns() {
+    fun aStoreDoesNotStartOverAFileItCanNeitherRemoveNorReadAndClearsOnceItCanBeRemoved() {
         files.files["/s/drafts/d"] = JSONObject().put("g", 7).put("savedAt", 1).put("data", "old").toString().toByteArray()
         files.failRemove = { it.name == "d" }
         files.failRead = { it.name == "d" }
         refusal("unreadable") { store().get("drafts", "x") }
+        // Still unreadable, but removable now: the store's start removes it (no generation on disk: every draft is stale), so the
+        // store starts clean and the clear that follows is a true "cleared".
         files.failRemove = { false }
         val a = StoreCalls(store()).call("clear", JSONObject())
-        assertTrue(a is CallAnswer.Reject)
+        assertTrue("the clear answered ${(a as? CallAnswer.Reject)?.code}", a is CallAnswer.Resolve)
         assertEquals(emptyList<String>(), files.names("drafts"))
+        files.failRead = { false }
+        val after = store()
+        assertTrue(after.list("drafts").isEmpty())
+        after.put("drafts", "n", "new")
+        assertEquals("new", after.get("drafts", "n")?.data)
+    }
+
+    @Test
+    fun aClearWhoseFileCanStillNeitherBeRemovedNorReadAnswersNotCleared() {
+        files.files["/s/drafts/d"] = JSONObject().put("g", 7).put("savedAt", 1).put("data", "old").toString().toByteArray()
+        files.failRemove = { it.name == "d" }
+        files.failRead = { it.name == "d" }
+        val a = StoreCalls(store()).call("clear", JSONObject())
+        assertEquals("not_cleared", (a as CallAnswer.Reject).code)
+        assertEquals(listOf("d"), files.names("drafts"))
+        assertFalse(files.files.containsKey("/s/generation"))
     }
 
     @Test
