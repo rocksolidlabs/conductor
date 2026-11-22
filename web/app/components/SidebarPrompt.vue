@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { RowPrompt } from '~/utils/sidebarActions'
 import { MODE_CHOICE, choiceKey } from '~/utils/attention'
-import { bindDraft, holdLine, type ReplyTaken } from '~/utils/reply'
+import { replyLine, type ReplyTaken } from '~/utils/reply'
 
 /**
  * A prompt answered in the row (design 3b, 3c): the choices as numbered buttons, a free-text prompt as a reply field where Enter
@@ -17,27 +17,24 @@ const props = withDefaults(defineProps<{ prompt: RowPrompt; busy?: boolean; big?
  */
 const emit = defineEmits<{ answer: [index: number, question: string | undefined]; reply: [text: string, question: string | undefined, taken: ReplyTaken] }>()
 
-const text = ref('')
+/**
+ * The line, and the question it was begun for (as its first character was typed): it names that one when sent, whatever the row
+ * shows by then (someone else answered, the next question came), so that the owner refuses it rather than take it for the next; a
+ * line that came back refused stays bound to it until the person changes it (replyLine, #654).
+ */
+const draft = replyLine(() => props.prompt.question)
+const text = draft.text
 // While the host is away, or the session waits for its terminal, nothing typed here would go.
 const off = computed(() => props.busy || props.prompt.away || props.prompt.held)
-/**
- * The question a line was begun for (as its first character was typed): it names that one when sent, whatever the row shows by
- * then (someone else answered, the next question came), so that the owner refuses it rather than take it for the next.
- */
-const draftFor = ref<string | undefined>()
-watch(text, (now, before) => {
-  draftFor.value = bindDraft(before, now, draftFor.value, props.prompt.question)
-})
-
 /** The field keeps its keys from the list's and the window's (a digit, J, X), Escape excepted: it leaves the field (the list's own). */
 function keepKeys(e: KeyboardEvent) {
   if (e.key !== 'Escape') e.stopPropagation()
 }
 
 function send() {
-  const t = text.value.trim()
-  if (!t || off.value) return
-  emit('reply', t, draftFor.value, holdLine(text, () => (draftFor.value = props.prompt.question)))
+  if (off.value) return
+  const r = draft.send()
+  if (r) emit('reply', r.line, r.question, r.taken)
 }
 </script>
 

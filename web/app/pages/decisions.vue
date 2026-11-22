@@ -257,14 +257,15 @@ function confirmQuestion(a: InboxAction): { title: string; detail: string } {
 async function act(ref: string, a: InboxAction, text?: string, taken?: ReplyTaken) {
   const it = item.value
   if (!it || it.ref !== ref || acts.pending(ref)) {
-    taken?.(false)
+    taken?.('held')
     return
   }
   // Opened from Recent on an earlier action: the card shows this one's steps from now on.
   if (openAction.value.receipt) void router.replace({ query: { ...route.query, receipt: undefined, attempt: undefined } })
-  // A typed line leaves its field only once the owner took it (#654): refused, not sent or not confirmed, it stays as typed.
+  // A typed line leaves its field only once the owner took it (#654): refused, not sent or not confirmed, it stays as typed; one
+  // that never went (an action on the item under way) changes nothing.
   const came = await acts.act(it, a, text)
-  taken?.(came?.how === 'confirmed')
+  taken?.(!came ? 'held' : came.how === 'confirmed' ? 'sent' : 'refused')
   await readItem()
   void inbox.changed()
 }

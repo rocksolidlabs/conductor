@@ -137,14 +137,14 @@ function fail(title: string) {
 
 /**
  * A reply names the question the bar showed (its id): one answered meanwhile takes nothing, and says so. `taken` tells the bar
- * whether the line was sent, so that a line not sent stays in its field (#654).
+ * what became of the line, so that a line not sent stays in its field (#654).
  */
 function reply(s: SessionInfo, text: string, question?: string, taken?: ReplyTaken) {
   quick.reply(s, text, { question }).then(
-    (sent) => taken?.(sent),
+    (sent) => taken?.(sent ? 'sent' : 'held'),
     (e: unknown) => {
-      toast.add(replyFailure(e, s.name))
-      taken?.(false)
+      toast.add(replyFailure(e, s.name, true))
+      taken?.('refused')
     },
   )
 }

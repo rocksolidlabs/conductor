@@ -167,7 +167,7 @@ const asking = ref<{ key: string; action?: Action } | null>(null)
 const fielding = ref<string | null>(null)
 const fieldText = ref('')
 /** A reply drafted in a Needs-you row, with the question it was begun for (bindDraft): sent to that one, whatever the row shows by then. */
-const replies = ref<Record<string, { text: string; question?: string }>>({})
+const replies = ref<Record<string, { text: string; question?: string; kept?: boolean }>>({})
 
 function rowEl(key: string, within = ''): HTMLElement | null {
   return list.value?.querySelector<HTMLElement>(`[data-palette-row="${CSS.escape(key)}"]${within ? ` ${within}` : ''}`) ?? null
@@ -353,7 +353,8 @@ function answerChoice(row: PaletteItem, i: number) {
 }
 function draftReply(row: PaletteItem, after: string) {
   const d = replies.value[row.key]
-  replies.value = { ...replies.value, [row.key]: { text: after, question: bindDraft(d?.text ?? '', after, d?.question, row.prompt?.question) } }
+  // A line that came back refused is bound anew at the person's first change of it (#654).
+  replies.value = { ...replies.value, [row.key]: { text: after, question: bindDraft(d?.text ?? '', after, d?.question, row.prompt?.question, d?.kept) } }
 }
 function sendReply(row: PaletteItem) {
   const s = row.session
@@ -362,13 +363,12 @@ function sendReply(row: PaletteItem) {
   const text = (d?.text ?? '').trim()
   if (!s || !p || p.held || p.away || !text) return
   const typed = d!.text
-  // The field keeps the line until it is sent (#654): emptied then if it still holds it; a line not sent stays as typed, bound to
-  // the question the row shows now (a second Enter is the person's own, after the toast said why the first went nowhere).
-  void rows.reply(s, text, d?.question).then((sent) => {
+  // The field keeps the line until it is sent (#654): emptied then if it still holds it. A line refused stays as typed and bound to
+  // the question it was typed for, until the person changes it; one that never went (a reply on its way) changes nothing.
+  void rows.reply(s, text, d?.question).then((outcome) => {
     const now = replies.value[row.key]
-    if (now?.text !== typed) return
-    const question = sent ? undefined : (flat.value.find((r) => r.key === row.key)?.prompt?.question ?? now.question)
-    replies.value = { ...replies.value, [row.key]: sent ? { text: '' } : { text: typed, question } }
+    if (outcome === 'held' || now?.text !== typed) return
+    replies.value = { ...replies.value, [row.key]: outcome === 'sent' ? { text: '' } : { ...now, kept: true } }
   })
 }
 function openInTab(row: PaletteItem) {

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ANSWER_IN_TERMINAL, answersInTerminal, choiceTitle, choiceKey, decisionAnsweredBy, decisionOf, noReply, offeredChoices, recommendedChoice, startupInTerminal, takesReply, waitingHeading, waitsForTerminal } from '~/utils/attention'
 import type { Attention, Role } from '~/utils/protocol'
-import { draftQuestion, holdLine, questionOf, type ReplyTaken } from '~/utils/reply'
+import { questionOf, replyLine, type ReplyTaken } from '~/utils/reply'
 
 /**
  * `answers`: the viewer is the operator (the session page, the Yard's focused panel), who answers a question that mirrors a durable
@@ -18,7 +18,13 @@ const props = defineProps<{ attention?: Attention; agentName: string; role: Role
  */
 const emit = defineEmits<{ reply: [text: string, question: string | undefined, taken: ReplyTaken]; option: [index: number, question: string | undefined]; openPlan: [path: string]; previewPlan: [path: string]; answer: [decision: string]; paste: [] }>()
 
-const text = ref('')
+/**
+ * The line, and the question it was begun for (as its first character was typed): it names that one when sent, whatever the bar shows
+ * by then (someone else answered, the next question came), so that the owner refuses it rather than take it for the next; a line
+ * that came back refused stays bound to it until the person changes it (replyLine, #654).
+ */
+const draft = replyLine(() => questionOf(props.attention))
+const text = draft.text
 const show = computed(() => props.attention?.state === 'needs_input')
 // A held turn (text typed and not entered): no reply is taken until someone types in the terminal, which it would only wait for.
 const held = computed(() => waitsForTerminal(props.attention))
@@ -35,19 +41,10 @@ const options = computed(() => offeredChoices(props.attention))
 const recommended = computed(() => recommendedChoice(options.value))
 const canReply = computed(() => !props.busy && takesReply(props.attention, props.role))
 const placeholder = computed(() => (props.role !== 'control' ? 'View only' : (noReply(props.attention) ?? `Reply to ${props.agentName}…`)))
-/**
- * The question a line was begun for (as its first character was typed): it names that one when sent, whatever the bar shows by
- * then (someone else answered, the next question came), so that the owner refuses it rather than take it for the next.
- */
-const draftFor = ref<string | undefined>()
-watch(text, (now, before) => {
-  draftFor.value = draftQuestion(before, now, draftFor.value, props.attention)
-})
-
 function send() {
-  const t = text.value.trim()
-  if (!t || !canReply.value) return
-  emit('reply', t, draftFor.value, holdLine(text, () => (draftFor.value = questionOf(props.attention))))
+  if (!canReply.value) return
+  const r = draft.send()
+  if (r) emit('reply', r.line, r.question, r.taken)
 }
 
 function pick(i: number) {

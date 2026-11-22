@@ -52,3 +52,43 @@ test('a reply line past the control bound is refused with words, and a line that
     await api.stopSession(s.id)
   }
 })
+
+// A line refused because its question was answered stays in the reply bar, bound to that question: pressed again without a change,
+// quickly, it is refused again and never answers the question that came next; changed, it is bound to the question shown then, and
+// answers it.
+test('a kept reply line stays bound to the question it was typed for until the person changes it', async ({ page, api, state }) => {
+  const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'e2e kept line' })
+  const transcript = async () => {
+    const id = (await api.session(s.id)).agentSession?.id ?? ''
+    const file = join(state.home, '.stub-sessions', `${id}.txt`)
+    return id && existsSync(file) ? readFileSync(file, 'utf8') : ''
+  }
+  try {
+    await api.ok('POST', `/api/sessions/${s.id}/attention`, { state: 'needs_input', message: 'Which branch?' })
+    await page.goto(`/sessions/${encodeURIComponent(s.id)}`)
+    const bar = page.locator('[data-quick-reply]')
+    await expect(bar).toContainText('Which branch?', { timeout: 30_000 })
+    const field = bar.locator('input')
+    await field.fill('kept-draft')
+    // The question is answered elsewhere, and the next one comes while the line waits in the field.
+    await api.ok('POST', `/api/sessions/${s.id}/attention`, { state: 'working' })
+    await api.ok('POST', `/api/sessions/${s.id}/attention`, { state: 'needs_input', message: 'Which file?' })
+    await expect(bar).toContainText('Which file?', { timeout: 15_000 })
+    // Three quick presses, and one more once the refusal is said: none of them is a change.
+    for (let i = 0; i < 3; i++) await field.press('Enter')
+    const refused = page.locator('li').filter({ hasText: 'Already answered' }).last()
+    await expect(refused).toContainText('Your line is kept: change it to send it for what is asked now.', { timeout: 15_000 })
+    await expect(field).toHaveValue('kept-draft')
+    await field.press('Enter')
+    await expect(field).toHaveValue('kept-draft')
+    // Changed, the line is bound to the question shown now and answers it.
+    await field.press('End')
+    await field.pressSequentially(' now')
+    await field.press('Enter')
+    await expect.poll(transcript, { timeout: 15_000, message: 'the changed line answered the question shown' }).toContain('kept-draft now')
+    // The owner takes a connection's lines in order: the unchanged presses, before it, never answered the next question.
+    expect((await transcript()).split('kept-draft').length - 1, 'the line went to the agent once, changed').toBe(1)
+  } finally {
+    await api.stopSession(s.id)
+  }
+})

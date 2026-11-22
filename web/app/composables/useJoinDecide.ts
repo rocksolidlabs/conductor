@@ -299,7 +299,7 @@ export function useJoinDecide(lane: DecisionLane, seq: Ref<number>) {
     const it = item.value
     // An action still owed is settled first: no other action replaces it.
     if (!it || it.ref !== r || owed.value[r]) {
-      taken?.(false)
+      taken?.('held')
       return
     }
     pick.value = null
@@ -307,7 +307,7 @@ export function useJoinDecide(lane: DecisionLane, seq: Ref<number>) {
     await send(r)
     // A typed line leaves its field once it is taken, or owed (the page sends an owed action again by itself, line and all); a
     // refused one stays as typed (#654).
-    taken?.(!refused.value[r])
+    taken?.(refused.value[r] ? 'refused' : 'sent')
   }
   /**
    * Sends the action owed on r, as it went (under its own opId: the owner answers a repeat from its record), unless one send of it

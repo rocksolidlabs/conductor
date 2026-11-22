@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { ref } from 'vue'
 import { CONTROL_TOO_LARGE, MAX_QUESTION_ID, TOO_LONG } from './protocol'
-import { clearAnswered, answerMessage, bindDraft, draftQuestion, holdLine, listedAttention, questionOf, repliedQuestions, ReplyError, replyFailure } from './reply'
+import { clearAnswered, answerMessage, bindDraft, draftQuestion, holdLine, LINE_KEPT, listedAttention, questionOf, repliedQuestions, ReplyError, replyFailure, replyLine } from './reply'
 import { sessionRow } from './sidebar'
 import { rowPrompt } from './sidebarActions'
 import type { SessionInfo } from '~/composables/useSessions'
@@ -124,30 +124,101 @@ describe('repliedQuestions', () => {
 })
 
 describe('holdLine', () => {
-  it('keeps a line not sent exactly as typed, and rebinds it, told once', () => {
+  it('keeps a line refused exactly as typed, told once', () => {
     const text = ref('"'.repeat(4096))
-    let rebound = 0
-    const taken = holdLine(text, () => rebound++)
-    taken(false)
+    let kept = 0
+    const taken = holdLine(text, () => kept++)
+    taken('refused')
     expect(text.value).toBe('"'.repeat(4096))
-    expect(rebound).toBe(1)
-    taken(true)
+    expect(kept).toBe(1)
+    taken('sent')
     expect(text.value).toBe('"'.repeat(4096))
   })
 
-  it('empties the field once the line is sent, unless something was typed since', () => {
+  it('empties the field once the line is sent, unless something was typed since; a line held changes nothing', () => {
     const text = ref('looks good')
-    holdLine(text)(true)
+    holdLine(text)('sent')
     expect(text.value).toBe('')
     const more = ref('looks good')
     const taken = holdLine(more)
     more.value = 'looks good, and'
-    taken(true)
+    taken('sent')
     expect(more.value).toBe('looks good, and')
+    const held = ref('looks good')
+    let kept = 0
+    holdLine(held, () => kept++)('held')
+    expect(held.value).toBe('looks good')
+    expect(kept).toBe(0)
+  })
+})
+
+describe('replyLine', () => {
+  /** A field whose page shows the question `shown`. */
+  function field() {
+    const page = { shown: 'q1' as string | undefined }
+    const line = replyLine(() => page.shown)
+    return { page, line }
+  }
+
+  it('names the question a line was begun for, whatever shows when it is sent', () => {
+    const { page, line } = field()
+    line.text.value = 'm'
+    line.text.value = 'main'
+    page.shown = 'q2'
+    expect(line.send()).toMatchObject({ line: 'main', question: 'q1' })
+  })
+
+  it('a press that never reached the owner changes nothing: the next press names the same question', () => {
+    const { page, line } = field()
+    line.text.value = 'main'
+    const first = line.send()!
+    page.shown = 'q2'
+    first.taken('held')
+    const again = line.send()!
+    expect(again).toMatchObject({ line: 'main', question: 'q1' })
+    expect(line.text.value).toBe('main')
+  })
+
+  it('a line refused stays bound to its question: Enter again without a change names it again', () => {
+    const { page, line } = field()
+    line.text.value = 'main'
+    const first = line.send()!
+    page.shown = 'q2'
+    first.taken('refused')
+    expect(line.text.value).toBe('main')
+    expect(line.send()).toMatchObject({ line: 'main', question: 'q1' })
+  })
+
+  it('a line refused is bound anew when the person changes it, to the question shown at that change', () => {
+    const { page, line } = field()
+    line.text.value = 'main'
+    line.send()!.taken('refused')
+    page.shown = 'q2'
+    line.text.value = 'main branch'
+    page.shown = 'q3'
+    expect(line.send()).toMatchObject({ line: 'main branch', question: 'q2' })
+  })
+
+  it('a line not refused is not bound anew by a change: only one begun on an empty field is', () => {
+    const { page, line } = field()
+    line.text.value = 'main'
+    page.shown = 'q2'
+    line.text.value = 'main branch'
+    expect(line.send()).toMatchObject({ question: 'q1' })
+    line.send()!.taken('sent')
+    expect(line.text.value).toBe('')
+    line.text.value = 'next'
+    expect(line.send()).toMatchObject({ line: 'next', question: 'q2' })
   })
 })
 
 describe('replyFailure', () => {
+  it('says a typed line refused as answered is kept, and how it goes; a choice\'s keys as before', () => {
+    const refused = new ReplyError('question_answered', 'this question was already answered by Nate: nothing was sent')
+    expect(replyFailure(refused, 'fix-auth', true).description).toBe(`fix-auth's question was answered by Nate. Nothing was sent. ${LINE_KEPT}`)
+    expect(replyFailure(refused, 'fix-auth').description).toMatch(/answer it in its terminal\.$/)
+  })
+
   it("says a line past the control bound was not sent, in the owner's words", () => {
     expect(replyFailure(new ReplyError(TOO_LONG, CONTROL_TOO_LARGE), 'fix-auth')).toEqual({ title: 'Not sent', description: CONTROL_TOO_LARGE, color: 'warning' })
   })

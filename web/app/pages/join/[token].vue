@@ -9,7 +9,7 @@ import { joinServer } from '~/utils/invite'
 import { filesRoot, joinedFromInfo } from '~/utils/joined'
 import { chatThreadKey, scopeItems } from '~/utils/chat'
 import { skipWords, type MemberStatus } from '~/utils/crews'
-import { repliedQuestions, ReplyError, replyFailure, type QuestionReply, type ReplyTaken } from '~/utils/reply'
+import { repliedQuestions, ReplyError, replyFailure, type QuestionReply, type ReplyOutcome, type ReplyTaken } from '~/utils/reply'
 import { DecisionLane, type LaneWire } from '~/utils/transport/decide'
 import { newestRead } from '~/composables/useRunDesk'
 import { sessionStatus } from '~/utils/status'
@@ -270,10 +270,11 @@ function chatAnswer(m: ChatMessage, index: number) {
 /** Sends a reply to a question over the terminal's connection, once per question; a refusal (answered already, not connected) is said in a toast. */
 const replied = repliedQuestions()
 const typedAnswers = useTypedAnswers()
-function answerQuestion(reply: QuestionReply): Promise<boolean> {
+/** What became of the reply (ReplyOutcome): held when one to the same question is still on its way from here. */
+function answerQuestion(reply: QuestionReply): Promise<ReplyOutcome> {
   if (!terminal.value) {
     toast.add(replyFailure(new ReplyError('not_connected', 'not connected')))
-    return Promise.resolve(false)
+    return Promise.resolve('refused')
   }
   const t = terminal.value
   return replied
@@ -281,11 +282,11 @@ function answerQuestion(reply: QuestionReply): Promise<boolean> {
     // A line typed as the answer, once sent: this browser shows it under the question to its own person (#364).
     .then((sent) => {
       if (sent && 'text' in reply && reply.text) typedAnswers.remember(reply.question, reply.text)
-      return sent
+      return sent ? 'sent' : 'held'
     })
     .catch((e: unknown) => {
-      toast.add(replyFailure(e))
-      return false
+      toast.add(replyFailure(e, undefined, 'text' in reply))
+      return 'refused'
     })
 }
 function onRequestError(err: { code: string; message: string; requestId: string }) {
@@ -419,9 +420,9 @@ function backToCrew() {
   fetchInfo()
 }
 
-/** A line from the reply bar: `taken` tells the bar whether it was sent, so that a line not sent stays in its field (#654). */
+/** A line from the reply bar: `taken` tells the bar what became of it, so that a line not sent stays in its field (#654). */
 function reply(text: string, question?: string, taken?: ReplyTaken) {
-  void answerQuestion({ question, text }).then((sent) => taken?.(sent))
+  void answerQuestion({ question, text }).then((outcome) => taken?.(outcome))
 }
 
 function option(index: number, question?: string) {
