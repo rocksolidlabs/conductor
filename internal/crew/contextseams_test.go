@@ -266,9 +266,9 @@ func TestBaseAndCandidateNoted(t *testing.T) {
 }
 
 // A query names each decision once, by its id and state; past
-// ext.MaxContextDecisions the standing ones (open, answered, applied) are
-// kept first and then the newest, whatever order the reads gave them in,
-// and they are named in the order they were opened.
+// ext.MaxContextDecisions the open, answered and applied ones are kept
+// before the other final states, and then the newest, whatever order the
+// reads gave them in, and they are named in the order they were opened.
 func TestQueryKeepsTheStandingDecisionsFirst(t *testing.T) {
 	closed := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
 	var rows []ledger.DecisionRow
@@ -311,5 +311,29 @@ func TestQueryKeepsTheStandingDecisionsFirst(t *testing.T) {
 	q := ext.ContextQuery{Run: "api-0a0b0c0d", Crew: "api", Task: "build", Attempt: 1, Kind: "work", Worktree: "/w", Dir: "/w", Decisions: got}
 	if err := q.Valid(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A decision that still waits is never cut for a closed one: one open
+// decision and twenty newer applied ones keep the open one and the
+// newest nineteen applied; the applied ones are kept before the other
+// final states, newest first within each rank.
+func TestQueryKeepsAWaitingDecisionBeforeAClosedOne(t *testing.T) {
+	closed := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
+	rows := []ledger.DecisionRow{{N: 1, State: ledger.DecisionOpen, Rev: 1}}
+	for n := int64(2); n <= 21; n++ {
+		rows = append(rows, ledger.DecisionRow{N: n, State: ledger.DecisionApplied, Rev: 3, ClosedAt: closed})
+	}
+	got := decisionStates(slices.Clone(rows))
+	if len(got) != ext.MaxContextDecisions || got[0].Request != "dr-1" || got[0].State != ledger.DecisionOpen || got[1].Request != "dr-3" {
+		t.Fatalf("one open and twenty applied: %+v", got[:2])
+	}
+	// Ten cancelled newer than all of them: the applied ones stay ahead.
+	for n := int64(22); n <= 31; n++ {
+		rows = append(rows, ledger.DecisionRow{N: n, State: ledger.DecisionCancelled, Rev: 2, ClosedAt: closed})
+	}
+	got = decisionStates(rows)
+	if got[0].Request != "dr-1" || got[len(got)-1].Request != "dr-21" || slices.ContainsFunc(got, func(d ext.DecisionState) bool { return d.State == ledger.DecisionCancelled }) {
+		t.Fatalf("with ten newer cancelled: %+v", got)
 	}
 }

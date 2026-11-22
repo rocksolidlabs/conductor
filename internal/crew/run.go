@@ -418,6 +418,10 @@ type Engine struct {
 	// contextOf answers an attempt's context blocks (SetContext; nil, none
 	// is asked). Under mu.
 	contextOf ContextFunc
+	// contextDecisionsRead is told each time the decisions of an
+	// attempt's query are read from the ledger (nil, nothing): a test's
+	// count (SetContextDecisionsReadForTest).
+	contextDecisionsRead func()
 	// handoffOf answers the handoff package a person sent for an attempt
 	// (SetHandoff; nil, none is asked). Under mu.
 	handoffOf HandoffFunc

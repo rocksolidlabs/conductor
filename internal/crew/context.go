@@ -85,6 +85,12 @@ func (e *Engine) contextDecisions(ctx context.Context, chain []string, task, tic
 	if !ok {
 		return nil
 	}
+	e.mu.Lock()
+	seam := e.contextDecisionsRead
+	e.mu.Unlock()
+	if seam != nil {
+		seam()
+	}
 	var rows []ledger.DecisionRow
 	for _, runID := range chain {
 		got, err := allDecisions(ctx, dl, ledger.DecisionFilter{CurrentRun: runID, Task: task})
@@ -108,21 +114,15 @@ func (e *Engine) contextDecisions(ctx context.Context, chain []string, task, tic
 }
 
 // decisionStates are rows as a query names them: each once, by its id and
-// its state; at most ext.MaxContextDecisions, the standing ones (open,
-// answered, applied) kept first and then the newest, in the order they
-// were opened.
+// its state; at most ext.MaxContextDecisions, kept by rank and then the
+// newest first within a rank (the ones that still wait, open and
+// answered; then applied; then the other final states), so a decision
+// that waits is never cut for a closed one; named in the order they were
+// opened.
 func decisionStates(rows []ledger.DecisionRow) []ext.DecisionState {
 	slices.SortFunc(rows, func(x, y ledger.DecisionRow) int { return cmp.Compare(y.N, x.N) })
 	rows = slices.CompactFunc(rows, func(x, y ledger.DecisionRow) bool { return x.N == y.N })
-	slices.SortStableFunc(rows, func(x, y ledger.DecisionRow) int {
-		switch sx, sy := standing(x.State), standing(y.State); {
-		case sx && !sy:
-			return -1
-		case sy && !sx:
-			return 1
-		}
-		return 0
-	})
+	slices.SortStableFunc(rows, func(x, y ledger.DecisionRow) int { return cmp.Compare(decisionRank(x.State), decisionRank(y.State)) })
 	rows = rows[:min(len(rows), ext.MaxContextDecisions)]
 	slices.SortFunc(rows, func(x, y ledger.DecisionRow) int { return cmp.Compare(x.N, y.N) })
 	var out []ext.DecisionState
@@ -130,6 +130,28 @@ func decisionStates(rows []ledger.DecisionRow) []ext.DecisionState {
 		out = append(out, ext.DecisionState{Request: row.ID(), State: row.State, Final: row.Final(), Rev: row.Rev, ClosedAt: row.ClosedAt})
 	}
 	return out
+}
+
+// decisionRank is the order a query keeps decisions in before its cut:
+// 0 for one that still waits (open, answered), 1 for applied, 2 for the
+// other final states.
+func decisionRank(state string) int {
+	switch state {
+	case ledger.DecisionOpen, ledger.DecisionAnswered:
+		return 0
+	case ledger.DecisionApplied:
+		return 1
+	}
+	return 2
+}
+
+// SetContextDecisionsReadForTest sets what is told each time the
+// decisions of an attempt's query are read from the ledger (nil for
+// nothing), for a test that counts the reads.
+func (e *Engine) SetContextDecisionsReadForTest(fn func()) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.contextDecisionsRead = fn
 }
 
 // RepairReview is the person's review whose request the task's next
