@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/rocksolidlabs/conductor/ext"
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
 	"github.com/rocksolidlabs/conductor/internal/session"
 )
@@ -131,5 +132,33 @@ func TestHostsLoneGateLinksWithoutSession(t *testing.T) {
 	}
 	if run.WaitingRef != "decision:dr-1" || *r.This.Decisions != (HostsDecisions{Open: 1, WaitingRef: "decision:dr-1"}) {
 		t.Fatalf("the lone gate: %+v, this %+v", run, r.This.Decisions)
+	}
+}
+
+// An open decision of a stopped run is counted, and linked, on this
+// server's decisions though no run row lists it: a stop ends no decision,
+// which can still be answered, and Needs your decision lists it.
+func TestHostsStoppedRunsDecisionCounted(t *testing.T) {
+	f := newDecisionFixture(t, nil, nil)
+	f.ask(t, clarificationBody("r1"), http.StatusCreated, "")
+	if err := f.srv.runs.Stop(t.Context(), f.run); err != nil {
+		t.Fatal(err)
+	}
+	var r HostsReply
+	waitUntil(t, "the stopped run gone from the list", func() bool {
+		r = f.hostsOf(t)
+		_, listed := hostsRunOf(r, f.run)
+		return !listed
+	})
+	f.decisionWhen(t, "dr-1", "still open", inState(ledger.DecisionOpen))
+	if r.This.Decisions == nil || *r.This.Decisions != (HostsDecisions{Open: 1, WaitingRef: "decision:dr-1"}) {
+		t.Fatalf("this server's decisions: %+v", r.This.Decisions)
+	}
+	b, ok := f.srv.hostSummaryBytes(t.Context())
+	if !ok {
+		t.Fatal("no summary")
+	}
+	if sum, err := ext.ParseHostSummary(b); err != nil || sum.Runs.Held != 0 {
+		t.Fatalf("the summary: %s %v", b, err)
 	}
 }

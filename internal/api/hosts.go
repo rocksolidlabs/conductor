@@ -150,6 +150,8 @@ const (
 	NoteHeldHere         = "This server holds the lock."
 	NoteReadOnly         = "This server holds the lock, and reads its database only."
 	NoteCannotWrite      = "This server holds the lock, and its database cannot be written; it can still be read."
+	NoteCannotWriteRead  = "This server holds the lock, and its database can be neither written nor read."
+	NoteCannotOpenRead   = "This server holds the lock, and its database cannot be opened for writing; it can still be read."
 	NoteCannotOpen       = "This server holds the lock, and its database cannot be opened."
 	NoteNewerOrDamaged   = "This server holds the lock, and its database was written by a newer Conductor or is damaged; it can still be read."
 	NoteNewerUnreadable  = "This server holds the lock, and its database was written by a newer Conductor or is damaged; it cannot be read."
@@ -167,7 +169,7 @@ const (
 )
 
 // hostsNotes is every sentence ledger.note may be.
-var hostsNotes = []string{NoteHeldHere, NoteReadOnly, NoteCannotWrite, NoteCannotOpen, NoteNewerOrDamaged, NoteNewerUnreadable,
+var hostsNotes = []string{NoteHeldHere, NoteReadOnly, NoteCannotWrite, NoteCannotWriteRead, NoteCannotOpenRead, NoteCannotOpen, NoteNewerOrDamaged, NoteNewerUnreadable,
 	NoteOtherHolds, NoteOtherUnreadable, NoteStoppedWaiting, NoteTaking, NoteNoLocks, NoteClosed, NoteNotOpened, NoteNoDataDir,
 	NoteUnreadPermission, NoteUnreadMissing, NoteUnreadOther}
 
@@ -275,6 +277,7 @@ const (
 	hostsVersionMax    = 64
 	hostsUserMax       = 64
 	hostsPidDigits     = 10
+	hostsMaxOpenPages  = 40  // pages of the open decisions read for this server's count
 	hostsRefMax        = 512 // a waitingRef: MB0's bound for an item's ref
 	hostsMaxMachines   = 64
 	hostsMaxRemoteRuns = 200 // per machine
@@ -600,13 +603,18 @@ func (s *Server) hostsSwitchyard() *HostsSwitchyard {
 // for the rows it holds when this server holds them. A run this server
 // holds counts what waits on it as distinct items: its open decisions, by
 // the run that holds each now (current_run), and its members' questions
-// that mirror no decision; the decisions of every such run are this
-// server's decisions, nil under any other holder.
+// that mirror no decision. This server's decisions are every open
+// decision record of its ledger (a stopped run's among them, which can
+// still be answered), nil under any other holder. Without probe (the host
+// summary) a ledger this server does not hold is not read at all.
 func (s *Server) hostsRuns(ctx context.Context, byID map[string]session.Info, probe bool) ([]HostsRun, int, HostsLedger, *HostsDecisions) {
 	led := s.hostsHolder(probe)
 	runs := []HostsRun{}
-	if s.ledger == nil {
+	if s.ledger == nil || !probe && led.Holder != HolderThis {
 		return runs, 0, led, nil
+	}
+	if f := s.hostsLedgerRead; f != nil {
+		f()
 	}
 	rows, more, err := s.ledger.OpenRuns(ctx, hostsMaxRuns)
 	if err != nil && !errors.Is(err, ledger.ErrUnavailable) {
@@ -625,14 +633,14 @@ func (s *Server) hostsRuns(ctx context.Context, byID map[string]session.Info, pr
 	for _, r := range rows {
 		inRows[r.ID] = true
 	}
-	decisions := &HostsDecisions{}
+	decisions := s.openDecisions(ctx)
 	for _, r := range s.runs.List() {
 		if r.Managed == nil {
 			continue
 		}
 		held[r.ID] = r
 		if !inRows[r.ID] && !runFinal(r.State) {
-			fresh = append(fresh, s.heldRun(ctx, r.ID, cmpOr(r.Label, r.Name), r.CrewID, r.State, r.Paused, r.Members, byID, decisions))
+			fresh = append(fresh, s.heldRun(ctx, r.ID, cmpOr(r.Label, r.Name), r.CrewID, r.State, r.Paused, r.Members, byID))
 		}
 	}
 	runs = append(runs, fresh...)
@@ -641,15 +649,41 @@ func (s *Server) hostsRuns(ctx context.Context, byID map[string]session.Info, pr
 			if runFinal(r.State) {
 				continue
 			}
-			runs = append(runs, s.heldRun(ctx, r.ID, cmpOr(r.Label, r.Name), r.CrewID, r.State, r.Paused, r.Members, byID, decisions))
+			runs = append(runs, s.heldRun(ctx, r.ID, cmpOr(r.Label, r.Name), r.CrewID, r.State, r.Paused, r.Members, byID))
 			continue
 		}
 		// A run only the ledger has (interrupted, or recovered after a
 		// restart or a late lock): none of its attempts runs in any
 		// process, so only its open decisions wait on it.
-		runs = append(runs, s.heldRun(ctx, row.ID, row.CrewName, row.CrewID, row.State, row.Paused, nil, byID, decisions))
+		runs = append(runs, s.heldRun(ctx, row.ID, row.CrewName, row.CrewID, row.State, row.Paused, nil, byID))
 	}
 	return runs, more, led, decisions
+}
+
+// openDecisions counts every open decision record of this server's
+// ledger, in pages of ledger.MaxOpenAfter, at most hostsMaxOpenPages of
+// them, with the lone one's ref when exactly one is open.
+func (s *Server) openDecisions(ctx context.Context) *HostsDecisions {
+	out := &HostsDecisions{}
+	after := int64(0)
+	for range hostsMaxOpenPages {
+		ns, more, err := s.ledger.OpenDecisionsAfter(ctx, after, ledger.MaxOpenAfter)
+		if err != nil {
+			if !errors.Is(err, ledger.ErrUnavailable) {
+				s.log.Warn("hosts: the open decisions", "err", err)
+			}
+			break
+		}
+		for _, n := range ns {
+			out.WaitingRef = waitingOne(out.Open, out.WaitingRef, boundedRef("decision:"+ledger.DecisionID(n)))
+			out.Open++
+		}
+		if !more || len(ns) == 0 {
+			break
+		}
+		after = ns[len(ns)-1]
+	}
+	return out
 }
 
 // runFinal reports whether an engine's run has ended.
@@ -659,7 +693,7 @@ func runFinal(state string) bool { return state == crew.RunFinished || state == 
 // waitsForPerson and its open decisions by current_run, counted with the
 // lone item's ref in the same pass, the decisions added to all.
 func (s *Server) heldRun(ctx context.Context, id, name, crewID, state string, paused bool, members []crew.MemberState,
-	byID map[string]session.Info, all *HostsDecisions) HostsRun {
+	byID map[string]session.Info) HostsRun {
 	waiting, ref := 0, ""
 	for _, m := range members {
 		if info, ok := byID[m.SessionID]; ok && m.SessionID != "" && waitsForPerson(info) {
@@ -675,8 +709,6 @@ func (s *Server) heldRun(ctx context.Context, id, name, crewID, state string, pa
 		dref := boundedRef("decision:" + d.ID())
 		ref = waitingOne(waiting, ref, dref)
 		waiting++
-		all.WaitingRef = waitingOne(all.Open, all.WaitingRef, dref)
-		all.Open++
 	}
 	return HostsRun{ID: id, Name: cutBytes(name, hostsNameMax), Crew: cutBytes(crewID, hostsNameMax), State: state, Paused: paused,
 		Waiting: &waiting, WaitingRef: ref, HeldBy: HolderThis}
@@ -745,8 +777,26 @@ func (s *Server) hostsHolder(probe bool) HostsLedger {
 	return HostsLedger{Holder: HolderNone, Note: NoteNotOpened}
 }
 
-// readOnlyNote is the sentence of a ledger this server owns and reads only.
-func readOnlyNote(ledger.LockView) string { return NoteReadOnly }
+// readOnlyNote is the sentence of a ledger this server owns and reads
+// only, from the ledger's closed set of reasons: never its words, which
+// may name the database's path.
+func readOnlyNote(v ledger.LockView) string {
+	switch {
+	case v.Reason == ledger.ReadOnlyCannotWrite && v.Readable:
+		return NoteCannotWrite
+	case v.Reason == ledger.ReadOnlyCannotWrite:
+		return NoteCannotWriteRead
+	case v.Reason == ledger.ReadOnlyCannotOpen && v.Readable:
+		return NoteCannotOpenRead
+	case v.Reason == ledger.ReadOnlyCannotOpen:
+		return NoteCannotOpen
+	case v.Reason == ledger.ReadOnlyNewerOrDamaged && v.Readable:
+		return NoteNewerOrDamaged
+	case v.Reason == ledger.ReadOnlyNewerOrDamaged:
+		return NoteNewerUnreadable
+	}
+	return NoteReadOnly
+}
 
 // holderLine is the pid and time a lock another process holds says, when
 // its line is in the ledger's form.

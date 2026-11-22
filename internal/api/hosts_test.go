@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -311,23 +312,56 @@ func TestHostsLedgerStates(t *testing.T) {
 	twice("held here", func(l HostsLedger) bool { return l == HostsLedger{Holder: HolderThis, Note: NoteHeldHere} })
 }
 
-// A database a newer schema wrote: held here, read-only, with the reason.
+// A database a newer schema wrote, and one that cannot be written: held
+// here, read-only, each with its own sentence; neither reply holds the
+// data directory's path, nor any word of the ledger's own reason.
 func TestHostsHeldHereReadOnly(t *testing.T) {
-	f := newDecisionFixture(t, nil, nil)
-	crashServer(t, f.testEnv, f.run)
-	db, err := sql.Open("sqlite", filepath.Join(f.srv.store.Dir(), "runs", ledger.File))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec("UPDATE schema_version SET version = ?", ledger.Version+1); err != nil {
-		t.Fatal(err)
-	}
-	db.Close()
-	b := f.restart()
-	r := b.hostsOf(t)
-	run, ok := hostsRunOf(r, f.run)
-	if r.Ledger.Holder != HolderThisReadOnly || !slices.Contains(hostsNotes, r.Ledger.Note) || !ok || run.Waiting != nil || run.HeldBy != HolderThisReadOnly {
-		t.Fatalf("read-only here: %+v", r)
+	for _, c := range []struct {
+		name, note string
+		spoil      func(t *testing.T, path string)
+	}{
+		{"newer", NoteNewerOrDamaged, func(t *testing.T, path string) {
+			db, err := sql.Open("sqlite", path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			if _, err := db.Exec("UPDATE schema_version SET version = ?", ledger.Version+1); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"unwritable", NoteCannotWrite, func(t *testing.T, path string) {
+			if os.Geteuid() == 0 {
+				t.Skip("root writes a file whatever its mode")
+			}
+			if err := os.Chmod(path, 0o400); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { os.Chmod(path, 0o600) })
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := newDecisionFixture(t, nil, nil)
+			crashServer(t, f.testEnv, f.run)
+			path := filepath.Join(f.srv.store.Dir(), "runs", ledger.File)
+			c.spoil(t, path)
+			b := f.restart()
+			status, body := b.get(t, "/api/hosts")
+			if status != http.StatusOK {
+				t.Fatalf("%d %s", status, body)
+			}
+			r := decodeHosts(t, body)
+			run, ok := hostsRunOf(r, f.run)
+			if r.Ledger.Holder != HolderThisReadOnly || r.Ledger.Note != c.note || !ok || run.Waiting != nil || run.HeldBy != HolderThisReadOnly {
+				t.Fatalf("read-only here: %+v (the ledger says %+v)", r.Ledger, b.srv.ledger.Lock())
+			}
+			_, why := b.srv.ledger.ReadOnly()
+			for _, word := range []string{filepath.Base(filepath.Dir(f.srv.store.Dir())), f.srv.store.Dir(), ledger.File, why} {
+				if word != "" && bytes.Contains(body, []byte(word)) {
+					t.Fatalf("the reply holds %q: %s", word, body)
+				}
+			}
+		})
 	}
 }
 
@@ -458,4 +492,24 @@ func treeState(t *testing.T, dir string) map[string]string {
 		t.Fatal(err)
 	}
 	return out
+}
+
+// Under another holder the host summary reads nothing of the ledger: it
+// reports runs only when this server holds them. The page's read does.
+func TestHostSummaryReadsNoLedgerItDoesNotHold(t *testing.T) {
+	f := newDecisionFixture(t, nil, nil)
+	lockWait(t, time.Millisecond)
+	b := f.restart()
+	waitUntil(t, "the second server's wait given up", func() bool { return !b.srv.ledger.Lock().GaveUpAt.IsZero() })
+	var reads atomic.Int64
+	b.srv.hostsLedgerRead = func() { reads.Add(1) }
+	if _, ok := b.srv.hostSummaryBytes(t.Context()); !ok {
+		t.Fatal("no summary")
+	}
+	if n := reads.Load(); n != 0 {
+		t.Fatalf("the summary read the ledger %d times", n)
+	}
+	if r := b.hostsOf(t); r.Ledger.Holder != HolderOther || reads.Load() != 1 {
+		t.Fatalf("the page's read: %+v, %d reads", r.Ledger, reads.Load())
+	}
 }

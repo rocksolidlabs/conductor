@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -222,52 +223,77 @@ func TestHostsSeenAfterRetention(t *testing.T) {
 	}
 }
 
-// A register and the last removal of one key, in both orders, the removal
-// held at a gate in its hook: the second decides.
+// A register and the last removal of one key, in both orders, the
+// removal held at a gate where it reads the registry: the table's lock is
+// held across that read, so a register's change waits for the removal and
+// the second decides. The registry here is the test's: what it lists is
+// what the test has registered by then.
 func TestHostsSeenRegisterAndRemoveRace(t *testing.T) {
+	key := strings.Repeat("b", 32)
+	old := session.Info{ID: "old", Kind: session.KindHosted, HostName: "studio", HostKey: key, HostKeyFrom: session.HostKeyMachine}
+	fresh := session.Info{ID: "new", Kind: session.KindHosted, HostName: "studio", HostKey: key, HostKeyFrom: session.HostKeyMachine}
 	for _, registerFirst := range []bool{true, false} {
 		t.Run(fmt.Sprintf("register first %v", registerFirst), func(t *testing.T) {
-			e := newTestEnv(t, nil)
-			key := machineKey(t)
-			hs, _ := hostOn(t, e, "studio", key)
-			id := hs.Info().ID
-			at, gate := make(chan struct{}), make(chan struct{})
-			var once sync.Once
-			e.srv.seen.mu.Lock()
-			e.srv.seen.removing = func(string) { once.Do(func() { close(at); <-gate }) }
-			e.srv.seen.mu.Unlock()
+			h := newHostsSeen()
+			var mu sync.Mutex
+			var listed []session.Info
 			if registerFirst {
-				// The new session registers while the removal waits at its
-				// gate, before it reads the registry: the registry lists it.
-				done := make(chan struct{})
-				go func() { e.srv.registry.Remove(id); close(done) }()
-				<-at
-				// The register's change waits for the table's lock, which
-				// the removal holds: it comes second and decides.
-				registered := make(chan struct{})
-				go func() { hostOn(t, e, "studio", key); close(registered) }()
-				close(gate)
-				<-done
-				<-registered
-			} else {
-				done := make(chan struct{})
-				go func() { e.srv.registry.Remove(id); close(done) }()
-				<-at
-				close(gate)
-				<-done
-				hostOn(t, e, "studio", key)
+				listed = []session.Info{fresh}
 			}
-			r, ok := hostRowOf(e.hostsOf(t), machine.Group(key))
-			if !ok || r.Availability != HostConnected || len(r.SessionIDs) != 1 {
-				t.Fatalf("the reply: %+v", r)
+			at, gate := make(chan struct{}), make(chan struct{})
+			read := func() []session.Info {
+				// The read is made under the table's lock.
+				if h.mu.TryLock() {
+					h.mu.Unlock()
+					t.Error("the registry is read outside the table's lock")
+				}
+				close(at)
+				<-gate
+				mu.Lock()
+				defer mu.Unlock()
+				return slices.Clone(listed)
 			}
-			e.srv.seen.mu.Lock()
-			_, recorded := e.srv.seen.entries[machine.Group(key)]
-			e.srv.seen.mu.Unlock()
+			removed := make(chan struct{})
+			go func() { h.removed(old, "", read); close(removed) }()
+			<-at
+			// The register's change, made while the removal reads: it waits
+			// for the table's lock, so it comes second whichever the order.
+			changed := make(chan struct{})
+			go func() {
+				mu.Lock()
+				listed = []session.Info{fresh}
+				mu.Unlock()
+				h.changed(fresh, func(string) bool { return true })
+				close(changed)
+			}()
+			close(gate)
+			<-removed
+			<-changed
+			h.mu.Lock()
+			_, recorded := h.entries[key]
+			h.mu.Unlock()
 			if recorded {
 				t.Fatal("the machine is kept as seen while its new session is listed")
 			}
 		})
+	}
+}
+
+// A late change from a hosted session already removed (its host's
+// status, after the removal recorded its machine) leaves the machine Last
+// seen.
+func TestHostsSeenLateChangeKeepsTheEntry(t *testing.T) {
+	e := newTestEnv(t, nil)
+	key := machineKey(t)
+	hs, _ := hostOn(t, e, "studio", key)
+	e.srv.registry.Remove(hs.Info().ID)
+	if r, ok := hostRowOf(e.hostsOf(t), machine.Group(key)); !ok || r.Availability != HostSeen {
+		t.Fatalf("removed: %+v", r)
+	}
+	code := 0
+	hs.HostStatus(session.StatusExited, &code)
+	if r, ok := hostRowOf(e.hostsOf(t), machine.Group(key)); !ok || r.Availability != HostSeen {
+		t.Fatalf("after a late change: %+v", r)
 	}
 }
 
