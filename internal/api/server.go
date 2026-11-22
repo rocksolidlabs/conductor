@@ -143,6 +143,11 @@ type Server struct {
 	// place of ledger.Probe (hostsHolder).
 	seen      *hostsSeen
 	probeLock func(dir string) (ledger.ProbeResult, error)
+	// others keeps that the sync status has been current once
+	// (otherMachinesShown); hostsSync is the host summary's computed
+	// source, nil where none is registered (hosts_summary.go).
+	others    othersSeen
+	hostsSync *hostsSync
 	// remoteMu orders the writes of other machines' records (remote.go);
 	// remoteMax, when a test sets it before any is written, bounds their
 	// files in place of ext.MaxRemoteFiles.
@@ -646,6 +651,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 	s.opens = newOpenDesk()
 	s.writeCatalog = func(ov catalog.Overlay) error { return st.Save(catalogFile, ov) }
 	s.events = newEventHub()
+	s.registerHostSummary()
 	s.runs = crew.NewEngine(s, s.lookupLocal)
 	// The Runtime the engine offers its managed runs, before any run is
 	// launched or continued (the ledger's recovery, a route's).

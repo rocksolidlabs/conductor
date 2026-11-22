@@ -233,7 +233,7 @@ func (h *extHost) PutRemote(ctx context.Context, r ext.Remote) error {
 		return err
 	}
 	if !remoteShown(r.Kind, r.Data) {
-		return fmt.Errorf("%w: a remote pins record is a pins document as this server keeps its own", ext.ErrRefused)
+		return fmt.Errorf("%w: a remote %s record is not of the form this server shows", ext.ErrRefused, r.Kind)
 	}
 	if err := ctx.Err(); err != nil {
 		return err
@@ -244,13 +244,18 @@ func (h *extHost) PutRemote(ctx context.Context, r ext.Remote) error {
 // remoteShown says a record's body is of the form its kind is shown in:
 // another machine's pins a pins document as this server keeps its own
 // (its version, at most its count of pins, each session once, unknown
-// fields refused); every other kind as its check took it.
+// fields refused); a host summary one ext.ParseHostSummary takes; every
+// other kind as its check took it.
 func remoteShown(kind string, data []byte) bool {
-	if kind != ext.RemotePins {
-		return true
+	switch kind {
+	case ext.RemotePins:
+		_, err := uiContentOf(uiPins, data, true)
+		return err == nil
+	case ext.RemoteHosts:
+		_, err := ext.ParseHostSummary(data)
+		return err == nil
 	}
-	_, err := uiContentOf(uiPins, data, true)
-	return err == nil
+	return true
 }
 
 // DeleteRemote removes a record another machine held (ext.Host); one not

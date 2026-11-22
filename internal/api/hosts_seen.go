@@ -4,6 +4,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/rocksolidlabs/conductor/internal/session"
@@ -21,8 +22,8 @@ import (
 type hostsSeen struct {
 	mu      sync.Mutex
 	entries map[string]seenHost
-	// now is the table's clock: time.Now but in tests.
-	now func() time.Time
+	// now is the table's clock: time.Now but in tests (setNow).
+	now atomic.Pointer[func() time.Time]
 	// removing, when a test sets it, is called inside the removal hook,
 	// under the table's lock, before the registry is read.
 	removing func(key string)
@@ -35,11 +36,16 @@ type seenHost struct {
 }
 
 func newHostsSeen() *hostsSeen {
-	return &hostsSeen{entries: map[string]seenHost{}, now: time.Now}
+	h := &hostsSeen{entries: map[string]seenHost{}}
+	h.setNow(time.Now)
+	return h
 }
 
+// setNow sets the table's clock.
+func (h *hostsSeen) setNow(now func() time.Time) { h.now.Store(&now) }
+
 // clock is the table's time, in UTC.
-func (h *hostsSeen) clock() time.Time { return h.now().UTC() }
+func (h *hostsSeen) clock() time.Time { return (*h.now.Load())().UTC() }
 
 // removed is the registry's removal hook for a hosted session: the
 // machine is recorded when list, read under the table's lock, holds no
