@@ -112,36 +112,72 @@ def licence_files(directory: Path) -> list[tuple[str, str]]:
     return found
 
 
-def classify(text: str) -> str:
-    """The SPDX id a licence text reads as, or '' when it is none this script knows."""
-    t = " ".join(text.split())
-    if "Apache License" in t and "Version 2.0" in t:
-        return "Apache-2.0"
-    if "Mozilla Public License" in t and ("Version 2.0" in t or "version 2.0" in t):
-        return "MPL-2.0"
-    if "SIL OPEN FONT LICENSE" in t.upper():
-        return "OFL-1.1"
-    if "Permission is hereby granted, free of charge" in t:
-        return "MIT"
-    if "Permission to use, copy, modify, and/or distribute" in t or "Permission to use, copy, modify, and distribute" in t:
-        return "ISC"
-    if "Redistribution and use in source and binary forms" in t:
+# Each licence this script knows, by the sentence that grants it: where that sentence stands in a text, the licence is there,
+# and its terms run from it to the next grant. A grant is named by its terms (terms below): the OFL grants "a copy of the Font
+# Software" in words that begin MIT's, without MIT's condition, so it names the OFL alone.
+GRANTS = [
+    ("Apache-2.0", re.compile(r"Apache License,? Version 2\.0")),
+    ("MPL-2.0", re.compile(r"Mozilla Public License,? (?:[Vv]ersion|v\.) 2\.0")),
+    ("OFL-1.1", re.compile(r"SIL OPEN FONT LICENSE", re.I)),
+    ("MIT", re.compile(r"Permission is hereby granted, free of charge, to any person obtaining a copy of")),
+    ("ISC", re.compile(r"Permission to use, copy, modify, and(?:/or)? distribute this software for any purpose with or without fee is hereby granted")),
+    ("BSD", re.compile(r"Redistribution and use in source and binary forms")),
+    ("Unlicense", re.compile(r"free and unencumbered software released into the public domain", re.I)),
+]
+
+
+def terms(kind: str, t: str) -> str:
+    """The SPDX id of a grant's licence, read from its terms: which conditions follow the grant tell the variants apart; ''
+    for a variant this script does not name."""
+    if kind == "BSD":
+        if "All advertising materials mentioning" in t:
+            return "BSD-4-Clause"
         return "BSD-3-Clause" if ("Neither the name" in t or "names of its contributors" in t) else "BSD-2-Clause"
-    if "free and unencumbered software released into the public domain" in t:
-        return "Unlicense"
-    return ""
+    if kind == "MIT" and "shall be included in all copies or substantial portions" not in t:
+        return ""  # MIT's grant without MIT's condition: another licence in its words (NCSA, Unicode's), none named here
+    if kind == "ISC" and "appear in all copies" not in t:
+        return "0BSD"
+    return kind
+
+
+def licences(text: str) -> list[str]:
+    """The SPDX ids of every licence a text carries, sorted: a text can carry several, each over code of its own (a library's
+    licence and the one a part of it came under)."""
+    t = " ".join(text.split())
+    found = sorted((m.start(), kind) for kind, grant in GRANTS for m in grant.finditer(t))
+    ids = {terms(kind, t[start:found[i + 1][0] if i + 1 < len(found) else len(t)]) for i, (start, kind) in enumerate(found)}
+    return sorted(ids - {""})
+
+
+def classify(text: str) -> str:
+    """The SPDX ids a licence text reads as, joined with ", " when it carries several, or '' when it is none this script knows."""
+    return ", ".join(licences(text))
+
+
+# A file that accounts for the code of others (a NOTICE, a THIRD-PARTY list): carried whole, but not the package's licence.
+OTHERS = re.compile(r"^notice|third.?party|3rd.?party", re.I)
+
+
+def own_licences(texts: list[tuple[str, str]]) -> list[str]:
+    """The licences a package's own licence files carry, sorted; its files that account for others' code name none."""
+    return sorted({k for name, text in texts if not OTHERS.search(name) for k in licences(text)})
+
+
+# The longest text the notices print, in lines: far above any licence (the longest carried, a compilation of grammars'
+# notices, is some 12,700). A text past it stops the script with its package's name, never printed in part.
+MAX_TEXT_LINES = 50_000
 
 
 def comment_blocks(path: Path, limit: int = 200) -> list[str]:
-    """The comments in a source file's first lines, each run of // lines or /* */ block as one text, markers, a block's common
-    indent and build directives taken out (a notice can follow the package clause, a block need not star its lines)."""
+    """The comments that begin in a source file's first lines, each run of // lines or /* */ block as one text, whole however
+    far it runs, markers, a block's common indent and build directives taken out (a notice can follow the package clause, a
+    block need not star its lines)."""
     blocks: list[str] = []
     run: list[str] = []
     block: list[str] | None = None
+    in_run = False
     with path.open(encoding="utf-8", errors="replace") as f:
         for i, raw in enumerate(f):
-            if i >= limit:
-                break
             line = raw.rstrip("\n")
             if block is not None:
                 end = line.find("*/")
@@ -151,7 +187,11 @@ def comment_blocks(path: Path, limit: int = 200) -> list[str]:
                     block = None
                 continue
             s = line.strip()
-            if s.startswith("//"):
+            # Past the first lines only a comment begun in them goes on, to its end.
+            if i >= limit and not (in_run and s.startswith("//")):
+                break
+            in_run = s.startswith("//")
+            if in_run:
                 if not s.startswith(("//go:", "// +build", "//+build")):
                     run.append(re.sub(r"^//\s?", "", s))
                 continue
@@ -232,7 +272,7 @@ def go_entries() -> list[Entry]:
     entries = []
     for (path, version), directory in sorted(mods.items()):
         texts = licence_files(directory)
-        kinds = sorted({classify(t) for n, t in texts if not n.lower().startswith("notice")} - {""})
+        kinds = own_licences(texts)
         if not kinds:
             raise SystemExit(f"notices: no licence this script knows for the Go module {path} {version} in {directory}")
         # More than one licence text: each applies to the files it names (a project's COPYING says which); MPL-2.0 files' source is named.
@@ -261,7 +301,7 @@ def npm_entry(directory: Path, note: str = "", files: list[Path] | None = None) 
         texts = [("LICENSE", (EXTRA / TEXT_KEPT[pkg["name"]]).read_text())]
     if not texts:
         raise SystemExit(f"notices: the npm package {pkg['name']} {pkg.get('version', '')} carries no licence file; keep one in scripts/notices")
-    kind = licence or classify(texts[0][1])
+    kind = licence or ", ".join(own_licences(texts))
     for s in SUPPLEMENTS.get(pkg["name"], []):
         if s.get("for") and s["for"] != pkg.get("version"):
             raise SystemExit(f"notices: {s['file']} was taken for {pkg['name']} {s['for']}, not {pkg.get('version')}: take it again for this version")
@@ -321,6 +361,13 @@ def render(parts: list[tuple[str, list[Entry]]]) -> str:
         "ships; do not edit it by hand.",
         "",
     ]
+    for _, entries in parts:
+        for e in entries:
+            for name, text in e.texts:
+                lines = text.replace("\r\n", "\n").strip("\n").count("\n") + 1
+                if lines > MAX_TEXT_LINES:
+                    raise SystemExit(f"notices: {e.title}: {name} is {lines} lines, past the {MAX_TEXT_LINES} the notices print whole; "
+                                     "nothing is printed in part: read the text and raise MAX_TEXT_LINES in scripts/notices.py if it is right")
     for heading, entries in parts:
         out += [heading, "-" * len(heading)]
         for e in entries:

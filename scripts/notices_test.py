@@ -1,9 +1,10 @@
-"""Tests for notices.py's file notices: python3 -m unittest discover -s scripts -p '*_test.py'"""
+"""Tests for notices.py's file notices, licence names and printing: python3 -m unittest discover -s scripts -p '*_test.py'"""
 from pathlib import Path
 import tempfile
 import unittest
 
-from notices import file_notices, notice_comments
+import notices
+from notices import Entry, classify, file_notices, licences, notice_comments, own_licences, render
 
 GO_LICENCE = "Copyright (c) 2009 The Go Authors. All rights reserved. Redistribution and use in source and binary forms..."
 
@@ -70,6 +71,117 @@ class FileNotices(unittest.TestCase):
 
     def test_no_notice(self):
         self.assertEqual(notice_comments(self.write("plain.go", "package x\n\nfunc f() {}\n")), [])
+
+    def test_a_notice_begun_in_the_first_lines_is_read_to_its_end(self):
+        lines = [f"// clause {i} of the notice" for i in range(300)]
+        p = self.write("errno_darwin.go", "package errno\n\n" + "var x int\n" * 150 + "// Copyright (c) 2000 Apple Computer, Inc. All rights reserved.\n" + "\n".join(lines) + "\n\nvar y int\n")
+        got = notice_comments(p)
+        self.assertEqual(len(got), 1)
+        self.assertEqual(got[0].splitlines()[-1], "clause 299 of the notice")
+        self.assertEqual(len(got[0].splitlines()), 301)
+        b = self.write("stdio_darwin.go", "package stdio\n\n" + "var x int\n" * 190 + "/*\n * Copyright (c) 1990 The Regents of the University of California.\n" + "".join(f" * term {i}\n" for i in range(100)) + " */\n\nvar y int\n")
+        got = notice_comments(b)
+        self.assertEqual(len(got), 1)
+        self.assertTrue(got[0].endswith("term 99"))
+
+    def test_a_comment_begun_after_the_first_lines_is_not_read(self):
+        p = self.write("late.go", "package x\n\n" + "var x int\n" * 300 + "// Copyright 2001 Someone Else.\n")
+        self.assertEqual(notice_comments(p), [])
+
+
+GODS = """Copyright (c) 2015, Emir Pasic
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+* Redistributions of source code must retain the above copyright notice, this
+  list of conditions and the following disclaimer.
+
+* Redistributions in binary form must reproduce the above copyright notice,
+  this list of conditions and the following disclaimer in the documentation
+  and/or other materials provided with the distribution.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES ... EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+-------------------------------------------------------------------------------
+
+AVL Tree:
+
+Copyright (c) 2017 Benjamin Scher Purcell <benjapurcell@gmail.com>
+
+Permission to use, copy, modify, and distribute this software for any
+purpose with or without fee is hereby granted, provided that the above
+copyright notice and this permission notice appear in all copies.
+
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+MERCHANTABILITY AND FITNESS.
+"""
+BSD3 = ("Copyright (c) 2017 The Sqlite Authors. All rights reserved.\n\nRedistribution and use in source and binary forms, with or without\n"
+        "modification, are permitted provided that the following conditions are met:\n\n3. Neither the name of the copyright holder nor the names of its\n"
+        "contributors may be used to endorse or promote products derived from this software without specific prior written permission.\n")
+BSD2 = "Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met: two of them.\n"
+MIT = ("Permission is hereby granted, free of charge, to any person obtaining a copy\nof this software and associated documentation files (the \"Software\"), to deal\n"
+       "in the Software without restriction. The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.\n")
+APACHE = "                                 Apache License\n                           Version 2.0, January 2004\n\n   TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION\n"
+OFL = ("This Font Software is licensed under the SIL Open Font License, Version 1.1.\n\nPermission is hereby granted, free of charge, to any person obtaining\n"
+       "a copy of the Font Software, to use, study, copy, merge, embed, modify, redistribute, and sell modified and unmodified copies of the Font Software.\n")
+
+
+class Classify(unittest.TestCase):
+    def test_each_licence_by_its_own_text(self):
+        cases = {
+            APACHE: "Apache-2.0",
+            "Mozilla Public License Version 2.0\n==================================\n1. Definitions": "MPL-2.0",
+            OFL: "OFL-1.1",
+            MIT: "MIT",
+            "University of Illinois/NCSA Open Source License\n\nPermission is hereby granted, free of charge, to any person obtaining a copy of this software, to deal with the Software without restriction: Redistributions of source code must retain the above copyright notice.": "",
+            "Permission to use, copy, modify, and/or distribute this software for any purpose with or without fee is hereby granted, provided that the above copyright notice and this permission notice appear in all copies.": "ISC",
+            "Permission to use, copy, modify, and/or distribute this software for any purpose with or without fee is hereby granted.\n\nTHE SOFTWARE IS PROVIDED \"AS IS\"": "0BSD",
+            BSD2: "BSD-2-Clause",
+            BSD3: "BSD-3-Clause",
+            BSD2 + "3. All advertising materials mentioning features or use of this software must display an acknowledgement.": "BSD-4-Clause",
+            "This is free and unencumbered software released into the public domain.": "Unlicense",
+            "Licensed under terms this script does not know.": "",
+        }
+        for text, want in cases.items():
+            with self.subTest(want=want):
+                self.assertEqual(classify(text), want)
+
+    def test_a_text_carrying_two_licences_names_both(self):
+        self.assertEqual(classify(GODS), "BSD-2-Clause, ISC")
+        self.assertEqual(licences(MIT + "\n\nPortions:\n\n" + APACHE), ["Apache-2.0", "MIT"])
+
+    def test_each_grant_is_read_from_its_own_terms(self):
+        # The third clause of the later BSD text is its own: the earlier one stays two-clause.
+        self.assertEqual(licences(BSD2 + "\n\nThe parser:\n\n" + BSD3), ["BSD-2-Clause", "BSD-3-Clause"])
+
+    def test_one_licence_holding_words_of_another_is_that_licence_alone(self):
+        self.assertEqual(licences(OFL), ["OFL-1.1"])
+
+    def test_a_list_of_others_licences_does_not_name_the_package(self):
+        texts = [("LICENSE", BSD3), ("LICENSE-3RD-PARTY.md", "# Third-Party Licenses\n\n" + APACHE + MIT), ("NOTICE", MIT)]
+        self.assertEqual(own_licences(texts), ["BSD-3-Clause"])
+        self.assertEqual(own_licences([("LICENSE", GODS), ("LICENSE-ADDITIONAL", MIT)]), ["BSD-2-Clause", "ISC", "MIT"])
+
+
+class Render(unittest.TestCase):
+    def test_a_long_licence_is_printed_whole(self):
+        text = "\n".join(f"term {i}" for i in range(1000))
+        out = render([("Go modules", [Entry("example.com/long", "v1.0.0", "MIT", [("LICENSE", text)])])])
+        self.assertIn(text, out)
+
+    def test_a_text_past_the_limit_stops_with_its_package_named(self):
+        text = "\n".join("x" for _ in range(notices.MAX_TEXT_LINES + 1))
+        ok = "\n".join("x" for _ in range(notices.MAX_TEXT_LINES))
+        render([("Go modules", [Entry("example.com/fits", "v1.0.0", "MIT", [("LICENSE", ok)])])])
+        with self.assertRaises(SystemExit) as stop:
+            render([("Go modules", [Entry("example.com/fits", "v1.0.0", "MIT", [("LICENSE", "MIT")]),
+                                    Entry("example.com/huge", "v2.0.0", "MIT", [("LICENSE", "MIT"), ("COPYING", text)])])])
+        self.assertIn("example.com/huge v2.0.0: COPYING", str(stop.exception))
+        self.assertNotIn("example.com/fits", str(stop.exception))
 
 
 if __name__ == "__main__":
