@@ -11,6 +11,10 @@ import android.security.keystore.KeyGenParameterSpec
 import android.view.ViewGroup
 import android.webkit.WebResourceResponse
 import android.webkit.WebViewClient
+import android.webkit.WebChromeClient
+import android.webkit.ConsoleMessage
+import android.webkit.WebResourceError
+import android.graphics.Bitmap
 import org.bouncycastle.crypto.params.Ed25519PrivateKeyParameters
 import org.junit.Assert.fail
 import org.junit.Assume.assumeTrue
@@ -19,6 +23,7 @@ import java.io.File
 import java.security.KeyPairGenerator
 import java.security.spec.ECGenParameterSpec
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CopyOnWriteArrayList
 import android.os.ParcelFileDescriptor
 import android.security.keystore.KeyInfo
 import android.security.keystore.KeyProperties
@@ -517,12 +522,14 @@ class ShellBootsUnderItsPolicyTest {
     /**
      * A page of the test's own, with no policy, holding a frame, an object and an embed of another origin: whatever the platform's web
      * view requests for each is judged by the shell's installed client, the request gate alone (the shell's own page has its policy
-     * answer first, so only a page without one shows what the platform really sends for such a load).
+     * answer first, so only a page without one shows what the platform really sends for such a load). Its script says in the console
+     * that it ran and when each element finished loading.
      */
     private val unguarded = """<!doctype html><html><body>
-        <iframe src="https://example.com/?probe-frame"></iframe>
-        <object type="text/html" data="https://example.com/?probe-object"></object>
+        <iframe src="https://example.com/?probe-frame" onload="console.log('probe: the frame loaded')"></iframe>
+        <object type="text/html" data="https://example.com/?probe-object" onload="console.log('probe: the object loaded')"></object>
         <embed type="text/html" src="https://example.com/?probe-embed">
+        <script>console.log('probe: the page ran, frames ' + document.querySelectorAll('iframe,object,embed').length)</script>
         </body></html>"""
 
     @Test
@@ -531,34 +538,70 @@ class ShellBootsUnderItsPolicyTest {
             until(30, "the gates in place") { read(s) { it.gates != null } }
             val heard = ConcurrentHashMap<String, String>()
             val answered = ConcurrentHashMap<String, String>()
+            // Everything the test's web view did, in order: each load's start and end, errors, every request asked of the client,
+            // every navigation it was asked to override, and the page's console.
+            val events = CopyOnWriteArrayList<String>()
+            fun saw(what: String) {
+                events.add(what)
+                step("the probe's web view: $what")
+            }
             val probe = AtomicReference<WebView>()
             s.onActivity { a ->
                 val installed = a.getBridge().webViewClient
                 val w = WebView(a)
+                w.settings.javaScriptEnabled = true
+                saw("made on the main thread: ${android.os.Looper.myLooper() == android.os.Looper.getMainLooper()}; " +
+                    "network loads blocked: ${w.settings.blockNetworkLoads}")
+                w.webChromeClient = object : WebChromeClient() {
+                    override fun onConsoleMessage(m: ConsoleMessage?): Boolean {
+                        saw("console ${m?.messageLevel()}: ${m?.message()} (${m?.sourceId()}:${m?.lineNumber()})")
+                        return true
+                    }
+                }
                 w.webViewClient = object : WebViewClient() {
+                    override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) = saw("page started: $url")
+                    override fun onPageFinished(view: WebView?, url: String?) = saw("page finished: $url")
+                    override fun onReceivedError(view: WebView?, request: WebResourceRequest?, error: WebResourceError?) =
+                        saw("error ${error?.errorCode} ${error?.description} for ${request?.url} (main frame ${request?.isForMainFrame})")
+                    override fun onReceivedHttpError(view: WebView?, request: WebResourceRequest?, response: WebResourceResponse?) =
+                        saw("http ${response?.statusCode} for ${request?.url} (main frame ${request?.isForMainFrame})")
+
                     override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? {
                         val r = request ?: return null
-                        val answer = installed.shouldInterceptRequest(view!!, r)
+                        val h = r.requestHeaders ?: emptyMap()
                         val marker = Regex("probe-(frame|object|embed)").find(r.url.toString())?.groupValues?.get(1)
-                        if (marker != null) {
-                            val h = r.requestHeaders ?: emptyMap()
-                            answered[marker] = answer?.statusCode?.toString() ?: "network"
-                            heard[marker] = "main-frame=${r.isForMainFrame} upgrade-insecure-requests=" +
-                                "${h.keys.any { it.equals("Upgrade-Insecure-Requests", ignoreCase = true) }} " +
-                                "accept=${h.entries.firstOrNull { it.key.equals("Accept", ignoreCase = true) }?.value}"
+                        val said = "main-frame=${r.isForMainFrame} upgrade-insecure-requests=" +
+                            "${h.keys.any { it.equals("Upgrade-Insecure-Requests", ignoreCase = true) }} " +
+                            "accept=${h.entries.firstOrNull { it.key.equals("Accept", ignoreCase = true) }?.value}"
+                        saw("asked for ${r.url} ($said)")
+                        if (marker != null) heard[marker] = said
+                        val answer = try {
+                            installed.shouldInterceptRequest(view!!, r)
+                        } catch (e: Throwable) {
+                            saw("the installed client threw for ${r.url}: $e")
+                            if (marker != null) answered[marker] = "threw"
+                            throw e
                         }
+                        if (marker != null) answered[marker] = answer?.statusCode?.toString() ?: "network"
                         // The test never reaches the network itself: what the gate would let through is answered empty here.
                         return answer ?: WebResourceResponse("text/plain", "utf-8", 204, "No Content", emptyMap(), ByteArrayInputStream(ByteArray(0)))
                     }
 
-                    override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean = true
+                    // A frame's or an object's navigation may be offered here too; only the main frame's leaving is cancelled, so
+                    // theirs go on to the request above.
+                    override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
+                        saw("asked to override ${request?.url} (main frame ${request?.isForMainFrame})")
+                        return request?.isForMainFrame ?: true
+                    }
                 }
-                a.addContentView(w, ViewGroup.LayoutParams(200, 200))
+                a.addContentView(w, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
                 w.loadDataWithBaseURL("https://probe.invalid/", unguarded, "text/html", "utf-8", null)
                 probe.set(w)
             }
             try {
-                until(60, "the frame's and the object's document requests", { "(heard: $heard)" }) { heard.containsKey("frame") && heard.containsKey("object") }
+                until(60, "the frame's and the object's document requests", { "(heard: $heard; the web view: $events)" }) {
+                    heard.containsKey("frame") && heard.containsKey("object")
+                }
                 for (m in listOf("frame", "object", "embed")) step("the platform's request for the $m: ${heard[m] ?: "none made"}; the gate: ${answered[m] ?: "-"}")
                 assertEquals("the frame's document (${heard["frame"]})", "403", answered["frame"])
                 assertEquals("the object's document (${heard["object"]})", "403", answered["object"])
