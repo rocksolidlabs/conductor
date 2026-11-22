@@ -263,6 +263,19 @@ def go_env() -> dict[str, str]:
     return env
 
 
+def go_entry(path: str, version: str, directory: Path, files: list[Path]) -> Entry:
+    """A Go module's entry: its licence files, its list line from them, and the notices of its compiled files."""
+    texts = licence_files(directory)
+    kinds = own_licences(texts)
+    if not kinds:
+        raise SystemExit(f"notices: no licence this script knows for the Go module {path} {version} in {directory}")
+    line = list_line(", ".join(kinds), texts)
+    # More than one licence text: each applies to the files it names (a project's COPYING says which); MPL-2.0 files' source is named.
+    note = f"the source of its MPL-2.0 files: https://{path} at {version}" if "MPL-2.0" in kinds else ""
+    texts += file_notices(files, directory, " ".join(t for _, t in texts))
+    return Entry(path, version, line, texts, note)
+
+
 def go_entries() -> list[Entry]:
     base_env = go_env()
     mods: dict[tuple[str, str], Path] = {}
@@ -280,17 +293,7 @@ def go_entries() -> list[Entry]:
             if path != "std":
                 mods[(path, version)] = Path(directory)
             sources.setdefault(path, set()).update(Path(pkgdir) / n for n in names.split())
-    entries = []
-    for (path, version), directory in sorted(mods.items()):
-        texts = licence_files(directory)
-        licence_texts = list(texts)
-        kinds = own_licences(texts)
-        if not kinds:
-            raise SystemExit(f"notices: no licence this script knows for the Go module {path} {version} in {directory}")
-        # More than one licence text: each applies to the files it names (a project's COPYING says which); MPL-2.0 files' source is named.
-        note = f"the source of its MPL-2.0 files: https://{path} at {version}" if "MPL-2.0" in kinds else ""
-        texts += file_notices(sorted(sources.get(path, ())), directory, " ".join(t for _, t in texts))
-        entries.append(Entry(path, version, list_line(", ".join(kinds), licence_texts), texts, note))
+    entries = [go_entry(path, version, directory, sorted(sources.get(path, ()))) for (path, version), directory in sorted(mods.items())]
     goroot = Path(run(["go", "env", "GOROOT"], env=base_env).strip())
     licence = (goroot / "LICENSE").read_text()
     std = file_notices(sorted(sources.get("std", ())), goroot / "src", licence)
