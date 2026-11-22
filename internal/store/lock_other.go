@@ -16,3 +16,8 @@ func (*OwnerLock) Release() {}
 
 // LockHeld tells nothing where there is no owner lock.
 func LockHeld(string) (bool, error) { return false, nil }
+
+// ProbeOwnerLock answers that there are no locks here.
+func ProbeOwnerLock(string, int) (held bool, line string, noLocks bool, err error) {
+	return false, "", true, nil
+}
