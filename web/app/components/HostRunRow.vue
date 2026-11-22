@@ -4,7 +4,7 @@ import { heldRunStatus, statusOfKey } from '~/utils/status'
 
 /**
  * A managed run on the Hosts page (docs/plans/hosts.md, PR-3): its name linking to its run page, its id, its state in the status
- * language, what waits on it and who holds it with the note, all from the row it is given (runRowView:
+ * language, what waits on it (a link to Needs you, PR-4) and who holds it with the note, all from the row it is given (runRowView:
  * that reply's row alone). No control: Stop, Continue, Retry and
  * the rest live on the run page.
  */
@@ -31,7 +31,11 @@ const needs = statusOfKey('needs')
     <div class="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-muted">
       <span class="min-w-0 truncate font-mono" data-mono="id" :title="row.id">{{ row.id }}</span>
       <template v-if="row.waiting">
-        <span class="inline-flex items-center gap-1.5" data-host-run-waiting :data-count="row.waitingCount">
+        <ULink v-if="row.waitingLink" :to="row.waitingLink" class="inline-flex items-center gap-1.5 text-default hover:underline" data-host-run-waiting :data-count="row.waitingCount">
+          <StatusMark :status="needs" />
+          <span>{{ row.waiting }}</span>
+        </ULink>
+        <span v-else class="inline-flex items-center gap-1.5" data-host-run-waiting :data-count="row.waitingCount">
           <StatusMark v-if="row.waitingCount > 0" :status="needs" />
           <span>{{ row.waiting }}</span>
         </span>

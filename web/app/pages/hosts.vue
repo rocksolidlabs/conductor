@@ -17,7 +17,7 @@ import { clock } from '~/utils/syncStatus'
 import { pageState } from '~/utils/pageState'
 import { sessionStatus } from '~/utils/status'
 
-// Hosts (docs/plans/hosts.md, PR-3): every machine this server knows, what runs and waits on each, and who holds this data
+// Hosts (docs/plans/hosts.md, PR-3 and PR-4): every machine this server knows, what runs and waits on each, and who holds this data
 // directory's managed runs, from GET /api/hosts. Read on open, again (at most once a second) on the session, removal and run events
 // the layout already streams, and every 30 s for the times it says; one read at a time, a reply older than one shown never drawn.
 // Its only actions are links: nothing here starts, moves, continues or retries work.
@@ -115,6 +115,7 @@ const ledgerNote = computed(() => (reply.value ? holderNote(reply.value.ledger.h
             availability="here"
             :availability-words="hostAvailabilityWords('here')"
             :sessions="reply.this.sessions"
+            :decisions="reply.this.decisions"
             :run-line="serverRunLine(reply.ledger.holder, reply.runs.length)"
           >
             <div v-if="reply.this.hosted" class="mt-3 border-t border-default pt-3" data-host-hosted>

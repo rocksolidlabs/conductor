@@ -5,8 +5,8 @@ import { clock } from '../app/utils/syncStatus'
 import { dayPage, expect, readAgain, test } from './fixtures'
 import { noSideways } from './layout'
 
-// The Hosts page (docs/plans/hosts.md, PR-3), against a stub of GET /api/hosts: This server, the hosts that reach it, the switchyard,
-// the runs and who holds them, and nothing that acts on work.
+// The Hosts page (docs/plans/hosts.md, PR-3 and PR-4), against a stub of GET /api/hosts: This server, the hosts that reach it, the
+// switchyard, the runs and who holds them, each count of what waits linked to its item on Needs you, and nothing that acts on work.
 // The stub's keys, session ids and run ids are its own (no test server mints them). The page against the real route, with a real
 // `conductor host`, is the last test.
 
@@ -140,6 +140,25 @@ test('the page draws this server, its hosts, the switchyard and the runs, as the
   // Nothing on the page acts on work (I2): no button starts, stops, moves, launches, continues or retries anything.
   const body = page.locator('#dashboard-panel-hosts-body, [data-hosts]').first()
   await expect(body.getByRole('button', { name: /start|stop|move|launch|continue|retry/i })).toHaveCount(0)
+})
+
+test('each count of what waits links to its item on Needs you, and to the list when more than one waits (PR-4)', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await serve(page, () => ({ json: stub() }))
+  await page.goto('/hosts')
+  const studio = card(page, 'hs2stub-studio')
+  await expect(studio.locator('[data-host-waiting]')).toHaveText('1 needs you')
+  await expect(studio.locator('[data-host-waiting]')).toHaveAttribute('href', `/decisions?item=${encodeURIComponent('question:hs2stub-s1/q-7')}`)
+  const here = card(page, 'hs2stub-this')
+  await expect(here.locator('[data-host-waiting]')).toHaveAttribute('href', `/decisions?item=${encodeURIComponent('question:hs2stub-s9/q-1')}`)
+  await expect(here.locator('[data-host-decisions]')).toHaveText('2 decisions wait')
+  await expect(here.locator('[data-host-decisions]')).toHaveAttribute('href', '/decisions')
+  const run = page.locator('[data-host-run="hs2stub-run-1"] [data-host-run-waiting]')
+  await expect(run).toHaveText('1 needs you')
+  await expect(run).toHaveAttribute('href', `/decisions?item=${encodeURIComponent('decision:hs2stub-dr-1')}`)
+  // Nothing waits: no count and no link.
+  await expect(card(page, 'hs2stub-wsl').locator('[data-host-waiting]')).toHaveCount(0)
+  await expect(page.locator('[data-host-run="hs2stub-run-2"] [data-host-run-waiting]')).toHaveCount(0)
 })
 
 test("each holder's words come from the reply that says them, redrawn: a former holder's line is gone", async ({ page }) => {

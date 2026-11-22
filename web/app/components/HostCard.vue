@@ -1,12 +1,12 @@
 <script setup lang="ts">
-import type { HostsSessions } from '~/utils/protocol'
-import { moreWords, platformWords, sessionWords, hostWaitingWords, whereWords, type CardSession } from '~/utils/hosts'
+import type { HostsDecisions, HostsSessions } from '~/utils/protocol'
+import { hostDecisionWords, moreWords, platformWords, sessionWords, waitingLink, hostWaitingWords, whereWords, type CardSession } from '~/utils/hosts'
 import { statusOfKey, type StatusView } from '~/utils/status'
 
 /**
  * A machine on the Hosts page (docs/plans/hosts.md, PR-3): its name, its platform in words, its version and user, its availability as
  * a neutral badge (Here, Connected, Away since 14:02, Last seen 13:40), its sessions and what
- * waits there, each session a link to its page, where its sessions run, and its run line. Availability is
+ * waits there (a link to Needs you, PR-4), each session a link to its page, where its sessions run, and its run line. Availability is
  * a fact this server sees, never a session's state: the badge is neutral, its icon telling the four apart, and no status colour is
  * drawn for it. The junction mark is never drawn here. Its only actions are links.
  */
@@ -25,6 +25,8 @@ const props = withDefaults(
     availability: CardAvailability
     availabilityWords: string
     sessions?: HostsSessions
+    /** The machine's open decisions (this server's, PR-4). */
+    decisions?: HostsDecisions | null
     sessionList?: Array<CardSession & { status?: StatusView }>
     moreSessions?: number
     where?: string[]
@@ -32,7 +34,7 @@ const props = withDefaults(
     /** Drawn inside another card (the sessions hosted from this server's machine): no card of its own, no name line. */
     bare?: boolean
   }>(),
-  { names: 0, platform: '', version: '', user: '', sessions: undefined, sessionList: () => [], moreSessions: 0, where: () => [], runLine: '', bare: false },
+  { names: 0, platform: '', version: '', user: '', sessions: undefined, decisions: undefined, sessionList: () => [], moreSessions: 0, where: () => [], runLine: '', bare: false },
 )
 
 const ICON: Record<CardAvailability, string> = {
@@ -46,6 +48,9 @@ const machineIcon = computed(() => (props.kind === 'host' ? 'i-lucide-laptop' : 
 const meta = computed(() => [platformWords(props.platform) || 'Platform not reported', props.version, props.user && `user ${props.user}`].filter(Boolean).join(' · '))
 const needs = statusOfKey('needs')
 const waiting = computed(() => hostWaitingWords(props.sessions?.waiting ?? 0))
+const waitingTo = computed(() => waitingLink(props.sessions?.waiting, props.sessions?.waitingRef))
+const decided = computed(() => hostDecisionWords(props.decisions?.open))
+const decidedTo = computed(() => waitingLink(props.decisions?.open, props.decisions?.waitingRef))
 </script>
 
 <template>
@@ -61,12 +66,28 @@ const waiting = computed(() => hostWaitingWords(props.sessions?.waiting ?? 0))
           <p class="mt-0.5 text-sm text-muted" data-host-meta>{{ meta }}</p>
         </template>
         <p v-if="names > 1" class="text-xs text-muted" data-host-names>Reported as {{ names }} names</p>
-        <div v-if="sessions" class="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm" :class="bare ? 'mt-1' : 'mt-2'" data-host-counts>
+        <div v-if="sessions || decided" class="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm" :class="bare ? 'mt-1' : 'mt-2'" data-host-counts>
           <span v-if="sessions" data-host-sessions :data-count="sessions.running">{{ sessionWords(sessions) }}</span>
-          <span v-if="waiting" class="inline-flex items-center gap-1.5" data-host-waiting :data-count="sessions?.waiting">
-            <StatusMark :status="needs" />
-            <span>{{ waiting }}</span>
-          </span>
+          <template v-if="waiting">
+            <ULink v-if="waitingTo" :to="waitingTo" class="inline-flex items-center gap-1.5 hover:underline pointer-coarse:py-2.5" data-host-waiting :data-count="sessions?.waiting">
+              <StatusMark :status="needs" />
+              <span>{{ waiting }}</span>
+            </ULink>
+            <span v-else class="inline-flex items-center gap-1.5" data-host-waiting :data-count="sessions?.waiting">
+              <StatusMark :status="needs" />
+              <span>{{ waiting }}</span>
+            </span>
+          </template>
+          <template v-if="decided">
+            <ULink v-if="decidedTo" :to="decidedTo" class="inline-flex items-center gap-1.5 hover:underline pointer-coarse:py-2.5" data-host-decisions :data-count="decisions?.open">
+              <StatusMark :status="needs" />
+              <span>{{ decided }}</span>
+            </ULink>
+            <span v-else class="inline-flex items-center gap-1.5" data-host-decisions :data-count="decisions?.open">
+              <StatusMark :status="needs" />
+              <span>{{ decided }}</span>
+            </span>
+          </template>
         </div>
         <p v-if="where.length" class="mt-1 text-xs text-muted" data-host-where>{{ whereWords(where) }}</p>
         <ul v-if="sessionList.length" class="mt-2 flex flex-col gap-0.5" data-host-session-list>

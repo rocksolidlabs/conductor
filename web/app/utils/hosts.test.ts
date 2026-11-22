@@ -5,6 +5,7 @@ import {
   hostAvailabilityWords,
   cardSessions,
   coalesce,
+  hostDecisionWords,
   holderNote,
   holderWords,
   hostsReader,
@@ -13,13 +14,15 @@ import {
   serverRunLine,
   sessionWords,
   sortHosts,
+  waitingLink,
   hostWaitingWords,
   whereWords,
 } from './hosts'
 import { clock } from './syncStatus'
 import { heldRunStatus } from './status'
 
-// The Hosts page's model (docs/plans/hosts.md, PR-3): the words it says, the order it draws, and the reader that never draws a reply older than one drawn.
+// The Hosts page's model (docs/plans/hosts.md, PR-3 and PR-4): the words it says, the order it draws, where its counts link, and the
+// reader that never draws a reply older than one drawn.
 
 const at = '2026-11-05T14:02:00Z'
 
@@ -81,7 +84,7 @@ describe('who holds the runs', () => {
   })
 })
 
-describe('the counts', () => {
+describe('the counts and their links (PR-4)', () => {
   it('says the sessions and what waits, and the count made elsewhere', () => {
     expect(sessionWords({ running: 0 })).toBe('No sessions')
     expect(sessionWords({ running: 1 })).toBe('1 session')
@@ -90,6 +93,18 @@ describe('the counts', () => {
     expect(hostWaitingWords(1)).toBe('1 needs you')
     expect(hostWaitingWords(2)).toBe('2 need you')
     expect(hostWaitingWords(null)).toBe('counted on the server that holds it')
+    expect(hostDecisionWords(1)).toBe('1 decision waits')
+    expect(hostDecisionWords(2)).toBe('2 decisions wait')
+    expect(hostDecisionWords(0)).toBe('')
+  })
+
+  it('links a count to its one item from the ref alone, to Needs you for more than one, and nowhere at 0', () => {
+    expect(waitingLink(1, 'decision:dr-7')).toBe('/decisions?item=decision%3Adr-7')
+    expect(waitingLink(1, 'question:s-1/q 2')).toBe('/decisions?item=question%3As-1%2Fq%202')
+    expect(waitingLink(2, undefined)).toBe('/decisions')
+    expect(waitingLink(1, undefined)).toBe('/decisions')
+    expect(waitingLink(0, 'decision:dr-7')).toBeUndefined()
+    expect(waitingLink(null, 'decision:dr-7')).toBeUndefined()
   })
 
   it('says where the sessions run, and names a session the page does not hold by its id', () => {
@@ -107,9 +122,9 @@ describe("a run's row", () => {
   const ledger = { holder: 'this' as const, note: '' }
   const run = (over: Partial<HostsRun> = {}): HostsRun => ({ id: 'team-0001', name: 'Release', crew: 'release', state: 'running', paused: false, waiting: 0, heldBy: 'this', ...over })
 
-  it('links the run to its page and says what waits on it', () => {
-    const v = runRowView(run({ waiting: 1 }), ledger)
-    expect(v).toMatchObject({ id: 'team-0001', title: 'Release', link: '/runs/team-0001', waiting: '1 needs you', waitingCount: 1, holder: 'Held by this server', note: '' })
+  it('links the run to its page and its count to its item', () => {
+    const v = runRowView(run({ waiting: 1, waitingRef: 'decision:dr-1' }), ledger)
+    expect(v).toMatchObject({ id: 'team-0001', title: 'Release', link: '/runs/team-0001', waiting: '1 needs you', waitingCount: 1, waitingLink: '/decisions?item=decision%3Adr-1', holder: 'Held by this server', note: '' })
   })
 
   it("draws each holder from that reply alone: from none on, the former holder's pid and time are nowhere in the row", () => {
@@ -141,9 +156,10 @@ describe("a run's row", () => {
     ])
   })
 
-  it('says a count made elsewhere', () => {
+  it('says a count made elsewhere, and links nowhere for it', () => {
     const v = runRowView(run({ heldBy: 'other', waiting: null }), { holder: 'other', note: 'pid 1 since 2026-11-05T13:00:00Z' })
     expect(v.waiting).toBe('counted on the server that holds it')
+    expect(v.waitingLink).toBeUndefined()
   })
 
   it("marks a run's state in the status language: running, paused, interrupted", () => {

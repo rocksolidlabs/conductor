@@ -1,6 +1,7 @@
 // The Hosts page (docs/plans/hosts.md, PR-3): every machine this server knows, what runs and waits on each, and who holds this
 // data directory's managed runs, from GET /api/hosts. The pure model the page and its components draw from: a platform in words,
-// a machine's availability and its order, a run's holder in words, and the one-read-at-a-time reader with its queue and generation. It imports no Nuxt module, so the Playwright specs read it too.
+// a machine's availability and its order, a run's holder in words, the links of what waits, and the
+// one-read-at-a-time reader with its queue and generation. It imports no Nuxt module, so the Playwright specs read it too.
 import type { HostAvailability, HostRow, HostsHolder, HostsRun, HostsSessions } from './protocol'
 import { clock } from './syncStatus'
 
@@ -99,6 +100,22 @@ export function hostWaitingWords(n: number | null | undefined): string {
   return `${n} ${n === 1 ? 'needs' : 'need'} you`
 }
 
+/**
+ * Where a count of what waits links (PR-4): the one item on Needs you when the reply names it (`waitingRef`), Needs you itself when
+ * more than one waits or the reply names none, nowhere at 0 or for a count made elsewhere (null). The reply carries the target; the
+ * page derives none.
+ */
+export function waitingLink(n: number | null | undefined, ref?: string): string | undefined {
+  if (!n || n <= 0) return undefined
+  return ref ? `/decisions?item=${encodeURIComponent(ref)}` : '/decisions'
+}
+
+/** Open decisions in words: "1 decision waits", "2 decisions wait"; '' at 0. */
+export function hostDecisionWords(n: number | undefined): string {
+  if (!n || n <= 0) return ''
+  return n === 1 ? '1 decision waits' : `${n} decisions wait`
+}
+
 /** "and 3 more", for rows a bounded list left out; '' at 0. */
 export function moreWords(n: number | undefined, what: string): string {
   return n && n > 0 ? `and ${n} more ${what} not listed` : ''
@@ -137,7 +154,8 @@ export function whereWords(where: readonly string[] | undefined): string {
 
 /**
  * A run's row as the page draws it, made from that row of that reply alone, so a row redrawn with the next reply shows nothing of the
- * last one (a former holder's pid and time among them): a local run's name linking to its run page, its id, what waits on it, and its holder's words with the note. Its state's mark is the status language's (heldRunStatus), drawn by the row from `state` and `paused`.
+ * last one (a former holder's pid and time among them): a local run's name linking to its run page, its id, what waits on it and
+ * where that links, and its holder's words with the note. Its state's mark is the status language's (heldRunStatus), drawn by the row from `state` and `paused`.
  */
 export interface RunRowView {
   id: string
@@ -149,6 +167,7 @@ export interface RunRowView {
   waiting: string
   /** How many wait, for the mark; 0 for none and for a count made elsewhere. */
   waitingCount: number
+  waitingLink?: string
   holder: string
   note: string
 }
@@ -163,6 +182,7 @@ export function runRowView(run: HostsRun, ledger: { holder: HostsHolder; note: s
     paused: run.paused,
     waiting: hostWaitingWords(run.waiting),
     waitingCount: run.waiting ?? 0,
+    waitingLink: waitingLink(run.waiting, run.waitingRef),
     holder: holderWords(holder),
     // The note is the ledger's, made for this reply: shown under the holder it was made for, never under another.
     note: holder === ledger.holder ? holderNote(holder, ledger.note) : '',

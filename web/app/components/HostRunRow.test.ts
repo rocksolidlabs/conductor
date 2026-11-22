@@ -17,7 +17,8 @@ describe("a run's row", () => {
   it('renders no button: the run link is its only action', () => {
     expect(template).not.toMatch(/<(UButton|button|IconButton)\b/)
     expect(template).toMatch(/<ULink\s+v-if="row\.link"/)
-    expect(template.match(/<ULink\b/g)?.length).toBe(1)
+    expect(template).toMatch(/<ULink v-if="row\.waitingLink"/)
+    expect(template.match(/<ULink\b/g)?.length).toBe(2)
   })
 
   it('draws the state in the status language', () => {
