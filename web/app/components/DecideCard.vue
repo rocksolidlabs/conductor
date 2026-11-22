@@ -9,9 +9,11 @@ import { ownStanding, ownStandingWords } from '~/utils/decisionPolicy'
  * the uncertainty and what an answer authorizes; the answer as its type asks; and, each above the card, what became of it. The draft
  * stays as typed through every refusal; while an answer's outcome is not known the form is held, and Send again sends that answer.
  *
- * Several approvals (SW1 PR-9): an approval of this person's that counts while the decision waits for others is said as counted, and
- * the form is not offered again (`held`, useDecide's); the server's "counted already" holds it the same way until a read shows it. A
- * receipt in a status this page does not know is said in neutral words and offers nothing, never as an approval.
+ * Several approvals (SW1 PR-9), judged by the view as read: an approval of this person's that counts is said as counted, and every
+ * answer is still offered (a Reject answers at once; an approval again answers it once every other approval it needs is in). An
+ * approval that no longer counts asks for another answer while the decision is open (its outcome, the server's words) and, once it is
+ * not, says only that it no longer counts. A receipt in a status this page does not know is said in neutral words and offers nothing
+ * (`held`, useDecide's), never as an approval.
  */
 const props = withDefaults(defineProps<{ card: DecideCard; answerable: boolean; closable: boolean; ended: boolean; held?: boolean }>(), { held: false })
 defineEmits<{ send: []; close: []; dismiss: [] }>()
@@ -22,8 +24,8 @@ const recommended = computed(() => v.value?.options?.[v.value.recommendation ?? 
 const ready = computed(() => props.card.draft.choice !== undefined || (v.value?.type === 'clarification' && !!props.card.draft.text.trim()))
 const locked = computed(() => !props.answerable || !!props.card.sent)
 const standing = computed(() => ownStanding(v.value?.own))
-/** Where the person's own answer stands, in words, in place of the outcome's "recorded" while it is counted. */
-const standingWords = computed(() => (v.value?.state === 'open' && standing.value ? ownStandingWords(standing.value, props.card.id) : ''))
+/** Where the person's own answer stands, in words, in place of the outcome's words: counted while open, no longer counting once closed. */
+const standingWords = computed(() => (v.value && standing.value ? ownStandingWords(standing.value, props.card.id, v.value.state === 'open') : ''))
 const outcome = computed(() => (v.value && !standingWords.value ? decideOutcomeWords(v.value) : ''))
 const asked = computed(() => {
   const t = Date.parse(v.value?.createdAt ?? '')

@@ -100,6 +100,8 @@ watch(
  * applied) reads the item and the list again, so what waits and where it stands follow.
  */
 const record = useDecisionRecord(() => decisionIdOf(openRef.value))
+/** Who reads the page: its own responses on a record are judged by the read with it (SW1 PR-9). */
+const operatorSubject = useOperatorSubject()
 /** Whether the record's DecisionRespond draws its buttons: its card then leaves out its option rows (UX1 PR-20). */
 const controls = ref(false)
 watch(
@@ -433,7 +435,7 @@ const lastClosed = computed(() => lastClosedWords(state.value.closed, recent.val
               <p v-if="!record.decision.value && !record.error.value" class="text-sm text-muted">Reading {{ decisionIdOf(item.ref) }}…</p>
               <template v-if="record.decision.value && record.decision.value.id === decisionIdOf(item.ref)">
                 <DecisionCard :decision="record.decision.value" :refs="record.refs.value" :now="now" :controls="controls" captures :policy-now="record.policyNow.value" :quorum="record.quorum.value" />
-                <DecisionRespond :decision="record.decision.value" :begin="record.begin" :policy-now="record.policyNow.value" :quorum="record.quorum.value" :router="record.router.value" @read="record.read()" @controls="controls = $event" />
+                <DecisionRespond :decision="record.decision.value" :begin="record.begin" :policy-now="record.policyNow.value" :quorum="record.quorum.value" :subject="operatorSubject" :router="record.router.value" @read="record.read()" @controls="controls = $event" />
               </template>
             </template>
           </InboxItem>

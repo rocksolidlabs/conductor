@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { Decision } from './decisions'
-import { answeredHow, answerers, canAskRouter, countedWords, eligibleWords, heldBackWords, knownStatus, notInForceWords, operatorHeldBack, overrideAllowed, overrideLine, overrideReasonReady, ownStanding, ownStandingWords, policyRefusalWords, quorumWords, routedPolicy, severalApprovals, stillNeeded, whoMayAnswer, type RoutedPolicy } from './decisionPolicy'
+import { answeredHow, answerers, approves, canAskRouter, countedWords, fullWords, ownResponse, placesFull, eligibleWords, heldBackWords, knownStatus, notInForceWords, operatorHeldBack, overrideAllowed, overrideLine, overrideReasonReady, ownStanding, ownStandingWords, policyRefusalWords, quorumWords, routedPolicy, severalApprovals, stillNeeded, whoMayAnswer, type RoutedPolicy } from './decisionPolicy'
 import type { DecisionQuorum } from './protocol'
 
 // A decision router's policy in words (SW1 PR-8, docs/plans/decision-policy.md, "web/app"): every via, a gap, not in force, and an
@@ -178,6 +178,13 @@ describe('several approvals: the count', () => {
     expect(quorumWords(several([['architecture', 3]], true), quorum([['architecture', 3, 1]]))!.distinct).toBe('')
   })
 
+  it('shows the count the read gives once answered by its approvals: full, the last group met, never one short', () => {
+    // The server's count includes the approval that answered (cam's, accepted), though the record holds one counted row.
+    const w = quorumWords(several([['architecture', 1], ['security', 1]]), { places: 2, filled: 2, groups: [{ role: 'architecture', quorum: 1, counted: 1, met: true }, { role: 'security', quorum: 1, counted: 1, met: true }] })!
+    expect(w.lead).toBe('2 of 2 approvals')
+    expect(w.groups.map((g) => g.words)).toEqual(['1 of 1 for the architecture owner: met', '1 of 1 for the security owner: met'])
+  })
+
   it('names a group the policy does not label by its role, and never draws a count past its quorum or a broken one', () => {
     const p = several([['architecture', 1]])
     const q: DecisionQuorum = { places: 3, filled: 9, groups: [{ role: 'architecture', quorum: 1, counted: 5, met: true }, { role: 'legal', quorum: 2, counted: -1, met: true }] }
@@ -200,23 +207,63 @@ describe('several approvals: a person\'s own answer', () => {
     expect(countedWords(null, null)).toBe('Your approval is counted. It waits for the other approvals it needs.')
   })
 
-  it('reads where a decide principal stands from its newest receipt: counted, answered again after a failed recheck, or unknown', () => {
+  it('reads where a person stands from their newest response as read: counted, no longer counting, or unknown', () => {
     expect(ownStanding([])).toBeNull()
     expect(ownStanding(undefined)).toBeNull()
     expect(ownStanding([{ k: 1, status: 'counted' }])).toBe('counted')
-    // A counted approval that no longer counts reads refused (not_confirmed): the person answers again.
-    expect(ownStanding([{ k: 1, status: 'refused' }])).toBeNull()
-    expect(ownStanding([{ k: 2, status: 'refused' }, { k: 1, status: 'counted' }])).toBeNull()
-    expect(ownStanding([{ k: 1, status: 'refused' }, { k: 2, status: 'counted' }])).toBe('counted')
-    expect(ownStanding([{ k: 1, status: 'accepted' }])).toBeNull()
+    // A counted approval that no longer counts reads refused, not_confirmed: lapsed, and answered again while open.
+    expect(ownStanding([{ k: 1, status: 'refused', code: 'not_confirmed' }])).toBe('lapsed')
+    expect(ownStanding([{ k: 1, status: 'refused', code: 'stale_decision' }])).toBeNull()
+    expect(ownStanding([{ k: 2, status: 'refused', code: 'not_confirmed' }, { k: 1, status: 'counted' }])).toBe('lapsed')
+    expect(ownStanding([{ k: 1, status: 'refused', code: 'not_confirmed' }, { k: 2, status: 'counted' }])).toBe('counted')
+    // A counted approver's Reject answers it: the newest row is accepted.
+    expect(ownStanding([{ k: 1, status: 'counted' }, { k: 2, status: 'accepted' }])).toBeNull()
     // A status a newer server gives is neither an approval nor nothing: it offers nothing.
-    expect(ownStanding([{ k: 1, status: 'pending_review' as never }])).toBe('unknown')
-    expect(ownStandingWords('counted', 'dr-8')).toBe('Your approval of dr-8 is counted. It waits for the other approvals it needs: nothing more is asked of you.')
+    expect(ownStanding([{ k: 1, status: 'pending_review' }])).toBe('unknown')
+    expect(knownStatus('counted')).toBe(true)
+    expect(knownStatus('approved')).toBe(false)
+  })
+
+  it("finds the operator's own responses in the read by its subject's actor alone, never the workbench token's", () => {
+    const rows = [
+      { decision: 'dr-8', k: 1, status: 'counted', words: '', actor: 'user:ana', at: '', rev: 2 },
+      { decision: 'dr-8', k: 2, status: 'counted', words: '', actor: 'user:cam', at: '', rev: 3 },
+      { decision: 'dr-8', k: 3, status: 'refused', code: 'not_confirmed', words: '', actor: 'user:ana', at: '', rev: 3 },
+      { decision: 'dr-8', k: 4, status: 'accepted', words: '', actor: 'admin', at: '', rev: 4 },
+    ]
+    expect(ownResponse({ responses: rows }, 'ana')?.k).toBe(3)
+    expect(ownResponse({ responses: rows }, 'cam')?.k).toBe(2)
+    expect(ownResponse({ responses: rows }, '')).toBeUndefined()
+    expect(ownResponse({ responses: rows }, 'dee')).toBeUndefined()
+    expect(ownResponse({ responses: undefined }, 'ana')).toBeUndefined()
+  })
+
+  it('says the decide page\'s standing: counted offers every answer, an approval no longer counting is said once closed, nothing more', () => {
+    expect(ownStandingWords('counted', 'dr-8')).toBe('Your approval of dr-8 is counted. You may still choose another answer; approving again answers dr-8 only when every other approval it needs is in.')
+    expect(ownStandingWords('counted', 'dr-8', false)).toBe('')
+    // While open the outcome says it (the server's "answer again"); once closed the page says only that it no longer counts.
+    expect(ownStandingWords('lapsed', 'dr-8', true)).toBe('')
+    expect(ownStandingWords('lapsed', 'dr-8', false)).toBe('Your approval of dr-8 no longer counts.')
+    expect(ownStandingWords('lapsed', 'dr-8', false)).not.toContain('answer again')
     expect(ownStandingWords('unknown', 'dr-8')).toBe('This page cannot show what became of your answer to dr-8: nothing more is asked of you here.')
     expect(ownStandingWords('unknown', 'dr-8')).not.toMatch(/approv|counted/)
     expect(ownStandingWords(null, 'dr-8')).toBe('')
-    expect(knownStatus('counted')).toBe(true)
-    expect(knownStatus('approved')).toBe(false)
+  })
+
+  it("holds back only the approval of a counted approver while places are left, and offers it once every place is filled", () => {
+    const short = quorum([['architecture', 1, 1], ['security', 1, 0]])
+    const full = quorum([['architecture', 1, 1], ['security', 1, 1]])
+    expect(placesFull(short)).toBe(false)
+    expect(placesFull(full)).toBe(true)
+    expect(placesFull(quorum([['architecture', 1, 1]]))).toBe(false)
+    expect(placesFull(null)).toBe(false)
+    expect(approves({ type: 'approval' }, 0)).toBe(true)
+    expect(approves({ type: 'approval' }, 1)).toBe(false)
+    expect(approves({ type: 'assignment' }, 0)).toBe(true)
+    expect(approves({ type: 'clarification' }, 0)).toBe(false)
+    expect(countedWords(p, short, 'Reject')).toBe('Your approval is counted: 1 of 2 approvals. It waits for the security owner. You may still answer Reject.')
+    expect(fullWords(true)).toBe('Your approval is counted, and every approval it needs is in: approving again answers it.')
+    expect(fullWords(false)).toBe('Every approval it needs is in: an approval now answers it.')
   })
 
   it('says the two refusals in their own words', () => {
@@ -238,6 +285,13 @@ describe('several approvals: how it was answered', () => {
     expect(answeredHow(rec('answered', [reject]), q)).toBe('Reject by Cam: one eligible Reject answers it at once.')
     expect(answeredHow(rec('answered', [{ ...counted, k: 3 }, counted, reject]), q)).toContain('The 2 approvals counted before it stay in the record.')
     expect(answeredHow(rec('answered', [{ ...reject, choice: 1 }], 'assignment'), q)).toBe('Not done by Cam: one eligible Not done answers it at once.')
+  })
+
+  it('counts only the approvals that stand: one that no longer counts is not said as kept', () => {
+    const reject = { decision: 'dr-8', k: 3, status: 'accepted', words: 'Recorded', actor: 'user:cam', byName: 'Cam', choice: 1, at: '', rev: 4 }
+    const lapsed = { ...counted, k: 2, status: 'refused', code: 'not_confirmed', words: "Dan's approval of dr-8 no longer counts: its sign-in could not be rechecked" }
+    expect(answeredHow(rec('answered', [counted, lapsed, reject]), q)).toBe('Reject by Cam: one eligible Reject answers it at once. The approval counted before it stays in the record.')
+    expect(answeredHow(rec('answered', [lapsed, reject]), q)).toBe('Reject by Cam: one eligible Reject answers it at once.')
   })
 
   it('says an override answered every group at once', () => {

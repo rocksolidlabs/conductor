@@ -1,5 +1,5 @@
-import { hasInjectionContext, inject, type ComputedRef } from 'vue'
-import type { DecisionEvent, DecisionQuorum } from '~/utils/protocol'
+import { hasInjectionContext, inject, type ComputedRef, type Ref } from 'vue'
+import type { DecisionEvent, DecisionQuorum, MeReply } from '~/utils/protocol'
 import { REF_ACCESS } from '~/utils/refAccess'
 import type { Decision, DecisionRef } from '~/utils/decisions'
 import type { PolicyNow } from '~/utils/decisionPolicy'
@@ -371,6 +371,24 @@ export class DecisionRecordView {
  * window's focus).
  */
 export const POLICY_REREAD_MS = 15_000
+
+/**
+ * Who reads the operator's pages (`GET /api/me`), read once a page load: an identity's operator's subject, '' for the workbench token or
+ * while not known. A record's responses kept under `user:<subject>` are that reader's own: the card judges its own counted approval by
+ * the read with it (SW1 PR-9), never by a send's reply.
+ */
+export function useOperatorSubject(): Ref<string> {
+  const subject = useState<string>('operatorSubject', () => '')
+  const asked = useState<boolean>('operatorSubjectAsked', () => false)
+  if (!asked.value && import.meta.client) {
+    asked.value = true
+    const { request } = useApi()
+    request<MeReply>('/api/me')
+      .then((me) => (subject.value = typeof me?.subject === 'string' ? me.subject : ''))
+      .catch(() => (asked.value = false))
+  }
+  return subject
+}
 
 /**
  * One decision whole (`GET /api/decisions/{id}`, with its evidence's resolutions), read when the id is set, again on its own `decision`
