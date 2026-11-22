@@ -6,7 +6,7 @@ import type { Attention } from '~/utils/protocol'
 import { isEnded, liveAttention } from './attention'
 import { memberSession, memberStatus, ownError, type MemberStatus } from './crews'
 import { runState } from './runs'
-import { taskAnswer } from './tasks'
+import { NEVER_RUNS_WORDS, neverRuns, taskAnswer } from './tasks'
 
 /**
  * One status language (the UX review's P1; docs/design/system.md, Status): a session is in one of five states, each with one mark
@@ -180,6 +180,7 @@ export function markLook(key: MarkKey): StatusLook {
 }
 
 const READY_LEGEND = 'ready: it can start; it starts when a member is free'
+const NEVER_RUNS_LEGEND = 'will not run: a task it needs failed or was cancelled, or its run ended first; it never starts'
 const CHECKING_LEGEND = "checking: the attempt's result is being checked"
 const HELD_LEGEND = "needs you: it waits for a person's decision; nothing moves until someone answers"
 const OUT_LEGEND = 'needs you: it failed, and a person decides: retry it, or accept its last result anyway'
@@ -191,17 +192,20 @@ function mark(key: MarkKey, word = markLook(key).word, legend = markLook(key).le
 }
 
 /** What taskStatus reads of a task: its state, and where it has them, its holds, the engine's commands and its attempt. */
-export type TaskInput = Pick<RunTask, 'state'> & Partial<Pick<RunTask, 'holds' | 'commands'>>
+export type TaskInput = Pick<RunTask, 'state'> & Partial<Pick<RunTask, 'holds' | 'commands' | 'blockedForGood'>>
 
 /**
  * A task's state, by these rules in order: a decision still open that holds it (taskAnswer) is needs, and so is a failed task on which
  * the engine names a command (`commands`: the inbox's own rule, internal/api/inbox.go taskItem; a record carries none); a hold answered
  * and not yet applied is Yardmaster's to apply, not a person's. A running task is its attempt's session's state (working, finished,
- * needs or running), running while no live session is known; verifying is the working mark with "checking"; blocked is waiting and
+ * needs or running), running while no live session is known; verifying is the working mark with "checking"; a task that will never run
+ * (neverRuns) is the cancelled mark with "will not run"; blocked is waiting and
  * ready is the waiting mark with "ready"; succeeded is done, failed with no command failed, cancelled cancelled.
  */
-export function taskStatus(t: TaskInput, run: Pick<RunInfo, 'record'> | undefined, attemptSession: StatusInput | undefined, now = Date.now()): MarkView {
+export function taskStatus(t: TaskInput, run: (Pick<RunInfo, 'record'> & Partial<Pick<RunInfo, 'outcome'>>) | undefined, attemptSession: StatusInput | undefined, now = Date.now()): MarkView {
   const terminal = t.state === 'succeeded' || t.state === 'failed' || t.state === 'cancelled'
+  // A task that will never run (blocked for good, or never started in a run that ended) is not waiting: the dash, "will not run".
+  if (neverRuns(t, run)) return mark('cancelled', NEVER_RUNS_WORDS, NEVER_RUNS_LEGEND)
   if (!terminal && taskAnswer(t)) return mark('needs', 'needs you', HELD_LEGEND)
   if (t.state === 'failed' && !run?.record && (t.commands?.length ?? 0) > 0) return mark('needs', 'needs you', OUT_LEGEND)
   switch (t.state) {

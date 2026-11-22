@@ -194,6 +194,45 @@ test("the palette's Cancel… asks with Keep it and Cancel the task, as the row'
   await page.close()
 })
 
+test("a task blocked for good says it will not run, never waiting, and neither its menu nor the palette offers Cancel…", async ({ day, browser }) => {
+  void day
+  // release-notes needs migrate, which failed out of its attempts: the server says it is blocked for good, and names Cancel on it still.
+  const run = ledger()
+  const notes = run.tasks.find((t) => t.id === 'release-notes')!
+  Object.assign(notes, { state: 'blocked', needs: ['migrate'], reason: 'needs migrate, which will not succeed', blockedForGood: true, holds: undefined, commands: ['cancel'] })
+  const { page, commands } = await opened(browser, run)
+  const row = page.locator('[data-task-row="release-notes"]')
+  await expect(row.locator('[data-status-word]')).toHaveText('will not run')
+  await expect(row).toContainText('will not run: needs migrate, which will not succeed')
+  await expect(row).not.toContainText('waiting')
+  // Its detail says the same.
+  await row.locator('> [role="button"]').click()
+  await expect(page.locator('[data-task-detail-id="release-notes"] [data-task-never-runs]')).toHaveText('will not run: needs migrate, which will not succeed')
+  // Its menu, where it has one, holds no Cancel…; the palette's row offers none either.
+  await expect(page.locator('[data-task-cancel="release-notes"]')).toHaveCount(0)
+  if (await page.locator('[data-task-menu="release-notes"]').count()) {
+    await page.locator('[data-task-menu="release-notes"]').click()
+    await expect(page.getByRole('menu')).toBeVisible()
+    await expect(page.getByRole('menu').getByRole('menuitem', { name: 'Cancel…' })).toHaveCount(0)
+    await page.keyboard.press('Escape')
+    await expect(page.getByRole('menu')).toHaveCount(0)
+  }
+  budget(3 * LOAD_MS) // the palette, the row, its words
+  await page.keyboard.press('Control+k')
+  const palette = page.locator('[data-palette]')
+  await expect(palette).toBeVisible({ timeout: LOAD_MS })
+  await palette.locator('input[data-palette-input]').fill('release-notes')
+  const item = palette.locator('[data-palette-row="page:task:release-notes"]')
+  await expect(item).toContainText('will not run: needs migrate, which will not succeed', { timeout: LOAD_MS })
+  await expect(item.locator('[data-palette-action="cancel"]')).toHaveCount(0)
+  for (let i = 0; i < 12 && (await item.getAttribute('data-palette-focused')) === null; i++) await page.keyboard.press('ArrowDown')
+  await expect(item).toHaveAttribute('data-palette-focused', '')
+  await page.keyboard.press('ArrowRight')
+  await expect(item.locator('[data-palette-action="cancel"]')).toHaveCount(0)
+  expect(commands, 'nothing was sent').toEqual([])
+  await page.close()
+})
+
 /**
  * At the page's narrow width, every row of `run` whole: who below the state, the actions (when the row has any) on a line of their own
  * below who and what, no two of the row's pieces over each other (an action over the id or the name), and the id, the state's word

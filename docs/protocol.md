@@ -5146,7 +5146,12 @@ checkpoint with it, since the next attempt starts from the new result. The ledge
 version 3 for the checkpoint column and the messages table; a version 2
 database is brought to it as it opens.
 
-The run reports `tasks` (each with its `state`, `reason`, `attempts`, latest
+The run reports `tasks` (each with its `state`, `reason`, `blockedForGood`
+(`true` on a blocked task that will never start: a task it needs failed, was
+cancelled or is itself blocked for good, the condition its `reason`'s "…,
+which will not succeed" is written from; absent otherwise, a task blocked
+for now among them; the run page then says it will not run and offers no
+command on it, though the engine still takes a cancel), `attempts`, latest
 `attempt`, `result`, in a continuation `importedFrom`, in a crew with
 people its `owner` and `ownerFrom`, and `commands`, the task commands its
 state allows now, `retry`, `accept` and `cancel` in that order, as the

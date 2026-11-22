@@ -597,6 +597,11 @@ export interface RunTask {
   /** blocked (its needs have no result yet, or never will: `reason` says), ready, running (an attempt is in flight), verifying (a result is checked), succeeded, failed, cancelled. */
   state: 'blocked' | 'ready' | 'running' | 'verifying' | 'succeeded' | 'failed' | 'cancelled'
   reason?: string
+  /**
+   * A blocked task that will never start: a task it needs failed, was cancelled or is itself blocked for good (the engine's words
+   * "…, which will not succeed" are written from the same condition); absent otherwise, and from a server older than it (neverRuns).
+   */
+  blockedForGood?: boolean
   /** Attempts made so far. */
   attempts: number
   /** The durable decisions that hold it (Program item DR1): it is not dispatched until each is applied or ends; absent for none. */

@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import type { RunStep, RunTask } from '~/composables/useSessions'
-import { holdsWords, openDecisions, taskAnswer } from './tasks'
+import { holdsWords, openDecisions, taskAnswer, neverRuns } from './tasks'
 import {
   CommandRefused,
   commandBody,
@@ -63,6 +63,32 @@ describe('taskCounts and taskBadges', () => {
     ])
     expect(taskBadges({ tasks: [], cleaning: 1 }).at(-1)?.title).toBe('1 tree is being ended: services stopped, cleanup steps run')
     expect(taskBadges({ tasks: [], cleaning: 0 }).map((b) => b.label)).toEqual(['0/0 tasks'])
+  })
+})
+
+describe('a task that will never run', () => {
+  const doomed = task({ state: 'blocked', needs: ['build'], reason: 'needs build, which will not succeed', blockedForGood: true, commands: ['cancel'] })
+  it('says it will not run, with the reason, never that it waits', () => {
+    expect(neverRuns(doomed, {})).toBe(true)
+    expect(taskWords(doomed, {})).toEqual({ text: 'will not run: needs build, which will not succeed', tone: 'muted' })
+    expect(taskRow(doomed, {}).words).toBe('will not run: needs build, which will not succeed')
+    // Blocked for now: as before.
+    const waiting = task({ state: 'blocked', needs: ['build'], reason: 'needs build', commands: ['cancel'] })
+    expect(neverRuns(waiting, {})).toBe(false)
+    expect(taskWords(waiting, {}).text).toBe('needs build')
+    // A run that ended: a task never started, blocked or ready, will not run; one that ran keeps its words.
+    expect(taskWords(task({ state: 'ready' }), { outcome: 'failed' }).text).toBe('will not run: the run ended before it started')
+    expect(taskWords(task({ state: 'blocked', needs: ['build'], reason: 'needs build' }), { outcome: 'cancelled' }).text).toBe('will not run: needs build')
+    expect(neverRuns(task({ state: 'failed' }), { outcome: 'failed' })).toBe(false)
+  })
+  it('is offered nothing that acts on it, Cancel among them, though the engine names it; what reads stays', () => {
+    const withAttempt = { ...doomed, attempts: 1, attempt: { n: 1, state: 'failed' as const, sessionId: 's1', branch: 'crew/r/build.1' } }
+    expect(taskActions(withAttempt, {})).toMatchObject({ retry: false, accept: false, cancel: false, open: true, copyBranch: true })
+    expect(taskRow(withAttempt, {}).menu).not.toContain('cancel')
+    // Blocked for now, the same task named Cancel: offered.
+    expect(taskActions({ ...withAttempt, blockedForGood: undefined }, {}).cancel).toBe(true)
+    // A run that ended: none on a task that never started.
+    expect(taskActions(task({ state: 'ready', commands: ['cancel'] }), { outcome: 'cancelled' }).cancel).toBe(false)
   })
 })
 
