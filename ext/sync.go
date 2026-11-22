@@ -785,16 +785,18 @@ type Remote struct {
 	Kind       string    `json:"kind"`       // RemoteDecision, RemotePointer, RemotePins, RemoteDevice or RemoteHosts
 	Device     string    `json:"device"`     // the provider's id of the machine that reported it, at most MaxHeldID bytes of [A-Za-z0-9._-]
 	DeviceName string    `json:"deviceName"` // at most MaxDeviceName bytes, one line
-	ID         string    `json:"id"`         // the record's id on that machine (dr-n, a run's id, "pins", a device's id, "summary"), the shape of Device
+	ID         string    `json:"id"`         // the record's id on that machine (dr-n, a run's id, "pins", a device's id, "summary"), the shape of Device, or a pointer's run's id (ValidRunID, at most MaxRunID bytes)
 	Rev        int64     `json:"rev"`
 	At         time.Time `json:"at"`
 	Data       []byte    `json:"data"` // the kind's body: a DecisionDoc, a run pointer, a pins document, a device, a host summary
 }
 
 // Valid checks a record against its kind's bound and shape: a kind of the
-// five; its device and id 1 to MaxHeldID bytes of [A-Za-z0-9._-]; its
-// device's name one line of at most MaxDeviceName bytes; its time set;
-// its body a JSON object of its kind, within its kind's bound:
+// five; its device and id 1 to MaxHeldID bytes of [A-Za-z0-9._-], a
+// pointer's id that or a run's id (ValidRunID, at most MaxRunID bytes,
+// so a crew id of any length it takes is named whole); its device's name
+// one line of at most MaxDeviceName bytes; its time set; its body a JSON
+// object of its kind, within its kind's bound:
 //   - decision: a DecisionDoc whose id is the record's, its request part
 //     sound (RequestPart), at most MaxDecisionDoc;
 //   - pointer: a run pointer whose id is the record's, at most
@@ -807,8 +809,8 @@ type Remote struct {
 //     MaxRemoteHosts.
 func (r Remote) Valid() error {
 	switch {
-	case !remoteID.MatchString(r.Device) || !remoteID.MatchString(r.ID):
-		return fmt.Errorf("%w: a remote record's device and id are 1 to %d bytes of A-Z a-z 0-9 . _ -", ErrRefused, MaxHeldID)
+	case !remoteID.MatchString(r.Device) || !remoteRecordID(r.Kind, r.ID):
+		return fmt.Errorf("%w: a remote record's device and id are 1 to %d bytes of A-Z a-z 0-9 . _ -, a pointer's id a run's id of at most %d", ErrRefused, MaxHeldID, MaxRunID)
 	case r.DeviceName == "" || len(r.DeviceName) > MaxDeviceName || !oneLine(r.DeviceName):
 		return fmt.Errorf("%w: a remote record's device name is one line of 1 to %d bytes", ErrRefused, MaxDeviceName)
 	case r.At.IsZero() || r.Rev < 0:
@@ -870,6 +872,13 @@ func (r Remote) Valid() error {
 // remoteID is the shape of a remote record's device and id.
 var remoteID = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
 
+// remoteRecordID says id can name a record of kind: remoteID's shape, or
+// for a pointer, which is named by its run, a run's id (runID), whose
+// bound MaxRunID is past remoteID's.
+func remoteRecordID(kind, id string) bool {
+	return remoteID.MatchString(id) || kind == RemotePointer && runID(id)
+}
+
 // The kinds of a Remote.
 const (
 	RemoteDecision = "decision"
@@ -914,9 +923,9 @@ type SyncReport struct {
 	Person     string         `json:"person,omitempty"`    // the same
 }
 
-// SyncWithheld is a change kept back: what (CND-12's comment, dr-7), at
-// most MaxHeldID bytes, and why, at most MaxSyncWords characters of one
-// line.
+// SyncWithheld is a change kept back: what (CND-12's comment, dr-7, a
+// run's id), at most MaxRunID bytes, and why, at most MaxSyncWords
+// characters of one line.
 type SyncWithheld struct {
 	Ref   string `json:"ref"`
 	Words string `json:"words"`
@@ -933,8 +942,8 @@ func (r SyncReport) IsZero() bool {
 // Valid checks a report against its bounds: the zero report, nothing to
 // report, is valid; any other report has a state of the five; waiting
 // not below 0; at most MaxSyncWithheld changes kept back, each a ref of 1
-// to MaxHeldID bytes of one line and words of at most MaxSyncWords
-// characters of one line; an answer page that is an https URL of at most
+// to MaxRunID bytes (a run's id fits) of one line and words of at most
+// MaxSyncWords characters of one line; an answer page that is an https URL of at most
 // MaxAnswerURL bytes, or none; its own device the shape of a remote
 // record's, its name one line of at most MaxDeviceName bytes, its
 // workspace and person opaque ids of at most MaxHeldID bytes.
@@ -964,8 +973,8 @@ func (r SyncReport) Valid() error {
 		}
 	}
 	for _, w := range r.Withheld {
-		if w.Ref == "" || len(w.Ref) > MaxHeldID || !oneLine(w.Ref) || !oneLine(w.Words) || utf8.RuneCountInString(w.Words) > MaxSyncWords {
-			return fmt.Errorf("%w: a change kept back names what in %d bytes and why in %d characters, each one line", ErrRefused, MaxHeldID, MaxSyncWords)
+		if w.Ref == "" || len(w.Ref) > MaxRunID || !oneLine(w.Ref) || !oneLine(w.Words) || utf8.RuneCountInString(w.Words) > MaxSyncWords {
+			return fmt.Errorf("%w: a change kept back names what in %d bytes and why in %d characters, each one line", ErrRefused, MaxRunID, MaxSyncWords)
 		}
 	}
 	return nil
