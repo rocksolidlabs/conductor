@@ -5,7 +5,7 @@ import { carried, DECISION_ANSWERING, replyKept, replyWords, type AnswerFields }
 import { inShell } from '~/utils/shell'
 import { mintCommandId } from '~/utils/tasks'
 import type { PolicyNow } from '~/utils/decisionPolicy'
-import { canAskRouter, countedWords, heldBackWords, knownStatus, ownStandingWords, MIN_OVERRIDE_REASON, operatorHeldBack, overrideAllowed, overrideReasonReady, policyRefusalWords, routedPolicy } from '~/utils/decisionPolicy'
+import { approves, canAskRouter, countedWords, fullWords, heldBackWords, knownStatus, ownResponse, ownStanding, ownStandingWords, placesFull, MIN_OVERRIDE_REASON, operatorHeldBack, overrideAllowed, overrideReasonReady, policyRefusalWords, routedPolicy } from '~/utils/decisionPolicy'
 import type { DecisionQuorum } from '~/utils/protocol'
 
 /**
@@ -29,7 +29,7 @@ import type { DecisionQuorum } from '~/utils/protocol'
  * the text, the rationale, Back and Answer are disabled and no draft is written, its words and its actions (Cancel, Confirm to send
  * your answer) drawn. With nothing injected, the server's routes, as before.
  */
-const props = withDefaults(defineProps<{ decision: Decision; begin: () => (decision: Decision) => void; policyNow?: PolicyNow | null; quorum?: DecisionQuorum | null; router?: boolean }>(), { policyNow: null, quorum: null, router: false })
+const props = withDefaults(defineProps<{ decision: Decision; begin: () => (decision: Decision) => void; policyNow?: PolicyNow | null; quorum?: DecisionQuorum | null; subject?: string; router?: boolean }>(), { policyNow: null, quorum: null, subject: '', router: false })
 const emit = defineEmits<{ read: []; controls: [shown: boolean] }>()
 
 const { request } = useApi()
@@ -64,8 +64,6 @@ const text = ref('')
 const rationale = ref('')
 const receipt = ref<ResponseReceipt | null>(null)
 const refusal = ref('')
-/** The code of the last refusal ('' for none): `already_counted` holds the answer, as a counted receipt does. */
-const refusedCode = ref('')
 const busy = ref(false)
 const comment = ref('')
 const opWords = ref('')
@@ -132,7 +130,8 @@ async function sendOverride() {
 /** A refusal in words: the policy's own codes said first, then the server's words. */
 function refusalWords(e: unknown): string {
   const err = refusalOf(e)
-  refusedCode.value = err.code
+  // Counted already, or not needed: the record's read says where this person's approval stands now.
+  if (err.code === 'already_counted' || err.code === 'not_needed') emit('read')
   const lead = policyRefusalWords(err.code, d.value.id, policy.value)
   return lead && lead !== err.message ? `${lead} ${err.message}` : err.message
 }
@@ -158,23 +157,40 @@ async function askRouter() {
 }
 
 /**
- * Several approvals (SW1 PR-9): the operator's own approval counted (an identity's operator the policy names) waits for the others,
- * and so does one the server says is counted already: the answer is not offered again, the choice as it was picked stays drawn, and
- * the words say what is still needed. A receipt in a status this page does not know is drawn as neither an answer nor an approval.
+ * Several approvals (SW1 PR-9), judged by the record as read, never by a send's reply: the operator's own newest response (an identity's
+ * operator the policy names: the rows kept under its subject) says where its answer stands. Counted while places are left: its approval
+ * is not offered again (the choice disabled, with the count's words), and every other answer (a Reject) still is. Every place filled
+ * while still open (a re-route can leave it so): an approval answers it, a counted approver's too, and the words say so. A counted
+ * approval that no longer counts: the server's words, and the answer offered again. A status this page does not know: neutral words,
+ * nothing offered.
  */
-/** The receipt's status as the record holds it now (a counted approval whose recheck failed reads refused there), else as it came. */
-const receiptStatus = computed(() => {
-  const k = receipt.value?.k
-  return (k ? d.value.responses?.find((r) => r.k === k)?.status : undefined) ?? receipt.value?.status
+const own = computed(() => ownResponse(d.value, props.subject))
+const standing = computed(() => (d.value.state === 'open' && own.value ? ownStanding([own.value]) : null))
+const full = computed(() => d.value.state === 'open' && placesFull(props.quorum))
+/** The approval held back: this person's approval counts and places are left, so another would fill nothing. */
+const approvalHeld = computed(() => standing.value === 'counted' && !full.value)
+/** Everything held back: a status this page does not know, for its own response or the reply it was just given. */
+const unknownReceipt = computed(() => !!receipt.value && !knownStatus(receiptShown.value?.status))
+const answerHeld = computed(() => d.value.state === 'open' && (standing.value === 'unknown' || unknownReceipt.value))
+/** Whether choice i is held back now. */
+const choiceHeld = (i: number | undefined) => answerHeld.value || (approvalHeld.value && approves(d.value, i))
+/** The answer that is still this person's to give beside the approval held back (an approval's Reject, an assignment's Not done). */
+const otherLabel = computed(() => options.value.find((_, i) => !approves(d.value, i))?.label ?? '')
+const standingLine = computed(() => {
+  if (answerHeld.value) return ownStandingWords('unknown', d.value.id)
+  if (approvalHeld.value) return countedWords(policy.value, props.quorum, otherLabel.value)
+  if (full.value && !!props.policyNow?.inForce && !!props.policyNow.eligible) return fullWords(standing.value === 'counted')
+  if (standing.value === 'lapsed') return own.value?.words ?? ''
+  return ''
 })
-const unknownReceipt = computed(() => !!receipt.value && !knownStatus(receiptStatus.value))
-const counted = computed(() => d.value.state === 'open' && (receiptStatus.value === 'counted' || refusedCode.value === 'already_counted'))
-/** Held: counted, or a receipt in a status this page does not know (offered nothing, said in neutral words). */
-const answerHeld = computed(() => counted.value || (d.value.state === 'open' && unknownReceipt.value))
-const heldLine = computed(() => (counted.value ? countedWords(policy.value, props.quorum) : unknownReceipt.value ? ownStandingWords('unknown', d.value.id) : ''))
+/** The last reply's receipt as the record holds it now (a counted approval that no longer counts reads so there), else as it came. */
+const receiptShown = computed(() => {
+  const k = receipt.value?.k
+  return (k ? d.value.responses?.find((r) => r.k === k) : undefined) ?? receipt.value
+})
 
 function pick(i: number) {
-  if (locked.value || answerHeld.value) return
+  if (locked.value || choiceHeld(i)) return
   refusal.value = ''
   if (confirms.value) pending.value = { choice: i, rev: d.value.rev }
   else picked.value = picked.value === i ? undefined : i
@@ -182,10 +198,11 @@ function pick(i: number) {
 
 async function send(choice: number | undefined, rev: number) {
   // A selection is never sent without its rationale (the server refuses one too).
-  if (busy.value || !ask.value.ready || locked.value || answerHeld.value || !respondOn.value.on) return
+  // An answer this person may not give now (their approval counting while places are left) is never sent.
+  if (choiceHeld(choice)) return
+  if (busy.value || !ask.value.ready || locked.value || !respondOn.value.on) return
   busy.value = true
   refusal.value = ''
-  refusedCode.value = ''
   const take = props.begin()
   try {
     const body = responseBody({ choice, text: confirms.value ? '' : text.value, rationale: rationale.value, expectedRev: rev, byName: identity.name.value })
@@ -217,7 +234,7 @@ async function send(choice: number | undefined, rev: number) {
   }
 }
 
-const canSend = computed(() => !busy.value && !locked.value && !answerHeld.value && respondOn.value.on && ask.value.ready && (picked.value !== undefined || !!text.value.trim()))
+const canSend = computed(() => !busy.value && !locked.value && !choiceHeld(picked.value) && respondOn.value.on && ask.value.ready && (picked.value !== undefined || !!text.value.trim()))
 
 async function opSend(kind: 'comment' | 'more_info') {
   if (commentBusy.value || !comment.value.trim()) return
@@ -240,7 +257,6 @@ async function opSend(kind: 'comment' | 'more_info') {
 
 function readAgain() {
   refusal.value = ''
-  refusedCode.value = ''
   pending.value = null
   emit('read')
 }
@@ -304,7 +320,6 @@ watch(
     rationale.value = ''
     receipt.value = null
     refusal.value = ''
-    refusedCode.value = ''
     opWords.value = ''
     comment.value = ''
     void nextTick(() => {
@@ -331,7 +346,7 @@ watch(
           :ui="{ label: 'min-w-0 text-clip whitespace-normal wrap-anywhere text-start' }"
           :color="(pending?.choice ?? picked) === i ? 'primary' : 'neutral'"
           :variant="(pending?.choice ?? picked) === i ? 'solid' : i === best ? 'soft' : 'outline'"
-          :disabled="busy || locked || heldBack || answerHeld"
+          :disabled="busy || locked || heldBack || choiceHeld(i)"
           :data-decision-choice="i"
           :data-decision-choice-label="o.label"
           :data-decision-recommended="i === best ? '' : undefined"
@@ -348,7 +363,7 @@ watch(
         <UButton v-if="canOverride" label="Override…" icon="i-lucide-shield-alert" size="sm" color="warning" variant="outline" class="max-lg:min-h-11" :disabled="busy" data-decision-override @click="openOverride" />
       </div>
       <!-- Several approvals: this person's approval counts, and the answer waits for the others; nothing is offered again. -->
-      <p v-if="answerHeld" class="break-words rounded-md bg-elevated/40 p-2 text-sm ring ring-default" role="status" data-decision-counted :data-held-by="counted ? 'counted' : 'unknown'">{{ heldLine }}</p>
+      <p v-if="standingLine" class="break-words rounded-md bg-elevated/40 p-2 text-sm ring ring-default" role="status" data-decision-standing :data-standing="answerHeld ? 'unknown' : approvalHeld ? 'counted' : standing === 'lapsed' ? 'lapsed' : 'full'">{{ standingLine }}</p>
       <!-- Each choice's tradeoffs, one muted line each under the buttons. -->
       <ul v-if="tradeoffs.length" class="flex flex-col gap-0.5 text-xs text-muted" data-decision-tradeoffs>
         <li v-for="t in tradeoffs" :key="t.i" class="break-words" :data-decision-tradeoff="t.i">
@@ -358,7 +373,7 @@ watch(
       <UTextarea v-if="decision.type === 'clarification' && !heldBack && !answerHeld" v-model="text" :rows="2" autoresize placeholder="Or answer in words…" :maxlength="4096" :disabled="busy || locked" data-decision-text />
       <UTextarea v-if="!heldBack && !answerHeld" v-model="rationale" :rows="1" autoresize :placeholder="ask.placeholder" :maxlength="2000" :disabled="busy || locked" :required="rationaleNeeded" :aria-required="rationaleNeeded" data-decision-rationale :data-rationale-required="rationaleNeeded ? '' : undefined" />
 
-      <div v-if="pending && !answerHeld" class="flex flex-col gap-2 rounded-md bg-warning/10 p-2 ring ring-warning/30" data-decision-confirm-step>
+      <div v-if="pending && !choiceHeld(pending.choice)" class="flex flex-col gap-2 rounded-md bg-warning/10 p-2 ring ring-warning/30" data-decision-confirm-step>
         <p class="text-sm wrap-anywhere">
           Answer {{ decision.id }} <span class="font-semibold" data-decision-confirm-choice>{{ options[pending.choice]?.label }}</span>?
           <template v-if="confirmAuthorizes(decision, pending.choice)"> <span data-decision-confirm-authorizes>{{ confirmAuthorizes(decision, pending.choice) }}</span></template>
@@ -389,7 +404,7 @@ watch(
     </div>
 
     <!-- Done, in neutral ink with its check, as a done step is (UX1 PR-20, invariant 7: green is a live agent's alone). -->
-    <p v-if="receipt" class="flex items-start gap-1.5 rounded-md bg-elevated/40 p-2 text-sm text-default" data-decision-receipt :data-receipt-status="receipt.status"><UIcon :name="unknownReceipt ? 'i-lucide-info' : 'i-lucide-circle-check'" class="mt-0.5 size-4 flex-none" data-decision-receipt-mark /><span class="min-w-0 break-words">{{ receipt.words }}<span v-if="receipt.k" class="font-mono text-xs text-muted"> · receipt {{ receipt.decision }}/{{ receipt.k }}</span></span></p>
+    <p v-if="receiptShown" class="flex items-start gap-1.5 rounded-md bg-elevated/40 p-2 text-sm text-default" data-decision-receipt :data-receipt-status="receiptShown.status"><UIcon :name="unknownReceipt || receiptShown?.status === 'refused' ? 'i-lucide-info' : 'i-lucide-circle-check'" class="mt-0.5 size-4 flex-none" data-decision-receipt-mark /><span class="min-w-0 break-words">{{ receiptShown.words }}<span v-if="receiptShown.k" class="font-mono text-xs text-muted"> · receipt {{ receiptShown.decision }}/{{ receiptShown.k }}</span></span></p>
     <div v-if="refusal" class="flex flex-wrap items-center gap-2 rounded-md bg-error/10 p-2 text-sm text-error" data-decision-refusal>
       <span class="min-w-0 flex-1 break-words" data-decision-refusal-words>{{ refusal }}</span>
       <UButton label="Read again" icon="i-lucide-refresh-cw" size="xs" color="neutral" variant="outline" data-decision-read-again @click="readAgain" />

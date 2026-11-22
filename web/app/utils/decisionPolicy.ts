@@ -218,15 +218,34 @@ export function stillNeeded(p: RoutedPolicy, q: DecisionQuorum | null | undefine
   return `It waits for ${list}.`
 }
 
+/** Whether every place of a record's policy is filled now, as its count says (several approvals only). */
+export function placesFull(q: DecisionQuorum | null | undefined): boolean {
+  return severalApprovals(q) && count(q.filled) >= count(q.places)
+}
+
+/** Whether choice i of d is an approval, which fills places (an approval's or an assignment's first option); any other answers at once. */
+export function approves(d: Pick<Decision, 'type'>, i: number | undefined): boolean {
+  return i === 0 && (d.type === 'approval' || d.type === 'assignment')
+}
+
 /**
- * The operator's own approval counted (an identity's operator the policy names): "Your approval is counted: 1 of 2 approvals. It waits
- * for the security owner." Without a count, the words say only that it waits for the others.
+ * The operator's own approval counted and standing while places are left (an identity's operator the policy names): "Your approval is
+ * counted: 1 of 2 approvals. It waits for the security owner. You may still answer Reject." Without a count, the words say only that it
+ * waits for the others; without another answer to give, they leave the last sentence out.
  */
-export function countedWords(p: RoutedPolicy | null, q: DecisionQuorum | null | undefined): string {
+export function countedWords(p: RoutedPolicy | null, q: DecisionQuorum | null | undefined, other = ''): string {
   const w = p ? quorumWords(p, q) : null
   const owed = p ? stillNeeded(p, q) : ''
   const where = w?.lead || w?.groups[0]?.words || ''
-  return `Your approval is counted${where ? `: ${where}` : ''}. ${owed || 'It waits for the other approvals it needs.'}`
+  return `Your approval is counted${where ? `: ${where}` : ''}. ${owed || 'It waits for the other approvals it needs.'}${other ? ` You may still answer ${other}.` : ''}`
+}
+
+/**
+ * An open record whose places are all filled (a re-route can leave it so): the next eligible approval answers it, a counted approver's
+ * too. Said to whoever may approve it now.
+ */
+export function fullWords(mineCounted: boolean): string {
+  return mineCounted ? 'Your approval is counted, and every approval it needs is in: approving again answers it.' : 'Every approval it needs is in: an approval now answers it.'
 }
 
 /** Whether a response's status is one this page knows how to draw. */
@@ -254,21 +273,42 @@ export function answeredHow(d: Pick<Decision, 'state' | 'type' | 'responses' | '
   return ''
 }
 
-/**
- * Where a decide principal's own answer stands, from its newest receipt (`own`, by `k`): `counted` while its approval counts and the
- * decision waits for others; `unknown` for a status a newer server gives that this page does not know; null otherwise (nothing yet,
- * accepted, or refused: a counted approval that no longer counts reads refused, and is answered again).
- */
-export function ownStanding(own: readonly Pick<DecideReceipt, 'k' | 'status'>[] | null | undefined): 'counted' | 'unknown' | null {
-  if (!own?.length) return null
-  const newest = own.reduce((a, b) => (count(b.k) > count(a.k) ? b : a))
-  if (newest.status === 'counted') return 'counted'
-  return knownStatus(newest.status) ? null : 'unknown'
+/** The newest of the responses a person made, by `k`: the one that says where their answer stands. */
+function newest<T extends { k?: number }>(rows: readonly T[]): T | undefined {
+  return rows.length ? rows.reduce((a, b) => (count(b.k) > count(a.k) ? b : a)) : undefined
 }
 
-/** The decide page's words of where the person's own answer stands (ownStanding), naming the decision and no one; '' for none. */
-export function ownStandingWords(standing: ReturnType<typeof ownStanding>, did: string): string {
-  if (standing === 'counted') return `Your approval of ${did} is counted. It waits for the other approvals it needs: nothing more is asked of you.`
+/**
+ * The operator's own newest response on a record, from the read alone (never a send's reply): the responses kept under its actor,
+ * `user:<subject>` for an identity's operator. None for the workbench token (no subject), which is never a subject the policy counts.
+ */
+export function ownResponse(d: Pick<Decision, 'responses'>, subject: string | null | undefined): ResponseReceipt | undefined {
+  if (!subject) return undefined
+  return newest((d.responses ?? []).filter((r) => r.actor === `user:${subject}`))
+}
+
+/**
+ * Where a person's own answer stands, from their newest response as the read gives it (a decide principal's `own`, or the operator's own
+ * rows of `responses`): `counted` while their approval counts; `lapsed` once a counted approval no longer counts (refused,
+ * `not_confirmed`); `unknown` for a status a newer server gives that this page does not know; null otherwise (nothing yet, accepted, or
+ * refused for any other reason).
+ */
+export function ownStanding(own: readonly { k?: number; status: string; code?: string }[] | null | undefined): 'counted' | 'lapsed' | 'unknown' | null {
+  const n = newest(own ?? [])
+  if (!n) return null
+  if (n.status === 'counted') return 'counted'
+  if (n.status === 'refused' && n.code === 'not_confirmed') return 'lapsed'
+  return knownStatus(n.status) ? null : 'unknown'
+}
+
+/**
+ * The decide page's words of where the person's own answer stands, naming the decision and no group or person: counted (the decide view
+ * carries no count, so whether an approval again answers it is said as a condition); an approval that no longer counts on a decision no
+ * longer open (the server's "answer again" is said only while it is open, by its outcome); a status it does not know. '' for none.
+ */
+export function ownStandingWords(standing: ReturnType<typeof ownStanding>, did: string, open = true): string {
+  if (standing === 'counted' && open) return `Your approval of ${did} is counted. You may still choose another answer; approving again answers ${did} only when every other approval it needs is in.`
+  if (standing === 'lapsed' && !open) return `Your approval of ${did} no longer counts.`
   if (standing === 'unknown') return `This page cannot show what became of your answer to ${did}: nothing more is asked of you here.`
   return ''
 }

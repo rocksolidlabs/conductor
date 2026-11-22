@@ -1,6 +1,6 @@
 import { onBeforeUnmount, onMounted, reactive } from 'vue'
 import { decideWords, isDecisionId, replaces, respondOutcome } from '~/utils/decisions'
-import { ownStanding } from '~/utils/decisionPolicy'
+import { ownStanding, ownStandingWords } from '~/utils/decisionPolicy'
 import { DECIDE_CARDS, DECIDE_FRESH_FOR, DECIDE_READ_EVERY, DECIDE_READ_WAIT, GRANT_DECIDE, MAX_DECIDE_LIST, MAX_DECIDE_LIST_ENTRIES, MAX_DECIDE_REPLY, MAX_DECIDE_VIEW, MAX_ME_REPLY } from '~/utils/protocol'
 import type { DecideEntry, DecideReceipt, DecideView, MeReply } from '~/utils/protocol'
 import { mintCommandId } from '~/utils/tasks'
@@ -36,10 +36,7 @@ export interface DecideCard {
   unknown: string
   /** The words of the last send's definite refusal. */
   refused: string
-  /**
-   * That refusal's code ('' for none). `already_counted` (SW1 PR-9: this person's approval counts already) holds the answer until a read
-   * shows where it stands.
-   */
+  /** That refusal's code ('' for none). */
   refusedCode: string
   /** An end for this person: its answer's final outcome, no longer open to it (404), or its reads refused (403). */
   end: '' | 'applied' | 'not_used' | 'gone' | 'refused'
@@ -270,7 +267,8 @@ export function createDecide(env: DecideEnv, did?: string) {
   function settle(c: DecideCard, rc: DecideReceipt) {
     c.sent = ''
     c.unknown = ''
-    c.refused = rc.status === 'refused' ? decideWords(rc.code ?? '', c.id) : ''
+    // An approval that no longer counts asks for another answer only while the decision is open (the server's words say so too).
+    c.refused = rc.status !== 'refused' ? '' : rc.code === 'not_confirmed' && c.view?.state !== 'open' ? ownStandingWords('lapsed', c.id, false) : decideWords(rc.code ?? '', c.id)
     c.refusedCode = rc.status === 'refused' ? (rc.code ?? '') : ''
   }
 
@@ -281,8 +279,6 @@ export function createDecide(env: DecideEnv, did?: string) {
   function take(c: DecideCard, v: DecideView, whole: boolean, at?: ReturnType<typeof mark>) {
     if ((whole && c.end) || !replaces(c.view, v, whole)) return
     c.view = v
-    // A read shows where the person's answer stands: `already_counted` holds the answer no longer than that.
-    if (whole && c.refusedCode === 'already_counted' && !c.sent) c.refusedCode = ''
     if (at) {
       Object.assign(c, at, { failed: false })
       fresh(c)
@@ -369,11 +365,12 @@ export function createDecide(env: DecideEnv, did?: string) {
   const closable = (c: DecideCard) => c.open && !c.end && emptyDraft(c.draft) && !c.sent
 
   /**
-   * Whether a new answer is held (SW1 PR-9): the person's own approval counts and the decision waits for others, the server said it is
-   * counted already, or the newest own receipt is in a status this page does not know. Nothing is offered then.
+   * Whether a new answer is held (SW1 PR-9), judged by the view as read: only when the newest own receipt is in a status this page does
+   * not know. A person whose approval counts is still offered every answer: a Reject answers at once, and an approval again answers it
+   * once every other approval it needs is in (the server refuses it, counted already, while one is still missing).
    */
   function held(c: DecideCard): boolean {
-    return !!ownStanding(c.view?.own) || c.refusedCode === 'already_counted'
+    return ownStanding(c.view?.own) === 'unknown'
   }
 
   /**
@@ -430,8 +427,8 @@ export function createDecide(env: DecideEnv, did?: string) {
       c.sent = ''
       c.refused = decideWords(r.body.error.code, id)
       c.refusedCode = r.body.error.code
-      // Counted already: the view read now shows the approval that counts, and nothing is offered meanwhile.
-      if (c.refusedCode === 'already_counted' && !c.end) reads.get(c)?.run()
+      // Counted already, or not needed: the view read now shows where the person's approval stands.
+      if ((c.refusedCode === 'already_counted' || c.refusedCode === 'not_needed') && !c.end) reads.get(c)?.run()
     } else c.unknown = heldWords(c, r.body?.error?.code === 'rate_limited' ? 'rate_limited' : 'decision_moved')
   }
 

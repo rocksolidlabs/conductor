@@ -10,6 +10,8 @@ import { inboxKindWords } from '~/utils/inbox'
 const modal = useDecisionModal()
 const decisions = useDecisions()
 const record = useDecisionRecord(() => modal.id.value)
+/** Who reads the page: its own responses on a record are judged by the read with it (SW1 PR-9). */
+const operatorSubject = useOperatorSubject()
 const now = ref(Date.now())
 let tick: number | undefined
 onMounted(() => {
@@ -38,7 +40,7 @@ const open = computed({
         <p v-if="!record.decision.value && !record.error.value" class="text-sm text-muted">Reading {{ modal.id.value }}…</p>
         <template v-if="record.decision.value">
           <DecisionCard :decision="record.decision.value" :refs="record.refs.value" :now="now" :controls="controls" captures :policy-now="record.policyNow.value" :quorum="record.quorum.value" />
-          <DecisionRespond :decision="record.decision.value" :begin="record.begin" :policy-now="record.policyNow.value" :quorum="record.quorum.value" :router="record.router.value" @read="record.read()" @controls="controls = $event" />
+          <DecisionRespond :decision="record.decision.value" :begin="record.begin" :policy-now="record.policyNow.value" :quorum="record.quorum.value" :subject="operatorSubject" :router="record.router.value" @read="record.read()" @controls="controls = $event" />
         </template>
       </div>
     </template>
