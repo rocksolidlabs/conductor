@@ -99,15 +99,29 @@ async function serve(page: Page, next: () => { status?: number; json: unknown })
 
 const card = (page: Page, key: string) => page.locator(`[data-host-card="${key}"]`)
 
+/**
+ * Hosts opened as a person opens it from the palette (the plan's "go hosts"): the palette's key once the layout's sidebar is drawn
+ * (its listener's own component), "hosts" typed, the Go to row chosen. The palette's input holds what was typed before Enter.
+ */
+async function goHosts(page: Page) {
+  await expect(page.locator('#dashboard-sidebar-main')).toBeVisible()
+  await page.keyboard.press('Alt+/')
+  const palette = page.locator('[data-palette]')
+  const input = palette.locator('input[data-palette-input]')
+  await expect(input).toBeFocused()
+  await input.fill('hosts')
+  await expect(input).toHaveValue('hosts')
+  const row = palette.locator('[data-palette-row="go:hosts"]')
+  await expect(row.locator('[data-palette-label]')).toHaveText('Hosts')
+  await row.click()
+  await expect(page).toHaveURL(/\/hosts$/)
+}
+
 test('the page draws this server, its hosts, the switchyard and the runs, as the reply says', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 })
   await serve(page, () => ({ json: stub() }))
   await page.goto('/crews')
-  // The layout's keys are listened for once its sidebar is drawn: G then O opens Hosts.
-  await expect(page.locator('#dashboard-sidebar-main')).toBeVisible()
-  await page.keyboard.press('g')
-  await page.keyboard.press('o')
-  await expect(page).toHaveURL(/\/hosts$/)
+  await goHosts(page)
   await expect(page.locator('[data-hosts]')).toBeVisible()
 
   const here = card(page, 'hs2stub-this')
@@ -333,10 +347,7 @@ test.describe('the page against the real route', () => {
     mkdirSync(elsewhere, { recursive: true })
     const first = await startHost(api, state, 'hosts-a', elsewhere)
     await page.goto('/crews')
-    await expect(page.locator('#dashboard-sidebar-main')).toBeVisible()
-    await page.keyboard.press('g')
-    await page.keyboard.press('o')
-    await expect(page).toHaveURL(/\/hosts$/)
+    await goHosts(page)
     await expect(card(page, (await rowOf(page, state.token, first.id))?.key ?? 'none')).toBeVisible()
     const row = (await rowOf(page, state.token, first.id))!
     const mine = card(page, row.key)
