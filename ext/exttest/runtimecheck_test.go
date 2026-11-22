@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"slices"
@@ -80,6 +81,38 @@ func TestTheContractHoldsForTheFake(t *testing.T) {
 			t.Errorf("Where %q, want the fake's own", f.Where())
 		}
 	})
+}
+
+// takenPort is the native Runtime whose first Port for the probe check
+// answers a port another socket of the test holds, as when a socket takes
+// the number Port picked before the helper binds it.
+type takenPort struct {
+	ext.Runtime
+	held   int
+	handed atomic.Int32
+}
+
+func (r *takenPort) Port(ctx context.Context, ref ext.ProcessRef) (int, error) {
+	if ctx.Err() == nil && ref.Run == "exttest-probe" && r.handed.Add(1) == 1 {
+		return r.held, nil
+	}
+	return r.Runtime.Port(ctx, ref)
+}
+
+// A port Port answered that another socket has taken by the time the
+// helper binds it is not the Runtime's fault: the check starts the helper
+// again on a fresh one, and the native Runtime passes.
+func TestAPortTakenBeforeTheHelperBindsItIsAskedForAgain(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	r := &takenPort{Runtime: local.Native(), held: ln.Addr().(*net.TCPAddr).Port}
+	RuntimeExec(t, r, helperCase(t))
+	if n := r.handed.Load(); n < 2 {
+		t.Errorf("Port was asked for the probe %d time(s): want the held port, then a fresh one", n)
+	}
 }
 
 // broken is the native Runtime with one rule broken, as its fields say.

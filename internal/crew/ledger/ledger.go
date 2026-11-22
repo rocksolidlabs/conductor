@@ -398,7 +398,7 @@ func Open(dir string) (*Ledger, error) {
 		// what there is, and takes the lock as it is let go (awaitLock),
 		// for up to LockWait.
 		l.why = "waiting for the owner lock: " + why
-		go l.awaitLock(lockPath, path)
+		go l.awaitLock(lockPath, path, time.Now().Add(LockWait))
 	}
 	return l, nil
 }
@@ -495,8 +495,8 @@ func (l *Ledger) readVersion(ctx context.Context) {
 	}
 }
 
-// awaitLock tries for the owner lock every 250 ms for up to LockWait
-// after Open and, once it is taken, opens the database as the owner's in
+// awaitLock tries for the owner lock every 250 ms until deadline (Open's
+// LockWait, read as Open returns) and, once it is taken, opens the database as the owner's in
 // place of the read-only one, under mu, so a reader sees one or the other;
 // then OnOwned's function runs. Past LockWait the ledger stays read-only
 // and says who holds the lock. Close ends the wait: each try is made under
@@ -505,8 +505,7 @@ func (l *Ledger) readVersion(ctx context.Context) {
 // it is missing, and a lock taken opens the database: once Close has
 // returned, the wait makes nothing in the directory, which may be going by
 // then (a test's cleanup removing it, #281).
-func (l *Ledger) awaitLock(lockPath, path string) {
-	deadline := time.Now().Add(LockWait)
+func (l *Ledger) awaitLock(lockPath, path string, deadline time.Time) {
 	tick := time.NewTicker(250 * time.Millisecond)
 	defer tick.Stop()
 	for {

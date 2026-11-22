@@ -1994,13 +1994,15 @@ func TestCloseReadsChecks(t *testing.T) {
 // The close's checks are off its critical path (#989): fourteen delivery
 // links, every item read in the close's first pass, then the checks in a
 // second, four at once, the first four checks reads answered and the rest
-// held at the fake past the phase. The close passes; each link shows
-// either the checks read now or the last read's with the time they were
-// read. With the checks read beside each item, the held reads keep the
-// four slots to the read's cap and then to the phase's end, the last two
-// links get none, and the close is refused.
+// held at the fake, the phase ended (as its cap would end it) once four
+// are held. The close passes; each link shows either the checks read now
+// or the last read's with the time they were read. With the checks read
+// beside each item, the held reads keep the four slots to the phase's
+// end, the links after them get no read, and the close is refused. The
+// caps are generous: the phase ends when the test ends it, so a loaded
+// machine's slow item read in the first pass refuses nothing.
 func TestCloseChecksAfterTheItems(t *testing.T) {
-	e, g, _ := mergedEnv(t, &trackerCaps{busy: 500 * time.Millisecond, reads: testWait, images: testWait, merged: 3 * time.Second, write: testWait})
+	e, g, _ := mergedEnv(t, &trackerCaps{busy: testWait, reads: testWait, images: testWait, merged: testWait, write: testWait})
 	key := e.newDispatchTicket(t, "MLR", "Close it", nil)["key"].(string)
 	// The links added with no token kept, so no read starts in the
 	// background (one at a time per ticket, each wait within the short
@@ -2024,15 +2026,25 @@ func TestCloseChecksAfterTheItems(t *testing.T) {
 		first[l] = r
 	}
 	// The first four checks reads answered, a failure now; the rest held
-	// until the test ends.
+	// until the test ends, and the close's phase ended once four are held,
+	// every slot taken.
 	var mu sync.Mutex
 	answered := 0
+	var endPhase func()
+	e.srv.external.closePhase = func(end func()) {
+		mu.Lock()
+		endPhase = end
+		mu.Unlock()
+	}
 	held := make(chan struct{})
 	t.Cleanup(func() { close(held) })
 	g.f.Handle("GET", "api.github.com", itemsRepo+"/commits/"+headSHA+"/status", func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		answered++
 		hold := answered > 4
+		if answered == 4+maxCloseReads && endPhase != nil {
+			endPhase()
+		}
 		mu.Unlock()
 		if hold {
 			select {
