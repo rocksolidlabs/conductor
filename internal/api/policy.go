@@ -16,6 +16,7 @@ import (
 	"github.com/rocksolidlabs/conductor/ext"
 	"github.com/rocksolidlabs/conductor/internal/crew"
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
+	"github.com/rocksolidlabs/conductor/internal/proto"
 )
 
 // A decision router's policy on a decision record (SW1,
@@ -401,6 +402,25 @@ func (s *Server) routeInForce(ctx context.Context, did string) (revision string,
 	return p.Revision, s.policyCheck(ctx, rec, p.Revision, "").InForce
 }
 
+// quorumFor is the operator's read's count of a record under a router's
+// policy (proto.DecisionQuorum): its places in all, those the counted
+// approvals that stand fill now, and each group's count; nil for any other
+// record, and for one the ledger cannot read now.
+func (s *Server) quorumFor(ctx context.Context, did string) *proto.DecisionQuorum {
+	if s.ledger == nil {
+		return nil
+	}
+	n, ok := ledger.ParseDecisionID(did)
+	if !ok {
+		return nil
+	}
+	rec, found, err := s.ledger.Decision(ctx, n)
+	if err != nil || !found {
+		return nil
+	}
+	return crew.QuorumOf(rec, s.runs.Boot(), s.runs.CountedPending)
+}
+
 // policyNowReply is GET /api/decisions/{did}'s policyNow: in force now and
 // the router's why; eligible when the reader, an identity's operator, is
 // among those the policy names and the router confirms now.
@@ -563,7 +583,7 @@ func (h *extHost) routerLedger() (*ledger.Ledger, error) {
 // OpenDecisions pages every open record after the decision after ("" for
 // the first), in number order, each with its policy (nil under the
 // server's own), when the router's policy was first written, the last
-// route's why and its rev. No count cuts it: a router reads every page.
+// route's why, its rev and its counted approvals that stand. No count cuts it: a router reads every page.
 func (h *extHost) OpenDecisions(ctx context.Context, after string) (ext.OpenDecisionsPage, error) {
 	ld, err := h.routerLedger()
 	if err != nil {
@@ -589,6 +609,7 @@ func (h *extHost) OpenDecisions(ctx context.Context, after string) (ext.OpenDeci
 		if p, _, ok := crew.RouterPolicyOf(rec.Policy); ok {
 			od.Policy = &p
 			od.RoutedAt = routedAtOf(rec.Policy)
+			od.Counted = crew.CountedOf(rec, h.s.runs.Boot(), h.s.runs.CountedPending)
 		}
 		page.Decisions = append(page.Decisions, od)
 	}

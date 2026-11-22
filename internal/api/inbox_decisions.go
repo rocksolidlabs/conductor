@@ -678,6 +678,21 @@ func (s *Server) decisionTrack(ctx context.Context, n int64, actor, kind, id str
 		}
 		var rc crew.ResponseReceipt
 		_ = json.Unmarshal([]byte(r.Receipt), &rc)
+		if r.Status == ledger.ResponseCounted && crew.CountedStands(rec, s.runs.Boot(), s.runs.CountedPending)(r.K) {
+			// An approval counted toward a router's policy of several places:
+			// recorded, the decision open until the last place is filled; its
+			// application is the decision's.
+			receipt := fmt.Sprintf("%s/%d", rec.ID(), r.K)
+			if rec.State == ledger.DecisionOpen {
+				return []deliveryStep{avail, step(stepRecorded, stepDone, timeOf(r.At), cmpOr(rc.Words, "counted"), receipt),
+					step(stepValidated, stepWaiting, nil, "not yet: it waits for the places still to fill", ""), step(stepApplied, stepWaiting, nil, "not yet", "")}, nil
+			}
+			all[1] = step(stepRecorded, stepDone, timeOf(r.At), cmpOr(rc.Words, "counted"), receipt)
+			return all, nil
+		}
+		if r.Status == ledger.ResponseCounted {
+			rc.Words, rc.Code = "counted, then not rechecked: answer again", crew.CodeNotConfirmed
+		}
 		words := cmpOr(rc.Words, "refused")
 		if rc.Code != "" {
 			words += " (" + rc.Code + ")"

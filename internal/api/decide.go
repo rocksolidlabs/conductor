@@ -309,7 +309,7 @@ func (s *Server) decideRead(w http.ResponseWriter, r *http.Request, p principal)
 	}
 	s.decideWorked(w, p, func(w http.ResponseWriter) {
 		if rec, a, ok := s.admittedRecord(w, r, p); ok {
-			s.writeBounded(w, http.StatusOK, decideView(rec, admittee(p), a), proto.MaxDecideView)
+			s.writeBounded(w, http.StatusOK, s.decideView(rec, admittee(p), a), proto.MaxDecideView)
 		}
 	})
 }
@@ -439,7 +439,7 @@ func (s *Server) decideAnswer(w http.ResponseWriter, r *http.Request, p principa
 	reply := proto.DecideReply{Receipt: decideReceipt(rc, resp.ResponseID)}
 	if after, found, err := s.ledger.Decision(ctx, rec.N); err == nil && found {
 		if a := decideAdmission(after, p); a != crew.AdmitNone {
-			v := decideView(after, admittee(p), a)
+			v := s.decideView(after, admittee(p), a)
 			reply.Decision = &v
 		}
 	}
@@ -488,9 +488,12 @@ func decideReceipt(rc crew.ResponseReceipt, responseID string) proto.DecideRecei
 // receipts and outcome alone. Its own receipts are the rows who sent
 // (crew.Admittee.Sent), as its outcome is (crew.OutcomeOf): a router's row
 // kept in its name is not its own. Nothing is resolved through another
-// record.
-func decideView(rec ledger.DecisionRecord, who crew.Admittee, a crew.Admission) proto.DecideView {
+// record. A counted approval of its own reads counted while it counts,
+// and refused, code not_confirmed, once it no longer does
+// (crew.CountedStands).
+func (s *Server) decideView(rec ledger.DecisionRecord, who crew.Admittee, a crew.Admission) proto.DecideView {
 	v := proto.DecideView{ID: rec.ID(), Rev: rec.Rev, Own: []proto.DecideReceipt{}}
+	stands := crew.CountedStands(rec, s.runs.Boot(), s.runs.CountedPending)
 	for _, row := range rec.Responses {
 		if !who.Sent(row) {
 			continue
@@ -498,10 +501,13 @@ func decideView(rec ledger.DecisionRecord, who crew.Admittee, a crew.Admission) 
 		var rc crew.ResponseReceipt
 		_ = json.Unmarshal([]byte(row.Receipt), &rc)
 		rc.K, rc.At = row.K, row.At
+		if row.Status == ledger.ResponseCounted && !stands(row.K) {
+			rc.Status, rc.Code = proto.ReceiptRefused, crew.CodeNotConfirmed
+		}
 		v.Own = append(v.Own, decideReceipt(rc, row.ResponseID))
 	}
 	v.Own = v.Own[max(0, len(v.Own)-proto.MaxDecideOwn):]
-	v.Outcome, v.OutcomeCode = crew.OutcomeOf(rec, who)
+	v.Outcome, v.OutcomeCode = crew.OutcomeWith(rec, who, stands)
 	if a != crew.AdmitOpen {
 		return v
 	}

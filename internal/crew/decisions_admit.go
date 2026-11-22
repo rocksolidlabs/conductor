@@ -165,11 +165,33 @@ func AdmissionOf(rec ledger.DecisionRecord, who Admittee) Admission {
 // final without applying it; refused, with the newest one's code, when
 // none of its responses was accepted; "" when it has none.
 func OutcomeOf(rec ledger.DecisionRecord, who Admittee) (outcome, code string) {
+	return OutcomeWith(rec, who, nil)
+}
+
+// OutcomeWith is OutcomeOf with stands saying whether a counted approval
+// k still counts (CountedStands; nil: every one does). A counted approval
+// that counts is waiting while the decision is open or answered by an
+// approval, applied once that approval is applied, and not_used once the
+// decision ended otherwise (a Reject, an override's, a supersession); one
+// that no longer counts is refused, code not_confirmed. An accepted
+// response of its own says the outcome before any counted one.
+func OutcomeWith(rec ledger.DecisionRecord, who Admittee, stands func(k int) bool) (outcome, code string) {
 	var app struct {
 		Response int `json:"response"`
 	}
 	applied := rec.Applied != "" && json.Unmarshal([]byte(rec.Applied), &app) == nil
+	// approved says the record's accepted response approves it (the
+	// combined answer its counted approvals are part of).
+	approved := false
+	for _, r := range rec.Responses {
+		if r.Status == ledger.ResponseAccepted {
+			var rc ResponseReceipt
+			_ = json.Unmarshal([]byte(r.Receipt), &rc)
+			approved = !rc.Override && approvesRecord(rec.Type, Response{Choice: rc.Choice}) && len(rc.Groups) > 0
+		}
+	}
 	own := false
+	counted := ""
 	for _, r := range rec.Responses {
 		if !who.Sent(r) {
 			continue
@@ -178,6 +200,20 @@ func OutcomeOf(rec ledger.DecisionRecord, who Admittee) (outcome, code string) {
 		var rc ResponseReceipt
 		_ = json.Unmarshal([]byte(r.Receipt), &rc)
 		code = rc.Code
+		if r.Status == ledger.ResponseCounted {
+			switch {
+			case stands != nil && !stands(r.K):
+				code = CodeNotConfirmed
+				counted = ""
+			case rec.State == ledger.DecisionOpen || rec.State == ledger.DecisionAnswered && approved:
+				counted, code = proto.OutcomeWaiting, ""
+			case rec.State == ledger.DecisionApplied && approved && applied:
+				counted, code = proto.OutcomeApplied, ""
+			default:
+				counted, code = proto.OutcomeNotUsed, ""
+			}
+			continue
+		}
 		if r.Status != ledger.ResponseAccepted {
 			continue
 		}
@@ -191,6 +227,9 @@ func OutcomeOf(rec ledger.DecisionRecord, who Admittee) (outcome, code string) {
 	}
 	if !own {
 		return "", ""
+	}
+	if counted != "" {
+		return counted, ""
 	}
 	return proto.OutcomeRefused, code
 }
