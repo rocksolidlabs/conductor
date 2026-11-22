@@ -152,6 +152,9 @@ func (p *peer) startWebRTC(ice []proto.ICEServer) error {
 				return
 			}
 			f, err := proto.Decode(msg.Data)
+			if errors.Is(err, proto.ErrControlTooLarge) && p.tellTooLarge() {
+				return
+			}
 			if err != nil {
 				// A frame no reader would take (a type the protocol has
 				// not, a payload past its type's limit: a save part over
@@ -304,6 +307,23 @@ func (p *peer) buffered() uint64 {
 		return 0
 	}
 	return sink.buffered()
+}
+
+// tellTooLarge answers a control frame past proto.MaxControl from an
+// attached viewer over the data channel as the server answers one
+// (serveLocalViewer): bad_frame with proto.ControlTooLargeWords, nothing of
+// the frame acted on, the viewer kept. False for a viewer not attached (no
+// hello taken yet) or being let go, which is refused as any frame no
+// reader takes is.
+func (p *peer) tellTooLarge() bool {
+	p.mu.Lock()
+	sub, closed := p.sub, p.closed
+	p.mu.Unlock()
+	if sub == nil || closed || p.erred.Load() || p.a.local == nil {
+		return false
+	}
+	p.a.local.Send(sub, proto.NewError(proto.ErrCodeBadFrame, proto.ControlTooLargeWords))
+	return true
 }
 
 // handleFrame processes a terminal frame from the viewer over the relay.

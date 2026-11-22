@@ -2,6 +2,8 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import {
+  CONTROL_TOO_LARGE,
+  controlFits,
   DECISION_PAGE,
   DecideCode,
   FrameType,
@@ -27,6 +29,7 @@ import {
   MAX_DECISION_RECEIPT,
   MAX_LANE_REF,
   MAX_RATIONALE,
+  MAX_CONTROL,
   MAX_SUBMIT,
   decideValid,
   decisionRequestValid,
@@ -61,6 +64,22 @@ import {
 
 // host_token (internal/proto HostTokenMsg, ParseHostToken; docs/protocol.md, Host control connection): a token at its bound,
 // of token68's characters, which JSON never escapes, fits the message's bound; registered's renews is optional.
+describe('the control bound', () => {
+  it("is the owner's, and its refusal speaks the owner's words", () => {
+    const frame = readFileSync(fileURLToPath(new URL('../../../internal/proto/frame.go', import.meta.url)), 'utf8')
+    const control = readFileSync(fileURLToPath(new URL('../../../internal/proto/control.go', import.meta.url)), 'utf8')
+    expect(/\bMaxControl\s*=\s*8 << 10\b/.test(frame)).toBe(true)
+    expect(MAX_CONTROL).toBe(8 << 10)
+    const words = /\bControlTooLargeWords = "([^"]+)"/.exec(control)?.[1]
+    expect(words).toBe(CONTROL_TOO_LARGE)
+  })
+
+  it('takes a CONTROL frame of MAX_CONTROL bytes and no more', () => {
+    expect(controlFits(new Uint8Array(1 + MAX_CONTROL))).toBe(true)
+    expect(controlFits(new Uint8Array(2 + MAX_CONTROL))).toBe(false)
+  })
+})
+
 describe('host_token', () => {
   it('fits a token at its bound in the message', () => {
     expect(HOST_MAX_TOKEN).toBe(2048)

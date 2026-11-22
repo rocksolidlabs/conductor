@@ -186,6 +186,13 @@ func (s *Server) serveLocalViewer(ctx context.Context, c *websocket.Conn, raw ne
 	}
 	for {
 		f, err := readFrame(sink.ctx, c, 0)
+		if errors.Is(err, proto.ErrControlTooLarge) {
+			// Read whole within the connection's read limit, and not read
+			// further: a line past MaxControl as encoded is told why, in
+			// words, and the connection goes on.
+			local.Send(sub, proto.NewError(proto.ErrCodeBadFrame, proto.ControlTooLargeWords))
+			continue
+		}
 		if err != nil {
 			if !errors.Is(err, context.Canceled) && websocket.CloseStatus(err) == -1 && sub.Reason() == nil {
 				sink.Close(nil)
@@ -775,6 +782,12 @@ func (s *Server) serveHostedViewer(ctx context.Context, c *websocket.Conn, raw n
 			s.viewerSeam.read(pumped)
 		}
 		f, err := readFrame(reading, c, 0)
+		if errors.Is(err, proto.ErrControlTooLarge) {
+			// As a server viewer's is (serveLocalViewer): told why, in
+			// words, nothing of it relayed, and the connection goes on.
+			_ = sink.WriteFrame(proto.NewError(proto.ErrCodeBadFrame, proto.ControlTooLargeWords))
+			continue
+		}
 		if err != nil {
 			return
 		}

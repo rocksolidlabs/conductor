@@ -715,3 +715,66 @@ func TestAnOversizedSavePartOverTheDataChannelLetsTheViewerGo(t *testing.T) {
 		t.Fatal("the host did not let the viewer go")
 	}
 }
+
+// A line within MaxSubmit whose submit passes MaxControl once encoded,
+// from a viewer attached over the data channel, is told why in words as
+// the server tells it (bad_frame, proto.ControlTooLargeWords), nothing of
+// it typed, and the viewer is kept: a line that fits is entered after it.
+func TestALinePastTheControlBoundOverTheDataChannelIsToldInWords(t *testing.T) {
+	dir := t.TempDir()
+	proc, err := pty.Start(pty.Spec{Argv: []string{"/bin/cat"}, Dir: dir, Env: hostEnv(nil)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	local := session.NewLocal(session.Info{ID: "s", Cwd: dir, Cols: 80, Rows: 24}, proc, session.Options{})
+	t.Cleanup(func() { proc.Stop(t.Context(), time.Second) })
+	out := make(chan any, 64)
+	errs := make(chan proto.ViewerError, 4)
+	a := &agent{opts: Options{}, local: local, peers: map[string]*peer{}, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	a.sendHook = func(v any) {
+		if e, ok := v.(proto.ViewerError); ok {
+			errs <- e
+			return
+		}
+		out <- v
+	}
+	const id = "0123456789abcdef"
+	p := newPeer(a, id, session.RoleControl, "link1", "laptop", false)
+	a.peers[id] = p
+	if err := p.startWebRTC(nil); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(p.close)
+	dc, frames := loopbackViewer(t, p, out)
+	dc.Send(proto.MustControl(proto.Hello{T: proto.CtlHello, Proto: 1, Cols: 90, Rows: 30, Name: "Jane"}))
+	deadline := time.After(10 * time.Second)
+	// control reads the viewer's frames until a control message of kind t.
+	control := func(t0 string) map[string]any {
+		for {
+			select {
+			case raw := <-frames:
+				f, err := proto.Decode(raw)
+				if err != nil || f.Type != proto.TypeControl {
+					continue
+				}
+				var m map[string]any
+				if json.Unmarshal(f.Payload, &m) == nil && m["t"] == t0 {
+					return m
+				}
+			case e := <-errs:
+				t.Fatalf("the viewer was let go with %+v", e)
+			case <-deadline:
+				t.Fatalf("no %s", t0)
+			}
+		}
+	}
+	control(proto.CtlWelcome)
+	dc.Send(proto.MustControl(proto.Submit{T: proto.CtlSubmit, ReqID: "s1", Text: strings.Repeat(`"`, proto.MaxSubmit)}))
+	if m := control(proto.CtlError); m["code"] != proto.ErrCodeBadFrame || m["message"] != proto.ControlTooLargeWords || m["requestId"] != nil {
+		t.Fatalf("a line past the control bound: %v", m)
+	}
+	dc.Send(proto.MustControl(proto.Submit{T: proto.CtlSubmit, ReqID: "s2", Text: "fits"}))
+	if m := control(proto.CtlSubmitOK); m["requestId"] != "s2" {
+		t.Fatalf("a line that fits, after: %v", m)
+	}
+}
