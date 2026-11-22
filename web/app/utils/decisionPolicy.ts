@@ -1,4 +1,6 @@
 import type { Decision, ResponseReceipt } from '~/utils/decisions'
+import { optionsOf } from '~/utils/decisions'
+import type { DecideReceipt, DecisionQuorum } from '~/utils/protocol'
 
 /**
  * A decision router's policy on a decision record, in words (SW1 PR-8, docs/plans/decision-policy.md, "web/app"): who may answer it,
@@ -32,6 +34,8 @@ export interface RoutedPolicy {
   router: string
   scope: string
   groups: PolicyGroup[]
+  /** One person may fill only one group (SW1 PR-9). */
+  distinct?: boolean
   override: 'operator' | 'none' | string
   unsupported?: boolean
   routedAt?: string
@@ -145,6 +149,126 @@ export function policyRefusalWords(code: string, did: string, p: RoutedPolicy | 
       return `${did}'s policy allows no override, or its reason is too short.`
     case 'routed_by_policy':
       return `${did} is routed by its router's policy: ask the router again, or override at the answer where the policy allows.`
+    case 'not_needed':
+      return `Not counted: your approval fills no place ${did} still needs.`
+    case 'already_counted':
+      return `Your approval of ${did} is counted already: nothing more is asked of you.`
   }
+  return ''
+}
+
+/*
+ * Several approvals (SW1 PR-9, docs/plans/decision-policy.md, "Groups, quorum and distinct persons"): a policy may ask for up to four
+ * groups, each a quorum of up to four. The operator's read says how far a record is (`quorum`, DecisionQuorum): the places in all, how
+ * many the counted approvals fill now, and each group's count. A record of one group of quorum 1 is said exactly as before: no count.
+ */
+
+/** A whole number of at least 0, or 0: the count a newer or broken reply might give otherwise is never drawn. */
+const count = (n: unknown) => (typeof n === 'number' && Number.isInteger(n) && n > 0 ? n : 0)
+
+/** Whether a record's count is worth saying: a policy that asks for more than one approval (places above one). */
+export function severalApprovals(q: DecisionQuorum | null | undefined): q is DecisionQuorum {
+  return !!q && count(q.places) > 1 && Array.isArray(q.groups)
+}
+
+/** A group's label for people, from the policy by its role; the role itself when the policy does not name it. */
+function labelOf(p: RoutedPolicy, role: string): string {
+  return p.groups.find((g) => g.role === role)?.label || role
+}
+
+/** One group's count in words: "1 of 2 for the architecture owner", and ": met" once its quorum is reached. */
+export interface QuorumLine {
+  role: string
+  words: string
+  met: boolean
+}
+
+/**
+ * How far a record is from its answer, in words: the lead ("1 of 2 approvals", only with more than one group), each group's line ("1 of 2
+ * for the architecture owner", "1 of 1 for the security owner: met"), and, with distinct persons and more than one group, the plan's
+ * words of it once. Null for a record of one group of quorum 1, or with no count: its card says what it said before.
+ */
+export function quorumWords(p: RoutedPolicy, q: DecisionQuorum | null | undefined): { lead: string; groups: QuorumLine[]; distinct: string } | null {
+  if (!severalApprovals(q)) return null
+  const groups = q.groups.map((g) => {
+    const quorum = count(g.quorum)
+    const counted = Math.min(count(g.counted), quorum)
+    const met = g.met === true && counted === quorum && quorum > 0
+    return { role: g.role, words: `${counted} of ${quorum} for the ${labelOf(p, g.role)}${met ? ': met' : ''}`, met }
+  })
+  const places = count(q.places)
+  const lead = groups.length > 1 ? `${Math.min(count(q.filled), places)} of ${places} approvals` : ''
+  const distinct = p.distinct && groups.length > 1 ? 'One person may fill only one group.' : ''
+  return { lead, groups, distinct }
+}
+
+/**
+ * What the record still waits for, from its count: "It waits for the security owner", "It waits for 2 more approvals for the
+ * architecture owner and the security owner"; '' when every group is met or the count does not say.
+ */
+export function stillNeeded(p: RoutedPolicy, q: DecisionQuorum | null | undefined): string {
+  if (!severalApprovals(q)) return ''
+  const owed = q.groups.flatMap((g) => {
+    const left = count(g.quorum) - Math.min(count(g.counted), count(g.quorum))
+    if (left <= 0) return []
+    return [left === 1 ? `the ${labelOf(p, g.role)}` : `${left} more approvals for the ${labelOf(p, g.role)}`]
+  })
+  if (!owed.length) return ''
+  const list = owed.length === 1 ? owed[0] : `${owed.slice(0, -1).join(', ')} and ${owed.at(-1)}`
+  return `It waits for ${list}.`
+}
+
+/**
+ * The operator's own approval counted (an identity's operator the policy names): "Your approval is counted: 1 of 2 approvals. It waits
+ * for the security owner." Without a count, the words say only that it waits for the others.
+ */
+export function countedWords(p: RoutedPolicy | null, q: DecisionQuorum | null | undefined): string {
+  const w = p ? quorumWords(p, q) : null
+  const owed = p ? stillNeeded(p, q) : ''
+  const where = w?.lead || w?.groups[0]?.words || ''
+  return `Your approval is counted${where ? `: ${where}` : ''}. ${owed || 'It waits for the other approvals it needs.'}`
+}
+
+/** Whether a response's status is one this page knows how to draw. */
+export function knownStatus(status: unknown): status is 'accepted' | 'refused' | 'counted' {
+  return status === 'accepted' || status === 'refused' || status === 'counted'
+}
+
+/**
+ * How an answered record under several approvals was answered, as its responses say: an override answers every group at once; one
+ * eligible Reject (any option but an approval's or an assignment's first) answers it at once; the counted approvals before either
+ * stay in the record. '' for any other record, or one answered by its approvals.
+ */
+export function answeredHow(d: Pick<Decision, 'state' | 'type' | 'responses' | 'request'>, q: DecisionQuorum | null | undefined): string {
+  if (d.state === 'open' || !severalApprovals(q)) return ''
+  const rc = d.responses?.find((r) => r.status === 'accepted')
+  if (!rc) return ''
+  const n = (d.responses ?? []).filter((r) => r.status === 'counted').length
+  const kept = n ? ` ${n === 1 ? 'The approval counted before it stays' : `The ${n} approvals counted before it stay`} in the record.` : ''
+  if (rc.override) return `The override answered every group at once.${kept}`
+  if ((d.type === 'approval' || d.type === 'assignment') && typeof rc.choice === 'number' && rc.choice > 0) {
+    const label = optionsOf(d)[rc.choice]?.label || 'rejection'
+    const by = rc.byName || rc.actor
+    return `${label}${by ? ` by ${by}` : ''}: one eligible ${label} answers it at once.${kept}`
+  }
+  return ''
+}
+
+/**
+ * Where a decide principal's own answer stands, from its newest receipt (`own`, by `k`): `counted` while its approval counts and the
+ * decision waits for others; `unknown` for a status a newer server gives that this page does not know; null otherwise (nothing yet,
+ * accepted, or refused: a counted approval that no longer counts reads refused, and is answered again).
+ */
+export function ownStanding(own: readonly Pick<DecideReceipt, 'k' | 'status'>[] | null | undefined): 'counted' | 'unknown' | null {
+  if (!own?.length) return null
+  const newest = own.reduce((a, b) => (count(b.k) > count(a.k) ? b : a))
+  if (newest.status === 'counted') return 'counted'
+  return knownStatus(newest.status) ? null : 'unknown'
+}
+
+/** The decide page's words of where the person's own answer stands (ownStanding), naming the decision and no one; '' for none. */
+export function ownStandingWords(standing: ReturnType<typeof ownStanding>, did: string): string {
+  if (standing === 'counted') return `Your approval of ${did} is counted. It waits for the other approvals it needs: nothing more is asked of you.`
+  if (standing === 'unknown') return `This page cannot show what became of your answer to ${did}: nothing more is asked of you here.`
   return ''
 }

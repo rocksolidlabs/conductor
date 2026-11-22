@@ -1,5 +1,6 @@
 import { onBeforeUnmount, onMounted, reactive } from 'vue'
 import { decideWords, isDecisionId, replaces, respondOutcome } from '~/utils/decisions'
+import { ownStanding } from '~/utils/decisionPolicy'
 import { DECIDE_CARDS, DECIDE_FRESH_FOR, DECIDE_READ_EVERY, DECIDE_READ_WAIT, GRANT_DECIDE, MAX_DECIDE_LIST, MAX_DECIDE_LIST_ENTRIES, MAX_DECIDE_REPLY, MAX_DECIDE_VIEW, MAX_ME_REPLY } from '~/utils/protocol'
 import type { DecideEntry, DecideReceipt, DecideView, MeReply } from '~/utils/protocol'
 import { mintCommandId } from '~/utils/tasks'
@@ -35,6 +36,11 @@ export interface DecideCard {
   unknown: string
   /** The words of the last send's definite refusal. */
   refused: string
+  /**
+   * That refusal's code ('' for none). `already_counted` (SW1 PR-9: this person's approval counts already) holds the answer until a read
+   * shows where it stands.
+   */
+  refusedCode: string
   /** An end for this person: its answer's final outcome, no longer open to it (404), or its reads refused (403). */
   end: '' | 'applied' | 'not_used' | 'gone' | 'refused'
   open: boolean
@@ -265,6 +271,7 @@ export function createDecide(env: DecideEnv, did?: string) {
     c.sent = ''
     c.unknown = ''
     c.refused = rc.status === 'refused' ? decideWords(rc.code ?? '', c.id) : ''
+    c.refusedCode = rc.status === 'refused' ? (rc.code ?? '') : ''
   }
 
   /** The moment a read begins, on both clocks. */
@@ -274,6 +281,8 @@ export function createDecide(env: DecideEnv, did?: string) {
   function take(c: DecideCard, v: DecideView, whole: boolean, at?: ReturnType<typeof mark>) {
     if ((whole && c.end) || !replaces(c.view, v, whole)) return
     c.view = v
+    // A read shows where the person's answer stands: `already_counted` holds the answer no longer than that.
+    if (whole && c.refusedCode === 'already_counted' && !c.sent) c.refusedCode = ''
     if (at) {
       Object.assign(c, at, { failed: false })
       fresh(c)
@@ -297,7 +306,7 @@ export function createDecide(env: DecideEnv, did?: string) {
   function openCard(id: string, listed: boolean) {
     let c = card(id)
     if (!c) {
-      c = reactive<DecideCard>({ id, view: null, draft: { text: '', rationale: '' }, sent: '', sending: false, unknown: '', refused: '', end: '', open: true, freshAt: 0, freshWall: 0, suspended: true, listed, failed: false })
+      c = reactive<DecideCard>({ id, view: null, draft: { text: '', rationale: '' }, sent: '', sending: false, unknown: '', refused: '', refusedCode: '', end: '', open: true, freshAt: 0, freshWall: 0, suspended: true, listed, failed: false })
       page.cards.push(c)
       const cc = c
       reads.set(c, new Reads((s) => readCard(cc, s), visible, env.now, track))
@@ -360,6 +369,14 @@ export function createDecide(env: DecideEnv, did?: string) {
   const closable = (c: DecideCard) => c.open && !c.end && emptyDraft(c.draft) && !c.sent
 
   /**
+   * Whether a new answer is held (SW1 PR-9): the person's own approval counts and the decision waits for others, the server said it is
+   * counted already, or the newest own receipt is in a status this page does not know. Nothing is offered then.
+   */
+  function held(c: DecideCard): boolean {
+    return !!ownStanding(c.view?.own) || c.refusedCode === 'already_counted'
+  }
+
+  /**
    * Whether a card's answer may be sent now, the one rule of Send and Send again: the page alive, the card its own, nothing of the page's
    * being sent; then an answer held (Send again) whenever its decision has not answered 404 to this pass, whatever a read showed since;
    * a new one only on a fresh view of an open decision, the card open.
@@ -367,7 +384,7 @@ export function createDecide(env: DecideEnv, did?: string) {
   function answerable(c: DecideCard): boolean {
     if (!alive() || !mine(c) || page.cards.some((x) => x.sending)) return false
     if (c.sent) return c.end !== 'gone'
-    return c.open && !c.end && !c.suspended && c.view?.state === 'open'
+    return c.open && !c.end && !c.suspended && c.view?.state === 'open' && !held(c)
   }
 
   /** Sends the card's answer: `sent` again, unchanged, when its outcome is not known; else the draft, frozen under a new response id. */
@@ -390,6 +407,7 @@ export function createDecide(env: DecideEnv, did?: string) {
     c.sending = true
     c.unknown = ''
     c.refused = ''
+    c.refusedCode = ''
     const p = call('POST', `/api/decisions/${id}/respond`, MAX_DECIDE_REPLY, body, ac.signal)
     track(p.then(() => {}))
     const r = await p
@@ -411,12 +429,16 @@ export function createDecide(env: DecideEnv, did?: string) {
     } else if (outcome === 'refused') {
       c.sent = ''
       c.refused = decideWords(r.body.error.code, id)
+      c.refusedCode = r.body.error.code
+      // Counted already: the view read now shows the approval that counts, and nothing is offered meanwhile.
+      if (c.refusedCode === 'already_counted' && !c.end) reads.get(c)?.run()
     } else c.unknown = heldWords(c, r.body?.error?.code === 'rate_limited' ? 'rate_limited' : 'decision_moved')
   }
 
   return {
     page,
     answerable,
+    held,
     send,
     shown,
     /** Begins: who the pass is, then the list, and the address's decision first. */
