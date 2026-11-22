@@ -1041,3 +1041,32 @@ func TestHeldAnswerToAnAnsweredDecisionSaysItIsAnswered(t *testing.T) {
 	}
 	f.unchanged(t, did, rec.Rev, len(rec.Responses))
 }
+
+// A record whose policy column names a policy this server does not hold
+// (neither local/1 nor a router's: a damaged or foreign ledger) refuses a
+// held answer stale_policy and keeps the refusal: on a server with no
+// router that is the final refusal it always was, and its repeat the
+// same, never "not taken now" (#1065).
+func TestAKeptStalePolicyIsAFinalRefusal(t *testing.T) {
+	f := newHeldFixture(t)
+	did := f.open(t, "q1")
+	n, _ := ledger.ParseDecisionID(did)
+	db, err := sql.Open("sqlite", "file:"+filepath.Join(f.srv.store.Dir(), "runs", ledger.File)+"?_pragma=busy_timeout(10000)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`UPDATE decisions SET policy = ? WHERE n = ?`, `{"revision":"local/0","approver":"operator","quorum":1,"authority":[{"kind":"operator"}]}`, n); err != nil {
+		t.Fatal(err)
+	}
+	answer := held(did, "h1", "ana", 0, 1)
+	for i := range 2 {
+		out := f.hand(t, answer)
+		if out.Status != ext.AnswerRefused || out.Code != crew.CodeStalePolicy || out.Repeat != (i == 1) {
+			t.Fatalf("hand-in %d to a record under a policy not held here: %+v", i+1, out)
+		}
+	}
+	if rec := f.rec(t, did); len(rec.Responses) != 1 || rec.Responses[0].Status != ledger.ResponseRefused {
+		t.Fatalf("the kept refusal: %+v", rec.Responses)
+	}
+}

@@ -192,6 +192,8 @@ func (s *Server) recordHeld(ctx context.Context, did string, resp crew.Response,
 // recordHeldWith is recordHeld with the router's confirmation the door
 // asked (nil for none): a policy written since that ask is stale_policy,
 // unkept, which is not taken now for the provider, never a final refusal.
+// A stale_policy the ledger kept (a row written: a record under a policy
+// this server does not hold, its replays too) stays the final refusal.
 func (s *Server) recordHeldWith(ctx context.Context, did string, resp crew.Response, actor string, auth crew.Authority, statement string, conf *ext.Confirmation) (ext.AnswerOutcome, error) {
 	rc, err := s.runs.RespondHeldWith(ctx, did, resp, actor, auth, statement, conf)
 	var de *crew.DecisionError
@@ -200,7 +202,8 @@ func (s *Server) recordHeldWith(ctx context.Context, did string, resp crew.Respo
 		// again later.
 		return ext.AnswerOutcome{}, err
 	}
-	if de != nil && de.Code == crew.CodeStalePolicy {
+	if de != nil && de.Code == crew.CodeStalePolicy && rc.K == 0 {
+		// Nothing written: handed in again later.
 		return notTakenNow(did), nil
 	}
 	out := ext.AnswerOutcome{Repeat: rc.Repeat}
