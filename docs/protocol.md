@@ -458,7 +458,34 @@ that failed; a re-registration tries it again with its backoff, as it tries
 a dial that failed. Text frames are JSON; binary frames are RELAY
 envelopes.
 
-Host → server: `register{proto, host{name,version,user?,answerAs?,forms?}, session{name,agentId,command,cwd,cols,rows,relayOnly?,agentToken?,branch?,where?,agentVersion?,repo?,repoCommon?,startCommit?}, resume?{sessionId,secret}}`
+**What a host says of its machine** (`docs/plans/hosts.md`, PR-1). An
+upgrade the owner's own server accepts from a host (any accepted
+credential; never on a switchyard) carries the response header
+`Conductor-Server-Key`: the server's key of this start, 32 random bytes as
+exactly 64 lowercase hex digits, made as the server starts and kept in
+memory only. The host reads it from the dial's answer and registers with
+`host.machine`: exactly 32 lowercase hex digits, the first 16 bytes of
+HMAC-SHA-256 of its machine's id keyed by that key, so no server is sent
+the id itself, and one machine has an unrelated key at every server and at
+every start of one. A header that is missing (an older server, a proxy that
+drops it) or not of that form, and a machine id that cannot be read or
+made, mean the host sends no `machine`. The machine's id is 32 random hex
+digits kept per user in `<user config directory>/conductor/machine-id`
+(0600), made once by whichever process needs it first; it is left out of
+every export, refused by every restore, and refused to every session's file
+routes. `host.platform` is `<GOOS>/<GOARCH>`, with `+wsl` inside WSL, at
+most 32 bytes of `^[a-z0-9]{1,15}/[a-z0-9]{1,15}(\+wsl)?$`. A registration
+to a switchyard sends neither. A `register` (or `register_desk`) whose
+`machine` or `platform` is present and out of its form is refused whole
+(the connection closed, `registration rejected`), never cut down; an older
+host sends neither and registers as before; an older server ignores both.
+The server keeps `host.version` for the session when it is at most 64
+bytes of `^[0-9A-Za-z][0-9A-Za-z.+_-]*$`, and keeps none otherwise (the
+register stands, since an older host's may be of any form). It keeps only
+a hash of `machine` (the session's `hostKey`, below), never what the host
+sent, and logs neither the key nor the id.
+
+Host → server: `register{proto, host{name,version,user?,answerAs?,forms?,machine?,platform?}, session{name,agentId,command,cwd,cols,rows,relayOnly?,agentToken?,branch?,where?,agentVersion?,repo?,repoCommon?,startCommit?}, resume?{sessionId,secret}}`
 (`user` ≤ 64 bytes is the OS user for "hosted by"; `answerAs: true` says the host takes `answer_as` and
 sends `kept` with its `attention` (below): `conductor host` says it, a server publishing to a switchyard
 never does, an older host leaves it out and an older server ignores it; `forms: true` says the host reads
@@ -1772,7 +1799,24 @@ server takes its entries as before.
 
 Session `Info` also carries `branch` (the git branch of the working
 directory, read from `.git/HEAD` at launch; server and host alike) and, for
-hosted sessions, `hostUser`. A server session carries `yolo: true` when its
+hosted sessions, `hostUser` and what its host said of itself and its link,
+each omitted when empty: `hostPlatform` and `hostVersion` (as it
+registered, in their forms, Host control connection); `hostKey`, 32
+lowercase hex digits its machine is grouped by on this server's pages,
+with `hostKeyFrom` saying what it was made from: `machine` (a hash of the
+key the host sent, under a prefix of its own; the server's own machine
+gets the same hash of the key it makes for itself, so a host on the
+server's machine and the server share one), `process` (a host that sent no
+machine: a hash of its process's instance) or `session` (the oldest hosts,
+which send neither: a hash of the session's id, so no two share one); the
+three hashes are made under three prefixes, so one never equals another.
+The key groups what a page shows and decides nothing: a host holding a host
+token can send any key. `hostLink` is the session's control connection as
+it is, apart from its status: `up` while the session holds its host's
+connection, `down` once its host has gone, with `hostAwaySince` (when it
+went) exactly while `down`. An ended session keeps its status when its host
+leaves, so only `hostLink` says whether its host is still there. A server
+session carries `yolo: true` when its
 launch applied its agent's yolo recipe (absent otherwise, an agent without a
 recipe included), `agentSession{id, resumable, source}` once Conductor knows
 the agent's own session (`source` `set` when Conductor chose the id at launch,

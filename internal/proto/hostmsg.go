@@ -73,7 +73,11 @@ const (
 
 // HostInfo describes the host process.
 type HostInfo struct {
-	Name    string `json:"name"`
+	Name string `json:"name"`
+	// Version is the host's release. A server keeps it for
+	// the session (session.Info.HostVersion) when it is within
+	// MaxHostVersion bytes of its form (ValidHostVersion), and keeps none
+	// otherwise: the register stands, since an older host's may be of any.
 	Version string `json:"version"`
 	// User is the OS user running the host (≤ 64 bytes), for "hosted by".
 	User string `json:"user,omitempty"`
@@ -96,6 +100,22 @@ type HostInfo struct {
 	// a switchyard (the Uplink) never says it; a switchyard ignores it, and
 	// so does an older server.
 	Forms bool `json:"forms,omitempty"`
+	// Machine is the host's key for its machine at this server
+	// (machine.Key, hostmachine.go): exactly MaxHostMachine lowercase hex
+	// digits, made from the machine's id and the key this server sent in
+	// the upgrade's ServerKeyHeader, so it is never the id itself and each
+	// server, and each start of one, is sent an unrelated key. Only to the
+	// owner's own server: a registration to a switchyard leaves it out, and
+	// so does a host whose upgrade carried no key of the header's form or
+	// that has no id. A server keeps only a hash of it (machine.Group). It
+	// groups the sessions of one machine on the server's page and decides
+	// nothing. Never logged. A register with one out of its form is refused
+	// (CheckMachine); an older server ignores it.
+	Machine string `json:"machine,omitempty"`
+	// Platform is the host's <GOOS>/<GOARCH>, with +wsl inside WSL
+	// (machine.Platform), at most MaxHostPlatform bytes of its form
+	// (ValidHostPlatform), refused out of it. Left out to a switchyard.
+	Platform string `json:"platform,omitempty"`
 }
 
 // MaxHostUser bounds HostInfo.User; MaxHostInstance and MaxLocalID bound
@@ -339,6 +359,9 @@ func (m RegisterDesk) Validate() error {
 	}
 	if len(m.Host.Name) > 120 || len(m.Host.User) > MaxHostUser || len(m.Host.Instance) > MaxHostInstance {
 		return errors.New("register_desk: host out of bounds")
+	}
+	if err := m.Host.CheckMachine(); err != nil {
+		return err
 	}
 	if m.Run.ID == "" || len(m.Run.ID) > MaxRunID || m.Run.Name == "" || len(m.Run.Name) > MaxRunName {
 		return errors.New("register_desk: run id and name required, within bounds")

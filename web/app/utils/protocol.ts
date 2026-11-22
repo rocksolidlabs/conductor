@@ -871,6 +871,28 @@ export const HOST_MAX_INSTANCE = 64
 export const HOST_MAX_LOCAL_ID = 64
 
 /**
+ * What a host's register says of its machine (docs/protocol.md, Host control connection), each optional: an older host
+ * sends neither `machine` nor `platform`. A register with either out of its form is refused whole; a `version` out of its
+ * form is not kept. None of them is sent to a switchyard but `version`.
+ */
+export interface HostMachine {
+  /**
+   * Exactly HOST_MAX_MACHINE lowercase hex digits: a key for the host's machine made from its machine id and the key this
+   * server sent in the upgrade's `Conductor-Server-Key` header, never the id itself. The server keeps and serves only a hash
+   * of it (a session's `hostKey`).
+   */
+  machine?: string
+  /** `<GOOS>/<GOARCH>`, with `+wsl` inside WSL: at most HOST_MAX_PLATFORM bytes of `^[a-z0-9]{1,15}/[a-z0-9]{1,15}(\+wsl)?$`. */
+  platform?: string
+  /** The host's release, kept when at most HOST_MAX_VERSION bytes of `^[0-9A-Za-z][0-9A-Za-z.+_-]*$`. */
+  version?: string
+}
+/** The bounds of HostMachine's fields. */
+export const HOST_MAX_MACHINE = 32
+export const HOST_MAX_PLATFORM = 32
+export const HOST_MAX_VERSION = 64
+
+/**
  * Routed answers (the decision seam, docs/protocol.md, Host control connection): what a host's
  * register says when it takes `answer_as` and sends `kept`. `conductor host` says it; a server
  * publishing to a switchyard never does; an older host leaves it out.

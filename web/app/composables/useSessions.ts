@@ -9,6 +9,10 @@ import type { CompareSpec } from '~/utils/compareTemplate'
 
 export type SessionKind = 'server' | 'hosted'
 export type SessionStatus = 'starting' | 'running' | 'exited' | 'stopped' | 'host_disconnected'
+/** What a hosted session's `hostKey` was made from. */
+export type HostKeyFrom = 'machine' | 'process' | 'session'
+/** A hosted session's control connection. */
+export type HostLink = 'up' | 'down'
 
 export interface SessionInfo {
   id: string
@@ -25,6 +29,20 @@ export interface SessionInfo {
   hostName?: string
   /** OS user running `conductor host` (hosted sessions). */
   hostUser?: string
+  /** A hosted session's host's `<GOOS>/<GOARCH>` (`+wsl` inside WSL), as it registered; missing when it said none. */
+  hostPlatform?: string
+  /** A hosted session's host's release, as it registered; missing when it said none of its form. */
+  hostVersion?: string
+  /**
+   * The key a hosted session's machine is grouped by on this server's pages, 32 lowercase hex digits, and what it was made
+   * from: the machine its host reported, its host's process, or the session alone. It groups what a page shows and decides
+   * nothing.
+   */
+  hostKey?: string
+  hostKeyFrom?: HostKeyFrom
+  /** A hosted session's control connection as it is, apart from its status: `up`, or `down` since `hostAwaySince`. */
+  hostLink?: HostLink
+  hostAwaySince?: string
   /** Git branch of the working directory when known. */
   branch?: string
   /** The crew run the session is a member of; missing for a session launched on its own. */
