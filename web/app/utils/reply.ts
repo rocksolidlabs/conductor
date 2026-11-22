@@ -149,12 +149,20 @@ export function holdLine(text: Ref<string>, kept?: () => void): ReplyTaken {
       return
     }
     kept?.()
-    if (!from || from === document.body) return
-    void nextTick(() => {
-      const now = document.activeElement
-      if (from.isConnected && (!now || now === document.body)) from.focus()
-    })
+    giveFocusBack(from)
   }
+}
+
+/**
+ * Gives the focus back to `from`, the field a line was sent from, once the page has drawn the refusal, when nothing else took it
+ * meanwhile (a field disabled while its line was on its way loses it) and the field is still there.
+ */
+export function giveFocusBack(from: HTMLElement | null): void {
+  if (!from || typeof document === 'undefined' || from === document.body) return
+  void nextTick(() => {
+    const now = document.activeElement
+    if (from.isConnected && (!now || now === document.body)) from.focus()
+  })
 }
 
 /**

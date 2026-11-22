@@ -194,7 +194,7 @@ function confirmStop() {
           @click="emit('answerOpen', row)"
         />
       </div>
-      <SidebarPrompt v-else-if="prompt && !confirming" :prompt="prompt" :busy="busy" :big="big" @answer="(i, q) => emit('answer', row, i, q)" @reply="(text, q, taken) => emit('reply', row, text, q, taken)" />
+      <SidebarPrompt :draft-key="row.session.id" v-else-if="prompt && !confirming" :prompt="prompt" :busy="busy" :big="big" @answer="(i, q) => emit('answer', row, i, q)" @reply="(text, q, taken) => emit('reply', row, text, q, taken)" />
     </li>
   </UContextMenu>
 </template>

@@ -10,6 +10,7 @@ import { blockSubtitle, filterNeeds, LIST_SECTIONS, SECTION_TITLES, focusRows, m
 import { sessionTarget } from '~/utils/actions'
 import { rowMenuItems, sessionLive } from '~/utils/sidebarActions'
 import { replyFailure, type ReplyTaken } from '~/utils/reply'
+import { ROW_DRAFTS, RowDrafts } from '~/utils/rowDrafts'
 import { needsCount } from '~/utils/needsYou'
 import { showingWords } from '~/utils/inbox'
 import { pinRows } from '~/utils/pins'
@@ -47,6 +48,13 @@ provideRowMenu()
 // rows, a run's decisions and tasks under its header, a plan (and an item of a run the store does not hold) as a loose row. Its header
 // counts the one number, the nav's.
 const oneList = useNeedsYou()
+// The rows' reply lines, by session (RowDrafts, #654): kept here, past the field that draws one, at most one per session listed.
+const rowDrafts = reactive(new RowDrafts())
+provide(ROW_DRAFTS, rowDrafts)
+watch(
+  () => attention.sessions.value.map((s) => s.id),
+  (ids) => rowDrafts.keep(ids),
+)
 const model = computed(() => sidebarModel(filterSessions(attention.sessions.value, query.value), attention.runOf, filterNeeds(oneList.items.value, query.value)))
 // The pinned sessions, first (utils/pins.ts): a pin no longer listed is let go a week after its pinning, once the list is read.
 const uiState = useUiState()

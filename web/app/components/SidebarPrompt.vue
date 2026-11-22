@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import type { RowPrompt } from '~/utils/sidebarActions'
 import { MODE_CHOICE, choiceKey } from '~/utils/attention'
-import { replyLine, type ReplyTaken } from '~/utils/reply'
+import { giveFocusBack, type ReplyTaken } from '~/utils/reply'
+import { ROW_DRAFTS, RowDrafts } from '~/utils/rowDrafts'
 
 /**
  * A prompt answered in the row (design 3b, 3c): the choices as numbered buttons, a free-text prompt as a reply field where Enter
@@ -9,8 +10,11 @@ import { replyLine, type ReplyTaken } from '~/utils/reply'
  * never inside it (a link holds no button), and keeps its keys to itself so that the list's and the window's digit keys never see
  * what is typed.
  */
-/** `wrap`: in the question's panel (SidebarRowPanel) a label wraps over its lines rather than being cut. */
-const props = withDefaults(defineProps<{ prompt: RowPrompt; busy?: boolean; big?: boolean; wrap?: boolean }>(), { busy: false, big: false, wrap: false })
+/**
+ * `wrap`: in the question's panel (SidebarRowPanel) a label wraps over its lines rather than being cut. `draftKey`: the session the
+ * row is for, whose line the sidebar keeps (RowDrafts).
+ */
+const props = withDefaults(defineProps<{ prompt: RowPrompt; draftKey: string; busy?: boolean; big?: boolean; wrap?: boolean }>(), { busy: false, big: false, wrap: false })
 /**
  * Each answer names the question the row showed as it was clicked or typed (its id). A reply hands its page `taken`, which the page
  * calls once it knows whether the line was sent: the field empties then, and keeps a line not sent as typed (#654).
@@ -20,10 +24,14 @@ const emit = defineEmits<{ answer: [index: number, question: string | undefined]
 /**
  * The line, and the question it was begun for (as its first character was typed): it names that one when sent, whatever the row
  * shows by then (someone else answered, the next question came), so that the owner refuses it rather than take it for the next; a
- * line that came back refused stays bound to it until the person changes it (replyLine, #654).
+ * line that came back refused stays bound to it until the person changes it. The sidebar keeps it (RowDrafts, #654), so that it
+ * outlives this field: a prompt cleared as answered, a row moved to another list, and a field that shows again shows it.
  */
-const draft = replyLine(() => props.prompt.question)
-const text = draft.text
+const drafts = inject(ROW_DRAFTS, () => reactive(new RowDrafts()), true)
+const text = computed({
+  get: () => drafts.text(props.draftKey),
+  set: (v: string) => drafts.edit(props.draftKey, v, props.prompt.question),
+})
 // While the host is away, or the session waits for its terminal, nothing typed here would go.
 const off = computed(() => props.busy || props.prompt.away || props.prompt.held)
 /** The field keeps its keys from the list's and the window's (a digit, J, X), Escape excepted: it leaves the field (the list's own). */
@@ -33,8 +41,15 @@ function keepKeys(e: KeyboardEvent) {
 
 function send() {
   if (off.value) return
-  const r = draft.send()
-  if (r) emit('reply', r.line, r.question, r.taken)
+  const id = props.draftKey
+  const raw = text.value
+  const line = raw.trim()
+  if (!line) return
+  const from = typeof document === 'undefined' ? null : (document.activeElement as HTMLElement | null)
+  emit('reply', line, drafts.get(id)?.question, (outcome) => {
+    drafts.settle(id, raw, outcome)
+    if (outcome === 'refused') giveFocusBack(from)
+  })
 }
 </script>
 

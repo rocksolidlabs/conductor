@@ -34,7 +34,7 @@ const content = { side: 'right' as const, align: 'start' as const, sideOffset: 1
       <div ref="body" class="flex flex-col gap-1.5 pt-2.5" data-row-panel :data-panel-for="`s:${row.id}`" @keydown="emit('keys', $event)" @focusout="emit('leave', $event)">
         <p class="truncate px-3 text-sm font-semibold text-highlighted" :title="row.session.name" data-panel-name>{{ row.session.name }}</p>
         <p class="max-h-[50vh] overflow-y-auto px-3 text-xs break-words" data-panel-question>{{ row.prompt?.message }}</p>
-        <SidebarPrompt v-if="prompt" :prompt="prompt" :busy="busy" wrap @answer="(i, q) => emit('answer', row, i, q)" @reply="(text, q, taken) => emit('reply', row, text, q, taken)" />
+        <SidebarPrompt :draft-key="row.session.id" v-if="prompt" :prompt="prompt" :busy="busy" wrap @answer="(i, q) => emit('answer', row, i, q)" @reply="(text, q, taken) => emit('reply', row, text, q, taken)" />
       </div>
     </template>
   </UPopover>
