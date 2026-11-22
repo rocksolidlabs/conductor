@@ -146,6 +146,9 @@ type Server struct {
 	// place of ledger.Probe (hostsHolder).
 	seen      *hostsSeen
 	probeLock func(dir string) (ledger.ProbeResult, error)
+	// hostsLedgerRead, when a test sets it, is called as the host overview
+	// reads the ledger's open runs.
+	hostsLedgerRead func()
 	// others keeps that the sync status has been current once
 	// (otherMachinesShown); hostsSync is the host summary's computed
 	// source, nil where none is registered (hosts_summary.go).
@@ -951,7 +954,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 				}
 			}
 		}
-		s.seen.changed(info)
+		s.seen.changed(info, s.listed)
 		s.events.publishIf(info, s.listed)
 		s.router.mark(info.ID)
 		// A hosted session that ended takes its links with it, as a server

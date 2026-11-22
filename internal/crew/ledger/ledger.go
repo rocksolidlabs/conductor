@@ -324,6 +324,11 @@ type Ledger struct {
 	noLocks      bool
 	// wait is how awaitLock waits (waitSeams), fixed at Open.
 	wait waitSeams
+	// roReason and roReadable say why a ledger that owns the lock reads
+	// its database only (attach), and whether it can still read it; ""
+	// otherwise. Guarded by mu.
+	roReason   ReadOnlyReason
+	roReadable bool
 	// done ends awaitLock when the ledger is closed; ownedLate says the
 	// lock was taken after Open, onOwned is what runs then (OnOwned), and
 	// notified that it ran.
@@ -438,6 +443,7 @@ func openWith(dir string, w waitSeams) (*Ledger, error) {
 func (l *Ledger) attach(ctx context.Context, path string) error {
 	defer l.readVersion(ctx)
 	l.pathsErr = nil
+	l.roReason, l.roReadable = "", false
 	_, statErr := os.Lstat(path)
 	if l.readOnly && statErr != nil {
 		// Nothing to read, and not ours to make.
@@ -455,11 +461,12 @@ func (l *Ledger) attach(ctx context.Context, path string) error {
 		// server may not write): kept as it is, read when it can be, never
 		// written.
 		l.readOnly, l.why = true, err.Error()
+		l.roReason, l.roReadable = ReadOnlyCannotOpen, false
 		if db, err = l.open(ctx, path, true); err != nil {
 			l.why += "; nor read: " + err.Error()
 			return nil
 		}
-		l.db = db
+		l.db, l.roReadable = db, true
 		return nil
 	}
 	l.db = db
@@ -477,12 +484,13 @@ func (l *Ledger) attach(ctx context.Context, path string) error {
 			// as it is, read when it can be, never written.
 			db.Close()
 			l.readOnly, l.why = true, fmt.Sprintf("ledger: %s cannot be written: %v", path, err)
+			l.roReason, l.roReadable = ReadOnlyCannotWrite, false
 			if db, err = l.open(ctx, path, true); err != nil {
 				l.why += "; nor read: " + err.Error()
 				l.db = nil
 				return nil
 			}
-			l.db = db
+			l.db, l.roReadable = db, true
 			return nil
 		}
 		if modeErr != nil {
@@ -495,13 +503,14 @@ func (l *Ledger) attach(ctx context.Context, path string) error {
 			// A damaged database, or one a later binary wrote: kept as it
 			// is, read when it can be, never written.
 			l.readOnly, l.why = true, err.Error()
+			l.roReason, l.roReadable = ReadOnlyNewerOrDamaged, false
 			db.Close()
 			if db, err = l.open(ctx, path, true); err != nil {
 				l.why += "; nor read: " + err.Error()
 				l.db = nil
 				return nil
 			}
-			l.db = db
+			l.db, l.roReadable = db, true
 		}
 	}
 	return nil

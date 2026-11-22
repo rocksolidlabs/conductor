@@ -71,14 +71,18 @@ func (h *hostsSeen) removed(info session.Info, own string, list func() []session
 }
 
 // changed is the hub's change hook: a session of the key is listed, so
-// its machine is no longer only seen.
-func (h *hostsSeen) changed(info session.Info) {
+// its machine is no longer only seen. A change from a session the
+// registry no longer lists (listed, read under the table's lock: a late
+// change after its removal) changes nothing.
+func (h *hostsSeen) changed(info session.Info, listed func(id string) bool) {
 	if info.HostKey == "" {
 		return
 	}
 	h.mu.Lock()
-	delete(h.entries, info.HostKey)
-	h.mu.Unlock()
+	defer h.mu.Unlock()
+	if listed(info.ID) {
+		delete(h.entries, info.HostKey)
+	}
 }
 
 // trimLocked drops the entries past hostsSeenFor and, past hostsSeenMax,

@@ -22,9 +22,16 @@ import (
 // locks) or Closed. None of them quotes another process: who holds the
 // lock is Probe's to say, at the moment it is asked.
 type LockView struct {
-	At           time.Time
-	Owned        bool
-	ReadOnly     bool
+	At       time.Time
+	Owned    bool
+	ReadOnly bool
+	// Reason and Readable say, while Owned and ReadOnly, why the ledger
+	// reads its database only, of a closed set (ReadOnlyCannotWrite,
+	// ReadOnlyCannotOpen, ReadOnlyNewerOrDamaged; "" for none of them), and
+	// whether it can still read it: words a page may show, unlike Why,
+	// which may name the database's path.
+	Reason       ReadOnlyReason
+	Readable     bool
 	Why          string
 	WaitingSince time.Time
 	GaveUpAt     time.Time
@@ -43,13 +50,26 @@ func (l *Ledger) Lock() LockView {
 	case l.lock != nil:
 		v.Owned = true
 		if l.readOnly {
-			v.Why = l.why
+			v.Why, v.Reason, v.Readable = l.why, l.roReason, l.roReadable
 		}
 	default:
 		v.WaitingSince, v.GaveUpAt, v.NoLocks = l.waitingSince, l.gaveUpAt, l.noLocks
 	}
 	return v
 }
+
+// ReadOnlyReason is why a ledger that owns the owner lock reads its
+// database only.
+type ReadOnlyReason string
+
+// The reasons a ledger that owns the lock reads its database only: it
+// would not take a write, it would not open for writing, or a newer
+// Conductor wrote it or it is damaged.
+const (
+	ReadOnlyCannotWrite    ReadOnlyReason = "cannot_write"
+	ReadOnlyCannotOpen     ReadOnlyReason = "cannot_open"
+	ReadOnlyNewerOrDamaged ReadOnlyReason = "newer_or_damaged"
+)
 
 // ProbeLineMax bounds the holder's line a probe reads, in bytes.
 const ProbeLineMax = 200

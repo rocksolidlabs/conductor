@@ -911,6 +911,9 @@ func TestARollbackJournalDatabaseItCannotWriteIsRead(t *testing.T) {
 	if !ro || !strings.Contains(why, "readonly database") || strings.Contains(why, "nor read") {
 		t.Fatalf("read-only %v: %s", ro, why)
 	}
+	if v := again.Lock(); !v.Owned || (v.Reason != ReadOnlyCannotWrite && v.Reason != ReadOnlyCannotOpen) || !v.Readable {
+		t.Fatalf("the lock's view of a database that cannot be written: %+v", v)
+	}
 	// It reads what the file holds, the writable open still failing.
 	if runs, err := again.Runs(ctx); err != nil || len(runs) != 2 || runs[0].ID != "team-00000001" || runs[1].ID != "team-00000002" {
 		t.Fatalf("the runs: %+v %v", runs, err)
@@ -977,6 +980,9 @@ func TestAWALDatabaseItCannotWriteIsReadOnly(t *testing.T) {
 	ro, why := again.ReadOnly()
 	if !ro || !strings.Contains(why, "readonly database") || strings.Contains(why, "nor read") {
 		t.Fatalf("read-only %v: %s", ro, why)
+	}
+	if v := again.Lock(); !v.Owned || (v.Reason != ReadOnlyCannotWrite && v.Reason != ReadOnlyCannotOpen) || !v.Readable {
+		t.Fatalf("the lock's view of a database that cannot be written: %+v", v)
 	}
 	var mode string
 	if err := again.db.QueryRowContext(ctx, "PRAGMA journal_mode").Scan(&mode); err != nil || mode != "wal" {
