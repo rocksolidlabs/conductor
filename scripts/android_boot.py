@@ -59,7 +59,7 @@ def tell(message: str) -> None:
 def run_streamed(argv: list[str], cwd: Path, bound: int) -> tuple[int, str]:
     """Runs argv, its output streamed to ours and its last lines kept, under bound seconds; a run past it is stopped (its whole
     process group) and answers 124."""
-    proc = subprocess.Popen(argv, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, start_new_session=True)
+    proc = subprocess.Popen(argv, cwd=cwd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, start_new_session=True)
     kept: list[str] = []
 
     def pump() -> None:
