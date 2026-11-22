@@ -7,6 +7,7 @@ import android.content.pm.ApplicationInfo
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.util.Log
 import android.view.WindowManager
 import android.widget.TextView
 import androidx.webkit.WebViewFeature
@@ -123,6 +124,7 @@ class MainActivity : BridgeActivity() {
     /** The shell stops: its page never loads (the web view is never shown, so the runtime's posted first load never runs), with words. */
     private fun stop(words: List<String>) {
         stopped = words.joinToString(" ")
+        Log.w("ConductorShell", "the shell loads nothing: ${words.joinToString(" ")}")
         gates = null
         bridge?.webView?.stopLoading()
         val view = TextView(this)

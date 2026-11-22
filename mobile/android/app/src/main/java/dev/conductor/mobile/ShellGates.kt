@@ -4,6 +4,7 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Bundle
 import android.os.Message
 import android.webkit.GeolocationPermissions
 import android.webkit.JsPromptResult
@@ -191,13 +192,22 @@ class ShellChromeClient(bridge: Bridge) : BridgeWebChromeClient(bridge) {
 /**
  * An intent as the shell lets it in: a tap's message id and handle, a link only when it is an `https` address, nothing else (TapData).
  * What another app sends the shell's activity reaches neither the native runtime (which reads an intent's extras as its preferences)
- * nor its plugins nor the page in any other form.
+ * nor its plugins nor the page in any other form. The intent stays the one it was in everything `Intent.filterEquals` compares (its
+ * action, categories, type, package and component, and its data when that is kept), so whatever follows the activity by its intent
+ * (the system's task, a test's scenario) still finds it; its extras, a data address that is not kept, its clip data and its grants of
+ * access go.
  */
 fun sanitized(intent: Intent?, component: ComponentName): Intent {
-    val out = Intent(intent?.action ?: Intent.ACTION_MAIN)
+    val out = if (intent != null) Intent(intent) else Intent(Intent.ACTION_MAIN)
     out.component = component
+    out.selector = null
+    out.clipData = null
+    out.flags = out.flags and (
+        Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION or
+            Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION or Intent.FLAG_GRANT_PREFIX_URI_PERMISSION
+        ).inv()
     val link = TapData.link(intent?.action, intent?.dataString)
-    if (link != null) out.data = Uri.parse(link)
+    if (link == null && out.data != null) out.data = null
     val extras = mutableMapOf<String, Any?>()
     try {
         val bundle = intent?.extras
@@ -210,6 +220,7 @@ fun sanitized(intent: Intent?, component: ComponentName): Intent {
     } catch (e: Exception) {
         extras.clear()
     }
+    out.replaceExtras(Bundle())
     for ((k, v) in TapData.keep(extras)) out.putExtra(k, v)
     return out
 }

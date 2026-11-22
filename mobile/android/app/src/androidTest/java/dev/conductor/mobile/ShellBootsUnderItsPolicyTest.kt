@@ -1,6 +1,9 @@
 package dev.conductor.mobile
 
+import android.content.ComponentName
+import android.content.Intent
 import android.content.pm.ApplicationInfo
+import android.net.Uri
 import android.content.pm.PackageManager
 import android.os.Build
 import android.util.Log
@@ -203,6 +206,28 @@ class ShellBootsUnderItsPolicyTest {
             )
             assertNull("the open-source build holds a signing policy", ConductorKey.packagedPolicy())
         }
+    }
+
+    @Test
+    fun anIntentKeepsItsIdentityAndLosesWhatAnotherAppCouldCarryIn() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val component = ComponentName(context, MainActivity::class.java)
+        // The launcher's intent (a scenario's, the system's) is the same intent after the shell has cleaned it.
+        val launcher = Intent.makeMainActivity(component)
+        assertTrue("the launcher's intent changed identity", launcher.filterEquals(sanitized(launcher, component)))
+        // What another app could carry in: a scheme of its own, a preference for the runtime, a grant: gone; a tap's handle kept.
+        val sent = Intent(Intent.ACTION_VIEW, Uri.parse("conductor-probe://x"))
+            .setComponent(component)
+            .putExtra("DisableDeploy", true)
+            .putExtra(TapData.MESSAGE_ID, "0:1")
+            .putExtra(TapData.HANDLE, "h-1")
+            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        val clean = sanitized(sent, component)
+        assertNull(clean.data)
+        assertEquals(setOf(TapData.MESSAGE_ID, TapData.HANDLE), clean.extras?.keySet()?.toSet())
+        assertEquals("h-1", clean.getStringExtra(TapData.HANDLE))
+        assertEquals(0, clean.flags and Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        assertEquals("https://push.example/d/1", sanitized(Intent(Intent.ACTION_VIEW, Uri.parse("https://push.example/d/1")), component).dataString)
     }
 
     @Test
