@@ -62,6 +62,10 @@ type fakeLauncher struct {
 	// and questions its other questions (Options.Questions).
 	trust     *regexp.Regexp
 	questions []session.StartupQuestion
+	// confirm is every session's Options.ConfirmSubmit (its agent reports
+	// taking a prompt), and confirmWait its Options.ConfirmWait.
+	confirm     bool
+	confirmWait time.Duration
 	// workingTitle, when set, is every session's Options.WorkingTitle, and
 	// titleSettle its Options.TitleSettle.
 	workingTitle *regexp.Regexp
@@ -161,7 +165,7 @@ func (f *fakeLauncher) Launch(ctx context.Context, spec LaunchSpec) (*session.Lo
 	info := session.Info{ID: session.NewID(), Name: name, AgentID: spec.AgentID, Cwd: spec.Cwd, Crew: &ref, Cols: 80, Rows: 24}
 	l := session.NewLocal(info, p, session.Options{Log: quietLog, OnActivity: f.activity, OnChange: f.change,
 		SubmitPause: pause, TrustPattern: f.trust, Questions: f.questions, InputWait: f.inputWait,
-		WorkingTitle: f.workingTitle, TitleSettle: f.titleSettle})
+		WorkingTitle: f.workingTitle, TitleSettle: f.titleSettle, ConfirmSubmit: f.confirm, ConfirmWait: f.confirmWait})
 	f.mu.Lock()
 	f.procs[name], f.locals[name], f.byID[info.ID] = p, l, l
 	f.all = append(f.all, p)
