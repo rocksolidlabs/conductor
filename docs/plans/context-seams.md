@@ -935,10 +935,14 @@ const (
   continues, as a task file's decisions are read), the decisions that
   hold the task or that it asked (`DecisionFilter.Task`), and the gates
   of the run's ticket's plan (`DecisionFilter.Ticket`, origin `plan`);
-  each once. Past `MaxContextDecisions` the standing ones (open,
-  answered, applied) are kept first and then the newest, named in the
-  order they were opened. A read that fails names none; the attempt is
-  asked about as before.
+  each once. Past `MaxContextDecisions` they are kept by rank, newest
+  first within each: the ones that still wait (open, answered), then
+  applied, then the other final states, so a decision that waits is
+  never cut for a closed one; they are named in the order they were
+  opened. They are read once the task's decisions are settled (an
+  applied approval its start supersedes is named superseded, as its task
+  file carries it), and only on a server with a context provider. A read
+  that fails names none; the attempt is asked about as before.
 - **Reviews** (`internal/api/extcontext_reviews.go`, `contextReviews`,
   in `contextFor` before the providers are asked, and only when one is):
   Dispatch's reviews, for a run launched from a ticket. For a review
@@ -949,8 +953,13 @@ const (
   the request is, alone (`Engine.RepairReview`: the repair the engine
   holds, which its task file's `repair.request` carries, so the findings
   are the same ones). A finding's state is its latest mark's verdict, as
-  Dispatch reads it; its path is handed when it is one plain line within
-  `MaxContextRef` bytes, and its line is the first it names. A read that
+  Dispatch reads it; its path is handed when it names a file inside the
+  tree (relative, no empty, `.` or `..` part), is one plain line within
+  `MaxContextRef` bytes, and is one the tree's reads hand a provider (the
+  deny list and the allowed roots, judged under the attempt's worktree);
+  otherwise the finding is named by id and state alone. Its line is the
+  first it names, and none for a finding on the base's side (a line of
+  the base's file). Each provider is given its own copy of both lists. A read that
   fails names none. A repair of a review task's verdict is told no
   review: its findings have no id or state of their own, and they reach
   the attempt through its task file.

@@ -4,8 +4,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
+	"sync/atomic"
 	"testing"
 
 	"github.com/rocksolidlabs/conductor/ext"
@@ -195,5 +198,72 @@ func TestQueryCarriesDecisionsAndReviews(t *testing.T) {
 	}
 	if got := decisionsOf(q); !slices.Equal(got, []string{"dr-1 applied"}) {
 		t.Fatalf("the second review's decisions: %v", got)
+	}
+}
+
+// A server with no context provider builds no query and reads no
+// decision for it; one with a provider reads them for its attempt.
+func TestDecisionsReadOnlyWithAProvider(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		providers []ext.ContextProvider
+		read      bool
+	}{{"no provider", nil, false}, {"a provider", []ext.ContextProvider{&fakeContext{name: "graph"}}, true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := contextEnv(t, tc.providers...)
+			var reads atomic.Int64
+			e.srv.runs.SetContextDecisionsReadForTest(func() { reads.Add(1) })
+			e.gitRepo(t)
+			run, release, err := e.srv.runs.LaunchNamed(t.Context(), managedCrew(e.root), "")
+			release()
+			if err != nil {
+				t.Fatal(err)
+			}
+			// The read comes before the task files, which come before the
+			// attempt runs.
+			runningAttempt(t, e, run.ID, "build", 1)
+			if got := reads.Load(); (got > 0) != tc.read {
+				t.Fatalf("%d reads of the query's decisions", got)
+			}
+			stopRunVia(t, e, run.ID)
+		})
+	}
+}
+
+// A finding's path is handed only when it names a file inside the tree
+// that the tree's reads hand a provider: an absolute path, one that
+// climbs or has a '.' part, and one the deny list refuses are named by
+// id and state alone. A finding on the base's side has its path and no
+// line: its line is of the base's file.
+func TestAFindingsPathIsHeldToTheTree(t *testing.T) {
+	e := contextEnv(t, &fakeContext{name: "graph"})
+	tree := filepath.Join(e.root, "tree")
+	if err := os.MkdirAll(tree, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	e.srv.fileDeny = func() []string { return []string{filepath.Join(tree, "secret.env")} }
+	id := func(n int) string { return fmt.Sprintf("%016x", n) }
+	rv := dispatch.Review{ReviewSummary: dispatch.ReviewSummary{ID: id(99)}, Findings: []dispatch.Finding{
+		{ID: id(1), State: ext.FindingOpen, Path: "src/a.go", Side: dispatch.SideCandidate, From: 7},
+		{ID: id(2), State: ext.FindingOpen, Path: "src/a.go", Side: dispatch.SideBase, From: 7},
+		{ID: id(3), State: ext.FindingOpen, Path: "/etc/passwd", Side: dispatch.SideCandidate, From: 1},
+		{ID: id(4), State: ext.FindingOpen, Path: "../outside.go", Side: dispatch.SideCandidate, From: 1},
+		{ID: id(5), State: ext.FindingOpen, Path: "src/../../outside.go", Side: dispatch.SideCandidate, From: 1},
+		{ID: id(6), State: ext.FindingOpen, Path: "./src/a.go", Side: dispatch.SideCandidate, From: 1},
+		{ID: id(7), State: ext.FindingResolved, Path: "secret.env", Side: dispatch.SideCandidate, From: 2},
+	}}
+	got := contextReview(rv, treePathOK(e.srv, tree))
+	want := ext.ContextReview{ID: id(99), Findings: []ext.ContextReviewFinding{
+		{ID: id(1), State: ext.FindingOpen, Path: "src/a.go", Line: 7},
+		{ID: id(2), State: ext.FindingOpen, Path: "src/a.go"},
+		{ID: id(3), State: ext.FindingOpen}, {ID: id(4), State: ext.FindingOpen}, {ID: id(5), State: ext.FindingOpen},
+		{ID: id(6), State: ext.FindingOpen}, {ID: id(7), State: ext.FindingResolved},
+	}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("the review: %+v\nwant %+v", got, want)
+	}
+	// A worktree that does not resolve passes no path.
+	if got := contextReview(rv, treePathOK(e.srv, filepath.Join(e.root, "gone"))); got.Findings[0] != (ext.ContextReviewFinding{ID: id(1), State: ext.FindingOpen}) {
+		t.Fatalf("under a worktree that is gone: %+v", got.Findings[0])
 	}
 }
