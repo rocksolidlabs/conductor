@@ -134,8 +134,8 @@ export const NEVER_RUNS_WORDS = 'will not run'
 
 /**
  * Whether a task will never run: the server says it is blocked for good (`blockedForGood`: a task it needs failed, was cancelled or is
- * itself blocked for good), or its run has ended (`outcome`) with it never started (blocked or ready). Nothing offered acts on it then
- * but what reads (Open, its links); the engine still takes a cancel sent for it, as before.
+ * itself blocked for good), or its run has ended (`outcome`) with it never started (blocked or ready). It decides the words alone (taskWords,
+ * taskStatus): what is offered is still what the server names on the task (taskActions), Cancel among them, which the engine takes.
  */
 export function neverRuns(t: Pick<RunTask, 'state'> & Partial<Pick<RunTask, 'blockedForGood'>>, run: { outcome?: RunInfo['outcome'] } | undefined): boolean {
   if (t.state === 'blocked' && t.blockedForGood) return true
@@ -256,13 +256,12 @@ export interface TaskActionSet {
  * sets it at its worktree's `tree.ready` and clears it at the attempt's close, at a service's own exit and while the run stops, so
  * nothing here second-guesses it. A run a provider launched whose time limit has passed at `now` (its `origin`'s deadline) takes
  * no Retry and no Accept anyway: each would start an attempt, which the server refuses (`time_limit_passed`). A task that will never run
- * (neverRuns: blocked for good, or never started in a run that ended) is offered no command, Cancel among them. Preview this candidate
+ * (neverRuns) is offered what the server names on it as any other: Cancel, which the engine takes. Preview this candidate
  * is offered only on a run whose read carries its project manifest (`manifest`): the server refuses a candidate's preview of a run
  * without one (`409 no_manifest`).
  */
-export function taskActions(t: RunTask, run: Pick<RunInfo, 'record' | 'resumedBy'> & Partial<Pick<RunInfo, 'stoppedAt' | 'origin' | 'manifest' | 'outcome'>>, now: number = Date.now()): TaskActionSet {
-  // A task that will never run (neverRuns) is offered nothing that acts on it: Open, Copy branch and what reads stay.
-  const live = !run.record && !run.resumedBy && !neverRuns(t, run)
+export function taskActions(t: RunTask, run: Pick<RunInfo, 'record' | 'resumedBy'> & Partial<Pick<RunInfo, 'stoppedAt' | 'origin' | 'manifest'>>, now: number = Date.now()): TaskActionSet {
+  const live = !run.record && !run.resumedBy
   const named = (c: TaskCommand) => live && !!t.commands?.includes(c)
   const starts = !timeLimitPassed(run.origin, now)
   return {

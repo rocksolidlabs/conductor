@@ -81,14 +81,16 @@ describe('a task that will never run', () => {
     expect(taskWords(task({ state: 'blocked', needs: ['build'], reason: 'needs build' }), { outcome: 'cancelled' }).text).toBe('will not run: needs build')
     expect(neverRuns(task({ state: 'failed' }), { outcome: 'failed' })).toBe(false)
   })
-  it('is offered nothing that acts on it, Cancel among them, though the engine names it; what reads stays', () => {
+  it('is offered what the server names on it, Cancel among them (the engine takes it), and what reads', () => {
     const withAttempt = { ...doomed, attempts: 1, attempt: { n: 1, state: 'failed' as const, sessionId: 's1', branch: 'crew/r/build.1' } }
-    expect(taskActions(withAttempt, {})).toMatchObject({ retry: false, accept: false, cancel: false, open: true, copyBranch: true })
-    expect(taskRow(withAttempt, {}).menu).not.toContain('cancel')
-    // Blocked for now, the same task named Cancel: offered.
-    expect(taskActions({ ...withAttempt, blockedForGood: undefined }, {}).cancel).toBe(true)
-    // A run that ended: none on a task that never started.
-    expect(taskActions(task({ state: 'ready', commands: ['cancel'] }), { outcome: 'cancelled' }).cancel).toBe(false)
+    expect(taskActions(withAttempt, {})).toMatchObject({ retry: false, accept: false, cancel: true, open: true, copyBranch: true })
+    expect(taskRow(withAttempt, {}).menu).toContain('cancel')
+    // Named nothing, offered nothing: the server's commands decide, as for any task.
+    expect(taskActions({ ...withAttempt, commands: undefined }, {}).cancel).toBe(false)
+    // A run that ended: a task never started is offered the Cancel the server names on it, its words saying it will not run.
+    const ended = task({ state: 'blocked', needs: ['build'], reason: 'needs build, which will not succeed', commands: ['cancel'] })
+    expect(taskActions(ended, { outcome: 'cancelled' } as Parameters<typeof taskActions>[1]).cancel).toBe(true)
+    expect(taskRow(ended, { outcome: 'cancelled' } as Parameters<typeof taskRow>[1])).toMatchObject({ words: 'will not run: needs build, which will not succeed', menu: ['cancel'] })
   })
 })
 
