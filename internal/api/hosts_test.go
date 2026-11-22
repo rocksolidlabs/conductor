@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -45,6 +46,12 @@ func decodeHosts(t *testing.T, body []byte) HostsReply {
 	var r HostsReply
 	if err := dec.Decode(&r); err != nil {
 		t.Fatalf("the reply %s: %v", body, err)
+	}
+	// The ledger's note is one of the server's sentences; its pid at most
+	// its digits, and only under another holder.
+	if !slices.Contains(hostsNotes, r.Ledger.Note) || r.Ledger.Pid < 0 || len(strconv.FormatInt(r.Ledger.Pid, 10)) > hostsPidDigits ||
+		r.Ledger.Pid != 0 && r.Ledger.Holder != HolderOther {
+		t.Fatalf("the ledger %+v", r.Ledger)
 	}
 	return r
 }
@@ -137,7 +144,7 @@ func TestHostsRunsHeldByThis(t *testing.T) {
 	f := newDecisionFixture(t, nil, nil)
 	r := f.hostsOf(t)
 	run, ok := hostsRunOf(r, f.run)
-	if r.Ledger != (HostsLedger{Holder: HolderThis}) || !ok || run.HeldBy != HolderThis || run.Waiting == nil || *run.Waiting != 0 ||
+	if r.Ledger != (HostsLedger{Holder: HolderThis, Note: NoteHeldHere}) || !ok || run.HeldBy != HolderThis || run.Waiting == nil || *run.Waiting != 0 ||
 		run.Crew != "routes" || run.Name != "Routes" || run.State != crew.RunRunning || len(r.Runs) != 1 || r.More.Runs != 0 {
 		t.Fatalf("the reply: %+v", r)
 	}
@@ -193,24 +200,22 @@ func TestHostsRunsHeldByOther(t *testing.T) {
 	waitUntil(t, "the second server's wait given up", func() bool { return !b.srv.ledger.Lock().GaveUpAt.IsZero() })
 	r := b.hostsOf(t)
 	run, ok := hostsRunOf(r, f.run)
-	pid := strconv.Itoa(os.Getpid())
-	if r.Ledger.Holder != HolderOther || !strings.HasPrefix(r.Ledger.Note, "pid "+pid+" since ") || !ok || run.HeldBy != HolderOther || run.Waiting != nil {
+	if r.Ledger.Holder != HolderOther || r.Ledger.Note != NoteOtherHolds || r.Ledger.Pid != int64(os.Getpid()) || r.Ledger.Since.IsZero() ||
+		!ok || run.HeldBy != HolderOther || run.Waiting != nil {
 		t.Fatalf("held by another server: %+v", r)
 	}
-	if _, err := time.Parse(time.RFC3339, strings.TrimPrefix(r.Ledger.Note, "pid "+pid+" since ")); err != nil {
-		t.Fatalf("the note's time: %q", r.Ledger.Note)
-	}
-	since := strings.TrimPrefix(r.Ledger.Note, "pid "+pid+" since ")
+	since := r.Ledger.Since.Format(time.RFC3339)
 	crashServer(t, f.testEnv, f.run)
 	status, body := b.get(t, "/api/hosts")
 	if status != http.StatusOK {
 		t.Fatalf("%d %s", status, body)
 	}
 	after := decodeHosts(t, body)
-	if after.Ledger.Holder != HolderNone || !strings.HasPrefix(after.Ledger.Note, "this server stopped waiting for the lock at ") {
+	if after.Ledger.Holder != HolderNone || after.Ledger.Note != NoteStoppedWaiting || after.Ledger.Pid != 0 ||
+		!after.Ledger.Since.Equal(b.srv.ledger.Lock().GaveUpAt.UTC()) {
 		t.Fatalf("held by none: %+v", after.Ledger)
 	}
-	for _, word := range []string{"pid " + pid, since, "another server holds"} {
+	for _, word := range []string{`"pid"`, since, NoteOtherHolds} {
 		if bytes.Contains(body, []byte(word)) {
 			t.Fatalf("the reply after the holder left holds %q: %s", word, body)
 		}
@@ -269,39 +274,41 @@ func TestHostsLedgerStates(t *testing.T) {
 	}
 	pid := strconv.Itoa(os.Getpid())
 	twice("held by another server", func(l HostsLedger) bool {
-		return l.Holder == HolderOther && strings.HasPrefix(l.Note, "pid "+pid+" since ")
+		return l.Holder == HolderOther && l.Note == NoteOtherHolds && strconv.FormatInt(l.Pid, 10) == pid && !l.Since.IsZero()
 	})
 	// The probe finds the lock free while this server's wait still runs.
 	b.srv.probeLock = func(string) (ledger.ProbeResult, error) { return ledger.ProbeResult{State: ledger.ProbeFree}, nil }
 	twice("free, this server still waiting", func(l HostsLedger) bool {
-		return l.Holder == HolderNone && strings.HasPrefix(l.Note, "this server is taking the lock, waiting since ") && !strings.Contains(l.Note, "pid")
+		return l.Holder == HolderNone && l.Note == NoteTaking && l.Pid == 0 && l.Since.Equal(b.srv.ledger.Lock().WaitingSince.UTC())
 	})
 	// A lock file whose line is not of the ledger's form.
 	b.srv.probeLock = func(string) (ledger.ProbeResult, error) {
 		return ledger.ProbeResult{State: ledger.ProbeHeld, Line: "pid 12 since yesterday at /home/ada"}, nil
 	}
-	twice("a line not of its form", func(l HostsLedger) bool { return l.Holder == HolderOther && l.Note == "its line is not readable" })
+	twice("a line not of its form", func(l HostsLedger) bool {
+		return l.Holder == HolderOther && l.Note == NoteOtherUnreadable && l.Pid == 0 && l.Since.IsZero()
+	})
 	// A probe that fails says the class of its error, never its text.
 	secret := "/home/ada/.local/secret-path"
 	for _, c := range []struct {
 		err   error
 		class string
-	}{{&fs.PathError{Op: "open", Path: secret, Err: fs.ErrPermission}, "permission"}, {&fs.PathError{Op: "open", Path: secret, Err: fs.ErrNotExist}, "missing"}, {errors.New(secret), "other"}} {
+	}{{&fs.PathError{Op: "open", Path: secret, Err: fs.ErrPermission}, NoteUnreadPermission}, {&fs.PathError{Op: "open", Path: secret, Err: fs.ErrNotExist}, NoteUnreadMissing}, {errors.New(secret), NoteUnreadOther}} {
 		b.srv.probeLock = func(string) (ledger.ProbeResult, error) { return ledger.ProbeResult{}, c.err }
 		twice("not known: "+c.class, func(l HostsLedger) bool {
-			return l.Holder == HolderUnknown && l.Note == "the lock file could not be read ("+c.class+")"
+			return l.Holder == HolderUnknown && l.Note == c.class && l.Since.IsZero()
 		})
 	}
 	b.srv.probeLock = func(string) (ledger.ProbeResult, error) { return ledger.ProbeResult{State: ledger.ProbeNoLocks}, nil }
 	twice("no locks", func(l HostsLedger) bool {
-		return l.Holder == HolderNone && l.Note == "the data directory's filesystem has no locks"
+		return l.Holder == HolderNone && l.Note == NoteNoLocks
 	})
 	b.srv.probeLock = nil
 	// The holder gone: this server takes the lock.
 	crashServer(t, f.testEnv, f.run)
 	t.Cleanup(func() { stopEveryRun(b.srv) })
 	waitUntil(t, "the lock taken", func() bool { return b.srv.ledger.Lock().Owned })
-	twice("held here", func(l HostsLedger) bool { return l == HostsLedger{Holder: HolderThis} })
+	twice("held here", func(l HostsLedger) bool { return l == HostsLedger{Holder: HolderThis, Note: NoteHeldHere} })
 }
 
 // A database a newer schema wrote: held here, read-only, with the reason.
@@ -319,7 +326,7 @@ func TestHostsHeldHereReadOnly(t *testing.T) {
 	b := f.restart()
 	r := b.hostsOf(t)
 	run, ok := hostsRunOf(r, f.run)
-	if r.Ledger.Holder != HolderThisReadOnly || !strings.Contains(r.Ledger.Note, "newer") || len(r.Ledger.Note) > hostsNoteMax || !ok || run.Waiting != nil || run.HeldBy != HolderThisReadOnly {
+	if r.Ledger.Holder != HolderThisReadOnly || !slices.Contains(hostsNotes, r.Ledger.Note) || !ok || run.Waiting != nil || run.HeldBy != HolderThisReadOnly {
 		t.Fatalf("read-only here: %+v", r)
 	}
 }
@@ -329,7 +336,7 @@ func TestHostsLockless(t *testing.T) {
 	e := newTestEnv(t, nil)
 	e.srv.probeLock = func(string) (ledger.ProbeResult, error) { return ledger.ProbeResult{State: ledger.ProbeNoLocks}, nil }
 	crashServer(t, e)
-	if l := e.hostsOf(t).Ledger; l.Holder != HolderNone || l.Note != "the data directory's filesystem has no locks" {
+	if l := e.hostsOf(t).Ledger; l.Holder != HolderNone || l.Note != NoteNoLocks {
 		t.Fatalf("no locks: %+v", l)
 	}
 }

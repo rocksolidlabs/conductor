@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -130,8 +131,45 @@ type HostsRun struct {
 // for this reply.
 type HostsLedger struct {
 	Holder string `json:"holder"` // HolderThis, HolderThisReadOnly, HolderOther, HolderNone or HolderUnknown
-	Note   string `json:"note"`
+	// Note is always one of the server's own sentences (the Note…
+	// constants): never a time, a pid, a path, or anything read from a file
+	// or an error.
+	Note string `json:"note"`
+	// Pid is the holder's process id as its lock line says it (at most
+	// hostsPidDigits digits, nothing trusts it), under HolderOther alone.
+	Pid int64 `json:"pid,omitempty"`
+	// Since is the time of the holder's state: under HolderOther the time
+	// its lock line gives; under HolderNone when this server stopped
+	// waiting for the lock, or since when it has been waiting.
+	Since time.Time `json:"since,omitzero"`
 }
+
+// The ledger's notes: the closed list of sentences the reply's ledger.note
+// is one of.
+const (
+	NoteHeldHere         = "This server holds the lock."
+	NoteReadOnly         = "This server holds the lock, and reads its database only."
+	NoteCannotWrite      = "This server holds the lock, and its database cannot be written; it can still be read."
+	NoteCannotOpen       = "This server holds the lock, and its database cannot be opened."
+	NoteNewerOrDamaged   = "This server holds the lock, and its database was written by a newer Conductor or is damaged; it can still be read."
+	NoteNewerUnreadable  = "This server holds the lock, and its database was written by a newer Conductor or is damaged; it cannot be read."
+	NoteOtherHolds       = "Another server holds the lock, as its lock file says."
+	NoteOtherUnreadable  = "Another server holds the lock; its lock file's line is not readable."
+	NoteStoppedWaiting   = "This server stopped waiting for the lock."
+	NoteTaking           = "This server is taking the lock."
+	NoteNoLocks          = "The data directory's filesystem has no locks."
+	NoteClosed           = "This server's ledger is closed."
+	NoteNotOpened        = "This server could not open its ledger."
+	NoteNoDataDir        = "This server keeps no data directory."
+	NoteUnreadPermission = "The lock file could not be read: permission denied."
+	NoteUnreadMissing    = "The lock file could not be read: it is missing."
+	NoteUnreadOther      = "The lock file could not be read."
+)
+
+// hostsNotes is every sentence ledger.note may be.
+var hostsNotes = []string{NoteHeldHere, NoteReadOnly, NoteCannotWrite, NoteCannotOpen, NoteNewerOrDamaged, NoteNewerUnreadable,
+	NoteOtherHolds, NoteOtherUnreadable, NoteStoppedWaiting, NoteTaking, NoteNoLocks, NoteClosed, NoteNotOpened, NoteNoDataDir,
+	NoteUnreadPermission, NoteUnreadMissing, NoteUnreadOther}
 
 // HostsMore counts the rows left out of the first half by its bounds.
 type HostsMore struct {
@@ -236,7 +274,7 @@ const (
 	hostsPlatformMax   = 32
 	hostsVersionMax    = 64
 	hostsUserMax       = 64
-	hostsNoteMax       = 200
+	hostsPidDigits     = 10
 	hostsRefMax        = 512 // a waitingRef: MB0's bound for an item's ref
 	hostsMaxMachines   = 64
 	hostsMaxRemoteRuns = 200 // per machine
@@ -653,21 +691,21 @@ var lockLine = regexp.MustCompile(`^pid ([0-9]{1,10}) since (\S+)$`)
 // that moment, never from words the ledger or the lock kept.
 func (s *Server) hostsHolder(probe bool) HostsLedger {
 	if s.store == nil {
-		return HostsLedger{Holder: HolderNone, Note: "this server keeps no data directory"}
+		return HostsLedger{Holder: HolderNone, Note: NoteNoDataDir}
 	}
 	var lv ledger.LockView
 	if s.ledger != nil {
 		lv = s.ledger.Lock()
 		if lv.Owned && !lv.ReadOnly {
-			return HostsLedger{Holder: HolderThis}
+			return HostsLedger{Holder: HolderThis, Note: NoteHeldHere}
 		}
 		if lv.Owned {
-			return HostsLedger{Holder: HolderThisReadOnly, Note: cutBytes(lv.Why, hostsNoteMax)}
+			return HostsLedger{Holder: HolderThisReadOnly, Note: readOnlyNote(lv)}
 		}
 	}
 	if !probe {
 		// Not asked: the lock is tried only for a request of the page.
-		return HostsLedger{Holder: HolderUnknown, Note: "not asked"}
+		return HostsLedger{Holder: HolderUnknown, Note: NoteUnreadOther}
 	}
 	try := s.probeLock
 	if try == nil {
@@ -675,47 +713,55 @@ func (s *Server) hostsHolder(probe bool) HostsLedger {
 	}
 	pr, err := try(filepath.Join(s.store.Dir(), "runs"))
 	if err != nil {
-		class := "other"
+		note := NoteUnreadOther
 		switch {
 		case errors.Is(err, fs.ErrPermission):
-			class = "permission"
+			note = NoteUnreadPermission
 		case errors.Is(err, fs.ErrNotExist):
-			class = "missing"
+			note = NoteUnreadMissing
 		}
-		return HostsLedger{Holder: HolderUnknown, Note: "the lock file could not be read (" + class + ")"}
+		return HostsLedger{Holder: HolderUnknown, Note: note}
 	}
 	switch pr.State {
 	case ledger.ProbeHeld:
-		return HostsLedger{Holder: HolderOther, Note: holderLine(pr.Line)}
+		l := HostsLedger{Holder: HolderOther, Note: NoteOtherUnreadable}
+		if pid, at, ok := holderLine(pr.Line); ok {
+			l.Note, l.Pid, l.Since = NoteOtherHolds, pid, at
+		}
+		return l
 	case ledger.ProbeNoLocks:
-		return HostsLedger{Holder: HolderNone, Note: "the data directory's filesystem has no locks"}
+		return HostsLedger{Holder: HolderNone, Note: NoteNoLocks}
 	}
-	note := ""
 	switch {
 	case lv.NoLocks:
-		note = "the data directory's filesystem has no locks"
+		return HostsLedger{Holder: HolderNone, Note: NoteNoLocks}
 	case !lv.GaveUpAt.IsZero():
-		note = "this server stopped waiting for the lock at " + lv.GaveUpAt.UTC().Format(time.RFC3339)
+		return HostsLedger{Holder: HolderNone, Note: NoteStoppedWaiting, Since: lv.GaveUpAt.UTC()}
 	case !lv.WaitingSince.IsZero():
-		note = "this server is taking the lock, waiting since " + lv.WaitingSince.UTC().Format(time.RFC3339)
+		return HostsLedger{Holder: HolderNone, Note: NoteTaking, Since: lv.WaitingSince.UTC()}
 	case lv.Closed:
-		note = "this server's ledger is closed"
-	default:
-		note = "this server could not open its ledger"
+		return HostsLedger{Holder: HolderNone, Note: NoteClosed}
 	}
-	return HostsLedger{Holder: HolderNone, Note: note}
+	return HostsLedger{Holder: HolderNone, Note: NoteNotOpened}
 }
 
-// holderLine is the note of a lock another process holds: its pid and
-// time as it wrote them, when they are in the ledger's form.
-func holderLine(line string) string {
+// readOnlyNote is the sentence of a ledger this server owns and reads only.
+func readOnlyNote(ledger.LockView) string { return NoteReadOnly }
+
+// holderLine is the pid and time a lock another process holds says, when
+// its line is in the ledger's form.
+func holderLine(line string) (int64, time.Time, bool) {
 	m := lockLine.FindStringSubmatch(strings.TrimSpace(line))
 	if m == nil {
-		return "its line is not readable"
+		return 0, time.Time{}, false
 	}
 	at, err := time.Parse(time.RFC3339, m[2])
 	if err != nil {
-		return "its line is not readable"
+		return 0, time.Time{}, false
 	}
-	return cutBytes("pid "+m[1]+" since "+at.UTC().Format(time.RFC3339), hostsNoteMax)
+	pid, err := strconv.ParseInt(m[1], 10, 64)
+	if err != nil {
+		return 0, time.Time{}, false
+	}
+	return pid, at.UTC(), true
 }
