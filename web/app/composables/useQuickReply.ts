@@ -41,7 +41,8 @@ export function useQuickReply() {
   }
 
   /** over sends the reply on a short control connection: whether the owner took it, it went unconfirmed, or nothing was sent (AnswerOutcome). */
-  async function over(session: Pick<SessionInfo, 'id' | 'kind'>, token: string | undefined, reply: QuestionReply, server?: string): Promise<AnswerOutcome> {
+  /** `sent` is called as the reply leaves the page, before any word on it (the transport's answer). */
+  async function over(session: Pick<SessionInfo, 'id' | 'kind'>, token: string | undefined, reply: QuestionReply, server?: string, sent?: () => void): Promise<AnswerOutcome> {
     // One reply per question from here: a second click on one already answered from this tab is not sent; one refused may be
     // tried again (repliedQuestions).
     if (sending.value.has(session.id)) return 'not_sent'
@@ -55,7 +56,7 @@ export function useQuickReply() {
           if (welcome.role !== 'control') throw new Error('This link is view-only')
           // An owner that takes answers says whether it took this one; to an older one, the frame is only let leave: it finishes
           // a submission after the connection goes.
-          if (await t.answer(reply)) outcome = 'taken'
+          if (await t.answer(reply, { sent })) outcome = 'taken'
           else {
             outcome = 'unconfirmed'
             await new Promise((r) => setTimeout(r, 150))
@@ -78,7 +79,7 @@ export function useQuickReply() {
     return (await over(session, opts.token, { question: opts.question, input, reqId: opts.reqId }, opts.server)) !== 'not_sent'
   }
 
-  async function reply(session: Pick<SessionInfo, 'id' | 'kind'>, text: string, opts: { token?: string; server?: string; question?: string; reqId?: string } = {}): Promise<boolean> {
+  async function reply(session: Pick<SessionInfo, 'id' | 'kind'>, text: string, opts: { token?: string; server?: string; question?: string; reqId?: string; sent?: () => void } = {}): Promise<boolean> {
     return (await answer(session, { text }, opts)) !== 'not_sent'
   }
 
@@ -86,8 +87,8 @@ export function useQuickReply() {
    * Answers a question with a choice's keys (`input`) or a typed line (`text`), and says what became of it (AnswerOutcome): the
    * decision page keeps the owner's word, and only that, as its action's outcome (useInbox).
    */
-  async function answer(session: Pick<SessionInfo, 'id' | 'kind'>, what: { input: string } | { text: string }, opts: { token?: string; server?: string; question?: string; reqId?: string } = {}): Promise<AnswerOutcome> {
-    const out = await over(session, opts.token, { ...what, question: opts.question, reqId: opts.reqId }, opts.server)
+  async function answer(session: Pick<SessionInfo, 'id' | 'kind'>, what: { input: string } | { text: string }, opts: { token?: string; server?: string; question?: string; reqId?: string; sent?: () => void } = {}): Promise<AnswerOutcome> {
+    const out = await over(session, opts.token, { ...what, question: opts.question, reqId: opts.reqId }, opts.server, opts.sent)
     // The line sent, this browser shows it under the question to its own person: the owner repeats no typed line (#364). One
     // not sent (a reply under way from here, a duplicate) is not remembered.
     if (out !== 'not_sent' && 'text' in what) typedAnswers.remember(opts.question, what.text)

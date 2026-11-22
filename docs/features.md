@@ -4654,6 +4654,139 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   names (Conductor, Yardmaster, Brakeman #356, Switchman) in the README,
   `docs/architecture.md`, `docs/repository-map.md` and AGENTS.md; the
   architecture's crew-runs section gains the managed run.
+- **Yardmaster's leftover steps with real agents on WSL and on a Mac,
+  observed 2026-11-22, and what they found, fixed (#1075).** Both on a build
+  of `main` at 7b53bd8d (`conductor v0.7.0-rc.24-866-g7b53bd8d`), the
+  open-source build with no account, with real Claude Code (on Haiku) in the
+  seats of small crews in a scratch repository: each a `build` work task
+  with a check outside the worktree (a file beside it made it slow or
+  failing) and a `docs` task that needs it, driven through the API with the
+  workbench token and in headless Chromium. On the WSL box, the night
+  before, Claude Code was 2.1.327, then 2.1.330 after its own update. On an
+  Apple silicon Mac with macOS 27 in the morning, the same commit cross-built
+  for darwin/arm64 ran as a launchd job reached through an SSH tunnel;
+  Claude Code was 2.1.325 at the first launch, which installed 2.1.330 as it
+  started, and 2.1.330 in every session that worked. Codex was not used on
+  WSL.
+
+  On WSL:
+  1. Cancel… from a running task's row menu, confirmed with "Cancel the
+     task", answered a receipt. The attempt's session and its agent process
+     ended, `build` was cancelled and `docs` never started ("needs build,
+     which will not succeed"). The same command id again gave the same
+     receipt with `repeat`, and an old revision `409 stale_revision`. The
+     run ended cancelled, its header saying Stopped, with Copy branch still
+     offered.
+  2. The palette's task rows showed "kind · member · words" with each
+     state's mark. Enter opened the task's detail. Retry, Accept anyway…
+     (asked first) and Cancel… (asked first) answered the receipts the Tasks
+     view's own controls give, with their effects: a new attempt; the run's
+     outcome turned from failed to succeeded; a working task's agent ended.
+     Preview this candidate, on a run with a project manifest, opened the
+     candidate's preview page "as committed", and the row then offered Open
+     the candidate's preview.
+  3. A handoff in a managed run was logged "sent as a message" and started
+     no one. A done finished nothing and drew one reminder. The message was
+     kept until `docs` had its task line, typed as "Message from build (#1):
+     …", read with the inbox and acknowledged.
+  4. An attempt that saved a checkpoint and whose agent was killed ended
+     without a result. The next attempt started at the checkpoint's commit,
+     with "Where the last attempt got to" in its task file and the
+     checkpoint in `task.json`. With the server killed after a checkpoint
+     and started again, Continue's first attempt started at that checkpoint.
+  5. A launch with `crews.managed` off was refused `409 managed_off`, and one
+     while another server held the ledger `503 ledger_unavailable`.
+
+  On the Mac:
+  1. A message to a member not started yet was kept ("docs has not had its
+     prompt yet"), typed after its task line as "Message from build (#1): …"
+     and acknowledged through the inbox. Messages to a member whose task had
+     succeeded were typed into its idle session, read and acknowledged.
+  2. A blocker showed in the Tasks view ("blocked by build: …"), in the
+     task's detail and under Needs you, and was asked in the session as its
+     question. A checkpoint showed in the run log and on the attempt.
+  3. Retry of a cancelled task, Accept anyway… of a failed task (asked with
+     Keep it and Accept the result; the run's outcome turned from failed to
+     succeeded), Pause and Unpause each answered a receipt; the same id again
+     answered `repeat`, an old revision `409 stale_revision`.
+  4. With the server killed during a check and started again on the same
+     data, the run read interrupted, and Continue verified the same
+     candidate again as attempt 2 with no agent session.
+  5. Stop during a check ended the attempt (stopped, its check interrupted)
+     and the check's process.
+  6. The ledger `runs/managed.sqlite` and its WAL and shared-memory files are
+     0600 on APFS.
+  7. With Claude Code in the reviewer seat, a review used the Conductor MCP
+     tools, its needs_changes reopened `build` at the reviewed commit, the
+     repair passed and the second review approved.
+  8. Cancel from a running task's row menu, a handoff sent as a message and
+     a restart at a checkpoint went as on WSL: the agent ended and its
+     dependent was blocked for good (the same id `repeat`, an old revision
+     `409`); the handoff was "sent as a message", a done drew one reminder
+     and finished nothing; an attempt after an agent killed at its
+     checkpoint started at the checkpoint's commit with "Where the last
+     attempt got to" in its task file.
+
+  Observed differently from the words here: the launch refusals' words
+  showed in a "Launch failed" toast for a few seconds and the launch sheet
+  closed (fixed here, below). A message typed into a working Claude Code
+  session waits until its turn ends. Agents told to stop and wait after a
+  checkpoint ended their turn and met the done reminder; one then submitted
+  its half-done work, on each machine. A task blocked for good in a
+  cancelled run was marked waiting (fixed here, below). On the Mac, unlike on WSL: the blocker's question
+  left with the agent's done each time, never with its result; Claude Code
+  ran the `sleep` commands it was told to run in the background and ended
+  its turn; a check whose server was killed kept running to its end, and the
+  restarted server's log counted it without naming it (fixed here, below).
+
+  Found, and fixed here: the palette's Cancel… asked with two buttons both
+  named "Cancel" (the one that kept the task and the one that cancelled
+  it). Every question the palette asks now carries its two buttons' words
+  beside its title, never the same word, and they are the words the same
+  action's own dialog says: Keep it beside Cancel the task, Accept the result
+  and Resume; Cancel beside Stop (Stop the run on a run's page), Revoke,
+  Restart server, Save and restart the server and Stop them. Preview this
+  candidate was offered on a run without a project manifest and refused
+  `409 no_manifest`: it is now offered only on a run whose read carries its
+  `manifest`, which the server gives exactly when a candidate's preview can
+  be served. A launch the server refused closed its sheet: every refusal now
+  stays on the sheet in the server's words, with what the sheet was opened
+  with kept (the run's name), and Launch can be pressed again; only a crew
+  saved since the sheet read it (read again, as before) and a crew gone (the
+  sheet closes, and the page says so) are not. A check the last server left
+  running is named at the next start, as a service is: its run, task,
+  attempt, tree, phase and id, its process, and that it "may still be
+  running: it is reported, never signalled", beside the run's count. A task
+  blocked for good was marked waiting: the run's read now says so of such a
+  task (`blockedForGood`), and the Tasks view, the palette and the sidebar
+  say it "will not run", with its reason; in a run that has ended the same
+  holds for every task that never started. Cancel stays offered wherever
+  the server names it, as on any task: the engine takes it, and a retry or
+  an accept of the task it needs would start it. Tests:
+  `actions.test.ts` and `useTaskCommands.test.ts` (each question's words),
+  `tasks.test.ts` (the preview offered by the manifest),
+  `CrewLaunchSheet.test.ts` (each code the launch route answers),
+  `crew/preview_test.go` (the read's `manifest` and the `no_manifest`
+  refusal together), `crew/blocked_test.go` (`blockedForGood` behind a
+  cancelled need, a failed one and in a chain of three, not behind a running
+  one), `status.test.ts` and `tasks.test.ts` (its words and what is
+  offered: the commands the server names), `ledger/steps_test.go` and `api/services_test.go` (a
+  check left running described, then named at the next start, not
+  signalled), `run-tasks.spec.ts` (the row menu and the palette with and
+  without a manifest; the palette's Keep it sending nothing; a task blocked
+  for good saying it will not run, its Cancel… still offered),
+  `palette-rows.spec.ts` (the Stop questions' words) and
+  `crew-launch-revision.spec.ts` (a refused launch kept on its sheet, the
+  run's name with it).
+
+  Two findings in the start of an agent's session on the Mac are recorded
+  and fixed with #1017.
+
+  Not observed: a Codex reviewer on the Mac; the blocker's question leaving
+  with a result itself (it left with the done each time); Pause pressed on
+  the page (it went through the API); the whole crew on a second Linux
+  machine; the Windows app. Not pressed: the palette's Open preview and Open
+  in Conductor on a running attempt.
 - **Dispatch: projects, tickets and the views over them (DS1, #400 to
   #413, 2026-10-29 to 2026-11-01).** Program item DS1, planned in
   `docs/plans/dispatch.md` (PR #384) and shipped as fourteen PRs.

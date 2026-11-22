@@ -128,7 +128,8 @@ func TestViaSyncAppliedOnlyAfterAdmits(t *testing.T) {
 }
 
 // A held answer the recheck does not admit is superseded by a fresh
-// decision with its holds, as an identity's is.
+// decision with its holds, as an identity's is. A held answer carries no
+// name, so the reason names it by its actor.
 func TestViaSyncSupersededWhenAdmitsSaysNo(t *testing.T) {
 	dir := newRepo(t)
 	e, _, ld := decisionEngine(t)

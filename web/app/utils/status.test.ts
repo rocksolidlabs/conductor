@@ -237,6 +237,15 @@ describe('taskStatus', () => {
     const t = task('a', { state: 'failed', attempts: 3, ...(row.commands.length ? { commands: row.commands } : {}) })
     expect(taskStatus(t, run, undefined, NOW).key).toBe(row.commands.length ? 'needs' : 'failed')
   })
+  it('marks a task that will never run "will not run" on the cancelled mark, never waiting: blocked for good, or never started in a run that ended', () => {
+    expect(of(task('a', { state: 'blocked', needs: ['b'], reason: 'needs b, which will not succeed', blockedForGood: true }))).toEqual(['cancelled', 'will not run'])
+    // Blocked for now (the server says nothing more): waiting, as before.
+    expect(of(task('a', { state: 'blocked', needs: ['b'], reason: 'needs b' }))).toEqual(['waiting', 'waiting'])
+    // A run that ended: every task that never started, blocked or ready, will not run.
+    const ended = { ...run, outcome: 'cancelled' as const }
+    for (const state of ['blocked', 'ready'] as const) expect(taskStatus(task('a', { state }), ended, undefined, NOW)).toMatchObject({ key: 'cancelled', word: 'will not run' })
+    expect(taskStatus(task('a', { state: 'succeeded' }), ended, undefined, NOW).key).toBe('done')
+  })
   it('reads a record as nothing to act on: its failed task is failed', () => {
     expect(taskStatus(task('a', { state: 'failed', commands: ['retry'] }), { record: true }, undefined, NOW).key).toBe('failed')
   })

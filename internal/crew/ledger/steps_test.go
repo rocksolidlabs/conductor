@@ -546,13 +546,18 @@ func TestAServiceLeftOpenIsReportedByTheRecovery(t *testing.T) {
 		t.Fatalf("recovered %+v %v", rec, err)
 	}
 	want := []RecoveredService{
-		{Task: "build", N: 1, Tree: TreeCheckout, ID: "db"},
-		{Task: "build", N: 1, Tree: TreeWorktree, ID: "web", Pid: 4242, Group: 4242, StartedAt: started, Confirmed: true},
+		{Task: "build", N: 1, Tree: TreeCheckout, Phase: PhaseService, ID: "db"},
+		{Task: "build", N: 1, Tree: TreeWorktree, Phase: PhaseService, ID: "web", Pid: 4242, Group: 4242, StartedAt: started, Confirmed: true},
 	}
 	for i, sv := range rec[0].Services {
 		if sv != want[i] {
 			t.Fatalf("service %d: %+v, want %+v", i, sv, want[i])
 		}
+	}
+	// The task's check left running is described as a service is, named by
+	// its task, attempt, tree, phase and id, with its process.
+	if steps := rec[0].Steps; len(steps) != 1 || steps[0] != (RecoveredService{Task: "build", N: 1, Tree: TreeCheckout, Phase: PhaseCheck, ID: "unit", Pid: 4343, Group: 4343, Confirmed: true}) {
+		t.Fatalf("the steps left running: %+v", steps)
 	}
 	rows, _ := l.Checks(ctx, "team-00000001", "build", 1, false)
 	for _, r := range rows {

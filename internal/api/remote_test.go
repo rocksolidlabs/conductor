@@ -174,6 +174,74 @@ func TestRemoteRoutes(t *testing.T) {
 	}
 }
 
+// remoteRunID is a run's id of n bytes: a crew id of n-9 letters, a dash
+// and 8 hex.
+func remoteRunID(n int) string { return strings.Repeat("a", n-9) + "-0123abcd" }
+
+// A pointer is named by its run, and a run's id is up to ext.MaxRunID
+// bytes: another machine's pointer of a run at that bound is kept, read by
+// kind and by a page's next that names it, and deleted; one a byte past
+// it is refused, its put and its delete.
+func TestARemotePointerOfTheLongestRunIDIsKeptAndDeleted(t *testing.T) {
+	ctx := context.Background()
+	f := newFakeSync()
+	e := syncEnv(t, syncDataDir(t), f)
+	h := &extHost{s: e.srv, name: f.Name(), ctx: ctx}
+	pointer := func(id string) ext.Remote {
+		return remoteOf(ext.RemotePointer, "dev-1", id, 1, map[string]any{"id": id, "crew": id[:len(id)-9], "state": "running", "revision": 1})
+	}
+	long := remoteRunID(ext.MaxRunID)
+	if len(long) != 73 || !ext.ValidRunID(long) {
+		t.Fatalf("%q is no run id at the bound", long)
+	}
+	// 199 pointers whose paths sort before the long one's, one after: the
+	// first page ends at the long one, and its next names it.
+	for i := range 199 {
+		id := fmt.Sprintf("a-%08x", i)
+		if err := h.PutRemote(ctx, pointer(id)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := h.PutRemote(ctx, pointer(long)); err != nil {
+		t.Fatalf("a pointer of a %d-byte run id: %v", len(long), err)
+	}
+	if err := h.PutRemote(ctx, pointer("b-00000001")); err != nil {
+		t.Fatal(err)
+	}
+	first, next := remoteRecords(t, e, "?kind=pointer")
+	if len(first) != remotePage || first[len(first)-1].ID != long || !strings.Contains(string(first[len(first)-1].Data), long) {
+		t.Fatalf("the first page: %d records, the last %q", len(first), first[len(first)-1].ID)
+	}
+	if want := remoteDir("dev-1") + "/" + remoteFile(ext.RemotePointer, long); next != want {
+		t.Fatalf("next %q, want the long one's path %q", next, want)
+	}
+	rest, more := remoteRecords(t, e, "?kind=pointer&after="+url.QueryEscape(next))
+	if len(rest) != 1 || rest[0].ID != "b-00000001" || more != "" {
+		t.Fatalf("the page after the long one: %v, next %q", rest, more)
+	}
+	if err := h.DeleteRemote(ctx, ext.RemotePointer, "dev-1", long); err != nil {
+		t.Fatalf("deleting the pointer of a %d-byte run id: %v", len(long), err)
+	}
+	if recs, _ := remoteRecords(t, e, "?kind=pointer"); recordByID(recs, long).ID != "" {
+		t.Fatal("the deleted pointer is still read")
+	}
+	// A byte past the bound, and a long id of another kind: refused.
+	past := remoteRunID(ext.MaxRunID + 1)
+	if err := h.PutRemote(ctx, pointer(past)); !errors.Is(err, ext.ErrRefused) {
+		t.Fatalf("a pointer of a %d-byte id: %v", len(past), err)
+	}
+	if err := h.DeleteRemote(ctx, ext.RemotePointer, "dev-1", past); !errors.Is(err, ext.ErrRefused) {
+		t.Fatalf("deleting a pointer of a %d-byte id: %v", len(past), err)
+	}
+	if err := h.DeleteRemote(ctx, ext.RemoteDevice, "dev-1", long); !errors.Is(err, ext.ErrRefused) {
+		t.Fatalf("deleting a device of a %d-byte id: %v", len(long), err)
+	}
+	if err := h.DeleteRemote(ctx, ext.RemotePointer, long, "b-00000001"); !errors.Is(err, ext.ErrRefused) {
+		t.Fatalf("deleting a record of a %d-byte device: %v", len(long), err)
+	}
+	e.expect(t, http.MethodGet, "/api/remote?after="+remoteDir("dev-1")+"/pointer-"+strings.Repeat("61", ext.MaxRunID+1)+".json", nil, http.StatusBadRequest, "invalid_request")
+}
+
 // With no sync store registered GET /api/remote answers none, as GET
 // /api/sync answers {}: records a store registered once left in remote/
 // are not read, by kind, by ticket or at all.
@@ -551,7 +619,7 @@ func TestSyncStatusRoute(t *testing.T) {
 	full := ext.SyncReport{State: ext.SyncUnreachable, Since: remoteAt, Waiting: 1 << 30, AnswerURL: "https://example.com/" + strings.Repeat("a", ext.MaxAnswerURL-20),
 		Device: strings.Repeat("d", 64), DeviceName: strings.Repeat("é", 32), Workspace: strings.Repeat("w", 64), Person: strings.Repeat("p", 64)}
 	for i := range ext.MaxSyncWithheld {
-		full.Withheld = append(full.Withheld, ext.SyncWithheld{Ref: fmt.Sprintf("%064d", i), Words: strings.Repeat("<", ext.MaxSyncWords)})
+		full.Withheld = append(full.Withheld, ext.SyncWithheld{Ref: fmt.Sprintf("%0*d", ext.MaxRunID, i), Words: strings.Repeat("<", ext.MaxSyncWords)})
 	}
 	if err := full.Valid(); err != nil {
 		t.Fatal(err)
@@ -560,6 +628,29 @@ func TestSyncStatusRoute(t *testing.T) {
 	_, body, _ := e.call(t, http.MethodGet, "/api/sync", nil)
 	if len(body) > maxSyncStatusReply || !strings.Contains(string(body), `"unreachable"`) {
 		t.Fatalf("the answer at its bounds: %d bytes", len(body))
+	}
+}
+
+// A change kept back can name a run: GET /api/sync shows a report whose
+// kept-back ref is a run's id at ext.MaxRunID bytes, and leaves out one a
+// byte past it.
+func TestSyncStatusNamesAKeptBackRun(t *testing.T) {
+	st := &statusSync{fakeSync: newFakeSync()}
+	e := syncEnv(t, syncDataDir(t), st)
+	long := remoteRunID(ext.MaxRunID)
+	st.set(func() ext.SyncReport {
+		return ext.SyncReport{State: ext.SyncBehind, Withheld: []ext.SyncWithheld{{Ref: long, Words: "quotes captured output"}}}
+	})
+	got := e.expect(t, http.MethodGet, "/api/sync", nil, http.StatusOK, "")
+	if w, _ := got["withheld"].([]any); got["state"] != ext.SyncBehind || len(w) != 1 || w[0].(map[string]any)["ref"] != long {
+		t.Fatalf("a run's id kept back: %v", got)
+	}
+	past := remoteRunID(ext.MaxRunID + 1)
+	st.set(func() ext.SyncReport {
+		return ext.SyncReport{State: ext.SyncBehind, Withheld: []ext.SyncWithheld{{Ref: past, Words: "quotes captured output"}}}
+	})
+	if got := e.expect(t, http.MethodGet, "/api/sync", nil, http.StatusOK, ""); got["state"] != nil || got["withheld"] != nil {
+		t.Fatalf("a ref of %d bytes: %v", len(past), got)
 	}
 }
 

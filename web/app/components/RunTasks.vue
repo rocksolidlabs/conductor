@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import type { RouteLocationRaw } from 'vue-router'
 import type { RunAttempt, RunInfo, RunStep, RunTask } from '~/composables/useSessions'
+import type { Ask } from '~/utils/actions'
 import type { BrakemanRequest, BrakemanRow } from '~/utils/brakeman'
 import { candidateRef, ticketPath } from '~/utils/dispatch'
 import { taskReviewTarget } from '~/utils/review'
 import { relativeTime } from '~/utils/sessions'
 import { latestReads, ownedBy, type Owned } from '~/utils/latestReads'
-import { prerequisitesRefused, stepManifest, taskActions, taskAnswer, taskRow } from '~/utils/tasks'
+import { neverRuns, prerequisitesRefused, stepManifest, taskActions, taskAnswer, taskRow, taskWords } from '~/utils/tasks'
 import { attemptSession, taskStatus } from '~/utils/status'
 import type { DecisionSummary } from '~/utils/decisions'
 import { ownerWords } from '~/utils/crews'
@@ -94,8 +95,9 @@ function reviewAt(run: string, task: string, attempt: number, commit: string | u
  * run's attempt, taskReviewTarget), else its latest attempt that submitted one.
  */
 const reviewTarget = computed(() => (selectedTask.value ? taskReviewTarget(props.run.id, selectedTask.value, attempts.value) : null))
-// The run's state too: a task of an interrupted run says what its continuation takes up (taskWords), a held one among them (DR1).
-const live = computed(() => ({ state: props.run.state, stoppedAt: props.run.stoppedAt, paused: props.run.paused, pausedWhy: props.run.pausedWhy, record: props.run.record, resumedBy: props.run.resumedBy, origin: props.run.origin }))
+// The run's state too: a task of an interrupted run says what its continuation takes up (taskWords), a held one among them (DR1); its
+// project manifest, without which no candidate's preview is offered (taskActions).
+const live = computed(() => ({ state: props.run.state, stoppedAt: props.run.stoppedAt, paused: props.run.paused, pausedWhy: props.run.pausedWhy, record: props.run.record, resumedBy: props.run.resumedBy, origin: props.run.origin, manifest: props.run.manifest, outcome: props.run.outcome }))
 function agentOf(member: string): string {
   return props.run.members.find((m) => m.name === member)?.agentId ?? ''
 }
@@ -284,7 +286,9 @@ const askOpen = computed({
     if (!v) asking.value = null
   },
 })
-const question = computed(() => (asking.value ? commands.question(asking.value.task, asking.value.command) : { title: '', detail: '' }))
+// The question as last asked, kept while the dialog closes, so its buttons keep their words through the closing animation.
+let lastQuestion: Ask = { title: '', detail: '', confirm: '', keep: '' }
+const question = computed(() => (lastQuestion = asking.value ? commands.question(asking.value.task, asking.value.command) : lastQuestion))
 async function confirm() {
   const a = asking.value
   if (!a) return
@@ -383,6 +387,8 @@ async function confirm() {
         <span class="truncate text-muted">{{ selectedTask.kind }} · {{ selectedTask.member }}<span v-if="selectedTask.owner" data-task-detail-owner> · <NuxtLink :to="personPath(selectedTask.owner)" class="hover:underline" data-task-detail-owner-link>{{ ownerWords(selectedTask) }}</NuxtLink></span>{{ selectedTask.needs?.length ? ` · needs ${selectedTask.needs.join(', ')}` : '' }}</span>
         <IconButton icon="i-lucide-x" size="xs" variant="ghost" color="neutral" class="ml-auto" label="Close" data-task-detail-close @click="emit('select', '')" />
       </div>
+      <!-- A task that will never run says so, with its reason: never that it waits. -->
+      <p v-if="neverRuns(selectedTask, live)" class="text-muted [overflow-wrap:anywhere]" data-task-never-runs>{{ taskWords(selectedTask, live).text }}</p>
       <!-- Its candidate reviewed on the ticket that holds the run (RV1), or why not. -->
       <div v-if="selectedTask.kind === 'work' && reviewTarget" class="flex flex-wrap items-center gap-2" data-task-review-entry>
         <UButton v-if="ticket" :label="`Review on ${ticket}`" icon="i-lucide-scan-eye" size="xs" color="neutral" variant="outline" :to="reviewAt(reviewTarget.run, selectedTask.id, reviewTarget.attempt, reviewTarget.commit)" data-task-review />
@@ -475,8 +481,8 @@ async function confirm() {
     <UModal v-model:open="askOpen" :title="question.title" :description="question.detail">
       <template #footer>
         <div class="flex w-full justify-end gap-2">
-          <UButton label="Keep it" color="neutral" variant="ghost" @click="asking = null" />
-          <UButton :label="asking?.command === 'cancel' ? 'Cancel the task' : 'Accept the result'" :icon="asking?.command === 'cancel' ? 'i-lucide-x' : 'i-lucide-check'" :color="asking?.command === 'cancel' ? 'error' : 'warning'" :loading="!!commands.busy.value" data-task-confirm @click="confirm" />
+          <UButton :label="question.keep" color="neutral" variant="ghost" @click="asking = null" />
+          <UButton :label="question.confirm" :icon="asking?.command === 'cancel' ? 'i-lucide-x' : 'i-lucide-check'" :color="asking?.command === 'cancel' ? 'error' : 'warning'" :loading="!!commands.busy.value" data-task-confirm @click="confirm" />
         </div>
       </template>
     </UModal>

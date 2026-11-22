@@ -264,7 +264,7 @@ func (h *extHost) DeleteRemote(ctx context.Context, kind, device, id string) err
 	if err := h.syncHost(); err != nil {
 		return err
 	}
-	if !remoteKinds[kind] || !remoteIDShape.MatchString(device) || !remoteIDShape.MatchString(id) {
+	if !remoteKinds[kind] || !remoteIDShape.MatchString(device) || !remoteRecordID(kind, id) {
 		return fmt.Errorf("%w: a remote record is named by its kind, device and id", ext.ErrRefused)
 	}
 	if err := ctx.Err(); err != nil {
@@ -304,11 +304,19 @@ func (h *extHost) ClearRemote(ctx context.Context) error {
 var remoteKinds = map[string]bool{ext.RemoteDecision: true, ext.RemotePointer: true, ext.RemotePins: true, ext.RemoteDevice: true, ext.RemoteHosts: true}
 
 // remoteIDShape is a remote record's device's and id's shape, and
-// remoteCursor a page's cursor (the last record's path).
+// remoteCursor a page's cursor (the last record's path: the device's hex,
+// at most remoteIDShape's 64 bytes, and the id's, at most a run's id).
 var (
 	remoteIDShape = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
-	remoteCursor  = regexp.MustCompile(`^[0-9a-f]{2,128}/[a-z]+-[0-9a-f]{2,128}\.json$`)
+	remoteCursor  = regexp.MustCompile(fmt.Sprintf(`^[0-9a-f]{2,128}/[a-z]+-[0-9a-f]{2,%d}\.json$`, 2*ext.MaxRunID))
 )
+
+// remoteRecordID says id can name a record of kind, as ext.Remote's Valid
+// judges it: remoteIDShape, or for a pointer, named by its run, a run's id
+// (ext.ValidRunID, at most ext.MaxRunID bytes).
+func remoteRecordID(kind, id string) bool {
+	return remoteIDShape.MatchString(id) || kind == ext.RemotePointer && ext.ValidRunID(id)
+}
 
 // remoteTicketMatch is what a ticket filter matches: a decision's document
 // naming the ticket, a pointer naming it or naming a run the ticket links.

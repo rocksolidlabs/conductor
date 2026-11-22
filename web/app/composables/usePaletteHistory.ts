@@ -1,5 +1,5 @@
 import type { PaletteItem } from '~/composables/usePalette'
-import type { Action } from '~/utils/actions'
+import { resumeQuestion, type Action } from '~/utils/actions'
 import { parsePrefix, type PaletteGroup } from '~/utils/palette'
 import {
   byAnchor,
@@ -104,7 +104,7 @@ export function usePaletteHistory(o: { go: (to: string) => void; token: () => vo
     if (!r || r.offered !== 'yes') return { ...base, label: 'Resume', disabled: true, reason: r?.why || read.error || 'Not offered for this session', run: () => {} }
     // A lost record asks a second time, and a launch with variables names them: its record's page asks both.
     if (r.confirm) return { ...base, label: 'Resume on its record…', run: () => o.go(`/history/sessions/${encodeURIComponent(s.id)}`) }
-    return { ...base, label: 'Resume', ask: { title: `Resume ${e.title}?`, detail: "A new session takes up its agent's own conversation." }, run: () => void resume(s.id, e.title) }
+    return { ...base, label: 'Resume', ask: resumeQuestion(e.title), run: () => void resume(s.id, e.title) }
   }
 
   function item(e: HistoryItem, now: number): PaletteItem {

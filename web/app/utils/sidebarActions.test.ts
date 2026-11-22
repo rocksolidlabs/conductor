@@ -64,7 +64,7 @@ describe('rowMenuItems', () => {
 
 describe('stopQuestion and sessionLive', () => {
   it('asks in the row with the words of the design', () => {
-    expect(stopQuestion({ kind: 'session', name: 'docs-sweep' })).toEqual({ title: 'Stop docs-sweep?', detail: 'Its terminal closes. Resume brings the conversation back from Exited.' })
+    expect(stopQuestion({ kind: 'session', name: 'docs-sweep' })).toEqual({ title: 'Stop docs-sweep?', detail: 'Its terminal closes. Resume brings the conversation back from Exited.', confirm: 'Stop', keep: 'Cancel' })
     expect(stopQuestion({ kind: 'run', name: 'users api' }).title).toBe('Stop users api?')
     expect(sessionLive('running')).toBe(true)
     expect(sessionLive('starting')).toBe(true)

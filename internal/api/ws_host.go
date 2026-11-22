@@ -460,6 +460,17 @@ type byteBucket struct {
 	// waits counts the takes that had to wait: a test's way to tell what
 	// the bound slowed from what a busy machine did.
 	waits int
+	// now is the bucket's clock, nil for time.Now: a test holds it still
+	// to read exactly what each take charged.
+	now func() time.Time
+}
+
+// clock is the time the bucket refills to. Called with mu held.
+func (b *byteBucket) clock() time.Time {
+	if b.now != nil {
+		return b.now()
+	}
+	return time.Now()
 }
 
 func newByteBucket(bytesPerSecond, burst int) *byteBucket {
@@ -490,7 +501,7 @@ func (b *byteBucket) refill(now time.Time) {
 
 func (b *byteBucket) take(ctx context.Context, n int) error {
 	b.mu.Lock()
-	b.refill(time.Now())
+	b.refill(b.clock())
 	b.tokens -= float64(n)
 	owed := -b.tokens
 	if owed > 0 {

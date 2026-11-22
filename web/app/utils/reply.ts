@@ -1,5 +1,6 @@
+import { nextTick, ref, watch, type Ref } from 'vue'
 import type { SessionInfo } from '~/composables/useSessions'
-import { ANSWER_DECISION, MAX_ANSWER_REQ_ID, MAX_QUESTION_ID, QUESTION_ANSWERED, type AnswerMsg, type Attention } from './protocol'
+import { ANSWER_DECISION, CONTROL_TOO_LARGE, MAX_ANSWER_REQ_ID, MAX_QUESTION_ID, QUESTION_ANSWERED, TOO_LONG, type AnswerMsg, type Attention } from './protocol'
 import { decisionAnsweredBy } from './attention'
 
 /**
@@ -32,9 +33,14 @@ export function draftQuestion(
   return bindDraft(before, after, bound, questionOf(att))
 }
 
-/** draftQuestion for a field that knows the question shown by its id alone (`current`: a sidebar row's prompt). */
-export function bindDraft(before: string, after: string, bound: string | undefined, current: string | undefined): string | undefined {
-  return after.trim() && !before.trim() ? current : bound
+/**
+ * draftQuestion for a field that knows the question shown by its id alone (`current`: a sidebar row's prompt). `kept`: the line
+ * came back not sent (#654); the person's first change of it binds it anew, to the question shown at that change, as a fresh
+ * line's is. Unchanged, it stays bound to the question it was typed for.
+ */
+export function bindDraft(before: string, after: string, bound: string | undefined, current: string | undefined, kept = false): string | undefined {
+  if (!after.trim()) return bound
+  return !before.trim() || (kept && after !== before) ? current : bound
 }
 
 /**
@@ -112,7 +118,177 @@ export function repliedQuestions() {
  */
 export const NO_QUESTION = 'no_question'
 
-/** A reply that did not go: the owner's refusal (its error code), or the page's own (`not_connected`, `no_word`, `no_question`). */
+/**
+ * What became of a reply line (#654), as its field hears it: `left`, the line left the page (its frame written: the field empties,
+ * the line kept aside), always followed by one of the three others; `sent`, the owner took it, to type now or to hold for the
+ * session's turn, or nothing will say (an older owner; no word in time; typed and not entered): nothing is left to send again;
+ * `refused`, the owner said no, or the page did before it left: the line is in the field, exactly as typed and bound to the
+ * question it was typed for; `held`, it never left the page (a reply to the same question, or an action on the same item, still
+ * on its way): nothing changes.
+ */
+export type ReplyOutcome = 'left' | 'sent' | 'refused' | 'held'
+/** A page's word to the field a reply line came from: what became of the line. Each word once, `left` first when it comes. */
+export type ReplyTaken = (outcome: ReplyOutcome) => void
+
+/** What the toast for a typed line refused as answered adds: the line stays in its field, and how it goes. */
+export const LINE_KEPT = 'Your line is kept: change it to send it for what is asked now.'
+
+/**
+ * What a reply's failure (its promise's rejection) is for its field: every word the owner gives a reply, and the page's own, by
+ * its code (docs/protocol.md, `answer`, `submit`, Error codes). None is left to a default.
+ */
+export function replyOutcomeOf(e: unknown): 'sent' | 'refused' {
+  const code = (e as { code?: unknown } | null)?.code
+  switch (code) {
+    // The owner said no: nothing of the line was written.
+    case QUESTION_ANSWERED:
+    case ANSWER_DECISION:
+    case 'not_sent':
+    case 'read_only':
+    case 'session_ended':
+    case 'too_many_requests':
+    case 'bad_frame':
+    case 'revoked':
+    case 'expired':
+      return 'refused'
+    // Its outcome is open: the line was typed and not entered, or may be typed yet (no word in time, the connection gone while
+    // the owner holds it for the session's turn). Sent again, it would be typed twice.
+    case 'input_failed':
+    case 'no_word':
+    case 'closed':
+      return 'sent'
+    // The page's own: nothing left the page.
+    case TOO_LONG:
+    case NO_QUESTION:
+    case 'not_connected':
+      return 'refused'
+  }
+  // A failure that carries no code of a reply's (the connection could not be made, a view-only link): nothing left the page.
+  return 'refused'
+}
+
+/**
+ * The word a reply field hands its page with a line (#654), for a field that keeps no question (the decision card's line). A line
+ * that leaves empties the field if it still holds it, and is kept aside: refused, it comes back into the field if the field is
+ * still empty (`kept` runs, and the focus goes back to the field when nothing else took it meanwhile: a field disabled while its
+ * line was on its way loses it); sent, it is let go. Held changes nothing.
+ */
+export function holdLine(text: Ref<string>, kept?: () => void): ReplyTaken {
+  const line = text.value
+  const from = typeof document === 'undefined' ? null : (document.activeElement as HTMLElement | null)
+  let away = false
+  return (outcome) => {
+    if (outcome === 'held') return
+    if (outcome === 'left') {
+      if (text.value === line) {
+        text.value = ''
+        away = true
+      }
+      return
+    }
+    if (outcome === 'sent') {
+      if (!away && text.value === line) text.value = ''
+      away = false
+      return
+    }
+    if (away && text.value === '') text.value = line
+    away = false
+    kept?.()
+    giveFocusBack(from)
+  }
+}
+
+/**
+ * A page's word passed on as said once: `left` once, and the first of the other three alone (a fallback said after the word was
+ * given is not heard).
+ */
+export function onceTaken(taken: ReplyTaken | undefined): ReplyTaken {
+  let left = false
+  let told = false
+  return (outcome) => {
+    if (told) return
+    if (outcome === 'left') {
+      if (!left) taken?.('left')
+      left = true
+      return
+    }
+    told = true
+    taken?.(outcome)
+  }
+}
+
+/**
+ * Gives the focus back to `from`, the field a line was sent from, once the page has drawn the refusal, when nothing else took it
+ * meanwhile (a field disabled while its line was on its way loses it) and the field is still there.
+ */
+export function giveFocusBack(from: HTMLElement | null): void {
+  if (!from || typeof document === 'undefined' || from === document.body) return
+  void nextTick(() => {
+    const now = document.activeElement
+    if (from.isConnected && (!now || now === document.body)) from.focus()
+  })
+}
+
+/**
+ * A reply field's line and the question it names (#654): bound to the question shown as the line is begun, and bound anew only when
+ * the person changes a line that came back refused (bindDraft). A line that left the page and is refused comes back into the
+ * field, if it is still empty, bound to the question it was typed for. `send` hands the line (trimmed), its question and the
+ * page's word; null for a blank line.
+ */
+export function replyLine(current: () => string | undefined) {
+  const text = ref('')
+  const question = ref<string | undefined>()
+  let kept = false
+  /** The binding a line coming back into the field takes, set for the edit that puts it back. */
+  let back: { question: string | undefined } | null = null
+  watch(
+    text,
+    (now, before) => {
+      if (back) {
+        question.value = back.question
+        back = null
+        kept = true
+        return
+      }
+      question.value = bindDraft(before, now, question.value, current(), kept)
+      kept = false
+    },
+    { flush: 'sync' },
+  )
+  function send(): { line: string; question: string | undefined; taken: ReplyTaken } | null {
+    const line = text.value.trim()
+    if (!line) return null
+    const raw = text.value
+    const bound = question.value
+    const from = typeof document === 'undefined' ? null : (document.activeElement as HTMLElement | null)
+    let away = false
+    const taken: ReplyTaken = (outcome) => {
+      if (outcome === 'held') return
+      if (outcome === 'left') {
+        if (text.value === raw) {
+          text.value = ''
+          away = true
+        }
+        return
+      }
+      if (outcome === 'sent') {
+        if (!away && text.value === raw) text.value = ''
+        away = false
+        return
+      }
+      if (away && text.value === '') {
+        back = { question: bound }
+        text.value = raw
+      } else if (text.value === raw) kept = true
+      away = false
+      giveFocusBack(from)
+    }
+    return { line, question: bound, taken }
+  }
+  return { text, question, send }
+}
+
+/** A reply that did not go: the owner's refusal (its error code), or the page's own (`not_connected`, `no_word`, `no_question`, `too_long`). */
 export class ReplyError extends Error {
   readonly code: string
   constructor(code: string, message: string) {
@@ -136,7 +312,8 @@ export function clearAnswered(sessions: Map<string, SessionInfo>, id: string, qu
 }
 
 /** The words a page shows for a reply that did not go (a toast's): `name` the session it was for, where the page lists several. */
-export function replyFailure(e: unknown, name?: string): { title: string; description?: string; color: 'warning' | 'error' } {
+/** `line`: the reply was a typed line, which its field keeps (#654): an answered question's toast says so, and how it goes. */
+export function replyFailure(e: unknown, name?: string, line = false): { title: string; description?: string; color: 'warning' | 'error' } {
   const code = (e as { code?: unknown } | null)?.code
   if (code === QUESTION_ANSWERED) {
     // The owner's words say what became of the question when it knows: answered by whom (its recorded result), being
@@ -147,7 +324,7 @@ export function replyFailure(e: unknown, name?: string): { title: string; descri
     const what = by ? `was answered by ${by}` : /being answered/.test(said) ? 'is being answered by someone else' : /in the terminal/.test(said) ? 'was answered in its terminal' : 'was answered before your reply arrived'
     return {
       title: 'Already answered',
-      description: `${name ? `${name}'s` : 'This'} question ${what}. Nothing was sent. If the agent still asks, answer it in its terminal.`,
+      description: `${name ? `${name}'s` : 'This'} question ${what}. Nothing was sent. ${line ? LINE_KEPT : 'If the agent still asks, answer it in its terminal.'}`,
       color: 'warning',
     }
   }
@@ -173,5 +350,7 @@ export function replyFailure(e: unknown, name?: string): { title: string; descri
     }
   }
   if (code === 'not_connected') return { title: 'Not connected', description: 'Reconnect the terminal and try again.', color: 'warning' }
+  // The line's frame would pass the owner's control bound: nothing was sent, in the owner's own words.
+  if (code === TOO_LONG) return { title: 'Not sent', description: CONTROL_TOO_LARGE, color: 'warning' }
   return { title: name ? `Reply to ${name} failed` : 'Reply failed', description: (e as Error | null)?.message, color: 'error' }
 }

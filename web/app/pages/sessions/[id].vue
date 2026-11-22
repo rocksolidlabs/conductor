@@ -9,9 +9,9 @@ import { SESSION_SHORTCUTS, useShortcutsModal } from '~/composables/useShortcuts
 import { firstMessageLine } from '~/utils/launch'
 import { agentName, gonePage, sessionGone, sessionHeadline, type GonePage } from '~/utils/sessions'
 import { sessionStatus, statusOfKey } from '~/utils/status'
-import { listedAttention, repliedQuestions, ReplyError, replyFailure, type QuestionReply } from '~/utils/reply'
+import { listedAttention, repliedQuestions, ReplyError, replyFailure, type QuestionReply, type ReplyOutcome, type ReplyTaken, replyOutcomeOf } from '~/utils/reply'
 import { activateTab, toggleCollapse, toggleFold } from '~/utils/editorTabs'
-import { stopQuestion } from '~/utils/actions'
+import { revokeQuestion, stopQuestion } from '~/utils/actions'
 import { resolveTyped } from '~/utils/fileTree'
 import { editorRows } from '~/utils/editorRows'
 import type { EditorColumnHandle } from '~/components/EditorColumn.vue'
@@ -108,21 +108,32 @@ function chatRetry(nonce: string) {
 /** A question's choice from the chat: its keys into the session, as the quick reply bar's, naming the question (its line is the question's id). */
 function chatAnswer(m: ChatMessage, index: number) {
   const o = m.options?.[index]
-  if (o) answerQuestion({ question: m.id, input: o.input })
+  if (o) void answerQuestion({ question: m.id, input: o.input })
 }
 /** Sends a reply to a question over the terminal's connection, once per question; a refusal (answered already, not connected) is said in a toast. */
 const replied = repliedQuestions()
 const typedAnswers = useTypedAnswers()
-function answerQuestion(reply: QuestionReply) {
-  if (!terminal.value) return toast.add(replyFailure(new ReplyError('not_connected', 'not connected')))
+/**
+ * What became of the reply (ReplyOutcome, without `left`): held when one to the same question is still on its way from here; a
+ * failure by its code (replyOutcomeOf). `left` is called as the reply leaves the page.
+ */
+function answerQuestion(reply: QuestionReply, left?: () => void): Promise<ReplyOutcome> {
+  if (!terminal.value) {
+    toast.add(replyFailure(new ReplyError('not_connected', 'not connected')))
+    return Promise.resolve('refused')
+  }
   const t = terminal.value
-  replied
-    .once(reply.question, () => t.answer(reply))
+  return replied
+    .once(reply.question, () => t.answer(reply, { sent: left }))
     // A line typed as the answer, once sent: this browser shows it under the question to its own person (#364).
     .then((sent) => {
       if (sent && 'text' in reply && reply.text) typedAnswers.remember(reply.question, reply.text)
+      return sent ? 'sent' : 'held'
     })
-    .catch((e: unknown) => toast.add(replyFailure(e)))
+    .catch((e: unknown): ReplyOutcome => {
+      toast.add(replyFailure(e, undefined, 'text' in reply))
+      return replyOutcomeOf(e)
+    })
 }
 function onRequestError(err: { code: string; message: string; requestId: string }) {
   if (chat.fail(err.requestId, err.message)) return
@@ -225,7 +236,7 @@ const menu = computed(() => [
   [{ label: 'Stop session', icon: 'i-lucide-square', color: 'error' as const, disabled: !(session.value && (session.value.status === 'running' || session.value.status === 'starting')), onSelect: stop }],
 ])
 
-const terminal = ref<{ connect: () => void; focus: () => void; sendInput: (t: string) => boolean; submit: (t: string) => boolean; answer: (r: QuestionReply) => Promise<boolean>; chat: (p: ChatPost) => boolean; chatSend: (s: ChatSend) => boolean; requestFile: (p: string, s?: boolean, x?: FileGetExtra) => Promise<any>; nvimOpen: (p: string) => Promise<NvimEvent>; nvimInput: EditorTerminal['nvimInput']; nvimClose: EditorTerminal['nvimClose']; nvimSwap: EditorTerminal['nvimSwap']; writeFile: EditorTerminal['writeFile']; takeSize: () => void; sizerShown: () => boolean; openPaste: () => void } | null>(null)
+const terminal = ref<{ connect: () => void; focus: () => void; sendInput: (t: string) => boolean; submit: (t: string) => boolean; answer: (r: QuestionReply, o?: { sent?: () => void }) => Promise<boolean>; chat: (p: ChatPost) => boolean; chatSend: (s: ChatSend) => boolean; requestFile: (p: string, s?: boolean, x?: FileGetExtra) => Promise<any>; nvimOpen: (p: string) => Promise<NvimEvent>; nvimInput: EditorTerminal['nvimInput']; nvimClose: EditorTerminal['nvimClose']; nvimSwap: EditorTerminal['nvimSwap']; writeFile: EditorTerminal['writeFile']; takeSize: () => void; sizerShown: () => boolean; openPaste: () => void } | null>(null)
 
 // The thread counts nothing while it is open in front of this person.
 watch(
@@ -373,14 +384,15 @@ async function stop() {
   }
 }
 
-function reply(text: string, question?: string) {
-  answerQuestion({ question, text })
+/** A line from the reply bar: `taken` tells the bar what became of it, so that a line not sent stays in its field (#654). */
+function reply(text: string, question?: string, taken?: ReplyTaken) {
+  void answerQuestion({ question, text }, () => taken?.('left')).then((outcome) => taken?.(outcome))
 }
 
 function option(index: number, question?: string) {
   const o = attention.value.options?.[index]
   if (!o) return
-  answerQuestion({ question, input: o.input })
+  void answerQuestion({ question, input: o.input })
 }
 
 
@@ -560,7 +572,7 @@ palette.registerPage(() => {
         detail: `${l.active} ${l.active === 1 ? 'viewer' : 'viewers'} on it`,
         icon: 'i-lucide-link',
         run: () => showView('people'),
-        actions: [{ id: 'revoke', kind: 'page' as const, target: l.id, label: 'Revoke', icon: 'i-lucide-ban', kbds: ['X'], ask: { title: `Revoke ${l.label || 'the link'}?`, detail: 'Viewers using it are disconnected.' }, run: () => void revoke(l) }],
+        actions: [{ id: 'revoke', kind: 'page' as const, target: l.id, label: 'Revoke', icon: 'i-lucide-ban', kbds: ['X'], ask: revokeQuestion(l.label), run: () => void revoke(l) }],
       })),
   ]
   return {

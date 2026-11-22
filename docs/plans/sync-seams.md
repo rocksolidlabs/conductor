@@ -1628,7 +1628,7 @@ type Remote struct {
 	Kind       string    `json:"kind"`       // decision | pointer | pins | device | hosts
 	Device     string    `json:"device"`     // the provider's id of the machine that reported it, at most 64 bytes of [A-Za-z0-9._-]
 	DeviceName string    `json:"deviceName"` // at most 64 bytes, one line
-	ID         string    `json:"id"`         // the record's id on that machine (dr-n, a run's id, "pins", a device's id, "summary"), at most 64 bytes of [A-Za-z0-9._-]
+	ID         string    `json:"id"`         // the record's id on that machine (dr-n, a run's id, "pins", a device's id, "summary"), at most 64 bytes of [A-Za-z0-9._-]; a pointer's may be a run's id, at most ext.MaxRunID (73) bytes
 	Rev        int64     `json:"rev"`
 	At         time.Time `json:"at"`
 	Data       []byte    `json:"data"` // the kind's body, below
@@ -1692,7 +1692,7 @@ type SyncReport struct {
 	Person     string         `json:"person,omitempty"`
 }
 type SyncWithheld struct {
-	Ref   string `json:"ref"`   // what was kept back (CND-12's comment, dr-7), at most 64 bytes
+	Ref   string `json:"ref"`   // what was kept back (CND-12's comment, dr-7, a run's id), at most ext.MaxRunID (73) bytes
 	Words string `json:"words"` // at most 200 characters, one line
 }
 func (r SyncReport) Valid() error

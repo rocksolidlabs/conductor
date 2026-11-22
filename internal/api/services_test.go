@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"os/exec"
 	"regexp"
 	"strconv"
 	"strings"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/rocksolidlabs/conductor/internal/catalog"
 	"github.com/rocksolidlabs/conductor/internal/crew"
+	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
 )
 
 // The helper serves HTTP on the loopback at the port CONDUCTOR_PORT_WEB
@@ -183,4 +185,64 @@ func TestTheNextStartNamesAServiceTheLastServerLeftRunning(t *testing.T) {
 	if syscall.Kill(n, 0) == nil {
 		t.Fatalf("the service %s outlived its server's shutdown", pid)
 	}
+}
+
+// A server that ends while a task's check runs is followed by one whose
+// start names the check in its log as possibly alive, as it names a
+// service (the run, the task, its attempt, its tree, the phase, the
+// check's id, its pid, group and start), beside the count, and signals
+// nothing: the process is still there after the start.
+func TestTheNextStartNamesACheckTheLastServerLeftRunning(t *testing.T) {
+	var logs logBuffer
+	e := newTestEnvAgents(t, nil, slog.New(slog.NewTextHandler(&logs, nil)), nil)
+	ld := e.srv.ledger
+	histCreate(t, ld, "hist-00000031", "", histCrew(e.root))
+	// The check's process, as the last server would have started it.
+	check := exec.Command("sleep", "60")
+	if err := check.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { check.Process.Kill(); check.Wait() })
+	n := check.Process.Pid
+	histTx(t, ld, "hist-00000031", func(tx *ledger.Tx) error {
+		if err := tx.PutTree(ledger.TreeRow{TaskID: "build", N: 1, Kind: ledger.TreeCheckout, Dir: e.root + "/build.1.check", Commit: commitID(1), State: ledger.TreeReady}); err != nil {
+			return err
+		}
+		if err := tx.PutAttempt(histAttempt("build", 1, ledger.AttemptVerifying, "", commitID(0), commitID(1))); err != nil {
+			return err
+		}
+		r := histReceipt("build", 1, "unit", 1, commitID(1), 0, "")
+		r.Dir, r.State, r.FinishedAt, r.PID, r.Group, r.ProcessStartedAt = e.root+"/build.1.check", ledger.CheckRunning, time.Time{}, n, n, histNow
+		return tx.PutCheck(r)
+	})
+	// The owner ends here: its ledger closed with the check running.
+	if err := ld.Close(); err != nil {
+		t.Fatal(err)
+	}
+	again := e.restart()
+	logs.wait(t, "a check the last server started may still be running")
+	line, counted := "", ""
+	for _, l := range strings.Split(logs.String(), "\n") {
+		if strings.Contains(l, "a check the last server started may still be running: it is reported, never signalled") {
+			line = l
+		}
+		if strings.Contains(l, "a managed run was left open by the last server's end") && strings.Contains(l, "run=hist-00000031") {
+			counted = l
+		}
+	}
+	pid := strconv.Itoa(n)
+	for _, want := range []string{"run=hist-00000031", "task=build", "attempt=1", "tree=checkout", "phase=check", "check=unit", "pid=" + pid, "group=" + pid, "startedAt="} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("the start's log line has no %s: %s", want, line)
+		}
+	}
+	if !strings.Contains(counted, "checks=1") {
+		t.Fatalf("the run's line no longer counts the check: %q", counted)
+	}
+	if syscall.Kill(n, 0) != nil {
+		t.Fatalf("the check %s was signalled at the next start", pid)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	again.srv.Shutdown(ctx)
 }

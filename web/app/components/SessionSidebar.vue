@@ -9,7 +9,8 @@ import { joinedPath } from '~/utils/joined'
 import { blockSubtitle, filterNeeds, LIST_SECTIONS, SECTION_TITLES, focusRows, mayRefocusRow, moveFocus, narrowSidebar, needsDotShown, panelRow, reopenNeeds, rowMeta, sectionPreview, sidebarModel, type ItemRow, type ListSection, type RunBlock, type SessionRow, type SidebarItem } from '~/utils/sidebar'
 import { sessionTarget } from '~/utils/actions'
 import { rowMenuItems, sessionLive } from '~/utils/sidebarActions'
-import { replyFailure } from '~/utils/reply'
+import { replyFailure, replyOutcomeOf, type ReplyTaken } from '~/utils/reply'
+import { ROW_DRAFTS, RowDrafts } from '~/utils/rowDrafts'
 import { needsCount } from '~/utils/needsYou'
 import { showingWords } from '~/utils/inbox'
 import { pinRows } from '~/utils/pins'
@@ -47,6 +48,13 @@ provideRowMenu()
 // rows, a run's decisions and tasks under its header, a plan (and an item of a run the store does not hold) as a loose row. Its header
 // counts the one number, the nav's.
 const oneList = useNeedsYou()
+// The rows' reply lines, by session (RowDrafts, #654): kept here, past the field that draws one, at most one per session listed.
+const rowDrafts = reactive(new RowDrafts())
+provide(ROW_DRAFTS, rowDrafts)
+watch(
+  () => attention.sessions.value.map((s) => s.id),
+  (ids) => rowDrafts.keep(ids),
+)
 const model = computed(() => sidebarModel(filterSessions(attention.sessions.value, query.value), attention.runOf, filterNeeds(oneList.items.value, query.value)))
 // The pinned sessions, first (utils/pins.ts): a pin no longer listed is let go a week after its pinning, once the list is read.
 const uiState = useUiState()
@@ -178,15 +186,22 @@ function openRunOf(row: SessionRow) {
 // card there and the row here agree. Each answer names the question the row showed as it was clicked, typed or keyed: one that
 // another person answered first takes nothing, and the toast says it was answered already.
 const busyAll = computed(() => new Set([...busy.value, ...quick.sending.value]))
-function fail(name: string) {
-  return (e: unknown) => toast.add(replyFailure(e, name))
+function fail(name: string, line = false) {
+  return (e: unknown) => toast.add(replyFailure(e, name, line))
 }
 function answer(row: SessionRow, i: number, question: string | undefined) {
   const o = row.prompt?.options[i]
   if (o) quick.send(row.session, o.input, { question }).catch(fail(row.session.name))
 }
-function reply(row: SessionRow, text: string, question: string | undefined) {
-  quick.reply(row.session, text, { question }).catch(fail(row.session.name))
+/** A line from a row's field: `taken` tells the field what became of it, so that a line not sent stays in it (#654). */
+function reply(row: SessionRow, text: string, question: string | undefined, taken?: ReplyTaken) {
+  quick.reply(row.session, text, { question, sent: () => taken?.('left') }).then(
+    (sent) => taken?.(sent ? 'sent' : 'held'),
+    (e: unknown) => {
+      fail(row.session.name, true)(e)
+      taken?.(replyOutcomeOf(e))
+    },
+  )
 }
 
 function focusFilter() {

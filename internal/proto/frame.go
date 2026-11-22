@@ -54,6 +54,12 @@ var (
 	ErrTooLarge     = errors.New("proto: payload exceeds limit")
 	ErrBadEnvelope  = errors.New("proto: malformed relay envelope")
 	ErrBadFileFrame = errors.New("proto: malformed file frame")
+	// ErrControlTooLarge is Decode's refusal of a CONTROL frame past
+	// MaxControl (errors.Is ErrTooLarge as well). A line within MaxSubmit
+	// can pass it once JSON escapes it, so an owner that has read such a
+	// frame whole answers it with ControlTooLargeWords (bad_frame) and goes
+	// on with the connection, nothing of the frame acted on.
+	ErrControlTooLarge = fmt.Errorf("%w: a control message past %d bytes", ErrTooLarge, MaxControl)
 )
 
 // Frame is a decoded frame. Payload aliases the input slice.
@@ -114,6 +120,9 @@ func Decode(b []byte) (Frame, error) {
 		return Frame{}, fmt.Errorf("%w: 0x%02x", ErrUnknownType, f.Type)
 	}
 	if len(f.Payload) > limit {
+		if f.Type == TypeControl {
+			return Frame{}, fmt.Errorf("%w: it has %d bytes", ErrControlTooLarge, len(f.Payload))
+		}
 		return Frame{}, fmt.Errorf("%w: type 0x%02x has %d bytes (limit %d)", ErrTooLarge, f.Type, len(f.Payload), limit)
 	}
 	return f, nil

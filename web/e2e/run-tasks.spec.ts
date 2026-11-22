@@ -107,12 +107,13 @@ test("the row's menu holds Cancel, Copy branch and Ask Brakeman why; the keyboar
   await modal.getByRole('button', { name: 'Keep it' }).click()
   await expect(modal).toHaveCount(0)
   expect(commands, 'Keep it sends no command').toEqual([])
-  // migrate, out of its attempts: Preview this candidate (its last attempt submitted a commit), Copy branch and Ask Brakeman why (the
-  // day's server has Brakeman), and no Cancel (the engine names none on a failed task). Retry and Accept anyway stay in the row.
+  // migrate, out of its attempts: Copy branch and Ask Brakeman why (the day's server has Brakeman), no Preview this candidate though
+  // its last attempt submitted a commit (the Ledger run has no project manifest, and the server would refuse it: the next test), and
+  // no Cancel (the engine names none on a failed task). Retry and Accept anyway stay in the row.
   await expect(page.locator('[data-task-row="migrate"] [data-task-retry="migrate"]')).toBeVisible()
   await expect(page.locator('[data-task-row="migrate"] [data-task-accept="migrate"]')).toBeVisible()
   await page.locator('[data-task-menu="migrate"]').click()
-  await expect(menu.getByRole('menuitem')).toHaveText(['Preview this candidate', 'Copy branch', 'Ask Brakeman why'])
+  await expect(menu.getByRole('menuitem')).toHaveText(['Copy branch', 'Ask Brakeman why'])
   // Ask Brakeman why asks at once from where it is (issue 993): an item of the menu, no longer a link to Brakeman's page
   // (brakeman-where.spec.ts sends it, on a server with Brakeman on).
   await expect(page.locator('[data-task-ask-brakeman="migrate"]')).toHaveRole('menuitem')
@@ -128,6 +129,104 @@ test("the row's menu holds Cancel, Copy branch and Ask Brakeman why; the keyboar
   await page.keyboard.press('Enter')
   await expect(page).toHaveURL(/[?&]task=naming(&|$)/)
   await expect(page.locator('[data-task-detail-id="naming"]')).toBeVisible()
+})
+
+/** Opens the palette (unless it is open) on the task's row and reveals its → actions; returns the row. */
+async function paletteTask(page: Page, taskId: string) {
+  budget(3 * LOAD_MS) // the palette, the row, its actions
+  const palette = page.locator('[data-palette]')
+  if (!(await palette.isVisible())) await page.keyboard.press('Control+k')
+  await expect(palette).toBeVisible({ timeout: LOAD_MS })
+  await palette.locator('input[data-palette-input]').fill(taskId)
+  const row = palette.locator(`[data-palette-row="page:task:${taskId}"]`)
+  await expect(row).toBeVisible({ timeout: LOAD_MS })
+  // Other rows may match the words too: move the focus down until it is on the task's row.
+  for (let i = 0; i < 12 && (await row.getAttribute('data-palette-focused')) === null; i++) await page.keyboard.press('ArrowDown')
+  await expect(row).toHaveAttribute('data-palette-focused', '')
+  await page.keyboard.press('ArrowRight')
+  await expect(row.locator('[data-palette-actions]')).toBeVisible({ timeout: LOAD_MS })
+  return row
+}
+
+test("Preview this candidate is offered, in the row's menu and the palette, only on a run whose read carries its project manifest", async ({ day, browser }) => {
+  void day
+  // With a manifest: migrate's last attempt submitted a commit, so its menu and its palette row offer the preview.
+  const served = ledger()
+  served.manifest = { source: 'crew', revision: 1 }
+  const withManifest = await opened(browser, served)
+  await withManifest.page.locator('[data-task-menu="migrate"]').click()
+  const menu = withManifest.page.getByRole('menu')
+  await expect(menu.getByRole('menuitem')).toHaveText(['Preview this candidate', 'Copy branch', 'Ask Brakeman why'])
+  await withManifest.page.keyboard.press('Escape')
+  await expect(menu).toHaveCount(0)
+  const offered = await paletteTask(withManifest.page, 'migrate')
+  await expect(offered.locator('[data-palette-action="preview-candidate"]')).toHaveText('Preview this candidate')
+  await withManifest.page.close()
+  // Without one (the server would refuse it 409 no_manifest): neither offers it, and the rest is as it was.
+  const { page } = await opened(browser, ledger())
+  await page.locator('[data-task-menu="migrate"]').click()
+  await expect(page.getByRole('menu').getByRole('menuitem')).toHaveText(['Copy branch', 'Ask Brakeman why'])
+  await page.keyboard.press('Escape')
+  await expect(page.getByRole('menu')).toHaveCount(0)
+  const row = await paletteTask(page, 'migrate')
+  await expect(row.locator('[data-palette-action="retry"]')).toBeVisible()
+  await expect(row.locator('[data-palette-action="preview-candidate"]')).toHaveCount(0)
+  await page.close()
+})
+
+test("the palette's Cancel… asks with Keep it and Cancel the task, as the row's dialog does, and Keep it sends nothing", async ({ day, browser }) => {
+  void day
+  const { page, commands } = await opened(browser, ledger())
+  const row = await paletteTask(page, 'soak')
+  await row.locator('[data-palette-action="cancel"]').click()
+  const ask = row.locator('[data-palette-ask]')
+  await expect(ask).toContainText('Cancel the task soak?')
+  await expect(ask.getByRole('button')).toHaveText(['Keep it', 'Cancel the task'])
+  await ask.getByRole('button', { name: 'Keep it', exact: true }).click()
+  await expect(ask).toHaveCount(0)
+  // Accept anyway… on migrate asks with the dialog's words too (the palette still open: its field takes the next words).
+  const failed = await paletteTask(page, 'migrate')
+  await failed.locator('[data-palette-action="accept"]').click()
+  await expect(failed.locator('[data-palette-ask]').getByRole('button')).toHaveText(['Keep it', 'Accept the result'])
+  await failed.locator('[data-palette-ask]').getByRole('button', { name: 'Keep it', exact: true }).click()
+  await expect(failed.locator('[data-palette-ask]')).toHaveCount(0)
+  expect(commands, 'Keep it sends no command').toEqual([])
+  await page.close()
+})
+
+test("a task blocked for good says it will not run, never waiting, and its menu and the palette offer the Cancel… the server names on it", async ({ day, browser }) => {
+  void day
+  // release-notes needs migrate, which failed out of its attempts: the server says it is blocked for good, and names Cancel on it still.
+  const run = ledger()
+  const notes = run.tasks.find((t) => t.id === 'release-notes')!
+  Object.assign(notes, { state: 'blocked', needs: ['migrate'], reason: 'needs migrate, which will not succeed', blockedForGood: true, holds: undefined, commands: ['cancel'] })
+  const { page, commands } = await opened(browser, run)
+  const row = page.locator('[data-task-row="release-notes"]')
+  await expect(row.locator('[data-status-word]')).toHaveText('will not run')
+  await expect(row).toContainText('will not run: needs migrate, which will not succeed')
+  await expect(row).not.toContainText('waiting')
+  // Its detail says the same.
+  await row.locator('> [role="button"]').click()
+  await expect(page.locator('[data-task-detail-id="release-notes"] [data-task-never-runs]')).toHaveText('will not run: needs migrate, which will not succeed')
+  // Its menu holds the Cancel… the server names (a retry or an accept of migrate would start it, and the engine takes the cancel).
+  await page.locator('[data-task-menu="release-notes"]').click()
+  const menu = page.getByRole('menu')
+  await expect(menu.getByRole('menuitem', { name: 'Cancel…' })).toBeVisible()
+  await page.keyboard.press('Escape')
+  await expect(menu).toHaveCount(0)
+  budget(3 * LOAD_MS) // the palette, the row, its actions
+  await page.keyboard.press('Control+k')
+  const palette = page.locator('[data-palette]')
+  await expect(palette).toBeVisible({ timeout: LOAD_MS })
+  await palette.locator('input[data-palette-input]').fill('release-notes')
+  const item = palette.locator('[data-palette-row="page:task:release-notes"]')
+  await expect(item).toContainText('will not run: needs migrate, which will not succeed', { timeout: LOAD_MS })
+  for (let i = 0; i < 12 && (await item.getAttribute('data-palette-focused')) === null; i++) await page.keyboard.press('ArrowDown')
+  await expect(item).toHaveAttribute('data-palette-focused', '')
+  await page.keyboard.press('ArrowRight')
+  await expect(item.locator('[data-palette-action="cancel"]')).toHaveText('Cancel…')
+  expect(commands, 'nothing was sent').toEqual([])
+  await page.close()
 })
 
 /**

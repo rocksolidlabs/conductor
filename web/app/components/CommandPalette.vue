@@ -167,7 +167,9 @@ const asking = ref<{ key: string; action?: Action } | null>(null)
 const fielding = ref<string | null>(null)
 const fieldText = ref('')
 /** A reply drafted in a Needs-you row, with the question it was begun for (bindDraft): sent to that one, whatever the row shows by then. */
-const replies = ref<Record<string, { text: string; question?: string }>>({})
+const replies = ref<Record<string, { text: string; question?: string; kept?: boolean }>>({})
+/** A row's line that left the page, until the word on it: put back if it is refused (#654). */
+const repliesAway = new Map<string, { text: string; question?: string }>()
 
 function rowEl(key: string, within = ''): HTMLElement | null {
   return list.value?.querySelector<HTMLElement>(`[data-palette-row="${CSS.escape(key)}"]${within ? ` ${within}` : ''}`) ?? null
@@ -353,7 +355,8 @@ function answerChoice(row: PaletteItem, i: number) {
 }
 function draftReply(row: PaletteItem, after: string) {
   const d = replies.value[row.key]
-  replies.value = { ...replies.value, [row.key]: { text: after, question: bindDraft(d?.text ?? '', after, d?.question, row.prompt?.question) } }
+  // A line that came back refused is bound anew at the person's first change of it (#654).
+  replies.value = { ...replies.value, [row.key]: { text: after, question: bindDraft(d?.text ?? '', after, d?.question, row.prompt?.question, d?.kept) } }
 }
 function sendReply(row: PaletteItem) {
   const s = row.session
@@ -361,8 +364,28 @@ function sendReply(row: PaletteItem) {
   const d = replies.value[row.key]
   const text = (d?.text ?? '').trim()
   if (!s || !p || p.held || p.away || !text) return
-  replies.value = { ...replies.value, [row.key]: { text: '' } }
-  void rows.reply(s, text, d?.question)
+  const typed = d!.text
+  // The field empties as the line leaves the page, if it still holds it (#654). A line refused comes back as typed, if the field is
+  // still empty, bound to the question it was typed for until the person changes it; one that never left changes nothing.
+  const key = row.key
+  const left = () => {
+    const now = replies.value[key]
+    if (now?.text !== typed) return
+    repliesAway.set(key, { text: typed, question: now.question })
+    replies.value = { ...replies.value, [key]: { text: '' } }
+  }
+  void rows.reply(s, text, d?.question, left).then((outcome) => {
+    const aside = repliesAway.get(key)
+    repliesAway.delete(key)
+    const now = replies.value[key]
+    if (outcome === 'held') return
+    if (outcome === 'sent') {
+      if (!aside && now?.text === typed) replies.value = { ...replies.value, [key]: { text: '' } }
+      return
+    }
+    if (aside && !now?.text) replies.value = { ...replies.value, [key]: { ...aside, kept: true } }
+    else if (now?.text === typed) replies.value = { ...replies.value, [key]: { ...now, kept: true } }
+  })
 }
 function openInTab(row: PaletteItem) {
   if (!row.href) return
@@ -601,8 +624,8 @@ function pieces(text: string): [string, string, string] {
                     <span class="text-sm font-medium">{{ (asking.action?.ask ?? row.ask)?.title }}</span>
                     <span class="text-xs text-muted">{{ (asking.action?.ask ?? row.ask)?.detail }}</span>
                     <span class="ml-auto flex items-center gap-1">
-                      <UButton label="Cancel" size="xs" color="neutral" variant="ghost" @click="cancelAsk(row)" />
-                      <UButton :label="(asking.action?.ask ?? row.ask)?.title.split(' ')[0] ?? 'Confirm'" size="xs" color="error" data-palette-confirm @click="confirm(row)" />
+                      <UButton :label="(asking.action?.ask ?? row.ask)?.keep" size="xs" color="neutral" variant="ghost" data-palette-keep @click="cancelAsk(row)" />
+                      <UButton :label="(asking.action?.ask ?? row.ask)?.confirm" size="xs" color="error" data-palette-confirm @click="confirm(row)" />
                     </span>
                   </div>
                   <!-- A row's field: a line it takes before it runs (a run's name, a broadcast). -->

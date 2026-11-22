@@ -469,8 +469,8 @@ shutdown), `endTree` waits for it to be quiet, stops its services, runs its
 cleanup steps, releases its ports and records `tree.ended`; nothing removes
 the tree itself. A stop ends the run's services beside its sessions before
 `recordStop`, and the server's shutdown arms a cut-off first
-(`Engine.Draining`) so the teardown fits its budget; a service a crash left
-running is reported at the next start, never signalled. The run page shows
+(`Engine.Draining`) so the teardown fits its budget; a service or a check a crash
+left running is reported at the next start, never signalled. The run page shows
 the receipts under each attempt (`RunAttemptSteps.vue`) and the
 prerequisites above the tasks, the header's `paused` badge with its words
 and `cleaning up` while trees end, and Open preview on the task's row and

@@ -1,7 +1,7 @@
 import type { Browser, Page } from '@playwright/test'
 import { expect, stopStrays, test } from './fixtures'
 import type { Started } from './server'
-import { budget as budgetMs, decision, decisionServer, decisionUntil, decisionsOf, makeTicket, propose, type DecisionServer } from './decisions-helpers'
+import { budget as budgetMs, decision, decisionServer, decisionUntil, decisionsOf, firstDraw, makeTicket, propose, type DecisionServer } from './decisions-helpers'
 
 // DR1's records on the decision page (docs/plans/decision-inbox.md, Program item MB0, PR-4), on a phone (390 x 844, touch), on a server
 // of the spec's own (decisions-helpers: its decisions are its alone, and it is restarted over its data directory). A ticket's approved
@@ -240,6 +240,7 @@ test('a gate answered from the Needs you tab through DR1\'s card, a stale respon
   const phone = await phonePage(browser, srv.started)
   budget(6)
   await phone.goto('/decisions')
+  await firstDraw(phone.locator(`[data-inbox-row="decision:${gate1}"]`))
   await expect(phone.locator('[data-bottom-bar]')).toBeVisible()
   await phone.locator(`[data-inbox-row="decision:${gate1}"]`).tap()
   const item = phone.locator(`[data-inbox-item="decision:${gate1}"]`)
@@ -304,7 +305,7 @@ test('a gate answered from the Needs you tab through DR1\'s card, a stale respon
   budget(3)
   await phone.goto(`/dispatch/${PROJECT}/1`)
   const link = phone.locator(`[data-ticket-decision-record="${gate1}"] [data-ticket-decision-item="${gate1}"]`)
-  await expect(link).toBeVisible({ timeout: 30_000 })
+  await firstDraw(link)
   // The applied record there, its state words and its mark, in neutral ink, never green (UX1 PR-20, invariant 7).
   const record = phone.locator(`[data-ticket-decision-record="${gate1}"]`)
   await expect(record.locator('[data-ticket-decision-state]')).toContainText('Applied')
@@ -320,6 +321,7 @@ test('a gate answered from the Needs you tab through DR1\'s card, a stale respon
   budget(5)
   await phone.goto(`/decisions?item=${encodeURIComponent(`decision:${asked}`)}`)
   const asks = phone.locator(`[data-inbox-item="decision:${asked}"] [data-decision-respond]`)
+  await firstDraw(phone.locator(`[data-inbox-item="decision:${asked}"] [data-decision-card] [data-decision-question]`))
   // UX1 PR-20: an agent's clarification starts with Details folded; a tap opens them, and they stay open through the rev the
   // request for more makes below.
   const askedCard = phone.locator(`[data-inbox-item="decision:${asked}"] [data-decision-card]`)
@@ -364,7 +366,7 @@ test('a gate answered from the Needs you tab through DR1\'s card, a stale respon
   const after = await phonePage(browser, srv.started)
   budget(4)
   await after.goto('/decisions')
-  await expect(after.locator(`[data-recent-decision="decision:${gate1}"]`)).toBeVisible({ timeout: 30_000 })
+  await firstDraw(after.locator(`[data-recent-decision="decision:${gate1}"]`))
   await after.locator(`[data-recent-decision="decision:${gate1}"]`).tap()
   const again = after.locator(`[data-inbox-item="decision:${gate1}"] [data-decision-card]`)
   await expect.poll(() => states(again), { timeout: STEP_MS }).toEqual(before)
@@ -373,6 +375,7 @@ test('a gate answered from the Needs you tab through DR1\'s card, a stale respon
   budget(6)
   await after.goto(`/decisions?item=${encodeURIComponent(`decision:${gate2}`)}`)
   const second = after.locator(`[data-inbox-item="decision:${gate2}"]`)
+  await firstDraw(second.locator('[data-decision-choice-label="Approve"]'))
   await second.locator('[data-decision-choice-label="Approve"]').tap()
   await second.locator('[data-decision-confirm]').tap()
   await expect(second.locator('[data-decision-receipt]')).toContainText(`Recorded: ${gate2} answered by Nate`)
@@ -382,9 +385,9 @@ test('a gate answered from the Needs you tab through DR1\'s card, a stale respon
   budget(3)
   await after.goto('/decisions')
   const tracking = after.locator(`[data-decisions-tracking] [data-inbox-row="decision:${gate2}"]`)
-  await expect(tracking).toBeVisible({ timeout: 30_000 })
+  await firstDraw(tracking)
   await after.reload()
-  await expect(tracking).toBeVisible({ timeout: 30_000 })
+  await firstDraw(tracking)
 
   // The run continued: the continuation applies the answer, and the record leaves the list for Recent.
   budget(4)
@@ -426,7 +429,7 @@ test('choices as long as the server takes them read whole on their buttons, on a
       budget(6)
       await page.goto(`/decisions?item=${encodeURIComponent(`decision:${id}`)}`)
       const item = page.locator(`[data-inbox-item="decision:${id}"]`)
-      await expect(item.locator('[data-decision-card] [data-decision-question]')).toBeVisible()
+      await firstDraw(item.locator('[data-decision-card] [data-decision-question]'))
       if (type === 'approval') await expect(item.locator('[data-decision-tradeoffs]')).toHaveCount(0)
       // The clarification's second choice says what it costs: its line under the buttons, led by the label, lies in the card.
       else await tradeoffWhole(page, item, `${size}, the page`)
@@ -435,7 +438,7 @@ test('choices as long as the server takes them read whole on their buttons, on a
       if (type === 'approval') await confirmWhole(page, item, `${size}, the page`)
       await page.goto(`/runs/${encodeURIComponent(run)}?view=tasks&decision=${id}`)
       const modal = page.locator(`[data-decision-modal][data-decision-modal-id="${id}"]`)
-      await expect(modal.locator('[data-decision-question]')).toBeVisible()
+      await firstDraw(modal.locator('[data-decision-question]'))
       tallest.push(`${size}, the modal, the ${type}: ${await choicesWhole(page, modal, LONG[type], `${size}, the modal, the ${type}`)} px`)
       if (type === 'approval') await confirmWhole(page, modal, `${size}, the modal`)
       else await tradeoffWhole(page, modal, `${size}, the modal`)
@@ -451,6 +454,7 @@ test('choices as long as the server takes them read whole on their buttons, on a
   const phone = await phonePage(browser, srv.started)
   await phone.goto(`/decisions?item=${encodeURIComponent(`decision:${ids.approval}`)}`)
   const item = phone.locator(`[data-inbox-item="decision:${ids.approval}"]`)
+  await firstDraw(item.locator('[data-decision-choice="0"]'))
   await item.locator('[data-decision-choice="0"]').tap()
   await item.locator('[data-decision-confirm]').tap()
   const card = item.locator('[data-decision-card]')
@@ -458,6 +462,7 @@ test('choices as long as the server takes them read whole on their buttons, on a
   await expect(card.locator('[data-decision-answer-choice]')).toHaveText(LONG.approval[0]!, { timeout: STEP_MS })
   const desk = await deskPage(browser)
   await desk.goto(`/decisions?item=${encodeURIComponent(`decision:${ids.approval}`)}`)
+  await firstDraw(desk.locator(`[data-inbox-item="decision:${ids.approval}"] [data-decision-card]`))
   for (const [page, size] of [[phone, 'phone'], [desk, 'desktop']] as const) {
     const answered = page.locator(`[data-inbox-item="decision:${ids.approval}"] [data-decision-card]`)
     await expect(answered.locator('[data-decision-answer-choice]')).toHaveText(LONG.approval[0]!, { timeout: STEP_MS })

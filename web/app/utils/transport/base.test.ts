@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { encodeControl, encodeJSONFrame, FrameType, MAX_SUBMIT, parseJSON, type FileHeader, type FileResponse, type Welcome } from '../protocol'
+import { CONTROL_TOO_LARGE, encodeControl, encodeJSONFrame, FrameType, MAX_CONTROL, MAX_SUBMIT, parseJSON, TOO_LONG, type FileHeader, type FileResponse, type Welcome } from '../protocol'
 import { ReplyError } from '../reply'
 import { ANSWER_TIMEOUT_MS, BaseTransport, DECIDE_TIMEOUT_MS, LANE_READ_TIMEOUT_MS } from './base'
 import { LaneError } from './decide'
@@ -277,6 +277,73 @@ describe('BaseTransport.submitAcked (#322)', () => {
     await vi.advanceTimersByTimeAsync(0)
     expect(sent.value).toBe(false)
     expect(control(old, 0)).toEqual({ t: 'submit', text: 'plain' })
+  })
+})
+
+// A line within MAX_SUBMIT can pass MAX_CONTROL once JSON encodes it (docs/protocol.md, Error codes): the transport measures the frame
+// it builds and sends none past the owner's bound, refusing the line with the owner's words; a line that fits goes whole, as before.
+describe('BaseTransport, a line past the control bound', () => {
+  beforeEach(() => {
+    vi.stubGlobal('window', globalThis)
+    vi.useFakeTimers()
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+  })
+  /** A transport welcomed by an owner that takes answers and acknowledges submits, or an older one that does neither. */
+  function welcomed(current: boolean): TestTransport {
+    const t = new TestTransport()
+    t.receive(encodeControl({ t: 'welcome', proto: 1, sessionId: 's', role: 'control', cols: 80, rows: 24, status: 'running', scrollbackBytes: 0, transport: 'ws', fileView: true, ...(current ? { answer: true, submitAck: true } : {}) }))
+    return t
+  }
+  /** The worst lines MAX_SUBMIT permits: each character one JSON writes as six bytes, or as two. */
+  const worst = ['\x01'.repeat(MAX_SUBMIT), '"'.repeat(MAX_SUBMIT), '\\'.repeat(MAX_SUBMIT), '\n'.repeat(MAX_SUBMIT)]
+
+  it('refuses the worst line MAX_SUBMIT permits with the owner\'s words, nothing sent, through every way a line goes', async () => {
+    for (const current of [true, false]) {
+      for (const text of worst) {
+        const t = welcomed(current)
+        const acked = track(t.submitAcked(text, { unlessWaiting: true }))
+        const answered = track(t.answer({ question: 'q1', text, reqId: 'a1' }))
+        await vi.advanceTimersByTimeAsync(0)
+        for (const r of [acked, answered]) {
+          expect(r.error).toBeInstanceOf(ReplyError)
+          expect(r.error).toMatchObject({ code: TOO_LONG, message: CONTROL_TOO_LARGE })
+        }
+        expect(t.submit(text)).toBe(false)
+        expect(t.sent).toHaveLength(0)
+      }
+    }
+  })
+
+  it('says a reply has left the page as its frame is written, never for one refused before it left', async () => {
+    for (const current of [true, false]) {
+      const t = welcomed(current)
+      const left = vi.fn()
+      track(t.answer({ question: 'q1', text: '"'.repeat(MAX_SUBMIT) }, { sent: left }))
+      expect(left).not.toHaveBeenCalled()
+      track(t.answer({ question: 'q1', text: 'owner line' }, { sent: left }))
+      expect(t.sent).toHaveLength(1)
+      expect(left).toHaveBeenCalledTimes(1)
+    }
+  })
+
+  it('sends a line that fits whole, as before, up to the last byte the bound holds', async () => {
+    const t = welcomed(true)
+    const line = 'x'.repeat(MAX_SUBMIT)
+    track(t.submitAcked(line))
+    track(t.answer({ question: 'q1', text: line }))
+    expect(t.sent).toHaveLength(2)
+    for (const f of t.sent) expect(parseJSON<{ text: string }>(f.subarray(1))!.text).toBe(line)
+    // A plain submit is {"t":"submit","text":"…"}: 24 bytes and two a quotation mark, so 4084 of them fit and 4085 do not.
+    const old = welcomed(false)
+    const fits = '"'.repeat((MAX_CONTROL - 24) / 2)
+    expect(old.submit(fits)).toBe(true)
+    expect(old.sent[0]!.length - 1).toBe(MAX_CONTROL)
+    expect(parseJSON<{ text: string }>(old.sent[0]!.subarray(1))!.text).toBe(fits)
+    expect(old.submit(fits + '"')).toBe(false)
+    expect(old.sent).toHaveLength(1)
   })
 })
 

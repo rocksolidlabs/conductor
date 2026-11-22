@@ -186,9 +186,10 @@ test('the session page: the views show and never hide, Share, Copy a view link, 
   await runRow(page, 'page:collapse-terminal')
   await expect(slot).toHaveAttribute('data-terminal-slot', 'open')
   await expect(page.locator('[data-terminal-bar]')).toHaveCount(0)
-  // Stop asks in the row; Enter stops.
+  // Stop asks in the row, with the sidebar row's own words (Cancel, Stop: never one word twice, #1075); Enter stops.
   const palette = await runRow(page, 'page:stop')
   await expect(palette.locator('[data-palette-row="page:stop"] [data-palette-ask]')).toBeVisible()
+  await expect(palette.locator('[data-palette-row="page:stop"] [data-palette-ask]').getByRole('button')).toHaveText(['Cancel', 'Stop'])
   await page.keyboard.press('Enter')
   await expect.poll(async () => (await api.session(s.id)).status, { timeout: 15_000 }).toMatch(/stopped|ended/)
 })
@@ -294,6 +295,8 @@ test("the run page: the broadcast field, the views, the run's chat, Share, Stop"
   await page.keyboard.press('Escape')
   palette = await runRow(page, 'page:stop')
   await expect(palette.locator('[data-palette-row="page:stop"] [data-palette-ask]')).toBeVisible()
+  // With the run header's own words (Cancel, Stop the run, #1075).
+  await expect(palette.locator('[data-palette-row="page:stop"] [data-palette-ask]').getByRole('button')).toHaveText(['Cancel', 'Stop the run'])
   await page.keyboard.press('Enter')
   await expect.poll(async () => (await api.run(run.id)).state, { timeout: 30_000 }).toMatch(/stopped|ended|done/)
 })

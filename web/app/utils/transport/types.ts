@@ -22,9 +22,10 @@ export interface TerminalTransport extends LaneWire {
   sendInput(data: Uint8Array): void
   /**
    * Submits a line as a reply box does: the owner types it (as a paste when the program asks for one) and presses
-   * Enter 250 ms later, so that a TUI takes the Enter as Enter. Controllers only; at most MAX_SUBMIT bytes.
+   * Enter 250 ms later, so that a TUI takes the Enter as Enter. Controllers only; at most MAX_SUBMIT bytes. False when nothing was
+   * sent: not open, or a frame past MAX_CONTROL as encoded (CONTROL_TOO_LARGE).
    */
-  submit(text: string): void
+  submit(text: string): boolean
   /**
    * Types a line as `submit` does and settles with the owner's word (#322), to an owner whose welcome said `submitAck`: true once
    * the line was entered; a ReplyError with the owner's code when it was not (`not_sent`: the session was asking and `unlessWaiting`
@@ -37,7 +38,7 @@ export interface TerminalTransport extends LaneWire {
    * took it, a ReplyError when it did not (`question_answered`: the question no longer waits, nothing was sent). To an older owner,
    * or without a question's id, it goes as keys or a submit and settles false at once.
    */
-  answer(reply: QuestionReply): Promise<boolean>
+  answer(reply: QuestionReply, opts?: { sent?: () => void }): Promise<boolean>
   /** Posts to the session's chat (every role); only once the owner's welcome said `chat`. */
   chat(post: ChatPost): void
   /** Types a kept chat message into the agent (controllers only). */

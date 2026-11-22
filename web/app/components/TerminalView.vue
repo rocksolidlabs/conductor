@@ -744,11 +744,10 @@ function sendInput(text: string): boolean {
   return true
 }
 
-/** Submits a line through the session's owner (a paste, then Enter); false when the transport is not open. */
+/** Submits a line through the session's owner (a paste, then Enter); false when the transport is not open or the line is past the control bound as encoded. */
 function submit(text: string): boolean {
   if (props.readOnly || !transport || transport.state.value !== 'open') return false
-  transport.submit(text)
-  return true
+  return transport.submit(text)
 }
 
 /**
@@ -756,9 +755,9 @@ function submit(text: string): boolean {
  * false once sent to an older owner that says nothing, and rejects with a ReplyError when it did not go (`question_answered`: the
  * question no longer waits, nothing was sent; `not_connected`).
  */
-function answer(reply: QuestionReply): Promise<boolean> {
+function answer(reply: QuestionReply, opts: { sent?: () => void } = {}): Promise<boolean> {
   if (!transport || transport.state.value !== 'open') return Promise.reject(new ReplyError('not_connected', 'not connected'))
-  return transport.answer(reply)
+  return transport.answer(reply, opts)
 }
 
 /**

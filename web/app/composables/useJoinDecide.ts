@@ -1,6 +1,7 @@
 import { computed, nextTick, ref, watch, type Ref } from 'vue'
 import { itemOf, mintRequestId, reconcileDelivery, showingWords, stepsFinal, trackKey, type DeliveryStep, type InboxAction, type InboxItem, type InboxSummary } from '~/utils/inbox'
 import { DecideCode, type DecideOkMsg } from '~/utils/protocol'
+import type { ReplyTaken } from '~/utils/reply'
 import {
   assembleRecord,
   decideOf,
@@ -294,13 +295,20 @@ export function useJoinDecide(lane: DecisionLane, seq: Ref<number>) {
   }
 
   /** One action on the item drawn, through the lane: a `decide` under a fresh opId, owed from now until a reply settles it. */
-  async function act(r: string, a: InboxAction, text?: string) {
+  async function act(r: string, a: InboxAction, text?: string, taken?: ReplyTaken) {
     const it = item.value
     // An action still owed is settled first: no other action replaces it.
-    if (!it || it.ref !== r || owed.value[r]) return
+    if (!it || it.ref !== r || owed.value[r]) {
+      taken?.('held')
+      return
+    }
     pick.value = null
     put(r, { m: decideOf(it, a, mintRequestId(), text), kind: it.kind, label: a.label, went: false, sending: false, words: '' })
+    // The line leaves its field as the action is owed: the page holds it and sends it again by itself (#654). Taken, or still owed,
+    // it is sent; refused, it comes back into the field.
+    taken?.('left')
     await send(r)
+    taken?.(refused.value[r] ? 'refused' : 'sent')
   }
   /**
    * Sends the action owed on r, as it went (under its own opId: the owner answers a repeat from its record), unless one send of it

@@ -30,6 +30,20 @@ export const FOLLOW_SIZE = { cols: 0, rows: 0 } as const
 /** The longest line a `submit` control message carries, in bytes (proto.MaxSubmit). */
 export const MAX_SUBMIT = 4096
 
+/** A CONTROL frame's payload, in bytes as encoded (proto.MaxControl): each connection's bound, which does not grow. */
+export const MAX_CONTROL = 8 * 1024
+
+/**
+ * Why a line was not sent when its `submit` or `answer`, encoded, would pass MAX_CONTROL (proto.ControlTooLargeWords, the same
+ * words): JSON writes a quotation mark, a backslash, a tab or a line break as two bytes and another control character as six, so a
+ * line within MAX_SUBMIT can pass it. The owner answers such a frame with them (`bad_frame`); the page refuses it first.
+ */
+export const CONTROL_TOO_LARGE =
+  'not sent: the line is past 8 KiB as sent, where each quotation mark, backslash, tab or line break counts two bytes and each other control character six: shorten the line'
+
+/** The page's own code for a line refused as CONTROL_TOO_LARGE: nothing was sent. */
+export const TOO_LONG = 'too_long'
+
 /** A session's name, in bytes (proto.MaxSessionName): a launch's and a rename's (PATCH /api/sessions/{id}); the server cuts one longer. */
 export const MAX_SESSION_NAME = 120
 
@@ -651,6 +665,11 @@ export function encodeJSONFrame(type: number, value: unknown): Uint8Array<ArrayB
 
 export function encodeControl(value: Record<string, unknown>): Uint8Array<ArrayBuffer> {
   return encodeJSONFrame(FrameType.Control, value)
+}
+
+/** Whether a CONTROL frame (encodeControl's) is within MAX_CONTROL, which the owner reads no frame past (CONTROL_TOO_LARGE). */
+export function controlFits(frame: Uint8Array): boolean {
+  return frame.length - 1 <= MAX_CONTROL
 }
 
 export function encodeInput(data: Uint8Array): Uint8Array<ArrayBuffer> {

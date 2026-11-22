@@ -197,6 +197,16 @@ add its rule here.
   its own waits' caps as it takes them (`testInfo.setTimeout`, the
   `budget` of `palette-rows.spec.ts`), with the config's timeout above
   their sum, never a multiple of the config's.
+- A load is a step of its own. A `goto` or a reload returns at the load,
+  and the app then starts before its first read: seconds on a loaded
+  machine (eleven at a load average above 70), past the 15 s that the
+  click or the expect after it took as its own cap. A second tab's
+  Approve and a window's decision card ran out before the page had drawn
+  anything (`decisions.spec.ts`, `decision-page-durable.spec.ts`, #281).
+  After every load, wait for the first thing the page draws that the next
+  step needs, with the cap of a first draw, which only bounds a hang
+  (`firstDraw` and `DRAW_MS` in `web/e2e/decisions-helpers.ts`), and raise
+  the test's timeout by it; the steps after it keep their own caps.
 - Import what is tested with the file, never inside a test. A module
   imported in a test's body (`await import('./useTicketPlans')` in its
   helper) counts its cold import against that test's 5 s, and a test that

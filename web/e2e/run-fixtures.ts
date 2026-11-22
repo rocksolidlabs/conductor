@@ -46,6 +46,8 @@ export type StubRun = Omit<Run, 'tasks' | 'members'> & {
   managed: { revision: number }
   members: StubMember[]
   tasks: StubTask[]
+  /** The run's project manifest as its read carries it, absent without one: Preview this candidate is offered only with it. */
+  manifest?: { source: 'crew' | 'file'; revision?: number; digest?: string }
 }
 
 /**
