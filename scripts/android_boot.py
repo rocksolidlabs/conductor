@@ -34,7 +34,8 @@ TRIES = 3
 PAUSE = 60
 BUILD_BOUND = 2400
 IMAGE_BOUND = 900
-CHECK_BOUND = 1800
+# One round's bound: above the boot check's own waits added up (its steps' caps, some 15 minutes), so it only bounds a hang.
+CHECK_BOUND = 1200
 # The emulator the boot check runs on (ci.yml's mobile-android job names the same).
 API_LEVEL = 34
 IMAGE = f"system-images;android-{API_LEVEL};google_apis;x86_64"
@@ -125,7 +126,7 @@ def image(**kw) -> int:
 
 
 # The device's log, kept with the tests' reports (which the job uploads when it fails), bounded.
-LOGCAT = ANDROID / "app/build/reports/androidTests/conductor-logcat.txt"
+LOGCAT = ANDROID / "app/build/reports/androidTests/conductor-logcat.txt"  # each round keeps its own beside it
 LOGCAT_LINES = 30000
 # What of the device's log the job's own log shows at once: the boot check's report, the shell's own words, a crash or a hang.
 TELLING = re.compile(r"ConductorBootCheck|ConductorShell|ConductorPage|AndroidRuntime|FATAL EXCEPTION|ANR in|Process: dev\.conductor|dev\.conductor\.mobile.*(?:Exception|Error)|TestRunner")
@@ -142,26 +143,34 @@ def adb(args: list[str], bound: int = 120) -> str:
         return ""
 
 
-def keep_log(say=tell) -> None:
-    """The device's whole log since the run began (its last LOGCAT_LINES lines, and its crash buffer) into LOGCAT; its telling lines
-    into the job's log."""
+def keep_log(name: str, say=tell) -> None:
+    """The device's whole log since the round began (its last LOGCAT_LINES lines, and its crash buffer) into a file of the reports'
+    folder; its telling lines into the job's log."""
     main = adb(["logcat", "-d", "-v", "threadtime"]).splitlines()[-LOGCAT_LINES:]
     crash = adb(["logcat", "-d", "-v", "threadtime", "-b", "crash"]).splitlines()[-2000:]
-    LOGCAT.parent.mkdir(parents=True, exist_ok=True)
-    LOGCAT.write_text("\n".join(["--- crash buffer ---", *crash, "--- main ---", *main]) + "\n", encoding="utf-8")
+    kept = LOGCAT.with_name(name)
+    kept.parent.mkdir(parents=True, exist_ok=True)
+    kept.write_text("\n".join(["--- crash buffer ---", *crash, "--- main ---", *main]) + "\n", encoding="utf-8")
     telling = [l for l in [*crash, *main] if TELLING.search(l)][-TELLING_LINES:]
     for line in telling:
         say(line)
-    say(f"android_boot: {len(telling)} telling line(s) of the device's log; all of it ({len(main)} lines) in {LOGCAT.relative_to(ROOT)}")
+    say(f"android_boot: {len(telling)} telling line(s) of the device's log; all of it ({len(main)} lines) in {kept}")
 
 
-def check(run=run_streamed, say=tell) -> int:
-    adb(["logcat", "-c"])
-    code, _ = run([*GRADLE, *CHECK_TASKS], ANDROID, CHECK_BOUND)
-    keep_log(say)
-    if code != 0:
-        say("android_boot: the boot check failed" if code != 124 else f"android_boot: the boot check ran past {CHECK_BOUND} s")
-        return 1
+# The boot check is run this many times in a row, each a fresh install and start of the app, until the cause of its one failure in
+# CI's run 3 (no probes' report in 120 s, with nothing to read it from) is known: a flake is work, not a note (AGENTS.md).
+ROUNDS = 3
+
+
+def check(run=run_streamed, say=tell, rounds: int = ROUNDS) -> int:
+    for n in range(1, rounds + 1):
+        say(f"android_boot: the boot check, round {n} of {rounds}")
+        adb(["logcat", "-c"])
+        code, _ = run([*GRADLE, *CHECK_TASKS], ANDROID, CHECK_BOUND)
+        keep_log(f"conductor-logcat-{n}.txt", say)
+        if code != 0:
+            say(f"android_boot: the boot check failed in round {n}" if code != 124 else f"android_boot: the boot check ran past {CHECK_BOUND} s in round {n}")
+            return 1
     return 0
 
 

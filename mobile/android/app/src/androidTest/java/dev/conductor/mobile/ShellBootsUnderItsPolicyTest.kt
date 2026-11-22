@@ -68,7 +68,8 @@ class ShellBootsUnderItsPolicyTest {
               const post = (o) => window.androidBridge.postMessage(JSON.stringify(o));
               const id = (n) => '$PREFIX' + String(n).padStart(2, '0');
               (async () => {
-                const at = (step) => { window.__bootStep = step };
+                // Each step is marked in the page and said on its console, which a debug build keeps in the device's log with its time.
+                const at = (step) => { window.__bootStep = step; console.info('boot probe step: ' + step) };
                 at('interfaces');
                 const before = location.href;
                 check('interfaces', typeof window.CapacitorCookiesAndroidInterface === 'undefined' && typeof window.CapacitorHttpAndroidInterface === 'undefined');

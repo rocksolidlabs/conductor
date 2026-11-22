@@ -70,6 +70,19 @@ class Tries(unittest.TestCase):
             self.assertTrue(android_boot.TELLING.search(line), line)
         self.assertIsNone(android_boot.TELLING.search("11-22 09:17:10.249   512   530 I chatty: uid=1000 expire 3 lines"))
 
+    def test_the_boot_check_runs_its_rounds_and_stops_at_the_first_that_fails(self) -> None:
+        kept = Path(tempfile.mkdtemp()) / "conductor-logcat.txt"
+        old = android_boot.LOGCAT
+        android_boot.LOGCAT = kept
+        self.addCleanup(setattr, android_boot, "LOGCAT", old)
+        outcomes, said = [(0, ""), (1, "FAILED"), (0, "")], []
+        self.assertEqual(android_boot.check(run=lambda argv, cwd, bound: outcomes.pop(0), say=said.append, rounds=3), 1)
+        self.assertEqual(outcomes, [(0, "")])
+        self.assertIn("round 2", said[-1])
+        self.assertTrue((kept.parent / "conductor-logcat-1.txt").exists() and (kept.parent / "conductor-logcat-2.txt").exists())
+        outcomes[:] = [(0, "")] * 3
+        self.assertEqual(android_boot.check(run=lambda argv, cwd, bound: outcomes.pop(0), say=said.append, rounds=3), 0)
+
     def test_a_run_past_its_bound_is_stopped(self) -> None:
         code, _ = android_boot.run_streamed([sys.executable, "-c", "import time; print('started', flush=True); time.sleep(60)"], Path(tempfile.gettempdir()), 2)
         self.assertEqual(code, 124)

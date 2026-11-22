@@ -480,7 +480,7 @@ jobs:
     # its steps'.
     runs-on: ubuntu-latest
     needs: web
-    timeout-minutes: 140
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -513,10 +513,11 @@ jobs:
       - name: The emulator's system image (three tries)
         run: make mobile-android-image
         timeout-minutes: 30
-      # The boot check (ShellBootsUnderItsPolicyTest): the built app on an emulator with no provider.
-      - name: The boot check on an emulator
+      # The boot check (ShellBootsUnderItsPolicyTest): the built app on an emulator with no provider,
+      # three rounds in a row, each a fresh install and start (scripts/android_boot.py says why).
+      - name: The boot check on an emulator (three rounds)
         uses: reactivecircus/android-emulator-runner@v2
-        timeout-minutes: 45
+        timeout-minutes: 70
         with:
           api-level: 34
           target: google_apis
