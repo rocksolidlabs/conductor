@@ -286,3 +286,21 @@ func TestRemoteHostsJudgedOnRead(t *testing.T) {
 		t.Fatalf("the machine: %+v", r.Other)
 	}
 }
+
+// An interrupted run another machine continued is no open run there: its
+// pointer, interrupted and not closed but continued, beside its running
+// continuation, shows the continuation alone.
+func TestHostsOtherContinuedRunNotShown(t *testing.T) {
+	e, _, h := othersEnv(t)
+	interrupted := remoteOf(ext.RemotePointer, "dev-2", "team-00000011", 2, map[string]any{"id": "team-00000011", "crew": "team",
+		"state": "interrupted", "revision": 2, "continuedBy": "team-00000012"})
+	interrupted.DeviceName = "studio"
+	continuation := remoteOf(ext.RemotePointer, "dev-2", "team-00000012", 1, map[string]any{"id": "team-00000012", "crew": "team",
+		"state": "running", "revision": 1, "continuedFrom": "team-00000011"})
+	continuation.DeviceName = "studio"
+	put(t, h, deviceOf("dev-2", "dev-2", "studio", remoteAt), interrupted, continuation)
+	r := e.hostsOf(t)
+	if r.Other == nil || len(r.Other.Machines) != 1 || len(r.Other.Machines[0].Runs) != 1 || r.Other.Machines[0].Runs[0].ID != "team-00000012" {
+		t.Fatalf("other: %+v", r.Other)
+	}
+}

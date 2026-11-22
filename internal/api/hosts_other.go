@@ -84,10 +84,11 @@ type remoteDeviceBody struct {
 
 // remotePointerBody is a pointer record's body as the reply reads it.
 type remotePointerBody struct {
-	ID       string    `json:"id"`
-	Crew     string    `json:"crew"`
-	State    string    `json:"state"`
-	ClosedAt time.Time `json:"closedAt"`
+	ID          string    `json:"id"`
+	Crew        string    `json:"crew"`
+	State       string    `json:"state"`
+	ContinuedBy string    `json:"continuedBy"`
+	ClosedAt    time.Time `json:"closedAt"`
 }
 
 // hostsOther is the second half of the reply, nil when the rule says it
@@ -154,6 +155,8 @@ func (s *Server) hostsOther(ctx context.Context) *HostsOther {
 		names[id] = m.device.Name
 	}
 	for _, rec := range rest {
+		// A pointer is an open run while it is not closed, not final and not
+		// continued, as this server's own list decides.
 		// A record of a device that is not shown (this one, revoked, or
 		// no device record) is of no machine on the page.
 		m := devices[rec.Device]
@@ -167,7 +170,7 @@ func (s *Server) hostsOther(ctx context.Context) *HostsOther {
 			}
 		case ext.RemotePointer:
 			var p remotePointerBody
-			if json.Unmarshal(rec.Data, &p) != nil || p.ID == "" || !p.ClosedAt.IsZero() || s.ledgerHolds(ctx, p.ID) ||
+			if json.Unmarshal(rec.Data, &p) != nil || p.ID == "" || !p.ClosedAt.IsZero() || p.ContinuedBy != "" || s.ledgerHolds(ctx, p.ID) ||
 				p.State == ledger.RunFinished || p.State == ledger.RunStopped {
 				continue
 			}
