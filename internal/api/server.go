@@ -138,6 +138,11 @@ type Server struct {
 	settlePass    func(context.Context) (int, bool)
 	settleWaits   func()
 	settleBetween func(text string)
+	// seen is the host overview's recently seen machines (hosts_seen.go);
+	// probeLock, when a test sets it, tries the ledger's owner lock in
+	// place of ledger.Probe (hostsHolder).
+	seen      *hostsSeen
+	probeLock func(dir string) (ledger.ProbeResult, error)
 	// remoteMu orders the writes of other machines' records (remote.go);
 	// remoteMax, when a test sets it before any is written, bounds their
 	// files in place of ext.MaxRemoteFiles.
@@ -587,6 +592,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		catalog:     effective,
 		registry:    session.NewRegistry(cfg.MaxSessions),
 		links:       share.NewStore(),
+		seen:        newHostsSeen(),
 		limiter:     newRateLimiter(5, 20),
 		hostLimiter: newRateLimiter(float64(max(1, cfg.Switchyard.OpenHostRegistrationsPerMinute))/60, float64(max(1, cfg.Switchyard.OpenHostRegistrationsPerMinute))),
 		openHosts:   &addrCounter{},
@@ -932,6 +938,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 				}
 			}
 		}
+		s.seen.changed(info)
 		s.events.publishIf(info, s.listed)
 		s.router.mark(info.ID)
 		// A hosted session that ended takes its links with it, as a server
@@ -989,6 +996,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		s.router.mark(id)
 		s.recordRemoved(id, d)
 		s.hostedSeen.gone(id)
+		s.seen.removed(d.Info(), s.OwnHostKey(), s.registry.List)
 	}
 	if cfg.Switchyard.Enabled && s.store != nil {
 		s.openLinkKeeper(s.store)
@@ -1218,6 +1226,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/export", s.requireAdmin(s.handleExport))
 	mux.HandleFunc("GET /api/capabilities", s.requireAdmin(s.handleCapabilities))
 	mux.HandleFunc("GET /api/remote", s.requireAdmin(s.handleRemote))
+	mux.HandleFunc("GET /api/hosts", s.requireAdmin(s.handleHosts))
 	mux.HandleFunc("GET /api/sync", s.requireAdmin(s.handleSyncStatus))
 	mux.HandleFunc("GET /api/ui/{name}", s.requireAdmin(s.handleUIGet))
 	mux.HandleFunc("PUT /api/ui/{name}", s.requireAdmin(s.handleUIPut))
