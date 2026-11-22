@@ -31,6 +31,7 @@ import (
 	"github.com/rocksolidlabs/conductor/internal/config"
 	"github.com/rocksolidlabs/conductor/internal/export"
 	"github.com/rocksolidlabs/conductor/internal/hostagent"
+	"github.com/rocksolidlabs/conductor/internal/machine"
 	"github.com/rocksolidlabs/conductor/internal/proto"
 	"github.com/rocksolidlabs/conductor/internal/reach"
 	"github.com/rocksolidlabs/conductor/internal/session"
@@ -57,6 +58,20 @@ var webUI = web.Handler
 // server, as it replaces extensions.
 var newServer = func(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, ui http.Handler, st *store.Store, p ext.Providers, notices string) (*api.Server, error) {
 	return api.New(cfg, cat, log, ui, st, api.WithExtensions(p), api.WithNotices(notices), api.WithPreviewBridge(web.PreviewBridge()))
+}
+
+// machineDir is the directory of this machine's id (machine.Dir): the
+// package's tests give their own (main_test.go), so that no test makes or
+// reads the id of the machine it runs on.
+var machineDir = machine.Dir
+
+// machineID is this machine's id, from machineDir (machine.ID).
+func machineID() (string, error) {
+	dir, err := machineDir()
+	if err != nil {
+		return "", err
+	}
+	return machine.ID(dir)
 }
 
 // extensionsLine names what the registry holds, kind and name, in its
@@ -303,6 +318,18 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 	// decision links here. A build with no embedded page (API only) serves
 	// no Decide tab, so it says nothing of decisions and gets none.
 	srv.SetSwitchyardDecisions(ui != nil)
+	// This machine's id, read once here and never in a route: the server
+	// keys its own row among its hosts' machines by it, as a host on this
+	// machine is keyed (machine.Group). A switchyard groups no machines; an
+	// id that cannot be read leaves the row with no key, said once, naming
+	// the file and why, never what it holds.
+	if !cfg.Switchyard.Enabled {
+		if id, err := machineID(); err != nil {
+			log.Warn("this machine's id cannot be read, so hosts on this machine are not shown with this server", "err", err)
+		} else {
+			srv.SetOwnMachine(id)
+		}
+	}
 	if cfg.Switchyard.Enabled {
 		log.Info("switchyard: coordinating hosted sessions and launching nothing", "relay", cfg.SwitchyardRelay(), "origins", strings.Join(cfg.SwitchyardOrigins(), ","))
 	}

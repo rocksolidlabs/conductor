@@ -62,6 +62,16 @@ func (s *Server) handleHostWS(w http.ResponseWriter, r *http.Request) {
 		}
 		defer s.openHosts.release(addr)
 	}
+	// This start's key, from which a host of the owner's own server makes
+	// the key of its machine it registers with (proto.HostInfo.Machine):
+	// only on an upgrade accepted for a host's credential, never on a
+	// switchyard, whose hosts send no machine. Set before the upgrade's
+	// answer is written; never logged.
+	if hp.host && !s.cfg.Switchyard.Enabled {
+		if k := s.serverKeyHeader(); k != "" {
+			w.Header().Set(proto.ServerKeyHeader, k)
+		}
+	}
 	c, err := websocket.Accept(w, r, s.acceptOptions())
 	if err != nil {
 		return
