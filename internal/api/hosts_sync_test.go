@@ -348,3 +348,46 @@ func TestHostSummaryLeavesOutTheLocal(t *testing.T) {
 		}
 	}
 }
+
+// The computed sources on their own: a source of two keys, each marked,
+// built at delivery and sent alone, one built deleted and sent as a
+// delete, both listed by a replay after the run pointers.
+func TestSyncComputedSourceKeys(t *testing.T) {
+	f := newFakeSync()
+	e := syncEnv(t, syncDataDir(t), syncStarter{f})
+	var mu sync.Mutex
+	bodies := map[string]string{"a": `{"n":1}`, "b": `{"n":2}`}
+	e.srv.syncs.computed(&computedSource{store: "cards", paths: func() []string { return []string{"a", "b"} },
+		build: func(_ context.Context, path string) ([]byte, bool, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			b, ok := bodies[path]
+			return []byte(b), !ok, nil
+		}})
+	newLedgerRun(t, e.srv.ledger, "team-00000001", ledger.RunRunning)
+	e.srv.StartExtensions(t.Context())
+	calls := f.until(t, "the replay", func(cs []syncCall) bool { return replayedIn(cs, 1) })
+	keys := keysOf(calls, nthEpoch(calls, 1))
+	at := map[string]int{}
+	for i, k := range keys {
+		at[k.store+"/"+k.path] = i
+	}
+	if at["cards/a"] < at[syncLedger+"/team-00000001"] || at["cards/b"] < at[syncLedger+"/team-00000001"] || at["cards/b"] > at[syncDispatch+"/"+syncLogPath] {
+		t.Fatalf("the replay lists %v", keys)
+	}
+	mu.Lock()
+	bodies["a"] = `{"n":3}`
+	delete(bodies, "b")
+	mu.Unlock()
+	before := len(f.all())
+	e.srv.syncs.computedChanged("cards", "a")
+	e.srv.syncs.computedChanged("cards", "b")
+	calls = f.until(t, "both keys again", func(cs []syncCall) bool { return len(cs) >= before+2 })
+	a, b := callsOf(calls[before:], syncKey{"cards", "a"}), callsOf(calls[before:], syncKey{"cards", "b"})
+	if len(a) != 1 || a[0].op != "saved" || string(a[0].d.Data) != `{"n":3}` || a[0].d.Rev != 2 {
+		t.Fatalf("a: %s", describeCalls(a))
+	}
+	if len(b) != 1 || b[0].op != "deleted" || b[0].d.Rev != 2 {
+		t.Fatalf("b: %s", describeCalls(b))
+	}
+}

@@ -604,8 +604,9 @@ func TestSyncReplayAtStart(t *testing.T) {
 		seen[syncKey{c.d.Store, c.d.Path}]++
 	}
 	// Every allowlisted document the directory holds now (the server's own
-	// start wrote the ledger runs' records), each run, Dispatch's log.
-	want := []syncKey{{syncReplay, ""}, {syncReplayed, ""}, {syncLedger, "team-00000001"}, {syncLedger, "team-00000002"}, {syncDispatch, syncLogPath}}
+	// start wrote the ledger runs' records), each run, the host summary,
+	// Dispatch's log.
+	want := []syncKey{{syncReplay, ""}, {syncReplayed, ""}, {syncLedger, "team-00000001"}, {syncLedger, "team-00000002"}, {syncHosts, syncHostsPath}, {syncDispatch, syncLogPath}}
 	for _, sub := range []string{"", "crews", "runs"} {
 		docs, _ := st.ListDocs(sub)
 		for _, d := range docs {
