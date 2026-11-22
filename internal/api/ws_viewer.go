@@ -781,25 +781,30 @@ func (s *Server) serveHostedViewer(ctx context.Context, c *websocket.Conn, raw n
 		if s.viewerSeam != nil && s.viewerSeam.read != nil {
 			s.viewerSeam.read(pumped)
 		}
-		f, err := readFrame(reading, c, 0)
-		if errors.Is(err, proto.ErrControlTooLarge) {
-			// As a server viewer's is (serveLocalViewer): told why, in
-			// words, nothing of it relayed, and the connection goes on.
-			_ = sink.WriteFrame(proto.NewError(proto.ErrCodeBadFrame, proto.ControlTooLargeWords))
-			continue
-		}
-		if err != nil {
+		f, n, err := readFrameLen(reading, c, 0)
+		tooLarge := errors.Is(err, proto.ErrControlTooLarge)
+		if err != nil && !tooLarge {
 			return
 		}
 		// Every frame is counted, whatever becomes of it, before the next
-		// is read; a frame waits for the host's queue in its turn after
+		// is read, a control past its bound too, at the length read; a
+		// frame waits for the host's queue in its turn after
 		// (signal.HostConn's share for viewers), so neither wait holds up
 		// the host's connection or another viewer's.
 		if budget != nil {
-			credit = 1 + len(f.Payload)
+			credit = n
 			if budget.take(waits, credit) != nil {
 				return
 			}
+		}
+		if tooLarge {
+			// As a server viewer's is (serveLocalViewer): told why, in
+			// words, nothing of it relayed (so neither relay count, which
+			// count what reaches the host, takes it), and the connection
+			// goes on.
+			credit = 0
+			_ = sink.WriteFrame(proto.NewError(proto.ErrCodeBadFrame, proto.ControlTooLargeWords))
+			continue
 		}
 		switch f.Type {
 		case proto.TypeSignal:

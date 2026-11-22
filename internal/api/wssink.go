@@ -239,6 +239,15 @@ func (s seamSink) WriteFrame(frame []byte) error {
 
 // readFrame reads one binary frame with a deadline.
 func readFrame(ctx context.Context, c *websocket.Conn, timeout time.Duration) (proto.Frame, error) {
+	f, _, err := readFrameLen(ctx, c, timeout)
+	return f, err
+}
+
+// readFrameLen is readFrame with the length of the message read, the frame
+// whole with its type byte: what a frame Decode refused (one past its type's
+// limit, read within the connection's read limit) was, too, for a budget
+// that counts every frame read. 0 when nothing was read.
+func readFrameLen(ctx context.Context, c *websocket.Conn, timeout time.Duration) (proto.Frame, int, error) {
 	if timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, timeout)
@@ -246,12 +255,13 @@ func readFrame(ctx context.Context, c *websocket.Conn, timeout time.Duration) (p
 	}
 	typ, data, err := c.Read(ctx)
 	if err != nil {
-		return proto.Frame{}, err
+		return proto.Frame{}, 0, err
 	}
 	if typ != websocket.MessageBinary {
-		return proto.Frame{}, errors.New("text frames are not accepted")
+		return proto.Frame{}, len(data), errors.New("text frames are not accepted")
 	}
-	return proto.Decode(data)
+	f, err := proto.Decode(data)
+	return f, len(data), err
 }
 
 // keepalive pings the peer every `every` until ctx ends or a ping fails.

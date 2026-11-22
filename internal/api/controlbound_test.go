@@ -87,3 +87,45 @@ func TestARelayedLinePastTheControlBoundIsToldInWords(t *testing.T) {
 		t.Fatalf("relayed to the host: %+v", got)
 	}
 }
+
+// A relayed viewer's control past its bound is charged to its address's
+// relay budget at the length read, before it is answered, as a frame
+// within its bound is charged before it is relayed: with the bucket's
+// clock held, each takes exactly its own length.
+func TestARelayedLinePastTheControlBoundIsChargedToTheBudget(t *testing.T) {
+	e := newTestEnv(t, func(c *config.Config) { c.Switchyard.Enabled = true; viewerBudget(c) })
+	host := dialFakeHost(t, e, "hosted-agent-token")
+	tok := host.link("control", "")
+	tap := tapRelays(t, host)
+	v := dialViewer(t, e, host.sessionID, tok)
+	vid := joinRelayed(t, host, v)
+	b := budgetOf(t, e, "127.0.0.1")
+	b.mu.Lock()
+	still := b.last
+	b.now = func() time.Time { return still }
+	b.mu.Unlock()
+	held := func() float64 {
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		b.refill(b.clock())
+		return b.tokens
+	}
+	before := held()
+	past := pastControl()[0]
+	v.send(past)
+	expectTooLarge(t, v)
+	if got := before - held(); got != float64(len(past)) {
+		t.Fatalf("a control of %d bytes past its bound took %v of the budget", len(past), got)
+	}
+	// An INPUT frame as long, within its own bound, takes the same as it is
+	// read, and the relay envelope it brings past that as it is relayed.
+	before = held()
+	keys := proto.Encode(proto.TypeInput, []byte(strings.Repeat("k", len(past)-1)))
+	v.send(keys)
+	if !waitFor(10*time.Second, func() bool { return tap.inputBytes(vid) == len(keys)-1 }) {
+		t.Fatal("the keys were not relayed")
+	}
+	if got, want := before-held(), float64(len(keys)+1+proto.ViewerIDLen); got != want {
+		t.Fatalf("an input of %d bytes took %v of the budget, not %v", len(keys), got, want)
+	}
+}
