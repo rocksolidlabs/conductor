@@ -1821,9 +1821,28 @@ for a person, as for a revoked link's: `submit` under Attention); in a
 session with a `trustPrompt` the pause lasts until the screen watcher has had
 its 500 ms look at what was drawn since the text (at most 2 s more), so a
 trust question drawn then holds the carriage return back too. While the
-screen, a whole frame, still shows a startup question, answered or not (the
-program slow to move on), no line is typed into it: a person's is refused
-(`not_sent` with the trust question's words), Conductor's own waits. No lock
+startup questions' watch lasts (until the first submission's carriage
+return), a line's text is typed only at the agent's prompt, judged on one
+reading of the screen as the program drew it, before the text and again as
+the writer takes it. For an agent whose catalog entry has a `promptShape`,
+the text is typed only where that reading is a whole frame (no
+synchronized update under way, nothing cut by a window made smaller) that
+shows the agent's prompt by its shape, no startup question's pattern and no
+numbered choice. Anywhere else nothing of the line is written: a person's
+is refused with `not_sent` and words true to the screen: the startup
+question's words where one shows, `the agent's screen shows what may be a
+question: nothing was typed; answer it in its terminal` where a numbered
+choice shows and no startup question, `the agent is not at its prompt yet:
+nothing was typed` otherwise; Conductor's own waits, and a crew member's
+prompt so held is noted once per wait in the run's log (Crew runs). An
+agent with startup questions and no `promptShape` is refused where a whole
+frame shows a startup question or a numbered choice, or a frame not whole
+while the output the watcher keeps saw a startup question drawn. A line
+that is a carriage return alone is judged the same way as the writer takes
+it. The carriage return of a line with text is held where it was held
+before (a startup question that may show, a question drawn in the pause):
+the prompt holding the line's own text is not read by the prompt's shape.
+No lock
 of the session is held
 across the pause, and a person's keystrokes (INPUT) are written as they come,
 not held back. What Conductor submits always records one `input` entry as the
@@ -4336,6 +4355,8 @@ whose `message` is one of these:
 | trust question | `status` | `<member> asks "<question>": answer it with one of its choices ("<choice>", …) in the run page's chat or on <member>'s session page, or in its terminal; its prompt waits` when the session offers the question's choices (a startup dialog the catalog knows: the folder's trust, the agent's own update), else `<member> asks "<question>": answer it in <member>'s terminal; its prompt waits`; once for each question in one wait for the prompt (`; its handoffs wait` for a member resumed). One dialog is one line however many times the session reads it again in that wait (its screen drawn again, as when a page attaches the member's terminal): words noted in the wait are not noted again, and a reading whose words are the row the dialog is found by (its first choice, the heading not on the screen: `Update now (runs`) is not noted while a reading of its own words is noted or comes at the wait's next look; held at that look with only such a reading, the line is written once without them, `<member> asks a question of its agent's own: answer it …`. Another question in the wait, with other words, has its own line, and a later wait (a later start of the member) notes its questions anew |
 | prompt without its Enter | `error` | `typed <member>'s prompt without its Enter: <member> waits on a question; answer it, then press Enter in its terminal` |
 | Enter again | `status` | `pressed Enter again for <member>: it did not report taking its prompt within 3s` |
+| prompt not reported taken | `error` | `typed <member>'s prompt, and its agent did not report taking it: check its terminal, and type the prompt there if its input is empty`, once, for an agent that reports taking a prompt (Claude Code's hook) that has not done so within 3 s of the Enter pressed again either: nothing more is typed, the member stays prompted (a later done starts the members after it), and the run's member reads `needsInput` until its agent reports a turn (working, or done) |
+| prompt refused | `status` | `<member>'s prompt waits: <why>` when the session refuses the prompt, nothing typed, while it shows no question (a startup screen: `the agent is not at its prompt yet: nothing was typed`, `the agent's screen shows what may be a question: nothing was typed; answer it in its terminal`, or a startup question's pattern the session has not asked), once for each in one wait for the prompt, for every member; the prompt is tried again a poll later |
 | no yolo recipe | `status` | `<member>: yolo is on, but <agent name> has no yolo recipe: launched without one` |
 | resumed | `status` | `<member> resumed its conversation` |
 | relaunched | `status` | `<member> started anew` (its prompt is typed again once it is ready) |

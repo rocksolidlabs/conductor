@@ -211,6 +211,38 @@ that order.
   link grants. Content appears only after the guest joins.
 - **No Runs nav item** until there is something behind it.
 
+## The start of an agent's session: a line's text goes only into the agent's prompt (#1017; 2026-11-22)
+
+- **A line's text only at the agent's prompt.** Until the first line a
+  session types is entered, a line for Claude Code or Codex (an agent whose
+  catalog entry has a prompt shape) has its text typed only where a whole
+  frame of the screen shows the agent's own prompt and no startup question
+  or numbered choice; anywhere else nothing of it is written. A person's
+  line is refused with words true to the screen: the startup question's
+  words where one shows, "the agent's screen shows what may be a question:
+  nothing was typed; answer it in its terminal" at a numbered choice, "the
+  agent is not at its prompt yet: nothing was typed" otherwise. A crew
+  member's prompt waits, and the run's log says why once per wait, for
+  every member. An agent with startup questions and no prompt shape is
+  refused wherever either of its two earlier checks refused a line's text
+  or held its Enter.
+- **The Enter.** A line that is an Enter alone is judged by the same rule
+  as it is written. The Enter of a line with text is held where it was
+  held before.
+- **A prompt its agent did not report taking.** For an agent that reports
+  taking a prompt (Claude Code), a crew member's prompt it does not report
+  taking, after an Enter pressed again, is said once in the run's log
+  ("typed <member>'s prompt, and its agent did not report taking it: check
+  its terminal, and type the prompt there if its input is empty"); nothing
+  is typed again, and the member reads as waiting on a person until its
+  agent reports a turn.
+- **Where Codex is not signed in**, its sign-in screen lists its ways to
+  sign in as numbered choices: a line is refused there as at any screen
+  that may be a question, and a crew member's prompt waits with that noted.
+- **Not built:** the startup watch ends only at the Enter of a line a
+  session types, or at the session's end. Codex's sign-in screen is not
+  among its catalog questions (an entry holds at most eight).
+
 ## Sync's seams: what this repository hands a sync store, and what it shows of other machines (CS1, #1028; 2026-11-20)
 
 The open-source half of sync between a person's machines (`docs/plans/sync-seams.md`,
