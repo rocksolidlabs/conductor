@@ -537,8 +537,9 @@ func (l *Ledger) readVersion(ctx context.Context) {
 	}
 }
 
-// awaitLock tries for the owner lock every 250 ms for up to LockWait
-// after Open and, once it is taken, opens the database as the owner's in
+// awaitLock tries for the owner lock every 250 ms for up to the wait fixed
+// at Open (LockWait as Open was called, waitSeams) and, once it is taken,
+// opens the database as the owner's in
 // place of the read-only one, under mu, so a reader sees one or the other;
 // then OnOwned's function runs. Past LockWait the ledger stays read-only
 // and says who holds the lock. Close ends the wait: each try is made under

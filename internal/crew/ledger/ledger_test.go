@@ -369,17 +369,14 @@ func TestTheOwnerLockHoldsAcrossProcesses(t *testing.T) {
 		t.Fatal("the helper did not take the lock")
 	}
 	old := LockWait
-	LockWait = 300 * time.Millisecond
 	t.Cleanup(func() { LockWait = old })
-	// Open does not wait: the ledger is read-only at once, waiting for the
-	// lock, and says who holds it; past LockWait it stops waiting.
-	began := time.Now()
+	// Open does not wait: with a wait longer than any test, Open returns
+	// (an Open that waited would hang here) and the ledger is read-only,
+	// waiting for the lock, and says who holds it.
+	LockWait = time.Hour
 	l, err := Open(dir)
 	if err != nil {
 		t.Fatal(err)
-	}
-	if took := time.Since(began); took > 200*time.Millisecond {
-		t.Fatalf("Open waited %v for a held lock", took)
 	}
 	ro, why := l.ReadOnly()
 	if !ro || !strings.HasPrefix(why, "waiting for the owner lock: another server holds") || !strings.Contains(why, "pid") {
@@ -388,24 +385,39 @@ func TestTheOwnerLockHoldsAcrossProcesses(t *testing.T) {
 	if _, err := l.Transition(context.Background(), "team-00000001", func(tx *Tx) error { return nil }); !errors.Is(err, ErrReadOnly) {
 		t.Fatalf("a transition while waiting: %v", err)
 	}
-	deadline := time.Now().Add(3 * time.Second)
-	for {
-		ro, why = l.ReadOnly()
-		if !strings.HasPrefix(why, "waiting") {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("still waiting after LockWait: %s", why)
-		}
-		time.Sleep(50 * time.Millisecond)
+	l.Close()
+	// Past LockWait it stops waiting and says who holds the lock: Open's
+	// try, then the wait's first, made under the ledger's lock, which
+	// ReadOnly takes after it. The wait is fixed as Open is called, so the
+	// next value is the next Open's alone.
+	LockWait = 0
+	take, tries := takeLock, make(chan struct{}, 2)
+	t.Cleanup(func() { takeLock = take })
+	takeLock = func(path string) (*ownerLock, string, bool, error) {
+		defer func() {
+			select {
+			case tries <- struct{}{}:
+			default:
+			}
+		}()
+		return take(path)
 	}
+	l, err = Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-tries
+	<-tries
+	ro, why = l.ReadOnly()
 	if !ro || !strings.HasPrefix(why, "another server holds") {
 		t.Fatalf("after LockWait: %v %s", ro, why)
 	}
 	l.Close()
+	takeLock = take
 	// Let go within the wait, the lock is taken in the background: the
-	// ledger turns the owner's, and OnOwned's function runs once.
-	LockWait = 5 * time.Second
+	// ledger turns the owner's, and OnOwned's function runs once. The wait
+	// is longer than any test: the helper's letting go is what ends it.
+	LockWait = time.Hour
 	l, err = Open(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -417,12 +429,7 @@ func TestTheOwnerLockHoldsAcrossProcesses(t *testing.T) {
 	l.OnOwned(func() { owned <- struct{}{} })
 	stdin.Close()
 	helper.Wait()
-	select {
-	case <-owned:
-	case <-time.After(4 * time.Second):
-		ro, why := l.ReadOnly()
-		t.Fatalf("the lock was not taken once let go: read-only %v: %s", ro, why)
-	}
+	<-owned
 	if ro, why := l.ReadOnly(); ro {
 		t.Fatalf("still read-only: %s", why)
 	}

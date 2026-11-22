@@ -29,7 +29,7 @@ describe('the words after a line typed into a session (#322)', () => {
   })
 
   it('tells a refusal that typed nothing from an outcome left open, by the code', () => {
-    for (const code of ['not_sent', 'read_only', 'session_ended', 'too_many_requests', 'bad_frame', 'not_connected']) expect(sayOutcomeOf(code, 'why')).toEqual({ refused: 'why' })
+    for (const code of ['not_sent', 'read_only', 'session_ended', 'too_many_requests', 'bad_frame', 'not_connected', 'too_long']) expect(sayOutcomeOf(code, 'why')).toEqual({ refused: 'why' })
     for (const code of ['input_failed', 'no_word', 'closed', 'other']) expect(sayOutcomeOf(code, 'why')).toEqual({ unconfirmed: 'why' })
   })
 

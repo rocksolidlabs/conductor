@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { holdLine, type ReplyTaken } from '~/utils/reply'
 import { briefLine, inboxKindWords, itemTimeWords, ticketOf, type DeliveryStep, type InboxAction, type InboxItem } from '~/utils/inbox'
 import type { LaneEvidence } from '~/utils/transport/decide'
 
@@ -51,7 +52,7 @@ const props = defineProps<{
    */
   recordShown?: boolean
 }>()
-const emit = defineEmits<{ act: [ref: string, action: InboxAction, text?: string]; comment: [ref: string, ticket: string, text: string, taken: (sent: boolean) => void]; reread: []; ask: [subject: string] }>()
+const emit = defineEmits<{ act: [ref: string, action: InboxAction, text?: string, taken?: ReplyTaken]; comment: [ref: string, ticket: string, text: string, taken: (sent: boolean) => void]; reread: []; ask: [subject: string] }>()
 
 const brakeman = computed(() => props.item.briefBy === 'brakeman')
 /** The heading's time: waiting while the item is open, when it was answered once it is not (itemTimeWords). */
@@ -107,11 +108,11 @@ function confirm() {
   asking.value = null
   if (a) emit('act', props.item.ref, a)
 }
+/** Sends the typed line; it stays in the field until the page says it was sent (`taken`), as typed when it was not (#654). */
 function sendLine() {
   const a = line.value
   if (!a || !text.value.trim()) return
-  emit('act', props.item.ref, a, text.value)
-  text.value = ''
+  emit('act', props.item.ref, a, text.value, holdLine(text))
 }
 
 const commenting = ref(false)

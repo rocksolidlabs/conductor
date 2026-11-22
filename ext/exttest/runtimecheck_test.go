@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"slices"
 	"strings"
@@ -80,6 +82,91 @@ func TestTheContractHoldsForTheFake(t *testing.T) {
 			t.Errorf("Where %q, want the fake's own", f.Where())
 		}
 	})
+}
+
+// takenPort is the native Runtime whose first Port for the probe check
+// answers a port another socket of the test holds, as when a socket takes
+// the number Port picked before the helper binds it.
+type takenPort struct {
+	ext.Runtime
+	held   int
+	handed atomic.Int32
+}
+
+func (r *takenPort) Port(ctx context.Context, ref ext.ProcessRef) (int, error) {
+	if ctx.Err() == nil && ref.Run == "exttest-probe" && r.handed.Add(1) == 1 {
+		return r.held, nil
+	}
+	return r.Runtime.Port(ctx, ref)
+}
+
+// A port Port answered that another socket has taken by the time the
+// helper binds it is not the Runtime's fault: the check starts the helper
+// again on a fresh one, and the native Runtime passes.
+func TestAPortTakenBeforeTheHelperBindsItIsAskedForAgain(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	r := &takenPort{Runtime: local.Native(), held: ln.Addr().(*net.TCPAddr).Port}
+	RuntimeExec(t, r, helperCase(t))
+	if n := r.handed.Load(); n < 2 {
+		t.Errorf("Port was asked for the probe %d time(s): want the held port, then a fresh one", n)
+	}
+}
+
+// strangerPort is the native Runtime whose first Port for the panicking
+// Started's Run answers the port of another server the test runs, one
+// that answers every path 200.
+type strangerPort struct {
+	ext.Runtime
+	held   int
+	handed atomic.Int32
+}
+
+func (r *strangerPort) Port(ctx context.Context, ref ext.ProcessRef) (int, error) {
+	if ctx.Err() == nil && ref.Run == "exttest-started-panics" && ref.Task == "Run" && r.handed.Add(1) == 1 {
+		return r.held, nil
+	}
+	return r.Runtime.Port(ctx, ref)
+}
+
+// Another server's answer at the port Port answered is not the helper's:
+// the panicking Started's check takes only the helper's own answer, so a
+// server that took the port is not read as the helper left running, and
+// the check starts the helper again on a fresh port; the native Runtime
+// passes.
+func TestAnotherServersAnswerAtThePortIsNotTheHelpers(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer srv.Close()
+	r := &strangerPort{Runtime: local.Native(), held: srv.Listener.Addr().(*net.TCPAddr).Port}
+	RuntimeExec(t, r, helperCase(t))
+	if n := r.handed.Load(); n < 2 {
+		t.Errorf("Port was asked for the panicking Started's Run %d time(s): want the other server's port, then a fresh one", n)
+	}
+}
+
+// Another run's helper at the port Port answered gives its 204 on /ok as
+// this run's would: the panicking Started's check asks for the answer
+// only this start's helper gives (its word, handed to it), so that helper
+// is not read as this one left running, and the check starts again on a
+// fresh port; the native Runtime passes.
+func TestAnotherRunsHelperAtThePortIsNotThisRunsHelper(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/ok", "/last", "/run/exttest-another-run":
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	r := &strangerPort{Runtime: local.Native(), held: srv.Listener.Addr().(*net.TCPAddr).Port}
+	RuntimeExec(t, r, helperCase(t))
+	if n := r.handed.Load(); n < 2 {
+		t.Errorf("Port was asked for the panicking Started's Run %d time(s): want the other helper's port, then a fresh one", n)
+	}
 }
 
 // broken is the native Runtime with one rule broken, as its fields say.

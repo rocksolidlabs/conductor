@@ -159,6 +159,15 @@ type Submit struct {
 // MaxSubmit bounds the text of a submit message, in bytes: a reply box's line.
 const MaxSubmit = 4096
 
+// ControlTooLargeWords say why a line was not sent when its submit or
+// answer, encoded, passes MaxControl: JSON writes a quotation mark, a
+// backslash, a tab or a line break as two bytes and another control
+// character as six, so a line within MaxSubmit can pass it. An owner
+// answers such a frame with them (bad_frame, no request named: the frame
+// is not read), and a client refuses to send one with the same words
+// (web/app/utils/protocol.ts, CONTROL_TOO_LARGE).
+const ControlTooLargeWords = "not sent: the line is past 8 KiB as sent, where each quotation mark, backslash, tab or line break counts two bytes and each other control character six: shorten the line"
+
 // Valid reports whether m is within its bounds: Text at most MaxSubmit
 // bytes and ReqID none or at most MaxAnswerReqID of printable ASCII.
 func (m Submit) Valid() bool {

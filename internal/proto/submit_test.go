@@ -2,6 +2,7 @@ package proto
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -52,5 +53,42 @@ func TestSubmitShapeAndBounds(t *testing.T) {
 	w, _ = json.Marshal(Welcome{T: CtlWelcome})
 	if strings.Contains(string(w), "submitAck") {
 		t.Fatalf("an older owner's welcome: %s", w)
+	}
+}
+
+// A submit or an answer whose line is within MaxSubmit but passes
+// MaxControl once encoded (each byte a character JSON writes as six, or
+// as two for MaxSubmit of them and the envelope) is refused as a control
+// past its bound, ErrControlTooLarge, which an owner answers with
+// ControlTooLargeWords; a line that fits decodes as before.
+func TestALineThatEncodesPastMaxControlIsRefused(t *testing.T) {
+	for _, c := range []string{`"`, "\x01", "<", `\`} {
+		text := strings.Repeat(c, MaxSubmit)
+		for name, m := range map[string]any{
+			"submit": Submit{T: CtlSubmit, Text: text, ReqID: "s1"},
+			"answer": Answer{T: CtlAnswer, ReqID: "a1", Question: "q", Text: text},
+		} {
+			_, err := Decode(MustControl(m))
+			if !errors.Is(err, ErrControlTooLarge) || !errors.Is(err, ErrTooLarge) {
+				t.Errorf("%s of %d %q: %v", name, MaxSubmit, c, err)
+			}
+		}
+	}
+	for name, m := range map[string]any{
+		"submit": Submit{T: CtlSubmit, Text: strings.Repeat("x", MaxSubmit), ReqID: strings.Repeat("r", MaxAnswerReqID), UnlessWaiting: true},
+		"answer": Answer{T: CtlAnswer, ReqID: strings.Repeat("r", MaxAnswerReqID), Question: strings.Repeat("q", MaxQuestionID), Text: strings.Repeat("x", MaxSubmit)},
+	} {
+		f, err := Decode(MustControl(m))
+		if err != nil || f.Type != TypeControl {
+			t.Errorf("%s that fits: %v", name, err)
+		}
+	}
+	// Any other frame past its bound is not taken for a control's.
+	if _, err := Decode(Encode(TypeInput, make([]byte, MaxInput+1))); errors.Is(err, ErrControlTooLarge) || !errors.Is(err, ErrTooLarge) {
+		t.Fatalf("an input past its bound: %v", err)
+	}
+	// The words name the bound as it is.
+	if MaxControl != 8<<10 || !strings.Contains(ControlTooLargeWords, "8 KiB") {
+		t.Fatalf("the words %q for a bound of %d bytes", ControlTooLargeWords, MaxControl)
 	}
 }

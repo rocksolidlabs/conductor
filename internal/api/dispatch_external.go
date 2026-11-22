@@ -102,6 +102,9 @@ type externalState struct {
 	// (publishSeam).
 	now         func() time.Time
 	publishStep func(ctx context.Context, at, id string)
+	// closePhase, when set, is handed a close's phase as its reads begin
+	// (readForClose): the func ends the phase as its cap would.
+	closePhase func(end func())
 }
 
 // stopping is the context that ends as the server begins to stop.
@@ -1457,6 +1460,9 @@ func (s *Server) readForClose(w http.ResponseWriter, r *http.Request, ds *dispat
 	// merged reads' cap; each record within a write's cap of its own after.
 	pctx, pcancel := context.WithTimeout(ctx, caps.busy+caps.merged)
 	defer pcancel()
+	if f := s.external.closePhase; f != nil {
+		f(pcancel)
+	}
 	// The edit's content as EditTicket hands it to Apply.
 	args := struct {
 		Key string `json:"key"`

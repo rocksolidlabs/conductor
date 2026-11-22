@@ -700,7 +700,11 @@ func TestCloseAllWaitsForAnEditorStillStarting(t *testing.T) {
 
 // An editor's open bounds Neovim's first answers too: a Neovim busy just
 // as it has started (a plugin's work) is ended when the open's time runs
-// out, the open returns, and the editor says it closed.
+// out, the open returns, and the editor says it closed. The open's time
+// runs out where the test ends it, once Neovim has reached its loop: a
+// time of the clock's would also bound Neovim's start, which a loaded
+// machine can spend whole, and the open then fails before the editor is
+// shown.
 func TestAnEditorBusyAsItStartsEndsWithItsOpen(t *testing.T) {
 	if !nvim.Available() {
 		t.Skip("nvim is not on PATH; the bridge's test needs the real Neovim")
@@ -708,10 +712,45 @@ func TestAnEditorBusyAsItStartsEndsWithItsOpen(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	// Neovim writes a line to this pipe just before its loop: the test's
+	// read of it returns once Neovim is there.
+	busy := filepath.Join(t.TempDir(), "busy")
+	if err := syscall.Mkfifo(busy, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The open's own deadline bounds Neovim's whole start and the wait for
+	// its loop: a hang's bound only, the test's, far above what a loaded
+	// machine takes. In a run that works the hook ends the open's time
+	// first, once Neovim is in its loop.
+	const startHang = 30 * time.Second
+	ctx, cancel := context.WithTimeout(context.Background(), startHang)
+	defer cancel()
 	nvimStarted = func(ed *nvim.Editor) {
-		// A loop, not :sleep, which goes on answering requests.
-		go ed.Input(":while 1 | endwhile<CR>")
-		time.Sleep(200 * time.Millisecond)
+		// A loop, not :sleep, which goes on answering requests. The keys'
+		// call waits for Neovim's answer after them, which the loop holds.
+		go ed.Input(":call writefile(['busy'], '" + busy + "') | while 1 | endwhile<CR>")
+		read := make(chan error, 1)
+		go func() {
+			_, err := os.ReadFile(busy)
+			read <- err
+		}()
+		select {
+		case err := <-read:
+			if err != nil {
+				t.Errorf("the loop's pipe: %v", err)
+			}
+		case <-ctx.Done():
+			// Neovim never reached its loop (it ended, or the keys went
+			// elsewhere): a writer's open lets the read's open go, so the
+			// read ends and nothing is left waiting on the pipe. One that
+			// finds no reader (the read already ended) is refused at once.
+			if w, err := os.OpenFile(busy, os.O_WRONLY|syscall.O_NONBLOCK, 0); err == nil {
+				w.Close()
+			}
+			<-read
+			t.Errorf("Neovim did not reach its loop within the open's %v", startHang)
+		}
+		cancel()
 	}
 	t.Cleanup(func() { nvimStarted = nil })
 	dir := t.TempDir()
@@ -725,9 +764,7 @@ func TestAnEditorBusyAsItStartsEndsWithItsOpen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	returnsWithin(t, 10*time.Second, "the open", func() error {
+	returnsWithin(t, startHang+10*time.Second, "the open", func() error {
 		return s.NvimOpen(ctx, sub, proto.NvimOpen{T: proto.CtlNvimOpen, ReqID: "r1", Path: "a.txt"})
 	})
 	from := 0

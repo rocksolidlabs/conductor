@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import type { ReplyTaken } from '~/utils/reply'
 import { blockRows, type ListSection, type RunBlock, type SessionRow } from '~/utils/sidebar'
 
 /**
@@ -7,7 +8,7 @@ import { blockRows, type ListSection, type RunBlock, type SessionRow } from '~/u
  * them all for the visit. The members' and the header's actions pass up to the list.
  */
 const props = withDefaults(defineProps<{ block: RunBlock; now: number; section?: ListSection; unfolded?: boolean; narrow?: boolean; panelFor?: string | null; needsDot?: boolean; open?: boolean; busy?: Set<string>; focusedId?: string | null; confirmingId?: string | null; big?: boolean }>(), { section: 'working', unfolded: false, narrow: false, panelFor: null, needsDot: true, open: false, busy: () => new Set(), focusedId: null, confirmingId: null, big: false })
-const emit = defineEmits<{ shareRun: [block: RunBlock]; stopRun: [block: RunBlock]; share: [row: SessionRow]; stop: [row: SessionRow]; yard: [row: SessionRow]; openRun: [row: SessionRow]; answer: [row: SessionRow, index: number, question: string | undefined]; reply: [row: SessionRow, text: string, question: string | undefined]; confirm: [id: string | null]; sheet: [target: SessionRow | RunBlock]; unfold: [runId: string]; answerOpen: [row: SessionRow] }>()
+const emit = defineEmits<{ shareRun: [block: RunBlock]; stopRun: [block: RunBlock]; share: [row: SessionRow]; stop: [row: SessionRow]; yard: [row: SessionRow]; openRun: [row: SessionRow]; answer: [row: SessionRow, index: number, question: string | undefined]; reply: [row: SessionRow, text: string, question: string | undefined, taken: ReplyTaken]; confirm: [id: string | null]; sheet: [target: SessionRow | RunBlock]; unfold: [runId: string]; answerOpen: [row: SessionRow] }>()
 const shown = computed(() => blockRows(props.block, props.section, props.unfolded))
 </script>
 
@@ -46,7 +47,7 @@ const shown = computed(() => blockRows(props.block, props.section, props.unfolde
         @yard="emit('yard', $event)"
         @open-run="emit('openRun', $event)"
         @answer="(row, i, q) => emit('answer', row, i, q)"
-        @reply="(row, text, q) => emit('reply', row, text, q)"
+        @reply="(row, text, q, taken) => emit('reply', row, text, q, taken)"
         @sheet="emit('sheet', $event)"
         :narrow="narrow"
         :panel-open="panelFor === `s:${m.id}`"

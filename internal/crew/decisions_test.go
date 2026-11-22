@@ -927,7 +927,7 @@ func TestARevokedIdentityIsNotApplied(t *testing.T) {
 	}
 	e.ConfirmAuthority(g.ID, rc.K, false)
 	old := decisionWhen(t, ld, g.ID, "superseded", inState(ledger.DecisionSuperseded))
-	if old.Applied != "" || old.SupersededBy == "" || !strings.Contains(old.Why, "user:nate's answer could not be rechecked") {
+	if old.Applied != "" || old.SupersededBy == "" || !strings.HasPrefix(old.Why, "Nate's answer could not be rechecked") {
 		t.Fatalf("the revoked answer's decision: %+v", old.DecisionRow)
 	}
 	fresh := decisionWhen(t, ld, old.SupersededBy, "open", inState(ledger.DecisionOpen))

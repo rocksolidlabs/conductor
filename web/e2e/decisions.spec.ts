@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process'
 import type { Page } from '@playwright/test'
 import { expect, stopStrays, task, test, type Session } from './fixtures'
-import { budget, decisionServer, decisionUntil, decisionsOf, makeTicket, operatorPage, propose, runUntil, type DecisionServer } from './decisions-helpers'
+import { budget, decisionServer, decisionUntil, decisionsOf, firstDraw, makeTicket, operatorPage, propose, runUntil, type DecisionServer } from './decisions-helpers'
 import { storedTicket } from './dispatch-helpers'
 
 // An agent's durable decision answered where its question is (Program item DR1, docs/plans/decisions.md, PR-7), on a server of its own:
@@ -182,6 +182,7 @@ test("build's approval waits while docs finishes, is answered in its card from t
   budget(10 * STEP_MS)
   await page.goto(`${base}/runs/${runId}?view=tasks`)
   const row = page.locator('[data-task-row="build"]')
+  await firstDraw(row)
   // The row says the attempt once: attempt 1 is the norm, so the words alone (UX1 PR-11).
   await expect(row.locator('[data-task-words]')).toHaveText(`waits for decision ${id}`, { timeout: 30_000 })
   // Held by an open decision, it waits on a person: the status language's needs (UX1 PR-10), never the running green.
@@ -245,6 +246,7 @@ test("build's approval waits while docs finishes, is answered in its card from t
       budget(4 * STEP_MS)
       await page.evaluate(() => localStorage.setItem('conductor-color-mode', 'light'))
       await page.goto(`${base}/runs/${runId}?view=tasks&decision=${id}`)
+      await firstDraw(modal.locator('[data-decision-question]'))
       await expect(page.locator('html')).toHaveClass(/\blight\b/)
       await expect(modal.locator('[data-decision-step="recorded"]')).toHaveAttribute('data-step-icon', 'i-lucide-circle-dot')
     } else {
@@ -267,6 +269,7 @@ test("build's approval waits while docs finishes, is answered in its card from t
   // The session page's bar: the question, Answer, no reply field or number key; Answer opens the card.
   budget(6 * STEP_MS)
   await page.goto(`${base}/sessions/${sid}`)
+  await firstDraw(page.locator('[data-quick-reply]'))
   let bar = await barHoldsNoReply(page, question)
   await bar.locator('[data-quick-reply-answer]').click()
   await expect(modal.locator('[data-decision-question]')).toHaveText(question)
@@ -275,6 +278,7 @@ test("build's approval waits while docs finishes, is answered in its card from t
   // The Yard's focused panel: the same.
   budget(5 * STEP_MS)
   await page.goto(`${base}/yard?focus=${sid}`)
+  await firstDraw(page.locator('[data-quick-reply]'))
   bar = await barHoldsNoReply(page, question)
   await bar.locator('[data-quick-reply-answer]').click()
   await expect(modal.locator('[data-decision-question]')).toHaveText(question)
@@ -287,6 +291,7 @@ test("build's approval waits while docs finishes, is answered in its card from t
   await guestCtx.addInitScript(() => localStorage.setItem('conductor.displayName', 'Ana'))
   const guest = await guestCtx.newPage()
   await guest.goto(`${base}/join/${token}`)
+  await firstDraw(guest.getByRole('button', { name: 'Join session' }))
   await guest.getByRole('button', { name: 'Join session' }).click()
   const guestBar = await barHoldsNoReply(guest, question)
   await expect(guestBar.locator('[data-quick-reply-decision]')).toHaveText(`The operator answers ${id} in Conductor`)
@@ -299,6 +304,7 @@ test("build's approval waits while docs finishes, is answered in its card from t
   const second = await operatorPage(browser, srv.started, 'Priya')
   await second.goto(`${base}/runs/${runId}?view=tasks&decision=${id}`)
   const secondModal = second.locator(`[data-decision-modal][data-decision-modal-id="${id}"]`)
+  await firstDraw(secondModal.locator('[data-decision-choice-label="Approve"]'))
   await secondModal.locator('[data-decision-choice-label="Approve"]').click()
   await expect(secondModal.locator('[data-decision-confirm]')).toBeVisible()
   await expect(secondModal.locator('[data-decision-option]')).toHaveCount(0)
@@ -306,6 +312,7 @@ test("build's approval waits while docs finishes, is answered in its card from t
   // The palette's row opens the card, where the operator approves: Recorded at once, then Applied, typed into build's attempt 1.
   budget(6 * STEP_MS)
   await page.goto(`${base}/`)
+  await firstDraw(page.locator('#dashboard-sidebar-main'))
   const palette = await openPalette(page)
   const prow = palette.locator(`[data-palette-row="decision:${id}"]`)
   await expect(prow).toContainText(`Answer ${id}: ${question}`)
@@ -367,6 +374,7 @@ test("build's approval waits while docs finishes, is answered in its card from t
   // their receipts in Details.
   budget(4 * STEP_MS)
   await page.goto(`${base}/runs/${runId}?view=tasks&decision=${id}`)
+  await firstDraw(modal.locator('[data-decision-state-words]'))
   await expect(modal.locator('[data-decision-state-words]')).toHaveText("Applied: typed into build's attempt 1")
   await expect(modal.locator('[data-decision-option]')).toHaveCount(2)
   await expect(modal.locator('[data-decision-option="0"] [data-decision-recommended]')).toHaveCount(1)

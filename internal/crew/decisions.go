@@ -2421,7 +2421,7 @@ func (e *Engine) applyTx(r *run, d *decision) tx {
 	revoked := e.confirmation(d) < 0
 	delete(e.confirms, confirmKey{d.n, ans.k})
 	if ans.auth.Via == ViaIdentity && (ans.auth.Boot != e.boot || revoked) || ans.auth.Via == ViaSync && revoked {
-		replace, t := e.replaceDecision(r, d, fmt.Sprintf("%s's answer could not be rechecked", ans.actor))
+		replace, t := e.replaceDecision(r, d, fmt.Sprintf("%s's answer could not be rechecked", nameOf(ans.byName, ans.actor)))
 		opened := t.done
 		t.done = func() {
 			opened()

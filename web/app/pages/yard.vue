@@ -9,7 +9,7 @@ import { WALL_SHORTCUTS } from '~/composables/useShortcuts'
 import { isActive } from '~/utils/attention'
 import { sessionStatus } from '~/utils/status'
 import { bestGrid, yardFilterOf, yardChips, yardCounts, yardFilter, type YardFilter } from '~/utils/wall'
-import { replyFailure } from '~/utils/reply'
+import { replyFailure, replyOutcomeOf, type ReplyTaken } from '~/utils/reply'
 import { pageState } from '~/utils/pageState'
 import { QUICK_START_URL } from '~/utils/about'
 
@@ -135,9 +135,18 @@ function fail(title: string) {
   return (e: unknown) => toast.add({ title, description: (e as Error).message, color: 'error' })
 }
 
-/** A reply names the question the bar showed (its id): one answered meanwhile takes nothing, and says so. */
-function reply(s: SessionInfo, text: string, question?: string) {
-  quick.reply(s, text, { question }).catch((e: unknown) => toast.add(replyFailure(e, s.name)))
+/**
+ * A reply names the question the bar showed (its id): one answered meanwhile takes nothing, and says so. `taken` tells the bar
+ * what became of the line, so that a line not sent stays in its field (#654).
+ */
+function reply(s: SessionInfo, text: string, question?: string, taken?: ReplyTaken) {
+  quick.reply(s, text, { question, sent: () => taken?.('left') }).then(
+    (sent) => taken?.(sent ? 'sent' : 'held'),
+    (e: unknown) => {
+      toast.add(replyFailure(e, s.name, true))
+      taken?.(replyOutcomeOf(e))
+    },
+  )
 }
 
 function option(s: SessionInfo, index: number, question?: string) {
@@ -287,7 +296,7 @@ usePalette().registerPage(() => {
             @link-offered="linkOffered"
           />
           <template #bar>
-            <QuickReplyBar :attention="focused.attention" :agent-name="focused.agentId" role="control" :busy="quick.sending.value.has(focused.id)" answers @answer="decisionModal.open" @reply="(text, q) => reply(focused!, text, q)" @option="(i, q) => option(focused!, i, q)" @open-plan="openFile({ path: $event })" @preview-plan="previewFile({ path: $event })" />
+            <QuickReplyBar :attention="focused.attention" :agent-name="focused.agentId" role="control" :busy="quick.sending.value.has(focused.id)" answers @answer="decisionModal.open" @reply="(text, q, taken) => reply(focused!, text, q, taken)" @option="(i, q) => option(focused!, i, q)" @open-plan="openFile({ path: $event })" @preview-plan="previewFile({ path: $event })" />
           </template>
         </EditorColumn>
         <!-- Not in the first read: not found; before it, the reading shape (or the failed one). -->

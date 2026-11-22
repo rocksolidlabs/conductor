@@ -325,6 +325,76 @@ func TestSyncReportValid(t *testing.T) {
 	}
 }
 
+// longRunID is a run's id of n bytes: a crew id of n-9 letters, a dash and
+// 8 hex.
+func longRunID(n int) string { return strings.Repeat("a", n-9) + "-0123abcd" }
+
+// A pointer is named by its run, so its id takes a run's id at its bound
+// (a crew id of MaxCrewID, MaxRunID bytes) and no byte past it; every id
+// of at most MaxHeldID bytes is taken or refused as before, and no other
+// kind's id grows.
+func TestARemotePointerIsNamedByItsRunsID(t *testing.T) {
+	pointer := func(id string) Remote {
+		r := validRemote(RemotePointer)
+		r.ID, r.Data = id, []byte(`{"id":"`+id+`","crew":"c","state":"running","revision":1}`)
+		return r
+	}
+	if len(longRunID(MaxRunID)) != 73 || !ValidRunID(longRunID(MaxRunID)) || ValidRunID(longRunID(MaxRunID+1)) {
+		t.Fatal("the run ids of the test are not at the run id's bound")
+	}
+	if err := pointer(longRunID(MaxRunID)).Valid(); err != nil {
+		t.Errorf("a pointer of a %d-byte run id: %v", MaxRunID, err)
+	}
+	for name, id := range map[string]string{
+		"a run id a byte past its bound":   longRunID(MaxRunID + 1),
+		"73 bytes that are no run's id":    strings.Repeat("A", MaxRunID),
+		"65 bytes that are no run's id":    strings.Repeat("x", MaxHeldID+1),
+		"a run id with upper-case hex":     strings.Repeat("a", 64) + "-0123ABCD",
+		"a long run id with a space in it": strings.Repeat("a", 60) + " b-0123abcd",
+	} {
+		if err := pointer(id).Valid(); !errors.Is(err, ErrRefused) {
+			t.Errorf("a pointer of %s: %v", name, err)
+		}
+	}
+	// At most MaxHeldID bytes, a pointer's id is judged as it was.
+	for _, id := range []string{"team-00000001", "Team.X_1", "pins", strings.Repeat("z", MaxHeldID), longRunID(MaxHeldID),
+		"", "a b", "dev/1", "é", strings.Repeat("a", 55) + "-0123ABCD"} {
+		if got, was := remoteRecordID(RemotePointer, id), remoteID.MatchString(id); got != was {
+			t.Errorf("a pointer's id %q: taken %v, was %v", id, got, was)
+		}
+	}
+	// Another kind named by a 73-byte run id is refused, as it was.
+	dev := validRemote(RemoteDevice)
+	dev.ID, dev.Data = longRunID(MaxRunID), []byte(`{"id":"`+longRunID(MaxRunID)+`","name":"laptop","kind":"server"}`)
+	if err := dev.Valid(); !errors.Is(err, ErrRefused) {
+		t.Errorf("a device of a %d-byte id: %v", MaxRunID, err)
+	}
+	// The device stays at MaxHeldID.
+	r := pointer(longRunID(MaxRunID))
+	r.Device = longRunID(MaxRunID)
+	if err := r.Valid(); !errors.Is(err, ErrRefused) {
+		t.Errorf("a device of a %d-byte id: %v", MaxRunID, err)
+	}
+}
+
+// A change kept back can be named by a run's id: its ref takes MaxRunID
+// bytes and no byte past them.
+func TestAKeptBackChangeNamesARun(t *testing.T) {
+	r := SyncReport{State: SyncBehind, Withheld: []SyncWithheld{{Ref: longRunID(MaxRunID), Words: "quotes captured output"}}}
+	if err := r.Valid(); err != nil {
+		t.Fatalf("a ref of %d bytes: %v", MaxRunID, err)
+	}
+	r.Withheld[0].Ref = longRunID(MaxRunID + 1)
+	if err := r.Valid(); !errors.Is(err, ErrRefused) {
+		t.Fatalf("a ref of %d bytes: %v", MaxRunID+1, err)
+	}
+	// The other ids of a report stay at MaxHeldID.
+	r = SyncReport{State: SyncBehind, Workspace: strings.Repeat("w", MaxHeldID+1)}
+	if err := r.Valid(); !errors.Is(err, ErrRefused) {
+		t.Fatalf("a workspace of %d bytes: %v", MaxHeldID+1, err)
+	}
+}
+
 // The zero report says the store has nothing to report, and is valid; a
 // report with no state and any other field set is refused as before.
 func TestTheZeroSyncReportIsValid(t *testing.T) {
