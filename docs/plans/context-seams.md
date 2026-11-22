@@ -272,6 +272,17 @@ hold whatever the author put there; it is handed because the provider
 runs in the server's process and already has the worktree's path
 (Owner decisions, 2).
 
+**Handed, by the query (CT-4, #1073).** The decisions about the work:
+the gates of the plan of the run's ticket and the task's own decisions,
+each by its id and its state as `Host.Decision` reads it (`dr-<n>`, the
+state, whether it is final, its revision, when it closed), never its
+question, its answer, who answered or for whom; and what people's
+reviews found: for a review, the reviews of the candidates of the task it
+reviews, and for a repair of a person's request, that review, each by its
+id with its findings by id, state (open, resolved or withdrawn), file and
+first line, never a review's or a finding's words, who made it, or its
+link. A provider may cite a decision; nothing it is handed answers one.
+
 **Handed, by commit notes (CT-1).** The run's id, the task and attempt
 of a candidate, the kind (`base` or `candidate`), the commit's full id,
 when.
@@ -883,6 +894,99 @@ is derived. A binary of the version before opens this one read-only.
   says "context: N blocks"; opening it reads the task route (as a
   review's findings are read) and shows the list.
 
+### `ext`, `internal/crew`, `internal/api`: decisions and reviews in the query (CT-4, #1073)
+
+The row the first rows left for later: a provider is told what was
+decided about the work and what earlier reviews of it found, each by id
+and state, so a pack can cite them.
+
+```go
+type ContextQuery struct {
+	// ... main's fields and CT-1's ...
+	Decisions []DecisionState `json:"decisions,omitempty"` // at most MaxContextDecisions
+	Reviews   []ContextReview `json:"reviews,omitempty"`   // at most MaxContextReviews
+}
+// DecisionState is Host.Decision's type, reused: Request ("dr-<n>"),
+// State (open, answered, applied, superseded, cancelled, expired),
+// Final, Rev, ClosedAt.
+type ContextReview struct {
+	ID       string                 `json:"id"`       // ContextReviewIDLen lower-case hex
+	Findings []ContextReviewFinding `json:"findings"` // 1 to MaxContextReviewFindings
+}
+type ContextReviewFinding struct {
+	ID    string `json:"id"`             // ContextReviewIDLen lower-case hex
+	State string `json:"state"`          // open | resolved | withdrawn
+	Path  string `json:"path,omitempty"` // one line of at most MaxContextRef bytes
+	Line  int    `json:"line,omitempty"` // its first line, 1 to MaxContextLine
+}
+
+const (
+	MaxContextDecisions      = 20
+	MaxContextReviews        = 5
+	MaxContextReviewFindings = 50         // Dispatch's MaxReviewFindings: a review is never cut
+	ContextReviewIDLen       = 16         // Dispatch's ids
+	MaxContextLine           = 10_000_000 // Dispatch's bound on a line
+)
+```
+
+- **Decisions** (`internal/crew/context.go`, `contextDecisions`): read
+  from the ledger outside the engine's lock, as the attempt is about to
+  be asked about: each run of the chain (the run and the runs it
+  continues, as a task file's decisions are read), the decisions that
+  hold the task or that it asked (`DecisionFilter.Task`), and the gates
+  of the run's ticket's plan (`DecisionFilter.Ticket`, origin `plan`);
+  each once. Past `MaxContextDecisions` they are kept by rank, newest
+  first within each: the ones that still wait (open, answered), then
+  applied, then the other final states, so a decision that waits is
+  never cut for a closed one; they are named in the order they were
+  opened. They are read once the task's decisions are settled (an
+  applied approval its start supersedes is named superseded, as its task
+  file carries it), and only on a server with a context provider. A read
+  that fails names none; the attempt is asked about as before.
+- **Reviews** (`internal/api/extcontext_reviews.go`, `contextReviews`,
+  in `contextFor` before the providers are asked, and only when one is):
+  Dispatch's reviews, for a run launched from a ticket. For a review
+  attempt, the reviews of the candidates of the task it reviews (its
+  inputs' tasks), made in the run's chain (`ledgerChain`), that found
+  anything: the newest `MaxContextReviews`, named in the order they were
+  made. For a work attempt that repairs a person's request, the review
+  the request is, alone (`Engine.RepairReview`: the repair the engine
+  holds, which its task file's `repair.request` carries, so the findings
+  are the same ones). A finding's state is its latest mark's verdict, as
+  Dispatch reads it; its path is handed when it names a file inside the
+  tree (relative, no empty, `.` or `..` part), is one plain line within
+  `MaxContextRef` bytes, and is one the tree's reads hand a provider (the
+  deny list and the allowed roots, judged under the attempt's worktree);
+  otherwise the finding is named by id and state alone. Its line is the
+  first it names, and none for a finding on the base's side (a line of
+  the base's file). Each provider is given its own copy of both lists. A read that
+  fails names none. A repair of a review task's verdict is told no
+  review: its findings have no id or state of their own, and they reach
+  the attempt through its task file.
+- **Never handed:** a decision's question or answer, who answered it or
+  for whom; a review's summary, a finding's words, resolution, lines or
+  check, who made either; another task's decisions or reviews; a review
+  of a run outside the chain. The query's other bounds stand.
+- **`ContextQuery.Valid`** refuses past each bound and out of form: a
+  decision's id, a state that is none, `Final` not as the state is, a
+  revision below 1, a closing time on a decision not final, an id named
+  twice; a review of no finding, an id of another shape, a finding's
+  state that is none, a path of two lines or past the bound, a line past
+  `MaxContextLine`. Both fields are `omitempty`: a provider built
+  against an earlier tag ignores them.
+- **`ext/exttest`**: `FullQuery(q)`, q naming as many decisions and
+  reviews as a query holds, every field at its bound; the `Context`
+  check asks the provider with it as well as with the query it is given.
+- **Tests:** `TestContextQueryValid` (each bound, at it and one past),
+  `TestRecordsRoundTrip`, `TestFullQueryIsAtItsBounds`,
+  `TestSuiteCatchesABreach` (a block not valid only for a query that
+  names reviews), `TestQueryKeepsTheStandingDecisionsFirst` (the cut),
+  and `TestQueryCarriesDecisionsAndReviews` in `internal/api`: a run of a
+  ticket's plan revision with a gate, a task's decisions in two states, a
+  person's request and its repair, marks, another task's reviewed
+  candidate, a review task's verdict and a second review attempt past the
+  bound, through the server's own path.
+
 ### Protocol
 
 No WebSocket frame changes. `docs/protocol.md` gains the lookup route
@@ -991,9 +1095,6 @@ CT-3, so that it can be reverted alone.
   reach it as a candidate once submitted.
 - **A project's tree outside a run.** Reads name a run; a read for a
   Dispatch project with no run is a later row of whatever plan needs it.
-- **Decisions and reviews in the query.** DR1's records and RV1's
-  reviews named in `ContextQuery` are a later row; nothing here blocks
-  it.
 - **A person's lookup from the app's screens.** The tool is an agent's.
 - **A lookup by a hosted attempt** (`conductor host`): its task routes
   are refused today and this one is too.
@@ -1172,6 +1273,7 @@ CT-3.
 | CT-2 | ext, api, cli, agents: the lookup | `ContextLookup`, `LookupRequest`, `LookupAnswer`, `LookupItem`, `LookupCoverage`, the bounds; the route, `Engine.LookupScope`, the in-flight bound, the guide's operation and `needContextLookup`, the MCP tool and its listing, `conductor task lookup`, the skill's bullet and its lead in `skillToolLeads`, the lookup's own guard kind, the tool's framing and the answer's text rules, the exttest check; `docs/protocol.md` | `ext`, `ext/exttest`, `internal/api`, `internal/crew`, `internal/cli`, `internal/agents`, `docs` | the CT-2 lists | CT-1 | ~500 + 650 |
 | CT-3a | ledger: the next schema version, a barrier, with `attempt_context` | the migration alone | `internal/crew/ledger` | the CT-3a list | CT-2 | ~40 + 150 |
 | CT-3 | crew, api, web: the attempt's context recorded and shown (after the step) | `Tx.AddAttemptContext`, `Ledger.AttemptContext`, the context file and its writer, the rows in the workspace transaction, `Engine.RecordLookupContext` and the lookup's blocks, the task route's `context`, the body route, `filterTask`, the candidates' count; `utils/attemptContext.ts`, `AttemptContext.vue`, the run page's and the ticket's lists; `docs/protocol.md`, `docs/features.md`, `docs/repository-map.md` | `internal/crew`, `internal/crew/ledger`, `internal/api`, `web/app`, `web/e2e`, `docs` | the CT-3 lists | CT-3a | ~650 + 900 |
+| CT-4 (#1073) | ext, crew, api: decisions and reviews in the query | `ContextQuery.Decisions` (`DecisionState`, reused) and `.Reviews`, `ContextReview`, `ContextReviewFinding`, their bounds and `Valid`; the decisions read from the ledger, the reviews from Dispatch, `Engine.RepairReview`; `exttest.FullQuery` in the `Context` check | `ext`, `ext/exttest`, `internal/crew`, `internal/api`, `docs/plans` | the CT-4 list | CT-1 | ~250 + 400 |
 
 ## Owner decisions
 

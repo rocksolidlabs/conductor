@@ -820,6 +820,15 @@ func copyDecision(d ext.Decision) ext.Decision {
 
 func copyQuery(q ext.ContextQuery) ext.ContextQuery {
 	q.Inputs = append([]ext.ContextInput(nil), q.Inputs...)
+	q.Decisions = append([]ext.DecisionState(nil), q.Decisions...)
+	reviews := make([]ext.ContextReview, len(q.Reviews))
+	for i, rv := range q.Reviews {
+		rv.Findings = append([]ext.ContextReviewFinding(nil), rv.Findings...)
+		reviews[i] = rv
+	}
+	if q.Reviews != nil {
+		q.Reviews = reviews
+	}
 	return q
 }
 

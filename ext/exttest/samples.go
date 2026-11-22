@@ -1,6 +1,8 @@
 package exttest
 
 import (
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/rocksolidlabs/conductor/ext"
@@ -51,6 +53,41 @@ func SampleQuery(dir string) ext.ContextQuery {
 		Start:        "0123456789abcdef0123456789abcdef01234567",
 		Inputs:       []ext.ContextInput{{Task: "plan", Commit: "89abcdef0123456789abcdef0123456789abcdef"}},
 	}
+}
+
+// FullQuery is q naming as many decisions and reviews as a query holds
+// (ext.MaxContextDecisions, ext.MaxContextReviews of
+// ext.MaxContextReviewFindings findings), each field at its bound and of
+// every state, as a provider may be asked: Context checks a provider with
+// it as well as with the query it is given.
+func FullQuery(q ext.ContextQuery) ext.ContextQuery {
+	states := []struct {
+		state string
+		final bool
+	}{{"open", false}, {"answered", false}, {"applied", true}, {"superseded", true}, {"cancelled", true}, {"expired", true}}
+	q.Decisions = make([]ext.DecisionState, ext.MaxContextDecisions)
+	for i := range q.Decisions {
+		s := states[i%len(states)]
+		d := ext.DecisionState{Request: fmt.Sprintf("dr-%d", 999_999_999_999_999_000+i), State: s.state, Final: s.final, Rev: i + 1}
+		if s.final {
+			d.ClosedAt = time.Date(2026, 11, 1, 12, 0, i, 0, time.UTC)
+		}
+		q.Decisions[i] = d
+	}
+	findingStates := []string{ext.FindingOpen, ext.FindingResolved, ext.FindingWithdrawn}
+	q.Reviews = make([]ext.ContextReview, ext.MaxContextReviews)
+	for i := range q.Reviews {
+		fs := make([]ext.ContextReviewFinding, ext.MaxContextReviewFindings)
+		for k := range fs {
+			fs[k] = ext.ContextReviewFinding{ID: fmt.Sprintf("%016x", 0xf1<<48|i<<16|k), State: findingStates[k%len(findingStates)]}
+			if k%2 == 0 {
+				fs[k].Path = "src/" + strings.Repeat("p", ext.MaxContextRef-len("src/"))
+				fs[k].Line = ext.MaxContextLine - k
+			}
+		}
+		q.Reviews[i] = ext.ContextReview{ID: fmt.Sprintf("%016x", 0xae<<48|i), Findings: fs}
+	}
+	return q
 }
 
 // SampleRecord is what a durable decision's record says of itself to a

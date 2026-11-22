@@ -264,3 +264,76 @@ func TestBaseAndCandidateNoted(t *testing.T) {
 		t.Fatalf("the first engine noted more: %+v", got.all())
 	}
 }
+
+// A query names each decision once, by its id and state; past
+// ext.MaxContextDecisions the open, answered and applied ones are kept
+// before the other final states, and then the newest, whatever order the
+// reads gave them in, and they are named in the order they were opened.
+func TestQueryKeepsTheStandingDecisionsFirst(t *testing.T) {
+	closed := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
+	var rows []ledger.DecisionRow
+	for n := int64(1); n <= 30; n++ {
+		row := ledger.DecisionRow{N: n, State: ledger.DecisionCancelled, Rev: 2, ClosedAt: closed}
+		switch n {
+		case 2:
+			row.State, row.ClosedAt = ledger.DecisionOpen, time.Time{}
+		case 4:
+			row.State, row.ClosedAt = ledger.DecisionAnswered, time.Time{}
+		case 6:
+			row.State = ledger.DecisionApplied
+		}
+		rows = append(rows, row)
+	}
+	// The ticket's read and the task's give a gate twice, out of order.
+	rows = append(rows, rows[1], rows[0])
+	slices.Reverse(rows[:15])
+	got := decisionStates(rows)
+	var want []string
+	for _, n := range []int{2, 4, 6} {
+		want = append(want, ledger.DecisionID(int64(n)))
+	}
+	for n := 14; n <= 30; n++ {
+		if n != 2 && n != 4 && n != 6 {
+			want = append(want, ledger.DecisionID(int64(n)))
+		}
+	}
+	var ids []string
+	for _, d := range got {
+		ids = append(ids, d.Request)
+	}
+	if len(got) != ext.MaxContextDecisions || !slices.Equal(ids, want) {
+		t.Fatalf("the decisions: %v, want %v", ids, want)
+	}
+	if got[0] != (ext.DecisionState{Request: "dr-2", State: ledger.DecisionOpen, Rev: 2}) ||
+		got[2] != (ext.DecisionState{Request: "dr-6", State: ledger.DecisionApplied, Final: true, Rev: 2, ClosedAt: closed}) {
+		t.Fatalf("the states: %+v", got[:3])
+	}
+	q := ext.ContextQuery{Run: "api-0a0b0c0d", Crew: "api", Task: "build", Attempt: 1, Kind: "work", Worktree: "/w", Dir: "/w", Decisions: got}
+	if err := q.Valid(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A decision that still waits is never cut for a closed one: one open
+// decision and twenty newer applied ones keep the open one and the
+// newest nineteen applied; the applied ones are kept before the other
+// final states, newest first within each rank.
+func TestQueryKeepsAWaitingDecisionBeforeAClosedOne(t *testing.T) {
+	closed := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
+	rows := []ledger.DecisionRow{{N: 1, State: ledger.DecisionOpen, Rev: 1}}
+	for n := int64(2); n <= 21; n++ {
+		rows = append(rows, ledger.DecisionRow{N: n, State: ledger.DecisionApplied, Rev: 3, ClosedAt: closed})
+	}
+	got := decisionStates(slices.Clone(rows))
+	if len(got) != ext.MaxContextDecisions || got[0].Request != "dr-1" || got[0].State != ledger.DecisionOpen || got[1].Request != "dr-3" {
+		t.Fatalf("one open and twenty applied: %+v", got[:2])
+	}
+	// Ten cancelled newer than all of them: the applied ones stay ahead.
+	for n := int64(22); n <= 31; n++ {
+		rows = append(rows, ledger.DecisionRow{N: n, State: ledger.DecisionCancelled, Rev: 2, ClosedAt: closed})
+	}
+	got = decisionStates(rows)
+	if got[0].Request != "dr-1" || got[len(got)-1].Request != "dr-21" || slices.ContainsFunc(got, func(d ext.DecisionState) bool { return d.State == ledger.DecisionCancelled }) {
+		t.Fatalf("with ten newer cancelled: %+v", got)
+	}
+}

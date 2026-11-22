@@ -312,6 +312,17 @@ func newNineBlocks() nineBlocks {
 	return nineBlocks{f}
 }
 
+// reviewsBlock answers a block with no body when the query names a
+// review, and none otherwise.
+type reviewsBlock struct{ *FakeContext }
+
+func (reviewsBlock) Context(_ context.Context, q ext.ContextQuery) ([]ext.ContextBlock, error) {
+	if len(q.Reviews) == 0 {
+		return nil, nil
+	}
+	return []ext.ContextBlock{{Title: "Findings"}}, nil
+}
+
 // hostStarter waits on its host inside Start.
 type hostStarter struct{ *FakeIdentity }
 
@@ -554,6 +565,9 @@ func TestSuiteCatchesABreach(t *testing.T) {
 		{"nine blocks", func(t T, n *Network) {
 			Context(t, n, newNineBlocks(), SampleQuery(t.TempDir()))
 		}, []string{`exttest: Context "nine": Context answered 9 blocks`, "MaxContextBlocks (8)"}},
+		{"a block not valid only for a query that names reviews", func(t T, n *Network) {
+			Context(t, n, reviewsBlock{NewFakeContext("reviewer")}, SampleQuery(t.TempDir()))
+		}, []string{`exttest: Context "reviewer": Context's block 0 for a query of every decision and review it holds is not valid`, "body is empty"}},
 		{"a Start that waits on its host", func(t T, n *Network) {
 			Starter(t, n, hostStarter{NewFakeIdentity("starter")})
 		}, []string{`exttest: Starter "starter": Start (try 1) did not return within StartWait (5s) with its host and the network blocked`}},

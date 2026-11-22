@@ -1039,7 +1039,9 @@ it), leaves out a server session's paths its deny list refuses (the rule
 
 A context provider may also implement `ext.CommitNoter` and
 `ext.ContextLookup` and read a run's committed trees through
-`Host.ReadTree`, `ReadBlob` and `Denied`, and every provider's blocks are
+`Host.ReadTree`, `ReadBlob` and `Denied`; its query names the run's
+ticket, the task's checks, the evidence, and the decisions and people's
+reviews about the work by id and state; and every provider's blocks are
 recorded against the attempt they were given to
 (`docs/plans/context-seams.md`).
 

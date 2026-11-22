@@ -44,6 +44,32 @@ type ContextFinding struct {
 	Message  string `json:"message"` // 1 to MaxContextFinding bytes
 }
 
+// ContextReview is a person's review of a candidate, as Dispatch keeps it:
+// its id and its findings, in the review's order, each by its id, its
+// state and the place it names. Neither the review's words nor a
+// finding's are handed, nor who made it.
+type ContextReview struct {
+	ID       string                 `json:"id"`       // ContextReviewIDLen lower-case hex
+	Findings []ContextReviewFinding `json:"findings"` // 1 to MaxContextReviewFindings
+}
+
+// ContextReviewFinding is one finding of a review: its id, its state (its
+// latest mark's verdict: open with none, resolved or withdrawn), and the
+// file and first line it is on, when it names them.
+type ContextReviewFinding struct {
+	ID    string `json:"id"` // ContextReviewIDLen lower-case hex
+	State string `json:"state"`
+	Path  string `json:"path,omitempty"` // one line of at most MaxContextRef bytes
+	Line  int    `json:"line,omitempty"` // 1 to MaxContextLine
+}
+
+// The states of a review's finding.
+const (
+	FindingOpen      = "open"
+	FindingResolved  = "resolved"
+	FindingWithdrawn = "withdrawn"
+)
+
 const (
 	MaxContextPack        = 128  // a pack mark, in bytes: printable ASCII, one line
 	MaxContextChecks      = 8    // a task's checks (the crew's own bound)
@@ -56,6 +82,19 @@ const (
 	MaxContextFindings    = 50   // a review's findings (the crew's own bound)
 	MaxContextFinding     = 1000 // bytes of a finding's message
 	MaxContextInputs      = 128  // an attempt's inputs (the crew's tasks)
+	// MaxContextDecisions bounds the decisions a query names (a task
+	// file's ended decisions are the newest 20 too).
+	MaxContextDecisions = 20
+	// MaxContextReviews bounds the reviews a query names, and
+	// MaxContextReviewFindings a review's findings (Dispatch's
+	// MaxReviewFindings: a review is never cut).
+	MaxContextReviews        = 5
+	MaxContextReviewFindings = 50
+	// ContextReviewIDLen is a review's and a finding's id, in lower-case
+	// hex (Dispatch's IDLen).
+	ContextReviewIDLen = 16
+	// MaxContextLine is a finding's line (Dispatch's bound).
+	MaxContextLine = 10_000_000
 	// CommitQueue bounds a provider's queue of commit notes, the oldest
 	// dropped past it.
 	CommitQueue = 256
@@ -133,8 +172,14 @@ func (n CommitNote) Valid() error {
 // key, revision, plan id and number, digest and people; at most
 // MaxContextChecks checks, each an id and an argv within its bounds (none
 // when cut); at most MaxContextEvidence refs of one line of 1 to
-// MaxContextEvidenceRef bytes; and a launcher of at most MaxContextPerson
-// characters on one line.
+// MaxContextEvidenceRef bytes; a launcher of at most MaxContextPerson
+// characters on one line; at most MaxContextDecisions decisions, each a
+// decision's id named once, one of the six states, final as that state
+// is, a revision from 1 and a closing time only when final; and at most
+// MaxContextReviews reviews, each an id named once with 1 to
+// MaxContextReviewFindings findings, each an id named once in the query,
+// a finding's state, a path of one line of at most MaxContextRef bytes
+// and a line of at most MaxContextLine.
 func (q ContextQuery) Valid() error {
 	const rec = "context query"
 	switch {
@@ -166,6 +211,26 @@ func (q ContextQuery) Valid() error {
 		return invalid(rec, "%d evidence refs, past %d", len(q.Evidence), MaxContextEvidence)
 	case !oneLine(q.LaunchedBy) || utf8.RuneCountInString(q.LaunchedBy) > MaxContextPerson:
 		return invalid(rec, "launchedBy is not one line of at most %d characters", MaxContextPerson)
+	case len(q.Decisions) > MaxContextDecisions:
+		return invalid(rec, "%d decisions, past %d", len(q.Decisions), MaxContextDecisions)
+	case len(q.Reviews) > MaxContextReviews:
+		return invalid(rec, "%d reviews, past %d", len(q.Reviews), MaxContextReviews)
+	}
+	seen := map[string]bool{}
+	for i, d := range q.Decisions {
+		if err := contextDecision(d); err != nil {
+			return invalid(rec, "decision %d: %v", i, err)
+		}
+		if seen[d.Request] {
+			return invalid(rec, "decision %s is named twice", d.Request)
+		}
+		seen[d.Request] = true
+	}
+	ids := map[string]bool{}
+	for i, rv := range q.Reviews {
+		if err := rv.valid(ids); err != nil {
+			return invalid(rec, "review %d: %v", i, err)
+		}
 	}
 	for i, in := range q.Inputs {
 		if err := in.valid(); err != nil {
@@ -247,6 +312,68 @@ func (t ContextTicket) valid() error {
 		if err := name(rec, "an assignee", a, MaxContextPerson); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// contextDecision checks a decision as a query names it: a decision's id,
+// one of the ledger's six states, Final as that state is, a revision from
+// 1, and a closing time only once final.
+func contextDecision(d DecisionState) error {
+	const rec = "context decision"
+	final, ok := decisionStates[d.State]
+	switch {
+	case !decisionID(d.Request):
+		return invalid(rec, "%q is not a decision's id", d.Request)
+	case !ok:
+		return invalid(rec, "state %q is not a decision's", d.State)
+	case d.Final != final:
+		return invalid(rec, "final is %v for the state %s", d.Final, d.State)
+	case d.Rev < 1:
+		return invalid(rec, "rev is below 1")
+	case !d.Final && !d.ClosedAt.IsZero():
+		return invalid(rec, "a decision %s has not closed", d.State)
+	}
+	return nil
+}
+
+// decisionStates are a durable decision's states, each with whether it
+// is final.
+var decisionStates = map[string]bool{"open": false, "answered": false, "applied": true, "superseded": true, "cancelled": true, "expired": true}
+
+// valid checks rv: its id, named once in the query, and 1 to
+// MaxContextReviewFindings findings, each with an id named once in the
+// query, a state, a path of one line of at most MaxContextRef bytes and a
+// line of at most MaxContextLine. ids holds the ids the query named
+// before rv, a review's after "r:", a finding's after "f:".
+func (rv ContextReview) valid(ids map[string]bool) error {
+	const rec = "context review"
+	switch {
+	case !lowerHex(rv.ID, ContextReviewIDLen):
+		return invalid(rec, "id %q is not %d lower-case hex", rv.ID, ContextReviewIDLen)
+	case ids["r:"+rv.ID]:
+		return invalid(rec, "review %s is named twice", rv.ID)
+	case len(rv.Findings) == 0:
+		return invalid(rec, "review %s has no finding", rv.ID)
+	case len(rv.Findings) > MaxContextReviewFindings:
+		return invalid(rec, "%d findings, past %d", len(rv.Findings), MaxContextReviewFindings)
+	}
+	ids["r:"+rv.ID] = true
+	for i, f := range rv.Findings {
+		switch {
+		case !lowerHex(f.ID, ContextReviewIDLen):
+			return invalid(rec, "finding %d: id %q is not %d lower-case hex", i, f.ID, ContextReviewIDLen)
+		case ids["f:"+f.ID]:
+			return invalid(rec, "finding %s is named twice", f.ID)
+		case f.State != FindingOpen && f.State != FindingResolved && f.State != FindingWithdrawn:
+			return invalid(rec, "finding %d: state %q is not open, resolved or withdrawn", i, f.State)
+		case f.Line < 0 || f.Line > MaxContextLine:
+			return invalid(rec, "finding %d: line is not 0 to %d", i, MaxContextLine)
+		}
+		if err := line(rec, "a finding's path", f.Path, MaxContextRef, false); err != nil {
+			return err
+		}
+		ids["f:"+f.ID] = true
 	}
 	return nil
 }

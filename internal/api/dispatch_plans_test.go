@@ -43,12 +43,18 @@ type planTest struct {
 // newPlanTest makes a planTest with the extra agents in its catalog.
 func newPlanTest(t *testing.T, mutate func(*config.Config), agents ...catalog.Agent) *planTest {
 	t.Helper()
+	return newPlanTestWith(t, mutate, agents)
+}
+
+// newPlanTestWith is newPlanTest of a server with the options opts.
+func newPlanTestWith(t *testing.T, mutate func(*config.Config), agents []catalog.Agent, opts ...Option) *planTest {
+	t.Helper()
 	e := newTestEnvAgents(t, func(cfg *config.Config) {
 		cfg.DataDir = filepath.Join(t.TempDir(), "data")
 		if mutate != nil {
 			mutate(cfg)
 		}
-	}, slog.New(slog.NewTextHandler(io.Discard, nil)), agents)
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)), agents, opts...)
 	repo := filepath.Join(e.root, "repo")
 	head := planRepo(t, repo)
 	e.newDispatchProject(t, "CND", map[string]any{"cwd": repo})

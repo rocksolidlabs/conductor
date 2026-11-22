@@ -58,6 +58,25 @@ type ContextQuery struct {
 	// LaunchedBy is who launched the run, when the run keeps it: at most
 	// MaxContextPerson characters.
 	LaunchedBy string `json:"launchedBy,omitempty"`
+	// Decisions are the durable decisions about the work: the gates of the
+	// plan of the run's ticket and the decisions of the task (asked by it
+	// or holding it), of the run and the runs it continues, each by its id
+	// and its state as Host.Decision reads it, once the task's decisions
+	// are settled for the attempt; at most MaxContextDecisions, kept by
+	// rank and newest first within each (open and answered; then applied;
+	// then the other final states), so one that waits is never cut for a
+	// closed one; named in the order they were opened. A provider may cite
+	// one; nothing it is handed answers one.
+	Decisions []DecisionState `json:"decisions,omitempty"`
+	// Reviews are what people's reviews (Dispatch's) found: for a review,
+	// those of the candidates of the tasks it reviews, of the run and the
+	// runs it continues, at most MaxContextReviews, the newest kept, in the
+	// order they were made; for a work attempt that repairs a person's
+	// request, the review the request is, alone (its task file's repair
+	// carries the same findings). A finding's path is one inside the tree
+	// that the tree's reads hand a provider, else none; a finding on the
+	// base's side has no line.
+	Reviews []ContextReview `json:"reviews,omitempty"`
 }
 
 // ContextInput is one task's result an attempt starts from: the task, the

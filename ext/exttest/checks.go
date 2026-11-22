@@ -564,7 +564,8 @@ func Confirmer(t T, n *Network, r ext.DecisionRouter, d ext.Decision) {
 
 // Context checks a context provider against the query q: a valid name;
 // Context answering at most ext.MaxContextBlocks blocks, each valid (a
-// pack mark among it), from Goroutines goroutines at once too; NoteTouch
+// pack mark among it), from Goroutines goroutines at once too, and so for
+// q naming as many decisions and reviews as a query holds (FullQuery); NoteTouch
 // returning; NoteCommit, when it is an ext.CommitNoter, returning within
 // ext.DeliveryWait with the network blocked; Lookup, when it is an
 // ext.ContextLookup, answering within ext.LookupWait with the network
@@ -589,7 +590,8 @@ func Context(t T, n *Network, p ext.ContextProvider, q ext.ContextQuery) {
 		bs  []ext.ContextBlock
 		err error
 	}
-	blocks := func(ph phase) {
+	full := FullQuery(q)
+	answers := func(ph phase, q ext.ContextQuery, of string) {
 		a, returned := run(c, "Context", ext.ContextWait, ph, func(ctx context.Context) answer {
 			bs, err := p.Context(ctx, q)
 			return answer{bs, err}
@@ -598,13 +600,17 @@ func Context(t T, n *Network, p ext.ContextProvider, q ext.ContextQuery) {
 			return
 		}
 		if len(a.bs) > ext.MaxContextBlocks {
-			c.found("Context answered %d blocks%s, past MaxContextBlocks (%d)", len(a.bs), ph.words(), ext.MaxContextBlocks)
+			c.found("Context answered %d blocks%s%s, past MaxContextBlocks (%d)", len(a.bs), of, ph.words(), ext.MaxContextBlocks)
 		}
 		for i, b := range a.bs {
 			if err := b.Valid(); err != nil {
-				c.found("Context's block %d is not valid%s: %v", i, ph.words(), err)
+				c.found("Context's block %d%s is not valid%s: %v", i, of, ph.words(), err)
 			}
 		}
+	}
+	blocks := func(ph phase) {
+		answers(ph, q, "")
+		answers(ph, full, " for a query of every decision and review it holds")
 	}
 	noteTouch := func(ph phase) {
 		run(c, "NoteTouch", ext.DeliveryWait, ph, func(ctx context.Context) struct{} {

@@ -1,6 +1,7 @@
 package ext_test
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -30,6 +31,19 @@ func largestQuery() ext.ContextQuery {
 	for i := range evidence {
 		evidence[i] = "ticket:CND-1" + strings.Repeat("0", ext.MaxContextEvidenceRef-len("ticket:CND-1"))
 	}
+	decisions := make([]ext.DecisionState, ext.MaxContextDecisions)
+	for i := range decisions {
+		decisions[i] = ext.DecisionState{Request: fmt.Sprintf("dr-%d", 999999999999999990-i), State: "applied", Final: true, Rev: 1 << 30, ClosedAt: time.Unix(1, 0)}
+	}
+	decisions[0] = ext.DecisionState{Request: "dr-1", State: "open", Rev: 1}
+	reviews := make([]ext.ContextReview, ext.MaxContextReviews)
+	for i := range reviews {
+		fs := make([]ext.ContextReviewFinding, ext.MaxContextReviewFindings)
+		for k := range fs {
+			fs[k] = ext.ContextReviewFinding{ID: fmt.Sprintf("%016x", i<<8|k), State: ext.FindingWithdrawn, Path: strings.Repeat("p", ext.MaxContextRef), Line: ext.MaxContextLine}
+		}
+		reviews[i] = ext.ContextReview{ID: fmt.Sprintf("%016x", 0xabc<<40|i), Findings: fs}
+	}
 	return ext.ContextQuery{Run: "api-0a0b0c0d", Crew: "api", Task: "build", Attempt: 2, Kind: "work", Goal: "Ship it.", Instructions: "Do it.",
 		Worktree: "/r/.conductor/worktrees/api-0a0b0c0d/build.2", Dir: "/r/.conductor/worktrees/api-0a0b0c0d/build.2", Start: sha40, Base: sha64,
 		Inputs:     []ext.ContextInput{{Task: "check", Commit: sha40, Attempt: 1, Start: sha40, Verdict: "needs_changes", Findings: findings}},
@@ -37,6 +51,8 @@ func largestQuery() ext.ContextQuery {
 		Checks:     checks,
 		Evidence:   evidence,
 		LaunchedBy: strings.Repeat("Ä", ext.MaxContextPerson),
+		Decisions:  decisions,
+		Reviews:    reviews,
 	}
 }
 
@@ -83,6 +99,32 @@ func TestContextQueryValid(t *testing.T) {
 		"a run that is no run id":       func(q *ext.ContextQuery) { q.Run = "api" },
 		"a worktree that is relative":   func(q *ext.ContextQuery) { q.Worktree = "w" },
 		"attempt 0":                     func(q *ext.ContextQuery) { q.Attempt = 0 },
+		"a 21st decision": func(q *ext.ContextQuery) {
+			q.Decisions = append(q.Decisions, ext.DecisionState{Request: "dr-2", State: "open", Rev: 1})
+		},
+		"a decision named twice":          func(q *ext.ContextQuery) { q.Decisions[1].Request = q.Decisions[0].Request },
+		"a decision's id that is none":    func(q *ext.ContextQuery) { q.Decisions[0].Request = "q-1" },
+		"a decision's state that is none": func(q *ext.ContextQuery) { q.Decisions[0].State = "waiting" },
+		"an open decision said final":     func(q *ext.ContextQuery) { q.Decisions[0].Final = true },
+		"an applied decision not final":   func(q *ext.ContextQuery) { q.Decisions[1].Final = false },
+		"a decision at rev 0":             func(q *ext.ContextQuery) { q.Decisions[0].Rev = 0 },
+		"an open decision closed":         func(q *ext.ContextQuery) { q.Decisions[0].ClosedAt = time.Unix(1, 0) },
+		"a sixth review": func(q *ext.ContextQuery) {
+			q.Reviews = append(q.Reviews, ext.ContextReview{ID: strings.Repeat("e", 16), Findings: []ext.ContextReviewFinding{{ID: strings.Repeat("e", 16), State: ext.FindingOpen}}})
+		},
+		"a 51st finding of a review": func(q *ext.ContextQuery) {
+			q.Reviews[0].Findings = append(q.Reviews[0].Findings, ext.ContextReviewFinding{ID: strings.Repeat("e", 16), State: ext.FindingOpen})
+		},
+		"a review of no finding":          func(q *ext.ContextQuery) { q.Reviews[0].Findings = nil },
+		"a review named twice":            func(q *ext.ContextQuery) { q.Reviews[1].ID = q.Reviews[0].ID },
+		"a review's id in upper case":     func(q *ext.ContextQuery) { q.Reviews[0].ID = strings.ToUpper(q.Reviews[0].ID) },
+		"a finding's id of 15 hex":        func(q *ext.ContextQuery) { q.Reviews[0].Findings[0].ID = q.Reviews[0].Findings[0].ID[1:] },
+		"a finding named twice":           func(q *ext.ContextQuery) { q.Reviews[1].Findings[0].ID = q.Reviews[0].Findings[0].ID },
+		"a finding's state that is none":  func(q *ext.ContextQuery) { q.Reviews[0].Findings[0].State = "done" },
+		"a finding's path of 1025 bytes":  func(q *ext.ContextQuery) { q.Reviews[0].Findings[0].Path += "p" },
+		"a finding's path of two lines":   func(q *ext.ContextQuery) { q.Reviews[0].Findings[0].Path = "a\nb" },
+		"a finding's line past the bound": func(q *ext.ContextQuery) { q.Reviews[0].Findings[0].Line++ },
+		"a finding's line below 0":        func(q *ext.ContextQuery) { q.Reviews[0].Findings[0].Line = -1 },
 	}
 	for what, change := range past {
 		q := largestQuery()

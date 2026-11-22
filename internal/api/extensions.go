@@ -1178,7 +1178,9 @@ func copyDecision(d ext.Decision) ext.Decision {
 	return d
 }
 
-// copyQuery is q with its inputs copied.
+// copyQuery is q with each of its lists copied: its inputs and their
+// findings, the ticket's assignees, the checks and their argv, the
+// evidence, the decisions, and the reviews and their findings.
 func copyQuery(q ext.ContextQuery) ext.ContextQuery {
 	q.Inputs = copyOrNil(q.Inputs)
 	for i := range q.Inputs {
@@ -1194,6 +1196,11 @@ func copyQuery(q ext.ContextQuery) ext.ContextQuery {
 		q.Checks[i].Argv = copyOrNil(q.Checks[i].Argv)
 	}
 	q.Evidence = copyOrNil(q.Evidence)
+	q.Decisions = copyOrNil(q.Decisions)
+	q.Reviews = copyOrNil(q.Reviews)
+	for i := range q.Reviews {
+		q.Reviews[i].Findings = copyOrNil(q.Reviews[i].Findings)
+	}
 	return q
 }
 
