@@ -3,7 +3,8 @@ import type { Decision, DecisionRef } from '~/utils/decisions'
 import { acceptedAnswer, approverLead, approverWords, askedWhere, assignmentWords, authorizesLine, decisionWords, detailsOpen, historyWords, optionSubject, optionsOf, recommended, routedFor, stepLook, subjectWords } from '~/utils/decisions'
 import { relativeTime } from '~/utils/sessions'
 import type { PolicyNow } from '~/utils/decisionPolicy'
-import { notInForceWords, overrideLine, routedPolicy, whoMayAnswer } from '~/utils/decisionPolicy'
+import { answeredHow, notInForceWords, overrideLine, quorumWords, routedPolicy, whoMayAnswer } from '~/utils/decisionPolicy'
+import type { DecisionQuorum } from '~/utils/protocol'
 import { inShell } from '~/utils/shell'
 
 /**
@@ -23,10 +24,11 @@ import { inShell } from '~/utils/shell'
  * final, and each option's candidate (its task, attempt and short commit), linked to the ticket's comparison when the run's ticket is
  * known; nothing is marked recommended.
  */
-const props = withDefaults(defineProps<{ decision: Decision; refs?: readonly DecisionRef[]; now: number; controls?: boolean; captures?: boolean; policyNow?: PolicyNow | null }>(), {
+const props = withDefaults(defineProps<{ decision: Decision; refs?: readonly DecisionRef[]; now: number; controls?: boolean; captures?: boolean; policyNow?: PolicyNow | null; quorum?: DecisionQuorum | null }>(), {
   controls: false,
   captures: false,
   policyNow: null,
+  quorum: null,
 })
 
 /**
@@ -38,6 +40,13 @@ const policy = computed(() => routedPolicy(props.decision))
 const policyLines = computed(() => (policy.value ? whoMayAnswer(policy.value) : []))
 const notInForce = computed(() => (policy.value && props.decision.state === 'open' ? notInForceWords(policy.value, props.policyNow) : ''))
 const overridden = computed(() => (props.decision.responses ?? []).map((r) => overrideLine(r)).find((w) => w) ?? '')
+/**
+ * Several approvals (SW1 PR-9): how far it is ("1 of 2 approvals"), each group's count with a check once met and an hourglass while it
+ * waits (the steps' own marks), distinct persons said once, and, once answered, whether one eligible Reject or an override answered it.
+ * A record of one group of quorum 1 has none of these: its card is as before.
+ */
+const counts = computed(() => (policy.value ? quorumWords(policy.value, props.quorum) : null))
+const how = computed(() => answeredHow(props.decision, props.quorum))
 
 /** Whether the run that holds it runs here now: an answer recorded on a run that does not waits for it to be continued. */
 const run = useDecisionRunInfo(() => props.decision.run)
@@ -90,11 +99,20 @@ watch(
 
     <section v-if="policy" class="flex flex-col gap-1 rounded-md bg-elevated/40 p-2 text-xs ring ring-default" data-decision-policy :data-policy-revision="policy.revision">
       <span class="font-medium text-default">Who may answer</span>
-      <p v-for="l in policyLines" :key="l.role" class="break-words" :class="l.gap ? 'text-warning' : 'text-default'" :data-policy-group="l.role" :data-policy-gap="l.gap ? '' : undefined">
+      <p v-for="l in policyLines" :key="l.role" class="wrap-anywhere" :class="l.gap ? 'text-warning' : 'text-default'" :data-policy-group="l.role" :data-policy-gap="l.gap ? '' : undefined">
         {{ l.words }}<span class="text-muted"> · rule {{ l.rule }}</span>
       </p>
+      <p v-if="counts?.distinct" class="break-words text-muted" data-decision-policy-distinct>{{ counts.distinct }}</p>
+      <div v-if="counts" class="flex flex-col gap-0.5 pt-1" data-decision-quorum>
+        <span v-if="counts.lead" class="font-medium text-default" data-decision-quorum-lead>{{ counts.lead }}</span>
+        <p v-for="g in counts.groups" :key="g.role" class="flex min-w-0 items-start gap-1.5" :data-quorum-group="g.role" :data-quorum-met="g.met ? '' : undefined">
+          <UIcon :name="g.met ? 'i-lucide-circle-check' : 'i-lucide-hourglass'" class="mt-0.5 size-3.5 flex-none" :class="g.met ? 'text-default' : 'text-muted'" />
+          <span class="min-w-0 wrap-anywhere" data-quorum-words>{{ g.words }}</span>
+        </p>
+      </div>
       <p v-if="notInForce" class="break-words text-muted" data-decision-policy-not-in-force>{{ notInForce }}</p>
       <p v-if="overridden" class="break-words text-muted" data-decision-policy-override>{{ overridden }}</p>
+      <p v-if="how" class="break-words text-default" data-decision-answered-how>{{ how }}</p>
     </section>
 
     <MarkdownPreview v-if="decision.request.context" :text="decision.request.context" dir="" :relative-links="false" class="text-sm" data-decision-context />

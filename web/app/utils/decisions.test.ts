@@ -515,6 +515,13 @@ describe("the decide page's words of a router's policy's refusals (SW1)", () => 
     }
   })
 
+  it("says a counted approval that no longer counts as the view's outcome, asking for the answer again (SW1 PR-9)", () => {
+    expect(decideWords('not_confirmed', 'dr-7')).toBe('Your approval of dr-7 could not be rechecked: answer again.')
+    expect(decideOutcomeWords({ id: 'dr-7', outcome: 'refused', outcomeCode: 'not_confirmed' })).toBe('Your approval of dr-7 could not be rechecked: answer again.')
+    // A view's code, never a respond refusal: a send answered with it is not taken as judged.
+    expect(DECIDE_JUDGING).not.toContain('not_confirmed')
+  })
+
   it('sends an override only when asked', () => {
     expect(responseBody({ choice: 0, rationale: 'Ana is away this week', expectedRev: 2, override: true }, 'r1')).toEqual({ responseId: 'r1', expectedRev: 2, choice: 0, rationale: 'Ana is away this week', override: true })
     expect(responseBody({ choice: 0, expectedRev: 2 }, 'r1')).toEqual({ responseId: 'r1', expectedRev: 2, choice: 0 })
