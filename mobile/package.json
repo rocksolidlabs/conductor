@@ -1,12 +1,14 @@
 {
   "name": "conductor-mobile",
   "private": true,
-  "description": "The phone shell: the iOS app around the workbench's own screens (docs/plans/phone-shell.md, OSS-1a).",
+  "description": "The phone shell: the iOS and Android apps around the workbench's own screens (docs/plans/phone-shell.md, OSS-1a and OSS-3).",
   "license": "Apache-2.0",
   "scripts": {
-    "sync:ios": "cap sync ios"
+    "sync:ios": "cap sync ios",
+    "sync:android": "cap sync android"
   },
   "dependencies": {
+    "@capacitor/android": "8.6.0",
     "@capacitor/app": "8.1.2",
     "@capacitor/browser": "8.0.5",
     "@capacitor/core": "8.6.0",

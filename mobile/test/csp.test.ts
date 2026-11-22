@@ -13,6 +13,9 @@ import { NATIVE_HTTP, syncBundle } from '../scripts/sync.mjs'
 // carries `script-src 'self' 'wasm-unsafe-eval'` with every inline script's hash and no other; an inline event handler or a
 // `javascript:` address fails the sync; the bridge's tag, and a provider module's when there is one, stand before the entry. The
 // real build (internal/web/dist) is synced when it is there; the boot spec (web/e2e/shell-boot.spec.ts) runs the synced bundle.
+// Every expectation here is the bundle's policy: one bundle, synced once, which the iPhone's shell carries as it is and the Android
+// shell carries too, serving each page with its own frame and object policy beside it as a header (ServedPolicy.POLICY, proven by
+// the Android project's tests, not here).
 
 const sha = (s: string) => `'sha256-${createHash('sha256').update(s, 'utf8').digest('base64')}'`
 const ENTRY = '<script type="module" src="/_nuxt/entry.js" crossorigin></script>'
@@ -37,6 +40,20 @@ function carried(html: string): { policy: string; srcs: string[] } {
 }
 
 describe("the shell's policy", () => {
+  it("is the bundle's policy both shells carry, the iPhone's whole: fixed, with no frame or object directive of the Android shell's", () => {
+    // A fixed page and the policy main's sync gave it, written out: the iPhone's shell carries exactly this, and its boot check
+    // (ShellBootsUnderItsPolicyTests) expects a page with no frame-src and no object-src.
+    const page = '<!doctype html><html><head><script>window.a=1</script><script type="importmap">{"imports":{}}</script><script type="application/json" id="d">{}</script></head><body>' + ENTRY + '</body></html>'
+    expect(policyFor(page)).toBe("script-src 'self' 'wasm-unsafe-eval' 'sha256-WpNQcWxgTJamkluTtRGYllok20MyGquJpWh9YXWGA4E=' 'sha256-URrTy+Il/Nz0lHojVUx275hWqAWhkSF0VsHbUM4/6Hw='; connect-src 'none'")
+    expect(policyFor(page, { connect: ['https://relay.example.test'] })).toBe("script-src 'self' 'wasm-unsafe-eval' 'sha256-WpNQcWxgTJamkluTtRGYllok20MyGquJpWh9YXWGA4E=' 'sha256-URrTy+Il/Nz0lHojVUx275hWqAWhkSF0VsHbUM4/6Hw='; connect-src https://relay.example.test")
+    const from = tmp()
+    writeFileSync(join(from, 'index.html'), page)
+    const www = join(tmp(), 'www')
+    syncBundle(from, www)
+    expect(carried(readFileSync(join(www, 'index.html'), 'utf8')).policy).toBe(policyFor(page))
+    expect(carried(readFileSync(join(www, 'index.html'), 'utf8')).policy).not.toMatch(/frame-src|object-src/)
+  })
+
   it("hashes every inline script the browser runs, the import map among them, and no data block", () => {
     const scripts = inlineScripts(PAGE)
     expect(scripts).toHaveLength(3)

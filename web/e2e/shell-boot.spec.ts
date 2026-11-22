@@ -98,7 +98,9 @@ test('the synced bundle starts under its policy on Open a server, with no provid
   await expect(page.locator('html')).toHaveClass(/\b(dark|light)\b/)
   expect(await page.evaluate(() => (window as unknown as { conductorShell?: { v: number; platform: string } }).conductorShell?.platform)).toBe('web')
   const html = readFileSync(join(www, 'index.html'), 'utf8')
-  expect(metaPolicy(html)).toMatch(/^script-src 'self' 'wasm-unsafe-eval'( 'sha256-[A-Za-z0-9+/=]+')+; connect-src 'none'$/)
+  // The bundle's policy, the one both shells carry: the iPhone's whole; the Android shell serves each page with its own frame and
+  // object policy beside it, as a header (ServedPolicy.POLICY), which this spec's static server does not add.
+  expect(metaPolicy(html), "the bundle's policy, the iPhone's shell's whole").toMatch(/^script-src 'self' 'wasm-unsafe-eval'( 'sha256-[A-Za-z0-9+/=]+')+; connect-src 'none'$/)
   expect(await violations()).toEqual([])
   expect(errors).toEqual([])
   await ctx.close()
