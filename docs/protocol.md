@@ -4955,7 +4955,10 @@ serve`, so 7 s), which leaves the rows their time, and waits for the trees'
 ends before the ledger closes. The run's JSON gains `pausedWhy`, `manifest`
 (`{source, revision?, digest?, prerequisites: [{id, k?, state, exit?, error?,
 duration?}]}`, `state` `pending`, `running`, `passed`, `failed` or
-`interrupted`), `cleaning` (its trees being ended: an `outcome` says every
+`interrupted`; present exactly when the run has a project manifest, which is
+what a candidate's preview needs: a run read without it is refused that preview
+`409 no_manifest`, and the run page offers Preview this candidate only on a run
+read with it), `cleaning` (its trees being ended: an `outcome` says every
 attempt is closed, not that every tree has ended) and each attempt's
 `preview` (above). A run whose crew has no manifest and no `setup` makes no
 tree and keeps no step receipt.
@@ -5115,7 +5118,10 @@ the same changes without a receipt.
 takes the ledger's owner lock, it concludes what the last server left open
 (the ledger's recovery): an attempt reserved and not launched is
 `uncertain`, one launched, running, submitting or verifying `interrupted`,
-a check, a step or a prerequisite under way `interrupted`, a service that
+a check, a step or a prerequisite under way `interrupted` (a task's check or
+a tree's step left running is named in the server's log as a service is:
+its run, task, attempt, tree, phase and id, its pid, group and start, as
+possibly alive and never signalled, beside the run's count), a service that
 was running `interrupted` and reported, never signalled (a process the last
 server started that outlived it is nobody's to signal: a `service.ended` of
 its own with `recovered: true` and its pid, group and start time, the
@@ -5208,7 +5214,12 @@ checkpoint with it, since the next attempt starts from the new result. The ledge
 version 3 for the checkpoint column and the messages table; a version 2
 database is brought to it as it opens.
 
-The run reports `tasks` (each with its `state`, `reason`, `attempts`, latest
+The run reports `tasks` (each with its `state`, `reason`, `blockedForGood`
+(`true` on a blocked task that will never start: a task it needs failed, was
+cancelled or is itself blocked for good, the condition its `reason`'s "…,
+which will not succeed" is written from; absent otherwise, a task blocked
+for now among them; the run page then says it will not run and offers no
+command on it, though the engine still takes a cancel), `attempts`, latest
 `attempt`, `result`, in a continuation `importedFrom`, in a crew with
 people its `owner` and `ownerFrom`, and `commands`, the task commands its
 state allows now, `retry`, `accept` and `cancel` in that order, as the

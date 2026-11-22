@@ -95,6 +95,18 @@ func recoverLedger(ctx context.Context, ld *ledger.Ledger, records *crew.Records
 			log.Warn("a service the last server was starting may be running: its process was never recorded, so it cannot be named", "run", r.RunID, "task", sv.Task,
 				"attempt", sv.N, "tree", sv.Tree, "service", sv.ID)
 		}
+		// So may a check the last server was running (a task's check, a
+		// manifest's setup, ready, verify or cleanup step): named the same
+		// way, beside the count, and never signalled.
+		for _, st := range r.Steps {
+			if st.Confirmed {
+				log.Warn("a check the last server started may still be running: it is reported, never signalled", "run", r.RunID, "task", st.Task, "attempt", st.N,
+					"tree", st.Tree, "phase", st.Phase, "check", st.ID, "pid", st.Pid, "group", st.Group, "startedAt", st.StartedAt)
+				continue
+			}
+			log.Warn("a check the last server was starting may be running: its process was never recorded, so it cannot be named", "run", r.RunID, "task", st.Task,
+				"attempt", st.N, "tree", st.Tree, "phase", st.Phase, "check", st.ID)
+		}
 	}
 	if restore != nil {
 		pctx, cancel := context.WithTimeout(ctx, recoveryBudget)

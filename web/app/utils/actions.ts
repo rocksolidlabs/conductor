@@ -11,6 +11,18 @@ import { ATTEMPT_REASON, hostedReason } from './clone'
  */
 export type ActionKind = 'session' | 'run' | 'shared' | 'account' | 'page' | 'global'
 
+/**
+ * The question a destructive row asks before it runs (#1075): its title and detail, and its two buttons' words, made where the question
+ * is: `confirm` does it, `keep` leaves things as they are. They are never the same word, and they are the words the action's own dialog
+ * elsewhere says (a task's Cancel: Keep it / Cancel the task), so a question in the palette reads as the one in the row's menu.
+ */
+export interface Ask {
+  title: string
+  detail: string
+  confirm: string
+  keep: string
+}
+
 export interface Action {
   /** Stable within its kind: `open`, `share`, `stop`… The palette keys frecency by kind, id and target. */
   id: string
@@ -22,7 +34,7 @@ export interface Action {
   /** What it is about: a session, run or shared link id. */
   target?: string
   /** A destructive action asks this in the row before it runs. */
-  ask?: { title: string; detail: string }
+  ask?: Ask
   color?: 'error'
   disabled?: boolean
   /** Why it is disabled, said beside it. */
@@ -133,10 +145,45 @@ function cloneGroup(t: RowActionTarget, on: RowActionHandlers, a: (id: string, l
   return [a('clone', 'Clone…', on.clone, { icon: 'i-lucide-copy', ...quick }), a('clone-options', 'Clone with options…', on.cloneWithOptions, { icon: 'i-lucide-copy-plus', ...hosted })]
 }
 
-/** The question a row asks before it stops something, in the row itself. */
-export function stopQuestion(t: Pick<RowActionTarget, 'kind' | 'name'>): { title: string; detail: string } {
-  if (t.kind === 'run') return { title: `Stop ${t.name}?`, detail: "Every member's terminal closes. The run can be resumed as a new run." }
-  return { title: `Stop ${t.name}?`, detail: 'Its terminal closes. Resume brings the conversation back from Exited.' }
+/** The question a row asks before it stops something, in the row itself, with the sidebar row's own buttons (Cancel, Stop). */
+export function stopQuestion(t: Pick<RowActionTarget, 'kind' | 'name'>): Ask {
+  if (t.kind === 'run') return { title: `Stop ${t.name}?`, detail: "Every member's terminal closes. The run can be resumed as a new run.", confirm: 'Stop', keep: 'Cancel' }
+  return { title: `Stop ${t.name}?`, detail: 'Its terminal closes. Resume brings the conversation back from Exited.', confirm: 'Stop', keep: 'Cancel' }
+}
+
+/** The run page's Stop run…: the run header's own dialog's buttons (Cancel, Stop the run). */
+export function stopRunPageQuestion(name: string): Ask {
+  return { ...stopQuestion({ kind: 'run', name }), confirm: 'Stop the run' }
+}
+
+/** Stop every finished session: the sessions named, each stopped. */
+export function stopFinishedQuestion(names: readonly string[]): Ask {
+  return { title: `Stop ${names.length} finished ${names.length === 1 ? 'session' : 'sessions'}?`, detail: names.join(', '), confirm: 'Stop them', keep: 'Cancel' }
+}
+
+/** What a server's restart ends: its `n` running sessions. */
+function endsWith(n: number): string {
+  return n ? `${n} ${n === 1 ? 'session ends' : 'sessions end'} with it.` : 'No session is running.'
+}
+
+/** Restart server (the desktop app's): Settings' own button says Restart server. */
+export function restartQuestion(n: number): Ask {
+  return { title: 'Restart the server?', detail: endsWith(n), confirm: 'Restart server', keep: 'Cancel' }
+}
+
+/** Settings' Save when what changed takes a restart: its own button says Save and restart the server. */
+export function saveRestartQuestion(n: number): Ask {
+  return { title: 'Save and restart the server?', detail: endsWith(n), confirm: 'Save and restart the server', keep: 'Cancel' }
+}
+
+/** A session's link revoked: the Share dialog's own button says Revoke. */
+export function revokeQuestion(label: string | undefined): Ask {
+  return { title: `Revoke ${label || 'the link'}?`, detail: 'Viewers using it are disconnected.', confirm: 'Revoke', keep: 'Cancel' }
+}
+
+/** A session found in History resumed: its record's page asks with Keep it and Resume. */
+export function resumeQuestion(title: string): Ask {
+  return { title: `Resume ${title}?`, detail: "A new session takes up its agent's own conversation.", confirm: 'Resume', keep: 'Keep it' }
 }
 
 /** What the account menu beside the sidebar's name offers (design 3b): your name, the shortcuts, the theme, the workbench token. */

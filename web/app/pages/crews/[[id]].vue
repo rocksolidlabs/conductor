@@ -7,8 +7,8 @@ import { runItems } from '~/utils/status'
 import { runLive, runState } from '~/utils/runs'
 import { modelProblem } from '~/utils/capacity'
 import { pageState } from '~/utils/pageState'
-import { SheetConfirmation, afterRefusal, type SheetRefusal, type SheetTarget } from '~/utils/crewLaunch'
-import { CREW_CHANGED, crewLaunchBody } from '~/utils/protocol'
+import { SheetConfirmation, afterRefusal, launchRefusal, type SheetRefusal, type SheetTarget } from '~/utils/crewLaunch'
+import { crewLaunchBody } from '~/utils/protocol'
 import { COMPARISON_LAUNCHES_FROM_A_TICKET } from '~/utils/compareLaunch'
 
 // Two things, told apart: a crew is a saved plan, a run is one launch of it.
@@ -514,7 +514,11 @@ async function startLaunch(label: string) {
 function sheetGone() {
   const t = sheet.target
   sheet.open = false
-  toast.add({ title: 'The crew is gone', description: `${t && 'id' in t ? t.id : 'It'} is no longer saved on the server: nothing was launched.`, icon: 'i-lucide-circle-x', color: 'warning' })
+  crewGone(t && 'id' in t ? t.id : '')
+}
+/** The page says the crew `id` is no longer saved (a launch refused `not_found` closes its sheet as its launch ends). */
+function crewGone(id: string) {
+  toast.add({ title: 'The crew is gone', description: `${id || 'It'} is no longer saved on the server: nothing was launched.`, icon: 'i-lucide-circle-x', color: 'warning' })
 }
 watch(selectedKey, (k) => {
   if (k !== sheet.at) sheet.open = false
@@ -589,9 +593,10 @@ async function launch(t: SheetTarget, read: CrewInfo | null, confirmed: () => bo
     try {
       launched = await api.launchCrew(c.id, body)
     } catch (e) {
-      if (e instanceof ApiError && e.code === CREW_CHANGED) startedNothing(t, c, 'changed', confirmed())
-      else if (e instanceof ApiError && e.code === 'not_a_repo') fail('Not a git repository', e)
-      else fail('Launch failed', e)
+      // Every refusal stays on the sheet in the server's words, but a crew no longer saved, which nothing on the sheet can launch.
+      const why = launchRefusal(e)
+      if (why === 'gone') crewGone(c.id)
+      else startedNothing(t, c, why, confirmed())
       return
     }
     const { run, viewLink } = launched
@@ -631,9 +636,10 @@ async function launch(t: SheetTarget, read: CrewInfo | null, confirmed: () => bo
 }
 
 /**
- * The launch started nothing (`why`): the server refused it, the crew saved since the copy it named (`crew_changed`), or the crew came
- * without a revision and no launch was sent. A sheet still open on that opening, on this page not left, stays open and says why
- * (afterRefusal: it reads the crew again, or holds Launch); otherwise a toast says so wherever the person now is.
+ * The launch started nothing (`why`): the server refused it, the crew saved since the copy it named (`crew_changed`) or for any other
+ * reason it gives (launchRefusal), or the crew came without a revision and no launch was sent. A sheet still open on that opening, on
+ * this page not left, stays open and says why (afterRefusal: it reads the crew again, holds Launch, or shows the server's words with what
+ * it was opened with kept); otherwise a toast says so wherever the person now is.
  */
 function startedNothing(t: SheetTarget, c: CrewInfo, why: SheetRefusal, confirmed: boolean) {
   const next = afterRefusal(t, c, why, { confirmed, mounted, open: sheet.open, at: sheet.at, selected: selectedKey.value }, confirmation)

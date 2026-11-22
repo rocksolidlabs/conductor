@@ -6,7 +6,7 @@ import { usePalette, type PaletteItem } from '~/composables/usePalette'
 import { kindLook, rowLine } from '~/utils/inbox'
 import type { LaunchPrefill } from '~/composables/useLaunchModal'
 import { sameQuestions } from '~/utils/needsCursor'
-import { rowActions, sessionTarget, type Action } from '~/utils/actions'
+import { restartQuestion, rowActions, sessionTarget, stopFinishedQuestion, stopQuestion, type Action } from '~/utils/actions'
 import { hostedReason } from '~/utils/clone'
 import { answerRows, cutNotice, oneRowPerDecision, rowDecision, staleNotice, type Decision } from '~/utils/decisions'
 import { isEnded, noReply, offeredChoices } from '~/utils/attention'
@@ -593,7 +593,7 @@ export function usePaletteRows(ctx: PaletteContext) {
       detail: done.length ? done.map((s) => s.name).join(', ') : 'None has finished',
       icon: 'i-lucide-square',
       disabled: !done.length,
-      ask: { title: `Stop ${done.length} finished ${done.length === 1 ? 'session' : 'sessions'}?`, detail: done.map((s) => s.name).join(', ') },
+      ask: stopFinishedQuestion(done.map((s) => s.name)),
       run: () => {
         for (const s of done) void stopSession(s)
       },
@@ -617,7 +617,7 @@ export function usePaletteRows(ctx: PaletteContext) {
       out.push({ key: 'action:open-browser', label: 'Open in browser', icon: 'i-lucide-external-link', run: () => void desktop.bridge.value?.openInBrowser() })
       out.push({ key: 'action:server-log', label: 'Server log', icon: 'i-lucide-scroll-text', run: () => void desktop.bridge.value?.showLog() })
       const n = attention.sessions.value.filter((s) => s.kind === 'server' && sessionLive(s.status)).length
-      out.push({ key: 'action:restart', label: 'Restart server', icon: 'i-lucide-rotate-ccw', ask: { title: 'Restart the server?', detail: n ? `${n} ${n === 1 ? 'session ends' : 'sessions end'} with it.` : 'No session is running.' }, run: () => void desktop.bridge.value?.restartServer() })
+      out.push({ key: 'action:restart', label: 'Restart server', icon: 'i-lucide-rotate-ccw', ask: restartQuestion(n), run: () => void desktop.bridge.value?.restartServer() })
       out.push({ key: 'action:settings', label: 'Settings', icon: 'i-lucide-settings', kbds: ['G', 'S'], run: () => go('/settings') })
     }
     out.push({ key: 'action:name', label: 'Your name…', icon: 'i-lucide-user-round', run: () => ctx.name() })
@@ -872,10 +872,10 @@ export function usePaletteRows(ctx: PaletteContext) {
       case 'stop': {
         if (v.target.kind === 'run') {
           const r = run(v.target.id)
-          return r ? { key: `verb:stop:${r.id}`, label: `Stop ${v.target.name}`, detail: 'Every member’s terminal closes. The run can be resumed as a new run.', icon: 'i-lucide-square', ask: { title: `Stop ${v.target.name}?`, detail: "Every member's terminal closes. The run can be resumed as a new run." }, run: () => stopRun(r) } : null
+          return r ? { key: `verb:stop:${r.id}`, label: `Stop ${v.target.name}`, detail: 'Every member’s terminal closes. The run can be resumed as a new run.', icon: 'i-lucide-square', ask: stopQuestion({ kind: 'run', name: v.target.name }), run: () => stopRun(r) } : null
         }
         const s = session(v.target.id)
-        return s ? { ...sessionItem(s, now), key: `verb:stop:${s.id}`, label: `Stop ${s.name}`, detail: 'Its terminal closes. Resume brings the conversation back from Exited.', ask: { title: `Stop ${s.name}?`, detail: 'Its terminal closes. Resume brings the conversation back from Exited.' }, disabled: !sessionLive(s.status), run: () => stopSession(s), actions: undefined, prompt: null } : null
+        return s ? { ...sessionItem(s, now), key: `verb:stop:${s.id}`, label: `Stop ${s.name}`, detail: 'Its terminal closes. Resume brings the conversation back from Exited.', ask: stopQuestion({ kind: 'session', name: s.name }), disabled: !sessionLive(s.status), run: () => stopSession(s), actions: undefined, prompt: null } : null
       }
       case 'share': {
         if (v.target.kind === 'run') return { key: `verb:share:${v.target.id}`, label: `Share ${v.target.name} (${v.role})`, detail: `Opens the Share dialog on the run, a ${v.role} link`, icon: 'i-lucide-share-2', run: () => ctx.share({ runId: v.target.id, sessionName: v.target.name }, v.role) }

@@ -127,7 +127,20 @@ export type Tone = 'warning' | 'error' | 'muted' | 'default' | 'success'
  * What of its run a task's words read: stopped, paused and why, the run's state (interrupted: what its continuation takes up), and the
  * run that continued it.
  */
-export type TaskRun = Pick<RunInfo, 'stoppedAt' | 'paused' | 'resumedBy'> & { state?: string; pausedWhy?: string }
+export type TaskRun = Pick<RunInfo, 'stoppedAt' | 'paused' | 'resumedBy'> & { state?: string; pausedWhy?: string; outcome?: RunInfo['outcome'] }
+
+/** The status word of a task that will never run (neverRuns), where the Tasks view, the palette and the sidebar say a task's state. */
+export const NEVER_RUNS_WORDS = 'will not run'
+
+/**
+ * Whether a task will never run: the server says it is blocked for good (`blockedForGood`: a task it needs failed, was cancelled or is
+ * itself blocked for good), or its run has ended (`outcome`) with it never started (blocked or ready). Nothing offered acts on it then
+ * but what reads (Open, its links); the engine still takes a cancel sent for it, as before.
+ */
+export function neverRuns(t: Pick<RunTask, 'state'> & Partial<Pick<RunTask, 'blockedForGood'>>, run: { outcome?: RunInfo['outcome'] } | undefined): boolean {
+  if (t.state === 'blocked' && t.blockedForGood) return true
+  return !!run?.outcome && (t.state === 'blocked' || t.state === 'ready')
+}
 
 /**
  * A task's state in words: what it waits for, which attempt runs, how it ended; on an interrupted run, what its continuation takes up;
@@ -138,6 +151,8 @@ export function taskWords(t: RunTask, run: TaskRun, o: { attempt?: boolean } = {
   const n = t.attempt?.n ?? t.attempts
   const live = (words: string, sep = ' ') => (o.attempt === false ? words : `attempt ${n}${sep}${words}`)
   if (run.resumedBy && t.state !== 'succeeded' && t.state !== 'cancelled') return { text: 'taken up by its continuation', tone: 'muted' }
+  // A task that will never run says so, never that it waits: with the engine's reason, or, in a run that ended, that it ended first.
+  if (neverRuns(t, run)) return { text: `${NEVER_RUNS_WORDS}: ${t.reason || holdsWords(t) || 'the run ended before it started'}`, tone: 'muted' }
   switch (t.state) {
     case 'blocked':
       return { text: t.reason || holdsWords(t) || (t.needs?.length ? `needs ${t.needs.join(', ')}` : 'waiting'), tone: t.reason?.includes('will not') ? 'error' : 'muted' }
@@ -220,7 +235,11 @@ export interface TaskActionSet {
   preview: string
   /** Open in Conductor: the preview page frames the attempt's preview while it is offered (docs/plans/browser-evidence.md). */
   inConductor: boolean
-  /** Preview this candidate: the attempt submitted a commit, no checkout of it is open, and no continuation owns the run. */
+  /**
+   * Preview this candidate: the attempt submitted a commit, no checkout of it is open, no continuation owns the run, and the run has a
+   * project manifest (its read's `manifest`, present exactly when the server serves a candidate's preview: without one the open is
+   * refused `409 no_manifest`).
+   */
   candidate: boolean
   /** The candidate's checkout while one is open: Open (the preview page at its `seq`) and Close. */
   previewing: { seq: number; state: 'resolved' | 'ready' | 'ending' } | null
@@ -236,10 +255,14 @@ export interface TaskActionSet {
  * commit, of any kind, and a stopped run still takes its commands. Open preview follows the attempt's `preview` alone: the server
  * sets it at its worktree's `tree.ready` and clears it at the attempt's close, at a service's own exit and while the run stops, so
  * nothing here second-guesses it. A run a provider launched whose time limit has passed at `now` (its `origin`'s deadline) takes
- * no Retry and no Accept anyway: each would start an attempt, which the server refuses (`time_limit_passed`).
+ * no Retry and no Accept anyway: each would start an attempt, which the server refuses (`time_limit_passed`). A task that will never run
+ * (neverRuns: blocked for good, or never started in a run that ended) is offered no command, Cancel among them. Preview this candidate
+ * is offered only on a run whose read carries its project manifest (`manifest`): the server refuses a candidate's preview of a run
+ * without one (`409 no_manifest`).
  */
-export function taskActions(t: RunTask, run: Pick<RunInfo, 'record' | 'resumedBy'> & Partial<Pick<RunInfo, 'stoppedAt' | 'origin'>>, now: number = Date.now()): TaskActionSet {
-  const live = !run.record && !run.resumedBy
+export function taskActions(t: RunTask, run: Pick<RunInfo, 'record' | 'resumedBy'> & Partial<Pick<RunInfo, 'stoppedAt' | 'origin' | 'manifest' | 'outcome'>>, now: number = Date.now()): TaskActionSet {
+  // A task that will never run (neverRuns) is offered nothing that acts on it: Open, Copy branch and what reads stay.
+  const live = !run.record && !run.resumedBy && !neverRuns(t, run)
   const named = (c: TaskCommand) => live && !!t.commands?.includes(c)
   const starts = !timeLimitPassed(run.origin, now)
   return {
@@ -251,7 +274,7 @@ export function taskActions(t: RunTask, run: Pick<RunInfo, 'record' | 'resumedBy
     showResult: !!t.result,
     preview: t.attempt?.preview ?? '',
     inConductor: !!t.attempt?.preview,
-    candidate: !!t.attempt?.result && !t.attempt.previewing && !run.resumedBy,
+    candidate: !!t.attempt?.result && !t.attempt.previewing && !run.resumedBy && !!run.manifest,
     previewing: t.attempt?.previewing && t.attempt.previewing.state !== 'ending' ? { seq: t.attempt.previewing.seq, state: t.attempt.previewing.state } : null,
     askWhy: t.state === 'failed' || t.state === 'cancelled' || t.state === 'blocked' || !!t.blocker,
   }
@@ -283,7 +306,7 @@ export interface TaskRowParts {
  * a menu (Open in Conductor, Preview this candidate or its Open and Close, Cancel, Copy branch, Ask Brakeman why), from taskActions and taskAnswer as the row offered them. `brakeman`: the server has
  * Brakeman, so Ask Brakeman why is offered where it applies.
  */
-export function taskRow(t: RunTask, run: TaskRun & Pick<RunInfo, 'record' | 'resumedBy'>, o: { brakeman?: boolean } = {}): TaskRowParts {
+export function taskRow(t: RunTask, run: TaskRun & Pick<RunInfo, 'record' | 'resumedBy'> & Partial<Pick<RunInfo, 'manifest' | 'outcome'>>, o: { brakeman?: boolean } = {}): TaskRowParts {
   const words = taskWords(t, run, { attempt: false }).text
   const n = t.attempt?.n ?? t.attempts
   const attempt = n > 1 && !words.includes(`attempt ${n}`) ? `attempt ${n}` : ''

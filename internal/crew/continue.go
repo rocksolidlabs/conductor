@@ -1186,6 +1186,7 @@ func Recovered(rec Run, from Loaded) Run {
 		// rows under this run only (I16).
 		t.Holds = recoveredHolds(from, t.ID)
 	}
+	markBlockedForGood(rec.Tasks)
 	now := time.Now().UTC()
 	for i := range rec.Members {
 		m := &rec.Members[i]

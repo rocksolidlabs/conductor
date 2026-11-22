@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it, vi } from 'vitest'
 import { useDispatchApi } from '../composables/useDispatch'
-import { AGENT_CHOOSES, AT_LAUNCH, OWN_LOGIN, SHEET_DEADLINE_MS, SheetConfirmation, accountName, afterRefusal, accountUnreadable, addMemberProblem, boundWords, brakemanAccount, cleanFolder, launchAccountWords, launchLines, memberAccountItems, memberAccountProblem, namedAccounts, readNamedAccounts, launchYoloWords, readSheet, refusedTarget, sheetAccountWords, sheetNotes, sheetNotice, sheetRows, UNREVISED_WORDS, withAgent, type SheetTarget } from '../utils/crewLaunch'
+import { AGENT_CHOOSES, AT_LAUNCH, OWN_LOGIN, REFUSED_WORDS, SHEET_DEADLINE_MS, SheetConfirmation, accountName, afterRefusal, launchRefusal, accountUnreadable, addMemberProblem, boundWords, brakemanAccount, cleanFolder, launchAccountWords, launchLines, memberAccountItems, memberAccountProblem, namedAccounts, readNamedAccounts, launchYoloWords, readSheet, refusedTarget, sheetAccountWords, sheetNotes, sheetNotice, sheetRows, UNREVISED_WORDS, withAgent, type SheetTarget } from '../utils/crewLaunch'
 import { capacityKey, type After, type CapacityView } from '../utils/capacity'
 import { draftMember, toCrewInput, toCrewMember } from '../utils/crews'
 
@@ -198,6 +198,48 @@ describe('the launch sheet', () => {
     for (const p of [{ open: false }, { selected: 'other' }, { confirmed: false }]) expect(afterRefusal(byId, crew, 'changed', { ...here, ...p }, c)).toHaveProperty('toast')
   })
 
+  // Every code POST /api/crews/{id}/launch answers (internal/api/runs.go, launchSaved and runError; docs/protocol.md), and a launch
+  // that reached no server: each stays on the sheet in the server's words, but crew_changed (read again) and not_found (the crew gone).
+  it('keeps every refusal of a launch on the sheet in the server’s words, but a crew changed (read again) or gone (closed, said)', () => {
+    const err = (code: string, message: string) => Object.assign(new Error(message), { code })
+    const kept: Array<[string, string]> = [
+      ['managed_off', 'crews with tasks are off on this server (crews.managed)'],
+      ['ledger_unavailable', 'the ledger is held by another server (pid 4242)'],
+      ['invalid_crew', 'member lead: agent claude is not installed on the server'],
+      ['invalid_cwd', 'the folder is outside the allowed roots'],
+      ['not_a_repo', 'not a git repository'],
+      ['invalid_account', 'member lead: this agent’s entry uses another login'],
+      ['invalid_request', 'label: at most 60 characters'],
+      ['crew_unreadable', 'pinned.json: not JSON'],
+      ['store_unavailable', 'no data directory is configured'],
+      ['store_failed', 'could not read the crews'],
+      ['launch_failed', 'git is not installed on the server'],
+      ['run_stopped', 'the run was stopped'],
+      ['switchyard', 'this server coordinates hosted sessions and launches none'],
+      ['unauthorized', 'a workbench token is needed'],
+      ['network', 'Cannot reach the server'],
+    ]
+    for (const [code, words] of kept) {
+      const why = launchRefusal(err(code, words))
+      expect(why, code).toEqual({ code, words })
+      // The sheet shows the words as given, Launch not held, and keeps its target (the run's name the person set) as a new opening.
+      expect(sheetNotice(why as Exclude<typeof why, 'gone'>, 'drawn', false), code).toEqual({ kind: 'refused', words: `${REFUSED_WORDS} ${words}`, hold: false, code })
+      const c = new SheetConfirmation()
+      c.opened()
+      const n = c.take(true)
+      const target: SheetTarget = { id: 'pinned', label: 'fix login' }
+      const next = afterRefusal(target, { id: 'pinned', name: 'Pinned crew' }, why as Exclude<typeof why, 'gone'>, { confirmed: true, mounted: true, open: true, at: 'pinned', selected: 'pinned' }, c)
+      expect(next, code).toEqual({ target, refused: { code, words } })
+      expect(c.holds(n), `${code}: the launch's end leaves the sheet open`).toBe(false)
+      // Off the page, a toast names the crew and keeps the words.
+      expect(afterRefusal(target, { id: 'pinned', name: 'Pinned crew' }, why as Exclude<typeof why, 'gone'>, { confirmed: true, mounted: false, open: true, at: 'pinned', selected: 'pinned' }, c)).toEqual({ toast: `Pinned crew was refused by the server, so no run was started: ${words}` })
+    }
+    expect(launchRefusal(err('crew_changed', 'read it again'))).toBe('changed')
+    expect(launchRefusal(err('not_found', 'no such crew'))).toBe('gone')
+    // A failure with no code still keeps its words on the sheet.
+    expect(launchRefusal(new Error('boom'))).toEqual({ code: 'error', words: 'boom' })
+  })
+
   it('keeps the refused sheet open as a new opening, whose Launch takes a confirmation once the refused launch has ended', () => {
     for (const why of ['changed', 'unrevised'] as const) {
       const c = new SheetConfirmation()
@@ -298,10 +340,10 @@ describe('the launch sheet', () => {
     expect(sheetNotes(r, () => null)).toEqual([])
   })
 
-  it("source: the page sends a launch only with the revision of what it launches and answers crew_changed by reading again; the sheet says why", () => {
+  it("source: the page sends a launch only with the revision of what it launches and answers every refusal by launchRefusal; the sheet says why", () => {
     const page = readFileSync(new URL('../pages/crews/[[id]].vue', import.meta.url), 'utf8')
     expect(page).toContain("const body = crewLaunchBody(t.label, c.revision)\n    if (!body) return startedNothing(t, c, 'unrevised', confirmed())")
-    expect(page).toContain("e.code === CREW_CHANGED) startedNothing(t, c, 'changed', confirmed())")
+    expect(page).toContain("const why = launchRefusal(e)\n      if (why === 'gone') crewGone(c.id)\n      else startedNothing(t, c, why, confirmed())")
     const src = readFileSync(new URL('./CrewLaunchSheet.vue', import.meta.url), 'utf8')
     expect(src).toContain('<div role="status">')
     expect(src).toContain(':disabled="!open || !crew || launching || notice?.hold || comparison"')

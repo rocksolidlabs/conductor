@@ -198,7 +198,7 @@ const previewLeftOpen = "the owner stopped before the preview was ended"
 // the recovery finds them (resolved or ready): ended and interrupted, with
 // why, each with a `preview.ended` event of a fixed shape; nothing is run
 // for them, and a service of theirs is reported with the others
-// (openServices), never signalled. It returns how many.
+// (openSteps), never signalled. It returns how many.
 func (t *Tx) endPreviews(now string) (int, error) {
 	type key struct {
 		task   string

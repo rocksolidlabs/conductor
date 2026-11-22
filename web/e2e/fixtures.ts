@@ -77,6 +77,8 @@ export interface RunTask {
   needs?: string[]
   state: string
   reason?: string
+  /** A blocked task that will never start, as the server says it (`blockedForGood`); absent otherwise. */
+  blockedForGood?: boolean
   attempts: number
   attempt?: RunAttempt
   result?: { attempt: number; commit?: string; summary?: string; issues?: string[]; verdict?: string; findings?: Array<{ severity: string; path?: string; line?: number; message: string }>; at: string }

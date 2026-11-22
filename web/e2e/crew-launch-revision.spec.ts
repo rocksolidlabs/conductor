@@ -1,4 +1,6 @@
 import { randomBytes } from 'node:crypto'
+import { mkdirSync } from 'node:fs'
+import { join } from 'node:path'
 import type { Page, Response, Route } from '@playwright/test'
 import { expect, standingRoute, test, type Api, type Run } from './fixtures'
 
@@ -356,4 +358,47 @@ test('nothing that should go is refused: a saved crew, a draft in one go, two la
   expect(launches.seen.map((l) => l.run!.members.map((m) => m.name).join()).sort()).toEqual(['lead', 'lead', 'renamed'])
   await expect(s.changed).toHaveCount(0)
   expect(await crewRuns(api, a.id)).toHaveLength(3)
+})
+
+test("a launch the server refuses stays on the sheet in the server's words, with the run's name kept; Launch again is refused again: no run", async ({ page, api, state }) => {
+  // A crew of worktrees in a folder that is no git working tree: the server refuses its launch 409 not_a_repo, starting nothing.
+  const plain = join(state.root, `launch-plain-${randomBytes(3).toString('hex')}`)
+  mkdirSync(plain, { recursive: true })
+  const name = label('refused')
+  const { crew } = await api.ok<{ crew: { id: string } }>('POST', '/api/crews', { name, goal: '', cwd: plain, where: 'server', isolation: 'worktree', openAfterLaunch: false, yolo: false, members: [{ name: 'lead', agentId: 'claude', prompt: '', start: { when: 'manual' } }] })
+  made.crews.push(crew.id)
+  const launches = launchesOf(page, crew.id)
+  const s = sheet(page)
+  const run = `e2e kept ${randomBytes(3).toString('hex')}`
+  budget(READ, EXPECT, EXPECT, READ, EXPECT, EXPECT, EXPECT, EXPECT, EXPECT) // the page, the menu, the name, the sheet, the refusal and what stays, again, the close
+  await page.goto(`/crews/${encodeURIComponent(crew.id)}`)
+  await expect(page.getByLabel('Crew name')).toHaveValue(name, { timeout: READ })
+  // The run named in the launch's own menu: the sheet opens as that run.
+  await page.locator('[data-launch-menu]').click()
+  await page.locator('[data-launch-name]').fill(run)
+  await expect(page.locator('[data-launch-name]')).toHaveValue(run)
+  await page.locator('[data-launch-named]').click()
+  const dialog = page.getByRole('dialog')
+  await expect(dialog).toContainText(`As the run ${run}`)
+  await expect(s.line('lead')).toBeVisible({ timeout: READ })
+  for (let i = 0; i < 2; i++) {
+    const refused = page.waitForResponse((r) => r.request().method() === 'POST' && new URL(r.url()).pathname === `/api/crews/${crew.id}/launch`)
+    await s.confirm.click()
+    const answer = await refused
+    expect(answer.status(), 'the launch is refused').toBe(409)
+    const { error } = (await answer.json()) as { error: { code: string; message: string } }
+    expect(error.code).toBe('not_a_repo')
+    // On the sheet, announced, in the server's own words; the sheet as it was opened: the run's name, the member, Launch offered.
+    const notice = page.locator('[data-crew-launch-refused="not_a_repo"]')
+    await expect(notice).toHaveText(`The server refused the launch, so nothing was started: ${error.message}`)
+    await expect(page.getByRole('status').filter({ has: notice }), 'the refusal is announced').toHaveCount(1)
+    await expect(dialog).toContainText(`As the run ${run}`)
+    await expect(s.line('lead')).toBeVisible()
+    await expect(s.confirm).toBeEnabled()
+  }
+  await page.locator('[data-crew-launch-cancel]').click()
+  await expect(s.confirm).toHaveCount(0)
+  await launches.settled()
+  expect(launches.seen.map((l) => l.status)).toEqual([409, 409])
+  expect(await crewRuns(api, crew.id)).toEqual([])
 })

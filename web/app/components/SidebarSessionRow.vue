@@ -159,8 +159,8 @@ function confirmStop() {
       </div>
       <!-- The confirm's buttons sit below the link, after its words, never over them; the hover actions beside the link: a link holds no button. -->
       <span v-if="confirming" class="flex items-center justify-end gap-1 px-1.5 pb-1.5" data-row-stop-buttons>
-        <UButton label="Cancel" size="xs" color="neutral" variant="ghost" @click="confirming = false" />
-        <UButton label="Stop" icon="i-lucide-square" size="xs" color="error" :loading="busy" data-confirm-stop @click="confirmStop" />
+        <UButton :label="question.keep" size="xs" color="neutral" variant="ghost" @click="confirming = false" />
+        <UButton :label="question.confirm" icon="i-lucide-square" size="xs" color="error" :loading="busy" data-confirm-stop @click="confirmStop" />
       </span>
       <!-- On a resumable row the bar is centred vertically, as the arrow beside the link is, so the … and the arrow share one centre
            and sit side by side at the edge (#331); a running row's bar sits at the top beside its first line. -->

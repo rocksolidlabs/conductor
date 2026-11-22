@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { SessionInfo } from '~/composables/useSessions'
-import { accountActions, rowActions, sessionTarget, toMenuItems } from './actions'
+import { accountActions, restartQuestion, resumeQuestion, revokeQuestion, rowActions, saveRestartQuestion, sessionTarget, stopFinishedQuestion, stopQuestion, stopRunPageQuestion, toMenuItems, type Ask } from './actions'
 import { accountItems, rowMenuItems } from './sidebarActions'
 
 const on = { open: () => {}, openRun: () => {}, share: () => {}, yard: () => {}, rename: () => {}, clone: () => {}, cloneWithOptions: () => {}, stop: () => {}, forget: () => {} }
@@ -33,7 +33,7 @@ describe('the action descriptors', () => {
     const stop = groups.flat().find((a) => a.id === 'stop')!
     expect(stop.kind).toBe('session')
     expect(stop.target).toBe('s1')
-    expect(stop.ask).toEqual({ title: 'Stop docs?', detail: 'Its terminal closes. Resume brings the conversation back from Exited.' })
+    expect(stop.ask).toEqual({ title: 'Stop docs?', detail: 'Its terminal closes. Resume brings the conversation back from Exited.', confirm: 'Stop', keep: 'Cancel' })
     expect(stop.kbds).toEqual(['X'])
     const run = rowActions({ kind: 'run', name: 'nightly', live: false, id: 'r1' }, on).flat()
     expect(run.find((a) => a.id === 'stop')?.disabled).toBe(true)
@@ -83,5 +83,43 @@ describe('the action descriptors', () => {
       expect(i).not.toHaveProperty('ask')
       expect(typeof i.onSelect).toBe('function')
     }
+  })
+})
+
+// Every question the palette can ask in a row (#1075): its two buttons' words come with it, never the same word, and they are the
+// words the same action's own dialog says (the sidebar row's Cancel and Stop, the run header's Stop the run, Settings' buttons, the
+// record page's Keep it and Resume). The task commands' questions are useTaskCommands.test.ts's.
+describe('the questions the palette asks', () => {
+  const asks: Array<[string, Ask, string, string]> = [
+    ['a session row’s Stop…', stopQuestion({ kind: 'session', name: 'docs' }), 'Stop', 'Cancel'],
+    ['a run row’s Stop run…', stopQuestion({ kind: 'run', name: 'nightly' }), 'Stop', 'Cancel'],
+    ['the run page’s Stop run…', stopRunPageQuestion('nightly'), 'Stop the run', 'Cancel'],
+    ['Stop every finished session', stopFinishedQuestion(['a', 'b']), 'Stop them', 'Cancel'],
+    ['Restart server', restartQuestion(2), 'Restart server', 'Cancel'],
+    ['Save and restart the server', saveRestartQuestion(0), 'Save and restart the server', 'Cancel'],
+    ['a link’s Revoke', revokeQuestion('review'), 'Revoke', 'Cancel'],
+    ['a History row’s Resume', resumeQuestion('docs'), 'Resume', 'Keep it'],
+  ]
+  it.each(asks)('%s says what its dialog says, in two words that differ', (_what, ask, confirm, keep) => {
+    expect([ask.confirm, ask.keep]).toEqual([confirm, keep])
+    expect(ask.confirm).not.toBe(ask.keep)
+    expect(ask.title).not.toBe('')
+  })
+
+  it('keep their titles and details', () => {
+    expect(stopRunPageQuestion('nightly')).toEqual({ ...stopQuestion({ kind: 'run', name: 'nightly' }), confirm: 'Stop the run' })
+    expect(stopFinishedQuestion(['a'])).toMatchObject({ title: 'Stop 1 finished session?', detail: 'a' })
+    expect(stopFinishedQuestion(['a', 'b'])).toMatchObject({ title: 'Stop 2 finished sessions?', detail: 'a, b' })
+    expect(restartQuestion(0).detail).toBe('No session is running.')
+    expect(restartQuestion(1).detail).toBe('1 session ends with it.')
+    expect(saveRestartQuestion(3)).toMatchObject({ title: 'Save and restart the server?', detail: '3 sessions end with it.' })
+    expect(revokeQuestion('')).toMatchObject({ title: 'Revoke the link?', detail: 'Viewers using it are disconnected.' })
+    expect(resumeQuestion('docs')).toMatchObject({ title: 'Resume docs?', detail: "A new session takes up its agent's own conversation." })
+  })
+
+  it('are the questions the rows carry', () => {
+    const stop = (t: Parameters<typeof rowActions>[0]) => rowActions(t, on).flat().find((a) => a.id === 'stop')!.ask
+    expect(stop({ kind: 'session', name: 'docs', live: true, id: 's1' })).toEqual(stopQuestion({ kind: 'session', name: 'docs' }))
+    expect(stop({ kind: 'run', name: 'nightly', live: true, id: 'r1' })).toEqual(stopQuestion({ kind: 'run', name: 'nightly' }))
   })
 })

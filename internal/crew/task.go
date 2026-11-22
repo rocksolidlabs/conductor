@@ -729,15 +729,21 @@ type input struct {
 
 // TaskState is a task as the run reports it.
 type TaskState struct {
-	ID       string        `json:"id"`
-	Member   string        `json:"member"`
-	Kind     string        `json:"kind"`
-	Needs    []string      `json:"needs,omitempty"`
-	State    string        `json:"state"`
-	Reason   string        `json:"reason,omitempty"`
-	Attempts int           `json:"attempts"`
-	Attempt  *AttemptState `json:"attempt,omitempty"` // the latest
-	Result   *ResultState  `json:"result,omitempty"`
+	ID     string   `json:"id"`
+	Member string   `json:"member"`
+	Kind   string   `json:"kind"`
+	Needs  []string `json:"needs,omitempty"`
+	State  string   `json:"state"`
+	Reason string   `json:"reason,omitempty"`
+	// BlockedForGood says a blocked task will never start: a need failed,
+	// was cancelled or is itself blocked for good (doomed), the same
+	// condition its reason's "…, which will not succeed" is written from;
+	// absent otherwise, a task blocked for now by a need still under way
+	// among them.
+	BlockedForGood bool          `json:"blockedForGood,omitempty"`
+	Attempts       int           `json:"attempts"`
+	Attempt        *AttemptState `json:"attempt,omitempty"` // the latest
+	Result         *ResultState  `json:"result,omitempty"`
 	// ImportedFrom names the result a continuation took by reference, as
 	// "<run>/<task>/<n>" (continue.go).
 	ImportedFrom string `json:"importedFrom,omitempty"`
@@ -845,8 +851,10 @@ func (r *run) task(id string) *task {
 // taskStates is the run's tasks as reported. The caller holds e.mu.
 func (r *run) taskStates() []TaskState {
 	out := make([]TaskState, 0, len(r.tasks))
+	doomed := r.doomed()
 	for _, t := range r.tasks {
 		st := TaskState{ID: t.def.ID, Member: t.def.Member, Kind: t.def.Kind, Needs: slices.Clone(t.def.Needs), State: t.state, Reason: t.reason, Attempts: len(t.attempts) + t.prior, ImportedFrom: t.imported}
+		st.BlockedForGood = t.state == ledger.TaskBlocked && doomed[t]
 		st.setOwner(Crew{People: r.people}, t.def)
 		if b := t.blocker; b != nil {
 			st.Blocker = &Blocker{Reason: b.reason, Message: b.message, By: b.by, At: b.at}
@@ -1561,40 +1569,74 @@ func (r *run) settle() {
 }
 
 // doomed is, for every task, whether it waits behind a need that failed or
-// was cancelled, or behind one so doomed: each task and need visited once,
-// so a dense graph costs its edges. The caller holds e.mu.
+// was cancelled, or behind one so doomed (doomedAmong). The caller holds
+// e.mu.
 func (r *run) doomed() map[*task]bool {
+	needs, states := make([][]string, len(r.tasks)), make([]string, len(r.tasks))
+	for i, t := range r.tasks {
+		needs[i], states[i] = t.def.Needs, t.state
+	}
+	d := doomedAmong(needs, states, func(id string) int { return slices.IndexFunc(r.tasks, func(t *task) bool { return t.def.ID == id }) })
 	out := make(map[*task]bool, len(r.tasks))
-	var visit func(t *task) bool
-	visit = func(t *task) bool {
-		if d, ok := out[t]; ok {
-			return d
+	for i, t := range r.tasks {
+		out[t] = d[i]
+	}
+	return out
+}
+
+// doomedAmong is, for each of a run's tasks (its needs and its state, a
+// need named by index, -1 for none), whether it waits behind a need that
+// failed, was cancelled or is not there, or behind a blocked one so
+// doomed: each task and need visited once, so a dense graph costs its
+// edges. The engine's run (doomed) and a record as the ledger has it
+// (markBlockedForGood) are judged by this one rule.
+func doomedAmong(needs [][]string, states []string, index func(string) int) []bool {
+	out := make([]bool, len(needs))
+	seen := make([]bool, len(needs))
+	var visit func(i int) bool
+	visit = func(i int) bool {
+		if seen[i] {
+			return out[i]
 		}
-		out[t] = false // a cycle (none passes validation) resolves as not doomed
+		seen[i] = true // a cycle (none passes validation) resolves as not doomed
 		d := false
-		for _, n := range t.def.Needs {
-			need := r.task(n)
-			if need == nil {
+		for _, n := range needs[i] {
+			j := index(n)
+			if j < 0 {
 				d = true
 				break
 			}
-			switch need.state {
+			switch states[j] {
 			case ledger.TaskFailed, ledger.TaskCancelled:
 				d = true
 			case ledger.TaskBlocked:
-				d = visit(need)
+				d = visit(j)
 			}
 			if d {
 				break
 			}
 		}
-		out[t] = d
+		out[i] = d
 		return d
 	}
-	for _, t := range r.tasks {
-		visit(t)
+	for i := range needs {
+		visit(i)
 	}
 	return out
+}
+
+// markBlockedForGood sets each task's BlockedForGood as taskStates does,
+// by doomedAmong over the tasks as given: a record written again as the
+// ledger has the run (Recovered).
+func markBlockedForGood(tasks []TaskState) {
+	needs, states := make([][]string, len(tasks)), make([]string, len(tasks))
+	for i, t := range tasks {
+		needs[i], states[i] = t.Needs, t.State
+	}
+	d := doomedAmong(needs, states, func(id string) int { return slices.IndexFunc(tasks, func(t TaskState) bool { return t.ID == id }) })
+	for i := range tasks {
+		tasks[i].BlockedForGood = tasks[i].State == ledger.TaskBlocked && d[i]
+	}
 }
 
 // ready marks the blocked tasks whose needs all have results ready, and

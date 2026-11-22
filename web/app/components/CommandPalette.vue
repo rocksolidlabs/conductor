@@ -624,8 +624,8 @@ function pieces(text: string): [string, string, string] {
                     <span class="text-sm font-medium">{{ (asking.action?.ask ?? row.ask)?.title }}</span>
                     <span class="text-xs text-muted">{{ (asking.action?.ask ?? row.ask)?.detail }}</span>
                     <span class="ml-auto flex items-center gap-1">
-                      <UButton label="Cancel" size="xs" color="neutral" variant="ghost" @click="cancelAsk(row)" />
-                      <UButton :label="(asking.action?.ask ?? row.ask)?.title.split(' ')[0] ?? 'Confirm'" size="xs" color="error" data-palette-confirm @click="confirm(row)" />
+                      <UButton :label="(asking.action?.ask ?? row.ask)?.keep" size="xs" color="neutral" variant="ghost" data-palette-keep @click="cancelAsk(row)" />
+                      <UButton :label="(asking.action?.ask ?? row.ask)?.confirm" size="xs" color="error" data-palette-confirm @click="confirm(row)" />
                     </span>
                   </div>
                   <!-- A row's field: a line it takes before it runs (a run's name, a broadcast). -->

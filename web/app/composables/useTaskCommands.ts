@@ -1,4 +1,5 @@
 import type { RunTask } from '~/composables/useSessions'
+import type { Ask } from '~/utils/actions'
 import { CommandRefused, commandBody, sendCommand, type TaskCommand } from '~/utils/tasks'
 
 /**
@@ -44,12 +45,15 @@ export function useTaskCommands(runId: () => string) {
     }
   }
 
-  /** What Cancel and Accept anyway ask before they run. */
-  function question(t: Pick<RunTask, 'id' | 'state' | 'attempts'>, command: 'cancel' | 'accept'): { title: string; detail: string } {
+  /**
+   * What Cancel and Accept anyway ask before they run, with the buttons' words the Tasks view's dialog and the palette's row both say
+   * (Keep it, and Cancel the task or Accept the result). Retry asks nothing: it allows one more attempt and takes nothing back.
+   */
+  function question(t: Pick<RunTask, 'id' | 'state' | 'attempts'>, command: 'cancel' | 'accept'): Ask {
     if (command === 'cancel') {
-      return { title: `Cancel the task ${t.id}?`, detail: t.state === 'running' || t.state === 'verifying' ? 'Its attempt ends and its session is stopped; the tasks that need it never start. A retry can allow it one more attempt later.' : 'The tasks that need it never start. A retry can allow it one more attempt later.' }
+      return { title: `Cancel the task ${t.id}?`, detail: t.state === 'running' || t.state === 'verifying' ? 'Its attempt ends and its session is stopped; the tasks that need it never start. A retry can allow it one more attempt later.' : 'The tasks that need it never start. A retry can allow it one more attempt later.', confirm: 'Cancel the task', keep: 'Keep it' }
     }
-    return { title: `Accept ${t.id}'s last result anyway?`, detail: `Its last submitted commit becomes the task's result although a check failed it, and the tasks that need ${t.id} start from it.` }
+    return { title: `Accept ${t.id}'s last result anyway?`, detail: `Its last submitted commit becomes the task's result although a check failed it, and the tasks that need ${t.id} start from it.`, confirm: 'Accept the result', keep: 'Keep it' }
   }
 
   return { busy, send, question }

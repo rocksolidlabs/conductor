@@ -1,5 +1,6 @@
 import type { DraftCrew } from './crews'
 import { memberNameError } from './crews'
+import { CREW_CHANGED } from './protocol'
 import { accountChoices, accountWords, launchLogin, limited, modelProblem, modelWords, realAfter, warningOf, withDeadline, type After, type AccountChoice, type AccountsLike, type CapacityQuery, type CapacityView } from './capacity'
 
 /**
@@ -194,11 +195,36 @@ export class SheetConfirmation {
   }
 }
 
+/** A launch the server refused, kept on the sheet in the server's own words (#1075): the route's code and its message as written. */
+export interface ServerRefusal {
+  code: string
+  words: string
+}
+
 /**
  * Why a sheet's Launch started nothing (#957): `changed`, the server refused it `crew_changed` (the crew was saved since the copy the
- * launch named); `unrevised`, the crew came without a revision (a server that does not give one), so the launch was not sent.
+ * launch named); `unrevised`, the crew came without a revision (a server that does not give one), so the launch was not sent; a
+ * ServerRefusal, any other refusal of the launch, which the sheet keeps with the server's words (launchRefusal).
  */
-export type SheetRefusal = 'changed' | 'unrevised'
+export type SheetRefusal = 'changed' | 'unrevised' | ServerRefusal
+
+/**
+ * Where a launch's failure is said (#1075), by the code POST /api/crews/{id}/launch answered (docs/protocol.md): `crew_changed` is
+ * `changed` (the sheet reads the crew again); `not_found` is `gone` (the crew is no longer saved: nothing on the sheet can be launched,
+ * so the sheet closes and the page says so, as when the sheet's own read finds it gone). Every other refusal stays on the sheet, in the
+ * server's words as given, with what the sheet was opened with kept: a person can act on each or must read it to understand why nothing
+ * started (`managed_off`: crews with tasks are off on this server; `ledger_unavailable`: another server holds the ledger, or it could
+ * not be opened; `invalid_crew`, `invalid_cwd`, `not_a_repo`, `invalid_account`: the crew, its folder or a member's account;
+ * `crew_unreadable`, `store_unavailable`, `store_failed`; `launch_failed`, git missing among them; `run_stopped`; `switchyard`;
+ * `invalid_request`, the run's name; a member's session refused as `POST /api/sessions` refuses one), and so does a launch that
+ * reached no server (`network`), which a toast would take away after a few seconds.
+ */
+export function launchRefusal(e: unknown): SheetRefusal | 'gone' {
+  const code = typeof e === 'object' && e !== null && 'code' in e && typeof e.code === 'string' ? e.code : ''
+  if (code === CREW_CHANGED) return 'changed'
+  if (code === 'not_found') return 'gone'
+  return { code: code || 'error', words: e instanceof Error ? e.message : String(e) }
+}
 
 /**
  * The sheet's target once its Launch started nothing (`why`). While the launch's opening is still the sheet's (`current`), the sheet
@@ -225,18 +251,25 @@ export interface RefusalPlace { confirmed: boolean; mounted: boolean; open: bool
 export function afterRefusal(t: SheetTarget, c: { id: string; name: string }, why: SheetRefusal, p: RefusalPlace, confirmation: SheetConfirmation): { target: SheetTarget; refused: SheetRefusal } | { toast: string } {
   const target = refusedTarget(t, c.id, why, p.confirmed && p.mounted && p.open && p.at === p.selected, confirmation)
   if (target) return { target, refused: why }
+  if (typeof why === 'object') return { toast: `${c.name} was refused by the server, so no run was started: ${why.words}` }
   return { toast: `${c.name} ${why === 'changed' ? 'was saved since the launch sheet read it' : 'came without a revision from this server'}: no run was started.` }
 }
 
 /** The sheet's words for a crew that came without a revision: Launch is held. */
 export const UNREVISED_WORDS = 'This server does not say which copy of the crew it holds, so this sheet cannot tell which copy Launch would start: nothing is launched. Load the page again.'
 
+/** The sheet's words before the server's own, for a launch it refused (a ServerRefusal). */
+export const REFUSED_WORDS = 'The server refused the launch, so nothing was started:'
+
 /**
- * The sheet's notice and whether it holds Launch: for a crew drawn without a revision (`unrevised`, a saved crew read so) or a launch not
- * sent for want of one, UNREVISED_WORDS, held; after a `changed` refusal, what the sheet is doing about it, in the state of its read again
- * (`read`): being read, failed (the read's own error is beside it, and Launch has nothing to start), or drawn. null otherwise.
+ * The sheet's notice and whether it holds Launch: after a server's refusal (a ServerRefusal), its words as the server gave them, Launch
+ * not held (the person may set right what it names and launch again); for a crew drawn without a revision (`unrevised`, a saved crew read
+ * so) or a launch not sent for want of one, UNREVISED_WORDS, held; after a `changed` refusal, what the sheet is doing about it, in the
+ * state of its read again (`read`): being read, failed (the read's own error is beside it, and Launch has nothing to start), or drawn.
+ * null otherwise.
  */
-export function sheetNotice(refused: SheetRefusal | null | undefined, read: 'reading' | 'failed' | 'drawn', unrevised: boolean): { kind: SheetRefusal; words: string; hold: boolean } | null {
+export function sheetNotice(refused: SheetRefusal | null | undefined, read: 'reading' | 'failed' | 'drawn', unrevised: boolean): { kind: 'changed' | 'unrevised' | 'refused'; words: string; hold: boolean; code?: string } | null {
+  if (typeof refused === 'object' && refused) return { kind: 'refused', words: `${REFUSED_WORDS} ${refused.words}`, hold: false, code: refused.code }
   if (refused === 'unrevised' || (read === 'drawn' && unrevised)) return { kind: 'unrevised', words: UNREVISED_WORDS, hold: true }
   if (refused !== 'changed') return null
   const first = 'The crew was saved since this sheet read it, so nothing was launched.'

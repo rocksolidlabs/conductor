@@ -146,6 +146,42 @@ func TestAClosedAttemptsCandidatePreviewOpens(t *testing.T) {
 	l.previewWhen(t, run.ID, "build", 1, 1, "ended", previewEndedRow)
 }
 
+// A run's read carries its project manifest exactly when a candidate's
+// preview can be served, which is what the run page offers Preview this
+// candidate by: a run of a crew without a manifest reads none, and its
+// candidate's preview is refused (no_manifest), the command's receipt
+// failed with that refusal and nothing opened; a run with one reads it,
+// and its candidate's preview opens.
+func TestARunReadsItsManifestExactlyWhenItsCandidatePreviews(t *testing.T) {
+	e, _, l := managedEngine(t)
+	bare := launchManaged(t, e, repoCrew(newRepo(t), work("build", "lead")))
+	commitResult(t, e, waitAttempt(t, e, bare.ID, "build", ledger.AttemptRunning), "built.txt", "yes\n", "built")
+	if r := waitOutcome(t, e, bare.ID, ledger.OutcomeSucceeded); r.Manifest != nil {
+		t.Fatalf("a run without a manifest reads one: %+v", r.Manifest)
+	}
+	if _, err := e.OpenPreview(t.Context(), bare.ID, "build", 1, "admin"); !errors.Is(err, ErrNoPreviewManifest) {
+		t.Fatalf("the preview of a run without a manifest: %v", err)
+	}
+	rc, _, err := e.PreviewCandidate(t.Context(), bare.ID, "build", 1, "admin", Command{ID: "open-bare"})
+	if !errors.Is(err, ErrNoPreviewManifest) || rc.Status != ledger.CommandFailed || rc.Refusal != RefusalNoManifest {
+		t.Fatalf("the preview command on a run without a manifest: %+v %v", rc, err)
+	}
+	if previewHeld(e, bare.ID, "build", 1) {
+		t.Fatal("a refused preview is held")
+	}
+
+	served, _ := candidateOf(t, e, l, repoManifestCrew(newRepo(t), previewManifest(), work("build", "lead")))
+	if r, _ := e.Get(served.ID); r.Manifest == nil {
+		t.Fatal("a run with a manifest reads none")
+	}
+	openPreview(t, e, served.ID)
+	l.previewWhen(t, served.ID, "build", 1, 1, "ready", previewReadyRow)
+	if err := e.ClosePreview(served.ID, "build", 1, 1); err != nil {
+		t.Fatal(err)
+	}
+	l.previewWhen(t, served.ID, "build", 1, 1, "ended", previewEndedRow)
+}
+
 // A preview's open, ready and end never touch the result checkout's trees
 // row nor the attempt's trees: its rows are the previews table's.
 func TestAPreviewLeavesTheResultCheckoutsTreeRowAlone(t *testing.T) {
