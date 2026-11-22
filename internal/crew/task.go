@@ -2288,9 +2288,6 @@ func (e *Engine) dispatch(ctx context.Context, r *run, a *attempt) {
 			return
 		}
 	}
-	// The context the providers give the attempt, asked outside the lock
-	// (askContext): none, without a provider or for one late or failing.
-	blocks := e.askContext(ctx, r, a)
 	// The task's decisions, an undelivered approval rechecked against the
 	// start first (S4): read, or the attempt is not started, uncounted,
 	// and the run pauses, since an answer applied for its task file
@@ -2300,6 +2297,12 @@ func (e *Engine) dispatch(ctx context.Context, r *run, a *attempt) {
 		fail(decisionsStage, err, false, true)
 		return
 	}
+	// The context the providers give the attempt, asked outside the lock
+	// (askContext) once the task's decisions are settled, so the query
+	// names each in the state the task files carry: none, without a
+	// provider or for one late or failing. An attempt whose decisions
+	// could not be read never starts, and no provider is asked about it.
+	blocks := e.askContext(ctx, r, a)
 	// The task files, through a root at the working directory: a
 	// .conductor that is not a directory of ours, or a task file that is
 	// there already, is refused.

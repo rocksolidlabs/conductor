@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/rocksolidlabs/conductor/ext"
 	"os"
 	"path/filepath"
 	"slices"
@@ -233,8 +234,18 @@ func TestASupersededApprovalIsNeverTyped(t *testing.T) {
 // file and the ledger.
 func undelivered(t *testing.T, checkpointAtHead, artifact bool) (string, TaskFile, *ledger.Ledger) {
 	t.Helper()
+	return undeliveredWith(t, checkpointAtHead, artifact, nil)
+}
+
+// undeliveredWith is undelivered with setup run on the engine before the
+// run is launched (nil for none).
+func undeliveredWith(t *testing.T, checkpointAtHead, artifact bool, setup func(*Engine)) (string, TaskFile, *ledger.Ledger) {
+	t.Helper()
 	dir := newRepo(t)
 	e, fl, ld := decisionEngine(t)
+	if setup != nil {
+		setup(e)
+	}
 	held, release := make(chan struct{}), make(chan struct{})
 	var once sync.Once
 	e.beforeTyping = func(int64) { once.Do(func() { close(held); <-release }) }
@@ -733,6 +744,27 @@ func TestAMarkedApprovalIsRecheckedAtEveryStart(t *testing.T) {
 		t.Fatalf("attempt 3's task file: %+v", f.Decisions)
 	}
 	stopRun(t, e, run.ID)
+}
+
+// A context provider is asked once the task's decisions are settled: an
+// applied approval the next attempt's start supersedes (its subject moved)
+// is named superseded, at the revision that closed it, as the attempt's
+// task file carries it, never applied.
+func TestQueryNamesAnApprovalAsTheTaskFileCarriesIt(t *testing.T) {
+	rec := &queries{}
+	id, f, ld := undeliveredWith(t, false, false, func(e *Engine) {
+		useContextFiles(t, e)
+		e.SetContext(rec.ask)
+	})
+	row := decisionWhen(t, ld, id, "superseded", inState(ledger.DecisionSuperseded))
+	if td := decisionIn(t, f, id); td.State != ledger.DecisionSuperseded {
+		t.Fatalf("the task file's decision: %+v", td)
+	}
+	q := rec.of(t, "build", 2)
+	i := slices.IndexFunc(q.Decisions, func(d ext.DecisionState) bool { return d.Request == id })
+	if i < 0 || q.Decisions[i] != (ext.DecisionState{Request: id, State: ledger.DecisionSuperseded, Final: true, Rev: row.Rev, ClosedAt: row.ClosedAt}) {
+		t.Fatalf("build #2's query names %+v; the ledger has %s at rev %d", q.Decisions, row.State, row.Rev)
+	}
 }
 
 // A response whose recheck of an unchanged subject is cut short by its own
