@@ -2,7 +2,7 @@
 import type { RunInfo, RunMember, SessionInfo } from '~/composables/useSessions'
 import { scopeItems } from '~/utils/chat'
 import { broadcastByName, broadcastSelection, broadcastSummary, crewFeed, memberStatus, skipWords, takeViewLink } from '~/utils/crews'
-import { stopQuestion, type Action } from '~/utils/actions'
+import { stopRunPageQuestion, type Action } from '~/utils/actions'
 import { taskActions, taskWords } from '~/utils/tasks'
 import { attemptSession, markSection, sessionStatus, taskStatus } from '~/utils/status'
 import { rowPrompt } from '~/utils/sidebarActions'
@@ -572,7 +572,7 @@ palette.registerPage(() => {
         ? [{ key: 'page:resume', label: 'Resume as new run', icon: 'i-lucide-history', run: () => header.value?.resume() }]
         : header.value?.isEnded()
           ? []
-          : [{ key: 'page:stop', label: 'Stop run…', icon: 'i-lucide-square', kbds: ['X'], disabled: !!r.record, ask: stopQuestion({ kind: 'run', name: title }), run: () => header.value?.stopNow() }]),
+          : [{ key: 'page:stop', label: 'Stop run…', icon: 'i-lucide-square', kbds: ['X'], disabled: !!r.record, ask: stopRunPageQuestion(title), run: () => header.value?.stopNow() }]),
       ...taskRows,
       ...members,
   ]

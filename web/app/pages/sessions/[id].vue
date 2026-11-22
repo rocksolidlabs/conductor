@@ -11,7 +11,7 @@ import { agentName, gonePage, sessionGone, sessionHeadline, type GonePage } from
 import { sessionStatus, statusOfKey } from '~/utils/status'
 import { listedAttention, repliedQuestions, ReplyError, replyFailure, type QuestionReply } from '~/utils/reply'
 import { activateTab, toggleCollapse, toggleFold } from '~/utils/editorTabs'
-import { stopQuestion } from '~/utils/actions'
+import { revokeQuestion, stopQuestion } from '~/utils/actions'
 import { resolveTyped } from '~/utils/fileTree'
 import { editorRows } from '~/utils/editorRows'
 import type { EditorColumnHandle } from '~/components/EditorColumn.vue'
@@ -560,7 +560,7 @@ palette.registerPage(() => {
         detail: `${l.active} ${l.active === 1 ? 'viewer' : 'viewers'} on it`,
         icon: 'i-lucide-link',
         run: () => showView('people'),
-        actions: [{ id: 'revoke', kind: 'page' as const, target: l.id, label: 'Revoke', icon: 'i-lucide-ban', kbds: ['X'], ask: { title: `Revoke ${l.label || 'the link'}?`, detail: 'Viewers using it are disconnected.' }, run: () => void revoke(l) }],
+        actions: [{ id: 'revoke', kind: 'page' as const, target: l.id, label: 'Revoke', icon: 'i-lucide-ban', kbds: ['X'], ask: revokeQuestion(l.label), run: () => void revoke(l) }],
       })),
   ]
   return {

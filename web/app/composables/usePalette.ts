@@ -1,6 +1,6 @@
 import type { AgentInfo, CrewSummary, SessionInfo } from '~/composables/useSessions'
 import type { ProjectSummary, TicketSummary } from '~/composables/useDispatch'
-import type { Action } from '~/utils/actions'
+import type { Action, Ask } from '~/utils/actions'
 import type { MarkView } from '~/utils/status'
 import { DispatchOrder, serially, through } from '~/utils/dispatchOrder'
 import { allPages, paletteListed, withPatched } from '~/utils/dispatch'
@@ -31,8 +31,8 @@ export interface PaletteItem extends PaletteRow {
   run: () => unknown
   /** → reveals these; their keys run them while the row has the focus. */
   actions?: Action[]
-  /** The row asks before it runs. */
-  ask?: { title: string; detail: string }
+  /** The row asks before it runs, with its two buttons' words (Ask). */
+  ask?: Ask
   /** The row takes a line (a broadcast, a run's name): the action `field` among its actions opens it, or Enter when `fieldOnEnter`; Enter in it submits. */
   field?: { placeholder: string; maxLength?: number; button?: string; note?: string; submit: (text: string) => unknown; /** What the field opens with: a line refused last time (#322). */ draft?: string }
   fieldOnEnter?: boolean

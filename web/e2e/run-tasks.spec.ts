@@ -130,6 +130,43 @@ test("the row's menu holds Cancel, Copy branch and Ask Brakeman why; the keyboar
   await expect(page.locator('[data-task-detail-id="naming"]')).toBeVisible()
 })
 
+/** Opens the palette (unless it is open) on the task's row and reveals its → actions; returns the row. */
+async function paletteTask(page: Page, taskId: string) {
+  budget(3 * LOAD_MS) // the palette, the row, its actions
+  const palette = page.locator('[data-palette]')
+  if (!(await palette.isVisible())) await page.keyboard.press('Control+k')
+  await expect(palette).toBeVisible({ timeout: LOAD_MS })
+  await palette.locator('input[data-palette-input]').fill(taskId)
+  const row = palette.locator(`[data-palette-row="page:task:${taskId}"]`)
+  await expect(row).toBeVisible({ timeout: LOAD_MS })
+  // Other rows may match the words too: move the focus down until it is on the task's row.
+  for (let i = 0; i < 12 && (await row.getAttribute('data-palette-focused')) === null; i++) await page.keyboard.press('ArrowDown')
+  await expect(row).toHaveAttribute('data-palette-focused', '')
+  await page.keyboard.press('ArrowRight')
+  await expect(row.locator('[data-palette-actions]')).toBeVisible({ timeout: LOAD_MS })
+  return row
+}
+
+test("the palette's Cancel… asks with Keep it and Cancel the task, as the row's dialog does, and Keep it sends nothing", async ({ day, browser }) => {
+  void day
+  const { page, commands } = await opened(browser, ledger())
+  const row = await paletteTask(page, 'soak')
+  await row.locator('[data-palette-action="cancel"]').click()
+  const ask = row.locator('[data-palette-ask]')
+  await expect(ask).toContainText('Cancel the task soak?')
+  await expect(ask.getByRole('button')).toHaveText(['Keep it', 'Cancel the task'])
+  await ask.getByRole('button', { name: 'Keep it', exact: true }).click()
+  await expect(ask).toHaveCount(0)
+  // Accept anyway… on migrate asks with the dialog's words too (the palette still open: its field takes the next words).
+  const failed = await paletteTask(page, 'migrate')
+  await failed.locator('[data-palette-action="accept"]').click()
+  await expect(failed.locator('[data-palette-ask]').getByRole('button')).toHaveText(['Keep it', 'Accept the result'])
+  await failed.locator('[data-palette-ask]').getByRole('button', { name: 'Keep it', exact: true }).click()
+  await expect(failed.locator('[data-palette-ask]')).toHaveCount(0)
+  expect(commands, 'Keep it sends no command').toEqual([])
+  await page.close()
+})
+
 /**
  * At the page's narrow width, every row of `run` whole: who below the state, the actions (when the row has any) on a line of their own
  * below who and what, no two of the row's pieces over each other (an action over the id or the name), and the id, the state's word

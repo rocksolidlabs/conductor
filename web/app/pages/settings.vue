@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { pickerStart, type PickerField } from '~/utils/dirPicker'
+import { restartQuestion, saveRestartQuestion } from '~/utils/actions'
 import type { AgentInfo, ReachInfo } from '~/composables/useSessions'
 import { identity, notInstalledBadge } from '~/utils/agents'
 import { plainCopy, switchyardProblem, type DesktopIceStatus, type DesktopSettings } from '~/utils/desktop'
@@ -348,10 +349,10 @@ usePalette().registerPage(() => {
   return {
     label: 'Settings',
     rows: [
-      { key: 'page:save', label: restarts.value ? 'Save and restart the server' : 'Save', icon: 'i-lucide-save', disabled: !dirty.value || saving.value || blocked.value, ask: restarts.value ? { title: 'Save and restart the server?', detail: n ? `${n} ${n === 1 ? 'session ends' : 'sessions end'} with it.` : 'No session is running.' } : undefined, run: save },
+      { key: 'page:save', label: restarts.value ? 'Save and restart the server' : 'Save', icon: 'i-lucide-save', disabled: !dirty.value || saving.value || blocked.value, ask: restarts.value ? saveRestartQuestion(n) : undefined, run: save },
       ...(desktop.isDesktop.value
         ? [
-            { key: 'page:restart', label: 'Restart server', icon: 'i-lucide-rotate-ccw', ask: { title: 'Restart the server?', detail: n ? `${n} ${n === 1 ? 'session ends' : 'sessions end'} with it.` : 'No session is running.' }, run: () => void desktop.bridge.value?.restartServer() },
+            { key: 'page:restart', label: 'Restart server', icon: 'i-lucide-rotate-ccw', ask: restartQuestion(n), run: () => void desktop.bridge.value?.restartServer() },
             { key: 'page:browser', label: 'Open in browser', icon: 'i-lucide-external-link', run: () => void desktop.bridge.value?.openInBrowser() },
             { key: 'page:log', label: 'Server log', icon: 'i-lucide-scroll-text', run: () => void desktop.bridge.value?.showLog() },
           ]

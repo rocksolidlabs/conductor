@@ -78,8 +78,8 @@ function confirmStop() {
         </span>
       </NuxtLink>
       <span v-if="confirming" class="flex items-center justify-end gap-1 px-1.5 pb-1.5" data-run-stop-buttons>
-        <UButton label="Cancel" size="xs" color="neutral" variant="ghost" @click="confirming = false" />
-        <UButton label="Stop" icon="i-lucide-square" size="xs" color="error" :loading="busy" data-confirm-stop @click="confirmStop" />
+        <UButton :label="question.keep" size="xs" color="neutral" variant="ghost" @click="confirming = false" />
+        <UButton :label="question.confirm" icon="i-lucide-square" size="xs" color="error" :loading="busy" data-confirm-stop @click="confirmStop" />
       </span>
       <span
         v-else

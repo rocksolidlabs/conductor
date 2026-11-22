@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { RouteLocationRaw } from 'vue-router'
 import type { RunAttempt, RunInfo, RunStep, RunTask } from '~/composables/useSessions'
+import type { Ask } from '~/utils/actions'
 import type { BrakemanRequest, BrakemanRow } from '~/utils/brakeman'
 import { candidateRef, ticketPath } from '~/utils/dispatch'
 import { taskReviewTarget } from '~/utils/review'
@@ -284,7 +285,9 @@ const askOpen = computed({
     if (!v) asking.value = null
   },
 })
-const question = computed(() => (asking.value ? commands.question(asking.value.task, asking.value.command) : { title: '', detail: '' }))
+// The question as last asked, kept while the dialog closes, so its buttons keep their words through the closing animation.
+let lastQuestion: Ask = { title: '', detail: '', confirm: '', keep: '' }
+const question = computed(() => (lastQuestion = asking.value ? commands.question(asking.value.task, asking.value.command) : lastQuestion))
 async function confirm() {
   const a = asking.value
   if (!a) return
@@ -475,8 +478,8 @@ async function confirm() {
     <UModal v-model:open="askOpen" :title="question.title" :description="question.detail">
       <template #footer>
         <div class="flex w-full justify-end gap-2">
-          <UButton label="Keep it" color="neutral" variant="ghost" @click="asking = null" />
-          <UButton :label="asking?.command === 'cancel' ? 'Cancel the task' : 'Accept the result'" :icon="asking?.command === 'cancel' ? 'i-lucide-x' : 'i-lucide-check'" :color="asking?.command === 'cancel' ? 'error' : 'warning'" :loading="!!commands.busy.value" data-task-confirm @click="confirm" />
+          <UButton :label="question.keep" color="neutral" variant="ghost" @click="asking = null" />
+          <UButton :label="question.confirm" :icon="asking?.command === 'cancel' ? 'i-lucide-x' : 'i-lucide-check'" :color="asking?.command === 'cancel' ? 'error' : 'warning'" :loading="!!commands.busy.value" data-task-confirm @click="confirm" />
         </div>
       </template>
     </UModal>
