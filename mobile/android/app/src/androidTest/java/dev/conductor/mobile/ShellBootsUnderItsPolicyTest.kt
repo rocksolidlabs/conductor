@@ -42,9 +42,17 @@ class ShellBootsUnderItsPolicyTest {
         const val DECISION_ID = "org/repo#12 a:b~é"
         const val DECISION_SEGMENT = "b3JnL3JlcG8jMTIgYTpifsOp"
 
+        /** Added before the page's own scripts: every policy violation, every uncaught error and every console error or warning kept. */
         val VIOLATIONS = """
             window.__bootViolations = [];
+            window.__bootConsole = [];
             document.addEventListener('securitypolicyviolation', (e) => window.__bootViolations.push(e.violatedDirective + ' ' + e.blockedURI));
+            window.addEventListener('error', (e) => window.__bootConsole.push('error: ' + e.message + ' at ' + e.filename + ':' + e.lineno));
+            window.addEventListener('unhandledrejection', (e) => window.__bootConsole.push('rejection: ' + String(e.reason && (e.reason.message || e.reason.code) || e.reason)));
+            for (const level of ['error', 'warn']) {
+              const was = console[level];
+              console[level] = function (...a) { try { window.__bootConsole.push(level + ': ' + a.map(String).join(' ').slice(0, 300)) } catch (e) {} return was.apply(this, a) };
+            }
         """.trimIndent()
 
         val PROBES = """
@@ -60,6 +68,8 @@ class ShellBootsUnderItsPolicyTest {
               const post = (o) => window.androidBridge.postMessage(JSON.stringify(o));
               const id = (n) => '$PREFIX' + String(n).padStart(2, '0');
               (async () => {
+                const at = (step) => { window.__bootStep = step };
+                at('interfaces');
                 const before = location.href;
                 check('interfaces', typeof window.CapacitorCookiesAndroidInterface === 'undefined' && typeof window.CapacitorHttpAndroidInterface === 'undefined');
                 post({ pluginId: 'WebView', methodName: 'getServerBasePath', options: {}, callbackId: id(1) });
@@ -71,6 +81,7 @@ class ShellBootsUnderItsPolicyTest {
                 post({ pluginId: 'App', methodName: 'addListener', options: {}, callbackId: id(7) });
                 post({ pluginId: 'Browser', methodName: 'open', options: { url: 'conductor-probe://boot-probe-browser' }, callbackId: id(8) });
                 post({ type: 'js.error', error: { message: 'boot probe' } });
+                at('srcdoc frame');
                 // A frame of the page's own (a srcdoc frame, as the diagram's is): it draws, and its call, if the channel is in it at all, is dropped.
                 const frame = document.createElement('iframe');
                 frame.srcdoc = '<p id="drawn">drawn</p>';
@@ -89,6 +100,7 @@ class ShellBootsUnderItsPolicyTest {
                 } catch (e) { check('frame-post', false, String(e)) }
                 // The local server: its prefixes, plain and escaped, a climb out of the bundle, and a decision's address in its own spelling,
                 // none served; the same decision's address as the screens carry it goes on (not refused: the native count says so).
+                at('local server');
                 check('file', (await image('/_capacitor_file_/system/etc/hosts')) === 'refused');
                 check('content', (await image('/_capacitor_content_/media/external/images/media/1')) === 'refused');
                 check('file-escaped', (await image('/%5Fcapacitor_file_/system/etc/hosts')) === 'refused');
@@ -96,18 +108,23 @@ class ShellBootsUnderItsPolicyTest {
                 await image('/shell/decisions/$DECISION_SEGMENT');
                 await image('/shell/decisions/' + encodeURIComponent(${org.json.JSONObject.quote(DECISION_ID)}));
                 // No prompt answers, and no window opens on a script's own.
+                at('prompt');
                 check('prompt', prompt('boot probe') === null);
+                at('window');
                 check('window', window.open('https://example.com/?boot-probe-window') === null);
                 // The calls the shell means still answer, the native HTTP call is still the shell's own, and the runtime's WebView is not reached.
+                at('calls');
                 check('http', (await code(() => P.CapacitorHttp.request({ url: 'https://unnamed.example/' }))) === 'origin_refused');
                 const key = await code(() => P.ConductorKey.state());
                 check('key', key === 'answered', key);
                 check('store', Array.isArray(((await value(() => P.ConductorStore.list({ area: 'drafts' }))) || {}).keys));
+                at('runtime webview');
                 const web = await code(() => P.WebView.getServerBasePath(), 10000);
                 check('webview', web === 'no_answer', web);
                 check('injected', window.__bootInjected === undefined);
                 check('location', location.href === before);
                 check('platform', !!window.conductorShell && window.conductorShell.platform === 'android', window.conductorShell && window.conductorShell.platform);
+                at('done');
                 window.__bootProbes = failed.length ? 'failed:' + failed.join(',') : 'ok';
               })().catch((e) => { window.__bootProbes = 'threw:' + e });
               return 1;
@@ -145,14 +162,29 @@ class ShellBootsUnderItsPolicyTest {
 
     private fun text(json: String): String = (JSONTokener(json).nextValue() as? String) ?: ""
 
-    /** Polls until the condition holds or the bound passes; each poll's own wait is bounded too. */
-    private fun until(seconds: Long, what: String, condition: () -> Boolean) {
+    /** Polls until the condition holds or the bound passes; each poll's own wait is bounded too. A failure says what `diagnose` reads. */
+    private fun until(seconds: Long, what: String, diagnose: () -> String = { "" }, condition: () -> Boolean) {
         val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(seconds)
         while (System.nanoTime() < deadline) {
             if (condition()) return
             Thread.sleep(250)
         }
-        throw AssertionError("not within $seconds s: $what")
+        throw AssertionError("not within $seconds s: $what ${diagnose()}")
+    }
+
+    /** Where the page is and what it said: the web view's address, the probes' last step, its console, the gates' counts. Logged too. */
+    private fun diagnosis(s: ActivityScenario<MainActivity>, gates: ShellGates): String {
+        val url = read(s) { it.getBridge().webView.url }
+        val page = try {
+            eval(s, "JSON.stringify({href: location.href, ready: document.readyState, step: window.__bootStep, probes: window.__bootProbes, " +
+                "console: window.__bootConsole, violations: window.__bootViolations})")
+        } catch (e: AssertionError) {
+            "no answer from the page"
+        }
+        val said = "(the web view at $url; the page: $page; dropped ${gates.dropped.get()}, refused ${gates.refused.get()}, " +
+            "cancelled ${gates.cancelled.get()}, handed ${gates.handedOff.get()})"
+        step("diagnosis: $said")
+        return said
     }
 
     @Test
@@ -185,7 +217,13 @@ class ShellBootsUnderItsPolicyTest {
                 step("cancelled: $to")
             }
             eval(s, PROBES)
-            until(120, "the probes' report") { text(eval(s, "window.__bootProbes || ''")).isNotEmpty() }
+            // The probes' own waits bound each one (20 s for each of eleven, 10 s for one): the report comes within their sum, and this
+            // bound only bounds a hang. A page that is no longer the one the probes run in (its globals gone) fails at once, saying where it is.
+            until(300, "the probes' report", { diagnosis(s, gates) }) {
+                val now = eval(s, "typeof window.__bootProbes === 'string' ? window.__bootProbes : null")
+                if (now == "null") throw AssertionError("the page the probes ran in is gone: ${diagnosis(s, gates)}")
+                text(now).isNotEmpty()
+            }
             val probes = text(eval(s, "window.__bootProbes"))
             val framePosted = eval(s, "window.__bootFramePosted") == "true"
             val violations = eval(s, "window.__bootViolations.length")

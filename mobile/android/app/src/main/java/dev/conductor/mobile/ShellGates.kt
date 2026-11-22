@@ -6,6 +6,8 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import android.os.Message
+import android.util.Log
+import android.webkit.ConsoleMessage
 import android.webkit.GeolocationPermissions
 import android.webkit.JsPromptResult
 import android.webkit.PermissionRequest
@@ -168,7 +170,7 @@ class RefusingWorkers(private val gates: ShellGates) : ServiceWorkerClient() {
 /**
  * The chrome client: the runtime's own for an alert and a confirm, and the rest refused: every permission request (a camera, a
  * microphone, a protected media id, anything else) denied with no prompt, the location denied, no file chooser, every text-input prompt
- * answered with nothing, and no new window.
+ * answered with nothing, and no new window. The page's console is kept in the device's log in a debug build only.
  */
 class ShellChromeClient(bridge: Bridge) : BridgeWebChromeClient(bridge) {
     override fun onPermissionRequest(request: PermissionRequest?) {
@@ -187,6 +189,15 @@ class ShellChromeClient(bridge: Bridge) : BridgeWebChromeClient(bridge) {
     }
 
     override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Boolean, resultMsg: Message?): Boolean = false
+
+    /** The page's console: in a debug build (the boot check's) to the device's log under its own tag; in any other build, nowhere. */
+    override fun onConsoleMessage(consoleMessage: ConsoleMessage?): Boolean {
+        if (BuildConfig.DEBUG && consoleMessage != null) {
+            Log.i("ConductorPage", "${consoleMessage.messageLevel()} ${consoleMessage.message()} (${consoleMessage.sourceId()}:${consoleMessage.lineNumber()})")
+            return true
+        }
+        return super.onConsoleMessage(consoleMessage)
+    }
 }
 
 /**

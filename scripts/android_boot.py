@@ -128,7 +128,7 @@ def image(**kw) -> int:
 LOGCAT = ANDROID / "app/build/reports/androidTests/conductor-logcat.txt"
 LOGCAT_LINES = 30000
 # What of the device's log the job's own log shows at once: the boot check's report, the shell's own words, a crash or a hang.
-TELLING = re.compile(r"ConductorBootCheck|ConductorShell|AndroidRuntime|FATAL EXCEPTION|ANR in|Process: dev\.conductor|dev\.conductor\.mobile.*(?:Exception|Error)|TestRunner")
+TELLING = re.compile(r"ConductorBootCheck|ConductorShell|ConductorPage|AndroidRuntime|FATAL EXCEPTION|ANR in|Process: dev\.conductor|dev\.conductor\.mobile.*(?:Exception|Error)|TestRunner")
 TELLING_LINES = 300
 
 

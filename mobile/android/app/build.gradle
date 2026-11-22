@@ -31,6 +31,10 @@ android {
             java.srcDir 'src/packaging/java'
         }
     }
+    buildFeatures {
+        // BuildConfig.DEBUG: the page's console reaches the device's log in a debug build alone.
+        buildConfig true
+    }
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_21
         targetCompatibility JavaVersion.VERSION_21

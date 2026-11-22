@@ -62,6 +62,7 @@ class Tries(unittest.TestCase):
         for line in (
             "11-22 09:17:10.249  4708  4739 I ConductorBootCheck: components: x",
             "11-22 09:17:10.249  4708  4708 W ConductorShell: the shell loads nothing: x",
+            "11-22 09:17:10.249  4708  4708 I ConductorPage: ERROR Uncaught TypeError: x (https://localhost/_nuxt/a.js:1)",
             "11-22 09:17:10.249  4708  4708 E AndroidRuntime: FATAL EXCEPTION: main",
             "11-22 09:17:10.249  4708  4708 E AndroidRuntime: Process: dev.conductor.mobile, PID: 4708",
             "11-22 09:17:10.249   512   530 E ActivityManager: ANR in dev.conductor.mobile",
