@@ -58,8 +58,8 @@ version at its merge (8 and 13 today).
 
 **Not on `main`, and what waits for it.** HS2's PR-5
 (`docs/plans/hosts.md`) defines `ext.HostSummary`, the body of the
-`hosts` remote kind (OS-4 bounds that kind's record until then). The
-adapter's computed sources (HS2's PR-5 or TS1's PR-5,
+`hosts` remote kind, and that kind's `Valid` judges a record's body by it
+(as built below, OS-4). The adapter's computed sources (HS2's PR-5 or TS1's PR-5,
 `docs/plans/team-history.md`) are not on `main`; OS-3's decision
 document uses them if they have merged and its own store name
 otherwise (OS-3). No provider is registered in this repository, ever:
@@ -1653,8 +1653,7 @@ lastReport, revoked}`, at most `MaxRemoteDevice`; a device of the kind
 `host` is never one, refused by `Valid`), and `hosts`, another of the
 person's servers' host summary (at most `MaxRemoteHosts`; its body is
 `ext.HostSummary`, which HS2's PR-5 defines and makes the kind's `Valid`
-check; until then the kind is checked for its bound and for being a JSON
-object). Each kind has its own `Valid` (`TestRemoteDeviceAndHostsKinds`,
+check). Each kind has its own `Valid` (`TestRemoteDeviceAndHostsKinds`,
 in `ext` and `internal/api`).
 
 Kept in the data directory under `remote/<device>/<kind>-<id>.json` (at
@@ -1738,6 +1737,28 @@ The Share, rekey and Sync controls need a registered provider, which
 this repository never has: vitest covers their drawing with `sync` in a
 stubbed capabilities reply. `docs/features.md` gains the entry for
 sync's seams.
+
+**As built (HS2 PR-5, the `hosts` body).** `ext.HostSummary` is
+`{platform, version, sessions: {running, waiting}, runs: {held, waiting},
+hosts}`, each host `{name, platform?, version?, availability, since?,
+sessions}`: the platform `<GOOS>/<GOARCH>` (`+wsl` inside WSL) in at most
+`MaxHostPlatform` (32) bytes, the version at most `MaxHostVersion` (64)
+bytes of `A-Z a-z 0-9 . + _ -`, at most `MaxHostSummaryRows` (32) hosts,
+a host's name 1 to `MaxHostName` (120) bytes of one line that is no path,
+login, address or id (no `/`, `\`, `@` or `:`, not an IP address, not 16
+or more hex digits alone), `connected`, `away` or `seen` with `since`
+required for the last two, every count 0 to `MaxHostCount` (1,000,000),
+and the whole at most `MaxHostSummary` (`MaxRemoteHosts`, 16 KiB).
+`ext.ParseHostSummary` decodes one strictly (unknown fields, a field named
+in other letters or twice, anything after the object, a body past its
+bound: refused, never trimmed), and `Remote.Valid` of kind `hosts` is its
+answer, so a provider that hands in a body that is not such a summary has
+`PutRemote` answer `ext.ErrRefused` with the words why, and nothing is
+kept. `exttest.FakeHost`'s `PutRemote` refuses the same way, and
+`exttest.SampleHostSummary` and `SampleRemoteHosts` give a test a summary
+of every field and its record. Its tests: `TestHostSummaryValid`,
+`TestParseHostSummary`, `TestHostsKindValidIsTheSummarys`,
+`TestHostSummaryFieldsAreThePlans` (in `ext`).
 
 **As built (OS-4).** A record's file is `remote/<device>/<kind>-<id>.json`
 with the device and the id hex-encoded, since the data directory's stores

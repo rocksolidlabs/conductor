@@ -1,6 +1,7 @@
 package exttest
 
 import (
+	"encoding/json"
 	"time"
 
 	"github.com/rocksolidlabs/conductor/ext"
@@ -79,4 +80,42 @@ func SamplePolicy() ext.RoutePolicy {
 		Groups:   []ext.Requirement{{Role: "architecture", Label: "architecture owner", Quorum: 1, Rule: "r-1", Eligible: []ext.Eligible{{Subject: "ana", Name: "Ana", Via: ext.ViaRole, Ref: "ref-1"}}}},
 		Override: ext.OverrideOperator,
 	}
+}
+
+// SampleHostSummary is a host summary of every field (ext.HostSummary):
+// a server with two hosts reaching it, one connected and one away. A test
+// hands it to a sync store as the hosts/summary document, or into a
+// server as another machine's RemoteHosts record (SampleRemoteHosts).
+func SampleHostSummary() ext.HostSummary {
+	at := time.Date(2026, 11, 20, 9, 0, 0, 0, time.UTC)
+	return ext.HostSummary{
+		Platform: "linux/amd64", Version: "v0.7.0",
+		Sessions: ext.HostSessions{Running: 3, Waiting: 1},
+		Runs:     ext.HostRuns{Held: 2, Waiting: 1},
+		Hosts: []ext.HostSummaryRow{
+			{Name: "studio", Platform: "darwin/arm64", Version: "v0.7.0", Availability: ext.HostConnected, Since: at, Sessions: ext.HostSessions{Running: 2, Waiting: 1}},
+			{Name: "desk", Platform: "linux/amd64+wsl", Version: "v0.7.0", Availability: ext.HostAway, Since: at.Add(time.Hour), Sessions: ext.HostSessions{Running: 1}},
+		},
+	}
+}
+
+// SampleRemoteHosts is the RemoteHosts record a sync store hands in for
+// device: its host summary, body as given (nil: SampleHostSummary's
+// encoding). A test that needs a summary the server refuses gives its own
+// body.
+func SampleRemoteHosts(device, deviceName string, body []byte) ext.Remote {
+	if body == nil {
+		body = sampleHostSummaryJSON()
+	}
+	return ext.Remote{Kind: ext.RemoteHosts, Device: device, DeviceName: deviceName, ID: "summary", Rev: 1,
+		At: time.Date(2026, 11, 20, 9, 5, 0, 0, time.UTC), Data: body}
+}
+
+// sampleHostSummaryJSON is SampleHostSummary encoded.
+func sampleHostSummaryJSON() []byte {
+	b, err := json.Marshal(SampleHostSummary())
+	if err != nil {
+		panic(err)
+	}
+	return b
 }

@@ -233,7 +233,7 @@ func validRemote(kind string) Remote {
 	case RemoteDevice:
 		r.ID, r.Data = "dev-2", []byte(`{"id":"dev-2","name":"laptop","kind":"server","platform":"linux","version":"1.0","lastReport":"2026-11-20T09:00:00Z","revoked":false}`)
 	case RemoteHosts:
-		r.ID, r.Data = "summary", []byte(`{"hosts":[]}`)
+		r.ID, r.Data = "summary", []byte(`{"platform":"linux/amd64","version":"v0.7.0","sessions":{"running":1,"waiting":0},"runs":{"held":0,"waiting":0},"hosts":[]}`)
 	}
 	return r
 }
