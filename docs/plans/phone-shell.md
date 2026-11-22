@@ -1781,6 +1781,171 @@ step signs or is told:
 11. A link tapped in a decision's context opens outside the shell, in
     the system's browser, and the shell's page stays as it was.
 
+**As built, OSS-3 (the Android shell, `mobile/android`):**
+
+- The project is what `@capacitor/cli` 8.6.0's template and `cap add
+  android` make, at the template's own minimum (Android 7.0, API 24; the
+  plan named none), compileSdk and targetSdk 36, Gradle 8.14.3 (its
+  distribution pinned by checksum), the shell's code in Kotlin, every
+  version pinned in `variables.gradle`. No backup and no transfer to
+  another phone take anything (the rules exclude every domain), no
+  cleartext, the shell's activity the one exported component with the
+  launcher's filter alone (a notification's tap opens it; no link filter:
+  a packaging adds its own verified https filter, as an iPhone packaging
+  adds its associated domains), no permission but the network and
+  notifications. The app id is the development one; nothing signs.
+- The runtime's configuration is built in code by the shell's activity,
+  never read from a file the build copies: the app's address
+  `https://localhost`, no navigation beyond the bundle, no logging, no
+  mixed content, no legacy channel, no service worker served from the
+  bundle. Its first load is posted (a named server path), so it runs only
+  after every gate below stands; at every start the activity checks its
+  policy (`ShellPolicy`: the web view has the web message listener and
+  document-start scripts, the build is not backed up and sends no
+  cleartext, `capacitor.plugins.json` names the three plugins alone, the
+  runtime started as configured, the plugin behind each name the page
+  reaches is the shell's) and otherwise loads nothing, with words. The
+  recent apps never show the page (from Android 13 its screenshot off,
+  before it the window kept secure).
+- The key (`ConductorKey.kt`): the iPhone key's states, calls, codes,
+  bounds and policy rule. From Android 13 the keystore's own Ed25519 key;
+  before it, or where the keystore cannot make one, an Ed25519 seed (made
+  with Bouncy Castle's lightweight API) sealed by a keystore AES-256-GCM
+  key and opened for one signature. Either keystore key is made in the
+  secure hardware, usable only while the phone is unlocked (from Android 9)
+  and only within five minutes of the person's unlock; the keystore's own
+  account of the key is read back, and a key it does not keep in its
+  secure hardware behind the unlock is removed and refused
+  (`key_unprotected`), as is a phone with no screen lock (`no_lock`).
+  Presence is BiometricPrompt with the device's PIN, pattern or password
+  allowed ("Confirm your answer in Conductor"); a plan that does not ask
+  for presence still signs only inside the unlock's window, and past it
+  the person is asked; a sealed key whose seal needs the unlock asks once
+  at its making. A key the keystore no longer holds or has invalidated (a
+  changed lock) is no key. The record is a file in the no-backup folder;
+  the keystore's keys and that folder go with the app and neither is in a
+  backup, so there is no install's mark. A packaging's signing policy is
+  the class `dev.conductor.mobile.packaging.ConductorKeySigningPolicy`
+  (`KeySigningPolicy`, with a constructor of no argument), placed in
+  `app/src/packaging/java`, which the app compiles and this repository
+  ships empty (git ignores it; `scripts/android_project.py` fails on any
+  file there).
+- The store (`ConductorStore.kt`): the iPhone store's areas, bounds,
+  refusals and clear, under the no-backup folder; Android has no file
+  class like the iPhone's complete protection, so the records are in the
+  app's credential-encrypted storage (unreadable before the phone's first
+  unlock after a start). A clear empties the web view's cookies, storage,
+  saved HTTP credentials and cache.
+- A refusal reaches the page with its words under `data` (the runtime's
+  place on Android); the bridge lifts them beside the code.
+
+**Every way a page reaches native code on Android** (read from
+`@capacitor/android` 8.6.0 and its App, Browser and PushNotifications
+plugins; each gate decides on who sent a thing, every field native code
+reads, the spelling native code uses, what leaves the app, and, where it
+forwards to code that judges again, a sense that is that code's or
+narrower):
+
+- **The message channel `androidBridge`**, a web message listener the
+  runtime adds for its allowed origins (and, where the web view has none,
+  a JavaScript interface every frame of every origin reaches). The runtime
+  parses a message as a JSON object and reads `type` (`cordova`, a Cordova
+  call; `js.error`, a log line; anything else a plugin call),
+  `callbackId`, `pluginId`, `methodName` and `options`, and answers through
+  the main frame as serialised JSON. Gate: `BridgeGate`, which takes the
+  listener's name over (the runtime's listener and every JavaScript
+  interface removed first, a web view without the listener refused). (a)
+  The main frame, at `https://localhost`, while it holds the app's own
+  address. (b) A JSON object of no key but the four a call has (no
+  `type`); a plugin and method of the iPhone's closed table; `callbackId`
+  `-1` or 1 to 16 digits; `options` an object or absent, and for the
+  runtime's own plugins exactly the bridge's form (a listener's event,
+  `Browser.open`'s `url` alone, https or http, and nothing for the rest).
+  (c) The gate parses with the phone's own JSON parser, as the runtime
+  does. (d) Nothing leaves by the message itself; `Browser.open` hands
+  only an https or http address to Custom Tabs. (e) The runtime finds the
+  plugin by the exact name judged. A register for push with no push
+  service in the build is answered `no_push` (the runtime's would end the
+  app). The runtime's `WebView` and `CapacitorCookies` are refusing
+  stand-ins behind the gate; `CapacitorHttp` is the shell's.
+- **JavaScript interfaces**: the runtime's cookies plugin adds
+  `CapacitorCookiesAndroidInterface` (a cookie for any domain) and its
+  HTTP plugin `CapacitorHttpAndroidInterface`, in every frame of every
+  origin; both are removed before the first load, the cookies plugin's
+  process-wide cookie handler with them.
+- **Navigations** (the web view client's `shouldOverrideUrlLoading`, in
+  front of the runtime's, which hands any address outside the app to any
+  app): `LoadGate`. The main frame loads only the app's address exactly
+  or followed by `/`, `?` or `#` (the web view writes scheme and host in
+  lower case and decodes nothing); a navigation with the person's gesture,
+  not a redirect, to an https or http address, in the foreground, is
+  handed to the system as a browsable view; everything else is cancelled.
+  A frame loads only `about:srcdoc` and `about:blank`. No `intent:`,
+  `tel:`, `market:`, custom or other scheme is ever handed on. A window a
+  script opens: none (no multiple windows, no automatic windows).
+- **Requests** (the web view client's `shouldInterceptRequest`, in front
+  of the runtime's local server, which answers its host over https and
+  http from the bundle by the decoded path and, under its prefixes, any
+  file the app can read, any content address and a proxy): `RequestGate`.
+  Only `https://localhost`, a path spelled with letters, digits, `.`,
+  `_`, `-` and `/` and no dot segment, under none of the prefixes, with a
+  Range header of the one form the server parses; the server's host on
+  another scheme or port refused; a main-frame document of another origin
+  refused (a form's post, which no navigation check sees); service
+  workers served nothing. The screens carry a decision's id in one
+  base64url segment (`decisionPath`), as on the iPhone.
+- **The chrome client** (`ShellChromeClient`, over the runtime's, which
+  grants every permission but the camera and microphone without asking,
+  asks for those and for the location, and opens a file chooser with the
+  camera): every permission and the location denied with no prompt, no
+  file chooser, no prompt answered, no window; an alert and a confirm are
+  the runtime's dialogs.
+- **The web view's settings**: no file or content address, no mixed
+  content, no location.
+- **Intents**: the one exported activity takes intents from any app and
+  the push service's taps; the runtime reads an intent's extras as its
+  preferences and its plugins read its data and extras. Only a tap's
+  message id and an `h` of at most 256 bytes, and an https link of a view,
+  reach them.
+- **Native to native**: the native HTTP call uses no cookie handler and no
+  cache (none is used while the process has one), follows no redirect and
+  reads 1 MiB at most.
+
+The boot check `ShellBootsUnderItsPolicyTest` (`app/src/androidTest`,
+run by CI's `mobile-android` job on an emulator, API 34) starts the built
+app with no provider, waits for Open a server, reloads it under a
+violation listener, makes three main-frame loads away with no tap (each
+waited on until the load gate has cancelled it), then runs the probes in
+the page: nine messages the gate must drop (a plugin outside the table,
+three of them; the Cordova kind; a method outside the table; a callback id
+that is no callback id; a listener with no event; `Browser.open` to a
+custom scheme; a log line), a srcdoc frame (it draws, its call is dropped
+when the channel is in it), the runtime's interfaces (absent in the page
+and the frame), the local server's prefixes plain and escaped, a climb and
+a decision's id in its own spelling (each refused), the same decision as
+the screens carry it (not refused), a prompt, a window, the runtime's
+`WebView` through its page script (dropped), and the shell's own calls
+(the key and the store answer, the native HTTP call refuses an origin not
+named). It passes only on `ready platform=android probes=ok own-dropped=0
+own-refused=0 dropped=10 (11 with the frame's) refused=5 cancelled=3
+handed=0 violations=0 page-own=true`, the counts read from the gates
+themselves; a second test reads the built app's components (only the
+activity and the push service's and the profile installer's receivers,
+each behind its permission, exported), no backup, no cleartext and no
+camera, microphone, location or storage permission.
+
+**By hand on an Android phone**, from a clean checkout with a JDK 21 and
+the Android SDK: `make web-build mobile-install mobile-sync`, `npx cap sync
+android` in `mobile/`, open `mobile/android` in the IDE, a packaging's
+`google-services.json` and signing policy where a step is told or signs:
+the unlock sheet with "Confirm your answer in Conductor", cancelled
+(`presence_refused`) and confirmed with the PIN; a key made on the phone
+reports the keystore's secure hardware (an emulator's keystore does not);
+nothing signs while the phone is locked; a reinstall and a backup bring no
+key and no records; a notification's tap with an `h` and without; the
+recent apps show no card; a camera or microphone request denied with no
+prompt; a link in a decision opens outside the shell and the page stays.
+
 OSS-2a needs nothing of the shell and the shell's rows nothing of
 OSS-2a until OSS-2b, which joins them; OSS-2b is the last code row of
 the first platform and adds the `docs/features.md` entry.

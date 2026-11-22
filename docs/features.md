@@ -388,6 +388,28 @@ provider.
   ID sheet itself, the keychain and the files while the phone is locked,
   a reinstall or a restored backup, and a notification's tap
   (`docs/plans/phone-shell.md`, By hand on a device).
+- **The Android app** (OSS-3). The same bridge, screens and provider
+  interfaces in an Android app (`mobile/android`, Android 7.0 and later),
+  its native layer in Kotlin. Held by its JVM tests (over stand-ins for the
+  keystore, the files and the person's check): the key keeps the iPhone's
+  states, calls and policy rule, is made only in the keystore's secure
+  hardware behind the person's unlock or not at all (from Android 13 the
+  keystore's own Ed25519 key, before it an Ed25519 key sealed by a keystore
+  key), signs only inside the window the person's unlock opened and asks
+  "Confirm your answer in Conductor" whenever the policy does; the store
+  keeps the iPhone's areas, bounds and refusals in the no-backup folder,
+  and a sign-out removes the drafts, the cache and the web view's cookies,
+  storage and cache; the native HTTP call reaches only the origins a
+  packaging names, with no cookie and no redirect; each gate's decision
+  (the message channel, navigations, the local server's requests, an
+  intent's contents). Held by its boot check on an emulator in CI: the app
+  starts on Open a server under the page's policy with no violation and
+  its native plugins in the page, every known way around a gate is refused
+  by the gate's own count, and the built app exports only what a
+  notification's tap needs and is backed up nowhere. Built and not yet seen
+  on a device: the person's unlock sheet, the key in a phone's secure
+  hardware (an emulator's keystore is not), a notification's tap, and a
+  link handed out of the shell.
 - **How it is built.** `make web-build mobile-sync` puts the workbench's
   bundle into `mobile/www` with the shell's bridge and its page policy
   (`script-src 'self' 'wasm-unsafe-eval'` and the hash of each inline

@@ -7,9 +7,10 @@ platforms released), the npm packages in the web bundle the binary embeds
 (web/.nuxt/bundled-packages.json, written by web/build/bundledPackages.ts
 during `make web-build`) and the desktop app's own: Electron and the
 production packages electron-builder puts in the app; and the phone shell's
-(mobile/): the native runtime's packages the iOS app is built from. Texts a package does
-not carry (the Inter font @nuxt/fonts fetches, the Lucide icons Nuxt Icon
-inlines) are kept in scripts/notices/.
+(mobile/): the native runtime's packages the iOS and Android apps are built
+from, and the Gradle packages the Android app's build files pin. Texts a
+package does not carry (the Inter font @nuxt/fonts fetches, the Lucide icons
+Nuxt Icon inlines, the Gradle packages' licences) are kept in scripts/notices/.
 
     python3 scripts/notices.py           # write THIRD_PARTY_NOTICES
     python3 scripts/notices.py --check   # exit 1 when it is not current
@@ -69,6 +70,9 @@ SUPPLEMENTS: dict[str, list[dict[str, str]]] = {
     # The native runtime's iOS package compiles Apache Cordova's iOS classes into its Cordova framework (their files carry the
     # ASF's Apache-2.0 header); Cordova's NOTICE goes with them.
     "@capacitor/ios": [{"name": "Apache Cordova's NOTICE (its iOS classes, compiled into the Cordova framework, Apache-2.0)", "file": "cordova-ios.NOTICE"}],
+    # The native runtime's Android library builds against Apache Cordova's Android framework, which goes into the app; its NOTICE goes
+    # with it.
+    "@capacitor/android": [{"name": "Apache Cordova's NOTICE (its Android framework, built into the app, Apache-2.0)", "file": "cordova-android.NOTICE"}],
     "monaco-editor": [
         {"name": "DOMPurify 3.4.15's LICENSE (vendored as esm/vs/base/browser/dompurify)", "file": "dompurify-3.4.15.LICENSE", "for": "0.57.0"},
         {"name": "Codicons (the codicon.ttf icon font, CC BY 4.0)", "file": "codicons.NOTICE", "for": "0.57.0"},
@@ -306,9 +310,58 @@ def mobile_entries() -> list[Entry]:
     if not (MOBILE / "node_modules/@capacitor/ios").exists():
         raise SystemExit("notices: no mobile/node_modules: run npm ci in mobile/ first")
     lines = run(["npm", "ls", "--omit=dev", "--all", "--parseable"], cwd=MOBILE).splitlines()
-    ios = "the app's Capacitor and Cordova frameworks, fetched by the Swift Package Manager from its capacitor-swift-pm at the same version"
-    entries = [npm_entry(Path(line), note=ios if Path(line) == MOBILE / "node_modules/@capacitor/ios" else "") for line in lines if line.strip() and Path(line) != MOBILE]
+    notes = {
+        MOBILE / "node_modules/@capacitor/ios": "the app's Capacitor and Cordova frameworks, fetched by the Swift Package Manager from its capacitor-swift-pm at the same version",
+        MOBILE / "node_modules/@capacitor/android": "the Android app's Capacitor library, built by Gradle from this package",
+    }
+    entries = [npm_entry(Path(line), note=notes.get(Path(line), "")) for line in lines if line.strip() and Path(line) != MOBILE]
     return unique(entries)
+
+
+ANDROID = MOBILE / "android"
+# The Gradle packages the Android app's build files name (mobile/android/variables.gradle, build.gradle and app/build.gradle), with the
+# variable or plugin each version is read from, the licence and the text kept for it. A version moved without its entry stops the
+# script. What each brings with it (AndroidX's own, and Firebase's Google Play services libraries under their own terms) is Gradle's to
+# fetch at those versions and is not listed here.
+ANDROID_PACKAGES = [
+    ("androidx.activity:activity", "androidxActivityVersion", "Apache-2.0", "scripts/notices/apache-2.0.LICENSE", ""),
+    ("androidx.appcompat:appcompat", "androidxAppCompatVersion", "Apache-2.0", "scripts/notices/apache-2.0.LICENSE", ""),
+    ("androidx.biometric:biometric", "androidxBiometricVersion", "Apache-2.0", "scripts/notices/apache-2.0.LICENSE", "the person's unlock"),
+    ("androidx.browser:browser", "androidxBrowserVersion", "Apache-2.0", "scripts/notices/apache-2.0.LICENSE", "Custom Tabs, for @capacitor/browser"),
+    ("androidx.coordinatorlayout:coordinatorlayout", "androidxCoordinatorLayoutVersion", "Apache-2.0", "scripts/notices/apache-2.0.LICENSE", ""),
+    ("androidx.core:core", "androidxCoreVersion", "Apache-2.0", "scripts/notices/apache-2.0.LICENSE", ""),
+    ("androidx.core:core-splashscreen", "coreSplashScreenVersion", "Apache-2.0", "scripts/notices/apache-2.0.LICENSE", ""),
+    ("androidx.fragment:fragment", "androidxFragmentVersion", "Apache-2.0", "scripts/notices/apache-2.0.LICENSE", ""),
+    ("androidx.webkit:webkit", "androidxWebkitVersion", "Apache-2.0", "scripts/notices/apache-2.0.LICENSE", ""),
+    ("com.google.firebase:firebase-messaging", "firebaseMessagingVersion", "Apache-2.0", "scripts/notices/apache-2.0.LICENSE",
+     "Firebase Cloud Messaging, for @capacitor/push-notifications; the Google Play services libraries it brings are under their own terms"),
+    ("org.apache.cordova:framework", "cordovaAndroidVersion", "Apache-2.0", "scripts/notices/apache-2.0.LICENSE", "Apache Cordova's Android framework, for @capacitor/android"),
+    ("org.bouncycastle:bcprov-jdk18on", "bouncyCastleVersion", "MIT", "scripts/notices/bouncycastle-1.82.LICENSE", "Ed25519 for a key sealed by the keystore"),
+    ("org.jetbrains.kotlin:kotlin-stdlib", "kotlin-gradle-plugin", "Apache-2.0", "scripts/notices/apache-2.0.LICENSE", "the standard library of the Kotlin the app is written in"),
+]
+# A text taken for one version of a package: another version stops the script until the text is taken again for it.
+ANDROID_TEXT_FOR = {"org.bouncycastle:bcprov-jdk18on": "1.82"}
+
+
+def android_entries() -> list[Entry]:
+    variables = dict(re.findall(r"^\s*(\w+)\s*=\s*'([^']+)'", (ANDROID / "variables.gradle").read_text(), re.M))
+    build = (ANDROID / "build.gradle").read_text()
+    entries = []
+    for name, source, licence, text, note in ANDROID_PACKAGES:
+        if source in variables:
+            version = variables[source]
+        else:
+            found = re.search(rf":{re.escape(source)}:([0-9][0-9A-Za-z.\-]*)'", build)
+            if not found:
+                raise SystemExit(f"notices: no version of {name} in mobile/android ({source})")
+            version = found.group(1)
+        if ANDROID_TEXT_FOR.get(name, version) != version:
+            raise SystemExit(f"notices: {text} was taken for {name} {ANDROID_TEXT_FOR[name]}, not {version}: take it again for this version")
+        texts = [("LICENSE", (ROOT / text).read_text())]
+        for s in SUPPLEMENTS.get("@capacitor/android", []) if name == "org.apache.cordova:framework" else []:
+            texts.append((s["name"], (EXTRA / s["file"]).read_text()))
+        entries.append(Entry(name, version, licence, texts, note))
+    return sorted(entries, key=lambda e: e.name)
 
 
 def render(parts: list[tuple[str, list[Entry]]]) -> str:
@@ -355,6 +408,7 @@ def main() -> int:
         ("The workbench, embedded in the binary: npm packages in the web bundle", web_entries()),
         ("The desktop app: Electron and its packages", desktop_entries()),
         ("The phone shell (mobile/): the native runtime's packages", mobile_entries()),
+        ("The phone shell's Android app (mobile/android): the Gradle packages its build files pin", android_entries()),
     ])
     if args.check:
         have = OUT.read_text() if OUT.exists() else ""
