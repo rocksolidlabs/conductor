@@ -107,12 +107,13 @@ test("the row's menu holds Cancel, Copy branch and Ask Brakeman why; the keyboar
   await modal.getByRole('button', { name: 'Keep it' }).click()
   await expect(modal).toHaveCount(0)
   expect(commands, 'Keep it sends no command').toEqual([])
-  // migrate, out of its attempts: Preview this candidate (its last attempt submitted a commit), Copy branch and Ask Brakeman why (the
-  // day's server has Brakeman), and no Cancel (the engine names none on a failed task). Retry and Accept anyway stay in the row.
+  // migrate, out of its attempts: Copy branch and Ask Brakeman why (the day's server has Brakeman), no Preview this candidate though
+  // its last attempt submitted a commit (the Ledger run has no project manifest, and the server would refuse it: the next test), and
+  // no Cancel (the engine names none on a failed task). Retry and Accept anyway stay in the row.
   await expect(page.locator('[data-task-row="migrate"] [data-task-retry="migrate"]')).toBeVisible()
   await expect(page.locator('[data-task-row="migrate"] [data-task-accept="migrate"]')).toBeVisible()
   await page.locator('[data-task-menu="migrate"]').click()
-  await expect(menu.getByRole('menuitem')).toHaveText(['Preview this candidate', 'Copy branch', 'Ask Brakeman why'])
+  await expect(menu.getByRole('menuitem')).toHaveText(['Copy branch', 'Ask Brakeman why'])
   // Ask Brakeman why asks at once from where it is (issue 993): an item of the menu, no longer a link to Brakeman's page
   // (brakeman-where.spec.ts sends it, on a server with Brakeman on).
   await expect(page.locator('[data-task-ask-brakeman="migrate"]')).toHaveRole('menuitem')
@@ -146,6 +147,32 @@ async function paletteTask(page: Page, taskId: string) {
   await expect(row.locator('[data-palette-actions]')).toBeVisible({ timeout: LOAD_MS })
   return row
 }
+
+test("Preview this candidate is offered, in the row's menu and the palette, only on a run whose read carries its project manifest", async ({ day, browser }) => {
+  void day
+  // With a manifest: migrate's last attempt submitted a commit, so its menu and its palette row offer the preview.
+  const served = ledger()
+  served.manifest = { source: 'crew', revision: 1 }
+  const withManifest = await opened(browser, served)
+  await withManifest.page.locator('[data-task-menu="migrate"]').click()
+  const menu = withManifest.page.getByRole('menu')
+  await expect(menu.getByRole('menuitem')).toHaveText(['Preview this candidate', 'Copy branch', 'Ask Brakeman why'])
+  await withManifest.page.keyboard.press('Escape')
+  await expect(menu).toHaveCount(0)
+  const offered = await paletteTask(withManifest.page, 'migrate')
+  await expect(offered.locator('[data-palette-action="preview-candidate"]')).toHaveText('Preview this candidate')
+  await withManifest.page.close()
+  // Without one (the server would refuse it 409 no_manifest): neither offers it, and the rest is as it was.
+  const { page } = await opened(browser, ledger())
+  await page.locator('[data-task-menu="migrate"]').click()
+  await expect(page.getByRole('menu').getByRole('menuitem')).toHaveText(['Copy branch', 'Ask Brakeman why'])
+  await page.keyboard.press('Escape')
+  await expect(page.getByRole('menu')).toHaveCount(0)
+  const row = await paletteTask(page, 'migrate')
+  await expect(row.locator('[data-palette-action="retry"]')).toBeVisible()
+  await expect(row.locator('[data-palette-action="preview-candidate"]')).toHaveCount(0)
+  await page.close()
+})
 
 test("the palette's Cancel… asks with Keep it and Cancel the task, as the row's dialog does, and Keep it sends nothing", async ({ day, browser }) => {
   void day

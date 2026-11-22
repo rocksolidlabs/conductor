@@ -95,8 +95,9 @@ function reviewAt(run: string, task: string, attempt: number, commit: string | u
  * run's attempt, taskReviewTarget), else its latest attempt that submitted one.
  */
 const reviewTarget = computed(() => (selectedTask.value ? taskReviewTarget(props.run.id, selectedTask.value, attempts.value) : null))
-// The run's state too: a task of an interrupted run says what its continuation takes up (taskWords), a held one among them (DR1).
-const live = computed(() => ({ state: props.run.state, stoppedAt: props.run.stoppedAt, paused: props.run.paused, pausedWhy: props.run.pausedWhy, record: props.run.record, resumedBy: props.run.resumedBy, origin: props.run.origin }))
+// The run's state too: a task of an interrupted run says what its continuation takes up (taskWords), a held one among them (DR1); its
+// project manifest, without which no candidate's preview is offered (taskActions).
+const live = computed(() => ({ state: props.run.state, stoppedAt: props.run.stoppedAt, paused: props.run.paused, pausedWhy: props.run.pausedWhy, record: props.run.record, resumedBy: props.run.resumedBy, origin: props.run.origin, manifest: props.run.manifest }))
 function agentOf(member: string): string {
   return props.run.members.find((m) => m.name === member)?.agentId ?? ''
 }

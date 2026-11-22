@@ -220,7 +220,11 @@ export interface TaskActionSet {
   preview: string
   /** Open in Conductor: the preview page frames the attempt's preview while it is offered (docs/plans/browser-evidence.md). */
   inConductor: boolean
-  /** Preview this candidate: the attempt submitted a commit, no checkout of it is open, and no continuation owns the run. */
+  /**
+   * Preview this candidate: the attempt submitted a commit, no checkout of it is open, no continuation owns the run, and the run has a
+   * project manifest (its read's `manifest`, present exactly when the server serves a candidate's preview: without one the open is
+   * refused `409 no_manifest`).
+   */
   candidate: boolean
   /** The candidate's checkout while one is open: Open (the preview page at its `seq`) and Close. */
   previewing: { seq: number; state: 'resolved' | 'ready' | 'ending' } | null
@@ -236,9 +240,11 @@ export interface TaskActionSet {
  * commit, of any kind, and a stopped run still takes its commands. Open preview follows the attempt's `preview` alone: the server
  * sets it at its worktree's `tree.ready` and clears it at the attempt's close, at a service's own exit and while the run stops, so
  * nothing here second-guesses it. A run a provider launched whose time limit has passed at `now` (its `origin`'s deadline) takes
- * no Retry and no Accept anyway: each would start an attempt, which the server refuses (`time_limit_passed`).
+ * no Retry and no Accept anyway: each would start an attempt, which the server refuses (`time_limit_passed`). Preview this candidate
+ * is offered only on a run whose read carries its project manifest (`manifest`): the server refuses a candidate's preview of a run
+ * without one (`409 no_manifest`).
  */
-export function taskActions(t: RunTask, run: Pick<RunInfo, 'record' | 'resumedBy'> & Partial<Pick<RunInfo, 'stoppedAt' | 'origin'>>, now: number = Date.now()): TaskActionSet {
+export function taskActions(t: RunTask, run: Pick<RunInfo, 'record' | 'resumedBy'> & Partial<Pick<RunInfo, 'stoppedAt' | 'origin' | 'manifest'>>, now: number = Date.now()): TaskActionSet {
   const live = !run.record && !run.resumedBy
   const named = (c: TaskCommand) => live && !!t.commands?.includes(c)
   const starts = !timeLimitPassed(run.origin, now)
@@ -251,7 +257,7 @@ export function taskActions(t: RunTask, run: Pick<RunInfo, 'record' | 'resumedBy
     showResult: !!t.result,
     preview: t.attempt?.preview ?? '',
     inConductor: !!t.attempt?.preview,
-    candidate: !!t.attempt?.result && !t.attempt.previewing && !run.resumedBy,
+    candidate: !!t.attempt?.result && !t.attempt.previewing && !run.resumedBy && !!run.manifest,
     previewing: t.attempt?.previewing && t.attempt.previewing.state !== 'ending' ? { seq: t.attempt.previewing.seq, state: t.attempt.previewing.state } : null,
     askWhy: t.state === 'failed' || t.state === 'cancelled' || t.state === 'blocked' || !!t.blocker,
   }
@@ -283,7 +289,7 @@ export interface TaskRowParts {
  * a menu (Open in Conductor, Preview this candidate or its Open and Close, Cancel, Copy branch, Ask Brakeman why), from taskActions and taskAnswer as the row offered them. `brakeman`: the server has
  * Brakeman, so Ask Brakeman why is offered where it applies.
  */
-export function taskRow(t: RunTask, run: TaskRun & Pick<RunInfo, 'record' | 'resumedBy'>, o: { brakeman?: boolean } = {}): TaskRowParts {
+export function taskRow(t: RunTask, run: TaskRun & Pick<RunInfo, 'record' | 'resumedBy'> & Partial<Pick<RunInfo, 'manifest'>>, o: { brakeman?: boolean } = {}): TaskRowParts {
   const words = taskWords(t, run, { attempt: false }).text
   const n = t.attempt?.n ?? t.attempts
   const attempt = n > 1 && !words.includes(`attempt ${n}`) ? `attempt ${n}` : ''

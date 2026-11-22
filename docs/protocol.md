@@ -4887,7 +4887,10 @@ serve`, so 7 s), which leaves the rows their time, and waits for the trees'
 ends before the ledger closes. The run's JSON gains `pausedWhy`, `manifest`
 (`{source, revision?, digest?, prerequisites: [{id, k?, state, exit?, error?,
 duration?}]}`, `state` `pending`, `running`, `passed`, `failed` or
-`interrupted`), `cleaning` (its trees being ended: an `outcome` says every
+`interrupted`; present exactly when the run has a project manifest, which is
+what a candidate's preview needs: a run read without it is refused that preview
+`409 no_manifest`, and the run page offers Preview this candidate only on a run
+read with it), `cleaning` (its trees being ended: an `outcome` says every
 attempt is closed, not that every tree has ended) and each attempt's
 `preview` (above). A run whose crew has no manifest and no `setup` makes no
 tree and keeps no step receipt.

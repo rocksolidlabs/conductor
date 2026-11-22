@@ -132,6 +132,8 @@ describe('taskWords', () => {
 
 describe('taskActions', () => {
   const live = {}
+  /** A run whose read carries its project manifest: the server serves its candidates' previews. */
+  const served = { manifest: { source: 'crew' as const, revision: 1 } }
   // The fixture the engine's TaskCommands and the decision inbox are held to (internal/crew/testdata/task-commands.json, read by
   // TestTaskCommandsFollowTheFixture, which also holds the run's read to name each row's commands on its task): the run page offers
   // what the run's read names, as it names it, and nothing on a run no longer the engine's.
@@ -166,7 +168,7 @@ describe('taskActions', () => {
     expect(taskActions(task({ state: 'failed', attempt: { n: 2, state: 'failed', result: 'abc' }, commands: ['retry'] }), live).accept).toBe(false)
   })
   it('offers retry and accept on a failed task the engine names them on, cancel on a live one, open and copy with an attempt', () => {
-    expect(taskActions(task({ state: 'failed', attempt: { n: 3, state: 'failed', result: 'abc', sessionId: 's', branch: 'crew/r/build.3' }, commands: ['retry', 'accept'] }), live)).toEqual({ retry: true, accept: true, cancel: false, open: true, copyBranch: true, showResult: false, preview: '', inConductor: false, candidate: true, previewing: null, askWhy: true })
+    expect(taskActions(task({ state: 'failed', attempt: { n: 3, state: 'failed', result: 'abc', sessionId: 's', branch: 'crew/r/build.3' }, commands: ['retry', 'accept'] }), served)).toEqual({ retry: true, accept: true, cancel: false, open: true, copyBranch: true, showResult: false, preview: '', inConductor: false, candidate: true, previewing: null, askWhy: true })
     expect(taskActions(task({ state: 'failed', attempt: { n: 3, state: 'failed' } }), live).accept).toBe(false)
     expect(taskActions(task({ state: 'cancelled', commands: ['retry'] }), live)).toMatchObject({ retry: true, accept: false, cancel: false })
     expect(taskActions(task({ state: 'running', attempt: { n: 1, state: 'running', sessionId: 's' }, commands: ['cancel'] }), live)).toMatchObject({ retry: false, cancel: true, open: true })
@@ -186,6 +188,16 @@ describe('taskActions', () => {
     expect(taskActions(task({ state: 'running', commands: ['cancel'] }), { record: true })).toMatchObject({ cancel: false })
     // A finished run, continued: its continuation owns its tasks.
     expect(taskActions(task({ state: 'failed', attempt: { n: 1, state: 'failed', result: 'abc', sessionId: 's' }, commands: ['retry', 'accept'] }), { resumedBy: 'next' })).toMatchObject({ retry: false, accept: false, cancel: false, open: true })
+  })
+  it('offers Preview this candidate only on a run whose read carries its project manifest: the server refuses one without (409 no_manifest)', () => {
+    const submitted = task({ state: 'succeeded', attempts: 1, attempt: { n: 1, state: 'succeeded', result: 'c0ffee' }, result: { attempt: 1, commit: 'c0ffee', at: '' } })
+    expect(taskActions(submitted, served).candidate).toBe(true)
+    expect(taskActions(submitted, { manifest: { source: 'file' as const, digest: 'b10b' } }).candidate).toBe(true)
+    // No manifest on the run's read: not offered, as on a failed task's last commit.
+    expect(taskActions(submitted, live).candidate).toBe(false)
+    expect(taskActions(task({ state: 'failed', attempt: { n: 3, state: 'failed', result: 'abc' }, commands: ['retry', 'accept'] }), live).candidate).toBe(false)
+    // A manifest offers nothing an attempt without a commit cannot preview.
+    expect(taskActions(task({ state: 'running', attempt: { n: 1, state: 'running' } }), served).candidate).toBe(false)
   })
   it("offers Open preview by the attempt's preview alone (EN1): the server sets it at tree.ready and clears it at the close", () => {
     const url = 'http://127.0.0.1:41234/'
@@ -424,6 +436,8 @@ describe("taskWords without the attempt (the task table's words)", () => {
 
 describe('taskRow: a task as the table draws it, each part said once', () => {
   const live = {}
+  /** A run whose read carries its project manifest: the server serves its candidates' previews. */
+  const served = { manifest: { source: 'crew' as const, revision: 1 } }
   const hold = (id: string) => ({ id, type: 'approval', state: 'open', question: 'May it?' }) as unknown as NonNullable<RunTask['holds']>[number]
   const attempt = (n: number, over: Partial<NonNullable<RunTask['attempt']>> = {}) => ({ n, state: 'running' as const, sessionId: `s${n}`, branch: `crew/r/build.${n}`, ...over })
   /** The attempt said in the row's two places at once, which taskRow never does. */
@@ -467,15 +481,16 @@ describe('taskRow: a task as the table draws it, each part said once', () => {
 
   it("offers Preview this candidate on an attempt that submitted a commit, and Open and Close while its checkout is open", () => {
     const submitted = task({ state: 'succeeded', attempts: 1, attempt: attempt(1, { state: 'succeeded', result: 'c0ffee', sessionId: undefined }), result: { attempt: 1, commit: 'c0ffee', at: '' } })
-    expect(taskRow(submitted, live).menu).toEqual(['previewCandidate', 'copyBranch'])
+    expect(taskRow(submitted, served).menu).toEqual(['previewCandidate', 'copyBranch'])
     const open = { ...submitted, attempt: { ...submitted.attempt!, previewing: { seq: 2, state: 'ready' as const } } }
-    expect(taskRow(open, live).menu).toEqual(['candidateOpen', 'candidateClose', 'copyBranch'])
-    expect(taskActions(open, live).previewing).toEqual({ seq: 2, state: 'ready' })
+    expect(taskRow(open, served).menu).toEqual(['candidateOpen', 'candidateClose', 'copyBranch'])
+    expect(taskActions(open, served).previewing).toEqual({ seq: 2, state: 'ready' })
     // One ending is no longer offered, and Preview this candidate waits for its end.
     const ending = { ...submitted, attempt: { ...submitted.attempt!, previewing: { seq: 2, state: 'ending' as const } } }
-    expect(taskRow(ending, live).menu).toEqual(['copyBranch'])
-    // Nothing submitted, or a continuation owning the run: none.
-    expect(taskRow(task({ state: 'running', attempts: 1, attempt: attempt(1) }), live).menu).not.toContain('previewCandidate')
-    expect(taskRow(submitted, { resumedBy: 'next' }).menu).not.toContain('previewCandidate')
+    expect(taskRow(ending, served).menu).toEqual(['copyBranch'])
+    // Nothing submitted, a continuation owning the run, or a run without a project manifest: none.
+    expect(taskRow(task({ state: 'running', attempts: 1, attempt: attempt(1) }), served).menu).not.toContain('previewCandidate')
+    expect(taskRow(submitted, { ...served, resumedBy: 'next' }).menu).not.toContain('previewCandidate')
+    expect(taskRow(submitted, live).menu).toEqual(['copyBranch'])
   })
 })
