@@ -21,6 +21,19 @@ class CallsTest {
     private fun code(a: CallAnswer): String = (a as CallAnswer.Reject).code
 
     @Test
+    fun theTestsParseWithARealJsonParserNotThePlatformsStub() {
+        // The platform's org.json is a stub on a unit test's classpath; the real one (a test dependency) must come first, or every
+        // test here fails at its first JSON call with "not mocked". Said once, plainly, here.
+        val o = try {
+            JSONObject("""{"a":1,"b":"x"}""")
+        } catch (e: RuntimeException) {
+            throw AssertionError("org.json is the platform's stub on this classpath: ${e.message}")
+        }
+        assertEquals(1, o.getInt("a"))
+        assertEquals("x", o.getString("b"))
+    }
+
+    @Test
     fun theStoresCallsAnswerAsTheBridgeReadsThem() {
         val calls = StoreCalls(ConductorStore(File("/s"), MemoryFiles(), CountedCaches()) { 1_700_000_000_123L })
         resolved(calls.call("put", JSONObject().put("area", "drafts").put("key", "d1").put("data", "text")))

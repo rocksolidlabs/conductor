@@ -1,6 +1,5 @@
 package dev.conductor.mobile
 
-import com.sun.net.httpserver.HttpServer
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -10,7 +9,6 @@ import org.junit.Test
 import java.net.CookieHandler
 import java.net.CookieManager
 import java.net.HttpURLConnection
-import java.net.InetSocketAddress
 import java.net.URL
 
 // The native HTTP call's allowlist on Android (docs/plans/phone-shell.md, OSS-3; the iPhone's NativeHTTPCalls): only https on an origin
@@ -117,55 +115,28 @@ class NativeHttpTest {
         assertTrue(NativeHttpCalls.headerAllowed("X-Conductor-Sig", "a.b-c_d~"))
     }
 
-    /** A local server on http, which the test's opener alone reaches: the phone's opener takes https only. */
-    private fun serve(handle: (com.sun.net.httpserver.HttpExchange) -> Unit): Pair<HttpServer, String> {
-        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
-        server.createContext("/") { ex ->
-            try {
-                handle(ex)
-            } finally {
-                ex.close()
-            }
-        }
-        server.start()
-        return server to "http://127.0.0.1:${server.address.port}"
-    }
-
     private fun transport(maxBody: Int = NativeHttpCalls.MAX_BODY) =
         UrlConnectionTransport(maxBody) { url -> URL(url).openConnection() as HttpURLConnection }
 
     @Test(timeout = 60_000)
     fun theConnectionFollowsNoRedirectKeepsNoCookieAndBoundsTheBody() {
-        val cookies = mutableListOf<String?>()
-        val (server, base) = serve { ex ->
-            cookies.add(ex.requestHeaders.getFirst("Cookie"))
-            when (ex.requestURI.path) {
-                "/away" -> {
-                    ex.responseHeaders.add("Location", "http://127.0.0.1:1/elsewhere")
-                    ex.responseHeaders.add("Set-Cookie", "sid=1; Path=/")
-                    ex.sendResponseHeaders(302, -1)
-                }
-                "/big" -> {
-                    val body = ByteArray(2048) { 'x'.code.toByte() }
-                    ex.sendResponseHeaders(200, body.size.toLong())
-                    ex.responseBody.write(body)
-                }
-                else -> {
-                    val body = "fine".toByteArray()
-                    ex.sendResponseHeaders(200, body.size.toLong())
-                    ex.responseBody.write(body)
-                }
+        LoopbackServer { path ->
+            when (path) {
+                "/away" -> LoopbackServer.reply(302, "", "Location: http://127.0.0.1:1/elsewhere", "Set-Cookie: sid=1; Path=/")
+                "/big" -> LoopbackServer.reply(200, "x".repeat(2048))
+                else -> LoopbackServer.reply(200, "fine")
             }
-        }
-        try {
+        }.use { server ->
             val t = transport(maxBody = 1024)
-            val away = t.send(HttpRequest("$base/away", "GET", emptyMap(), null))
+            val away = t.send(HttpRequest("${server.base}/away", "GET", emptyMap(), null))
             assertEquals(302, away.status)
             assertEquals("http://127.0.0.1:1/elsewhere", away.headers["Location"])
-            assertEquals("fine", String(t.send(HttpRequest("$base/next", "GET", emptyMap(), null)).body))
-            assertEquals(listOf<String?>(null, null), cookies.toList())
+            assertEquals("fine", String(t.send(HttpRequest("${server.base}/next", "GET", emptyMap(), null)).body))
+            // The redirect was not followed (its address has nobody), and the cookie it set was not sent back.
+            assertEquals(listOf("/away", "/next"), server.paths())
+            assertEquals(listOf<String?>(null, null), server.requests.map { it["cookie"] })
             try {
-                t.send(HttpRequest("$base/big", "GET", emptyMap(), null))
+                t.send(HttpRequest("${server.base}/big", "GET", emptyMap(), null))
                 fail()
             } catch (r: Refusal) {
                 assertEquals("too_large", r.code)
@@ -173,16 +144,38 @@ class NativeHttpTest {
             // A process with a cookie handler (the native runtime's cookies plugin sets one) sends nothing at all.
             CookieHandler.setDefault(CookieManager())
             try {
-                t.send(HttpRequest("$base/next", "GET", emptyMap(), null))
+                t.send(HttpRequest("${server.base}/next", "GET", emptyMap(), null))
                 fail()
             } catch (r: Refusal) {
                 assertEquals("native", r.code)
             } finally {
                 CookieHandler.setDefault(null)
             }
-            assertEquals(3, cookies.size)
-        } finally {
-            server.stop(0)
+            assertEquals(listOf("/away", "/next", "/big"), server.paths())
+        }
+    }
+
+    @Test(timeout = 60_000)
+    fun anAdmittedCallArrivesAsAdmittedAndARefusedOneNeverLeaves() {
+        LoopbackServer { _ -> LoopbackServer.reply(200, "ok", "X-Answer: 1") }.use { server ->
+            val port = server.port
+            val origins = NativeHttpOrigins.parse("""{"origins":["https://api.provider.example:$port"]}""")
+            // The phone's connection is https; the test's opener sends the admitted address to its own server instead, unchanged otherwise.
+            val calls = NativeHttpCalls(origins, UrlConnectionTransport { url ->
+                URL(url.replace("https://api.provider.example:$port", server.base)).openConnection() as HttpURLConnection
+            })
+            val a = calls.call("request", JSONObject().put("url", "https://API.provider.example:$port/v1/inbox?after=7#x")
+                .put("headers", JSONObject().put("Authorization", "Bearer t"))) as CallAnswer.Resolve
+            assertEquals(200, a.value.getInt("status"))
+            assertEquals("ok", a.value.getString("data"))
+            assertEquals("1", a.value.getJSONObject("headers").getString("x-answer"))
+            assertEquals(listOf("/v1/inbox?after=7"), server.paths())
+            assertEquals("Bearer t", server.requests.single()["authorization"])
+            for (u in listOf("https://other.example:$port/v1/inbox", "http://api.provider.example:$port/", "https://api.provider.example/",
+                "https://u@api.provider.example:$port/")) {
+                assertEquals(u, "origin_refused", (calls.call("get", JSONObject().put("url", u)) as CallAnswer.Reject).code)
+            }
+            assertEquals(1, server.requests.size)
         }
     }
 }
