@@ -71,3 +71,60 @@ func TestContinuityStartsTheStoreOnRefusedDoors(t *testing.T) {
 		t.Fatalf("a store that is no Starter: %v", errs)
 	}
 }
+
+// remoteScript is a sync door script that keeps the records it is handed.
+type remoteScript struct {
+	ext.UnsupportedSync
+	put *[]ext.Remote
+}
+
+func (s remoteScript) PutRemote(_ context.Context, r ext.Remote) error {
+	*s.put = append(*s.put, r)
+	return nil
+}
+
+// FakeHost's PutRemote takes another machine's host summary of its form
+// and refuses one that is not, with the kind's ErrRefused, before the
+// script sees it, as the server answers a provider.
+func TestFakeHostPutRemoteJudgesTheHostSummary(t *testing.T) {
+	ctx := context.Background()
+	h := NewFakeHost(t)
+	var put []ext.Remote
+	h.OnSync(remoteScript{put: &put})
+	if err := h.PutRemote(ctx, SampleRemoteHosts("dev-1", "studio", nil)); err != nil {
+		t.Fatalf("the sample summary: %v", err)
+	}
+	for name, body := range map[string][]byte{
+		"a body that is no summary": []byte(`{"hosts":[]}`),
+		"an unknown field":          []byte(`{"platform":"linux/amd64","version":"v1","sessions":{"running":0,"waiting":0},"runs":{"held":0,"waiting":0},"hosts":[],"user":"ana"}`),
+	} {
+		if err := h.PutRemote(ctx, SampleRemoteHosts("dev-1", "studio", body)); !errors.Is(err, ext.ErrRefused) {
+			t.Errorf("%s: %v, want a refusal", name, err)
+		}
+	}
+	if len(put) != 1 || put[0].Kind != ext.RemoteHosts {
+		t.Fatalf("the script was handed %+v", put)
+	}
+}
+
+// Continuity hands the store the host summary: store hosts, path summary,
+// a HostSummary the server would take.
+func TestContinuitySendsTheHostSummary(t *testing.T) {
+	cs := NewFakeContinuity("summary")
+	if errs := record(t, func(rt T) { Continuity(rt, nil, cs) }); len(errs) != 0 {
+		t.Fatal(errs)
+	}
+	sent := 0
+	for _, d := range cs.Docs() {
+		if d.Doc.Store != "hosts" {
+			continue
+		}
+		sent++
+		if _, err := ext.ParseHostSummary(d.Doc.Data); d.Doc.Path != "summary" || d.Deleted || d.Doc.Rev < 1 || err != nil {
+			t.Errorf("the summary document %+v: %v", d.Doc, err)
+		}
+	}
+	if sent == 0 {
+		t.Fatal("no host summary was sent")
+	}
+}

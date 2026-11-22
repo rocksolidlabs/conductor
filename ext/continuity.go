@@ -51,10 +51,10 @@ type RestoreRequest struct {
 
 // Doc is one document's state after a local commit, or a replay's marker.
 type Doc struct {
-	Store  string    `json:"store"`         // data | ledger | dispatch | decision, or the markers replay | replayed
-	Path   string    `json:"path"`          // a document's path in the data directory, a run's id, a Dispatch entity's kind/id or "log", a decision's dr-n
+	Store  string    `json:"store"`         // data | ledger | dispatch | decision | hosts, or the markers replay | replayed
+	Path   string    `json:"path"`          // a document's path in the data directory, a run's id, a Dispatch entity's kind/id or "log", a decision's dr-n, hosts' "summary" (a HostSummary)
 	Epoch  string    `json:"epoch"`         // 32 hex characters, new at every replay: Rev orders docs of one epoch only
-	Rev    int64     `json:"rev,omitempty"` // data: the data directory's commit sequence in this epoch; ledger: the run's revision; dispatch: the last change's position in its log
+	Rev    int64     `json:"rev,omitempty"` // data: the data directory's commit sequence in this epoch; ledger: the run's revision; dispatch: the last change's position in its log; hosts: the summary's sequence in this epoch, from 1, rising with its contents
 	At     time.Time `json:"at"`
 	Size   int64     `json:"size,omitempty"`   // the whole document's bytes
 	Offset int64     `json:"offset,omitempty"` // where Data begins in it: a document past MaxDocData comes in parts

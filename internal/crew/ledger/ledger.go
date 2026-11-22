@@ -315,6 +315,15 @@ type Ledger struct {
 	// when it could not be read.
 	version int
 	lock    *ownerLock
+	// While the ledger does not hold lock, one of these says why
+	// (LockView): waitingSince while awaitLock tries, gaveUpAt once it, or
+	// Open, stopped trying, noLocks where there are no locks. A lock
+	// taken clears them.
+	waitingSince time.Time
+	gaveUpAt     time.Time
+	noLocks      bool
+	// wait is how awaitLock waits (waitSeams), fixed at Open.
+	wait waitSeams
 	// done ends awaitLock when the ledger is closed; ownedLate says the
 	// lock was taken after Open, onOwned is what runs then (OnOwned), and
 	// notified that it ran.
@@ -361,6 +370,15 @@ var (
 // takeLock is takeOwnerLock; the tests make it fail.
 var takeLock = takeOwnerLock
 
+// waitSeams are how a ledger's wait for the owner lock (awaitLock) goes:
+// lockWait, how long it keeps trying (LockWait as Open was called), and
+// ticks, when a test sets it, what starts each try in place of a 250 ms
+// ticker.
+type waitSeams struct {
+	lockWait time.Duration
+	ticks    <-chan time.Time
+}
+
 // Open opens, or creates, the database under dir (the runs directory,
 // 0700) and takes the owner lock. It never fails for want of the lock or
 // of a usable database: the ledger then opens read-only, or with nothing
@@ -368,24 +386,31 @@ var takeLock = takeOwnerLock
 // crews while managed launches answer 503. It fails only when the
 // directory cannot be made or the database file is a symbolic link.
 func Open(dir string) (*Ledger, error) {
+	return openWith(dir, waitSeams{lockWait: LockWait})
+}
+
+// openWith is Open with the wait for the owner lock as w says.
+func openWith(dir string, w waitSeams) (*Ledger, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
-	l := &Ledger{dir: dir, done: make(chan struct{})}
+	l := &Ledger{dir: dir, done: make(chan struct{}), wait: w}
 	path := filepath.Join(dir, File)
 	if fi, err := os.Lstat(path); err == nil && fi.Mode()&os.ModeSymlink != 0 {
 		return nil, fmt.Errorf("ledger: %s is a symbolic link", path)
 	}
 	lockPath := filepath.Join(dir, Lock)
-	lock, why, held, err := takeLock(lockPath)
+	lock, why, held, err := takeOrdered(lockPath)
 	if err != nil {
 		// The lock file itself: the ledger is unavailable, the server not.
 		l.readOnly, l.why = true, err.Error()
+		l.gaveUpAt = time.Now().UTC()
 		return l, nil
 	}
 	l.lock = lock
 	if lock == nil {
 		l.readOnly, l.why = true, why
+		l.noLocks = !held
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -398,6 +423,7 @@ func Open(dir string) (*Ledger, error) {
 		// what there is, and takes the lock as it is let go (awaitLock),
 		// for up to LockWait.
 		l.why = "waiting for the owner lock: " + why
+		l.waitingSince = time.Now().UTC()
 		go l.awaitLock(lockPath, path)
 	}
 	return l, nil
@@ -504,16 +530,22 @@ func (l *Ledger) readVersion(ctx context.Context) {
 // way and none is made after it. A try opens the lock file, making it when
 // it is missing, and a lock taken opens the database: once Close has
 // returned, the wait makes nothing in the directory, which may be going by
-// then (a test's cleanup removing it, #281).
+// then (a test's cleanup removing it, #281). Where it stops, it records
+// why beside the reason it keeps for ReadOnly (LockView): GaveUpAt, or
+// NoLocks; a lock taken clears both, and WaitingSince with them.
 func (l *Ledger) awaitLock(lockPath, path string) {
-	deadline := time.Now().Add(LockWait)
-	tick := time.NewTicker(250 * time.Millisecond)
-	defer tick.Stop()
+	deadline := time.Now().Add(l.wait.lockWait)
+	ticks := l.wait.ticks
+	if ticks == nil {
+		tick := time.NewTicker(250 * time.Millisecond)
+		defer tick.Stop()
+		ticks = tick.C
+	}
 	for {
 		select {
 		case <-l.done:
 			return
-		case <-tick.C:
+		case <-ticks:
 		}
 		l.mu.Lock()
 		if l.closed {
@@ -521,12 +553,14 @@ func (l *Ledger) awaitLock(lockPath, path string) {
 			l.mu.Unlock()
 			return
 		}
-		lock, why, held, err := takeLock(lockPath)
+		lock, why, held, err := takeOrdered(lockPath)
 		switch {
 		case err != nil:
 			l.why = err.Error()
+			l.waitingSince, l.gaveUpAt = time.Time{}, time.Now().UTC()
 		case lock != nil:
 			l.lock = lock
+			l.waitingSince, l.gaveUpAt, l.noLocks = time.Time{}, time.Time{}, false
 			if l.db != nil {
 				l.db.Close()
 				l.db = nil
@@ -536,7 +570,9 @@ func (l *Ledger) awaitLock(lockPath, path string) {
 			err := l.attach(ctx, path)
 			cancel()
 			if err != nil {
+				// attach let the lock go.
 				l.readOnly, l.why = true, err.Error()
+				l.gaveUpAt = time.Now().UTC()
 			}
 			if !l.readOnly && l.outputCheck != nil {
 				// Before any of this server's writes: what the last owner
@@ -560,6 +596,12 @@ func (l *Ledger) awaitLock(lockPath, path string) {
 		default:
 			// Held past the wait, or locks no longer supported: as it is.
 			l.why = why
+			l.waitingSince = time.Time{}
+			if held {
+				l.gaveUpAt = time.Now().UTC()
+			} else {
+				l.noLocks = true
+			}
 		}
 		l.mu.Unlock()
 		return
