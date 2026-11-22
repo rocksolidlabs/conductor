@@ -175,6 +175,29 @@ function listen(add: (gate: <T>(cb: (x: T) => void) => (x: T) => void) => Promis
   }
 }
 
+/**
+ * A native refusal as a provider reads it, with `code` and `words` at the top. The iPhone's runtime puts a rejection's fields there;
+ * Android's puts them under `data` (beside `code` and the message), so the words are lifted from there onto the error itself.
+ */
+export function refusalOf(e: unknown): unknown {
+  if (!e || typeof e !== 'object') return e
+  const o = e as { code?: unknown; words?: unknown; data?: unknown }
+  if (typeof o.words === 'string' || typeof o.code !== 'string') return e
+  const words = o.data && typeof o.data === 'object' ? (o.data as { words?: unknown }).words : undefined
+  if (typeof words !== 'string') return e
+  try {
+    Object.defineProperty(e, 'words', { value: words, enumerable: true, configurable: true, writable: true })
+    return e
+  } catch {
+    return { code: o.code, words, message: words }
+  }
+}
+
+/** A native call whose refusal reaches its caller as `refusalOf` reads it. */
+function lifted<T>(p: Promise<T>): Promise<T> {
+  return p.catch((e: unknown) => Promise.reject(refusalOf(e)))
+}
+
 /** The key and the store a provider is handed with no native layer: every call refused `no_native`. */
 function refusingKit(): Pick<ProviderKit, 'key' | 'store' | 'http'> {
   const no = () => refuse(NO_NATIVE)
@@ -190,11 +213,11 @@ function providerStore(s: NativeStore): ProviderKit['store'] {
   const area = (a: unknown): a is 'drafts' | 'cache' => a === 'drafts' || a === 'cache'
   const out = (a: unknown) => refuse({ code: 'area_refused', words: 'A provider keeps drafts and its cache here, nothing else.' })
   return {
-    put: (a, key, data) => (area(a) ? s.put({ area: a, key, data }) : out(a)),
-    get: (a, key) => (area(a) ? s.get({ area: a, key }) : out(a)),
-    list: (a) => (area(a) ? s.list({ area: a }).then((r) => r.keys) : out(a)),
-    remove: (a, key) => (area(a) ? s.remove({ area: a, key }) : out(a)),
-    clear: () => s.clear(),
+    put: (a, key, data) => (area(a) ? lifted(s.put({ area: a, key, data })) : out(a)),
+    get: (a, key) => (area(a) ? lifted(s.get({ area: a, key })) : out(a)),
+    list: (a) => (area(a) ? lifted(s.list({ area: a })).then((r) => r.keys) : out(a)),
+    remove: (a, key) => (area(a) ? lifted(s.remove({ area: a, key })) : out(a)),
+    clear: () => lifted(s.clear()),
   }
 }
 
@@ -251,18 +274,18 @@ export function makeBridge(native: NativeLayer | null, host: PageHost): { bridge
   const kit: ProviderKit = native
     ? {
         key: {
-          create: (o) => native.key.create(o),
-          publicKey: () => native.key.publicKey(),
-          state: () => native.key.state(),
-          bind: (o) => native.key.bind(o),
-          sign: (o) => native.key.sign(o),
-          ending: () => native.key.ending(),
-          remove: () => native.key.remove(),
+          create: (o) => lifted(native.key.create(o)),
+          publicKey: () => lifted(native.key.publicKey()),
+          state: () => lifted(native.key.state()),
+          bind: (o) => lifted(native.key.bind(o)),
+          sign: (o) => lifted(native.key.sign(o)),
+          ending: () => lifted(native.key.ending()),
+          remove: () => lifted(native.key.remove()),
         },
         store: providerStore(native.store),
         push: { token: () => token, onToken: (cb) => (tokenListeners.add(cb), () => tokenListeners.delete(cb)) },
         http: async (o) => {
-          const r = await native.http.request({ ...o, responseType: 'text' })
+          const r = await lifted(native.http.request({ ...o, responseType: 'text' }))
           if (typeof r.data !== 'string') return refuse({ code: 'unreadable', words: 'The reply was not handed over as its text.' })
           if (new TextEncoder().encode(r.data).length > MAX_HTTP_BODY) return refuse({ code: 'too_large', words: `The reply is longer than ${MAX_HTTP_BODY} bytes.` })
           return { status: r.status, headers: r.headers, data: r.data }

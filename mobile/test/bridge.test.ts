@@ -179,6 +179,31 @@ describe('a provider module', () => {
     }
     expect([...files.keys()].some((k) => k.startsWith('servers/'))).toBe(false)
   })
+
+  it("reads every native refusal with its code and words, whether the runtime put the words at the top (iPhone) or under data (Android)", async () => {
+    const { native } = fakeNative()
+    native.platform = 'android'
+    // Android's runtime rejects with the message, the code, and the plugin's fields under `data`, on an Error of its own.
+    const android = (code: string, words: string) => Object.assign(new Error(words), { code, data: { words } })
+    native.key.sign = vi.fn(async () => Promise.reject(android('presence_refused', 'Not confirmed: nothing was signed.')))
+    native.store.put = vi.fn(async () => Promise.reject(android('full', 'This phone keeps 32 drafts already.')))
+    native.store.clear = vi.fn(async () => Promise.reject(android('not_cleared', 'Not everything of this sign-in could be removed from this phone.')))
+    native.http.request = vi.fn(async () => Promise.reject(android('origin_refused', 'Only an https address on an origin this shell names is sent.')))
+    const { bridge } = makeBridge(native, quiet())
+    let kit: ProviderKit | undefined
+    bridge.register((k: ProviderKit) => ((kit = k), { name: 'P' }))
+    await expect(kit!.key.sign({ request: {} })).rejects.toMatchObject({ code: 'presence_refused', words: 'Not confirmed: nothing was signed.' })
+    await expect(kit!.store.put('drafts', 'd', 'x')).rejects.toMatchObject({ code: 'full', words: 'This phone keeps 32 drafts already.' })
+    await expect(kit!.store.clear()).rejects.toMatchObject({ code: 'not_cleared' })
+    await expect(kit!.store.clear()).rejects.toHaveProperty('words', 'Not everything of this sign-in could be removed from this phone.')
+    await expect(kit!.http({ url: 'https://x.example/' })).rejects.toMatchObject({ code: 'origin_refused', words: 'Only an https address on an origin this shell names is sent.' })
+    // The iPhone's shape is left as it is; anything that is no refusal too.
+    const ios = Object.assign(new Error('w'), { code: 'no_key', words: 'This phone has no key.' })
+    native.key.state = vi.fn(async () => Promise.reject(ios))
+    await expect(kit!.key.state()).rejects.toBe(ios)
+    native.key.remove = vi.fn(async () => Promise.reject('plain'))
+    await expect(kit!.key.remove()).rejects.toBe('plain')
+  })
 })
 
 describe('the platform', () => {
