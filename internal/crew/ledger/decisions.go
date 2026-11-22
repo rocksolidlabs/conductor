@@ -158,6 +158,12 @@ const (
 
 	ResponseAccepted = "accepted"
 	ResponseRefused  = "refused"
+	// ResponseCounted is an eligible approval counted toward a router's
+	// policy of several groups or a quorum above one (SW1 PR-9): it fills
+	// a place, and the decision stays open until the approval that fills
+	// the last one is accepted. A barrier (version 17) keeps a binary that
+	// counts no approvals read-only on a ledger that may hold one.
+	ResponseCounted = "counted"
 
 	// ViaIdentity is the authority of a response an identity provider's
 	// principal gave: its acceptance holds a place for the decision that
@@ -195,6 +201,10 @@ const (
 	// HistoryRerouted is a decision router's change of a record's policy
 	// (beside assigned, delegated and escalated, the router's four kinds).
 	HistoryRerouted = "rerouted"
+	// HistoryRechecked is a counted response's sign-in rechecked after its
+	// commit (its detail {k, admitted}): admitted, it keeps its place
+	// across restarts; not, it no longer counts. At most one a response.
+	HistoryRechecked = "rechecked"
 )
 
 // Bounds of a decision's record (Owner decisions, 15): each part keeps its
@@ -303,6 +313,7 @@ var historyBounds = map[string]struct {
 	HistoryDelegated:         {"router", MaxDecisionRouterChanges},
 	HistoryEscalated:         {"router", MaxDecisionRouterChanges},
 	HistoryRerouted:          {"router", MaxDecisionRouterChanges},
+	HistoryRechecked:         {"rechecked", MaxDecisionResponses},
 	HistoryExpired:           {"rest", 0},
 }
 
@@ -312,9 +323,9 @@ func routerKind(kind string) bool { return historyBounds[kind].group == "router"
 
 // mandatoryHistory is the room the bounded kinds keep: one opened, two
 // routed, the operator's operations, a Brakeman turn's and a decision
-// router's changes, the responses, one applied, one supersession or
-// cancellation, one refund and three deliveries.
-const mandatoryHistory = 1 + 2 + MaxDecisionOperations + MaxDecisionTurnOps + MaxDecisionRouterChanges + MaxDecisionResponses + 1 + 1 + 1 + 3
+// router's changes, the responses and their rechecks, one applied, one
+// supersession or cancellation, one refund and three deliveries.
+const mandatoryHistory = 1 + 2 + MaxDecisionOperations + MaxDecisionTurnOps + MaxDecisionRouterChanges + MaxDecisionResponses + MaxDecisionResponses + 1 + 1 + 1 + 3
 
 // Errors of the decision writers.
 var (
@@ -930,21 +941,26 @@ const openish = `(d.state = 'open' OR ` + placeCond + `)`
 
 // placeCond is the SQL condition of a decision (alias d) that holds a
 // place for its replacement: answered, its accepted response an
-// identity's; or open or answered with a spare in its policy (a record
-// opened while a decision router routes policies), whose accepted
-// response, an identity's or not, takes that one place, never a second.
+// identity's; open with an identity's counted response (SW1 PR-9: the
+// replacement its counted approvals may need); or open or answered with a
+// spare in its policy (a record opened while a decision router routes
+// policies), whose accepted or counted responses, an identity's or not,
+// take that one place, never a second.
 const placeCond = `((d.state = 'answered' AND EXISTS (SELECT 1 FROM decision_responses r
 	WHERE r.decision = d.n AND r.status = 'accepted' AND json_extract(r.authority, '$.via') IN ('identity', 'sync')))
+	OR (d.state = 'open' AND EXISTS (SELECT 1 FROM decision_responses r
+	WHERE r.decision = d.n AND r.status = 'counted' AND json_extract(r.authority, '$.via') IN ('identity', 'sync')))
 	OR (d.state IN ('open', 'answered') AND COALESCE(json_extract(d.policy, '$.spare'), 0) = 1))`
 
 // voidedCond is the SQL condition of a voided routed decision (alias d):
-// an accepted answer voided, the decision superseded while it held a spare
-// (opened while a decision router routed policies), its replacement
-// standing in its place. The run's voided decisions are bound apart
+// an accepted answer voided, or counted approvals whose response rows ran
+// short (SW1 PR-9), the decision superseded while it held a spare (opened
+// while a decision router routed policies), its replacement standing in
+// its place. The run's voided decisions are bound apart
 // (MaxVoidedRoutedPerRun). A decision superseded unanswered (an agent's
 // newer request) is not voided: it counts among the run's decisions.
 const voidedCond = `(d.state = 'superseded' AND COALESCE(json_extract(d.policy, '$.spare'), 0) = 1
-	AND EXISTS (SELECT 1 FROM decision_responses r WHERE r.decision = d.n AND r.status = 'accepted'))`
+	AND EXISTS (SELECT 1 FROM decision_responses r WHERE r.decision = d.n AND r.status IN ('accepted', 'counted')))`
 
 // MaxVoidedRoutedPerRun bounds a run's voided routed decisions: past it an
 // answer to a routed decision is refused for room (the replacement it may
@@ -1360,8 +1376,11 @@ func (t *Tx) MoveDecisions(from, to string) ([]DecisionRow, error) {
 	return out, nil
 }
 
-// Respond keeps a response to decision n, refused or accepted, with its
-// receipt, numbered in the order received. A response id its actor sent
+// Respond keeps a response to decision n, refused, counted or accepted,
+// with its receipt, numbered in the order received. A counted response
+// (an approval toward a router's policy of several places) is kept while
+// the decision is open and unanswered, as an acceptance is, and leaves it
+// open; its places are the caller's to judge. A response id its actor sent
 // before answers that response's row (Repeat), whatever it was, or
 // ErrDecisionConflict when its fingerprint differs. A decision keeps at
 // most MaxDecisionRefusals refused rows: a refusal past them keeps no row
@@ -1381,9 +1400,9 @@ func (t *Tx) Respond(n int64, r ResponseRow) (Responded, error) {
 	}
 	r.Decision = n
 	switch r.Status {
-	case ResponseAccepted, ResponseRefused:
+	case ResponseAccepted, ResponseRefused, ResponseCounted:
 	default:
-		return Responded{}, invalid("a response is accepted or refused, not %q", r.Status)
+		return Responded{}, invalid("a response is accepted, refused or counted, not %q", r.Status)
 	}
 	if r.Actor == "" || r.ResponseID == "" || r.Fingerprint == "" {
 		return Responded{}, invalid("a response names its actor, its id and its fingerprint")
@@ -1415,9 +1434,10 @@ func (t *Tx) Respond(n int64, r ResponseRow) (Responded, error) {
 		}
 		return Responded{Row: prior, Repeat: true, Kept: true}, nil
 	}
-	var all, refused, accepted int
-	if err := t.tx.QueryRowContext(t.ctx, `SELECT COUNT(*), COALESCE(SUM(status = 'refused'), 0), COALESCE(SUM(status = 'accepted'), 0) FROM decision_responses WHERE decision = ?`, n).
-		Scan(&all, &refused, &accepted); err != nil {
+	var all, refused, accepted, countedPlace int
+	if err := t.tx.QueryRowContext(t.ctx, `SELECT COUNT(*), COALESCE(SUM(status = 'refused'), 0), COALESCE(SUM(status = 'accepted'), 0),
+		COALESCE(SUM(status = 'counted' AND json_extract(authority, '$.via') IN ('identity', 'sync')), 0) FROM decision_responses WHERE decision = ?`, n).
+		Scan(&all, &refused, &accepted, &countedPlace); err != nil {
 		return Responded{}, err
 	}
 	if r.Status == ResponseRefused {
@@ -1440,9 +1460,10 @@ func (t *Tx) Respond(n int64, r ResponseRow) (Responded, error) {
 				return Responded{}, fmt.Errorf("%w: %s's run has voided %d routed answers: stop or cancel it", ErrDecisionLimit, d.ID(), voided)
 			}
 		}
-		if (auth.Via == ViaIdentity || auth.Via == ViaSync) && !spareOf(d.Policy) {
+		if (auth.Via == ViaIdentity || auth.Via == ViaSync) && !spareOf(d.Policy) && countedPlace == 0 {
 			// A record with a spare holds its replacement's place from its
-			// opening: its answer is never refused for room.
+			// opening, and one with an identity's counted response from that
+			// response (placeCond): its answer is never refused for room.
 			if ok, err := t.room(d.CurrentRun); err != nil {
 				return Responded{}, err
 			} else if !ok {
