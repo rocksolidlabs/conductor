@@ -686,10 +686,11 @@ once per request; nothing is persisted.
     sessions by the predicate, not taken from it; the way MB0 drops the
     question item a record replaces
     (`TestADecisionRecordReplacesItsQuestion`).
-  - This server's `decisions`, `{"open": 1, "waitingRef": "…"}`: the
-    open decision records of the runs it lists with a `waiting` count
-    (holder `this`), by `current_run`; `null` for every other holder, as
-    those runs' `waiting` is. It sits beside `sessions.waiting`, which
+  - This server's `decisions`, `{"open": 1, "waitingRef": "…"}`: every
+    open decision record of its ledger while it holds the ledger (holder
+    `this`), a stopped run's among them, which can still be answered and
+    which Needs your decision lists, read in bounded pages; `null` for
+    every other holder, as those runs' `waiting` is. It sits beside `sessions.waiting`, which
     leaves out the mirrors by the same predicate. A hosted session's question
     stays a question (DR1: a managed run's attempts are server sessions,
     so no decision record is ever a host's).
