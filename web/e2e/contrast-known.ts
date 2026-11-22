@@ -6,7 +6,7 @@
  * main.css, not listed.
  */
 
-export type WalkedPage = 'yard' | 'session' | 'needs' | 'agents' | 'dispatch' | 'run'
+export type WalkedPage = 'yard' | 'session' | 'needs' | 'agents' | 'dispatch' | 'run' | 'hosts'
 
 export interface Known {
   page: WalkedPage

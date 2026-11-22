@@ -1,9 +1,15 @@
+import { spawn, type ChildProcess } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
+import { openSync } from 'node:fs'
+import { join } from 'node:path'
 import type { Page, Route } from '@playwright/test'
 import { hostAvailabilityWords, platformWords } from '../app/utils/hosts'
-import type { HostsReply } from '../app/utils/protocol'
+import type { HostRow, HostsReply } from '../app/utils/protocol'
 import { clock } from '../app/utils/syncStatus'
-import { dayPage, expect, readAgain, test } from './fixtures'
+import { budget, dayPage, endHosted, expect, hostedName, hostedSession, readAgain, test, type Api } from './fixtures'
 import { noSideways } from './layout'
+import { serverBinary, stubBash, stubPath } from './server'
+import type { E2EState } from './state'
 
 // The Hosts page (docs/plans/hosts.md, PR-3 and PR-4), against a stub of GET /api/hosts: This server, the hosts that reach it, the
 // switchyard, the runs and who holds them, each count of what waits linked to its item on Needs you, and nothing that acts on work.
@@ -218,4 +224,107 @@ test('on a phone, in both themes, the page fits its width: nothing scrolls sidew
     await noSideways(page, { root: page.locator('[data-hosts]') })
     await page.context().close()
   }
+})
+
+// Against the real route: a real `conductor host` running the stub agent, and a managed run on this server. Counted by what this test
+// made alone: its host's card is found by its session's id in the reply, never by a list's length.
+test.describe('the page against the real route', () => {
+  const hosts: Array<{ name: string; proc: ChildProcess | null }> = []
+  const crews: string[] = []
+  const runs: string[] = []
+
+  test.afterAll(async ({ api }) => {
+    for (const id of runs) await api.stopRun(id)
+    for (const id of crews) await api.call('DELETE', `/api/crews/${encodeURIComponent(id)}`)
+    for (const h of hosts) await endHosted(api, h.name, h.proc)
+  })
+
+  /** A `conductor host` of the stub agent as Codex, in a process group of its own; its session's id once it registered. */
+  async function startHost(api: Api, state: E2EState, base: string): Promise<{ id: string; proc: ChildProcess }> {
+    const logFile = join(state.root, `${base}-${randomUUID()}.log`)
+    const log = openSync(logFile, 'a')
+    const name = hostedName(base)
+    const bash = stubBash()
+    const proc = spawn(serverBinary(), ['host', '--server', state.baseURL, '--token', state.hostToken, '--host-name', `${base}-machine`, '--name', name, '--agent', 'codex', '--cwd', state.home, '--relay-only', '--no-local', '--', bash.command, stubPath, '--session-id', randomUUID()], {
+      env: { PATH: bash.path, LANG: 'C.UTF-8', HOME: state.home, CONDUCTOR_BIN: serverBinary(), STUB_IDENTITY: 'codex', STUB_REPORT: 'codex' },
+      stdio: ['ignore', log, log],
+      detached: true,
+    })
+    hosts.push({ name, proc })
+    return { id: (await hostedSession(api, logFile, name)).id, proc }
+  }
+
+  /** The reply's row of the machine that hosts `session`, read as the page reads it. */
+  async function rowOf(page: Page, token: string, session: string): Promise<HostRow | undefined> {
+    const r = await page.evaluate(async (t) => (await (await fetch('/api/hosts', { headers: { Authorization: `Bearer ${t}` } })).json()) as HostsReply, token)
+    return r.hosts.find((h) => h.sessionIds.includes(session))
+  }
+
+  test('a host is Connected with its session and its question, a managed run is held by this server, and a host gone is Away, then Last seen', async ({ page, api, state }) => {
+    budget(60_000)
+    await page.setViewportSize({ width: 1440, height: 900 })
+    const first = await startHost(api, state, 'hosts-a')
+    await page.goto('/crews')
+    await expect(page.locator('#dashboard-sidebar-main')).toBeVisible()
+    await page.keyboard.press('g')
+    await page.keyboard.press('o')
+    await expect(page).toHaveURL(/\/hosts$/)
+    await expect(card(page, (await rowOf(page, state.token, first.id))?.key ?? 'none')).toBeVisible()
+    const row = (await rowOf(page, state.token, first.id))!
+    const mine = card(page, row.key)
+    await expect(mine.locator('[data-host-availability-words]')).toHaveText('Connected')
+    await expect(mine.locator('[data-host-meta]')).toContainText(platformWords(row.platform) || 'Platform not reported')
+    await expect(mine.locator(`[data-host-session="${first.id}"]`)).toHaveAttribute('href', `/sessions/${first.id}`)
+    await expect(mine.locator('[data-host-runs]')).toHaveText('Holds no runs')
+
+    // The stub's command approval, asked in the session's terminal: the card's count of what waits, waited on by the count itself.
+    await page.goto(`/sessions/${encodeURIComponent(first.id)}`)
+    const screen = page.locator('.terminal-host .xterm-screen').first()
+    await expect(screen).toBeVisible({ timeout: 30_000 })
+    await screen.click()
+    await page.keyboard.type('stub approve curl -sI https://example.com')
+    await page.keyboard.press('Enter')
+    await expect.poll(async () => (await api.session(first.id)).attention?.source ?? '', { timeout: 30_000, message: 'the approval is asked' }).toBe('question')
+    await page.goto('/hosts')
+    await expect(mine.locator('[data-host-waiting]')).toHaveAttribute('data-count', '1')
+    await expect(mine.locator('[data-host-waiting]')).toHaveText('1 needs you')
+
+    // A managed run on this server: held by this server, a link to its run page.
+    const crew = await api.ok<{ crew: { id: string } }>('POST', '/api/crews', {
+      name: 'e2e hosts managed',
+      goal: 'wait',
+      cwd: '',
+      where: 'server',
+      openAfterLaunch: false,
+      yolo: null,
+      isolation: 'worktree',
+      members: [{ name: 'builder', agentId: 'claude', prompt: '', start: { when: 'task' } }],
+      tasks: [{ id: 'build', member: 'builder', kind: 'work', instructions: 'Build it.' }],
+    })
+    crews.push(crew.crew.id)
+    const run = await api.launchCrew(crew.crew.id)
+    runs.push(run.id)
+    const runRow = page.locator(`[data-host-run="${run.id}"]`)
+    await expect(runRow.locator('[data-host-run-link]')).toHaveAttribute('href', `/runs/${run.id}`)
+    const holderWords = async () => {
+      await expect(runRow.locator('[data-host-run-holder-words]')).toHaveText('Held by this server')
+      await expect(page.locator('[data-hosts]').getByRole('button', { name: /start|stop|move|launch|continue|retry/i })).toHaveCount(0)
+    }
+    await holderWords()
+
+    // A redraw the test causes: a second host connects; the run's holder and the page's controls are checked again.
+    const second = await startHost(api, state, 'hosts-b')
+    await expect.poll(async () => (await rowOf(page, state.token, second.id))?.key ?? '', { message: 'the second host is listed' }).not.toBe('')
+    await expect(card(page, (await rowOf(page, state.token, second.id))!.key)).toBeVisible()
+    await holderWords()
+
+    // The first host gone (its process group killed): Away while its session waits in the grace, then Last seen once it is removed:
+    // the grace, then the server's maintenance tick that expires it, then the page's read on the removal.
+    process.kill(-first.proc.pid!, 'SIGKILL')
+    await expect(mine.locator('[data-host-availability-words]')).toHaveText(/^Away/)
+    const graceAndTick = 60_000 + 30_000 + 15_000
+    budget(graceAndTick)
+    await expect(mine.locator('[data-host-availability-words]')).toHaveText(/^Last seen /, { timeout: graceAndTick })
+    await expect(mine.locator('[data-host-session]')).toHaveCount(0)
+  })
 })
