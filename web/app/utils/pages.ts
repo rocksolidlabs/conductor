@@ -13,6 +13,7 @@ export type PageId =
   | 'dispatch'
   | 'history'
   | 'history-feed'
+  | 'hosts'
   | 'brakeman'
   | 'sessions'
   | 'paste'
@@ -133,7 +134,18 @@ export const PAGES: readonly PageEntry[] = [
     place: { palette: 9 },
     viewOf: 'history',
   },
-  { id: 'paste', label: 'Paste invite', title: 'Paste invite', to: '/paste', icon: 'i-lucide-clipboard-paste', about: 'Opens a share link or an invite someone sent you.', when: 'always', place: { palette: 10 } },
+  {
+    id: 'hosts',
+    label: 'Hosts',
+    title: 'Hosts',
+    to: '/hosts',
+    icon: 'i-lucide-server',
+    chord: ['G', 'O'],
+    about: 'The machines this server knows, and who holds each run.',
+    when: 'always',
+    place: { nav: 8, more: 5, palette: 10 },
+  },
+  { id: 'paste', label: 'Paste invite', title: 'Paste invite', to: '/paste', icon: 'i-lucide-clipboard-paste', about: 'Opens a share link or an invite someone sent you.', when: 'always', place: { palette: 11 } },
   {
     id: 'settings',
     label: 'Settings',
@@ -143,7 +155,7 @@ export const PAGES: readonly PageEntry[] = [
     chord: ['G', 'S'],
     about: 'How the desktop app runs its server and shares.',
     when: 'desktop',
-    place: { nav: 8, more: 5, palette: 11 },
+    place: { nav: 9, more: 6, palette: 12 },
   },
 ]
 
@@ -169,7 +181,7 @@ export function pageById(id: PageId): PageEntry {
   return PAGES.find((p) => p.id === id)!
 }
 
-/** The rail: Needs you while its row shows, the Yard, Crews, Dispatch, Brakeman while the server has it, Agents, History, Settings in the desktop app. */
+/** The rail: Needs you while its row shows, the Yard, Crews, Dispatch, Brakeman while the server has it, Agents, History, Hosts, Settings in the desktop app. */
 export function navPages(s: PageScope = {}): PageEntry[] {
   return placed('nav', s).filter((p) => p.id !== 'decisions' || s.needs !== false)
 }
@@ -207,12 +219,12 @@ export function navTiles(s: TileScope = {}): { tiles: NavTile[]; more: PageEntry
   return { tiles, more: placed('nav', s).filter((p) => p.place.tile === undefined) }
 }
 
-/** The pages under the phone's More, in order: Dispatch, Brakeman while the server has it, Agents, History, Settings in the desktop app. */
+/** The pages under the phone's More, in order: Dispatch, Brakeman while the server has it, Agents, History, Hosts, Settings in the desktop app. */
 export function phoneMore(s: Pick<PageScope, 'desktop' | 'brakeman'> = {}): PageEntry[] {
   return placed('more', s)
 }
 
-/** The palette's Go to rows, in order: the destinations and their views (the Roundhouse, Agents · Reporting, History · Live), the paste invite. */
+/** The palette's Go to rows, in order: the destinations and their views (the Roundhouse, Agents · Reporting, History · Live), Hosts, the paste invite. */
 export function palettePages(s: Pick<PageScope, 'desktop'> = {}): PageEntry[] {
   return placed('palette', s)
 }

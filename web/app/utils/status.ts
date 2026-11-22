@@ -260,6 +260,20 @@ export function memberStatusOf(run: RunInfo, member: RunMember, sessions: readon
   return { status, mark: s ? sessionStatus(s, now) : mark('running') }
 }
 
+const PAUSED_LEGEND = 'paused: a person paused the run; nothing new starts until it is resumed on its run page'
+const INTERRUPTED_LEGEND = 'interrupted: a restart ended its attempts and it is not yet continued; its run page continues it'
+
+/**
+ * An open managed run as the Hosts page lists it, from its row alone (GET /api/hosts: its state and paused flag as the engine or the
+ * ledger gives them): interrupted and not yet continued takes the exited mark with those words, paused the waiting mark with
+ * "paused", and any other open run the running mark.
+ */
+export function heldRunStatus(state: string, paused: boolean): MarkView {
+  if (state === 'interrupted') return mark('exited', 'interrupted, not yet continued', INTERRUPTED_LEGEND)
+  if (paused) return mark('waiting', 'paused', PAUSED_LEGEND)
+  return mark('running')
+}
+
 /** The items of the one list (needsYou) that wait in the run `id`: what its "N need you" counts. */
 export function runItems(items: readonly NeedsItem[], id: string): NeedsItem[] {
   return items.filter((it) => it.run === id)

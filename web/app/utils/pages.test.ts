@@ -7,12 +7,12 @@ const labels = (ps: ReadonlyArray<{ label: string }>) => ps.map((p) => p.label)
 
 describe('the pages in one table', () => {
   it("gives the sidebar's foot: Brakeman while the server has it, Settings in the desktop app, and no view of another page", () => {
-    const base = ['Needs you', 'Yard', 'Crews', 'Dispatch', 'Agents', 'History']
+    const base = ['Needs you', 'Yard', 'Crews', 'Dispatch', 'Agents', 'History', 'Hosts']
     expect(labels(navPages())).toEqual(base)
-    expect(labels(navPages({ brakeman: true }))).toEqual(['Needs you', 'Yard', 'Crews', 'Dispatch', 'Brakeman', 'Agents', 'History'])
+    expect(labels(navPages({ brakeman: true }))).toEqual(['Needs you', 'Yard', 'Crews', 'Dispatch', 'Brakeman', 'Agents', 'History', 'Hosts'])
     expect(labels(navPages({ desktop: true }))).toEqual([...base, 'Settings'])
-    expect(labels(navPages({ brakeman: true, desktop: true }))).toEqual(['Needs you', 'Yard', 'Crews', 'Dispatch', 'Brakeman', 'Agents', 'History', 'Settings'])
-    expect(navPages().map((p) => p.to)).toEqual(['/decisions', '/yard', '/crews', '/dispatch', '/agents', '/history'])
+    expect(labels(navPages({ brakeman: true, desktop: true }))).toEqual(['Needs you', 'Yard', 'Crews', 'Dispatch', 'Brakeman', 'Agents', 'History', 'Hosts', 'Settings'])
+    expect(navPages().map((p) => p.to)).toEqual(['/decisions', '/yard', '/crews', '/dispatch', '/agents', '/history', '/hosts'])
     for (const view of ['roundhouse', 'history-feed', 'agents-reporting', 'paste']) expect(ids(navPages({ brakeman: true, desktop: true }))).not.toContain(view)
 
     // Needs you's row leaves when nothing waits and nothing was decided that day (needsRowShown); the rest keep their places.
@@ -22,14 +22,14 @@ describe('the pages in one table', () => {
   it("gives the phone's bar and its More, the Roundhouse in neither", () => {
     expect(labels(phoneTabs())).toEqual(['Needs you', 'Sessions', 'Yard', 'Crews'])
     expect(phoneTabs().map((p) => p.to)).toEqual(['/decisions', '/sessions', '/yard', '/crews'])
-    expect(labels(phoneMore())).toEqual(['Dispatch', 'Agents', 'History'])
-    expect(labels(phoneMore({ desktop: true }))).toEqual(['Dispatch', 'Agents', 'History', 'Settings'])
+    expect(labels(phoneMore())).toEqual(['Dispatch', 'Agents', 'History', 'Hosts'])
+    expect(labels(phoneMore({ desktop: true }))).toEqual(['Dispatch', 'Agents', 'History', 'Hosts', 'Settings'])
   })
 
   it("gives the phone's More Brakeman after Dispatch while the server has it, so every page is reached from the phone", () => {
-    expect(labels(phoneMore({ brakeman: true }))).toEqual(['Dispatch', 'Brakeman', 'Agents', 'History'])
-    expect(labels(phoneMore({ brakeman: true, desktop: true }))).toEqual(['Dispatch', 'Brakeman', 'Agents', 'History', 'Settings'])
-    expect(labels(phoneMore({ brakeman: false }))).toEqual(['Dispatch', 'Agents', 'History'])
+    expect(labels(phoneMore({ brakeman: true }))).toEqual(['Dispatch', 'Brakeman', 'Agents', 'History', 'Hosts'])
+    expect(labels(phoneMore({ brakeman: true, desktop: true }))).toEqual(['Dispatch', 'Brakeman', 'Agents', 'History', 'Hosts', 'Settings'])
+    expect(labels(phoneMore({ brakeman: false }))).toEqual(['Dispatch', 'Agents', 'History', 'Hosts'])
   })
 
   it("gives the full sidebar's foot as six tiles, Brakeman's slot held while the server has not said, the rest under More", () => {
@@ -43,10 +43,10 @@ describe('the pages in one table', () => {
     expect(cells({ brakeman: false, switchyard: true })).toEqual(['Yard', 'Crews', 'Dispatch', 'more'])
     expect(cells({ brakeman: true, switchyard: true })).toEqual(['Yard', 'Crews', 'Dispatch', 'Brakeman', 'more'])
     // More holds the rail's other pages in the rail's order, Settings in the desktop app alone, never the Roundhouse or Brakeman.
-    expect(labels(navTiles({ brakeman: true }).more)).toEqual(['Agents', 'History'])
-    expect(labels(navTiles({ brakeman: false }).more)).toEqual(['Agents', 'History'])
-    expect(labels(navTiles({}).more)).toEqual(['Agents', 'History'])
-    expect(labels(navTiles({ brakeman: true, desktop: true }).more)).toEqual(['Agents', 'History', 'Settings'])
+    expect(labels(navTiles({ brakeman: true }).more)).toEqual(['Agents', 'History', 'Hosts'])
+    expect(labels(navTiles({ brakeman: false }).more)).toEqual(['Agents', 'History', 'Hosts'])
+    expect(labels(navTiles({}).more)).toEqual(['Agents', 'History', 'Hosts'])
+    expect(labels(navTiles({ brakeman: true, desktop: true }).more)).toEqual(['Agents', 'History', 'Hosts', 'Settings'])
     // Every page of the rail is a tile or under More: nothing the rail offers is lost.
     for (const s of [{ brakeman: true }, { brakeman: true, desktop: true }, { brakeman: false, desktop: true }]) {
       const { tiles, more } = navTiles(s)
@@ -77,12 +77,12 @@ describe('the pages in one table', () => {
   })
 
   it("gives the palette's page rows in their order, by the page's own name", () => {
-    const go = ['decisions', 'yard', 'roundhouse', 'crews', 'dispatch', 'agents', 'agents-reporting', 'history', 'history-feed', 'paste']
+    const go = ['decisions', 'yard', 'roundhouse', 'crews', 'dispatch', 'agents', 'agents-reporting', 'history', 'history-feed', 'hosts', 'paste']
     expect(ids(palettePages())).toEqual(go)
     expect(ids(palettePages({ desktop: true }))).toEqual([...go, 'settings'])
     expect(palettePages()[0]!.title).toBe('Needs you')
-    expect(palettePages().map((p) => p.title)).toEqual(['Needs you', 'Yard', 'Roundhouse', 'Crews', 'Dispatch', 'Agents', 'Agents · Reporting', 'History', 'History · Live', 'Paste invite'])
-    expect(palettePages().map((p) => p.chord?.join(' '))).toEqual(['G N', 'G Y', 'G R', 'G C', 'G D', 'G A', undefined, 'G H', 'G E', undefined])
+    expect(palettePages().map((p) => p.title)).toEqual(['Needs you', 'Yard', 'Roundhouse', 'Crews', 'Dispatch', 'Agents', 'Agents · Reporting', 'History', 'History · Live', 'Hosts', 'Paste invite'])
+    expect(palettePages().map((p) => p.chord?.join(' '))).toEqual(['G N', 'G Y', 'G R', 'G C', 'G D', 'G A', undefined, 'G H', 'G E', 'G O', undefined])
   })
 
   it("retires the Events page: no entry of it, G E is History's Feed, and the Feed is a view of History", () => {
@@ -127,6 +127,9 @@ describe('the pages in one table', () => {
       ['decisions', '/decisions', true],
       ['decisions', '/decide', false],
       ['settings', '/settings', true],
+      ['hosts', '/hosts', true],
+      ['hosts', '/hostsx', false],
+      ['history', '/hosts', false],
       ['history', '/', false],
     ]
     expect(cases.filter(([id, path, want]) => pageActive(id, path) !== want)).toEqual([])
