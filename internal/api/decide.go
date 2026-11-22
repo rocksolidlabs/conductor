@@ -554,6 +554,12 @@ func decideWords(code, did string) string {
 		return "Not known whether your answer to " + did + " was recorded: send it again."
 	case crew.CodeNotEligible:
 		return "You are not among those who may answer " + did + "."
+	case crew.CodeNotNeeded:
+		return did + " needs no more answers of this kind."
+	case crew.CodeAlreadyCounted:
+		return "Your answer to " + did + " is counted already."
+	case crew.CodeNotConfirmed:
+		return "Your approval of " + did + " could not be rechecked: answer again."
 	}
 	return did + " could not take this answer."
 }

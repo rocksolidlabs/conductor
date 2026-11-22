@@ -44,6 +44,43 @@ const (
 	OutcomeRefused = "refused"  // none of its answers was accepted: outcomeCode is the newest's code
 )
 
+// The status of a response as its receipt says it (DecideReceipt.Status).
+const (
+	ReceiptAccepted = "accepted" // it answered the decision
+	ReceiptRefused  = "refused"  // it was refused, kept: code says why
+	// ReceiptCounted is an eligible approval counted toward a router's
+	// policy of several groups or a quorum above one: it fills a place, and
+	// the decision stays open until every place is filled
+	// (docs/plans/decision-policy.md, Groups, quorum and distinct persons).
+	ReceiptCounted = "counted"
+)
+
+// MaxDecisionQuorum bounds a DecisionQuorum as encoded: four groups, each a
+// role of at most 40 bytes of a-z, 0-9 and '-' with three small numbers and
+// a flag (at most 90 bytes each), and the two totals.
+const MaxDecisionQuorum = 512
+
+// DecisionQuorum is how far a record under a router's policy is from its
+// answer (the operator's read, GET /api/decisions/{did}, beside
+// policyNow): the places its groups' quorums ask for in all, how many the
+// counted approvals fill now, and each group's own count, in the policy's
+// order. A group is named by its role; its label is the policy's.
+type DecisionQuorum struct {
+	Places int           `json:"places"`
+	Filled int           `json:"filled"`
+	Groups []QuorumGroup `json:"groups"`
+}
+
+// QuorumGroup is one group's count: its role, its quorum, the places of it
+// the counted approvals fill now (at most the quorum), and whether it is
+// met (counted equals quorum).
+type QuorumGroup struct {
+	Role    string `json:"role"`
+	Quorum  int    `json:"quorum"`
+	Counted int    `json:"counted"`
+	Met     bool   `json:"met"`
+}
+
 // MeReply is GET /api/me's reply: who the credential is, and what it may do
 // here. subject and name are an identity provider's principal's.
 type MeReply struct {
@@ -59,7 +96,10 @@ type DecideOption struct {
 }
 
 // DecideReceipt is one of a decide principal's own responses: never its
-// words, its actor or what it sent beside the choice.
+// words, its actor or what it sent beside the choice. Status is accepted,
+// refused or counted; a counted approval that no longer counts (its
+// sign-in could not be rechecked) reads refused with the code
+// not_confirmed.
 type DecideReceipt struct {
 	K          int       `json:"k"`
 	ResponseID string    `json:"responseId"`

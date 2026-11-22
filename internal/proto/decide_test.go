@@ -66,3 +66,25 @@ func TestDecideBounds(t *testing.T) {
 		t.Errorf("the widest list is %d bytes, want 11,626 within %d", n, MaxDecideList)
 	}
 }
+
+// TestDecisionQuorumBound holds the operator's count of a routed record's
+// places to MaxDecisionQuorum at its widest: four groups of the longest
+// role, every number at a quorum's bound and past it, each group met.
+func TestDecisionQuorumBound(t *testing.T) {
+	q := DecisionQuorum{Places: 16, Filled: 16}
+	for i := range 4 {
+		q.Groups = append(q.Groups, QuorumGroup{Role: strings.Repeat("a", 39) + strconv.Itoa(i), Quorum: 4, Counted: 4, Met: true})
+	}
+	b, err := json.Marshal(q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(b) > MaxDecisionQuorum {
+		t.Fatalf("the widest count is %d bytes, past %d", len(b), MaxDecisionQuorum)
+	}
+	// A receipt's counted status is no wider than the accepted one the
+	// receipt's bound was measured with.
+	if len(ReceiptCounted) > len(ReceiptAccepted) {
+		t.Fatalf("the counted status is wider than the accepted one")
+	}
+}

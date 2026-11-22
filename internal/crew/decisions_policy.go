@@ -36,6 +36,16 @@ const (
 	CodeOverrideRefused = "override_refused"
 	CodeRoutedByPolicy  = "routed_by_policy"
 	CodeNoRouter        = "no_router"
+	// CodeNotNeeded is an eligible approval that fills no place the record
+	// still needs (its groups' quorums met already): unkept, no row.
+	CodeNotNeeded = "not_needed"
+	// CodeAlreadyCounted is a second approval of a subject whose approval
+	// counts already: unkept, no row.
+	CodeAlreadyCounted = "already_counted"
+	// CodeNotConfirmed is the code a counted approval reads with once it
+	// no longer counts: its sign-in could not be rechecked (after its
+	// commit, or not before a restart). Never a response's refusal.
+	CodeNotConfirmed = "not_confirmed"
 )
 
 // EntryEligible is the kind of a policy entry that admits one identity, by
