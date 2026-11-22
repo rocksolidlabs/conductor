@@ -304,9 +304,10 @@ export function useJoinDecide(lane: DecisionLane, seq: Ref<number>) {
     }
     pick.value = null
     put(r, { m: decideOf(it, a, mintRequestId(), text), kind: it.kind, label: a.label, went: false, sending: false, words: '' })
+    // The line leaves its field as the action is owed: the page holds it and sends it again by itself (#654). Taken, or still owed,
+    // it is sent; refused, it comes back into the field.
+    taken?.('left')
     await send(r)
-    // A typed line leaves its field once it is taken, or owed (the page sends an owed action again by itself, line and all); a
-    // refused one stays as typed (#654).
     taken?.(refused.value[r] ? 'refused' : 'sent')
   }
   /**

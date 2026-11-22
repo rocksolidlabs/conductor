@@ -38,7 +38,7 @@ export interface TerminalTransport extends LaneWire {
    * took it, a ReplyError when it did not (`question_answered`: the question no longer waits, nothing was sent). To an older owner,
    * or without a question's id, it goes as keys or a submit and settles false at once.
    */
-  answer(reply: QuestionReply): Promise<boolean>
+  answer(reply: QuestionReply, opts?: { sent?: () => void }): Promise<boolean>
   /** Posts to the session's chat (every role); only once the owner's welcome said `chat`. */
   chat(post: ChatPost): void
   /** Types a kept chat message into the agent (controllers only). */

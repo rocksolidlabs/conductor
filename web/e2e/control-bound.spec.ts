@@ -63,6 +63,13 @@ test('a kept reply line stays bound to the question it was typed for until the p
     const file = join(state.home, '.stub-sessions', `${id}.txt`)
     return id && existsSync(file) ? readFileSync(file, 'utf8') : ''
   }
+  // The owner's refusals the page is told, as they come on its connection (watched before the page opens it).
+  let refusals = 0
+  page.on('websocket', (ws) =>
+    ws.on('framereceived', (f) => {
+      if ((typeof f.payload === 'string' ? f.payload : f.payload.toString('latin1')).includes('"question_answered"')) refusals++
+    }),
+  )
   try {
     await api.ok('POST', `/api/sessions/${s.id}/attention`, { state: 'needs_input', message: 'Which branch?' })
     await page.goto(`/sessions/${encodeURIComponent(s.id)}`)
@@ -79,7 +86,9 @@ test('a kept reply line stays bound to the question it was typed for until the p
     const refused = page.locator('li').filter({ hasText: 'Already answered' }).last()
     await expect(refused).toContainText('Your line is kept: change it to send it for what is asked now.', { timeout: 15_000 })
     await expect(field).toHaveValue('kept-draft')
+    const before = refusals
     await field.press('Enter')
+    await expect.poll(() => refusals, { timeout: 15_000, message: 'the unchanged line is refused again' }).toBeGreaterThan(before)
     await expect(field).toHaveValue('kept-draft')
     // Changed, the line is bound to the question shown now and answers it.
     await field.press('End')

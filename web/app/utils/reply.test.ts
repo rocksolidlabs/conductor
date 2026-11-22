@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { ref } from 'vue'
 import { CONTROL_TOO_LARGE, MAX_QUESTION_ID, TOO_LONG } from './protocol'
-import { clearAnswered, answerMessage, bindDraft, draftQuestion, holdLine, LINE_KEPT, listedAttention, questionOf, repliedQuestions, ReplyError, replyFailure, replyLine } from './reply'
+import { clearAnswered, answerMessage, bindDraft, draftQuestion, holdLine, LINE_KEPT, listedAttention, questionOf, repliedQuestions, ReplyError, replyFailure, replyLine, replyOutcomeOf } from './reply'
 import { sessionRow } from './sidebar'
 import { rowPrompt } from './sidebarActions'
 import type { SessionInfo } from '~/composables/useSessions'
@@ -124,31 +124,50 @@ describe('repliedQuestions', () => {
 })
 
 describe('holdLine', () => {
-  it('keeps a line refused exactly as typed, told once', () => {
+  it('empties the field as the line leaves, and lets it go once sent: taken for a held turn, nothing is left to send again', () => {
+    const text = ref('owner line')
+    const taken = holdLine(text)
+    taken('left')
+    expect(text.value).toBe('')
+    taken('sent')
+    expect(text.value).toBe('')
+  })
+
+  it('puts a line refused back into the empty field, exactly as typed; leaves newer text as it is', () => {
     const text = ref('"'.repeat(4096))
     let kept = 0
     const taken = holdLine(text, () => kept++)
+    taken('left')
     taken('refused')
     expect(text.value).toBe('"'.repeat(4096))
     expect(kept).toBe(1)
-    taken('sent')
-    expect(text.value).toBe('"'.repeat(4096))
+    const newer = ref('first')
+    const again = holdLine(newer)
+    again('left')
+    newer.value = 'second'
+    again('refused')
+    expect(newer.value).toBe('second')
   })
 
-  it('empties the field once the line is sent, unless something was typed since; a line held changes nothing', () => {
-    const text = ref('looks good')
-    holdLine(text)('sent')
-    expect(text.value).toBe('')
-    const more = ref('looks good')
-    const taken = holdLine(more)
-    more.value = 'looks good, and'
-    taken('sent')
-    expect(more.value).toBe('looks good, and')
+  it('a line refused before it left stays; a line held changes nothing', () => {
+    const local = ref('x')
+    holdLine(local)('refused')
+    expect(local.value).toBe('x')
     const held = ref('looks good')
     let kept = 0
     holdLine(held, () => kept++)('held')
     expect(held.value).toBe('looks good')
     expect(kept).toBe(0)
+  })
+})
+
+describe('replyOutcomeOf', () => {
+  it('reads every word the owner gives a reply, and the page\'s own, by its code: none by default', () => {
+    for (const code of ['question_answered', 'decision', 'not_sent', 'read_only', 'session_ended', 'too_many_requests', 'bad_frame', 'revoked', 'expired'])
+      expect(replyOutcomeOf(new ReplyError(code, 'no')), code).toBe('refused')
+    for (const code of ['input_failed', 'no_word', 'closed']) expect(replyOutcomeOf(new ReplyError(code, 'open')), code).toBe('sent')
+    for (const code of [TOO_LONG, 'no_question', 'not_connected']) expect(replyOutcomeOf(new ReplyError(code, 'page')), code).toBe('refused')
+    expect(replyOutcomeOf(new Error('This link is view-only'))).toBe('refused')
   })
 })
 
@@ -168,21 +187,34 @@ describe('replyLine', () => {
     expect(line.send()).toMatchObject({ line: 'main', question: 'q1' })
   })
 
-  it('a press that never reached the owner changes nothing: the next press names the same question', () => {
+  it('a press that never left changes nothing: the next press names the same question', () => {
     const { page, line } = field()
     line.text.value = 'main'
     const first = line.send()!
     page.shown = 'q2'
     first.taken('held')
-    const again = line.send()!
-    expect(again).toMatchObject({ line: 'main', question: 'q1' })
     expect(line.text.value).toBe('main')
+    expect(line.send()).toMatchObject({ line: 'main', question: 'q1' })
   })
 
-  it('a line refused stays bound to its question: Enter again without a change names it again', () => {
+  it('a line taken for a held turn leaves the field for good: the next line is bound to the question shown then', () => {
+    const { page, line } = field()
+    line.text.value = 'owner line'
+    const first = line.send()!
+    first.taken('left')
+    expect(line.text.value).toBe('')
+    page.shown = 'q2'
+    first.taken('sent')
+    expect(line.text.value).toBe('')
+    line.text.value = 'next'
+    expect(line.send()).toMatchObject({ line: 'next', question: 'q2' })
+  })
+
+  it('a line refused comes back bound to its question: Enter again without a change names it again', () => {
     const { page, line } = field()
     line.text.value = 'main'
     const first = line.send()!
+    first.taken('left')
     page.shown = 'q2'
     first.taken('refused')
     expect(line.text.value).toBe('main')
@@ -192,11 +224,21 @@ describe('replyLine', () => {
   it('a line refused is bound anew when the person changes it, to the question shown at that change', () => {
     const { page, line } = field()
     line.text.value = 'main'
-    line.send()!.taken('refused')
+    const first = line.send()!
+    first.taken('left')
     page.shown = 'q2'
+    first.taken('refused')
     line.text.value = 'main branch'
     page.shown = 'q3'
     expect(line.send()).toMatchObject({ line: 'main branch', question: 'q2' })
+    // Refused before it left (past the control bound): it stays, and a change binds it anew too.
+    const other = field()
+    other.line.text.value = 'long'
+    const r = other.line.send()!
+    other.page.shown = 'q9'
+    r.taken('refused')
+    other.line.text.value = 'shorter'
+    expect(other.line.send()).toMatchObject({ question: 'q9' })
   })
 
   it('a line not refused is not bound anew by a change: only one begun on an empty field is', () => {
@@ -205,10 +247,6 @@ describe('replyLine', () => {
     page.shown = 'q2'
     line.text.value = 'main branch'
     expect(line.send()).toMatchObject({ question: 'q1' })
-    line.send()!.taken('sent')
-    expect(line.text.value).toBe('')
-    line.text.value = 'next'
-    expect(line.send()).toMatchObject({ line: 'next', question: 'q2' })
   })
 })
 

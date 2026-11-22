@@ -9,7 +9,7 @@ import { SESSION_SHORTCUTS, useShortcutsModal } from '~/composables/useShortcuts
 import { firstMessageLine } from '~/utils/launch'
 import { agentName, gonePage, sessionGone, sessionHeadline, type GonePage } from '~/utils/sessions'
 import { sessionStatus, statusOfKey } from '~/utils/status'
-import { listedAttention, repliedQuestions, ReplyError, replyFailure, type QuestionReply, type ReplyOutcome, type ReplyTaken } from '~/utils/reply'
+import { listedAttention, repliedQuestions, ReplyError, replyFailure, type QuestionReply, type ReplyOutcome, type ReplyTaken, replyOutcomeOf } from '~/utils/reply'
 import { activateTab, toggleCollapse, toggleFold } from '~/utils/editorTabs'
 import { stopQuestion } from '~/utils/actions'
 import { resolveTyped } from '~/utils/fileTree'
@@ -113,23 +113,26 @@ function chatAnswer(m: ChatMessage, index: number) {
 /** Sends a reply to a question over the terminal's connection, once per question; a refusal (answered already, not connected) is said in a toast. */
 const replied = repliedQuestions()
 const typedAnswers = useTypedAnswers()
-/** What became of the reply (ReplyOutcome): held when one to the same question is still on its way from here. */
-function answerQuestion(reply: QuestionReply): Promise<ReplyOutcome> {
+/**
+ * What became of the reply (ReplyOutcome, without `left`): held when one to the same question is still on its way from here; a
+ * failure by its code (replyOutcomeOf). `left` is called as the reply leaves the page.
+ */
+function answerQuestion(reply: QuestionReply, left?: () => void): Promise<ReplyOutcome> {
   if (!terminal.value) {
     toast.add(replyFailure(new ReplyError('not_connected', 'not connected')))
     return Promise.resolve('refused')
   }
   const t = terminal.value
   return replied
-    .once(reply.question, () => t.answer(reply))
+    .once(reply.question, () => t.answer(reply, { sent: left }))
     // A line typed as the answer, once sent: this browser shows it under the question to its own person (#364).
     .then((sent) => {
       if (sent && 'text' in reply && reply.text) typedAnswers.remember(reply.question, reply.text)
       return sent ? 'sent' : 'held'
     })
-    .catch((e: unknown) => {
+    .catch((e: unknown): ReplyOutcome => {
       toast.add(replyFailure(e, undefined, 'text' in reply))
-      return 'refused'
+      return replyOutcomeOf(e)
     })
 }
 function onRequestError(err: { code: string; message: string; requestId: string }) {
@@ -233,7 +236,7 @@ const menu = computed(() => [
   [{ label: 'Stop session', icon: 'i-lucide-square', color: 'error' as const, disabled: !(session.value && (session.value.status === 'running' || session.value.status === 'starting')), onSelect: stop }],
 ])
 
-const terminal = ref<{ connect: () => void; focus: () => void; sendInput: (t: string) => boolean; submit: (t: string) => boolean; answer: (r: QuestionReply) => Promise<boolean>; chat: (p: ChatPost) => boolean; chatSend: (s: ChatSend) => boolean; requestFile: (p: string, s?: boolean, x?: FileGetExtra) => Promise<any>; nvimOpen: (p: string) => Promise<NvimEvent>; nvimInput: EditorTerminal['nvimInput']; nvimClose: EditorTerminal['nvimClose']; nvimSwap: EditorTerminal['nvimSwap']; writeFile: EditorTerminal['writeFile']; takeSize: () => void; sizerShown: () => boolean; openPaste: () => void } | null>(null)
+const terminal = ref<{ connect: () => void; focus: () => void; sendInput: (t: string) => boolean; submit: (t: string) => boolean; answer: (r: QuestionReply, o?: { sent?: () => void }) => Promise<boolean>; chat: (p: ChatPost) => boolean; chatSend: (s: ChatSend) => boolean; requestFile: (p: string, s?: boolean, x?: FileGetExtra) => Promise<any>; nvimOpen: (p: string) => Promise<NvimEvent>; nvimInput: EditorTerminal['nvimInput']; nvimClose: EditorTerminal['nvimClose']; nvimSwap: EditorTerminal['nvimSwap']; writeFile: EditorTerminal['writeFile']; takeSize: () => void; sizerShown: () => boolean; openPaste: () => void } | null>(null)
 
 // The thread counts nothing while it is open in front of this person.
 watch(
@@ -383,7 +386,7 @@ async function stop() {
 
 /** A line from the reply bar: `taken` tells the bar what became of it, so that a line not sent stays in its field (#654). */
 function reply(text: string, question?: string, taken?: ReplyTaken) {
-  void answerQuestion({ question, text }).then((outcome) => taken?.(outcome))
+  void answerQuestion({ question, text }, () => taken?.('left')).then((outcome) => taken?.(outcome))
 }
 
 function option(index: number, question?: string) {

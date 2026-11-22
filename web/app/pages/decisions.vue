@@ -2,7 +2,7 @@
 import { KIND_SUBJECTS, refRoute } from '~/utils/brakeman'
 import { pageState } from '~/utils/pageState'
 import { relativeTime } from '~/utils/sessions'
-import type { ReplyTaken } from '~/utils/reply'
+import { onceTaken, type ReplyTaken } from '~/utils/reply'
 import {
   INBOX_KINDS,
   INBOX_ROW_CLASS,
@@ -262,10 +262,11 @@ async function act(ref: string, a: InboxAction, text?: string, taken?: ReplyTake
   }
   // Opened from Recent on an earlier action: the card shows this one's steps from now on.
   if (openAction.value.receipt) void router.replace({ query: { ...route.query, receipt: undefined, attempt: undefined } })
-  // A typed line leaves its field only once the owner took it (#654): refused, not sent or not confirmed, it stays as typed; one
-  // that never went (an action on the item under way) changes nothing.
-  const came = await acts.act(it, a, text)
-  taken?.(!came ? 'held' : came.how === 'confirmed' ? 'sent' : 'refused')
+  // The typed line's field hears what became of it from the action (#654); one that never went changes nothing, and a word the
+  // action could not give (a failure before its answer was made) is read off what came.
+  const told = onceTaken(taken)
+  const came = await acts.act(it, a, text, told)
+  told(!came ? 'held' : came.how === 'confirmed' || came.how === 'unconfirmed' ? 'sent' : 'refused')
   await readItem()
   void inbox.changed()
 }

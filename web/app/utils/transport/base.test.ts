@@ -317,6 +317,18 @@ describe('BaseTransport, a line past the control bound', () => {
     }
   })
 
+  it('says a reply has left the page as its frame is written, never for one refused before it left', async () => {
+    for (const current of [true, false]) {
+      const t = welcomed(current)
+      const left = vi.fn()
+      track(t.answer({ question: 'q1', text: '"'.repeat(MAX_SUBMIT) }, { sent: left }))
+      expect(left).not.toHaveBeenCalled()
+      track(t.answer({ question: 'q1', text: 'owner line' }, { sent: left }))
+      expect(t.sent).toHaveLength(1)
+      expect(left).toHaveBeenCalledTimes(1)
+    }
+  })
+
   it('sends a line that fits whole, as before, up to the last byte the bound holds', async () => {
     const t = welcomed(true)
     const line = 'x'.repeat(MAX_SUBMIT)

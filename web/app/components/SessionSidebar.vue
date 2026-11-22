@@ -9,7 +9,7 @@ import { joinedPath } from '~/utils/joined'
 import { blockSubtitle, filterNeeds, LIST_SECTIONS, SECTION_TITLES, focusRows, mayRefocusRow, moveFocus, narrowSidebar, needsDotShown, panelRow, reopenNeeds, rowMeta, sectionPreview, sidebarModel, type ItemRow, type ListSection, type RunBlock, type SessionRow, type SidebarItem } from '~/utils/sidebar'
 import { sessionTarget } from '~/utils/actions'
 import { rowMenuItems, sessionLive } from '~/utils/sidebarActions'
-import { replyFailure, type ReplyTaken } from '~/utils/reply'
+import { replyFailure, replyOutcomeOf, type ReplyTaken } from '~/utils/reply'
 import { ROW_DRAFTS, RowDrafts } from '~/utils/rowDrafts'
 import { needsCount } from '~/utils/needsYou'
 import { showingWords } from '~/utils/inbox'
@@ -195,11 +195,11 @@ function answer(row: SessionRow, i: number, question: string | undefined) {
 }
 /** A line from a row's field: `taken` tells the field what became of it, so that a line not sent stays in it (#654). */
 function reply(row: SessionRow, text: string, question: string | undefined, taken?: ReplyTaken) {
-  quick.reply(row.session, text, { question }).then(
+  quick.reply(row.session, text, { question, sent: () => taken?.('left') }).then(
     (sent) => taken?.(sent ? 'sent' : 'held'),
     (e: unknown) => {
       fail(row.session.name, true)(e)
-      taken?.('refused')
+      taken?.(replyOutcomeOf(e))
     },
   )
 }

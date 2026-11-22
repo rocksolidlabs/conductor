@@ -168,6 +168,8 @@ const fielding = ref<string | null>(null)
 const fieldText = ref('')
 /** A reply drafted in a Needs-you row, with the question it was begun for (bindDraft): sent to that one, whatever the row shows by then. */
 const replies = ref<Record<string, { text: string; question?: string; kept?: boolean }>>({})
+/** A row's line that left the page, until the word on it: put back if it is refused (#654). */
+const repliesAway = new Map<string, { text: string; question?: string }>()
 
 function rowEl(key: string, within = ''): HTMLElement | null {
   return list.value?.querySelector<HTMLElement>(`[data-palette-row="${CSS.escape(key)}"]${within ? ` ${within}` : ''}`) ?? null
@@ -363,12 +365,26 @@ function sendReply(row: PaletteItem) {
   const text = (d?.text ?? '').trim()
   if (!s || !p || p.held || p.away || !text) return
   const typed = d!.text
-  // The field keeps the line until it is sent (#654): emptied then if it still holds it. A line refused stays as typed and bound to
-  // the question it was typed for, until the person changes it; one that never went (a reply on its way) changes nothing.
-  void rows.reply(s, text, d?.question).then((outcome) => {
-    const now = replies.value[row.key]
-    if (outcome === 'held' || now?.text !== typed) return
-    replies.value = { ...replies.value, [row.key]: outcome === 'sent' ? { text: '' } : { ...now, kept: true } }
+  // The field empties as the line leaves the page, if it still holds it (#654). A line refused comes back as typed, if the field is
+  // still empty, bound to the question it was typed for until the person changes it; one that never left changes nothing.
+  const key = row.key
+  const left = () => {
+    const now = replies.value[key]
+    if (now?.text !== typed) return
+    repliesAway.set(key, { text: typed, question: now.question })
+    replies.value = { ...replies.value, [key]: { text: '' } }
+  }
+  void rows.reply(s, text, d?.question, left).then((outcome) => {
+    const aside = repliesAway.get(key)
+    repliesAway.delete(key)
+    const now = replies.value[key]
+    if (outcome === 'held') return
+    if (outcome === 'sent') {
+      if (!aside && now?.text === typed) replies.value = { ...replies.value, [key]: { text: '' } }
+      return
+    }
+    if (aside && !now?.text) replies.value = { ...replies.value, [key]: { ...aside, kept: true } }
+    else if (now?.text === typed) replies.value = { ...replies.value, [key]: { ...now, kept: true } }
   })
 }
 function openInTab(row: PaletteItem) {

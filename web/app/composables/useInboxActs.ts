@@ -1,6 +1,6 @@
 import { isStale } from '~/utils/brakemanCards'
 import { DispatchOrder } from '~/utils/dispatchOrder'
-import { replyFailure, ReplyError } from '~/utils/reply'
+import { replyFailure, ReplyError, replyOutcomeOf, type ReplyTaken } from '~/utils/reply'
 import { CommandRefused, commandBody, mintCommandId, sendCommand, type Receipt, type TaskCommand } from '~/utils/tasks'
 import {
   answerFailure,
@@ -48,7 +48,7 @@ export type SessionKnown = Pick<SessionInfo, 'id' | 'kind' | 'name'>
 export interface ActSends {
   /** The session an answer goes to, its kind known; null when it cannot be known now (nothing is sent then). */
   session: (id: string) => Promise<SessionKnown | null>
-  answer: (s: SessionKnown, what: { input: string } | { text: string }, o: { question: string; reqId: string }) => Promise<AnswerOutcome>
+  answer: (s: SessionKnown, what: { input: string } | { text: string }, o: { question: string; reqId: string; sent?: () => void }) => Promise<AnswerOutcome>
   command: (run: string, task: string, name: TaskCommand, o: { expectedRevision?: number; commandId: string }) => Promise<unknown>
   /**
    * Check again of the candidate (its attempt and commit) through the recheck route of `run`, the candidate's own; a refusal is a
@@ -113,11 +113,14 @@ export class InboxActs {
     return !!this.fb[ref]?.busy
   }
 
-  /** Does action `a` on item `it` (a typed line in `text`); null when nothing is done (one is out on the item, or no route fits). */
-  act(it: InboxItem, a: InboxAction, text?: string): Promise<ActCame | null> {
+  /**
+   * Does action `a` on item `it` (a typed line in `text`, whose field is told what became of it through `taken`); null when nothing
+   * is done (one is out on the item, or no route fits).
+   */
+  act(it: InboxItem, a: InboxAction, text?: string, taken?: ReplyTaken): Promise<ActCame | null> {
     // A DR1 record is answered through DR1's own card (DecisionRespond), never here.
     if (this.pending(it.ref) || it.kind === 'decision') return Promise.resolve(null)
-    if (a.name === 'answer') return this.answer(it, a, text)
+    if (a.name === 'answer') return this.answer(it, a, text, taken)
     if (a.name === 'retry' || a.name === 'accept' || a.name === 'cancel' || a.name === 'recheck') return this.command(it, a)
     if (a.name === 'approve' || a.name === 'withdraw') return this.plan(it, a)
     return Promise.resolve(null)
@@ -138,7 +141,7 @@ export class InboxActs {
     })
   }
 
-  private answer(it: InboxItem, a: InboxAction, text?: string): Promise<ActCame> {
+  private answer(it: InboxItem, a: InboxAction, text?: string, taken?: ReplyTaken): Promise<ActCame> {
     const reqId = this.ids.request()
     const entry: RecentEntry = { ref: it.ref, receipt: a.expect, attempt: reqId, at: this.now(), title: it.title, label: text === undefined ? a.label : 'A line' }
     return this.send(
@@ -149,13 +152,19 @@ export class InboxActs {
       async (sent) => {
         // The session's kind first: nothing goes while it is not known (a hosted session's answer goes through its relay).
         const s = await this.sends.session(refParts(it.ref).a)
-        if (!s) return { how: 'not_sent', words: NOT_SENT_SESSION }
+        if (!s) {
+          taken?.('refused')
+          return { how: 'not_sent', words: NOT_SENT_SESSION }
+        }
         sent()
         try {
-          const out = await this.sends.answer(s, text === undefined ? { input: a.input ?? '' } : { text }, { question: a.expect, reqId })
+          const out = await this.sends.answer(s, text === undefined ? { input: a.input ?? '' } : { text }, { question: a.expect, reqId, sent: () => taken?.('left') })
+          // The field's word (#654): a reply under way from here never left; one taken, or whose word did not come, is sent.
+          taken?.(out === 'not_sent' ? 'held' : 'sent')
           if (out === 'not_sent') return { how: 'not_sent', words: NOT_SENT_BUSY }
           return out === 'taken' ? { how: 'confirmed' } : { how: 'unconfirmed' }
         } catch (e) {
+          taken?.(replyOutcomeOf(e))
           const how = answerFailure(e)
           if (how === 'unconfirmed') return { how }
           // A refusal in the owner's own words (a question set aside refuses with the same words as one answered): the step says
@@ -372,7 +381,7 @@ export function useInboxActs() {
   return {
     feedback,
     pending: (ref: string) => !!feedback.value[ref]?.busy,
-    act: (it: InboxItem, a: InboxAction, text?: string) => acts.act(it, a, text),
+    act: (it: InboxItem, a: InboxAction, text?: string, taken?: ReplyTaken) => acts.act(it, a, text, taken),
     comment: (it: InboxItem, ticket: string, body: string) => acts.comment(it, ticket, body),
   }
 }

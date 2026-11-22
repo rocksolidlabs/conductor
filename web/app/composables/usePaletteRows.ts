@@ -27,7 +27,7 @@ import { memberOffer, runOffer, sessionResumeOffered } from '~/utils/runs'
 import { mergeTouched, type FeedFile } from '~/utils/touchedIndex'
 import { sayWords, type SayOutcome } from '~/utils/sayWords'
 import { SayDrafts } from '~/utils/sayDrafts'
-import { LINE_KEPT, type ReplyOutcome } from '~/utils/reply'
+import { LINE_KEPT, replyOutcomeOf, type ReplyOutcome } from '~/utils/reply'
 import { QUESTION_ANSWERED } from '~/utils/protocol'
 import { capPeople, personRows } from '~/utils/people'
 
@@ -237,14 +237,17 @@ export function usePaletteRows(ctx: PaletteContext) {
     const o = s.attention?.options?.[i]
     if (o) quick.send(s, o.input, { question }).catch((e) => toast.add({ title: `${s.name}: not answered`, description: (e as Error).message, color: 'error' }))
   }
-  /** Sends a reply line: what became of it (ReplyOutcome); a refusal is said in a toast (#654: the row's field keeps the line). */
-  function reply(s: SessionInfo, text: string, question: string | undefined): Promise<ReplyOutcome> {
-    return quick.reply(s, text, { question }).then(
+  /**
+   * Sends a reply line: what became of it (ReplyOutcome, without `left`; a failure by its code, replyOutcomeOf), `left` called as
+   * it leaves the page; a failure is said in a toast (#654: the row's field keeps a line refused).
+   */
+  function reply(s: SessionInfo, text: string, question: string | undefined, left?: () => void): Promise<ReplyOutcome> {
+    return quick.reply(s, text, { question, sent: left }).then(
       (sent): ReplyOutcome => (sent ? 'sent' : 'held'),
       (e): ReplyOutcome => {
         const answered = (e as { code?: unknown } | null)?.code === QUESTION_ANSWERED
         toast.add({ title: `${s.name}: not sent`, description: answered ? `${(e as Error).message}. ${LINE_KEPT}` : (e as Error).message, color: 'error' })
-        return 'refused'
+        return replyOutcomeOf(e)
       },
     )
   }

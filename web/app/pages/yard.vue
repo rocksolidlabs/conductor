@@ -9,7 +9,7 @@ import { WALL_SHORTCUTS } from '~/composables/useShortcuts'
 import { isActive } from '~/utils/attention'
 import { sessionStatus } from '~/utils/status'
 import { bestGrid, yardFilterOf, yardChips, yardCounts, yardFilter, type YardFilter } from '~/utils/wall'
-import { replyFailure, type ReplyTaken } from '~/utils/reply'
+import { replyFailure, replyOutcomeOf, type ReplyTaken } from '~/utils/reply'
 import { pageState } from '~/utils/pageState'
 import { QUICK_START_URL } from '~/utils/about'
 
@@ -140,11 +140,11 @@ function fail(title: string) {
  * what became of the line, so that a line not sent stays in its field (#654).
  */
 function reply(s: SessionInfo, text: string, question?: string, taken?: ReplyTaken) {
-  quick.reply(s, text, { question }).then(
+  quick.reply(s, text, { question, sent: () => taken?.('left') }).then(
     (sent) => taken?.(sent ? 'sent' : 'held'),
     (e: unknown) => {
       toast.add(replyFailure(e, s.name, true))
-      taken?.('refused')
+      taken?.(replyOutcomeOf(e))
     },
   )
 }

@@ -149,13 +149,15 @@ export abstract class BaseTransport implements TerminalTransport {
    * longer waits, nothing was sent), the connection's end, or no word in ANSWER_TIMEOUT_MS; one that names no question it could
    * take is not sent (`no_question`): unguarded keys could land on another question. To an older owner it goes as keys or a submit,
    * as before, and settles false at once: nothing will say whether it was taken. A line whose frame would pass MAX_CONTROL as
-   * encoded is not sent: a ReplyError coded TOO_LONG, in CONTROL_TOO_LARGE's words.
+   * encoded is not sent: a ReplyError coded TOO_LONG, in CONTROL_TOO_LARGE's words. `sent` is called as the reply leaves the page
+   * (its frame written), before any word on it: a reply refused or never sent never calls it.
    */
-  answer(reply: QuestionReply): Promise<boolean> {
+  answer(reply: QuestionReply, opts: { sent?: () => void } = {}): Promise<boolean> {
     if (this.state.value !== 'open') return Promise.reject(new ReplyError('not_connected', 'not connected'))
     if (!this.takesAnswers) {
       if ('input' in reply) this.sendInput(encodeText(reply.input))
       else if (!this.submit(reply.text)) return Promise.reject(new ReplyError(TOO_LONG, CONTROL_TOO_LARGE))
+      opts.sent?.()
       return Promise.resolve(false)
     }
     const reqId = reply.reqId && !this.answers.has(reply.reqId) ? reply.reqId : `a${(++this.reqCounter).toString(36)}`
@@ -170,6 +172,7 @@ export abstract class BaseTransport implements TerminalTransport {
       }, ANSWER_TIMEOUT_MS)
       this.answers.set(reqId, { resolve, reject, timer })
       this.send(frame)
+      opts.sent?.()
     })
   }
 
