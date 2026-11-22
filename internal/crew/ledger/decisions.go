@@ -955,11 +955,22 @@ const placeCond = `((d.state = 'answered' AND EXISTS (SELECT 1 FROM decision_res
 // voidedCond is the SQL condition of a voided routed decision (alias d):
 // an accepted answer voided, or counted approvals whose response rows ran
 // short (SW1 PR-9), the decision superseded while it held a spare (opened
-// while a decision router routed policies), its replacement standing in
-// its place. The run's voided decisions are bound apart
-// (MaxVoidedRoutedPerRun). A decision superseded unanswered (an agent's
-// newer request) is not voided: it counts among the run's decisions.
-const voidedCond = `(d.state = 'superseded' AND COALESCE(json_extract(d.policy, '$.spare'), 0) = 1
+// while a decision router routed policies) by its replacement, which
+// stands in its place: the decision its superseded_by names was opened
+// following it (its opened row's follows). The run's voided decisions are
+// bound apart (MaxVoidedRoutedPerRun). A decision superseded with no
+// replacement (an agent's newer request, a moved subject), answered or
+// not, is not voided: it counts among the run's decisions.
+const voidedCond = `(` + replacedCond + `
+	AND d.superseded_by LIKE 'dr-%'
+	AND EXISTS (SELECT 1 FROM decision_history h WHERE h.decision = CAST(substr(d.superseded_by, 4) AS INTEGER)
+		AND h.kind = 'opened' AND json_extract(h.detail, '$.follows') = 'dr-' || d.n))`
+
+// replacedCond is voidedCond less its replacement: a routed decision
+// superseded while it held a spare, with an accepted or a counted
+// response. The replacement being opened for it (OpenDecision's From)
+// finds it so, before its superseded_by names that replacement.
+const replacedCond = `(d.state = 'superseded' AND COALESCE(json_extract(d.policy, '$.spare'), 0) = 1
 	AND EXISTS (SELECT 1 FROM decision_responses r WHERE r.decision = d.n AND r.status IN ('accepted', 'counted')))`
 
 // MaxVoidedRoutedPerRun bounds a run's voided routed decisions: past it an
@@ -977,16 +988,18 @@ func (t *Tx) count(query string, args ...any) (int, error) {
 // room says whether run has room for one more decision in all: the
 // decisions it opened and the places it holds for replacements together
 // stay within MaxDecisionsPerRun.
-func (t *Tx) room(run string) (bool, error) { return t.roomFor(run, 1) }
+func (t *Tx) room(run string) (bool, error) { return t.roomFor(run, 1, 0) }
 
 // roomFor says whether run has room for need more of its places: a
-// decision opened with a spare needs two, itself and its spare.
-func (t *Tx) roomFor(run string, need int) (bool, error) {
+// decision opened with a spare needs two, itself and its spare. replacing
+// is the decision the one being opened replaces (0 for none).
+func (t *Tx) roomFor(run string, need int, replacing int64) (bool, error) {
 	// A routed decision whose accepted answer was voided (voidedCond) no
 	// longer counts: its replacement stands in its place, so a chain of
 	// replacements holds one decision and one spare of the run's bound
-	// (voided apart, its own bound).
-	opened, err := t.count("SELECT COUNT(*) FROM decisions d WHERE d.run_id = ? AND NOT "+voidedCond, run)
+	// (voided apart, its own bound). The one being replaced counts so for
+	// the replacement being opened.
+	opened, err := t.count("SELECT COUNT(*) FROM decisions d WHERE d.run_id = ? AND NOT "+voidedCond+" AND NOT (d.n = ? AND "+replacedCond+")", run, replacing)
 	if err != nil {
 		return false, err
 	}
@@ -1013,9 +1026,11 @@ func (t *Tx) roomFor(run string, need int) (bool, error) {
 // A replacement (a fresh decision in the place of one whose identity
 // answer could not be rechecked) has its place only in this order, in one
 // transition: the replaced decision made final first (PutDecision,
-// superseded, no superseded_by yet), so its place is free; then the
-// replacement opened here; then the replaced one put again in the same
-// state with superseded_by naming it. Opened while the replaced one is
+// superseded, no superseded_by yet); then the replacement opened here,
+// its From naming the replaced one, whose place it takes over
+// (replacedCond); then its opened row following the replaced one, and the
+// replaced one put again in the same state with superseded_by naming it
+// (voidedCond). Opened while the replaced one is
 // still answered, the replacement finds the place taken and is
 // ErrDecisionLimit at the bound.
 func (t *Tx) OpenDecision(d DecisionRow) (DecisionRow, bool, error) {
@@ -1067,7 +1082,7 @@ func (t *Tx) OpenDecision(d DecisionRow) (DecisionRow, bool, error) {
 		// router routes policies): a run fills here, never at an answer.
 		need = 2
 	}
-	if ok, err := t.roomFor(d.RunID, need); err != nil {
+	if ok, err := t.roomFor(d.RunID, need, d.From); err != nil {
 		return DecisionRow{}, false, err
 	} else if !ok {
 		return DecisionRow{}, false, fmt.Errorf("%w: the run has %d decisions", ErrDecisionLimit, MaxDecisionsPerRun)

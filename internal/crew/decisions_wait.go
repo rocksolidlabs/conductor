@@ -716,12 +716,12 @@ func (r *run) decisionsStanding() int {
 }
 
 // holdsPlace says d holds a place for its replacement, as the ledger's
-// placeCond says: answered by an identity, or open or answered with a
-// spare.
+// placeCond says: answered by an identity, open with an identity's counted
+// approval, or open or answered with a spare.
 func (d *decision) holdsPlace() bool {
 	switch d.state {
 	case ledger.DecisionOpen:
-		return d.spare
+		return d.spare || d.counted
 	case ledger.DecisionAnswered:
 		return d.spare || d.answer != nil && (d.answer.auth.Via == ViaIdentity || d.answer.auth.Via == ViaSync)
 	}

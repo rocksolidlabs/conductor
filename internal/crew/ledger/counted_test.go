@@ -2,6 +2,7 @@ package ledger
 
 import (
 	"errors"
+	"fmt"
 	"path/filepath"
 	"testing"
 )
@@ -51,9 +52,11 @@ func TestACountedResponseLeavesTheDecisionOpen(t *testing.T) {
 	}
 }
 
-// A routed decision superseded with counted responses (its rows ran short)
-// is voided, as one whose accepted answer was voided is: its replacement
-// stands in its place among the run's decisions. Superseded with none, it
+// A routed decision superseded by its replacement with counted responses
+// (its rows ran short) is voided, as one whose accepted answer was voided
+// is: its replacement stands in its place among the run's decisions.
+// Superseded with no response, or with counted ones but no replacement
+// (another decision named in its place that does not follow it), it
 // counts among them.
 func TestACountedDecisionSupersededIsVoided(t *testing.T) {
 	l := openLedger(t, filepath.Join(t.TempDir(), "runs"))
@@ -66,13 +69,35 @@ func TestACountedDecisionSupersededIsVoided(t *testing.T) {
 			t.Fatal(ok, err)
 		}
 	}
-	if err := respondAs(l, run, counted, "c1", anaIdentity, ResponseCounted); err != nil {
+	newer := open(t, l, spareGate(run, "g3"))
+	if ok, err := putPolicy(l, run, newer, routerPolicy, 1); err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+	for _, n := range []int64{counted, newer} {
+		if err := respondAs(l, run, n, fmt.Sprintf("c%d", n), anaIdentity, ResponseCounted); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := replaceSpare(l, run, counted, "g1-again"); err != nil {
 		t.Fatal(err)
 	}
-	setState(t, l, run, counted, DecisionSuperseded, "")
 	setState(t, l, run, bare, DecisionSuperseded, "")
+	// Superseded with counted approvals but no replacement (an agent's
+	// newer request names another decision that does not follow it): it
+	// stays among the run's decisions.
+	in(t, l, run, func(tx *Tx) error {
+		d, _, err := tx.Decision(newer)
+		if err != nil {
+			return err
+		}
+		d.State, d.Rev, d.SupersededBy = DecisionSuperseded, d.Rev+1, DecisionID(bare)
+		return tx.PutDecision(d)
+	})
 	if got := countRows(t, l, "SELECT COUNT(*) FROM decisions d WHERE "+voidedCond); got != 1 {
-		t.Fatalf("%d voided, want the counted one alone", got)
+		t.Fatalf("%d voided, want the counted one its replacement follows, alone", got)
+	}
+	if got := countRows(t, l, "SELECT COUNT(*) FROM decisions d WHERE d.n = ? AND "+voidedCond, counted); got != 1 {
+		t.Fatalf("the replaced counted decision is not the voided one")
 	}
 }
 

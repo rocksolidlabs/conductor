@@ -372,6 +372,11 @@ type decision struct {
 	// run_id), so its voiding frees one of this run's decisions; voided
 	// that its accepted answer was voided, counted once (decisionsHeld).
 	spare, own, voided bool
+	// replaced says it was superseded by its replacement (replaceDecision):
+	// only so is it voided, as the ledger's voidedCond has it. counted
+	// says an identity's counted approval of it is kept: an open decision
+	// holds a place for its replacement then (the ledger's placeCond).
+	replaced, counted bool
 }
 
 // accepted is a decision's accepted response, for its application.
@@ -635,10 +640,10 @@ func (r *run) decisionN(n int64) *decision {
 func (r *run) dropDecision(d *decision) {
 	r.decisions = slices.DeleteFunc(r.decisions, func(x *decision) bool { return x == d })
 	r.dec.noRoom = false
-	if d.state == ledger.DecisionSuperseded && d.spare && d.own && d.answer != nil && !d.voided {
-		// An accepted answer voided (the ledger's voidedCond): the record no
-		// longer counts among the run's decisions, its replacement in its
-		// place.
+	if d.state == ledger.DecisionSuperseded && d.spare && d.own && d.replaced && (d.answer != nil || d.counted) && !d.voided {
+		// An accepted answer or counted approvals voided (the ledger's
+		// voidedCond): the record no longer counts among the run's
+		// decisions, its replacement in its place.
 		d.voided = true
 		r.dec.voided++
 	}
@@ -2255,6 +2260,7 @@ func (e *Engine) respondHeld(ctx context.Context, r *run, n int64, resp Response
 				// approval stands for good.
 				if d != nil {
 					d.rev = max(d.rev, out.rev)
+					d.counted = d.counted || auth.Via == ViaIdentity
 				}
 				if auth.Via == ViaIdentity {
 					if e.countedPending == nil {
@@ -2735,7 +2741,7 @@ func (e *Engine) replaceDecisionFrom(r *run, d *decision, why, from string) (*de
 		r.sel.last = d.id()
 	}
 	held := slices.Clone(d.holds)
-	d.state = ledger.DecisionSuperseded
+	d.state, d.replaced = ledger.DecisionSuperseded, true
 	r.dropDecision(d)
 	r.decisions = append(r.decisions, fresh)
 	// Counted as it is carried, in the change that frees the answer's
