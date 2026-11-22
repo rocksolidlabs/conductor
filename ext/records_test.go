@@ -56,6 +56,7 @@ var (
 	}
 	enabled        = true
 	contextFinding = ext.ContextFinding{Severity: "major", Path: "a.go", Line: 3, Message: "m"}
+	contextReview  = ext.ContextReview{ID: "0123456789abcdef", Findings: []ext.ContextReviewFinding{{ID: "fedcba9876543210", State: ext.FindingResolved, Path: "a.go", Line: 3}}}
 	contextTicket  = ext.ContextTicket{Key: "CND-12", Rev: 9, Plan: "0123456789abcdef", PlanN: 3, Digest: strings.Repeat("e", 64), Owner: "Ada", Assignees: []string{"Grace"}}
 	lookupItem     = ext.LookupItem{Kind: ext.ItemSymbol, Path: "a.go", Line: 3, Symbol: "Open", Relation: ext.RelationCalledBy, Mark: ext.MarkSupported, Why: "w", Excerpt: "e"}
 	lookupCoverage = ext.LookupCoverage{Commit: strings.Repeat("a", 40), Snapshot: "s-1", Files: 412, Excluded: 3, Unknown: 1, Partial: true, At: at}
@@ -108,7 +109,11 @@ var records = []any{
 		Checks:     []ext.ContextCheck{{ID: "unit", Argv: []string{"go", "test"}, Cut: true}},
 		Evidence:   []string{"ticket:CND-12"},
 		LaunchedBy: "Ada",
+		Decisions:  []ext.DecisionState{{Request: "dr-7", State: "applied", Final: true, Rev: 3, ClosedAt: at}},
+		Reviews:    []ext.ContextReview{contextReview},
 	},
+	&contextReview,
+	&contextReview.Findings[0],
 	&ext.ContextInput{Task: "plan", Commit: "def456", Attempt: 2, Start: "abc123", Verdict: "needs_changes", Findings: []ext.ContextFinding{contextFinding}},
 	&contextFinding,
 	&contextTicket,

@@ -1,6 +1,7 @@
 package crew
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"maps"
@@ -12,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/rocksolidlabs/conductor/ext"
+	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
 	"github.com/rocksolidlabs/conductor/internal/quoted"
 )
 
@@ -51,14 +53,123 @@ func (e *Engine) askContext(ctx context.Context, r *run, a *attempt) []TaskConte
 		f = nil
 	}
 	var q ext.ContextQuery
+	var chain []string
+	ticket := ""
 	if f != nil {
 		q = contextQuery(r, a)
+		chain = slices.Clone(r.dec.chain)
+		if len(chain) == 0 {
+			chain = []string{r.id}
+		}
+		if r.pkg != nil {
+			ticket = r.pkg.p.Ticket.ID
+		}
 	}
 	e.mu.Unlock()
 	if f == nil {
 		return nil
 	}
+	q.Decisions = e.contextDecisions(ctx, chain, q.Task, ticket)
 	return f(ctx, q)
+}
+
+// contextDecisions are the decisions a context provider is told of for an
+// attempt of the task: the gates of the plan of the ticket the run was
+// launched from (ticket, Dispatch's id; none for "") and the task's own
+// decisions (asked by it or holding it), each held by a run of chain, the
+// run and the runs it continues, as the task file's are read. Read from
+// the ledger outside the engine's lock; a read that fails gives none, and
+// the attempt is asked about as before decisions were named.
+func (e *Engine) contextDecisions(ctx context.Context, chain []string, task, ticket string) []ext.DecisionState {
+	dl, ok := e.ledger.(decisionLedger)
+	if !ok {
+		return nil
+	}
+	e.mu.Lock()
+	seam := e.contextDecisionsRead
+	e.mu.Unlock()
+	if seam != nil {
+		seam()
+	}
+	var rows []ledger.DecisionRow
+	for _, runID := range chain {
+		got, err := allDecisions(ctx, dl, ledger.DecisionFilter{CurrentRun: runID, Task: task})
+		if err != nil {
+			return nil
+		}
+		rows = append(rows, got...)
+		if ticket == "" {
+			continue
+		}
+		if got, err = allDecisions(ctx, dl, ledger.DecisionFilter{CurrentRun: runID, Ticket: ticket}); err != nil {
+			return nil
+		}
+		for _, row := range got {
+			if row.Origin == ledger.OriginPlan {
+				rows = append(rows, row)
+			}
+		}
+	}
+	return decisionStates(rows)
+}
+
+// decisionStates are rows as a query names them: each once, by its id and
+// its state; at most ext.MaxContextDecisions, kept by rank and then the
+// newest first within a rank (the ones that still wait, open and
+// answered; then applied; then the other final states), so a decision
+// that waits is never cut for a closed one; named in the order they were
+// opened.
+func decisionStates(rows []ledger.DecisionRow) []ext.DecisionState {
+	slices.SortFunc(rows, func(x, y ledger.DecisionRow) int { return cmp.Compare(y.N, x.N) })
+	rows = slices.CompactFunc(rows, func(x, y ledger.DecisionRow) bool { return x.N == y.N })
+	slices.SortStableFunc(rows, func(x, y ledger.DecisionRow) int { return cmp.Compare(decisionRank(x.State), decisionRank(y.State)) })
+	rows = rows[:min(len(rows), ext.MaxContextDecisions)]
+	slices.SortFunc(rows, func(x, y ledger.DecisionRow) int { return cmp.Compare(x.N, y.N) })
+	var out []ext.DecisionState
+	for _, row := range rows {
+		out = append(out, ext.DecisionState{Request: row.ID(), State: row.State, Final: row.Final(), Rev: row.Rev, ClosedAt: row.ClosedAt})
+	}
+	return out
+}
+
+// decisionRank is the order a query keeps decisions in before its cut:
+// 0 for one that still waits (open, answered), 1 for applied, 2 for the
+// other final states.
+func decisionRank(state string) int {
+	switch state {
+	case ledger.DecisionOpen, ledger.DecisionAnswered:
+		return 0
+	case ledger.DecisionApplied:
+		return 1
+	}
+	return 2
+}
+
+// SetContextDecisionsReadForTest sets what is told each time the
+// decisions of an attempt's query are read from the ledger (nil for
+// nothing), for a test that counts the reads.
+func (e *Engine) SetContextDecisionsReadForTest(fn func()) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.contextDecisionsRead = fn
+}
+
+// RepairReview is the person's review whose request the task's next
+// attempt repairs, as its task file's repair names it (its request's
+// review, Dispatch's id); "" for a run or task the engine does not hold, a
+// task with no repair, and a repair a review task asked for.
+func (e *Engine) RepairReview(runID, taskID string) string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	r, ok := e.runs[runID]
+	if !ok {
+		return ""
+	}
+	t := r.task(taskID)
+	if t == nil || t.repair == nil || t.repair.request == nil {
+		return ""
+	}
+	return t.repair.request.Review
 }
 
 // contextQuery is a's attempt as a context provider is asked about it: its

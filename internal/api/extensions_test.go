@@ -855,13 +855,24 @@ func TestExtCallCopiesInputs(t *testing.T) {
 	if d.Options[0].Input != "1" {
 		t.Fatalf("the router changed the caller's question: %+v", d.Options)
 	}
-	c := &guardContext{s: srv, name: "graph", p: mutatingContext{}}
-	q := ext.ContextQuery{Task: "t", Inputs: []ext.ContextInput{{Task: "a", Commit: "c1"}}}
-	if _, err := c.Context(t.Context(), q); err != nil {
-		t.Fatal(err)
+	// Two providers asked at once, as contextFor asks them, each changing
+	// every list it is given in place: neither reaches the caller's query
+	// or the other's (the race detector sees a shared array).
+	q := ext.ContextQuery{Task: "t", Inputs: []ext.ContextInput{{Task: "a", Commit: "c1"}},
+		Decisions: []ext.DecisionState{{Request: "dr-1", State: "open", Rev: 1}},
+		Reviews:   []ext.ContextReview{{ID: "0123456789abcdef", Findings: []ext.ContextReviewFinding{{ID: "fedcba9876543210", State: ext.FindingOpen}}}}}
+	var wg sync.WaitGroup
+	for _, name := range []string{"graph", "graph-2"} {
+		c := &guardContext{s: srv, name: name, p: mutatingContext{}}
+		wg.Go(func() {
+			if _, err := c.Context(t.Context(), q); err != nil {
+				t.Error(err)
+			}
+		})
 	}
-	if q.Inputs[0].Commit != "c1" {
-		t.Fatalf("the context provider changed the caller's query: %+v", q.Inputs)
+	wg.Wait()
+	if q.Inputs[0].Commit != "c1" || q.Decisions[0].State != "open" || q.Reviews[0].Findings[0].State != ext.FindingOpen {
+		t.Fatalf("a context provider changed the caller's query: %+v %+v %+v", q.Inputs, q.Decisions, q.Reviews)
 	}
 }
 
@@ -958,6 +969,14 @@ func (mutatingContext) Name() string                               { return "gra
 func (mutatingContext) NoteTouch(context.Context, ext.TouchedFile) {}
 func (mutatingContext) Context(_ context.Context, q ext.ContextQuery) ([]ext.ContextBlock, error) {
 	q.Inputs[0].Commit = "changed"
+	for i := range q.Decisions {
+		q.Decisions[i].State = "changed"
+	}
+	for i := range q.Reviews {
+		for k := range q.Reviews[i].Findings {
+			q.Reviews[i].Findings[k].State = "changed"
+		}
+	}
 	return nil, nil
 }
 
