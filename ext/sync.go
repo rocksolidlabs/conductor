@@ -889,7 +889,9 @@ const (
 
 // SyncStatus is an optional interface beside ContinuityStore: the sync
 // store's state, answered from memory through the guard (StatusWait),
-// for the Sync row of the app's settings.
+// for the Sync row of the app's settings. A store with nothing to report
+// (registered, and not in use) answers the zero report, and the server
+// shows no report for it, as for a store that offers no SyncStatus.
 type SyncStatus interface {
 	SyncStatus() SyncReport
 }
@@ -898,7 +900,8 @@ type SyncStatus interface {
 // SyncUnreachable, SyncLapsed or SyncSignedOut, since when, how many
 // changes wait, what was kept back and why, where a remote decision is
 // answered, and this server's own device, workspace and person as the
-// provider names them (empty while it is not signed in).
+// provider names them (empty while it is not signed in). The zero report
+// (no state and no other field, IsZero) says there is nothing to report.
 type SyncReport struct {
 	State      string         `json:"state"`
 	Since      time.Time      `json:"since,omitzero"`
@@ -919,7 +922,16 @@ type SyncWithheld struct {
 	Words string `json:"words"`
 }
 
-// Valid checks a report against its bounds: a state of the five; waiting
+// IsZero reports whether r is the zero report: no state and no other
+// field (an empty list of changes kept back counts as none), nothing to
+// report.
+func (r SyncReport) IsZero() bool {
+	return r.State == "" && r.Since.IsZero() && r.Waiting == 0 && len(r.Withheld) == 0 && r.AnswerURL == "" && r.Device == "" &&
+		r.DeviceName == "" && r.Workspace == "" && r.Person == ""
+}
+
+// Valid checks a report against its bounds: the zero report, nothing to
+// report, is valid; any other report has a state of the five; waiting
 // not below 0; at most MaxSyncWithheld changes kept back, each a ref of 1
 // to MaxHeldID bytes of one line and words of at most MaxSyncWords
 // characters of one line; an answer page that is an https URL of at most
@@ -927,6 +939,9 @@ type SyncWithheld struct {
 // record's, its name one line of at most MaxDeviceName bytes, its
 // workspace and person opaque ids of at most MaxHeldID bytes.
 func (r SyncReport) Valid() error {
+	if r.IsZero() {
+		return nil
+	}
 	switch r.State {
 	case SyncCurrent, SyncBehind, SyncUnreachable, SyncLapsed, SyncSignedOut:
 	default:
@@ -956,7 +971,7 @@ func (r SyncReport) Valid() error {
 	return nil
 }
 
-// The states of a SyncReport.
+// The states of a SyncReport; the zero report has none (IsZero).
 const (
 	SyncCurrent     = "current"
 	SyncBehind      = "behind"

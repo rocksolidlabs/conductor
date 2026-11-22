@@ -1760,7 +1760,14 @@ server's own device (the report's `device`) is never drawn. A project's
 new key is carried into Brakeman's saved scope before the rekey, so a
 grant follows the person's project; a project made under the new key
 between that save and the rekey makes the rekey refuse while the scope
-names that project, until it is put back.
+names that project, until it is put back. A store with nothing to report
+(registered, and not in use) answers the zero report (no state and no
+other field, `SyncReport.IsZero`), which `Valid` takes: `GET /api/sync`
+leaves the report's fields out for it, byte for byte as for a store that
+offers no `ext.SyncStatus`, and tells no failure of the store; the Sync
+row is drawn only for a report with a state, so it shows nothing then.
+Every other report is judged as before, a state-less one with a field
+set refused (#1066).
 
 **As built (the stream's review).** What the apply does with a row naming
 one of this store's own tags (a tag this store's instance joined under):
