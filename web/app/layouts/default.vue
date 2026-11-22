@@ -308,6 +308,7 @@ defineShortcuts({
   'g-a': chord(() => router.push('/agents')),
   'g-e': chord(() => router.push('/history?view=feed')),
   'g-h': chord(() => router.push('/history')),
+  'g-o': chord(() => router.push('/hosts')),
   'g-c': chord(() => router.push('/crews')),
   'g-d': chord(() => router.push('/dispatch')),
   // A server without Brakeman has no page of it (utils/pages.ts, `when`).

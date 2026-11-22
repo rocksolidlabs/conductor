@@ -59,6 +59,12 @@ type Hub struct {
 	// registry or this table, or its registration fails; nil keeps none.
 	// Desks carry no token. Set it before the first host registers.
 	Tokens session.TokenSet
+	// Switchyard says the hub is a switchyard's: it keeps none of what a
+	// host says of its machine (proto.HostInfo's Machine, Platform and
+	// Version), whatever a host sends, so its sessions carry no
+	// hostPlatform, no hostVersion and no key made of a machine. Set it
+	// before the first host registers.
+	Switchyard bool
 	// registering holds the ids of the registrations with an instance
 	// under way, from the look-up that found no session under the id to
 	// the insert into sessions or the failure: a second one meanwhile is
@@ -112,7 +118,10 @@ func (hub *Hub) Register(reg proto.Register, conn *HostConn) (*HostedSession, bo
 	if (reg.Host.Instance == "") != (reg.Session.LocalID == "") || len(reg.Host.Instance) > proto.MaxHostInstance || len(reg.Session.LocalID) > proto.MaxLocalID {
 		return nil, false, ErrBadRegister
 	}
-	if reg.Session.HostReport.Check() != nil {
+	// A machine key out of its form refuses the register whole
+	// (proto.ErrHostMachine); a platform or a version out of its form is
+	// only not kept (setHostFields).
+	if reg.Session.HostReport.Check() != nil || reg.Host.CheckMachine() != nil {
 		return nil, false, ErrBadRegister
 	}
 	if reg.Resume != nil {
@@ -210,6 +219,7 @@ func (hub *Hub) Register(reg proto.Register, conn *HostConn) (*HostedSession, bo
 			CreatedAt: time.Now().UTC(),
 		},
 	}
+	setHostFields(&hs.info, reg.Host, owner, hub.Switchyard)
 	hs.setAgentToken(reg.Session.AgentToken)
 	hs.setAnswerAs(reg.Host.AnswerAs)
 	if err := hub.registry.Add(hs); err != nil {
@@ -261,6 +271,9 @@ func (hs *HostedSession) attachLive(reg proto.Register, conn *HostConn) (attache
 	hs.info.Cols, hs.info.Rows = reg.Session.Cols, reg.Session.Rows
 	hs.info.Branch = reg.Session.Branch
 	hs.info.HostUser = reg.Host.User
+	// What the host says of itself now: a host back with another key (the
+	// file of its machine's id made again) is grouped by the new one.
+	setHostFields(&hs.info, reg.Host, hs.owner, hs.hub.Switchyard)
 	hs.relayOnly = reg.Session.RelayOnly
 	hs.setAnswerAs(reg.Host.AnswerAs)
 	if reg.Session.AgentToken != "" {

@@ -27,7 +27,7 @@ test('every list of the pages, as drawn', async ({ browser, state }) => {
   await drawn(tiles.locator('[data-sidebar-tile] [data-nav-label]'), ['Needs you', 'Yard', 'Crews', 'Dispatch', 'Brakeman', 'More'])
   await tiles.locator('[data-sidebar-tile="more"]').click()
   const menu = page.getByRole('menu')
-  await drawn(menu.getByRole('menuitem').locator('[data-slot="itemLabel"]'), ['Agents', 'History'])
+  await drawn(menu.getByRole('menuitem').locator('[data-slot="itemLabel"]'), ['Agents', 'History', 'Hosts'])
   await page.keyboard.press('Escape')
   await expect(menu).toHaveCount(0)
 
@@ -37,7 +37,7 @@ test('every list of the pages, as drawn', async ({ browser, state }) => {
   const palette = page.locator('[data-palette]')
   await expect(palette).toBeVisible()
   const go = palette.locator('[data-palette-group="goto"] [data-palette-row] [data-palette-label]')
-  await drawn(go, ['Needs you', 'Yard', 'Roundhouse', 'Crews', 'Dispatch', 'Agents', 'Agents · Reporting', 'History', 'History · Live', 'Paste invite'])
+  await drawn(go, ['Needs you', 'Yard', 'Roundhouse', 'Crews', 'Dispatch', 'Agents', 'Agents · Reporting', 'History', 'History · Live', 'Hosts', 'Paste invite'])
   await page.keyboard.press('Escape')
   await expect(palette).toBeHidden()
 
@@ -50,7 +50,7 @@ test('every list of the pages, as drawn', async ({ browser, state }) => {
   const rail = sidebar.getByRole('navigation').last().getByRole('link')
   const railNames = await rail.evaluateAll((els) => els.map((el) => (el.getAttribute('aria-label') ?? '').replace(/,.*$/, '')))
   const rest = railNames[0] === 'Needs you' ? railNames.slice(1) : railNames
-  expect(rest).toEqual(['Yard', 'Crews', 'Dispatch', 'Brakeman', 'Agents', 'History'])
+  expect(rest).toEqual(['Yard', 'Crews', 'Dispatch', 'Brakeman', 'Agents', 'History', 'Hosts'])
   await page.keyboard.press('Alt+b')
   await expect(sidebar.locator('[data-rail]')).toHaveCount(0)
 
@@ -62,5 +62,5 @@ test('every list of the pages, as drawn', async ({ browser, state }) => {
   await phone.locator('[data-bottom-tab="more"]').tap()
   const more = phone.locator('[data-bottom-more]')
   await expect(more.getByRole('link', { name: 'Brakeman' })).toBeVisible()
-  await drawn(more.getByRole('link'), ['Dispatch', 'Brakeman', 'Agents', 'History'])
+  await drawn(more.getByRole('link'), ['Dispatch', 'Brakeman', 'Agents', 'History', 'Hosts'])
 })

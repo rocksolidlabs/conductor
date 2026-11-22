@@ -871,6 +871,29 @@ export const HOST_MAX_INSTANCE = 64
 export const HOST_MAX_LOCAL_ID = 64
 
 /**
+ * What a host's register says of its machine (docs/protocol.md, Host control connection), each optional: an older host
+ * sends neither `machine` nor `platform`. A register with a `machine` out of its form is refused whole; a `platform` or a
+ * `version` out of its form is not kept and the register stands. A host sends `machine` and `platform` only to a server
+ * whose upgrade carried its key; a switchyard keeps none of the three.
+ */
+export interface HostMachine {
+  /**
+   * Exactly HOST_MAX_MACHINE lowercase hex digits: a key for the host's machine made from its machine id and the key this
+   * server sent in the upgrade's `Conductor-Server-Key` header, never the id itself. The server keeps and serves only a hash
+   * of it (a session's `hostKey`).
+   */
+  machine?: string
+  /** `<GOOS>/<GOARCH>`, with `+wsl` inside WSL: kept when at most HOST_MAX_PLATFORM bytes of `^[a-z0-9]{1,15}/[a-z0-9]{1,15}(\+wsl)?$`. */
+  platform?: string
+  /** The host's release, kept when at most HOST_MAX_VERSION bytes of `^[0-9A-Za-z][0-9A-Za-z.+_-]*$`. */
+  version?: string
+}
+/** The bounds of HostMachine's fields. */
+export const HOST_MAX_MACHINE = 32
+export const HOST_MAX_PLATFORM = 32
+export const HOST_MAX_VERSION = 64
+
+/**
  * Routed answers (the decision seam, docs/protocol.md, Host control connection): what a host's
  * register says when it takes `answer_as` and sends `kept`. `conductor host` says it; a server
  * publishing to a switchyard never does; an older host leaves it out.
@@ -1846,3 +1869,165 @@ export interface SyncStatusReply {
   person?: string
   here?: { check?: string; cut?: number; hosted?: number }
 }
+
+/**
+ * GET /api/hosts (docs/protocol.md; docs/plans/hosts.md): every machine this server knows, what runs and waits on each, and who
+ * holds this data directory's managed runs. Admin only, no query. At most HOSTS_REPLY_MAX bytes; every list is bounded and the rows
+ * left out are counted in `more` (and `other.more`, a row's `moreSessionIds`, a summary's `moreHosts`).
+ */
+export type HostAvailability = 'here' | 'connected' | 'away' | 'seen'
+export type HostsHolder = 'this' | 'this_read_only' | 'other' | 'none' | 'unknown'
+export interface HostsSessions {
+  /** Sessions starting, running or away. */
+  running: number
+  /** Sessions waiting for a person: not ended, a question shown, not answered, and no decision's mirror. */
+  waiting: number
+  /** MB0's item ref when exactly one thing waits (at most HOSTS_REF_MAX bytes); missing otherwise. */
+  waitingRef?: string
+}
+export interface HostsDecisions {
+  open: number
+  waitingRef?: string
+}
+export interface HostsHosted {
+  sessions: HostsSessions
+  sessionIds: string[]
+  moreSessionIds?: number
+  /** The Runtimes these sessions run in, as their host reported them (at most HOSTS_MAX_WHERE). */
+  where?: string[]
+}
+export interface HostsThis {
+  /** This machine's group key: a host of this machine is kept under the same one. */
+  key: string
+  kind: 'server'
+  name: string
+  platform: string
+  version: string
+  availability: 'here'
+  sessions: HostsSessions
+  /** Sessions hosted from this server's own machine: no card of their own. */
+  hosted?: HostsHosted
+  /** The open decisions of the runs this server holds; null for any other holder. */
+  decisions: HostsDecisions | null
+}
+export interface HostRow {
+  /** The sessions' hostKey: a hash that groups, never what the host sent. */
+  key: string
+  kind: 'host'
+  /** The newest of its sessions' host names. */
+  name: string
+  /** How many names its sessions report, when more than one. */
+  names?: number
+  platform?: string
+  version?: string
+  user?: string
+  availability: 'connected' | 'away' | 'seen'
+  /** away: when its last link dropped; seen: when its last session went; missing while connected. */
+  since?: string
+  sessions: HostsSessions
+  /** Its listed sessions, newest first (at most HOSTS_MAX_SESSION_IDS); empty when seen. */
+  sessionIds: string[]
+  moreSessionIds?: number
+  where?: string[]
+  keyFrom: 'machine' | 'process' | 'session'
+}
+export interface HostsSwitchyard {
+  /** Scheme, host and path only. */
+  url: string
+  publishing: number
+  connected: number
+}
+export interface HostsRun {
+  id: string
+  /** The run's own name while this server's engine holds it, else the crew's name as the run's row holds it. */
+  name: string
+  /** The crew's id. */
+  crew: string
+  state: string
+  paused: boolean
+  /** What waits for a person on the run; null when another process holds it (counted on the server that holds it). */
+  waiting: number | null
+  waitingRef?: string
+  heldBy: HostsHolder
+}
+export interface HostsSummaryHost {
+  name: string
+  platform?: string
+  version?: string
+  availability: 'connected' | 'away' | 'seen'
+  since?: string
+  sessions: HostsSessions
+}
+export interface HostsRemoteSummary {
+  platform: string
+  version: string
+  sessions: HostsSessions
+  runs: { held: number; waiting: number }
+  /** At most HOSTS_SUMMARY_ROWS; the rest counted in moreHosts. */
+  hosts: HostsSummaryHost[]
+  moreHosts?: number
+}
+export interface HostsRemoteRun {
+  id: string
+  crew: string
+  state: string
+  waiting: number
+  /** The name of the device that reported the run, and when: never a holder. */
+  reportedBy: string
+  reportedAt?: string
+}
+export interface HostsMachine {
+  device: string
+  name: string
+  platform?: string
+  version?: string
+  /** When the sync service last heard from the device: said as a time, never as connected. */
+  lastReport?: string
+  own: boolean
+  summary?: HostsRemoteSummary
+  runs: HostsRemoteRun[]
+  decisions: HostsDecisions
+}
+export interface HostsOther {
+  state: Exclude<SyncState, 'signed_out'>
+  since?: string
+  /** Empty while other machines are not shown (a state that is not current). */
+  machines: HostsMachine[]
+  more: { machines: number; remoteRuns: number }
+}
+/**
+ * Who holds this data directory's managed runs, as the owner lock is when the reply is built. `note` is always one of the
+ * server's own sentences (never a time, a pid, a path or anything read from a file or an error); `pid` (at most
+ * HOSTS_PID_DIGITS digits) only under `other`, as that server wrote it; `since` (RFC 3339) under `other` the time its lock line
+ * gives, under `none` when this server stopped waiting for the lock or since when it has been waiting. The page says every time
+ * itself, in the viewer's local time.
+ */
+export interface HostsLedger {
+  holder: HostsHolder
+  note: string
+  pid?: number
+  since?: string
+}
+export interface HostsReply {
+  at: string
+  /** When this server started: machines are seen since then. */
+  started: string
+  this: HostsThis
+  hosts: HostRow[]
+  switchyard?: HostsSwitchyard
+  runs: HostsRun[]
+  ledger: HostsLedger
+  more: { hosts: number; runs: number }
+  /** Present only while a registered sync store has been current in this server's life and is not signed out. */
+  other?: HostsOther
+}
+export const HOSTS_REPLY_MAX = 256 << 10
+export const HOSTS_MAX_HOST_ROWS = 256
+export const HOSTS_MAX_RUNS = 500
+export const HOSTS_MAX_SESSION_IDS = 64
+export const HOSTS_MAX_WHERE = 8
+export const HOSTS_REF_MAX = 512
+export const HOSTS_PID_DIGITS = 10
+export const HOSTS_MAX_MACHINES = 64
+export const HOSTS_MAX_REMOTE_RUNS = 200
+export const HOSTS_SUMMARY_ROWS = 8

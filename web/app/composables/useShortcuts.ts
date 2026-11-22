@@ -41,6 +41,8 @@ export const GLOBAL_SHORTCUTS: ShortcutGroup = {
     { keys: ['G', 'E'], label: "Go to History · Live", terminal: ['alt', 'E'] },
     // No terminal twin: Alt+H is the shortcuts' own (chords.ts), so History has the plain chord alone.
     { keys: ['G', 'H'], label: 'Go to History' },
+    // No terminal twin: Alt+O stays the terminal's (a shell's or an editor's), so Hosts has the plain chord alone.
+    { keys: ['G', 'O'], label: 'Go to Hosts' },
     { keys: ['F'], label: 'Toggle fullscreen', terminal: ['alt', 'F'] },
     { keys: [']'], label: 'The next session that needs you, in a pill with its choices: 1–9 answer, Enter opens, Escape dismisses', terminal: ['alt', ']'] },
     { keys: ['['], label: 'The one before', terminal: ['alt', '['] },

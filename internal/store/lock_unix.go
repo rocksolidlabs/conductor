@@ -80,3 +80,46 @@ func LockHeld(path string) (bool, error) {
 	syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
 	return false, nil
 }
+
+// ProbeOwnerLock tries once for the lock at path, never making the file,
+// opening it only to read, and writing nothing to it: held when another
+// open file holds the lock, and then line, the first line of what its
+// holder wrote, read in that same try (at most lineMax bytes; a longer
+// line, or one not yet written, is ""); noLocks when the filesystem does
+// not support locks. A free lock is let go at once. An error is for a file
+// that cannot be opened or locked: a missing one among them
+// (fs.ErrNotExist), since a holder may hold a file that was removed.
+// Nothing trusts line.
+func ProbeOwnerLock(path string, lineMax int) (held bool, line string, noLocks bool, err error) {
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return false, "", false, err
+	}
+	defer f.Close()
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		if errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN) {
+			return true, firstLine(f, lineMax), false, nil
+		}
+		if errors.Is(err, syscall.EOPNOTSUPP) || errors.Is(err, syscall.ENOTSUP) || errors.Is(err, syscall.ENOLCK) || errors.Is(err, syscall.ENOSYS) || errors.Is(err, syscall.EINVAL) {
+			return false, "", true, nil
+		}
+		return false, "", false, fmt.Errorf("lock %s: %w", path, err)
+	}
+	syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	return false, "", false, nil
+}
+
+// firstLine is the first line of f, without its newline, when it ends
+// within limit bytes; "" otherwise, or when f cannot be read.
+func firstLine(f *os.File, limit int) string {
+	if limit <= 0 {
+		return ""
+	}
+	buf := make([]byte, limit+1)
+	n, _ := f.ReadAt(buf, 0)
+	i := strings.IndexByte(string(buf[:n]), '\n')
+	if i < 0 {
+		return ""
+	}
+	return string(buf[:i])
+}

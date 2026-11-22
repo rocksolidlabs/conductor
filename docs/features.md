@@ -211,6 +211,72 @@ that order.
   link grants. Content appears only after the guest joins.
 - **No Runs nav item** until there is something behind it.
 
+## Hosts: the machines this server knows, and who holds each run (HS2, #1032; 2026-11-22)
+
+One page, **Hosts** (`/hosts`; the nav after History, the phone's More, the
+palette's Go to, G O), drawn from `GET /api/hosts` (`docs/plans/hosts.md`). It
+shows where work is and who holds it, and nothing on it moves or starts work: its
+only actions are links to the run page, a session and Needs you.
+
+- **This server.** Its name, its platform in words (`Linux · x64`, `macOS ·
+  arm64`, `Windows · x64`, `· WSL` inside WSL), its version, Here, its sessions and
+  what waits for a person among them, the open decisions of the runs it holds, and
+  the sessions hosted from its own machine (one machine, no card of their own).
+- **Hosts.** One card per machine running `conductor host` against this server,
+  however many sessions it hosts: Connected while a link of its host is up, Away
+  since 14:02 once none is and a session waits in its 60 s grace, Last seen 13:40
+  for 24 hours after its last session left (since this server started); its
+  sessions, each a link, where they run, and Holds no runs: a host runs sessions,
+  and only a server's ledger holds a managed run. Availability is a neutral badge,
+  never a status colour.
+- **The switchyard** this server publishes to: its address, how many sessions are
+  published and how many of them connected.
+- **Runs and who holds them.** The data directory's open managed runs (one a
+  restart interrupted and not yet continued among them), each a link to its run
+  page, its state in the status language and what waits on it, under its holder as
+  it is when the page asks: Held by this server; Held by this server, read-only,
+  with the ledger's reason; Held by another server on this data directory, with the
+  line that server wrote and its counts said to be counted there; Held by no
+  server, with why; or Not known who holds these runs, with why. A former holder's
+  line is never shown once it let go.
+- **What waits links to its item.** Each count of what waits opens its one item on
+  Needs you when exactly one waits, Needs you itself when more do, and nothing at 0.
+- **Other machines (#1069),** only where a sync store is registered and has been
+  current in this server's life: the workspace's other servers as the sync service
+  last heard from them, each Last reported 14:05 (never Connected or Here), the
+  person's own other servers with their hosts as that server last saw them, the
+  runs sync shares as Reported by studio at 14:05 (never a holder), and the
+  decisions waiting there, all read only: no link and no control. While the
+  service has not answered, is behind for 10 minutes or more, or the subscription
+  has lapsed, the section is one line ("Other machines are not shown: the sync
+  service has not answered since 14:02") and the rest of the page is unchanged; it
+  comes back at the next current state with no restart. With no sync store, never
+  signed in, signed out or still starting, the page says nothing of other machines.
+- The page reads on open, again at most once a second on the session and run
+  events the layout already streams, and every 30 s; one read at a time, and a
+  reply older than one it drew is never drawn.
+- Tests: `utils/hosts.test.ts`, `utils/otherMachinesShown.test.ts`,
+  `HostCard.test.ts`, `HostRunRow.test.ts`, `web/e2e/hosts.spec.ts` (a stub of the
+  route, Other machines among it, and the real route with a real `conductor host`
+  of the stub agent), `web/e2e/hosts-free.spec.ts` (nothing of other machines with
+  no sync store, a `remote/` folder left behind included), and the route's own
+  tests in `internal/api`. The section against a real sync store is the premium
+  repository's check.
+- **Observed by hand (the plan's Acceptance, part A): not yet.** To be recorded
+  here once seen, with no networking set up by anyone on Windows or WSL: a server on
+  a Linux machine with a Mac's host and a WSL host on one Hosts page, each one card
+  however many sessions it hosts, a question asked on the Mac counted on its card
+  and its link opening the session; a managed run Held by this server, then Held by
+  another server on this data directory from a second server on the same data
+  directory, then Held by no server once the first stopped; the Mac's host stopped,
+  Away since, then Last seen; the desktop app's server and a host in the same WSL
+  distribution as one machine; and no control that starts, moves, continues or
+  retries work.
+- **Observed by hand (part B): not yet.** It waits for the sync service's and the
+  provider's hosts rows: two signed-in servers of one workspace, each showing the
+  other under Other machines, then the staging service stopped and the subscription
+  lapsed, the section one line each time and back with no restart.
+
 ## Sync's seams: what this repository hands a sync store, and what it shows of other machines (CS1, #1028; 2026-11-20)
 
 The open-source half of sync between a person's machines (`docs/plans/sync-seams.md`,

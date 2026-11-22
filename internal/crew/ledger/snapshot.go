@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
-	"path/filepath"
 )
 
 // Snapshot writes a copy of the database to dst, a file that must not
@@ -59,13 +58,4 @@ func vacuumInto(ctx context.Context, db *sql.DB, dst string) error {
 		return fmt.Errorf("ledger: snapshot: %w", cancelledAs(ctx, err))
 	}
 	return os.Chmod(dst, 0o600)
-}
-
-// Held reports whether a server holds the owner lock of the ledger under
-// dir (the runs directory): it tries the lock and lets it go at once,
-// never making the file or the directory, so a directory with no lock
-// file is held by nobody. On a platform or a filesystem with no locks it
-// answers false: nothing can be told there.
-func Held(dir string) (bool, error) {
-	return lockHeld(filepath.Join(dir, Lock))
 }

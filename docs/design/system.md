@@ -177,7 +177,7 @@ is held by no floor: the light amber mark is the brand's signal amber.
 
 Checks: `themeContrast.test.ts` (every text token on every surface token
 of both themes against its floor); `web/e2e/contrast.spec.ts` (each drawn
-text over its real ground, on six pages of the seeded day, both themes, at
+text over its real ground, on seven pages of the seeded day, both themes, at
 1440 and 390, at rest and with a row hovered; `contrast-known.ts` lists
 what is known faded, and it only shrinks); `designRules.test.ts`, the
 floors (this table equals `CONTRAST_FLOORS`), no zinc, and the sidebar's

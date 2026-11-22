@@ -152,7 +152,17 @@ func runHost(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	if err := serverIsMineOK(*serverIsMine, *server); err != nil {
 		return 2, err
 	}
+	// The directory of this machine's id: the host's sessions are grouped
+	// with this machine's other hosts, and with a server on this machine,
+	// by a key made of it for each server it registers with. None when the
+	// user's config directory is not known.
+	idDir, err := machineDir()
+	if err != nil {
+		log.Warn("the user's config directory is not known, so this host tells its server nothing of its machine", "err", err)
+		idDir = ""
+	}
 	opts := hostagent.Options{
+		MachineDir:      idDir,
 		ICE:             hostagent.ICE{UDPPort: *iceUDPPort, PublicIP: *icePublicIP},
 		ServerURL:       *server,
 		Token:           *token,

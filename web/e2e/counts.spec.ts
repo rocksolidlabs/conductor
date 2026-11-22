@@ -1,5 +1,5 @@
 import type { BrowserContext, Page, Route } from '@playwright/test'
-import { budget, dayPage, expect, itemURL, pagePath, test, type Session } from './fixtures'
+import { budget, dayPage, expect, itemURL, pagePath, pressChord, test, type Session } from './fixtures'
 import { inboxItem, summary } from './inbox-stub'
 import { tapTarget } from './layout'
 import type { Day } from './day'
@@ -332,8 +332,7 @@ test.describe('the row leaves at zero', () => {
     await expect(page.locator('#dashboard-sidebar-main nav[data-needs-read="true"]')).toHaveCount(1)
     await expect(row(page)).toHaveCount(0)
     // G then N: the page open, its row shown while it is.
-    await page.keyboard.press('g')
-    await page.keyboard.press('n')
+    await pressChord(page, 'g', 'n')
     await expect.poll(() => pagePath(page)).toBe('/decisions')
     await expect(row(page)).toBeVisible()
     await page.goto('/yard')

@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { expect, test, type Session } from './fixtures'
+import { expect, pressChord, test, type Session } from './fixtures'
 import { freeProjectKey, makeProject, makeTicket, rowKeys, storedTicket } from './dispatch-helpers'
 
 // Dispatch's keys (docs/plans/dispatch.md, Owner decisions, 10): J K and Enter on a project's list, Escape back to it with the row
@@ -232,8 +232,7 @@ test("X selects two tickets and the palette's page group sets their status, one 
 test('G D goes to Dispatch from the Yard; Alt+D does from a focused terminal, which never gets the key', async ({ page, api, state }) => {
   await page.goto('/yard')
   await expect(page.locator('[data-session-list]')).toBeVisible({ timeout: 30_000 })
-  await page.keyboard.press('g')
-  await page.keyboard.press('d')
+  await pressChord(page, 'g', 'd')
   await expect(page).toHaveURL(/\/dispatch$/)
 
   const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'e2e dispatch alt d' })

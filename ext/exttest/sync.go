@@ -209,9 +209,15 @@ func (h *FakeHost) LastDecision(ctx context.Context) (int64, error) {
 	return d.LastDecision(ctx)
 }
 
+// PutRemote refuses a record that is not valid (ext.Remote.Valid: a host
+// summary's body among the rest) with Valid's error, wrapping
+// ext.ErrRefused, before the script sees it, as the server answers it.
 func (h *FakeHost) PutRemote(ctx context.Context, r ext.Remote) error {
 	d, err := h.door("PutRemote")
 	if err != nil {
+		return err
+	}
+	if err := r.Valid(); err != nil {
 		return err
 	}
 	return d.PutRemote(ctx, r)

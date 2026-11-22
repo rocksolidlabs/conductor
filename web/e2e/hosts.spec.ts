@@ -1,0 +1,485 @@
+import { spawn, type ChildProcess } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
+import { mkdirSync, openSync } from 'node:fs'
+import { join } from 'node:path'
+import type { Page, Route } from '@playwright/test'
+import { HOSTS_READ_WAIT_MS, hostAvailabilityWords, platformWords, remoteWords, timeWords } from '../app/utils/hosts'
+import type { HostRow, HostsLedger, HostsReply } from '../app/utils/protocol'
+import { atRest, budget, dayPage, endHosted, expect, hostedName, hostedSession, readAgain, test, type Api } from './fixtures'
+import { noSideways } from './layout'
+import { serverBinary, stubBash, stubPath } from './server'
+import type { E2EState } from './state'
+
+// The Hosts page (docs/plans/hosts.md, PR-3 to PR-5), against a stub of GET /api/hosts: This server, the hosts that reach it, the
+// switchyard, the runs and who holds them, each count of what waits linked to its item on Needs you, another machine drawn read
+// only, and nothing that acts on work.
+// The stub's keys, session ids and run ids are its own (no test server mints them). The page against the real route, with a real
+// `conductor host`, is the last test.
+
+const at = '2026-11-05T14:05:00Z'
+/** A time of the stub's reply as the page says it: against the reply's own moment. */
+const clock = (iso: string) => timeWords(iso, at)
+/** A machine last seen a week before the reply: its day and month are said, never a bare time that reads as today's. */
+const weekOld = '2026-10-29T14:02:00Z'
+const away = '2026-11-05T14:02:00Z'
+const started = '2026-11-05T09:12:00Z'
+
+function stub(over: Partial<HostsReply> = {}): HostsReply {
+  return {
+    at,
+    started,
+    this: {
+      key: 'hs2stub-this',
+      kind: 'server',
+      name: 'hs2stub-linuxbox',
+      platform: 'linux/amd64',
+      version: 'v0.7.0',
+      availability: 'here',
+      sessions: { running: 3, waiting: 1, waitingRef: 'question:hs2stub-s9/q-1' },
+      decisions: { open: 2 },
+    },
+    hosts: [
+      {
+        key: 'hs2stub-seen',
+        kind: 'host',
+        name: 'hs2stub-old',
+        platform: 'windows/amd64',
+        availability: 'seen',
+        since: weekOld,
+        sessions: { running: 0, waiting: 0 },
+        sessionIds: [],
+        keyFrom: 'machine',
+      },
+      {
+        key: 'hs2stub-studio',
+        kind: 'host',
+        name: 'hs2stub-studio',
+        names: 2,
+        platform: 'darwin/arm64',
+        version: 'v0.7.0',
+        user: 'ana',
+        availability: 'connected',
+        since: away,
+        sessions: { running: 2, waiting: 1, waitingRef: 'question:hs2stub-s1/q-7' },
+        sessionIds: ['hs2stub-s1', 'hs2stub-s2'],
+        where: ['native'],
+        keyFrom: 'machine',
+      },
+      {
+        key: 'hs2stub-wsl',
+        kind: 'host',
+        name: 'hs2stub-wsl',
+        platform: 'linux/amd64+wsl',
+        availability: 'away',
+        since: away,
+        sessions: { running: 1, waiting: 0 },
+        sessionIds: ['hs2stub-s3'],
+        keyFrom: 'machine',
+      },
+    ],
+    switchyard: { url: 'https://yard.example.test/', publishing: 2, connected: 1 },
+    runs: [
+      { id: 'hs2stub-run-1', name: 'Release', crew: 'release', state: 'running', paused: false, waiting: 1, waitingRef: 'decision:hs2stub-dr-1', heldBy: 'this' },
+      { id: 'hs2stub-run-2', name: 'Nightly', crew: 'nightly', state: 'interrupted', paused: false, waiting: 0, heldBy: 'this' },
+    ],
+    ledger: { holder: 'this', note: 'This server holds the lock.' },
+    more: { hosts: 0, runs: 0 },
+    ...over,
+  }
+}
+
+/** Serves `next()` for every read of GET /api/hosts, counting the reads. */
+async function serve(page: Page, next: () => { status?: number; json: unknown }): Promise<{ reads: () => number }> {
+  let n = 0
+  await page.route('**/api/hosts', (route: Route) => {
+    n++
+    const r = next()
+    return route.fulfill({ status: r.status ?? 200, json: r.json })
+  })
+  return { reads: () => n }
+}
+
+const card = (page: Page, key: string) => page.locator(`[data-host-card="${key}"]`)
+
+/**
+ * Hosts opened as a person opens it from the palette (the plan's "go hosts"): the palette's key once the layout's sidebar is drawn
+ * (its listener's own component), "hosts" typed, the Go to row chosen. The palette's input holds what was typed before Enter.
+ */
+async function goHosts(page: Page) {
+  await expect(page.locator('#dashboard-sidebar-main')).toBeVisible()
+  await page.keyboard.press('Alt+/')
+  const palette = page.locator('[data-palette]')
+  const input = palette.locator('input[data-palette-input]')
+  await expect(input).toBeFocused()
+  await input.fill('hosts')
+  await expect(input).toHaveValue('hosts')
+  const row = palette.locator('[data-palette-row="go:hosts"]')
+  await expect(row.locator('[data-palette-label]')).toHaveText('Hosts')
+  await row.click()
+  await expect(page).toHaveURL(/\/hosts$/)
+}
+
+test('the page draws this server, its hosts, the switchyard and the runs, as the reply says', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await serve(page, () => ({ json: stub() }))
+  await page.goto('/crews')
+  await goHosts(page)
+  await expect(page.locator('[data-hosts]')).toBeVisible()
+
+  const here = card(page, 'hs2stub-this')
+  await expect(here.locator('[data-host-name]')).toHaveText('hs2stub-linuxbox')
+  await expect(here.locator('[data-host-availability-words]')).toHaveText('Here')
+  await expect(here.locator('[data-host-meta]')).toHaveText(`${platformWords('linux/amd64')} · v0.7.0`)
+  await expect(here.locator('[data-host-sessions]')).toHaveText('3 sessions')
+  await expect(here.locator('[data-host-runs]')).toHaveText('Holds 2 runs')
+
+  // The cards in their order: connected, away, then seen; each host holds no runs.
+  await expect(page.locator('[data-hosts-section="hosts"] [data-host-card]')).toHaveCount(3)
+  expect(await page.locator('[data-hosts-section="hosts"] [data-host-card]').evaluateAll((els) => els.map((e) => e.getAttribute('data-host-card')))).toEqual(['hs2stub-studio', 'hs2stub-wsl', 'hs2stub-seen'])
+  const studio = card(page, 'hs2stub-studio')
+  await expect(studio.locator('[data-host-availability-words]')).toHaveText('Connected')
+  await expect(studio.locator('[data-host-meta]')).toHaveText('macOS · arm64 · v0.7.0 · user ana')
+  await expect(studio.locator('[data-host-names]')).toHaveText('Reported as 2 names')
+  await expect(studio.locator('[data-host-where]')).toHaveText('Runs in native')
+  await expect(studio.locator('[data-host-session]')).toHaveCount(2)
+  await expect(studio.locator('[data-host-session="hs2stub-s1"]')).toHaveAttribute('href', '/sessions/hs2stub-s1')
+  await expect(studio.locator('[data-host-runs]')).toHaveText('Holds no runs')
+  await expect(card(page, 'hs2stub-wsl').locator('[data-host-availability-words]')).toHaveText(hostAvailabilityWords('away', away, at))
+  await expect(card(page, 'hs2stub-wsl').locator('[data-host-meta]')).toHaveText('Linux · x64 · WSL')
+  await expect(card(page, 'hs2stub-seen').locator('[data-host-availability-words]')).toHaveText(`Last seen ${clock(weekOld)}`)
+  await expect(card(page, 'hs2stub-seen').locator('[data-host-availability-words]')).toHaveText(/^Last seen \d{1,2} (Oct|Nov) \d\d:\d\d$/)
+  await expect(page.locator('[data-hosts-started]')).toContainText(`since this server started at ${clock(started)}`)
+
+  await expect(page.locator('[data-hosts-switchyard-url]')).toHaveText('https://yard.example.test/')
+  await expect(page.locator('[data-hosts-switchyard-counts]')).toHaveText('2 sessions published · 1 connected')
+
+  await expect(page.locator('[data-hosts-holder-words]')).toHaveText('Held by this server')
+  const release = page.locator('[data-host-run="hs2stub-run-1"]')
+  await expect(release.locator('[data-host-run-link]')).toHaveAttribute('href', '/runs/hs2stub-run-1')
+  await expect(release.locator('[data-host-run-state] [data-status-word]')).toHaveText('running')
+  await expect(release.locator('[data-host-run-holder]')).toHaveText('Held by this server')
+  await expect(page.locator('[data-host-run="hs2stub-run-2"] [data-host-run-state] [data-status-word]')).toHaveText('interrupted, not yet continued')
+  await expect(page.locator('[data-hosts-footer]')).toHaveText('Runs stay with the server that holds them; nothing on this page moves or starts work.')
+
+  // Nothing on the page acts on work (I2): no button starts, stops, moves, launches, continues or retries anything.
+  const body = page.locator('#dashboard-panel-hosts-body, [data-hosts]').first()
+  await expect(body.getByRole('button', { name: /start|stop|move|launch|continue|retry/i })).toHaveCount(0)
+})
+
+test('each count of what waits links to its item on Needs you, and to the list when more than one waits (PR-4)', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await serve(page, () => ({ json: stub() }))
+  await page.goto('/hosts')
+  const studio = card(page, 'hs2stub-studio')
+  await expect(studio.locator('[data-host-waiting]')).toHaveText('1 needs you')
+  await expect(studio.locator('[data-host-waiting]')).toHaveAttribute('href', `/decisions?item=${encodeURIComponent('question:hs2stub-s1/q-7')}`)
+  const here = card(page, 'hs2stub-this')
+  await expect(here.locator('[data-host-waiting]')).toHaveAttribute('href', `/decisions?item=${encodeURIComponent('question:hs2stub-s9/q-1')}`)
+  await expect(here.locator('[data-host-decisions]')).toHaveText('2 decisions wait')
+  await expect(here.locator('[data-host-decisions]')).toHaveAttribute('href', '/decisions')
+  const run = page.locator('[data-host-run="hs2stub-run-1"] [data-host-run-waiting]')
+  await expect(run).toHaveText('1 needs you')
+  await expect(run).toHaveAttribute('href', `/decisions?item=${encodeURIComponent('decision:hs2stub-dr-1')}`)
+  // Nothing waits: no count and no link.
+  await expect(card(page, 'hs2stub-wsl').locator('[data-host-waiting]')).toHaveCount(0)
+  await expect(page.locator('[data-host-run="hs2stub-run-2"] [data-host-run-waiting]')).toHaveCount(0)
+})
+
+test("each holder's words come from the reply that says them, redrawn: a former holder's line is gone", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  const steps: Array<Pick<HostsReply, 'ledger' | 'runs'>> = []
+  const run = (heldBy: HostsReply['ledger']['holder'], waiting: number | null) => [{ id: 'hs2stub-run-1', name: 'Release', crew: 'release', state: 'running', paused: false, waiting, heldBy }]
+  steps.push({ ledger: { holder: 'this', note: 'This server holds the lock.' }, runs: run('this', 0) })
+  steps.push({ ledger: { holder: 'other', note: 'Another server holds the lock, as its lock file says.', pid: 4242, since: '2026-11-05T13:00:00Z' }, runs: run('other', null) })
+  steps.push({ ledger: { holder: 'none', note: 'This server stopped waiting for the lock.', since: '2026-11-05T13:02:10Z' }, runs: run('none', null) })
+  steps.push({ ledger: { holder: 'unknown', note: 'The lock file could not be read: permission denied.' }, runs: run('unknown', null) })
+  steps.push({ ledger: { holder: 'this_read_only', note: 'This server holds the lock, and reads its database only.' }, runs: run('this_read_only', null) })
+  let step = 0
+  await serve(page, () => ({ json: stub(steps[step]) }))
+  await page.goto('/hosts')
+  const row = page.locator('[data-host-run="hs2stub-run-1"]')
+  const want = [
+    'Held by this server',
+    `Held by another server on this data directory: pid 4242, since ${clock('2026-11-05T13:00:00Z')}, as that server wrote`,
+    `Held by no server: This server stopped waiting for the lock · since ${clock('2026-11-05T13:02:10Z')}`,
+    'Not known who holds these runs: The lock file could not be read: permission denied.',
+    'Held by this server, read-only: This server holds the lock, and reads its database only.',
+  ]
+  // What a run's count says when the reply makes none: only another server's runs are counted there.
+  const uncounted = ['', 'counted on the server that holds it', 'not counted: no server holds these runs', 'not counted: not known who holds these runs', "not counted while this server's ledger is read-only"]
+  for (let i = 0; i < steps.length; i++) {
+    if (i > 0) {
+      step = i
+      await page.getByRole('button', { name: 'Read again' }).click()
+    }
+    await expect(row.locator('[data-host-run-holder]')).toHaveText(want[i]!)
+    await expect(page.locator('[data-hosts-holder]')).toHaveText(want[i]!)
+    if (uncounted[i]) await expect(row.locator('[data-host-run-waiting]')).toHaveText(uncounted[i]!)
+    if (i >= 2) await expect(page.locator('[data-hosts]')).not.toContainText('4242')
+    await expect(row.getByRole('button')).toHaveCount(0)
+  }
+})
+
+test("another machine is drawn as reported, read only, and its section is one line while the sync service is not current (PR-5)", async ({ page }) => {
+  // A stub of a reply with a registered sync store: the page's drawing of it. That a real store's records reach the reply is the Go
+  // tests' (ext/exttest's fake provider) and the premium repository's browser check (the plan's PR-6).
+  await page.setViewportSize({ width: 1440, height: 900 })
+  const machines = [
+    {
+      device: 'hs2stub-dev-studio',
+      name: 'hs2stub-studio2',
+      platform: 'darwin/arm64',
+      version: 'v0.7.0',
+      lastReport: weekOld,
+      own: true,
+      summary: {
+        platform: 'darwin/arm64',
+        version: 'v0.7.0',
+        sessions: { running: 2, waiting: 1 },
+        runs: { held: 1, waiting: 1 },
+        hosts: [{ name: 'hs2stub-laptop', platform: 'linux/amd64', availability: 'connected' as const, sessions: { running: 1, waiting: 0 } }],
+      },
+      runs: [{ id: 'hs2stub-run-9', crew: 'nightly', state: 'running', waiting: 2, reportedBy: 'hs2stub-studio2', reportedAt: away }],
+      decisions: { open: 2 },
+    },
+  ]
+  let state: 'current' | 'unreachable' | 'lapsed' = 'current'
+  await serve(page, () => ({ json: stub({ other: { state, since: away, machines: state === 'current' ? machines : [], more: { machines: 0, remoteRuns: 0 } } }) }))
+  await page.goto('/hosts')
+  const section = page.locator('[data-hosts-section="other"]')
+  const studio = card(page, 'hs2stub-dev-studio')
+  await expect(studio.locator('[data-host-availability-words]')).toHaveText(remoteWords(weekOld, at))
+  await expect(studio.locator('[data-host-availability-words]')).toHaveText(/^Last reported \d{1,2} (Oct|Nov) \d\d:\d\d$/)
+  await expect(studio.locator('[data-host-availability-words]')).not.toContainText(/Connected|Here/)
+  await expect(studio.locator('[data-host-meta]')).toHaveText('macOS · arm64 · v0.7.0')
+  await expect(studio.locator('[data-host-summary-host]')).toHaveText(/hs2stub-laptop\s*Linux · x64 · Connected/)
+  const run = studio.locator('[data-host-run="hs2stub-run-9"]')
+  await expect(run.locator('[data-host-run-reported]')).toHaveText(`Reported by hs2stub-studio2 at ${clock(away)}`)
+  await expect(run.locator('[data-host-run-waiting]')).toHaveText('2 decisions wait there')
+  await expect(studio.locator('[data-host-decisions]')).toHaveText('2 decisions wait there')
+  await expect(studio.locator('[data-host-waiting]')).toHaveText('1 question waits there')
+  // Read only (I2, the second half): another machine's card links nothing and has no control.
+  await expect(studio.getByRole('link')).toHaveCount(0)
+  await expect(studio.getByRole('button')).toHaveCount(0)
+  await expect(run.locator('[data-host-run-holder]')).toHaveCount(0)
+
+  for (const [next, words] of [
+    ['unreachable', `Other machines are not shown: the sync service has not answered since ${clock(away)}`],
+    ['lapsed', 'Other machines are not shown: the subscription has lapsed'],
+  ] as const) {
+    state = next
+    await page.getByRole('button', { name: 'Read again' }).click()
+    await expect(section.locator('[data-hosts-other-line]')).toHaveText(words)
+    await expect(studio).toHaveCount(0)
+    // The rest of the page is unchanged.
+    await expect(card(page, 'hs2stub-this')).toBeVisible()
+    await expect(page.locator('[data-host-run="hs2stub-run-1"]')).toBeVisible()
+  }
+  state = 'current'
+  await page.getByRole('button', { name: 'Read again' }).click()
+  await expect(studio).toBeVisible()
+  await expect(section.locator('[data-hosts-other-line]')).toHaveCount(0)
+})
+
+test('the first read failing says so, and Read again draws the page', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  let fail = true
+  await serve(page, () => (fail ? { status: 500, json: { error: { code: 'internal', message: 'the hosts could not be read' } } } : { json: stub() }))
+  await page.goto('/hosts')
+  const empty = page.locator('[data-page-empty="hosts"]')
+  await expect(empty).toHaveAttribute('data-state', 'failed')
+  await expect(empty.locator('[data-page-why]')).toContainText('the hosts could not be read')
+  fail = false
+  // The page reads again by itself too (an event, its 30 s tick): Read again is pressed until the page is drawn, never once and blind.
+  await readAgain(empty.locator('[data-page-again]'), card(page, 'hs2stub-this'))
+  await expect(page.locator('[data-page-empty="hosts"]')).toHaveCount(0)
+})
+
+test('a read that does not answer is given up within its bound: the page says so, keeps what it drew, and the next read goes', async ({ page }) => {
+  // The bound of the read held, then at most one more read an event asked meanwhile, held and given up the same way.
+  budget(3 * HOSTS_READ_WAIT_MS + 30_000)
+  await page.setViewportSize({ width: 1440, height: 900 })
+  // While `hold` stands every read is held, never answered until the test lets it go after the page gave it up (a read an event asks
+  // meanwhile too, so that no answer clears what the test reads); after it, every read is answered.
+  let hold = false
+  const held: Route[] = []
+  await page.route('**/api/hosts', (route: Route) => {
+    if (hold) {
+      held.push(route)
+      return
+    }
+    return route.fulfill({ json: held.length ? stub({ switchyard: { url: 'https://after.example.test/', publishing: 0, connected: 0 } }) : stub() })
+  })
+  await page.goto('/hosts')
+  await expect(card(page, 'hs2stub-this')).toBeVisible()
+  hold = true
+  await page.getByRole('button', { name: 'Read again' }).click()
+  await expect.poll(() => held.length, { message: 'a read is held' }).toBeGreaterThan(0)
+  // Past the bound: the page says so, and what it drew stays, said as of the reply that drew it.
+  const alert = page.locator('[data-hosts-error]')
+  await expect(alert).toContainText(`The server has not answered in ${HOSTS_READ_WAIT_MS / 1000} s.`, { timeout: HOSTS_READ_WAIT_MS + 10_000 })
+  await expect(alert).toContainText(/What is shown is as of \d{1,2} (Oct|Nov) \d\d:\d\d\./)
+  await expect(card(page, 'hs2stub-this')).toBeVisible()
+  // The next ask reads (after a read an event asked meanwhile, if one is held, is given up in its turn): its answer is drawn and the
+  // alert goes.
+  hold = false
+  await page.getByRole('button', { name: 'Read again' }).click()
+  await expect(page.locator('[data-hosts-switchyard-url]')).toHaveText('https://after.example.test/', { timeout: HOSTS_READ_WAIT_MS + 10_000 })
+  await expect(alert).toHaveCount(0)
+  // The given-up reads answering now are never drawn.
+  for (const r of held) await r.fulfill({ json: stub({ switchyard: { url: 'https://late.example.test/', publishing: 0, connected: 0 } }) }).catch(() => undefined)
+  await page.getByRole('button', { name: 'Read again' }).click()
+  await expect(page.locator('[data-hosts-switchyard-url]')).toHaveText('https://after.example.test/')
+  await expect(page.locator('[data-hosts]')).not.toContainText('late.example.test')
+})
+
+test('on a phone, in both themes, the page fits its width: nothing scrolls sideways', async ({ browser, state }) => {
+  for (const theme of ['dark', 'light'] as const) {
+    const page = await dayPage(browser, { server: state, path: '/crews', theme, width: 390, height: 844, touch: true })
+    await serve(page, () => ({ json: stub({ hosts: [...stub().hosts, { key: 'hs2stub-long', kind: 'host', name: 'hs2stub-' + 'a-very-long-machine-name-'.repeat(4), availability: 'away', since: away, sessions: { running: 1, waiting: 0 }, sessionIds: ['hs2stub-' + 'x'.repeat(60)], keyFrom: 'session' }] }) }))
+    await page.goto('/hosts')
+    await expect(card(page, 'hs2stub-long')).toBeVisible()
+    await expect(page.locator('[data-hosts-footer]')).toBeVisible()
+    await noSideways(page, { root: page.locator('[data-hosts]') })
+    await page.context().close()
+  }
+})
+
+test("on a phone, every holder's line and a run's note wrap: nothing scrolls sideways", async ({ browser, state }) => {
+  // Each holder with the longest sentence the server gives it, and a pid of its most digits.
+  const ledgers: HostsLedger[] = [
+    { holder: 'this_read_only', note: 'This server holds the lock, and its database was written by a newer Conductor or is damaged; it cannot be read.' },
+    { holder: 'other', note: 'Another server holds the lock, as its lock file says.', pid: 4294967295, since: weekOld },
+    { holder: 'other', note: "Another server holds the lock; its lock file's line is not readable." },
+    { holder: 'none', note: 'This server stopped waiting for the lock.', since: weekOld },
+    { holder: 'unknown', note: 'The lock file could not be read: permission denied.' },
+  ]
+  const page = await dayPage(browser, { server: state, path: '/crews', width: 390, height: 844, touch: true })
+  let i = 0
+  await serve(page, () => ({ json: stub({ ledger: ledgers[i]!, runs: stub().runs.map((r) => ({ ...r, heldBy: ledgers[i]!.holder, waiting: null })) }) }))
+  await page.goto('/hosts')
+  for (i = 0; i < ledgers.length; i++) {
+    if (i > 0) await page.getByRole('button', { name: 'Read again' }).click()
+    const line = page.locator('[data-hosts-holder]')
+    await expect(line).toHaveAttribute('data-holder', ledgers[i]!.holder)
+    const note = page.locator('[data-host-run="hs2stub-run-1"] [data-host-run-holder]')
+    if (ledgers[i]!.pid) await expect(note).toContainText(`pid ${ledgers[i]!.pid}`)
+    else await expect(note).toContainText(ledgers[i]!.note.replace(/\.$/, ''))
+    await line.scrollIntoViewIfNeeded()
+    await atRest(line)
+    await noSideways(page, { root: page.locator('[data-hosts-section="runs"]') })
+    // The line stays inside the window: it wraps rather than running out.
+    const box = (await line.boundingBox())!
+    expect(box.x + box.width).toBeLessThanOrEqual(390)
+  }
+  await page.context().close()
+})
+
+
+// Against the real route: a real `conductor host` running the stub agent, and a managed run on this server. Counted by what this test
+// made alone: its host's card is found by its session's id in the reply, never by a list's length.
+test.describe('the page against the real route', () => {
+  const hosts: Array<{ name: string; proc: ChildProcess | null }> = []
+  const crews: string[] = []
+  const runs: string[] = []
+
+  test.afterAll(async ({ api }) => {
+    for (const id of runs) await api.stopRun(id)
+    for (const id of crews) await api.call('DELETE', `/api/crews/${encodeURIComponent(id)}`)
+    for (const h of hosts) await endHosted(api, h.name, h.proc)
+  })
+
+  /**
+   * A `conductor host` of the stub agent as Codex, in a process group of its own; its session's id once it registered. `home` is the
+   * host's HOME, where its machine's id is kept: the server's own HOME makes it a host on the server's machine, a HOME of its own a
+   * machine of its own.
+   */
+  async function startHost(api: Api, state: E2EState, base: string, home: string): Promise<{ id: string; proc: ChildProcess }> {
+    const logFile = join(state.root, `${base}-${randomUUID()}.log`)
+    const log = openSync(logFile, 'a')
+    const name = hostedName(base)
+    const bash = stubBash()
+    const proc = spawn(serverBinary(), ['host', '--server', state.baseURL, '--token', state.hostToken, '--host-name', `${base}-machine`, '--name', name, '--agent', 'codex', '--cwd', state.home, '--relay-only', '--no-local', '--', bash.command, stubPath, '--session-id', randomUUID()], {
+      env: { PATH: bash.path, LANG: 'C.UTF-8', HOME: home, CONDUCTOR_BIN: serverBinary(), STUB_IDENTITY: 'codex', STUB_REPORT: 'codex' },
+      stdio: ['ignore', log, log],
+      detached: true,
+    })
+    hosts.push({ name, proc })
+    return { id: (await hostedSession(api, logFile, name)).id, proc }
+  }
+
+  /** The reply's row of the machine that hosts `session`, read as the page reads it. */
+  async function rowOf(page: Page, token: string, session: string): Promise<HostRow | undefined> {
+    const r = await page.evaluate(async (t) => (await (await fetch('/api/hosts', { headers: { Authorization: `Bearer ${t}` } })).json()) as HostsReply, token)
+    return r.hosts.find((h) => h.sessionIds.includes(session))
+  }
+
+  test('a host is Connected with its session and its question, a managed run is held by this server, and a host gone is Away, then Last seen', async ({ page, api, state }) => {
+    budget(60_000)
+    await page.setViewportSize({ width: 1440, height: 900 })
+    // Another machine: a HOME of its own, so a machine id of its own.
+    const elsewhere = join(state.root, `hosts-machine-${randomUUID()}`)
+    mkdirSync(elsewhere, { recursive: true })
+    const first = await startHost(api, state, 'hosts-a', elsewhere)
+    await page.goto('/crews')
+    await goHosts(page)
+    await expect(card(page, (await rowOf(page, state.token, first.id))?.key ?? 'none')).toBeVisible()
+    const row = (await rowOf(page, state.token, first.id))!
+    const mine = card(page, row.key)
+    await expect(mine.locator('[data-host-availability-words]')).toHaveText('Connected')
+    await expect(mine.locator('[data-host-meta]')).toContainText(platformWords(row.platform) || 'Platform not reported')
+    await expect(mine.locator(`[data-host-session="${first.id}"]`)).toHaveAttribute('href', `/sessions/${first.id}`)
+    await expect(mine.locator('[data-host-runs]')).toHaveText('Holds no runs')
+
+    // The stub's command approval, asked in the session's terminal: the card's count of what waits, waited on by the count itself.
+    await page.goto(`/sessions/${encodeURIComponent(first.id)}`)
+    const screen = page.locator('.terminal-host .xterm-screen').first()
+    await expect(screen).toBeVisible({ timeout: 30_000 })
+    await screen.click()
+    await page.keyboard.type('stub approve curl -sI https://example.com')
+    await page.keyboard.press('Enter')
+    await expect.poll(async () => (await api.session(first.id)).attention?.source ?? '', { timeout: 30_000, message: 'the approval is asked' }).toBe('question')
+    await page.goto('/hosts')
+    await expect(mine.locator('[data-host-waiting]')).toHaveAttribute('data-count', '1')
+    await expect(mine.locator('[data-host-waiting]')).toHaveText('1 needs you')
+
+    // A managed run on this server: held by this server, a link to its run page.
+    const crew = await api.ok<{ crew: { id: string } }>('POST', '/api/crews', {
+      name: 'e2e hosts managed',
+      goal: 'wait',
+      cwd: '',
+      where: 'server',
+      openAfterLaunch: false,
+      yolo: null,
+      isolation: 'worktree',
+      members: [{ name: 'builder', agentId: 'claude', prompt: '', start: { when: 'task' } }],
+      tasks: [{ id: 'build', member: 'builder', kind: 'work', instructions: 'Build it.' }],
+    })
+    crews.push(crew.crew.id)
+    const run = await api.launchCrew(crew.crew.id)
+    runs.push(run.id)
+    const runRow = page.locator(`[data-host-run="${run.id}"]`)
+    await expect(runRow.locator('[data-host-run-link]')).toHaveAttribute('href', `/runs/${run.id}`)
+    const holderWords = async () => {
+      await expect(runRow.locator('[data-host-run-holder-words]')).toHaveText('Held by this server')
+      await expect(page.locator('[data-hosts]').getByRole('button', { name: /start|stop|move|launch|continue|retry/i })).toHaveCount(0)
+    }
+    await holderWords()
+
+    // A redraw the test causes: a second host connects, on this server's own machine (the server's HOME): no card of its own, its
+    // session under This server's Hosted from this machine. The run's holder and the page's controls are checked again.
+    const second = await startHost(api, state, 'hosts-b', state.home)
+    await expect(page.locator(`[data-host-hosted] [data-host-session="${second.id}"]`)).toBeVisible()
+    expect(await rowOf(page, state.token, second.id)).toBeUndefined()
+    await holderWords()
+
+    // The first host gone (its process group killed): Away while its session waits in the grace, then Last seen once it is removed:
+    // the grace, then the server's maintenance tick that expires it, then the page's read on the removal.
+    process.kill(-first.proc.pid!, 'SIGKILL')
+    await expect(mine.locator('[data-host-availability-words]')).toHaveText(/^Away/)
+    const graceAndTick = 60_000 + 30_000 + 15_000
+    budget(graceAndTick)
+    await expect(mine.locator('[data-host-availability-words]')).toHaveText(/^Last seen /, { timeout: graceAndTick })
+    await expect(mine.locator('[data-host-session]')).toHaveCount(0)
+  })
+})

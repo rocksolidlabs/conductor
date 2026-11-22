@@ -19,6 +19,10 @@ const (
 	WhyInstance   = "instance"           // this machine's own: made again where it is absent (ui/writer, the UI documents' writer id)
 )
 
+// WhyMachine is why an export leaves out machine-id at any depth
+// (internal/machine), and why a restore refuses an archive holding one.
+const WhyMachine = "this machine's id: another machine must never hold it"
+
 // leftRule is a row of leftOut: an exact slash path (file), a directory
 // and everything under it (dir), or a pattern any element of a path may
 // match (name, path.Match's syntax).
@@ -70,6 +74,12 @@ var leftOut = []leftRule{
 	// config.ProviderStateMark: a directory holding it is a provider's
 	// (rest), and no archive may plant it.
 	{name: ".conductor-provider-state", why: WhyProvider},
+	// machine.FileName: this machine's id, kept outside the default data
+	// directories, but a data directory may be given that holds it, or is
+	// its directory. No archive carries it and none plants it, so a restore
+	// on another machine never gives two machines one id. (Its temporary
+	// files are *.tmp, above.)
+	{name: "machine-id", why: WhyMachine},
 }
 
 // reserved says why the slash path rel, relative to the data directory,
