@@ -3,6 +3,7 @@ package exttest
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -51,7 +52,9 @@ const HelperDirFile = "exttest-dir"
 //   - http PORT: listens on 127.0.0.1:PORT, prints "exttest-listening",
 //     and serves until it is ended: each request printed as
 //     "exttest-request:" and its path and query, then answered, /redirect
-//     with a 302 to /ok, /ok and /last with a 204, anything else a 404.
+//     with a 302 to /ok, /ok and /last with a 204, anything else a 404. A
+//     port another socket holds is "exttest-port-taken" (PortTaken), then
+//     exit 2.
 //
 // A mode it does not know, or arguments it cannot read, is exit 2 with why
 // on its standard error.
@@ -118,6 +121,11 @@ func RunHelper(args []string) int {
 	}
 	return helperRefuses("no mode " + strconv.Quote(mode))
 }
+
+// PortTaken is what the helper's http mode prints when the port it was
+// given is bound by another socket by the time it binds it: a port Port
+// picked is not a port held, and a check given it starts again on another.
+const PortTaken = "exttest-port-taken"
 
 // Spewed is the i-th byte the helper's spew mode prints.
 func Spewed(i int) byte { return byte('a' + i%26) }
@@ -191,6 +199,9 @@ func helperHTTP(port string) int {
 	}
 	l, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", port))
 	if err != nil {
+		if errors.Is(err, syscall.EADDRINUSE) {
+			fmt.Println(PortTaken)
+		}
 		return helperRefuses("http: " + err.Error())
 	}
 	fmt.Println("exttest-listening")

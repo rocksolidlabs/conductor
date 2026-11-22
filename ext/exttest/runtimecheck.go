@@ -86,8 +86,10 @@ func WithRuntimeCase(c RuntimeCase) RunOption {
 //     ended context is answered promptly, a service answered ending with
 //     it.
 //   - Port answers a number free where the services listen (the helper's
-//     http mode binds it); Probe makes one try and follows no redirect,
-//     and answers an ended context with an error and no request.
+//     http mode binds it; a number another socket takes before the helper
+//     binds it is asked for again, a port picked not being a port held);
+//     Probe makes one try and follows no redirect, and answers an ended
+//     context with an error and no request.
 //
 // Every call is bounded by rc's Wait, the product's caps added where a
 // method has one (StopKillWait), Done and Exit among them, and a panic of
@@ -998,6 +1000,12 @@ func (x *execCheck) serveUntilTheContextEnds(dir string) {
 	}
 }
 
+// portTries bounds the helper's starts on a fresh port when another
+// socket has taken the one Port answered by the time the helper binds it
+// (PortTaken): a lost start is a helper that exits at its bind, so the
+// bound only ends a machine where every port Port answers is taken.
+const portTries = 20
+
 // portAndProbe checks Port's number, bound by the helper's http mode, and
 // Probe's one try against it.
 func (x *execCheck) portAndProbe() {
@@ -1008,43 +1016,23 @@ func (x *execCheck) portAndProbe() {
 		n, err := x.r.Port(ended, ref)
 		return number{n, err}
 	})
-	p, ok := bounded(x, "Port", x.wait, func() number {
-		n, err := x.r.Port(context.Background(), ref)
-		return number{n, err}
-	})
-	if !ok {
-		return
+	var (
+		p   number
+		log *screen
+		svc ext.ServiceProcess
+	)
+	for try := 1; ; try++ {
+		var ok, taken bool
+		p, log, svc, ok, taken = x.listening(ref, try < portTries)
+		if taken {
+			continue
+		}
+		if !ok {
+			return
+		}
+		break
 	}
-	if p.err != nil || p.n < 1 || p.n > 65535 {
-		x.errorf("Port answered %d, %v: want a port's number", p.n, p.err)
-		return
-	}
-	dir, _ := x.dir()
-	log := newScreen()
-	a, ok := owned(x, "Serve of the helper's http mode", x.wait, func() served {
-		svc, err := x.r.Serve(context.Background(), ext.CommandSpec{Argv: x.argv("http", strconv.Itoa(p.n)), Dir: dir, Env: x.env("probe"), Log: log, LogLimit: reportBound, Ref: ref})
-		return served{svc, err}
-	}, stopLateService)
-	if !ok {
-		return
-	}
-	if a.err != nil || a.svc == nil {
-		x.errorf("Serve of the helper's http mode answered %v, %v: want a ServiceProcess", a.svc, a.err)
-		x.stopService(a.svc)
-		return
-	}
-	defer x.stopService(a.svc)
-	done, ok := x.doneOf("ServiceProcess.Done of the helper's http mode", a.svc.Done)
-	if !ok {
-		return
-	}
-	go func() {
-		<-done
-		log.end()
-	}()
-	if !x.await(log, "exttest-listening", fmt.Sprintf("the helper listening on the port Port answered (%d), which is free where the services listen", p.n)) {
-		return
-	}
+	defer x.stopService(svc)
 	base := fmt.Sprintf("http://127.0.0.1:%d", p.n)
 	probe := func(ctx context.Context, path string) number {
 		n, err := x.r.Probe(ctx, ext.ProbeSpec{URL: base + path, Interval: x.wait, Ref: ref})
@@ -1071,6 +1059,59 @@ func (x *execCheck) portAndProbe() {
 	if !slices.Equal(asked, []string{"/redirect", "/last"}) {
 		x.errorf("the service was asked %q by Probe of /redirect, an ended context and /last: want [\"/redirect\" \"/last\"], one try each, no redirect followed and no request under an ended context", asked)
 	}
+}
+
+// listening asks Port for a number and serves the helper's http mode on
+// it, until the helper says it listens: ok false, said, when a step
+// fails, the service stopped. When the helper finds the port taken by
+// another socket (PortTaken) and retry is true, it says nothing and
+// answers taken, the service stopped, for a start on a fresh port.
+func (x *execCheck) listening(ref ext.ProcessRef, retry bool) (p number, log *screen, svc ext.ServiceProcess, ok, taken bool) {
+	x.c.t.Helper()
+	p, ok = bounded(x, "Port", x.wait, func() number {
+		n, err := x.r.Port(context.Background(), ref)
+		return number{n, err}
+	})
+	if !ok {
+		return p, nil, nil, false, false
+	}
+	if p.err != nil || p.n < 1 || p.n > 65535 {
+		x.errorf("Port answered %d, %v: want a port's number", p.n, p.err)
+		return p, nil, nil, false, false
+	}
+	dir, _ := x.dir()
+	log = newScreen()
+	a, ok := owned(x, "Serve of the helper's http mode", x.wait, func() served {
+		svc, err := x.r.Serve(context.Background(), ext.CommandSpec{Argv: x.argv("http", strconv.Itoa(p.n)), Dir: dir, Env: x.env("probe"), Log: log, LogLimit: reportBound, Ref: ref})
+		return served{svc, err}
+	}, stopLateService)
+	if !ok {
+		return p, log, nil, false, false
+	}
+	if a.err != nil || a.svc == nil {
+		x.errorf("Serve of the helper's http mode answered %v, %v: want a ServiceProcess", a.svc, a.err)
+		x.stopService(a.svc)
+		return p, log, nil, false, false
+	}
+	done, ok := x.doneOf("ServiceProcess.Done of the helper's http mode", a.svc.Done)
+	if !ok {
+		x.stopService(a.svc)
+		return p, log, nil, false, false
+	}
+	go func() {
+		<-done
+		log.end()
+	}()
+	unless := ""
+	if retry {
+		unless = PortTaken
+	}
+	ok, taken = x.awaitUnless(log, "exttest-listening", unless, fmt.Sprintf("the helper listening on the port Port answered (%d), which is free where the services listen", p.n))
+	if !ok {
+		x.stopService(a.svc)
+		return p, log, nil, false, taken
+	}
+	return p, log, a.svc, true, false
 }
 
 // screen is output gathered as it comes, from a terminal (readOut) or as
@@ -1137,30 +1178,44 @@ func (s *screen) text() string {
 // the case's Wait passed first.
 func (x *execCheck) await(s *screen, want, what string) bool {
 	x.c.t.Helper()
+	ok, _ := x.awaitUnless(s, want, "", what)
+	return ok
+}
+
+// awaitUnless is await, except that s holding unless (when it is not
+// empty) and not want ends the wait unsaid: false, and seen true.
+func (x *execCheck) awaitUnless(s *screen, want, unless, what string) (ok, seen bool) {
+	x.c.t.Helper()
 	timer := time.NewTimer(x.wait)
 	defer timer.Stop()
 	for {
-		if strings.Contains(s.text(), want) {
-			return true
+		out := s.text()
+		switch {
+		case strings.Contains(out, want):
+			return true, false
+		case unless != "" && strings.Contains(out, unless):
+			return false, true
 		}
 		select {
 		case <-s.more:
 		case <-s.ended:
-			if strings.Contains(s.text(), want) {
-				return true
+			if out := s.text(); strings.Contains(out, want) {
+				return true, false
+			} else if unless != "" && strings.Contains(out, unless) {
+				return false, true
 			}
 			s.mu.Lock()
 			broke := s.broke
 			s.mu.Unlock()
 			if broke != "" {
 				x.errorf("%s: the output ended without %q (the Terminal's %s): %q", what, want, broke, tail(s.text()))
-				return false
+				return false, false
 			}
 			x.errorf("%s: the output ended without %q: %q", what, want, tail(s.text()))
-			return false
+			return false, false
 		case <-timer.C:
 			x.errorf("%s: no %q within %s (the case's Wait): %q", what, want, x.wait, tail(s.text()))
-			return false
+			return false, false
 		}
 	}
 }
