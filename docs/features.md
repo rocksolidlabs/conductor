@@ -300,7 +300,11 @@ The second half (#1072, PR-9, after the ledger's barrier at version 17, PR-9a,
   approvals that stand then and the people the policy names then: without distinct
   persons one person fills a place in each group that names them; with them, one
   place each, the largest assignment found (a person named in two groups takes the
-  one the others leave). A delegate counts as themselves. An approval that fills no
+  one the others leave). A delegate counts as themselves. An approval that leaves
+  every place filled answers the decision, even when the places were filled
+  already (a re-route brought a counted approver back), and a person a re-route
+  moved to another group is judged anew there; a person whose approval counts may
+  still Reject. An approval that fills no
   place still needed is refused `not_needed`, a second approval of the same person
   `already_counted`, and neither takes a row; a refusal is kept only while the rows
   left still hold one for each place to fill.
@@ -313,7 +317,8 @@ The second half (#1072, PR-9, after the ledger's barrier at version 17, PR-9a,
   A re-route that leaves fewer response rows than places to fill supersedes it at
   once, the router told which decision asks again.
 - **Said in the app.** The operator's read carries each group's count
-  (`quorum`); the card says "1 of 2 for the architecture owner"; a person's own
+  (`quorum`, the approval that answered included) and says which counted
+  approvals no longer count; the card says "1 of 2 for the architecture owner"; a person's own
   approval reads counted on the decide page, or refused `not_confirmed` once it no
   longer counts.
 
