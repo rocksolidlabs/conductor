@@ -2454,15 +2454,16 @@ func (e *Engine) applyOne(r *run, d *decision) {
 		// Under no request's context: nothing cuts the recheck short.
 		at, moved, _ := e.recheckSubject(context.Background(), r, d)
 		// An answer that counted as eligible under a router's policy is
-		// confirmed again, outside the transaction (decisions_policy.go).
-		confirmed := e.confirmAtApply(d)
+		// confirmed again, outside the transaction, with every counted
+		// approval beside it (decisions_policy.go).
+		confirmed, why := e.confirmAtApply(d)
 		again := false
 		err = e.transact(context.Background(), r, func() tx {
 			if d.state != ledger.DecisionAnswered || r.decisionN(d.n) != d || e.continued(r) != nil {
 				return tx{}
 			}
 			if !confirmed && d.answer != nil && len(d.answer.groups) > 0 {
-				replace, t := e.replaceDecision(r, d, fmt.Sprintf("%s's answer could not be confirmed", nameOf(d.answer.byName, d.answer.actor)))
+				replace, t := e.replaceDecision(r, d, why)
 				opened := t.done
 				t.done = func() {
 					opened()

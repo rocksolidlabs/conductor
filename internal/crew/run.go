@@ -606,6 +606,10 @@ type Engine struct {
 	// decisions_policy.go).
 	routesPolicies atomic.Bool
 	policyCheck    atomic.Pointer[PolicyCheck]
+	// policySince asks the router whether a subject stayed eligible since
+	// a time (SetPolicySince): every counted approval and the deciding
+	// one are confirmed so at the application.
+	policySince atomic.Pointer[PolicySinceCheck]
 	// opMu orders the operators' operations on decisions (operate), from
 	// the look for their ids through their commits: an operation's row is
 	// never refused in its transaction as another's with the same id,

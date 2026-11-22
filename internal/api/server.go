@@ -893,6 +893,11 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		// A registered decision router that confirms policies routes the
 		// records' policies (policy.go); with none, nothing changes.
 		s.runs.SetRouterPolicies(s.routerConfirms(), s.policyCheck)
+		if s.routerConfirms() {
+			// Every counted approval, and the deciding one, is confirmed
+			// since its response's time before the answer is applied.
+			s.runs.SetPolicySince(s.policyCheckSince)
+		}
 	}
 	s.webhooks = s.startNotifier(cfg.Webhooks)
 	// The runs take every entry too: a member's done starts the members after

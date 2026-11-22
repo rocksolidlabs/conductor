@@ -149,18 +149,32 @@ func (c *policyClock) forget(id string) {
 // of the first in its run is taken as not in force. It is
 // crew.PolicyCheck.
 func (s *Server) policyCheck(ctx context.Context, rec ledger.DecisionRecord, revision, subject string) ext.Confirmation {
-	c, _ := s.policyCheckTold(ctx, rec, revision, subject)
+	c, _ := s.policyCheckTold(ctx, rec, revision, subject, time.Time{})
 	return c
 }
 
-// policyCheckTold is policyCheck, and says whether the router answered.
-func (s *Server) policyCheckTold(ctx context.Context, rec ledger.DecisionRecord, revision, subject string) (ext.Confirmation, bool) {
+// policyCheckSince is policyCheck asking whether subject stayed eligible,
+// without a break, since since (a counted response's time, at the
+// application): a router that cannot say answers not eligible. It is
+// crew.PolicySinceCheck. A zero since is refused as not confirmed: the
+// question would be another.
+func (s *Server) policyCheckSince(ctx context.Context, rec ledger.DecisionRecord, revision, subject string, since time.Time) ext.Confirmation {
+	if since.IsZero() || subject == "" {
+		return notConfirmed
+	}
+	c, _ := s.policyCheckTold(ctx, rec, revision, subject, since)
+	return c
+}
+
+// policyCheckTold is policyCheck, since since when it is not zero, and
+// says whether the router answered.
+func (s *Server) policyCheckTold(ctx context.Context, rec ledger.DecisionRecord, revision, subject string, since time.Time) (ext.Confirmation, bool) {
 	g, ok := s.exts.router.(guardRouter)
 	if !ok {
 		return notConfirmed, false
 	}
 	d := s.recordDecision(ctx, rec)
-	c, answered := g.confirmTold(ctx, ext.ConfirmQuery{Decision: d, Revision: revision, Subject: subject})
+	c, answered := g.confirmTold(ctx, ext.ConfirmQuery{Decision: d, Revision: revision, Subject: subject, Since: since})
 	// A revision other than the one asked about, in force or not, asks the
 	// caller to try again (the response's judgement), so it too is held to
 	// the bound.
@@ -186,7 +200,7 @@ func (s *Server) eligibleNow(ctx context.Context, rec ledger.DecisionRecord, sub
 	if !ok || !s.runs.RoutesPolicies() || subject == "" {
 		return false, true
 	}
-	c, answered := s.policyCheckTold(ctx, rec, p.Revision, subject)
+	c, answered := s.policyCheckTold(ctx, rec, p.Revision, subject, time.Time{})
 	if !c.InForce || c.Behind || c.Revision != "" && c.Revision != p.Revision {
 		return false, answered
 	}

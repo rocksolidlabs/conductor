@@ -74,6 +74,24 @@ const policySpareJSON = `{"revision":"local/1","approver":"operator","quorum":1,
 // force. It is called outside every transaction.
 type PolicyCheck func(ctx context.Context, rec ledger.DecisionRecord, revision, subject string) ext.Confirmation
 
+// PolicySinceCheck is PolicyCheck asking whether subject stayed eligible,
+// without a break, since since (ext.ConfirmQuery.Since): a router that
+// cannot say answers not eligible. It is called outside every
+// transaction.
+type PolicySinceCheck func(ctx context.Context, rec ledger.DecisionRecord, revision, subject string, since time.Time) ext.Confirmation
+
+// SetPolicySince hands the engine the function that asks the registered
+// router whether a subject stayed eligible since a time: every counted
+// approval and the deciding one are confirmed so before the application
+// (confirmAtApply). Called once, beside SetRouterPolicies.
+func (e *Engine) SetPolicySince(check PolicySinceCheck) {
+	if check != nil {
+		e.policySince.Store(&check)
+	} else {
+		e.policySince.Store(nil)
+	}
+}
+
 // SetRouterPolicies tells the engine whether the registered decision
 // router confirms policies, and hands it the one function that asks it.
 // Called once, before the engine runs anything.
@@ -473,31 +491,94 @@ func stripFormat(s string) string {
 
 // confirmAtApply asks the router again, before d's application, whether
 // the subject of its accepted response is still eligible under the
-// record's policy (an answer that counted as eligible); true for any other
-// answer (an override, the server's own policy), whose rechecks are DR1's.
-// The caller holds no lock.
-func (e *Engine) confirmAtApply(d *decision) bool {
+// record's policy (an answer that counted as eligible), since its
+// response's time; and, where the policy counts approvals and the answer
+// approves, the same of every counted approval that stands, since each
+// one's time, then whether the approvals the router confirms still fill
+// every place (fill, from the rows as they stand now). ok true for any
+// other answer (an override, the server's own policy), whose rechecks are
+// DR1's. Anything not confirmed (no longer eligible, not in force, no
+// answer, a counted approval not rechecked) is ok false, with the words
+// the decision is superseded with. The caller holds no lock.
+func (e *Engine) confirmAtApply(d *decision) (ok bool, why string) {
 	e.mu.Lock()
 	ans := d.answer
-	n := d.n
+	n, typ := d.n, d.typ
 	e.mu.Unlock()
 	if ans == nil || len(ans.groups) == 0 {
-		return true
+		return true, ""
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*ext.ConfirmWait)
+	who := nameOf(ans.byName, ans.actor)
+	notConfirmed := who + "'s answer could not be confirmed"
+	ctx, cancel := context.WithTimeout(context.Background(), (ledger.MaxDecisionResponses+1)*2*ext.ConfirmWait)
 	defer cancel()
-	rec, ok, err := e.readDecision(ctx, n)
-	if err != nil || !ok {
-		return false
+	rec, found, err := e.readDecision(ctx, n)
+	if err != nil || !found {
+		return false, notConfirmed
 	}
 	p, routed := routedOf(rec.Policy)
-	check := e.policyCheck.Load()
+	check, since := e.policyCheck.Load(), e.policySince.Load()
 	if !routed || check == nil {
-		return false
+		return false, notConfirmed
 	}
-	c := (*check)(ctx, rec, p.Revision, ans.auth.Subject)
-	return c.InForce && !c.Behind && (c.Revision == "" || c.Revision == p.Revision) &&
-		slices.ContainsFunc(ans.groups, func(g string) bool { return slices.Contains(c.Groups, g) })
+	// confirm is the groups of groups the router confirms subject eligible
+	// in now, and since at when it can be asked so: none for anything but
+	// in force at the record's revision.
+	confirm := func(subject string, at time.Time, groups []string) []string {
+		cctx, cancel := context.WithTimeout(ctx, 2*ext.ConfirmWait)
+		defer cancel()
+		var c ext.Confirmation
+		if since != nil {
+			c = (*since)(cctx, rec, p.Revision, subject, at)
+		} else {
+			c = (*check)(cctx, rec, p.Revision, subject)
+		}
+		if !c.InForce || c.Behind || c.Revision != "" && c.Revision != p.Revision {
+			return nil
+		}
+		var out []string
+		for _, g := range groups {
+			if slices.Contains(c.Groups, g) {
+				out = append(out, g)
+			}
+		}
+		return out
+	}
+	at := time.Time{}
+	for _, r := range rec.Responses {
+		if r.K == ans.k {
+			at = r.At
+		}
+	}
+	mine := confirm(ans.auth.Subject, at, ans.groups)
+	if len(mine) == 0 {
+		return false, notConfirmed
+	}
+	if !p.counts() || !approvesRecord(typ, Response{Choice: ans.choice}) {
+		return true, ""
+	}
+	if since == nil {
+		// Counted approvals are confirmed only since their time.
+		return false, notConfirmed
+	}
+	standing, _ := countedRows(rec, e.boot, func(k int) bool { return e.CountedPending(n, k) })
+	rows := []countedRow{{subject: ans.auth.Subject, groups: mine}}
+	for _, c := range standing {
+		if !c.confirmed {
+			// Its sign-in's recheck has not answered: not established.
+			return false, c.name + "'s approval could not be rechecked"
+		}
+		g := confirm(c.subject, c.at, c.groups)
+		if len(g) == 0 {
+			return false, c.name + "'s approval could not be confirmed"
+		}
+		c.groups = g
+		rows = append(rows, c)
+	}
+	if filled, _ := fill(p, rows); filled < placesOf(p) {
+		return false, rec.ID() + "'s approvals no longer fill its requirement"
+	}
+	return true, ""
 }
 
 // Reroute is a decision router's change of decision id's policy
