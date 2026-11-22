@@ -8,10 +8,12 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"sync"
 
 	"github.com/rocksolidlabs/conductor/internal/capacity"
+	"github.com/rocksolidlabs/conductor/internal/machine"
 	"github.com/rocksolidlabs/conductor/internal/session"
 	"github.com/rocksolidlabs/conductor/internal/store"
 )
@@ -126,7 +128,8 @@ func (c *Config) FileDenyStateFunc(dirs ...string) func() ([]string, error) {
 
 // machineFiles are the directories and files of the other Conductors this
 // machine may run: ~/.conductor, the default data directory, whichever
-// this server uses; the desktop app's (desktopFiles: its own directory
+// this server uses; the host's state (hostStateDirs); the directory of
+// this machine's id (machineDirs); the desktop app's (desktopFiles: its own directory
 // under both names, its settings, the data directory they name, and inside
 // WSL the one it gives a server there); and the directory the app named
 // for the server it started (DesktopDir), with its settings file, which
@@ -141,6 +144,7 @@ func (c *Config) machineFiles() (dirs, files []string) {
 		dirs = append(dirs, filepath.Join(home, ".conductor"))
 	}
 	dirs = append(dirs, hostStateDirs()...)
+	dirs = append(dirs, machineDirs()...)
 	d, f, _ := desktopFiles()
 	dirs = append(dirs, d...)
 	files = append(files, f...)
@@ -163,8 +167,9 @@ func (c *Config) fileDeny(dirs, files []string) []string {
 // told), with CONDUCTOR_DATA_DIR and CONDUCTOR_CATALOG_PATH over it, and
 // finds its data directory as ResolveDataDir does. The default data
 // directory, ~/.conductor, is refused whichever directory that is, as are
-// the copies beside the config file and the catalog file, the directories
-// and settings of the desktop app's server (desktopFiles), and the folder of
+// the copies beside the config file and the catalog file, the host's state
+// (hostStateDirs), the directory of this machine's id (machineDirs), the
+// directories and settings of the desktop app's server (desktopFiles), and the folder of
 // each account the accounts document of each of these directories registers. A config file or
 // an accounts document that cannot be read or parsed is an error, and so are the
 // desktop app's settings when they are there but cannot be read, and a data
@@ -225,6 +230,7 @@ func LocalFileDeny(path string) ([]string, error) {
 		dirs = append(dirs, filepath.Join(home, ".conductor"))
 	}
 	dirs = append(dirs, hostStateDirs()...)
+	dirs = append(dirs, machineDirs()...)
 	desktopDirs, desktopSettings, err := desktopFiles()
 	if err != nil {
 		return nil, err
@@ -274,6 +280,31 @@ func hostStateDirs() []string {
 	var dirs []string
 	for _, f := range []func() (string, error){HostStateDir, defaultHostStateDir} {
 		if d, err := f(); err == nil && !slices.Contains(dirs, d) {
+			dirs = append(dirs, d)
+		}
+	}
+	return dirs
+}
+
+// machineDirs is every place a deny list names for the directory that
+// holds this machine's id (internal/machine, machine.Dir), which no
+// session's file read, save or editor may reach, though a session rooted at
+// the home holds it and Conductor reads as the file's owner: machine.Dir as
+// this process's environment gives it and, where XDG_CONFIG_HOME moves it
+// (the Unix systems but macOS), the default under the home directory too,
+// since a host and a server on one machine may run with different
+// environments.
+func machineDirs() []string {
+	var dirs []string
+	if d, err := machine.Dir(); err == nil {
+		dirs = append(dirs, d)
+	}
+	switch runtime.GOOS {
+	case "windows", "darwin", "ios", "plan9":
+		return dirs
+	}
+	if home, err := os.UserHomeDir(); err == nil && filepath.IsAbs(home) {
+		if d := filepath.Join(home, ".config", "conductor"); !slices.Contains(dirs, d) {
 			dirs = append(dirs, d)
 		}
 	}

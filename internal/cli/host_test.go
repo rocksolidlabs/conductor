@@ -239,7 +239,7 @@ func TestHostRefusesTheServersFilesToItsSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	local := []string{filepath.Join(home, ".conductor"), filepath.Join(home, ".local", "state", "conductor"), filepath.Join(home, ".local", "share", "conductor", "data"), filepath.Join(config, "conductor-desktop"), filepath.Join(config, "Conductor")}
+	local := []string{filepath.Join(home, ".conductor"), filepath.Join(home, ".local", "state", "conductor"), filepath.Join(config, "conductor"), filepath.Join(home, ".local", "share", "conductor", "data"), filepath.Join(config, "conductor-desktop"), filepath.Join(config, "Conductor")}
 	var desktopSettings []string
 	for _, name := range []string{"conductor-desktop", "Conductor"} {
 		desktopSettings = append(desktopSettings, filepath.Join(config, name, "settings.json"), filepath.Join(config, name, "*settings.json*"))
