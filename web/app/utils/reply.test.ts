@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
+import { ref } from 'vue'
 import { CONTROL_TOO_LARGE, MAX_QUESTION_ID, TOO_LONG } from './protocol'
-import { clearAnswered, answerMessage, bindDraft, draftQuestion, listedAttention, questionOf, repliedQuestions, ReplyError, replyFailure } from './reply'
+import { clearAnswered, answerMessage, bindDraft, draftQuestion, holdLine, listedAttention, questionOf, repliedQuestions, ReplyError, replyFailure } from './reply'
 import { sessionRow } from './sidebar'
 import { rowPrompt } from './sidebarActions'
 import type { SessionInfo } from '~/composables/useSessions'
@@ -119,6 +120,30 @@ describe('repliedQuestions', () => {
     // A reply naming no question always goes.
     expect(await replied.once(undefined, async () => void sent.push('none'))).toBe(true)
     expect(await replied.once(undefined, async () => void sent.push('none'))).toBe(true)
+  })
+})
+
+describe('holdLine', () => {
+  it('keeps a line not sent exactly as typed, and rebinds it, told once', () => {
+    const text = ref('"'.repeat(4096))
+    let rebound = 0
+    const taken = holdLine(text, () => rebound++)
+    taken(false)
+    expect(text.value).toBe('"'.repeat(4096))
+    expect(rebound).toBe(1)
+    taken(true)
+    expect(text.value).toBe('"'.repeat(4096))
+  })
+
+  it('empties the field once the line is sent, unless something was typed since', () => {
+    const text = ref('looks good')
+    holdLine(text)(true)
+    expect(text.value).toBe('')
+    const more = ref('looks good')
+    const taken = holdLine(more)
+    more.value = 'looks good, and'
+    taken(true)
+    expect(more.value).toBe('looks good, and')
   })
 })
 

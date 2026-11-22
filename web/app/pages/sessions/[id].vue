@@ -9,7 +9,7 @@ import { SESSION_SHORTCUTS, useShortcutsModal } from '~/composables/useShortcuts
 import { firstMessageLine } from '~/utils/launch'
 import { agentName, gonePage, sessionGone, sessionHeadline, type GonePage } from '~/utils/sessions'
 import { sessionStatus, statusOfKey } from '~/utils/status'
-import { listedAttention, repliedQuestions, ReplyError, replyFailure, type QuestionReply } from '~/utils/reply'
+import { listedAttention, repliedQuestions, ReplyError, replyFailure, type QuestionReply, type ReplyTaken } from '~/utils/reply'
 import { activateTab, toggleCollapse, toggleFold } from '~/utils/editorTabs'
 import { stopQuestion } from '~/utils/actions'
 import { resolveTyped } from '~/utils/fileTree'
@@ -108,21 +108,28 @@ function chatRetry(nonce: string) {
 /** A question's choice from the chat: its keys into the session, as the quick reply bar's, naming the question (its line is the question's id). */
 function chatAnswer(m: ChatMessage, index: number) {
   const o = m.options?.[index]
-  if (o) answerQuestion({ question: m.id, input: o.input })
+  if (o) void answerQuestion({ question: m.id, input: o.input })
 }
 /** Sends a reply to a question over the terminal's connection, once per question; a refusal (answered already, not connected) is said in a toast. */
 const replied = repliedQuestions()
 const typedAnswers = useTypedAnswers()
-function answerQuestion(reply: QuestionReply) {
-  if (!terminal.value) return toast.add(replyFailure(new ReplyError('not_connected', 'not connected')))
+function answerQuestion(reply: QuestionReply): Promise<boolean> {
+  if (!terminal.value) {
+    toast.add(replyFailure(new ReplyError('not_connected', 'not connected')))
+    return Promise.resolve(false)
+  }
   const t = terminal.value
-  replied
+  return replied
     .once(reply.question, () => t.answer(reply))
     // A line typed as the answer, once sent: this browser shows it under the question to its own person (#364).
     .then((sent) => {
       if (sent && 'text' in reply && reply.text) typedAnswers.remember(reply.question, reply.text)
+      return sent
     })
-    .catch((e: unknown) => toast.add(replyFailure(e)))
+    .catch((e: unknown) => {
+      toast.add(replyFailure(e))
+      return false
+    })
 }
 function onRequestError(err: { code: string; message: string; requestId: string }) {
   if (chat.fail(err.requestId, err.message)) return
@@ -373,14 +380,15 @@ async function stop() {
   }
 }
 
-function reply(text: string, question?: string) {
-  answerQuestion({ question, text })
+/** A line from the reply bar: `taken` tells the bar whether it was sent, so that a line not sent stays in its field (#654). */
+function reply(text: string, question?: string, taken?: ReplyTaken) {
+  void answerQuestion({ question, text }).then((sent) => taken?.(sent))
 }
 
 function option(index: number, question?: string) {
   const o = attention.value.options?.[index]
   if (!o) return
-  answerQuestion({ question, input: o.input })
+  void answerQuestion({ question, input: o.input })
 }
 
 

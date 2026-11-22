@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import type { ReplyTaken } from '~/utils/reply'
 import { agentInitials, sessionMeta } from '~/utils/sessions'
 import { exitLine as exitLineOf, rowMeta, sessionOpen, type SessionRow } from '~/utils/sidebar'
 import { sessionStatus } from '~/utils/status'
@@ -18,7 +19,7 @@ import { isPinned, pinSession, unpinSession } from '~/utils/pins'
  * `confirming` (a model: the hover Stop sets it too) shows the question.
  */
 const props = withDefaults(defineProps<{ row: SessionRow; now: number; member?: boolean; needsDot?: boolean; busy?: boolean; focused?: boolean; big?: boolean; narrow?: boolean; panelOpen?: boolean }>(), { member: false, needsDot: true, busy: false, focused: false, big: false, narrow: false, panelOpen: false })
-const emit = defineEmits<{ answerOpen: [row: SessionRow]; share: [row: SessionRow]; stop: [row: SessionRow]; yard: [row: SessionRow]; openRun: [row: SessionRow]; answer: [row: SessionRow, index: number, question: string | undefined]; reply: [row: SessionRow, text: string, question: string | undefined]; sheet: [row: SessionRow] }>()
+const emit = defineEmits<{ answerOpen: [row: SessionRow]; share: [row: SessionRow]; stop: [row: SessionRow]; yard: [row: SessionRow]; openRun: [row: SessionRow]; answer: [row: SessionRow, index: number, question: string | undefined]; reply: [row: SessionRow, text: string, question: string | undefined, taken: ReplyTaken]; sheet: [row: SessionRow] }>()
 
 // A touch long press (500 ms, design 3e) opens the row's sheet; the context menu is the mouse's and a coarse pointer's own is off.
 const coarse = useMedia('(pointer: coarse)')
@@ -193,7 +194,7 @@ function confirmStop() {
           @click="emit('answerOpen', row)"
         />
       </div>
-      <SidebarPrompt v-else-if="prompt && !confirming" :prompt="prompt" :busy="busy" :big="big" @answer="(i, q) => emit('answer', row, i, q)" @reply="(text, q) => emit('reply', row, text, q)" />
+      <SidebarPrompt v-else-if="prompt && !confirming" :prompt="prompt" :busy="busy" :big="big" @answer="(i, q) => emit('answer', row, i, q)" @reply="(text, q, taken) => emit('reply', row, text, q, taken)" />
     </li>
   </UContextMenu>
 </template>

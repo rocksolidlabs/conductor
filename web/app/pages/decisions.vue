@@ -2,6 +2,7 @@
 import { KIND_SUBJECTS, refRoute } from '~/utils/brakeman'
 import { pageState } from '~/utils/pageState'
 import { relativeTime } from '~/utils/sessions'
+import type { ReplyTaken } from '~/utils/reply'
 import {
   INBOX_KINDS,
   INBOX_ROW_CLASS,
@@ -253,12 +254,17 @@ function confirmQuestion(a: InboxAction): { title: string; detail: string } {
  * comes back, its one outcome decided there). The action names the item it was drawn for: one pressed for an item no longer shown
  * does nothing. Whatever item is shown when it comes back is read again.
  */
-async function act(ref: string, a: InboxAction, text?: string) {
+async function act(ref: string, a: InboxAction, text?: string, taken?: ReplyTaken) {
   const it = item.value
-  if (!it || it.ref !== ref || acts.pending(ref)) return
+  if (!it || it.ref !== ref || acts.pending(ref)) {
+    taken?.(false)
+    return
+  }
   // Opened from Recent on an earlier action: the card shows this one's steps from now on.
   if (openAction.value.receipt) void router.replace({ query: { ...route.query, receipt: undefined, attempt: undefined } })
-  await acts.act(it, a, text)
+  // A typed line leaves its field only once the owner took it (#654): refused, not sent or not confirmed, it stays as typed.
+  const came = await acts.act(it, a, text)
+  taken?.(came?.how === 'confirmed')
   await readItem()
   void inbox.changed()
 }

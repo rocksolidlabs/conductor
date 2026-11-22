@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { RowPrompt } from '~/utils/sidebarActions'
 import { MODE_CHOICE, choiceKey } from '~/utils/attention'
-import { bindDraft } from '~/utils/reply'
+import { bindDraft, holdLine, type ReplyTaken } from '~/utils/reply'
 
 /**
  * A prompt answered in the row (design 3b, 3c): the choices as numbered buttons, a free-text prompt as a reply field where Enter
@@ -11,8 +11,11 @@ import { bindDraft } from '~/utils/reply'
  */
 /** `wrap`: in the question's panel (SidebarRowPanel) a label wraps over its lines rather than being cut. */
 const props = withDefaults(defineProps<{ prompt: RowPrompt; busy?: boolean; big?: boolean; wrap?: boolean }>(), { busy: false, big: false, wrap: false })
-/** Each answer names the question the row showed as it was clicked or typed (its id). */
-const emit = defineEmits<{ answer: [index: number, question: string | undefined]; reply: [text: string, question: string | undefined] }>()
+/**
+ * Each answer names the question the row showed as it was clicked or typed (its id). A reply hands its page `taken`, which the page
+ * calls once it knows whether the line was sent: the field empties then, and keeps a line not sent as typed (#654).
+ */
+const emit = defineEmits<{ answer: [index: number, question: string | undefined]; reply: [text: string, question: string | undefined, taken: ReplyTaken] }>()
 
 const text = ref('')
 // While the host is away, or the session waits for its terminal, nothing typed here would go.
@@ -34,8 +37,7 @@ function keepKeys(e: KeyboardEvent) {
 function send() {
   const t = text.value.trim()
   if (!t || off.value) return
-  emit('reply', t, draftFor.value)
-  text.value = ''
+  emit('reply', t, draftFor.value, holdLine(text, () => (draftFor.value = props.prompt.question)))
 }
 </script>
 

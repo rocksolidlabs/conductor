@@ -361,8 +361,15 @@ function sendReply(row: PaletteItem) {
   const d = replies.value[row.key]
   const text = (d?.text ?? '').trim()
   if (!s || !p || p.held || p.away || !text) return
-  replies.value = { ...replies.value, [row.key]: { text: '' } }
-  void rows.reply(s, text, d?.question)
+  const typed = d!.text
+  // The field keeps the line until it is sent (#654): emptied then if it still holds it; a line not sent stays as typed, bound to
+  // the question the row shows now (a second Enter is the person's own, after the toast said why the first went nowhere).
+  void rows.reply(s, text, d?.question).then((sent) => {
+    const now = replies.value[row.key]
+    if (now?.text !== typed) return
+    const question = sent ? undefined : (flat.value.find((r) => r.key === row.key)?.prompt?.question ?? now.question)
+    replies.value = { ...replies.value, [row.key]: sent ? { text: '' } : { text: typed, question } }
+  })
 }
 function openInTab(row: PaletteItem) {
   if (!row.href) return

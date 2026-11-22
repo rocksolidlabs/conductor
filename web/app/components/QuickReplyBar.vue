@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ANSWER_IN_TERMINAL, answersInTerminal, choiceTitle, choiceKey, decisionAnsweredBy, decisionOf, noReply, offeredChoices, recommendedChoice, startupInTerminal, takesReply, waitingHeading, waitsForTerminal } from '~/utils/attention'
 import type { Attention, Role } from '~/utils/protocol'
-import { draftQuestion, questionOf } from '~/utils/reply'
+import { draftQuestion, holdLine, questionOf, type ReplyTaken } from '~/utils/reply'
 
 /**
  * `answers`: the viewer is the operator (the session page, the Yard's focused panel), who answers a question that mirrors a durable
@@ -13,9 +13,10 @@ const props = defineProps<{ attention?: Attention; agentName: string; role: Role
  * Each reply names the question the bar showed as it was clicked, typed or keyed (its id; none from an older owner). `openPlan` is
  * the plan a plan approval is about (#289), to open in the editor; `previewPlan` the same plan, to open rendered (#432); `answer` the
  * durable decision the question mirrors (`dr-7`), to open its card; `paste` asks the page for its terminal's paste control
- * (`pastes`: the session's page, which has it).
+ * (`pastes`: the session's page, which has it). A reply hands its page `taken`, which the page calls once it knows whether the line
+ * was sent: the field empties then, and keeps a line not sent as typed (#654).
  */
-const emit = defineEmits<{ reply: [text: string, question: string | undefined]; option: [index: number, question: string | undefined]; openPlan: [path: string]; previewPlan: [path: string]; answer: [decision: string]; paste: [] }>()
+const emit = defineEmits<{ reply: [text: string, question: string | undefined, taken: ReplyTaken]; option: [index: number, question: string | undefined]; openPlan: [path: string]; previewPlan: [path: string]; answer: [decision: string]; paste: [] }>()
 
 const text = ref('')
 const show = computed(() => props.attention?.state === 'needs_input')
@@ -46,8 +47,7 @@ watch(text, (now, before) => {
 function send() {
   const t = text.value.trim()
   if (!t || !canReply.value) return
-  emit('reply', t, draftFor.value)
-  text.value = ''
+  emit('reply', t, draftFor.value, holdLine(text, () => (draftFor.value = questionOf(props.attention))))
 }
 
 function pick(i: number) {

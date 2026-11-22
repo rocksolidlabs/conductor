@@ -36,6 +36,8 @@ test('a reply line past the control bound is refused with words, and a line that
     await field.press('Enter')
     const toast = page.locator('li').filter({ hasText: 'Not sent' }).last()
     await expect(toast).toContainText(CONTROL_TOO_LARGE, { timeout: 15_000 })
+    // The line not sent stays in the field, whole, to shorten (#654).
+    await expect(field).toHaveValue('"'.repeat(MAX_SUBMIT))
     expect(sent.filter((n) => n > 1 + MAX_CONTROL), 'no frame past the bound left the page').toEqual([])
     expect(sockets, 'the connection was kept').toBe(before)
     // The question still waits, and a line that fits answers it.
@@ -43,6 +45,9 @@ test('a reply line past the control bound is refused with words, and a line that
     await field.fill('main-after-the-refusal')
     await field.press('Enter')
     await expect.poll(transcript, { timeout: 15_000, message: 'the line that fits reached the agent' }).toContain('main-after-the-refusal')
+    // A line sent does not stay: the field empties once the owner took it, or the bar goes with the question it answered.
+    const kept = async () => ((await field.count()) ? await field.inputValue({ timeout: 1_000 }).catch(() => '') : '')
+    await expect.poll(kept, { timeout: 15_000 }).toBe('')
   } finally {
     await api.stopSession(s.id)
   }

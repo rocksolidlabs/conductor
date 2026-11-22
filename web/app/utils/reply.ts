@@ -1,3 +1,4 @@
+import { nextTick, type Ref } from 'vue'
 import type { SessionInfo } from '~/composables/useSessions'
 import { ANSWER_DECISION, CONTROL_TOO_LARGE, MAX_ANSWER_REQ_ID, MAX_QUESTION_ID, QUESTION_ANSWERED, TOO_LONG, type AnswerMsg, type Attention } from './protocol'
 import { decisionAnsweredBy } from './attention'
@@ -111,6 +112,36 @@ export function repliedQuestions() {
  * on another question.
  */
 export const NO_QUESTION = 'no_question'
+
+/** A page's word to the field a reply line came from: whether the line was sent (#654). Told once. */
+export type ReplyTaken = (sent: boolean) => void
+
+/**
+ * The word a reply field hands its page with a line (#654). The field keeps the line until the page says it was sent, and then
+ * empties only if it still holds that line (nothing typed since). A line not sent (refused, or failed: the page says why) stays
+ * exactly as typed; `notSent` runs (the field binds the line to the question it shows now: a second Enter is the person's own,
+ * after the page said why the first went nowhere), and the focus goes back to the field it was sent from when nothing else took it
+ * meanwhile (a field disabled while its line was on its way loses it).
+ */
+export function holdLine(text: Ref<string>, notSent?: () => void): ReplyTaken {
+  const line = text.value
+  const from = typeof document === 'undefined' ? null : (document.activeElement as HTMLElement | null)
+  let told = false
+  return (sent) => {
+    if (told) return
+    told = true
+    if (sent) {
+      if (text.value === line) text.value = ''
+      return
+    }
+    notSent?.()
+    if (!from || from === document.body) return
+    void nextTick(() => {
+      const now = document.activeElement
+      if (from.isConnected && (!now || now === document.body)) from.focus()
+    })
+  }
+}
 
 /** A reply that did not go: the owner's refusal (its error code), or the page's own (`not_connected`, `no_word`, `no_question`, `too_long`). */
 export class ReplyError extends Error {

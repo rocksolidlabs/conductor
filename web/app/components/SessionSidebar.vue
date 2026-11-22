@@ -9,7 +9,7 @@ import { joinedPath } from '~/utils/joined'
 import { blockSubtitle, filterNeeds, LIST_SECTIONS, SECTION_TITLES, focusRows, mayRefocusRow, moveFocus, narrowSidebar, needsDotShown, panelRow, reopenNeeds, rowMeta, sectionPreview, sidebarModel, type ItemRow, type ListSection, type RunBlock, type SessionRow, type SidebarItem } from '~/utils/sidebar'
 import { sessionTarget } from '~/utils/actions'
 import { rowMenuItems, sessionLive } from '~/utils/sidebarActions'
-import { replyFailure } from '~/utils/reply'
+import { replyFailure, type ReplyTaken } from '~/utils/reply'
 import { needsCount } from '~/utils/needsYou'
 import { showingWords } from '~/utils/inbox'
 import { pinRows } from '~/utils/pins'
@@ -185,8 +185,15 @@ function answer(row: SessionRow, i: number, question: string | undefined) {
   const o = row.prompt?.options[i]
   if (o) quick.send(row.session, o.input, { question }).catch(fail(row.session.name))
 }
-function reply(row: SessionRow, text: string, question: string | undefined) {
-  quick.reply(row.session, text, { question }).catch(fail(row.session.name))
+/** A line from a row's field: `taken` tells the field whether it was sent, so that a line not sent stays in it (#654). */
+function reply(row: SessionRow, text: string, question: string | undefined, taken?: ReplyTaken) {
+  quick.reply(row.session, text, { question }).then(
+    (sent) => taken?.(sent),
+    (e: unknown) => {
+      fail(row.session.name)(e)
+      taken?.(false)
+    },
+  )
 }
 
 function focusFilter() {

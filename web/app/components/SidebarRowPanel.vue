@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import type { ReplyTaken } from '~/utils/reply'
 import type { SessionRow } from '~/utils/sidebar'
 import { rowPrompt } from '~/utils/sidebarActions'
 
@@ -11,7 +12,7 @@ import { rowPrompt } from '~/utils/sidebarActions'
  * it is for (`anchor`); it carries `data-row-panel` and `data-panel-for="s:<id>"`.
  */
 const props = withDefaults(defineProps<{ row: SessionRow; anchor: HTMLElement | null; busy?: boolean }>(), { busy: false })
-const emit = defineEmits<{ answer: [row: SessionRow, index: number, question: string | undefined]; reply: [row: SessionRow, text: string, question: string | undefined]; keys: [e: KeyboardEvent]; leave: [e: FocusEvent]; shown: [] }>()
+const emit = defineEmits<{ answer: [row: SessionRow, index: number, question: string | undefined]; reply: [row: SessionRow, text: string, question: string | undefined, taken: ReplyTaken]; keys: [e: KeyboardEvent]; leave: [e: FocusEvent]; shown: [] }>()
 const prompt = computed(() => rowPrompt(props.row))
 const body = useTemplateRef<HTMLElement>('body')
 // Drawn: the list may move the focus into it now.
@@ -33,7 +34,7 @@ const content = { side: 'right' as const, align: 'start' as const, sideOffset: 1
       <div ref="body" class="flex flex-col gap-1.5 pt-2.5" data-row-panel :data-panel-for="`s:${row.id}`" @keydown="emit('keys', $event)" @focusout="emit('leave', $event)">
         <p class="truncate px-3 text-sm font-semibold text-highlighted" :title="row.session.name" data-panel-name>{{ row.session.name }}</p>
         <p class="max-h-[50vh] overflow-y-auto px-3 text-xs break-words" data-panel-question>{{ row.prompt?.message }}</p>
-        <SidebarPrompt v-if="prompt" :prompt="prompt" :busy="busy" wrap @answer="(i, q) => emit('answer', row, i, q)" @reply="(text, q) => emit('reply', row, text, q)" />
+        <SidebarPrompt v-if="prompt" :prompt="prompt" :busy="busy" wrap @answer="(i, q) => emit('answer', row, i, q)" @reply="(text, q, taken) => emit('reply', row, text, q, taken)" />
       </div>
     </template>
   </UPopover>
