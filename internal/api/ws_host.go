@@ -64,9 +64,10 @@ func (s *Server) handleHostWS(w http.ResponseWriter, r *http.Request) {
 	}
 	// This start's key, from which a host of the owner's own server makes
 	// the key of its machine it registers with (proto.HostInfo.Machine):
-	// only on an upgrade accepted for a host's credential, never on a
-	// switchyard, whose hosts send no machine. Set before the upgrade's
-	// answer is written; never logged.
+	// sent to a principal that may register a host (set before the
+	// handshake is answered, so also on one the handshake itself refuses),
+	// never by a switchyard, whose hosts are then sent no key and say
+	// nothing of their machine. Never logged.
 	if hp.host && !s.cfg.Switchyard.Enabled {
 		if k := s.serverKeyHeader(); k != "" {
 			w.Header().Set(proto.ServerKeyHeader, k)

@@ -11,8 +11,9 @@ import (
 // serverMachine is what this server keeps to group the hosts of its own
 // machine with its own row (docs/plans/hosts.md, PR-1): its key of this
 // start, 32 random bytes made as the server is made and held in memory
-// only, never logged, which it sends a host in the upgrade of GET /ws/host
-// it accepts (proto.ServerKeyHeader); and its own row's key, made from its
+// only, never logged, which it sends a principal that may register a host
+// on an upgrade of GET /ws/host (proto.ServerKeyHeader); and its own row's
+// key, made from its
 // own machine's id by the one function the hub keys a host of this machine
 // by.
 type serverMachine struct {
@@ -31,8 +32,8 @@ func newServerMachine() *serverMachine {
 }
 
 // serverKeyHeader is the value of proto.ServerKeyHeader on an upgrade of
-// GET /ws/host this server accepts from a host: "" for a server made
-// without New (tests that build a Server by hand).
+// GET /ws/host from a principal that may register a host: "" for a server
+// made without New (tests that build a Server by hand).
 func (s *Server) serverKeyHeader() string {
 	if s.machine == nil {
 		return ""
