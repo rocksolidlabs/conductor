@@ -12,11 +12,13 @@ import (
 
 // Recipe is what a session of agent a watches on its screen (#293): its
 // trust question and answers, its other questions, the window title that
-// says it works, and whether it reports taking a prompt. The server starts
-// its own sessions with it (CompileRecipe) and hands it to a host that
-// registers a session of the same agent (proto.Registered.Recipe), whole
-// to one that says it reads forms and without them (HostRecipe) to one
-// that does not, so that the two watch the same things, or the same but
+// says it works, whether it reports taking a prompt, and its prompt at
+// rest (its prompt shape). The server starts its own sessions with it
+// (CompileRecipe) and hands it to a host that registers a session of the
+// same agent (proto.Registered.Recipe), whole to one that says it reads
+// forms and without them (HostRecipe) to one that does not, and with its
+// prompt shape only to one that says it takes it (WithoutPromptShape
+// otherwise), so that the two watch the same things, or the same but
 // those. Nil when the agent has none of them.
 func Recipe(a catalog.Agent) *proto.HostRecipe {
 	sig := a.EffectiveSignal()
@@ -25,6 +27,7 @@ func Recipe(a catalog.Agent) *proto.HostRecipe {
 		TrustAnswers:  recipeAnswers(a.TrustAnswers),
 		WorkingTitle:  sig.WorkingTitle,
 		ConfirmSubmit: ConfirmsSubmit(a.Adapter, sig),
+		PromptShape:   a.PromptShape,
 	}
 	for _, q := range a.Questions {
 		r.Questions = append(r.Questions, proto.RecipeQuestion{
@@ -32,10 +35,26 @@ func Recipe(a catalog.Agent) *proto.HostRecipe {
 			AnswersFromScreen: q.AnswersFromScreen, ModeAnswers: q.ModeAnswers, TypedAnswers: q.TypedAnswers,
 		})
 	}
-	if r.TrustPrompt == "" && len(r.TrustAnswers) == 0 && len(r.Questions) == 0 && r.WorkingTitle == "" && !r.ConfirmSubmit {
+	if r.Empty() {
 		return nil
 	}
 	return r
+}
+
+// WithoutPromptShape is r as a host whose register does not say it takes
+// the prompt shape (proto.HostInfo.PromptShape) is sent it: the same but
+// the shape, byte for byte what a host was sent before the recipe carried
+// one, and nil when nothing else is left to watch. r is not changed.
+func WithoutPromptShape(r *proto.HostRecipe) *proto.HostRecipe {
+	if r == nil || r.PromptShape == "" {
+		return r
+	}
+	c := *r
+	c.PromptShape = ""
+	if c.Empty() {
+		return nil
+	}
+	return &c
 }
 
 // HostRecipe is Recipe as a host that does not read forms is sent it
@@ -63,13 +82,26 @@ func recipeAnswers(in []catalog.Answer) []proto.RecipeAnswer {
 }
 
 // Watch is a Recipe compiled for session.Options: the fields of the same
-// names there.
+// names there, which Apply sets.
 type Watch struct {
 	TrustPattern  *regexp.Regexp
 	TrustAnswers  []session.Option
 	Questions     []session.StartupQuestion
 	WorkingTitle  *regexp.Regexp
 	ConfirmSubmit bool
+	PromptShape   *regexp.Regexp
+}
+
+// Apply sets on o what w watches, every field of it: a server's own
+// session and a hosted one are started through it, so the two watch the
+// same fields of one recipe.
+func (w Watch) Apply(o *session.Options) {
+	o.TrustPattern = w.TrustPattern
+	o.TrustAnswers = w.TrustAnswers
+	o.Questions = w.Questions
+	o.WorkingTitle = w.WorkingTitle
+	o.ConfirmSubmit = w.ConfirmSubmit
+	o.PromptShape = w.PromptShape
 }
 
 // Errors of CompileRecipe, by the part of the recipe that does not compile.
@@ -77,12 +109,14 @@ var (
 	ErrRecipeTrustPrompt  = errors.New("the agent's trust prompt is invalid")
 	ErrRecipeWorkingTitle = errors.New("the agent's working title is invalid")
 	ErrRecipeQuestion     = errors.New("one of the agent's startup questions is invalid")
+	ErrRecipePromptShape  = errors.New("the agent's prompt shape is invalid")
 )
 
 // CompileRecipe compiles r as a session started with it uses it: each
-// pattern as the catalog holds patterns (catalog.CompilePattern; the title
-// with catalog.CompileWorkingTitle), the answers as the session's choices.
-// A nil r watches nothing.
+// pattern as the catalog holds patterns (catalog.CompilePattern, the
+// prompt shape among them, as the catalog compiles an agent's promptShape;
+// the title with catalog.CompileWorkingTitle), the answers as the
+// session's choices. A nil r watches nothing.
 func CompileRecipe(r *proto.HostRecipe) (Watch, error) {
 	var w Watch
 	if r == nil {
@@ -97,6 +131,11 @@ func CompileRecipe(r *proto.HostRecipe) (Watch, error) {
 	if r.WorkingTitle != "" {
 		if w.WorkingTitle, err = catalog.CompileWorkingTitle(r.WorkingTitle); err != nil {
 			return Watch{}, ErrRecipeWorkingTitle
+		}
+	}
+	if r.PromptShape != "" {
+		if w.PromptShape, err = catalog.CompilePattern(r.PromptShape); err != nil {
+			return Watch{}, ErrRecipePromptShape
 		}
 	}
 	w.TrustAnswers = sessionOptions(r.TrustAnswers)
