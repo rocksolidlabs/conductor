@@ -4,6 +4,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/rocksolidlabs/conductor/internal/catalog"
@@ -83,7 +84,18 @@ var claudeAssets = map[string]string{
 	// Conductor's MCP server, for --mcp-config (Claude Code 2.1.288 takes
 	// JSON files or strings; verified with --help).
 	"claude-mcp.json": jsonAsset(`{"mcpServers":{"conductor":{"command":"{{BIN}}","args":["mcp"]}}}`),
+	// The same server for a chat's child (the protocol way), with a
+	// per-server timeout of 8 hours (in milliseconds): Claude Code's pages
+	// document that a per-server timeout of at least 1000 raises that
+	// server's idle window from its 30 minutes (for .mcp.json; a run of
+	// 2.1.331 showed an --mcp-config file's raise it too), so a permission
+	// question a person has not yet answered does not end the call.
+	"claude-protocol-mcp.json": jsonAsset(`{"mcpServers":{"conductor":{"command":"{{BIN}}","args":["mcp"],"timeout":` + strconv.Itoa(ClaudeProtocolMCPTimeoutMs) + `}}}`),
 }
+
+// ClaudeProtocolMCPTimeoutMs is the timeout claude-protocol-mcp.json gives
+// Conductor's MCP server: 8 hours.
+const ClaudeProtocolMCPTimeoutMs = 8 * 60 * 60 * 1000
 
 func claudeSteps(hooksDir string) []step {
 	return []step{mergeHooksStep(claudeAssets, hooksDir, "claude.json", claudeSettings, claudeMarker), skillStep(hooksDir, claudeSkill)}
