@@ -3,6 +3,8 @@ package sessiontest
 import (
 	"context"
 	"errors"
+	"io"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -133,5 +135,86 @@ func TestFakeRuntimeRecordsWhatItIsAsked(t *testing.T) {
 			t.Fatal(err)
 		}
 		<-svc.Done()
+	})
+}
+
+// A FakeRuntime is no ext.PipeStarter; a FakePipeRuntime is: unscripted
+// its StartPipes refuses naming the method; scripted it answers a
+// FakeProc's pipes (the test's prints its output, its input arriving on
+// Input, a closed input refusing writes, its end and its stop the
+// FakeProc's); through its Base it starts the native child, the call
+// recorded with its spec, its ref and the process.
+func TestFakePipeRuntimeScriptsPipes(t *testing.T) {
+	ctx := t.Context()
+	ref := ext.ProcessRef{Session: "s-1"}
+	var plain ext.Runtime = &FakeRuntime{}
+	if _, ok := plain.(ext.PipeStarter); ok {
+		t.Fatal("a FakeRuntime is a PipeStarter")
+	}
+	var piped ext.Runtime = FakePipeRuntime{&FakeRuntime{}}
+	ps, ok := piped.(ext.PipeStarter)
+	if !ok {
+		t.Fatal("a FakePipeRuntime is no PipeStarter")
+	}
+	if _, err := ps.StartPipes(ctx, ext.PipeSpec{Argv: []string{"agent"}, Ref: ref}); err == nil || !strings.Contains(err.Error(), "StartPipes") {
+		t.Fatalf("unscripted: %v", err)
+	}
+	proc := NewFakeProc()
+	f := FakePipeRuntime{&FakeRuntime{Pipes: func(ext.PipeSpec) (*FakeProc, error) { return proc, nil }}}
+	p, err := f.StartPipes(ctx, ext.PipeSpec{Argv: []string{"agent", "-p"}, Ref: ref})
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = proc.Print("{\"type\":\"ready\"}\n") }()
+	buf := make([]byte, 64)
+	if n, err := p.Stdout().Read(buf); err != nil || string(buf[:n]) != "{\"type\":\"ready\"}\n" {
+		t.Fatalf("read %q, %v", buf[:n], err)
+	}
+	if _, err := p.Stdin().Write([]byte("go\n")); err != nil || string(<-proc.Input) != "go\n" {
+		t.Fatalf("write: %v", err)
+	}
+	if err := p.Stdin().Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Stdin().Write([]byte("late\n")); !errors.Is(err, os.ErrClosed) {
+		t.Fatalf("a write once the input is closed: %v", err)
+	}
+	if err := p.Stop(ctx, time.Second); err != nil || !proc.Stopped() {
+		t.Fatalf("stop: %v, stopped %v", err, proc.Stopped())
+	}
+	<-p.Done()
+	if st := p.Exit(); st.Code != -1 || p.Process().PID != 0 {
+		t.Fatalf("the exit: %+v, process %+v", st, p.Process())
+	}
+	if c := f.Asked("StartPipes"); len(c) != 1 || c[0].Ref != ref || !reflect.DeepEqual(c[0].Spec.(ext.PipeSpec).Argv, []string{"agent", "-p"}) {
+		t.Fatalf("the call recorded: %+v", c)
+	}
+	t.Run("a script that panics", func(t *testing.T) {
+		f := FakePipeRuntime{&FakeRuntime{Pipes: func(ext.PipeSpec) (*FakeProc, error) { panic("the script panics") }}}
+		defer func() {
+			if r := recover(); r != "the script panics" {
+				t.Fatalf("recovered %v", r)
+			}
+		}()
+		f.StartPipes(ctx, ext.PipeSpec{Ref: ref})
+	})
+	t.Run("through its Base", func(t *testing.T) {
+		f := FakePipeRuntime{&FakeRuntime{Base: local.Native()}}
+		p, err := f.StartPipes(ctx, ext.PipeSpec{Argv: []string{"cat"}, Dir: t.TempDir(), Env: []string{}, Ref: ref})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := p.Stdin().Write([]byte("echoed\n")); err != nil {
+			t.Fatal(err)
+		}
+		if n, err := io.ReadAtLeast(p.Stdout(), buf, len("echoed\n")); err != nil || string(buf[:n]) != "echoed\n" {
+			t.Fatalf("read %q, %v", buf[:n], err)
+		}
+		if err := p.Stop(ctx, 0); err != nil {
+			t.Fatal(err)
+		}
+		if c := f.Asked("StartPipes"); len(c) != 1 || c[0].Process.PID <= 0 || c[0].Process != p.Process() {
+			t.Fatalf("the call recorded: %+v", c)
+		}
 	})
 }
