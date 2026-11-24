@@ -938,9 +938,10 @@ func TestABriefsCapacityRefsLookNothingUp(t *testing.T) {
 // the reading the server holds, whatever its account or its agent is now:
 // a reading whose account was removed since names the account by its id
 // alone; one whose agent's program is gone since, one whose key is being
-// read again, and readings in the states that carry no version (signed
+// read again, and readings in the states that carry no figures (signed
 // out, key-paid, unqualified, error) each resolve at the reading's own
-// state, windows and time, those with no version and no readBy. No program
+// state, windows and time: a signed-out or key-paid one with what read it
+// (its version and readBy), the others with no version and no readBy. No program
 // is looked up for them, the accounts are read once, and every time the
 // snapshots and the turn's view write is in UTC.
 func TestACapacityRefIsTheReadingHeld(t *testing.T) {
@@ -1026,7 +1027,12 @@ func TestACapacityRefIsTheReadingHeld(t *testing.T) {
 		if c.state == capacity.StateOK && (agent["version"] != "2.0.0" || snap["readBy"] == nil || len(windows) != 1) {
 			t.Errorf("%s: the reading's version, readBy and window: %s", c.name, mustJSON(snap))
 		}
-		if c.state != capacity.StateOK && (agent["version"] != nil || snap["readBy"] != nil || len(windows) != 0) {
+		// A signed-out or key-paid reading says what read it, as the view does; none that is not ok carries a window.
+		said := c.state == capacity.StateSignedOut || c.state == capacity.StateKeyPaid
+		if said && (agent["version"] != "2.0.0" || snap["readBy"] == nil || len(windows) != 0) {
+			t.Errorf("%s: the reading's version and readBy, and no window: %s", c.name, mustJSON(snap))
+		}
+		if c.state != capacity.StateOK && !said && (agent["version"] != nil || snap["readBy"] != nil || len(windows) != 0) {
 			t.Errorf("%s: a reading %s carries a version, a readBy or a window: %s", c.name, c.state, mustJSON(snap))
 		}
 	}

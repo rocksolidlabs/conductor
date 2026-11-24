@@ -137,6 +137,29 @@ describe('CapacityLive', () => {
     expect(live.entry(q).view?.state).toBe('reading')
   })
 
+  it('sends the check of a version not checked at once when the server takes one now, and still no plain read before nextReadAfter', async () => {
+    const srv = fakeServer()
+    const live = new CapacityLive(() => Date.parse('2026-11-12T10:00:00Z'))
+    live.attach(srv.reads)
+    const q = { agent: 'claude', account: 'a-work' }
+    void live.watch(q)
+    // What the dialog's read as it opened left: not checked, nothing started, the check's slot kept.
+    srv.gets[0]!.answer(view('claude', 'a-work', { state: 'unqualified', nextReadAfter: '2026-11-12T10:05:00Z', checkNow: true }))
+    await settle()
+    expect(await live.read(q)).toBe(false)
+    expect(srv.posts).toHaveLength(0)
+    const sent = live.read(q, true)
+    expect(srv.posts).toHaveLength(1)
+    expect(srv.posts[0]).toMatchObject({ q, check: true })
+    srv.posts[0]!.answer(view('claude', 'a-work', { state: 'ok', nextReadAfter: '2026-11-12T10:05:00Z' }))
+    await settle()
+    srv.gets[1]!.answer(view('claude', 'a-work', { state: 'ok', nextReadAfter: '2026-11-12T10:05:00Z' }))
+    expect(await sent).toBe(true)
+    // The check had its slot: another waits as a read does.
+    expect(await live.read(q, true)).toBe(false)
+    expect(srv.posts).toHaveLength(1)
+  })
+
   it("says a read's refusal in the server's words, and shows the view fetched after it", async () => {
     const srv = fakeServer()
     const live = new CapacityLive()

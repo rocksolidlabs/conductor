@@ -513,3 +513,43 @@ func TestVersionsDocumentShape(t *testing.T) {
 		t.Errorf("a check after a failed Own: %v", err)
 	}
 }
+
+// TestARefusalACheckWouldLiftIsMarked: a version not recorded, or one
+// whose check was interrupted, is refused to a read with Error.Check, the
+// refusal the admin's check lifts; a turned version, one under a check and
+// one no reader can record are refused without it, since a check would
+// not start them either.
+func TestARefusalACheckWouldLiftIsMarked(t *testing.T) {
+	v := openAt(t, t.TempDir(), Options{}).Versions()
+	checkOf := func(err error) bool {
+		var ce *Error
+		return errors.As(err, &ce) && ce.Check
+	}
+	if _, err := v.Admit("claude", "2.1.700", false, false); code(err) != CodeUnqualified || !checkOf(err) {
+		t.Errorf("a version not recorded: %v, check %v", err, checkOf(err))
+	}
+	a, err := v.Admit("claude", "2.1.701", false, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := v.Admit("claude", "2.1.701", false, false); code(err) != CodeCheckUnderWay || checkOf(err) {
+		t.Errorf("a version under a check: %v, check %v", err, checkOf(err))
+	}
+	_ = a.Done(Inconclusive)
+	if _, err := v.Admit("claude", "2.1.701", false, false); code(err) != CodeUnqualified || !checkOf(err) {
+		t.Errorf("an interrupted version: %v, check %v", err, checkOf(err))
+	}
+	a, err = v.Admit("claude", "2.1.702", false, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = a.Done(Turned)
+	for _, check := range []bool{false, true} {
+		if _, err := v.Admit("claude", "2.1.702", false, check); code(err) != CodeUnqualified || checkOf(err) {
+			t.Errorf("a turned version (check %v): %v, marked %v", check, err, checkOf(err))
+		}
+	}
+	if _, err := v.Admit("claude", "not a version", false, false); code(err) != CodeUnqualified || checkOf(err) {
+		t.Errorf("no version a reader can record: %v, check %v", err, checkOf(err))
+	}
+}

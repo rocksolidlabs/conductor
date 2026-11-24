@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { capacityKey, capacityStatements, clockWords, compactWords, offersCheck, offersRead, readWait, severityColor, type CapacityQuery, type CapacityStatement } from '~/utils/capacity'
+import { capacityKey, capacityStatements, clockWords, compactWords, panelAction, readsOnOpen, severityColor, type CapacityQuery, type CapacityStatement } from '~/utils/capacity'
 
 /**
  * The capacity panel (docs/plans/capacity.md, PR-5): what the server's capacity view says of an agent on an account before a launch.
@@ -8,7 +8,8 @@ import { capacityKey, capacityStatements, clockWords, compactWords, offersCheck,
  * the provider's; Conductor's own count in another, marked as an estimate; how fresh it is. Every state that is not a reading says
  * what it is, in the server's words; a reading's figures are said with the server's own words beside them when it gives any. A limit
  * the provider reports is warned of as a window near its limit is. It never disables a launch. `readOnOpen` asks the server to read as the panel shows a question
- * (the launch dialog's opening), which the server does at most once in five minutes per agent and account; `compact` is one line, with every other statement in details that open by keyboard and by touch.
+ * (the launch dialog's opening), which the server does at most once in five minutes per agent and account, and never of a version
+ * the server said is not checked (readsOnOpen): both presentations offer "Check this version" for it (panelAction); `compact` is one line, with every other statement in details that open by keyboard and by touch.
  * A launch with its own login (on this computer, or a login its environment sets) is shown with no account and no model; a launch on
  * this server of an agent whose entry sets its login, with no account and the entry's variable named (`launchLogin` decides which).
  */
@@ -27,14 +28,14 @@ onMounted(() => {
 
 const entry = computed(() => (props.query ? cap.entry(props.query) : null))
 const view = computed(() => entry.value?.view ?? null)
-const wait = computed(() => (view.value ? readWait(view.value, now.value) : null))
 const reading = computed(() => !!entry.value?.reading || view.value?.state === 'reading')
+const action = computed(() => (view.value ? panelAction(view.value, now.value, reading.value) : null))
 
 /** Shows a question: fetched now, then read when it is the opening's, still shown here, and the server reads it. */
 async function show(q: CapacityQuery, gone: () => boolean) {
   await cap.store.watch(q)
   const v = cap.store.entry(q).view
-  if (!gone() && props.readOnOpen && q.launch !== 'remote' && v && offersRead(v)) await cap.store.read(q)
+  if (!gone() && props.readOnOpen && q.launch !== 'remote' && v && readsOnOpen(v)) await cap.store.read(q)
 }
 watch(
   () => (props.query ? capacityKey(props.query) : ''),
@@ -65,6 +66,7 @@ const said = computed(() => (view.value ? capacityStatements(view.value, now.val
 const one = (kind: CapacityStatement['kind']) => said.value.find((s) => s.kind === kind)
 const windows = computed(() => said.value.filter((s) => s.kind === 'window'))
 const brief = computed(() => (view.value ? compactWords(view.value, now.value, props.model) : null))
+const checkTitle = computed(() => `Runs this version of ${view.value?.readBy?.program ?? view.value?.agent.name ?? 'the agent'} once to see that it answers its usage without a model turn`)
 </script>
 
 <template>
@@ -73,8 +75,9 @@ const brief = computed(() => (view.value ? compactWords(view.value, now.value, p
     <div v-else-if="view && compact && brief" class="flex min-w-0 flex-col gap-1">
       <div class="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
         <p class="min-w-0 flex-[1_1_16rem] text-xs [overflow-wrap:anywhere]" data-capacity-line>{{ brief.line }}<span class="text-muted"> · {{ brief.fresh }}</span></p>
-        <span v-if="wait" class="flex-none text-xs text-muted" data-capacity-wait>again after {{ clockWords(wait) }}</span>
-        <UButton v-else-if="offersRead(view) || reading" label="Read now" icon="i-lucide-refresh-cw" size="xs" color="neutral" variant="ghost" :loading="reading" :disabled="reading" data-capacity-read @click="readNow()" />
+        <span v-if="action?.wait" class="flex-none text-xs text-muted" data-capacity-wait>again after {{ clockWords(action.wait) }}</span>
+        <UButton v-else-if="action?.kind === 'check'" label="Check this version" icon="i-lucide-shield-question" size="xs" color="neutral" variant="outline" :disabled="action.disabled" :title="checkTitle" data-capacity-check @click="readNow(true)" />
+        <UButton v-else-if="action?.kind === 'read'" label="Read now" icon="i-lucide-refresh-cw" size="xs" color="neutral" variant="ghost" :loading="reading" :disabled="action.disabled" data-capacity-read @click="readNow()" />
       </div>
       <p v-if="brief.warning" class="flex items-start gap-1.5 text-xs [overflow-wrap:anywhere]" :class="brief.warning.color === 'error' ? 'text-error' : 'text-warning'" data-capacity-warning :data-capacity-warning-color="brief.warning.color">
         <UIcon name="i-lucide-triangle-alert" class="mt-0.5 size-3.5 flex-none" />{{ brief.warning.words }}
@@ -127,9 +130,9 @@ const brief = computed(() => (view.value ? compactWords(view.value, now.value, p
       <div class="flex flex-wrap items-center gap-2">
         <span class="text-xs text-muted" data-capacity-fresh>{{ one('fresh')?.text }}</span>
         <div class="flex-1" />
-        <span v-if="wait" class="text-xs text-muted" data-capacity-wait>Read again after {{ clockWords(wait) }}</span>
-        <UButton v-if="offersCheck(view)" label="Check this version" icon="i-lucide-shield-question" size="xs" color="neutral" variant="outline" :disabled="!!wait || reading" :title="`Runs this version of ${view.readBy?.program ?? 'the agent'} once to see that it answers its usage without a model turn`" data-capacity-check @click="readNow(true)" />
-        <UButton v-else-if="offersRead(view) || reading" label="Read now" icon="i-lucide-refresh-cw" size="xs" color="neutral" variant="ghost" :loading="reading" :disabled="!!wait || reading" data-capacity-read @click="readNow()" />
+        <span v-if="action?.wait" class="text-xs text-muted" data-capacity-wait>Read again after {{ clockWords(action.wait) }}</span>
+        <UButton v-if="action?.kind === 'check'" label="Check this version" icon="i-lucide-shield-question" size="xs" color="neutral" variant="outline" :disabled="action.disabled" :title="checkTitle" data-capacity-check @click="readNow(true)" />
+        <UButton v-else-if="action?.kind === 'read'" label="Read now" icon="i-lucide-refresh-cw" size="xs" color="neutral" variant="ghost" :loading="reading" :disabled="action.disabled" data-capacity-read @click="readNow()" />
       </div>
     </template>
     <p v-if="entry?.error" class="flex flex-wrap items-center gap-2 text-xs text-error [overflow-wrap:anywhere]" data-capacity-error>
