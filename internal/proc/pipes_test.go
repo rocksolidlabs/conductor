@@ -395,6 +395,9 @@ func TestStartPipesRefusesABadSpec(t *testing.T) {
 	noPipesRunner = func() error { return errNoPipesRunner }
 	t.Cleanup(func() { noPipesRunner = old })
 	p, err := StartPipes(context.Background(), PipeSpec{Argv: []string{"sleep", "300"}, Dir: dir})
+	if p != nil {
+		p.Stop(context.Background(), 0)
+	}
 	if p != nil || err == nil || err.Error() != "proc: no pipes runner on this platform" {
 		t.Fatalf("where no pipes runner is: %v, %v", p, err)
 	}
