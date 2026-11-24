@@ -374,21 +374,16 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 	}
 	// What the session watches on its screen: the trust question and its
 	// answers, the other questions, the window title that says the agent
-	// works (Codex's, with the title its adapter's launch asks for), and
-	// whether it reports taking a prompt. A hosted session of the same
-	// agent is handed the same recipe (agents.Recipe, ws_host.go).
+	// works (Codex's, with the title its adapter's launch asks for),
+	// whether it reports taking a prompt, and its prompt at rest (its
+	// prompt shape: where a line's text is typed while the startup watch
+	// lasts, and the one screen a Brakeman turn's line and a first message
+	// are typed into). A hosted session of the same agent is handed the
+	// same recipe (agents.Recipe, ws_host.go), its prompt shape too when
+	// its host says it takes it.
 	watch, err := agents.CompileRecipe(agents.Recipe(agent))
 	if err != nil {
 		return nil, newAPIError(http.StatusInternalServerError, "invalid_agent", err.Error())
-	}
-	// Its prompt at rest, the one screen a Brakeman turn's line is typed
-	// into (session.Submission.OnlyAtPrompt). A server session's alone: no
-	// host types such a line, so the hosts' recipe does not carry it.
-	var promptShape *regexp.Regexp
-	if agent.PromptShape != "" {
-		if promptShape, err = catalog.CompilePattern(agent.PromptShape); err != nil {
-			return nil, newAPIError(http.StatusInternalServerError, "invalid_agent", "the agent's prompt shape is invalid")
-		}
 	}
 	id := req.id
 	if id == "" {
@@ -534,12 +529,6 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 		OnOutput:        s.outputArrived,
 		RunChat:         req.runChat,
 		Pattern:         pattern,
-		TrustPattern:    watch.TrustPattern,
-		TrustAnswers:    watch.TrustAnswers,
-		PromptShape:     promptShape,
-		Questions:       watch.Questions,
-		WorkingTitle:    watch.WorkingTitle,
-		ConfirmSubmit:   watch.ConfirmSubmit,
 		WatchGit:        true,
 		Launched:        launched,
 		Folder:          folder,
@@ -548,6 +537,10 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 		// directory the agent itself writes to.
 		Plans: agents.PlansDir(agent.Adapter, pty.Lookup(procEnv), cwd),
 	}
+	// The trust question and the startup ones, the questions asked during
+	// the work, the working title, the prompt's report and its shape: as a
+	// hosted session of the agent sets them (hostagent).
+	watch.Apply(&opts)
 	s.recordHooks(rc, &opts)
 	if rc != nil {
 		s.recordSeam("beforeMade", id)

@@ -26,7 +26,7 @@ func hostRecipes(t *testing.T) []byte {
 	}
 	var out []entry
 	for _, a := range catalog.Default().List() {
-		b, err := json.Marshal(s.hostRecipe(a.ID, false))
+		b, err := json.Marshal(s.hostRecipe(a.ID, false, false))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -72,7 +72,7 @@ func TestTheRecipeAHostThatReadsFormsIsSentIsTheServers(t *testing.T) {
 	s := &Server{catalog: catalog.Default(), log: slog.New(slog.NewTextHandler(io.Discard, nil))}
 	forms := 0
 	for _, a := range catalog.Default().List() {
-		got, want := s.hostRecipe(a.ID, true), agents.Recipe(a)
+		got, want := s.hostRecipe(a.ID, true, true), agents.Recipe(a)
 		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("%s: sent %+v, want %+v", a.ID, got, want)
 		}

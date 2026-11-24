@@ -177,7 +177,9 @@ func TestRegisteredCarriesTheFormsOnlyToAHostThatReadsThem(t *testing.T) {
 	if !ok {
 		t.Fatal("no codex in the default catalog")
 	}
-	whole, without := encoded(t, agents.Recipe(codex)), encoded(t, agents.HostRecipe(codex))
+	// None of these hosts says it takes the prompt shape: each is sent the
+	// recipe without it (TestRegisteredCarriesThePromptShapeOnlyToAHostThatTakesIt).
+	whole, without := encoded(t, agents.WithoutPromptShape(agents.Recipe(codex))), encoded(t, agents.WithoutPromptShape(agents.HostRecipe(codex)))
 	var r proto.HostRecipe
 	if err := json.Unmarshal(whole, &r); err != nil || !slices.ContainsFunc(r.Questions, isForm) {
 		t.Fatalf("Codex's recipe has no form: %s", whole)
@@ -212,4 +214,65 @@ func encoded(t *testing.T, v any) []byte {
 		t.Fatal(err)
 	}
 	return b
+}
+
+// The agent's prompt shape is in the recipe registered carries only for a
+// host whose register says it takes it (proto.HostInfo.PromptShape): such
+// a host is sent the recipe it would be sent without the word, with the
+// catalog's shape, the same from the owner's own server and from a
+// switchyard; a host that does not say it (an earlier release's) is sent
+// the recipe without the shape, byte for byte what it was sent before, and
+// for an agent whose recipe holds nothing else, none. Claude Code and Codex
+// alike.
+func TestRegisteredCarriesThePromptShapeOnlyToAHostThatTakesIt(t *testing.T) {
+	discard := slog.New(slog.NewTextHandler(io.Discard, nil))
+	shapeOnly := catalog.Agent{ID: "shaped", Name: "shaped", Command: []string{"/bin/sh"}, PromptShape: `(?m)^> \z`}
+	var list []catalog.Agent
+	for _, id := range []string{"codex", "claude"} {
+		a, ok := catalog.Default().Get(id)
+		if !ok || a.PromptShape == "" {
+			t.Fatalf("no %s with a prompt shape in the default catalog", id)
+		}
+		list = append(list, a)
+	}
+	list = append(list, shapeOnly)
+	own := newTestEnvAgents(t, nil, discard, list)
+	yard := newTestEnvAgents(t, func(c *config.Config) { c.Switchyard.Enabled = true }, discard, list)
+	for _, a := range list {
+		withForms, withoutForms := agents.Recipe(a), agents.HostRecipe(a)
+		for _, c := range []struct {
+			name string
+			e    *testEnv
+			host proto.HostInfo
+			want *proto.HostRecipe
+		}{
+			{"a host that takes the shape and reads forms", own, proto.HostInfo{Name: "laptop", AnswerAs: true, Forms: true, PromptShape: true}, withForms},
+			{"a host that takes the shape alone", own, proto.HostInfo{Name: "laptop", PromptShape: true}, withoutForms},
+			{"a host that reads forms alone", own, proto.HostInfo{Name: "laptop", AnswerAs: true, Forms: true}, agents.WithoutPromptShape(withForms)},
+			{"an earlier release's host", own, proto.HostInfo{Name: "laptop"}, agents.WithoutPromptShape(withoutForms)},
+			{"a host that takes the shape, to a switchyard", yard, proto.HostInfo{Name: "laptop", Forms: true, PromptShape: true}, withoutForms},
+			{"a host that does not, to a switchyard", yard, proto.HostInfo{Name: "laptop", Forms: true}, agents.WithoutPromptShape(withoutForms)},
+		} {
+			got := registeredRecipe(t, c.e, c.host, a.ID)
+			if c.want == nil {
+				if got != nil {
+					t.Errorf("%s, %s: was sent %s, want no recipe", a.ID, c.name, got)
+				}
+				continue
+			}
+			if string(got) != string(encoded(t, c.want)) {
+				t.Errorf("%s, %s: was sent\n%s\nwant\n%s", a.ID, c.name, got, encoded(t, c.want))
+			}
+			var r proto.HostRecipe
+			if err := json.Unmarshal(got, &r); err != nil {
+				t.Fatal(err)
+			}
+			if takes := c.host.PromptShape; (r.PromptShape == a.PromptShape) != takes || (!takes && r.PromptShape != "") {
+				t.Errorf("%s, %s: sent the prompt shape %q", a.ID, c.name, r.PromptShape)
+			}
+		}
+	}
+	if agents.WithoutPromptShape(agents.Recipe(shapeOnly)) != nil {
+		t.Fatal("a recipe of the shape alone is sent without it as one")
+	}
 }
