@@ -73,7 +73,8 @@ func hostedOptions(t *testing.T, a catalog.Agent) session.Options {
 
 // The line's rule gives a hosted session of Claude Code or Codex the
 // answer it gives the server's own session of the same agent, on every
-// screen of the rule's matrix at every size (TestTheStartupLineRefusesWhereEitherGuardDid's),
+// screen of the rule's matrix at every size (TestTheStartupLineRefusesWhereEitherGuardDid's,
+// and 40 columns, where a prompt wraps),
 // and holds the hosted session to the same oracles: wherever the guard a
 // line's text had refuses, or the guard a line's Enter had holds, the rule
 // refuses the line, and atPrompt answers as it did. The hosted session's
@@ -82,7 +83,9 @@ func TestAHostedSessionJudgesALineAsTheServersOwnDoes(t *testing.T) {
 	typed, refused := 0, 0
 	for _, a := range shapedAgents(t) {
 		server, hosted := serverOptions(t, a), hostedOptions(t, a)
-		for _, size := range [][2]int{{80, 24}, {80, 5}, {80, 2}, {80, 1}} {
+		// The oracle test's four sizes, and a narrow window, where the
+		// prompt's rows wrap.
+		for _, size := range [][2]int{{80, 24}, {80, 5}, {80, 2}, {80, 1}, {40, 24}} {
 			for _, sc := range session.MatrixScreens() {
 				name := fmt.Sprintf("%s at %dx%d, %q", a.ID, size[0], size[1], sc.Name)
 				var got [2]session.LineJudgement

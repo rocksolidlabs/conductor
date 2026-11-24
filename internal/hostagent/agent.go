@@ -1046,10 +1046,9 @@ func (a *agent) connected() bool {
 // server), and for one past its bounds or whose patterns do not compile,
 // which the log tells. The session then works as it did without one;
 // except that a recipe carrying the agent's prompt shape, refused for its
-// shape or for anything else, is ErrRecipeRefused, and Run starts nothing:
-// the server refuses to start its own session of an agent whose recipe
-// does not compile, and a hosted session without the shape would judge a
-// line by a weaker rule than the server's own.
+// shape or for anything else, is ErrRecipeRefused, and Run starts nothing,
+// as the server refuses to start its own session of an agent whose recipe
+// does not compile.
 func (a *agent) watchOf(r *proto.HostRecipe) (agents.Watch, error) {
 	if r == nil || a.opts.Switchyard {
 		return agents.Watch{}, nil
