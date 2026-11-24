@@ -146,8 +146,10 @@ type Options struct {
 	// workbench, stops it and forwards its agent's reports, and leaves it off.
 	Switchyard bool
 	// formsUnsaid leaves proto.HostInfo.Forms out of the register, as a
-	// host of an earlier release does (tests).
+	// host of an earlier release does (tests); shapeUnsaid leaves out
+	// proto.HostInfo.PromptShape the same way.
 	formsUnsaid bool
+	shapeUnsaid bool
 
 	// MachineDir is the directory of this machine's id (machine.Dir, which
 	// conductor host passes): read once as the host starts (machineIDOf),
@@ -294,8 +296,16 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 	}
 	notifyURL := attentionURL(opts.ServerURL, registered.SessionID)
 	// What the session watches on its screen: the server's recipe for the
-	// agent the host named (#293), as a server session of it watches.
-	watch := a.watchOf(registered.Recipe)
+	// agent the host named (#293), as a server session of it watches. A
+	// recipe that carries the agent's prompt shape and is refused starts
+	// nothing: the server refuses its own session of such an agent.
+	watch, err := a.watchOf(registered.Recipe)
+	if err != nil {
+		folder.Close()
+		a.dropConn(firstConn)
+		firstConn.Close(websocket.StatusNormalClosure, "start failed")
+		return Result{}, err
+	}
 	// The binary the hooks run (the one the assets name when injectHooks
 	// wrote them), for what the agent runs itself (the skill).
 	bin, _ := agents.Binary()
@@ -362,7 +372,7 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 		Branch:    session.GitBranch(dir),
 		CreatedAt: time.Now().UTC(),
 	}
-	local := session.NewLocal(info, session.RuntimeProcess(term), session.Options{
+	sopts := session.Options{
 		ScrollbackBytes: opts.ScrollbackBytes,
 		MaxViewers:      opts.MaxViewers,
 		FileView:        opts.FileView,
@@ -379,15 +389,14 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 		OnChat:     a.onLocalChat,
 		Pattern:    opts.Pattern,
 		WatchGit:   true,
-		// The trust question and the startup ones held at start, the
-		// questions asked during the work with their choices, typed text
-		// held while one shows, the working title (#293).
-		TrustPattern:  watch.TrustPattern,
-		TrustAnswers:  watch.TrustAnswers,
-		Questions:     watch.Questions,
-		WorkingTitle:  watch.WorkingTitle,
-		ConfirmSubmit: watch.ConfirmSubmit,
-	})
+	}
+	// The trust question and the startup ones held at start, the questions
+	// asked during the work with their choices, typed text held while one
+	// shows, the working title (#293), and the agent's prompt shape, where
+	// a line's text is typed while the startup watch lasts: as the server
+	// sets them on its own session of the agent.
+	watch.Apply(&sopts)
+	local := session.NewLocal(info, session.RuntimeProcess(term), sopts)
 	a.mu.Lock()
 	a.local = local
 	a.mu.Unlock()
@@ -965,6 +974,9 @@ func (a *agent) registration(cols, rows uint16) proto.Register {
 		// It reads a recipe's forms by the form's rules (#970): its
 		// session asks them as the server's own sessions do.
 		reg.Host.Forms = !a.opts.formsUnsaid
+		// Its session judges a line by the agent's prompt shape, as the
+		// server's own sessions do: the server sends the shape.
+		reg.Host.PromptShape = !a.opts.shapeUnsaid
 		reg.Session.HostReport = a.report
 		return reg
 	}
@@ -1032,22 +1044,36 @@ func (a *agent) connected() bool {
 // switchyard (Options.Switchyard), whose catalog is someone else's, for
 // none (the server's catalog has no agent of the host's id, or an older
 // server), and for one past its bounds or whose patterns do not compile,
-// which the log tells. The session then works as it did without one.
-func (a *agent) watchOf(r *proto.HostRecipe) agents.Watch {
+// which the log tells. The session then works as it did without one;
+// except that a recipe carrying the agent's prompt shape, refused for its
+// shape or for anything else, is ErrRecipeRefused, and Run starts nothing:
+// the server refuses to start its own session of an agent whose recipe
+// does not compile, and a hosted session without the shape would judge a
+// line by a weaker rule than the server's own.
+func (a *agent) watchOf(r *proto.HostRecipe) (agents.Watch, error) {
 	if r == nil || a.opts.Switchyard {
-		return agents.Watch{}
+		return agents.Watch{}, nil
 	}
-	if err := r.Check(); err != nil {
-		a.log.Warn("the server's recipe for the agent is refused; its questions are not watched", "agent", a.opts.AgentID, "err", err)
-		return agents.Watch{}
+	err := r.Check()
+	var w agents.Watch
+	if err == nil {
+		w, err = agents.CompileRecipe(r)
 	}
-	w, err := agents.CompileRecipe(r)
-	if err != nil {
-		a.log.Warn("the server's recipe for the agent is refused; its questions are not watched", "agent", a.opts.AgentID, "err", err)
-		return agents.Watch{}
+	if err == nil {
+		return w, nil
 	}
-	return w
+	if r.PromptShape != "" {
+		a.log.Warn("the server's recipe for the agent is refused; nothing is started", "agent", a.opts.AgentID, "err", err)
+		return agents.Watch{}, ErrRecipeRefused
+	}
+	a.log.Warn("the server's recipe for the agent is refused; its questions are not watched", "agent", a.opts.AgentID, "err", err)
+	return agents.Watch{}, nil
 }
+
+// ErrRecipeRefused is Run's refusal, before the process starts, of a
+// recipe that carries the agent's prompt shape and does not pass the
+// host's check or compile.
+var ErrRecipeRefused = errors.New("host: the server's recipe for the agent does not validate: nothing was started")
 
 // lastElement is the last element of a folder's path, "" for none.
 func lastElement(dir string) string {

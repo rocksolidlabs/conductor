@@ -307,6 +307,17 @@ only actions are links to the run page, a session and Needs you.
   its terminal, and type the prompt there if its input is empty"); nothing
   is typed again, and the member reads as waiting on a person until its
   agent reports a turn.
+- **Hosted sessions too (#1093).** A session `conductor host` runs is
+  judged by the same rule: its register says it takes the prompt shape,
+  and the server sends the catalog's shape with the agent's recipe, so a
+  hosted Claude Code or Codex session types a line's text, and an Enter
+  alone, only where the server's own session of the agent would. A host
+  of an earlier release, or a host whose server is of an earlier release,
+  is sent no shape and judges a line by the rule for an agent with none.
+  A recipe carrying a shape the host cannot take starts nothing, with
+  `host: the server's recipe for the agent does not validate: nothing was
+  started`. A hosted launch still takes no first message: nothing types
+  one on a host.
 - **Where Codex is not signed in**, its sign-in screen lists its ways to
   sign in as numbered choices: a line is refused there as at any screen
   that may be a question, and a crew member's prompt waits with that noted.

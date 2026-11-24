@@ -567,9 +567,10 @@ func TestTheRegistrationSaysFormsToTheOwnersServerAlone(t *testing.T) {
 }
 
 // The host compiles the recipe the server sent as the server compiles its
-// own sessions' (#293); a host publishing to a switchyard (the uplink)
-// watches none of it, and one past its bounds is refused whole, the session
-// then working as it did without one.
+// own sessions' (#293), the agent's prompt shape among it; a host
+// publishing to a switchyard (the uplink) watches none of it, and one
+// without a prompt shape past its bounds is refused whole, the session then
+// working as it did without one.
 func TestHostWatchesTheRecipeItIsGiven(t *testing.T) {
 	codex, ok := catalog.Default().Get("codex")
 	if !ok {
@@ -577,26 +578,32 @@ func TestHostWatchesTheRecipeItIsGiven(t *testing.T) {
 	}
 	r := agents.Recipe(codex)
 	a := &agent{opts: Options{AgentID: "codex"}, log: discardLog}
-	if w := a.watchOf(nil); w.TrustPattern != nil || len(w.Questions) != 0 {
+	if w, _ := a.watchOf(nil); w.TrustPattern != nil || len(w.Questions) != 0 {
 		t.Fatalf("no recipe watched %+v", w)
 	}
-	w := a.watchOf(r)
+	w, err := a.watchOf(r)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if w.TrustPattern == nil || !w.TrustPattern.MatchString("Trust this folder?") || w.WorkingTitle == nil || !w.WorkingTitle.MatchString("⠋ Working") || len(w.Questions) != len(codex.Questions) || len(w.TrustAnswers) != 2 {
 		t.Fatalf("watch %+v", w)
 	}
+	if w.PromptShape == nil || w.PromptShape.String() != codex.PromptShape {
+		t.Fatalf("the prompt shape watched: %v", w.PromptShape)
+	}
 	a.opts.Switchyard = true
-	if w := a.watchOf(r); w.TrustPattern != nil || len(w.Questions) != 0 {
+	if w, _ := a.watchOf(r); w.TrustPattern != nil || len(w.Questions) != 0 {
 		t.Fatalf("a switchyard's recipe was watched: %+v", w)
 	}
 	a.opts.Switchyard = false
-	bad := *r
+	bad := *agents.WithoutPromptShape(r)
 	bad.Questions = append(slices.Clone(bad.Questions), make([]proto.RecipeQuestion, proto.MaxRecipeQuestions)...)
-	if w := a.watchOf(&bad); w.TrustPattern != nil || len(w.Questions) != 0 {
-		t.Fatalf("a recipe past its bounds was watched: %+v", w)
+	if w, err := a.watchOf(&bad); err != nil || w.TrustPattern != nil || len(w.Questions) != 0 {
+		t.Fatalf("a recipe past its bounds was watched: %+v %v", w, err)
 	}
-	broken := *r
+	broken := *agents.WithoutPromptShape(r)
 	broken.TrustPrompt = "("
-	if w := a.watchOf(&broken); w.TrustPattern != nil || len(w.Questions) != 0 {
-		t.Fatalf("a recipe that does not compile was watched: %+v", w)
+	if w, err := a.watchOf(&broken); err != nil || w.TrustPattern != nil || len(w.Questions) != 0 {
+		t.Fatalf("a recipe that does not compile was watched: %+v %v", w, err)
 	}
 }
