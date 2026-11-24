@@ -1236,8 +1236,11 @@ func freeBuild() ext.Providers { return local.Fill(ext.Providers{}) }
 // that carries the server's own count of changes (Reroutes, Recent).
 // Every shape ext.RoutePolicy holds is taken (up to ext.MaxPolicyGroups
 // groups, quorums up to ext.MaxGroupQuorum, distinct persons, or the
-// unsupported form), its bounds and relations ext.RoutePolicy.Valid's. No
-// policy is nothing to refuse.
+// unsupported form), its bounds and relations ext.RoutePolicy.Valid's;
+// one that counts approvals, from a router that answers no query with a
+// Since, is then not taken by the engine (crew.Engine.PolicyUntaken),
+// which keeps the router's routed row saying why. No policy is nothing to
+// refuse.
 func (g guardRouter) policyShape(p *ext.RoutePolicy) error {
 	if p == nil {
 		return nil

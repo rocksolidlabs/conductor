@@ -90,9 +90,12 @@ func countedRows(rec ledger.DecisionRecord, boot string, pending func(k int) boo
 }
 
 // placesOf is the places p's groups ask for in all.
-func placesOf(p routedPolicy) int {
+func placesOf(p routedPolicy) int { return placesIn(p.Groups) }
+
+// placesIn is the places groups ask for in all.
+func placesIn(groups []ext.Requirement) int {
 	n := 0
-	for _, g := range p.Groups {
+	for _, g := range groups {
 		n += g.Quorum
 	}
 	return n

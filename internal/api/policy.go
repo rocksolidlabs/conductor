@@ -40,6 +40,32 @@ func (s *Server) routerConfirms() bool {
 	return confirms && s.routerRegistered()
 }
 
+// routerConfirmsSince says the registered decision router confirms
+// policies and says it answers a query with a Since (ext.SinceConfirmer):
+// only then is it asked one, and only from it is a policy that counts
+// approvals taken.
+func (s *Server) routerConfirmsSince() bool {
+	g, ok := s.exts.router.(guardRouter)
+	return ok && s.routerConfirms() && g.confirmsSince()
+}
+
+// confirmsSince asks the provider whether it answers a query with a Since:
+// an ext.SinceConfirmer answering true. Any other answer, a panic among
+// them, is no.
+func (g guardRouter) confirmsSince() (yes bool) {
+	sc, ok := g.p.(ext.SinceConfirmer)
+	if !ok {
+		return false
+	}
+	defer func() {
+		if p := recover(); p != nil {
+			yes = false
+			g.s.extFailed(ext.KindDecisions, g.name, "since", "ConfirmsSince panicked: "+extText(p))
+		}
+	}()
+	return sc.ConfirmsSince()
+}
+
 // routerRegistered says a decision router was registered: the free build
 // has none.
 func (s *Server) routerRegistered() bool {
@@ -198,7 +224,7 @@ func (s *Server) eligibleNow(ctx context.Context, rec ledger.DecisionRecord, sub
 		return true, true
 	}
 	p, _, ok := crew.RouterPolicyOf(rec.Policy)
-	if !ok || !s.runs.RoutesPolicies() || subject == "" {
+	if !ok || !s.runs.RoutesPolicies() || subject == "" || s.runs.PolicyUntaken(p) != "" {
 		return false, true
 	}
 	c, answered := s.policyCheckTold(ctx, rec, p.Revision, subject, time.Time{})
@@ -358,6 +384,10 @@ func (s *Server) policyNowFor(ctx context.Context, did, subject string) *policyN
 	if !s.runs.RoutesPolicies() {
 		return &policyNowReply{Why: "no router confirms its policy now"}
 	}
+	if why := s.runs.PolicyUntaken(p); why != "" {
+		// As the respond route's judgement says it: the operator answers.
+		return &policyNowReply{Why: "it " + why}
+	}
 	c := s.policyCheck(ctx, rec, p.Revision, subject)
 	inForce := c.InForce && !c.Behind && (c.Revision == "" || c.Revision == p.Revision)
 	reply := &policyNowReply{InForce: inForce, Why: c.Why}
@@ -396,7 +426,7 @@ func (s *Server) routeInForce(ctx context.Context, did string) (revision string,
 	if !routed {
 		return "", false
 	}
-	if !s.runs.RoutesPolicies() {
+	if !s.runs.RoutesPolicies() || s.runs.PolicyUntaken(p) != "" {
 		return p.Revision, false
 	}
 	return p.Revision, s.policyCheck(ctx, rec, p.Revision, "").InForce
@@ -523,16 +553,21 @@ func recommended(rec ledger.DecisionRecord) []ext.Destination {
 // rev (the policy's transaction, crew.Engine.RoutePolicy), with the
 // route's destinations and rule as its one routed row: unrouted (told
 // again) when the record moved meanwhile, nothing when it carries a
-// router's policy already or is closed.
-func (r *decisionRouter) routePolicyOf(d ext.Decision, rev int, rt ext.Route, unrouted func()) error {
+// router's policy already or is closed, the routed row alone when the
+// engine does not take the policy (crew.Engine.PolicyUntaken). It answers
+// the record's rev after it, where the route's answer is offered.
+func (r *decisionRouter) routePolicyOf(d ext.Decision, rev int, rt ext.Route, unrouted func()) (int, error) {
 	to := make([]crew.Destination, 0, len(rt.To))
 	for _, t := range rt.To {
 		to = append(to, crew.Destination{Kind: t.Kind, Name: t.Name})
 	}
-	_, err := r.s.runs.RoutePolicy(r.s.extCtx, d.Request, r.s.exts.router.Name(), rev, *rt.Policy, to, rt.Rule)
+	rc, err := r.s.runs.RoutePolicy(r.s.extCtx, d.Request, r.s.exts.router.Name(), rev, *rt.Policy, to, rt.Rule)
 	var de *crew.DecisionError
 	switch {
 	case err == nil:
+		if why := r.s.runs.PolicyUntaken(*rt.Policy); why != "" {
+			r.s.log.Info("routed decision's policy not taken", "decision", d.Request, "words", why)
+		}
 	case errors.As(err, &de) && de.Code == crew.CodeStaleDecision:
 		unrouted()
 	case errors.As(err, &de):
@@ -541,7 +576,10 @@ func (r *decisionRouter) routePolicyOf(d ext.Decision, rev int, rt ext.Route, un
 		r.s.log.Warn("routed decision's policy not written", "decision", d.Request, "err", err)
 		unrouted()
 	}
-	return err
+	if rc.Rev == 0 {
+		return rev + 1, err
+	}
+	return rc.Rev, err
 }
 
 // retell tells the router of the open record id again: it leaves the set
