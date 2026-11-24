@@ -127,7 +127,7 @@ func TestFreeBuildUnchanged(t *testing.T) {
 	if len(e.srv.exts.context) != 0 {
 		t.Fatalf("%d context providers", len(e.srv.exts.context))
 	}
-	log := gitLog(t)
+	log := gitLog(t, e)
 	run, release, err := e.srv.runs.LaunchNamed(t.Context(), managedCrew(e.root), "")
 	release()
 	if err != nil {
