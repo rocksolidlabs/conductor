@@ -81,8 +81,16 @@ func TestNativeRuntimeIsAPipeStarter(t *testing.T) {
 	}
 	ended, cancel := context.WithCancel(context.Background())
 	cancel()
-	if p, err := ps.StartPipes(ended, ext.PipeSpec{Argv: []string{"sleep", "300"}, Dir: dir, Env: env}); p != nil || !errors.Is(err, context.Canceled) {
-		t.Fatalf("under an ended context: %v, %v", p, err)
+	// What a start that broke the rule would leave is stopped at the end.
+	var late ext.Pipes
+	t.Cleanup(func() {
+		if late != nil {
+			late.Stop(context.Background(), 0)
+		}
+	})
+	late, err = ps.StartPipes(ended, ext.PipeSpec{Argv: []string{"sleep", "300"}, Dir: dir, Env: env})
+	if late != nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("under an ended context: %v, %v", late, err)
 	}
 }
 
