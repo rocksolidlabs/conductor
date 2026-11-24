@@ -4,9 +4,10 @@
 // managed-run checks (docs/plans/agent-harness-order.md) and a project
 // manifest's steps (docs/plans/project-manifests.md) are Run's callers; a
 // manifest's services are Serve's, a command that runs until it is
-// stopped (SIGTERM to its group, SIGKILL after a grace). Probe makes one
-// try of a tree's readiness probe and FreePort draws a port for it; git
-// has a runner of its own. Prepare builds a command's environment apart
+// stopped (SIGTERM to its group, SIGKILL after a grace); a session's child
+// on its protocol way is StartPipes's, a long-lived child whose input and
+// output are the caller's pipes. Probe makes one try of a tree's readiness
+// probe and FreePort draws a port for it; git has a runner of its own. Prepare builds a command's environment apart
 // from its run, for a runner that takes it whole (Spec.Environ): the
 // Runtime (package ext) receives what Conductor built.
 package proc
