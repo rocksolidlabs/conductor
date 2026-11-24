@@ -753,7 +753,11 @@ func (st submitState) withdrawnTyped(res SubmitResult, err error) error {
 
 // TurnHeld says the session's turn is held for a person after a text
 // typed without its Enter (holdTyped), or is about to be: set as the
-// submission ends, before it returns, until a person's keys end it.
+// submission ends, until a person's keys end it. That is before Submit
+// returns, except for a line whose text the program was still taking when
+// Submit answered (a withdrawal, a link's end, its time run out): it is
+// finished as the text lands (finishSubmission), the session's turn kept
+// until its hold is set, so no other line is typed meanwhile.
 func (s *Local) TurnHeld() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()

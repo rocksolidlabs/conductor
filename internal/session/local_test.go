@@ -29,6 +29,8 @@ type fakeProc struct {
 	// onWrite, when set, runs in Write before the bytes arrive: what a
 	// process does as it is written to.
 	onWrite func()
+	// onBytes, when set, runs in Write before the bytes arrive, with them.
+	onBytes func([]byte)
 }
 
 func newFakeProc() *fakeProc {
@@ -40,6 +42,9 @@ func (f *fakeProc) Read(b []byte) (int, error) { return f.out.Read(b) }
 func (f *fakeProc) Write(b []byte) (int, error) {
 	if f.onWrite != nil {
 		f.onWrite()
+	}
+	if f.onBytes != nil {
+		f.onBytes(b)
 	}
 	f.input <- append([]byte(nil), b...)
 	return len(b), nil
