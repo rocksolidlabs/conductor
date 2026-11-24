@@ -200,7 +200,8 @@ func (s *Server) handleHostWS(w http.ResponseWriter, r *http.Request) {
 		recipe = s.hostRecipe(reg.Session.AgentID, reg.Host.Forms && !s.cfg.Switchyard.Enabled, reg.Host.PromptShape)
 	}
 	registered, dropped := registeredMessage(proto.Registered{T: proto.HostRegistered, SessionID: info.ID, Secret: hs.Secret(), ShareBaseURL: s.publicBase(r), Resumed: resumed, ICEServers: ice, Links: s.liveLinkIDs(info.ID),
-		Recipe: recipe, Decisions: s.hosts.Decisions(), Renews: hc.cred != nil, SessionInfo: !isDesk && !s.cfg.Switchyard.Enabled, AgentSessions: !isDesk, ActivitySeq: !isDesk && !s.cfg.Switchyard.Enabled})
+		Recipe: recipe, Decisions: s.hosts.Decisions(), Renews: hc.cred != nil, SessionInfo: !isDesk && !s.cfg.Switchyard.Enabled, AgentSessions: !isDesk, ActivitySeq: !isDesk && !s.cfg.Switchyard.Enabled,
+		Transcript: !isDesk})
 	if dropped {
 		s.log.Warn("registered with the agent's recipe is past a host message; the hosted session watches no questions", "session", info.ID, "agent", reg.Session.AgentID)
 	}

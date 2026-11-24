@@ -131,6 +131,10 @@ func (s *Server) serveLocalViewer(ctx context.Context, c *websocket.Conn, raw ne
 			}
 		}
 	}
+	var out session.Sink = sink
+	if s.viewerSeam != nil && s.viewerSeam.localWrite != nil {
+		out = seamSink{sink, s.viewerSeam.localWrite}
+	}
 	sub, err := local.AttachWith(session.AttachOptions{
 		Role: role, LinkID: linkID, LinkLabel: label, Name: hello.Name, Cols: hello.Cols, Rows: hello.Rows, ChatOnly: hello.ChatOnly,
 		AnswerName: answerName,
@@ -138,7 +142,9 @@ func (s *Server) serveLocalViewer(ctx context.Context, c *websocket.Conn, raw ne
 		Owner:      owner,
 		Decisions:  decides,
 		Hold:       hold,
-	}, sink)
+		// A chat's resume point: the entries changed after it follow the ready.
+		TranscriptAfter: hello.TranscriptAfter,
+	}, out)
 	if err != nil {
 		switch {
 		case errors.Is(err, session.ErrRevoked), errors.Is(err, session.ErrSessionEnded), errors.Is(err, errShuttingDown):
@@ -247,6 +253,15 @@ func (s *Server) serveLocalViewer(ctx context.Context, c *websocket.Conn, raw ne
 // and its Enter.
 const submitTimeout = 10 * time.Second
 
+// submitWait is a submit message's bound: submitTimeout, or a test's
+// (viewerSeam.submitWait).
+func (s *Server) submitWait() time.Duration {
+	if s.viewerSeam != nil && s.viewerSeam.submitWait > 0 {
+		return s.viewerSeam.submitWait
+	}
+	return submitTimeout
+}
+
 // sendKeysError answers keystrokes (INPUT) refused with err: revoked or
 // expired when the viewer's link no longer opens the session, else as
 // sendInputError.
@@ -273,6 +288,8 @@ func (s *Server) sendInputError(sub *session.Subscription, local *session.Local,
 		local.Send(sub, proto.NewError("input_failed", session.ErrInputStalled.Error()))
 	case errors.Is(err, session.ErrTooManyRequests):
 		local.Send(sub, proto.NewError(proto.ErrCodeTooManyRequests, "too many lines wait for the session's turn: try again once they are done"))
+	case errors.Is(err, session.ErrNotTerminal):
+		local.Send(sub, proto.NewError(proto.ErrCodeNotTerminal, session.NotTerminalWords))
 	default:
 		local.Send(sub, proto.NewError("input_failed", "input could not be delivered"))
 	}
@@ -348,6 +365,8 @@ func (s *Server) handleLocalControl(sub *session.Subscription, local *session.Lo
 				// view-only clients, and every viewer but the sizer, follow the size silently
 			case errors.Is(err, session.ErrBadDimension):
 				local.Send(sub, proto.NewError(proto.ErrCodeBadFrame, "invalid terminal size"))
+			case errors.Is(err, session.ErrNotTerminal):
+				local.Send(sub, proto.NewError(proto.ErrCodeNotTerminal, session.NotTerminalWords))
 			}
 		}
 	case proto.CtlPing:
@@ -426,7 +445,7 @@ func (s *Server) handleLocalControl(sub *session.Subscription, local *session.Lo
 		// without its Enter. The read loop waits for it, so what the client
 		// sends next comes after it (but while the turn is held: typeIn).
 		held.typeIn(sub, local, m.ReqID, func() error {
-			ctx, cancel := context.WithTimeout(context.Background(), submitTimeout)
+			ctx, cancel := context.WithTimeout(context.Background(), s.submitWait())
 			defer cancel()
 			res, err := local.Submit(ctx, session.Submission{Text: m.Text, By: sub, UnlessWaiting: m.UnlessWaiting, Finished: word})
 			// A line the program takes slowly is accepted, and entered as it
@@ -501,6 +520,25 @@ func (s *Server) handleLocalControl(sub *session.Subscription, local *session.Lo
 			defer cancel()
 			return local.ChatSend(ctx, sub, m)
 		}, func(err error) { local.Send(sub, session.ChatErrorFrame(err, m.Ref)) })
+	case proto.CtlTranscriptGet:
+		// A chat's read (every role): answered from memory, its reply
+		// queued, at most proto.MaxTranscriptInFlight not yet written.
+		m, err := proto.DecodeTranscriptGet(payload)
+		if err != nil {
+			local.Send(sub, session.TranscriptRefused(proto.RequestIDOf(payload), session.ErrBadTranscriptGet))
+			return true
+		}
+		if err := local.TranscriptGet(sub, m); err != nil {
+			local.Send(sub, session.TranscriptRefused(m.ReqID, err))
+		}
+	case proto.CtlInterrupt:
+		// A chat's Stop (controllers): off the read loop, which goes on.
+		m, err := proto.DecodeInterrupt(payload)
+		if err != nil {
+			local.Send(sub, proto.MustControl(proto.ErrorMsg{T: proto.CtlError, Code: proto.ErrCodeBadFrame, Message: "bad interrupt message", RequestID: proto.RequestIDOf(payload)}))
+			return true
+		}
+		local.InterruptAsk(sub, m.ReqID, nil)
 	case proto.CtlHello:
 		// duplicate hello is harmless
 	default:
