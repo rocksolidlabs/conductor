@@ -1733,6 +1733,55 @@ branch), `internal/api`.
 
 No UI. **By hand:** none. **14 h.**
 
+**As built, row 2** (#1105; `internal/session/protocol.go`,
+`transcript.go`, `internal/session/internal/way`,
+`sessiontest/fakeprotocol.go`):
+
+- The protocol way's types live in `internal/session/internal/way`, a
+  package that imports nothing of the session, and `session` names each
+  of them (`session.Protocol = way.Protocol`, and the rest): the
+  session's own tests import `sessiontest`, so its `FakeProtocol` could
+  not import `session` to implement them.
+- A test enters the way with `sessiontest.EnterProtocol(local, start)`
+  (`start` a `session.ProtocolStart`, `FakeProtocol.Start` for the
+  fake), which the session registers as it loads; nothing else enters
+  it. The terminal's process is left as it was, quiet: row 5's
+  `SwapWay` stops it first. A `Begin` that fails, or a child whose
+  output ends before it is ready, leaves the session in its terminal.
+  `Begin` is bounded by `protocolReadyCap` (60 s).
+- `Submit` queues every message, Conductor's own too, and answers
+  `ErrSubmitPending` at once. A message is written once nothing is under
+  way: no turn running, no message written and not yet acknowledged or
+  unconfirmed. `Finished` is told `Entered` at the acknowledgement and
+  `Unconfirmed` with `ErrUnconfirmed` ("Sent, not yet confirmed.") past
+  `AcceptWait`. A message whose sender no longer stands when its turn
+  to be written comes is never written; its entry's state is
+  `withdrawn`, a state the plan's list did not have. A reply's claim on
+  its question is taken as it is queued and resolves the question as
+  its write begins.
+- Keys of every kind (`Input`, `AnswerInput`, `AnswerAs`, through
+  `input`) and `Resize`, `ResizeWith` answer `ErrNotTerminal`; rows 3 and
+  6 turn an answer to a question into a message. `LastLine`,
+  `ScreenRead` and `BracketedPaste` answer empty, `LastOutputAt` the
+  last event's time, `ProcessDone` the child's.
+- `KindInterrupted` is set by the protocol way alone: `ValidKind` does
+  not take it, so no report from outside carries it.
+- A permission request (`ProtocolEvents.Permission`) is taken into the
+  transcript as an open entry with a question id, held with its input,
+  at most `MaxPendingPermissions` (8, the ninth denied with the bound's
+  words); it is withdrawn by `PermissionWithdrawn`, by the call's
+  `ToolEnded` and by the turn's end, and denied by `Stop` (before the
+  input closes) and by the session's end. It is not shown in the
+  attention yet, and nothing answers it: row 6.
+- `Info` does not yet carry `way`, `protocol` and `verbatim` (row 4);
+  `Local.Way`, `Ready`, `ProtocolName` and `BackgroundWork` say them.
+- The tool steps and texts the session follows at once are bounded at
+  1,000, the oldest no longer followed past it.
+- A line the driver cannot read ends the child and the session with the
+  notice "The agent sent something Conductor cannot read; the session
+  ended.": the agent's own name in it is row 4's. A child started again
+  says "The agent was started again to stop its turn."
+
 ### Row 3: the wire
 
 **Scope.** Design 6 whole but `permission_answer` (row 6) and `way`,
