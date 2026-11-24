@@ -1,12 +1,12 @@
 # Chat or terminal: a second way to run an agent's session (issue #1088)
 
-Status: proposed 2026-11-24, for the maintainers' review before any of
-its code. Nothing here is built. The maintainers set it to Planned by
-approving it; its rows (The rows) are units of work, grouped into pull
-requests as `AGENTS.md` (Working an issue) says, with the boundaries
-kept apart. **No builder starts before the maintainers have answered
-the one decision this plan asks** (Decision before any builder: which
-agents' interfaces Conductor builds on, and for which sign-ins). The
+Status: planned 2026-11-24. A maintainer answered the one decision this
+plan asks that day (Decision before any builder): Claude Code's
+interface, with any sign-in the program already has. Step 1 (rows 1 to
+7) is in work; nothing of it is built yet. Its rows (The rows) are units
+of work, grouped into pull requests as `AGENTS.md` (Working an issue)
+says, with the boundaries kept apart. Codex and each Agent Client
+Protocol agent wait for an answer of their own (rows 10 and 11). The
 rest of what the plan chooses is a table of defaults a maintainer may
 overturn (Defaults this plan is written to).
 
@@ -1410,8 +1410,8 @@ service.
 **The pages the maintainers read before deciding**, each read on
 2026-11-24. This plan quotes none of them, characterises none of them,
 and draws no legal conclusion; which interfaces Conductor builds on, and
-for which sign-ins, is the maintainers' decision, made before any
-builder starts (Decision before any builder).
+for which sign-ins, is the maintainers' decision (Decision before any
+builder: answered for Claude Code on 2026-11-24).
 
 - Anthropic: Claude Code, Legal and compliance
   (https://code.claude.com/docs/en/legal-and-compliance.md); Agent SDK
@@ -2268,6 +2268,12 @@ starting with `/` may run as the agent's commands."), fixtures per agent,
 and the stub's third mode with its Playwright run. **18 h.**
 
 ## Decision before any builder
+
+**Answered by a maintainer on 2026-11-24, for Claude Code: (a), any
+sign-in the program already has.** Rows 1 to 7 are built to it, and rows
+8 and 9 after step 2's trust design. Codex (row 10) and each Agent
+Client Protocol agent (row 11) wait for answers of their own. The
+decision as it was put:
 
 One decision must come before any builder starts, and only the
 maintainers can make it, after reading the pages listed above (Sign-in
