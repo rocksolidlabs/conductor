@@ -1652,6 +1652,31 @@ existing `Runtime` methods.
 No UI. **By hand:** none. **Boundary:** a seam of the public `ext`,
 PR-A alone. **8 h.**
 
+- **As built** (#1104):
+  - `proc.StartPipes` kills what the child left in its process group at
+    the child's own exit, before it is reaped, as `Run` and `Serve` do:
+    `Done` closes once the child and its group have ended, the group's
+    end I1 asks for. `Stop` is a Terminal's (the child given its grace,
+    then the group killed), its SIGTERM sent once whoever calls it, as a
+    service's is. The standard error's count is `proc.Pipes.StderrBytes`;
+    `ext.Pipes` carries none.
+  - The child enters its folder as a terminal does, through
+    `pty.StartDir`, exported for it. Where no process group and exit
+    watch are (off Linux and macOS), `StartPipes` is refused, as `Serve`
+    is; the server is built for Linux and macOS alone, and `internal/proc`
+    builds for Windows against a stub of the terminal's spec (`internal/pty`
+    does not build there).
+  - The fake is `sessiontest.FakePipeRuntime`, a `FakeRuntime` that is a
+    `PipeStarter` (a `FakeRuntime` alone is not), with the `Pipes` script
+    and `FakePipes`. `ext/exttest`'s own `FakeRuntime` is unchanged and
+    is no `PipeStarter`.
+  - The guard also refuses a start that answers no `Pipes` and no error,
+    and takes a `Read` or `Write` that answers a count outside its buffer
+    for the child's failure, as a panic is; the quiet walk walks
+    `StartPipes` and every method of `Pipes`.
+  - `RuntimeExec`'s checks run with the helper's new `pipes` mode, and
+    add a stop after the child's exit to the two stops.
+
 ### Row 2: the protocol way inside the session, against a fake child
 
 **Scope.** `session.Child`, `session.Protocol`, `session.ProtocolEvents`,
