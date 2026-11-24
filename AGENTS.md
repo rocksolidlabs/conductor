@@ -431,6 +431,18 @@ add its rule here.
   outside its lock. A test that read every frame again each round under
   that lock held it for 11 s on a loaded machine, and the session dropped
   the sink as a slow consumer, its editor with it ("file access denied").
+- A request heard is not a request answered. The phone shell's live test
+  of its request gate noted each document the web view asked for as it
+  was asked, then called the gate and noted the answer; its wait ended on
+  the requests noted and it read the answers at once. On CI the object's
+  was asked 6 ms before the judgement, on another of the web view's
+  threads, and its answer was not yet noted (`expected:<403> but
+  was:<null>`,
+  `theRequestGateRefusesTheDocumentsThePlatformRequestsForAFrameAndAnObject`,
+  2026-11-24, #281). Wait for the note the judgement reads, for each
+  request the test saw asked, and hold those notes back in the test until
+  the judgement waits for them (`recording`), so a judgement that reads
+  at once fails every run.
 - Keep what decides ahead of what is shown, and wait on what decides.
   The output pump sent each chunk to the viewers before it fed the screen
   a key is routed by (`startupMayShow`): a viewer that answered the

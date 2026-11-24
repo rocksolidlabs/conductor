@@ -50,6 +50,7 @@ import org.junit.runner.RunWith
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
+import kotlin.concurrent.thread
 
 /**
  * The plan's boot check on Android (docs/plans/phone-shell.md, ShellBootsUnderItsPolicyTests; OSS-3): the built app, started on an
@@ -554,6 +555,17 @@ class ShellBootsUnderItsPolicyTest {
             // by then the platform has asked for every document it will.
             val ran = java.util.concurrent.atomic.AtomicBoolean(false)
             val settled = java.util.concurrent.atomic.AtomicBoolean(false)
+            // A request is heard as the platform asks it, before the gate answers, on one of the web view's own threads; the gate's
+            // answer is recorded after. Each record is written on a thread of its own, held until the judgement opens `recording` as it
+            // begins to wait for the answers: a judgement that read the answers at once, once the requests were heard, finds none every
+            // run. The platform has the gate's answer at once either way: only the test's record of it waits.
+            val recording = CountDownLatch(1)
+            fun record(marker: String, what: String) {
+                thread(isDaemon = true, name = "probe-record-$marker") {
+                    recording.await()
+                    answered[marker] = what
+                }
+            }
             val probe = AtomicReference<WebView>()
             s.onActivity { a ->
                 val installed = a.getBridge().webViewClient
@@ -597,10 +609,10 @@ class ShellBootsUnderItsPolicyTest {
                             installed.shouldInterceptRequest(view!!, r)
                         } catch (e: Throwable) {
                             saw("the installed client threw for ${r.url}: $e")
-                            if (marker != null) answered[marker] = "threw"
+                            if (marker != null) record(marker, "threw")
                             throw e
                         }
-                        if (marker != null) answered[marker] = answer?.statusCode?.toString() ?: "network"
+                        if (marker != null) record(marker, answer?.statusCode?.toString() ?: "network")
                         // The test never reaches the network itself: what the gate would let through is answered empty here.
                         return answer ?: WebResourceResponse("text/plain", "utf-8", 204, "No Content", emptyMap(), ByteArrayInputStream(ByteArray(0)))
                     }
@@ -622,12 +634,22 @@ class ShellBootsUnderItsPolicyTest {
                     settled.get() || (heard.containsKey("frame") && heard.containsKey("object"))
                 }
                 if (heard.isEmpty()) step("the platform's requests for the frame, the object and the embed: none heard (the web view: $events)")
+                recording.countDown()
                 for (m in listOf("frame", "object", "embed")) {
+                    // Read once: a request heard from here on is judged with its answer waited for, never before its record.
+                    val asked = heard.containsKey(m)
+                    // The gate answers each request it is asked before the platform goes on, and its record follows on a thread of its
+                    // own: 20 s bounds only a hang.
+                    if (asked) until(20, "the gate's answer for the $m recorded", { "(heard: $heard; answered: $answered; the web view: $events)" }) {
+                        answered.containsKey(m)
+                    }
                     step("the platform's request for the $m: ${heard[m] ?: "none heard"}; the gate: ${answered[m] ?: "-"}")
                     // Wherever the platform made the request, the gate refuses it; headers RequestGate.document does not read fail here.
-                    if (heard.containsKey(m)) assertEquals("the $m's document, as the platform requested it (${heard[m]})", "403", answered[m])
+                    if (asked) assertEquals("the $m's document, as the platform requested it (${heard[m]})", "403", answered[m])
                 }
             } finally {
+                // No record is left held once the test has judged, or failed before judging.
+                recording.countDown()
                 s.onActivity {
                     probe.get()?.let { w ->
                         (w.parent as? ViewGroup)?.removeView(w)
