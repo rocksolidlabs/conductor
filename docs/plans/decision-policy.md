@@ -350,7 +350,11 @@ behaves unchanged, and a router that does not implement
   words "its router's policy asks for 2 approvals, and its router does
   not confirm an approval since its time: the operator answers it under
   the server's own policy", the record staying under the server's own
-  policy; a re-route to one is refused (`ErrRefused`) with those words;
+  policy (the router is not told: its later word that it will route
+  such a record now, `Routes`, is not believed, and the operator's
+  answer or a held answer is judged under the server's own policy at
+  once; `Engine.PolicyNotTaken` knows such a record by its router's
+  routing row with a revision); a re-route to one is refused (`ErrRefused`) with those words;
   and a record that keeps one (written while its router answered a
   `Since`) is judged not in force, for its reads and its responses.
   `Confirmation{InForce bool, Behind bool, Routes bool, Revision
