@@ -1278,3 +1278,36 @@ func TestProtocolUnreadableLineEndsTheSession(t *testing.T) {
 		t.Fatalf("status %s", st)
 	}
 }
+
+// I11: an open request the stream's own result or the turn's end leaves
+// behind is withdrawn with its words, its driver sent the protocol's
+// cancel, never an allow.
+func TestTurnEndWithdrawsOpenRequests(t *testing.T) {
+	s, _, f := protocolSession(t, Options{})
+	f.TurnStarted("")
+	f.ToolStarted(ToolStep{Ref: "c1", Name: "Bash", Input: []byte(`{"command":"make"}`)})
+	f.Permission(PermissionRequest{Ref: "req-1", Call: "c1", Tool: "Bash", Input: []byte(`{"command":"make"}`)})
+	first := lastEntry(t, s)
+	f.Permission(PermissionRequest{Ref: "req-2", Call: "c2", Tool: "Bash", Input: []byte(`{"command":"make install"}`)})
+	second := lastEntry(t, s)
+	f.ToolEnded("c1", ToolResult{Status: ToolOK})
+	if e := entryOf(t, s, first.Seq); e.State != PermissionWithdrawn || e.Why != AnsweredByAgentWords {
+		t.Fatalf("the request whose call ended %+v", e)
+	}
+	f.TurnEnded("interrupted", Usage{})
+	if e := entryOf(t, s, second.Seq); e.State != PermissionWithdrawn || e.Why != TurnStoppedWords {
+		t.Fatalf("the request left at the turn's end %+v", e)
+	}
+	waitCalls(t, f, "both requests answered", func(c []string) bool { return sessiontest.Count(c, "reply") == 2 })
+	for _, r := range f.Replies() {
+		if r.Verdict.Allow || !r.Verdict.Cancel {
+			t.Fatalf("answered %+v", r)
+		}
+	}
+	s.mu.Lock()
+	open := len(s.way.Load().perms)
+	s.mu.Unlock()
+	if open != 0 {
+		t.Fatalf("%d requests still open", open)
+	}
+}
