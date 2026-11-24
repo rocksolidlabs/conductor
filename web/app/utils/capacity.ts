@@ -79,6 +79,11 @@ export interface CapacityView {
   readBy?: { program: string; version: string; qualified: string }
   fresh: 'fresh' | 'stale' | 'reset_passed' | 'none' | string
   nextReadAfter?: string
+  /**
+   * The admin's check is taken now though a plain read waits for `nextReadAfter`: the key's last read was refused only for want of that
+   * check (a version not yet checked), and no read is under way.
+   */
+  checkNow?: boolean
   /** The variable (a name of at most 32 bytes) by which the agent's entry sets its login, for every account asked; absent for none. */
   entryLogin?: string
 }
@@ -419,6 +424,36 @@ export function offersCheck(v: CapacityView): boolean {
 /** Whether the view offers a read: never for what is answered without one, or while one is under way. */
 export function offersRead(v: CapacityView): boolean {
   return !['reading', 'unsupported', 'not_installed', 'remote', 'env_set', 'unlisted', 'not_owner'].includes(v.state)
+}
+
+/**
+ * Whether a panel that reads as it opens (the launch dialog, the crew's sheet) asks a read of this view: where it offers one, but never
+ * of a version the server already said is not checked, which a read could only say again; the check is the person's to press.
+ */
+export function readsOnOpen(v: CapacityView): boolean {
+  return offersRead(v) && v.state !== 'unqualified'
+}
+
+/** What a panel offers beside its words: the check, a read, or nothing; the time it waits for, if any; whether it can be pressed now. */
+export interface PanelAction {
+  kind: 'check' | 'read' | 'none'
+  wait: number | null
+  disabled: boolean
+}
+
+/**
+ * The panel's one button, in the full panel and the compact one alike: "Check this version" for a Claude Code version not checked, which
+ * can be pressed at once when the server says a check is taken now (`checkNow`) and otherwise once `nextReadAfter` has passed; else
+ * "Read now" where the server reads, waiting for `nextReadAfter`; nothing for a state answered without a read. Never while a read is out.
+ */
+export function panelAction(v: CapacityView, now: number, reading: boolean): PanelAction {
+  const wait = readWait(v, now)
+  if (offersCheck(v)) {
+    const w = v.checkNow ? null : wait
+    return { kind: 'check', wait: w, disabled: w !== null || reading }
+  }
+  if (offersRead(v) || reading) return { kind: 'read', wait, disabled: wait !== null || reading }
+  return { kind: 'none', wait, disabled: true }
 }
 
 /** The time the server reads this key again at the soonest, when it is ahead of now; null when a read may be asked. */

@@ -26,9 +26,11 @@ import {
   modelWords,
   offersCheck,
   offersRead,
+  panelAction,
   planWords,
   readAgoWords,
   readWait,
+  readsOnOpen,
   severityColor,
   viewTurns,
   warns,
@@ -136,6 +138,8 @@ describe('freshness and the states', () => {
     expect(freshnessWords(view({ ...read, fresh: 'reset_passed' }), NOW)).toBe('A reset has passed since this reading (read 3 minutes ago)')
     expect(freshnessWords(view({ state: 'reading', readAt: read.readAt }), NOW)).toBe('Reading…')
     expect(freshnessWords(view({ state: 'never_read', fresh: 'none' }), NOW)).toBe('')
+    // A signed-out reading the server says what read it is said as any other reading: when, and by what.
+    expect(freshnessWords(view({ ...read, state: 'signed_out', readBy: { program: 'Codex CLI', version: '0.167.0', qualified: '0.163.0' } }), NOW)).toBe('Read 3 minutes ago by Codex CLI 0.167.0, checked on 0.163.0')
     expect(readAgoWords(NOW - 2 * 86_400_000, NOW)).toBe('2 days ago')
     expect(readAgoWords(NOW, NOW)).toBe('just now')
   })
@@ -171,6 +175,36 @@ describe('freshness and the states', () => {
     expect(offersCheck(view({ state: 'ok' }))).toBe(false)
     for (const s of ['reading', 'unsupported', 'not_installed', 'remote', 'env_set', 'unlisted', 'not_owner']) expect(offersRead(view({ state: s })), s).toBe(false)
     for (const s of ['ok', 'never_read', 'signed_out', 'key_paid', 'unqualified', 'error']) expect(offersRead(view({ state: s })), s).toBe(true)
+  })
+
+  it('reads as a dialog opens where a read is offered, but never a version the server said is not checked', () => {
+    for (const s of ['ok', 'never_read', 'signed_out', 'key_paid', 'error']) expect(readsOnOpen(view({ state: s })), s).toBe(true)
+    expect(readsOnOpen(view({ state: 'unqualified', words: '2.1.330 has not been checked: check this version to read it' }))).toBe(false)
+    for (const s of ['reading', 'unsupported', 'not_installed', 'remote', 'env_set', 'unlisted', 'not_owner']) expect(readsOnOpen(view({ state: s })), s).toBe(false)
+  })
+
+  it("offers the check of a version not checked at once when the server takes one now, though a plain read waits for nextReadAfter", () => {
+    const next = new Date(NOW + 4 * 60_000).toISOString()
+    const unchecked = view({ state: 'unqualified', words: '2.1.330 has not been checked: check this version to read it', nextReadAfter: next })
+    // The dialog's read as it opened answered "not checked" and started nothing: the server says the check is taken now.
+    expect(panelAction({ ...unchecked, checkNow: true }, NOW, false)).toEqual({ kind: 'check', wait: null, disabled: false })
+    // Without the server's word the check waits as a read does, and none is pressed while a read is out.
+    expect(panelAction(unchecked, NOW, false)).toEqual({ kind: 'check', wait: Date.parse(next), disabled: true })
+    expect(panelAction({ ...unchecked, checkNow: true }, NOW, true)).toEqual({ kind: 'check', wait: null, disabled: true })
+    // A plain read waits for nextReadAfter whatever checkNow says; nothing is offered where the server reads nothing.
+    expect(panelAction(view({ state: 'ok', nextReadAfter: next, checkNow: true }), NOW, false)).toEqual({ kind: 'read', wait: Date.parse(next), disabled: true })
+    expect(panelAction(view({ state: 'never_read' }), NOW, false)).toEqual({ kind: 'read', wait: null, disabled: false })
+    expect(panelAction(view({ state: 'unsupported' }), NOW, false)).toMatchObject({ kind: 'none' })
+    // Codex has no check: its version not checked is offered a read.
+    expect(panelAction(view({ state: 'unqualified', agent: { id: 'codex', adapter: 'codex' } }), NOW, false)).toMatchObject({ kind: 'read' })
+  })
+
+  it('draws one button in both presentations from panelAction, and reads on open only through readsOnOpen', () => {
+    const src = readFileSync(new URL('../components/CapacityPanel.vue', import.meta.url), 'utf8')
+    expect(src).toContain('readsOnOpen(v)')
+    expect(src).not.toMatch(/offersRead\(|offersCheck\(|readWait\(/)
+    // The compact presentation offers the check too, as the full one does.
+    expect(src.match(/<UButton v-(?:else-)?if="action\?\.kind === 'check'"[^>]*data-capacity-check/g)).toHaveLength(2)
   })
 
   it('waits for nextReadAfter only while it is ahead of the clock', () => {

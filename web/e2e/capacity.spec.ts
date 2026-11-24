@@ -223,8 +223,9 @@ test('each state the stub answers shows its words, and an agent no reader knows 
   // A version past the one the reader was checked on, of this run alone: its turn is recorded on the server for good.
   const newer = `2.1.${1000 + randomInt(1_000_000)}`
   const cases = [
-    { what: 'signed out', line: 'signed_out', state: 'signed_out', words: 'Signed out: not signed in to Claude Code' },
-    { what: 'key paid', line: 'key_paid', state: 'key_paid', words: 'Paid by key: signed in with an API key: no usage windows are reported' },
+    // A signed-out or key-paid reading says what read it, as any reading does.
+    { what: 'signed out', line: 'signed_out', state: 'signed_out', words: 'Signed out: not signed in to Claude Code', fresh: /^Read (just now|\d+ minutes? ago) by Claude Code 2\.1\.322$/ },
+    { what: 'key paid', line: 'key_paid', state: 'key_paid', words: 'Paid by key: signed in with an API key: no usage windows are reported', fresh: /^Read (just now|\d+ minutes? ago) by Claude Code 2\.1\.322$/ },
     { what: 'error', line: 'error', state: 'error', words: "Could not read: Claude Code's result line says the /usage run failed" },
     { what: 'turn', line: `turn ${newer}`, state: 'unqualified', words: `Version not checked: Claude Code ${newer} answered /usage with a model turn: it is not run again` },
   ]
@@ -249,6 +250,7 @@ test('each state the stub answers shows its words, and an agent no reader knows 
     await pickAccount(page, dialog, labels[c.what]!)
     await expect(panel, c.what).toHaveAttribute('data-capacity-state', c.state, { timeout: 30_000 })
     await expect(panel.locator('[data-capacity-words]'), c.what).toHaveText(c.words)
+    if (c.fresh) await expect(panel.locator('[data-capacity-fresh]'), c.what).toHaveText(c.fresh)
     // A window the provider did not report is never drawn, as empty or at all.
     await expect(panel.locator('[data-capacity-window]'), c.what).toHaveCount(0)
     await expect(dialog.getByRole('button', { name: 'Launch' })).toBeEnabled()
@@ -295,6 +297,48 @@ test('each state the stub answers shows its words, and an agent no reader knows 
   await expect(plain.locator('[data-capacity-words]')).toHaveText("Usage unknown: Conductor knows no way to read this agent's usage")
   await expect(plain.locator('[data-launch-account]')).toHaveCount(0)
   await expect(plain.getByRole('button', { name: 'Launch' })).toBeEnabled()
+})
+
+test('a version not yet checked: the dialog opened on it offers the check at once, and the reading shows once it is pressed', async ({ page, api, state }) => {
+  test.setTimeout(120_000)
+  // A version past the one the reader was checked on, of this run alone: its check is recorded on the server for good.
+  const newer = `2.1.${2_000_000 + randomInt(1_000_000)}`
+  const fresh = label('fresh')
+  const id = await addAccount(api, 'claude', fresh, folder(state.home, `ok ${newer}`))
+  await page.goto('/')
+  const dialog = await launchDialog(page, 'Claude Code (e2e stub)')
+  const panel = dialog.locator('[data-capacity-panel]')
+  await pickAccount(page, dialog, fresh)
+  // The dialog's read as it opened found the version not checked and started nothing: the check is the person's, at once.
+  await expect(panel).toHaveAttribute('data-capacity-state', 'unqualified', { timeout: 30_000 })
+  await expect(panel.locator('[data-capacity-words]')).toHaveText(`Version not checked: ${newer} has not been checked: check this version to read it`)
+  const check = panel.locator('[data-capacity-check]')
+  await expect(check).toHaveText('Check this version')
+  await expect(check).toBeEnabled()
+  await expect(panel.locator('[data-capacity-wait]')).toHaveCount(0)
+  const sent = page.waitForResponse((r) => r.request().method() === 'POST' && new URL(r.url()).pathname === '/api/capacity/read')
+  await check.click()
+  expect((await sent).request().postDataJSON()).toEqual({ agent: 'claude', account: id, check: true })
+  await expect(panel).toHaveAttribute('data-capacity-state', 'ok', { timeout: 30_000 })
+  await expect(panel.locator('[data-capacity-window]')).toHaveCount(2)
+  await expect(panel.locator('[data-capacity-fresh]')).toHaveText(new RegExp(`^Read (just now|\\d+ minutes? ago) by Claude Code ${newer.replace(/\./g, '\\.')}, checked on 2\\.1\\.322$`))
+  await expect(panel.locator('[data-capacity-check]')).toHaveCount(0)
+
+  // Settings' compact line of a version not checked offers the same check: here that of another account, read by the route.
+  const other = label('other')
+  const otherNewer = `2.1.${3_000_000 + randomInt(1_000_000)}`
+  const otherId = await addAccount(api, 'claude', other, folder(state.home, `ok ${otherNewer}`))
+  expect((await api.ok<{ state: string; checkNow?: boolean }>('POST', '/api/capacity/read', { agent: 'claude', account: otherId })).checkNow).toBe(true)
+  await page.keyboard.press('Escape')
+  await expect(dialog).toHaveCount(0)
+  await page.goto('/settings')
+  const row = page.locator(`[data-accounts-card] [data-account-row="${otherId}"]`)
+  await expect(row.locator('[data-capacity-line]')).toContainText(`Version not checked: ${otherNewer} has not been checked`)
+  const compactCheck = row.locator('[data-capacity-check]')
+  await expect(compactCheck).toBeEnabled()
+  await compactCheck.click()
+  await expect(row.locator('[data-capacity-panel]')).toHaveAttribute('data-capacity-state', 'ok', { timeout: 30_000 })
+  await expect(row.locator('[data-capacity-line]')).toContainText('Claude Max · ')
 })
 
 test.describe('on this computer', () => {

@@ -334,6 +334,12 @@ func unqualified(words string, a ...any) error {
 	return &Error{Code: CodeUnqualified, Words: fmt.Sprintf(words, a...)}
 }
 
+// needsCheck is an unqualified refusal the admin's explicit check would
+// lift (Error.Check).
+func needsCheck(words string, a ...any) error {
+	return &Error{Code: CodeUnqualified, Words: fmt.Sprintf(words, a...), Check: true}
+}
+
 // Admit asks leave to start one run of adapter's program at version,
 // whichever account asks. qualified says the version lies from the
 // reader's MinVersion to its Qualified version (the caller compares);
@@ -385,9 +391,9 @@ func (v *Versions) Admit(adapter, version string, qualified, check bool) (*Admis
 		v.pending++
 		return &Admission{v: v, key: key}, nil
 	case !check && state == VersionInterrupted:
-		return nil, unqualified("a check of %s was interrupted: check it again", version)
+		return nil, needsCheck("a check of %s was interrupted: check it again", version)
 	case !check:
-		return nil, unqualified("%s has not been checked: check this version to read it", version)
+		return nil, needsCheck("%s has not been checked: check this version to read it", version)
 	}
 	if state == "" && v.held()+v.pending >= MaxHeld {
 		return nil, full()

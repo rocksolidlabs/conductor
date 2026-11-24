@@ -887,14 +887,25 @@ func TestCacheKeepsCopies(t *testing.T) {
 }
 
 // TestCacheFailureCarriesNoFigures: a reading that is not ok holds its
-// state and its words; nothing of the reader's plan, windows, credits,
-// limits or versions rides beside the failure.
+// state and its words; nothing of the reader's plan, windows, credits or
+// limits rides beside it. A signed_out or key_paid reading, the tool's
+// own answer about the login, says what read it (the program, the version
+// found and the qualified one) as an ok reading does, and a version past
+// its bound is left out of it; an unqualified or error reading, and one of
+// a state no reading has, say nothing of a version.
 func TestCacheFailureCarriesNoFigures(t *testing.T) {
 	yes := true
 	bal := "5.00"
-	for i, state := range []string{StateSignedOut, StateKeyPaid, StateUnqualified, StateError, "no such state"} {
+	cases := []struct {
+		state, version string
+		readBy         bool
+	}{
+		{StateSignedOut, "2.1.400", true}, {StateKeyPaid, "2.1.400", true}, {StateSignedOut, strings.Repeat("9", MaxVersion+1), false},
+		{StateSignedOut, "", false}, {StateUnqualified, "2.1.400", false}, {StateError, "2.1.400", false}, {"no such state", "2.1.400", false},
+	}
+	for i, tc := range cases {
 		c := NewCache(CacheOptions{Clock: newClock(), Read: func(context.Context, Key, Intent) Reading {
-			return Reading{State: state, Words: "the tool's words", Plan: "Invented Plan", Program: "Claude Code", Version: "2.1.400", Qualified: "2.1.318",
+			return Reading{State: tc.state, Words: "the tool's words", Plan: "Invented Plan", Program: "Claude Code", Version: tc.version, Qualified: "2.1.318",
 				Windows: []Window{{Kind: "weekly_all", Name: "Weekly", Percent: 100}},
 				Credits: []Credit{{Kind: "credits", Balance: &bal}},
 				Limits:  Limits{Reached: "weekly", OrdinaryAllowed: &yes}}
@@ -902,14 +913,91 @@ func TestCacheFailureCarriesNoFigures(t *testing.T) {
 		v := c.Read(context.Background(), key(i), ReadOptions{})
 		c.Close()
 		b, _ := json.Marshal(v)
+		want := (*ReadBy)(nil)
+		if tc.readBy {
+			want = &ReadBy{Program: "Claude Code", Version: tc.version, Qualified: "2.1.318"}
+		}
 		switch {
 		case v.State == StateOK || v.Words == "":
-			t.Errorf("%s: %s %q", state, v.State, v.Words)
-		case len(v.Windows) != 0 || len(v.Credits) != 0 || v.Limits != (Limits{}) || v.Account.Plan != "" || v.ReadBy != nil || v.Agent.Version != "":
-			t.Errorf("%s kept figures beside the failure: %s", state, b)
-		case strings.Contains(string(b), "Invented Plan") || strings.Contains(string(b), "2.1.318") || strings.Contains(string(b), "5.00"):
-			t.Errorf("%s: %s", state, b)
+			t.Errorf("%s: %s %q", tc.state, v.State, v.Words)
+		case len(v.Windows) != 0 || len(v.Credits) != 0 || v.Limits != (Limits{}) || v.Account.Plan != "":
+			t.Errorf("%s kept figures beside its state: %s", tc.state, b)
+		case strings.Contains(string(b), "Invented Plan") || strings.Contains(string(b), "5.00"):
+			t.Errorf("%s: %s", tc.state, b)
+		case (v.ReadBy == nil) != (want == nil) || (want != nil && *v.ReadBy != *want):
+			t.Errorf("%s of version %.12q: readBy %+v, want %+v", tc.state, tc.version, v.ReadBy, want)
+		case want == nil && (v.Agent.Version != "" || strings.Contains(string(b), "2.1.318")):
+			t.Errorf("%s says a version: %s", tc.state, b)
+		case want != nil && v.Agent.Version != tc.version:
+			t.Errorf("%s: agent version %q", tc.state, v.Agent.Version)
 		}
+	}
+}
+
+// TestCacheLeavesACheckItsSlot: a read refused only for want of the
+// admin's check (the launch dialog's as it opens, of a version not yet
+// checked) leaves that check its slot inside the key's MinInterval, once:
+// the view says so (CheckNow), a plain read still waits, and the check's
+// own read starts the interval again. A refusal a check would not lift,
+// or a mark on a reading that is not unqualified, leaves no slot.
+func TestCacheLeavesACheckItsSlot(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		first Reading
+		slot  bool
+	}{
+		{"not checked", Reading{State: StateUnqualified, Words: "2.1.900 has not been checked: check this version to read it", NeedsCheck: true}, true},
+		{"turned", Reading{State: StateUnqualified, Words: "a run of 2.1.900 took a model turn: it is not started again"}, false},
+		{"signed out", Reading{State: StateSignedOut, NeedsCheck: true}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			clock := newClock()
+			var mu sync.Mutex
+			var checks []bool
+			c := NewCache(CacheOptions{Clock: clock, Read: func(_ context.Context, _ Key, in Intent) Reading {
+				check := in.Check()
+				mu.Lock()
+				defer mu.Unlock()
+				checks = append(checks, check)
+				if len(checks) == 1 {
+					return tc.first
+				}
+				return Reading{State: StateOK, Program: "Claude Code", Version: "2.1.900", Qualified: "2.1.318", Windows: []Window{{Kind: "weekly_all", Name: "Weekly", Percent: 40}}}
+			}})
+			t.Cleanup(c.Close)
+			reads := func() []bool {
+				mu.Lock()
+				defer mu.Unlock()
+				return slices.Clone(checks)
+			}
+			ctx, k := context.Background(), key(1)
+			v := c.Read(ctx, k, ReadOptions{})
+			if v.State != tc.first.State || v.NextRead == nil || v.CheckNow != tc.slot {
+				t.Fatalf("the first read: %s, next %v, checkNow %v", v.State, v.NextRead, v.CheckNow)
+			}
+			if b, _ := json.Marshal(c.View(k)); strings.Contains(string(b), `"checkNow"`) != tc.slot {
+				t.Fatalf("the view: %s", b)
+			}
+			// A plain read inside the interval reads nothing, and leaves the slot.
+			clock.Advance(time.Minute)
+			if v := c.Read(ctx, k, ReadOptions{}); len(reads()) != 1 || v.CheckNow != tc.slot {
+				t.Fatalf("a plain read inside the interval: %d reads, checkNow %v", len(reads()), v.CheckNow)
+			}
+			v = c.Read(ctx, k, ReadOptions{Check: true})
+			if !tc.slot {
+				if len(reads()) != 1 || v.State != tc.first.State || v.CheckNow {
+					t.Fatalf("a check with no slot left for it: %v, %s", reads(), v.State)
+				}
+				return
+			}
+			if got := reads(); len(got) != 2 || !got[1] || v.State != StateOK || v.CheckNow || v.NextRead == nil || !v.NextRead.Equal(t0.Add(time.Minute+MinInterval)) {
+				t.Fatalf("the check: %v, %s, checkNow %v, next %v", got, v.State, v.CheckNow, v.NextRead)
+			}
+			// The slot was the check's once: another inside the check's interval reads nothing.
+			if v := c.Read(ctx, k, ReadOptions{Check: true}); len(reads()) != 2 || v.CheckNow || v.State != StateOK {
+				t.Fatalf("a second check: %v, checkNow %v", reads(), v.CheckNow)
+			}
+		})
 	}
 }
 

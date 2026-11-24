@@ -383,6 +383,58 @@ func TestCapacityMinInterval(t *testing.T) {
 	}
 }
 
+// The launch dialog's read as it opens, of a Claude Code version not yet
+// checked, starts nothing under an admission and leaves the admin's check
+// its slot: the view says checkNow, a plain read inside the five minutes
+// still reads nothing, the check at once runs the version once and the
+// reading shows, and a second check inside the check's five minutes reads
+// nothing.
+func TestAReadOfAVersionNotCheckedLeavesTheCheckItsSlot(t *testing.T) {
+	claude, codex := newFakeUsage("claude"), newFakeUsage("codex")
+	e := capEnv(t, nil, nil, claude, codex, []catalog.Agent{versioned("claude-new", "2.1.0")})
+	v := readNow(t, e, "claude-new", "", false)
+	if v["state"] != capacity.StateUnqualified || v["nextReadAfter"] == nil || v["checkNow"] != true {
+		t.Fatalf("the dialog's read: %v", v)
+	}
+	if calls, s := claude.count(); calls != 1 || s["2.1.0"] != 0 {
+		t.Fatalf("the dialog's read: %d reads, started %v", calls, s)
+	}
+	if v := viewOfKey(t, e, "agent=claude-new"); v["checkNow"] != true {
+		t.Fatalf("the view after it: %v", v)
+	}
+	if again := readNow(t, e, "claude-new", "", false); again["checkNow"] != true {
+		t.Fatalf("a plain read inside the five minutes: %v", again)
+	}
+	if calls, _ := claude.count(); calls != 1 {
+		t.Fatalf("a plain read inside the five minutes read: %d reads", calls)
+	}
+	checked := readNow(t, e, "claude-new", "", true)
+	if calls, s := claude.count(); calls != 2 || s["2.1.0"] != 1 || checked["state"] != capacity.StateOK || checked["checkNow"] != nil {
+		t.Fatalf("the check: %d reads, started %v, %v", calls, s, checked)
+	}
+	if again := readNow(t, e, "claude-new", "", true); again["checkNow"] != nil || again["nextReadAfter"] == nil {
+		t.Fatalf("a second check inside the five minutes: %v", again)
+	}
+	if calls, _ := claude.count(); calls != 2 {
+		t.Fatalf("a second check inside the five minutes read: %d reads", calls)
+	}
+}
+
+// A signed-out reading says what read it: the program, the version found
+// and the version the reader was checked on, as an ok reading does.
+func TestASignedOutReadingSaysWhatReadIt(t *testing.T) {
+	claude, codex := newFakeUsage("claude"), newFakeUsage("codex")
+	codex.set(func(f *fakeUsage) {
+		f.report = agents.UsageReport{State: agents.UsageSignedOut, Words: "not signed in to Codex"}
+	})
+	e := capEnv(t, nil, nil, claude, codex, nil)
+	v := readNow(t, e, "codex-a", "", false)
+	by, _ := v["readBy"].(map[string]any)
+	if v["state"] != capacity.StateSignedOut || by["program"] != "Codex CLI" || by["version"] != "2.0.0" || by["qualified"] != "2.0.0" {
+		t.Fatalf("a signed-out reading: %v", v)
+	}
+}
+
 // The views of states no read gives, each with its words, and a reading
 // made with another environment than a read would be now is stale.
 func TestCapacityViewStates(t *testing.T) {

@@ -138,11 +138,12 @@ export class CapacityLive {
   /**
    * Asks the server to read q's agent and account now (`check`: the admin's explicit check of a Claude Code version not checked):
    * nothing is sent for a question no page shows, while a read of q is out, or while the view's `nextReadAfter` is ahead of the
-   * clock. Answers whether a read was sent.
+   * clock, unless it is a check and the view says the server takes one now (`checkNow`). Answers whether a read was sent.
    */
   async read(q: CapacityQuery, check = false): Promise<boolean> {
     const s = this.slots.get(capacityKey(q))
-    if (!this.reads || !s || s.watchers === 0 || s.reading || (s.view && readWait(s.view, this.now()) !== null)) return false
+    const waits = !!s?.view && readWait(s.view, this.now()) !== null && !(check && s.view.checkNow)
+    if (!this.reads || !s || s.watchers === 0 || s.reading || waits) return false
     const t = { slot: s, epoch: this.epoch }
     const reads = this.reads
     s.reading = true

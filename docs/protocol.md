@@ -9013,7 +9013,12 @@ moment (`internal/agents`' readers), kept in memory only, at most 8 per
 key and 128 keys, so a restart starts at `never_read`. A key (an agent and
 an account) is read at most once in 5 minutes whoever asks, two at once
 across the server, an asker waiting at most 2 s; a reading is fresh for 15
-minutes. Only `POST /api/capacity/read` reads; every `GET` answers what is
+minutes. One read is let through inside those 5 minutes: the admin's check
+of a key whose last read was refused only for want of that check (a Claude
+Code version not recorded, or one whose check was interrupted: nothing was
+started under an admission), so the read the launch dialog asks as it opens
+never spends the slot the check needs; the check's own read starts the key's
+5 minutes again. Only `POST /api/capacity/read` reads; every `GET` answers what is
 kept. A read runs with the environment a session of that agent gets (the
 entry's and the server's part, one function for both), then
 `TERM=dumb`, `NO_COLOR=1` and the account's folder; a reading keeps a
@@ -9201,12 +9206,17 @@ its limit with every character escaped as JSON may escape it: an add's at
 | `PUT /api/accounts/defaults/{adapter}` | `{account, expectedRev}` → `{defaults, rev}`; a retired account, or one of another adapter, refused |
 | `GET /api/capacity?agent=&account=&model=&launch=&yolo=` | one view, reading nothing; at most 32 KiB. `account` defaults to the agent's default: its adapter's, or `default` for an entry whose environment (or the server's passthrough) sets the adapter's folder variable or one of its login variables, which has that login alone; `launch` is `session` (the default), `legacy` (a legacy crew's member), `managed` (a managed run's attempt) or `remote` (a session on another computer) |
 | `GET /api/capacity?after=&limit=` | without `agent`: `{views, next?}`, every installed agent's view for its default and, unless its entry sets its login, each account of its adapter not retired, ordered by `<agent>/<account>`, each asked as the single view would be with the same `launch` and `yolo`, at most `limit` (1 to 16, 16 by default) and until the next would pass 128 KiB (at least one); `next` is the cursor to pass as `after` |
-| `POST /api/capacity/read` | `{agent, account?, check?}` → `202` the view: `reading` when the read did not end within 2 s, the kept reading with `nextReadAfter` inside the 5 minutes; `check` (Claude Code only, `400` otherwise) runs a version not recorded `checked` once; at most 1 KiB of body |
+| `POST /api/capacity/read` | `{agent, account?, check?}` → `202` the view: `reading` when the read did not end within 2 s, the kept reading with `nextReadAfter` inside the 5 minutes, except a `check` while the view says `checkNow`; `check` (Claude Code only, `400` otherwise) runs a version not recorded `checked` once; at most 1 KiB of body |
 
 A **view** is `{agent: {id, name, adapter, version}, model: {chosen,
 words}, account: {id, label, default, retired, plan}, host: {kind, name?,
 words?}, entryLogin?, state, words, windows, credits, limits, counts,
-readAt?, readBy?: {program, version, qualified}, fresh, nextReadAfter?}`.
+readAt?, readBy?: {program, version, qualified}, fresh, nextReadAfter?,
+checkNow?}`. `readBy` is that of an `ok`, a `signed_out` or a `key_paid`
+reading whose read found the program's version; `checkNow`, `true` or
+absent, says the admin's check is taken now although a plain read waits
+for `nextReadAfter` (the key's last read was refused only for want of it,
+and no read is under way).
 `entryLogin`, in the view of every account asked of an agent whose entry
 (or the server's passthrough) sets its adapter's folder variable or one of
 its login variables, is that variable's name (one of a fixed list, at most

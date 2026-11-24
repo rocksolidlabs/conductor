@@ -109,6 +109,12 @@ type Cache struct {
 	// called), kept apart from the readings until MinInterval has passed,
 	// so a key dropped from keys is still not read again early.
 	cool map[Key]time.Time
+	// checks are the keys of cool whose last read was refused only for
+	// want of the admin's explicit check (Reading.NeedsCheck): a check of
+	// one is started inside its MinInterval, once, so a read that started
+	// nothing under an admission (the launch dialog's as it opens) never
+	// spends the slot the check needs. Its entry leaves with cool's.
+	checks map[Key]bool
 }
 
 type kept struct {
@@ -130,7 +136,7 @@ type flight struct {
 // NewCache makes a cache over its reader. Close ends the reads under way.
 func NewCache(o CacheOptions) *Cache {
 	c := &Cache{clock: o.Clock, read: o.Read, onRead: o.OnRead, slots: make(chan struct{}, MaxReads),
-		keys: map[Key]*kept{}, flights: map[Key]*flight{}, cool: map[Key]time.Time{}}
+		keys: map[Key]*kept{}, flights: map[Key]*flight{}, cool: map[Key]time.Time{}, checks: map[Key]bool{}}
 	if c.clock == nil {
 		c.clock = realClock{}
 	}
@@ -165,6 +171,9 @@ func closedView(k Key) View {
 // decided), else a read started unless k was read less than MinInterval
 // ago or the cooldown table is full of unexpired keys and queued reads
 // (then nothing is read and the View says when a read can be, NextRead).
+// A check (o.Check) of a key whose last read was refused only for want of
+// one (CheckNow) is started inside that MinInterval, and its own read
+// starts the key's MinInterval again.
 // It waits at most Wait (or until ctx ends) and otherwise answers the
 // last reading with the state reading. Once Close has begun it starts
 // nothing and answers ClosedWords.
@@ -183,9 +192,11 @@ func (c *Cache) Read(ctx context.Context, k Key, o ReadOptions) View {
 		for key, t := range c.cool {
 			if !now.Before(t.Add(MinInterval)) {
 				delete(c.cool, key)
+				delete(c.checks, key)
 			}
 		}
-		if _, ok := c.cool[k]; ok || len(c.cool)+c.queued >= MaxCooldown {
+		_, cooling := c.cool[k]
+		if checkNow := cooling && o.Check && c.checks[k]; (cooling && !checkNow) || (!cooling && len(c.cool)+c.queued >= MaxCooldown) {
 			c.ask(k)
 			v := c.viewLocked(k, now)
 			if v.NextRead == nil {
@@ -257,6 +268,7 @@ func (c *Cache) run(k Key, f *flight) {
 	}
 	c.queued--
 	c.cool[k] = c.clock.Now()
+	delete(c.checks, k) // this read is the one its slot was left for
 	c.mu.Unlock()
 	r := c.read(c.ctx, k, Intent{c: c, f: f})
 	<-c.slots
@@ -264,6 +276,9 @@ func (c *Cache) run(k Key, f *flight) {
 	r = r.kept(k, now)
 	c.mu.Lock()
 	c.keep(k, f, r)
+	if _, ok := c.cool[k]; ok && r.NeedsCheck {
+		c.checks[k] = true
+	}
 	delete(c.flights, k)
 	tell := !c.closed && c.onRead != nil
 	var v View
@@ -380,6 +395,7 @@ func (c *Cache) viewLocked(k Key, now time.Time) View {
 	if t, ok := c.cool[k]; ok && now.Before(t.Add(MinInterval)) {
 		next := t.Add(MinInterval)
 		v.NextRead = &next
+		v.CheckNow = c.checks[k] && c.flights[k] == nil
 	}
 	return v
 }

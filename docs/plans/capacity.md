@@ -654,7 +654,11 @@ asked dropped), so a restart starts at `never_read`. One read at a time
 per key (askers of a read under way join it) and at most 2 across the
 server; an asker waits at most 2 s and otherwise gets the last reading
 with `reading`. A key is read at most once in five minutes (`MinInterval`)
-whoever asks. The time of each key's last read is kept apart from the
+whoever asks, but for one check: a key whose last read was refused only for
+want of the admin's check (a version not recorded, or interrupted: nothing
+started under an admission) takes that check inside its five minutes, and
+the view says so (`checkNow`), so the read the dialog asks as it opens never
+spends the check's slot (#788's observation). The time of each key's last read is kept apart from the
 readings, in a cooldown table whose entries leave only once their five
 minutes have passed, so a key dropped from the readings is still not
 read again early; the table holds at most 1,024 keys, and a read asked
