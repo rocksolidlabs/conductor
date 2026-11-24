@@ -619,7 +619,9 @@ type Engine struct {
 	policyCheck    atomic.Pointer[PolicyCheck]
 	// policySince asks the router whether a subject stayed eligible since
 	// a time (SetPolicySince): every counted approval and the deciding
-	// one are confirmed so at the application.
+	// one are confirmed so at the application. Nil for a router that
+	// answers no such query: a policy that counts approvals is then not
+	// taken (PolicyUntaken).
 	policySince atomic.Pointer[PolicySinceCheck]
 	// opMu orders the operators' operations on decisions (operate), from
 	// the look for their ids through their commits: an operation's row is

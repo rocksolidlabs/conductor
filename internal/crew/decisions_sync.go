@@ -51,7 +51,7 @@ func (e *Engine) RespondHeldWith(ctx context.Context, id string, resp Response, 
 		c.Groups = slices.Clone(conf.Groups)
 		conf = &c
 	}
-	return e.respond(ctx, id, resp, actor, auth, policyIn{routes: e.RoutesPolicies(), conf: conf, statement: statement})
+	return e.respond(ctx, id, resp, actor, auth, policyIn{routes: e.RoutesPolicies(), conf: conf, statement: statement, counted: e.takesCounted()})
 }
 
 // heldRefused judges a held answer to an open record before the router's

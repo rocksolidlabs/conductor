@@ -8873,7 +8873,16 @@ above, and no field, code or row below is ever written or answered.
   applied every counted approval and the deciding one is confirmed by the
   router with its subject and `since` its response's time; any not
   confirmed, or places no longer filled, supersedes the decision by a
-  fresh one, as an identity recheck that fails does. When a re-route
+  fresh one, as an identity recheck that fails does. A `since` is asked
+  only of a router that says it answers one (`ext.SinceConfirmer`); from
+  any other, the deciding answer of a policy of one place is confirmed by
+  the plain query, and a policy of more than one place is not taken: the
+  record stays under the server's own policy, the router's routed row
+  saying "its router's policy asks for N approvals, and its router does
+  not confirm an approval since its time: the operator answers it under
+  the server's own policy", and a record that keeps one reads and is
+  answered as not in force (`policyNow.why` "it asks for N approvals, and
+  its router does not confirm an approval since its time"). When a re-route
   leaves fewer response rows than places to fill, the decision is
   superseded in the re-route's transaction ("dr-7's responses filled its
   record; dr-9 asks again") and `Reroute`'s `superseded` names the fresh

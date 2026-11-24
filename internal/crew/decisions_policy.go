@@ -26,9 +26,11 @@ import (
 // the router confirms it (respondTx's judgement, the confirmation handed
 // in by the route that asked it); the operator answers in its place only by
 // an explicit override where the policy allows one; an eligible answer is
-// confirmed again before it is applied (applyOne); and whenever the router
-// does not confirm the policy, the operator answers under local/1, the
-// receipt saying why.
+// confirmed again before it is applied (applyOne), since its response's
+// time where the router answers such a query (SetPolicySince), else by the
+// plain query; a policy that counts approvals is taken only from a router
+// that does (PolicyUntaken); and whenever the router does not confirm the
+// policy, the operator answers under local/1, the receipt saying why.
 
 // The refusal codes of a router's policy.
 const (
@@ -83,7 +85,11 @@ type PolicySinceCheck func(ctx context.Context, rec ledger.DecisionRecord, revis
 // SetPolicySince hands the engine the function that asks the registered
 // router whether a subject stayed eligible since a time: every counted
 // approval and the deciding one are confirmed so before the application
-// (confirmAtApply). Called once, beside SetRouterPolicies.
+// (confirmAtApply). Called once, beside SetRouterPolicies, and only for a
+// router that says it answers such a query (ext.SinceConfirmer). With none
+// set, the deciding answer of a policy of one place is confirmed by the
+// plain query, and a policy that counts approvals is not taken
+// (PolicyUntaken).
 func (e *Engine) SetPolicySince(check PolicySinceCheck) {
 	if check != nil {
 		e.policySince.Store(&check)
@@ -106,6 +112,50 @@ func (e *Engine) SetRouterPolicies(on bool, check PolicyCheck) {
 
 // RoutesPolicies says the registered router confirms policies.
 func (e *Engine) RoutesPolicies() bool { return e.routesPolicies.Load() }
+
+// takesCounted says the engine takes a policy that counts approvals: it
+// confirms each since its response's time (SetPolicySince).
+func (e *Engine) takesCounted() bool { return e.policySince.Load() != nil }
+
+// PolicyUntaken is why the engine does not take the router's policy p now,
+// "" when it does: a policy that counts approvals (more than one place in
+// all) while it confirms none since its time, its router answering no
+// query with a Since. The words follow "<id>'s router's policy".
+func (e *Engine) PolicyUntaken(p ext.RoutePolicy) string {
+	return untakenWords(p.Groups, e.takesCounted())
+}
+
+// PolicyNotTaken says rec is a record whose router's policy was not taken
+// (notTakenRecord): the router's word that it will route it now (Routes)
+// is not believed of it.
+func (e *Engine) PolicyNotTaken(rec ledger.DecisionRecord) bool {
+	return notTakenRecord(rec, e.takesCounted())
+}
+
+// notTakenRecord says rec is open under the server's own policy and holds
+// a router's routing row that carries a revision, on an engine that takes
+// no policy counting approvals (counted false): such a row is written
+// beside the policy in the same transaction (RoutePolicy, Reroute) in
+// every case but a policy not taken, so a record being routed for the
+// first time, and every record of an engine whose router answers a Since,
+// is never one.
+func notTakenRecord(rec ledger.DecisionRecord, counted bool) bool {
+	if counted || rec.State != ledger.DecisionOpen || ledger.RouterPolicy(rec.Policy) {
+		return false
+	}
+	return slices.ContainsFunc(rec.History, func(h ledger.HistoryRow) bool {
+		return routingRow(h) && strings.HasPrefix(h.By, "router:") && revisionOf(h) != ""
+	})
+}
+
+// untakenWords is PolicyUntaken for groups, counted saying the engine takes
+// a policy that counts approvals.
+func untakenWords(groups []ext.Requirement, counted bool) string {
+	if n := placesIn(groups); n > 1 && !counted {
+		return fmt.Sprintf("asks for %d approvals, and its router does not confirm an approval since its time", n)
+	}
+	return ""
+}
 
 // openingPolicy is the policy a record of origin opens under: the server's
 // own, with a spare while the router routes policies, never for a
@@ -227,6 +277,9 @@ type policyIn struct {
 	// a counted approval stands by (countedRows). Set by respond.
 	boot    string
 	pending func(n int64, k int) bool
+	// counted says the engine takes a policy that counts approvals
+	// (takesCounted): one it does not take is judged not in force.
+	counted bool
 }
 
 // pendingOf is pol's pending for decision n's responses.
@@ -251,7 +304,7 @@ func (e *Engine) RespondDecisionWith(ctx context.Context, id string, resp Respon
 		c.Groups = slices.Clone(conf.Groups)
 		conf = &c
 	}
-	return e.respond(ctx, id, resp, actor, auth, policyIn{routes: e.RoutesPolicies(), conf: conf})
+	return e.respond(ctx, id, resp, actor, auth, policyIn{routes: e.RoutesPolicies(), conf: conf, counted: e.takesCounted()})
 }
 
 // judgePolicy is the router's policy's judgement of a response to the
@@ -268,8 +321,10 @@ func judgePolicy(rec ledger.DecisionRecord, resp Response, who Admittee, pol pol
 	id := rec.ID()
 	p, routed := routedOf(rec.Policy)
 	if !routed {
-		if pol.routes && pol.conf != nil && pol.conf.Routes && rec.Origin != ledger.OriginCompare {
-			// The router will route it now: told again by the route.
+		if pol.routes && pol.conf != nil && pol.conf.Routes && rec.Origin != ledger.OriginCompare && !notTakenRecord(rec, pol.counted) {
+			// The router will route it now: told again by the route. Never
+			// believed of a record whose policy was not taken: its router,
+			// never told so, would hold it here until ext.MaxBehind.
 			return true, false, refuse(CodeStalePolicy, "%s's policy is being written: try again", id)
 		}
 		return false, false, nil
@@ -285,11 +340,18 @@ func judgePolicy(rec ledger.DecisionRecord, resp Response, who Admittee, pol pol
 		// A door that did not ask the router: never taken as not in force.
 		return true, false, refuse(CodeStalePolicy, "%s's policy was not confirmed for this answer: try again", id)
 	}
-	inForce := pol.routes && pol.conf.InForce
+	// untaken: a policy that counts approvals, kept while the engine took
+	// them, on an engine that takes none (its router answers no query with
+	// a Since): never in force, whatever the router says of it.
+	untaken := ""
+	if pol.routes {
+		untaken = untakenWords(p.Groups, pol.counted)
+	}
+	inForce := pol.routes && pol.conf.InForce && untaken == ""
 	if inForce && (pol.conf.Behind || pol.conf.Revision != "" && pol.conf.Revision != p.Revision) {
 		return true, false, refuse(CodeStalePolicy, "%s's policy is changing: try again", id)
 	}
-	if !inForce && pol.routes && pol.conf.Revision != "" && pol.conf.Revision != p.Revision {
+	if !inForce && untaken == "" && pol.routes && pol.conf.Revision != "" && pol.conf.Revision != p.Revision {
 		// Not in force, of another revision than the one kept now: the
 		// router's word was about another policy.
 		return true, false, refuse(CodeStalePolicy, "%s's policy is changing: try again", id)
@@ -298,6 +360,9 @@ func judgePolicy(rec ledger.DecisionRecord, resp Response, who Admittee, pol pol
 		why := "no router confirms its policy now"
 		if pol.conf != nil && pol.conf.Why != "" {
 			why = pol.conf.Why
+		}
+		if untaken != "" {
+			why = "it " + untaken
 		}
 		if !who.operator() {
 			rc.Code, rc.Words = CodeNotApprover, fmt.Sprintf("%s's policy is not in force now (%s): the operator answers it", id, why)
@@ -393,6 +458,12 @@ func (e *Engine) RoutePolicy(ctx context.Context, id, by string, rev int, policy
 			dt.Words += ": its router's policy came after its answer, and changes nothing"
 			return dt, nil
 		}
+		if why := e.PolicyUntaken(policy); why != "" {
+			// Not taken: the routed row alone, saying why; the record stays
+			// under the server's own policy at its rev.
+			dt.Words += ": its router's policy " + why + ": the operator answers it under the server's own policy"
+			return dt, nil
+		}
 		stored, err := storedPolicy(policy, by, ledger.PolicySpare(rec.Policy), time.Now().UTC())
 		if err != nil {
 			return opDetail{}, err
@@ -431,7 +502,9 @@ func (e *Engine) RoutePolicy(ctx context.Context, id, by string, rev int, policy
 			if rec.Rev != rev {
 				return o, refuse(CodeStaleDecision, "%s is at rev %d, not %d", id, rec.Rev, rev)
 			}
-			o.rev, o.expectedRev = true, rev
+			// A policy not taken writes its routed row alone, at the
+			// record's rev (PolicyUntaken).
+			o.rev, o.expectedRev = e.PolicyUntaken(policy) == "", rev
 		}
 		o.held = func(_ *run, _ *decision, rec ledger.DecisionRecord) (opDetail, func(), error) {
 			dt, err := detail(rec)
@@ -613,6 +686,9 @@ func (e *Engine) Reroute(ctx context.Context, id, router string, policy ext.Rout
 	}
 	if res, done, err := rerouteJudged(rec, policy, expectedRev); done {
 		return res, err
+	}
+	if why := e.PolicyUntaken(policy); why != "" {
+		return ext.RerouteResult{}, fmt.Errorf("%w: %s's router's policy %s: it is not taken", ext.ErrRefused, id, why)
 	}
 	fp := fingerprintOf([]any{"reroute", policy, why})
 	actor := "router:" + router

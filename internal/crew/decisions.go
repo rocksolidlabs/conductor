@@ -2073,7 +2073,7 @@ const (
 // receipt is returned, with the refusal's DecisionError; an accepted
 // response of a held run is then applied (applyDecisions).
 func (e *Engine) RespondDecision(ctx context.Context, id string, resp Response, actor string, auth Authority) (ResponseReceipt, error) {
-	return e.respond(ctx, id, resp, actor, auth, policyIn{routes: e.RoutesPolicies()})
+	return e.respond(ctx, id, resp, actor, auth, policyIn{routes: e.RoutesPolicies(), counted: e.takesCounted()})
 }
 
 // respond is RespondDecision with what the route handed in of the
