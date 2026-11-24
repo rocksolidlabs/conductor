@@ -78,14 +78,16 @@ type PipesExit struct {
 // of StartPipes's own, read to its end and counted (StderrBytes) so that a
 // child that writes to it is never held up, in a process group of its own.
 // Its exit is watched without reaping: once it has exited, what it left in
-// its group is killed while its id is still its own, as Run and Serve kill
-// it, then it is reaped and Done closed. ctx bounds the start, never the
+// its group is sent SIGKILL while its id is still its own, as Run and Serve
+// send it, then it is reaped and Done closed (Done does not wait for those
+// members to be gone). ctx bounds the start, never the
 // child's life: an ended context is answered with its error before
 // anything is made, and again at the commitment point, just before the
 // child is started; past it, the child is started and the caller's. A
 // child that cannot start is an error, with nothing left running. It is
-// refused where there is no process group or exit watch to end a child
-// through (noPipesRunner), as Serve is.
+// ended as soon as it starts, and the start an error, on a unix with no
+// exit watch to end it through, as Serve's is. internal/proc does not build
+// for Windows: it imports internal/pty, which does not.
 func StartPipes(ctx context.Context, s PipeSpec) (*Pipes, error) {
 	if err := noPipesRunner(); err != nil {
 		return nil, err
@@ -222,8 +224,9 @@ func (p *Pipes) Stdin() io.WriteCloser { return p.stdin }
 // Stdout is the child's standard output.
 func (p *Pipes) Stdout() io.Reader { return p.stdout }
 
-// Done is closed once the child has exited, what it left in its group has
-// been killed, and it has been reaped.
+// Done is closed once the child has exited and been reaped, what it left in
+// its group having been sent SIGKILL first; it does not wait for those
+// members to be gone.
 func (p *Pipes) Done() <-chan struct{} { return p.done }
 
 // Exit is how the child ended once Done is closed; before, Code -1.

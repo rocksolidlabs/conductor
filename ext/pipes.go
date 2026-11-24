@@ -64,8 +64,9 @@ type Pipes interface {
 	// what it writes, as it writes it, until its end (io.EOF) once nothing
 	// of the child holds it.
 	Stdout() io.Reader
-	// Done is closed once the child has exited and been reaped, and what
-	// it left in its process group ended with it.
+	// Done is closed once the child has exited and been reaped, what it
+	// left in its process group having been sent SIGKILL first (natively);
+	// it does not wait for those members to be gone.
 	Done() <-chan struct{}
 	// Exit is how the child ended, once Done is closed.
 	Exit() ExitStatus

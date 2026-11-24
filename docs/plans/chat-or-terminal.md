@@ -1653,27 +1653,30 @@ No UI. **By hand:** none. **Boundary:** a seam of the public `ext`,
 PR-A alone. **8 h.**
 
 - **As built** (#1104):
-  - `proc.StartPipes` kills what the child left in its process group at
-    the child's own exit, before it is reaped, as `Run` and `Serve` do:
-    `Done` closes once the child and its group have ended, the group's
-    end I1 asks for. `Stop` is a Terminal's (the child given its grace,
+  - `proc.StartPipes` sends SIGKILL to what the child left in its
+    process group at the child's own exit, before it is reaped, as `Run`
+    and `Serve` do. `Done` closes once the child has exited and been
+    reaped, those members having been sent SIGKILL first; it does not wait
+    for them to be gone, so a later row that needs the group proven gone
+    (I1's move) waits for that itself. `Stop` is a Terminal's (the child given its grace,
     then the group killed), its SIGTERM sent once whoever calls it, as a
     service's is. The standard error's count is `proc.Pipes.StderrBytes`;
     `ext.Pipes` carries none.
   - The child enters its folder as a terminal does, through
-    `pty.StartDir`, exported for it. Where no process group and exit
-    watch are (off Linux and macOS), `StartPipes` is refused, as `Serve`
-    is; the server is built for Linux and macOS alone, and `internal/proc`
-    builds for Windows against a stub of the terminal's spec (`internal/pty`
-    does not build there).
+    `pty.StartDir`, exported for it. On a unix with no exit watch (other
+    than Linux and macOS) the child is ended as soon as it starts and the
+    start is an error, as `Serve`'s is. `internal/proc` does not build for
+    Windows: it imports `internal/pty`, which does not.
   - The fake is `sessiontest.FakePipeRuntime`, a `FakeRuntime` that is a
     `PipeStarter` (a `FakeRuntime` alone is not), with the `Pipes` script
     and `FakePipes`. `ext/exttest`'s own `FakeRuntime` is unchanged and
     is no `PipeStarter`.
-  - The guard also refuses a start that answers no `Pipes` and no error,
-    and takes a `Read` or `Write` that answers a count outside its buffer
-    for the child's failure, as a panic is; the quiet walk walks
-    `StartPipes` and every method of `Pipes`.
+  - The guard also refuses a start that answers no `Pipes` and no error;
+    one that answers `Pipes` and an error is refused with its error and
+    the `Pipes` are stopped on a goroutine of the guard's. It takes a
+    `Read` or `Write` that answers a count outside its buffer for the
+    child's failure, as a panic is, for a terminal's too; the quiet walk
+    walks `StartPipes` and every method of `Pipes`.
   - `RuntimeExec`'s checks run with the helper's new `pipes` mode, and
     add a stop after the child's exit to the two stops.
 
