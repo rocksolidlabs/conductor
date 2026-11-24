@@ -114,3 +114,78 @@ func TestConfirmerContract(t *testing.T) {
 		t.Fatalf("RunAll did not run the Confirmer check; it said:\n%s", strings.Join(errs, "\n"))
 	}
 }
+
+// sinceFlipper says it answers a query with a Since and then that it does
+// not.
+type sinceFlipper struct {
+	*FakeRouter
+	mu    sync.Mutex
+	asked int
+}
+
+func (r *sinceFlipper) ConfirmsSince() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.asked++
+	return r.asked == 1
+}
+
+// invalidSince says it answers a query with a Since and answers one with a
+// confirmation that is not valid.
+type invalidSince struct{ *FakeRouter }
+
+func (r invalidSince) Confirm(ctx context.Context, q ext.ConfirmQuery) (ext.Confirmation, error) {
+	if !q.Since.IsZero() {
+		return ext.Confirmation{Groups: []string{"architecture"}}, nil
+	}
+	return r.FakeRouter.Confirm(ctx, q)
+}
+
+// The Confirmer check of a router's word on a query with a Since: the fake
+// that answers one is asked one, in every phase; the fake that says it
+// answers none, and the one that does not say, pass and are asked none;
+// a router whose word changes is found, and one that says it answers one
+// and answers it with a confirmation that is not valid is found.
+func TestConfirmerContractWithASince(t *testing.T) {
+	sinces := func(f *FakeRouter) int {
+		n := 0
+		for _, q := range f.Confirms() {
+			if !q.Since.IsZero() {
+				n++
+			}
+		}
+		return n
+	}
+	f := NewFakeRouter("since")
+	if errs := record(t, func(rt T) { Confirmer(rt, NewNetwork(), f, SampleDecisionRequest()) }); len(errs) != 0 {
+		t.Fatalf("the fake that answers a Since failed the check:\n%s", strings.Join(errs, "\n"))
+	}
+	if got := sinces(f); got < 3 {
+		t.Fatalf("the fake that answers a Since was asked %d queries with one, want one in each phase at least", got)
+	}
+	for _, name := range []string{"says-none", "does-not-say"} {
+		f := NewFakeRouterNoSince(name)
+		var router ext.DecisionRouter = f
+		if name == "does-not-say" {
+			router = WithoutSince(f)
+		}
+		if errs := record(t, func(rt T) { Confirmer(rt, NewNetwork(), router, SampleDecisionRequest()) }); len(errs) != 0 {
+			t.Fatalf("the fake that %s failed the check:\n%s", name, strings.Join(errs, "\n"))
+		}
+		if len(f.Confirms()) == 0 || sinces(f) != 0 {
+			t.Fatalf("the fake that %s was asked %v: want plain queries alone", name, f.Confirms())
+		}
+	}
+	errs := record(t, func(rt T) {
+		Confirmer(rt, NewNetwork(), &sinceFlipper{FakeRouter: NewFakeRouter("flipper")}, SampleDecisionRequest())
+	})
+	if !said(errs, `exttest: Confirmer "flipper": ConfirmsSince answered true and then false`) {
+		t.Fatalf("a router whose word on a Since changed was not found; it said:\n%s", strings.Join(errs, "\n"))
+	}
+	errs = record(t, func(rt T) {
+		Confirmer(rt, NewNetwork(), invalidSince{NewFakeRouter("bad-since")}, SampleDecisionRequest())
+	})
+	if !said(errs, `exttest: Confirmer "bad-since": Confirm answered a confirmation that is not valid`, "with a Since", "groups are an answer in force") {
+		t.Fatalf("an invalid answer to a query with a Since was not found; it said:\n%s", strings.Join(errs, "\n"))
+	}
+}
