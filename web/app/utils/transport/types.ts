@@ -1,5 +1,5 @@
 import type { Ref } from 'vue'
-import type { ChatPost, ChatSend, ControlMessage, FileGetExtra, FileResponse, FileWriteOptions, NvimEvent, NvimSwapChoice, TransportKind, Welcome } from '../protocol'
+import type { ChatPost, ChatSend, ControlMessage, FileGetExtra, FileResponse, FileWriteOptions, NvimEvent, NvimSwapChoice, TranscriptMessage, TranscriptReply, TranscriptRequest, TransportKind, Welcome } from '../protocol'
 import type { QuestionReply } from '../reply'
 import type { LaneWire } from './decide'
 
@@ -60,4 +60,12 @@ export interface TerminalTransport extends LaneWire {
   onControl(cb: (msg: ControlMessage) => void): void
   onClose(cb: (info: CloseInfo) => void): void
   close(): void
+  /** A chat's TRANSCRIPT frames: each entry as it changes, and the replay's pages after ready (see Chat sessions). */
+  onTranscript(cb: (msg: TranscriptMessage) => void): void
+  /** The mark of the transcript the page holds, which the hello of a connection made with this transport carries. */
+  transcriptFrom(mark: number): void
+  /** A chat's read: a page of entries or a piece of a part, or a ReplyError with the owner's code (`transcript_gone`). */
+  transcriptGet(req: TranscriptRequest): Promise<TranscriptReply>
+  /** A chat's Stop, to an owner whose welcome said `interrupt`: true on `interrupt_ok`, a ReplyError (`no_turn`, `read_only`) otherwise. */
+  interrupt(): Promise<boolean>
 }
