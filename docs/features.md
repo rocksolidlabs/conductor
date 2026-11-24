@@ -417,6 +417,11 @@ The second half (#1072, PR-9, after the ledger's barrier at version 17, PR-9a,
   the answer is applied every counted approval and the deciding one are confirmed
   with the router, each since its own time; any the router cannot confirm, or
   places no longer filled, supersede the decision with a fresh one that asks again.
+  The router is asked "since a time" only when it says it answers such a question.
+  One that does not still has a one-approval policy confirmed when the answer is
+  applied (in force, the person still eligible), but a policy that needs more than
+  one approval is not taken from it: the decision stays the operator's, and its
+  history says why.
   A re-route that leaves fewer response rows than places to fill supersedes it at
   once, the router told which decision asks again.
 - **Said in the app.** The operator's read carries each group's count
