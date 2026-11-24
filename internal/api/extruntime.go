@@ -474,8 +474,9 @@ func (s guardService) Stop(ctx context.Context) (err error) {
 // on and start a child nobody holds. Its panic is recovered once it has
 // unwound, by when the contract has had the Runtime end and reap what it
 // began, logged at error naming the Runtime, and answered as a refused
-// start; its error is quieted (quietErr), and a start that answers no
-// Pipes and no error is refused. The Pipes it answers are behind the guard
+// start; its error is quieted (quietErr), Pipes it answered beside the
+// error are stopped (endHanded), and a start that answers no Pipes and no
+// error is refused. The Pipes it answers are behind the guard
 // too (guardedPipes).
 type guardPipes struct {
 	guardRuntime
@@ -492,6 +493,9 @@ func (g guardPipes) StartPipes(ctx context.Context, s ext.PipeSpec) (p ext.Pipes
 	}()
 	pp, err := g.ps.StartPipes(ctx, s)
 	if err != nil {
+		if pp != nil {
+			g.endHanded(pp)
+		}
 		return nil, g.quiet(err)
 	}
 	if pp == nil {
@@ -499,6 +503,20 @@ func (g guardPipes) StartPipes(ctx context.Context, s ext.PipeSpec) (p ext.Pipes
 		return nil, fmt.Errorf("the Runtime %s answered no Pipes", g.name)
 	}
 	return g.pipes(pp), nil
+}
+
+// endHanded ends Pipes a start answered beside an error, which the
+// contract allows never: behind the guard (a panic in their Stop
+// recovered), stopped on a goroutine of its own under a context bounded by
+// ext.StopKillWait, so the caller has its refusal at once.
+func (g guardPipes) endHanded(p ext.Pipes) {
+	g.s.log.Error("extension call failed: the Runtime answered Pipes and an error, and they are stopped", "kind", ext.KindRuntime, "provider", g.name, "call", "StartPipes", "failure", "invalid")
+	handed := g.pipes(p)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), ext.StopKillWait)
+		defer cancel()
+		_ = handed.Stop(ctx, 0)
+	}()
 }
 
 // pipes is p behind the guard.

@@ -159,6 +159,27 @@ func (o overreader) Stop(context.Context, time.Duration) error {
 	return nil
 }
 
+// gatedStop is a Pipes whose Stop waits for its gate, is counted, ends it
+// and sends its number on stopped.
+type gatedStop struct {
+	ext.Pipes
+	done    chan struct{}
+	gate    <-chan struct{}
+	stops   *atomic.Int32
+	stopped chan int32
+}
+
+func (g gatedStop) Done() <-chan struct{} { return g.done }
+func (g gatedStop) Stop(context.Context, time.Duration) error {
+	<-g.gate
+	n := g.stops.Add(1)
+	if n == 1 {
+		close(g.done)
+	}
+	g.stopped <- n
+	return nil
+}
+
 // misanswering is a FakePipeRuntime whose StartPipes answers what answer
 // gives in place of its own.
 type misanswering struct {
@@ -169,10 +190,12 @@ type misanswering struct {
 func (m misanswering) StartPipes(context.Context, ext.PipeSpec) (ext.Pipes, error) { return m.answer() }
 
 // The guard hands on nothing the Runtime misanswered: a start that answers
-// no Pipes and no error is refused, and a Write of the input or a Read of
-// the output that answers a count outside its buffer is the child's
-// failure, as a panic is: the call answers nothing and the words, and the
-// child is stopped through the Runtime's Stop.
+// no Pipes and no error is refused, one that answers Pipes and an error is
+// refused with its error while the Pipes are stopped on a goroutine of the
+// guard's, once, and a Write of the input or a Read of the output that
+// answers a count outside its buffer is the child's failure, as a panic is:
+// the call answers nothing and the words, and the child is stopped through
+// the Runtime's Stop.
 func TestAPipesGuardRefusesWhatTheRuntimeMisanswers(t *testing.T) {
 	t.Run("no Pipes and no error", func(t *testing.T) {
 		rt := misanswering{FakePipeRuntime: sessiontest.FakePipeRuntime{FakeRuntime: &sessiontest.FakeRuntime{}}, answer: func() (ext.Pipes, error) { return nil, nil }}
@@ -183,6 +206,51 @@ func TestAPipesGuardRefusesWhatTheRuntimeMisanswers(t *testing.T) {
 		}
 		if p, err := ps.StartPipes(t.Context(), ext.PipeSpec{}); p != nil || err == nil || err.Error() != "the Runtime fake answered no Pipes" {
 			t.Fatalf("a start that answered nothing: %v, %v", p, err)
+		}
+	})
+	t.Run("Pipes and an error", func(t *testing.T) {
+		gate, stopped := make(chan struct{}), make(chan int32, 4)
+		var once sync.Once
+		open := func() { once.Do(func() { close(gate) }) }
+		t.Cleanup(open)
+		stops := &atomic.Int32{}
+		held := gatedStop{done: make(chan struct{}), gate: gate, stops: stops, stopped: stopped}
+		rt := misanswering{FakePipeRuntime: sessiontest.FakePipeRuntime{FakeRuntime: &sessiontest.FakeRuntime{}}, answer: func() (ext.Pipes, error) { return held, errors.New("no start") }}
+		logs := &logBuffer{}
+		e := runtimeEnv(t, nativeSeam(), slog.New(slog.NewTextHandler(logs, nil)), withRuntime(rt))
+		ps := e.srv.offered.(ext.PipeStarter)
+		// The Runtime's Stop is held at its gate: the refusal comes all the
+		// same, so the caller does not wait for it.
+		answered := make(chan error, 1)
+		go func() {
+			p, err := ps.StartPipes(t.Context(), ext.PipeSpec{})
+			if p != nil {
+				err = errors.New("the guard handed the Pipes on")
+			}
+			answered <- err
+		}()
+		select {
+		case err := <-answered:
+			if err == nil || err.Error() != "no start" {
+				t.Fatalf("a start that answered Pipes and an error: %v", err)
+			}
+		case <-time.After(testWait):
+			t.Fatal("the caller waited for the Runtime's Stop")
+		}
+		open()
+		select {
+		case n := <-stopped:
+			if n != 1 {
+				t.Fatalf("stop %d returned first", n)
+			}
+		case <-time.After(testWait):
+			t.Fatal("the Pipes handed beside the error were not stopped")
+		}
+		if n := stops.Load(); n != 1 {
+			t.Fatalf("the Runtime's Stop was called %d times, want once", n)
+		}
+		if l := logs.String(); !strings.Contains(l, "provider=fake call=StartPipes failure=invalid") {
+			t.Fatalf("the guard's log:\n%s", l)
 		}
 	})
 	t.Run("a written count outside the buffer", func(t *testing.T) {
