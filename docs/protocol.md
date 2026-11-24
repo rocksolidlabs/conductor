@@ -508,13 +508,17 @@ stands, since an older host's may be of any form). It keeps only a hash of
 logs neither the key nor the id. A switchyard keeps none of `machine`,
 `platform` and `version`, whatever a host sends.
 
-Host → server: `register{proto, host{name,version,user?,answerAs?,forms?,machine?,platform?}, session{name,agentId,command,cwd,cols,rows,relayOnly?,agentToken?,branch?,where?,agentVersion?,repo?,repoCommon?,startCommit?}, resume?{sessionId,secret}}`
+Host → server: `register{proto, host{name,version,user?,answerAs?,forms?,promptShape?,machine?,platform?}, session{name,agentId,command,cwd,cols,rows,relayOnly?,agentToken?,branch?,where?,agentVersion?,repo?,repoCommon?,startCommit?}, resume?{sessionId,secret}}`
 (`user` ≤ 64 bytes is the OS user for "hosted by"; `answerAs: true` says the host takes `answer_as` and
 sends `kept` with its `attention` (below): `conductor host` says it, a server publishing to a switchyard
 never does, an older host leaves it out and an older server ignores it; `forms: true` says the host reads
 a recipe's forms by the form's rules, so the owner's own server puts them in `registered.recipe` (below,
 #970): a bool, so the register's bound does not change; `conductor host` says it, a server publishing to
-a switchyard never does, an older host leaves it out and an older server ignores it; `cwd` ≤ 4096 bytes; `branch` ≤ 200 bytes is read from `.git/HEAD`;
+a switchyard never does, an older host leaves it out and an older server ignores it; `promptShape: true`
+says the host's session judges a line by the agent's prompt shape, so a server puts the shape in
+`registered.recipe` (below, #1093): a bool, so the register's bound does not change; `conductor host`
+says it, whatever its server, a server publishing to a switchyard never does (its sessions watch no
+recipe), an older host leaves it out and is sent no shape, and an older server ignores it and sends none; `cwd` ≤ 4096 bytes; `branch` ≤ 200 bytes is read from `.git/HEAD`;
 a server publishing its sessions to a switchyard registers each with less: `command` is one word, the
 agent's id or else the program's name, never an argument; `cwd` the folder's last element; no `user`,
 no `branch` and none of what the host reports, below),
@@ -870,7 +874,7 @@ the screen of the agent the host registered (`session.agentId`), so that a
 hosted session watches what a server session of the same agent watches:
 `{trustPrompt?, trustAnswers?: [{label, input}], questions?: [{prompt,
 words?, anytime?, answers?, answersFromScreen?, modeAnswers?,
-typedAnswers?}], workingTitle?, confirmSubmit?}`, the catalog's own fields:
+typedAnswers?}], workingTitle?, confirmSubmit?, promptShape?}`, the catalog's own fields:
 to a host whose register said `forms`, from the owner's own server, the
 recipe the server's own sessions are started with (`internal/agents`'
 `Recipe`), whole; to any other (an older host, and every host of a
@@ -890,7 +894,24 @@ title. `confirmSubmit` (the agent reports taking a prompt) is carried and
 set on the hosted session as on a server one, where only a submission that
 asks for a second Enter gets it (a crew's prompt); no submission on a host
 asks for one yet, hosted crews being to come, so today it changes nothing
-there. It is absent
+there. `promptShape` (#1093), the agent's prompt at rest as the catalog
+has it (`promptShape`, below), goes only to a host whose register said
+`promptShape`, from the owner's own server and from a switchyard alike;
+any other host is sent the recipe without it, byte for byte what it was
+sent before (and none when nothing else is left). With it the hosted
+session judges a line as the server's own session of the agent does:
+while its startup watch lasts, a line's text is typed only where a whole
+frame shows the agent's prompt by its shape, and a line that is an Enter
+alone is judged the same way as the writer takes it (Attention, what
+Conductor submits). A host without it (an earlier release's, or one whose server is
+of an earlier release) judges a line by the rule for an agent with no
+`promptShape`. The host takes the shape as the catalog takes one (at
+most 200 bytes, RE2 that compiles and matches no empty text) and refuses
+a recipe that carries a shape it does not take, the shape or any other
+part of it, before the program starts: `conductor host` ends with `host:
+the server's recipe for the agent does not validate: nothing was
+started` and logs why, as the server refuses to start its own session of
+an agent whose recipe does not compile. It is absent
 when the catalog has no agent of that id (or none is named), when the
 agent has nothing to watch, from an older server, when its encoding is
 past 24 KiB (the built-in entries are far under it), and when `registered`
@@ -903,8 +924,9 @@ nothing of it, as it does a pattern that does not compile): at most 8
 questions, each with a prompt; at most 6 answers to the trust question and
 to each question, a label of 1 to 60 characters (counted trimmed of
 surrounding spaces, as the catalog counts) and keys of 1 to 48 bytes;
-each pattern at most 200 bytes. A host publishing to a switchyard (the
-server's uplink) watches nothing of one; an older host ignores the field.
+each pattern at most 200 bytes, the prompt shape's too. A host
+publishing to a switchyard (the server's uplink) watches nothing of one;
+an older host ignores the field.
 
 A run link minted by `link_run` resolves on the join page as a run link does
 (`{run: {id, name, members, desk?}, role, label, switchyard}`, `desk` the
@@ -1559,8 +1581,9 @@ way, nothing cut by a smaller window) that matches it and shows no dialog's
 numbered choice on any row, and nothing is typed into any other screen; the
 turn then ends at its start bound saying the screen was not recognised, with
 its words. The built-in Claude Code and Codex carry theirs; with none, the
-numbered-choice rule alone keeps the line from a whole screen. Hosted sessions are not handed it (no host types
-such a line), so `registered.recipe` does not carry it.
+numbered-choice rule alone keeps the line from a whole screen. A hosted session whose host said `promptShape`
+is handed it in `registered.recipe` (#1093) and judges a line's text at its start by it as a server session does
+(Attention, what Conductor submits); no host types a Brakeman turn's line.
 
 An agent's catalog entry can carry a `trustPrompt`, the words of its
 workspace-trust question (RE2, at most 200 bytes, not matching an empty text).
@@ -1891,7 +1914,9 @@ trust question drawn then holds the carriage return back too. While the
 startup questions' watch lasts (until the first submission's carriage
 return), a line's text is typed only at the agent's prompt, judged on one
 reading of the screen as the program drew it, before the text and again as
-the writer takes it. For an agent whose catalog entry has a `promptShape`,
+the writer takes it. For an agent whose catalog entry has a `promptShape`
+(a server's own session, and a hosted one whose host said `promptShape`,
+which `registered.recipe` hands the shape),
 the text is typed only where that reading is a whole frame (no
 synchronized update under way, nothing cut by a window made smaller) that
 shows the agent's prompt by its shape, no startup question's pattern and no
@@ -1902,7 +1927,9 @@ question: nothing was typed; answer it in its terminal` where a numbered
 choice shows and no startup question, `the agent is not at its prompt yet:
 nothing was typed` otherwise; Conductor's own waits, and a crew member's
 prompt so held is noted once per wait in the run's log (Crew runs). An
-agent with startup questions and no `promptShape` is refused where a whole
+agent with startup questions and no `promptShape` (and a hosted session
+whose host was sent none: an earlier release's host, or a host of an
+earlier release's server) is refused where a whole
 frame shows a startup question or a numbered choice, or a frame not whole
 while the output the watcher keeps saw a startup question drawn. A line
 that is a carriage return alone is judged the same way as the writer takes

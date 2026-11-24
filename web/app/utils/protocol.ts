@@ -960,6 +960,16 @@ export interface HostFormsInfo {
   forms?: boolean
 }
 
+/**
+ * The prompt shape (docs/protocol.md, Host control connection, #1093): what a host's register says when its session judges a
+ * line by the agent's prompt shape, so that a server puts the shape in `registered.recipe` (`promptShape`). A bool. `conductor
+ * host` says it; a server publishing to a switchyard never does; an older host leaves it out and is sent no shape, and an older
+ * server ignores it.
+ */
+export interface HostPromptShapeInfo {
+  promptShape?: boolean
+}
+
 /** host → server, on `attention`, from a host that said answerAs: the questions its session keeps without showing them. */
 export interface HostAttentionKept {
   /** At most HOST_MAX_KEPT question ids (1–32 bytes of printable ASCII each); a message past that is dropped whole. */
@@ -1173,6 +1183,8 @@ export function hostDeskLocalId(runId: string): string {
  * host registered, as a server session of it watches. Absent when the catalog has no such agent or nothing to watch, from an older
  * server, past HOST_MAX_RECIPE bytes encoded, and when registered with it would be past a host message (64 KiB); a host refuses one
  * past the bounds below. confirmSubmit is set on the hosted session, but no submission on a host asks for the second Enter yet.
+ * promptShape, the agent's prompt at rest (a pattern of at most HOST_MAX_RECIPE_PATTERN bytes, as the catalog's), goes only to a
+ * host whose register said promptShape (HostPromptShapeInfo); a host that cannot take the one it is sent starts nothing.
  * The workbench never sees it.
  */
 export interface HostRegisteredRecipe {
@@ -1184,6 +1196,7 @@ export interface HostRecipe {
   questions?: HostRecipeQuestion[]
   workingTitle?: string
   confirmSubmit?: boolean
+  promptShape?: string
 }
 export interface HostRecipeAnswer {
   label: string
