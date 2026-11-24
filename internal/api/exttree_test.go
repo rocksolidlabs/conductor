@@ -17,6 +17,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"testing/fstest"
 
@@ -70,8 +71,14 @@ func graphHost(t *testing.T, e *testEnv) *extHost {
 // gitLog puts a git first on PATH that writes each command it runs into
 // the file it answers, after the two variables of the reads' environment
 // as it finds them ("NR=<no replace> LP=<literal pathspecs>"), then runs
-// the real one.
-func gitLog(t *testing.T) string {
+// the real one. PATH is the process's, so the log would hold every git
+// the process starts, the server's own too: e's history indexer, woken by
+// the test's commits, reads a run's repository on a goroutine of its own
+// (TestTheReadsLogHoldsTheReadsAlone). The indexer is stopped first, its
+// goroutine and its check ended, and is not started again: from then on
+// nothing of it runs, whatever wakes it, and the log holds what the test
+// asked for alone.
+func gitLog(t *testing.T, e *testEnv) string {
 	t.Helper()
 	if runtime.GOOS == "windows" {
 		t.Skip("a shell script as git")
@@ -80,6 +87,7 @@ func gitLog(t *testing.T) string {
 	if err != nil {
 		t.Skip("git is not installed")
 	}
+	e.srv.stopHistory()
 	bin := t.TempDir()
 	log := filepath.Join(t.TempDir(), "git.log")
 	script := fmt.Sprintf("#!/bin/sh\necho \"NR=$GIT_NO_REPLACE_OBJECTS LP=$GIT_LITERAL_PATHSPECS $*\" >> '%s'\nexec '%s' \"$@\"\n", log, real)
@@ -157,7 +165,7 @@ func TestReadTreeRefusesARevisionExpression(t *testing.T) {
 	putRun(t, e, readsRun, e.root)
 	c := gitIn(t, e.root, "rev-parse", "HEAD")
 	h := graphHost(t, e)
-	log := gitLog(t)
+	log := gitLog(t, e)
 	for _, rev := range []string{"HEAD", "main", "refs/heads/main", c[:12], strings.ToUpper(c), c + "^", c + ":README", c + "^{tree}"} {
 		if _, err := h.ReadTree(t.Context(), ext.TreeRequest{Run: readsRun, Commit: rev}); !errors.Is(err, ext.ErrRefused) {
 			t.Errorf("%q: %v", rev, err)
@@ -422,7 +430,7 @@ func TestReadBlobRefusesLargeBeforeReading(t *testing.T) {
 	e := treeEnv(t, nil)
 	c := commitFile(t, e.root, "big.bin", strings.Repeat("b", 2<<20))
 	putRun(t, e, readsRun, e.root)
-	log := gitLog(t)
+	log := gitLog(t, e)
 	if _, err := graphHost(t, e).ReadBlob(t.Context(), ext.BlobRequest{Run: readsRun, Commit: c, Path: "big.bin"}); !errors.Is(err, ext.ErrRefused) || !strings.Contains(err.Error(), "too large") {
 		t.Fatalf("2 MiB: %v", err)
 	}
@@ -459,7 +467,7 @@ func TestDeniedFollowsTheListAsItChanges(t *testing.T) {
 		return slices.Clone(list)
 	}
 	h := graphHost(t, e)
-	log := gitLog(t)
+	log := gitLog(t, e)
 	ask := func() []bool {
 		got, err := h.Denied(t.Context(), ext.DeniedRequest{Run: readsRun, Paths: []string{"README", "notes/a.txt"}})
 		if err != nil {
@@ -588,7 +596,7 @@ func TestHostReadsUseTheReadEnvironment(t *testing.T) {
 	putRun(t, e, readsRun, e.root)
 	c := gitIn(t, e.root, "rev-parse", "HEAD")
 	h := graphHost(t, e)
-	log := gitLog(t)
+	log := gitLog(t, e)
 	if _, err := h.ReadTree(t.Context(), ext.TreeRequest{Run: readsRun, Commit: c, Roots: true}); err != nil {
 		t.Fatal(err)
 	}
@@ -615,6 +623,45 @@ func TestHostReadsUseTheReadEnvironment(t *testing.T) {
 	}
 	if len(subs) != 4 {
 		t.Fatalf("the reads ran %v:\n%s", subs, strings.Join(lines, "\n"))
+	}
+}
+
+// The log of the reads' git holds what the reads ran, never a git the
+// server runs on its own: the history's indexer, woken by the run's
+// commit, reads the run's folder's repository (gitcli.RepoOf), and that
+// read, held at its seam until the log is in place (or its indexer stops)
+// and let go then, lands in no log (#281).
+func TestTheReadsLogHoldsTheReadsAlone(t *testing.T) {
+	e := treeEnv(t, nil)
+	c := gitIn(t, e.root, "rev-parse", "HEAD")
+	reached, release, returned := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	var held atomic.Bool
+	freshIndexer(t, e, func(h *historyIndexer) {
+		h.repoOf = func(ctx context.Context, dir string) (string, string, error) {
+			if dir != e.root || !held.CompareAndSwap(false, true) {
+				return gitcli.RepoOf(ctx, dir)
+			}
+			close(reached)
+			defer close(returned)
+			select {
+			case <-release:
+			case <-ctx.Done():
+			}
+			return gitcli.RepoOf(ctx, dir)
+		}
+	})
+	putRun(t, e, readsRun, e.root)
+	<-reached
+	log := gitLog(t, e)
+	close(release)
+	<-returned
+	if _, err := graphHost(t, e).ReadTree(t.Context(), ext.TreeRequest{Run: readsRun, Commit: c}); err != nil {
+		t.Fatal(err)
+	}
+	for _, l := range strings.Split(strings.TrimSpace(ran(t, log)), "\n") {
+		if !strings.HasPrefix(l, "NR=1 LP=1 ") {
+			t.Errorf("a git run without the reads' environment: %s", l)
+		}
 	}
 }
 
