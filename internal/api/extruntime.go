@@ -107,9 +107,10 @@ func processRefOf(id string, crewRef *session.CrewRef) ext.ProcessRef {
 // at error naming the Runtime, and answered as a refused start, or as a
 // command's result with Exit -1 and the words. The Terminal and the
 // ServiceProcess it answers are behind the guard too (guardProcess), since
-// the server's goroutines call them for as long as the process lives. The
-// panic's value is not quoted: the spec the Runtime was handed holds a
-// session's agent token. The errors and a result's status texts of a
+// the server's goroutines call them for as long as the process lives; a
+// Terminal's Read or Write that answers a count outside its buffer is its
+// process's failure, as a panic is. The panic's value is not quoted: the
+// spec the Runtime was handed holds a session's agent token. The errors and a result's status texts of a
 // Runtime that is the identity provider's value leave the guard as the
 // guard's own words (quietErr), from every method of its, its processes'
 // too; what its commands print is their output, passed on as it is.
@@ -371,15 +372,27 @@ type guardTerminal struct {
 	t ext.Terminal
 }
 
+// Read is the Runtime's Read; a count outside b is the process's failure,
+// as a panic is (miscounted), never handed on.
 func (t guardTerminal) Read(b []byte) (n int, err error) {
 	if t.broken() || !t.guard("Read", func() { n, err = t.t.Read(b) }) {
+		return 0, t.err()
+	}
+	if n < 0 || n > len(b) {
+		t.miscounted("Read")
 		return 0, t.err()
 	}
 	return n, t.g.quiet(err)
 }
 
+// Write is the Runtime's Write; a count outside b is the process's
+// failure, as Read's is.
 func (t guardTerminal) Write(b []byte) (n int, err error) {
 	if t.broken() || !t.guard("Write", func() { n, err = t.t.Write(b) }) {
+		return 0, t.err()
+	}
+	if n < 0 || n > len(b) {
+		t.miscounted("Write")
 		return 0, t.err()
 	}
 	return n, t.g.quiet(err)
