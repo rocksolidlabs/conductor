@@ -125,6 +125,18 @@ func runNotify(ctx context.Context, args []string, stdin io.Reader, stdout, stde
 		}
 		options = opts
 	}
+	// A chat's child (the protocol way, CONDUCTOR_PROTOCOL set) reports
+	// through its own stream; the hooks the person's settings run in it
+	// too (Conductor's own among them) would be a second account of the
+	// same steps. Their payload is read, so the runner never writes into a
+	// closed pipe, and nothing is sent. The agent's own reports (--ask,
+	// --event, a state) are not hook payloads and are still sent.
+	if len(payload) == 1 && os.Getenv(protocolEnv) != "" {
+		if payload[0] != "--codex" {
+			_, _ = readPayload(stdin)
+		}
+		return 0, nil
+	}
 	target, err := notify.TargetFromEnv(os.Getenv)
 	if err != nil {
 		// A hook runner writes the payload whether or not there is a session
@@ -216,6 +228,10 @@ func joinFlags(flags []string) string {
 	}
 	return strings.Join(flags[:len(flags)-1], ", ") + " and " + flags[len(flags)-1]
 }
+
+// protocolEnv is set (to 1) in the environment of a session's child that
+// runs the agent's protocol way.
+const protocolEnv = "CONDUCTOR_PROTOCOL"
 
 // hookPayload is an agent whose hooks write their payload to stdin: the flag
 // that says whose it is, its usage, and the mapper.
