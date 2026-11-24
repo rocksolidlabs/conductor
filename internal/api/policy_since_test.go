@@ -92,8 +92,11 @@ func TestAOnePlaceAnswerIsAppliedWhateverTheRouterSaysOfASince(t *testing.T) {
 // A policy of two groups from a router that answers no Since, either form:
 // not taken. The record stays under the server's own policy, its history
 // keeping the router's routed row with the words why, which the
-// operator's read shows; the operator answers it, applied; ana is never
-// asked about.
+// operator's read shows. The router, never told its policy was not
+// taken, answers the operator's query that it will route the record now
+// (Routes): that is not believed of a policy not taken. The operator's
+// answer is taken at once, applied, the router not told again; ana is
+// never asked about.
 func TestACountingPolicyFromARouterWithNoSinceIsNotTaken(t *testing.T) {
 	for _, c := range sinceForms()[1:] {
 		t.Run(c.name, func(t *testing.T) {
@@ -118,12 +121,67 @@ func TestACountingPolicyFromARouterWithNoSinceIsNotTaken(t *testing.T) {
 			if !strings.Contains(mustJSON(read), want) {
 				t.Fatalf("the operator's read does not say why: %.600s", mustJSON(read))
 			}
+			c.fr.SetConfirm(did, routesStill)
+			told := routerToldOf(c.fr, did)
 			f.expect(t, http.MethodPost, "/api/decisions/"+did+"/respond", operatorBody("o1", 0, f.rev(t, did), false, ""), http.StatusCreated, "")
 			f.decisionWhen(t, did, "applied", inState(ledger.DecisionApplied))
+			if n := routerToldOf(c.fr, did); n != told {
+				t.Fatalf("the router was told %s %d times more", did, n-told)
+			}
 			if all, _ := sinceQueries(c.fr, did, "ana"); all != 0 {
 				t.Fatalf("the router was asked about ana %d times", all)
 			}
 		})
+	}
+}
+
+// routesStill is a router that holds its route of a record as answered and
+// not written: it will route the record now (Routes) whenever it is asked
+// about it under the server's own policy.
+func routesStill(q ext.ConfirmQuery) ext.Confirmation {
+	if q.Revision == "local/1" && q.Subject == "" {
+		return ext.Confirmation{InForce: true, Routes: true}
+	}
+	return ext.Confirmation{InForce: true}
+}
+
+// routerToldOf counts the times fr was told the record did.
+func routerToldOf(fr *exttest.FakeRouter, did string) int {
+	n := 0
+	for _, d := range fr.Decisions() {
+		if d.Request == did {
+			n++
+		}
+	}
+	return n
+}
+
+// A held answer to a record whose counting policy was not taken, from a
+// router that answers no Since and still says it will route the record
+// now (Routes): recorded at once, the operator's, applied, the router not
+// told again.
+func TestAHeldAnswerToACountingPolicyNotTakenIsTakenAtOnce(t *testing.T) {
+	fr := exttest.NewFakeRouterNoSince("switchman")
+	fr.SetPolicy("dr-1", groupsPolicy("exttest-r1", true, group("architecture", 1, "ana"), group("security", 1, "cam")))
+	f := newHeldFixtureRouted(t, fr)
+	did := f.openLocal(t, "q1")
+	until(t, did+"'s routed row with its revision", func() bool {
+		for _, h := range f.rec(t, did).History {
+			if h.Kind == ledger.HistoryRouted && h.By == "router:switchman" && strings.Contains(h.Detail, `"revision":"exttest-r1"`) {
+				return true
+			}
+		}
+		return false
+	})
+	fr.SetConfirm(did, routesStill)
+	told := routerToldOf(fr, did)
+	out := f.hand(t, held(did, "h1", "ana", 0, f.rec(t, did).Rev))
+	if out.Status != ext.AnswerRecorded || out.Repeat {
+		t.Fatalf("the held answer: %+v", out)
+	}
+	until(t, did+" applied", func() bool { return f.rec(t, did).State == ledger.DecisionApplied })
+	if n := routerToldOf(fr, did); n != told {
+		t.Fatalf("the router was told %s %d times more", did, n-told)
 	}
 }
 

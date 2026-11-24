@@ -227,7 +227,8 @@ type PolicyConfirmer interface {
 // ConfirmQuery with a Since: whether it can establish that a subject
 // stayed eligible, without a break, since a time. ConfirmsSince is
 // answered at once from what the router is, never a call out, and the
-// same every time: the server asks it once, as it is made.
+// same every time: the server asks it once, as it is made, before the
+// provider's Start (ext.Starter) has run.
 //
 // Only of a router whose ConfirmsSince answers true does the server ask a
 // query with a Since, and only from one does it take a policy that counts

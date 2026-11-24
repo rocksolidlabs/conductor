@@ -346,7 +346,14 @@ func (s *Server) confirmFor(ctx context.Context, did string, auth crew.Authority
 	}
 	c := s.policyCheck(ctx, rec, revision, subject)
 	if c.Routes && !ledger.RouterPolicy(rec.Policy) {
-		s.router.retell(did)
+		if s.runs.PolicyNotTaken(rec) {
+			// Its router's policy was not taken (crew.Engine.PolicyNotTaken):
+			// its word that it will route the record now is not believed,
+			// and the answer is judged under the server's own policy.
+			c.Routes = false
+		} else {
+			s.router.retell(did)
+		}
 	}
 	if c.Revision == "" {
 		// An answer that leaves its revision out is the revision asked
@@ -565,7 +572,7 @@ func (r *decisionRouter) routePolicyOf(d ext.Decision, rev int, rt ext.Route, un
 	var de *crew.DecisionError
 	switch {
 	case err == nil:
-		if why := r.s.runs.PolicyUntaken(*rt.Policy); why != "" {
+		if why := r.s.runs.PolicyUntaken(*rt.Policy); why != "" && !rc.Repeat {
 			r.s.log.Info("routed decision's policy not taken", "decision", d.Request, "words", why)
 		}
 	case errors.As(err, &de) && de.Code == crew.CodeStaleDecision:

@@ -125,6 +125,29 @@ func (e *Engine) PolicyUntaken(p ext.RoutePolicy) string {
 	return untakenWords(p.Groups, e.takesCounted())
 }
 
+// PolicyNotTaken says rec is a record whose router's policy was not taken
+// (notTakenRecord): the router's word that it will route it now (Routes)
+// is not believed of it.
+func (e *Engine) PolicyNotTaken(rec ledger.DecisionRecord) bool {
+	return notTakenRecord(rec, e.takesCounted())
+}
+
+// notTakenRecord says rec is open under the server's own policy and holds
+// a router's routing row that carries a revision, on an engine that takes
+// no policy counting approvals (counted false): such a row is written
+// beside the policy in the same transaction (RoutePolicy, Reroute) in
+// every case but a policy not taken, so a record being routed for the
+// first time, and every record of an engine whose router answers a Since,
+// is never one.
+func notTakenRecord(rec ledger.DecisionRecord, counted bool) bool {
+	if counted || rec.State != ledger.DecisionOpen || ledger.RouterPolicy(rec.Policy) {
+		return false
+	}
+	return slices.ContainsFunc(rec.History, func(h ledger.HistoryRow) bool {
+		return routingRow(h) && strings.HasPrefix(h.By, "router:") && revisionOf(h) != ""
+	})
+}
+
 // untakenWords is PolicyUntaken for groups, counted saying the engine takes
 // a policy that counts approvals.
 func untakenWords(groups []ext.Requirement, counted bool) string {
@@ -298,8 +321,10 @@ func judgePolicy(rec ledger.DecisionRecord, resp Response, who Admittee, pol pol
 	id := rec.ID()
 	p, routed := routedOf(rec.Policy)
 	if !routed {
-		if pol.routes && pol.conf != nil && pol.conf.Routes && rec.Origin != ledger.OriginCompare {
-			// The router will route it now: told again by the route.
+		if pol.routes && pol.conf != nil && pol.conf.Routes && rec.Origin != ledger.OriginCompare && !notTakenRecord(rec, pol.counted) {
+			// The router will route it now: told again by the route. Never
+			// believed of a record whose policy was not taken: its router,
+			// never told so, would hold it here until ext.MaxBehind.
 			return true, false, refuse(CodeStalePolicy, "%s's policy is being written: try again", id)
 		}
 		return false, false, nil

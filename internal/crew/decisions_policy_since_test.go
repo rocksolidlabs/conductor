@@ -186,7 +186,13 @@ func TestACountingPolicyWithoutASinceIsNotTaken(t *testing.T) {
 			if err != nil || !again.Repeat || len(recordOf(t, ld, id).History) != len(rec.History) {
 				t.Fatalf("told again: %+v %v", again, err)
 			}
-			answer(t, e, id, Response{ResponseID: "o1", Choice: choice(0), ExpectedRev: rec.Rev})
+			// The router, never told its policy was not taken, says it will
+			// route the record now: not believed, the operator's answer taken.
+			routes := ext.Confirmation{InForce: true, Routes: true, Revision: "local/1"}
+			op, err := e.RespondDecisionWith(t.Context(), id, Response{ResponseID: "o1", Choice: choice(0), ExpectedRev: rec.Rev, ByName: "Nate"}, "admin", workbench(e), &routes)
+			if err != nil || op.Status != ledger.ResponseAccepted {
+				t.Fatalf("the operator's answer with the router's Routes: %+v %v", op, err)
+			}
 			appliedOnceIn(t, ld, id)
 			if n := p.askedAbout("ana"); n != 0 {
 				t.Fatalf("the router was asked about ana %d times", n)
@@ -246,4 +252,50 @@ func TestAKeptCountingPolicyIsNotInForceWithoutASince(t *testing.T) {
 	}
 	appliedOnceIn(t, ld, g.ID)
 	stopRun(t, e, run.ID)
+}
+
+// Whether a record's router's policy was not taken is read off its
+// history: an open record under the server's own policy with a router's
+// routing row that carries a revision, on an engine that takes no
+// counting policy. A record not yet routed is not one, nor one routed
+// with destinations alone, nor one whose policy was written, nor the same
+// record on an engine whose router answers a Since, nor once it is
+// answered.
+func TestAPolicyNotTakenIsKnownByItsRoutingRow(t *testing.T) {
+	p := &plainRouter{answer: anaEligible}
+	e, ld, run, id := noSinceGate(t, "api-sweep-000010d1", p)
+	if e.PolicyNotTaken(recordOf(t, ld, id)) {
+		t.Fatal("a record not yet routed reads as a policy not taken")
+	}
+	if _, err := e.RecordRoute(t.Context(), id, "switchman", toAna, "the architecture owner"); err != nil {
+		t.Fatal(err)
+	}
+	if e.PolicyNotTaken(recordOf(t, ld, id)) {
+		t.Fatal("a record routed with destinations alone reads as a policy not taken")
+	}
+	if _, err := e.RoutePolicy(t.Context(), id, "switchman", recordOf(t, ld, id).Rev, policyOf("rev-1", false, eligibleGroup("architecture", 2, "ana", "ben")), toAna, ""); err != nil {
+		t.Fatal(err)
+	}
+	rec := recordOf(t, ld, id)
+	if !e.PolicyNotTaken(rec) {
+		t.Fatalf("a policy not taken is not known: %+v", rec.History)
+	}
+	if notTakenRecord(rec, true) {
+		t.Fatal("on an engine whose router answers a Since, a record reads as a policy not taken")
+	}
+	answer(t, e, id, Response{ResponseID: "o1", Choice: choice(0), ExpectedRev: rec.Rev})
+	if e.PolicyNotTaken(appliedOnceIn(t, ld, id)) {
+		t.Fatal("an answered record reads as a policy not taken")
+	}
+	stopRun(t, e, run.ID)
+
+	q := &plainRouter{answer: anaEligible}
+	e2, ld2, run2, id2 := noSinceGate(t, "api-sweep-000010d2", q)
+	if _, err := e2.RoutePolicy(t.Context(), id2, "switchman", recordOf(t, ld2, id2).Rev, policyOf("rev-1", false, eligibleGroup("architecture", 1, "ana")), nil, ""); err != nil {
+		t.Fatal(err)
+	}
+	if e2.PolicyNotTaken(recordOf(t, ld2, id2)) {
+		t.Fatal("a record whose policy was written reads as a policy not taken")
+	}
+	stopRun(t, e2, run2.ID)
 }
