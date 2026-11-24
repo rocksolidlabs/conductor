@@ -115,7 +115,12 @@ After this item:
   (`StartTerminal`), a bounded command (`Run`), a service (`Serve`), one try of a
   probe (`Probe`), a port (`Port`), whether it runs a managed run
   (`Takes`), and its names (C1's `Name`, and `Where`). `ext/local`'s
-  native Runtime is `main`'s code and takes every run.
+  native Runtime is `main`'s code and takes every run. A Runtime may also
+  implement the optional `ext.PipeStarter`, a long-lived child whose input
+  and output are pipes (a session's protocol way,
+  `docs/plans/chat-or-terminal.md`): the native Runtime does, the server's
+  guard offers it only when the registered Runtime itself has it, and a
+  Runtime that lacks it is never handed such a child.
 - The composition root (`runServe`) hands the server C1's filled set
   (`local.Fill`), whose Runtime is the registered one or the native one.
   The server and its engine start every process through a Runtime: a
