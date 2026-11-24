@@ -3,6 +3,7 @@ package session
 import (
 	"errors"
 	"regexp"
+	"sync"
 	"testing"
 	"time"
 )
@@ -144,6 +145,12 @@ func TestTheFirstMessageWaitsInInfo(t *testing.T) {
 // shows no hold, and the agent's next report shows. A line withdrawn by
 // anything else (a sender let go) keeps its hold and its words. The pause
 // is longer than the test: only the withdrawal ends it.
+//
+// A sender's withdrawal that comes while the program is still taking the
+// text (its write begun, not done) answers Submit at once, and the line is
+// finished as the text lands, the session's turn kept meanwhile: its hold
+// is set then, and shown (HeldWords). So the hold is waited for by what it
+// shows, never read as Submit returns.
 func TestAPersonsKeysBeforeTheEnterHoldNothing(t *testing.T) {
 	t.Run("withdrawn by a person's keys", func(t *testing.T) {
 		s, p := newLocalWith(t, quiet(Options{SubmitPause: time.Hour}))
@@ -184,25 +191,58 @@ func TestAPersonsKeysBeforeTheEnterHoldNothing(t *testing.T) {
 			t.Fatalf("the agent's working shows %+v", a)
 		}
 	})
-	t.Run("withdrawn by its sender", func(t *testing.T) {
-		s, p := newLocalWith(t, quiet(Options{SubmitPause: time.Hour}))
-		p.outW.Write([]byte("> "))
-		gone := make(chan struct{})
-		done := make(chan error, 1)
-		go func() {
-			_, err := s.Submit(t.Context(), Submission{Text: "fix the parser", ByName: "relay", Withdrawn: gone})
-			done <- err
-		}()
-		if w := nextWrite(t, p); w != "fix the parser" {
-			t.Fatalf("written %q", w)
+	// Its sender withdraws the line: once after its text is written, once
+	// while the program is still taking it (the fake program's write of the
+	// text held until Submit has answered and the test has looked, so the
+	// line is finished after Submit returns every run).
+	for _, mid := range []bool{false, true} {
+		name := "withdrawn by its sender"
+		if mid {
+			name += " while the program takes the text"
 		}
-		close(gone)
-		<-done
-		if !s.TurnHeld() {
-			t.Fatal("the session's turn is not held")
-		}
-		waitAttention(t, s, func(a Attention) bool {
-			return a.State == AttentionNeedsInput && a.Source == SourceSubmit && a.Message == HeldWords
+		t.Run(name, func(t *testing.T) {
+			s, p := newLocalWith(t, quiet(Options{SubmitPause: time.Hour}))
+			p.outW.Write([]byte("> "))
+			gone := make(chan struct{})
+			answered := make(chan struct{})
+			if mid {
+				var once sync.Once
+				p.onBytes = func(b []byte) {
+					if string(b) == "fix the parser" {
+						once.Do(func() {
+							close(gone)
+							<-answered
+						})
+					}
+				}
+			}
+			done := make(chan error, 1)
+			go func() {
+				_, err := s.Submit(t.Context(), Submission{Text: "fix the parser", ByName: "relay", Withdrawn: gone})
+				done <- err
+			}()
+			if mid {
+				if err := <-done; !errors.Is(err, ErrRevoked) {
+					t.Fatalf("withdrawn as the program takes the text, Submit answered %v", err)
+				}
+				// The program takes the text now that Submit has answered.
+				close(answered)
+			}
+			if w := nextWrite(t, p); w != "fix the parser" {
+				t.Fatalf("written %q", w)
+			}
+			if !mid {
+				close(gone)
+				if err := <-done; !errors.Is(err, ErrRevoked) {
+					t.Fatalf("the line ended with %v", err)
+				}
+			}
+			waitAttention(t, s, func(a Attention) bool {
+				return a.State == AttentionNeedsInput && a.Source == SourceSubmit && a.Message == HeldWords
+			})
+			if !s.TurnHeld() {
+				t.Fatal("the session's turn is not held")
+			}
 		})
-	})
+	}
 }

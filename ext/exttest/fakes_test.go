@@ -578,3 +578,41 @@ func TestFakes(t *testing.T) {
 		}
 	})
 }
+
+// The fake router's two words on a query with a Since: NewFakeRouter's
+// says it answers one and answers it by its script; NewFakeRouterNoSince's
+// says it answers none and answers one not eligible whatever its script,
+// its plain query still by the script; WithoutSince's is no
+// ext.SinceConfirmer and answers as NewFakeRouterNoSince's does.
+func TestFakeRouterSaysWhetherItAnswersASince(t *testing.T) {
+	eligible := func(ext.ConfirmQuery) ext.Confirmation {
+		return ext.Confirmation{InForce: true, Groups: []string{"architecture"}}
+	}
+	q := ext.ConfirmQuery{Decision: ext.Decision{ID: "dr-1", Request: "dr-1"}, Revision: "r1", Subject: "ana"}
+	at := q
+	at.Since = time.Now().UTC()
+	ctx := t.Context()
+
+	yes := NewFakeRouter("since")
+	yes.SetConfirm("dr-1", eligible)
+	if c, _ := yes.Confirm(ctx, at); !yes.ConfirmsSince() || !c.InForce || len(c.Groups) != 1 {
+		t.Fatalf("NewFakeRouter: ConfirmsSince %t, a Since answered %+v", yes.ConfirmsSince(), c)
+	}
+	no := NewFakeRouterNoSince("no-since")
+	no.SetConfirm("dr-1", eligible)
+	if c, _ := no.Confirm(ctx, at); no.ConfirmsSince() || c.InForce || len(c.Groups) != 0 || c.Why == "" {
+		t.Fatalf("NewFakeRouterNoSince: ConfirmsSince %t, a Since answered %+v", no.ConfirmsSince(), c)
+	}
+	if c, _ := no.Confirm(ctx, q); !c.InForce || len(c.Groups) != 1 {
+		t.Fatalf("NewFakeRouterNoSince: a plain query answered %+v", c)
+	}
+	f := NewFakeRouter("plain")
+	f.SetConfirm("dr-1", eligible)
+	plain := WithoutSince(f)
+	if _, says := any(plain).(ext.SinceConfirmer); says {
+		t.Fatal("WithoutSince's router is an ext.SinceConfirmer")
+	}
+	if c, _ := plain.Confirm(ctx, at); c.InForce || len(f.Confirms()) != 1 {
+		t.Fatalf("WithoutSince: a Since answered %+v, the fake holding %d queries", c, len(f.Confirms()))
+	}
+}

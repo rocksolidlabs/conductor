@@ -101,6 +101,16 @@ type HostInfo struct {
 	// a switchyard (the Uplink) never says it; a switchyard ignores it, and
 	// so does an older server.
 	Forms bool `json:"forms,omitempty"`
+	// PromptShape says the host's session judges a line by the agent's
+	// prompt shape (HostRecipe.PromptShape), so a server puts the shape in
+	// its recipe (Registered.Recipe) and the hosted session types a line's
+	// text, while its startup watch lasts, only where its screen shows the
+	// agent's prompt, as the server's own session of the agent does. A
+	// bool, so the register's bound does not change. `conductor host`
+	// says it, whatever its server is; a server publishing to a switchyard
+	// (the Uplink), whose hosted sessions watch no recipe, never says it;
+	// an older server ignores it and sends no shape.
+	PromptShape bool `json:"promptShape,omitempty"`
 	// Machine is the host's key for its machine at this server
 	// (machine.Key, hostmachine.go): exactly MaxHostMachine lowercase hex
 	// digits, made from the machine's id and the key this server sent in
@@ -395,13 +405,21 @@ const MaxDeskID = 64
 // ConfirmSubmit is set on the hosted session as on a server one, but only
 // a submission that asks for the second Enter gets it (a crew's prompt,
 // session.Submission.Confirm), and no submission on a host asks for one
-// yet: hosted crews are to come.
+// yet: hosted crews are to come. PromptShape is the agent's prompt at rest
+// (the catalog's promptShape), sent only to a host whose register says it
+// takes it (HostInfo.PromptShape).
 type HostRecipe struct {
 	TrustPrompt   string           `json:"trustPrompt,omitempty"`
 	TrustAnswers  []RecipeAnswer   `json:"trustAnswers,omitempty"`
 	Questions     []RecipeQuestion `json:"questions,omitempty"`
 	WorkingTitle  string           `json:"workingTitle,omitempty"`
 	ConfirmSubmit bool             `json:"confirmSubmit,omitempty"`
+	PromptShape   string           `json:"promptShape,omitempty"`
+}
+
+// Empty says r watches nothing: a server sends no recipe for it.
+func (r HostRecipe) Empty() bool {
+	return r.TrustPrompt == "" && len(r.TrustAnswers) == 0 && len(r.Questions) == 0 && r.WorkingTitle == "" && !r.ConfirmSubmit && r.PromptShape == ""
 }
 
 // RecipeAnswer is one of a question's answers: its label and the keys that
@@ -441,10 +459,14 @@ const (
 // questions, each with a prompt; at most MaxRecipeAnswers answers to the
 // trust question and to each question, each with a label (at most
 // MaxRecipeAnswerLabel runes once trimmed, as the catalog counts) and
-// keys; every pattern at most MaxRecipePattern bytes. Whether a pattern
-// compiles is the host's to find, as the server's is when it starts a
-// session.
+// keys; every pattern at most MaxRecipePattern bytes, the prompt shape
+// among them (ErrRecipePromptShapeBound), as the catalog bounds a pattern.
+// Whether a pattern compiles is the host's to find, as the server's is
+// when it starts a session.
 func (r HostRecipe) Check() error {
+	if len(r.PromptShape) > MaxRecipePattern {
+		return ErrRecipePromptShapeBound
+	}
 	if len(r.TrustPrompt) > MaxRecipePattern || len(r.WorkingTitle) > MaxRecipePattern {
 		return errors.New("recipe: a pattern past its bound")
 	}
@@ -469,6 +491,10 @@ func (r HostRecipe) Check() error {
 	}
 	return nil
 }
+
+// ErrRecipePromptShapeBound is Check's refusal of a recipe whose prompt
+// shape is past MaxRecipePattern bytes.
+var ErrRecipePromptShapeBound = fmt.Errorf("recipe: the prompt shape is past %d bytes", MaxRecipePattern)
 
 func checkRecipeAnswers(as []RecipeAnswer) error {
 	if len(as) > MaxRecipeAnswers {

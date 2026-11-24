@@ -277,13 +277,13 @@ func TestReadingFields(t *testing.T) {
 		want []string
 	}{
 		{Reading{}, []string{"Key capacity.Key", "State string", "Words string", "Plan string", "Windows []capacity.Window", "Credits []capacity.Credit", "Limits capacity.Limits",
-			"Program string", "Version string", "Qualified string", "ReadAt time.Time", "Env string", "Filed string"}},
+			"Program string", "Version string", "Qualified string", "ReadAt time.Time", "Env string", "Filed string", "NeedsCheck bool"}},
 		{Window{}, []string{"Source string", "Kind string", "Name string", "Minutes int", "Percent int", "ResetsAt *time.Time", "Severity string", "Active *bool", "Limit string"}},
 		{Credit{}, []string{"Source string", "Kind string", "Enabled *bool", "Used *string", "Limit *string", "Balance *string", "Unlimited bool", "Currency string"}},
 		{Limits{}, []string{"Source string", "Reached string", "SpendControl *bool", "OrdinaryAllowed *bool"}},
 		{View{}, []string{"Agent capacity.ViewAgent", "Model capacity.ViewModel", "Account capacity.ViewAccount", "Host capacity.ViewHost", "State string", "Words string",
 			"Windows []capacity.Window", "Credits []capacity.Credit", "Limits capacity.Limits", "Counts capacity.Counts", "ReadAt *time.Time", "ReadBy *capacity.ReadBy",
-			"Fresh string", "NextRead *time.Time", "EntryLogin string", "Env string", "Filed string"}},
+			"Fresh string", "NextRead *time.Time", "CheckNow bool", "EntryLogin string", "Env string", "Filed string"}},
 	} {
 		if got := fields(c.v); !slices.Equal(got, c.want) {
 			t.Errorf("%T's fields:\n%v\nwant\n%v", c.v, got, c.want)

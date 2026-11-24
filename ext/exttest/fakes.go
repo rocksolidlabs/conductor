@@ -15,6 +15,7 @@ var (
 	_ ext.IdentityProvider  = (*FakeIdentity)(nil)
 	_ ext.DecisionRouter    = (*FakeRouter)(nil)
 	_ ext.PolicyConfirmer   = (*FakeRouter)(nil)
+	_ ext.SinceConfirmer    = (*FakeRouter)(nil)
 	_ ext.ContextProvider   = (*FakeContext)(nil)
 	_ ext.NotificationSink  = (*FakeSink)(nil)
 	_ ext.ContinuityStore   = (*FakeContinuity)(nil)
@@ -149,10 +150,17 @@ func (f *FakeIdentity) Authenticate(_ context.Context, token string) (ext.Princi
 // and their resolutions, and answers the route scripted for a question's
 // id, the empty route for the rest. It confirms policies
 // (ext.PolicyConfirmer): it answers the confirmation scripted for a
-// record's id, not in force for the rest, and records every query.
+// record's id, not in force for the rest, and records every query. It says
+// whether it answers a query with a Since (ext.SinceConfirmer): one made by
+// NewFakeRouter does, and is answered such a query by its script; one made
+// by NewFakeRouterNoSince does not, and answers every such query not
+// eligible, whatever its script, as a router that cannot establish it
+// does. WithoutSince is a router of the same fake that is no
+// ext.SinceConfirmer at all.
 type FakeRouter struct {
 	changes
-	name string
+	name    string
+	noSince bool
 
 	mu          sync.Mutex
 	routes      map[string]ext.Route
@@ -168,6 +176,47 @@ type FakeRouter struct {
 // NewFakeRouter is a FakeRouter named name that answers the empty route.
 func NewFakeRouter(name string) *FakeRouter {
 	return &FakeRouter{name: name, routes: map[string]ext.Route{}, policies: map[string]ext.RoutePolicy{}, confirm: map[string]func(ext.ConfirmQuery) ext.Confirmation{}}
+}
+
+// NewFakeRouterNoSince is NewFakeRouter's router that says it answers no
+// query with a Since (ConfirmsSince false), and answers one not eligible.
+func NewFakeRouterNoSince(name string) *FakeRouter {
+	f := NewFakeRouter(name)
+	f.noSince = true
+	return f
+}
+
+// ConfirmsSince says whether the fake answers a query with a Since: true
+// unless it was made by NewFakeRouterNoSince.
+func (f *FakeRouter) ConfirmsSince() bool { return !f.noSince }
+
+// sinceRefused is the fake's answer to a query with a Since when it says
+// it answers none: not eligible.
+const sinceRefused = "the fake router cannot say whether the subject stayed eligible since then"
+
+// WithoutSince is f as a router that confirms policies and is no
+// ext.SinceConfirmer: its Route, Resolved and Confirm are f's, f made a
+// router that answers a query with a Since not eligible, as
+// NewFakeRouterNoSince's does. Call it before f is in use.
+func WithoutSince(f *FakeRouter) interface {
+	ext.DecisionRouter
+	ext.PolicyConfirmer
+} {
+	f.noSince = true
+	return plainConfirmer{f}
+}
+
+// plainConfirmer is a FakeRouter that does not say whether it answers a
+// query with a Since: it has no ConfirmsSince.
+type plainConfirmer struct{ f *FakeRouter }
+
+func (p plainConfirmer) Name() string { return p.f.Name() }
+func (p plainConfirmer) Route(ctx context.Context, d ext.Decision) (ext.Route, error) {
+	return p.f.Route(ctx, d)
+}
+func (p plainConfirmer) Resolved(ctx context.Context, r ext.Resolution) { p.f.Resolved(ctx, r) }
+func (p plainConfirmer) Confirm(ctx context.Context, q ext.ConfirmQuery) (ext.Confirmation, error) {
+	return p.f.Confirm(ctx, q)
 }
 
 // SetPolicy has Route answer p as its policy for the record id, beside the
@@ -206,8 +255,12 @@ func (f *FakeRouter) Confirm(_ context.Context, q ext.ConfirmQuery) (ext.Confirm
 	q.Decision = copyDecision(q.Decision)
 	f.confirms = append(f.confirms, q)
 	fn := f.confirm[q.Decision.Request]
+	noSince := f.noSince
 	f.mu.Unlock()
 	f.tell()
+	if noSince && !q.Since.IsZero() {
+		return ext.Confirmation{Why: sinceRefused}, nil
+	}
 	if fn == nil {
 		return ext.Confirmation{Why: "the fake router holds no policy for " + q.Decision.Request}, nil
 	}

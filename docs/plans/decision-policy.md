@@ -337,6 +337,26 @@ behaves unchanged, and a router that does not implement
   whether the policy is in force. `Since` (a counted response's time,
   PR-9) asks whether the subject has stayed eligible, without a break,
   since then; a router that cannot establish it answers not eligible.
+  The server asks it only of a router that says it answers one:
+  `SinceConfirmer`, a second optional interface, `ConfirmsSince() bool`,
+  answered at once from what the router is and asked once as the server
+  is made (#1094). A router that confirms policies and says it answers
+  none (or does not say) is asked no `Since`: the deciding answer of a
+  policy of one place is confirmed at its application by the plain query
+  (in force at the record's revision, not behind, its person eligible in
+  a group they answered for), as before PR-9; a policy that counts
+  approvals (more than one place in all) is not taken from it. Its route
+  writes the router's routed row alone, at the record's rev, with the
+  words "its router's policy asks for 2 approvals, and its router does
+  not confirm an approval since its time: the operator answers it under
+  the server's own policy", the record staying under the server's own
+  policy (the router is not told: its later word that it will route
+  such a record now, `Routes`, is not believed, and the operator's
+  answer or a held answer is judged under the server's own policy at
+  once; `Engine.PolicyNotTaken` knows such a record by its router's
+  routing row with a revision); a re-route to one is refused (`ErrRefused`) with those words;
+  and a record that keeps one (written while its router answered a
+  `Since`) is judged not in force, for its reads and its responses.
   `Confirmation{InForce bool, Behind bool, Routes bool, Revision
   string, Groups []string, Why string}`:
   - `InForce`: the router stands behind its policy for this record now;
@@ -753,7 +773,8 @@ behaves unchanged, and a router that does not implement
     decision it no longer holds; an open one is judged as above.
 - **Application** (`applyDecisions`): for a response that counted
   under a router's policy, the engine asks `Confirm` again with its
-  subject (and, in PR-9, `Since` its time) before the application's
+  subject (and, in PR-9, `Since` its time, of a router that answers one)
+  before the application's
   transaction, beside DR1's identity recheck. Not confirmed (no longer
   eligible, not in force, no answer) supersedes the decision with DR1's
   fresh decision and words ("Ana's answer could not be confirmed: dr-9
@@ -1061,7 +1082,8 @@ One found unconfirmed after a restart (its `boot` another process's) is
 refused the same way (a held answer never counts: Responding, Held
 answers). A confirmed one keeps its place across restarts. At
 application every counted response is rechecked by `Confirm` with its
-subject and `Since` its time: a router that cannot say the subject
+subject and `Since` its time (a policy that counts is taken only from a
+router that says it answers a `Since`): a router that cannot say the subject
 stayed eligible since then answers not eligible, and the decision is
 superseded with DR1's fresh decision and words, as a failing identity
 recheck does. No credential is stored. How a router establishes "since"
@@ -1113,9 +1135,12 @@ counted response; the operator's card shows each group's count.
   recheck is still to answer; its decision's combined answer is applied
   only once every counted approval's recheck has answered.
 - At application, confirmed by `Confirm` with `Since` (`Engine.SetPolicySince`,
-  the server's guarded call; a zero `Since` is never asked): any counted
-  approval or the deciding one not confirmed supersedes the decision, as
-  do places no longer filled by the approvals confirmed.
+  the server's guarded call, set only for a router whose `ConfirmsSince`
+  answers true; a zero `Since` is never asked): any counted approval or
+  the deciding one not confirmed supersedes the decision, as do places no
+  longer filled by the approvals confirmed. With no `SetPolicySince` the
+  deciding answer of a policy of one place is confirmed by the plain
+  query, and no policy that counts is taken (`Engine.PolicyUntaken`).
 - The rows-short supersession is made in the re-route's transaction on a
   run the engine holds, and before a response's transaction (as a moved
   subject's is) on the next response, and after a recheck that voided an

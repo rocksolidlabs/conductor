@@ -111,6 +111,10 @@ type Reading struct {
 	// Filed is what the reader's caller files the reading under, decided
 	// as the read starts; carried as it is to the View, never in its JSON.
 	Filed string
+	// NeedsCheck marks an unqualified reading refused only for want of the
+	// admin's explicit check (Error.Check): nothing was started under an
+	// admission, so the key's cooldown leaves a check its slot (Cache.Read).
+	NeedsCheck bool
 }
 
 // Window is one usage limit as the provider reported it. A window the
@@ -252,6 +256,10 @@ type View struct {
 	ReadBy   *ReadBy     `json:"readBy,omitempty"`
 	Fresh    string      `json:"fresh"`
 	NextRead *time.Time  `json:"nextReadAfter,omitempty"`
+	// CheckNow says the admin's explicit check is taken now although a
+	// plain read waits for NextRead: the key's last read was refused only
+	// for want of that check (Reading.NeedsCheck), and no read is under way.
+	CheckNow bool `json:"checkNow,omitempty"`
 	// EntryLogin is the name of the variable by which the agent's entry,
 	// or the server's passthrough, sets its login (its adapter's folder
 	// variable or one of its login variables, a name of at most 32 bytes):
@@ -402,7 +410,13 @@ func (r Reading) outOfBounds() string {
 //     the bound: never a cut or clamped figure;
 //   - a reading that is not ok holds its state, its words, its time and
 //     its environment's hash, and nothing of the reader's plan, windows,
-//     credits, limits or versions;
+//     credits or limits; an unqualified one holds whether it waits for a
+//     check (NeedsCheck);
+//   - a signed_out or key_paid reading, the tool's own answer about the
+//     login, holds what read it (the program, the version found, the
+//     qualified version) when the reader found a version within its
+//     bound, so its freshness says "by" what as an ok reading's does; a
+//     version past its bound is left out, the state kept;
 //   - free text for people is cut, saying so (cut);
 //   - every slice and pointer is its own, never the reader's.
 func (r Reading) kept(k Key, at time.Time) Reading {
@@ -419,7 +433,12 @@ func (r Reading) kept(k Key, at time.Time) Reading {
 		if words == "" {
 			words = StateWords(r.State)
 		}
-		return Reading{Key: k, State: r.State, Words: cut(words, MaxWords), ReadAt: at, Env: r.Env, Filed: r.Filed}
+		out := Reading{Key: k, State: r.State, Words: cut(words, MaxWords), ReadAt: at, Env: r.Env, Filed: r.Filed,
+			NeedsCheck: r.State == StateUnqualified && r.NeedsCheck}
+		if (r.State == StateSignedOut || r.State == StateKeyPaid) && r.Version != "" && len(r.Version) <= MaxVersion && len(r.Qualified) <= MaxVersion {
+			out.Program, out.Version, out.Qualified = cut(r.Program, MaxShort), r.Version, r.Qualified
+		}
+		return out
 	}
 	if why := r.outOfBounds(); why != "" {
 		return failed("the read's answer is unknown: " + why)
@@ -435,8 +454,8 @@ func (r Reading) kept(k Key, at time.Time) Reading {
 
 // view is the View of a kept reading at now: what the reading holds, in
 // copies of its own, and how fresh it is. A reading that is not ok shows
-// its state and its words alone. A reading dated ahead of the clock (the
-// clock set back) is never fresh.
+// its state and its words, and what read it when it holds that (kept). A
+// reading dated ahead of the clock (the clock set back) is never fresh.
 func (r Reading) view(now time.Time) View {
 	at := r.ReadAt
 	v := View{
@@ -452,7 +471,7 @@ func (r Reading) view(now time.Time) View {
 		Env:     r.Env,
 		Filed:   r.Filed,
 	}
-	if r.State == StateOK {
+	if r.State == StateOK || r.Version != "" {
 		v.ReadBy = &ReadBy{Program: r.Program, Version: r.Version, Qualified: r.Qualified}
 	}
 	if age := now.Sub(r.ReadAt); age >= FreshFor || age < 0 {

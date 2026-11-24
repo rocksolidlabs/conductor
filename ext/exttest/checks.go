@@ -501,7 +501,11 @@ func Router(t T, n *Network, r ext.DecisionRouter, d ext.Decision) {
 // record d: Confirm answering within ext.ConfirmWait, with no subject and
 // with one, from Goroutines goroutines at once too, each answer valid
 // (ext.Confirmation.Valid); and article 8 (Network): with the network
-// blocked, it answers from what it holds.
+// blocked, it answers from what it holds. A router that is an
+// ext.SinceConfirmer has ConfirmsSince answering within ext.ConfirmWait,
+// the same in every phase; when it answers true, Confirm is asked with a
+// Since too, in every phase, each answer valid. A router that says it
+// answers none, or does not say, is asked none: the server asks it none.
 func Confirmer(t T, n *Network, r ext.DecisionRouter, d ext.Decision) {
 	t.Helper()
 	pc, ok := r.(ext.PolicyConfirmer)
@@ -532,7 +536,7 @@ func Confirmer(t T, n *Network, r ext.DecisionRouter, d ext.Decision) {
 	if n, err := strconv.ParseInt(strings.TrimPrefix(d.Request, "dr-"), 10, 64); err == nil && n > 0 && n < 1<<40 {
 		base = n * 1000
 	}
-	ask := func(ph phase, subject string) {
+	ask := func(ph phase, subject string, at time.Time) {
 		mu.Lock()
 		asked++
 		q := copyDecision(d)
@@ -540,18 +544,51 @@ func Confirmer(t T, n *Network, r ext.DecisionRouter, d ext.Decision) {
 		q.Request = q.ID
 		mu.Unlock()
 		a, returned := run(c, "Confirm", ext.ConfirmWait, ph, func(ctx context.Context) answer {
-			cf, err := pc.Confirm(ctx, ext.ConfirmQuery{Decision: q, Revision: "exttest-r1", Subject: subject})
+			cf, err := pc.Confirm(ctx, ext.ConfirmQuery{Decision: q, Revision: "exttest-r1", Subject: subject, Since: at})
 			return answer{cf, err}
 		})
 		if returned && a.err == nil {
 			if err := a.c.Valid(); err != nil {
-				c.found("Confirm answered a confirmation that is not valid%s: %v", ph.words(), err)
+				with := ""
+				if !at.IsZero() {
+					with = " to a query with a Since"
+				}
+				c.found("Confirm answered a confirmation that is not valid%s%s: %v", with, ph.words(), err)
 			}
 		}
 	}
+	// since is the router's word on a query with a Since, asked once in
+	// each phase: the first answer is the one every later one must be.
+	sc, says := r.(ext.SinceConfirmer)
+	var (
+		word  bool
+		heard bool
+	)
+	since := func(ph phase) bool {
+		if !says {
+			return false
+		}
+		yes, returned := run(c, "ConfirmsSince", ext.ConfirmWait, ph, func(context.Context) bool { return sc.ConfirmsSince() })
+		if !returned {
+			return false
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		if !heard {
+			word, heard = yes, true
+		} else if yes != word {
+			c.found("ConfirmsSince answered %t and then %t%s: a router's word on a query with a Since is the same every time, the server asking it once", word, yes, ph.words())
+		}
+		return yes && word
+	}
 	confirm := func(ph phase) {
-		ask(ph, "")
-		ask(ph, "exttest-subject")
+		ask(ph, "", time.Time{})
+		ask(ph, "exttest-subject", time.Time{})
+	}
+	sinceAsks := func(ph phase) {
+		if since(ph) {
+			ask(ph, "exttest-subject", time.Now().Add(-time.Minute).UTC())
+		}
 	}
 	confirm(open)
 	together(func() { confirm(open) })
@@ -559,6 +596,7 @@ func Confirmer(t T, n *Network, r ext.DecisionRouter, d ext.Decision) {
 		if ph != open {
 			confirm(ph)
 		}
+		sinceAsks(ph)
 	})
 }
 

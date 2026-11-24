@@ -17,7 +17,9 @@ import (
 // when the answer is applied, and answers under its own policy (the
 // operator) whenever the router does not confirm it. A router that does not
 // implement PolicyConfirmer gets the server's own policy whatever it
-// answers: a Policy from it is refused as invalid.
+// answers: a Policy from it is refused as invalid. A policy that counts
+// approvals is taken only from a router that also says it answers a query
+// with a Since (SinceConfirmer).
 //
 // The seam's types are whole as of here for every row of the plan (a
 // router's policy, the record it is told and the confirmation it gives,
@@ -213,11 +215,32 @@ type RouteChange struct {
 // answers. Confirm is answered from what the router holds, never a round
 // trip, within ConfirmWait. Subject "" asks only whether the policy is in
 // force; Since asks whether the subject stayed eligible since then (a
-// router that cannot say answers not eligible). A router answers Behind,
-// Routes, or a Revision other than the one asked about for one record for
-// at most MaxBehind. Safe for concurrent use.
+// router that cannot say answers not eligible), and is asked only of a
+// router that says it answers one (SinceConfirmer). A router answers
+// Behind, Routes, or a Revision other than the one asked about for one
+// record for at most MaxBehind. Safe for concurrent use.
 type PolicyConfirmer interface {
 	Confirm(ctx context.Context, q ConfirmQuery) (Confirmation, error)
+}
+
+// SinceConfirmer is a PolicyConfirmer that says whether it answers a
+// ConfirmQuery with a Since: whether it can establish that a subject
+// stayed eligible, without a break, since a time. ConfirmsSince is
+// answered at once from what the router is, never a call out, and the
+// same every time: the server asks it once, as it is made, before the
+// provider's Start (ext.Starter) has run.
+//
+// Only of a router whose ConfirmsSince answers true does the server ask a
+// query with a Since, and only from one does it take a policy that counts
+// approvals (more than one place in all: a quorum above one, or several
+// groups). From any other router that confirms policies, a policy of one
+// place is taken and its deciding answer confirmed at its application by
+// a plain query (in force at the record's revision, the person eligible
+// in a group they answered for), and a policy that counts approvals is
+// not taken: the record stays under the server's own policy, its history
+// saying why, and a re-route to one is refused.
+type SinceConfirmer interface {
+	ConfirmsSince() bool
 }
 
 // ConfirmQuery asks a router about a record's policy at a revision.

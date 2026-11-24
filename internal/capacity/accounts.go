@@ -129,12 +129,15 @@ const (
 
 // Error is a refusal, with the code a route answers, the field it is
 // about ("" for none), why in words, and for account_in_use what holds
-// the account (at most MaxBound).
+// the account (at most MaxBound). Check marks an unqualified refusal that
+// the admin's explicit check would lift (Versions.Admit): a version not
+// recorded, or one whose check was interrupted.
 type Error struct {
 	Code  string
 	Field string
 	Words string
 	Names []string
+	Check bool
 }
 
 func (e *Error) Error() string {

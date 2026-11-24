@@ -307,6 +307,17 @@ only actions are links to the run page, a session and Needs you.
   its terminal, and type the prompt there if its input is empty"); nothing
   is typed again, and the member reads as waiting on a person until its
   agent reports a turn.
+- **Hosted sessions too (#1093).** A session `conductor host` runs is
+  judged by the same rule: its register says it takes the prompt shape,
+  and the server sends the catalog's shape with the agent's recipe, so a
+  hosted Claude Code or Codex session types a line's text, and an Enter
+  alone, only where the server's own session of the agent would. A host
+  of an earlier release, or a host whose server is of an earlier release,
+  is sent no shape and judges a line by the rule for an agent with none.
+  A recipe carrying a shape the host cannot take starts nothing, with
+  `host: the server's recipe for the agent does not validate: nothing was
+  started`. A hosted launch still takes no first message: nothing types
+  one on a host.
 - **Where Codex is not signed in**, its sign-in screen lists its ways to
   sign in as numbered choices: a line is refused there as at any screen
   that may be a question, and a crew member's prompt waits with that noted.
@@ -417,6 +428,11 @@ The second half (#1072, PR-9, after the ledger's barrier at version 17, PR-9a,
   the answer is applied every counted approval and the deciding one are confirmed
   with the router, each since its own time; any the router cannot confirm, or
   places no longer filled, supersede the decision with a fresh one that asks again.
+  The router is asked "since a time" only when it says it answers such a question.
+  One that does not still has a one-approval policy confirmed when the answer is
+  applied (in force, the person still eligible), but a policy that needs more than
+  one approval is not taken from it: the decision stays the operator's, and its
+  history says why.
   A re-route that leaves fewer response rows than places to fill supersedes it at
   once, the router told which decision asks again.
 - **Said in the app.** The operator's read carries each group's count
@@ -1254,9 +1270,31 @@ What the item shipped, row by row (each row's issue says what it verified):
   capacity), `docs/repository-map.md`, the README (Accounts and capacity) and
   `docs/protocol.md` (The background role).
 
-**Owed: the by-hand check and the acceptance observation.** Neither has been
-made; both need the owner's machine, the real tools and the owner's own
-logins, which no test reaches. The issue stays open for them (#788).
+**Owed: the by-hand check and the acceptance observation.**
+
+- **The live observation (2026-11-24, on WSL).** On a build of `main` at 0a60d09f, a scratch server with its own data
+  directory was driven through the API and in headless Chromium, with real agents. The launch dialog's capacity panel
+  showed, for a Claude Code login that read ok, the provider's windows with their share used and their resets, the plan,
+  a credit row where the provider reports one, Conductor's count marked as an estimate, and "Read … ago by" with the tool's version and the
+  version the reader was checked on. The same minute, Claude Code's own `/usage` gave the same windows, shares and
+  resets. Agents with no reader showed "Usage unknown" with its reason,
+  and an account on a folder never signed in read signed out for each of the two adapters. A session launched on the
+  default login and resumed after a second account was made the default kept its own login and conversation; a session
+  launched after took the second account. A ticket's approved revision with a Claude Code member and a Codex member
+  showed both lines on its launch sheet. A run launched from a revision of two Claude Code members kept the first login
+  for an attempt after a failed check and for a retried attempt after the default changed mid-run, as read in the
+  attempts' launch blocks and the ledger's `runs.crew`. Brakeman, asked for a briefing with Capacity on, proposed
+  nothing that moves work to another account; that briefing, which was not asked about usage, cited
+  no `capacity:` ref. The wake was not seen, since no reading was at warning.
+- **Still owed:** Codex's windows beside Codex's own `/status`; a briefing that is asked about usage, for its
+  `capacity:` ref; and the owner's word that the panel told the truth about both logins, which closes AC1 (#788).
+- **Found by it and fixed:** opening the launch dialog on a Claude Code
+  version not yet checked no longer spends the five-minute read: "Check this
+  version" can be pressed at once, and the reading shows once it has run;
+  the one-line panels (Settings' Accounts, the crew's and the ticket's launch
+  sheets) offer the same check. A signed-out or key-paid reading says the
+  tool and version that read it, as an ok reading does (an unqualified or
+  error reading names no version).
 
 - *By hand*: Claude Code and Codex each read with the default login and with a
   second folder; the windows and resets equal what Claude Code's `/usage` and

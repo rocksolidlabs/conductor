@@ -443,6 +443,15 @@ add its rule here.
   request the test saw asked, and hold those notes back in the test until
   the judgement waits for them (`recording`), so a judgement that reads
   at once fails every run.
+- A call's answer is not the call's work done. A line withdrawn by its
+  sender while the program was still taking its text is answered at once,
+  and finished on a goroutine of its own as the text lands, which then
+  sets the hold (the session's turn kept meanwhile): a test that read
+  `TurnHeld` as `Submit` returned found none on a loaded machine
+  (`TestAPersonsKeysBeforeTheEnterHoldNothing`, 2026-11-24, #281). Wait
+  for what the work shows (the hold's attention), and hold the program's
+  write at a seam (`onBytes` in the fake program) so that the early read
+  fails every run.
 - Keep what decides ahead of what is shown, and wait on what decides.
   The output pump sent each chunk to the viewers before it fed the screen
   a key is routed by (`startupMayShow`): a viewer that answered the

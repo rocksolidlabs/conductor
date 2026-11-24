@@ -118,7 +118,10 @@ type Options struct {
 	// PromptShape, when set, matches the agent's own prompt at rest on its
 	// whole screen (the catalog's promptShape): a submission OnlyAtPrompt
 	// is typed, and entered, only while the screen matches and shows no
-	// dialog's numbered choice (atPrompt).
+	// dialog's numbered choice (atPrompt), and while the startup watch
+	// lasts a line's text is typed only where it matches (startupLine). A
+	// server's own session and a hosted one whose host was sent the shape
+	// set it alike (agents.Watch.Apply).
 	PromptShape *regexp.Regexp
 	// Questions are the agent's other startup questions (the catalog's
 	// questions; round 13, G2c), held exactly as the trust question is:

@@ -912,9 +912,14 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		// A registered decision router that confirms policies routes the
 		// records' policies (policy.go); with none, nothing changes.
 		s.runs.SetRouterPolicies(s.routerConfirms(), s.policyCheck)
-		if s.routerConfirms() {
-			// Every counted approval, and the deciding one, is confirmed
-			// since its response's time before the answer is applied.
+		if s.routerConfirmsSince() {
+			// A router that says it answers a query with a Since
+			// (ext.SinceConfirmer): every counted approval, and the deciding
+			// one, is confirmed since its response's time before the answer
+			// is applied. Any other router is asked no Since: the deciding
+			// answer of a policy of one place is confirmed by the plain
+			// query, and a policy that counts approvals is not taken
+			// (crew.Engine.PolicyUntaken).
 			s.runs.SetPolicySince(s.policyCheckSince)
 		}
 	}

@@ -615,6 +615,9 @@ func (d *capacityDesk) read(ctx context.Context, k capacity.Key, in capacity.Int
 	if errors.As(refused, &ce) && (ce.Code == capacity.CodeNotKept || ce.Code == capacity.CodeNotOwner) {
 		r = capacity.Reading{State: capacity.StateError, Words: ce.Words, Env: hash}
 	}
+	// Refused only for want of the admin's check, nothing started under an
+	// admission: the key's cooldown leaves that check its slot.
+	r.NeedsCheck = r.State == capacity.StateUnqualified && adm == nil && errors.As(refused, &ce) && ce.Check
 	if adm != nil {
 		adm.mu.Lock()
 		err := adm.err

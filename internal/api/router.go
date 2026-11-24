@@ -972,9 +972,9 @@ func (r *decisionRouter) routeRecord(d ext.Decision, rev int) {
 		if rt.Policy != nil && d.Record != nil && d.Record.Origin != ledger.OriginCompare && r.s.runs.RoutesPolicies() {
 			// The policy's transaction writes the route's one routed row
 			// with it (RecordRoute is not called beside it).
-			err := r.routePolicyOf(d, rev, rt, unrouted)
+			at, err := r.routePolicyOf(d, rev, rt, unrouted)
 			if a := rt.Answer; a != nil && err == nil {
-				err = r.offer(d, *a, rev+1)
+				err = r.offer(d, *a, at)
 			}
 			recordStep("routed", d.Request, rt, err)
 			return
