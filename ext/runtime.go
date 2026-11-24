@@ -23,7 +23,9 @@ import (
 // server gives it) implements Starter beside Runtime, which is why the
 // terminal's launch is StartTerminal and not Start: until its Start has
 // succeeded, its slot answers the free default, so Takes is not asked and
-// a run made meanwhile runs natively.
+// a run made meanwhile runs natively. A Runtime that can start a child with
+// pipes in place of a terminal implements PipeStarter beside Runtime too;
+// one that does not is never handed such a child.
 //
 // Ownership: until StartTerminal, Run or Serve has returned normally,
 // whatever it began (a process, a guest) is the Runtime's; once it has

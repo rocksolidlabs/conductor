@@ -2,6 +2,7 @@ package local
 
 import (
 	"context"
+	"io"
 	"time"
 
 	"github.com/rocksolidlabs/conductor/ext"
@@ -13,11 +14,15 @@ import (
 // user, which is what Conductor does without a Runtime. Its terminal is
 // pty.Start's, its commands and services are internal/proc's Run and
 // Serve, its probe is proc.Probe and its port proc.FreePort, each called
-// as Conductor calls them without the seam. Its Name is Name, its Where
+// as Conductor calls them without the seam. It is an ext.PipeStarter too,
+// its child with pipes proc.StartPipes's. Its Name is Name, its Where
 // ext.WhereNative, and it takes every run.
 func Native() ext.Runtime { return native{} }
 
-var _ ext.Runtime = native{}
+var (
+	_ ext.Runtime     = native{}
+	_ ext.PipeStarter = native{}
+)
 
 // native is the free Runtime. seam is nil outside ext/local's tests.
 type native struct{ seam *startSeam }
@@ -94,6 +99,22 @@ func (r native) StartTerminal(ctx context.Context, s ext.TerminalSpec) (ext.Term
 	p.Release()
 	returned = true
 	return t, nil
+}
+
+// StartPipes is proc.StartPipes, whose two checks of the context are the
+// contract's (the second its commitment point), with exactly s.Env (an
+// empty environment when s has none, never the server's own). It is done
+// with s.DirFile when it returns, and its errors are returned as they are.
+func (native) StartPipes(ctx context.Context, s ext.PipeSpec) (ext.Pipes, error) {
+	env := s.Env
+	if env == nil {
+		env = []string{}
+	}
+	p, err := proc.StartPipes(ctx, proc.PipeSpec{Argv: s.Argv, Dir: s.Dir, DirFile: s.DirFile, Environ: env})
+	if err != nil {
+		return nil, err
+	}
+	return nativePipes{p}, nil
 }
 
 // Run is proc.Run with the environment whole (proc.Spec.Environ).
@@ -191,3 +212,29 @@ type nativeService struct{ svc *proc.Service }
 func (s nativeService) Done() <-chan struct{}          { return s.svc.Done() }
 func (s nativeService) Result() ext.CommandResult      { return commandResult(s.svc.Result()) }
 func (s nativeService) Stop(ctx context.Context) error { return s.svc.Stop(ctx) }
+
+// nativePipes is a proc.Pipes as an ext.Pipes.
+type nativePipes struct{ p *proc.Pipes }
+
+func (p nativePipes) Stdin() io.WriteCloser { return p.p.Stdin() }
+func (p nativePipes) Stdout() io.Reader     { return p.p.Stdout() }
+func (p nativePipes) Done() <-chan struct{} { return p.p.Done() }
+
+// Exit is the child's exit status, its error as words.
+func (p nativePipes) Exit() ext.ExitStatus {
+	st := p.p.Exit()
+	out := ext.ExitStatus{Code: st.Code, Signal: st.Signal}
+	if st.Err != nil {
+		out.Err = st.Err.Error()
+	}
+	return out
+}
+
+// Stop is proc.Pipes.Stop: SIGTERM to the group, SIGKILL after grace or
+// once ctx ends, the child waited for at most proc.PipesKillWait after it.
+func (p nativePipes) Stop(ctx context.Context, grace time.Duration) error {
+	return p.p.Stop(ctx, grace)
+}
+
+// Process is the child's pid, its group and when it started.
+func (p nativePipes) Process() ext.ProcessInfo { return processInfo(p.p.Process()) }

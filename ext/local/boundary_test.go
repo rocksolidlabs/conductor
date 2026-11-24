@@ -44,10 +44,11 @@ var rawAllowed = []string{
 
 // runners are the runners the Runtime wraps, by package: a session's
 // terminal (pty.Start, and pty.StartHeld, the native Runtime's), a check's
-// command and a tree's service (proc.Run, proc.Serve).
+// command and a tree's service (proc.Run, proc.Serve), and a session's
+// child with pipes (proc.StartPipes, the native Runtime's PipeStarter).
 var runners = map[string][]string{
 	module + "/internal/pty":  {"Start", "StartHeld"},
-	module + "/internal/proc": {"Run", "Serve"},
+	module + "/internal/proc": {"Run", "Serve", "StartPipes"},
 }
 
 // runnersAllowed are where a runner may be used: the native Runtime, the
@@ -275,9 +276,10 @@ func boundaryPlants(t *testing.T) {
 		"internal/gitcli/lit.go":      "package gitcli\n\nimport \"os/exec\"\n\nvar _ = &exec.Cmd{}\n",
 		"internal/crew/plant.go":      "package crew\n\nimport " + proc + "\n\nfunc f() { proc.Run(nil, proc.Spec{}) }\n",
 		"internal/hostagent/plant.go": "package hostagent\n\nimport p " + proc + "\n\nvar serve = p.Serve\n",
+		"internal/session/pipes.go":   "package session\n\nimport " + proc + "\n\nfunc p() { proc.StartPipes(nil, proc.PipeSpec{}) }\n", // line 5
 		"internal/api/plant_test.go":  "package api\n\nimport \"os/exec\"\n\nfunc g() { exec.Command(\"sh\") }\n",
 		"ext/local/native.go": "package local\n\nimport (\n\t" + pty + "\n\t" + proc + "\n)\n\n" +
-			"var _, _, _, _ = pty.Start, pty.StartHeld, proc.Run, proc.Serve\n",
+			"var _, _, _, _, _ = pty.Start, pty.StartHeld, proc.Run, proc.Serve, proc.StartPipes\n",
 		"internal/proc/run.go":         "package proc\n\nimport \"os/exec\"\n\nfunc h() { exec.Command(\"sh\") }\n",
 		"internal/gitcli/x/plant.go":   "package x\n\nimport \"os/exec\"\n\nfunc i() { exec.Command(\"git\") }\n",
 		"internal/api/testdata/x.go":   "package x\n\nimport \"os/exec\"\n\nfunc j() { exec.Command(\"sh\") }\n",
@@ -321,6 +323,7 @@ func boundaryPlants(t *testing.T) {
 		"internal/api/start.go:5: pty.Start (" + module + "/internal/pty)",
 		"internal/crew/plant.go:5: proc.Run (" + module + "/internal/proc)",
 		"internal/hostagent/plant.go:5: p.Serve (" + module + "/internal/proc)",
+		"internal/session/pipes.go:5: proc.StartPipes (" + module + "/internal/proc)",
 	}
 	slices.Sort(want)
 	if !slices.Equal(got, want) {
