@@ -427,11 +427,14 @@ export function offersRead(v: CapacityView): boolean {
 }
 
 /**
- * Whether a panel that reads as it opens (the launch dialog, the crew's sheet) asks a read of this view: where it offers one, but never
- * of a version the server already said is not checked, which a read could only say again; the check is the person's to press.
+ * Whether a panel that reads as it opens (the launch dialog, the crew's sheet) asks a read of this view: wherever the server reads,
+ * unless the view's own button is "Check this version" (a Claude Code version the reader was not checked on, offersCheck): pressing the
+ * check is the person's, and a read as the panel opens would spend the five minutes the check waits for when the server keeps none
+ * for it. Any other view is read, an unqualified one too (a Codex version read only from a later one, a probe that failed, a program
+ * that changed while it was checked), so it is not left stale on every opening.
  */
 export function readsOnOpen(v: CapacityView): boolean {
-  return offersRead(v) && v.state !== 'unqualified'
+  return offersRead(v) && !offersCheck(v)
 }
 
 /** What a panel offers beside its words: the check, a read, or nothing; the time it waits for, if any; whether it can be pressed now. */

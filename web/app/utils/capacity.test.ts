@@ -177,9 +177,14 @@ describe('freshness and the states', () => {
     for (const s of ['ok', 'never_read', 'signed_out', 'key_paid', 'unqualified', 'error']) expect(offersRead(view({ state: s })), s).toBe(true)
   })
 
-  it('reads as a dialog opens where a read is offered, but never a version the server said is not checked', () => {
+  it('reads as a dialog opens where a read is offered, unless the view offers the check instead', () => {
     for (const s of ['ok', 'never_read', 'signed_out', 'key_paid', 'error']) expect(readsOnOpen(view({ state: s })), s).toBe(true)
+    // A Claude Code version not yet checked: its button is the check, the person's to press.
     expect(readsOnOpen(view({ state: 'unqualified', words: '2.1.330 has not been checked: check this version to read it' }))).toBe(false)
+    // An unqualified view whose button is a read is read again: a Codex version read only from a later one, a probe that failed.
+    const codex = { id: 'codex', name: 'Codex CLI', adapter: 'codex', version: '0.150.0' }
+    expect(readsOnOpen(view({ state: 'unqualified', agent: codex, words: 'Codex CLI 0.150.0 is read only from 0.163.0' }))).toBe(true)
+    expect(readsOnOpen(view({ state: 'unqualified', agent: { id: 'goose', adapter: 'goose' }, words: 'the program changed while it was checked' }))).toBe(true)
     for (const s of ['reading', 'unsupported', 'not_installed', 'remote', 'env_set', 'unlisted', 'not_owner']) expect(readsOnOpen(view({ state: s })), s).toBe(false)
   })
 
