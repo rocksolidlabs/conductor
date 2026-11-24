@@ -97,6 +97,8 @@ For a package with no mechanical verifier, require an explicit configured review
 
 Do not build a replacement model/tool loop, require an agent SDK or app-server transport, replace PTYs with synthetic chat, introduce a second crew scheduler, implement Boxcar or any other VM/container execution backend, require a cloud control plane, or build a public package marketplace for this release. There are **no runtime-isolation backend deliverables** in scope.
 
+Amended by `docs/plans/chat-or-terminal.md` (issue #1088): the terminal way is never removed or replaced, and that plan adds a second, optional way of running a session, through an agent's own documented structured interface. An agent's structured interface (its headless mode, an app server, the Agent Client Protocol) is no longer ruled out as a session's transport; nothing requires one, and a person or a run may always choose the terminal.
+
 Do not introduce CRDT/consensus infrastructure as a prerequisite. One owner process is authoritative for a run. Browser layouts can remain browser-local. Cross-host live migration of an agent conversation, transparent failover to another machine, and individual members of one run spread across multiple owners are outside the first version.
 
 ## 4. Architecture and ownership
@@ -417,6 +419,8 @@ Preserve current view/control link semantics. Do not silently grant shared contr
 ## 14. Agent integration and MCP/CLI surface
 
 Continue using `internal/agents` and `internal/notify` for vendor-specific launch and observation behavior. Do not require an app-server mode for an agent currently run in a shared TUI.
+
+Amended by `docs/plans/chat-or-terminal.md` (issue #1088): a shared TUI stays supported and is never removed; that plan adds an optional protocol way beside it, chosen per session and per run.
 
 Preserve the existing MCP tools. Add scoped, versioned operations along these lines:
 
