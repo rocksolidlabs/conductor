@@ -428,6 +428,10 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 	if sub.By != nil && sub.By.Role != RoleControl {
 		return res, ErrReadOnly
 	}
+	if p := s.way.Load(); p != nil {
+		// A session in the protocol way: its own queue (protocol.go).
+		return s.submitProtocol(p, sub)
+	}
 	text := SubmitLine(sub.Text)
 	if len(text) > MaxSubmitText {
 		return res, ErrTextTooLong
@@ -1596,6 +1600,9 @@ func (p *pasteMode) on() bool { return p.state.Load() == 1 }
 // and then off again is between screens (Claude Code does while it starts):
 // the run engine does not type into it then.
 func (s *Local) BracketedPaste() (seen, on bool) {
+	if s.way.Load() != nil {
+		return false, false
+	}
 	st := s.paste.state.Load()
 	return st != 0, st == 1
 }

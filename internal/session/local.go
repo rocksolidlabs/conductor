@@ -91,6 +91,19 @@ type Options struct {
 	// has it: the copied-output check's index of what the server captured
 	// (docs/plans/sync-seams.md, OS-1c). It must not block.
 	OnOutput func(sessionID string, chunk []byte)
+	// OnCaptured is OnOutput for a session in the protocol way
+	// (protocol.go): called (outside the session lock) with every byte its
+	// driver captured (the agent's words, a tool's input and output, a
+	// diff, a request's input) as it is applied, before any viewer is sent
+	// anything of it. It must not block.
+	OnCaptured func(sessionID string, data []byte)
+	// AcceptWait is how long a message written into a session in the
+	// protocol way waits for the agent's acknowledgement before it is
+	// unconfirmed; AcceptWait when zero.
+	AcceptWait time.Duration
+	// Now is the clock of a protocol way's transcript: an entry's time, a
+	// text's coalescing, a step's measured duration; time.Now when nil.
+	Now func() time.Time
 	// RunChat, when set, is the chat of the run this session is a member of
 	// (ChatRoom): its viewers read and post it over their own connection,
 	// with scope "run", and are listed on its roster.
@@ -557,6 +570,16 @@ type Local struct {
 	// attnChanged is closed and replaced, under mu, on every attention change:
 	// Submit waits on it for the agent to take a prompt.
 	attnChanged chan struct{}
+
+	// way is the protocol way's state once the session runs in it
+	// (protocol.go), its fields under mu; nil while it runs in its
+	// terminal.
+	way atomic.Pointer[protocolWay]
+	// transcript is the protocol way's transcript (transcript.go). Under mu.
+	transcript transcriptRing
+	// afterApply, a test's hook, runs with an event's name once the
+	// protocol way has applied it, before anything of it goes to a viewer.
+	afterApply atomic.Pointer[func(event string)]
 }
 
 // NewLocal wraps a started process and begins pumping its output.
@@ -765,6 +788,9 @@ func (s *Local) markEnded(status Status) {
 		return
 	}
 	s.info.Status = status
+	// A protocol way's own end (protocol.go): what waits is told, the
+	// open requests are denied.
+	protocolEnded := s.endProtocolLocked()
 	s.token.Remove()
 	// A claim whose claimant may still resolve it stays, its question kept
 	// as it stands (endedQs): its keys may have been written, and the
@@ -792,9 +818,13 @@ func (s *Local) markEnded(status Status) {
 	now := time.Now().UTC()
 	s.info.EndedAt = &now
 	var exitCode *int
+	done, exit := s.proc.Done(), s.proc.Exit
+	if p := s.way.Load(); p != nil {
+		done, exit = p.child.Done(), p.child.Exit
+	}
 	select {
-	case <-s.proc.Done():
-		st := s.proc.Exit()
+	case <-done:
+		st := exit()
 		code := st.Code
 		exitCode = &code
 		s.info.ExitCode = exitCode
@@ -807,6 +837,7 @@ func (s *Local) markEnded(status Status) {
 	s.hub.Broadcast(frame)
 	s.mu.Unlock()
 	close(s.ended)
+	protocolEnded()
 	attrs := []any{"status", status}
 	msg := string(status)
 	if exitCode != nil {
@@ -2192,7 +2223,8 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 	if words == "" {
 		words = message
 	}
-	if !ValidKind(kind) {
+	// An interrupted turn's done is the protocol way's alone (KindInterrupted).
+	if !ValidKind(kind) && (kind != KindInterrupted || source != SourceProtocol) {
 		kind = ""
 	}
 	options = CleanOptions(options)
@@ -2200,6 +2232,12 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 		kind, options = "", nil
 	}
 	s.mu.Lock()
+	if readsScreen(source) && s.way.Load() != nil {
+		// A session in the protocol way has no screen: no rule that reads
+		// one changes its attention (I7).
+		s.mu.Unlock()
+		return nil
+	}
 	if rules&spendToken != 0 && !s.events.Take(time.Now()) {
 		log := s.log
 		s.mu.Unlock()
@@ -2854,6 +2892,10 @@ func (s *Local) Info() Info {
 func (s *Local) LastOutputAt() time.Time {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if p := s.way.Load(); p != nil {
+		// A protocol session's: its driver's last event.
+		return p.lastEvent
+	}
 	return s.lastOutput
 }
 
@@ -3015,7 +3057,7 @@ func (s *Local) AttachWith(o AttachOptions, sink Sink) (*Subscription, error) {
 	// joining through a link never shrinks the session on the owner's
 	// screen, and two of the owner's windows never take turns. The role
 	// comes from the token, never from the hello.
-	sized := role == RoleControl && proto.HelloSize(cols, rows) && !s.info.Status.Ended()
+	sized := role == RoleControl && proto.HelloSize(cols, rows) && !s.info.Status.Ended() && s.way.Load() == nil
 	// A viewer moving to the relay under the same id (Replaces) whose old
 	// connection's leave handed the size on, the move seen after that leave,
 	// takes the size back: a move keeps the size where it was, to whichever
@@ -3299,6 +3341,10 @@ func (s *Local) InputWaiting(ctx context.Context, sub *Subscription, data []byte
 // choices, looked at with the question and again as the writer takes
 // them (ErrNotAChoice).
 func (s *Local) input(ctx context.Context, who typist, question string, data []byte, o writeWait, finished func(error)) error {
+	if s.way.Load() != nil {
+		// A session in the protocol way has no terminal to take keys.
+		return ErrNotTerminal
+	}
 	if !who.controls() {
 		return ErrReadOnly
 	}
@@ -5901,6 +5947,9 @@ func (s *Local) Resize(sub *Subscription, cols, rows uint16) error {
 // becomes the sizer. Every viewer hears who sizes it in the resize frame's
 // By, a change of sizer at the same size included.
 func (s *Local) ResizeWith(sub *Subscription, cols, rows uint16, take bool) error {
+	if s.way.Load() != nil {
+		return ErrNotTerminal
+	}
 	if sub.Role != RoleControl {
 		return ErrReadOnly
 	}
@@ -5948,7 +5997,7 @@ func (s *Local) handOverSize() {
 			next = c
 		}
 	})
-	if next != nil && !s.info.Status.Ended() {
+	if next != nil && !s.info.Status.Ended() && s.way.Load() == nil {
 		s.sizer = next.ID
 		if cols, rows := next.want[0], next.want[1]; cols != s.info.Cols || rows != s.info.Rows {
 			if err := s.proc.Resize(cols, rows); err == nil {
@@ -5968,6 +6017,9 @@ func (s *Local) handOverSize() {
 // stop's error; its status stays as it is, so a stop never makes a
 // session running again.
 func (s *Local) Stop(ctx context.Context) error {
+	if p := s.way.Load(); p != nil {
+		return s.stopProtocol(ctx, p)
+	}
 	s.mu.Lock()
 	ended := s.info.Status.Ended()
 	s.stopRequested = true
@@ -5988,7 +6040,16 @@ func (s *Local) Stop(ctx context.Context) error {
 // waited for: the process's own Done. A session's status can read ended
 // before it (Stop marks it stopped whatever the process did), so what must
 // know the process is gone (the Brakeman desk's slot) waits on this.
-func (s *Local) ProcessDone() <-chan struct{} { return s.proc.Done() }
+func (s *Local) ProcessDone() <-chan struct{} {
+	if p := s.way.Load(); p != nil {
+		// The protocol way's child (a child it restarts is its own act,
+		// never the session's end).
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		return p.child.Done()
+	}
+	return s.proc.Done()
+}
 
 // maxLastLine bounds LastLine.
 const maxLastLine = 200
@@ -5997,6 +6058,10 @@ const maxLastLine = 200
 // its escape sequences stripped and cut to at most maxLastLine bytes: what
 // an agent printed as it exited ("Please run /login").
 func (s *Local) LastLine() string {
+	if s.way.Load() != nil {
+		// A protocol session has no terminal output.
+		return ""
+	}
 	text := strings.ReplaceAll(string(StripANSI(s.ring.Snapshot())), "\r", "\n")
 	lines := strings.Split(text, "\n")
 	for i := len(lines) - 1; i >= 0; i-- {
@@ -6145,7 +6210,7 @@ func (s *Local) ScreenCols() int {
 // frame as far as it is drawn, which a terminal shows only once the update
 // ends (or its own timeout passes).
 func (s *Local) ScreenRead(n int) (rows []string, updating bool) {
-	if n <= 0 {
+	if n <= 0 || s.way.Load() != nil {
 		return nil, false
 	}
 	rows, drawn := s.shot.Rows()
