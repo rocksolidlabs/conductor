@@ -10,6 +10,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/coder/websocket"
+
 	"github.com/rocksolidlabs/conductor/internal/proto"
 	"github.com/rocksolidlabs/conductor/internal/session"
 	"github.com/rocksolidlabs/conductor/internal/share"
@@ -123,6 +125,14 @@ func (u *Uplink) options(info session.Info) Options {
 	return opts
 }
 
+// OlderSwitchyardWords say why a chat is not published: the switchyard's
+// registered did not say transcript.
+const OlderSwitchyardWords = "Chats are not published: the switchyard is older than this server."
+
+// ErrOlderSwitchyard refuses to publish a chat to a switchyard whose
+// registered does not say transcript.
+var ErrOlderSwitchyard = errors.New(OlderSwitchyardWords)
+
 // Published is a session published to the rendezvous.
 type Published struct {
 	// SessionID is the rendezvous's id for the session; ShareBaseURL the
@@ -228,6 +238,12 @@ func (u *Uplink) Publish(ctx context.Context, local *session.Local) (*Published,
 	conn, registered, err := a.dialAndRegister(ctx)
 	if err != nil {
 		return nil, err
+	}
+	if local.Way() == session.WayProtocol && !registered.Transcript {
+		// A chat to a switchyard that would close on its frames (I14):
+		// not published, in the words the session's line says.
+		conn.Close(websocket.StatusNormalClosure, "not published")
+		return nil, ErrOlderSwitchyard
 	}
 	// The publication outlives the registration's context: Stop or the
 	// session's end are what end it.
