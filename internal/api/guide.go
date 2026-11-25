@@ -836,7 +836,7 @@ var operationsTable = sync.OnceValue(func() []Operation {
 				"input":       map[string]any{"type": "object", "description": "the call's whole input"},
 				"tool_use_id": str("the call's id"),
 			}, "required": []string{"tool_name", "input"}},
-			Bounds: map[string]int{"body": maxPermissionBody}},
+			Bounds: map[string]int{"body": MaxPermissionBody}},
 	}
 })
 

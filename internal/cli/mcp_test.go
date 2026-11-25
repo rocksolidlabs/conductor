@@ -519,11 +519,6 @@ func TestSummaryAndDescriptionAreBounded(t *testing.T) {
 	}
 }
 
-// awaitingTheTable is the handled tools whose entry in the table of
-// operations is not there yet: permission, whose Operation comes with the
-// permission route. Once it is the table's, it is taken out of here.
-var awaitingTheTable = map[string]bool{permissionTool: true}
-
 // Every tool the MCP server handles is an operation of the table, listed
 // under its name, and each answers outside a session that it is outside
 // one, never that it is unknown: the handled set is call's.
@@ -548,11 +543,6 @@ func TestEveryToolIsAnOperation(t *testing.T) {
 	}
 	s := &mcpServer{getenv: func(string) string { return "" }}
 	for name := range mcpHandled {
-		if _, ok := byMCP[name]; !ok && awaitingTheTable[name] {
-			continue
-		} else if ok && awaitingTheTable[name] {
-			t.Errorf("tool %s is the table's now: take it out of awaitingTheTable", name)
-		}
 		if _, ok := byMCP[name]; !ok || !listed[name] {
 			t.Errorf("tool %s is handled but not the table's or not listed", name)
 		}

@@ -11,7 +11,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/rocksolidlabs/conductor/internal/api"
 	"github.com/rocksolidlabs/conductor/internal/notify"
+	"github.com/rocksolidlabs/conductor/internal/session"
 )
 
 // permissionTool is the MCP name of the tool Claude Code calls for a
@@ -21,16 +23,16 @@ import (
 const permissionTool = "permission"
 
 // permissionCallWait bounds a held permission call: the server answers it
-// deny before (session.PermissionWait), so this bound only ends a call the
-// server never answered. It is the eight hours Claude Code is told to
-// wait for Conductor's MCP server (agents.ClaudeProtocolMCPTimeoutMs) and
-// one minute more; it becomes session.PermissionWait plus one minute once
-// that bound is the session's.
-const permissionCallWait = 8*time.Hour + time.Minute
+// deny first, at session.PermissionWait, so this bound only ends a call
+// the server never answered: PermissionWait plus one minute (the plan's,
+// design 7), the eight hours Claude Code is told to wait for Conductor's
+// MCP server (agents.ClaudeProtocolMCPTimeoutMs).
+const permissionCallWait = session.PermissionWait + time.Minute
 
-// maxPermissionBody bounds what the tool posts, the route's own bound: a
+// maxPermissionBody bounds what the tool posts, the route's own bound
+// (api.MaxPermissionBody), counted over the same bytes, the whole body: a
 // call whose body would be larger is denied without a post.
-const maxPermissionBody = 256 << 10
+const maxPermissionBody = api.MaxPermissionBody
 
 // maxPermissionAnswer bounds what the tool reads of the server's answer:
 // a verdict and a message of at most 500 bytes, each character escaped.

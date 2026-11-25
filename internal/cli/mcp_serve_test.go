@@ -607,8 +607,15 @@ func (d *deadlines) seen() []bool {
 // one) and the call arms no timer but its own bound. That bound, once it
 // passes, ends the post with the lost request's deny.
 func TestPermissionHeldPastTheSessionClientsBound(t *testing.T) {
-	if want := time.Duration(agents.ClaudeProtocolMCPTimeoutMs)*time.Millisecond + time.Minute; permissionCallWait != want {
+	// PermissionWait plus one minute: the server denies a minute before
+	// the call's own bound, which is the 8 hours Claude Code waits for
+	// Conductor's MCP server.
+	want, mcpTimeout := session.PermissionWait+time.Minute, time.Duration(agents.ClaudeProtocolMCPTimeoutMs)*time.Millisecond
+	if permissionCallWait != want {
 		t.Fatalf("the call's bound is %v, want %v", permissionCallWait, want)
+	}
+	if want != mcpTimeout {
+		t.Fatalf("PermissionWait plus a minute is %v, the MCP server's timeout %v", want, mcpTimeout)
 	}
 	srv := newPermServer(t)
 	clock, rec := &fakeClock{}, &deadlines{}

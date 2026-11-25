@@ -24,9 +24,11 @@ import (
 // driver's Reply): past it the answer is told question_answered.
 const permissionAnswerWait = 15 * time.Second
 
-// maxPermissionBody bounds a permission request's body: past it, 413 and no
-// question asked.
-const maxPermissionBody = 256 << 10
+// MaxPermissionBody bounds a permission request's body, every byte of it
+// (its call, tool and input, as conductor mcp's permission tool encodes
+// them): past it, 413 and no question asked. The tool bounds what it posts
+// by the same constant, so no call it posts meets the 413.
+const MaxPermissionBody = 256 << 10
 
 // permissionRequest is the body: the agent's id of the call ("" when its
 // request names none), the tool's name and the call's whole input, as the
@@ -83,7 +85,7 @@ func (s *Server) handlePermission(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "unauthorized", "the session's agent token required")
 		return
 	}
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxPermissionBody))
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxPermissionBody))
 	if err != nil {
 		var mbe *http.MaxBytesError
 		if errors.As(err, &mbe) {
