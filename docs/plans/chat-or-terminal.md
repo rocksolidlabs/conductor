@@ -1074,19 +1074,21 @@ this plan (Out of scope).
 
 ### 8. Yardmaster on the protocol way (step 2)
 
-Step 2 waits for a trust design of its own (The rows, Step 2): a crew's
-member, like every session, starts in its terminal, and how it comes to
-run as a chat without a person pressing Chat is that design's to settle.
-The engine work it needs is planned here, so that design changes only
-how a member's way is chosen. The engine keeps holding `*session.Local`
-(`Launcher`, the lookup). What changes, all through `Local`'s calls
-above:
+Step 2's trust design is design 14, for the maintainers' approval: a
+crew's member, like every session, starts in its terminal, where a
+person answers its folder's trust as today; once the terminal shows the
+agent's prompt with nothing typed, the engine moves it to a chat that
+starts a new conversation and sends the member's prompt there. The
+engine keeps holding `*session.Local` (`Launcher`, the lookup). What
+changes, all through `Local`'s calls above:
 
 - **The way of an attempt.** `LaunchSpec` gains `Way` (`"protocol"` or
-  `""`), set as step 2's design says. A member runs the protocol way
+  `""`), `"protocol"` when the run's way is Chat (the crew's `way`,
+  fixed at launch: design 14). A member runs the protocol way
   only where its agent's installed version is qualified and its run's
   Runtime has pipes, else it stays in its terminal. A managed attempt's
-  way is fixed at its launch. No ledger migration: attempts are fresh
+  way is fixed at its launch; it starts in its terminal and moves at its
+  prompt (design 14, How a member moves). No ledger migration: attempts are fresh
   sessions and the ledger keeps nothing new; the run's log says which
   way each attempt ran ("build, attempt 2: runs as a chat" or "in its
   terminal: this version of Claude Code can only run in its terminal").
@@ -1095,10 +1097,12 @@ above:
   Runtime has no pipes, and the log says so ("in its terminal: the
   run's Runtime has no pipes").
 - **Readiness is the session's answer.** `AwaitReady`
-  (`internal/crew/run.go:2981`) waits on `Local.Ready()` for a protocol
-  session, bounded by `protocolReadyCap` (60 s); past it, the launch
-  fails with the driver's words. Nothing is "typed anyway" (`readyCap`'s
-  rule stays the terminal's).
+  (`internal/crew/run.go:2981`) holds at the trust question in the
+  terminal as today, then the move waits for the prompt (design 14), then
+  for `Local.Ready()`, bounded by `protocolReadyCap` (60 s); past it, the
+  attempt goes on in a terminal started again (design 14's fallback).
+  Nothing is "typed anyway" into a chat (`readyCap`'s rule stays the
+  terminal's).
 - **A prompt is taken when the agent acknowledges it.** `promptWith`
   (`run.go:1764`) sends the role prompt or the task line (`taskLine`,
   `task.go:3230`) by `Submit` and waits for its `Finished`; the member is
@@ -1397,6 +1401,321 @@ Every string is one short sentence.
 | an older switchyard | "Chats are not published: the switchyard is older than this server." |
 | another Claude Code session holds the conversation | "Another Claude Code session holds this conversation." |
 
+### 14. Step 2's trust design
+
+For the maintainers' approval (Decision before any builder, Step 2's
+trust design). Written on 2026-11-25 against `main` at `f9268319` after
+reading `internal/crew` (`run.go`: `promptWith`, `AwaitReady`,
+`readyAt`, `heldWords`; `worktree.go`: `RepoRoots`; `commands.go` and
+`continue.go`, where an attempt's worktree goes; `crew.go`'s `Yolo`;
+`continue.go`'s `Recovered`), `internal/session` (`local.go`:
+`TrustPattern`, `TrustAnswers`, `atPrompt`; `submit.go`:
+`ErrTrustQuestion`; `move.go`: `SwapWay`, `MoveStarts`,
+`CrewStaysWords`), `internal/catalog/defaults.go` (Claude Code's
+`trustPrompt`, `trustAnswers`, `promptShape`), `internal/agents`
+(`TrustArgs`, Codex's alone), `internal/api` (`sessions.go`'s yolo and
+trust arguments, `dispatch_plans.go`'s `agentSelection`),
+`internal/gitcli/run.go`, `docs/features.md` (the crews' trust entries
+and the adapter matrix) and `docs/protocol.md` (the trust question).
+
+**What a member does today.**
+
+- A member starts as every session does, in its terminal
+  (`createLocalSession`); a managed attempt in a fresh worktree of its
+  own, `<crew folder>/.conductor/worktrees/<run>/<task>.<n>`
+  (`commands.go:1237`, `continue.go:1040`), at its task's start commit.
+- Claude Code's trust question is a startup question the screen watch
+  knows by the catalog's `trustPrompt`: attention `needs_input`, source
+  `trust`, its two answers as choices (`defaults.go:121-123`,
+  `local.go:126-139`). While it shows, `AwaitReady` holds the prompt
+  (`readyAt`, `run.go:3099`), `Submit` refuses text
+  (`ErrTrustQuestion`), and the run log says where to answer it
+  (`heldWords`, `run.go:2864`).
+- Only a person answers it: a controller of the member's session (its
+  page, the run page's chat, a control link, its terminal) picks a
+  choice. No rule, router or timer does. "No, exit" ends Claude Code,
+  and the member ends before its prompt.
+- Claude Code takes no per-launch trust (`docs/features.md`, the adapter
+  matrix), and asks even with `--dangerously-skip-permissions` (round
+  4); Codex's per-launch override (`TrustArgs`) is applied only with
+  yolo (`sessions.go:338-344`).
+- Every attempt meets the question only until a person has trusted the
+  repository once: Claude Code keys trust on the repository's root, and
+  a worktree on its main checkout's root (below), so a Yes given in any
+  attempt's worktree covers every later attempt, and every commit.
+
+**What the vendor's pages say** (each read on 2026-11-25):
+
+- Configure permissions, the sections on workspace trust and What runs
+  before you trust a folder (https://code.claude.com/docs/en/permissions.md):
+  trust is kept per repository root, covering the repository but not a
+  repository nested in it; in a worktree, the main checkout's root;
+  outside a repository, the starting folder and its subfolders. The
+  dialog is shown in an interactive terminal session only, never in a
+  `-p` or SDK run. In a `-p` run in a folder never trusted, the settings
+  files' hooks, the `env` block, helper commands and a project skill's
+  hooks are used, and `.mcp.json` servers connect without asking,
+  approved or not; the project's allow rules and added directories are
+  not used, nor a project subagent's own hooks. To keep a repository's
+  content out of a `-p` run the page names the user source alone,
+  `--bare`, `disableAllHooks` passed by `--settings` (a project's
+  settings can turn the user's back on), and `disabledMcpjsonServers`.
+- Security, Additional safeguards (https://code.claude.com/docs/en/security.md):
+  in an interactive session the dialog shows in a folder not yet
+  trusted, and `.mcp.json` servers have an approval prompt of their own;
+  a `-p` run shows neither.
+- Use Claude Code features in the SDK
+  (https://code.claude.com/docs/en/agent-sdk/claude-code-features.md):
+  the `user` source is the person's own settings, `CLAUDE.md`, rules,
+  skills, commands and subagents; `project` is the folder's
+  `.claude/settings.json` and its hooks, `CLAUDE.md` and rules up the
+  parents, and skills, commands and subagents up to the repository's
+  root; `local` is `CLAUDE.local.md` and `.claude/settings.local.json`;
+  none named means all three. Managed settings, `~/.claude.json` and
+  auto memory (one per repository, shared by its worktrees) are read
+  whatever the sources.
+- CLI reference (https://code.claude.com/docs/en/cli-reference.md):
+  `--setting-sources` takes a list of `user`, `project`, `local`;
+  `--strict-mcp-config` skips the servers of `.mcp.json`,
+  `~/.claude.json` and plugins and loads only those `--mcp-config`
+  names.
+- How Claude remembers your project (https://code.claude.com/docs/en/memory.md):
+  project rules are skipped without the `project` source; an import from
+  outside the folder is asked about once per project in an interactive
+  session, and where no dialog shows it loads only if already approved.
+- Hooks (https://code.claude.com/docs/en/hooks.md): edits to a settings
+  file's hooks are normally picked up during a session by a file
+  watcher, and no step approves a changed hook.
+- Permission modes (https://code.claude.com/docs/en/permission-modes.md):
+  an interactive session's built-in starting mode is `auto` (2.1.283 and
+  later), a `-p` run's is Manual; `--permission-mode auto` works in
+  `-p`, under conditions of plan, organisation and model.
+
+What follows: trust is the person's, per repository, given once and
+not asked again when the repository's hooks, `env` or settings change,
+so a terminal in a trusted repository already runs whatever its commit
+holds, with no question. A chat's child takes no tool server but
+Conductor's own (design 4's `--strict-mcp-config`), so of a trusted
+folder it reads what its terminal's next start reads: the hooks, the
+`env` block and the instructions, with no question in either. In a
+folder never trusted a `-p` start would read all of that with no
+person having looked, which is why a member's terminal comes first.
+
+**What the move already gives** (row 5): a person's session moves to
+Chat after a turn that ended, and its child reads the setting sources
+its terminal read in the same folder, with Conductor's tool server
+alone (design 4). A crew member is refused (`CrewStaysWords`,
+`internal/session/move.go:30`).
+
+**The rule.** A crew member whose run says Chat starts in its terminal,
+and a person answers its folder's trust there, as today. Once the
+terminal shows the agent's own prompt with nothing typed into it, the
+engine moves the member to a chat that starts a new conversation, and
+sends its prompt there. A chat's child loads Conductor's own tool
+server and no other (design 4).
+
+**What a member has in a chat.** Conductor's own tools, and none of the
+folder's `.mcp.json` servers or the person's own tool servers; the
+folder's instructions, rules, skills and hooks as its terminal has them.
+A crew that needs a folder's tool servers runs as Terminal.
+
+**How a member moves** (row 9).
+
+1. The attempt launches as today, in its terminal, its `LaunchSpec.Way`
+   `"protocol"`. An unqualified version or a Runtime without pipes keeps
+   it there (design 8), said in the log.
+2. `AwaitReady` holds at the trust question as today. Then the engine
+   waits, polling at `readyPoll` for at most `readyCap`, until
+   `Local.AtPrompt()` (today's `atPrompt`, exported: the whole frame
+   uncut, Claude Code's `promptShape`, no numbered choice on it) and no
+   question shows. The sign is positive: the trust dialog is a numbered
+   list, so it is never the prompt, whatever its words; the move never
+   waits on the trust words being absent. In a folder with `.mcp.json`
+   the terminal asks its own question about the folder's tool servers
+   after trust, which Conductor offers no choices for: a person answers
+   it in the terminal, and until then the screen is not the prompt and
+   step 5's first fallback applies.
+3. `Local.MoveFresh(MoveStarts)`, the engine's alone (no route reaches
+   it), is refused unless the session is a crew member's launched
+   `"protocol"`, nothing was submitted or typed into it, no turn was
+   reported and no question shows. It stops the terminal and proves its
+   group gone (design 9, steps 1 and 2), then starts the chat's child
+   with design 4's argv, the session recipe's `StartArgs` on a new id in
+   place of `--resume`; `Info.AgentSession` becomes that id. The
+   terminal's id is never resumed: it holds no turn. A member that is
+   not yolo gets `--permission-mode auto` in place of design 4's
+   `default` (Decision, step 2's question 3): the mode its terminal
+   starts in by Claude Code's built-in default, so the member asks what
+   it asked there; what the classifier would ask goes to the operator
+   through the permission question.
+4. `Begin`, `Ready()`, then the prompt through `promptWith` (design 8),
+   marked prompted at `Accepted`. The prompt is never typed into the
+   terminal.
+5. Fallbacks. The prompt not recognised by `readyCap`: the member stays
+   in its terminal and its prompt is typed there by today's rule, which
+   types nothing while the startup watch sees a screen that is not the
+   prompt and notes once in the run log that the prompt waits. A chat
+   that does not start or become ready: a terminal started afresh (a new
+   id by `StartArgs`, since no conversation exists to resume), its
+   prompt typed there; both failing, the attempt fails with both
+   failures' words.
+6. A later start of the attempt's chat (the input bound's restart, an
+   interrupt without its receipt) resumes as row 4's does.
+
+Why the prompt is enough for a member: I21's first reply exists so that
+a person's move has a conversation to resume, and a member's chat
+starts its own. What trust needs is the agent's own program to have
+run in that folder to its prompt with every startup question answered,
+which the prompt shows. Between the two starts nothing is typed, and an
+attempt's worktree is its own. The cost is a second start of Claude
+Code per attempt (a few seconds): the folder's `SessionStart` hooks run
+twice, and the tool servers the person approved there run in the
+terminal's start only. With row 9, I21 gains a
+clause ("or by the engine's move of a crew member whose terminal shows
+the agent's prompt with nothing typed"), and design 13's "Crew members
+stay in their terminals." becomes "A crew member's way is its run's."
+
+**The alternatives weighed.**
+
+| Way | Why not |
+|---|---|
+| The move after the first turn ended, a person's rule | the task's first turn is most of an attempt's work, and it would run in the terminal |
+| A chat from the first moment with the user's sources alone (`--setting-sources user --strict-mcp-config`) | it keeps the person's own settings, Conductor's MCP server and the floor; like every chat it has no other tool server, and beyond that it loses the project's `CLAUDE.md` or `AGENTS.md`, rules, skills, subagents, commands and hooks: a crew working without the repository's own rules of work, unlike the same member in its terminal |
+| A chat from the first moment in a folder Conductor saw trusted before | Conductor's own copy of the agent's trust, seen only as a question answered or a start that asked nothing: stale once the person withdraws it, wrong for a copy of the agent with its own configuration folder; the agent's own file is never read |
+| Trust given once per run by the operator at launch | Conductor's own folder trust, which this plan keeps out; Claude Code takes no per-launch trust, so a `-p` start would run the folder's hooks and `env` whatever Conductor recorded; pinned to a commit it is out of date at the next merge, pinned to the repository it is Claude Code's own trust again |
+| The user's sources, with the folder's instructions passed by Conductor as a system prompt | Conductor would redo the agent's loading (imports, parents, rules) and still lose skills, subagents and commands |
+
+**A default of Chat.** For crews, the crew's own choice: the crew editor
+says "Members run as: Terminal | Chat", Terminal by default, and the
+launch sheet and Dispatch's launch show it. No server-wide default in
+this step. A person's own session has no default of Chat: it moves
+after its first reply, as step 1 builds.
+
+**What it asks of a launch.**
+
+- The crew gains `way` beside `yolo` (`internal/crew/crew.go`): `"chat"`
+  or absent, fixed at launch. The crew as launched, which the ledger
+  keeps with the run (`Recovered` reads it), carries it, as it carries
+  `yolo`, so a continued or recovered run keeps its way: no migration.
+- Dispatch's plan revision's package gains `way` beside `yolo`, omitted
+  for Terminal, so every existing package's digest stands; its launch
+  compares it as it compares `yolo`.
+- `agentSelection` takes the way: for Chat its digest also covers the
+  catalog's `protocol` (name and arguments) and the way, so a plan
+  approved for Terminal is never launched as Chat, and a change of the
+  protocol between attempts is `ErrAgentChanged`; for Terminal it is
+  `main`'s.
+- The run's log says each attempt's way and every fallback (below).
+
+**What a person sees** (the run log's words, after the member's name
+and attempt):
+
+| When | Words |
+|---|---|
+| it moved | "runs as a chat." |
+| an unqualified version | "in its terminal: this version of Claude Code can only run in its terminal." |
+| a Runtime without pipes | "in its terminal: the run's Runtime has no pipes." |
+| the trust question shows | today's `heldWords`, then "; it runs as a chat once answered" |
+| the prompt not recognised | "in its terminal: Claude Code's prompt was not recognised." |
+| the chat did not start | "in its terminal: Claude Code did not start a chat." |
+| a permission question | "asks to run a command: answer it on its session page." (its plain words, design 11) |
+
+On the member's page the switch is a label, "Runs as a chat for its
+run.", and the route refuses a person's move with "A crew member's way
+is its run's." The crew editor says under its choice: "In a chat,
+members have Conductor's tools and none of the folder's tool servers."
+
+**The adversarial read.** The adversaries: the repository's own content
+(its hooks, settings, `.mcp.json`, `CLAUDE.md`, a manifest file), a
+ticket's text, another crew member.
+
+- **Before trust.** What runs: git with no program the repository
+  names (`internal/gitcli/run.go` sets `core.hooksPath` to the null
+  device); a crew whose manifest is the repository's
+  `conductor.manifest.json` runs its steps at the tree's commit, as
+  today, by the operator's choice; Conductor's own MCP server and hooks;
+  the agent's interactive start, which shows its dialog. No `-p` child
+  starts in a folder before its terminal has shown the prompt.
+- **A worktree of a trusted repository** is trusted at every commit:
+  Claude Code's rule. A branch a member just changed can add a hook, and
+  the next attempt's terminal runs it, as today. The chat loads the
+  same, never more: of tool servers, Conductor's alone.
+- **A move or a restart** re-reads the folder, as every process start
+  does; Claude Code does not ask again for changed settings in either
+  way, so a hook added during a session runs in the terminal's next turn
+  and in a chat's alike. A folder's `.mcp.json` servers never start in a
+  chat (design 4).
+- **A permission request** is the operator's alone (row 6); the attempt
+  waits, its run saying so, and nobody answering is a deny after
+  `PermissionWait`. A member in a mode that asks nothing (yolo) reaches
+  no one, and in `auto` the classifier allows what it judges safe, as
+  in the member's terminal; the floor's deny rules hold in every mode. A ticket's text
+  that steers a member to change `.claude/settings.json` meets Claude
+  Code's own question in Manual, and the operator; in yolo it may write,
+  and the hook runs in that member's next turn, whichever its way.
+- **Another member** shares the repository's trust. With isolation
+  `none` it writes the shared folder between a terminal's start and the
+  move, and the chat reads the folder as it is then, as a terminal
+  started then would.
+
+**What it does not promise.** Protection from a trusted repository's own
+content: the person's trust covers every commit and worktree of it. That
+a hook a member adds is noticed. A folder's tool servers in a chat: a
+member there has Conductor's tools alone, and a crew that needs the
+folder's servers runs as Terminal. Anything about the main checkout's own local settings, managed
+settings, `~/.claude.json` or auto memory, which the agent reads
+whatever Conductor passes. Any agent but Claude Code: rows 10 and 11
+state their own before they are declared.
+
+**Tests** (Go race unless named):
+
+- Row 8: `TestSelectionDigestNamesProtocolAndWay` beside row 8's two;
+  `TestPackageWayOmittedForTerminal` (`internal/dispatch`: every existing
+  package's digest unchanged).
+- Row 9 (`internal/crew` over `sessiontest.FakeProtocol`):
+  `TestMemberMovesAtItsPrompt`: no move while the trust question shows,
+  the move once the screen is the prompt; breaks if the move follows
+  `AwaitReady`'s quiet output alone. `TestMemberMoveNeedsThePromptShape`:
+  a numbered dialog whose words the catalog does not know (the stub's
+  question about a folder's tool servers, after trust) holds the move,
+  types nothing into it, and past `readyCap` leaves the member in its
+  terminal with the log's line; breaks if the trust words' absence is
+  taken for trust.
+  `TestMemberChatStartsANewConversation`: the child's argv has the
+  recipe's `StartArgs` on a new id, no `--resume`, and `Info.AgentSession`
+  is that id; a member that is not yolo has `--permission-mode auto`, a
+  person's chat still `default`. `TestMemberPromptOnlyInTheChat`: nothing typed into the
+  terminal; the prompt sent once. `TestMemberMoveFallsBackToATerminal`:
+  a chat never ready gives a terminal started afresh with the prompt
+  typed there; breaks if it resumes the empty conversation.
+  `TestMoveFreshRefusedAfterInput` (`internal/session`): after a
+  submission, typed keys or a turn, `MoveFresh` is refused, and no route
+  reaches it. `TestCrewWayFixedAtLaunch`: the launched crew carries the
+  way, and a recovered run keeps it. `TestTerminalCrewUnchanged`: a
+  crew without `way` launches every attempt with `main`'s argv.
+- vitest: `CrewEditor.test.ts`'s `membersRunAs`. Playwright:
+  `crew-chat.spec.ts` gains a stub member that draws Claude Code's trust
+  question first: held, answered on its session page, then moved, its
+  prompt arriving in the chat.
+
+**By hand, with the real agent** (the builder's, recorded in the pull
+request): in a repository Claude Code has not trusted, a crew of two
+chat members whose first attempt asks and later ones do not; whether a
+terminal at its prompt with `--session-id` and no message leaves a
+conversation of that id; whether an interactive start in a folder
+never trusted runs any of the folder's hooks before its dialog is
+answered; and what `--permission-mode auto` does where auto mode is
+unavailable. Observed 2026-11-25: a chat's child, started with
+`--strict-mcp-config`, started no server named in its folder's
+`.mcp.json`. Observed 2026-11-25: a hook written into a trusted
+folder's settings while a session ran was run by the terminal's next
+turn, by a chat's next turn and by the terminal's next start alike,
+with no question.
+
+**Size.** Row 8 gains about 2 hours (the package's way, the digest's
+way), to 12; row 9 about 6 (the member's move, its fresh start and
+fallbacks, the crew's way and its editor), to 22.
+
 ## Sign-in and the vendors' pages
 
 **The rule Conductor keeps, every way, every agent.** Conductor runs
@@ -1548,8 +1867,9 @@ Three steps, each usable by itself:
   (rows 1 to 7). At its end a person presses Chat on a Claude Code
   session after its first reply, works in the chat, answers its
   permission questions, and presses Terminal to go back.
-- **Step 2, crews as chats** (rows 8 and 9). It waits for a trust design
-  of its own, with an adversarial read of its own. A start that is a
+- **Step 2, crews as chats** (rows 8 and 9). It waits for the
+  maintainers' approval of its trust design, design 14, which carries
+  its adversarial read. A start that is a
   chat from its first moment has no terminal behind it: no agent program
   has asked its own trust question there, and a `-p` start uses a
   folder's hooks, `env` block and `.mcp.json` servers without one
@@ -1560,9 +1880,9 @@ Three steps, each usable by itself:
   skills, and, by the agent SDK's page, its agents and commands:
   https://code.claude.com/docs/en/agent-sdk/claude-code-features.md;
   https://code.claude.com/docs/en/memory.md), or a design of its own.
-  One candidate: a member starts in its terminal to the agent's prompt,
-  then moves. At step 2's end a crew's members run as chats, and a
-  default of Chat may be offered.
+  Design 14 takes the candidate: a member starts in its terminal to the
+  agent's prompt, then moves. At step 2's end a crew whose editor says
+  Chat runs its members as chats.
 - **Step 3, more agents** (rows 10 and 11), each after the maintainers'
   decision on its agents. At its end Codex, then the first Agent Client
   Protocol agents, run as chats the way step 1 does.
@@ -1597,14 +1917,14 @@ screens with its specs, several builders, about 5 hours of wall time
 | 5 | 1 | session, api, proto, web: the move between ways, the connection split | `internal/session` (`SwapWay`, the terminal start extracted), `internal/api` (the move route), `internal/proto`, `web/app/utils/protocol.ts`, `docs/protocol.md`, `web/app` (`useSessionConnection.ts`, `TerminalView.vue`, the switch's component, not yet mounted), `web/e2e`, `docs` | row 4 | no | 14 h |
 | 6 | 1 | session, api, cli, proto: the permission request | `internal/session` (the list, the binding, the withdrawals), `internal/api` (the route, `router.go`, `exthost.go`, `inbox.go`, `lane.go`, `compare_doors.go`, `guide.go`), `internal/cli` (`mcp.go`'s concurrent loop and the tool with its own client, `notify.go`'s `--protocol-floor`), `internal/agents` (the floor's settings assets), `internal/proto`, `web/app/utils/protocol.ts`, `docs/protocol.md` | rows 3, 4, 5 | yes: PR-B alone, adversarial read | 18 h |
 | 7 | 1 | web: Chat, the switch mounted, the permission question, People, the other pages | `web/app` (`ChatView.vue`, `ToolStepRow.vue`, `InlineDiff.vue`, `PermissionQuestion.vue`, `utils/hiddenMarks.ts`, `utils/runOrigin.ts`, `utils/transcript.ts`, the session page, `pages/join/[token].vue`, `JoinCrewGrid.vue`, `pages/yard.vue`, `pages/roundhouse.vue`, `SessionTile.vue`, `utils/inspector.ts`, the palette's rows), `web/e2e`, `docs/features.md` | rows 5, 6 | no | 18 h |
-| 8 | 2 | catalog, api, web, and step 2's trust design: the declaration on the Agents page, the digest, how a member comes to run as a chat | `internal/catalog`, `internal/api` (`catalog.go`, `dispatch_plans.go`), `web/app` (`utils/agentForm.ts`), `web/e2e`, `docs` | row 7; step 2's trust design approved | the trust design: an adversarial read of its own | 10 h |
-| 9 | 2 | crew, session, api, signal, hostagent, web: Yardmaster on the protocol way, with a live crew | `internal/crew` (`run.go`, `task.go`, `handoff.go`, `decisions.go`, `messages.go`, `runtime.go`), `internal/session` (`Options.OnActivity`), `internal/api` (`runs.go`, `publish.go`, `server.go`), `internal/signal` (`hub.go`, `hosted.go`), `internal/hostagent/uplink.go`, `web/e2e`, `docs/protocol.md` (run log rows) | rows 6, 8 | no | 16 h |
+| 8 | 2 | catalog, api, dispatch, web: the declaration on the Agents page, the digest and the package's way | `internal/catalog`, `internal/api` (`catalog.go`, `dispatch_plans.go`), `internal/dispatch` (the package's `way`), `web/app` (`utils/agentForm.ts`), `web/e2e`, `docs` | row 7; design 14 approved | no: design 14 carries step 2's adversarial read | 12 h |
+| 9 | 2 | crew, session, api, signal, hostagent, web: Yardmaster on the protocol way, the member's move at its prompt, with a live crew | `internal/crew` (`crew.go`, `run.go`, `task.go`, `handoff.go`, `decisions.go`, `messages.go`, `runtime.go`), `internal/session` (`AtPrompt`, `MoveFresh`, `Options.OnActivity`), `internal/agentproto` (the fresh start's argv), `internal/api` (`runs.go`, `publish.go`, `server.go`, `chat_start.go`), `internal/signal` (`hub.go`, `hosted.go`), `internal/hostagent/uplink.go`, `web/app` (`CrewEditor.vue`, `CrewLaunchSheet.vue`, `DispatchLaunch.vue`), `web/e2e`, `docs/protocol.md` (run log rows, the crew's `way`) | rows 6, 8 | no | 22 h |
 | 10 | 3 | agentproto, catalog, agents: Codex's app server | `internal/agentproto/codex.go`, `internal/catalog/defaults.go`, `internal/agents/codex.go` (`codexMCPEnv` gains `CONDUCTOR_PROTOCOL`), `web/e2e` (a second stub mode) | row 7; the maintainers' decision on Codex | no | 18 h |
 | 11 | 3 | agentproto, catalog: the Agent Client Protocol client and its first native agents | `internal/agentproto/acp.go`, `internal/catalog/defaults.go`, `web/e2e` | row 7; the maintainers' decision per agent | no | 18 h |
 
-Step 1 (rows 1 to 7): about 97 hours. Step 2 (rows 8 and 9): about 26
-hours, after its trust design. Step 3 (rows 10 and 11): about 36 hours.
-In all about 159 hours of builders' work.
+Step 1 (rows 1 to 7): about 97 hours. Step 2 (rows 8 and 9): about 34
+hours, after its trust design is approved. Step 3 (rows 10 and 11):
+about 36 hours. In all about 167 hours of builders' work.
 
 **Built at the same time.** Row 1 beside row 2 (they share only
 `sessiontest`, in different files; the second to merge rebases). After
@@ -2479,27 +2799,33 @@ to Chat after its first reply, a permission question and its answer, on
 the desktop app's server inside WSL and on Linux, with nothing
 configured. **18 h.**
 
-### Row 8: the declaration on the Agents page, the digest, and step 2's trust design
+### Row 8: the declaration on the Agents page, the digest and the package's way
 
-**Scope.** Step 2's trust design (how a crew's member comes to run as a
-chat without a person pressing Chat, and whether a default of Chat is
-offered), written and read adversarially before its code; then the
-Agents page's form carrying `protocol` (`utils/agentForm.ts`,
-`AgentInput`); `agentSelection` digesting the protocol only for a
-protocol launch; and what the trust design asks of a launch. **Must not
-touch** the crew engine.
+**Scope.** Built once design 14 is approved. The Agents page's form
+carrying `protocol` (`utils/agentForm.ts`, `AgentInput`);
+`agentSelection` taking the way and
+digesting the protocol and the way only for a Chat launch; Dispatch's
+package gaining `way`, omitted for Terminal. **Must not touch** the crew
+engine.
 
 **Tests.** Go race: `TestSelectionDigestUnchangedForTerminal`
 (`internal/api`: every terminal launch's digest equals `main`'s, from a
-table of the existing test cases), `TestSelectionDigestNamesProtocol`.
-vitest: `agentForm.test.ts`'s `carriesProtocol`. The trust design's own
-tests, named in it. **10 h**, the trust design's own size to be given
-with it.
+table of the existing test cases), `TestSelectionDigestNamesProtocol`,
+and design 14's row 8 tests (`TestSelectionDigestNamesProtocolAndWay`,
+`TestPackageWayOmittedForTerminal`). vitest: `agentForm.test.ts`'s
+`carriesProtocol`. **12 h.**
 
 ### Row 9: Yardmaster on the protocol way
 
-**Scope.** Design 8 whole, with the member's way set as step 2's trust
-design says: `LaunchSpec.Way`; `runtimeFor` keeping a run in its
+**Scope.** Design 8 whole, with the member's way set as design 14 says:
+the crew's `way` (`"chat"` or absent, fixed at launch in the crew the
+ledger keeps, no migration) and "Members run as: Terminal | Chat" in the
+crew editor, the launch sheet and Dispatch's launch; `LaunchSpec.Way`;
+the member's move at its prompt (`Local.AtPrompt`, `Local.MoveFresh`,
+the chat's child on a new id by the recipe's `StartArgs`, `auto` for a
+member that is not yolo, the fallbacks to a terminal started afresh);
+I21's member clause and
+design 13's "A crew member's way is its run's."; `runtimeFor` keeping a run in its
 registered Runtime and its members in their terminals when that Runtime
 has no pipes; `AwaitReady`'s protocol branch with `protocolReadyCap`;
 `promptWith` waiting on `Finished` and marking prompted at `Accepted`;
@@ -2533,15 +2859,25 @@ class.
   registered Runtime without pipes takes stays in it, its members in
   their terminals, the log saying so; breaks if the run is moved to
   native.
+- design 14's row 9 tests: `TestMemberMovesAtItsPrompt`,
+  `TestMemberMoveNeedsThePromptShape`,
+  `TestMemberChatStartsANewConversation`, `TestMemberPromptOnlyInTheChat`,
+  `TestMemberMoveFallsBackToATerminal`, `TestMoveFreshRefusedAfterInput`
+  (`internal/session`), `TestCrewWayFixedAtLaunch`,
+  `TestTerminalCrewUnchanged`.
 - the existing tests of `internal/crew`, `internal/session`,
   `internal/api`, `internal/signal` and `internal/hostagent` change only
   at the `OnActivity` call sites' new argument.
+vitest: `CrewEditor.test.ts`'s `membersRunAs`.
 Playwright: `crew-chat.spec.ts`: a managed run of two stub protocol
 members, each attempt's way in the run's log, a task finished by its
-result alone.
+result alone; a member whose stub draws Claude Code's trust question
+first, held, answered on its session page, then moved, its prompt
+arriving in the chat.
 **By hand, with the real agent:** a live crew of the example crew with
 Claude Code members as chats, one permission answered, the run to its
-end; recorded in the features entry. **16 h.**
+end, and design 14's by-hand checks; recorded in the features entry.
+**22 h.**
 
 ### Row 10: Codex's app server (after the maintainers' decision)
 
@@ -2614,6 +2950,37 @@ Claude Code adds to row 4: the shape check reads `apiKeySource` from
 with one sentence ("Chat needs this agent to use an API key."), about
 one more hour. Answer (c) for Claude Code ends rows 2 to 9 before they
 begin.
+
+**Step 2's trust design (design 14): three questions, each answered by
+choosing one.** Rows 8 and 9 are written to the first answer of each.
+
+1. **How a crew's member comes to run as a chat.**
+   (a) In its terminal to the agent's prompt, its trust answered there by
+   a person as today, then moved by the engine before its prompt is sent
+   (design 14): rows 8 and 9 as written. (b) In its terminal through its
+   first turn, then moved, a person's rule: about 3 hours less in row 9,
+   and an attempt's first turn, most of its work, runs in the terminal.
+   (c) A chat from its first moment with the person's own settings alone
+   (`--setting-sources user --strict-mcp-config`): about 4 hours less in
+   row 9, and members work without the project's instructions, rules,
+   skills and hooks, besides having, as every chat does, no tool server
+   but Conductor's. (d) Not in step 2: row 9 is not built, and row 8
+   keeps the Agents page.
+2. **Where Chat is chosen.** (a) Per crew, "Members run as: Terminal |
+   Chat", Terminal by default, fixed at each launch and carried into a
+   ticket plan's approval; a person's own session keeps Chat after its
+   first reply, with no default. (b) As (a), with a server-wide default
+   in Settings that a crew without a choice follows: about 2 hours more.
+   (c) As (a), with a person's launch "Open as Chat", moved at the prompt
+   by the member's rule: about 4 hours more, and I21 gains a person's
+   clause.
+3. **The permission mode of a member's chat that is not yolo.** (a)
+   `auto`, the mode its terminal starts in by Claude Code's built-in
+   default: the operator is asked only what the classifier leaves to a
+   person, as in its terminal.
+   (b) Manual (`default`), as a person's chat: every call that needs
+   approval waits for the operator, and a run of several members waits
+   often. (c) The crew chooses, Manual by default: about 2 hours more.
 
 ## Defaults this plan is written to
 
