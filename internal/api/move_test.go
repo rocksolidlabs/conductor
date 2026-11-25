@@ -174,14 +174,14 @@ func indexOf(argv []string, s string) int {
 	return -1
 }
 
-// wayFrames is a viewer's sink that keeps its control frames' text.
+// wayFrames is a viewer's sink that keeps its control and TRANSCRIPT frames' text.
 type wayFrames struct {
 	mu     sync.Mutex
 	frames []string
 }
 
 func (w *wayFrames) WriteFrame(f []byte) error {
-	if len(f) > 0 && f[0] == proto.TypeControl {
+	if len(f) > 0 && (f[0] == proto.TypeControl || f[0] == proto.TypeTranscript) {
 		w.mu.Lock()
 		w.frames = append(w.frames, string(f[1:]))
 		w.mu.Unlock()
@@ -190,7 +190,7 @@ func (w *wayFrames) WriteFrame(f []byte) error {
 }
 func (w *wayFrames) Close(error) {}
 
-// saw says a control frame holds s.
+// saw says a control or TRANSCRIPT frame holds s.
 func (w *wayFrames) saw(s string) bool {
 	w.mu.Lock()
 	defer w.mu.Unlock()

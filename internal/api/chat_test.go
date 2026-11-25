@@ -269,22 +269,30 @@ func TestClaudeGateKeepsTheTerminal(t *testing.T) {
 			t.Fatalf("to Chat: %d %v", code, out)
 		}
 		moved(t, l, session.WayProtocol)
+		// Its viewer is sent the driver's notice as it comes: the chat's
+		// transcript is not read once the session is back in its terminal.
+		sink := &wayFrames{}
+		sub, err := l.AttachWith(session.AttachOptions{Role: session.RoleView, Name: "Ada"}, sink)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { l.Detach(sub) })
 		if _, err := l.Submit(context.Background(), session.Submission{Text: "hello"}); err != nil && !errors.Is(err, session.ErrSubmitPending) {
 			t.Fatal(err)
 		}
-		es := entriesWhen(t, l, "the not-signed-in notice", func(es []session.TranscriptEntry) bool {
-			return hasEntry(es, func(e session.TranscriptEntry) bool {
-				return e.Kind == session.EntryNotice && e.Code == agentproto.NoticeNotSignedIn
-			})
+		until(t, "the not-signed-in notice", func() bool {
+			return sink.saw(`"code":"` + agentproto.NoticeNotSignedIn + `"`)
 		})
-		if hasEntry(es, func(e session.TranscriptEntry) bool { return e.Kind == session.EntryNotice && e.Code == "unreadable" }) {
+		if !sink.saw(agentproto.NotSignedInWords) {
+			t.Fatal("the notice's words are not the driver's")
+		}
+		if sink.saw(`"code":"unreadable"`) {
 			t.Fatal("a signed-out agent was told as an unreadable one")
 		}
-		for _, e := range es {
-			if e.Kind == session.EntryNotice && e.Code == agentproto.NoticeNotSignedIn && e.Words != agentproto.NotSignedInWords {
-				t.Fatalf("its words: %q", e.Words)
-			}
-		}
+		// The way message back carries the driver's sentence.
+		until(t, "the way message back", func() bool {
+			return sink.saw(`"way":"terminal","why":"` + agentproto.NotSignedInWords + `"`)
+		})
 		// Back in its terminal, on the same conversation: not ended.
 		moved(t, l, session.WayTerminal)
 		if l.Info().Status.Ended() {
