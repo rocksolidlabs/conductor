@@ -146,6 +146,11 @@ func (s *mcpServer) permission(ctx context.Context, raw json.RawMessage) (string
 // allow only for exactly {"behavior":"allow"}, a deny with the server's
 // message, and anything else the lost request's deny.
 func permissionAnswer(raw []byte) string {
+	// An allow is these bytes and nothing else (less the encoder's
+	// newline): no other spelling of one, in case or keys, is taken.
+	if string(bytes.TrimSuffix(raw, []byte("\n"))) == `{"behavior":"allow"}` {
+		return permissionResult{Behavior: "allow"}.text()
+	}
 	d := json.NewDecoder(bytes.NewReader(raw))
 	d.DisallowUnknownFields()
 	var a struct {
@@ -159,8 +164,6 @@ func permissionAnswer(raw []byte) string {
 		return permissionDeny(permissionLost)
 	}
 	switch {
-	case a.Behavior == "allow" && a.Message == nil:
-		return permissionResult{Behavior: "allow"}.text()
 	case a.Behavior == "deny" && a.Message != nil:
 		return permissionDeny(cmp.Or(*a.Message, permissionLost))
 	}

@@ -164,9 +164,11 @@ const maxMCPCalls = session.MaxPendingPermissions + 4
 // callsPastTheBound is what a tool call past maxMCPCalls is answered.
 const callsPastTheBound = "Too many tool calls are running at once; call again once one has answered."
 
-// mcpServer serves one agent. Each tools/call runs on a goroutine of its
-// own, with a context of its own; every other message is answered in
-// turn by the loop that reads them.
+// mcpServer serves one agent. A permission call runs on a goroutine of
+// its own; every other tools/call is handed, in the order read, to one
+// worker, so the server meets them in the order the agent sent them, as
+// before; each has a context of its own. Every other message is answered
+// in turn by the loop that reads them, a call held or not.
 type mcpServer struct {
 	out    io.Writer
 	getenv func(string) string
@@ -191,6 +193,11 @@ type mcpServer struct {
 	// lowered as its last act but the WaitGroup's.
 	running atomic.Int64
 	wg      sync.WaitGroup
+	// queue is the worker's: the calls that are not permission calls, in
+	// the order read. Its room is maxMCPCalls, every call in flight, so a
+	// call past the bound is refused before it is queued and the loop
+	// never waits on it.
+	queue chan func()
 }
 
 // mcpCall is one tools/call in flight.
@@ -236,6 +243,13 @@ func (s *mcpServer) serve(ctx context.Context, in io.Reader) (int, error) {
 	s.mu.Lock()
 	s.calls = map[string]*mcpCall{}
 	s.mu.Unlock()
+	s.queue = make(chan func(), maxMCPCalls)
+	go func() {
+		for run := range s.queue {
+			run()
+		}
+	}()
+	defer close(s.queue)
 	sc := bufio.NewScanner(in)
 	sc.Buffer(make([]byte, 64<<10), maxMCPLine)
 	for sc.Scan() {
@@ -280,8 +294,9 @@ func (s *mcpServer) answer(id json.RawMessage, result any, rpcErr *mcpError) {
 	s.reply(mcpResponse{JSONRPC: "2.0", ID: id, Result: result})
 }
 
-// startCall runs one tools/call on a goroutine of its own, or answers it
-// at once: a call with no name, one whose id is a call still in flight,
+// startCall runs one tools/call, a permission call on a goroutine of its
+// own and any other on the worker, after those read before it, or answers
+// it at once: a call with no name, one whose id is a call still in flight,
 // and one past maxMCPCalls. A permission call's context is held's, which
 // the end of stdin ends; any other's is the server's, as before.
 func (s *mcpServer) startCall(ctx, held context.Context, req mcpRequest) {
@@ -328,7 +343,7 @@ func (s *mcpServer) startCall(ctx, held context.Context, req mcpRequest) {
 	s.wg.Add(1)
 	s.running.Add(1)
 	s.mu.Unlock()
-	go func() {
+	run := func() {
 		defer s.wg.Done()
 		defer s.running.Add(-1)
 		defer cancel()
@@ -337,7 +352,12 @@ func (s *mcpServer) startCall(ctx, held context.Context, req mcpRequest) {
 			s.beforeReply(req.ID)
 		}
 		s.finishCall(key, c, req.ID, result, rpcErr)
-	}()
+	}
+	if permission {
+		go run()
+		return
+	}
+	s.queue <- run
 }
 
 // finishCall frees the call's place and writes its reply, unless the call

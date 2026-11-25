@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -402,7 +403,7 @@ func (s *Server) laneItems(ctx context.Context, sc laneScope) (_ []*inboxItem, _
 		if s.coversSession(sc, info.ID) {
 			// A question that mirrors a record is the record's item.
 			if it, ok := rd.questionItem(info); ok && !rd.mirrorsRecord(info.Attention.Decision) {
-				out = append(out, laneTakes(it))
+				out = append(out, laneTakes(lanePermission(it, info)))
 			}
 		}
 	}
@@ -1745,4 +1746,23 @@ func (s *Server) handleRunDesk(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+}
+
+// PermissionAnswererWords names who answers a chat's permission request,
+// on a lane's item of it (lanePermission).
+const PermissionAnswererWords = "the person who runs this server"
+
+// lanePermission is a lane's item of a chat's permission request: a lane
+// (a decision link's, a run desk's) is never its answerer, so the item says
+// who is (session.NotAnswererWords) in place of the inbox's "Answer it in
+// the chat.", which is the operator's alone; it offers no action either
+// way. Any other item is it as it is.
+func lanePermission(it *inboxItem, info session.Info) *inboxItem {
+	if a := info.Attention; a.Source != session.SourceProtocol || a.Kind != session.KindPermission {
+		return it
+	}
+	it.Brief = strings.Replace(it.Brief, PermissionInChatWords, session.NotAnswererWords, 1)
+	it.Blocking.Words = strings.Replace(it.Blocking.Words, PermissionInChatWords, session.NotAnswererWords, 1)
+	it.Answerer = PermissionAnswererWords
+	return it
 }

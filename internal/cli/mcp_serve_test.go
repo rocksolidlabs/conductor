@@ -686,6 +686,12 @@ func TestPermissionToolResultIsTheDocumentedOne(t *testing.T) {
 		{"another behavior", permReply{status: 200, body: `{"behavior":"ask"}`}, denied("Conductor lost this request.")},
 		{"no answer", permReply{status: 200}, denied("Conductor lost this request.")},
 		{"a deny with no message", permReply{status: 200, body: `{"behavior":"deny"}`}, denied("Conductor lost this request.")},
+		{"an allow with its newline", permReply{status: 200, body: allowed + "\n"}, allowed},
+		// An allow is its exact bytes: no other spelling of one is taken.
+		{"an allow's key in capitals", permReply{status: 200, body: `{"Behavior":"allow"}`}, denied("Conductor lost this request.")},
+		{"an allow's key all capitals", permReply{status: 200, body: `{"BEHAVIOR":"allow"}`}, denied("Conductor lost this request.")},
+		{"a deny then an allow under one key", permReply{status: 200, body: `{"behavior":"deny","behavior":"allow"}`}, denied("Conductor lost this request.")},
+		{"an allow with spaces", permReply{status: 200, body: `{ "behavior": "allow" }`}, denied("Conductor lost this request.")},
 	} {
 		if got := ask(&tc.reply); got != tc.want {
 			t.Errorf("%s: %s, want %s", tc.what, got, tc.want)

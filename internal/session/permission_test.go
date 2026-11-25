@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -524,4 +525,107 @@ func TestNoMoveWhileARequestWaits(t *testing.T) {
 	}
 	a.cancel()
 	a.returned0(t)
+}
+
+// The floor's spellings (commandNamesDenied): what the docs say is judged a
+// path of the deny list is floored, a quote, a backslash, a doubled slash, a
+// dot segment, the home folder's forms and a path relative to the session's
+// folder among them; a glob, a variable other than HOME and a computed path
+// are asked like any other call; a pattern is a path for Glob alone.
+func TestPermissionFloorSpellings(t *testing.T) {
+	var deny []string
+	s, f, _ := permissionSession(t, Options{FileDenyFunc: func() []string { return deny }})
+	cwd := s.Info().Cwd
+	t.Setenv("HOME", cwd)
+	data := filepath.Join(cwd, "cdata")
+	if err := os.MkdirAll(data, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	deny = DenyList([]string{data}, nil)
+	cases := []struct {
+		name, tool, input string
+		floored           bool
+	}{
+		{"as the list spells it", "Bash", bash("cat " + data + "/s.json"), true},
+		{"a doubled slash", "Bash", bash("cat " + cwd + "//cdata/s.json"), true},
+		{"a dot segment", "Bash", bash("cat " + cwd + "/./cdata/s.json"), true},
+		{"in quotes", "Bash", bash(`cat \"` + data + `\"/s.json`), true},
+		{"quotes inside it", "Bash", bash("cat " + cwd + "/cd''ata/s.json"), true},
+		{"a backslash inside it", "Bash", bash(`cat ` + cwd + `/cd\\ata/s.json`), true},
+		{"relative to the session's folder", "Bash", bash("cat cdata/s.json"), true},
+		{"relative with a dot", "Bash", bash("ls ./cdata"), true},
+		{"after an equals sign", "Bash", bash("CONF=cdata/s.json make"), true},
+		{"the home folder by ~", "Bash", bash("cat ~/cdata/s.json"), true},
+		{"the home folder by $HOME in quotes", "Bash", bash(`cat \"$HOME\"/cdata/s.json`), true},
+		{"in capitals", "Bash", bash("cat " + strings.ToUpper(data) + "/S.JSON"), true},
+		{"a Glob's pattern", "Glob", `{"pattern":"` + data + `/**/*.json"}`, true},
+		{"a glob in the command", "Bash", bash("cat " + cwd + "/cdat?/s.json"), false},
+		{"a variable", "Bash", bash("D=" + cwd + "; cat $D/cdata/s.json"), false},
+		{"a word that only ends in the name", "Bash", bash("cat oldcdata/s.json"), false},
+		{"a Grep's pattern", "Grep", `{"pattern":"` + data + `"}`, false},
+	}
+	for i, c := range cases {
+		call := fmt.Sprintf("c-%d", i)
+		announce(f, call, c.tool, c.input)
+		a := ask(s, call, c.tool, c.input)
+		if c.floored {
+			if v := a.returned(t); v.Allow || v.Message != FloorWords {
+				t.Fatalf("%s (%s): %+v", c.name, c.input, v)
+			}
+			continue
+		}
+		openRequest(t, s, call)
+		f.ToolEnded(call, ToolResult{Status: ToolOK})
+		if v := a.returned(t); v.Allow || !v.Cancel {
+			t.Fatalf("%s: %+v", c.name, v)
+		}
+	}
+	// The hook knows no folder: the absolute spellings alone.
+	if !CommandNamesDenied("cat "+cwd+"//cdata/s.json", deny) || CommandNamesDenied("cat cdata/s.json", deny) {
+		t.Fatal("the hook's judgement")
+	}
+}
+
+// A request's summary folds white space before it is cut and says it was
+// cut: a command of ls, six hundred spaces and a second command never reads
+// as ls alone; the whole input is the part.
+func TestPermissionSummaryIsHonest(t *testing.T) {
+	s, f, _ := permissionSession(t, Options{})
+	padded := bash("ls" + strings.Repeat(" ", 600) + "&& rm -rf build")
+	announce(f, "c-1", "Bash", padded)
+	ask(s, "c-1", "Bash", padded)
+	if e := openRequest(t, s, "c-1"); !strings.Contains(e.Summary, "rm -rf build") || strings.HasSuffix(e.Summary, SummaryCutMark) {
+		t.Fatalf("a padded command's summary %q", e.Summary)
+	}
+	long := bash(strings.Repeat("echo word ", 300))
+	announce(f, "c-2", "Bash", long)
+	ask(s, "c-2", "Bash", long)
+	e := openRequest(t, s, "c-2")
+	if len(e.Summary) > MaxEntrySummary || !strings.HasSuffix(e.Summary, SummaryCutMark) {
+		t.Fatalf("a long command's summary (%d bytes) %q", len(e.Summary), e.Summary)
+	}
+	if part, total, cut, err := s.TranscriptPart(e.Seq, PartInput, 0); err != nil || total != len(long) || cut || string(part) != long {
+		t.Fatalf("the input part: %d of %d, cut %v: %v", len(part), total, cut, err)
+	}
+}
+
+// An in-stream request's input is bounded as the route's is: past 256 KiB
+// it is denied with the too-large sentence, never asked with its part cut
+// under a digest of the whole.
+func TestPermissionInStreamInputBound(t *testing.T) {
+	s, f, _ := permissionSession(t, Options{})
+	big := []byte(`{"command":"` + strings.Repeat("x", MaxTranscriptPart) + `"}`)
+	f.Permission(PermissionRequest{Ref: "req-1", Call: "c-1", Tool: "Bash", Input: big})
+	if e := lastEntry(t, s); e.State != PermissionDenied || e.Why != TooLargeWords || e.Question != "" {
+		t.Fatalf("a request past the bound %+v", e)
+	}
+	waitCalls(t, f, "the deny", func(c []string) bool { return sessiontest.Count(c, "reply") == 1 })
+	if r := f.Replies(); r[0].Verdict.Allow || r[0].Verdict.Message != TooLargeWords {
+		t.Fatalf("replied %+v", r)
+	}
+	at := []byte(`{"command":"` + strings.Repeat("x", MaxTranscriptPart-len(`{"command":""}`)) + `"}`)
+	f.Permission(PermissionRequest{Ref: "req-2", Call: "c-2", Tool: "Bash", Input: at})
+	if e := lastEntry(t, s); e.State != PermissionOpen {
+		t.Fatalf("a request at the bound %+v", e)
+	}
 }

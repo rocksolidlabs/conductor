@@ -166,6 +166,7 @@ func (s *Local) AnswerPermission(ctx context.Context, by *Subscription, a proto.
 	s.mu.Unlock()
 	s.sendApplied(out)
 	if err != nil {
+		s.RecordServer(ActivityEntry{Type: ActivityStatus, Message: NotDeliveredWords})
 		return ErrQuestionAnswered
 	}
 	return nil

@@ -2344,7 +2344,7 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 		// A chat's permission request shows (I18): no other change
 		// replaces or withdraws it; this one is kept, and applied once no
 		// request is open (permission.go).
-		s.asideLocked(p, asideChange{state: state, message: message, source: source, kind: kind, options: options, rules: rules, turn: turn, plan: plan, opt: opt})
+		s.asideLocked(p, asideChange{state: state, message: message, source: source, kind: kind, options: options, rules: rules, turn: turn, plan: plan, opt: opt, hasOpt: len(opts) > 0})
 		s.mu.Unlock()
 		return nil
 	}

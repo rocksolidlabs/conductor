@@ -35,7 +35,7 @@ const (
 	// gives its MCP server (claude-protocol-mcp.json).
 	PermissionWait = 8*time.Hour - time.Minute
 	// maxAside bounds the attention changes kept aside while a request
-	// shows: past it the oldest goes.
+	// shows: past it the oldest that is no question goes.
 	maxAside = 16
 	// permissionToolName is Conductor's own prompt tool, as the agent's
 	// stream names its calls: a request about a call of it is none.
@@ -50,7 +50,11 @@ const (
 	AlreadyAskedWords       = "Already asked."
 	NotExactWords           = "Conductor cannot show this call exactly."
 	WithdrawnElsewhereWords = "Withdrawn: answered elsewhere."
-	RequestLostWords        = "The request was lost."
+	TooLargeWords           = "This call's input is too large for Conductor to show it whole."
+	// NotDeliveredWords is the activity line of an operator's answer
+	// recorded and then not delivered: its request had gone.
+	NotDeliveredWords = "The answer was not delivered: the request was lost."
+	RequestLostWords  = "The request was lost."
 )
 
 // PermissionAsk is a request a chat's agent put to Conductor's prompt tool
@@ -93,6 +97,10 @@ type asideChange struct {
 	turn    uint64
 	plan    string
 	opt     attentionOpt
+	// hasOpt says the change was made with an attentionOpt: one made
+	// without is replayed without, as setAttentionLooked tells the two
+	// apart (a change for one question has one).
+	hasOpt bool
 }
 
 func (s *Local) announceWait() time.Duration {
@@ -313,6 +321,9 @@ func (s *Local) RequestPermission(ctx context.Context, a PermissionAsk, reply fu
 		close(held.done)
 		s.mu.Unlock()
 		s.sendApplied(out)
+		if hv.operator && err != nil {
+			s.RecordServer(ActivityEntry{Type: ActivityStatus, Message: NotDeliveredWords})
+		}
 	case <-ctx.Done():
 		// The POST went before a verdict reached it: withdrawn, recorded
 		// before any later answer can be applied.
@@ -325,9 +336,13 @@ func (s *Local) RequestPermission(ctx context.Context, a PermissionAsk, reply fu
 			s.reviseLocked(r.seq, func(e *TranscriptEntry) { e.State, e.Why = PermissionWithdrawn, RequestLostWords }, &out)
 			s.unpinLocked(r)
 		}
+		lost := r.handed
 		close(held.done)
 		s.mu.Unlock()
 		s.sendApplied(out)
+		if lost {
+			s.RecordServer(ActivityEntry{Type: ActivityStatus, Message: NotDeliveredWords})
+		}
 	}
 }
 
@@ -387,7 +402,7 @@ func (s *Local) permissionEntryLocked(p *protocolWay, call, tool string, input [
 	return TranscriptEntry{
 		Kind: EntryPermission, Turn: p.turns, Call: cutAt(call, MaxEntryRef),
 		Tool: cutAt(CleanMessage(tool), MaxEventTool), Plain: plainOf(tool),
-		Summary:    cutAt(strings.Join(strings.Fields(CleanMessage(compactJSON(input))), " "), MaxEntrySummary),
+		Summary:    requestSummary(input),
 		Cwd:        cutAt(strings.Map(dropControl, cwd), MaxEventPath),
 		InputBytes: len(input), InputSha256: digest,
 		Choices: []string{proto.PermissionAllowOnce, proto.PermissionDeny}, State: PermissionOpen,
@@ -513,6 +528,7 @@ func (s *Local) asideLocked(p *protocolWay, c asideChange) {
 	}
 	if c.state == AttentionNeedsInput {
 		c.opt.id = NewID()
+		c.hasOpt = true
 		if c.opt.asked != nil {
 			*c.opt.asked = c.opt.id
 			c.opt.asked = nil
@@ -521,7 +537,17 @@ func (s *Local) asideLocked(p *protocolWay, c asideChange) {
 	c.rules &^= spendToken
 	p.aside = append(p.aside, c)
 	if len(p.aside) > maxAside {
-		p.aside = p.aside[1:]
+		// Past the bound the oldest change that is no question goes: a
+		// question's id is its asker's already. Only questions kept: the
+		// oldest of them.
+		drop := 0
+		for i, a := range p.aside {
+			if a.state != AttentionNeedsInput {
+				drop = i
+				break
+			}
+		}
+		p.aside = append(p.aside[:drop], p.aside[drop+1:]...)
 	}
 }
 
@@ -688,8 +714,9 @@ func digestOf(tool string, canon []byte) string { return inputDigest(tool, canon
 
 // flooredLocked is Conductor's floor (design 7): a file tool's path under
 // the server's deny list, or a shell command whose text names a path of
-// it. A command that computes a path (a variable, a cd, a script) is not
-// caught: the floor does not promise it. The caller holds s.mu.
+// it as commandNamesDenied says. A command that computes a path (a
+// variable, a cd, a script, a glob) is not caught: the floor does not
+// promise it. The caller holds s.mu.
 func (s *Local) flooredLocked(tool string, input []byte) bool {
 	deny := s.fileDeny()
 	if len(deny) == 0 {
@@ -701,7 +728,7 @@ func (s *Local) flooredLocked(tool string, input []byte) bool {
 	}
 	switch plainOf(tool) {
 	case "command":
-		return CommandNamesDenied(commandText(fields), deny)
+		return commandNamesDenied(commandText(fields), deny, s.info.Cwd)
 	case "file", "read":
 		for _, k := range []string{"file_path", "notebook_path", "path", "pattern"} {
 			v, ok := fields[k].(string)
@@ -709,6 +736,11 @@ func (s *Local) flooredLocked(tool string, input []byte) bool {
 				continue
 			}
 			if k == "pattern" {
+				// A pattern is a path only for the tool whose pattern is
+				// one (Glob): Grep's is a regular expression.
+				if !strings.EqualFold(tool, "glob") {
+					continue
+				}
 				v = literalPrefix(v)
 				if v == "" || !filepath.IsAbs(v) {
 					continue
@@ -772,15 +804,33 @@ func (s *Local) pathDenied(path string, deny []string) bool {
 }
 
 // CommandNamesDenied reports whether a command's text names a path of the
-// deny list: the path itself, or its home-relative spelling (~, $HOME); a
-// name entry by its directory and its name. A command that computes a path
-// (a variable, a cd, a script) is not caught. Conductor's floor judges a
-// chat's shell calls by it, and so does conductor notify --protocol-floor.
-func CommandNamesDenied(cmd string, deny []string) bool {
+// deny list, for conductor notify --protocol-floor, which knows no folder:
+// commandNamesDenied with none.
+func CommandNamesDenied(cmd string, deny []string) bool { return commandNamesDenied(cmd, deny, "") }
+
+// commandNamesDenied is the floor's judgement of a shell command's text,
+// and exactly this: the text is lowercased, its quotes (' and ") and
+// backslashes taken out, and every "//" and "/./" made one "/"; then it
+// names a path of the deny list when it holds the path as the list spells
+// it, or with ~, $HOME or ${HOME} for the home folder before the rest, or,
+// with cwd (the session's folder), the path relative to cwd where the path
+// is inside it, after the start of the text, a space or one of =:(<>|;&.
+// A name entry (dir/*name*) is named by its name and its directory. What is
+// not judged a path, and is asked like any other call (or runs unasked in
+// a yolo session): a variable other than HOME, a glob, a cd, a script, a
+// path computed any other way, a path relative to another folder.
+func commandNamesDenied(cmd string, deny []string, cwd string) bool {
 	if cmd == "" {
 		return false
 	}
-	text := strings.ToLower(cmd)
+	text := strings.ToLower(strings.NewReplacer(`"`, "", "'", "", `\`, "").Replace(cmd))
+	for {
+		next := strings.ReplaceAll(strings.ReplaceAll(text, "/./", "/"), "//", "/")
+		if next == text {
+			break
+		}
+		text = next
+	}
 	home, _ := os.UserHomeDir()
 	forms := func(p string) []string {
 		out := []string{p}
@@ -790,11 +840,38 @@ func CommandNamesDenied(cmd string, deny []string) bool {
 		}
 		return out
 	}
+	relative := func(p string) string {
+		if cwd == "" {
+			return ""
+		}
+		r, err := filepath.Rel(cwd, p)
+		if err != nil || r == "." || !filepath.IsLocal(r) {
+			return ""
+		}
+		return strings.ToLower(filepath.ToSlash(r))
+	}
+	// atWord says the text holds f where a word begins.
+	atWord := func(f string) bool {
+		for i := 0; ; {
+			j := strings.Index(text[i:], f)
+			if j < 0 {
+				return false
+			}
+			at := i + j
+			if at == 0 || strings.ContainsRune(" \t\n=:(<>|;&", rune(text[at-1])) || strings.HasSuffix(text[:at], "./") && (at == 2 || strings.ContainsRune(" \t\n=:(<>|;&", rune(text[at-3]))) {
+				return true
+			}
+			i = at + 1
+		}
+	}
 	names := func(p string) bool {
 		for _, f := range forms(p) {
 			if strings.Contains(text, strings.ToLower(f)) {
 				return true
 			}
+		}
+		if r := relative(p); r != "" && atWord(r) {
+			return true
 		}
 		return false
 	}
@@ -805,7 +882,7 @@ func CommandNamesDenied(cmd string, deny []string) bool {
 		base := filepath.Base(e)
 		if len(base) > 2 && strings.HasPrefix(base, "*") && strings.HasSuffix(base, "*") {
 			core := strings.ToLower(strings.Trim(base, "*"))
-			if core != "" && strings.Contains(text, core) && names(filepath.Dir(e)) {
+			if core != "" && strings.Contains(text, core) && (names(filepath.Dir(e)) || relative(filepath.Dir(e)) == "" && cwd != "" && sameDir(cwd, filepath.Dir(e))) {
 				return true
 			}
 			continue
@@ -815,4 +892,24 @@ func CommandNamesDenied(cmd string, deny []string) bool {
 		}
 	}
 	return false
+}
+
+// sameDir says a and b are one folder, as cleaned paths.
+func sameDir(a, b string) bool { return filepath.Clean(a) == filepath.Clean(b) }
+
+// SummaryCutMark ends a request's summary that was cut: the mark a
+// question's words cut to fit end with (shownWords).
+const SummaryCutMark = "…"
+
+// requestSummary is a request's summary: its input as compact JSON, its
+// control characters dropped and every run of white space one space, then
+// cut to MaxEntrySummary with SummaryCutMark at its end when cut, so a
+// command padded with spaces never reads as all there is. The whole input
+// is the request's part.
+func requestSummary(input []byte) string {
+	words := strings.Join(strings.Fields(strings.Map(dropControl, compactJSON(input))), " ")
+	if len(words) <= MaxEntrySummary {
+		return words
+	}
+	return cutAt(words, MaxEntrySummary-len(SummaryCutMark)) + SummaryCutMark
 }
