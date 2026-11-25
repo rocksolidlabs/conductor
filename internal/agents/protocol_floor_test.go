@@ -10,7 +10,8 @@ import (
 )
 
 // A chat's floor files: both settings hold a Read and an Edit deny rule
-// for every path of the deny list, the path and what is under it, and one
+// for every path of the deny list, the path and what is under it, an allow
+// rule for each of Conductor's unasked tools and no other, and one
 // PreToolUse hook on shell calls that runs conductor notify
 // --protocol-floor with the list beside them; the yolo one also the yolo
 // key; the list holds the deny list as given.
@@ -37,7 +38,8 @@ func TestPermissionFloorAssets(t *testing.T) {
 		}
 		var s struct {
 			Permissions struct {
-				Deny []string `json:"deny"`
+				Deny  []string `json:"deny"`
+				Allow []string `json:"allow"`
 			} `json:"permissions"`
 			Hooks map[string][]struct {
 				Matcher string `json:"matcher"`
@@ -62,6 +64,14 @@ func TestPermissionFloorAssets(t *testing.T) {
 		if len(s.Permissions.Deny) != 4*len(deny) {
 			t.Errorf("%s: %d rules for %d paths", name, len(s.Permissions.Deny), len(deny))
 		}
+		// Conductor's unasked tools are allowed, each by its one tool's
+		// rule, and nothing else: never the prompt tool, never a server's
+		// every tool.
+		want := []string{"mcp__conductor__guide", "mcp__conductor__report", "mcp__conductor__set_state", "mcp__conductor__ask", "mcp__conductor__task_context",
+			"mcp__conductor__task_checkpoint", "mcp__conductor__task_blocked", "mcp__conductor__task_result"}
+		if !slices.Equal(s.Permissions.Allow, want) {
+			t.Errorf("%s allows %v, want %v", name, s.Permissions.Allow, want)
+		}
 		pre := s.Hooks["PreToolUse"]
 		if len(s.Hooks) != 1 || len(pre) != 1 || pre[0].Matcher != "Bash" || len(pre[0].Hooks) != 1 || pre[0].Hooks[0].Type != "command" ||
 			pre[0].Hooks[0].Command != "'"+bin+"' notify --protocol-floor "+filepath.Join(hooks, ClaudeProtocolFloorList) {
@@ -83,5 +93,23 @@ func TestPermissionFloorAssets(t *testing.T) {
 	}
 	if err := WriteProtocolFloor("hooks", bin, deny); err == nil {
 		t.Fatal("a relative hooks directory was taken")
+	}
+}
+
+// The two lists of Conductor's tools are apart: a tool is unasked or asks,
+// never both, and the prompt tool asks (it is never allowed).
+func TestTheUnaskedToolsAreApart(t *testing.T) {
+	for _, tool := range ProtocolUnaskedTools {
+		if _, both := ProtocolAskedTools[tool]; both {
+			t.Errorf("%s is in both lists", tool)
+		}
+	}
+	if _, asks := ProtocolAskedTools["permission"]; !asks || slices.Contains(ProtocolUnaskedTools, "permission") {
+		t.Fatal("the prompt tool is not among the tools that ask")
+	}
+	for tool, why := range ProtocolAskedTools {
+		if strings.TrimSpace(why) == "" {
+			t.Errorf("%s asks for no reason given", tool)
+		}
 	}
 }
