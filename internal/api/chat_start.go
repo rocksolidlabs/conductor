@@ -91,6 +91,31 @@ func (s *Server) keepChatLaunch(id string, l chatLaunch) {
 	s.chatLaunches.Store(id, &l)
 }
 
+// errNoChatAgent is a crew member's agent that has no chat: its catalog
+// entry declares no protocol Conductor speaks.
+var errNoChatAgent = errors.New("its agent has no chat")
+
+// ChatQualified says whether a crew member's agent can run as a chat
+// (crew.ChatChecker), asked as a Chat run's attempt is launched: its
+// catalog entry declares a protocol Conductor speaks, and its installed
+// version, probed now, is one its driver runs (agentproto.Qualified),
+// else agentproto.ErrNotQualified, whose words the run's log quotes. The
+// run's Runtime is the engine's to look at.
+func (s *Server) ChatQualified(ctx context.Context, agentID string) error {
+	a, ok := s.Catalog().Get(agentID)
+	if !ok || a.Protocol.Off() || agentproto.Check(a.Protocol) != nil {
+		return errNoChatAgent
+	}
+	version := ""
+	if id := s.identityNow(ctx)(a); id != nil && id.Identified {
+		version = id.Version
+	}
+	if !agentproto.Qualified(a.Protocol.Name, version) {
+		return agentproto.ErrNotQualified
+	}
+	return nil
+}
+
 // forgetChatLaunch lets a removed session's go.
 func (s *Server) forgetChatLaunch(id string) { s.chatLaunches.Delete(id) }
 
