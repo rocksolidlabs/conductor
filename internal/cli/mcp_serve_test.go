@@ -37,6 +37,9 @@ type mcpClient struct {
 	// pending is the replies read but not yet asked for.
 	pending []map[string]any
 	once    sync.Once
+	// hung is set once the loop has failed to return: a cleanup after
+	// that does not wait for it again.
+	hung bool
 }
 
 // startMCP starts s's serve loop; the test's cleanup ends its stdin and
@@ -74,8 +77,19 @@ func startMCP(t *testing.T, s *mcpServer) *mcpClient {
 // send writes one line; it returns once the serve loop has read it.
 func (c *mcpClient) send(line string) {
 	c.t.Helper()
-	if _, err := io.WriteString(c.in, line+"\n"); err != nil {
-		c.t.Fatalf("send %s: %v", line, err)
+	sent := make(chan error, 1)
+	go func() {
+		_, err := io.WriteString(c.in, line+"\n")
+		sent <- err
+	}()
+	select {
+	case err := <-sent:
+		if err != nil {
+			c.t.Fatalf("send %.80s: %v", line, err)
+		}
+	case <-time.After(mcpHang):
+		c.hung = true
+		c.t.Fatalf("the serve loop did not read %.80s", line)
 	}
 }
 
@@ -122,9 +136,13 @@ func (c *mcpClient) byID(id int) map[string]any {
 func (c *mcpClient) end() (int, error) {
 	c.t.Helper()
 	c.once.Do(func() { _ = c.in.Close() })
+	if c.hung {
+		return -1, nil
+	}
 	select {
 	case <-c.done:
 	case <-time.After(mcpHang):
+		c.hung = true
 		c.t.Fatal("the serve loop did not return at the end of its stdin")
 	}
 	return c.code, c.err
@@ -203,13 +221,14 @@ func (h *heldPOST) ended(t *testing.T) {
 type permServer struct {
 	*httptest.Server
 	posts   chan *heldPOST
+	quit    chan struct{}
 	count   atomic.Int32
 	reports atomic.Int32
 }
 
 func newPermServer(t *testing.T) *permServer {
 	t.Helper()
-	p := &permServer{posts: make(chan *heldPOST, 64)}
+	p := &permServer{posts: make(chan *heldPOST, 64), quit: make(chan struct{})}
 	p.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodPost && r.URL.Path == "/api/sessions/s1/permission":
@@ -230,6 +249,9 @@ func newPermServer(t *testing.T) *permServer {
 				_, _ = io.WriteString(w, a.body)
 			case <-r.Context().Done():
 				close(h.gone)
+			case <-p.quit:
+				// The test has ended: a post it never answered gets none.
+				panic(http.ErrAbortHandler)
 			}
 		case r.Method == http.MethodPost && (r.URL.Path == "/api/sessions/s1/events" || r.URL.Path == "/api/sessions/s1/attention"):
 			p.reports.Add(1)
@@ -239,7 +261,10 @@ func newPermServer(t *testing.T) *permServer {
 			http.NotFound(w, r)
 		}
 	}))
-	t.Cleanup(p.Close)
+	t.Cleanup(func() {
+		close(p.quit)
+		p.Close()
+	})
 	return p
 }
 
