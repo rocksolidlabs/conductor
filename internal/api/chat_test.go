@@ -74,6 +74,17 @@ func newChatEnvWith(t *testing.T, mutate func(*config.Config), env map[string]st
 		log = slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
 	}
 	e := newTestEnvAgents(t, mutate, log, []catalog.Agent{claude}, withNativeRuntime(sessiontest.FakePipeRuntime{FakeRuntime: rt}))
+	// A chat's start asks the stub's version, and with no answer the
+	// session stays in its terminal. The lookup's wait, the probe's and
+	// the probe's own bound only bound a hang here: the product's (2 s)
+	// are what a loaded machine spends before node has answered, and a
+	// start that gave up then failed TestChatChildThroughPipes on CI
+	// (2026-11-25, #281). Set before anything asks; a test of a probe
+	// that comes late sets its own wait (TestClaudeRestartReusesTheQualifiedVersion).
+	e.srv.lookups.stubWait(hangWait)
+	e.srv.probes.mu.Lock()
+	e.srv.probes.wait, e.srv.probes.timeout = hangWait, hangWait
+	e.srv.probes.mu.Unlock()
 	return &chatEnvT{testEnv: e, rt: rt}
 }
 
