@@ -6,6 +6,10 @@
 //
 //   stub-protocol.mjs --version          prints "2.1.331 (Claude Code)" (STUB_PROTOCOL_VERSION changes the number)
 //   stub-protocol.mjs -p ... --resume ID speaks stream-json on stdin and stdout, on the conversation ID
+//   stub-protocol.mjs -p ... --session-id ID   the same, on a new conversation of that id (a crew member's chat)
+//
+// Its arguments go into $HOME/.stub-sessions/<conversation>.argv as JSON when that folder is there: what a spec reads of how a
+// chat was started.
 //
 // Each turn's message goes into $HOME/.stub-sessions/<conversation>.txt as "chat: <message>" when that folder is there (the
 // terminal stub's transcript, which a terminal resumed on the conversation prints).
@@ -24,8 +28,11 @@
 //   STUB_PROTOCOL_NO_RECEIPT=1  the init offers no interrupt receipt
 //   STUB_PROTOCOL_CHILD=1   it starts a process of its own in its group (a sleep, its standard streams closed) that
 //                           outlives it, as a tool's process may: what a move proves gone with the group
-import { spawn } from 'node:child_process'
-import { appendFileSync, existsSync } from 'node:fs'
+//   STUB_PROTOCOL_WORKER=1  a managed run's worker: a message that is a task's line ('Conductor task "<id>", attempt <n>')
+//                           commits stub-<member>.txt in its folder and submits the result with conductor task result
+//                           (CONDUCTOR_BIN), as the terminal stub's worker does
+import { spawn, spawnSync } from 'node:child_process'
+import { appendFileSync, existsSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { createInterface } from 'node:readline'
 
@@ -40,7 +47,24 @@ if (!args.includes('-p')) {
   process.exit(2)
 }
 const resume = args.indexOf('--resume')
-const session = resume >= 0 ? args[resume + 1] : '00000000-0000-4000-8000-000000000001'
+const fresh = args.indexOf('--session-id')
+const session = resume >= 0 ? args[resume + 1] : fresh >= 0 ? args[fresh + 1] : '00000000-0000-4000-8000-000000000001'
+{
+  const kept = join(process.env.HOME || '/nonexistent', '.stub-sessions')
+  if (existsSync(kept)) writeFileSync(join(kept, `${session}.argv`), `${JSON.stringify(args)}\n`)
+}
+
+// work does a task's line as a worker does (STUB_PROTOCOL_WORKER): its file committed, its result submitted.
+function work(text) {
+  const m = /^Conductor task "([^"]+)", attempt (\d+)/.exec(text)
+  if (process.env.STUB_PROTOCOL_WORKER !== '1' || !m) return
+  const member = process.env.CONDUCTOR_MEMBER || 'stub'
+  const id = ['-c', 'user.name=conductor-e2e', '-c', 'user.email=e2e@conductor.invalid', '-c', 'commit.gpgsign=false']
+  appendFileSync(`stub-${member}.txt`, `attempt ${m[2]} of ${m[1]} by ${member}, as a chat\n`)
+  spawnSync('git', ['add', '--', `stub-${member}.txt`], { stdio: 'ignore' })
+  spawnSync('git', [...id, 'commit', '-q', '-m', `stub: ${member} does ${m[1]}, attempt ${m[2]}`], { stdio: 'ignore' })
+  spawnSync(process.env.CONDUCTOR_BIN || 'conductor', ['task', 'result', '--summary', `stub ${member} did ${m[1]} as a chat, attempt ${m[2]}`, '--issue', 'none'], { stdio: 'ignore' })
+}
 const permissionMode = args.includes('--dangerously-skip-permissions') ? 'bypassPermissions' : 'default'
 
 if (process.env.STUB_PROTOCOL_CHILD === '1') spawn('sleep', ['600'], { stdio: 'ignore' }).unref()
@@ -78,6 +102,7 @@ async function turn(m) {
     return
   }
   interrupted = false
+  work(text)
   if (/\btool\b/.test(text)) {
     const call = id('toolu')
     send({ type: 'assistant', message: { model: 'stub', id: id('msg'), type: 'message', role: 'assistant',

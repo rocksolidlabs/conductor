@@ -9665,7 +9665,9 @@ token and an agent token answer `401`), the body at most 64 bytes and read
 strictly (`413 too_large` past it, `400 invalid_request` for an unknown
 field or another way), refused on a switchyard. Every session starts in
 its terminal: a launch, a resume and a resume from history start the
-terminal way, and a chat is entered only by this move.
+terminal way, and a chat is entered only by this move, or by the engine's
+move of a crew member whose terminal shows the agent's prompt with nothing
+typed (Crew runs, Members as chats), which no route reaches.
 
 The reply is `200` with where the session stands: `{way, moving: true}`
 when the move was made at once (the session was at rest), or `{way,
