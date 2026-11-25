@@ -51,7 +51,7 @@ Client → owner:
 | `answer` | `reqId?, question, input?, text?` | A reply to the question the person was shown (see Attention, Answering a question), sent only to an owner whose `welcome` says `answer` (an older one closes on an unknown message). Controllers only (`read_only`, also on the relay). `question` is that question's `id` (1–32 bytes of printable ASCII, no space); exactly one of `input` (a choice's keys, at most 48 bytes, written as INPUT is) and `text` (a line, at most 4096 bytes, submitted as `submit` is; the frame within the CONTROL frame's 8 KiB as encoded, as a `submit`'s); `reqId` at most 32 bytes of the same. Out of those bounds: `error{bad_frame, requestId}` (no `requestId` when it is itself out of bounds), the connection stays. The owner writes nothing unless the question is still the one shown, nobody is answering it and nobody answered it in the terminal, looked at as the reply arrives and again, together with claiming the question, as the keys (a line's text, its Enter for a line with none) are written: first to claim wins; otherwise `error{question_answered, requestId}`, whose `message` says what became of the question when the owner knows (`this question was already answered by <name>: nothing was sent` once a result is recorded, `this question is being answered: nothing was sent` while another reply's keys are on their way, `this question was answered in the terminal: nothing was sent` once keys typed in the terminal reached it, else `this question was already answered: nothing was sent`). `answer_ok{requestId}` is the final word: the keys landed, or the line was entered, and the question is resolved by this reply (or was withdrawn by the agent moving on while they were written); it is never sent while the outcome is open (a line the program takes slowly is told once it is entered). A line typed whose Enter was not written (a question came in its pause, its link went) is `error{input_failed}` with `the line was typed and not entered: type in the terminal to continue`: the session's turn is held. Any other refusal is an `error` naming it as INPUT's or `submit`'s would be (`not_sent`, `input_failed`, `too_many_requests`, `session_ended`). An `answer`, a choice's keys too, is withdrawn as a `submit` is once its link's credential no longer stands (revoked or expired; on a host, no ping of its own sent within 15 s answered by the server: see the host control connection), whether or not its connection has closed for it yet: nothing of it written, `input_failed`. A `text` waits for the session's turn as `submit` does, also while it is held for a person, on a server connection apart from its other frames as `submit` does; an `input` answers a `trust` or `question` prompt showing over a held turn without ending the hold, the hold's words shown again once it is answered; an `answer` naming the hold itself (`source:"submit"`) is refused (`question_answered`), nothing written; one naming a question that mirrors a durable decision (the attention's `decision`) is refused `error{decision, requestId}`, its message naming the decision, nothing written. Every quick reply uses it: the sidebar's row and its 1–9, the Yard's card and queue, the session page's and a link's reply bar and its digits, a question's choices in the chat |
 | `transcript_get` | `reqId, after?, before?, limit?, part?{seq, name, offset?}` | A chat's read, every role, to an owner whose `welcome` says `way: "protocol"` (see Chat sessions). `reqId` 1 to 32 bytes of printable ASCII, `limit` at most 100 (0 or absent: 100), `part.name` one of `input`, `output`, `diff`, a part named alone; read strictly (a field it does not know, or past a bound: `error{bad_frame, requestId}`). Answered by a TRANSCRIPT `page` or `part` naming `reqId`, or `error{code, requestId}`: `transcript_gone` (`That part of the chat is no longer kept.`), `too_many_requests` (four replies of the connection not yet written to it), `not_protocol` on a session in its terminal (`This session runs in its terminal: it has no chat.`), `revoked`, `expired` |
 | `interrupt` | `reqId` | A chat's Stop, controllers only, to an owner whose `welcome` says `interrupt`; `reqId` as `transcript_get`'s. Taken off the connection's read loop, one at a time (another meanwhile: `too_many_requests`), held to the viewer's link as it is acted on. Answered `interrupt_ok{requestId}` once the agent was asked (the turn's end follows in the transcript), or `error{code, requestId}`: `not_protocol` (`Stop is for a chat; use the agent's own key in its terminal.`), `no_turn` (`The agent is not working on anything.`), `read_only`, `revoked`, `expired`, `bad_frame` |
-| `permission_answer` | `reqId, question, call, sha256, choice, message?` | The operator's answer to a chat's permission request (see Chat sessions, Permission requests), sent only to an owner whose `welcome` says `permissionAnswer`: `question` the request's question id (1 to 32 printable bytes), `call` the entry's `call` (at most 128 printable bytes), `sha256` its `inputSha256` (64 lowercase hex digits), `choice` `allow_once` or `deny`, `message` with a deny alone what the agent is told (at most 500 bytes, no control character); read strictly (`bad_frame` otherwise). Answered `answer_ok{requestId}` once the verdict was delivered to the agent, or `error{code, requestId}`: `not_answerer` (`Only the person who runs this server can answer.`: any connection but the operator's own, a link's of any role, a decision link's, a relayed viewer's), `stale_request` (`This request changed or was answered.`: another call or digest than the request's, or a call that has its result; the request stays open), `question_answered` (answered, withdrawn or denied already, or a verdict that could not be delivered), `moving`, `not_protocol` |
+| `permission_answer` | `reqId, question, call, sha256, choice, message?` | The operator's answer to a chat's permission request (see Chat sessions, Permission requests), sent only to an owner whose `welcome` says `permissionAnswer`: `question` the request's question id (1 to 32 printable bytes), `call` the entry's `call` (at most 128 printable bytes), `sha256` its `inputSha256` (64 lowercase hex digits), `choice` `allow_once` or `deny`, `message` with a deny alone what the agent is told (at most 500 bytes, no control character; a deny with none tells the agent `The operator denied this call.`); read strictly (`bad_frame` otherwise). Answered `answer_ok{requestId}` once the verdict was delivered to the agent, or `error{code, requestId}`: `not_answerer` (`Only the person who runs this server can answer.`: any connection but the operator's own, a link's of any role, a decision link's, a relayed viewer's), `stale_request` (`This request changed or was answered.`: another call or digest than the request's, or a call that has its result; the request stays open), `question_answered` (answered, withdrawn or denied already, or a verdict that could not be delivered), `moving`, `not_protocol` |
 
 Owner → client:
 
@@ -4081,7 +4081,10 @@ server says the caller may do here, computed per caller on each request
 and never cached, from the one table of Conductor's operations that the
 MCP server's tools are listed from too (`internal/api/guide.go`), so a
 tool and its guide entry cannot drift. `conductor guide` and the MCP
-tool `guide` read it.
+tool `guide` read it. The one operation left out of the guide (its
+overview, its operations and the skill) is `permission`, the tool a
+chat's Claude Code calls for its permission prompts and the model never
+does (see Chat sessions, Permission requests).
 
 | Route | Credential | Answer |
 |---|---|---|
@@ -9450,6 +9453,27 @@ them at its start. The floor does not catch a command that computes a path
 settings can switch off. At most eight requests are open or waiting per
 session: one more is denied `Too many requests are waiting; this one was
 denied.`.
+
+`conductor mcp` reads on while a call is held: each `tools/call` runs on
+a goroutine of its own, at most twelve at once (the eight requests and
+four more; past them a permission call is denied `Too many requests are
+waiting; this one was denied.` and any other answered an error at once),
+its replies written one at a time. A `notifications/cancelled` naming a
+call ends it, its POST with it, and no reply is written for that id; the
+end of stdin ends every held permission call the same way; a second call
+under a held call's id ends the first, unanswered, and is refused. The
+`permission` tool is listed in a chat alone (`CONDUCTOR_PROTOCOL` set),
+reads Claude Code's arguments (`tool_name`, `input`, `tool_use_id`, the
+last posted as `call`) and posts on a client with no timeout of its own,
+its call bounded by 8 hours (the server's 7 hours 59 minutes and one
+more). It returns the documented result, one text block: an allow only
+when the server's answer was exactly `{"behavior":"allow"}`; the
+server's deny as it came; a body past 256 KiB (the same bytes the route
+counts) or a `413`, `This call's input is too large for Conductor to
+show it whole.`, without posting; a call naming no tool or no input,
+`Conductor cannot show this call exactly.`; any other ending (a lost
+connection, another status, an answer it cannot read, no session),
+`Conductor lost this request.`. It logs nothing.
 
 A request taken is a `permission` entry (`state: "open"`, its `question`,
 `call`, `tool`, `plain`, `summary`, `inputSha256`, `choices`

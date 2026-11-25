@@ -2444,8 +2444,9 @@ MCP half, `conductor mcp`'s serve loop and its `permission` tool, is
   server's base context), so the entry says lost; the route then writes
   the deny "The session ended before anyone answered." to a client still
   there, never an empty answer.
-- The operator's deny with no message is sent with an empty `message`:
-  the plan gives no sentence for it.
+- The operator's deny with no message tells the agent "The operator
+  denied this call." (the lead's sentence; the plan gave none); a message
+  the operator writes goes as written.
 - In-stream requests (no driver hands one yet) take the digest's
   refusal, the bound, the floor, the list, the attention and the timer;
   their binding to an announced call is the Codex and ACP rows'.
@@ -2459,6 +2460,41 @@ MCP half, `conductor mcp`'s serve loop and its `permission` tool, is
 - Only the operator's own connection's welcome says `permissionAnswer`;
   `peer.go` (a published session's viewers through a switchyard) answers
   every `permission_answer` `not_answerer`.
+- The MCP half (`internal/cli/mcp.go`, `mcp_permission.go`), built beside
+  it and merged into the row's branch: each `tools/call` runs on a
+  goroutine of its own, at most twelve (`MaxPendingPermissions` and four);
+  past them a permission call gets the bound's deny, not an error result,
+  and any other tool an error. A cancellation ends any call it names, not
+  only a permission call. The end of stdin ends the held permission calls
+  and lets the other tools run to their own bounds. A second call under a
+  held call's id ends the first unanswered and is refused ("Already
+  asked." for a permission call).
+- The tool reads Claude Code's arguments leniently (they are not
+  documented): `tool_use_id` is posted as `call` (`""` when absent, which
+  the server binds to the one matching call); no `tool_name` or no
+  `input` is "Conductor cannot show this call exactly.", with no POST. The
+  server's answer is read strictly: only exactly `{"behavior":"allow"}` is
+  an allow, a deny must carry its message, anything else (another status,
+  an unreadable answer, a redirect, which the client refuses) is
+  "Conductor lost this request."; a `413` is the too-large deny. Outside a
+  session the tool answers the lost deny.
+- One bound, one count: the tool bounds the body it posts (the call, the
+  tool and the input, encoded) by the route's own constant,
+  `api.MaxPermissionBody`, so no call it posts meets the route's `413`.
+- A held call is bounded by `session.PermissionWait` plus one minute,
+  which is the 8 hours `claude-protocol-mcp.json` gives Conductor's
+  server.
+- The integration tests (`internal/cli/mcp_route_test.go`) run the real
+  serve loop on pipes against the real route on a test listener and a
+  chat on a fake driver, in one process: the tool listed from the table
+  in a chat alone; the operator's allow and deny as the documented text,
+  the entry allowed or denied once the reply was written; a cancellation
+  and the end of stdin ending the POST ("The request was lost."); the
+  session's withdrawals (the call's result, the turn's end, an interrupt,
+  the stop) answering the held call at once; the bound through the tool,
+  and thirteen withdrawn calls leaving the loop able to take the next;
+  the body counted alike by both; no call's input in any log line or
+  reply.
 
 ### Row 7: Chat, the switch mounted, the permission question
 
