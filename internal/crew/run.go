@@ -278,9 +278,6 @@ type Run struct {
 	// Yolo is the run's yolo choice, fixed at launch: every member, one added
 	// or started later included, is launched with it.
 	Yolo bool `json:"yolo"`
-	// Way is how its members run (Crew.Way), fixed at launch: WayChat, or
-	// absent for their terminals.
-	Way string `json:"way,omitempty"`
 	// ResumedFrom is the stopped run this one resumed (ResumeRun), and
 	// ResumedBy the run that resumed this one.
 	ResumedFrom string `json:"resumedFrom,omitempty"`
@@ -1277,7 +1274,7 @@ func (e *Engine) ResumeRecord(ctx context.Context, rec Run) (*Run, error) {
 		return nil, ErrRunRunning
 	}
 	yolo := rec.Yolo
-	c := Crew{ID: rec.CrewID, Name: rec.Name, Goal: rec.Goal, Cwd: rec.Cwd, Where: WhereServer, Isolation: rec.Isolation, Yolo: &yolo, Way: rec.Way}
+	c := Crew{ID: rec.CrewID, Name: rec.Name, Goal: rec.Goal, Cwd: rec.Cwd, Where: WhereServer, Isolation: rec.Isolation, Yolo: &yolo}
 	keeps := map[string]kept{}
 	for _, st := range rec.Members {
 		// Its binding as the record keeps it; one that keeps none (a record
@@ -2807,7 +2804,7 @@ func (e *Engine) GetWithDiffs(ctx context.Context, runID string) (Run, bool) {
 // snapshot copies r, with the members' diffs when withDiffs and the run's
 // chat when withChat. The caller holds e.mu.
 func (r *run) snapshot(withDiffs, withChat bool) Run {
-	out := Run{ID: r.id, CrewID: r.crewID, Name: r.name, Label: r.label, Goal: r.goal, Cwd: r.cwd, Isolation: r.isolation, Yolo: r.yolo, Way: r.way,
+	out := Run{ID: r.id, CrewID: r.crewID, Name: r.name, Label: r.label, Goal: r.goal, Cwd: r.cwd, Isolation: r.isolation, Yolo: r.yolo,
 		Class: r.class, Request: r.request,
 		StartedAt: r.startedAt, StoppedAt: r.stoppedAt, Members: make([]MemberState, 0, len(r.members)),
 		ResumedFrom: r.resumedFrom, ResumedBy: r.resumedBy,

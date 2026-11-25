@@ -4450,9 +4450,7 @@ member has `needsInput: true`; a member whose own question outlasts its
 turn's `done`, see Attention, is one, while the members that start after it
 start at that `done`); `running` otherwise (a member's `done` keeps it
 running: a done agent is idle, not gone). `yolo` is the run's yolo choice,
-fixed at launch, and `way` the crew's `way` (`"chat"`, absent for a crew
-whose members run in their terminals, as every crew saved before it), also
-fixed at launch (Members as chats, below). A member's `agentSession` is the one its latest session last
+fixed at launch; so is the crew's `way` (Members as chats, below). A member's `agentSession` is the one its latest session last
 showed (see Attention), kept after that session leaves the server, for
 `POST /api/runs/{run}/members/{name}/resume`;
 `diff` counts the lines of tracked files the member's worktree adds and removes

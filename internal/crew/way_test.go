@@ -89,6 +89,16 @@ func within(t *testing.T, what string, ch <-chan struct{}) {
 	}
 }
 
+// runWay is the way the engine holds run runID to.
+func runWay(e *Engine, runID string) string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if r := e.runs[runID]; r != nil {
+		return r.way
+	}
+	return "<no run>"
+}
+
 // promptEntries is how many prompt entries the chat's transcript holds.
 func promptEntries(t *testing.T, l *session.Local) int {
 	t.Helper()
@@ -454,13 +464,13 @@ func TestCrewWayFixedAtLaunch(t *testing.T) {
 	if err := json.Unmarshal([]byte(row.Crew), &launched); err != nil || launched.Way != WayChat {
 		t.Fatalf("the crew as launched: %v %s", err, row.Crew)
 	}
-	if r, _ := e.Get(run.ID); r.Way != WayChat {
-		t.Fatalf("the run's way: %q", r.Way)
+	if way := runWay(e, run.ID); way != WayChat {
+		t.Fatalf("the run's way: %q", way)
 	}
 	e2, fl2, _ := restart(t, e, ld, ldir, run.ID)
 	next := continueRun(t, e2, run.ID)
-	if next.Way != WayChat {
-		t.Fatalf("the continuation's way: %q", next.Way)
+	if way := runWay(e2, next.ID); way != WayChat {
+		t.Fatalf("the continuation's way: %q", way)
 	}
 	fp2, _ := chatOf(t, fl2, attemptName("lead", "build", 2))
 	sent(t, fp2, 1)
@@ -490,8 +500,8 @@ func TestChatPackageIsReadByTheEngine(t *testing.T) {
 	}
 	p.Way = WayChat
 	run := launchPlanned(t, e, c, p)
-	if run.Way != WayChat {
-		t.Fatalf("the run's way: %q", run.Way)
+	if way := runWay(e, run.ID); way != WayChat {
+		t.Fatalf("the run's way: %q", way)
 	}
 	fp, _ := chatOf(t, fl, attemptName("lead", "build", 1))
 	sent(t, fp, 1)

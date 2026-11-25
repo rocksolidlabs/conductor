@@ -48,8 +48,8 @@ func TestPipelessRuntimeKeepsTheRunInATerminal(t *testing.T) {
 			log = append(log, en.Message)
 		}
 		if slices.Contains(log, line) {
-			if run.Way != crew.WayChat || slices.ContainsFunc(log, func(s string) bool { return strings.Contains(s, "runs as a chat") }) {
-				t.Fatalf("the run: way %q, log %q", run.Way, log)
+			if slices.ContainsFunc(log, func(s string) bool { return strings.Contains(s, "runs as a chat") }) {
+				t.Fatalf("the run's log: %q", log)
 			}
 			return
 		}
