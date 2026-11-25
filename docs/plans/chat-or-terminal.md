@@ -2497,6 +2497,12 @@ MCP half, `conductor mcp`'s serve loop and its `permission` tool, is
   ends at a word's end; a line continuation is taken out with its
   backslash; a `Glob` pattern relative to the session's folder is judged
   there.
+- After the pull request's first whole run: the route answers the
+  admin's token `403 agent_only`, as every route the session's own token
+  alone takes, and refuses a Brakeman turn's own token (`401`) before it
+  reads the body (a Brakeman turn runs in its terminal, never as a
+  chat); the guide's walk of the body bounds tries the operation the
+  guide does not list itself.
 - The MCP half (`internal/cli/mcp.go`, `mcp_permission.go`), built beside
   it and merged into the row's branch: each `tools/call` runs on a
   goroutine of its own (every other call on one worker, since the fix
