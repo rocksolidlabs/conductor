@@ -64,7 +64,13 @@ var ErrTrustQuestion = errors.New(TrustQuestionWords)
 // prompt (promptOnly) while the agent's screen is not its prompt
 // (atPrompt): nothing of it was written. A person is told its words with
 // not_sent (NotSentWords).
-var ErrNotAtPrompt = errors.New(NotAtPromptWords)
+var ErrNotAtPrompt error = sentence(NotAtPromptWords)
+
+// sentence is an error whose words are a whole sentence a person reads,
+// its last stop included.
+type sentence string
+
+func (w sentence) Error() string { return string(w) }
 
 // NotAtPromptWords say why a line typed only at the agent's prompt was
 // refused, nothing typed: the screen, read as the writer took the line,
