@@ -114,6 +114,14 @@ type Info struct {
 	// hosted session's copy learns it from the reports it carries and from
 	// its host's word (proto.HostAttentionMsg.Turns).
 	Turns bool `json:"turns,omitempty"`
+	// FirstTurn says the session's terminal has reported a turn that ended
+	// (a done from a source that reports turns, ReportsTurn): the agent's
+	// first reply has ended. A move to Chat is refused before it
+	// (Local.SwapWay judges by this field), and a page offers the move by
+	// it. Set under the lock that sets Attention, read with it in one
+	// snapshot, never cleared; a resumed session's starts false. A hosted
+	// session's copy never carries it: a hosted session never moves.
+	FirstTurn bool `json:"firstTurn,omitempty"`
 	// FirstMessage is "waiting" while the line the session was launched
 	// with (POST /api/sessions' message) waits to be typed into its agent;
 	// "typed" once it is typed into the agent's input and its Enter left

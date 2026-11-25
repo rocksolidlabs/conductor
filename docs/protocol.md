@@ -1344,6 +1344,15 @@ session shows), keep the one shown, its `since` and its words; a host's
 `done` with another `id` is another turn's (one the host finished while
 it was away, told as its connection came back) and replaces it, stamped
 as it is received.
+`firstTurn` in a server session's `Info` (absent when false) says the
+agent's first reply in this session has ended: its terminal has reported
+a `done` of its own (source `api`, `title` or `status`; a bell, the
+screen pattern and an operator's mark do not count, nor a `working` such
+as the prompt's own report). It is never cleared; a session that begins
+as a resume starts without it, whatever its conversation held. A move to
+Chat is refused until it is set (see Moving between ways), and the
+session page offers Chat by it alone. A hosted session's copy never
+carries it, and an older server sends none: a page then offers no move.
 
 `kind` describes the shape of a prompt so clients can offer one-click answers:
 `permission` (a numbered permission dialog), `prompt` (a free-text reply is
@@ -9633,7 +9642,8 @@ a terminal whose attention is a done from a source that reports turns,
 with no question open, nothing typed held and no submission under way.
 `409 move_refused` with the plan's words when the move cannot be made:
 `Chat opens after the agent's first reply.` (a move to Chat before the
-terminal reported a turn that ended), `Crew members stay in their
+terminal reported a turn that ended: while the session's `firstTurn` is
+absent), `Crew members stay in their
 terminals.`, `Sessions on another machine stay in their terminal.`,
 `This agent cannot move its conversation yet.` (an agent with no
 protocol the server speaks, a driver that does not move, a Runtime other

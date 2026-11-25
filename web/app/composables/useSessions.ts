@@ -58,6 +58,12 @@ export interface SessionInfo {
    */
   turns?: boolean
   /**
+   * The agent's first reply in this session has ended: its terminal reported a turn's end of its own. A move to Chat is refused
+   * before, and the session page offers it by this alone. Never cleared; missing until then, on a resume until its own first turn
+   * ends, on a hosted session and from an older server (no move offered).
+   */
+  firstTurn?: boolean
+  /**
    * "waiting" while the message the session was launched with waits to be typed; "typed" once it sits in the agent's input with its
    * Enter left out, until a person's key; absent otherwise. A word this page does not know shows nothing.
    */
