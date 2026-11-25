@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { SessionWay } from '~/utils/protocol'
-import { switchState, type SwitchFacts } from '~/utils/switchState'
+import { pressFor, switchState, type SwitchFacts } from '~/utils/switchState'
 
 /**
  * The header's switch, Chat | Terminal (docs/plans/chat-or-terminal.md, design 11): the side the session runs is selected, the
@@ -15,7 +15,8 @@ const sides: Array<{ way: SessionWay; label: string }> = [
   { way: 'terminal', label: 'Terminal' },
 ]
 function press(way: SessionWay) {
-  if (way !== state.value.selected && state.value.pressable) emit('move', way)
+  const to = pressFor(state.value, way)
+  if (to) emit('move', to)
 }
 </script>
 
@@ -28,7 +29,7 @@ function press(way: SessionWay) {
         :label="side.label"
         color="neutral"
         :variant="side.way === state.selected ? 'soft' : 'ghost'"
-        :disabled="side.way !== state.selected && !state.pressable"
+        :disabled="!pressFor(state, side.way) && side.way !== state.selected"
         :aria-pressed="side.way === state.selected"
         :data-way-side="side.way"
         @click="press(side.way)"

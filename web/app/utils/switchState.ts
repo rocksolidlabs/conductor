@@ -8,6 +8,8 @@ export const NOT_QUALIFIED = 'This version of Claude Code can only run in its te
 export const MOVES_TO_CHAT = 'Moves to Chat when this turn ends.'
 export const MOVES_TO_TERMINAL = 'Moves to the terminal when this turn ends.'
 export const MOVING = 'The session is moving; try again in a moment.'
+/** A move to Chat at rest ends what the agent left running in its terminal (the move's notice says it was ended). */
+export const ENDS_TERMINAL_WORK = 'Moving to Chat ends what the agent left running in its terminal.'
 
 /** What the switch is drawn from: the session's way and its noted move (the welcome, the `way` message), and the page's facts. */
 export interface SwitchFacts {
@@ -62,6 +64,17 @@ export function switchState(f: SwitchFacts): SwitchState {
   else if (other === 'protocol' && !f.firstReply) s.line = FIRST_REPLY
   else if (other === 'protocol' && !f.qualified) s.line = NOT_QUALIFIED
   else if (f.inTurn) s.line = movesWhenTurnEnds(other)
+  else if (other === 'protocol') s.line = ENDS_TERMINAL_WORK
   if (other === 'protocol' && (!f.firstReply || !f.qualified) && !f.noted) s.pressable = false
   return s
+}
+
+/**
+ * What a press of `side` sends (the way to move to), or null for none: the other side while it may be pressed; the selected side while
+ * a move is noted, which takes the noted move back (the route's press of the way the session runs).
+ */
+export function pressFor(s: SwitchState, side: SessionWay): SessionWay | null {
+  if (!s.shown || !s.pressable) return null
+  if (side !== s.selected) return side
+  return s.noted ? side : null
 }
