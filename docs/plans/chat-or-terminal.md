@@ -953,11 +953,17 @@ is `PermissionWithdrawn`.
    any question, a file tool's call (`Read`, `Edit`, `Write`,
    `MultiEdit`, `NotebookEdit`, `Grep`, `Glob`) whose path is under the
    list, and a shell command whose text names such a path: "Conductor
-   keeps agents out of its own files." A `PreToolUse` hook on shell
-   commands (`conductor notify --protocol-floor`, judging the command's
-   text against the list) is a second look. **What the floor does not
-   promise:** a command that computes a path (a variable, a `cd`, a
-   script) is not caught, so a yolo session's commands can reach any
+   keeps agents out of its own files." The text names a path when,
+   lowercased, its quotes and backslashes taken out and every `//` and
+   `/./` made one `/`, it holds the path as the list spells it, with
+   `~`, `$HOME` or `${HOME}` for the home folder, or relative to the
+   session's folder where it lies inside it. A `PreToolUse` hook on
+   shell commands (`conductor notify --protocol-floor`, judging the
+   command's text against the list by the same rule, the absolute
+   spellings alone) is a second look, and denies nothing when it cannot
+   read its list. **What the floor does not promise:** a command that
+   computes a path (a variable other than `HOME`, a glob, a `cd`, a
+   script) is not caught, and is asked like any other call, so a yolo session's commands can reach any
    file the person's account can read; the hook is a second look that a
    folder's own settings can switch off (`disableAllHooks`); a mod the
    person installed can still approve some calls a deny rule refuses
@@ -2460,9 +2466,28 @@ MCP half, `conductor mcp`'s serve loop and its `permission` tool, is
 - Only the operator's own connection's welcome says `permissionAnswer`;
   `peer.go` (a published session's viewers through a switchyard) answers
   every `permission_answer` `not_answerer`.
+- The fix pass after the adversarial review: an attention change kept
+  aside is applied as it was made (a plain report, a clear, with no
+  options of its own, was taken for a withdrawal of a question not
+  showing, and lost); past 16 kept, the oldest that is no question goes,
+  a question's id being its asker's already. A lane's item of a request
+  (a decision link's, a run desk's) says "Only the person who runs this
+  server can answer.", its answerer the person who runs this server; the
+  operator's inbox keeps "Answer it in the chat.". The floor's shell
+  judgement takes quotes and backslashes out, folds `//` and `/./`, and,
+  in the session, also matches a path relative to the session's folder;
+  a `pattern` is judged for `Glob` alone. A request's summary folds white
+  space before it is cut and ends with `…` when cut. An in-stream
+  request's input past 256 KiB is denied with the too-large sentence. An
+  answer recorded and not delivered gets a second activity line, "The
+  answer was not delivered: the request was lost.". `conductor mcp`
+  runs permission calls on goroutines of their own and every other call
+  on one worker, in the order read, so their order is what it was before
+  this row. The tool's allow is the exact bytes `{"behavior":"allow"}`.
 - The MCP half (`internal/cli/mcp.go`, `mcp_permission.go`), built beside
   it and merged into the row's branch: each `tools/call` runs on a
-  goroutine of its own, at most twelve (`MaxPendingPermissions` and four);
+  goroutine of its own (every other call on one worker, since the fix
+  pass), at most twelve in flight (`MaxPendingPermissions` and four);
   past them a permission call gets the bound's deny, not an error result,
   and any other tool an error. A cancellation ends any call it names, not
   only a permission call. The end of stdin ends the held permission calls

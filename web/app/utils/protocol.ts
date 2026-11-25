@@ -2298,7 +2298,8 @@ export type PermissionChoice = 'allow_once' | 'deny'
 /**
  * The operator's answer to an open permission request (client -> owner): `question` the entry's question id, `call` and `sha256`
  * the entry's `call` and `inputSha256`, `message` with a deny what the agent is told. Answered `answer_ok` naming `reqId` once the
- * verdict was delivered, or `error` naming it: `question_answered`, `stale_request`, `not_answerer`, `read_only`, `moving`.
+ * verdict was delivered, or `error` naming it: `question_answered`, `stale_request`, `not_answerer`, `read_only`, `moving`,
+ * `not_protocol`, `bad_frame`.
  */
 export interface PermissionAnswer {
   t: 'permission_answer'

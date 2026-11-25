@@ -9439,23 +9439,35 @@ no space, no HTML escaping) of the bytes the agent sent; an input that is
 not UTF-8, holds a lone surrogate escape or a key twice is denied
 `Conductor cannot show this call exactly.`. Conductor's floor denies,
 before any question, a file tool's call (`Read`, `Edit`, `Write`,
-`MultiEdit`, `NotebookEdit`, `Grep`, `Glob`) whose path is under the
-server's deny list (the data directory, the configuration and catalog, the
-TLS keys, the hooks directory, the machine's directory) and a shell command
-whose text names such a path: `Conductor keeps agents out of its own
-files.`. The one `--settings` a chat's child takes (`claude-protocol.json`,
+`MultiEdit`, `NotebookEdit`, `Grep`, `Glob`) whose path (a `pattern` for
+`Glob` alone, up to its first wildcard; `Grep`'s is a regular expression)
+is under the server's deny list (the data directory, the configuration and
+catalog, the TLS keys, the hooks directory, the machine's directory), its
+links followed, and a shell command whose text names such a path:
+`Conductor keeps agents out of its own files.`. A command's text names a
+path when, lowercased, its quotes (`'`, `"`) and backslashes taken out and
+every `//` and `/./` made one `/`, it holds the path as the list spells it,
+or with `~`, `$HOME` or `${HOME}` for the home folder, or the path relative
+to the session's folder where it lies inside it (after the text's start, a
+space or one of `=:(<>|;&`, with or without `./`). Nothing else is judged a
+path: a variable other than `HOME`, a glob, a `cd`, a script or any other
+computed path is asked like any other call, and in a yolo session runs
+unasked. The one `--settings` a chat's child takes (`claude-protocol.json`,
 or `claude-protocol-yolo.json` with the yolo key) holds a `Read` and an
 `Edit` deny rule for every path of that list and a `PreToolUse` hook on
 shell calls, `conductor notify --protocol-floor <list>`, which prints
-Claude Code's documented deny for a command naming one; the server writes
-them at its start. The floor does not catch a command that computes a path
-(a variable, a `cd`, a script); the hook is a second look a folder's own
-settings can switch off. At most eight requests are open or waiting per
+Claude Code's documented deny for a command naming one by the same rule,
+the absolute spellings alone (it knows no folder); the server writes them
+at its start. The hook is a second look: a folder's own settings can
+switch it off, and it denies nothing (it fails open) when it cannot read
+its list or the call's payload. At most eight requests are open or waiting per
 session: one more is denied `Too many requests are waiting; this one was
 denied.`.
 
-`conductor mcp` reads on while a call is held: each `tools/call` runs on
-a goroutine of its own, at most twelve at once (the eight requests and
+`conductor mcp` reads on while a call is held: each permission call runs
+on a goroutine of its own, and every other `tools/call` is handed, in the
+order read, to one worker, so the server meets them in the order the
+agent sent them; at most twelve calls are in flight at once (the eight requests and
 four more; past them a permission call is denied `Too many requests are
 waiting; this one was denied.` and any other answered an error at once),
 its replies written one at a time. A `notifications/cancelled` naming a
@@ -9467,7 +9479,8 @@ reads Claude Code's arguments (`tool_name`, `input`, `tool_use_id`, the
 last posted as `call`) and posts on a client with no timeout of its own,
 its call bounded by 8 hours (the server's 7 hours 59 minutes and one
 more). It returns the documented result, one text block: an allow only
-when the server's answer was exactly `{"behavior":"allow"}`; the
+when the server's answer was exactly the bytes `{"behavior":"allow"}`
+(less a trailing newline), no other spelling of one; the
 server's deny as it came; a body past 256 KiB (the same bytes the route
 counts) or a `413`, `This call's input is too large for Conductor to
 show it whole.`, without posting; a call naming no tool or no input,
@@ -9486,14 +9499,21 @@ question asked meanwhile is shown once none is open, under the id its ask
 was answered with; one withdrawn meanwhile goes). A router is told of it
 (kind `permission`) and its answer is refused, recorded in the session's
 activity; the inbox's item says `Answer it in the chat.` and offers no
-action.
+action, and a lane's item of it (a decision link's, a run desk's) says
+`Only the person who runs this server can answer.`, its answerer `the
+person who runs this server`, with no action. The entry's `summary` is
+its input as compact JSON, every run of white space one space, cut to
+1 KiB with `…` at its end when cut; the whole input is its part. An
+in-stream request whose input is past 256 KiB is denied `This call's
+input is too large for Conductor to show it whole.`.
 
 The operator alone answers it, with `permission_answer` on the session's
 socket. Who answered is recorded first (the question's result, the
 entry's `byName`, an activity entry), then the verdict is handed over, and
 the entry is `allowed` or `denied` only once it was delivered (the POST's
 reply written); one that could not be (the POST gone) is `withdrawn`,
-`The request was lost.`. Every other answer path, `answer`, a line, a
+`The request was lost.`, and the activity says `The answer was not
+delivered: the request was lost.` after the answer's own line. Every other answer path, `answer`, a line, a
 provider's `Host.Submit`, a router's answer, a decision link's, is refused
 `permission`. Nothing else allows: a request is withdrawn (its POST
 answered `{"behavior":"deny","message":"Withdrawn: answered elsewhere."}`)
