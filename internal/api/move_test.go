@@ -22,16 +22,13 @@ import (
 
 // The move between ways on a server session (docs/plans/chat-or-terminal.md,
 // design 9, row 5): its terminal a fake, its chat's child the stub agent
-// (web/e2e/stub-protocol.mjs) through the native StartPipes. Claude Code's
-// Moves is not set yet (its by-hand observation), so the server here moves
-// every protocol it speaks (movesUnobserved).
+// (web/e2e/stub-protocol.mjs) through the native StartPipes, as Claude Code
+// (whose driver moves: agentproto.Moves).
 
 // newMoveEnv is a chat's server that moves, the stub's environment env.
 func newMoveEnv(t *testing.T, env map[string]string, log *slog.Logger) *chatEnvT {
 	t.Helper()
-	c := newChatEnv(t, env, log)
-	c.srv.movesUnobserved = true
-	return c
+	return newChatEnv(t, env, log)
 }
 
 // move asks the move of id to to as the operator would, through the
@@ -177,14 +174,14 @@ func indexOf(argv []string, s string) int {
 	return -1
 }
 
-// wayFrames is a viewer's sink that keeps its control frames' text.
+// wayFrames is a viewer's sink that keeps its control and TRANSCRIPT frames' text.
 type wayFrames struct {
 	mu     sync.Mutex
 	frames []string
 }
 
 func (w *wayFrames) WriteFrame(f []byte) error {
-	if len(f) > 0 && f[0] == proto.TypeControl {
+	if len(f) > 0 && (f[0] == proto.TypeControl || f[0] == proto.TypeTranscript) {
 		w.mu.Lock()
 		w.frames = append(w.frames, string(f[1:]))
 		w.mu.Unlock()
@@ -193,7 +190,7 @@ func (w *wayFrames) WriteFrame(f []byte) error {
 }
 func (w *wayFrames) Close(error) {}
 
-// saw says a control frame holds s.
+// saw says a control or TRANSCRIPT frame holds s.
 func (w *wayFrames) saw(s string) bool {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -281,14 +278,14 @@ func TestMoveRouteRefusesACrewMember(t *testing.T) {
 	if got, words := refusalOf(out); code != http.StatusConflict || got != "move_refused" || words != session.CrewStaysWords {
 		t.Fatalf("a crew member: %d %v", code, out)
 	}
-	c2 := newChatEnv(t, nil, nil) // Moves false: Claude Code's, before its observation
-	l2 := c2.launch(t)
-	(&chatEnvT{testEnv: c2.testEnv, rt: c2.rt}).turnEnded(t, l2.Info().ID)
-	code, out = (&chatEnvT{testEnv: c2.testEnv, rt: c2.rt}).move(t, l2.Info().ID, session.WayProtocol)
+	// An agent with no protocol (a plain program): nothing it could move to.
+	e := newTestEnv(t, nil)
+	plain := e.createSession("cat")
+	code, out = (&chatEnvT{testEnv: e}).move(t, plain, session.WayProtocol)
 	if got, words := refusalOf(out); code != http.StatusConflict || got != "move_refused" || words != session.CannotMoveWords {
-		t.Fatalf("Moves false: %d %v", code, out)
+		t.Fatalf("an agent with no protocol: %d %v", code, out)
 	}
-	if len(c.pipeSpecs())+len(c2.pipeSpecs()) != 0 || l.Info().Status.Ended() || l2.Info().Status.Ended() {
+	if len(c.pipeSpecs()) != 0 || l.Info().Status.Ended() || e.local(plain).Info().Status.Ended() {
 		t.Fatal("a refused move started or stopped something")
 	}
 }

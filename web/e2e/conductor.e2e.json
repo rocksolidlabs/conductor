@@ -25,18 +25,6 @@
         "session": { "startArgs": ["--session-id", "{id}"], "idFrom": "hook", "resumeArgs": ["--resume", "{id}"], "idPattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" }
       },
       {
-        "id": "claude-proto",
-        "name": "Claude Code with its chat (e2e stub)",
-        "description": "The Claude Code stub with its chat declared: stub-agent.sh in its terminal, stub-protocol.mjs as its chat, one transcript, so a session moves between the two.",
-        "command": ["@BASH@", "@STUB@"],
-        "allowArgs": true,
-        "env": { "STUB_IDENTITY": "claude", "STUB_REPORT": "claude", "STUB_CLAUDE_VERSION": "2.1.331", "STUB_NODE": "@NODE@" },
-        "adapter": "claude",
-        "signal": { "kind": "hook" },
-        "protocol": { "name": "claude-stream-json" },
-        "session": { "startArgs": ["--session-id", "{id}"], "idFrom": "hook", "resumeArgs": ["--resume", "{id}"], "idPattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" }
-      },
-      {
         "id": "signed-out",
         "name": "Signed out (e2e stub)",
         "description": "The stub that starts on the agent's sign-in screen, takes only the invented code STUB_SIGNIN names and then asks whether to trust the folder: no real tool, no real sign-in.",

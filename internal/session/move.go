@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/rocksolidlabs/conductor/ext"
+	"github.com/rocksolidlabs/conductor/internal/proc"
 	"github.com/rocksolidlabs/conductor/internal/proto"
 )
 
@@ -31,7 +32,7 @@ const (
 	HostedStaysWords     = "Sessions on another machine stay in their terminal."
 	MovingWords          = "The session is moving; try again in a moment."
 	MovedToTerminalWords = "Moved to the terminal."
-	MovedToChatWords     = "Moved to Chat. Turns made in the terminal are not shown here."
+	MovedToChatWords     = "Moved to Chat. Turns made in the terminal are not shown here. What the agent left running in its terminal was ended."
 
 	// The move's own words where the plan gives none.
 	OldNotGoneWords     = "The agent's earlier process did not end; the session ended."
@@ -160,7 +161,7 @@ func (s *Local) SwapWay(to string, m MoveStarts) (MoveState, error) {
 	}
 	s.clearNotedLocked()
 	s.beginMoveLocked()
-	go s.move(from, to, m)
+	go s.move(from, to, m, "")
 	return MoveState{Way: from, Moving: true}, nil
 }
 
@@ -272,43 +273,69 @@ func (s *Local) tryNoted() {
 	s.clearNotedLocked()
 	s.beginMoveLocked()
 	s.mu.Unlock()
-	go s.move(from, to, m)
+	go s.move(from, to, m, "")
 }
 
 // move is the move itself, on a goroutine of its own, the session marked
 // moving: the old process stopped and proven gone with its group, the
 // conversation read as it stands, the other way started on it; a start
-// that fails goes back the way it came, once; both failing end the
-// session with both failures' words.
-func (s *Local) move(from, to string, m MoveStarts) {
-	ended, why := false, ""
+// that fails has its child's group proven gone too and goes back the way
+// it came, once; both failing end the session with both failures' words.
+// cause, when set, is why the move was made (a chat whose agent is not
+// signed in going back to its terminal): the way message's sentence. A
+// Stop cancels what the move waits on (moveCancel) and nothing is started
+// after it: the session ends stopped.
+func (s *Local) move(from, to string, m MoveStarts, cause string) {
+	ctx, cancel := context.WithCancel(context.Background())
+	s.mu.Lock()
+	s.moveCancel = cancel
+	if s.stopRequested {
+		cancel()
+	}
+	s.mu.Unlock()
+	ended, why := false, cause
 	defer func() {
+		cancel()
 		s.mu.Lock()
 		done := s.moveDone
-		s.moveDone = nil
+		s.moveDone, s.moveCancel = nil, nil
 		if !ended && !s.info.Status.Ended() {
 			s.hub.Broadcast(s.wayFrameLocked(why))
 		}
+		p := s.way.Load()
 		s.mu.Unlock()
 		if done != nil {
 			close(done)
 		}
+		if p != nil {
+			// What the chat refused while it moved is sent again by its
+			// senders; the sender looks once more.
+			p.wake()
+		}
 		s.notifyChange()
 	}()
-	group, err := s.stopForMove(from)
-	if err == nil && group > 0 {
-		if m.Gone == nil {
-			err = errors.New("session: nothing proves the old process's group gone")
-		} else {
-			ctx, cancel := context.WithTimeout(context.Background(), moveGroupWait)
-			err = m.Gone(ctx, group)
-			cancel()
-		}
+	stopped := func() bool {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		return s.stopRequested
+	}
+	// endStopped ends a move a Stop cut short: nothing more starts.
+	endStopped := func() {
+		s.markEnded(StatusStopped)
+		ended = true
+	}
+	group, err := s.stopForMove(ctx, from)
+	if err == nil {
+		err = s.proveGone(ctx, m, group)
 	}
 	if s.isEnded() {
 		// The process ended by itself meanwhile, or the session was
 		// stopped: nothing starts.
 		ended = true
+		return
+	}
+	if stopped() {
+		endStopped()
 		return
 	}
 	if err != nil {
@@ -320,29 +347,70 @@ func (s *Local) move(from, to string, m MoveStarts) {
 	if m.AfterOldExit != nil {
 		m.AfterOldExit()
 	}
-	s.mu.Lock()
-	stop := s.stopRequested
-	s.mu.Unlock()
-	if stop {
-		s.markEnded(StatusStopped)
-		ended = true
+	if stopped() {
+		endStopped()
 		return
 	}
-	err = s.startWay(to, m)
+	left, err := s.startWay(ctx, to, m)
 	if err == nil {
-		s.moved(to, "")
+		if to == WayProtocol {
+			// Kept for the way back the chat may take by itself (a
+			// signed-out agent, readProtocol).
+			s.mu.Lock()
+			s.movedWith = m
+			s.mu.Unlock()
+		}
+		s.moved(to, cause)
+		return
+	}
+	if stopped() {
+		endStopped()
 		return
 	}
 	first := moveWords(m, to, err)
 	s.log.Warn("a move's start failed; going back", "to", to, "err", err)
-	if err := s.startWay(from, m); err != nil {
+	// The child of the start that failed is proven gone as the old one was
+	// (I1): the way back starts on the same conversation.
+	if gerr := s.proveGone(ctx, m, left); gerr != nil {
+		s.log.Warn("a failed start's child was not proven gone", "err", gerr)
+		if stopped() {
+			endStopped()
+			return
+		}
+		s.endMove(first, OldNotGoneWords)
+		ended = true
+		return
+	}
+	if stopped() {
+		endStopped()
+		return
+	}
+	if _, err := s.startWay(ctx, from, m); err != nil {
 		s.log.Warn("the way back did not start either", "to", from, "err", err)
+		if stopped() {
+			endStopped()
+			return
+		}
 		s.endMove(first, moveWords(m, from, err))
 		ended = true
 		return
 	}
 	why = first
 	s.moved(from, first)
+}
+
+// proveGone proves a stopped process's group gone (MoveStarts.Gone), within
+// the move's bound; a group of 0 is none to prove.
+func (s *Local) proveGone(ctx context.Context, m MoveStarts, group int) error {
+	if group <= 0 {
+		return nil
+	}
+	if m.Gone == nil {
+		return errors.New("session: nothing proves the old process's group gone")
+	}
+	gctx, cancel := context.WithTimeout(ctx, moveGroupWait)
+	defer cancel()
+	return m.Gone(gctx, group)
 }
 
 // moveWords is a failed start's sentence.
@@ -362,8 +430,8 @@ func moveWords(m MoveStarts, to string, err error) string {
 // process's exit and its output's end; it returns the process's group, to
 // be proven gone. Called with no lock held: a stop that hangs holds no
 // request and no lock.
-func (s *Local) stopForMove(from string) (int, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), s.opts.StopGrace+ext.StopKillWait)
+func (s *Local) stopForMove(mctx context.Context, from string) (int, error) {
+	ctx, cancel := context.WithTimeout(mctx, s.opts.StopGrace+ext.StopKillWait)
 	defer cancel()
 	if from == WayProtocol {
 		return s.leaveProtocol(ctx)
@@ -372,7 +440,7 @@ func (s *Local) stopForMove(from string) (int, error) {
 	// The pump of the terminal stopped here finds a later terminal and
 	// does not end the session.
 	s.termGen.Add(1)
-	proc := s.term.get()
+	old := s.term.get()
 	done := s.pumpDone.Load()
 	s.mu.Unlock()
 	for _, w := range []*PatternWatcher{s.pattern, s.trust, s.asked, s.shot} {
@@ -380,9 +448,9 @@ func (s *Local) stopForMove(from string) (int, error) {
 			w.Stop()
 		}
 	}
-	err := proc.Stop(ctx, s.opts.StopGrace)
+	err := old.Stop(ctx, s.opts.StopGrace)
 	select {
-	case <-proc.Done():
+	case <-old.Done():
 	case <-ctx.Done():
 		return 0, errors.New("session: the terminal's process did not exit")
 	}
@@ -394,7 +462,7 @@ func (s *Local) stopForMove(from string) (int, error) {
 		}
 	}
 	_ = err
-	return groupOf(proc), nil
+	return groupOf(old), nil
 }
 
 // leaveProtocol stops a chat's child for a move: its input closed, then
@@ -415,7 +483,34 @@ func (s *Local) leaveProtocol(ctx context.Context) (int, error) {
 			t.timer.Stop()
 		}
 	}
+	// Nothing waits on the way that is left: a message queued or written
+	// and not yet acknowledged (one that came as the move began) is told
+	// the session is moving, its claim on a question let go, and none of
+	// it is written to the child that ends.
+	var out applied
+	out.event = "left"
+	pending := append([]*queuedMessage(nil), p.queue...)
+	if p.inflight != nil {
+		pending = append(pending, p.inflight)
+	}
+	p.queue, p.inflight = nil, nil
+	for _, q := range pending {
+		if q.timer != nil {
+			q.timer.Stop()
+		}
+		state := PromptWithdrawn
+		if q.state == PromptWritten {
+			state = PromptUnconfirmed
+		}
+		q.state = state
+		s.reviseLocked(q.seq, func(e *TranscriptEntry) { e.State = state }, &out)
+		if q.claim != 0 {
+			out.release = append(out.release, questionClaim{id: q.sub.Question, token: q.claim})
+		}
+		out.finish(q, SubmitResult{}, ErrMoving)
+	}
 	s.mu.Unlock()
+	s.sendApplied(out)
 	_ = d.CloseInput()
 	_ = child.Stop(ctx, s.opts.StopGrace)
 	select {
@@ -432,15 +527,17 @@ func (s *Local) leaveProtocol(ctx context.Context) (int, error) {
 	return groupOf(child), nil
 }
 
-// startWay starts the way to on the conversation as it stands now.
-func (s *Local) startWay(to string, m MoveStarts) error {
+// startWay starts the way to on the conversation as it stands now, within
+// the move's ctx (a Stop cancels it). A chat's start that failed answers its
+// child's group, to be proven gone before the way back.
+func (s *Local) startWay(mctx context.Context, to string, m MoveStarts) (int, error) {
 	s.mu.Lock()
 	conv := ""
 	if s.info.AgentSession != nil {
 		conv = s.info.AgentSession.ID
 	}
 	s.mu.Unlock()
-	ctx, cancel := context.WithTimeout(context.Background(), protocolReadyCap)
+	ctx, cancel := context.WithTimeout(mctx, protocolReadyCap)
 	defer cancel()
 	if to == WayProtocol {
 		s.mu.Lock()
@@ -450,7 +547,7 @@ func (s *Local) startWay(to string, m MoveStarts) error {
 			s.way.Store(nil)
 		}
 		s.mu.Unlock()
-		return s.enterProtocol(ctx, m.Protocol)
+		return s.enterProtocolGroup(ctx, m.Protocol)
 	}
 	// A terminal still running (one a test left quiet as it entered the
 	// protocol way) is stopped first: one pump, one writer.
@@ -463,28 +560,29 @@ func (s *Local) startWay(to string, m MoveStarts) error {
 			select {
 			case <-*done:
 			case <-ctx.Done():
-				return errors.New("session: the terminal before did not end")
+				return 0, errors.New("session: the terminal before did not end")
 			}
 		}
 	}
 	s.mu.Lock()
 	cols, rows := s.info.Cols, s.info.Rows
 	s.mu.Unlock()
-	proc, err := m.Terminal(ctx, conv, cols, rows)
+	term, err := m.Terminal(ctx, conv, cols, rows)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	s.mu.Lock()
-	if s.info.Status.Ended() {
+	if s.info.Status.Ended() || s.stopRequested {
+		// Stopped while it started: the session never runs it.
 		s.mu.Unlock()
-		_ = proc.Stop(context.Background(), s.opts.StopGrace)
-		return ErrSessionEnded
+		_ = term.Stop(context.Background(), s.opts.StopGrace)
+		return groupOf(term), ErrSessionEnded
 	}
 	s.renewTerminalLocked()
 	s.way.Store(nil)
-	s.startTerminal(proc)
+	s.startTerminal(term)
 	s.mu.Unlock()
-	return nil
+	return 0, nil
 }
 
 // renewTerminalLocked gives a terminal started again its ring and screens
@@ -551,33 +649,7 @@ func (s *Local) endMove(first, second string) {
 	s.markEnded(StatusExited)
 }
 
-// GroupGone proves the native process group group ended: it waits, within
-// ctx, until no process is in it, a signal 0 to the group finding none
-// (ESRCH). A member still there once the group's leader is gone (what the
-// leader left in it) is sent SIGKILL once: two writers to one conversation
-// are never left. The group's number is not reused while a member is in
-// it, so the kill reaches this session's process's group alone.
-func GroupGone(ctx context.Context, group int) error {
-	if group <= 0 {
-		return nil
-	}
-	killed := false
-	for {
-		alive, err := groupAlive(group)
-		if err != nil {
-			return err
-		}
-		if !alive {
-			return nil
-		}
-		if !killed {
-			killGroup(group)
-			killed = true
-		}
-		select {
-		case <-ctx.Done():
-			return errors.New("session: the old process's group did not end")
-		case <-time.After(moveGroupPoll):
-		}
-	}
-}
+// GroupGone proves the native process group group ended: nothing left in
+// it that can run, what the old process left there sent SIGKILL once
+// (proc.GroupGone, the runner's: the session signals no process itself).
+func GroupGone(ctx context.Context, group int) error { return proc.GroupGone(ctx, group) }

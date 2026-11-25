@@ -651,6 +651,13 @@ function handleControl(msg: ControlMessage) {
       if (msg.way !== drawnWay) {
         drawnWay = msg.way
         term?.reset()
+        // Back in the terminal: the new process starts at the size the session had before the chat, which refused every resize
+        // meanwhile; this window's fit is asked again, as its connect asks it (the owner takes it from the window that sizes the
+        // session, or from one of the owner's own when none does).
+        if (msg.way === 'terminal' && mayFit()) {
+          const { cols, rows } = measure(true)
+          if (cols) conn.resize(cols, rows)
+        }
       }
       break
     case 'chat_history':
@@ -942,7 +949,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="relative h-full w-full overflow-hidden" :class="compact ? '' : 'rounded-lg border border-default'" :data-session-way="conn.way.value" :data-way-noted="conn.noted.value || undefined" :data-transcript-frames="transcriptFrames">
+  <div class="relative h-full w-full overflow-hidden" :class="compact ? '' : 'rounded-lg border border-default'" :data-session-way="conn.way.value" :data-way-noted="conn.noted.value || undefined" :data-welcomed="welcomed || undefined" :data-transcript-frames="transcriptFrames">
     <UContextMenu :items="terminalMenu" :disabled="compact">
       <div ref="host" class="terminal-host" :class="{ 'terminal-compact': compact, 'terminal-scale': scaledView, 'terminal-tile': props.fit === 'tile' }" :data-ended="ended ? 'true' : undefined" :data-renderer="renderer" :data-cols="grid.cols || undefined" :data-rows="grid.rows || undefined" :data-scaled-font="scaledAt" :data-fit-passes="fitPasses" :data-fit-resizes="fitResizes" :aria-label="readOnly ? 'terminal (read-only)' : 'terminal'" role="region" />
     </UContextMenu>

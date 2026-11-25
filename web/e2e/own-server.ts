@@ -16,6 +16,8 @@ export interface AgentCopy {
   env: Record<string, string>
   /** The copy's prompt shape (the catalog's promptShape): what the server recognises as the agent's own prompt. */
   promptShape?: string
+  /** The copy's protocol (the catalog's protocol): the agent's own interface a session of it moves to as a chat. */
+  protocol?: { name: string }
 }
 
 export interface OwnServerOptions {
@@ -102,7 +104,7 @@ async function startOwn(o: OwnServerOptions, root: string, log: string, remove: 
   for (const a of o.agents ?? []) {
     const base = cfg.catalog.agents.find((x) => x.id === a.from)
     if (!base) throw new Error(`the e2e catalog has no agent ${a.from} to copy as ${a.id}`)
-    cfg.catalog.agents.push({ ...JSON.parse(JSON.stringify(base)), id: a.id, name: `${base.name}, ${a.id}`, env: { ...base.env, ...a.env }, ...(a.promptShape ? { promptShape: a.promptShape } : {}) })
+    cfg.catalog.agents.push({ ...JSON.parse(JSON.stringify(base)), id: a.id, name: `${base.name}, ${a.id}`, env: { ...base.env, ...a.env }, ...(a.promptShape ? { promptShape: a.promptShape } : {}), ...(a.protocol ? { protocol: a.protocol } : {}) })
   }
   writeFileSync(config, JSON.stringify(cfg, null, 2) + '\n')
   const start = () => startServer({ config, home, data, allowedRoot: root, defaultCwd: repo, log, env: o.env, hostToken: o.hostToken })

@@ -92,6 +92,12 @@ type words struct{ s, code string }
 
 func (e *words) Error() string { return e.s }
 
+// BackToTerminal says a Read that ended with this error leaves the
+// session's terminal able to go on where the chat cannot: an agent not
+// signed in (ErrNotSignedIn) goes back to its terminal on the same
+// conversation, where the person signs in (design 4).
+func (e *words) BackToTerminal() bool { return e == ErrNotSignedIn }
+
 // EndNotice is the notice a session ends a Read with this error by: its
 // code and words, or none ("") where the driver has told the session.
 func (e *words) EndNotice() (code, words string) {

@@ -129,11 +129,8 @@ func (s *Server) moveStarts(ctx context.Context, local *session.Local, to string
 	return m, ""
 }
 
-// moves is the driver's Moves for the protocol name, or every protocol's
-// where the suite allows moves before its observation (movesUnobserved).
-func (s *Server) moves(name string) bool {
-	return agentproto.Moves(name) || s.movesUnobserved && slices.Contains(agentproto.Names(), name)
-}
+// moves is the driver's Moves for the protocol name.
+func (s *Server) moves(name string) bool { return agentproto.Moves(name) }
 
 // terminalStart starts the session's terminal again on a conversation, as
 // a resume starts it: the agent's command, its recipe's resume arguments on

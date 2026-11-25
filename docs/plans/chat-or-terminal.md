@@ -1171,9 +1171,13 @@ noted and the line says why in one sentence:
   message waits for its acceptance; a terminal session's attention is
   `done` from a source that reports turns, with no question open and
   nothing typed held;
-- no work the agent started still runs after the turn (a chat's stream
-  reports none: `Background(false)`); for a terminal session, nothing in
-  the PTY's process group but the agent's own process;
+- no work the agent started still runs after the turn, for a chat: its
+  stream reports none (`Background(false)`), and a move to the terminal
+  waits while it does. A terminal's group always holds the agent's own
+  helpers (its MCP servers among them), so nothing there holds a move to
+  Chat: what the agent left running in its terminal is ended with its
+  process (never doubled), and the move says so, on the switch before it
+  and in its notice after;
 - no permission request is open and no submission waits.
 
 **The steps**, in the session's own order:
@@ -1198,7 +1202,8 @@ noted and the line says why in one sentence:
    the other view. The terminal's ring and screens begin empty with the
    new process. The transcript stays, with a `notice` entry at the
    boundary: "Moved to the terminal." or "Moved to Chat. Turns made in
-   the terminal are not shown here."
+   the terminal are not shown here. What the agent left running in its
+   terminal was ended."
 6. If the new start fails, the session tries once to resume the way it
    came from; if that fails too, it ends with both failures' words, and
    the conversation stays resumable with Resume.
@@ -2118,8 +2123,9 @@ prompt, one turn with a tool; whether the MCP server's `timeout` in a
 **Scope.** Design 9 whole: `Local.SwapWay`, the terminal's start
 extracted from `NewLocal` (called by both), the route and its body
 bound, the move noted during a turn and made at its end, the condition
-of a first turn that ended, its refusals with background work among
-them, the boundary notices, the one retry and the end with both
+of a first turn that ended, its refusals (a chat's background work
+among them; a terminal's is ended with its process, and said), the
+boundary notices, the one retry and the end with both
 failures' words; `way` (with `noted`), `moving` and `move_refused` in
 the three places, and the welcome's `noted`; `useSessionConnection` and
 `TerminalView` as its consumer; the switch's component with its states
@@ -2196,20 +2202,32 @@ start in `local.go`, `internal/api/move.go`, `internal/proto/way.go`,
   (`Ring.Reset`). `Info.Command` stays the launch's.
 - I1: the old way is stopped with no lock held (a chat's input closed,
   then `Stop`), its exit and its output's end waited for, then its process
-  group proven gone: `session.GroupGone` sends signal 0 to the group until
-  none is in it, and SIGKILL once to what the old process left there (its
-  number is not reused while a member is in it). A process that reports a
+  group proven gone: `proc.GroupGone` (the runner's, which the session asks
+  through `session.GroupGone`: the session signals no process itself)
+  sends signal 0 to the group until none is in it, or until every member
+  left has exited (a zombie, where nothing reaps orphans: a server that is
+  process 1 with no init; read from /proc on Linux, the kernel's list of
+  the group on macOS), and SIGKILL once to what the old process left there
+  (its number is not reused while a member is in it). The way back from a
+  chat's start that failed proves that child's group gone the same way. A process that reports a
   group and a move given nothing to prove it gone ends the session in
   words of the move's own ("The agent's earlier process did not end; the
   session ended."). Only a native session moves: a Runtime other than this
   machine's group is not the server's to look at, so it is refused "This
   agent cannot move its conversation yet."
-- Where the plan says nothing in the terminal's process group but the
-  agent's own process: not built. Claude Code keeps the MCP servers it
-  starts (Conductor's among them) in its group for its life, so that
-  check would refuse every move. The terminal's condition is the hook's
-  done, no question, nothing held, no submission; stopping the terminal
-  ends its group, so work left there is ended, never doubled.
+- Where the plan said nothing in the terminal's process group but the
+  agent's own process: not built, and design 9 now says what is. Claude
+  Code keeps the MCP servers it starts (Conductor's among them) in its
+  group for its life, so that check would refuse every move. The
+  terminal's condition is the hook's done, no question, nothing held, no
+  submission; stopping the terminal ends its group, so work left there is
+  ended, never doubled, and the person is told: the switch's line before
+  a move to Chat at rest says "Moving to Chat ends what the agent left
+  running in its terminal.", and the boundary's notice and activity line
+  after it "Moved to Chat. Turns made in the terminal are not shown here.
+  What the agent left running in its terminal was ended." A chat's
+  background work (its driver's task events) holds a move to the terminal
+  ("Background work is still running.").
 - The `way` message gains `why` (at most 200 bytes), beside the plan's
   `way`, `protocol` and `noted`: the noted move's sentence, and the
   sentence of a move that went back. A failed start's words where the plan
@@ -2217,13 +2235,24 @@ start in `local.go`, `internal/api/move.go`, `internal/proto/way.go`,
 - The route answers `200` with `{way, noted?, why?, moving?}`, `409
   move_refused` with the words, `409 moving`, `413 too_large` past its 64
   bytes; on a switchyard and for a hosted session `409 move_refused`
-  "Sessions on another machine stay in their terminal." Stop during a move
-  waits for it, and the move starts nothing once it sees the stop.
+  "Sessions on another machine stay in their terminal." A Stop during a
+  move cancels what the move waits on (its start among it), nothing is
+  started after it, and the session ends stopped.
+- A message that reaches a chat as a move begins is refused `moving` under
+  the lock the move begins under (and a terminal's submission likewise,
+  once it has its turn), and the way that is left finishes what waits on
+  it (a message queued or written and not acknowledged) with `moving`, its
+  claim let go, before its child stops. A child started again (an
+  interrupt without its receipt, the input's bound) starts with no
+  background work of the old one's, and clears a restart asked for at the
+  turn's end. A question answered through Conductor tries the noted move
+  again, so its sentence becomes the turn's.
+- A chat whose agent says it is not signed in goes back to its terminal
+  on the same conversation with the driver's sentence (the driver's
+  error says so, `BackToTerminal`), when it came into the chat by a move;
+  the session does not end.
 - `agentproto.Moves(name)` is the driver's word; Claude Code's
-  (`claudeMoves`) stays false until its by-hand observation. The tests
-  set `Server.movesUnobserved`; the e2e server reads
-  `CONDUCTOR_E2E_MOVES=1` for its stub, which speaks Claude Code's
-  protocol: it goes when `Moves` is set.
+  (`claudeMoves`) is set on the by-hand observation below.
 - A session that becomes a chat while published to a switchyard whose
   `registered` lacks `transcript` is published no longer, its line in
   `proto.OlderSwitchyardWords`.
@@ -2232,17 +2261,23 @@ start in `local.go`, `internal/api/move.go`, `internal/proto/way.go`,
   controls, TRANSCRIPT and close, and every request; `TerminalView`
   makes one and is its consumer (its exposed methods go through it, and
   it exposes it as `connection`), its terminal reset when the way
-  changes. Its root says `data-session-way`, `data-way-noted` and
+  changes and, back in the terminal, its fit asked again (the session
+  refused every resize while it was a chat). Its root says
+  `data-session-way`, `data-way-noted`, `data-welcomed` and
   `data-transcript-frames`; no page changed. `switchState` gives the
   switch's side, whether it may be pressed and its line, in the plan's
-  words; `WaySwitch.vue` draws it, mounted by row 7.
-- The e2e stub: `claude-proto` declares `claude-stream-json`; the bash
+  words, and `pressFor` what a press sends (the selected side takes a
+  noted move back); `WaySwitch.vue` draws it, mounted by row 7.
+- The e2e stub, on `chat-move.spec.ts`'s own server alone (the suite's
+  shared catalog is unchanged): a copy of the Claude Code stub,
+  `claude-proto`, declares `claude-stream-json`; the bash
   stub execs `stub-protocol.mjs` (by `STUB_NODE`, the suite's node) when
   started with `-p ... --input-format stream-json`, says the version
   `STUB_CLAUDE_VERSION`, holds a terminal turn on `stub hold` until its
   `.hold` file says `stop`, and notes each resume in `<id>.resumed`; the
   protocol stub appends each chat turn to the same transcript, and
   `STUB_PROTOCOL_CHILD=1` leaves a process of its own in its group.
+- **By hand, with the real agent.** Observed on 2026-11-24 on a development build of this branch, with real Claude Code 2.1.332 on its smallest model in a scratch repository. Before any reply, the move to Chat was refused with "Chat opens after the agent's first reply." After two terminal turns (a made-up word to remember, then a read of a file), the move through the route was made within about two seconds: the listing said the way, the Activity said "Moved to Chat. Turns made in the terminal are not shown here.", the terminal's process was gone, and a new child ran the agent's print mode with the stream-json flags and a resume of the same conversation, on pipes with no terminal, in a process group of its own. In the chat the agent named the word; a read arrived as a tool entry, running and then done, before the answer; a write was denied by Claude Code itself at once, the turn ended and nothing waited. Moved back, Claude Code resumed the conversation with the chat's turns in it, and asked in the terminal it listed what it had been asked in the chat. A move pressed during a terminal turn, while the turn showed a permission question, was noted with "A request is waiting for an answer."; after the question was answered the turn ran on, and the move was made two seconds after its end. A background command the agent had started from the terminal did not hold the move, and was ended with the agent's process: the move's notice now says so. A longer chat turn stopped with the interrupt ended as interrupted, and the next message was answered.
 
 ### Row 6: the permission request
 

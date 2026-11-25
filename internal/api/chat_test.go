@@ -222,10 +222,9 @@ func TestSessionInfoSaysTheWay(t *testing.T) {
 // below the driver's, or none, keeps the session in its terminal with its
 // sentence and starts nothing; a child that answers no initialize, or
 // fails the shape check, is ended and the session stays in its terminal,
-// well inside the session's bound on a start; a child whose first answer
-// says it is not signed in is ended with that sentence. (Going back to the
-// terminal from a chat, and the sentence on the switch, are the move's:
-// row 5.)
+// well inside the session's bound on a start; a chat whose child's first
+// answer says it is not signed in goes back to its terminal on the same
+// conversation, with that sentence (design 4; the move's way back).
 func TestClaudeGateKeepsTheTerminal(t *testing.T) {
 	for _, c := range []struct {
 		name string
@@ -264,26 +263,52 @@ func TestClaudeGateKeepsTheTerminal(t *testing.T) {
 	t.Run("not signed in", func(t *testing.T) {
 		env := newChatEnv(t, map[string]string{"STUB_PROTOCOL_SIGNED_OUT": "1"}, nil)
 		l := env.launch(t)
-		if err := env.enter(t, l); err != nil {
+		id, conv := l.Info().ID, l.Info().AgentSession.ID
+		env.turnEnded(t, id)
+		if code, out := env.move(t, id, session.WayProtocol); code != http.StatusOK {
+			t.Fatalf("to Chat: %d %v", code, out)
+		}
+		moved(t, l, session.WayProtocol)
+		// Its viewer is sent the driver's notice as it comes: the chat's
+		// transcript is not read once the session is back in its terminal.
+		sink := &wayFrames{}
+		sub, err := l.AttachWith(session.AttachOptions{Role: session.RoleView, Name: "Ada"}, sink)
+		if err != nil {
 			t.Fatal(err)
 		}
+		t.Cleanup(func() { l.Detach(sub) })
 		if _, err := l.Submit(context.Background(), session.Submission{Text: "hello"}); err != nil && !errors.Is(err, session.ErrSubmitPending) {
 			t.Fatal(err)
 		}
-		es := entriesWhen(t, l, "the not-signed-in notice", func(es []session.TranscriptEntry) bool {
-			return hasEntry(es, func(e session.TranscriptEntry) bool {
-				return e.Kind == session.EntryNotice && e.Code == agentproto.NoticeNotSignedIn
-			})
+		until(t, "the not-signed-in notice", func() bool {
+			return sink.saw(`"code":"` + agentproto.NoticeNotSignedIn + `"`)
 		})
-		if hasEntry(es, func(e session.TranscriptEntry) bool { return e.Kind == session.EntryNotice && e.Code == "unreadable" }) {
+		if !sink.saw(agentproto.NotSignedInWords) {
+			t.Fatal("the notice's words are not the driver's")
+		}
+		if sink.saw(`"code":"unreadable"`) {
 			t.Fatal("a signed-out agent was told as an unreadable one")
 		}
-		for _, e := range es {
-			if e.Kind == session.EntryNotice && e.Code == agentproto.NoticeNotSignedIn && e.Words != agentproto.NotSignedInWords {
-				t.Fatalf("its words: %q", e.Words)
-			}
+		// The way message back carries the driver's sentence.
+		until(t, "the way message back", func() bool {
+			return sink.saw(`"way":"terminal","why":"` + agentproto.NotSignedInWords + `"`)
+		})
+		// Back in its terminal, on the same conversation: not ended.
+		moved(t, l, session.WayTerminal)
+		if l.Info().Status.Ended() {
+			t.Fatalf("the session ended: %q", l.Info().Status)
 		}
-		waitUntil(t, "the child ended", func() bool { return l.Info().Status.Ended() })
+		terms := env.rt.Asked("StartTerminal")
+		if len(terms) != 2 {
+			t.Fatalf("%d terminals started", len(terms))
+		}
+		argv := terms[1].Spec.(ext.TerminalSpec).Argv
+		if i := indexOf(argv, "--resume"); i < 0 || i+1 >= len(argv) || argv[i+1] != conv {
+			t.Fatalf("the terminal back: %q, want --resume %s", argv, conv)
+		}
+		if info := l.Info(); info.AgentSession == nil || info.AgentSession.ID != conv {
+			t.Fatalf("the conversation: %+v", info.AgentSession)
+		}
 	})
 }
 

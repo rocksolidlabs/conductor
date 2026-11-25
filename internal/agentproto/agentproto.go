@@ -51,9 +51,9 @@ func Moves(name string) bool {
 	return false
 }
 
-// claudeMoves is Claude Code's Moves: set once the by-hand observation of
-// both directions with the real agent is recorded (row 5's acceptance).
-const claudeMoves = false
+// claudeMoves is Claude Code's Moves: set on the by-hand observation of both
+// directions with the real agent, recorded in row 5's As built note.
+const claudeMoves = true
 
 // Qualified says whether a probed version of the agent may run the
 // protocol name: at or above its driver's MinVersion. A version the probe

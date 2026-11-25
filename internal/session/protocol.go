@@ -300,17 +300,25 @@ func (s *Local) acceptWait() time.Duration {
 // child ended. Only a session that runs in its terminal and has not ended
 // enters it.
 func (s *Local) enterProtocol(ctx context.Context, start ProtocolStart) error {
+	_, err := s.enterProtocolGroup(ctx, start)
+	return err
+}
+
+// enterProtocolGroup is enterProtocol answering, for a start whose child
+// never became ready, that child's process group (Grouped), stopped: the
+// move proves it gone before it goes back (I1).
+func (s *Local) enterProtocolGroup(ctx context.Context, start ProtocolStart) (int, error) {
 	if start == nil {
-		return errors.New("session: a protocol way needs its start")
+		return 0, errors.New("session: a protocol way needs its start")
 	}
 	s.mu.Lock()
 	if s.info.Status.Ended() {
 		s.mu.Unlock()
-		return ErrSessionEnded
+		return 0, ErrSessionEnded
 	}
 	if s.way.Load() != nil {
 		s.mu.Unlock()
-		return errors.New("session: the session runs in the protocol way already")
+		return 0, errors.New("session: the session runs in the protocol way already")
 	}
 	conv := ""
 	if s.info.AgentSession != nil {
@@ -319,7 +327,7 @@ func (s *Local) enterProtocol(ctx context.Context, start ProtocolStart) error {
 	s.mu.Unlock()
 	child, driver, err := start(ctx, conv)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	wctx, cancel := context.WithCancel(context.Background())
 	p := &protocolWay{
@@ -334,7 +342,7 @@ func (s *Local) enterProtocol(ctx context.Context, start ProtocolStart) error {
 		cancel()
 		_ = driver.CloseInput()
 		_ = child.Stop(context.Background(), s.opts.StopGrace)
-		return ErrSessionEnded
+		return groupOf(child), ErrSessionEnded
 	}
 	s.way.Store(p)
 	s.mu.Unlock()
@@ -371,13 +379,13 @@ func (s *Local) enterProtocol(ctx context.Context, start ProtocolStart) error {
 		cancel()
 		_ = driver.CloseInput()
 		_ = child.Stop(context.Background(), s.opts.StopGrace)
-		return err
+		return groupOf(child), err
 	}
 	go s.protocolSender(p)
 	p.wake()
 	// Its Info says the way now.
 	s.notifyChange()
-	return nil
+	return 0, nil
 }
 
 // wake wakes the sender.
@@ -405,6 +413,26 @@ func (s *Local) readProtocol(p *protocolWay, gen uint64, d Protocol, child Child
 	s.mu.Unlock()
 	if stale {
 		return
+	}
+	var back backToTerminal
+	if err != nil && errors.As(err, &back) && back.BackToTerminal() {
+		// The driver says the chat cannot go on but its terminal can (an
+		// agent not signed in, design 4): the session goes back to its
+		// terminal on the same conversation, with the driver's sentence,
+		// when it came into the chat by a move and nothing else is under
+		// way. Otherwise it ends, as below.
+		s.mu.Lock()
+		m := s.movedWith
+		can := m.Terminal != nil && s.moveDone == nil && p.gen == gen && !p.stopping && !p.restarting && !s.info.Status.Ended()
+		if can {
+			s.clearNotedLocked()
+			s.beginMoveLocked()
+		}
+		s.mu.Unlock()
+		if can {
+			go s.move(WayProtocol, WayTerminal, m, cutAt(CleanMessage(err.Error()), MaxNoticeWords))
+			return
+		}
 	}
 	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, context.Canceled) {
 		// The driver's error may name the end in its agent's words, or say
@@ -449,7 +477,7 @@ func (s *Local) protocolSender(p *protocolWay) {
 // under way; it reports whether it took one.
 func (s *Local) sendNext(p *protocolWay) bool {
 	s.mu.Lock()
-	if s.info.Status.Ended() || p.stopping || p.restarting || !p.isReady || p.busyLocked() || len(p.queue) == 0 {
+	if s.info.Status.Ended() || s.moveDone != nil || p.stopping || p.restarting || !p.isReady || p.busyLocked() || len(p.queue) == 0 {
 		s.mu.Unlock()
 		return false
 	}
@@ -600,6 +628,12 @@ func (s *Local) submitProtocol(p *protocolWay, sub Submission) (SubmitResult, er
 		s.mu.Unlock()
 		return res, ErrSessionEnded
 	}
+	if s.moveDone != nil || s.way.Load() != p {
+		// A move began since Submit looked (move.go): refused here, under
+		// the lock the move begins under, never queued on a way that ends.
+		s.mu.Unlock()
+		return res, ErrMoving
+	}
 	if sub.Question != "" && s.permissionQuestionLocked(sub.Question) {
 		s.mu.Unlock()
 		return res, ErrPermissionCard
@@ -697,6 +731,10 @@ func (s *Local) Interrupt(ctx context.Context, by *Subscription) error {
 		s.mu.Unlock()
 		return ErrSessionEnded
 	}
+	if s.moveDone != nil {
+		s.mu.Unlock()
+		return ErrMoving
+	}
 	if !p.isReady || p.restarting || p.stopping || !(p.inTurn || p.accepted || p.inflight != nil) {
 		s.mu.Unlock()
 		return ErrNoTurn
@@ -726,6 +764,9 @@ func (s *Local) restartProtocol(p *protocolWay) {
 	out.event = "restart"
 	s.mu.Lock()
 	p.gen++
+	// This restart is the one a restart at the turn's end asked for, if one
+	// did: none is left for the next turn's end.
+	p.restartAtEnd = false
 	oldDriver, oldChild, oldRead := p.driver, p.child, p.readDone
 	if q := p.inflight; q != nil && !q.told {
 		// Written to the child that ends: never written again.
@@ -772,24 +813,28 @@ func (s *Local) restartProtocol(p *protocolWay) {
 		_ = child.Stop(context.Background(), s.opts.StopGrace)
 		return
 	}
-	p.child, p.driver, p.readDone, p.readEnded = child, driver, make(chan struct{}), false
+	// The new child's work is its own: what the old one reported running
+	// ended with its group.
+	p.child, p.driver, p.readDone, p.readEnded, p.background = child, driver, make(chan struct{}), false, false
 	gen, done := p.gen, p.readDone
 	s.mu.Unlock()
 	go s.readProtocol(p, gen, driver, child, done)
 	err = driver.Begin(ctx)
+	// The output's end and the restart's end are judged in one lock section:
+	// an end that comes between them is seen here, or by readProtocol once
+	// restarting is false.
 	s.mu.Lock()
 	if err == nil && p.readEnded {
 		err = errors.New("session: the agent's output ended as it started")
 	}
-	s.mu.Unlock()
 	if err != nil {
+		s.mu.Unlock()
 		fail()
 		_ = driver.CloseInput()
 		_ = child.Stop(context.Background(), s.opts.StopGrace)
 		return
 	}
 	out = applied{event: "restarted", kick: true}
-	s.mu.Lock()
 	p.restarting = false
 	code, words := noticeRestarted, RestartedWords
 	if p.restartCode != "" {
@@ -1590,6 +1635,11 @@ func (s *Local) RestartProtocol(code, words string) error {
 // end: the notice's code and words in place of the unreadable one, or an
 // empty code when the driver has told it already.
 type endNoticer interface{ EndNotice() (code, words string) }
+
+// backToTerminal is a driver's Read error that says the chat cannot go on
+// and its terminal can (Claude Code not signed in): the session moves back
+// to its terminal on the same conversation (readProtocol).
+type backToTerminal interface{ BackToTerminal() bool }
 
 func (e protocolEvents) Notice(code, words string) {
 	if !e.begin() {

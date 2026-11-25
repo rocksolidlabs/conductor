@@ -481,6 +481,10 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 	}
 	s.mu.Lock()
 	ended := s.info.Status.Ended()
+	// A move begun since Submit looked (move.go): it has its turn now, and
+	// is refused here, under the lock the move begins under, before it
+	// types anything into the terminal the move stops.
+	moving := s.moveDone != nil || s.way.Load() != nil
 	promptSince := s.info.Attention.Since
 	showing := s.info.Attention.State == AttentionNeedsInput
 	source := s.info.Attention.Source
@@ -501,6 +505,9 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 	s.mu.Unlock()
 	if ended {
 		return res, ErrSessionEnded
+	}
+	if moving {
+		return res, ErrMoving
 	}
 	// A reply to a question answered or gone (one before it in the
 	// session's turn answered it) types nothing.
