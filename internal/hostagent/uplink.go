@@ -130,8 +130,13 @@ func (u *Uplink) options(info session.Info) Options {
 const OlderSwitchyardWords = "Chats are not published: the switchyard is older than this server."
 
 // ErrOlderSwitchyard refuses to publish a chat to a switchyard whose
-// registered does not say transcript.
-var ErrOlderSwitchyard = errors.New(OlderSwitchyardWords)
+// registered does not say transcript, in OlderSwitchyardWords.
+var ErrOlderSwitchyard error = olderSwitchyard{}
+
+// olderSwitchyard is ErrOlderSwitchyard: its words are a person's to read.
+type olderSwitchyard struct{}
+
+func (olderSwitchyard) Error() string { return OlderSwitchyardWords }
 
 // Published is a session published to the rendezvous.
 type Published struct {
