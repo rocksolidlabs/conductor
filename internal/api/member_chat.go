@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"sync/atomic"
 
 	"github.com/rocksolidlabs/conductor/ext"
 	"github.com/rocksolidlabs/conductor/internal/agentproto"
@@ -110,13 +111,15 @@ func (s *Server) MemberMove(_ context.Context, local *session.Local, fresh bool)
 	if !l.gate.qualified.Load() {
 		return session.MoveStarts{}, memberReason(agentproto.ErrNotQualified)
 	}
-	chat, err := s.chatStartWith(local, memberChatArgv(fresh))
+	chat, err := s.chatStartWith(local, memberChatArgv(false))
 	if err != nil {
 		return session.MoveStarts{}, memberReason(err)
 	}
 	term := s.terminalStart(l)
 	if fresh {
-		term = s.freshTerminalStart(l)
+		if chat, term, err = s.freshMemberStarts(local, l, chat, term); err != nil {
+			return session.MoveStarts{}, memberReason(err)
+		}
 	}
 	id := local.Info().ID
 	m := session.MoveStarts{Protocol: chat, Terminal: term, Gone: session.GroupGone, Words: moveWords}
@@ -124,6 +127,45 @@ func (s *Server) MemberMove(_ context.Context, local *session.Local, fresh bool)
 		m.AfterOldExit = func() { seam(id) }
 	}
 	return m, nil
+}
+
+// freshMemberStarts are the starts of a fresh member's move (MoveFresh):
+// only a conversation's FIRST start is fresh. The chat's child starts a
+// new conversation by the session recipe's start, and the terminal the move
+// falls back to starts afresh on another; once a chat's child has started
+// on a conversation, every later start on it (the chat's restart past its
+// input bound, the way back to its terminal) resumes it, as any other
+// conversation is resumed, for the recipe's start on an id in use is
+// refused. resumeChat and resumeTerm are those resuming starts.
+func (s *Server) freshMemberStarts(local *session.Local, l *chatLaunch, resumeChat session.ProtocolStart, resumeTerm func(context.Context, string, uint16, uint16) (session.Process, error)) (session.ProtocolStart, func(context.Context, string, uint16, uint16) (session.Process, error), error) {
+	freshChat, err := s.chatStartWith(local, memberChatArgv(true))
+	if err != nil {
+		return nil, nil, err
+	}
+	freshTerm := s.freshTerminalStart(l)
+	// begun is the conversation a chat's child started on.
+	var begun atomic.Pointer[string]
+	started := func(conversation string) bool {
+		on := begun.Load()
+		return on != nil && *on == conversation
+	}
+	chat := func(ctx context.Context, conversation string) (session.Child, session.Protocol, error) {
+		if started(conversation) {
+			return resumeChat(ctx, conversation)
+		}
+		child, driver, err := freshChat(ctx, conversation)
+		if err == nil {
+			begun.Store(&conversation)
+		}
+		return child, driver, err
+	}
+	term := func(ctx context.Context, conversation string, cols, rows uint16) (session.Process, error) {
+		if started(conversation) {
+			return resumeTerm(ctx, conversation, cols, rows)
+		}
+		return freshTerm(ctx, conversation, cols, rows)
+	}
+	return chat, term, nil
 }
 
 // memberChatArgv is the argv of a crew member's chat's child (design 4 and
