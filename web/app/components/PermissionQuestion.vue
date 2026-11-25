@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { markHidden, markWhole } from '~/utils/hiddenMarks'
-import { messageBytes, plainWords, shownInput, type ShownInput } from '~/utils/permissionInput'
+import { messageBytes, plainWords, shownInput, summaryLine, type ShownInput } from '~/utils/permissionInput'
 import type { PermissionAnswer, TranscriptEntry } from '~/utils/protocol'
 import { ReplyError } from '~/utils/reply'
 import { MAX_PERMISSION_MESSAGE } from '~/utils/protocol'
@@ -8,14 +8,15 @@ import { permissionEnd, type ReadPart } from '~/utils/transcript'
 
 /**
  * A chat's permission question (docs/plans/chat-or-terminal.md, designs 7 and 11): amber while it waits on a person. What the call
- * is in plain words, the tool that runs it, the exact command or path in one line of the code font that opens to the whole input,
- * and, below the whole input, Allow once and Deny. The input is read whole (its `input` part) and drawn as text, never applied:
- * every character a person cannot see is a mark of its own (utils/hiddenMarks.ts), a line feed a line break, each line's end and
- * the spaces left at it marked too, and a line says so when a hidden one is there. The opened input has no scroll of its own: it
- * lies in the chat's. Allow once is offered only once the whole input is drawn (a one-line input at once, a longer one once opened),
- * its end has been in view, and the digest of the bytes drawn is the request's: the answer carries that digest and the call, so it
- * binds to exactly what was shown. Anyone but the operator sees the question and who answers it, never a button. An answered
- * question reads its input only when its line is opened.
+ * is in plain words and the tool that runs it; a short input (SHORT_INPUT_ROWS) drawn whole, open, as it arrives; a longer one as the
+ * exact command or path in one line of the code font that opens to the whole input (a path never cut); and, below the whole input,
+ * Allow once and Deny. The input is read whole (its `input` part) and drawn as text, never applied: every character a person cannot
+ * see is a mark of its own (utils/hiddenMarks.ts), a line feed a line break, each line's end and the spaces left at it marked too, and
+ * a line says so when a hidden one is there. The input has no scroll of its own: it lies in the chat's. Allow once is offered only
+ * once the whole input is drawn, its first row and its end have been in view, and the digest of the bytes drawn is the request's: the
+ * answer carries that digest and the call, so it binds to exactly what was shown. While it waits it looks like nothing to press, and
+ * one line says what it waits for. Anyone but the operator sees the question and who answers it, never a button. An answered
+ * question reads its input only when its line is opened; until then its line is read out of its summary, never drawn as raw JSON.
  */
 const props = withDefaults(
   defineProps<{
@@ -82,37 +83,65 @@ async function toggle() {
 
 /** The tool, the line and the rows, marked: the opened rows with each line's end and its trailing spaces marked too. */
 const tool = computed(() => markHidden(props.entry.tool ?? ''))
-const line = computed(() => markHidden(input.value?.line ?? props.entry.summary ?? ''))
+// Before its input is read (an answered question, a link's view), the line is read out of the entry's summary, in the same form;
+// never the summary's raw JSON.
+const line = computed(() => markHidden(input.value ? input.value.line : summaryLine(props.entry)))
+/** A path is never cut: it wraps whole. A command stays one line until opened. */
+const pathLine = computed(() => props.entry.plain === 'file' || props.entry.plain === 'read')
 const rows = computed(() => (input.value?.rows ?? []).map((r) => ({ key: markHidden(r.key), value: markWhole(r.text) })))
 const cwd = computed(() => (props.entry.cwd ? markWhole(props.entry.cwd) : null))
 const hidden = computed(() => tool.value.hidden || line.value.hidden || rows.value.some((r) => r.key.hidden || r.value.hidden) || !!cwd.value?.hidden)
-/** The line can open: an input not read yet (a closed question's), or one that is more than its line. */
-const opens = computed(() => !input.value || !input.value.whole)
+/** A short input is drawn whole, open, as it arrives (SHORT_INPUT_ROWS): no line to open. */
+const short = computed(() => !!input.value?.whole)
+/** The input is drawn: short, or opened by the person. */
+const drawn = computed(() => !!input.value && (short.value || opened.value))
+/** The line can open: an input not read yet (a closed question's), or a long one; and it has words to open. */
+const opens = computed(() => !short.value && (!!input.value || line.value.pieces.length > 0))
 
 /**
- * The input's end has been in view since it was drawn as it is now: an observer on the mark after its last row (after the line when
- * the line is the whole input), seen again after every open or close.
+ * The input's first row and its end have each been in view since it was drawn as it is now: an observer on the mark before its first
+ * row and on the mark after its last, seen again after every open or close. Both, so that a question whose end shows while its top is
+ * scrolled away does not count.
  */
+const inputStart = ref<HTMLElement | null>(null)
 const inputEnd = ref<HTMLElement | null>(null)
+const startSeen = ref(false)
 const endSeen = ref(false)
 let observer: IntersectionObserver | undefined
 function watchEnd() {
+  startSeen.value = false
   endSeen.value = false
-  const el = inputEnd.value
-  if (!el || typeof IntersectionObserver === 'undefined') return
   observer?.disconnect()
+  const start = inputStart.value
+  const end = inputEnd.value
+  if (!start || !end || typeof IntersectionObserver === 'undefined') return
   observer = new IntersectionObserver((seen) => {
-    if (seen.some((s) => s.isIntersecting)) endSeen.value = true
+    for (const s of seen) {
+      if (!s.isIntersecting) continue
+      if (s.target === start) startSeen.value = true
+      if (s.target === end) endSeen.value = true
+    }
   })
-  observer.observe(el)
+  observer.observe(start)
+  observer.observe(end)
 }
-watch([opened, input, inputEnd], () => void nextTick(watchEnd), { flush: 'post' })
+watch([opened, input, inputStart, inputEnd], () => void nextTick(watchEnd), { flush: 'post' })
 onBeforeUnmount(() => observer?.disconnect())
 
-/** The whole input is drawn: a one-line input as it is, a longer one once opened; and its end has been in view. */
-const wholeDrawn = computed(() => !!input.value && (input.value.whole || opened.value) && endSeen.value)
+/** The whole input is drawn (short, or opened), and its first row and its end have been in view. */
+const wholeDrawn = computed(() => drawn.value && startSeen.value && endSeen.value)
 const allowable = computed(() => open.value && props.canAnswer && !!props.entry.tool && !!input.value?.exact && wholeDrawn.value && !sending.value)
 const end = computed(() => permissionEnd(props.entry))
+/**
+ * While Allow once waits on the person, one line says what it waits for: a long input not opened yet, or an input whose first row
+ * and end were not both in view. None while it waits on nothing they can do (an input not shown exactly says so itself).
+ */
+const waiting = computed(() => {
+  if (!open.value || !props.canAnswer || !input.value?.exact || allowable.value || sending.value) return ''
+  if (!drawn.value) return 'Open the call above and read it whole to allow it.'
+  if (!startSeen.value || !endSeen.value) return 'Read the call from its start to its end to allow it.'
+  return ''
+})
 /** A deny's message is bounded in bytes on the wire (500), whatever its script. */
 const tooLong = computed(() => messageBytes(message.value.trim()) > MAX_PERMISSION_MESSAGE)
 
@@ -167,9 +196,12 @@ async function send(choice: 'allow_once' | 'deny') {
       <code class="min-w-0 break-all [overflow-wrap:anywhere] font-mono text-xs text-muted" data-permission-tool><MarkedText :pieces="tool.pieces" /></code>
     </div>
 
-    <!-- The one line: the exact command or path, opening to the whole input. Drawn as text: a hidden character is a mark. -->
+    <!-- The one line of a long input (or of one not read yet): the exact command or path, opening to the whole input. A path wraps
+         whole; a command is one line until opened. Drawn as text: a hidden character is a mark. A short input has none: it is drawn
+         whole below, at once. -->
     <component
       :is="opens ? 'button' : 'div'"
+      v-if="!short && line.pieces.length"
       :type="opens ? 'button' : undefined"
       class="flex min-w-0 items-start gap-1.5 rounded-md bg-default px-2.5 py-1.5 text-left font-mono text-xs text-default ring-1 ring-default"
       :aria-expanded="opens ? opened : undefined"
@@ -179,12 +211,14 @@ async function send(choice: 'allow_once' | 'deny') {
       @click="opens && toggle()"
     >
       <UIcon v-if="opens" :name="opened ? 'i-lucide-chevron-down' : 'i-lucide-chevron-right'" class="mt-0.5 size-3.5 flex-none text-muted" aria-hidden="true" />
-      <span class="min-w-0 flex-1" :class="input?.whole ? 'break-all whitespace-break-spaces [overflow-wrap:anywhere]' : 'truncate whitespace-pre'"><MarkedText :pieces="line.pieces" :breaks="false" /></span>
+      <span class="min-w-0 flex-1" :class="pathLine ? 'break-all whitespace-break-spaces [overflow-wrap:anywhere]' : 'truncate whitespace-pre'" data-permission-line-text><MarkedText :pieces="line.pieces" :breaks="false" /></span>
     </component>
 
-    <!-- The whole input, opened, in the chat's own scroll (no scroll of its own): each field's name and its value as text, line feeds
-         as breaks, each line's end and the spaces left at it marked, every hidden character marked. -->
-    <dl v-if="opened && input" data-mono="command" class="flex flex-col gap-1.5 rounded-md bg-default px-2.5 py-2 font-mono text-xs ring-1 ring-default" data-permission-whole>
+    <!-- The whole input, short (at once) or opened, in the chat's own scroll (no scroll of its own): each field's name and its value
+         as text, line feeds as breaks, each line's end and the spaces left at it marked, every hidden character marked; a mark before
+         its first row and one after its last, which Allow once waits to have seen. -->
+    <span ref="inputStart" class="-mb-2.5 block h-px" aria-hidden="true" data-permission-input-start />
+    <dl v-if="drawn && input" data-mono="command" class="flex flex-col gap-1.5 rounded-md bg-default px-2.5 py-2 font-mono text-xs ring-1 ring-default" data-permission-whole :data-permission-short="short || undefined">
       <div v-if="cwd" class="flex flex-col gap-0.5" data-permission-cwd>
         <dt class="text-muted">folder</dt>
         <dd class="break-all whitespace-break-spaces [overflow-wrap:anywhere]"><MarkedText :pieces="cwd.pieces" /></dd>
@@ -194,7 +228,7 @@ async function send(choice: 'allow_once' | 'deny') {
         <dd class="break-all whitespace-break-spaces [overflow-wrap:anywhere]"><MarkedText :pieces="r.value.pieces" /></dd>
       </div>
     </dl>
-    <!-- The input's end: Allow once waits until this has been in view. -->
+    <!-- The input's end: Allow once waits until this, and the mark before its first row, have been in view. -->
     <span ref="inputEnd" class="-mt-2.5 block h-px" aria-hidden="true" data-permission-input-end />
 
     <p v-if="hidden" class="text-xs font-medium text-default" data-permission-hidden>This call holds characters that are not shown as typed.</p>
@@ -206,9 +240,11 @@ async function send(choice: 'allow_once' | 'deny') {
         <UInput v-model="message" size="sm" placeholder="Why, for the agent (optional)" aria-label="What the agent is told with a deny" class="w-full" data-permission-message />
         <p v-if="tooLong" class="text-xs text-muted" data-permission-message-long>The message to the agent is too long: it takes at most 500 bytes.</p>
         <div class="flex flex-wrap items-center gap-2" data-permission-buttons>
-          <UButton label="Allow once" size="sm" color="warning" :disabled="!allowable" :loading="sending" data-permission-allow @click="send('allow_once')" />
+          <!-- Waiting, Allow once has the neutral look of a control that cannot be pressed, never the action's colour dimmed. -->
+          <UButton label="Allow once" size="sm" :color="allowable ? 'warning' : 'neutral'" :variant="allowable ? 'solid' : 'outline'" :disabled="!allowable" :loading="sending" :data-permission-waiting="!allowable || undefined" data-permission-allow @click="send('allow_once')" />
           <UButton label="Deny" size="sm" color="neutral" variant="outline" :disabled="sending || tooLong" data-permission-deny @click="send('deny')" />
         </div>
+        <p v-if="waiting" class="text-xs text-muted" data-permission-waiting-line>{{ waiting }}</p>
       </template>
       <p v-else class="text-xs text-muted" data-permission-operator-only>Only the person who runs this server can answer.</p>
     </template>

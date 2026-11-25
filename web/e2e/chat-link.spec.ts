@@ -57,6 +57,21 @@ test('a view link and a control link see the chat; the control link sends a mess
     await expect(turnWith(c.g, 'hold for the link')).toHaveAttribute('data-turn-outcome', 'interrupted', { timeout: LONG_MS })
     await expect(turnWith(v.g, 'hold for the link')).toHaveAttribute('data-turn-outcome', 'interrupted', { timeout: LONG_MS })
 
+    // A question the operator answered: the link's line is the command, in the line's own form, never the summary's JSON.
+    await say(page, 'ask short')
+    budget(4 * STEP_MS + 2 * LONG_MS)
+    const q = page.locator('[data-chat-view] [data-permission-question][data-permission-state="open"]')
+    await expect(q.locator('[data-permission-deny]')).toBeVisible({ timeout: LONG_MS })
+    await q.locator('[data-permission-deny]').click()
+    await expect(page.locator('[data-chat-view] [data-permission-question][data-permission-state="denied"]').last()).toBeVisible({ timeout: LONG_MS })
+    // A view link opened after the answer reads none of the call's input: its line is read out of the request's summary.
+    const late = await joined(browser, own, s.id, 'view')
+    guests.push(late.ctx)
+    const answered = late.g.locator('[data-chat-view] [data-permission-question][data-permission-state="denied"]').last()
+    await expect(answered).toBeVisible({ timeout: LONG_MS })
+    await expect(answered.locator('[data-permission-line]')).toHaveText('echo allowed')
+    await expect(answered.locator('[data-permission-line]')).not.toContainText('{')
+
     // A file change on the join page: its diff opens; no link to an editor this page has not.
     await say(c.g, 'edit for the link')
     budget(4 * STEP_MS + LONG_MS)

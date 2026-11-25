@@ -41,14 +41,15 @@ test('the operator allows a call shown whole, opens a long one before allowing, 
     await toChat(api, s.id, view)
     const chat = page.locator('[data-chat-view]')
 
-    // A one-line call: its plain words, its tool, the exact command in one line, Allow once offered at once.
+    // A short call: its plain words, its tool, the whole input drawn at once with no line to open, Allow once offered at once.
     await say(page, 'ask short')
     budget(10 * STEP_MS + 4 * LONG_MS)
     const q = openQuestion(page)
     await expect(q).toBeVisible({ timeout: LONG_MS })
     await expect(q.locator('[data-permission-words]')).toHaveText('Run a command?')
     await expect(q.locator('[data-permission-tool]')).toHaveText('Bash')
-    await expect(q.locator('[data-permission-line]')).toHaveText('echo allowed')
+    await expect(q.locator('[data-permission-whole][data-permission-short]')).toContainText('echo allowed')
+    await expect(q.locator('[data-permission-line]')).toHaveCount(0)
     await expect(q.locator('[data-permission-hidden]')).toHaveCount(0)
     // No bar repeats the question under the chat that shows it, and the sidebar's row says where it is answered, with no field.
     await expect(page.locator('[data-quick-reply]')).toHaveCount(0)
@@ -70,11 +71,16 @@ test('the operator allows a call shown whole, opens a long one before allowing, 
     budget(12 * STEP_MS + 3 * LONG_MS)
     const long = openQuestion(page)
     await expect(lineButton(long)).toBeVisible({ timeout: LONG_MS })
+    // Waiting, Allow once looks like nothing to press, and one line says what it waits for.
     await expect(long.locator('[data-permission-allow]')).toBeDisabled()
+    await expect(long.locator('[data-permission-allow]')).toHaveAttribute('data-permission-waiting', 'true')
+    await expect(long.locator('[data-permission-waiting-line]')).toHaveText('Open the call above and read it whole to allow it.')
     await lineButton(long).click()
     await expect(long.locator('[data-permission-whole]')).toContainText('echo "step 12 of a long command that runs over many lines"')
     await long.locator('[data-permission-allow]').scrollIntoViewIfNeeded()
     await expect(long.locator('[data-permission-allow]')).toBeEnabled()
+    await expect(long.locator('[data-permission-allow]')).not.toHaveAttribute('data-permission-waiting', /./)
+    await expect(long.locator('[data-permission-waiting-line]')).toHaveCount(0)
     await long.locator('[data-permission-message]').fill(String.fromCodePoint(0x65e5).repeat(200))
     await expect(long.locator('[data-permission-message-long]')).toHaveText('The message to the agent is too long: it takes at most 500 bytes.')
     await expect(long.locator('[data-permission-deny]')).toBeDisabled()
@@ -89,9 +95,8 @@ test('the operator allows a call shown whole, opens a long one before allowing, 
     await say(page, 'ask hidden')
     budget(8 * STEP_MS + 2 * LONG_MS)
     const hid = openQuestion(page)
-    await expect(lineButton(hid)).toBeVisible({ timeout: LONG_MS })
-    await expect(hid.locator('[data-permission-hidden]')).toHaveText('This call holds characters that are not shown as typed.')
-    await lineButton(hid).click()
+    await expect(hid.locator('[data-permission-hidden]')).toHaveText('This call holds characters that are not shown as typed.', { timeout: LONG_MS })
+    // Short: drawn whole at once.
     const whole = hid.locator('[data-permission-whole]')
     await expect(whole.locator('[data-hidden-mark]').first()).toBeVisible()
     const drawn = await whole.innerText()
@@ -100,6 +105,82 @@ test('the operator allows a call shown whole, opens a long one before allowing, 
     expect(drawn).toContain(`${'\\'}u202E`)
     await hid.locator('[data-permission-deny]').click()
     await expect.poll(() => readStub(own, conv, 'denied'), { timeout: LONG_MS }).toBe('The operator denied this call.\n')
+  } finally {
+    await page.context().close()
+  }
+})
+
+test("a call with its description, as every real one has, is allowed with one press; one whose end shows with its top out of view waits", async ({ browser }) => {
+  const api = own.api
+  const { s, conv } = await launch(api, sessions, 'e2e chat permission described', 'asker-proto')
+  const page = await dayPage(browser, { server: own.started, width: 1440, height: 420 })
+  try {
+    const view = await openSession(page, s.id)
+    await firstTurn(page, api, s.id)
+    await toChat(api, s.id, view)
+    const chat = page.locator('[data-chat-view]')
+    // A short call with a description: drawn whole as it arrives, both its fields, and Allow once offered with no opening.
+    await say(page, 'ask described')
+    budget(8 * STEP_MS + 4 * LONG_MS)
+    const q = openQuestion(page)
+    const whole = q.locator('[data-permission-whole][data-permission-short]')
+    await expect(whole).toContainText('echo allowed', { timeout: LONG_MS })
+    await expect(whole).toContainText('Say allowed')
+    await expect(q.locator('[data-permission-allow]')).toBeEnabled()
+    await q.locator('[data-permission-allow]').click()
+    await expect.poll(() => readStub(own, conv, 'allowed'), { timeout: LONG_MS }).not.toBe('')
+    await expect(chat.locator('[data-chat-turn]').last()).toHaveAttribute('data-turn-outcome', 'done', { timeout: LONG_MS })
+    // Another short call arrives below the person, who reads the chat's top: they jump to its end alone, its first row above the
+    // window: Allow once waits, saying so; once its first row has been in view too, it is offered.
+    await say(page, 'steps before')
+    budget(10 * STEP_MS + 3 * LONG_MS)
+    await expect(chat.locator('[data-chat-turn]').last()).toHaveAttribute('data-turn-outcome', 'done', { timeout: LONG_MS })
+    await page.locator('[data-chat-scroll]').evaluate((el) => (el.scrollTop = 0))
+    await say(page, 'ask seven')
+    const seven = openQuestion(page)
+    await expect(seven.locator('[data-permission-whole][data-permission-short]')).toBeAttached({ timeout: LONG_MS })
+    await expect(seven.locator('[data-permission-input-start]')).not.toBeInViewport()
+    await seven.locator('[data-permission-input-end]').evaluate((el) => el.scrollIntoView({ block: 'start' }))
+    await expect(seven.locator('[data-permission-input-end]')).toBeInViewport()
+    await expect(seven.locator('[data-permission-input-start]')).not.toBeInViewport()
+    await expect(seven.locator('[data-permission-allow]')).toBeDisabled()
+    await expect(seven.locator('[data-permission-waiting-line]')).toHaveText('Read the call from its start to its end to allow it.')
+    await seven.locator('[data-permission-input-start]').evaluate((el) => el.scrollIntoView({ block: 'start' }))
+    await expect(seven.locator('[data-permission-allow]')).toBeEnabled()
+    await expect(seven.locator('[data-permission-waiting-line]')).toHaveCount(0)
+    await seven.locator('[data-permission-deny]').click()
+  } finally {
+    await page.context().close()
+  }
+})
+
+test("an Edit's question: a small change drawn whole with its path, a large one's path whole in its line", async ({ browser }) => {
+  const api = own.api
+  const { s } = await launch(api, sessions, 'e2e chat permission edit', 'asker-proto')
+  const page = await dayPage(browser, { server: own.started, width: 390, height: 844, touch: true })
+  try {
+    const view = await openSession(page, s.id)
+    await firstTurn(page, api, s.id)
+    await toChat(api, s.id, view)
+    const chat = page.locator('[data-chat-view]')
+    await say(page, 'ask edit')
+    budget(8 * STEP_MS + 3 * LONG_MS)
+    const q = openQuestion(page)
+    await expect(q.locator('[data-permission-words]')).toHaveText('Change a file?', { timeout: LONG_MS })
+    await expect(q.locator('[data-permission-tool]')).toHaveText('Edit')
+    const whole = q.locator('[data-permission-whole][data-permission-short]')
+    await expect(whole).toContainText('confirmation_email_template.go')
+    await expect(whole).toContainText('alpha and beta')
+    await q.locator('[data-permission-deny]').click()
+    await expect(chat.locator('[data-chat-turn]').last()).toHaveAttribute('data-turn-outcome', 'done', { timeout: LONG_MS })
+    // A large change: one line, the path, never cut: wrapped whole in the line, at a phone's width.
+    await say(page, 'ask bigedit')
+    const big = openQuestion(page)
+    await expect(lineButton(big)).toBeVisible({ timeout: LONG_MS })
+    await expect(lineButton(big)).toContainText('/src/services/accounts/internal/handlers/registration/confirmation_email_template.go')
+    const fits = await lineButton(big).locator('[data-permission-line-text]').evaluate((el) => el.scrollWidth <= el.clientWidth + 1)
+    expect(fits).toBe(true)
+    await big.locator('[data-permission-deny]').click()
   } finally {
     await page.context().close()
   }
@@ -250,7 +331,7 @@ test("a view link's join page shows the question and who answers it, with no but
     await expect(gq).toHaveAttribute('data-permission-state', 'open', { timeout: LONG_MS })
     await expect(gq.locator('[data-permission-words]')).toHaveText('Run a command?')
     await expect(gq.locator('[data-permission-tool]')).toHaveText('Bash')
-    await expect(gq.locator('[data-permission-line]')).toHaveText('echo allowed')
+    await expect(gq.locator('[data-permission-whole]')).toContainText('echo allowed')
     await expect(gq.locator('[data-permission-operator-only]')).toHaveText('Only the person who runs this server can answer.')
     await expect(gq.locator('button[data-permission-allow], button[data-permission-deny]')).toHaveCount(0)
     await expect(g.locator('[data-way-label]')).toHaveText('Chat')

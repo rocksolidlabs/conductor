@@ -318,21 +318,31 @@ export interface InputRow {
 
 /**
  * An input as the question shows it: the one line (the command, the path, else the input's canonical JSON), the rows of the whole
- * input, whether the line alone is all of it (a one-line input, drawn whole at once), and the digest of exactly that input. `exact`
- * is false when the bytes are not an input the session could have taken, or their digest is not the request's: then nothing of it
- * may be allowed.
+ * input, whether it is short (drawn whole, open, as the question arrives: SHORT_INPUT_ROWS), and the digest of exactly that input.
+ * `exact` is false when the bytes are not an input the session could have taken, or their digest is not the request's: then nothing
+ * of it may be allowed.
  */
 export interface ShownInput {
   line: string
   rows: InputRow[]
-  /** The line is the whole input: one field holding the command or path, on one line, or a short input with no field to show apart; never with a folder named beside it. */
+  /** The input is short: every field of it, and the folder a request names, fits in SHORT_INPUT_ROWS rows; drawn whole, with no line to open. */
   whole: boolean
   digest: string
   exact: boolean
 }
 
-/** How long a line may be and still be the whole input at once, in characters; a longer one is opened to be read whole. */
-export const ONE_LINE_MAX = 160
+/**
+ * A short input, drawn whole and open as its question arrives: every field's name and value, and a named folder, in at most
+ * SHORT_INPUT_ROWS rows, a row counted as SHORT_ROW_CHARS characters of a value (a line longer takes more than one), a field's name a
+ * row of its own. A longer input is one line the person opens.
+ */
+export const SHORT_INPUT_ROWS = 8
+export const SHORT_ROW_CHARS = 80
+
+/** The rows a text takes as the question draws it, by SHORT_ROW_CHARS a row. */
+function rowsOf(text: string): number {
+  return text.split('\n').reduce((n, l) => n + Math.max(1, Math.ceil(Array.from(l).length / SHORT_ROW_CHARS)), 0)
+}
 
 const LINE_KEYS: Record<string, string[]> = { command: ['command', 'cmd'], file: ['file_path', 'notebook_path', 'path'], read: ['file_path', 'notebook_path', 'path', 'pattern'] }
 
@@ -363,19 +373,41 @@ export function shownInput(entry: Pick<TranscriptEntry, 'tool' | 'plain' | 'inpu
     lineKey = k
     break
   }
-  const short = (s: string) => !s.includes('\n') && Array.from(s).length <= ONE_LINE_MAX
-  let whole: boolean
-  if (lineKey !== undefined) whole = fields!.length === 1 && typeof fields![0]![1] === 'string' && short(line)
-  else {
-    line = canon
-    whole = short(canon)
-  }
-  // A request that names its folder (Codex's) is opened to be read whole: the folder is drawn with the opened input.
-  if (entry.cwd) whole = false
+  if (lineKey === undefined) line = canon
+  // Short: every row of it, a folder the request names among them, within the bound.
+  const count = rows.reduce((n, r) => n + (r.key ? 1 : 0) + rowsOf(r.text), 0) + (entry.cwd ? 1 + rowsOf(entry.cwd) : 0)
+  const whole = count <= SHORT_INPUT_ROWS
   return { line, rows, whole, digest, exact }
 }
 
 /** A deny's message as the wire bounds it (MAX_PERMISSION_MESSAGE): its UTF-8 bytes, whatever its script. */
 export function messageBytes(s: string): number {
   return new TextEncoder().encode(s).length
+}
+
+/**
+ * The one line a question draws from its entry alone, before (or without) its input is read: an answered question, a link's view.
+ * The summary is the input's compact JSON as the session kept it, cut with its mark past its bound: the command or the path is read
+ * out of it, in the same form as the line drawn from the input, and the cut kept; where none can be read, nothing (the plain words
+ * alone), never the JSON itself.
+ */
+export function summaryLine(entry: Pick<TranscriptEntry, 'plain' | 'summary'>): string {
+  let s = entry.summary ?? ''
+  // The session's mark at a cut summary's end.
+  const cut = s.endsWith('…')
+  if (cut) s = s.slice(0, -1)
+  for (const k of LINE_KEYS[entry.plain ?? ''] ?? []) {
+    const m = new RegExp(`"${k}":"((?:[^"\\\\]|\\\\.)*)("|\\\\?$)`).exec(s)
+    if (!m) continue
+    // A value cut inside an escape (a \\u not whole) loses that escape's half: tried shorter, a character at a time, at most six.
+    for (let drop = 0; drop <= 6 && drop <= m[1]!.length; drop++) {
+      try {
+        const text = JSON.parse(`"${m[1]!.slice(0, m[1]!.length - drop)}"`) as string
+        return m[2] === '"' && drop === 0 ? text : `${text}…`
+      } catch {
+        /* shorter */
+      }
+    }
+  }
+  return ''
 }
