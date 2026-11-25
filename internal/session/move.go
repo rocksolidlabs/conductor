@@ -64,8 +64,9 @@ func moveRefused(words string) error { return &MoveRefusal{Words: words} }
 // with when that start fails: the server's, built from the session's own
 // launch (the same Runtime, folder, binding and environment).
 type MoveStarts struct {
-	// Terminal starts the agent's terminal resuming conversation.
-	Terminal func(ctx context.Context, conversation string) (Process, error)
+	// Terminal starts the agent's terminal resuming conversation, on a
+	// terminal of cols by rows (the session's size).
+	Terminal func(ctx context.Context, conversation string, cols, rows uint16) (Process, error)
 	// Protocol starts a chat's child and its driver on the conversation.
 	Protocol ProtocolStart
 	// Gone proves that what is left of the process group group (a
@@ -178,22 +179,11 @@ func (s *Local) Moving() bool {
 	return s.moveDone != nil
 }
 
-// movingLocked says a move is under way. The caller holds s.mu.
-func (s *Local) movingLocked() bool { return s.moveDone != nil }
-
 // Noted is the way a noted move goes to and why it waits ("" when none).
 func (s *Local) Noted() (to, why string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.noted, s.notedWhy
-}
-
-// moveWhy is the sentence of a noted move that waits for the turn's end.
-func moveWhy(to string) string {
-	if to == WayProtocol {
-		return MovesToChatWords
-	}
-	return MovesToTerminalWords
 }
 
 // atRestLocked says whether the session is at rest for a move now, and if
@@ -462,7 +452,25 @@ func (s *Local) startWay(to string, m MoveStarts) error {
 		s.mu.Unlock()
 		return s.enterProtocol(ctx, m.Protocol)
 	}
-	proc, err := m.Terminal(ctx, conv)
+	// A terminal still running (one a test left quiet as it entered the
+	// protocol way) is stopped first: one pump, one writer.
+	if done := s.pumpDone.Load(); done != nil {
+		select {
+		case <-*done:
+		default:
+			s.termGen.Add(1)
+			_ = s.term.get().Stop(ctx, s.opts.StopGrace)
+			select {
+			case <-*done:
+			case <-ctx.Done():
+				return errors.New("session: the terminal before did not end")
+			}
+		}
+	}
+	s.mu.Lock()
+	cols, rows := s.info.Cols, s.info.Rows
+	s.mu.Unlock()
+	proc, err := m.Terminal(ctx, conv, cols, rows)
 	if err != nil {
 		return err
 	}

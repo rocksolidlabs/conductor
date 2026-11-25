@@ -33,7 +33,8 @@ type chatLaunch struct {
 	// What a move back to the terminal starts it again with
 	// (terminalStart): the launch's arguments after the command and the
 	// conversation's (the user's, the model's, yolo's, the hooks', the MCP
-	// server's), the terminal's own environment, and its size at launch.
+	// server's), the terminal's own environment, and its size at launch
+	// (the session's own size is the one a move starts it at).
 	termTail   []string
 	termEnv    []string
 	cols, rows uint16

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"net/http"
@@ -138,9 +139,10 @@ func (s *Server) moves(name string) bool {
 // a resume starts it: the agent's command, its recipe's resume arguments on
 // the conversation, and the rest of the launch's arguments, on the same
 // Runtime, in the same folder, with the same environment (the same login
-// binding and agent token) and the launch's size.
-func (s *Server) terminalStart(l *chatLaunch) func(context.Context, string) (session.Process, error) {
-	return func(ctx context.Context, conversation string) (session.Process, error) {
+// binding and agent token), at the session's size (the launch's when it
+// has none).
+func (s *Server) terminalStart(l *chatLaunch) func(context.Context, string, uint16, uint16) (session.Process, error) {
+	return func(ctx context.Context, conversation string, cols, rows uint16) (session.Process, error) {
 		if conversation == "" {
 			return nil, errNoConversation
 		}
@@ -156,7 +158,7 @@ func (s *Server) terminalStart(l *chatLaunch) func(context.Context, string) (ses
 			return nil, err
 		}
 		defer dirFile.Close()
-		term, err := rt.StartTerminal(ctx, ext.TerminalSpec{Argv: argv, Dir: l.folder.Path(), DirFile: dirFile, Env: slices.Clone(l.termEnv), Cols: l.cols, Rows: l.rows, Ref: l.ref})
+		term, err := rt.StartTerminal(ctx, ext.TerminalSpec{Argv: argv, Dir: l.folder.Path(), DirFile: dirFile, Env: slices.Clone(l.termEnv), Cols: cmp.Or(cols, l.cols), Rows: cmp.Or(rows, l.rows), Ref: l.ref})
 		if err != nil {
 			return nil, err
 		}

@@ -43,7 +43,7 @@ type terminals struct {
 	before func()
 }
 
-func (ts *terminals) start(_ context.Context, conv string) (Process, error) {
+func (ts *terminals) start(_ context.Context, conv string, _, _ uint16) (Process, error) {
 	if ts.before != nil {
 		ts.before()
 	}
