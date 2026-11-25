@@ -480,11 +480,18 @@ func defaults() []Agent {
 // that is no choice begins with neither a highlight's marker nor a number
 // and a dot ("2. Skip"); an empty row is none either. Every row a shape
 // reads, the ones inside Claude Code's box as the ones under it, is such a
-// row, and a screen with a numbered choice anywhere on it is still not the
-// prompt (the session's atPrompt asks both). The session matches a shape
+// row, and a screen with a dialog's numbered choice on it is still not the
+// prompt (the session's atPrompt asks both: while its startup watch lasts,
+// a numbered row anywhere; after it, one in or under the rows the shape
+// takes, or one with a highlight's marker anywhere). The session matches a shape
 // on the screen with every Unicode space a plain one (Claude Code's no-break
 // space after its marker included), so a shape names spaces as " " and \s.
+// Codex's ends at its composer's footer, the last row it draws under the
+// composer (its shortcuts hint, the queue hint, "again to" a key's second
+// press, the context left, the send key): a › row with no footer under it
+// (a message of the person's in the history, a list's highlight) is not
+// the composer.
 const (
 	claudePromptShape = `(?m)^─{8,}\n❯ *(?:(?:[^\d\s]|\d+[^\d.\n])[^\n]*)?(?:\n *(?:(?:[^\d\s─❯›>]|\d+[^\d.\n])[^\n]*)?){0,8}\n─{8,}(?:\n *(?:(?:[^\d\s❯›>]|\d+[^\d.\n])[^\n]*)?){0,8}\s*\z`
-	codexPromptShape  = `(?m)^ {0,3}› +(?:[^\d\sW]|W[^a\n]|\d+[^\d.\n])[^\n]*(?:\n *(?:(?:[^\d\s❯›>]|\d+[^\d.\n])[^\n]*)?){1,6}\s*\z`
+	codexPromptShape  = `(?m)^ {0,3}› +(?:[^\d\sW]|W[^a\n]|\d+[^\d.\n])[^\n]*(?:\n *(?:(?:[^\d\s❯›>]|\d+[^\d.\n])[^\n]*)?){0,5}\n  [^\n]*(?:for shortcuts|to queue|again to|context left|⏎ send)[^\n]*\s*\z`
 )
