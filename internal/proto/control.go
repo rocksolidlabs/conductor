@@ -519,6 +519,10 @@ type Welcome struct {
 	Verbatim   bool               `json:"verbatim,omitempty"`
 	Transcript *WelcomeTranscript `json:"transcript,omitempty"`
 	Interrupt  bool               `json:"interrupt,omitempty"`
+	// Noted is the way a move pressed during a turn goes to at the turn's
+	// end (way.go): "terminal" or "protocol", absent while none is noted
+	// and from an older owner.
+	Noted string `json:"noted,omitempty"`
 }
 
 // ICEServer is the WebRTC ICE server description sent to clients.
