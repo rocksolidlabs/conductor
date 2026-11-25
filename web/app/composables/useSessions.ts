@@ -72,6 +72,15 @@ export interface SessionInfo {
   agentSession?: AgentSession
   /** The session this one resumed or relaunched. */
   resumedFrom?: string
+  /**
+   * How the session runs its agent: `protocol` for a chat (the agent's own structured interface), missing for its terminal (and from
+   * an older server). A chat's `cols` and `rows` are 0.
+   */
+  way?: 'protocol'
+  /** A chat's protocol, of the catalog's closed set (`claude-stream-json`), at most 32 bytes. */
+  protocol?: string
+  /** A chat's messages reach its agent as written: no `@path` is expanded, no `/command` run. */
+  verbatim?: boolean
 }
 
 /** What a server session was launched with, as an admin reads it (GET /api/sessions/{id}, #434): what a clone takes by default. */
@@ -192,6 +201,14 @@ export interface AgentInfo {
   recheck?: boolean
   /** The browser its links open in (#436); absent (or without a name) is the computer's default browser. */
   browser?: AgentBrowser
+  /** The protocol way it may run, read-only: its protocol's name and the arguments added to its command for a chat. Missing: none. */
+  protocol?: AgentProtocol
+}
+
+/** An agent's protocol way (the catalog's `protocol`): `{}` turns an inherited one off. */
+export interface AgentProtocol {
+  name?: string
+  args?: string[]
 }
 
 /** The identity probe's answer: the program run with its version flag and its output matched against what the agent prints. */

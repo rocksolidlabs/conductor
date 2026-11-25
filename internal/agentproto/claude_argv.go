@@ -69,6 +69,9 @@ type ClaudeLaunch struct {
 	LaunchArgs []string
 	// HooksDir is the absolute hooks directory the assets are in.
 	HooksDir string
+	// NoMCP leaves Conductor's MCP server out, as a terminal's launch does
+	// when the server's MCP is off.
+	NoMCP bool
 	// PermissionHost says Conductor answers the child's permission
 	// prompts: its MCP tool is named and the floor is its one --settings.
 	// Until then a call that needs approval is denied by Claude Code
@@ -113,7 +116,9 @@ func ClaudeArgs(l ClaudeLaunch) ([]string, error) {
 		argv = append(argv, "--permission-mode", "default")
 	}
 	argv = append(argv, l.LaunchArgs...)
-	argv = append(argv, "--mcp-config", filepath.Join(l.HooksDir, ClaudeProtocolMCP))
+	if !l.NoMCP {
+		argv = append(argv, "--mcp-config", filepath.Join(l.HooksDir, ClaudeProtocolMCP))
+	}
 	if l.PermissionHost {
 		settings := ClaudeProtocolSettings
 		if l.Yolo {

@@ -9,6 +9,7 @@ import (
 	"errors"
 	"io"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -179,6 +180,11 @@ type protocolWay struct {
 	readEnded  bool
 	restarting bool
 	stopping   bool
+	// restartAtEnd says the driver asked for its child to be started again
+	// at the turn's end (RestartProtocol), and restartCode and restartWords
+	// are the notice that restart writes ("" for the interrupt's).
+	restartAtEnd              bool
+	restartCode, restartWords string
 
 	// turns is Conductor's count of turns; inTurn says one runs (from
 	// TurnStarted to TurnEnded), accepted that a message was taken since
@@ -369,6 +375,8 @@ func (s *Local) enterProtocol(ctx context.Context, start ProtocolStart) error {
 	}
 	go s.protocolSender(p)
 	p.wake()
+	// Its Info says the way now.
+	s.notifyChange()
 	return nil
 }
 
@@ -399,9 +407,18 @@ func (s *Local) readProtocol(p *protocolWay, gen uint64, d Protocol, child Child
 		return
 	}
 	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, context.Canceled) {
+		// The driver's error may name the end in its agent's words, or say
+		// it has told the session already (EndNotice's empty code).
+		code, words := noticeUnreadable, UnreadableWords
+		var told endNoticer
+		if errors.As(err, &told) {
+			code, words = told.EndNotice()
+		}
 		var out applied
 		s.mu.Lock()
-		s.noticeLocked(p, noticeUnreadable, UnreadableWords, &out)
+		if code != "" {
+			s.noticeLocked(p, code, words, &out)
+		}
 		s.mu.Unlock()
 		s.sendApplied(out)
 		_ = d.CloseInput()
@@ -770,7 +787,12 @@ func (s *Local) restartProtocol(p *protocolWay) {
 	out = applied{event: "restarted", kick: true}
 	s.mu.Lock()
 	p.restarting = false
-	s.noticeLocked(p, noticeRestarted, RestartedWords, &out)
+	code, words := noticeRestarted, RestartedWords
+	if p.restartCode != "" {
+		code, words = p.restartCode, p.restartWords
+		p.restartCode, p.restartWords = "", ""
+	}
+	s.noticeLocked(p, code, words, &out)
 	s.mu.Unlock()
 	s.sendApplied(out)
 }
@@ -856,7 +878,7 @@ func (s *Local) endProtocolLocked() func() {
 type applied struct {
 	event    string
 	id       string
-	captured [][]byte
+	captured []capturedPiece
 	attn     *attnChange
 	records  []ActivityEntry
 	replies  []verdictReply
@@ -870,6 +892,19 @@ type applied struct {
 	// entries are the seqs of the entries the event added or revised.
 	entries []uint64
 }
+
+// capturedPiece is bytes a driver captured (OnCaptured, whole), with the
+// key the transcript keeps them under (OnTranscriptPiece, cut as kept).
+type capturedPiece struct {
+	key string
+	b   []byte
+	// again says the bytes reached OnCaptured already: they are only kept
+	// under one more key (words that went on into a new entry).
+	again bool
+}
+
+// pieceKey is a transcript piece's key: "<seq>/<part>".
+func pieceKey(seq uint64, part string) string { return strconv.FormatUint(seq, 10) + "/" + part }
 
 type attnChange struct {
 	state   AttentionState
@@ -896,17 +931,36 @@ func (out *applied) finish(q *queuedMessage, res SubmitResult, err error) {
 
 // sendApplied does what an applied event left to do (applied).
 func (s *Local) sendApplied(out applied) {
-	if s.opts.OnCaptured != nil && len(out.captured) > 0 {
-		if out.id == "" {
-			s.mu.Lock()
-			out.id = s.info.ID
-			s.mu.Unlock()
+	var dropped []string
+	if s.opts.OnTranscriptDropped != nil {
+		s.mu.Lock()
+		dropped = s.transcript.takeDropped()
+		s.mu.Unlock()
+	}
+	if out.id == "" && (len(out.captured) > 0 || len(dropped) > 0) {
+		s.mu.Lock()
+		out.id = s.info.ID
+		s.mu.Unlock()
+	}
+	for _, c := range out.captured {
+		if len(c.b) == 0 {
+			continue
 		}
-		for _, b := range out.captured {
-			if len(b) > 0 {
-				s.opts.OnCaptured(out.id, b)
+		if s.opts.OnCaptured != nil && !c.again {
+			s.opts.OnCaptured(out.id, c.b)
+		}
+		if s.opts.OnTranscriptPiece != nil && c.key != "" {
+			// What the transcript keeps of it: a part past its bound is
+			// kept cut, and nothing past the cut is ever shown.
+			b := c.b
+			if len(b) > MaxTranscriptPart {
+				b = b[:MaxTranscriptPart]
 			}
+			s.opts.OnTranscriptPiece(out.id, c.key, b)
 		}
+	}
+	if len(dropped) > 0 {
+		s.opts.OnTranscriptDropped(out.id, dropped)
 	}
 	if hook := s.afterApply.Load(); hook != nil && out.event != "" {
 		(*hook)(out.event)
@@ -1074,6 +1128,7 @@ func (s *Local) flushTextLocked(p *protocolWay, ref string, t *openText, final b
 		}
 		pending = pending[len(chunk):]
 		t.seq = s.addEntryLocked(TranscriptEntry{Kind: EntryText, Turn: p.turns, Ref: ref, Text: chunk, Final: final && pending == ""}, out)
+		out.captured = append(out.captured, capturedPiece{key: pieceKey(t.seq, "text"), b: []byte(chunk), again: true})
 	}
 	p.lastText = t.seq
 	t.lastChange = s.now()
@@ -1212,7 +1267,6 @@ func (e protocolEvents) Text(ref, delta string, final bool) {
 	s, p := e.s, e.p
 	out := applied{event: "text"}
 	ref = cutAt(ref, MaxEntryRef)
-	out.captured = append(out.captured, []byte(delta))
 	t := p.texts[ref]
 	if t == nil {
 		chunk := cutAt(delta, MaxEntryText)
@@ -1243,6 +1297,10 @@ func (e protocolEvents) Text(ref, delta string, final bool) {
 		gen := e.gen
 		t.timer = time.AfterFunc(TextCoalesce, func() { s.flushTextTimer(p, gen, ref, t) })
 	}
+	// Kept under the entry the words end in for now; words that go on
+	// into a new entry are kept under it too as it is made
+	// (flushTextLocked).
+	out.captured = append(out.captured, capturedPiece{key: pieceKey(t.seq, "text"), b: []byte(delta)})
 	s.mu.Unlock()
 	s.sendApplied(out)
 }
@@ -1265,7 +1323,7 @@ func (e protocolEvents) ToolStarted(t ToolStep) {
 		InputBytes: len(t.Input), InputSha256: inputDigest(t.Name, t.Input), Status: "running",
 	}, &out)
 	s.transcript.putPart(seq, PartInput, t.Input, false, false)
-	out.captured = append(out.captured, t.Input)
+	out.captured = append(out.captured, capturedPiece{key: pieceKey(seq, PartInput), b: t.Input}, capturedPiece{key: pieceKey(seq, "text"), b: []byte(summary), again: true})
 	if ref != "" {
 		if _, open := p.tools[ref]; open {
 			s.forgetToolLocked(p, ref)
@@ -1313,7 +1371,7 @@ func (e protocolEvents) ToolEnded(ref string, r ToolResult) {
 		e.Status, e.Exit, e.DurationMs, e.Measured, e.OutputBytes = status, exit, &ms, measured, len(r.Output)
 	}, &out)
 	s.transcript.putPart(t.seq, PartOutput, r.Output, r.Cut, false)
-	out.captured = append(out.captured, r.Output)
+	out.captured = append(out.captured, capturedPiece{key: pieceKey(t.seq, PartOutput), b: r.Output})
 	// The stream showed the call's result: a request about it was
 	// answered by the agent's own rules.
 	for _, pr := range append([]*openPermission(nil), p.perms...) {
@@ -1355,7 +1413,7 @@ func (e protocolEvents) FileChanged(f FileChange) {
 	}, &out)
 	if len(f.Diff) > 0 {
 		s.transcript.putPart(seq, PartDiff, f.Diff, false, false)
-		out.captured = append(out.captured, f.Diff)
+		out.captured = append(out.captured, capturedPiece{key: pieceKey(seq, PartDiff), b: f.Diff})
 	}
 	activityOp := FileOpEdit
 	switch op {
@@ -1427,11 +1485,11 @@ func (e protocolEvents) Permission(r PermissionRequest) {
 		InputBytes: len(r.Input), InputSha256: inputDigest(r.Tool, r.Input),
 		Choices: []string{"allow_once", "deny"}, State: PermissionOpen,
 	}
-	out.captured = append(out.captured, r.Input)
 	if len(p.perms) >= MaxPendingPermissions {
 		// Past the bound: denied, never left waiting.
 		entry.State, entry.Why = PermissionDenied, TooManyRequestsWords
-		s.addEntryLocked(entry, &out)
+		seq := s.addEntryLocked(entry, &out)
+		out.captured = append(out.captured, capturedPiece{key: "", b: r.Input}, capturedPiece{key: pieceKey(seq, "text"), b: []byte(entry.Summary), again: true})
 		out.replies = append(out.replies, verdictReply{d: p.driver, ref: r.Ref, v: Verdict{Message: TooManyRequestsWords}})
 		s.mu.Unlock()
 		s.sendApplied(out)
@@ -1441,6 +1499,7 @@ func (e protocolEvents) Permission(r PermissionRequest) {
 	seq := s.addEntryLocked(entry, &out)
 	s.transcript.putPart(seq, PartInput, r.Input, false, true)
 	s.transcript.pin(seq, true)
+	out.captured = append(out.captured, capturedPiece{key: pieceKey(seq, PartInput), b: r.Input}, capturedPiece{key: pieceKey(seq, "text"), b: []byte(entry.Summary), again: true})
 	p.perms = append(p.perms, &openPermission{seq: seq, ref: r.Ref, call: entry.Call, question: entry.Question})
 	s.mu.Unlock()
 	s.sendApplied(out)
@@ -1478,9 +1537,51 @@ func (e protocolEvents) TurnEnded(outcome string, u Usage) {
 	}
 	out := applied{event: "turn_ended"}
 	e.s.endTurnLocked(e.p, outcome, u, &out)
+	// A restart the driver asked for during the turn: no queued message is
+	// written to the child that ends, and the next one takes them.
+	restart := e.p.restartAtEnd && !e.p.restarting && !e.p.stopping
+	if restart {
+		e.p.restartAtEnd, e.p.restarting, out.kick = false, true, false
+	}
 	e.s.mu.Unlock()
 	e.s.sendApplied(out)
+	if restart {
+		go e.s.restartProtocol(e.p)
+	}
 }
+
+// RestartProtocol has a session in the protocol way end its child and start
+// it again on the same conversation, a notice of code and words written once
+// it is: at the end of the turn under way (before any queued message is
+// written), or at once when none is. A driver asks it for a reason of its
+// own (Claude Code's: what it wrote reached its bound). ErrNotProtocol on a
+// session in its terminal; nil when a restart or a stop is under way.
+func (s *Local) RestartProtocol(code, words string) error {
+	p := s.way.Load()
+	if p == nil {
+		return ErrNotProtocol
+	}
+	s.mu.Lock()
+	if s.info.Status.Ended() || p.restarting || p.stopping || !p.isReady {
+		s.mu.Unlock()
+		return nil
+	}
+	p.restartCode, p.restartWords = cutAt(code, MaxNoticeCode), cutAt(CleanMessage(words), MaxNoticeWords)
+	if p.inTurn || p.accepted || p.inflight != nil || p.sending {
+		p.restartAtEnd = true
+		s.mu.Unlock()
+		return nil
+	}
+	p.restarting = true
+	s.mu.Unlock()
+	go s.restartProtocol(p)
+	return nil
+}
+
+// endNoticer is a driver's Read error that says how the session tells its
+// end: the notice's code and words in place of the unreadable one, or an
+// empty code when the driver has told it already.
+type endNoticer interface{ EndNotice() (code, words string) }
 
 func (e protocolEvents) Notice(code, words string) {
 	if !e.begin() {

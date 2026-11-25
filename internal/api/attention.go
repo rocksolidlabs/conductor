@@ -351,6 +351,9 @@ func (s *Server) handleAttention(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", "plan is longer than 1024 bytes")
 		return
 	}
+	if s.dropForChat(w, d, source, !req.Ask && (req.Kind == session.KindPermission || req.Turn)) {
+		return
+	}
 	if !reportAttention(w, d, source, state, req.Message, req.Kind, req.Options, req.Ask, req.Plan, req.TurnID) {
 		return
 	}
@@ -389,6 +392,17 @@ func (s *Server) handleEvent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
+	hookShaped := false
+	switch req.Type {
+	case session.ActivityFile, session.ActivityToolUse, session.ActivityToolDenied, session.ActivityError:
+		hookShaped = true
+	}
+	if _, isAttention := attentionState(req.Type); isAttention && !req.Ask && req.Kind == session.KindPermission {
+		hookShaped = true
+	}
+	if s.dropForChat(w, d, source, hookShaped) {
+		return
+	}
 	if state, isAttention := attentionState(req.Type); isAttention {
 		if !reportAttention(w, d, source, state, req.Message, req.Kind, req.Options, req.Ask, "", "") {
 			return
@@ -402,6 +416,30 @@ func (s *Server) handleEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]any{"accepted": true})
+}
+
+// HookDroppedWords is the one activity line a chat records when it first
+// drops a report its hooks made.
+const HookDroppedWords = "Hook reports are not taken in a chat: its own stream reports its steps."
+
+// dropForChat drops a hook-shaped report (hookShaped) the agent token sent
+// for a server session in the protocol way: its own stream reports the
+// same steps, so the hooks the person's settings run in a chat's child
+// (Conductor's own among them, should their conductor notify not stay
+// silent) would report them twice. The report is answered 200 and noted in
+// the session's activity once; it reports true when it dropped it. The
+// agent's own reports (--ask, a progress, an artifact, a handoff) are not
+// hook-shaped, and an admin's report is never dropped.
+func (s *Server) dropForChat(w http.ResponseWriter, d session.Driver, source string, hookShaped bool) bool {
+	local, ok := d.(*session.Local)
+	if !hookShaped || !ok || source != session.SourceAPI || local.Way() != session.WayProtocol {
+		return false
+	}
+	if _, told := s.hookDropped.LoadOrStore(local.Info().ID, true); !told {
+		local.Record(session.ActivityEntry{Type: session.ActivityStatus, Message: HookDroppedWords})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"dropped": true})
+	return true
 }
 
 // reportEvent records one of the six event types in d. It writes the response

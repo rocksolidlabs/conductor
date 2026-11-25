@@ -641,9 +641,11 @@ func TestClaudeInterruptWithoutReceipt(t *testing.T) {
 	}
 }
 
-// Past MaxClaudeInput written into the child, the next turn's end (after
-// it is handed to the session) calls Restart, once: the caller ends the
-// child and resumes the same conversation. At the bound, no restart.
+// Past MaxClaudeInput written into the child, the next turn's end calls
+// Restart, once, before the session is told of that end (so the session
+// restarts at it, writing nothing queued to the child that ends): the
+// caller ends the child and resumes the same conversation. At the bound,
+// no restart.
 func TestClaudeInputCountResumes(t *testing.T) {
 	turn := `{"type":"result","subtype":"success","is_error":false,"usage":{"input_tokens":1,"output_tokens":1}}` + "\n"
 	pr, pw := io.Pipe()
@@ -690,8 +692,8 @@ func TestClaudeInputCountResumes(t *testing.T) {
 	for n := range restarts {
 		got = append(got, n)
 	}
-	if !slices.Equal(got, []int{2}) {
-		t.Fatalf("restarts after turn ends %v, want one after the second", got)
+	if !slices.Equal(got, []int{1}) {
+		t.Fatalf("restarts after turn ends %v, want one as the second ends, before it is told", got)
 	}
 	if MaxClaudeInput != 8<<20 {
 		t.Fatalf("MaxClaudeInput %d", MaxClaudeInput)

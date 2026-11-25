@@ -2019,6 +2019,92 @@ prompt, one turn with a tool; whether the MCP server's `timeout` in a
 `--mcp-config` file raises the idle window (design 7's
 `PermissionWait`), written in the row's pull request. **14 h.**
 
+**As built, row 4** (#1107; `internal/agentproto`, its fixtures in
+`testdata/claude`, `internal/session/pipes.go` and `protocol.go`,
+`internal/api/chat_start.go`, `attention.go`, `output_guard.go`,
+`web/e2e/stub-protocol.mjs`):
+
+- `ClaudeMinVersion` is 2.1.331, the version the fixtures were recorded
+  from (a real run in a throwaway repository, seven messages; the account,
+  plan and sign-in fields, every path and every minted id removed). Two
+  fixtures are hand-built from the documented shapes and say so:
+  background work (a 150-second MCP call was not moved to the background
+  in print mode, so no run showed task events) and a signed-out start.
+- What the run showed that design 4 does not say: the `initialize`
+  answer carries a `capabilities` list of its own without
+  `interrupt_receipt_v1`, which only `system/init` carries, and
+  `system/init` comes after the first message and again at each turn's
+  start: the driver reads the receipt there, and `Interrupt` answers
+  `ErrNoInterrupt` before it. The replay carries the `uuid` written (the
+  undocumented fact holds) and not `client_composed`. Events the pages do
+  not list: `command_lifecycle`, `tool_progress` heartbeats every 30 s of
+  an MCP call, `system/thinking_tokens`, `system/commands_changed`; fields:
+  `api_message_id`, `wire_*`, `tool_result_meta`, `tool_use_meta`,
+  `model_usage_since_last_result`, `pending_user_dialog_requests`. Each
+  `assistant` line holds one block. The interrupt's receipt is
+  `{still_queued: []}` and its turn ends `error_during_execution`,
+  `aborted_streaming`. `total_cost_usd` counts the child's life (a resumed
+  child's earlier calls too): a turn's cost is the difference, none for a
+  child's first turn.
+- The MCP `timeout` (by hand, row 6's question): in one `--mcp-config`
+  file, a server without one was aborted by the idle check at 30 s, one
+  with `"timeout": 300000` was kept to its answer at 150 s. A
+  `--mcp-config` file's `timeout` raises the idle window as `.mcp.json`'s
+  does; `claude-protocol-mcp.json` sets 8 hours.
+- The argv: the permission tool and the floor's one `--settings` are
+  passed only with `ClaudeLaunch.PermissionHost` (row 6 sets it); until
+  then a chat's argv has no `--settings`. A terminal argument that is one
+  of the chat's own flags (`--settings`, `--setting-sources`, `--bare`,
+  `--strict-mcp-config`, `--permission-mode`, `--resume`, the stream
+  flags) refuses the start. `NoMCP` leaves the MCP config out when the
+  server's MCP is off, as a terminal's launch does.
+- The driver mints a UUID per message (the session's refs are hex) and
+  maps the replay back to its ref; where a replay names none, the oldest
+  written. Begin waits at most `ClaudeInitWait` (20 s) for the initialize
+  answer. A request the child makes of Conductor is answered as not
+  supported. Lists it keeps: 64 pending sends, 256 denied calls, 1,000
+  calls and 1,000 streamed texts followed, 256 background tasks.
+- The start of a chat's child (`Server.chatStart`, which row 5's
+  `SwapWay` calls): the terminal's launch leaves what it starts from in
+  memory (`chatLaunch`: the Runtime, the folder, the agent as launched,
+  the launch's arguments, model and yolo, the terminal's environment
+  without TERM and COLORTERM, with NO_COLOR=1 and CONDUCTOR_PROTOCOL=1),
+  gone with the session. Each start checks the probed version
+  (`agentproto.Qualified`), builds `ClaudeArgs` on the conversation it is
+  given and starts through the Runtime's `StartPipes` under the start's
+  context. A start refused, a child that answers no initialize or fails
+  the shape check: the session stays in its terminal.
+- Past 8 MiB written, the driver calls `Restart` as the turn's result
+  arrives, before the session hears of it; the session's new
+  `Local.RestartProtocol` restarts at that turn's end, so a message queued
+  during it goes to the new child alone, with the notice "The agent was
+  started again on the same conversation: its input reached its bound."
+- A driver's Read error may name its end (`EndNotice`): Claude Code's
+  unreadable line is told in its words, a signed-out agent by the
+  driver's own notice ("Claude Code is not signed in; sign in from its
+  terminal.") and the child ended; going back to the terminal from a chat
+  is the move's (row 5).
+- The copied-output feed: each piece the transcript keeps is a live
+  source of its own, `transcript:<id>/<seq>/<part>`, fed as the transcript
+  keeps it (cut at 256 KiB), pruned when the ring lets the entry or the
+  part go (`Options.OnTranscriptPiece`, `OnTranscriptDropped`) and when the
+  session is removed: a chat's text is output exactly as long as the
+  transcript keeps it. A single live source of the transcript's size would
+  have let an old entry's text go while a flood of parts was still within
+  it.
+- The attention and events routes drop a hook-shaped report from the
+  agent token on a chat (kind `permission`, `turn: true`, a `file`,
+  `tool_use`, `tool_denied` or `error` event): `200 {dropped: true}`,
+  noted once in the activity. `Info` carries `way`, `protocol` and
+  `verbatim` (the session's own struct, `internal/session/info.go`; the
+  app's types in `composables/useSessions.ts`); the catalog route's agents
+  carry `protocol`; a save and a clone check it with `agentproto.Check`,
+  and a clone takes the source's.
+- `web/e2e/stub-protocol.mjs` speaks the recorded shapes (`--version`
+  prints 2.1.331; environment switches for a missing or bad initialize
+  answer, a signed-out start, a held turn, no receipt), and
+  `TestStubProtocolSpeaksTheDriver` holds it to the driver.
+
 ### Row 5: the move between ways, and the connection split
 
 **Scope.** Design 9 whole: `Local.SwapWay`, the terminal's start
