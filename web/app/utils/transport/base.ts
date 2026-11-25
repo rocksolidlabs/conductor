@@ -405,8 +405,16 @@ export abstract class BaseTransport implements TerminalTransport {
         this.transcriptWaits.delete(msg.reqId)
         window.clearTimeout(w.timer)
         if (msg.t === 'part') {
+          // A piece whose data is not base64 settles its read as a frame the page cannot read, never leaving it waiting.
           const { data, ...rest } = msg
-          w.resolve({ ...rest, bytes: partBytes(data) })
+          let bytes: Uint8Array
+          try {
+            bytes = partBytes(data)
+          } catch {
+            w.reject(new ReplyError('bad_frame', 'the owner sent a piece of the part the page cannot read'))
+            return
+          }
+          w.resolve({ ...rest, bytes })
         } else w.resolve(msg)
       }
       return

@@ -564,6 +564,23 @@ describe('BaseTransport chat (TRANSCRIPT)', () => {
     expect(t.sent).toHaveLength(3)
   })
 
+  it('a part whose data is not base64 settles its read with bad_frame, never leaving it waiting', async () => {
+    const t = new ChatTransport()
+    chatWelcome(t)
+    const part = track(t.transcriptGet({ part: { seq: 3, name: 'output' } }))
+    const reqId = parseJSON<{ reqId: string }>(t.sent[0]!.subarray(1))!.reqId
+    t.receive(encodeJSONFrame(FrameType.Transcript, { t: 'part', reqId, seq: 3, name: 'output', offset: 0, total: 2, kept: 2, data: 'not base64!' }))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(part.error).toBeInstanceOf(ReplyError)
+    expect(part.error).toMatchObject({ code: 'bad_frame' })
+    // Its place is free for the next read.
+    const next = track(t.transcriptGet({ after: 1 }))
+    const id2 = parseJSON<{ reqId: string }>(t.sent[1]!.subarray(1))!.reqId
+    t.receive(encodeJSONFrame(FrameType.Transcript, { t: 'page', reqId: id2, entries: [], first: 0, last: 0 }))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(next.value).toMatchObject({ t: 'page' })
+  })
+
   it('Stop goes to an owner whose welcome said interrupt, settled by interrupt_ok or the error naming it; never to another', async () => {
     const term = new ChatTransport()
     term.receive(encodeControl({ t: 'welcome', proto: 1, sessionId: 's', role: 'control', cols: 80, rows: 24, status: 'running', scrollbackBytes: 0, transport: 'ws', fileView: true }))
