@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { ENDS_TERMINAL_WORK, FIRST_REPLY, MOVES_TO_CHAT, MOVES_TO_TERMINAL, MOVING, NOT_QUALIFIED, pressFor, switchState, type SwitchFacts } from './switchState'
+import { ENDS_TERMINAL_WORK, FIRST_REPLY, MOVES_TO_CHAT, MOVES_TO_TERMINAL, MOVING, NOT_QUALIFIED, RUNS_AS_CHAT_FOR_RUN, crewChatOf, pressFor, switchState, type SwitchFacts } from './switchState'
 
 const at = (f: Partial<SwitchFacts>): SwitchFacts => ({
   hasProtocol: true, way: 'terminal', noted: '', why: '', canMove: true, firstReply: true, qualified: true, inTurn: false, moving: false, ...f,
@@ -28,7 +28,7 @@ describe('switchState: which sentence the switch shows', () => {
     expect(switchState(at({ way: 'protocol', noted: 'terminal', why: 'Background work is still running.' })).line).toBe('Background work is still running.')
   })
   it('refused: the route words, over the rest', () => {
-    expect(switchState(at({ refused: 'Crew members stay in their terminals.', inTurn: true })).line).toBe('Crew members stay in their terminals.')
+    expect(switchState(at({ refused: "A crew member's way is its run's.", inTurn: true })).line).toBe("A crew member's way is its run's.")
   })
   it('back the way it came: the start failure sentence', () => {
     expect(switchState(at({ why: 'Claude Code did not start a chat.' })).line).toBe('Claude Code did not start a chat.')
@@ -42,6 +42,23 @@ describe('switchState: which sentence the switch shows', () => {
   it('at rest after a turn, to Chat: pressable, and the line says what the move ends', () => {
     expect(switchState(at({}))).toMatchObject({ pressable: true, line: ENDS_TERMINAL_WORK })
     expect(switchState(at({ way: 'protocol' }))).toMatchObject({ pressable: true, line: '' })
+  })
+})
+
+describe("crewChatOf: a Chat run member's switch is its run's label", () => {
+  const member = { crew: { runId: 'api-sweep-0000beef', crewId: 'api-sweep', member: 'lead', task: 'build', attempt: 1 } }
+  it('a crew member in its chat: the label, nothing pressable', () => {
+    expect(crewChatOf(member, 'protocol')).toBe(true)
+    const s = switchState(at({ way: 'protocol', crewChat: crewChatOf(member, 'protocol') }))
+    expect(s).toMatchObject({ shown: true, selected: 'protocol', pressable: false, line: RUNS_AS_CHAT_FOR_RUN, noted: '' })
+    expect(pressFor(s, 'terminal')).toBeNull()
+    expect(RUNS_AS_CHAT_FOR_RUN).toBe('Runs as a chat for its run.')
+  })
+  it("a crew member in its terminal, and a person's session, keep the switch", () => {
+    expect(crewChatOf(member, 'terminal')).toBe(false)
+    expect(crewChatOf({}, 'protocol')).toBe(false)
+    expect(crewChatOf(undefined, 'protocol')).toBe(false)
+    expect(switchState(at({ way: 'protocol', crewChat: crewChatOf({}, 'protocol') })).line).not.toBe(RUNS_AS_CHAT_FOR_RUN)
   })
 })
 

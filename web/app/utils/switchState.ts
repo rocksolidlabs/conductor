@@ -49,6 +49,15 @@ export interface SwitchState {
   noted: SessionWay | ''
 }
 
+/**
+ * Whether a session is a crew member running as a chat (SwitchFacts.crewChat), from its listing's crew reference and its way: a member
+ * reaches its chat by its run's move alone (a person's move of one is refused), so a member in its chat is a Chat run's, and its switch
+ * is the run's label. A member in its terminal, and a person's session, keep the switch.
+ */
+export function crewChatOf(session: { crew?: unknown } | null | undefined, way: SessionWay): boolean {
+  return !!session?.crew && way === 'protocol'
+}
+
 /** The words of a move to `to` pressed during a turn. */
 export function movesWhenTurnEnds(to: SessionWay): string {
   return to === 'protocol' ? MOVES_TO_CHAT : MOVES_TO_TERMINAL
