@@ -476,11 +476,9 @@ func TestOldTranscriptTextIsStillOutput(t *testing.T) {
 	}
 	quoted := func(text string) bool {
 		t.Helper()
-		wctx, cancel := context.WithTimeout(ctx, testWait)
-		defer cancel()
-		if !e.srv.outputs.whole(wctx) {
-			t.Fatal("the index is not whole")
-		}
+		// Each wait is the index's own catch-up bound: a loaded machine
+		// (the race detector) takes several to index what was fed.
+		waitUntil(t, "the index whole", func() bool { return e.srv.outputs.whole(ctx) })
 		q, err := e.srv.outputs.quotes(text)
 		if err != nil {
 			t.Fatal(err)
