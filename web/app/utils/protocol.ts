@@ -564,6 +564,8 @@ export interface Welcome {
   transcript?: WelcomeTranscript
   /** The owner takes `interrupt`, a chat's Stop. */
   interrupt?: boolean
+  /** The way a move pressed during a turn goes to at its end (see Moving between ways); absent while none is noted, and from an older owner. */
+  noted?: SessionWay
 }
 
 export type ControlMessage =
@@ -590,6 +592,7 @@ export type ControlMessage =
   | DecisionsChangedMsg
   /** The owner asked the agent to stop the turn (`interrupt` of that `reqId`); the turn's end follows in the transcript. */
   | { t: 'interrupt_ok'; requestId: string }
+  | WayMessage
 
 export interface FileEntry {
   name: string
@@ -2129,6 +2132,47 @@ export const ERR_NO_TURN = 'no_turn'
 export const ERR_TRANSCRIPT_GONE = 'transcript_gone'
 export const ERR_UNCONFIRMED = 'unconfirmed'
 export const ERR_PERMISSION_CARD = 'permission'
+
+// Moving between ways (docs/protocol.md): the operator moves a person's own server session between its terminal and its chat
+// (POST /api/sessions/{id}/way) once a turn has ended; the owner tells every viewer with `way`, the welcome carries a noted move.
+
+/** How a session runs its agent: in its terminal, or as a chat (the agent's own protocol). */
+export type SessionWay = 'terminal' | 'protocol'
+
+/**
+ * The session's way now (owner -> client): sent when a move changed it, and when a move is noted (pressed during a turn), replaced
+ * or pressed away. `protocol` names a chat's protocol (at most MAX_WAY_PROTOCOL bytes), `noted` the way a noted move goes to,
+ * `why` one sentence (at most MAX_WAY_WHY bytes): why the noted move waits, or why the session is back the way it came from.
+ */
+export interface WayMessage {
+  t: 'way'
+  way: SessionWay
+  protocol?: string
+  noted?: SessionWay
+  why?: string
+}
+
+/** The way message's bounds, in bytes (proto.MaxWayProtocol, proto.MaxWayWhy); the move's body (the route's). */
+export const MAX_WAY_PROTOCOL = 32
+export const MAX_WAY_WHY = 200
+export const MAX_WAY_BODY = 64
+
+/** The move's error codes: a submission, an answer or an interrupt during a move; a move whose conditions do not hold. */
+export const ERR_MOVING = 'moving'
+export const ERR_MOVE_REFUSED = 'move_refused'
+
+/** Whether m is a way message within its bounds: what a client acts on. */
+export function validWay(m: { t?: unknown; way?: unknown; protocol?: unknown; noted?: unknown; why?: unknown }): m is WayMessage {
+  const ways = ['terminal', 'protocol']
+  const bytes = (v: unknown) => new TextEncoder().encode(String(v)).length
+  return (
+    m.t === 'way' &&
+    ways.includes(m.way as string) &&
+    (m.noted === undefined || ways.includes(m.noted as string)) &&
+    (m.protocol === undefined || (typeof m.protocol === 'string' && bytes(m.protocol) <= MAX_WAY_PROTOCOL)) &&
+    (m.why === undefined || (typeof m.why === 'string' && bytes(m.why) <= MAX_WAY_WHY))
+  )
+}
 
 export type TranscriptKind = 'prompt' | 'text' | 'tool' | 'file' | 'permission' | 'turn' | 'notice'
 export type TranscriptPartName = 'input' | 'output' | 'diff'

@@ -681,6 +681,10 @@ func (s *Local) permissionQuestionLocked(id string) bool {
 // in its terminal, ErrReadOnly for a view role, ErrNoTurn while no turn
 // is under way.
 func (s *Local) Interrupt(ctx context.Context, by *Subscription) error {
+	if s.Moving() {
+		// Between ways (move.go): nothing is stopped until the move ends.
+		return ErrMoving
+	}
 	p := s.way.Load()
 	if p == nil {
 		return ErrNotProtocol
@@ -999,6 +1003,9 @@ func (s *Local) sendApplied(out applied) {
 	if out.kick && out.p != nil {
 		out.p.wake()
 	}
+	// A move noted during the turn, made once the session is at rest
+	// (move.go): the event may have ended what held it.
+	s.tryNoted()
 }
 
 // addEntryLocked adds e to the transcript at the session's clock. The
@@ -1529,6 +1536,7 @@ func (e protocolEvents) Background(running bool) {
 	}
 	e.p.background = running
 	e.s.mu.Unlock()
+	e.s.tryNoted()
 }
 
 func (e protocolEvents) TurnEnded(outcome string, u Usage) {

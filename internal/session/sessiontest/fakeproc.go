@@ -20,6 +20,9 @@ type FakeProc struct {
 	// Input receives a copy of every write to the process, in order. It holds
 	// 64 writes; a write waits for room until the process ends.
 	Input chan []byte
+	// Group is the process group it says it has (session.Grouped), set
+	// before the session takes it; 0 for none.
+	Group int
 
 	out  *io.PipeReader
 	outW *io.PipeWriter
@@ -102,6 +105,9 @@ func (f *FakeProc) Resize(cols, rows uint16) error {
 
 // Done is closed once the process has ended.
 func (f *FakeProc) Done() <-chan struct{} { return f.done }
+
+// ProcessGroup is Group.
+func (f *FakeProc) ProcessGroup() int { return f.Group }
 
 // Exit is how the process ended: the code End was given, -1 after Stop.
 func (f *FakeProc) Exit() pty.ExitStatus {

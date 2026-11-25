@@ -428,6 +428,10 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 	if sub.By != nil && sub.By.Role != RoleControl {
 		return res, ErrReadOnly
 	}
+	if s.Moving() {
+		// Between ways (move.go): nothing takes it until the move ends.
+		return res, ErrMoving
+	}
 	if p := s.way.Load(); p != nil {
 		// A session in the protocol way: its own queue (protocol.go).
 		return s.submitProtocol(p, sub)

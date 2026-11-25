@@ -130,6 +130,14 @@ type Server struct {
 	chatLaunches sync.Map
 	chatInitWait time.Duration
 	chatMaxInput int64
+	// movesUnobserved lets a session move between ways whatever its
+	// driver's Moves says (agentproto.Moves): the e2e suite's stub agent
+	// speaks Claude Code's protocol before that observation is recorded
+	// (CONDUCTOR_E2E_MOVES=1, logged at the start), and the tests set it.
+	// moveSeam, a test's, runs in a move once the old process is proven
+	// gone, before the new one starts (session.MoveStarts.AfterOldExit).
+	movesUnobserved bool
+	moveSeam        func(id string)
 	// hookDropped holds, by session, that a chat has noted the hook reports
 	// it dropped (dropForChat): once.
 	hookDropped sync.Map
@@ -609,40 +617,41 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 	}
 	firstCtx, firstStop := context.WithCancel(context.Background())
 	s := &Server{
-		firstCtx:    firstCtx,
-		firstStop:   firstStop,
-		firstWait:   crew.AwaitReady,
-		notices:     o.notices,
-		cfg:         cfg,
-		base:        base,
-		overlay:     overlay,
-		catalog:     effective,
-		registry:    session.NewRegistry(cfg.MaxSessions),
-		links:       share.NewStore(),
-		seen:        newHostsSeen(),
-		machine:     newServerMachine(),
-		limiter:     newRateLimiter(5, 20),
-		hostLimiter: newRateLimiter(float64(max(1, cfg.Switchyard.OpenHostRegistrationsPerMinute))/60, float64(max(1, cfg.Switchyard.OpenHostRegistrationsPerMinute))),
-		openHosts:   &addrCounter{},
-		openRelay:   &addrBuckets{},
-		viewerRelay: &addrBuckets{},
-		pingEvery:   pingEvery,
-		log:         log,
-		web:         web,
-		store:       st,
-		trackers:    newTrackers(cfg, st, log),
-		crews:       crews,
-		fileDeny:    fileDeny(cfg, st, log),
-		lookups:     newLookupCache(),
-		probes:      newProbeCache(),
-		home:        home,
-		skillDone:   map[string]bool{},
-		instance:    newInstance(),
-		started:     time.Now(),
-		relayed:     newRelayMeter(nil),
-		rechecking:  make(chan struct{}, 1),
-		settleWake:  make(chan struct{}, 1),
-		rowsWake:    make(chan struct{}, 1),
+		movesUnobserved: os.Getenv("CONDUCTOR_E2E_MOVES") == "1",
+		firstCtx:        firstCtx,
+		firstStop:       firstStop,
+		firstWait:       crew.AwaitReady,
+		notices:         o.notices,
+		cfg:             cfg,
+		base:            base,
+		overlay:         overlay,
+		catalog:         effective,
+		registry:        session.NewRegistry(cfg.MaxSessions),
+		links:           share.NewStore(),
+		seen:            newHostsSeen(),
+		machine:         newServerMachine(),
+		limiter:         newRateLimiter(5, 20),
+		hostLimiter:     newRateLimiter(float64(max(1, cfg.Switchyard.OpenHostRegistrationsPerMinute))/60, float64(max(1, cfg.Switchyard.OpenHostRegistrationsPerMinute))),
+		openHosts:       &addrCounter{},
+		openRelay:       &addrBuckets{},
+		viewerRelay:     &addrBuckets{},
+		pingEvery:       pingEvery,
+		log:             log,
+		web:             web,
+		store:           st,
+		trackers:        newTrackers(cfg, st, log),
+		crews:           crews,
+		fileDeny:        fileDeny(cfg, st, log),
+		lookups:         newLookupCache(),
+		probes:          newProbeCache(),
+		home:            home,
+		skillDone:       map[string]bool{},
+		instance:        newInstance(),
+		started:         time.Now(),
+		relayed:         newRelayMeter(nil),
+		rechecking:      make(chan struct{}, 1),
+		settleWake:      make(chan struct{}, 1),
+		rowsWake:        make(chan struct{}, 1),
 	}
 	// Every provider behind the guard before the server's first write of
 	// its own (the ledger's recovery, the records): nothing calls them yet.
@@ -1396,6 +1405,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/sessions/{id}", s.requireAdmin(s.handleDeleteSession))
 	mux.HandleFunc("PATCH /api/sessions/{id}", s.launching(s.handleRenameSession))
 	mux.HandleFunc("POST /api/sessions/{id}/resume", s.launching(s.handleResumeSession))
+	// The move between ways is the operator's alone, as Stop is (move.go).
+	mux.HandleFunc("POST /api/sessions/{id}/way", s.requireAdmin(s.handleSessionWay))
 	mux.HandleFunc("POST /api/sessions/{id}/clone", s.launching(s.handleCloneSession))
 	mux.HandleFunc("GET /api/sessions/{id}/links", s.requireAdmin(s.handleListLinks))
 	mux.HandleFunc("POST /api/sessions/{id}/links", s.requireAdmin(s.handleCreateLink))

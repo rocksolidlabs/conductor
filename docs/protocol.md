@@ -56,7 +56,7 @@ Owner → client:
 
 | `t` | Fields |
 |---|---|
-| `welcome` | `proto, sessionId, role, subscriberId, cols, rows, status, scrollbackBytes, transport, fileView, chat, runChat?, cwd?` (+ `viewerId, iceServers, relayTimeoutMs` on the signaling welcome); `chat: true` says the owner takes `chat` and `chat_send`; `runChat: true` that the session is a run's member with a run chat (scope `run`, `chat_roster`); `answer: true` that the owner takes `answer` and refuses one whose question no longer waits (absent from an older owner, which a client replies to with INPUT and `submit`); `submitAck: true` that the owner answers a `submit` naming a `reqId` with `submit_ok` or an `error` naming it, and takes `unlessWaiting` (#322; absent from an older owner, which types the line and says nothing); `sizer: true` that the owner sizes the session by one viewer, and `sizedBy` which (its subscriber id; absent, nobody holds the size): a view that is not it shows the session's grid scaled to its pane (round 14); `fileEdit: true` that this connection may save a file; `nvim: true` that it may also use the editor's Neovim (one of the owner's own windows, the machine has `nvim`); `nvimOwnerOnly: true` that it may edit but not through Neovim, which is kept for the owner's own windows (a link's or an invite's controller edits with the editor's own keys); `nvimSettled: true`, with `nvim`, that the owner's Neovim says when keys are done (`nvim_event` `settled`; an older owner sends neither, and a page takes a cursor's `ack` for that word, as it did); `cwd` is the session's working directory on the machine that runs it, to a viewer whose role may read files (at most 4096 bytes as encoded in the welcome, escapes included, so the welcome always fits one CONTROL frame; absent past that, to a role that may read none, and from an older owner), which roots a guest's Files pane: a switchyard lists a published session with its folder's last element alone; on a chat (see Chat sessions) `way: "protocol"`, `verbatim` (its messages reach the agent as written), `transcript{first, last, mark}` and `interrupt: true`, no SCROLLBACK and `scrollbackBytes` 0; absent for a session in its terminal, as from an older owner |
+| `welcome` | `proto, sessionId, role, subscriberId, cols, rows, status, scrollbackBytes, transport, fileView, chat, runChat?, cwd?` (+ `viewerId, iceServers, relayTimeoutMs` on the signaling welcome); `chat: true` says the owner takes `chat` and `chat_send`; `runChat: true` that the session is a run's member with a run chat (scope `run`, `chat_roster`); `answer: true` that the owner takes `answer` and refuses one whose question no longer waits (absent from an older owner, which a client replies to with INPUT and `submit`); `submitAck: true` that the owner answers a `submit` naming a `reqId` with `submit_ok` or an `error` naming it, and takes `unlessWaiting` (#322; absent from an older owner, which types the line and says nothing); `sizer: true` that the owner sizes the session by one viewer, and `sizedBy` which (its subscriber id; absent, nobody holds the size): a view that is not it shows the session's grid scaled to its pane (round 14); `fileEdit: true` that this connection may save a file; `nvim: true` that it may also use the editor's Neovim (one of the owner's own windows, the machine has `nvim`); `nvimOwnerOnly: true` that it may edit but not through Neovim, which is kept for the owner's own windows (a link's or an invite's controller edits with the editor's own keys); `nvimSettled: true`, with `nvim`, that the owner's Neovim says when keys are done (`nvim_event` `settled`; an older owner sends neither, and a page takes a cursor's `ack` for that word, as it did); `cwd` is the session's working directory on the machine that runs it, to a viewer whose role may read files (at most 4096 bytes as encoded in the welcome, escapes included, so the welcome always fits one CONTROL frame; absent past that, to a role that may read none, and from an older owner), which roots a guest's Files pane: a switchyard lists a published session with its folder's last element alone; on a chat (see Chat sessions) `way: "protocol"`, `verbatim` (its messages reach the agent as written), `transcript{first, last, mark}` and `interrupt: true`, no SCROLLBACK and `scrollbackBytes` 0; absent for a session in its terminal, as from an older owner; `noted` the way a move pressed during a turn goes to (see Moving between ways), absent while none is and from an older owner |
 | `ready` | end of scrollback; live output follows |
 | `resize` | `cols, rows, by` (the viewer that sizes the session now; absent when nobody holds the size, as when it left with none of the owner's windows to take it). Sent on every change of size or of sizer, the same size included. A viewer that moves to the relay keeps the size it held: its hello there takes it back, at the hello's size, unless a `take` moved it meanwhile. An owner without `sizer` (an older host) names the subscriber that resized |
 | `status` | `status, exitCode?` |
@@ -72,6 +72,7 @@ Owner → client:
 | `nvim_event` | `id, kind, …` | What editor `id` reports. `kind` says the fields: `opened` (`reqId` on the first, `path`), `lines` (the buffer lines `[first, last)` become `lines`, `last` -1 meaning to the end, each event under the control bound, `truncated` when a line past 4 KiB was cut), `cursor` (`line`, `col`, 1-based, `mode`, `visualLine`/`visualCol` the other end of a visual selection), `mode`, `cmdline` (`show`, `content`, `pos`, `prompt`), `message` (`text`, `messageKind`), `written` (`path`; the write is also a `file` event `write` by the person with tool `nvim`), `closed` (`reason`), `error` (`reqId`, `code`, `message`), `swap` (`swap` `{file, pid?, running, user?, host?, modified?, mtime?}`: another editor's swap file for the file opened, which Neovim then opened read-only instead of asking; `running` when its writer still runs on the session's machine, a zombie not counted; `modified` when it holds changes not written; round 13), `modified` (`modified`: the buffer began to hold changes not written, or no longer does: written, undone back, or another file shown; the field is absent when false), `settled` (`ack`: Neovim has done the keys numbered up to it, nothing left pending: every change they made has been sent before it; a `cursor`'s `ack` can come before those changes, since Neovim answers requests in the middle of a key, a plugin's `vim.wait`; the editor keeps a tab's Neovim while its keys are not settled). The editor keeps a tab's Neovim while another tab is in front as long as its buffer holds changes not written, which is why a connection may keep 4. Neovim's own questions (`:confirm q`, a write over a file changed outside) come as a `message` of kind `confirm` whose last line holds the choices (`[Y]es, (N)o, (C)ancel: `), which the editor shows as buttons sending the key; a substitute's question at each match (its `c` flag) is a `message` of kind `confirm_sub` (`replace with b (y/n/a/q/l/^E/^Y)?`), answered with typed keys. Neovim leaves a question shown once answered, so a `message` of kind `clear` comes before the next acknowledgement (`ack`) after one: Neovim acknowledges no keys while it asks. The `lines` are the buffer's alone: Neovim's live preview of a substitute is off ('inccommand' is emptied after the person's config loads), and a preview turned on again later (Neovim reports it with no changedtick, and undoes it without a word) is never sent. The bridge passes over a notification of a shape it does not expect rather than lose Neovim over it; a Neovim that dies is told as soon as the bridge's reading of it ends (or at the next key, when its output is held open), `closed` with a `reason` beginning `error:`, and the changes it sent before may still follow that `closed` (the client delivers them on a goroutine of its own); its own quit is told before its output ends; an end before `opened` is told right after it; nothing follows an `nvim_close`. `closed` with `reason` `quit` is the person's own quit (`:q`), which closes the tab; any other is Neovim lost: the tab stays with the text Neovim last held, its later `lines` applied, read only, and Reopen starts Neovim again, which offers the lost one's swap file. A tab not in front follows its Neovim's `lines` too. A buffer Neovim reloads (`:e!`) is followed again and sent whole |
 | `chat_roster` | `scope: "run", count, list[{id, name, role, on?}]` — who is on the run's chat: every connection to any member, one row per name, `on` the member a person looks at (a connection that is not quiet); sent to every member's viewers whenever any member's roster changes, and naming a connection from the moment it is sent `ready`; `count` counts everyone, `list` the first 32 |
 | `interrupt_ok` | `requestId` — the owner asked a chat's agent to stop the turn of the `interrupt` of that `reqId`; the turn's end follows in the transcript |
+| `way` | `way, protocol?, noted?, why?` — how the session runs its agent now (see Moving between ways): `way` `terminal` or `protocol`, `protocol` a chat's protocol (at most 32 bytes), `noted` the way a move pressed during a turn goes to at the turn's end (absent when none), `why` one sentence of at most 200 bytes (why a noted move waits, or why the session is back the way it came from); sent to every viewer when a move changed the way and when a move is noted, replaced or pressed away |
 
 Error codes: `read_only`, `slow_consumer`, `bad_frame`, `hello_timeout`,
 `revoked`, `expired` (the link reached its expiry; both also refuse what a
@@ -94,7 +95,10 @@ it has no terminal.`), `not_protocol`, `no_turn`, `transcript_gone`,
 time: `Sent, not yet confirmed.`; written once, never again),
 `permission` (a line naming a permission request: `Answer this request
 with its own buttons.`), and `too_many_requests` on a chat's `submit`
-past sixteen waiting (`Too many messages are waiting.`).
+past sixteen waiting (`Too many messages are waiting.`); the move's (see
+Moving between ways): `moving` (a `submit`, an `answer`, keys or an
+`interrupt` while the session moves: `The session is moving; try again
+in a moment.`) and `move_refused` (the route's, its words saying why).
 
 A CONTROL frame past its 8 KiB is not read. A line within the 4096 bytes
 of a `submit` or an `answer` can pass it once JSON encodes it: a quotation
@@ -3727,6 +3731,7 @@ its run, and on no other.
 | `GET /api/sessions/{id}` | admin or share token | one session with the caller's `role`; admins also get its `links`, and for a server session its `launch`, `{agentId, cwd, args, yolo, account: {id, label?, source}, model?}` (its binding without its folder or fingerprint, see Capacity): what it was launched with and what a clone takes by default (`POST /api/sessions/{id}/clone`), its agent, its resolved working directory, the arguments the launch gave, as given, and its yolo choice (not whether a recipe was applied: `Info.yolo` says that); never the launch's environment, and never to a share link's holder; on a switchyard the workbench token's `role` is `""` |
 | `DELETE /api/sessions/{id}` | admin | stop a running session; on an ended session, remove it from the list; on a switchyard, a session a Conductor published there ends its publication, its process running on at home |
 | `PATCH /api/sessions/{id}` | admin | rename a server session, running or ended: `{name}` (the body at most 4 KiB); the name loses its control characters (C0, DEL and C1) and the space around it and is cut to 120 bytes at a character boundary (`proto.MaxSessionName`, the bound a launch's name has too); reply `200` with the session `Info`; the change reaches `GET /api/events` as a `session` event, and a resume of the session starts under the new name (`POST /api/sessions/{id}/resume`; a crew member's too, the member keeping its own name in its run); `400 invalid_name` when nothing is left; `400 hosted_session` for a hosted session (its host names it); `400 invalid_request` for a body that is not one `{name}` (an unknown field, or past its 4 KiB); `404` when unknown. A session a Conductor published to a switchyard keeps there the name it was published with |
+| `POST /api/sessions/{id}/way` | admin | move a server session between its terminal and its chat: `{to}` (`terminal` or `protocol`, the body at most 64 bytes); reply `200 {way, noted?, why?, moving?}`, `409 move_refused` with the words that say why, `409 moving`, `413 too_large`; see Moving between ways |
 | `POST /api/sessions/{id}/resume` | admin | resume an ended server session (no body), while it is listed: a new session with the same agent, name (the one it was renamed to, if it was: `PATCH /api/sessions/{id}`), working directory, arguments, environment and yolo choice, launched with its agent's `resumeArgs` for the stored `agentSession`, right after the command, when the agent has a `session` recipe and the session was `resumable` (`resumed: true`), and plainly otherwise, with a `notice`: `<agent> has no session recipe: started anew`, or `nothing to resume yet (the agent had no turn): started anew`; reply `201 {session, resumed, notice?}`, the new session's `Info` with `resumedFrom`; a crew member's session is resumed as its member, as `POST /api/runs/{run}/members/{name}/resume` does; `404` when unknown; `400 hosted_session` for a hosted session; `409 still_running`, also, read as the launch takes the conversation, while a session of that agent session or of its `resumedFrom` chain has a process not done (a stop that failed, listed or removed since), and for a plain relaunch while the session's own process is not done ("the session's process is still running: its stop did not end it; stop it again"), whatever its status says; `409 already_resumed` when a running session holds that agent session; `400 invalid_agent` when its agent is no longer in the catalog; `400 invalid_cwd` when its working directory no longer passes the check; it is started under the binding and model the session was launched with, `409 account_gone` when its login would now be another (see Capacity); otherwise as `POST /api/sessions` answers |
 | `POST /api/sessions/{id}/clone` | admin | start a new session like a server session, running or ended, while it is listed (#434): `{name, agentId?, cwd?, args?, yolo?, account?, model?}` (the body at most 64 KiB; `account` and `model` left out are the source's, its registered account or else `default`, for an agent of the source's adapter, the one it was started as whatever became of its entry, and the adapter's default otherwise); what the body leaves out (an empty `agentId` or `cwd`, no `args`, no `yolo`) is the source's `launch` (`GET /api/sessions/{id}`), never its environment; `args: []` launches with none; the yolo choice is sent as the source's, never left to the server's default. The clone is a loose session (a crew member's gets nothing of its run: no `crew`, no `CONDUCTOR_CREW`, `CONDUCTOR_RUN`, `CONDUCTOR_MEMBER`, `CONDUCTOR_TASK*` or `GOAL`, no tree names, run chat or role prompt), in a new agent conversation (an agent whose recipe names it at launch names it afresh); Conductor makes and removes no worktree for it, and nothing of the source changes. The name is cleaned as a rename's (`PATCH /api/sessions/{id}`) and must be no listed session's, server or hosted, running or ended, compared ignoring case; it is held from that check until the clone is registered or refused, so two clones asking for one name at once make one session. Reply `201` with the clone's `Info`; `404` when unknown; `400 hosted_session` for a hosted session (Conductor cannot start a session on its machine); `400 invalid_name` when nothing of the name is left; `409 name_taken`; `400 invalid_request` for a body that is not one (an unknown field such as `env` among it); otherwise as `POST /api/sessions` answers: `400 invalid_agent` when the agent is no longer in the catalog, `400 invalid_cwd` when the directory is gone or outside the allowed roots (with no default directory instead, unlike a resume), `400 args_not_allowed`, `409 too_many_sessions`; a switchyard's `403 switchyard` |
 | `POST /api/sessions/{id}/crew` | the session's agent token, or admin | an agent forms a crew around its own session (`agents.selfService`, on by default; `403 self_service_off`): body `{name, goal, members, self, isolation?, open?}` (the crew's `cwd`, `where` and `yolo` are the session's own, never in the body; `self` names the member this session becomes, whose `agentId` is the session's agent or empty, meaning that); the crew is saved, its run launched with the session adopted as `self` (`running`, its prompt its own: the members after it start on its next done, handoffs reach it) and the others started as at launch; reply `201 {run, crew, member, url}`, `url` the run's page; the session is tagged with the run and records `formed crew <name>` (a `link` entry with `(open)` when asked, which the workbench offers as a toast); at most 2 per session per hour (`429`); `409 in_a_run` while the session is a member of a run, `409 session_ended`, `400 hosted_session`, `400 invalid_crew` as a launch answers (an impostor among the members included); `409 lane` for a session of a comparison's run, whichever token asks, before the body is read, nothing made: its lane is its own from its launch (A comparison's crew below) |
@@ -9319,8 +9324,8 @@ escape.
 
 A session may run its agent through the agent's own documented
 non-interactive interface instead of its terminal: a chat
-(`docs/plans/chat-or-terminal.md`). Nothing a person can reach makes one
-yet. A chat keeps its conversation as typed entries in memory, at most
+(`docs/plans/chat-or-terminal.md`). The operator's move makes one (see
+Moving between ways); the app's screens offer it from row 7 of the plan. A chat keeps its conversation as typed entries in memory, at most
 1,000 entries and 2 MiB of them, their parts (a tool's whole input and
 output, a file's diff) at most 256 KiB each and 8 MiB in all, the oldest
 dropped first, an open permission request's entry and input never. Its
@@ -9401,5 +9406,62 @@ lacks it no TRANSCRIPT frame is relayed and a chat's viewer is refused
 published chat's viewers as the server serves its own: the hello's mark,
 `transcript_get` (a link's viewer's waiting for the host to vouch for
 its server as a file read does), `interrupt` and a message by the
-session's way. `ProtoVersion` does not move.
+session's way. `ProtoVersion` does not move. A published session that
+moves to Chat on a switchyard whose `registered` lacks `transcript` is
+published no longer, its activity line in those words; a Share
+publishes it again.
+
+### Moving between ways
+
+`POST /api/sessions/{id}/way {"to": "terminal" | "protocol"}` moves a
+person's own server session between its terminal and its chat in place:
+its id, links, viewers, people's chat, record and listing stay. The
+operator's alone (admin, as Stop's `DELETE /api/sessions/{id}`; a link's
+token and an agent token answer `401`), the body at most 64 bytes and read
+strictly (`413 too_large` past it, `400 invalid_request` for an unknown
+field or another way), refused on a switchyard. Every session starts in
+its terminal: a launch, a resume and a resume from history start the
+terminal way, and a chat is entered only by this move.
+
+The reply is `200` with where the session stands: `{way, moving: true}`
+when the move was made at once (the session was at rest), or `{way,
+noted, why}` when it was pressed during a turn, or while something holds
+it: the move is noted (one at a time; a second press replaces it, a press
+to the way the session runs takes it back) and made once the session is at
+rest. Its sentence: `Moves to Chat when this turn ends.` / `Moves to the
+terminal when this turn ends.`, `A request is waiting for an answer.`,
+`Background work is still running.`. At rest means: a chat with no turn
+under way, no message waiting to be written or for its acknowledgement,
+no permission request open and no work the agent reported still running;
+a terminal whose attention is a done from a source that reports turns,
+with no question open, nothing typed held and no submission under way.
+`409 move_refused` with the plan's words when the move cannot be made:
+`Chat opens after the agent's first reply.` (a move to Chat before the
+terminal reported a turn that ended), `Crew members stay in their
+terminals.`, `Sessions on another machine stay in their terminal.`,
+`This agent cannot move its conversation yet.` (an agent with no
+protocol the server speaks, a driver that does not move, a Runtime other
+than this machine's, no recipe to resume its terminal, or a conversation
+not known yet), `This version of Claude Code can only run in its
+terminal.`; `409 moving` while a move is under way; `409 session_ended`;
+`404` when unknown.
+
+The move marks the session moving (a `submit`, an `answer`, keys and an
+`interrupt` are refused `moving`), stops the way it runs (a chat's input
+closed, then its child stopped; the terminal's process stopped), waits for
+the old process's exit and its output's end, proves its process group
+gone (no process left in it; what the old process left there is ended),
+reads the conversation as it stands then (a chat's stream's latest
+`session_id`, the terminal's hook's latest report) and starts the other
+way on it: the chat's child through the same Runtime, folder, binding and
+environment, or the terminal with the agent's `resumeArgs` and the
+launch's other arguments. Every viewer is sent `way`; the terminal's
+ring and screens begin empty with the new process; the transcript stays,
+with a `notice` entry at the boundary: `Moved to the terminal.` or `Moved
+to Chat. Turns made in the terminal are not shown here.`, and the
+activity says the move. A new start that fails goes back the way it came
+from, once, its sentence on the `way` message's `why` and in the activity
+(`Claude Code did not start a chat.`, `Claude Code is not signed in; sign
+in from its terminal.`); when that fails too, the session ends with both
+failures' words, and the conversation stays resumable with Resume.
 

@@ -110,6 +110,14 @@ func replayStart(b []byte) int {
 	return start
 }
 
+// Reset forgets every byte stored: a terminal started again (a move back
+// to the terminal) replays nothing of the one before.
+func (r *Ring) Reset() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.start, r.size, r.wrapped = 0, 0, false
+}
+
 // Len returns the number of stored bytes.
 func (r *Ring) Len() int {
 	r.mu.Lock()

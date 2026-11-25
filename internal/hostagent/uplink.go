@@ -127,7 +127,7 @@ func (u *Uplink) options(info session.Info) Options {
 
 // OlderSwitchyardWords say why a chat is not published: the switchyard's
 // registered did not say transcript.
-const OlderSwitchyardWords = "Chats are not published: the switchyard is older than this server."
+const OlderSwitchyardWords = proto.OlderSwitchyardWords
 
 // ErrOlderSwitchyard refuses to publish a chat to a switchyard whose
 // registered does not say transcript, in OlderSwitchyardWords.
@@ -157,6 +157,10 @@ type Published struct {
 // Done is closed once the publication has ended: Stop, the session's end
 // (endLinger after it), or a stop the switchyard sent (StoppedThere).
 func (p *Published) Done() <-chan struct{} { return p.done }
+
+// TakesTranscript says the switchyard's registered said transcript: a chat's
+// frames reach its viewers there (I14).
+func (p *Published) TakesTranscript() bool { return p.a.transcript.Load() }
 
 // StoppedThere says the switchyard ended the publication with a stop of its
 // own. The session goes on here; publishing it again is a new publication.

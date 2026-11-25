@@ -14,7 +14,8 @@ import { NEWLINE_IN_PROMPT, newlineChord } from '~/utils/terminalKeys'
 import { closeReason, encodeText, FOLLOW_SIZE, type ActivityEntry, type Attention, type ChatHistory, type ChatMessage, type ChatPost, type ChatRoster, type ChatSend, type ControlMessage, type FileGetExtra, type FileResponse, type FileWriteOptions, type NvimSwapChoice, type Role, type TransportKind, type ViewerInfo, type Welcome } from '~/utils/protocol'
 import type { CloseInfo, TerminalTransport, TransportState } from '~/utils/transport/types'
 import type { LaneWire } from '~/utils/transport/decide'
-import { ReplyError, type QuestionReply } from '~/utils/reply'
+import type { QuestionReply } from '~/utils/reply'
+import { useSessionConnection } from '~/composables/useSessionConnection'
 import { FIT_DEBOUNCE_MS, helloSize, tileFit, tileScale } from '~/utils/tile'
 
 const props = withDefaults(
@@ -186,7 +187,7 @@ function openPaste() {
 }
 function typePaste() {
   // No connection: nothing can be typed, and the text stays in the field until it is typed or the person closes it.
-  if (transport?.state.value !== 'open') {
+  if (!conn.open()) {
     pasteNote.value = PASTE_OFFLINE
     return
   }
@@ -287,7 +288,24 @@ let endedAtWelcome = false
 
 let term: Terminal | undefined
 let fit: FitAddon | undefined
-let transport: TerminalTransport | undefined
+/**
+ * The session's connection (useSessionConnection): the transport, its control messages and the requests over it. This view is a
+ * consumer of its output and its size; a move between ways (the `way` message) changes the session's way on the same connection.
+ */
+const conn = useSessionConnection(() => props.createTransport())
+/** The way the terminal last drew: a move back to the terminal starts it again empty, with the new process. */
+let drawnWay = 'terminal'
+/** The TRANSCRIPT frames this connection has received, on the host as data-transcript-frames (a chat's, row 7 draws them). */
+const transcriptFrames = ref(0)
+conn.onOutput((data) => term?.write(data))
+conn.onControl(handleControl)
+conn.onTranscript(() => transcriptFrames.value++)
+conn.onClose((info, t) => {
+  if (conn.transport.value !== t) return
+  connecting.value = false
+  overlay.value = { title: info.error?.message || closeReason(info.code, info.reason), detail: info.error ? info.error.code : undefined }
+  emit('closed', info)
+})
 let observer: ResizeObserver | undefined
 let resizeTimer: number | undefined
 let pingTimer: number | undefined
@@ -299,10 +317,10 @@ const existsCache = new Map<string, Promise<boolean>>()
 const theme = useTerminalTheme()
 
 function pathExists(path: string): Promise<boolean> {
-  if (!transport || transport.state.value !== 'open' || !fileView.value) return Promise.resolve(false)
+  if (!conn.open() || !fileView.value) return Promise.resolve(false)
   let p = existsCache.get(path)
   if (!p) {
-    p = transport
+    p = conn
       .requestFile(path, true)
       .then((r) => r.header.exists)
       .catch(() => false)
@@ -412,9 +430,9 @@ function scheduleResize() {
 function fitAndResize(retries: number) {
   fitPasses.value++
   const { cols, rows } = measure()
-  if (cols && transport) {
+  if (cols && conn.transport.value) {
     fitResizes.value++
-    transport.resize(cols, rows)
+    conn.resize(cols, rows)
   }
   window.requestAnimationFrame(() => {
     if (retries > 0 && cols && overflows()) fitAndResize(retries - 1)
@@ -530,12 +548,12 @@ function applyFitMode() {
  */
 function takeSize() {
   const h = host.value
-  if (!term || !fit || !transport || !mayFit() || !h?.clientWidth || !h.clientHeight) return
+  if (!term || !fit || !conn.transport.value || !mayFit() || !h?.clientWidth || !h.clientHeight) return
   const el = term.element
   if (el) el.style.transform = ''
   term.options.fontSize = props.fontSize
   fitPane()
-  transport.resize(term.cols, term.rows, true)
+  conn.resize(term.cols, term.rows, true)
   sizedBy.value = subscriberId.value
   applyFitMode()
 }
@@ -573,6 +591,7 @@ function markEnded() {
 function handleControl(msg: ControlMessage) {
   switch (msg.t) {
     case 'welcome':
+      drawnWay = msg.way ?? 'terminal'
       role.value = msg.role
       fileView.value = msg.fileView
       subscriberId.value = msg.subscriberId ?? ''
@@ -626,6 +645,14 @@ function handleControl(msg: ControlMessage) {
     case 'decisions_changed':
       emit('decisionsChanged')
       break
+    case 'way':
+      // The session moved between its terminal and its chat on this connection: the terminal starts again empty with the new
+      // process (its ring and screens are new on the owner too).
+      if (msg.way !== drawnWay) {
+        drawnWay = msg.way
+        term?.reset()
+      }
+      break
     case 'chat_history':
       emit('chatHistory', msg)
       break
@@ -653,17 +680,6 @@ async function connect() {
   overlay.value = null
   notice.value = ''
   connecting.value = true
-  const t = props.createTransport()
-  transport = t
-  stopWatch = watch([t.kind, t.state, t.rtt], ([kind, state, rtt]) => emit('transport', { kind, state, rtt }), { immediate: true })
-  t.onOutput((data) => term?.write(data))
-  t.onControl(handleControl)
-  t.onClose((info) => {
-    if (transport !== t) return
-    connecting.value = false
-    overlay.value = { title: info.error?.message || closeReason(info.code, info.reason), detail: info.error ? info.error.code : undefined }
-    emit('closed', info)
-  })
   // A fresh connection starts live again; reset() also re-shows the cursor.
   ended.value = false
   endedAtWelcome = false
@@ -683,7 +699,10 @@ async function connect() {
       term.options.fontSize = props.fontSize
     }
     helloSent = measure(true)
-    await t.connect(helloSent)
+    const connected = conn.connect(helloSent)
+    const t = conn.transport.value!
+    stopWatch = watch([t.kind, t.state, t.rtt], ([kind, state, rtt]) => emit('transport', { kind, state, rtt }), { immediate: true })
+    await connected
     t.ping()
     if (sizes()) {
       const { cols, rows } = measure()
@@ -702,22 +721,18 @@ async function connect() {
 function disconnect(showOverlay = true) {
   stopWatch?.()
   stopWatch = undefined
-  const t = transport
-  transport = undefined
-  t?.close()
+  conn.disconnect()
   if (showOverlay && !overlay.value) overlay.value = { title: 'Disconnected' }
 }
 
 function writeFile(path: string, data: Uint8Array, opts?: FileWriteOptions): Promise<FileResponse> {
-  if (!transport) return Promise.reject(new Error('not connected'))
-  return transport.writeFile(path, data, opts)
+  return conn.writeFile(path, data, opts)
 }
 function nvimOpen(path: string): Promise<NvimEvent> {
-  if (!transport) return Promise.reject(new Error('not connected'))
-  return transport.nvimOpen(path)
+  return conn.nvimOpen(path)
 }
 function nvimInput(id: string, keys: string, seq?: number): void {
-  transport?.nvimInput(id, keys, seq)
+  conn.nvimInput(id, keys, seq)
 }
 /** Whether nothing holds the focus (the page itself, or this terminal): a terminal that connects may take it then. */
 function focusIsFree(): boolean {
@@ -726,28 +741,26 @@ function focusIsFree(): boolean {
   return !el || el === document.body || !!(host.value && host.value.contains(el))
 }
 function nvimSwap(id: string, choice: NvimSwapChoice): void {
-  transport?.nvimSwap(id, choice)
+  conn.nvimSwap(id, choice)
 }
 function nvimClose(id: string, discard?: boolean): void {
-  transport?.nvimClose(id, discard)
+  conn.nvimClose(id, discard)
 }
 function requestFile(path: string, stat = false, extra: FileGetExtra = {}): Promise<FileResponse> {
-  if (!transport) return Promise.reject(new Error('not connected'))
-  return transport.requestFile(path, stat, extra)
+  return conn.requestFile(path, stat, extra)
 }
 
 /** Sends text to the PTY as if typed; false when the transport is not open. */
 function sendInput(text: string): boolean {
   // A read-only view (a thumbnail, a view link's) types nothing, whatever asks: a chord's newline or a page's call.
-  if (props.readOnly || !transport || transport.state.value !== 'open') return false
-  transport.sendInput(encodeText(text))
-  return true
+  if (props.readOnly) return false
+  return conn.sendInput(encodeText(text))
 }
 
 /** Submits a line through the session's owner (a paste, then Enter); false when the transport is not open or the line is past the control bound as encoded. */
 function submit(text: string): boolean {
-  if (props.readOnly || !transport || transport.state.value !== 'open') return false
-  return transport.submit(text)
+  if (props.readOnly) return false
+  return conn.submit(text)
 }
 
 /**
@@ -756,8 +769,7 @@ function submit(text: string): boolean {
  * question no longer waits, nothing was sent; `not_connected`).
  */
 function answer(reply: QuestionReply, opts: { sent?: () => void } = {}): Promise<boolean> {
-  if (!transport || transport.state.value !== 'open') return Promise.reject(new ReplyError('not_connected', 'not connected'))
-  return transport.answer(reply, opts)
+  return conn.answer(reply, opts)
 }
 
 /**
@@ -765,21 +777,17 @@ function answer(reply: QuestionReply, opts: { sent?: () => void } = {}): Promise
  * `decisions`, null otherwise (no connection, or a link that is no decision link's).
  */
 function lane(): LaneWire | null {
-  return transport?.decisions ? transport : null
+  return conn.lane()
 }
 
 /** Posts to the chat; false when the transport is not open (the caller queues it). */
 function chat(post: ChatPost): boolean {
-  if (!transport || transport.state.value !== 'open') return false
-  transport.chat(post)
-  return true
+  return conn.chat(post)
 }
 
 /** Types a kept chat message into the agent; false when the transport is not open. */
 function chatSend(send: ChatSend): boolean {
-  if (!transport || transport.state.value !== 'open') return false
-  transport.chatSend(send)
-  return true
+  return conn.chatSend(send)
 }
 
 /** The screen as text, a line a row (the Roundhouse's thumbnails, #310): what this view shows, from its own connection. */
@@ -790,7 +798,7 @@ function snapshot(): string[] | null {
   for (let y = 0; y < term.rows; y++) lines.push(b.getLine(b.viewportY + y)?.translateToString(true) ?? '')
   return lines
 }
-defineExpose({ connect, disconnect, requestFile, writeFile, nvimOpen, nvimInput, nvimClose, nvimSwap, sendInput, submit, answer, chat, chatSend, lane, focus: () => term?.focus(), scrollToBottom: () => term?.scrollToBottom(), takeSize, sizerShown: () => !!sizerChip.value, snapshot, openPaste })
+defineExpose({ connection: conn, connect, disconnect, requestFile, writeFile, nvimOpen, nvimInput, nvimClose, nvimSwap, sendInput, submit, answer, chat, chatSend, lane, focus: () => term?.focus(), scrollToBottom: () => term?.scrollToBottom(), takeSize, sizerShown: () => !!sizerChip.value, snapshot, openPaste })
 
 onMounted(() => {
   // One handler for the terminal's web links of both kinds, the hyperlinks an agent prints (OSC 8, xterm's linkHandler: without it
@@ -890,11 +898,11 @@ onMounted(() => {
   } catch {
     /* canvas renderer fallback */
   }
-  term.onData((data) => transport?.sendInput(encodeText(data)))
+  term.onData((data) => void conn.sendInput(encodeText(data)))
   term.onBinary((data) => {
     const bytes = new Uint8Array(data.length)
     for (let i = 0; i < data.length; i++) bytes[i] = data.charCodeAt(i) & 0xff
-    transport?.sendInput(bytes)
+    conn.sendInput(bytes)
   })
   if (sizes() && host.value?.clientWidth && host.value.clientHeight) fitPane()
   observer = new ResizeObserver((entries) => {
@@ -909,7 +917,7 @@ onMounted(() => {
   if (scaledView.value && term.element) observer.observe(term.element)
   // A tab brought back sizes its session again: the view the person looks at wins.
   document.addEventListener('visibilitychange', onVisibility)
-  pingTimer = window.setInterval(() => transport?.ping(), 10000)
+  pingTimer = window.setInterval(() => conn.ping(), 10000)
   if (props.autoConnect) connect()
 })
 
@@ -934,7 +942,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="relative h-full w-full overflow-hidden" :class="compact ? '' : 'rounded-lg border border-default'">
+  <div class="relative h-full w-full overflow-hidden" :class="compact ? '' : 'rounded-lg border border-default'" :data-session-way="conn.way.value" :data-way-noted="conn.noted.value || undefined" :data-transcript-frames="transcriptFrames">
     <UContextMenu :items="terminalMenu" :disabled="compact">
       <div ref="host" class="terminal-host" :class="{ 'terminal-compact': compact, 'terminal-scale': scaledView, 'terminal-tile': props.fit === 'tile' }" :data-ended="ended ? 'true' : undefined" :data-renderer="renderer" :data-cols="grid.cols || undefined" :data-rows="grid.rows || undefined" :data-scaled-font="scaledAt" :data-fit-passes="fitPasses" :data-fit-resizes="fitResizes" :aria-label="readOnly ? 'terminal (read-only)' : 'terminal'" role="region" />
     </UContextMenu>

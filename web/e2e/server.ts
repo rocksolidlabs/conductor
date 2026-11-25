@@ -193,6 +193,9 @@ export function renderConfig(template: string, out: string): void {
   const agents = cfg.catalog?.agents ?? []
   const bash = agents.some((agent) => agent.command.includes('@BASH@')) ? stubBash().command : undefined
   for (const a of agents) a.command = a.command.map((arg) => (arg === '@STUB@' ? stubPath : arg === '@BASH@' ? bash! : arg))
+  // @NODE@ in an entry's env is the node that runs the suite (the stub's chat child, stub-protocol.mjs).
+  for (const a of agents as Array<{ env?: Record<string, string> }>)
+    for (const [k, v] of Object.entries(a.env ?? {})) if (v === '@NODE@') a.env![k] = process.execPath
   writeFileSync(out, JSON.stringify(cfg, null, 2) + '\n')
 }
 
@@ -278,6 +281,8 @@ async function startOn(o: Parameters<typeof startServer>[0], port: number): Prom
       CONDUCTOR_RENDEZVOUS: '0',
       // As the desktop app sets it: the Settings picker browses outside the roots.
       CONDUCTOR_PATHS_BROWSE: 'any',
+      // The stub's chat moves between ways before Claude Code's own move is observed and its driver says Moves (docs/plans/chat-or-terminal.md).
+      CONDUCTOR_E2E_MOVES: '1',
       ...(o.hostToken ? { CONDUCTOR_HOST_TOKENS: o.hostToken } : {}),
       ...Object.fromEntries((o.passEnv ?? []).flatMap((k) => (process.env[k] === undefined || k.startsWith('CONDUCTOR_') ? [] : [[k, process.env[k]!]]))),
       ...(o.env ?? {}),

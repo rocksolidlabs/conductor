@@ -589,6 +589,28 @@ type Local struct {
 	// afterApply, a test's hook, runs with an event's name once the
 	// protocol way has applied it, before anything of it goes to a viewer.
 	afterApply atomic.Pointer[func(event string)]
+
+	// term is the session's terminal process (proc is it): the one started
+	// last. termGen counts the terminals started (startTerminal): a pump
+	// whose terminal a move stopped finds a later one and does not end the
+	// session. pumpDone is closed as the current terminal's pump returns.
+	term     *termProc
+	termGen  atomic.Uint64
+	pumpDone atomic.Pointer[chan struct{}]
+	// The move between ways (move.go), under mu: moveDone is open while a
+	// move is under way (nil otherwise), and closed as it ends. noted is
+	// the way a move pressed during a turn goes to at its end ("" while
+	// none is), notedWhy the sentence that says why it waits, and
+	// notedStarts what it starts with; hasNoted says one is noted, read
+	// without the lock by the events that may let it be made (tryNoted).
+	// firstTurn says the terminal has reported a turn that ended (a done
+	// from a source that reports turns): a move to Chat is refused before.
+	moveDone    chan struct{}
+	noted       string
+	notedWhy    string
+	notedStarts MoveStarts
+	hasNoted    atomic.Bool
+	firstTurn   bool
 }
 
 // NewLocal wraps a started process and begins pumping its output.
@@ -692,14 +714,45 @@ func NewLocal(info Info, proc Process, opts Options) *Local {
 	if opts.WatchGit && info.Cwd != "" {
 		s.gitSeenStart()
 	}
-	go s.pump()
+	s.term = &termProc{}
+	s.proc = s.term
+	s.startTerminal(proc)
 	return s
 }
 
-func (s *Local) pump() {
+// startTerminal is the terminal's start, NewLocal's and a move's back to
+// the terminal (SwapWay): proc becomes the session's process, and its
+// output is pumped to the screens and the viewers from now on. A move
+// gives the terminal's ring and screens back empty first (renewTerminal).
+func (s *Local) startTerminal(proc Process) {
+	s.term.set(proc)
+	gen := s.termGen.Add(1)
+	done := make(chan struct{})
+	s.pumpDone.Store(&done)
+	go s.pump(proc, gen, done)
+}
+
+// termProc is the session's terminal process as the session's code reads it
+// (Local.proc): the one started last, which a move back to the terminal
+// replaces. The pump reads the process it was started with alone.
+type termProc struct{ cur atomic.Pointer[procBox] }
+
+type procBox struct{ Process }
+
+func (t *termProc) set(p Process)                                 { t.cur.Store(&procBox{p}) }
+func (t *termProc) get() Process                                  { return t.cur.Load().Process }
+func (t *termProc) Read(b []byte) (int, error)                    { return t.get().Read(b) }
+func (t *termProc) Write(b []byte) (int, error)                   { return t.get().Write(b) }
+func (t *termProc) Resize(cols, rows uint16) error                { return t.get().Resize(cols, rows) }
+func (t *termProc) Done() <-chan struct{}                         { return t.get().Done() }
+func (t *termProc) Exit() pty.ExitStatus                          { return t.get().Exit() }
+func (t *termProc) Stop(c context.Context, g time.Duration) error { return t.get().Stop(c, g) }
+
+func (s *Local) pump(proc Process, gen uint64, done chan struct{}) {
+	defer close(done)
 	buf := make([]byte, proto.MaxOutput)
 	for {
-		n, err := s.proc.Read(buf)
+		n, err := proc.Read(buf)
 		// The turn the output was read in: taken at once, so that a turn
 		// begun while the pump waits for the lock below leaves it the
 		// ended turn's (scanOutput).
@@ -764,8 +817,13 @@ func (s *Local) pump() {
 	}
 	// The read side closes when the child exits; wait briefly for the status.
 	select {
-	case <-s.proc.Done():
+	case <-proc.Done():
 	case <-time.After(5 * time.Second):
+	}
+	if s.termGen.Load() != gen {
+		// A move between ways stopped this terminal (SwapWay): its end is
+		// not the session's.
+		return
 	}
 	s.mu.Lock()
 	status := StatusExited
@@ -797,6 +855,8 @@ func (s *Local) markEnded(status Status) {
 		return
 	}
 	s.info.Status = status
+	// A move noted goes with the session (move.go).
+	s.clearNotedLocked()
 	// A protocol way's own end (protocol.go): what waits is told, the
 	// open requests are denied.
 	protocolEnded := s.endProtocolLocked()
@@ -2240,6 +2300,9 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 	if state == AttentionNone {
 		kind, options = "", nil
 	}
+	// A move noted during the turn (move.go) is made once the session is
+	// at rest: after this change, the lock let go.
+	defer s.tryNoted()
 	s.mu.Lock()
 	if readsScreen(source) && s.way.Load() != nil {
 		// A session in the protocol way has no screen: no rule that reads
@@ -2281,6 +2344,11 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 	if ReportsTurn(state, source) && !s.info.Turns {
 		s.info.Turns = true
 		defer s.notifyChange()
+	}
+	// A turn that ended, reported by a source that reports turns: a move
+	// to Chat is offered from now on (move.go).
+	if state == AttentionDone && ReportsTurn(state, source) {
+		s.firstTurn = true
 	}
 	// The turn the report names (endedTurn), weighed before every path
 	// below that records a done: a done naming the turn whose end was
@@ -3148,6 +3216,9 @@ func (s *Local) AttachWith(o AttachOptions, sink Sink) (*Subscription, error) {
 		welcome.Way, welcome.Verbatim, welcome.Interrupt = WayProtocol, chat.verbatim, true
 		welcome.Transcript = s.welcomeTranscriptLocked()
 	}
+	// A move noted during a turn (move.go): another window or a reload
+	// shows it too.
+	welcome.Noted = s.noted
 	sub.send(proto.MustControl(welcome))
 	if !sub.quiet && chat == nil {
 		snap := s.ring.Snapshot()
@@ -3377,6 +3448,10 @@ func (s *Local) InputWaiting(ctx context.Context, sub *Subscription, data []byte
 // choices, looked at with the question and again as the writer takes
 // them (ErrNotAChoice).
 func (s *Local) input(ctx context.Context, who typist, question string, data []byte, o writeWait, finished func(error)) error {
+	if s.Moving() {
+		// Between ways (move.go): no keys until the move ends.
+		return ErrMoving
+	}
 	if s.way.Load() != nil {
 		// A session in the protocol way has no terminal to take keys.
 		return ErrNotTerminal
@@ -6058,6 +6133,21 @@ func (s *Local) handOverSize() {
 // stop's error; its status stays as it is, so a stop never makes a
 // session running again.
 func (s *Local) Stop(ctx context.Context) error {
+	// A move between ways under way (move.go) starts nothing once it sees
+	// the stop asked, and ends: what runs then is stopped.
+	s.mu.Lock()
+	moving := s.moveDone
+	if moving != nil {
+		s.stopRequested = true
+	}
+	s.mu.Unlock()
+	if moving != nil {
+		select {
+		case <-moving:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 	if p := s.way.Load(); p != nil {
 		return s.stopProtocol(ctx, p)
 	}
