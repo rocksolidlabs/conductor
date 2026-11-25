@@ -2174,8 +2174,8 @@ start in `local.go`, `internal/api/move.go`, `internal/proto/way.go`,
   turn ended). `MoveStarts` carries both ways' starts (the chat's child,
   `Server.chatStart`; the terminal again, `Server.terminalStart`: the
   agent's command, its recipe's `ResumeArgs` on the conversation, and the
-  launch's other arguments, environment, folder and size, kept in
-  `chatLaunch`), the group's proof (`Gone`), the driver's words for a
+  launch's other arguments, environment and folder, kept in `chatLaunch`,
+  at the session's size), the group's proof (`Gone`), the driver's words for a
   failed start (`Words`) and the seam `AfterOldExit`. The conversation is
   read after the old process is gone, the latest the session holds.
 - The terminal's start is `startTerminal`, NewLocal's and the move's; the
