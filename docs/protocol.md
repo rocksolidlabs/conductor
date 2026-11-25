@@ -9447,7 +9447,9 @@ terminal.`; `409 moving` while a move is under way; `409 session_ended`;
 `404` when unknown.
 
 The move marks the session moving (a `submit`, an `answer`, keys and an
-`interrupt` are refused `moving`), stops the way it runs (a chat's input
+`interrupt` are refused `moving`; a Stop ends the move: what it waits on
+is let go, nothing is started after it and the session ends stopped),
+stops the way it runs (a chat's input
 closed, then its child stopped; the terminal's process stopped), waits for
 the old process's exit and its output's end, proves its process group
 gone (no process left in it; what the old process left there is ended),
@@ -9458,8 +9460,9 @@ environment, or the terminal with the agent's `resumeArgs` and the
 launch's other arguments. Every viewer is sent `way`; the terminal's
 ring and screens begin empty with the new process; the transcript stays,
 with a `notice` entry at the boundary: `Moved to the terminal.` or `Moved
-to Chat. Turns made in the terminal are not shown here.`, and the
-activity says the move. A new start that fails goes back the way it came
+to Chat. Turns made in the terminal are not shown here. What the agent
+left running in its terminal was ended.`, and the activity says the
+move. A new start that fails goes back the way it came
 from, once, its sentence on the `way` message's `why` and in the activity
 (`Claude Code did not start a chat.`, `Claude Code is not signed in; sign
 in from its terminal.`); when that fails too, the session ends with both
