@@ -1,5 +1,5 @@
 import { atRest, dayPage, expect, test } from './fixtures'
-import { chatServer, firstTurn, launch, openSession, say, toChat } from './chat-fixtures'
+import { budget, chatServer, firstTurn, launch, lineButton, LONG_MS, openSession, say, STEP_MS, toChat } from './chat-fixtures'
 import { noSideways, uncut } from './layout'
 import type { OwnServer } from './own-server'
 
@@ -25,9 +25,9 @@ test.beforeAll(async ({ browser }) => {
     await firstTurn(page, api, s.id)
     await toChat(api, s.id, view)
     await say(page, 'steps edit markdown')
-    await expect(page.locator('[data-chat-turn][data-turn-outcome="done"]')).toHaveCount(1, { timeout: 30_000 })
+    await expect(page.locator('[data-chat-turn][data-turn-outcome="done"]')).toHaveCount(1, { timeout: LONG_MS })
     await say(page, 'ask long')
-    await expect(page.locator('[data-permission-question][data-permission-state="open"]')).toBeVisible({ timeout: 30_000 })
+    await expect(page.locator('[data-permission-question][data-permission-state="open"]')).toBeVisible({ timeout: LONG_MS })
   } finally {
     await page.context().close()
   }
@@ -42,15 +42,18 @@ for (const theme of ['light', 'dark'] as const) {
   for (const [width, height] of [[1440, 900], [1280, 720], [390, 844]] as const) {
     test(`a chat's page at ${width} x ${height} (${theme}): nothing sideways, the name whole with the switch, the box in reach`, async ({ browser }) => {
       const phone = width < 640
+      // The walk's waits: the page and its session, about twenty bounded checks and measures, and the long ones.
+      budget(22 * STEP_MS + 2 * LONG_MS)
       const page = await dayPage(browser, { server: own.started, width, height, theme, touch: phone })
       try {
         await openSession(page, id, 'protocol')
         const chat = page.locator('[data-chat-view]')
-        await expect(chat.locator('[data-permission-question][data-permission-state="open"]')).toBeVisible({ timeout: 30_000 })
+        await expect(chat.locator('[data-permission-question][data-permission-state="open"]')).toBeVisible({ timeout: LONG_MS })
         // The turn's steps opened, the question's whole input opened: the longest things the chat draws.
         await chat.locator('[data-chat-steps-line]').first().click()
         await expect(chat.locator('[data-tool-step]').first()).toBeVisible()
-        await chat.locator('[data-permission-line]').click()
+        await expect(lineButton(chat.locator('[data-permission-question][data-permission-state="open"]'))).toBeVisible()
+        await lineButton(chat.locator('[data-permission-question][data-permission-state="open"]')).click()
         await expect(chat.locator('[data-permission-whole]')).toBeVisible()
         await atRest(page.locator('[data-session-bar]'))
         await atRest(chat)

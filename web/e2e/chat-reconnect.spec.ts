@@ -1,7 +1,7 @@
 import { writeFileSync } from 'node:fs'
 import type { WebSocket as WireSocket } from '@playwright/test'
 import { dayPage, expect, test } from './fixtures'
-import { chatServer, firstTurn, launch, openSession, say, stubFile, toChat, turnWith } from './chat-fixtures'
+import { budget, chatServer, firstTurn, launch, LONG_MS, openSession, say, STEP_MS, stubFile, toChat, turnWith } from './chat-fixtures'
 import type { OwnServer } from './own-server'
 
 // A chat's connection dropped and made again (docs/plans/chat-or-terminal.md, row 7, design 6), on a server of the spec's own: the
@@ -36,7 +36,6 @@ function entriesOn(ws: WireSocket): Array<{ seq: number; mark: number; kind: str
 }
 
 test('a connection made again is sent only what changed after its mark, and a request withdrawn meanwhile is drawn withdrawn', async ({ browser }) => {
-  test.setTimeout(180_000)
   const api = own.api
   const { s, conv } = await launch(api, sessions, 'e2e chat reconnect')
   const page = await dayPage(browser, { server: own.started })
@@ -61,11 +60,12 @@ test('a connection made again is sent only what changed after its mark, and a re
     await firstTurn(page, api, s.id)
     await toChat(api, s.id, view)
     await say(page, 'steps first')
-    await expect(turnWith(page, 'stub chat: steps first')).toHaveAttribute('data-turn-outcome', 'done', { timeout: 30_000 })
+    budget(6 * STEP_MS + 9 * LONG_MS)
+    await expect(turnWith(page, 'stub chat: steps first')).toHaveAttribute('data-turn-outcome', 'done', { timeout: LONG_MS })
     // A request open as the connection drops.
     await say(page, 'ask withdraw')
     const q = page.locator('[data-chat-view] [data-permission-question]')
-    await expect(q).toHaveAttribute('data-permission-state', 'open', { timeout: 30_000 })
+    await expect(q).toHaveAttribute('data-permission-state', 'open', { timeout: LONG_MS })
     const held = Number(await page.locator('[data-chat-view]').getAttribute('data-chat-entries'))
     expect(held).toBeGreaterThan(5)
 
@@ -73,9 +73,9 @@ test('a connection made again is sent only what changed after its mark, and a re
     const before = sockets.length
     await page.evaluate(() => (window as unknown as { __sockets: Array<{ close: () => void }> }).__sockets.at(-1)?.close())
     const again = page.getByRole('button', { name: 'Reconnect', exact: true })
-    await expect(again).toBeVisible({ timeout: 30_000 })
+    await expect(again).toBeVisible({ timeout: LONG_MS })
     writeFileSync(stubFile(own, conv, 'withdraw'), 'go\n')
-    await expect.poll(async () => (await api.session(s.id)).attention?.state, { timeout: 30_000 }).toBe('done')
+    await expect.poll(async () => (await api.session(s.id)).attention?.state, { timeout: LONG_MS }).toBe('done')
 
     // Made again: its hello names the mark held, and it is sent the changes after it alone.
     const hello = new Promise<{ transcriptAfter?: number }>((resolve) =>
@@ -90,12 +90,12 @@ test('a connection made again is sent only what changed after its mark, and a re
     const got: Array<{ seq: number; mark: number; kind: string; state?: string }>[] = []
     page.on('websocket', (ws) => got.push(entriesOn(ws)))
     await again.click()
-    await expect.poll(() => sockets.length, { timeout: 30_000 }).toBeGreaterThan(before)
+    await expect.poll(() => sockets.length, { timeout: LONG_MS }).toBeGreaterThan(before)
     const said = await hello
     expect(said.transcriptAfter).toBeGreaterThan(0)
-    await expect(q).toHaveAttribute('data-permission-state', 'withdrawn', { timeout: 30_000 })
+    await expect(q).toHaveAttribute('data-permission-state', 'withdrawn', { timeout: LONG_MS })
     await expect(q.locator('[data-permission-end]')).toHaveText('The request was lost.')
-    await expect(turnWith(page, 'stub chat: ask withdraw')).toHaveAttribute('data-turn-outcome', 'done', { timeout: 30_000 })
+    await expect(turnWith(page, 'stub chat: ask withdraw')).toHaveAttribute('data-turn-outcome', 'done', { timeout: LONG_MS })
     const sent = got.flat()
     // Only changes after the mark: every entry sent is marked past it, the request's end among them; nothing of the first turns.
     expect(sent.length).toBeGreaterThan(0)
