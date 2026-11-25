@@ -605,7 +605,13 @@ type Local struct {
 	// without the lock by the events that may let it be made (tryNoted).
 	// firstTurn says the terminal has reported a turn that ended (a done
 	// from a source that reports turns): a move to Chat is refused before.
-	moveDone    chan struct{}
+	moveDone chan struct{}
+	// moveCancel ends what the move under way waits on (a Stop's), and
+	// movedWith is what the last move to the chat moved with: the way a
+	// chat goes back to its terminal by itself (a signed-out agent,
+	// readProtocol). Under mu.
+	moveCancel  context.CancelFunc
+	movedWith   MoveStarts
 	noted       string
 	notedWhy    string
 	notedStarts MoveStarts
@@ -4151,6 +4157,9 @@ func (s *Local) release(id string, token uint64) {
 // showing again. The agent's own question kept (own) goes with it. An
 // input entry with the question records the answer.
 func (s *Local) resolve(id string, token uint64, by, byName, reqID string, keys []byte) {
+	// A move noted while the question waited (move.go) says the turn's
+	// sentence once it is answered, or is made when the session is at rest.
+	defer s.tryNoted()
 	s.mu.Lock()
 	if s.claims[id] != (questionClaim{id: id, token: token}) {
 		s.mu.Unlock()
@@ -6138,7 +6147,12 @@ func (s *Local) Stop(ctx context.Context) error {
 	s.mu.Lock()
 	moving := s.moveDone
 	if moving != nil {
+		// The move cancels what it waits on (moveCancel) and starts
+		// nothing more: it ends the session stopped.
 		s.stopRequested = true
+		if s.moveCancel != nil {
+			s.moveCancel()
+		}
 	}
 	s.mu.Unlock()
 	if moving != nil {
