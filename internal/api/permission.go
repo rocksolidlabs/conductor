@@ -73,37 +73,27 @@ func (s *Server) handlePermission(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	refuse := func() {
+	// The attention route's door (attentionPrincipal: the session's agent
+	// token, a comparison lane's own door, the admin), narrowed to the
+	// session's own agent.
+	source, ok := s.attentionPrincipal(w, r, d)
+	if !ok {
+		return
+	}
+	if source == session.SourceAdmin {
+		// The workbench's token, an admin principal's, answers agent_only,
+		// as every route the session's own token alone takes (opAgentOnly).
+		writeError(w, http.StatusForbidden, "agent_only", "a permission request is the chat's own agent's, with its token")
+		return
+	}
+	if ref := d.Info().Crew; ref != nil && ref.Brakeman != nil {
+		// A Brakeman turn runs in its terminal, never as a chat: its token
+		// asks nothing here, refused before the body is read.
 		if !s.limiter.allow(clientKey(r)) {
 			writeError(w, http.StatusTooManyRequests, "rate_limited", "too many requests")
 			return
 		}
 		writeError(w, http.StatusUnauthorized, "unauthorized", "the session's agent token required")
-	}
-	switch s.agentTokenOK(r, d) {
-	case agentTokenServed:
-		if ref := d.Info().Crew; ref != nil && ref.Brakeman != nil {
-			// A Brakeman turn runs in its terminal, never as a chat: its
-			// token asks nothing here, refused before the body is read.
-			refuse()
-			return
-		}
-	case agentTokenLaneClosed:
-		writeLaneClosed(w)
-		return
-	default:
-		// The workbench's token, an admin principal's, answers
-		// agent_only, as every route the session's own token alone takes
-		// (opAgentOnly); any other, 401.
-		p, ok := s.authenticate(w, r, false)
-		if !ok {
-			return
-		}
-		if p.admin && opAgentOnly("permission") {
-			writeError(w, http.StatusForbidden, "agent_only", "a permission request is the chat's own agent's, with its token")
-			return
-		}
-		refuse()
 		return
 	}
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxPermissionBody))
