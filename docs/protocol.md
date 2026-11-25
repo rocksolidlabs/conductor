@@ -3896,6 +3896,7 @@ Crews are held to these limits: `id` matches `^[a-z0-9][a-z0-9-]{0,63}$`; `name`
 not blank, at most 60 characters and without control characters (surrounding
 space is trimmed), `goal` at most 2000 characters, `cwd` at most 4096 bytes;
 `where` is `server` or `host` and `isolation` is `none` or `worktree`;
+`way` is `chat` or absent (Crew runs, Members as chats);
 `viewLinkTtlSeconds` 0 to 31536000 (a year); at most 12 members, each with a
 `name` matching `^[a-z0-9][a-z0-9._-]{0,39}$`, unique in its crew and one git
 takes for a branch (no `..`, no `.` or `.lock` at the end), an `agentId`
