@@ -43,6 +43,7 @@ func runNotify(ctx context.Context, args []string, stdin io.Reader, stdout, stde
 		hooks = append(hooks, hookFlag{"--" + h.name, fs.Bool(h.name, false, h.usage), h.mapHook})
 	}
 	quiet := fs.Bool("quiet", true, "exit 0 silently when not running inside a conductor session")
+	floor := fs.String("protocol-floor", "", "a chat's PreToolUse hook: read the shell call's payload from stdin and deny a command that names a path of the deny list in this file")
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, "Usage: conductor notify [--state S] [--message M] [--choices \"a|b|c\"] | --ask --message M [--choices \"a|b|c\"] | --event E [--message M] [--url U] [--to T] [--tool N] [--op O --path P] | --<agent>-hook [--files] | --codex <json>")
 		fs.PrintDefaults()
@@ -58,6 +59,11 @@ func runNotify(ctx context.Context, args []string, stdin io.Reader, stdout, stde
 			return 0, nil
 		}
 		return misuse, err
+	}
+	if *floor != "" {
+		// A chat's floor, its second look (docs/plans/chat-or-terminal.md,
+		// design 7): nothing is sent anywhere.
+		return protocolFloor(*floor, stdin, stdout)
 	}
 	// The payload flags given, in the order of the usage: at most one may be.
 	var payload []string
@@ -268,6 +274,10 @@ func hookMode(args []string) bool {
 			break
 		}
 		name, value, hasValue := strings.Cut(strings.TrimLeft(a, "-"), "=")
+		if strings.HasPrefix(a, "-") && name == "protocol-floor" {
+			// A chat's PreToolUse hook (protocolFloor).
+			return true
+		}
 		if !strings.HasPrefix(a, "-") || !slices.Contains(payloadFlags, name) {
 			continue
 		}

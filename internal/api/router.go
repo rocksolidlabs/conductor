@@ -580,13 +580,20 @@ func (r *decisionRouter) apply(drv session.Driver, d ext.Decision, a ext.Answer)
 	defer cancel()
 	req := ext.SubmitRequest{Session: d.Session.ID, Question: d.ID, Input: a.Input, Text: a.Text, By: a.By}
 	var res ext.SubmitResult
-	var err error
-	if local, ok := drv.(*session.Local); ok {
-		res, err, _ = r.s.submitTo(ctx, local, req, nil)
+	var err, raw error
+	local, isLocal := drv.(*session.Local)
+	if isLocal {
+		res, err, raw = r.s.submitTo(ctx, local, req, nil)
 	} else {
 		res, err = r.s.answerHosted(ctx, drv, req)
 	}
 	switch {
+	case isLocal && errors.Is(raw, session.ErrPermissionCard):
+		// A chat's permission request is answered by the operator alone
+		// (design 7): the router was told of it, and its answer is
+		// recorded refused, never applied.
+		r.s.log.Info("routed answer refused: a permission request is answered by the operator alone", "session", d.Session.ID, "question", d.ID)
+		local.RecordServer(session.ActivityEntry{Type: session.ActivityStatus, Message: RoutedPermissionRefusedWords})
 	case err == nil && res.Status == "sent":
 		r.s.log.Info("routed answer sent to the session's host", "session", d.Session.ID, "question", d.ID)
 	case err == nil && res.Status == "pending":
@@ -600,6 +607,10 @@ func (r *decisionRouter) apply(drv session.Driver, d ext.Decision, a ext.Answer)
 	}
 	seam("applied", d.Session.ID, d.ID, ext.Route{}, err)
 }
+
+// RoutedPermissionRefusedWords is the activity line of a router's answer to
+// a chat's permission request: refused, never applied.
+const RoutedPermissionRefusedWords = "A routed answer to a permission request was refused: only the person who runs this server answers it."
 
 // routedWords is the status entry of a route with destinations:
 // "routed: <kind> <name>, … (<rule>)".

@@ -1087,6 +1087,28 @@ func TestEachBodyBoundIsItsRoutes(t *testing.T) {
 			}
 		}
 	}
+	// An operation no guide lists (unguided: a tool the agent's program
+	// calls, never the model, a chat's permission prompts) is tried here,
+	// with the token its route takes: the session's own.
+	for _, op := range Operations() {
+		n := op.Bounds["body"]
+		if !op.unguided || op.Method != http.MethodPost || n == 0 {
+			continue
+		}
+		tried[op.Name] = true
+		tok, path := e.agentToken(asid), strings.ReplaceAll(op.Path, "{id}", asid)
+		probe := `{"boundProbe":1`
+		over := probe + strings.Repeat(" ", n+1-len(probe)-1) + "}"
+		at := probe + strings.Repeat(" ", n-len(probe)-1) + "}"
+		status, data, out := e.callAs(t, tok, op.Method, path, []byte(over))
+		if status != http.StatusRequestEntityTooLarge && !strings.Contains(apiMessage(out), errBodyTooLarge.Error()) {
+			t.Errorf("%s: %d bytes, one past its bound, answers %d %.200s", op.Name, len(over), status, data)
+		}
+		status, data, out = e.callAs(t, tok, op.Method, path, []byte(at))
+		if status != http.StatusBadRequest || !strings.Contains(apiMessage(out), `unknown field "boundProbe"`) {
+			t.Errorf("%s: %d bytes, at its bound, answers %d %.200s", op.Name, len(at), status, data)
+		}
+	}
 	for _, op := range Operations() {
 		if op.Method == http.MethodPost && op.Bounds["body"] > 0 && !tried[op.Name] {
 			t.Errorf("%s: no caller's guide lists it, so its body bound is untried", op.Name)

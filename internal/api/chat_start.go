@@ -175,6 +175,9 @@ func chatArgv(l *chatLaunch, conversation, hooks string, mcp bool) ([]string, er
 	return agentproto.ClaudeArgs(agentproto.ClaudeLaunch{
 		Command: l.agent.Command, Protocol: l.agent.Protocol.Args, Conversation: conversation,
 		Model: l.model, Yolo: l.yolo, YoloArgs: yoloArgs, LaunchArgs: l.args, HooksDir: hooks, NoMCP: !mcp,
+		// Conductor answers its permission prompts, its floor the one
+		// --settings (design 7).
+		PermissionHost: true,
 	})
 }
 

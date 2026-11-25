@@ -229,7 +229,7 @@ func TestChatChildThroughPipes(t *testing.T) {
 	if spec.Dir != info.Cwd || spec.Ref.Session != info.ID {
 		t.Fatalf("started in %q for %q, want %q for %q", spec.Dir, spec.Ref.Session, info.Cwd, info.ID)
 	}
-	want, err := agentproto.ClaudeArgs(agentproto.ClaudeLaunch{Command: []string{stubProtocol(t)}, Conversation: info.AgentSession.ID, HooksDir: agents.HooksDir(c.srv.cfg.DataDir), NoMCP: !c.srv.cfg.MCP()})
+	want, err := agentproto.ClaudeArgs(agentproto.ClaudeLaunch{Command: []string{stubProtocol(t)}, Conversation: info.AgentSession.ID, HooksDir: agents.HooksDir(c.srv.cfg.DataDir), NoMCP: !c.srv.cfg.MCP(), PermissionHost: true})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -86,6 +86,10 @@ type Operation struct {
 	// answers 403 agent_only (a task's result, a brief). Its route asks
 	// it (opAgentOnly), and the guide lists the operation to no admin.
 	agentOnly bool
+	// unguided keeps the operation out of the guide (its operations and
+	// its overview): a tool the agent's program calls, never the model
+	// (a chat's permission prompts).
+	unguided bool
 	// guideInput is Input as the guide's operations section gives it,
 	// when another section carries the whole of it (brief_submit's
 	// brief, the briefs section); nil for Input itself.
@@ -820,6 +824,19 @@ var operationsTable = sync.OnceValue(func() []Operation {
 			CLI:     []string{"conductor", "capacity", "--agent", "ID", "--read"},
 			Input:   bodySchema(capacityReadBody{}),
 			Bounds:  map[string]int{"body": maxCapacityBody, "reply": maxCapacityView}},
+		// A chat's permission prompts (permission.go): Claude Code calls
+		// this tool (--permission-prompt-tool), never the model. conductor
+		// mcp lists it in a chat alone (CONDUCTOR_PROTOCOL set), and the
+		// guide's text to the agent leaves it out (unguided).
+		{Name: "permission", MCP: "permission", Scope: "session", Method: http.MethodPost, Path: sessions + "/permission", agentOnly: true, unguided: true,
+			Summary:     "Conductor's answer to a chat's permission prompts, which the person who runs this server gives: never a tool to call.",
+			Description: "Conductor's own tool: Claude Code calls it for a permission prompt in a chat, and the person who runs this server answers. Never call it yourself: a call that is not one of this session's pending calls is denied.",
+			Input: map[string]any{"type": "object", "properties": map[string]any{
+				"tool_name":   str("the tool whose call asks permission"),
+				"input":       map[string]any{"type": "object", "description": "the call's whole input"},
+				"tool_use_id": str("the call's id"),
+			}, "required": []string{"tool_name", "input"}},
+			Bounds: map[string]int{"body": MaxPermissionBody}},
 	}
 })
 
@@ -1212,7 +1229,7 @@ func (s *Server) turnGrant(id string) ([]string, brakeman.Budget, brakeman.Visib
 // operation a caller would be refused is never listed to it, and one it
 // may call never left out.
 func (s *Server) admits(c guideCaller, op Operation) bool {
-	if !s.reaches(c, op) || !c.guided(op.Method+" "+op.Path) {
+	if op.unguided || !s.reaches(c, op) || !c.guided(op.Method+" "+op.Path) {
 		return false
 	}
 	if c.Kind == "admin" && opAgentOnly(op.Name) {

@@ -966,11 +966,22 @@ is `PermissionWithdrawn`.
    any question, a file tool's call (`Read`, `Edit`, `Write`,
    `MultiEdit`, `NotebookEdit`, `Grep`, `Glob`) whose path is under the
    list, and a shell command whose text names such a path: "Conductor
-   keeps agents out of its own files." A `PreToolUse` hook on shell
-   commands (`conductor notify --protocol-floor`, judging the command's
-   text against the list) is a second look. **What the floor does not
-   promise:** a command that computes a path (a variable, a `cd`, a
-   script) is not caught, so a yolo session's commands can reach any
+   keeps agents out of its own files." The text names a path when,
+   lowercased, a line continuation, its quotes and backslashes taken out
+   and every `//` and `/./` made one `/`, it holds the path as the list
+   spells it, with `~`, `$HOME` or `${HOME}` for the home folder, or
+   relative to the session's folder where it lies inside it, as a word of
+   its own. The copies beside a configuration or catalog file
+   (`<folder>/*<name>*`) are named by a word holding the name in a file
+   name whose folder is that folder, or, when the session's folder is
+   that folder, a word with no folder at all (a word that is only a
+   search pattern for the name is taken for the file). A `PreToolUse` hook on
+   shell commands (`conductor notify --protocol-floor`, judging the
+   command's text against the list by the same rule, the absolute
+   spellings alone) is a second look, and denies nothing when it cannot
+   read its list. **What the floor does not promise:** a command that
+   computes a path (a variable other than `HOME`, a glob, a `cd`, a
+   script) is not caught, and is asked like any other call, so a yolo session's commands can reach any
    file the person's account can read; the hook is a second look that a
    folder's own settings can switch off (`disableAllHooks`); a mod the
    person installed can still approve some calls a deny rule refuses
@@ -2426,6 +2437,131 @@ grant widens what runs unasked (modes), whether any end, restart, move
 or bound allows or leaves a held request behind (lifetime), and whether
 every verdict is recorded before it is handed over, with no secret in a
 log (audit). **18 h.**
+
+**As built, row 6** (#1109; `internal/session/permission.go`,
+`permission_answer.go`, the protocol way's events in `protocol.go`,
+`internal/api/permission.go`, `internal/proto/permission.go`,
+`internal/agents/protocol_floor.go`, `internal/cli/notify_floor.go`; the
+MCP half, `conductor mcp`'s serve loop and its `permission` tool, is
+`internal/cli/mcp.go`'s):
+
+- `Local.RequestPermission(ctx, PermissionAsk{Call, Tool, Input}, reply)`
+  is the route's: it calls `reply` once with the verdict and records the
+  operator's `allowed` or `denied` only once `reply` returned nil. The
+  bound counts the calls under way (waiting, open or being delivered) and
+  the in-stream requests open. The announcement wait is a channel the
+  session closes at every `ToolStarted`, `ToolEnded`, turn's end and end;
+  its timer is `Options.AfterFunc`'s (a test's fake clock), as
+  `PermissionWait`'s is. The binding keeps, per open tool step, the name
+  and digest the stream gave and its turn; a call that has its result is
+  remembered for the turn (`resulted`), so a request for it is denied at
+  once, not after `AnnounceWait`.
+- The claim is the list's own (`openPermission.claim`), not the terminal
+  questions' `waitsLocked`/`claimLocked`: every other path refuses a
+  request's question before any claim (`ErrPermissionCard`), so the
+  promise is the same (a claim on any request of the list, the first
+  answer wins) with no change to the terminal's machinery.
+- The attention: the first request shown keeps what showed aside
+  (`protocolWay.under`), and every other setter's change meanwhile is kept
+  in order (`asideLocked`, at most 16) and applied once the list is empty,
+  an ask told now the id it will show under. Its message is the plain
+  words alone ("Run a command?", "Change a file?", "Read a file?", "Use a
+  tool?"): no word the agent sent reaches the attention, a router or the
+  inbox.
+- The server cannot tell an MCP cancellation from a lost POST (the
+  request's context ends either way): both are "The request was lost."
+  unless the stream's result came first. At the server's stop the
+  request's context ends before the sessions are stopped (the HTTP
+  server's base context), so the entry says lost; the route then writes
+  the deny "The session ended before anyone answered." to a client still
+  there, never an empty answer.
+- The operator's deny with no message tells the agent "The operator
+  denied this call." (the lead's sentence; the plan gave none); a message
+  the operator writes goes as written.
+- In-stream requests (no driver hands one yet) take the digest's
+  refusal, the bound, the floor, the list, the attention and the timer;
+  their binding to an announced call is the Codex and ACP rows'.
+- The floor's files are written by `conductor serve` at its start
+  (`agents.WriteProtocolFloor`, with `cfg.FileDeny()` as it is then): for
+  every path a `Read` and an `Edit` rule of the path and of `path/**`,
+  absolute from the root (`//`), the hook `conductor notify
+  --protocol-floor <hooks>/claude-protocol-floor.json` on `Bash`, and the
+  list itself in that file. With the server's MCP off the floor's
+  `--settings` is still passed and the prompt tool is not.
+- Only the operator's own connection's welcome says `permissionAnswer`;
+  `peer.go` (a published session's viewers through a switchyard) answers
+  every `permission_answer` `not_answerer`.
+- The fix pass after the adversarial review: an attention change kept
+  aside is applied as it was made (a plain report, a clear, with no
+  options of its own, was taken for a withdrawal of a question not
+  showing, and lost); past 16 kept, the oldest that is no question goes,
+  a question's id being its asker's already. A lane's item of a request
+  (a decision link's, a run desk's) says "Only the person who runs this
+  server can answer.", its answerer the person who runs this server; the
+  operator's inbox keeps "Answer it in the chat.". The floor's shell
+  judgement takes quotes and backslashes out, folds `//` and `/./`, and,
+  in the session, also matches a path relative to the session's folder;
+  a `pattern` is judged for `Glob` alone. A request's summary folds white
+  space before it is cut and ends with `…` when cut. An in-stream
+  request's input past 256 KiB is denied with the too-large sentence. An
+  answer recorded and not delivered gets a second activity line, "The
+  answer was not delivered: the request was lost.". `conductor mcp`
+  runs permission calls on goroutines of their own and every other call
+  on one worker, in the order read, so their order is what it was before
+  this row. The tool's allow is the exact bytes `{"behavior":"allow"}`.
+- The second pass: a name entry (`<folder>/*<name>*`) is named only by a
+  word holding the name in a file whose folder is that folder (when the
+  session's folder is it, a word with no folder at all), never by the
+  name anywhere in the text, which denied `cat web/conductor.json` in a
+  project folder holding the server's configuration; a relative match
+  ends at a word's end; a line continuation is taken out with its
+  backslash; a `Glob` pattern relative to the session's folder is judged
+  there.
+- After the pull request's first whole run: the route answers the
+  admin's token `403 agent_only`, as every route the session's own token
+  alone takes, and refuses a Brakeman turn's own token (`401`) before it
+  reads the body (a Brakeman turn runs in its terminal, never as a
+  chat); the guide's walk of the body bounds tries the operation the
+  guide does not list itself.
+- The MCP half (`internal/cli/mcp.go`, `mcp_permission.go`), built beside
+  it and merged into the row's branch: each `tools/call` runs on a
+  goroutine of its own (every other call on one worker, since the fix
+  pass), at most twelve in flight (`MaxPendingPermissions` and four);
+  past them a permission call gets the bound's deny, not an error result,
+  and any other tool an error. A cancellation ends any call it names, not
+  only a permission call. The end of stdin ends the held permission calls
+  and lets the other tools run to their own bounds. A second call under a
+  held call's id ends the first unanswered and is refused ("Already
+  asked." for a permission call).
+- The tool reads Claude Code's arguments leniently (they are not
+  documented): `tool_use_id` is posted as `call` (`""` when absent, which
+  the server binds to the one matching call); no `tool_name` or no
+  `input` is "Conductor cannot show this call exactly.", with no POST. The
+  server's answer is read strictly: only exactly `{"behavior":"allow"}` is
+  an allow, a deny must carry its message, anything else (another status,
+  an unreadable answer, a redirect, which the client refuses) is
+  "Conductor lost this request."; a `413` is the too-large deny. Outside a
+  session the tool answers the lost deny.
+- A request's entry and input stay held until its end is written in the
+  entry (an operator's answer's until its delivery is): let go before,
+  the revision of a ring at its bound could drop the entry it revised.
+- One bound, one count: the tool bounds the body it posts (the call, the
+  tool and the input, encoded) by the route's own constant,
+  `api.MaxPermissionBody`, so no call it posts meets the route's `413`.
+- A held call is bounded by `session.PermissionWait` plus one minute,
+  which is the 8 hours `claude-protocol-mcp.json` gives Conductor's
+  server.
+- The integration tests (`internal/cli/mcp_route_test.go`) run the real
+  serve loop on pipes against the real route on a test listener and a
+  chat on a fake driver, in one process: the tool listed from the table
+  in a chat alone; the operator's allow and deny as the documented text,
+  the entry allowed or denied once the reply was written; a cancellation
+  and the end of stdin ending the POST ("The request was lost."); the
+  session's withdrawals (the call's result, the turn's end, an interrupt,
+  the stop) answering the held call at once; the bound through the tool,
+  and thirteen withdrawn calls leaving the loop able to take the next;
+  the body counted alike by both; no call's input in any log line or
+  reply.
 
 ### Row 7: Chat, the switch mounted, the permission question
 

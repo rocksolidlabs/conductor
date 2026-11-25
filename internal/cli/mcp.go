@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bufio"
+	"bytes"
 	"cmp"
 	"context"
 	"encoding/json"
@@ -14,11 +15,14 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/rocksolidlabs/conductor/internal/api"
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
 	"github.com/rocksolidlabs/conductor/internal/notify"
+	"github.com/rocksolidlabs/conductor/internal/session"
 	"github.com/rocksolidlabs/conductor/internal/version"
 )
 
@@ -37,7 +41,9 @@ report, set_state, ask, form_crew, add_member, run_status, link and open_url, th
 commands as tools, and guide, what the server says this session may do. The server registers it with agents that take an MCP server at
 launch; run it by hand only to try it. A Brakeman turn's session (CONDUCTOR_BRAKEMAN
 set) lists brakeman_request, observe and brief_submit, and no crew or ticket tool;
-it lists act too when the person has granted the turn an operation.
+it lists act too when the person has granted the turn an operation. A chat's session
+(CONDUCTOR_PROTOCOL set) lists permission, which the agent's program calls to ask
+the person about a tool call; the model never calls it.
 `
 
 // mcpProtocolVersion is the MCP revision answered when the client's is unknown.
@@ -82,7 +88,7 @@ var mcpHandled = map[string]bool{
 	"ticket_read": true, "ticket_comment": true,
 	"decision_request": true, "decision_list": true, "decision_read": true, "decision_withdraw": true,
 	"guide": true, "brakeman_request": true, "observe": true, "brief_submit": true, "act": true,
-	"context_lookup": true,
+	"context_lookup": true, permissionTool: true,
 }
 
 // brakemanOnly is the tools a Brakeman turn's session alone lists, and
@@ -107,41 +113,109 @@ var taskOnly = map[string]bool{"decision_request": true, "decision_list": true, 
 // (docs/plans/context-seams.md, CT-2).
 var lookupOnly = map[string]bool{"context_lookup": true}
 
+// protocolOnly is the tools only a session whose agent runs its protocol
+// way (a chat, CONDUCTOR_PROTOCOL set) lists: permission, which the
+// agent's own program calls for a permission prompt, never the model
+// (docs/plans/chat-or-terminal.md, design 7).
+var protocolOnly = map[string]bool{permissionTool: true}
+
 // mcpTools is the tools as tools/list gives them, from the server's table
 // of operations: its names, descriptions and schemas are the table's, so
 // the tools and the guide cannot drift (internal/api, guide.go).
 // brakeman is a Brakeman turn's session (CONDUCTOR_BRAKEMAN set), granted
-// that its turn is granted an operation (its request's permissions.act).
-func mcpTools(brakeman, granted bool) []mcpTool {
-	return mcpToolsFrom(api.Operations(), brakeman, granted)
+// that its turn is granted an operation (its request's permissions.act),
+// protocol a session on the protocol way (CONDUCTOR_PROTOCOL set).
+func mcpTools(brakeman, granted, protocol bool) []mcpTool {
+	return mcpToolsFrom(api.Operations(), brakeman, granted, protocol)
 }
 
 // mcpToolsFrom is the tools of ops that call has a handler for and the
 // session lists, in ops' order.
-func mcpToolsFrom(ops []api.Operation, brakeman, granted bool) []mcpTool {
+func mcpToolsFrom(ops []api.Operation, brakeman, granted, protocol bool) []mcpTool {
 	var out []mcpTool
 	for _, op := range ops {
-		if op.MCP != "" && mcpHandled[op.MCP] && listedIn(op.MCP, brakeman, granted) {
+		if op.MCP != "" && mcpHandled[op.MCP] && listedIn(op.MCP, brakeman, granted, protocol) {
 			out = append(out, mcpTool{Name: op.MCP, Description: op.Description, InputSchema: op.Input})
 		}
 	}
 	return out
 }
 
-// listedIn reports whether a session lists the tool: a Brakeman turn's
-// all but the crew and ticket tools, act only when it is granted an
-// operation; any other all but Brakeman's.
-func listedIn(tool string, brakeman, granted bool) bool {
+// listedIn reports whether a session lists the tool: permission only on
+// the protocol way; a Brakeman turn's all but the crew and ticket tools,
+// act only when it is granted an operation; any other all but Brakeman's.
+func listedIn(tool string, brakeman, granted, protocol bool) bool {
+	if protocolOnly[tool] && !protocol {
+		return false
+	}
 	if brakeman {
 		return !notForBrakeman[tool] && (granted || !grantedOnly[tool])
 	}
 	return !brakemanOnly[tool]
 }
 
-// mcpServer serves one agent.
+// maxMCPCalls bounds the tools/call requests in flight at once: the
+// permission requests a session holds open (session.MaxPendingPermissions)
+// and four more, so the agent's reports go on while they wait. A call past
+// it is answered at once, never queued (docs/plans/chat-or-terminal.md,
+// design 7).
+const maxMCPCalls = session.MaxPendingPermissions + 4
+
+// callsPastTheBound is what a tool call past maxMCPCalls is answered.
+const callsPastTheBound = "Too many tool calls are running at once; call again once one has answered."
+
+// mcpServer serves one agent. A permission call runs on a goroutine of
+// its own; every other tools/call is handed, in the order read, to one
+// worker, so the server meets them in the order the agent sent them, as
+// before; each has a context of its own. Every other message is answered
+// in turn by the loop that reads them, a call held or not.
 type mcpServer struct {
 	out    io.Writer
 	getenv func(string) string
+
+	// afterFunc runs f once d has passed, unless the stop it returns is
+	// called first; nil is the clock's own (time.AfterFunc). A test hands
+	// it a fake clock.
+	afterFunc func(d time.Duration, f func()) (stop func() bool)
+	// permissionTransport carries the permission tool's posts; nil is
+	// http.DefaultTransport.
+	permissionTransport http.RoundTripper
+	// beforeReply, when set, runs on a call's goroutine once its answer
+	// is made and before it is written or dropped: a test's seam.
+	beforeReply func(id json.RawMessage)
+
+	// wmu makes one writer of out: a reply is written whole, alone.
+	wmu sync.Mutex
+	// mu guards calls, the tools/call requests in flight by id.
+	mu    sync.Mutex
+	calls map[string]*mcpCall
+	// running counts the calls' goroutines: raised before one starts,
+	// lowered as its last act but the WaitGroup's.
+	running atomic.Int64
+	wg      sync.WaitGroup
+	// queue is the worker's: the calls that are not permission calls, in
+	// the order read. Its room is maxMCPCalls, every call in flight, so a
+	// call past the bound is refused before it is queued and the loop
+	// never waits on it.
+	queue chan func()
+}
+
+// mcpCall is one tools/call in flight.
+type mcpCall struct {
+	cancel context.CancelFunc
+	// permission is a call of the permission tool: the end of stdin ends it.
+	permission bool
+	// cancelled is set, under mcpServer.mu, when the client withdrew the
+	// call (notifications/cancelled) or its stdin ended: no reply is ever
+	// written for it, one made after included.
+	cancelled bool
+}
+
+func (s *mcpServer) after(d time.Duration, f func()) func() bool {
+	if s.afterFunc != nil {
+		return s.afterFunc(d, f)
+	}
+	return time.AfterFunc(d, f).Stop
 }
 
 func runMcp(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
@@ -157,8 +231,25 @@ func runMcp(ctx context.Context, args []string, stdin io.Reader, stdout, stderr 
 	return s.serve(ctx, stdin)
 }
 
-// serve reads messages until stdin ends.
+// serve reads messages until stdin ends. It reads on while calls run: a
+// permission call is held until a person answers, and the agent's pings,
+// reports and cancellations meanwhile are read and answered. At the end
+// of stdin every permission call still held is ended with no reply, the
+// other calls finish within their own bounds, and serve returns once
+// every call's goroutine has.
 func (s *mcpServer) serve(ctx context.Context, in io.Reader) (int, error) {
+	held, endHeld := context.WithCancel(ctx)
+	defer endHeld()
+	s.mu.Lock()
+	s.calls = map[string]*mcpCall{}
+	s.mu.Unlock()
+	s.queue = make(chan func(), maxMCPCalls)
+	go func() {
+		for run := range s.queue {
+			run()
+		}
+	}()
+	defer close(s.queue)
 	sc := bufio.NewScanner(in)
 	sc.Buffer(make([]byte, 64<<10), maxMCPLine)
 	for sc.Scan() {
@@ -172,27 +263,187 @@ func (s *mcpServer) serve(ctx context.Context, in io.Reader) (int, error) {
 			continue
 		}
 		if len(req.ID) == 0 || string(req.ID) == "null" {
-			// A notification (initialized, cancelled, …): nothing to answer.
+			// A notification (initialized, …): nothing to answer. A
+			// cancellation ends the call it names.
+			if req.Method == "notifications/cancelled" {
+				s.cancelCall(req.Params)
+			}
+			continue
+		}
+		if req.Method == "tools/call" {
+			s.startCall(ctx, held, req)
 			continue
 		}
 		result, rpcErr := s.handle(ctx, req)
-		if rpcErr != nil {
-			s.reply(mcpResponse{JSONRPC: "2.0", ID: req.ID, Error: rpcErr})
-		} else {
-			s.reply(mcpResponse{JSONRPC: "2.0", ID: req.ID, Result: result})
-		}
+		s.answer(req.ID, result, rpcErr)
 	}
+	s.endHeldCalls()
+	s.wg.Wait()
 	if err := sc.Err(); err != nil && !errors.Is(err, io.EOF) {
 		return 1, err
 	}
 	return 0, nil
 }
 
-// reply writes one message, a line, with HTML escaping off (encodeJSON):
-// a ticket of '<' would be six times its size otherwise.
+// answer writes the reply to request id: its result, or its error.
+func (s *mcpServer) answer(id json.RawMessage, result any, rpcErr *mcpError) {
+	if rpcErr != nil {
+		s.reply(mcpResponse{JSONRPC: "2.0", ID: id, Error: rpcErr})
+		return
+	}
+	s.reply(mcpResponse{JSONRPC: "2.0", ID: id, Result: result})
+}
+
+// startCall runs one tools/call, a permission call on a goroutine of its
+// own and any other on the worker, after those read before it, or answers
+// it at once: a call with no name, one whose id is a call still in flight,
+// and one past maxMCPCalls. A permission call's context is held's, which
+// the end of stdin ends; any other's is the server's, as before.
+func (s *mcpServer) startCall(ctx, held context.Context, req mcpRequest) {
+	var p struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(req.Params, &p); err != nil || p.Name == "" {
+		s.answer(req.ID, nil, &mcpError{Code: -32602, Message: "tools/call needs a name"})
+		return
+	}
+	permission := p.Name == permissionTool
+	key := mcpIDKey(req.ID)
+	s.mu.Lock()
+	if old := s.calls[key]; old != nil {
+		// Two calls under one id: the client can no longer tell their
+		// replies apart, so the first is ended with no reply, and the
+		// second refused.
+		old.cancelled = true
+		old.cancel()
+		s.mu.Unlock()
+		if permission {
+			s.answer(req.ID, textResult(permissionDeny(permissionAlreadyAsked)), nil)
+			return
+		}
+		s.answer(req.ID, nil, &mcpError{Code: -32600, Message: "a call with this id is still running"})
+		return
+	}
+	if len(s.calls) >= maxMCPCalls {
+		s.mu.Unlock()
+		if permission {
+			s.answer(req.ID, textResult(permissionDeny(permissionTooMany)), nil)
+			return
+		}
+		s.answer(req.ID, map[string]any{"content": []map[string]any{{"type": "text", "text": callsPastTheBound}}, "isError": true}, nil)
+		return
+	}
+	parent := ctx
+	if permission {
+		parent = held
+	}
+	cctx, cancel := context.WithCancel(parent)
+	c := &mcpCall{cancel: cancel, permission: permission}
+	s.calls[key] = c
+	s.wg.Add(1)
+	s.running.Add(1)
+	s.mu.Unlock()
+	run := func() {
+		defer s.wg.Done()
+		defer s.running.Add(-1)
+		defer cancel()
+		result, rpcErr := s.handle(cctx, req)
+		if s.beforeReply != nil {
+			s.beforeReply(req.ID)
+		}
+		s.finishCall(key, c, req.ID, result, rpcErr)
+	}
+	if permission {
+		go run()
+		return
+	}
+	s.queue <- run
+}
+
+// finishCall frees the call's place and writes its reply, unless the call
+// was cancelled: the place is free before the reply can be read, and a
+// cancellation read before this point is never followed by a reply.
+func (s *mcpServer) finishCall(key string, c *mcpCall, id json.RawMessage, result any, rpcErr *mcpError) {
+	s.wmu.Lock()
+	defer s.wmu.Unlock()
+	s.mu.Lock()
+	cancelled := c.cancelled
+	if s.calls[key] == c {
+		delete(s.calls, key)
+	}
+	s.mu.Unlock()
+	if cancelled {
+		return
+	}
+	s.write(mcpResponse{JSONRPC: "2.0", ID: id, Result: result, Error: rpcErr})
+}
+
+// cancelCall ends the call a notifications/cancelled names (its
+// requestId), which is then answered nothing, as MCP asks. A
+// cancellation of a call that has answered, or of none, does nothing.
+func (s *mcpServer) cancelCall(params json.RawMessage) {
+	var p struct {
+		RequestID json.RawMessage `json:"requestId"`
+	}
+	if json.Unmarshal(params, &p) != nil || len(p.RequestID) == 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if c := s.calls[mcpIDKey(p.RequestID)]; c != nil {
+		c.cancelled = true
+		c.cancel()
+	}
+}
+
+// endHeldCalls ends, with no reply, every permission call in flight: stdin
+// has ended, and nobody is left to read an answer.
+func (s *mcpServer) endHeldCalls() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, c := range s.calls {
+		if c.permission {
+			c.cancelled = true
+			c.cancel()
+		}
+	}
+}
+
+// mcpIDKey is a request id as one string: a JSON string and a number of
+// the same text are different ids.
+func mcpIDKey(id json.RawMessage) string {
+	d := json.NewDecoder(bytes.NewReader(id))
+	d.UseNumber()
+	var v any
+	if d.Decode(&v) == nil {
+		switch x := v.(type) {
+		case string:
+			return "s" + x
+		case json.Number:
+			return "n" + x.String()
+		}
+	}
+	return "r" + string(id)
+}
+
+// reply writes one message under the writer's lock.
 func (s *mcpServer) reply(r mcpResponse) {
+	s.wmu.Lock()
+	defer s.wmu.Unlock()
+	s.write(r)
+}
+
+// write writes one message, a line, with HTML escaping off (encodeJSON):
+// a ticket of '<' would be six times its size otherwise. The caller holds
+// wmu.
+func (s *mcpServer) write(r mcpResponse) {
 	b, _ := encodeJSON(r)
 	_, _ = printReply(s.out, b, false)
+}
+
+// textResult is a tools/call result of one text block.
+func textResult(text string) map[string]any {
+	return map[string]any{"content": []map[string]any{{"type": "text", "text": text}}}
 }
 
 func (s *mcpServer) handle(ctx context.Context, req mcpRequest) (any, *mcpError) {
@@ -216,7 +467,7 @@ func (s *mcpServer) handle(ctx context.Context, req mcpRequest) (any, *mcpError)
 		return map[string]any{}, nil
 	case "tools/list":
 		turn := s.getenv(envBrakeman) != ""
-		tools := mcpTools(turn, turn && s.granted(ctx))
+		tools := mcpTools(turn, turn && s.granted(ctx), s.getenv(protocolEnv) != "")
 		if s.getenv("CONDUCTOR_TASK") == "" {
 			tools = slices.DeleteFunc(tools, func(t mcpTool) bool { return taskOnly[t.Name] })
 		}
@@ -233,6 +484,15 @@ func (s *mcpServer) handle(ctx context.Context, req mcpRequest) (any, *mcpError)
 			return nil, &mcpError{Code: -32602, Message: "tools/call needs a name"}
 		}
 		text, err := s.call(ctx, p.Name, p.Arguments)
+		if p.Name == permissionTool {
+			// The permission tool's every answer is the documented
+			// result: an error is never the agent's to read as a
+			// verdict, so one is the lost request's deny.
+			if err != nil {
+				text = permissionDeny(permissionLost)
+			}
+			return textResult(text), nil
+		}
 		if err != nil {
 			var unknown unknownTool
 			if errors.As(err, &unknown) {
@@ -273,6 +533,8 @@ func (s *mcpServer) call(ctx context.Context, name string, raw json.RawMessage) 
 		raw = json.RawMessage("{}")
 	}
 	switch name {
+	case permissionTool:
+		return s.permission(ctx, raw)
 	case "report", "set_state", "ask":
 		target, err := notify.TargetFromEnv(s.getenv)
 		if err != nil {

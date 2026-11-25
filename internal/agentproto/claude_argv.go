@@ -100,7 +100,8 @@ type ClaudeLaunch struct {
 	// when the server's MCP is off.
 	NoMCP bool
 	// PermissionHost says Conductor answers the child's permission
-	// prompts: its MCP tool is named and the floor is its one --settings.
+	// prompts: its MCP tool is named (unless NoMCP) and the floor is its
+	// one --settings.
 	// Until then a call that needs approval is denied by Claude Code
 	// itself (a print-mode run with no host denies it).
 	PermissionHost bool
@@ -162,7 +163,12 @@ func ClaudeArgs(l ClaudeLaunch) ([]string, error) {
 		if l.Yolo {
 			settings = ClaudeProtocolYoloSettings
 		}
-		argv = append(argv, "--permission-prompt-tool", ClaudePermissionTool, "--settings", filepath.Join(l.HooksDir, settings))
+		if !l.NoMCP {
+			// The prompt tool is Conductor's MCP server's: with the server's
+			// MCP off, Claude Code itself denies what needs approval.
+			argv = append(argv, "--permission-prompt-tool", ClaudePermissionTool)
+		}
+		argv = append(argv, "--settings", filepath.Join(l.HooksDir, settings))
 	}
 	return argv, nil
 }

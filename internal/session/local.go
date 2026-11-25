@@ -113,6 +113,13 @@ type Options struct {
 	// Now is the clock of a protocol way's transcript: an entry's time, a
 	// text's coalescing, a step's measured duration; time.Now when nil.
 	Now func() time.Time
+	// AnnounceWait and PermissionWait are a chat's permission request's
+	// waits (permission.go), AnnounceWait and PermissionWait when zero;
+	// AfterFunc, when set, is their timer (time.AfterFunc's, answering its
+	// Stop): a test's fake clock.
+	AnnounceWait   time.Duration
+	PermissionWait time.Duration
+	AfterFunc      func(d time.Duration, f func()) (stop func() bool)
 	// RunChat, when set, is the chat of the run this session is a member of
 	// (ChatRoom): its viewers read and post it over their own connection,
 	// with scope "run", and are listed on its roster.
@@ -593,6 +600,14 @@ type Local struct {
 	// afterApply, a test's hook, runs with an event's name once the
 	// protocol way has applied it, before anything of it goes to a viewer.
 	afterApply atomic.Pointer[func(event string)]
+	// beforeToolStarted, a test's hook, runs as the driver hands a tool
+	// step over, before the session applies it; permissionWaits as a
+	// permission request begins to wait for its call's announcement.
+	beforeToolStarted atomic.Pointer[func()]
+	permissionWaits   atomic.Pointer[func()]
+	// permissionClaimed, a test's hook, runs once an answer has claimed a
+	// permission request, before its hand-over.
+	permissionClaimed atomic.Pointer[func()]
 
 	// term is the session's terminal process (proc is it): the one started
 	// last. termGen counts the terminals started (startTerminal): a pump
@@ -2274,6 +2289,9 @@ type attentionOpt struct {
 	// turn is the agent's name for the turn the report belongs to
 	// (SetAttentionTurn), "" when it names none.
 	turn string
+	// id is the question's id, given it as it was asked while a chat's
+	// permission request showed (asideLocked), "" for a new one.
+	id string
 }
 
 func (s *Local) setAttentionLooked(state AttentionState, message, source, kind string, options []Option, rules attentionRules, turn, look uint64, plan string, opts ...attentionOpt) error {
@@ -2326,7 +2344,15 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 		countDrop(&s.dropped, log, ActivityAttention)
 		return ErrRateLimited
 	}
-	if len(opts) > 0 && opt.asked == nil && opt.turn == "" && (opt.only == "" || s.info.Attention.ID != opt.only) {
+	if p := s.way.Load(); p != nil && p.showing != "" {
+		// A chat's permission request shows (I18): no other change
+		// replaces or withdraws it; this one is kept, and applied once no
+		// request is open (permission.go).
+		s.asideLocked(p, asideChange{state: state, message: message, source: source, kind: kind, options: options, rules: rules, turn: turn, plan: plan, opt: opt, hasOpt: len(opts) > 0})
+		s.mu.Unlock()
+		return nil
+	}
+	if len(opts) > 0 && opt.asked == nil && opt.turn == "" && opt.id == "" && (opt.only == "" || s.info.Attention.ID != opt.only) {
 		// A change for one question (WithdrawQuestion) that is not the one
 		// shown: under this same lock, the agent's own kept aside and the
 		// question the hold of the turn holds over go if they are that one
@@ -2742,6 +2768,9 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 		now := s.activity.Stamp(1)
 		att.Since = &now
 		att.ID = NewID()
+		if opt.id != "" && state == AttentionNeedsInput {
+			att.ID = opt.id
+		}
 		if stillAnswered {
 			// A new instance of the question answered, asked again before
 			// the program drew what follows: consumed, no answer taken.
@@ -3225,6 +3254,9 @@ func (s *Local) AttachWith(o AttachOptions, sink Sink) (*Subscription, error) {
 		welcome.ScrollbackBytes = 0
 		welcome.Way, welcome.Verbatim, welcome.Interrupt = WayProtocol, chat.verbatim, true
 		welcome.Transcript = s.welcomeTranscriptLocked()
+		// Only the operator's own connection is drawn a permission
+		// request's buttons (permission_answer.go).
+		welcome.PermissionAnswer = operatorAnswers(sub)
 	}
 	// A move noted during a turn (move.go): another window or a reload
 	// shows it too.
@@ -3463,7 +3495,12 @@ func (s *Local) input(ctx context.Context, who typist, question string, data []b
 		return ErrMoving
 	}
 	if s.way.Load() != nil {
-		// A session in the protocol way has no terminal to take keys.
+		// A session in the protocol way has no terminal to take keys; a
+		// reply naming a permission request is answered with its own
+		// buttons alone (design 7).
+		if question != "" && s.isPermissionQuestion(question) {
+			return ErrPermissionCard
+		}
 		return ErrNotTerminal
 	}
 	if !who.controls() {
@@ -4331,6 +4368,10 @@ func (s *Local) heldNowLocked() (shown string, now []string) {
 		shown = att.ID
 	}
 	now = []string{shown, s.own.ID, s.heldOver.ID}
+	if p := s.way.Load(); p != nil && p.under.ID != "" {
+		// The question a chat's permission request shows over is held.
+		now = append(now, p.under.ID)
+	}
 	for id := range s.endedQs {
 		now = append(now, id)
 	}
