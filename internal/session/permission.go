@@ -307,6 +307,7 @@ func (s *Local) RequestPermission(ctx context.Context, a PermissionAsk, reply fu
 					e.Why = RequestLostWords
 				}
 			}, &out)
+			s.unpinLocked(r)
 		}
 		held.delivered = err == nil
 		close(held.done)
@@ -322,6 +323,7 @@ func (s *Local) RequestPermission(ctx context.Context, a PermissionAsk, reply fu
 		} else if r.handed {
 			// The operator's verdict on its way to it, never delivered.
 			s.reviseLocked(r.seq, func(e *TranscriptEntry) { e.State, e.Why = PermissionWithdrawn, RequestLostWords }, &out)
+			s.unpinLocked(r)
 		}
 		close(held.done)
 		s.mu.Unlock()
@@ -523,8 +525,10 @@ func (s *Local) asideLocked(p *protocolWay, c asideChange) {
 	}
 }
 
-// removePermissionLocked takes r out of the list, its timer stopped, its
-// entry and input droppable, the next oldest shown. The caller holds s.mu.
+// removePermissionLocked takes r out of the list, its timer stopped, the
+// next oldest shown. Its entry and input stay held (pinned) until the
+// caller has written how it ended (unpinLocked): the ring never drops a
+// request's entry before its end is in it. The caller holds s.mu.
 func (s *Local) removePermissionLocked(p *protocolWay, r *openPermission, out *applied) {
 	for i, o := range p.perms {
 		if o == r {
@@ -535,9 +539,12 @@ func (s *Local) removePermissionLocked(p *protocolWay, r *openPermission, out *a
 	if r.stop != nil {
 		r.stop()
 	}
-	s.transcript.pin(r.seq, false)
 	s.showPermissionsLocked(p, out)
 }
+
+// unpinLocked makes r's entry and input droppable, its end written. The
+// caller holds s.mu.
+func (s *Local) unpinLocked(r *openPermission) { s.transcript.pin(r.seq, false) }
 
 // strictCanonical is input's canonical JSON (numbers as written, objects'
 // keys sorted, no insignificant space, no HTML escaping), false when input

@@ -162,6 +162,7 @@ func (s *Local) AnswerPermission(ctx context.Context, by *Subscription, a proto.
 			e.Why = RequestLostWords
 		}
 	}, &out)
+	s.unpinLocked(r)
 	s.mu.Unlock()
 	s.sendApplied(out)
 	if err != nil {

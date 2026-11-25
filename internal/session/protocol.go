@@ -1143,6 +1143,7 @@ func (s *Local) noticeLocked(p *protocolWay, code, words string, out *applied) {
 func (s *Local) closePermissionLocked(p *protocolWay, r *openPermission, state, why string, reply *Verdict, out *applied) {
 	s.removePermissionLocked(p, r, out)
 	s.reviseLocked(r.seq, func(e *TranscriptEntry) { e.State, e.Why = state, why }, out)
+	s.unpinLocked(r)
 	v := Verdict{Message: why}
 	if reply != nil {
 		v = *reply
