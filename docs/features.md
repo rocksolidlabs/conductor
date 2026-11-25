@@ -238,13 +238,15 @@ kept for the chat, as its terminal had it.
   message's line while it waits ("Sends when the turn ends.", "Sent, not yet
   confirmed.").
 - **The permission question.** Amber, in plain words ("Run a command?",
-  "Change a file?", "Read a file?", "Use a tool?") with the tool's name, the
-  exact command or path in one line that opens to the whole input, and under it
+  "Change a file?", "Read a file?", "Use a tool?") with the tool's name; a short
+  call (eight rows at most) drawn whole as it arrives, a longer one as the exact
+  command or a path never cut, in one line that opens to the whole input; under it
   **Allow once** and **Deny** (with an optional message to the agent, at most
   500 bytes). Every character a person cannot see is drawn as a mark of its
   own, with one line saying the call holds some; each line's end and the spaces
   left at it are marked too. Allow once is offered only once the whole input is
-  drawn and its end has been in view, and only when the digest the page
+  drawn and its first row and its end have been in view (until then it looks
+  like nothing to press, and one line says why), and only when the digest the page
   computes of what it drew is the request's: the answer carries it. Only the
   operator gets the buttons; anyone else reads "Only the person who runs this
   server can answer." No reply bar repeats the question beside the chat, and

@@ -2757,6 +2757,27 @@ and `chat-layout`, each on a server of its own with `claude-proto` and
   - Refusals are said in the plan's words, or plain ones where the plan
     has none ("The message was not sent.", "The answer was not sent.",
     "Not sent: the connection is down.").
+- **After the second read and the check with the real agent:**
+  - The chat follows a change only for a person at its end, measured as
+    the change arrives, before it is drawn: an input opened at the end
+    grows below and is not scrolled past by the next entry. The tool's
+    name, a field's name and a value wrap anywhere.
+  - A short input is drawn whole, open, as its question arrives: at most
+    eight rows (`SHORT_INPUT_ROWS`), a row being 80 characters of a
+    value (`SHORT_ROW_CHARS`), a field's name a row of its own, a named
+    folder counted. Every real Bash call (its description among its
+    fields) is so answered with one press. A longer input is one line
+    the person opens.
+  - Allow once wakes once marks before the input's first row and after
+    its end have both been in view, seen again after each open or close.
+    While it waits it has a disabled control's neutral look, and one line
+    says what it waits for: "Open the call above and read it whole to
+    allow it." or "Read the call from its start to its end to allow it."
+  - A path in the line is never cut: it wraps whole.
+  - Before its input is read (an answered question, a link's view), a
+    question's line is read out of the request's summary, the command or
+    the path, a cut said with its mark; where none can be read, the plain
+    words alone, never the summary's JSON.
 - **Not built:** Settings' line for an older switchyard (the server's
   switchyard status says nothing of `transcript`); the Share dialog shows
   the server's own words for it, as the link's rendezvous note.
