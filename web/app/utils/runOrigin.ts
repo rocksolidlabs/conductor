@@ -1,4 +1,5 @@
 import type { RunOrigin } from '~/composables/useSessions'
+import { HIDDEN } from './hiddenMarks'
 
 /**
  * The run page's origin line: where a run a registered provider launched
@@ -39,10 +40,8 @@ export const ORIGIN_SUBJECT_SHOWN = 48
 /** How many hex digits of the start commit the line shows. */
 export const ORIGIN_COMMIT_SHOWN = 7
 
-// What draws nothing, as the task file's quoting judges it (internal/quoted): a character that is not graphic (a control, a
-// format character such as a bidirectional one or a zero-width space, a line or paragraph separator, a private-use or an
-// unassigned one), a default-ignorable one, or a variation selector.
-const HIDDEN = /[^\p{L}\p{M}\p{N}\p{P}\p{S}\p{Zs}]|[\p{Default_Ignorable_Code_Point}\p{Variation_Selector}]/gu
+// What draws nothing, as the task file's quoting judges it: the set utils/hiddenMarks.ts holds, which a chat's permission question
+// draws too.
 
 /** s as the line shows it: every character that draws nothing a visible mark of its own (U+FFFD), so none reorders or hides the words. */
 export function shownText(s: string): string {

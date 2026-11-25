@@ -39,6 +39,11 @@ export interface RenderOptions {
    * preview it had.
    */
   linkify?: boolean
+  /**
+   * An agent's words in a chat (docs/plans/chat-or-terminal.md, design 11): a link only when its address starts with `https://`, any
+   * other held as its words (a relative one too); no image at all, its alt text kept. Off by default.
+   */
+  agentWords?: boolean
 }
 
 export interface Rendered {
@@ -201,6 +206,9 @@ export function renderMarkdown(src: string, opts: RenderOptions): Rendered {
     if (!href) {
       // `[words]()`: no destination, so no link (an empty href would reload the page).
       t.attrs = (t.attrs ?? []).filter((a) => a[0] !== 'href')
+    } else if (opts.agentWords && !href.startsWith('https://')) {
+      held.push(true)
+      return `<span class="md-link-held" title="${escapeHtml(href)}">`
     } else if (opts.attachments && /^attachment:/i.test(href)) {
       held.push(true)
       return `<span class="md-link-held" title="An attachment of the ticket's: it is downloaded from its Attachments">`
@@ -225,6 +233,7 @@ export function renderMarkdown(src: string, opts: RenderOptions): Rendered {
     const t = tokens[idx]!
     const src = String(t.attrGet('src') ?? '')
     const alt = self.renderInlineAsText(t.children ?? [], options, env)
+    if (opts.agentWords) return `<span class="md-image-held" title="An image is not shown in the chat">${escapeHtml(alt || src)}</span>`
     const attachment = opts.attachments ? /^attachment:([0-9a-f]{16})$/.exec(src) : null
     if (attachment) {
       // Filled by the component with the content it fetched with the token: no URL of the API is ever an img's source.

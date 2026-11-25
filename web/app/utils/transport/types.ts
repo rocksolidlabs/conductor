@@ -1,5 +1,5 @@
 import type { Ref } from 'vue'
-import type { ChatPost, ChatSend, ControlMessage, FileGetExtra, FileResponse, FileWriteOptions, NvimEvent, NvimSwapChoice, TranscriptMessage, TranscriptReply, TranscriptRequest, TransportKind, Welcome } from '../protocol'
+import type { ChatPost, ChatSend, ControlMessage, FileGetExtra, FileResponse, FileWriteOptions, NvimEvent, NvimSwapChoice, PermissionAnswer, TranscriptMessage, TranscriptReply, TranscriptRequest, TransportKind, Welcome } from '../protocol'
 import type { QuestionReply } from '../reply'
 import type { LaneWire } from './decide'
 
@@ -68,4 +68,6 @@ export interface TerminalTransport extends LaneWire {
   transcriptGet(req: TranscriptRequest): Promise<TranscriptReply>
   /** A chat's Stop, to an owner whose welcome said `interrupt`: true on `interrupt_ok`, a ReplyError (`no_turn`, `read_only`) otherwise. */
   interrupt(): Promise<boolean>
+  /** The operator's answer to a chat's permission request: true on `answer_ok`, a ReplyError (`stale_request`, `not_answerer`) otherwise. */
+  permissionAnswer(a: Omit<PermissionAnswer, 't' | 'reqId'>): Promise<boolean>
 }
