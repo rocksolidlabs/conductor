@@ -40,6 +40,7 @@ test('a first turn held at the gate keeps Chat waiting with its sentence; its en
     budget(2 * STEP_MS)
     await expect(line).toHaveText(FIRST_REPLY)
     await expect(side(page, 'protocol')).toBeDisabled()
+    await expect(page.locator(`[data-session-status="${s.id}"]`)).not.toHaveAttribute('data-status-mark', 'working')
     // The first line, its turn held at the stub's gate: the agent at work, its conversation resumable (the prompt hook's word), its
     // first reply not ended.
     await typeLine(page, 'stub hold')
@@ -51,9 +52,10 @@ test('a first turn held at the gate keeps Chat waiting with its sentence; its en
         return `${info.attention?.state} ${!!info.agentSession?.resumable} ${!!info.firstTurn}`
       }, { timeout: 30_000 })
       .toBe('working true false')
-    // The page has drawn the state the gate holds (its status is the session's working); Chat still waits, its sentence shown.
-    await expect(page.locator('[data-way-switch]')).toHaveAttribute('data-way', 'terminal')
-    budget(4 * STEP_MS)
+    // Judged only once the page has drawn the held turn's own update (Chat is disabled before the turn too, a starting value): the
+    // header's status says working, drawn from the attention the turn's report set.
+    budget(5 * STEP_MS)
+    await expect(page.locator(`[data-session-status="${s.id}"]`)).toHaveAttribute('data-status-mark', 'working')
     await expect(side(page, 'protocol')).toBeDisabled()
     await expect(line).toHaveText(FIRST_REPLY)
     // Again after a redraw the test causes (a narrower window): still waiting.
