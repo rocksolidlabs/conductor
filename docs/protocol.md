@@ -1345,10 +1345,11 @@ session shows), keep the one shown, its `since` and its words; a host's
 it was away, told as its connection came back) and replaces it, stamped
 as it is received.
 `firstTurn` in a server session's `Info` (absent when false) says the
-agent's first reply in this session has ended: its terminal has reported
-a `done` of its own (source `api`, `title` or `status`; a bell, the
-screen pattern and an operator's mark do not count, nor a `working` such
-as the prompt's own report). It is never cleared; a session that begins
+agent's first reply in this session has ended: its agent's hooks have
+reported a `done` (source `api`, the agent's own report of its turn's
+end). A window title and a program status report only work, never a
+`done`; a bell, the screen pattern and an operator's mark do not count,
+nor a `working` such as the prompt's own report. It is never cleared; a session that begins
 as a resume starts without it, whatever its conversation held. A move to
 Chat is refused until it is set (see Moving between ways), and the
 session page offers Chat by it alone. A hosted session's copy never
