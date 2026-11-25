@@ -6,17 +6,22 @@
 /** The set, as a pattern's source: one character of it. */
 export const HIDDEN_SOURCE = String.raw`[^\p{L}\p{M}\p{N}\p{P}\p{S}\p{Zs}]|[\p{Default_Ignorable_Code_Point}\p{Variation_Selector}]`
 
-/** The set as a global pattern, for a replace over a whole string. */
-export const HIDDEN = new RegExp(HIDDEN_SOURCE, 'gu')
+// The patterns are built at their first use, never as the module loads: this module is in the chunk every page starts with (the
+// shell's Open a server among them, which uses neither), and a pattern of Unicode properties is not cheap to build.
+let hidden: RegExp | undefined
+let one: RegExp | undefined
 
-const ONE = new RegExp(`^(?:${HIDDEN_SOURCE})$`, 'u')
+/** The set as a global pattern, for a replace over a whole string (a replace starts it afresh: no call is left at another's place). */
+export function hiddenPattern(): RegExp {
+  return (hidden ??= new RegExp(HIDDEN_SOURCE, 'gu'))
+}
 
 /** A piece of text as a question draws it: words as typed, a hidden character's mark, or a line break (a line feed). */
 export type MarkedPiece = { text: string } | { mark: string; code: number } | { br: true } | { eol: true } | { spaces: number }
 
 /** Whether the character c (one code point) is one a person cannot see. A line feed is one: a question draws it as a line break. */
 export function isHidden(c: string): boolean {
-  return ONE.test(c)
+  return (one ??= new RegExp(`^(?:${HIDDEN_SOURCE})$`, 'u')).test(c)
 }
 
 /** The mark a hidden character is drawn as: a carriage return as `\r`, a tab as `\t`, any other as its `\u` escape. */

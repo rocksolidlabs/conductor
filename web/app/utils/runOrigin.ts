@@ -1,5 +1,5 @@
 import type { RunOrigin } from '~/composables/useSessions'
-import { HIDDEN } from './hiddenMarks'
+import { hiddenPattern } from './hiddenMarks'
 
 /**
  * The run page's origin line: where a run a registered provider launched
@@ -45,7 +45,7 @@ export const ORIGIN_COMMIT_SHOWN = 7
 
 /** s as the line shows it: every character that draws nothing a visible mark of its own (U+FFFD), so none reorders or hides the words. */
 export function shownText(s: string): string {
-  return s.replace(HIDDEN, '\ufffd')
+  return s.replace(hiddenPattern(), '\ufffd')
 }
 
 /** s cut to n characters (code points), an ellipsis after a cut. */
