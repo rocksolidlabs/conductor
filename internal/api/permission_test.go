@@ -256,6 +256,20 @@ func TestPermissionOnlyTheOperator(t *testing.T) {
 	if !ok || len(it.Actions) != 0 || !strings.Contains(it.Blocking.Words, PermissionInChatWords) || !strings.Contains(it.Brief, PermissionInChatWords) {
 		t.Fatalf("the inbox's item %+v (%v)", it, ok)
 	}
+	// The lane draws it with no action and the not-answerer's words: who
+	// answers is the person who runs this server, never the link.
+	items, _, _, err := e.srv.laneItems(context.Background(), laneScope{session: id})
+	if err != nil {
+		t.Fatal(err)
+	}
+	li := slices.IndexFunc(items, func(x *inboxItem) bool { return x.Ref == questionRef(id, r.Question) })
+	if li < 0 {
+		t.Fatalf("the lane has no item for the request: %d items", len(items))
+	}
+	if lit := items[li]; len(lit.Actions) != 0 || !strings.Contains(lit.Brief, session.NotAnswererWords) || !strings.Contains(lit.Blocking.Words, session.NotAnswererWords) ||
+		strings.Contains(lit.Brief+lit.Blocking.Words, PermissionInChatWords) || lit.Answerer != PermissionAnswererWords {
+		t.Fatalf("the lane's item %+v", lit)
+	}
 	ref := brakeman.Ref{Kind: "question", Session: id, Question: r.Question}
 	for _, m := range []proto.Decide{{ReqID: "d1", Revision: r.Question, Input: "y\r"}, {ReqID: "d2", Revision: r.Question, Text: "yes"}} {
 		if frame, _ := e.srv.laneAnswer(context.Background(), "link-decide", id, laneScope{}, ref, it, m, nil, nil); frame == nil {
@@ -332,5 +346,36 @@ func TestPermissionOnlyTheOperator(t *testing.T) {
 	op.until("the operator's word", func(c chatFrame) bool { return c.names("o1") && c.m["t"] == proto.CtlAnswerOK }, nil)
 	if status, out := h.answered(t); status != http.StatusOK || out["behavior"] != "allow" {
 		t.Fatalf("the operator's allow: %d %v", status, out)
+	}
+}
+
+// A control link's interrupt ends the turn, which withdraws the open
+// request with the turn-stopped words and answers its POST the withdrawal:
+// never an allow.
+func TestAControlLinksInterruptWithdrawsNeverAllows(t *testing.T) {
+	e := newTestEnv(t, nil)
+	_, l, f, _, h, r := chatAsking(t, e)
+	link, err := l.AttachWith(session.AttachOptions{Role: session.RoleControl, LinkID: "link-control", Name: "controller"}, quietSink{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Detach(link)
+	e.srv.handleLocalControl(link, l, &heldTyping{}, proto.MustControl(proto.Interrupt{T: proto.CtlInterrupt, ReqID: "i1"})[1:])
+	waitFor := func(what string, ok func() bool) {
+		t.Helper()
+		for deadline := time.Now().Add(30 * time.Second); !ok(); {
+			if time.Now().After(deadline) {
+				t.Fatalf("waited for %s", what)
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}
+	waitFor("the interrupt to reach the driver", func() bool { return sessiontest.Count(f.Calls(), "interrupt") == 1 })
+	f.TurnEnded("interrupted", session.Usage{})
+	if status, out := h.answered(t); status != http.StatusOK || out["behavior"] != "deny" || out["message"] != session.WithdrawnElsewhereWords {
+		t.Fatalf("the held POST: %d %v", status, out)
+	}
+	if got := entryState(t, l, r.Seq); got.State != session.PermissionWithdrawn || got.Why != session.TurnStoppedWords {
+		t.Fatalf("the request after the interrupt %+v", got)
 	}
 }
