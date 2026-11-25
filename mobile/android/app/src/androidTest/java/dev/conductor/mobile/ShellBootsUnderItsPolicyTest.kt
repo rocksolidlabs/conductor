@@ -88,14 +88,6 @@ class ShellBootsUnderItsPolicyTest {
         val PROBES = """
             (() => {
               window.__bootProbes = '';
-              // TEMPORARY (#1110): what moves this page is kept where the next document can read it.
-              try {
-                const keep = (k, v) => { try { sessionStorage.setItem(k, ((sessionStorage.getItem(k) || '') + ' || ' + String(v)).slice(0, 1500)) } catch (e) {} };
-                keep('diag:armed', location.href + ' navigation api ' + !!window.navigation);
-                if (window.navigation) window.navigation.addEventListener('navigate', (e) => keep('diag:navigate', e.navigationType + ' to ' + e.destination.url + ' same document ' + e.destination.sameDocument + ' user ' + e.userInitiated + ' at ' + new Error('stack').stack));
-                window.addEventListener('vite:preloadError', (e) => keep('diag:preload', (e.payload && (e.payload.stack || e.payload.message)) || e.payload));
-                window.addEventListener('popstate', () => keep('diag:popstate', location.href));
-              } catch (e) {}
               const failed = [];
               const check = (name, ok, seen) => { if (!ok) failed.push(seen === undefined ? name : name + ':' + seen) };
               const within = (p, ms) => Promise.race([p, new Promise((_, no) => setTimeout(() => no({ code: 'no_answer' }), ms || 20000))]);
@@ -203,7 +195,7 @@ class ShellBootsUnderItsPolicyTest {
                 for (const k of ['diag:navigate', 'diag:preload', 'diag:popstate', 'diag:armed', 'nuxt:reload']) o[k] = sessionStorage.getItem(k);
                 o['nuxt:reload:state'] = (sessionStorage.getItem('nuxt:reload:state') || '').slice(0, 200);
               } catch (e) { o.storage = 'unreadable ' + e }
-              try { o.kind = (performance.getEntriesByType('navigation')[0] || {}).type } catch (e) { o.kind = 'unreadable ' + e }
+              try { o.kind = (performance.getEntriesByType('navigation')[0] || {}).type; o.began = new Date(performance.timeOrigin).toISOString() } catch (e) { o.kind = 'unreadable ' + e }
               try { o.referrer = document.referrer; o.entries = history.length; o.state = JSON.stringify(history.state) } catch (e) { o.state = 'unreadable ' + e }
               o.href = location.href; o.ready = document.readyState; o.step = window.__bootStep; o.probes = window.__bootProbes;
               o.console = window.__bootConsole; o.violations = window.__bootViolations;
@@ -285,6 +277,18 @@ class ShellBootsUnderItsPolicyTest {
 
     @Test
     fun theShellStartsOnOpenAServerUnderItsPolicyWithItsNativeLayer() {
+        // TEMPORARY (#1110): every step of an activity's life is said as it happens.
+        val app = InstrumentationRegistry.getInstrumentation().targetContext.applicationContext as android.app.Application
+        app.registerActivityLifecycleCallbacks(object : android.app.Application.ActivityLifecycleCallbacks {
+            private fun say(what: String, a: android.app.Activity) = step("life: $what ${a.javaClass.simpleName} ${System.identityHashCode(a)}")
+            override fun onActivityCreated(a: android.app.Activity, b: android.os.Bundle?) = say(if (b == null) "created" else "created again from a saved state", a)
+            override fun onActivityStarted(a: android.app.Activity) = say("started", a)
+            override fun onActivityResumed(a: android.app.Activity) = say("resumed", a)
+            override fun onActivityPaused(a: android.app.Activity) = say("paused", a)
+            override fun onActivityStopped(a: android.app.Activity) = say("stopped", a)
+            override fun onActivitySaveInstanceState(a: android.app.Activity, b: android.os.Bundle) = say("state saved", a)
+            override fun onActivityDestroyed(a: android.app.Activity) = say("destroyed", a)
+        })
         ActivityScenario.launch(MainActivity::class.java).use { s ->
             val stopped = read(s) { it.stopped }
             step("the shell's policy: ${stopped ?: "held"}")
@@ -293,7 +297,6 @@ class ShellBootsUnderItsPolicyTest {
             val drawn = { eval(s, "!!document.querySelector('[data-shell-open-server]')") == "true" }
             until(180, "Open a server drawn") { drawn() }
             step("Open a server drawn")
-            step("who, at the first drawing: ${who(s)}; ${eval(s, DIAGNOSE).take(900)}")
             // The page again, with a listener for policy violations added before its own scripts.
             s.onActivity { a ->
                 val w = a.getBridge().webView
@@ -302,7 +305,6 @@ class ShellBootsUnderItsPolicyTest {
             }
             until(30, "the reload begun") { eval(s, "typeof window.__bootViolations") == "\"object\"" }
             until(180, "Open a server drawn again") { drawn() }
-            step("who, at the second drawing: ${who(s)}; ${eval(s, DIAGNOSE).take(900)}")
             val gates = read(s) { it.gates!! }
             val ownDropped = gates.dropped.get()
             val ownRefused = gates.refused.get()
