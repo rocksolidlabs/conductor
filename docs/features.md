@@ -215,30 +215,46 @@ that order.
 
 - **The rule.** For an agent whose catalog entry has a prompt shape
   (Claude Code and Codex among the built-in ones), every line Conductor
-  types into a session that names no question is typed only where a whole
+  types into a session that names no question, and every reply to a
+  question the session does not read off the screen (the agent's own, a
+  decision's, a wait the agent reported), is typed only where a whole
   frame of the screen, read as the writer takes the line, shows the
-  agent's own prompt by its shape and no numbered choice, for the whole of
-  the session. Its Enter is written only where the screen, read again as
-  the writer takes the Enter, is that prompt, or the prompt holding the
-  line's own text (a long line wraps past the rows the shape takes).
-  Anywhere else nothing of the line is written, its Enter included.
+  agent's own prompt by its shape and no dialog's numbered choice, for the
+  whole of the session. Its Enter is written only where the screen, read
+  again as the writer takes the Enter and once more as the last thing
+  before it, is that prompt, or the prompt holding the line's own text (a
+  long line wraps past the rows the shape takes). Anywhere else nothing of
+  the line is written, its Enter included.
+- **A numbered list is not a dialog.** After the startup watch, a numbered
+  row is a dialog's choice only in or under the rows the prompt's shape
+  matched, or where it carries a highlight's marker: a numbered list in
+  the agent's own answer above its prompt takes a line, at rest and at
+  work.
+- **Codex's prompt ends at its footer.** Codex's shape takes its composer
+  only with the footer Codex draws under it as the screen's last row; a
+  `›` row with no footer under it (a message of the person's above a
+  question, a list's highlight) is not its prompt.
 - **Every line Conductor types.** A person's line from the app or a reply
   box, a link's, a chat line to the agent, a crew member's prompt and
-  message, a handoff, a broadcast, a decision's line that answers no
-  question, a Brakeman turn's line. A person's line is refused with "the
-  agent's screen is not recognised as its prompt: nothing was typed" (in
-  the startup words while the startup watch lasts); a line that must never
-  answer a prompt (a handoff, a broadcast, a chat line between members, a
-  line from the palette) is held back and waits, as it does while the
-  session asks; a crew member's prompt waits and is tried again, noted
-  once in the run's log. An Enter refused after the line's text is left
-  out, and the text waits in the agent's input; a crew member's prompt
-  its agent did not report taking gets its second Enter only at the
-  prompt too.
+  message, a handoff, a broadcast, a decision's line, a Brakeman turn's
+  line. A person's line is refused with "the agent's screen is not
+  recognised as its prompt: nothing was typed. Look at its terminal." (in
+  the startup words while the startup watch lasts); a line from the
+  palette is told the same when the session asks nothing; a handoff, a
+  decision's line and the reminder that a done does not finish a task
+  wait for the member's next activity, the run's log saying once that the
+  member shows a screen that is not its prompt; a crew member's prompt
+  waits and is tried again, noted once in the run's log.
+- **An Enter refused after the text** is left out, the text waits in the
+  agent's input, and the session's turn is held until a person types in
+  its terminal ("the line was typed and not entered: type in the terminal
+  to continue"), so no later line joins the text; a chat message sent to
+  the agent is not shown as sent then. A crew member's prompt its agent
+  did not report taking gets its second Enter only at the prompt too.
 - **Unchanged.** Keys a person types in the terminal; an answer to a
-  question the session asks (its choices, a reply naming it); a session
-  whose agent has no prompt shape. A hosted session follows the rule
-  through the shape its host is sent with the agent's recipe.
+  question the session reads off the screen (its choices, a reply naming
+  it); a session whose agent has no prompt shape. A hosted session follows
+  the rule through the shape its host is sent with the agent's recipe.
 
 ## Hosts: the machines this server knows, and who holds each run (HS2, #1032; 2026-11-22)
 
