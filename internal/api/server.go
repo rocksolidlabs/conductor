@@ -1405,6 +1405,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/sessions/{id}", s.requireAdmin(s.handleDeleteSession))
 	mux.HandleFunc("PATCH /api/sessions/{id}", s.launching(s.handleRenameSession))
 	mux.HandleFunc("POST /api/sessions/{id}/resume", s.launching(s.handleResumeSession))
+	// The move between ways is the operator's alone, as Stop is (move.go).
+	mux.HandleFunc("POST /api/sessions/{id}/way", s.requireAdmin(s.handleSessionWay))
 	mux.HandleFunc("POST /api/sessions/{id}/clone", s.launching(s.handleCloneSession))
 	mux.HandleFunc("GET /api/sessions/{id}/links", s.requireAdmin(s.handleListLinks))
 	mux.HandleFunc("POST /api/sessions/{id}/links", s.requireAdmin(s.handleCreateLink))
