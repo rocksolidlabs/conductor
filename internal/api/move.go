@@ -182,19 +182,44 @@ func moveWords(err error) string {
 
 // endChatOnOlderSwitchyard ends the publication of a session that has
 // become a chat on a switchyard whose registered did not say transcript:
-// its viewers there would be refused and its frames dropped (I14). The
-// session's line says why; a Share after a move back publishes it again.
+// its viewers there would be refused and its frames dropped (I14). It ends
+// it as a publication the switchyard stopped is ended (watchPublication):
+// the session stays owed one, so a Share publishes it again (refused in
+// the same words while it is still a chat, made once it is back in its
+// terminal). The session's line says why.
 func (s *Server) endChatOnOlderSwitchyard(info session.Info) {
 	if info.Way != session.WayProtocol {
 		return
 	}
-	pub := s.publishedOf(info.ID)
+	id := info.ID
+	pub := s.publishedOf(id)
 	t, ok := pub.(interface{ TakesTranscript() bool })
 	if pub == nil || !ok || t.TakesTranscript() {
 		return
 	}
-	s.unpublish(info.ID)
-	if l, ok := s.lookupLocal(info.ID); ok {
+	s.pubMu.Lock()
+	ours := s.published[id] == pub
+	if ours {
+		delete(s.published, id)
+		s.forgetRemoteLocked(id, "", "", true)
+		if s.pubErr == nil {
+			s.pubErr = map[string]string{}
+		}
+		s.pubErr[id] = proto.OlderSwitchyardWords
+		if s.pubStopped == nil {
+			s.pubStopped = map[string]bool{}
+		}
+		s.pubStopped[id] = true
+	}
+	s.pubMu.Unlock()
+	if !ours {
+		return
+	}
+	pub.Stop()
+	if l, ok := s.lookupLocal(id); ok {
 		l.Record(session.ActivityEntry{Type: session.ActivityStatus, Message: proto.OlderSwitchyardWords})
+	}
+	if runID, _, ok := s.runs.MemberOf(id); ok {
+		s.scheduleRunSync(runID)
 	}
 }
