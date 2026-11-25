@@ -17,6 +17,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/rocksolidlabs/conductor/internal/session"
 )
@@ -71,34 +72,54 @@ var (
 	// ErrNotQualified is Begin's answer for a version below
 	// ClaudeMinVersion, or one the agent does not say: the session stays in
 	// its terminal.
-	ErrNotQualified error = &words{NotQualifiedWords}
+	ErrNotQualified error = &words{s: NotQualifiedWords}
 	// ErrNotStarted is Begin's answer for an initialize answer that is
 	// missing or fails the shape check.
-	ErrNotStarted error = &words{NotStartedWords}
+	ErrNotStarted error = &words{s: NotStartedWords}
 	// ErrNotSignedIn is Read's answer when the agent says, before its first
 	// answer, that it is not signed in: the child is ended and the session
 	// goes back to its terminal.
-	ErrNotSignedIn error = &words{NotSignedInWords}
+	ErrNotSignedIn error = &words{s: NotSignedInWords}
 	// ErrUnreadable is Read's answer for a line that is not the protocol's.
-	ErrUnreadable error = &words{UnreadableWords}
+	ErrUnreadable error = &words{s: UnreadableWords, code: "unreadable"}
 	// errInputClosed is a write after CloseInput.
 	errInputClosed = errors.New("agentproto: the agent's input is closed")
 )
 
 // words is an error whose words are a person's to read: one sentence, as
 // the plan gives it (design 13).
-type words struct{ s string }
+type words struct{ s, code string }
 
 func (e *words) Error() string { return e.s }
 
+// EndNotice is the notice a session ends a Read with this error by: its
+// code and words, or none ("") where the driver has told the session.
+func (e *words) EndNotice() (code, words string) {
+	if e.code == "" {
+		return "", ""
+	}
+	return e.code, e.s
+}
+
 // ClaudeOptions are a Claude Code driver's.
 type ClaudeOptions struct {
-	// Restart, when set, is called once, after the end of the first turn
-	// that ends with more than MaxClaudeInput written into the child: the
-	// caller ends the child and resumes the same conversation in a new
-	// one.
+	// Restart, when set, is called once, as the first turn that ends with
+	// more than MaxClaudeInput written into the child ends, before the
+	// session is told of its end: the caller ends the child at that end and
+	// resumes the same conversation in a new one (the session's
+	// RestartProtocol, which waits for the turn's end it is about to hear).
 	Restart func()
+	// InitWait bounds Begin's wait for the initialize answer, ClaudeInitWait
+	// when 0, and MaxInput the bytes written before a restart,
+	// MaxClaudeInput when 0 (a test's knobs).
+	InitWait time.Duration
+	MaxInput int64
 }
+
+// ClaudeInitWait bounds the wait for the initialize answer: well inside the
+// session's own bound on a start, so a child that never answers goes back
+// to the terminal in seconds. The recorded run answered in under two.
+const ClaudeInitWait = 20 * time.Second
 
 // Claude is the driver of Claude Code's print mode with stream-json in and
 // out (session.Protocol): it writes the initialize control request, each
@@ -108,10 +129,11 @@ type ClaudeOptions struct {
 // keeps a credential: the child runs on the sign-in its program already
 // has.
 type Claude struct {
-	in      io.WriteCloser
-	out     io.Reader
-	restart func()
-	max     int64
+	in       io.WriteCloser
+	out      io.Reader
+	restart  func()
+	max      int64
+	initWait time.Duration
 
 	// Writes go one at a time; written counts their bytes.
 	wmu     sync.Mutex
@@ -177,8 +199,16 @@ type claudeRead struct {
 // NewClaude is the driver of a Claude Code child whose input is in and
 // output out.
 func NewClaude(in io.WriteCloser, out io.Reader, opts ClaudeOptions) *Claude {
+	initWait := opts.InitWait
+	if initWait <= 0 {
+		initWait = ClaudeInitWait
+	}
+	max := opts.MaxInput
+	if max <= 0 {
+		max = MaxClaudeInput
+	}
 	return &Claude{
-		in: in, out: out, restart: opts.Restart, max: MaxClaudeInput,
+		in: in, out: out, restart: opts.Restart, max: max, initWait: initWait,
 		readDone: make(chan struct{}),
 		r:        claudeRead{streamed: map[string]int{}, tools: map[string]string{}, denied: map[string]bool{}, bg: map[string]bool{}},
 	}
@@ -215,6 +245,8 @@ func (c *Claude) Begin(ctx context.Context) error {
 	c.initAnswer = make(chan error, 1)
 	id, answer := c.initID, c.initAnswer
 	c.mu.Unlock()
+	ctx, cancel := context.WithTimeout(ctx, c.initWait)
+	defer cancel()
 	if err := c.writeJSON(controlRequest{Type: "control_request", RequestID: id, Request: map[string]string{"subtype": "initialize"}}); err != nil {
 		return fmt.Errorf("%w (its initialize request was not written: %v)", ErrNotStarted, err)
 	}
@@ -1020,12 +1052,11 @@ func (c *Claude) result(ev claudeEvent, e session.ProtocolEvents) error {
 	r.inTurn = false
 	// What was written by this turn's end decides, before the session is
 	// told: a message it writes on the end is the next turn's.
-	past := c.written.Load() > c.max
-	e.TurnEnded(outcome, u)
-	if past && c.restart != nil && !r.restarted {
+	if c.written.Load() > c.max && c.restart != nil && !r.restarted {
 		r.restarted = true
 		c.restart()
 	}
+	e.TurnEnded(outcome, u)
 	return nil
 }
 
