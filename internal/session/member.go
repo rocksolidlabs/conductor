@@ -110,7 +110,7 @@ func (s *Local) moveMember(m MoveStarts, fresh bool) error {
 		refused = moveRefused(CannotMoveWords)
 	case m.Protocol == nil || m.Terminal == nil:
 		refused = moveRefused(CannotMoveWords)
-	case s.submitted.Load() || s.typedText.Load() || s.held != nil || len(s.submitting) > 0 || fresh && s.firstTurn:
+	case s.submitted.Load() || s.typedText.Load() || s.held != nil || len(s.submitting) > 0 || fresh && s.turnBegunLocked():
 		refused = moveRefused(TypedFirstWords)
 	case !at || s.info.Attention.State == AttentionNeedsInput:
 		refused = moveRefused(NotAtPromptYetWords)
@@ -256,6 +256,18 @@ func (s *Local) moveFresh(m MoveStarts) {
 	}
 	why = first
 	s.moved(WayTerminal, first)
+}
+
+// turnBegunLocked says a fresh member's terminal's conversation has had a
+// turn: one that ended (firstTurn, a done from a source that reports
+// turns), or one begun (its agent's hook reporting the prompt submitted,
+// which marks its conversation resumable; a fresh member's starts
+// unresumable, set by Conductor). Keys that are only a dialog's (a digit
+// and Enter typed while the agent loads) mark nothing as typed, yet may
+// become its first message: the move would end that turn and drop the
+// line. The caller holds s.mu.
+func (s *Local) turnBegunLocked() bool {
+	return s.firstTurn || s.info.AgentSession != nil && s.info.AgentSession.Resumable
 }
 
 // dialogKeys reports whether keys, as keysWritten read them, are only keys

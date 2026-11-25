@@ -137,6 +137,32 @@ func TestMoveFreshRefusedAfterInput(t *testing.T) {
 			refused(t, s, f, ts)
 		})
 	}
+	t.Run("a dialog's keys that began a turn", func(t *testing.T) {
+		// A digit and Enter typed while the agent loads mark nothing as
+		// typed, but become its first message: the hook reports the prompt
+		// submitted (working, the conversation resumable), and the prompt's
+		// box stays drawn under the spinner.
+		s, p := memberSession(t, false)
+		f, ts := sessiontest.NewFakeProtocol(), &terminals{}
+		ts.cleanup(t)
+		_, _ = p.outW.Write([]byte("\x1b[2J\x1b[H" + claudeBanner + "   Loading…"))
+		moveWaitFor(t, "the agent loading", func() bool { return strings.Contains(strings.Join(s.ScreenLines(24), "\n"), "Loading") })
+		sub, err := s.Attach("", RoleControl, "", 80, 24, newChanSink(false))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, keys := range []string{"2", "\r"} {
+			if err := s.Input(sub, []byte(keys)); err != nil {
+				t.Fatal(err)
+			}
+			untilIdle(t, s)
+		}
+		s.SetAttention(AttentionWorking, "", SourceAPI)
+		s.ReportAgentSession(s.Info().AgentSession.ID, PolicyLatest, true)
+		draw(t, s, p, claudeBanner+"> 2\r\n\r\n✻ Thinking…\r\n\r\n"+rule80+"\r\n❯ \r\n"+rule80+"\r\n  ? for shortcuts")
+		moveWaitFor(t, "the prompt's box under the spinner", s.AtPrompt)
+		refused(t, s, f, ts)
+	})
 	t.Run("text queued as the move begins", func(t *testing.T) {
 		s, p := memberSession(t, false)
 		f, ts := sessiontest.NewFakeProtocol(), &terminals{}
