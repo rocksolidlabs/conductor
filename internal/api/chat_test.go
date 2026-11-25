@@ -222,10 +222,9 @@ func TestSessionInfoSaysTheWay(t *testing.T) {
 // below the driver's, or none, keeps the session in its terminal with its
 // sentence and starts nothing; a child that answers no initialize, or
 // fails the shape check, is ended and the session stays in its terminal,
-// well inside the session's bound on a start; a child whose first answer
-// says it is not signed in is ended with that sentence. (Going back to the
-// terminal from a chat, and the sentence on the switch, are the move's:
-// row 5.)
+// well inside the session's bound on a start; a chat whose child's first
+// answer says it is not signed in goes back to its terminal on the same
+// conversation, with that sentence (design 4; the move's way back).
 func TestClaudeGateKeepsTheTerminal(t *testing.T) {
 	for _, c := range []struct {
 		name string
@@ -264,9 +263,12 @@ func TestClaudeGateKeepsTheTerminal(t *testing.T) {
 	t.Run("not signed in", func(t *testing.T) {
 		env := newChatEnv(t, map[string]string{"STUB_PROTOCOL_SIGNED_OUT": "1"}, nil)
 		l := env.launch(t)
-		if err := env.enter(t, l); err != nil {
-			t.Fatal(err)
+		id, conv := l.Info().ID, l.Info().AgentSession.ID
+		env.turnEnded(t, id)
+		if code, out := env.move(t, id, session.WayProtocol); code != http.StatusOK {
+			t.Fatalf("to Chat: %d %v", code, out)
 		}
+		moved(t, l, session.WayProtocol)
 		if _, err := l.Submit(context.Background(), session.Submission{Text: "hello"}); err != nil && !errors.Is(err, session.ErrSubmitPending) {
 			t.Fatal(err)
 		}
@@ -283,7 +285,22 @@ func TestClaudeGateKeepsTheTerminal(t *testing.T) {
 				t.Fatalf("its words: %q", e.Words)
 			}
 		}
-		waitUntil(t, "the child ended", func() bool { return l.Info().Status.Ended() })
+		// Back in its terminal, on the same conversation: not ended.
+		moved(t, l, session.WayTerminal)
+		if l.Info().Status.Ended() {
+			t.Fatalf("the session ended: %q", l.Info().Status)
+		}
+		terms := env.rt.Asked("StartTerminal")
+		if len(terms) != 2 {
+			t.Fatalf("%d terminals started", len(terms))
+		}
+		argv := terms[1].Spec.(ext.TerminalSpec).Argv
+		if i := indexOf(argv, "--resume"); i < 0 || i+1 >= len(argv) || argv[i+1] != conv {
+			t.Fatalf("the terminal back: %q, want --resume %s", argv, conv)
+		}
+		if info := l.Info(); info.AgentSession == nil || info.AgentSession.ID != conv {
+			t.Fatalf("the conversation: %+v", info.AgentSession)
+		}
 	})
 }
 
