@@ -298,10 +298,19 @@ func (e *Engine) moveMember(ctx context.Context, r *run, m *member, local *sessi
 			note(session.ActivityStatus, "%s: in its terminal: %s", label, reasonWords(err))
 			return nil
 		}
+		// A stop or a cancel during the move ends it at once: the member's
+		// session is stopped, which ends the move stopped and starts
+		// nothing after it. The engine holds no lock and no transaction
+		// across the move: only the run's start (r.starts) for its member.
+		stopAt := context.AfterFunc(ctx, func() { stopLocal(local) })
 		if fresh {
 			err = local.MoveFresh(starts)
 		} else {
 			err = local.MoveResumed(starts)
+		}
+		stopAt()
+		if cerr := ctx.Err(); cerr != nil {
+			return cerr
 		}
 		var refusal *session.MoveRefusal
 		switch {

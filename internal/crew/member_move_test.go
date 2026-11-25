@@ -662,3 +662,48 @@ func TestAStopWhileAResumedMemberWaitsIsNoFailure(t *testing.T) {
 		t.Fatalf("the member is %s, not ended", st.Status)
 	}
 }
+
+// A run's stop while a member's chat starts ends the move at once: the
+// stop returns within its own bounds, not the chat's readiness bound; the
+// chat's child is ended, no terminal is started after it, and the run's
+// log says nothing of a fallback.
+func TestAStopEndsAMemberMoveAtOnce(t *testing.T) {
+	dir := newRepo(t)
+	e, fl, _ := chatEngine(t, newScreens())
+	name := attemptName("lead", "build", 1)
+	begun := make(chan struct{})
+	var once sync.Once
+	// The chat's start held for an hour: only the stop can end it.
+	fl.chatGate, fl.readyCap = make(chan struct{}), time.Hour
+	fl.chatBegin = func(string) { once.Do(func() { close(begun) }) }
+	run := launchManaged(t, e, chatCrew(dir, work("build", "lead")))
+	within(t, "the chat's start", begun)
+	local := sessionOf(t, fl, name)
+	if !local.Moving() {
+		t.Fatal("not moving while its chat starts")
+	}
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		stopRun(t, e, run.ID)
+	}()
+	// The stop's own bounds: the member's session stopped, then the run's
+	// sessions stopped, each within stopTimeout.
+	select {
+	case <-stopped:
+	case <-time.After(2 * stopTimeout):
+		t.Fatalf("the stop waited past its own bounds (%v) for the member's move", 2*stopTimeout)
+	}
+	fp, _ := chatOf(t, fl, name)
+	waitTrue(t, "the chat's child ended", func() bool { return isClosed(fp.Child().Done()) })
+	waitTrue(t, "the member's session ended", func() bool { return isClosed(local.Ended()) })
+	fl.mu.Lock()
+	fresh := len(fl.terminalConv)
+	fl.mu.Unlock()
+	if fresh != 0 {
+		t.Fatalf("%d terminals started after the stop", fresh)
+	}
+	if n := logCount(t, e, run.ID, "in its terminal"); n != 0 {
+		t.Fatalf("the log told a fallback %d times", n)
+	}
+}
