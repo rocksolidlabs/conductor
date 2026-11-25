@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -199,5 +200,49 @@ func TestBrakemansTokenPutsNoPermissionRequest(t *testing.T) {
 		if o, w := l.OpenPermissions(); o != 0 || w != 0 {
 			t.Fatalf("%d open, %d waiting", o, w)
 		}
+	}
+}
+
+// Every tool of Conductor's MCP server is sorted for a chat's floor: each
+// MCP name of the operations table is in exactly one of the agents' two
+// lists (unasked, or asks with its reason), so a new tool fails here until
+// someone sorts it; no list names a tool the table does not have; the
+// prompt tool asks; an unasked tool is a session's or an attempt's own,
+// never Brakeman's or a ticket's; and the allow rules name the server the
+// prompt tool is named by.
+func TestEveryConductorToolIsSorted(t *testing.T) {
+	byMCP := map[string]Operation{}
+	for _, op := range Operations() {
+		if op.MCP != "" {
+			byMCP[op.MCP] = op
+		}
+	}
+	for name, op := range byMCP {
+		_, asks := agents.ProtocolAskedTools[name]
+		unasked := slices.Contains(agents.ProtocolUnaskedTools, name)
+		switch {
+		case asks && unasked:
+			t.Errorf("%s is both unasked and asked", name)
+		case !asks && !unasked:
+			t.Errorf("%s is neither unasked nor asked: sort it for a chat's floor (agents.ProtocolUnaskedTools, agents.ProtocolAskedTools)", name)
+		case unasked && op.Scope != "session" && op.Scope != "task":
+			t.Errorf("%s is unasked but of scope %s", name, op.Scope)
+		}
+	}
+	for _, name := range agents.ProtocolUnaskedTools {
+		if _, ok := byMCP[name]; !ok {
+			t.Errorf("the unasked %s is no tool of the table", name)
+		}
+	}
+	for name := range agents.ProtocolAskedTools {
+		if _, ok := byMCP[name]; !ok {
+			t.Errorf("the asked %s is no tool of the table", name)
+		}
+	}
+	if _, asks := agents.ProtocolAskedTools[byMCP["permission"].MCP]; !asks {
+		t.Error("the prompt tool is not among the tools that ask")
+	}
+	if !strings.HasPrefix(agentproto.ClaudePermissionTool, "mcp__conductor__") {
+		t.Errorf("the prompt tool is %s: the allow rules name another server", agentproto.ClaudePermissionTool)
 	}
 }
