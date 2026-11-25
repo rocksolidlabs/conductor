@@ -2105,14 +2105,15 @@ func (h *HostedSession) HostQuestionTold(id string, retold bool) bool {
 }
 
 // offerActivity hands e to the hub's OnActivity, or, late, to its
-// OnLateActivity when it has one.
+// OnLateActivity when it has one, with no kind: a host's sessions run in
+// their terminals, and its wire carries none.
 func (h *HostedSession) offerActivity(id string, e session.ActivityEntry, state session.AttentionState, late bool) {
 	switch {
 	case h.hub == nil:
 	case late && h.hub.OnLateActivity != nil:
-		h.hub.OnLateActivity(id, e, state)
+		h.hub.OnLateActivity(id, e, state, "")
 	case h.hub.OnActivity != nil:
-		h.hub.OnActivity(id, e, state)
+		h.hub.OnActivity(id, e, state, "")
 	}
 }
 

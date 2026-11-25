@@ -312,8 +312,8 @@ func (p *Published) OnChat(id string, m session.ChatMessage) { p.a.onLocalChat(i
 // OnActivity is the local session's OnActivity hook; the caller chains it.
 // It never waits, and the rendezvous is sent no entry: the publication only
 // notes when the session's final status entry is recorded.
-func (p *Published) OnActivity(id string, e session.ActivityEntry, state session.AttentionState) {
-	p.a.onLocalActivity(id, e, state)
+func (p *Published) OnActivity(id string, e session.ActivityEntry, state session.AttentionState, kind string) {
+	p.a.onLocalActivity(id, e, state, kind)
 }
 
 // Decisions says the rendezvous's last registered said it carries

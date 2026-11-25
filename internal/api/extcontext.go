@@ -162,7 +162,7 @@ type touch struct {
 // or a hosted session, offered to every context provider. It never waits:
 // the session is looked up and the path made absolute here, cheaply, and
 // the deny list is read at delivery (touch.denied).
-func (s *Server) noteTouches(sessionID string, e session.ActivityEntry, _ session.AttentionState) {
+func (s *Server) noteTouches(sessionID string, e session.ActivityEntry, _ session.AttentionState, _ string) {
 	if e.Type != session.ActivityFile || e.Op == "" || e.Path == "" {
 		return
 	}

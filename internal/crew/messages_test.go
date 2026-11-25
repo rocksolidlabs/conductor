@@ -140,7 +140,7 @@ func TestAHandoffInAManagedRunIsAMessage(t *testing.T) {
 	e, _, _ := managedEngine(t)
 	run := launchManaged(t, e, repoCrew(dir, work("build", "lead"), work("docs", "writer", "build")))
 	b := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
-	e.OnActivity(b.Attempt.SessionID, session.ActivityEntry{Type: session.ActivityHandoff, To: "writer", Message: "over to you: the handlers are in", At: time.Now().UTC()}, session.AttentionDone)
+	e.OnActivity(b.Attempt.SessionID, session.ActivityEntry{Type: session.ActivityHandoff, To: "writer", Message: "over to you: the handlers are in", At: time.Now().UTC()}, session.AttentionDone, "")
 	msgs := waitMessages(t, e, run.ID, "the handoff's", func(ms []Message) bool { return len(ms) == 1 })
 	if msgs[0].From != "lead" || msgs[0].To != "writer" || msgs[0].Text != "over to you: the handlers are in" {
 		t.Fatalf("the message: %+v", msgs[0])

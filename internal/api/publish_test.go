@@ -102,7 +102,7 @@ func TestAPublishedServerSessionIsViewableAtTheRendezvous(t *testing.T) {
 	// without its words, so by then the event would have too.
 	var mu sync.Mutex
 	var there []session.ActivityEntry
-	rendezvous.srv.events.addSink(func(sid string, e session.ActivityEntry, _ session.AttentionState) {
+	rendezvous.srv.events.addSink(func(sid string, e session.ActivityEntry, _ session.AttentionState, _ string) {
 		mu.Lock()
 		there = append(there, e)
 		mu.Unlock()
@@ -870,17 +870,18 @@ type gatedPublication struct {
 	done    chan struct{}
 }
 
-func (p *gatedPublication) OnChange(session.Info)                                            {}
-func (p *gatedPublication) OnActivity(string, session.ActivityEntry, session.AttentionState) {}
-func (p *gatedPublication) OnChat(string, session.ChatMessage)                               {}
-func (p *gatedPublication) Stop()                                                            {}
-func (p *gatedPublication) Base() string                                                     { return "https://rendezvous.example.net" }
-func (p *gatedPublication) ID() string                                                       { return p.id }
-func (p *gatedPublication) CurrentID() string                                                { return p.id }
-func (p *gatedPublication) HeldLinks() ([]string, bool)                                      { return nil, false }
-func (p *gatedPublication) Done() <-chan struct{}                                            { return p.done }
-func (p *gatedPublication) StoppedThere() bool                                               { return false }
-func (p *gatedPublication) Connected() bool                                                  { return true }
+func (p *gatedPublication) OnChange(session.Info) {}
+func (p *gatedPublication) OnActivity(string, session.ActivityEntry, session.AttentionState, string) {
+}
+func (p *gatedPublication) OnChat(string, session.ChatMessage) {}
+func (p *gatedPublication) Stop()                              {}
+func (p *gatedPublication) Base() string                       { return "https://rendezvous.example.net" }
+func (p *gatedPublication) ID() string                         { return p.id }
+func (p *gatedPublication) CurrentID() string                  { return p.id }
+func (p *gatedPublication) HeldLinks() ([]string, bool)        { return nil, false }
+func (p *gatedPublication) Done() <-chan struct{}              { return p.done }
+func (p *gatedPublication) StoppedThere() bool                 { return false }
+func (p *gatedPublication) Connected() bool                    { return true }
 func (p *gatedPublication) Link(context.Context, string, time.Duration, string) (proto.LinkCreated, error) {
 	return proto.LinkCreated{}, errors.New("not here")
 }

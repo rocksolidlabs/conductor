@@ -2097,7 +2097,8 @@ func stopLocal(l *session.Local) {
 }
 
 // OnActivity takes the activity of every session, as the server's activity
-// fan-out hands it with, for an attention entry, the state it records. The
+// fan-out hands it with, for an attention entry, the state it records and
+// that state's attention kind. The
 // entry of a session that is no member of a run costs no lock. An entry of a
 // member's session wakes the handoffs waiting for that member. The first done
 // a running member reports starts the pending members that start after it; a
@@ -2106,7 +2107,7 @@ func stopLocal(l *session.Local) {
 // the state changes, so that done is the idle state the prompt answered. A handoff a member reports
 // goes to the member it names (handoff). It never waits: a start, and the
 // typing of a handoff, run on goroutines of their own.
-func (e *Engine) OnActivity(sessionID string, entry session.ActivityEntry, state session.AttentionState) {
+func (e *Engine) OnActivity(sessionID string, entry session.ActivityEntry, state session.AttentionState, kind string) {
 	v, ok := e.bySession.Load(sessionID)
 	if !ok {
 		return

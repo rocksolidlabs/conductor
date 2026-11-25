@@ -277,7 +277,7 @@ func TestEveryTurnsDoneIsRecordedOnce(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var mu sync.Mutex
 			var told []string
-			s, p := newLocalWith(t, quiet(Options{OnActivity: func(_ string, e ActivityEntry, state AttentionState) {
+			s, p := newLocalWith(t, quiet(Options{OnActivity: func(_ string, e ActivityEntry, state AttentionState, _ string) {
 				if e.Type == ActivityAttention && state == AttentionDone {
 					mu.Lock()
 					told = append(told, e.Message)

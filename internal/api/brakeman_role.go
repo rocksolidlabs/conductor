@@ -147,7 +147,7 @@ func (d *brakemanDesk) runChanged(runID string) {
 // session, and pokes the desk, whose turn may be the one asking (its
 // agent held at a startup question: heldAtStartup). It runs where the
 // entry was recorded, so it never waits.
-func (d *brakemanDesk) activity(sessionID string, e session.ActivityEntry, state session.AttentionState) {
+func (d *brakemanDesk) activity(sessionID string, e session.ActivityEntry, state session.AttentionState, _ string) {
 	if e.Type != session.ActivityAttention || state != session.AttentionNeedsInput {
 		return
 	}

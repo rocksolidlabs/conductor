@@ -799,7 +799,7 @@ func TestASwitchyardKeepsNoChatOrActivity(t *testing.T) {
 	host := dialFakeHost(t, e, "hosted-agent-token")
 	var mu sync.Mutex
 	var entries []session.ActivityEntry
-	e.srv.events.addSink(func(_ string, en session.ActivityEntry, _ session.AttentionState) {
+	e.srv.events.addSink(func(_ string, en session.ActivityEntry, _ session.AttentionState, _ string) {
 		mu.Lock()
 		entries = append(entries, en)
 		mu.Unlock()

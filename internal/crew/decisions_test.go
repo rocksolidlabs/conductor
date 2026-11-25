@@ -605,7 +605,7 @@ func TestNoReminderWhileADecisionWaits(t *testing.T) {
 	d := ask(t, e, b.Attempt.SessionID, approval("q1", "Merge it?"))
 	mirrorOf(t, l, d.ID)
 	done := func() {
-		e.OnActivity(b.Attempt.SessionID, session.ActivityEntry{Type: session.ActivityAttention, Message: "done", At: time.Now().UTC()}, session.AttentionDone)
+		e.OnActivity(b.Attempt.SessionID, session.ActivityEntry{Type: session.ActivityAttention, Message: "done", At: time.Now().UTC()}, session.AttentionDone, "")
 	}
 	done()
 	e.mu.Lock()

@@ -1149,7 +1149,7 @@ func TestDoneAndHandoffFinishNothingInAManagedRun(t *testing.T) {
 	_, p := fl.attemptSession(t, build)
 	waitTyped(t, p, 10*time.Second)
 	done := func() {
-		e.OnActivity(build.Attempt.SessionID, session.ActivityEntry{Type: session.ActivityAttention, Message: "done", At: time.Now().UTC()}, session.AttentionDone)
+		e.OnActivity(build.Attempt.SessionID, session.ActivityEntry{Type: session.ActivityAttention, Message: "done", At: time.Now().UTC()}, session.AttentionDone, "")
 	}
 	done()
 	// One reminder, typed; a second done gets none.
@@ -1167,7 +1167,7 @@ func TestDoneAndHandoffFinishNothingInAManagedRun(t *testing.T) {
 		t.Fatalf("done started the review: %+v", ts)
 	}
 	// A handoff is noted, never typed, and starts no one.
-	e.OnActivity(build.Attempt.SessionID, session.ActivityEntry{Type: session.ActivityHandoff, To: "critic", Message: "look at this", At: time.Now().UTC()}, session.AttentionDone)
+	e.OnActivity(build.Attempt.SessionID, session.ActivityEntry{Type: session.ActivityHandoff, To: "critic", Message: "look at this", At: time.Now().UTC()}, session.AttentionDone, "")
 	waitLogged(t, e, run.ID, "sent as a message", 1, 5*time.Second)
 	if n := len(fl.launched()); n != 1 {
 		t.Fatalf("launched %d", n)

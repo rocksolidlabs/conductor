@@ -61,8 +61,10 @@ func (h *eventHub) changed() {
 // entry, the attention state it records, which comes with the entry: set with
 // the entry's stamp on a server session, sent by the host on a hosted one; ""
 // when it is not known (an older host sends none, and a state that is not one
-// of the three is dropped).
-type activitySink func(sessionID string, e session.ActivityEntry, state session.AttentionState)
+// of the three is dropped); and that state's attention kind, "" for every
+// other entry and for a hosted session's (an interrupted turn's done is
+// told by its kind alone, session.KindInterrupted).
+type activitySink func(sessionID string, e session.ActivityEntry, state session.AttentionState, kind string)
 
 func newEventHub() *eventHub { return &eventHub{clients: map[chan []byte]struct{}{}} }
 
@@ -178,22 +180,22 @@ func (h *eventHub) addSink(f activitySink) {
 
 // activity queues an activity entry of a session for every client, with the
 // attention state an attention entry records (eventState), then hands it to
-// every sink with state ("" when it is not known). It is the OnActivity hook
+// every sink with state ("" when it is not known) and kind. It is the OnActivity hook
 // of every session, server and hosted alike, so it runs on the goroutines that
 // record, concurrently and out of order (each entry says when it happened),
 // and it never waits: a client whose queue is past activityQueueLimit misses
 // the entry and keeps its stream.
-func (h *eventHub) activity(sessionID string, e session.ActivityEntry, state session.AttentionState) {
-	h.activityAs(sessionID, e, state, false)
+func (h *eventHub) activity(sessionID string, e session.ActivityEntry, state session.AttentionState, kind string) {
+	h.activityAs(sessionID, e, state, kind, false)
 }
 
 // activityLate is activity for an entry that reached the server late: its
 // clients are sent it marked late, and no sink is offered it.
-func (h *eventHub) activityLate(sessionID string, e session.ActivityEntry, state session.AttentionState) {
-	h.activityAs(sessionID, e, state, true)
+func (h *eventHub) activityLate(sessionID string, e session.ActivityEntry, state session.AttentionState, kind string) {
+	h.activityAs(sessionID, e, state, kind, true)
 }
 
-func (h *eventHub) activityAs(sessionID string, e session.ActivityEntry, state session.AttentionState, late bool) {
+func (h *eventHub) activityAs(sessionID string, e session.ActivityEntry, state session.AttentionState, kind string, late bool) {
 	b, err := json.Marshal(activityEvent{SessionID: sessionID, ActivityEntry: e, State: eventState(e, state), Late: late})
 	h.mu.Lock()
 	if err == nil {
@@ -214,7 +216,7 @@ func (h *eventHub) activityAs(sessionID string, e session.ActivityEntry, state s
 		return
 	}
 	for _, f := range sinks {
-		f(sessionID, e, state)
+		f(sessionID, e, state, kind)
 	}
 }
 

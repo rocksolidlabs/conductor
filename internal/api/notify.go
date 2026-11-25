@@ -69,7 +69,7 @@ func (s *Server) startNotifier(hooks []config.Webhook) *webhookSender {
 // builds the notification only once a sink wants it, builds the webhooks'
 // body once for every webhook that wants it, and queues. Once the webhooks
 // are closed (Shutdown) it queues nothing.
-func (nt *notifier) offer(sessionID string, e session.ActivityEntry, state session.AttentionState) {
+func (nt *notifier) offer(sessionID string, e session.ActivityEntry, state session.AttentionState, _ string) {
 	if nt.hooks.ctx.Err() != nil {
 		return
 	}

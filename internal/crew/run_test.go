@@ -194,11 +194,11 @@ func (f *fakeLauncher) Launch(ctx context.Context, spec LaunchSpec) (*session.Lo
 
 // activity is the sessions' OnActivity: the entry goes to the engine with the
 // state it records, as the server's hook hands it on.
-func (f *fakeLauncher) activity(sessionID string, e session.ActivityEntry, state session.AttentionState) {
+func (f *fakeLauncher) activity(sessionID string, e session.ActivityEntry, state session.AttentionState, _ string) {
 	if f.beforeActivity != nil {
 		f.beforeActivity(sessionID, e)
 	}
-	f.engine.OnActivity(sessionID, e, state)
+	f.engine.OnActivity(sessionID, e, state, "")
 }
 
 // change is the sessions' OnChange: the change goes to the engine, as the
@@ -1011,7 +1011,7 @@ func TestStopStopsEveryMember(t *testing.T) {
 	}
 	stoppedAt := *got.StoppedAt
 	core, _ := fl.member("core")
-	e.OnActivity(core.Info().ID, session.ActivityEntry{Type: session.ActivityAttention, Message: "done", At: time.Now().UTC()}, session.AttentionDone)
+	e.OnActivity(core.Info().ID, session.ActivityEntry{Type: session.ActivityAttention, Message: "done", At: time.Now().UTC()}, session.AttentionDone, "")
 	if err := e.StartMember(t.Context(), run.ID, "docs"); !errors.Is(err, ErrRunStopped) {
 		t.Fatalf("starting a member of a stopped run: %v", err)
 	}

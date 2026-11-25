@@ -36,9 +36,9 @@ func TestPublishServesALocalSessionOverTheRelay(t *testing.T) {
 				pub.OnChange(i)
 			}
 		},
-		OnActivity: func(id string, e session.ActivityEntry, st session.AttentionState) {
+		OnActivity: func(id string, e session.ActivityEntry, st session.AttentionState, _ string) {
 			if pub != nil {
-				pub.OnActivity(id, e, st)
+				pub.OnActivity(id, e, st, "")
 			}
 		},
 	})

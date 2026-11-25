@@ -110,7 +110,7 @@ func TestALateEntryPagesNoOneAndARetoldQuestionPagesOnce(t *testing.T) {
 	e := newTestEnv(t, nil)
 	var mu sync.Mutex
 	var paged []string
-	e.srv.events.addSink(func(_ string, en session.ActivityEntry, st session.AttentionState) {
+	e.srv.events.addSink(func(_ string, en session.ActivityEntry, st session.AttentionState, _ string) {
 		mu.Lock()
 		paged = append(paged, string(st)+":"+en.Message)
 		mu.Unlock()
@@ -159,7 +159,7 @@ func TestARetoldQuestionPagesUnlessItWasOfferedLive(t *testing.T) {
 	e := newTestEnv(t, nil)
 	var mu sync.Mutex
 	var paged []string
-	e.srv.events.addSink(func(_ string, en session.ActivityEntry, st session.AttentionState) {
+	e.srv.events.addSink(func(_ string, en session.ActivityEntry, st session.AttentionState, _ string) {
 		mu.Lock()
 		paged = append(paged, string(st)+":"+en.Message)
 		mu.Unlock()

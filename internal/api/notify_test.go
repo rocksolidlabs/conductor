@@ -233,7 +233,7 @@ func TestWebhooksUnchanged(t *testing.T) {
 			}
 			for _, sid := range []string{id, "not-a-session"} {
 				for _, tc := range cases {
-					e.srv.events.activity(sid, tc.entry, tc.state)
+					e.srv.events.activity(sid, tc.entry, tc.state, "")
 					d := nextAt(t, rcv, at)
 					ms := mainSession{ID: sid}
 					if sid == id {
@@ -428,7 +428,7 @@ func TestBlockedSinkNeverHoldsTheHub(t *testing.T) {
 	first := make(chan struct{})
 	go func() {
 		defer close(first)
-		e.srv.events.activity(id, progress("0"), "")
+		e.srv.events.activity(id, progress("0"), "", "")
 	}()
 	select {
 	case <-stuck.entered:
@@ -450,7 +450,7 @@ func TestBlockedSinkNeverHoldsTheHub(t *testing.T) {
 			for n, _ := fastQ.stats(); n >= ext.SinkQueue/2; n, _ = fastQ.stats() {
 				time.Sleep(time.Millisecond)
 			}
-			e.srv.events.activity(id, progress(fmt.Sprint(i)), "")
+			e.srv.events.activity(id, progress(fmt.Sprint(i)), "", "")
 		}
 	}()
 	select {
@@ -470,7 +470,7 @@ func TestBlockedSinkNeverHoldsTheHub(t *testing.T) {
 		t.Fatalf("the fast sink got %v", g)
 	}
 	// The webhooks deliver.
-	e.srv.events.activity(id, session.ActivityEntry{At: time.Now().UTC(), Type: session.ActivityError, Message: "boom"}, "")
+	e.srv.events.activity(id, session.ActivityEntry{At: time.Now().UTC(), Type: session.ActivityError, Message: "boom"}, "", "")
 	if d := rcv.next(t); d.message(t) != "boom" {
 		t.Fatalf("the webhook got %s", d.body)
 	}
@@ -546,7 +546,7 @@ func TestSinkEventsFilter(t *testing.T) {
 		{session.ActivityEntry{At: now, Type: session.ActivityProgress, Message: "p"}, ""},
 	}
 	for _, x := range entries {
-		e.srv.events.activity(id, x.e, x.state)
+		e.srv.events.activity(id, x.e, x.state, "")
 	}
 	// A notice names an event, which no sink but those taking notices
 	// counts it by.
@@ -601,15 +601,15 @@ func TestSinkEventsFilter(t *testing.T) {
 		if m[0] == 'e' {
 			typ = session.ActivityError
 		}
-		e2.srv.events.activity("s1", session.ActivityEntry{At: now, Type: typ, Message: m}, "")
+		e2.srv.events.activity("s1", session.ActivityEntry{At: now, Type: typ, Message: m}, "", "")
 	}
 	if n, _ := sinkOf(t, e2.srv, "late").queue.stats(); n != 4 {
 		t.Fatalf("an unread sink holds %d, want all 4", n)
 	}
 	e2.srv.StartExtensions(t.Context())
 	waitState(t, e2.srv, "late", extStarted)
-	e2.srv.events.activity("s1", session.ActivityEntry{At: now, Type: session.ActivityError, Message: "e3"}, "")
-	e2.srv.events.activity("s1", session.ActivityEntry{At: now, Type: session.ActivityProgress, Message: "p3"}, "")
+	e2.srv.events.activity("s1", session.ActivityEntry{At: now, Type: session.ActivityError, Message: "e3"}, "", "")
+	e2.srv.events.activity("s1", session.ActivityEntry{At: now, Type: session.ActivityProgress, Message: "p3"}, "", "")
 	got := late.waitFor(t, "e3", func(ns []ext.Notification) bool { return len(ns) > 0 && ns[len(ns)-1].Message == "e3" })
 	if ms := messages(got, session.ActivityError); len(got) != 3 || !slices.Equal(ms, []string{"e1", "e2", "e3"}) {
 		t.Fatalf("the late sink was delivered %+v", got)
@@ -711,7 +711,7 @@ func TestProviderNoticesCannotLoop(t *testing.T) {
 		}
 		// A session entry after the notice: the sender's sink, which takes
 		// every entry, is handed it and was handed nothing before it.
-		e.srv.events.activity("s1", session.ActivityEntry{At: time.Now().UTC(), Type: session.ActivityProgress, Message: "after"}, "")
+		e.srv.events.activity("s1", session.ActivityEntry{At: time.Now().UTC(), Type: session.ActivityProgress, Message: "after"}, "", "")
 		got := sender.waitFor(t, "the entry", func(ns []ext.Notification) bool { return len(ns) > 0 })
 		if len(got) != 1 || got[0].Message != "after" || got[0].Type != session.ActivityProgress {
 			t.Fatalf("the sender's sink was given %+v", got)
@@ -755,7 +755,7 @@ func TestSinkPanicRecovered(t *testing.T) {
 	other := &recSink{name: "other"}
 	e := newNotifyEnv(t, logTo(&logs), nil, breaks, noEvents, other)
 	for _, m := range []string{"panic", "after"} {
-		e.srv.events.activity("s1", session.ActivityEntry{At: time.Now().UTC(), Type: session.ActivityProgress, Message: m}, "")
+		e.srv.events.activity("s1", session.ActivityEntry{At: time.Now().UTC(), Type: session.ActivityProgress, Message: m}, "", "")
 	}
 	got := breaks.waitFor(t, "after", func(ns []ext.Notification) bool { return len(ns) > 0 })
 	if len(got) != 1 || got[0].Message != "after" {
@@ -842,19 +842,19 @@ func TestSinksInMainsOrder(t *testing.T) {
 	saw := make(chan seen, 4)
 	hook, sink := e.srv.webhooks.hooks[0], sinkOf(t, e.srv, "held")
 	runs := sinks[2]
-	e.srv.events.sinks = []activitySink{sinks[0], sinks[1], func(id string, en session.ActivityEntry, st session.AttentionState) {
+	e.srv.events.sinks = []activitySink{sinks[0], sinks[1], func(id string, en session.ActivityEntry, st session.AttentionState, _ string) {
 		if id == "probe" {
 			w, _ := hook.stats()
 			s, _ := sink.queue.stats()
 			saw <- seen{w, s}
 		}
-		runs(id, en, st)
+		runs(id, en, st, "")
 	}}
 	e.srv.events.mu.Unlock()
 	progress := func(m string) session.ActivityEntry {
 		return session.ActivityEntry{At: time.Now().UTC(), Type: session.ActivityProgress, Message: m}
 	}
-	e.srv.events.activity("probe", progress("0"), "")
+	e.srv.events.activity("probe", progress("0"), "", "")
 	<-saw
 	select {
 	case <-stalled:
@@ -862,7 +862,7 @@ func TestSinksInMainsOrder(t *testing.T) {
 		t.Fatal("the webhook was never called")
 	}
 	// The webhook is held with 0; 1 waits in its queue when the engine has it.
-	e.srv.events.activity("probe", progress("1"), "")
+	e.srv.events.activity("probe", progress("1"), "", "")
 	if s := <-saw; s.webhook != 1 || s.sink != 2 {
 		t.Fatalf("as the engine was handed the entry, the webhook held %d and the sink %d: want 1 and 2", s.webhook, s.sink)
 	}
@@ -943,7 +943,7 @@ func TestSinkFirstNotifyGetsFullDeliveryWait(t *testing.T) {
 	release := func() { releaseOnce.Do(func() { close(slow.gate) }) }
 	t.Cleanup(release)
 	for _, m := range []string{"0", "1"} {
-		e.srv.events.activity("s1", session.ActivityEntry{At: time.Now().UTC(), Type: session.ActivityProgress, Message: m}, "")
+		e.srv.events.activity("s1", session.ActivityEntry{At: time.Now().UTC(), Type: session.ActivityProgress, Message: m}, "", "")
 	}
 	select {
 	case <-slow.entered:

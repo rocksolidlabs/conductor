@@ -150,11 +150,11 @@ func activityTestAgent(t *testing.T, delayStatus time.Duration) (*agent, chan an
 	go a.activity.run(t.Context())
 	hook := a.onLocalActivity
 	if delayStatus > 0 {
-		hook = func(id string, e session.ActivityEntry, state session.AttentionState) {
+		hook = func(id string, e session.ActivityEntry, state session.AttentionState, _ string) {
 			if e.Type == session.ActivityStatus {
 				time.Sleep(delayStatus)
 			}
-			a.onLocalActivity(id, e, state)
+			a.onLocalActivity(id, e, state, "")
 		}
 	}
 	local := session.NewLocal(session.Info{ID: "sess-1", Cwd: dir, Cols: 80, Rows: 24}, proc, session.Options{OnActivity: hook})
@@ -189,7 +189,7 @@ func TestHostRecordingNeverWaitsForTheConnection(t *testing.T) {
 	go func() {
 		defer close(done)
 		for i := 0; i < 3*activityQueue; i++ {
-			a.onLocalActivity("sess-1", entryMessage("n"), "")
+			a.onLocalActivity("sess-1", entryMessage("n"), "", "")
 		}
 	}()
 	select {

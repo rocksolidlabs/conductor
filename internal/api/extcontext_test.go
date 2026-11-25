@@ -441,7 +441,7 @@ func TestTouchesReachProviders(t *testing.T) {
 	for sent := 0; sent < ext.TouchQueue+extra; {
 		n := min(ext.TouchQueue/2, ext.TouchQueue+extra-sent)
 		for i := range n {
-			e.srv.events.activity(id, session.ActivityEntry{Type: session.ActivityFile, Op: "read", Path: fmt.Sprintf("flood/%d.go", sent+i)}, "")
+			e.srv.events.activity(id, session.ActivityEntry{Type: session.ActivityFile, Op: "read", Path: fmt.Sprintf("flood/%d.go", sent+i)}, "", "")
 		}
 		for i := range n {
 			if got := next(); got.Path != filepath.Join(e.root, fmt.Sprintf("flood/%d.go", sent+i)) {

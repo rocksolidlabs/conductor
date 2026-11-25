@@ -19,7 +19,7 @@ func TestEventHubActivityFormat(t *testing.T) {
 	h := newEventHub()
 	ch := h.subscribe()
 	at := time.Date(2026, 9, 29, 12, 0, 0, 0, time.UTC)
-	h.activity("s1", session.ActivityEntry{At: at, Type: session.ActivityArtifact, ByName: "agent", Message: "PR", URL: "https://x/1"}, "")
+	h.activity("s1", session.ActivityEntry{At: at, Type: session.ActivityArtifact, ByName: "agent", Message: "PR", URL: "https://x/1"}, "", "")
 	want := "event: activity\n" +
 		`data: {"sessionId":"s1","at":"2026-09-29T12:00:00Z","type":"artifact","byName":"agent","message":"PR","url":"https://x/1"}` + "\n\n"
 	select {
@@ -37,7 +37,7 @@ func TestEventHubActivityFormat(t *testing.T) {
 func TestEventHubActivityStaysOneMessage(t *testing.T) {
 	h := newEventHub()
 	ch := h.subscribe()
-	h.activity("s1", session.ActivityEntry{Type: session.ActivityError, Message: "a\nb\r\nc d\n\ndata: forged\nevent: session"}, "")
+	h.activity("s1", session.ActivityEntry{Type: session.ActivityError, Message: "a\nb\r\nc d\n\ndata: forged\nevent: session"}, "", "")
 	msg := string(<-ch)
 	if strings.Count(msg, "\n") != 3 || !strings.HasSuffix(msg, "\n\n") || !strings.HasPrefix(msg, "event: activity\ndata: {") {
 		t.Fatalf("message is not one event: %q", msg)
@@ -54,7 +54,7 @@ func TestEventHubActivityNeverBlocksOrEvictsAClientThatStoppedReading(t *testing
 	go func() {
 		defer close(done)
 		for i := 0; i < 20*eventQueue; i++ {
-			h.activity("s", session.ActivityEntry{Type: session.ActivityProgress, Message: "n"}, "")
+			h.activity("s", session.ActivityEntry{Type: session.ActivityProgress, Message: "n"}, "", "")
 		}
 	}()
 	select {
@@ -96,12 +96,12 @@ func TestEventHubActivityResumesOnceTheClientCatchesUp(t *testing.T) {
 	h := newEventHub()
 	ch := h.subscribe()
 	for i := 0; i < 2*eventQueue; i++ {
-		h.activity("s", session.ActivityEntry{Type: session.ActivityProgress}, "")
+		h.activity("s", session.ActivityEntry{Type: session.ActivityProgress}, "", "")
 	}
 	for len(ch) > 0 {
 		<-ch
 	}
-	h.activity("s", session.ActivityEntry{Type: session.ActivityError, Message: "after"}, "")
+	h.activity("s", session.ActivityEntry{Type: session.ActivityError, Message: "after"}, "", "")
 	select {
 	case msg := <-ch:
 		if !strings.Contains(string(msg), `"message":"after"`) {
@@ -126,7 +126,7 @@ func TestEventHubActivityReachesEveryClientThatReads(t *testing.T) {
 	const batches, perBatch = 10, 100
 	for b := 1; b <= batches; b++ {
 		for i := 0; i < perBatch; i++ {
-			h.activity("s", session.ActivityEntry{Type: session.ActivityProgress}, "")
+			h.activity("s", session.ActivityEntry{Type: session.ActivityProgress}, "", "")
 		}
 		deadline := time.Now().Add(5 * time.Second)
 		for got.Load() < int64(b*perBatch) && time.Now().Before(deadline) {
@@ -174,7 +174,7 @@ func TestEventHubIsSafeForConcurrentUse(t *testing.T) {
 		go func() {
 			defer producers.Done()
 			for i := 0; i < 300; i++ {
-				h.activity("s", session.ActivityEntry{Type: session.ActivityToolUse, Tool: "Bash"}, "")
+				h.activity("s", session.ActivityEntry{Type: session.ActivityToolUse, Tool: "Bash"}, "", "")
 				if i%50 == 0 {
 					h.publishIf(session.Info{ID: "s"}, nil)
 					h.removed("s")
@@ -200,16 +200,16 @@ func TestEventHubSinksGetEveryEntryAfterTheClients(t *testing.T) {
 	}
 	var sunk []got
 	ch := h.subscribe()
-	h.addSink(func(id string, e session.ActivityEntry, state session.AttentionState) {
+	h.addSink(func(id string, e session.ActivityEntry, state session.AttentionState, _ string) {
 		sunk = append(sunk, got{id, e, state, len(ch)})
 	})
 	e := session.ActivityEntry{At: time.Date(2026, 9, 29, 12, 0, 0, 0, time.UTC), Type: session.ActivityAttention, Message: "approve?"}
-	h.activity("s1", e, session.AttentionNeedsInput)
+	h.activity("s1", e, session.AttentionNeedsInput, "")
 	if msg := string(<-ch); !strings.Contains(msg, `"state":"needs_input"`) || !strings.Contains(msg, `"message":"approve?"`) {
 		t.Fatalf("a client was sent %q", msg)
 	}
 	h.unsubscribe(ch)
-	h.activity("s2", e, "")
+	h.activity("s2", e, "", "")
 	if len(sunk) != 2 || sunk[0] != (got{"s1", e, session.AttentionNeedsInput, 1}) || sunk[1] != (got{"s2", e, "", 0}) {
 		t.Fatalf("sunk %+v", sunk)
 	}
@@ -222,9 +222,9 @@ func TestEventHubActivityCarriesTheAttentionState(t *testing.T) {
 	h := newEventHub()
 	ch := h.subscribe()
 	at := time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC)
-	h.activity("s1", session.ActivityEntry{At: at, Type: session.ActivityAttention, Message: "Allow Bash?"}, session.AttentionNeedsInput)
-	h.activity("s1", session.ActivityEntry{At: at, Type: session.ActivityProgress, Message: "1/3"}, session.AttentionNeedsInput)
-	h.activity("s1", session.ActivityEntry{At: at, Type: session.ActivityAttention, Message: "x"}, "bogus")
+	h.activity("s1", session.ActivityEntry{At: at, Type: session.ActivityAttention, Message: "Allow Bash?"}, session.AttentionNeedsInput, "")
+	h.activity("s1", session.ActivityEntry{At: at, Type: session.ActivityProgress, Message: "1/3"}, session.AttentionNeedsInput, "")
+	h.activity("s1", session.ActivityEntry{At: at, Type: session.ActivityAttention, Message: "x"}, "bogus", "")
 	for _, want := range []string{
 		`{"sessionId":"s1","at":"2026-10-01T09:00:00Z","type":"attention","message":"Allow Bash?","state":"needs_input"}`,
 		`{"sessionId":"s1","at":"2026-10-01T09:00:00Z","type":"progress","message":"1/3"}`,
@@ -263,7 +263,7 @@ func TestEventHubChatFormat(t *testing.T) {
 	h := newEventHub()
 	ch := h.subscribe()
 	var sunk atomic.Int32
-	h.addSink(func(string, session.ActivityEntry, session.AttentionState) { sunk.Add(1) })
+	h.addSink(func(string, session.ActivityEntry, session.AttentionState, string) { sunk.Add(1) })
 	at := time.Date(2026, 10, 6, 8, 32, 0, 0, time.UTC)
 	h.chat("s1", "", session.ChatMessage{ID: "m1", At: at, Scope: "session", Kind: "message", By: session.ChatBy{ID: "v1", Name: "Nate", Role: session.RoleControl}, Text: "hello <all>", Nonce: "n1"})
 	want := "event: chat\n" +
@@ -643,7 +643,7 @@ func TestEventHubDispatchEventDropsAClientThatCannotKeepUp(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newEventHub()
 			var sunk atomic.Int32
-			h.addSink(func(string, session.ActivityEntry, session.AttentionState) { sunk.Add(1) })
+			h.addSink(func(string, session.ActivityEntry, session.AttentionState, string) { sunk.Add(1) })
 			full, reading := h.subscribe(), h.subscribe()
 			for len(full) < eventQueue {
 				full <- []byte("event: session\ndata: {}\n\n")

@@ -363,7 +363,7 @@ func TestStatusesLeaveAQuestionHeldOnTheScreen(t *testing.T) {
 func TestAWorkingStatusReadUnderADialogShowsOnceTheDialogIsAnswered(t *testing.T) {
 	var mu sync.Mutex
 	var states []AttentionState
-	s, p := newLocalWith(t, titled(200*time.Millisecond, Options{OnActivity: func(_ string, e ActivityEntry, st AttentionState) {
+	s, p := newLocalWith(t, titled(200*time.Millisecond, Options{OnActivity: func(_ string, e ActivityEntry, st AttentionState, _ string) {
 		if e.Type == ActivityAttention {
 			mu.Lock()
 			states = append(states, st)

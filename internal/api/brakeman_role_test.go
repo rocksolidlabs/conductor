@@ -171,7 +171,7 @@ func TestABriefingWakesNothing(t *testing.T) {
 	b.slotFree(t)
 	// Its run's changes and its session's question reach the sources.
 	b.desk.runChanged(run)
-	b.desk.activity(sid, session.ActivityEntry{Type: session.ActivityAttention}, session.AttentionNeedsInput)
+	b.desk.activity(sid, session.ActivityEntry{Type: session.ActivityAttention}, session.AttentionNeedsInput, "")
 	if r, ok := b.srv.runs.Get(run); !ok || len(b.desk.runWakes(r)) != 0 {
 		t.Fatalf("a Brakeman turn's run gives wakes: %v", ok)
 	}

@@ -72,7 +72,7 @@ func TestRecordServerSpendsNoToken(t *testing.T) {
 		mu     sync.Mutex
 		hooked []ActivityEntry
 	)
-	s, _ := newLocalWith(t, Options{ScrollbackBytes: 4096, OnActivity: func(_ string, e ActivityEntry, _ AttentionState) {
+	s, _ := newLocalWith(t, Options{ScrollbackBytes: 4096, OnActivity: func(_ string, e ActivityEntry, _ AttentionState, _ string) {
 		if e.Type == ActivityArtifact {
 			mu.Lock()
 			hooked = append(hooked, e)
@@ -104,7 +104,7 @@ func TestRecordServerSpendsNoToken(t *testing.T) {
 
 func TestRecordRateLimitsPerSession(t *testing.T) {
 	var got int
-	s, _ := newLocalWith(t, Options{ScrollbackBytes: 4096, OnActivity: func(string, ActivityEntry, AttentionState) { got++ }})
+	s, _ := newLocalWith(t, Options{ScrollbackBytes: 4096, OnActivity: func(string, ActivityEntry, AttentionState, string) { got++ }})
 	accepted := 0
 	for i := 0; i < 200; i++ {
 		if s.Record(ActivityEntry{Type: ActivityProgress, Message: "x"}) {
@@ -145,7 +145,7 @@ func TestRecordDropsAreNotStoredBroadcastOrReported(t *testing.T) {
 	logs := &syncBuffer{}
 	s, _ := newLocalWith(t, Options{
 		Log: slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
-		OnActivity: func(_ string, e ActivityEntry, _ AttentionState) {
+		OnActivity: func(_ string, e ActivityEntry, _ AttentionState, _ string) {
 			hmu.Lock()
 			hooked[e.Message] = true
 			hmu.Unlock()
@@ -220,7 +220,7 @@ func drainBucket(s *Local) {
 func TestRecordSessionEntriesBypassTheBucket(t *testing.T) {
 	var hmu sync.Mutex
 	hooked := map[string]bool{}
-	s, _ := newLocalWith(t, Options{OnActivity: func(_ string, e ActivityEntry, _ AttentionState) {
+	s, _ := newLocalWith(t, Options{OnActivity: func(_ string, e ActivityEntry, _ AttentionState, _ string) {
 		hmu.Lock()
 		hooked[e.Message] = true
 		hmu.Unlock()
@@ -316,7 +316,7 @@ type attentionHook struct {
 	got []ActivityEntry
 }
 
-func (h *attentionHook) hook(_ string, e ActivityEntry, _ AttentionState) {
+func (h *attentionHook) hook(_ string, e ActivityEntry, _ AttentionState, _ string) {
 	if e.Type != ActivityAttention {
 		return
 	}
@@ -534,7 +534,7 @@ func TestOnActivityRunsAfterTheBroadcastAndOutsideTheLock(t *testing.T) {
 	sink := newChanSink(false)
 	got := make(chan seen, 1)
 	var s *Local
-	s, _ = newLocalWith(t, Options{OnActivity: func(id string, e ActivityEntry, _ AttentionState) {
+	s, _ = newLocalWith(t, Options{OnActivity: func(id string, e ActivityEntry, _ AttentionState, _ string) {
 		if e.Type != ActivityArtifact {
 			return
 		}
@@ -600,7 +600,7 @@ func TestOnActivityGetsTheStateTheEntryRecords(t *testing.T) {
 	t.Cleanup(letGo) // a failed test does not leave the hook held
 	var s *Local
 	var shown AttentionState // what the session shows when the held hook goes on
-	s, _ = newLocalWith(t, Options{OnActivity: func(_ string, e ActivityEntry, state AttentionState) {
+	s, _ = newLocalWith(t, Options{OnActivity: func(_ string, e ActivityEntry, state AttentionState, _ string) {
 		if e.Message == "Allow Bash?" {
 			close(entered)
 			<-release

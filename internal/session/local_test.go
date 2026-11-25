@@ -381,7 +381,7 @@ func TestSessionEndedLogShowsTheExitCode(t *testing.T) {
 		_, p := newLocalWith(t, Options{
 			Log: slog.New(slog.NewTextHandler(logs, nil)),
 			// The status row is recorded after the log line, in the same goroutine.
-			OnActivity: func(_ string, e ActivityEntry, _ AttentionState) {
+			OnActivity: func(_ string, e ActivityEntry, _ AttentionState, _ string) {
 				if e.Type == ActivityStatus {
 					status <- struct{}{}
 				}
