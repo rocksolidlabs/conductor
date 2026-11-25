@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/rocksolidlabs/conductor/internal/session"
@@ -119,8 +120,13 @@ func (s *Server) handlePermission(w http.ResponseWriter, r *http.Request) {
 	dec := json.NewDecoder(bytes.NewReader(body))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&req); err != nil || dec.More() || req.Tool == "" || len(req.Input) == 0 {
-		// The input's words are never in an error's.
-		writeError(w, http.StatusBadRequest, "invalid_request", `the body is {"call", "tool", "input"}`)
+		// The input's words are never in an error's: a field unknown is
+		// named by its name alone, anything else in the route's words.
+		words := `the body is {"call", "tool", "input"}`
+		if err != nil && strings.HasPrefix(err.Error(), "json: unknown field ") {
+			words = err.Error()
+		}
+		writeError(w, http.StatusBadRequest, "invalid_request", words)
 		return
 	}
 	replied := false
