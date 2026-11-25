@@ -142,14 +142,7 @@ func (s *Server) chatStart(local *session.Local) (session.ProtocolStart, error) 
 			}
 			l.gate.qualified.Store(true)
 		}
-		var yoloArgs []string
-		if l.yolo && l.agent.Yolo != nil {
-			yoloArgs = slices.Clone(l.agent.Yolo.Args)
-		}
-		argv, err := agentproto.ClaudeArgs(agentproto.ClaudeLaunch{
-			Command: l.agent.Command, Protocol: l.agent.Protocol.Args, Conversation: conversation,
-			Model: l.model, Yolo: l.yolo, YoloArgs: yoloArgs, LaunchArgs: l.args, HooksDir: hooks, NoMCP: !mcp,
-		})
+		argv, err := chatArgv(l, conversation, hooks, mcp)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -170,4 +163,25 @@ func (s *Server) chatStart(local *session.Local) (session.ProtocolStart, error) 
 		})
 		return session.PipesChild(pipes), driver, nil
 	}, nil
+}
+
+// chatArgv is the argv of l's chat's child on conversation (design 4),
+// with the hooks directory and whether the server's MCP is on.
+func chatArgv(l *chatLaunch, conversation, hooks string, mcp bool) ([]string, error) {
+	var yoloArgs []string
+	if l.yolo && l.agent.Yolo != nil {
+		yoloArgs = slices.Clone(l.agent.Yolo.Args)
+	}
+	return agentproto.ClaudeArgs(agentproto.ClaudeLaunch{
+		Command: l.agent.Command, Protocol: l.agent.Protocol.Args, Conversation: conversation,
+		Model: l.model, Yolo: l.yolo, YoloArgs: yoloArgs, LaunchArgs: l.args, HooksDir: hooks, NoMCP: !mcp,
+	})
+}
+
+// chatArgsCheck is the refusal the chat's child's argv would meet for l's
+// arguments, asked before a move stops anything: the argv is built as the
+// start builds it, on a conversation that only has the shape of one.
+func (s *Server) chatArgsCheck(l *chatLaunch) error {
+	_, err := chatArgv(l, "00000000-0000-4000-8000-000000000000", agents.HooksDir(s.cfg.DataDir), s.cfg.MCP())
+	return err
 }
