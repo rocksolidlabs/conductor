@@ -628,7 +628,7 @@ func ChatErrorFrame(err error, requestID string) []byte {
 	switch {
 	case errors.As(err, &notSent):
 		code, msg = proto.ErrCodeNotSent, notSent.Reason
-	case errors.Is(err, ErrTrustQuestion), errors.Is(err, ErrQuestion):
+	case errors.Is(err, ErrTrustQuestion), errors.Is(err, ErrQuestion), errors.Is(err, ErrNotAtPrompt):
 		code = proto.ErrCodeNotSent
 		msg, _ = NotSentWords(err)
 	case errors.Is(err, ErrChatRateLimited):

@@ -25,10 +25,13 @@ import "regexp"
 // Submit asks it before the text and the text's guard again as the writer
 // takes the text. A line that is an Enter alone is judged by it as the
 // writer takes the Enter. The Enter of a line with text keeps the guard it
-// had (enterGuard, startupMayShow): the agent's prompt holding the line's
-// own text is not read by the prompt's shape (a long line wraps past the
-// rows the shape takes), so its Enter is held where it was held before.
-// Nothing of this keeps a state: the rule reads the screen as it is.
+// had (enterGuard, startupMayShow). For an agent with a prompt shape every
+// line that names no question is also typed only at the agent's prompt
+// for the whole of the session, its text and its Enter (promptOnly): the
+// Enter where the screen is the prompt, or the prompt holding the line's
+// own text (atPromptForEnter), since a long line wraps past the rows the
+// shape takes. Nothing of this keeps a state: the rule reads the screen
+// as it is.
 
 // promptShown reports whether text, a whole frame, shows the agent's
 // prompt by its shape (shape; none for an agent without one) with no

@@ -116,12 +116,13 @@ type Options struct {
 	// since its Enter would pick whatever the dialog highlights.
 	TrustAnswers []Option
 	// PromptShape, when set, matches the agent's own prompt at rest on its
-	// whole screen (the catalog's promptShape): a submission OnlyAtPrompt
-	// is typed, and entered, only while the screen matches and shows no
-	// dialog's numbered choice (atPrompt), and while the startup watch
-	// lasts a line's text is typed only where it matches (startupLine). A
-	// server's own session and a hosted one whose host was sent the shape
-	// set it alike (agents.Watch.Apply).
+	// whole screen (the catalog's promptShape): for the whole of the
+	// session every line Submit types that names no question is typed,
+	// and entered, only while the screen matches and shows no dialog's
+	// numbered choice (atPrompt, promptOnly), and while the startup watch
+	// lasts a line's text is refused in the startup words where it does
+	// not match (startupLine). A server's own session and a hosted one
+	// whose host was sent the shape set it alike (agents.Watch.Apply).
 	PromptShape *regexp.Regexp
 	// Questions are the agent's other startup questions (the catalog's
 	// questions; round 13, G2c), held exactly as the trust question is:
@@ -5869,7 +5870,7 @@ func AnswerResult(reqID string, err error) []byte {
 		code, msg = proto.ErrCodeQuestionAnswered, err.Error()
 	case errors.Is(err, ErrLineStranded):
 		msg = LineStrandedWords
-	case errors.Is(err, ErrTrustQuestion), errors.Is(err, ErrQuestion):
+	case errors.Is(err, ErrTrustQuestion), errors.Is(err, ErrQuestion), errors.Is(err, ErrNotAtPrompt):
 		code = proto.ErrCodeNotSent
 		msg, _ = NotSentWords(err)
 	case errors.Is(err, ErrReadOnly):
@@ -6019,8 +6020,9 @@ func (s *Local) ScreenLines(n int) []string {
 }
 
 // atPrompt reports whether the screen shows the agent's prompt, the one
-// screen a submission OnlyAtPrompt is typed into: read whole, as one frame
-// (PatternWatcher.Frame: every row, from the screen the pump feeds before
+// screen a line typed only at the prompt (promptOnly) is typed into: read
+// whole, as one frame (PatternWatcher.Frame: every row, from the screen
+// the pump feeds before
 // the viewers and before the scan for what says the agent waits), it shows
 // everything the program drew as it drew it (no synchronized update under
 // way, nothing cut by a window made smaller: a dialog cut away is not
@@ -6055,14 +6057,35 @@ const promptHolds = "text"
 // narrow window, scrolled out of the composer) is not found, and the
 // screen is not taken for the prompt holding it.
 func (s *Local) atPromptHolding(text string) bool {
-	words := strings.Fields(text)
-	if len(words) == 0 {
+	if len(strings.Fields(text)) == 0 {
 		return s.atPrompt()
 	}
+	frame, _, uncut, _, _ := s.shot.Frame()
+	return uncut && promptHolding(frame, text, s.opts.PromptShape)
+}
+
+// atPromptForEnter reports whether a line's Enter may be written on the
+// screen as it is now, the line typed only at the agent's prompt
+// (promptOnly): one whole frame that is the agent's prompt by atPrompt's
+// rule, or, the line's text typed, the prompt holding that text by
+// atPromptHolding's (a line longer than the rows the prompt's shape
+// takes wraps over more of them). typed is the text written, "" for a
+// line that is an Enter alone.
+func (s *Local) atPromptForEnter(typed string) bool {
 	frame, _, uncut, _, _ := s.shot.Frame()
 	if !uncut {
 		return false
 	}
+	if promptShown(frame, s.opts.PromptShape) {
+		return true
+	}
+	return len(strings.Fields(typed)) > 0 && promptHolding(frame, typed, s.opts.PromptShape)
+}
+
+// promptHolding is atPromptHolding's rule on frame, a whole frame, for a
+// text of at least one word: a pure function of them and shape.
+func promptHolding(frame, text string, shape *regexp.Regexp) bool {
+	words := strings.Fields(text)
 	frame = plainSpaces(frame)
 	quoted := make([]string, len(words))
 	for i, w := range words {
@@ -6086,7 +6109,7 @@ func (s *Local) atPromptHolding(text string) bool {
 		strings.TrimSpace(frame[at[1]:rowEnd]) != "" {
 		return false
 	}
-	return promptShown(frame[:at[0]]+promptHolds+frame[at[1]:], s.opts.PromptShape)
+	return promptShown(frame[:at[0]]+promptHolds+frame[at[1]:], shape)
 }
 
 // awaitEcho waits, up to Options.EchoWait, for the screen to show the

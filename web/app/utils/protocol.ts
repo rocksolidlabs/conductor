@@ -81,8 +81,9 @@ export interface AnswerMsg {
 /**
  * A line to type (`submit`, client → owner, controllers only), as a reply box does. With `reqId` (at most 32 bytes of printable
  * ASCII, to an owner whose welcome said `submitAck`, #322) the owner answers it with `submit_ok` once the line is entered, or an
- * `error` naming it (`not_sent` when `unlessWaiting` held it back from a session that asks, nothing typed; `input_failed` when the
- * line was typed and not entered). Without `reqId` nothing is answered.
+ * `error` naming it (`not_sent` when `unlessWaiting` held it back from a session that asks, or when the line was refused with nothing
+ * typed, its words saying why: a question on the screen, or, for an agent with a prompt shape, a screen that is not its prompt;
+ * `input_failed` when the line was typed and not entered). Without `reqId` nothing is answered.
  */
 export interface SubmitMsg {
   t: 'submit'
