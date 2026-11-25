@@ -535,7 +535,7 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 	release := true
 	defer func() {
 		if release {
-			<-s.submitting
+			s.giveTurn()
 		}
 	}()
 	// Its link, or its sender, withdrawn while it waited for the turn (the
@@ -713,7 +713,7 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 		// the text, its claim let go as the hold shows.
 		release = false
 		go func() {
-			defer func() { <-s.submitting }()
+			defer s.giveTurn()
 			s.holdTyped()
 		}()
 		return res, why
@@ -741,6 +741,15 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 		return res, ErrSubmitPending
 	}
 	return res, err
+}
+
+// giveTurn gives the session's turn back, and makes a move noted while
+// the turn was taken (move.go) once the session is at rest: a turn held
+// for a person, or a line's Enter under way, gives it back after the
+// attention change that would have made it.
+func (s *Local) giveTurn() {
+	<-s.submitting
+	s.tryNoted()
 }
 
 // maxTurnWaiters bounds the submissions that wait for the session's turn
@@ -795,7 +804,7 @@ var errEnterLater = errors.New("session: the Enter is to be pressed later")
 // answer; then it gives the turn back. The checks before an Enter are made
 // again, as for any.
 func (s *Local) finishEnter(sub Submission, res SubmitResult, st submitState) {
-	defer func() { <-s.submitting }()
+	defer s.giveTurn()
 	defer st.settle(s, sub)
 	s.finishLine(sub, res, st)
 }
@@ -1100,7 +1109,7 @@ func (s *Local) typedEntry(sub Submission, text string, st submitState) {
 // back. The session's end or a prompt come meanwhile ends it without its
 // Enter, which is logged.
 func (s *Local) finishSubmission(landed <-chan error, sub Submission, text string, st submitState) {
-	defer func() { <-s.submitting }()
+	defer s.giveTurn()
 	defer st.settle(s, sub)
 	select {
 	case err := <-landed:
@@ -1488,7 +1497,7 @@ func (s *Local) landEnter(sub Submission, res SubmitResult, st submitState) (Sub
 // holdTyped) as for any Enter the screen refused, so that no later line
 // joins the text.
 func (s *Local) finishLanding(sub Submission, res SubmitResult, st submitState) {
-	defer func() { <-s.submitting }()
+	defer s.giveTurn()
 	defer st.settle(s, sub)
 	res, err := s.landEnter(sub, res, st)
 	err = st.withdrawnTyped(res, err)

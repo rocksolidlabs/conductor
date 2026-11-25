@@ -164,7 +164,16 @@ func TestAMoveWaitsForAHeldTurnAndAnEnterUnderWay(t *testing.T) {
 			t.Fatalf("written %q", got)
 		}
 		moveWaitFor(t, "the hold's end", func() bool { return !s.TurnHeld() })
+		// The turn the hold took is given back as its goroutine ends; the
+		// agent's done can come first. Taken here for that moment (the
+		// session's turn is a slot), the done comes while it is taken and
+		// the move stays noted; the turn given back makes it.
+		s.submitting <- struct{}{}
 		s.SetAttention(AttentionDone, "its turn", SourceAPI)
+		if s.Way() != WayTerminal || s.Moving() {
+			t.Fatalf("moved with the turn taken: way %q, moving %v", s.Way(), s.Moving())
+		}
+		s.giveTurn()
 		moveWaitFor(t, "the move made", func() bool { return s.Way() == WayProtocol && !s.Moving() })
 	})
 	t.Run("an Enter under way", func(t *testing.T) {
