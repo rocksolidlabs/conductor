@@ -81,7 +81,7 @@ const yolo = computed({
 const runAsItems = MEMBERS_RUN_AS.items.map((i) => ({ ...i }))
 const runAs = computed({
   get: () => membersRunAs(crew.value),
-  set: (v: string | number) => (crew.value = withMembersRunAs(crew.value, String(v))),
+  set: (v: string) => (crew.value = withMembersRunAs(crew.value, v)),
 })
 
 const viewLink = computed({
@@ -232,8 +232,8 @@ function refused(message: string) {
       <USelect v-model="coordination" :items="coordinationItems" :aria-label="SETUP_WORDS.start" class="w-full" data-crew-coordination />
     </UFormField>
 
-    <UFormField :label="MEMBERS_RUN_AS.label" name="way" :help="MEMBERS_RUN_AS.chatLine" :ui="{ help: 'mt-1 text-xs' }">
-      <UTabs v-model="runAs" :items="runAsItems" :content="false" size="xs" color="neutral" class="w-fit" :aria-label="MEMBERS_RUN_AS.label" data-crew-way />
+    <UFormField :label="MEMBERS_RUN_AS.label" name="way" :help="MEMBERS_RUN_AS.chatLine" :ui="{ help: 'mt-1 text-xs leading-4' }">
+      <USelect v-model="runAs" :items="runAsItems" :aria-label="MEMBERS_RUN_AS.label" class="w-full sm:w-60" data-crew-way />
     </UFormField>
 
     <!-- The options a crew rarely changes, folded; the line beside the toggle says what each is now. -->
