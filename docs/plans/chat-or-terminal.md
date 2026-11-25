@@ -576,7 +576,12 @@ the yolo key in one file). `--strict-mcp-config`, always: Conductor's
 MCP server is the only tool server a chat's child loads (none with the
 server's MCP off); the person's own tool servers and a folder's stay
 with the session's terminal (#1118). A launch's own `--mcp-config`
-argument is kept for the chat, as its terminal had it. Where an
+argument is kept for the chat, as its terminal had it. A session whose
+arguments name an added folder (`--add-dir`) keeps to its terminal: a
+chat's child is started in the session's own folder alone. The move
+asks `ClaudeArgs` before it stops anything, so this refusal and that of
+a flag a chat sets itself are told with the terminal still running
+(#1126). Where an
 administrator's managed MCP configuration is in force, Claude Code
 refuses the flag and exits: the chat does not start and the session
 stays in its terminal. No `--setting-sources`: the child reads the
@@ -1396,7 +1401,7 @@ Every string is one short sentence.
 | a message during a turn | "Sends when the turn ends." |
 | a full queue (`too_many_requests` on `submit`) | "Too many messages are waiting." |
 | a move pressed during a turn | "Moves to Chat when this turn ends." / "Moves to the terminal when this turn ends." |
-| a noted move that cannot be made (`move_refused`) | "A request is waiting for an answer." / "Background work is still running." / "Crew members stay in their terminals." / "This agent cannot move its conversation yet." / "Sessions on another machine stay in their terminal." |
+| a noted move that cannot be made (`move_refused`) | "A request is waiting for an answer." / "Background work is still running." / "Crew members stay in their terminals." / "This agent cannot move its conversation yet." / "Sessions on another machine stay in their terminal." / "Sessions launched with an added folder stay in their terminal." / "This session's arguments hold <flag>, which a chat sets itself; it stays in its terminal." |
 | the session moving (`moving`) | "The session is moving; try again in a moment." |
 | a permission answer from a non-answerer (`not_answerer`) | "Only the person who runs this server can answer." |
 | a permission answer that no longer matches (`stale_request`) | "This request changed or was answered." |

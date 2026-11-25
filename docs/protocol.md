@@ -9443,7 +9443,10 @@ terminals.`, `Sessions on another machine stay in their terminal.`,
 protocol the server speaks, a driver that does not move, a Runtime other
 than this machine's, no recipe to resume its terminal, or a conversation
 not known yet), `This version of Claude Code can only run in its
-terminal.`; `409 moving` while a move is under way; `409 session_ended`;
+terminal.`, `Sessions launched with an added folder stay in their
+terminal.` (a launch argument `--add-dir`), `This session's arguments
+hold <flag>, which a chat sets itself; it stays in its terminal.` (both
+told before anything is stopped); `409 moving` while a move is under way; `409 session_ended`;
 `404` when unknown.
 
 The move marks the session moving (a `submit`, an `answer`, keys and an

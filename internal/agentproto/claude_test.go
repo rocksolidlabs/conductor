@@ -43,8 +43,8 @@ func TestClaudeArgvIsTheDocumentedOne(t *testing.T) {
 		l    ClaudeLaunch
 		want []string
 	}{
-		{"a chat", ClaudeLaunch{Command: []string{"claude"}, Conversation: conv, Model: []string{"--model=opus"}, LaunchArgs: []string{"--add-dir=/srv/docs"}, HooksDir: hooks},
-			join([]string{"claude"}, stream, []string{"--resume", conv, "--model=opus", "--permission-mode", "default", "--add-dir=/srv/docs", "--mcp-config", hooks + "/claude-protocol-mcp.json", "--strict-mcp-config"})},
+		{"a chat", ClaudeLaunch{Command: []string{"claude"}, Conversation: conv, Model: []string{"--model=opus"}, LaunchArgs: []string{"--fallback-model=sonnet"}, HooksDir: hooks},
+			join([]string{"claude"}, stream, []string{"--resume", conv, "--model=opus", "--permission-mode", "default", "--fallback-model=sonnet", "--mcp-config", hooks + "/claude-protocol-mcp.json", "--strict-mcp-config"})},
 		{"a yolo session", ClaudeLaunch{Command: []string{"claude"}, Protocol: []string{"--effort=high"}, Conversation: conv, Yolo: true, YoloArgs: []string{"--dangerously-skip-permissions"}, HooksDir: hooks},
 			join([]string{"claude"}, stream, []string{"--effort=high", "--resume", conv, "--dangerously-skip-permissions", "--mcp-config", hooks + "/claude-protocol-mcp.json", "--strict-mcp-config"})},
 		{"a chat with its permission host", ClaudeLaunch{Command: []string{"/opt/claude", "--x"}, Conversation: conv, HooksDir: hooks, PermissionHost: true},
@@ -100,6 +100,37 @@ func TestClaudeArgvIsTheDocumentedOne(t *testing.T) {
 		if got, err := ClaudeArgs(bad); err == nil {
 			t.Errorf("%+v made %q", bad, got)
 		}
+	}
+}
+
+// A launch whose arguments name an added folder is not started as a chat,
+// wherever the argument stands, and a flag of the chat's own is refused by
+// its name: each with an error the move can tell a person from.
+func TestClaudeArgvRefusesAnAddedFolder(t *testing.T) {
+	hooks := "/data/hooks"
+	conv := "11111111-2222-4333-8444-555555555555"
+	for name, l := range map[string]ClaudeLaunch{
+		"a launch argument with its value":     {Command: []string{"claude"}, Conversation: conv, HooksDir: hooks, LaunchArgs: []string{"--add-dir=/srv/docs"}},
+		"a launch argument, its folders after": {Command: []string{"claude"}, Conversation: conv, HooksDir: hooks, LaunchArgs: []string{"--add-dir", "/srv/docs", "/srv/more"}},
+		"the recipe's":                         {Command: []string{"claude"}, Conversation: conv, HooksDir: hooks, Protocol: []string{"--add-dir=/srv/docs"}},
+		"the command's own":                    {Command: []string{"claude", "--add-dir=/srv/docs"}, Conversation: conv, HooksDir: hooks},
+		"the yolo recipe's":                    {Command: []string{"claude"}, Conversation: conv, HooksDir: hooks, Yolo: true, YoloArgs: []string{"--dangerously-skip-permissions", "--add-dir", "/srv/docs"}},
+		"beside a flag of the chat's own":      {Command: []string{"claude"}, Conversation: conv, HooksDir: hooks, LaunchArgs: []string{"--verbose", "--add-dir=/srv/docs"}},
+	} {
+		if got, err := ClaudeArgs(l); !errors.Is(err, ErrAddedFolder) {
+			t.Errorf("%s: %v (%q), want ErrAddedFolder", name, err, got)
+		}
+	}
+	// A folder's name that only looks like the flag is no added folder.
+	if _, err := ClaudeArgs(ClaudeLaunch{Command: []string{"claude"}, Conversation: conv, HooksDir: hooks, LaunchArgs: []string{"--add-directory-note=x", "--fallback-model=--add-dir"}}); err != nil {
+		t.Errorf("an argument that only resembles the flag: %v", err)
+	}
+	var own *OwnFlagError
+	if _, err := ClaudeArgs(ClaudeLaunch{Command: []string{"claude"}, Conversation: conv, HooksDir: hooks, LaunchArgs: []string{"--settings=/x.json"}}); !errors.As(err, &own) || own.Flag != "--settings" {
+		t.Errorf("a flag of the chat's own: %v", err)
+	}
+	if OwnFlagWords("--settings") != "This session's arguments hold --settings, which a chat sets itself; it stays in its terminal." {
+		t.Errorf("the own flag's words: %q", OwnFlagWords("--settings"))
 	}
 }
 
