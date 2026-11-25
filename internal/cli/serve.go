@@ -44,6 +44,9 @@ import (
 // writeAssets is agents.WriteAssets: a test replaces it to make a mode fail.
 var writeAssets = agents.WriteAssets
 
+// writeFloor is agents.WriteProtocolFloor.
+var writeFloor = agents.WriteProtocolFloor
+
 // extensions is ext.Freeze: the composition root (runServe, runHost) reads
 // the registry through it, once, at start, which closes it. A test replaces
 // it instead of registering into the process's registry.
@@ -275,6 +278,15 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 			return 1, fmt.Errorf("write the hook assets to %s: %w", agents.HooksDir(cfg.DataDir), err)
 		}
 		log.Warn("serving with hook assets whose modes could not be set", "dir", agents.HooksDir(cfg.DataDir), "err", err)
+	}
+	// A chat's floor: its deny rules for the deny list as it is now, and
+	// its hook (docs/plans/chat-or-terminal.md, design 7).
+	if err := writeFloor(agents.HooksDir(cfg.DataDir), exe, cfg.FileDeny()); err != nil {
+		var me *agents.ModeError
+		if !errors.As(err, &me) {
+			return 1, fmt.Errorf("write a chat's floor to %s: %w", agents.HooksDir(cfg.DataDir), err)
+		}
+		log.Warn("serving with a chat's floor whose modes could not be set", "dir", agents.HooksDir(cfg.DataDir), "err", err)
 	}
 	if root := cfg.DataDirOverlap(); root != "" {
 		log.Warn("the data directory overlaps an allowed root: agents working there can read it and commit its secrets, and the file viewer refuses it; keep it outside allowedRoots (the default is ~/.conductor), or set dataDir or CONDUCTOR_DATA_DIR to a directory outside them", "dataDir", cfg.DataDir, "allowedRoot", root)

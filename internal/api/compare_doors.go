@@ -46,6 +46,9 @@ var compareDoors = map[string]doorRule{
 	"POST /api/sessions/{id}/attention": doorOwn,
 	"GET /api/sessions/{id}/guide":      doorOwn,
 	"POST /api/sessions/{id}/open":      doorOwn,
+	// A chat's permission request: a lane's member asks about its own
+	// calls, answered by the operator alone.
+	"POST /api/sessions/{id}/permission": doorOwn,
 	// A view link to the session: a lane's member mints none.
 	"POST /api/sessions/{id}/links/agent": doorRefused,
 	// Its attempt: its task file, its result, its blocker, its

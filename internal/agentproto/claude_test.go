@@ -49,6 +49,8 @@ func TestClaudeArgvIsTheDocumentedOne(t *testing.T) {
 			join([]string{"/opt/claude", "--x"}, stream, []string{"--resume", conv, "--permission-mode", "default", "--mcp-config", hooks + "/claude-protocol-mcp.json", "--permission-prompt-tool", "mcp__conductor__permission", "--settings", hooks + "/claude-protocol.json"})},
 		{"a yolo session with its permission host", ClaudeLaunch{Command: []string{"claude"}, Conversation: conv, Yolo: true, YoloArgs: []string{"--dangerously-skip-permissions"}, HooksDir: hooks, PermissionHost: true},
 			join([]string{"claude"}, stream, []string{"--resume", conv, "--dangerously-skip-permissions", "--mcp-config", hooks + "/claude-protocol-mcp.json", "--permission-prompt-tool", "mcp__conductor__permission", "--settings", hooks + "/claude-protocol-yolo.json"})},
+		{"a chat with its permission host and the server's MCP off", ClaudeLaunch{Command: []string{"claude"}, Conversation: conv, HooksDir: hooks, NoMCP: true, PermissionHost: true},
+			join([]string{"claude"}, stream, []string{"--resume", conv, "--permission-mode", "default", "--settings", hooks + "/claude-protocol.json"})},
 		{"a yolo launch with no recipe", ClaudeLaunch{Command: []string{"claude"}, Conversation: conv, Yolo: true, HooksDir: hooks},
 			join([]string{"claude"}, stream, []string{"--resume", conv, "--permission-mode", "default", "--mcp-config", hooks + "/claude-protocol-mcp.json"})},
 	}
