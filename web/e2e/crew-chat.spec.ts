@@ -46,7 +46,8 @@ test.afterAll(async () => {
 })
 
 /** A managed crew run as a chat: one work task per member. */
-async function chatCrew(name: string, members: Array<{ name: string; agentId: string; task: string }>, way: 'chat' | undefined = 'chat'): Promise<string> {
+async function chatCrew(name: string, members: Array<{ name: string; agentId: string; task: string }>, runAs: 'chat' | 'terminal' = 'chat'): Promise<string> {
+  const way = runAs === 'chat' ? 'chat' : undefined
   const body = {
     name,
     goal: 'ship it',
@@ -167,7 +168,7 @@ test('a member whose stub asks the trust question first is held, answered on its
 
 test("a member in its terminal: its page's switch has no side to press, and says a crew member's way is its run's", async ({ browser }) => {
   const api = own.api
-  const crewId = await chatCrew('e2e terminal crew', [{ name: 'solo', agentId: 'claude-chat', task: 'build' }], undefined)
+  const crewId = await chatCrew('e2e terminal crew', [{ name: 'solo', agentId: 'claude-chat', task: 'build' }], 'terminal')
   const run = await api.launchCrew(crewId)
   runs.push(run.id)
   let id = ''
