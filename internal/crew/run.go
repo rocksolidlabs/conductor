@@ -1288,7 +1288,13 @@ func (e *Engine) ResumeRecord(ctx context.Context, rec Run) (*Run, error) {
 			keeps[st.Name] = kept{agentSession: st.AgentSession.ID, sessionID: st.SessionID, worktree: st.Worktree, branch: st.Branch, base: st.Base}
 		}
 	}
-	return e.resumeInto(ctx, c, keeps, rec.Label, rec.ID, nil)
+	run, err := e.resumeInto(ctx, c, keeps, rec.Label, rec.ID, nil)
+	if err == nil && ranAsChat(rec) {
+		// The record keeps no way: the run is resumed with its members in
+		// their terminals, and its log says so.
+		e.Note(run.ID, session.ActivityStatus, recordTerminalWords)
+	}
+	return run, err
 }
 
 // resumeInto makes the run that resumes fromID: a run of c, labelled, in
@@ -1781,7 +1787,9 @@ func (e *Engine) promptWith(ctx context.Context, r *run, m *member, local *sessi
 	// A member launched to run as a chat is moved to it here, and one in
 	// its chat is prompted there; the rest of this function is the
 	// terminal's, untouched by the way.
-	if err := e.toChat(ctx, r, m, local); err != nil {
+	if err := e.toChat(ctx, r, m, local); errors.Is(err, errMemberEnded) {
+		return nil
+	} else if err != nil {
 		return err
 	}
 	if inChat(local) {
@@ -2053,6 +2061,20 @@ func (e *Engine) settle(r *run, m *member, local *session.Local) {
 		}
 		e.mu.Unlock()
 		return
+	}
+	// A member of a Chat run resumed on its conversation moves to its chat
+	// on that conversation at its prompt (design 9's move).
+	switch merr := e.resumedToChat(r.ctx, r, m, local, lines); {
+	case errors.Is(merr, errMemberEnded):
+		return
+	case merr != nil:
+		e.mu.Lock()
+		r.note(session.ActivityError, "%s did not move to a chat: %v", name, merr)
+		e.mu.Unlock()
+		if isClosed(local.Ended()) {
+			e.endedEarly(r, m, local, "before it was ready again")
+			return
+		}
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()

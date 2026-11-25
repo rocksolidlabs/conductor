@@ -2672,7 +2672,15 @@ func (e *Engine) managedEnded(r *run, a *attempt) {
 			return tx{}
 		}
 		stage := a.state
-		e.closeAttempt(r, a, ledger.AttemptFailed, stage, "the session ended before a result was submitted")
+		why := "the session ended before a result was submitted"
+		if l, ok := e.lookup(a.sessionID); ok {
+			if words := l.MoveEndWords(); words != "" {
+				// A member's move to its chat neither way of which started
+				// (design 14): both failures' words.
+				why = words
+			}
+		}
+		e.closeAttempt(r, a, ledger.AttemptFailed, stage, why)
 		if a.stage == stageDecision {
 			// Given back while it waits: attempt.waited is its event.
 			return tx{}

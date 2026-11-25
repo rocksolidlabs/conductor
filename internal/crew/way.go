@@ -35,14 +35,39 @@ const protocolReadyCap = 60 * time.Second
 var errChatNotReady = errors.New("the chat was not ready")
 
 // ChatChecker is optional beside Launcher: a Launcher that has it says
-// whether the installed version of a member's agent can run as a chat.
-// The API server answers it from the agent's catalog entry and its probed
-// version. A Launcher without it runs every member in its terminal.
+// whether a member can run as a chat, and gives the engine what a member's
+// move to its chat starts with. The API server answers both from the
+// agent's catalog entry, its probed version and the member's launch. A
+// Launcher without it runs every member in its terminal.
 type ChatChecker interface {
-	// ChatQualified answers nil when agentID's installed version can run
-	// as a chat, else an error whose words say why in one sentence (the
-	// run's log quotes them).
-	ChatQualified(ctx context.Context, agentID string) error
+	// ChatCheck answers nil when a member of agentID launched with args
+	// can run as a chat (its installed version qualifies, its arguments
+	// name no added folder and no flag a chat sets itself), else why: a
+	// *TerminalReason in the run's log's words, or an error the log
+	// quotes.
+	ChatCheck(ctx context.Context, agentID string, args []string) error
+	// MemberMove is what the move of local, a member launched to run as a
+	// chat, starts its chat with (and its terminal again, should the chat
+	// not start), asked with its terminal still running: its checks, made
+	// first, refuse it as ChatCheck does. fresh is a launch that resumed
+	// no conversation (session.Local.MoveFresh), else one that did
+	// (session.Local.MoveResumed).
+	MemberMove(ctx context.Context, local *session.Local, fresh bool) (session.MoveStarts, error)
+}
+
+// TerminalReason is why a member of a Chat run stays in its terminal, in
+// the run's log's words after "in its terminal: ".
+type TerminalReason struct{ Words string }
+
+func (r *TerminalReason) Error() string { return r.Words }
+
+// reasonWords is err's words after "in its terminal: ".
+func reasonWords(err error) string {
+	var r *TerminalReason
+	if errors.As(err, &r) {
+		return r.Words
+	}
+	return sentence(err.Error())
 }
 
 // Why a member of a Chat run stays in its terminal, after "in its
@@ -68,8 +93,8 @@ func (e *Engine) launchWay(ctx context.Context, r *run, m *member, task string, 
 			way, why = "", noPipesWords
 		} else if c, ok := e.launcher.(ChatChecker); !ok {
 			way, why = "", noCheckerWords
-		} else if err := c.ChatQualified(ctx, m.def.AgentID); err != nil {
-			way, why = "", sentence(err.Error())
+		} else if err := c.ChatCheck(ctx, m.def.AgentID, m.def.Args); err != nil {
+			way, why = "", reasonWords(err)
 		}
 	}
 	e.mu.Lock()
@@ -111,22 +136,181 @@ func sentence(words string) string {
 	return words
 }
 
-// toChat is where a member whose session was launched to run as a chat
-// (m.way, WayProtocol) and still runs in its terminal is moved to its chat,
-// once its terminal's readiness hold at a trust question has let go: the
-// one place the move attaches. Today it moves nothing, and the member
-// goes on the way its session runs. The caller holds no lock of the
-// engine's.
-func (e *Engine) toChat(context.Context, *run, *member, *session.Local) error {
-	return nil
+// The run's log's words of a member's move (design 14's table), after the
+// member's name and attempt.
+const (
+	// heldMoveWords follow a trust question's words (heldWords) while it
+	// holds a member that moves to a chat at its prompt.
+	heldMoveWords = "once answered, it moves to a chat at its prompt"
+	// notPromptWords is said once while such a member's screen is
+	// something other than its prompt.
+	notPromptWords = "its prompt waits: its terminal shows something other than Claude Code's prompt; answer it there."
+	// typedFirstWords, notStartedWords: after "in its terminal: ".
+	typedFirstWords = "a person typed in it first."
+	notStartedWords = "Claude Code did not start a chat."
+	// resumedChatWords is a resumed member's move made.
+	resumedChatWords = "runs as a chat, on its conversation."
+)
+
+// recordTerminalWords is what a Chat run resumed from its record alone says:
+// the record keeps no way (a run's record keeps the type older builds
+// read), and its members run in their terminals.
+const recordTerminalWords = "resumed from its record: its members run in their terminals; the record does not keep the run's way"
+
+// ranAsChat says rec, a run's record, ran a member as a chat: its log says
+// so (the record keeps no way of its own).
+func ranAsChat(rec Run) bool {
+	for _, en := range rec.Log {
+		if strings.HasSuffix(en.Message, ": runs as a chat.") || strings.HasSuffix(en.Message, ": "+resumedChatWords) {
+			return true
+		}
+	}
+	return false
 }
 
-// chatNotReady is what follows a member's chat that was not ready within
-// protocolReadyCap: nothing is sent to it, and the attempt's start ends
-// with the failure's words, which promptWith returns. The caller holds no
-// lock of the engine's.
+// errMemberEnded says the member's session ended before its move: the
+// member ended with it (endedEarly), and nothing more is done.
+var errMemberEnded = errors.New("the member's session ended")
+
+// toChat moves member m, whose session local was launched to run as a
+// chat (m.way WayProtocol, a launch that resumed no conversation) and
+// still runs in its terminal, to its chat (design 14): the terminal's hold
+// at a trust question as today, its words saying the member moves once it
+// is answered; then the wait for the agent's prompt, with no bound of its
+// own; then the move. The one place the move attaches: promptWith's first
+// call. It returns nil with the member in its chat or kept in its terminal
+// (said in the run's log), its prompt then typed there by today's rule;
+// errMemberEnded once the member ended with its session; any other error
+// fails the start (both failures' words of a move neither way of which
+// started). The caller holds no lock of the engine's.
+func (e *Engine) toChat(ctx context.Context, r *run, m *member, local *session.Local) error {
+	e.mu.Lock()
+	way := m.way
+	e.mu.Unlock()
+	if way != WayProtocol || inChat(local) {
+		return nil
+	}
+	c, ok := e.launcher.(ChatChecker)
+	if !ok {
+		return nil
+	}
+	lines := e.heldLines(r, m.def.Name, local, heldMoveWords)
+	switch err := e.await(lines.ctx(ctx), local, lines.held); {
+	case errors.Is(err, session.ErrSessionEnded):
+		e.endedEarly(r, m, local, "before its prompt was typed")
+		return errMemberEnded
+	case err != nil && !errors.Is(err, errNotReady):
+		return err
+	}
+	return e.moveMember(ctx, r, m, local, c, lines, true)
+}
+
+// moveMember is the move of member m's session local to its chat once its
+// terminal shows the agent's prompt: it waits for the prompt with no bound
+// of its own (a question shown is held, said once per question by lines;
+// another screen is said once), asks the launcher for the move's starts
+// with the terminal still running (its checks refuse first), and moves:
+// fresh, a new conversation (Local.MoveFresh); else on the conversation
+// the launch resumed (Local.MoveResumed). It says in the run's log why a
+// member stays in its terminal. The caller holds no lock of the engine's.
+func (e *Engine) moveMember(ctx context.Context, r *run, m *member, local *session.Local, c ChatChecker, lines *heldLines, fresh bool) error {
+	e.mu.Lock()
+	label := memberLabel(m)
+	e.mu.Unlock()
+	note := func(typ, format string, args ...any) {
+		e.mu.Lock()
+		r.note(typ, format, args...)
+		e.mu.Unlock()
+	}
+	other := false
+	for {
+		// The positive sign alone: the agent's prompt by its shape, no
+		// question showing. A dialog's words being gone is never it.
+		for {
+			att := local.Info().Attention
+			if att.State == session.AttentionNeedsInput {
+				if att.Source == session.SourceTrust || att.Source == session.SourceQuestion {
+					lines.held(att.Message)
+				}
+			} else if local.AtPrompt() {
+				break
+			} else if !other {
+				other = true
+				note(session.ActivityStatus, "%s: %s", label, notPromptWords)
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-local.Ended():
+				e.endedEarly(r, m, local, "before its prompt was typed")
+				return errMemberEnded
+			case <-time.After(readyPoll):
+			}
+		}
+		starts, err := c.MemberMove(ctx, local, fresh)
+		if err != nil {
+			note(session.ActivityStatus, "%s: in its terminal: %s", label, reasonWords(err))
+			return nil
+		}
+		if fresh {
+			err = local.MoveFresh(starts)
+		} else {
+			err = local.MoveResumed(starts)
+		}
+		var refusal *session.MoveRefusal
+		switch {
+		case err == nil:
+			if !fresh {
+				note(session.ActivityStatus, "%s: %s", label, resumedChatWords)
+			}
+			return nil
+		case errors.As(err, &refusal) && refusal.Words == session.NotAtPromptYetWords:
+			// The screen moved on between the look and the move: the wait
+			// goes on.
+			continue
+		case errors.As(err, &refusal):
+			note(session.ActivityStatus, "%s: in its terminal: %s", label, typedFirstWords)
+			return nil
+		case errors.Is(err, session.ErrMoveFellBack):
+			note(session.ActivityStatus, "%s: in its terminal: %s", label, notStartedWords)
+			return nil
+		case errors.Is(err, session.ErrSessionEnded):
+			e.endedEarly(r, m, local, "before its prompt was typed")
+			return errMemberEnded
+		}
+		return fmt.Errorf("its move to a chat: %w", err)
+	}
+}
+
+// resumedToChat moves member m, resumed on its conversation into session
+// local launched to run as a chat, to its chat on that conversation once
+// its terminal shows the prompt with nothing typed (design 9's move,
+// Local.MoveResumed): no prompt is sent, as for every resumed member; a
+// chat that does not start goes back to the terminal on the same
+// conversation. The caller holds no lock of the engine's.
+func (e *Engine) resumedToChat(ctx context.Context, r *run, m *member, local *session.Local, lines *heldLines) error {
+	e.mu.Lock()
+	way := m.way
+	e.mu.Unlock()
+	if way != WayProtocol || inChat(local) {
+		return nil
+	}
+	c, ok := e.launcher.(ChatChecker)
+	if !ok {
+		return nil
+	}
+	return e.moveMember(ctx, r, m, local, c, lines, false)
+}
+
+// chatNotReady is what follows a chat promptChat finds not ready within
+// protocolReadyCap. A member's chat is entered only by its move
+// (Local.MoveFresh), which waits for its readiness within that bound and,
+// past it, ends the chat and starts the member's terminal afresh, its
+// prompt typed there (design 14's one fallback); a chat met unready here
+// was entered otherwise. Nothing is sent to it, and the start ends with
+// the failure's words. The caller holds no lock of the engine's.
 func (e *Engine) chatNotReady(*run, *member, *session.Local) error {
-	return sentenceError(fmt.Sprintf("%s It was not ready within %v.", session.ChatNotStartedWords, protocolReadyCap))
+	return sentenceError(fmt.Sprintf("%s It was not ready within %v.", notStartedWords, protocolReadyCap))
 }
 
 // sentenceError is an error whose words are sentences a person reads, as

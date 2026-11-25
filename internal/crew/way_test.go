@@ -116,64 +116,73 @@ func promptEntries(t *testing.T, l *session.Local) int {
 }
 
 // A chat member's readiness is its session's (Local.Ready): its task line
-// is sent only once the chat's start has answered, and a chat not ready by
-// the cap is sent nothing, its attempt failing with the words.
+// is sent only once its chat's start has answered. A chat not ready within
+// protocolReadyCap is sent nothing: its child is ended, and a terminal
+// started afresh on a new conversation takes the prompt (design 14's one
+// fallback); the attempt fails, with both failures' words, only when that
+// terminal does not start either.
 func TestProtocolMemberReadyIsTheSessions(t *testing.T) {
-	for _, capped := range []bool{false, true} {
-		t.Run(map[bool]string{false: "ready", true: "past the cap"}[capped], func(t *testing.T) {
-			dir := newRepo(t)
-			e, fl, l := managedEngine(t)
-			waiting, fire := make(chan struct{}), make(chan time.Time)
-			e.await = readyWait{poll: 5 * time.Millisecond, quiet: 20 * time.Millisecond, chatCap: func() <-chan time.Time {
-				close(waiting)
-				return fire
-			}}.await
-			begun, release := make(chan struct{}), make(chan struct{})
-			fl.chatBegin = func(string) {
-				close(begun)
-				<-release
+	t.Run("ready", func(t *testing.T) {
+		dir := newRepo(t)
+		e, fl, _ := managedEngine(t)
+		begun, gate := make(chan struct{}), make(chan struct{})
+		fl.chatGate = gate
+		fl.chatBegin = func(string) { close(begun) }
+		released := false
+		t.Cleanup(func() {
+			if !released {
+				close(gate)
 			}
-			released := false
-			t.Cleanup(func() {
-				if !released {
-					close(release)
-				}
-			})
-			c := chatCrew(dir, work("build", "lead"))
-			run := launchManaged(t, e, c)
-			within(t, "the chat's start", begun)
-			within(t, "the engine to wait on the chat's readiness", waiting)
-			fp, local := chatOf(t, fl, attemptName("lead", "build", 1))
-			if n := promptEntries(t, local); n != 0 || sessiontest.Count(fp.Calls(), "send") != 0 {
-				t.Fatalf("before the chat was ready: %d prompts, calls %v", n, fp.Calls())
-			}
-			if capped {
-				close(fire)
-				l.attemptRowIn(t, run.ID, "build", 1, ledger.AttemptFailed)
-				waitLogged(t, e, run.ID, "The chat did not start. It was not ready within 1m0s.", 1, 10*time.Second)
-				released = true
-				close(release)
-				ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-				defer cancel()
-				if !fp.Await(ctx, func(calls []string) bool { return slices.Contains(calls, "begin") }) {
-					t.Fatal("the chat's start never answered")
-				}
-				within(t, "the failed attempt's session to end", local.Ended())
-				if n := sessiontest.Count(fp.Calls(), "send"); n != 0 {
-					t.Fatalf("a chat past its cap was sent %d messages", n)
-				}
-				return
-			}
-			released = true
-			close(release)
-			got := sent(t, fp, 1)
-			calls := fp.Calls()
-			if slices.Index(calls, "begin") > slices.Index(calls, "send") || got[0].Text != session.ProtocolLine(taskLine(c.Tasks[0], 1)) {
-				t.Fatalf("calls %v, sent %q", calls, got[0].Text)
-			}
-			stopRun(t, e, run.ID)
 		})
-	}
+		c := chatCrew(dir, work("build", "lead"))
+		run := launchManaged(t, e, c)
+		within(t, "the chat's start", begun)
+		fp, _ := chatOf(t, fl, attemptName("lead", "build", 1))
+		if n := sessiontest.Count(fp.Calls(), "send"); n != 0 {
+			t.Fatalf("sent %d messages before the chat was ready", n)
+		}
+		released = true
+		close(gate)
+		got := sent(t, fp, 1)
+		calls := fp.Calls()
+		if slices.Index(calls, "begin") > slices.Index(calls, "send") || got[0].Text != session.ProtocolLine(taskLine(c.Tasks[0], 1)) {
+			t.Fatalf("calls %v, sent %q", calls, got[0].Text)
+		}
+		stopRun(t, e, run.ID)
+	})
+	t.Run("past the cap", func(t *testing.T) {
+		dir := newRepo(t)
+		e, fl, _ := managedEngine(t)
+		fl.chatGate, fl.readyCap = make(chan struct{}), time.Millisecond
+		name := attemptName("lead", "build", 1)
+		c := chatCrew(dir, work("build", "lead"))
+		run := launchManaged(t, e, c)
+		waitLogged(t, e, run.ID, "lead (task build, attempt 1): in its terminal: "+notStartedWords, 1, 10*time.Second)
+		fp, _ := chatOf(t, fl, name)
+		if n := sessiontest.Count(fp.Calls(), "send"); n != 0 || !isClosed(fp.Child().Done()) {
+			t.Fatalf("a chat past its cap: %d sent, its child ended %v", n, isClosed(fp.Child().Done()))
+		}
+		if got := waitTyped(t, fl.procOf(name), 10*time.Second); got != taskLine(c.Tasks[0], 1)+"\r" {
+			t.Fatalf("the terminal started afresh was typed %q", got)
+		}
+		stopRun(t, e, run.ID)
+	})
+	t.Run("past the cap, no terminal", func(t *testing.T) {
+		dir := newRepo(t)
+		e, fl, l := managedEngine(t)
+		fl.chatGate, fl.readyCap = make(chan struct{}), time.Millisecond
+		fl.terminalErr = errors.New("the terminal did not start")
+		run := launchManaged(t, e, chatCrew(dir, work("build", "lead")))
+		row := l.attemptRowIn(t, run.ID, "build", 1, ledger.AttemptFailed)
+		if want := session.ChatNotStartedWords + " " + session.TermNotStartedWords; !strings.Contains(row.Error, want) {
+			t.Fatalf("the attempt failed with %q, want %q", row.Error, want)
+		}
+		fp, _ := chatOf(t, fl, attemptName("lead", "build", 1))
+		if n := sessiontest.Count(fp.Calls(), "send"); n != 0 {
+			t.Fatalf("sent %d", n)
+		}
+		stopRun(t, e, run.ID)
+	})
 }
 
 // A chat member is prompted at its agent's acknowledgement, never at the
