@@ -70,10 +70,13 @@ func (s *Local) AtPrompt() bool {
 // ended: nil once it runs as a chat. It is refused (MoveRefusal, nothing
 // stopped) unless the session is such a member's, not ended and not
 // moving, its screen is the agent's prompt (AtPrompt) with no question
-// showing, and nothing was typed: no line submitted to it, no key of a
-// person's written while its screen was the prompt, no turn reported. A
-// startup question's answer through its choices, and keys at another
-// screen, leave it allowed. The terminal is stopped and its group proven
+// showing, and nothing was typed: no line submitted to it, no text of a
+// person's written into its terminal since its start, whatever the screen
+// showed, no turn reported. A startup question's answer, through its
+// choices or by keys while it shows, and keys that only answer or move
+// within a dialog (digits, arrows, Enter, Escape, Space, Tab), leave it
+// allowed. A person's key that comes once the move has begun is refused
+// (ErrMoving), never written into the terminal it stops. The terminal is stopped and its group proven
 // gone; the chat's child is started on a new conversation id (m.Protocol,
 // given that id: the recipe's start, never --resume), which becomes
 // Info.AgentSession; the terminal's own id is never resumed. A chat that
@@ -107,7 +110,7 @@ func (s *Local) moveMember(m MoveStarts, fresh bool) error {
 		refused = moveRefused(CannotMoveWords)
 	case m.Protocol == nil || m.Terminal == nil:
 		refused = moveRefused(CannotMoveWords)
-	case s.submitted.Load() || s.typedAtPrompt.Load() || s.held != nil || len(s.submitting) > 0 || fresh && s.firstTurn:
+	case s.submitted.Load() || s.typedText.Load() || s.held != nil || len(s.submitting) > 0 || fresh && s.firstTurn:
 		refused = moveRefused(TypedFirstWords)
 	case !at || s.info.Attention.State == AttentionNeedsInput:
 		refused = moveRefused(NotAtPromptYetWords)
@@ -253,6 +256,28 @@ func (s *Local) moveFresh(m MoveStarts) {
 	}
 	why = first
 	s.moved(WayTerminal, first)
+}
+
+// dialogKeys reports whether keys, as keysWritten read them, are only keys
+// that answer or move within a dialog: digits, the arrows, Shift+Tab,
+// Enter, Escape, Space and Tab. Anything else, a paste among it, is text a
+// person typed. None at all is no dialog's key.
+func dialogKeys(keys [][]byte) bool {
+	if len(keys) == 0 {
+		return false
+	}
+	for _, k := range keys {
+		switch string(k) {
+		case "\r", "\x1b", " ", "\t",
+			"\x1b[A", "\x1b[B", "\x1b[C", "\x1b[D", "\x1bOA", "\x1bOB", "\x1bOC", "\x1bOD", "\x1b[Z":
+			continue
+		}
+		if len(k) == 1 && k[0] >= '0' && k[0] <= '9' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 // freshConversation gives the session a new conversation id, which the

@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/rocksolidlabs/conductor/internal/session/sessiontest"
 )
@@ -103,6 +104,107 @@ func TestMoveFreshRefusedAfterInput(t *testing.T) {
 		untilIdle(t, s)
 		refused(t, s, f, ts)
 	})
+	// A person's text counts whatever the screen showed as it was written:
+	// typed while the agent loads, and shown in its prompt once drawn; typed
+	// while a synchronized update cuts the frame.
+	for how, before := range map[string]func(p *fakeProc){
+		"text typed while the agent loads": func(p *fakeProc) {
+			_, _ = p.outW.Write([]byte("\x1b[2J\x1b[H" + claudeBanner + "   Loading…"))
+		},
+		"text typed in a cut frame": func(p *fakeProc) {
+			_, _ = p.outW.Write([]byte("\x1b[2J\x1b[H" + claudePromptRow("") + "\x1b[?2026h\x1b[2J\x1b[H" + claudeBanner))
+		},
+	} {
+		t.Run(how, func(t *testing.T) {
+			s, p := memberSession(t, false)
+			f, ts := sessiontest.NewFakeProtocol(), &terminals{}
+			ts.cleanup(t)
+			before(p)
+			moveWaitFor(t, "the screen not the prompt", func() bool {
+				return strings.Contains(strings.Join(s.ScreenLines(24), "\n"), "Claude Code") && !s.AtPrompt()
+			})
+			sub, err := s.Attach("", RoleControl, "", 80, 24, newChanSink(false))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := s.Input(sub, []byte("please fix the login bug")); err != nil {
+				t.Fatal(err)
+			}
+			untilIdle(t, s)
+			_, _ = p.outW.Write([]byte("\x1b[?2026l"))
+			draw(t, s, p, claudePromptRow("please fix the login bug"))
+			moveWaitFor(t, "the prompt with the text", s.AtPrompt)
+			refused(t, s, f, ts)
+		})
+	}
+	t.Run("text queued as the move begins", func(t *testing.T) {
+		s, p := memberSession(t, false)
+		f, ts := sessiontest.NewFakeProtocol(), &terminals{}
+		ts.cleanup(t)
+		gate := make(chan struct{})
+		f.BeginGate = gate
+		t.Cleanup(func() {
+			select {
+			case <-gate:
+			default:
+				close(gate)
+			}
+		})
+		draw(t, s, p, claudePromptRow(""))
+		sub, err := s.Attach("", RoleControl, "", 80, 24, newChanSink(false))
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The writer held on a focus report; the person's text queued behind
+		// it, past input's look at the move; then the move, held at its
+		// chat's start.
+		takeAgain := stopTaking(t, p)
+		go func() { _ = s.Input(sub, []byte("\x1b[I")) }()
+		untilWaiting(t, s, 0)
+		typedErr := make(chan error, 1)
+		go func() { typedErr <- s.Input(sub, []byte("hello")) }()
+		untilWaiting(t, s, 1)
+		moveErr := make(chan error, 1)
+		go func() { moveErr <- s.MoveFresh(memberStarts(f, ts)) }()
+		moveWaitFor(t, "the move begun, or refused", func() bool { return s.Moving() || len(moveErr) > 0 })
+		takeAgain()
+		// The bound only bounds a hang of the input's answer.
+		answered := func() error {
+			select {
+			case err := <-typedErr:
+				return err
+			case <-time.After(30 * time.Second):
+				t.Fatal("the person's text was never answered")
+				return nil
+			}
+		}
+		var ierr error
+		got := false
+		if len(moveErr) == 0 {
+			// The move under way: the text, written after it began, is
+			// refused, never written into the terminal it stops.
+			ierr, got = answered(), true
+			close(gate)
+		}
+		err = <-moveErr
+		if !got {
+			ierr = answered()
+		}
+		wrote := false
+		for len(p.input) > 0 {
+			if strings.Contains(string(<-p.input), "hello") {
+				wrote = true
+			}
+		}
+		switch {
+		case wrote && err == nil:
+			t.Fatalf("the person's text was written into the terminal the move stopped (Input %v)", ierr)
+		case !wrote && !errors.Is(ierr, ErrMoving):
+			t.Fatalf("the text was not written, and Input said %v, not that the session is moving", ierr)
+		case err == nil && s.Way() != WayProtocol:
+			t.Fatalf("the move: way %s", s.Way())
+		}
+	})
 	t.Run("a turn", func(t *testing.T) {
 		s, p := memberSession(t, false)
 		f, ts := sessiontest.NewFakeProtocol(), &terminals{}
@@ -163,6 +265,45 @@ func TestMoveFreshRefusedAfterInput(t *testing.T) {
 				t.Fatalf("%s: MoveFresh = %v", name, err)
 			}
 		}
+	})
+	t.Run("a dialog's keys and a startup question's", func(t *testing.T) {
+		// Keys that only move within a dialog or answer it, and text typed
+		// while the trust question shows, leave the move allowed.
+		s, p := memberSession(t, false)
+		f, ts := sessiontest.NewFakeProtocol(), &terminals{}
+		ts.cleanup(t)
+		was := s.Info().AgentSession.ID
+		draw(t, s, p, memberTrustFrame)
+		moveWaitFor(t, "the trust question shown", func() bool {
+			att := s.Info().Attention
+			return att.State == AttentionNeedsInput && att.Source == SourceTrust
+		})
+		sub, err := s.Attach("", RoleControl, "", 80, 24, newChanSink(false))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, keys := range []string{"abc", "\x1b[A", "\x1b[B", "2", " ", "\t", "\x1b[Z", "\r"} {
+			if err := s.Input(sub, []byte(keys)); err != nil {
+				t.Fatal(err)
+			}
+			untilIdle(t, s)
+		}
+		// A dialog Conductor does not know (Claude Code's question about a
+		// folder's tool servers): its keys move and answer within it.
+		draw(t, s, p, " New MCP server found in .mcp.json: tools\r\n\r\n ❯ Use this and all future MCP servers in this project\r\n   Use this MCP server\r\n\r\n Enter to confirm · Esc to reject")
+		moveWaitFor(t, "the trust question gone", func() bool {
+			att := s.Info().Attention
+			return !(att.State == AttentionNeedsInput && att.Source == SourceTrust) && !s.startupMayShow()
+		})
+		for _, keys := range []string{"\x1b[B", "\x1b[A", "1", "\r"} {
+			if err := s.Input(sub, []byte(keys)); err != nil {
+				t.Fatal(err)
+			}
+			untilIdle(t, s)
+		}
+		draw(t, s, p, claudePromptRow(""))
+		moveWaitFor(t, "the trust question gone", func() bool { return s.Info().Attention.State != AttentionNeedsInput })
+		moved(t, s, f, ts, was)
 	})
 	t.Run("no route", func(t *testing.T) {
 		files, err := filepath.Glob(filepath.Join("..", "api", "*.go"))
