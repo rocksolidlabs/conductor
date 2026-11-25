@@ -69,6 +69,15 @@ function chatArgv(conv: string): string[] {
   return existsSync(path) ? (JSON.parse(readFileSync(path, 'utf8')) as string[]) : []
 }
 
+/**
+ * Raises the test's timeout by a step's own caps as the step is taken: the test's timeout bounds a hang, not its steps, and the config's
+ * timeout stays above what is left (AGENTS.md, "A test's timeout bounds a hang"; palette-rows.spec.ts's budget).
+ */
+function budget(ms: number) {
+  const info = test.info()
+  info.setTimeout(info.timeout + ms)
+}
+
 /** What the stub's conversation holds: the chat's turns, "chat: <message>". */
 function transcript(conv: string): string {
   const path = join(own.home, '.stub-sessions', `${conv}.txt`)
@@ -76,7 +85,6 @@ function transcript(conv: string): string {
 }
 
 test('a managed run of two chat members: each attempt runs as a chat, its task finished by its result alone', async () => {
-  test.setTimeout(150_000)
   const api = own.api
   const crewId = await chatCrew('e2e chat crew', [
     { name: 'builder', agentId: 'claude-chat', task: 'build' },
@@ -85,6 +93,7 @@ test('a managed run of two chat members: each attempt runs as a chat, its task f
   const run = await api.launchCrew(crewId)
   runs.push(run.id)
   let r: Run = run
+  budget(90_000)
   await expect
     .poll(async () => {
       r = await api.run(run.id)
@@ -107,12 +116,12 @@ test('a managed run of two chat members: each attempt runs as a chat, its task f
 })
 
 test('a member whose stub asks the trust question first is held, answered on its session page, then moved, its prompt in the chat', async ({ browser }) => {
-  test.setTimeout(150_000)
   const api = own.api
   const crewId = await chatCrew('e2e chat trust', [{ name: 'solo', agentId: 'claude-trust', task: 'build' }])
   const run = await api.launchCrew(crewId)
   runs.push(run.id)
   let r: Run = run
+  budget(30_000)
   await expect
     .poll(async () => {
       r = await api.run(run.id)
@@ -121,15 +130,22 @@ test('a member whose stub asks the trust question first is held, answered on its
     .toBe(true)
   const id = member(r, 'solo').sessionId ?? ''
   expect((await api.session(id)).way).toBeUndefined()
+  // dayPage: its goto and its two waits at the config's expect bound (15 s each).
+  budget(60_000)
   const page = await dayPage(browser, { server: own.started })
   try {
+    budget(30_000)
     await page.goto(`/sessions/${encodeURIComponent(id)}`)
     const bar = page.locator('[data-quick-reply]')
+    budget(30_000)
     await bar.getByRole('button', { name: 'Yes, trust this folder' }).click({ timeout: 30_000 })
     // Moved once its prompt shows, in place: the same session, now a chat, its prompt the chat's first message.
+    budget(30_000)
     await expect.poll(async () => (await api.session(id)).way, { timeout: 30_000, message: 'the member moved to its chat' }).toBe('protocol')
     const conv = (await api.session(id)).agentSession?.id ?? ''
+    budget(30_000)
     await expect.poll(() => transcript(conv), { timeout: 30_000, message: 'its prompt in the chat' }).toContain('chat: Conductor task "build", attempt 1')
+    budget(60_000)
     await expect
       .poll(async () => {
         r = await api.run(run.id)
