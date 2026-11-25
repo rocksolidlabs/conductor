@@ -51,6 +51,35 @@ describe('Transcript', () => {
     expect(t.entries.size).toBe(0)
   })
 
+  it('readsBackWhatItsTerminalAdded: what the session added while in its terminal (the move\'s notice) is read back as it returns, in order, the mark held until then', async () => {
+    const t = new Transcript()
+    const notice = (seq: number, mark: number, words: string) => e(seq, mark, { kind: 'notice', code: 'moved', words })
+    t.take({ t: 'entry', entry: notice(1, 1, 'Moved to Chat.') })
+    t.take({ t: 'entry', entry: e(2, 2) })
+    // The way message says terminal: the owner sends nothing meanwhile, though the session adds its notice (seq 3).
+    t.leave()
+    // Back to Chat: the move's notice comes first, then the way message.
+    t.take({ t: 'entry', entry: notice(4, 4, 'Moved to Chat.') })
+    expect(t.mark).toBe(2)
+    expect(t.rejoin()).toBe(true)
+    expect(t.gap).toBe(4)
+    const asked: TranscriptRequest[] = []
+    await t.readBack(async (req) => {
+      asked.push(req)
+      return { t: 'page', entries: [notice(3, 3, 'Moved to the terminal.')], first: 1, last: 4, more: false }
+    })
+    expect(asked).toEqual([{ before: 4, after: 2, limit: MAX_TRANSCRIPT_PAGE }])
+    expect(chatBlocks(t.list()).filter((b) => b.kind === 'notice').map((b) => b.kind === 'notice' && b.entry.words)).toEqual(['Moved to Chat.', 'Moved to the terminal.', 'Moved to Chat.'])
+    expect(t.mark).toBe(4)
+    expect(t.gap).toBeNull()
+    // A welcome of a session in its terminal (no way) is a leave too; a chat's welcome (its replay covers the gap) and a rejoin with no leave read nothing.
+    const w = new Transcript()
+    w.welcome({})
+    w.welcome({ way: 'protocol', transcript: { first: 1, last: 1, mark: 1 } })
+    expect(w.rejoin()).toBe(false)
+    expect(new Transcript().rejoin()).toBe(false)
+  })
+
   it('refusesPastBound: an entry or a page past the wire\'s bounds is refused whole, and what the page keeps is bounded', () => {
     const t = new Transcript()
     expect(t.take({ t: 'entry', entry: e(1, 1, { text: 'x'.repeat(MAX_ENTRY_TEXT) }) })).toBe(true)

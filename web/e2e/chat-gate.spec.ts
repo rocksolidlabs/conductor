@@ -7,10 +7,13 @@ import type { OwnServer } from './own-server'
 // The switch's offer of Chat and its marks (issue 1136), on a server of the spec's own with the chat's stub: the page offers Chat by
 // the session's firstTurn, the one fact the move's route judges by. A first turn held at the stub's gate (its conversation already
 // resumable, as the agent's prompt hook makes it) keeps Chat unpressable and its sentence shown for the whole of it, through a redraw
-// the test causes; the turn's end offers Chat and takes the sentence away with no reload.
+// the test causes; the turn's end offers Chat and takes the sentence away with no reload. Moves to Chat, the terminal and Chat again
+// on the page's one connection mark each move once, in order, the terminal's among them, as a reload's replay draws them.
 test.describe.configure({ mode: 'serial' })
 
 const FIRST_REPLY = "Chat opens after the agent's first reply."
+const TO_CHAT = 'Moved to Chat. Turns made in the terminal are not shown here. What the agent left running in its terminal was ended.'
+const TO_TERMINAL = 'Moved to the terminal.'
 
 let own: OwnServer
 const sessions: string[] = []
@@ -63,6 +66,39 @@ test('a first turn held at the gate keeps Chat waiting with its sentence; its en
     await expect.poll(async () => !!(await api.session(s.id)).firstTurn, { timeout: 30_000 }).toBe(true)
     await expect(side(page, 'protocol')).toBeEnabled()
     await expect(line).toHaveCount(0)
+  } finally {
+    await page.context().close()
+  }
+})
+
+test('moves to Chat, the terminal and Chat again mark each move once, in order, on the open page', async ({ browser }) => {
+  const api = own.api
+  const { s } = await launch(api, sessions, 'e2e chat marks')
+  const page = await dayPage(browser, { server: own.started, width: 1440, height: 900 })
+  try {
+    const view = await openSession(page, s.id)
+    await typeLine(page, 'a first turn')
+    budget(LONG_MS + STEP_MS)
+    await expect.poll(async () => !!(await api.session(s.id)).firstTurn, { timeout: 30_000 }).toBe(true)
+    const notices = page.locator('[data-chat-notice]')
+    const press = async (to: 'terminal' | 'protocol') => {
+      budget(2 * STEP_MS + LONG_MS)
+      await side(page, to).click()
+      await expect(view).toHaveAttribute('data-session-way', to, { timeout: 30_000 })
+      await expect.poll(async () => (await api.session(s.id)).way ?? 'terminal', { timeout: 30_000 }).toBe(to)
+    }
+    await press('protocol')
+    budget(STEP_MS)
+    await expect(notices).toHaveText([TO_CHAT])
+    await press('terminal')
+    await press('protocol')
+    budget(STEP_MS)
+    await expect(notices).toHaveText([TO_CHAT, TO_TERMINAL, TO_CHAT])
+    // A reload's replay draws the same.
+    await page.reload()
+    budget(LONG_MS + STEP_MS)
+    await expect(page.locator('[data-session-way]').first()).toHaveAttribute('data-session-way', 'protocol', { timeout: 30_000 })
+    await expect(notices).toHaveText([TO_CHAT, TO_TERMINAL, TO_CHAT])
   } finally {
     await page.context().close()
   }

@@ -57,6 +57,11 @@ const openRequest = (e: TranscriptEntry) => e.kind === 'permission' && e.state =
  * The page's transcript of one session: fed the TRANSCRIPT frames its connection hears (`take`), told of each welcome (`welcome`),
  * read back over a gap a replay left (`readBack`). `mark` is the highest mark of a run of changes it holds whole: what the next
  * hello carries. `version` rises with every change, for a view to redraw by.
+ *
+ * While the session runs in its terminal the owner sends no entry (see Chat sessions), though the session adds some (the move's
+ * notice, "Moved to the terminal."): the page is told it left (`leave`, at a `way` message or a welcome of a session in its terminal), takes
+ * what comes as the session returns (the move's notice to Chat comes before the `way` message) without raising its mark past what
+ * it missed, and on its return (`rejoin`, at the `way` message that says protocol) reads back what was added while it was away.
  */
 export class Transcript {
   readonly entries = new Map<number, TranscriptEntry>()
@@ -64,7 +69,9 @@ export class Transcript {
   mark = 0
   version = 0
   /** A replay that left changes out (`more`): the seq below which it is read back, and the mark held once it has been. */
-  private back: { before: number; mark: number } | null = null
+  private back: { before: number; after?: number; mark: number } | null = null
+  /** The session runs in its terminal: the highest seq held as it left, and the lowest seq and highest mark taken since. */
+  private away: { after: number; low: number; mark: number } | null = null
   private size = 0
 
   /** The entries in seq order. */
@@ -79,8 +86,33 @@ export class Transcript {
 
   /** A welcome: a transcript whose mark is below the one held is a new one (the session's life began again), and the page starts afresh. */
   welcome(w: Pick<Welcome, 'way' | 'transcript'>): void {
-    if (w.way !== 'protocol' || !w.transcript) return
-    if (w.transcript.mark < this.mark) this.clear()
+    if (w.way !== 'protocol') {
+      this.leave()
+      return
+    }
+    // A chat's welcome: the replay after the hello's mark covers what the page missed while away.
+    this.away = null
+    if (w.transcript && w.transcript.mark < this.mark) this.clear()
+  }
+
+  /** The session runs in its terminal now (a `way` message, a welcome): what it adds meanwhile is read back on its return. */
+  leave(): void {
+    if (this.away) return
+    const top = this.list().at(-1)?.seq ?? 0
+    this.away = { after: top, low: 0, mark: 0 }
+  }
+
+  /**
+   * The session is a chat again on this connection (a `way` message): true when it had left, and what it added while away (after
+   * the seq held as it left, before the first entry taken since) is then the gap `readBack` reads, its mark held once read.
+   */
+  rejoin(): boolean {
+    const a = this.away
+    if (!a) return false
+    this.away = null
+    const before = a.low || Number.MAX_SAFE_INTEGER
+    this.back = { before: Math.min(before, this.back?.before ?? before), after: a.after, mark: Math.max(a.mark, this.back?.mark ?? 0, this.mark) }
+    return true
   }
 
   clear(): void {
@@ -88,6 +120,7 @@ export class Transcript {
     this.mark = 0
     this.size = 0
     this.back = null
+    this.away = null
     this.version++
   }
 
@@ -96,7 +129,10 @@ export class Transcript {
     if (msg.t === 'entry') {
       if (!entryValid(msg.entry)) return false
       this.put(msg.entry)
-      if (!this.back) this.mark = Math.max(this.mark, msg.entry.mark)
+      if (this.away) {
+        this.away.low = this.away.low ? Math.min(this.away.low, msg.entry.seq) : msg.entry.seq
+        this.away.mark = Math.max(this.away.mark, msg.entry.mark)
+      } else if (!this.back) this.mark = Math.max(this.mark, msg.entry.mark)
       else this.back.mark = Math.max(this.back.mark, msg.entry.mark)
       this.bound()
       this.version++
@@ -122,7 +158,7 @@ export class Transcript {
    */
   async readBack(get: (req: TranscriptRequest) => Promise<TranscriptReply>): Promise<void> {
     for (let n = 0; this.back && n < MAX_PAGES_BACK; n++) {
-      const r = await get({ before: this.back.before, limit: MAX_TRANSCRIPT_PAGE })
+      const r = await get({ before: this.back.before, ...(this.back.after ? { after: this.back.after } : {}), limit: MAX_TRANSCRIPT_PAGE })
       if (r.t !== 'page' || !pageValid(r.entries)) return
       for (const e of r.entries) this.put(e)
       this.version++
