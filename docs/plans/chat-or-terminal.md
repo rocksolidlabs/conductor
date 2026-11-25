@@ -2478,6 +2478,9 @@ MCP half, `conductor mcp`'s serve loop and its `permission` tool, is
   an unreadable answer, a redirect, which the client refuses) is
   "Conductor lost this request."; a `413` is the too-large deny. Outside a
   session the tool answers the lost deny.
+- A request's entry and input stay held until its end is written in the
+  entry (an operator's answer's until its delivery is): let go before,
+  the revision of a ring at its bound could drop the entry it revised.
 - One bound, one count: the tool bounds the body it posts (the call, the
   tool and the input, encoded) by the route's own constant,
   `api.MaxPermissionBody`, so no call it posts meets the route's `413`.
