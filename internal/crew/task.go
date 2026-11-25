@@ -2618,21 +2618,27 @@ func (e *Engine) managedActivity(r *run, sm sessionMember, entry session.Activit
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), stopTimeout)
 		defer cancel()
-		res, err := l.Submit(ctx, session.Submission{Text: line, ByName: typedBy, UnlessWaiting: true, Finished: func(res session.SubmitResult, err error) {
+		sub := session.Submission{Text: line, ByName: typedBy, UnlessWaiting: true}
+		chat := inChat(l)
+		if chat {
 			// A chat's reminder, sent and taken by its agent or not: never
-			// sent again.
-			e.mu.Lock()
-			defer e.mu.Unlock()
-			switch {
-			case res.Entered:
-				r.note(session.ActivityStatus, "task %s: %s reports done without a result; reminded once", a.t.def.ID, member)
-			case res.Unconfirmed:
-				r.note(session.ActivityStatus, "task %s: %s reports done without a result; reminded once, its agent not confirming it", a.t.def.ID, member)
+			// sent again, told once it ends. A terminal's is told as main
+			// tells it, below.
+			sub.Finished = func(res session.SubmitResult, err error) {
+				e.mu.Lock()
+				defer e.mu.Unlock()
+				switch {
+				case res.Entered:
+					r.note(session.ActivityStatus, "task %s: %s reports done without a result; reminded once", a.t.def.ID, member)
+				case res.Unconfirmed:
+					r.note(session.ActivityStatus, "task %s: %s reports done without a result; reminded once, its agent not confirming it", a.t.def.ID, member)
+				}
 			}
-		}})
+		}
+		res, err := l.Submit(ctx, sub)
 		e.mu.Lock()
 		defer e.mu.Unlock()
-		if errors.Is(err, session.ErrSubmitPending) && inChat(l) {
+		if errors.Is(err, session.ErrSubmitPending) && chat {
 			// Sent into its chat: it stays reminded, told once it ends.
 			return
 		}

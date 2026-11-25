@@ -15,12 +15,15 @@ import (
 	"github.com/rocksolidlabs/conductor/internal/session"
 )
 
-// terminalRunOnMain is what one managed run of a crew with no way made,
-// on the engine before members could run as chats: the lines written into
-// the attempt's terminal, the run's log, the ledger's events with their
-// payloads, and the rows the run ended with, each with the run's, the
-// sessions' and the commits' ids taken out (terminalRun). It was written
-// by this test on that engine, not by the engine it now tests.
+// terminalRunOnMain is what two runs of crews with no way made, on the
+// engine before members could run as chats: a managed run whose done
+// without a result is reminded while its program reads slowly, and a run
+// of two members with a handoff, then stopped. For each, the lines written
+// into its terminals, the run's log, and what it ended with; for the
+// managed run the ledger's events with their payloads and its rows, each
+// with the run's, the sessions' and the commits' ids taken out
+// (terminalRun). It was written by this test on that engine, not by the
+// engine it now tests.
 const terminalRunOnMain = `typed:
 "<line>\r"
 "Conductor: a done does not finish task \"build\". Commit your work and submit it with the task_result tool or \"conductor task result --summary ...\"; a review submits --verdict.\r"
@@ -46,20 +49,39 @@ rows:
 attempt succeeded <session> crew/<run>/build.1
 task succeeded
 launch lead · build #1 "<dir>/.conductor/worktrees/<run>/build.1" yolo=false
+handoff run typed:
+"lead Plan it.\r"
+"tests Test it.\r"
+"tests Handoff from lead: the handlers are in\r"
+handoff run log:
+status handoff delivered from lead to tests
+status launched API sweep: 2 members, 2 starting now
+status lead started
+status stopped
+status tests started
+status typed lead's prompt
+status typed tests's prompt
+handoff run: stopped
+member lead ended
+member tests ended
+launch lead "/work" yolo=false
+launch tests "/work" yolo=false
 `
 
 // A crew with no way runs as it did before a member could run as a chat:
 // the same writes into its terminals, the same lines in the run's log, the
 // same ledger events and rows, and every launch with no way.
 func TestTerminalCrewUnchanged(t *testing.T) {
-	got, fl := terminalRun(t)
-	fl.mu.Lock()
-	for _, call := range fl.calls {
-		if call.way != "" {
-			t.Errorf("%s was launched with way %q", call.name, call.way)
+	got, launchers := terminalRun(t)
+	for _, fl := range launchers {
+		fl.mu.Lock()
+		for _, call := range fl.calls {
+			if call.way != "" {
+				t.Errorf("%s was launched with way %q", call.name, call.way)
+			}
 		}
+		fl.mu.Unlock()
 	}
-	fl.mu.Unlock()
 	if os.Getenv("CONDUCTOR_PRINT_TERMINAL_RUN") != "" {
 		fmt.Printf("----8<----\n%s----8<----\n", got)
 	}
@@ -68,14 +90,20 @@ func TestTerminalCrewUnchanged(t *testing.T) {
 	}
 }
 
-// terminalRun runs one managed run of one task whose member runs in its
-// terminal: its task line typed, a done without a result reminded once,
-// its result submitted and the run finished; it answers what the run
-// wrote, each id taken out, and its launcher.
-func terminalRun(t *testing.T) (string, *fakeLauncher) {
+// terminalRun runs two runs whose members run in their terminals: a
+// managed run of one task, its task line typed, a done without a result
+// reminded once while its program is slow to read (the reminder accepted
+// pending), its result submitted and the run finished; and a run of two
+// members, one's handoff typed into the other's terminal, then stopped. It
+// answers what the runs wrote, each id taken out, and their launchers.
+func terminalRun(t *testing.T) (string, []*fakeLauncher) {
 	t.Helper()
+	var b strings.Builder
 	dir := newRepo(t)
 	e, fl, l := managedEngine(t)
+	// The program slow to read the reminder: its write waits past the
+	// session's InputWait, accepted pending, and lands once read.
+	fl.inputWait = 200 * time.Millisecond
 	c := repoCrew(dir, work("build", "lead"))
 	run := launchManaged(t, e, c)
 	build := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
@@ -86,9 +114,13 @@ func terminalRun(t *testing.T) (string, *fakeLauncher) {
 		t.Fatalf("the task line: %q", line)
 	}
 	lines = append(lines, "<line>\r")
+	// The terminal's input full: nothing more is read until the test reads.
+	for len(p.Input) < cap(p.Input) {
+		p.Input <- nil
+	}
 	local.SetAttention(session.AttentionDone, "all done", session.SourceAPI)
-	lines = append(lines, waitTyped(t, p, 10*time.Second))
 	waitLogged(t, e, run.ID, "reminded once", 1, 10*time.Second)
+	lines = append(lines, waitTyped(t, p, 10*time.Second))
 	writeFile(t, filepath.Join(build.Attempt.Worktree, "built.txt"), "yes\n")
 	commitAll(t, build.Attempt.Worktree, "build it")
 	submit(t, e, build.Attempt.SessionID, Result{Summary: "built it"})
@@ -104,7 +136,6 @@ func terminalRun(t *testing.T) (string, *fakeLauncher) {
 		}
 		return hex.ReplaceAllString(s, "<commit>")
 	}
-	var b strings.Builder
 	b.WriteString("typed:\n")
 	for _, s := range lines {
 		fmt.Fprintf(&b, "%q\n", s)
@@ -132,7 +163,53 @@ func terminalRun(t *testing.T) (string, *fakeLauncher) {
 	}
 	fl.mu.Unlock()
 	stopRun(t, e, run.ID)
-	return b.String(), fl
+
+	// A run of two members: lead's handoff typed into tests's terminal, and
+	// the run stopped.
+	e2, fl2 := newEngine(t)
+	fl2.onLaunch = askAtOnce
+	run2, err := e2.Launch(t.Context(), testCrew(immediate("lead", "Plan it."), immediate("tests", "Test it.")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var typed2 []string
+	for _, name := range []string{"lead", "tests"} {
+		waitStatus(t, e2, run2.ID, name, MemberRunning, 10*time.Second)
+		ml, mp := fl2.member(name)
+		typed2 = append(typed2, name+" "+waitTyped(t, mp, 10*time.Second))
+		ml.SetAttention(session.AttentionWorking, "", session.SourceAPI)
+	}
+	lead, _ := fl2.member("lead")
+	_, tp := fl2.member("tests")
+	lead.Record(handoffEntry("tests", "the handlers are in"))
+	typed2 = append(typed2, "tests "+waitTyped(t, tp, 10*time.Second))
+	waitLogged(t, e2, run2.ID, "handoff delivered from lead to tests", 1, 10*time.Second)
+	stopRun(t, e2, run2.ID)
+	clean2 := func(s string) string { return strings.ReplaceAll(s, run2.ID, "<run>") }
+	b.WriteString("handoff run typed:\n")
+	for _, s := range typed2 {
+		fmt.Fprintf(&b, "%q\n", s)
+	}
+	// Its log's lines in order of their words: its two members start at
+	// once, in no set order.
+	b.WriteString("handoff run log:\n")
+	r2, _ := e2.Get(run2.ID)
+	var logged []string
+	for _, en := range r2.Log {
+		logged = append(logged, fmt.Sprintf("%s %s\n", en.Type, clean2(en.Message)))
+	}
+	sort.Strings(logged)
+	b.WriteString(strings.Join(logged, ""))
+	fmt.Fprintf(&b, "handoff run: %s\n", r2.State)
+	for _, m := range r2.Members {
+		fmt.Fprintf(&b, "member %s %s\n", m.Name, m.Status)
+	}
+	fl2.mu.Lock()
+	for _, call := range fl2.calls {
+		fmt.Fprintf(&b, "launch %s %q yolo=%v\n", call.name, call.cwd, call.yolo)
+	}
+	fl2.mu.Unlock()
+	return b.String(), []*fakeLauncher{fl, fl2}
 }
 
 // payloadWords is an event's payload with its keys in order, each value
