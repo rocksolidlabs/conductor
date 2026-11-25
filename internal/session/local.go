@@ -3250,6 +3250,9 @@ func (s *Local) AttachWith(o AttachOptions, sink Sink) (*Subscription, error) {
 		welcome.ScrollbackBytes = 0
 		welcome.Way, welcome.Verbatim, welcome.Interrupt = WayProtocol, chat.verbatim, true
 		welcome.Transcript = s.welcomeTranscriptLocked()
+		// Only the operator's own connection is drawn a permission
+		// request's buttons (permission_answer.go).
+		welcome.PermissionAnswer = operatorAnswers(sub)
 	}
 	// A move noted during a turn (move.go): another window or a reload
 	// shows it too.
@@ -3488,7 +3491,12 @@ func (s *Local) input(ctx context.Context, who typist, question string, data []b
 		return ErrMoving
 	}
 	if s.way.Load() != nil {
-		// A session in the protocol way has no terminal to take keys.
+		// A session in the protocol way has no terminal to take keys; a
+		// reply naming a permission request is answered with its own
+		// buttons alone (design 7).
+		if question != "" && s.isPermissionQuestion(question) {
+			return ErrPermissionCard
+		}
 		return ErrNotTerminal
 	}
 	if !who.controls() {
