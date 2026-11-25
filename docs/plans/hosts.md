@@ -950,6 +950,19 @@ machine **Reported by** its name, and its one line after the service is
 stopped, with no restart. The open-source repository has no provider,
 so its browser checks prove only that the section is absent (PR-5).
 
+As built: the premium repository's provider uploads the summary as the
+person's own and hands the person's other servers' summaries to
+`Host.PutRemote`. Against a sync service that does not take the `hosts`
+kind yet, the summary stays on the machine, with words saying so, while
+sync stays current; it leaves at its next state, at a server start, or
+at the provider's next ask twelve hours after the last refusal. The
+outage test is `TestHostsOtherMachinesThroughAnOutage` and the lapse
+test `TestHostsOtherMachinesThroughALapse`; the browser check is
+`TestHostsOtherMachinesInABrowser`, which runs the open-source
+checkout's Playwright against a premium build that embeds the workbench.
+The acceptance's second part by hand waits for the sync service to take
+the `hosts` kind.
+
 ## Events, orderings and invariants
 
 No state machine of the engine, the ledger or a session changes. What
