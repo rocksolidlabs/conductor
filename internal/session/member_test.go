@@ -324,3 +324,43 @@ func TestMoveFreshRefusedAfterInput(t *testing.T) {
 		}
 	})
 }
+
+// A member's terminal started afresh, its chat not started, asks its
+// startup questions afresh: the trust question the first terminal answered,
+// drawn again, is held again and answered by its choice, nothing of the
+// first terminal's answer kept.
+func TestAFreshTerminalAsksItsStartupQuestionAfresh(t *testing.T) {
+	s, p := memberSession(t, false)
+	ts := &terminals{}
+	ts.cleanup(t)
+	trustShown := func() bool {
+		att := s.Info().Attention
+		return att.State == AttentionNeedsInput && att.Source == SourceTrust && att.ID != ""
+	}
+	draw(t, s, p, memberTrustFrame)
+	moveWaitFor(t, "the trust question shown", trustShown)
+	sub, err := s.Attach("", RoleControl, "", 80, 24, newChanSink(false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AnswerInput(context.Background(), sub, s.Info().Attention.ID, []byte(memberTrustAnswers[0].Input)); err != nil {
+		t.Fatal(err)
+	}
+	untilIdle(t, s)
+	draw(t, s, p, claudePromptRow(""))
+	moveWaitFor(t, "the trust question gone", func() bool { return s.Info().Attention.State != AttentionNeedsInput })
+	noChat := ProtocolStart(func(context.Context, string) (Child, Protocol, error) {
+		return nil, nil, errors.New("the chat's child did not start")
+	})
+	if err := s.MoveFresh(MoveStarts{Protocol: noChat, Terminal: ts.start, Gone: GroupGone}); !errors.Is(err, ErrMoveFellBack) {
+		t.Fatalf("MoveFresh = %v, want the fallback", err)
+	}
+	ts.mu.Lock()
+	fresh := ts.procs[0]
+	ts.mu.Unlock()
+	draw(t, s, fresh, memberTrustFrame)
+	moveWaitFor(t, "the trust question held afresh", trustShown)
+	if err := s.AnswerInput(context.Background(), sub, s.Info().Attention.ID, []byte(memberTrustAnswers[0].Input)); err != nil {
+		t.Fatalf("the fresh terminal's trust question answered by its choice: %v", err)
+	}
+}

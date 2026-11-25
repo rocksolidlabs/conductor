@@ -606,10 +606,16 @@ func (s *Local) startWay(mctx context.Context, to string, m MoveStarts, fresh bo
 		return groupOf(term), ErrSessionEnded
 	}
 	s.renewTerminalLocked()
-	if fresh && s.trust != nil {
+	if fresh {
 		// A terminal started afresh asks its startup questions again: the
-		// watch of them starts over.
-		s.trust.Renew(int(s.info.Cols), int(s.info.Rows))
+		// watch of them starts over, with no memory of what the terminal
+		// before answered, so that a question asked afresh is held afresh.
+		if s.trust != nil {
+			s.trust.Renew(int(s.info.Cols), int(s.info.Rows))
+		}
+		s.startupAnswered, s.startupAnsweredAt = false, 0
+		s.startupAnsweredWords, s.startupAnsweredFed = "", 0
+		s.heldAnswer = heldStartup{}
 	}
 	s.way.Store(nil)
 	s.startTerminal(term)
