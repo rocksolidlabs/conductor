@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -563,5 +564,51 @@ func TestARecordsResumeSaysItsWayIsNotKept(t *testing.T) {
 			t.Fatalf("a member resumed from a record launched with way %q", way)
 		}
 		stopRun(t, e, run.ID)
+	}
+}
+
+// A screen other than the prompt for a moment (the agent drawing its
+// prompt at its start) is not said: the run's log says the prompt waits
+// only once the screen has held for notPromptLooks looks in a row, and
+// once.
+func TestAMomentsOtherScreenIsNotSaid(t *testing.T) {
+	for _, held := range []bool{false, true} {
+		t.Run(map[bool]string{false: "a moment", true: "a screen that holds"}[held], func(t *testing.T) {
+			dir := newRepo(t)
+			sc := newScreens()
+			name := attemptName("lead", "build", 1)
+			sc.first[name] = loadingScreen
+			e, fl, _ := chatEngine(t, sc)
+			var most atomic.Int32
+			var early atomic.Bool
+			var runID atomic.Value
+			e.lookedOther = func(n int) {
+				// The line of look n is written after this call: one already
+				// in the log was written at an earlier look.
+				if id, ok := runID.Load().(string); ok && n <= notPromptLooks && logCount(t, e, id, notPromptWords) != 0 {
+					early.Store(true)
+				}
+				most.Store(int32(n))
+			}
+			run := launchManaged(t, e, chatCrew(dir, work("build", "lead")))
+			runID.Store(run.ID)
+			want := 0
+			if held {
+				want = 1
+				waitLogged(t, e, run.ID, "lead (task build, attempt 1): "+notPromptWords, 1, 10*time.Second)
+			} else {
+				waitTrue(t, "a few looks at the other screen", func() bool { return most.Load() >= 3 })
+			}
+			prompt(fl.procOf(name))
+			fp, _ := chatOf(t, fl, name)
+			sent(t, fp, 1)
+			if n := logCount(t, e, run.ID, notPromptWords); n != want && !(held == false && most.Load() >= notPromptLooks) {
+				t.Fatalf("said %d times after %d looks, want %d", n, most.Load(), want)
+			}
+			if early.Load() {
+				t.Fatalf("said before %d looks", notPromptLooks)
+			}
+			stopRun(t, e, run.ID)
+		})
 	}
 }

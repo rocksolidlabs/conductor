@@ -152,6 +152,12 @@ const (
 	resumedChatWords = "runs as a chat, on its conversation."
 )
 
+// notPromptLooks is how many looks in a row, readyPoll apart, must find a
+// member's terminal showing a screen that is neither the agent's prompt
+// nor a question before the run's log says its prompt waits (notPromptWords):
+// 8 looks, 2 s of a screen that holds.
+const notPromptLooks = 8
+
 // recordTerminalWords is what a Chat run resumed from its record alone says:
 // the record keeps no way (a run's record keeps the type older builds
 // read), and its members run in their terminals.
@@ -250,21 +256,33 @@ func (e *Engine) moveMember(ctx context.Context, r *run, m *member, local *sessi
 		r.note(typ, format, args...)
 		e.mu.Unlock()
 	}
-	other := false
+	// said says the other screen's line is written; looks counts the
+	// looks in a row that found another screen.
+	said, looks := false, 0
 	for {
 		// The positive sign alone: the agent's prompt by its shape, no
 		// question showing. A dialog's words being gone is never it.
 		for {
 			att := local.Info().Attention
 			if att.State == session.AttentionNeedsInput {
+				looks = 0
 				if att.Source == session.SourceTrust || att.Source == session.SourceQuestion {
 					lines.held(att.Message)
 				}
 			} else if local.AtPrompt() {
 				break
-			} else if !other {
-				other = true
-				note(session.ActivityStatus, "%s: %s", label, notPromptWords)
+			} else {
+				// Another screen: said once it has held for notPromptLooks
+				// looks in a row, never for a moment (the agent drawing its
+				// prompt at its start).
+				looks++
+				if e.lookedOther != nil {
+					e.lookedOther(looks)
+				}
+				if !said && looks >= notPromptLooks {
+					said = true
+					note(session.ActivityStatus, "%s: %s", label, notPromptWords)
+				}
 			}
 			select {
 			case <-ctx.Done():

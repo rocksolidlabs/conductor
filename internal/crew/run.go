@@ -533,6 +533,10 @@ type Engine struct {
 	// tried, when set, is called by deliver after each attempt to type a
 	// handoff, with the member and whether it was typed: tests wait on it.
 	tried func(member string, typed bool)
+	// lookedOther, when set, is called by a member's move each time a
+	// look at its terminal finds a screen that is neither its prompt nor a
+	// question, with how many such looks in a row: tests wait on it.
+	lookedOther func(looks int)
 	// afterLookup, when set, runs once a command or RetryTask has looked
 	// its run up and before its change: a test evicts the run there.
 	afterLookup func(runID string)
