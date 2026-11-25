@@ -872,3 +872,28 @@ func TestClaudeTypeClashChangesNothing(t *testing.T) {
 		t.Fatalf("capabilities of another type taken for a receipt: %v", err)
 	}
 }
+
+// The terminal's arguments may not set the chat's own flags in their
+// documented short forms either: -p, -r and -c, alone, in a cluster of
+// short flags, or with -r's value attached. A short flag that takes a
+// value ends the cluster, so "-nproject" is a name and no -p.
+func TestClaudeArgsRefuseShortFlags(t *testing.T) {
+	launch := func(args ...string) error {
+		_, err := ClaudeArgs(ClaudeLaunch{Command: []string{"claude"}, Conversation: "11111111-2222-4333-8444-555555555555", HooksDir: "/data/hooks", LaunchArgs: args})
+		return err
+	}
+	for _, bad := range [][]string{
+		{"-p"}, {"-r"}, {"-c"}, {"-cp"}, {"-pc"}, {"-vp"}, {"-r11111111-2222-4333-8444-555555555555"}, {"-rname"}, {"--add-dir=/x", "-c"},
+	} {
+		if err := launch(bad...); err == nil {
+			t.Errorf("%q taken", bad)
+		}
+	}
+	for _, good := range [][]string{
+		{"-n", "proj"}, {"-nproject"}, {"-wtree"}, {"-w", "tree"}, {"-v"}, {"-5"}, {"--model=opus"}, {"-"},
+	} {
+		if err := launch(good...); err != nil {
+			t.Errorf("%q refused: %v", good, err)
+		}
+	}
+}

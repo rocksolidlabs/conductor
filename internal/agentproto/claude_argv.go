@@ -129,7 +129,9 @@ func ClaudeArgs(l ClaudeLaunch) ([]string, error) {
 	return argv, nil
 }
 
-// ownFlag is the first of args that is one of the driver's own flags.
+// ownFlag is the first of args that is one of the driver's own flags: by
+// its name (alone or with "=value"), or as a short flag within a cluster of
+// them (shortOwnFlag).
 func ownFlag(args []string) string {
 	for _, a := range args {
 		name, _, _ := strings.Cut(a, "=")
@@ -137,6 +139,38 @@ func ownFlag(args []string) string {
 			if name == f {
 				return f
 			}
+		}
+		if f := shortOwnFlag(a); f != "" {
+			return f
+		}
+	}
+	return ""
+}
+
+// Claude Code's documented short flags (its CLI reference): -p (--print),
+// -r (--resume), -c (--continue), -n (--name), -v (--version), -w
+// (--worktree). Of them -p, -r and -c are the chat's own; -r, -n and -w
+// take a value, which a cluster may carry attached ("-rID", "-nname").
+const (
+	claudeShortOwn   = "prc"
+	claudeShortValue = "rnw"
+)
+
+// shortOwnFlag is the chat's own short flag a short-flag argument holds:
+// "-p" alone, or among others as "-cp" or "-pc", or carrying its value as
+// "-rID". The letters after one that takes a value are that value, and a
+// digit ends the flags (a negative number is no flag). "" for none, and for
+// a long flag ("--…").
+func shortOwnFlag(a string) string {
+	if len(a) < 2 || a[0] != '-' || a[1] == '-' {
+		return ""
+	}
+	for _, r := range a[1:] {
+		switch {
+		case strings.ContainsRune(claudeShortOwn, r):
+			return "-" + string(r)
+		case strings.ContainsRune(claudeShortValue, r), r >= '0' && r <= '9', r == '=':
+			return ""
 		}
 	}
 	return ""
