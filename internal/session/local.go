@@ -155,6 +155,13 @@ type Options struct {
 	// not match (startupLine). A server's own session and a hosted one
 	// whose host was sent the shape set it alike (agents.Watch.Apply).
 	PromptShape *regexp.Regexp
+	// MemberWay is the way a crew member's session was launched to run
+	// (crew.LaunchSpec.Way: WayProtocol, or "" for its terminal), and
+	// MemberResumes says its launch resumed a conversation. The engine's
+	// move of a member to its chat is refused for any other session
+	// (MoveFresh, MoveResumed).
+	MemberWay     string
+	MemberResumes bool
 	// Questions are the agent's other startup questions (the catalog's
 	// questions; round 13, G2c), held exactly as the trust question is:
 	// source "trust", their answers the choices, typed text refused while
@@ -488,6 +495,13 @@ type Local struct {
 	// the program's text (PersonTyped), once (personOnce).
 	personTyped chan struct{}
 	personOnce  sync.Once
+	// typedAtPrompt is set once a person's keys are written while the
+	// screen is the agent's prompt (AtPrompt), and submitted once any
+	// submission's text is written: a crew member's move to its chat is
+	// refused after either (MoveFresh). Only a member launched to run as
+	// a chat keeps typedAtPrompt.
+	typedAtPrompt atomic.Bool
+	submitted     atomic.Bool
 	// endedTurn is the agent's name for the last turn whose end was
 	// recorded (a done whose report named its turn): a done naming it
 	// again is the same report, however much has happened since, and a
@@ -631,8 +645,12 @@ type Local struct {
 	// movedWith is what the last move to the chat moved with: the way a
 	// chat goes back to its terminal by itself (a signed-out agent,
 	// readProtocol). Under mu.
-	moveCancel  context.CancelFunc
-	movedWith   MoveStarts
+	moveCancel context.CancelFunc
+	movedWith  MoveStarts
+	// lastMoveWhy is the sentence of the last move that went back or
+	// ended (move, endMove), read by the member's move (moveMember).
+	// Guarded by mu.
+	lastMoveWhy string
 	noted       string
 	notedWhy    string
 	notedStarts MoveStarts
@@ -3752,6 +3770,13 @@ func (s *Local) input(ctx context.Context, who typist, question string, data []b
 			// a launch's first message, still waiting, is theirs to type
 			// now (PersonTyped).
 			s.notePersonTyped()
+		}
+		if typed && !quiet && question == "" && !isTerminalReport(data) && s.opts.MemberWay == WayProtocol && s.atPrompt() {
+			// A person's keys at a crew member's prompt: its move to its
+			// chat is refused from now on (MoveFresh). Keys at any other
+			// screen (a startup question, a dialog Conductor does not
+			// know) do not count.
+			s.typedAtPrompt.Store(true)
 		}
 		// A reply's keys to the startup question shown (claimed as the
 		// writer took them): its screen goes behind as a sure answer's does.
