@@ -193,6 +193,9 @@ export function renderConfig(template: string, out: string): void {
   const agents = cfg.catalog?.agents ?? []
   const bash = agents.some((agent) => agent.command.includes('@BASH@')) ? stubBash().command : undefined
   for (const a of agents) a.command = a.command.map((arg) => (arg === '@STUB@' ? stubPath : arg === '@BASH@' ? bash! : arg))
+  // @NODE@ in an entry's env is the node that runs the suite (the stub's chat child, stub-protocol.mjs).
+  for (const a of agents as Array<{ env?: Record<string, string> }>)
+    for (const [k, v] of Object.entries(a.env ?? {})) if (v === '@NODE@') a.env![k] = process.execPath
   writeFileSync(out, JSON.stringify(cfg, null, 2) + '\n')
 }
 

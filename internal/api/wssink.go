@@ -222,6 +222,12 @@ type viewerSeam struct {
 	waited func()
 	left   func()
 	taking func(ctx context.Context)
+	// localWrite, when set, runs before each frame written to a server
+	// session's viewer (serveLocalViewer): a test's gate on its writes.
+	localWrite func() error
+	// submitWait, when set, is a submit message's bound in place of
+	// submitTimeout: a test's, to show nothing waits on it.
+	submitWait time.Duration
 }
 
 // seamSink is a sink whose writes fail when the seam says so.

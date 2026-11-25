@@ -1,0 +1,5 @@
+conversation 00000000-0000-4000-8000-000000000001
+accepted m201
+turn_started
+text msg_01Fixture000000000000951:0 1 call(s) final=true "Not logged in · Please run /login"
+notice not_signed_in "Claude Code is not signed in; sign in from its terminal."

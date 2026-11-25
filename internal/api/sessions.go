@@ -324,6 +324,9 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 		argv = append(argv, catalog.Expand(r.StartArgs, id)...)
 		agentSession = &session.AgentSession{ID: id, Source: session.AgentSessionSet}
 	}
+	// Where the arguments after the command and the conversation's begin:
+	// a move back to the terminal resumes with them (chatLaunch.termTail).
+	tailAt := len(argv)
 	argv = append(argv, req.Args...)
 	// The model, through the adapter's flag after the launch's own
 	// arguments, which are judged beside it (launchModel).
@@ -515,23 +518,25 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 		repo.Close()
 	}
 	opts := session.Options{
-		ScrollbackBytes: s.cfg.ScrollbackBytes,
-		MaxViewers:      s.cfg.MaxViewersPerSession,
-		FileView:        string(s.cfg.FileView),
-		FileEdit:        string(s.cfg.FileEdit),
-		FileDenyFunc:    s.fileDeny,
-		Transport:       proto.TransportWS,
-		Log:             s.log,
-		Tokens:          &s.agentTokens,
-		OnChange:        s.localChange,
-		OnActivity:      s.localActivity,
-		OnChat:          s.localChat,
-		OnOutput:        s.outputArrived,
-		RunChat:         req.runChat,
-		Pattern:         pattern,
-		WatchGit:        true,
-		Launched:        launched,
-		Folder:          folder,
+		ScrollbackBytes:     s.cfg.ScrollbackBytes,
+		MaxViewers:          s.cfg.MaxViewersPerSession,
+		FileView:            string(s.cfg.FileView),
+		FileEdit:            string(s.cfg.FileEdit),
+		FileDenyFunc:        s.fileDeny,
+		Transport:           proto.TransportWS,
+		Log:                 s.log,
+		Tokens:              &s.agentTokens,
+		OnChange:            s.localChange,
+		OnActivity:          s.localActivity,
+		OnChat:              s.localChat,
+		OnOutput:            s.outputArrived,
+		OnTranscriptPiece:   s.transcriptPiece,
+		OnTranscriptDropped: s.transcriptDropped,
+		RunChat:             req.runChat,
+		Pattern:             pattern,
+		WatchGit:            true,
+		Launched:            launched,
+		Folder:              folder,
 		// Where the agent keeps its plans outside the folder (#289), from
 		// its adapter and the environment the process was given: the
 		// directory the agent itself writes to.
@@ -560,6 +565,13 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 		return nil, newAPIError(http.StatusConflict, "too_many_sessions", "session limit reached")
 	}
 	keepFolder = true
+	// What its chat's child starts from, for an agent that has one (the
+	// protocol way): in memory, while the session is listed.
+	s.keepChatLaunch(id, chatLaunch{
+		where: where, agent: agent.Copy(), yolo: applied, model: slices.Clone(modelArgs), args: slices.Clone(req.Args),
+		env: chatEnv(procEnv), folder: folder, ref: processRefOf(id, crewRef),
+		termTail: slices.Clone(argv[tailAt:]), termEnv: slices.Clone(procEnv), cols: cols, rows: rows,
+	})
 	// Its registration complete, its record reconciled once: an exit
 	// before the registry held it is read now.
 	s.registered(rc)
@@ -632,6 +644,9 @@ func (s *Server) localChange(info session.Info) {
 	}
 	if pub := s.publishedOf(info.ID); pub != nil {
 		pub.OnChange(info)
+		// A session moved to Chat on a switchyard too old for its frames
+		// is published no longer (move.go).
+		s.endChatOnOlderSwitchyard(info)
 	}
 }
 

@@ -1,0 +1,10 @@
+conversation 00000000-0000-4000-8000-000000000001
+accepted m7
+turn_started
+tool_started toolu_01Fixture000000000000005 parent="" Read summary="/work/notes.txt" input={"file_path":"/work/notes.txt"}
+tool_ended toolu_01Fixture000000000000005 ok exit=none cut=false output="1\tone\n2\ttwo\n3\tthree\n4\t"
+tool_started toolu_01Fixture000000000000006 parent="" Edit summary="/work/notes.txt" input={"file_path":"/work/notes.txt","new_string":"2","old_string":"two","replace_all":false}
+tool_ended toolu_01Fixture000000000000006 ok exit=none cut=false output="The file /work/notes.txt has been updated successfully. (file state is current in your context — no need to Read it back)"
+file_changed tool=toolu_01Fixture000000000000006 /work/notes.txt edit +1 -1 diff="@@ -1,3 +1,3 @@\n one\n-two\n+2\n three\n"
+text msg_01Fixture000000000000010:0 9 call(s) final=true "I changed line 2 of `notes.txt` from `two` to `2` with the Edit tool. The file now reads `one`, `2`, `three`."
+turn_ended done in=147527 out=497 cost=0.00000000

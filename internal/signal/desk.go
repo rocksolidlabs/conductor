@@ -196,16 +196,6 @@ func (h *HostedSession) retireDesk() {
 	place.Release()
 }
 
-// laneRequest says whether t is a request of a decision link's lane
-// (proto.DecodeLane's): a view-role viewer's is dropped at the relay.
-func laneRequest(t string) bool {
-	switch t {
-	case proto.CtlDecisionsList, proto.CtlDecisionRead, proto.CtlDecisionTrack, proto.CtlDecisionRecord, proto.CtlDecisionEvidence:
-		return true
-	}
-	return false
-}
-
 // DeskCount is how many desks the hub holds.
 func (hub *Hub) DeskCount() int {
 	hub.mu.Lock()

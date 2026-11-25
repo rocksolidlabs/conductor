@@ -123,6 +123,25 @@ type Server struct {
 	// on a switchyard and without a data directory.
 	outputs   *outputIndex
 	copyCheck *outputGuard
+	// chatLaunches is what each listed server session's chat's child starts
+	// from (chatLaunch, by session id); chatInitWait and chatMaxInput, when a
+	// test sets them before a start, the driver's wait for its initialize
+	// answer and its input's bound (agentproto.ClaudeOptions).
+	chatLaunches sync.Map
+	chatInitWait time.Duration
+	chatMaxInput int64
+	// moveSeam, a test's, runs in a move once the old process is proven
+	// gone, before the new one starts (session.MoveStarts.AfterOldExit).
+	moveSeam func(id string)
+	// hookDropped holds, by session, that a chat has noted the hook reports
+	// it dropped (dropForChat): once.
+	hookDropped sync.Map
+	// transcriptKeys is, by session, the pieces of each chat's transcript
+	// the copied-output index keeps (transcriptPiece).
+	transcriptKeys struct {
+		sync.Mutex
+		m map[string]map[string]bool
+	}
 	// settleDue is set when the ledger's check writes a part pending, and
 	// settleWake wakes the decisions' settle loop once that write's commit
 	// is told (pokeSettle); settleTick, when a test sets it, is the loop's
@@ -1004,6 +1023,9 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 			s.outputs.prune("ring:" + id)
 			s.outputs.prune("screen:" + id)
 		}
+		s.forgetTranscript(id)
+		s.forgetChatLaunch(id)
+		s.hookDropped.Delete(id)
 		switch drv := d.(type) {
 		case *session.Local:
 			drv.LeaveRunChat()
@@ -1377,6 +1399,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/sessions/{id}", s.requireAdmin(s.handleDeleteSession))
 	mux.HandleFunc("PATCH /api/sessions/{id}", s.launching(s.handleRenameSession))
 	mux.HandleFunc("POST /api/sessions/{id}/resume", s.launching(s.handleResumeSession))
+	// The move between ways is the operator's alone, as Stop is (move.go).
+	mux.HandleFunc("POST /api/sessions/{id}/way", s.requireAdmin(s.handleSessionWay))
 	mux.HandleFunc("POST /api/sessions/{id}/clone", s.launching(s.handleCloneSession))
 	mux.HandleFunc("GET /api/sessions/{id}/links", s.requireAdmin(s.handleListLinks))
 	mux.HandleFunc("POST /api/sessions/{id}/links", s.requireAdmin(s.handleCreateLink))

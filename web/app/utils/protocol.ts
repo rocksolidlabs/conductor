@@ -17,6 +17,8 @@ export const FrameType = {
   /** client -> owner: one action on a decision, to an owner whose welcome says `decisions`. */
   Decide: 0x0a,
   Relay: 0x10,
+  /** owner -> client: a chat's entries and replies to its reads (see Chat sessions); never from a session in its terminal. */
+  Transcript: 0x0b,
 } as const
 
 export const ProtoVersion = 1
@@ -561,6 +563,16 @@ export interface Welcome {
   iceServers?: ICEServer[]
   relayTimeoutMs?: number
   relayOnly?: boolean
+  /** `protocol` on a chat (see Chat sessions), which sends TRANSCRIPT and no SCROLLBACK; absent for a session in its terminal, as from an older owner. */
+  way?: 'protocol'
+  /** A chat's messages reach the agent as written. */
+  verbatim?: boolean
+  /** What a chat's transcript keeps: its first and last seq (0 when none) and its mark, the resume point a hello carries. */
+  transcript?: WelcomeTranscript
+  /** The owner takes `interrupt`, a chat's Stop. */
+  interrupt?: boolean
+  /** The way a move pressed during a turn goes to at its end (see Moving between ways); absent while none is noted, and from an older owner. */
+  noted?: SessionWay
 }
 
 export type ControlMessage =
@@ -585,6 +597,9 @@ export type ControlMessage =
   | DecideOkMsg
   | DecideRefusedMsg
   | DecisionsChangedMsg
+  /** The owner asked the agent to stop the turn (`interrupt` of that `reqId`); the turn's end follows in the transcript. */
+  | { t: 'interrupt_ok'; requestId: string }
+  | WayMessage
 
 export interface FileEntry {
   name: string
@@ -2099,3 +2114,181 @@ export const HOSTS_PID_DIGITS = 10
 export const HOSTS_MAX_MACHINES = 64
 export const HOSTS_MAX_REMOTE_RUNS = 200
 export const HOSTS_SUMMARY_ROWS = 8
+
+// Chat sessions (docs/protocol.md): a session that runs its agent through the agent's own protocol keeps its conversation as typed
+// entries, sent in TRANSCRIPT frames (FrameType.Transcript); a viewer reads more with `transcript_get` and stops a turn with
+// `interrupt`, to an owner whose welcome says `way: "protocol"` and `interrupt`.
+
+/** A TRANSCRIPT frame's payload, in bytes (proto.MaxTranscript); one entry as sent (proto.MaxTranscriptEntry). */
+export const MAX_TRANSCRIPT = 128 * 1024
+export const MAX_TRANSCRIPT_ENTRY = 12 * 1024
+/** A page's entries at most (proto.MaxTranscriptPage), and the bytes of a part one piece carries (proto.MaxTranscriptData). */
+export const MAX_TRANSCRIPT_PAGE = 100
+export const MAX_TRANSCRIPT_DATA = 95 * 1024
+/** What a viewer is sent of the transcript after its ready, the open requests' entries outside it (proto.TranscriptReplayBytes). */
+export const TRANSCRIPT_REPLAY_BYTES = 256 * 1024
+/** A `transcript_get`'s and an `interrupt`'s reqId, in bytes (proto.MaxTranscriptReqID). */
+export const MAX_TRANSCRIPT_REQ_ID = 32
+/** A connection's reads whose replies are not yet written to it (proto.MaxTranscriptInFlight): one more is refused `too_many_requests`. */
+export const MAX_TRANSCRIPT_IN_FLIGHT = 4
+
+/** The chat's error codes. */
+export const ERR_NOT_TERMINAL = 'not_terminal'
+export const ERR_NOT_PROTOCOL = 'not_protocol'
+export const ERR_NO_TURN = 'no_turn'
+export const ERR_TRANSCRIPT_GONE = 'transcript_gone'
+export const ERR_UNCONFIRMED = 'unconfirmed'
+export const ERR_PERMISSION_CARD = 'permission'
+
+// Moving between ways (docs/protocol.md): the operator moves a person's own server session between its terminal and its chat
+// (POST /api/sessions/{id}/way) once a turn has ended; the owner tells every viewer with `way`, the welcome carries a noted move.
+
+/** How a session runs its agent: in its terminal, or as a chat (the agent's own protocol). */
+export type SessionWay = 'terminal' | 'protocol'
+
+/**
+ * The session's way now (owner -> client): sent when a move changed it, and when a move is noted (pressed during a turn), replaced
+ * or pressed away. `protocol` names a chat's protocol (at most MAX_WAY_PROTOCOL bytes), `noted` the way a noted move goes to,
+ * `why` one sentence (at most MAX_WAY_WHY bytes): why the noted move waits, or why the session is back the way it came from.
+ */
+export interface WayMessage {
+  t: 'way'
+  way: SessionWay
+  protocol?: string
+  noted?: SessionWay
+  why?: string
+}
+
+/** The way message's bounds, in bytes (proto.MaxWayProtocol, proto.MaxWayWhy); the move's body (the route's). */
+export const MAX_WAY_PROTOCOL = 32
+export const MAX_WAY_WHY = 200
+export const MAX_WAY_BODY = 64
+
+/** The move's error codes: a submission, an answer or an interrupt during a move; a move whose conditions do not hold. */
+export const ERR_MOVING = 'moving'
+export const ERR_MOVE_REFUSED = 'move_refused'
+
+/** Whether m is a way message within its bounds: what a client acts on. */
+export function validWay(m: { t?: unknown; way?: unknown; protocol?: unknown; noted?: unknown; why?: unknown }): m is WayMessage {
+  const ways = ['terminal', 'protocol']
+  const bytes = (v: unknown) => new TextEncoder().encode(String(v)).length
+  return (
+    m.t === 'way' &&
+    ways.includes(m.way as string) &&
+    (m.noted === undefined || ways.includes(m.noted as string)) &&
+    (m.protocol === undefined || (typeof m.protocol === 'string' && bytes(m.protocol) <= MAX_WAY_PROTOCOL)) &&
+    (m.why === undefined || (typeof m.why === 'string' && bytes(m.why) <= MAX_WAY_WHY))
+  )
+}
+
+export type TranscriptKind = 'prompt' | 'text' | 'tool' | 'file' | 'permission' | 'turn' | 'notice'
+export type TranscriptPartName = 'input' | 'output' | 'diff'
+
+/** One entry of a chat's transcript (session.TranscriptEntry): `seq` its place, `mark` the session's count of changes as of its last. */
+export interface TranscriptEntry {
+  seq: number
+  mark: number
+  rev: number
+  at: string
+  kind: TranscriptKind
+  turn: number
+  ref?: string
+  parent?: string
+  /** A prompt: who sent it, their name, its text (none for an answer to a question: `answers` names it), its state. A text: `final` once closed. */
+  by?: 'person' | 'conductor'
+  byName?: string
+  text?: string
+  state?: string
+  answers?: string
+  final?: boolean
+  /** A tool step, and a permission request. */
+  tool?: string
+  summary?: string
+  inputBytes?: number
+  inputSha256?: string
+  status?: 'running' | 'ok' | 'error' | 'denied' | 'interrupted'
+  exit?: number
+  durationMs?: number
+  measured?: 'conductor'
+  outputBytes?: number
+  /** A file a tool changed. */
+  path?: string
+  outside?: boolean
+  op?: 'create' | 'edit' | 'delete'
+  added?: number
+  removed?: number
+  /** A permission request. */
+  question?: string
+  call?: string
+  plain?: string
+  cwd?: string
+  choices?: string[]
+  why?: string
+  /** A turn. */
+  phase?: 'start' | 'end'
+  outcome?: string
+  usage?: { inputTokens?: number; outputTokens?: number; costUsd?: number }
+  /** A notice. */
+  code?: string
+  words?: string
+}
+
+/** What a chat's welcome says of its transcript (proto.WelcomeTranscript). */
+export interface WelcomeTranscript {
+  first: number
+  last: number
+  mark: number
+}
+
+/** A TRANSCRIPT frame's message: one entry, new or revised; a page (a reply naming `reqId`, or the replay after ready); a piece of a part. */
+export type TranscriptMessage =
+  | { t: 'entry'; entry: TranscriptEntry }
+  | { t: 'page'; reqId?: string; entries: TranscriptEntry[]; first: number; last: number; more?: boolean }
+  | { t: 'part'; reqId: string; seq: number; name: TranscriptPartName; offset: number; total: number; kept: number; data: string; cut?: boolean }
+
+/** A read of the transcript: entries after `after`, or the newest before `before`, at most `limit`; or a piece of a part. */
+export interface TranscriptRequest {
+  after?: number
+  before?: number
+  limit?: number
+  part?: { seq: number; name: TranscriptPartName; offset?: number }
+}
+
+/** A piece of a part as the transport hands it back: its bytes decoded from `data`. */
+export type TranscriptReply =
+  | Extract<TranscriptMessage, { t: 'page' }>
+  | (Omit<Extract<TranscriptMessage, { t: 'part' }>, 'data'> & { bytes: Uint8Array })
+
+/** Whether r is within a `transcript_get`'s bounds (proto.TranscriptGet.Valid), its reqId aside. */
+export function transcriptRequestValid(r: TranscriptRequest): boolean {
+  const n = (v: number | undefined) => v === undefined || (Number.isInteger(v) && v >= 0)
+  if (!n(r.after) || !n(r.before) || !n(r.limit) || (r.limit ?? 0) > MAX_TRANSCRIPT_PAGE) return false
+  if (r.part) {
+    return ['input', 'output', 'diff'].includes(r.part.name) && Number.isInteger(r.part.seq) && r.part.seq > 0 && n(r.part.offset) && r.after === undefined && r.before === undefined && r.limit === undefined
+  }
+  return true
+}
+
+/** Decodes a TRANSCRIPT frame's payload; null for one past MAX_TRANSCRIPT or not a message of the three. */
+export function decodeTranscript(payload: Uint8Array): TranscriptMessage | null {
+  if (payload.length > MAX_TRANSCRIPT) return null
+  const m = parseJSON<TranscriptMessage>(payload)
+  if (!m) return null
+  switch (m.t) {
+    case 'entry':
+      return m.entry && typeof m.entry.seq === 'number' ? m : null
+    case 'page':
+      return Array.isArray(m.entries) ? m : null
+    case 'part':
+      return typeof m.reqId === 'string' && typeof m.data === 'string' ? m : null
+  }
+  return null
+}
+
+/** The bytes of a part's piece (its `data`, base64). */
+export function partBytes(data: string): Uint8Array {
+  const bin = atob(data)
+  const out = new Uint8Array(bin.length)
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i)
+  return out
+}

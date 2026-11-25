@@ -69,6 +69,9 @@ type peer struct {
 	// filesWaiting counts the viewer's file reads waiting for the host to
 	// vouch for its server (fileGetIn).
 	filesWaiting atomic.Int32
+	// transcriptsWaiting counts the viewer's chat reads waiting for the host
+	// to vouch for its server (transcriptGetIn).
+	transcriptsWaiting atomic.Int32
 
 	// room is whether the server has room for more of the viewer's relayed
 	// frames (viewer_behind), whichever relay sink the viewer is on.
@@ -379,7 +382,9 @@ func (p *peer) handle(f proto.Frame, via *dcSink) {
 		case proto.CtlResize:
 			var m proto.Resize
 			if json.Unmarshal(f.Payload, &m) == nil {
-				_ = p.a.local.ResizeWith(sub, m.Cols, m.Rows, m.Take)
+				if err := p.a.local.ResizeWith(sub, m.Cols, m.Rows, m.Take); errors.Is(err, session.ErrNotTerminal) {
+					p.a.local.Send(sub, inputError(err))
+				}
 			}
 		case proto.CtlPing:
 			var m proto.Ping
@@ -504,6 +509,23 @@ func (p *peer) handle(f proto.Frame, via *dcSink) {
 				return
 			}
 			p.fileGetIn(sub, m)
+		case proto.CtlTranscriptGet:
+			// A chat's read (every role), served as the server serves
+			// its own sessions' (ws_viewer.go): not_protocol on a terminal.
+			m, err := proto.DecodeTranscriptGet(f.Payload)
+			if err != nil {
+				p.a.local.Send(sub, session.TranscriptRefused(proto.RequestIDOf(f.Payload), session.ErrBadTranscriptGet))
+				return
+			}
+			p.transcriptGetIn(sub, m)
+		case proto.CtlInterrupt:
+			// A chat's Stop (controllers), off the frame loop.
+			m, err := proto.DecodeInterrupt(f.Payload)
+			if err != nil {
+				p.a.local.Send(sub, proto.MustControl(proto.ErrorMsg{T: proto.CtlError, Code: proto.ErrCodeBadFrame, Message: "bad interrupt message", RequestID: proto.RequestIDOf(f.Payload)}))
+				return
+			}
+			p.a.local.InterruptAsk(sub, m.ReqID, p.awaitVouch)
 		default:
 			// A decision link's lane (lane.go): refused on a viewer of no
 			// decision link, and by a host that serves no decisions.
@@ -694,6 +716,35 @@ func (p *peer) fileGetIn(sub *session.Subscription, m proto.FileGet) {
 	}()
 }
 
+// transcriptGetIn serves a chat's read for sub (session.TranscriptGet, its
+// reply queued to the viewer), or answers why not; a link's viewer's read
+// waits for the host to vouch for its server first, as a file read does
+// (fileGetIn), a ping's own wait at most, at most
+// proto.MaxTranscriptInFlight such reads at once.
+func (p *peer) transcriptGetIn(sub *session.Subscription, m proto.TranscriptGet) {
+	get := func() {
+		if err := p.a.local.TranscriptGet(sub, m); err != nil {
+			p.a.local.Send(sub, session.TranscriptRefused(m.ReqID, err))
+		}
+	}
+	if p.cred == nil || p.a.vouches() == nil {
+		get()
+		return
+	}
+	if p.transcriptsWaiting.Add(1) > proto.MaxTranscriptInFlight {
+		p.transcriptsWaiting.Add(-1)
+		get()
+		return
+	}
+	go func() {
+		defer p.transcriptsWaiting.Add(-1)
+		ctx, cancel := context.WithTimeout(context.Background(), p.a.heardWithin())
+		_ = p.awaitVouch(ctx)
+		cancel()
+		get()
+	}()
+}
+
 // chatLater takes a chat post of a viewer who joined through a link off the
 // frame loop while the host does not vouch for its server (the first
 // pong of its join's ping not in yet, as after a start, a reconnect or a
@@ -756,6 +807,8 @@ func inputError(err error) []byte {
 		return proto.NewError(proto.ErrCodeSessionEnded, "the session has ended")
 	case errors.Is(err, session.ErrTooManyRequests):
 		return queueFull("")
+	case errors.Is(err, session.ErrNotTerminal):
+		return proto.NewError(proto.ErrCodeNotTerminal, session.NotTerminalWords)
 	case errors.Is(err, session.ErrInputStalled), errors.Is(err, context.DeadlineExceeded):
 		return proto.NewError("input_failed", session.ErrInputStalled.Error())
 	}
@@ -893,6 +946,12 @@ func (p *peer) attach(hello proto.Hello, via *dcSink) {
 	replaces := p.replaces
 	p.mu.Unlock()
 	decides := p.decides("")
+	if p.a.local.Way() == session.WayProtocol && !p.a.transcript.Load() {
+		// A chat's viewer through a server that would close on its frames
+		// (I14): not served there.
+		p.a.sendViewerError(p.id, proto.ErrCodeNotProtocol, OlderSwitchyardWords)
+		return
+	}
 	// The publisher's store's answer when it was what refused this attach:
 	// the refusal is said from that one answer.
 	var ended atomic.Pointer[error]
@@ -900,6 +959,8 @@ func (p *peer) attach(hello proto.Hello, via *dcSink) {
 		ID: p.id, Role: p.role, LinkID: p.linkID, LinkLabel: p.linkLabel, Name: hello.Name, Cols: hello.Cols, Rows: hello.Rows,
 		Owner: p.owner, Replaces: replaces, Fresh: p.fresh, Decisions: decides,
 		Authorize: func() (session.Grant, error) { return p.authorizeAs(&ended) },
+		// A chat's resume point, as the server's own viewers give it.
+		TranscriptAfter: hello.TranscriptAfter,
 	}, sink)
 	if err != nil {
 		code, msg := "attach_failed", err.Error()

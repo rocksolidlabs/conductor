@@ -1171,9 +1171,13 @@ noted and the line says why in one sentence:
   message waits for its acceptance; a terminal session's attention is
   `done` from a source that reports turns, with no question open and
   nothing typed held;
-- no work the agent started still runs after the turn (a chat's stream
-  reports none: `Background(false)`); for a terminal session, nothing in
-  the PTY's process group but the agent's own process;
+- no work the agent started still runs after the turn, for a chat: its
+  stream reports none (`Background(false)`), and a move to the terminal
+  waits while it does. A terminal's group always holds the agent's own
+  helpers (its MCP servers among them), so nothing there holds a move to
+  Chat: what the agent left running in its terminal is ended with its
+  process (never doubled), and the move says so, on the switch before it
+  and in its notice after;
 - no permission request is open and no submission waits.
 
 **The steps**, in the session's own order:
@@ -1198,7 +1202,8 @@ noted and the line says why in one sentence:
    the other view. The terminal's ring and screens begin empty with the
    new process. The transcript stays, with a `notice` entry at the
    boundary: "Moved to the terminal." or "Moved to Chat. Turns made in
-   the terminal are not shown here."
+   the terminal are not shown here. What the agent left running in its
+   terminal was ended."
 6. If the new start fails, the session tries once to resume the way it
    came from; if that fails too, it ends with both failures' words, and
    the conversation stays resumable with Resume.
@@ -1761,6 +1766,55 @@ branch), `internal/api`.
 
 No UI. **By hand:** none. **14 h.**
 
+**As built, row 2** (#1105; `internal/session/protocol.go`,
+`transcript.go`, `internal/session/internal/way`,
+`sessiontest/fakeprotocol.go`):
+
+- The protocol way's types live in `internal/session/internal/way`, a
+  package that imports nothing of the session, and `session` names each
+  of them (`session.Protocol = way.Protocol`, and the rest): the
+  session's own tests import `sessiontest`, so its `FakeProtocol` could
+  not import `session` to implement them.
+- A test enters the way with `sessiontest.EnterProtocol(local, start)`
+  (`start` a `session.ProtocolStart`, `FakeProtocol.Start` for the
+  fake), which the session registers as it loads; nothing else enters
+  it. The terminal's process is left as it was, quiet: row 5's
+  `SwapWay` stops it first. A `Begin` that fails, or a child whose
+  output ends before it is ready, leaves the session in its terminal.
+  `Begin` is bounded by `protocolReadyCap` (60 s).
+- `Submit` queues every message, Conductor's own too, and answers
+  `ErrSubmitPending` at once. A message is written once nothing is under
+  way: no turn running, no message written and not yet acknowledged or
+  unconfirmed. `Finished` is told `Entered` at the acknowledgement and
+  `Unconfirmed` with `ErrUnconfirmed` ("Sent, not yet confirmed.") past
+  `AcceptWait`. A message whose sender no longer stands when its turn
+  to be written comes is never written; its entry's state is
+  `withdrawn`, a state the plan's list did not have. A reply's claim on
+  its question is taken as it is queued and resolves the question as
+  its write begins.
+- Keys of every kind (`Input`, `AnswerInput`, `AnswerAs`, through
+  `input`) and `Resize`, `ResizeWith` answer `ErrNotTerminal`; rows 3 and
+  6 turn an answer to a question into a message. `LastLine`,
+  `ScreenRead` and `BracketedPaste` answer empty, `LastOutputAt` the
+  last event's time, `ProcessDone` the child's.
+- `KindInterrupted` is set by the protocol way alone: `ValidKind` does
+  not take it, so no report from outside carries it.
+- A permission request (`ProtocolEvents.Permission`) is taken into the
+  transcript as an open entry with a question id, held with its input,
+  at most `MaxPendingPermissions` (8, the ninth denied with the bound's
+  words); it is withdrawn by `PermissionWithdrawn`, by the call's
+  `ToolEnded` and by the turn's end, and denied by `Stop` (before the
+  input closes) and by the session's end. It is not shown in the
+  attention yet, and nothing answers it: row 6.
+- `Info` does not yet carry `way`, `protocol` and `verbatim` (row 4);
+  `Local.Way`, `Ready`, `ProtocolName` and `BackgroundWork` say them.
+- The tool steps and texts the session follows at once are bounded at
+  1,000, the oldest no longer followed past it.
+- A line the driver cannot read ends the child and the session with the
+  notice "The agent sent something Conductor cannot read; the session
+  ended.": the agent's own name in it is row 4's. A child started again
+  says "The agent was started again to stop its turn."
+
 ### Row 3: the wire
 
 **Scope.** Design 6 whole but `permission_answer` (row 6) and `way`,
@@ -1831,6 +1885,50 @@ dropped) and `transcriptChunked` (a chunked frame reassembled).
 Playwright: none yet (row 5). **By hand:** none. **Boundary:** the
 relay's allow list is a part with its own adversarial review (links).
 **11 h.**
+
+**As built, row 3** (#1106; `internal/proto/transcript.go`,
+`internal/session/transcriptwire.go`, `internal/api/ws_viewer.go`,
+`internal/hostagent/peer.go` and `uplink.go`, `internal/signal/hosted.go`,
+`web/app/utils/transport/base.ts`, `docs/protocol.md`, Chat sessions):
+
+- The TRANSCRIPT frame is 0x0B, as planned, listed last. A part's piece
+  carries its bytes in `data` as base64, at most 95 KiB of them (96 KiB
+  in base64 would pass the frame's 128 KiB), with `kept`, the bytes the
+  owner keeps of the part, which the plan's list did not have: a reader
+  reads on until it. A page holds what fits the frame
+  (`proto.TranscriptPageRoom`), fewer than asked when they would not.
+- An entry's words are sent as valid UTF-8 with their control
+  characters but tab and line break dropped, so that each encodes to at
+  most two bytes; an entry is cut to fit 12 KiB only past the session's
+  bounds, which `TestTheLargestEntryIsTheFixture` shows never happens at
+  them. The largest is a prompt (`testdata/transcript-max.json`, which
+  that test writes with `CONDUCTOR_WRITE_FIXTURE=1`).
+- The live frames go out in `sendApplied` after the attention and the
+  activity, read from the ring under the session's lock: an entry
+  revised twice is sent as it stands, never older than a viewer's
+  replay. The replay's pages carry no `reqId`, and each says `more` when
+  it left a change out; a mark the transcript never gave counts as none.
+- "In flight" is a reply not yet written to the connection
+  (`Subscription.sendThen`): four of them, the fifth `too_many_requests`.
+- `interrupt` is taken off the read loop, one at a time per connection
+  (`Local.InterruptAsk`), its link checked as it is acted on; on a host
+  it waits for the host to vouch for its server first, as a key does.
+- `transcript_get` on a terminal session answers `not_protocol` in
+  words of its own, "This session runs in its terminal: it has no chat."
+  (the plan gives words for `interrupt` alone). Both new messages are
+  read strictly.
+- The switchyard's word: a chat is not published to a switchyard whose
+  `registered` lacks it (`hostagent.ErrOlderSwitchyard`, the plan's
+  words, which go into the session's activity line and the publication's
+  why); and on such a connection no TRANSCRIPT frame is relayed and a
+  chat's viewer is refused, for a session that becomes a chat after it
+  was published (row 5's move). Settings' own line for it is a page's
+  change, left to the rows that change pages.
+- The relay's allow list (`signal.viewAllows`) passes CONTROL whose `t`
+  is one of the five, and refuses every other frame, a control that does
+  not parse among them; the deny list's `laneRequest` went with it.
+- The welcome's `noted` and `permissionAnswer` are rows 5's and 6's; the
+  sessions listing's `way` is row 4's.
 
 ### Row 4: the Claude Code driver
 
@@ -1926,13 +2024,108 @@ prompt, one turn with a tool; whether the MCP server's `timeout` in a
 `--mcp-config` file raises the idle window (design 7's
 `PermissionWait`), written in the row's pull request. **14 h.**
 
+**As built, row 4** (#1107; `internal/agentproto`, its fixtures in
+`testdata/claude`, `internal/session/pipes.go` and `protocol.go`,
+`internal/api/chat_start.go`, `attention.go`, `output_guard.go`,
+`web/e2e/stub-protocol.mjs`):
+
+- `ClaudeMinVersion` is 2.1.331, the version the fixtures were recorded
+  from (a real run in a throwaway repository, seven messages; the account,
+  plan and sign-in fields, every path and every minted id removed). Two
+  fixtures are hand-built from the documented shapes and say so:
+  background work (a 150-second MCP call was not moved to the background
+  in print mode, so no run showed task events) and a signed-out start.
+- What the run showed that design 4 does not say: the `initialize`
+  answer carries a `capabilities` list of its own without
+  `interrupt_receipt_v1`, which only `system/init` carries, and
+  `system/init` comes after the first message and again at each turn's
+  start: the driver reads the receipt there, and `Interrupt` answers
+  `ErrNoInterrupt` before it. The replay carries the `uuid` written (the
+  undocumented fact holds) and not `client_composed`. Events the pages do
+  not list: `command_lifecycle`, `tool_progress` heartbeats every 30 s of
+  an MCP call, `system/thinking_tokens`, `system/commands_changed`; fields:
+  `api_message_id`, `wire_*`, `tool_result_meta`, `tool_use_meta`,
+  `model_usage_since_last_result`, `pending_user_dialog_requests`. Each
+  `assistant` line holds one block. The interrupt's receipt is
+  `{still_queued: []}` and its turn ends `error_during_execution`,
+  `aborted_streaming`. `total_cost_usd` counts the child's life (a resumed
+  child's earlier calls too): a turn's cost is the difference, none for a
+  child's first turn.
+- The MCP `timeout` (by hand, row 6's question): in one `--mcp-config`
+  file, a server without one was aborted by the idle check at 30 s, one
+  with `"timeout": 300000` was kept to its answer at 150 s. A
+  `--mcp-config` file's `timeout` raises the idle window as `.mcp.json`'s
+  does; `claude-protocol-mcp.json` sets 8 hours.
+- The argv: the permission tool and the floor's one `--settings` are
+  passed only with `ClaudeLaunch.PermissionHost` (row 6 sets it); until
+  then a chat's argv has no `--settings`. A terminal argument that is one
+  of the chat's own flags (`--settings`, `--setting-sources`, `--bare`,
+  `--strict-mcp-config`, `--permission-mode`, `--resume`, the stream
+  flags), or one of its documented short forms (`-p`, `-r`, `-c`, alone,
+  in a cluster such as `-cp`, or as `-r<id>`), refuses the start. `NoMCP` leaves the MCP config out when the
+  server's MCP is off, as a terminal's launch does.
+- The driver mints a UUID per message (the session's refs are hex) and
+  maps the replay back to its ref; where a replay names none, the oldest
+  written. Begin waits at most `ClaudeInitWait` (20 s) for the initialize
+  answer. A request the child makes of Conductor is answered as not
+  supported. Lists it keeps: 64 pending sends, 256 denied calls, 1,000
+  calls and 1,000 streamed texts followed, 256 background tasks.
+- The start of a chat's child (`Server.chatStart`, which row 5's
+  `SwapWay` calls): the terminal's launch leaves what it starts from in
+  memory (`chatLaunch`: the Runtime, the folder, the agent as launched,
+  the launch's arguments, model and yolo, the terminal's environment
+  without TERM and COLORTERM, with NO_COLOR=1 and CONDUCTOR_PROTOCOL=1),
+  gone with the session. The first start checks the probed version
+  (`agentproto.Qualified`) and the session keeps the answer, so a later
+  start (a restart's) never waits on a probe that may come late; the
+  initialize answer's shape check, with its version, guards every start.
+  Each builds `ClaudeArgs` on the conversation it is
+  given and starts through the Runtime's `StartPipes` under the start's
+  context. A start refused, a child that answers no initialize or fails
+  the shape check: the session stays in its terminal.
+- Past 8 MiB written, the driver calls `Restart` as the turn's result
+  arrives, before the session hears of it; the session's new
+  `Local.RestartProtocol` restarts at that turn's end, so a message queued
+  during it goes to the new child alone, with the notice "The agent was
+  started again on the same conversation: its input reached its bound."
+- A driver's Read error may name its end (`EndNotice`): Claude Code's
+  unreadable line is told in its words, a signed-out agent by the
+  driver's own notice ("Claude Code is not signed in; sign in from its
+  terminal.") and the child ended; going back to the terminal from a chat
+  is the move's (row 5).
+- The stream is read leniently: each line must be a JSON object, and a
+  field the driver reads is taken only when its value is of the type it
+  reads it as; a field of another type is as if absent, never the end of
+  the read.
+- The copied-output feed: each piece the transcript keeps is a live
+  source of its own, `transcript:<id>/<seq>/<part>`, fed as the transcript
+  keeps it (cut at 256 KiB), pruned when the ring lets the entry or the
+  part go (`Options.OnTranscriptPiece`, `OnTranscriptDropped`) and when the
+  session is removed: a chat's text is output exactly as long as the
+  transcript keeps it. A single live source of the transcript's size would
+  have let an old entry's text go while a flood of parts was still within
+  it.
+- The attention and events routes drop a hook-shaped report from the
+  agent token on a chat (kind `permission`, `turn: true`, a `file`,
+  `tool_use`, `tool_denied` or `error` event): `200 {dropped: true}`,
+  noted once in the activity. `Info` carries `way`, `protocol` and
+  `verbatim` (the session's own struct, `internal/session/info.go`; the
+  app's types in `composables/useSessions.ts`); the catalog route's agents
+  carry `protocol`; a save and a clone check it with `agentproto.Check`,
+  and a clone takes the source's.
+- `web/e2e/stub-protocol.mjs` speaks the recorded shapes (`--version`
+  prints 2.1.331; environment switches for a missing or bad initialize
+  answer, a signed-out start, a held turn, no receipt), and
+  `TestStubProtocolSpeaksTheDriver` holds it to the driver.
+
 ### Row 5: the move between ways, and the connection split
 
 **Scope.** Design 9 whole: `Local.SwapWay`, the terminal's start
 extracted from `NewLocal` (called by both), the route and its body
 bound, the move noted during a turn and made at its end, the condition
-of a first turn that ended, its refusals with background work among
-them, the boundary notices, the one retry and the end with both
+of a first turn that ended, its refusals (a chat's background work
+among them; a terminal's is ended with its process, and said), the
+boundary notices, the one retry and the end with both
 failures' words; `way` (with `noted`), `moving` and `move_refused` in
 the three places, and the welcome's `noted`; `useSessionConnection` and
 `TerminalView` as its consumer; the switch's component with its states
@@ -1982,6 +2175,109 @@ session's first two turns in its terminal, moved to Chat through the
 route, a turn there, moved back, the terminal shows the chat's turn in
 its context; recorded in the pull request, and in `docs/features.md`
 with row 7. **14 h.**
+
+**As built, row 5** (#1108; `internal/session/move.go`, the terminal's
+start in `local.go`, `internal/api/move.go`, `internal/proto/way.go`,
+`web/app/composables/useSessionConnection.ts`, `utils/switchState.ts`,
+`components/WaySwitch.vue`, `web/e2e/chat-move.spec.ts`):
+
+- `Local.SwapWay(to, MoveStarts)` moves the session at once when it is at
+  rest, else notes it with its sentence; the noted move is tried again
+  after every event the protocol way applies and every attention change
+  (a turn's end, a done, a request closed, the work ended, the message's
+  turn ended). `MoveStarts` carries both ways' starts (the chat's child,
+  `Server.chatStart`; the terminal again, `Server.terminalStart`: the
+  agent's command, its recipe's `ResumeArgs` on the conversation, and the
+  launch's other arguments, environment and folder, kept in `chatLaunch`,
+  at the session's size), the group's proof (`Gone`), the driver's words for a
+  failed start (`Words`) and the seam `AfterOldExit`. The conversation is
+  read after the old process is gone, the latest the session holds.
+- The terminal's start is `startTerminal`, NewLocal's and the move's; the
+  session's process is held where a move back replaces it (`termProc`),
+  the pump reads the process it was started with, and a pump whose
+  terminal a move stopped (a later `termGen`) does not end the session.
+  The terminal's watchers are stopped for the move and given a blank
+  screen on the way back (`PatternWatcher.Renew`; the startup questions'
+  watch is not renewed: a first turn has ended), the ring is emptied
+  (`Ring.Reset`). `Info.Command` stays the launch's.
+- I1: the old way is stopped with no lock held (a chat's input closed,
+  then `Stop`), its exit and its output's end waited for, then its process
+  group proven gone: `proc.GroupGone` (the runner's, which the session asks
+  through `session.GroupGone`: the session signals no process itself)
+  sends signal 0 to the group until none is in it, or until every member
+  left has exited (a zombie, where nothing reaps orphans: a server that is
+  process 1 with no init; read from /proc on Linux, the kernel's list of
+  the group on macOS), and SIGKILL once to what the old process left there
+  (its number is not reused while a member is in it). The way back from a
+  chat's start that failed proves that child's group gone the same way. A process that reports a
+  group and a move given nothing to prove it gone ends the session in
+  words of the move's own ("The agent's earlier process did not end; the
+  session ended."). Only a native session moves: a Runtime other than this
+  machine's group is not the server's to look at, so it is refused "This
+  agent cannot move its conversation yet."
+- Where the plan said nothing in the terminal's process group but the
+  agent's own process: not built, and design 9 now says what is. Claude
+  Code keeps the MCP servers it starts (Conductor's among them) in its
+  group for its life, so that check would refuse every move. The
+  terminal's condition is the hook's done, no question, nothing held, no
+  submission; stopping the terminal ends its group, so work left there is
+  ended, never doubled, and the person is told: the switch's line before
+  a move to Chat at rest says "Moving to Chat ends what the agent left
+  running in its terminal.", and the boundary's notice and activity line
+  after it "Moved to Chat. Turns made in the terminal are not shown here.
+  What the agent left running in its terminal was ended." A chat's
+  background work (its driver's task events) holds a move to the terminal
+  ("Background work is still running.").
+- The `way` message gains `why` (at most 200 bytes), beside the plan's
+  `way`, `protocol` and `noted`: the noted move's sentence, and the
+  sentence of a move that went back. A failed start's words where the plan
+  has none: "The chat did not start." and "The terminal did not start.".
+- The route answers `200` with `{way, noted?, why?, moving?}`, `409
+  move_refused` with the words, `409 moving`, `413 too_large` past its 64
+  bytes; on a switchyard and for a hosted session `409 move_refused`
+  "Sessions on another machine stay in their terminal." A Stop during a
+  move cancels what the move waits on (its start among it), nothing is
+  started after it, and the session ends stopped.
+- A message that reaches a chat as a move begins is refused `moving` under
+  the lock the move begins under (and a terminal's submission likewise,
+  once it has its turn), and the way that is left finishes what waits on
+  it (a message queued or written and not acknowledged) with `moving`, its
+  claim let go, before its child stops. A child started again (an
+  interrupt without its receipt, the input's bound) starts with no
+  background work of the old one's, and clears a restart asked for at the
+  turn's end. A question answered through Conductor tries the noted move
+  again, so its sentence becomes the turn's.
+- A chat whose agent says it is not signed in goes back to its terminal
+  on the same conversation with the driver's sentence (the driver's
+  error says so, `BackToTerminal`), when it came into the chat by a move;
+  the session does not end.
+- `agentproto.Moves(name)` is the driver's word; Claude Code's
+  (`claudeMoves`) is set on the by-hand observation below.
+- A session that becomes a chat while published to a switchyard whose
+  `registered` lacks `transcript` is published no longer, its line in
+  `proto.OlderSwitchyardWords`.
+- The app: `useSessionConnection` holds the transport, the welcome's and
+  the `way` message's way, `noted` and `why`, the listeners of output,
+  controls, TRANSCRIPT and close, and every request; `TerminalView`
+  makes one and is its consumer (its exposed methods go through it, and
+  it exposes it as `connection`), its terminal reset when the way
+  changes and, back in the terminal, its fit asked again (the session
+  refused every resize while it was a chat). Its root says
+  `data-session-way`, `data-way-noted`, `data-welcomed` and
+  `data-transcript-frames`; no page changed. `switchState` gives the
+  switch's side, whether it may be pressed and its line, in the plan's
+  words, and `pressFor` what a press sends (the selected side takes a
+  noted move back); `WaySwitch.vue` draws it, mounted by row 7.
+- The e2e stub, on `chat-move.spec.ts`'s own server alone (the suite's
+  shared catalog is unchanged): a copy of the Claude Code stub,
+  `claude-proto`, declares `claude-stream-json`; the bash
+  stub execs `stub-protocol.mjs` (by `STUB_NODE`, the suite's node) when
+  started with `-p ... --input-format stream-json`, says the version
+  `STUB_CLAUDE_VERSION`, holds a terminal turn on `stub hold` until its
+  `.hold` file says `stop`, and notes each resume in `<id>.resumed`; the
+  protocol stub appends each chat turn to the same transcript, and
+  `STUB_PROTOCOL_CHILD=1` leaves a process of its own in its group.
+- **By hand, with the real agent.** Observed on 2026-11-24 on a development build of this branch, with real Claude Code 2.1.332 on its smallest model in a scratch repository. Before any reply, the move to Chat was refused with "Chat opens after the agent's first reply." After two terminal turns (a made-up word to remember, then a read of a file), the move through the route was made within about two seconds: the listing said the way, the Activity said "Moved to Chat. Turns made in the terminal are not shown here.", the terminal's process was gone, and a new child ran the agent's print mode with the stream-json flags and a resume of the same conversation, on pipes with no terminal, in a process group of its own. In the chat the agent named the word; a read arrived as a tool entry, running and then done, before the answer; a write was denied by Claude Code itself at once, the turn ended and nothing waited. Moved back, Claude Code resumed the conversation with the chat's turns in it, and asked in the terminal it listed what it had been asked in the chat. A move pressed during a terminal turn, while the turn showed a permission question, was noted with "A request is waiting for an answer."; after the question was answered the turn ran on, and the move was made two seconds after its end. A background command the agent had started from the terminal did not hold the move, and was ended with the agent's process: the move's notice now says so. A longer chat turn stopped with the interrupt ended as interrupted, and the next message was answered.
 
 ### Row 6: the permission request
 

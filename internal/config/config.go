@@ -19,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/rocksolidlabs/conductor/internal/agentproto"
 	"github.com/rocksolidlabs/conductor/internal/agents"
 	"github.com/rocksolidlabs/conductor/internal/catalog"
 	"github.com/rocksolidlabs/conductor/internal/store"
@@ -1538,17 +1539,21 @@ func (c *Config) LoadCatalog() (catalog.Catalog, error) {
 	if err != nil {
 		return catalog.Catalog{}, err
 	}
-	// The catalog cannot check an adapter (the adapters import it): the
-	// config's agents are checked here, as the Agents page checks the ones it
-	// saves. Each error names the catalog the agent comes from: the inline
-	// agents come first in file.Agents, the catalog file's after them.
+	// The catalog cannot check an adapter (the adapters import it) or a
+	// protocol (the drivers import it): the config's agents are checked
+	// here, as the Agents page checks the ones it saves. Each error names
+	// the catalog the agent comes from: the inline agents come first in
+	// file.Agents, the catalog file's after them.
 	var errs []error
 	for i, a := range file.Agents {
+		src := "config catalog"
+		if i >= len(c.Catalog.Agents) {
+			src = "catalog " + c.CatalogPath
+		}
 		if err := agents.CheckAdapter(a.Adapter); err != nil {
-			src := "config catalog"
-			if i >= len(c.Catalog.Agents) {
-				src = "catalog " + c.CatalogPath
-			}
+			errs = append(errs, fmt.Errorf("%s: agent %s: %w", src, a.ID, err))
+		}
+		if err := agentproto.Check(a.Protocol); err != nil {
 			errs = append(errs, fmt.Errorf("%s: agent %s: %w", src, a.ID, err))
 		}
 	}

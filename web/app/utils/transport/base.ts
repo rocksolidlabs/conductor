@@ -7,6 +7,10 @@ import {
   ProtoVersion,
   decodeDecision,
   decodeFile,
+  decodeTranscript,
+  MAX_TRANSCRIPT_IN_FLIGHT,
+  partBytes,
+  transcriptRequestValid,
   decodeFrame,
   decisionRequestValid,
   encodeControl,
@@ -28,6 +32,9 @@ import {
   type FileResponse,
   type FileWriteOptions,
   type NvimSwapChoice,
+  type TranscriptMessage,
+  type TranscriptReply,
+  type TranscriptRequest,
   type TransportKind,
   type Welcome,
 } from '../protocol'
@@ -51,6 +58,8 @@ export const ANSWER_TIMEOUT_MS = ANSWER_WAIT_SECONDS * 1000
  */
 export const LANE_READ_TIMEOUT_MS = 30_000
 export const DECIDE_TIMEOUT_MS = 60_000
+/** How long a chat's read waits for its reply: the owner answers every one from memory, so this bounds a hang alone. */
+export const TRANSCRIPT_READ_TIMEOUT_MS = 30_000
 
 /**
  * Shared frame handling for both transports: listener registration, the
@@ -79,6 +88,14 @@ export abstract class BaseTransport implements TerminalTransport {
   /** Lane reads waiting for their DECISION frame and decides for their `decide_ok`, by reqId; a `decide_refused` settles either. */
   protected laneWaits = new Map<string, { resolve: (v: unknown) => void; reject: (e: Error) => void; timer: number; decide: boolean }>()
   protected chunks = new ChunkAssembler()
+  /** Who hears a chat's TRANSCRIPT frames: each entry as it changes, and the replay's pages after ready (see Chat sessions). */
+  protected transcriptCbs: Array<(msg: TranscriptMessage) => void> = []
+  /** A chat's reads waiting for their reply (a page or a part), or an `error` naming them, by reqId. */
+  protected transcriptWaits = new Map<string, { resolve: (r: TranscriptReply) => void; reject: (e: Error) => void; timer: number }>()
+  /** The owner's welcome said `interrupt`: it takes a chat's Stop. */
+  protected takesInterrupt = false
+  /** The highest mark of the transcript this connection holds, which its hello carries: a connection made again is sent what changed after it. */
+  protected transcriptMark = 0
   protected lastError?: { code: string; message: string }
   protected welcomeResolve?: (w: Welcome) => void
   protected welcomeReject?: (e: Error) => void
@@ -321,7 +338,90 @@ export abstract class BaseTransport implements TerminalTransport {
   }
 
   protected helloFrame(hello: { cols: number; rows: number }): Uint8Array<ArrayBuffer> {
-    return encodeControl({ t: 'hello', proto: ProtoVersion, cols: hello.cols, rows: hello.rows, client: 'web/1', ...(this.name ? { name: this.name } : {}), ...(this.chatOnly ? { chatOnly: true } : {}) })
+    return encodeControl({
+      t: 'hello',
+      proto: ProtoVersion,
+      cols: hello.cols,
+      rows: hello.rows,
+      client: 'web/1',
+      ...(this.name ? { name: this.name } : {}),
+      ...(this.chatOnly ? { chatOnly: true } : {}),
+      ...(this.transcriptMark > 0 ? { transcriptAfter: this.transcriptMark } : {}),
+    })
+  }
+
+  onTranscript(cb: (msg: TranscriptMessage) => void): void {
+    this.transcriptCbs.push(cb)
+  }
+
+  /** The mark of the transcript the page holds, for a connection made anew (a new transport): its hello carries it. */
+  transcriptFrom(mark: number): void {
+    if (Number.isSafeInteger(mark) && mark > this.transcriptMark) this.transcriptMark = mark
+  }
+
+  /**
+   * A chat's read: settled by the page or the part naming its reqId (a part's bytes decoded), or an Error carrying the owner's code
+   * (`transcript_gone`, `too_many_requests`, `not_protocol`), the connection's end, or no reply in TRANSCRIPT_READ_TIMEOUT_MS. Not
+   * sent past its bounds, or while MAX_TRANSCRIPT_IN_FLIGHT of this connection's wait.
+   */
+  transcriptGet(req: TranscriptRequest): Promise<TranscriptReply> {
+    if (this.state.value !== 'open') return Promise.reject(new ReplyError('not_connected', 'not connected'))
+    if (!transcriptRequestValid(req)) return Promise.reject(new ReplyError('invalid', 'the read is past its bounds'))
+    if (this.transcriptWaits.size >= MAX_TRANSCRIPT_IN_FLIGHT) return Promise.reject(new ReplyError('too_many_requests', 'too many reads wait'))
+    const reqId = `t${(++this.reqCounter).toString(36)}`
+    return new Promise((resolve, reject) => {
+      const timer = window.setTimeout(() => {
+        this.transcriptWaits.delete(reqId)
+        reject(new ReplyError('no_word', 'the owner did not answer the read'))
+      }, TRANSCRIPT_READ_TIMEOUT_MS)
+      this.transcriptWaits.set(reqId, { resolve, reject, timer })
+      this.send(encodeControl({ t: 'transcript_get', reqId, ...req }))
+    })
+  }
+
+  /**
+   * A chat's Stop, to an owner whose welcome said `interrupt`: settled true on `interrupt_ok` (the turn's end follows in the
+   * transcript), or a ReplyError with the owner's code (`no_turn`, `read_only`, `not_protocol`), the connection's end, or no word.
+   */
+  interrupt(): Promise<boolean> {
+    if (this.state.value !== 'open') return Promise.reject(new ReplyError('not_connected', 'not connected'))
+    if (!this.takesInterrupt) return Promise.reject(new ReplyError('not_protocol', 'this session has no chat'))
+    const reqId = `i${(++this.reqCounter).toString(36)}`
+    return new Promise((resolve, reject) => {
+      const timer = window.setTimeout(() => {
+        this.answers.delete(reqId)
+        reject(new ReplyError('no_word', 'the session did not say whether it stopped the turn'))
+      }, ANSWER_TIMEOUT_MS)
+      this.answers.set(reqId, { resolve, reject, timer })
+      this.send(encodeControl({ t: 'interrupt', reqId }))
+    })
+  }
+
+  /** A TRANSCRIPT frame: a reply settles its read; an entry or a replay page goes to every listener, its marks kept. */
+  private handleTranscript(msg: TranscriptMessage): void {
+    if ((msg.t === 'page' || msg.t === 'part') && msg.reqId) {
+      const w = this.transcriptWaits.get(msg.reqId)
+      if (w) {
+        this.transcriptWaits.delete(msg.reqId)
+        window.clearTimeout(w.timer)
+        if (msg.t === 'part') {
+          // A piece whose data is not base64 settles its read as a frame the page cannot read, never leaving it waiting.
+          const { data, ...rest } = msg
+          let bytes: Uint8Array
+          try {
+            bytes = partBytes(data)
+          } catch {
+            w.reject(new ReplyError('bad_frame', 'the owner sent a piece of the part the page cannot read'))
+            return
+          }
+          w.resolve({ ...rest, bytes })
+        } else w.resolve(msg)
+      }
+      return
+    }
+    if (msg.t === 'entry') this.transcriptFrom(msg.entry.mark)
+    else if (msg.t === 'page' && !msg.more) for (const e of msg.entries) this.transcriptFrom(e.mark)
+    for (const cb of this.transcriptCbs) cb(msg)
   }
 
   /** Dispatches a terminal-stream frame. Returns false for unknown types. */
@@ -363,19 +463,31 @@ export abstract class BaseTransport implements TerminalTransport {
         if (d) this.settleLane(d.reqId, d, undefined, false)
         return true
       }
+      case FrameType.Transcript: {
+        const m = decodeTranscript(frame.payload)
+        if (m) this.handleTranscript(m)
+        return true
+      }
     }
     return false
   }
 
   protected handleControl(msg: ControlMessage): void {
     // The owner's word on an answer or a submit is that request's own, not the page's: it settles the reply and goes no further.
-    if ((msg.t === 'answer_ok' || msg.t === 'submit_ok' || msg.t === 'error') && msg.requestId) {
+    if ((msg.t === 'answer_ok' || msg.t === 'submit_ok' || msg.t === 'interrupt_ok' || msg.t === 'error') && msg.requestId) {
       const waiting = this.answers.get(msg.requestId)
       if (waiting) {
         this.answers.delete(msg.requestId)
         window.clearTimeout(waiting.timer)
-        if (msg.t === 'answer_ok' || msg.t === 'submit_ok') waiting.resolve(true)
-        else waiting.reject(new ReplyError(msg.code, msg.message))
+        if (msg.t === 'error') waiting.reject(new ReplyError(msg.code, msg.message))
+        else waiting.resolve(true)
+        return
+      }
+      const read = msg.t === 'error' ? this.transcriptWaits.get(msg.requestId) : undefined
+      if (read && msg.t === 'error') {
+        this.transcriptWaits.delete(msg.requestId)
+        window.clearTimeout(read.timer)
+        read.reject(new ReplyError(msg.code, msg.message))
         return
       }
     }
@@ -387,6 +499,7 @@ export abstract class BaseTransport implements TerminalTransport {
       this.takesAnswers = !!msg.answer
       this.acksSubmits = !!msg.submitAck
       this.takesDecisions = !!msg.decisions
+      this.takesInterrupt = msg.way === 'protocol' && !!msg.interrupt
       this.welcomeResolve?.(msg)
       this.welcomeResolve = undefined
       this.welcomeReject = undefined
@@ -430,6 +543,11 @@ export abstract class BaseTransport implements TerminalTransport {
       w.reject(new LaneError(LaneLocal.Closed, w.decide ? 'the connection closed before the owner said whether it took the action' : 'the connection closed'))
     }
     this.laneWaits.clear()
+    for (const w of this.transcriptWaits.values()) {
+      window.clearTimeout(w.timer)
+      w.reject(new ReplyError('closed', 'the connection closed before the read was answered'))
+    }
+    this.transcriptWaits.clear()
     for (const cb of this.closeCbs) cb(info)
   }
 }

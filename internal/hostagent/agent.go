@@ -627,6 +627,11 @@ type agent struct {
 	// decisions is what the server's last registered said of decision
 	// links (proto.Registered.Decisions).
 	decisions atomic.Bool
+	// transcript is what the server's last registered said of a chat's
+	// frames (proto.Registered.Transcript): without it no TRANSCRIPT frame
+	// is relayed on the connection (sendRelayWithin), and a chat's viewer
+	// is not served there (peer.attach).
+	transcript atomic.Bool
 	// lanes is the tree every viewer's lane lives under (lane.go): the
 	// publication's or the desk's end waits for its workers before it is
 	// done.
@@ -919,6 +924,7 @@ func (a *agent) dialAndRegister(ctx context.Context) (*websocket.Conn, proto.Reg
 	a.secret = registered.Secret
 	a.ice = registered.ICEServers
 	a.decisions.Store(registered.Decisions)
+	a.transcript.Store(registered.Transcript)
 	a.sessionInfo.Store(registered.SessionInfo)
 	a.agentSessions.Store(registered.AgentSessions)
 	a.registeredActivity(registered.ActivitySeq, registered.Resumed)
@@ -2066,6 +2072,11 @@ func (a *agent) sendRelayWithin(viewerID string, frame []byte, gone <-chan struc
 	// never written.
 	if _, err := proto.Decode(frame); err != nil {
 		return err
+	}
+	// A server whose registered did not say transcript closes the
+	// connection on a TRANSCRIPT frame (I14): it is never sent one.
+	if frame[0] == proto.TypeTranscript && !a.transcript.Load() {
+		return nil
 	}
 	if turn <= 0 {
 		return session.ErrSlowConsumer

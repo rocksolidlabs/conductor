@@ -27,6 +27,7 @@ const (
 	TypeDecision   byte = 0x09 // owner -> client: a decision link's lane reply (decisions.go)
 	TypeDecide     byte = 0x0A // client -> owner: one action on a decision (decisions.go)
 	TypeRelay      byte = 0x10 // host <-> server: envelope for a relayed viewer
+	TypeTranscript byte = 0x0B // owner -> client: a chat's entries and reads (transcript.go)
 )
 
 // Payload limits per frame type.
@@ -150,6 +151,8 @@ func limitFor(t byte) (int, bool) {
 		return MaxDecide, true
 	case TypeRelay:
 		return ViewerIDLen + 1 + MaxFileBytes + MaxFileHeader + 12, true
+	case TypeTranscript:
+		return MaxTranscript, true
 	}
 	return 0, false
 }
@@ -178,7 +181,7 @@ func DecodeRelay(payload []byte) (string, Frame, error) {
 		return "", Frame{}, err
 	}
 	switch inner.Type {
-	case TypeOutput, TypeInput, TypeControl, TypeScrollback, TypeFile, TypeFileWrite, TypeDecision, TypeDecide:
+	case TypeOutput, TypeInput, TypeControl, TypeScrollback, TypeFile, TypeFileWrite, TypeDecision, TypeDecide, TypeTranscript:
 	default:
 		return "", Frame{}, fmt.Errorf("%w: inner type 0x%02x not relayable", ErrBadEnvelope, inner.Type)
 	}

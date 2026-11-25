@@ -598,6 +598,24 @@ func (w *PatternWatcher) Reset() {
 	w.checked = w.feeds
 }
 
+// Renew starts the watching again on a terminal started anew (a move back
+// to the terminal, SwapWay), after Stop: what was fed before is forgotten
+// (a screen watcher's screen is a blank one of cols by rows), its counts
+// go on, and nothing is held.
+func (w *PatternWatcher) Renew(cols, rows int) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	switch w.tracker.(type) {
+	case *Screen:
+		w.tracker = NewScreen(cols, rows)
+	case *ScreenTail:
+		w.tracker = &ScreenTail{}
+	default:
+		w.tracker = &LineTracker{}
+	}
+	w.checked, w.held, w.stopped = w.feeds, false, false
+}
+
 // Stop ends the watching. When it returns no fire is running and none will
 // start, so what a caller does next cannot be followed by a fire that was
 // already on its way. It may be called more than once, but not from fire, which
