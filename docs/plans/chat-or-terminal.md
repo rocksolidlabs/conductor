@@ -2407,6 +2407,59 @@ or bound allows or leaves a held request behind (lifetime), and whether
 every verdict is recorded before it is handed over, with no secret in a
 log (audit). **18 h.**
 
+**As built, row 6** (#1109; `internal/session/permission.go`,
+`permission_answer.go`, the protocol way's events in `protocol.go`,
+`internal/api/permission.go`, `internal/proto/permission.go`,
+`internal/agents/protocol_floor.go`, `internal/cli/notify_floor.go`; the
+MCP half, `conductor mcp`'s serve loop and its `permission` tool, is
+`internal/cli/mcp.go`'s):
+
+- `Local.RequestPermission(ctx, PermissionAsk{Call, Tool, Input}, reply)`
+  is the route's: it calls `reply` once with the verdict and records the
+  operator's `allowed` or `denied` only once `reply` returned nil. The
+  bound counts the calls under way (waiting, open or being delivered) and
+  the in-stream requests open. The announcement wait is a channel the
+  session closes at every `ToolStarted`, `ToolEnded`, turn's end and end;
+  its timer is `Options.AfterFunc`'s (a test's fake clock), as
+  `PermissionWait`'s is. The binding keeps, per open tool step, the name
+  and digest the stream gave and its turn; a call that has its result is
+  remembered for the turn (`resulted`), so a request for it is denied at
+  once, not after `AnnounceWait`.
+- The claim is the list's own (`openPermission.claim`), not the terminal
+  questions' `waitsLocked`/`claimLocked`: every other path refuses a
+  request's question before any claim (`ErrPermissionCard`), so the
+  promise is the same (a claim on any request of the list, the first
+  answer wins) with no change to the terminal's machinery.
+- The attention: the first request shown keeps what showed aside
+  (`protocolWay.under`), and every other setter's change meanwhile is kept
+  in order (`asideLocked`, at most 16) and applied once the list is empty,
+  an ask told now the id it will show under. Its message is the plain
+  words alone ("Run a command?", "Change a file?", "Read a file?", "Use a
+  tool?"): no word the agent sent reaches the attention, a router or the
+  inbox.
+- The server cannot tell an MCP cancellation from a lost POST (the
+  request's context ends either way): both are "The request was lost."
+  unless the stream's result came first. At the server's stop the
+  request's context ends before the sessions are stopped (the HTTP
+  server's base context), so the entry says lost; the route then writes
+  the deny "The session ended before anyone answered." to a client still
+  there, never an empty answer.
+- The operator's deny with no message is sent with an empty `message`:
+  the plan gives no sentence for it.
+- In-stream requests (no driver hands one yet) take the digest's
+  refusal, the bound, the floor, the list, the attention and the timer;
+  their binding to an announced call is the Codex and ACP rows'.
+- The floor's files are written by `conductor serve` at its start
+  (`agents.WriteProtocolFloor`, with `cfg.FileDeny()` as it is then): for
+  every path a `Read` and an `Edit` rule of the path and of `path/**`,
+  absolute from the root (`//`), the hook `conductor notify
+  --protocol-floor <hooks>/claude-protocol-floor.json` on `Bash`, and the
+  list itself in that file. With the server's MCP off the floor's
+  `--settings` is still passed and the prompt tool is not.
+- Only the operator's own connection's welcome says `permissionAnswer`;
+  `peer.go` (a published session's viewers through a switchyard) answers
+  every `permission_answer` `not_answerer`.
+
 ### Row 7: Chat, the switch mounted, the permission question
 
 **Scope.** Design 11 and 12 whole: `ChatView` with the folded steps
