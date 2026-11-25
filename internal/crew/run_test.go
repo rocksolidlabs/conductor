@@ -230,10 +230,14 @@ func (f *fakeLauncher) enterChat(name string, l *session.Local) {
 	f.t.Cleanup(func() { fp.Child().End(0) })
 	entered := make(chan error, 1)
 	go func() { entered <- sessiontest.EnterProtocol(l, fp.Start()) }()
+	// Both may be ready at once (a Begin that returned at once): an entry
+	// that answered nil has begun.
 	select {
 	case <-begun:
 	case err := <-entered:
-		f.t.Errorf("member %s's chat: %v", name, err)
+		if err != nil {
+			f.t.Errorf("member %s's chat: %v", name, err)
+		}
 	}
 }
 
