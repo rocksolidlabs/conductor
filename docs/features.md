@@ -211,6 +211,35 @@ that order.
   link grants. Content appears only after the guest joins.
 - **No Runs nav item** until there is something behind it.
 
+## A line is typed only at the agent's prompt, for the whole of a session (#1116; 2026-11-25)
+
+- **The rule.** For an agent whose catalog entry has a prompt shape
+  (Claude Code and Codex among the built-in ones), every line Conductor
+  types into a session that names no question is typed only where a whole
+  frame of the screen, read as the writer takes the line, shows the
+  agent's own prompt by its shape and no numbered choice, for the whole of
+  the session. Its Enter is written only where the screen, read again as
+  the writer takes the Enter, is that prompt, or the prompt holding the
+  line's own text (a long line wraps past the rows the shape takes).
+  Anywhere else nothing of the line is written, its Enter included.
+- **Every line Conductor types.** A person's line from the app or a reply
+  box, a link's, a chat line to the agent, a crew member's prompt and
+  message, a handoff, a broadcast, a decision's line that answers no
+  question, a Brakeman turn's line. A person's line is refused with "the
+  agent's screen is not recognised as its prompt: nothing was typed" (in
+  the startup words while the startup watch lasts); a line that must never
+  answer a prompt (a handoff, a broadcast, a chat line between members, a
+  line from the palette) is held back and waits, as it does while the
+  session asks; a crew member's prompt waits and is tried again, noted
+  once in the run's log. An Enter refused after the line's text is left
+  out, and the text waits in the agent's input; a crew member's prompt
+  its agent did not report taking gets its second Enter only at the
+  prompt too.
+- **Unchanged.** Keys a person types in the terminal; an answer to a
+  question the session asks (its choices, a reply naming it); a session
+  whose agent has no prompt shape. A hosted session follows the rule
+  through the shape its host is sent with the agent's recipe.
+
 ## Hosts: the machines this server knows, and who holds each run (HS2, #1032; 2026-11-22)
 
 One page, **Hosts** (`/hosts`; the nav after History, the phone's More, the
@@ -299,7 +328,8 @@ only actions are links to the run page, a session and Needs you.
   output it keeps.
 - **The Enter.** A line that is an Enter alone is judged by the same rule
   as it is written. The Enter of a line with text is held where it was
-  held before.
+  held before, and, for an agent with a prompt shape, written only at the
+  agent's prompt (#1116).
 - **A prompt its agent did not report taking.** For an agent that reports
   taking a prompt (Claude Code), a crew member's prompt it does not report
   taking, after an Enter pressed again, is said once in the run's log
