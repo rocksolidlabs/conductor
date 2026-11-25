@@ -211,6 +211,63 @@ that order.
   link grants. Content appears only after the guest joins.
 - **No Runs nav item** until there is something behind it.
 
+## A crew's members as chats (#1125; 2026-11-25)
+
+- **What a person chooses.** A crew's Setup says "Members run as:
+  Terminal | Chat", Terminal by default. The choice is the crew's `way`
+  (`"chat"`, absent for Terminal), fixed at each launch: the crew as
+  launched, which the ledger keeps with the run, carries it, so a
+  continued run keeps it. The launch sheet and Dispatch's launch say
+  "Members run as: Chat" (or Terminal) and change nothing. A launch from
+  a ticket's plan takes the way its revision approved, handed beside the
+  launch package, whose bytes and digest stay a Terminal launch's.
+- **How a member comes to be a chat.** Every member starts in its
+  terminal, as every session does, and a person answers its folder's
+  trust there. Once its terminal shows the agent's own prompt by its
+  shape, with nothing typed into it, the engine moves it to a chat that
+  starts a new conversation, and sends its prompt there, once, taken at
+  the agent's acknowledgement. The move waits for that sign however long
+  a person takes; a dialog the catalog does not know (Claude Code's
+  question about a folder's tool servers) holds it until a person
+  answers it in the terminal. A member resumed on its conversation
+  moves to a chat on that conversation and is sent no prompt.
+- **What a member has in a chat.** Conductor's own tools only: no other
+  tool server, the folder's `.mcp.json` servers and the person's own
+  alike; the folder's instructions, rules, skills and hooks as its
+  terminal has them. A member that is not yolo is given no permission
+  mode of Conductor's: it takes the person's own default mode, else
+  Claude Code's for a chat (Manual), and asks the operator through the
+  permission question. A crew that needs a folder's tool servers runs
+  as Terminal.
+- **When a member stays in its terminal**, the run's log says why, after
+  the member's name and attempt: "in its terminal: this version of
+  Claude Code can only run in its terminal.", "… the run's Runtime has no
+  pipes." (a run a registered Runtime without pipes takes stays in that
+  Runtime), "… it was launched with an added folder.", "… its arguments
+  hold `<flag>`, which a chat sets itself.", "… a person typed in it
+  first." (a line or a person's keys reached its prompt before the
+  move), "… Claude Code did not start a chat." (a chat that does not
+  start, or is not ready within 60 s: its terminal is started afresh on
+  a new conversation, its prompt typed there; both failing, the attempt
+  fails with both failures' words). The checks are made with the
+  terminal still running: a refusal never stops it. A member that moved
+  says "runs as a chat." ("runs as a chat, on its conversation." for a
+  resumed one).
+- **The limits.** A crew run resumed from its record alone (after the
+  server forgot it) runs its members in their terminals: the record does
+  not keep the run's way, and the run's log says so. Brakeman's turns run
+  in their terminals. A person's move of a crew member is refused "A crew
+  member's way is its run's."; on a Chat run's member's page the switch
+  is the label "Runs as a chat for its run.".
+- **By hand, not yet made** (the maintainers' record, with the real
+  agent): a live crew of the example crew with Claude Code members as
+  chats, one permission answered, the run to its end; a repository Claude
+  Code has not trusted, whose first attempt asks and later ones do not;
+  whether the question about a folder's tool servers is asked again in
+  each fresh attempt's worktree, and the whole frame while it shows;
+  whether an interactive start in a folder never trusted runs any of the
+  folder's hooks before its dialog is answered.
+
 ## A line is typed only at the agent's prompt, for the whole of a session (#1116; 2026-11-25)
 
 - **The rule.** For an agent whose catalog entry has a prompt shape
