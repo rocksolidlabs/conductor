@@ -61,6 +61,13 @@ type LaunchSpec struct {
 	// Yolo is the run's yolo choice, fixed when the run was made: the agent's
 	// yolo recipe is applied when it has one.
 	Yolo bool
+	// Way is how the member is to run, fixed for the attempt at its launch
+	// (launchWay): WayProtocol for a member of a Chat run whose agent's
+	// installed version can run as a chat and whose run's Runtime has
+	// pipes, "" in its terminal. A session launched with WayProtocol still
+	// starts in its terminal; what the engine does with it is keyed on the
+	// session's own way when it acts (session.Local.Way).
+	Way string
 	// Resume, when set, is the agent session the launch resumes with its
 	// agent's recipe (ResumeMember); ResumedFrom the session it follows.
 	Resume, ResumedFrom string
@@ -271,6 +278,9 @@ type Run struct {
 	// Yolo is the run's yolo choice, fixed at launch: every member, one added
 	// or started later included, is launched with it.
 	Yolo bool `json:"yolo"`
+	// Way is how its members run (Crew.Way), fixed at launch: WayChat, or
+	// absent for their terminals.
+	Way string `json:"way,omitempty"`
 	// ResumedFrom is the stopped run this one resumed (ResumeRun), and
 	// ResumedBy the run that resumed this one.
 	ResumedFrom string `json:"resumedFrom,omitempty"`
@@ -858,8 +868,10 @@ type run struct {
 	// made: read for what the run reports and the task files, never to
 	// start anything.
 	people []Person
-	// yolo is the run's yolo choice, fixed when it is made.
+	// yolo is the run's yolo choice, fixed when it is made, and way its
+	// members' (Crew.Way: WayChat, or "" for their terminals), too.
 	yolo bool
+	way  string
 	// changed is the engine's OnRunChange, or nil.
 	changed func(runID string)
 	// prefix is where cwd lies in its repository, with worktrees: a member
@@ -931,8 +943,13 @@ type member struct {
 	// reaches the engine later, is the idle state the prompt answered.
 	prompted   bool
 	promptedAt time.Time
-	diff       *Diff
-	diffAt     time.Time // when diff was read; zero: never
+	// way is the Way its latest session was launched with (LaunchSpec.Way),
+	// under e.mu; took is closed once the agent of a chat whose prompt was
+	// not confirmed reports a turn of its own (promptChat), nil otherwise.
+	way    string
+	took   chan struct{}
+	diff   *Diff
+	diffAt time.Time // when diff was read; zero: never
 	// handoffs wait to be typed into the member, oldest first, at most
 	// maxHandoffs (handoff.go). delivering is set, under e.mu, while a
 	// goroutine types them (deliver), and read without it by poke; wake makes
@@ -1218,7 +1235,7 @@ func (e *Engine) ResumeRun(ctx context.Context, runID string) (*Run, error) {
 	}
 	old.resuming = true
 	yolo := old.yolo
-	c := Crew{ID: old.crewID, Name: old.name, Goal: old.goal, Cwd: old.cwd, Where: WhereServer, Isolation: old.isolation, Yolo: &yolo, People: old.people}
+	c := Crew{ID: old.crewID, Name: old.name, Goal: old.goal, Cwd: old.cwd, Where: WhereServer, Isolation: old.isolation, Yolo: &yolo, Way: old.way, People: old.people}
 	keeps := map[string]kept{}
 	for _, m := range old.members {
 		c.Members = append(c.Members, m.def)
@@ -1260,7 +1277,7 @@ func (e *Engine) ResumeRecord(ctx context.Context, rec Run) (*Run, error) {
 		return nil, ErrRunRunning
 	}
 	yolo := rec.Yolo
-	c := Crew{ID: rec.CrewID, Name: rec.Name, Goal: rec.Goal, Cwd: rec.Cwd, Where: WhereServer, Isolation: rec.Isolation, Yolo: &yolo}
+	c := Crew{ID: rec.CrewID, Name: rec.Name, Goal: rec.Goal, Cwd: rec.Cwd, Where: WhereServer, Isolation: rec.Isolation, Yolo: &yolo, Way: rec.Way}
 	keeps := map[string]kept{}
 	for _, st := range rec.Members {
 		// Its binding as the record keeps it; one that keeps none (a record
@@ -1327,7 +1344,7 @@ func (e *Engine) resumeInto(ctx context.Context, c Crew, keeps map[string]kept, 
 			cwd = filepath.Join(k.worktree, r.prefix)
 		}
 		local, err := e.launcher.Launch(ctx, LaunchSpec{AgentID: m.def.AgentID, Name: name, Cwd: cwd, Args: slices.Clone(m.def.Args),
-			Env: map[string]string{"GOAL": r.goal}, Ref: r.crewRef(m, "", 0), Yolo: r.yolo,
+			Env: map[string]string{"GOAL": r.goal}, Ref: r.crewRef(m, "", 0), Yolo: r.yolo, Way: e.launchWay(ctx, r, m, "", 0),
 			Resume: k.agentSession, ResumedFrom: k.sessionID, Account: m.def.boundAccount(), Model: m.def.Model})
 		if err != nil {
 			r.starts.Done()
@@ -1438,7 +1455,7 @@ func (e *Engine) add(c Crew, p prepared, label string) *run {
 func (e *Engine) addRun(c Crew, p prepared, label, id string, pkg *runPackage) (*run, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	r := &run{crewID: c.ID, name: c.Name, label: label, goal: c.Goal, cwd: c.Cwd, isolation: c.Isolation, prefix: p.prefix,
-		yolo: c.Yolo != nil && *c.Yolo, changed: e.OnRunChange, startedAt: time.Now().UTC(), ctx: ctx, cancel: cancel, launching: true, managed: c.Managed(),
+		yolo: c.Yolo != nil && *c.Yolo, way: c.Way, changed: e.OnRunChange, startedAt: time.Now().UTC(), ctx: ctx, cancel: cancel, launching: true, managed: c.Managed(),
 		class: p.opts.Class, request: p.opts.Request, people: c.clone().People, continuation: p.continuation}
 	// Its openings take a spare while the router routes policies, which the
 	// engine is told once, before it runs anything.
@@ -1723,7 +1740,7 @@ func (e *Engine) launch(ctx context.Context, r *run, m *member) (*session.Local,
 		}
 	}
 	local, err := e.launcher.Launch(ctx, LaunchSpec{AgentID: m.def.AgentID, Name: name, Cwd: cwd, Args: slices.Clone(m.def.Args),
-		Env: map[string]string{"GOAL": r.goal}, Ref: r.crewRef(m, "", 0), Yolo: r.yolo,
+		Env: map[string]string{"GOAL": r.goal}, Ref: r.crewRef(m, "", 0), Yolo: r.yolo, Way: e.launchWay(ctx, r, m, "", 0),
 		Class: r.class, Request: r.request, Account: m.def.boundAccount(), Model: m.def.Model})
 	if err != nil {
 		return nil, err
@@ -1764,6 +1781,15 @@ func (e *Engine) prompt(ctx context.Context, r *run, m *member, local *session.L
 // promptWith is prompt with the line to type given: a member's role prompt,
 // or an attempt's task line (taskLine).
 func (e *Engine) promptWith(ctx context.Context, r *run, m *member, local *session.Local, text string) error {
+	// A member launched to run as a chat is moved to it here, and one in
+	// its chat is prompted there; the rest of this function is the
+	// terminal's, untouched by the way.
+	if err := e.toChat(ctx, r, m, local); err != nil {
+		return err
+	}
+	if inChat(local) {
+		return e.promptChat(ctx, r, m, local, text)
+	}
 	name := m.def.Name
 	hasPrompt := strings.TrimSpace(text) != ""
 	// pending says its prompt was accepted while the program took it
@@ -2122,6 +2148,7 @@ func (e *Engine) OnActivity(sessionID string, entry session.ActivityEntry, state
 		e.mu.Lock()
 		if m.state.Unconfirmed == sessionID {
 			m.state.Unconfirmed = ""
+			m.tookUnconfirmed()
 		}
 		e.mu.Unlock()
 	}
@@ -2148,14 +2175,16 @@ func (e *Engine) OnActivity(sessionID string, entry session.ActivityEntry, state
 	if r.managed {
 		// A done starts no one and finishes nothing; a handoff is noted,
 		// never typed: a managed run passes work by results (task.go).
-		e.managedActivity(r, sm, entry, isHandoff)
+		e.managedActivity(r, sm, entry, isHandoff, kind)
 		e.mu.Unlock()
 		return
 	}
 	var next []*member
 	if isHandoff {
 		e.handoff(r, m, entry)
-	} else {
+	} else if kind != session.KindInterrupted {
+		// A turn a person stopped (a chat's interrupt) is no turn done:
+		// it starts no one.
 		next = r.startAfter(m, entry.At)
 	}
 	e.mu.Unlock()
@@ -2778,7 +2807,7 @@ func (e *Engine) GetWithDiffs(ctx context.Context, runID string) (Run, bool) {
 // snapshot copies r, with the members' diffs when withDiffs and the run's
 // chat when withChat. The caller holds e.mu.
 func (r *run) snapshot(withDiffs, withChat bool) Run {
-	out := Run{ID: r.id, CrewID: r.crewID, Name: r.name, Label: r.label, Goal: r.goal, Cwd: r.cwd, Isolation: r.isolation, Yolo: r.yolo,
+	out := Run{ID: r.id, CrewID: r.crewID, Name: r.name, Label: r.label, Goal: r.goal, Cwd: r.cwd, Isolation: r.isolation, Yolo: r.yolo, Way: r.way,
 		Class: r.class, Request: r.request,
 		StartedAt: r.startedAt, StoppedAt: r.stoppedAt, Members: make([]MemberState, 0, len(r.members)),
 		ResumedFrom: r.resumedFrom, ResumedBy: r.resumedBy,
@@ -3033,12 +3062,19 @@ type readyWait struct {
 	// hands them one by one (each send returns once the wait has taken
 	// it), so that it says when the wait looks.
 	ticks <-chan time.Time
+	// chatCap, when set, is the bound of the wait for a chat's readiness
+	// in place of protocolReadyCap (awaitChat): a test fires it.
+	chatCap func() <-chan time.Time
 }
 
 var productReady = readyWait{poll: readyPoll, quiet: readyQuiet, min: readyMin}
 
 // await is AwaitReady with w's bounds.
 func (w readyWait) await(ctx context.Context, l *session.Local, held func(question string)) error {
+	if inChat(l) {
+		// A chat is ready when the session says so, and only then.
+		return awaitChat(ctx, l, w.chatCap)
+	}
 	start := time.Now()
 	ticks := w.ticks
 	if ticks == nil {
@@ -3203,7 +3239,7 @@ func (e *Engine) ResumeMember(ctx context.Context, runID, name, resume string) (
 	defer cancel()
 	defer context.AfterFunc(r.ctx, cancel)()
 	local, err := e.launcher.Launch(ctx, LaunchSpec{AgentID: m.def.AgentID, Name: name, Cwd: cwd, Args: slices.Clone(m.def.Args),
-		Env: map[string]string{"GOAL": r.goal}, Ref: r.crewRef(m, "", 0), Yolo: r.yolo,
+		Env: map[string]string{"GOAL": r.goal}, Ref: r.crewRef(m, "", 0), Yolo: r.yolo, Way: e.launchWay(ctx, r, m, "", 0),
 		Resume: resume, ResumedFrom: old, Account: m.def.boundAccount(), Model: m.def.Model})
 	if err != nil {
 		e.mu.Lock()

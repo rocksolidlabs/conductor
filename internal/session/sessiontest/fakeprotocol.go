@@ -33,6 +33,10 @@ type FakeProtocol struct {
 	// BeforeSend, when set, runs in Send with the message before it is
 	// recorded: a test's gate on a write.
 	BeforeSend func(way.Message)
+	// BeforeBegin, when set, runs in Begin before it is recorded, the
+	// session already in the protocol way and not yet ready: a test's gate
+	// on the child's start.
+	BeforeBegin func()
 
 	mu        sync.Mutex
 	calls     []string
@@ -182,6 +186,9 @@ func (f *FakeProtocol) Verbatim() bool { return f.IsVerbatim }
 
 // Begin answers BeginErr.
 func (f *FakeProtocol) Begin(context.Context) error {
+	if f.BeforeBegin != nil {
+		f.BeforeBegin()
+	}
 	f.note("begin")
 	return f.BeginErr
 }

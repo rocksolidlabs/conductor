@@ -1113,7 +1113,7 @@ func Recovered(rec Run, from Loaded) Run {
 		rec = Run{ID: from.Run.ID, CrewID: from.Run.CrewID, StartedAt: from.Run.CreatedAt, State: RunRunning}
 		var c Crew
 		if err := json.Unmarshal([]byte(from.Run.Crew), &c); err == nil {
-			rec.Name, rec.Goal, rec.Cwd, rec.Isolation, rec.Yolo = c.Name, c.Goal, c.Cwd, c.Isolation, c.Yolo != nil && *c.Yolo
+			rec.Name, rec.Goal, rec.Cwd, rec.Isolation, rec.Yolo, rec.Way = c.Name, c.Goal, c.Cwd, c.Isolation, c.Yolo != nil && *c.Yolo, c.Way
 			for _, m := range c.Members {
 				rec.Members = append(rec.Members, memberStateOf(m))
 			}

@@ -242,7 +242,7 @@ func (e *Engine) deliver(r *run, m *member, l *session.Local) {
 			switch {
 			case h.seq > 0 && res.Entered:
 				go e.delivered(r, h.seq)
-			case h.seq > 0 && !res.Typed:
+			case h.seq > 0 && !res.Typed && !res.Unconfirmed:
 				go e.untyped(r, h.seq, gone(r, l, err))
 			}
 		}})
@@ -251,6 +251,8 @@ func (e *Engine) deliver(r *run, m *member, l *session.Local) {
 		}
 		e.mu.Lock()
 		switch {
+		case errors.Is(err, session.ErrSubmitPending) && inChat(l):
+			r.note(session.ActivityStatus, "handoff from %s to %s sent to %s's chat: it is delivered once its agent takes it", h.from, m.def.Name, m.def.Name)
 		case errors.Is(err, session.ErrSubmitPending):
 			r.note(session.ActivityStatus, "handoff from %s to %s waits for %s to take its input: it is entered once it has", h.from, m.def.Name, m.def.Name)
 		case err != nil && !res.Typed:
@@ -279,6 +281,8 @@ func (e *Engine) deliver(r *run, m *member, l *session.Local) {
 			}
 			if res.NotAtPrompt {
 				r.noteQueued(m, "shows a screen that is not its prompt")
+			} else if inChat(l) {
+				r.noteQueued(m, chatBusyWords)
 			} else {
 				r.noteQueued(m, "is waiting for input")
 			}
@@ -306,6 +310,11 @@ func (r *run) noteHandoffEnd(h handoff, to string, res session.SubmitResult, err
 	switch {
 	case res.Entered:
 		r.noteHandoff(h.from, to)
+	case res.Unconfirmed:
+		// Sent into a chat, its agent not saying it took it: never sent
+		// again, its message left as it stands (neither delivered nor
+		// untyped, so that nothing queues it again).
+		r.note(session.ActivityError, "handoff from %s to %s sent, and its agent did not confirm taking it: it is never sent again", h.from, to)
 	case !res.Typed:
 		r.note(session.ActivityError, "handoff dropped from %s to %s: %v", h.from, to, err)
 	case err != nil:
