@@ -700,8 +700,10 @@ func TestClaudeInputCountResumes(t *testing.T) {
 	}
 }
 
-// No fixture holds an email-shaped string, an account, organisation or
-// sign-in field, or a path of the machine it was recorded on.
+// No fixture holds an email-shaped string, an account, organisation,
+// plan or sign-in field, a field that says how the use was billed or
+// served, or a path of the machine it was recorded on: each kind is tried
+// by putting one back.
 func TestFixturesHoldNoAccount(t *testing.T) {
 	names, _ := filepath.Glob(fixture("*"))
 	if len(names) < 7 {
@@ -724,6 +726,21 @@ func TestFixturesHoldNoAccount(t *testing.T) {
 		`{"type":"result","credential_expires_at":"2027-01-01"}`,
 		`{"type":"system","cwd":"/home/someone/work"}`,
 		`{"type":"system","organizationName":"x"}`,
+		`{"type":"result","modelUsage":{"m":{"provider":"firstParty"}}}`,
+		`{"type":"result","modelUsage":{"m":{"costBasis":"list"}}}`,
+		`{"type":"result","modelUsage":{"m":{"contextWindow":1000000}}}`,
+		`{"type":"assistant","message":{"usage":{"cache_creation":{"ephemeral_1h_input_tokens":1}}}}`,
+		`{"type":"result","modelUsage":{"m":{"cacheCreationEphemeral1hInputTokens":1}}}`,
+		`{"type":"stream_event","thinking_display":"updates"}`,
+		`{"type":"system","subtype":"init","fast_mode_state":"off"}`,
+		`{"type":"result","fast_mode_disabled_reason":"x"}`,
+		`{"type":"rate_limit_event"}`,
+		`{"type":"system","rate_limit_status":"ok"}`,
+		`{"type":"system","cwd":"/Volumes/Work/repo"}`,
+		`{"type":"system","cwd":"/mnt/c/Users/x"}`,
+		`{"type":"system","cwd":"C:\\Users\\x"}`,
+		`{"type":"system","cwd":"D:/work"}`,
+		`{"type":"system","cwd":"/Users/someone/work"}`,
 	} {
 		if len(accountIn([]byte(bad+"\n"), true)) == 0 {
 			t.Errorf("not found in %s", bad)
@@ -735,8 +752,14 @@ var (
 	emailShape = regexp.MustCompile(`[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}`)
 	// accountKeys are the fields that describe an account, its
 	// organisation, its plan or its sign-in.
-	accountKeys = []string{"account", "email", "emailAddress", "organization", "organizationName", "organization_uuid", "subscriptionType", "apiKeySource", "credential_expires_at", "rate_limit_info", "tokenSource"}
-	machinePath = regexp.MustCompile(`/(home|Users)/[^/"\s]+|/tmp/|/private/`)
+	accountKeys = []string{"account", "email", "emailAddress", "organization", "organizationName", "organization_uuid", "subscriptionType", "apiKeySource", "credential_expires_at", "tokenSource",
+		// How the use was billed and served, and a display setting.
+		"provider", "costBasis", "contextWindow", "cache_creation", "cacheCreationEphemeral1hInputTokens", "cacheCreationEphemeral5mInputTokens", "thinking_display"}
+	// accountPrefixes begin every key of the account's fast mode and rate
+	// limits.
+	accountPrefixes = []string{"fast_mode", "rate_limit"}
+	// machinePath is a home, temporary, mounted or drive-letter folder.
+	machinePath = regexp.MustCompile(`/(home|Users)/[^/"\s]+|/tmp/|/private/|/Volumes/|/mnt/|(^|["\s=])[A-Za-z]:(\\\\|/)`)
 )
 
 // accountIn is what of an account b holds: an email-shaped string, a path
@@ -758,8 +781,11 @@ func accountIn(b []byte, lines bool) []string {
 		switch x := v.(type) {
 		case map[string]any:
 			for k, e := range x {
-				if slices.Contains(accountKeys, k) {
+				if slices.Contains(accountKeys, k) || slices.ContainsFunc(accountPrefixes, func(p string) bool { return strings.HasPrefix(k, p) }) {
 					found = append(found, k)
+				}
+				if s, ok := e.(string); ok && k == "type" && strings.HasPrefix(s, "rate_limit") {
+					found = append(found, s)
 				}
 				walk(e)
 			}
