@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { itemTooltip, pickItem, pillText, type InspectorItem, type InspectorView } from '~/utils/inspector'
+import { itemTooltip, pickItem, pillText, railView, type InspectorItem, type InspectorView } from '~/utils/inspector'
 
 /**
  * The inspector's rail (design 4h, #301): 44 px on the panel's outer edge,
@@ -30,18 +30,18 @@ function pick(id: InspectorView) {
       <button
         type="button"
         class="relative grid size-9 place-items-center rounded-md transition-colors"
-        :class="open && view === it.id ? 'bg-elevated text-highlighted' : 'text-muted hover:bg-elevated/60 hover:text-default'"
+        :class="open && railView(view) === it.id ? 'bg-elevated text-highlighted' : 'text-muted hover:bg-elevated/60 hover:text-default'"
         :aria-label="itemTooltip(it)"
-        :aria-pressed="open && view === it.id ? 'true' : 'false'"
+        :aria-pressed="open && railView(view) === it.id ? 'true' : 'false'"
         :data-rail-item="it.id"
-        :data-chat-tab="it.id === 'chat' ? '' : undefined"
+        :data-chat-tab="it.chat ? '' : undefined"
         @click="pick(it.id)"
       >
         <UIcon :name="it.icon" class="size-[18px]" aria-hidden="true" />
         <!-- The pill sits inside the rail (#325): at -right-1.5 it stuck out past the rail's edge by two pixels, and the session page's body, which
              scrolls on its own, grew a horizontal scrollbar for them. -->
-        <span v-if="pillText(it.count)" class="absolute -right-0.5 -top-1 min-w-4 rounded-full bg-elevated px-1 text-[10px] font-semibold leading-4 text-highlighted ring-2 ring-default" :data-rail-count="it.id" aria-hidden="true">{{ pillText(it.count) }}</span>
-        <span v-if="open && view === it.id" class="absolute -right-1 bottom-2 top-2 w-0.5 rounded-full bg-primary" data-rail-active aria-hidden="true" />
+        <span v-if="pillText(it.count)" class="absolute -right-0.5 -top-1 min-w-4 rounded-full bg-elevated px-1 text-[10px] font-semibold leading-4 text-highlighted ring-2 ring-default" :data-rail-count="it.countOf ?? it.id" aria-hidden="true">{{ pillText(it.count) }}</span>
+        <span v-if="open && railView(view) === it.id" class="absolute -right-1 bottom-2 top-2 w-0.5 rounded-full bg-primary" data-rail-active aria-hidden="true" />
       </button>
     </UTooltip>
     <span class="flex-1" />

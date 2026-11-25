@@ -465,7 +465,7 @@ usePalette().registerPage(() => ({
                 </div>
               </div>
               <div class="relative flex-1 min-h-0 rounded-lg" :class="typing && index === selected ? 'ring-[3px] ring-primary ring-offset-2 ring-offset-default' : ''">
-                <TerminalView v-if="near(index)" :key="item.id" :ref="terminalRef(item.id)" :create-transport="transportFor(item)" :auto-focus="false" />
+                <TerminalView v-if="near(index)" :key="item.id" :ref="terminalRef(item.id)" :create-transport="transportFor(item)" :auto-focus="false" operator :verbatim="item.way === 'protocol' ? !!item.verbatim : undefined" />
                 <div v-else class="terminal-host rounded-lg border border-default flex items-center justify-center text-xs text-muted">idle</div>
                 <UBadge v-if="typing && index === selected" label="Paused: terminal has focus" icon="i-lucide-pause" color="neutral" variant="solid" size="sm" class="absolute top-3 right-4" />
               </div>

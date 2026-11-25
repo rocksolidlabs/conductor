@@ -11,12 +11,13 @@ import { findFileLocations } from '~/utils/links'
 import { openWebLink, terminalLinkHandler, type LinkTip } from '~/utils/terminalLinks'
 import { ALT_PASSTHROUGH_CODES, usePageAltCodes } from '~/composables/useShortcuts'
 import { NEWLINE_IN_PROMPT, newlineChord } from '~/utils/terminalKeys'
-import { closeReason, encodeText, FOLLOW_SIZE, type ActivityEntry, type Attention, type ChatHistory, type ChatMessage, type ChatPost, type ChatRoster, type ChatSend, type ControlMessage, type FileGetExtra, type FileResponse, type FileWriteOptions, type NvimSwapChoice, type Role, type TransportKind, type ViewerInfo, type Welcome } from '~/utils/protocol'
+import { closeReason, encodeText, FOLLOW_SIZE, type ActivityEntry, type Attention, type ChatHistory, type ChatMessage, type ChatPost, type ChatRoster, type ChatSend, type ControlMessage, type FileGetExtra, type FileResponse, type FileWriteOptions, type NvimSwapChoice, type Role, type TranscriptEntry, type TransportKind, type ViewerInfo, type Welcome } from '~/utils/protocol'
 import type { CloseInfo, TerminalTransport, TransportState } from '~/utils/transport/types'
 import type { LaneWire } from '~/utils/transport/decide'
 import type { QuestionReply } from '~/utils/reply'
 import { useSessionConnection } from '~/composables/useSessionConnection'
 import { FIT_DEBOUNCE_MS, helloSize, tileFit, tileScale } from '~/utils/tile'
+import { lastWords } from '~/utils/transcript'
 
 const props = withDefaults(
   defineProps<{
@@ -44,8 +45,15 @@ const props = withDefaults(
     fit?: 'fill' | 'scale' | 'tile'
     /** Focus the terminal once connected (controllers only). */
     autoFocus?: boolean
+    /** A chat's (ChatView's): this page is the operator's, and the session's `verbatim` as its listing says. */
+    operator?: boolean
+    verbatim?: boolean
+    /** A chat's file change opens the editor's diff tab (`openChange`): only where the page has the editor and listens. */
+    opensChanges?: boolean
+    /** The note shown once, the first time a person presses Chat (ChatView's `note`); `dismissNote` when it is closed. */
+    chatNote?: { site?: string } | null
   }>(),
-  { readOnly: false, autoConnect: true, fontSize: 13, scrollback: 5000, compact: false, fit: 'fill', autoFocus: true },
+  { readOnly: false, autoConnect: true, fontSize: 13, scrollback: 5000, compact: false, fit: 'fill', autoFocus: true, operator: false, verbatim: undefined, opensChanges: false, chatNote: null },
 )
 
 const emit = defineEmits<{
@@ -70,6 +78,9 @@ const emit = defineEmits<{
   nvim: [ev: NvimEvent]
   /** A decision link's connection: the scope's items changed (the lane's `decisions_changed`; the join page's Needs you tab lists again). */
   decisionsChanged: []
+  /** A chat's file change asks for its diff in the editor (ChatView). */
+  openChange: [entry: TranscriptEntry]
+  dismissNote: []
 }>()
 
 const host = ref<HTMLDivElement>()
@@ -300,6 +311,17 @@ const transcriptFrames = ref(0)
 conn.onOutput((data) => term?.write(data))
 conn.onControl(handleControl)
 conn.onTranscript(() => transcriptFrames.value++)
+/**
+ * A chat (the session's way `protocol`) is drawn by ChatView over the terminal's pane, from the same connection (design 11); the
+ * terminal stays mounted under it, hidden, with its marks, for the move back. A tile shows that it runs as a chat and the agent's
+ * last line of words, never an empty terminal.
+ */
+const chatShown = computed(() => conn.way.value === 'protocol')
+const chatLast = computed(() => {
+  void conn.transcriptVersion.value
+  return chatShown.value && props.compact ? lastWords(conn.transcript.list()) : ''
+})
+const chatView = ref<{ showQuestion: () => void } | null>(null)
 conn.onClose((info, t) => {
   if (conn.transport.value !== t) return
   connecting.value = false
@@ -430,7 +452,8 @@ function scheduleResize() {
 function fitAndResize(retries: number) {
   fitPasses.value++
   const { cols, rows } = measure()
-  if (cols && conn.transport.value) {
+  // A chat has no terminal to size: the pane is fitted for the move back, and the session is asked nothing.
+  if (cols && conn.transport.value && !chatShown.value) {
     fitResizes.value++
     conn.resize(cols, rows)
   }
@@ -676,7 +699,7 @@ function handleControl(msg: ControlMessage) {
         break
       }
       if (msg.code === 'read_only') notice.value = 'This link is view-only'
-      else if (msg.code !== 'bad_frame') notice.value = msg.message
+      else if (msg.code !== 'bad_frame' && !(msg.code === 'not_terminal' && chatShown.value)) notice.value = msg.message
       break
   }
 }
@@ -711,13 +734,13 @@ async function connect() {
     stopWatch = watch([t.kind, t.state, t.rtt], ([kind, state, rtt]) => emit('transport', { kind, state, rtt }), { immediate: true })
     await connected
     t.ping()
-    if (sizes()) {
+    if (sizes() && !chatShown.value) {
       const { cols, rows } = measure()
       if (cols) t.resize(cols, rows)
     }
     // The terminal takes the focus only when nothing else has it: a person who moved to the filter, the chat or a field while it
     // connected keeps their place (the connect used to take it back, and a shortcut pressed meanwhile lost its target).
-    if (props.autoFocus && !props.readOnly && focusIsFree()) term.focus()
+    if (props.autoFocus && !props.readOnly && !chatShown.value && focusIsFree()) term.focus()
   } catch (e) {
     if (!overlay.value) overlay.value = { title: (e as Error).message }
   } finally {
@@ -805,7 +828,7 @@ function snapshot(): string[] | null {
   for (let y = 0; y < term.rows; y++) lines.push(b.getLine(b.viewportY + y)?.translateToString(true) ?? '')
   return lines
 }
-defineExpose({ connection: conn, connect, disconnect, requestFile, writeFile, nvimOpen, nvimInput, nvimClose, nvimSwap, sendInput, submit, answer, chat, chatSend, lane, focus: () => term?.focus(), scrollToBottom: () => term?.scrollToBottom(), takeSize, sizerShown: () => !!sizerChip.value, snapshot, openPaste })
+defineExpose({ connection: conn, showQuestion: () => chatView.value?.showQuestion(), connect, disconnect, requestFile, writeFile, nvimOpen, nvimInput, nvimClose, nvimSwap, sendInput, submit, answer, chat, chatSend, lane, focus: () => term?.focus(), scrollToBottom: () => term?.scrollToBottom(), takeSize, sizerShown: () => !!sizerChip.value && !chatShown.value, snapshot, openPaste })
 
 onMounted(() => {
   // One handler for the terminal's web links of both kinds, the hyperlinks an agent prints (OSC 8, xterm's linkHandler: without it
@@ -951,8 +974,15 @@ onBeforeUnmount(() => {
 <template>
   <div class="relative h-full w-full overflow-hidden" :class="compact ? '' : 'rounded-lg border border-default'" :data-session-way="conn.way.value" :data-way-noted="conn.noted.value || undefined" :data-welcomed="welcomed || undefined" :data-transcript-frames="transcriptFrames">
     <UContextMenu :items="terminalMenu" :disabled="compact">
-      <div ref="host" class="terminal-host" :class="{ 'terminal-compact': compact, 'terminal-scale': scaledView, 'terminal-tile': props.fit === 'tile' }" :data-ended="ended ? 'true' : undefined" :data-renderer="renderer" :data-cols="grid.cols || undefined" :data-rows="grid.rows || undefined" :data-scaled-font="scaledAt" :data-fit-passes="fitPasses" :data-fit-resizes="fitResizes" :aria-label="readOnly ? 'terminal (read-only)' : 'terminal'" role="region" />
+      <div ref="host" class="terminal-host" :class="{ 'terminal-compact': compact, 'terminal-scale': scaledView, 'terminal-tile': props.fit === 'tile', invisible: chatShown }" :data-ended="ended ? 'true' : undefined" :data-renderer="renderer" :data-cols="grid.cols || undefined" :data-rows="grid.rows || undefined" :data-scaled-font="scaledAt" :data-fit-passes="fitPasses" :data-fit-resizes="fitResizes" :aria-label="readOnly ? 'terminal (read-only)' : 'terminal'" role="region" />
     </UContextMenu>
+
+    <!-- A chat, over the terminal's pane: the whole view, or a tile's line. -->
+    <ChatView v-if="chatShown && !compact" ref="chatView" :connection="conn" :read-only="readOnly" :operator="operator" :verbatim="verbatim" :opens-changes="opensChanges" :note="chatNote" @dismiss-note="emit('dismissNote')" class="absolute inset-0 z-10" @open-diff="emit('openChange', $event)" />
+    <div v-else-if="chatShown" class="absolute inset-0 z-10 flex flex-col gap-1 bg-default px-2.5 py-2 text-xs" data-chat-tile>
+      <span class="text-muted">Runs as a chat.</span>
+      <span v-if="chatLast" class="line-clamp-3 break-words text-default" data-chat-tile-words>{{ chatLast }}</span>
+    </div>
 
     <!-- Where the link under the pointer goes, from its parsed address whatever its words (#1020); text, never markup. The scheme and
          host come first and are never cut (a long one wraps); only the path after them is cut, at its end. A visual aid, as a
@@ -961,16 +991,16 @@ onBeforeUnmount(() => {
       <span class="min-w-0 max-w-full font-medium break-all" data-link-tip-origin>{{ linkTip.origin }}</span><span class="min-w-0 max-w-full truncate text-muted" data-link-tip-rest>{{ linkTip.rest }}</span><span v-if="linkTip.hint" class="ml-2 shrink-0 font-medium" data-link-tip-hint>{{ linkTip.hint }}</span>
     </p>
 
-    <div v-if="sizerChip" class="absolute right-2 bottom-2 z-10 flex items-center gap-2 rounded-md border border-default bg-default/90 py-1 pr-1 pl-2.5 text-xs shadow-sm backdrop-blur-sm" data-terminal-sizer :data-sizer-by="sizedBy">
+    <div v-if="sizerChip && !chatShown" class="absolute right-2 bottom-2 z-10 flex items-center gap-2 rounded-md border border-default bg-default/90 py-1 pr-1 pl-2.5 text-xs shadow-sm backdrop-blur-sm" data-terminal-sizer :data-sizer-by="sizedBy">
       <UIcon name="i-lucide-scaling" class="size-3.5 text-muted" />
       <span class="text-muted">Sized by <span class="font-medium text-default" data-sizer-name>{{ sizerChip.who }}</span> · <span class="font-mono">{{ sizerChip.cols }} × {{ sizerChip.rows }}</span></span>
       <UButton label="Fit to my window" icon="i-lucide-maximize-2" size="xs" color="neutral" variant="soft" data-fit-mine @click="takeSize" />
     </div>
 
     <!-- A view that cannot take the size (a view-only link) says why its grid may be small, under it (#906). -->
-    <p v-else-if="sizedHere" ref="sizedLine" class="absolute inset-x-0 bottom-2 z-10 mx-auto w-fit max-w-[calc(100%-1rem)] truncate rounded-md border border-default bg-default/90 px-2.5 py-1 text-xs text-muted shadow-sm backdrop-blur-sm" data-terminal-sized-elsewhere>Another window sets this session's size.</p>
+    <p v-else-if="sizedHere && !chatShown" ref="sizedLine" class="absolute inset-x-0 bottom-2 z-10 mx-auto w-fit max-w-[calc(100%-1rem)] truncate rounded-md border border-default bg-default/90 px-2.5 py-1 text-xs text-muted shadow-sm backdrop-blur-sm" data-terminal-sized-elsewhere>Another window sets this session's size.</p>
 
-    <template v-if="!compact && canPaste()">
+    <template v-if="!compact && canPaste() && !chatShown">
       <IconButton v-if="touch && !pasteBlocked" icon="i-lucide-clipboard-paste" size="xs" color="neutral" variant="soft" class="absolute bottom-2 left-2 z-10" label="Paste into the terminal" data-terminal-paste @click="pasteOpen = true" />
       <UModal v-model:open="pasteOpen" title="Paste into the terminal" description="What you paste or type here goes to the terminal as a paste, with no Enter: press Enter in the terminal yourself.">
         <template #body>

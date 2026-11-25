@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ANSWER_IN_TERMINAL, answersInTerminal, choiceTitle, choiceKey, decisionAnsweredBy, decisionOf, noReply, offeredChoices, recommendedChoice, startupInTerminal, takesReply, waitingHeading, waitsForTerminal } from '~/utils/attention'
+import { ANSWER_IN_CHAT, ANSWER_IN_TERMINAL, answersInChat, answersInTerminal, choiceTitle, choiceKey, decisionAnsweredBy, decisionOf, noReply, offeredChoices, recommendedChoice, startupInTerminal, takesReply, waitingHeading, waitsForTerminal } from '~/utils/attention'
 import type { Attention, Role } from '~/utils/protocol'
 import { questionOf, replyLine, type ReplyTaken } from '~/utils/reply'
 
@@ -16,7 +16,7 @@ const props = defineProps<{ attention?: Attention; agentName: string; role: Role
  * (`pastes`: the session's page, which has it). A reply hands its page `taken`, which the page calls once it knows whether the line
  * was sent: the field empties then, and keeps a line not sent as typed (#654).
  */
-const emit = defineEmits<{ reply: [text: string, question: string | undefined, taken: ReplyTaken]; option: [index: number, question: string | undefined]; openPlan: [path: string]; previewPlan: [path: string]; answer: [decision: string]; paste: [] }>()
+const emit = defineEmits<{ reply: [text: string, question: string | undefined, taken: ReplyTaken]; option: [index: number, question: string | undefined]; openPlan: [path: string]; previewPlan: [path: string]; answer: [decision: string]; paste: []; chat: [] }>()
 
 /**
  * The line, and the question it was begun for (as its first character was typed): it names that one when sent, whatever the bar shows
@@ -36,6 +36,8 @@ const terminal = computed(() => answersInTerminal(props.attention))
 const startup = computed(() => startupInTerminal(props.attention))
 // A question that mirrors a durable decision (decisionOf) is answered as the decision: no reply field, choice or number key.
 const decision = computed(() => decisionOf(props.attention))
+// A chat's permission request is answered with its own buttons in the chat (`chat` brings it into view): no field or choice here.
+const inChat = computed(() => answersInChat(props.attention))
 const options = computed(() => offeredChoices(props.attention))
 // The choice drawn filled: only the one the agent itself recommends (its label ends "(Recommended)"), never a mode choice.
 const recommended = computed(() => recommendedChoice(options.value))
@@ -93,8 +95,9 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
       <UButton label="Open plan" icon="i-lucide-file-text" size="sm" color="neutral" variant="soft" class="flex-none" :ui="{ label: 'hidden sm:inline' }" aria-label="Open plan" :title="attention.plan" data-quick-reply-plan @click="emit('openPlan', attention!.plan!)" />
       <UButton label="Preview plan" icon="i-lucide-eye" size="sm" color="neutral" variant="soft" class="flex-none" :ui="{ label: 'hidden sm:inline' }" aria-label="Preview plan" :title="attention.plan" data-quick-reply-plan-preview @click="emit('previewPlan', attention!.plan!)" />
     </template>
+    <UButton v-if="inChat" :label="ANSWER_IN_CHAT" size="sm" color="neutral" variant="link" class="ml-auto flex-none" data-quick-reply-in-chat @click="emit('chat')" />
     <!-- A durable decision's question takes no reply here: it is answered as the decision, in its card (the operator's Answer). -->
-    <UButton v-if="decision && answers" :label="`Answer ${decision}`" icon="i-lucide-scale" size="sm" color="primary" class="ml-auto flex-none" data-quick-reply-answer @click="emit('answer', decision)" />
+    <UButton v-else-if="decision && answers" :label="`Answer ${decision}`" icon="i-lucide-scale" size="sm" color="primary" class="ml-auto flex-none" data-quick-reply-answer @click="emit('answer', decision)" />
     <span v-else-if="decision" class="ml-auto text-xs text-muted" data-quick-reply-decision>{{ decisionAnsweredBy(decision) }}</span>
     <!-- The choices shrink to the bar and wrap (#327): never wider than the window on a phone, every one on screen under a thumb. -->
     <div v-else-if="options.length" class="ml-auto flex min-w-0 max-w-full flex-wrap items-center justify-end gap-2">

@@ -1001,6 +1001,11 @@ export function useSessions() {
     resumeRunMember: (runId: string, name: string) =>
       request<ResumeResult>(`/api/runs/${encodeURIComponent(runId)}/members/${encodeURIComponent(name)}/resume`, { method: 'POST' }),
     stop: (id: string) => request<SessionInfo | void>(`/api/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+    /**
+     * Moves a session between its terminal and its chat (POST /api/sessions/{id}/way, the operator's): made at once when the turn has
+     * ended (`moving`), else noted for its end (`noted`, with its sentence `why`); refused 409 `move_refused` in the words why.
+     */
+    moveWay: (id: string, to: 'terminal' | 'protocol') => request<{ way: 'terminal' | 'protocol'; noted?: 'terminal' | 'protocol'; why?: string; moving?: boolean }>(`/api/sessions/${encodeURIComponent(id)}/way`, { method: 'POST', body: { to } }),
     /** Renames a server session, running or ended (#318): the reply is the session under the name the server kept; the events stream tells every page. */
     rename: (id: string, name: string) => request<SessionInfo>(`/api/sessions/${encodeURIComponent(id)}`, { method: 'PATCH', body: { name } }),
     catalog: () => request<{ agents: AgentInfo[] }>('/api/catalog').then((r) => r.agents ?? []),

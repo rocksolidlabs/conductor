@@ -29,7 +29,8 @@ import { reuseHeld, shareDescription, shareReach, shareRefusal, type ShareReach,
  */
 type Target = { sessionId: string; runId?: undefined } | { runId: string; sessionId?: undefined }
 /** `role`: the role asked for by whoever opened the dialog (the palette's `share <name> control`), used for this opening's link. */
-const props = defineProps<Target & { sessionName?: string; role?: Role }>()
+/** `chat`: the session runs as a chat (docs/plans/chat-or-terminal.md, design 12): the dialog says what its links let people read. */
+const props = defineProps<Target & { sessionName?: string; role?: Role; chat?: boolean }>()
 const open = defineModel<boolean>('open', { default: false })
 
 const api = useSessions()
@@ -306,6 +307,7 @@ const live = computed(() => links.value.filter((l) => !l.revoked))
         <UAlert v-if="refused" color="neutral" variant="subtle" icon="i-lucide-unlink" :title="refused.title" :description="refused.text" data-share-refused />
 
         <template v-if="!refused">
+          <p v-if="chat" class="text-sm text-muted" data-share-chat>People with this link can read the whole chat, including what its tools read and printed.</p>
 
           <div v-if="creating && !created" class="flex items-center gap-2 text-sm text-muted" data-share-making>
             <UIcon name="i-lucide-loader-circle" class="size-4 animate-spin" />

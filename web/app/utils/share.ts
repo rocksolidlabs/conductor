@@ -63,7 +63,8 @@ export function shareReach(created: CreatedLink, reach: ReachInfo | null | undef
       kind: 'unpublished',
       level: local.level,
       title: 'Not published to the switchyard',
-      text: `${hostOf(created.rendezvous.server)}: ${created.rendezvous.error}. This link works where this machine is reachable. ${local.text}`,
+      // The server's words, as a sentence of their own whether or not they end with one (a chat's on an older switchyard do).
+      text: `${hostOf(created.rendezvous.server)}: ${created.rendezvous.error.replace(/\.$/, '')}. This link works where this machine is reachable. ${local.text}`,
     }
   }
   return { kind: 'local', level: local.level, title: local.title, text: local.text }

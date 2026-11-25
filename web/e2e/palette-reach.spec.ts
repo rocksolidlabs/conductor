@@ -100,8 +100,12 @@ test('] shows the pill for the next session that needs you; 1 answers it from th
 test('?tab= opens the inspector on that view, ?filter= the Yard on that chip, ?view= the run on that view', async ({ page, api }) => {
   const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'e2e reach tabs' })
   sessions.push(s.id)
+  // ?tab=chat and ?tab=people both open People, which holds the people's chat.
   await page.goto(`/sessions/${s.id}?tab=chat`)
-  await expect(page.locator('[data-inspector] [data-rail-item="chat"]')).toHaveAttribute('aria-pressed', 'true', { timeout: 30_000 })
+  await expect(page.locator('[data-inspector] [data-rail-item="people"]')).toHaveAttribute('aria-pressed', 'true', { timeout: 30_000 })
+  await expect(page.locator('[data-inspector] [data-chat]')).toBeVisible({ timeout: 30_000 })
+  await page.goto(`/sessions/${s.id}?tab=people`)
+  await expect(page.locator('[data-inspector] [data-rail-item="people"]')).toHaveAttribute('aria-pressed', 'true', { timeout: 30_000 })
   await page.goto(`/sessions/${s.id}?tab=files`)
   await expect(page.locator('[data-inspector] [data-rail-item="explorer"]')).toHaveAttribute('aria-pressed', 'true', { timeout: 30_000 })
   await page.goto('/yard?filter=finished')

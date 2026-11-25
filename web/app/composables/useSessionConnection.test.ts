@@ -28,6 +28,7 @@ function fakeTransport() {
     onClose: (cb: typeof close) => void (close = cb),
     transcriptGet: async () => ({ t: 'page', entries: [], first: 0, last: 0 }),
     interrupt: async () => (sent.push('interrupt'), true),
+    transcriptFrom: () => {},
   }
   return {
     transport: t as unknown as TerminalTransport,

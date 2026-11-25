@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import type { SessionInfo, ShareLink } from '~/composables/useSessions'
-import { liveAttention } from '~/utils/attention'
+import type { AgentInfo, SessionInfo, ShareLink } from '~/composables/useSessions'
+import { answersInChat, liveAttention } from '~/utils/attention'
 import type { ActivityEntry, Attention, ChatHistory, ChatMessage, ChatPost, ChatSend, TransportKind, ViewerInfo, Welcome, NvimEvent, NvimBridge, ChatQuote } from '~/utils/protocol'
 import type { TransportState } from '~/utils/transport/types'
 import type { FileTarget } from '~/components/FileBrowser.vue'
-import type { InspectorView } from '~/utils/inspector'
+import { railView, type InspectorView } from '~/utils/inspector'
 import { SESSION_SHORTCUTS, useShortcutsModal } from '~/composables/useShortcuts'
 import { firstMessageLine } from '~/utils/launch'
 import { agentName, gonePage, sessionGone, sessionHeadline, type GonePage } from '~/utils/sessions'
@@ -17,7 +17,11 @@ import { editorRows } from '~/utils/editorRows'
 import type { EditorColumnHandle } from '~/components/EditorColumn.vue'
 import type { ChangeRow } from '~/utils/changes'
 import type { CommitRow } from '~/utils/commits'
-import type { FileHeader } from '~/utils/protocol'
+import type { FileHeader, SessionWay, TranscriptEntry } from '~/utils/protocol'
+import type { SessionConnection } from '~/composables/useSessionConnection'
+import { ENDS_TERMINAL_WORK, switchState, type SwitchFacts } from '~/utils/switchState'
+import { joinTop } from '~/utils/changes'
+import { ApiError } from '~/composables/useApi'
 
 const route = useRoute()
 // The question bar's Answer on a durable decision's question opens its card (Program item DR1).
@@ -58,13 +62,13 @@ const chatOffline = computed(() => transport.value.state !== 'open')
 // Below xl the inspector is not rendered: the header's Chat button opens the chat as a sheet (design 2c).
 const xl = useMedia('(min-width: 80rem)')
 const chatSheet = ref(false)
-/** The thread is in front of the person: on the inspector's Chat tab where the inspector shows, or in the sheet. */
-const chatShown = computed(() => (xl.value && inspector.value && tab.value === 'chat') || chatSheet.value)
+/** The thread is in front of the person: on the inspector's People view where the inspector shows, or in the sheet. */
+const chatShown = computed(() => (xl.value && inspector.value && railView(tab.value) === 'people') || chatSheet.value)
 function showChat() {
   if (!xl.value) chatSheet.value = true
-  else if (inspector.value && tab.value === 'chat') inspector.value = false
+  else if (inspector.value && railView(tab.value) === 'people') inspector.value = false
   else {
-    tab.value = 'chat'
+    tab.value = 'people'
     inspector.value = true
   }
 }
@@ -96,7 +100,7 @@ function chatSend(text: string, to: string) {
 provideChatQuotes(quoteActionsFor(requestFile, () => current.value?.cwd, openFile))
 function onComment(c: { quote: ChatQuote; text: string; toAgent: boolean }) {
   chat.send(c.text, { quote: c.quote, ...(c.toAgent ? { to: 'agent' } : {}) }, viaChat)
-  tab.value = 'chat'
+  tab.value = 'people'
   if (import.meta.client && !window.matchMedia('(min-width: 1280px)').matches) chatSheet.value = true
 }
 function chatSendToAgent(ref: string) {
@@ -212,6 +216,7 @@ function renameSession() {
 }
 
 const menu = computed(() => [
+  ...wayItems.value,
   ...(sm.value
     ? []
     : [
@@ -236,7 +241,108 @@ const menu = computed(() => [
   [{ label: 'Stop session', icon: 'i-lucide-square', color: 'error' as const, disabled: !(session.value && (session.value.status === 'running' || session.value.status === 'starting')), onSelect: stop }],
 ])
 
-const terminal = ref<{ connect: () => void; focus: () => void; sendInput: (t: string) => boolean; submit: (t: string) => boolean; answer: (r: QuestionReply, o?: { sent?: () => void }) => Promise<boolean>; chat: (p: ChatPost) => boolean; chatSend: (s: ChatSend) => boolean; requestFile: (p: string, s?: boolean, x?: FileGetExtra) => Promise<any>; nvimOpen: (p: string) => Promise<NvimEvent>; nvimInput: EditorTerminal['nvimInput']; nvimClose: EditorTerminal['nvimClose']; nvimSwap: EditorTerminal['nvimSwap']; writeFile: EditorTerminal['writeFile']; takeSize: () => void; sizerShown: () => boolean; openPaste: () => void } | null>(null)
+const terminal = ref<{ connection: SessionConnection; showQuestion: () => void; connect: () => void; focus: () => void; sendInput: (t: string) => boolean; submit: (t: string) => boolean; answer: (r: QuestionReply, o?: { sent?: () => void }) => Promise<boolean>; chat: (p: ChatPost) => boolean; chatSend: (s: ChatSend) => boolean; requestFile: (p: string, s?: boolean, x?: FileGetExtra) => Promise<any>; nvimOpen: (p: string) => Promise<NvimEvent>; nvimInput: EditorTerminal['nvimInput']; nvimClose: EditorTerminal['nvimClose']; nvimSwap: EditorTerminal['nvimSwap']; writeFile: EditorTerminal['writeFile']; takeSize: () => void; sizerShown: () => boolean; openPaste: () => void } | null>(null)
+
+// The header's switch, Terminal | Chat (docs/plans/chat-or-terminal.md, design 11): on a session of an agent whose catalog entry
+// has a protocol. The way and the noted move are the connection's (its welcome, its `way` messages); a press is the operator's
+// POST /api/sessions/{id}/way. Its line is drawn above the terminal; below sm the two sides are items of More.
+const agents = ref<AgentInfo[]>([])
+const agentInfo = computed(() => agents.value.find((a) => a.id === (current.value?.agentId ?? '')))
+// The exposed connection's refs, read whether or not the template ref unwrapped them.
+const conn = computed(() => terminal.value?.connection as unknown as SessionConnection | undefined)
+const way = computed<SessionWay>(() => unref(conn.value?.way) ?? (current.value?.way === 'protocol' ? 'protocol' : 'terminal'))
+const moving = ref(false)
+const refused = ref('')
+const switchFacts = computed<SwitchFacts>(() => ({
+  hasProtocol: !!agentInfo.value?.protocol?.name || way.value === 'protocol',
+  way: way.value,
+  noted: unref(conn.value?.noted) ?? '',
+  why: unref(conn.value?.why) ?? '',
+  canMove: !ended.value,
+  firstReply: !!current.value?.agentSession?.resumable || way.value === 'protocol',
+  qualified: true,
+  inTurn: attention.value.state === 'working',
+  moving: moving.value,
+  refused: refused.value || undefined,
+}))
+const switched = computed(() => switchState(switchFacts.value))
+/** The switch's line above the terminal: what a press did or why it waits; the at-rest line is the Chat side's own tooltip. */
+const wayLine = computed(() => (switched.value.shown && switched.value.line !== ENDS_TERMINAL_WORK ? switched.value.line : ''))
+// Every `way` message ends what a press began: the move made, noted, taken back, or gone back with its sentence (a start that failed
+// sends the way it was, unchanged, with why), so the switch never stays on "moving" after it.
+let wayMessages = 0
+watch(
+  conn,
+  (c, _, onCleanup) => {
+    if (!c) return
+    onCleanup(
+      c.onControl((m) => {
+        if (m.t !== 'way') return
+        wayMessages++
+        moving.value = false
+        refused.value = ''
+      }),
+    )
+  },
+  { immediate: true },
+)
+/**
+ * The note on the vendor's terms (design 11), once in this browser: the first time a person presses Chat. It is drawn in the chat,
+ * under the move's notice (ChatView's ChatNote), where it covers nothing, until closed; under its sentence, that the chat has
+ * Conductor's tools only.
+ */
+const TERMS_KEY = 'conductor.chatTermsNoted'
+const chatNote = ref<{ site?: string } | null>(null)
+function noteTerms() {
+  try {
+    if (localStorage.getItem(TERMS_KEY) === '1') return
+    localStorage.setItem(TERMS_KEY, '1')
+  } catch {
+    /* a browser that keeps nothing shows it each time */
+  }
+  chatNote.value = { site: agentInfo.value?.site?.startsWith('https://') ? agentInfo.value.site : undefined }
+}
+async function moveTo(to: SessionWay) {
+  if (!current.value) return
+  if (to === 'protocol') noteTerms()
+  refused.value = ''
+  const before = wayMessages
+  try {
+    const r = await api.moveWay(current.value.id, to)
+    // A move that was already made, or went back, before the route's answer came (its `way` message first) is not still moving.
+    moving.value = !!r.moving && wayMessages === before
+  } catch (e) {
+    refused.value = e instanceof ApiError ? e.message : (e as Error).message
+  }
+}
+const wayItems = computed(() =>
+  switched.value.shown && !sm.value
+    ? [
+        (['terminal', 'protocol'] as const).map((w) => ({
+          label: w === 'protocol' ? 'Chat' : 'Terminal',
+          // What a move to Chat ends, said on the item before it is pressed, as the switch's Chat side says it.
+          ...(w === 'protocol' && switched.value.line === ENDS_TERMINAL_WORK ? { description: ENDS_TERMINAL_WORK } : {}),
+          type: 'checkbox' as const,
+          checked: switched.value.selected === w,
+          disabled: !switchFacts.value.canMove || (w !== switched.value.selected && !switched.value.pressable),
+          onSelect: () => w !== switched.value.selected && void moveTo(w),
+        })),
+      ]
+    : [],
+)
+/** A chat's file change, opened in the editor's diff tab: the file against the folder's head. */
+function openChange(e: TranscriptEntry) {
+  const cwd = current.value?.cwd
+  if (!cwd || !e.path || e.outside) return
+  const abs = e.path.startsWith('/') ? e.path : joinTop(cwd, e.path)
+  const parts = e.path.split('/')
+  const name = parts.pop() ?? e.path
+  openDiff({ path: e.path, abs, dir: parts.length ? `${parts.join('/')}/` : '', name, status: e.op === 'create' ? 'A' : e.op === 'delete' ? 'D' : 'M', added: e.added ?? 0, removed: e.removed ?? 0, binary: false }, { top: cwd })
+}
+/** The reply bar's "Answer it in the chat.": the question in view. */
+function showQuestion() {
+  terminal.value?.showQuestion()
+}
 
 // The thread counts nothing while it is open in front of this person.
 watch(
@@ -293,6 +399,7 @@ async function load() {
   }
   try {
     const res = await api.get(id.value)
+    if (!agents.value.length) void api.catalog().then((a) => (agents.value = a), () => undefined)
     session.value = res.session
     attention.value = liveAttention(res.session.attention ?? { state: '' })
     links.value = res.links ?? []
@@ -443,13 +550,14 @@ watch(id, () => {
 })
 
 // ?tab= (#303): the rail's item a link names, read as the page opens and as the query changes (never written back).
-const TAB_QUERY: Record<string, InspectorView> = { files: 'explorer', explorer: 'explorer', changes: 'changes', commits: 'commits', chat: 'chat', activity: 'activity', people: 'people' }
+// `chat` and `people` both open People, where the people's chat and who is here are one view (docs/plans/chat-or-terminal.md, design 11).
+const TAB_QUERY: Record<string, InspectorView> = { files: 'explorer', explorer: 'explorer', changes: 'changes', commits: 'commits', chat: 'people', activity: 'activity', people: 'people' }
 watch(
   () => route.query.tab,
   (q) => {
     const v = typeof q === 'string' ? TAB_QUERY[q] : undefined
     if (!v) return
-    if (v === 'chat' && !xl.value) {
+    if (v === 'people' && !xl.value) {
       chatSheet.value = true
       return
     }
@@ -502,11 +610,12 @@ const phone = useIsPhone()
  * Chat buttons toggle (showFiles, showChat); a palette row or a session row's Open … says "open" and never hides.
  */
 function showView(v: InspectorView) {
-  if (v === 'chat' && !xl.value) {
+  // Below xl People is the sheet: the people's chat and who is here.
+  if (railView(v) === 'people' && !xl.value) {
     chatSheet.value = true
     return
   }
-  tab.value = v
+  tab.value = railView(v)
   inspector.value = true
 }
 async function copyViewLink() {
@@ -527,9 +636,9 @@ palette.registerPage(() => {
   const live = s.status === 'running' || s.status === 'starting'
   const views: Array<[InspectorView, string, string]> = [
     ['explorer', 'Open Files', 'i-lucide-folder'],
-    ['chat', `Open Chat${chatUnread.value ? ` · ${chatUnread.value} unread` : ''}`, 'i-lucide-message-circle'],
     ['activity', 'Open Activity', 'i-lucide-activity'],
-    ['people', `Open People · ${viewers.value.length || s.viewers} here`, 'i-lucide-users'],
+    // People: the people's chat and who is here, one view.
+    ['people', `Open People${chatUnread.value ? ` · ${chatUnread.value} unread` : ''}`, 'i-lucide-users'],
   ]
   const t = tabs.value
   /** The terminal collapsed under the open editor, as EditorColumn folds it wider than a phone (#432): its pane has no height. */
@@ -632,6 +741,7 @@ palette.registerPage(() => {
               <span :id="nameHint" hidden>Show the whole name</span>
               <StatusMark v-if="status" :status="status" word class="text-xs" :data-session-status="current?.id" />
               <YoloBadge v-if="current?.yolo" />
+              <WaySwitch v-if="sm" :facts="switchFacts" :line="false" class="flex-none" @move="moveTo" />
             </div>
             <span v-if="headline" class="truncate font-mono text-[11.5px] text-muted" :title="headline.title" data-session-meta>{{ headline.line }}</span>
           </div>
@@ -647,8 +757,8 @@ palette.registerPage(() => {
             <UButton icon="i-lucide-folder-open" color="neutral" variant="outline" aria-label="Files" class="hidden sm:inline-flex xl:hidden" :class="inspector && tab === 'explorer' && 'ring-2 ring-primary/40'" @click="showFiles">Files</UButton>
             <UButton icon="i-lucide-share-2" color="neutral" variant="outline" aria-label="Share" class="hidden sm:inline-flex" data-share-button @click="share = true">Share</UButton>
             <!-- The chat (design 2b, 2c): the count while the thread is closed; the inspector's tab at xl, a sheet below. -->
-            <IconButton v-if="chat.thread.value.capable" icon="i-lucide-message-circle" color="neutral" variant="outline" label="Chat" class="xl:hidden" :class="chatShown && 'ring-2 ring-primary/40'" data-chat-button @click="showChat">
-              <span class="hidden sm:inline">Chat</span>
+            <IconButton v-if="chat.thread.value.capable" icon="i-lucide-users" color="neutral" variant="outline" label="People" class="xl:hidden" :class="chatShown && 'ring-2 ring-primary/40'" data-chat-button @click="showChat">
+              <span class="hidden sm:inline">People</span>
               <ChatUnreadPill :count="chatUnread" />
             </IconButton>
             <UDropdownMenu :items="menu">
@@ -676,6 +786,10 @@ palette.registerPage(() => {
         <EditorColumn ref="columnRef" v-model:tabs="tabs" :request="requestFile" :nvim="editor.nvim.value" :write="editor.writeFile" :can-edit="editor.canEdit.value" commenting :can-ask="!ended" :cwd="current?.cwd" :raw-url="rawUrl" :host-away="hostAway" :bar-text="attention.message || agentLabel" class="p-3" @comment="onComment">
           <!-- The first message's wait (P19), said above the terminal: the inspector, where Activity says it too, starts closed. -->
           <div class="flex h-full min-h-0 flex-col gap-2">
+            <p v-if="wayLine" class="flex flex-none items-center gap-2 rounded-md border border-default bg-elevated/60 px-3 py-1.5 text-xs text-muted" role="status" data-way-line>
+              <UIcon name="i-lucide-arrow-left-right" class="size-3.5 flex-none" aria-hidden="true" />
+              <span class="min-w-0">{{ wayLine }}</span>
+            </p>
             <p v-if="firstLine" class="flex flex-none items-center gap-2 rounded-md border border-default bg-elevated/60 px-3 py-1.5 text-xs text-muted" data-first-message>
               <UIcon name="i-lucide-message-square-text" class="size-3.5 flex-none" aria-hidden="true" />
               <span class="min-w-0 truncate" :title="firstLine">{{ firstLine }}</span>
@@ -684,6 +798,11 @@ palette.registerPage(() => {
               <TerminalView
                 ref="terminal"
                 :create-transport="createTransport"
+                operator
+                opens-changes
+                :chat-note="chatNote"
+                @dismiss-note="chatNote = null"
+                :verbatim="current?.way === 'protocol' ? !!current.verbatim : undefined"
                 @nvim="editor.onNvim"
                 @welcome="onWelcome"
                 @status="onStatus"
@@ -696,6 +815,7 @@ palette.registerPage(() => {
                 @chat-history="onChatHistory"
                 @request-error="onRequestError"
                 @open-file="openFile"
+                @open-change="openChange"
                 @link-opened="linkOpened"
                 @link-offered="linkOffered"
               />
@@ -703,7 +823,8 @@ palette.registerPage(() => {
           </div>
           <div v-if="typingLine" class="pointer-events-none absolute bottom-2 left-3 flex items-center gap-2 rounded bg-default/80 px-2 py-0.5 text-xs text-muted backdrop-blur-sm"><span class="inline-block h-3.5 w-1.5 bg-muted/70" />{{ typingLine }}</div>
           <template #bar>
-            <QuickReplyBar :attention="attention" :agent-name="agentLabel" role="control" answers pastes @answer="decisionModal.open" @paste="terminal?.openPaste()" @reply="reply" @option="option" @open-plan="openFile({ path: $event })" @preview-plan="previewFile({ path: $event })" />
+            <!-- A chat's permission question is answered in the chat, which shows it: no bar repeats it (only for a terminal's question). -->
+            <QuickReplyBar v-if="!(way === 'protocol' && answersInChat(attention))" :attention="attention" :agent-name="agentLabel" role="control" answers pastes @answer="decisionModal.open" @chat="showQuestion" @paste="terminal?.openPaste()" @reply="reply" @option="option" @open-plan="openFile({ path: $event })" @preview-plan="previewFile({ path: $event })" />
           </template>
         </EditorColumn>
         <!-- The inspector (design 4h): its rail stays at xl, the panel beside it open or collapsed. -->
@@ -741,6 +862,6 @@ palette.registerPage(() => {
     </template>
   </UDashboardPanel>
 
-  <ShareLinksModal v-model:open="share" :session-id="id" :session-name="current?.name" />
-  <ChatSheet v-model:open="chatSheet" :thread="chat.thread.value" role="control" :ended="ended" :offline="chatOffline" :viewers="viewers" @send="chatSend" @send-to-agent="chatSendToAgent" @retry="chatRetry" @answer="chatAnswer" />
+  <ShareLinksModal v-model:open="share" :session-id="id" :session-name="current?.name" :chat="way === 'protocol'" />
+  <ChatSheet v-model:open="chatSheet" title="People" :thread="chat.thread.value" role="control" :ended="ended" :offline="chatOffline" :viewers="viewers" @send="chatSend" @send-to-agent="chatSendToAgent" @retry="chatRetry" @answer="chatAnswer" />
 </template>

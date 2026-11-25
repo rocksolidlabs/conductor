@@ -1,6 +1,8 @@
 <script setup lang="ts">
+import { answersInChat } from '~/utils/attention'
 import { SPONSOR_URL } from '~/utils/about'
 import type { JoinInfo, JoinRunMember, SessionKind } from '~/composables/useSessions'
+import type { SessionConnection } from '~/composables/useSessionConnection'
 import type { Attention, ChatHistory, ChatMessage, ChatPost, ChatSend, TransportKind, ViewerInfo, Welcome, ChatQuote, ActivityEntry } from '~/utils/protocol'
 import { closedByTheEnd } from '~/utils/protocol'
 import type { CloseInfo, TransportState } from '~/utils/transport/types'
@@ -56,7 +58,9 @@ const transport = ref<{ kind: TransportKind; state: TransportState; rtt: number 
 // The editor area (design 4g): files open above the terminal, the Files pane beside it where there is room.
 const { tabs, openFile, previewFile, linkOpened, linkOffered, openDiff, openCommitDiff } = useEditorTabs()
 const filesPanel = ref(true)
-const terminal = ref<EditorTerminal & { requestFile: (p: string, s?: boolean, x?: FileGetExtra) => Promise<any>; sendInput: (t: string) => boolean; submit: (t: string) => boolean; answer: (r: QuestionReply, o?: { sent?: () => void }) => Promise<boolean>; chat: (p: ChatPost) => boolean; chatSend: (s: ChatSend) => boolean; lane: () => LaneWire | null } | null>(null)
+/** How the session runs, as its connection says (the welcome, its way messages). */
+const joinWay = computed(() => unref((terminal.value?.connection as unknown as SessionConnection | undefined)?.way) ?? 'terminal')
+const terminal = ref<EditorTerminal & { connection?: SessionConnection; showQuestion?: () => void; requestFile: (p: string, s?: boolean, x?: FileGetExtra) => Promise<any>; sendInput: (t: string) => boolean; submit: (t: string) => boolean; answer: (r: QuestionReply, o?: { sent?: () => void }) => Promise<boolean>; chat: (p: ChatPost) => boolean; chatSend: (s: ChatSend) => boolean; lane: () => LaneWire | null } | null>(null)
 const attention = ref<Attention>({ state: '' })
 /**
  * Whether the session's agent reports its turns: the join's (read again at each reconnect), held true from the first working or done
@@ -554,6 +558,8 @@ function requestFile(path: string, stat?: boolean, extra?: FileGetExtra) {
       <span class="truncate"><template v-if="run">{{ run.name }} · </template>{{ current.name }}</span>
       <UBadge :label="info.role === 'control' ? 'control' : 'view only'" :icon="info.role === 'control' ? 'i-lucide-keyboard' : 'i-lucide-eye'" :color="info.role === 'control' ? 'primary' : 'neutral'" variant="subtle" size="sm" />
       <StatusMark v-if="guestStatus" :status="guestStatus" word class="text-xs" data-join-status />
+      <!-- The way, a label for a link's viewer (docs/plans/chat-or-terminal.md, design 11): no link moves a session. -->
+      <WaySwitch v-if="joinWay === 'protocol'" :facts="{ hasProtocol: true, way: joinWay, noted: '', why: '', canMove: false, firstReply: true, qualified: true, inTurn: false, moving: false }" class="flex-none" />
       <TransportBadge :kind="transport.kind" :state="transport.state" :rtt="transport.rtt" />
       <UBadge :label="`${viewers} here`" icon="i-lucide-users" color="neutral" variant="subtle" size="sm" />
       <UBadge v-if="current.kind === 'hosted'" :label="`hosted on ${current.hostName || 'dev machine'}`" icon="i-lucide-laptop" color="neutral" variant="subtle" size="sm" />
@@ -562,8 +568,8 @@ function requestFile(path: string, stat?: boolean, extra?: FileGetExtra) {
       <ViewerAvatars :viewers="viewerList" class="hidden lg:flex" />
       <UButton icon="i-lucide-folder-open" color="neutral" variant="outline" size="sm" aria-label="Files" class="hidden md:inline-flex" :class="filesPanel && 'ring-2 ring-primary/40'" data-files-button @click="filesPanel = !filesPanel"><span>Files</span></UButton>
       <!-- The chat (design 2c, 2d): the count while the thread is closed; the panel beside the terminal where there is room, a sheet below. -->
-      <IconButton v-if="chat.thread.value.capable" icon="i-lucide-message-circle" color="neutral" variant="outline" size="sm" label="Chat" :class="chatShown && 'ring-2 ring-primary/40'" data-chat-button @click="showChat">
-        <span class="hidden sm:inline">Chat</span>
+      <IconButton v-if="chat.thread.value.capable" icon="i-lucide-users" color="neutral" variant="outline" size="sm" label="People" :class="chatShown && 'ring-2 ring-primary/40'" data-chat-button @click="showChat">
+        <span class="hidden sm:inline">People</span>
         <ChatUnreadPill :count="chatUnread" />
       </IconButton>
       <IconButton v-if="run" icon="i-lucide-messages-square" color="neutral" variant="outline" size="sm" label="Run chat" :class="runChatOpen && 'ring-2 ring-primary/40'" data-run-chat-button :data-run-chat-offline="runChat.offline.value ? '' : undefined" @click="runChatOpen = true">
@@ -607,7 +613,7 @@ function requestFile(path: string, stat?: boolean, extra?: FileGetExtra) {
           @decisions-changed="onDecisionsChanged"
         />
         <template #bar>
-          <QuickReplyBar :attention="attention" :agent-name="agentLabel" :role="info.role" @reply="reply" @option="option" @open-plan="openFile({ path: $event })" @preview-plan="previewFile({ path: $event })" />
+          <QuickReplyBar v-if="!(joinWay === 'protocol' && answersInChat(attention))" :attention="attention" :agent-name="agentLabel" :role="info.role" @chat="terminal?.showQuestion?.()" @reply="reply" @option="option" @open-plan="openFile({ path: $event })" @preview-plan="previewFile({ path: $event })" />
         </template>
       </EditorColumn>
       <aside v-if="filesPanel" v-show="!sessionDecides || tab === 'terminal'" class="hidden md:flex w-[332px] flex-none flex-col overflow-hidden rounded-lg border border-default bg-default" data-files-aside>
@@ -622,7 +628,7 @@ function requestFile(path: string, stat?: boolean, extra?: FileGetExtra) {
       </aside>
     </main>
 
-    <ChatSheet v-model:open="chatSheet" :thread="chat.thread.value" :role="info.role" :ended="ended" :offline="chatOffline" :viewers="viewerList" :note="chatNote" @send="chatSend" @send-to-agent="chatSendToAgent" @retry="chatRetry" @answer="chatAnswer" />
+    <ChatSheet v-model:open="chatSheet" title="People" :thread="chat.thread.value" :role="info.role" :ended="ended" :offline="chatOffline" :viewers="viewerList" :note="chatNote" @send="chatSend" @send-to-agent="chatSendToAgent" @retry="chatRetry" @answer="chatAnswer" />
     <ChatSheet
       v-if="run"
       v-model:open="runChatOpen"

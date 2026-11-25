@@ -18,6 +18,9 @@ describe('shareReach', () => {
     expect(r.text).toContain('switchyard.example.net: connection refused')
     expect(r.text).toContain('works where this machine is reachable')
     expect(r.level).toBe('local')
+    // A chat on a switchyard older than the server: the server's sentence, once (docs/plans/chat-or-terminal.md, design 13).
+    const chat = shareReach({ url: 'http://127.0.0.1:8080/join/abc', rendezvous: { server: 'https://switchyard.example.net', error: 'Chats are not published: the switchyard is older than this server.' } }, offline)
+    expect(chat.text).toContain('switchyard.example.net: Chats are not published: the switchyard is older than this server. This link works')
   })
   it('a local link keeps the reach report, and a crew link says it is made here', () => {
     const r = shareReach({ url: 'http://192.168.1.5:8080/join/abc' }, offline)
