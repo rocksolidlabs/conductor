@@ -478,3 +478,61 @@ func TestTranscriptGetReads(t *testing.T) {
 		t.Fatalf("its refusal %v", w.msg)
 	}
 }
+
+// I6 for the transcript: an entry's frame follows its event's state, the
+// attention's frame and the activity's queued before it, and is sent only
+// past the test's seam (afterApply): held there, the viewer has not had it.
+func TestEntriesFollowTheirState(t *testing.T) {
+	s, _, f := protocolSession(t, Options{})
+	sink := newChanSink(false)
+	sub, err := s.AttachWith(AttachOptions{Role: RoleView}, sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Detach(sub) })
+	n := len(wireOf(t, sub, sink))
+	held := make(chan struct{})
+	release := make(chan struct{})
+	hold := func(event string) {
+		if event == "turn_started" {
+			close(held)
+			<-release
+		}
+	}
+	s.afterApply.Store(&hold)
+	t.Cleanup(func() { s.afterApply.Store(nil) })
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		f.TurnStarted("")
+	}()
+	<-held
+	for _, w := range wireOf(t, sub, sink)[n:] {
+		if w.typ == proto.TypeTranscript {
+			t.Fatalf("an entry reached the viewer before its state: %+v", w.entries)
+		}
+	}
+	close(release)
+	<-done
+	f.ToolStarted(ToolStep{Ref: "c1", Name: "Bash", Input: []byte(`{"command":"ls"}`)})
+	f.ToolEnded("c1", ToolResult{Status: ToolOK, Output: []byte("ok")})
+	frames := wireOf(t, sub, sink)[n:]
+	at := func(ok func(wireFrame) bool) int {
+		for i, w := range frames {
+			if ok(w) {
+				return i
+			}
+		}
+		t.Fatalf("no such frame in %+v", frames)
+		return -1
+	}
+	working := at(func(w wireFrame) bool { return w.t == proto.CtlAttention && w.msg["state"] == string(AttentionWorking) })
+	start := at(func(w wireFrame) bool { return w.t == proto.TranscriptEntryT && w.entries[0].Kind == EntryTurn })
+	used := at(func(w wireFrame) bool { return w.t == proto.CtlActivity && w.msg["type"] == ActivityToolUse })
+	ended := at(func(w wireFrame) bool {
+		return w.t == proto.TranscriptEntryT && w.entries[0].Kind == EntryTool && w.entries[0].Status == ToolOK
+	})
+	if working > start || used > ended {
+		t.Fatalf("working %d before the turn's entry %d; the step's activity %d before its end %d", working, start, used, ended)
+	}
+}
