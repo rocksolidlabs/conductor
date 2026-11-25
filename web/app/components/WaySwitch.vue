@@ -26,7 +26,7 @@ function press(way: SessionWay) {
 
 <template>
   <div v-if="state.shown" class="flex min-w-0 items-center gap-2" data-way-switch :data-way="state.selected" :data-noted="state.noted || undefined">
-    <UFieldGroup v-if="facts.canMove && !facts.crewChat" size="xs">
+    <UFieldGroup v-if="facts.canMove && !facts.crewChat && !facts.crewMember" size="xs">
       <UTooltip v-for="side in sides" :key="side.way" :text="side.way === 'protocol' && atRest ? ENDS_TERMINAL_WORK : undefined" :disabled="!(side.way === 'protocol' && atRest)">
         <UButton
           :label="side.label"

@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
-import { ENDS_TERMINAL_WORK, FIRST_REPLY, MOVES_TO_CHAT, MOVES_TO_TERMINAL, MOVING, NOT_QUALIFIED, RUNS_AS_CHAT_FOR_RUN, crewChatOf, pressFor, switchState, type SwitchFacts } from './switchState'
+import { CREW_WAY_IS_RUNS, ENDS_TERMINAL_WORK, FIRST_REPLY, MOVES_TO_CHAT, MOVES_TO_TERMINAL, MOVING, NOT_QUALIFIED, RUNS_AS_CHAT_FOR_RUN, crewChatOf, crewMemberOf, pressFor, switchState, type SwitchFacts } from './switchState'
 
 const at = (f: Partial<SwitchFacts>): SwitchFacts => ({
   hasProtocol: true, way: 'terminal', noted: '', why: '', canMove: true, firstReply: true, qualified: true, inTurn: false, moving: false, ...f,
@@ -61,7 +61,20 @@ describe("crewChatOf: a Chat run member's switch is its run's label", () => {
     expect(page).toContain('crewChat: crewChatOf(current.value, way.value)')
     expect(page).toContain('!!switchFacts.value.crewChat ||')
   })
-  it("a crew member in its terminal, and a person's session, keep the switch", () => {
+  it("a crew member in its terminal: no side to press and the crew's sentence, whatever its turns", () => {
+    expect(crewMemberOf(member)).toBe(true)
+    for (const firstReply of [false, true]) {
+      const s = switchState(at({ way: 'terminal', firstReply, crewMember: crewMemberOf(member), crewChat: crewChatOf(member, 'terminal') }))
+      expect(s).toMatchObject({ shown: true, selected: 'terminal', pressable: false, line: CREW_WAY_IS_RUNS, noted: '' })
+      expect(pressFor(s, 'protocol')).toBeNull()
+    }
+    expect(CREW_WAY_IS_RUNS).toBe("A crew member's way is its run's.")
+    const page = readFileSync(new URL('../pages/sessions/[id].vue', import.meta.url), 'utf8')
+    expect(page).toContain('crewMember: crewMemberOf(current.value)')
+    expect(page).toContain('!!switchFacts.value.crewMember ||')
+  })
+  it("a person's session keeps the switch", () => {
+    expect(crewMemberOf({})).toBe(false)
     expect(crewChatOf(member, 'terminal')).toBe(false)
     expect(crewChatOf({}, 'protocol')).toBe(false)
     expect(crewChatOf(undefined, 'protocol')).toBe(false)

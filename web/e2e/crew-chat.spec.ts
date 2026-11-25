@@ -46,7 +46,7 @@ test.afterAll(async () => {
 })
 
 /** A managed crew run as a chat: one work task per member. */
-async function chatCrew(name: string, members: Array<{ name: string; agentId: string; task: string }>): Promise<string> {
+async function chatCrew(name: string, members: Array<{ name: string; agentId: string; task: string }>, way: 'chat' | undefined = 'chat'): Promise<string> {
   const body = {
     name,
     goal: 'ship it',
@@ -54,12 +54,12 @@ async function chatCrew(name: string, members: Array<{ name: string; agentId: st
     where: 'server',
     isolation: 'worktree',
     openAfterLaunch: false,
-    way: 'chat',
+    way,
     members: members.map((m) => ({ name: m.name, agentId: m.agentId, prompt: '', start: { when: 'task' } })),
     tasks: members.map((m) => ({ id: m.task, member: m.name, kind: 'work', instructions: `Do ${m.task}.` })),
   }
   const made = await own.api.ok<{ crew: { id: string; way?: string } }>('POST', '/api/crews', body)
-  expect(made.crew.way).toBe('chat')
+  expect(made.crew.way).toBe(way)
   return made.crew.id
 }
 
@@ -160,6 +160,32 @@ test('a member whose stub asks the trust question first is held, answered on its
       .toBe('succeeded')
     expect(logged(r, 'solo (task build, attempt 1): runs as a chat.')).toBe(true)
     expect(logged(r, "typed solo's prompt")).toBe(false)
+  } finally {
+    await page.context().close()
+  }
+})
+
+test("a member in its terminal: its page's switch has no side to press, and says a crew member's way is its run's", async ({ browser }) => {
+  const api = own.api
+  const crewId = await chatCrew('e2e terminal crew', [{ name: 'solo', agentId: 'claude-chat', task: 'build' }], undefined)
+  const run = await api.launchCrew(crewId)
+  runs.push(run.id)
+  let id = ''
+  budget(30_000)
+  await expect
+    .poll(async () => (id = member(await api.run(run.id), 'solo').sessionId ?? ''), { timeout: 30_000, message: "the member's session" })
+    .not.toBe('')
+  expect((await api.session(id)).way).toBeUndefined()
+  budget(60_000)
+  const page = await dayPage(browser, { server: own.started })
+  try {
+    budget(30_000)
+    await page.goto(`/sessions/${encodeURIComponent(id)}`)
+    budget(45_000)
+    const header = page.locator('[data-way-switch]')
+    await expect(header.locator('[data-way-label]')).toHaveText('Terminal')
+    await expect(header.locator('[data-way-side]')).toHaveCount(0)
+    await expect(page.locator('[data-way-line]')).toHaveText("A crew member's way is its run's.")
   } finally {
     await page.context().close()
   }

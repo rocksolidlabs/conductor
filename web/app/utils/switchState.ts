@@ -10,6 +10,8 @@ export const MOVES_TO_TERMINAL = 'Moves to the terminal when this turn ends.'
 export const MOVING = 'The session is moving; try again in a moment.'
 /** A crew member of a Chat run: its way is its run's, and its switch is a label (design 14). */
 export const RUNS_AS_CHAT_FOR_RUN = 'Runs as a chat for its run.'
+/** A crew member in its terminal: its way is its run's (the route's refusal of a person's move, design 13 as row 9 words it). */
+export const CREW_WAY_IS_RUNS = "A crew member's way is its run's."
 /** A move to Chat at rest ends what the agent left running in its terminal (the move's notice says it was ended). */
 export const ENDS_TERMINAL_WORK = 'Moving to Chat ends what the agent left running in its terminal.'
 
@@ -35,6 +37,8 @@ export interface SwitchFacts {
   refused?: string
   /** The session is a crew member of a Chat run (its launch's way): its switch is a label, the run's. */
   crewChat?: boolean
+  /** The session is a crew member, in whichever way: no person moves it, whatever its turns. */
+  crewMember?: boolean
 }
 
 export interface SwitchState {
@@ -50,9 +54,16 @@ export interface SwitchState {
 }
 
 /**
+ * Whether a session is a crew member (SwitchFacts.crewMember), from its listing's crew reference: a person's move of one is refused, so
+ * its switch has no side to press, in its terminal as in its chat, whatever its turns.
+ */
+export function crewMemberOf(session: { crew?: unknown } | null | undefined): boolean {
+  return !!session?.crew
+}
+
+/**
  * Whether a session is a crew member running as a chat (SwitchFacts.crewChat), from its listing's crew reference and its way: a member
- * reaches its chat by its run's move alone (a person's move of one is refused), so a member in its chat is a Chat run's, and its switch
- * is the run's label. A member in its terminal, and a person's session, keep the switch.
+ * reaches its chat by its run's move alone, so a member in its chat is a Chat run's, and its switch is the run's label.
  */
 export function crewChatOf(session: { crew?: unknown } | null | undefined, way: SessionWay): boolean {
   return !!session?.crew && way === 'protocol'
@@ -68,6 +79,7 @@ export function switchState(f: SwitchFacts): SwitchState {
   const off: SwitchState = { shown: false, selected: f.way, pressable: false, line: '', noted: '' }
   if (!f.hasProtocol) return off
   if (f.crewChat) return { shown: true, selected: f.way, pressable: false, line: RUNS_AS_CHAT_FOR_RUN, noted: '' }
+  if (f.crewMember) return { shown: true, selected: f.way, pressable: false, line: CREW_WAY_IS_RUNS, noted: '' }
   const s: SwitchState = { shown: true, selected: f.way, pressable: f.canMove && !f.moving, line: '', noted: f.noted }
   if (!f.canMove) return { ...s, noted: '' }
   const other: SessionWay = f.way === 'terminal' ? 'protocol' : 'terminal'
