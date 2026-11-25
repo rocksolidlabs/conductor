@@ -559,6 +559,9 @@ func TestPermissionFloorSpellings(t *testing.T) {
 		{"the home folder by $HOME in quotes", "Bash", bash(`cat \"$HOME\"/cdata/s.json`), true},
 		{"in capitals", "Bash", bash("cat " + strings.ToUpper(data) + "/S.JSON"), true},
 		{"a Glob's pattern", "Glob", `{"pattern":"` + data + `/**/*.json"}`, true},
+		{"a Glob's pattern relative to the session's folder", "Glob", `{"pattern":"cdata/*.json"}`, true},
+		{"a Glob's pattern with nothing literal", "Glob", `{"pattern":"**/*.json"}`, false},
+		{"a line continuation inside it", "Bash", bash(`cat ` + cwd + `/cda\\\nta/s.json`), true},
 		{"a glob in the command", "Bash", bash("cat " + cwd + "/cdat?/s.json"), false},
 		{"a variable", "Bash", bash("D=" + cwd + "; cat $D/cdata/s.json"), false},
 		{"a word that only ends in the name", "Bash", bash("cat oldcdata/s.json"), false},
@@ -628,4 +631,73 @@ func TestPermissionInStreamInputBound(t *testing.T) {
 	if e := lastEntry(t, s); e.State != PermissionOpen {
 		t.Fatalf("a request at the bound %+v", e)
 	}
+}
+
+// A name entry (dir/*name*: the copies beside a config or catalog file)
+// is named by a word holding the name in a file name whose folder is dir:
+// spelt in full, or, when the session's folder is dir, with no folder at
+// all. A file of that name in another folder is asked; so is a word that
+// only ends in a denied path relative to the session's folder.
+func TestPermissionFloorNameEntries(t *testing.T) {
+	run := func(t *testing.T, s *Local, f *sessiontest.FakeProtocol, cases []floorCase) {
+		t.Helper()
+		for i, c := range cases {
+			call := fmt.Sprintf("c-%s-%d", t.Name(), i)
+			announce(f, call, "Bash", bash(c.cmd))
+			a := ask(s, call, "Bash", bash(c.cmd))
+			if c.floored {
+				if v := a.returned(t); v.Allow || v.Message != FloorWords {
+					t.Fatalf("%q: %+v, want the floor's deny", c.cmd, v)
+				}
+				continue
+			}
+			openRequest(t, s, call)
+			f.ToolEnded(call, ToolResult{Status: ToolOK})
+			if v := a.returned(t); v.Allow || !v.Cancel {
+				t.Fatalf("%q: %+v, want it asked", c.cmd, v)
+			}
+		}
+	}
+	t.Run("the session's folder is the entry's", func(t *testing.T) {
+		var deny []string
+		s, f, _ := permissionSession(t, Options{FileDenyFunc: func() []string { return deny }})
+		cwd := s.Info().Cwd
+		deny = DenyList([]string{filepath.Join(cwd, "conductor.d")}, []string{filepath.Join(cwd, "conductor.json")})
+		run(t, s, f, []floorCase{
+			{"cat conductor.json", true},
+			{"cat ./conductor.json.bak", true},
+			{`cat \"conductor.json\"`, true}, // in the JSON input: cat "conductor.json"
+			{"cat " + cwd + "/conductor.json~", true},
+			{"grep -rn conductor.json docs/", true},
+			{"cat web/conductor.json", false},
+			{"cat notes/conductor.json.md", false},
+			{"git diff -- examples/conductor.json", false},
+			{"ls conductor.d", true},
+			{"ls conductor.d/x", true},
+			{"ls conductor.dx", false},
+			{"ls old-conductor.d", false},
+		})
+	})
+	t.Run("the entry's folder is another", func(t *testing.T) {
+		other := realDir(t, t.TempDir())
+		var deny []string
+		s, f, _ := permissionSession(t, Options{FileDenyFunc: func() []string { return deny }})
+		deny = DenyList(nil, []string{filepath.Join(other, "conductor.json")})
+		run(t, s, f, []floorCase{
+			{"cat conductor.json", false},
+			{"cat " + other + "/conductor.json.bak", true},
+			{"cat " + other + "/web/conductor.json", false},
+		})
+	})
+	// The hook knows no folder: the folder-less word is asked there.
+	dir := t.TempDir()
+	deny := DenyList(nil, []string{filepath.Join(dir, "conductor.json")})
+	if CommandNamesDenied("cat conductor.json", deny) || !CommandNamesDenied("cat "+dir+"/conductor.json.bak", deny) {
+		t.Fatal("the hook's judgement of a name entry")
+	}
+}
+
+type floorCase struct {
+	cmd     string
+	floored bool
 }
