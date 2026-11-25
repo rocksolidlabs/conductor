@@ -772,11 +772,15 @@ add its rule here.
   for each round, names the activity paused, stopped, destroyed and made
   again; a page's console cannot: read the device's log for the
   activity's life before the page's. A check that holds an activity over
-  many steps starts its steps over when the system has made the activity
-  again under them (`onOneActivity`), a bounded number of times, saying
-  so; a step that fails on the activity it began on fails; and a test
-  makes the activity again itself, mid-check, so that the path runs every
-  time (`theBootCheckStartsOverOnAnActivityTheSystemMadeAgain`).
+  many steps starts its steps over, on a start of the app of its own,
+  when the system has made the activity again under them
+  (`onAFreshStart`), a bounded number of times, saying so; a step that
+  fails on the activity it began on fails; and a test makes the activity
+  again itself, where the device did, so that the path runs every time
+  (`theBootCheckStartsOverOnAnActivityTheSystemMadeAgain`). What the
+  steps counted on the activity they lost stays with it: a request the
+  lost page had on its way (a service worker's) is counted by whichever
+  gate is in place when it lands.
 - Prove a flake fix the way it failed: `go test -race -count=30` (on the
   Mac too when it flaked there), `npx playwright test <spec> --repeat-each
   10`, and once more under load.

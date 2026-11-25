@@ -68,7 +68,7 @@ class ShellBootsUnderItsPolicyTest {
     companion object {
         const val TAG = "ConductorBootCheck"
         const val PREFIX = "90000000"
-        /** How often a check starts over on an activity the system made again under it (onOneActivity). */
+        /** How often a check starts over when the system has made its activity again under it (onAFreshStart). */
         const val RESTARTS = 3
         /** A provider's id outside the path's alphabet, and the segment the shell's screens carry it in (decisionPath, web/app/utils/shell.ts). */
         const val DECISION_ID = "org/repo#12 a:b~é"
@@ -252,24 +252,29 @@ class ShellBootsUnderItsPolicyTest {
     }
 
     /**
-     * The steps of a check, on the activity they began on. A device that has just started is still being set up, and a change to what
-     * an app is built from (an overlay enabled, its package's information changed) makes Android start every activity of the app
+     * The steps of a check, on a start of the app of their own. A device that has just started is still being set up, and a change to
+     * what an app is built from (an overlay applied, its package's information changed) makes Android start every activity of the app
      * again, whatever its manifest says the activity handles itself: the page the steps were reading is gone with its web view, and
-     * nothing they check has failed. The steps then start over on the activity the system made, RESTARTS times at most, saying so. A
-     * step that fails with the activity it began on still there fails the check.
+     * nothing they check has failed. The steps then start over on a new start (the activity the system made is closed: what the
+     * steps did on it before they noticed would count against them), RESTARTS times at most, saying so. A step that fails with the
+     * activity it began on still there fails the check.
      */
-    private fun onOneActivity(s: ActivityScenario<MainActivity>, steps: () -> Unit) {
+    private fun onAFreshStart(steps: (ActivityScenario<MainActivity>) -> Unit) {
         var restarts = 0
         while (true) {
-            val began = read(s) { it }
-            try {
-                steps()
-                return
-            } catch (e: AssertionError) {
-                if (read(s) { it } === began || restarts == RESTARTS) throw e
-                restarts++
-                step("the activity was made again under the check, which starts over ($restarts of $RESTARTS); the step cut short said: ${e.message.orEmpty().take(300)}")
+            val again = ActivityScenario.launch(MainActivity::class.java).use { s ->
+                val began = read(s) { it }
+                try {
+                    steps(s)
+                    false
+                } catch (e: AssertionError) {
+                    if (read(s) { it } === began || restarts == RESTARTS) throw e
+                    restarts++
+                    step("the activity was made again under the check, which starts over on a start of its own ($restarts of $RESTARTS); the step cut short said: ${e.message.orEmpty().take(300)}")
+                    true
+                }
             }
+            if (!again) return
         }
     }
 
@@ -289,24 +294,26 @@ class ShellBootsUnderItsPolicyTest {
     }
 
     @Test
-    fun theShellStartsOnOpenAServerUnderItsPolicyWithItsNativeLayer() {
-        ActivityScenario.launch(MainActivity::class.java).use { s -> onOneActivity(s) { bootSteps(s) } }
-    }
+    fun theShellStartsOnOpenAServerUnderItsPolicyWithItsNativeLayer() = onAFreshStart { s -> bootSteps(s) }
 
     /**
-     * The same check when the system starts the activity again under it, as a device still being set up does (onOneActivity): done
-     * here through the scenario, once, as the probes begin. The steps it cuts short start over on the activity made after, and pass there.
+     * The same check when the system makes the activity again under it, as a device still being set up does (onAFreshStart): done here
+     * through the scenario, once, where CI's device did it, while the probes are at their last step (a wait of ten seconds). The steps
+     * it cuts short start over on a start of their own, and pass there.
      */
     @Test
     fun theBootCheckStartsOverOnAnActivityTheSystemMadeAgain() {
-        ActivityScenario.launch(MainActivity::class.java).use { s ->
-            var runs = 0
-            onOneActivity(s) {
-                runs++
-                bootSteps(s) { if (runs == 1) s.recreate() }
+        var runs = 0
+        onAFreshStart { s ->
+            runs++
+            bootSteps(s) {
+                if (runs == 1) {
+                    until(120, "the probes at their last step") { text(eval(s, "String(window.__bootStep)")) == "runtime webview" }
+                    s.recreate()
+                }
             }
-            assertEquals("the steps ran on the activity the check began on, and again on the one made after it", 2, runs)
         }
+        assertEquals("the steps ran on the start the check began on, and again on one of their own", 2, runs)
     }
 
     /** The boot check's steps on the scenario's activity. `probing` runs once the probes do (a test's seam: nothing by default). */
