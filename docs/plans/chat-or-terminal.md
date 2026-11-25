@@ -1853,6 +1853,50 @@ Playwright: none yet (row 5). **By hand:** none. **Boundary:** the
 relay's allow list is a part with its own adversarial review (links).
 **11 h.**
 
+**As built, row 3** (#1106; `internal/proto/transcript.go`,
+`internal/session/transcriptwire.go`, `internal/api/ws_viewer.go`,
+`internal/hostagent/peer.go` and `uplink.go`, `internal/signal/hosted.go`,
+`web/app/utils/transport/base.ts`, `docs/protocol.md`, Chat sessions):
+
+- The TRANSCRIPT frame is 0x0B, as planned, listed last. A part's piece
+  carries its bytes in `data` as base64, at most 95 KiB of them (96 KiB
+  in base64 would pass the frame's 128 KiB), with `kept`, the bytes the
+  owner keeps of the part, which the plan's list did not have: a reader
+  reads on until it. A page holds what fits the frame
+  (`proto.TranscriptPageRoom`), fewer than asked when they would not.
+- An entry's words are sent as valid UTF-8 with their control
+  characters but tab and line break dropped, so that each encodes to at
+  most two bytes; an entry is cut to fit 12 KiB only past the session's
+  bounds, which `TestTheLargestEntryIsTheFixture` shows never happens at
+  them. The largest is a prompt (`testdata/transcript-max.json`, which
+  that test writes with `CONDUCTOR_WRITE_FIXTURE=1`).
+- The live frames go out in `sendApplied` after the attention and the
+  activity, read from the ring under the session's lock: an entry
+  revised twice is sent as it stands, never older than a viewer's
+  replay. The replay's pages carry no `reqId`, and each says `more` when
+  it left a change out; a mark the transcript never gave counts as none.
+- "In flight" is a reply not yet written to the connection
+  (`Subscription.sendThen`): four of them, the fifth `too_many_requests`.
+- `interrupt` is taken off the read loop, one at a time per connection
+  (`Local.InterruptAsk`), its link checked as it is acted on; on a host
+  it waits for the host to vouch for its server first, as a key does.
+- `transcript_get` on a terminal session answers `not_protocol` in
+  words of its own, "This session runs in its terminal: it has no chat."
+  (the plan gives words for `interrupt` alone). Both new messages are
+  read strictly.
+- The switchyard's word: a chat is not published to a switchyard whose
+  `registered` lacks it (`hostagent.ErrOlderSwitchyard`, the plan's
+  words, which go into the session's activity line and the publication's
+  why); and on such a connection no TRANSCRIPT frame is relayed and a
+  chat's viewer is refused, for a session that becomes a chat after it
+  was published (row 5's move). Settings' own line for it is a page's
+  change, left to the rows that change pages.
+- The relay's allow list (`signal.viewAllows`) passes CONTROL whose `t`
+  is one of the five, and refuses every other frame, a control that does
+  not parse among them; the deny list's `laneRequest` went with it.
+- The welcome's `noted` and `permissionAnswer` are rows 5's and 6's; the
+  sessions listing's `way` is row 4's.
+
 ### Row 4: the Claude Code driver
 
 **Scope.** `internal/agentproto` with `Names`, `Check`, the Claude Code
