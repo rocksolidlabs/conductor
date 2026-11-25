@@ -68,6 +68,8 @@ class ShellBootsUnderItsPolicyTest {
     companion object {
         const val TAG = "ConductorBootCheck"
         const val PREFIX = "90000000"
+        /** How often a check starts over on an activity the system made again under it (onOneActivity). */
+        const val RESTARTS = 3
         /** A provider's id outside the path's alphabet, and the segment the shell's screens carry it in (decisionPath, web/app/utils/shell.ts). */
         const val DECISION_ID = "org/repo#12 a:b~é"
         const val DECISION_SEGMENT = "b3JnL3JlcG8jMTIgYTpifsOp"
@@ -187,22 +189,6 @@ class ShellBootsUnderItsPolicyTest {
             })()
         """.trimIndent()
 
-        /** TEMPORARY (#1110): where the page is and how its document came to be loaded. */
-        val DIAGNOSE = """
-            (() => {
-              const o = {};
-              try {
-                for (const k of ['diag:navigate', 'diag:preload', 'diag:popstate', 'diag:armed', 'nuxt:reload']) o[k] = sessionStorage.getItem(k);
-                o['nuxt:reload:state'] = (sessionStorage.getItem('nuxt:reload:state') || '').slice(0, 200);
-              } catch (e) { o.storage = 'unreadable ' + e }
-              try { o.kind = (performance.getEntriesByType('navigation')[0] || {}).type; o.began = new Date(performance.timeOrigin).toISOString() } catch (e) { o.kind = 'unreadable ' + e }
-              try { o.referrer = document.referrer; o.entries = history.length; o.state = JSON.stringify(history.state) } catch (e) { o.state = 'unreadable ' + e }
-              o.href = location.href; o.ready = document.readyState; o.step = window.__bootStep; o.probes = window.__bootProbes;
-              o.console = window.__bootConsole; o.violations = window.__bootViolations;
-              return JSON.stringify(o);
-            })()
-        """.trimIndent()
-
         /** The main-frame loads the test makes with no tap: each cancelled by the load gate, the page staying where it was. */
         val AWAY = listOf("conductor-probe://boot-probe-location", "https://example.com/?boot-probe-away", "intent://boot-probe#Intent;scheme=probe;end")
     }
@@ -210,6 +196,27 @@ class ShellBootsUnderItsPolicyTest {
     private fun step(what: String) {
         Log.i(TAG, what)
     }
+
+    /** An activity made again from a saved state (by the system, or by a test's own recreate) is said as it happens: a failure after it is read with it. */
+    private val madeAgain = object : android.app.Application.ActivityLifecycleCallbacks {
+        override fun onActivityCreated(a: android.app.Activity, saved: android.os.Bundle?) {
+            if (saved != null) step("made again from a saved state: ${a.javaClass.simpleName}")
+        }
+        override fun onActivityStarted(a: android.app.Activity) {}
+        override fun onActivityResumed(a: android.app.Activity) {}
+        override fun onActivityPaused(a: android.app.Activity) {}
+        override fun onActivityStopped(a: android.app.Activity) {}
+        override fun onActivitySaveInstanceState(a: android.app.Activity, state: android.os.Bundle) {}
+        override fun onActivityDestroyed(a: android.app.Activity) {}
+    }
+
+    private fun app() = InstrumentationRegistry.getInstrumentation().targetContext.applicationContext as android.app.Application
+
+    @org.junit.Before
+    fun sayEachActivityMadeAgain() = app().registerActivityLifecycleCallbacks(madeAgain)
+
+    @org.junit.After
+    fun sayNoMore() = app().unregisterActivityLifecycleCallbacks(madeAgain)
 
     private fun webView(s: ActivityScenario<MainActivity>): WebView {
         val out = AtomicReference<WebView>()
@@ -234,13 +241,6 @@ class ShellBootsUnderItsPolicyTest {
 
     private fun text(json: String): String = (JSONTokener(json).nextValue() as? String) ?: ""
 
-    /** TEMPORARY (#1110): which activity and which web view answer. */
-    private fun who(s: ActivityScenario<MainActivity>): String = try {
-        read(s) { "activity ${System.identityHashCode(it)}, web view ${System.identityHashCode(it.getBridge().webView)}, focus ${it.hasWindowFocus()}, finishing ${it.isFinishing}" }
-    } catch (e: Throwable) {
-        "unreadable: $e"
-    }
-
     /** Polls until the condition holds or the bound passes; each poll's own wait is bounded too. A failure says what `diagnose` reads. */
     private fun until(seconds: Long, what: String, diagnose: () -> String = { "" }, condition: () -> Boolean) {
         val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(seconds)
@@ -251,119 +251,133 @@ class ShellBootsUnderItsPolicyTest {
         throw AssertionError("not within $seconds s: $what ${diagnose()}")
     }
 
+    /**
+     * The steps of a check, on the activity they began on. A device that has just started is still being set up, and a change to what
+     * an app is built from (an overlay enabled, its package's information changed) makes Android start every activity of the app
+     * again, whatever its manifest says the activity handles itself: the page the steps were reading is gone with its web view, and
+     * nothing they check has failed. The steps then start over on the activity the system made, RESTARTS times at most, saying so. A
+     * step that fails with the activity it began on still there fails the check.
+     */
+    private fun onOneActivity(s: ActivityScenario<MainActivity>, steps: () -> Unit) {
+        var restarts = 0
+        while (true) {
+            val began = read(s) { it }
+            try {
+                steps()
+                return
+            } catch (e: AssertionError) {
+                if (read(s) { it } === began || restarts == RESTARTS) throw e
+                restarts++
+                step("the activity was made again under the check, which starts over ($restarts of $RESTARTS); the step cut short said: ${e.message.orEmpty().take(300)}")
+            }
+        }
+    }
+
     /** Where the page is and what it said: the web view's address, the probes' last step, its console, the gates' counts. Logged too. */
     private fun diagnosis(s: ActivityScenario<MainActivity>, gates: ShellGates): String {
         val url = read(s) { it.getBridge().webView.url }
-        // TEMPORARY (#1110): how this document came to be loaded, read after the fact so that the reading changes nothing.
-        val history = try {
-            read(s) {
-                val h = it.getBridge().webView.copyBackForwardList()
-                "${h.currentIndex + 1}/${h.size}: " + (0 until h.size).joinToString(" | ") { i -> "${h.getItemAtIndex(i).url} (first ${h.getItemAtIndex(i).originalUrl})" }
-            }
-        } catch (e: Throwable) {
-            "unreadable: $e"
-        }
         val page = try {
-            eval(s, DIAGNOSE)
+            eval(s, "JSON.stringify({href: location.href, ready: document.readyState, step: window.__bootStep, probes: window.__bootProbes, " +
+                "console: window.__bootConsole, violations: window.__bootViolations})")
         } catch (e: AssertionError) {
             "no answer from the page"
         }
-        page.chunked(3000).forEachIndexed { i, part -> step("diagnosis, the page, part ${i + 1}: $part") }
-        val said = "(${who(s)}; the web view at $url; its history $history; the page: $page; dropped ${gates.dropped.get()}, refused ${gates.refused.get()}, " +
+        val said = "(the web view at $url; the page: $page; dropped ${gates.dropped.get()}, refused ${gates.refused.get()}, " +
             "cancelled ${gates.cancelled.get()}, handed ${gates.handedOff.get()})"
-        step("diagnosis: ${said.take(1200)}")
+        step("diagnosis: $said")
         return said
     }
 
     @Test
     fun theShellStartsOnOpenAServerUnderItsPolicyWithItsNativeLayer() {
-        // TEMPORARY (#1110): every step of an activity's life is said as it happens.
-        val app = InstrumentationRegistry.getInstrumentation().targetContext.applicationContext as android.app.Application
-        app.registerActivityLifecycleCallbacks(object : android.app.Application.ActivityLifecycleCallbacks {
-            private fun say(what: String, a: android.app.Activity) = step("life: $what ${a.javaClass.simpleName} ${System.identityHashCode(a)}")
-            override fun onActivityCreated(a: android.app.Activity, b: android.os.Bundle?) = say(if (b == null) "created" else "created again from a saved state", a)
-            override fun onActivityStarted(a: android.app.Activity) = say("started", a)
-            override fun onActivityResumed(a: android.app.Activity) = say("resumed", a)
-            override fun onActivityPaused(a: android.app.Activity) = say("paused", a)
-            override fun onActivityStopped(a: android.app.Activity) = say("stopped", a)
-            override fun onActivitySaveInstanceState(a: android.app.Activity, b: android.os.Bundle) = say("state saved", a)
-            override fun onActivityDestroyed(a: android.app.Activity) = say("destroyed", a)
-        })
+        ActivityScenario.launch(MainActivity::class.java).use { s -> onOneActivity(s) { bootSteps(s) } }
+    }
+
+    /**
+     * The same check when the system starts the activity again under it, as a device still being set up does (onOneActivity): done
+     * here through the scenario, once, as the probes begin. The steps it cuts short start over on the activity made after, and pass there.
+     */
+    @Test
+    fun theBootCheckStartsOverOnAnActivityTheSystemMadeAgain() {
         ActivityScenario.launch(MainActivity::class.java).use { s ->
-            val stopped = read(s) { it.stopped }
-            step("the shell's policy: ${stopped ?: "held"}")
-            assertNull("the shell stopped: $stopped", stopped)
-            until(30, "the gates in place") { read(s) { it.gates != null } }
-            val drawn = { eval(s, "!!document.querySelector('[data-shell-open-server]')") == "true" }
-            until(180, "Open a server drawn") { drawn() }
-            step("Open a server drawn")
-            // The page again, with a listener for policy violations added before its own scripts.
-            s.onActivity { a ->
-                val w = a.getBridge().webView
-                WebViewCompat.addDocumentStartJavaScript(w, VIOLATIONS, setOf(APP))
-                w.reload()
+            var runs = 0
+            onOneActivity(s) {
+                runs++
+                bootSteps(s) { if (runs == 1) s.recreate() }
             }
-            until(30, "the reload begun") { eval(s, "typeof window.__bootViolations") == "\"object\"" }
-            until(180, "Open a server drawn again") { drawn() }
-            val gates = read(s) { it.gates!! }
-            val ownDropped = gates.dropped.get()
-            val ownRefused = gates.refused.get()
-            step("the page's own calls dropped: $ownDropped, its own requests refused: $ownRefused")
-            // The load gate: each main-frame load away from the bundle with no tap, waited on until the gate has cancelled it.
-            for (to in AWAY) {
-                val n = gates.cancelled.get()
-                eval(s, "location.href = ${org.json.JSONObject.quote(to)}; 1")
-                until(30, "the load to $to cancelled") { gates.cancelled.get() > n }
-                step("cancelled: $to")
-            }
-            val ownViolations = eval(s, "window.__bootViolations.length")
-            eval(s, PROBES)
-            // The probes' own waits bound each one (20 s for each of eleven, 10 s for one): the report comes within their sum, and this
-            // bound only bounds a hang. A page that is no longer the one the probes run in (its globals gone) fails at once, saying where it is.
-            until(300, "the probes' report", { diagnosis(s, gates) }) {
-                val now = eval(s, "typeof window.__bootProbes === 'string' ? window.__bootProbes : null")
-                if (now == "null") {
-                    // TEMPORARY (#1110): where the page is at once, and twice more some seconds on.
-                    val first = diagnosis(s, gates)
-                    Thread.sleep(5000)
-                    val second = diagnosis(s, gates)
-                    Thread.sleep(5000)
-                    throw AssertionError("the page the probes ran in is gone: $first; five seconds on: $second; ten seconds on: ${diagnosis(s, gates)}")
-                }
-                text(now).isNotEmpty()
-            }
-            val probes = text(eval(s, "window.__bootProbes"))
-            val framePosted = eval(s, "window.__bootFramePosted") == "true"
-            val probeViolations = text(eval(s, "window.__bootViolations.slice($ownViolations).map((v) => v.split(' ')[0]).sort().join(',')"))
-            val platform = text(eval(s, "window.conductorShell ? window.conductorShell.platform : 'none'"))
-            val page = text(eval(s, "location.href"))
-            step("probes: $probes; the frame had the channel: $framePosted; violations: ${eval(s, "JSON.stringify(window.__bootViolations)")}")
-            // 9 messages posted, the srcdoc frame's when it had the channel, and the call to the runtime's WebView through its page script.
-            val expectedDrops = ownDropped + 10 + (if (framePosted) 1 else 0)
-            until(30, "the gate's drops counted") { gates.dropped.get() >= expectedDrops }
-            val report = "ready platform=$platform probes=$probes own-dropped=$ownDropped own-refused=$ownRefused own-violations=$ownViolations " +
-                "dropped=${gates.dropped.get() - ownDropped} refused=${gates.refused.get() - ownRefused} cancelled=${gates.cancelled.get()} " +
-                "handed=${gates.handedOff.get()} workers=${gates.workers.get()} probe-violations=$probeViolations page-own=${LoadGate.own(page)}"
-            step("the boot check's report: $report")
-            assertEquals(
-                "ready platform=android probes=ok own-dropped=0 own-refused=0 own-violations=0 dropped=${10 + (if (framePosted) 1 else 0)} " +
-                    "refused=5 cancelled=${AWAY.size} handed=0 workers=1 probe-violations=frame-src,object-src page-own=true",
-                report,
-            )
-            // Last, as it leaves the shell's page: a form posted to another origin, which no navigation check sees, never loads there:
-            // the request gate refuses its document (or, where the web view asks about it, the load gate cancels it).
-            val refusedBefore = gates.refused.get()
-            val cancelledBefore = gates.cancelled.get()
-            eval(s, "(() => { const f = document.createElement('form'); f.method = 'post'; f.action = 'https://example.com/?boot-probe-post'; " +
-                "document.body.appendChild(f); f.submit(); return 1 })()")
-            until(30, "the form's post refused or cancelled", { diagnosis(s, gates) }) {
-                gates.refused.get() > refusedBefore || gates.cancelled.get() > cancelledBefore
-            }
-            val post = if (gates.refused.get() > refusedBefore) "refused" else "cancelled"
-            step("the form's post: $post (the web view at ${read(s) { it.getBridge().webView.url }})")
-            assertEquals("refused", post)
-            assertNull("the open-source build holds a signing policy", ConductorKey.packagedPolicy())
+            assertEquals("the steps ran on the activity the check began on, and again on the one made after it", 2, runs)
         }
+    }
+
+    /** The boot check's steps on the scenario's activity. `probing` runs once the probes do (a test's seam: nothing by default). */
+    private fun bootSteps(s: ActivityScenario<MainActivity>, probing: () -> Unit = {}) {
+        val stopped = read(s) { it.stopped }
+        step("the shell's policy: ${stopped ?: "held"}")
+        assertNull("the shell stopped: $stopped", stopped)
+        until(30, "the gates in place") { read(s) { it.gates != null } }
+        val drawn = { eval(s, "!!document.querySelector('[data-shell-open-server]')") == "true" }
+        until(180, "Open a server drawn") { drawn() }
+        step("Open a server drawn")
+        // The page again, with a listener for policy violations added before its own scripts.
+        s.onActivity { a ->
+            val w = a.getBridge().webView
+            WebViewCompat.addDocumentStartJavaScript(w, VIOLATIONS, setOf(APP))
+            w.reload()
+        }
+        until(30, "the reload begun") { eval(s, "typeof window.__bootViolations") == "\"object\"" }
+        until(180, "Open a server drawn again") { drawn() }
+        val gates = read(s) { it.gates!! }
+        val ownDropped = gates.dropped.get()
+        val ownRefused = gates.refused.get()
+        step("the page's own calls dropped: $ownDropped, its own requests refused: $ownRefused")
+        // The load gate: each main-frame load away from the bundle with no tap, waited on until the gate has cancelled it.
+        for (to in AWAY) {
+            val n = gates.cancelled.get()
+            eval(s, "location.href = ${org.json.JSONObject.quote(to)}; 1")
+            until(30, "the load to $to cancelled") { gates.cancelled.get() > n }
+            step("cancelled: $to")
+        }
+        val ownViolations = eval(s, "window.__bootViolations.length")
+        eval(s, PROBES)
+        probing()
+        // The probes' own waits bound each one (20 s for each of eleven, 10 s for one): the report comes within their sum, and this
+        // bound only bounds a hang. A page that is no longer the one the probes run in (its globals gone) fails at once, saying where it is.
+        until(300, "the probes' report", { diagnosis(s, gates) }) {
+            val now = eval(s, "typeof window.__bootProbes === 'string' ? window.__bootProbes : null")
+            if (now == "null") throw AssertionError("the page the probes ran in is gone: ${diagnosis(s, gates)}")
+            text(now).isNotEmpty()
+        }
+        val probes = text(eval(s, "window.__bootProbes"))
+        val framePosted = eval(s, "window.__bootFramePosted") == "true"
+        val probeViolations = text(eval(s, "window.__bootViolations.slice($ownViolations).map((v) => v.split(' ')[0]).sort().join(',')"))
+        val platform = text(eval(s, "window.conductorShell ? window.conductorShell.platform : 'none'"))
+        val page = text(eval(s, "location.href"))
+        step("probes: $probes; the frame had the channel: $framePosted; violations: ${eval(s, "JSON.stringify(window.__bootViolations)")}")
+        // 9 messages posted, the srcdoc frame's when it had the channel, and the call to the runtime's WebView through its page script.
+        val expectedDrops = ownDropped + 10 + (if (framePosted) 1 else 0)
+        until(30, "the gate's drops counted") { gates.dropped.get() >= expectedDrops }
+        val report = "ready platform=$platform probes=$probes own-dropped=$ownDropped own-refused=$ownRefused own-violations=$ownViolations " +
+            "dropped=${gates.dropped.get() - ownDropped} refused=${gates.refused.get() - ownRefused} cancelled=${gates.cancelled.get()} " +
+            "handed=${gates.handedOff.get()} workers=${gates.workers.get()} probe-violations=$probeViolations page-own=${LoadGate.own(page)}"
+        step("the boot check's report: $report")
+        assertEquals(
+            "ready platform=android probes=ok own-dropped=0 own-refused=0 own-violations=0 dropped=${10 + (if (framePosted) 1 else 0)} " +
+                "refused=5 cancelled=${AWAY.size} handed=0 workers=1 probe-violations=frame-src,object-src page-own=true",
+            report,
+        )
+        // Last, as it leaves the shell's page: a form posted to another origin, which no navigation check sees, never loads there:
+        // the request gate refuses its document (or, where the web view asks about it, the load gate cancels it).
+        val refusedBefore = gates.refused.get()
+        val cancelledBefore = gates.cancelled.get()
+        eval(s, "(() => { const f = document.createElement('form'); f.method = 'post'; f.action = 'https://example.com/?boot-probe-post'; " +
+            "document.body.appendChild(f); f.submit(); return 1 })()")
+        until(30, "the form's post refused or cancelled", { diagnosis(s, gates) }) {
+            gates.refused.get() > refusedBefore || gates.cancelled.get() > cancelledBefore
+        }
+        val post = if (gates.refused.get() > refusedBefore) "refused" else "cancelled"
+        step("the form's post: $post (the web view at ${read(s) { it.getBridge().webView.url }})")
+        assertEquals("refused", post)
+        assertNull("the open-source build holds a signing policy", ConductorKey.packagedPolicy())
     }
 
     @Test

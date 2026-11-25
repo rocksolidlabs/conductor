@@ -158,8 +158,11 @@ def keep_log(name: str, say=tell) -> None:
     say(f"android_boot: {len(telling)} telling line(s) of the device's log; all of it ({len(main)} lines) in {kept}")
 
 
-# The boot check is run this many times in a row, each a fresh install and start of the app, until the cause of its one failure in
-# CI's run 3 (no probes' report in 120 s, with nothing to read it from) is known: a flake is work, not a note (AGENTS.md).
+# The boot check is run this many times in a row, each a fresh install and start of the app. The rounds began as a watch for the
+# cause of its one failure in CI's run 3 (no probes' report in 120 s, with nothing to read it from), known since 2026-11-25: on a
+# device still being set up the system starts the app's activities again, and the page the check was reading is gone (AGENTS.md,
+# Tests that do not flake). The check starts over then. The rounds stay: the first meets a device that has just started, the others
+# one that has settled.
 ROUNDS = 3
 
 

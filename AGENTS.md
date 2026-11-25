@@ -757,6 +757,26 @@ add its rule here.
   going makes the call on a goroutine of its own, and opens the gate before
   it waits for the call to return; a seam between the commit and the
   dispatch (`beforeCancelPump`) makes the old order fail every run.
+- A device that has just started is still being set up, and the system
+  starts an app's activities again under a test. CI's emulator runs the
+  phone shell's boot check seconds after its boot, while its services
+  still configure it (default roles granted, overlays applied): a change
+  to what an app is built from makes Android start every activity of the
+  app again, whatever `configChanges` its manifest declares, and the page
+  the check was reading is gone with its web view ("the page the probes
+  ran in is gone", a new one loading at the bundle's root:
+  `ShellBootsUnderItsPolicyTest`, three runs of one pull request in a row
+  on 2026-11-25 and once before; the same bundle then passed nine rounds,
+  #1110). A diagnostic put into the page, and then into the test, only
+  met a device that happened not to do it. The device's whole log, kept
+  for each round, names the activity paused, stopped, destroyed and made
+  again; a page's console cannot: read the device's log for the
+  activity's life before the page's. A check that holds an activity over
+  many steps starts its steps over when the system has made the activity
+  again under them (`onOneActivity`), a bounded number of times, saying
+  so; a step that fails on the activity it began on fails; and a test
+  makes the activity again itself, mid-check, so that the path runs every
+  time (`theBootCheckStartsOverOnAnActivityTheSystemMadeAgain`).
 - Prove a flake fix the way it failed: `go test -race -count=30` (on the
   Mac too when it flaked there), `npx playwright test <spec> --repeat-each
   10`, and once more under load.
