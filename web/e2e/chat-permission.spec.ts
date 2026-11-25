@@ -155,6 +155,81 @@ test("an input whose end lies far down: no scroll of its own, its empty lines ma
   }
 })
 
+test("a person reading an opened input is not carried past it by the chat's next change, and one at the chat's end is followed", async ({ browser }) => {
+  const api = own.api
+  const { s, conv } = await launch(api, sessions, 'e2e chat permission reading', 'asker-proto')
+  const page = await dayPage(browser, { server: own.started, width: 1440, height: 700 })
+  try {
+    const view = await openSession(page, s.id)
+    await firstTurn(page, api, s.id)
+    await toChat(api, s.id, view)
+    await say(page, 'ask padded')
+    budget(10 * STEP_MS + 4 * LONG_MS)
+    const q = openQuestion(page)
+    await expect(lineButton(q)).toBeVisible({ timeout: LONG_MS })
+    // At the chat's end, the person opens the long input: it grows below them, with no scroll of the page.
+    await lineButton(q).click()
+    await expect(q.locator('[data-permission-whole]')).toBeVisible()
+    await expect(q.locator('[data-permission-input-end]')).not.toBeInViewport()
+    await expect(q.locator('[data-permission-allow]')).toBeDisabled()
+    // A change of the chat while they read (a message queued behind the turn): the page does not move them to its end.
+    const before = Number(await page.locator('[data-chat-view]').getAttribute('data-chat-entries'))
+    await say(page, 'a message while reading')
+    await expect.poll(async () => Number(await page.locator('[data-chat-view]').getAttribute('data-chat-entries')), { timeout: LONG_MS }).toBeGreaterThan(before)
+    await expect(page.locator('[data-chat-view] [data-chat-prompt]').filter({ hasText: 'a message while reading' })).toBeAttached()
+    await expect(q.locator('[data-permission-input-end]')).not.toBeInViewport()
+    await expect(q.locator('[data-permission-allow]')).toBeDisabled()
+    // A person at the chat's end is followed: scrolled there, the answer's turn and the queued message's come into view.
+    await page.locator('[data-chat-scroll]').evaluate((el) => (el.scrollTop = el.scrollHeight))
+    await q.locator('[data-permission-deny]').click()
+    await expect.poll(() => readStub(own, conv, 'denied'), { timeout: LONG_MS }).not.toBe('')
+    const last = page.locator('[data-chat-view] [data-chat-turn]').filter({ hasText: 'stub chat: a message while reading' })
+    await expect(last).toHaveAttribute('data-turn-outcome', 'done', { timeout: LONG_MS })
+    await expect(last.locator('[data-chat-words]')).toBeInViewport()
+  } finally {
+    await page.context().close()
+  }
+})
+
+test('a value of no-break spaces wraps inside the question: its last word is not cut at the chat\'s edge', async ({ browser }) => {
+  const api = own.api
+  const { s, conv } = await launch(api, sessions, 'e2e chat permission nbsp', 'asker-proto')
+  const page = await dayPage(browser, { server: own.started })
+  try {
+    const view = await openSession(page, s.id)
+    await firstTurn(page, api, s.id)
+    await toChat(api, s.id, view)
+    await say(page, 'ask nbsp')
+    budget(6 * STEP_MS + 2 * LONG_MS)
+    const q = openQuestion(page)
+    await expect(lineButton(q)).toBeVisible({ timeout: LONG_MS })
+    await lineButton(q).click()
+    const whole = q.locator('[data-permission-whole]')
+    await expect(whole).toBeVisible()
+    await q.locator('[data-permission-allow]').scrollIntoViewIfNeeded()
+    // The word's own box, from the browser's Range, lies inside the question's.
+    const inside = await q.evaluate((el) => {
+      const walk = document.createTreeWalker(el.querySelector('[data-permission-whole]')!, NodeFilter.SHOW_TEXT)
+      for (let n = walk.nextNode(); n; n = walk.nextNode()) {
+        const at = n.textContent?.indexOf('tailword') ?? -1
+        if (at < 0) continue
+        const range = document.createRange()
+        range.setStart(n, at)
+        range.setEnd(n, at + 'tailword'.length)
+        const r = range.getBoundingClientRect()
+        const box = el.getBoundingClientRect()
+        return { word: [r.left, r.right], box: [box.left, box.right], inside: r.left >= box.left && r.right <= box.right && r.width > 0 }
+      }
+      return null
+    })
+    expect(inside?.inside, JSON.stringify(inside)).toBe(true)
+    await q.locator('[data-permission-deny]').click()
+    await expect.poll(() => readStub(own, conv, 'denied'), { timeout: LONG_MS }).not.toBe('')
+  } finally {
+    await page.context().close()
+  }
+})
+
 test("a view link's join page shows the question and who answers it, with no button", async ({ browser }) => {
   const api = own.api
   const { s, conv } = await launch(api, sessions, 'e2e chat permission link', 'asker-proto')

@@ -164,7 +164,7 @@ async function send(choice: 'allow_once' | 'deny') {
       <span v-if="open" class="size-2 flex-none rounded-full bg-warning" aria-hidden="true" />
       <h3 class="text-sm font-semibold text-highlighted" data-permission-words>{{ plainWords(entry.plain) }}</h3>
       <!-- The tool that runs it, always: the digest binds it, so it is read before Allow once. -->
-      <code class="min-w-0 break-all font-mono text-xs text-muted" data-permission-tool><MarkedText :pieces="tool.pieces" /></code>
+      <code class="min-w-0 break-all [overflow-wrap:anywhere] font-mono text-xs text-muted" data-permission-tool><MarkedText :pieces="tool.pieces" /></code>
     </div>
 
     <!-- The one line: the exact command or path, opening to the whole input. Drawn as text: a hidden character is a mark. -->
@@ -179,7 +179,7 @@ async function send(choice: 'allow_once' | 'deny') {
       @click="opens && toggle()"
     >
       <UIcon v-if="opens" :name="opened ? 'i-lucide-chevron-down' : 'i-lucide-chevron-right'" class="mt-0.5 size-3.5 flex-none text-muted" aria-hidden="true" />
-      <span class="min-w-0 flex-1" :class="input?.whole ? 'break-all whitespace-break-spaces' : 'truncate whitespace-pre'"><MarkedText :pieces="line.pieces" :breaks="false" /></span>
+      <span class="min-w-0 flex-1" :class="input?.whole ? 'break-all whitespace-break-spaces [overflow-wrap:anywhere]' : 'truncate whitespace-pre'"><MarkedText :pieces="line.pieces" :breaks="false" /></span>
     </component>
 
     <!-- The whole input, opened, in the chat's own scroll (no scroll of its own): each field's name and its value as text, line feeds
@@ -187,11 +187,11 @@ async function send(choice: 'allow_once' | 'deny') {
     <dl v-if="opened && input" data-mono="command" class="flex flex-col gap-1.5 rounded-md bg-default px-2.5 py-2 font-mono text-xs ring-1 ring-default" data-permission-whole>
       <div v-if="cwd" class="flex flex-col gap-0.5" data-permission-cwd>
         <dt class="text-muted">folder</dt>
-        <dd class="break-all whitespace-break-spaces"><MarkedText :pieces="cwd.pieces" /></dd>
+        <dd class="break-all whitespace-break-spaces [overflow-wrap:anywhere]"><MarkedText :pieces="cwd.pieces" /></dd>
       </div>
       <div v-for="(r, n) in rows" :key="n" class="flex flex-col gap-0.5" data-permission-row>
-        <dt v-if="r.key.pieces.length" class="text-muted"><MarkedText :pieces="r.key.pieces" /></dt>
-        <dd class="break-all whitespace-break-spaces"><MarkedText :pieces="r.value.pieces" /></dd>
+        <dt v-if="r.key.pieces.length" class="break-all whitespace-break-spaces [overflow-wrap:anywhere] text-muted"><MarkedText :pieces="r.key.pieces" /></dt>
+        <dd class="break-all whitespace-break-spaces [overflow-wrap:anywhere]"><MarkedText :pieces="r.value.pieces" /></dd>
       </div>
     </dl>
     <!-- The input's end: Allow once waits until this has been in view. -->

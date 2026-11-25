@@ -380,3 +380,11 @@ export function limitReads<Q, R>(get: (req: Q) => Promise<R>, n: number): (req: 
       else waiting.push(go)
     })
 }
+
+/** How near its end a chat's scroll may be and still be at its end, in pixels. */
+export const CHAT_END_SLACK = 48
+
+/** Whether a chat's scroll shows its end now: what a new entry follows, measured before the entry is drawn. */
+export function atChatEnd(el: Pick<HTMLElement, 'scrollHeight' | 'scrollTop' | 'clientHeight'>): boolean {
+  return el.scrollHeight - el.scrollTop - el.clientHeight < CHAT_END_SLACK
+}

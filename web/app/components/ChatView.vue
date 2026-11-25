@@ -2,7 +2,7 @@
 import type { SessionConnection } from '~/composables/useSessionConnection'
 import type { PermissionAnswer, TranscriptEntry, TranscriptPartName, TranscriptRequest } from '~/utils/protocol'
 import { ReplyError } from '~/utils/reply'
-import { chatBlocks, limitReads, promptLine, promptText, readPart, stepsLine, type ChatTurn } from '~/utils/transcript'
+import { atChatEnd, chatBlocks, limitReads, promptLine, promptText, readPart, stepsLine, type ChatTurn } from '~/utils/transcript'
 import { MAX_TRANSCRIPT_IN_FLIGHT } from '~/utils/protocol'
 
 /**
@@ -126,23 +126,21 @@ async function stop() {
 }
 const answer = (a: Omit<PermissionAnswer, 't' | 'reqId'>) => going(() => conn.permissionAnswer(a))
 
-// The newest entry in view while the person is at the bottom: a turn's words follow as they come; one who scrolled up stays.
+// The newest entry in view while the person is at the bottom: a turn's words follow as they come; one who scrolled up stays. Where the
+// person is, is measured as each change arrives, before it is drawn (`flush: 'pre'`): an input opened at the chat's end grows below it
+// with no scroll, and a person reading it is not at the bottom, so the next change never carries the page past what they read.
 const scroller = ref<HTMLElement | null>(null)
-let atBottom = true
-function onScroll() {
-  const el = scroller.value
-  if (el) atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 48
-}
 watch(
   () => conn.transcriptVersion.value,
   () => {
-    if (!atBottom) return
+    const el = scroller.value
+    if (el && !atChatEnd(el)) return
     void nextTick(() => {
-      const el = scroller.value
-      if (el) el.scrollTop = el.scrollHeight
+      const box = scroller.value
+      if (box) box.scrollTop = box.scrollHeight
     })
   },
-  { flush: 'post' },
+  { flush: 'pre' },
 )
 
 /** The oldest open permission question, brought into view (the reply bar's "Answer it in the chat."). */
@@ -156,7 +154,7 @@ defineExpose({ showQuestion })
 
 <template>
   <div class="flex h-full min-h-0 flex-col bg-default" data-chat-view :data-chat-entries="entries.length" :data-turn-running="running || undefined">
-    <div ref="scroller" class="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-4 py-4" data-chat-scroll @scroll.passive="onScroll">
+    <div ref="scroller" class="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-4 py-4" data-chat-scroll>
       <div class="mx-auto flex max-w-3xl flex-col gap-4">
         <ChatNote v-if="note && !noteAfter" :site="note.site" :host="siteHost" @dismiss="emit('dismissNote')" />
         <template v-for="b in blocks" :key="b.key">

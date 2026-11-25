@@ -171,4 +171,11 @@ describe('the permission question', () => {
     expect(src).toContain("invalid: 'The message to the agent is too long.'")
     expect(src).not.toContain('(e as Error).message')
   })
+
+  it('wrapsAnywhere: the tool, a field\'s name and its value wrap anywhere, so no run of no-break spaces spills past the chat\'s edge', () => {
+    expect(src).toMatch(/<code class="[^"]*\[overflow-wrap:anywhere\][^"]*" data-permission-tool>/)
+    expect(src).toMatch(/<dt v-if="r\.key\.pieces\.length" class="[^"]*\[overflow-wrap:anywhere\][^"]*">/)
+    expect(src).toMatch(/<dd class="[^"]*\[overflow-wrap:anywhere\][^"]*"><MarkedText :pieces="r\.value\.pieces" \/><\/dd>/)
+    expect(src).toMatch(/<dd class="[^"]*\[overflow-wrap:anywhere\][^"]*"><MarkedText :pieces="cwd\.pieces" \/><\/dd>/)
+  })
 })

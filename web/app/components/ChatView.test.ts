@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import { renderMarkdown } from '../utils/markdown'
 import type { TranscriptEntry, TranscriptReply, TranscriptRequest } from '../utils/protocol'
-import { chatBlocks, readPart, stepsLine } from '../utils/transcript'
+import { atChatEnd, CHAT_END_SLACK, chatBlocks, readPart, stepsLine } from '../utils/transcript'
 
 // A session run as a chat (docs/plans/chat-or-terminal.md, design 11). The app's vitest mounts no component: the rules are the
 // functions ChatView.vue and ToolStepRow.vue draw from, and their source is checked for the bindings that draw them; what a browser
@@ -97,5 +97,15 @@ describe('the chat', () => {
     expect(pages('sessions/[id].vue')).toContain(`<QuickReplyBar v-if="!(way === 'protocol' && answersInChat(attention))"`)
     expect(pages('join/[token].vue')).toContain(`<QuickReplyBar v-if="!(joinWay === 'protocol' && answersInChat(attention))"`)
     expect(pages('yard.vue')).toContain(`<QuickReplyBar v-if="!(focused.way === 'protocol' && answersInChat(focused.attention))"`)
+  })
+
+  it("followsOnlyAtTheEnd: where the person is, is measured as a change arrives, before it is drawn; one reading above the end stays", () => {
+    expect(atChatEnd({ scrollHeight: 2000, scrollTop: 1500, clientHeight: 500 })).toBe(true)
+    expect(atChatEnd({ scrollHeight: 2000, scrollTop: 1500 - CHAT_END_SLACK + 1, clientHeight: 500 })).toBe(true)
+    // An input opened at the end grew below: the same place is no longer the end.
+    expect(atChatEnd({ scrollHeight: 2800, scrollTop: 1500, clientHeight: 500 })).toBe(false)
+    expect(view).toMatch(/watch\(\s*\(\) => conn\.transcriptVersion\.value,\s*\(\) => \{\s*const el = scroller\.value\s*if \(el && !atChatEnd\(el\)\) return/)
+    expect(view).toContain("{ flush: 'pre' },")
+    expect(view).not.toContain('atBottom')
   })
 })
