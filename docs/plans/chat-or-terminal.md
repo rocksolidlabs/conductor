@@ -2571,6 +2571,82 @@ to Chat after its first reply, a permission question and its answer, on
 the desktop app's server inside WSL and on Linux, with nothing
 configured. **18 h.**
 
+**As built, row 7** (#1110; `web/app/utils/transcript.ts`,
+`permissionInput.ts`, `hiddenMarks.ts`, `components/ChatView.vue`,
+`ToolStepRow.vue`, `InlineDiff.vue`, `PermissionQuestion.vue`, the
+agent's box in `ChatComposer.vue`, `WaySwitch.vue` on the session page;
+the specs `chat-view`, `chat-permission`, `chat-link`, `chat-reconnect`
+and `chat-layout`, each on a server of its own with `claude-proto` and
+`asker-proto`, through `web/e2e/chat-fixtures.ts`):
+
+- **The chat is drawn by `TerminalView`**, over its pane, from the
+  connection it holds: the terminal stays mounted under it, hidden, with
+  every DOM mark it had, and sizes nothing while the session is a chat
+  (no resize is sent, so the owner's `not_terminal` never comes). So the
+  session page, the join page, a run's join grid, the yard and the
+  roundhouse draw `ChatView` by the session's way without a change of
+  their own, and a tile (`compact`) says "Runs as a chat." with the
+  agent's last line of words.
+- **The switch reads Terminal | Chat** (the maintainers' order). Its line
+  is drawn above the pane, not beside the name, so the name keeps its
+  room; the at-rest line before a move to Chat ("Moving to Chat ends
+  what the agent left running in its terminal.") is the Chat side's
+  tooltip and description, said before it is pressed, not a line that
+  stays on every session at rest. `qualified` is taken as true: an
+  unqualified version is refused by the route, in its words.
+- **A move made on an open connection** brings the `way` message and no
+  new welcome, so that connection's welcome is still the terminal's:
+  without `verbatim`, `interrupt` or `permissionAnswer`. The transport
+  takes Stop and sends `permission_answer` after a `way` message to the
+  chat (the owner judges each answer), and the chat stands in for the
+  rest with the page's word: `operator` where the page holds the
+  workbench token (the session page, the yard, the roundhouse), and
+  `verbatim` from the session's listing. A connection made after the
+  move reads all three from its welcome, as the plan says.
+- **The digest is computed in the page.** `permissionInput.ts` reads the
+  request's `input` part whole, decodes it as strictly as the session
+  does (a key twice, a lone surrogate, nesting past 256, anything after
+  the value: not exact), writes its canonical JSON as Go's encoder does
+  (keys by their bytes, numbers as written, U+2028 and U+2029 escaped)
+  and hashes it with a SHA-256 of its own (a page on plain http has no
+  `crypto.subtle`). Allow once is offered only when that digest is the
+  entry's, the part was kept whole, and the whole input is drawn; the
+  answer carries that digest and the call. A deny carries the entry's
+  digest and is always offered.
+- **A one-line input** is one field holding the command or path, on one
+  line of at most 160 characters, or an input whose canonical JSON is
+  that short with no field to show apart. A Bash call with a
+  `description` is opened before Allow once: the description is part of
+  what is approved. The opened input is every field's name and its value
+  as text; a tab is drawn `\t`, as a carriage return is `\r`.
+- **Deny takes a message** from one field under the question ("Why, for
+  the agent (optional)"); without one the agent is told row 6's
+  sentence.
+- **People.** The rail's item keeps the code's id `people`; `?tab=chat`
+  and a view named `chat` open it (`railView`). Its pill counts the
+  chat's unread messages while there are any (`data-rail-count="chat"`),
+  else who is here, as before. With the people's chat, who is here and
+  the share links fold under People's head, which opens them.
+- **A turn's order**: its messages, then its steps' line, then what the
+  agent wrote, changed and asked in the stream's order. A turn the
+  session's count begins again (a move back to the chat) is a new turn.
+  An interrupted turn says "The turn was stopped." (the request's words,
+  reused).
+- **Reads.** A replay with `more` is read back with `transcript_get
+  before`, at most ten pages, before its mark is held. A part is read a
+  piece at a time up to what the session keeps (256 KiB); the inline
+  diff draws 40 lines and its link opens the editor's diff tab of the
+  file against the folder.
+- **A refusal that names no request** (the relay's) is drawn in its
+  words in the box's line while a request of the chat is on its way.
+- **The stub** scripts a turn by words in its message ("steps", "edit",
+  "hold", "markdown", "ask short|long|hidden|withdraw") rather than a
+  turns file; it asks through the session's route with its agent token,
+  and keeps its gates and what it was told under `.stub-sessions`.
+- **Not built:** Settings' line for an older switchyard (the server's
+  switchyard status says nothing of `transcript`); the Share dialog shows
+  the server's own words for it, as the link's rendezvous note.
+
 ### Row 8: the declaration on the Agents page, the digest, and step 2's trust design
 
 **Scope.** Step 2's trust design (how a crew's member comes to run as a
