@@ -963,10 +963,12 @@ is `PermissionWithdrawn`.
    mode, including `bypassPermissions`" (permission-modes.md), they hold
    beside whatever the folder supplies, and they also keep an `@`
    reference from including such a file. The same file allows, so that
-   they never ask, Conductor's own tools through which an agent only
-   tells Conductor about its own session or asks a person (the guide,
-   `set_state`, `ask` and an attempt's own task tools:
-   `agents.ProtocolUnaskedTools`); every other tool asks as before.
+   they never ask, Conductor's own tools through which an agent tells
+   Conductor about its own session's work, asks a person, or hands its
+   work on within its own run (the guide, `report`, `set_state`, `ask`
+   and an attempt's own task tools: `agents.ProtocolUnaskedTools`); a
+   handoff reaches only a member of the session's own run, which acts
+   on it under its own mode. Every other tool asks as before.
    Conductor also denies, before
    any question, a file tool's call (`Read`, `Edit`, `Write`,
    `MultiEdit`, `NotebookEdit`, `Grep`, `Glob`) whose path is under the
@@ -2487,12 +2489,14 @@ MCP half, `conductor mcp`'s serve loop and its `permission` tool, is
   refusal, the bound, the floor, the list, the attention and the timer;
   their binding to an announced call is the Codex and ACP rows'.
 - After the live check (#1133): the floor's settings also allow, with no
-  question, Conductor's tools through which an agent only tells Conductor
-  about its own session or asks a person (`guide`, `set_state`, `ask`,
+  question, Conductor's tools through which an agent tells Conductor
+  about its own session's work, asks a person, or hands its work on
+  within its own run (`guide`, `report`, `set_state`, `ask`,
   `task_context`, `task_checkpoint`, `task_blocked`, `task_result`, as
   `mcp__conductor__<tool>`), so a chat's agent that follows the skill is
-  not asked about each step it reports; `report` still asks, since its
-  handoff types into another member.
+  not asked about each step it reports; `report`'s handoff is in, since
+  it reaches only a member of the session's own run (held by
+  `TestAHandoffReachesOnlyItsOwnRun`); `message_send` still asks.
 - The floor's files are written by `conductor serve` at its start
   (`agents.WriteProtocolFloor`, with `cfg.FileDeny()` as it is then): for
   every path a `Read` and an `Edit` rule of the path and of `path/**`,

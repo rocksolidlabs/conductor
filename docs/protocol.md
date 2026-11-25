@@ -9541,13 +9541,19 @@ the absolute spellings alone (it knows no folder); the server writes them
 at its start. The hook is a second look: a folder's own settings can
 switch it off, and it denies nothing (it fails open) when it cannot read
 its list or the call's payload. The same file allows, without asking,
-Conductor's own tools through which an agent only tells Conductor about
-its own session or asks a person: `guide`, `set_state`, `ask`,
-`task_context`, `task_checkpoint`, `task_blocked` and `task_result`
-(rules `mcp__conductor__<tool>`); such a call never reaches Conductor as
-a request, and its step is in the transcript as any other. Every other
-tool asks as before, Conductor's `report` among them (its handoff types
-into another member), and the prompt tool is never allowed. A deny rule
+Conductor's own tools through which an agent tells Conductor about its
+own session's work, asks a person, or hands its work on within its own
+run: `guide`, `report`, `set_state`, `ask`, `task_context`,
+`task_checkpoint`, `task_blocked` and `task_result` (rules
+`mcp__conductor__<tool>`); such a call never reaches Conductor as a
+request, and its step is in the transcript as any other. `report`'s
+handoff is among them because it reaches only a member of the session's
+own run, as one bounded line that member acts on under its own
+permission mode (a name no member of the run has is noted and typed
+nowhere; a session in no run has nobody to hand to): the crew's own
+baton, set up by the person who formed or launched the crew. Every other
+tool asks as before, `message_send` among them, and the prompt tool is
+never allowed. A deny rule
 wins over these allows, and in a yolo session they change nothing. At most eight requests are open or waiting per
 session: one more is denied `Too many requests are waiting; this one was
 denied.`.
