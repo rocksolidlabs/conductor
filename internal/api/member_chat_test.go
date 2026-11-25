@@ -176,3 +176,21 @@ func TestAFreshMembersConversationIsResumedAfterItsFirstStart(t *testing.T) {
 		})
 	}
 }
+
+// A key refused because the session is moving is said in the switch's own
+// moving words, not as input that could not be delivered.
+func TestAKeyRefusedWhileMovingSaysSo(t *testing.T) {
+	c := newChatEnv(t, map[string]string{}, nil)
+	l := c.launch(t)
+	sink := &wayFrames{}
+	sub, err := l.AttachWith(session.AttachOptions{Role: session.RoleControl, Name: "Ada"}, sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { l.Detach(sub) })
+	c.srv.sendInputError(sub, l, session.ErrMoving)
+	until(t, "the moving words", func() bool { return sink.saw(session.MovingWords) })
+	if sink.saw("input could not be delivered") {
+		t.Fatal("said as input that could not be delivered")
+	}
+}
