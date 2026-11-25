@@ -569,3 +569,46 @@ func TestCatalogRouteShowsTheProtocol(t *testing.T) {
 		t.Fatalf("{} left it on: %+v", a.Protocol)
 	}
 }
+
+// The version is checked once per session: a chat's child started again
+// (past its input's bound here) reuses the answer its first start had,
+// so a probe that no longer answers in time (its answer expired, the
+// machine loaded) never ends a running chat at its restart.
+func TestClaudeRestartReusesTheQualifiedVersion(t *testing.T) {
+	c := newChatEnv(t, map[string]string{}, nil)
+	c.srv.chatMaxInput = 1
+	l := c.launch(t)
+	if err := c.enter(t, l); err != nil {
+		t.Fatal(err)
+	}
+	// From now on the probe's answer is gone and a new one comes late.
+	held := make(chan struct{})
+	t.Cleanup(func() { close(held) })
+	c.srv.probes.mu.Lock()
+	c.srv.probes.entries = map[string]probeEntry{}
+	c.srv.probes.wait = 50 * time.Millisecond
+	run := c.srv.probes.run
+	c.srv.probes.run = func(ctx context.Context, r *agents.ProbeProcess, command []string, p agents.Probe, env map[string]string) agents.ProbeResult {
+		select {
+		case <-held:
+		case <-ctx.Done():
+		}
+		return run(ctx, r, command, p, env)
+	}
+	c.srv.probes.mu.Unlock()
+	if _, err := l.Submit(context.Background(), session.Submission{Text: "first"}); err != nil && !errors.Is(err, session.ErrSubmitPending) {
+		t.Fatal(err)
+	}
+	entriesWhen(t, l, "the restart's notice", func(es []session.TranscriptEntry) bool {
+		return hasEntry(es, func(e session.TranscriptEntry) bool {
+			return e.Kind == session.EntryNotice && (e.Code == "restarted" || e.Code == "restart_failed")
+		})
+	})
+	waitUntil(t, "the second child", func() bool { return len(c.pipeSpecs()) >= 2 })
+	if st := l.Info().Status; st.Ended() {
+		t.Fatalf("the restart ended the chat: %s", st)
+	}
+	if l.Way() != session.WayProtocol {
+		t.Fatalf("the chat left its way: %q", l.Way())
+	}
+}
