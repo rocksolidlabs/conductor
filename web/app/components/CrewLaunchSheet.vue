@@ -142,7 +142,7 @@ const notes = computed(() => sheetNotes(rows.value, viewOf))
             <span role="cell" class="min-w-0 [overflow-wrap:anywhere]"><span class="text-muted sm:hidden">Account: </span><span data-crew-launch-account>{{ r.account }}</span></span>
           </div>
         </div>
-        <p class="mt-3 text-sm text-muted" data-crew-launch-yolo>{{ launchYoloWords(crew.yolo, crew.inherits) }}</p>
+        <p class="mt-3 text-sm text-muted" data-crew-launch-yolo>{{ launchYoloWords(crew.yolo, crew.inherits, crew.way) }}</p>
         <p class="mt-1 text-sm text-muted" :data-crew-launch-way="crew.way === 'chat' ? 'chat' : 'terminal'">{{ membersRunAsLine(crew.way) }}</p>
         <!-- Everything else the sheet knows, one press away: the sessions per login, and each member's usage as the server read it. -->
         <details class="group mt-3 text-sm" data-crew-launch-details>

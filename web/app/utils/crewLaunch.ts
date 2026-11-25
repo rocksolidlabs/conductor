@@ -283,10 +283,17 @@ export function sheetNotice(refused: SheetRefusal | null | undefined, read: 'rea
  * launch's revision covers it) or, for a crew that inherits it (`inherited`), the server's default at the launch, with what it is now
  * (`yolo`).
  */
-export function launchYoloWords(yolo: boolean, inherited: boolean): string {
+export function launchYoloWords(yolo: boolean, inherited: boolean, way?: string): string {
+  if (!yolo && way === 'chat') {
+    // A member in a chat that is not yolo is given no permission mode of Conductor's: it takes the person's own.
+    return CHAT_PERMISSION_WORDS
+  }
   const what = yolo ? 'skipped: the members act without asking' : 'the members ask before they act'
   return `Permission prompts: ${what} (${inherited ? "the server's default now" : "the crew's setting"})`
 }
+
+/** The launch sheet's permission line for a Chat crew that is not yolo: its members' chats take the person's own mode. */
+export const CHAT_PERMISSION_WORDS = "Permission prompts: in a chat, the members follow your own permission mode in the agent's settings"
 
 /** One member's row of the launch sheet's table: member · agent · model · account, in plain words, and the question its usage asks. */
 export interface SheetRow {
