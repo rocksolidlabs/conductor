@@ -438,7 +438,19 @@ func (e *Engine) promptChat(ctx context.Context, r *run, m *member, local *sessi
 	case err != nil:
 		return err
 	}
+	// The attempt read again after the move: one cancelled or stopped
+	// during it (its context ends once the cancel is committed) is sent
+	// nothing.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	e.mu.Lock()
+	if sm, ok := e.bySession.Load(local.Info().ID); ok {
+		if a := sm.(sessionMember).a; a != nil && !a.closedAt.IsZero() {
+			e.mu.Unlock()
+			return context.Canceled
+		}
+	}
 	r.note(session.ActivityStatus, "%s: runs as a chat.", memberLabel(m))
 	e.mu.Unlock()
 	if strings.TrimSpace(text) == "" {
