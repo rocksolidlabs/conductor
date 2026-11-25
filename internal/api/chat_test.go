@@ -24,6 +24,7 @@ import (
 	"github.com/rocksolidlabs/conductor/internal/agentproto"
 	"github.com/rocksolidlabs/conductor/internal/agents"
 	"github.com/rocksolidlabs/conductor/internal/catalog"
+	"github.com/rocksolidlabs/conductor/internal/config"
 	"github.com/rocksolidlabs/conductor/internal/session"
 	"github.com/rocksolidlabs/conductor/internal/session/sessiontest"
 )
@@ -56,6 +57,12 @@ func stubProtocol(t *testing.T) string {
 // catalog entry sets), logging to log (nil discards).
 func newChatEnv(t *testing.T, env map[string]string, log *slog.Logger) *chatEnvT {
 	t.Helper()
+	return newChatEnvWith(t, nil, env, log)
+}
+
+// newChatEnvWith is newChatEnv on a configuration mutate changes.
+func newChatEnvWith(t *testing.T, mutate func(*config.Config), env map[string]string, log *slog.Logger) *chatEnvT {
+	t.Helper()
 	stub := stubProtocol(t)
 	claude, _ := catalog.Default().Get("claude")
 	claude = claude.Copy()
@@ -66,7 +73,18 @@ func newChatEnv(t *testing.T, env map[string]string, log *slog.Logger) *chatEnvT
 	if log == nil {
 		log = slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
 	}
-	e := newTestEnvAgents(t, nil, log, []catalog.Agent{claude}, withNativeRuntime(sessiontest.FakePipeRuntime{FakeRuntime: rt}))
+	e := newTestEnvAgents(t, mutate, log, []catalog.Agent{claude}, withNativeRuntime(sessiontest.FakePipeRuntime{FakeRuntime: rt}))
+	// A chat's start asks the stub's version, and with no answer the
+	// session stays in its terminal. The lookup's wait, the probe's and
+	// the probe's own bound only bound a hang here: the product's (2 s)
+	// are what a loaded machine spends before node has answered, and a
+	// start that gave up then failed TestChatChildThroughPipes on CI
+	// (2026-11-25, #281). Set before anything asks; a test of a probe
+	// that comes late sets its own wait (TestClaudeRestartReusesTheQualifiedVersion).
+	e.srv.lookups.stubWait(hangWait)
+	e.srv.probes.mu.Lock()
+	e.srv.probes.wait, e.srv.probes.timeout = hangWait, hangWait
+	e.srv.probes.mu.Unlock()
 	return &chatEnvT{testEnv: e, rt: rt}
 }
 
@@ -133,6 +151,57 @@ func envValue(env []string, name string) (string, bool) {
 	return "", false
 }
 
+// The argv a chat's child is started with names Conductor's own MCP config
+// once, with --strict-mcp-config once after it, so that the child loads that
+// tool server and no other; with the server's MCP off it holds the flag
+// alone. Read off the start itself, word for word, not through ClaudeArgs.
+func TestChatChildLoadsConductorsToolServerAlone(t *testing.T) {
+	off := false
+	for _, tc := range []struct {
+		name   string
+		mutate func(*config.Config)
+		mcp    bool
+	}{
+		{"the server's MCP on", nil, true},
+		{"the server's MCP off", func(c *config.Config) { c.Agents.MCP = &off }, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := newChatEnvWith(t, tc.mutate, nil, nil)
+			l := c.launch(t)
+			if err := c.enter(t, l); err != nil {
+				t.Fatal(err)
+			}
+			specs := c.pipeSpecs()
+			if len(specs) != 1 {
+				t.Fatalf("%d pipes started", len(specs))
+			}
+			argv := specs[0].Argv
+			strict, named := 0, 0
+			for _, a := range argv {
+				switch {
+				case a == "--strict-mcp-config":
+					strict++
+				case a == "--mcp-config" || strings.HasPrefix(a, "--mcp-config="):
+					named++
+				}
+			}
+			if strict != 1 {
+				t.Errorf("--strict-mcp-config %d times in %q", strict, argv)
+			}
+			own := filepath.Join(agents.HooksDir(c.srv.cfg.DataDir), agentproto.ClaudeProtocolMCP)
+			i := slices.Index(argv, "--mcp-config")
+			switch {
+			case !tc.mcp && named != 0:
+				t.Errorf("an MCP config with the server's MCP off in %q", argv)
+			case tc.mcp && (named != 1 || i < 0 || i+2 >= len(argv) || argv[i+1] != own):
+				t.Errorf("want Conductor's own --mcp-config %s once in %q", own, argv)
+			case tc.mcp && argv[i+2] != "--strict-mcp-config":
+				t.Errorf("--strict-mcp-config does not follow Conductor's MCP config in %q", argv)
+			}
+		})
+	}
+}
+
 // A chat's child starts through the session's Runtime's StartPipes, never
 // StartTerminal, in the terminal's folder, with the terminal's environment
 // but TERM and COLORTERM, CONDUCTOR_PROTOCOL=1 and NO_COLOR=1 set, and the
@@ -160,7 +229,7 @@ func TestChatChildThroughPipes(t *testing.T) {
 	if spec.Dir != info.Cwd || spec.Ref.Session != info.ID {
 		t.Fatalf("started in %q for %q, want %q for %q", spec.Dir, spec.Ref.Session, info.Cwd, info.ID)
 	}
-	want, err := agentproto.ClaudeArgs(agentproto.ClaudeLaunch{Command: []string{stubProtocol(t)}, Conversation: info.AgentSession.ID, HooksDir: agents.HooksDir(c.srv.cfg.DataDir), NoMCP: !c.srv.cfg.MCP()})
+	want, err := agentproto.ClaudeArgs(agentproto.ClaudeLaunch{Command: []string{stubProtocol(t)}, Conversation: info.AgentSession.ID, HooksDir: agents.HooksDir(c.srv.cfg.DataDir), NoMCP: !c.srv.cfg.MCP(), PermissionHost: true})
 	if err != nil {
 		t.Fatal(err)
 	}

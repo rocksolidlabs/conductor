@@ -338,6 +338,19 @@ func TestServeWritesTheHookAssets(t *testing.T) {
 	if fi, err := os.Stat(filepath.Join(data, "hooks")); err != nil || fi.Mode().Perm() != 0o700 {
 		t.Fatalf("hooks dir: %v %v", fi.Mode(), err)
 	}
+	// A chat's floor, its deny rules for the data directory among them.
+	real, err := filepath.EvalSymlinks(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{agents.ClaudeProtocolSettings, agents.ClaudeProtocolYoloSettings} {
+		b, err := os.ReadFile(filepath.Join(data, "hooks", name))
+		rule := "Read(//" + strings.TrimPrefix(filepath.ToSlash(data), "/") + "/**)"
+		realRule := "Read(//" + strings.TrimPrefix(filepath.ToSlash(real), "/") + "/**)"
+		if err != nil || !(strings.Contains(string(b), rule) || strings.Contains(string(b), realRule)) || !strings.Contains(string(b), "notify --protocol-floor") {
+			t.Fatalf("%s: %v\n%s", name, err, b)
+		}
+	}
 }
 
 // A mode WriteAssets cannot set (agents.ModeError: the assets are in place)

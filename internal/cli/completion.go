@@ -104,7 +104,7 @@ func completionSpec() []commandSpec {
 	for _, h := range hookPayloads {
 		notifyFlags = append(notifyFlags, flagSpec{name: "--" + h.name})
 	}
-	notifyFlags = append(notifyFlags, flagSpec{name: "--quiet"})
+	notifyFlags = append(notifyFlags, flagSpec{name: "--quiet"}, flagSpec{name: "--protocol-floor", kind: flagFile})
 	adapters := []string{"all"}
 	for _, a := range agents.All() {
 		adapters = append(adapters, a.ID)

@@ -526,6 +526,11 @@ type Welcome struct {
 	// end (way.go): "terminal" or "protocol", absent while none is noted
 	// and from an older owner.
 	Noted string `json:"noted,omitempty"`
+	// PermissionAnswer says the owner takes this connection's
+	// permission_answer: a chat's welcome to the operator's own connection
+	// alone (absent to every other, and from an older owner), so that only
+	// the operator is drawn a permission request's buttons.
+	PermissionAnswer bool `json:"permissionAnswer,omitempty"`
 }
 
 // ICEServer is the WebRTC ICE server description sent to clients.

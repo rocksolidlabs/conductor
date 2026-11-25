@@ -271,3 +271,53 @@ func (y *stubYard) noTranscript(t *testing.T) {
 		}
 	}
 }
+
+// I10 through a switchyard: a relayed viewer of a published chat, a control
+// link's as much as a view link's, is never the operator: its
+// permission_answer is not_answerer and its answer or line naming the
+// request is refused with its own buttons' words; the request stays open
+// and its driver is told nothing.
+func TestARelayedViewerAnswersNoPermissionRequest(t *testing.T) {
+	y := newStubYard(t)
+	y.transcript.Store(true)
+	chat, f := chatLocal(t)
+	if _, err := publish(t, y, chat); err != nil {
+		t.Fatal(err)
+	}
+	<-y.reg
+	<-y.conn
+	f.TurnStarted("")
+	f.ToolStarted(session.ToolStep{Ref: "c1", Name: "Bash", Input: []byte(`{"command":"make"}`)})
+	f.Permission(session.PermissionRequest{Ref: "req-1", Call: "c1", Tool: "Bash", Input: []byte(`{"command":"make"}`)})
+	entries, err := chat.Transcript(0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := entries[len(entries)-1]
+	if r.Kind != session.EntryPermission || r.State != session.PermissionOpen {
+		t.Fatalf("the request %+v", r)
+	}
+	const viewer, ctl = "guestrelay000031", "guestrelay000032"
+	y.guest(viewer, session.RoleView, "link-1", ^uint64(0))
+	y.guest(ctl, session.RoleControl, "link-2", ^uint64(0))
+	for _, who := range []string{viewer, ctl} {
+		y.relay(who, proto.MustControl(proto.PermissionAnswer{T: proto.CtlPermissionAnswer, ReqID: "p1", Question: r.Question, Call: r.Call, Sha256: r.InputSha256, Choice: proto.PermissionAllowOnce}))
+		if m := y.wait("the permission_answer's word", func(m yardMsg) bool { return names(m, who, "p1") }); relayedJSON(m)["code"] != proto.ErrCodeNotAnswerer {
+			t.Fatalf("%s's permission_answer %v", who, relayedJSON(m))
+		}
+	}
+	y.relay(ctl, proto.MustControl(proto.Answer{T: proto.CtlAnswer, ReqID: "a1", Question: r.Question, Input: "y\r"}))
+	if m := y.wait("the answer's word", func(m yardMsg) bool { return names(m, ctl, "a1") }); relayedJSON(m)["code"] != proto.ErrCodePermission {
+		t.Fatalf("a relayed answer %v", relayedJSON(m))
+	}
+	y.relay(ctl, proto.MustControl(proto.Answer{T: proto.CtlAnswer, ReqID: "a2", Question: r.Question, Text: "yes"}))
+	if m := y.wait("the line's word", func(m yardMsg) bool { return names(m, ctl, "a2") }); relayedJSON(m)["code"] != proto.ErrCodePermission {
+		t.Fatalf("a relayed line %v", relayedJSON(m))
+	}
+	if n := sessiontest.Count(f.Calls(), "reply"); n != 0 {
+		t.Fatalf("the driver was replied %d times", n)
+	}
+	if o, _ := chat.OpenPermissions(); o != 1 {
+		t.Fatalf("%d open", o)
+	}
+}

@@ -27,10 +27,12 @@ var update = flag.Bool("update", false, "write the fixtures' expected events")
 // the command, print mode with stream-json, the protocol's arguments, the
 // resumed conversation, the model, --permission-mode default (a yolo
 // session's yolo arguments in its place), the terminal's arguments and
-// Conductor's MCP config; with a permission host, the permission tool and
-// exactly one --settings, the floor. Never --bare, --setting-sources,
-// --strict-mcp-config or the SDK's stdio prompt route; an argument of the
-// terminal's that would set one of the chat's own flags is refused.
+// Conductor's MCP config with --strict-mcp-config, once, so that no other
+// tool server is loaded (alone, with the server's MCP off); with a
+// permission host, the permission tool and exactly one --settings, the
+// floor. Never --bare, --setting-sources or the SDK's stdio prompt route;
+// an argument of the terminal's that would set one of the chat's own flags
+// is refused.
 func TestClaudeArgvIsTheDocumentedOne(t *testing.T) {
 	hooks := "/data/hooks"
 	conv := "11111111-2222-4333-8444-555555555555"
@@ -41,16 +43,20 @@ func TestClaudeArgvIsTheDocumentedOne(t *testing.T) {
 		l    ClaudeLaunch
 		want []string
 	}{
-		{"a chat", ClaudeLaunch{Command: []string{"claude"}, Conversation: conv, Model: []string{"--model=opus"}, LaunchArgs: []string{"--add-dir=/srv/docs"}, HooksDir: hooks},
-			join([]string{"claude"}, stream, []string{"--resume", conv, "--model=opus", "--permission-mode", "default", "--add-dir=/srv/docs", "--mcp-config", hooks + "/claude-protocol-mcp.json"})},
+		{"a chat", ClaudeLaunch{Command: []string{"claude"}, Conversation: conv, Model: []string{"--model=opus"}, LaunchArgs: []string{"--fallback-model=sonnet"}, HooksDir: hooks},
+			join([]string{"claude"}, stream, []string{"--resume", conv, "--model=opus", "--permission-mode", "default", "--fallback-model=sonnet", "--mcp-config", hooks + "/claude-protocol-mcp.json", "--strict-mcp-config"})},
 		{"a yolo session", ClaudeLaunch{Command: []string{"claude"}, Protocol: []string{"--effort=high"}, Conversation: conv, Yolo: true, YoloArgs: []string{"--dangerously-skip-permissions"}, HooksDir: hooks},
-			join([]string{"claude"}, stream, []string{"--effort=high", "--resume", conv, "--dangerously-skip-permissions", "--mcp-config", hooks + "/claude-protocol-mcp.json"})},
+			join([]string{"claude"}, stream, []string{"--effort=high", "--resume", conv, "--dangerously-skip-permissions", "--mcp-config", hooks + "/claude-protocol-mcp.json", "--strict-mcp-config"})},
 		{"a chat with its permission host", ClaudeLaunch{Command: []string{"/opt/claude", "--x"}, Conversation: conv, HooksDir: hooks, PermissionHost: true},
-			join([]string{"/opt/claude", "--x"}, stream, []string{"--resume", conv, "--permission-mode", "default", "--mcp-config", hooks + "/claude-protocol-mcp.json", "--permission-prompt-tool", "mcp__conductor__permission", "--settings", hooks + "/claude-protocol.json"})},
+			join([]string{"/opt/claude", "--x"}, stream, []string{"--resume", conv, "--permission-mode", "default", "--mcp-config", hooks + "/claude-protocol-mcp.json", "--strict-mcp-config", "--permission-prompt-tool", "mcp__conductor__permission", "--settings", hooks + "/claude-protocol.json"})},
 		{"a yolo session with its permission host", ClaudeLaunch{Command: []string{"claude"}, Conversation: conv, Yolo: true, YoloArgs: []string{"--dangerously-skip-permissions"}, HooksDir: hooks, PermissionHost: true},
-			join([]string{"claude"}, stream, []string{"--resume", conv, "--dangerously-skip-permissions", "--mcp-config", hooks + "/claude-protocol-mcp.json", "--permission-prompt-tool", "mcp__conductor__permission", "--settings", hooks + "/claude-protocol-yolo.json"})},
+			join([]string{"claude"}, stream, []string{"--resume", conv, "--dangerously-skip-permissions", "--mcp-config", hooks + "/claude-protocol-mcp.json", "--strict-mcp-config", "--permission-prompt-tool", "mcp__conductor__permission", "--settings", hooks + "/claude-protocol-yolo.json"})},
+		{"a chat with its permission host and the server's MCP off", ClaudeLaunch{Command: []string{"claude"}, Conversation: conv, HooksDir: hooks, NoMCP: true, PermissionHost: true},
+			join([]string{"claude"}, stream, []string{"--resume", conv, "--permission-mode", "default", "--strict-mcp-config", "--settings", hooks + "/claude-protocol.json"})},
 		{"a yolo launch with no recipe", ClaudeLaunch{Command: []string{"claude"}, Conversation: conv, Yolo: true, HooksDir: hooks},
-			join([]string{"claude"}, stream, []string{"--resume", conv, "--permission-mode", "default", "--mcp-config", hooks + "/claude-protocol-mcp.json"})},
+			join([]string{"claude"}, stream, []string{"--resume", conv, "--permission-mode", "default", "--mcp-config", hooks + "/claude-protocol-mcp.json", "--strict-mcp-config"})},
+		{"a chat with the server's MCP off", ClaudeLaunch{Command: []string{"claude"}, Conversation: conv, HooksDir: hooks, NoMCP: true},
+			join([]string{"claude"}, stream, []string{"--resume", conv, "--permission-mode", "default", "--strict-mcp-config"})},
 	}
 	for _, c := range cases {
 		got, err := ClaudeArgs(c.l)
@@ -60,7 +66,13 @@ func TestClaudeArgvIsTheDocumentedOne(t *testing.T) {
 		if !slices.Equal(got, c.want) {
 			t.Errorf("%s:\n got %q\nwant %q", c.name, got, c.want)
 		}
-		for _, never := range []string{"--bare", "--setting-sources", "--strict-mcp-config", "stdio"} {
+		if n := count(got, "--strict-mcp-config"); n != 1 {
+			t.Errorf("%s: --strict-mcp-config %d times", c.name, n)
+		}
+		if n := count(got, "--mcp-config"); (n == 1) == c.l.NoMCP || n > 1 {
+			t.Errorf("%s: --mcp-config %d times", c.name, n)
+		}
+		for _, never := range []string{"--bare", "--setting-sources", "stdio"} {
 			if slices.ContainsFunc(got, func(a string) bool { return a == never || strings.HasPrefix(a, never+"=") }) {
 				t.Errorf("%s: %s in %q", c.name, never, got)
 			}
@@ -90,6 +102,37 @@ func TestClaudeArgvIsTheDocumentedOne(t *testing.T) {
 		if got, err := ClaudeArgs(bad); err == nil {
 			t.Errorf("%+v made %q", bad, got)
 		}
+	}
+}
+
+// A launch whose arguments name an added folder is not started as a chat,
+// wherever the argument stands, and a flag of the chat's own is refused by
+// its name: each with an error the move can tell a person from.
+func TestClaudeArgvRefusesAnAddedFolder(t *testing.T) {
+	hooks := "/data/hooks"
+	conv := "11111111-2222-4333-8444-555555555555"
+	for name, l := range map[string]ClaudeLaunch{
+		"a launch argument with its value":     {Command: []string{"claude"}, Conversation: conv, HooksDir: hooks, LaunchArgs: []string{"--add-dir=/srv/docs"}},
+		"a launch argument, its folders after": {Command: []string{"claude"}, Conversation: conv, HooksDir: hooks, LaunchArgs: []string{"--add-dir", "/srv/docs", "/srv/more"}},
+		"the recipe's":                         {Command: []string{"claude"}, Conversation: conv, HooksDir: hooks, Protocol: []string{"--add-dir=/srv/docs"}},
+		"the command's own":                    {Command: []string{"claude", "--add-dir=/srv/docs"}, Conversation: conv, HooksDir: hooks},
+		"the yolo recipe's":                    {Command: []string{"claude"}, Conversation: conv, HooksDir: hooks, Yolo: true, YoloArgs: []string{"--dangerously-skip-permissions", "--add-dir", "/srv/docs"}},
+		"beside a flag of the chat's own":      {Command: []string{"claude"}, Conversation: conv, HooksDir: hooks, LaunchArgs: []string{"--verbose", "--add-dir=/srv/docs"}},
+	} {
+		if got, err := ClaudeArgs(l); !errors.Is(err, ErrAddedFolder) {
+			t.Errorf("%s: %v (%q), want ErrAddedFolder", name, err, got)
+		}
+	}
+	// A folder's name that only looks like the flag is no added folder.
+	if _, err := ClaudeArgs(ClaudeLaunch{Command: []string{"claude"}, Conversation: conv, HooksDir: hooks, LaunchArgs: []string{"--add-directory-note=x", "--fallback-model=--add-dir"}}); err != nil {
+		t.Errorf("an argument that only resembles the flag: %v", err)
+	}
+	var own *OwnFlagError
+	if _, err := ClaudeArgs(ClaudeLaunch{Command: []string{"claude"}, Conversation: conv, HooksDir: hooks, LaunchArgs: []string{"--settings=/x.json"}}); !errors.As(err, &own) || own.Flag != "--settings" {
+		t.Errorf("a flag of the chat's own: %v", err)
+	}
+	if OwnFlagWords("--settings") != "This session's arguments hold --settings, which a chat sets itself; it stays in its terminal." {
+		t.Errorf("the own flag's words: %q", OwnFlagWords("--settings"))
 	}
 }
 

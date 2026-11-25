@@ -290,6 +290,46 @@ func TestMoveRouteRefusesACrewMember(t *testing.T) {
 	}
 }
 
+// A session launched with an added folder, or with a flag a chat sets
+// itself, is told so at the move, before anything is stopped: its terminal
+// goes on and no child is started.
+func TestMoveRefusesArgumentsAChatCannotHold(t *testing.T) {
+	c := newMoveEnv(t, nil, nil)
+	for _, tc := range []struct {
+		name  string
+		args  []string
+		words string
+	}{
+		{"an added folder", []string{"--add-dir=" + t.TempDir()}, agentproto.AddedFolderWords},
+		{"a flag of the chat's own", []string{"--verbose"}, agentproto.OwnFlagWords("--verbose")},
+	} {
+		resp, out := c.do("POST", "/api/sessions", adminToken, map[string]any{"agentId": "claude", "args": tc.args})
+		if resp.StatusCode != http.StatusCreated {
+			t.Fatalf("%s: the launch: %d %v", tc.name, resp.StatusCode, out)
+		}
+		id, _ := out["id"].(string)
+		t.Cleanup(func() {
+			if d, ok := c.srv.registry.Get(id); ok {
+				_ = d.Stop(t.Context())
+			}
+		})
+		c.turnEnded(t, id)
+		code, body := c.move(t, id, session.WayProtocol)
+		if got, words := refusalOf(body); code != http.StatusConflict || got != "move_refused" || words != tc.words {
+			t.Fatalf("%s: %d %v, want move_refused %q", tc.name, code, body, tc.words)
+		}
+		if l := c.local(id); l.Way() != session.WayTerminal || l.Info().Status.Ended() {
+			t.Fatalf("%s: the refused move left the way %q, ended %v", tc.name, l.Way(), l.Info().Status.Ended())
+		}
+	}
+	if n := len(c.pipeSpecs()); n != 0 {
+		t.Fatalf("%d children started by refused moves", n)
+	}
+	if n := len(c.rt.Asked("StartTerminal")); n != 2 {
+		t.Fatalf("%d terminals started: a refused move stops and starts none", n)
+	}
+}
+
 // I21: every session starts in its terminal: a launch, a resume of a session
 // that ended as a chat, and a resume from its record.
 func TestEverySessionStartsInItsTerminal(t *testing.T) {

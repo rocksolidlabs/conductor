@@ -24,24 +24,27 @@ import (
 	"github.com/rocksolidlabs/conductor/internal/version"
 )
 
-// mcpRun feeds lines to the MCP server and returns its replies, one per request.
+// mcpRun feeds lines to the MCP server as a client that waits for each
+// answer before it sends the next request, and returns its replies, one
+// per request, in order: calls run each on a goroutine of their own, so
+// requests sent at once may be answered in any order.
 func mcpRun(t *testing.T, getenv func(string) string, lines ...string) []map[string]any {
 	t.Helper()
-	var out bytes.Buffer
-	s := &mcpServer{out: &out, getenv: getenv}
-	if code, err := s.serve(context.Background(), strings.NewReader(strings.Join(lines, "\n")+"\n")); code != 0 || err != nil {
+	c := startMCP(t, &mcpServer{getenv: getenv})
+	var replies []map[string]any
+	for _, l := range lines {
+		c.send(l)
+		var req mcpRequest
+		if json.Unmarshal([]byte(l), &req) == nil && req.JSONRPC == "2.0" && (len(req.ID) == 0 || string(req.ID) == "null") {
+			continue // a notification: nothing comes back
+		}
+		replies = append(replies, c.next())
+	}
+	if code, err := c.end(); code != 0 || err != nil {
 		t.Fatalf("serve: %d %v", code, err)
 	}
-	var replies []map[string]any
-	for _, l := range strings.Split(strings.TrimSpace(out.String()), "\n") {
-		if l == "" {
-			continue
-		}
-		var m map[string]any
-		if err := json.Unmarshal([]byte(l), &m); err != nil {
-			t.Fatalf("reply %q: %v", l, err)
-		}
-		replies = append(replies, m)
+	if extra := c.rest(); len(extra) > 0 {
+		t.Fatalf("replies no request asked for: %v", extra)
 	}
 	return replies
 }
@@ -532,7 +535,7 @@ func TestEveryToolIsAnOperation(t *testing.T) {
 		}
 	}
 	listed := map[string]bool{}
-	for _, tl := range append(mcpTools(false, false), mcpTools(true, true)...) {
+	for _, tl := range slices.Concat(mcpTools(false, false, false), mcpTools(true, true, false), mcpTools(false, false, true)) {
 		listed[tl.Name] = true
 		if op, ok := byMCP[tl.Name]; !ok || tl.Description != op.Description {
 			t.Errorf("tool %s: not the table's", tl.Name)
@@ -563,12 +566,12 @@ func TestAnUnhandledToolIsNotListed(t *testing.T) {
 	}
 	ops := append(api.Operations(), api.Operation{Name: "not_yet", MCP: "not_yet", Summary: "s", Description: "d", Input: map[string]any{"type": "object"}})
 	for _, c := range []struct{ brakeman, granted bool }{{false, false}, {true, false}, {true, true}} {
-		for _, tl := range mcpToolsFrom(ops, c.brakeman, c.granted) {
+		for _, tl := range mcpToolsFrom(ops, c.brakeman, c.granted, false) {
 			if tl.Name == "not_yet" {
 				t.Fatal("a tool with no handler is listed")
 			}
 		}
-		if len(mcpToolsFrom(ops, c.brakeman, c.granted)) != len(mcpTools(c.brakeman, c.granted)) {
+		if len(mcpToolsFrom(ops, c.brakeman, c.granted, false)) != len(mcpTools(c.brakeman, c.granted, false)) {
 			t.Fatal("the listing changed")
 		}
 	}
@@ -673,7 +676,7 @@ func TestBrakemansToolsOnlyInABrakemanSession(t *testing.T) {
 			t.Errorf("a Brakeman turn's session does not list %s", name)
 		}
 	}
-	for _, tl := range mcpTools(true, true) {
+	for _, tl := range mcpTools(true, true, false) {
 		op, ok := operation(tl.Name)
 		if !ok || tl.Description != op.Description || !reflect.DeepEqual(tl.InputSchema, op.Input) {
 			t.Errorf("tool %s is not the table's", tl.Name)
@@ -746,7 +749,7 @@ func TestNoCrewToolsForBrakeman(t *testing.T) {
 	}
 	// Less the crew and ticket tools, the task's own and the lookup a
 	// turn never lists, plus Brakeman's.
-	if want := len(mcpTools(false, false)) - 4 - len(taskOnly) - len(lookupOnly) + 3; len(turn) != want {
+	if want := len(mcpTools(false, false, false)) - 4 - len(taskOnly) - len(lookupOnly) + 3; len(turn) != want {
 		t.Fatalf("%d tools, want %d: %v", len(turn), want, turn)
 	}
 }
@@ -968,7 +971,7 @@ func TestTheActToolIsListedOnlyWithAGrant(t *testing.T) {
 			t.Errorf("%s lists act: %v", name, got)
 		}
 	}
-	tl := mcpTools(true, true)
+	tl := mcpTools(true, true, false)
 	i := slices.IndexFunc(tl, func(x mcpTool) bool { return x.Name == "act" })
 	op, _ := operation("act")
 	if i < 0 || !reflect.DeepEqual(tl[i].InputSchema, op.Input) || tl[i].Description != op.Description {

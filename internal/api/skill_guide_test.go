@@ -141,6 +141,11 @@ func TestTheSkillListsTheGuidesTools(t *testing.T) {
 	brakemanRefuses := regexp.MustCompile(`^(` + strings.Join(strings.Split(strings.ReplaceAll(refused[1], " and ", ", "), ", "), "|") + `)$`)
 	want := map[cond][]string{}
 	for _, op := range operationsTable() {
+		if op.unguided {
+			// A tool the agent's program calls, never the model (a chat's
+			// permission prompts): the skill, as the guide, leaves it out.
+			continue
+		}
 		if op.MCP != "" && (op.Scope == "observe" || op.Scope == "act") {
 			if !regexp.MustCompile(`\b` + op.MCP + `\b`).MatchString(brakemans) {
 				t.Errorf("the skill's Brakeman section does not name %s", op.MCP)

@@ -1409,6 +1409,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/sessions/{id}/links/{linkId}", s.requireAdmin(s.handleRevokeLink))
 	mux.HandleFunc("GET /api/sessions/{id}/files", s.handleGetFile)
 	mux.HandleFunc("POST /api/sessions/{id}/attention", s.handleAttention)
+	// A chat's permission request, held open until it is answered
+	// (permission.go): the session's agent token alone.
+	mux.HandleFunc("POST /api/sessions/{id}/permission", s.handlePermission)
 	mux.HandleFunc("POST /api/sessions/{id}/events", s.handleEvent)
 	mux.HandleFunc("GET /api/events", s.handleEvents)
 	mux.HandleFunc("GET /api/join/{token}", s.handleJoin)

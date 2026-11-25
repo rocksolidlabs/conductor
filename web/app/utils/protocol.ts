@@ -573,6 +573,8 @@ export interface Welcome {
   interrupt?: boolean
   /** The way a move pressed during a turn goes to at its end (see Moving between ways); absent while none is noted, and from an older owner. */
   noted?: SessionWay
+  /** The owner takes this connection's `permission_answer`: a chat's welcome to the operator's own connection alone, so only it is drawn a request's buttons. */
+  permissionAnswer?: boolean
 }
 
 export type ControlMessage =
@@ -2292,3 +2294,37 @@ export function partBytes(data: string): Uint8Array {
   for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i)
   return out
 }
+
+// A chat's permission request (docs/protocol.md, Chat sessions): a call the agent put to Conductor's prompt tool is a `permission`
+// entry and the session's question (kind `permission`, source `protocol`), answered by the operator alone with `permission_answer`,
+// bound to the request by its call and its input's digest. Every other answer path is refused `permission`.
+
+/** The choices of a permission answer: no "always" in the first cut. */
+export type PermissionChoice = 'allow_once' | 'deny'
+
+/**
+ * The operator's answer to an open permission request (client -> owner): `question` the entry's question id, `call` and `sha256`
+ * the entry's `call` and `inputSha256`, `message` with a deny what the agent is told. Answered `answer_ok` naming `reqId` once the
+ * verdict was delivered, or `error` naming it: `question_answered`, `stale_request`, `not_answerer`, `read_only`, `moving`,
+ * `not_protocol`, `bad_frame`.
+ */
+export interface PermissionAnswer {
+  t: 'permission_answer'
+  reqId: string
+  question: string
+  call: string
+  sha256: string
+  choice: PermissionChoice
+  message?: string
+}
+
+/** A permission answer's bounds, in bytes (proto.MaxPermissionQuestion, MaxPermissionCall, PermissionSha256Len, MaxPermissionMessage). */
+export const MAX_PERMISSION_QUESTION = 32
+export const MAX_PERMISSION_CALL = 128
+export const PERMISSION_SHA256_LEN = 64
+export const MAX_PERMISSION_MESSAGE = 500
+
+/** The permission request's error codes: an answer that no longer matches its request; an answer from anyone but the operator. */
+export const ERR_STALE_REQUEST = 'stale_request'
+export const ERR_NOT_ANSWERER = 'not_answerer'
+
