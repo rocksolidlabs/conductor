@@ -514,6 +514,12 @@ func (rd *inboxRead) questionItem(info session.Info) (*inboxItem, bool) {
 	case held:
 		words := agent + "'s turn is held for keys typed in its terminal: open the terminal to go on"
 		it.Brief, it.Blocking.Words = fitText(words, 2<<10), fitText(words, 500)
+	case a.Source == session.SourceProtocol && a.Kind == session.KindPermission:
+		// A chat's permission request: the operator answers it in the
+		// chat, with its own buttons, bound to its call (design 7); no
+		// action here answers it.
+		it.Brief = fitText(brief+"; it asks permission for a call: "+PermissionInChatWords, 2<<10)
+		it.Blocking.Words = fitText(agent+" does nothing until it is answered. "+PermissionInChatWords, 500)
 	case a.Decision != "":
 		// The decision's card answers it: no choice, no line.
 		it.Brief = fitText(brief+"; it asks a decision for you, "+a.Decision+", answered on its card, never in the terminal", 2<<10)
@@ -562,7 +568,7 @@ func (rd *inboxRead) questionItem(info session.Info) (*inboxItem, bool) {
 		}
 		// A blocker the attempt reported is this question: it names the
 		// task and carries the task's commands, each at the run's revision.
-		if task != nil && task.Blocker != nil && task.Attempt != nil && task.Attempt.SessionID == info.ID && !held {
+		if task != nil && task.Blocker != nil && task.Attempt != nil && task.Attempt.SessionID == info.ID && !held && !(a.Source == session.SourceProtocol && a.Kind == session.KindPermission) {
 			it.Brief = fitText(brief+"; "+c.Task+" is blocked: "+task.Blocker.Reason, 2<<10)
 			if set, ok := rd.commandsOf(run.ID, c.Task); ok {
 				rd.taskActions(it, run, set, " task "+c.Task)
@@ -572,6 +578,10 @@ func (rd *inboxRead) questionItem(info session.Info) (*inboxItem, bool) {
 	rd.withCard(it)
 	return it, true
 }
+
+// PermissionInChatWords is what the inbox's item of a chat's permission
+// request says in place of an action (the plan's, design 11).
+const PermissionInChatWords = "Answer it in the chat."
 
 // btoi is 1 for true.
 func btoi(b bool) int {

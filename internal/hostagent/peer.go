@@ -526,6 +526,12 @@ func (p *peer) handle(f proto.Frame, via *dcSink) {
 				return
 			}
 			p.a.local.InterruptAsk(sub, m.ReqID, p.awaitVouch)
+		case proto.CtlPermissionAnswer:
+			// A permission request is answered by the operator alone, on
+			// the server's own socket: no viewer through a host or a
+			// switchyard is the operator (docs/plans/chat-or-terminal.md,
+			// design 7).
+			p.a.local.Send(sub, session.PermissionAnswerWord(proto.RequestIDOf(f.Payload), session.ErrNotAnswerer))
 		default:
 			// A decision link's lane (lane.go): refused on a viewer of no
 			// decision link, and by a host that serves no decisions.

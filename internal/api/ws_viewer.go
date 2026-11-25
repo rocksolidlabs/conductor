@@ -539,6 +539,19 @@ func (s *Server) handleLocalControl(sub *session.Subscription, local *session.Lo
 			return true
 		}
 		local.InterruptAsk(sub, m.ReqID, nil)
+	case proto.CtlPermissionAnswer:
+		// A chat's permission request, the operator's alone
+		// (session.Local.AnswerPermission): every other connection is
+		// refused not_answerer. Answered once the verdict was delivered.
+		m, err := proto.DecodePermissionAnswer(payload)
+		if err != nil {
+			local.Send(sub, session.PermissionAnswerWord(proto.RequestIDOf(payload), session.ErrBadAnswer))
+			return true
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), permissionAnswerWait)
+		err = local.AnswerPermission(ctx, sub, m)
+		cancel()
+		local.Send(sub, session.PermissionAnswerWord(m.ReqID, err))
 	case proto.CtlHello:
 		// duplicate hello is harmless
 	default:
