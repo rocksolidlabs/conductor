@@ -116,6 +116,8 @@ export interface Session {
   turns?: boolean
   /** `protocol` while it runs as a chat (the agent's own protocol); missing in its terminal. */
   way?: string
+  /** A chat's messages reach its agent as written (the listing's `verbatim`). */
+  verbatim?: boolean
 }
 
 /**
@@ -260,7 +262,8 @@ export async function pressChord(page: Page, first: string, second: string): Pro
  * which a check that merely wants the view up never means.
  */
 export async function showView(page: Page, item: 'people' | 'explorer' | 'changes' | 'commits' | 'activity' | 'chat'): Promise<void> {
-  const button = page.locator(`[data-inspector] [data-rail-item="${item}"]`)
+  // The people's chat is People's (docs/plans/chat-or-terminal.md, design 11): one rail item holds both.
+  const button = page.locator(`[data-inspector] [data-rail-item="${item === 'chat' ? 'people' : item}"]`)
   if ((await button.getAttribute('aria-pressed')) !== 'true') await button.click()
 }
 

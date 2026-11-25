@@ -132,13 +132,14 @@ test('the session page: the views show and never hide, Share, Copy a view link, 
   await expect(page.locator('.terminal-host .xterm-helper-textarea').first()).toBeFocused({ timeout: 30_000 })
   const inspector = page.locator('[data-inspector]')
   const pressed = (item: string) => expect(inspector.locator(`[data-rail-item="${item}"]`)).toHaveAttribute('aria-pressed', 'true')
-  // The views: each shows its view; Open Chat run twice keeps the chat open (it used to toggle it closed).
+  // The views: each shows its view; Open People (the people's chat and who is here, one view) run twice keeps it open (it used to
+  // toggle it closed). No row opens a Chat of its own.
   await runRow(page, 'page:view:explorer')
   await pressed('explorer')
-  await runRow(page, 'page:view:chat')
-  await pressed('chat')
+  await runRow(page, 'page:view:people')
+  await pressed('people')
   await expect(inspector.locator('[data-chat]')).toBeVisible()
-  await runRow(page, 'page:view:chat')
+  await runRow(page, 'page:view:people')
   await expect(inspector).toHaveAttribute('data-inspector-open', 'true')
   await expect(inspector.locator('[data-chat]')).toBeVisible()
   await runRow(page, 'page:view:activity')
@@ -334,7 +335,7 @@ test('a session row’s actions: the copies say so, Open Files/Chat/Activity/Peo
   a = await act(actions, s.id)
   await a('copy-link').click()
   await expect(toast(page, /View link to .* copied/)).toBeVisible({ timeout: 15_000 })
-  for (const [action, tab, item] of [['open-files', 'files', 'explorer'], ['open-chat', 'chat', 'chat'], ['open-activity', 'activity', 'activity'], ['open-people', 'people', 'people']] as const) {
+  for (const [action, tab, item] of [['open-files', 'files', 'explorer'], ['open-activity', 'activity', 'activity'], ['open-people', 'people', 'people']] as const) {
     await page.goto('/agents')
     await expect(page.locator('[data-session-list]')).toBeVisible({ timeout: 30_000 })
     a = await act(actions, s.id)
@@ -344,10 +345,10 @@ test('a session row’s actions: the copies say so, Open Files/Chat/Activity/Peo
   }
   // On the session's own page the same action shows the view here, twice without hiding it.
   a = await act(actions, s.id)
-  await a('open-chat').click()
+  await a('open-people').click()
   await expect(page.locator('[data-inspector] [data-chat]')).toBeVisible()
   a = await act(actions, s.id)
-  await a('open-chat').click()
+  await a('open-people').click()
   await expect(page.locator('[data-inspector] [data-chat]')).toBeVisible()
   // Type a line opens the field; Resume on an exited session makes a new one.
   await page.goto('/agents')
