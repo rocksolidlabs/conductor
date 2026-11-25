@@ -41,7 +41,8 @@ test('the panel is closed until opened, the terminal takes its room, and the lin
   await connected(page)
   await expect(inspector).toHaveAttribute('data-inspector-open', 'false')
   await expect(rail).toBeVisible()
-  await expect(rail.locator('[data-rail-item]')).toHaveCount(6)
+  // People holds the people's chat and who is here (docs/plans/chat-or-terminal.md, design 11): five items.
+  await expect(rail.locator('[data-rail-item]')).toHaveCount(5)
   await expect(rail.locator('[data-rail-item][aria-pressed="true"]')).toHaveCount(0)
   await expect(inspector.locator('[data-inspector-panel]')).toHaveCount(0)
   // The terminal's column is as wide as the page's body less the rail.
@@ -152,7 +153,7 @@ test('a session the server no longer holds opens on its name and a way to its re
   await expect(page.locator('[data-session-gone-head] [data-status-mark="exited"] [data-status-word]')).toHaveText('exited')
   await expect(page).toHaveTitle(/e2e session gone/)
   // No control that cannot work: no connection, no viewers, Files, Share, Chat or More.
-  for (const name of ['Share', 'More', 'Files', 'Chat']) await expect(page.getByRole('button', { name, exact: true })).toHaveCount(0)
+  for (const name of ['Share', 'More', 'Files', 'People']) await expect(page.getByRole('button', { name, exact: true })).toHaveCount(0)
   await expect(page.locator('[data-transport-state]')).toHaveCount(0)
   await expect(page.locator('[data-inspector]')).toHaveCount(0)
   await goneBody.getByRole('link', { name: 'Open its record' }).click()

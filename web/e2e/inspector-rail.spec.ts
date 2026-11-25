@@ -20,7 +20,9 @@ test('each rail item opens its view, the active one collapses the panel, the cou
     const rail = inspector.locator('[data-inspector-rail]')
     const item = (id: string) => rail.locator(`[data-rail-item="${id}"]`)
     await expect(rail).toBeVisible()
-    await expect(rail.locator('[data-rail-item]')).toHaveCount(6)
+    // People holds the people's chat and who is here (docs/plans/chat-or-terminal.md, design 11): five items.
+    await expect(rail.locator('[data-rail-item]')).toHaveCount(5)
+    await expect(rail.locator('[data-rail-item="chat"]')).toHaveCount(0)
     // The panel is closed as the page opens (P11): the rail and its items shown, none pressed. People opens it, pressed, with its bar.
     await expect(inspector).toHaveAttribute('data-inspector-open', 'false')
     await expect(rail.locator('[data-rail-item][aria-pressed="true"]')).toHaveCount(0)
@@ -59,8 +61,10 @@ test('each rail item opens its view, the active one collapses the panel, the cou
     await expect(page.locator('[data-inspector] [data-rail-item="explorer"]')).toHaveAttribute('aria-pressed', 'true')
     await page.locator('[data-inspector] [data-rail-item="explorer"]').click()
     await expect(page.locator('[data-inspector]')).toHaveAttribute('data-inspector-open', 'false')
-    await page.locator('[data-inspector] [data-rail-item="chat"]').click()
-    await expect(page.locator('[data-inspector] [data-rail-item="chat"]')).toHaveAttribute('aria-pressed', 'true')
+    await page.locator('[data-inspector] [data-rail-item="people"]').click()
+    await expect(page.locator('[data-inspector] [data-rail-item="people"]')).toHaveAttribute('aria-pressed', 'true')
+    await expect(page.locator('[data-inspector] [data-rail-item="people"]')).toHaveAttribute('aria-label', /^People · /)
+    await expect(page.locator('[data-inspector] [data-inspector-head="people"]')).toContainText('People')
     await expect(page.locator('[data-inspector] [data-chat]')).toBeVisible()
     // Activity: All, then Files with the touched rows and their count on the chip, then Tools.
     await api.ok('POST', `/api/sessions/${s.id}/events`, { type: 'file', op: 'edit', path: 'src/main.go', tool: 'Edit' })

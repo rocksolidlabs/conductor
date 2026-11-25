@@ -57,6 +57,8 @@ function send() {
   <div class="flex flex-wrap items-center gap-1.5 pb-1.5 pr-2.5" :class="big ? 'flex-col items-stretch pl-2 pt-1' : wrap ? 'px-3 pb-3' : 'pl-2.5'" :title="prompt.away || prompt.held ? prompt.placeholder : undefined" data-row-answer>
     <!-- A durable decision's question takes no reply here: the row says where it is answered (noReply). -->
     <p v-if="prompt.decision" class="text-xs text-muted" data-row-decision>{{ prompt.placeholder }}</p>
+    <!-- A chat's permission request: answered in the chat alone, said in plain words, no field to type in. -->
+    <p v-else-if="prompt.inChat" class="text-xs text-muted" data-row-in-chat>{{ prompt.placeholder }}</p>
     <template v-else-if="prompt.choices.length">
       <UButton
         v-for="(o, i) in prompt.choices"

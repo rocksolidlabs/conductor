@@ -1,8 +1,9 @@
 import { shallowRef, ref, type Ref, type ShallowRef } from 'vue'
-import { validWay, type ChatPost, type ChatSend, type ControlMessage, type FileGetExtra, type FileResponse, type FileWriteOptions, type NvimEvent, type NvimSwapChoice, type Role, type SessionWay, type TranscriptMessage, type TranscriptReply, type TranscriptRequest, type Welcome } from '~/utils/protocol'
+import { validWay, type ChatPost, type ChatSend, type ControlMessage, type FileGetExtra, type FileResponse, type FileWriteOptions, type NvimEvent, type NvimSwapChoice, type PermissionAnswer, type Role, type SessionWay, type TranscriptMessage, type TranscriptReply, type TranscriptRequest, type Welcome } from '~/utils/protocol'
 import type { CloseInfo, TerminalTransport } from '~/utils/transport/types'
 import type { LaneWire } from '~/utils/transport/decide'
 import { ReplyError, type QuestionReply } from '~/utils/reply'
+import { Transcript } from '~/utils/transcript'
 
 /**
  * One connection to a session, whichever way the session runs (docs/plans/chat-or-terminal.md, design 11): the transport, the
@@ -21,6 +22,13 @@ export interface SessionConnection {
   readonly way: Ref<SessionWay>
   readonly noted: Ref<SessionWay | ''>
   readonly why: Ref<string>
+  /**
+   * A chat's transcript as this page holds it (utils/transcript.ts), across the connections made again: the highest mark it holds is
+   * the next hello's `transcriptAfter`, so a connection made again is sent only what changed after it. `transcriptVersion` rises with
+   * every change, for a view to redraw by.
+   */
+  readonly transcript: Transcript
+  readonly transcriptVersion: Ref<number>
   /** Makes a fresh transport and connects it with hello (the transport's own connect), the one before closed. */
   connect(hello: { cols: number; rows: number }): Promise<Welcome>
   disconnect(): void
@@ -40,6 +48,8 @@ export interface SessionConnection {
   /** Keys to the terminal; false when not open. */
   sendInput(data: Uint8Array): boolean
   submit(text: string): boolean
+  /** A message with the owner's word on it (a chat's: `submit_ok` once the agent took it, or the owner's refusal in its words). */
+  submitAcked(text: string): Promise<boolean>
   answer(reply: QuestionReply, opts?: { sent?: () => void }): Promise<boolean>
   chat(post: ChatPost): boolean
   chatSend(send: ChatSend): boolean
@@ -49,6 +59,8 @@ export interface SessionConnection {
   ping(): void
   transcriptGet(req: TranscriptRequest): Promise<TranscriptReply>
   interrupt(): Promise<boolean>
+  /** The operator's answer to a chat's permission request (the welcome's `permissionAnswer` says this connection may). */
+  permissionAnswer(a: Omit<PermissionAnswer, 't' | 'reqId'>): Promise<boolean>
 }
 
 /** The connection of one session's view: what TerminalView holds, split from its terminal. */
@@ -60,6 +72,8 @@ export function useSessionConnection(createTransport: () => TerminalTransport): 
   const way = ref<SessionWay>('terminal')
   const noted = ref<SessionWay | ''>('')
   const why = ref('')
+  const transcript = new Transcript()
+  const transcriptVersion = ref(0)
   const outputs = new Set<(data: Uint8Array, replay: boolean) => void>()
   const controls = new Set<(msg: ControlMessage) => void>()
   const transcripts = new Set<(msg: TranscriptMessage) => void>()
@@ -78,6 +92,8 @@ export function useSessionConnection(createTransport: () => TerminalTransport): 
       way.value = msg.way === 'protocol' ? 'protocol' : 'terminal'
       noted.value = msg.noted === 'terminal' || msg.noted === 'protocol' ? msg.noted : ''
       why.value = ''
+      transcript.welcome(msg)
+      transcriptVersion.value = transcript.version
     } else if (msg.t === 'way') {
       // A way message past its bounds is not acted on.
       if (!validWay(msg)) return
@@ -107,8 +123,20 @@ export function useSessionConnection(createTransport: () => TerminalTransport): 
     t.onControl((msg) => control(t, msg))
     t.onTranscript((msg) => {
       if (transport.value !== t) return
+      if (transcript.take(msg)) {
+        transcriptVersion.value = transcript.version
+        // A replay that left changes out is read back before its mark is held (see Chat sessions: `more`).
+        if (msg.t === 'page' && msg.more && transcript.gap !== null) {
+          void transcript
+            .readBack((req) => t.transcriptGet(req))
+            .catch(() => undefined)
+            .finally(() => (transcriptVersion.value = transcript.version))
+        }
+      }
       for (const cb of transcripts) cb(msg)
     })
+    // The resume point the page holds goes with the hello of the connection made now.
+    t.transcriptFrom(transcript.mark)
     t.onClose((info) => {
       for (const cb of closes) cb(info, t)
     })
@@ -125,6 +153,8 @@ export function useSessionConnection(createTransport: () => TerminalTransport): 
     way,
     noted,
     why,
+    transcript,
+    transcriptVersion,
     connect,
     disconnect,
     open,
@@ -144,6 +174,7 @@ export function useSessionConnection(createTransport: () => TerminalTransport): 
       return true
     },
     submit: (text) => open() && transport.value!.submit(text),
+    submitAcked: (text) => (open() ? transport.value!.submitAcked(text) : Promise.reject(new ReplyError('not_connected', 'not connected'))),
     answer(reply, opts = {}) {
       if (!open()) return Promise.reject(new ReplyError('not_connected', 'not connected'))
       return transport.value!.answer(reply, opts)
@@ -163,5 +194,6 @@ export function useSessionConnection(createTransport: () => TerminalTransport): 
     ping: () => transport.value?.ping(),
     transcriptGet: (req) => transport.value?.transcriptGet(req) ?? Promise.reject(new ReplyError('not_connected', 'not connected')),
     interrupt: () => transport.value?.interrupt() ?? Promise.reject(new ReplyError('not_connected', 'not connected')),
+    permissionAnswer: (a) => transport.value?.permissionAnswer(a) ?? Promise.reject(new ReplyError('not_connected', 'not connected')),
   }
 }

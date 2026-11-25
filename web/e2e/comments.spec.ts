@@ -68,7 +68,8 @@ test('a comment on lines lands in the chat as a quote card; asked of the agent i
     // The agent adds two lines above: the first card's lines moved, and Open goes to where they are now.
     writeFileSync(file, ['package api', '', '// Users.', '// The handlers.', 'func A() {}', 'func B() {}', 'func C() {}', 'func D() {}', ''].join('\n'))
     await page.reload()
-    await page.locator('[data-inspector] [data-rail-item="chat"]').click()
+    // The people's chat is People's (one rail item with who is here).
+    await page.locator('[data-inspector] [data-rail-item="people"]').click()
     const moved = page.locator('[data-chat-thread] [data-chat-quote="users.go:3–4"]').first()
     await expect(moved.locator('[data-chat-quote-moved]')).toHaveText('Lines moved since · now 5–6', { timeout: 15_000 })
     await moved.locator('[data-chat-quote-open]').click()

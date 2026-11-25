@@ -393,7 +393,6 @@ export function usePaletteRows(ctx: PaletteContext) {
       ...(s.branch ? [{ id: 'copy-branch', kind: 'session' as const, target: s.id, label: 'Copy branch', icon: 'i-lucide-git-branch', run: () => void copy(s.branch!, 'Branch copied') }] : []),
       ...(s.agentSession?.id ? [{ id: 'copy-agent-session', kind: 'session' as const, target: s.id, label: "Copy the agent's session id", icon: 'i-lucide-hash', run: () => void copy(s.agentSession!.id, 'Session id copied') }] : []),
       { id: 'open-files', kind: 'session', target: s.id, label: 'Open Files', icon: 'i-lucide-folder-open', run: () => openView(s, 'explorer', 'files') },
-      { id: 'open-chat', kind: 'session', target: s.id, label: 'Open Chat', icon: 'i-lucide-message-circle', run: () => openView(s, 'chat', 'chat') },
       { id: 'open-activity', kind: 'session', target: s.id, label: 'Open Activity', icon: 'i-lucide-activity', run: () => openView(s, 'activity', 'activity') },
       { id: 'open-people', kind: 'session', target: s.id, label: 'Open People', icon: 'i-lucide-users', run: () => openView(s, 'people', 'people') },
       { id: 'field', kind: 'session', target: s.id, label: 'Type a line into it', icon: 'i-lucide-keyboard', kbds: ['I'], disabled: !live || s.attention?.state === 'needs_input', run: () => {} },

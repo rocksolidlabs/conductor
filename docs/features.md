@@ -211,6 +211,58 @@ that order.
   link grants. Content appears only after the guest joins.
 - **No Runs nav item** until there is something behind it.
 
+## Chat or terminal: a session run as a chat, and its permission question (#1088, row 7 #1110; 2026-11-25)
+
+A Claude Code session can run as a chat (`docs/plans/chat-or-terminal.md`,
+designs 11 and 12). Every session still starts in its terminal. In Chat the
+agent has Conductor's own tools. The person's own tool servers and a folder's
+stay with the session's terminal. A launch's own `--mcp-config` argument is
+kept for the chat, as its terminal had it.
+
+- **The switch.** The session's header has **Terminal | Chat** after its name
+  (below `sm`, two items of More). Before the agent's first reply it says "Chat
+  opens after the agent's first reply."; pressed during a turn, the move is made
+  at the turn's end, with a line saying so; at rest, the Chat side says what a
+  move ends. The first time a person presses Chat in a browser, one note in
+  the chat, under the move's notice, says the agent's own terms decide how its
+  non-interactive mode may be used and counted, with a link to the agent's
+  site, and under it that in Chat the agent has Conductor's tools only. A refused move says the server's words. A link's
+  viewer sees the way as a label.
+- **The chat.** Where the terminal was: what the person wrote and what the
+  agent wrote (Markdown without HTML, a link only to `https://`), each turn's
+  steps in one line ("12 steps", "Working." while it runs) that opens to the
+  steps and their output, a changed file as one line ("`notes.txt` changed.")
+  that opens to a small diff and from there the editor's diff tab, a notice of a
+  move. No token count, timing or id. The box to write in (4,096 bytes) has
+  Stop while a turn runs, one help line by the session's `verbatim`, and a
+  message's line while it waits ("Sends when the turn ends.", "Sent, not yet
+  confirmed.").
+- **The permission question.** Amber, in plain words ("Run a command?",
+  "Change a file?", "Read a file?", "Use a tool?") with the tool's name; a short
+  call (eight rows at most) drawn whole as it arrives, a longer one as the exact
+  command or a path never cut, in one line that opens to the whole input; under it
+  **Allow once** and **Deny** (with an optional message to the agent, at most
+  500 bytes). Every character a person cannot see is drawn as a mark of its
+  own, with one line saying the call holds some; each line's end and the spaces
+  left at it are marked too. Allow once is offered only once the whole input is
+  drawn and its first row and its end have been in view (until then it looks
+  like nothing to press, and one line says why), and only when the digest the page
+  computes of what it drew is the request's: the answer carries it. Only the
+  operator gets the buttons; anyone else reads "Only the person who runs this
+  server can answer." No reply bar repeats the question beside the chat, and
+  the sidebar's row says "Answer it in the chat."
+- **Links.** A view link and a control link see the chat on the join page; a
+  control link may write and press Stop; no link answers a permission question
+  or moves a session. The Share dialog says, for a chat: "People with this link
+  can read the whole chat, including what its tools read and printed."
+- **People.** The people's chat and who is here are one rail item, **People**
+  (`?tab=chat` and `?tab=people` open it; the palette's row is Open People).
+- **Elsewhere.** The join page, a run's join grid, the yard and the roundhouse
+  draw the chat by the session's way; a tile says "Runs as a chat." with the
+  agent's last line.
+- **A connection made again** is sent only what changed after the point it
+  held, and a request that ended meanwhile is drawn ended.
+
 ## A line is typed only at the agent's prompt, for the whole of a session (#1116; 2026-11-25)
 
 - **The rule.** For an agent whose catalog entry has a prompt shape

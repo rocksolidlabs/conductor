@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import type { SessionInfo } from '~/composables/useSessions'
 import { ANSWER_IN_TERMINAL, TERMINAL_FIRST } from './attention'
@@ -91,6 +92,13 @@ describe('rowPrompt', () => {
     expect(p?.placeholder).toBe(HOST_AWAY)
     expect(p?.choices).toEqual(options)
     expect(rowPrompt({ session: session('running') })).toBeNull()
+  })
+
+  it("takes no reply to a chat's permission request: the row says, in plain words, that it is answered in the chat", () => {
+    const asks = { ...session('running'), attention: { state: 'needs_input', source: 'protocol', kind: 'permission', id: 'q1', message: 'Run a command?' } } as SessionInfo
+    expect(rowPrompt({ session: asks, prompt: { message: 'Run a command?', options: [], question: 'q1' } })).toEqual({ message: 'Run a command?', choices: [], away: false, held: true, placeholder: 'Answer it in the chat.', question: 'q1', inChat: true })
+    const src = readFileSync(new URL('../components/SidebarPrompt.vue', import.meta.url), 'utf8')
+    expect(src).toMatch(/<p v-else-if="prompt\.inChat"[^>]*data-row-in-chat>\{\{ prompt\.placeholder \}\}<\/p>\s*<template v-else-if="prompt\.choices\.length">/)
   })
 
   it('takes no reply while the session waits for its terminal', () => {

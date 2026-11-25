@@ -2328,3 +2328,15 @@ export const MAX_PERMISSION_MESSAGE = 500
 export const ERR_STALE_REQUEST = 'stale_request'
 export const ERR_NOT_ANSWERER = 'not_answerer'
 
+
+/** Whether an answer is within permission_answer's bounds (proto.PermissionAnswer's), its reqId aside: what a page sends. */
+export function permissionAnswerValid(a: Omit<PermissionAnswer, 't' | 'reqId'>): boolean {
+  const n = (v: string) => new TextEncoder().encode(v).length
+  return (
+    typeof a.question === 'string' && n(a.question) >= 1 && n(a.question) <= MAX_PERMISSION_QUESTION &&
+    typeof a.call === 'string' && n(a.call) <= MAX_PERMISSION_CALL &&
+    typeof a.sha256 === 'string' && a.sha256.length === PERMISSION_SHA256_LEN && /^[0-9a-f]+$/.test(a.sha256) &&
+    (a.choice === 'allow_once' || a.choice === 'deny') &&
+    (a.message === undefined || (typeof a.message === 'string' && n(a.message) <= MAX_PERMISSION_MESSAGE))
+  )
+}

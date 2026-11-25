@@ -11,6 +11,9 @@ import {
   MAX_TRANSCRIPT_IN_FLIGHT,
   partBytes,
   transcriptRequestValid,
+  permissionAnswerValid,
+  validWay,
+  ERR_NOT_ANSWERER,
   decodeFrame,
   decisionRequestValid,
   encodeControl,
@@ -33,6 +36,7 @@ import {
   type FileWriteOptions,
   type NvimSwapChoice,
   type TranscriptMessage,
+  type PermissionAnswer,
   type TranscriptReply,
   type TranscriptRequest,
   type TransportKind,
@@ -94,6 +98,10 @@ export abstract class BaseTransport implements TerminalTransport {
   protected transcriptWaits = new Map<string, { resolve: (r: TranscriptReply) => void; reject: (e: Error) => void; timer: number }>()
   /** The owner's welcome said `interrupt`: it takes a chat's Stop. */
   protected takesInterrupt = false
+  /** The owner's welcome said `permissionAnswer`: this connection is the operator's own, which answers a chat's permission requests. */
+  protected takesPermissionAnswer = false
+  /** The session moved to its chat on this connection, after a welcome that was its terminal's: the owner judges each answer. */
+  protected movedToChat = false
   /** The highest mark of the transcript this connection holds, which its hello carries: a connection made again is sent what changed after it. */
   protected transcriptMark = 0
   protected lastError?: { code: string; message: string }
@@ -397,6 +405,26 @@ export abstract class BaseTransport implements TerminalTransport {
     })
   }
 
+  /**
+   * The operator's answer to a chat's permission request (`permission_answer`), to an owner whose welcome said `permissionAnswer`:
+   * settled true on `answer_ok` naming it (the verdict delivered), or a ReplyError with the owner's code (`stale_request`,
+   * `question_answered`, `not_answerer`, `read_only`, `moving`), the connection's end, or no word. One past its bounds is not sent.
+   */
+  permissionAnswer(a: Omit<PermissionAnswer, 't' | 'reqId'>): Promise<boolean> {
+    if (this.state.value !== 'open') return Promise.reject(new ReplyError('not_connected', 'not connected'))
+    if (!this.takesPermissionAnswer && !this.movedToChat) return Promise.reject(new ReplyError(ERR_NOT_ANSWERER, 'Only the person who runs this server can answer.'))
+    if (!permissionAnswerValid(a)) return Promise.reject(new ReplyError('invalid', 'the answer is past its bounds'))
+    const reqId = `p${(++this.reqCounter).toString(36)}`
+    return new Promise((resolve, reject) => {
+      const timer = window.setTimeout(() => {
+        this.answers.delete(reqId)
+        reject(new ReplyError('no_word', 'the session did not say whether it took the answer'))
+      }, ANSWER_TIMEOUT_MS)
+      this.answers.set(reqId, { resolve, reject, timer })
+      this.send(encodeControl({ t: 'permission_answer', reqId, ...a }))
+    })
+  }
+
   /** A TRANSCRIPT frame: a reply settles its read; an entry or a replay page goes to every listener, its marks kept. */
   private handleTranscript(msg: TranscriptMessage): void {
     if ((msg.t === 'page' || msg.t === 'part') && msg.reqId) {
@@ -500,9 +528,17 @@ export abstract class BaseTransport implements TerminalTransport {
       this.acksSubmits = !!msg.submitAck
       this.takesDecisions = !!msg.decisions
       this.takesInterrupt = msg.way === 'protocol' && !!msg.interrupt
+      this.takesPermissionAnswer = msg.way === 'protocol' && !!msg.permissionAnswer
+      this.movedToChat = false
       this.welcomeResolve?.(msg)
       this.welcomeResolve = undefined
       this.welcomeReject = undefined
+    } else if (msg.t === 'way' && validWay(msg)) {
+      // A session moved on this connection (Moving between ways): an owner that says `way` takes a chat's Stop, and whether this
+      // connection answers a permission request is the owner's to judge (the message carries no `permissionAnswer`); in its
+      // terminal again, neither is sent.
+      this.takesInterrupt = msg.way === 'protocol'
+      this.movedToChat = msg.way === 'protocol'
     } else if (msg.t === 'error') {
       this.lastError = { code: msg.code, message: msg.message }
     } else if (msg.t === 'pong') {

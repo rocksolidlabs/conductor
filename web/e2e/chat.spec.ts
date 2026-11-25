@@ -73,6 +73,9 @@ test('two people on one session see each other, the closed tab counts, and a lin
   const priyaTab = priya.locator('[data-inspector] [data-chat-tab]')
   await expect(nateTab).toBeVisible({ timeout: 15_000 })
   await expect(priyaTab).toBeVisible({ timeout: 15_000 })
+  // The people's chat is People (docs/plans/chat-or-terminal.md, design 11): the rail's one item with who is here.
+  await expect(nateTab).toHaveAttribute('data-rail-item', 'people')
+  await expect(nateTab).toHaveAttribute('aria-label', /^People · /)
 
   // Nate opens the chat and writes; Priya, on People, sees the count on the tab.
   await nateTab.click()
@@ -145,6 +148,7 @@ test('a view link can talk beside the terminal and cannot reach the agent; the c
   await expect(guestChat.locator('[data-chat-note]')).toHaveText('You are view only: what you write reaches the people here, not the agent.')
   await expect(guestChat.locator('[data-chat-to-agent]')).toHaveCount(0)
   await expect(guest.locator('[data-chat-button]')).toBeVisible()
+  await expect(guest.locator('[data-chat-button]')).toHaveAccessibleName('People')
   // The guest's join and words reach Nate's chat; her row carries the view tag.
   await expect(nateChat.locator('[data-chat-system]').last()).toContainText('Priya joined · view', { timeout: 15_000 })
   await nateChat.locator('[data-chat-input] textarea, textarea[data-chat-input]').first().fill('welcome, Priya')
