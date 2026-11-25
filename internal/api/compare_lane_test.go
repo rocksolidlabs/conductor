@@ -24,7 +24,8 @@ import (
 // it calls each, written out here and not read from compareDoors: the
 // guide, its run and its ticket, its task, its inbox, a message to its
 // lane, the inbox's acknowledgement, a report, ask, a link opened for the
-// person, a checkpoint, a blocker and, last, the task's result.
+// person, a checkpoint, a blocker, a chat's permission request and, last,
+// the task's result.
 var laneDoors = []struct {
 	pattern string
 	body    any
@@ -41,6 +42,9 @@ var laneDoors = []struct {
 	{"POST /api/sessions/{id}/open", map[string]any{"url": "https://example.test/"}},
 	{"POST /api/sessions/{id}/task/checkpoint", map[string]any{"done": "the index", "remaining": "the tests"}},
 	{"POST /api/sessions/{id}/task/blocked", map[string]any{"reason": "the data is missing", "message": "Where is it?"}},
+	// A chat's permission request (a session in its terminal answers the
+	// deny of a call it is not making, 200).
+	{"POST /api/sessions/{id}/permission", map[string]any{"call": "c-1", "tool": "Bash", "input": map[string]any{"command": "make"}}},
 	{"POST /api/sessions/{id}/task/result", map[string]any{"summary": "indexed"}},
 }
 

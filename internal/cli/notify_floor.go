@@ -74,6 +74,10 @@ func protocolFloor(listPath string, stdin io.Reader, stdout io.Writer) (int, err
 	if err != nil {
 		return 0, nil
 	}
-	fmt.Fprintln(stdout, string(enc))
+	text, err := jsonText(enc, false)
+	if err != nil {
+		return 0, nil
+	}
+	fmt.Fprintln(stdout, text)
 	return 0, nil
 }
