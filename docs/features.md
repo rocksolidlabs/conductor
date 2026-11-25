@@ -223,10 +223,10 @@ kept for the chat, as its terminal had it.
   (below `sm`, two items of More). Before the agent's first reply it says "Chat
   opens after the agent's first reply."; pressed during a turn, the move is made
   at the turn's end, with a line saying so; at rest, the Chat side says what a
-  move ends. The first time a person presses Chat in a browser, one note says
-  the agent's own terms decide how its non-interactive mode may be used and
-  counted, with a link to the agent's site, and under it that in Chat the agent
-  has Conductor's tools only. A refused move says the server's words. A link's
+  move ends. The first time a person presses Chat in a browser, one note in
+  the chat, under the move's notice, says the agent's own terms decide how its
+  non-interactive mode may be used and counted, with a link to the agent's
+  site, and under it that in Chat the agent has Conductor's tools only. A refused move says the server's words. A link's
   viewer sees the way as a label.
 - **The chat.** Where the terminal was: what the person wrote and what the
   agent wrote (Markdown without HTML, a link only to `https://`), each turn's
@@ -238,15 +238,17 @@ kept for the chat, as its terminal had it.
   message's line while it waits ("Sends when the turn ends.", "Sent, not yet
   confirmed.").
 - **The permission question.** Amber, in plain words ("Run a command?",
-  "Change a file?", "Read a file?", "Use a tool?"), the exact command or path in
-  one line that opens to the whole input, **Allow once** and **Deny** (with an
-  optional message to the agent). Every character a person cannot see is drawn
-  as a mark of its own, with one line saying the call holds some. Allow once is
-  offered only once the whole input is drawn, and only when the digest the page
+  "Change a file?", "Read a file?", "Use a tool?") with the tool's name, the
+  exact command or path in one line that opens to the whole input, and under it
+  **Allow once** and **Deny** (with an optional message to the agent, at most
+  500 bytes). Every character a person cannot see is drawn as a mark of its
+  own, with one line saying the call holds some; each line's end and the spaces
+  left at it are marked too. Allow once is offered only once the whole input is
+  drawn and its end has been in view, and only when the digest the page
   computes of what it drew is the request's: the answer carries it. Only the
   operator gets the buttons; anyone else reads "Only the person who runs this
-  server can answer." The reply bar says "Answer it in the chat." and brings the
-  question into view.
+  server can answer." No reply bar repeats the question beside the chat, and
+  the sidebar's row says "Answer it in the chat."
 - **Links.** A view link and a control link see the chat on the join page; a
   control link may write and press Stop; no link answers a permission question
   or moves a session. The Share dialog says, for a chat: "People with this link

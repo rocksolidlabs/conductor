@@ -2714,6 +2714,49 @@ and `chat-layout`, each on a server of its own with `claude-proto` and
   "hold", "markdown", "ask short|long|hidden|withdraw") rather than a
   turns file; it asks through the session's route with its agent token,
   and keeps its gates and what it was told under `.stub-sessions`.
+- **After the review** (row 7's one fix pass):
+  - The question draws its tool's name on every question, marked as
+    text, under its plain words: two tools with one input are told
+    apart, and the digest binds it.
+  - The opened input has no scroll of its own: it lies in the chat's.
+    Each line's end is a mark (`↵`) before its break, and the spaces
+    left at a line's end are marks (`·`), so empty lines and trailing
+    spaces cannot carry the input's end out of sight unmarked; a line
+    feed is still a line break, never a hidden character's mark, and
+    raises no warning. Allow once and Deny sit under the whole input,
+    and Allow once waits until an `IntersectionObserver` has seen the
+    mark after the input's last row (after the line when the line is
+    the whole input), seen again after each open or close.
+  - A request that names its folder is never one line: it opens, and
+    the folder is drawn with the input.
+  - An open question reads its input at once, and again at the
+    connection's next welcome after a failed read; an answered one
+    reads it when its line is opened. The chat's reads wait their turn
+    among the connection's four (`limitReads`) instead of being
+    refused.
+  - A deny's message is counted in UTF-8 bytes (500, as the wire
+    bounds it); past them the field says "The message to the agent is
+    too long: it takes at most 500 bytes." and Deny waits.
+  - Each block of the agent's words is its own component, rendered
+    again only when its text changes; a link's address is its title.
+    A step's tool and summary and a changed file's name draw hidden
+    characters as marks.
+  - "Open in the editor" is drawn only on the session page, which opens
+    the editor's diff tab.
+  - Every `way` message ends a press's "moving" (a start that fails
+    goes back with the way unchanged and its sentence); during a turn
+    nothing is said above the pane until a move is pressed.
+  - Below xl, `?tab=people` and Open People open the people's sheet;
+    the join page's sheet is titled People.
+  - The first-Chat note is drawn in the chat, under the move's notice,
+    closable, once, both sentences; not a toast over the box.
+  - Where the chat shows a permission question, no reply bar repeats
+    it; the sidebar's row says "Answer it in the chat." with no field.
+  - On a phone, More's Chat item carries the line that a move ends
+    what the agent left running in its terminal.
+  - Refusals are said in the plan's words, or plain ones where the plan
+    has none ("The message was not sent.", "The answer was not sent.",
+    "Not sent: the connection is down.").
 - **Not built:** Settings' line for an older switchyard (the server's
   switchyard status says nothing of `transcript`); the Share dialog shows
   the server's own words for it, as the link's rendezvous note.
