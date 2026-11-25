@@ -9545,16 +9545,25 @@ Conductor's own tools through which an agent tells Conductor about its
 own session's work, asks a person, or hands its work on within its own
 run: `guide`, `report`, `set_state`, `ask`, `task_context`,
 `task_checkpoint`, `task_blocked` and `task_result` (rules
-`mcp__conductor__<tool>`); such a call never reaches Conductor as a
-request, and its step is in the transcript as any other. `report`'s
-handoff is among them because it reaches only a member of the session's
-own run, as one bounded line that member acts on under its own
-permission mode (a name no member of the run has is noted and typed
-nowhere; a session in no run has nobody to hand to): the crew's own
-baton, set up by the person who formed or launched the crew. Every other
-tool asks as before, `message_send` among them, and the prompt tool is
-never allowed. A deny rule
-wins over these allows, and in a yolo session they change nothing. At most eight requests are open or waiting per
+`mcp__conductor__<tool>`); such a call does not reach Conductor as a
+request unless a deny or ask rule of the person's or the folder's own
+settings names it, and its step is in the transcript as any other.
+`report`'s handoff is among them because it reaches only a member of the
+session's own run, which acts on it under its own permission mode (a
+name no member of the run has is noted and typed nowhere; a session in
+no run has nobody to hand to): the crew's own baton, set up by the
+person who formed or launched the crew. In a managed run a handoff is
+kept and delivered as a message is, in the run's lane. These tools start
+only what the run's own definition starts on them (a done starts the
+members waiting on this one; a task's result lets the next attempts be
+scheduled), reach no record but the session's own and its run's, and
+what they report goes to the operator's own notices as any report does.
+Every other tool asks as before, the prompt tool is never allowed, and
+`message_send` asks too: it is not a call an agent reports its own work
+with, though a handoff carries the same message, shorter. Claude Code
+judges deny, then ask, then allow, across every settings source the
+child reads, so a deny or ask rule wins over these allows; in a yolo
+session they change nothing. At most eight requests are open or waiting per
 session: one more is denied `Too many requests are waiting; this one was
 denied.`.
 

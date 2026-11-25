@@ -968,7 +968,12 @@ is `PermissionWithdrawn`.
    work on within its own run (the guide, `report`, `set_state`, `ask`
    and an attempt's own task tools: `agents.ProtocolUnaskedTools`); a
    handoff reaches only a member of the session's own run, which acts
-   on it under its own mode. Every other tool asks as before.
+   on it under its own mode, and in a managed run is kept and delivered
+   as a message is. They start only what the run's own definition
+   starts on them and reach no record but the session's and its run's.
+   A deny or ask rule of the person's or the folder's settings wins over
+   these allows (Claude Code judges deny, then ask, then allow); every
+   other tool asks as before.
    Conductor also denies, before
    any question, a file tool's call (`Read`, `Edit`, `Write`,
    `MultiEdit`, `NotebookEdit`, `Grep`, `Glob`) whose path is under the
@@ -2496,7 +2501,13 @@ MCP half, `conductor mcp`'s serve loop and its `permission` tool, is
   `mcp__conductor__<tool>`), so a chat's agent that follows the skill is
   not asked about each step it reports; `report`'s handoff is in, since
   it reaches only a member of the session's own run (held by
-  `TestAHandoffReachesOnlyItsOwnRun`); `message_send` still asks.
+  `TestAHandoffReachesOnlyItsOwnRun` and
+  `TestAManagedHandoffToANameOutsideTheRunIsNoMessage`), and in a
+  managed run it is kept and delivered as a message is; `message_send`
+  still asks, as no call an agent reports its own work with, the unasked
+  set kept the smallest an agent needs to report its work; a deny or ask
+  rule of the person's or the folder's own settings wins over these
+  allows.
 - The floor's files are written by `conductor serve` at its start
   (`agents.WriteProtocolFloor`, with `cfg.FileDeny()` as it is then): for
   every path a `Read` and an `Edit` rule of the path and of `path/**`,
