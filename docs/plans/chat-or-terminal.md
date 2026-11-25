@@ -76,8 +76,9 @@ command?" with the command on one line, and two buttons, **Allow once**
 and **Deny**. Only the person who runs the server can answer. It waits
 until they answer.
 
-The first time a person presses Chat, one sentence says the agent's own
-terms decide how this mode may be used and counted.
+The first time a person presses Chat, a note says the agent's own
+terms decide how this mode may be used and counted, and that in Chat the
+agent has Conductor's tools only.
 
 Pressing Terminal moves the session back. In a terminal session, the
 agent and its terminal work as today; its messages are still typed into
@@ -538,7 +539,7 @@ the person's own installed `claude`, never a bundled copy, and no SDK.
 | a replayed user message carries the `uuid` the client wrote | not stated on the pages read | undocumented | row 4's fixture records it; where it does not, replays are matched to writes in order (one message in flight per session), never by time |
 | `client_composed: true` on a user message: "Claude Code then doesn't expand `@path` mentions, and doesn't run text that starts with `/` as a command"; "Requires ... Claude Code v2.1.248 or later" | https://code.claude.com/docs/en/agent-sdk/typescript.md, SDKUserMessage | documented | **gated**: `MinVersion` is at least 2.1.248; the driver's `Verbatim` is true and `Send` sets it on every message |
 | an `@` reference "makes no tool call", so `PreToolUse` hooks do not run for it; "Claude Code doesn't include a file that the rule matches" for a `Read` deny rule | https://code.claude.com/docs/en/common-workflows.md | documented | the floor's `Read` and `Edit` deny rules (design 7) |
-| a `-p` run uses a folder's settings-file hooks, its `env` block and its `.mcp.json` servers without a trust dialog | https://code.claude.com/docs/en/permissions.md, What runs before you trust a folder | documented | a chat is started only from a session whose terminal ran the agent's own program in that folder to its prompt (design 9), with the same setting sources: it loads nothing the terminal did not |
+| a `-p` run uses a folder's settings-file hooks, its `env` block and its `.mcp.json` servers without a trust dialog | https://code.claude.com/docs/en/permissions.md, What runs before you trust a folder | documented | a chat is started only from a session whose terminal ran the agent's own program in that folder to its prompt (design 9), with the same setting sources: it loads nothing the terminal did not; and `--strict-mcp-config` (below) keeps every tool server but Conductor's out of a chat |
 | `--session-id <uuid>`, `--resume <id>`; a `-p` session resumes by id in the terminal UI: "You can still resume one by passing its session ID to `claude --resume <session-id>`" | https://code.claude.com/docs/en/sessions.md | documented | the move is observed by hand in row 5 before `Moves` is set |
 | `--permission-mode`; "`claude -p` ... with no permission mode set start in Manual mode", and a settings file may change the default | https://code.claude.com/docs/en/permission-modes.md | documented | Conductor always passes the mode |
 | "Deny rules block in every mode, including `bypassPermissions`." | https://code.claude.com/docs/en/permission-modes.md | documented | the floor's deny rules; a mod the person installed can still approve some calls a deny rule refuses (https://code.claude.com/docs/en/permissions.md, Precedence among rules, hooks, and mods): the floor does not hold against the person's own mods |
@@ -571,9 +572,21 @@ yolo launch, the catalog's `Yolo.Args` alone, never the adapter's
 `timeout` 8 hours), `--permission-prompt-tool mcp__conductor__permission`,
 and exactly one `--settings <hooks>/claude-protocol.json` (the floor:
 design 7; for a yolo session `claude-protocol-yolo.json`, the floor and
-the yolo key in one file). No `--setting-sources` and no
-`--strict-mcp-config`: the child reads the same setting sources the
-agent's terminal program read in that folder for this session. The
+the yolo key in one file). `--strict-mcp-config`, always: Conductor's
+MCP server is the only tool server a chat's child loads (none with the
+server's MCP off); the person's own tool servers and a folder's stay
+with the session's terminal (#1118). A launch's own `--mcp-config`
+argument is kept for the chat, as its terminal had it. A session whose
+arguments name an added folder (`--add-dir`) keeps to its terminal: a
+chat's child is started in the session's own folder alone. The move
+asks `ClaudeArgs` before it stops anything, so this refusal and that of
+a flag a chat sets itself are told with the terminal still running
+(#1126). Where an
+administrator's managed MCP configuration is in force, Claude Code
+refuses the flag and exits: the chat does not start and the session
+stays in its terminal. No `--setting-sources`: the child reads the
+same setting sources the agent's terminal program read in that folder
+for this session. The
 terminal way's hook settings, trust arguments and screen recipe are not
 passed. Conductor sets no environment variable that names another
 client.
@@ -972,8 +985,9 @@ is `PermissionWithdrawn`.
    file the person's account can read; the hook is a second look that a
    folder's own settings can switch off (`disableAllHooks`); a mod the
    person installed can still approve some calls a deny rule refuses
-   (permissions.md); and the folder's own hooks, helpers and MCP servers
-   run as the person's account, as they do in the terminal.
+   (permissions.md); and the folder's own hooks and helpers run as the
+   person's account, as they do in the terminal (of tool servers a chat
+   loads Conductor's alone: design 4).
 3. **The bound.** At most `MaxPendingPermissions` (8) open or waiting
    per session; past it, denied "Too many requests are waiting; this one
    was denied."
@@ -1336,7 +1350,8 @@ conversation, and a hand-off of a running turn makes two writers.
   per-viewer convenience): "Chat runs the agent's own non-interactive
   mode with its existing sign-in; the agent's terms decide how that may
   be used and counted." with a link to the agent's site from its catalog
-  entry.
+  entry, and under it: "In Chat the agent has Conductor's tools only;
+  your own tool servers stay in its terminal." (#1118)
 - **Other pages that draw a session.** The join page
   (`pages/join/[token].vue`), a run's join grid (`components/JoinCrewGrid.vue`),
   the yard and the roundhouse draw `ChatView` for a protocol session by
@@ -1397,7 +1412,7 @@ Every string is one short sentence.
 | a message during a turn | "Sends when the turn ends." |
 | a full queue (`too_many_requests` on `submit`) | "Too many messages are waiting." |
 | a move pressed during a turn | "Moves to Chat when this turn ends." / "Moves to the terminal when this turn ends." |
-| a noted move that cannot be made (`move_refused`) | "A request is waiting for an answer." / "Background work is still running." / "Crew members stay in their terminals." / "This agent cannot move its conversation yet." / "Sessions on another machine stay in their terminal." |
+| a noted move that cannot be made (`move_refused`) | "A request is waiting for an answer." / "Background work is still running." / "Crew members stay in their terminals." / "This agent cannot move its conversation yet." / "Sessions on another machine stay in their terminal." / "Sessions launched with an added folder stay in their terminal." / "This session's arguments hold <flag>, which a chat sets itself; it stays in its terminal." |
 | the session moving (`moving`) | "The session is moving; try again in a moment." |
 | a permission answer from a non-answerer (`not_answerer`) | "Only the person who runs this server can answer." |
 | a permission answer that no longer matches (`stale_request`) | "This request changed or was answered." |
@@ -1944,8 +1959,8 @@ relay's allow list is a part with its own adversarial review (links).
 ### Row 4: the Claude Code driver
 
 **Scope.** `internal/agentproto` with `Names`, `Check`, the Claude Code
-driver (`claude.go`: the argv of design 4 with exactly one `--settings`
-and no `--setting-sources` or `--strict-mcp-config`; the stream's events
+driver (`claude.go`: the argv of design 4 with exactly one `--settings`,
+`--strict-mcp-config` once (#1118) and no `--setting-sources`; the stream's events
 mapped to `ProtocolEvents`, the `system` task events to `Background`;
 `Begin` with `initialize` alone; `Send` as a stream-json user message
 with `client_composed: true` and a ref the replay names, matched in
@@ -1975,9 +1990,9 @@ launch, the launch route, the app's pages.
 **Tests.** Go race:
 - `TestClaudeArgvIsTheDocumentedOne` (`internal/agentproto`): the argv
   of a chat's child and of a yolo session's, element for element; breaks
-  if `--bare`, `--permission-prompt-tool stdio`, `--setting-sources` or
-  `--strict-mcp-config` appear, if `--permission-mode` is missing, or if
-  `--settings` appears more than once.
+  if `--bare`, `--permission-prompt-tool stdio` or `--setting-sources`
+  appear, if `--permission-mode` is missing, if `--strict-mcp-config` is
+  missing or twice (#1118), or if `--settings` appears more than once.
 - `TestClaudeSendIsVerbatim` (I19): a sent message (`@<data dir>/x` and
   `/help`) reaches stdin with `client_composed: true` and the text
   unchanged; breaks without the field.
@@ -2074,7 +2089,12 @@ prompt, one turn with a tool; whether the MCP server's `timeout` in a
   `--strict-mcp-config`, `--permission-mode`, `--resume`, the stream
   flags), or one of its documented short forms (`-p`, `-r`, `-c`, alone,
   in a cluster such as `-cp`, or as `-r<id>`), refuses the start. `NoMCP` leaves the MCP config out when the
-  server's MCP is off, as a terminal's launch does.
+  server's MCP is off, as a terminal's launch does. With #1118 the argv
+  ends its MCP part with `--strict-mcp-config`: a chat's child loads
+  Conductor's own tool server and no other; a launch's own
+  `--mcp-config` argument stays (`TestChatChildLoadsConductorsToolServerAlone`
+  in `internal/api` holds the start's argv with the server's MCP on and
+  off).
 - The driver mints a UUID per message (the session's refs are hex) and
   maps the replay back to its ref; where a replay names none, the oldest
   written. Begin waits at most `ClaudeInitWait` (20 s) for the initialize

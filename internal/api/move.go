@@ -86,8 +86,9 @@ func (s *Server) handleSessionWay(w http.ResponseWriter, r *http.Request) {
 // to: a crew member's and a hosted session's are the session's own words
 // (SwapWay); here an agent the server cannot move (no protocol it speaks,
 // a driver whose Moves is false, a Runtime other than the native one, no
-// recipe to resume its terminal) and, to Chat, a version its driver did
-// not qualify.
+// recipe to resume its terminal) and, to Chat, arguments its chat is not
+// started with (an added folder, a flag a chat sets itself) and a version
+// its driver did not qualify.
 func (s *Server) moveStarts(ctx context.Context, local *session.Local, to string) (session.MoveStarts, string) {
 	info := local.Info()
 	if info.Crew != nil {
@@ -106,6 +107,11 @@ func (s *Server) moveStarts(ctx context.Context, local *session.Local, to string
 		return session.MoveStarts{}, session.CannotMoveWords
 	}
 	if to == session.WayProtocol {
+		// What the child's argv would refuse is told now, with the
+		// terminal still running: an added folder, a flag a chat sets.
+		if err := s.chatArgsCheck(l); err != nil {
+			return session.MoveStarts{}, chatArgsWords(err)
+		}
 		version := ""
 		if id, ok := s.cachedIdentity(l.agent); ok && id.Identified {
 			version = id.Version
@@ -127,6 +133,19 @@ func (s *Server) moveStarts(ctx context.Context, local *session.Local, to string
 		m.AfterOldExit = func() { seam(id) }
 	}
 	return m, ""
+}
+
+// chatArgsWords is the plan's sentence for arguments a chat is not
+// started with (design 13).
+func chatArgsWords(err error) string {
+	var own *agentproto.OwnFlagError
+	switch {
+	case errors.Is(err, agentproto.ErrAddedFolder):
+		return agentproto.AddedFolderWords
+	case errors.As(err, &own):
+		return agentproto.OwnFlagWords(own.Flag)
+	}
+	return session.CannotMoveWords
 }
 
 // moves is the driver's Moves for the protocol name.
