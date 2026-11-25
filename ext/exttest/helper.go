@@ -41,6 +41,10 @@ const HelperDirFile = "exttest-dir"
 //     its terminal's size, and "exttest-ready"; prints the size again at
 //     each change of it (SIGWINCH); reads one line of input, prints
 //     "exttest-got:" and the line, and exits 3.
+//   - pipes ARG...: what report prints, then "exttest-ready"; reads one
+//     line of input, writes "exttest-stderr" to its standard error, then
+//     prints "exttest-got:" and the line, and exits 3: for a child started
+//     with pipes (StartPipes), whose standard error is not its output.
 //   - asked: prints "exttest-ready" and runs until asked to end (SIGTERM),
 //     then exits 0.
 //   - ignore: prints "exttest-ready", and "exttest-asked" at each ask to
@@ -71,6 +75,8 @@ func RunHelper(args []string) int {
 		return 0
 	case "terminal":
 		return helperTerminal(rest)
+	case "pipes":
+		return helperPipes(rest)
 	case "asked":
 		asks := make(chan os.Signal, 1)
 		signal.Notify(asks, syscall.SIGTERM)
@@ -197,6 +203,20 @@ func helperTerminal(args []string) int {
 			return 3
 		}
 	}
+}
+
+// helperPipes is the pipes mode: the report, one line read, a word on its
+// standard error and the line on its output, and exit 3.
+func helperPipes(args []string) int {
+	helperReport(args)
+	fmt.Println("exttest-ready")
+	sc := bufio.NewScanner(os.Stdin)
+	if !sc.Scan() {
+		return helperRefuses("pipes: no line on its input")
+	}
+	fmt.Fprintln(os.Stderr, "exttest-stderr")
+	fmt.Println("exttest-got:" + sc.Text())
+	return 3
 }
 
 // helperHTTP is the http mode.

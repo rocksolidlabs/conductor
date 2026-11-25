@@ -261,7 +261,15 @@ add its rule here.
 - Count only what the test made. A spec that counts sessions, tiles or list
   rows sees what an earlier spec left behind and what the server's sweeps
   removed: end the strays first (`stopStrays` in `web/e2e/fixtures.ts`) and
-  look for the thing by its id or name, never by a list's length.
+  look for the thing by its id or name, never by a list's length. A log
+  of every program the process starts counts the server's own work too:
+  a git first on PATH, meant to hold the reads' git alone, held the
+  history indexer's read of the run's repository, woken by the test's own
+  run commit and landing after the log was in place (2026-11-24, #281).
+  Bring what runs on its own to an end through its seam before the log
+  begins (`gitLog` stops the server's indexer first), and prove it with
+  the background's read held until the log is in place
+  (`TestTheReadsLogHoldsTheReadsAlone`).
 - What a child keeps under HOME is shared by every process of the same
   HOME. A test that gives each child its own `XDG_STATE_HOME` hides what
   the product does where it gives none: the e2e's one server HOME then

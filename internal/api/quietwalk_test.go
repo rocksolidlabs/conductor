@@ -36,7 +36,7 @@ const walkToken = "code-secret-1"
 type walker struct {
 	panics  bool
 	panicOn string
-	start   bool // StartTerminal and Serve succeed
+	start   bool // StartTerminal, StartPipes and Serve succeed
 	done    chan struct{}
 
 	mu     sync.Mutex
@@ -134,6 +134,12 @@ func (w *walker) StartTerminal(context.Context, ext.TerminalSpec) (ext.Terminal,
 	}
 	return nil, w.fail("StartTerminal")
 }
+func (w *walker) StartPipes(context.Context, ext.PipeSpec) (ext.Pipes, error) {
+	if w.start {
+		return walkPipes{w}, nil
+	}
+	return nil, w.fail("StartPipes")
+}
 func (w *walker) Run(context.Context, ext.CommandSpec) ext.CommandResult {
 	r := texts[ext.CommandResult](w.fail("Run").Error())
 	r.Exit = 1
@@ -177,6 +183,40 @@ func (t walkTerminal) Process() ext.ProcessInfo {
 	return texts[ext.ProcessInfo]("Process cannot go on with " + walkToken)
 }
 
+// walkPipes is the walker's child with pipes, walkPipe its input and its
+// output, which fail as Stdin or Stdout.
+type walkPipes struct{ w *walker }
+
+type walkPipe struct {
+	w      *walker
+	method string
+}
+
+func (p walkPipe) Read([]byte) (int, error)  { return 0, p.w.fail(p.method) }
+func (p walkPipe) Write([]byte) (int, error) { return 0, p.w.fail(p.method) }
+func (p walkPipe) Close() error              { return p.w.fail(p.method) }
+
+func (p walkPipes) Stdin() io.WriteCloser { return walkPipe{p.w, "Stdin"} }
+func (p walkPipes) Stdout() io.Reader     { return walkPipe{p.w, "Stdout"} }
+func (p walkPipes) Done() <-chan struct{} {
+	if p.w.panicOn == "Done" {
+		_ = p.w.fail("Done")
+	}
+	return p.w.done
+}
+func (p walkPipes) Exit() ext.ExitStatus {
+	st := texts[ext.ExitStatus](p.w.fail("Exit").Error())
+	st.Code = 1
+	return st
+}
+func (p walkPipes) Stop(context.Context, time.Duration) error { return p.w.fail("Stop") }
+func (p walkPipes) Process() ext.ProcessInfo {
+	if p.w.panicOn == "Process" {
+		_ = p.w.fail("Process")
+	}
+	return texts[ext.ProcessInfo]("Process cannot go on with " + walkToken)
+}
+
 type walkService struct{ w *walker }
 
 func (s walkService) Done() <-chan struct{} {
@@ -205,6 +245,13 @@ type walkRow struct {
 func terminalOf(ctx context.Context, e *testEnv) ext.Terminal {
 	t, _ := e.srv.offered.StartTerminal(ctx, ext.TerminalSpec{})
 	return t
+}
+
+// pipesOf is the walker's child with pipes, started through the guard,
+// which offers StartPipes because the walker has it.
+func pipesOf(ctx context.Context, e *testEnv) ext.Pipes {
+	p, _ := e.srv.offered.(ext.PipeStarter).StartPipes(ctx, ext.PipeSpec{})
+	return p
 }
 
 func serviceOf(ctx context.Context, e *testEnv) ext.ServiceProcess {
@@ -319,6 +366,32 @@ var walkSlots = map[string]map[string]walkRow{
 			return []any{t.Process(), t.Exit()}
 		}},
 	},
+	"Runtime.PipeStarter": {
+		"StartPipes": {call: func(ctx context.Context, e *testEnv) []any {
+			p, err := e.srv.offered.(ext.PipeStarter).StartPipes(ctx, ext.PipeSpec{})
+			return []any{p == nil, err}
+		}},
+	},
+	"Runtime.Pipes": {
+		"Stdin": {call: func(ctx context.Context, e *testEnv) []any {
+			in := pipesOf(ctx, e).Stdin()
+			n, err := in.Write([]byte("x"))
+			return []any{n, err, in.Close()}
+		}},
+		"Stdout": {call: func(ctx context.Context, e *testEnv) []any {
+			n, err := pipesOf(ctx, e).Stdout().Read(make([]byte, 8))
+			return []any{n, err}
+		}},
+		"Done": {queued: true, call: func(ctx context.Context, e *testEnv) []any {
+			return []any{pipesOf(ctx, e).Exit()} // the guard reads Done on its watch
+		}},
+		"Exit": {call: func(ctx context.Context, e *testEnv) []any { return []any{pipesOf(ctx, e).Exit()} }},
+		"Stop": {call: func(ctx context.Context, e *testEnv) []any { return []any{pipesOf(ctx, e).Stop(ctx, 0)} }},
+		"Process": {call: func(ctx context.Context, e *testEnv) []any {
+			p := pipesOf(ctx, e)
+			return []any{p.Process(), p.Exit()}
+		}},
+	},
 	"Runtime.ServiceProcess": {
 		"Done": {queued: true, call: func(ctx context.Context, e *testEnv) []any {
 			return []any{serviceOf(ctx, e).Result()}
@@ -332,6 +405,8 @@ var walkSlots = map[string]map[string]walkRow{
 func walkTypes() map[string]reflect.Type {
 	types := map[string]reflect.Type{
 		"Runtime.Terminal":       reflect.TypeFor[ext.Terminal](),
+		"Runtime.PipeStarter":    reflect.TypeFor[ext.PipeStarter](),
+		"Runtime.Pipes":          reflect.TypeFor[ext.Pipes](),
 		"Runtime.ServiceProcess": reflect.TypeFor[ext.ServiceProcess](),
 	}
 	pt := reflect.TypeFor[ext.Providers]()
@@ -380,7 +455,9 @@ func TestIdentityValueQuietInEverySlot(t *testing.T) {
 			}
 			for _, panics := range []bool{false, true} {
 				w := newWalker(panics, method)
-				w.start = strings.HasPrefix(slot, "Runtime.")
+				// The processes' slots start one to reach its methods; the
+				// PipeStarter's slot walks the start itself.
+				w.start = strings.HasPrefix(slot, "Runtime.") && slot != "Runtime.PipeStarter"
 				logs := &syncLog{}
 				e := newTestEnvAgents(t, func(c *config.Config) {
 					c.Rendezvous.Server, c.Rendezvous.Token = "https://yard.invalid", walkToken

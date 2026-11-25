@@ -94,6 +94,11 @@ func WithRuntimeCase(c RuntimeCase) RunOption {
 //     binds it is asked for again, a port picked not being a port held);
 //     Probe makes one try and follows no redirect, and answers an ended
 //     context with an error and no request.
+//   - For a Runtime that is an ext.PipeStarter too, StartPipes and its
+//     Pipes: the argv, the directory, the environment, the input, the
+//     output apart from the standard error, the exit, a context ended
+//     before and during the start, and Stop asked, forced and after an
+//     exit (runtimecheck_pipes.go).
 //
 // Every call is bounded by rc's Wait, the product's caps added where a
 // method has one (StopKillWait), Done and Exit among them, and a panic of
@@ -125,6 +130,9 @@ func RuntimeExec(t T, r ext.Runtime, rc RuntimeCase) {
 	x.startedPanics()
 	x.serve()
 	x.portAndProbe()
+	if ps, ok := r.(ext.PipeStarter); ok {
+		x.pipesChecks(ps)
+	}
 }
 
 // execCheck is one RuntimeExec run.
