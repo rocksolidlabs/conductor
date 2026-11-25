@@ -214,7 +214,9 @@ that order.
 ## Chat or terminal: a session run as a chat, and its permission question (#1088, row 7 #1110; 2026-11-25)
 
 A Claude Code session can run as a chat (`docs/plans/chat-or-terminal.md`,
-designs 11 and 12). Every session still starts in its terminal.
+designs 11 and 12). Every session still starts in its terminal. In Chat the
+agent has Conductor's own tools. The person's own tool servers and a folder's
+stay with the session's terminal.
 
 - **The switch.** The session's header has **Terminal | Chat** after its name
   (below `sm`, two items of More). Before the agent's first reply it says "Chat
