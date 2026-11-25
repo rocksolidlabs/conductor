@@ -494,6 +494,9 @@ type Local struct {
 	// (pressEnter), before it looks at anything; beforeWritten as keys
 	// written (input) come to what follows their write, with the keys.
 	beforeEnter atomic.Pointer[func()]
+	// entered keeps the numbered lines the session entered, as the agent's
+	// history shows them (enteredRows).
+	entered enteredRows
 	// confirmWaits counts the waits for the agent's report that it took a
 	// line (confirmed): a test's view of how many were made.
 	confirmWaits  atomic.Int32

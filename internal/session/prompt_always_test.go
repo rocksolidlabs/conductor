@@ -324,6 +324,13 @@ func TestAnEnterIsWrittenOnlyAtThePrompt(t *testing.T) {
 				if !s.TurnHeld() {
 					t.Fatal("the turn is not held for the text typed without its Enter")
 				}
+				// The session says so, in words true to the cause.
+				waitAttention(t, s, func(a Attention) bool {
+					return a.State == AttentionNeedsInput && a.Source == SourceSubmit && a.Message == HeldWords
+				})
+				if HeldWords != "A line was typed and not entered: type in the terminal to continue" {
+					t.Fatalf("the held turn's words: %q", HeldWords)
+				}
 				// The prompt holding the text: the next line waits for the
 				// turn, which a person's keys in the terminal give back.
 				drawsOn(s, p, prompt(a.id)("fix the bug"))
@@ -385,6 +392,14 @@ func TestCodexsPromptEndsAtItsFooter(t *testing.T) {
 		"a highlighted list":                  codexRows("  Choose a colour", "", "› Blue", "  Green", "", "  Press enter to choose or esc to go back"),
 		"a ruled list":                        codexRows("  ──────────", "› Go on in the browser", "  Use a key instead", "  ──────────"),
 		"choices numbered with a parenthesis": codexRows("› Look up how sessions work", "", "  Go on?", "  1) Yes", "  2) No"),
+		// Codex's composer with a footer the shape does not take, a
+		// footer configured to show none of its five, a list of
+		// suggestions with no footer under the composer.
+		"a first Escape's footer":    codexRows("› fix the bug", "", "  esc esc to edit previous message"),
+		"the history search's row":   codexRows("› fix the bug", "", "  search the history: fix  ↑ ↓ to move · enter to pick"),
+		"the shortcuts list's last":  codexRows("› Ask Codex to do anything", "", "  ctrl + t to view the transcript"),
+		"a configured footer":        codexRows("› Ask Codex to do anything", "", "  main · ~/src/notes"),
+		"suggestions with no footer": codexRows("  Commands", "> /status    show the session's status", "  /stop      stop the work", "  /style     pick a style", "  tab to complete", "", "› /st"),
 	}
 	for _, size := range [][2]int{{80, 24}, {80, 5}, {120, 40}} {
 		for name, screen := range questions {
@@ -405,6 +420,15 @@ func TestCodexsPromptEndsAtItsFooter(t *testing.T) {
 		"a key's second press":   codexRows("› Ask Codex to do anything", "", "  esc again to edit previous message"),
 		"the quit key's second":  codexRows("› Ask Codex to do anything", "", "  ctrl + c again to quit"),
 		"the context left alone": codexRows("› Ask Codex to do anything", "", "  100% context left"),
+		// The footers Codex draws under its composer, each a made-up
+		// composer's last row.
+		"empty and idle":            codexRows("› Ask Codex to do anything", "", "  ? for shortcuts                                         100% context left"),
+		"a draft typed":             codexRows("› fix the bug", "", "                                                          100% context left"),
+		"a draft while a task runs": codexRows("• Working (3s • esc to interrupt)", "", "› fix the bug", "", "  tab to queue message                                    100% context left"),
+		"the Escape pressed once":   codexRows("› fix the bug", "", "  esc again to edit previous message"),
+		"the quit key pressed once": codexRows("› fix the bug", "", "  ⌃c again to quit"),
+		// A list of suggestions drawn above the composer, its footer kept.
+		"suggestions above it": codexRows("  Commands", "> /status    show the session's status", "  /stop      stop the work", "  /style     pick a style", "  tab to complete", "", "› /st", "", "  ? for shortcuts                                         100% context left"),
 	}
 	for _, size := range [][2]int{{80, 24}, {120, 40}} {
 		for name, screen := range composers {
@@ -425,6 +449,35 @@ func TestCodexsPromptEndsAtItsFooter(t *testing.T) {
 		t.Fatalf("a composer with no footer: the word %+v", word)
 	}
 	nothingWrittenNow(t, s, p)
+}
+
+// TestCodexsEnterIsWrittenUnderItsSuggestions: a command typed into
+// Codex's composer with its list of suggestions drawn above it, the
+// footer kept under the composer: the line is typed and entered.
+func TestCodexsEnterIsWrittenUnderItsSuggestions(t *testing.T) {
+	a := shapedAgents()[1]
+	s, p, sub := pastFirstLine(t, a, Options{})
+	list := func(typed string) string {
+		return codexRows("  Commands", "> /status    show the session's status", "  /stop      stop the work", "  /style     pick a style", "  tab to complete", "", "› "+typed, "", "  ? for shortcuts                                         100% context left")
+	}
+	draw(t, s, p, list("/st"))
+	var shown atomic.Bool
+	hook := func() { shown.Store(drawsOn(s, p, list("/status"))) }
+	s.beforeEnter.Store(&hook)
+	res, err := s.Submit(t.Context(), Submission{Text: "/status", By: sub})
+	s.beforeEnter.Store(nil)
+	if !shown.Load() {
+		t.Fatalf("the list was never drawn: %q", s.ScreenLines(24))
+	}
+	if err != nil || !res.Entered {
+		t.Fatalf("the command under its suggestions: %+v %v", res, err)
+	}
+	for _, want := range []string{"/status", "\r"} {
+		if got := written(t, p); got != want {
+			t.Fatalf("written %q, want %q", got, want)
+		}
+	}
+	nothingIn(t, s, p)
 }
 
 // TestCodexsEnterIsNotWrittenOntoAQuestionUnderTheLine: the line typed at
@@ -595,4 +648,227 @@ func TestAChoiceAboveAnIntactPromptBoxTakesNoLine(t *testing.T) {
 		t.Fatalf("written %q", got)
 	}
 	nothingIn(t, s, p)
+}
+
+// TestAnEnterRefusedLateHoldsTheTurn: a crew's line whose BeforeEnter runs
+// past the session's InputWait, the screen gone to a choice meanwhile: its
+// caller is answered as taken slowly, the session's turn kept; the
+// writer's last reading refuses the Enter, the line is told it was typed
+// and not entered, and the turn is held for a person, so that the next
+// line is not typed after the text.
+func TestAnEnterRefusedLateHoldsTheTurn(t *testing.T) {
+	for _, a := range shapedAgents() {
+		t.Run(a.id, func(t *testing.T) {
+			s, p, sub := pastFirstLine(t, a, Options{InputWait: 300 * time.Millisecond})
+			gate := make(chan struct{})
+			finished := make(chan error, 1)
+			var word SubmitResult
+			line := Submission{Text: "fix the bug", ByName: "crew",
+				BeforeEnter: func() {
+					drawsOn(s, p, pickFrame)
+					<-gate
+				},
+				Finished: func(res SubmitResult, err error) { word = res; finished <- err },
+			}
+			res, err := s.Submit(t.Context(), line)
+			if !errors.Is(err, ErrSubmitPending) || res.Entered {
+				t.Fatalf("the line, its BeforeEnter past its wait: %+v %v", res, err)
+			}
+			close(gate)
+			if err := <-finished; !errors.Is(err, ErrLineStranded) || word.Entered || !word.NotAtPrompt {
+				t.Fatalf("the line's word: %+v %v", word, err)
+			}
+			if !s.TurnHeld() {
+				t.Fatal("the turn is not held for the text typed without its Enter")
+			}
+			if got := written(t, p); got != "fix the bug" {
+				t.Fatalf("written %q", got)
+			}
+			nothingIn(t, s, p)
+			drawsOn(s, p, prompt(a.id)("fix the bug"))
+			ctx, cancel := context.WithTimeout(t.Context(), 300*time.Millisecond)
+			defer cancel()
+			if res, err := s.Submit(ctx, Submission{Text: "and the tests", By: sub}); !errors.Is(err, context.DeadlineExceeded) || res.Typed {
+				t.Fatalf("the next line, the turn held: %+v %v", res, err)
+			}
+			nothingIn(t, s, p)
+		})
+	}
+}
+
+// ownLine is a numbered line long enough to be told apart in the agent's
+// history.
+const ownLine = "1. add the test for the parser, then 2. fix the bug"
+
+// history is the agent's screen with a line of the person's in its history
+// behind the prompt's mark, the agent's answer under it, and its prompt,
+// at rest or at work.
+func history(id, row string, working bool) string {
+	if id == "claude" {
+		rows := []string{"❯ " + row, "", "● Done: both."}
+		if working {
+			rows = append(rows, "", "✻ Thinking… (esc to interrupt)")
+		}
+		return strings.Join(append(rows, "", rule80, "❯ ", rule80, "  ? for shortcuts"), "\r\n")
+	}
+	rows := []string{"› " + row, "", "• Done: both."}
+	if working {
+		rows = append(rows, "", "• Working (3s • esc to interrupt)")
+	}
+	return codexRows(append(rows, "", "› Ask Codex to do anything", "", "  ? for shortcuts")...)
+}
+
+// TestANumberedLineTheSessionEnteredIsNoChoice: the session entered a
+// numbered line (a person's, a broadcast's, a chat line from a link), and
+// the agent shows it in its history behind the prompt's mark: at rest and
+// at work, a person's next line, a handoff and a crew's prompt are typed
+// and entered. The same row typed by keys in the terminal, a short one the
+// session entered, a dialog's marked choice above the prompt beside the
+// session's own row, and a long marked choice the session never entered
+// each take no line.
+func TestANumberedLineTheSessionEnteredIsNoChoice(t *testing.T) {
+	next := []struct {
+		name string
+		sub  func(*Subscription) Submission
+	}{
+		{"a person's line", func(sub *Subscription) Submission { return Submission{Text: "now run the tests", By: sub} }},
+		{"a handoff", func(*Subscription) Submission {
+			return Submission{Text: "now run the tests", ByName: "crew", UnlessWaiting: true}
+		}},
+		{"a crew's prompt", func(*Subscription) Submission {
+			return Submission{Text: "now run the tests", ByName: "crew", Confirm: true}
+		}},
+	}
+	entered := []struct {
+		name string
+		sub  func(*Local, *Subscription) Submission
+	}{
+		{"a person's line", func(_ *Local, sub *Subscription) Submission { return Submission{Text: ownLine, By: sub} }},
+		{"a broadcast", func(*Local, *Subscription) Submission {
+			return Submission{Text: ownLine, ByName: "admin", UnlessWaiting: true}
+		}},
+		{"a chat line from a link", func(s *Local, _ *Subscription) Submission {
+			guest, err := s.AttachWith(AttachOptions{Role: RoleControl, Name: "guest", LinkID: "l1", Cols: 80, Rows: 24}, newChanSink(false))
+			if err != nil {
+				panic(err)
+			}
+			return Submission{Text: ownLine, ByName: "guest", From: guest, UnlessWaiting: true}
+		}},
+	}
+	for _, a := range shapedAgents() {
+		for _, working := range []bool{false, true} {
+			for _, by := range entered {
+				for _, n := range next {
+					t.Run(fmt.Sprintf("%s working %v, entered as %s, then %s", a.id, working, by.name, n.name), func(t *testing.T) {
+						s, p, sub := pastFirstLine(t, a, Options{})
+						draw(t, s, p, a.prompt)
+						if res, err := s.Submit(t.Context(), by.sub(s, sub)); err != nil || !res.Entered {
+							t.Fatalf("the numbered line: %+v %v", res, err)
+						}
+						typed(t, p, ownLine)
+						draw(t, s, p, history(a.id, ownLine, working))
+						res, err := s.Submit(t.Context(), n.sub(sub))
+						if err != nil || !res.Entered {
+							t.Fatalf("the next line under the numbered one: %+v %v", res, err)
+						}
+						typed(t, p, "now run the tests")
+						nothingIn(t, s, p)
+					})
+				}
+			}
+		}
+		t.Run(a.id+" not the session's", func(t *testing.T) {
+			s, p, sub := pastFirstLine(t, a, Options{})
+			draw(t, s, p, a.prompt)
+			// Typed by keys in the terminal: the session did not enter it.
+			if err := s.Input(sub, []byte(ownLine+"\r")); err != nil {
+				t.Fatal(err)
+			}
+			if got := written(t, p); got != ownLine+"\r" {
+				t.Fatalf("written %q", got)
+			}
+			// A short one the session entered.
+			if res, err := s.Submit(t.Context(), Submission{Text: "1. Yes", By: sub}); err != nil || !res.Entered {
+				t.Fatalf("the short line: %+v %v", res, err)
+			}
+			typed(t, p, "1. Yes")
+			screens := map[string]string{
+				"a row typed by keys": history(a.id, ownLine, false),
+				"a short row":         history(a.id, "1. Yes", false),
+			}
+			if a.id == "claude" {
+				// The session's own row and a dialog's marked choice above
+				// the box; and a ruled question whose marked choice is long
+				// and was never entered.
+				s.rememberEntered("1. Small and plain, for the report")
+				screens["an own row beside a dialog's choice"] = "❯ 1. Small and plain, for the report\r\n\r\n" + choiceAboveTheBox
+				screens["a long choice never entered"] = strings.Replace(choiceAboveTheBox, " ❯ 1. Small", " ❯ 1. Small and medium sizes, for the whole report", 1)
+			}
+			for name, screen := range screens {
+				draw(t, s, p, screen)
+				if res, err := s.Submit(t.Context(), Submission{Text: "now run the tests", By: sub}); !errors.Is(err, ErrNotAtPrompt) || res.Typed {
+					t.Fatalf("%s: %+v %v", name, res, err)
+				}
+				nothingIn(t, s, p)
+			}
+		})
+	}
+}
+
+// typed fails unless the process was written text and then its Enter.
+func typed(t *testing.T, p *fakeProc, text string) {
+	t.Helper()
+	for _, want := range []string{text, "\r"} {
+		if got := written(t, p); got != want {
+			t.Fatalf("written %q, want %q", got, want)
+		}
+	}
+}
+
+// TestTheSessionsOwnLinesAreBounded: a numbered line the session entered
+// is known as its own when it wraps past the window, its first screen row
+// alone on a row; the ninth such line puts the first out of what is kept;
+// and a line whose Enter the screen refused is not kept.
+func TestTheSessionsOwnLinesAreBounded(t *testing.T) {
+	a := shapedAgents()[0]
+	s, p, sub := pastFirstLine(t, a, Options{})
+	long := "1. " + strings.Repeat("read the parser and its tests ", 4)
+	draw(t, s, p, a.prompt)
+	if res, err := s.Submit(t.Context(), Submission{Text: long, By: sub}); err != nil || !res.Entered {
+		t.Fatalf("the long line: %+v %v", res, err)
+	}
+	typed(t, p, strings.TrimSpace(long))
+	first, rest := strings.TrimSpace(long)[:76], strings.TrimSpace(long)[76:]
+	wrapped := strings.Replace(history("claude", first, false), "\r\n\r\n● Done", "\r\n  "+rest+"\r\n\r\n● Done", 1)
+	draw(t, s, p, wrapped)
+	if res, err := s.Submit(t.Context(), Submission{Text: "now run the tests", By: sub}); err != nil || !res.Entered {
+		t.Fatalf("under the wrapped line: %+v %v", res, err)
+	}
+	typed(t, p, "now run the tests")
+
+	lines := make([]string, 9)
+	for i := range lines {
+		lines[i] = fmt.Sprintf("%d. read the parser and its tests, part %d", i+1, i+1)
+		s.rememberEntered(lines[i])
+	}
+	if s.enteredRow("❯ " + lines[0]) {
+		t.Fatal("the first of nine lines is still kept")
+	}
+	if !s.enteredRow("❯ "+lines[8]) || !s.enteredRow("❯ "+lines[1]) {
+		t.Fatal("the last eight are not all kept")
+	}
+
+	// A line whose Enter the screen refuses as the last thing before the
+	// write (a choice drawn as its BeforeEnter runs).
+	s, p, sub = pastFirstLine(t, a, Options{})
+	refused := "1. this line's Enter is refused by the screen"
+	var shown atomic.Bool
+	draw(t, s, p, a.prompt)
+	res, err := s.Submit(t.Context(), Submission{Text: refused, By: sub, BeforeEnter: func() { shown.Store(drawsOn(s, p, pickFrame)) }})
+	if !shown.Load() || !errors.Is(err, ErrLineStranded) || res.Entered {
+		t.Fatalf("the refused line: %+v %v (drawn %v)", res, err, shown.Load())
+	}
+	if s.enteredRow("❯ " + refused) {
+		t.Fatal("a line whose Enter was refused is kept")
+	}
 }

@@ -144,11 +144,12 @@ var ErrQuestion = errors.New(QuestionWords)
 var ErrBadSubmit = errors.New("submit: text past 4096 bytes, or a request id past 32 bytes of printable ASCII")
 
 // HeldWords say why the session needs input while its turn is held for a
-// submission's text typed without its Enter, its link no longer opening the
-// session (holdTyped, source SourceSubmit): the text waits in the program's
-// input, and the next submission waits for a person to type into the
-// terminal.
-const HeldWords = "Text from a link that was let go was typed and not entered: type in the terminal to continue"
+// submission's text typed without its Enter, whatever kept the Enter out
+// (its link no longer opening the session, a reply's question come in its
+// pause, a screen that is not the agent's prompt: holdTyped, source
+// SourceSubmit): the text waits in the program's input, and the next
+// submission waits for a person to type into the terminal.
+const HeldWords = "A line was typed and not entered: type in the terminal to continue"
 
 // Submission is a line to submit (Local.Submit).
 type Submission struct {
@@ -431,6 +432,11 @@ type SubmitResult struct {
 	// its time ran out: the program has not taken it yet, and it gives the
 	// write's result once it has (landEnter).
 	landed <-chan error
+	// read says that Enter has its reading still to pass as the last thing
+	// before the write (a line typed only at the agent's prompt): it is
+	// entered, and the startup watch ends, only once the write is made, and
+	// the session's turn is kept until then (finishLanding).
+	read bool
 }
 
 // Submit types sub.Text and presses Enter, as two writes Options.SubmitPause
@@ -685,6 +691,16 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 		}()
 		return res, why
 	}
+	if err == nil && res.landed != nil && res.read {
+		// Its Enter's write began, its reading still to pass, and its time
+		// ran out: accepted, the turn kept until the Enter is written or
+		// refused (finishLanding).
+		release = false
+		handed = true
+		go s.finishLanding(sub, res, st)
+		res.landed, res.read = nil, false
+		return res, ErrSubmitPending
+	}
 	if err == nil && res.landed != nil {
 		// Its Enter's write began and its time ran out: accepted, entered
 		// as the program reads, the question its claim holds resolved and
@@ -837,7 +853,9 @@ func (s *Local) TurnHeld() bool {
 
 // holdTyped holds the session's turn, which its caller holds and gives
 // back once it returns, after a submission whose text was typed and whose
-// Enter was not written, its link no longer opening the session: no other
+// Enter was not written for good (its link no longer opening the session,
+// a reply's question come in its pause, a screen that is not the agent's
+// prompt: strand): no other
 // submission (a person's reply, a crew's prompt, a handoff) is typed after
 // the text, to be entered with it, until a person types into the terminal
 // (input), who deals with what is left in the program's input, or the
@@ -1286,7 +1304,20 @@ func (s *Local) pressEnter(ctx context.Context, sub Submission, res SubmitResult
 		}
 		s.nextTurn()
 	}
-	wait.last = func() error { return late }
+	// The last reading, made again after the notes above, as the very last
+	// thing before the write: the gap is the write call alone.
+	wait.last = func() error {
+		err := late
+		if err == nil && read != nil {
+			err = read()
+		}
+		if err == nil && res.Typed {
+			// Written now: a numbered line the agent will show in its
+			// history behind the prompt's mark is the session's own.
+			s.rememberEntered(SubmitLine(sub.Text))
+		}
+		return err
+	}
 	enterAt := time.Now().UTC()
 	landed, err := s.writeProc(ctx, []byte{'\r'}, wait)
 	pending := landed != nil
@@ -1310,20 +1341,18 @@ func (s *Local) pressEnter(ctx context.Context, sub Submission, res SubmitResult
 		}
 		return res, err
 	}
+	if pending && read != nil {
+		// Begun, its reading still to pass as the last thing before the
+		// write: entered only once the write is made (landEnter), the
+		// session's turn kept until then (finishLanding).
+		s.log.Info("a submission's Enter waits for the program to take input")
+		res.landed, res.read = landed, true
+		return res, nil
+	}
 	// An Enter whose write has begun lands when the program reads again:
 	// the submission is entered, and nothing more is pressed for it.
 	res.Entered = true
-	if s.trust != nil {
-		// A trust question comes before the first prompt, never after.
-		s.trust.Stop()
-		if s.asked != nil && len(s.askedQuestions) == 0 {
-			// The screen kept for the startup questions alone.
-			s.asked.Stop()
-		}
-	}
-	if sub.By != nil {
-		s.stampTyping(sub.By)
-	}
+	s.enteredLine(sub)
 	if pending {
 		// Begun, the Enter lands when the program reads again: the
 		// question a reply's claim holds is resolved then, and the line's
@@ -1356,6 +1385,22 @@ func (s *Local) pressEnter(ctx context.Context, sub Submission, res SubmitResult
 		res.Unconfirmed = res.Reentered && !s.inTurn() && !s.confirmed(ctx, enterAt)
 	}
 	return res, nil
+}
+
+// enteredLine is what follows a line's Enter written, or begun: the
+// startup watch ends (a trust question comes before the first prompt,
+// never after), and a controller's line stamps it typing.
+func (s *Local) enteredLine(sub Submission) {
+	if s.trust != nil {
+		s.trust.Stop()
+		if s.asked != nil && len(s.askedQuestions) == 0 {
+			// The screen kept for the startup questions alone.
+			s.asked.Stop()
+		}
+	}
+	if sub.By != nil {
+		s.stampTyping(sub.By)
+	}
 }
 
 // resolveLine resolves the question a reply's line claimed (its text's
@@ -1393,20 +1438,44 @@ func (s *Local) landEnter(sub Submission, res SubmitResult, st submitState) (Sub
 			err = ErrSessionEnded
 		}
 	}
+	if errors.Is(err, errNotHolding) || errors.Is(err, errNotAtPromptEnter) {
+		// Refused as the last thing before the write: not written, the
+		// turn held for a person (strand), its claim with it.
+		res.Entered, res.read, res.NotAtPrompt = false, false, true
+		return res, nil
+	}
 	if err != nil {
-		res.Entered = false
+		res.Entered, res.read = false, false
 		if token := st.claim.Swap(0); token != 0 {
 			s.release(sub.Question, token)
 		}
-		if errors.Is(err, errNotHolding) || errors.Is(err, errNotAtPromptEnter) {
-			// Refused as the last thing before the write: not written.
-			res.NotAtPrompt = true
-			err = ErrLineStranded
-		}
 		return res, err
+	}
+	if res.read {
+		// Written now: entered.
+		res.Entered, res.read = true, false
+		s.enteredLine(sub)
 	}
 	s.resolveLine(sub, st)
 	return res, nil
+}
+
+// finishLanding finishes a line whose Enter's write began, its reading
+// still to pass, when its time ran out (SubmitResult.read): its caller
+// answered ErrSubmitPending, the session's turn held until the Enter is
+// written or refused; refused, the turn is held for a person (strand,
+// holdTyped) as for any Enter the screen refused, so that no later line
+// joins the text.
+func (s *Local) finishLanding(sub Submission, res SubmitResult, st submitState) {
+	defer func() { <-s.submitting }()
+	defer st.settle(s, sub)
+	res, err := s.landEnter(sub, res, st)
+	err = st.withdrawnTyped(res, err)
+	stranded, err := st.strand(s, sub, res, err)
+	s.finished(sub, res, err)
+	if stranded {
+		s.holdTyped()
+	}
 }
 
 // finishEntered is landEnter for a submission accepted with its Enter
@@ -1474,8 +1543,9 @@ var errNotAtPromptEnter = errors.New("session: the screen is not the agent's pro
 // textGuard is a submission's text's guard (writeWait.guard), asked as the
 // writer takes it: what Submit refuses before the text, looked at again,
 // for a question or a dialog come while the text waited behind another
-// write. With UnlessWaiting, any prompt, and a screen that is not the
-// agent's prompt for a line typed only there (errWaiting); else a startup
+// write. With UnlessWaiting, any prompt (errWaiting), and a screen that is
+// not the agent's prompt for a line typed only there (errWaitingScreen);
+// else a startup
 // question (ErrTrustQuestion), a question asked during the work or a
 // dialog on the screen now or Held (ErrQuestion); for a line typed only
 // at the agent's prompt (promptOnly), a screen that is not that prompt

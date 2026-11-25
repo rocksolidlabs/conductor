@@ -3,6 +3,8 @@ package session
 import (
 	"regexp"
 	"strings"
+	"sync"
+	"unicode/utf8"
 )
 
 // A line while the startup questions' watch lasts (until the first
@@ -60,9 +62,11 @@ var markedChoiceRow = regexp.MustCompile(`^\s*[›>❯]\s*\d+\.\s+\S`)
 // prompt shape, the shape matches and no numbered row is a dialog's
 // choice, which is one in or under the rows the shape matched (from the
 // first row of its match to the frame's end) or one with a highlight's
-// marker anywhere. A numbered list in the agent's own output above its
-// prompt is no choice. With no shape it is promptShown.
-func promptShownPast(text string, shape *regexp.Regexp) bool {
+// marker above them, unless own (nil for none) says that marked row is a
+// line the session itself entered, shown in the agent's history
+// (enteredRow). A numbered list in the agent's own answer above its prompt
+// is no choice. With no shape it is promptShown.
+func promptShownPast(text string, shape *regexp.Regexp, own func(row string) bool) bool {
 	if shape == nil {
 		return promptShown(text, nil)
 	}
@@ -75,8 +79,8 @@ func promptShownPast(text string, shape *regexp.Regexp) bool {
 	if startupChoiceShown(text[from:]) {
 		return false
 	}
-	for _, row := range strings.Split(text, "\n") {
-		if markedChoiceRow.MatchString(row) {
+	for _, row := range strings.Split(text[:from], "\n") {
+		if markedChoiceRow.MatchString(row) && (own == nil || !own(row)) {
 			return false
 		}
 	}
@@ -85,12 +89,84 @@ func promptShownPast(text string, shape *regexp.Regexp) bool {
 
 // promptRead reports whether frame, a whole frame, shows the agent's
 // prompt: while the startup watch lasts with a numbered row anywhere read
-// as a choice (promptShown), after it as promptShownPast reads it.
+// as a choice (promptShown), after it as promptShownPast reads it, the
+// lines the session entered known to it.
 func (s *Local) promptRead(frame string) bool {
 	if s.trust != nil && s.trust.Watching() {
 		return promptShown(frame, s.opts.PromptShape)
 	}
-	return promptShownPast(frame, s.opts.PromptShape)
+	return promptShownPast(frame, s.opts.PromptShape, s.enteredRow)
+}
+
+// The lines the session entered that read as a numbered row (enteredRows).
+const (
+	// maxEnteredRows is how many are kept, the latest.
+	maxEnteredRows = 8
+	// maxEnteredRow bounds each, in bytes.
+	maxEnteredRow = 256
+	// minEnteredRow is the fewest characters one has, and the fewest a
+	// marked row's text has to be taken for one.
+	minEnteredRow = 24
+)
+
+// enteredNumbered is a line that reads as a numbered row ("1. add the test").
+var enteredNumbered = regexp.MustCompile(`^\s*\d+\.\s+\S`)
+
+// rowMarker is a row's highlight marker and the spaces around it.
+var rowMarker = regexp.MustCompile(`^\s*[›>❯]\s*`)
+
+// enteredRows are the first lines of the last lines the session entered
+// (their Enter written) that read as a numbered row and are at least
+// minEnteredRow characters long, spaces normalised, each cut to
+// maxEnteredRow bytes: the agents show a line they were given in their
+// history behind the prompt's mark, where it reads as a dialog's marked
+// choice. Nothing else of what was typed is kept, and nothing survives
+// the session.
+type enteredRows struct {
+	mu   sync.Mutex
+	rows []string
+}
+
+// normalRow is text with its runs of spaces one space, trimmed.
+func normalRow(text string) string { return strings.Join(strings.Fields(text), " ") }
+
+// rememberEntered keeps line, a line the session typed whose Enter is
+// being written, when it reads as a numbered row and is long enough.
+func (s *Local) rememberEntered(line string) {
+	line = normalRow(plainSpaces(line))
+	if utf8.RuneCountInString(line) < minEnteredRow || !enteredNumbered.MatchString(line) {
+		return
+	}
+	if len(line) > maxEnteredRow {
+		line = strings.ToValidUTF8(line[:maxEnteredRow], "")
+	}
+	s.entered.mu.Lock()
+	defer s.entered.mu.Unlock()
+	rows := append(s.entered.rows, line)
+	if len(rows) > maxEnteredRows {
+		rows = append([]string(nil), rows[len(rows)-maxEnteredRows:]...)
+	}
+	s.entered.rows = rows
+}
+
+// enteredRow reports whether row, a marked numbered row on the screen, is
+// a line the session entered as the agent's history shows it: its text
+// after the marker, spaces normalised, at least minEnteredRow characters
+// long and a prefix of a line kept (the whole of it, or its first row
+// where the screen wrapped it).
+func (s *Local) enteredRow(row string) bool {
+	text := normalRow(rowMarker.ReplaceAllString(row, ""))
+	if utf8.RuneCountInString(text) < minEnteredRow {
+		return false
+	}
+	s.entered.mu.Lock()
+	defer s.entered.mu.Unlock()
+	for _, r := range s.entered.rows {
+		if strings.HasPrefix(r, text) {
+			return true
+		}
+	}
+	return false
 }
 
 // startupIn reports whether text shows a startup question's pattern, read
