@@ -29,6 +29,9 @@ const (
 	memberAddedFolderWords  = "it was launched with an added folder."
 	memberNoPipesWords      = "the run's Runtime has no pipes."
 	memberNoChatWords       = "its agent has no chat."
+	// memberNoPromptWords: an agent whose prompt's shape the catalog does
+	// not give, whose prompt the move could never see.
+	memberNoPromptWords = "Conductor cannot tell when its agent's prompt shows."
 )
 
 // memberOwnFlagWords is the run's log's words for a member whose
@@ -70,6 +73,11 @@ func (s *Server) ChatCheck(ctx context.Context, agentID string, args []string) e
 	if !ok || a.Protocol.Off() || agentproto.Check(a.Protocol) != nil || a.Protocol.Name != agentproto.ClaudeStreamJSON || a.Session.Empty() || len(a.Session.StartArgs) == 0 {
 		return &crew.TerminalReason{Words: memberNoChatWords}
 	}
+	if a.PromptShape == "" {
+		// The move waits for the agent's prompt by its shape, and with
+		// none would wait for good: the member runs in its terminal.
+		return &crew.TerminalReason{Words: memberNoPromptWords}
+	}
 	if _, err := agentproto.ClaudeArgs(agentproto.ClaudeLaunch{Command: a.Command, Protocol: a.Protocol.Args, Conversation: memberProbeConversation,
 		Fresh: catalog.Expand(a.Session.StartArgs, memberProbeConversation), Member: true, LaunchArgs: args,
 		HooksDir: agents.HooksDir(s.cfg.DataDir), NoMCP: !s.cfg.MCP(), PermissionHost: true}); err != nil {
@@ -104,6 +112,9 @@ func (s *Server) MemberMove(_ context.Context, local *session.Local, fresh bool)
 	l := v.(*chatLaunch)
 	if l.agent.Protocol.Name != agentproto.ClaudeStreamJSON || l.agent.Session.Empty() || fresh && len(l.agent.Session.StartArgs) == 0 {
 		return session.MoveStarts{}, memberReason(errNoChat)
+	}
+	if l.agent.PromptShape == "" {
+		return session.MoveStarts{}, &crew.TerminalReason{Words: memberNoPromptWords}
 	}
 	if _, err := memberChatArgv(fresh)(l, memberProbeConversation, agents.HooksDir(s.cfg.DataDir), s.cfg.MCP()); err != nil {
 		return session.MoveStarts{}, memberReason(err)

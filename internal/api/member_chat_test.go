@@ -3,6 +3,8 @@ package api
 import (
 	"context"
 	"errors"
+	"io"
+	"log/slog"
 	"slices"
 	"strings"
 	"sync"
@@ -69,6 +71,23 @@ func TestAMembersChatArgvAndItsChecks(t *testing.T) {
 		if got := memberReason(err).Error(); got != want {
 			t.Fatalf("%v: %q, want %q", err, got, want)
 		}
+	}
+}
+
+// A member whose agent gives no prompt shape is no Chat member: the move
+// waits for its prompt by its shape and could never see it, so it runs in
+// its terminal, the run's log saying why.
+func TestAMemberWithNoPromptShapeRunsInItsTerminal(t *testing.T) {
+	claude, ok := catalog.Default().Get("claude")
+	if !ok {
+		t.Fatal("no built-in Claude Code")
+	}
+	bare := claude.Copy()
+	bare.ID, bare.PromptShape = "bare-claude", ""
+	e := newTestEnvAgents(t, nil, slog.New(slog.NewTextHandler(io.Discard, nil)), []catalog.Agent{bare})
+	var r *crew.TerminalReason
+	if err := e.srv.ChatCheck(t.Context(), "bare-claude", nil); !errors.As(err, &r) || r.Words != memberNoPromptWords {
+		t.Fatalf("ChatCheck = %v, want %q", err, memberNoPromptWords)
 	}
 }
 
