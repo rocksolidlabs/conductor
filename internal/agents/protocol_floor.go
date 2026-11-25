@@ -35,10 +35,14 @@ const claudeShellTool = "Bash"
 // calls without asking, and those it asks for as for any other call
 // (docs/plans/chat-or-terminal.md, design 7, the floor). A tool is
 // unasked when through it an agent tells Conductor about its own session's
-// work, asks a person, or hands its work on within its own run: it starts,
-// changes or stops no other session or run, writes no ticket, publishes
-// nothing outward and reads nothing beyond the session's own record (a
-// handoff aside, below). Every other tool asks, and a tool of the table that is in
+// work, asks a person, or hands its work on within its own run: it starts
+// only what the run's own definition starts on it (a done starts the
+// members waiting on this one; a task's result lets the engine schedule
+// the next attempts, or open the reviewed task again), reaches no record
+// but its session's own and its run's, writes no ticket, and what it
+// reports goes to the operator's own notices (the webhooks) as any report
+// does. It is the smallest set an agent needs to report its own work;
+// nothing is added to it without the maintainers. Every other tool asks, and a tool of the table that is in
 // neither list fails a test (api's TestEveryConductorToolIsSorted), so a
 // new one asks until someone puts it here.
 var (
@@ -70,7 +74,7 @@ var (
 		"run_status":        "reads the run, beyond the session's own record",
 		"link":              "mints a link that publishes the session outward",
 		"open_url":          "opens a page in the person's browser",
-		"message_send":      "types into any member of the run at a moment of the agent's own choosing: no report",
+		"message_send":      "not a call an agent reports its own work with; in a managed run a handoff carries the same message, shorter",
 		"inbox_read":        "reads what other members sent",
 		"inbox_ack":         "changes the run's record of messages",
 		"context_lookup":    "reads beyond the session's own record, through a provider",
@@ -94,8 +98,11 @@ const claudeMCPServer = "conductor"
 
 // claudeAllowRules is the floor's allow rules: one per unasked tool, in
 // Claude Code's form for one tool of an MCP server, mcp__<server>__<tool>
-// (permissions.md, MCP). An allow rule has no effect in bypassPermissions
-// (a yolo session) and a deny rule wins over it.
+// (permissions.md, MCP). Claude Code judges deny, then ask, then allow,
+// across every settings source the child reads (the person's and the
+// folder's among them): a deny or ask rule naming one of these tools wins
+// over its allow, and then the call is denied or put to Conductor as any
+// other. An allow rule has no effect in bypassPermissions (a yolo session).
 func claudeAllowRules() []string {
 	rules := make([]string, 0, len(ProtocolUnaskedTools))
 	for _, t := range ProtocolUnaskedTools {

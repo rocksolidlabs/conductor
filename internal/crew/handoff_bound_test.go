@@ -1,6 +1,7 @@
 package crew
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -48,17 +49,33 @@ func TestAHandoffReachesOnlyItsOwnRun(t *testing.T) {
 	}
 }
 
-// In a managed run a handoff to a name no member of the run has (another
-// run's member, say) is no message: noted not sent, nothing kept.
+// In a managed run a handoff to a name no member of the run has is no
+// message: here the name is a member of another run on the same engine,
+// which is typed nothing and keeps nothing, and the reporter's run notes
+// the handoff not sent and keeps no message.
 func TestAManagedHandoffToANameOutsideTheRunIsNoMessage(t *testing.T) {
-	dir := newRepo(t)
-	e, _, _ := managedEngine(t)
-	run := launchManaged(t, e, repoCrew(dir, work("build", "lead"), work("docs", "writer", "build")))
+	e, fl, _ := managedEngine(t)
+	run := launchManaged(t, e, repoCrew(newRepo(t), work("build", "lead"), work("docs", "writer", "build")))
 	defer stopRun(t, e, run.ID)
+	other := launchManaged(t, e, repoCrew(newRepo(t), work("other", "outsider")))
+	defer stopRun(t, e, other.ID)
+	o := waitAttempt(t, e, other.ID, "other", ledger.AttemptRunning)
+	_, po := fl.attemptSession(t, o)
+	typed(po) // its task line
 	b := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
 	e.OnActivity(b.Attempt.SessionID, session.ActivityEntry{Type: session.ActivityHandoff, To: "outsider", Message: "over to you", At: time.Now().UTC()}, session.AttentionDone)
 	waitLogged(t, e, run.ID, "the handoff from lead to outsider was not sent", 1, 10*time.Second)
-	if msgs, _ := e.MessagesOf(run.ID); len(msgs) != 0 {
-		t.Fatalf("a handoff outside the run was kept as a message: %+v", msgs)
+	for _, id := range []string{run.ID, other.ID} {
+		if msgs, _ := e.MessagesOf(id); len(msgs) != 0 {
+			t.Fatalf("run %s kept a message: %+v", id, msgs)
+		}
+	}
+	if n := logCount(t, e, other.ID, "handoff"); n != 0 {
+		t.Fatalf("the other run noted %d handoffs", n)
+	}
+	for _, line := range typed(po) {
+		if strings.Contains(line, "over to you") {
+			t.Fatalf("the other run's member was typed %q", line)
+		}
 	}
 }
