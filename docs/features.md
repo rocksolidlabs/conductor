@@ -216,7 +216,8 @@ that order.
 A Claude Code session can run as a chat (`docs/plans/chat-or-terminal.md`,
 designs 11 and 12). Every session still starts in its terminal. In Chat the
 agent has Conductor's own tools. The person's own tool servers and a folder's
-stay with the session's terminal.
+stay with the session's terminal. A launch's own `--mcp-config` argument is
+kept for the chat, as its terminal had it.
 
 - **The switch.** The session's header has **Terminal | Chat** after its name
   (below `sm`, two items of More). Before the agent's first reply it says "Chat
@@ -224,8 +225,9 @@ stay with the session's terminal.
   at the turn's end, with a line saying so; at rest, the Chat side says what a
   move ends. The first time a person presses Chat in a browser, one note says
   the agent's own terms decide how its non-interactive mode may be used and
-  counted, with a link to the agent's site. A link's viewer sees the way as a
-  label.
+  counted, with a link to the agent's site, and under it that in Chat the agent
+  has Conductor's tools only. A refused move says the server's words. A link's
+  viewer sees the way as a label.
 - **The chat.** Where the terminal was: what the person wrote and what the
   agent wrote (Markdown without HTML, a link only to `https://`), each turn's
   steps in one line ("12 steps", "Working." while it runs) that opens to the

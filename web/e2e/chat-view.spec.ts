@@ -37,10 +37,11 @@ test("a terminal session's switch moves it to its chat, whose turn shows its wor
     await expect(sw.locator('[data-way-side="protocol"]')).toBeDisabled()
     await firstTurn(page, api, s.id, 'remember PINEAPPLE')
     await expect(page.locator('[data-way-line]')).toHaveCount(0)
-    // The switch moves it; the first press in this browser says the agent's terms decide how the mode is used.
+    // The switch moves it; the first press in this browser says the agent's terms decide how the mode is used, and that the chat has Conductor's tools only.
     await sw.locator('[data-way-side="protocol"]').click()
     const terms = page.getByRole('region', { name: /^Notifications/ }).locator('li').filter({ hasText: "Chat runs the agent's own non-interactive mode with its existing sign-in" })
     await expect(terms).toBeVisible()
+    await expect(terms).toContainText("In Chat the agent has Conductor's tools only; your own tool servers stay in its terminal.")
     await expect(view).toHaveAttribute('data-session-way', 'protocol', { timeout: 30_000 })
     await expect(sw).toHaveAttribute('data-way', 'protocol')
     const chat = page.locator('[data-chat-view]')

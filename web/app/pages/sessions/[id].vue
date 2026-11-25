@@ -275,7 +275,7 @@ watch(
     refused.value = ''
   },
 )
-/** The note on the vendor's terms (design 11), once in this browser: the first time a person presses Chat. */
+/** The note on the vendor's terms (design 11), once in this browser: the first time a person presses Chat; under it, that the chat has Conductor's tools only. */
 const TERMS_KEY = 'conductor.chatTermsNoted'
 function noteTerms() {
   try {
@@ -287,6 +287,7 @@ function noteTerms() {
   const site = agentInfo.value?.site?.startsWith('https://') ? agentInfo.value.site : undefined
   toast.add({
     title: "Chat runs the agent's own non-interactive mode with its existing sign-in; the agent's terms decide how that may be used and counted.",
+    description: "In Chat the agent has Conductor's tools only; your own tool servers stay in its terminal.",
     color: 'neutral',
     duration: 15000,
     actions: site ? [{ label: new URL(site).host, to: site, target: '_blank', color: 'neutral', variant: 'outline' }] : [],

@@ -2644,6 +2644,13 @@ and `chat-layout`, each on a server of its own with `claude-proto` and
   `description` is opened before Allow once: the description is part of
   what is approved. The opened input is every field's name and its value
   as text; a tab is drawn `\t`, as a carriage return is `\r`.
+- **The note shown once** (the first press of Chat in a browser, kept in
+  its storage) is a toast: the vendor's-terms sentence as its title, with
+  the agent's site as its action where the catalog gives an `https`
+  site, and under it "In Chat the agent has Conductor's tools only; your
+  own tool servers stay in its terminal." A refused move draws the
+  route's `move_refused` words as given; the switch keeps no list of
+  them.
 - **Deny takes a message** from one field under the question ("Why, for
   the agent (optional)"); without one the agent is told row 6's
   sentence.
