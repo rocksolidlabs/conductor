@@ -116,6 +116,11 @@ type Hello struct {
 	// and no join line in its chat; it is on the run's roster. An older
 	// owner ignores it and sends output, which the client drops.
 	ChatOnly bool `json:"chatOnly,omitempty"`
+	// TranscriptAfter is the highest mark of a chat's transcript the client
+	// holds (transcript.go): after its ready the owner sends every entry
+	// changed after it. 0, or absent, holds none; an owner of a terminal
+	// session, or an older one, ignores it.
+	TranscriptAfter uint64 `json:"transcriptAfter,omitempty"`
 }
 
 // Resize is sent by controllers to change the PTY size and broadcast by the
@@ -504,6 +509,20 @@ type Welcome struct {
 	ICEServers     []ICEServer `json:"iceServers,omitempty"`
 	RelayTimeoutMs int         `json:"relayTimeoutMs,omitempty"`
 	RelayOnly      bool        `json:"relayOnly,omitempty"`
+	// Way is "protocol" on a chat (a session that runs its agent through
+	// the agent's own protocol, transcript.go), which sends no SCROLLBACK
+	// (ScrollbackBytes 0) and sends TRANSCRIPT: absent for a session that
+	// runs in its terminal, as from an older owner. Verbatim says the
+	// chat's messages reach the agent as written; Transcript what the chat
+	// keeps; Interrupt that the owner takes interrupt.
+	Way        string             `json:"way,omitempty"`
+	Verbatim   bool               `json:"verbatim,omitempty"`
+	Transcript *WelcomeTranscript `json:"transcript,omitempty"`
+	Interrupt  bool               `json:"interrupt,omitempty"`
+	// Noted is the way a move pressed during a turn goes to at the turn's
+	// end (way.go): "terminal" or "protocol", absent while none is noted
+	// and from an older owner.
+	Noted string `json:"noted,omitempty"`
 }
 
 // ICEServer is the WebRTC ICE server description sent to clients.

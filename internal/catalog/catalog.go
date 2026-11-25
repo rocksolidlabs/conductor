@@ -92,6 +92,62 @@ type Agent struct {
 	// nil is the computer's default browser; nil in a saved override takes
 	// the replaced agent's, and {} is the default over it.
 	Browser *Browser `json:"browser,omitempty"`
+	// Protocol, when set, says this agent may run the protocol way: the
+	// agent's own documented structured interface, as a child with pipes,
+	// shown as a chat. Its name is from a closed set that this package
+	// does not know (internal/agentproto checks it); its arguments are
+	// added to Command for it. nil in a saved override takes the replaced
+	// agent's; {} turns it off.
+	Protocol *ProtocolRecipe `json:"protocol,omitempty"`
+}
+
+// ProtocolRecipe is an agent's protocol way: which protocol it speaks and
+// what is added to its command for it.
+type ProtocolRecipe struct {
+	// Name is the protocol's name ("claude-stream-json"), of the form of an
+	// agent's id; empty only in the recipe that turns it off ({}).
+	Name string `json:"name,omitempty"`
+	// Args go after Command for the protocol way: at most 16, each 1 to
+	// 4096 bytes without NUL, as a yolo recipe's.
+	Args []string `json:"args,omitempty"`
+}
+
+// Off reports whether r gives the agent no protocol way: nil, or the empty
+// recipe.
+func (r *ProtocolRecipe) Off() bool { return r == nil || r.Name == "" }
+
+// clone returns a copy of r that shares nothing with it.
+func (r *ProtocolRecipe) clone() *ProtocolRecipe {
+	if r == nil {
+		return nil
+	}
+	return &ProtocolRecipe{Name: r.Name, Args: slices.Clone(r.Args)}
+}
+
+// validateProtocol bounds a protocol recipe: the name of an id's form, and
+// the arguments as a yolo recipe's. The empty recipe, which turns an
+// inherited one off, passes; a recipe with arguments and no name does not.
+// Whether the name is one Conductor speaks is checked outside this package
+// (agentproto.Check). Its errors carry no agent id; validate adds it.
+func validateProtocol(r ProtocolRecipe) error {
+	if r.Name == "" {
+		if len(r.Args) > 0 {
+			return errors.New("args without a name: {} turns the protocol off")
+		}
+		return nil
+	}
+	if !idPattern.MatchString(r.Name) {
+		return fmt.Errorf("name must match %s", idPattern)
+	}
+	if len(r.Args) > maxYoloArgs {
+		return fmt.Errorf("too many args (at most %d)", maxYoloArgs)
+	}
+	for i, arg := range r.Args {
+		if arg == "" || strings.ContainsRune(arg, 0) || len(arg) > maxCommandArg {
+			return fmt.Errorf("args[%d] must be 1 to %d bytes without NUL", i, maxCommandArg)
+		}
+	}
+	return nil
 }
 
 // Probed reports whether the identity probe runs for the agent: unless Probe
@@ -452,6 +508,11 @@ func validate(a Agent) error {
 			return fmt.Errorf("agent %s: browser: %w", a.ID, err)
 		}
 	}
+	if a.Protocol != nil {
+		if err := validateProtocol(*a.Protocol); err != nil {
+			return fmt.Errorf("agent %s: protocol: %w", a.ID, err)
+		}
+	}
 	if len(a.EnvPassthrough) > maxEnvPassthrough {
 		return fmt.Errorf("agent %s: too many envPassthrough entries (at most %d)", a.ID, maxEnvPassthrough)
 	}
@@ -692,7 +753,7 @@ func (c *Catalog) ApplyOverlay(o Overlay) error {
 }
 
 // inherit returns a, an agent saved over prev (had says there was one), with
-// what it leaves to prev filled in: an adapter, a signal (or its working title), a site, a yolo recipe, a trust prompt, a prompt shape or a browser it omits,
+// what it leaves to prev filled in: an adapter, a signal (or its working title), a site, a yolo recipe, a trust prompt, a prompt shape, a browser or a protocol recipe it omits,
 // and every env value it holds as RedactedValue. The Agents page stores the
 // mask for a key whose value the editor did not change, so a value changed in
 // the config reaches the agent. A value equal to prev's counts as the mask: it
@@ -742,6 +803,9 @@ func inherit(a, prev Agent, had bool) Agent {
 		}
 		if a.Browser == nil {
 			a.Browser = prev.Browser.clone()
+		}
+		if a.Protocol == nil {
+			a.Protocol = prev.Protocol.clone()
 		}
 	}
 	for k, v := range a.Env {
@@ -799,6 +863,7 @@ func (a Agent) clone() Agent {
 		a.Probe = &v
 	}
 	a.Browser = a.Browser.clone()
+	a.Protocol = a.Protocol.clone()
 	return a
 }
 

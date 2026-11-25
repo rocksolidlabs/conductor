@@ -10,6 +10,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/coder/websocket"
+
 	"github.com/rocksolidlabs/conductor/internal/proto"
 	"github.com/rocksolidlabs/conductor/internal/session"
 	"github.com/rocksolidlabs/conductor/internal/share"
@@ -123,6 +125,19 @@ func (u *Uplink) options(info session.Info) Options {
 	return opts
 }
 
+// OlderSwitchyardWords say why a chat is not published: the switchyard's
+// registered did not say transcript.
+const OlderSwitchyardWords = proto.OlderSwitchyardWords
+
+// ErrOlderSwitchyard refuses to publish a chat to a switchyard whose
+// registered does not say transcript, in OlderSwitchyardWords.
+var ErrOlderSwitchyard error = olderSwitchyard{}
+
+// olderSwitchyard is ErrOlderSwitchyard: its words are a person's to read.
+type olderSwitchyard struct{}
+
+func (olderSwitchyard) Error() string { return OlderSwitchyardWords }
+
 // Published is a session published to the rendezvous.
 type Published struct {
 	// SessionID is the rendezvous's id for the session; ShareBaseURL the
@@ -142,6 +157,10 @@ type Published struct {
 // Done is closed once the publication has ended: Stop, the session's end
 // (endLinger after it), or a stop the switchyard sent (StoppedThere).
 func (p *Published) Done() <-chan struct{} { return p.done }
+
+// TakesTranscript says the switchyard's registered said transcript: a chat's
+// frames reach its viewers there (I14).
+func (p *Published) TakesTranscript() bool { return p.a.transcript.Load() }
 
 // StoppedThere says the switchyard ended the publication with a stop of its
 // own. The session goes on here; publishing it again is a new publication.
@@ -228,6 +247,12 @@ func (u *Uplink) Publish(ctx context.Context, local *session.Local) (*Published,
 	conn, registered, err := a.dialAndRegister(ctx)
 	if err != nil {
 		return nil, err
+	}
+	if local.Way() == session.WayProtocol && !registered.Transcript {
+		// A chat to a switchyard that would close on its frames (I14):
+		// not published, in the words the session's line says.
+		conn.Close(websocket.StatusNormalClosure, "not published")
+		return nil, ErrOlderSwitchyard
 	}
 	// The publication outlives the registration's context: Stop or the
 	// session's end are what end it.

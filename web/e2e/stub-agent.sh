@@ -166,6 +166,13 @@
 # and spins as `stub spin 30` does. `stub fail` is a turn that ends in an
 # error: the status working, an error printed, the status error, and no
 # report of the turn's end (#991).
+# A line `stub hold` is a turn held at a gate: reported working through the
+# agent's hooks, then done once $HOME/.stub-sessions/<id>.hold says `stop`.
+# A resume that printed its transcript appends its count of lines to
+# $HOME/.stub-sessions/<id>.resumed. Started as a chat's child (-p with
+# --input-format stream-json) it is web/e2e/stub-protocol.mjs, run by
+# STUB_NODE (node unless set), on the same transcript; STUB_CLAUDE_VERSION
+# is the version the claude identity says (2.1.287 unless set).
 # The agent's session: --session-id ID names it, --resume ID (or a leading
 # `resume ID`) continues it; without either a fresh id is made. The
 # transcript lives in $HOME/.stub-sessions/<id>.txt, so a resumed session
@@ -216,7 +223,7 @@ usage_state= usage_version=
 if [[ -n $usage_dir && -f $usage_dir/stub-usage ]]; then
 	read -r usage_state usage_version _ <"$usage_dir/stub-usage" || true
 fi
-claude_version=2.1.287 codex_version=0.159.0
+claude_version=${STUB_CLAUDE_VERSION:-2.1.287} codex_version=0.159.0
 if [[ -n $usage_state ]]; then
 	claude_version=${usage_version:-2.1.322}
 	codex_version=${usage_version:-0.163.0}
@@ -328,6 +335,11 @@ auth)
 	exit 0
 	;;
 -p)
+	# A chat's child (the protocol way, Claude Code's print mode with stream-json): the protocol stub speaks it, on the same
+	# conversation's transcript under $HOME/.stub-sessions (STUB_NODE is the suite's node).
+	if [[ " $* " == *" --input-format stream-json "* ]]; then
+		exec "${STUB_NODE:-node}" "$(dirname "${BASH_SOURCE[0]}")/stub-protocol.mjs" "$@"
+	fi
 	if [[ $identity == claude && ${2:-} == /usage ]]; then
 		[[ -n $usage_state ]] || exit 1
 		claude_usage usage
@@ -2155,6 +2167,8 @@ if [[ -n $resume_id ]]; then
 	if [[ -s $transcript ]]; then
 		printf 'stub: resumed %s: %s lines\n' "$id" "$(wc -l <"$transcript" | tr -d ' ')"
 		cat "$transcript"
+		# What a resume showed, for a test that reads it whatever the browser draws: a line per resume, its count of lines.
+		printf '%s\n' "$(wc -l <"$transcript" | tr -d ' ')" >>"$transcripts/$id.resumed"
 	else
 		printf 'stub: resumed %s: 0 lines\n' "$id"
 	fi
@@ -2211,7 +2225,19 @@ handle_line() {
 		mcp_next=
 		printf 'mcp-allow next line: %s\n' "${line:0:200}" >>"$transcript"
 	fi
-	if [[ $line =~ ^stub\ spin\ ([1-9][0-9]?)$ ]]; then
+	if [[ $line == 'stub hold' ]]; then
+		# A turn held at a gate (a test's): reported working, then done once $HOME/.stub-sessions/<id>.hold says stop.
+		printf '%s\n' "$line" >>"$transcript"
+		put "$transcripts/$id.hold" $'hold\n'
+		report_working
+		local hold=
+		until [[ $hold == stop ]]; do
+			sleep 0.1
+			hold=
+			IFS= read -r hold <"$transcripts/$id.hold" || true
+		done
+		report_done "a held turn, let go" "$line"
+	elif [[ $line =~ ^stub\ spin\ ([1-9][0-9]?)$ ]]; then
 		title_working
 		spin "${BASH_REMATCH[1]}"
 		title_ready

@@ -133,6 +133,50 @@ type Subscription struct {
 	// carryMu.
 	carryMu     sync.Mutex
 	reportCarry []byte
+	// transcriptReads counts the connection's transcript_get replies not
+	// yet written to it (TranscriptGet), interrupting that one of its
+	// interrupts is under way (InterruptAsk).
+	transcriptReads atomic.Int32
+	interrupting    atomic.Bool
+	// afters are what runs once a frame queued with sendThen has been
+	// written, by the frame's first byte's address; aftersN counts them.
+	aftersMu sync.Mutex
+	afters   map[*byte]func()
+	aftersN  atomic.Int32
+}
+
+// sendThen enqueues frame as send does, and runs after once the sink has
+// taken it (WriteFrame returned without an error). A frame dropped (the
+// subscription ended, or dropped as a slow consumer) never runs after.
+func (s *Subscription) sendThen(frame []byte, after func()) {
+	if len(frame) == 0 {
+		return
+	}
+	s.aftersMu.Lock()
+	if s.afters == nil {
+		s.afters = map[*byte]func(){}
+	}
+	s.afters[&frame[0]] = after
+	s.aftersN.Add(1)
+	s.aftersMu.Unlock()
+	s.send(frame)
+}
+
+// wrote runs what waits on frame having been written (sendThen).
+func (s *Subscription) wrote(frame []byte) {
+	if s.aftersN.Load() == 0 || len(frame) == 0 {
+		return
+	}
+	s.aftersMu.Lock()
+	after := s.afters[&frame[0]]
+	if after != nil {
+		delete(s.afters, &frame[0])
+		s.aftersN.Add(-1)
+	}
+	s.aftersMu.Unlock()
+	if after != nil {
+		after()
+	}
 }
 
 // typesSomething reports whether data, the connection's next write of keys,
@@ -199,6 +243,7 @@ func (s *Subscription) run() {
 				s.closeWith(err)
 				return
 			}
+			s.wrote(frame)
 		}
 	}
 }
@@ -230,6 +275,7 @@ func (s *Subscription) owed() {
 			if err != nil {
 				return
 			}
+			s.wrote(frame)
 		default:
 			return
 		}

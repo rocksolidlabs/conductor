@@ -55,18 +55,31 @@ const (
 	// startup question or a dialog gone after keys typed in the terminal
 	// reached it.
 	SourceScreen = "screen"
+	// SourceProtocol: the agent's own structured stream, a session in the
+	// protocol way (protocol.go): its turn's start (working) and end (done).
+	SourceProtocol = "protocol"
 )
+
+// readsScreen says a change from source is a rule that reads a screen: one
+// a session in the protocol way, which has none, never applies.
+func readsScreen(source string) bool {
+	switch source {
+	case SourceBell, SourceOSC, SourcePattern, SourceTrust, SourceQuestion, SourceSubmit, SourceTitle, SourceStatus, SourceScreen:
+		return true
+	}
+	return false
+}
 
 // ReportsTurn reports whether a change of state from source is the agent
 // saying where its turn stands (Info.Turns): a working or a done from its
-// hooks (api), its window title or its program status. A bell, an OSC
-// notification, the screen pattern and an operator's mark (admin) say
-// nothing of a turn.
+// hooks (api), its window title, its program status or its structured
+// stream (protocol). A bell, an OSC notification, the screen pattern and an
+// operator's mark (admin) say nothing of a turn.
 func ReportsTurn(state AttentionState, source string) bool {
 	if state != AttentionWorking && state != AttentionDone {
 		return false
 	}
-	return source == SourceAPI || source == SourceTitle || source == SourceStatus
+	return source == SourceAPI || source == SourceTitle || source == SourceStatus || source == SourceProtocol
 }
 
 // Attention kinds describe the shape of a needs-input prompt so clients can
@@ -75,6 +88,10 @@ const (
 	KindPermission = "permission" // numbered permission dialog (Claude Code)
 	KindPrompt     = "prompt"     // free-text reply expected
 	KindDone       = "done"       // agent finished its turn
+	// KindInterrupted is the done of a protocol session's turn that was
+	// stopped (Local.Interrupt): nothing takes it for a finished turn. Only
+	// the protocol way sets it; no report from outside is taken with it.
+	KindInterrupted = "interrupted"
 )
 
 // ValidKind reports whether k is a known attention kind (or empty).

@@ -130,6 +130,9 @@ func defaults() []Agent {
 			PromptShape: claudePromptShape,
 			// Verified live (2.1.287).
 			Session: &SessionRecipe{StartArgs: []string{"--session-id", IDArg}, IDFrom: "hook", ResumeArgs: []string{"--resume", IDArg}, IDPattern: uuidPattern},
+			// Its print mode with stream-json in and out, as its own pages
+			// document it (internal/agentproto, claude.go).
+			Protocol: &ProtocolRecipe{Name: "claude-stream-json"},
 			// Claude Code's dialogs during the work, as 2.1.304 drew them in
 			// a PTY on 2026-10-19 (#288): a tool's permission ("Do you want
 			// to proceed?", "Do you want to create c288.txt?"), the plan's

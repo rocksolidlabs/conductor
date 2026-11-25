@@ -488,7 +488,7 @@ func commands(v any) []string {
 // (TestClaudeYoloSettings checks what they hold).
 // claude-mcp.json names the binary as a program with its arguments apart (an
 // MCP server entry), not a command line: its path is checked as JSON alone.
-var commandless = map[string]bool{"claude-yolo-only.json": true, "claude-mcp.json": true}
+var commandless = map[string]bool{"claude-yolo-only.json": true, "claude-mcp.json": true, "claude-protocol-mcp.json": true}
 
 var jsConst = regexp.MustCompile(`(?m)^const CONDUCTOR = (".*");$`)
 

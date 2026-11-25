@@ -39,6 +39,8 @@ func startNotifyServer(t *testing.T) *notifyServer {
 	// A test run inside a hosted session reports to no host of its own.
 	t.Setenv("CONDUCTOR_HOST_SOCKET", "")
 	t.Setenv("CONDUCTOR_HOST_EVENTS", "")
+	// Nor does it run as a chat's child.
+	t.Setenv("CONDUCTOR_PROTOCOL", "")
 	return ns
 }
 

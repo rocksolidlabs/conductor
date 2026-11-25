@@ -1,0 +1,21 @@
+conversation 00000000-0000-4000-8000-000000000001
+accepted m4
+turn_started
+tool_started toolu_01Fixture000000000000007 parent="" ToolSearch summary="" input={"max_results":1,"query":"select:mcp__plain__wait"}
+tool_ended toolu_01Fixture000000000000007 ok exit=none cut=false output=""
+tool_started toolu_01Fixture000000000000008 parent="" mcp__plain__wait summary="" input={}
+tool_ended toolu_01Fixture000000000000008 error exit=none cut=false output="MCP server \"plain\" tool \"wait\" sent no response or progress for 30s; aborting. If this server is configured in your MCP settings, set a per-server \"timeout\" (ms…"
+text msg_01Fixture000000000000013:0 38 call(s) final=true "The `wait` tool on the `plain` server did not return anything. It sent no response or progress for 30 seconds, so the call was aborted. The tool's description says it waits a while and then reports how long it waited, so a 30-second idle timeout is likely too short for it.\n\nIf you want it to run, you can raise the idle timeout. Set a per-server `timeout` in the `plain` server's MCP config, or set `CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT` to a larger value in milliseconds (0 disables it). I can retry once you've changed that."
+turn_ended done in=155490 out=309 cost=0.00000000
+accepted m5
+turn_started
+tool_started toolu_01Fixture000000000000009 parent="" ToolSearch summary="" input={"max_results":1,"query":"select:mcp__slow__wait"}
+tool_ended toolu_01Fixture000000000000009 ok exit=none cut=false output=""
+tool_started toolu_01Fixture000000000000010 parent="" mcp__slow__wait summary="" input={}
+tool_ended toolu_01Fixture000000000000010 ok exit=none cut=false output="waited 150 seconds"
+text msg_01Fixture000000000000016:0 11 call(s) final=true "The `wait` tool on the `slow` server returned \"waited 150 seconds.\" It finished, though it ran longer than the 30-second idle timeout that aborted the `plain` server's call."
+turn_ended done in=157269 out=220 cost=0.00178373
+accepted m6
+turn_started
+text msg_01Fixture000000000000017:1 2 call(s) final=true "**"
+turn_ended interrupted in=0 out=0 cost=0.00066307
