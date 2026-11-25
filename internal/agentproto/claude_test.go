@@ -847,3 +847,28 @@ func TestClaudeListBounds(t *testing.T) {
 		t.Errorf("%d texts streamed, %d open", n, len(c.r.streamed))
 	}
 }
+
+// A field whose type is not the one the driver reads it as, in an event it
+// ignores or in one it reads, changes nothing: the read goes on, and what
+// the driver reads of the event is read as before. Only a line that is not
+// a JSON object ends it.
+func TestClaudeTypeClashChangesNothing(t *testing.T) {
+	lines := strings.Join([]string{
+		`{"type":"system","subtype":"x_new","task_id":5,"uuid":7,"capabilities":{"a":1}}`,
+		`{"type":5,"subtype":["init"]}`,
+		`{"type":"rate_limit_event","usage":{"input_tokens":"many"}}`,
+		`{"type":"system","subtype":"init","session_id":"11111111-2222-4333-8444-555555555555","uuid":12,"capabilities":{"interrupt_receipt_v1":true},"tools":"all"}`,
+		`{"type":"system","subtype":"task_started","task_id":9,"tool_use_id":"x"}`,
+		`{"type":"result","subtype":"success","is_error":false,"uuid":3,"total_cost_usd":"free","usage":{"input_tokens":1.5,"output_tokens":3,"cache_read_input_tokens":"x"}}`,
+	}, "\n") + "\n"
+	rec, c, err := replay(t, strings.NewReader(lines))
+	if !errors.Is(err, io.EOF) {
+		t.Fatalf("the read ended with %v", err)
+	}
+	if got := rec.render(); got != "conversation 11111111-2222-4333-8444-555555555555\nturn_ended done in=0 out=3 cost=0.00000000\n" {
+		t.Fatalf("events:\n%s", got)
+	}
+	if err := c.Interrupt(context.Background()); !errors.Is(err, session.ErrNoInterrupt) {
+		t.Fatalf("capabilities of another type taken for a receipt: %v", err)
+	}
+}
