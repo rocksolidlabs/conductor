@@ -405,6 +405,14 @@ func (s *Local) move(from, to string, m MoveStarts, cause string) {
 	s.moved(from, first)
 }
 
+// MoveEndWords is the words of a move neither way of which started, which
+// ended the session (endMove): both failures'; "" for any other session.
+func (s *Local) MoveEndWords() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.endedByMove
+}
+
 // noteMoveWhy keeps why for the member's move (lastMoveWhy).
 func (s *Local) noteMoveWhy(why string) {
 	s.mu.Lock()
@@ -664,6 +672,9 @@ func (s *Local) endMove(first, second string) {
 		words = first + " " + second
 	}
 	s.noteMoveWhy(words)
+	s.mu.Lock()
+	s.endedByMove = words
+	s.mu.Unlock()
 	var out applied
 	out.event = "move_failed"
 	s.mu.Lock()

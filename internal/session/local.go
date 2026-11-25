@@ -648,9 +648,11 @@ type Local struct {
 	moveCancel context.CancelFunc
 	movedWith  MoveStarts
 	// lastMoveWhy is the sentence of the last move that went back or
-	// ended (move, endMove), read by the member's move (moveMember).
-	// Guarded by mu.
+	// ended (move, endMove), read by the member's move (moveMember), and
+	// endedByMove the words of a move that ended the session
+	// (MoveEndWords). Guarded by mu.
 	lastMoveWhy string
+	endedByMove string
 	noted       string
 	notedWhy    string
 	notedStarts MoveStarts
