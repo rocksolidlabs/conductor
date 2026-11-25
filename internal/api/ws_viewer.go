@@ -279,9 +279,9 @@ func (s *Server) sendInputError(sub *session.Subscription, local *session.Local,
 		local.Send(sub, proto.NewError(proto.ErrCodeReadOnly, "this link is view-only"))
 	case errors.Is(err, session.ErrSessionEnded):
 		local.Send(sub, proto.NewError(proto.ErrCodeSessionEnded, "the session has ended"))
-	case errors.Is(err, session.ErrTrustQuestion), errors.Is(err, session.ErrQuestion):
+	case errors.Is(err, session.ErrTrustQuestion), errors.Is(err, session.ErrQuestion), errors.Is(err, session.ErrNotAtPrompt):
 		// Nothing typed, in the words of why (a startup question, a
-		// startup screen, a question).
+		// startup screen, a question, a screen not the agent's prompt).
 		words, _ := session.NotSentWords(err)
 		local.Send(sub, proto.NewError(proto.ErrCodeNotSent, words))
 	case errors.Is(err, session.ErrInputStalled):

@@ -55,7 +55,8 @@ const (
 	ErrCodeFileDenied       = "file_denied"
 	ErrCodeTooManyRequests  = "too_many_requests"
 	// ErrCodeNotSent answers a chat_send whose text could not be typed into
-	// the member it names (a run's chat): the message says why.
+	// the member it names (a run's chat), or a line refused with nothing
+	// typed (a submit, a chat to the agent): the message says why.
 	ErrCodeNotSent = "not_sent"
 	// ErrCodeQuestionAnswered answers an answer whose question is no longer
 	// the one waiting (answered by another reply, or gone): nothing was
@@ -146,8 +147,10 @@ type Resize struct {
 // With ReqID (#322; at most MaxAnswerReqID bytes of printable ASCII, as an
 // answer's), the owner answers it: SubmitOK once the line is entered, or an
 // ErrorMsg naming it (ErrCodeNotSent when UnlessWaiting held it back and
-// the session was asking; input_failed when the line was typed and not
-// entered; too_many_requests, session_ended, bad_frame). Without ReqID
+// the session was asking, and, with the words of why, when the line was
+// refused with nothing typed: a question on the screen, or, for an agent
+// with a prompt shape, a screen that is not its prompt; input_failed when
+// the line was typed and not entered; too_many_requests, session_ended, bad_frame). Without ReqID
 // nothing is answered, as before. UnlessWaiting writes nothing while the
 // session waits on a prompt, looked at as the owner holds the session's
 // turn, so no prompt slips between the look and the write: what a line

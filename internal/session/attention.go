@@ -39,8 +39,10 @@ const (
 	// screen (Options.Questions marked Anytime: Codex's command approval).
 	SourceQuestion = "question"
 	// SourceSubmit: a submission's text is typed and its Enter was not
-	// written, its link no longer opening the session; the session's next
-	// submission waits for a person to type into the terminal (HeldWords).
+	// written for good (its link no longer opening the session, a reply's
+	// question come in its pause, a screen that is not the agent's prompt);
+	// the session's next submission waits for a person to type into the
+	// terminal (HeldWords).
 	SourceSubmit = "submit"
 	// SourceTitle: the agent's window title says it works (Options.WorkingTitle:
 	// Codex's "⠋ Working").

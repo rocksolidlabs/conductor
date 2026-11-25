@@ -2603,16 +2603,29 @@ func (e *Engine) managedActivity(r *run, sm sessionMember, entry session.Activit
 	if a.reminded {
 		return
 	}
-	a.reminded = true
-	r.note(session.ActivityStatus, "task %s: %s reports done without a result; reminded once", a.t.def.ID, sm.m.def.Name)
-	if l, ok := e.lookup(a.sessionID); ok {
-		line := fmt.Sprintf("Conductor: a done does not finish task %q. Commit your work and submit it with the task_result tool or \"conductor task result --summary ...\"; a review submits --verdict.", a.t.def.ID)
-		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), stopTimeout)
-			defer cancel()
-			_, _ = l.Submit(ctx, session.Submission{Text: line, ByName: typedBy, UnlessWaiting: true})
-		}()
+	l, ok := e.lookup(a.sessionID)
+	if !ok {
+		return
 	}
+	// Marked as under way, and kept reminded only once the line is typed:
+	// a reminder held back (a question, a screen that is not the agent's
+	// prompt) is tried again at the member's next done.
+	a.reminded = true
+	member := sm.m.def.Name
+	line := fmt.Sprintf("Conductor: a done does not finish task %q. Commit your work and submit it with the task_result tool or \"conductor task result --summary ...\"; a review submits --verdict.", a.t.def.ID)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), stopTimeout)
+		defer cancel()
+		res, _ := l.Submit(ctx, session.Submission{Text: line, ByName: typedBy, UnlessWaiting: true})
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		if res.Typed {
+			r.note(session.ActivityStatus, "task %s: %s reports done without a result; reminded once", a.t.def.ID, member)
+			return
+		}
+		a.reminded = false
+		r.note(session.ActivityStatus, "task %s: %s reports done without a result; the reminder waits for its next done", a.t.def.ID, member)
+	}()
 }
 
 // managedEnded takes the end of an attempt's session: before its result,
