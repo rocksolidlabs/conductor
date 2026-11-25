@@ -76,8 +76,9 @@ command?" with the command on one line, and two buttons, **Allow once**
 and **Deny**. Only the person who runs the server can answer. It waits
 until they answer.
 
-The first time a person presses Chat, one sentence says the agent's own
-terms decide how this mode may be used and counted.
+The first time a person presses Chat, a note says the agent's own
+terms decide how this mode may be used and counted, and that in Chat the
+agent has Conductor's tools only.
 
 Pressing Terminal moves the session back. In a terminal session, the
 agent and its terminal work as today; its messages are still typed into
@@ -538,7 +539,7 @@ the person's own installed `claude`, never a bundled copy, and no SDK.
 | a replayed user message carries the `uuid` the client wrote | not stated on the pages read | undocumented | row 4's fixture records it; where it does not, replays are matched to writes in order (one message in flight per session), never by time |
 | `client_composed: true` on a user message: "Claude Code then doesn't expand `@path` mentions, and doesn't run text that starts with `/` as a command"; "Requires ... Claude Code v2.1.248 or later" | https://code.claude.com/docs/en/agent-sdk/typescript.md, SDKUserMessage | documented | **gated**: `MinVersion` is at least 2.1.248; the driver's `Verbatim` is true and `Send` sets it on every message |
 | an `@` reference "makes no tool call", so `PreToolUse` hooks do not run for it; "Claude Code doesn't include a file that the rule matches" for a `Read` deny rule | https://code.claude.com/docs/en/common-workflows.md | documented | the floor's `Read` and `Edit` deny rules (design 7) |
-| a `-p` run uses a folder's settings-file hooks, its `env` block and its `.mcp.json` servers without a trust dialog | https://code.claude.com/docs/en/permissions.md, What runs before you trust a folder | documented | a chat is started only from a session whose terminal ran the agent's own program in that folder to its prompt (design 9), with the same setting sources: it loads nothing the terminal did not |
+| a `-p` run uses a folder's settings-file hooks, its `env` block and its `.mcp.json` servers without a trust dialog | https://code.claude.com/docs/en/permissions.md, What runs before you trust a folder | documented | a chat is started only from a session whose terminal ran the agent's own program in that folder to its prompt (design 9), with the same setting sources: it loads nothing the terminal did not; and `--strict-mcp-config` (below) keeps every tool server but Conductor's out of a chat |
 | `--session-id <uuid>`, `--resume <id>`; a `-p` session resumes by id in the terminal UI: "You can still resume one by passing its session ID to `claude --resume <session-id>`" | https://code.claude.com/docs/en/sessions.md | documented | the move is observed by hand in row 5 before `Moves` is set |
 | `--permission-mode`; "`claude -p` ... with no permission mode set start in Manual mode", and a settings file may change the default | https://code.claude.com/docs/en/permission-modes.md | documented | Conductor passes the mode, but for a crew member that is not yolo (design 14: it takes its terminal's) |
 | "Deny rules block in every mode, including `bypassPermissions`." | https://code.claude.com/docs/en/permission-modes.md | documented | the floor's deny rules; a mod the person installed can still approve some calls a deny rule refuses (https://code.claude.com/docs/en/permissions.md, Precedence among rules, hooks, and mods): the floor does not hold against the person's own mods |
@@ -572,15 +573,24 @@ mode: design 14), the terminal's launch arguments,
 `timeout` 8 hours), `--permission-prompt-tool mcp__conductor__permission`,
 and exactly one `--settings <hooks>/claude-protocol.json` (the floor:
 design 7; for a yolo session `claude-protocol-yolo.json`, the floor and
-the yolo key in one file). No `--setting-sources` and no
-`--strict-mcp-config`: the child reads the same setting sources the
-agent's terminal program read in that folder for this session. The
+the yolo key in one file). `--strict-mcp-config`, always: Conductor's
+MCP server is the only tool server a chat's child loads (none with the
+server's MCP off); the person's own tool servers and a folder's stay
+with the session's terminal (#1118). A launch's own `--mcp-config`
+argument is kept for the chat, as its terminal had it. A session whose
+arguments name an added folder (`--add-dir`) keeps to its terminal: a
+chat's child is started in the session's own folder alone. The move
+asks `ClaudeArgs` before it stops anything, so this refusal and that of
+a flag a chat sets itself are told with the terminal still running
+(#1126). Where an
+administrator's managed MCP configuration is in force, Claude Code
+refuses the flag and exits: the chat does not start and the session
+stays in its terminal. No `--setting-sources`: the child reads the
+same setting sources the agent's terminal program read in that folder
+for this session. The
 terminal way's hook settings, trust arguments and screen recipe are not
-passed. A launch argument that names an added folder (`--add-dir`,
-alone, with `=value`, or with its value as the next argument) is never
-passed: such a session is not started as a chat (design 9), since an
-added folder's own settings are the terminal's to ask about. Conductor
-sets no environment variable that names another client.
+passed. Conductor sets no environment variable that names another
+client.
 
 **Conductor's own hooks are not a second source.** The person's user
 settings may hold the terminal way's hooks that Settings' integration
@@ -965,8 +975,9 @@ is `PermissionWithdrawn`.
    file the person's account can read; the hook is a second look that a
    folder's own settings can switch off (`disableAllHooks`); a mod the
    person installed can still approve some calls a deny rule refuses
-   (permissions.md); and the folder's own hooks, helpers and MCP servers
-   run as the person's account, as they do in the terminal.
+   (permissions.md); and the folder's own hooks and helpers run as the
+   person's account, as they do in the terminal (of tool servers a chat
+   loads Conductor's alone: design 4).
 3. **The bound.** At most `MaxPendingPermissions` (8) open or waiting
    per session; past it, denied "Too many requests are waiting; this one
    was denied."
@@ -1174,10 +1185,10 @@ noted and the line says why in one sentence:
   crew), not ended;
 - its agent's catalog entry has a protocol, its driver's `Moves` is
   true, and the installed version is qualified (for a move to Chat);
-- its launch arguments name no added folder (`--add-dir`, in any of its
-  forms; design 4): such a move to Chat is refused before anything is
-  stopped, "Sessions with an added folder stay in their terminal.", and
-  a crew member with one stays in its running terminal (design 14);
+- its launch arguments name no added folder and no flag a chat sets
+  itself (design 4: told before anything is stopped, in design 13's
+  words); a crew member with either stays in its running terminal
+  (design 14);
 - the agent's conversation id is known and resumable
   (`Info.AgentSession`), read **at the move** from the session (the
   stream's latest `session_id` for a chat, the hook's latest report for
@@ -1340,7 +1351,8 @@ conversation, and a hand-off of a running turn makes two writers.
   per-viewer convenience): "Chat runs the agent's own non-interactive
   mode with its existing sign-in; the agent's terms decide how that may
   be used and counted." with a link to the agent's site from its catalog
-  entry.
+  entry, and under it: "In Chat the agent has Conductor's tools only;
+  your own tool servers stay in its terminal." (#1118)
 - **Other pages that draw a session.** The join page
   (`pages/join/[token].vue`), a run's join grid (`components/JoinCrewGrid.vue`),
   the yard and the roundhouse draw `ChatView` for a protocol session by
@@ -1401,7 +1413,7 @@ Every string is one short sentence.
 | a message during a turn | "Sends when the turn ends." |
 | a full queue (`too_many_requests` on `submit`) | "Too many messages are waiting." |
 | a move pressed during a turn | "Moves to Chat when this turn ends." / "Moves to the terminal when this turn ends." |
-| a noted move that cannot be made (`move_refused`) | "A request is waiting for an answer." / "Background work is still running." / "Crew members stay in their terminals." / "This agent cannot move its conversation yet." / "Sessions on another machine stay in their terminal." / "Sessions with an added folder stay in their terminal." |
+| a noted move that cannot be made (`move_refused`) | "A request is waiting for an answer." / "Background work is still running." / "Crew members stay in their terminals." / "This agent cannot move its conversation yet." / "Sessions on another machine stay in their terminal." / "Sessions launched with an added folder stay in their terminal." / "This session's arguments hold <flag>, which a chat sets itself; it stays in its terminal." |
 | the session moving (`moving`) | "The session is moving; try again in a moment." |
 | a permission answer from a non-answerer (`not_answerer`) | "Only the person who runs this server can answer." |
 | a permission answer that no longer matches (`stale_request`) | "This request changed or was answered." |
@@ -1536,9 +1548,8 @@ server and no other (design 4).
 **What a member has in a chat.** Conductor's own tools only: no other
 tool server, the folder's `.mcp.json` servers and the person's own
 alike (design 4, as issue 1118 makes it); the folder's instructions,
-rules, skills and hooks as its terminal has them. A session whose
-launch arguments name an added folder is not started as a chat
-(design 9). A crew that needs a folder's tool servers runs as Terminal.
+rules, skills and hooks as its terminal has them. A session
+launched with an added folder keeps to its terminal (design 4). A crew that needs a folder's tool servers runs as Terminal.
 
 **How a member moves** (row 9).
 
@@ -1547,9 +1558,9 @@ launch arguments name an added folder is not started as a chat
    the launch, each said in the run's log: an unqualified version (the
    launch's answer is kept as the session's version gate, so the move
    never probes again), a Runtime without pipes (design 8), an added
-   folder in its arguments (design 9), and an argument that is one of
-   the chat's own flags (design 4's list; for a member the recipe's
-   `StartArgs` excepted). A launch that resumes a conversation
+   folder in its arguments, and an argument that is one of the chat's
+   own flags (design 4: `chatArgsCheck`, its `ErrAddedFolder` and
+   `OwnFlagError`; for a member the recipe's `StartArgs` excepted). A launch that resumes a conversation
    (`LaunchSpec.Resume`: a continued or recovered run's member, a
    member resumed by a person) is never moved fresh: step 3's second
    case.
@@ -1567,9 +1578,9 @@ launch arguments name an added folder is not started as a chat
    prompt shows, however long that takes. Today's rule types nothing
    into a screen that is not the prompt either. While the member waits
    at a screen that is not its prompt, the run's log says so once.
-3. **The move.** Checked first, with the terminal still running: the
-   child's arguments are built (`ClaudeArgs`) and the kept version gate
-   read. A refusal leaves the member in its running terminal, its
+3. **The move.** Checked first, with the terminal still running, as
+   design 4's move does for a person: the child's arguments
+   (`chatArgsCheck` over `ClaudeArgs`) and the kept version gate. A refusal leaves the member in its running terminal, its
    prompt typed there by today's rule, with the refusal's words in the
    log. Then:
    - **A fresh launch:** `Local.MoveFresh(MoveStarts)`, the engine's
@@ -1598,7 +1609,7 @@ launch arguments name an added folder is not started as a chat
      terminal does. Where they set none, the built-in default differs
      by the page: `auto` for the terminal, Manual for a `-p` run, so the
      chat asks the operator for what the terminal's classifier would
-     have judged. This rests on a by-hand check (below); should a start
+     have judged, as observed (below); should a later version's start
      given no mode report a mode other than these, the member's chat is
      started in the stricter of Manual and the mode the terminal's hook
      events last reported, which for a member moved before its first
@@ -1676,8 +1687,8 @@ and attempt):
 | a resumed member moved | "runs as a chat, on its conversation." |
 | an unqualified version | "in its terminal: this version of Claude Code can only run in its terminal." |
 | a Runtime without pipes | "in its terminal: the run's Runtime has no pipes." |
-| an added folder in its arguments | "in its terminal: it reads an added folder." |
-| an argument the chat sets itself | "in its terminal: its arguments hold `<flag>`, which a chat sets itself." |
+| launched with an added folder | "in its terminal: it was launched with an added folder." |
+| an argument the chat sets itself | "in its terminal: its arguments hold `<flag>`, which a chat sets itself." (design 13's words in the log's form) |
 | the trust question shows | today's `heldWords`, then "; once answered, it moves to a chat at its prompt" |
 | another screen than the prompt, once | "its prompt waits: its terminal shows something other than Claude Code's prompt; answer it there." |
 | a person typed first | "in its terminal: a person typed in it first." |
@@ -1705,9 +1716,9 @@ ticket's text, another crew member.
   Claude Code's rule. A branch a member just changed can add a hook, and
   the next attempt's terminal runs it, as today. The chat loads the
   same, never more: of tool servers, Conductor's alone.
-- **An added folder** never reaches a chat's child: such a session stays
-  in its terminal (design 9), where the folder's own settings are the
-  terminal's to ask about.
+- **An added folder** never reaches a chat's child: a session launched
+  with one keeps to its terminal, a chat's child being started in the
+  session's own folder alone (design 4).
 - **A move or a restart** re-reads the folder, as every process start
   does; Claude Code does not ask again for changed settings in either
   way, so a hook added during a session runs in the terminal's next turn
@@ -1771,8 +1782,9 @@ agent reads whatever Conductor passes. Any agent but Claude Code: rows
   - `TestMemberPromptOnlyInTheChat`: nothing is typed into the
     terminal; the prompt is sent once, as the chat's first message.
   - `TestMemberChecksBeforeStopping`: a member whose arguments hold one
-    of the chat's own flags, or an added folder: one terminal start, the
-    terminal never stopped, its prompt typed there, the log's line.
+    of the chat's own flags (`OwnFlagError`), or one launched with an
+    added folder (`ErrAddedFolder`): one terminal start, the terminal
+    never stopped, its prompt typed there, the log's line.
   - `TestMemberRefusedMoveStaysInItsTerminal`: a person's keys reach the
     prompt before the move: `MoveFresh` is refused, the same terminal
     process runs on, its prompt is typed once, the log's line.
@@ -1803,10 +1815,6 @@ request):
 
 - in a repository Claude Code has not trusted, a crew of two chat
   members whose first attempt asks and later ones do not;
-- the check the mode rests on: a chat's child given no mode reports (in
-  `system/init`) the person's `defaultMode` where their settings set
-  one, as an interactive start in the same folder does, and Manual where
-  they set none;
 - whether the terminal asks its question about a folder's tool servers
   again in each fresh attempt's worktree;
 - the whole frame while that question shows (is the prompt's box drawn
@@ -1819,14 +1827,17 @@ Observed 2026-11-25: a chat's child, started with
 `.mcp.json`. Observed 2026-11-25: a hook written into a trusted
 folder's settings while a session ran was run by the terminal's next
 turn, by a chat's next turn and by the terminal's next start alike,
-with no question.
+with no question. Observed 2026-11-25 (Claude Code 2.1.332): given no
+mode, a non-interactive start reported `default` and an interactive one
+`auto`; with a default mode set in a settings file each reported that
+mode.
 
 **Size.** Row 8 gains about 2 hours (the package's way, the digest's
 way), to 12; row 9 about 12 (the member's move with its checks before
 the stop, the resumed member's move, the fallbacks, the package's
 reading, the crew's way and its editor, and its boundary's review), to
-28. A person's move refused for an added folder is a pull request of
-its own before row 7, outside these hours.
+28. A person's move refused for an added folder or a flag a chat sets
+itself is built (#1126), outside these hours.
 
 ## Sign-in and the vendors' pages
 
@@ -2366,8 +2377,8 @@ relay's allow list is a part with its own adversarial review (links).
 ### Row 4: the Claude Code driver
 
 **Scope.** `internal/agentproto` with `Names`, `Check`, the Claude Code
-driver (`claude.go`: the argv of design 4 with exactly one `--settings`
-and no `--setting-sources` or `--strict-mcp-config`; the stream's events
+driver (`claude.go`: the argv of design 4 with exactly one `--settings`,
+`--strict-mcp-config` once (#1118) and no `--setting-sources`; the stream's events
 mapped to `ProtocolEvents`, the `system` task events to `Background`;
 `Begin` with `initialize` alone; `Send` as a stream-json user message
 with `client_composed: true` and a ref the replay names, matched in
@@ -2397,9 +2408,9 @@ launch, the launch route, the app's pages.
 **Tests.** Go race:
 - `TestClaudeArgvIsTheDocumentedOne` (`internal/agentproto`): the argv
   of a chat's child and of a yolo session's, element for element; breaks
-  if `--bare`, `--permission-prompt-tool stdio`, `--setting-sources` or
-  `--strict-mcp-config` appear, if `--permission-mode` is missing, or if
-  `--settings` appears more than once.
+  if `--bare`, `--permission-prompt-tool stdio` or `--setting-sources`
+  appear, if `--permission-mode` is missing, if `--strict-mcp-config` is
+  missing or twice (#1118), or if `--settings` appears more than once.
 - `TestClaudeSendIsVerbatim` (I19): a sent message (`@<data dir>/x` and
   `/help`) reaches stdin with `client_composed: true` and the text
   unchanged; breaks without the field.
@@ -2496,7 +2507,12 @@ prompt, one turn with a tool; whether the MCP server's `timeout` in a
   `--strict-mcp-config`, `--permission-mode`, `--resume`, the stream
   flags), or one of its documented short forms (`-p`, `-r`, `-c`, alone,
   in a cluster such as `-cp`, or as `-r<id>`), refuses the start. `NoMCP` leaves the MCP config out when the
-  server's MCP is off, as a terminal's launch does.
+  server's MCP is off, as a terminal's launch does. With #1118 the argv
+  ends its MCP part with `--strict-mcp-config`: a chat's child loads
+  Conductor's own tool server and no other; a launch's own
+  `--mcp-config` argument stays (`TestChatChildLoadsConductorsToolServerAlone`
+  in `internal/api` holds the start's argv with the server's MCP on and
+  off).
 - The driver mints a UUID per message (the session's refs are hex) and
   maps the replay back to its ref; where a replay names none, the oldest
   written. Begin waits at most `ClaudeInitWait` (20 s) for the initialize
@@ -3077,7 +3093,7 @@ begin.
 **Step 2's trust design (design 14): three questions, each answered by
 choosing one.** Rows 8 and 9 are written to the first answer of each.
 In every answer a member's chat has Conductor's tool server alone, and
-a session with an added folder stays in its terminal.
+a session launched with an added folder stays in its terminal.
 
 1. **How a crew's member comes to run as a chat.**
    (a) In its terminal to the agent's prompt, its trust answered there by
@@ -3112,8 +3128,8 @@ a session with an added folder stays in its terminal.
    its terminal where the person chose: Conductor passes no mode, so the
    chat takes the person's own `permissions.defaultMode` as the
    terminal does; with none set, Claude Code's built-in default for a
-   `-p` run, Manual, where the terminal's is `auto` (the by-hand check
-   of design 14 confirms both). Recommended: a crew behaves in Chat as
+   `-p` run, Manual, where the terminal's is `auto` (observed
+   2026-11-25: design 14). Recommended: a crew behaves in Chat as
    the person configured it, and with nothing configured it asks the
    operator more than its terminal would. Where the mode is `auto`, the
    classifier runs what it judges safe with no question, and denies what
