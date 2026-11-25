@@ -9540,7 +9540,15 @@ Claude Code's documented deny for a command naming one by the same rule,
 the absolute spellings alone (it knows no folder); the server writes them
 at its start. The hook is a second look: a folder's own settings can
 switch it off, and it denies nothing (it fails open) when it cannot read
-its list or the call's payload. At most eight requests are open or waiting per
+its list or the call's payload. The same file allows, without asking,
+Conductor's own tools through which an agent only tells Conductor about
+its own session or asks a person: `guide`, `set_state`, `ask`,
+`task_context`, `task_checkpoint`, `task_blocked` and `task_result`
+(rules `mcp__conductor__<tool>`); such a call never reaches Conductor as
+a request, and its step is in the transcript as any other. Every other
+tool asks as before, Conductor's `report` among them (its handoff types
+into another member), and the prompt tool is never allowed. A deny rule
+wins over these allows, and in a yolo session they change nothing. At most eight requests are open or waiting per
 session: one more is denied `Too many requests are waiting; this one was
 denied.`.
 
