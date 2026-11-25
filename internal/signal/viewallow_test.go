@@ -57,27 +57,42 @@ func protoConstants(t *testing.T, prefix string) map[string]ast.Expr {
 
 // I15: a relayed viewer whose role is not control passes the host CONTROL
 // whose t is hello, ping, chat, file_get or transcript_get, and nothing
-// else: every other control proto names (listed from its own constants,
-// so one a later release adds is refused until this list names it), a t
+// else: every other string proto declares under any name (read from its
+// own source, so one a later release adds is refused until this list names
+// it, whatever its constant is called), a t
 // nobody knows, a control that does not parse, and every other frame type
 // are refused read_only, nothing of them sent. A control viewer's pass.
 func TestRelayAllowListForViewRoles(t *testing.T) {
 	allowed := map[string]bool{proto.CtlHello: true, proto.CtlPing: true, proto.CtlChat: true, proto.CtlFileGet: true, proto.CtlTranscriptGet: true}
+	// Every string proto declares, whatever its constant's name: a t the
+	// list might take, under any prefix (a host message's, a code's), is
+	// among them, so a name the list gains is seen here however it is
+	// declared. The controls (Ctl*) are each a literal, and all are read.
 	var ts []string
-	for name, v := range protoConstants(t, "Ctl") {
+	ctls, seen := 0, map[string]bool{}
+	for name, v := range protoConstants(t, "") {
 		lit, ok := v.(*ast.BasicLit)
 		if !ok || lit.Kind != token.STRING {
-			t.Fatalf("proto.%s is not a string literal", name)
+			if strings.HasPrefix(name, "Ctl") {
+				t.Fatalf("proto.%s is not a string literal", name)
+			}
+			continue
 		}
 		s, err := strconv.Unquote(lit.Value)
 		if err != nil {
 			t.Fatal(err)
 		}
-		ts = append(ts, s)
+		if strings.HasPrefix(name, "Ctl") {
+			ctls++
+		}
+		if !seen[s] {
+			seen[s] = true
+			ts = append(ts, s)
+		}
 	}
 	sort.Strings(ts)
-	if len(ts) < 30 || !contains(ts, proto.CtlInterrupt) || !contains(ts, proto.CtlTranscriptGet) {
-		t.Fatalf("proto's controls were not all read: %v", ts)
+	if ctls < 30 || !contains(ts, proto.CtlInterrupt) || !contains(ts, proto.CtlTranscriptGet) || !contains(ts, proto.HostAnswerAs) {
+		t.Fatalf("proto's strings were not all read: %d controls, %v", ctls, ts)
 	}
 	ts = append(ts, "a_control_a_later_release_adds")
 	var types []byte
