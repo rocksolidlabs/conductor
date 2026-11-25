@@ -3,6 +3,8 @@ package session
 import (
 	"context"
 	"errors"
+	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -84,13 +86,16 @@ func TestPermissionHoldsTheAttention(t *testing.T) {
 	if v := first.returned(t); !v.Allow {
 		t.Fatalf("the operator's allow delivered as %+v", v)
 	}
-	// The list empty: the most recent other question shows, the decision's.
-	att := s.Info().Attention
-	if att.ID != decided || att.Decision != "dr-7" {
-		t.Fatalf("after the list %+v, want the decision's question %s", att, decided)
+	// The list empty: the changes kept aside are applied in order, as they
+	// would have been with no request open: the admin's clear, last,
+	// leaves nothing showing.
+	if att := s.Info().Attention; att.State != AttentionNone || att.Source != SourceAdmin {
+		t.Fatalf("after the list %+v, want the admin's clear", att)
 	}
+	_ = blocker
 
-	// Two open again: answering the oldest shows the next.
+	// Two open again: answering the oldest shows the next, and once none
+	// is open the most recent other question shows.
 	announce(f, "c-3", "Bash", bash("three"))
 	announce(f, "c-4", "Bash", bash("four"))
 	ask(s, "c-3", "Bash", bash("three"))
@@ -98,10 +103,67 @@ func TestPermissionHoldsTheAttention(t *testing.T) {
 	ask(s, "c-4", "Bash", bash("four"))
 	r4 := openRequest(t, s, "c-4")
 	shows("two more", r3.Question)
+	again, err := s.TryAskDecision("dr-8", "Merge it?")
+	if err != nil || again == "" {
+		t.Fatalf("the decision's ask: %q %v", again, err)
+	}
 	if err := s.AnswerPermission(context.Background(), op, answerOf(r3, proto.PermissionDeny)); err != nil {
 		t.Fatal(err)
 	}
 	shows("the oldest answered", r4.Question)
+	if err := s.AnswerPermission(context.Background(), op, answerOf(r4, proto.PermissionDeny)); err != nil {
+		t.Fatal(err)
+	}
+	if att := s.Info().Attention; att.ID != again || att.Decision != "dr-8" {
+		t.Fatalf("after the list %+v, want the decision's question %s", att, again)
+	}
+	_ = decided
+}
+
+// I18, the changes kept aside: a plain report (no options of its own) made
+// while a request shows is applied once none is open, as it would have been
+// with none open; past maxAside kept, the oldest that is no question goes,
+// a question kept whose id its asker holds.
+func TestPermissionKeepsWhatWasSaidMeanwhile(t *testing.T) {
+	s, f, _ := permissionSession(t, Options{})
+	op := operator(t, s)
+	announce(f, "c-1", "Bash", bash("one"))
+	ask(s, "c-1", "Bash", bash("one"))
+	r := openRequest(t, s, "c-1")
+	s.SetAttention(AttentionWorking, "step", SourceAPI)
+	if err := s.AnswerPermission(context.Background(), op, answerOf(r, proto.PermissionDeny)); err != nil {
+		t.Fatal(err)
+	}
+	if att := s.Info().Attention; att.State != AttentionWorking || att.Message != "step" {
+		t.Fatalf("a report made while the request showed: %+v", att)
+	}
+
+	announce(f, "c-2", "Bash", bash("two"))
+	ask(s, "c-2", "Bash", bash("two"))
+	r = openRequest(t, s, "c-2")
+	q, err := s.TryAskID("Task t1 is blocked", SourceAPI, "", nil)
+	if err != nil || q == "" {
+		t.Fatalf("the ask: %q %v", q, err)
+	}
+	for i := range maxAside {
+		s.SetAttention(AttentionWorking, fmt.Sprintf("step %d", i), SourceAPI)
+	}
+	s.mu.Lock()
+	kept := s.way.Load().aside
+	n, hasQ := len(kept), slices.ContainsFunc(kept, func(c asideChange) bool { return c.opt.id == q })
+	s.mu.Unlock()
+	if n != maxAside || !hasQ {
+		t.Fatalf("%d kept, the question among them: %v", n, hasQ)
+	}
+	if err := s.AnswerPermission(context.Background(), op, answerOf(r, proto.PermissionDeny)); err != nil {
+		t.Fatal(err)
+	}
+	if att := s.Info().Attention; att.State != AttentionWorking || att.Message != fmt.Sprintf("step %d", maxAside-1) {
+		t.Fatalf("after the list %+v", att)
+	}
+	if !slices.Contains(s.Info().Kept, q) {
+		t.Fatalf("the question asked meanwhile is not kept: %+v", s.Info().Kept)
+	}
 }
 
 // I9: an answer reaches only the request it was given for: another call,
@@ -166,6 +228,15 @@ func TestPermissionAnswerBinding(t *testing.T) {
 	c.returned(t)
 	if e := entryOf(t, s, r4.Seq); e.State != PermissionWithdrawn || e.Why != RequestLostWords {
 		t.Fatalf("an allow not delivered recorded %+v", e)
+	}
+	// The activity says the allow was recorded, then that it was not
+	// delivered.
+	var lines []string
+	for _, a := range s.Activity() {
+		lines = append(lines, a.Message)
+	}
+	if i := slices.Index(lines, NotDeliveredWords); i < 0 || !slices.Contains(lines[:i], "Allowed once: Run a command?") {
+		t.Fatalf("the activity %q", lines)
 	}
 }
 

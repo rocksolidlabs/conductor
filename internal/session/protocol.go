@@ -1076,6 +1076,10 @@ func (s *Local) sendApplied(out applied) {
 		s.recordOwn(e, AttentionNeedsInput)
 	}
 	for _, c := range out.replay {
+		if !c.hasOpt {
+			_ = s.setAttentionLooked(c.state, c.message, c.source, c.kind, c.options, c.rules, c.turn, 0, c.plan)
+			continue
+		}
 		_ = s.setAttentionLooked(c.state, c.message, c.source, c.kind, c.options, c.rules, c.turn, 0, c.plan, c.opt)
 	}
 	if out.changed {
@@ -1624,6 +1628,10 @@ func (e protocolEvents) Permission(r PermissionRequest) {
 	entry.Ref = cutAt(r.Ref, MaxEntryRef)
 	why := ""
 	switch {
+	case len(r.Input) > MaxTranscriptPart:
+		// Kept whole or not shown: a part past its bound would be cut
+		// under a digest of the whole.
+		why = TooLargeWords
 	case !clean:
 		why = NotExactWords
 	case p.requests+p.inStreamLocked() >= MaxPendingPermissions:
