@@ -97,6 +97,15 @@ type Options struct {
 	// diff, a request's input) as it is applied, before any viewer is sent
 	// anything of it. It must not block.
 	OnCaptured func(sessionID string, data []byte)
+	// OnTranscriptPiece is OnCaptured with where the transcript keeps the
+	// bytes: under key "<seq>/<part>" (part "text", "input", "output" or
+	// "diff"), cut as the transcript keeps them. OnTranscriptDropped names
+	// what the transcript's bounds let go, after the event that let it go:
+	// "<seq>" for an entry, every key under it with it, "<seq>/<part>" for
+	// a part alone. The copied-output check keeps a chat's text exactly as
+	// long as the transcript does. Neither may block.
+	OnTranscriptPiece   func(sessionID, key string, data []byte)
+	OnTranscriptDropped func(sessionID string, keys []string)
 	// AcceptWait is how long a message written into a session in the
 	// protocol way waits for the agent's acknowledgement before it is
 	// unconfirmed; AcceptWait when zero.
@@ -2883,6 +2892,12 @@ func (s *Local) Info() Info {
 	if info.AgentSession != nil {
 		as := *info.AgentSession
 		info.AgentSession = &as
+	}
+	if p := s.way.Load(); p != nil {
+		// A chat: its way, its protocol and whether its messages go as
+		// written; it has no terminal size.
+		info.Way, info.Protocol, info.Verbatim = WayProtocol, p.name, p.verbatim
+		info.Cols, info.Rows = 0, 0
 	}
 	return info
 }

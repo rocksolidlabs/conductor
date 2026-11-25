@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"sort"
+	"strconv"
 	"time"
 	"unicode/utf8"
 )
@@ -214,6 +215,17 @@ type transcriptRing struct {
 	parts     map[partKey]*ringPart
 	partOrder []partKey
 	partBytes int
+	// dropped is the keys of what the bounds let go since the last
+	// takeDropped: "<seq>" for an entry (and its parts), "<seq>/<part>" for
+	// a part alone. Bounded by what the ring held.
+	dropped []string
+}
+
+// takeDropped is the keys dropped since the last call (dropped).
+func (r *transcriptRing) takeDropped() []string {
+	d := r.dropped
+	r.dropped = nil
+	return d
 }
 
 // entrySize is what an entry counts toward MaxTranscriptBytes: its JSON.
@@ -294,6 +306,7 @@ func (r *transcriptRing) trim() {
 		r.entries = append(r.entries[:i], r.entries[i+1:]...)
 		r.bytes -= re.size
 		r.droppedMark = max(r.droppedMark, re.e.Mark)
+		r.dropped = append(r.dropped, strconv.FormatUint(re.e.Seq, 10))
 		for _, name := range []string{PartInput, PartOutput, PartDiff} {
 			r.dropPart(partKey{re.e.Seq, name})
 		}
@@ -329,7 +342,9 @@ func (r *transcriptRing) putPart(seq uint64, name string, data []byte, cut, held
 		if i == len(r.partOrder) {
 			return
 		}
-		r.dropPart(r.partOrder[i])
+		k := r.partOrder[i]
+		r.dropped = append(r.dropped, strconv.FormatUint(k.seq, 10)+"/"+k.name)
+		r.dropPart(k)
 	}
 }
 

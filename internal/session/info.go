@@ -132,6 +132,14 @@ type Info struct {
 	LastAnswer *Answer    `json:"lastAnswer,omitempty"`
 	CreatedAt  time.Time  `json:"createdAt"`
 	EndedAt    *time.Time `json:"endedAt,omitempty"`
+	// Way is how the session runs its agent: "protocol" for a chat (the
+	// agent's own structured interface), absent for its terminal. Protocol
+	// is then the protocol's name (at most 32 bytes, of the catalog's closed
+	// set) and Verbatim whether its driver sends a message as written;
+	// Cols and Rows are 0. Set by Local.Info from the way, never stored.
+	Way      string `json:"way,omitempty"`
+	Protocol string `json:"protocol,omitempty"`
+	Verbatim bool   `json:"verbatim,omitempty"`
 }
 
 // CrewRef ties a server session to the crew run it is a member of: the run,
