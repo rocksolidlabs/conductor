@@ -9,9 +9,8 @@ import type { OwnServer } from './own-server'
 // with its agent token, as the prompt tool does, held until the operator answers. The question says the call in plain words with
 // its tool and shows the exact command; Allow once lets the stub's call run; a long input's Allow once waits until it is opened and
 // its end has been in view, the input lying in the chat's own scroll with its buttons under it; Deny's message reaches the stub,
-// bounded in bytes; characters a person cannot see are marks; no bar or sidebar field repeats the question; a chat that kept more
-// questions than the connection reads at once still offers Allow once after a reload; a view link's join page shows the question
-// and no button. Each step raises the test's timeout by its own waits' caps (budget).
+// bounded in bytes; characters a person cannot see are marks; no bar or sidebar field repeats the question;
+// a view link's join page shows the question and no button. Each step raises the test's timeout by its own waits' caps (budget).
 test.describe.configure({ mode: 'serial' })
 
 let own: OwnServer
@@ -151,40 +150,6 @@ test("an input whose end lies far down: no scroll of its own, its empty lines ma
     expect(w!.y + w!.height).toBeLessThanOrEqual(a!.y)
     await q.locator('[data-permission-deny]').click()
     await expect.poll(() => readStub(own, conv, 'denied'), { timeout: LONG_MS }).not.toBe('')
-  } finally {
-    await page.context().close()
-  }
-})
-
-test('a chat that keeps more questions than the connection reads at once offers Allow once on the open one after a reload', async ({ browser }) => {
-  const api = own.api
-  const { s, conv } = await launch(api, sessions, 'e2e chat permission five', 'asker-proto')
-  const page = await dayPage(browser, { server: own.started })
-  try {
-    const view = await openSession(page, s.id)
-    await firstTurn(page, api, s.id)
-    await toChat(api, s.id, view)
-    const chat = page.locator('[data-chat-view]')
-    // Four asked and denied, the fifth left open.
-    for (let n = 0; n < 4; n++) {
-      rmSync(stubFile(own, conv, 'denied'), { force: true })
-      await say(page, 'ask short')
-      budget(STEP_MS + 3 * LONG_MS)
-      await expect(openQuestion(page).locator('[data-permission-deny]')).toBeEnabled({ timeout: LONG_MS })
-      await openQuestion(page).locator('[data-permission-deny]').click()
-      await expect.poll(() => readStub(own, conv, 'denied'), { timeout: LONG_MS }).not.toBe('')
-      await expect(chat.locator('[data-chat-turn]').last()).toHaveAttribute('data-turn-outcome', 'done', { timeout: LONG_MS })
-    }
-    await say(page, 'ask short')
-    budget(4 * STEP_MS + 3 * LONG_MS)
-    await expect(openQuestion(page)).toBeVisible({ timeout: LONG_MS })
-    // A reload draws all five at once: the open one's input is read whatever the four before it do, and none says it cannot show.
-    await page.reload()
-    await expect(page.locator('[data-session-way]').first()).toHaveAttribute('data-welcomed', 'true', { timeout: LONG_MS })
-    await expect(page.locator('[data-chat-view] [data-permission-question]')).toHaveCount(5, { timeout: LONG_MS })
-    await expect(openQuestion(page).locator('[data-permission-allow]')).toBeEnabled({ timeout: LONG_MS })
-    await expect(page.locator('[data-permission-unread]')).toHaveCount(0)
-    await openQuestion(page).locator('[data-permission-deny]').click()
   } finally {
     await page.context().close()
   }

@@ -91,4 +91,11 @@ describe('the chat', () => {
     expect(pages('sessions/[id].vue')).toMatch(/operator\s+opens-changes/)
     for (const p of ['yard.vue', 'roundhouse.vue', 'join/[token].vue']) expect(pages(p), p).not.toContain('opens-changes')
   })
+
+  it("noBarBesideTheQuestion: where the chat shows a permission question, no reply bar repeats it", () => {
+    const pages = (p: string) => readFileSync(new URL(`../pages/${p}`, import.meta.url), 'utf8')
+    expect(pages('sessions/[id].vue')).toContain(`<QuickReplyBar v-if="!(way === 'protocol' && answersInChat(attention))"`)
+    expect(pages('join/[token].vue')).toContain(`<QuickReplyBar v-if="!(joinWay === 'protocol' && answersInChat(attention))"`)
+    expect(pages('yard.vue')).toContain(`<QuickReplyBar v-if="!(focused.way === 'protocol' && answersInChat(focused.attention))"`)
+  })
 })
