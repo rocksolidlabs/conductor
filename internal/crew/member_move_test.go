@@ -612,3 +612,53 @@ func TestAMomentsOtherScreenIsNotSaid(t *testing.T) {
 		})
 	}
 }
+
+// A Chat run stopped while its resumed member waits for its move: the
+// member ends stopped, with no error line; a stop is no failure.
+func TestAStopWhileAResumedMemberWaitsIsNoFailure(t *testing.T) {
+	e, fl := readyEngine(t)
+	fl.trust, fl.trustAnswers = claudeTrust, trustChoices
+	c := testCrew(immediate("lead", "Plan it."))
+	c.Way = WayChat
+	run, err := e.Launch(t.Context(), c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fp, local := chatOf(t, fl, "lead")
+	turn(t, fp, sent(t, fp, 1)[0])
+	if !fp.Conversation("conv-7") {
+		t.Fatal("the chat's output ended")
+	}
+	turnEnds(t, fp, "done")
+	waitTrue(t, "the conversation kept resumable", func() bool {
+		as := local.Info().AgentSession
+		return as != nil && as.ID == "conv-7" && as.Resumable
+	})
+	stopRun(t, e, run.ID)
+	// The resumed terminal shows another screen than its prompt: the move
+	// waits.
+	looked := make(chan struct{})
+	var once sync.Once
+	e.lookedOther = func(int) { once.Do(func() { close(looked) }) }
+	fl.mu.Lock()
+	fl.chatScreen = func(_ string, p *sessiontest.FakeProc, _ *session.Local) { _ = p.Print(loadingScreen) }
+	fl.mu.Unlock()
+	next, err := e.ResumeRun(t.Context(), run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	within(t, "the resumed member's wait for its prompt", looked)
+	stopRun(t, e, next.ID)
+	if n := logCount(t, e, next.ID, "did not move to a chat"); n != 0 {
+		t.Fatalf("the stop was logged as a failed move %d times", n)
+	}
+	r, _ := e.Get(next.ID)
+	for _, entry := range r.Log {
+		if entry.Type == session.ActivityError {
+			t.Fatalf("an error line for a stop: %q", entry.Message)
+		}
+	}
+	if st := memberState(t, e, next.ID, "lead"); st.Status != MemberEnded {
+		t.Fatalf("the member is %s, not ended", st.Status)
+	}
+}

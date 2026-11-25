@@ -2049,14 +2049,11 @@ func (e *Engine) settle(r *run, m *member, local *session.Local) {
 	name := m.def.Name
 	lines := e.heldLines(r, name, local, "its handoffs wait")
 	err := e.await(lines.ctx(r.ctx), local, lines.held)
-	switch {
-	case errors.Is(err, session.ErrSessionEnded):
-		e.endedEarly(r, m, local, "before it was ready again")
-		return
-	case err != nil && !errors.Is(err, errNotReady):
-		// The run stopped while it waited: the stop ends its session, and
-		// the member ends here, so that nothing of a completed stop is
-		// left starting (which a resume refuses and eviction waits for).
+	// stopped ends a member whose run stopped while it waited: the stop ends
+	// its session, and the member ends here, so that nothing of a
+	// completed stop is left starting (which a resume refuses and eviction
+	// waits for). A stop is no failure: no line is written.
+	stopped := func() {
 		now := time.Now().UTC()
 		e.mu.Lock()
 		if m.state.Status == MemberStarting && m.state.SessionID == local.Info().ID {
@@ -2064,12 +2061,24 @@ func (e *Engine) settle(r *run, m *member, local *session.Local) {
 			r.touch()
 		}
 		e.mu.Unlock()
+	}
+	switch {
+	case errors.Is(err, session.ErrSessionEnded):
+		e.endedEarly(r, m, local, "before it was ready again")
+		return
+	case err != nil && !errors.Is(err, errNotReady):
+		stopped()
 		return
 	}
 	// A member of a Chat run resumed on its conversation moves to its chat
 	// on that conversation at its prompt (design 9's move).
 	switch merr := e.resumedToChat(r.ctx, r, m, local, lines); {
 	case errors.Is(merr, errMemberEnded):
+		return
+	case merr != nil && r.ctx.Err() != nil:
+		// The run stopped while the member waited for its move, or during
+		// it: it ends stopped, with no error line.
+		stopped()
 		return
 	case merr != nil:
 		e.mu.Lock()
