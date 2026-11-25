@@ -571,9 +571,13 @@ yolo launch, the catalog's `Yolo.Args` alone, never the adapter's
 `timeout` 8 hours), `--permission-prompt-tool mcp__conductor__permission`,
 and exactly one `--settings <hooks>/claude-protocol.json` (the floor:
 design 7; for a yolo session `claude-protocol-yolo.json`, the floor and
-the yolo key in one file). No `--setting-sources` and no
-`--strict-mcp-config`: the child reads the same setting sources the
-agent's terminal program read in that folder for this session. The
+the yolo key in one file). `--strict-mcp-config`, always: Conductor's
+MCP server is the only tool server a chat's child loads (none with the
+server's MCP off); the person's own tool servers and a folder's stay
+with the session's terminal (amended 2026-11-25, #1118; this design read
+"no `--strict-mcp-config`"). No `--setting-sources`: the child reads the
+same setting sources the agent's terminal program read in that folder
+for this session. The
 terminal way's hook settings, trust arguments and screen recipe are not
 passed. Conductor sets no environment variable that names another
 client.
@@ -1933,8 +1937,8 @@ relay's allow list is a part with its own adversarial review (links).
 ### Row 4: the Claude Code driver
 
 **Scope.** `internal/agentproto` with `Names`, `Check`, the Claude Code
-driver (`claude.go`: the argv of design 4 with exactly one `--settings`
-and no `--setting-sources` or `--strict-mcp-config`; the stream's events
+driver (`claude.go`: the argv of design 4 with exactly one `--settings`,
+`--strict-mcp-config` once (#1118) and no `--setting-sources`; the stream's events
 mapped to `ProtocolEvents`, the `system` task events to `Background`;
 `Begin` with `initialize` alone; `Send` as a stream-json user message
 with `client_composed: true` and a ref the replay names, matched in
@@ -1964,9 +1968,9 @@ launch, the launch route, the app's pages.
 **Tests.** Go race:
 - `TestClaudeArgvIsTheDocumentedOne` (`internal/agentproto`): the argv
   of a chat's child and of a yolo session's, element for element; breaks
-  if `--bare`, `--permission-prompt-tool stdio`, `--setting-sources` or
-  `--strict-mcp-config` appear, if `--permission-mode` is missing, or if
-  `--settings` appears more than once.
+  if `--bare`, `--permission-prompt-tool stdio` or `--setting-sources`
+  appear, if `--permission-mode` is missing, if `--strict-mcp-config` is
+  missing or twice (#1118), or if `--settings` appears more than once.
 - `TestClaudeSendIsVerbatim` (I19): a sent message (`@<data dir>/x` and
   `/help`) reaches stdin with `client_composed: true` and the text
   unchanged; breaks without the field.
@@ -2063,7 +2067,9 @@ prompt, one turn with a tool; whether the MCP server's `timeout` in a
   `--strict-mcp-config`, `--permission-mode`, `--resume`, the stream
   flags), or one of its documented short forms (`-p`, `-r`, `-c`, alone,
   in a cluster such as `-cp`, or as `-r<id>`), refuses the start. `NoMCP` leaves the MCP config out when the
-  server's MCP is off, as a terminal's launch does.
+  server's MCP is off, as a terminal's launch does. Since #1118 the argv
+  always ends its MCP part with `--strict-mcp-config`: a chat's child
+  loads Conductor's own tool server and no other.
 - The driver mints a UUID per message (the session's refs are hex) and
   maps the replay back to its ref; where a replay names none, the oldest
   written. Begin waits at most `ClaudeInitWait` (20 s) for the initialize

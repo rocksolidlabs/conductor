@@ -83,12 +83,14 @@ type ClaudeLaunch struct {
 // as design 4 of the plan lists it, never a shell string: the catalog's
 // command, print mode with stream-json, the protocol's arguments, the
 // resumed conversation, the model, the permission mode (or the yolo
-// arguments), the terminal's arguments, Conductor's MCP server and, with a
+// arguments), the terminal's arguments, Conductor's MCP server alone
+// (--strict-mcp-config, always: the child loads no tool server but the one
+// named here, and none when the server's MCP is off; the person's own tool
+// servers and a folder's stay with the session's terminal) and, with a
 // permission host, its permission tool and exactly one --settings. Never
-// --bare (which reads no sign-in), --setting-sources or
-// --strict-mcp-config: the child reads the setting sources its terminal
-// read. The terminal way's hook settings, trust arguments and screen
-// recipe are not passed.
+// --bare (which reads no sign-in) or --setting-sources: the child reads
+// the setting sources its terminal read. The terminal way's hook settings,
+// trust arguments and screen recipe are not passed.
 func ClaudeArgs(l ClaudeLaunch) ([]string, error) {
 	if len(l.Command) == 0 || strings.TrimSpace(l.Command[0]) == "" {
 		return nil, errors.New("agentproto: a chat's child needs the agent's command")
@@ -119,6 +121,7 @@ func ClaudeArgs(l ClaudeLaunch) ([]string, error) {
 	if !l.NoMCP {
 		argv = append(argv, "--mcp-config", filepath.Join(l.HooksDir, ClaudeProtocolMCP))
 	}
+	argv = append(argv, "--strict-mcp-config")
 	if l.PermissionHost {
 		settings := ClaudeProtocolSettings
 		if l.Yolo {
