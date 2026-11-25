@@ -4557,11 +4557,12 @@ whose `message` is one of these:
 | prompt not reported taken | `error` | `typed <member>'s prompt, and its agent did not report taking it: check its terminal, and type the prompt there if its input is empty`, once, for an agent that reports taking a prompt (Claude Code's hook) that has not done so within 3 s of the Enter pressed again either: nothing more is typed, the member stays prompted (a later done starts the members after it), and the run's member reads `needsInput` until its agent reports a turn (working, or done) |
 | prompt refused | `status` | `<member>'s prompt waits: <why>` when the session refuses the prompt, nothing typed, while it shows no question (a startup screen: `the agent is not at its prompt yet: nothing was typed`, `the agent's screen shows what may be a question: nothing was typed; answer it in its terminal`, or a startup question's pattern the session has not asked), once for each in one wait for the prompt, for every member; the prompt is tried again a poll later |
 | no yolo recipe | `status` | `<member>: yolo is on, but <agent name> has no yolo recipe: launched without one` |
-| runs as a chat | `status` | `<member>: runs as a chat.` for a member of a Chat run moved to its chat, once the chat is ready (Members as chats); `<member>: runs as a chat, on its conversation.` for a resumed one; a managed run's attempt is named `<member> (task <task>, attempt <n>)` in this line and the next three |
-| in its terminal | `status` | `<member>: in its terminal: <why>` for a member of a Chat run kept in its terminal, at its launch or at its move, why one of `this version of Claude Code can only run in its terminal.` (its agent's installed version cannot run as a chat), `the run's Runtime has no pipes.` (the Runtime that took the run cannot start a chat: the run stays in it), `it was launched with an added folder.`, `its arguments hold <flag>, which a chat sets itself.`, `its agent has no chat.` (its catalog entry declares no protocol), `a person typed in it first.` (a line or a person's keys reached its prompt before the move) and `Claude Code did not start a chat.` (its chat did not start, or was not ready within 60 s: a terminal started afresh takes its prompt) |
-| waits to move | `status` | the trust question's line (above) ends `; once answered, it moves to a chat at its prompt` for a member that moves at its prompt; `<member>: its prompt waits: its terminal shows something other than Claude Code's prompt; answer it there.`, once, while its screen is another one |
+| runs as a chat | `status` | `<member>: runs as a chat.` for a member of a Chat run moved to its chat, once the chat is ready (Members as chats); `<member>: runs as a chat, on its conversation.` for a resumed one; a managed run's attempt is named `<member> (task <task>, attempt <n>)` in this line, the next one and the other screen's line of the one after; the trust question's line keeps the member's name alone, as today's does |
+| in its terminal | `status` | `<member>: in its terminal: <why>` for a member of a Chat run kept in its terminal, at its launch or at its move, why one of `this version of Claude Code can only run in its terminal.` (its agent's installed version cannot run as a chat), `the run's Runtime has no pipes.` (the Runtime that took the run cannot start a chat: the run stays in it), `it was launched with an added folder.`, `its arguments hold <flag>, which a chat sets itself.`, `its agent has no chat.` (its catalog entry declares no protocol), `Conductor cannot tell when its agent's prompt shows.` (its catalog entry gives no prompt shape, which the move waits for), `this server cannot run its agent as a chat.` (an engine whose launcher has no chat: never the server's own), `a person typed in it first.` (a line reached it, or a person typed text into its terminal, whatever it showed, before the move: keys that only answer or move within a dialog, and keys while a startup question shows, are none) and `Claude Code did not start a chat.` (its chat did not start, or was not ready within 60 s: a terminal started afresh takes its prompt) |
+| waits to move | `status` | the trust question's line (above) ends `; once answered, it moves to a chat at its prompt` for a member that moves at its prompt; `<member>: its prompt waits: its terminal shows something other than Claude Code's prompt; answer it there.`, once, when its screen has been another one for 8 looks in a row (2 s), never for a moment |
 | permission question | `status` | `<member>: asks to run a command: answer it on its session page.` (`asks to change a file`, `asks to read a file`, `asks to use a tool`) when a member's chat asks a permission question |
 | resumed from its record | `status` | `resumed from its record: its members run in their terminals; the record does not keep the run's way` for a Chat run resumed from its record alone |
+| launched from a plan | `status` | `launched from a ticket's plan, which does not carry the crew's way yet: its members run in their terminals`, once, for a Chat crew's run launched from a ticket's plan |
 | chat prompt sent | `status` | `sent <member>'s prompt`, once its agent took it |
 | chat prompt not confirmed | `error` | `sent <member>'s prompt, and its agent did not confirm taking it: it is never sent again; look at its chat`, then `<member>'s agent works on its prompt` once the agent reports a turn of its own |
 | resumed | `status` | `<member> resumed its conversation` |
@@ -4592,19 +4593,28 @@ run a registered Runtime without pipes takes stays in that Runtime, its
 members in their terminals. The way is fixed at launch: the crew as
 launched, which the ledger keeps with a managed run, carries it, so a
 continued run keeps it; an older server reads the crew without it and
-continues the run with its members in their terminals. A planned launch
-takes its way from the plan revision, beside the launch package, whose bytes
-and digest are a Terminal launch's. A member's session starts in its
+continues the run with its members in their terminals. A plan revision does
+not carry a way yet: a planned launch runs its members in their terminals, and
+a Chat crew's says so once in its log. A member's session starts in its
 terminal, as every session does, and a person answers its trust question
 there. Once its terminal shows the agent's own prompt by its shape (never a
-dialog's words being gone), with no line submitted to it, no key of a
-person's written while it showed the prompt and no turn reported, the engine
-moves it, with no bound on that wait: it asks first, with the terminal still
+dialog's words being gone), with no line submitted to it, no text of a
+person's typed into its terminal since its start, whatever its screen showed
+(keys that only answer or move within a dialog, and keys while a startup
+question shows, are none), and no turn reported, the engine moves it, with no
+bound on that wait; a person's key that comes once the move has begun is
+refused (`moving`), never written into the terminal it stops. A member whose
+agent gives no prompt shape is no Chat member. It asks first, with the terminal still
 running, whether its arguments name an added folder or a flag a chat sets
 itself and whether the version its launch qualified is kept, then stops the
 terminal, proves its process group gone and starts the chat's child on a new
 conversation by the session recipe's start (`--session-id <new id>`, never
 the terminal's), with no `--permission-mode` for a member that is not yolo.
+Only that first start is fresh: once a chat's child has started on the
+conversation, its restart (past its input bound) and its way back to its
+terminal resume it (`--resume`). A stop or a cancel during the move ends it
+at once, the member's session stopped, and nothing starts after it; a pause
+holds the run's scheduling and leaves a move under way.
 No route reaches that move. A member resumed on its conversation moves to a
 chat on that conversation, and is sent no prompt. A chat that does not start,
 or is not ready within 60 s, is ended and a terminal is started afresh on

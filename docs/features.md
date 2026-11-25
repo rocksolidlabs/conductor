@@ -218,9 +218,13 @@ that order.
   (`"chat"`, absent for Terminal), fixed at each launch: the crew as
   launched, which the ledger keeps with the run, carries it, so a
   continued run keeps it. The launch sheet and Dispatch's launch say
-  "Members run as: Chat" (or Terminal) and change nothing. A launch from
-  a ticket's plan takes the way its revision approved, handed beside the
-  launch package, whose bytes and digest stay a Terminal launch's.
+  "Members run as: Chat" (or Terminal) and change nothing. A plan does
+  not carry a way yet: a run from a ticket's plan runs its members in
+  their terminals for now, Dispatch's launch saying so for a Chat crew
+  ("A run from a ticket's plan runs its members in their terminals for
+  now.") and the run's log once. For a Chat crew that is not yolo, the
+  launch sheet's permission line says "Permission prompts: in a chat,
+  the members follow your own permission mode in the agent's settings".
 - **How a member comes to be a chat.** Every member starts in its
   terminal, as every session does, and a person answers its folder's
   trust there. Once its terminal shows the agent's own prompt by its
@@ -244,9 +248,12 @@ that order.
   Claude Code can only run in its terminal.", "… the run's Runtime has no
   pipes." (a run a registered Runtime without pipes takes stays in that
   Runtime), "… it was launched with an added folder.", "… its arguments
-  hold `<flag>`, which a chat sets itself.", "… a person typed in it
-  first." (a line or a person's keys reached its prompt before the
-  move), "… Claude Code did not start a chat." (a chat that does not
+  hold `<flag>`, which a chat sets itself.", "… Conductor cannot tell
+  when its agent's prompt shows." (an agent whose catalog entry gives no
+  prompt shape), "… a person typed in it first." (a line, or a person's
+  text typed into its terminal whatever it showed, came before the move;
+  a key that comes once the move has begun is refused), "… Claude Code
+  did not start a chat." (a chat that does not
   start, or is not ready within 60 s: its terminal is started afresh on
   a new conversation, its prompt typed there; both failing, the attempt
   fails with both failures' words). The checks are made with the
@@ -257,8 +264,11 @@ that order.
   server forgot it) runs its members in their terminals: the record does
   not keep the run's way, and the run's log says so. Brakeman's turns run
   in their terminals. A person's move of a crew member is refused "A crew
-  member's way is its run's."; on a Chat run's member's page the switch
-  is the label "Runs as a chat for its run.".
+  member's way is its run's."; on the page of a member in its chat, the
+  switch (once the session page draws it) is the label "Runs as a chat
+  for its run.". A stop or a cancel during a member's move ends it at
+  once: nothing starts after it. A pause holds the run's scheduling and
+  leaves a member's move, as every running member, under way.
 - **By hand, not yet made** (the maintainers' record, with the real
   agent): a live crew of the example crew with Claude Code members as
   chats, one permission answered, the run to its end; a repository Claude
