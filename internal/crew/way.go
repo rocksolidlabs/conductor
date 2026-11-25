@@ -168,6 +168,34 @@ func ranAsChat(rec Run) bool {
 	return false
 }
 
+// permissionAsks is a chat's permission question in the run's log's
+// words, by the question's own (session.permissionWords).
+var permissionAsks = map[string]string{
+	"Run a command?": "asks to run a command",
+	"Change a file?": "asks to change a file",
+	"Read a file?":   "asks to read a file",
+	"Use a tool?":    "asks to use a tool",
+}
+
+// notePermission says in the run's log that member m's chat asks a
+// permission question (words, its attention's), and where it is
+// answered: "<member>: asks to run a command: answer it on its session
+// page." Said for a chat alone: a terminal's questions are said as they
+// always were. The caller holds no lock of the engine's.
+func (e *Engine) notePermission(r *run, m *member, sessionID, words string) {
+	l, ok := e.lookup(sessionID)
+	if !ok || !inChat(l) {
+		return
+	}
+	asks, ok := permissionAsks[words]
+	if !ok {
+		asks = "asks to use a tool"
+	}
+	e.mu.Lock()
+	r.note(session.ActivityStatus, "%s: %s: answer it on its session page.", memberLabel(m), asks)
+	e.mu.Unlock()
+}
+
 // errMemberEnded says the member's session ended before its move: the
 // member ended with it (endedEarly), and nothing more is done.
 var errMemberEnded = errors.New("the member's session ended")

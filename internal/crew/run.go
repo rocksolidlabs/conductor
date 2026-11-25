@@ -2161,6 +2161,11 @@ func (e *Engine) OnActivity(sessionID string, entry session.ActivityEntry, state
 	r, m := sm.r, sm.m
 	m.poke()
 	isHandoff := entry.Type == session.ActivityHandoff
+	if entry.Type == session.ActivityAttention && state == session.AttentionNeedsInput && kind == session.KindPermission {
+		// A chat's permission question (design 11): the run's log says
+		// where it is answered.
+		e.notePermission(r, m, sessionID, entry.Message)
+	}
 	if !isHandoff && entry.Type == session.ActivityAttention && (state == session.AttentionWorking || state == session.AttentionDone) {
 		// A turn of its agent's own: a prompt it did not report taking
 		// (MemberState.Unconfirmed) no longer holds the member.

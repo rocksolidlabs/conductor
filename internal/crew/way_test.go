@@ -437,6 +437,19 @@ func TestRunLogSaysTheWay(t *testing.T) {
 			stopRun(t, e, run.ID)
 		})
 	}
+	t.Run("a permission question", func(t *testing.T) {
+		dir := newRepo(t)
+		e, fl, _ := managedEngine(t)
+		run := launchManaged(t, e, chatCrew(dir, work("build", "lead")))
+		fp, _ := chatOf(t, fl, attemptName("lead", "build", 1))
+		turn(t, fp, sent(t, fp, 1)[0])
+		input := []byte(`{"command":"ls"}`)
+		if !fp.ToolStarted(session.ToolStep{Ref: "c-1", Name: "Bash", Input: input}) || !fp.Permission(session.PermissionRequest{Ref: "req-1", Call: "c-1", Tool: "Bash", Input: input}) {
+			t.Fatal("the chat's output ended")
+		}
+		waitLogged(t, e, run.ID, "lead (task build, attempt 1): asks to run a command: answer it on its session page.", 1, 10*time.Second)
+		stopRun(t, e, run.ID)
+	})
 	t.Run("a legacy run's member", func(t *testing.T) {
 		e, fl := readyEngine(t)
 		c := testCrew(immediate("lead", "Plan it."))
