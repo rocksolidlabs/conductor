@@ -31,7 +31,12 @@ type fakeProc struct {
 	onWrite func()
 	// onBytes, when set, runs in Write before the bytes arrive, with them.
 	onBytes func([]byte)
+	// group is its process group as a Runtime would report it (Grouped);
+	// 0 for none.
+	group int
 }
+
+func (f *fakeProc) ProcessGroup() int { return f.group }
 
 func newFakeProc() *fakeProc {
 	r, w := io.Pipe()

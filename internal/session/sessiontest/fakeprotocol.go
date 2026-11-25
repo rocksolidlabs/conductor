@@ -316,6 +316,10 @@ func (f *FakeProtocol) Notice(code, words string) bool {
 // FakeChild is a FakeProtocol's child (session.Child): its Stop, or End,
 // ends it and the driver's output.
 type FakeChild struct {
+	// Group is the process group it says it has (session.Grouped), set
+	// before it is started; 0 for none.
+	Group int
+
 	f    *FakeProtocol
 	done chan struct{}
 	once sync.Once
@@ -325,6 +329,9 @@ type FakeChild struct {
 
 // Done is closed once the child has ended.
 func (c *FakeChild) Done() <-chan struct{} { return c.done }
+
+// ProcessGroup is Group.
+func (c *FakeChild) ProcessGroup() int { return c.Group }
 
 // Exit is the code End was given, -1 after Stop.
 func (c *FakeChild) Exit() pty.ExitStatus {

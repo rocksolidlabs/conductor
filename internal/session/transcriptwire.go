@@ -296,6 +296,10 @@ func chatCode(err error) (code, words string) {
 		return proto.ErrCodePermission, PermissionCardWords
 	case errors.Is(err, ErrBadTranscriptGet):
 		return proto.ErrCodeBadFrame, "bad transcript_get message"
+	case errors.Is(err, ErrMoving):
+		return proto.ErrCodeMoving, MovingWords
+	case errors.Is(err, ErrMoveRefused):
+		return proto.ErrCodeMoveRefused, err.Error()
 	}
 	return "", ""
 }
@@ -343,6 +347,9 @@ func InterruptWord(reqID string, err error) []byte {
 // and a view role read_only, at once.
 func (s *Local) InterruptAsk(sub *Subscription, reqID string, wait func(context.Context) error) {
 	switch {
+	case s.Moving():
+		sub.send(InterruptWord(reqID, ErrMoving))
+		return
 	case s.way.Load() == nil:
 		sub.send(InterruptWord(reqID, ErrNotProtocol))
 		return
