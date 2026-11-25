@@ -88,6 +88,14 @@ class ShellBootsUnderItsPolicyTest {
         val PROBES = """
             (() => {
               window.__bootProbes = '';
+              // TEMPORARY (#1110): what moves this page is kept where the next document can read it.
+              try {
+                const keep = (k, v) => { try { sessionStorage.setItem(k, ((sessionStorage.getItem(k) || '') + ' || ' + String(v)).slice(0, 1500)) } catch (e) {} };
+                keep('diag:armed', location.href + ' navigation api ' + !!window.navigation);
+                if (window.navigation) window.navigation.addEventListener('navigate', (e) => keep('diag:navigate', e.navigationType + ' to ' + e.destination.url + ' same document ' + e.destination.sameDocument + ' user ' + e.userInitiated + ' at ' + new Error('stack').stack));
+                window.addEventListener('vite:preloadError', (e) => keep('diag:preload', (e.payload && (e.payload.stack || e.payload.message)) || e.payload));
+                window.addEventListener('popstate', () => keep('diag:popstate', location.href));
+              } catch (e) {}
               const failed = [];
               const check = (name, ok, seen) => { if (!ok) failed.push(seen === undefined ? name : name + ':' + seen) };
               const within = (p, ms) => Promise.race([p, new Promise((_, no) => setTimeout(() => no({ code: 'no_answer' }), ms || 20000))]);
@@ -187,6 +195,22 @@ class ShellBootsUnderItsPolicyTest {
             })()
         """.trimIndent()
 
+        /** TEMPORARY (#1110): where the page is and how its document came to be loaded. */
+        val DIAGNOSE = """
+            (() => {
+              const o = {};
+              try {
+                for (const k of ['diag:navigate', 'diag:preload', 'diag:popstate', 'diag:armed', 'nuxt:reload']) o[k] = sessionStorage.getItem(k);
+                o['nuxt:reload:state'] = (sessionStorage.getItem('nuxt:reload:state') || '').slice(0, 200);
+              } catch (e) { o.storage = 'unreadable ' + e }
+              try { o.kind = (performance.getEntriesByType('navigation')[0] || {}).type } catch (e) { o.kind = 'unreadable ' + e }
+              try { o.referrer = document.referrer; o.entries = history.length; o.state = JSON.stringify(history.state) } catch (e) { o.state = 'unreadable ' + e }
+              o.href = location.href; o.ready = document.readyState; o.step = window.__bootStep; o.probes = window.__bootProbes;
+              o.console = window.__bootConsole; o.violations = window.__bootViolations;
+              return JSON.stringify(o);
+            })()
+        """.trimIndent()
+
         /** The main-frame loads the test makes with no tap: each cancelled by the load gate, the page staying where it was. */
         val AWAY = listOf("conductor-probe://boot-probe-location", "https://example.com/?boot-probe-away", "intent://boot-probe#Intent;scheme=probe;end")
     }
@@ -218,6 +242,13 @@ class ShellBootsUnderItsPolicyTest {
 
     private fun text(json: String): String = (JSONTokener(json).nextValue() as? String) ?: ""
 
+    /** TEMPORARY (#1110): which activity and which web view answer. */
+    private fun who(s: ActivityScenario<MainActivity>): String = try {
+        read(s) { "activity ${System.identityHashCode(it)}, web view ${System.identityHashCode(it.getBridge().webView)}, focus ${it.hasWindowFocus()}, finishing ${it.isFinishing}" }
+    } catch (e: Throwable) {
+        "unreadable: $e"
+    }
+
     /** Polls until the condition holds or the bound passes; each poll's own wait is bounded too. A failure says what `diagnose` reads. */
     private fun until(seconds: Long, what: String, diagnose: () -> String = { "" }, condition: () -> Boolean) {
         val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(seconds)
@@ -231,15 +262,24 @@ class ShellBootsUnderItsPolicyTest {
     /** Where the page is and what it said: the web view's address, the probes' last step, its console, the gates' counts. Logged too. */
     private fun diagnosis(s: ActivityScenario<MainActivity>, gates: ShellGates): String {
         val url = read(s) { it.getBridge().webView.url }
+        // TEMPORARY (#1110): how this document came to be loaded, read after the fact so that the reading changes nothing.
+        val history = try {
+            read(s) {
+                val h = it.getBridge().webView.copyBackForwardList()
+                "${h.currentIndex + 1}/${h.size}: " + (0 until h.size).joinToString(" | ") { i -> "${h.getItemAtIndex(i).url} (first ${h.getItemAtIndex(i).originalUrl})" }
+            }
+        } catch (e: Throwable) {
+            "unreadable: $e"
+        }
         val page = try {
-            eval(s, "JSON.stringify({href: location.href, ready: document.readyState, step: window.__bootStep, probes: window.__bootProbes, " +
-                "console: window.__bootConsole, violations: window.__bootViolations})")
+            eval(s, DIAGNOSE)
         } catch (e: AssertionError) {
             "no answer from the page"
         }
-        val said = "(the web view at $url; the page: $page; dropped ${gates.dropped.get()}, refused ${gates.refused.get()}, " +
+        page.chunked(3000).forEachIndexed { i, part -> step("diagnosis, the page, part ${i + 1}: $part") }
+        val said = "(${who(s)}; the web view at $url; its history $history; the page: $page; dropped ${gates.dropped.get()}, refused ${gates.refused.get()}, " +
             "cancelled ${gates.cancelled.get()}, handed ${gates.handedOff.get()})"
-        step("diagnosis: $said")
+        step("diagnosis: ${said.take(1200)}")
         return said
     }
 
@@ -253,6 +293,7 @@ class ShellBootsUnderItsPolicyTest {
             val drawn = { eval(s, "!!document.querySelector('[data-shell-open-server]')") == "true" }
             until(180, "Open a server drawn") { drawn() }
             step("Open a server drawn")
+            step("who, at the first drawing: ${who(s)}; ${eval(s, DIAGNOSE).take(900)}")
             // The page again, with a listener for policy violations added before its own scripts.
             s.onActivity { a ->
                 val w = a.getBridge().webView
@@ -261,6 +302,7 @@ class ShellBootsUnderItsPolicyTest {
             }
             until(30, "the reload begun") { eval(s, "typeof window.__bootViolations") == "\"object\"" }
             until(180, "Open a server drawn again") { drawn() }
+            step("who, at the second drawing: ${who(s)}; ${eval(s, DIAGNOSE).take(900)}")
             val gates = read(s) { it.gates!! }
             val ownDropped = gates.dropped.get()
             val ownRefused = gates.refused.get()
@@ -278,7 +320,14 @@ class ShellBootsUnderItsPolicyTest {
             // bound only bounds a hang. A page that is no longer the one the probes run in (its globals gone) fails at once, saying where it is.
             until(300, "the probes' report", { diagnosis(s, gates) }) {
                 val now = eval(s, "typeof window.__bootProbes === 'string' ? window.__bootProbes : null")
-                if (now == "null") throw AssertionError("the page the probes ran in is gone: ${diagnosis(s, gates)}")
+                if (now == "null") {
+                    // TEMPORARY (#1110): where the page is at once, and twice more some seconds on.
+                    val first = diagnosis(s, gates)
+                    Thread.sleep(5000)
+                    val second = diagnosis(s, gates)
+                    Thread.sleep(5000)
+                    throw AssertionError("the page the probes ran in is gone: $first; five seconds on: $second; ten seconds on: ${diagnosis(s, gates)}")
+                }
                 text(now).isNotEmpty()
             }
             val probes = text(eval(s, "window.__bootProbes"))
