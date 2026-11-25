@@ -281,8 +281,6 @@ async function startOn(o: Parameters<typeof startServer>[0], port: number): Prom
       CONDUCTOR_RENDEZVOUS: '0',
       // As the desktop app sets it: the Settings picker browses outside the roots.
       CONDUCTOR_PATHS_BROWSE: 'any',
-      // The stub's chat moves between ways before Claude Code's own move is observed and its driver says Moves (docs/plans/chat-or-terminal.md).
-      CONDUCTOR_E2E_MOVES: '1',
       ...(o.hostToken ? { CONDUCTOR_HOST_TOKENS: o.hostToken } : {}),
       ...Object.fromEntries((o.passEnv ?? []).flatMap((k) => (process.env[k] === undefined || k.startsWith('CONDUCTOR_') ? [] : [[k, process.env[k]!]]))),
       ...(o.env ?? {}),
