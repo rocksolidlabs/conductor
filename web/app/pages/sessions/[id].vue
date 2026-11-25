@@ -19,7 +19,7 @@ import type { ChangeRow } from '~/utils/changes'
 import type { CommitRow } from '~/utils/commits'
 import type { FileHeader, SessionWay, TranscriptEntry } from '~/utils/protocol'
 import type { SessionConnection } from '~/composables/useSessionConnection'
-import { ENDS_TERMINAL_WORK, switchState, type SwitchFacts } from '~/utils/switchState'
+import { ENDS_TERMINAL_WORK, crewChatOf, switchState, type SwitchFacts } from '~/utils/switchState'
 import { joinTop } from '~/utils/changes'
 import { ApiError } from '~/composables/useApi'
 
@@ -264,6 +264,8 @@ const switchFacts = computed<SwitchFacts>(() => ({
   inTurn: attention.value.state === 'working',
   moving: moving.value,
   refused: refused.value || undefined,
+  // A crew member in its chat: its way is its run's, and the switch is a label (crewChatOf).
+  crewChat: crewChatOf(current.value, way.value),
 }))
 const switched = computed(() => switchState(switchFacts.value))
 /** The switch's line above the terminal: what a press did or why it waits; the at-rest line is the Chat side's own tooltip. */
@@ -324,7 +326,7 @@ const wayItems = computed(() =>
           ...(w === 'protocol' && switched.value.line === ENDS_TERMINAL_WORK ? { description: ENDS_TERMINAL_WORK } : {}),
           type: 'checkbox' as const,
           checked: switched.value.selected === w,
-          disabled: !switchFacts.value.canMove || (w !== switched.value.selected && !switched.value.pressable),
+          disabled: !switchFacts.value.canMove || !!switchFacts.value.crewChat || (w !== switched.value.selected && !switched.value.pressable),
           onSelect: () => w !== switched.value.selected && void moveTo(w),
         })),
       ]

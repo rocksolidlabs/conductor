@@ -142,6 +142,12 @@ test('a member whose stub asks the trust question first is held, answered on its
     // Moved once its prompt shows, in place: the same session, now a chat, its prompt the chat's first message.
     budget(30_000)
     await expect.poll(async () => (await api.session(id)).way, { timeout: 30_000, message: 'the member moved to its chat' }).toBe('protocol')
+    // On its page the switch is a label of its run's way, with no side to press, and says so.
+    budget(30_000)
+    const header = page.locator('[data-way-switch]')
+    await expect(header.locator('[data-way-label]')).toHaveText('Chat')
+    await expect(header.locator('[data-way-side]')).toHaveCount(0)
+    await expect(page.locator('[data-way-line]')).toHaveText('Runs as a chat for its run.')
     const conv = (await api.session(id)).agentSession?.id ?? ''
     budget(30_000)
     await expect.poll(() => transcript(conv), { timeout: 30_000, message: 'its prompt in the chat' }).toContain('chat: Conductor task "build", attempt 1')

@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import { ENDS_TERMINAL_WORK, FIRST_REPLY, MOVES_TO_CHAT, MOVES_TO_TERMINAL, MOVING, NOT_QUALIFIED, RUNS_AS_CHAT_FOR_RUN, crewChatOf, pressFor, switchState, type SwitchFacts } from './switchState'
 
@@ -54,6 +55,11 @@ describe("crewChatOf: a Chat run member's switch is its run's label", () => {
     expect(s).toMatchObject({ shown: true, selected: 'protocol', pressable: false, line: RUNS_AS_CHAT_FOR_RUN, noted: '' })
     expect(pressFor(s, 'terminal')).toBeNull()
     expect(RUNS_AS_CHAT_FOR_RUN).toBe('Runs as a chat for its run.')
+  })
+  it("the session page gives its switch and its menu's way entries the fact", () => {
+    const page = readFileSync(new URL('../pages/sessions/[id].vue', import.meta.url), 'utf8')
+    expect(page).toContain('crewChat: crewChatOf(current.value, way.value)')
+    expect(page).toContain('!!switchFacts.value.crewChat ||')
   })
   it("a crew member in its terminal, and a person's session, keep the switch", () => {
     expect(crewChatOf(member, 'terminal')).toBe(false)

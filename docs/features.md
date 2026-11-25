@@ -265,8 +265,9 @@ that order.
   not keep the run's way, and the run's log says so. Brakeman's turns run
   in their terminals. A person's move of a crew member is refused "A crew
   member's way is its run's."; on the page of a member in its chat, the
-  switch (once the session page draws it) is the label "Runs as a chat
-  for its run.". A stop or a cancel during a member's move ends it at
+  switch is the label "Runs as a chat for its run.", with no side to
+  press (in the page's More menu too); a member in its terminal keeps the
+  switch, and a press is refused with those words. A stop or a cancel during a member's move ends it at
   once: nothing starts after it. A pause holds the run's scheduling and
   leaves a member's move, as every running member, under way.
 - **By hand, not yet made** (the maintainers' record, with the real
