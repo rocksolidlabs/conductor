@@ -529,3 +529,38 @@ func TestChatPackageIsReadByTheEngine(t *testing.T) {
 		t.Fatalf("a way that is no way: %v", err)
 	}
 }
+
+// A Chat crew launched from a ticket's plan, which carries no way yet,
+// runs its members in their terminals, its log saying why once; a Terminal
+// crew's planned run says nothing of it.
+func TestAChatCrewsPlannedRunSaysItRunsInTerminals(t *testing.T) {
+	for _, chat := range []bool{true, false} {
+		dir := newRepo(t)
+		e, fl, _ := decisionEngine(t)
+		base := strings.TrimSpace(head(t, dir))
+		c := repoCrew(dir, work("build", "lead"))
+		if chat {
+			c.Way = WayChat
+		}
+		run := launchPlanned(t, e, c, planned(t, c.ID+"-0000000e", base))
+		if way := runWay(e, run.ID); way != "" {
+			t.Fatalf("the run's way: %q", way)
+		}
+		waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+		want := 0
+		if chat {
+			want = 1
+		}
+		if n := logCount(t, e, run.ID, plannedTerminalWords); n != want {
+			t.Fatalf("chat %v: the log said it %d times", chat, n)
+		}
+		fl.mu.Lock()
+		for _, call := range fl.calls {
+			if call.way != "" {
+				t.Errorf("%s was launched with way %q", call.name, call.way)
+			}
+		}
+		fl.mu.Unlock()
+		stopRun(t, e, run.ID)
+	}
+}

@@ -4,7 +4,7 @@ import type { TicketPlans } from '~/composables/useTicketPlans'
 import type { AgentInfo } from '~/composables/useSessions'
 import { PLAN_BOUNDS, revisionTag, shortCommit, yoloWords, type LaunchOutcome } from '~/utils/dispatchPlans'
 import { launchLines } from '~/utils/crewLaunch'
-import { membersRunAsLine } from '~/utils/crews'
+import { PLANNED_TERMINAL_LINE } from '~/utils/crews'
 import { compareLaunch, launchButtonWords } from '~/utils/compareLaunch'
 import { accountCountWords, launchAccounts, memberLogin } from '~/utils/launchAccounts'
 
@@ -146,7 +146,7 @@ async function send() {
             <UButton label="Read it again" size="xs" color="neutral" variant="outline" data-launch-body-retry @click="readBodyAgain" />
           </p>
           <p v-else class="text-dimmed" data-launch-body-reading>Reading revision {{ revision.n }}: its yolo choice is said before anything launches…</p>
-          <p v-if="body" class="text-muted" :data-launch-way="body.crew.way === 'chat' ? 'chat' : 'terminal'">{{ membersRunAsLine(body.crew.way) }}</p>
+          <p v-if="body && body.crew.way === 'chat'" class="text-muted" data-launch-way>{{ PLANNED_TERMINAL_LINE }}</p>
           <p v-if="comparison?.kind === 'compare'" class="text-default" data-launch-compare :data-launch-candidates="comparison.count">
             <template v-for="(part, i) in comparison.statement" :key="part.key"><span :data-launch-compare-part="part.key">{{ part.words }}</span>{{ i < comparison.statement.length - 1 ? '; ' : '.' }}</template>
           </p>

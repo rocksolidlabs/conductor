@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import type { CrewInput } from '../composables/useSessions'
-import { MEMBERS_RUN_AS, membersRunAs, membersRunAsLine, toCrewInput, withMembersRunAs } from '../utils/crews'
+import { MEMBERS_RUN_AS, PLANNED_TERMINAL_LINE, membersRunAs, membersRunAsLine, toCrewInput, withMembersRunAs } from '../utils/crews'
 import { RUNS_AS_CHAT_FOR_RUN, switchState, type SwitchFacts } from '../utils/switchState'
 
 // The crew editor's "Members run as: Terminal | Chat" (docs/plans/chat-or-terminal.md, design 14). The app's vitest runs in node with no
@@ -33,14 +33,17 @@ describe('the crew editor', () => {
     expect(src).toContain('data-crew-way')
   })
 
-  it('the launch sheet and Dispatch\'s launch say how the members run, and change nothing', () => {
+  it('the launch sheet says how the members run, and Dispatch\'s launch that a planned run is in terminals; neither changes it', () => {
     expect(membersRunAsLine('chat')).toBe('Members run as: Chat')
     expect(membersRunAsLine(undefined)).toBe('Members run as: Terminal')
-    for (const file of ['./CrewLaunchSheet.vue', './DispatchLaunch.vue']) {
-      const src = readFileSync(new URL(file, import.meta.url), 'utf8')
-      expect(src).toContain('membersRunAsLine(')
-      expect(src).not.toContain('withMembersRunAs')
-    }
+    const sheet = readFileSync(new URL('./CrewLaunchSheet.vue', import.meta.url), 'utf8')
+    expect(sheet).toContain('membersRunAsLine(')
+    // A plan carries no way yet: the crew's choice is not shown as the planned run's way.
+    const dispatch = readFileSync(new URL('./DispatchLaunch.vue', import.meta.url), 'utf8')
+    expect(dispatch).not.toContain('membersRunAsLine(')
+    expect(dispatch).toContain('PLANNED_TERMINAL_LINE')
+    expect(PLANNED_TERMINAL_LINE).toBe("A run from a ticket's plan runs its members in their terminals for now.")
+    for (const src of [sheet, dispatch]) expect(src).not.toContain('withMembersRunAs')
   })
 
   it("a Chat run's member's switch is a label, its run's way, and a person's move of it shows the route's refusal as given", () => {

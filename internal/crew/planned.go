@@ -86,6 +86,10 @@ func (e *Engine) LaunchPlanned(ctx context.Context, c Crew, label string, p Plan
 	if p.Way != "" && p.Way != WayChat {
 		return nil, noop, invalidf("the plan's way %s must be %q or absent", quote(p.Way), WayChat)
 	}
+	// The crew's way is the plan's: a plan does not carry one yet (nothing
+	// writes Planned.Way before the plan's way is approved with it), so a
+	// Chat crew's planned run runs in terminals, its log saying why.
+	inTerminals := c.Way == WayChat && p.Way == ""
 	c.Way = p.Way
 	if len(p.Package) > ledger.MaxPackage {
 		return nil, noop, invalidf("the package is %d bytes, more than %d", len(p.Package), ledger.MaxPackage)
@@ -134,6 +138,9 @@ func (e *Engine) LaunchPlanned(ctx context.Context, c Crew, label string, p Plan
 	r, err := e.addRun(c, prep, label, p.RunID, pkg)
 	if err != nil {
 		return nil, noop, err
+	}
+	if inTerminals {
+		e.Note(r.id, session.ActivityStatus, plannedTerminalWords)
 	}
 	release := sync.OnceFunc(func() { e.launched(r) })
 	if e.afterAdd != nil {

@@ -1388,6 +1388,12 @@ export function membersRunAsLine(way: string | undefined): string {
   return `${MEMBERS_RUN_AS.label}: ${way === 'chat' ? 'Chat' : 'Terminal'}`
 }
 
+/**
+ * What Dispatch's launch says of a Chat crew's run from a ticket's plan: a plan carries no way yet, so its members run in their terminals,
+ * and the crew's choice is not shown as the run's way.
+ */
+export const PLANNED_TERMINAL_LINE = "A run from a ticket's plan runs its members in their terminals for now."
+
 /** A view link's hours as the Setup says them: 8 by default, else its own. */
 export function viewLinkHoursWords(ttlSeconds: number | undefined): string {
   return ttlSeconds && ttlSeconds !== 8 * 3600 ? `${Math.round((ttlSeconds / 3600) * 10) / 10} h` : '8 h'

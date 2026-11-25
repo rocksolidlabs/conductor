@@ -158,6 +158,11 @@ const (
 // 8 looks, 2 s of a screen that holds.
 const notPromptLooks = 8
 
+// plannedTerminalWords is what a Chat crew's run launched from a ticket's
+// plan says once: the plan carries no way yet, and its members run in their
+// terminals.
+const plannedTerminalWords = "launched from a ticket's plan, which does not carry the crew's way yet: its members run in their terminals"
+
 // recordTerminalWords is what a Chat run resumed from its record alone says:
 // the record keeps no way (a run's record keeps the type older builds
 // read), and its members run in their terminals.
