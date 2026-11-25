@@ -18,6 +18,9 @@ import (
 const (
 	NotAnswererWords  = "Only the person who runs this server can answer."
 	StaleRequestWords = "This request changed or was answered."
+	// OperatorDeniedWords are what the agent is told with the operator's
+	// deny when the operator wrote no message of their own.
+	OperatorDeniedWords = "The operator denied this call."
 )
 
 var (
@@ -122,6 +125,9 @@ func (s *Local) AnswerPermission(ctx context.Context, by *Subscription, a proto.
 	v := Verdict{Allow: allow}
 	if !allow {
 		v.Message = CleanMessage(a.Message)
+		if v.Message == "" {
+			v.Message = OperatorDeniedWords
+		}
 	}
 	if r.held != nil {
 		r.held.verdict <- heldVerdict{v: v, operator: true}
