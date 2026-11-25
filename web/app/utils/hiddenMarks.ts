@@ -12,7 +12,7 @@ export const HIDDEN = new RegExp(HIDDEN_SOURCE, 'gu')
 const ONE = new RegExp(`^(?:${HIDDEN_SOURCE})$`, 'u')
 
 /** A piece of text as a question draws it: words as typed, a hidden character's mark, or a line break (a line feed). */
-export type MarkedPiece = { text: string } | { mark: string; code: number } | { br: true }
+export type MarkedPiece = { text: string } | { mark: string; code: number } | { br: true } | { eol: true } | { spaces: number }
 
 /** Whether the character c (one code point) is one a person cannot see. A line feed is one: a question draws it as a line break. */
 export function isHidden(c: string): boolean {
@@ -58,4 +58,32 @@ export function markHidden(s: string): { pieces: MarkedPiece[]; hidden: boolean 
 export function holdsHidden(s: string): boolean {
   for (const c of s) if (c !== '\n' && isHidden(c)) return true
   return false
+}
+
+/**
+ * s as the opened input of a question draws it (markHidden's pieces), where nothing of a line may go unseen: each line's end is a
+ * mark of its own before its break (`eol`), and a run of spaces at a line's end is drawn as one mark a space (`spaces`), so neither
+ * empty lines nor trailing spaces push the input's end out of sight unmarked. A line feed stays a line break, never a hidden mark.
+ */
+export function markWhole(s: string): { pieces: MarkedPiece[]; hidden: boolean } {
+  const { pieces, hidden } = markHidden(s)
+  const out: MarkedPiece[] = []
+  /** Takes the trailing spaces off the text before a line's end. */
+  const trail = () => {
+    const last = out[out.length - 1]
+    if (!last || !('text' in last)) return
+    const m = / +$/.exec(last.text)
+    if (!m) return
+    last.text = last.text.slice(0, -m[0].length)
+    if (!last.text) out.pop()
+    out.push({ spaces: m[0].length })
+  }
+  for (const p of pieces) {
+    if ('br' in p) {
+      trail()
+      out.push({ eol: true }, p)
+    } else out.push({ ...p })
+  }
+  trail()
+  return { pieces: out, hidden }
 }

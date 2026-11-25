@@ -325,7 +325,7 @@ export interface InputRow {
 export interface ShownInput {
   line: string
   rows: InputRow[]
-  /** The line is the whole input: one field holding the command or path, on one line, or a short input with no field to show apart. */
+  /** The line is the whole input: one field holding the command or path, on one line, or a short input with no field to show apart; never with a folder named beside it. */
   whole: boolean
   digest: string
   exact: boolean
@@ -337,7 +337,7 @@ export const ONE_LINE_MAX = 160
 const LINE_KEYS: Record<string, string[]> = { command: ['command', 'cmd'], file: ['file_path', 'notebook_path', 'path'], read: ['file_path', 'notebook_path', 'path', 'pattern'] }
 
 /** The request's input as the question shows it, from its bytes (the entry's `input` part, whole) and its entry. */
-export function shownInput(entry: Pick<TranscriptEntry, 'tool' | 'plain' | 'inputSha256'>, bytes: Uint8Array): ShownInput {
+export function shownInput(entry: Pick<TranscriptEntry, 'tool' | 'plain' | 'inputSha256'> & Partial<Pick<TranscriptEntry, 'cwd'>>, bytes: Uint8Array): ShownInput {
   let text = ''
   try {
     text = new TextDecoder('utf-8', { fatal: true }).decode(bytes)
@@ -370,5 +370,12 @@ export function shownInput(entry: Pick<TranscriptEntry, 'tool' | 'plain' | 'inpu
     line = canon
     whole = short(canon)
   }
+  // A request that names its folder (Codex's) is opened to be read whole: the folder is drawn with the opened input.
+  if (entry.cwd) whole = false
   return { line, rows, whole, digest, exact }
+}
+
+/** A deny's message as the wire bounds it (MAX_PERMISSION_MESSAGE): its UTF-8 bytes, whatever its script. */
+export function messageBytes(s: string): number {
+  return new TextEncoder().encode(s).length
 }
