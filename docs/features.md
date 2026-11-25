@@ -217,8 +217,8 @@ that order.
   Terminal | Chat", Terminal by default. The choice is the crew's `way`
   (`"chat"`, absent for Terminal), fixed at each launch: the crew as
   launched, which the ledger keeps with the run, carries it, so a
-  continued run keeps it. The launch sheet and Dispatch's launch say
-  "Members run as: Chat" (or Terminal) and change nothing. A plan does
+  continued run keeps it. The launch sheet says "Members run as: Chat"
+  (or Terminal) and changes nothing. A plan does
   not carry a way yet: a run from a ticket's plan runs its members in
   their terminals for now, Dispatch's launch saying so for a Chat crew
   ("A run from a ticket's plan runs its members in their terminals for
@@ -235,9 +235,9 @@ that order.
   question about a folder's tool servers) holds it until a person
   answers it in the terminal. A member resumed on its conversation
   moves to a chat on that conversation and is sent no prompt.
-- **What a member has in a chat.** Conductor's own tools only: no other
-  tool server, the folder's `.mcp.json` servers and the person's own
-  alike; the folder's instructions, rules, skills and hooks as its
+- **What a member has in a chat.** Conductor's own tools only, unless
+  its own arguments name one (`--mcp-config`): no other tool server, the
+  folder's `.mcp.json` servers and the person's own alike; the folder's instructions, rules, skills and hooks as its
   terminal has them. A member that is not yolo is given no permission
   mode of Conductor's: it takes the person's own default mode, else
   Claude Code's for a chat (Manual), and asks the operator through the

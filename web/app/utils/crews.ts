@@ -1359,7 +1359,8 @@ export function permissionItems(serverDefault: boolean): Array<{ label: string; 
 
 /**
  * How a crew's members run (docs/plans/chat-or-terminal.md, design 14): "Members run as: Terminal | Chat", Terminal by default, the line
- * under it saying what a member has in a chat. A launch fixes it on the run; the launch sheet and Dispatch's launch show it.
+ * under it saying what a member has in a chat. A launch fixes it on the run; the launch sheet shows it (Dispatch's launch shows
+ * PLANNED_TERMINAL_LINE for a Chat crew instead).
  */
 export const MEMBERS_RUN_AS = {
   label: 'Members run as',
@@ -1383,7 +1384,7 @@ export function withMembersRunAs<C extends Pick<CrewInput, 'way'>>(c: C, as: str
   return out
 }
 
-/** What the launch sheet and Dispatch's launch say of how the members run: "Members run as: Chat" (they do not change it). */
+/** What the launch sheet says of how the members run: "Members run as: Chat" (it does not change it). */
 export function membersRunAsLine(way: string | undefined): string {
   return `${MEMBERS_RUN_AS.label}: ${way === 'chat' ? 'Chat' : 'Terminal'}`
 }
