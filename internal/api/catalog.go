@@ -10,6 +10,7 @@ import (
 	"slices"
 	"sync"
 
+	"github.com/rocksolidlabs/conductor/internal/agentproto"
 	"github.com/rocksolidlabs/conductor/internal/agents"
 	"github.com/rocksolidlabs/conductor/internal/catalog"
 	"github.com/rocksolidlabs/conductor/internal/store"
@@ -540,6 +541,11 @@ func copyFromSource(a *catalog.Agent, src catalog.Agent) error {
 	if a.Browser == nil {
 		a.Browser = src.Browser
 	}
+	// The protocol way the source declares (the Agents page has no control
+	// for it): {} turns it off.
+	if a.Protocol == nil {
+		a.Protocol = src.Protocol
+	}
 	for _, k := range slices.Sorted(maps.Keys(a.Env)) {
 		if a.Env[k] != catalog.RedactedValue {
 			continue
@@ -608,9 +614,14 @@ func (s *Server) handleCheckCommand(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// checkAdapter rejects an agent whose adapter Conductor does not have.
+// checkAdapter rejects an agent whose adapter Conductor does not have, or
+// whose protocol it does not speak (agentproto.Check): what the catalog
+// cannot check itself, for a save, a clone and the saved overlay alike.
 func checkAdapter(a catalog.Agent) error {
 	if err := agents.CheckAdapter(a.Adapter); err != nil {
+		return fmt.Errorf("agent %s: %w", a.ID, err)
+	}
+	if err := agentproto.Check(a.Protocol); err != nil {
 		return fmt.Errorf("agent %s: %w", a.ID, err)
 	}
 	return nil

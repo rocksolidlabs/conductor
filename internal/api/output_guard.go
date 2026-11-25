@@ -155,6 +155,72 @@ func (s *Server) outputArrived(id string, chunk []byte) {
 	}
 }
 
+// transcriptPiece is what a chat (a session in the protocol way) captured,
+// as the transcript keeps it: the index takes it as the live source
+// transcript:<id>/<key>, one for each piece the transcript keeps (an
+// entry's words, a step's input, output or diff), never as the session's
+// ring, which holds a terminal's scrollback. The source goes when the
+// transcript lets the piece go (transcriptDropped) and when the session is
+// removed (forgetTranscript), so a chat's text is output exactly as long as
+// the transcript keeps it.
+func (s *Server) transcriptPiece(id, key string, data []byte) {
+	if s.outputs == nil {
+		return
+	}
+	s.transcriptKeys.Lock()
+	if s.transcriptKeys.m == nil {
+		s.transcriptKeys.m = map[string]map[string]bool{}
+	}
+	keys := s.transcriptKeys.m[id]
+	if keys == nil {
+		keys = map[string]bool{}
+		s.transcriptKeys.m[id] = keys
+	}
+	keys[key] = true
+	s.transcriptKeys.Unlock()
+	s.outputs.feed(transcriptSource(id, key), data, session.MaxTranscriptPart)
+}
+
+// transcriptSource is the index's name of a chat's transcript piece.
+func transcriptSource(id, key string) string { return "transcript:" + id + "/" + key }
+
+// transcriptDropped lets go of the pieces the transcript let go: an entry
+// ("<seq>") with every piece of it, or one part ("<seq>/<part>").
+func (s *Server) transcriptDropped(id string, dropped []string) {
+	if s.outputs == nil {
+		return
+	}
+	var gone []string
+	s.transcriptKeys.Lock()
+	keys := s.transcriptKeys.m[id]
+	for _, d := range dropped {
+		for k := range keys {
+			if k == d || strings.HasPrefix(k, d+"/") {
+				delete(keys, k)
+				gone = append(gone, k)
+			}
+		}
+	}
+	s.transcriptKeys.Unlock()
+	for _, k := range gone {
+		s.outputs.prune(transcriptSource(id, k))
+	}
+}
+
+// forgetTranscript lets go of every piece of a removed session's transcript.
+func (s *Server) forgetTranscript(id string) {
+	s.transcriptKeys.Lock()
+	keys := s.transcriptKeys.m[id]
+	delete(s.transcriptKeys.m, id)
+	s.transcriptKeys.Unlock()
+	if s.outputs == nil {
+		return
+	}
+	for k := range keys {
+		s.outputs.prune(transcriptSource(id, k))
+	}
+}
+
 // screenRows bounds the rows a screen is read with.
 const screenRows = 10_000
 
