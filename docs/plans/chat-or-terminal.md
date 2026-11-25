@@ -2056,7 +2056,8 @@ prompt, one turn with a tool; whether the MCP server's `timeout` in a
   then a chat's argv has no `--settings`. A terminal argument that is one
   of the chat's own flags (`--settings`, `--setting-sources`, `--bare`,
   `--strict-mcp-config`, `--permission-mode`, `--resume`, the stream
-  flags) refuses the start. `NoMCP` leaves the MCP config out when the
+  flags), or one of its documented short forms (`-p`, `-r`, `-c`, alone,
+  in a cluster such as `-cp`, or as `-r<id>`), refuses the start. `NoMCP` leaves the MCP config out when the
   server's MCP is off, as a terminal's launch does.
 - The driver mints a UUID per message (the session's refs are hex) and
   maps the replay back to its ref; where a replay names none, the oldest
@@ -2069,8 +2070,11 @@ prompt, one turn with a tool; whether the MCP server's `timeout` in a
   memory (`chatLaunch`: the Runtime, the folder, the agent as launched,
   the launch's arguments, model and yolo, the terminal's environment
   without TERM and COLORTERM, with NO_COLOR=1 and CONDUCTOR_PROTOCOL=1),
-  gone with the session. Each start checks the probed version
-  (`agentproto.Qualified`), builds `ClaudeArgs` on the conversation it is
+  gone with the session. The first start checks the probed version
+  (`agentproto.Qualified`) and the session keeps the answer, so a later
+  start (a restart's) never waits on a probe that may come late; the
+  initialize answer's shape check, with its version, guards every start.
+  Each builds `ClaudeArgs` on the conversation it is
   given and starts through the Runtime's `StartPipes` under the start's
   context. A start refused, a child that answers no initialize or fails
   the shape check: the session stays in its terminal.
@@ -2084,6 +2088,10 @@ prompt, one turn with a tool; whether the MCP server's `timeout` in a
   driver's own notice ("Claude Code is not signed in; sign in from its
   terminal.") and the child ended; going back to the terminal from a chat
   is the move's (row 5).
+- The stream is read leniently: each line must be a JSON object, and a
+  field the driver reads is taken only when its value is of the type it
+  reads it as; a field of another type is as if absent, never the end of
+  the read.
 - The copied-output feed: each piece the transcript keeps is a live
   source of its own, `transcript:<id>/<seq>/<part>`, fed as the transcript
   keeps it (cut at 256 KiB), pruned when the ring lets the entry or the
