@@ -99,22 +99,6 @@ func runWay(e *Engine, runID string) string {
 	return "<no run>"
 }
 
-// promptEntries is how many prompt entries the chat's transcript holds.
-func promptEntries(t *testing.T, l *session.Local) int {
-	t.Helper()
-	entries, err := l.Transcript(0, session.MaxTranscriptPage)
-	if err != nil {
-		t.Fatal(err)
-	}
-	n := 0
-	for _, en := range entries {
-		if en.Kind == session.EntryPrompt {
-			n++
-		}
-	}
-	return n
-}
-
 // A chat member's readiness is its session's (Local.Ready): its task line
 // is sent only once its chat's start has answered. A chat not ready within
 // protocolReadyCap is sent nothing: its child is ended, and a terminal
