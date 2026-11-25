@@ -37,6 +37,24 @@ func Check(r *catalog.ProtocolRecipe) error {
 	return nil
 }
 
+// Moves says whether a session of the agent the protocol name drives may
+// move between its terminal and its chat (docs/plans/chat-or-terminal.md,
+// design 9): the driver's word, never the operator's, true only once
+// resuming one conversation across the two ways is established for its
+// agent by its documentation and a by-hand observation. A name Conductor
+// does not speak moves nothing.
+func Moves(name string) bool {
+	switch name {
+	case ClaudeStreamJSON:
+		return claudeMoves
+	}
+	return false
+}
+
+// claudeMoves is Claude Code's Moves: set once the by-hand observation of
+// both directions with the real agent is recorded (row 5's acceptance).
+const claudeMoves = false
+
 // Qualified says whether a probed version of the agent may run the
 // protocol name: at or above its driver's MinVersion. A version the probe
 // did not find ("") is not qualified, and the session stays in its

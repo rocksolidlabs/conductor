@@ -324,6 +324,9 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 		argv = append(argv, catalog.Expand(r.StartArgs, id)...)
 		agentSession = &session.AgentSession{ID: id, Source: session.AgentSessionSet}
 	}
+	// Where the arguments after the command and the conversation's begin:
+	// a move back to the terminal resumes with them (chatLaunch.termTail).
+	tailAt := len(argv)
 	argv = append(argv, req.Args...)
 	// The model, through the adapter's flag after the launch's own
 	// arguments, which are judged beside it (launchModel).
@@ -567,6 +570,7 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 	s.keepChatLaunch(id, chatLaunch{
 		where: where, agent: agent.Copy(), yolo: applied, model: slices.Clone(modelArgs), args: slices.Clone(req.Args),
 		env: chatEnv(procEnv), folder: folder, ref: processRefOf(id, crewRef),
+		termTail: slices.Clone(argv[tailAt:]), termEnv: slices.Clone(procEnv), cols: cols, rows: rows,
 	})
 	// Its registration complete, its record reconciled once: an exit
 	// before the registry held it is read now.
@@ -640,6 +644,9 @@ func (s *Server) localChange(info session.Info) {
 	}
 	if pub := s.publishedOf(info.ID); pub != nil {
 		pub.OnChange(info)
+		// A session moved to Chat on a switchyard too old for its frames
+		// is published no longer (move.go).
+		s.endChatOnOlderSwitchyard(info)
 	}
 }
 

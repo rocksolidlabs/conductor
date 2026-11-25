@@ -30,6 +30,13 @@ type chatLaunch struct {
 	env    []string
 	folder *session.Folder
 	ref    ext.ProcessRef
+	// What a move back to the terminal starts it again with
+	// (terminalStart): the launch's arguments after the command and the
+	// conversation's (the user's, the model's, yolo's, the hooks', the MCP
+	// server's), the terminal's own environment, and its size at launch.
+	termTail   []string
+	termEnv    []string
+	cols, rows uint16
 }
 
 // Where a chat's child's start is told apart.

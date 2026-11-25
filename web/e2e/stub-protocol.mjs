@@ -19,6 +19,9 @@
 //   STUB_PROTOCOL_SIGNED_OUT=1  the first message is answered as a signed-out Claude Code answers it
 //   STUB_PROTOCOL_HOLD      a file: each turn's words wait until it exists (a test's gate on a turn)
 //   STUB_PROTOCOL_NO_RECEIPT=1  the init offers no interrupt receipt
+//   STUB_PROTOCOL_CHILD=1   it starts a process of its own in its group (a sleep, its standard streams closed) that
+//                           outlives it, as a tool's process may: what a move proves gone with the group
+import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { createInterface } from 'node:readline'
 
@@ -35,6 +38,8 @@ if (!args.includes('-p')) {
 const resume = args.indexOf('--resume')
 const session = resume >= 0 ? args[resume + 1] : '00000000-0000-4000-8000-000000000001'
 const permissionMode = args.includes('--dangerously-skip-permissions') ? 'bypassPermissions' : 'default'
+
+if (process.env.STUB_PROTOCOL_CHILD === '1') spawn('sleep', ['600'], { stdio: 'ignore' }).unref()
 
 let n = 0
 const id = (prefix) => `${prefix}_01Stub${String(++n).padStart(18, '0')}`
