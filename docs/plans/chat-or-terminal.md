@@ -954,10 +954,15 @@ is `PermissionWithdrawn`.
    `MultiEdit`, `NotebookEdit`, `Grep`, `Glob`) whose path is under the
    list, and a shell command whose text names such a path: "Conductor
    keeps agents out of its own files." The text names a path when,
-   lowercased, its quotes and backslashes taken out and every `//` and
-   `/./` made one `/`, it holds the path as the list spells it, with
-   `~`, `$HOME` or `${HOME}` for the home folder, or relative to the
-   session's folder where it lies inside it. A `PreToolUse` hook on
+   lowercased, a line continuation, its quotes and backslashes taken out
+   and every `//` and `/./` made one `/`, it holds the path as the list
+   spells it, with `~`, `$HOME` or `${HOME}` for the home folder, or
+   relative to the session's folder where it lies inside it, as a word of
+   its own. The copies beside a configuration or catalog file
+   (`<folder>/*<name>*`) are named by a word holding the name in a file
+   name whose folder is that folder, or, when the session's folder is
+   that folder, a word with no folder at all (a word that is only a
+   search pattern for the name is taken for the file). A `PreToolUse` hook on
    shell commands (`conductor notify --protocol-floor`, judging the
    command's text against the list by the same rule, the absolute
    spellings alone) is a second look, and denies nothing when it cannot
@@ -2484,6 +2489,14 @@ MCP half, `conductor mcp`'s serve loop and its `permission` tool, is
   runs permission calls on goroutines of their own and every other call
   on one worker, in the order read, so their order is what it was before
   this row. The tool's allow is the exact bytes `{"behavior":"allow"}`.
+- The second pass: a name entry (`<folder>/*<name>*`) is named only by a
+  word holding the name in a file whose folder is that folder (when the
+  session's folder is it, a word with no folder at all), never by the
+  name anywhere in the text, which denied `cat web/conductor.json` in a
+  project folder holding the server's configuration; a relative match
+  ends at a word's end; a line continuation is taken out with its
+  backslash; a `Glob` pattern relative to the session's folder is judged
+  there.
 - The MCP half (`internal/cli/mcp.go`, `mcp_permission.go`), built beside
   it and merged into the row's branch: each `tools/call` runs on a
   goroutine of its own (every other call on one worker, since the fix

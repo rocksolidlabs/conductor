@@ -9511,17 +9511,26 @@ not UTF-8, holds a lone surrogate escape or a key twice is denied
 `Conductor cannot show this call exactly.`. Conductor's floor denies,
 before any question, a file tool's call (`Read`, `Edit`, `Write`,
 `MultiEdit`, `NotebookEdit`, `Grep`, `Glob`) whose path (a `pattern` for
-`Glob` alone, up to its first wildcard; `Grep`'s is a regular expression)
+`Glob` alone, up to its first wildcard, relative to the session's folder
+when it is not absolute; `Grep`'s is a regular expression)
 is under the server's deny list (the data directory, the configuration and
 catalog, the TLS keys, the hooks directory, the machine's directory), its
 links followed, and a shell command whose text names such a path:
 `Conductor keeps agents out of its own files.`. A command's text names a
-path when, lowercased, its quotes (`'`, `"`) and backslashes taken out and
-every `//` and `/./` made one `/`, it holds the path as the list spells it,
-or with `~`, `$HOME` or `${HOME}` for the home folder, or the path relative
-to the session's folder where it lies inside it (after the text's start, a
-space or one of `=:(<>|;&`, with or without `./`). Nothing else is judged a
-path: a variable other than `HOME`, a glob, a `cd`, a script or any other
+path when, lowercased, a backslash before a newline taken out with the
+newline, then its quotes (`'`, `"`) and backslashes, and every `//` and
+`/./` made one `/`, it holds the path as the list spells it, or with `~`,
+`$HOME` or `${HOME}` for the home folder, or the path relative to the
+session's folder where it lies inside it, as a word of its own (after the
+text's start, a space, a tab, a newline or one of `=:(<>|;&`, a leading
+`./` allowed, and before the text's end, a `/` or one of those). The copies
+beside a configuration or catalog file (the list's `<folder>/*<name>*`) are
+named by a word holding the name in a file name whose folder is that
+folder, spelt as above, or, when the session's folder is that folder, a
+word with no folder at all: `cat conductor.json` is denied there,
+`cat web/conductor.json` is asked, and a word that is only a search
+pattern for the name (`grep -rn conductor.json docs/`) cannot be told
+from the file and is denied. Nothing else is judged a path: a variable other than `HOME`, a glob, a `cd`, a script or any other
 computed path is asked like any other call, and in a yolo session runs
 unasked. The one `--settings` a chat's child takes (`claude-protocol.json`,
 or `claude-protocol-yolo.json` with the yolo key) holds a `Read` and an
