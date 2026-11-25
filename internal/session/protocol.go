@@ -851,8 +851,8 @@ func (s *Local) endProtocolLocked() func() {
 // applied is what an event applied under the session's lock leaves to do
 // once it is let go, in this order: the captured bytes to the
 // copied-output check, the test's seam, the attention change, the
-// activity entries, the requests' replies, the claims, the submissions'
-// words, the sender woken.
+// activity entries, the entries' TRANSCRIPT frames (sendEntries), the
+// requests' replies, the claims, the submissions' words, the sender woken.
 type applied struct {
 	event    string
 	id       string
@@ -867,6 +867,8 @@ type applied struct {
 	resumed  bool
 	kick     bool
 	p        *protocolWay
+	// entries are the seqs of the entries the event added or revised.
+	entries []uint64
 }
 
 type attnChange struct {
@@ -915,6 +917,9 @@ func (s *Local) sendApplied(out applied) {
 	for _, e := range out.records {
 		s.Record(e)
 	}
+	if len(out.entries) > 0 {
+		s.sendEntries(out.entries)
+	}
 	for _, r := range out.replies {
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), s.opts.StopGrace)
@@ -947,13 +952,16 @@ func (s *Local) sendApplied(out applied) {
 func (s *Local) addEntryLocked(e TranscriptEntry, out *applied) uint64 {
 	out.id = s.info.ID
 	out.p = s.way.Load()
-	return s.transcript.add(e, s.now())
+	seq := s.transcript.add(e, s.now())
+	out.entries = append(out.entries, seq)
+	return seq
 }
 
 // reviseLocked revises the entry seq. The caller holds s.mu.
 func (s *Local) reviseLocked(seq uint64, change func(*TranscriptEntry), out *applied) bool {
 	out.id = s.info.ID
 	out.p = s.way.Load()
+	out.entries = append(out.entries, seq)
 	return s.transcript.revise(seq, change)
 }
 

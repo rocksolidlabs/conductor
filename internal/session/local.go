@@ -2961,6 +2961,10 @@ type AttachOptions struct {
 	// Hold must not call the
 	// session and must not wait.
 	Hold func() (Held, error)
+	// TranscriptAfter is the client's resume point on a chat (its hello's
+	// transcriptAfter): the highest mark of the transcript it holds, 0 for
+	// none. Ignored by a session that runs in its terminal.
+	TranscriptAfter uint64
 }
 
 // Attach registers a client without a display name. See AttachWith.
@@ -3096,7 +3100,10 @@ func (s *Local) AttachWith(o AttachOptions, sink Sink) (*Subscription, error) {
 	}
 	room := s.opts.RunChat
 	offerNvim := nvimAvailable() && !s.nvimOwnerOnly(sub)
-	sub.send(proto.MustControl(proto.Welcome{
+	// A chat (the protocol way) has no terminal to replay: no SCROLLBACK,
+	// its transcript after the ready instead.
+	chat := s.way.Load()
+	welcome := proto.Welcome{
 		T:               proto.CtlWelcome,
 		Proto:           proto.ProtoVersion,
 		SessionID:       s.info.ID,
@@ -3120,8 +3127,14 @@ func (s *Local) AttachWith(o AttachOptions, sink Sink) (*Subscription, error) {
 		SubmitAck:       true,
 		Decisions:       o.Decisions,
 		Cwd:             welcomeCwd(s.info.Cwd, s.fileAllowed(role)),
-	}))
-	if !sub.quiet {
+	}
+	if chat != nil {
+		welcome.ScrollbackBytes = 0
+		welcome.Way, welcome.Verbatim, welcome.Interrupt = WayProtocol, chat.verbatim, true
+		welcome.Transcript = s.welcomeTranscriptLocked()
+	}
+	sub.send(proto.MustControl(welcome))
+	if !sub.quiet && chat == nil {
 		snap := s.ring.Snapshot()
 		for len(snap) > 0 {
 			n := min(len(snap), proto.MaxOutput)
@@ -3147,6 +3160,14 @@ func (s *Local) AttachWith(o AttachOptions, sink Sink) (*Subscription, error) {
 	// both, which clients take once by id; never neither.
 	for _, f := range chatReplayFrames(proto.ChatScopeSession, s.chat.snapshot()) {
 		sub.send(f)
+	}
+	// A chat's transcript after the chat's replay and before the hub holds
+	// the viewer: an entry changed meanwhile (sendEntries, under this lock)
+	// reaches it after the replay, never before it.
+	if chat != nil && !sub.quiet {
+		for _, f := range s.transcriptReplayLocked(o.TranscriptAfter) {
+			sub.send(f)
+		}
 	}
 	if room != nil {
 		room.attach(sub, s.hub)
@@ -5930,6 +5951,11 @@ func AnswerResult(reqID string, err error) []byte {
 		msg = ErrInputStalled.Error()
 	case errors.Is(err, ErrInputBusy):
 		msg = ErrInputBusy.Error()
+	default:
+		// A chat's refusals of a message (transcriptwire.go).
+		if c, words := chatCode(err); c != "" {
+			code, msg = c, words
+		}
 	}
 	return proto.MustControl(proto.ErrorMsg{T: proto.CtlError, Code: code, Message: msg, RequestID: reqID})
 }

@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
+import * as chat from './protocol'
 import {
   CONTROL_TOO_LARGE,
   controlFits,
@@ -615,5 +616,23 @@ describe("a crew launch's revision", () => {
     expect(crewLaunchBody(' ', undefined)).toBeNull()
     expect(crewLaunchBody('named', undefined)).toBeNull()
     expect(crewLaunchBody('named', '')).toBeNull()
+  })
+})
+
+describe('a chat (TRANSCRIPT)', () => {
+  it('mirrors the Go bounds and reads the largest entry the session sends', () => {
+    const p = chat
+    expect(p.FrameType.Transcript).toBe(0x0b)
+    expect([p.MAX_TRANSCRIPT, p.MAX_TRANSCRIPT_ENTRY, p.MAX_TRANSCRIPT_PAGE, p.MAX_TRANSCRIPT_DATA]).toEqual([128 * 1024, 12 * 1024, 100, 95 * 1024])
+    expect([p.TRANSCRIPT_REPLAY_BYTES, p.MAX_TRANSCRIPT_REQ_ID, p.MAX_TRANSCRIPT_IN_FLIGHT]).toEqual([256 * 1024, 32, 4])
+    const raw = readFileSync(fileURLToPath(new URL('../../../internal/proto/testdata/transcript-max.json', import.meta.url)))
+    const payload = new Uint8Array(raw).subarray(0, raw.length - 1)
+    expect(payload.length).toBeLessThanOrEqual(p.MAX_TRANSCRIPT_ENTRY)
+    const m = p.decodeTranscript(payload)
+    expect(m?.t).toBe('entry')
+    expect(p.transcriptRequestValid({ part: { seq: 3, name: 'diff' } })).toBe(true)
+    expect(p.transcriptRequestValid({ part: { seq: 3, name: 'diff' }, after: 1 })).toBe(false)
+    expect(p.transcriptRequestValid({ part: { seq: 3, name: 'stderr' as 'diff' } })).toBe(false)
+    expect(p.transcriptRequestValid({ limit: 101 })).toBe(false)
   })
 })

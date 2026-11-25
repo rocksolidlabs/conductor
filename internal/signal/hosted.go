@@ -1874,9 +1874,10 @@ func (h *HostedSession) StartRelay(v *Viewer) error {
 	return h.fromViewer(v, proto.ViewerRef{T: proto.HostRelayStart, ViewerID: v.ID})
 }
 
-// RelayToHost wraps a viewer frame in a RELAY envelope for the host. Input
-// and resize from view-role viewers are dropped here as defence in depth.
-// The envelope waits while the viewers' lane of the host's queue is full
+// RelayToHost wraps a viewer frame in a RELAY envelope for the host. A
+// viewer whose role is not control passes only what viewAllows names, as
+// defence in depth: every other frame is refused here (session.ErrReadOnly),
+// nothing of it sent. The envelope waits while the viewers' lane of the host's queue is full
 // (HostConn.sendFrom): ErrSlowHost when the host's connection closes
 // meanwhile, ErrViewerGone when the viewer is closed, or its connection
 // fails (ConnFailed) while the envelope waits; one that needs no wait goes
@@ -1885,19 +1886,8 @@ func (h *HostedSession) RelayToHost(v *Viewer, inner proto.Frame) error {
 	if !v.relay.Load() {
 		return errors.New("signal: viewer is not in relay mode")
 	}
-	if v.Role != session.RoleControl {
-		switch inner.Type {
-		case proto.TypeInput, proto.TypeFileWrite, proto.TypeDecide:
-			return session.ErrReadOnly
-		case proto.TypeControl:
-			// A chat post passes for every role (the host refuses one that is
-			// also for the agent); typing a message into the agent does not,
-			// nor any of a decision link's lane, which only a control link
-			// can be.
-			if t, _ := proto.ParseHeader(inner.Payload); t == proto.CtlResize || t == proto.CtlSubmit || t == proto.CtlAnswer || t == proto.CtlChatSend || t == proto.CtlNvimOpen || t == proto.CtlNvimInput || t == proto.CtlNvimClose || t == proto.CtlNvimSwap || laneRequest(t) {
-				return session.ErrReadOnly
-			}
-		}
+	if v.Role != session.RoleControl && !viewAllows(inner) {
+		return session.ErrReadOnly
 	}
 	env, err := proto.EncodeRelay(v.ID, proto.Encode(inner.Type, inner.Payload))
 	if err != nil {
@@ -1916,6 +1906,29 @@ func (h *HostedSession) RelayToHost(v *Viewer, inner proto.Frame) error {
 		return err
 	}
 	return conn.sendFrom(Outbound{Binary: env, of: v}, v.done, v.stop)
+}
+
+// viewAllows says whether a viewer whose role is not control may send the
+// host inner: a CONTROL frame whose t is hello, ping, chat (the host
+// refuses one that is also for the agent), file_get or transcript_get, and
+// nothing else. Every other frame (keys, a save's part, a decide) and every
+// other control (a line, an answer, a resize, the editor's, a decision
+// link's lane, a chat's interrupt, and any a later release adds) is
+// refused: the list fails closed. The host's and the session's own checks
+// of the role stay the first line.
+func viewAllows(inner proto.Frame) bool {
+	if inner.Type != proto.TypeControl {
+		return false
+	}
+	t, err := proto.ParseHeader(inner.Payload)
+	if err != nil {
+		return false
+	}
+	switch t {
+	case proto.CtlHello, proto.CtlPing, proto.CtlChat, proto.CtlFileGet, proto.CtlTranscriptGet:
+		return true
+	}
+	return false
 }
 
 // fromViewer sends the host a message on v's behalf, charged as encoded

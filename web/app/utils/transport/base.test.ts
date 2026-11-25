@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { CONTROL_TOO_LARGE, encodeControl, encodeJSONFrame, FrameType, MAX_CONTROL, MAX_SUBMIT, parseJSON, TOO_LONG, type FileHeader, type FileResponse, type Welcome } from '../protocol'
+import { CONTROL_TOO_LARGE, encodeControl, encodeFrame, encodeJSONFrame, FrameType, MAX_CONTROL, MAX_SUBMIT, MAX_TRANSCRIPT, MAX_TRANSCRIPT_PAGE, parseJSON, TOO_LONG, type FileHeader, type FileResponse, type TranscriptMessage, type Welcome } from '../protocol'
 import { ReplyError } from '../reply'
 import { ANSWER_TIMEOUT_MS, BaseTransport, DECIDE_TIMEOUT_MS, LANE_READ_TIMEOUT_MS } from './base'
 import { LaneError } from './decide'
@@ -463,5 +463,124 @@ describe('BaseTransport, a decision link\'s lane', () => {
     await vi.advanceTimersByTimeAsync(0)
     expect(act.error).toMatchObject({ code: 'closed' })
     expect(DECIDE_TIMEOUT_MS).toBeGreaterThan(LANE_READ_TIMEOUT_MS)
+  })
+})
+
+describe('BaseTransport chat (TRANSCRIPT)', () => {
+  beforeEach(() => {
+    vi.stubGlobal('window', globalThis)
+    vi.useFakeTimers()
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+  })
+
+  /** A transport that says whether it took a frame, and what its listeners heard. */
+  class ChatTransport extends TestTransport {
+    heard: TranscriptMessage[] = []
+    constructor() {
+      super()
+      this.onTranscript((m) => this.heard.push(m))
+    }
+    take(frame: Uint8Array): boolean {
+      return this.handleFrame(frame)
+    }
+    hello(): Record<string, unknown> {
+      return parseJSON<Record<string, unknown>>(this.helloFrame({ cols: 0, rows: 0 }).subarray(1))!
+    }
+  }
+  const entry = (seq: number, mark: number, text = 'words') => ({ seq, mark, rev: 0, at: '2026-11-24T12:00:00.000Z', kind: 'text', turn: 1, text })
+  const chatWelcome = (t: ChatTransport) =>
+    t.receive(encodeControl({ t: 'welcome', proto: 1, sessionId: 's', role: 'control', cols: 0, rows: 0, status: 'running', scrollbackBytes: 0, transport: 'ws', fileView: true, way: 'protocol', interrupt: true, transcript: { first: 1, last: 9, mark: 12 } }))
+  /** CHUNK frames of frame, as a host fragments one over a data channel: [uint16 msgId][uint32 total][uint32 offset][data]. */
+  function chunks(frame: Uint8Array, id: number, size = 32 * 1024): Uint8Array[] {
+    const out: Uint8Array[] = []
+    for (let off = 0; off < frame.length; off += size) {
+      const data = frame.subarray(off, Math.min(off + size, frame.length))
+      const c = new Uint8Array(11 + data.length)
+      c[0] = FrameType.Chunk
+      const v = new DataView(c.buffer)
+      v.setUint16(1, id)
+      v.setUint32(3, frame.length)
+      v.setUint32(7, off)
+      c.set(data, 11)
+      out.push(c)
+    }
+    return out
+  }
+
+  it('transcriptFrameDispatched: a TRANSCRIPT frame reaches onTranscript, its mark kept for the next hello; an unknown type is still dropped', () => {
+    const t = new ChatTransport()
+    expect(t.hello().transcriptAfter).toBeUndefined()
+    expect(t.take(encodeJSONFrame(FrameType.Transcript, { t: 'entry', entry: entry(4, 7) }))).toBe(true)
+    expect(t.take(encodeJSONFrame(FrameType.Transcript, { t: 'page', entries: [entry(5, 9), entry(6, 8)], first: 1, last: 6 }))).toBe(true)
+    expect(t.heard.map((m) => m.t)).toEqual(['entry', 'page'])
+    expect(t.hello().transcriptAfter).toBe(9)
+    // A replay that left changes out moves no mark: the page pages back first.
+    t.take(encodeJSONFrame(FrameType.Transcript, { t: 'page', entries: [entry(40, 50)], first: 1, last: 40, more: true }))
+    expect(t.hello().transcriptAfter).toBe(9)
+    // Past its bound, or not a message of the three: taken, heard by nobody.
+    t.take(encodeJSONFrame(FrameType.Transcript, { t: 'later', x: 1 }))
+    t.take(encodeFrame(FrameType.Transcript, new Uint8Array(MAX_TRANSCRIPT + 1).fill(0x20)))
+    expect(t.heard).toHaveLength(3)
+    expect(t.take(encodeFrame(0x0c, new Uint8Array([1, 2])))).toBe(false)
+    expect(t.heard).toHaveLength(3)
+  })
+
+  it('transcriptChunked: a TRANSCRIPT frame past a data channel message, in chunks, is heard once whole', () => {
+    const t = new ChatTransport()
+    const entries = Array.from({ length: 20 }, (_, i) => entry(i + 1, i + 1, 'x'.repeat(4000)))
+    const frame = encodeJSONFrame(FrameType.Transcript, { t: 'page', entries, first: 1, last: 20 })
+    expect(frame.length).toBeGreaterThan(2 * 32 * 1024)
+    const parts = chunks(frame, 7)
+    for (const c of parts.slice(0, -1)) t.take(c)
+    expect(t.heard).toHaveLength(0)
+    t.take(parts[parts.length - 1]!)
+    expect(t.heard).toHaveLength(1)
+    expect(t.heard[0]).toMatchObject({ t: 'page', last: 20 })
+    expect((t.heard[0] as { entries: unknown[] }).entries).toHaveLength(20)
+  })
+
+  it('a read names its reqId and is settled by the reply naming it, a part with its bytes, or by an error naming it; the replies are not heard', async () => {
+    const t = new ChatTransport()
+    chatWelcome(t)
+    const page = track(t.transcriptGet({ before: 5, limit: 2 }))
+    const part = track(t.transcriptGet({ part: { seq: 3, name: 'output' } }))
+    const gone = track(t.transcriptGet({ after: 1 }))
+    const ids = [1, 2, 3].map((n) => parseJSON<{ t: string; reqId: string; before?: number }>(t.sent[n - 1]!.subarray(1))!)
+    expect(ids[0]).toMatchObject({ t: 'transcript_get', before: 5, limit: 2 })
+    t.receive(encodeJSONFrame(FrameType.Transcript, { t: 'page', reqId: ids[0]!.reqId, entries: [entry(3, 3), entry(4, 4)], first: 1, last: 9, more: true }))
+    t.receive(encodeJSONFrame(FrameType.Transcript, { t: 'part', reqId: ids[1]!.reqId, seq: 3, name: 'output', offset: 0, total: 2, kept: 2, data: btoa('ok') }))
+    t.receive(encodeControl({ t: 'error', code: 'transcript_gone', message: 'That part of the chat is no longer kept.', requestId: ids[2]!.reqId }))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(page.value).toMatchObject({ t: 'page', more: true })
+    expect(new TextDecoder().decode((part.value as { bytes: Uint8Array }).bytes)).toBe('ok')
+    expect(gone.error).toMatchObject({ code: 'transcript_gone' })
+    expect(t.heard).toHaveLength(0)
+    const bad = track(t.transcriptGet({ limit: MAX_TRANSCRIPT_PAGE + 1 }))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(bad.error).toMatchObject({ code: 'invalid' })
+    expect(t.sent).toHaveLength(3)
+  })
+
+  it('Stop goes to an owner whose welcome said interrupt, settled by interrupt_ok or the error naming it; never to another', async () => {
+    const term = new ChatTransport()
+    term.receive(encodeControl({ t: 'welcome', proto: 1, sessionId: 's', role: 'control', cols: 80, rows: 24, status: 'running', scrollbackBytes: 0, transport: 'ws', fileView: true }))
+    const refused = track(term.interrupt())
+    await vi.advanceTimersByTimeAsync(0)
+    expect(refused.error).toMatchObject({ code: 'not_protocol' })
+    expect(term.sent).toHaveLength(0)
+    const t = new ChatTransport()
+    chatWelcome(t)
+    const ok = track(t.interrupt())
+    const noTurn = track(t.interrupt())
+    const [a, b] = [0, 1].map((n) => parseJSON<{ t: string; reqId: string }>(t.sent[n]!.subarray(1))!)
+    expect(a!.t).toBe('interrupt')
+    t.receive(encodeControl({ t: 'interrupt_ok', requestId: a!.reqId }))
+    t.receive(encodeControl({ t: 'error', code: 'no_turn', message: 'The agent is not working on anything.', requestId: b!.reqId }))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(ok.value).toBe(true)
+    expect(noTurn.error).toMatchObject({ code: 'no_turn' })
   })
 })

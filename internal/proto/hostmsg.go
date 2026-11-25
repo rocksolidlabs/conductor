@@ -233,6 +233,12 @@ type Registered struct {
 	// switchyard and on a connection of the workbench token, a host token
 	// or an open host.
 	Renews bool `json:"renews,omitempty"`
+	// Transcript says the server takes TypeTranscript in relay envelopes
+	// (transcript.go), and its join page draws a chat: only then does a
+	// publisher publish a chat there, and only then does a host relay a
+	// TRANSCRIPT frame on the connection. Absent from an older server, which
+	// closes the connection on a relayed frame of a type it does not know.
+	Transcript bool `json:"transcript,omitempty"`
 }
 
 // HostTokenMsg is host_token: the credential that replaces the one the

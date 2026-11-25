@@ -57,6 +57,8 @@ type stubYard struct {
 	// registration's Authorization header, in order.
 	renews atomic.Bool
 	auths  chan string
+	// transcript is what its registered says of a chat's frames.
+	transcript atomic.Bool
 }
 
 func newStubYard(t *testing.T) *stubYard {
@@ -84,7 +86,7 @@ func newStubYard(t *testing.T) *stubYard {
 		default:
 		}
 		y.reg <- reg
-		b, _ := json.Marshal(proto.Registered{T: proto.HostRegistered, SessionID: "yard-session-1", Secret: "s", ShareBaseURL: "https://yard.invalid", Links: []string{}, Renews: y.renews.Load()})
+		b, _ := json.Marshal(proto.Registered{T: proto.HostRegistered, SessionID: "yard-session-1", Secret: "s", ShareBaseURL: "https://yard.invalid", Links: []string{}, Renews: y.renews.Load(), Transcript: y.transcript.Load()})
 		if err := c.Write(r.Context(), websocket.MessageText, b); err != nil {
 			return
 		}
