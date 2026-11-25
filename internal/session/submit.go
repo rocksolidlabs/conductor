@@ -64,7 +64,13 @@ var ErrTrustQuestion = errors.New(TrustQuestionWords)
 // prompt (promptOnly) while the agent's screen is not its prompt
 // (atPrompt): nothing of it was written. A person is told its words with
 // not_sent (NotSentWords).
-var ErrNotAtPrompt = errors.New("the agent's screen is not recognised as its prompt: nothing was typed")
+var ErrNotAtPrompt = errors.New(NotAtPromptWords)
+
+// NotAtPromptWords say why a line typed only at the agent's prompt was
+// refused, nothing typed: the screen, read as the writer took the line,
+// was not that prompt (a screen of another shape, a dialog's choice, half
+// a frame), and its terminal shows what it is.
+const NotAtPromptWords = "the agent's screen is not recognised as its prompt: nothing was typed. Look at its terminal."
 
 // StartupChoiceWords say why a line is refused, whole, while the startup
 // questions' watch lasts and the agent's screen shows a numbered choice
@@ -241,13 +247,32 @@ type Submission struct {
 // each where the screen read whole is the agent's prompt (atPrompt; the
 // Enter atPromptForEnter), nothing written anywhere else. That is a line
 // marked so (OnlyAtPrompt), and, in a session whose agent has a prompt
-// shape (Options.PromptShape), every line that names no question, for the
-// whole of the session: a person's line, a link's, a crew's message, a
-// handoff, a broadcast, a decision's line that answers no question. A
-// reply to a question (Question) is judged by its question, as before; a
-// session whose agent has no prompt shape types its other lines as before.
+// shape (Options.PromptShape), for the whole of the session, every line
+// that names no question (a person's line, a link's, a crew's message, a
+// handoff, a broadcast, a decision's line) and every reply to a question
+// the session does not read off the screen (questionOnScreen: the agent's
+// own question, a decision's, a report of the agent's), which the agent
+// takes at its prompt. A reply to a question read off the screen is
+// judged by its question; a session whose agent has no prompt shape types
+// its other lines as it always did.
 func (s *Local) promptOnly(sub Submission) bool {
-	return sub.OnlyAtPrompt || s.opts.PromptShape != nil && sub.Question == ""
+	if sub.OnlyAtPrompt {
+		return true
+	}
+	if s.opts.PromptShape == nil {
+		return false
+	}
+	return sub.Question == "" || !s.questionOnScreen(sub.Question)
+}
+
+// questionOnScreen reports whether the question of id is one the session
+// shows now as read off the screen: a startup question (SourceTrust) or a
+// question asked during the work (SourceQuestion).
+func (s *Local) questionOnScreen(id string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	att := s.info.Attention
+	return att.ID == id && (att.Source == SourceTrust || att.Source == SourceQuestion)
 }
 
 // ErrSubmitPending says a submission's text was being taken when its time
@@ -326,7 +351,12 @@ func (st submitState) strand(s *Local, sub Submission, res SubmitResult, err err
 	if !res.Typed || res.Entered {
 		return false, err
 	}
-	stranded := errors.Is(err, ErrRevoked) || err == nil && st.claimed()
+	// A line typed only at the agent's prompt whose Enter the screen
+	// refused (SubmitResult.NotAtPrompt; a first message, PromptHoldsText,
+	// is its caller's to tell) leaves its text in the agent's input: the
+	// turn is held as for any text typed without its Enter, so that no
+	// later line joins it.
+	stranded := errors.Is(err, ErrRevoked) || err == nil && (st.claimed() || res.NotAtPrompt && !sub.PromptHoldsText)
 	if !stranded || sub.WithdrawnByKeys && errors.Is(err, errWithdrawn) {
 		// Not stranded; or withdrawn by a person's keys, who deal with the
 		// text themselves: no hold.
@@ -383,10 +413,13 @@ type SubmitResult struct {
 	// second Enter either: nothing more is written for it, and whoever
 	// typed it says so.
 	Unconfirmed bool
-	// NotAtPrompt is set, with Typed and not Entered, when the Enter was
-	// left out because the screen was not the agent's prompt holding the
-	// text (Submission.PromptHoldsText) and no question came: the text sits
-	// in the agent's input, not sent.
+	// NotAtPrompt is set when the screen was not the agent's prompt for a
+	// line typed only there (promptOnly) and no question came: with Typed
+	// and not Entered, its Enter was left out (the prompt did not show, or
+	// did not hold the text: Submission.PromptHoldsText), the text sitting
+	// in the agent's input, not sent, the turn held for a person
+	// (ErrLineStranded) but for a first message; with nothing typed, a line
+	// with UnlessWaiting was held back.
 	NotAtPrompt bool
 	// landed, when set, is the Enter's write begun and not finished when
 	// its time ran out: the program has not taken it yet, and it gives the
@@ -603,6 +636,10 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 		}
 		landed, err := s.writeProc(ctx, []byte(data), textWait)
 		if errors.Is(err, errWaiting) {
+			return res, nil
+		}
+		if errors.Is(err, errWaitingScreen) {
+			res.NotAtPrompt = true
 			return res, nil
 		}
 		if err != nil {
@@ -1116,42 +1153,52 @@ func (s *Local) pressEnter(ctx context.Context, sub Submission, res SubmitResult
 	// the Enter waited behind another write, or a dialog drawn on the
 	// screen meanwhile, is never answered by it.
 	wait.guard = s.enterGuard(st.comesAfter)
+	// read is the Enter's reading of the screen for a line typed only at
+	// the agent's prompt, nil for any other: asked as the writer takes the
+	// Enter, after the other checks (a question or a dialog come meanwhile
+	// refuses it first, as for any line), and again as the last thing
+	// before the write, after the caller's BeforeEnter (wait.last).
+	var read func() error
 	holding := sub.OnlyAtPrompt && sub.PromptHoldsText && res.Typed
 	if holding {
 		// The prompt holding the line's text, as the agent draws it in
-		// its own time; a question or a dialog come meanwhile refuses the
-		// Enter first, as for any line.
+		// its own time.
 		text := SubmitLine(sub.Text)
 		s.awaitEcho(ctx, text)
-		enter := wait.guard
-		wait.guard = func() error {
-			if err := enter(); err != nil {
-				return err
-			}
+		read = func() error {
 			if !s.atPromptHolding(text) {
 				return errNotHolding
 			}
 			return nil
 		}
 	} else if s.promptOnly(sub) {
-		// The Enter of a line typed only at the agent's prompt, judged on
-		// the screen as the writer takes it: the prompt, or the prompt
-		// holding the line's text (atPromptForEnter). Anywhere else it is
-		// left out, as for a prompt come in the pause; a line that is an
+		// The prompt, or the prompt holding the line's text
+		// (atPromptForEnter). Anywhere else the Enter is left out, the
+		// turn held for a person (errNotAtPromptEnter); a line that is an
 		// Enter alone is refused, nothing written.
 		typed := ""
 		if res.Typed {
 			typed = SubmitLine(sub.Text)
 		}
+		read = func() error {
+			switch {
+			case s.atPromptForEnter(typed):
+				return nil
+			case res.Typed:
+				return errNotAtPromptEnter
+			case !sub.UnlessWaiting:
+				return ErrNotAtPrompt
+			}
+			return errPromptCame
+		}
+	}
+	if read != nil {
 		enter := wait.guard
 		wait.guard = func() error {
-			if !s.atPromptForEnter(typed) {
-				if !res.Typed && !sub.UnlessWaiting {
-					return ErrNotAtPrompt
-				}
-				return errPromptCame
+			if err := enter(); err != nil {
+				return err
 			}
-			return enter()
+			return read()
 		}
 	}
 	if !res.Typed {
@@ -1211,9 +1258,18 @@ func (s *Local) pressEnter(ctx context.Context, sub Submission, res SubmitResult
 	// caller's BeforeEnter, what an Enter naming no question does to the
 	// questions (rawKeys: a bell's wait withdrawn), and the turn a done
 	// ended is behind (nextTurn).
+	// The Enter's reading made again once the caller's BeforeEnter has
+	// run, the last thing before the write: refused then, the Enter is not
+	// written and nothing of it is noted (wait.last).
+	var late error
 	wait.before = func() {
 		if sub.BeforeEnter != nil {
 			sub.BeforeEnter()
+		}
+		if read != nil {
+			if late = read(); late != nil {
+				return
+			}
 		}
 		keys, _, _ := s.keysWritten([]byte{'\r'})
 		if sub.Question == "" {
@@ -1224,6 +1280,7 @@ func (s *Local) pressEnter(ctx context.Context, sub Submission, res SubmitResult
 		}
 		s.nextTurn()
 	}
+	wait.last = func() error { return late }
 	enterAt := time.Now().UTC()
 	landed, err := s.writeProc(ctx, []byte{'\r'}, wait)
 	pending := landed != nil
@@ -1231,8 +1288,9 @@ func (s *Local) pressEnter(ctx context.Context, sub Submission, res SubmitResult
 		// Left out, as one seen before the Enter is.
 		return res, nil
 	}
-	if errors.Is(err, errNotHolding) {
-		// Left out: the screen is not the prompt holding the text.
+	if errors.Is(err, errNotHolding) || errors.Is(err, errNotAtPromptEnter) {
+		// Left out: the screen is not the agent's prompt (holding the
+		// text).
 		res.NotAtPrompt = true
 		return res, nil
 	}
@@ -1334,6 +1392,11 @@ func (s *Local) landEnter(sub Submission, res SubmitResult, st submitState) (Sub
 		if token := st.claim.Swap(0); token != 0 {
 			s.release(sub.Question, token)
 		}
+		if errors.Is(err, errNotHolding) || errors.Is(err, errNotAtPromptEnter) {
+			// Refused as the last thing before the write: not written.
+			res.NotAtPrompt = true
+			err = ErrLineStranded
+		}
 		return res, err
 	}
 	s.resolveLine(sub, st)
@@ -1389,6 +1452,19 @@ const lookBudget = 2 * time.Second
 // a zero result then, as for one seen before the text.
 var errWaiting = errors.New("session: the session waits on a prompt")
 
+// errWaitingScreen refuses the text of a submission with UnlessWaiting,
+// typed only at the agent's prompt, while the screen is not that prompt
+// (textGuard): Submit returns a result with nothing typed and NotAtPrompt
+// set, so that whoever waits for it can say why.
+var errWaitingScreen = errors.New("session: the agent's screen is not its prompt")
+
+// errNotAtPromptEnter refuses the Enter of a line typed only at the
+// agent's prompt (promptOnly), its text typed, where the screen is not
+// that prompt as the writer takes the Enter (pressEnter): it is left out,
+// the result says so (SubmitResult.NotAtPrompt) and the turn is held for a
+// person (strand).
+var errNotAtPromptEnter = errors.New("session: the screen is not the agent's prompt for the Enter")
+
 // textGuard is a submission's text's guard (writeWait.guard), asked as the
 // writer takes it: what Submit refuses before the text, looked at again,
 // for a question or a dialog come while the text waited behind another
@@ -1416,10 +1492,12 @@ func (s *Local) textGuard(sub Submission, st submitState) func() error {
 		startup := s.startupLine(sub.OnlyAtPrompt)
 		notAtPrompt := s.promptOnly(sub) && !s.atPrompt()
 		switch {
-		case sub.UnlessWaiting && (showing || dialog || startup != nil || notAtPrompt):
+		case sub.UnlessWaiting && (showing || dialog || startup != nil):
+			return errWaiting
+		case sub.UnlessWaiting && notAtPrompt:
 			// What must never answer a prompt writes nothing where the
 			// screen is not the agent's prompt either, and waits.
-			return errWaiting
+			return errWaitingScreen
 		case showing && att.Source == SourceTrust || startup == ErrTrustQuestion:
 			return ErrTrustQuestion
 		case dialog || showing && att.Source == SourceQuestion:
@@ -1661,7 +1739,8 @@ var titleOnly = regexp.MustCompile(`^(?:\x1b\][02];[^\x07\x1b]*(?:\x07|\x1b\\))+
 // submit_ok once the line was entered; else the error
 // naming the request, as AnswerResult names an answer's: not_sent with the
 // question's words when the unless-waiting guard held the line back (typed
-// nothing, no error), input_failed when the line was typed and not entered
+// nothing, no error), with ErrNotAtPrompt's when it held it back because
+// the screen was not the agent's prompt (NotAtPrompt), input_failed when the line was typed and not entered
 // (the session's turn is held), too_many_requests, session_ended,
 // read_only, bad_frame.
 func SubmitWord(reqID string, res SubmitResult, err error) []byte {
@@ -1669,8 +1748,12 @@ func SubmitWord(reqID string, res SubmitResult, err error) []byte {
 		return nil
 	}
 	if err == nil && !res.Typed && !res.Entered {
-		// The guard held it: the session was asking.
+		// The guard held it: the session was asking, or the screen was not
+		// the agent's prompt (NotAtPrompt).
 		err = ErrQuestion
+		if res.NotAtPrompt {
+			err = ErrNotAtPrompt
+		}
 	}
 	if err == nil {
 		if !res.Entered {

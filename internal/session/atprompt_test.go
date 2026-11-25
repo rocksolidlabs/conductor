@@ -198,11 +198,12 @@ func TestALineForThePromptIsTypedIntoThePromptAlone(t *testing.T) {
 // line is typed at the prompt, and the prompt is replaced by a sign-in no
 // catalog entry knows, a screen with no numbered choice the dialog guards
 // would see: before the line's Enter (the beforeEnter hook, as the
-// submission comes to it), its Enter is withheld; after it (BeforeEnter,
-// as the writer takes it) and before the confirming Enter an agent that
-// does not report taking the line gets (ConfirmSubmit), that one is
-// withheld. A line whose prompt stays gets both, so the second case
-// reaches the confirming Enter.
+// submission comes to it), its Enter is withheld, the result says why and
+// the session's turn is held for a person; after it (as the program takes
+// the Enter's byte) and before the confirming Enter an agent that does
+// not report taking the line gets (ConfirmSubmit), that one is withheld.
+// A line whose prompt stays gets both, so the second case reaches the
+// confirming Enter.
 func TestAPromptGoneBeforeAnEnterGetsNoEnter(t *testing.T) {
 	text := "Brakeman request bk-1 (briefing)"
 	opts := func() Options {
@@ -222,8 +223,8 @@ func TestAPromptGoneBeforeAnEnterGetsNoEnter(t *testing.T) {
 	if !shown {
 		t.Fatalf("the sign-in was never drawn: %q", s.ScreenLines(24))
 	}
-	if err != nil || !res.Typed || res.Entered || res.Reentered {
-		t.Fatalf("the line, its prompt gone before its Enter: %+v %v", res, err)
+	if !errors.Is(err, ErrLineStranded) || !res.Typed || res.Entered || res.Reentered || !res.NotAtPrompt || !s.TurnHeld() {
+		t.Fatalf("the line, its prompt gone before its Enter: %+v %v (turn held %v)", res, err, s.TurnHeld())
 	}
 	if got := written(t, p); got != text {
 		t.Fatalf("written %q", got)
@@ -237,7 +238,12 @@ func TestAPromptGoneBeforeAnEnterGetsNoEnter(t *testing.T) {
 		var shown atomic.Bool
 		sub := Submission{Text: text, OnlyAtPrompt: true, Confirm: true}
 		if gone {
-			sub.BeforeEnter = func() { shown.Store(drawsOn(s, p, unknownSignIn)) }
+			var once atomic.Bool
+			p.onBytes = func(b []byte) {
+				if string(b) == "\r" && once.CompareAndSwap(false, true) {
+					shown.Store(drawsOn(s, p, unknownSignIn))
+				}
+			}
 		}
 		res, err := s.Submit(t.Context(), sub)
 		if gone && !shown.Load() {

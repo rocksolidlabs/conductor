@@ -1893,6 +1893,12 @@ func (e *Engine) promptWith(ctx context.Context, r *run, m *member, local *sessi
 				}
 				continue
 			}
+			if errors.Is(err, session.ErrLineStranded) && res.Typed {
+				// Typed, its Enter left out (the screen was not its
+				// agent's prompt as the Enter was due): the session holds
+				// its turn for a person, and the prompt counts as given.
+				err = nil
+			}
 			pending = errors.Is(err, session.ErrSubmitPending)
 			if err == nil || pending {
 				break
@@ -1911,6 +1917,12 @@ func (e *Engine) promptWith(ctx context.Context, r *run, m *member, local *sessi
 			// prompted then (BeforeEnter), never before: a done before
 			// its Enter starts nothing.
 			r.note(session.ActivityStatus, "%s's prompt waits for %s to take its input: it is entered once it has", name, name)
+		case !res.Entered && res.NotAtPrompt:
+			// The screen was not the agent's prompt as the Enter was due:
+			// the prompt waits in the agent's input, and is never typed
+			// again.
+			m.markPrompted()
+			r.note(session.ActivityError, "typed %s's prompt without its Enter: %s's screen was not its prompt when the Enter was due; press Enter in its terminal", name, name)
 		case !res.Entered:
 			// A question came up during the pause: the prompt waits in the
 			// agent's input, and is never typed again.

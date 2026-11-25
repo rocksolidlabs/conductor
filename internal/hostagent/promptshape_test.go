@@ -354,10 +354,10 @@ var shapePick = shapeFrame("  Choose a colour for the chart", "", "  › 1. Blue
 // A hosted session of Codex, its host sent the prompt shape, types a line
 // only at Codex's prompt for the whole of the session, end to end from a
 // page through the server: its first line is typed and entered at the
-// composer; long past it, with a choice on the screen and no prompt, a
-// line is refused in the words of a screen that is not the agent's prompt
-// and the program reads nothing more, no text and no Enter.
-func TestAHostedSessionTypesALineOnlyAtThePromptLongPastItsFirst(t *testing.T) {
+// composer; then, with a choice on the screen and no prompt, a line is
+// refused in the words of a screen that is not the agent's prompt and the
+// program reads nothing more, no text and no Enter.
+func TestAHostedSessionTypesEveryLineOnlyAtThePrompt(t *testing.T) {
 	_, hs := shapeServer(t)
 	said := make(chan map[string]any, 8)
 	p := registerProxy(t, hs.URL, func(map[string]any) {}, said)

@@ -1,6 +1,9 @@
 package session
 
-import "regexp"
+import (
+	"regexp"
+	"strings"
+)
 
 // A line while the startup questions' watch lasts (until the first
 // submission's Enter): its text is typed only at the agent's prompt.
@@ -26,12 +29,13 @@ import "regexp"
 // takes the text. A line that is an Enter alone is judged by it as the
 // writer takes the Enter. The Enter of a line with text keeps the guard it
 // had (enterGuard, startupMayShow). For an agent with a prompt shape every
-// line that names no question is also typed only at the agent's prompt
-// for the whole of the session, its text and its Enter (promptOnly): the
-// Enter where the screen is the prompt, or the prompt holding the line's
-// own text (atPromptForEnter), since a long line wraps past the rows the
-// shape takes. Nothing of this keeps a state: the rule reads the screen
-// as it is.
+// line that names no question, and every reply to a question not read off
+// the screen, is also typed only at the agent's prompt for the whole of
+// the session, its text and its Enter (promptOnly): the Enter where the
+// screen is the prompt, or the prompt holding the line's own text
+// (atPromptForEnter), since a long line wraps past the rows the shape
+// takes. Nothing of this keeps a state: the rule reads the screen as it
+// is.
 
 // promptShown reports whether text, a whole frame, shows the agent's
 // prompt by its shape (shape; none for an agent without one) with no
@@ -44,6 +48,49 @@ func promptShown(text string, shape *regexp.Regexp) bool {
 		return false
 	}
 	return !startupChoiceShown(text)
+}
+
+// markedChoiceRow is a numbered row with a highlight's marker before it
+// ("› 1. Trust and continue", "❯ 1. Yes"): a dialog's choice wherever it
+// stands on the screen.
+var markedChoiceRow = regexp.MustCompile(`^\s*[›>❯]\s*\d+\.\s+\S`)
+
+// promptShownPast is the agent's prompt read on text, a whole frame, once
+// the session's startup watch is over (promptRead): for an agent with a
+// prompt shape, the shape matches and no numbered row is a dialog's
+// choice, which is one in or under the rows the shape matched (from the
+// first row of its match to the frame's end) or one with a highlight's
+// marker anywhere. A numbered list in the agent's own output above its
+// prompt is no choice. With no shape it is promptShown.
+func promptShownPast(text string, shape *regexp.Regexp) bool {
+	if shape == nil {
+		return promptShown(text, nil)
+	}
+	text = plainSpaces(text)
+	at := shape.FindStringIndex(text)
+	if at == nil {
+		return false
+	}
+	from := strings.LastIndexByte(text[:at[0]], '\n') + 1
+	if startupChoiceShown(text[from:]) {
+		return false
+	}
+	for _, row := range strings.Split(text, "\n") {
+		if markedChoiceRow.MatchString(row) {
+			return false
+		}
+	}
+	return true
+}
+
+// promptRead reports whether frame, a whole frame, shows the agent's
+// prompt: while the startup watch lasts with a numbered row anywhere read
+// as a choice (promptShown), after it as promptShownPast reads it.
+func (s *Local) promptRead(frame string) bool {
+	if s.trust != nil && s.trust.Watching() {
+		return promptShown(frame, s.opts.PromptShape)
+	}
+	return promptShownPast(frame, s.opts.PromptShape)
 }
 
 // startupIn reports whether text shows a startup question's pattern, read

@@ -6029,15 +6029,18 @@ func (s *Local) ScreenLines(n int) []string {
 // known gone), it matches the agent's prompt when the agent has a shape
 // known (Options.PromptShape), and, shape or none, no row of it is a
 // dialog's numbered choice, read by its shape as startupChoiceShown reads
-// one: a shape that matches never admits a screen with a choice a digit of
-// the line would pick. Both read the frame with every horizontal space a
+// one (promptRead: while the startup watch lasts any numbered row; after
+// it, for an agent with a shape, one in or under the rows the shape
+// matched, or one with a highlight's marker anywhere): a shape that
+// matches never admits a screen with a choice a digit of the line would
+// pick. Both read the frame with every horizontal space a
 // plain one (plainSpaces): a row indented with a no-break space is read as
 // the same row indented with spaces, so no indentation turns a choice into
 // text for either. Anything else, an unknown dialog, a sign-in screen,
 // half a frame, is not the prompt (#714).
 func (s *Local) atPrompt() bool {
 	text, _, uncut, _, _ := s.shot.Frame()
-	return uncut && promptShown(text, s.opts.PromptShape)
+	return uncut && s.promptRead(text)
 }
 
 // promptHolds stands for the text a submission typed into the agent's
@@ -6061,7 +6064,7 @@ func (s *Local) atPromptHolding(text string) bool {
 		return s.atPrompt()
 	}
 	frame, _, uncut, _, _ := s.shot.Frame()
-	return uncut && promptHolding(frame, text, s.opts.PromptShape)
+	return uncut && promptHolding(frame, text, s.promptRead)
 }
 
 // atPromptForEnter reports whether a line's Enter may be written on the
@@ -6076,15 +6079,16 @@ func (s *Local) atPromptForEnter(typed string) bool {
 	if !uncut {
 		return false
 	}
-	if promptShown(frame, s.opts.PromptShape) {
+	if s.promptRead(frame) {
 		return true
 	}
-	return len(strings.Fields(typed)) > 0 && promptHolding(frame, typed, s.opts.PromptShape)
+	return len(strings.Fields(typed)) > 0 && promptHolding(frame, typed, s.promptRead)
 }
 
 // promptHolding is atPromptHolding's rule on frame, a whole frame, for a
-// text of at least one word: a pure function of them and shape.
-func promptHolding(frame, text string, shape *regexp.Regexp) bool {
+// text of at least one word, the frame with the text put back as one word
+// read as the prompt by read (promptRead).
+func promptHolding(frame, text string, read func(string) bool) bool {
 	words := strings.Fields(text)
 	frame = plainSpaces(frame)
 	quoted := make([]string, len(words))
@@ -6109,7 +6113,7 @@ func promptHolding(frame, text string, shape *regexp.Regexp) bool {
 		strings.TrimSpace(frame[at[1]:rowEnd]) != "" {
 		return false
 	}
-	return promptShown(frame[:at[0]]+promptHolds+frame[at[1]:], shape)
+	return read(frame[:at[0]] + promptHolds + frame[at[1]:])
 }
 
 // awaitEcho waits, up to Options.EchoWait, for the screen to show the
