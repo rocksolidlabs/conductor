@@ -61,7 +61,9 @@ const openRequest = (e: TranscriptEntry) => e.kind === 'permission' && e.state =
  * While the session runs in its terminal the owner sends no entry (see Chat sessions), though the session adds some (the move's
  * notice, "Moved to the terminal."): the page is told it left (`leave`, at a `way` message or a welcome of a session in its terminal), takes
  * what comes as the session returns (the move's notice to Chat comes before the `way` message) without raising its mark past what
- * it missed, and on its return (`rejoin`, at the `way` message that says protocol) reads back what was added while it was away.
+ * it missed, and on its return (`rejoin`, at the `way` message that says protocol) reads what was added while it was away
+ * (`readBack` reads that window first: `readAway`). That read is apart from a replay's gap (`readBack`): a gap a refused or unanswered read-back left stays for the next
+ * connection, as it was, and the read of what the terminal added asks for its own window whatever that gap holds.
  */
 export class Transcript {
   readonly entries = new Map<number, TranscriptEntry>()
@@ -69,9 +71,11 @@ export class Transcript {
   mark = 0
   version = 0
   /** A replay that left changes out (`more`): the seq below which it is read back, and the mark held once it has been. */
-  private back: { before: number; after?: number; mark: number } | null = null
+  private back: { before: number; mark: number } | null = null
   /** The session runs in its terminal: the highest seq held as it left, and the lowest seq and highest mark taken since. */
   private away: { after: number; low: number; mark: number } | null = null
+  /** Back from its terminal: the window `readAway` reads (after `after`, before `before`), and the highest mark taken since it left. */
+  private returning: { after: number; before: number; mark: number } | null = null
   private size = 0
 
   /** The entries in seq order. */
@@ -92,6 +96,7 @@ export class Transcript {
     }
     // A chat's welcome: the replay after the hello's mark covers what the page missed while away.
     this.away = null
+    this.returning = null
     if (w.transcript && w.transcript.mark < this.mark) this.clear()
   }
 
@@ -103,16 +108,47 @@ export class Transcript {
   }
 
   /**
-   * The session is a chat again on this connection (a `way` message): true when it had left, and what it added while away (after
-   * the seq held as it left, before the first entry taken since) is then the gap `readBack` reads, its mark held once read.
+   * The session is a chat again on this connection (a `way` message): true when it had left. What it added while away (after the
+   * seq held as it left, before the first entry taken since) is then the window `readAway` reads; a window an earlier return has
+   * not read yet is read with it.
    */
   rejoin(): boolean {
     const a = this.away
     if (!a) return false
     this.away = null
     const before = a.low || Number.MAX_SAFE_INTEGER
-    this.back = { before: Math.min(before, this.back?.before ?? before), after: a.after, mark: Math.max(a.mark, this.back?.mark ?? 0, this.mark) }
+    const r = this.returning
+    this.returning = { after: Math.min(a.after, r?.after ?? a.after), before, mark: Math.max(a.mark, r?.mark ?? 0) }
     return true
+  }
+
+  /**
+   * Reads what the session added while in its terminal (`rejoin`'s window), oldest first, a page at a time, at most MAX_PAGES_BACK
+   * pages; then the marks taken since it left are held: the resume point's, or, while a replay's gap is still open below (a
+   * read-back refused or unanswered), that gap's, so that the next connection is still sent what the gap holds. A read refused or
+   * unanswered leaves the window for the next connection: its hello's mark is below it.
+   */
+  private async readAway(get: (req: TranscriptRequest) => Promise<TranscriptReply>): Promise<void> {
+    for (let n = 0; this.returning && n < MAX_PAGES_BACK; n++) {
+      const w = this.returning
+      const r = await get({ after: w.after, limit: MAX_TRANSCRIPT_PAGE })
+      if (r.t !== 'page' || !pageValid(r.entries) || this.returning !== w) return
+      const inside = r.entries.filter((e) => e.seq < w.before)
+      for (const e of inside) {
+        this.put(e)
+        w.mark = Math.max(w.mark, e.mark)
+      }
+      this.version++
+      const top = r.entries.reduce((m, e) => Math.max(m, e.seq), 0)
+      if (!r.more || !r.entries.length || top >= w.before - 1 || inside.length < r.entries.length) break
+      w.after = top
+    }
+    const w = this.returning
+    if (w) {
+      this.returning = null
+      if (this.back) this.back.mark = Math.max(this.back.mark, w.mark)
+      else this.mark = Math.max(this.mark, w.mark)
+    }
   }
 
   clear(): void {
@@ -121,6 +157,7 @@ export class Transcript {
     this.size = 0
     this.back = null
     this.away = null
+    this.returning = null
     this.version++
   }
 
@@ -132,7 +169,8 @@ export class Transcript {
       if (this.away) {
         this.away.low = this.away.low ? Math.min(this.away.low, msg.entry.seq) : msg.entry.seq
         this.away.mark = Math.max(this.away.mark, msg.entry.mark)
-      } else if (!this.back) this.mark = Math.max(this.mark, msg.entry.mark)
+      } else if (this.returning) this.returning.mark = Math.max(this.returning.mark, msg.entry.mark)
+      else if (!this.back) this.mark = Math.max(this.mark, msg.entry.mark)
       else this.back.mark = Math.max(this.back.mark, msg.entry.mark)
       this.bound()
       this.version++
@@ -155,10 +193,16 @@ export class Transcript {
   /**
    * Reads back what a replay left out (`gap`), a page at a time with `transcript_get before`, at most MAX_PAGES_BACK pages, then holds
    * the replay's mark: the next connection is sent only what changes after it. A read refused leaves the gap for the next connection.
+   * What the session added while in its terminal (`rejoin`) is read first, in a window of its own (`readAway`).
    */
   async readBack(get: (req: TranscriptRequest) => Promise<TranscriptReply>): Promise<void> {
+    try {
+      await this.readAway(get)
+    } finally {
+      this.version++
+    }
     for (let n = 0; this.back && n < MAX_PAGES_BACK; n++) {
-      const r = await get({ before: this.back.before, ...(this.back.after ? { after: this.back.after } : {}), limit: MAX_TRANSCRIPT_PAGE })
+      const r = await get({ before: this.back.before, limit: MAX_TRANSCRIPT_PAGE })
       if (r.t !== 'page' || !pageValid(r.entries)) return
       for (const e of r.entries) this.put(e)
       this.version++
