@@ -724,6 +724,10 @@ func (s *Server) submitTo(ctx context.Context, local *session.Local, r ext.Submi
 		return ext.SubmitResult{}, refused("the session has ended"), raw
 	case raw != nil:
 		return ext.SubmitResult{}, refused("%v", raw), raw
+	case !got.Typed && got.NotAtPrompt:
+		// Held back: the agent's screen is not its prompt, and it asks
+		// nothing.
+		return ext.SubmitResult{}, refused("%s", session.NotAtPromptWords), nil
 	case !got.Typed:
 		return ext.SubmitResult{}, refused("the session asks a question"), nil
 	case !got.Entered:

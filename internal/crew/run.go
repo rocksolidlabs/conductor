@@ -1865,7 +1865,11 @@ func (e *Engine) promptWith(ctx context.Context, r *run, m *member, local *sessi
 				}
 				e.mu.Lock()
 				m.markPrompted()
-				r.note(session.ActivityError, "typed %s's prompt without its Enter: %s waits on a question; answer it, then press Enter in its terminal", name, name)
+				if res.NotAtPrompt {
+					r.note(session.ActivityError, "typed %s's prompt without its Enter: %s's screen was not its prompt when the Enter was due; press Enter in its terminal", name, name)
+				} else {
+					r.note(session.ActivityError, "typed %s's prompt without its Enter: %s waits on a question; answer it, then press Enter in its terminal", name, name)
+				}
 				e.mu.Unlock()
 				m.poke()
 			}})
