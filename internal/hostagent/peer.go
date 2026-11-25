@@ -915,7 +915,7 @@ func submitError(err error) []byte {
 		code = proto.ErrCodeReadOnly
 	case errors.Is(err, session.ErrSessionEnded):
 		code = proto.ErrCodeSessionEnded
-	case errors.Is(err, session.ErrTrustQuestion), errors.Is(err, session.ErrQuestion):
+	case errors.Is(err, session.ErrTrustQuestion), errors.Is(err, session.ErrQuestion), errors.Is(err, session.ErrNotAtPrompt):
 		code = proto.ErrCodeNotSent
 	case errors.Is(err, session.ErrTooManyRequests):
 		code = proto.ErrCodeTooManyRequests
