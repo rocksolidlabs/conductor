@@ -197,7 +197,9 @@ func (s *Local) Noted() (to, why string) {
 func (s *Local) atRestLocked() (string, bool) {
 	if p := s.way.Load(); p != nil {
 		switch {
-		case len(p.perms) > 0:
+		case len(p.perms) > 0 || p.requests > 0:
+			// A request open, waiting for its call or on its way back: no
+			// move while any is (design 9).
 			return RequestWaitsWords, false
 		case !p.isReady || p.restarting || p.stopping || p.restartAtEnd || p.busyLocked() || len(p.queue) > 0:
 			return MovesToTerminalWords, false

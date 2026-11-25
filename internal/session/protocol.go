@@ -219,6 +219,24 @@ type protocolWay struct {
 	texts     map[string]*openText
 	textOrder []string
 	perms     []*openPermission
+
+	// The permission requests' own state (permission.go): requests counts
+	// the RequestPermission calls under way (open, waiting or being
+	// delivered) and waiting those that wait for their call's
+	// announcement, woken as announced is closed; turnEnds counts the
+	// turns' ends; asked and resulted are the calls of the current turn a
+	// request was made for and that have a result; showing is the question the
+	// attention shows of the list, under the attention it took the place
+	// of, and aside the changes made meanwhile.
+	requests  int
+	waiting   int
+	announced chan struct{}
+	turnEnds  uint64
+	asked     map[string]bool
+	resulted  map[string]bool
+	showing   string
+	under     Attention
+	aside     []asideChange
 }
 
 // queuedMessage is a message on its way into the conversation.
@@ -240,6 +258,12 @@ type openTool struct {
 	seq  uint64
 	name string
 	at   time.Time
+	// rawName, digest and turn are what a permission request is bound
+	// by: the tool's name and input's digest as the stream announced
+	// them, and the turn it was announced in.
+	rawName string
+	digest  string
+	turn    uint32
 }
 
 type openText struct {
@@ -254,6 +278,17 @@ type openPermission struct {
 	ref      string
 	call     string
 	question string
+	// digest is the input's (inputSha256), plain the question's plain
+	// words' kind; held the POST that holds a request put to the prompt
+	// tool (nil for an in-stream one); claim the operator's answer's while
+	// it is checked, handed once its verdict is on its way; stop ends its
+	// PermissionWait.
+	digest string
+	plain  string
+	held   *heldRequest
+	claim  uint64
+	handed bool
+	stop   func() bool
 }
 
 // busyLocked says a message's turn is under way or a turn runs: the next
@@ -335,6 +370,7 @@ func (s *Local) enterProtocolGroup(ctx context.Context, start ProtocolStart) (in
 		gen: 1, child: child, driver: driver, readDone: make(chan struct{}),
 		ctx: wctx, cancel: cancel, ready: make(chan struct{}), kick: make(chan struct{}, 1),
 		tools: map[string]*openTool{}, texts: map[string]*openText{},
+		announced: make(chan struct{}), asked: map[string]bool{}, resulted: map[string]bool{},
 	}
 	s.mu.Lock()
 	if s.info.Status.Ended() || s.way.Load() != nil {
@@ -691,6 +727,13 @@ func (s *Local) submitProtocol(p *protocolWay, sub Submission) (SubmitResult, er
 	return res, ErrSubmitPending
 }
 
+// isPermissionQuestion is permissionQuestionLocked, its lock taken.
+func (s *Local) isPermissionQuestion(id string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.permissionQuestionLocked(id)
+}
+
 // permissionQuestionLocked says id names an open permission request's
 // question. The caller holds s.mu.
 func (s *Local) permissionQuestionLocked(id string) bool {
@@ -857,6 +900,7 @@ func (s *Local) stopProtocol(ctx context.Context, p *protocolWay) error {
 	s.stopRequested = true
 	p.stopping = true
 	child, d := p.child, p.driver
+	p.announceLocked()
 	for len(p.perms) > 0 {
 		s.closePermissionLocked(p, p.perms[0], PermissionDenied, EndedBeforeAnswerWords, nil, &out)
 	}
@@ -892,6 +936,7 @@ func (s *Local) endProtocolLocked() func() {
 	}
 	var out applied
 	out.event = "ended"
+	p.announceLocked()
 	for len(p.perms) > 0 {
 		s.closePermissionLocked(p, p.perms[0], PermissionDenied, EndedBeforeAnswerWords, nil, &out)
 	}
@@ -940,6 +985,13 @@ type applied struct {
 	p        *protocolWay
 	// entries are the seqs of the entries the event added or revised.
 	entries []uint64
+	// own are the attention entries of a permission request shown,
+	// recorded as the session's own; replay the attention changes kept
+	// aside while requests showed, applied once none is open; changed
+	// says what the session shows changed (OnChange).
+	own     []ActivityEntry
+	replay  []asideChange
+	changed bool
 }
 
 // capturedPiece is bytes a driver captured (OnCaptured, whole), with the
@@ -1020,6 +1072,15 @@ func (s *Local) sendApplied(out applied) {
 	for _, e := range out.records {
 		s.Record(e)
 	}
+	for _, e := range out.own {
+		s.recordOwn(e, AttentionNeedsInput)
+	}
+	for _, c := range out.replay {
+		_ = s.setAttentionLooked(c.state, c.message, c.source, c.kind, c.options, c.rules, c.turn, 0, c.plan, c.opt)
+	}
+	if out.changed {
+		s.notifyChange()
+	}
 	if len(out.entries) > 0 {
 		s.sendEntries(out.entries)
 	}
@@ -1080,17 +1141,23 @@ func (s *Local) noticeLocked(p *protocolWay, code, words string, out *applied) {
 // entry and input let go; reply, when set, is the verdict its driver is
 // sent. The caller holds s.mu.
 func (s *Local) closePermissionLocked(p *protocolWay, r *openPermission, state, why string, reply *Verdict, out *applied) {
-	for i, o := range p.perms {
-		if o == r {
-			p.perms = append(p.perms[:i], p.perms[i+1:]...)
-			break
-		}
-	}
+	s.removePermissionLocked(p, r, out)
 	s.reviseLocked(r.seq, func(e *TranscriptEntry) { e.State, e.Why = state, why }, out)
-	s.transcript.pin(r.seq, false)
 	v := Verdict{Message: why}
 	if reply != nil {
 		v = *reply
+	}
+	if v.Allow {
+		// Never: no end allows (I11).
+		v = Verdict{Message: why}
+	}
+	if r.held != nil {
+		// Its POST is answered at once, never allow.
+		select {
+		case r.held.verdict <- heldVerdict{v: v}:
+		default:
+		}
+		return
 	}
 	out.replies = append(out.replies, verdictReply{d: p.driver, ref: r.ref, v: v})
 }
@@ -1131,6 +1198,11 @@ func (s *Local) endTurnLocked(p *protocolWay, outcome string, u Usage, out *appl
 	for len(p.perms) > 0 {
 		s.closePermissionLocked(p, p.perms[0], PermissionWithdrawn, why, &Verdict{Cancel: true, Message: why}, out)
 	}
+	// A request waiting for its call is denied: the turn it named ended.
+	p.turnEnds++
+	clear(p.asked)
+	clear(p.resulted)
+	p.announceLocked()
 	d := s.now().Sub(p.turnAt).Milliseconds()
 	if d < 0 {
 		d = 0
@@ -1358,6 +1430,9 @@ func (e protocolEvents) Text(ref, delta string, final bool) {
 }
 
 func (e protocolEvents) ToolStarted(t ToolStep) {
+	if hook := e.s.beforeToolStarted.Load(); hook != nil {
+		(*hook)()
+	}
 	if !e.begin() {
 		return
 	}
@@ -1380,11 +1455,13 @@ func (e protocolEvents) ToolStarted(t ToolStep) {
 		if _, open := p.tools[ref]; open {
 			s.forgetToolLocked(p, ref)
 		}
-		p.tools[ref] = &openTool{seq: seq, name: name, at: s.now()}
+		p.tools[ref] = &openTool{seq: seq, name: name, at: s.now(), rawName: t.Name, digest: inputDigest(t.Name, t.Input), turn: p.turns}
 		p.toolOrder = append(p.toolOrder, ref)
 		if len(p.toolOrder) > maxOpenSteps {
 			s.forgetToolLocked(p, p.toolOrder[0])
 		}
+		// A request waiting for this call takes it now.
+		p.announceLocked()
 	}
 	s.mu.Unlock()
 	s.sendApplied(out)
@@ -1431,6 +1508,11 @@ func (e protocolEvents) ToolEnded(ref string, r ToolResult) {
 			s.closePermissionLocked(p, pr, PermissionWithdrawn, AnsweredByAgentWords, &Verdict{Cancel: true, Message: AnsweredByAgentWords}, &out)
 		}
 	}
+	if len(p.resulted) >= 2*MaxTranscriptEntries {
+		clear(p.resulted)
+	}
+	p.resulted[ref] = true
+	p.announceLocked()
 	// Activity as the hook mappers make it (internal/notify).
 	entry := ActivityEntry{Type: ActivityToolUse, Tool: t.name, ByName: "agent"}
 	switch status {
@@ -1529,30 +1611,36 @@ func (e protocolEvents) Permission(r PermissionRequest) {
 	}
 	s, p := e.s, e.p
 	out := applied{event: "permission"}
-	entry := TranscriptEntry{
-		Kind: EntryPermission, Turn: p.turns, Ref: cutAt(r.Ref, MaxEntryRef), Call: cutAt(r.Call, MaxEntryRef),
-		Tool: cutAt(CleanMessage(r.Tool), MaxEventTool), Plain: plainOf(r.Tool),
-		Summary:    cutAt(strings.Join(strings.Fields(CleanMessage(compactJSON(r.Input))), " "), MaxEntrySummary),
-		Cwd:        cutAt(strings.Map(dropControl, r.Cwd), MaxEventPath),
-		InputBytes: len(r.Input), InputSha256: inputDigest(r.Tool, r.Input),
-		Choices: []string{"allow_once", "deny"}, State: PermissionOpen,
+	// An in-stream request is judged at once (the driver hands events in
+	// order): a digest of one form, the bound, the floor; then it is the
+	// session's question as a request to the prompt tool is.
+	canon, clean := strictCanonical(r.Input)
+	digest := inputDigest(r.Tool, r.Input)
+	if clean {
+		digest = digestOf(r.Tool, canon)
 	}
-	if len(p.perms) >= MaxPendingPermissions {
+	entry := s.permissionEntryLocked(p, r.Call, r.Tool, r.Input, digest, r.Cwd)
+	entry.Ref = cutAt(r.Ref, MaxEntryRef)
+	why := ""
+	switch {
+	case !clean:
+		why = NotExactWords
+	case p.requests+p.inStreamLocked() >= MaxPendingPermissions:
 		// Past the bound: denied, never left waiting.
-		entry.State, entry.Why = PermissionDenied, TooManyRequestsWords
+		why = TooManyRequestsWords
+	case s.flooredLocked(r.Tool, r.Input):
+		why = FloorWords
+	}
+	if why != "" {
+		entry.State, entry.Why = PermissionDenied, why
 		seq := s.addEntryLocked(entry, &out)
 		out.captured = append(out.captured, capturedPiece{key: "", b: r.Input}, capturedPiece{key: pieceKey(seq, "text"), b: []byte(entry.Summary), again: true})
-		out.replies = append(out.replies, verdictReply{d: p.driver, ref: r.Ref, v: Verdict{Message: TooManyRequestsWords}})
+		out.replies = append(out.replies, verdictReply{d: p.driver, ref: r.Ref, v: Verdict{Message: why}})
 		s.mu.Unlock()
 		s.sendApplied(out)
 		return
 	}
-	entry.Question = NewID()
-	seq := s.addEntryLocked(entry, &out)
-	s.transcript.putPart(seq, PartInput, r.Input, false, true)
-	s.transcript.pin(seq, true)
-	out.captured = append(out.captured, capturedPiece{key: pieceKey(seq, PartInput), b: r.Input}, capturedPiece{key: pieceKey(seq, "text"), b: []byte(entry.Summary), again: true})
-	p.perms = append(p.perms, &openPermission{seq: seq, ref: r.Ref, call: entry.Call, question: entry.Question})
+	s.takeLocked(p, entry, entry.Call, r.Ref, r.Input, nil, &out)
 	s.mu.Unlock()
 	s.sendApplied(out)
 }
