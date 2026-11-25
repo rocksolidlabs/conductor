@@ -34,18 +34,28 @@ const claudeShellTool = "Bash"
 // The tools of Conductor's own MCP server (`conductor mcp`) a chat's child
 // calls without asking, and those it asks for as for any other call
 // (docs/plans/chat-or-terminal.md, design 7, the floor). A tool is
-// unasked when a call of it only tells Conductor about the session's own
-// work, reads what the session itself was given, or asks a person: it
-// starts, changes or stops no other session or run, writes no ticket,
-// publishes nothing outward and reads nothing beyond the session's own
-// record. Every other tool asks, and a tool of the table that is in
+// unasked when through it an agent tells Conductor about its own session's
+// work, asks a person, or hands its work on within its own run: it starts,
+// changes or stops no other session or run, writes no ticket, publishes
+// nothing outward and reads nothing beyond the session's own record (a
+// handoff aside, below). Every other tool asks, and a tool of the table that is in
 // neither list fails a test (api's TestEveryConductorToolIsSorted), so a
 // new one asks until someone puts it here.
 var (
 	// ProtocolUnaskedTools are allowed by the floor's settings
 	// (claudeAllowRules).
 	ProtocolUnaskedTools = []string{
-		"guide",           // the session's own guide: reads it
+		"guide", // the session's own guide: reads it
+		// report: the session's own progress, artifacts and steps, and its
+		// handoff. A handoff reaches only a member of the session's own run
+		// (crew.Engine.handoff: a name no member of the run has, or the
+		// reporter's own, is noted and typed nowhere; a managed run sends it
+		// as a message within the run, in its lane), as one bounded line,
+		// and that member acts on it under its own permission mode; a
+		// session in no run has nobody to hand to. It is the crew's own baton,
+		// set up by the person who formed or launched the crew, and the
+		// reports are the calls an agent makes most.
+		"report",
 		"set_state",       // the session's own attention: working, done, clear
 		"ask",             // a question to the people watching: a person answers
 		"task_context",    // the attempt's own task, as .conductor/task.md holds it
@@ -55,13 +65,12 @@ var (
 	}
 	// ProtocolAskedTools ask as any other call does, each for its reason.
 	ProtocolAskedTools = map[string]string{
-		"report":            "its handoff event types a line into another member of the run",
 		"form_crew":         "starts other sessions",
 		"add_member":        "starts another session in the run",
 		"run_status":        "reads the run, beyond the session's own record",
 		"link":              "mints a link that publishes the session outward",
 		"open_url":          "opens a page in the person's browser",
-		"message_send":      "types into another member of the run",
+		"message_send":      "types into any member of the run at a moment of the agent's own choosing: no report",
 		"inbox_read":        "reads what other members sent",
 		"inbox_ack":         "changes the run's record of messages",
 		"context_lookup":    "reads beyond the session's own record, through a provider",

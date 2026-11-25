@@ -67,7 +67,7 @@ func TestPermissionFloorAssets(t *testing.T) {
 		// Conductor's unasked tools are allowed, each by its one tool's
 		// rule, and nothing else: never the prompt tool, never a server's
 		// every tool.
-		want := []string{"mcp__conductor__guide", "mcp__conductor__set_state", "mcp__conductor__ask", "mcp__conductor__task_context",
+		want := []string{"mcp__conductor__guide", "mcp__conductor__report", "mcp__conductor__set_state", "mcp__conductor__ask", "mcp__conductor__task_context",
 			"mcp__conductor__task_checkpoint", "mcp__conductor__task_blocked", "mcp__conductor__task_result"}
 		if !slices.Equal(s.Permissions.Allow, want) {
 			t.Errorf("%s allows %v, want %v", name, s.Permissions.Allow, want)

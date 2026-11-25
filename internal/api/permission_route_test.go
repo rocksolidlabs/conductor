@@ -207,9 +207,11 @@ func TestBrakemansTokenPutsNoPermissionRequest(t *testing.T) {
 // MCP name of the operations table is in exactly one of the agents' two
 // lists (unasked, or asks with its reason), so a new tool fails here until
 // someone sorts it; no list names a tool the table does not have; the
-// prompt tool asks; an unasked tool is a session's or an attempt's own,
-// never Brakeman's or a ticket's; and the allow rules name the server the
-// prompt tool is named by.
+// prompt tool asks; an unasked tool is one any session or an attempt is
+// given (scope session or task), never one of Brakeman's, a ticket's or a
+// grant's, and none of those the guide names as forming or growing a crew
+// (needSelfService); and the allow rules name the server the prompt tool
+// is named by.
 func TestEveryConductorToolIsSorted(t *testing.T) {
 	byMCP := map[string]Operation{}
 	for _, op := range Operations() {
@@ -227,6 +229,8 @@ func TestEveryConductorToolIsSorted(t *testing.T) {
 			t.Errorf("%s is neither unasked nor asked: sort it for a chat's floor (agents.ProtocolUnaskedTools, agents.ProtocolAskedTools)", name)
 		case unasked && op.Scope != "session" && op.Scope != "task":
 			t.Errorf("%s is unasked but of scope %s", name, op.Scope)
+		case unasked && op.needs&needSelfService != 0:
+			t.Errorf("%s is unasked but is a self-service operation (it forms or grows a crew, reads a run, mints a link)", name)
 		}
 	}
 	for _, name := range agents.ProtocolUnaskedTools {
