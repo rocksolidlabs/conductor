@@ -745,3 +745,68 @@ func TestAServiceThatPanicsIsEndedNotTheServer(t *testing.T) {
 		t.Fatalf("the guard's log:\n%s", l)
 	}
 }
+
+// miscountingTerminal is a Terminal whose Read answers count's count of
+// the buffer it is given, with no error.
+type miscountingTerminal struct {
+	ext.Terminal
+	count func(int) int
+}
+
+func (m miscountingTerminal) Read(b []byte) (int, error) { return m.count(len(b)), nil }
+
+// miscountingRuntime is a Runtime whose terminals are miscountingTerminals
+// of FakeProcs.
+type miscountingRuntime struct {
+	*sessiontest.FakeRuntime
+	count func(int) int
+}
+
+func (r miscountingRuntime) StartTerminal(ctx context.Context, s ext.TerminalSpec) (ext.Terminal, error) {
+	t, err := r.FakeRuntime.StartTerminal(ctx, s)
+	if err != nil {
+		return nil, err
+	}
+	return miscountingTerminal{Terminal: t, count: r.count}, nil
+}
+
+// A registered Runtime's terminal whose Read answers a count outside the
+// buffer it was given, more than it holds or less than nothing, ends its
+// session: the guard answers its own words for the read, logs the failure
+// naming the Runtime and the method, and ends the process through the
+// Runtime's Stop, so the session records its end.
+func TestATerminalReadThatMiscountsEndsItsSession(t *testing.T) {
+	for name, count := range map[string]func(int) int{
+		"more than the buffer": func(n int) int { return n + 1 },
+		"less than nothing":    func(int) int { return -1 },
+	} {
+		t.Run(name, func(t *testing.T) {
+			fp := sessiontest.NewFakeProc()
+			t.Cleanup(func() { fp.End(0) })
+			rt := miscountingRuntime{FakeRuntime: &sessiontest.FakeRuntime{Terminal: func(ext.TerminalSpec) (*sessiontest.FakeProc, error) { return fp, nil }}, count: count}
+			logs := &logBuffer{}
+			e := runtimeEnv(t, nativeSeam(), slog.New(slog.NewTextHandler(logs, nil)), withRuntime(rt))
+			l, aerr := e.srv.createLocalSession(createSessionRequest{AgentID: "cat", where: rt.Where()}, nil)
+			if aerr != nil {
+				t.Fatalf("the start: %+v", aerr)
+			}
+			select {
+			case <-l.ProcessDone():
+			case <-time.After(testWait):
+				t.Fatal("the session's process not ended")
+			}
+			if !waitFor(testWait, func() bool { return l.Info().ExitCode != nil }) {
+				t.Fatal("the session did not record its end")
+			}
+			if c := *l.Info().ExitCode; c != -1 {
+				t.Fatalf("the exit code: %d, want -1", c)
+			}
+			if !fp.Stopped() {
+				t.Fatal("the process was not stopped through the Runtime's Stop")
+			}
+			if l := logs.String(); !strings.Contains(l, "provider=fake call=Terminal.Read failure=invalid") {
+				t.Fatalf("the guard's log:\n%s", l)
+			}
+		})
+	}
+}

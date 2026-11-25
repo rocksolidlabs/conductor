@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -28,10 +29,14 @@ import (
 
 // installRuntimes sets the server's two Runtimes from p, the extensions'
 // set, and native, the test's stand-in for the native one (nil outside
-// the tests). A registered Runtime is wrapped in the guard (guardRuntime);
-// the free default is held as it is, since its Takes answers at once from
-// no I/O and its process methods are what the server ran before the seam,
-// so the guard would only add a goroutine to every run made.
+// the tests). A registered Runtime is wrapped in the guard (guardRuntime),
+// and in guardPipes when the Runtime itself is an ext.PipeStarter, so that
+// what the server holds is a PipeStarter exactly when the registered value
+// is: the check is a type assertion on the registered value, which calls
+// none of its methods, never on the guard. The free default is held as it
+// is, since its Takes answers at once from no I/O and its process methods
+// are what the server ran before the seam, so the guard would only add a
+// goroutine to every run made.
 func (s *Server) installRuntimes(p ext.Providers, native ext.Runtime) {
 	s.native = native
 	if s.native == nil {
@@ -45,7 +50,11 @@ func (s *Server) installRuntimes(p ext.Providers, native ext.Runtime) {
 		return
 	}
 	name := extNames(p)(ext.KindRuntime, 0, p.Runtime)
-	s.offered = guardRuntime{s: s, name: name, where: runtimeWhere(p.Runtime), p: p.Runtime, ready: s.readyOf(name, p.Runtime)}
+	g := guardRuntime{s: s, name: name, where: runtimeWhere(p.Runtime), p: p.Runtime, ready: s.readyOf(name, p.Runtime)}
+	s.offered = g
+	if ps, ok := p.Runtime.(ext.PipeStarter); ok {
+		s.offered = guardPipes{guardRuntime: g, ps: ps}
+	}
 }
 
 // runtimeWhere is r's Where, read once, as the registry read it when r
@@ -98,9 +107,10 @@ func processRefOf(id string, crewRef *session.CrewRef) ext.ProcessRef {
 // at error naming the Runtime, and answered as a refused start, or as a
 // command's result with Exit -1 and the words. The Terminal and the
 // ServiceProcess it answers are behind the guard too (guardProcess), since
-// the server's goroutines call them for as long as the process lives. The
-// panic's value is not quoted: the spec the Runtime was handed holds a
-// session's agent token. The errors and a result's status texts of a
+// the server's goroutines call them for as long as the process lives; a
+// Terminal's Read or Write that answers a count outside its buffer is its
+// process's failure, as a panic is. The panic's value is not quoted: the
+// spec the Runtime was handed holds a session's agent token. The errors and a result's status texts of a
 // Runtime that is the identity provider's value leave the guard as the
 // guard's own words (quietErr), from every method of its, its processes'
 // too; what its commands print is their output, passed on as it is.
@@ -261,9 +271,23 @@ func (p *guardProcess) end() { p.doneOnce.Do(func() { close(p.done) }) }
 // fail is the first panic of the process's method: logged, the process
 // ended. Later ones change nothing.
 func (p *guardProcess) fail(method string) {
+	p.failed1(method, "panic", "panicked", "panicked in")
+}
+
+// miscounted is a Read or a Write of the process's that answered a count
+// outside the buffer it was given: the process's failure, as a panic is.
+func (p *guardProcess) miscounted(method string) {
+	p.failed1(method, "invalid", "answered a count outside its buffer", "answered a count outside its buffer in")
+}
+
+// failed1 is the first failure of the process's method, a panic or an
+// answer the guard cannot hand on: logged as failure, what the process did
+// said in the log (did) and in its words (in), the process ended. Later
+// ones change nothing.
+func (p *guardProcess) failed1(method, failure, did, in string) {
 	p.once.Do(func() {
-		p.g.s.log.Error("extension call failed: the Runtime's process panicked, and it is ended", "kind", ext.KindRuntime, "provider", p.g.name, "call", p.what+"."+method, "failure", "panic")
-		p.words = fmt.Sprintf("the Runtime %s panicked in %s.%s", p.g.name, p.what, method)
+		p.g.s.log.Error("extension call failed: the Runtime's process "+did+", and it is ended", "kind", ext.KindRuntime, "provider", p.g.name, "call", p.what+"."+method, "failure", failure)
+		p.words = fmt.Sprintf("the Runtime %s %s %s.%s", p.g.name, in, p.what, method)
 		close(p.failed)
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), ext.StopKillWait)
@@ -348,15 +372,27 @@ type guardTerminal struct {
 	t ext.Terminal
 }
 
+// Read is the Runtime's Read; a count outside b is the process's failure,
+// as a panic is (miscounted), never handed on.
 func (t guardTerminal) Read(b []byte) (n int, err error) {
 	if t.broken() || !t.guard("Read", func() { n, err = t.t.Read(b) }) {
+		return 0, t.err()
+	}
+	if n < 0 || n > len(b) {
+		t.miscounted("Read")
 		return 0, t.err()
 	}
 	return n, t.g.quiet(err)
 }
 
+// Write is the Runtime's Write; a count outside b is the process's
+// failure, as Read's is.
 func (t guardTerminal) Write(b []byte) (n int, err error) {
 	if t.broken() || !t.guard("Write", func() { n, err = t.t.Write(b) }) {
+		return 0, t.err()
+	}
+	if n < 0 || n > len(b) {
+		t.miscounted("Write")
 		return 0, t.err()
 	}
 	return n, t.g.quiet(err)
@@ -429,4 +465,178 @@ func (s guardService) Stop(ctx context.Context) (err error) {
 		return s.g.quiet(err)
 	}
 	return s.stopBroken(ctx)
+}
+
+// guardPipes is a registered Runtime that is an ext.PipeStarter behind the
+// guard: guardRuntime's methods, and StartPipes guarded as StartTerminal
+// is. The start is called on the caller's goroutine with the caller's
+// context, never under extCall's wait: a start the wait gave up on would go
+// on and start a child nobody holds. Its panic is recovered once it has
+// unwound, by when the contract has had the Runtime end and reap what it
+// began, logged at error naming the Runtime, and answered as a refused
+// start; its error is quieted (quietErr), Pipes it answered beside the
+// error are stopped (endHanded), and a start that answers no Pipes and no
+// error is refused. The Pipes it answers are behind the guard
+// too (guardedPipes).
+type guardPipes struct {
+	guardRuntime
+	ps ext.PipeStarter
+}
+
+var _ ext.PipeStarter = guardPipes{}
+
+func (g guardPipes) StartPipes(ctx context.Context, s ext.PipeSpec) (p ext.Pipes, err error) {
+	defer func() {
+		if recover() != nil {
+			p, err = nil, errors.New(g.panicked("StartPipes"))
+		}
+	}()
+	pp, err := g.ps.StartPipes(ctx, s)
+	if err != nil {
+		if pp != nil {
+			g.endHanded(pp)
+		}
+		return nil, g.quiet(err)
+	}
+	if pp == nil {
+		g.s.log.Error("extension call failed: the Runtime answered no Pipes and no error", "kind", ext.KindRuntime, "provider", g.name, "call", "StartPipes", "failure", "invalid")
+		return nil, fmt.Errorf("the Runtime %s answered no Pipes", g.name)
+	}
+	return g.pipes(pp), nil
+}
+
+// endHanded ends Pipes a start answered beside an error, which the
+// contract allows never: behind the guard (a panic in their Stop
+// recovered), stopped on a goroutine of its own under a context bounded by
+// ext.StopKillWait, so the caller has its refusal at once.
+func (g guardPipes) endHanded(p ext.Pipes) {
+	g.s.log.Error("extension call failed: the Runtime answered Pipes and an error, and they are stopped", "kind", ext.KindRuntime, "provider", g.name, "call", "StartPipes", "failure", "invalid")
+	handed := g.pipes(p)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), ext.StopKillWait)
+		defer cancel()
+		_ = handed.Stop(ctx, 0)
+	}()
+}
+
+// pipes is p behind the guard.
+func (g guardRuntime) pipes(p ext.Pipes) ext.Pipes {
+	return guardedPipes{guardProcess: g.guarded("Pipes", func(ctx context.Context) error { return p.Stop(ctx, 0) }, p.Done), p: p}
+}
+
+// guardedPipes is a registered Runtime's Pipes behind the guard
+// (guardProcess): every method of the Runtime's Pipes, and of the input
+// and output they answer, is recovered, its errors quieted, and a count
+// a Read or a Write answers outside the buffer it was given is the
+// process's failure, as a panic is, never handed on.
+type guardedPipes struct {
+	*guardProcess
+	p ext.Pipes
+}
+
+// Stdin is the Runtime's Stdin behind the guard.
+func (t guardedPipes) Stdin() io.WriteCloser {
+	var w io.WriteCloser
+	if t.broken() || !t.guard("Stdin", func() { w = t.p.Stdin() }) || w == nil {
+		return pipesInput{t: t}
+	}
+	return pipesInput{t: t, w: w}
+}
+
+// Stdout is the Runtime's Stdout behind the guard.
+func (t guardedPipes) Stdout() io.Reader {
+	var r io.Reader
+	if t.broken() || !t.guard("Stdout", func() { r = t.p.Stdout() }) || r == nil {
+		return pipesOutput{t: t}
+	}
+	return pipesOutput{t: t, r: r}
+}
+
+func (t guardedPipes) Done() <-chan struct{} { return t.done }
+
+func (t guardedPipes) Exit() (st ext.ExitStatus) {
+	if t.broken() || !t.guard("Exit", func() { st = t.p.Exit() }) {
+		return ext.ExitStatus{Code: -1, Err: t.words}
+	}
+	st.Err, st.Signal = t.g.s.quietWords(ext.KindRuntime, t.g.name, st.Err), t.g.s.quietWords(ext.KindRuntime, t.g.name, st.Signal)
+	return st
+}
+
+// Stop is the Runtime's Stop; its success ends the child (end) before it
+// returns, as the Runtime's has reaped it by then.
+func (t guardedPipes) Stop(ctx context.Context, grace time.Duration) (err error) {
+	if !t.broken() && t.guard("Stop", func() { err = t.p.Stop(ctx, grace) }) {
+		if err == nil {
+			t.end()
+		}
+		return t.g.quiet(err)
+	}
+	return t.stopBroken(ctx)
+}
+
+func (t guardedPipes) Process() (info ext.ProcessInfo) {
+	if t.broken() || !t.guard("Process", func() { info = t.p.Process() }) {
+		return ext.ProcessInfo{}
+	}
+	return info
+}
+
+// errNoPipe is what the guard's input or output answers where the Runtime
+// answered none.
+var errNoPipe = errors.New("the Runtime answered no pipe")
+
+// pipesInput is the Runtime's Stdin behind the guard; w nil where it
+// answered none (or panicked).
+type pipesInput struct {
+	t guardedPipes
+	w io.WriteCloser
+}
+
+func (in pipesInput) Write(b []byte) (n int, err error) {
+	switch {
+	case in.t.broken():
+		return 0, in.t.err()
+	case in.w == nil:
+		return 0, errNoPipe
+	case !in.t.guard("Stdin.Write", func() { n, err = in.w.Write(b) }):
+		return 0, in.t.err()
+	case n < 0 || n > len(b):
+		in.t.miscounted("Stdin.Write")
+		return 0, in.t.err()
+	}
+	return n, in.t.g.quiet(err)
+}
+
+func (in pipesInput) Close() (err error) {
+	switch {
+	case in.t.broken():
+		return in.t.err()
+	case in.w == nil:
+		return errNoPipe
+	case !in.t.guard("Stdin.Close", func() { err = in.w.Close() }):
+		return in.t.err()
+	}
+	return in.t.g.quiet(err)
+}
+
+// pipesOutput is the Runtime's Stdout behind the guard; r nil where it
+// answered none (or panicked).
+type pipesOutput struct {
+	t guardedPipes
+	r io.Reader
+}
+
+func (out pipesOutput) Read(b []byte) (n int, err error) {
+	switch {
+	case out.t.broken():
+		return 0, out.t.err()
+	case out.r == nil:
+		return 0, errNoPipe
+	case !out.t.guard("Stdout.Read", func() { n, err = out.r.Read(b) }):
+		return 0, out.t.err()
+	case n < 0 || n > len(b):
+		out.t.miscounted("Stdout.Read")
+		return 0, out.t.err()
+	}
+	return n, out.t.g.quiet(err)
 }

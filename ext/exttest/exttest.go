@@ -97,6 +97,8 @@
 // Runtime runs it: RunHelper is that program, its modes (what it does on
 // which argument) in its documentation, and a RuntimeCase names it (its
 // Argv, what it needs in its environment, the bound of each wait).
+// A Runtime that is an ext.PipeStarter has its StartPipes and its Pipes
+// checked too, with the helper's pipes mode.
 // FakeRuntime with a base passes calls through to another Runtime, so a
 // test does real work under a Where of its own; NewFakeTerminal is a
 // Terminal over pipes for a scripted StartTerminal.

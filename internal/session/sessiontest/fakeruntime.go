@@ -3,6 +3,8 @@ package sessiontest
 import (
 	"context"
 	"fmt"
+	"io"
+	"os"
 	"slices"
 	"sync"
 	"time"
@@ -17,7 +19,9 @@ import (
 // real work can be done under a Where that is not native). A call nothing
 // answers is refused: StartTerminal, Serve, Probe and Port with an error
 // naming the method, Run with Exit -1 and those words. Set its fields
-// before its first call; its methods are safe for concurrent use.
+// before its first call; its methods are safe for concurrent use. It is no
+// ext.PipeStarter, as a Runtime without the method is not:
+// FakePipeRuntime is the one that is.
 //
 // Of this module it imports ext and internal/pty alone, never
 // internal/session, so the session's own tests may use it.
@@ -32,6 +36,9 @@ type FakeRuntime struct {
 	// Terminal answers StartTerminal with a FakeProc's terminal
 	// (FakeTerminal), or its error.
 	Terminal func(ext.TerminalSpec) (*FakeProc, error)
+	// Pipes answers a FakePipeRuntime's StartPipes with a FakeProc's pipes
+	// (FakePipes), or its error; a panic in it leaves StartPipes as it is.
+	Pipes func(ext.PipeSpec) (*FakeProc, error)
 	// Result answers Run.
 	Result func(ext.CommandSpec) ext.CommandResult
 	// Service answers Serve.
@@ -64,10 +71,11 @@ const PanicAfterStartValue = "sessiontest: the FakeRuntime panics after its star
 var _ ext.Runtime = (*FakeRuntime)(nil)
 
 // RuntimeCall is one call a FakeRuntime was made: its method, its ref and
-// its spec (an ext.TerminalSpec, ext.CommandSpec or ext.ProbeSpec; nil for
-// Takes and Port), and, for a StartTerminal Base answered, the process
-// Base started, as its Terminal reported it (for a PanicAfterStart start,
-// the process it started).
+// its spec (an ext.TerminalSpec, ext.PipeSpec, ext.CommandSpec or
+// ext.ProbeSpec; nil for Takes and Port), and, for a StartTerminal or a
+// StartPipes Base answered, the process Base started, as its Terminal or
+// its Pipes reported it (for a PanicAfterStart start, the process it
+// started).
 type RuntimeCall struct {
 	Method  string
 	Ref     ext.ProcessRef
@@ -182,8 +190,8 @@ func (f *FakeRuntime) panicAfterStart(ctx context.Context, i int, s ext.Terminal
 	panic(PanicAfterStartValue)
 }
 
-// started notes the process t reports on call i.
-func (f *FakeRuntime) started(i int, t ext.Terminal) {
+// started notes the process t (a Terminal, or Pipes) reports on call i.
+func (f *FakeRuntime) started(i int, t interface{ Process() ext.ProcessInfo }) {
 	p := t.Process()
 	f.mu.Lock()
 	f.calls[i].Process = p
@@ -251,3 +259,84 @@ func (t fakeTerminal) Exit() ext.ExitStatus {
 }
 
 func (t fakeTerminal) Process() ext.ProcessInfo { return ext.ProcessInfo{} }
+
+// FakePipeRuntime is a FakeRuntime that is an ext.PipeStarter too: its
+// StartPipes, recorded as every call is, answers the FakeRuntime's Pipes,
+// else its Base's StartPipes when the Base is a PipeStarter (local.Native
+// is), else refuses with an error naming the method. Its other methods are
+// the FakeRuntime's.
+type FakePipeRuntime struct{ *FakeRuntime }
+
+var (
+	_ ext.Runtime     = FakePipeRuntime{}
+	_ ext.PipeStarter = FakePipeRuntime{}
+)
+
+// StartPipes answers Pipes, else Base's StartPipes, else refuses.
+func (f FakePipeRuntime) StartPipes(ctx context.Context, s ext.PipeSpec) (ext.Pipes, error) {
+	i := f.record(RuntimeCall{Method: "StartPipes", Ref: s.Ref, Spec: s})
+	if f.Pipes != nil {
+		p, err := f.Pipes(s)
+		if err != nil {
+			return nil, err
+		}
+		return FakePipes(p), nil
+	}
+	if ps, ok := f.Base.(ext.PipeStarter); ok {
+		p, err := ps.StartPipes(ctx, s)
+		if err == nil {
+			f.started(i, p)
+		}
+		return p, err
+	}
+	return nil, refused("StartPipes")
+}
+
+// FakePipes is p as ext.Pipes, FakeTerminal's sibling: what the test
+// prints (Print) is the child's output (Stdout), what is written to its
+// input (Stdin) arrives on p.Input, and its end and stop are p's; its exit
+// code p's (-1 after Stop); its process a pid of 0, none. Its input's Close
+// refuses every later write with os.ErrClosed, and p sees no end of its
+// input.
+func FakePipes(p *FakeProc) ext.Pipes { return &fakePipes{p: p} }
+
+type fakePipes struct {
+	p      *FakeProc
+	mu     sync.Mutex
+	closed bool
+}
+
+func (f *fakePipes) Stdin() io.WriteCloser { return fakeStdin{f} }
+func (f *fakePipes) Stdout() io.Reader     { return f.p }
+func (f *fakePipes) Done() <-chan struct{} { return f.p.Done() }
+
+func (f *fakePipes) Exit() ext.ExitStatus {
+	st := f.p.Exit()
+	return ext.ExitStatus{Code: st.Code, Signal: st.Signal}
+}
+
+func (f *fakePipes) Stop(ctx context.Context, grace time.Duration) error {
+	return f.p.Stop(ctx, grace)
+}
+
+func (f *fakePipes) Process() ext.ProcessInfo { return ext.ProcessInfo{} }
+
+// fakeStdin is a FakePipes' input.
+type fakeStdin struct{ f *fakePipes }
+
+func (w fakeStdin) Write(b []byte) (int, error) {
+	w.f.mu.Lock()
+	closed := w.f.closed
+	w.f.mu.Unlock()
+	if closed {
+		return 0, os.ErrClosed
+	}
+	return w.f.p.Write(b)
+}
+
+func (w fakeStdin) Close() error {
+	w.f.mu.Lock()
+	defer w.f.mu.Unlock()
+	w.f.closed = true
+	return nil
+}
