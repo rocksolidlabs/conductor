@@ -25,9 +25,20 @@ export const TERMINAL_FIRST = 'Type in the terminal first'
  * (the screen did not show them: a hosted session's dialog, one not read, the moment before the screen is read). A typed reply's
  * Enter would pick whatever the dialog highlights, so none is taken.
  */
-export function answersInTerminal(a: Pick<Attention, 'state' | 'kind' | 'options'> | undefined): boolean {
-  return a?.state === 'needs_input' && a.kind === 'permission' && !a.options?.length
+export function answersInTerminal(a: Pick<Attention, 'state' | 'kind' | 'options'> & Partial<Pick<Attention, 'source'>> | undefined): boolean {
+  return a?.state === 'needs_input' && a.kind === 'permission' && a.source !== 'protocol' && !a.options?.length
 }
+
+/**
+ * Whether the session's question is a chat's permission request (kind `permission`, source `protocol`): answered only with its own
+ * buttons in the chat, by the operator (docs/plans/chat-or-terminal.md, design 7), so no reply bar, row or choice takes it.
+ */
+export function answersInChat(a: Pick<Attention, 'state' | 'kind'> & Partial<Pick<Attention, 'source'>> | undefined): boolean {
+  return a?.state === 'needs_input' && a.kind === 'permission' && a.source === 'protocol'
+}
+
+/** What a reply bar says for a chat's permission request (answersInChat), and a row: the server's inbox says the same. */
+export const ANSWER_IN_CHAT = 'Answer it in the chat.'
 
 /**
  * The durable decision a question mirrors (`dr-<n>`, the attention's `decision`; Program item DR1), or undefined for any other
@@ -51,6 +62,7 @@ export function offeredChoices(a: Pick<Attention, 'state' | 'decision' | 'option
  */
 export function noReply(a: Pick<Attention, 'state' | 'source' | 'kind' | 'options' | 'decision'> | undefined): string | undefined {
   if (waitsForTerminal(a)) return TERMINAL_FIRST
+  if (answersInChat(a)) return ANSWER_IN_CHAT
   if (answersInTerminal(a) || startupInTerminal(a)) return ANSWER_IN_TERMINAL
   const d = decisionOf(a)
   return d ? decisionAnsweredBy(d) : undefined

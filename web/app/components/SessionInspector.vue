@@ -15,8 +15,8 @@ import { opIcon, touchedWords } from '~/utils/touched'
 
 /**
  * The session page's inspector (design 4h, #301): one rail on its outer
- * edge with People, Explorer, Changes, Commits, Activity and Chat (when
- * the owner takes chat), the panel beside it showing the view picked, or
+ * edge with People (who is here, and the people's chat when the owner takes
+ * chat), Explorer, Changes, Commits and Activity, the panel beside it showing the view picked, or
  * collapsed to the rail alone, whose pills still count. Each view opens
  * with a two-line title. Touched is an Activity filter (All · Files ·
  * Tools). The git status and log are polled here (useRepoStatus), so the
@@ -97,6 +97,8 @@ function who(v: ViewerInfo) {
 }
 
 const liveLinks = computed(() => props.links.filter((l) => !l.revoked))
+/** With the people's chat, who is here and the links are folded under People's head until it is pressed. */
+const roster = ref(false)
 const here = computed(() => props.viewers.length || props.session.viewers)
 const peopleSub = computed(() => `${here.value} here now · ${liveLinks.value.length} share ${liveLinks.value.length === 1 ? 'link' : 'links'}`)
 
@@ -182,17 +184,26 @@ const items = computed(() =>
   <!-- overflow-x-clip (#325): nothing of the rail or the panel widens the page, whatever a badge or a long name does. -->
   <aside class="flex h-full min-h-0 flex-none overflow-x-clip border-l border-default bg-default" data-inspector :data-inspector-open="open ? 'true' : 'false'">
     <div v-if="open" class="flex h-full min-h-0 w-[332px] flex-col" data-inspector-panel>
-      <ChatPanel v-if="view === 'chat' && chat" :thread="chat" :role="role" :ended="ended" :offline="chatOffline" :viewers="viewers" @send="(text, to) => emit('chatSend', text, to)" @send-to-agent="emit('chatSendToAgent', $event)" @retry="emit('chatRetry', $event)" @answer="(m, i) => emit('chatAnswer', m, i)" />
-
-      <template v-else-if="view === 'people'">
-        <div class="flex items-center gap-2 border-b border-default px-3 py-2 text-xs" data-inspector-head="people">
+      <!-- People (docs/plans/chat-or-terminal.md, design 11): the people's chat and who is here, one view. With the chat, who is here and
+           the share links fold under the head, which opens them; without it they are the view. -->
+      <template v-if="view === 'people' || view === 'chat'">
+        <component
+          :is="chat?.capable ? 'button' : 'div'"
+          :type="chat?.capable ? 'button' : undefined"
+          class="flex w-full items-center gap-2 border-b border-default px-3 py-2 text-left text-xs"
+          :class="chat?.capable && 'hover:bg-elevated/60'"
+          :aria-expanded="chat?.capable ? roster : undefined"
+          data-inspector-head="people"
+          @click="chat?.capable && (roster = !roster)"
+        >
           <UIcon name="i-lucide-users" class="size-3.5 flex-none text-muted" />
           <div class="flex min-w-0 flex-1 flex-col">
             <span class="text-[13px] font-semibold text-highlighted">People</span>
             <span class="truncate text-[11px] text-muted tabular-nums" data-inspector-sub>{{ peopleSub }}</span>
           </div>
-        </div>
-        <div class="flex-1 min-h-0 overflow-y-auto p-4 flex flex-col gap-6">
+          <UIcon v-if="chat?.capable" :name="roster ? 'i-lucide-chevron-up' : 'i-lucide-chevron-down'" class="size-3.5 flex-none text-muted" aria-hidden="true" />
+        </component>
+        <div v-if="!chat?.capable || roster" class="min-h-0 overflow-y-auto p-4 flex flex-col gap-6" :class="chat?.capable ? 'max-h-[45%] flex-none border-b border-default' : 'flex-1'" data-people-roster>
           <section class="flex flex-col gap-2.5">
             <h3 class="text-[11px] font-semibold uppercase tracking-wider text-muted">Here now · {{ here }}</h3>
             <p v-if="!viewers.length" class="text-xs text-muted">Names arrive once everyone reconnects.</p>
@@ -223,6 +234,7 @@ const items = computed(() =>
             </div>
           </section>
         </div>
+        <ChatPanel v-if="chat?.capable" class="min-h-0 flex-1" bare :thread="chat" :role="role" :ended="ended" :offline="chatOffline" :viewers="viewers" @send="(text, to) => emit('chatSend', text, to)" @send-to-agent="emit('chatSendToAgent', $event)" @retry="emit('chatRetry', $event)" @answer="(m, i) => emit('chatAnswer', m, i)" />
       </template>
 
       <div v-else-if="view === 'explorer' || view === 'changes' || view === 'commits'" class="flex-1 min-h-0 flex flex-col">

@@ -285,6 +285,8 @@ usePalette().registerPage(() => {
             :key="focused.id"
             ref="focusTerminal"
             :create-transport="transportFor(focused)"
+            operator
+            :verbatim="focused.way === 'protocol' ? !!focused.verbatim : undefined"
             @welcome="onFocusWelcome"
             @activity="onFocusActivity"
             @nvim="editor.onNvim"
@@ -296,7 +298,7 @@ usePalette().registerPage(() => {
             @link-offered="linkOffered"
           />
           <template #bar>
-            <QuickReplyBar :attention="focused.attention" :agent-name="focused.agentId" role="control" :busy="quick.sending.value.has(focused.id)" answers @answer="decisionModal.open" @reply="(text, q, taken) => reply(focused!, text, q, taken)" @option="(i, q) => option(focused!, i, q)" @open-plan="openFile({ path: $event })" @preview-plan="previewFile({ path: $event })" />
+            <QuickReplyBar :attention="focused.attention" :agent-name="focused.agentId" role="control" :busy="quick.sending.value.has(focused.id)" answers @answer="decisionModal.open" @chat="(focusTerminal as { showQuestion?: () => void } | null)?.showQuestion?.()" @reply="(text, q, taken) => reply(focused!, text, q, taken)" @option="(i, q) => option(focused!, i, q)" @open-plan="openFile({ path: $event })" @preview-plan="previewFile({ path: $event })" />
           </template>
         </EditorColumn>
         <!-- Not in the first read: not found; before it, the reading shape (or the failed one). -->
