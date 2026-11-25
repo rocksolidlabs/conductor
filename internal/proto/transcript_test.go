@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -205,5 +206,48 @@ func TestHelloAndWelcomeOmitTheChat(t *testing.T) {
 	b, _ = json.Marshal(w)
 	if want := strings.TrimSuffix(terminal, "}") + `,"way":"protocol","verbatim":true,"transcript":{"first":2,"last":9,"mark":14},"interrupt":true}`; string(b) != want {
 		t.Fatalf("a chat's welcome\n got %s\nwant %s", b, want)
+	}
+}
+
+// docs/protocol.md's RELAY row names exactly the inner frames DecodeRelay
+// takes: every type a relay envelope may carry, and none it refuses.
+func TestTheRelayRowListsWhatIsRelayed(t *testing.T) {
+	raw, err := os.ReadFile("../../docs/protocol.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var row string
+	for _, line := range strings.Split(string(raw), "\n") {
+		if strings.HasPrefix(line, "| `0x10` | RELAY |") {
+			row = line
+		}
+	}
+	if row == "" {
+		t.Fatal("no RELAY row")
+	}
+	inner := row[strings.Index(row, "[inner frame"):]
+	inner = inner[:strings.Index(inner, "]")]
+	listed := map[byte]bool{}
+	for _, part := range strings.Split(strings.TrimPrefix(inner, "[inner frame "), ",") {
+		part = strings.TrimSpace(part)
+		var lo, hi byte
+		if from, to, ok := strings.Cut(part, "–"); ok {
+			fmt.Sscanf(from, "0x%x", &lo)
+			fmt.Sscanf(to, "0x%x", &hi)
+		} else {
+			fmt.Sscanf(part, "0x%x", &lo)
+			hi = lo
+		}
+		for b := lo; b <= hi && b != 0; b++ {
+			listed[b] = true
+		}
+	}
+	for typ := 0; typ < 256; typ++ {
+		env, _ := EncodeRelay("0123456789abcdef", []byte{byte(typ)})
+		_, _, err := DecodeRelay(env[1:])
+		takes := err == nil // an empty payload is within every bound
+		if takes != listed[byte(typ)] {
+			t.Errorf("type 0x%02X: DecodeRelay takes it %v, the RELAY row lists it %v", typ, takes, listed[byte(typ)])
+		}
 	}
 }

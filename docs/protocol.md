@@ -21,7 +21,7 @@ relay envelope, so a client handles them identically regardless of transport.
 | `0x08` | FILE_WRITE | client → owner | `[8-byte reqId][uint32 headerLen][JSON header][part]`: one part of a save (see File saves) | 32 KiB part, 4 KiB header |
 | `0x09` | DECISION | owner → client | UTF-8 JSON: a decision link's lane reply (see Decision links) | 128 KiB |
 | `0x0A` | DECIDE | client → owner | UTF-8 JSON, decoded strictly: one action on a decision (see Decision links) | 32 KiB |
-| `0x10` | RELAY | host ↔ server | `[16-byte viewerId][inner frame 0x01–0x04, 0x06, 0x08]` | |
+| `0x10` | RELAY | host ↔ server | `[16-byte viewerId][inner frame 0x01–0x04, 0x06, 0x08, 0x09, 0x0A, 0x0B]` (`proto.DecodeRelay`'s list; a server closes a host's connection on any other) | |
 | `0x0B` | TRANSCRIPT | owner → client | UTF-8 JSON, encoded without HTML escaping: a chat's entry, a page of entries or a piece of a part (see Chat sessions); relayable; never from a session in its terminal | 128 KiB |
 
 "Owner" is whichever process holds the PTY: the server for `server` sessions,
