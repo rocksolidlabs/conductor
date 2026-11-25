@@ -145,12 +145,13 @@ type Options struct {
 	// since its Enter would pick whatever the dialog highlights.
 	TrustAnswers []Option
 	// PromptShape, when set, matches the agent's own prompt at rest on its
-	// whole screen (the catalog's promptShape): a submission OnlyAtPrompt
-	// is typed, and entered, only while the screen matches and shows no
-	// dialog's numbered choice (atPrompt), and while the startup watch
-	// lasts a line's text is typed only where it matches (startupLine). A
-	// server's own session and a hosted one whose host was sent the shape
-	// set it alike (agents.Watch.Apply).
+	// whole screen (the catalog's promptShape): for the whole of the
+	// session every line Submit types that names no question is typed,
+	// and entered, only while the screen matches and shows no dialog's
+	// numbered choice (atPrompt, promptOnly), and while the startup watch
+	// lasts a line's text is refused in the startup words where it does
+	// not match (startupLine). A server's own session and a hosted one
+	// whose host was sent the shape set it alike (agents.Watch.Apply).
 	PromptShape *regexp.Regexp
 	// Questions are the agent's other startup questions (the catalog's
 	// questions; round 13, G2c), held exactly as the trust question is:
@@ -522,6 +523,9 @@ type Local struct {
 	// (pressEnter), before it looks at anything; beforeWritten as keys
 	// written (input) come to what follows their write, with the keys.
 	beforeEnter atomic.Pointer[func()]
+	// entered keeps the numbered lines the session entered, as the agent's
+	// history shows them (enteredRows).
+	entered enteredRows
 	// confirmWaits counts the waits for the agent's report that it took a
 	// line (confirmed): a test's view of how many were made.
 	confirmWaits  atomic.Int32
@@ -6076,7 +6080,7 @@ func AnswerResult(reqID string, err error) []byte {
 		code, msg = proto.ErrCodeQuestionAnswered, err.Error()
 	case errors.Is(err, ErrLineStranded):
 		msg = LineStrandedWords
-	case errors.Is(err, ErrTrustQuestion), errors.Is(err, ErrQuestion):
+	case errors.Is(err, ErrTrustQuestion), errors.Is(err, ErrQuestion), errors.Is(err, ErrNotAtPrompt):
 		code = proto.ErrCodeNotSent
 		msg, _ = NotSentWords(err)
 	case errors.Is(err, ErrReadOnly):
@@ -6270,23 +6274,27 @@ func (s *Local) ScreenLines(n int) []string {
 }
 
 // atPrompt reports whether the screen shows the agent's prompt, the one
-// screen a submission OnlyAtPrompt is typed into: read whole, as one frame
-// (PatternWatcher.Frame: every row, from the screen the pump feeds before
+// screen a line typed only at the prompt (promptOnly) is typed into: read
+// whole, as one frame (PatternWatcher.Frame: every row, from the screen
+// the pump feeds before
 // the viewers and before the scan for what says the agent waits), it shows
 // everything the program drew as it drew it (no synchronized update under
 // way, nothing cut by a window made smaller: a dialog cut away is not
 // known gone), it matches the agent's prompt when the agent has a shape
 // known (Options.PromptShape), and, shape or none, no row of it is a
 // dialog's numbered choice, read by its shape as startupChoiceShown reads
-// one: a shape that matches never admits a screen with a choice a digit of
-// the line would pick. Both read the frame with every horizontal space a
+// one (promptRead: while the startup watch lasts any numbered row; after
+// it, for an agent with a shape, one in or under the rows the shape
+// matched, or one with a highlight's marker anywhere): a shape that
+// matches never admits a screen with a choice a digit of the line would
+// pick. Both read the frame with every horizontal space a
 // plain one (plainSpaces): a row indented with a no-break space is read as
 // the same row indented with spaces, so no indentation turns a choice into
 // text for either. Anything else, an unknown dialog, a sign-in screen,
 // half a frame, is not the prompt (#714).
 func (s *Local) atPrompt() bool {
 	text, _, uncut, _, _ := s.shot.Frame()
-	return uncut && promptShown(text, s.opts.PromptShape)
+	return uncut && s.promptRead(text)
 }
 
 // promptHolds stands for the text a submission typed into the agent's
@@ -6306,14 +6314,36 @@ const promptHolds = "text"
 // narrow window, scrolled out of the composer) is not found, and the
 // screen is not taken for the prompt holding it.
 func (s *Local) atPromptHolding(text string) bool {
-	words := strings.Fields(text)
-	if len(words) == 0 {
+	if len(strings.Fields(text)) == 0 {
 		return s.atPrompt()
 	}
+	frame, _, uncut, _, _ := s.shot.Frame()
+	return uncut && promptHolding(frame, text, s.promptRead)
+}
+
+// atPromptForEnter reports whether a line's Enter may be written on the
+// screen as it is now, the line typed only at the agent's prompt
+// (promptOnly): one whole frame that is the agent's prompt by atPrompt's
+// rule, or, the line's text typed, the prompt holding that text by
+// atPromptHolding's (a line longer than the rows the prompt's shape
+// takes wraps over more of them). typed is the text written, "" for a
+// line that is an Enter alone.
+func (s *Local) atPromptForEnter(typed string) bool {
 	frame, _, uncut, _, _ := s.shot.Frame()
 	if !uncut {
 		return false
 	}
+	if s.promptRead(frame) {
+		return true
+	}
+	return len(strings.Fields(typed)) > 0 && promptHolding(frame, typed, s.promptRead)
+}
+
+// promptHolding is atPromptHolding's rule on frame, a whole frame, for a
+// text of at least one word, the frame with the text put back as one word
+// read as the prompt by read (promptRead).
+func promptHolding(frame, text string, read func(string) bool) bool {
+	words := strings.Fields(text)
 	frame = plainSpaces(frame)
 	quoted := make([]string, len(words))
 	for i, w := range words {
@@ -6337,7 +6367,7 @@ func (s *Local) atPromptHolding(text string) bool {
 		strings.TrimSpace(frame[at[1]:rowEnd]) != "" {
 		return false
 	}
-	return promptShown(frame[:at[0]]+promptHolds+frame[at[1]:], s.opts.PromptShape)
+	return read(frame[:at[0]] + promptHolds + frame[at[1]:])
 }
 
 // awaitEcho waits, up to Options.EchoWait, for the screen to show the

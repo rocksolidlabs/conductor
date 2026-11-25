@@ -7,7 +7,7 @@ import { type Api, expect, test, type Session } from './fixtures'
 // session through a control link and the link revoked before its Enter. Moved here from held.spec.ts as it was, so that two specs
 // make one the same way; `baseURL` is the server the guest joins when it is not the suite's (a spec's own server).
 
-export const HELD = 'Text from a link that was let go was typed and not entered: type in the terminal to continue'
+export const HELD = 'A line was typed and not entered: type in the terminal to continue'
 
 /** The stub's files for the agent session of s: each read as it is now, '' before it is there. */
 export function stubFiles(home: string, s: Session) {

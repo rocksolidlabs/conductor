@@ -270,12 +270,18 @@ func (e *Engine) deliver(r *run, m *member, l *session.Local) {
 			// agent's input, and is never typed again.
 			r.note(session.ActivityError, "handoff from %s to %s typed without its Enter: %s waits on a question; answer it, then press Enter in its terminal", h.from, m.def.Name, m.def.Name)
 		default:
-			// Waiting for input: back to the head, the oldest again.
+			// Waiting for input, or held back at a screen that is not its
+			// agent's prompt: back to the head, the oldest again, typed at
+			// the member's next activity.
 			m.handoffs = slices.Insert(m.handoffs, 0, h)
 			if len(m.handoffs) > maxHandoffs {
 				r.dropOldest(m)
 			}
-			r.noteQueued(m, "is waiting for input")
+			if res.NotAtPrompt {
+				r.noteQueued(m, "shows a screen that is not its prompt")
+			} else {
+				r.noteQueued(m, "is waiting for input")
+			}
 		}
 		e.mu.Unlock()
 		if err == nil && !res.Typed {

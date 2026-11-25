@@ -1,4 +1,4 @@
-import { FOLLOW_SIZE, MAX_SUBMIT, type Welcome } from '~/utils/protocol'
+import { FOLLOW_SIZE, MAX_SUBMIT, NOT_AT_PROMPT_WORDS, type Welcome } from '~/utils/protocol'
 import { sayOutcomeOf, type SayOutcome } from '~/utils/sayWords'
 import { clearAnswered, repliedQuestions, ReplyError, type QuestionReply } from '~/utils/reply'
 import type { CloseInfo, TerminalTransport } from '~/utils/transport/types'
@@ -12,6 +12,11 @@ import type { SessionInfo } from './useSessions'
  * connection's, rejects with its ReplyError, as before.
  */
 export type AnswerOutcome = 'taken' | 'unconfirmed' | 'not_sent'
+
+/** The words a palette line refused with not_sent shows: the owner's when the agent's screen was not its prompt, else the broadcast's. */
+function notSentWords(message: string): string {
+  return message === NOT_AT_PROMPT_WORDS ? message : skipWords('needs_input')
+}
 
 /** The questions this browser tab has replied to from a row, a card or a chat (the app renders in the browser alone: ssr is off). */
 const replied = repliedQuestions()
@@ -130,10 +135,11 @@ export function useQuickReply() {
       try {
         typed = await t.submitAcked(text, { unlessWaiting: true })
       } catch (e) {
-        // The owner's word, by its code: not_sent (the session asks: the broadcast's words) and the other refusals typed nothing;
-        // input_failed (typed and not entered), no_word and closed leave the outcome open (Codex's round on #322).
+        // The owner's word, by its code: not_sent (the session asks: the broadcast's words; the agent's screen not its prompt: the
+        // owner's own words) and the other refusals typed nothing; input_failed (typed and not entered), no_word and closed leave the
+        // outcome open (Codex's round on #322).
         if (!(e instanceof ReplyError)) return { unconfirmed: (e as Error).message }
-        return sayOutcomeOf(e.code, e.code === 'not_sent' ? skipWords('needs_input') : e.message || e.code)
+        return sayOutcomeOf(e.code, e.code === 'not_sent' ? notSentWords(e.message) : e.message || e.code)
       }
       if (typed) return { typed: true }
       // An older owner says nothing for a line it took; for one it did not, an error frame, or a close that carries one; a close

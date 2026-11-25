@@ -76,8 +76,13 @@ type writeWait struct {
 	// takes it, as from's credential does.
 	gone <-chan struct{}
 	// before, when set, runs as the writer takes the write, just before it
-	// is made, and never for a write not made: a submission's BeforeEnter.
+	// is made: a submission's BeforeEnter.
 	before func()
+	// last, when set, is asked after before, the last thing before the
+	// write: an error from it and the write is not made, the error its
+	// answer (a submission's Enter whose screen, read again after its
+	// BeforeEnter, is not the agent's prompt).
+	last func() error
 	// guard, when set, is asked as the writer takes the write, as over is,
 	// the last of its checks: an error from it and the write is not made (a
 	// submission's Enter that a newer prompt would take); nil, and it is.
@@ -242,8 +247,10 @@ type procWrite struct {
 	// lock, and never begins one it finds over, whether or not its waiter
 	// has seen the end yet.
 	over func() error
-	// before runs as the writer takes it (writeWait.before).
+	// before runs as the writer takes it (writeWait.before), and last
+	// after it (writeWait.last).
 	before func()
+	last   func() error
 	// held is the credential over took (writeWait.hold), nil for none: let
 	// go once the write has returned or was cancelled (letGo).
 	held Held
@@ -267,7 +274,7 @@ func (s *Local) newWrite(ctx context.Context, data []byte, deadline time.Time, o
 	if hold == nil && o.from != nil {
 		hold = o.from.hold
 	}
-	w := &procWrite{data: bytes.Clone(data), done: make(chan error, 1), before: o.before}
+	w := &procWrite{data: bytes.Clone(data), done: make(chan error, 1), before: o.before, last: o.last}
 	w.over = func() error {
 		select {
 		case <-ended:
@@ -438,7 +445,12 @@ func (q *procWriter) run(to io.Writer) {
 			if w.before != nil {
 				w.before()
 			}
-			_, err = to.Write(w.data)
+			if w.last != nil {
+				err = w.last()
+			}
+			if err == nil {
+				_, err = to.Write(w.data)
+			}
 		}
 		if cancelled() && err == nil {
 			err = w.cancelledBy()

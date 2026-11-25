@@ -49,6 +49,33 @@ var claudeOwnFlags = []string{
 	"--settings", "--setting-sources", "--strict-mcp-config", "--bare",
 }
 
+// ErrAddedFolder is ClaudeArgs's refusal of a launch whose arguments name
+// an added folder (--add-dir): such a session keeps to its terminal, and a
+// chat's child is started in the session's own folder alone.
+var ErrAddedFolder = errors.New("agentproto: the launch's arguments name an added folder, which stays with the terminal")
+
+// AddedFolderWords is what a person reads when a session launched with an
+// added folder is asked to move to Chat (the plan's words, design 13).
+const AddedFolderWords = "Sessions launched with an added folder stay in their terminal."
+
+// OwnFlagError is ClaudeArgs's refusal of an argument of the terminal's
+// (or of the catalog's protocol recipe) that a chat sets itself.
+type OwnFlagError struct{ Flag string }
+
+func (e *OwnFlagError) Error() string {
+	return fmt.Sprintf("agentproto: %s is set by the chat itself, and the terminal's arguments hold it", e.Flag)
+}
+
+// OwnFlagWords is what a person reads when a session whose arguments hold
+// flag is asked to move to Chat (the plan's words, design 13).
+func OwnFlagWords(flag string) string {
+	return "This session's arguments hold " + flag + ", which a chat sets itself; it stays in its terminal."
+}
+
+// addedFolderFlag is the CLI reference's flag that adds a working
+// directory to a session.
+const addedFolderFlag = "--add-dir"
+
 // ClaudeLaunch is what a chat's child of Claude Code is started from: the
 // session's terminal launch, as the catalog and the launch gave it.
 type ClaudeLaunch struct {
@@ -84,12 +111,17 @@ type ClaudeLaunch struct {
 // as design 4 of the plan lists it, never a shell string: the catalog's
 // command, print mode with stream-json, the protocol's arguments, the
 // resumed conversation, the model, the permission mode (or the yolo
-// arguments), the terminal's arguments, Conductor's MCP server and, with a
+// arguments), the terminal's arguments, Conductor's MCP server alone
+// (--strict-mcp-config, always: the child loads no tool server but the one
+// named here, and none when the server's MCP is off; the person's own tool
+// servers and a folder's stay with the session's terminal) and, with a
 // permission host, its permission tool and exactly one --settings. Never
-// --bare (which reads no sign-in), --setting-sources or
-// --strict-mcp-config: the child reads the setting sources its terminal
-// read. The terminal way's hook settings, trust arguments and screen
-// recipe are not passed.
+// --bare (which reads no sign-in) or --setting-sources: the child reads
+// the setting sources its terminal read. The terminal way's hook settings,
+// trust arguments and screen recipe are not passed. A launch whose
+// arguments name an added folder is refused (ErrAddedFolder), and one that
+// holds a flag of the chat's own (OwnFlagError): the move asks this before
+// it stops anything.
 func ClaudeArgs(l ClaudeLaunch) ([]string, error) {
 	if len(l.Command) == 0 || strings.TrimSpace(l.Command[0]) == "" {
 		return nil, errors.New("agentproto: a chat's child needs the agent's command")
@@ -100,9 +132,14 @@ func ClaudeArgs(l ClaudeLaunch) ([]string, error) {
 	if !filepath.IsAbs(l.HooksDir) {
 		return nil, fmt.Errorf("agentproto: the hooks directory %q is not absolute", l.HooksDir)
 	}
+	for _, set := range [][]string{l.Command[1:], l.Protocol, l.Model, l.YoloArgs, l.LaunchArgs} {
+		if addedFolder(set) {
+			return nil, ErrAddedFolder
+		}
+	}
 	for _, set := range [][]string{l.Protocol, l.Model, l.LaunchArgs} {
 		if f := ownFlag(set); f != "" {
-			return nil, fmt.Errorf("agentproto: %s is set by the chat itself, and the terminal's arguments hold it", f)
+			return nil, &OwnFlagError{Flag: f}
 		}
 	}
 	var argv []string
@@ -120,6 +157,7 @@ func ClaudeArgs(l ClaudeLaunch) ([]string, error) {
 	if !l.NoMCP {
 		argv = append(argv, "--mcp-config", filepath.Join(l.HooksDir, ClaudeProtocolMCP))
 	}
+	argv = append(argv, "--strict-mcp-config")
 	if l.PermissionHost {
 		settings := ClaudeProtocolSettings
 		if l.Yolo {
@@ -133,6 +171,17 @@ func ClaudeArgs(l ClaudeLaunch) ([]string, error) {
 		argv = append(argv, "--settings", filepath.Join(l.HooksDir, settings))
 	}
 	return argv, nil
+}
+
+// addedFolder reports whether args name an added folder: the flag alone
+// (its folders follow) or with "=value".
+func addedFolder(args []string) bool {
+	for _, a := range args {
+		if name, _, _ := strings.Cut(a, "="); name == addedFolderFlag {
+			return true
+		}
+	}
+	return false
 }
 
 // ownFlag is the first of args that is one of the driver's own flags: by

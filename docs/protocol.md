@@ -47,7 +47,7 @@ Client → owner:
 | `nvim_swap` | `id, choice` | Answers the swap file editor `id` found (round 13): `choice` is `edit` (leave read-only and edit), `recover` (read the swap file's text into the buffer, which is sent whole; the buffer is modified until written) or `delete` (remove that swap file, only a regular file named `*.sw?` that Neovim reported, and edit); `recover` and `delete` only once the process that wrote it is gone, else the editor's `message` of kind `emsg` says no; fixed choices mapped to fixed commands, never a command from the page. The switchyard drops it from view-role connections |
 | `chat` | `nonce?, scope?, text, on?, to?, quote?` | Every role, once the owner's `welcome` said `chat` (an older owner closes on an unknown message). `text` is kept cleaned (line breaks as `\n`, other control characters but tabs dropped, trimmed) and must be 1–2048 bytes after that (0 with a `quote`); `quote` `{path, from, to, lines[], cut?}` is lines of a file the message is about (design round 12, F7): the path (at most 512 bytes), the 1-based range, at most 12 lines of at most 200 bytes, control characters but tabs dropped, its last lines left out (`cut`) when the message would pass 8 KiB, dropped without a path or range; a message with a quote sent to the agent types `path:from-to`, the lines as `> ` lines, then the text (at most 4096 bytes); `scope` is `session` when absent, or `run` for the chat of the run the session is a member of (`welcome.runChat`; `bad_frame` otherwise); `nonce` (≤ 32 bytes) is the client's own id of the post, echoed in the message; `to`, a controller's, also types the text as `chat_send` does: `"agent"` into this session's agent, a member's name into that member in scope `run`; `on` (scope `run`) names the member the sender looks at, kept when it is one. 10 a second with a burst of 20 per connection, beyond which `error{too_many_requests, requestId: nonce}` and the connection stays. Refusals name the nonce: `bad_frame` (empty, too long, a scope or `to` not here), `read_only` (`to` from a view link), `session_ended`, `revoked` or `expired` (the viewer's link no longer opens the session: nothing kept or sent) |
 | `chat_send` | `ref, scope?, to?` | Controllers only (`read_only`, also on the relay). Types the text of the kept message `ref` into the agent as a `submit` would, then keeps and sends a `sent_to_agent` marker. In scope `run`, into the member `to` of the run as a broadcast does (nothing while that member waits on a prompt), with the marker in the run's chat, or `error{not_sent, message: needs_input|not_running|unknown|no_enter, requestId: ref}`. `bad_frame` with `requestId: ref` for a message not kept or not a message, or a run send naming no member; `revoked` or `expired` with `requestId: ref` once the viewer's link no longer opens the session (nothing typed), as it is taken and as its text is typed |
-| `submit` | `text` | Controllers only; `text` at most 4096 bytes (`bad_frame` beyond, `read_only` from a view link, also on the relay), and the frame within the CONTROL frame's 8 KiB as encoded (past it: `bad_frame` in words, the connection kept, see below Error codes). The owner submits it as a line: line breaks and tabs become spaces and other control characters are dropped, the text is written as a bracketed paste while the program has that mode on (`ESC[?2004h`), then a carriage return is written on its own 250 ms later, so that a TUI takes it as Enter rather than as part of a paste. The Enter answers the prompt that was showing when the text was typed; a prompt raised during the pause is not answered and the Enter is left out. The submission goes on if the client disconnects meanwhile (or its time runs out once its text is typed: see below), but not once its link is revoked or expires (its run forgotten, its link gone) before its carriage return is written: before its text is typed, nothing of it is written; once its text is typed, its carriage return is not written either, the text stays in the program's input (it cannot be taken back out), and the session's turn stays held, so that no other submission (a reply, a crew's prompt, a handoff) is typed after it and entered with it, until a person types into the terminal (INPUT from a controller, a terminal's own reports and mouse reports aside, any number of them in a write, mixed, or one a write begins and the next finishes, at any byte: the pointer, moved or clicked, types nothing; a lone Escape counts with the key after it), who deals with the text, or the session ends. Meanwhile the session is `needs_input` with `source:"submit"` and the words `Text from a link that was let go was typed and not entered: type in the terminal to continue`, which that input clears. While the turn is held (or becomes held as it waits), a server connection's `submit`, `chat` to the agent or `chat_send` waits for it apart from the connection's other frames, so that its own INPUT can end the hold; one at a time, another meanwhile refused with `error{too_many_requests}` (its `requestId` as for a host's) and the connection stays; a connection that closes keeps its viewer until it is done, as one whose frames waited for it does. At most 64 submissions wait for a session's turn together, every connection's and Conductor's own: one more is refused at once (`too_many_requests`). A host is told when a viewer's link goes (`viewer_leave` with a reason, `link_gone`), also once the viewer has left, and does the same. On a host, one that still waits for the keys the viewer sent before it is dropped as the viewer goes. The reply boxes use it to an owner whose `welcome` lacks `answer`; keys typed into the terminal stay INPUT. With `reqId` (#322; at most 32 bytes of printable ASCII, as `answer`'s) the owner answers it, to a client whose `welcome` said `submitAck`: `submit_ok{requestId}` once the line was entered; else `error{code, requestId}`: `not_sent` with the question's words when `unlessWaiting: true` held it back (the session was asking, looked at as the owner holds the session's turn, so no prompt slips between the look and the write: the broadcast's guard, what the palette's typed line asks for; nothing typed), `input_failed` when the line was typed and not entered (the turn held, as above), `too_many_requests`, `session_ended`, `read_only`, `bad_frame` (past its bounds; no `requestId` when the id itself is). Without `reqId` nothing is answered, as before, and `unlessWaiting` still holds |
+| `submit` | `text` | Controllers only; `text` at most 4096 bytes (`bad_frame` beyond, `read_only` from a view link, also on the relay), and the frame within the CONTROL frame's 8 KiB as encoded (past it: `bad_frame` in words, the connection kept, see below Error codes). The owner submits it as a line: line breaks and tabs become spaces and other control characters are dropped, the text is written as a bracketed paste while the program has that mode on (`ESC[?2004h`), then a carriage return is written on its own 250 ms later, so that a TUI takes it as Enter rather than as part of a paste. The Enter answers the prompt that was showing when the text was typed; a prompt raised during the pause is not answered and the Enter is left out. The submission goes on if the client disconnects meanwhile (or its time runs out once its text is typed: see below), but not once its link is revoked or expires (its run forgotten, its link gone) before its carriage return is written: before its text is typed, nothing of it is written; once its text is typed, its carriage return is not written either, the text stays in the program's input (it cannot be taken back out), and the session's turn stays held, so that no other submission (a reply, a crew's prompt, a handoff) is typed after it and entered with it, until a person types into the terminal (INPUT from a controller, a terminal's own reports and mouse reports aside, any number of them in a write, mixed, or one a write begins and the next finishes, at any byte: the pointer, moved or clicked, types nothing; a lone Escape counts with the key after it), who deals with the text, or the session ends. Meanwhile the session is `needs_input` with `source:"submit"` and the words `A line was typed and not entered: type in the terminal to continue`, which that input clears (the same words for every line typed whose Enter was not written for good: a link let go, a reply's question come in its pause, a screen that is not the agent's prompt). While the turn is held (or becomes held as it waits), a server connection's `submit`, `chat` to the agent or `chat_send` waits for it apart from the connection's other frames, so that its own INPUT can end the hold; one at a time, another meanwhile refused with `error{too_many_requests}` (its `requestId` as for a host's) and the connection stays; a connection that closes keeps its viewer until it is done, as one whose frames waited for it does. At most 64 submissions wait for a session's turn together, every connection's and Conductor's own: one more is refused at once (`too_many_requests`). A host is told when a viewer's link goes (`viewer_leave` with a reason, `link_gone`), also once the viewer has left, and does the same. On a host, one that still waits for the keys the viewer sent before it is dropped as the viewer goes. The reply boxes use it to an owner whose `welcome` lacks `answer`; keys typed into the terminal stay INPUT. With `reqId` (#322; at most 32 bytes of printable ASCII, as `answer`'s) the owner answers it, to a client whose `welcome` said `submitAck`: `submit_ok{requestId}` once the line was entered; else `error{code, requestId}`: `not_sent` with the question's words when `unlessWaiting: true` held it back (the session was asking, looked at as the owner holds the session's turn, so no prompt slips between the look and the write: the broadcast's guard, what the palette's typed line asks for; nothing typed), `not_sent` with `the agent's screen is not recognised as its prompt: nothing was typed. Look at its terminal.` when the session's agent has a `promptShape` and the screen, read as the writer took the line, was not its prompt (nothing typed, the carriage return included; with `unlessWaiting: true` it is held back with the same words when the session asks nothing, and with the question's words when it asks: see Attention, what Conductor submits), `input_failed` when the line was typed and not entered (the turn held, as above), `too_many_requests`, `session_ended`, `read_only`, `bad_frame` (past its bounds; no `requestId` when the id itself is). Without `reqId` nothing is answered, as before, and `unlessWaiting` still holds |
 | `answer` | `reqId?, question, input?, text?` | A reply to the question the person was shown (see Attention, Answering a question), sent only to an owner whose `welcome` says `answer` (an older one closes on an unknown message). Controllers only (`read_only`, also on the relay). `question` is that question's `id` (1–32 bytes of printable ASCII, no space); exactly one of `input` (a choice's keys, at most 48 bytes, written as INPUT is) and `text` (a line, at most 4096 bytes, submitted as `submit` is; the frame within the CONTROL frame's 8 KiB as encoded, as a `submit`'s); `reqId` at most 32 bytes of the same. Out of those bounds: `error{bad_frame, requestId}` (no `requestId` when it is itself out of bounds), the connection stays. The owner writes nothing unless the question is still the one shown, nobody is answering it and nobody answered it in the terminal, looked at as the reply arrives and again, together with claiming the question, as the keys (a line's text, its Enter for a line with none) are written: first to claim wins; otherwise `error{question_answered, requestId}`, whose `message` says what became of the question when the owner knows (`this question was already answered by <name>: nothing was sent` once a result is recorded, `this question is being answered: nothing was sent` while another reply's keys are on their way, `this question was answered in the terminal: nothing was sent` once keys typed in the terminal reached it, else `this question was already answered: nothing was sent`). `answer_ok{requestId}` is the final word: the keys landed, or the line was entered, and the question is resolved by this reply (or was withdrawn by the agent moving on while they were written); it is never sent while the outcome is open (a line the program takes slowly is told once it is entered). A line typed whose Enter was not written (a question came in its pause, its link went) is `error{input_failed}` with `the line was typed and not entered: type in the terminal to continue`: the session's turn is held. Any other refusal is an `error` naming it as INPUT's or `submit`'s would be (`not_sent`, `input_failed`, `too_many_requests`, `session_ended`). An `answer`, a choice's keys too, is withdrawn as a `submit` is once its link's credential no longer stands (revoked or expired; on a host, no ping of its own sent within 15 s answered by the server: see the host control connection), whether or not its connection has closed for it yet: nothing of it written, `input_failed`. A `text` waits for the session's turn as `submit` does, also while it is held for a person, on a server connection apart from its other frames as `submit` does; an `input` answers a `trust` or `question` prompt showing over a held turn without ending the hold, the hold's words shown again once it is answered; an `answer` naming the hold itself (`source:"submit"`) is refused (`question_answered`), nothing written; one naming a question that mirrors a durable decision (the attention's `decision`) is refused `error{decision, requestId}`, its message naming the decision, nothing written. Every quick reply uses it: the sidebar's row and its 1–9, the Yard's card and queue, the session page's and a link's reply bar and its digits, a question's choices in the chat |
 | `transcript_get` | `reqId, after?, before?, limit?, part?{seq, name, offset?}` | A chat's read, every role, to an owner whose `welcome` says `way: "protocol"` (see Chat sessions). `reqId` 1 to 32 bytes of printable ASCII, `limit` at most 100 (0 or absent: 100), `part.name` one of `input`, `output`, `diff`, a part named alone; read strictly (a field it does not know, or past a bound: `error{bad_frame, requestId}`). Answered by a TRANSCRIPT `page` or `part` naming `reqId`, or `error{code, requestId}`: `transcript_gone` (`That part of the chat is no longer kept.`), `too_many_requests` (four replies of the connection not yet written to it), `not_protocol` on a session in its terminal (`This session runs in its terminal: it has no chat.`), `revoked`, `expired` |
 | `interrupt` | `reqId` | A chat's Stop, controllers only, to an owner whose `welcome` says `interrupt`; `reqId` as `transcript_get`'s. Taken off the connection's read loop, one at a time (another meanwhile: `too_many_requests`), held to the viewer's link as it is acted on. Answered `interrupt_ok{requestId}` once the agent was asked (the turn's end follows in the transcript), or `error{code, requestId}`: `not_protocol` (`Stop is for a chat; use the agent's own key in its terminal.`), `no_turn` (`The agent is not working on anything.`), `read_only`, `revoked`, `expired`, `bad_frame` |
@@ -1592,14 +1592,27 @@ An agent's catalog entry can carry a `promptShape` (#714), its own prompt
 at rest matched by its shape against the server session's whole screen (its
 rows joined by line breaks, a row autowrap went on from read with the next as
 one, every other Unicode space read as a plain one, for the numbered-choice
-rule below too, so no indentation makes a choice read as text): a Brakeman turn's line, and its Enter, are typed only while the screen,
-read as the writer takes each, is a whole frame (no synchronized update under
-way, nothing cut by a smaller window) that matches it and shows no dialog's
-numbered choice on any row, and nothing is typed into any other screen; the
-turn then ends at its start bound saying the screen was not recognised, with
-its words. The built-in Claude Code and Codex carry theirs; with none, the
+rule below too, so no indentation makes a choice read as text): every line
+a session of the agent types that names no question (a person's `submit`,
+a `chat` to the agent, a crew's prompt, a handoff, a broadcast, a Brakeman
+turn's line), every reply to a question the session does not read off the
+screen, and their Enters, are typed only while the screen, read as the
+writer takes each, is a whole frame (no synchronized update under way,
+nothing cut by a smaller window) that matches it and shows no dialog's
+numbered choice (Attention, what Conductor submits, says which rows are
+one; for the Enter, the prompt holding the line's own text counts), for
+the whole of the session, and nothing is typed into any other screen
+(#1116). Codex's built-in shape ends at its composer's footer, the
+screen's last row (its shortcuts hint, the queue hint, a key's "again
+to", the context left, the send key): a `›` row with no such footer under
+it is not its prompt, and neither is a composer drawn without one or
+under a footer configured to show none of them (give such an agent a
+`promptShape` of its own); a list of suggestions Codex draws above the
+composer keeps the footer under it; a Brakeman
+turn then ends at its start bound saying the screen was not recognised,
+with its words. The built-in Claude Code and Codex carry theirs; with none, the
 numbered-choice rule alone keeps the line from a whole screen. A hosted session whose host said `promptShape`
-is handed it in `registered.recipe` (#1093) and judges a line's text at its start by it as a server session does
+is handed it in `registered.recipe` (#1093) and judges a line by it as a server session does
 (Attention, what Conductor submits); no host types a Brakeman turn's line.
 
 An agent's catalog entry can carry a `trustPrompt`, the words of its
@@ -1956,8 +1969,66 @@ frame shows a startup question or a numbered choice, or a frame not whole
 while the output the watcher keeps saw a startup question drawn. A line
 that is a carriage return alone is judged the same way as the writer takes
 it. The carriage return of a line with text is held where it was held
-before (a startup question that may show, a question drawn in the pause):
-the prompt holding the line's own text is not read by the prompt's shape.
+before (a startup question that may show, a question drawn in the pause).
+For an agent with a `promptShape`, every line Conductor types that names
+no question (a `submit`, a `chat` to the agent, a crew's prompt or
+message, a handoff, a broadcast, a decision's line), and every reply that
+names a question the session does not read off the screen (the agent's
+own question, a decision's, a `needs_input` the agent reported), is typed
+only at the agent's prompt for the whole of the session (#1116). Its text
+goes where a whole frame of the screen, read as the writer takes it,
+shows the prompt by its shape and no dialog's numbered choice: while the
+startup watch lasts, a numbered row anywhere on the frame is one; after
+it, a numbered row in or under the rows the shape matched, or one with a
+highlight's marker (`›`, `>`, `❯`) above them, so that a numbered list in
+the agent's own answer above its prompt takes a line. A marked numbered
+row above them whose text after the marker (spaces as one) is at least
+24 characters long and the start of one of the last eight numbered lines
+the session itself entered (each at least 24 characters long, kept cut
+to 256 bytes, nothing else of what was typed, nothing across a restart)
+is that line in the agent's history, no choice; a numbered message typed
+by keys in the terminal, a short one, or one entered before a restart
+holds lines back until it scrolls off (meanwhile, the terminal). A
+hosted session's host keeps its own lines the same way. Its carriage return
+is read again as the writer takes it, after the other checks, and once
+more as the last thing before the write (after a crew's own step at the
+Enter): the screen must be that prompt or the prompt holding the line's
+own text (its words found last on the screen with only spaces and line
+breaks between them, put back as one word: a long line wraps past the
+rows the shape takes); a crew member's prompt the agent did not report
+taking gets its second carriage return only there too. Anywhere else
+nothing of the line is written: a person's is refused with `not_sent`
+and `the agent's screen is not recognised as its prompt: nothing was
+typed. Look at its terminal.` (while the startup watch lasts, in the
+startup words above); one with `unlessWaiting` is held back, and a
+person's or an extension's is told those same words when the session
+asks nothing (the question's words when it asks); a handoff and a
+decision's line wait for the member's next activity, the run's log
+saying once that the member shows a screen that is not its prompt; the
+reminder that a done does not finish a task is given only once typed,
+and held back waits for the member's next done; a crew member's prompt
+waits and is tried again a poll later, noted once. A carriage
+return refused after the text is left out, the text waits in the
+program's input, and the session's turn is held for a person
+(`needs_input`, `source:"submit"`, `A line was typed and not entered: type in the terminal to continue`, until keys typed in
+the terminal): the line is answered `input_failed` with `the line was typed
+and not entered: type in the terminal to continue`, and no later line is
+typed after the text. A carriage return whose write began when its wait
+ran out keeps the session's turn until it is written (only then is the
+line entered and the startup watch over) or refused, which holds the
+turn the same way. Its last reading is made after everything else the
+Enter does, the write itself the only step after it. A reply to a question read off the screen and a
+person's keys (INPUT) are judged by their own rules. A session in the
+protocol way (a chat, Chat sessions) types nothing into a terminal: none
+of this reads a screen for its lines, and nothing it sends is kept as a
+numbered line of the session's own. A session moved back to its terminal
+runs a new process with no startup watch: its screen is read by the rule
+past the watch from its first frame, so a line sent before the new
+terminal draws its prompt writes nothing, and the numbered lines the
+session entered before the move are still read as its own in the
+history the agent draws again. A move pressed while the session's turn
+is held, or while a line's carriage return is under way, is noted and
+made once the session is at rest.
 No lock
 of the session is held
 across the pause, and a person's keystrokes (INPUT) are written as they come,
@@ -3758,7 +3829,7 @@ its run, and on no other.
 | `DELETE /api/sessions/{id}/links/{linkId}` | admin | revoke a share link, which closes every viewer attached through it (`4403`); `204`; revoking a revoked link answers `204`, records nothing and closes any viewer still attached through it; a session that ended took its links with it (local ones revoked and dropped, their viewers closed as the session's end, `4410`; those minted at the rendezvous forgotten here and ended there by the session's end, which the rendezvous hears from the publication; a hosted session's at its end too), so they are no longer listed and a revoke of one answers `204`, and stops what the session's end still writes their viewers (here, and at the rendezvous over the publication, which outlasts the session's end by 5 s for it: `502 rendezvous_unavailable` when the rendezvous does not answer then); a link minted at the rendezvous is revoked there over the host connection (`link_revoke`), `204` also when the rendezvous no longer holds it, `502 rendezvous_unavailable` when it does not answer|
 | `GET /api/sessions/{id}/files` | admin or share token | read a file of a server session (`path`, `stat`, `raw` query), see File reads |
 | `POST /api/sessions/{id}/attention` | agent token or admin (not a switchyard's) | report an attention state, and with it the agent's own session id (`agentSession`, at most 128 bytes) and whether the report is of a turn (`turn`), see Attention; on a hosted session still registering, the id waits for the session's recorder, and when that wait (10 s) runs out the answer is `503 registering`: the attention applied, the id not kept, the report to be sent again. On a hosted session whose host has no connection to the server, the report does not reach the host's session: the server's copy takes it, and when the host returns, the listing shows what the host's session shows, until the agent's next report. A client whose own wait is shorter ends first and sees no answer: `conductor notify` gives each report 5 s and sends it once (only a `429` again), and the hooks that carry the agent's session id carry it again in a later report (Claude Code's in each attention report; Codex's, Copilot's, Cursor's and Antigravity's at a turn's end, Copilot's and Cursor's at its start too); for a session in the protocol way (a chat, `Info.way: "protocol"`), a report the agent token sends of kind `permission`, or with `turn: true`, is the shape of a hook's (its own stream reports the same steps): answered `200 {dropped: true}`, applied to nothing, and noted once in its activity ("Hook reports are not taken in a chat: its own stream reports its steps."); an `ask` report, and an admin's, are taken |
-| `POST /api/sessions/{id}/permission` | the session's agent token only (a comparison lane's own door) | a chat's permission request, which `conductor mcp`'s `permission` tool posts for Claude Code's prompt (see Chat sessions, Permission requests): body `{call, tool, input}` at most 256 KiB (`413 too_large` past it, no question asked; `400 invalid_request` for a field unknown or missing), held open until the session answers it, then `200 {"behavior":"allow"}` or `200 {"behavior":"deny","message"}`; a session that is no chat answers the deny `Not a call this session is making.`; every other caller `401` |
+| `POST /api/sessions/{id}/permission` | the session's agent token only (a comparison lane's own door) | a chat's permission request, which `conductor mcp`'s `permission` tool posts for Claude Code's prompt (see Chat sessions, Permission requests): body `{call, tool, input}` at most 256 KiB (`413 too_large` past it, no question asked; `400 invalid_request` for a field unknown, named by its name alone, or one missing), held open until the session answers it, then `200 {"behavior":"allow"}` or `200 {"behavior":"deny","message"}`; a session that is no chat answers the deny `Not a call this session is making.`; the workbench's token or an admin principal's `403 agent_only`; a Brakeman turn's own token, and every other caller, `401`, before the body is read |
 | `POST /api/sessions/{id}/events` | agent token or admin (not a switchyard's) | report an event or an attention word, reply `202 {accepted}`, see Events; in a chat, as the attention route: a `file`, `tool_use`, `tool_denied` or `error` event, or an attention word of kind `permission` without `ask`, from the agent token is answered `200 {dropped: true}` and noted once; `progress`, `artifact`, `handoff` and an `ask` are taken |
 | `GET /api/events` | admin | Server-Sent Events of session changes (`snapshot`, `session`, `removed`), of activity entries (`activity`, with `state`, the state an attention entry records, absent for other entries and for an attention entry from a host that does not send one, and `late: true` for a hosted session's entry that reached the server late, which is shown and pages no one, see Attention, The host's activity while away), of chat messages (`chat`: the message as `chat` carries it, with `sessionId` for a session's chat or `runId` for a run's; as droppable as `activity`; for the browsers' unread counts; a `conductor host` session's chat arrives the same way, the host sending each message on its control connection), and of run changes no session event carries (`run`: `{id}`, read the run again with `GET /api/runs/{run}`, or `{id, removed: true}` when the server forgot it; at most 128 bytes; sent for a member reserved, started, prompted, failed or ended early, every entry of the run's log, and a stop; a client that cannot keep up is dropped as for a session change, and reads every run again on its next `snapshot`), and of Dispatch's changes (`dispatch`: `{seq, entity, id, ticket, project}`, one per entity a commit changed, but one with `id` and `ticket` `""` for more than 64 of a kind in a project, a commit's arriving together and in order, at most 160 bytes; dropped with the client as a `run` event is, see Dispatch), and of Brakeman's requests (`brakeman`: `{id, state}`, at most 200 bytes, `id` `role` for a change of the background role, see Brakeman), of a Brakeman turn's progress (`brakeman_progress`: `{id, reads, readsPerTurn, startedAt?, deadline?, reading?: {what, ref?}}`, at most 768 bytes, sent once a turn's read is counted, `reading` that read (`what` the read's observe operation, at most 16 bytes) and `ref` the ref it names, left out for a read of a listing, for one that does not parse and when the event would pass its bound, at most one a second for a request (the first at once, then one trailing send with the last count), only while the request is `starting` or `running`, never after the `brakeman` event that closed it, as droppable as `activity` and reaching no sink, see Brakeman), and of opened marks changed (`brakeman_opened`: `{}`, at most 32 bytes, naming no one: a page reads its own count again, see Brakeman), and of a background brief of Brakeman's that holds a decision no earlier one held (`brakeman_needs_you`: `{id, decisions}`, at most 64 bytes, once, after the `brakeman` event that says `briefed`, as droppable as `activity`, naming no one and no word of the brief, see Brakeman, Notifications), and of durable decisions (`decision`: `{id, run, task?, state, rev}`, at most 256 bytes, after each committed change of one, dropped with the client as a `run` event is, see Decisions), and of the links agents open (`open`: `{id, sessionId, url, browser?, state}`, at most 15,200 bytes, as droppable as `activity`, see Opening a link), and of usage readings kept (`capacity`: `{agent, account, state, readAt}`, at most 512 bytes, dropped with the client as a `run` event is, see Capacity); a desktop app's workbench that opens links sends `X-Conductor-Desktop: 1` with it, see Attention and Events |
 | `GET /api/join/{token}` | share token in the path | resolve a share link for the join page (rate limited): `{session, role, label}` for a session link, `session` carrying `turns: true` when its agent reports its turns (see Attention), absent otherwise; `{run: {id, name, members}, role, label}` for a run link, each with `switchyard` (whether this server is one, which the join page names), each member `{name, sessionId?, agentId, status}` in the run's order, with `sessionId` only while its session runs (`agentId` and `status` then the session's) and otherwise its state in the run, `pending`, `starting` or `ended`; `404` with `invalid_link`, `revoked`, `expired`, `session_gone` or `run_gone`; on a switchyard, `503 host_offline` for a link it keeps whose host is not connected now (it works again once the host registers) |
@@ -9440,17 +9511,26 @@ not UTF-8, holds a lone surrogate escape or a key twice is denied
 `Conductor cannot show this call exactly.`. Conductor's floor denies,
 before any question, a file tool's call (`Read`, `Edit`, `Write`,
 `MultiEdit`, `NotebookEdit`, `Grep`, `Glob`) whose path (a `pattern` for
-`Glob` alone, up to its first wildcard; `Grep`'s is a regular expression)
+`Glob` alone, up to its first wildcard, relative to the session's folder
+when it is not absolute; `Grep`'s is a regular expression)
 is under the server's deny list (the data directory, the configuration and
 catalog, the TLS keys, the hooks directory, the machine's directory), its
 links followed, and a shell command whose text names such a path:
 `Conductor keeps agents out of its own files.`. A command's text names a
-path when, lowercased, its quotes (`'`, `"`) and backslashes taken out and
-every `//` and `/./` made one `/`, it holds the path as the list spells it,
-or with `~`, `$HOME` or `${HOME}` for the home folder, or the path relative
-to the session's folder where it lies inside it (after the text's start, a
-space or one of `=:(<>|;&`, with or without `./`). Nothing else is judged a
-path: a variable other than `HOME`, a glob, a `cd`, a script or any other
+path when, lowercased, a backslash before a newline taken out with the
+newline, then its quotes (`'`, `"`) and backslashes, and every `//` and
+`/./` made one `/`, it holds the path as the list spells it, or with `~`,
+`$HOME` or `${HOME}` for the home folder, or the path relative to the
+session's folder where it lies inside it, as a word of its own (after the
+text's start, a space, a tab, a newline or one of `=:(<>|;&`, a leading
+`./` allowed, and before the text's end, a `/` or one of those). The copies
+beside a configuration or catalog file (the list's `<folder>/*<name>*`) are
+named by a word holding the name in a file name whose folder is that
+folder, spelt as above, or, when the session's folder is that folder, a
+word with no folder at all: `cat conductor.json` is denied there,
+`cat web/conductor.json` is asked, and a word that is only a search
+pattern for the name (`grep -rn conductor.json docs/`) cannot be told
+from the file and is denied. Nothing else is judged a path: a variable other than `HOME`, a glob, a `cd`, a script or any other
 computed path is asked like any other call, and in a yolo session runs
 unasked. The one `--settings` a chat's child takes (`claude-protocol.json`,
 or `claude-protocol-yolo.json` with the yolo key) holds a `Read` and an
@@ -9559,11 +9639,16 @@ terminals.`, `Sessions on another machine stay in their terminal.`,
 protocol the server speaks, a driver that does not move, a Runtime other
 than this machine's, no recipe to resume its terminal, or a conversation
 not known yet), `This version of Claude Code can only run in its
-terminal.`; `409 moving` while a move is under way; `409 session_ended`;
+terminal.`, `Sessions launched with an added folder stay in their
+terminal.` (a launch argument `--add-dir`), `This session's arguments
+hold <flag>, which a chat sets itself; it stays in its terminal.` (both
+told before anything is stopped); `409 moving` while a move is under way; `409 session_ended`;
 `404` when unknown.
 
 The move marks the session moving (a `submit`, an `answer`, keys and an
-`interrupt` are refused `moving`), stops the way it runs (a chat's input
+`interrupt` are refused `moving`; a Stop ends the move: what it waits on
+is let go, nothing is started after it and the session ends stopped),
+stops the way it runs (a chat's input
 closed, then its child stopped; the terminal's process stopped), waits for
 the old process's exit and its output's end, proves its process group
 gone (no process left in it; what the old process left there is ended),
@@ -9574,8 +9659,9 @@ environment, or the terminal with the agent's `resumeArgs` and the
 launch's other arguments. Every viewer is sent `way`; the terminal's
 ring and screens begin empty with the new process; the transcript stays,
 with a `notice` entry at the boundary: `Moved to the terminal.` or `Moved
-to Chat. Turns made in the terminal are not shown here.`, and the
-activity says the move. A new start that fails goes back the way it came
+to Chat. Turns made in the terminal are not shown here. What the agent
+left running in its terminal was ended.`, and the activity says the
+move. A new start that fails goes back the way it came
 from, once, its sentence on the `way` message's `why` and in the activity
 (`Claude Code did not start a chat.`, `Claude Code is not signed in; sign
 in from its terminal.`); when that fails too, the session ends with both

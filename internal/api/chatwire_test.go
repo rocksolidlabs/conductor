@@ -165,11 +165,21 @@ func TestTranscriptGetInFlight(t *testing.T) {
 		t.Fatalf("a read once the four were written: %v", c.m)
 	}
 
-	// Past the ring: the first entries are no longer kept.
+	// Past the ring: the first entries are no longer kept. The viewer that
+	// watched so far leaves first, and another comes once the entries are
+	// in: a viewer that reads nothing while 600 entries of the largest
+	// size are sent to it is dropped as a slow consumer as soon as its
+	// socket holds no more, which a Mac's loopback does long before
+	// Linux's, and the reads below ask nothing of a viewer that watched.
+	v.c.CloseNow()
 	big := strings.Repeat("w", session.MaxEntryText)
 	for i := range 600 {
 		f.Text(fmt.Sprintf("big%d", i), big, true)
 	}
+	v = dialViewer(t, e, id, adminToken)
+	helloChat(v, ^uint64(0))
+	v.until("the welcome once the entries are in", controlOf(proto.CtlWelcome), nil)
+	v.until("ready once the entries are in", controlOf(proto.CtlReady), nil)
 	v.send(transcriptGet("g1", proto.TranscriptGet{After: 1}))
 	if c := v.until("the read of a dropped range", func(c chatFrame) bool { return c.names("g1") }, nil); c.m["code"] != proto.ErrCodeTranscriptGone || c.m["message"] != session.TranscriptGoneWords {
 		t.Fatalf("a read of a range no longer kept: %v", c.m)

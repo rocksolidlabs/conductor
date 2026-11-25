@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/rocksolidlabs/conductor/internal/session"
@@ -72,12 +73,22 @@ func (s *Server) handlePermission(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	switch s.agentTokenOK(r, d) {
-	case agentTokenServed:
-	case agentTokenLaneClosed:
-		writeLaneClosed(w)
+	// The attention route's door (attentionPrincipal: the session's agent
+	// token, a comparison lane's own door, the admin), narrowed to the
+	// session's own agent.
+	source, ok := s.attentionPrincipal(w, r, d)
+	if !ok {
 		return
-	default:
+	}
+	if source == session.SourceAdmin {
+		// The workbench's token, an admin principal's, answers agent_only,
+		// as every route the session's own token alone takes (opAgentOnly).
+		writeError(w, http.StatusForbidden, "agent_only", "a permission request is the chat's own agent's, with its token")
+		return
+	}
+	if ref := d.Info().Crew; ref != nil && ref.Brakeman != nil {
+		// A Brakeman turn runs in its terminal, never as a chat: its token
+		// asks nothing here, refused before the body is read.
 		if !s.limiter.allow(clientKey(r)) {
 			writeError(w, http.StatusTooManyRequests, "rate_limited", "too many requests")
 			return
@@ -99,8 +110,13 @@ func (s *Server) handlePermission(w http.ResponseWriter, r *http.Request) {
 	dec := json.NewDecoder(bytes.NewReader(body))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&req); err != nil || dec.More() || req.Tool == "" || len(req.Input) == 0 {
-		// The input's words are never in an error's.
-		writeError(w, http.StatusBadRequest, "invalid_request", `the body is {"call", "tool", "input"}`)
+		// The input's words are never in an error's: a field unknown is
+		// named by its name alone, anything else in the route's words.
+		words := `the body is {"call", "tool", "input"}`
+		if err != nil && strings.HasPrefix(err.Error(), "json: unknown field ") {
+			words = err.Error()
+		}
+		writeError(w, http.StatusBadRequest, "invalid_request", words)
 		return
 	}
 	replied := false

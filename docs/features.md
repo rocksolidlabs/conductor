@@ -259,6 +259,85 @@ kept for the chat, as its terminal had it.
 - **A connection made again** is sent only what changed after the point it
   held, and a request that ended meanwhile is drawn ended.
 
+## A line is typed only at the agent's prompt, for the whole of a session (#1116; 2026-11-25)
+
+- **The rule.** For an agent whose catalog entry has a prompt shape
+  (Claude Code and Codex among the built-in ones), every line Conductor
+  types into a session that names no question, and every reply to a
+  question the session does not read off the screen (the agent's own, a
+  decision's, a wait the agent reported), is typed only where a whole
+  frame of the screen, read as the writer takes the line, shows the
+  agent's own prompt by its shape and no dialog's numbered choice, for the
+  whole of the session. Its Enter is written only where the screen, read
+  again as the writer takes the Enter and once more as the last thing
+  before it, is that prompt, or the prompt holding the line's own text (a
+  long line wraps past the rows the shape takes). Anywhere else nothing of
+  the line is written, its Enter included.
+- **A numbered list is not a dialog.** After the startup watch, a numbered
+  row is a dialog's choice only in or under the rows the prompt's shape
+  matched, or where it carries a highlight's marker: a numbered list in
+  the agent's own answer above its prompt takes a line, at rest and at
+  work.
+- **A numbered line the session entered is the agent's history.** The
+  agents show a line they were given in their history behind the prompt's
+  mark, where a line that begins "1. " reads as a dialog's marked choice.
+  The session keeps the last eight lines it entered that begin so and are
+  at least 24 characters long (each cut to 256 bytes, nothing else of
+  them), and a marked row above the prompt whose text is the start of one
+  of them is read as that line, not as a choice. A numbered message typed
+  by keys in the terminal itself, or a short one ("1. Yes"), still holds
+  Conductor's lines back until it scrolls off the screen, and so does
+  every such row after a server restart, which keeps none of them;
+  meanwhile, type in the terminal.
+- **Codex's prompt is read with its footer.** Codex's shape takes its
+  composer only with one of the five footers Codex draws under it as the
+  screen's last row: "? for shortcuts" with the context left at its right
+  end, the context left alone (a draft typed), "tab to queue message" (a
+  draft while it works), "esc again to edit previous message" and "⌃c
+  again to quit". A list of commands or files drawn above the composer
+  keeps the footer, and is read as the prompt. A `›` row with no such
+  footer under it (a message of the person's above a question, a list's
+  highlight), a composer whose footer shows something else (the first
+  press of a double Escape, the history search, the list of shortcuts)
+  and a footer configured to show none of the five are not read as the
+  prompt: a line is refused there. Whoever customises Codex's footer gives
+  the agent a `promptShape` of their own in the catalog, or types in the
+  terminal.
+- **Every line Conductor types.** A person's line from the app or a reply
+  box, a link's, a chat line to the agent, a crew member's prompt and
+  message, a handoff, a broadcast, a decision's line, a Brakeman turn's
+  line. A person's line is refused with "the agent's screen is not
+  recognised as its prompt: nothing was typed. Look at its terminal." (in
+  the startup words while the startup watch lasts); a line from the
+  palette and an extension's line are told the same when the session asks
+  nothing; a handoff and a decision's line wait for the member's next
+  activity, the run's log saying once that the member shows a screen that
+  is not its prompt; the reminder that a done does not finish a task is
+  given only once typed, and while it is held back the run's log says it
+  waits for the member's next done; a crew member's prompt waits and is
+  tried again, noted once in the run's log.
+- **An Enter refused after the text** is left out, the text waits in the
+  agent's input, and the session's turn is held until a person types in
+  its terminal, so no later line joins the text: the session shows "A
+  line was typed and not entered: type in the terminal to continue", the
+  line's sender is told "the line was typed and not entered: type in the
+  terminal to continue", and a chat message sent to the agent is not
+  shown as sent. So it is for an Enter refused late, its write begun when
+  its wait ran out: the turn is kept until it is written or refused. A crew member's prompt its agent
+  did not report taking gets its second Enter only at the prompt too.
+- **Chat and terminal.** A session in a chat types nothing into a
+  terminal, and none of this applies to its lines. A session moved back
+  to its terminal reads the new terminal's screen by the same rule from
+  its first frame: a line sent before the agent draws its prompt is
+  refused, and the numbered lines the session entered before the move
+  are still read as its own in the history the agent draws again. A move
+  pressed while the turn is held, or while a line's Enter is under way,
+  waits until the session is at rest.
+- **Unchanged.** Keys a person types in the terminal; an answer to a
+  question the session reads off the screen (its choices, a reply naming
+  it); a session whose agent has no prompt shape. A hosted session follows
+  the rule through the shape its host is sent with the agent's recipe.
+
 ## Hosts: the machines this server knows, and who holds each run (HS2, #1032; 2026-11-22)
 
 One page, **Hosts** (`/hosts`; the nav after History, the phone's More, the
@@ -347,7 +426,8 @@ only actions are links to the run page, a session and Needs you.
   output it keeps.
 - **The Enter.** A line that is an Enter alone is judged by the same rule
   as it is written. The Enter of a line with text is held where it was
-  held before.
+  held before, and, for an agent with a prompt shape, written only at the
+  agent's prompt (#1116).
 - **A prompt its agent did not report taking.** For an agent that reports
   taking a prompt (Claude Code), a crew member's prompt it does not report
   taking, after an Enter pressed again, is said once in the run's log
@@ -2763,8 +2843,8 @@ request each from main.
   session** (#172). The owner's decision, 2026-10-12, stricter than #122's:
   a submission whose text was typed and whose link was then revoked or
   expired gets no Enter; the session's turn stays held, its view saying
-  "Text from a link that was let go was typed and not entered: type in the
-  terminal to continue", until a person types in the terminal (a terminal's
+  "A line was typed and not entered: type in the terminal to continue"
+  (#1116: the same words for every line whose Enter was kept out), until a person types in the terminal (a terminal's
   own reports and the pointer's do not count) or the session ends; while it
   holds, the reply boxes take no reply, a question on the screen shows over
   it, and at most 64 submissions wait. A host now hears why a viewer left

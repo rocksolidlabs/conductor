@@ -121,7 +121,12 @@ func TestPermissionRouteBodyBound(t *testing.T) {
 	if status, out := at.answered(t); status != http.StatusOK || out["behavior"] != "deny" || out["message"] != session.NotACallWords {
 		t.Fatalf("a body at 256 KiB: %d %v", status, out)
 	}
-	for name, tk := range map[string]string{"the admin's": adminToken, "another session's": otherTok, "none": "", "a wrong one": "wrong"} {
+	// The admin's token answers agent_only, as every route the session's
+	// own token alone takes; any other, 401.
+	if status, out := postPermission(e, id, adminToken, permissionBody("c", "Bash", `{}`)).answered(t); status != http.StatusForbidden || errorCode(out) != "agent_only" {
+		t.Fatalf("the admin's token: %d %v", status, out)
+	}
+	for name, tk := range map[string]string{"another session's": otherTok, "none": "", "a wrong one": "wrong"} {
 		h := postPermission(e, id, tk, permissionBody("c", "Bash", `{}`))
 		if status, out := h.answered(t); status != http.StatusUnauthorized {
 			t.Fatalf("%s token: %d %v", name, status, out)
@@ -170,5 +175,29 @@ func TestPermissionRouteOpenToALane(t *testing.T) {
 func TestTheFloorsFilesAreTheChildsOwn(t *testing.T) {
 	if agentproto.ClaudeProtocolSettings != agents.ClaudeProtocolSettings || agentproto.ClaudeProtocolYoloSettings != agents.ClaudeProtocolYoloSettings {
 		t.Fatal("the floor's file names differ between the start and the assets")
+	}
+}
+
+// A Brakeman turn's session runs in its terminal, never as a chat: its own
+// token is refused on the permission route (401) before the body is read,
+// and asks no question.
+func TestBrakemansTokenPutsNoPermissionRequest(t *testing.T) {
+	b := brakemanEnv(t, nil)
+	b.enable(t, "bk", nil)
+	sid, tok, _ := b.turnSession(t, b.briefing(t))
+	for name, body := range map[string][]byte{"a request": permissionBody("c-1", "Bash", `{"command":"ls"}`), "a body it would refuse": []byte(`{}`)} {
+		status, data, _ := b.callAs(t, tok, http.MethodPost, "/api/sessions/"+sid+"/permission", body)
+		if status != http.StatusUnauthorized {
+			t.Fatalf("%s with Brakeman's token: %d %.200s", name, status, data)
+		}
+	}
+	d, ok := b.srv.registry.Get(sid)
+	if !ok {
+		t.Fatal("the turn's session is not listed")
+	}
+	if l, isLocal := d.(*session.Local); isLocal {
+		if o, w := l.OpenPermissions(); o != 0 || w != 0 {
+			t.Fatalf("%d open, %d waiting", o, w)
+		}
 	}
 }

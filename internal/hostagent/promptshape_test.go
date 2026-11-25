@@ -341,3 +341,40 @@ func TestARecipeWithAShapeTheHostDoesNotTakeStartsNothing(t *testing.T) {
 		})
 	}
 }
+
+// pickProgram draws its first argument, reads one line (its Enter turned
+// into a line feed by the terminal) into the file its third names, then
+// draws its second and appends every key it reads after that to the file.
+const pickProgram = `stty -icanon -echo; printf '%s' "$1"; IFS= read -r first; printf '%s\n' "$first" > "$3"; printf '%s' "$2"; exec /bin/cat >> "$3"`
+
+// shapePick is a screen with a choice an Enter or a digit would pick,
+// made of plain rows no catalog entry knows.
+var shapePick = shapeFrame("  Choose a colour for the chart", "", "  › 1. Blue", "    2. Green", "    3. Red", "", "  Enter to choose · Esc to close")
+
+// A hosted session of Codex, its host sent the prompt shape, types a line
+// only at Codex's prompt for the whole of the session, end to end from a
+// page through the server: its first line is typed and entered at the
+// composer; then, with a choice on the screen and no prompt, a line is
+// refused in the words of a screen that is not the agent's prompt and the
+// program reads nothing more, no text and no Enter.
+func TestAHostedSessionTypesEveryLineOnlyAtThePrompt(t *testing.T) {
+	_, hs := shapeServer(t)
+	said := make(chan map[string]any, 8)
+	p := registerProxy(t, hs.URL, func(map[string]any) {}, said)
+	typed := filepath.Join(t.TempDir(), "typed")
+	id := runFormHost(t, p.URL, Options{Token: hostToken, AgentID: "codex", Argv: []string{"/bin/sh", "-c", pickProgram, "sh", shapeCodexPrompt, shapePick, typed}})
+	if host := <-said; host["promptShape"] != true {
+		t.Fatalf("the host's register said %v", host)
+	}
+	if m := submitFromAPage(t, hs.URL, id, "Ask Codex", "read the code"); m["t"] != proto.CtlSubmitOK {
+		t.Fatalf("the first line at the prompt: %v", m)
+	}
+	readsLine(t, typed, "read the code")
+	m := submitFromAPage(t, hs.URL, id, "Choose a colour", "1 fix the bug")
+	if m["t"] != proto.CtlError || m["code"] != proto.ErrCodeNotSent || m["message"] != session.ErrNotAtPrompt.Error() {
+		t.Fatalf("the line at the choice: %v, want it refused as not at the prompt", m)
+	}
+	if b, _ := os.ReadFile(typed); string(b) != "read the code\n" {
+		t.Fatalf("the program read %q", b)
+	}
+}

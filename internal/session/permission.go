@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -741,8 +742,10 @@ func (s *Local) flooredLocked(tool string, input []byte) bool {
 				if !strings.EqualFold(tool, "glob") {
 					continue
 				}
+				// Up to its first wildcard, relative to the session's
+				// folder when it is not absolute (pathDenied).
 				v = literalPrefix(v)
-				if v == "" || !filepath.IsAbs(v) {
+				if v == "" {
 					continue
 				}
 			}
@@ -809,21 +812,27 @@ func (s *Local) pathDenied(path string, deny []string) bool {
 func CommandNamesDenied(cmd string, deny []string) bool { return commandNamesDenied(cmd, deny, "") }
 
 // commandNamesDenied is the floor's judgement of a shell command's text,
-// and exactly this: the text is lowercased, its quotes (' and ") and
-// backslashes taken out, and every "//" and "/./" made one "/"; then it
-// names a path of the deny list when it holds the path as the list spells
-// it, or with ~, $HOME or ${HOME} for the home folder before the rest, or,
-// with cwd (the session's folder), the path relative to cwd where the path
-// is inside it, after the start of the text, a space or one of =:(<>|;&.
-// A name entry (dir/*name*) is named by its name and its directory. What is
-// not judged a path, and is asked like any other call (or runs unasked in
-// a yolo session): a variable other than HOME, a glob, a cd, a script, a
-// path computed any other way, a path relative to another folder.
+// and exactly this. The text is lowercased, a backslash before a newline
+// taken out with the newline, then its quotes (' and ") and backslashes,
+// and every "//" and "/./" made one "/". Then it names a path of the deny
+// list when it holds the path as the list spells it, or with ~, $HOME or
+// ${HOME} for the home folder before the rest, or, with cwd (the session's
+// folder), the path relative to cwd where the path is inside it, as a word
+// of its own: after the text's start, a space, a tab, a newline or one of
+// =:(<>|;& (a leading ./ allowed), and before the text's end, a "/" or one
+// of those. A name entry (dir/*name*) is named by a word holding name in a
+// file name whose folder is dir: the word's part before that name spelt as
+// dir is above, or, when dir is cwd, a word with no folder at all (a word
+// that is only a search pattern for that name is taken for the file).
+// Nothing else is judged a path: a variable other than HOME, a glob, a cd,
+// a script, a path computed any other way, a path relative to another
+// folder; such a call is asked like any other, or runs unasked in a yolo
+// session.
 func commandNamesDenied(cmd string, deny []string, cwd string) bool {
 	if cmd == "" {
 		return false
 	}
-	text := strings.ToLower(strings.NewReplacer(`"`, "", "'", "", `\`, "").Replace(cmd))
+	text := strings.ToLower(strings.NewReplacer("\\\n", "", `"`, "", "'", "", `\`, "").Replace(cmd))
 	for {
 		next := strings.ReplaceAll(strings.ReplaceAll(text, "/./", "/"), "//", "/")
 		if next == text {
@@ -831,47 +840,96 @@ func commandNamesDenied(cmd string, deny []string, cwd string) bool {
 		}
 		text = next
 	}
+	const bounds = " \t\n=:(<>|;&"
+	boundary := func(b byte) bool { return strings.IndexByte(bounds, b) >= 0 }
 	home, _ := os.UserHomeDir()
 	forms := func(p string) []string {
-		out := []string{p}
+		out := []string{strings.ToLower(p)}
 		if home != "" && home != "/" && (p == home || strings.HasPrefix(p, home+string(filepath.Separator))) {
-			rest := strings.TrimPrefix(p, home)
+			rest := strings.ToLower(strings.TrimPrefix(p, home))
 			out = append(out, "~"+rest, "$home"+rest, "${home}"+rest)
 		}
 		return out
 	}
-	relative := func(p string) string {
+	// relative is p relative to cwd, "" when p is cwd itself, and false
+	// when there is no cwd or p is not inside it.
+	relative := func(p string) (string, bool) {
 		if cwd == "" {
-			return ""
+			return "", false
 		}
 		r, err := filepath.Rel(cwd, p)
-		if err != nil || r == "." || !filepath.IsLocal(r) {
-			return ""
+		if err != nil {
+			return "", false
 		}
-		return strings.ToLower(filepath.ToSlash(r))
+		if r == "." {
+			return "", true
+		}
+		if !filepath.IsLocal(r) {
+			return "", false
+		}
+		return strings.ToLower(filepath.ToSlash(r)), true
 	}
-	// atWord says the text holds f where a word begins.
-	atWord := func(f string) bool {
-		for i := 0; ; {
+	// asWord says the text holds f as a word of its own (a leading ./
+	// allowed).
+	asWord := func(f string) bool {
+		for i := 0; i < len(text); {
 			j := strings.Index(text[i:], f)
 			if j < 0 {
 				return false
 			}
-			at := i + j
-			if at == 0 || strings.ContainsRune(" \t\n=:(<>|;&", rune(text[at-1])) || strings.HasSuffix(text[:at], "./") && (at == 2 || strings.ContainsRune(" \t\n=:(<>|;&", rune(text[at-3]))) {
+			at, end := i+j, i+j+len(f)
+			starts := at == 0 || boundary(text[at-1]) || strings.HasSuffix(text[:at], "./") && (at == 2 || boundary(text[at-3]))
+			ends := end == len(text) || text[end] == '/' || boundary(text[end])
+			if starts && ends {
 				return true
 			}
 			i = at + 1
 		}
+		return false
 	}
 	names := func(p string) bool {
 		for _, f := range forms(p) {
-			if strings.Contains(text, strings.ToLower(f)) {
+			if strings.Contains(text, f) {
 				return true
 			}
 		}
-		if r := relative(p); r != "" && atWord(r) {
+		if r, ok := relative(p); ok && r != "" && asWord(r) {
 			return true
+		}
+		return false
+	}
+	// words are the text's words, split at the boundaries.
+	words := strings.FieldsFunc(text, func(r rune) bool { return r < 0x80 && boundary(byte(r)) })
+	// namesEntry says a word names a file whose name holds core in dir.
+	namesEntry := func(dir, core string) bool {
+		dirs := forms(dir)
+		rel, inside := relative(dir)
+		for _, w := range words {
+			start := 0
+			for _, seg := range strings.SplitAfter(w, "/") {
+				name := strings.TrimSuffix(seg, "/")
+				if !strings.Contains(name, core) {
+					start += len(seg)
+					continue
+				}
+				folder := ""
+				if start > 0 {
+					folder = strings.TrimSuffix(w[:start], "/")
+					if folder == "" {
+						folder = "/"
+					}
+				}
+				for strings.HasPrefix(folder, "./") {
+					folder = folder[2:]
+				}
+				if folder == "." {
+					folder = ""
+				}
+				if folder != "" && slices.Contains(dirs, folder) || inside && folder == rel {
+					return true
+				}
+				break
+			}
 		}
 		return false
 	}
@@ -881,8 +939,7 @@ func commandNamesDenied(cmd string, deny []string, cwd string) bool {
 		}
 		base := filepath.Base(e)
 		if len(base) > 2 && strings.HasPrefix(base, "*") && strings.HasSuffix(base, "*") {
-			core := strings.ToLower(strings.Trim(base, "*"))
-			if core != "" && strings.Contains(text, core) && (names(filepath.Dir(e)) || relative(filepath.Dir(e)) == "" && cwd != "" && sameDir(cwd, filepath.Dir(e))) {
+			if core := strings.ToLower(strings.Trim(base, "*")); core != "" && namesEntry(filepath.Dir(e), core) {
 				return true
 			}
 			continue
@@ -893,9 +950,6 @@ func commandNamesDenied(cmd string, deny []string, cwd string) bool {
 	}
 	return false
 }
-
-// sameDir says a and b are one folder, as cleaned paths.
-func sameDir(a, b string) bool { return filepath.Clean(a) == filepath.Clean(b) }
 
 // SummaryCutMark ends a request's summary that was cut: the mark a
 // question's words cut to fit end with (shownWords).

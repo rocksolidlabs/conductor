@@ -62,6 +62,9 @@ type fakeLauncher struct {
 	// and questions its other questions (Options.Questions).
 	trust     *regexp.Regexp
 	questions []session.StartupQuestion
+	// shape, when set, is every session's prompt shape
+	// (Options.PromptShape).
+	shape *regexp.Regexp
 	// confirm is every session's Options.ConfirmSubmit (its agent reports
 	// taking a prompt), and confirmWait its Options.ConfirmWait.
 	confirm     bool
@@ -164,7 +167,7 @@ func (f *fakeLauncher) Launch(ctx context.Context, spec LaunchSpec) (*session.Lo
 	p := sessiontest.NewFakeProc()
 	info := session.Info{ID: session.NewID(), Name: name, AgentID: spec.AgentID, Cwd: spec.Cwd, Crew: &ref, Cols: 80, Rows: 24}
 	l := session.NewLocal(info, p, session.Options{Log: quietLog, OnActivity: f.activity, OnChange: f.change,
-		SubmitPause: pause, TrustPattern: f.trust, Questions: f.questions, InputWait: f.inputWait,
+		SubmitPause: pause, TrustPattern: f.trust, Questions: f.questions, InputWait: f.inputWait, PromptShape: f.shape,
 		WorkingTitle: f.workingTitle, TitleSettle: f.titleSettle, ConfirmSubmit: f.confirm, ConfirmWait: f.confirmWait})
 	f.mu.Lock()
 	f.procs[name], f.locals[name], f.byID[info.ID] = p, l, l

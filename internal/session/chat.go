@@ -558,8 +558,18 @@ func (s *Local) ChatSend(ctx context.Context, sub *Subscription, send proto.Chat
 	if !ok || ref.Kind != proto.ChatKindMessage {
 		return ErrChatUnknownRef
 	}
-	if _, err := s.Submit(ctx, Submission{Text: AgentText(ref), By: sub}); err != nil && !errors.Is(err, ErrSubmitPending) {
+	res, err := s.Submit(ctx, Submission{Text: AgentText(ref), By: sub})
+	if err != nil && !errors.Is(err, ErrSubmitPending) {
 		return err
+	}
+	switch {
+	case err == nil && res.Typed && !res.Entered:
+		// Typed without its Enter (a question came in its pause): not
+		// sent to the agent.
+		return ErrLineStranded
+	case err == nil && !res.Typed:
+		// Nothing typed: the session held it back.
+		return ErrQuestion
 	}
 	m := ChatMessage{ID: NewID(), At: time.Now().UTC(), Scope: proto.ChatScopeSession, Kind: proto.ChatKindSentToAgent, By: chatBy(sub), Ref: ref.ID}
 	s.mu.Lock()
@@ -628,9 +638,11 @@ func ChatErrorFrame(err error, requestID string) []byte {
 	switch {
 	case errors.As(err, &notSent):
 		code, msg = proto.ErrCodeNotSent, notSent.Reason
-	case errors.Is(err, ErrTrustQuestion), errors.Is(err, ErrQuestion):
+	case errors.Is(err, ErrTrustQuestion), errors.Is(err, ErrQuestion), errors.Is(err, ErrNotAtPrompt):
 		code = proto.ErrCodeNotSent
 		msg, _ = NotSentWords(err)
+	case errors.Is(err, ErrLineStranded):
+		msg = LineStrandedWords
 	case errors.Is(err, ErrChatRateLimited):
 		code, msg = proto.ErrCodeTooManyRequests, "too many messages at once"
 	case errors.Is(err, ErrReadOnly):

@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ref, type Ref } from 'vue'
+import { skipWords } from '~/utils/crews'
+import { NOT_AT_PROMPT_WORDS } from '~/utils/protocol'
 import { ReplyError } from '~/utils/reply'
 import { useQuickReply } from './useQuickReply'
 
@@ -64,5 +66,35 @@ describe("an answer's outcome", () => {
     word = () => Promise.reject(new ReplyError('closed', 'the connection closed before the session said whether it took the reply'))
     const quick = useQuickReply()
     await expect(quick.answer({ id: 's4', kind: 'hosted' }, { input: '1' }, { question: fresh(), reqId: 'd6' })).rejects.toMatchObject({ code: 'closed' })
+  })
+})
+
+// A palette line (`say`, unlessWaiting) the owner refuses with not_sent: held back while the session asks, it says the broadcast's
+// words; held back because the agent's screen is not its prompt, the owner's own words, which say where to look.
+describe("a palette line's refusal", () => {
+  /** The owner's refusal of the next line: a not_sent with its words. */
+  let refusal: string
+  beforeEach(() => {
+    vi.stubGlobal('useTerminalTransport', () => ({
+      create: () => ({
+        connect: () => Promise.resolve({ t: 'welcome', role: 'control' }),
+        onClose: () => {},
+        onControl: () => {},
+        submitAcked: () => Promise.reject(new ReplyError('not_sent', refusal)),
+        close: () => {},
+      }),
+    }))
+  })
+
+  it("says the agent's screen is not its prompt, and where to look, in the owner's words", async () => {
+    refusal = NOT_AT_PROMPT_WORDS
+    const quick = useQuickReply()
+    expect(await quick.say({ id: 's5', kind: 'server' }, 'now run the tests')).toEqual({ refused: NOT_AT_PROMPT_WORDS })
+  })
+
+  it("says the session asks, in the broadcast's words, for a session that asks", async () => {
+    refusal = 'the agent asks a question on its screen: answer with the question\'s choices, or in its terminal'
+    const quick = useQuickReply()
+    expect(await quick.say({ id: 's6', kind: 'server' }, 'now run the tests')).toEqual({ refused: skipWords('needs_input') })
   })
 })

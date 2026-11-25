@@ -2862,6 +2862,9 @@ type answerLine struct {
 	// naming the decision, never as the answer to its question, and with
 	// no delivery of its own.
 	notice bool
+	// held is set once the run's log has said the line waits for a screen
+	// that is not its agent's prompt (typeAnswer): said once per line.
+	held bool
 }
 
 // queueAnswer queues an applied answer for the asking attempt's member's
@@ -2992,6 +2995,18 @@ func (e *Engine) typeAnswer(r *run, m *member, l *session.Local, al *answerLine,
 		m.answers = slices.Insert(m.answers, 0, al)
 		e.mu.Unlock()
 		return false
+	case !res.Typed && (errors.Is(err, session.ErrNotAtPrompt) || err == nil && res.NotAtPrompt):
+		// The member's screen was not its agent's prompt (its answer is
+		// typed only there): nothing typed, the answer waits as for a
+		// question, said once.
+		e.mu.Lock()
+		m.answers = slices.Insert(m.answers, 0, al)
+		if !al.held {
+			al.held = true
+			r.note(session.ActivityStatus, "decision %s's answer waits: %s shows a screen that is not its prompt", al.d.id(), m.def.Name)
+		}
+		e.mu.Unlock()
+		return true
 	case !res.Typed && (errors.Is(err, session.ErrQuestion) || errors.Is(err, session.ErrTrustQuestion)):
 		// A dialog or a question found on the screen as the line began, or
 		// as its text was taken (the session's look, its writer's guard),
