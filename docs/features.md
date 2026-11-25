@@ -277,6 +277,14 @@ that order.
   shown as sent. So it is for an Enter refused late, its write begun when
   its wait ran out: the turn is kept until it is written or refused. A crew member's prompt its agent
   did not report taking gets its second Enter only at the prompt too.
+- **Chat and terminal.** A session in a chat types nothing into a
+  terminal, and none of this applies to its lines. A session moved back
+  to its terminal reads the new terminal's screen by the same rule from
+  its first frame: a line sent before the agent draws its prompt is
+  refused, and the numbered lines the session entered before the move
+  are still read as its own in the history the agent draws again. A move
+  pressed while the turn is held, or while a line's Enter is under way,
+  waits until the session is at rest.
 - **Unchanged.** Keys a person types in the terminal; an answer to a
   question the session reads off the screen (its choices, a reply naming
   it); a session whose agent has no prompt shape. A hosted session follows

@@ -2016,7 +2016,17 @@ ran out keeps the session's turn until it is written (only then is the
 line entered and the startup watch over) or refused, which holds the
 turn the same way. Its last reading is made after everything else the
 Enter does, the write itself the only step after it. A reply to a question read off the screen and a
-person's keys (INPUT) are judged by their own rules.
+person's keys (INPUT) are judged by their own rules. A session in the
+protocol way (a chat, Chat sessions) types nothing into a terminal: none
+of this reads a screen for its lines, and nothing it sends is kept as a
+numbered line of the session's own. A session moved back to its terminal
+runs a new process with no startup watch: its screen is read by the rule
+past the watch from its first frame, so a line sent before the new
+terminal draws its prompt writes nothing, and the numbered lines the
+session entered before the move are still read as its own in the
+history the agent draws again. A move pressed while the session's turn
+is held, or while a line's carriage return is under way, is noted and
+made once the session is at rest.
 No lock
 of the session is held
 across the pause, and a person's keystrokes (INPUT) are written as they come,
