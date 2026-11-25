@@ -8,6 +8,8 @@ export const NOT_QUALIFIED = 'This version of Claude Code can only run in its te
 export const MOVES_TO_CHAT = 'Moves to Chat when this turn ends.'
 export const MOVES_TO_TERMINAL = 'Moves to the terminal when this turn ends.'
 export const MOVING = 'The session is moving; try again in a moment.'
+/** A crew member of a Chat run: its way is its run's, and its switch is a label (design 14). */
+export const RUNS_AS_CHAT_FOR_RUN = 'Runs as a chat for its run.'
 /** A move to Chat at rest ends what the agent left running in its terminal (the move's notice says it was ended). */
 export const ENDS_TERMINAL_WORK = 'Moving to Chat ends what the agent left running in its terminal.'
 
@@ -31,6 +33,8 @@ export interface SwitchFacts {
   moving: boolean
   /** The route's refusal of the last press (move_refused's words), until the next way message. */
   refused?: string
+  /** The session is a crew member of a Chat run (its launch's way): its switch is a label, the run's. */
+  crewChat?: boolean
 }
 
 export interface SwitchState {
@@ -54,6 +58,7 @@ export function movesWhenTurnEnds(to: SessionWay): string {
 export function switchState(f: SwitchFacts): SwitchState {
   const off: SwitchState = { shown: false, selected: f.way, pressable: false, line: '', noted: '' }
   if (!f.hasProtocol) return off
+  if (f.crewChat) return { shown: true, selected: f.way, pressable: false, line: RUNS_AS_CHAT_FOR_RUN, noted: '' }
   const s: SwitchState = { shown: true, selected: f.way, pressable: f.canMove && !f.moving, line: '', noted: f.noted }
   if (!f.canMove) return { ...s, noted: '' }
   const other: SessionWay = f.way === 'terminal' ? 'protocol' : 'terminal'

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { AgentInfo, CrewInfo } from '~/composables/useSessions'
-import { plainTasks, type DraftCrew } from '~/utils/crews'
+import { membersRunAsLine, plainTasks, type DraftCrew } from '~/utils/crews'
 import { accountCountWords, launchAccounts, memberLogin } from '~/utils/launchAccounts'
 import { COMPARISON_LAUNCHES_FROM_A_TICKET } from '~/utils/compareLaunch'
 import { launchLines, launchYoloWords, readSheet, sheetNotes, sheetNotice, sheetRows, type SheetRead, type SheetRefusal, type SheetTarget } from '~/utils/crewLaunch'
@@ -61,7 +61,7 @@ const got = computed(() => (read.value && read.value.target === props.target ? r
 const failed = computed(() => (got.value && 'error' in got.value ? got.value : null))
 const crew = computed(() => {
   const g = got.value
-  return g && 'crew' in g ? { name: g.crew.name, members: g.crew.members, managed: !!g.crew.tasks, yolo: g.yolo, inherits: typeof g.crew.yolo !== 'boolean', saved: props.target && 'id' in props.target ? (g.crew as CrewInfo) : null } : null
+  return g && 'crew' in g ? { name: g.crew.name, members: g.crew.members, managed: !!g.crew.tasks, yolo: g.yolo, way: g.crew.way, inherits: typeof g.crew.yolo !== 'boolean', saved: props.target && 'id' in props.target ? (g.crew as CrewInfo) : null } : null
 })
 const notice = computed(() => sheetNotice(props.refused, failed.value ? 'failed' : crew.value ? 'drawn' : 'reading', !!crew.value?.saved && !crew.value.saved.revision))
 // Once a refused launch's crew is drawn again, the focus goes to Launch: Launch was held through the launch and the read again.
@@ -143,6 +143,7 @@ const notes = computed(() => sheetNotes(rows.value, viewOf))
           </div>
         </div>
         <p class="mt-3 text-sm text-muted" data-crew-launch-yolo>{{ launchYoloWords(crew.yolo, crew.inherits) }}</p>
+        <p class="mt-1 text-sm text-muted" :data-crew-launch-way="crew.way === 'chat' ? 'chat' : 'terminal'">{{ membersRunAsLine(crew.way) }}</p>
         <!-- Everything else the sheet knows, one press away: the sessions per login, and each member's usage as the server read it. -->
         <details class="group mt-3 text-sm" data-crew-launch-details>
           <summary class="flex w-fit cursor-pointer list-none items-center gap-1 rounded-xs text-muted outline-none hover:text-default focus-visible:ring-2 focus-visible:ring-primary max-sm:min-h-11 [&::-webkit-details-marker]:hidden" data-crew-launch-details-open>

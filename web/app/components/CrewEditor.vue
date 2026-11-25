@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { AgentInfo, CrewStart, SessionInfo } from '~/composables/useSessions'
-import { CREW_NAME_MAX, draftMember, manifestIds, memberNameFrom, moreOptionsLine, ownersFollowPeople, permissionItems, SETUP_WORDS, tasksFollowMembers, viewLinkHoursWords, type DraftCrew, type DraftMember, type DraftPerson } from '~/utils/crews'
+import { CREW_NAME_MAX, draftMember, manifestIds, memberNameFrom, MEMBERS_RUN_AS, membersRunAs, moreOptionsLine, ownersFollowPeople, permissionItems, SETUP_WORDS, tasksFollowMembers, viewLinkHoursWords, withMembersRunAs, type DraftCrew, type DraftMember, type DraftPerson } from '~/utils/crews'
 import { startSentence } from '~/utils/crewWords'
 import { withStart } from '~/utils/crewGraph'
 import { isActive } from '~/utils/attention'
@@ -75,6 +75,13 @@ const yoloItems = computed(() => permissionItems(!!props.yoloDefault))
 const yolo = computed({
   get: () => yoloChoice(crew.value.yolo),
   set: (c: YoloChoice) => (crew.value = { ...crew.value, yolo: yoloFromChoice(c) }),
+})
+
+// How the crew's members run: in their terminals, or as chats (design 14). Terminal by default; a launch fixes it on the run.
+const runAsItems = MEMBERS_RUN_AS.items.map((i) => ({ ...i }))
+const runAs = computed({
+  get: () => membersRunAs(crew.value),
+  set: (v: string | number) => (crew.value = withMembersRunAs(crew.value, String(v))),
 })
 
 const viewLink = computed({
@@ -223,6 +230,10 @@ function refused(message: string) {
 
     <UFormField :label="SETUP_WORDS.start" name="coordination" :ui="{ help: 'mt-1 text-xs' }" :help="managed ? 'The checks decide a task\'s result, never a quiet terminal. Launched, it runs as a managed run: the run page shows the tasks.' : ''">
       <USelect v-model="coordination" :items="coordinationItems" :aria-label="SETUP_WORDS.start" class="w-full" data-crew-coordination />
+    </UFormField>
+
+    <UFormField :label="MEMBERS_RUN_AS.label" name="way" :help="MEMBERS_RUN_AS.chatLine" :ui="{ help: 'mt-1 text-xs' }">
+      <UTabs v-model="runAs" :items="runAsItems" :content="false" size="xs" color="neutral" class="w-fit" :aria-label="MEMBERS_RUN_AS.label" data-crew-way />
     </UFormField>
 
     <!-- The options a crew rarely changes, folded; the line beside the toggle says what each is now. -->

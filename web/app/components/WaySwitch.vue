@@ -22,7 +22,7 @@ function press(way: SessionWay) {
 
 <template>
   <div v-if="state.shown" class="flex min-w-0 items-center gap-2" data-way-switch :data-way="state.selected" :data-noted="state.noted || undefined">
-    <UFieldGroup v-if="facts.canMove" size="xs">
+    <UFieldGroup v-if="facts.canMove && !facts.crewChat" size="xs">
       <UButton
         v-for="side in sides"
         :key="side.way"
