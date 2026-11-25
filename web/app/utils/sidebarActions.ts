@@ -1,6 +1,6 @@
 import type { DropdownMenuItem } from '@nuxt/ui'
 import { accountActions, rowActions, toMenuItems, type AccountHandlers, type RowActionHandlers, type RowActionTarget } from './actions'
-import { decisionOf, noReply } from './attention'
+import { answersInChat, decisionOf, noReply } from './attention'
 import type { AttentionOption } from './protocol'
 import type { SessionRow } from './sidebar'
 
@@ -37,6 +37,8 @@ export interface RowPrompt {
   placeholder: string
   /** The durable decision the question mirrors (`dr-<n>`): the row says where it is answered, and offers no field or choice. */
   decision?: string
+  /** A chat's permission request (answersInChat): answered in the chat alone, so the row says so in plain words, no field or choice. */
+  inChat?: boolean
   /** The question's id: an answer from the row names it, and the owner refuses it once the question no longer waits. */
   question?: string
 }
@@ -49,7 +51,8 @@ export function rowPrompt(row: Pick<SessionRow, 'prompt' | 'session'>): RowPromp
   const none = noReply(row.session.attention)
   const decision = decisionOf(row.session.attention)
   const placeholder = away ? HOST_AWAY : (none ?? 'Reply…')
-  return { message: row.prompt.message, choices: decision ? [] : row.prompt.options, away, held: none !== undefined, placeholder, question: row.prompt.question, decision }
+  const inChat = answersInChat(row.session.attention)
+  return { message: row.prompt.message, choices: decision || inChat ? [] : row.prompt.options, away, held: none !== undefined, placeholder, question: row.prompt.question, decision, ...(inChat ? { inChat } : {}) }
 }
 
 export function accountItems(hasToken: boolean, on: AccountHandlers): DropdownMenuItem[][] {

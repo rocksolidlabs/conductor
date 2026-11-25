@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { AgentInfo, SessionInfo, ShareLink } from '~/composables/useSessions'
-import { liveAttention } from '~/utils/attention'
+import { answersInChat, liveAttention } from '~/utils/attention'
 import type { ActivityEntry, Attention, ChatHistory, ChatMessage, ChatPost, ChatSend, TransportKind, ViewerInfo, Welcome, NvimEvent, NvimBridge, ChatQuote } from '~/utils/protocol'
 import type { TransportState } from '~/utils/transport/types'
 import type { FileTarget } from '~/components/FileBrowser.vue'
@@ -268,15 +268,31 @@ const switchFacts = computed<SwitchFacts>(() => ({
 const switched = computed(() => switchState(switchFacts.value))
 /** The switch's line above the terminal: what a press did or why it waits; the at-rest line is the Chat side's own tooltip. */
 const wayLine = computed(() => (switched.value.shown && switched.value.line !== ENDS_TERMINAL_WORK ? switched.value.line : ''))
+// Every `way` message ends what a press began: the move made, noted, taken back, or gone back with its sentence (a start that failed
+// sends the way it was, unchanged, with why), so the switch never stays on "moving" after it.
+let wayMessages = 0
 watch(
-  () => [unref(conn.value?.way), unref(conn.value?.noted)],
-  () => {
-    moving.value = false
-    refused.value = ''
+  conn,
+  (c, _, onCleanup) => {
+    if (!c) return
+    onCleanup(
+      c.onControl((m) => {
+        if (m.t !== 'way') return
+        wayMessages++
+        moving.value = false
+        refused.value = ''
+      }),
+    )
   },
+  { immediate: true },
 )
-/** The note on the vendor's terms (design 11), once in this browser: the first time a person presses Chat; under it, that the chat has Conductor's tools only. */
+/**
+ * The note on the vendor's terms (design 11), once in this browser: the first time a person presses Chat. It is drawn in the chat,
+ * under the move's notice (ChatView's ChatNote), where it covers nothing, until closed; under its sentence, that the chat has
+ * Conductor's tools only.
+ */
 const TERMS_KEY = 'conductor.chatTermsNoted'
+const chatNote = ref<{ site?: string } | null>(null)
 function noteTerms() {
   try {
     if (localStorage.getItem(TERMS_KEY) === '1') return
@@ -284,23 +300,17 @@ function noteTerms() {
   } catch {
     /* a browser that keeps nothing shows it each time */
   }
-  const site = agentInfo.value?.site?.startsWith('https://') ? agentInfo.value.site : undefined
-  toast.add({
-    title: "Chat runs the agent's own non-interactive mode with its existing sign-in; the agent's terms decide how that may be used and counted.",
-    description: "In Chat the agent has Conductor's tools only; your own tool servers stay in its terminal.",
-    color: 'neutral',
-    duration: 15000,
-    actions: site ? [{ label: new URL(site).host, to: site, target: '_blank', color: 'neutral', variant: 'outline' }] : [],
-    'data-chat-terms': '',
-  } as Parameters<typeof toast.add>[0])
+  chatNote.value = { site: agentInfo.value?.site?.startsWith('https://') ? agentInfo.value.site : undefined }
 }
 async function moveTo(to: SessionWay) {
   if (!current.value) return
   if (to === 'protocol') noteTerms()
   refused.value = ''
+  const before = wayMessages
   try {
     const r = await api.moveWay(current.value.id, to)
-    moving.value = !!r.moving
+    // A move that was already made, or went back, before the route's answer came (its `way` message first) is not still moving.
+    moving.value = !!r.moving && wayMessages === before
   } catch (e) {
     refused.value = e instanceof ApiError ? e.message : (e as Error).message
   }
@@ -310,6 +320,8 @@ const wayItems = computed(() =>
     ? [
         (['terminal', 'protocol'] as const).map((w) => ({
           label: w === 'protocol' ? 'Chat' : 'Terminal',
+          // What a move to Chat ends, said on the item before it is pressed, as the switch's Chat side says it.
+          ...(w === 'protocol' && switched.value.line === ENDS_TERMINAL_WORK ? { description: ENDS_TERMINAL_WORK } : {}),
           type: 'checkbox' as const,
           checked: switched.value.selected === w,
           disabled: !switchFacts.value.canMove || (w !== switched.value.selected && !switched.value.pressable),
@@ -545,7 +557,7 @@ watch(
   (q) => {
     const v = typeof q === 'string' ? TAB_QUERY[q] : undefined
     if (!v) return
-    if (v === 'people' && q === 'chat' && !xl.value) {
+    if (v === 'people' && !xl.value) {
       chatSheet.value = true
       return
     }
@@ -598,7 +610,8 @@ const phone = useIsPhone()
  * Chat buttons toggle (showFiles, showChat); a palette row or a session row's Open … says "open" and never hides.
  */
 function showView(v: InspectorView) {
-  if (v === 'chat' && !xl.value) {
+  // Below xl People is the sheet: the people's chat and who is here.
+  if (railView(v) === 'people' && !xl.value) {
     chatSheet.value = true
     return
   }
@@ -786,6 +799,9 @@ palette.registerPage(() => {
                 ref="terminal"
                 :create-transport="createTransport"
                 operator
+                opens-changes
+                :chat-note="chatNote"
+                @dismiss-note="chatNote = null"
                 :verbatim="current?.way === 'protocol' ? !!current.verbatim : undefined"
                 @nvim="editor.onNvim"
                 @welcome="onWelcome"
@@ -807,7 +823,8 @@ palette.registerPage(() => {
           </div>
           <div v-if="typingLine" class="pointer-events-none absolute bottom-2 left-3 flex items-center gap-2 rounded bg-default/80 px-2 py-0.5 text-xs text-muted backdrop-blur-sm"><span class="inline-block h-3.5 w-1.5 bg-muted/70" />{{ typingLine }}</div>
           <template #bar>
-            <QuickReplyBar :attention="attention" :agent-name="agentLabel" role="control" answers pastes @answer="decisionModal.open" @chat="showQuestion" @paste="terminal?.openPaste()" @reply="reply" @option="option" @open-plan="openFile({ path: $event })" @preview-plan="previewFile({ path: $event })" />
+            <!-- A chat's permission question is answered in the chat, which shows it: no bar repeats it (only for a terminal's question). -->
+            <QuickReplyBar v-if="!(way === 'protocol' && answersInChat(attention))" :attention="attention" :agent-name="agentLabel" role="control" answers pastes @answer="decisionModal.open" @chat="showQuestion" @paste="terminal?.openPaste()" @reply="reply" @option="option" @open-plan="openFile({ path: $event })" @preview-plan="previewFile({ path: $event })" />
           </template>
         </EditorColumn>
         <!-- The inspector (design 4h): its rail stays at xl, the panel beside it open or collapsed. -->

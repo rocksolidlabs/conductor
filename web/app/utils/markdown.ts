@@ -215,6 +215,8 @@ export function renderMarkdown(src: string, opts: RenderOptions): Rendered {
     } else if (isRemote(href)) {
       t.attrSet('target', '_blank')
       t.attrSet('rel', 'noopener noreferrer')
+      // An agent's link whose words may name another address shows where it goes.
+      if (opts.agentWords) t.attrSet('title', href)
     } else if (href && !href.startsWith('#')) {
       if (opts.relativeLinks === false) {
         held.push(true)

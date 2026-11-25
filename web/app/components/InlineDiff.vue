@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { TranscriptEntry } from '~/utils/protocol'
 import { ReplyError } from '~/utils/reply'
+import { markHidden } from '~/utils/hiddenMarks'
 import { fileLine, INLINE_DIFF_LINES, type ReadPart } from '~/utils/transcript'
 
 /**
@@ -16,6 +17,8 @@ const lines = ref<string[] | null>(null)
 const more = ref(0)
 const failed = ref('')
 const head = computed(() => fileLine(props.entry))
+// The file's name drawn as text, each character a person cannot see a mark.
+const name = computed(() => markHidden(head.value.name))
 
 async function toggle() {
   opened.value = !opened.value
@@ -28,7 +31,7 @@ async function toggle() {
     more.value = Math.max(0, all.length - INLINE_DIFF_LINES)
   } catch (e) {
     lines.value = []
-    failed.value = e instanceof ReplyError && e.code === 'transcript_gone' ? 'That part of the chat is no longer kept.' : ''
+    failed.value = e instanceof ReplyError && e.code === 'transcript_gone' ? 'That part of the chat is no longer kept.' : 'The change could not be read.'
   }
 }
 
@@ -44,7 +47,7 @@ function tone(l: string) {
   <div class="flex flex-col" data-file-change :data-file-path="entry.path" :data-seq="entry.seq">
     <button type="button" class="flex w-fit max-w-full min-w-0 items-center gap-1.5 rounded-md px-2 py-1 text-left text-sm hover:bg-elevated" :aria-expanded="opened" data-file-change-line @click="toggle">
       <UIcon :name="opened ? 'i-lucide-chevron-down' : 'i-lucide-chevron-right'" class="size-3.5 flex-none text-muted" aria-hidden="true" />
-      <code class="min-w-0 truncate font-mono text-xs text-highlighted" :title="entry.path">{{ head.name }}</code>
+      <code class="min-w-0 truncate font-mono text-xs text-highlighted" :title="entry.path"><MarkedText :pieces="name.pieces" :breaks="false" /></code>
       <span class="flex-none text-muted">{{ head.words }}</span>
     </button>
     <div v-if="opened" class="ml-6 mt-1 mb-1.5 flex flex-col gap-1" data-file-change-open>

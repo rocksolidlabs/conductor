@@ -357,3 +357,26 @@ export async function readPart(get: (req: TranscriptRequest) => Promise<Transcri
   }
   return { bytes: out.subarray(0, Math.min(out.length, MAX_PART_READ)), total, cut }
 }
+
+/**
+ * get with at most n of its reads on their way at once (the owner's MAX_TRANSCRIPT_IN_FLIGHT a connection): a read past them waits
+ * its turn, in order, and goes when one before it has settled, rather than being refused. A chat that draws many questions, steps
+ * and diffs at once reads them all.
+ */
+export function limitReads<Q, R>(get: (req: Q) => Promise<R>, n: number): (req: Q) => Promise<R> {
+  let going = 0
+  const waiting: Array<() => void> = []
+  const next = () => {
+    going--
+    waiting.shift()?.()
+  }
+  return (req) =>
+    new Promise<R>((resolve, reject) => {
+      const go = () => {
+        going++
+        get(req).then(resolve, reject).finally(next)
+      }
+      if (going < n) go()
+      else waiting.push(go)
+    })
+}

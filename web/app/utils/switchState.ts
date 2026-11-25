@@ -63,8 +63,9 @@ export function switchState(f: SwitchFacts): SwitchState {
   else if (f.why) s.line = f.why
   else if (other === 'protocol' && !f.firstReply) s.line = FIRST_REPLY
   else if (other === 'protocol' && !f.qualified) s.line = NOT_QUALIFIED
-  else if (f.inTurn) s.line = movesWhenTurnEnds(other)
-  else if (other === 'protocol') s.line = ENDS_TERMINAL_WORK
+  // During a turn nothing is said until a move is pressed (its `way` message says it is noted, with its sentence); at rest, what a
+  // move to Chat ends.
+  else if (other === 'protocol' && !f.inTurn) s.line = ENDS_TERMINAL_WORK
   if (other === 'protocol' && (!f.firstReply || !f.qualified) && !f.noted) s.pressable = false
   return s
 }

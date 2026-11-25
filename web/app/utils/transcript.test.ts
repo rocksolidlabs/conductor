@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { MAX_TRANSCRIPT_ENTRY, MAX_TRANSCRIPT_PAGE, type TranscriptEntry, type TranscriptReply, type TranscriptRequest } from './protocol'
-import { chatBlocks, entryValid, lastWords, MAX_ENTRY_TEXT, MAX_KEPT_ENTRIES, promptLine, promptText, readPart, stepsLine, Transcript } from './transcript'
+import { chatBlocks, entryValid, lastWords, limitReads, MAX_ENTRY_TEXT, MAX_KEPT_ENTRIES, promptLine, promptText, readPart, stepsLine, Transcript } from './transcript'
 
 // A chat's transcript as the page keeps it (docs/plans/chat-or-terminal.md, designs 5, 6 and 11): each entry at its latest revision
 // by seq, the highest mark held as the next hello's resume point, what is past the wire's bounds refused, a message that answers a
@@ -124,5 +124,28 @@ describe('readPart', () => {
     expect(new TextDecoder().decode(got.bytes)).toBe('abcdef')
     expect(asked.map((r) => r.part?.offset)).toEqual([0, 3])
     await expect(readPart(async () => ({ ...piece(0, 'x', 1), seq: 4 }), 3, 'output')).rejects.toThrow()
+  })
+})
+
+describe('limitReads', () => {
+  it("readsPastTheBound: reads past the connection's four wait their turn and all are answered, none refused", async () => {
+    // A connection that refuses a fifth read while four wait, as the transport does, and answers each on a later tick.
+    let waiting = 0
+    let most = 0
+    const get = (n: number) => {
+      if (waiting >= 4) return Promise.reject(new Error('too_many_requests'))
+      waiting++
+      most = Math.max(most, waiting)
+      return new Promise<number>((resolve) => setTimeout(() => (waiting--, resolve(n * 10)), 1))
+    }
+    const limited = limitReads(get, 4)
+    const got = await Promise.all([1, 2, 3, 4, 5, 6, 7].map((n) => limited(n)))
+    expect(got).toEqual([10, 20, 30, 40, 50, 60, 70])
+    expect(most).toBe(4)
+    // A refused read frees its place too.
+    const failing = limitReads((n: number) => (n === 1 ? Promise.reject(new Error('gone')) : Promise.resolve(n)), 1)
+    const [a, b] = await Promise.allSettled([failing(1), failing(2)])
+    expect(a.status).toBe('rejected')
+    expect(b).toEqual({ status: 'fulfilled', value: 2 })
   })
 })

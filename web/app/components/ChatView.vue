@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import type { SessionConnection } from '~/composables/useSessionConnection'
-import { renderMarkdown } from '~/utils/markdown'
-import type { PermissionAnswer, TranscriptEntry, TranscriptPartName } from '~/utils/protocol'
+import type { PermissionAnswer, TranscriptEntry, TranscriptPartName, TranscriptRequest } from '~/utils/protocol'
 import { ReplyError } from '~/utils/reply'
-import { chatBlocks, promptLine, promptText, readPart, stepsLine, type ChatTurn } from '~/utils/transcript'
+import { chatBlocks, limitReads, promptLine, promptText, readPart, stepsLine, type ChatTurn } from '~/utils/transcript'
+import { MAX_TRANSCRIPT_IN_FLIGHT } from '~/utils/protocol'
 
 /**
  * A session run as a chat (docs/plans/chat-or-terminal.md, design 11), where its terminal is drawn otherwise: quiet by design. What
@@ -24,10 +24,17 @@ const props = withDefaults(
      */
     operator?: boolean
     verbatim?: boolean
+    /** A file change's link opens the editor's diff tab: only where the page has the editor to open it in (the session page). */
+    opensChanges?: boolean
+    /**
+     * The note shown once, the first time a person presses Chat in this browser (design 11): drawn in the chat under the move's
+     * notice, where it covers nothing, until dismissed (`dismissNote`). `site` is the agent's site from its catalog entry.
+     */
+    note?: { site?: string } | null
   }>(),
-  { readOnly: false, operator: false, verbatim: undefined },
+  { readOnly: false, operator: false, verbatim: undefined, opensChanges: false, note: null },
 )
-const emit = defineEmits<{ openDiff: [entry: TranscriptEntry] }>()
+const emit = defineEmits<{ openDiff: [entry: TranscriptEntry]; dismissNote: [] }>()
 
 const conn = props.connection
 const entries = computed(() => {
@@ -51,10 +58,32 @@ function toggleSteps(t: ChatTurn) {
   opened.value = next
 }
 
-const read = (seq: number, name: TranscriptPartName) => readPart((req) => conn.transcriptGet(req), seq, name)
-const html = (text: string) => renderMarkdown(text, { dir: '', relativeLinks: false, agentWords: true }).html
+// The chat's reads wait their turn among the connection's MAX_TRANSCRIPT_IN_FLIGHT, never refused for it.
+const get = limitReads((req: TranscriptRequest) => conn.transcriptGet(req), MAX_TRANSCRIPT_IN_FLIGHT)
+const read = (seq: number, name: TranscriptPartName) => readPart(get, seq, name)
+/** Rises with each welcome: a question whose read failed while the connection was away reads again. */
+const epoch = ref(0)
+watch(() => conn.welcome.value, () => epoch.value++)
+/** The block the note is drawn after: the newest notice (the move's), else none, and it leads the chat. */
+const noteAfter = computed(() => [...blocks.value].reverse().find((b) => b.kind === 'notice')?.key ?? '')
+const siteHost = computed(() => {
+  try {
+    return props.note?.site?.startsWith('https://') ? new URL(props.note.site).host : ''
+  } catch {
+    return ''
+  }
+})
 
-const MESSAGE_FAILED: Record<string, string> = { too_many_requests: 'Too many messages are waiting.', moving: 'The session is moving; try again in a moment.' }
+/** The chat's refusals in the plan's words (design 13), the connection's own in plain ones: never the transport's. */
+const MESSAGE_FAILED: Record<string, string> = {
+  too_many_requests: 'Too many messages are waiting.',
+  moving: 'The session is moving; try again in a moment.',
+  no_turn: 'The agent is not working on anything.',
+  not_protocol: 'Stop is for a chat; use the agent\'s own key in its terminal.',
+  read_only: 'This link is view-only.',
+  not_connected: 'Not sent: the connection is down.',
+  closed: 'Not sent: the connection is down.',
+}
 
 /**
  * The chat's requests on their way (a message, Stop, an answer). A refusal that names no request (a relay refuses a control it does not
@@ -81,7 +110,7 @@ async function send(text: string) {
   } catch (e) {
     // A message not acknowledged in time is shown by its entry ("Sent, not yet confirmed."); every other refusal in the owner's words.
     if (e instanceof ReplyError && (e.code === 'no_word' || e.code === 'unconfirmed')) return
-    said.value = (e instanceof ReplyError && MESSAGE_FAILED[e.code]) || (e as Error).message
+    said.value = (e instanceof ReplyError && MESSAGE_FAILED[e.code]) || 'The message was not sent.'
   }
 }
 
@@ -92,7 +121,7 @@ async function stop() {
   } catch (e) {
     // A Stop the relay refused is already said in the owner's words.
     if (e instanceof ReplyError && e.code === 'no_word' && said.value) return
-    said.value = e instanceof ReplyError && e.code === 'no_turn' ? 'The agent is not working on anything.' : (e as Error).message
+    said.value = (e instanceof ReplyError && MESSAGE_FAILED[e.code]) || 'The session did not say whether it stopped the turn.'
   }
 }
 const answer = (a: Omit<PermissionAnswer, 't' | 'reqId'>) => going(() => conn.permissionAnswer(a))
@@ -129,8 +158,12 @@ defineExpose({ showQuestion })
   <div class="flex h-full min-h-0 flex-col bg-default" data-chat-view :data-chat-entries="entries.length" :data-turn-running="running || undefined">
     <div ref="scroller" class="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-4 py-4" data-chat-scroll @scroll.passive="onScroll">
       <div class="mx-auto flex max-w-3xl flex-col gap-4">
+        <ChatNote v-if="note && !noteAfter" :site="note.site" :host="siteHost" @dismiss="emit('dismissNote')" />
         <template v-for="b in blocks" :key="b.key">
-          <p v-if="b.kind === 'notice'" class="text-center text-xs text-muted" data-chat-notice :data-notice-code="b.entry.code">{{ b.entry.words }}</p>
+          <template v-if="b.kind === 'notice'">
+            <p class="text-center text-xs text-muted" data-chat-notice :data-notice-code="b.entry.code">{{ b.entry.words }}</p>
+            <ChatNote v-if="note && b.key === noteAfter" :site="note.site" :host="siteHost" @dismiss="emit('dismissNote')" />
+          </template>
           <section v-else class="flex flex-col gap-2.5" data-chat-turn :data-turn="b.turn" :data-turn-outcome="b.outcome || undefined">
             <!-- What was written for the turn, then its steps folded into one line until opened ("Working." while the turn runs), then
                  what the agent wrote, changed and asked, in the order its stream gave them. -->
@@ -150,11 +183,10 @@ defineExpose({ showQuestion })
               </ul>
             </div>
             <template v-for="it in b.items" :key="it.kind === 'text' ? `t${it.seq}` : `e${it.entry.seq}`">
-              <!-- The agent's words: Markdown without HTML (renderMarkdown never renders raw HTML), set as the renderer's output. -->
-              <!-- eslint-disable-next-line vue/no-v-html -->
-              <div v-if="it.kind === 'text'" class="chat-words min-w-0 text-sm text-default" data-chat-words v-html="html(it.text)" />
-              <InlineDiff v-else-if="it.kind === 'file'" :entry="it.entry" :read="read" :can-open="!readOnly" @open-diff="emit('openDiff', $event)" />
-              <PermissionQuestion v-else :entry="it.entry" :can-answer="canAnswer" :read="read" :answer="answer" />
+              <!-- The agent's words, each block rendered by its own component, again only when its text changed. -->
+              <ChatWords v-if="it.kind === 'text'" :text="it.text" />
+              <InlineDiff v-else-if="it.kind === 'file'" :entry="it.entry" :read="read" :can-open="!readOnly && opensChanges" @open-diff="emit('openDiff', $event)" />
+              <PermissionQuestion v-else :entry="it.entry" :can-answer="canAnswer" :read="read" :answer="answer" :epoch="epoch" />
             </template>
             <p v-if="b.outcome === 'interrupted'" class="text-xs text-muted" data-chat-turn-stopped>The turn was stopped.</p>
           </section>
@@ -172,54 +204,3 @@ defineExpose({ showQuestion })
     />
   </div>
 </template>
-
-<style scoped>
-.chat-words :deep(p) {
-  margin: 0.4rem 0;
-}
-.chat-words :deep(pre) {
-  margin: 0.5rem 0;
-  overflow-x: auto;
-  border-radius: 0.375rem;
-  background: var(--color-forest-950);
-  color: var(--color-forest-100);
-  padding: 0.6rem 0.75rem;
-  font-family: var(--font-mono);
-  font-size: 0.75rem;
-}
-.chat-words :deep(code) {
-  font-family: var(--font-mono);
-  font-size: 0.8em;
-}
-.chat-words :deep(:not(pre) > code) {
-  border-radius: 0.25rem;
-  background: var(--ui-bg-elevated);
-  padding: 0.05rem 0.3rem;
-}
-.chat-words :deep(ul),
-.chat-words :deep(ol) {
-  margin: 0.4rem 0;
-  padding-left: 1.25rem;
-}
-.chat-words :deep(ul) {
-  list-style: disc;
-}
-.chat-words :deep(ol) {
-  list-style: decimal;
-}
-.chat-words :deep(a) {
-  color: var(--ui-primary);
-  text-decoration: underline;
-  text-underline-offset: 2px;
-}
-.chat-words :deep(h1),
-.chat-words :deep(h2),
-.chat-words :deep(h3) {
-  margin: 0.6rem 0 0.3rem;
-  font-weight: 600;
-}
-.chat-words :deep(table) {
-  display: block;
-  overflow-x: auto;
-}
-</style>

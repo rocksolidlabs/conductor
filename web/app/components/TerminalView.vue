@@ -48,8 +48,12 @@ const props = withDefaults(
     /** A chat's (ChatView's): this page is the operator's, and the session's `verbatim` as its listing says. */
     operator?: boolean
     verbatim?: boolean
+    /** A chat's file change opens the editor's diff tab (`openChange`): only where the page has the editor and listens. */
+    opensChanges?: boolean
+    /** The note shown once, the first time a person presses Chat (ChatView's `note`); `dismissNote` when it is closed. */
+    chatNote?: { site?: string } | null
   }>(),
-  { readOnly: false, autoConnect: true, fontSize: 13, scrollback: 5000, compact: false, fit: 'fill', autoFocus: true, operator: false, verbatim: undefined },
+  { readOnly: false, autoConnect: true, fontSize: 13, scrollback: 5000, compact: false, fit: 'fill', autoFocus: true, operator: false, verbatim: undefined, opensChanges: false, chatNote: null },
 )
 
 const emit = defineEmits<{
@@ -76,6 +80,7 @@ const emit = defineEmits<{
   decisionsChanged: []
   /** A chat's file change asks for its diff in the editor (ChatView). */
   openChange: [entry: TranscriptEntry]
+  dismissNote: []
 }>()
 
 const host = ref<HTMLDivElement>()
@@ -973,7 +978,7 @@ onBeforeUnmount(() => {
     </UContextMenu>
 
     <!-- A chat, over the terminal's pane: the whole view, or a tile's line. -->
-    <ChatView v-if="chatShown && !compact" ref="chatView" :connection="conn" :read-only="readOnly" :operator="operator" :verbatim="verbatim" class="absolute inset-0 z-10" @open-diff="emit('openChange', $event)" />
+    <ChatView v-if="chatShown && !compact" ref="chatView" :connection="conn" :read-only="readOnly" :operator="operator" :verbatim="verbatim" :opens-changes="opensChanges" :note="chatNote" @dismiss-note="emit('dismissNote')" class="absolute inset-0 z-10" @open-diff="emit('openChange', $event)" />
     <div v-else-if="chatShown" class="absolute inset-0 z-10 flex flex-col gap-1 bg-default px-2.5 py-2 text-xs" data-chat-tile>
       <span class="text-muted">Runs as a chat.</span>
       <span v-if="chatLast" class="line-clamp-3 break-words text-default" data-chat-tile-words>{{ chatLast }}</span>

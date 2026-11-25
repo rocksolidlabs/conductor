@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { answersInChat } from '~/utils/attention'
 import { SPONSOR_URL } from '~/utils/about'
 import type { JoinInfo, JoinRunMember, SessionKind } from '~/composables/useSessions'
 import type { SessionConnection } from '~/composables/useSessionConnection'
@@ -612,7 +613,7 @@ function requestFile(path: string, stat?: boolean, extra?: FileGetExtra) {
           @decisions-changed="onDecisionsChanged"
         />
         <template #bar>
-          <QuickReplyBar :attention="attention" :agent-name="agentLabel" :role="info.role" @chat="terminal?.showQuestion?.()" @reply="reply" @option="option" @open-plan="openFile({ path: $event })" @preview-plan="previewFile({ path: $event })" />
+          <QuickReplyBar v-if="!(joinWay === 'protocol' && answersInChat(attention))" :attention="attention" :agent-name="agentLabel" :role="info.role" @chat="terminal?.showQuestion?.()" @reply="reply" @option="option" @open-plan="openFile({ path: $event })" @preview-plan="previewFile({ path: $event })" />
         </template>
       </EditorColumn>
       <aside v-if="filesPanel" v-show="!sessionDecides || tab === 'terminal'" class="hidden md:flex w-[332px] flex-none flex-col overflow-hidden rounded-lg border border-default bg-default" data-files-aside>
@@ -627,7 +628,7 @@ function requestFile(path: string, stat?: boolean, extra?: FileGetExtra) {
       </aside>
     </main>
 
-    <ChatSheet v-model:open="chatSheet" :thread="chat.thread.value" :role="info.role" :ended="ended" :offline="chatOffline" :viewers="viewerList" :note="chatNote" @send="chatSend" @send-to-agent="chatSendToAgent" @retry="chatRetry" @answer="chatAnswer" />
+    <ChatSheet v-model:open="chatSheet" title="People" :thread="chat.thread.value" :role="info.role" :ended="ended" :offline="chatOffline" :viewers="viewerList" :note="chatNote" @send="chatSend" @send-to-agent="chatSendToAgent" @retry="chatRetry" @answer="chatAnswer" />
     <ChatSheet
       v-if="run"
       v-model:open="runChatOpen"

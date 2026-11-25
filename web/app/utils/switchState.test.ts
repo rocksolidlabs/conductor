@@ -18,9 +18,10 @@ describe('switchState: which sentence the switch shows', () => {
     expect(switchState(at({ qualified: false })).line).toBe(NOT_QUALIFIED)
     expect(switchState(at({ qualified: false })).pressable).toBe(false)
   })
-  it('during a turn: the other side moves at the turn end', () => {
-    expect(switchState(at({ inTurn: true }))).toMatchObject({ pressable: true, line: MOVES_TO_CHAT })
-    expect(switchState(at({ way: 'protocol', inTurn: true })).line).toBe(MOVES_TO_TERMINAL)
+  it('during a turn: the other side may be pressed, and nothing is said until it is (the noted move says it)', () => {
+    expect(switchState(at({ inTurn: true }))).toMatchObject({ pressable: true, line: '' })
+    expect(switchState(at({ way: 'protocol', inTurn: true })).line).toBe('')
+    expect(switchState(at({ way: 'protocol', inTurn: true, noted: 'terminal' })).line).toBe(MOVES_TO_TERMINAL)
     expect(MOVES_TO_CHAT).toBe('Moves to Chat when this turn ends.')
   })
   it('noted: the way message sentence, else the move words', () => {
