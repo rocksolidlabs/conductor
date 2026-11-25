@@ -114,6 +114,8 @@ export interface Session {
   yolo?: boolean
   /** Its agent reports its turns (a working or a done of its own); missing when it has not. */
   turns?: boolean
+  /** `protocol` while it runs as a chat (the agent's own protocol); missing in its terminal. */
+  way?: string
 }
 
 /**

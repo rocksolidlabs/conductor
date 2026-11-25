@@ -7,6 +7,9 @@
 //   stub-protocol.mjs --version          prints "2.1.331 (Claude Code)" (STUB_PROTOCOL_VERSION changes the number)
 //   stub-protocol.mjs -p ... --resume ID speaks stream-json on stdin and stdout, on the conversation ID
 //
+// Each turn's message goes into $HOME/.stub-sessions/<conversation>.txt as "chat: <message>" when that folder is there (the
+// terminal stub's transcript, which a terminal resumed on the conversation prints).
+//
 // Each user message it is written is replayed (its uuid kept), then answered in one turn: the system init, the words
 // "stub chat: <the message>" streamed and whole, and a result with usage. A message that holds the word "tool" runs one
 // Bash step first (`ls`, never run: its result is fixed). The interrupt request is answered with its receipt and the
@@ -22,7 +25,8 @@
 //   STUB_PROTOCOL_CHILD=1   it starts a process of its own in its group (a sleep, its standard streams closed) that
 //                           outlives it, as a tool's process may: what a move proves gone with the group
 import { spawn } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { appendFileSync, existsSync } from 'node:fs'
+import { join } from 'node:path'
 import { createInterface } from 'node:readline'
 
 const version = process.env.STUB_PROTOCOL_VERSION || '2.1.331'
@@ -107,6 +111,10 @@ async function turn(m) {
   send({ type: 'stream_event', event: { type: 'content_block_stop', index: 0 }, parent_tool_use_id: null, session_id: session, uuid: uuid() })
   send({ type: 'stream_event', event: { type: 'message_stop' }, parent_tool_use_id: null, session_id: session, uuid: uuid() })
   cost += 0.001
+  // The conversation's transcript the e2e terminal stub keeps (web/e2e/stub-agent.sh), when it is there: a terminal resumed on the
+  // same id shows the chat's turns.
+  const kept = join(process.env.HOME || '/nonexistent', '.stub-sessions')
+  if (existsSync(kept)) appendFileSync(join(kept, `${session}.txt`), `chat: ${text.slice(0, 200)}\n`)
   send({ type: 'result', subtype: 'success', is_error: false, num_turns: 1, result: words, stop_reason: 'end_turn', terminal_reason: 'completed',
     session_id: session, total_cost_usd: cost, usage: { input_tokens: 4, cache_creation_input_tokens: 0, cache_read_input_tokens: 10, output_tokens: 7 },
     user_message_uuid: m.uuid, uuid: uuid() })
