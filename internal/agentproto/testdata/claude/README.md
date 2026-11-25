@@ -34,15 +34,22 @@ interrupt's as `conductor-interrupt-2`, the ids the driver gives them.
 Removed from every recorded line: every field that describes the account,
 its organisation, its plan or its sign-in (the initialize answer's
 `account`, `apiKeySource`, `credential_expires_at`, the fast mode and remote
-control fields, every `rate_limit_event`), the person's own settings (their
+control fields, every `rate_limit_event`, and how the use was billed and
+served: each `modelUsage` entry's `provider`, `costBasis` and
+`contextWindow`, and the prompt cache's split by lifetime, `cache_creation`
+and `cacheCreationEphemeral*`), the person's own settings (their
 hooks' events and output, commands, skills, agents, plugins, memory paths,
 MCP servers other than the run's stubs, and tools other than a few built-in
-ones), and the undocumented copies of each request (`wire_*`). Every path
+ones, the display setting `thinking_display`), and the undocumented copies
+of each request (`wire_*`). Every path
 of the machine is `/work` (the repository) or `/tools` (the stubs); every
 id the service minted (session, message, tool call, request, event) is a
 fixed made-up one of the same shape; every `timestamp` is one fixed time;
 the process id is 12345; thinking signatures are `fixture-signature`.
-Model names, usage and cost figures are as recorded.
+Model names, token counts and cost figures are as recorded.
+`TestFixturesHoldNoAccount` refuses every one of these fields, any key that
+begins `fast_mode` or `rate_limit`, an email-shaped string and a path of a
+home, temporary, mounted or drive-letter folder, should one come back.
 
 ## Hand-built
 

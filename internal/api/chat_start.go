@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync/atomic"
 
 	"github.com/rocksolidlabs/conductor/ext"
 	"github.com/rocksolidlabs/conductor/internal/agentproto"
@@ -38,7 +39,15 @@ type chatLaunch struct {
 	termTail   []string
 	termEnv    []string
 	cols, rows uint16
+	// gate holds that the agent's probed version qualified for a chat once:
+	// a later start of this session's child (a restart's, a move's again)
+	// reuses it, and the initialize answer's shape check, with its version,
+	// still guards every start.
+	gate *chatGate
 }
+
+// chatGate is a session's version check, made once.
+type chatGate struct{ qualified atomic.Bool }
 
 // Where a chat's child's start is told apart.
 var (
@@ -78,6 +87,7 @@ func (s *Server) keepChatLaunch(id string, l chatLaunch) {
 	if l.agent.Protocol.Off() || agentproto.Check(l.agent.Protocol) != nil {
 		return
 	}
+	l.gate = &chatGate{}
 	s.chatLaunches.Store(id, &l)
 }
 
@@ -86,9 +96,10 @@ func (s *Server) forgetChatLaunch(id string) { s.chatLaunches.Delete(id) }
 
 // chatStart is the start of a chat's child for the server session local:
 // the piece the move between ways (row 5's SwapWay) calls, and the tests'
-// way in until then (sessiontest.EnterProtocol). Each start, a restart's
-// too, checks the agent's probed version against its driver's
-// (agentproto.ErrNotQualified, the session staying in its terminal), builds
+// way in until then (sessiontest.EnterProtocol). Its first start checks the
+// agent's probed version against its driver's (agentproto.ErrNotQualified,
+// the session staying in its terminal), and every later one, a restart's
+// too, reuses that answer; each builds
 // the child's argv of design 4 (agentproto.ClaudeArgs) on the conversation
 // it is given, and starts it through the session's own Runtime's
 // StartPipes, in the terminal's folder, with the terminal's environment
@@ -118,12 +129,18 @@ func (s *Server) chatStart(local *session.Local) (session.ProtocolStart, error) 
 		if conversation == "" {
 			return nil, nil, errNoConversation
 		}
-		version := ""
-		if id := s.identityNow(ctx)(l.agent); id != nil && id.Identified {
-			version = id.Version
-		}
-		if !agentproto.Qualified(l.agent.Protocol.Name, version) {
-			return nil, nil, fmt.Errorf("%w (version %q)", agentproto.ErrNotQualified, version)
+		if !l.gate.qualified.Load() {
+			// The probe answers within its own short wait, and a slow one
+			// answers none: asked once per session, so that a running
+			// chat's restart never meets it.
+			version := ""
+			if id := s.identityNow(ctx)(l.agent); id != nil && id.Identified {
+				version = id.Version
+			}
+			if !agentproto.Qualified(l.agent.Protocol.Name, version) {
+				return nil, nil, fmt.Errorf("%w (version %q)", agentproto.ErrNotQualified, version)
+			}
+			l.gate.qualified.Store(true)
 		}
 		var yoloArgs []string
 		if l.yolo && l.agent.Yolo != nil {

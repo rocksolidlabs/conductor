@@ -511,7 +511,7 @@ type claudeEvent struct {
 // handle hands the session what one line says.
 func (c *Claude) handle(b []byte, e session.ProtocolEvents) error {
 	var ev claudeEvent
-	if err := json.Unmarshal(b, &ev); err != nil {
+	if err := decodeEvent(b, &ev); err != nil {
 		return fmt.Errorf("%w (%v)", ErrUnreadable, err)
 	}
 	switch ev.Type {
