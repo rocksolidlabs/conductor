@@ -872,3 +872,112 @@ func TestTheSessionsOwnLinesAreBounded(t *testing.T) {
 		t.Fatal("a line whose Enter was refused is kept")
 	}
 }
+
+// answers counts the entries that record the question of words answered.
+func answers(s *Local, words string) int {
+	n := 0
+	for _, a := range s.Activity() {
+		if a.Type == ActivityInput && a.Message == words {
+			n++
+		}
+	}
+	return n
+}
+
+// TestAPendingEnterIsJudgedOnceItLands: a line whose Enter's write is
+// begun when its wait runs out is answered as taken slowly, and judged
+// only once the write is made or refused. A reply to the agent's own
+// question whose Enter is then written is entered, the question answered
+// once, its word given once, the turn given back; the same reply whose
+// screen goes before the write is refused, its word says it was not
+// entered, the turn is held and the question still waits; a line whose
+// sender is withdrawn while its Enter is under way, the Enter then
+// written, is entered and holds nothing.
+func TestAPendingEnterIsJudgedOnceItLands(t *testing.T) {
+	for _, a := range shapedAgents() {
+		for _, tc := range []string{"a reply entered", "a reply refused", "a line withdrawn as it is entered"} {
+			t.Run(a.id+" "+tc, func(t *testing.T) {
+				s, p, sub := pastFirstLine(t, a, Options{InputWait: 300 * time.Millisecond})
+				id, err := s.TryAskID("Which database?", SourceAPI, "", nil)
+				if err != nil || id == "" {
+					t.Fatalf("the question: %q %v", id, err)
+				}
+				gate := make(chan struct{})
+				words := make(chan error, 2)
+				var word SubmitResult
+				line := Submission{Text: "use the small one", By: sub, Question: id, Finished: func(res SubmitResult, err error) { word = res; words <- err }}
+				withdrawn := make(chan struct{})
+				if tc == "a line withdrawn as it is entered" {
+					line = Submission{Text: "use the small one", ByName: "crew", Withdrawn: withdrawn, Finished: line.Finished}
+				}
+				if tc == "a reply refused" {
+					line.BeforeEnter = func() {
+						drawsOn(s, p, pausedFrame)
+						<-gate
+					}
+				} else {
+					var once atomic.Bool
+					p.onBytes = func(b []byte) {
+						if string(b) == "\r" && once.CompareAndSwap(false, true) {
+							if tc == "a line withdrawn as it is entered" {
+								close(withdrawn)
+							}
+							<-gate
+						}
+					}
+				}
+				res, err := s.Submit(t.Context(), line)
+				if !errors.Is(err, ErrSubmitPending) || res.Entered {
+					t.Fatalf("the line, its Enter's write under way past its wait: %+v %v", res, err)
+				}
+				close(gate)
+				err = <-words
+				switch tc {
+				case "a reply refused":
+					if !errors.Is(err, ErrLineStranded) || word.Entered {
+						t.Fatalf("the reply's word: %+v %v", word, err)
+					}
+					if got := written(t, p); got != "use the small one" {
+						t.Fatalf("written %q", got)
+					}
+					nothingIn(t, s, p)
+					if !s.TurnHeld() {
+						t.Fatal("the turn is not held for the text typed without its Enter")
+					}
+					// The hold shows in the question's place, the reply's
+					// claim let go: the question is held over, unanswered,
+					// to show again once a person's keys end the hold.
+					waitAttention(t, s, func(a Attention) bool { return a.Source == SourceSubmit })
+					s.mu.Lock()
+					over, claimed := s.heldOver.ID, s.claimedLocked(id)
+					s.mu.Unlock()
+					if over != id || claimed {
+						t.Fatalf("the question held over %q (want %q), still claimed %v", over, id, claimed)
+					}
+					if n := answers(s, "Which database?"); n != 0 {
+						t.Fatalf("the question answered %d times", n)
+					}
+				default:
+					if err != nil || !word.Entered {
+						t.Fatalf("the line's word: %+v %v", word, err)
+					}
+					typed(t, p, "use the small one")
+					nothingIn(t, s, p)
+					if s.TurnHeld() {
+						t.Fatal("the turn is held for a line that was entered")
+					}
+					if tc == "a reply entered" {
+						if n := answers(s, "Which database?"); n != 1 {
+							t.Fatalf("the question answered %d times", n)
+						}
+					}
+				}
+				select {
+				case err := <-words:
+					t.Fatalf("a second word: %v", err)
+				default:
+				}
+			})
+		}
+	}
+}

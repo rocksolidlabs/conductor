@@ -678,6 +678,18 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 		s.typedEntry(sub, text, st)
 	}
 	res, err = s.enter(ctx, sub, res, st)
+	if err == nil && res.landed != nil && res.read {
+		// Its Enter's write began, its reading still to pass, and its time
+		// ran out: accepted, the turn kept until the Enter is written or
+		// refused (finishLanding), and only then judged: stranded (its
+		// sender withdrawn, a reply's claim, a screen that refused it) only
+		// once its Enter is known not written.
+		release = false
+		handed = true
+		go s.finishLanding(sub, res, st)
+		res.landed, res.read = nil, false
+		return res, ErrSubmitPending
+	}
 	err = st.withdrawnTyped(res, err)
 	if stranded, why := st.strand(s, sub, res, err); stranded {
 		// Its text is typed and its Enter not written for good (its link no
@@ -690,16 +702,6 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 			s.holdTyped()
 		}()
 		return res, why
-	}
-	if err == nil && res.landed != nil && res.read {
-		// Its Enter's write began, its reading still to pass, and its time
-		// ran out: accepted, the turn kept until the Enter is written or
-		// refused (finishLanding).
-		release = false
-		handed = true
-		go s.finishLanding(sub, res, st)
-		res.landed, res.read = nil, false
-		return res, ErrSubmitPending
 	}
 	if err == nil && res.landed != nil {
 		// Its Enter's write began and its time ran out: accepted, entered
@@ -1313,7 +1315,11 @@ func (s *Local) pressEnter(ctx context.Context, sub Submission, res SubmitResult
 		}
 		if err == nil && res.Typed {
 			// Written now: a numbered line the agent will show in its
-			// history behind the prompt's mark is the session's own.
+			// history behind the prompt's mark is the session's own. It is
+			// kept as the write is begun; a write that then fails is the
+			// program gone or not reading, and a row kept for it only lets
+			// a marked row with that very text, at least 24 characters of
+			// the session's own words, read as the line it is.
 			s.rememberEntered(SubmitLine(sub.Text))
 		}
 		return err
