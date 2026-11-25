@@ -2162,6 +2162,80 @@ route, a turn there, moved back, the terminal shows the chat's turn in
 its context; recorded in the pull request, and in `docs/features.md`
 with row 7. **14 h.**
 
+**As built, row 5** (#1108; `internal/session/move.go`, the terminal's
+start in `local.go`, `internal/api/move.go`, `internal/proto/way.go`,
+`web/app/composables/useSessionConnection.ts`, `utils/switchState.ts`,
+`components/WaySwitch.vue`, `web/e2e/chat-move.spec.ts`):
+
+- `Local.SwapWay(to, MoveStarts)` moves the session at once when it is at
+  rest, else notes it with its sentence; the noted move is tried again
+  after every event the protocol way applies and every attention change
+  (a turn's end, a done, a request closed, the work ended, the message's
+  turn ended). `MoveStarts` carries both ways' starts (the chat's child,
+  `Server.chatStart`; the terminal again, `Server.terminalStart`: the
+  agent's command, its recipe's `ResumeArgs` on the conversation, and the
+  launch's other arguments, environment, folder and size, kept in
+  `chatLaunch`), the group's proof (`Gone`), the driver's words for a
+  failed start (`Words`) and the seam `AfterOldExit`. The conversation is
+  read after the old process is gone, the latest the session holds.
+- The terminal's start is `startTerminal`, NewLocal's and the move's; the
+  session's process is held where a move back replaces it (`termProc`),
+  the pump reads the process it was started with, and a pump whose
+  terminal a move stopped (a later `termGen`) does not end the session.
+  The terminal's watchers are stopped for the move and given a blank
+  screen on the way back (`PatternWatcher.Renew`; the startup questions'
+  watch is not renewed: a first turn has ended), the ring is emptied
+  (`Ring.Reset`). `Info.Command` stays the launch's.
+- I1: the old way is stopped with no lock held (a chat's input closed,
+  then `Stop`), its exit and its output's end waited for, then its process
+  group proven gone: `session.GroupGone` sends signal 0 to the group until
+  none is in it, and SIGKILL once to what the old process left there (its
+  number is not reused while a member is in it). A process that reports a
+  group and a move given nothing to prove it gone ends the session in
+  words of the move's own ("The agent's earlier process did not end; the
+  session ended."). Only a native session moves: a Runtime other than this
+  machine's group is not the server's to look at, so it is refused "This
+  agent cannot move its conversation yet."
+- Where the plan says nothing in the terminal's process group but the
+  agent's own process: not built. Claude Code keeps the MCP servers it
+  starts (Conductor's among them) in its group for its life, so that
+  check would refuse every move. The terminal's condition is the hook's
+  done, no question, nothing held, no submission; stopping the terminal
+  ends its group, so work left there is ended, never doubled.
+- The `way` message gains `why` (at most 200 bytes), beside the plan's
+  `way`, `protocol` and `noted`: the noted move's sentence, and the
+  sentence of a move that went back. A failed start's words where the plan
+  has none: "The chat did not start." and "The terminal did not start.".
+- The route answers `200` with `{way, noted?, why?, moving?}`, `409
+  move_refused` with the words, `409 moving`, `413 too_large` past its 64
+  bytes; on a switchyard and for a hosted session `409 move_refused`
+  "Sessions on another machine stay in their terminal." Stop during a move
+  waits for it, and the move starts nothing once it sees the stop.
+- `agentproto.Moves(name)` is the driver's word; Claude Code's
+  (`claudeMoves`) stays false until its by-hand observation. The tests
+  set `Server.movesUnobserved`; the e2e server reads
+  `CONDUCTOR_E2E_MOVES=1` for its stub, which speaks Claude Code's
+  protocol: it goes when `Moves` is set.
+- A session that becomes a chat while published to a switchyard whose
+  `registered` lacks `transcript` is published no longer, its line in
+  `proto.OlderSwitchyardWords`.
+- The app: `useSessionConnection` holds the transport, the welcome's and
+  the `way` message's way, `noted` and `why`, the listeners of output,
+  controls, TRANSCRIPT and close, and every request; `TerminalView`
+  makes one and is its consumer (its exposed methods go through it, and
+  it exposes it as `connection`), its terminal reset when the way
+  changes. Its root says `data-session-way`, `data-way-noted` and
+  `data-transcript-frames`; no page changed. `switchState` gives the
+  switch's side, whether it may be pressed and its line, in the plan's
+  words; `WaySwitch.vue` draws it, mounted by row 7.
+- The e2e stub: `claude-proto` declares `claude-stream-json`; the bash
+  stub execs `stub-protocol.mjs` (by `STUB_NODE`, the suite's node) when
+  started with `-p ... --input-format stream-json`, says the version
+  `STUB_CLAUDE_VERSION`, holds a terminal turn on `stub hold` until its
+  `.hold` file says `stop`, and notes each resume in `<id>.resumed`; the
+  protocol stub appends each chat turn to the same transcript, and
+  `STUB_PROTOCOL_CHILD=1` leaves a process of its own in its group.
+
 ### Row 6: the permission request
 
 **Scope.** Design 7 whole: `POST /api/sessions/{id}/permission` (agent
