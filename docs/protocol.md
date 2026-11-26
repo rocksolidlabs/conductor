@@ -4601,6 +4601,7 @@ whose `message` is one of these:
 | handoff to unknown member | `error` | `handoff to unknown member "<name>" from <a>` |
 | handoff to itself | `error` | `handoff to itself from <a>` |
 | handoff to a member that is not running | `error` | `handoff to a member that is not running, from <a> to <b>` |
+| call to Conductor refused | `status` | `<member>'s call to Conductor's <tool> was refused by its agent's own permission check; allow <rule> in its permissions (in Claude Code, /permissions) for it to call again`, `task <id>: ` before it for a task's attempt, once for the member's session and the tool: the member's hook reported a `tool_denied` whose `tool` is one of Conductor's (`mcp__conductor__<tool>`, the rule; Claude Code's `PermissionDenied` hook, which runs when auto mode's classifier denies a call, not for a deny rule or a person's refusal at the dialog); a refusal of any other tool says nothing (#1143) |
 | exclude | `error` | `could not add .conductor/ to the repository's info/exclude: <why>`, at most once a run |
 | stopped | `status` | `stopped` |
 | link created | `link` | `link created: <label> (<role>)`, the label `unlabelled` when there is none, as for a session's link |
