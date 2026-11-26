@@ -56,11 +56,13 @@ rule of `system.md` names its checks.
 
 `DESIGN.md` at the root is generated: `make design-md` writes it
 (`web/build/designMd.ts`) from the tokens (`main.css`, `app.config.ts`,
-Nuxt UI's and Tailwind's themes, `web/public/brand/tokens.css`) and the
-rules' headings in `docs/design/system.md`, and
-`web/build/designMd.test.ts`, among the app's tests, fails with the
-difference when the committed file is not what it makes. A change to a
-token or to a rule's heading, or an upgrade of Nuxt UI or Tailwind, runs
+Nuxt UI's and Tailwind's themes, Nuxt UI's corner steps and the class its
+button draws, `web/public/brand/tokens.css`), the tagline and section
+headings of `docs/design/brand.md` and the rules' headings in
+`docs/design/system.md`, and `web/build/designMd.test.ts`, among the
+app's tests, fails with the difference when the committed file is not
+what it makes. A change to a token, to `brand.md`'s tagline or headings
+or to a rule's heading, or an upgrade of Nuxt UI or Tailwind, runs
 `make design-md` and commits the file with it.
 
 `make design-capture` is not a check: it is a maintainer's step at a

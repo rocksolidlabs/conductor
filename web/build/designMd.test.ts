@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { anchor, designMd, designSources, ruleHeadings } from './designMd'
+import { anchor, designMd, designSources, nuxtUiCorners, ruleHeadings, sectionHeadings, tagline } from './designMd'
 
 // DESIGN.md at the root is what designMd() makes from the repository's files. Vitest writes a file snapshot only when asked
 // (`make design-md`, which runs this file with -u) or when the file is missing on a machine that is not CI; in CI a stale DESIGN.md
@@ -39,6 +39,46 @@ describe('DESIGN.md', () => {
     const refs = [...front.matchAll(/\{([\w.-]+)\}/g)].map((m) => m[1]!)
     expect(refs.length).toBeGreaterThan(10)
     expect(refs.filter((r) => !declared.has(r))).toEqual([])
+  })
+
+  it('gives the primary button the corner the app draws: the step of Nuxt UI\'s button class, from --ui-radius', () => {
+    // Read here on its own, not through the generator: the class the button's base draws, and that step's factor of --ui-radius.
+    const base = sources.nuxtUiShared.match(/const button = \(options\) => \(\{\s*slots: \{\s*base: \[\s*"([^"]*)"/)![1]!
+    const cls = base.match(/rounded-([\w-]+)/)![1]!
+    const factor = Number(sources.nuxtUiShared.match(new RegExp(`--radius-${cls}:\\s*calc\\(var\\(--ui-radius\\)\\s*\\*\\s*([\\d.]+)\\)`))![1])
+    const uiRadius = Number(sources.resolved.dark.vars['--ui-radius']!.replace('rem', '')) * 16
+    const md = designMd(sources)
+    const front = md.split('\n---\n')[0]!
+    for (const theme of ['dark', 'light']) {
+      const ref = front.match(new RegExp(`  button-primary-${theme}:[\\s\\S]*?rounded: "\\{rounded\\.([\\w-]+)\\}"`))![1]!
+      const corner = front.match(new RegExp(`^  "?${ref}"?: "([\\d.]+)px"$`, 'm'))![1]!
+      expect(Number(corner)).toBe(uiRadius * factor)
+    }
+    expect(cls).toBe('md')
+    expect(uiRadius * factor).toBe(6) // the app's button corner today: rounded-md, 1.5 x 0.25rem
+  })
+
+  it("follows Nuxt UI's button class and its steps", () => {
+    const shared = sources.nuxtUiShared.replace(/(const button = \(options\) => \(\{\s*slots: \{\s*base: \[\s*")rounded-md/, '$1rounded-lg')
+    expect(shared).not.toBe(sources.nuxtUiShared)
+    expect(nuxtUiCorners(shared).button).toBe('lg')
+    const md = designMd({ ...sources, nuxtUiShared: shared })
+    expect(md).toContain('    rounded: "{rounded.lg}"')
+    expect(md).toContain('  "lg": "8px"')
+    expect(() => nuxtUiCorners(shared.replace(/--radius-md:[^;]*;/, ''))).toThrow('--radius-md')
+  })
+
+  it("takes the tagline and the brand's sections from docs/design/brand.md, and fails when a section it points at is gone", () => {
+    expect(tagline(sources.brandMd)).toBe('Engineering intent, orchestrated.')
+    const retold = sources.brandMd.replace('**Conductor — Engineering intent, orchestrated.**', '**Conductor — A tagline of a test.**')
+    expect(designMd({ ...sources, brandMd: retold })).toContain('description: "A tagline of a test."')
+    expect(sectionHeadings(sources.brandMd)).toContain('Palette and semantic colors')
+    for (const h of ['Palette and semantic colors', 'Typography and layout']) {
+      const gone = sources.brandMd.replace(`## ${h}\n`, `## ${h}s\n`)
+      expect(gone).not.toBe(sources.brandMd)
+      expect(() => designMd({ ...sources, brandMd: gone })).toThrow(`no section "${h}" in docs/design/brand.md`)
+    }
+    expect(() => designMd({ ...sources, brandMd: retold.replace('**Conductor — A tagline of a test.**', '') })).toThrow('no line **Conductor')
   })
 
   it("makes a rule's anchor as GitHub does", () => {
