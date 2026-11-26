@@ -47,6 +47,10 @@
 //                twenty lines long) or withdraw (short, its request given up once <conversation>.withdraw exists, as a cancelled call
 //                ends its POST). Allowed, the step runs (its output "ran: <command's first line>") and <conversation>.allowed
 //                is written; denied, the step fails and the answer's message is written to <conversation>.denied.
+//   "question"   a report and a question through Conductor's own tools, as an agent calls them (mcp__conductor__report with a
+//                progress, then mcp__conductor__ask "Shall I go on?"): each a step announced in the stream, the question put to the
+//                session's attention route with the session's own agent token, marked the agent's own (ask), as `conductor mcp`
+//                does; the turn then ends, the question kept, and the person's answer comes as the next message
 import { spawn, spawnSync } from 'node:child_process'
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -174,8 +178,24 @@ async function ask(kind) {
   }
 }
 
+/** A call of one of Conductor's own tools (`conductor mcp`): announced, sent to the session's route, and its result. */
+async function conductorTool(name, input, body, result) {
+  const call = toolUse(`mcp__conductor__${name}`, input)
+  const url = (process.env.CONDUCTOR_NOTIFY_URL || '').replace(/\/attention$/, body.state ? '/attention' : '/events')
+  try {
+    await fetch(url, { method: 'POST', headers: { Authorization: `Bearer ${process.env.CONDUCTOR_NOTIFY_TOKEN || ''}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+  } catch {
+    // the report is lost: the step says what was called all the same
+  }
+  toolResult(call, result, false, undefined)
+}
+
 /** The steps a message's words ask for, before the turn's words. */
 async function steps(text) {
+  if (/\bquestion\b/.test(text)) {
+    await conductorTool('report', { event: 'progress', message: 'checked the files' }, { type: 'progress', message: 'checked the files' }, 'reported')
+    await conductorTool('ask', { message: 'Shall I go on?' }, { state: 'needs_input', message: 'Shall I go on?', ask: true }, "asked: the person's answer comes as their next message to you")
+  }
   if (/\bsteps\b/.test(text)) {
     const a = toolUse('Bash', { command: 'ls', description: 'List the folder' })
     toolResult(a, 'notes.txt', false, { stdout: 'notes.txt', stderr: '', interrupted: false, isImage: false })

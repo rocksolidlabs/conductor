@@ -90,15 +90,16 @@ same.
       "${CONDUCTOR_BIN:-conductor}" notify --event file --op edit --path internal/api/users.go
 
 - A decision you cannot make yourself, such as a choice between designs, a
-  missing credential or an approval: ask, then wait for the answer in the
-  terminal. The session shows as needing input until someone replies, also
+  missing credential or an approval: ask, then wait for the answer. It comes
+  to you as the person's next message, in a terminal and in a chat alike.
+  The session shows as needing input until someone replies, also
   once your turn has ended.
 
       "${CONDUCTOR_BIN:-conductor}" notify --ask --message "…"
 
-- A question with a few answers: name them in the terminal on their own
-  line, then ask with the same words as choices, so one click types the
-  answer as a line (at most 6, each at most 40 bytes):
+- A question with a few answers: name them in your message on their own
+  line, then ask with the same words as choices, so one click sends that
+  answer as the person's message (at most 6, each at most 40 bytes):
 
       "${CONDUCTOR_BIN:-conductor}" notify --ask --message "Which database?" --choices "Postgres|SQLite|Keep both"
 

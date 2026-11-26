@@ -148,7 +148,7 @@ func TestMcpReportsThroughNotify(t *testing.T) {
 	replies := mcpRun(t, os.Getenv,
 		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"ask","arguments":{"message":"Which database?","choices":["Postgres","SQLite"]}}}`,
 	)
-	if text, isErr := toolText(t, replies[0]); isErr || text != "reported" {
+	if text, isErr := toolText(t, replies[0]); isErr || text != askedWords {
 		t.Fatalf("ask %q %v", text, isErr)
 	}
 	if ns.body["state"] != "needs_input" || ns.body["kind"] != "prompt" || ns.body["message"] != "Which database?" || ns.body["ask"] != true {
@@ -459,6 +459,8 @@ func TestMcpTicketCommentResendsAfterAStalledReply(t *testing.T) {
 // schema's property and its description's sentence (RV1 PR-5).
 // ticket_read's and ticket_comment's name the ticket a run was launched
 // from as well as the one it is linked to, as the route answers (#887).
+// ask's says the answer comes as the person's next message, true in a chat
+// as in a terminal, where it said the answer comes in the terminal (#1139).
 func TestToolsListIsUnchanged(t *testing.T) {
 	golden, err := os.ReadFile("testdata/tools-list-main.json")
 	if err != nil {
