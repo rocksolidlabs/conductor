@@ -49,7 +49,7 @@ app's tests: `web/app/utils/designRules.test.ts` reads the app's sources
 and `docs/design/system.md` and fails when a rule is broken (an icon-only
 button with no tooltip, a cut whose box does not set its width, a state
 mapped to a status colour outside `utils/status.ts`, a zinc grey, Yolo in a
-fold, a fold on the settings page, "browser" in the words a person reads)
+fold, a fold on the settings page, "browser" in a template's text)
 or when the file and the code disagree (a rule with no mark, the Status
 table against `STATUS_LOOK`, the floors against `CONTRAST_FLOORS`). Each
 rule of `system.md` names its checks.
