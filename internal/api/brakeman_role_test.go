@@ -2230,3 +2230,52 @@ func TestMadeFindsTheBatchsRequestAndMakesNone(t *testing.T) {
 		t.Fatalf("after Fire: %q %v, want %q", id, err, fired)
 	}
 }
+
+// TestATurnHeldByTextInItsPromptBoxSaysSo: a key a person typed into a
+// turn's agent before its line went in, not sent, holds the line (the
+// agent's prompt box holds text); at the turn's start bound, on the desk's
+// clock, the turn ends with words that say so, not a sign-in's or an
+// unknown screen's. Nothing but the person's key reaches the agent.
+func TestATurnHeldByTextInItsPromptBoxSaysSo(t *testing.T) {
+	t.Parallel()
+	b := brakemanEnv(t, nil)
+	gate := make(chan struct{})
+	b.srv.runs.SetReadyAfterForTest(gate)
+	c := b.fakeClock()
+	b.enable(t, "bkprompt", nil)
+	id := b.briefing(t)
+	b.launched(t, id)
+	sid, _, l := b.turnSession(t, id)
+	if !waitFor(30*time.Second, func() bool {
+		return strings.Contains(strings.Join(l.ScreenLines(12), "\n"), "? for shortcuts")
+	}) {
+		t.Fatalf("the agent never drew its prompt: %q", l.ScreenLines(12))
+	}
+	sub, err := l.AttachWith(session.AttachOptions{Role: session.RoleControl, Name: "ann", Cols: 80, Rows: 24}, &gapSink{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Input(sub, []byte("x")); err != nil {
+		t.Fatal(err)
+	}
+	close(gate)
+	run := b.runOf(t, sid)
+	if !waitFor(30*time.Second, func() bool {
+		r, _ := b.srv.runs.Get(run)
+		return len(r.Members) > 0 && r.Members[0].BoxHeld &&
+			slices.ContainsFunc(r.Log, func(e session.ActivityEntry) bool { return strings.Contains(e.Message, "prompt box holds text") })
+	}) {
+		t.Fatalf("the engine never held the line at the box: %q", l.ScreenLines(12))
+	}
+	by, _ := b.startBy(t, id)
+	c.add(by.Sub(c.now()))
+	b.settle(t)
+	q := b.waitState(t, id, brakeman.StateFailed)
+	if !strings.Contains(q.Why, "its prompt box holds text a person typed: send it or clear it in its terminal") || strings.Contains(q.Why, "sign it in") {
+		t.Fatalf("the turn's words: %+v", q)
+	}
+	b.slotFree(t)
+	if got := b.typedInto(t, id); got != "x" {
+		t.Fatalf("what reached the agent: %q", got)
+	}
+}
