@@ -184,7 +184,24 @@ func TestTaskCommandsFollowTheFixture(t *testing.T) {
 // and one it leaves out is refused by the task's state.
 func TestTaskCommandsFollowALiveRun(t *testing.T) {
 	dir := newRepo(t)
-	e, _, _ := managedEngine(t)
+	e, _, l := managedEngine(t)
+	// The run's end is held at its commit (the fake ledger's blockOn): the
+	// engine shows the run failed, its change made, while the revision is
+	// still the one before it, which a command sent at it finds moved on
+	// once the end commits. The set is read once the ledger holds the
+	// run's end and the engine is settled at its revision; the hold is let
+	// go as that wait begins, or once the set was read (a read before the
+	// wait, the old order, then meets the commit every run).
+	l.blockOn, l.blocked, l.release = "run.finished", make(chan struct{}, 1), make(chan struct{})
+	waiting, read := make(chan struct{}), make(chan struct{})
+	go func() {
+		<-l.blocked
+		select {
+		case <-waiting:
+		case <-read:
+		}
+		close(l.release)
+	}()
 	build := work("build", "lead")
 	build.Checks = []Check{{ID: "never", Argv: []string{"sh", "-c", "exit 1"}}}
 	run := launchManaged(t, e, repoCrew(dir, build, work("docs", "writer", "build")))
@@ -197,7 +214,10 @@ func TestTaskCommandsFollowALiveRun(t *testing.T) {
 	}
 	failed := waitTask(t, e, run.ID, "build", ledger.TaskFailed, 3)
 	waitOutcome(t, e, run.ID, "failed")
+	close(waiting)
+	settledAt(t, e, l, run.ID, "run.finished")
 	set, err := e.TaskCommands(run.ID, "build")
+	close(read)
 	if err != nil || !slices.Equal(set.Commands, []string{TaskRetry, TaskAccept}) || set.AcceptAttempt != 3 || set.AcceptCommit != failed.Attempt.Result {
 		t.Fatalf("build: %+v %v", set, err)
 	}
@@ -235,4 +255,18 @@ func TestTaskCommandsFollowALiveRun(t *testing.T) {
 		t.Fatalf("build after the accept: %+v", after)
 	}
 	stopRun(t, e, run.ID)
+}
+
+// settledAt waits until the ledger holds the run's event kind, and the
+// engine is settled at the revision of its last commit: no change of the
+// run waits for a commit or is in one. A view's state (an outcome, a
+// task's) is made inside its change, before the commit that moves the
+// revision; a revision read before that commit is one behind.
+func settledAt(t *testing.T, e *Engine, l *fakeLedger, runID, kind string) {
+	t.Helper()
+	waitFake(t, "the ledger holding "+kind, func() bool { return slices.Contains(l.kinds(runID), kind) })
+	waitTrue(t, "the run settled", func() bool {
+		_, settled, _ := e.Settled(runID)
+		return settled
+	})
 }
