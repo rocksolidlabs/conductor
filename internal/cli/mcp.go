@@ -525,6 +525,10 @@ type unknownTool string
 
 func (u unknownTool) Error() string { return "unknown tool " + string(u) }
 
+// askedWords is what the ask tool answers: where the answer will come
+// from, true in a terminal and in a chat alike.
+const askedWords = "asked: the person's answer comes as their next message to you"
+
 var errNotInSession = errors.New("not running inside a Conductor session: nothing to report to")
 
 // call runs one tool; what it returns is the text the agent reads.
@@ -587,6 +591,9 @@ func (s *mcpServer) call(ctx context.Context, name string, raw json.RawMessage) 
 		defer cancel()
 		if err := target.Send(sctx, req); err != nil {
 			return "", err
+		}
+		if name == "ask" {
+			return askedWords, nil
 		}
 		return "reported", nil
 	case "brakeman_request", "observe", "brief_submit", "act":
