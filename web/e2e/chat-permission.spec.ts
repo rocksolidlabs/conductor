@@ -26,6 +26,9 @@ test.afterAll(async () => {
   await own.stop()
 })
 
+/** How near its end a chat's scroll is at its end (CHAT_END_SLACK, web/app/utils/transcript.ts: its module reads the app's aliases). */
+const CHAT_END_SLACK = 48
+
 /** The chat's open question, once its input is read (its line a button when it is more than one line, else its Allow judged). */
 function openQuestion(page: Page) {
   return page.locator('[data-chat-view] [data-permission-question][data-permission-state="open"]')
@@ -260,9 +263,22 @@ test("a person reading an opened input is not carried past it by the chat's next
     await expect(page.locator('[data-chat-view] [data-chat-prompt]').filter({ hasText: 'a message while reading' })).toBeAttached()
     await expect(q.locator('[data-permission-input-end]')).not.toBeInViewport()
     await expect(q.locator('[data-permission-allow]')).toBeDisabled()
-    // A person at the chat's end is followed: scrolled there, the answer's turn and the queued message's come into view.
-    await page.locator('[data-chat-scroll]').evaluate((el) => (el.scrollTop = el.scrollHeight))
+    // A person at the chat's end is followed: scrolled there, the answer's turn and the queued message's come into view. The scroll
+    // brings the input's end into view, which enables Allow once and takes its line away: the question changes under the scroll.
+    // Deny is pressed only once that has happened and the chat is at its end again, at rest, Deny whole in view: a click on a moving
+    // button is retried by Playwright with the button scrolled to the scroller's bottom edge, which takes the chat off its end
+    // (issue 1144), and what is judged then is a person who scrolled away.
+    const scroller = page.locator('[data-chat-scroll]')
+    await scroller.evaluate((el) => (el.scrollTop = el.scrollHeight))
+    await expect(q.locator('[data-permission-allow]')).toBeEnabled()
+    await expect(q.locator('[data-permission-waiting-line]')).toHaveCount(0)
+    await scroller.evaluate((el) => (el.scrollTop = el.scrollHeight))
+    const fromEnd = () => scroller.evaluate((el) => el.scrollHeight - el.scrollTop - el.clientHeight)
+    await expect.poll(fromEnd).toBeLessThan(CHAT_END_SLACK)
+    await expect(q.locator('[data-permission-deny]')).toBeInViewport({ ratio: 1 })
     await q.locator('[data-permission-deny]').click()
+    // The press left the chat at its end: nothing scrolled it away.
+    expect(await fromEnd()).toBeLessThan(CHAT_END_SLACK)
     await expect.poll(() => readStub(own, conv, 'denied'), { timeout: LONG_MS }).not.toBe('')
     const last = page.locator('[data-chat-view] [data-chat-turn]').filter({ hasText: 'stub chat: a message while reading' })
     await expect(last).toHaveAttribute('data-turn-outcome', 'done', { timeout: LONG_MS })

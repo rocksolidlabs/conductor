@@ -28,7 +28,7 @@ func runNotify(ctx context.Context, args []string, stdin io.Reader, stdout, stde
 	tool := fs.String("tool", "", "with --event tool_use, tool_denied, error or file: the tool involved")
 	op := fs.String("op", "", "with --event file: what was done to it, read, edit, write or delete")
 	filePath := fs.String("path", "", "with --event file: the file, as you name it")
-	choices := fs.String("choices", "", "with --state needs_input: answers to offer as buttons, separated by |, at most 6 of 40 bytes; a click types the choice as a line")
+	choices := fs.String("choices", "", "with --state needs_input: answers to offer as buttons, separated by |, at most 6 of 40 bytes; a click sends the choice as the person's answer")
 	ask := fs.Bool("ask", false, "your own question (--message, and --choices): the session shows it as needing input until someone answers, also once your turn has ended")
 	codex := fs.Bool("codex", false, "read a Codex notify payload from the last argument and map it")
 	files := fs.Bool("files", false, "with --<agent>-hook: report only the files the tool call touched, not the call (Claude Code's file-tool hook)")
