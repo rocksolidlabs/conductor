@@ -46,7 +46,8 @@ const (
 // CNL, CPL, CHA, HPA, VPA, CR, LF, BS, HT, RI, IND, NEL, save and restore),
 // erasing (ED, EL, ECH), inserting and deleting (IL, DL, ICH, DCH),
 // scrolling (DECSTBM, SU, SD), autowrap, the alternate screen (1049, 1047,
-// 47) and a synchronized update under way (2026, Settled). Colours, other
+// 47), a synchronized update under way (2026, Settled) and whether the
+// cursor is shown (25, Caret). Colours, other
 // modes and every other sequence are skipped, as are the
 // strings of OSC, DCS and the rest. A character's width is an approximation
 // (wide East Asian characters and most emoji take two cells, combining marks
@@ -63,6 +64,9 @@ type Screen struct {
 	wrap       bool // the last column was written: the next character goes to the next row
 	saved      [2]int
 	savedMain  [2]int // the cursor on the main screen as 1049 left it
+	// hidden says the program has hidden the cursor (DECTCEM, ?25l) and
+	// not shown it since (?25h): a terminal starts with it shown.
+	hidden bool
 	// syncing says the program has begun a synchronized update (2026) and
 	// not ended it: a terminal shows the frame before it until it ends,
 	// and this screen holds half of the next.
@@ -500,6 +504,7 @@ func (s *Screen) reset() {
 	s.layMain, s.layAlt = layout{drawnCols: s.cols, drawnRows: s.rows}, layout{}
 	s.cells, s.soft, s.wrapAt, s.lay, s.altOn = s.main, s.softMain, s.wrapMain, &s.layMain, false
 	s.x, s.y, s.top, s.bot, s.wrap = 0, 0, 0, s.rows-1, false
+	s.hidden = false
 }
 
 func (s *Screen) clampCursor() {
@@ -564,6 +569,8 @@ func (s *Screen) csi(final byte) {
 				switch m {
 				case 1049, 1047, 47:
 					s.altScreen(final == 'h', m == 1049)
+				case 25:
+					s.hidden = final == 'l'
 				case 2026:
 					// The update ends for both buffers, whichever is
 					// selected then: each one the frame erased whole is
@@ -780,6 +787,38 @@ func (s *Screen) DrawnAt() (uncut bool, cols, rows int) {
 
 // Size returns the screen's columns and rows.
 func (s *Screen) Size() (cols, rows int) { return s.cols, s.rows }
+
+// Caret is the cursor as the screen holds it (Screen.Caret): the row it
+// stands on, the characters of that row before it (a wide character's
+// tail left out; the whole row once the last column was written and the
+// next character goes to the next row) and whether the program shows it.
+// The agents with a prompt hide the cursor as a frame begins and show it
+// at the caret of their input as the frame ends.
+type Caret struct {
+	Row    string
+	Before string
+	Shown  bool
+}
+
+// Caret returns the cursor's row, what stands before it on that row and
+// whether it is shown.
+func (s *Screen) Caret() Caret {
+	row := s.cells[s.y]
+	x := s.x
+	if s.wrap {
+		x = len(row)
+	}
+	text := func(cells []rune) string {
+		line := make([]rune, 0, len(cells))
+		for _, c := range cells {
+			if c != wideTail {
+				line = append(line, c)
+			}
+		}
+		return string(line)
+	}
+	return Caret{Row: strings.TrimRight(text(row), " "), Before: text(row[:x]), Shown: !s.hidden}
+}
 
 // Last is what a PatternWatcher matches: Text, its last maxLookRows rows.
 func (s *Screen) Last() string { return s.text(maxLookRows) }

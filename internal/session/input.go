@@ -83,6 +83,16 @@ type writeWait struct {
 	// answer (a submission's Enter whose screen, read again after its
 	// BeforeEnter, is not the agent's prompt).
 	last func() error
+	// toDialog, when set, is asked as the write is made, after before: true
+	// says its keys go to a dialog the session shows (a reply's keys,
+	// AnswerInput; a person's keys the session reads as a dialog's answer),
+	// not the agent's prompt box (inputBox.wrote).
+	toDialog func() bool
+	// sends says the write is the Enter of a line typed only at the
+	// agent's prompt, written only where the screen is that prompt (or the
+	// prompt holding the line): the agent takes it, and its box is empty
+	// after it (inputBox.sent).
+	sends bool
 	// guard, when set, is asked as the writer takes the write, as over is,
 	// the last of its checks: an error from it and the write is not made (a
 	// submission's Enter that a newer prompt would take); nil, and it is.
@@ -251,6 +261,9 @@ type procWrite struct {
 	// after it (writeWait.last).
 	before func()
 	last   func() error
+	// made runs just before the write is made, after last passed: the
+	// session reads what goes into the agent's input then (inputBox).
+	made func()
 	// held is the credential over took (writeWait.hold), nil for none: let
 	// go once the write has returned or was cancelled (letGo).
 	held Held
@@ -275,6 +288,17 @@ func (s *Local) newWrite(ctx context.Context, data []byte, deadline time.Time, o
 		hold = o.from.hold
 	}
 	w := &procWrite{data: bytes.Clone(data), done: make(chan error, 1), before: o.before, last: o.last}
+	w.made = func() {
+		var fed uint64
+		if s.shot != nil {
+			fed = s.shot.Fed()
+		}
+		if o.sends {
+			s.box.sent(fed)
+			return
+		}
+		s.box.wrote(w.data, o.toDialog != nil && o.toDialog(), fed)
+	}
 	w.over = func() error {
 		select {
 		case <-ended:
@@ -449,6 +473,9 @@ func (q *procWriter) run(to io.Writer) {
 				err = w.last()
 			}
 			if err == nil {
+				if w.made != nil {
+					w.made()
+				}
 				_, err = to.Write(w.data)
 			}
 		}

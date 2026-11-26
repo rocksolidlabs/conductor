@@ -487,6 +487,20 @@ func (w *PatternWatcher) Frame() (text string, settled, uncut bool, cols, rows i
 	return w.tracker.Last(), true, true, 0, 0
 }
 
+// FrameCaret is Frame's text and uncut with the cursor (Screen.Caret) and
+// how many Feeds it had seen (Fed), under one lock: a caret read apart from
+// its frame could stand in another frame's row. The others' Last, uncut,
+// and no cursor shown.
+func (w *PatternWatcher) FrameCaret() (text string, uncut bool, c Caret, fed uint64) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if sc, ok := w.tracker.(*Screen); ok {
+		uncut, _, _ = sc.DrawnAt()
+		return sc.Lines(), uncut, sc.Caret(), w.feeds
+	}
+	return w.tracker.Last(), true, Caret{}, w.feeds
+}
+
 // Sight is a screen as one reading of it (PatternWatcher.Seen): its text
 // (Whole's), whether it shows everything the program drew as it drew it
 // (DrawnAt's uncut), how many Feeds it had seen (Fed), its size and the

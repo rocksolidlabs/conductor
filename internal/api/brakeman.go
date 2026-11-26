@@ -849,6 +849,10 @@ func (d *brakemanDesk) heldAtStartup(t *deskTurn, req brakeman.Request) string {
 // was typed into the screen before (the request's line, once the screen
 // was quiet and its screen was its agent's prompt) is all it was given.
 //
+// A turn whose line was never typed because its agent's prompt box holds
+// text typed into it (crew.BoxHoldsText) says so first: a person sends or
+// clears it in its terminal.
+//
 // A turn whose line was never typed because its agent's screen was not
 // recognised as its prompt (crew.UnknownScreen: a dialog the catalog does
 // not know) says so, with the screen's words: no key reached it, and a
@@ -868,7 +872,9 @@ func (d *brakemanDesk) notStarted(t *deskTurn, waited time.Duration) string {
 	}
 	mins := max(1, int(waited.Round(time.Minute)/time.Minute))
 	why := fmt.Sprintf("the agent did not start in %d minutes, no call to Conductor (signed out, or held at a screen Conductor does not know?); %s: sign it in or answer it in a session of that agent; Brakeman tries again by itself, or ask it now", mins, shown)
-	if len(locals) > 0 && d.atUnknownScreen(runID, locals[0]) {
+	if d.boxHeld(runID) {
+		why = fmt.Sprintf("its prompt box holds text a person typed: send it or clear it in its terminal; its request's line was not typed in %d minutes; %s; Brakeman tries again by itself, or ask it now", mins, shown)
+	} else if len(locals) > 0 && d.atUnknownScreen(runID, locals[0]) {
 		why = fmt.Sprintf("the agent's screen was not recognised, neither its prompt nor a startup screen Conductor knows, so its request's line was not typed in %d minutes; %s: answer it in a session of that agent; Brakeman tries again by itself, or ask it now", mins, shown)
 	}
 	for len(why) > brakeman.MaxWhy {
@@ -876,6 +882,14 @@ func (d *brakemanDesk) notStarted(t *deskTurn, waited time.Duration) string {
 		why = why[:len(why)-n]
 	}
 	return why
+}
+
+// boxHeld reports whether the engine holds the line of the turn's run
+// runID because its agent's prompt box holds text typed into it and not
+// sent (crew.BoxHoldsText, MemberState.BoxHeld).
+func (d *brakemanDesk) boxHeld(runID string) bool {
+	run, ok := d.s.runs.Get(runID)
+	return runID != "" && ok && len(run.Members) > 0 && run.Members[0].BoxHeld
 }
 
 // atUnknownScreen reports whether the engine holds the line of the turn's

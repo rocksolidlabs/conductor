@@ -583,6 +583,9 @@ type Local struct {
 	ownTurn  uint64
 	// writer makes every write to the process, in order (input.go).
 	writer procWriter
+	// box is what went into the agent's input as the writer made each
+	// write: whether its prompt box may hold text (inputBox).
+	box inputBox
 	// nvimEndWait is nvimEndWait as the session was made: its editors'.
 	nvimEndWait time.Duration
 	// paste follows the program's bracketed-paste mode (Submit, BracketedPaste).
@@ -3604,6 +3607,10 @@ func (s *Local) input(ctx context.Context, who typist, question string, data []b
 	// reaches a question that still shows.
 	typedEnter := enter
 	var quiet bool
+	// dialogKeys says the keys, as the writer takes them, answer a dialog
+	// the session shows or reads on the screen: a question's choice, a
+	// startup question's answer, a dialog's key (before sets it).
+	dialogKeys := false
 	// Keys are withdrawn as the connection ends, and, as a submission is,
 	// once its credential no longer stands (a link's: revoked or expired,
 	// or on a host its server not heard from lately), asked as they are
@@ -3864,6 +3871,7 @@ func (s *Local) input(ctx context.Context, who typist, question string, data []b
 			// still does).
 			s.asked.Hold()
 		}
+		dialogKeys = choice || ownAnswer || startupAnswer || heldAnswer || startupOnScreen || onScreenHeld || words != "" && answering
 	}
 	// written is what follows the keys once written: the viewer typing,
 	// the screen looked at again, and a reply's question resolved by the
@@ -3876,6 +3884,10 @@ func (s *Local) input(ctx context.Context, who typist, question string, data []b
 			s.resolve(question, token, who.id(), who.displayName(), who.reqID, data)
 		}
 	}
+	// A reply's keys to a question go to its dialog, not the agent's
+	// prompt box (inputBox), and so do a person's keys that the writer,
+	// taking them, reads as a dialog's answer (dialogKeys, set by before).
+	o.toDialog = func() bool { return question != "" || dialogKeys }
 	landed, err := s.writeProc(ctx, data, o)
 	if err != nil {
 		if landed != nil && !errors.Is(err, ErrSessionEnded) {

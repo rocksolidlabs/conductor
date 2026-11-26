@@ -247,6 +247,14 @@ type Submission struct {
 	// reads otherwise. Else the Enter is left out (SubmitResult.NotAtPrompt).
 	// A launch's first message.
 	PromptHoldsText bool
+	// EmptyBox types the line only into the agent's prompt box empty: while
+	// the box visibly begins with what was typed into it (boxRefusal,
+	// inputbox.go), it is refused (ErrBoxHoldsText, or
+	// ErrBoxHoldsEditedText for text edited with keys the session does not
+	// follow), nothing written, looked at before the text and again as the
+	// writer takes it. An agent with no prompt shape is never held.
+	// A crew member's prompt and a Brakeman turn's line (#1142).
+	EmptyBox bool
 }
 
 // promptOnly reports whether sub is typed only at the agent's prompt: its
@@ -614,6 +622,13 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 		}
 		return res, err
 	}
+	// A line typed only into an empty prompt box is never typed after text
+	// already in it (boxRefusal).
+	if sub.EmptyBox {
+		if err := s.boxRefusal(); err != nil {
+			return res, err
+		}
+	}
 	st := submitState{
 		promptSince: promptSince,
 		byName:      CleanName(sub.ByName),
@@ -626,6 +641,11 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 		aside:    aside,
 		claim:    new(atomic.Uint64),
 		decision: sub.Decision,
+	}
+	if sub.Question != "" && !s.promptOnly(sub) {
+		// A reply to a question read off the screen: its text and its Enter
+		// go to that dialog, not the agent's prompt box (inputBox).
+		st.wait.toDialog = func() bool { return true }
 	}
 	// A claim the line made and did not resolve is given up as it ends
 	// (claimSettled): here, or by the goroutine it is handed to.
@@ -1183,6 +1203,9 @@ func (s *Local) pressEnter(ctx context.Context, sub Submission, res SubmitResult
 		(*hook)()
 	}
 	wait := st.wait
+	// A line typed only at the agent's prompt has its Enter written only
+	// where the screen is that prompt: the box is empty after it.
+	wait.sends = s.opts.PromptShape != nil && s.promptOnly(sub)
 	s.mu.Lock()
 	ended := s.info.Status.Ended()
 	att := s.info.Attention
@@ -1579,7 +1602,8 @@ var errNotAtPromptEnter = errors.New("session: the screen is not the agent's pro
 // question (ErrTrustQuestion), a question asked during the work or a
 // dialog on the screen now or Held (ErrQuestion); for a line typed only
 // at the agent's prompt (promptOnly), a screen that is not that prompt
-// (ErrNotAtPrompt). A reply to a question
+// (ErrNotAtPrompt); for a line typed only into an empty prompt box
+// (EmptyBox), a box that may hold text (ErrBoxHoldsText). A reply to a question
 // (Question) is refused once that question no longer waits
 // (ErrQuestionAnswered), and passing, it claims the question in the same
 // critical section (claimQuestion), the claim kept in st.
@@ -1612,6 +1636,13 @@ func (s *Local) textGuard(sub Submission, st submitState) func() error {
 			return startup
 		case notAtPrompt:
 			return ErrNotAtPrompt
+		}
+		if sub.EmptyBox {
+			// Text went into the agent's input since the look before the
+			// text: the line waits for the box to be empty again.
+			if err := s.boxRefusal(); err != nil {
+				return err
+			}
 		}
 		if sub.Question != "" {
 			// The screen still shows the question, and no other drawn in
