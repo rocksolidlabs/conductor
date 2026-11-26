@@ -61,8 +61,10 @@ var ErrNotAChoice = errors.New("session: the keys are not one of the question's 
 // ctx ends, the wait runs out or by is withdrawn are not taken back: they
 // land as the program reads and resolve the question then, and AnswerAs
 // answers ErrSubmitPending, as a line accepted that way does; keys not yet
-// begun are never written. A line answering a question is Submit with
-// Question and ByName.
+// begun are never written. On a session in the protocol way the keys of
+// one choice of the question shown are that choice's words, sent as a line
+// answering it (chatChoice), whose word AnswerAs waits for within ctx. A
+// line answering a question is Submit with Question and ByName.
 func (s *Local) AnswerAs(ctx context.Context, question, input string, by Actor) error {
 	if question == "" {
 		return ErrQuestionAnswered

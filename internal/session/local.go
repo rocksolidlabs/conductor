@@ -3487,7 +3487,9 @@ func (s *Local) InputWaiting(ctx context.Context, sub *Subscription, data []byte
 // finished, when set, is told their word once they land late
 // (AnswerInputFinished). An actor's keys must be one of the question's
 // choices, looked at with the question and again as the writer takes
-// them (ErrNotAChoice).
+// them (ErrNotAChoice). On a session in the protocol way, a reply's keys
+// that are exactly one choice's of the question shown are that choice's
+// words, sent as the answer (chatChoice); any other keys are refused.
 func (s *Local) input(ctx context.Context, who typist, question string, data []byte, o writeWait, finished func(error)) error {
 	if s.Moving() {
 		// Between ways (move.go): no keys until the move ends.
@@ -3499,6 +3501,11 @@ func (s *Local) input(ctx context.Context, who typist, question string, data []b
 		// buttons alone (design 7).
 		if question != "" && s.isPermissionQuestion(question) {
 			return ErrPermissionCard
+		}
+		if question != "" {
+			// A reply with a choice's keys: that choice's words, as the
+			// person's answer (chatChoice); any other keys are refused.
+			return s.chatChoice(ctx, who, question, data, finished)
 		}
 		return ErrNotTerminal
 	}
