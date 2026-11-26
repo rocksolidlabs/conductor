@@ -538,13 +538,22 @@ func (rd *inboxRead) questionItem(info session.Info) (*inboxItem, bool) {
 			plan = "; it approves the plan at " + a.Plan
 		}
 		route := "/ws/sessions/" + info.ID
+		// A session that runs as a chat has no terminal: a choice, or a
+		// line, is sent to its agent as the person's answer (#1150).
+		chat := info.Way == session.WayProtocol
 		for _, o := range opts {
-			it.addAction(inboxAction{Name: "answer", Label: o.Label, Input: o.Input, Expect: a.ID, Route: route,
-				Scope: fmt.Sprintf("Types %s into the terminal of %s: the choice '%s'%s", keysWords(o.Input), info.Name, o.Label, plan)})
+			scope := fmt.Sprintf("Types %s into the terminal of %s: the choice '%s'%s", keysWords(o.Input), info.Name, o.Label, plan)
+			if chat {
+				scope = fmt.Sprintf("Sends the choice '%s' to %s as your answer%s", o.Label, info.Name, plan)
+			}
+			it.addAction(inboxAction{Name: "answer", Label: o.Label, Input: o.Input, Expect: a.ID, Route: route, Scope: scope})
 		}
 		if a.Kind == session.KindPrompt || len(a.Options) == 0 {
-			it.addAction(inboxAction{Name: "answer", Label: "Reply with a line", Text: true, Expect: a.ID, Route: route,
-				Scope: fmt.Sprintf("Types the line you write into the terminal of %s and enters it%s", info.Name, plan)})
+			scope := fmt.Sprintf("Types the line you write into the terminal of %s and enters it%s", info.Name, plan)
+			if chat {
+				scope = fmt.Sprintf("Sends the line you write to %s as your answer%s", info.Name, plan)
+			}
+			it.addAction(inboxAction{Name: "answer", Label: "Reply with a line", Text: true, Expect: a.ID, Route: route, Scope: scope})
 		}
 		if rt, ok := s.router.routeOf(info.ID, a.ID); ok {
 			for _, d := range rt.To {
