@@ -74,16 +74,17 @@ When designing:
 - Preserve clear labels, accessibility, discoverability, and recovery.
 - People use Conductor all day: simpler means less to watch, never more
   presses for daily work. No change makes a session's Chat or Terminal
-  view slower to use. A settings page folds nothing: its settings are the
-  page.
+  view slower to use. A settings page folds nothing and cuts nothing: its
+  settings are the page.
 
 Before finishing:
 - Inspect the rendered interface and walk through the main task, in a
   wide, short window (about 2000 x 810) as well as at 1440 and 390: after
   each change, `make web-build build-go`, then in a terminal of its own
   `CONDUCTOR_E2E_DAY_OPEN=1 npx playwright test day.spec.ts -g open` in
-  `web/` (the seeded day, `docs/checks.md`; it runs until Ctrl+C). An
-  agent that cannot open a page says so in the pull request.
+  `web/` (the seeded day, `docs/checks.md`; it runs until Ctrl+C, and no
+  other Playwright run starts in that worktree while it does). An agent
+  that cannot open a page says so in the pull request.
 - Review competing actions, redundant information, unnecessary steps,
   and choices that could be handled by defaults.
 - Apply justified simplifications, then verify affected secondary tasks.
