@@ -1,0 +1,14 @@
+{
+  "telemetry": false,
+  "updateCheck": false,
+  "hook": { "enabled": false },
+  "detector": {
+    "ignoreValues": [
+      {
+        "rule": "overused-font",
+        "value": "inter",
+        "reason": "The maintainers: Inter is Conductor's brand face (docs/design/brand.md, Typography and layout)"
+      }
+    ]
+  }
+}
