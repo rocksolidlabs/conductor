@@ -251,7 +251,8 @@ watch(runChat.refused, (r) => {
  * button, and no line a running member did not ask offers one.
  */
 const runChatAnswers = useRunChatAnswer({
-  members: () => runMembers.value.map((m) => ({ name: m.name, session: m.sessionId && (m.status === 'running' || m.status === 'starting') ? { id: m.sessionId, kind: m.kind ?? 'server' } : undefined })),
+  // A run link's members say not how their sessions run: a refusal names no terminal (wayUnknown).
+  members: () => runMembers.value.map((m) => ({ name: m.name, wayUnknown: true, session: m.sessionId && (m.status === 'running' || m.status === 'starting') ? { id: m.sessionId, kind: m.kind ?? 'server' } : undefined })),
   may: () => info.value?.role === 'control',
   via: () => ({ token: token.value, server: server.value }),
   // The link's read of the run is the page's own: read again as a question comes and as a choice is pressed, so that a member's

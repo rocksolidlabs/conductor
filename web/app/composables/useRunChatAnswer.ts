@@ -6,8 +6,13 @@ import type { SessionInfo } from './useSessions'
 /** A run's member as a page that shows the run's chat knows it: its name in the run, and its session while that runs. */
 export interface RunChatAsker {
   name: string
-  /** The member's session while it starts or runs, else none: a choice's keys go to it and nowhere else. */
-  session?: Pick<SessionInfo, 'id' | 'kind'>
+  /**
+   * The member's session while it starts or runs, else none: a choice's keys go to it and nowhere else. Its `way` says how it runs
+   * where the page knows it (missing: in its terminal).
+   */
+  session?: Pick<SessionInfo, 'id' | 'kind' | 'way'>
+  /** The page does not know how the member's session runs (a run link's page): a refusal names no terminal. */
+  wayUnknown?: boolean
 }
 
 /**
@@ -91,7 +96,9 @@ export function useRunChatAnswer(o: {
     } catch (e) {
       // The session's own word (answered meanwhile, refused) as the session page says it; a connection that never reached the
       // session (it ended, or left the server) sent nothing to it.
-      toast.add(e instanceof ReplyError ? replyFailure(e, who.name) : runChatNotSent('unreachable', who.name))
+      // In the member's session's way: a chat has no terminal to answer in, and a way not known names none.
+      const way = who.wayUnknown ? 'unknown' : who.session.way
+      toast.add(e instanceof ReplyError ? replyFailure(e, who.name, false, way) : runChatNotSent('unreachable', who.name))
     }
   }
 
