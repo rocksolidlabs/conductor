@@ -141,4 +141,12 @@ describe('refusalStands: a refusal says what is true now', () => {
     const folder: Refusal = { words: 'Sessions launched with an added folder stay in their terminal.', basis: { ...basis, firstReply: true } }
     expect(refusalStands(folder, { ...basis, firstReply: true })).toBe(true)
   })
+  it("a crew member's says its sentence for the session's life, whatever the facts a refusal was judged on, decided before any of them", () => {
+    const crew: Refusal = { words: CREW_WAY_IS_RUNS, basis }
+    for (const now of [basis, { ...basis, firstReply: true }, { ...basis, resumable: false }]) {
+      const refused = refusalStands(crew, now) ? crew.words : undefined
+      const s = switchState(at({ ...now, refused, crewMember: true }))
+      expect(s).toMatchObject({ shown: true, pressable: false, line: CREW_WAY_IS_RUNS })
+    }
+  })
 })

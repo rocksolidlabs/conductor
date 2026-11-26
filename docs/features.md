@@ -241,7 +241,8 @@ that order.
   terminal has them. A member that is not yolo is given no permission
   mode of Conductor's: it takes the person's own default mode, else
   Claude Code's for a chat (Manual), and asks the operator through the
-  permission question. A crew that needs a folder's tool servers runs
+  permission question; its own reports, its task's result and its
+  handoff within its run never ask (Chat's own tools). A crew that needs a folder's tool servers runs
   as Terminal.
 - **When a member stays in its terminal**, the run's log says why, after
   the member's name and attempt: "in its terminal: this version of
