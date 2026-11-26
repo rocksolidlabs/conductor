@@ -102,14 +102,14 @@ export async function typeLine(page: Page, line: string): Promise<void> {
   await page.keyboard.press('Enter')
 }
 
-/** A turn of the terminal's, ended: its hook's done shown, its conversation resumable (what a move to Chat waits for). */
+/** A turn of the terminal's, ended: its hook's done shown, its conversation resumable, its first turn listed (what a move to Chat waits for). */
 export async function firstTurn(page: Page, api: Api, id: string, line = 'a first turn'): Promise<void> {
   budget(LONG_MS)
   await typeLine(page, line)
   await expect
     .poll(async () => {
       const s = await api.session(id)
-      return s.attention?.state === 'done' && !!s.agentSession?.resumable
+      return s.attention?.state === 'done' && !!s.agentSession?.resumable && !!s.firstTurn
     }, { timeout: 30_000 })
     .toBe(true)
 }

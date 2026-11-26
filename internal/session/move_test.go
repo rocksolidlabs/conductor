@@ -1,7 +1,9 @@
 package session
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"sync"
@@ -528,6 +530,66 @@ func TestMoveNeedsAFirstTurnInside(t *testing.T) {
 	settled(t, s)
 	if s.Way() != WayProtocol {
 		t.Fatalf("way %q", s.Way())
+	}
+}
+
+// Info.FirstTurn is the fact the move to Chat is judged by, and the one a
+// page offers it by: false on a session whose conversation is already
+// resumable (a resume's, or a launch whose prompt was submitted), through a
+// working of the agent's own (its prompt-submit hook) and an operator's
+// done, the move refused all the while; true at the first done from a
+// source that reports turns, told (OnChange), then the move is made; in the
+// JSON as firstTurn only once true.
+func TestFirstTurnIsWhatTheMoveJudges(t *testing.T) {
+	p := newFakeProc()
+	var mu sync.Mutex
+	var told []bool
+	s := NewLocal(Info{ID: "sess", Kind: KindServer, Cwd: realDir(t, t.TempDir()), Cols: 80, Rows: 24,
+		AgentSession: &AgentSession{ID: "conv-1", Resumable: true, Source: AgentSessionResumed}}, p, Options{ScrollbackBytes: 4096, OnChange: func(i Info) {
+		mu.Lock()
+		told = append(told, i.FirstTurn)
+		mu.Unlock()
+	}})
+	t.Cleanup(func() { _ = s.Stop(context.Background()); p.exit() })
+	f := sessiontest.NewFakeProtocol()
+	refused := func(when string) {
+		t.Helper()
+		if s.Info().FirstTurn {
+			t.Fatalf("%s: firstTurn already", when)
+		}
+		_, err := s.SwapWay(WayProtocol, MoveStarts{Protocol: f.Start()})
+		var r *MoveRefusal
+		if !errors.As(err, &r) || r.Words != FirstReplyWords {
+			t.Fatalf("%s: %v", when, err)
+		}
+	}
+	refused("a resumed conversation")
+	if b, _ := json.Marshal(s.Info()); bytes.Contains(b, []byte("firstTurn")) {
+		t.Fatalf("firstTurn in the JSON while false: %s", b)
+	}
+	s.SetAttention(AttentionWorking, "", SourceAPI)
+	refused("the agent at work on its first prompt")
+	s.SetAttention(AttentionDone, "marked", SourceAdmin)
+	refused("an operator's done")
+	s.SetAttention(AttentionDone, "a turn", SourceAPI)
+	if !s.Info().FirstTurn {
+		t.Fatal("a turn's end did not set firstTurn")
+	}
+	if b, _ := json.Marshal(s.Info()); !bytes.Contains(b, []byte(`"firstTurn":true`)) {
+		t.Fatalf("firstTurn not in the JSON: %s", b)
+	}
+	mu.Lock()
+	last := len(told) > 0 && told[len(told)-1]
+	mu.Unlock()
+	if !last {
+		t.Fatal("the change was not told")
+	}
+	if st, err := s.SwapWay(WayProtocol, MoveStarts{Protocol: f.Start()}); err != nil || !st.Moving {
+		t.Fatalf("after the turn: %+v, %v", st, err)
+	}
+	settled(t, s)
+	if !s.Info().FirstTurn {
+		t.Fatal("the move cleared firstTurn")
 	}
 }
 

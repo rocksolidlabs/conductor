@@ -100,8 +100,20 @@ export function useSessionConnection(createTransport: () => TerminalTransport): 
       way.value = msg.way
       noted.value = msg.noted ?? ''
       why.value = msg.why ?? ''
+      // The owner sends no entry while the session runs in its terminal: what it added meanwhile (the move's notice) is read back as
+      // it comes back to the chat on this connection.
+      if (msg.way === 'terminal') transcript.leave()
+      else if (transcript.rejoin()) readBack(t)
     }
     for (const cb of controls) cb(msg)
+  }
+
+  /** Reads back the gap the transcript holds, on the connection t. */
+  function readBack(t: TerminalTransport) {
+    void transcript
+      .readBack((req) => t.transcriptGet(req))
+      .catch(() => undefined)
+      .finally(() => (transcriptVersion.value = transcript.version))
   }
 
   function disconnect() {
@@ -126,12 +138,7 @@ export function useSessionConnection(createTransport: () => TerminalTransport): 
       if (transcript.take(msg)) {
         transcriptVersion.value = transcript.version
         // A replay that left changes out is read back before its mark is held (see Chat sessions: `more`).
-        if (msg.t === 'page' && msg.more && transcript.gap !== null) {
-          void transcript
-            .readBack((req) => t.transcriptGet(req))
-            .catch(() => undefined)
-            .finally(() => (transcriptVersion.value = transcript.version))
-        }
+        if (msg.t === 'page' && msg.more && transcript.gap !== null) readBack(t)
       }
       for (const cb of transcripts) cb(msg)
     })

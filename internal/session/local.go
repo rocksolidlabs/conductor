@@ -622,8 +622,6 @@ type Local struct {
 	// none is), notedWhy the sentence that says why it waits, and
 	// notedStarts what it starts with; hasNoted says one is noted, read
 	// without the lock by the events that may let it be made (tryNoted).
-	// firstTurn says the terminal has reported a turn that ended (a done
-	// from a source that reports turns): a move to Chat is refused before.
 	moveDone chan struct{}
 	// moveCancel ends what the move under way waits on (a Stop's), and
 	// movedWith is what the last move to the chat moved with: the way a
@@ -635,7 +633,6 @@ type Local struct {
 	notedWhy    string
 	notedStarts MoveStarts
 	hasNoted    atomic.Bool
-	firstTurn   bool
 }
 
 // NewLocal wraps a started process and begins pumping its output.
@@ -2382,9 +2379,11 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 		defer s.notifyChange()
 	}
 	// A turn that ended, reported by a source that reports turns: a move
-	// to Chat is offered from now on (move.go).
-	if state == AttentionDone && ReportsTurn(state, source) {
-		s.firstTurn = true
+	// to Chat is offered from now on (Info.FirstTurn, move.go), told
+	// (OnChange) once the change is through.
+	if state == AttentionDone && ReportsTurn(state, source) && !s.info.FirstTurn {
+		s.info.FirstTurn = true
+		defer s.notifyChange()
 	}
 	// The turn the report names (endedTurn), weighed before every path
 	// below that records a done: a done naming the turn whose end was

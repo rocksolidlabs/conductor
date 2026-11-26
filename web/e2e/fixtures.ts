@@ -114,6 +114,8 @@ export interface Session {
   yolo?: boolean
   /** Its agent reports its turns (a working or a done of its own); missing when it has not. */
   turns?: boolean
+  /** The agent's first reply in this session has ended (its terminal reported a turn's end): what a move to Chat waits for. */
+  firstTurn?: boolean
   /** `protocol` while it runs as a chat (the agent's own protocol); missing in its terminal. */
   way?: string
   /** A chat's messages reach its agent as written (the listing's `verbatim`). */

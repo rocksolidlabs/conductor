@@ -51,6 +51,87 @@ describe('Transcript', () => {
     expect(t.entries.size).toBe(0)
   })
 
+  it('readsBackWhatItsTerminalAdded: what the session added while in its terminal (the move\'s notice) is read back as it returns, in order, the mark held until then', async () => {
+    const t = new Transcript()
+    const notice = (seq: number, mark: number, words: string) => e(seq, mark, { kind: 'notice', code: 'moved', words })
+    t.take({ t: 'entry', entry: notice(1, 1, 'Moved to Chat.') })
+    t.take({ t: 'entry', entry: e(2, 2) })
+    // The way message says terminal: the owner sends nothing meanwhile, though the session adds its notice (seq 3).
+    t.leave()
+    // Back to Chat: the move's notice comes first, then the way message.
+    t.take({ t: 'entry', entry: notice(4, 4, 'Moved to Chat.') })
+    expect(t.mark).toBe(2)
+    expect(t.rejoin()).toBe(true)
+    const asked: TranscriptRequest[] = []
+    await t.readBack(async (req) => {
+      asked.push(req)
+      return { t: 'page', entries: [notice(3, 3, 'Moved to the terminal.'), notice(4, 4, 'Moved to Chat.')], first: 1, last: 4, more: false }
+    })
+    expect(asked).toEqual([{ after: 2, limit: MAX_TRANSCRIPT_PAGE }])
+    expect(chatBlocks(t.list()).filter((b) => b.kind === 'notice').map((b) => b.kind === 'notice' && b.entry.words)).toEqual(['Moved to Chat.', 'Moved to the terminal.', 'Moved to Chat.'])
+    expect(t.mark).toBe(4)
+    expect(t.gap).toBeNull()
+    // A welcome of a session in its terminal (no way) is a leave too; a chat's welcome (its replay covers the gap) and a rejoin with no leave read nothing.
+    const w = new Transcript()
+    w.welcome({})
+    w.welcome({ way: 'protocol', transcript: { first: 1, last: 1, mark: 1 } })
+    expect(w.rejoin()).toBe(false)
+    expect(new Transcript().rejoin()).toBe(false)
+  })
+
+  it('readsItsOwnWindowAfterARefusedReadBack: a replay\'s read-back refused (its oldest entries dropped) leaves its gap, and a return from the terminal still reads what the terminal added, its mark held', async () => {
+    const t = new Transcript()
+    const notice = (seq: number, mark: number, words: string) => e(seq, mark, { kind: 'notice', code: 'moved', words })
+    // A fresh page on a long chat whose oldest entries were dropped: the replay says more; the read-back walks down to the first
+    // entry kept (5) and the next read is refused.
+    t.take({ t: 'page', entries: [e(10, 20), e(11, 21)], first: 5, last: 11, more: true })
+    const gone = Object.assign(new Error('That part of the chat is no longer kept.'), { code: 'transcript_gone' })
+    const asked: TranscriptRequest[] = []
+    const get = async (req: TranscriptRequest): Promise<TranscriptReply> => {
+      asked.push(req)
+      // As the server's read answers: nothing lies before 5 and after 11; the entry before 5 is no longer kept.
+      if (req.before !== undefined && req.after !== undefined && req.before <= req.after + 1) return { t: 'page', entries: [], first: 5, last: 13, more: false }
+      if (req.before === 10) return { t: 'page', entries: [5, 6, 7, 8, 9].map((n) => e(n, n + 10)), first: 5, last: 11, more: true }
+      if (req.before === 5) throw gone
+      // The terminal's window: entries after the last held as the page left.
+      return { t: 'page', entries: [notice(12, 22, 'Moved to the terminal.'), notice(13, 23, 'Moved to Chat.')], first: 5, last: 13, more: false }
+    }
+    await expect(t.readBack(get)).rejects.toBe(gone)
+    expect(t.gap).toBe(5)
+    expect(t.mark).toBe(0)
+    // Terminal, then Chat: the move's notice to Chat comes first, then the way message.
+    t.leave()
+    t.take({ t: 'entry', entry: notice(13, 23, 'Moved to Chat.') })
+    expect(t.rejoin()).toBe(true)
+    asked.length = 0
+    await t.readBack(get).catch(() => undefined)
+    // It holds the terminal's notice: it asked for the window the terminal added to, whatever the gap below holds.
+    expect(t.entries.get(12)?.words).toBe('Moved to the terminal.')
+    expect(asked[0]).toEqual({ after: 11, limit: MAX_TRANSCRIPT_PAGE })
+    expect(chatBlocks(t.list()).filter((b) => b.kind === 'notice').map((b) => b.kind === 'notice' && b.entry.words)).toEqual(['Moved to the terminal.', 'Moved to Chat.'])
+    // The gap below stays for the next connection (its hello's mark is below it), and holds the terminal's marks for when it is read.
+    expect(t.gap).toBe(5)
+    expect(t.mark).toBe(0)
+    await t.readBack(async () => ({ t: 'page', entries: [], first: 5, last: 13, more: false }))
+    expect(t.mark).toBe(23)
+  })
+
+  it('leavesTheWindowWhenItsReadDoesNotAnswer: a read of the terminal\'s window that fails holds no mark past it, and a chat\'s welcome hands it to its replay', async () => {
+    const t = new Transcript()
+    t.take({ t: 'entry', entry: e(1, 1) })
+    t.leave()
+    t.take({ t: 'entry', entry: e(3, 3, { kind: 'notice', code: 'moved', words: 'Moved to Chat.' }) })
+    expect(t.rejoin()).toBe(true)
+    await expect(t.readBack(async () => Promise.reject(new Error('the owner did not answer the read')))).rejects.toThrow()
+    expect(t.mark).toBe(1)
+    // A take while the window is unread does not move the mark past it either.
+    t.take({ t: 'entry', entry: e(4, 4) })
+    expect(t.mark).toBe(1)
+    t.welcome({ way: 'protocol', transcript: { first: 1, last: 4, mark: 4 } })
+    t.take({ t: 'page', entries: [e(2, 2, { kind: 'notice', code: 'moved', words: 'Moved to the terminal.' }), e(3, 3), e(4, 4)], first: 1, last: 4 })
+    expect(t.mark).toBe(4)
+  })
+
   it('refusesPastBound: an entry or a page past the wire\'s bounds is refused whole, and what the page keeps is bounded', () => {
     const t = new Transcript()
     expect(t.take({ t: 'entry', entry: e(1, 1, { text: 'x'.repeat(MAX_ENTRY_TEXT) }) })).toBe(true)

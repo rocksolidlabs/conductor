@@ -61,13 +61,13 @@ async function typeLine(page: Page, line: string) {
   await page.keyboard.press('Enter')
 }
 
-/** A turn of the terminal's, ended: its hook's done shown, its conversation resumable. */
+/** A turn of the terminal's, ended: its hook's done shown, its conversation resumable, its first turn listed. */
 async function firstTurn(page: Page, api: Api, id: string, line: string) {
   await typeLine(page, line)
   await expect
     .poll(async () => {
       const s = await api.session(id)
-      return s.attention?.state === 'done' && !!s.agentSession?.resumable
+      return s.attention?.state === 'done' && !!s.agentSession?.resumable && !!s.firstTurn
     }, { timeout: 30_000 })
     .toBe(true)
 }

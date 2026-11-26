@@ -146,7 +146,7 @@ func (s *Local) SwapWay(to string, m MoveStarts) (MoveState, error) {
 		return st, moveRefused(HostedStaysWords)
 	case to == WayProtocol && m.Protocol == nil, to == WayTerminal && m.Terminal == nil:
 		return st, moveRefused(CannotMoveWords)
-	case to == WayProtocol && !s.firstTurn:
+	case to == WayProtocol && !s.info.FirstTurn:
 		return st, moveRefused(FirstReplyWords)
 	case s.info.AgentSession == nil || s.info.AgentSession.ID == "" || !s.info.AgentSession.Resumable:
 		return st, moveRefused(CannotMoveWords)
