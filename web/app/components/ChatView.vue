@@ -2,7 +2,7 @@
 import type { SessionConnection } from '~/composables/useSessionConnection'
 import type { PermissionAnswer, TranscriptEntry, TranscriptPartName, TranscriptRequest } from '~/utils/protocol'
 import { ReplyError } from '~/utils/reply'
-import { atChatEnd, chatBlocks, limitReads, promptLine, promptText, readPart, stepsLine, type ChatTurn } from '~/utils/transcript'
+import { answerShown, atChatEnd, chatBlocks, limitReads, OWN_ANSWER_LINE, promptLine, promptText, readPart, stepsLine, type ChatTurn } from '~/utils/transcript'
 import { MAX_TRANSCRIPT_IN_FLIGHT } from '~/utils/protocol'
 
 /**
@@ -37,6 +37,8 @@ const props = withDefaults(
 const emit = defineEmits<{ openDiff: [entry: TranscriptEntry]; dismissNote: [] }>()
 
 const conn = props.connection
+/** A message that answers a question as the chat draws it (answerShown): this browser's own answer, or the words for one. */
+const answered = (p: TranscriptEntry) => answerShown(p, p.answers ? conn.ownAnswer(p.answers) : undefined)
 const entries = computed(() => {
   void conn.transcriptVersion.value
   return conn.transcript.list()
@@ -166,7 +168,18 @@ defineExpose({ showQuestion })
             <!-- What was written for the turn, then its steps folded into one line until opened ("Working." while the turn runs), then
                  what the agent wrote, changed and asked, in the order its stream gave them. -->
             <div v-for="p in b.prompts" :key="`e${p.seq}`" class="flex flex-col items-end gap-1" data-chat-prompt :data-prompt-state="p.state">
+              <!-- A message's text; an answer to a question: its text is never kept (#364); its sender's own browser shows what it sent, anyone else the
+                   words that say a question was answered. -->
               <p v-if="promptText(p)" class="max-w-[85%] rounded-lg bg-elevated px-3 py-2 text-sm whitespace-pre-wrap break-words text-highlighted" data-chat-prompt-text>{{ promptText(p) }}</p>
+              <template v-else-if="answered(p)">
+                <p
+                  class="max-w-[85%] rounded-lg bg-elevated px-3 py-2 text-sm whitespace-pre-wrap break-words"
+                  :class="answered(p)!.own ? 'text-highlighted' : 'text-muted'"
+                  data-chat-prompt-answer
+                  :data-answer-own="answered(p)!.own || undefined"
+                >{{ answered(p)!.text }}</p>
+                <span v-if="answered(p)!.own" class="text-[11px] text-muted" data-chat-answer-line>{{ OWN_ANSWER_LINE }}</span>
+              </template>
               <span v-if="p.byName && p.by === 'person'" class="text-[11px] text-muted">{{ p.byName }}</span>
               <span v-if="promptLine(p)" class="text-[11px] text-muted" data-chat-prompt-line>{{ promptLine(p) }}</span>
             </div>

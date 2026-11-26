@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { ref } from 'vue'
-import { useSessionConnection } from './useSessionConnection'
+import { MAX_OWN_ANSWERS, useSessionConnection } from './useSessionConnection'
 import type { ControlMessage, TranscriptMessage, Welcome } from '~/utils/protocol'
 import type { CloseInfo, TerminalTransport } from '~/utils/transport/types'
 
@@ -28,6 +28,8 @@ function fakeTransport() {
     onClose: (cb: typeof close) => void (close = cb),
     transcriptGet: async () => ({ t: 'page', entries: [], first: 0, last: 0 }),
     interrupt: async () => (sent.push('interrupt'), true),
+    // An answer the owner takes, unless its text says "refused".
+    answer: async (r: { question?: string; text?: string }) => (sent.push(`answer ${r.question} ${r.text}`), r.text !== 'refused'),
     transcriptFrom: () => {},
   }
   return {
@@ -96,5 +98,21 @@ describe('useSessionConnection', () => {
     expect(conn.way.value).toBe('terminal')
     made[1]!.owner.control({ t: 'welcome', role: 'view', fileView: false, way: 'protocol', noted: 'terminal' } as unknown as Welcome)
     expect([conn.way.value, conn.noted.value, conn.role.value]).toEqual(['protocol', 'terminal', 'view'])
+  })
+
+  it('keepsOwnAnswers: the text of an answer this browser sent is kept once the owner took it, for its chat to show its sender alone', async () => {
+    const conn = useSessionConnection(() => fakeTransport().transport)
+    await conn.connect({ cols: 80, rows: 24 })
+    expect(await conn.answer({ question: 'q-1', text: 'Yes, go on.' })).toBe(true)
+    expect(conn.ownAnswer('q-1')).toBe('Yes, go on.')
+    // Refused (another's answer came first): never shown as the one the chat holds.
+    expect(await conn.answer({ question: 'q-2', text: 'refused' })).toBe(false)
+    expect(conn.ownAnswer('q-2')).toBeUndefined()
+    // A choice's keys carry no text; and only the last MAX_OWN_ANSWERS are kept.
+    await conn.answer({ question: 'q-3', input: '1' })
+    expect(conn.ownAnswer('q-3')).toBeUndefined()
+    for (let i = 0; i < MAX_OWN_ANSWERS; i++) await conn.answer({ question: `n-${i}`, text: `a${i}` })
+    expect(conn.ownAnswer('q-1')).toBeUndefined()
+    expect(conn.ownAnswer(`n-${MAX_OWN_ANSWERS - 1}`)).toBe(`a${MAX_OWN_ANSWERS - 1}`)
   })
 })

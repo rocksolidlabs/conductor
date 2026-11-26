@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { MAX_TRANSCRIPT_ENTRY, MAX_TRANSCRIPT_PAGE, type TranscriptEntry, type TranscriptReply, type TranscriptRequest } from './protocol'
-import { chatBlocks, entryValid, lastWords, limitReads, MAX_ENTRY_TEXT, MAX_KEPT_ENTRIES, promptLine, promptText, readPart, stepsLine, Transcript } from './transcript'
+import { ANSWERED_WORDS, answerShown, chatBlocks, conductorStep, entryValid, lastWords, limitReads, MAX_ENTRY_TEXT, MAX_KEPT_ENTRIES, promptLine, promptText, readPart, stepsLine, Transcript } from './transcript'
 
 // A chat's transcript as the page keeps it (docs/plans/chat-or-terminal.md, designs 5, 6 and 11): each entry at its latest revision
 // by seq, the highest mark held as the next hello's resume point, what is past the wire's bounds refused, a message that answers a
@@ -230,3 +230,35 @@ describe('limitReads', () => {
     expect(b).toEqual({ status: 'fulfilled', value: 2 })
   })
 })
+
+describe('answerShown', () => {
+  it('answerBubbleSaysWhatHappened: an answer to a question is never an empty bubble; its sender sees what they sent, anyone else the words', () => {
+    const answer = e(1, 1, { kind: 'prompt', by: 'person', byName: 'Priya', answers: 'q-1' })
+    expect(answerShown(answer, 'Yes, go on.')).toEqual({ text: 'Yes, go on.', own: true })
+    expect(answerShown(answer, undefined)).toEqual({ text: ANSWERED_WORDS, own: false })
+    expect(ANSWERED_WORDS).toBe("Answered the agent's question.")
+    expect(answerShown(e(2, 2, { kind: 'prompt', text: 'hello' }), 'x')).toBeNull()
+  })
+})
+
+describe('conductorStep', () => {
+  const step = (tool: string, summary: string) => conductorStep({ tool, summary })
+  it('drawsWhatConductorsOwnToolDid: a report as its kind and message, a state as its word, a question as its words', () => {
+    expect(step('mcp__conductor__report', '{"event":"progress","message":"checked the files"}')).toEqual({ name: 'Report', words: 'progress: checked the files' })
+    expect(step('mcp__conductor__report', '{"event":"handoff","to":"tests","message":"the handlers are in"}')).toEqual({ name: 'Report', words: 'handoff to tests: the handlers are in' })
+    expect(step('mcp__conductor__report', '{"event":"artifact","message":"the pull request","url":"https://example.com/pr/1"}')).toEqual({ name: 'Report', words: 'artifact: the pull request https://example.com/pr/1' })
+    expect(step('mcp__conductor__set_state', '{"state":"done","message":"all green"}')).toEqual({ name: 'State', words: 'done: all green' })
+    expect(step('mcp__conductor__set_state', '{"state":"clear"}')).toEqual({ name: 'State', words: 'cleared' })
+    expect(step('mcp__conductor__ask', '{"message":"Shall I go on?","choices":["Yes","No"]}')).toEqual({ name: 'Question', words: 'Shall I go on? (Yes · No)' })
+  })
+  it('leavesEveryOtherStepAsItIs: another tool, an input cut or not of its shape, is drawn by its name and summary', () => {
+    expect(step('Bash', '{"event":"progress"}')).toBeNull()
+    expect(step('mcp__other__report', '{"event":"progress","message":"x"}')).toBeNull()
+    expect(step('mcp__conductor__report', '{"event":"progress","message":"cut at its bo…')).toBeNull()
+    expect(step('mcp__conductor__report', '{"event":"later","message":"x"}')).toBeNull()
+    expect(step('mcp__conductor__report', '{"event":"__proto__","message":"x"}')).toBeNull()
+    expect(step('mcp__conductor__set_state', '{"state":"sleepy"}')).toBeNull()
+    expect(step('mcp__conductor__link', '{"label":"x"}')).toBeNull()
+  })
+})
+
