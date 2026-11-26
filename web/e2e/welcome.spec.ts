@@ -12,7 +12,7 @@ import { START_WAIT_MS } from './server'
 /** An expect's bound and an action's (the config's expect timeout). */
 const STEP_MS = 15_000
 
-const SENTENCE = 'Conductor runs your coding agents in terminals on this machine, and lets you watch, answer and share them from any browser.'
+const SENTENCE = 'Run your coding agents here, and answer them from anywhere.'
 const STEPS = ['Launch an agent', 'Bring one in from another machine', 'Try a crew']
 
 /** An agent of GET /api/catalog, the fields this spec reads. */
@@ -82,6 +82,8 @@ async function wholeIn(parts: Locator, card: Locator, at: string) {
 async function welcomeWhole(page: Page, at: string, touch = false) {
   const card = await settled(page)
   await expect(card.locator('[data-welcome-sentence]'), at).toHaveText(SENTENCE)
+  // Conductor is used in its apps, not in a browser: the word is nowhere on the card.
+  await expect(card, at).not.toContainText(/browser/i)
   await expect(card.locator('[data-welcome-step-label]'), at).toHaveText(STEPS)
   await expect(card.locator('[data-welcome-where] h3'), at).toHaveText('Where things are')
   await wholeIn(card.locator('[data-welcome-step-label]'), card, at)

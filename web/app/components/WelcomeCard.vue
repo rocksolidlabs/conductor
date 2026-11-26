@@ -78,7 +78,7 @@ async function loadExamples() {
         <img src="/brand/conductor-mark-reversed.svg" alt="" class="hidden size-8 flex-none dark:block" />
         <div class="min-w-0">
           <h2 class="text-base font-semibold text-highlighted">Welcome to Conductor</h2>
-          <p class="text-sm text-muted" data-welcome-sentence>Conductor runs your coding agents in terminals on this machine, and lets you watch, answer and share them from any browser.</p>
+          <p class="text-balance text-sm text-muted" data-welcome-sentence>Run your coding agents here, and answer them from anywhere.</p>
         </div>
       </div>
 
