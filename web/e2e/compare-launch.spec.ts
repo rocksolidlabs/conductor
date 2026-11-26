@@ -206,13 +206,30 @@ test("New comparison on Crews makes a comparison's crew, and the crew editor sho
   for (const size of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) {
     await page.setViewportSize(size)
     await page.goto('/crews')
-    // The navbar's right side: About, New crew, New comparison and Full screen.
+    // The navbar's right side: About, New crew, New agent trial and Full screen.
     const navbar = page.locator('[data-new-comparison]').locator('..')
     await expect(page.locator('[data-new-comparison]')).toBeVisible({ timeout: 30_000 })
     // Beside New crew, neither filled: one filled button a navbar, and none here.
-    await expect(page.locator('[data-new-comparison]')).toHaveText('New comparison')
+    await expect(page.locator('[data-new-comparison]')).toHaveText('New agent trial')
+    // The old name is gone from the page.
+    await expect(page.getByText('New comparison')).toHaveCount(0)
     await noOverlap(navbar)
     await noSideways(page)
+    if (size.width === 1440) {
+      // Each button says what it makes, in its tooltip; the palette's row has the same name.
+      // (The tooltip by its role, which reka also keeps on a hidden copy of the words, and the box drawn around it: tooltips.spec.ts.)
+      const tip = (name: string) => page.locator('[data-slot="content"]').filter({ has: page.getByRole('tooltip', { name, exact: true, includeHidden: true }) })
+      await page.locator('[data-new-comparison]').hover()
+      await expect(tip('Agents each try the same task. You keep the best result.')).toBeVisible()
+      await page.locator('[data-new-crew]').hover()
+      await expect(tip('Agents that work together on one goal.')).toBeVisible()
+      await page.keyboard.press('Control+k')
+      const row = page.locator('[data-palette] [data-palette-row="page:new-comparison"]')
+      await expect(row).toContainText('New agent trial')
+      await expect(row).toContainText('Two to four agents each try the same task. You keep the best result.')
+      await page.keyboard.press('Escape')
+      await expect(page.locator('[data-palette]')).toHaveCount(0)
+    }
   }
   await page.locator('[data-new-comparison]').click()
   const form = page.locator('[data-compare-template]')
@@ -262,7 +279,10 @@ test("New comparison on Crews makes a comparison's crew, and the crew editor sho
   await expect(block.locator('[data-crew-compare-lane="approach-b"] [data-crew-compare-approach]')).toHaveText('No approach given: an independent try')
   await expect(block.locator('[data-crew-compare-lane="approach-b"]')).toContainText('cand-b · Worker, CLI (e2e stub) · --model e2e')
   await expect(block.locator('[data-crew-compare-lane="approach-a"]')).toContainText('Then: review-a')
-  await expect(block.locator('[data-crew-compare-brakeman]')).toHaveText('Brakeman drafts the comparison when all candidates are done.')
+  await expect(block.locator('[data-crew-compare-brakeman]')).toHaveText('Brakeman sums up the results when all are done.')
+  await expect(block).toContainText('2 agents, each working alone from the same commit, checked alike. Read only here.')
+  await expect(block.locator('[data-crew-compare-lane="approach-a"]')).toContainText('Agent A')
+  await expect(block).not.toContainText('Candidate')
   await expect(block.locator('input, textarea, [role="combobox"]')).toHaveCount(0)
   const box = async (sel: string) => (await page.locator(sel).first().boundingBox())!
   expect((await box('[data-crew-compare-block]')).y).toBeLessThan((await box('[data-crew-tasks-section]')).y)
@@ -309,8 +329,8 @@ test("a comparison made on Crews launches from its ticket with the count its sta
   expect([refused.status, refused.body.error.code]).toEqual([400, 'invalid_crew'])
 })
 
-/** Where a comparison is launched, as the crews page and the crew's launch sheet say it. */
-const WHERE = "A comparison is launched from a ticket's approved plan revision: propose this crew as a ticket's plan, approve it, and launch it there"
+/** Where an agent trial is started, as the crews page and the crew's launch sheet say it. */
+const WHERE = "An agent trial starts from a ticket's approved plan: propose this crew as the ticket's plan, approve it, and launch it there"
 
 test('New comparison keeps its draft across a close until Cancel, and a candidate moved to an agent that takes no arguments drops them', async ({ page, api, state }) => {
   test.setTimeout(120_000)

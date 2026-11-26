@@ -243,7 +243,7 @@ function newCrew() {
   router.push(`/crews/${NEW_ROUTE}`)
 }
 
-/** New comparison (CP1): its form, and the crew it saved opened, the list read again so it is listed. */
+/** New agent trial (CP1; the form the code calls a comparison): its form, and the crew it saved opened, the list read again so it is listed. */
 const comparisonOpen = ref(false)
 function newComparison() {
   comparisonOpen.value = true
@@ -682,7 +682,7 @@ usePalette().registerPage(() => ({
   label: 'Crews',
   rows: [
     { key: 'page:new', label: 'New crew', icon: 'i-lucide-plus', run: newCrew },
-    { key: 'page:new-comparison', label: 'New comparison', detail: 'Two to four candidates work one objective apart, checked alike', icon: 'i-lucide-git-compare', run: newComparison },
+    { key: 'page:new-comparison', label: 'New agent trial', detail: 'Two to four agents each try the same task. You keep the best result.', icon: 'i-lucide-git-compare', run: newComparison },
     { key: 'page:examples', label: 'Load the example crews', detail: EXAMPLES_LINE, icon: 'i-lucide-package-open', run: loadExamples },
     ...crews.value.map((c) => ({
       key: `page:launch:${c.id}`,
@@ -708,8 +708,12 @@ usePalette().registerPage(() => ({
             <p><b class="font-medium text-default">Running now</b>: launches of a saved crew; each member is a live session.</p>
             <p class="mt-2"><b class="font-medium text-default">Saved crews</b>: plans: who, which agent, which prompt, who waits for whom. Nothing runs until you launch one.</p>
           </PageAbout>
-          <UButton label="New crew" icon="i-lucide-plus" color="neutral" variant="outline" data-new-crew @click="newCrew" />
-          <UButton label="New comparison" icon="i-lucide-git-compare" color="neutral" variant="outline" data-new-comparison @click="newComparison" />
+          <UTooltip text="Agents that work together on one goal.">
+            <UButton label="New crew" icon="i-lucide-plus" color="neutral" variant="outline" data-new-crew @click="newCrew" />
+          </UTooltip>
+          <UTooltip text="Agents each try the same task. You keep the best result.">
+            <UButton label="New agent trial" icon="i-lucide-git-compare" color="neutral" variant="outline" data-new-comparison @click="newComparison" />
+          </UTooltip>
           <CrewCompareTemplate v-model:open="comparisonOpen" :agents="agents" @created="comparisonCreated" />
           <FullscreenButton />
         </template>

@@ -3,7 +3,7 @@ import type { AgentInfo, CrewInfo } from '~/composables/useSessions'
 import { COMPARE_LIMITS, compareProblems, compareSpec, draftComparison, draftOnOpen, rowKey, withCandidateAgent, type DraftCandidate, type DraftComparison } from '~/utils/compareTemplate'
 
 /**
- * New comparison (CP1, docs/plans/compare-crew.md, "The template"), opened from Crews: the project folder (the crew's working directory),
+ * New agent trial (CP1, docs/plans/compare-crew.md, "The template", where it is called New comparison), opened from Crews: the project folder (the crew's working directory),
  * the objective (its goal), the instructions every candidate gets, one to twelve criteria, the checks every candidate's result must pass
  * (or the project's conductor.manifest.json verify steps), two to four candidates (each an agent, its arguments, which is how a model is
  * chosen, and an optional approach), whether an agent reviews each candidate, and whether Brakeman drafts the comparison. Create posts the
@@ -74,7 +74,7 @@ async function create() {
 </script>
 
 <template>
-  <UModal v-model:open="open" title="New comparison" description="One objective, worked by two to four candidates apart from one base, each checked alike. It is saved as a crew; a ticket's approved plan revision launches it." :ui="{ content: 'sm:max-w-2xl', wrapper: 'min-w-0 pe-10' }" data-compare-template-dialog>
+  <UModal v-model:open="open" title="New agent trial" description="Two to four agents each try the same task on their own copy. You keep the best result. This saves the trial as a crew; a ticket's approved plan starts it." :ui="{ content: 'sm:max-w-2xl', wrapper: 'min-w-0 pe-10' }" data-compare-template-dialog>
     <template #body>
       <UForm :state="draft" class="flex flex-col gap-5 text-sm" data-compare-template @submit="create">
         <div class="grid gap-4 sm:grid-cols-2">
