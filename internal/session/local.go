@@ -583,6 +583,9 @@ type Local struct {
 	ownTurn  uint64
 	// writer makes every write to the process, in order (input.go).
 	writer procWriter
+	// box is what went into the agent's input as the writer made each
+	// write: whether its prompt box may hold text (inputBox).
+	box inputBox
 	// nvimEndWait is nvimEndWait as the session was made: its editors'.
 	nvimEndWait time.Duration
 	// paste follows the program's bracketed-paste mode (Submit, BracketedPaste).
@@ -3876,6 +3879,9 @@ func (s *Local) input(ctx context.Context, who typist, question string, data []b
 			s.resolve(question, token, who.id(), who.displayName(), who.reqID, data)
 		}
 	}
+	// A reply's keys to a question go to its dialog, not the agent's
+	// prompt box (inputBox).
+	o.answer = question != ""
 	landed, err := s.writeProc(ctx, data, o)
 	if err != nil {
 		if landed != nil && !errors.Is(err, ErrSessionEnded) {

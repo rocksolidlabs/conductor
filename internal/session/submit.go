@@ -247,6 +247,13 @@ type Submission struct {
 	// reads otherwise. Else the Enter is left out (SubmitResult.NotAtPrompt).
 	// A launch's first message.
 	PromptHoldsText bool
+	// EmptyBox types the line only into the agent's prompt box empty: while
+	// something printable went into the agent's input since the last Enter
+	// and the screen does not show the caret at the box's start
+	// (boxHoldsText, inputbox.go), it is refused (ErrBoxHoldsText), nothing
+	// written, looked at before the text and again as the writer takes it.
+	// A crew member's prompt and a Brakeman turn's line (#1142).
+	EmptyBox bool
 }
 
 // promptOnly reports whether sub is typed only at the agent's prompt: its
@@ -613,6 +620,11 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 			return res, nil
 		}
 		return res, err
+	}
+	// A line typed only into an empty prompt box is never typed after text
+	// already in it (boxHoldsText).
+	if sub.EmptyBox && s.boxHoldsText() {
+		return res, ErrBoxHoldsText
 	}
 	st := submitState{
 		promptSince: promptSince,
@@ -1579,7 +1591,8 @@ var errNotAtPromptEnter = errors.New("session: the screen is not the agent's pro
 // question (ErrTrustQuestion), a question asked during the work or a
 // dialog on the screen now or Held (ErrQuestion); for a line typed only
 // at the agent's prompt (promptOnly), a screen that is not that prompt
-// (ErrNotAtPrompt). A reply to a question
+// (ErrNotAtPrompt); for a line typed only into an empty prompt box
+// (EmptyBox), a box that may hold text (ErrBoxHoldsText). A reply to a question
 // (Question) is refused once that question no longer waits
 // (ErrQuestionAnswered), and passing, it claims the question in the same
 // critical section (claimQuestion), the claim kept in st.
@@ -1612,6 +1625,10 @@ func (s *Local) textGuard(sub Submission, st submitState) func() error {
 			return startup
 		case notAtPrompt:
 			return ErrNotAtPrompt
+		case sub.EmptyBox && s.boxHoldsText():
+			// Text went into the agent's input since the look before the
+			// text: the line waits for the box to be empty again.
+			return ErrBoxHoldsText
 		}
 		if sub.Question != "" {
 			// The screen still shows the question, and no other drawn in

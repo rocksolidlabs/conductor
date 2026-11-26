@@ -83,6 +83,10 @@ type writeWait struct {
 	// answer (a submission's Enter whose screen, read again after its
 	// BeforeEnter, is not the agent's prompt).
 	last func() error
+	// answer says the write is a reply's keys to a question the session
+	// shows (AnswerInput): what it does to the agent's prompt box is read
+	// as such (inputBox.wrote).
+	answer bool
 	// guard, when set, is asked as the writer takes the write, as over is,
 	// the last of its checks: an error from it and the write is not made (a
 	// submission's Enter that a newer prompt would take); nil, and it is.
@@ -251,6 +255,9 @@ type procWrite struct {
 	// after it (writeWait.last).
 	before func()
 	last   func() error
+	// made runs just before the write is made, after last passed: the
+	// session reads what goes into the agent's input then (inputBox).
+	made func()
 	// held is the credential over took (writeWait.hold), nil for none: let
 	// go once the write has returned or was cancelled (letGo).
 	held Held
@@ -275,6 +282,13 @@ func (s *Local) newWrite(ctx context.Context, data []byte, deadline time.Time, o
 		hold = o.from.hold
 	}
 	w := &procWrite{data: bytes.Clone(data), done: make(chan error, 1), before: o.before, last: o.last}
+	w.made = func() {
+		var fed uint64
+		if s.shot != nil {
+			fed = s.shot.Fed()
+		}
+		s.box.wrote(w.data, o.answer, fed)
+	}
 	w.over = func() error {
 		select {
 		case <-ended:
@@ -449,6 +463,9 @@ func (q *procWriter) run(to io.Writer) {
 				err = w.last()
 			}
 			if err == nil {
+				if w.made != nil {
+					w.made()
+				}
 				_, err = to.Write(w.data)
 			}
 		}
