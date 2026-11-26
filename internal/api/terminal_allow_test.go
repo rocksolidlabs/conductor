@@ -1,13 +1,33 @@
 package api
 
 import (
+	"net/http"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/rocksolidlabs/conductor/internal/config"
+	"github.com/rocksolidlabs/conductor/internal/session"
 )
+
+// refusedWords is the run's log line for lead's refused task_result in a
+// run of no tasks.
+const refusedWords = "lead's call to Conductor's task_result was refused by its agent's own permission check or a rule in its settings, " +
+	"though Conductor's launch allows it; look in its terminal (in Claude Code, /permissions)"
+
+// refusedLines counts run's log lines that are refusedWords.
+func (e *testEnv) refusedLines(run string) (int, []session.ActivityEntry) {
+	r, _ := e.srv.runs.Get(run)
+	n := 0
+	for _, entry := range r.Log {
+		if entry.Message == refusedWords {
+			n++
+		}
+	}
+	return n, r.Log
+}
 
 // A terminal crew's member of Claude Code is launched as main launches it,
 // with exactly one argument more where the server registers its MCP
@@ -15,7 +35,10 @@ import (
 // holds no rule), Conductor's MCP server and, beside it, one
 // --allowedTools of Conductor's eight reporting tools; with the server's
 // MCP off, main's launch exactly, no rule anywhere. It runs in its
-// terminal.
+// terminal. Its agent's refusal of one of those tools, which its hook
+// reports to the events route with the session's own token, comes back to
+// the run's log as one line, twice sent; with MCP off the launch allows
+// nothing, and the same refusal says nothing.
 func TestTerminalCrewUnchanged(t *testing.T) {
 	off := false
 	for name, mutate := range map[string]func(*config.Config){"mcp on": nil, "mcp off": func(c *config.Config) { c.Agents.MCP = &off }} {
@@ -46,6 +69,36 @@ func TestTerminalCrewUnchanged(t *testing.T) {
 			}
 			if !slices.Equal(info.Command, want) || info.Way != "" {
 				t.Fatalf("the member runs %q in way %q, want %q in its terminal", info.Command, info.Way, want)
+			}
+			tok := e.agentToken(sid)
+			for _, tool := range []string{"mcp__conductor__task_result", "mcp__conductor__task_result", "mcp__conductor__run_status"} {
+				resp, out := e.do("POST", "/api/sessions/"+sid+"/events", tok, map[string]any{"type": session.ActivityToolDenied, "tool": tool})
+				if resp.StatusCode != http.StatusAccepted {
+					t.Fatalf("the hook's report: %d %v", resp.StatusCode, out)
+				}
+			}
+			if mutate != nil {
+				// The reports are recorded, and the engine has taken them,
+				// as it takes an entry on the recording goroutine: nothing
+				// is said.
+				if n, log := e.refusedLines(run); n != 0 || slices.ContainsFunc(log, func(l session.ActivityEntry) bool { return strings.Contains(l.Message, "refused") }) {
+					t.Fatalf("a launch that allows nothing: %+v", log)
+				}
+				return
+			}
+			deadline := time.Now().Add(10 * time.Second)
+			for {
+				n, log := e.refusedLines(run)
+				if n == 1 {
+					break
+				}
+				if n > 1 || time.Now().After(deadline) {
+					t.Fatalf("%d lines of %q: %+v", n, refusedWords, log)
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			if _, log := e.refusedLines(run); slices.ContainsFunc(log, func(l session.ActivityEntry) bool { return strings.Contains(l.Message, "run_status") }) {
+				t.Fatalf("an asked tool's refusal was said: %+v", log)
 			}
 		})
 	}

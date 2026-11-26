@@ -9,17 +9,31 @@ import (
 // session's agent refused.
 type refusedKey struct{ session, tool string }
 
-// refusedCall takes a member's tool_denied entry: its agent's own
-// permission check refused a call (Claude Code's PermissionDenied hook,
-// which runs when auto mode's classifier denies one). A refusal of one of
-// Conductor's own tools is said in the run's log, once for the session and
-// the tool, with the rule that allows the call and where it is set: a
-// member whose task_result was refused otherwise leaves the run waiting
-// with only "reports done without a result" (#1143). Any other tool's
-// refusal is the agent's own business and says nothing. It takes e.mu.
+// refusedCall takes a member's tool_denied entry: its agent refused a
+// call, which a terminal's Claude Code tells through its PermissionDenied
+// hook. The run's log says it once for the session and the tool (#1143)
+// when the tool is exactly one of those the member's launch allows
+// Conductor's server without asking (agents.ConductorToolOf: at most
+// len(ProtocolUnaskedTools) lines and keys a session, the tool's name in
+// the line one Conductor wrote), the launch carries that allowance with
+// Conductor's own server (agents.AllowsConductorTools: a launch without
+// the server, or a Brakeman turn, carries none, and a server keyed
+// conductor there is not Conductor's), and the member runs in its
+// terminal: a chat's own stream records its refusals too (a deny rule's
+// among them), and a chat's floor and its permission questions are
+// Conductor's own, so nothing there needs this line. A member whose
+// task_result was refused would otherwise leave the run waiting with only
+// "reports done without a result". Any other refusal says nothing and
+// keeps nothing. The session's way and command are read as the entry
+// arrives, on the recording goroutine, before the change the turn's end
+// may bring. It takes e.mu.
 func (e *Engine) refusedCall(sessionID string, sm sessionMember, tool string) {
 	name, ok := agents.ConductorToolOf(tool)
 	if !ok {
+		return
+	}
+	l, ok := e.lookup(sessionID)
+	if !ok || l.Way() != session.WayTerminal || !agents.AllowsConductorTools(l.Info().Command) {
 		return
 	}
 	r := sm.r
@@ -40,6 +54,6 @@ func (e *Engine) refusedCall(sessionID string, sm sessionMember, tool string) {
 	if sm.a != nil {
 		where = "task " + sm.a.t.def.ID + ": "
 	}
-	r.note(session.ActivityStatus, "%s%s's call to Conductor's %s was refused by its agent's own permission check; allow %s in its permissions (in Claude Code, /permissions) for it to call again",
-		where, sm.m.def.Name, name, tool)
+	r.note(session.ActivityStatus, "%s%s's call to Conductor's %s was refused by its agent's own permission check or a rule in its settings, though Conductor's launch allows it; look in its terminal (in Claude Code, /permissions)",
+		where, sm.m.def.Name, name)
 }
