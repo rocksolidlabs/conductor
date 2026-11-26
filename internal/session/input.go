@@ -83,10 +83,16 @@ type writeWait struct {
 	// answer (a submission's Enter whose screen, read again after its
 	// BeforeEnter, is not the agent's prompt).
 	last func() error
-	// answer says the write is a reply's keys to a question the session
-	// shows (AnswerInput): what it does to the agent's prompt box is read
-	// as such (inputBox.wrote).
-	answer bool
+	// toDialog, when set, is asked as the write is made, after before: true
+	// says its keys go to a dialog the session shows (a reply's keys,
+	// AnswerInput; a person's keys the session reads as a dialog's answer),
+	// not the agent's prompt box (inputBox.wrote).
+	toDialog func() bool
+	// sends says the write is the Enter of a line typed only at the
+	// agent's prompt, written only where the screen is that prompt (or the
+	// prompt holding the line): the agent takes it, and its box is empty
+	// after it (inputBox.sent).
+	sends bool
 	// guard, when set, is asked as the writer takes the write, as over is,
 	// the last of its checks: an error from it and the write is not made (a
 	// submission's Enter that a newer prompt would take); nil, and it is.
@@ -287,7 +293,11 @@ func (s *Local) newWrite(ctx context.Context, data []byte, deadline time.Time, o
 		if s.shot != nil {
 			fed = s.shot.Fed()
 		}
-		s.box.wrote(w.data, o.answer, fed)
+		if o.sends {
+			s.box.sent(fed)
+			return
+		}
+		s.box.wrote(w.data, o.toDialog != nil && o.toDialog(), fed)
 	}
 	w.over = func() error {
 		select {

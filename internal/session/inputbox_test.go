@@ -10,25 +10,37 @@ import (
 )
 
 // A line typed only into an empty prompt box (Submission.EmptyBox, #1142)
-// waits while the box may hold text: something printable went into the
-// agent's input since the last Enter, and the screen does not show the
-// caret at the box's start.
+// waits while the agent's box visibly begins with what was typed into it.
 
-// The prompt boxes, drawn by hand after the shapes the agents draw: the
+// The prompt boxes, drawn by hand after the boxes the agents draw: the
 // box's own rows and the cursor's sequences alone, each frame a
-// synchronized update that hides the cursor as it begins and shows it at
-// the caret as it ends.
+// synchronized update that hides the cursor as it begins.
+//
+// Claude Code's: a rule, the ❯ mark in column 1 and a no-break space in
+// column 2, the box's text from column 3 (its placeholder's words as plain
+// text in an empty box; nothing after a turn), a rule, the footer. As it
+// runs by default it never shows the terminal's cursor (claudeBox's shown
+// false); with its native cursor on, the cursor stands at the caret.
 //
 // Codex's after the repository's own raw screen (codexUpdateOverSplash in
-// question_test.go): the mark on row 21, the input from column 3, a faint
-// placeholder, the footer on row 24, the cursor placed at the caret and
-// shown. Claude Code's rebuilt as it draws its box: a rule, the ❯ mark and
-// a no-break space, the input, a rule, the footer; an empty box shows a
-// faint placeholder, or nothing after a turn, the cursor just after the
-// mark. That Claude Code puts the cursor after the text a box holds (as
-// Codex does) is an assumption these screens make, not a capture.
-func claudeBox(text string, col int, shown bool) string {
-	return "\x1b[?2026h\x1b[?25l\x1b[2J\x1b[H" + rule80 + "\r\n❯ " + text + "\x1b[22m\r\n" + rule80 + "\r\n  ? for shortcuts" + caretAt(2, col, shown) + "\x1b[?2026l"
+// question_test.go): the mark on row 21, the input from column 3, the
+// footer on row 24, the cursor placed at the caret and shown.
+func claudeBox(rows []string, caretRow, caretCol int, shown bool) string {
+	box := ""
+	for i, r := range rows {
+		if i == 0 {
+			box += "❯ " + r
+		} else {
+			box += "\r\n" + r
+		}
+	}
+	return "\x1b[?2026h\x1b[?25l\x1b[2J\x1b[H" + rule80 + "\r\n" + box + "\r\n" + rule80 + "\r\n  ? for shortcuts" + caretAt(caretRow+1, caretCol, shown) + "\x1b[?2026l"
+}
+
+// claudeHolding is Claude Code's box holding text on its first row, the
+// cursor after it, shown or not.
+func claudeHolding(text string, shown bool) string {
+	return claudeBox([]string{text}, 1, 3+len([]rune(text)), shown)
 }
 
 func codexBox(text string, col int, shown bool) string {
@@ -47,18 +59,22 @@ func caretAt(row, col int, shown bool) string {
 }
 
 const (
-	claudePlaceholder = "\x1b[2mTry \"fix lint errors\""
+	claudePlaceholder = `Try "fix lint errors"`
 	codexPlaceholder  = "\x1b[2m\x1b[2mAsk Codex to do anything"
 )
 
-// The boxes: empty with the agent's placeholder, Claude Code's empty after
-// a turn, and holding a word typed (the caret after it).
+// The boxes: Claude Code's empty with its placeholder, empty after a turn,
+// and holding a word, as it draws them by default (its cursor hidden) and
+// with its cursor shown; Codex's empty with its placeholder and holding a
+// word.
 var (
-	claudeBoxPlaceholder = claudeBox(claudePlaceholder, 3, true)
-	claudeBoxEmpty       = claudeBox("", 3, true)
-	claudeBoxWord        = claudeBox("pear", 7, true)
-	codexBoxPlaceholder  = codexBox(codexPlaceholder, 3, true)
-	codexBoxWord         = codexBox("pear", 7, true)
+	claudePlaceholderBox      = claudeBox([]string{claudePlaceholder}, 1, 3, false)
+	claudePlaceholderBoxShown = claudeBox([]string{claudePlaceholder}, 1, 3, true)
+	claudeBlankBox            = claudeBox([]string{""}, 1, 3, false)
+	claudeWordBox             = claudeHolding("pear", false)
+	claudeWordBoxShown        = claudeHolding("pear", true)
+	codexPlaceholderBox       = codexBox(codexPlaceholder, 3, true)
+	codexWordBox              = codexBox("pear", 7, true)
 )
 
 // boxScreen is the screen a frame draws on a blank 80 by 24 screen: its
@@ -97,80 +113,108 @@ func TestTheScreenKeepsWhetherTheCursorIsShown(t *testing.T) {
 	}
 }
 
-// TestTheCaretAtTheBoxsStartIsReadOnTheAgentsScreens: Claude Code's box
-// and Codex's composer, empty with a placeholder after the caret (and
-// Claude Code's with nothing after a turn), show the caret at the box's
-// start; a box holding a word, a cursor never shown, a cursor on another
-// row of the prompt, half a frame do not. An agent with no shape takes
-// any row whose cells before the cursor are a mark alone.
-func TestTheCaretAtTheBoxsStartIsReadOnTheAgentsScreens(t *testing.T) {
+// boxModel is the model after writes, each its own write.
+func boxModel(writes ...string) boxState {
+	var b inputBox
+	for i, w := range writes {
+		b.wrote([]byte(w), false, uint64(i+1))
+	}
+	return b.state()
+}
+
+// TestTheBoxsModelFollowsASimpleLineEditor: characters are appended (a
+// paste's text, UTF-8, a kitty keyboard report of one), Backspace and DEL
+// take the last, Ctrl-W the last word, Ctrl-U and Ctrl-C clear; a
+// terminal's reports, the pointer's moves and releases, a lone Escape and
+// an Enter into an empty box do nothing; the cursor keys, Tab, a new line,
+// an Alt key, a mouse press, a paste of more than one line, a key after an
+// Enter and text past its bound make the text edited. An Enter keeps the
+// text, and Ctrl-U after it empties the box whether it was sent or not.
+func TestTheBoxsModelFollowsASimpleLineEditor(t *testing.T) {
+	long := strings.Repeat("a", maxBoxRunes+1)
+	for _, tc := range []struct {
+		name   string
+		writes []string
+		typed  string
+		edited bool
+	}{
+		{"characters", []string{"pe", "ar"}, "pear", false},
+		{"UTF-8 and a kitty key", []string{"é", "\x1b[97u\x1b[65;2u"}, "éaA", false},
+		{"Backspace and DEL", []string{"pexx\x7f\b", "ar"}, "pear", false},
+		{"Ctrl-W", []string{"one two  \x17"}, "one ", false},
+		{"Ctrl-U", []string{"pear\x15"}, "", false},
+		{"Ctrl-C", []string{"pear\x1b[D\x03"}, "", false},
+		{"a paste", []string{"\x1b[200~pe", "ar\x1b[201~"}, "pear", false},
+		{"reports and the pointer", []string{"\x1b[12;3R\x1b[?62;22c\x1b[I\x1b]11;rgb:0000/0000/0000\x1b\\\x1b[<35;10;5M\x1b[<0;10;5m\x1b[<64;1;1M\x1b"}, "", false},
+		{"an Enter into an empty box", []string{"\r", "\r"}, "", false},
+		{"an Enter after text", []string{"pear\r"}, "pear", false},
+		{"Ctrl-U after an Enter", []string{"pear\r", "\x15"}, "", false},
+		{"a key after an Enter", []string{"pear\r", "x"}, "pear", true},
+		{"Backspace after an Enter", []string{"pear\r", "\x7f"}, "pear", true},
+		{"a cursor key", []string{"pear\x1b[D"}, "pear", true},
+		{"Home in application mode", []string{"\x1bOH"}, "", true},
+		{"Tab", []string{"\t"}, "", true},
+		{"a new line", []string{"a\x1b\r"}, "a", true},
+		{"Ctrl-J", []string{"a\n"}, "a", true},
+		{"an Alt key", []string{"\x1bb"}, "", true},
+		{"a mouse press", []string{"\x1b[<0;10;5M"}, "", true},
+		{"a legacy mouse press", []string{"\x1b[M !!"}, "", true},
+		{"a paste of two lines", []string{"\x1b[200~a\rb\x1b[201~"}, "ab", true},
+		{"past its bound", []string{long}, long[:maxBoxRunes], true},
+	} {
+		got := boxModel(tc.writes...)
+		if got.typed != tc.typed || got.edited != tc.edited {
+			t.Errorf("%s: %q edited %v, want %q edited %v", tc.name, got.typed, got.edited, tc.typed, tc.edited)
+		}
+	}
+	var b inputBox
+	b.wrote([]byte("pear"), true, 1)
+	if st := b.state(); !st.empty() {
+		t.Fatalf("keys to a dialog: %+v", st)
+	}
+	b.wrote([]byte("pear"), false, 2)
+	b.wrote([]byte("\x1b[I\r"), false, 3)
+	if st := b.state(); st.mark != 3 {
+		t.Fatalf("an Enter after text is a key the screen judges: mark %d", st.mark)
+	}
+	b.wrote([]byte("\x1b[O"), false, 4)
+	if st := b.state(); st.mark != 3 {
+		t.Fatalf("a report moved the mark: %d", st.mark)
+	}
+}
+
+// TestTheBoxsFirstRowIsReadOnTheAgentsScreens: the row of the prompt's
+// mark, after the mark and its space (Claude Code's no-break space among
+// them), on each agent's box; a second row is never the first; the caret
+// is at the box's start only where the cursor is shown on that row just
+// after the mark.
+func TestTheBoxsFirstRowIsReadOnTheAgentsScreens(t *testing.T) {
 	claude, codex := builtInShape(t, "claude"), builtInShape(t, "codex")
+	bullet := claudeBox([]string{"Steps:", "  - "}, 2, 5, true)
 	for _, tc := range []struct {
 		name  string
 		shape *regexp.Regexp
 		frame string
-		want  bool
+		after string
+		start bool
 	}{
-		{"Claude Code's placeholder", claude, claudeBoxPlaceholder, true},
-		{"Claude Code's box after a turn", claude, claudeBoxEmpty, true},
-		{"Claude Code's box holding a word", claude, claudeBoxWord, false},
-		{"Claude Code's cursor hidden", claude, claudeBox(claudePlaceholder, 3, false), false},
-		{"Claude Code's cursor on its footer", claude, strings.Replace(claudeBoxPlaceholder, "\x1b[2;3H", "\x1b[4;3H", 1), false},
-		{"Claude Code's frame not ended", claude, strings.TrimSuffix(claudeBoxPlaceholder, "\x1b[?2026l"), false},
-		{"Codex's placeholder", codex, codexBoxPlaceholder, true},
-		{"Codex's composer holding a word", codex, codexBoxWord, false},
-		{"Codex's cursor hidden", codex, codexBox(codexPlaceholder, 3, false), false},
-		{"Codex's box on Claude Code's shape", claude, codexBoxPlaceholder, false},
-		{"no shape, a mark alone", nil, codexBoxPlaceholder, true},
-		{"no shape, a word", nil, codexBoxWord, false},
-		{"no shape, a shell's prompt", nil, "user@host:~$ " + caretAt(1, 14, true), false},
+		{"Claude Code's placeholder, cursor hidden", claude, claudePlaceholderBox, claudePlaceholder, false},
+		{"Claude Code's placeholder, cursor shown", claude, claudePlaceholderBoxShown, claudePlaceholder, true},
+		{"Claude Code's blank box", claude, claudeBlankBox, "", false},
+		{"Claude Code's word, cursor hidden", claude, claudeWordBox, "pear", false},
+		{"Claude Code's word, cursor shown", claude, claudeWordBoxShown, "pear", false},
+		{"Claude Code's second row begun with a bullet", claude, bullet, "Steps:", false},
+		{"Codex's placeholder", codex, codexPlaceholderBox, "Ask Codex to do anything", true},
+		{"Codex's word", codex, codexWordBox, "pear", false},
 	} {
 		text, uncut, c := boxScreen(tc.frame)
-		if got := caretAtBoxStart(text, uncut, c, tc.shape); got != tc.want {
-			t.Errorf("%s: %v, want %v (caret %+v, uncut %v)", tc.name, got, tc.want, c, uncut)
+		row, mark, after, ok := boxFirstRow(text, tc.shape)
+		if !uncut || !ok || after != tc.after {
+			t.Errorf("%s: %q (row %q, ok %v, uncut %v), want %q", tc.name, after, row, ok, uncut, tc.after)
+			continue
 		}
-	}
-}
-
-// TestInputKeysReadWhatGoesIntoTheBox: printable characters and the bytes
-// of UTF-8 are characters, a carriage return outside a paste an Enter;
-// control bytes, escape sequences (cursor keys, a terminal's reports, the
-// pointer's, OSC and DCS strings, an Alt key, ESC CR) are neither, and a
-// paste cut between two writes keeps its carriage returns its own. A kitty
-// keyboard report of Enter or of a character counts as one.
-func TestInputKeysReadWhatGoesIntoTheBox(t *testing.T) {
-	const (
-		o = keyOther
-		p = keyPrintable
-		e = keyEnter
-	)
-	for _, tc := range []struct {
-		in    string
-		paste bool
-		want  []inputKey
-	}{
-		{"pe", false, []inputKey{p, p}},
-		{"é\r", false, []inputKey{p, p, e}},
-		{"\x7f\x15\x03\b\t\n", false, nil},
-		{"\x1b[A\x1bOB\x1b[12;3R\x1b[?62;22c\x1b[I", false, nil},
-		{"\x1b]11;rgb:0000/0000/0000\x1b\\\x1bP>|xterm(1)\x1b\\\x1b]10;rgb:ff/ff/ff\x07", false, nil},
-		{"\x1b[<0;10;5M\x1b[M !!", false, nil},
-		{"\x1bb\x1b\r", false, nil},
-		{"\x1b[200~a\rb\x1b[201~\r", false, []inputKey{p, p, e}},
-		{"a\r", true, []inputKey{p}},
-		{"\x1b[13u\x1b[97u\x1b[97;5u\x1b[57399u\x1b[65;2u", false, []inputKey{e, p, p}},
-		{"\x1b", false, nil},
-	} {
-		paste := tc.paste
-		got := inputKeys([]byte(tc.in), &paste)
-		var want []inputKey
-		for _, k := range tc.want {
-			if k != o {
-				want = append(want, k)
-			}
-		}
-		if fmt.Sprint(got) != fmt.Sprint(want) {
-			t.Errorf("%q: %v, want %v", tc.in, got, want)
+		if got := caretAtBoxStart(row, mark, c); got != tc.start {
+			t.Errorf("%s: caret at the box's start %v, want %v (%+v)", tc.name, got, tc.start, c)
 		}
 	}
 }
@@ -203,131 +247,204 @@ func typeKeys(t *testing.T, s *Local, p *fakeProc, sub *Subscription, keys strin
 // emptyBoxLine is a crew member's prompt as the engine submits it.
 var emptyBoxLine = Submission{Text: "Task t1: read the brief", ByName: "crew", EmptyBox: true}
 
-// TestAnUntouchedSessionIsNeverHeldByItsBoxWhateverItsCursor: nothing a
-// person or Conductor typed went in, so the line is typed and entered at
-// once on every screen the line is typed on today, whatever the agent
-// does with its cursor: never shown, on another row, after text the agent
-// drew itself, for an agent with each built-in shape and one with none.
-// No agent, built-in or custom, waits for good by the box's rule.
-func TestAnUntouchedSessionIsNeverHeldByItsBoxWhateverItsCursor(t *testing.T) {
+// typedAlone submits the line and wants it typed and entered alone.
+func typedAlone(t *testing.T, s *Local, p *fakeProc, what string) {
+	t.Helper()
+	res, err := s.Submit(t.Context(), emptyBoxLine)
+	if err != nil || !res.Entered {
+		t.Fatalf("%s: %+v %v", what, res, err)
+	}
+	if got := written(t, p) + written(t, p); got != emptyBoxLine.Text+"\r" {
+		t.Fatalf("%s: written %q", what, got)
+	}
+}
+
+// held submits the line and wants it refused with want, nothing written.
+func held(t *testing.T, s *Local, p *fakeProc, want error, what string) {
+	t.Helper()
+	res, err := s.Submit(t.Context(), emptyBoxLine)
+	if err != want || res.Typed {
+		t.Fatalf("%s: %+v %v, want %v", what, res, err, want)
+	}
+	nothingIn(t, s, p)
+}
+
+// TestAnUntouchedSessionIsNeverHeldByItsBoxWhateverItsAgentDraws: nothing
+// typed went in (a terminal's reports and the pointer's moves type
+// nothing), so the line is typed and entered at once whatever the agent
+// draws in its box and does with its cursor: a word of its own, its
+// placeholder, its cursor never shown, for an agent with each built-in
+// shape and one with none. No agent, built-in or custom, waits for good
+// by the box's rule.
+func TestAnUntouchedSessionIsNeverHeldByItsBoxWhateverItsAgentDraws(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
 		shape *regexp.Regexp
 		frame string
 	}{
-		{"Claude Code, its cursor never shown", builtInShape(t, "claude"), claudeBox(claudePlaceholder, 3, false)},
-		{"Claude Code, its cursor after a word it drew", builtInShape(t, "claude"), claudeBoxWord},
+		{"Claude Code, a word it drew, its cursor hidden", builtInShape(t, "claude"), claudeWordBox},
+		{"Claude Code, its placeholder, its cursor hidden", builtInShape(t, "claude"), claudePlaceholderBox},
+		{"Codex, a word it drew", builtInShape(t, "codex"), codexWordBox},
 		{"Codex, its cursor never shown", builtInShape(t, "codex"), codexBox(codexPlaceholder, 3, false)},
-		{"Codex, its cursor on its footer", builtInShape(t, "codex"), strings.Replace(codexBoxPlaceholder, "\x1b[21;3H\x1b[?25h", "\x1b[24;20H\x1b[?25h", 1)},
-		{"no shape, a shell's prompt", nil, "\x1b[?2026h\x1b[?25luser@host:~$ \x1b[?2026l"},
+		{"no shape, a shell's prompt", nil, "\x1b[?2026h\x1b[?25luser@host:~$ pear\x1b[?2026l"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s, p := newLocalWith(t, quiet(Options{PromptShape: tc.shape}))
-			// A person's keys that type nothing: an arrow, a backspace.
-			typeKeys(t, s, p, controller(t, s, "ann"), "\x1b[A\x7f")
+			typeKeys(t, s, p, controller(t, s, "ann"), "\x1b[I\x1b[<35;10;5M\x1b")
 			drawFrame(t, s, p, tc.frame)
-			res, err := s.Submit(t.Context(), emptyBoxLine)
-			if err != nil || !res.Entered {
-				t.Fatalf("the line: %+v %v", res, err)
-			}
-			if got := written(t, p) + written(t, p); got != emptyBoxLine.Text+"\r" {
-				t.Fatalf("written %q", got)
-			}
+			typedAlone(t, s, p, "the line")
 		})
 	}
 }
 
-// TestALineWaitsWhileThePromptBoxHoldsAPersonsWord: a word a person typed
-// before the agent's box was drawn (while it loads), shown in the box with
-// the caret after it, holds the line, nothing of it written, for as many
-// looks as it shows; cleared (the box drawn empty again, its placeholder
-// after the caret) the line is typed and entered alone. A word entered
-// with an Enter holds nothing, whatever the screen still shows.
-func TestALineWaitsWhileThePromptBoxHoldsAPersonsWord(t *testing.T) {
+// TestALineWaitsWhileThePromptBoxBeginsWithAPersonsWord: a word a person
+// typed before the agent's box was drawn (while it loads), shown at the
+// start of the box, holds the line, nothing of it written, for as many
+// looks as it shows, whatever the cursor does; cleared (Ctrl-U, the
+// placeholder after the mark again) the line is typed and entered alone.
+// So it is for a word typed and deleted with Backspace, and for a key the
+// box never showed (it went elsewhere, or the agent dropped it).
+func TestALineWaitsWhileThePromptBoxBeginsWithAPersonsWord(t *testing.T) {
 	for _, tc := range []struct {
-		name        string
-		agent       string
-		word, empty string
+		name               string
+		agent              string
+		word, empty, blank string
 	}{
-		{"Claude Code", "claude", claudeBoxWord, claudeBoxEmpty},
-		{"Codex", "codex", codexBoxWord, codexBoxPlaceholder},
+		{"Claude Code, its cursor hidden", "claude", claudeWordBox, claudePlaceholderBox, claudeBlankBox},
+		{"Claude Code, its cursor shown", "claude", claudeWordBoxShown, claudePlaceholderBoxShown, claudeBlankBox},
+		{"Codex", "codex", codexWordBox, codexPlaceholderBox, codexPlaceholderBox},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s, p := newLocalWith(t, quiet(Options{PromptShape: builtInShape(t, tc.agent)}))
 			sub := controller(t, s, "ann")
 			typeKeys(t, s, p, sub, "pear")
-			drawFrame(t, s, p, tc.word)
 			for range 3 {
-				if res, err := s.Submit(t.Context(), emptyBoxLine); !errors.Is(err, ErrBoxHoldsText) || res.Typed {
-					t.Fatalf("the box holding a word: %+v %v", res, err)
-				}
 				drawFrame(t, s, p, tc.word)
+				held(t, s, p, ErrBoxHoldsText, "the box holding a word")
 			}
-			nothingIn(t, s, p)
-			// The person clears it: Ctrl-U, the box drawn empty.
 			typeKeys(t, s, p, sub, "\x15")
 			drawFrame(t, s, p, tc.empty)
-			res, err := s.Submit(t.Context(), emptyBoxLine)
-			if err != nil || !res.Entered {
-				t.Fatalf("the box cleared: %+v %v", res, err)
-			}
-			if got := written(t, p) + written(t, p); got != emptyBoxLine.Text+"\r" {
-				t.Fatalf("written %q", got)
-			}
+			typedAlone(t, s, p, "the box cleared")
+			drawFrame(t, s, p, tc.blank)
 
-			// A word sent: its Enter clears it, the screen not drawn again.
-			typeKeys(t, s, p, sub, "pear")
-			drawFrame(t, s, p, tc.word)
-			if _, err := s.Submit(t.Context(), emptyBoxLine); !errors.Is(err, ErrBoxHoldsText) {
-				t.Fatalf("the word again: %v", err)
-			}
-			typeKeys(t, s, p, sub, "\r")
-			if res, err := s.Submit(t.Context(), emptyBoxLine); err != nil || !res.Entered {
-				t.Fatalf("the word sent: %+v %v", res, err)
-			}
-			if got := written(t, p) + written(t, p); got != emptyBoxLine.Text+"\r" {
-				t.Fatalf("written %q", got)
-			}
+			typeKeys(t, s, p, sub, "pe")
+			typeKeys(t, s, p, sub, "\x7f\x7f")
+			drawFrame(t, s, p, tc.empty)
+			typedAlone(t, s, p, "a word deleted")
+			drawFrame(t, s, p, tc.blank)
+
+			typeKeys(t, s, p, sub, "?")
+			drawFrame(t, s, p, tc.empty)
+			typedAlone(t, s, p, "a key the box does not show")
 		})
 	}
 }
 
-// TestAWordNotDrawnYetHoldsTheLine: the box drawn empty, the caret at its
-// start, and a person's key written after it: until the agent has drawn
-// anything since the key went in, the screen is the one before it, and the
-// line waits; drawn (here with the word), it is judged by the screen.
+// TestAnEnterTheAgentDroppedLeavesTheWordHolding: a word and an Enter
+// written as one input before the agent has drawn anything: the agent
+// keeps the word in its box and drops the Enter. The screen decides: the
+// line waits while the box begins with the word, and goes once a frame
+// drawn after the Enter shows a box without it (sent, or cleared), the
+// word forgotten. An Enter into an empty box changes nothing.
+func TestAnEnterTheAgentDroppedLeavesTheWordHolding(t *testing.T) {
+	s, p := newLocalWith(t, quiet(Options{PromptShape: builtInShape(t, "claude")}))
+	sub := controller(t, s, "ann")
+	typeKeys(t, s, p, sub, "pear\r")
+	drawFrame(t, s, p, claudeWordBox)
+	held(t, s, p, ErrBoxHoldsText, "the word kept, its Enter dropped")
+	drawFrame(t, s, p, claudeBlankBox)
+	typedAlone(t, s, p, "the word sent")
+	if st := s.box.state(); !st.empty() {
+		t.Fatalf("the word sent is still kept: %+v", st)
+	}
+	typeKeys(t, s, p, sub, "\r")
+	drawFrame(t, s, p, claudePlaceholderBox)
+	typedAlone(t, s, p, "an Enter into an empty box")
+}
+
+// TestEditedTextHoldsWhileTheBoxIsNotBlank: text edited with a key the
+// session does not follow (a cursor key) holds the line while the box's
+// first row holds anything after its mark and the cursor does not show
+// the caret at the box's start, with words that say to press Enter into
+// the cleared box: behind Claude Code's placeholder and its hidden
+// cursor, a cleared box is not seen. A blank box, or the caret shown at
+// the box's start, lets the line go.
+func TestEditedTextHoldsWhileTheBoxIsNotBlank(t *testing.T) {
+	claude := builtInShape(t, "claude")
+	s, p := newLocalWith(t, quiet(Options{PromptShape: claude}))
+	sub := controller(t, s, "ann")
+	typeKeys(t, s, p, sub, "pear\x1b[D")
+	drawFrame(t, s, p, claudeWordBox)
+	held(t, s, p, ErrBoxHoldsEditedText, "edited text in the box")
+	drawFrame(t, s, p, claudePlaceholderBox)
+	held(t, s, p, ErrBoxHoldsEditedText, "the placeholder, the cursor hidden")
+	drawFrame(t, s, p, claudeBlankBox)
+	typedAlone(t, s, p, "a blank box")
+
+	s, p = newLocalWith(t, quiet(Options{PromptShape: claude}))
+	sub = controller(t, s, "ann")
+	typeKeys(t, s, p, sub, "pear\x1b[D")
+	drawFrame(t, s, p, claudeWordBoxShown)
+	held(t, s, p, ErrBoxHoldsEditedText, "edited text, the cursor shown after it")
+	drawFrame(t, s, p, claudePlaceholderBoxShown)
+	typedAlone(t, s, p, "the caret at the box's start")
+	if !errors.Is(ErrBoxHoldsEditedText, ErrBoxHoldsText) {
+		t.Fatal("edited text's refusal is no kind of ErrBoxHoldsText")
+	}
+}
+
+// TestABulletOnTheBoxsSecondRowIsNotItsStart: text typed, a new line made
+// with the agent's own key, and a bullet begun on the box's second row,
+// the cursor shown after it: the second row is not the box's first, and
+// the line waits.
+func TestABulletOnTheBoxsSecondRowIsNotItsStart(t *testing.T) {
+	s, p := newLocalWith(t, quiet(Options{PromptShape: builtInShape(t, "claude")}))
+	typeKeys(t, s, p, controller(t, s, "ann"), "Steps:\x1b\r- ")
+	drawFrame(t, s, p, claudeBox([]string{"Steps:", "  - "}, 2, 5, true))
+	held(t, s, p, ErrBoxHoldsEditedText, "a bullet on the second row")
+}
+
+// TestAnAgentWithNoShapeIsNeverHeldByItsBox: an agent with no prompt
+// shape gets its line as before, whatever was typed and whatever it draws.
+func TestAnAgentWithNoShapeIsNeverHeldByItsBox(t *testing.T) {
+	s, p := newLocalWith(t, quiet(Options{}))
+	typeKeys(t, s, p, controller(t, s, "ann"), "pear\x1b[D")
+	drawFrame(t, s, p, "\x1b[?2026h\x1b[2J\x1b[H( O)> pear\x1b[?2026l")
+	typedAlone(t, s, p, "the line")
+}
+
+// TestAWordNotDrawnYetHoldsTheLine: the box drawn empty and a person's key
+// written after it: until the agent has drawn anything since the key went
+// in, the screen is the one before it, and the line waits; drawn, it is
+// judged by the screen.
 func TestAWordNotDrawnYetHoldsTheLine(t *testing.T) {
 	s, p := newLocalWith(t, quiet(Options{PromptShape: builtInShape(t, "claude")}))
-	drawFrame(t, s, p, claudeBoxPlaceholder)
+	drawFrame(t, s, p, claudePlaceholderBox)
 	typeKeys(t, s, p, controller(t, s, "ann"), "p")
-	if _, err := s.Submit(t.Context(), emptyBoxLine); !errors.Is(err, ErrBoxHoldsText) {
-		t.Fatalf("before the key is drawn: %v", err)
-	}
-	drawFrame(t, s, p, claudeBox("p", 4, true))
-	if _, err := s.Submit(t.Context(), emptyBoxLine); !errors.Is(err, ErrBoxHoldsText) {
-		t.Fatalf("the key drawn: %v", err)
-	}
-	nothingIn(t, s, p)
+	held(t, s, p, ErrBoxHoldsText, "before the key is drawn")
+	drawFrame(t, s, p, claudeHolding("p", false))
+	held(t, s, p, ErrBoxHoldsText, "the key drawn")
 }
 
 // TestAWordTypedAsTheLineWaitsForTheWriterHoldsIt: the writer is held on
-// a person's earlier write (an arrow key) and the person's word is queued
-// behind it before the line: the line's look, before its text, finds the
-// box empty, and the writer, taking the text after the word, refuses it
-// (the text's guard), nothing of it written. Without the guard the line
-// would be typed after the word.
+// a person's earlier write (an arrow key, the box's model edited no more
+// than a Ctrl-U undoes) and the person's word is queued behind it before
+// the line: the line's look, before its text, finds nothing typed, and the
+// writer, taking the text after the word, refuses it (the text's guard),
+// nothing of it written. Without the guard the line would be typed after
+// the word.
 func TestAWordTypedAsTheLineWaitsForTheWriterHoldsIt(t *testing.T) {
 	s, p := newLocalWith(t, quiet(Options{PromptShape: builtInShape(t, "claude"), InputWait: 30 * time.Second}))
-	drawFrame(t, s, p, claudeBoxPlaceholder)
+	drawFrame(t, s, p, claudePlaceholderBox)
 	sub := controller(t, s, "ann")
 	gate := make(chan struct{})
 	p.onBytes = func(b []byte) {
-		if string(b) == "\x1b[A" {
+		if string(b) == "\x1b[I" {
 			<-gate
 		}
 	}
 	keys := make(chan error, 2)
-	go func() { keys <- s.Input(sub, []byte("\x1b[A")) }()
+	go func() { keys <- s.Input(sub, []byte("\x1b[I")) }()
 	untilWaiting(t, s, 0)
 	go func() { keys <- s.Input(sub, []byte("pear")) }()
 	untilWaiting(t, s, 1)
@@ -346,15 +463,14 @@ func TestAWordTypedAsTheLineWaitsForTheWriterHoldsIt(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if a, b := written(t, p), written(t, p); a != "\x1b[A" || b != "pear" {
+	if a, b := written(t, p), written(t, p); a != "\x1b[I" || b != "pear" {
 		t.Fatalf("written %q, %q", a, b)
 	}
 	nothingIn(t, s, p)
 }
 
 // TestAChoicesKeysAreNotTextInTheBox: a reply's keys to a question the
-// session shows (a choice's "y") go to its dialog, not the box: the line
-// is typed once the dialog is gone, whatever the cursor shows.
+// session shows (a choice's "y") go to its dialog, not the box.
 func TestAChoicesKeysAreNotTextInTheBox(t *testing.T) {
 	s, p := newLocalWith(t, quiet(Options{PromptShape: builtInShape(t, "codex")}))
 	sub := controller(t, s, "ann")
@@ -365,7 +481,31 @@ func TestAChoicesKeysAreNotTextInTheBox(t *testing.T) {
 	if got := written(t, p); got != "y" {
 		t.Fatalf("the choice's keys: %q", got)
 	}
-	if held, _ := s.box.holds(); held {
-		t.Fatal("a choice's keys count as text in the box")
+	if st := s.box.state(); !st.empty() {
+		t.Fatalf("a choice's keys count as text in the box: %+v", st)
+	}
+}
+
+// TestAStartupAnswerTypedInTheTerminalIsNotTextInTheBox: a person's digit
+// typed in the terminal at a startup question the session shows (Codex's
+// "Skip until next version") answers it, and is no text in the box; a
+// letter typed there is.
+func TestAStartupAnswerTypedInTheTerminalIsNotTextInTheBox(t *testing.T) {
+	upd := []Option{{Label: "Skip this update", Input: "\x1b"}, {Label: "Skip until next version", Input: "3"}}
+	s, p := newLocalWith(t, quiet(Options{PromptShape: builtInShape(t, "codex"), Questions: []StartupQuestion{{
+		Pattern: regexp.MustCompile(`(?i)update\s*now\s*\(\s*runs`),
+		Words:   regexp.MustCompile(`(?i)(update\s*available)\W*?(\d+(?:\.\d+)+\s*(?:→|->)\s*\d+(?:\.\d+)+)`),
+		Answers: upd,
+	}}}))
+	sub := controller(t, s, "ann")
+	p.outW.Write([]byte(codexUpdateScreen))
+	waitAttention(t, s, func(a Attention) bool { return a.Source == SourceTrust })
+	typeKeys(t, s, p, sub, "3")
+	if st := s.box.state(); !st.empty() {
+		t.Fatalf("a startup answer counts as text in the box: %+v", st)
+	}
+	typeKeys(t, s, p, sub, "x")
+	if st := s.box.state(); st.typed != "x" {
+		t.Fatalf("a letter at the dialog: %+v", st)
 	}
 }
