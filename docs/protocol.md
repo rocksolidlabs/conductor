@@ -2562,7 +2562,7 @@ one argument follows, `--allowedTools=mcp__conductor__guide,…` with the
 eight rules, and a launch that does not register it carries none (the
 server's `agents.mcp` off, a `conductor host` session). Conductor writes
 them into no settings file: the `--settings` files in the hooks directory
-hold the hooks alone, as Install merges them into `~/.claude/settings.json`.
+hold no permission rule (the hooks, and a yolo session's own key), as Install merges them into `~/.claude/settings.json`.
 An allow rule resolves a matching call before auto mode's classifier
 judges it; a deny or ask rule of the person's or the folder's own settings
 for the same tool still wins over it, and in a yolo session it changes
