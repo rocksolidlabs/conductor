@@ -1,6 +1,8 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
+import { ref, type Ref } from 'vue'
+import { useTypedAnswers } from '~/composables/useTypedAnswers'
 import { MAX_TRANSCRIPT_ENTRY, MAX_TRANSCRIPT_PAGE, type TranscriptEntry, type TranscriptReply, type TranscriptRequest } from './protocol'
-import { ANSWERED_WORDS, answerShown, chatBlocks, conductorStep, entryValid, lastWords, limitReads, MAX_ENTRY_TEXT, MAX_KEPT_ENTRIES, promptLine, promptText, readPart, stepsLine, Transcript } from './transcript'
+import { ANSWERED_WORDS, answerOf, answerShown, chatBlocks, conductorStep, entryValid, lastWords, limitReads, MAX_ENTRY_TEXT, MAX_KEPT_ENTRIES, promptLine, promptText, readPart, stepsLine, Transcript } from './transcript'
 
 // A chat's transcript as the page keeps it (docs/plans/chat-or-terminal.md, designs 5, 6 and 11): each entry at its latest revision
 // by seq, the highest mark held as the next hello's resume point, what is past the wire's bounds refused, a message that answers a
@@ -238,6 +240,24 @@ describe('answerShown', () => {
     expect(answerShown(answer, undefined)).toEqual({ text: ANSWERED_WORDS, own: false })
     expect(ANSWERED_WORDS).toBe("Answered the agent's question.")
     expect(answerShown(e(2, 2, { kind: 'prompt', text: 'hello' }), 'x')).toBeNull()
+  })
+
+  it('readsTheTabsStore: the sender\'s answer comes from the tab\'s store every way of answering fills, whatever page it was sent from', () => {
+    const states = new Map<string, Ref<unknown>>()
+    vi.stubGlobal('useState', <T>(key: string, init: () => T) => {
+      if (!states.has(key)) states.set(key, ref(init()))
+      return states.get(key) as Ref<T>
+    })
+    try {
+      const answer = e(1, 1, { kind: 'prompt', by: 'person', byName: 'Priya', answers: 'q-1' })
+      // The inbox, the palette or another page of the tab kept it, once the owner took it; the chat reads that store, nothing else.
+      useTypedAnswers().remember('q-1', 'Yes, go on.')
+      expect(answerOf(answer, useTypedAnswers().of)).toEqual({ text: 'Yes, go on.', own: true })
+      expect(answerOf(e(2, 2, { kind: 'prompt', answers: 'q-2' }), useTypedAnswers().of)).toEqual({ text: ANSWERED_WORDS, own: false })
+      expect(answerOf(e(3, 3, { kind: 'prompt', text: 'hello' }), useTypedAnswers().of)).toBeNull()
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 })
 

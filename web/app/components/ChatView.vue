@@ -2,7 +2,7 @@
 import type { SessionConnection } from '~/composables/useSessionConnection'
 import type { PermissionAnswer, TranscriptEntry, TranscriptPartName, TranscriptRequest } from '~/utils/protocol'
 import { ReplyError } from '~/utils/reply'
-import { answerShown, atChatEnd, chatBlocks, limitReads, OWN_ANSWER_LINE, promptLine, promptText, readPart, stepsLine, type ChatTurn } from '~/utils/transcript'
+import { answerOf, atChatEnd, chatBlocks, limitReads, OWN_ANSWER_LINE, promptLine, promptText, readPart, stepsLine, type ChatTurn } from '~/utils/transcript'
 import { MAX_TRANSCRIPT_IN_FLIGHT } from '~/utils/protocol'
 
 /**
@@ -37,8 +37,9 @@ const props = withDefaults(
 const emit = defineEmits<{ openDiff: [entry: TranscriptEntry]; dismissNote: [] }>()
 
 const conn = props.connection
-/** A message that answers a question as the chat draws it (answerShown): this browser's own answer, or the words for one. */
-const answered = (p: TranscriptEntry) => answerShown(p, p.answers ? conn.ownAnswer(p.answers) : undefined)
+/** A message that answers a question as the chat draws it: this browser's own answer, from the tab's store of them, or the words for one. */
+const typedAnswers = useTypedAnswers()
+const answered = (p: TranscriptEntry) => answerOf(p, typedAnswers.of)
 const entries = computed(() => {
   void conn.transcriptVersion.value
   return conn.transcript.list()

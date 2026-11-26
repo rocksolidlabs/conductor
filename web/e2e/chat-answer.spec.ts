@@ -5,7 +5,8 @@ import type { OwnServer } from './own-server'
 // An answer to the agent's own question in a chat (issue 1139), on a server of the spec's own with the chat's stub. The stub's turn
 // reports and asks through Conductor's own tools (its "question" words), the question held open by the session; the person answers
 // from the reply bar, and the agent's next turn has it. The transcript keeps no answer's text (#364): the sender's own page shows
-// what it sent, with the line that says only they see it; another page shows the words that say the question was answered, never
+// what it sent, with the line that says only they see it, also after leaving the page and coming back in the same tab (the
+// tab's store of answers); another page shows the words that say the question was answered, never
 // an empty bubble. The turn's steps of Conductor's own tools are drawn as what they did, never as a tool name with JSON.
 test.describe.configure({ mode: 'serial' })
 
@@ -46,6 +47,15 @@ test("an answer to the agent's question from the bar reaches it, its sender sees
     await expect(turnWith(page, 'stub chat: Yes, go on.')).toHaveAttribute('data-turn-outcome', /./, { timeout: 30_000 })
     // The sender's own page: what it sent, and that only they see it.
     const answer = page.locator('[data-chat-prompt-answer]')
+    await expect(answer).toHaveText('Yes, go on.')
+    await expect(answer).toHaveAttribute('data-answer-own', 'true')
+    await expect(page.locator('[data-chat-answer-line]')).toHaveText('Only you see your answer.')
+    // Away from the session page and back in the same tab: a new view and connection, the answer's words the tab's own.
+    budget(LONG_MS + 4 * STEP_MS)
+    await page.locator('[data-sidebar-tile]').filter({ has: page.locator('[data-nav-label]', { hasText: /^Yard$/ }) }).first().click({ timeout: STEP_MS })
+    await expect(page).toHaveURL(/\/yard/)
+    await page.goBack()
+    await expect(page.locator('[data-session-way]').first()).toHaveAttribute('data-session-way', 'protocol', { timeout: 30_000 })
     await expect(answer).toHaveText('Yes, go on.')
     await expect(answer).toHaveAttribute('data-answer-own', 'true')
     await expect(page.locator('[data-chat-answer-line]')).toHaveText('Only you see your answer.')

@@ -260,6 +260,15 @@ export function answerShown(e: Pick<TranscriptEntry, 'answers'>, own: string | u
   return own ? { text: own, own: true } : { text: ANSWERED_WORDS, own: false }
 }
 
+/**
+ * answerShown with this browser's answer read from the tab's own store of them (`useTypedAnswers().of`): what every way of answering
+ * fills once the owner took the answer (the session page's bar, a link's page, the inbox, the palette, a row), for as long as the tab
+ * lives, whichever page the answer was sent from. The entry's `answers` is the reply's question id.
+ */
+export function answerOf(e: Pick<TranscriptEntry, 'answers'>, typed: (question: string) => string): { text: string; own: boolean } | null {
+  return answerShown(e, e.answers ? typed(e.answers) || undefined : undefined)
+}
+
 /** The line under a message the agent has not taken yet (design 13): queued during a turn, or sent and not acknowledged. */
 export function promptLine(e: TranscriptEntry): string {
   if (e.state === 'queued') return 'Sends when the turn ends.'

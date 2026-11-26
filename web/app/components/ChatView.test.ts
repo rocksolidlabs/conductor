@@ -108,4 +108,10 @@ describe('the chat', () => {
     expect(view).toContain("{ flush: 'pre' },")
     expect(view).not.toContain('atBottom')
   })
+
+  it("readsTheSendersAnswerFromTheTab: an answer's own words come from the tab's store of answers (useTypedAnswers), as the People chat's do", () => {
+    expect(view).toContain('const typedAnswers = useTypedAnswers()')
+    expect(view).toContain('const answered = (p: TranscriptEntry) => answerOf(p, typedAnswers.of)')
+    expect(view).not.toContain('ownAnswer')
+  })
 })

@@ -1,4 +1,4 @@
-import { reactive, shallowRef, ref, type Ref, type ShallowRef } from 'vue'
+import { shallowRef, ref, type Ref, type ShallowRef } from 'vue'
 import { validWay, type ChatPost, type ChatSend, type ControlMessage, type FileGetExtra, type FileResponse, type FileWriteOptions, type NvimEvent, type NvimSwapChoice, type PermissionAnswer, type Role, type SessionWay, type TranscriptMessage, type TranscriptReply, type TranscriptRequest, type Welcome } from '~/utils/protocol'
 import type { CloseInfo, TerminalTransport } from '~/utils/transport/types'
 import type { LaneWire } from '~/utils/transport/decide'
@@ -51,11 +51,6 @@ export interface SessionConnection {
   /** A message with the owner's word on it (a chat's: `submit_ok` once the agent took it, or the owner's refusal in its words). */
   submitAcked(text: string): Promise<boolean>
   answer(reply: QuestionReply, opts?: { sent?: () => void }): Promise<boolean>
-  /**
-   * The text of this browser's answer to the question `question`, once the owner took it (`answer`'s true): a chat shows it to its
-   * sender alone, as the transcript keeps no answer's text (#364). In this tab's memory only, the last MAX_OWN_ANSWERS of them.
-   */
-  ownAnswer(question: string): string | undefined
   chat(post: ChatPost): boolean
   chatSend(send: ChatSend): boolean
   /** The lane of a decision link's connection, null otherwise. */
@@ -68,9 +63,6 @@ export interface SessionConnection {
   permissionAnswer(a: Omit<PermissionAnswer, 't' | 'reqId'>): Promise<boolean>
 }
 
-/** How many of this browser's answers a connection keeps the text of, for its chat to show its sender. */
-export const MAX_OWN_ANSWERS = 32
-
 /** The connection of one session's view: what TerminalView holds, split from its terminal. */
 export function useSessionConnection(createTransport: () => TerminalTransport): SessionConnection {
   const transport = shallowRef<TerminalTransport>()
@@ -82,7 +74,6 @@ export function useSessionConnection(createTransport: () => TerminalTransport): 
   const why = ref('')
   const transcript = new Transcript()
   const transcriptVersion = ref(0)
-  const ownAnswers = reactive(new Map<string, string>())
   const outputs = new Set<(data: Uint8Array, replay: boolean) => void>()
   const controls = new Set<(msg: ControlMessage) => void>()
   const transcripts = new Set<(msg: TranscriptMessage) => void>()
@@ -193,26 +184,8 @@ export function useSessionConnection(createTransport: () => TerminalTransport): 
     submitAcked: (text) => (open() ? transport.value!.submitAcked(text) : Promise.reject(new ReplyError('not_connected', 'not connected'))),
     answer(reply, opts = {}) {
       if (!open()) return Promise.reject(new ReplyError('not_connected', 'not connected'))
-      const p = transport.value!.answer(reply, opts)
-      if ('text' in reply && reply.question) {
-        const { question, text } = reply
-        // Kept once the owner took it: an answer refused (another's came first) is never shown as the one the chat holds.
-        p.then(
-          (ok) => {
-            if (!ok) return
-            ownAnswers.delete(question)
-            ownAnswers.set(question, text)
-            for (const k of ownAnswers.keys()) {
-              if (ownAnswers.size <= MAX_OWN_ANSWERS) break
-              ownAnswers.delete(k)
-            }
-          },
-          () => undefined,
-        )
-      }
-      return p
+      return transport.value!.answer(reply, opts)
     },
-    ownAnswer: (question) => ownAnswers.get(question),
     chat(post) {
       if (!open()) return false
       transport.value!.chat(post)
