@@ -2919,9 +2919,11 @@ and checked with the act itself. Nothing is begun for a link after its
 revoke or its expiry has marked it; an act begun before may land. A
 link's hold covers an act from its check until it has returned (an
 answer's keys or line, as the session's writer takes them, until the
-process write has returned; a task command until the engine has
-returned), and an expiry, the sweep's or the link's own deadline's (a
-desk's, a decision link's viewer's), ends the link as a revoke does:
+process write has returned; on a chat, an answer's message as the
+session's sender takes it from its queue, until its send has returned;
+a task command until the engine has returned), and an expiry, the
+sweep's or the link's own deadline's (a desk's, a decision link's
+viewer's), ends the link as a revoke does:
 from its start no act is held, and at its commit boundary, just before
 it is begun, an act asks once more whether its link stands, so one whose
 link ended while it was held is never begun (a command the engine had
@@ -2931,6 +2933,7 @@ the link's viewers and desks; one still under way then is counted in
 the server's log. What was begun is not taken back: a process write the
 program had not taken within those 5 s is refused as the link's end and
 resolves no question, though its bytes land as the program reads them;
+a chat's message whose send had begun is sent, its question answered;
 a command the engine committed stays committed, and one whose change the
 ledger refused is put back, settles `withdrawn` and never lands later.
 So an action queued, in flight or asked again when its link ends is

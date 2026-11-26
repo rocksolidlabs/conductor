@@ -3,7 +3,9 @@ package api
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/rocksolidlabs/conductor/ext"
 	"github.com/rocksolidlabs/conductor/internal/proto"
@@ -178,5 +180,61 @@ func TestAChatsQuestionItemSaysItSends(t *testing.T) {
 	want := []string{"Sends the choice 'Pears' to chat as your answer", "Sends the choice 'Plums' to chat as your answer", "Sends the line you write to chat as your answer"}
 	if strings.Join(scopes, "|") != strings.Join(want, "|") {
 		t.Fatalf("scopes %q", scopes)
+	}
+}
+
+// A desk's answer to a member's chat, queued behind the agent's turn: its
+// link expires (the link's deadline passed, the desk's connection still
+// open: its lapse held at the seam) before the turn ends. The answer is sent
+// under the link's hold, which no longer stands: nothing is sent, the
+// question waits again, and the desk is told the link expired.
+func TestADesksQueuedAnswerIsNotSentOnceItsLinkEnded(t *testing.T) {
+	e := readyEnv(t, nil)
+	e.gitRepo(t)
+	var cmu sync.Mutex
+	now := time.Now().UTC()
+	e.srv.links.SetNowForTest(func() time.Time { cmu.Lock(); defer cmu.Unlock(); return now })
+	fires := make(chan func(), 1)
+	e.srv.laneSeam = &laneSeams{lapse: func(_ string, fire func()) { fires <- fire }}
+	run, release, err := e.srv.runs.LaunchNamed(t.Context(), managedCrew(e.root), "")
+	release()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { e.do("POST", "/api/runs/"+run.ID+"/stop", adminToken, nil) })
+	sid := runningAttempt(t, e, run.ID, "build", 1)["sessionId"].(string)
+	d, _ := e.srv.registry.Get(sid)
+	l := d.(*session.Local)
+	f := sessiontest.NewFakeProtocol()
+	if err := sessiontest.EnterProtocol(l, f.Start()); err != nil {
+		t.Fatal(err)
+	}
+	f.TurnStarted("")
+	q := askFruit(t, l)
+	_, tok := e.decisionLink(t, "/api/runs/"+run.ID+"/links", "phone", 3600)
+	desk := dialLane(t, e, "/ws/runs/"+run.ID+"/desk", tok)
+	<-fires
+	rid := desk.sendDecide(proto.Decide{Ref: questionRef(sid, q), Action: "answer", Revision: q, Input: "Plums\r", OpID: "desk-1"})
+	until(t, "the answer queued behind the turn", func() bool {
+		entries, _ := l.Transcript(0, 0)
+		for _, en := range entries {
+			if en.Kind == session.EntryPrompt && en.Answers == q {
+				return true
+			}
+		}
+		return false
+	})
+	cmu.Lock()
+	now = now.Add(2 * time.Hour)
+	cmu.Unlock()
+	f.TurnEnded("done", session.Usage{})
+	if _, m := desk.reply(rid); !refusedWith(m, proto.DecideExpired) {
+		t.Fatalf("the desk's answer: %v", m)
+	}
+	if n := len(f.Sent()); n != 0 {
+		t.Fatalf("%d sent after the link ended", n)
+	}
+	if _, ok := l.QuestionResult(q); ok || l.Info().Attention.ID != q {
+		t.Fatalf("the question: %+v", l.Info().Attention)
 	}
 }
