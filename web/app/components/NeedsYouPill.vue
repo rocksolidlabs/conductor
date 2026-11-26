@@ -78,7 +78,7 @@ function answer(i: number) {
   const question = cursor.shown.value?.question
   if (!s || !p || !o || p.held || p.away) return
   // The question the pill showed, not whatever the session asks by now: the owner refuses one that moved on.
-  quick.choose(s, o, { question: question ?? p.question }).catch((e: unknown) => toast.add(replyFailure(e, s.name)))
+  quick.choose(s, o, { question: question ?? p.question }).catch((e: unknown) => toast.add(replyFailure(e, s.name, false, s.way)))
   cursor.hide()
 }
 /** What owns its own keys while it has the focus: a field, a terminal, the palette, another dialog, a list's option, a button. */

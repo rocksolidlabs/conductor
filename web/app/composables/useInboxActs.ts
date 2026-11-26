@@ -173,7 +173,7 @@ export class InboxActs {
           // what the owner said, never a guess at why.
           const said = how === 'refused' && e instanceof ReplyError ? e.message : ''
           if (said) return { how, words: said }
-          const f = replyFailure(e, s.name || undefined)
+          const f = replyFailure(e, s.name || undefined, text !== undefined, s.way)
           return { how, words: [f.title, f.description].filter(Boolean).join(': ') }
         }
       },

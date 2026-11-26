@@ -354,6 +354,14 @@ describe('choiceReply', () => {
     expect(choiceReply({ label: 'Yes, and allow it', input: '2' }, 'terminal')).toEqual({ input: '2' })
     expect(choiceReply(plums, 'protocol')).toEqual({ text: 'Plums' })
   })
+  it("saysAnAnsweredQuestionByWay: a choice refused in a chat says the question was answered and nothing was sent, no kept line and no terminal", () => {
+    const answered = new ReplyError('question_answered', 'this question was already answered by Nate: nothing was sent')
+    expect(replyFailure(answered, 'agent', false, 'protocol').description).toBe("agent's question was answered by Nate. Nothing was sent.")
+    expect(replyFailure(answered, 'agent', false, 'terminal').description).toBe("agent's question was answered by Nate. Nothing was sent. If the agent still asks, answer it in its terminal.")
+    expect(replyFailure(answered, 'agent').description).toBe("agent's question was answered by Nate. Nothing was sent. If the agent still asks, answer it in its terminal.")
+    // A line typed is kept in its field, in a chat as in a terminal.
+    expect(replyFailure(answered, 'agent', true, 'protocol').description).toBe(`agent's question was answered by Nate. Nothing was sent. ${LINE_KEPT}`)
+  })
   it("saysAChatsRefusalOfKeys: a choice's keys a chat refused (it moved to its chat meanwhile) are said, with what to do", () => {
     expect(replyFailure(new ReplyError(ERR_NOT_TERMINAL, 'This session is a chat: it has no terminal.'), 'agent')).toEqual({ title: 'Not sent', description: NOT_TERMINAL_CHOICE, color: 'warning' })
     expect(NOT_TERMINAL_CHOICE).toBe('This session runs as a chat now, so your choice was not sent. Press it again, or write your answer in the chat.')

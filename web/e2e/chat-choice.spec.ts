@@ -7,7 +7,7 @@ import type { OwnServer } from './own-server'
 // choices" words ask "Pears or plums?" with the choices Pears and Plums through Conductor's own tool, the question kept open by the
 // session. A chat has no terminal: a choice pressed is the person's answer in the choice's words, as a typed answer is, from the
 // reply bar and from the session's row in the sidebar alike; it ends the question, the agent's next turn has it, and the sender's
-// page shows it as its own answer. An answer the session refuses (the question answered from another page first) is said where it
+// page shows it as its own answer; a session decision link's Needs you sends it so too. An answer the session refuses (the question answered from another page first) is said where it
 // was pressed: another page's row, its live stream answered with the sessions as the question stood and later reads held, so that
 // it still offers the choice.
 test.describe.configure({ mode: 'serial' })
@@ -80,6 +80,34 @@ test("a choice pressed on the session's row in the sidebar is the person's answe
   }
 })
 
+test("a choice pressed on a session decision link's Needs you is the person's answer in a chat, as the bar's is", async ({ browser }) => {
+  const page = await dayPage(browser, { server: own.started, width: 1440, height: 900 })
+  let linkCtx: Awaited<ReturnType<typeof browser.newContext>> | undefined
+  try {
+    const { id, question } = await asked(page, 'e2e chat choice link')
+    const made = await own.api.ok<{ token: string }>('POST', `/api/sessions/${id}/links`, { role: 'control', decide: true, label: 'e2e chat decide' })
+    linkCtx = await browser.newContext({ baseURL: own.started.baseURL, viewport: { width: 1280, height: 800 } })
+    const holder = await linkCtx.newPage()
+    budget(4 * STEP_MS)
+    await holder.goto(`/join/${made.token}`)
+    await holder.getByRole('textbox', { name: 'Your name' }).fill('e2e holder')
+    await holder.getByRole('button', { name: 'Join session' }).click()
+    await expect(holder.locator('[data-join-tab="decide"]')).toHaveAttribute('aria-selected', 'true', { timeout: STEP_MS })
+    const ref = `question:${id}/${question}`
+    await holder.locator(`[data-join-session-decide] [data-inbox-row="${ref}"]`).click()
+    const item = holder.locator(`[data-join-session-decide] [data-inbox-item="${ref}"]`)
+    await expect(item.locator('[data-inbox-action="answer"]')).toHaveText(['Pears', 'Plums'])
+    await item.locator('[data-inbox-action="answer"][data-action-label="Plums"]').click()
+    budget(2 * LONG_MS)
+    await expect(turnWith(page, 'stub chat: Plums')).toHaveAttribute('data-turn-outcome', 'done', { timeout: LONG_MS })
+    await expect.poll(async () => (await own.api.session(id)).attention?.state ?? '', { timeout: LONG_MS }).not.toBe('needs_input')
+    await expect(item.locator('[data-inbox-refusal]')).toHaveCount(0)
+  } finally {
+    await linkCtx?.close()
+    await page.context().close()
+  }
+})
+
 test('an answer the session refuses is said where it was pressed: the question answered first from another page', async ({ browser }) => {
   const page = await dayPage(browser, { server: own.started, width: 1440, height: 900 })
   const other = await dayPage(browser, { server: own.started, width: 1440, height: 900 })
@@ -110,7 +138,8 @@ test('an answer the session refuses is said where it was pressed: the question a
     budget(STEP_MS)
     // The toast in the page's own words for the session's refusal (replyFailure), its live region beside it.
     await expect(other.getByText('Already answered').first()).toBeVisible()
-    await expect(other.getByText(/question (was answered|is being answered).*Nothing was sent/).first()).toBeVisible()
+    // The words whole: a chat has no terminal, and a choice no line to keep, so they say neither.
+    await expect(other.getByText("e2e chat choice refused's question was answered by Nate. Nothing was sent.", { exact: true }).first()).toBeVisible()
     await expect(turnWith(page, 'stub chat: Plums')).toHaveCount(0)
   } finally {
     for (const r of held) await r.abort().catch(() => undefined)

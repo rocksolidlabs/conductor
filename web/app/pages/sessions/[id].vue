@@ -112,7 +112,7 @@ function chatRetry(nonce: string) {
 /** A question's choice from the chat: its keys into the session, as the quick reply bar's, naming the question (its line is the question's id). */
 function chatAnswer(m: ChatMessage, index: number) {
   const o = m.options?.[index]
-  if (o) void answerQuestion({ question: m.id, ...choiceReply(o, way.value) })
+  if (o) void answerQuestion({ question: m.id, ...choiceReply(o, way.value) }, undefined, false)
 }
 /** Sends a reply to a question over the terminal's connection, once per question; a refusal (answered already, not connected) is said in a toast. */
 const replied = repliedQuestions()
@@ -121,7 +121,7 @@ const typedAnswers = useTypedAnswers()
  * What became of the reply (ReplyOutcome, without `left`): held when one to the same question is still on its way from here; a
  * failure by its code (replyOutcomeOf). `left` is called as the reply leaves the page.
  */
-function answerQuestion(reply: QuestionReply, left?: () => void): Promise<ReplyOutcome> {
+function answerQuestion(reply: QuestionReply, left?: () => void, typed = 'text' in reply): Promise<ReplyOutcome> {
   if (!terminal.value) {
     toast.add(replyFailure(new ReplyError('not_connected', 'not connected')))
     return Promise.resolve('refused')
@@ -135,7 +135,7 @@ function answerQuestion(reply: QuestionReply, left?: () => void): Promise<ReplyO
       return sent ? 'sent' : 'held'
     })
     .catch((e: unknown): ReplyOutcome => {
-      toast.add(replyFailure(e, undefined, 'text' in reply))
+      toast.add(replyFailure(e, undefined, typed, way.value))
       return replyOutcomeOf(e)
     })
 }
@@ -511,7 +511,7 @@ function option(index: number, question?: string) {
   const o = attention.value.options?.[index]
   if (!o) return
   // In a chat the choice's words are the answer, as a typed one is; in the terminal its keys, as ever (choiceReply).
-  void answerQuestion({ question, ...choiceReply(o, way.value) })
+  void answerQuestion({ question, ...choiceReply(o, way.value) }, undefined, false)
 }
 
 

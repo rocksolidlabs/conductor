@@ -324,8 +324,11 @@ export function clearAnswered(sessions: Map<string, SessionInfo>, id: string, qu
 /** A choice's keys refused by a chat (`not_terminal`): the page's own words, which say what to do. */
 export const NOT_TERMINAL_CHOICE = 'This session runs as a chat now, so your choice was not sent. Press it again, or write your answer in the chat.'
 
-/** `line`: the reply was a typed line, which its field keeps (#654): an answered question's toast says so, and how it goes. */
-export function replyFailure(e: unknown, name?: string, line = false): { title: string; description?: string; color: 'warning' | 'error' } {
+/**
+ * `line`: the reply was a typed line, which its field keeps (#654): an answered question's toast says so, and how it goes. `way`: how
+ * the session runs; a choice refused in a chat is told no terminal (it has none).
+ */
+export function replyFailure(e: unknown, name?: string, line = false, way?: string): { title: string; description?: string; color: 'warning' | 'error' } {
   const code = (e as { code?: unknown } | null)?.code
   if (code === QUESTION_ANSWERED) {
     // The owner's words say what became of the question when it knows: answered by whom (its recorded result), being
@@ -336,7 +339,9 @@ export function replyFailure(e: unknown, name?: string, line = false): { title: 
     const what = by ? `was answered by ${by}` : /being answered/.test(said) ? 'is being answered by someone else' : /in the terminal/.test(said) ? 'was answered in its terminal' : 'was answered before your reply arrived'
     return {
       title: 'Already answered',
-      description: `${name ? `${name}'s` : 'This'} question ${what}. Nothing was sent. ${line ? LINE_KEPT : 'If the agent still asks, answer it in its terminal.'}`,
+      // A line typed is kept in its field, whatever the way; a choice on a session in its terminal may be answered there, and one in
+      // a chat has nothing more to say: its question was answered and nothing was sent (#1148).
+      description: `${name ? `${name}'s` : 'This'} question ${what}. Nothing was sent.${line ? ` ${LINE_KEPT}` : way === 'protocol' ? '' : ' If the agent still asks, answer it in its terminal.'}`,
       color: 'warning',
     }
   }

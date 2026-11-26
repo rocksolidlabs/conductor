@@ -80,6 +80,16 @@ const ticket = computed(() => (props.noComments ? '' : ticketOf(props.item)))
 /** The terminal of the session the item is about, by this page's route or a link's tab; null when neither has it. */
 const terminalTo = computed(() => (terminal.value && props.routeOf(terminal.value.ref)) || null)
 const terminalOpens = computed(() => !!terminal.value && (!!terminalTo.value || !!props.openTerminal))
+/**
+ * The session the item is about runs as a chat (the listing this page holds says so): it has no terminal, and the button that opens
+ * it says it opens the chat. Unknown here (a link's page holds no listing): the terminal's words, as before.
+ */
+const attentionStore = useAttentionStore()
+const inChat = computed(() => {
+  const id = terminal.value?.ref.slice('session:'.length)
+  return !!id && attentionStore.value.sessions.get(id)?.way === 'protocol'
+})
+const openWords = computed(() => (inChat.value ? 'Open the chat' : 'Open the terminal'))
 function openTheTerminal() {
   if (terminal.value && props.openTerminal) props.openTerminal(terminal.value.ref)
 }
@@ -235,8 +245,8 @@ function sendComment() {
       <!-- A turn held for the terminal: the session refuses every reply naming it, so none is offered; its terminal goes on. -->
       <div v-if="held" class="flex flex-col gap-2" data-inbox-held>
         <p class="text-sm text-pretty">{{ item.blocking.words }}</p>
-        <UButton v-if="terminalTo" :to="terminalTo" label="Open the terminal" icon="i-lucide-square-terminal" size="lg" class="min-h-11 self-start" data-inbox-terminal />
-        <UButton v-else-if="terminalOpens" label="Open the terminal" icon="i-lucide-square-terminal" size="lg" class="min-h-11 self-start" data-inbox-terminal @click="openTheTerminal" />
+        <UButton v-if="terminalTo" :to="terminalTo" :label="openWords" icon="i-lucide-square-terminal" size="lg" class="min-h-11 self-start" data-inbox-terminal />
+        <UButton v-else-if="terminalOpens" :label="openWords" icon="i-lucide-square-terminal" size="lg" class="min-h-11 self-start" data-inbox-terminal @click="openTheTerminal" />
       </div>
       <UAlert
         v-if="refusal"
@@ -244,7 +254,7 @@ function sendComment() {
         variant="subtle"
         icon="i-lucide-triangle-alert"
         :title="refusal"
-        :actions="item.kind === 'question' && terminalOpens ? [{ label: 'Open the terminal', icon: 'i-lucide-square-terminal', color: 'neutral', variant: 'outline', class: 'min-h-11', ...(terminalTo ? { to: terminalTo } : { onClick: openTheTerminal }) }] : undefined"
+        :actions="item.kind === 'question' && terminalOpens ? [{ label: openWords, icon: inChat ? 'i-lucide-messages-square' : 'i-lucide-square-terminal', color: 'neutral', variant: 'outline', class: 'min-h-11', ...(terminalTo ? { to: terminalTo } : { onClick: openTheTerminal }) }] : undefined"
         data-inbox-refusal
       />
       <UAlert

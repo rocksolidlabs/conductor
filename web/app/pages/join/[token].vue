@@ -169,7 +169,9 @@ const tab = ref<'decide' | 'terminal'>('terminal')
 let decideShown = false
 const sessionLane = new DecisionLane(() => terminal.value?.lane() ?? null)
 /** What the session's Decide keeps, the page's for its whole life: a reconnect keeps the item open and an action not confirmed. */
-const sessionDecide = useJoinDecide(sessionLane, laneSeq)
+// A session link's items are its own session's: their choices go by the way it runs (decideOf). A run link's members stay in their
+// terminals (a crew member's session does not move), so its desk sends a choice's keys as ever.
+const sessionDecide = useJoinDecide(sessionLane, laneSeq, () => joinWay.value)
 const sessionDecides = computed(() => decisions.value && !run.value)
 function onDecisionsChanged() {
   if (sessionDecides.value) laneSeq.value++
@@ -269,7 +271,7 @@ function chatRetry(nonce: string) {
 /** A question's choice from the session's chat: its keys into the session, naming the question (its line is the question's id). */
 function chatAnswer(m: ChatMessage, index: number) {
   const o = m.options?.[index]
-  if (o) void answerQuestion({ question: m.id, ...choiceReply(o, joinWay.value) })
+  if (o) void answerQuestion({ question: m.id, ...choiceReply(o, joinWay.value) }, undefined, false)
 }
 /** Sends a reply to a question over the terminal's connection, once per question; a refusal (answered already, not connected) is said in a toast. */
 const replied = repliedQuestions()
@@ -278,7 +280,7 @@ const typedAnswers = useTypedAnswers()
  * What became of the reply (ReplyOutcome, without `left`): held when one to the same question is still on its way from here; a
  * failure by its code (replyOutcomeOf). `left` is called as the reply leaves the page.
  */
-function answerQuestion(reply: QuestionReply, left?: () => void): Promise<ReplyOutcome> {
+function answerQuestion(reply: QuestionReply, left?: () => void, typed = 'text' in reply): Promise<ReplyOutcome> {
   if (!terminal.value) {
     toast.add(replyFailure(new ReplyError('not_connected', 'not connected')))
     return Promise.resolve('refused')
@@ -292,7 +294,7 @@ function answerQuestion(reply: QuestionReply, left?: () => void): Promise<ReplyO
       return sent ? 'sent' : 'held'
     })
     .catch((e: unknown): ReplyOutcome => {
-      toast.add(replyFailure(e, undefined, 'text' in reply))
+      toast.add(replyFailure(e, undefined, typed, joinWay.value))
       return replyOutcomeOf(e)
     })
 }
@@ -435,7 +437,7 @@ function reply(text: string, question?: string, taken?: ReplyTaken) {
 function option(index: number, question?: string) {
   const o = attention.value.options?.[index]
   // In a chat the choice's words are the answer, as a typed one is; in the terminal its keys, as ever (choiceReply).
-  if (o) void answerQuestion({ question, ...choiceReply(o, joinWay.value) })
+  if (o) void answerQuestion({ question, ...choiceReply(o, joinWay.value) }, undefined, false)
 }
 
 function requestFile(path: string, stat?: boolean, extra?: FileGetExtra) {
