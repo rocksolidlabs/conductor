@@ -124,7 +124,8 @@ and moves the board for them.
   with review rounds and checks of its own; three had merged after a
   night.)
 - **Kept out of a bundle:** a change at a boundary (sign-in, tokens,
-  links, who may answer or act, the host link) gets a pull request of its
+  links, who may answer or act, the host link, what `.mcp.json` starts)
+  gets a pull request of its
   own, or a part of a bundle that is its own with an adversarial review of
   its own; a fix people are hitting now ships alone and at once; a ledger
   migration ships alone, so that it can be reverted alone.
