@@ -1045,8 +1045,12 @@ func TestCreateSessionInjectsTheAdapter(t *testing.T) {
 		}
 		e.save(body)
 		info := e.launch(tc.id, tc.args)
-		// Every launch of an adapter that takes an MCP server registers Conductor's, whatever the signal.
-		want := append(append(append(slices.Clone(script), tc.args...), tc.extra...), "--mcp-config", filepath.Join(hooks, "claude-mcp.json"))
+		// Every launch of an adapter that takes an MCP server registers
+		// Conductor's, whatever the signal, and beside it allows
+		// Conductor's own reporting tools of that server (#1143).
+		mcp := []string{"--mcp-config", filepath.Join(hooks, "claude-mcp.json"), "--allowedTools=mcp__conductor__guide,mcp__conductor__report," +
+			"mcp__conductor__set_state,mcp__conductor__ask,mcp__conductor__task_context,mcp__conductor__task_checkpoint,mcp__conductor__task_blocked,mcp__conductor__task_result"}
+		want := append(append(append(slices.Clone(script), tc.args...), tc.extra...), mcp...)
 		var got []string
 		for _, a := range info["command"].([]any) {
 			got = append(got, a.(string))
@@ -1056,7 +1060,7 @@ func TestCreateSessionInjectsTheAdapter(t *testing.T) {
 		}
 		c := dialViewer(t, e, info["id"].(string), adminToken)
 		c.hello(80, 24)
-		c.expectOutput("ARGS[" + strings.Join(append(append(slices.Clone(tc.args), tc.extra...), "--mcp-config", filepath.Join(hooks, "claude-mcp.json")), " ") + "]")
+		c.expectOutput("ARGS[" + strings.Join(append(append(slices.Clone(tc.args), tc.extra...), mcp...), " ") + "]")
 	}
 }
 

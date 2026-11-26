@@ -249,4 +249,29 @@ func TestEveryConductorToolIsSorted(t *testing.T) {
 	if !strings.HasPrefix(agentproto.ClaudePermissionTool, "mcp__conductor__") {
 		t.Errorf("the prompt tool is %s: the allow rules name another server", agentproto.ClaudePermissionTool)
 	}
+	// A terminal's Claude Code is allowed the same set (#1143), on the
+	// launch beside Conductor's MCP server: one --allowedTools of each
+	// unasked tool's rule under the server name of the MCP config the
+	// terminal is given, and nothing else.
+	claude, _ := agents.Get("claude")
+	var mcp struct {
+		Servers map[string]json.RawMessage `json:"mcpServers"`
+	}
+	if err := json.Unmarshal([]byte(claude.Assets["claude-mcp.json"]), &mcp); err != nil || len(mcp.Servers) != 1 {
+		t.Fatalf("the terminal's MCP config: %v %v", mcp.Servers, err)
+	}
+	var server string
+	for name := range mcp.Servers {
+		server = name
+	}
+	var want []string
+	for _, name := range agents.ProtocolUnaskedTools {
+		want = append(want, "mcp__"+server+"__"+name)
+	}
+	dir := t.TempDir()
+	with, without := agents.MCPFor("claude", dir, true), agents.MCPFor("claude", dir, false)
+	if len(with) != len(without)+1 || !slices.Equal(with[:len(without)], without) || !strings.HasPrefix(with[len(without)], "--allowedTools=") ||
+		!slices.Equal(strings.Split(strings.TrimPrefix(with[len(without)], "--allowedTools="), ","), want) {
+		t.Errorf("a terminal launched with Conductor's server gets %q, want %q and the one --allowedTools of %v", with, without, want)
+	}
 }

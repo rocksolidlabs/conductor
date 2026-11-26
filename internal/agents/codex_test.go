@@ -16,7 +16,7 @@ func TestCodexMCPEnvNamesBrakeman(t *testing.T) {
 	if !strings.Contains(codexMCPEnv, `"CONDUCTOR_BRAKEMAN"`) {
 		t.Fatalf("Codex's MCP server is not given CONDUCTOR_BRAKEMAN: %s", codexMCPEnv)
 	}
-	args := MCPFor("codex", t.TempDir())
+	args := MCPFor("codex", t.TempDir(), false)
 	if !slices.Contains(args, "mcp_servers.conductor.env_vars="+codexMCPEnv) {
 		t.Fatalf("Codex's registration: %q", args)
 	}
@@ -26,7 +26,7 @@ func TestCodexMCPEnvNamesBrakeman(t *testing.T) {
 // act can wait longer for a launch, so the registration Codex is launched
 // with gives Conductor's tools MCPToolTimeout, in Codex's seconds.
 func TestCodexMCPToolTimeoutCoversAnAct(t *testing.T) {
-	args := MCPFor("codex", t.TempDir())
+	args := MCPFor("codex", t.TempDir(), false)
 	want := "mcp_servers.conductor.tool_timeout_sec=" + strconv.Itoa(int(MCPToolTimeout/time.Second))
 	if !slices.Contains(args, want) {
 		t.Fatalf("Codex's registration: %q, want %s", args, want)

@@ -93,16 +93,33 @@ var (
 )
 
 // claudeMCPServer is the name Conductor's server has in
-// claude-protocol-mcp.json, which a rule for its tools names.
+// claude-protocol-mcp.json and claude-mcp.json (a chat's and a terminal's),
+// which a rule for its tools names.
 const claudeMCPServer = "conductor"
 
-// claudeAllowRules is the floor's allow rules: one per unasked tool, in
-// Claude Code's form for one tool of an MCP server, mcp__<server>__<tool>
+// ConductorToolOf reads tool, a tool's name as Claude Code reports it (a
+// hook's tool_name), as one of the tools a launch allows Conductor's
+// server without asking: its name exactly one of ProtocolUnaskedTools
+// after the server's prefix (mcp__conductor__task_result is task_result)
+// and true. Any other name, of another server, another of Conductor's
+// tools, or longer, shorter or with other bytes, is "" and false.
+func ConductorToolOf(tool string) (string, bool) {
+	name, ok := strings.CutPrefix(tool, "mcp__"+claudeMCPServer+"__")
+	if !ok || !slices.Contains(ProtocolUnaskedTools, name) {
+		return "", false
+	}
+	return name, true
+}
+
+// claudeAllowRules is the allow rules of a chat's floor and of a terminal's
+// launch (claudeAllowFlag): one per unasked tool, in Claude
+// Code's form for one tool of an MCP server, mcp__<server>__<tool>
 // (permissions.md, MCP). Claude Code judges deny, then ask, then allow,
 // across every settings source the child reads (the person's and the
 // folder's among them): a deny or ask rule naming one of these tools wins
-// over its allow, and then the call is denied or put to Conductor as any
-// other. An allow rule has no effect in bypassPermissions (a yolo session).
+// over its allow, and then the call is denied or put to Conductor (a
+// chat) or to the person (a terminal) as any other. An allow rule has no
+// effect in bypassPermissions (a yolo session).
 func claudeAllowRules() []string {
 	rules := make([]string, 0, len(ProtocolUnaskedTools))
 	for _, t := range ProtocolUnaskedTools {

@@ -763,6 +763,9 @@ type run struct {
 	// stopNote is what the run's log says of its stop in place of
 	// "stopped" (StopIfRunning), under e.mu.
 	stopNote string
+	// refusedSaid is each session and tool whose refused call to Conductor
+	// the run's log has said (refusedCall), under e.mu.
+	refusedSaid map[refusedKey]bool
 	// The run's project manifest (steps.go): the crew's effective one as
 	// launched (manifest, with File for the file form; a legacy setup
 	// lifted), its revision, and the manifest at the base (baseMan),
@@ -2114,6 +2117,10 @@ func (e *Engine) OnActivity(sessionID string, entry session.ActivityEntry, state
 	sm := v.(sessionMember)
 	r, m := sm.r, sm.m
 	m.poke()
+	if entry.Type == session.ActivityToolDenied {
+		e.refusedCall(sessionID, sm, entry.Tool)
+		return
+	}
 	isHandoff := entry.Type == session.ActivityHandoff
 	if !isHandoff && entry.Type == session.ActivityAttention && (state == session.AttentionWorking || state == session.AttentionDone) {
 		// A turn of its agent's own: a prompt it did not report taking

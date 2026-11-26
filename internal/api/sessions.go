@@ -83,7 +83,9 @@ type createSessionRequest struct {
 	// conductorArgs, set by Launch for a Brakeman turn's member, says Args
 	// are Conductor's own (the adapter's read-only, model and tools
 	// arguments, launchTurn checked them), taken whatever the agent's
-	// allowArgs says.
+	// allowArgs says; its launch carries no MCPAllow beside Conductor's MCP
+	// server (agents.MCPFor), as the turn's own switch decides Conductor's
+	// tools.
 	conductorArgs bool
 	// agentSHA256, set by Launch for an attempt of a run launched from a
 	// ticket, is the agent selection its plan revision approved
@@ -346,7 +348,9 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 	argv = append(argv, extra...)
 	// Conductor's MCP server, for the agents that take one at launch.
 	if s.cfg.MCP() {
-		argv = append(argv, agents.MCPFor(agent.Adapter, agents.HooksDir(s.cfg.DataDir))...)
+		// Conductor's own reporting tools allowed with it, but for a
+		// Brakeman turn, whose switch decides them (turnArgs).
+		argv = append(argv, agents.MCPFor(agent.Adapter, agents.HooksDir(s.cfg.DataDir), !req.conductorArgs)...)
 	}
 	// The environment and the login (launchEnv: the entry's, the server's
 	// and this launch's part, then the login decided over them).

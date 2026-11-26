@@ -120,5 +120,10 @@ func TestLaunchRegistersTheMCPServerUnlessOff(t *testing.T) {
 		if a == "--mcp-config" || a == filepath.Join(hooks, "claude-mcp.json") {
 			t.Fatalf("mcp registered with agents.mcp off: %v", info["command"])
 		}
+		// Nor are Conductor's tools allowed: the allowance travels with
+		// its server alone (#1143).
+		if s, _ := a.(string); strings.HasPrefix(s, "--allowedTools") {
+			t.Fatalf("tools allowed with agents.mcp off: %v", info["command"])
+		}
 	}
 }

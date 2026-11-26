@@ -2546,6 +2546,35 @@ live and in the replay after `ready`. The seven event types:
 
 The reporter chooses which fields an event carries; none is required.
 
+A terminal's Claude Code reports `tool_denied` through its
+`PermissionDenied` hook, which runs when auto mode's classifier denies a
+call (not for a deny rule, a `PreToolUse` hook or a person's refusal at
+the dialog); `tool` is the tool's name as Claude Code gives it,
+`mcp__conductor__<tool>` for one of Conductor's.
+
+A terminal's Claude Code may call Conductor's own reporting tools without
+asking (#1143): `guide`, `report`, `set_state`, `ask`, `task_context`,
+`task_checkpoint`, `task_blocked` and `task_result`, the tools a chat's
+floor allows (see Chat sessions, Permission requests, for why these and no
+others). The rules ride with Conductor's own tool server on the launch:
+where the launch registers it (`--mcp-config <hooks>/claude-mcp.json`),
+one argument follows, `--allowedTools=mcp__conductor__guide,…` with the
+eight rules, and a launch that does not register it carries none (the
+server's `agents.mcp` off, a `conductor host` session). Conductor writes
+them into no settings file: the `--settings` files in the hooks directory
+hold no permission rule (the hooks, and a yolo session's own key), as Install merges them into `~/.claude/settings.json`.
+An allow rule resolves a matching call before auto mode's classifier
+judges it; a deny or ask rule of the person's or the folder's own settings
+for the same tool still wins over it, and in a yolo session it changes
+nothing. A second `--allowedTools` among the launch's own arguments adds
+its tools to these (Claude Code 2.1.332 joins a repeated list option's
+values). A Brakeman turn carries only what its own switch says
+("Run Conductor's tools without asking": `--allowedTools=mcp__conductor`
+on, nothing off), and a chat's child is started as before. The limit: the
+rules name Conductor's server by its key, `conductor`, and Conductor's own
+definition is the one a launch that carries it uses. A crew member's
+refused call to one of these tools is said in its run's log (Crew runs).
+
 Limits, applied to every entry as the session stores it: control characters
 are dropped and surrounding space is trimmed. `message` is at most 500 bytes
 and `tool` at most 100; both keep line breaks and tabs. `url` (at most 2048
@@ -4578,6 +4607,7 @@ whose `message` is one of these:
 | handoff to unknown member | `error` | `handoff to unknown member "<name>" from <a>` |
 | handoff to itself | `error` | `handoff to itself from <a>` |
 | handoff to a member that is not running | `error` | `handoff to a member that is not running, from <a> to <b>` |
+| call to Conductor refused | `status` | `<member>'s call to Conductor's <tool> was refused by its agent's own permission check or a rule in its settings, though Conductor's launch allows it; look in its terminal (in Claude Code, /permissions)`, `task <id>: ` before it for a task's attempt, once for the member's session and the tool: the member, in its terminal, was launched with Conductor's server and its allowance (Events), and its hook reported a `tool_denied` whose `tool` is exactly one of the eight it allows (`mcp__conductor__<tool>`); any other name, a chat's member and a launch without the allowance say nothing (#1143) |
 | exclude | `error` | `could not add .conductor/ to the repository's info/exclude: <why>`, at most once a run |
 | stopped | `status` | `stopped` |
 | link created | `link` | `link created: <label> (<role>)`, the label `unlabelled` when there is none, as for a session's link |
@@ -9573,7 +9603,8 @@ Every other tool asks as before, the prompt tool is never allowed, and
 with, though a handoff carries the same message, shorter. Claude Code
 judges deny, then ask, then allow, across every settings source the
 child reads, so a deny or ask rule wins over these allows; in a yolo
-session they change nothing. At most eight requests are open or waiting per
+session they change nothing. A terminal's Claude Code is allowed the same
+tools by an argument beside Conductor's server on its launch (Events). At most eight requests are open or waiting per
 session: one more is denied `Too many requests are waiting; this one was
 denied.`.
 

@@ -45,6 +45,29 @@ func claudeBaseHookList() string {
 	return `"hooks":{` + hookLists(entry, claudeEvents...) + `,"PostToolUse":[` + files + `]}`
 }
 
+// claudeAllowFlag is the one argument that lets a terminal's Claude Code
+// call Conductor's own reporting tools without asking (#1143): the chat
+// floor's rules (claudeAllowRules), one per tool, mcp__conductor__<tool>,
+// in --allowedTools, which the CLI reference describes as "Tools that
+// execute without prompting for permission" and its --help (2.1.332) as a
+// "Comma or space-separated list of tool names to allow"; the = form, one
+// word, as ReadOnlyArgs passes its lists. It goes beside --mcp-config on
+// the launch (MCPFor), never into a settings file: the files in the hooks
+// directory are what Install, released ones included, merges into the
+// person's own settings. The rules name Conductor's server by its key,
+// conductor, and the server a launch that carries claude-mcp.json uses
+// under that key is Conductor's own. An allow rule resolves a matching
+// call before auto mode's classifier judges it (permission-modes.md, "How
+// the classifier evaluates actions"); a deny or ask rule of the person's
+// or the folder's own wins over it (permissions.md: deny, then ask, then
+// allow), and in bypassPermissions (a yolo session) it changes nothing.
+// A second --allowedTools on the same command line (a person's own
+// argument) adds its tools to these: 2.1.332's option parser concatenates
+// a repeated list option's values.
+func claudeAllowFlag() string {
+	return "--allowedTools=" + strings.Join(claudeAllowRules(), ",")
+}
+
 // claudeYoloKey skips the warning Claude Code shows before its first launch
 // with --dangerously-skip-permissions (the yolo recipe). Claude Code honours
 // only the last --settings, so it goes in the file that carries the hooks.
@@ -138,6 +161,7 @@ func claudeAdapter() Adapter {
 		MCP: func(hooksDir string) []string {
 			return []string{"--mcp-config", filepath.Join(hooksDir, "claude-mcp.json")}
 		},
+		MCPAllow: func() []string { return []string{claudeAllowFlag()} },
 		PlansDir: claudePlansDir,
 		// Checked against `claude --help` (2.1.314) and by the recipes tier;
 		// the = form, as --tools, --disallowedTools and --allowedTools take

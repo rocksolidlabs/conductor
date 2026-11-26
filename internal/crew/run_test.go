@@ -51,6 +51,9 @@ type launchCall struct {
 type fakeLauncher struct {
 	t      *testing.T
 	engine *Engine
+	// command, when set, is every session's Info.Command: the launch's
+	// whole argv, which the engine reads of a refused call (refusedCall).
+	command []string
 	// onLaunch, when set, runs on a goroutine of its own once a member's
 	// session has started: what its process does.
 	onLaunch func(member string, p *sessiontest.FakeProc, l *session.Local)
@@ -156,6 +159,7 @@ func (f *fakeLauncher) Launch(ctx context.Context, spec LaunchSpec) (*session.Lo
 	f.calls = append(f.calls, launchCall{spec.AgentID, name, spec.Cwd, slices.Clone(spec.Args), maps.Clone(spec.Env), ref, spec.Yolo, spec.Resume, maps.Clone(spec.Inject), slices.Clone(spec.Allow), spec.AgentSHA256, string(spec.Where), spec.Account, spec.Model})
 	err, block := f.fail[name], f.block[name]
 	pause := cmp.Or(f.pauses[name], f.pause, 5*time.Millisecond)
+	command := slices.Clone(f.command)
 	f.mu.Unlock()
 	if err != nil {
 		return nil, err
@@ -165,7 +169,7 @@ func (f *fakeLauncher) Launch(ctx context.Context, spec LaunchSpec) (*session.Lo
 		return nil, ctx.Err()
 	}
 	p := sessiontest.NewFakeProc()
-	info := session.Info{ID: session.NewID(), Name: name, AgentID: spec.AgentID, Cwd: spec.Cwd, Crew: &ref, Cols: 80, Rows: 24}
+	info := session.Info{ID: session.NewID(), Name: name, AgentID: spec.AgentID, Cwd: spec.Cwd, Crew: &ref, Cols: 80, Rows: 24, Command: command}
 	l := session.NewLocal(info, p, session.Options{Log: quietLog, OnActivity: f.activity, OnChange: f.change,
 		SubmitPause: pause, TrustPattern: f.trust, Questions: f.questions, InputWait: f.inputWait, PromptShape: f.shape,
 		WorkingTitle: f.workingTitle, TitleSettle: f.titleSettle, ConfirmSubmit: f.confirm, ConfirmWait: f.confirmWait})

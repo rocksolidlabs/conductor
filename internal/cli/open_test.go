@@ -86,7 +86,7 @@ func TestOpenURLOutsideASession(t *testing.T) {
 func TestOpenURLWorksWithCodexsMCPEnvironment(t *testing.T) {
 	srv, seen := fakeSelf(t)
 	var listed []string
-	for _, a := range agents.MCPFor("codex", t.TempDir()) {
+	for _, a := range agents.MCPFor("codex", t.TempDir(), false) {
 		if v, ok := strings.CutPrefix(a, "mcp_servers.conductor.env_vars="); ok {
 			if err := json.Unmarshal([]byte(v), &listed); err != nil {
 				t.Fatal(err)
