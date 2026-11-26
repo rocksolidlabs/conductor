@@ -945,6 +945,14 @@ func (s *Server) laneAnswer(ctx context.Context, linkID, sessionID string, sc la
 	if m.Revision != ref.Question || m.Choice != nil || m.Rationale != "" || (m.Input == "") == (m.Text == "") {
 		return refusal(m.ReqID, proto.DecideInvalid, "an answer names its question's id as its revision and carries a choice's keys or a line"), nil
 	}
+	// What a refusal says was not done: a terminal's keys or line were not
+	// typed; a chat, which has no terminal, was sent nothing (#1150).
+	nothing := "nothing was typed"
+	if d, ok := s.registry.Get(ref.Session); ok {
+		if l, ok := d.(*session.Local); ok && l.Way() == session.WayProtocol {
+			nothing = "nothing was sent"
+		}
+	}
 	lost := func(words string) ([]byte, *laneOutcome) {
 		s.note(linkID, ref.String(), ref.Question, m.OpID)
 		o := &laneOutcome{Ref: ref.String(), Receipt: ref.Question, Code: proto.DecideAnswered, Words: words}
@@ -958,13 +966,13 @@ func (s *Server) laneAnswer(ctx context.Context, linkID, sessionID string, sc la
 	}
 	if !offered {
 		if it.Revision != ref.Question || !slices.ContainsFunc(it.Actions, func(a inboxAction) bool { return a.Name == "answer" }) {
-			return lost("the question is no longer one an answer is taken for: nothing was typed")
+			return lost("the question is no longer one an answer is taken for: " + nothing)
 		}
-		return refusal(m.ReqID, proto.DecideInvalid, "not one of the question's choices: nothing was typed"), nil
+		return refusal(m.ReqID, proto.DecideInvalid, "not one of the question's choices: "+nothing), nil
 	}
 	d, ok := s.registry.Get(ref.Session)
 	if !ok {
-		return lost("the session is no longer listed: nothing was typed")
+		return lost("the session is no longer listed: " + nothing)
 	}
 	local, isLocal := d.(*session.Local)
 	if !isLocal {
@@ -1012,7 +1020,7 @@ func (s *Server) laneAnswer(ctx context.Context, linkID, sessionID string, sc la
 	if err != nil && !errors.Is(err, session.ErrSubmitPending) {
 		switch {
 		case errors.Is(err, session.ErrQuestionAnswered):
-			return lost("the question is no longer the one waiting: nothing was typed")
+			return lost("the question is no longer the one waiting: " + nothing)
 		case errors.Is(err, session.ErrNotAChoice):
 			return refusal(m.ReqID, proto.DecideInvalid, err.Error()), nil
 		}

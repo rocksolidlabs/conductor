@@ -326,7 +326,7 @@ export const NOT_TERMINAL_CHOICE = 'This session runs as a chat now, so your cho
 
 /**
  * `line`: the reply was a typed line, which its field keeps (#654): an answered question's toast says so, and how it goes. `way`: how
- * the session runs; a choice refused in a chat is told no terminal (it has none).
+ * the session runs; a choice refused in a chat is told no terminal (it has none), nor one whose way is `unknown` to the page.
  */
 export function replyFailure(e: unknown, name?: string, line = false, way?: string): { title: string; description?: string; color: 'warning' | 'error' } {
   const code = (e as { code?: unknown } | null)?.code
@@ -341,7 +341,7 @@ export function replyFailure(e: unknown, name?: string, line = false, way?: stri
       title: 'Already answered',
       // A line typed is kept in its field, whatever the way; a choice on a session in its terminal may be answered there, and one in
       // a chat has nothing more to say: its question was answered and nothing was sent (#1148).
-      description: `${name ? `${name}'s` : 'This'} question ${what}. Nothing was sent.${line ? ` ${LINE_KEPT}` : way === 'protocol' ? '' : ' If the agent still asks, answer it in its terminal.'}`,
+      description: `${name ? `${name}'s` : 'This'} question ${what}. Nothing was sent.${line ? ` ${LINE_KEPT}` : way === 'protocol' || way === 'unknown' ? '' : ' If the agent still asks, answer it in its terminal.'}`,
       color: 'warning',
     }
   }

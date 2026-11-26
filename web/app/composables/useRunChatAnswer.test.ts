@@ -103,6 +103,18 @@ describe('useRunChatAnswer', () => {
     expect(toasts.map((t) => [t.title, t.description])).toEqual([["Already answered", "cand-b's question was answered by Priya. Nothing was sent. If the agent still asks, answer it in its terminal."]])
   })
 
+  it("says a chat member's refusal naming no terminal, nor one for a member whose way the page does not know", async () => {
+    outcome = () => Promise.reject(new ReplyError('question_answered', 'the question was answered by Priya: nothing was sent'))
+    const chat: RunChatAsker = { name: 'cand-b', session: { id: 's-b', kind: 'server', way: 'protocol' } }
+    await useRunChatAnswer({ members: () => [chat], may: () => true }).answer(question('cand-b'), 0)
+    const unknown: RunChatAsker = { name: 'cand-b', session: { id: 's-b', kind: 'server' }, wayUnknown: true }
+    await useRunChatAnswer({ members: () => [unknown], may: () => true }).answer(question('cand-b', 'q3'), 0)
+    expect(toasts.map((t) => t.description)).toEqual([
+      "cand-b's question was answered by Priya. Nothing was sent.",
+      "cand-b's question was answered by Priya. Nothing was sent.",
+    ])
+  })
+
   it("answers through the member's session as a fresh read of the members gives it, not the one read at load", async () => {
     let members = [cand('cand-b', 's-first')]
     const refresh = vi.fn(async () => {

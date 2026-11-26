@@ -530,10 +530,30 @@ func (s *Local) sendNext(p *protocolWay) bool {
 		return true
 	}
 	// In flight from before its write: the agent's acknowledgement may
-	// come before Send returns.
+	// come before Send returns. Sending, the session is not at rest: no
+	// move between the ways begins while the message's credential is
+	// taken and it is sent.
 	p.sending, p.inflight = true, q
 	d := p.driver
 	s.mu.Unlock()
+	// The sender's credential, taken and asked as the terminal's writer
+	// takes a write's (newWrite), outside the session's lock: one that no
+	// longer stands withdraws the message, never written, its question's
+	// claim let go so the question waits again.
+	held, err := sendHold(q.sub)
+	if err != nil {
+		s.mu.Lock()
+		p.sending = false
+		if p.inflight == q {
+			p.inflight = nil
+		}
+		s.reviseLocked(q.seq, func(e *TranscriptEntry) { e.State = PromptWithdrawn }, &out)
+		out.release = append(out.release, questionClaim{id: q.sub.Question, token: q.claim})
+		out.finish(q, SubmitResult{}, err)
+		s.mu.Unlock()
+		s.sendApplied(out)
+		return true
+	}
 	if q.claim != 0 {
 		// A reply's claim resolves its question as its write is made, as
 		// a line's Enter does in the terminal: before the agent's turn,
@@ -545,7 +565,9 @@ func (s *Local) sendNext(p *protocolWay) bool {
 		s.resolve(q.sub.Question, q.claim, by, q.byName, q.sub.ReqID, nil)
 	}
 
-	err := d.Send(p.ctx, q.msg)
+	sent := letGoOnceSent(held)
+	err = d.Send(p.ctx, q.msg)
+	sent()
 
 	s.mu.Lock()
 	p.sending = false
@@ -579,6 +601,56 @@ func (s *Local) sendNext(p *protocolWay) bool {
 	s.mu.Unlock()
 	s.sendApplied(out)
 	return true
+}
+
+// sendHold takes the credential a chat's message is sent under, as the
+// terminal's writer takes a write's (newWrite): the submission's Hold,
+// else that of the subscription it came from (AttachOptions.Hold); nil for
+// none. Asked at once (Held.Stands), the commit boundary just before the
+// send. An error, taken or asked, refuses the send (a kind of ErrRevoked),
+// the credential let go.
+func sendHold(sub Submission) (Held, error) {
+	hold := sub.Hold
+	if hold == nil {
+		if from := submissionFrom(sub); from != nil {
+			hold = from.hold
+		}
+	}
+	if hold == nil {
+		return nil, nil
+	}
+	held, err := hold()
+	if err != nil {
+		return nil, asRevoked(err)
+	}
+	if err := held.Stands(); err != nil {
+		held.Release()
+		return nil, asRevoked(err)
+	}
+	return held, nil
+}
+
+// letGoOnceSent holds held while a message is sent: the returned func,
+// called once the send has returned, lets it go; it is let go sooner once
+// whoever ends the credential stops waiting for the send
+// (Held.Cancelled). Nothing for no credential.
+func letGoOnceSent(held Held) func() {
+	if held == nil {
+		return func() {}
+	}
+	sent, watched := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(watched)
+		select {
+		case <-held.Cancelled():
+		case <-sent:
+		}
+		held.Release()
+	}()
+	return func() {
+		close(sent)
+		<-watched
+	}
 }
 
 // unconfirm is a written message's AcceptWait passed with no
