@@ -130,12 +130,15 @@ export function pageOf(v: unknown): LanePage {
 /**
  * The decide for an action of an item, as the frame carries it: the item's ref, the action's name, its `expect` as the revision
  * (and a plan's ticket revision), a question's choice keys exactly or its line, and the action's own identity, `opId`. The actor is
- * the link, never a field. Nothing else is sent: which fields an action takes is the owner's to judge.
+ * the link, never a field. Nothing else is sent: which fields an action takes is the owner's to judge. `way` is how the session the
+ * item is about runs: a question's choice in a chat, which has no terminal, goes as the person's answer in the choice's words (its
+ * line), as every other place sends it (choiceReply, #1148); the owner takes a line for a question that offers one.
  */
-export function decideOf(item: Pick<InboxItem, 'ref'>, a: InboxAction, opId: string, text?: string): LaneDecide {
+export function decideOf(item: Pick<InboxItem, 'ref'>, a: InboxAction, opId: string, text?: string, way?: string): LaneDecide {
   const m: LaneDecide = { ref: item.ref, action: a.name, revision: a.expect, opId }
   if (a.ticketRev !== undefined) m.ticketRev = a.ticketRev
-  if (a.input !== undefined) m.input = a.input
+  if (a.name === 'answer' && a.input !== undefined && way === 'protocol') m.text = a.label
+  else if (a.input !== undefined) m.input = a.input
   if (a.text && text !== undefined) m.text = text
   return m
 }

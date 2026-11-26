@@ -33,8 +33,9 @@ beforeEach(() => {
   toasts = []
   outcome = () => Promise.resolve(true)
   vi.stubGlobal('useQuickReply', () => ({
-    send: (session: { id: string }, input: string, opts: Record<string, unknown>) => {
-      sends.push({ session, input, opts })
+    // The choice goes through the quick reply's choose, which sends it by the session's way (useQuickReply.test.ts holds that).
+    choose: (session: { id: string }, o: { label: string; input: string }, opts: Record<string, unknown>) => {
+      sends.push({ session, input: o.input, opts })
       return outcome()
     },
   }))

@@ -1,5 +1,5 @@
 import { computed, nextTick, ref, watch, type Ref } from 'vue'
-import { itemOf, mintRequestId, reconcileDelivery, showingWords, stepsFinal, trackKey, type DeliveryStep, type InboxAction, type InboxItem, type InboxSummary } from '~/utils/inbox'
+import { itemOf, mintRequestId, reconcileDelivery, refParts, showingWords, stepsFinal, trackKey, type DeliveryStep, type InboxAction, type InboxItem, type InboxSummary } from '~/utils/inbox'
 import { DecideCode, type DecideOkMsg } from '~/utils/protocol'
 import type { ReplyTaken } from '~/utils/reply'
 import {
@@ -78,7 +78,7 @@ function owedWords(e: unknown, kind: string, went: boolean): string {
  * moved four times in a row while it was read keeps the last one assembled whole, with the words why (`recordWords`), until the next
  * change reads it again; one whose read got no word back says so, and Read again (`reread`) reads the item and its record again.
  */
-export function useJoinDecide(lane: DecisionLane, seq: Ref<number>) {
+export function useJoinDecide(lane: DecisionLane, seq: Ref<number>, wayOf?: (session: string) => string | undefined) {
   const items = ref<InboxSummary[]>([])
   const next = ref('')
   const total = ref(0)
@@ -303,7 +303,9 @@ export function useJoinDecide(lane: DecisionLane, seq: Ref<number>) {
       return
     }
     pick.value = null
-    put(r, { m: decideOf(it, a, mintRequestId(), text), kind: it.kind, label: a.label, went: false, sending: false, words: '' })
+    // A question's choice goes by the way its session runs, where this page knows it (decideOf).
+    const way = it.kind === 'question' ? wayOf?.(refParts(it.ref).a) : undefined
+    put(r, { m: decideOf(it, a, mintRequestId(), text, way), kind: it.kind, label: a.label, went: false, sending: false, words: '' })
     // The line leaves its field as the action is owed: the page holds it and sends it again by itself (#654). Taken, or still owed,
     // it is sent; refused, it comes back into the field.
     taken?.('left')

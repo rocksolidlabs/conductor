@@ -86,7 +86,7 @@ export function useRunChatAnswer(o: {
       return
     }
     try {
-      const sent = await quick.send(who.session, choice.input, { ...(o.via?.() ?? {}), question: m.id })
+      const sent = await quick.choose(who.session, choice, { ...(o.via?.() ?? {}), question: m.id })
       if (!sent) toast.add(runChatNotSent('sent', who.name))
     } catch (e) {
       // The session's own word (answered meanwhile, refused) as the session page says it; a connection that never reached the

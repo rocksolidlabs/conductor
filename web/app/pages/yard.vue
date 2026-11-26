@@ -153,7 +153,7 @@ function reply(s: SessionInfo, text: string, question?: string, taken?: ReplyTak
 function option(s: SessionInfo, index: number, question?: string) {
   const o = s.attention?.options?.[index]
   if (!o) return
-  quick.send(s, o.input, { question }).catch((e: unknown) => toast.add(replyFailure(e, s.name)))
+  quick.choose(s, o, { question }).catch((e: unknown) => toast.add(replyFailure(e, s.name, false, s.way)))
 }
 
 async function stop(s: SessionInfo) {

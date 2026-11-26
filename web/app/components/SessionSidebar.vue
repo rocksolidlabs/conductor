@@ -186,12 +186,12 @@ function openRunOf(row: SessionRow) {
 // card there and the row here agree. Each answer names the question the row showed as it was clicked, typed or keyed: one that
 // another person answered first takes nothing, and the toast says it was answered already.
 const busyAll = computed(() => new Set([...busy.value, ...quick.sending.value]))
-function fail(name: string, line = false) {
-  return (e: unknown) => toast.add(replyFailure(e, name, line))
+function fail(name: string, line = false, way?: string) {
+  return (e: unknown) => toast.add(replyFailure(e, name, line, way))
 }
 function answer(row: SessionRow, i: number, question: string | undefined) {
   const o = row.prompt?.options[i]
-  if (o) quick.send(row.session, o.input, { question }).catch(fail(row.session.name))
+  if (o) quick.choose(row.session, o, { question }).catch(fail(row.session.name, false, row.session.way))
 }
 /** A line from a row's field: `taken` tells the field what became of it, so that a line not sent stays in it (#654). */
 function reply(row: SessionRow, text: string, question: string | undefined, taken?: ReplyTaken) {

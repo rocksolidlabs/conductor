@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { ref } from 'vue'
-import { CONTROL_TOO_LARGE, MAX_QUESTION_ID, TOO_LONG } from './protocol'
-import { clearAnswered, answerMessage, bindDraft, draftQuestion, holdLine, LINE_KEPT, listedAttention, questionOf, repliedQuestions, ReplyError, replyFailure, replyLine, replyOutcomeOf } from './reply'
+import { CONTROL_TOO_LARGE, ERR_NOT_TERMINAL, MAX_QUESTION_ID, TOO_LONG } from './protocol'
+import { choiceReply, clearAnswered, answerMessage, NOT_TERMINAL_CHOICE, bindDraft, draftQuestion, holdLine, LINE_KEPT, listedAttention, questionOf, repliedQuestions, ReplyError, replyFailure, replyLine, replyOutcomeOf } from './reply'
 import { sessionRow } from './sidebar'
 import { rowPrompt } from './sidebarActions'
 import type { SessionInfo } from '~/composables/useSessions'
@@ -343,5 +343,27 @@ describe('a refused reply clears the question it named (#258)', () => {
     expect(clearAnswered(sessions, 'c', 'q9')).toBe(false)
     expect(clearAnswered(sessions, 'nope', 'q1')).toBe(false)
     expect(clearAnswered(sessions, 'b', undefined)).toBe(false)
+  })
+})
+
+describe('choiceReply', () => {
+  const plums = { label: 'Plums', input: 'Plums\r' }
+  it("choiceByWay: a choice in a session's terminal is its keys, typed as a line; in a chat, its words as the person's answer", () => {
+    expect(choiceReply(plums, undefined)).toEqual({ input: 'Plums\r' })
+    expect(choiceReply(plums, 'terminal')).toEqual({ input: 'Plums\r' })
+    expect(choiceReply({ label: 'Yes, and allow it', input: '2' }, 'terminal')).toEqual({ input: '2' })
+    expect(choiceReply(plums, 'protocol')).toEqual({ text: 'Plums' })
+  })
+  it("saysAnAnsweredQuestionByWay: a choice refused in a chat says the question was answered and nothing was sent, no kept line and no terminal", () => {
+    const answered = new ReplyError('question_answered', 'this question was already answered by Nate: nothing was sent')
+    expect(replyFailure(answered, 'agent', false, 'protocol').description).toBe("agent's question was answered by Nate. Nothing was sent.")
+    expect(replyFailure(answered, 'agent', false, 'terminal').description).toBe("agent's question was answered by Nate. Nothing was sent. If the agent still asks, answer it in its terminal.")
+    expect(replyFailure(answered, 'agent').description).toBe("agent's question was answered by Nate. Nothing was sent. If the agent still asks, answer it in its terminal.")
+    // A line typed is kept in its field, in a chat as in a terminal.
+    expect(replyFailure(answered, 'agent', true, 'protocol').description).toBe(`agent's question was answered by Nate. Nothing was sent. ${LINE_KEPT}`)
+  })
+  it("saysAChatsRefusalOfKeys: a choice's keys a chat refused (it moved to its chat meanwhile) are said, with what to do", () => {
+    expect(replyFailure(new ReplyError(ERR_NOT_TERMINAL, 'This session is a chat: it has no terminal.'), 'agent')).toEqual({ title: 'Not sent', description: NOT_TERMINAL_CHOICE, color: 'warning' })
+    expect(NOT_TERMINAL_CHOICE).toBe('This session runs as a chat now, so your choice was not sent. Press it again, or write your answer in the chat.')
   })
 })

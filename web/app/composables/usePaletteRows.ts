@@ -235,7 +235,7 @@ export function usePaletteRows(ctx: PaletteContext) {
   }
   function answer(s: SessionInfo, i: number, question: string | undefined) {
     const o = s.attention?.options?.[i]
-    if (o) quick.send(s, o.input, { question }).catch((e) => toast.add({ title: `${s.name}: not answered`, description: (e as Error).message, color: 'error' }))
+    if (o) quick.choose(s, o, { question }).catch((e) => toast.add({ title: `${s.name}: not answered`, description: (e as Error).message, color: 'error' }))
   }
   /**
    * Sends a reply line: what became of it (ReplyOutcome, without `left`; a failure by its code, replyOutcomeOf), `left` called as
@@ -436,7 +436,7 @@ export function usePaletteRows(ctx: PaletteContext) {
         answerAll: (i: number) => {
           const o = g.choices[i]
           if (!o) return
-          for (const s of g.sessions) quick.send(s, o.input, { question: s.attention?.id }).catch((e) => toast.add({ title: `${s.name}: not answered`, description: (e as Error).message, color: 'error' }))
+          for (const s of g.sessions) quick.choose(s, o, { question: s.attention?.id }).catch((e) => toast.add({ title: `${s.name}: not answered`, description: (e as Error).message, color: 'error' }))
           toast.add({ title: `Answered ${g.sessions.length}: ${o.label}`, description: names, icon: 'i-lucide-reply-all', color: 'success' })
         },
         run: () => go(`/sessions/${g.sessions[0]!.id}`),
