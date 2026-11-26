@@ -1,8 +1,18 @@
-import type { SessionInfo } from '~/composables/useSessions'
+import type { RunMember, SessionInfo } from '~/composables/useSessions'
 import { isActive } from './attention'
 import { sessionRow } from './sidebar'
 import { rowPrompt } from './sidebarActions'
 import { sessionStatus } from './status'
+
+/**
+ * One tile of a run's wall (RunWall): a member in the run's order with its latest session, or a session of the run the last read did
+ * not know yet (no member).
+ */
+export interface RunWallTile {
+  name: string
+  member?: RunMember
+  session?: SessionInfo
+}
 
 export interface GridLayout {
   cols: number
