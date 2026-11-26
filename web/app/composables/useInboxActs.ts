@@ -1,6 +1,6 @@
 import { isStale } from '~/utils/brakemanCards'
 import { DispatchOrder } from '~/utils/dispatchOrder'
-import { replyFailure, ReplyError, replyOutcomeOf, type ReplyTaken } from '~/utils/reply'
+import { choiceReply, replyFailure, ReplyError, replyOutcomeOf, type ReplyTaken } from '~/utils/reply'
 import { CommandRefused, commandBody, mintCommandId, sendCommand, type Receipt, type TaskCommand } from '~/utils/tasks'
 import {
   answerFailure,
@@ -42,7 +42,7 @@ export interface ActFeedback {
 export type ActsFeedback = Record<string, ActFeedback>
 
 /** A session as an answer needs it: its kind picks the transport (a hosted session's goes through the hosted relay). */
-export type SessionKnown = Pick<SessionInfo, 'id' | 'kind' | 'name'>
+export type SessionKnown = Pick<SessionInfo, 'id' | 'kind' | 'name' | 'way'>
 
 /** How the page's sends go out; each rejects with what the operation's owner said (a ReplyError, a CommandRefused) or the failure. */
 export interface ActSends {
@@ -158,7 +158,9 @@ export class InboxActs {
         }
         sent()
         try {
-          const out = await this.sends.answer(s, text === undefined ? { input: a.input ?? '' } : { text }, { question: a.expect, reqId, sent: () => taken?.('left') })
+          // A choice in a chat is the person's answer in its words, as a typed one is; in a terminal its keys (choiceReply).
+          const what = text === undefined ? choiceReply({ label: a.label, input: a.input ?? '' }, s.way) : { text }
+          const out = await this.sends.answer(s, what, { question: a.expect, reqId, sent: () => taken?.('left') })
           // The field's word (#654): a reply under way from here never left; one taken, or whose word did not come, is sent.
           taken?.(out === 'not_sent' ? 'held' : 'sent')
           if (out === 'not_sent') return { how: 'not_sent', words: NOT_SENT_BUSY }

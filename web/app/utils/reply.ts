@@ -1,6 +1,6 @@
 import { nextTick, ref, watch, type Ref } from 'vue'
 import type { SessionInfo } from '~/composables/useSessions'
-import { ANSWER_DECISION, CONTROL_TOO_LARGE, MAX_ANSWER_REQ_ID, MAX_QUESTION_ID, QUESTION_ANSWERED, TOO_LONG, type AnswerMsg, type Attention } from './protocol'
+import { ANSWER_DECISION, CONTROL_TOO_LARGE, ERR_NOT_TERMINAL, MAX_ANSWER_REQ_ID, MAX_QUESTION_ID, QUESTION_ANSWERED, TOO_LONG, type AnswerMsg, type Attention } from './protocol'
 import { decisionAnsweredBy } from './attention'
 
 /**
@@ -11,6 +11,15 @@ import { decisionAnsweredBy } from './attention'
 export type QuestionReply = ({ question?: string; input: string } | { question?: string; text: string }) & {
   /** The request id the answer goes with, when the caller minted one (the decision page's, fresh per action: its attempt is told apart from the winner's); else the transport's own. */
   reqId?: string
+}
+
+/**
+ * A question's choice pressed (its label, the keys it types), as the reply it is by the way the session runs: in its terminal the
+ * choice's keys, typed as a line as ever; in a chat, which has no terminal, the choice's words as the person's answer, sent as a
+ * typed answer to a question is (docs/protocol.md: a chat refuses keys, `not_terminal`). Every place a choice is offered sends it so.
+ */
+export function choiceReply(o: { label: string; input: string }, way: string | undefined): { input: string } | { text: string } {
+  return way === 'protocol' ? { text: o.label } : { input: o.input }
 }
 
 /** The question a reply to the attention shown names: its id while it waits on input; none otherwise. */
@@ -312,6 +321,9 @@ export function clearAnswered(sessions: Map<string, SessionInfo>, id: string, qu
 }
 
 /** The words a page shows for a reply that did not go (a toast's): `name` the session it was for, where the page lists several. */
+/** A choice's keys refused by a chat (`not_terminal`): the page's own words, which say what to do. */
+export const NOT_TERMINAL_CHOICE = 'This session runs as a chat now, so your choice was not sent. Press it again, or write your answer in the chat.'
+
 /** `line`: the reply was a typed line, which its field keeps (#654): an answered question's toast says so, and how it goes. */
 export function replyFailure(e: unknown, name?: string, line = false): { title: string; description?: string; color: 'warning' | 'error' } {
   const code = (e as { code?: unknown } | null)?.code
@@ -350,6 +362,8 @@ export function replyFailure(e: unknown, name?: string, line = false): { title: 
     }
   }
   if (code === 'not_connected') return { title: 'Not connected', description: 'Reconnect the terminal and try again.', color: 'warning' }
+  // A choice's keys that reached a chat (the session moved to its chat as the choice left): nothing was typed.
+  if (code === ERR_NOT_TERMINAL) return { title: 'Not sent', description: NOT_TERMINAL_CHOICE, color: 'warning' }
   // The line's frame would pass the owner's control bound: nothing was sent, in the owner's own words.
   if (code === TOO_LONG) return { title: 'Not sent', description: CONTROL_TOO_LARGE, color: 'warning' }
   return { title: name ? `Reply to ${name} failed` : 'Reply failed', description: (e as Error | null)?.message, color: 'error' }

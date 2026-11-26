@@ -43,7 +43,8 @@
 //   "question"   a report and a question through Conductor's own tools, as an agent calls them (mcp__conductor__report with a
 //                progress, then mcp__conductor__ask "Shall I go on?"): each a step announced in the stream, the question put to the
 //                session's attention route with the session's own agent token, marked the agent's own (ask), as `conductor mcp`
-//                does; the turn then ends, the question kept, and the person's answer comes as the next message
+//                does; the turn then ends, the question kept, and the person's answer comes as the next message. With the word
+//                "choices" the question is "Pears or plums?" with the choices Pears and Plums, as the tool sends them
 import { spawn } from 'node:child_process'
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -170,7 +171,12 @@ async function conductorTool(name, input, body, result) {
 async function steps(text) {
   if (/\bquestion\b/.test(text)) {
     await conductorTool('report', { event: 'progress', message: 'checked the files' }, { type: 'progress', message: 'checked the files' }, 'reported')
-    await conductorTool('ask', { message: 'Shall I go on?' }, { state: 'needs_input', message: 'Shall I go on?', ask: true }, "asked: the person's answer comes as their next message to you")
+    if (/\bchoices\b/.test(text)) {
+      const options = ['Pears', 'Plums'].map((label) => ({ label, input: `${label}\r` }))
+      await conductorTool('ask', { message: 'Pears or plums?', choices: ['Pears', 'Plums'] }, { state: 'needs_input', message: 'Pears or plums?', ask: true, kind: 'prompt', options }, "asked: the person's answer comes as their next message to you")
+    } else {
+      await conductorTool('ask', { message: 'Shall I go on?' }, { state: 'needs_input', message: 'Shall I go on?', ask: true }, "asked: the person's answer comes as their next message to you")
+    }
   }
   if (/\bsteps\b/.test(text)) {
     const a = toolUse('Bash', { command: 'ls', description: 'List the folder' })

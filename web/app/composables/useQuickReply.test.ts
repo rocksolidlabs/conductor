@@ -26,7 +26,7 @@ beforeEach(() => {
   vi.stubGlobal('useTerminalTransport', () => ({
     create: () => ({
       connect: () => Promise.resolve({ t: 'welcome', role: 'control' }),
-      answer: () => word(),
+      answer: (r: unknown) => (replies.push(r), word()),
       close: () => {},
     }),
   }))
@@ -35,6 +35,9 @@ afterEach(() => vi.unstubAllGlobals())
 
 let n = 0
 const fresh = () => `q${++n}`
+/** What each short connection was asked to answer. */
+let replies: unknown[] = []
+beforeEach(() => (replies = []))
 
 describe("an answer's outcome", () => {
   it("is taken only on the owner's own word", async () => {
@@ -66,6 +69,24 @@ describe("an answer's outcome", () => {
     word = () => Promise.reject(new ReplyError('closed', 'the connection closed before the session said whether it took the reply'))
     const quick = useQuickReply()
     await expect(quick.answer({ id: 's4', kind: 'hosted' }, { input: '1' }, { question: fresh(), reqId: 'd6' })).rejects.toMatchObject({ code: 'closed' })
+  })
+})
+
+describe('a choice pressed', () => {
+  it("goes by the session's way: its keys to a terminal, its words to a chat as the person's answer, kept as this browser's", async () => {
+    const remembered: Array<[string | undefined, string]> = []
+    vi.stubGlobal('useTypedAnswers', () => ({ remember: (q: string | undefined, t: string) => remembered.push([q, t]) }))
+    const quick = useQuickReply()
+    const plums = { label: 'Plums', input: 'Plums\r' }
+    const q1 = fresh()
+    expect(await quick.choose({ id: 't1', kind: 'server' }, plums, { question: q1 })).toBe(true)
+    const q2 = fresh()
+    expect(await quick.choose({ id: 'c1', kind: 'server', way: 'protocol' }, plums, { question: q2 })).toBe(true)
+    expect(replies).toEqual([
+      { input: 'Plums\r', question: q1, reqId: undefined },
+      { text: 'Plums', question: q2, reqId: undefined },
+    ])
+    expect(remembered).toEqual([[q2, 'Plums']])
   })
 })
 

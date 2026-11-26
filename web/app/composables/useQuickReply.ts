@@ -1,6 +1,6 @@
 import { FOLLOW_SIZE, MAX_SUBMIT, NOT_AT_PROMPT_WORDS, type Welcome } from '~/utils/protocol'
 import { sayOutcomeOf, type SayOutcome } from '~/utils/sayWords'
-import { clearAnswered, repliedQuestions, ReplyError, type QuestionReply } from '~/utils/reply'
+import { choiceReply, clearAnswered, repliedQuestions, ReplyError, type QuestionReply } from '~/utils/reply'
 import type { CloseInfo, TerminalTransport } from '~/utils/transport/types'
 import { skipWords } from '~/utils/crews'
 import type { SessionInfo } from './useSessions'
@@ -77,6 +77,14 @@ export function useQuickReply() {
       if ((e as { code?: unknown } | null)?.code === QUESTION_ANSWERED) clearAnswered(store.value.sessions, session.id, reply.question)
       throw e
     }
+  }
+
+  /**
+   * A question's choice pressed (`o`, its label and keys), sent by the way the session runs (choiceReply): its keys in a terminal, its
+   * words as the person's answer in a chat, kept then as this browser's answer, as a typed one is. True when it left.
+   */
+  async function choose(session: Pick<SessionInfo, 'id' | 'kind' | 'way'>, o: { label: string; input: string }, opts: { token?: string; server?: string; question?: string; reqId?: string; sent?: () => void } = {}): Promise<boolean> {
+    return (await answer(session, choiceReply(o, session.way), opts)) !== 'not_sent'
   }
 
   /** `reqId`, when given, is the request id the answer goes with (the decision page mints one per action: its track names it). */
@@ -156,5 +164,5 @@ export function useQuickReply() {
     }
   }
 
-  return { send, reply, answer, say, sending }
+  return { send, reply, answer, choose, say, sending }
 }

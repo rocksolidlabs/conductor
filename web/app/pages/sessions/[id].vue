@@ -9,7 +9,7 @@ import { SESSION_SHORTCUTS, useShortcutsModal } from '~/composables/useShortcuts
 import { firstMessageLine } from '~/utils/launch'
 import { agentName, gonePage, sessionGone, sessionHeadline, type GonePage } from '~/utils/sessions'
 import { sessionStatus, statusOfKey } from '~/utils/status'
-import { listedAttention, repliedQuestions, ReplyError, replyFailure, type QuestionReply, type ReplyOutcome, type ReplyTaken, replyOutcomeOf } from '~/utils/reply'
+import { choiceReply, listedAttention, repliedQuestions, ReplyError, replyFailure, type QuestionReply, type ReplyOutcome, type ReplyTaken, replyOutcomeOf } from '~/utils/reply'
 import { activateTab, toggleCollapse, toggleFold } from '~/utils/editorTabs'
 import { revokeQuestion, stopQuestion } from '~/utils/actions'
 import { resolveTyped } from '~/utils/fileTree'
@@ -112,7 +112,7 @@ function chatRetry(nonce: string) {
 /** A question's choice from the chat: its keys into the session, as the quick reply bar's, naming the question (its line is the question's id). */
 function chatAnswer(m: ChatMessage, index: number) {
   const o = m.options?.[index]
-  if (o) void answerQuestion({ question: m.id, input: o.input })
+  if (o) void answerQuestion({ question: m.id, ...choiceReply(o, way.value) })
 }
 /** Sends a reply to a question over the terminal's connection, once per question; a refusal (answered already, not connected) is said in a toast. */
 const replied = repliedQuestions()
@@ -510,7 +510,8 @@ function reply(text: string, question?: string, taken?: ReplyTaken) {
 function option(index: number, question?: string) {
   const o = attention.value.options?.[index]
   if (!o) return
-  void answerQuestion({ question, input: o.input })
+  // In a chat the choice's words are the answer, as a typed one is; in the terminal its keys, as ever (choiceReply).
+  void answerQuestion({ question, ...choiceReply(o, way.value) })
 }
 
 

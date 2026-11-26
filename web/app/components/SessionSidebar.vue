@@ -191,7 +191,7 @@ function fail(name: string, line = false) {
 }
 function answer(row: SessionRow, i: number, question: string | undefined) {
   const o = row.prompt?.options[i]
-  if (o) quick.send(row.session, o.input, { question }).catch(fail(row.session.name))
+  if (o) quick.choose(row.session, o, { question }).catch(fail(row.session.name))
 }
 /** A line from a row's field: `taken` tells the field what became of it, so that a line not sent stays in it (#654). */
 function reply(row: SessionRow, text: string, question: string | undefined, taken?: ReplyTaken) {

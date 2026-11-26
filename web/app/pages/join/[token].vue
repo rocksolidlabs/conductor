@@ -11,7 +11,7 @@ import { joinServer } from '~/utils/invite'
 import { filesRoot, joinedFromInfo } from '~/utils/joined'
 import { chatThreadKey, scopeItems } from '~/utils/chat'
 import { skipWords, type MemberStatus } from '~/utils/crews'
-import { repliedQuestions, ReplyError, replyFailure, type QuestionReply, type ReplyOutcome, type ReplyTaken, replyOutcomeOf } from '~/utils/reply'
+import { choiceReply, repliedQuestions, ReplyError, replyFailure, type QuestionReply, type ReplyOutcome, type ReplyTaken, replyOutcomeOf } from '~/utils/reply'
 import { DecisionLane, type LaneWire } from '~/utils/transport/decide'
 import { newestRead } from '~/composables/useRunDesk'
 import { sessionStatus } from '~/utils/status'
@@ -269,7 +269,7 @@ function chatRetry(nonce: string) {
 /** A question's choice from the session's chat: its keys into the session, naming the question (its line is the question's id). */
 function chatAnswer(m: ChatMessage, index: number) {
   const o = m.options?.[index]
-  if (o) void answerQuestion({ question: m.id, input: o.input })
+  if (o) void answerQuestion({ question: m.id, ...choiceReply(o, joinWay.value) })
 }
 /** Sends a reply to a question over the terminal's connection, once per question; a refusal (answered already, not connected) is said in a toast. */
 const replied = repliedQuestions()
@@ -434,7 +434,8 @@ function reply(text: string, question?: string, taken?: ReplyTaken) {
 
 function option(index: number, question?: string) {
   const o = attention.value.options?.[index]
-  if (o) void answerQuestion({ question, input: o.input })
+  // In a chat the choice's words are the answer, as a typed one is; in the terminal its keys, as ever (choiceReply).
+  if (o) void answerQuestion({ question, ...choiceReply(o, joinWay.value) })
 }
 
 function requestFile(path: string, stat?: boolean, extra?: FileGetExtra) {
