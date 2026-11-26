@@ -177,6 +177,14 @@ var (
 // not typed. The Brakeman desk's words of such a turn say the same.
 const UnknownScreen = "shows a screen not recognised as its prompt (not its prompt's shape, a dialog's choices, or no readiness)"
 
+// BoxHoldsText is what the run's log says, once in a wait for a member's
+// prompt, of a member whose agent's prompt box may hold text a person
+// typed and did not send (session.ErrBoxHoldsText): its prompt is typed
+// once the box is empty again.
+func BoxHoldsText(member string) string {
+	return member + "'s prompt box holds text: send it or clear it"
+}
+
 // Diff is what a member's worktree adds and removes against the commit it
 // began from, in lines: tracked changes against the base, uncommitted
 // included (DiffStat).
@@ -1758,8 +1766,12 @@ func (e *Engine) launch(ctx context.Context, r *run, m *member) (*session.Local,
 // reported before it never starts the members after m. A session that ends
 // first gets no prompt: m ends, with how its process ended. A Brakeman
 // turn's member is never prompted "anyway": its line waits while its
-// screen is not recognised as its agent's prompt (UnknownScreen). An error
-// means the start failed: ctx ended or the prompt could not be written.
+// screen is not recognised as its agent's prompt (UnknownScreen). Every
+// member's line is typed only into its agent's prompt box empty
+// (session.Submission.EmptyBox, #1142): while the box may hold text a
+// person typed and did not send, it waits, noted once (BoxHoldsText), and
+// is typed alone once the box is empty again. An error means the start
+// failed: ctx ended or the prompt could not be written.
 func (e *Engine) prompt(ctx context.Context, r *run, m *member, local *session.Local) error {
 	return e.promptWith(ctx, r, m, local, typedPrompt(m.def.Prompt, r.goal))
 }
@@ -1784,15 +1796,10 @@ func (e *Engine) promptWith(ctx context.Context, r *run, m *member, local *sessi
 		// waits and is tried again a poll later; the desk ends the turn at
 		// its start bound with the screen's words (notStarted). stop says
 		// the wait ended, with what promptWith returns.
-		noted := false
-		unrecognised := func() (stop bool, err error) {
-			if !noted {
-				noted = true
-				e.mu.Lock()
-				m.state.Unrecognised = true
-				r.note(session.ActivityStatus, "%s %s: its prompt waits", name, UnknownScreen)
-				e.mu.Unlock()
-			}
+		noted, boxNoted := false, false
+		// later waits a poll and says whether the wait ended, with what
+		// promptWith returns.
+		later := func() (stop bool, err error) {
 			select {
 			case <-ctx.Done():
 				return true, ctx.Err()
@@ -1802,6 +1809,32 @@ func (e *Engine) promptWith(ctx context.Context, r *run, m *member, local *sessi
 			case <-time.After(readyPoll):
 			}
 			return false, nil
+		}
+		unrecognised := func() (stop bool, err error) {
+			if !noted {
+				noted = true
+				e.mu.Lock()
+				m.state.Unrecognised = true
+				r.note(session.ActivityStatus, "%s %s: its prompt waits", name, UnknownScreen)
+				e.mu.Unlock()
+			}
+			return later()
+		}
+		// boxHolds holds the line while the agent's prompt box may hold
+		// text (session.Submission.EmptyBox: a word a person typed in
+		// the member's terminal, while its agent loaded or since, and
+		// did not send): the line is typed only into an empty box, never
+		// after the text and entered with it. Noted once in the wait,
+		// as a screen not recognised is, and tried again a poll later:
+		// typed once the person has sent the text or cleared it.
+		boxHolds := func() (stop bool, err error) {
+			if !boxNoted {
+				boxNoted = true
+				e.mu.Lock()
+				r.note(session.ActivityStatus, "%s", BoxHoldsText(name))
+				e.mu.Unlock()
+			}
+			return later()
 		}
 		// One line in the run's log for one question, over every wait
 		// for this prompt (heldLines).
@@ -1852,7 +1885,7 @@ func (e *Engine) promptWith(ctx context.Context, r *run, m *member, local *sessi
 				}
 				continue
 			}
-			res, err = local.Submit(ctx, session.Submission{Text: text, ByName: typedBy, Confirm: true, OnlyAtPrompt: r.class == ClassBrakeman, BeforeEnter: func() {
+			res, err = local.Submit(ctx, session.Submission{Text: text, ByName: typedBy, Confirm: true, OnlyAtPrompt: r.class == ClassBrakeman, EmptyBox: true, BeforeEnter: func() {
 				e.mu.Lock()
 				m.markPrompted()
 				e.mu.Unlock()
@@ -1878,6 +1911,12 @@ func (e *Engine) promptWith(ctx context.Context, r *run, m *member, local *sessi
 			}})
 			if errors.Is(err, session.ErrNotAtPrompt) {
 				if stop, err := unrecognised(); stop {
+					return err
+				}
+				continue
+			}
+			if errors.Is(err, session.ErrBoxHoldsText) {
+				if stop, err := boxHolds(); stop {
 					return err
 				}
 				continue
