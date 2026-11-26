@@ -56,7 +56,7 @@ const plan: { it: InboxItem; a: InboxAction } = {
 
 /** The page's sends, each a held promise the test settles, with what each was called with. */
 function sendsOf(o: { listed?: SessionKnown[]; read?: (id: string) => Promise<SessionKnown> } = {}) {
-  const calls: { answer: Array<{ s: SessionKnown; reqId: string }>; command: string[]; recheck: Array<{ run: string; task: string; attempt: number; commit: string; expectedRevision?: number; commandId: string }>; plan: string[] } = {
+  const calls: { answer: Array<{ s: SessionKnown; reqId: string; what?: { input: string } | { text: string } }>; command: string[]; recheck: Array<{ run: string; task: string; attempt: number; commit: string; expectedRevision?: number; commandId: string }>; plan: string[] } = {
     answer: [],
     command: [],
     recheck: [],
@@ -65,8 +65,8 @@ function sendsOf(o: { listed?: SessionKnown[]; read?: (id: string) => Promise<Se
   let next: ReturnType<typeof held<unknown>> = held()
   const sends: ActSends = {
     session: (id) => sessionFor(o.listed ?? [{ id: 's1', kind: 'server', name: 'one' }], id, o.read ?? (() => Promise.reject(new Error('no such session')))),
-    answer: (s, _what, x) => {
-      calls.answer.push({ s, reqId: x.reqId })
+    answer: (s, what, x) => {
+      calls.answer.push({ s, reqId: x.reqId, what })
       return next.p as Promise<AnswerOutcome>
     },
     command: (_run, _task, _name, x) => {
@@ -342,6 +342,28 @@ describe('a Check again (#713)', () => {
       expect(await taskMovedOn(task.it, task.a, read)).toBe('The run moved on (revision 9 now, the choice was read at 7): build is failed now. Nothing was done.')
       expect(asked).toEqual({ runs: ['r1'], items: [] })
     })
+  })
+})
+
+describe("an answer's choice", () => {
+  it("goes by the session's way: its keys to a session in its terminal, its words to a chat as the person's answer", async () => {
+    const pg = await page({ listed: [{ id: 's1', kind: 'server', name: 'one' }, { id: 'c1', kind: 'server', name: 'chat', way: 'protocol' }] })
+    pg.s.hold()
+    const t = question('question:s1/q1')
+    const out = pg.acts.act(t.it, t.a)
+    await settle()
+    pg.s.reply.done('taken')
+    await out
+    pg.s.hold()
+    const c = question('question:c1/q2')
+    const chat = pg.acts.act(c.it, c.a)
+    await settle()
+    pg.s.reply.done('taken')
+    await chat
+    expect(pg.s.calls.answer.map((x) => [x.s.id, x.what])).toEqual([
+      ['s1', { input: '1' }],
+      ['c1', { text: 'Postgres' }],
+    ])
   })
 })
 

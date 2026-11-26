@@ -46,6 +46,17 @@ describe('decideOf', () => {
     const approve: InboxAction = { name: 'approve', label: 'Approve', expect: '3', ticketRev: 9, scope: 'Approves', route: 'POST /api/dispatch/plans/p/approve' }
     expect(decideOf({ ref: 'plan:CND-1/2' }, approve, 'op-4')).toMatchObject({ revision: '3', ticketRev: 9 })
   })
+  it("choiceByWay: a question's choice is its keys for a session in its terminal, and its words as the answer's line in a chat", () => {
+    const plums: InboxAction = { name: 'answer', label: 'Plums', input: 'Plums\r', expect: 'q-1', scope: 'Types Plums', route: '/ws/sessions/s' }
+    expect(decideOf({ ref: 'question:s/q-1' }, plums, 'op-5', undefined, 'terminal')).toEqual({ ref: 'question:s/q-1', action: 'answer', revision: 'q-1', input: 'Plums\r', opId: 'op-5' })
+    expect(decideOf({ ref: 'question:s/q-1' }, plums, 'op-5')).toMatchObject({ input: 'Plums\r' })
+    expect(decideOf({ ref: 'question:s/q-1' }, plums, 'op-6', undefined, 'protocol')).toEqual({ ref: 'question:s/q-1', action: 'answer', revision: 'q-1', text: 'Plums', opId: 'op-6' })
+    // A line is the person's own words in either way; a command is never an answer's text.
+    const line: InboxAction = { name: 'answer', label: 'Reply with a line', text: true, expect: 'q-1', scope: 'Types a line', route: '/ws/sessions/s' }
+    expect(decideOf({ ref: 'question:s/q-1' }, line, 'op-7', 'mine', 'protocol')).toMatchObject({ text: 'mine' })
+    const retry: InboxAction = { name: 'retry', label: 'Retry', expect: '12', scope: 'Starts attempt 4', route: 'POST /api/runs/r/tasks/build/retry' }
+    expect(decideOf({ ref: 'task:r/build' }, retry, 'op-8', undefined, 'protocol')).not.toHaveProperty('text')
+  })
 })
 
 describe('the lane client', () => {
