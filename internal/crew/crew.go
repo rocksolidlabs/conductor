@@ -75,6 +75,15 @@ const (
 	IsolationWorktree = "worktree" // every member gets a git worktree of Cwd
 )
 
+// How a crew's members run their agents (Crew.Way): WayChat, as a chat
+// over the agent's own structured interface; absent, in their terminals.
+const WayChat = "chat"
+
+// How a member's session is launched to run (LaunchSpec.Way): WayProtocol
+// for a member of a Chat run whose agent and Runtime can, "" in its
+// terminal.
+const WayProtocol = "protocol"
+
 // ErrInvalid is matched (errors.Is) by every error that says a crew breaks a
 // rule: from Validate, CheckAgents and the store's checks. The API answers it
 // with 400 invalid_crew.
@@ -203,7 +212,15 @@ type Crew struct {
 	// Yolo overrides the server's yolo default for the crew's runs: nil
 	// follows it, false launches every member without its agent's yolo
 	// recipe, true with it. A launch fixes the choice on the run.
-	Yolo    *bool    `json:"yolo,omitempty"`
+	Yolo *bool `json:"yolo,omitempty"`
+	// Way is how the crew's members run their agents (WayChat), absent
+	// for Terminal, which every crew saved before it is: a launch fixes it
+	// on the run, and the crew as launched, which the ledger keeps with
+	// the run, carries it, so a continued or recovered run keeps its way.
+	// A member runs as a chat only where its agent's installed version can
+	// and its run's Runtime has pipes (LaunchSpec.Way); otherwise in its
+	// terminal, the run's log saying why.
+	Way     string   `json:"way,omitempty"`
 	Members []Member `json:"members"`
 	// People are the persons who own the crew's decisions and its tasks'
 	// outcomes (people.go): local labels, a list of their own so that no
@@ -355,6 +372,9 @@ func (c Crew) Validate() error {
 	}
 	if c.Isolation != IsolationNone && c.Isolation != IsolationWorktree {
 		return invalidf("isolation %s must be %q or %q", quote(c.Isolation), IsolationNone, IsolationWorktree)
+	}
+	if c.Way != "" && c.Way != WayChat {
+		return invalidf("way %s must be %q or absent", quote(c.Way), WayChat)
 	}
 	if c.ViewLinkTTLSeconds < 0 || c.ViewLinkTTLSeconds > maxLinkTTL {
 		return invalidf("viewLinkTtlSeconds must be between 0 and %d", maxLinkTTL)

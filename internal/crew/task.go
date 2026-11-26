@@ -2438,7 +2438,7 @@ func (e *Engine) dispatch(ctx context.Context, r *run, a *attempt) {
 	// manifest, the tree's own names and the env names the server
 	// approved for it.
 	spec := LaunchSpec{AgentID: m.def.AgentID, Name: fmt.Sprintf("%s · %s #%d", m.def.Name, t.def.ID, a.n), Cwd: cwd, Args: slices.Clone(m.def.Args),
-		Env: map[string]string{"GOAL": r.goal}, Ref: r.crewRef(m, t.def.ID, a.n), Yolo: r.yolo, Reservation: res,
+		Env: map[string]string{"GOAL": r.goal}, Ref: r.crewRef(m, t.def.ID, a.n), Yolo: r.yolo, Way: e.launchWay(ctx, r, m, t.def.ID, a.n), Reservation: res,
 		Where: r.rt.Where(), Account: m.def.boundAccount(), Model: m.def.Model}
 	if tr != nil {
 		spec.Inject, spec.Allow = tr.names(), slices.Clone(tr.allow)
@@ -2573,7 +2573,7 @@ func treeHasPath(ctx context.Context, repo, commit, path string) (bool, error) {
 // managedActivity takes a member's done or handoff in a managed run: a
 // done finishes nothing (a reminder is typed once per attempt when it came
 // with no result); a handoff is noted, never typed. The caller holds e.mu.
-func (e *Engine) managedActivity(r *run, sm sessionMember, entry session.ActivityEntry, isHandoff bool) {
+func (e *Engine) managedActivity(r *run, sm sessionMember, entry session.ActivityEntry, isHandoff bool, kind string) {
 	a := sm.a
 	if isHandoff {
 		// A handoff is a message to the member it names (messages.go),
@@ -2600,7 +2600,9 @@ func (e *Engine) managedActivity(r *run, sm sessionMember, entry session.Activit
 		e.turnEnded(r, a, d, entry.At)
 		return
 	}
-	if a.reminded {
+	if a.reminded || kind == session.KindInterrupted {
+		// Reminded once already, or a turn a person stopped (a chat's
+		// interrupt), which is no done of the agent's.
 		return
 	}
 	l, ok := e.lookup(a.sessionID)
@@ -2616,9 +2618,30 @@ func (e *Engine) managedActivity(r *run, sm sessionMember, entry session.Activit
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), stopTimeout)
 		defer cancel()
-		res, _ := l.Submit(ctx, session.Submission{Text: line, ByName: typedBy, UnlessWaiting: true})
+		sub := session.Submission{Text: line, ByName: typedBy, UnlessWaiting: true}
+		chat := inChat(l)
+		if chat {
+			// A chat's reminder, sent and taken by its agent or not: never
+			// sent again, told once it ends. A terminal's is told as main
+			// tells it, below.
+			sub.Finished = func(res session.SubmitResult, err error) {
+				e.mu.Lock()
+				defer e.mu.Unlock()
+				switch {
+				case res.Entered:
+					r.note(session.ActivityStatus, "task %s: %s reports done without a result; reminded once", a.t.def.ID, member)
+				case res.Unconfirmed:
+					r.note(session.ActivityStatus, "task %s: %s reports done without a result; reminded once, its agent not confirming it", a.t.def.ID, member)
+				}
+			}
+		}
+		res, err := l.Submit(ctx, sub)
 		e.mu.Lock()
 		defer e.mu.Unlock()
+		if errors.Is(err, session.ErrSubmitPending) && chat {
+			// Sent into its chat: it stays reminded, told once it ends.
+			return
+		}
 		if res.Typed {
 			r.note(session.ActivityStatus, "task %s: %s reports done without a result; reminded once", a.t.def.ID, member)
 			return
@@ -2655,7 +2678,15 @@ func (e *Engine) managedEnded(r *run, a *attempt) {
 			return tx{}
 		}
 		stage := a.state
-		e.closeAttempt(r, a, ledger.AttemptFailed, stage, "the session ended before a result was submitted")
+		why := "the session ended before a result was submitted"
+		if l, ok := e.lookup(a.sessionID); ok {
+			if words := l.MoveEndWords(); words != "" {
+				// A member's move to its chat neither way of which started
+				// (design 14): both failures' words.
+				why = words
+			}
+		}
+		e.closeAttempt(r, a, ledger.AttemptFailed, stage, why)
 		if a.stage == stageDecision {
 			// Given back while it waits: attempt.waited is its event.
 			return tx{}

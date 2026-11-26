@@ -79,8 +79,10 @@ type Options struct {
 	// order: implementations must be safe for concurrent use, and must take
 	// the state from here, never from Info, which may have moved on. An entry
 	// the event bucket drops never reaches it; the attention entry of an
-	// attention change the session applied always does.
-	OnActivity func(sessionID string, e ActivityEntry, state AttentionState)
+	// attention change the session applied always does. kind is that
+	// change's attention kind (KindDone, KindInterrupted, ...; "" for every
+	// other entry): an interrupted turn's done is told by it alone.
+	OnActivity func(sessionID string, e ActivityEntry, state AttentionState, kind string)
 	// OnChat is called (outside the session lock) with the session ID and a
 	// chat message as kept: a post, a join or leave line, a sent-to-agent
 	// marker. The same contract as OnActivity: it runs on the posting
@@ -153,6 +155,13 @@ type Options struct {
 	// not match (startupLine). A server's own session and a hosted one
 	// whose host was sent the shape set it alike (agents.Watch.Apply).
 	PromptShape *regexp.Regexp
+	// MemberWay is the way a crew member's session was launched to run
+	// (crew.LaunchSpec.Way: WayProtocol, or "" for its terminal), and
+	// MemberResumes says its launch resumed a conversation. The engine's
+	// move of a member to its chat is refused for any other session
+	// (MoveFresh, MoveResumed).
+	MemberWay     string
+	MemberResumes bool
 	// Questions are the agent's other startup questions (the catalog's
 	// questions; round 13, G2c), held exactly as the trust question is:
 	// source "trust", their answers the choices, typed text refused while
@@ -486,6 +495,14 @@ type Local struct {
 	// the program's text (PersonTyped), once (personOnce).
 	personTyped chan struct{}
 	personOnce  sync.Once
+	// typedText is set once a person's text is written into the terminal
+	// of a crew member launched to run as a chat, whatever its screen
+	// showed (keys that only answer or move within a dialog, and keys while
+	// a startup question shows, are none), and submitted once any
+	// submission's text is written: the member's move to its chat is
+	// refused after either (MoveFresh). Only such a member keeps typedText.
+	typedText atomic.Bool
+	submitted atomic.Bool
 	// endedTurn is the agent's name for the last turn whose end was
 	// recorded (a done whose report named its turn): a done naming it
 	// again is the same report, however much has happened since, and a
@@ -627,8 +644,14 @@ type Local struct {
 	// movedWith is what the last move to the chat moved with: the way a
 	// chat goes back to its terminal by itself (a signed-out agent,
 	// readProtocol). Under mu.
-	moveCancel  context.CancelFunc
-	movedWith   MoveStarts
+	moveCancel context.CancelFunc
+	movedWith  MoveStarts
+	// lastMoveWhy is the sentence of the last move that went back or
+	// ended (move, endMove), read by the member's move (moveMember), and
+	// endedByMove the words of a move that ended the session
+	// (MoveEndWords). Guarded by mu.
+	lastMoveWhy string
+	endedByMove string
 	noted       string
 	notedWhy    string
 	notedStarts MoveStarts
@@ -952,7 +975,7 @@ func (s *Local) markEnded(status Status) {
 // to Record comes from outside the session and is limited like an event,
 // although nothing records one that way today.
 func (s *Local) Record(e ActivityEntry) bool {
-	return s.record(e, bucketed(e.Type), "")
+	return s.record(e, bucketed(e.Type), "", "")
 }
 
 // RecordServer records an entry the server makes itself, of an action it
@@ -960,23 +983,24 @@ func (s *Local) Record(e ActivityEntry) bool {
 // without asking the event bucket: the action has happened, and a burst of
 // the agent's reports must not drop the entry that says so.
 func (s *Local) RecordServer(e ActivityEntry) {
-	s.record(e, false, "")
+	s.record(e, false, "", "")
 }
 
 // recordOwn records an entry the session makes itself without asking the
 // event bucket, whatever its type, and hands OnActivity the attention state
-// it records. It records the attention entry of an attention change the
+// and kind it records. It records the attention entry of an attention change the
 // session has applied, which must not be dropped while the state it records
 // is showing: a report from outside paid its token before the change
 // (TrySetAttentionFull), and what the session observes itself (the bell, OSC
 // notifications, the screen pattern) is held to its own pace and spends none.
-func (s *Local) recordOwn(e ActivityEntry, state AttentionState) {
-	s.record(e, false, state)
+func (s *Local) recordOwn(e ActivityEntry, state AttentionState, kind string) {
+	s.record(e, false, state, kind)
 }
 
 // record is Record, with limited saying whether the entry spends a token of
-// the event bucket, and state what OnActivity is told the entry records.
-func (s *Local) record(e ActivityEntry, limited bool, state AttentionState) bool {
+// the event bucket, and state and kind what OnActivity is told the entry
+// records.
+func (s *Local) record(e ActivityEntry, limited bool, state AttentionState, kind string) bool {
 	s.mu.Lock()
 	if limited && !s.events.Take(time.Now()) {
 		log := s.log
@@ -1013,7 +1037,7 @@ func (s *Local) record(e ActivityEntry, limited bool, state AttentionState) bool
 		s.gitSeenPoke()
 	}
 	if s.opts.OnActivity != nil {
-		s.opts.OnActivity(id, e, state)
+		s.opts.OnActivity(id, e, state, kind)
 	}
 	return true
 }
@@ -2548,7 +2572,7 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 			if label == "" {
 				label = string(state)
 			}
-			s.recordOwn(ActivityEntry{Type: ActivityAttention, Message: label}, state)
+			s.recordOwn(ActivityEntry{Type: ActivityAttention, Message: label}, state, kind)
 		}
 		return nil
 	}
@@ -2588,14 +2612,14 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 		if label == "" {
 			label = string(state)
 		}
-		s.recordOwn(ActivityEntry{At: now, Type: ActivityAttention, Message: label}, AttentionDone)
+		s.recordOwn(ActivityEntry{At: now, Type: ActivityAttention, Message: label}, AttentionDone, kind)
 		if !ownShown {
 			// Shown again, it has its entry, as any state that shows.
 			label = own.Message
 			if label == "" {
 				label = string(AttentionNeedsInput)
 			}
-			s.recordOwn(ActivityEntry{At: now, Type: ActivityAttention, Message: label}, AttentionNeedsInput)
+			s.recordOwn(ActivityEntry{At: now, Type: ActivityAttention, Message: label}, AttentionNeedsInput, own.Kind)
 			s.notifyChange()
 		}
 		return nil
@@ -2717,7 +2741,7 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 			if label == "" {
 				label = string(state)
 			}
-			s.recordOwn(ActivityEntry{At: now, Type: ActivityAttention, Message: label}, state)
+			s.recordOwn(ActivityEntry{At: now, Type: ActivityAttention, Message: label}, state, kind)
 			return nil
 		}
 	}
@@ -2846,7 +2870,7 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 		if label == "" {
 			label = string(state)
 		}
-		s.recordOwn(ActivityEntry{At: *att.Since, Type: ActivityAttention, Message: label}, state)
+		s.recordOwn(ActivityEntry{At: *att.Since, Type: ActivityAttention, Message: label}, state, att.Kind)
 	}
 	s.notifyChange()
 	return nil
@@ -3663,6 +3687,34 @@ func (s *Local) input(ctx context.Context, who typist, question string, data []b
 			return nil
 		}
 	}
+	// memberTyped, set by before, says the keys are a person's text in a
+	// crew member's terminal (Options.MemberWay): last marks it as they are
+	// written.
+	var memberTyped bool
+	if s.opts.MemberWay == WayProtocol {
+		// A crew member's keys, the last thing asked before they are
+		// written, under the lock its move begins under (moveMember): once
+		// the move has begun they are refused (ErrMoving), never written
+		// into a terminal about to be stopped; before it, a person's text is
+		// marked, and the move is refused.
+		prior := o.last
+		o.last = func() error {
+			if prior != nil {
+				if err := prior(); err != nil {
+					return err
+				}
+			}
+			s.mu.Lock()
+			defer s.mu.Unlock()
+			if s.moveDone != nil {
+				return ErrMoving
+			}
+			if memberTyped {
+				s.typedText.Store(true)
+			}
+			return nil
+		}
+	}
 	o.before = func() {
 		// The keys the program reads from the write, a paste or an escape
 		// sequence a write before it left unfinished carried in.
@@ -3748,6 +3800,16 @@ func (s *Local) input(ctx context.Context, who typist, question string, data []b
 			// a launch's first message, still waiting, is theirs to type
 			// now (PersonTyped).
 			s.notePersonTyped()
+		}
+		if typed && !quiet && question == "" && !isTerminalReport(data) && s.opts.MemberWay == WayProtocol && !dialogKeys(maybe) &&
+			!startup && !(shown.State == AttentionNeedsInput && shown.Source == SourceTrust) {
+			// A person's text in a crew member's terminal, whatever its
+			// screen shows (the agent may show it in its prompt once drawn):
+			// its move to its chat is refused from now on (MoveFresh),
+			// marked by last as the keys are written. Keys that only answer
+			// or move within a dialog, and keys while a startup question
+			// shows, do not count.
+			memberTyped = true
 		}
 		// A reply's keys to the startup question shown (claimed as the
 		// writer took them): its screen goes behind as a sure answer's does.
@@ -4636,10 +4698,10 @@ func (s *Local) recordStatusReconciled() {
 	}
 	switch att.State {
 	case AttentionNeedsInput:
-		s.recordOwn(ActivityEntry{Type: ActivityAttention, Message: att.Message}, AttentionNeedsInput)
+		s.recordOwn(ActivityEntry{Type: ActivityAttention, Message: att.Message}, AttentionNeedsInput, att.Kind)
 	case AttentionWorking:
 		// Labelled as a working change is (setAttentionLooked): by its state.
-		s.recordOwn(ActivityEntry{Type: ActivityAttention, Message: string(AttentionWorking)}, AttentionWorking)
+		s.recordOwn(ActivityEntry{Type: ActivityAttention, Message: string(AttentionWorking)}, AttentionWorking, att.Kind)
 	}
 }
 

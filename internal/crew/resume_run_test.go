@@ -267,7 +267,7 @@ func TestAResumedMemberIsRunningOnceItsSessionIsReady(t *testing.T) {
 	}
 	// A handoff to lead meanwhile: queued, nothing typed.
 	qa, _ := fl.member("qa")
-	e.OnActivity(qa.Info().ID, handoffEntry("lead", "over to you"), "")
+	e.OnActivity(qa.Info().ID, handoffEntry("lead", "over to you"), "", "")
 	time.Sleep(100 * time.Millisecond)
 	_, p2 := fl.member("lead")
 	if w := typed(p2); len(w) != 0 {

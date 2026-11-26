@@ -350,9 +350,9 @@ func (s *Server) recordHooks(rc *recorder, o *session.Options) {
 		}
 		s.deliver(rc.in.ID(), nil, func() { s.reconcile(rc) })
 	}
-	o.OnActivity = func(id string, e session.ActivityEntry, st session.AttentionState) {
+	o.OnActivity = func(id string, e session.ActivityEntry, st session.AttentionState, kind string) {
 		if activity != nil {
-			activity(id, e, st)
+			activity(id, e, st, kind)
 		}
 		s.deliver(rc.in.ID(), e, func() { s.recordActivity(rc, e) })
 	}

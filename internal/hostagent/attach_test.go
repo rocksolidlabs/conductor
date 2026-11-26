@@ -23,7 +23,7 @@ func newJoinGate() *joinGate {
 	return &joinGate{held: make(chan struct{}), release: make(chan struct{})}
 }
 
-func (g *joinGate) hook(_ string, e session.ActivityEntry, _ session.AttentionState) {
+func (g *joinGate) hook(_ string, e session.ActivityEntry, _ session.AttentionState, _ string) {
 	if e.Type != session.ActivityJoin {
 		return
 	}

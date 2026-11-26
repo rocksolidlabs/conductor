@@ -27,7 +27,7 @@ const (
 	MovesToTerminalWords = "Moves to the terminal when this turn ends."
 	RequestWaitsWords    = "A request is waiting for an answer."
 	BackgroundWords      = "Background work is still running."
-	CrewStaysWords       = "Crew members stay in their terminals."
+	CrewStaysWords       = "A crew member's way is its run's."
 	CannotMoveWords      = "This agent cannot move its conversation yet."
 	HostedStaysWords     = "Sessions on another machine stay in their terminal."
 	MovingWords          = "The session is moving; try again in a moment."
@@ -81,6 +81,9 @@ type MoveStarts struct {
 	// AfterOldExit, a test's seam, runs once the old process has exited and
 	// its group's end is proven, before the new one starts.
 	AfterOldExit func()
+	// ReadyCap bounds a chat's start, its driver's Begin
+	// (protocolReadyCap when 0): a test's seam.
+	ReadyCap time.Duration
 }
 
 // Grouped is a process that knows its process group, as its Runtime
@@ -303,6 +306,7 @@ func (s *Local) move(from, to string, m MoveStarts, cause string) {
 		s.moveDone, s.moveCancel = nil, nil
 		if !ended && !s.info.Status.Ended() {
 			s.hub.Broadcast(s.wayFrameLocked(why))
+			s.lastMoveWhy = why
 		}
 		p := s.way.Load()
 		s.mu.Unlock()
@@ -353,7 +357,7 @@ func (s *Local) move(from, to string, m MoveStarts, cause string) {
 		endStopped()
 		return
 	}
-	left, err := s.startWay(ctx, to, m)
+	left, err := s.startWay(ctx, to, m, false)
 	if err == nil {
 		if to == WayProtocol {
 			// Kept for the way back the chat may take by itself (a
@@ -387,7 +391,7 @@ func (s *Local) move(from, to string, m MoveStarts, cause string) {
 		endStopped()
 		return
 	}
-	if _, err := s.startWay(ctx, from, m); err != nil {
+	if _, err := s.startWay(ctx, from, m, false); err != nil {
 		s.log.Warn("the way back did not start either", "to", from, "err", err)
 		if stopped() {
 			endStopped()
@@ -399,6 +403,21 @@ func (s *Local) move(from, to string, m MoveStarts, cause string) {
 	}
 	why = first
 	s.moved(from, first)
+}
+
+// MoveEndWords is the words of a move neither way of which started, which
+// ended the session (endMove): both failures'; "" for any other session.
+func (s *Local) MoveEndWords() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.endedByMove
+}
+
+// noteMoveWhy keeps why for the member's move (lastMoveWhy).
+func (s *Local) noteMoveWhy(why string) {
+	s.mu.Lock()
+	s.lastMoveWhy = why
+	s.mu.Unlock()
 }
 
 // proveGone proves a stopped process's group gone (MoveStarts.Gone), within
@@ -531,15 +550,21 @@ func (s *Local) leaveProtocol(ctx context.Context) (int, error) {
 
 // startWay starts the way to on the conversation as it stands now, within
 // the move's ctx (a Stop cancels it). A chat's start that failed answers its
-// child's group, to be proven gone before the way back.
-func (s *Local) startWay(mctx context.Context, to string, m MoveStarts) (int, error) {
+// child's group, to be proven gone before the way back. fresh, for a
+// terminal, starts its startup watch again (a crew member's terminal
+// started afresh: MoveFresh).
+func (s *Local) startWay(mctx context.Context, to string, m MoveStarts, fresh bool) (int, error) {
 	s.mu.Lock()
 	conv := ""
 	if s.info.AgentSession != nil {
 		conv = s.info.AgentSession.ID
 	}
 	s.mu.Unlock()
-	ctx, cancel := context.WithTimeout(mctx, protocolReadyCap)
+	readyCap := protocolReadyCap
+	if m.ReadyCap > 0 {
+		readyCap = m.ReadyCap
+	}
+	ctx, cancel := context.WithTimeout(mctx, readyCap)
 	defer cancel()
 	if to == WayProtocol {
 		s.mu.Lock()
@@ -581,6 +606,17 @@ func (s *Local) startWay(mctx context.Context, to string, m MoveStarts) (int, er
 		return groupOf(term), ErrSessionEnded
 	}
 	s.renewTerminalLocked()
+	if fresh {
+		// A terminal started afresh asks its startup questions again: the
+		// watch of them starts over, with no memory of what the terminal
+		// before answered, so that a question asked afresh is held afresh.
+		if s.trust != nil {
+			s.trust.Renew(int(s.info.Cols), int(s.info.Rows))
+		}
+		s.startupAnswered, s.startupAnsweredAt = false, 0
+		s.startupAnsweredWords, s.startupAnsweredFed = "", 0
+		s.heldAnswer = heldStartup{}
+	}
 	s.way.Store(nil)
 	s.startTerminal(term)
 	s.mu.Unlock()
@@ -641,6 +677,10 @@ func (s *Local) endMove(first, second string) {
 	if second != "" {
 		words = first + " " + second
 	}
+	s.noteMoveWhy(words)
+	s.mu.Lock()
+	s.endedByMove = words
+	s.mu.Unlock()
 	var out applied
 	out.event = "move_failed"
 	s.mu.Lock()

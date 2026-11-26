@@ -170,7 +170,7 @@ type activityRecorder struct {
 	states []session.AttentionState
 }
 
-func (r *activityRecorder) hook(id string, e session.ActivityEntry, state session.AttentionState) {
+func (r *activityRecorder) hook(id string, e session.ActivityEntry, state session.AttentionState, _ string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.ids = append(r.ids, id)

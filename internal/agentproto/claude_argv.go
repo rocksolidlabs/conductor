@@ -83,8 +83,18 @@ type ClaudeLaunch struct {
 	Command []string
 	// Protocol is the catalog's protocol recipe's arguments.
 	Protocol []string
-	// Conversation is the agent's conversation id, resumed.
+	// Conversation is the agent's conversation id, resumed; with Fresh, the
+	// new conversation's id Fresh names.
 	Conversation string
+	// Fresh, for a crew member's chat moved at its terminal's prompt
+	// (design 14), is the session recipe's StartArgs on a new conversation
+	// id, in the place of --resume: the terminal's id, which holds no
+	// turn, is never resumed.
+	Fresh []string
+	// Member says the chat is a crew member's: one that is not yolo is
+	// started with no --permission-mode of Conductor's choosing, and takes
+	// the person's own default mode as its terminal does (design 14).
+	Member bool
 	// Model is the model flag the terminal was started with ("--model=x"),
 	// none for the agent's own default.
 	Model []string
@@ -110,8 +120,9 @@ type ClaudeLaunch struct {
 // ClaudeArgs is the argv of a chat's child of Claude Code, every element
 // as design 4 of the plan lists it, never a shell string: the catalog's
 // command, print mode with stream-json, the protocol's arguments, the
-// resumed conversation, the model, the permission mode (or the yolo
-// arguments), the terminal's arguments, Conductor's MCP server alone
+// resumed conversation (or, for a crew member's chat, the recipe's start
+// on a new one), the model, the permission mode (or the yolo arguments;
+// none for a crew member that is not yolo), the terminal's arguments, Conductor's MCP server alone
 // (--strict-mcp-config, always: the child loads no tool server but the one
 // named here, and none when the server's MCP is off; the person's own tool
 // servers and a folder's stay with the session's terminal) and, with a
@@ -132,7 +143,7 @@ func ClaudeArgs(l ClaudeLaunch) ([]string, error) {
 	if !filepath.IsAbs(l.HooksDir) {
 		return nil, fmt.Errorf("agentproto: the hooks directory %q is not absolute", l.HooksDir)
 	}
-	for _, set := range [][]string{l.Command[1:], l.Protocol, l.Model, l.YoloArgs, l.LaunchArgs} {
+	for _, set := range [][]string{l.Command[1:], l.Protocol, l.Fresh, l.Model, l.YoloArgs, l.LaunchArgs} {
 		if addedFolder(set) {
 			return nil, ErrAddedFolder
 		}
@@ -146,11 +157,18 @@ func ClaudeArgs(l ClaudeLaunch) ([]string, error) {
 	argv = append(argv, l.Command...)
 	argv = append(argv, claudeStreamArgs...)
 	argv = append(argv, l.Protocol...)
-	argv = append(argv, "--resume", l.Conversation)
-	argv = append(argv, l.Model...)
-	if l.Yolo && len(l.YoloArgs) > 0 {
-		argv = append(argv, l.YoloArgs...)
+	if len(l.Fresh) > 0 {
+		argv = append(argv, l.Fresh...)
 	} else {
+		argv = append(argv, "--resume", l.Conversation)
+	}
+	argv = append(argv, l.Model...)
+	switch {
+	case l.Yolo && len(l.YoloArgs) > 0:
+		argv = append(argv, l.YoloArgs...)
+	case l.Member:
+		// A crew member's chat takes the mode its settings give it.
+	default:
 		argv = append(argv, "--permission-mode", "default")
 	}
 	argv = append(argv, l.LaunchArgs...)

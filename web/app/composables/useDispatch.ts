@@ -644,6 +644,8 @@ export interface PlanCrew {
   name: string
   cwd?: string
   yolo?: boolean
+  /** How its members run: `chat`, or missing for their terminals. */
+  way?: 'chat'
   updatedAt?: string
   members?: Array<{ name: string; agentId: string; args?: string[]; account?: string; model?: string }>
   tasks?: Array<{ id: string; member: string; kind: 'work' | 'review'; needs?: string[]; checks?: CrewCheck[]; owner?: string }>

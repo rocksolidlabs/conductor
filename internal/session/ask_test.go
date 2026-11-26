@@ -26,7 +26,7 @@ type ownLog struct {
 	got []string
 }
 
-func (l *ownLog) hook(_ string, e ActivityEntry, st AttentionState) {
+func (l *ownLog) hook(_ string, e ActivityEntry, st AttentionState, _ string) {
 	if e.Type != ActivityAttention {
 		return
 	}

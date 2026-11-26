@@ -82,12 +82,16 @@ func chatEnv(env []string) []string {
 }
 
 // keepChatLaunch keeps what a session's chat's child starts from, for an
-// agent whose catalog entry declares a protocol Conductor speaks.
-func (s *Server) keepChatLaunch(id string, l chatLaunch) {
+// agent whose catalog entry declares a protocol Conductor speaks;
+// qualified, for a crew member launched to run as a chat, says its
+// launch's check qualified the agent's version, which is its chat's gate
+// from then on: the move never probes again.
+func (s *Server) keepChatLaunch(id string, l chatLaunch, qualified bool) {
 	if l.agent.Protocol.Off() || agentproto.Check(l.agent.Protocol) != nil {
 		return
 	}
 	l.gate = &chatGate{}
+	l.gate.qualified.Store(qualified)
 	s.chatLaunches.Store(id, &l)
 }
 
@@ -106,6 +110,12 @@ func (s *Server) forgetChatLaunch(id string) { s.chatLaunches.Delete(id) }
 // made a chat's (chatEnv), under the start's context alone. The driver's
 // restart past its input's bound is the session's RestartProtocol.
 func (s *Server) chatStart(local *session.Local) (session.ProtocolStart, error) {
+	return s.chatStartWith(local, chatArgv)
+}
+
+// chatStartWith is chatStart with the child's argv built by argvFor: a
+// person's chat's (chatArgv) or a crew member's (memberChatArgv).
+func (s *Server) chatStartWith(local *session.Local, argvFor func(l *chatLaunch, conversation, hooks string, mcp bool) ([]string, error)) (session.ProtocolStart, error) {
 	v, ok := s.chatLaunches.Load(local.Info().ID)
 	if !ok {
 		return nil, errNoChat
@@ -142,7 +152,7 @@ func (s *Server) chatStart(local *session.Local) (session.ProtocolStart, error) 
 			}
 			l.gate.qualified.Store(true)
 		}
-		argv, err := chatArgv(l, conversation, hooks, mcp)
+		argv, err := argvFor(l, conversation, hooks, mcp)
 		if err != nil {
 			return nil, nil, err
 		}

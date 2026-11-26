@@ -661,6 +661,11 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 				}
 			}
 		}
+		// Any submission's text written: a crew member's move to its chat
+		// is refused from now on (MoveFresh). Set as the write is asked,
+		// before the writer's guards: a line refused there counts too, the
+		// safer mistake.
+		s.submitted.Store(true)
 		landed, err := s.writeProc(ctx, []byte(data), textWait)
 		if errors.Is(err, errWaiting) {
 			return res, nil

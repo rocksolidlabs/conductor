@@ -90,7 +90,7 @@ func TestAReminderHeldBackIsGivenAtTheNextDone(t *testing.T) {
 	run := launchManaged(t, e, repoCrew(dir, work("build", "lead")))
 	b, l, p := attemptOn(t, e, fl, run.ID, "build")
 	done := func() {
-		e.OnActivity(b.Attempt.SessionID, session.ActivityEntry{Type: session.ActivityAttention, Message: "done", At: time.Now().UTC()}, session.AttentionDone)
+		e.OnActivity(b.Attempt.SessionID, session.ActivityEntry{Type: session.ActivityAttention, Message: "done", At: time.Now().UTC()}, session.AttentionDone, "")
 	}
 	l.SetAttention(session.AttentionNeedsInput, "Allow edit?", session.SourceAPI)
 	done()

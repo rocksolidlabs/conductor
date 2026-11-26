@@ -100,6 +100,12 @@ type createSessionRequest struct {
 	// where, set by Launch, is the Runtime the session starts in
 	// (crew.LaunchSpec.Where, runtimeAt): empty is the native one.
 	where ext.Where
+	// memberWay, set by Launch, is the way a crew member's session is
+	// launched to run (crew.LaunchSpec.Way): with crew.WayProtocol the
+	// engine may move it to its chat at its prompt (session.Options
+	// MemberWay), and the version its launch's check qualified is the
+	// chat's gate, never probed again.
+	memberWay string
 	// spawned, set by Launch for a Brakeman turn's member, is handed the
 	// session as soon as its process exists, before it is registered: the
 	// desk keeps it for its process (memberStarted) even when the
@@ -541,6 +547,9 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 		// its adapter and the environment the process was given: the
 		// directory the agent itself writes to.
 		Plans: agents.PlansDir(agent.Adapter, pty.Lookup(procEnv), cwd),
+		// A crew member launched to run as a chat (design 14).
+		MemberWay:     req.memberWay,
+		MemberResumes: req.memberWay != "" && req.resume != "",
 	}
 	// The trust question and the startup ones, the questions asked during
 	// the work, the working title, the prompt's report and its shape: as a
@@ -571,7 +580,7 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 		where: where, agent: agent.Copy(), yolo: applied, model: slices.Clone(modelArgs), args: slices.Clone(req.Args),
 		env: chatEnv(procEnv), folder: folder, ref: processRefOf(id, crewRef),
 		termTail: slices.Clone(argv[tailAt:]), termEnv: slices.Clone(procEnv), cols: cols, rows: rows,
-	})
+	}, req.memberWay == crew.WayProtocol)
 	// Its registration complete, its record reconciled once: an exit
 	// before the registry held it is read now.
 	s.registered(rc)

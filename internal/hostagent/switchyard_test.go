@@ -232,9 +232,9 @@ func publishCat(t *testing.T, y *stubYard, dir string, command []string) *publis
 				p.OnChange(i)
 			}
 		},
-		OnActivity: func(id string, e session.ActivityEntry, st session.AttentionState) {
+		OnActivity: func(id string, e session.ActivityEntry, st session.AttentionState, _ string) {
 			if p := pub(); p != nil {
-				p.OnActivity(id, e, st)
+				p.OnActivity(id, e, st, "")
 			}
 		},
 		OnChat: func(id string, m session.ChatMessage) {

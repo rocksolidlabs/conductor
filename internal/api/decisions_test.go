@@ -981,7 +981,7 @@ func TestATasksDecisionKeysAreItsOwn(t *testing.T) {
 	built := entityOf(t, e.expectAs(t, e.agentToken(bsid), http.MethodPost, "/api/sessions/"+bsid+"/decisions", approvalBody("r1"), http.StatusCreated, ""), "decision")
 	// Its agent ends its turn: the waiting attempt gives up the member,
 	// and docs starts.
-	e.srv.runs.OnActivity(bsid, session.ActivityEntry{Type: session.ActivityAttention, Message: "done", At: time.Now().UTC()}, session.AttentionDone)
+	e.srv.runs.OnActivity(bsid, session.ActivityEntry{Type: session.ActivityAttention, Message: "done", At: time.Now().UTC()}, session.AttentionDone, "")
 	dsid := runningAttempt(t, e, run.ID, "docs", 1)["sessionId"].(string)
 	dtok := e.agentToken(dsid)
 	base := "/api/sessions/" + dsid + "/decisions"

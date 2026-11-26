@@ -601,7 +601,7 @@ func (s *Server) handleHostMessage(hs *signal.HostedSession, hc *hostConnState, 
 		// from the session's state, as a live event of the session's, and
 		// never again (HostQuestionTold).
 		if session.AttentionState(m.State) == session.AttentionNeedsInput && hs.HostQuestionTold(m.ID, m.Retold) {
-			s.events.activity(hs.Info().ID, session.ActivityEntry{At: time.Now().UTC(), Type: session.ActivityAttention, Message: m.Message}, session.AttentionNeedsInput)
+			s.events.activity(hs.Info().ID, session.ActivityEntry{At: time.Now().UTC(), Type: session.ActivityAttention, Message: m.Message}, session.AttentionNeedsInput, "")
 		}
 	case proto.HostActivity:
 		var m proto.HostActivityMsg

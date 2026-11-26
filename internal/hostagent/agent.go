@@ -1317,7 +1317,8 @@ func hostAttentionMsg(sessionID string, att session.Attention, kept []string, tu
 // session log has them.
 // A switchyard (Options.Switchyard) is sent no entry: the session's own
 // viewers have its log over their connection.
-func (a *agent) onLocalActivity(_ string, e session.ActivityEntry, state session.AttentionState) {
+// The kind is not sent: a host's sessions run in their terminals.
+func (a *agent) onLocalActivity(_ string, e session.ActivityEntry, state session.AttentionState, _ string) {
 	if !a.opts.Switchyard {
 		a.activity.push(e, state, a.madeOn(e.At))
 	}

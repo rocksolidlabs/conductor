@@ -290,6 +290,10 @@ func (s *Server) sendInputError(sub *session.Subscription, local *session.Local,
 		local.Send(sub, proto.NewError(proto.ErrCodeTooManyRequests, "too many lines wait for the session's turn: try again once they are done"))
 	case errors.Is(err, session.ErrNotTerminal):
 		local.Send(sub, proto.NewError(proto.ErrCodeNotTerminal, session.NotTerminalWords))
+	case errors.Is(err, session.ErrMoving):
+		// Between ways (a person's move, a crew member's): nothing written,
+		// in the switch's own words.
+		local.Send(sub, proto.NewError("input_failed", session.MovingWords))
 	default:
 		local.Send(sub, proto.NewError("input_failed", "input could not be delivered"))
 	}

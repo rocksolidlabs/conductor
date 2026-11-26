@@ -66,7 +66,7 @@ func (s *Server) Launch(ctx context.Context, spec crew.LaunchSpec) (*session.Loc
 	name, renamed := s.memberSessionName(spec)
 	req := createSessionRequest{AgentID: spec.AgentID, Name: name, Cwd: spec.Cwd, Args: spec.Args, Env: spec.Env, Yolo: &yolo, resume: spec.Resume, resumedFrom: spec.ResumedFrom,
 		renamed: renamed, runChat: room, reservation: spec.Reservation, inject: spec.Inject, allow: spec.Allow, agentSHA256: spec.AgentSHA256,
-		ctx: ctx, where: spec.Where, Model: spec.Model}
+		ctx: ctx, where: spec.Where, Model: spec.Model, memberWay: spec.Way}
 	// The member's binding (bindMembers'), which its session must get
 	// again; a member no launch bound (a run from before bindings) takes
 	// the tool's own login, as it did.

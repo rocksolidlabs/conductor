@@ -31,15 +31,18 @@ const (
 // Its tags are crew.Crew's, so the operating guide's schema of it
 // (crew_create) requires what a crew read back always carries.
 type crewInput struct {
-	Name               string        `json:"name"`
-	Goal               string        `json:"goal"`
-	Cwd                string        `json:"cwd"`
-	Where              string        `json:"where"`
-	Isolation          string        `json:"isolation"`
-	OpenAfterLaunch    bool          `json:"openAfterLaunch"`
-	ViewLinkTTLSeconds int64         `json:"viewLinkTtlSeconds,omitempty"`
-	Yolo               *bool         `json:"yolo,omitempty"`
-	Members            []crew.Member `json:"members"`
+	Name               string `json:"name"`
+	Goal               string `json:"goal"`
+	Cwd                string `json:"cwd"`
+	Where              string `json:"where"`
+	Isolation          string `json:"isolation"`
+	OpenAfterLaunch    bool   `json:"openAfterLaunch"`
+	ViewLinkTTLSeconds int64  `json:"viewLinkTtlSeconds,omitempty"`
+	Yolo               *bool  `json:"yolo,omitempty"`
+	// Way is how the crew's members run (crew.Crew.Way): "chat", or absent
+	// for their terminals.
+	Way     string        `json:"way,omitempty"`
+	Members []crew.Member `json:"members"`
 	// Tasks and Setup make a managed crew (#334): validated with the rest.
 	// Manifest is its project manifest, of which Setup is the legacy form: a
 	// crew has one or the other. The store counts its changes itself
@@ -83,7 +86,7 @@ func crewReply(c crew.Crew) map[string]any {
 // check and make alike, so a field is added here once.
 func (in crewInput) crew() crew.Crew {
 	return crew.Crew{Name: strings.TrimSpace(in.Name), Goal: in.Goal, Cwd: in.Cwd, Where: in.Where, Isolation: in.Isolation,
-		OpenAfterLaunch: in.OpenAfterLaunch, ViewLinkTTLSeconds: in.ViewLinkTTLSeconds, Yolo: in.Yolo, Members: in.Members, Tasks: in.Tasks, Setup: in.Setup,
+		OpenAfterLaunch: in.OpenAfterLaunch, ViewLinkTTLSeconds: in.ViewLinkTTLSeconds, Yolo: in.Yolo, Way: in.Way, Members: in.Members, Tasks: in.Tasks, Setup: in.Setup,
 		Manifest: in.Manifest, Compare: in.Compare, People: in.People}
 }
 

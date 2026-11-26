@@ -1073,7 +1073,7 @@ func (s *Local) sendApplied(out applied) {
 		s.Record(e)
 	}
 	for _, e := range out.own {
-		s.recordOwn(e, AttentionNeedsInput)
+		s.recordOwn(e, AttentionNeedsInput, KindPermission)
 	}
 	for _, c := range out.replay {
 		if !c.hasOpt {

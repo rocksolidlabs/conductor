@@ -33,7 +33,7 @@ func TestABlockerShowsOnTheTaskUntilTheAttemptWorksOn(t *testing.T) {
 		}
 	}
 	// A working report from the attempt clears it.
-	e.OnActivity(b.Attempt.SessionID, session.ActivityEntry{Type: session.ActivityAttention, At: time.Now().UTC()}, session.AttentionWorking)
+	e.OnActivity(b.Attempt.SessionID, session.ActivityEntry{Type: session.ActivityAttention, At: time.Now().UTC()}, session.AttentionWorking, "")
 	waitTaskWhere(t, e, run.ID, "build", "unblocked", func(ts TaskState) bool { return ts.Blocker == nil })
 	kinds := l.kinds(run.ID)
 	for _, want := range []string{"task.blocked", "task.unblocked"} {

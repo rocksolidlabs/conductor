@@ -538,6 +538,8 @@ export interface CrewInfo {
   viewLinkTtlSeconds?: number
   /** Overrides the server's yolo default for the crew's runs: missing follows it. A launch fixes the choice on the run. */
   yolo?: boolean
+  /** How the crew's members run: `chat`, or missing for their terminals. A launch fixes it on the run (docs/plans/chat-or-terminal.md, design 14). */
+  way?: 'chat'
   /** At most 12. The whole crew is at most 1 MiB as its file. */
   members: CrewMember[]
   /** At most 12: the persons who own the crew's decisions and its tasks' outcomes; absent for a crew without. */

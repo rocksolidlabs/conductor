@@ -26,7 +26,7 @@ type Publisher interface {
 // the local session's changes and entries, Stop ends the publication.
 type PublishedSession interface {
 	OnChange(info session.Info)
-	OnActivity(id string, e session.ActivityEntry, state session.AttentionState)
+	OnActivity(id string, e session.ActivityEntry, state session.AttentionState, kind string)
 	OnChat(id string, m session.ChatMessage)
 	Stop()
 	Base() string
@@ -422,10 +422,10 @@ func (s *Server) unpublish(id string) {
 // localActivity is the OnActivity hook of a server session: the entry goes
 // to the event hub (and through it to the runs and the webhooks), and to the
 // rendezvous when the session is published. Neither waits.
-func (s *Server) localActivity(id string, e session.ActivityEntry, state session.AttentionState) {
-	s.events.activity(id, e, state)
+func (s *Server) localActivity(id string, e session.ActivityEntry, state session.AttentionState, kind string) {
+	s.events.activity(id, e, state, kind)
 	if pub := s.publishedOf(id); pub != nil {
-		pub.OnActivity(id, e, state)
+		pub.OnActivity(id, e, state, kind)
 	}
 }
 

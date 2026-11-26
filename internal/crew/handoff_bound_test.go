@@ -63,7 +63,7 @@ func TestAManagedHandoffToANameOutsideTheRunIsNoMessage(t *testing.T) {
 	_, po := fl.attemptSession(t, o)
 	typed(po) // its task line
 	b := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
-	e.OnActivity(b.Attempt.SessionID, session.ActivityEntry{Type: session.ActivityHandoff, To: "outsider", Message: "over to you", At: time.Now().UTC()}, session.AttentionDone)
+	e.OnActivity(b.Attempt.SessionID, session.ActivityEntry{Type: session.ActivityHandoff, To: "outsider", Message: "over to you", At: time.Now().UTC()}, session.AttentionDone, "")
 	waitLogged(t, e, run.ID, "the handoff from lead to outsider was not sent", 1, 10*time.Second)
 	for _, id := range []string{run.ID, other.ID} {
 		if msgs, _ := e.MessagesOf(id); len(msgs) != 0 {

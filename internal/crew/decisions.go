@@ -3020,9 +3020,18 @@ func (e *Engine) typeAnswer(r *run, m *member, l *session.Local, al *answerLine,
 	case err == nil && !res.Typed:
 		e.mu.Lock()
 		m.answers = slices.Insert(m.answers, 0, al)
-		r.noteQueued(m, "is waiting for input")
+		if inChat(l) {
+			r.noteQueued(m, chatBusyWords)
+		} else {
+			r.noteQueued(m, "is waiting for input")
+		}
 		e.mu.Unlock()
 		return true
+	case errors.Is(err, session.ErrSubmitPending) && inChat(l):
+		e.mu.Lock()
+		r.note(session.ActivityStatus, "decision %s's answer sent to %s's chat: it is entered once its agent takes it", al.d.id(), m.def.Name)
+		e.mu.Unlock()
+		return false
 	case errors.Is(err, session.ErrSubmitPending):
 		e.mu.Lock()
 		r.note(session.ActivityStatus, "decision %s's answer waits for %s to take its input: it is entered once it has", al.d.id(), m.def.Name)
@@ -3043,6 +3052,10 @@ func (e *Engine) noteAnswer(r *run, m *member, al *answerLine, res session.Submi
 		r.note(session.ActivityStatus, "decision %s's answer typed into %s", al.d.id(), m.def.Name)
 		return
 	}
+	if res.Unconfirmed {
+		r.note(session.ActivityError, "decision %s's answer sent to %s, and its agent did not confirm taking it: it is never sent again", al.d.id(), m.def.Name)
+		return
+	}
 	if err == nil {
 		err = errors.New("typed without its Enter")
 	}
@@ -3058,9 +3071,14 @@ func (e *Engine) lineDone(r *run, al *answerLine, res session.SubmitResult, err 
 	if al.notice {
 		return
 	}
-	if err == nil && res.Entered {
+	switch {
+	case err == nil && res.Entered:
 		e.lineEnded(r, al.d, ledgerEntered, "")
-	} else {
+	case res.Unconfirmed:
+		// Sent into a chat, its agent not saying it took it: uncertain, as
+		// a restart finds a typing without its end, and never sent again.
+		e.lineEnded(r, al.d, ledgerUncertain, errWords(err))
+	default:
 		e.lineEnded(r, al.d, ledgerUntyped, errWords(err))
 	}
 	e.withdrawMirror(al.a, al.d)

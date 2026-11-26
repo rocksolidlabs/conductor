@@ -3909,6 +3909,7 @@ Crews are held to these limits: `id` matches `^[a-z0-9][a-z0-9-]{0,63}$`; `name`
 not blank, at most 60 characters and without control characters (surrounding
 space is trimmed), `goal` at most 2000 characters, `cwd` at most 4096 bytes;
 `where` is `server` or `host` and `isolation` is `none` or `worktree`;
+`way` is `chat` or absent (Crew runs, Members as chats);
 `viewLinkTtlSeconds` 0 to 31536000 (a year); at most 12 members, each with a
 `name` matching `^[a-z0-9][a-z0-9._-]{0,39}$`, unique in its crew and one git
 takes for a branch (no `..`, no `.` or `.lock` at the end), an `agentId`
@@ -4466,7 +4467,7 @@ member has `needsInput: true`; a member whose own question outlasts its
 turn's `done`, see Attention, is one, while the members that start after it
 start at that `done`); `running` otherwise (a member's `done` keeps it
 running: a done agent is idle, not gone). `yolo` is the run's yolo choice,
-fixed at launch. A member's `agentSession` is the one its latest session last
+fixed at launch; so is the crew's `way` (Members as chats, below). A member's `agentSession` is the one its latest session last
 showed (see Attention), kept after that session leaves the server, for
 `POST /api/runs/{run}/members/{name}/resume`;
 `diff` counts the lines of tracked files the member's worktree adds and removes
@@ -4566,12 +4567,21 @@ whose `message` is one of these:
 | prompt not reported taken | `error` | `typed <member>'s prompt, and its agent did not report taking it: check its terminal, and type the prompt there if its input is empty`, once, for an agent that reports taking a prompt (Claude Code's hook) that has not done so within 3 s of the Enter pressed again either: nothing more is typed, the member stays prompted (a later done starts the members after it), and the run's member reads `needsInput` until its agent reports a turn (working, or done) |
 | prompt refused | `status` | `<member>'s prompt waits: <why>` when the session refuses the prompt, nothing typed, while it shows no question (a startup screen: `the agent is not at its prompt yet: nothing was typed`, `the agent's screen shows what may be a question: nothing was typed; answer it in its terminal`, or a startup question's pattern the session has not asked), once for each in one wait for the prompt, for every member; the prompt is tried again a poll later |
 | no yolo recipe | `status` | `<member>: yolo is on, but <agent name> has no yolo recipe: launched without one` |
+| runs as a chat | `status` | `<member>: runs as a chat.` for a member of a Chat run moved to its chat, once the chat is ready (Members as chats); `<member>: runs as a chat, on its conversation.` for a resumed one; a managed run's attempt is named `<member> (task <task>, attempt <n>)` in this line, the next one and the other screen's line of the one after; the trust question's line keeps the member's name alone, as today's does |
+| in its terminal | `status` | `<member>: in its terminal: <why>` for a member of a Chat run kept in its terminal, at its launch or at its move, why one of `this version of Claude Code can only run in its terminal.` (its agent's installed version cannot run as a chat), `the run's Runtime has no pipes.` (the Runtime that took the run cannot start a chat: the run stays in it), `it was launched with an added folder.`, `its arguments hold <flag>, which a chat sets itself.`, `its agent has no chat.` (its catalog entry declares no protocol), `Conductor cannot tell when its agent's prompt shows.` (its catalog entry gives no prompt shape, which the move waits for), `this server cannot run its agent as a chat.` (an engine whose launcher has no chat: never the server's own), `a person typed in it first.` (a line reached it, or a person typed text into its terminal, whatever it showed, before the move: keys that only answer or move within a dialog, and keys while a startup question shows, are none) and `Claude Code did not start a chat.` (its chat did not start, or was not ready within 60 s: a terminal started afresh takes its prompt) |
+| waits to move | `status` | the trust question's line (above) ends `; once answered, it moves to a chat at its prompt` for a member that moves at its prompt; `<member>: its prompt waits: its terminal shows something other than Claude Code's prompt; answer it there.`, once, when its screen has been another one for 8 looks in a row (2 s), never for a moment |
+| permission question | `status` | `<member>: asks to run a command: answer it on its session page.` (`asks to change a file`, `asks to read a file`, `asks to use a tool`) when a member's chat asks a permission question |
+| resumed from its record | `status` | `resumed from its record: its members run in their terminals; the record does not keep the run's way` for a Chat run resumed from its record alone |
+| launched from a plan | `status` | `launched from a ticket's plan, which does not carry the crew's way yet: its members run in their terminals`, once, for a Chat crew's run launched from a ticket's plan |
+| chat prompt sent | `status` | `sent <member>'s prompt`, once its agent took it |
+| chat prompt not confirmed | `error` | `sent <member>'s prompt, and its agent did not confirm taking it: it is never sent again; look at its chat`, then `<member>'s agent works on its prompt` once the agent reports a turn of its own |
 | resumed | `status` | `<member> resumed its conversation` |
 | relaunched | `status` | `<member> started anew` (its prompt is typed again once it is ready) |
 | ended before its prompt | `status` | `<member> ended before its prompt was typed: <how it ended>` |
 | could not start | `error` | `<member> could not start: <why>` |
 | done | `status` | `<member> is done: starting <members>` |
-| handoff queued | `status` | `handoff queued from <a> to <b>: <b> is waiting for input`, or `: <b> has not had its prompt yet`; see below |
+| handoff queued | `status` | `handoff queued from <a> to <b>: <b> is waiting for input`, or `: <b> has not had its prompt yet`, or `: <b> is in a turn: it is sent when the turn ends` for a chat; see below |
+| handoff sent to a chat | `status` | `handoff from <a> to <b> sent to <b>'s chat: it is delivered once its agent takes it`; then delivered, or `handoff from <a> to <b> sent, and its agent did not confirm taking it: it is never sent again` (`error`) |
 | handoff delivered | `status` | `handoff delivered from <a> to <b>` |
 | handoff without its Enter | `error` | `handoff from <a> to <b> typed without its Enter: <b> waits on a question; answer it, then press Enter in its terminal`, or `: <the error>` when the run stopped or the write failed during the pause |
 | handoff dropped | `error` | `handoff dropped from <a> to <b>: <why>`, where why is `10 already waiting` (the oldest waiting is dropped), `<b> is not running`, `the run is stopped` or the error writing it |
@@ -4583,6 +4593,54 @@ whose `message` is one of these:
 | link created | `link` | `link created: <label> (<role>)`, the label `unlabelled` when there is none, as for a session's link |
 | link revoked | `link` | `link revoked: <label>`, likewise |
 | view link refused | `error` | `the view link could not be created: <why>` (at launch) |
+
+**Members as chats.** A crew with `way: "chat"` (`400 invalid_crew` for
+any other value) runs its members as chats, over their agents' own
+structured interface (see Chat sessions), where a member's agent's
+installed version can and the run's Runtime has pipes; otherwise the member
+runs in its terminal and the run log says why (`in its terminal`, above). A
+run a registered Runtime without pipes takes stays in that Runtime, its
+members in their terminals. The way is fixed at launch: the crew as
+launched, which the ledger keeps with a managed run, carries it, so a
+continued run keeps it; an older server reads the crew without it and
+continues the run with its members in their terminals. A plan revision does
+not carry a way yet: a planned launch runs its members in their terminals, and
+a Chat crew's says so once in its log. A member's session starts in its
+terminal, as every session does, and a person answers its trust question
+there. Once its terminal shows the agent's own prompt by its shape (never a
+dialog's words being gone), with no line submitted to it, no text of a
+person's typed into its terminal since its start, whatever its screen showed
+(keys that only answer or move within a dialog, and keys while a startup
+question shows, are none), and no turn reported, the engine moves it, with no
+bound on that wait; a person's key that comes once the move has begun is
+refused (`moving`), never written into the terminal it stops. A member whose
+agent gives no prompt shape is no Chat member. It asks first, with the terminal still
+running, whether its arguments name an added folder or a flag a chat sets
+itself and whether the version its launch qualified is kept, then stops the
+terminal, proves its process group gone and starts the chat's child on a new
+conversation by the session recipe's start (`--session-id <new id>`, never
+the terminal's), with no `--permission-mode` for a member that is not yolo.
+Only that first start is fresh: once a chat's child has started on the
+conversation, its restart (past its input bound) and its way back to its
+terminal resume it (`--resume`). A stop or a cancel during the move ends it
+at once, the member's session stopped, and nothing starts after it; a pause
+holds the run's scheduling and leaves a move under way.
+No route reaches that move. A member resumed on its conversation moves to a
+chat on that conversation, and is sent no prompt. A chat that does not start,
+or is not ready within 60 s, is ended and a terminal is started afresh on
+another new conversation, its startup questions watched again, its prompt
+typed there by the rule every line is typed by; both failing, the attempt
+fails with both failures' words. Nothing is typed into a chat "anyway". Its prompt is sent once, as a message, and the
+member is prompted, and running, when its agent acknowledges it, never at
+the write; a prompt not acknowledged is never sent again, and the member
+waits (`needsInput`) until its agent reports a turn of its own or a person
+ends it. A handoff, a message, a decision's answer and the reminder that a
+`done` is no result are sent between the agent's turns, never during one:
+each waits for the turn's end, decision answers first, at most 10 waiting.
+A turn's end, `done` or a turn a person stopped (attention `done` of kind
+`interrupted`), finishes no task; a stopped turn starts no member that
+starts after it and is reminded of nothing. Brakeman's turns run in their
+terminals.
 
 Every handoff a member reports while its run is not stopping is noted once as
 delivered, dropped, to an unknown member, to itself or to a member that is not
@@ -9650,7 +9708,9 @@ token and an agent token answer `401`), the body at most 64 bytes and read
 strictly (`413 too_large` past it, `400 invalid_request` for an unknown
 field or another way), refused on a switchyard. Every session starts in
 its terminal: a launch, a resume and a resume from history start the
-terminal way, and a chat is entered only by this move.
+terminal way, and a chat is entered only by this move, or by the engine's
+move of a crew member whose terminal shows the agent's prompt with nothing
+typed (Crew runs, Members as chats), which no route reaches.
 
 The reply is `200` with where the session stands: `{way, moving: true}`
 when the move was made at once (the session was at rest), or `{way,
@@ -9667,8 +9727,8 @@ with no question open, nothing typed held and no submission under way.
 `409 move_refused` with the plan's words when the move cannot be made:
 `Chat opens after the agent's first reply.` (a move to Chat before the
 terminal reported a turn that ended: while the session's `firstTurn` is
-absent), `Crew members stay in their
-terminals.`, `Sessions on another machine stay in their terminal.`,
+absent), `A crew member's way is its
+run's.`, `Sessions on another machine stay in their terminal.`,
 `This agent cannot move its conversation yet.` (an agent with no
 protocol the server speaks, a driver that does not move, a Runtime other
 than this machine's, no recipe to resume its terminal, or a conversation

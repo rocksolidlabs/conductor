@@ -1,5 +1,6 @@
 import { expect, logged, member, test, type Run } from './fixtures'
 import { noOverlap } from './layout'
+import type { Locator } from '@playwright/test'
 
 // The crew graph: the run page draws the members with their start rules and
 // the handoffs as they are delivered; the editor sets a start rule by
@@ -103,9 +104,17 @@ test('the editor sets a start rule by drawing an edge, and refuses a second pare
   await expect(canvas.locator('[data-graph-node]')).toHaveCount(4)
   await expect(page.locator('[data-graph-mode]')).toHaveAttribute('data-graph-mode', 'edit')
 
+  // The graph sits under the crew's Setup, its nodes at the window's bottom edge where a toast is drawn: the canvas is brought to the
+  // top of the window before each drag, so that both handles are in view and nothing is over them (AGENTS.md, "Point at the thing
+  // itself, in view").
+  const inView = async (...handles: Locator[]) => {
+    await canvas.evaluate((el) => el.scrollIntoView({ block: 'start' }))
+    for (const h of handles) await expect(h).toBeInViewport({ ratio: 1 })
+  }
   // Drag from tests' source handle to docs' target handle: docs starts after tests.
   const from = canvas.locator('[data-graph-node="tests"] .vue-flow__handle.source')
   const to = canvas.locator('[data-graph-node="docs"] .vue-flow__handle.target')
+  await inView(from, to)
   const a = (await from.boundingBox())!
   const b = (await to.boundingBox())!
   await page.mouse.move(a.x + a.width / 2, a.y + a.height / 2)
@@ -118,6 +127,7 @@ test('the editor sets a start rule by drawing an edge, and refuses a second pare
 
   // A second parent for docs is refused, and said.
   const from2 = canvas.locator('[data-graph-node="lead"] .vue-flow__handle.source')
+  await inView(from2, to)
   const a2 = (await from2.boundingBox())!
   const b2 = (await to.boundingBox())!
   await page.mouse.move(a2.x + a2.width / 2, a2.y + a2.height / 2)

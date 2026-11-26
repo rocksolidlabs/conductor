@@ -26,6 +26,7 @@ export function toCrewInput(c: Omit<CrewInput, 'tasks' | 'manifest'> & { tasks?:
     yolo: c.yolo,
     members: c.members.map(toCrewMember),
   }
+  if (c.way === 'chat') out.way = 'chat'
   if (c.people?.length) out.people = c.people.map(toCrewPerson)
   if (c.tasks) out.tasks = plainTasks(c.tasks).map(toCrewTask)
   if (c.setup?.length) out.setup = c.setup.map(toCrewCheck)
@@ -1042,7 +1043,7 @@ export function changedBetween(before: CrewInput, after: CrewInput): string[] {
   if (a.name !== b.name) out.push('the name')
   if (a.goal !== b.goal) out.push('the goal')
   if (a.cwd !== b.cwd) out.push('the working directory')
-  if (a.where !== b.where || a.isolation !== b.isolation || a.openAfterLaunch !== b.openAfterLaunch || a.viewLinkTtlSeconds !== b.viewLinkTtlSeconds || a.yolo !== b.yolo) out.push('how each run starts')
+  if (a.where !== b.where || a.isolation !== b.isolation || a.openAfterLaunch !== b.openAfterLaunch || a.viewLinkTtlSeconds !== b.viewLinkTtlSeconds || a.yolo !== b.yolo || (a.way ?? '') !== (b.way ?? '')) out.push('how each run starts')
   out.push(...listChanges(a.members, b.members, (m) => m.name, 'member', 'members'))
   out.push(...listChanges(a.people, b.people, (p) => p.name, 'person', 'people'))
   const accepts = (c: CrewInput) => c.people?.find((p) => p.responsibilities?.includes('acceptance'))?.name
@@ -1355,6 +1356,44 @@ export function permissionItems(serverDefault: boolean): Array<{ label: string; 
     { label: 'Skip: members act without asking', value: 'on' },
   ]
 }
+
+/**
+ * How a crew's members run (docs/plans/chat-or-terminal.md, design 14): "Members run as: Terminal | Chat", Terminal by default, the line
+ * under it saying what a member has in a chat. A launch fixes it on the run; the launch sheet shows it (Dispatch's launch shows
+ * PLANNED_TERMINAL_LINE for a Chat crew instead).
+ */
+export const MEMBERS_RUN_AS = {
+  label: 'Members run as',
+  items: [
+    { label: 'Terminal', value: 'terminal' },
+    { label: 'Chat', value: 'chat' },
+  ],
+  chatLine: "In a chat, members have Conductor's tools only: no other tool servers, the folder's or yours.",
+} as const
+
+/** The crew's "Members run as" choice: `chat` for a crew whose way is chat, else `terminal`. */
+export function membersRunAs(c: Pick<CrewInput, 'way'>): 'terminal' | 'chat' {
+  return c.way === 'chat' ? 'chat' : 'terminal'
+}
+
+/** c with its members run as `as`: a Terminal crew names no way, as every crew saved before the choice. */
+export function withMembersRunAs<C extends Pick<CrewInput, 'way'>>(c: C, as: string): C {
+  const out = { ...c }
+  if (as === 'chat') out.way = 'chat'
+  else delete out.way
+  return out
+}
+
+/** What the launch sheet says of how the members run: "Members run as: Chat" (it does not change it). */
+export function membersRunAsLine(way: string | undefined): string {
+  return `${MEMBERS_RUN_AS.label}: ${way === 'chat' ? 'Chat' : 'Terminal'}`
+}
+
+/**
+ * What Dispatch's launch says of a Chat crew's run from a ticket's plan: a plan carries no way yet, so its members run in their terminals,
+ * and the crew's choice is not shown as the run's way.
+ */
+export const PLANNED_TERMINAL_LINE = "A run from a ticket's plan runs its members in their terminals for now."
 
 /** A view link's hours as the Setup says them: 8 by default, else its own. */
 export function viewLinkHoursWords(ttlSeconds: number | undefined): string {

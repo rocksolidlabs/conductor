@@ -392,7 +392,7 @@ func TestWebhookDialsTheNextAddressWhenOneHangs(t *testing.T) {
 	useResolver(t, dns.resolver())
 	e, logs := newWebhookEnv(t, config.Webhook{URL: "http://eyeballs.test:" + portText + "/hook", Events: []string{"artifact"}, AllowPrivate: true})
 	start := time.Now()
-	e.srv.events.activity("s1", session.ActivityEntry{At: time.Now().UTC(), Type: session.ActivityArtifact, URL: "https://x/1"}, "")
+	e.srv.events.activity("s1", session.ActivityEntry{At: time.Now().UTC(), Type: session.ActivityArtifact, URL: "https://x/1"}, "", "")
 	d := rcv.next(t)
 	took := time.Since(start)
 	if d.header.Get("X-Conductor-Event") != "artifact" {
@@ -464,7 +464,7 @@ func TestWebhookQueueDropsTheOldestAndNeverDelaysTheSession(t *testing.T) {
 		return session.ActivityEntry{At: time.Now().UTC(), Type: session.ActivityProgress, Message: message}
 	}
 
-	e.srv.events.activity(id, progress("0"), "")
+	e.srv.events.activity(id, progress("0"), "", "")
 	select {
 	case <-stalled:
 	case <-time.After(5 * time.Second):
@@ -476,7 +476,7 @@ func TestWebhookQueueDropsTheOldestAndNeverDelaysTheSession(t *testing.T) {
 	go func() {
 		defer close(done)
 		for i := 1; i <= 456; i++ {
-			e.srv.events.activity(id, progress(strconv.Itoa(i)), "")
+			e.srv.events.activity(id, progress(strconv.Itoa(i)), "", "")
 		}
 	}()
 	select {
@@ -500,7 +500,7 @@ func TestWebhookQueueDropsTheOldestAndNeverDelaysTheSession(t *testing.T) {
 	}
 
 	// Another webhook delivers meanwhile.
-	e.srv.events.activity(id, session.ActivityEntry{At: time.Now().UTC(), Type: session.ActivityError, Message: "boom"}, "")
+	e.srv.events.activity(id, session.ActivityEntry{At: time.Now().UTC(), Type: session.ActivityError, Message: "boom"}, "", "")
 	if d := fast.next(t); d.message(t) != "boom" {
 		t.Fatalf("the other webhook got %s", d.body)
 	}
@@ -544,7 +544,7 @@ func TestWebhookDoesNotFollowRedirects(t *testing.T) {
 		http.Redirect(w, r, target.URL+"/elsewhere", http.StatusTemporaryRedirect)
 	})
 	e, logs := newWebhookEnv(t, config.Webhook{URL: redirect.URL + "/hook?token=t0k3n", Events: []string{"handoff"}, AllowPrivate: true})
-	e.srv.events.activity("s1", session.ActivityEntry{At: time.Now().UTC(), Type: session.ActivityHandoff, To: "tests"}, "")
+	e.srv.events.activity("s1", session.ActivityEntry{At: time.Now().UTC(), Type: session.ActivityHandoff, To: "tests"}, "", "")
 	if d := redirect.next(t); d.path != "/hook" {
 		t.Fatalf("request %s", d.path)
 	}
@@ -579,7 +579,7 @@ func TestWebhookDeliveriesStopWithTheServer(t *testing.T) {
 		close(abandoned)
 	})
 	e, _ := newWebhookEnv(t, config.Webhook{URL: rcv.URL, Events: []string{"artifact"}, AllowPrivate: true})
-	e.srv.events.activity("s1", session.ActivityEntry{At: time.Now().UTC(), Type: session.ActivityArtifact, URL: "https://x/1"}, "")
+	e.srv.events.activity("s1", session.ActivityEntry{At: time.Now().UTC(), Type: session.ActivityArtifact, URL: "https://x/1"}, "", "")
 	rcv.next(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -603,7 +603,7 @@ func TestWebhookDeliveriesStopWithTheServer(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("the webhook goroutines did not end")
 	}
-	e.srv.events.activity("s1", session.ActivityEntry{At: time.Now().UTC(), Type: session.ActivityArtifact, URL: "https://x/2"}, "")
+	e.srv.events.activity("s1", session.ActivityEntry{At: time.Now().UTC(), Type: session.ActivityArtifact, URL: "https://x/2"}, "", "")
 	rcv.none(t, 300*time.Millisecond)
 	if queued, _ := e.srv.webhooks.hooks[0].stats(); queued != 0 {
 		t.Fatalf("queued %d after shutdown", queued)

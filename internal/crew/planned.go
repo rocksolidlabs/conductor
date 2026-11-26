@@ -40,12 +40,20 @@ const maxMints = 3
 // it: the package keeps the shape every build reads, so an older build
 // that continues the run is never handed one it would drop, and the
 // gate's request in the ledger keeps each label once it is opened.
+//
+// Way is how the revision approved the run's members to run (Crew.Way:
+// WayChat, or "" for their terminals), beside the package for the same
+// reason: the package of a Chat revision is read by every build, and its
+// bytes and digest are a Terminal one's. The run's way is it, whatever
+// the crew handed says; the crew as launched, which the ledger keeps with
+// the run, carries it from then on.
 type Planned struct {
 	RunID   string
 	Base    string
 	Digest  string
 	Package []byte
 	For     map[string]string
+	Way     string
 }
 
 // LaunchPlanned launches c, a crew with tasks, as LaunchNamed does, under
@@ -75,6 +83,14 @@ func (e *Engine) LaunchPlanned(ctx context.Context, c Crew, label string, p Plan
 	if !fullCommit(p.Base) {
 		return nil, noop, invalidf("the base %s is not a full commit id", quote(p.Base))
 	}
+	if p.Way != "" && p.Way != WayChat {
+		return nil, noop, invalidf("the plan's way %s must be %q or absent", quote(p.Way), WayChat)
+	}
+	// The crew's way is the plan's: a plan does not carry one yet (nothing
+	// writes Planned.Way before the plan's way is approved with it), so a
+	// Chat crew's planned run runs in terminals, its log saying why.
+	inTerminals := c.Way == WayChat && p.Way == ""
+	c.Way = p.Way
 	if len(p.Package) > ledger.MaxPackage {
 		return nil, noop, invalidf("the package is %d bytes, more than %d", len(p.Package), ledger.MaxPackage)
 	}
@@ -122,6 +138,9 @@ func (e *Engine) LaunchPlanned(ctx context.Context, c Crew, label string, p Plan
 	r, err := e.addRun(c, prep, label, p.RunID, pkg)
 	if err != nil {
 		return nil, noop, err
+	}
+	if inTerminals {
+		e.Note(r.id, session.ActivityStatus, plannedTerminalWords)
 	}
 	release := sync.OnceFunc(func() { e.launched(r) })
 	if e.afterAdd != nil {

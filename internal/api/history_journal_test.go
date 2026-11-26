@@ -796,11 +796,11 @@ func stubbornSession(t *testing.T, e *testEnv, o session.Options) (*session.Loca
 // that is its end on its way to the record (the record's part comes after
 // the session's own hooks, recordHooks) until release is closed; reached is
 // closed once it holds it.
-func holdEnding(e *testEnv) (hook func(string, session.ActivityEntry, session.AttentionState), reached <-chan struct{}, release func()) {
+func holdEnding(e *testEnv) (hook func(string, session.ActivityEntry, session.AttentionState, string), reached <-chan struct{}, release func()) {
 	in, gate := make(chan struct{}), make(chan struct{})
 	var once, held sync.Once
-	return func(id string, en session.ActivityEntry, st session.AttentionState) {
-		e.srv.localActivity(id, en, st)
+	return func(id string, en session.ActivityEntry, st session.AttentionState, _ string) {
+		e.srv.localActivity(id, en, st, "")
 		if en.Type == session.ActivityStatus && isEnding(en.Message) {
 			held.Do(func() { close(in) })
 			<-gate
@@ -1014,8 +1014,8 @@ func TestAFileIsKeptUntilTheEnd(t *testing.T) {
 	var once sync.Once
 	release := func() { once.Do(func() { close(gate) }) }
 	t.Cleanup(release)
-	fs := recordedFakeSession(t, e, session.Options{OnActivity: func(id string, en session.ActivityEntry, st session.AttentionState) {
-		e.srv.localActivity(id, en, st)
+	fs := recordedFakeSession(t, e, session.Options{OnActivity: func(id string, en session.ActivityEntry, st session.AttentionState, _ string) {
+		e.srv.localActivity(id, en, st, "")
 		if en.Type == session.ActivityFile && en.Path == "late.go" {
 			close(reached)
 			<-gate

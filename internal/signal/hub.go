@@ -31,16 +31,18 @@ type Hub struct {
 	// OnActivity is called with a hosted session's ID and each activity entry
 	// its host reports, after the entry has been checked and cleaned, and,
 	// for an attention entry, the attention state the host says it records
-	// ("" when the host sent none it may send). It runs on the goroutine that
+	// ("" when the host sent none it may send), and its attention kind, ""
+	// for a hosted session: a host runs its sessions in their terminals,
+	// and its wire carries no kind. It runs on the goroutine that
 	// reads the host's connection, so it must not block; calls for different
 	// hosts overlap, so it must be safe for concurrent use. Set it, like
 	// OnChange, before the first host registers.
-	OnActivity func(sessionID string, e session.ActivityEntry, state session.AttentionState)
+	OnActivity func(sessionID string, e session.ActivityEntry, state session.AttentionState, kind string)
 	// OnLateActivity, when set, takes in OnActivity's place an entry a host
 	// sends late (proto.HostActivityMsg.Late: recorded before the connection
 	// that carries it began, or sent again) and the notice of entries it
 	// left out: kept and shown, offered to no sink as a live event.
-	OnLateActivity func(sessionID string, e session.ActivityEntry, state session.AttentionState)
+	OnLateActivity func(sessionID string, e session.ActivityEntry, state session.AttentionState, kind string)
 	// OnChat is called with a hosted session's ID and each chat message its
 	// host reports, after the message has been checked and cleaned. The same
 	// contract as OnActivity: it must not block, and it must be safe for

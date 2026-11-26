@@ -993,14 +993,14 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		}
 		s.recordHostedHint(info.ID)
 	}
-	s.hosts.OnActivity = func(id string, e session.ActivityEntry, st session.AttentionState) {
-		s.events.activity(id, e, st)
+	s.hosts.OnActivity = func(id string, e session.ActivityEntry, st session.AttentionState, kind string) {
+		s.events.activity(id, e, st, kind)
 		s.recordHostedActivity(id, e)
 	}
 	// An entry a host sends late is recorded and shown in its order, and
 	// offered to no sink: nobody is paged for what the session moved past.
-	s.hosts.OnLateActivity = func(id string, e session.ActivityEntry, st session.AttentionState) {
-		s.events.activityLate(id, e, st)
+	s.hosts.OnLateActivity = func(id string, e session.ActivityEntry, st session.AttentionState, kind string) {
+		s.events.activityLate(id, e, st, kind)
 		s.recordHostedActivity(id, e)
 	}
 	// A hosted session's chat reaches the browsers' unread counts as a server session's does.

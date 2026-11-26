@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rocksolidlabs/conductor/internal/catalog"
 	"github.com/rocksolidlabs/conductor/internal/session"
 	"github.com/rocksolidlabs/conductor/internal/session/sessiontest"
 )
@@ -43,6 +44,8 @@ type launchCall struct {
 	// account and model are the spec's: the member's binding and model.
 	account session.BoundAccount
 	model   string
+	// way is the spec's Way.
+	way string
 }
 
 // fakeLauncher starts member sessions over fake processes, where the API
@@ -79,6 +82,37 @@ type fakeLauncher struct {
 	pauses map[string]time.Duration
 	// inputWait is every session's Options.InputWait; the default when zero.
 	inputWait time.Duration
+	// A member launched with LaunchSpec.Way WayProtocol starts in its
+	// terminal, as every session does, with Claude Code's prompt shape
+	// unless shape is set, its screen drawn by chatScreen (Claude Code's
+	// prompt when nil) in place of onLaunch; its move (MemberMove) starts
+	// a FakeProtocol for its chat (protos, by session name, the latest;
+	// allProtos every one, in order), whose Begin calls chatBegin first
+	// when set and waits for chatGate when set, the chat's start bounded
+	// by readyCap (the session's own when zero), failing with chatErr when
+	// set; and a fake terminal for the way back (freshConvs and terminals
+	// the conversations each was started on). acceptWait is every session's
+	// Options.AcceptWait; the default when zero. unqualified answers
+	// ChatCheck by agent id (nil: it can), moveRefused MemberMove by
+	// session name; moves counts MemberMove's calls.
+	protos       map[string]*sessiontest.FakeProtocol
+	allProtos    []*sessiontest.FakeProtocol
+	chatBegin    func(member string)
+	chatGate     chan struct{}
+	chatErr      error
+	readyCap     time.Duration
+	chatScreen   func(member string, p *sessiontest.FakeProc, l *session.Local)
+	acceptWait   time.Duration
+	unqualified  map[string]error
+	moveRefused  map[string]error
+	moves        []moveCall
+	terminalConv []string
+	trustAnswers []session.Option
+	// beforeMove, when set, runs as MemberMove is asked, holding it: a
+	// test's gate between the engine's look at the prompt and the move;
+	// terminalErr fails every terminal a move starts.
+	beforeMove  func(name string)
+	terminalErr error
 	// ended ends the engine's runs and its processes, once, at the first
 	// of its processes' cleanups (endRuns).
 	ended sync.Once
@@ -109,7 +143,8 @@ type fakeLauncher struct {
 
 func newFakeLauncher(t *testing.T) *fakeLauncher {
 	return &fakeLauncher{t: t, fail: map[string]error{}, procs: map[string]*sessiontest.FakeProc{},
-		locals: map[string]*session.Local{}, byID: map[string]*session.Local{}, ports: newFakePorts(), probes: newFakeProbes()}
+		locals: map[string]*session.Local{}, byID: map[string]*session.Local{}, ports: newFakePorts(), probes: newFakeProbes(),
+		protos: map[string]*sessiontest.FakeProtocol{}, unqualified: map[string]error{}, moveRefused: map[string]error{}}
 }
 
 // newEngine returns an engine over a new fakeLauncher, its trees' ports
@@ -153,7 +188,7 @@ func (f *fakeLauncher) Reserve(ctx context.Context) (*session.Reservation, error
 func (f *fakeLauncher) Launch(ctx context.Context, spec LaunchSpec) (*session.Local, error) {
 	name, ref := spec.Name, spec.Ref
 	f.mu.Lock()
-	f.calls = append(f.calls, launchCall{spec.AgentID, name, spec.Cwd, slices.Clone(spec.Args), maps.Clone(spec.Env), ref, spec.Yolo, spec.Resume, maps.Clone(spec.Inject), slices.Clone(spec.Allow), spec.AgentSHA256, string(spec.Where), spec.Account, spec.Model})
+	f.calls = append(f.calls, launchCall{spec.AgentID, name, spec.Cwd, slices.Clone(spec.Args), maps.Clone(spec.Env), ref, spec.Yolo, spec.Resume, maps.Clone(spec.Inject), slices.Clone(spec.Allow), spec.AgentSHA256, string(spec.Where), spec.Account, spec.Model, spec.Way})
 	err, block := f.fail[name], f.block[name]
 	pause := cmp.Or(f.pauses[name], f.pause, 5*time.Millisecond)
 	f.mu.Unlock()
@@ -166,9 +201,28 @@ func (f *fakeLauncher) Launch(ctx context.Context, spec LaunchSpec) (*session.Lo
 	}
 	p := sessiontest.NewFakeProc()
 	info := session.Info{ID: session.NewID(), Name: name, AgentID: spec.AgentID, Cwd: spec.Cwd, Crew: &ref, Cols: 80, Rows: 24}
-	l := session.NewLocal(info, p, session.Options{Log: quietLog, OnActivity: f.activity, OnChange: f.change,
-		SubmitPause: pause, TrustPattern: f.trust, Questions: f.questions, InputWait: f.inputWait, PromptShape: f.shape,
-		WorkingTitle: f.workingTitle, TitleSettle: f.titleSettle, ConfirmSubmit: f.confirm, ConfirmWait: f.confirmWait})
+	opts := session.Options{Log: quietLog, OnActivity: f.activity, OnChange: f.change,
+		SubmitPause: pause, TrustPattern: f.trust, TrustAnswers: f.trustAnswers, Questions: f.questions, InputWait: f.inputWait, PromptShape: f.shape,
+		WorkingTitle: f.workingTitle, TitleSettle: f.titleSettle, ConfirmSubmit: f.confirm, ConfirmWait: f.confirmWait, AcceptWait: f.acceptWait}
+	onLaunch := f.onLaunch
+	if spec.Way == WayProtocol {
+		// A member launched to run as a chat: a server session of Claude
+		// Code's, on the conversation its launch chose or resumed.
+		info.Kind = session.KindServer
+		info.AgentSession = &session.AgentSession{ID: "launch-" + info.ID, Source: session.AgentSessionSet}
+		if spec.Resume != "" {
+			info.AgentSession = &session.AgentSession{ID: spec.Resume, Resumable: true, Source: session.AgentSessionResumed}
+		}
+		opts.MemberWay, opts.MemberResumes = spec.Way, spec.Resume != ""
+		if opts.PromptShape == nil {
+			opts.PromptShape = claudeShape(f.t)
+		}
+		onLaunch = f.chatScreen
+		if onLaunch == nil {
+			onLaunch = drawClaudePrompt
+		}
+	}
+	l := session.NewLocal(info, p, opts)
 	f.mu.Lock()
 	f.procs[name], f.locals[name], f.byID[info.ID] = p, l, l
 	f.all = append(f.all, p)
@@ -177,8 +231,8 @@ func (f *fakeLauncher) Launch(ctx context.Context, spec LaunchSpec) (*session.Lo
 		f.endRuns()
 		p.End(0)
 	})
-	if f.onLaunch != nil {
-		go f.onLaunch(name, p, l)
+	if onLaunch != nil {
+		go onLaunch(name, p, l)
 	}
 	f.mu.Lock()
 	hold, held := f.launchHold, f.launchHeld
@@ -192,13 +246,122 @@ func (f *fakeLauncher) Launch(ctx context.Context, spec LaunchSpec) (*session.Lo
 	return l, nil
 }
 
+// moveCall is a MemberMove the engine asked: the session's name, whether
+// fresh, and whether its terminal had been stopped by then.
+type moveCall struct {
+	name           string
+	fresh, stopped bool
+}
+
+// ChatCheck answers unqualified's error for the agent (crew.ChatChecker).
+func (f *fakeLauncher) ChatCheck(_ context.Context, agentID string, _ []string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.unqualified[agentID]
+}
+
+// MemberMove is a member's move's starts over fakes (crew.ChatChecker):
+// its chat a new FakeProtocol, its way back a fake terminal drawn as its
+// launch's was; refused with moveRefused's error for its session's name.
+func (f *fakeLauncher) MemberMove(_ context.Context, local *session.Local, fresh bool) (session.MoveStarts, error) {
+	name := local.Info().Name
+	f.mu.Lock()
+	hook := f.beforeMove
+	f.mu.Unlock()
+	if hook != nil {
+		hook(name)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	p := f.procs[name]
+	f.moves = append(f.moves, moveCall{name: name, fresh: fresh, stopped: p != nil && p.Stopped()})
+	if err := f.moveRefused[name]; err != nil {
+		return session.MoveStarts{}, err
+	}
+	return session.MoveStarts{
+		Protocol: func(ctx context.Context, conv string) (session.Child, session.Protocol, error) {
+			f.mu.Lock()
+			gate, begin, fail := f.chatGate, f.chatBegin, f.chatErr
+			f.mu.Unlock()
+			if fail != nil {
+				return nil, nil, fail
+			}
+			fp := sessiontest.NewFakeProtocol()
+			f.mu.Lock()
+			f.protos[name] = fp
+			f.allProtos = append(f.allProtos, fp)
+			f.mu.Unlock()
+			if gate != nil {
+				fp.BeginGate = gate
+			}
+			if begin != nil {
+				fp.BeforeBegin = func() { begin(name) }
+			}
+			f.t.Cleanup(func() { fp.Child().End(0) })
+			return fp.Start()(ctx, conv)
+		},
+		Terminal: func(_ context.Context, conv string, _, _ uint16) (session.Process, error) {
+			f.mu.Lock()
+			fail := f.terminalErr
+			f.mu.Unlock()
+			if fail != nil {
+				return nil, fail
+			}
+			np := sessiontest.NewFakeProc()
+			f.mu.Lock()
+			f.procs[name] = np
+			f.all = append(f.all, np)
+			f.terminalConv = append(f.terminalConv, conv)
+			draw := f.chatScreen
+			f.mu.Unlock()
+			f.t.Cleanup(func() {
+				f.endRuns()
+				np.End(0)
+			})
+			if draw == nil {
+				draw = drawClaudePrompt
+			}
+			go draw(name, np, local)
+			return np, nil
+		},
+		Gone:     session.GroupGone,
+		ReadyCap: f.readyCap,
+	}, nil
+}
+
+// claudeShape is Claude Code's prompt shape, as the catalog gives it.
+func claudeShape(t *testing.T) *regexp.Regexp {
+	t.Helper()
+	a, ok := catalog.Default().Get("claude")
+	if !ok {
+		t.Fatal("no built-in Claude Code")
+	}
+	re, err := catalog.CompilePattern(a.PromptShape)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return re
+}
+
+// claudeRule is a rule of Claude Code's prompt box, 80 columns wide.
+var claudeRule = strings.Repeat("─", 80)
+
+// claudePromptFrame is Claude Code's prompt at rest as the stub draws it:
+// a rule, the ❯ row, a rule, its footer.
+const claudePromptFrame = "\x1b[2J\x1b[H ▐▛███▜▌   Claude Code\r\n\r\n"
+
+// drawClaudePrompt draws Claude Code's prompt at rest on p.
+func drawClaudePrompt(_ string, p *sessiontest.FakeProc, _ *session.Local) {
+	_ = p.Print(claudePromptFrame + claudeRule + "\r\n❯ \r\n" + claudeRule + "\r\n  ? for shortcuts")
+}
+
 // activity is the sessions' OnActivity: the entry goes to the engine with the
-// state it records, as the server's hook hands it on.
-func (f *fakeLauncher) activity(sessionID string, e session.ActivityEntry, state session.AttentionState) {
+// state and kind it records, as the server's hook hands it on.
+func (f *fakeLauncher) activity(sessionID string, e session.ActivityEntry, state session.AttentionState, kind string) {
 	if f.beforeActivity != nil {
 		f.beforeActivity(sessionID, e)
 	}
-	f.engine.OnActivity(sessionID, e, state)
+	f.engine.OnActivity(sessionID, e, state, kind)
 }
 
 // change is the sessions' OnChange: the change goes to the engine, as the
@@ -1011,7 +1174,7 @@ func TestStopStopsEveryMember(t *testing.T) {
 	}
 	stoppedAt := *got.StoppedAt
 	core, _ := fl.member("core")
-	e.OnActivity(core.Info().ID, session.ActivityEntry{Type: session.ActivityAttention, Message: "done", At: time.Now().UTC()}, session.AttentionDone)
+	e.OnActivity(core.Info().ID, session.ActivityEntry{Type: session.ActivityAttention, Message: "done", At: time.Now().UTC()}, session.AttentionDone, "")
 	if err := e.StartMember(t.Context(), run.ID, "docs"); !errors.Is(err, ErrRunStopped) {
 		t.Fatalf("starting a member of a stopped run: %v", err)
 	}

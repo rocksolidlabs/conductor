@@ -28,11 +28,11 @@ func clarification(requestID, question string) DecisionRequest {
 // reportDone and reportWorking are the attempt's agent's own reports, as
 // its hooks hand them to the engine.
 func reportDone(e *Engine, sessionID string) {
-	e.OnActivity(sessionID, session.ActivityEntry{Type: session.ActivityAttention, Message: "done", At: time.Now().UTC()}, session.AttentionDone)
+	e.OnActivity(sessionID, session.ActivityEntry{Type: session.ActivityAttention, Message: "done", At: time.Now().UTC()}, session.AttentionDone, "")
 }
 
 func reportWorking(e *Engine, sessionID string) {
-	e.OnActivity(sessionID, session.ActivityEntry{Type: session.ActivityAttention, Message: "working", At: time.Now().UTC()}, session.AttentionWorking)
+	e.OnActivity(sessionID, session.ActivityEntry{Type: session.ActivityAttention, Message: "working", At: time.Now().UTC()}, session.AttentionWorking, "")
 }
 
 // extraOf is the attempts a task was given past its bound.

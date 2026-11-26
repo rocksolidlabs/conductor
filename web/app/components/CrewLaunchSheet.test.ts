@@ -286,6 +286,11 @@ describe('the launch sheet', () => {
     expect(launchYoloWords(false, false)).toBe("Permission prompts: the members ask before they act (the crew's setting)")
     expect(launchYoloWords(true, true)).toBe("Permission prompts: skipped: the members act without asking (the server's default now)")
     expect(launchYoloWords(false, true)).toBe("Permission prompts: the members ask before they act (the server's default now)")
+    // A Chat crew that is not yolo: its members' chats take the person's own mode; a yolo one, and a Terminal one, say what they did.
+    expect(launchYoloWords(false, false, 'chat')).toBe("Permission prompts: in a chat, the members follow your own permission mode in the agent's settings")
+    expect(launchYoloWords(false, true, 'chat')).toBe("Permission prompts: in a chat, the members follow your own permission mode in the agent's settings")
+    expect(launchYoloWords(true, false, 'chat')).toBe("Permission prompts: skipped: the members act without asking (the crew's setting)")
+    expect(launchYoloWords(false, false, undefined)).toBe("Permission prompts: the members ask before they act (the crew's setting)")
   })
 
   it('draws its table a row a member: member, agent, model and account in plain words, the default named once the view says it', () => {

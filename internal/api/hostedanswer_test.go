@@ -176,7 +176,7 @@ func TestHostedRouteRecordsItsStatus(t *testing.T) {
 	const words = "routed: person Ada (on call)"
 	var mu sync.Mutex
 	recorded := map[string]int{}
-	e.srv.events.addSink(func(sess string, en session.ActivityEntry, _ session.AttentionState) {
+	e.srv.events.addSink(func(sess string, en session.ActivityEntry, _ session.AttentionState, _ string) {
 		if en.Type == session.ActivityStatus && en.Message == words {
 			mu.Lock()
 			recorded[sess]++

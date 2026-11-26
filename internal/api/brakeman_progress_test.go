@@ -351,7 +351,7 @@ func TestProgressReachesNoSink(t *testing.T) {
 	t.Parallel()
 	h := newEventHub()
 	sunk := 0
-	h.addSink(func(string, session.ActivityEntry, session.AttentionState) { sunk++ })
+	h.addSink(func(string, session.ActivityEntry, session.AttentionState, string) { sunk++ })
 	fresh, full := h.subscribe(), h.subscribe()
 	for range activityQueueLimit {
 		full <- []byte("x")

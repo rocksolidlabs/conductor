@@ -33,6 +33,14 @@ type FakeProtocol struct {
 	// BeforeSend, when set, runs in Send with the message before it is
 	// recorded: a test's gate on a write.
 	BeforeSend func(way.Message)
+	// BeforeBegin, when set, runs in Begin before it is recorded, the
+	// session already in the protocol way and not yet ready: a test's gate
+	// on the child's start.
+	BeforeBegin func()
+	// BeginGate, when set, holds Begin until it is closed, or until
+	// Begin's context ends (its error then): a chat not ready within its
+	// bound.
+	BeginGate <-chan struct{}
 
 	mu        sync.Mutex
 	calls     []string
@@ -181,7 +189,18 @@ func (f *FakeProtocol) Name() string {
 func (f *FakeProtocol) Verbatim() bool { return f.IsVerbatim }
 
 // Begin answers BeginErr.
-func (f *FakeProtocol) Begin(context.Context) error {
+func (f *FakeProtocol) Begin(ctx context.Context) error {
+	if f.BeforeBegin != nil {
+		f.BeforeBegin()
+	}
+	if f.BeginGate != nil {
+		select {
+		case <-f.BeginGate:
+		case <-ctx.Done():
+			f.note("begin")
+			return ctx.Err()
+		}
+	}
 	f.note("begin")
 	return f.BeginErr
 }

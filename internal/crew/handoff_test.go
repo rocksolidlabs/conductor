@@ -219,7 +219,7 @@ func TestHandoffUnknownMemberLogged(t *testing.T) {
 		t.Fatalf("%d notes", n)
 	}
 	before, _ := e.Get(run.ID)
-	e.OnActivity("not-a-member", handoffEntry("tests", "hello"), "")
+	e.OnActivity("not-a-member", handoffEntry("tests", "hello"), "", "")
 	if after, _ := e.Get(run.ID); len(after.Log) != len(before.Log) {
 		t.Fatalf("a stranger's handoff was noted: %+v", after.Log[len(before.Log):])
 	}
@@ -402,7 +402,7 @@ func TestHandoffsDropWhenTheRunStops(t *testing.T) {
 		t.Fatalf("%d writes after the stop", n)
 	}
 	// A handoff reported as the run stops is ignored.
-	e.OnActivity(lead.Info().ID, handoffEntry("tests", "late"), "")
+	e.OnActivity(lead.Info().ID, handoffEntry("tests", "late"), "", "")
 	if after, _ := e.Get(run.ID); len(after.Log) != len(got.Log) {
 		t.Fatalf("noted after the stop: %+v", after.Log[len(got.Log):])
 	}

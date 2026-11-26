@@ -285,7 +285,7 @@ func TestALateWithdrawalLeavesTheQuestionANewBlockerTookOver(t *testing.T) {
 	withdrawAfter = func() { withdrawn <- struct{}{} }
 	t.Cleanup(func() { withdrawBeforeLock, withdrawAfter = nil, nil })
 	// A working report clears the blocker; its withdrawal is held back.
-	e.OnActivity(b.Attempt.SessionID, session.ActivityEntry{Type: session.ActivityAttention, At: time.Now().UTC()}, session.AttentionWorking)
+	e.OnActivity(b.Attempt.SessionID, session.ActivityEntry{Type: session.ActivityAttention, At: time.Now().UTC()}, session.AttentionWorking, "")
 	waitTaskWhere(t, e, run.ID, "build", "unblocked", func(ts TaskState) bool { return ts.Blocker == nil })
 	<-reached
 	// Reported again: the same question, kept by the new blocker.
