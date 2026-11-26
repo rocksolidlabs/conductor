@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -236,5 +237,35 @@ func TestADesksQueuedAnswerIsNotSentOnceItsLinkEnded(t *testing.T) {
 	}
 	if _, ok := l.QuestionResult(q); ok || l.Info().Attention.ID != q {
 		t.Fatalf("the question: %+v", l.Info().Attention)
+	}
+}
+
+// A hosted session's question: how it runs is its host's to know, so the
+// decision page's words for its choices and its line hold either way.
+func TestAHostedQuestionItemSaysItAnswers(t *testing.T) {
+	e := newTestEnv(t, nil)
+	hosted := startHost(t, e, []string{"/bin/cat"})
+	report(t, e, hosted, map[string]any{"state": "needs_input", "message": "Pears or plums?", "kind": "prompt",
+		"options": []map[string]any{{"label": "Pears", "input": "Pears\r"}, {"label": "Plums", "input": "Plums\r"}}})
+	var hq string
+	until(t, "the hosted question shown", func() bool {
+		hq = hostedSession(t, e, hosted).Info().Attention.ID
+		return hq != ""
+	})
+	name := hostedSession(t, e, hosted).Info().Name
+	resp, out := e.do("GET", "/api/inbox/item?ref="+url.QueryEscape(questionRef(hosted, hq)), adminToken, nil)
+	if resp.StatusCode != 200 {
+		t.Fatalf("the item: %d %v", resp.StatusCode, out)
+	}
+	var scopes []string
+	for _, a := range out["item"].(map[string]any)["actions"].([]any) {
+		scopes = append(scopes, a.(map[string]any)["scope"].(string))
+	}
+	want := []string{name + "'s question with the choice 'Pears'", name + "'s question with the choice 'Plums'", name + "'s question with the line you write"}
+	for i := range want {
+		want[i] = "Answers " + want[i]
+	}
+	if strings.Join(scopes, "|") != strings.Join(want, "|") {
+		t.Fatalf("scopes %q", scopes)
 	}
 }

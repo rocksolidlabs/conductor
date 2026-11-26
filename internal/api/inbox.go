@@ -539,19 +539,28 @@ func (rd *inboxRead) questionItem(info session.Info) (*inboxItem, bool) {
 		}
 		route := "/ws/sessions/" + info.ID
 		// A session that runs as a chat has no terminal: a choice, or a
-		// line, is sent to its agent as the person's answer (#1150).
+		// line, is sent to its agent as the person's answer (#1150). A
+		// hosted session's way is its host's to know, not this server's:
+		// words that hold either way.
 		chat := info.Way == session.WayProtocol
+		hosted := info.Kind == session.KindHosted
 		for _, o := range opts {
 			scope := fmt.Sprintf("Types %s into the terminal of %s: the choice '%s'%s", keysWords(o.Input), info.Name, o.Label, plan)
-			if chat {
+			switch {
+			case chat:
 				scope = fmt.Sprintf("Sends the choice '%s' to %s as your answer%s", o.Label, info.Name, plan)
+			case hosted:
+				scope = fmt.Sprintf("Answers %s's question with the choice '%s'%s", info.Name, o.Label, plan)
 			}
 			it.addAction(inboxAction{Name: "answer", Label: o.Label, Input: o.Input, Expect: a.ID, Route: route, Scope: scope})
 		}
 		if a.Kind == session.KindPrompt || len(a.Options) == 0 {
 			scope := fmt.Sprintf("Types the line you write into the terminal of %s and enters it%s", info.Name, plan)
-			if chat {
+			switch {
+			case chat:
 				scope = fmt.Sprintf("Sends the line you write to %s as your answer%s", info.Name, plan)
+			case hosted:
+				scope = fmt.Sprintf("Answers %s's question with the line you write%s", info.Name, plan)
 			}
 			it.addAction(inboxAction{Name: "answer", Label: "Reply with a line", Text: true, Expect: a.ID, Route: route, Scope: scope})
 		}
