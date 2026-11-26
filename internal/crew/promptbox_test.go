@@ -31,10 +31,9 @@ func claudeShape(t *testing.T) *regexp.Regexp {
 
 // claudeBox is Claude Code's prompt box drawn by hand, as the session's
 // tests draw it (inputbox_test.go): a rule, the ❯ mark and a no-break
-// space, text, a rule and the footer, as one synchronized update that
-// hides the cursor and ends with it at column col of the box's row, shown
-// or not. That Claude Code puts the cursor after the text its box holds is
-// an assumption of these screens.
+// space, text from column 3, a rule and the footer, as one synchronized
+// update that hides the cursor and ends with it at column col of the box's
+// row, shown or not (as Claude Code runs by default, never shown).
 func claudeBox(text string, col int, shown bool) string {
 	rule := strings.Repeat("─", 80)
 	show := ""
@@ -44,7 +43,7 @@ func claudeBox(text string, col int, shown bool) string {
 	return "\x1b[?2026h\x1b[?25l\x1b[2J\x1b[H" + rule + "\r\n❯ " + text + "\x1b[22m\r\n" + rule + "\r\n  ? for shortcuts" + fmt.Sprintf("\x1b[2;%dH", col) + show + "\x1b[?2026l"
 }
 
-const placeholder = "\x1b[2mTry \"fix lint errors\""
+const placeholder = `Try "fix lint errors"`
 
 // boxEngine is an engine whose member lead runs Claude Code's prompt shape
 // and whose readiness wait passes once lead's process has done what
@@ -108,7 +107,21 @@ func boxUntil(d time.Duration, cond func() bool) bool {
 	return true
 }
 
-const boxLine = "lead's prompt box holds text: send it or clear it"
+const (
+	boxLine       = "lead's prompt box holds text: send it or clear it"
+	boxEditedLine = "lead's prompt box holds text: send it, or clear it and press Enter"
+)
+
+// boxHeld reports whether the run's member lead is marked held by its
+// prompt box (MemberState.BoxHeld), what the Brakeman desk reads.
+func boxHeld(t *testing.T, e *Engine, runID string) bool {
+	t.Helper()
+	r, ok := e.Get(runID)
+	if !ok || len(r.Members) == 0 {
+		t.Fatalf("run %s not found", runID)
+	}
+	return r.Members[0].BoxHeld
+}
 
 // TestAMembersPromptWaitsWhileItsBoxHoldsAPersonsWord: a word a person
 // typed while the member's agent loaded, shown in its box with the caret
@@ -143,6 +156,9 @@ func TestAMembersPromptWaitsWhileItsBoxHoldsAPersonsWord(t *testing.T) {
 	if n := logCount(t, e, run.ID, boxLine); n != 1 {
 		t.Fatalf("the run's log says it %d times", n)
 	}
+	if !boxHeld(t, e, run.ID) {
+		t.Fatal("the member is not marked held by its box")
+	}
 	if got := typed(p); len(got) != 0 {
 		t.Fatalf("typed into the box: %q", got)
 	}
@@ -153,13 +169,74 @@ func TestAMembersPromptWaitsWhileItsBoxHoldsAPersonsWord(t *testing.T) {
 		t.Fatalf("typed %q", got)
 	}
 	waitLogged(t, e, run.ID, "typed lead's prompt", 1, 10*time.Second)
+	if boxHeld(t, e, run.ID) {
+		t.Fatal("the member is still marked held by its box")
+	}
+}
+
+// TestAMembersPromptWaitsBehindAnEnterItsAgentDropped: a word and an
+// Enter typed as one input while the member's agent loads: the agent
+// keeps the word in its box and drops the Enter. The box decides: the
+// prompt waits while it begins with the word, noted once, and is typed
+// alone once the box is blank (the word sent).
+func TestAMembersPromptWaitsBehindAnEnterItsAgentDropped(t *testing.T) {
+	e, fl, _, _ := boxEngine(t, func(p *sessiontest.FakeProc, l *session.Local, sub *session.Subscription) {
+		keys(t, l, sub, "pear\r")
+		drawn(t, p, l, claudeBox("pear", 7, false), "pear")
+	})
+	run, err := e.Launch(t.Context(), testCrew(immediate("lead", "Plan it.")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitLogged(t, e, run.ID, boxLine, 1, 10*time.Second)
+	l, p := fl.member("lead")
+	if got := typed(p); len(got) != 1 || got[0] != "pear\r" {
+		t.Fatalf("typed into the box: %q", got)
+	}
+	drawn(t, p, l, claudeBox("", 3, false), "shortcuts")
+	if got := waitTyped(t, p, 10*time.Second); strings.Contains(got, "pear") || !strings.Contains(got, "Plan it.") {
+		t.Fatalf("typed %q", got)
+	}
+}
+
+// TestAMembersPromptWaitsBehindEditedText: text edited with a key the
+// session does not follow (a cursor key) holds the prompt while the box
+// is not blank, and the run's log says once to send it, or clear it and
+// press Enter: behind the placeholder, with the cursor hidden, a cleared
+// box is not seen. The Enter into the cleared box lets it go.
+func TestAMembersPromptWaitsBehindEditedText(t *testing.T) {
+	e, fl, _, subs := boxEngine(t, func(p *sessiontest.FakeProc, l *session.Local, sub *session.Subscription) {
+		keys(t, l, sub, "pear\x1b[D")
+		drawn(t, p, l, claudeBox("pear", 6, false), "pear")
+	})
+	run, err := e.Launch(t.Context(), testCrew(immediate("lead", "Plan it.")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sub := <-subs
+	waitLogged(t, e, run.ID, boxEditedLine, 1, 10*time.Second)
+	l, p := fl.member("lead")
+	typed(p)
+	keys(t, l, sub, "\x7f\x7f\x7f\x7f")
+	drawn(t, p, l, claudeBox(placeholder, 3, false), "Try")
+	keys(t, l, sub, "\r")
+	drawn(t, p, l, claudeBox("", 3, false), "shortcuts")
+	if got := waitTyped(t, p, 10*time.Second); !strings.HasSuffix(got, "\r") || strings.Contains(got, "Plan it.") {
+		t.Fatalf("the person's keys: %q", got)
+	}
+	if got := waitTyped(t, p, 10*time.Second); !strings.Contains(got, "Plan it.") {
+		t.Fatalf("typed %q", got)
+	}
+	if n := logCount(t, e, run.ID, boxEditedLine); n != 1 {
+		t.Fatalf("the run's log says it %d times", n)
+	}
 }
 
 // TestAMembersPromptGoesAtOnceIntoAnEmptyBox: a box showing its
 // placeholder, a box whose agent never shows its cursor (no one typed),
-// and a box whose word a person sent with an Enter (the screen not drawn
-// again): the prompt is typed at once, and the run's log says nothing of
-// the box.
+// a box whose word a person sent with an Enter (the box blank after it),
+// and a word typed and deleted: the prompt is typed at once, and the
+// run's log says nothing of the box.
 func TestAMembersPromptGoesAtOnceIntoAnEmptyBox(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -175,8 +252,13 @@ func TestAMembersPromptGoesAtOnceIntoAnEmptyBox(t *testing.T) {
 		{"a word sent", func(p *sessiontest.FakeProc, l *session.Local, sub *session.Subscription) {
 			keys(t, l, sub, "pear")
 			keys(t, l, sub, "\r")
-			drawn(t, p, l, claudeBox("pear", 7, true), "pear")
+			drawn(t, p, l, claudeBox("", 3, false), "shortcuts")
 		}, []string{"pear\r"}},
+		{"a word deleted", func(p *sessiontest.FakeProc, l *session.Local, sub *session.Subscription) {
+			keys(t, l, sub, "pe\x7f\x7f")
+			drawn(t, p, l, claudeBox(placeholder, 3, false), "Try")
+			// Its keys have no Enter: they come before the prompt's text.
+		}, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			e, fl, _, _ := boxEngine(t, tc.before)

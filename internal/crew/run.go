@@ -178,10 +178,15 @@ var (
 const UnknownScreen = "shows a screen not recognised as its prompt (not its prompt's shape, a dialog's choices, or no readiness)"
 
 // BoxHoldsText is what the run's log says, once in a wait for a member's
-// prompt, of a member whose agent's prompt box may hold text a person
-// typed and did not send (session.ErrBoxHoldsText): its prompt is typed
-// once the box is empty again.
-func BoxHoldsText(member string) string {
+// prompt, of a member whose agent's prompt box shows text typed into it
+// and not sent (session.ErrBoxHoldsText): its prompt is typed once the
+// box is empty again. edited is text edited with keys the session does
+// not follow (session.ErrBoxHoldsEditedText), whose clearing a
+// placeholder may hide: an Enter into the cleared box tells.
+func BoxHoldsText(member string, edited bool) string {
+	if edited {
+		return member + "'s prompt box holds text: send it, or clear it and press Enter"
+	}
 	return member + "'s prompt box holds text: send it or clear it"
 }
 
@@ -226,6 +231,12 @@ type MemberState struct {
 	// cleared once the line is typed: what the Brakeman desk's words of
 	// a turn that did not start say. Not in the run's JSON.
 	Unrecognised bool `json:"-"`
+	// BoxHeld is set while a member's line waits because its agent's
+	// prompt box holds text typed into it and not sent (BoxHoldsText), and
+	// cleared once the line is typed, as Unrecognised is: what the
+	// Brakeman desk's words of a turn that did not start say first. Not in
+	// the run's JSON.
+	BoxHeld bool `json:"-"`
 	// Unconfirmed is the session a prompt was typed into, entered and
 	// entered again, whose agent, one that reports taking a prompt, never
 	// reported taking it (session.SubmitResult.Unconfirmed): while that is
@@ -1796,7 +1807,10 @@ func (e *Engine) promptWith(ctx context.Context, r *run, m *member, local *sessi
 		// waits and is tried again a poll later; the desk ends the turn at
 		// its start bound with the screen's words (notStarted). stop says
 		// the wait ended, with what promptWith returns.
-		noted, boxNoted := false, false
+		noted := false
+		// boxNoted is each wording of a box holding text noted in this
+		// wait (BoxHoldsText), by whether the text was edited.
+		var boxNoted [2]bool
 		// later waits a poll and says whether the wait ended, with what
 		// promptWith returns.
 		later := func() (stop bool, err error) {
@@ -1811,29 +1825,38 @@ func (e *Engine) promptWith(ctx context.Context, r *run, m *member, local *sessi
 			return false, nil
 		}
 		unrecognised := func() (stop bool, err error) {
+			e.mu.Lock()
+			// The latest reason the line waits is the one the desk reads.
+			m.state.Unrecognised, m.state.BoxHeld = true, false
 			if !noted {
 				noted = true
-				e.mu.Lock()
-				m.state.Unrecognised = true
 				r.note(session.ActivityStatus, "%s %s: its prompt waits", name, UnknownScreen)
-				e.mu.Unlock()
 			}
+			e.mu.Unlock()
 			return later()
 		}
-		// boxHolds holds the line while the agent's prompt box may hold
-		// text (session.Submission.EmptyBox: a word a person typed in
-		// the member's terminal, while its agent loaded or since, and
-		// did not send): the line is typed only into an empty box, never
-		// after the text and entered with it. Noted once in the wait,
-		// as a screen not recognised is, and tried again a poll later:
-		// typed once the person has sent the text or cleared it.
-		boxHolds := func() (stop bool, err error) {
-			if !boxNoted {
-				boxNoted = true
-				e.mu.Lock()
-				r.note(session.ActivityStatus, "%s", BoxHoldsText(name))
-				e.mu.Unlock()
+		// boxHolds holds the line while the agent's prompt box shows text
+		// typed into it and not sent (session.Submission.EmptyBox: a word a
+		// person typed in the member's terminal, while its agent loaded or
+		// since): the line is typed only into an empty box, never after the
+		// text and entered with it. Noted once in the wait for each wording
+		// (edited: text edited with keys the session does not follow), as a
+		// screen not recognised is, the member marked for the Brakeman desk
+		// (BoxHeld), and tried again a poll later: typed once the box no
+		// longer shows the text.
+		boxHolds := func(edited bool) (stop bool, err error) {
+			e.mu.Lock()
+			// The latest reason the line waits is the one the desk reads.
+			m.state.BoxHeld, m.state.Unrecognised = true, false
+			i := 0
+			if edited {
+				i = 1
 			}
+			if !boxNoted[i] {
+				boxNoted[i] = true
+				r.note(session.ActivityStatus, "%s", BoxHoldsText(name, edited))
+			}
+			e.mu.Unlock()
 			return later()
 		}
 		// One line in the run's log for one question, over every wait
@@ -1916,7 +1939,7 @@ func (e *Engine) promptWith(ctx context.Context, r *run, m *member, local *sessi
 				continue
 			}
 			if errors.Is(err, session.ErrBoxHoldsText) {
-				if stop, err := boxHolds(); stop {
+				if stop, err := boxHolds(errors.Is(err, session.ErrBoxHoldsEditedText)); stop {
 					return err
 				}
 				continue
@@ -1956,7 +1979,7 @@ func (e *Engine) promptWith(ctx context.Context, r *run, m *member, local *sessi
 			return fmt.Errorf("typing its prompt: %w", err)
 		}
 		e.mu.Lock()
-		m.state.Unrecognised = false
+		m.state.Unrecognised, m.state.BoxHeld = false, false
 		switch {
 		case pending:
 			// Accepted: entered as the program reads, and marked
@@ -3065,6 +3088,23 @@ func (e *Engine) SetNotReadyForTest(gate <-chan struct{}) {
 			return err
 		}
 		return errNotReady
+	}
+}
+
+// SetReadyAfterForTest makes the engine's readiness wait answer, once gate
+// is closed and every time it is asked from then on, that a member is
+// ready: a test of what a member's line meets on a screen the test has
+// made what it means to test (keys typed into it) before the line is
+// tried. It is called before the engine launches any run: the wait is
+// read without a lock.
+func (e *Engine) SetReadyAfterForTest(gate <-chan struct{}) {
+	e.await = func(ctx context.Context, _ *session.Local, _ func(string)) error {
+		select {
+		case <-gate:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		return ctx.Err()
 	}
 }
 
