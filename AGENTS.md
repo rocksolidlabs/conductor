@@ -319,6 +319,11 @@ add its rule here.
   `waitTask`, `attemptFailed`) and reads the ledger at once can read it
   before the commit. Wait on the ledger for what the ledger must hold
   (`attemptWhen`, `taskWhen`), every row and event the test then reads.
+  The run's revision is the ledger's too: an outcome seen in the view
+  comes with the revision before its commit, and a command sent at it
+  is refused stale once the commit lands; wait for the run settled at
+  its last commit before reading a revision to send
+  (`TestTaskCommandsFollowALiveRun`, `settledAt`, 2026-11-25, #281).
   The session works the same way: it changes the attention
   inside its lock and records the change's entry after it (`recordOwn`),
   so a state seen showing says nothing of its entry. Wait for the entry
