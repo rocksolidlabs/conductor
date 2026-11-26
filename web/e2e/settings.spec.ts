@@ -2,6 +2,7 @@ import { mkdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { expect, standingRoute, test, viaMore, type Api } from './fixtures'
 import type { Locator, Page, Request } from '@playwright/test'
+import { uncut } from './layout'
 import type { E2EState } from './state'
 
 // The desktop app's Settings page, under a stand-in for its bridge: the
@@ -1143,6 +1144,55 @@ for (const platform of ['linux', 'win32'] as const) {
       expect(await page.evaluate(() => (window as unknown as { e2eSets: Array<{ yolo?: boolean }> }).e2eSets.map((s) => s.yolo))).toEqual([true])
       // The section in view went in the address before the restart, so the page that follows the server opens on it.
       await expect(page).toHaveURL(/\/settings\?section=running$/)
+    })
+  })
+}
+
+/**
+ * The save bar at rest (its animations ended): its box and right padding, Save's box, and the box of each note beside it (every
+ * child but the button).
+ */
+async function saveBarOf(page: Page) {
+  const bar = page.locator('[data-settings-save-bar]')
+  await bar.evaluate((b) => Promise.all(b.getAnimations({ subtree: true }).map((a) => a.finished)).then(() => undefined))
+  return bar.evaluate((b) => {
+    const r = (e: Element) => JSON.parse(JSON.stringify(e.getBoundingClientRect())) as DOMRect
+    const save = b.querySelector('[data-save-settings]')!
+    return { bar: r(b), padLeft: parseFloat(getComputedStyle(b).paddingLeft), padRight: parseFloat(getComputedStyle(b).paddingRight), save: r(save), notes: Array.from(b.children).filter((c) => c !== save).map(r) }
+  })
+}
+
+/** Save at the bar's right end, within its padding, and every note wholly left of it and inside the bar's padding. */
+function saveAtTheRight(m: Awaited<ReturnType<typeof saveBarOf>>, notes: number) {
+  expect(Math.abs(m.bar.right - m.padRight - m.save.right), `Save's right edge (${m.save.right}) at the bar's (${m.bar.right}, padding ${m.padRight})`).toBeLessThanOrEqual(1)
+  expect(m.notes).toHaveLength(notes)
+  for (const n of m.notes) {
+    expect(n.right, 'the note ends left of Save').toBeLessThanOrEqual(m.save.left)
+    expect(n.left, "the note starts inside the bar's padding").toBeGreaterThanOrEqual(m.bar.left + m.padLeft - 1)
+  }
+}
+
+// The save bar (#1154): Save at its right end, where a form's action is looked for, and the bar's note (the restart sentence) at its
+// left, in the room left and wrapping there, so that on a phone the button stays whole in the window.
+for (const at of [{ name: 'a wide window', use: { viewport: { width: 1440, height: 900 } } }, { name: 'a phone', use: { viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true } }]) {
+  test.describe(`on ${at.name}`, () => {
+    test.use(at.use)
+
+    test("Save sits at the save bar's right end, and its note to its left", async ({ page, state }) => {
+      await standIn(page, state, 'linux')
+      await page.goto('/settings?section=running')
+      await settled(page, 'linux')
+      const save = page.locator('[data-save-settings]')
+      // No note: the button at the right end all the same.
+      await expect(save).toHaveText('Save')
+      saveAtTheRight(await saveBarOf(page), 0)
+      // The restart sentence shown: left of the button, whole, and the button whole in the window.
+      await page.locator('[data-yolo-switch]').click()
+      await expect(save).toHaveText('Save and restart the server')
+      await expect(page.locator('[data-settings-save-bar]')).toContainText('running sessions end')
+      saveAtTheRight(await saveBarOf(page), 1)
+      await uncut(save)
+      await uncut(page.locator('[data-settings-save-bar] > :not([data-save-settings])'))
     })
   })
 }
