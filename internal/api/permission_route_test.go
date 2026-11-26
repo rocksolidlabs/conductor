@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -14,7 +13,6 @@ import (
 
 	"github.com/rocksolidlabs/conductor/internal/agentproto"
 	"github.com/rocksolidlabs/conductor/internal/agents"
-	"github.com/rocksolidlabs/conductor/internal/catalog"
 	"github.com/rocksolidlabs/conductor/internal/session"
 	"github.com/rocksolidlabs/conductor/internal/session/sessiontest"
 )
@@ -251,10 +249,10 @@ func TestEveryConductorToolIsSorted(t *testing.T) {
 	if !strings.HasPrefix(agentproto.ClaudePermissionTool, "mcp__conductor__") {
 		t.Errorf("the prompt tool is %s: the allow rules name another server", agentproto.ClaudePermissionTool)
 	}
-	// A terminal's Claude Code is allowed the same set (#1143): every
-	// settings file it is launched with allows each unasked tool, by its
-	// one tool's rule under the server name of the MCP config the terminal
-	// is given, and nothing else.
+	// A terminal's Claude Code is allowed the same set (#1143), on the
+	// launch beside Conductor's MCP server: one --allowedTools of each
+	// unasked tool's rule under the server name of the MCP config the
+	// terminal is given, and nothing else.
 	claude, _ := agents.Get("claude")
 	var mcp struct {
 		Servers map[string]json.RawMessage `json:"mcpServers"`
@@ -271,29 +269,9 @@ func TestEveryConductorToolIsSorted(t *testing.T) {
 		want = append(want, "mcp__"+server+"__"+name)
 	}
 	dir := t.TempDir()
-	launches := 0
-	for _, sig := range []catalog.Signal{{Kind: catalog.SignalHook}, {Kind: catalog.SignalHook, ToolEvents: true}, {Kind: "bell"}} {
-		for _, yolo := range []bool{false, true} {
-			argv, _ := agents.InjectFor("claude", dir, sig, yolo)
-			if len(argv) != 2 || argv[0] != "--settings" {
-				continue
-			}
-			launches++
-			var settings struct {
-				Permissions struct {
-					Allow []string `json:"allow"`
-				} `json:"permissions"`
-			}
-			asset := filepath.Base(argv[1])
-			if err := json.Unmarshal([]byte(claude.Assets[asset]), &settings); err != nil {
-				t.Fatalf("%s: %v", asset, err)
-			}
-			if !slices.Equal(settings.Permissions.Allow, want) {
-				t.Errorf("a terminal launched with %s allows %v, want %v", asset, settings.Permissions.Allow, want)
-			}
-		}
-	}
-	if launches != 5 {
-		t.Errorf("%d terminal launches name a settings file, want 5", launches)
+	with, without := agents.MCPFor("claude", dir, true), agents.MCPFor("claude", dir, false)
+	if len(with) != len(without)+1 || !slices.Equal(with[:len(without)], without) || !strings.HasPrefix(with[len(without)], "--allowedTools=") ||
+		!slices.Equal(strings.Split(strings.TrimPrefix(with[len(without)], "--allowedTools="), ","), want) {
+		t.Errorf("a terminal launched with Conductor's server gets %q, want %q and the one --allowedTools of %v", with, without, want)
 	}
 }

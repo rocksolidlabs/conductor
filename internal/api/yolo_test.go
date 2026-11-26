@@ -129,7 +129,7 @@ func TestCodexTrustGoesWithYolo(t *testing.T) {
 	e.saveYoloAgent("cx", "codex", map[string]any{"args": []string{"--bypass"}})
 	on := e.do2(map[string]any{"agentId": "cx", "yolo": true})
 	// Codex's launches also register Conductor's MCP server, last.
-	mcp := agents.MCPFor("codex", filepath.Join(e.srv.cfg.DataDir, "hooks"))
+	mcp := agents.MCPFor("codex", filepath.Join(e.srv.cfg.DataDir, "hooks"), true)
 	want := append(append(slices.Clone(yoloScript), "--bypass", "-c", `projects={"`+realRoot(t, e.root)+`"={trust_level="trusted"}}`), mcp...)
 	if got := commandOf(on); !slices.Equal(got, want) {
 		t.Fatalf("command %q, want %q", got, want)

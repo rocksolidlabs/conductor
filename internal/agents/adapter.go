@@ -71,6 +71,12 @@ type Adapter struct {
 	// (conductor mcp) with the agent for one launch, given the hooks dir;
 	// nil for an agent Conductor cannot register it with at launch.
 	MCP func(hooksDir string) []string
+	// MCPAllow, when set, returns the arguments that let the agent call
+	// Conductor's own reporting tools (ProtocolUnaskedTools) of the server
+	// MCP registers without asking: they go on the launch beside MCP's,
+	// and on no launch without it (MCPFor), so they reach Conductor's
+	// server alone (#1143).
+	MCPAllow func() []string
 	// PlansDir, when set, is where the agent keeps the plans it writes
 	// outside a project (#289), given the environment its process runs with
 	// (getenv): Claude Code's `plans` under CLAUDE_CONFIG_DIR, else under

@@ -503,15 +503,15 @@ func TestMCPForEachAdapter(t *testing.T) {
 		"codex":  {"-c", `mcp_servers.conductor.command="/opt/conductor"`, "-c", `mcp_servers.conductor.args=["mcp"]`, "-c", "mcp_servers.conductor.env_vars=" + codexMCPEnv, "-c", "mcp_servers.conductor.tool_timeout_sec=720"},
 	}
 	for _, a := range All() {
-		got := MCPFor(a.ID, dir)
+		got := MCPFor(a.ID, dir, false)
 		if !slices.Equal(got, want[a.ID]) {
 			t.Errorf("%s: %q, want %q", a.ID, got, want[a.ID])
 		}
 	}
-	if got := MCPFor("claude", "hooks"); got != nil {
+	if got := MCPFor("claude", "hooks", true); got != nil {
 		t.Fatalf("relative hooks dir: %q", got)
 	}
-	if got := MCPFor("nope", dir); got != nil {
+	if got := MCPFor("nope", dir, true); got != nil {
 		t.Fatalf("unknown adapter: %q", got)
 	}
 	hooks := t.TempDir()

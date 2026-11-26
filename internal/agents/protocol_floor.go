@@ -98,16 +98,21 @@ var (
 const claudeMCPServer = "conductor"
 
 // ConductorToolOf reads tool, a tool's name as Claude Code reports it (a
-// hook's tool_name), as one of Conductor's own: its name in Conductor's
-// table (mcp__conductor__task_result is task_result) and true, or "" and
-// false for any other tool.
+// hook's tool_name), as one of the tools a launch allows Conductor's
+// server without asking: its name exactly one of ProtocolUnaskedTools
+// after the server's prefix (mcp__conductor__task_result is task_result)
+// and true. Any other name, of another server, another of Conductor's
+// tools, or longer, shorter or with other bytes, is "" and false.
 func ConductorToolOf(tool string) (string, bool) {
 	name, ok := strings.CutPrefix(tool, "mcp__"+claudeMCPServer+"__")
-	return name, ok && name != ""
+	if !ok || !slices.Contains(ProtocolUnaskedTools, name) {
+		return "", false
+	}
+	return name, true
 }
 
 // claudeAllowRules is the allow rules of a chat's floor and of a terminal's
-// launch settings (claudeAllowMember): one per unasked tool, in Claude
+// launch (claudeAllowFlag): one per unasked tool, in Claude
 // Code's form for one tool of an MCP server, mcp__<server>__<tool>
 // (permissions.md, MCP). Claude Code judges deny, then ask, then allow,
 // across every settings source the child reads (the person's and the

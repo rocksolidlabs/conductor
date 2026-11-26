@@ -104,8 +104,13 @@ func (a Adapter) clone() Adapter {
 // MCPFor returns the arguments that register Conductor's MCP server with
 // the agent of adapter agentID for one launch: nil for an adapter without a
 // way to at launch, an unknown adapter, or a hooks dir that is not absolute
-// (the arguments name a file in it).
-func MCPFor(agentID, hooksDir string) []string {
+// (the arguments name a file in it). With allow, they are followed by the
+// adapter's MCPAllow, so that the agent calls Conductor's own reporting
+// tools of that server without asking: the rules travel with Conductor's
+// server and with nothing else, and a launch without the server carries
+// none. A Brakeman turn passes allow false: its own switch decides
+// Conductor's tools (Adapter.AllowTools).
+func MCPFor(agentID, hooksDir string, allow bool) []string {
 	if !filepath.IsAbs(hooksDir) {
 		return nil
 	}
@@ -113,7 +118,11 @@ func MCPFor(agentID, hooksDir string) []string {
 	if !ok || a.MCP == nil {
 		return nil
 	}
-	return a.MCP(hooksDir)
+	argv := a.MCP(hooksDir)
+	if allow && a.MCPAllow != nil && len(argv) > 0 {
+		argv = append(argv, a.MCPAllow()...)
+	}
+	return argv
 }
 
 // InjectFor returns the flags to append to an agent's command and the
@@ -152,4 +161,31 @@ func InjectFor(agentID string, hooksDir string, sig catalog.Signal, yolo bool) (
 		return argv, env
 	}
 	return nil, nil
+}
+
+// AllowsConductorTools reports whether argv, a launch's whole command,
+// carries an adapter's MCPAllow as MCPFor appends it: Conductor's own
+// reporting tools allowed with Conductor's server. A launch without the
+// server (MCP off, a host's), or a Brakeman turn, carries none.
+func AllowsConductorTools(argv []string) bool {
+	for _, a := range registry {
+		if a.MCPAllow == nil {
+			continue
+		}
+		allow := a.MCPAllow()
+		if len(allow) == 0 {
+			continue
+		}
+		held := true
+		for _, arg := range allow {
+			if !slices.Contains(argv, arg) {
+				held = false
+				break
+			}
+		}
+		if held {
+			return true
+		}
+	}
+	return false
 }
