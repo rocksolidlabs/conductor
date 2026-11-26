@@ -346,29 +346,49 @@ kept for the chat, as its terminal had it.
 
 - **The rule.** A crew member's prompt (its role prompt, an attempt's
   task line, a Brakeman turn's line) waits while the agent's prompt box
-  may hold text, and only then: something printable went into the
-  member's terminal since the last Enter went in (a person's keys from any
-  viewer, counted from the session's start, while the agent loads too; a
-  line Conductor typed and did not enter), and the screen does not show
-  the agent's caret at the start of its box. The caret is at the start
-  where one whole frame, drawn since the last of that text went in, shows
-  the cursor on a row of the agent's prompt, just after the prompt's mark
-  and its space (Claude Code's `❯`, Codex's `›`), whatever stands after
-  it: a placeholder ("Try …", "Ask Codex to do anything") or nothing. An
-  Enter written by anyone clears the first condition; the keys of a
-  question's choice go to its dialog and do not count.
+  visibly begins with what was typed into it, and only then. What was
+  typed is followed from the session's first write (while the agent
+  loads too) by a simple line editor's model: a person's keys from any
+  viewer and a line Conductor typed append characters (a paste's text
+  too); Backspace takes the last, Ctrl-W the last word; Ctrl-U and Ctrl-C
+  clear. Every other key that moves the caret or edits elsewhere (the
+  cursor keys, Home, End, Tab, a new line, an Alt key, a mouse press, a
+  paste of more than one line) makes the text "edited". Keys that go to a
+  dialog the session shows (a question's choice, a startup question's
+  answer typed in the terminal) do not count.
+- **The screen decides.** An Enter does not empty the box by itself: an
+  agent still loading keeps the text and drops the Enter. The text is
+  forgotten once a whole frame, drawn after the last key, shows the
+  agent's prompt with a box that does not begin with it (sent, or
+  deleted). Until a frame is drawn after the last key, the line waits. An
+  Enter into an empty box changes nothing, and the Enter of a line
+  Conductor types at the agent's prompt empties the box.
+- **When it waits.** For an agent with a prompt shape (Claude Code and
+  Codex among the built-in ones): the text is not edited and the box's
+  first row (the row of the prompt's mark, after the mark and its space,
+  Claude Code's no-break space among them) begins with it; or the text is
+  edited, the first row holds something after the mark, and the cursor
+  does not show the caret just after the mark on that row (read only
+  where the agent shows its cursor). Text the box does not show (keys a
+  dialog took, keys the agent dropped), a blank box, and nothing typed
+  never hold the line. An agent with no prompt shape is never held.
 - **What the run's log says.** Once in the wait, `<member>'s prompt box
-  holds text: send it or clear it`. The prompt is tried again a poll
-  later, as at a screen not recognised, and typed and entered alone once
-  the person has sent the text or cleared it.
+  holds text: send it or clear it`; for edited text, whose clearing a
+  placeholder may hide, `<member>'s prompt box holds text: send it, or
+  clear it and press Enter`. The prompt is tried again a poll later, as
+  at a screen not recognised, and typed and entered alone once the box no
+  longer shows the text. A Brakeman turn held so until its start bound
+  ends with the words "its prompt box holds text a person typed: send it
+  or clear it in its terminal".
 - **A member no one typed in** is typed into at once, as before, whatever
-  its agent does with its cursor: no agent, built-in or custom, waits for
-  good by this rule.
-- **Limits.** A person who moved the caret to the start of their own text
-  reads as an empty box, and the prompt is typed before that text. An
-  Enter that did not send the text (a line ended with the agent's own
-  "new line" key, a backslash before Enter; an Enter a dialog took)
-  clears the first condition though the text stays.
+  its agent draws and does with its cursor: no agent, built-in or custom,
+  waits for good by this rule.
+- **Limits.** A typed text that the agent's own placeholder happens to
+  begin with ("T" before Claude Code's "Try …") holds until it is sent or
+  deleted. Text edited with the caret keys holds until the box is blank
+  or the caret shows at its start; behind a placeholder and a hidden
+  cursor, until it is sent. The simple editor's model is not the agent's:
+  an agent that binds these keys otherwise is read wrong.
 - **Unchanged.** The launch's first message (it already leaves its line
   unsent where letters stand before it on the prompt's row), handoffs,
   the later lines to a task, the run's broadcast, chat to a member,
