@@ -50,8 +50,8 @@ done in their name that they did not allow.
 
 ## Accessibility & Inclusion
 
-Every text meets its contrast floor in both themes; a state is never told
-by colour alone; an icon-only button has a label that is both its tooltip
-and its accessible name; on a phone, touch targets are at least 44 px and
-nothing scrolls sideways (`docs/design/system.md`). These are the
-project's own checks, not a certification.
+Every text meets its contrast floor in both themes; a state has its word
+as well as its mark, never its colour alone; an icon-only button has a
+label that is both its tooltip and its accessible name
+(`docs/design/system.md`). These are the project's own checks, not a
+certification.
