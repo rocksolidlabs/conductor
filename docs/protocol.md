@@ -2546,6 +2546,29 @@ live and in the replay after `ready`. The seven event types:
 
 The reporter chooses which fields an event carries; none is required.
 
+A terminal's Claude Code reports `tool_denied` through its
+`PermissionDenied` hook, which runs when auto mode's classifier denies a
+call (not for a deny rule, a `PreToolUse` hook or a person's refusal at
+the dialog); `tool` is the tool's name as Claude Code gives it,
+`mcp__conductor__<tool>` for one of Conductor's. The settings it is
+launched with (`--settings` with the hooks directory's `claude.json`,
+`claude-tools.json` with tool events, and `claude-yolo.json`,
+`claude-tools-yolo.json` or `claude-yolo-only.json` with the yolo recipe)
+hold its hooks and allow the tools a chat's floor allows, without its
+permission check judging them (#1143): `guide`, `report`, `set_state`,
+`ask`, `task_context`, `task_checkpoint`, `task_blocked` and
+`task_result`, by the rules `mcp__conductor__<tool>`, `conductor` being
+the server's name in the `--mcp-config` file the terminal is given (see
+Chat sessions, Permission requests, for why these and no others). An
+allow rule resolves a matching call before auto mode's classifier
+judges it; a deny or ask rule of the person's or the folder's own
+settings for the same tool wins over it, and in a yolo session it
+changes nothing. Install (`conductor hooks install`, the Events page)
+merges the hooks alone into `~/.claude/settings.json` (from the asset
+`claude-hooks.json`), never a rule: Conductor writes nothing into the
+person's or the folder's settings. A crew member's refused call to one
+of Conductor's tools is said in its run's log (Crew runs).
+
 Limits, applied to every entry as the session stores it: control characters
 are dropped and surrounding space is trimmed. `message` is at most 500 bytes
 and `tool` at most 100; both keep line breaks and tabs. `url` (at most 2048
@@ -9573,7 +9596,8 @@ Every other tool asks as before, the prompt tool is never allowed, and
 with, though a handoff carries the same message, shorter. Claude Code
 judges deny, then ask, then allow, across every settings source the
 child reads, so a deny or ask rule wins over these allows; in a yolo
-session they change nothing. At most eight requests are open or waiting per
+session they change nothing. A terminal's Claude Code is allowed the same
+tools by the settings it is launched with (Events). At most eight requests are open or waiting per
 session: one more is denied `Too many requests are waiting; this one was
 denied.`.
 

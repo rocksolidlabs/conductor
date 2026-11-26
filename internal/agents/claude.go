@@ -19,11 +19,9 @@ import (
 const (
 	claudeMarker   = "notify --claude-hook"
 	claudeSettings = ".claude/settings.json"
+	// claudeInstallAsset is what Install merges into claudeSettings.
+	claudeInstallAsset = "claude-hooks.json"
 )
-
-func claudeHooks(events ...string) string {
-	return jsonAsset(`{` + claudeHookList(events...) + `}`)
-}
 
 // claudeHookList is the "hooks" member of a settings file for events.
 func claudeHookList(events ...string) string {
@@ -43,6 +41,26 @@ func claudeBaseHookList() string {
 	entry := `{"hooks":[{"type":"command","command":"{{BIN}} notify --claude-hook"}]}`
 	files := `{"matcher":"` + claudeFileTools + `","hooks":[{"type":"command","command":"{{BIN}} notify --claude-hook --files"}]}`
 	return `"hooks":{` + hookLists(entry, claudeEvents...) + `,"PostToolUse":[` + files + `]}`
+}
+
+// claudeAllowMember is the "permissions" member of the settings a
+// terminal's Claude Code is launched with: the chat floor's allow rules
+// (claudeAllowRules), so that an agent calls Conductor's own reporting
+// tools without its permission check judging them, in a terminal as in a
+// chat (#1143). Claude Code honours only the last --settings, and these
+// files are Conductor's, in its hooks directory: nothing is written into
+// the person's settings or the folder's (claudeInstallAsset holds the
+// hooks alone). An allow rule resolves a matching call at once, before
+// auto mode's classifier (permission-modes.md, "How the classifier
+// evaluates actions"); a deny or ask rule of the person's or the folder's
+// for the same tool wins over it, as in a chat.
+func claudeAllowMember() string {
+	rules := claudeAllowRules()
+	quoted := make([]string, len(rules))
+	for i, r := range rules {
+		quoted[i] = strconv.Quote(r)
+	}
+	return `"permissions":{"allow":[` + strings.Join(quoted, ",") + `]}`
 }
 
 // claudeYoloKey skips the warning Claude Code shows before its first launch
@@ -73,14 +91,19 @@ var (
 )
 
 var claudeAssets = map[string]string{
-	"claude.json": jsonAsset(`{` + claudeBaseHookList() + `}`),
+	// The hooks alone, which Install merges into the person's own settings
+	// and the snippet shows: never an allow rule there.
+	claudeInstallAsset: jsonAsset(`{` + claudeBaseHookList() + `}`),
+	// The settings a terminal's Claude Code is launched with (Inject,
+	// YoloInject): the same hooks and Conductor's own tools allowed.
+	"claude.json": jsonAsset(`{` + claudeBaseHookList() + `,` + claudeAllowMember() + `}`),
 	// Tool events are chatty: a signal asks for them with toolEvents.
-	"claude-tools.json": claudeHooks(claudeToolsEvents...),
+	"claude-tools.json": jsonAsset(`{` + claudeHookList(claudeToolsEvents...) + `,` + claudeAllowMember() + `}`),
 	// The same with the yolo key, for a launch with the yolo recipe, and the
 	// key alone for one whose hooks are not wired.
-	"claude-yolo.json":       jsonAsset(`{` + claudeYoloKey + `,` + claudeBaseHookList() + `}`),
-	"claude-tools-yolo.json": jsonAsset(`{` + claudeYoloKey + `,` + claudeHookList(claudeToolsEvents...) + `}`),
-	"claude-yolo-only.json":  jsonAsset(`{` + claudeYoloKey + `}`),
+	"claude-yolo.json":       jsonAsset(`{` + claudeYoloKey + `,` + claudeBaseHookList() + `,` + claudeAllowMember() + `}`),
+	"claude-tools-yolo.json": jsonAsset(`{` + claudeYoloKey + `,` + claudeHookList(claudeToolsEvents...) + `,` + claudeAllowMember() + `}`),
+	"claude-yolo-only.json":  jsonAsset(`{` + claudeYoloKey + `,` + claudeAllowMember() + `}`),
 	// Conductor's MCP server, for --mcp-config (Claude Code 2.1.288 takes
 	// JSON files or strings; verified with --help).
 	"claude-mcp.json": jsonAsset(`{"mcpServers":{"conductor":{"command":"{{BIN}}","args":["mcp"]}}}`),
@@ -98,7 +121,7 @@ var claudeAssets = map[string]string{
 const ClaudeProtocolMCPTimeoutMs = 8 * 60 * 60 * 1000
 
 func claudeSteps(hooksDir string) []step {
-	return []step{mergeHooksStep(claudeAssets, hooksDir, "claude.json", claudeSettings, claudeMarker), skillStep(hooksDir, claudeSkill)}
+	return []step{mergeHooksStep(claudeAssets, hooksDir, claudeInstallAsset, claudeSettings, claudeMarker), skillStep(hooksDir, claudeSkill)}
 }
 
 // claudeIdentity is Claude Code's probe, which its usage reader asks too.
@@ -179,7 +202,7 @@ func claudeAdapter() Adapter {
 			return statusOf(home, claudeSettings, claudeSteps("")...)
 		},
 		Snippet: func(hooksDir string) string {
-			return snippetOf(claudeAssets, hooksDir, "claude.json")
+			return snippetOf(claudeAssets, hooksDir, claudeInstallAsset)
 		},
 		Events: []string{"needs_input", "working", "done", "tool_use", "tool_denied", "error", "progress"},
 	}
