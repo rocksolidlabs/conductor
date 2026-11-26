@@ -161,7 +161,7 @@ registered providers. Write to conductor@rocksolidlabs.io to talk about it.
 
 ## The pull request checklist
 
-The template puts five boxes and one line in every pull request body. Tick
+The template puts six boxes and one line in every pull request body. Tick
 a box only when it is true of the change:
 
 - **Rule 1.** The diff adds no licence check, plan check or paid code; a
@@ -176,6 +176,10 @@ a box only when it is true of the change:
   Verification, one that did not run named as such; a new dependency has
   its reason in the body, and `make notices` ran and its result is
   committed.
+- **A changed screen.** It was looked at rendered and its main task
+  walked (`AGENTS.md`, UX and UI priorities), or Verification says why it
+  could not be; What changed and why says what was removed, deferred or
+  left to a default; or no screen changed.
 
 The line under the boxes says that every commit is signed off by its
 author; the `dco` check proves it.

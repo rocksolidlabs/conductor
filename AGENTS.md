@@ -27,7 +27,8 @@ Conductor runs coding agents in PTYs and shares their terminals, to watch and dr
   (an `os.Root`), never a path opened again. Do not bypass either.
 - Keep per-connection bounds (read limits, queues, in-flight file requests).
 - UI components come from Nuxt UI; use the brand palette in `web/app/app.config.ts`
-  and `docs/design/brand.md`. The junction mark is artwork, never a status light.
+  and `docs/design/brand.md`. Screens follow the design system's rules,
+  `docs/design/system.md`. The junction mark is artwork, never a status light.
 - Names follow the railroad: Conductor is the application, Yardmaster the
   agent harness (a crew with tasks runs as its managed run), Dispatch the
   ticketing and project tracking component (its items are tickets; what
@@ -46,6 +47,48 @@ Conductor runs coding agents in PTYs and shares their terminals, to watch and dr
   instructions and by-hand checklists follow this; a check that would need
   such a step on WSL is done from a machine that is not WSL, or waits for the
   app. The maintainers have said this twice; do not raise it again.
+
+## UX and UI priorities
+
+Optimize for completing the user's task with fewer unnecessary decisions.
+
+Before adding a screen, adding controls, or restructuring a flow:
+- Identify the user's main task and the information needed to complete it.
+- Where your agent has uxui-principles (the MCP server in `.mcp.json`,
+  `docs/design/tools.md`), consult it for relevant guidance on cognitive
+  load, Hick's Law, progressive disclosure, and the applicable flow
+  checklist; without it, work from the design system alone. Name a
+  principle by its id; never copy its text.
+- Reuse established interaction patterns and existing components.
+  Outside guidance gives way to `docs/design/system.md` and `PRODUCT.md`.
+
+When designing:
+- Give the main task and its next action clear visual priority.
+- Keep frequent actions visible and easy to reach.
+- Reveal infrequent and advanced options at the point of need. How often
+  a thing is used decides, never how advanced it looks: Yolo stays in view.
+- Choose sensible defaults when a meaningful user decision is unnecessary.
+- Expose implementation settings only when users need to understand or
+  control them.
+- Add controls only when they serve a requested or clearly necessary task.
+- Preserve clear labels, accessibility, discoverability, and recovery.
+- People use Conductor all day: simpler means less to watch, never more
+  presses for daily work. No change makes a session's Chat or Terminal
+  view slower to use. A settings page folds nothing: its settings are the
+  page.
+
+Before finishing:
+- Inspect the rendered interface and walk through the main task, in a
+  wide, short window (about 2000 x 810) as well as at 1440 and 390: after
+  each change, `make web-build build-go`, then in a terminal of its own
+  `CONDUCTOR_E2E_DAY_OPEN=1 npx playwright test day.spec.ts -g open` in
+  `web/` (the seeded day, `docs/checks.md`; it runs until Ctrl+C). An
+  agent that cannot open a page says so in the pull request.
+- Review competing actions, redundant information, unnecessary steps,
+  and choices that could be handled by defaults.
+- Apply justified simplifications, then verify affected secondary tasks.
+- Briefly explain, under What changed and why in the pull request, the
+  decisions removed, deferred, or handled by defaults.
 
 ## Working an issue
 
