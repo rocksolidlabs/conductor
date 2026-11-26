@@ -29,7 +29,7 @@ mobile/ios/ConductorNative/Sources/ConductorPackaging/Packaging/
 # Python workflow execution artifacts
 __pycache__/
 
-# A person's own agent settings (their approvals of .mcp.json's server, or their own copy of it)
+# A person's own agent settings (their own entry for a design tool's MCP server: docs/design/tools.md)
 .claude/settings.local.json
 .cursor/mcp.json
 .codex/config.toml

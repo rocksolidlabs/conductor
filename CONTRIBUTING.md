@@ -16,8 +16,8 @@ the process, and the rest is what every change keeps true. Then:
 - `docs/checks.md` for the checks, by affected surface;
 - `docs/design/system.md` before changing a screen: the rules every
   screen follows and the checks that hold them (`PRODUCT.md` says who the
-  screens are for, `docs/design/tools.md` which design tools an agent can
-  use here);
+  screens are for, `docs/design/tools.md` which outside design tools a
+  person may add to their agent);
 - `docs/plans/` for a change larger than one pull request: a plan there is
   reviewed before its code.
 

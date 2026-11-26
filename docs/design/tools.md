@@ -42,7 +42,7 @@ The tools worth calling here:
 
 ### What it sends
 
-Nothing of a screen, as the repository starts it. The first start runs
+Nothing of a screen, as the commands below start it. The first start runs
 `npx -y`, which fetches the package and about ninety packages it depends
 on (the MCP SDK and what that brings: an HTTP framework, a process
 spawner, a JSON Schema validator and others) from npm, each by the range
@@ -50,15 +50,15 @@ it declares, with no lockfile; npx can ask npm's registry again at a
 later start. The server itself reads its own data and makes no network
 call. Two tools, `audit_interface` and `check_requirements`, need the
 publisher's paid key and send the screen's description to its service.
-The repository's entry sets that key, `UXUI_API_KEY`, to nothing, so they
+The commands below set that key, `UXUI_API_KEY`, to nothing, so they
 refuse, even for a person who has the key in their environment.
 
-`.mcp.json` pins the server at 1.3.0. Only the server is pinned; what it
-depends on comes by range, so a first run on a new machine can get newer
-versions of any of them. It is not a dependency of Conductor: nothing of
-it ships, and it is not in `THIRD_PARTY_NOTICES`. A new version is a pull
-request that changes `.mcp.json`, this file and `docs/dependencies.md`
-together.
+The commands here pin the server at 1.3.0. Only the server is pinned;
+what it depends on comes by range, so a first run on a new machine can
+get newer versions of any of them. It is not a dependency of Conductor:
+nothing of it ships, and it is not in `THIRD_PARTY_NOTICES`. A new
+version is a pull request that changes this file and
+`docs/dependencies.md` together.
 
 ### Its text stays its own
 
@@ -69,52 +69,65 @@ request's body, a commit message) names a principle, a checklist or a
 smell by its id and says in its own words what follows for the screen at
 hand. It never pastes the tool's sentences.
 
-### In Claude Code
+### Adding it to your agent
 
-`.mcp.json` at the root names the server `uxui-principles`. In an
-interactive session Claude Code asks each person once before it starts a
-server that a repository names: approve it, or reject it. The choice is
-kept in `.claude/settings.local.json`, which git ignores here;
-`claude mcp reset-project-choices` asks again. A session that cannot ask
-(`claude -p`, the Agent SDK) starts it without asking. To keep it off,
-reject it, turn it off in `/mcp`, or start a session with
-`--strict-mcp-config`. Subagents get its tools with the rest.
+The repository checks in no entry for it. An entry a repository checks
+in is started without a question by a session that skips permission
+prompts, and by `claude -p`; so here the choice stays each person's.
 
-Claude Code remembers an approval by the server's name, not by what it
-runs: a branch that changes the command under the same name starts the
-new command without asking. Read the diff of `.mcp.json` before you start
-an agent on someone else's branch; a change to it is reviewed as a
-boundary (`AGENTS.md`).
+Each agent starts the same command, `npx -y
+@uxuiprinciples/mcp-server@1.3.0`, with `UXUI_API_KEY` set to nothing. It
+needs Node 18 or later.
 
-### In other agents
+- Claude Code, from the folder of your checkout:
 
-Each starts the same command, `npx -y @uxuiprinciples/mcp-server@1.3.0`,
-with `UXUI_API_KEY` set to nothing. It needs Node 18 or later.
+  ```sh
+  claude mcp add --scope local uxui-principles -e UXUI_API_KEY= -- npx -y @uxuiprinciples/mcp-server@1.3.0
+  ```
 
-- VS Code with Copilot reads `.mcp.json` at the workspace root as it is.
-- Cursor: add the `uxui-principles` entry of `.mcp.json` under
-  `mcpServers` in `~/.cursor/mcp.json`, or in `.cursor/mcp.json` in your
-  checkout, which git ignores here.
+  `--scope local` adds it for this folder only, and for you only: another
+  checkout or worktree of the repository does not have it. `--scope user`
+  adds it for every project you open. Never `--scope project`: that
+  writes the entry into the repository, to be checked in. `claude mcp
+  remove uxui-principles` takes it out again; `/mcp` turns it off for a
+  while.
+- Cursor: in `~/.cursor/mcp.json`, or in `.cursor/mcp.json` in your
+  checkout, which git ignores here:
+
+  ```json
+  {
+    "mcpServers": {
+      "uxui-principles": {
+        "command": "npx",
+        "args": ["-y", "@uxuiprinciples/mcp-server@1.3.0"],
+        "env": { "UXUI_API_KEY": "" }
+      }
+    }
+  }
+  ```
+
+- VS Code with Copilot: the same entry, under `servers` in your user
+  configuration (the command MCP: Open User Configuration).
 - Codex, in `~/.codex/config.toml` (or `.codex/config.toml` in your
   checkout, which git ignores here):
 
-```toml
-[mcp_servers.uxui-principles]
-command = "npx"
-args = ["-y", "@uxuiprinciples/mcp-server@1.3.0"]
-startup_timeout_sec = 60
+  ```toml
+  [mcp_servers.uxui-principles]
+  command = "npx"
+  args = ["-y", "@uxuiprinciples/mcp-server@1.3.0"]
+  startup_timeout_sec = 60
 
-[mcp_servers.uxui-principles.env]
-UXUI_API_KEY = ""
-```
+  [mcp_servers.uxui-principles.env]
+  UXUI_API_KEY = ""
+  ```
 
 The first start fetches the package, which can take longer than Codex's
 default wait of 10 seconds; hence the 60. To see that it started, ask your
 agent to list the server's tools: `get_flow` and `generate_checklist` are
-among them (in Codex, `codex mcp list` names the server).
+among them (`claude mcp list` and `codex mcp list` name the server).
 
 A person who wants the paid tools adds a server of their own, under
-another name, at their user level, and keeps what it sends in mind.
+another name, and keeps what it sends in mind.
 
 ## Impeccable
 
@@ -125,7 +138,8 @@ that runs its detector after each edit, and an engine, a binary that its
 commands download from the project's GitHub releases on first use. It
 reads a project's `PRODUCT.md` and `DESIGN.md`. It is not an MCP server of
 design guidance: its MCP mode passes requests on to its publisher's
-account service and needs an account, so `.mcp.json` does not name it.
+account service and needs an account, so this page gives no command
+for it.
 
 The repository holds no copy of it and installs nothing of it. It holds
 what the skill reads, for a person who adds it: `PRODUCT.md`, `DESIGN.md`,

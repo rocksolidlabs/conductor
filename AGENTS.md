@@ -54,7 +54,7 @@ Optimize for completing the user's task with fewer unnecessary decisions.
 
 Before adding a screen, adding controls, or restructuring a flow:
 - Identify the user's main task and the information needed to complete it.
-- Where your agent has uxui-principles (the MCP server in `.mcp.json`,
+- Where your agent has uxui-principles (an MCP server a person may add:
   `docs/design/tools.md`), consult it for relevant guidance on cognitive
   load, Hick's Law, progressive disclosure, and the applicable flow
   checklist; without it, work from the design system alone. Name a
@@ -125,10 +125,10 @@ and moves the board for them.
   night.)
 - **Kept out of a bundle:** a change at a boundary (sign-in, tokens,
   links, who may answer or act, the host link, what `.mcp.json` starts)
-  gets a pull request of its
-  own, or a part of a bundle that is its own with an adversarial review of
-  its own; a fix people are hitting now ships alone and at once; a ledger
-  migration ships alone, so that it can be reverted alone.
+  gets a pull request of its own, or a part of a bundle that is its own
+  with an adversarial review of its own; a fix people are hitting now
+  ships alone and at once; a ledger migration ships alone, so that it can
+  be reverted alone.
 - Open a draft PR at the first commit, and tick the template's checklist.
   `Fixes #N` finishes the issue; `Part of #N` leaves it open. Say in the PR
   body which agent or person made it, with a session link when there is one.
