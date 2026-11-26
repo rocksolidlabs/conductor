@@ -107,6 +107,8 @@ describe('the chat', () => {
     expect(view).toMatch(/watch\(\s*\(\) => conn\.transcriptVersion\.value,\s*\(\) => \{\s*const el = scroller\.value\s*if \(el && !atChatEnd\(el\)\) return/)
     expect(view).toContain("{ flush: 'pre' },")
     expect(view).not.toContain('atBottom')
+    // The browser spec that judges the follow measures the end by the same slack (it cannot import this module).
+    expect(readFileSync(new URL('../../e2e/chat-permission.spec.ts', import.meta.url), 'utf8')).toContain(`const CHAT_END_SLACK = ${CHAT_END_SLACK}\n`)
   })
 
   it("readsTheSendersAnswerFromTheTab: an answer's own words come from the tab's store of answers (useTypedAnswers), as the People chat's do", () => {
