@@ -675,6 +675,18 @@ add its rule here.
   the page's animations slowly while it does (`Animation.setPlaybackRate`
   over a CDP session), so that a measure taken too soon fails every run
   and not only on a quick machine.
+- A click on a thing that moves is retried with the thing scrolled to an
+  edge. Playwright's click waits for its target to stand still, and its
+  first retry scrolls the target to the bottom of its scroller
+  (`scrollIntoView({block: 'end'})`), the next ones to the centre and the
+  top. A spec scrolled a chat to its end and pressed Deny at once, while
+  what its own scroll set off (the input's end seen: Allow once enabled,
+  its line gone) still moved the button; the retry took the chat off its
+  end, and the follow the spec judged was that of a person who had
+  scrolled away (`chat-permission.spec.ts`, CI on main, #1144). Wait for
+  what a step sets off to have happened, set the place again, check the
+  target is whole in view before pressing it, and read the place again
+  after the press.
 - Close what a spec opened before its server stops. Pages left open go on
   calling whatever server next takes that port, with a token it refuses,
   and spend its limit of refused requests for their address: a join in

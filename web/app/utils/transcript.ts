@@ -1,5 +1,6 @@
 import { MAX_TRANSCRIPT_ENTRY, MAX_TRANSCRIPT_PAGE, type TranscriptEntry, type TranscriptMessage, type TranscriptReply, type TranscriptRequest, type Welcome } from './protocol'
 import type { MarkView } from './status'
+import { EVENT_INFO, type EventType } from './events'
 
 // A chat's transcript as the page keeps it (docs/plans/chat-or-terminal.md, designs 5, 6 and 11): the entries the owner sent, each
 // kept at its latest revision by `seq`, the highest `mark` held (the next hello's `transcriptAfter`, so a connection made again is
@@ -243,6 +244,31 @@ export function promptText(e: TranscriptEntry): string {
   return e.answers ? '' : (e.text ?? '')
 }
 
+/** The bubble of a message that answers a question, to everyone but its sender's own browser: its text is never kept (#364). */
+export const ANSWERED_WORDS = "Answered the agent's question."
+/** The line under the answer its sender's own browser shows. */
+export const OWN_ANSWER_LINE = 'Only you see your answer.'
+
+/**
+ * What the chat draws of a message that answers a question (docs/plans/chat-or-terminal.md, the transcript's `prompt`: it carries
+ * `answers` and no `text`, its text shown to its sender by their own browser alone): the answer this browser sent, with the line that
+ * says only they see it, or, to anyone else and after a reload, the words that say a question was answered. Null for any other
+ * message. `own` is the text this browser's answer to the question carried, when the owner took it.
+ */
+export function answerShown(e: Pick<TranscriptEntry, 'answers'>, own: string | undefined): { text: string; own: boolean } | null {
+  if (!e.answers) return null
+  return own ? { text: own, own: true } : { text: ANSWERED_WORDS, own: false }
+}
+
+/**
+ * answerShown with this browser's answer read from the tab's own store of them (`useTypedAnswers().of`): what every way of answering
+ * fills once the owner took the answer (the session page's bar, a link's page, the inbox, the palette, a row), for as long as the tab
+ * lives, whichever page the answer was sent from. The entry's `answers` is the reply's question id.
+ */
+export function answerOf(e: Pick<TranscriptEntry, 'answers'>, typed: (question: string) => string): { text: string; own: boolean } | null {
+  return answerShown(e, e.answers ? typed(e.answers) || undefined : undefined)
+}
+
 /** The line under a message the agent has not taken yet (design 13): queued during a turn, or sent and not acknowledged. */
 export function promptLine(e: TranscriptEntry): string {
   if (e.state === 'queued') return 'Sends when the turn ends.'
@@ -365,6 +391,46 @@ export function toolStepMark(status: TranscriptEntry['status']): MarkView {
       return { key: 'cancelled', word: 'stopped', legend: 'stopped: the turn was stopped while the step ran' }
   }
   return { key: 'done', word: 'done', legend: 'done: the step ended' }
+}
+
+/** Conductor's own tools an agent calls (`conductor mcp`): a step of one is drawn as what it did, never as its name and input. */
+const CONDUCTOR_TOOL = /^mcp__conductor__(report|set_state|ask)$/
+
+/**
+ * A step of Conductor's own tools as what it did: a report as its kind and its message, a state as its word, a question as its words
+ * and choices; null for any other tool, and for one whose input the summary does not hold whole (a cut one is drawn as it is).
+ */
+export function conductorStep(e: Pick<TranscriptEntry, 'tool' | 'summary'>): { name: string; words: string } | null {
+  const m = CONDUCTOR_TOOL.exec(e.tool ?? '')
+  if (!m) return null
+  let v: unknown
+  try {
+    v = JSON.parse(e.summary ?? '')
+  } catch {
+    return null
+  }
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return null
+  const input = v as Record<string, unknown>
+  const str = (k: string) => (typeof input[k] === 'string' ? (input[k] as string).trim() : '')
+  const said = (head: string, rest: string) => (rest ? `${head}: ${rest}` : head)
+  switch (m[1]) {
+    case 'report': {
+      const ev = str('event')
+      const info = Object.hasOwn(EVENT_INFO, ev) ? EVENT_INFO[ev as EventType] : undefined
+      if (!info) return null
+      const head = ev === 'handoff' && str('to') ? `${info.label} to ${str('to')}` : ev === 'file' && str('path') ? `${info.label} ${str('path')}` : info.label
+      return { name: 'Report', words: said(head, [str('message'), str('url')].filter(Boolean).join(' ')) }
+    }
+    case 'set_state': {
+      const state = str('state')
+      if (!['working', 'done', 'clear'].includes(state)) return null
+      return { name: 'State', words: said(state === 'clear' ? 'cleared' : state, str('message')) }
+    }
+    default: {
+      const choices = Array.isArray(input.choices) ? input.choices.filter((c): c is string => typeof c === 'string') : []
+      return { name: 'Question', words: str('message') + (choices.length ? ` (${choices.join(' · ')})` : '') }
+    }
+  }
 }
 
 /** A file change's one line (design 11): "`main.go` changed." (the path's last part), or its whole path's when it has no folder. */

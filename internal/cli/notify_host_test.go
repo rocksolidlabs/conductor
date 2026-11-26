@@ -112,7 +112,11 @@ func TestMcpAttentionToolsReportToTheHostsSocket(t *testing.T) {
 	}
 	s := &mcpServer{out: io.Discard, getenv: func(k string) string { return env[k] }}
 	for name, raw := range map[string]string{"set_state": `{"state":"done","message":"through the tool"}`, "ask": `{"message":"Which one?","choices":["a","b"]}`} {
-		if text, err := s.call(t.Context(), name, json.RawMessage(raw)); err != nil || text != "reported" {
+		want := "reported"
+		if name == "ask" {
+			want = askedWords
+		}
+		if text, err := s.call(t.Context(), name, json.RawMessage(raw)); err != nil || text != want {
 			t.Fatalf("%s: %q %v", name, text, err)
 		}
 		select {

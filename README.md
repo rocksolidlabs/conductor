@@ -1006,8 +1006,9 @@ as the built-in Cursor CLI entry does for its prompt. Run `conductor notify
 `--state clear` resets it. A question with a few answers takes them as
 `--choices "Postgres|SQLite|Keep both"` (at most 6, each at most 40 bytes):
 the session's reply bar, the sidebar's row, the pill and the run page show them as buttons, and
-a click types the choice into the session as a line, so an agent names the
-choices in its terminal first and gets the same words back.
+a click sends the choice to the agent as the person's answer (typed as a line
+into a session in its terminal, the next message of a chat), so an agent names
+the choices in its message first and gets the same words back.
 
 **The Conductor skill.** `conductor skill` prints a `SKILL.md` that teaches an
 agent to report on its own: progress (`--event progress --message "4/7

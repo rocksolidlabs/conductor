@@ -38,6 +38,10 @@ func TestSkillText(t *testing.T) {
 		`"${CONDUCTOR_BIN:-conductor}" notify --ask --message "Which database?" --choices "Postgres|SQLite|Keep both"`,
 		`"${CONDUCTOR_BIN:-conductor}" notify --state clear`,
 		"The session shows as needing input until someone replies, also\n  once your turn has ended.",
+		// Where the answer comes from, true in a chat as in a terminal, which
+		// has no terminal to answer in (#1139).
+		"ask, then wait for the answer. It comes\n  to you as the person's next message, in a terminal and in a chat alike.",
+		"name them in your message on their own\n  line, then ask with the same words as choices, so one click sends that\n  answer as the person's message",
 		`"${CONDUCTOR_BIN:-conductor}" notify --event file --op edit --path internal/api/users.go`,
 		`"${CONDUCTOR_BIN:-conductor}" crew create crew.json --self lead --open`,
 		`"${CONDUCTOR_BIN:-conductor}" crew status`,
