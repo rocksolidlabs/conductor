@@ -259,7 +259,7 @@ func (s *Local) moveFresh(m MoveStarts) {
 }
 
 // turnBegunLocked says a fresh member's terminal's conversation has had a
-// turn: one that ended (firstTurn, a done from a source that reports
+// turn: one that ended (Info.FirstTurn, a done from a source that reports
 // turns), or one begun (its agent's hook reporting the prompt submitted,
 // which marks its conversation resumable; a fresh member's starts
 // unresumable, set by Conductor). Keys that are only a dialog's (a digit
@@ -267,7 +267,7 @@ func (s *Local) moveFresh(m MoveStarts) {
 // become its first message: the move would end that turn and drop the
 // line. The caller holds s.mu.
 func (s *Local) turnBegunLocked() bool {
-	return s.firstTurn || s.info.AgentSession != nil && s.info.AgentSession.Resumable
+	return s.info.FirstTurn || s.info.AgentSession != nil && s.info.AgentSession.Resumable
 }
 
 // dialogKeys reports whether keys, as keysWritten read them, are only keys

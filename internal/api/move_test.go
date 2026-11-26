@@ -377,6 +377,84 @@ func TestEverySessionStartsInItsTerminal(t *testing.T) {
 	}
 }
 
+// A session that begins as a resume (of a session, or of its record, as a
+// session is continued after the server restarted) holds a resumable
+// conversation from its start, and its terminal has reported no turn yet:
+// its listing says no firstTurn and the move to Chat is refused with the
+// first reply's words, as the page then offers none; once its own first
+// turn has ended the listing says firstTurn and the move is made.
+func TestAResumeOffersChatAfterItsOwnFirstTurn(t *testing.T) {
+	c := newMoveEnv(t, nil, nil)
+	l := c.launch(t)
+	id := l.Info().ID
+	c.turnEnded(t, id)
+	if got := c.listedFirstTurn(t, id); !got {
+		t.Fatal("a launch's ended turn is not listed as firstTurn")
+	}
+	stopped(t, c.testEnv, id)
+	resp, out := c.do("POST", "/api/sessions/"+id+"/resume", adminToken, map[string]any{})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("resume: %d %v", resp.StatusCode, out)
+	}
+	next, _ := out["id"].(string)
+	if next == "" {
+		next, _ = out["session"].(map[string]any)["id"].(string)
+	}
+	n := c.local(next)
+	t.Cleanup(func() { _ = n.Stop(context.Background()) })
+	c.offersChatAfterItsTurn(t, next, "a resume")
+	stopped(t, c.testEnv, next)
+	code, hout := resumeRecord(t, c.testEnv, id, map[string]any{"commandId": "c-1", "confirmLost": true})
+	if code != http.StatusCreated {
+		t.Fatalf("resume from its record: %d %v", code, hout)
+	}
+	h := hout["session"].(map[string]any)["id"].(string)
+	t.Cleanup(func() { _ = c.local(h).Stop(context.Background()) })
+	c.offersChatAfterItsTurn(t, h, "a resume from the record")
+}
+
+// listedFirstTurn is the session's firstTurn as its listing serves it.
+func (c *chatEnvT) listedFirstTurn(t *testing.T, id string) bool {
+	t.Helper()
+	resp, out := c.do("GET", "/api/sessions/"+id, adminToken, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("the listing of %s: %d %v", id, resp.StatusCode, out)
+	}
+	listed, _ := out["session"].(map[string]any)
+	v, ok := listed["firstTurn"]
+	if ok && v != true {
+		t.Fatalf("firstTurn %v", v)
+	}
+	return ok
+}
+
+// offersChatAfterItsTurn: the session id, resumable from its start, lists
+// no firstTurn and refuses the move to Chat until its own turn has ended;
+// then it lists firstTurn and the move is made.
+func (c *chatEnvT) offersChatAfterItsTurn(t *testing.T, id, what string) {
+	t.Helper()
+	info := c.local(id).Info()
+	if info.AgentSession == nil || !info.AgentSession.Resumable {
+		t.Fatalf("%s: its conversation is not resumable from its start: %+v", what, info.AgentSession)
+	}
+	if c.listedFirstTurn(t, id) {
+		t.Fatalf("%s: listed firstTurn before its own turn", what)
+	}
+	if code, out := c.move(t, id, session.WayProtocol); code != http.StatusConflict {
+		t.Fatalf("%s: before its turn: %d %v", what, code, out)
+	} else if got, words := refusalOf(out); got != "move_refused" || words != session.FirstReplyWords {
+		t.Fatalf("%s: before its turn: %v", what, out)
+	}
+	c.turnEnded(t, id)
+	if !c.listedFirstTurn(t, id) {
+		t.Fatalf("%s: its turn's end is not listed", what)
+	}
+	if code, out := c.move(t, id, session.WayProtocol); code != http.StatusOK || out["moving"] != true {
+		t.Fatalf("%s: after its turn: %d %v", what, code, out)
+	}
+	moved(t, c.local(id), session.WayProtocol)
+}
+
 // stopped stops the session id and waits for its record's end.
 func stopped(t *testing.T, e *testEnv, id string) {
 	t.Helper()

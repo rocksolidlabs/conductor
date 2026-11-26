@@ -25,7 +25,10 @@ export interface SwitchFacts {
   why: string
   /** This viewer may move the session (the operator's own connection); a link's viewer sees a label of the way. */
   canMove: boolean
-  /** The session's terminal has reported a turn that ended. */
+  /**
+   * The agent's first reply has ended: the session's `firstTurn`, the one fact the move's route judges a move to Chat by (absent from
+   * an older server: no move offered), or a chat already.
+   */
   firstReply: boolean
   /** The probed version of the agent may run its chat. */
   qualified: boolean
@@ -33,7 +36,7 @@ export interface SwitchFacts {
   inTurn: boolean
   /** A move under way. */
   moving: boolean
-  /** The route's refusal of the last press (move_refused's words), until the next way message. */
+  /** The route's refusal of the last press (move_refused's words), while what it was judged on stands (`refusalStands`). */
   refused?: string
   /** The session is a crew member of a Chat run (its launch's way): its switch is a label, the run's. */
   crewChat?: boolean
@@ -104,4 +107,35 @@ export function pressFor(s: SwitchState, side: SessionWay): SessionWay | null {
   if (!s.shown || !s.pressable) return null
   if (side !== s.selected) return side
   return s.noted ? side : null
+}
+
+/**
+ * The switch's first-reply fact from a session as it is listed: its `firstTurn` (the route's own fact), or a chat already. Nothing
+ * else stands for it: the conversation turns resumable as the first line is entered, before its reply has ended.
+ */
+export function firstReplyOf(s: { firstTurn?: boolean; agentSession?: { resumable?: boolean } } | null | undefined, way: SessionWay): boolean {
+  return !!s?.firstTurn || way === 'protocol'
+}
+
+/** What a refusal of the move was judged on, of what the page knows: the way, the first reply's end, the conversation known. */
+export interface RefusalBasis {
+  way: SessionWay
+  firstReply: boolean
+  resumable: boolean
+}
+
+/** A refusal the route answered a press with, and what it was judged on. */
+export interface Refusal {
+  words: string
+  basis: RefusalBasis
+}
+
+/**
+ * Whether the refusal r still says what is true: while every fact it was judged on is as it was. The first reply ended, the
+ * conversation known, the way changed: the line goes, and a press asks the route again. A refusal true for the session's life (an
+ * added folder, a crew member's, a hosted session's) stands as long as they do.
+ */
+export function refusalStands(r: Refusal | null, now: RefusalBasis): boolean {
+  if (!r) return false
+  return r.basis.way === now.way && r.basis.firstReply === now.firstReply && r.basis.resumable === now.resumable
 }

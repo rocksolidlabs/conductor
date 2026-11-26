@@ -19,7 +19,7 @@ import type { ChangeRow } from '~/utils/changes'
 import type { CommitRow } from '~/utils/commits'
 import type { FileHeader, SessionWay, TranscriptEntry } from '~/utils/protocol'
 import type { SessionConnection } from '~/composables/useSessionConnection'
-import { ENDS_TERMINAL_WORK, crewChatOf, crewMemberOf, switchState, type SwitchFacts } from '~/utils/switchState'
+import { ENDS_TERMINAL_WORK, crewChatOf, crewMemberOf, firstReplyOf, refusalStands, switchState, type Refusal, type RefusalBasis, type SwitchFacts } from '~/utils/switchState'
 import { joinTop } from '~/utils/changes'
 import { ApiError } from '~/composables/useApi'
 
@@ -252,18 +252,26 @@ const agentInfo = computed(() => agents.value.find((a) => a.id === (current.valu
 const conn = computed(() => terminal.value?.connection as unknown as SessionConnection | undefined)
 const way = computed<SessionWay>(() => unref(conn.value?.way) ?? (current.value?.way === 'protocol' ? 'protocol' : 'terminal'))
 const moving = ref(false)
-const refused = ref('')
+/** The agent's first reply has ended: the session's firstTurn, the fact the route judges a move to Chat by, or a chat already. */
+const firstReply = computed(() => firstReplyOf(current.value, way.value))
+// The route's refusal of the last press, with what it was judged on: it goes once any of that changes (the first reply ended, the
+// conversation became known, the way changed) and at every `way` message; a refusal true for the session's life stays.
+const refusalBasis = computed<RefusalBasis>(() => ({ way: way.value, firstReply: firstReply.value, resumable: !!current.value?.agentSession?.resumable }))
+const refusal = ref<Refusal | null>(null)
+watch(refusalBasis, (b) => {
+  if (refusal.value && !refusalStands(refusal.value, b)) refusal.value = null
+})
 const switchFacts = computed<SwitchFacts>(() => ({
   hasProtocol: !!agentInfo.value?.protocol?.name || way.value === 'protocol',
   way: way.value,
   noted: unref(conn.value?.noted) ?? '',
   why: unref(conn.value?.why) ?? '',
   canMove: !ended.value,
-  firstReply: !!current.value?.agentSession?.resumable || way.value === 'protocol',
+  firstReply: firstReply.value,
   qualified: true,
   inTurn: attention.value.state === 'working',
   moving: moving.value,
-  refused: refused.value || undefined,
+  refused: refusal.value?.words || undefined,
   // A crew member in its chat: its way is its run's, and the switch is a label (crewChatOf).
   crewChat: crewChatOf(current.value, way.value),
   // A crew member in its terminal: no person moves it either, whatever its turns.
@@ -284,7 +292,7 @@ watch(
         if (m.t !== 'way') return
         wayMessages++
         moving.value = false
-        refused.value = ''
+        refusal.value = null
       }),
     )
   },
@@ -309,14 +317,17 @@ function noteTerms() {
 async function moveTo(to: SessionWay) {
   if (!current.value) return
   if (to === 'protocol') noteTerms()
-  refused.value = ''
+  refusal.value = null
+  const basis = refusalBasis.value
   const before = wayMessages
   try {
     const r = await api.moveWay(current.value.id, to)
     // A move that was already made, or went back, before the route's answer came (its `way` message first) is not still moving.
     moving.value = !!r.moving && wayMessages === before
   } catch (e) {
-    refused.value = e instanceof ApiError ? e.message : (e as Error).message
+    // Judged on the facts as the press was made: one that changed while the route answered has already made it untrue.
+    const r = { words: e instanceof ApiError ? e.message : (e as Error).message, basis }
+    refusal.value = refusalStands(r, refusalBasis.value) ? r : null
   }
 }
 const wayItems = computed(() =>

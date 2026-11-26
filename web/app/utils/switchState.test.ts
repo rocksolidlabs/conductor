@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
-import { CREW_WAY_IS_RUNS, ENDS_TERMINAL_WORK, FIRST_REPLY, MOVES_TO_CHAT, MOVES_TO_TERMINAL, MOVING, NOT_QUALIFIED, RUNS_AS_CHAT_FOR_RUN, crewChatOf, crewMemberOf, pressFor, switchState, type SwitchFacts } from './switchState'
+import { CREW_WAY_IS_RUNS, ENDS_TERMINAL_WORK, FIRST_REPLY, MOVES_TO_CHAT, MOVES_TO_TERMINAL, MOVING, NOT_QUALIFIED, RUNS_AS_CHAT_FOR_RUN, crewChatOf, crewMemberOf, firstReplyOf, pressFor, refusalStands, switchState, type Refusal, type SwitchFacts } from './switchState'
 
 const at = (f: Partial<SwitchFacts>): SwitchFacts => ({
   hasProtocol: true, way: 'terminal', noted: '', why: '', canMove: true, firstReply: true, qualified: true, inTurn: false, moving: false, ...f,
@@ -97,5 +97,48 @@ describe('pressFor: what a press of each side sends', () => {
     expect(pressFor(switchState(at({ moving: true, noted: 'protocol' })), 'terminal')).toBeNull()
     expect(pressFor(switchState(at({ firstReply: false })), 'protocol')).toBeNull()
     expect(pressFor(switchState(at({ canMove: false })), 'protocol')).toBeNull()
+  })
+})
+
+describe('firstReplyOf: the offer is the route\'s own fact', () => {
+  it('a first line entered (the conversation resumable) is not the first reply ended: no Chat, the sentence stays', () => {
+    const entered = { agentSession: { resumable: true } }
+    expect(firstReplyOf(entered, 'terminal')).toBe(false)
+    expect(switchState(at({ firstReply: firstReplyOf(entered, 'terminal'), inTurn: true }))).toMatchObject({ pressable: false, line: FIRST_REPLY })
+  })
+  it('the first turn ended: Chat offered at rest, the sentence gone', () => {
+    const ended = { firstTurn: true, agentSession: { resumable: true } }
+    expect(firstReplyOf(ended, 'terminal')).toBe(true)
+    expect(switchState(at({ firstReply: firstReplyOf(ended, 'terminal') }))).toMatchObject({ pressable: true, line: ENDS_TERMINAL_WORK })
+  })
+  it('an older server sends no firstTurn: no move offered, nothing worse', () => {
+    expect(firstReplyOf({}, 'terminal')).toBe(false)
+    expect(firstReplyOf(undefined, 'terminal')).toBe(false)
+    expect(switchState(at({ firstReply: firstReplyOf({}, 'terminal') }))).toMatchObject({ shown: true, pressable: false, line: FIRST_REPLY })
+  })
+  it('a chat is past its first reply', () => {
+    expect(firstReplyOf({}, 'protocol')).toBe(true)
+  })
+})
+
+describe('refusalStands: a refusal says what is true now', () => {
+  const basis = { way: 'terminal' as const, firstReply: false, resumable: true }
+  const first: Refusal = { words: FIRST_REPLY, basis }
+  it('stands while what it was judged on stands', () => {
+    expect(refusalStands(first, { ...basis })).toBe(true)
+    expect(refusalStands(null, basis)).toBe(false)
+  })
+  it('the first reply ended: the refusal goes, and the line with it', () => {
+    expect(refusalStands(first, { ...basis, firstReply: true })).toBe(false)
+    expect(switchState(at({ firstReply: true, refused: refusalStands(first, { ...basis, firstReply: true }) ? first.words : undefined })).line).toBe(ENDS_TERMINAL_WORK)
+  })
+  it('the conversation became known, or the way changed: it goes', () => {
+    const unknown: Refusal = { words: 'This agent cannot move its conversation yet.', basis: { ...basis, firstReply: true, resumable: false } }
+    expect(refusalStands(unknown, { ...unknown.basis, resumable: true })).toBe(false)
+    expect(refusalStands(first, { ...basis, way: 'protocol' })).toBe(false)
+  })
+  it('one true for the session\'s life stays while nothing it was judged on changes', () => {
+    const folder: Refusal = { words: 'Sessions launched with an added folder stay in their terminal.', basis: { ...basis, firstReply: true } }
+    expect(refusalStands(folder, { ...basis, firstReply: true })).toBe(true)
   })
 })

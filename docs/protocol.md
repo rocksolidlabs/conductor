@@ -1344,6 +1344,16 @@ session shows), keep the one shown, its `since` and its words; a host's
 `done` with another `id` is another turn's (one the host finished while
 it was away, told as its connection came back) and replaces it, stamped
 as it is received.
+`firstTurn` in a server session's `Info` (absent when false) says the
+agent's first reply in this session has ended: its agent's hooks have
+reported a `done` (source `api`, the agent's own report of its turn's
+end). A window title and a program status report only work, never a
+`done`; a bell, the screen pattern and an operator's mark do not count,
+nor a `working` such as the prompt's own report. It is never cleared; a session that begins
+as a resume starts without it, whatever its conversation held. A move to
+Chat is refused until it is set (see Moving between ways), and the
+session page offers Chat by it alone. A hosted session's copy never
+carries it, and an older server sends none: a page then offers no move.
 
 `kind` describes the shape of a prompt so clients can offer one-click answers:
 `permission` (a numbered permission dialog), `prompt` (a free-text reply is
@@ -9598,7 +9608,30 @@ Claude Code's documented deny for a command naming one by the same rule,
 the absolute spellings alone (it knows no folder); the server writes them
 at its start. The hook is a second look: a folder's own settings can
 switch it off, and it denies nothing (it fails open) when it cannot read
-its list or the call's payload. At most eight requests are open or waiting per
+its list or the call's payload. The same file allows, without asking,
+Conductor's own tools through which an agent tells Conductor about its
+own session's work, asks a person, or hands its work on within its own
+run: `guide`, `report`, `set_state`, `ask`, `task_context`,
+`task_checkpoint`, `task_blocked` and `task_result` (rules
+`mcp__conductor__<tool>`); such a call does not reach Conductor as a
+request unless a deny or ask rule of the person's or the folder's own
+settings names it, and its step is in the transcript as any other.
+`report`'s handoff is among them because it reaches only a member of the
+session's own run, which acts on it under its own permission mode (a
+name no member of the run has is noted and typed nowhere; a session in
+no run has nobody to hand to): the crew's own baton, set up by the
+person who formed or launched the crew. In a managed run a handoff is
+kept and delivered as a message is, in the run's lane. These tools start
+only what the run's own definition starts on them (a done starts the
+members waiting on this one; a task's result lets the next attempts be
+scheduled), reach no record but the session's own and its run's, and
+what they report goes to the operator's own notices as any report does.
+Every other tool asks as before, the prompt tool is never allowed, and
+`message_send` asks too: it is not a call an agent reports its own work
+with, though a handoff carries the same message, shorter. Claude Code
+judges deny, then ask, then allow, across every settings source the
+child reads, so a deny or ask rule wins over these allows; in a yolo
+session they change nothing. At most eight requests are open or waiting per
 session: one more is denied `Too many requests are waiting; this one was
 denied.`.
 
@@ -9693,7 +9726,9 @@ a terminal whose attention is a done from a source that reports turns,
 with no question open, nothing typed held and no submission under way.
 `409 move_refused` with the plan's words when the move cannot be made:
 `Chat opens after the agent's first reply.` (a move to Chat before the
-terminal reported a turn that ended), `A crew member's way is its run's.`, `Sessions on another machine stay in their terminal.`,
+terminal reported a turn that ended: while the session's `firstTurn` is
+absent), `A crew member's way is its
+run's.`, `Sessions on another machine stay in their terminal.`,
 `This agent cannot move its conversation yet.` (an agent with no
 protocol the server speaks, a driver that does not move, a Runtime other
 than this machine's, no recipe to resume its terminal, or a conversation
