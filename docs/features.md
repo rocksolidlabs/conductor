@@ -342,6 +342,38 @@ kept for the chat, as its terminal had it.
   it); a session whose agent has no prompt shape. A hosted session follows
   the rule through the shape its host is sent with the agent's recipe.
 
+## A member's prompt is typed only into an empty prompt box (#1142; 2026-11-26)
+
+- **The rule.** A crew member's prompt (its role prompt, an attempt's
+  task line, a Brakeman turn's line) waits while the agent's prompt box
+  may hold text, and only then: something printable went into the
+  member's terminal since the last Enter went in (a person's keys from any
+  viewer, counted from the session's start, while the agent loads too; a
+  line Conductor typed and did not enter), and the screen does not show
+  the agent's caret at the start of its box. The caret is at the start
+  where one whole frame, drawn since the last of that text went in, shows
+  the cursor on a row of the agent's prompt, just after the prompt's mark
+  and its space (Claude Code's `❯`, Codex's `›`), whatever stands after
+  it: a placeholder ("Try …", "Ask Codex to do anything") or nothing. An
+  Enter written by anyone clears the first condition; the keys of a
+  question's choice go to its dialog and do not count.
+- **What the run's log says.** Once in the wait, `<member>'s prompt box
+  holds text: send it or clear it`. The prompt is tried again a poll
+  later, as at a screen not recognised, and typed and entered alone once
+  the person has sent the text or cleared it.
+- **A member no one typed in** is typed into at once, as before, whatever
+  its agent does with its cursor: no agent, built-in or custom, waits for
+  good by this rule.
+- **Limits.** A person who moved the caret to the start of their own text
+  reads as an empty box, and the prompt is typed before that text. An
+  Enter that did not send the text (a line ended with the agent's own
+  "new line" key, a backslash before Enter; an Enter a dialog took)
+  clears the first condition though the text stays.
+- **Unchanged.** The launch's first message (it already leaves its line
+  unsent where letters stand before it on the prompt's row), handoffs,
+  the later lines to a task, the run's broadcast, chat to a member,
+  decision answers and the app's reply box are typed as before.
+
 ## Hosts: the machines this server knows, and who holds each run (HS2, #1032; 2026-11-22)
 
 One page, **Hosts** (`/hosts`; the nav after History, the phone's More, the
