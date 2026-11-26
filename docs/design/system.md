@@ -10,6 +10,9 @@ How to read it:
   YYYY-MM-DD by the maintainers, #N." (the date the change that made it
   true merged, and that change's issue) or "Described, not decided." (how
   the app does it today, which the maintainers have not chosen).
+- A rule the maintainers decided before the app meets it everywhere
+  carries the date it was written here, and a line "Not yet:" naming the
+  places the app does not meet it yet; those places only become fewer.
 - A rule that a machine can hold names its checks, and those checks run in
   CI. A change to a rule changes its check in the same pull request: the
   checks that read this file (`web/app/utils/designRules.test.ts`) fail
@@ -17,6 +20,24 @@ How to read it:
 - Words in `code` are the names in the code: a key, a class, a file.
 
 ## The rules
+
+### Who the screens are for
+
+Decided 2026-11-26 by the maintainers, #1158.
+
+People who use Conductor all day: several agents at once, Yolo on, the
+desktop app in a wide, short window (about 2000 x 810). The screens where
+a person works with an agent, its Chat view and its Terminal view, come
+first: a change elsewhere never makes them slower to use.
+
+Simpler means less to watch and less to hold in the head, never more
+presses for what people do all day: one idea a screen, few things on it,
+plain words.
+
+Checks: none. What people do all day, and what comes first, are judged in
+review, by walking the main task on the rendered screens (`docs/checks.md`,
+the seeded day) at that window as well as at 1440 x 900 and 390 x 844. No
+layout spec measures at 2000 x 810 yet.
 
 ### Status
 
@@ -138,6 +159,20 @@ Checks: `designRules.test.ts`, the table and the code (the marks and words
 of this table against `TASK_LOOK`); `status.test.ts`;
 `web/e2e/run-status.spec.ts`.
 
+### A run's member opens inside its run
+
+Decided 2026-11-26 by the maintainers, #1158.
+
+A crew's member has no page of its own that a person can get lost on: it
+opens inside its run, with the way back to the run in view and in words
+(the run's name), wherever it is opened from: the sidebar, the run's page,
+the Yard.
+
+Not yet: today a member opens on its session's own page (`/sessions/<id>`).
+
+Checks: none yet; a spec beside `web/e2e/run-tasks.spec.ts` comes with the
+change that makes the rule true.
+
 ### Colour and contrast
 
 Decided 2026-11-16 by the maintainers, #939.
@@ -213,6 +248,21 @@ pre, a key, a field or an element marked `data-mono`; every other use a
 count per source in `designRules.mono.json`, a list that only shrinks);
 `main-action.spec.ts` reads the drawn family of sentences and ids.
 
+### Words
+
+Decided 2026-11-26 by the maintainers, #1158.
+
+Conductor is used in its apps, the desktop app and the phone, from
+anywhere. Its words never say it is used in a browser: they say "from
+anywhere", "in the app" or "on this device". The word stays where a real
+browser is meant: Open in browser, an agent's browser profile.
+
+Checks: `designRules.test.ts`, the words (no "browser" in a template's text
+or in an attribute written as text that a person reads: a label, a
+description, a placeholder, a title; each place that still says it, or
+that means a real browser, is listed there with its reason, and a new one
+fails).
+
 ### Amber when someone must act
 
 Decided 2026-11-16 by the maintainers, #941.
@@ -238,6 +288,27 @@ tooltip, and the less used ones move into More.
 Checks: `web/e2e/session-page.spec.ts` and `web/e2e/run-header.spec.ts`
 (the name whole and nothing overlapping at 1440 x 900 and at 390 x 844);
 the one-filled-action rule above; the tooltip rule below.
+
+### What stays in view
+
+Decided 2026-11-26 by the maintainers, #1158.
+
+What a person uses all the time stays in view, one press away, under the
+name people already use: Yolo, Accounts. How often a thing is used decides
+whether it folds away, never how technical it looks; what is rarely used
+may wait behind More or a fold, at the place it is needed.
+
+A settings page folds nothing: its settings are the page. It is made
+calmer with plainer words and a better order, never by hiding sections.
+
+Not yet everywhere: the crew editor folds a crew's Yolo under More
+options, as "Permission prompts" (`CrewEditor.vue`), and Brakeman's card
+on the settings page folds its advanced settings (`BrakemanSettings.vue`).
+
+Checks: `designRules.test.ts`, what stays in view (no control bound to a
+Yolo value inside a `UCollapsible` or a `UAccordion`, and neither of those
+on the settings page or in a card it draws; the places that still do are
+listed there, each with its reason, and the list only shrinks).
 
 ### The toolbar
 
@@ -323,6 +394,18 @@ its tooltip on hover and on focus by Tab, in both themes, its menu by
 Enter and by a click with no tooltip when the menu hands the focus back,
 and its name and menu at a tap on a phone, no tooltip after; a Dispatch
 project's Views, a popover's trigger, the same by click and by Enter).
+
+### Fields that take an agent's words
+
+Decided 2026-11-26 by the maintainers, #1158.
+
+A field for an agent's arguments or its model (the Launch dialog's, Add
+agent's, a crew member's) offers that agent's own flags and model names as
+the person types, from what Conductor knows of the agent.
+
+Not yet: these fields take free text today.
+
+Checks: none yet; they come with the change that builds it.
 
 ### What a pull request cannot do
 

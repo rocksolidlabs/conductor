@@ -1,6 +1,6 @@
 # Contributing to Conductor
 
-Conductor runs coding agents in real terminals, driven from the browser and
+Conductor runs coding agents in real terminals, driven from anywhere and
 shared by link; Yardmaster, its agent harness, runs crews of them as managed
 runs. This file is for anyone who wants to change it: what to read first,
 who decides, how an issue becomes a pull request, the sign-off every commit
@@ -14,6 +14,9 @@ the process, and the rest is what every change keeps true. Then:
 - `docs/repository-map.md` for where things are and how to add an agent, a
   route or a control message;
 - `docs/checks.md` for the checks, by affected surface;
+- `docs/design/system.md` before changing a screen: the rules every
+  screen follows and the checks that hold them (`PRODUCT.md` says who the
+  screens are for);
 - `docs/plans/` for a change larger than one pull request: a plan there is
   reviewed before its code.
 

@@ -48,10 +48,20 @@ python3 -m unittest discover -s scripts -p '*_test.py'  # the scripts' own tests
 app's tests: `web/app/utils/designRules.test.ts` reads the app's sources
 and `docs/design/system.md` and fails when a rule is broken (an icon-only
 button with no tooltip, a cut whose box does not set its width, a state
-mapped to a status colour outside `utils/status.ts`, a zinc grey) or when
-the file and the code disagree (a rule with no mark, the Status table
-against `STATUS_LOOK`, the floors against `CONTRAST_FLOORS`). Each rule of
-`system.md` names its checks.
+mapped to a status colour outside `utils/status.ts`, a zinc grey, Yolo in a
+fold, a fold on the settings page, "browser" in the words a person reads)
+or when the file and the code disagree (a rule with no mark, the Status
+table against `STATUS_LOOK`, the floors against `CONTRAST_FLOORS`). Each
+rule of `system.md` names its checks.
+
+`DESIGN.md` at the root is generated: `make design-md` writes it
+(`web/build/designMd.ts`) from the tokens (`main.css`, `app.config.ts`,
+Nuxt UI's and Tailwind's themes, `web/public/brand/tokens.css`) and the
+rules' headings in `docs/design/system.md`, and
+`web/build/designMd.test.ts`, among the app's tests, fails with the
+difference when the committed file is not what it makes. A change to a
+token or to a rule's heading, or an upgrade of Nuxt UI or Tailwind, runs
+`make design-md` and commits the file with it.
 
 `make design-capture` is not a check: it is a maintainer's step at a
 release, on the draft release's checklist. It builds the app and the
@@ -243,6 +253,9 @@ and one guard, one snapshot of the busy day, is 53 reads in 0.1 to
 `CONDUCTOR_E2E_DAY_OPEN=1 npx playwright test day.spec.ts -g open` (from
 `web/`, after `make web-build build-go`) prints its address and the path of
 a file only its owner reads that holds its token, and holds it until Ctrl+C.
+Install its browser once with `npx playwright install chromium` in `web/`.
+The day serves the built app, so run `make web-build build-go` again after
+each change; the page asks for the token in that file.
 `dayPage` and `useTheme` (`web/e2e/fixtures.ts`) set the colour mode the way
 the app keeps it (`conductor-color-mode`): a `colorScheme` context does not
 switch this app, which opens dark whatever the system prefers.
