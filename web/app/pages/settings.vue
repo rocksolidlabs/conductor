@@ -549,12 +549,13 @@ usePalette().registerPage(() => {
         <DirPickerModal v-if="picker" v-model:open="pickerOpen" :start="picker.start" :title="picker.title" anywhere :roots="form.allowedRoots" :expect="picker.expect" @pick="onPick" />
       </div>
     </template>
-    <!-- The save bar is the panel's footer: in reach wherever the page is scrolled (#366). In a browser it saves Brakeman's section (#707). -->
+    <!-- The save bar is the panel's footer: in reach wherever the page is scrolled (#366). In a browser it saves Brakeman's section (#707).
+         Save at its right end, its note in the room left of it, wrapping there, so a phone never pushes the button out of view (#1154). -->
     <template v-if="desktop.isDesktop.value || brakeman.available.value !== false" #footer>
       <div class="flex items-center gap-3 border-t border-default px-4 py-3 sm:px-6" data-settings-save-bar>
-        <UButton :label="restarts ? 'Save and restart the server' : 'Save'" icon="i-lucide-save" :loading="saving" :disabled="!dirty || blocked" data-save-settings @click="save" />
-        <span v-if="blocked" class="text-xs text-error" data-settings-blocked>Brakeman's settings hold a value it refuses: fix it, where it says, to save.</span>
-        <span v-else-if="restarts" class="text-xs text-muted">Changing where or how agents run restarts the server; running sessions end.</span>
+        <span v-if="blocked" class="min-w-0 flex-1 text-xs text-error" data-settings-blocked>Brakeman's settings hold a value it refuses: fix it, where it says, to save.</span>
+        <span v-else-if="restarts" class="min-w-0 flex-1 text-xs text-muted">Changing where or how agents run restarts the server; running sessions end.</span>
+        <UButton class="ms-auto shrink-0" :label="restarts ? 'Save and restart the server' : 'Save'" icon="i-lucide-save" :loading="saving" :disabled="!dirty || blocked" data-save-settings @click="save" />
       </div>
     </template>
   </UDashboardPanel>
