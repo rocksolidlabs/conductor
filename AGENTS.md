@@ -781,6 +781,12 @@ add its rule here.
   steps counted on the activity they lost stays with it: a request the
   lost page had on its way (a service worker's) is counted by whichever
   gate is in place when it lands.
+  And a tool's exit code is not its verdict on such a device: `simctl
+  bootstatus -b` said "Data Migration Failed" of a simulator and answered
+  0, and the app could not be launched on it ("Failed to get background
+  assertion for target": `mobile-ios`, 2026-11-25, #281). Read what the
+  tool said as well as what it returned (`boot` in `scripts/ios_boot.py`),
+  and start again from a clean device (the simulator erased).
 - Prove a flake fix the way it failed: `go test -race -count=30` (on the
   Mac too when it flaked there), `npx playwright test <spec> --repeat-each
   10`, and once more under load.

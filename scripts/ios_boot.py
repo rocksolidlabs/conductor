@@ -142,17 +142,31 @@ def pick(listing: dict) -> str | None:
     return best[1] if best else None
 
 
+# What bootstatus says of a simulator whose first start did not finish setting it up. It has said so and still answered 0
+# (2026-11-25, #281): the app could then not be launched on it ("Failed to get background assertion for target").
+MIGRATION_FAILED = "Data Migration Failed"
+
+
 def boot(udid: str, run=subprocess.run, sleep=time.sleep, say=tell) -> bool:
-    """Boots udid and waits until it has booted, three tries, a shutdown between them."""
+    """Boots udid and waits until it has booted, three tries, a shutdown between them. bootstatus is judged by its exit code
+    and by its words: a simulator whose data migration failed is not booted, and is erased before the next try."""
     for i in range(1, TRIES + 1):
         run(["xcrun", "simctl", "boot", udid], timeout=BOOT_BOUND)  # refused when already booted; the wait below decides
+        unset = False
         try:
-            if run(["xcrun", "simctl", "bootstatus", udid, "-b"], timeout=BOOT_BOUND).returncode == 0:
+            status = run(["xcrun", "simctl", "bootstatus", udid, "-b"], capture_output=True, text=True, timeout=BOOT_BOUND)
+            said = (getattr(status, "stdout", "") or "") + (getattr(status, "stderr", "") or "")
+            if said.strip():
+                say(said.rstrip())
+            unset = MIGRATION_FAILED in said
+            if status.returncode == 0 and not unset:
                 return True
-            say(f"ios_boot: the simulator did not boot (try {i} of {TRIES})")
+            say(f"ios_boot: the simulator {'was not set up: its data migration failed' if unset else 'did not boot'} (try {i} of {TRIES})")
         except subprocess.TimeoutExpired:
             say(f"ios_boot: the simulator was not booted after {BOOT_BOUND} s (try {i} of {TRIES})")
         run(["xcrun", "simctl", "shutdown", udid], timeout=BOOT_BOUND)
+        if unset:
+            run(["xcrun", "simctl", "erase", udid], timeout=BOOT_BOUND)
         if i < TRIES:
             sleep(PAUSE)
     return False

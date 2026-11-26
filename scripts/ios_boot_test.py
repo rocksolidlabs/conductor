@@ -161,6 +161,31 @@ class Simulator(unittest.TestCase):
         self.assertTrue(ios_boot.boot("NEW", run=run, sleep=lambda s: None, say=lambda m: None))
         self.assertEqual(calls, ["boot", "bootstatus", "shutdown", "boot", "bootstatus"])
 
+    def test_a_simulator_whose_data_migration_failed_is_erased_and_booted_again(self) -> None:
+        calls = []
+        said = []
+        answers = iter(["Status=3, isTerminal=YES\n\tData Migration Failed\n", "Status=4, isTerminal=YES\n\tFinished\n"])
+
+        def run(argv, timeout, **kw):
+            calls.append(argv[2])
+            if argv[2] == "bootstatus":
+                done = Done(0)  # bootstatus answered 0 with those words
+                done.stdout = next(answers)
+                return done
+            return Done(0)
+
+        self.assertTrue(ios_boot.boot("NEW", run=run, sleep=lambda s: None, say=said.append))
+        self.assertEqual(calls, ["boot", "bootstatus", "shutdown", "erase", "boot", "bootstatus"])
+        self.assertTrue(any("its data migration failed" in m for m in said), said)
+
+    def test_a_simulator_never_set_up_fails_the_boot(self) -> None:
+        def run(argv, timeout, **kw):
+            done = Done(0)
+            done.stdout = "Data Migration Failed\n" if argv[2] == "bootstatus" else ""
+            return done
+
+        self.assertFalse(ios_boot.boot("NEW", run=run, sleep=lambda s: None, say=lambda m: None))
+
     def test_the_check_runs_only_the_boot_test_unsigned_on_that_simulator(self) -> None:
         argv = ios_boot.test_argv("NEW")
         self.assertEqual(argv[:2], ["xcodebuild", "test"])
