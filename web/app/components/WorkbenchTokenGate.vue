@@ -16,7 +16,7 @@ function save() {
 </script>
 
 <template>
-  <UModal v-model:open="open" title="Workbench token" description="The token set in CONDUCTOR_WORKBENCH_TOKEN, or in the config's workbenchToken. With neither set, the server makes one each time it starts and keeps it, while it runs, in the file workbench-token in its data directory: it prints that file's path as it starts, never the token. The token opens everything here and is kept in this browser only.">
+  <UModal v-model:open="open" title="Workbench token" description="The token set in CONDUCTOR_WORKBENCH_TOKEN, or in the config's workbenchToken. With neither set, the server makes one each time it starts and keeps it, while it runs, in the file workbench-token in its data directory: it prints that file's path as it starts, never the token. The token opens everything here and is kept on this device only.">
     <template #body>
       <form class="flex flex-col gap-3" @submit.prevent="save">
         <UFormField label="Token" name="token">
