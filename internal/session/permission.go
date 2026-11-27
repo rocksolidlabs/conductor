@@ -52,6 +52,9 @@ const (
 	NotExactWords           = "Conductor cannot show this call exactly."
 	WithdrawnElsewhereWords = "Withdrawn: answered elsewhere."
 	TooLargeWords           = "This call's input is too large for Conductor to show it whole."
+	// TooMuchToCheckWords is the refusal of a call past the bounds of the
+	// floor's walk of its strings.
+	TooMuchToCheckWords = "This call holds too much for Conductor to check; ask the agent for smaller steps."
 	// NotDeliveredWords is the activity line of an operator's answer
 	// recorded and then not delivered: its request had gone.
 	NotDeliveredWords = "The answer was not delivered: the request was lost."
@@ -810,7 +813,7 @@ func (s *Local) runsInDenied(text, cwd string, deny []string) bool {
 var callFolderKeys = []string{"cwd", "workdir", "directory", "dir", "working_directory", "workingDirectory", "working_dir"}
 
 // Bounds of the walk of an in-stream call's strings (streamFloored): a call
-// past one is floored.
+// past one is refused (TooMuchToCheckWords).
 const (
 	// maxWalkStrings is the most strings a call's walk judges.
 	maxWalkStrings = 4096
@@ -831,24 +834,26 @@ const (
 // the call runs in (each folder judged once, before the walk: under the
 // list, as it is spelled, and as its links lead), and, where it looks like a
 // path, as a path; a file URI as its path. Past a bound (maxWalkStrings, a
-// path's maxLinkSteps) the call is floored. It reads only what does not
-// change over the session (its folder, the deny list), so the caller holds
-// no lock: the walk is the driver's, before the session's lock is taken.
-func (s *Local) streamFloored(input []byte) bool {
+// path's maxLinkSteps) the call is refused with TooMuchToCheckWords. The
+// answer is the refusal's words, "" for none. It reads the session's
+// folder, which does not change, and the deny list, computed at each call
+// (it only grows), so the caller holds no lock: the walk is the driver's,
+// before the session's lock is taken.
+func (s *Local) streamFloored(input []byte) string {
 	deny := s.fileDeny()
 	if len(deny) == 0 {
-		return false
+		return ""
 	}
 	var fields map[string]any
 	if json.Unmarshal(input, &fields) != nil {
-		return false
+		return ""
 	}
 	_, hasRaw := fields["rawInput"]
 	_, hasLoc := fields["locations"]
 	_, hasContent := fields["content"]
 	_, hasTitle := fields["title"]
 	if !hasRaw && !hasLoc && !hasContent && !hasTitle {
-		return false
+		return ""
 	}
 	// The folders the words are read from: the session's, and each the raw
 	// input names, as spelled and as its links lead.
@@ -859,8 +864,10 @@ func (s *Local) streamFloored(input []byte) bool {
 			if !ok || f == "" {
 				continue
 			}
-			if s.pathDenied(f, deny) {
-				return true
+			if denied, bounded := s.pathJudged(f, deny); bounded {
+				return TooMuchToCheckWords
+			} else if denied {
+				return FloorWords
 			}
 			from := filepath.Clean(f)
 			if !filepath.IsAbs(from) {
@@ -872,7 +879,7 @@ func (s *Local) streamFloored(input []byte) bool {
 			bases = append(bases, from)
 			linked, ok := linksFirst(from)
 			if !ok {
-				return true
+				return TooMuchToCheckWords
 			}
 			if real, err := evalExisting(linked); err == nil && real != from {
 				bases = append(bases, real)
@@ -880,10 +887,10 @@ func (s *Local) streamFloored(input []byte) bool {
 		}
 	}
 	strs := 0
-	denied := false
+	why := ""
 	var walk func(v any)
 	walk = func(v any) {
-		if denied {
+		if why != "" {
 			return
 		}
 		switch t := v.(type) {
@@ -892,20 +899,24 @@ func (s *Local) streamFloored(input []byte) bool {
 				return
 			}
 			if strs++; strs > maxWalkStrings {
-				denied = true
+				why = TooMuchToCheckWords
 				return
 			}
 			for _, b := range bases {
 				if commandNamesDenied(t, deny, b) {
-					denied = true
+					why = FloorWords
 					return
 				}
 			}
 			if p, ok := strings.CutPrefix(t, "file://"); ok {
 				t = p
 			}
-			if len(t) <= maxWalkPath && looksLikePath(t) && s.pathDenied(t, deny) {
-				denied = true
+			if len(t) <= maxWalkPath && looksLikePath(t) {
+				if denied, bounded := s.pathJudged(t, deny); bounded {
+					why = TooMuchToCheckWords
+				} else if denied {
+					why = FloorWords
+				}
 			}
 		case []any:
 			for _, x := range t {
@@ -920,7 +931,7 @@ func (s *Local) streamFloored(input []byte) bool {
 	for _, k := range []string{"rawInput", "locations", "content", "title"} {
 		walk(fields[k])
 	}
-	return denied
+	return why
 }
 
 // looksLikePath says a string may name a place: one line, with a slash, or
@@ -1032,8 +1043,16 @@ func literalPrefix(pattern string) string {
 }
 
 // pathDenied reports whether path, relative to the session's folder when it
-// is not absolute, is under the deny list, its links followed.
+// is not absolute, is under the deny list, its links followed; a path past
+// the bound of its walk is denied too.
 func (s *Local) pathDenied(path string, deny []string) bool {
+	denied, bounded := s.pathJudged(path, deny)
+	return denied || bounded
+}
+
+// pathJudged is pathDenied's judgement, bounded saying the path's walk went
+// past maxLinkSteps (the path is not judged).
+func (s *Local) pathJudged(path string, deny []string) (denied, bounded bool) {
 	if strings.HasPrefix(path, "~/") {
 		if home, err := os.UserHomeDir(); err == nil {
 			path = filepath.Join(home, path[2:])
@@ -1041,7 +1060,7 @@ func (s *Local) pathDenied(path string, deny []string) bool {
 	}
 	if !filepath.IsAbs(path) {
 		if s.info.Cwd == "" {
-			return false
+			return false, false
 		}
 		path = filepath.Join(s.info.Cwd, path)
 	}
@@ -1049,21 +1068,21 @@ func (s *Local) pathDenied(path string, deny []string) bool {
 	// as its letters read.
 	linked, ok := linksFirst(path)
 	if !ok {
-		return true
+		return false, true
 	}
 	if linked != filepath.Clean(path) {
 		if insideAny(linked, deny) {
-			return true
+			return true, false
 		}
 		if real, err := evalExisting(linked); err == nil && insideAny(real, deny) {
-			return true
+			return true, false
 		}
 	}
 	path = filepath.Clean(path)
 	if real, err := evalExisting(path); err == nil && insideAny(real, deny) {
-		return true
+		return true, false
 	}
-	return insideAny(path, deny)
+	return insideAny(path, deny), false
 }
 
 // CommandNamesDenied reports whether a command's text names a path of the

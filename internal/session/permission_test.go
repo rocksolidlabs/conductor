@@ -1100,8 +1100,8 @@ func TestTheWalkOfACallsStringsIsForCallsThatComeInAStream(t *testing.T) {
 }
 
 // The walk is bounded: a call with more strings than the walk judges, and a
-// folder with more parts than a path's walk takes, are floored, never
-// passed unjudged.
+// folder with more parts than a path's walk takes, are refused in words of
+// their own, never passed unjudged.
 func TestTheWalkOfACallsStringsIsBounded(t *testing.T) {
 	data := realDir(t, t.TempDir())
 	s, _, f := protocolSession(t, Options{FileDeny: DenyList([]string{data}, nil)})
@@ -1117,12 +1117,12 @@ func TestTheWalkOfACallsStringsIsBounded(t *testing.T) {
 		input string
 	}{
 		{"more strings than the walk judges", j(map[string]any{"kind": "other", "title": "x", "content": many})},
-		{"a folder longer than its walk", j(map[string]any{"kind": "execute", "title": "x", "rawInput": map[string]any{"command": "ls", "cwd": long}})},
+		{"a folder longer than its walk", j(map[string]any{"kind": "execute", "title": "x", "rawInput": map[string]any{"command": "ls", "workdir": long}})},
 	} {
 		call := fmt.Sprintf("c-%d", i)
 		f.ToolStarted(ToolStep{Ref: call, Name: "other", Input: []byte(tc.input)})
 		e, v := inStreamAsked(t, s, f, "req-"+call, call, "other", tc.input)
-		deniedWith(t, s, e, v, FloorWords)
+		deniedWith(t, s, e, v, TooMuchToCheckWords)
 	}
 	if _, ok := linksFirst(long); ok {
 		t.Fatal("linksFirst walked past its bound")
