@@ -651,3 +651,40 @@ describe("the operator's own typed line (I19, row 12)", () => {
     expect(JSON.stringify(own)).toBe('{"t":"submit","text":"/compact","expand":true}')
   })
 })
+
+describe("the agent's own commands (row 12)", () => {
+  const largest = () => readFileSync(fileURLToPath(new URL('../../../internal/proto/testdata/commands-max.json', import.meta.url)))
+  it('takes the largest message within its bounds', () => {
+    const raw = new Uint8Array(largest())
+    const m = chat.decodeTranscript(raw.subarray(0, raw.length - 1))
+    expect(m?.t).toBe('commands')
+    if (m?.t !== 'commands') return
+    expect(m.commands.length).toBe(chat.MAX_COMMANDS)
+    expect(m.more).toBe(true)
+  })
+  it('takes none past them', () => {
+    const base = JSON.parse(largest().toString('utf8')) as chat.TranscriptCommands
+    const enc = (m: unknown) => new TextEncoder().encode(JSON.stringify(m))
+    const bad: Array<(m: chat.TranscriptCommands) => void> = [
+      (m) => m.commands.push({ name: 'extra' }),
+      (m) => (m.commands[0]!.name += 'x'),
+      (m) => (m.commands[0]!.name = 'fix issue'),
+      (m) => (m.commands[0]!.name = 'a@b'),
+      (m) => (m.commands[0]!.name = '-x'),
+      (m) => (m.commands[0]!.name = 'x‮y'),
+      (m) => (m.commands[1]!.name = m.commands[0]!.name),
+      (m) => m.commands[0]!.aliases!.push('c'),
+      (m) => (m.commands[0]!.aliases![0] = 'a b'),
+      (m) => (m.commands[0]!.words += 'x'),
+      (m) => (m.commands[0]!.hint += 'x'),
+      (m) => (m.commands[0]!.words = 'one\ntwo'),
+    ]
+    for (const change of bad) {
+      const m = structuredClone(base)
+      change(m)
+      expect(chat.decodeTranscript(enc(m))).toBeNull()
+    }
+    expect(chat.decodeTranscript(enc({ t: 'commands', rev: 1, commands: [{ name: 'compact' }, { name: 'fix-issue', words: 'Fix one.', hint: '<number>', aliases: ['fi'] }] }))?.t).toBe('commands')
+    expect(chat.decodeTranscript(enc({ t: 'commands', rev: '1', commands: [] }))).toBeNull()
+  })
+})

@@ -331,6 +331,7 @@ type ProtocolEvents interface {
 	Background(running bool)                   // work the agent started still runs after its turn (or no longer does)
 	TurnEnded(outcome string, u Usage)         // "done", "interrupted", "error", "limit"
 	Notice(code, words string)                 // something the agent said that is none of the above
+	Commands(list []Command)                   // the agent's own commands, the whole list (row 12)
 }
 ```
 
@@ -3316,6 +3317,38 @@ adversarial read; the page's parts come after them. **30 h.**
 - The stub takes an unmarked message as the fixture does (`/compact`,
   `/fix-issue`, any other `/name`, `@path` inside its folder) and keeps
   each message's mark in `<conversation>.marks`.
+
+**As built, row 12, part 2** (#1169; `internal/session/commands.go`,
+`internal/proto/commands.go`, `internal/agentproto/claude.go`,
+`web/app/utils/protocol.ts`, `web/e2e/stub-protocol.mjs`):
+
+- `way.Command` and `ProtocolEvents.Commands(list)`: a driver hands the
+  whole list each time. The Claude Code driver reads the `initialize`
+  answer's `commands` once the shape check passed (the payload's
+  `commands` key alone), each `system/commands_changed` list, and, where
+  neither came, `system/init`'s `slash_commands` names; a list that is
+  not an array of objects with a string name changes nothing, and past
+  1,000 entries the rest is not read.
+- The session (`cleanCommands`) keeps a name only of the shape and bound,
+  once, its aliases of the same rules and never its own name, its words
+  and hint on one line with every control, format and line-separator
+  character dropped, cut at a character with `…` for the words; at most
+  200, `more` past them. An unchanged list is not sent again; a change
+  within `CommandsEvery` (1 s) of the last send is held and sent once,
+  the last list, by the session's clock (`Options.Now`, `AfterFunc`).
+  The list lives on the chat (`protocolWay.commands`): a move back to
+  the terminal lets it go, a held send of a chat that went is dropped, a
+  restarted child's list replaces it.
+- Sent by `operatorChatLocked` alone: after the transcript's replay in
+  `AttachWith`, at a change, and after the `way` message of a move, on
+  any chat (a driver with no mark included: who may see the list, not
+  what a line does).
+- `proto.TranscriptCommandsMsg` with `Valid`, `EncodeCommands` (never a
+  frame past its bounds) and `DecodeCommands` (strict); the app's
+  `decodeTranscript` takes `commands` only within the same bounds
+  (`commandsValid`). The stub's `initialize` answer lists a made-up set
+  (`compact`, `clear`, `model`, `fix-issue`) and a change follows each
+  change of `<conversation>.commands`.
 
 ## Decision before any builder
 
