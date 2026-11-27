@@ -1169,28 +1169,62 @@ func TestAnACPCallWithOnlyATitleIsFloored(t *testing.T) {
 }
 
 // An answer is refused when the session no longer holds the call as it was
-// shown: announced again with another input after the request, the card's
-// Allow reaches nobody.
-func TestAnAnswerForACallAnnouncedAgainIsRefused(t *testing.T) {
-	s, _, f := protocolSession(t, Options{})
-	f.TurnStarted("")
-	f.ToolStarted(ToolStep{Ref: "c1", Name: "execute", Input: []byte(`{"title":"ls"}`)})
-	e, v := inStreamAsked(t, s, f, "req-1", "c1", "execute", `{"title":"ls"}`)
-	if v != nil || e.State != PermissionOpen {
-		t.Fatalf("not asked: %+v, replied %+v", e, v)
+// shown, and the card closes, the agent told no: the call announced again
+// with another input after the request, and the call no longer held at all
+// (a thousand later steps past it).
+func TestAnAnswerForACallNotHeldAsShownIsRefused(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		after func(f *sessiontest.FakeProtocol)
+	}{
+		{"announced again", func(f *sessiontest.FakeProtocol) {
+			f.ToolStarted(ToolStep{Ref: "c1", Name: "execute", Input: []byte(`{"title":"rm -rf ~"}`)})
+		}},
+		{"no longer held", func(f *sessiontest.FakeProtocol) {
+			for i := range maxOpenSteps {
+				f.ToolStarted(ToolStep{Ref: fmt.Sprintf("g%d", i), Name: "read", Input: []byte(`{"title":"x"}`)})
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, _, f := protocolSession(t, Options{})
+			f.TurnStarted("")
+			f.ToolStarted(ToolStep{Ref: "c1", Name: "execute", Input: []byte(`{"title":"ls"}`)})
+			e, v := inStreamAsked(t, s, f, "req-1", "c1", "execute", `{"title":"ls"}`)
+			if v != nil || e.State != PermissionOpen {
+				t.Fatalf("not asked: %+v, replied %+v", e, v)
+			}
+			tc.after(f)
+			owner, err := s.AttachWith(AttachOptions{Role: RoleControl, Name: "Ada", Owner: true}, newChanSink(false))
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = s.AnswerPermission(context.Background(), owner, proto.PermissionAnswer{T: proto.CtlPermissionAnswer, ReqID: "a1", Question: e.Question, Call: e.Call, Sha256: e.InputSha256, Choice: proto.PermissionAllowOnce})
+			if !errors.Is(err, ErrStaleRequest) {
+				t.Fatalf("the answer: %v", err)
+			}
+			closed, v := entryOf(t, s, e.Seq), replyTo(t, f, "req-1")
+			if closed.State != PermissionWithdrawn || closed.Why != StaleRequestWords || v.Allow || v.Message != StaleRequestWords {
+				t.Fatalf("the card %+v, the agent told %+v", closed, v)
+			}
+		})
 	}
-	f.ToolStarted(ToolStep{Ref: "c1", Name: "execute", Input: []byte(`{"title":"rm -rf ~"}`)})
-	owner, err := s.AttachWith(AttachOptions{Role: RoleControl, Name: "Ada", Owner: true}, newChanSink(false))
-	if err != nil {
-		t.Fatal(err)
-	}
-	err = s.AnswerPermission(context.Background(), owner, proto.PermissionAnswer{T: proto.CtlPermissionAnswer, ReqID: "a1", Question: e.Question, Call: e.Call, Sha256: e.InputSha256, Choice: proto.PermissionAllowOnce})
-	if !errors.Is(err, ErrStaleRequest) {
-		t.Fatalf("an answer for a call announced again: %v", err)
-	}
-	for _, r := range f.Replies() {
-		if r.Ref == "req-1" && r.Verdict.Allow {
-			t.Fatalf("allowed: %+v", r)
+}
+
+// replyTo is the verdict the driver was sent for ref, waited for.
+func replyTo(t *testing.T, f *sessiontest.FakeProtocol, ref string) *Verdict {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		for _, r := range f.Replies() {
+			if r.Ref == ref {
+				v := r.Verdict
+				return &v
+			}
 		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no reply to %s", ref)
+		}
+		time.Sleep(time.Millisecond)
 	}
 }
