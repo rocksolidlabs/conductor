@@ -25,6 +25,8 @@ func decodeEvent(b []byte, ev *claudeEvent) error {
 	field(m, "response", &ev.Response)
 	field(m, "request_id", &ev.RequestID)
 	field(m, "capabilities", &ev.Capabilities)
+	field(m, "slash_commands", &ev.SlashCommands)
+	field(m, "commands", &ev.Commands)
 	field(m, "task_id", &ev.TaskID)
 	field(m, "tool_use_id", &ev.ToolUseID)
 	field(m, "ambient", &ev.Ambient)
@@ -35,6 +37,8 @@ func decodeEvent(b []byte, ev *claudeEvent) error {
 	field(m, "api_error_status", &ev.APIErrorStatus)
 	field(m, "terminal_reason", &ev.TerminalReason)
 	field(m, "total_cost_usd", &ev.TotalCostUSD)
+	field(m, "user_message_uuid", &ev.UserMessageUUID)
+	field(m, "user_message_uuids", &ev.UserMessageUUIDs)
 	var usage map[string]json.RawMessage
 	field(m, "usage", &usage)
 	field(usage, "input_tokens", &ev.Usage.InputTokens)
