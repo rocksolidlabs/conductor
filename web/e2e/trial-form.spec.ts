@@ -55,11 +55,11 @@ test('New agent trial opens on its task with nothing marked, two agents picked, 
       const { dialog, form } = await openForm(page)
       await expect(dialog.getByRole('heading', { name: 'New agent trial' })).toBeVisible()
       await expect(dialog).toContainText('Two to four agents each try the same task on their own copy. You keep the best result.')
-      await expect(form.locator('[data-compare-goal] textarea'), at).toBeFocused()
-      await expect(form.locator('[data-compare-goal] textarea')).toHaveAttribute('placeholder', 'What should each agent do?')
+      await expect(form.locator('[data-compare-goal]'), at).toBeFocused()
+      await expect(form.locator('[data-compare-goal]')).toHaveAttribute('placeholder', 'What should each agent do?')
       await expect(form.locator('[data-trial-agent]')).toHaveCount(2)
-      await expect(form.locator('[data-compare-check] input')).toHaveValue('')
-      await expect(form.locator('[data-compare-check] input')).not.toHaveAttribute('placeholder', /./)
+      await expect(form.locator('[data-compare-check]')).toHaveValue('')
+      await expect(form.locator('[data-compare-check]')).not.toHaveAttribute('placeholder', /./)
       // Nothing is marked before a press.
       await expect(dialog.locator('[aria-invalid="true"]'), at).toHaveCount(0)
       // The one filled button and Yolo beside it, in view as the form opens.
@@ -69,14 +69,14 @@ test('New agent trial opens on its task with nothing marked, two agents picked, 
       const yoloSwitch = dialog.getByRole('switch', { name: /^Yolo/ })
       await expect(yoloSwitch, at).toBeInViewport({ ratio: 1 })
       await expect(yoloSwitch).toHaveAttribute('aria-checked', String(yolo))
-      await expect(dialog.locator('[data-compare-yolo]')).toContainText('Yolo skips permission prompts')
+      await expect(dialog.getByRole('switch', { name: 'Yolo skips permission prompts', exact: true })).toBeVisible()
       // On, it is the switch's own colour, never the warning's; its words do not change.
       if (!yolo) await yoloSwitch.click()
       await expect(yoloSwitch).toHaveAttribute('aria-checked', 'true')
       await atRest(yoloSwitch)
       const fill = await probeColour(page, await yoloSwitch.evaluate((n) => getComputedStyle(n).backgroundColor))
       expect(fill, at).not.toBe(await probeColour(page, 'var(--ui-warning)'))
-      await expect(dialog.locator('[data-compare-yolo]')).toContainText('Yolo skips permission prompts')
+      await expect(dialog.getByRole('switch', { name: 'Yolo skips permission prompts', exact: true })).toBeVisible()
       // The title and the description stay clear of the close button.
       const close = (await dialog.locator('[data-slot="close"]').boundingBox())!
       for (const part of ['title', 'description']) {
@@ -100,19 +100,19 @@ test('a press with nothing typed marks the task, the check and the folder and pu
   await page.goto('/crews')
   const { dialog, form } = await openForm(page)
   await dialog.locator('[data-compare-create]').click()
-  await expect(form.locator('[data-compare-goal] textarea')).toBeFocused()
+  await expect(form.locator('[data-compare-goal]')).toBeFocused()
   await expect(dialog.locator('[aria-invalid="true"]')).toHaveCount(3)
-  await expect(form.locator('[data-compare-goal] textarea')).toHaveAttribute('aria-invalid', 'true')
-  await expect(form.locator('[data-compare-check] input')).toHaveAttribute('aria-invalid', 'true')
+  await expect(form.locator('[data-compare-goal]')).toHaveAttribute('aria-invalid', 'true')
+  await expect(form.locator('[data-compare-check]')).toHaveAttribute('aria-invalid', 'true')
   await expect(form).toContainText('Say what each agent should do.')
   await expect(form).toContainText('Give a command that tests each result, such as npm test.')
   await expect(form).toContainText('Pick the folder.')
   expect(seen).toHaveLength(0)
 
   // Each mark goes as its field is put right.
-  await form.locator('[data-compare-goal] textarea').fill('Add rate limiting to the login route')
+  await form.locator('[data-compare-goal]').fill('Add rate limiting to the login route')
   await expect(form).not.toContainText('Say what each agent should do.')
-  await form.locator('[data-compare-check] input').fill('true')
+  await form.locator('[data-compare-check]').fill('true')
   const folder = form.locator('[data-compare-cwd]').getByRole('combobox')
   await folder.fill(state.repo)
   await folder.press('Tab')
@@ -122,7 +122,7 @@ test('a press with nothing typed marks the task, the check and the folder and pu
   await dialog.getByRole('switch', { name: /^Yolo/ }).click()
   const agents = await form.locator('[data-trial-agent]').evaluateAll((els) => els.map((e) => e.getAttribute('data-agent-id')))
 
-  await form.locator('[data-compare-goal] textarea').focus()
+  await form.locator('[data-compare-goal]').focus()
   await page.keyboard.press('Control+Enter')
   await expect(dialog).toHaveCount(0, { timeout: 30_000 })
   await expect(page).toHaveURL(/\/crews\/(?!new)[^/?]+/, { timeout: 30_000 })
@@ -148,26 +148,108 @@ test("the draft lives across Escape and the X and ends with Cancel; an agent's a
   await page.setViewportSize(DESK)
   await page.goto('/crews')
   let { dialog, form } = await openForm(page)
-  await form.locator('[data-compare-goal] textarea').fill('kept across a close')
+  await form.locator('[data-compare-goal]').fill('kept across a close')
   const more = await openMore(form)
-  await more.locator('[data-compare-agent-args="1"] input').fill('--model e2e')
+  await more.locator('[data-compare-agent-args="1"]').fill('--model e2e')
   await expect(form.locator('[data-trial-agent="1"] [data-trial-agent-args]')).toHaveText('--model e2e')
   await expect(form.locator('[data-trial-agent="0"] [data-trial-agent-args]')).toHaveCount(0)
 
   await page.keyboard.press('Escape')
   await expect(dialog).toHaveCount(0)
   ;({ dialog, form } = await openForm(page))
-  await expect(form.locator('[data-compare-goal] textarea')).toHaveValue('kept across a close')
+  await expect(form.locator('[data-compare-goal]')).toHaveValue('kept across a close')
   await expect(form.locator('[data-trial-agent="1"] [data-trial-agent-args]')).toHaveText('--model e2e')
 
   await dialog.locator('[data-slot="close"]').click()
   await expect(dialog).toHaveCount(0)
   ;({ dialog, form } = await openForm(page))
-  await expect(form.locator('[data-compare-goal] textarea')).toHaveValue('kept across a close')
+  await expect(form.locator('[data-compare-goal]')).toHaveValue('kept across a close')
 
   await dialog.locator('[data-compare-cancel]').click()
   await expect(dialog).toHaveCount(0)
   ;({ dialog, form } = await openForm(page))
-  await expect(form.locator('[data-compare-goal] textarea')).toHaveValue('')
+  await expect(form.locator('[data-compare-goal]')).toHaveValue('')
   await expect(form.locator('[data-trial-agent-args]')).toHaveCount(0)
+})
+
+/** Whether an input's placeholder fits its box whole, measured in the input's own font. */
+async function placeholderFits(input: Locator): Promise<{ text: number; room: number }> {
+  return input.evaluate((el: HTMLInputElement) => {
+    const s = getComputedStyle(el)
+    const ctx = document.createElement('canvas').getContext('2d')!
+    ctx.font = `${s.fontStyle} ${s.fontWeight} ${s.fontSize} ${s.fontFamily}`
+    const room = el.clientWidth - parseFloat(s.paddingLeft) - parseFloat(s.paddingRight)
+    return { text: ctx.measureText(el.placeholder).width, room }
+  })
+}
+
+test('More options opens downward in five groups, the button staying where it was and the footer in view; its closed row names what was changed', async ({ page }) => {
+  test.setTimeout(120_000)
+  for (const size of [DAILY, DESK]) {
+    // This pass's caps: the page, the dialog's opening, the fold's, about twenty expects and measures.
+    budget(24 * EXPECT_MS)
+    const at = `${size.width} x ${size.height}`
+    await page.setViewportSize(size)
+    await page.goto('/crews')
+    const { dialog, form } = await openForm(page)
+    const button = form.locator('[data-more-options]')
+    await expect(button).toHaveAttribute('aria-expanded', 'false')
+    await expect(form.locator('[data-more-line]')).toHaveCount(0)
+    const before = (await button.boundingBox())!
+    const more = await openMore(form)
+    await atRest(dialog)
+    const after = (await button.boundingBox())!
+    expect(Math.abs(after.y - before.y), `More options moved from ${before.y} to ${after.y} (${at})`).toBeLessThanOrEqual(1)
+    expect(Math.abs(after.x - before.x), at).toBeLessThanOrEqual(1)
+    await expect(dialog.locator('[data-compare-create]'), at).toBeInViewport({ ratio: 1 })
+    await expect(more.locator('h3')).toHaveText(['Each agent', 'Every agent', 'Checks', 'When they are done', 'Filed as'])
+    // One row an agent, its approach and its arguments, each placeholder whole.
+    await expect(more.locator('[data-compare-agent-row]')).toHaveCount(2)
+    for (const sel of ['[data-compare-agent-args="0"]', '[data-compare-agent-approach="0"]']) {
+      const input = more.locator(sel)
+      await input.scrollIntoViewIfNeeded()
+      const fit = await placeholderFits(input)
+      expect(fit.text, `${sel}'s placeholder is ${fit.text} px in ${fit.room} px (${at})`).toBeLessThanOrEqual(fit.room)
+    }
+    await expect(more.locator('[data-compare-agent-args="0"]')).toHaveAttribute('placeholder', 'Flags, as you would type them in a terminal')
+    await expect(more.locator('[data-compare-agent-approach="0"]')).toHaveAttribute('placeholder', 'Optional: a way to try it')
+    await expect(more.locator('[data-compare-criterion="0"]')).toHaveValue('Does what the task asks')
+    await expect(more.locator('[data-compare-instructions]')).toHaveAttribute('placeholder', 'Extra instructions, the same for each')
+    await expect(more.locator('[data-compare-name]')).toHaveAttribute('placeholder', "The task's first words")
+    await expect(more.getByRole('button', { name: 'Add a check' })).toBeVisible()
+    // The review's agent comes with its switch, the first installed one picked.
+    await expect(more.locator('[data-compare-review-agent]')).toHaveCount(0)
+    await more.getByRole('switch', { name: 'Review' }).click()
+    await expect(more.locator('[data-compare-review-agent]')).toBeVisible()
+    await expect(more.locator('[data-compare-review-agent]')).not.toHaveText('')
+    // Changed, then closed: the row names it.
+    await more.locator('[data-compare-agent-args="1"]').fill('--model e2e')
+    await more.locator('[data-compare-name]').fill('Login rate limit')
+    await button.click()
+    await expect(button).toHaveAttribute('aria-expanded', 'false')
+    await expect(form.locator('[data-more-line]')).toHaveText('arguments · reviewed · named')
+    await dialog.locator('[data-compare-cancel]').click()
+    await expect(dialog).toHaveCount(0)
+  }
+})
+
+test('a press whose first problem is under More options opens it and puts the cursor there', async ({ page, state }) => {
+  test.setTimeout(120_000)
+  await page.setViewportSize(DAILY)
+  await page.goto('/crews')
+  const { dialog, form } = await openForm(page)
+  await form.locator('[data-compare-goal]').fill('Add rate limiting to the login route')
+  await form.locator('[data-compare-check]').fill('true')
+  const folder = form.locator('[data-compare-cwd]').getByRole('combobox')
+  await folder.fill(state.repo)
+  await folder.press('Tab')
+  const more = await openMore(form)
+  await more.locator('[data-compare-agent-args="0"]').fill('--model "opus')
+  await form.locator('[data-more-options]').click()
+  await expect(form.locator('[data-more-options]')).toHaveAttribute('aria-expanded', 'false')
+  await dialog.locator('[data-compare-create]').click()
+  await expect(form.locator('[data-more-options]')).toHaveAttribute('aria-expanded', 'true')
+  await expect(more.locator('[data-compare-agent-args="0"]')).toBeFocused()
+  await expect(more).toContainText('Agent A: close the quote in its arguments.')
+  await dialog.locator('[data-compare-cancel]').click()
 })
