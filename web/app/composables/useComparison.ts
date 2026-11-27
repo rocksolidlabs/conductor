@@ -57,7 +57,7 @@ export function useComparison(o: { run: () => string; ticket?: () => string }) {
       if (run !== o.run()) return
       if (e instanceof ApiError && e.status === 404) {
         comparison.value = null
-        missing.value = e.message || 'This run is not a comparison.'
+        missing.value = e.message || 'This run is not a trial.'
         error.value = ''
         changing.value = false
         loaded.value = true
@@ -69,7 +69,7 @@ export function useComparison(o: { run: () => string; ticket?: () => string }) {
         return
       }
       changing.value = false
-      error.value = (e as Error).message || 'The comparison could not be read.'
+      error.value = (e as Error).message || 'The trial could not be read.'
     }
   }
   const serial = new SerialReads(once)

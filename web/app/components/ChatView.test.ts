@@ -94,9 +94,46 @@ describe('the chat', () => {
 
   it("noBarBesideTheQuestion: where the chat shows a permission question, no reply bar repeats it", () => {
     const pages = (p: string) => readFileSync(new URL(`../pages/${p}`, import.meta.url), 'utf8')
-    expect(pages('sessions/[id].vue')).toContain(`<QuickReplyBar v-if="!(way === 'protocol' && answersInChat(attention))"`)
+    expect(pages('sessions/[id].vue')).toContain(`<QuickReplyBar v-if="!askInChat && !(way === 'protocol' && answersInChat(attention))"`)
+    expect(pages('sessions/[id].vue')).toContain(`<QuickReplyBar v-if="!answersInChat(attention)"`)
     expect(pages('join/[token].vue')).toContain(`<QuickReplyBar v-if="!(joinWay === 'protocol' && answersInChat(attention))"`)
     expect(pages('yard.vue')).toContain(`<QuickReplyBar v-if="!(focused.way === 'protocol' && answersInChat(focused.attention))"`)
+  })
+
+  it('drawsTheAskAboveTheBox: the card for a question sits between the conversation and the box, in the chat\'s column', () => {
+    const t = template(view)
+    const scroll = t.indexOf('data-chat-scroll')
+    const ask = t.indexOf('<slot name="ask" />')
+    const box = t.indexOf('<ChatComposer')
+    expect(scroll).toBeGreaterThan(-1)
+    expect(ask).toBeGreaterThan(scroll)
+    expect(box).toBeGreaterThan(ask)
+    expect(t).toMatch(/<div v-if="\$slots\.ask \|\| controls" class="mx-auto w-full max-w-3xl[^"]*" data-chat-foot>/)
+    // The terminal hands the page's card to its chat, and the session page fills it in Chat alone.
+    const terminal = readFileSync(new URL('./TerminalView.vue', import.meta.url), 'utf8')
+    expect(terminal).toContain('<template v-if="$slots.ask" #ask><slot name="ask" /></template>')
+    const page = readFileSync(new URL('../pages/sessions/[id].vue', import.meta.url), 'utf8')
+    expect(page).toContain('<template v-if="askInChat" #ask>')
+  })
+
+  it("drawsATileReadOnly: a chat's tile is the end of the conversation, with no box, no Stop and no answer, always at its end", () => {
+    expect(view).toContain("const controls = computed(() => !props.tile && !props.readOnly && conn.role.value === 'control')")
+    expect(view).toContain('const canAnswer = computed(() => !props.tile && !props.readOnly')
+    expect(view).toContain('if (el && !props.tile && !atChatEnd(el)) return')
+    expect(view).toContain(':inert="tile || undefined"')
+    expect(view).toContain(':data-chat-tile="tile ? \'\' : undefined"')
+    // The box is the controls' alone, and the Stop is the box's.
+    expect(template(view)).toMatch(/<ChatComposer\s+v-if="controls"/)
+    const terminal = readFileSync(new URL('./TerminalView.vue', import.meta.url), 'utf8')
+    expect(terminal).toContain('<ChatView v-else-if="chatShown" tile :connection="conn" read-only class="absolute inset-0 z-10" />')
+    expect(terminal).not.toContain('Runs as a chat.')
+  })
+
+  it('leavesALineForARequestOutOfView: an open permission card scrolled away is said above the box, with Show it', () => {
+    expect(view).toContain("if (it.kind === 'permission' && it.entry.state === 'open') return it.entry")
+    expect(view).toContain('askAway.value = r.bottom <= s.top || r.top >= s.bottom')
+    expect(view).toContain('@scroll.passive="measureAway"')
+    expect(template(view)).toMatch(/<div v-if="askAway && openAsk"[^>]*data-chat-permission-away>[\s\S]*asks:<\/span> \{\{ plainWords\(openAsk\.plain\) \}\}[\s\S]*label="Show it"[^>]*@click="showQuestion"/)
   })
 
   it("followsOnlyAtTheEnd: where the person is, is measured as a change arrives, before it is drawn; one reading above the end stays", () => {
@@ -104,7 +141,7 @@ describe('the chat', () => {
     expect(atChatEnd({ scrollHeight: 2000, scrollTop: 1500 - CHAT_END_SLACK + 1, clientHeight: 500 })).toBe(true)
     // An input opened at the end grew below: the same place is no longer the end.
     expect(atChatEnd({ scrollHeight: 2800, scrollTop: 1500, clientHeight: 500 })).toBe(false)
-    expect(view).toMatch(/watch\(\s*\(\) => conn\.transcriptVersion\.value,\s*\(\) => \{\s*const el = scroller\.value\s*if \(el && !atChatEnd\(el\)\) return/)
+    expect(view).toMatch(/watch\(\s*\(\) => conn\.transcriptVersion\.value,\s*\(\) => \{\s*const el = scroller\.value\s*(\/\/[^\n]*\s*)?if \(el && !props\.tile && !atChatEnd\(el\)\) return/)
     expect(view).toContain("{ flush: 'pre' },")
     expect(view).not.toContain('atBottom')
     // The browser spec that judges the follow measures the end by the same slack (it cannot import this module).

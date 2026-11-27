@@ -37,8 +37,10 @@ test('the empty home shows its welcome at desktop width, the list below it, and 
   await expect(page).toHaveURL(/\/$/, { timeout: 30_000 })
   const welcome = page.locator('[data-welcome]')
   await expect(welcome).toBeVisible()
-  // Its steps (the UX review's P17): an agent found on this machine to launch, the example crews to load. Settings left the card.
-  await expect(welcome.locator('[data-welcome-agent]').first()).toBeVisible()
+  // Its ways to start (the UX review's P17; UX3): an agent found on this machine to launch, and folded under Other ways to start, the
+  // example crews to load. Settings left the card.
+  await expect(welcome.locator('[data-welcome-primary]')).toBeVisible()
+  await welcome.locator('[data-welcome-expander]').click()
   await expect(welcome.getByRole('button', { name: 'Load the example crews' })).toBeVisible()
   await expect(welcome.getByRole('link', { name: 'Settings' })).toHaveCount(0)
 

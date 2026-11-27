@@ -15,8 +15,6 @@ import {
   linkLine,
   machineOf,
   repeatWords,
-  resumeDestination,
-  resumeFailure,
   type HistoryItem,
 } from '~/utils/history'
 
@@ -38,8 +36,6 @@ export function usePaletteHistory(o: { go: (to: string) => void; token: () => vo
   const admin = useWorkbenchToken()
   const route = useRoute()
   const copy = useCopy()
-  const toast = useToast()
-  const history = useHistory()
   const search = useHistorySearch()
 
   // What the palette's query asks of the history: `~` and its words (the latest sessions with none), or the plain search's words from
@@ -76,22 +72,8 @@ export function usePaletteHistory(o: { go: (to: string) => void; token: () => vo
   // applied only to the read that asked, a busy refusal asked again, asked again with a new token, cancelled as the palette closes).
   const entryRead = search.entryRead
 
-  async function resume(id: string, label: string) {
-    const record = `/history/sessions/${encodeURIComponent(id)}`
-    try {
-      const r = await history.resumeRecord(id)
-      const to = resumeDestination(r)
-      toast.add({ title: `${label} resumed`, description: r.notice, icon: 'i-lucide-history', color: 'success' })
-      if (to) o.go(to.to)
-    } catch (e) {
-      // An unknown or pending outcome is said as such, never as "did not resume", and its record opens: its receipts say how it ended.
-      // A question only the record's page asks in full (the launch's variables, a lost record's second yes): that page, saying why.
-      const f = resumeFailure(e, { unknown: 'its record, opened now, keeps the receipt that says whether it did', pending: 'Its record, opened now, keeps the receipt that says how it ends.' })
-      const title = f.outcome === 'refused' || f.outcome === 'failed' ? `${label} did not resume` : `${label}: ${f.title.charAt(0).toLowerCase()}${f.title.slice(1)}`
-      toast.add({ title, description: f.description, icon: f.icon, color: f.color })
-      if (f.outcome === 'unknown' || f.outcome === 'pending' || f.code === 'env_not_kept' || f.code === 'lost_unconfirmed') o.go(record)
-    }
-  }
+  // A resume asked from a row: the palette's and the welcome's one rule (useRecordResume).
+  const { resume } = useRecordResume({ go: o.go })
 
   function resumeAction(e: HistoryItem): Action | null {
     if (e.kind !== 'session') return null

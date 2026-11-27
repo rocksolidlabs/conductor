@@ -7,7 +7,6 @@
   "components/BrakemanProposal.vue": 4,
   "components/BrakemanReceipt.vue": 1,
   "components/BrakemanRefChip.vue": 1,
-  "components/ChatComposer.vue": 1,
   "components/ChatThread.vue": 5,
   "components/CodeBlock.vue": 1,
   "components/CommandPalette.vue": 1,

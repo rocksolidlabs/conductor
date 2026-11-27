@@ -95,7 +95,7 @@ describe('the questions the palette asks', () => {
     ['a run row’s Stop run…', stopQuestion({ kind: 'run', name: 'nightly' }), 'Stop', 'Cancel'],
     ['the run page’s Stop run…', stopRunPageQuestion('nightly'), 'Stop the run', 'Cancel'],
     ['Stop every finished session', stopFinishedQuestion(['a', 'b']), 'Stop them', 'Cancel'],
-    ['Restart server', restartQuestion(2), 'Restart server', 'Cancel'],
+    ['Restart server', restartQuestion(2), 'Restart server', 'Keep it running'],
     ['Save and restart', saveRestartQuestion(2), 'Save and restart', 'Keep editing'],
     ['a link’s Revoke', revokeQuestion('review'), 'Revoke', 'Cancel'],
     ['a History row’s Resume', resumeQuestion('docs'), 'Resume', 'Keep it'],
@@ -112,6 +112,7 @@ describe('the questions the palette asks', () => {
     expect(stopFinishedQuestion(['a', 'b'])).toMatchObject({ title: 'Stop 2 finished sessions?', detail: 'a, b' })
     expect(restartQuestion(0).detail).toBe('No agent is running.')
     expect(restartQuestion(1).detail).toBe('1 running agent stops.')
+    expect(restartQuestion(2)).toEqual({ title: 'Restart the server?', detail: '2 running agents stop.', confirm: 'Restart server', keep: 'Keep it running' })
     // Settings' save bar asks the same words (UX3 R56); the old ones are gone.
     expect(saveRestartQuestion(1)).toMatchObject({ title: 'Restart the server now?', detail: '1 running agent stops.' })
     expect(saveRestartQuestion(3)).toEqual({ title: 'Restart the server now?', detail: '3 running agents stop.', confirm: 'Save and restart', keep: 'Keep editing' })

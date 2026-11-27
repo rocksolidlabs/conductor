@@ -13,9 +13,9 @@ export type Preset = 'observe' | 'draft' | 'act'
 export type PresetShown = Preset | 'custom'
 
 export const PRESETS: ReadonlyArray<{ value: Preset; label: string; description: string }> = [
-  { value: 'observe', label: 'Observe', description: 'It reads and briefs. It drafts nothing, proposes nothing and runs nothing.' },
-  { value: 'draft', label: 'Draft and propose', description: 'It drafts tickets, crews and handoffs and proposes operations, which you edit, make and take.' },
-  { value: 'act', label: 'Act within grants', description: 'It drafts and proposes, and runs itself the operations you grant below, each through its own route.' },
+  { value: 'observe', label: 'Observe', description: 'Reads and briefs. Nothing else.' },
+  { value: 'draft', label: 'Draft and propose', description: 'Also drafts tickets and crews and proposes operations, for you to take.' },
+  { value: 'act', label: 'Act within grants', description: 'Also runs by itself what you turn on under What it may run.' },
 ]
 
 /** The words of a preset, or Custom's. */

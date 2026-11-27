@@ -106,7 +106,7 @@ describe('the permission question', () => {
     expect(src).toMatch(/<template v-if="canAnswer">[\s\S]*data-permission-allow[\s\S]*data-permission-deny[\s\S]*<\/template>\s*<p v-else[^>]*data-permission-operator-only>Only the person who runs this server can answer\.<\/p>/)
     // The page's view of who answers: the chat's own welcome when it has one, else the page's word, and a read-only view never.
     const view = readFileSync(new URL('./ChatView.vue', import.meta.url), 'utf8')
-    expect(view).toContain('const canAnswer = computed(() => !props.readOnly && (chatWelcome.value ? !!conn.welcome.value?.permissionAnswer : props.operator))')
+    expect(view).toContain('const canAnswer = computed(() => !props.tile && !props.readOnly && (chatWelcome.value ? !!conn.welcome.value?.permissionAnswer : props.operator))')
     expect(view).toContain(':can-answer="canAnswer"')
   })
 

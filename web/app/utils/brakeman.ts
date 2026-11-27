@@ -413,7 +413,7 @@ export const KINDS: ReadonlyArray<{ value: string; label: string }> = [
   { value: 'locate', label: 'Find…' },
   { value: 'overlaps', label: 'Overlapping changes' },
   { value: 'ask', label: 'A question' },
-  { value: 'compare', label: 'Compare approaches' },
+  { value: 'compare', label: 'Sum up a trial' },
 ]
 
 /** What the page calls a request's kind: a wake request is the background role's own, never one the composer offers. */
@@ -1125,7 +1125,7 @@ export function configProblems(c: BrakemanConfig, adapter: string | null): Recor
     } else if (!caps) out.agentId = "This agent cannot be Brakeman's: its adapter registers no Conductor tools or has no read-only mode."
     else if (c.model && !caps.model) out.model = 'This agent takes no model from Conductor: leave it empty for its default.'
     else if (c.allowConductorTools && !caps.allowTools) out.allowConductorTools = "This agent cannot be told to allow Conductor's tools: it asks before each."
-  } else if (c.enabled) out.agentId = 'Brakeman on needs an agent.'
+  } else if (c.enabled) out.agentId = 'Pick the agent Brakeman runs on.'
   else if (c.model) out.model = 'A model needs an agent.'
   if (c.model && !out.model && !MODEL.test(c.model)) out.model = 'A model is letters, digits and . _ : / @ -, at most 100, starting with a letter or a digit.'
   if (c.account) {
@@ -1330,22 +1330,22 @@ export const GRANTS: ReadonlyArray<{ value: string; label: string; words: string
   {
     value: 'launch_approved_plan',
     label: 'Launch an approved plan',
-    words: "Launch a managed run from a ticket's plan revision you approved, while your approval still holds. It never approves one: a revision not approved, or whose ticket changed since, is refused.",
+    words: 'Starts a run from a plan you approved. It never approves one.',
   },
   {
     value: 'request_repair',
     label: 'Request a repair',
-    words: "Ask for changes on a candidate of a run the server is running, a Yardmaster repair round of its task, recorded as Brakeman's review. It never approves or accepts a result, and never continues a stopped run: that stays yours.",
+    words: 'Asks a running task for changes, as its own review. It never accepts a result.',
   },
   {
     value: 'prepare_followup',
     label: 'Prepare a follow-up',
-    words: "Propose a revision of a ticket's plan based on the approved one. You still approve it or not: it never runs until you do.",
+    words: 'Proposes the next plan for a ticket. It runs only once you approve it.',
   },
   {
     value: 'route_decision',
     label: 'Route a decision',
-    words: "Send an open decision record to you, the operator, or to a person of its run's crew, by name or by the responsibility they hold. It never answers one: you answer it, for them.",
+    words: 'Sends an open decision to you or a crew member. It never answers one.',
   },
 ]
 

@@ -43,7 +43,7 @@ const sentence = (p: PlanCompare, agents: string[]) =>
 describe('the launch statement of a comparison', () => {
   it("says the plan's sentence for three candidates with reviews and Brakeman", () => {
     expect(sentence(part(3, { reviews: 3, brakemanTurn: true }), ['Claude Code', 'Codex', 'Claude Code'])).toBe(
-      "This comparison starts 3 candidates (Claude Code, Codex, Claude Code): 3 agent sessions, once the plan's decisions and the project's prerequisites let the work start; " +
+      "This trial starts 3 candidates (Claude Code, Codex, Claude Code): 3 agent sessions, once the plan's decisions and the project's prerequisites let the work start; " +
         'then an agent review of each candidate that succeeds: up to 3 more sessions, none for a candidate that fails or is cancelled; ' +
         "then what 3 runs of one candidate's crew would take, since each candidate is worked as a task of its own crew is (each attempt a session of its own; 3 counted attempts a task, and a review's request for changes, an attempt that could not start and each Retry you give add more); " +
         "2 checks on each submitted candidate attempt (the task's checks and conductor.manifest.json's verify steps at the base; a candidate that changes the manifest runs its own); " +
@@ -57,7 +57,7 @@ describe('the launch statement of a comparison', () => {
     expect(s[0]!.words).toContain('starts 2 candidates (Claude Code, Codex): 2 agent sessions')
     expect(s[1]!.words).toContain("then what 2 runs of one candidate's crew would take")
     expect(s[2]!.words).toMatch(/^1 check on each submitted candidate attempt/)
-    expect(s[3]!.words).toBe('no Brakeman turn: this comparison asks no draft')
+    expect(s[3]!.words).toBe('no Brakeman turn: this trial asks no summary')
   })
 
   it('counts four candidates with their reviews as "up to", and Brakeman', () => {
@@ -108,7 +108,7 @@ describe("a launch from a revision, and the count it sends", () => {
 
   it('is held when the block is there and the part is not: no count the person was not shown', () => {
     const l = compareLaunch({ n: 4 }, body(['claude', 'codex']), catalog)
-    expect(l).toEqual({ kind: 'unstated', words: 'Revision 4 is a comparison, and the server did not say what it starts: read the ticket again before launching it' })
+    expect(l).toEqual({ kind: 'unstated', words: 'Revision 4 is a trial, and the server did not say what it starts: read the ticket again before launching it' })
   })
 
   it('is held when the part and the body disagree, never counting from the body', () => {
