@@ -806,38 +806,74 @@ var callFolderKeys = []string{"cwd", "workdir", "directory", "dir", "working_dir
 
 // nestedDenied says a call whose input holds its raw input, its locations
 // and its content beside each other (an ACP agent's tool call: rawInput,
-// locations, content's diffs) names a place of the deny list in any of
-// them, whatever the call's kind: the raw input judged as a command's and a
-// file tool's input are (its line from the session's folder and from each
-// folder it says the call runs in, as runsInDenied judges it), each
-// location's and each diff's path. The caller holds s.mu.
+// locations, content's diffs) names a place of the deny list anywhere in
+// them, whatever the call's kind: every string they hold is judged as a
+// command line's words (from the session's folder, and from each folder the
+// raw input says the call runs in, as runsInDenied judges it) and, where it
+// looks like a path, as a path; a file URI as its path. The caller holds
+// s.mu.
 func (s *Local) nestedDenied(fields map[string]any, deny []string) bool {
+	_, hasRaw := fields["rawInput"]
+	_, hasLoc := fields["locations"]
+	_, hasContent := fields["content"]
+	if !hasRaw && !hasLoc && !hasContent {
+		return false
+	}
+	var folders []string
 	if raw, ok := fields["rawInput"].(map[string]any); ok {
-		text := commandText(raw)
-		if commandNamesDenied(text, deny, s.info.Cwd) {
-			return true
-		}
 		for _, k := range callFolderKeys {
-			if v, ok := raw[k].(string); ok && v != "" && s.runsInDenied(text, v, deny) {
-				return true
-			}
-		}
-		for _, k := range []string{"file_path", "filePath", "notebook_path", "path", "abs_path"} {
-			if v, ok := raw[k].(string); ok && v != "" && s.pathDenied(v, deny) {
-				return true
+			if v, ok := raw[k].(string); ok && v != "" {
+				folders = append(folders, v)
 			}
 		}
 	}
-	for _, key := range []string{"locations", "content"} {
-		list, _ := fields[key].([]any)
-		for _, item := range list {
-			m, _ := item.(map[string]any)
-			if v, ok := m["path"].(string); ok && v != "" && s.pathDenied(v, deny) {
-				return true
+	denied := false
+	var walk func(v any)
+	walk = func(v any) {
+		if denied {
+			return
+		}
+		switch t := v.(type) {
+		case string:
+			if t == "" {
+				return
+			}
+			if commandNamesDenied(t, deny, s.info.Cwd) {
+				denied = true
+				return
+			}
+			for _, f := range folders {
+				if s.runsInDenied(t, f, deny) {
+					denied = true
+					return
+				}
+			}
+			if p, ok := strings.CutPrefix(t, "file://"); ok {
+				t = p
+			}
+			if looksLikePath(t) && s.pathDenied(t, deny) {
+				denied = true
+			}
+		case []any:
+			for _, x := range t {
+				walk(x)
+			}
+		case map[string]any:
+			for _, x := range t {
+				walk(x)
 			}
 		}
 	}
-	return false
+	for _, k := range []string{"rawInput", "locations", "content", "title"} {
+		walk(fields[k])
+	}
+	return denied
+}
+
+// looksLikePath says a string may name a place: one line, with a slash, or
+// starting with ~.
+func looksLikePath(v string) bool {
+	return !strings.ContainsAny(v, "\n\x00") && (strings.Contains(v, "/") || strings.HasPrefix(v, "~"))
 }
 
 // linksFirst is an absolute path with its links followed one part at a time

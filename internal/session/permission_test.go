@@ -1013,6 +1013,10 @@ func TestAnACPCallIsFlooredByEveryPlaceItNames(t *testing.T) {
 		{"a relative line from the folder its raw input names", "execute", j(map[string]any{"kind": "execute", "title": "x", "rawInput": map[string]any{"command": "cat " + filepath.Base(data) + "/secrets.json", "cwd": filepath.Dir(data)}}), true},
 		{"a folder under another key", "execute", j(map[string]any{"kind": "execute", "title": "x", "rawInput": map[string]any{"command": "cat " + filepath.Base(data) + "/secrets.json", "directory": filepath.Dir(data)}}), true},
 		{"a folder that is a link", "execute", j(map[string]any{"kind": "execute", "title": "x", "rawInput": map[string]any{"command": "cat " + filepath.Base(data) + "/secrets.json", "workdir": linkTo(t, filepath.Dir(data))}}), true},
+		{"a move's destination under a key of its own", "move", j(map[string]any{"kind": "move", "title": "x", "rawInput": map[string]any{"source": "notes.txt", "destination": filepath.Join(data, "x")}}), true},
+		{"a list of paths", "read", j(map[string]any{"kind": "read", "title": "x", "rawInput": map[string]any{"paths": []any{"notes.txt", secret}}}), true},
+		{"a path inside a patch's text", "edit", j(map[string]any{"kind": "edit", "title": "x", "rawInput": map[string]any{"patchText": "*** Update File: " + secret + "\n+x"}}), true},
+		{"a file link in its content", "read", j(map[string]any{"kind": "read", "title": "x", "content": []any{map[string]any{"type": "content", "content": map[string]any{"type": "resource_link", "uri": "file://" + secret}}}}), true},
 		{"nothing of the list", "execute", j(map[string]any{"kind": "execute", "title": "x", "rawInput": map[string]any{"command": "make test"}}), false},
 	} {
 		call := fmt.Sprintf("c-%d", i)
