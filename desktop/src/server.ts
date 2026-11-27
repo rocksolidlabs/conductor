@@ -91,6 +91,8 @@ export class ServerSupervisor extends EventEmitter {
   private generation = 0
   private current: Promise<Handshake> | null = null
   private stopping: Promise<void> | null = null
+  /** The restart under way, whose outcome a start it stopped reports. */
+  private restarting: Promise<Handshake> | null = null
   private healthTimer: NodeJS.Timeout | null = null
   private restartTimer: NodeJS.Timeout | null = null
   private failTimes: number[] = []
@@ -186,8 +188,17 @@ export class ServerSupervisor extends EventEmitter {
       })
     })
     child.on('exit', (code, signal) => this.onExit(child, code, signal))
+    // A start told to stop while it started (a stop or a restart before its handshake): never trusted, whatever it prints.
+    const superseded = () => !this.wanted || this.child !== child || gen !== this.generation
+    // Its outcome is the restart's that stopped it, or the newer start's; a plain stop's is StartStopped.
+    const stale = (): Promise<Handshake> => {
+      if (this.restarting) return this.restarting
+      if (gen !== this.generation && this.current && this.wanted) return this.current
+      throw new StartStopped()
+    }
     try {
       const h = await handshake
+      if (superseded()) return stale()
       this.handshake = h
       this.backoff = this.o.backoffMinMs ?? 1000
       this.setState('running', { url: h.publicUrl, origin: loopbackOrigin(h.listen), pid: h.pid, version: h.version, lastError: undefined })
@@ -195,6 +206,8 @@ export class ServerSupervisor extends EventEmitter {
       this.startHealth()
       return h
     } catch (e) {
+      if (e instanceof StartStopped) throw e
+      if (superseded()) return stale()
       const err = e as Error
       this.setState('failed', { lastError: err.message })
       this.o.log('main', `server start failed: ${err.message}`)
@@ -298,8 +311,16 @@ export class ServerSupervisor extends EventEmitter {
 
   /** restart stops and starts again, with the same settings read afresh (env()). */
   async restart(): Promise<Handshake> {
-    await this.stop()
-    this.failTimes = []
-    return this.start()
+    const next = (async () => {
+      await this.stop()
+      this.failTimes = []
+      return this.start()
+    })()
+    this.restarting = next
+    try {
+      return await next
+    } finally {
+      if (this.restarting === next) this.restarting = null
+    }
   }
 }
