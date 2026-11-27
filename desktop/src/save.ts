@@ -35,9 +35,11 @@ export class SettingsSaver {
     const cur = d.get()
     // The zoom is the app's own (Ctrl+= and Ctrl+-): a form saved with an older level leaves the current one. So are the updates
     // told (#290): a form loaded before one was told would tell it again.
+    // What the page cannot set: the press's folders (pressedRoots), and the read-only list of them it is shown (pressedPaths).
+    const { pressedRoots: _pr, pressedPaths: _pp, ...fromPage } = patch as Partial<DesktopSettings> & { pressedPaths?: unknown }
     const next = typedDefault({
       ...cur,
-      ...patch,
+      ...fromPage,
       zoomLevel: cur.zoomLevel,
       updateAnnounced: cur.updateAnnounced,
       updateDownloaded: cur.updateDownloaded,

@@ -79,6 +79,7 @@ describe('server environment', () => {
     const shown = shownSettings(s)
     expect(shown.allowedRoots).toEqual(['/home/me', '/srv/a'])
     expect(shown).not.toHaveProperty('pressedRoots')
+    expect(shown.pressedPaths).toEqual(['/srv/a'])
     expect(rootPaths(s)).toEqual(['/home/me', '/srv/a'])
     expect(splitRoots(s, ['/home/me', '/srv/a', '/srv/b'])).toEqual({ allowedRoots: ['/home/me', '/srv/b'], pressedRoots: [{ path: '/srv/a', confirmed: '' }] })
     expect(splitRoots(s, ['/home/me'])).toEqual({ allowedRoots: ['/home/me'], pressedRoots: [] })

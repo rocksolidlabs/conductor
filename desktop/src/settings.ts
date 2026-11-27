@@ -81,9 +81,11 @@ export function rootPaths(s: Pick<DesktopSettings, 'allowedRoots' | 'pressedRoot
  * shownSettings are the settings as the Settings page has them: one list of folders (rootPaths), the press's apart from the typed
  * ones being the app's own business.
  */
-export function shownSettings(s: DesktopSettings): Omit<DesktopSettings, 'pressedRoots'> {
+export function shownSettings(s: DesktopSettings): Omit<DesktopSettings, 'pressedRoots'> & { pressedPaths: string[] } {
   const { pressedRoots: _pressed, ...rest } = s
-  return { ...rest, allowedRoots: rootPaths(s) }
+  // pressedPaths, read-only: which folders of the list a press added, for the page to say at a field what a save would do. Nothing
+  // the page sends under this name, or under pressedRoots, is ever taken (SettingsSaver).
+  return { ...rest, allowedRoots: rootPaths(s), pressedPaths: (s.pressedRoots ?? []).map((p) => p.path) }
 }
 
 /**

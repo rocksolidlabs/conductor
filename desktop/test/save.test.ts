@@ -121,10 +121,11 @@ describe('SettingsSaver', () => {
     const s = new SettingsSaver()
     const a = app()
     a.d.set({ ...a.stored(), pressedRoots: [{ path: '/srv/proj', confirmed: '' }, { path: '/srv/wide', confirmed: 'above_home' }] })
-    await s.save(a.d, { allowedRoots: ['/home/me', '/srv/wide', '/srv/typed'], pressedRoots: [{ path: '/srv/sneaked', confirmed: 'home' }] } as never)
+    await s.save(a.d, { allowedRoots: ['/home/me', '/srv/wide', '/srv/typed'], pressedRoots: [{ path: '/srv/sneaked', confirmed: 'home' }], pressedPaths: ['/srv/typed', '/srv/more'] } as never)
     expect(a.stored().allowedRoots).toEqual(['/home/me', '/srv/typed'])
-    // The page's own pressedRoots is never taken: the press's folders are the app's.
+    // The page's own pressedRoots and pressedPaths are never taken: the press's folders are the app's.
     expect(a.stored().pressedRoots).toEqual([{ path: '/srv/wide', confirmed: 'above_home' }])
+    expect(a.stored()).not.toHaveProperty('pressedPaths')
     expect(a.restarts).toHaveLength(1)
   })
 
