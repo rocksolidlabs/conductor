@@ -1771,3 +1771,35 @@ test('Settings keeps an edit not saved across a visit to another page, a setting
   await expect(page.locator('[data-yolo-switch]')).toHaveAttribute('aria-checked', 'false')
   await expect(page.locator('[data-save-settings]')).toBeDisabled()
 })
+
+// The save bar's note when it is longer than its room (UX3 R56's fix): many sections changed on a phone. It wraps inside a box of its
+// own, never cut to an ellipsis, so what a save costs is said whole before the press, and Save stays whole at the right. uncut fails
+// on a note that has no box of its own, whatever the fonts, so the old inline note fails here every run.
+test.describe('on a phone, a long note', () => {
+  test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true })
+
+  test("the save bar's note wraps whole in its own box, and Save stays whole at the right", async ({ page, state }) => {
+    test.setTimeout(20 * 15_000)
+    await standIn(page, state, 'linux')
+    await page.goto('/settings')
+    await settled(page, 'linux')
+    await page.getByLabel('Default folder', { exact: true }).fill(join(state.root, 'settings-long-note'))
+    await page.locator('[data-yolo-switch]').click()
+    await page.locator('[data-switchyard-enabled]').click()
+    await page.locator('[data-tray-switch]').click()
+    const reads = await readsField(page).inputValue()
+    await readsField(page).fill(reads === '400' ? '500' : '400')
+    const note = page.locator('[data-settings-changed]')
+    await expect(note).toHaveText('Changed: Where agents work, How agents run, Switchyard, Brakeman, The app. Saving restarts the server.')
+    await expect(page.locator('[data-save-settings]')).toHaveText('Save and restart')
+    // Wrapped, not cut: more than one line, no ellipsis, every word inside its own box.
+    const m = await note.evaluate((e) => ({ display: getComputedStyle(e).display, overflow: getComputedStyle(e).textOverflow, lines: Math.round(e.getBoundingClientRect().height / parseFloat(getComputedStyle(e).lineHeight)) }))
+    expect(m.display).not.toBe('inline')
+    expect(m.overflow).not.toBe('ellipsis')
+    expect(m.lines).toBeGreaterThan(1)
+    await uncut(note)
+    await uncut(page.locator('[data-save-settings]'))
+    await uncut(page.locator('[data-settings-discard]'))
+    saveAtTheRight(await saveBarOf(page), 2)
+  })
+})
