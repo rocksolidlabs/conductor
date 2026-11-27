@@ -20,6 +20,14 @@ import { COMPARISON_LAUNCHES_FROM_A_TICKET } from '~/utils/compareLaunch'
 
 definePageMeta({ key: 'crews' })
 
+/**
+ * The crew page's lines on whole pixels. The theme's line heights are ratios cut to five places (text-sm's 1.42857 of 14 px), which
+ * the engine draws 1/64 px short of their pixel, so a tall page ends on a fraction and, scrolled to its end, the unsaved-changes bar
+ * sits half a pixel above the window's foot. In lengths they are whole, and so is every line inside (AGENTS.md, a measure reads the
+ * box the browser drew).
+ */
+const WHOLE_LINES = '[--text-xs--line-height:1rem] [--text-sm--line-height:1.25rem] [--text-base--line-height:1.5rem] [--text-lg--line-height:1.75rem]'
+
 const route = useRoute()
 const router = useRouter()
 const api = useSessions()
@@ -805,7 +813,7 @@ usePalette().registerPage(() => ({
 
       <!-- One saved crew, or the new draft. -->
       <template v-else>
-        <div class="flex min-h-full shrink-0 flex-col gap-4 p-4 sm:p-6" :class="dirty && draft && 'pb-2'" data-crew-page>
+        <div class="flex min-h-full shrink-0 flex-col gap-4 p-4 sm:p-6" :class="[WHOLE_LINES, dirty && draft && 'pb-2']" data-crew-page>
           <UAlert v-if="error" color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="error" />
           <div v-if="unreadable" class="flex flex-col items-start gap-3" data-crew-unreadable>
             <UAlert color="error" variant="subtle" icon="i-lucide-file-warning" :title="`The file of ${routeId} cannot be used`" :description="unreadable" />
@@ -850,9 +858,9 @@ usePalette().registerPage(() => ({
           <PageEmpty v-else state="missing" :words="`No crew has the id ${routeId}.`" :actions="[{ label: 'All crews', icon: 'i-lucide-arrow-left', to: '/crews' }]" data-crew-missing />
         </div>
         <!-- The unsaved-changes bar stays in view at the bottom of the page. -->
-        <div v-if="dirty && draft" class="sticky bottom-0 px-4 pb-4 pt-2 sm:px-6">
+        <div v-if="dirty && draft" class="sticky bottom-0 px-4 pb-4 pt-2 sm:px-6" :class="WHOLE_LINES">
           <!-- The app's own elevated surface in both themes; the forest edge and mark say there is unsaved work. -->
-          <div class="flex flex-wrap items-center gap-x-2.5 gap-y-2 rounded-lg border border-default border-l-4 border-l-primary bg-elevated px-3.5 py-2.5 text-[13.5px] text-default shadow-lg" data-unsaved-bar>
+          <div class="flex flex-wrap items-center gap-x-2.5 gap-y-2 rounded-lg border border-default border-l-4 border-l-primary bg-elevated px-3.5 py-2.5 text-[13.5px] leading-5 text-default shadow-lg" data-unsaved-bar>
             <UIcon name="i-lucide-pencil" class="size-4 flex-none text-primary" />
             <b class="font-semibold text-highlighted">{{ draft.id ? 'Unsaved changes to the saved crew' : 'New crew, not saved yet' }}</b>
             <span class="min-w-0 text-muted" data-unsaved-words>{{ changeWords }}</span>
