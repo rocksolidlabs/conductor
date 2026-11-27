@@ -714,7 +714,7 @@ usePalette().registerPage(() => ({
           <UTooltip text="Agents each try the same task. You keep the best result.">
             <UButton label="New agent trial" icon="i-lucide-git-compare" color="neutral" variant="outline" data-new-comparison @click="newComparison" />
           </UTooltip>
-          <CrewCompareTemplate v-model:open="comparisonOpen" :agents="agents" @created="comparisonCreated" />
+          <CrewCompareTemplate v-model:open="comparisonOpen" :agents="agents" :yolo-default="yoloDefault" @created="comparisonCreated" />
           <FullscreenButton />
         </template>
       </UDashboardNavbar>

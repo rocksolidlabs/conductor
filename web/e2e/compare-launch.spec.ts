@@ -9,9 +9,9 @@ import { noOverlap, noSideways } from './layout'
 // dialog says what it starts from the revision's own `compare` part, above the members' lines, and its button says the count; the
 // count goes with the launch, the same on every resend of one operation; a comparison whose part is not given is not launched from the
 // dialog; an ordinary revision sends none (the launch route watched at this spec's own route, which answers the server's refusal where
-// the spec only needs to see what was sent). New comparison on Crews makes the crew through the server's template route, the editor
-// shows its block, and makeComparison launches it for real from its ticket, the server taking the count; the crews page's own Launch
-// of it is refused in the server's words.
+// the spec only needs to see what was sent). Crews names New agent trial; a trial's crew, saved through the server's template route,
+// shows its block in the editor, and makeComparison launches it for real from its ticket, the server taking the count; the crews
+// page's own Launch of it is refused in the server's words. The form itself is trial-form.spec.ts's.
 
 /** What one test made, ended after it. */
 const made = { crews: [] as string[], runs: [] as string[] }
@@ -196,13 +196,8 @@ test("a comparison whose statement the server did not give is not launched from 
   expect(plainSent[0]).not.toHaveProperty('candidates')
 })
 
-test("New comparison on Crews makes a comparison's crew, and the crew editor shows its block read only, on a phone too", async ({ page, api, state }) => {
+test("New agent trial is the name on Crews and in the palette, on a phone too, and a trial's crew shows its block read only in the crew editor", async ({ page, api, state }) => {
   test.setTimeout(120_000)
-  // What New comparison posts, seen on its way to the server's template route.
-  const seen: Array<Record<string, unknown>> = []
-  page.on('request', (r) => {
-    if (r.method() === 'POST' && new URL(r.url()).pathname === '/api/crews/templates/compare') seen.push(r.postDataJSON() as Record<string, unknown>)
-  })
   for (const size of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) {
     await page.setViewportSize(size)
     await page.goto('/crews')
@@ -231,15 +226,6 @@ test("New comparison on Crews makes a comparison's crew, and the crew editor sho
       await expect(page.locator('[data-palette]')).toHaveCount(0)
     }
   }
-  await page.locator('[data-new-comparison]').click()
-  const form = page.locator('[data-compare-template]')
-  await expect(form).toBeVisible()
-  await noSideways(page)
-  // Create waits for what the server would refuse, in words: here, the name first.
-  await expect(form.locator('[data-compare-template-problem]')).toHaveText('Name the comparison')
-  await expect(form.locator('[data-compare-create]')).toBeDisabled()
-  await page.keyboard.press('Escape')
-  await expect(form).toHaveCount(0)
   await page.setViewportSize({ width: 1440, height: 900 })
 
   const crewId = await createComparison(page, api, {
@@ -252,22 +238,6 @@ test("New comparison on Crews makes a comparison's crew, and the crew editor sho
     brakeman: true,
   })
   made.crews.push(crewId)
-  expect(seen).toHaveLength(1)
-  expect(seen[0]).toEqual({
-    name: expect.stringMatching(/^e2e compare /),
-    cwd: state.repo,
-    goal: 'Make the cache read fast',
-    instructions: 'Keep the API as it is.',
-    criteria: [
-      { id: 'no-new-dependency', text: 'no new dependency' },
-      { id: 'p99-of-the-cache-read-under-2-ms', text: 'p99 of the cache read under 2 ms' },
-    ],
-    checks: [{ id: 'unit', argv: ['true'] }],
-    candidates: [{ agentId: 'worker', approach: 'key the cache by locale' }, { agentId: 'worker-cli', args: ['--model', 'e2e'] }],
-    reviews: true,
-    reviewAgent: 'worker',
-    brakeman: true,
-  })
   const crew = await api.crew(crewId)
   expect(crew.tasks?.map((t) => t.id)).toEqual(['approach-a', 'approach-b', 'review-a', 'review-b'])
 
@@ -332,50 +302,6 @@ test("a comparison made on Crews launches from its ticket with the count its sta
 /** Where an agent trial is started, as the crews page and the crew's launch sheet say it. */
 const WHERE = "An agent trial starts from a ticket's approved plan: propose this crew as the ticket's plan, approve it, and launch it there"
 
-test('New comparison keeps its draft across a close until Cancel, and a candidate moved to an agent that takes no arguments drops them', async ({ page, api, state }) => {
-  test.setTimeout(120_000)
-  const catalog = (await api.ok<{ agents: Array<{ id: string; name: string; allowArgs: boolean }> }>('GET', '/api/catalog')).agents
-  const bare = catalog.find((a) => !a.allowArgs)
-  expect(bare, 'an agent of the catalog takes no arguments').toBeTruthy()
-  await page.goto('/crews')
-  await page.locator('[data-new-comparison]').click()
-  const form = page.locator('[data-compare-template]')
-  await form.locator('[data-compare-name]').fill('kept across a close')
-  await form.locator('[data-compare-cwd]').getByRole('combobox').fill(state.repo)
-  await form.locator('[data-compare-goal]').fill('Make it fast')
-  await form.locator('[data-compare-criterion="0"]').fill('no new dependency\t')
-  await form.locator('[data-compare-checks] [data-crew-check]').first().getByLabel('Command of check 1').locator('input').fill('true')
-  await form.locator('[data-compare-checks] [data-crew-check]').first().getByLabel('Command of check 1').locator('input').press('Enter')
-  const a = form.locator('[data-compare-candidate-row="0"]')
-  const argsInput = a.locator('[data-compare-candidate-args] input')
-  await argsInput.fill('--model')
-  await argsInput.press('Enter')
-  await argsInput.fill('"half')
-  await expect(form.locator('[data-compare-template-problem]')).toContainText('an argument is still being typed')
-  // To an agent that takes none: its arguments go with the field that showed them, and Create is free.
-  await a.locator('[data-compare-candidate-agent]').click()
-  await page.getByRole('option', { name: bare!.name, exact: true }).click()
-  await expect(page.getByRole('listbox')).toHaveCount(0)
-  await expect(a).toContainText('This agent takes no arguments.')
-  await expect(form.locator('[data-compare-template-problem]')).toHaveCount(0)
-  await expect(form.locator('[data-compare-create]')).toBeEnabled()
-
-  // Escape closes it; opened again, the draft is as it was.
-  await page.keyboard.press('Escape')
-  await expect(form).toHaveCount(0)
-  await page.locator('[data-new-comparison]').click()
-  await expect(form.locator('[data-compare-name]')).toHaveValue('kept across a close')
-  await expect(form.locator('[data-compare-criterion="0"]')).toHaveValue('no new dependency\t')
-  await expect(form.locator('[data-compare-candidate-row="0"]')).toContainText('This agent takes no arguments.')
-  await expect(form.locator('[data-compare-create]')).toBeEnabled()
-  // Cancel ends it: the next opening is a new draft.
-  await form.locator('[data-compare-cancel]').click()
-  await expect(form).toHaveCount(0)
-  await page.locator('[data-new-comparison]').click()
-  await expect(form.locator('[data-compare-name]')).toHaveValue('')
-  await expect(form.locator('[data-compare-template-problem]')).toHaveText('Name the comparison')
-})
-
 const PHONE = { width: 390, height: 844 }
 const DESK = { width: 1440, height: 900 }
 
@@ -437,30 +363,4 @@ test("a comparison's plan revision and its approval show each candidate's approa
   await featured.locator('[data-plan-launch]').click()
   const statement = page.locator('[data-launch-dialog] [data-launch-compare]')
   await expect(statement.locator('[data-launch-compare-part="checks"]')).toHaveText(/^1 check on each submitted candidate attempt /, { timeout: 30_000 })
-})
-
-test("New comparison's title and description stay clear of its close button, wide and on a phone, in both themes", async ({ page }) => {
-  test.setTimeout(120_000)
-  for (const size of [DESK, PHONE]) {
-    await page.setViewportSize(size)
-    await page.goto('/crews')
-    for (const theme of ['dark', 'light'] as const) {
-      // This pass's caps: the theme's reload, the dialog's opening and closing, the measures.
-      budget(6 * EXPECT_MS)
-      await useTheme(page, theme, '[data-new-comparison]')
-      await page.locator('[data-new-comparison]').click()
-      const dialog = page.getByRole('dialog').filter({ has: page.locator('[data-compare-template]') })
-      await expect(dialog.locator('[data-compare-template]')).toBeVisible()
-      const close = (await dialog.locator('[data-slot="close"]').boundingBox())!
-      for (const part of ['title', 'description']) {
-        const text = (await dialog.locator(`[data-slot="${part}"]`).boundingBox())!
-        // Beside the button, the words end before it starts; below it, they are past its bottom.
-        const clear = text.x + text.width <= close.x || text.y >= close.y + close.height
-        expect(clear, `the ${part} ends at ${text.x + text.width}, the close button starts at ${close.x} (${size.width} wide, ${theme})`).toBe(true)
-      }
-      await noSideways(page)
-      await page.keyboard.press('Escape')
-      await expect(dialog).toHaveCount(0)
-    }
-  }
 })
