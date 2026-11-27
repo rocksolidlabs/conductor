@@ -1,10 +1,13 @@
+import { existsSync, readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import type { Locator, Page } from '@playwright/test'
 import { Api, DAILY, atRest, expect, logged, member, test } from './fixtures'
 import { inside, noOverlap, uncut } from './layout'
 
 // A run's Members view (UX3): a wall of the members' tiles alone, the tab named Members, and the run's Activity a column the person
-// turns on beside the tiles, kept for the crew and taken by a crew opened for the first time; the tiles laid out as Grid or One
-// large, kept for the crew too; a tile that asks shows its question whole above its choices.
+// turns on beside the tiles, kept for the crew and taken by a crew opened for the first time; the tiles laid out as Grid, Columns,
+// Rows or One large, and the gaps between them dragged, kept for the crew too; a tile that asks shows its question whole above its
+// choices or says where it is answered, and a number key on its frame answers it.
 test.describe.configure({ mode: 'serial' })
 
 const made: string[] = []
@@ -141,26 +144,32 @@ async function marksKept(grid: Locator): Promise<number[]> {
 }
 
 /** Every tile is inside the wall or reached by its scroll, and no two overlap. */
-async function tilesLaidOut(grid: Locator, n: number): Promise<void> {
+async function tilesLaidOut(grid: Locator, n: number, scroll: 'x' | 'y' = 'y'): Promise<void> {
   const tiles = grid.locator(':scope > [data-member]')
   await expect(tiles).toHaveCount(n)
   await atRest(grid)
+  // The wall's content, where its scroll reaches, in the window's coordinates as they are now.
   const g = await grid.evaluate((el) => {
     const r = el.getBoundingClientRect()
-    return { left: r.left, right: r.right, top: r.top, bottom: r.top + el.scrollHeight, scrollW: el.scrollWidth, w: el.clientWidth }
+    const left = r.left - el.scrollLeft
+    const top = r.top - el.scrollTop
+    return { left, top, right: left + el.scrollWidth, bottom: top + el.scrollHeight, scrollW: el.scrollWidth, w: el.clientWidth }
   })
-  // Nothing sideways: the wall scrolls down only.
-  expect(g.scrollW).toBeLessThanOrEqual(g.w + 1)
-  const boxes = await tiles.evaluateAll((els, scrollTop) => els.map((el) => {
-    const r = el.getBoundingClientRect()
-    return { name: el.getAttribute('data-member'), left: r.left, right: r.right, top: r.top + scrollTop, bottom: r.bottom + scrollTop, h: r.height, w: r.width }
-  }), await grid.evaluate((el) => el.scrollTop))
+  // Nothing sideways but in Columns: the wall scrolls down.
+  if (scroll === 'y') expect(g.scrollW).toBeLessThanOrEqual(g.w + 1)
+  const boxes = await tiles.evaluateAll((els) =>
+    els.map((el) => {
+      const r = el.getBoundingClientRect()
+      return { name: el.getAttribute('data-member'), left: r.left, right: r.right, top: r.top, bottom: r.bottom, h: r.height, w: r.width }
+    }),
+  )
   for (const b of boxes) {
     expect(b.left, `${b.name} inside the wall`).toBeGreaterThanOrEqual(g.left - 1)
-    expect(b.right, `${b.name} inside the wall`).toBeLessThanOrEqual(g.right + 1)
+    expect(b.right, `${b.name} reached by the wall's scroll`).toBeLessThanOrEqual(g.right + 1)
     expect(b.top, `${b.name} inside the wall`).toBeGreaterThanOrEqual(g.top - 1)
     expect(b.bottom, `${b.name} reached by the wall's scroll`).toBeLessThanOrEqual(g.bottom + 1)
     expect(b.h, `${b.name} at least 140 px tall`).toBeGreaterThanOrEqual(139.5)
+    if (scroll === 'x') expect(b.w, `${b.name} at least 260 px wide`).toBeGreaterThanOrEqual(259.5)
   }
   for (const [i, a] of boxes.entries()) {
     for (const b of boxes.slice(i + 1)) {
@@ -178,7 +187,7 @@ for (const size of [DAILY, { width: 1440, height: 900 }]) {
       const [runId, names] = which === 'two' ? [second, ['solo', 'pair']] : [sixRun, SIX]
       const { grid } = await open(page, runId, names.length)
       const sw = page.locator('[data-run-layout-switch]')
-      await expect(sw.locator('[data-run-layout-choice]')).toHaveCount(2)
+      await expect(sw.locator('[data-run-layout-choice]')).toHaveCount(4)
       await expect(sw.locator('[data-run-layout-choice="grid"]')).toHaveAttribute('aria-pressed', 'true')
       await expect(sw.locator('[data-run-layout-choice="grid"]')).toHaveAccessibleName('Grid')
       await expect(sw.locator('[data-run-layout-choice="large"]')).toHaveAccessibleName('One large')
@@ -287,4 +296,174 @@ test('a tile that asks shows its question whole above its choices, in at most ha
   const q = (await words.boundingBox())!
   const c = (await choices.first().boundingBox())!
   expect(q.y + q.height).toBeLessThanOrEqual(c.y + 0.5)
+})
+
+// Columns and Rows (R19b): one row that scrolls sideways past 260 px a tile, one column that scrolls down past 140 px a tile.
+for (const size of [DAILY, { width: 1440, height: 900 }]) {
+  for (const which of ['two', 'six'] as const) {
+    test(`at ${size.width} x ${size.height} with ${which} members, Columns and Rows lay the tiles out and are kept`, async ({ page }) => {
+      await page.setViewportSize(size)
+      const [runId, names] = which === 'two' ? [second, ['solo', 'pair']] : [sixRun, SIX]
+      const { grid } = await open(page, runId, names.length)
+      const sw = page.locator('[data-run-layout-switch]')
+      await expect(sw.locator('[data-run-layout-choice]')).toHaveCount(4)
+      expect(await sw.locator('[data-run-layout-choice]').evaluateAll((els) => els.map((e) => e.getAttribute('aria-label')))).toEqual(['Grid', 'Columns', 'Rows', 'One large'])
+      await expect(grid.locator('[data-session-tile] [data-welcomed]')).toHaveCount(names.length, { timeout: 30_000 })
+      await markTerminals(grid)
+      await sw.locator('[data-run-layout-choice="columns"]').click()
+      await expect(grid).toHaveAttribute('data-run-layout', 'columns')
+      await tilesLaidOut(grid, names.length, 'x')
+      const tops = await grid.locator(':scope > [data-member]').evaluateAll((els) => els.map((e) => Math.round(e.getBoundingClientRect().top)))
+      expect(new Set(tops).size, 'one row').toBe(1)
+      expect(await marksKept(grid)).toEqual(names.map((_, i) => i + 1))
+      await sw.locator('[data-run-layout-choice="rows"]').click()
+      await expect(grid).toHaveAttribute('data-run-layout', 'rows')
+      await tilesLaidOut(grid, names.length)
+      const lefts = await grid.locator(':scope > [data-member]').evaluateAll((els) => els.map((e) => Math.round(e.getBoundingClientRect().left)))
+      expect(new Set(lefts).size, 'one column').toBe(1)
+      expect(await marksKept(grid)).toEqual(names.map((_, i) => i + 1))
+      await expect(grid.locator('[data-session-tile] [data-welcomed]')).toHaveCount(names.length)
+      await page.reload()
+      await expect(page.locator('[data-run-grid]')).toHaveAttribute('data-run-layout', 'rows')
+    })
+  }
+}
+
+// The gaps (R21).
+test('a drag of a gap changes the tracks once, at its release; the keys move it; a lost drag changes nothing; sizes are kept', async ({ page }) => {
+  test.setTimeout(20 * 15_000 + 30_000)
+  await page.setViewportSize(DAILY)
+  const { grid } = await open(page, first, 3)
+  await expect(grid.locator('[data-session-tile] [data-welcomed]')).toHaveCount(3, { timeout: 30_000 })
+  const gutter = grid.locator('[data-run-gutter="x"]').first()
+  await expect(grid.locator('[data-run-gutter="x"]')).toHaveCount(2)
+  await expect(gutter).toHaveAttribute('role', 'separator')
+  await expect(gutter).toHaveAttribute('aria-orientation', 'vertical')
+  const widths = () => grid.locator(':scope > [data-member]').evaluateAll((els) => els.map((e) => Math.round(e.getBoundingClientRect().width)))
+  const fits = () => grid.locator('.terminal-host').evaluateAll((els) => els.map((e) => [Number(e.getAttribute('data-fit-passes')), Number(e.getAttribute('data-fit-resizes'))]))
+  await atRest(grid)
+  const before = await widths()
+  // The fits settle before the drag: read twice an interval apart.
+  // The fits settle before the drag: two reads an interval apart agree.
+  let f0 = await fits()
+  await expect
+    .poll(
+      async () => {
+        const a = await fits()
+        await page.waitForTimeout(600)
+        f0 = await fits()
+        return JSON.stringify(a) === JSON.stringify(f0)
+      },
+      { timeout: 30_000 },
+    )
+    .toBe(true)
+  const g = (await gutter.boundingBox())!
+  await page.mouse.move(g.x + g.width / 2, g.y + 100)
+  await page.mouse.down()
+  for (let i = 1; i <= 10; i++) await page.mouse.move(g.x + g.width / 2 + i * 12, g.y + 100)
+  // While the pointer is held, the line follows it and nothing else moves.
+  await expect(gutter).toHaveAttribute('data-dragging', 'true')
+  expect(await widths()).toEqual(before)
+  await page.mouse.up()
+  await expect.poll(widths).not.toEqual(before)
+  const after = await widths()
+  expect(after[0]! - before[0]!).toBeGreaterThan(100)
+  // The two terminals beside the gap were fitted for the drag's one change, each with one resize at most; the third kept its size.
+  await expect.poll(async () => (await fits()).slice(0, 2).every(([p], i) => p > f0[i]![0]!), { timeout: 15_000 }).toBe(true)
+  for (const [i, [, r]] of (await fits()).entries()) expect(r - f0[i]![1]!).toBeLessThanOrEqual(1)
+  // The keys: Right moves the gap by 5 %, Home makes the two even.
+  await gutter.focus()
+  const v = Number(await gutter.getAttribute('aria-valuenow'))
+  await page.keyboard.press('ArrowRight')
+  await expect.poll(async () => Number(await gutter.getAttribute('aria-valuenow'))).toBeGreaterThan(v)
+  await page.keyboard.press('Home')
+  await expect.poll(async () => Number(await gutter.getAttribute('aria-valuenow'))).toBe(50)
+  // A drag the pointer loses (the window's blur) ends with nothing changed.
+  await atRest(grid)
+  const kept = await widths()
+  const g2 = (await gutter.boundingBox())!
+  await page.mouse.move(g2.x + g2.width / 2, g2.y + 100)
+  await page.mouse.down()
+  await page.mouse.move(g2.x + g2.width / 2 + 80, g2.y + 100)
+  await expect(gutter).toHaveAttribute('data-dragging', 'true')
+  await page.evaluate(() => window.dispatchEvent(new Event('blur')))
+  await expect(gutter).not.toHaveAttribute('data-dragging', 'true')
+  await page.mouse.up()
+  await atRest(grid)
+  expect(await widths()).toEqual(kept)
+  // Kept after a reload.
+  await page.keyboard.press('Tab')
+  await gutter.focus()
+  await page.keyboard.press('ArrowLeft')
+  await expect.poll(async () => Number(await gutter.getAttribute('aria-valuenow'))).toBeLessThan(50)
+  await atRest(grid)
+  const saved = await widths()
+  await page.reload()
+  await expect(page.locator('[data-run-grid] [data-session-tile]')).toHaveCount(3, { timeout: 30_000 })
+  await atRest(page.locator('[data-run-grid]'))
+  await expect.poll(() => page.locator('[data-run-grid] > [data-member]').evaluateAll((els) => els.map((e) => Math.round(e.getBoundingClientRect().width)))).toEqual(saved)
+})
+
+// Number keys on a tile's frame (R22).
+test("a number key on an asking tile's frame answers it; in its terminal the key is the agent's; a mode choice has no number", async ({ page, api, state }) => {
+  test.setTimeout(4 * 30_000 + 10 * 15_000 + 30_000)
+  const run = await api.run(first)
+  const id = member(run, 'core').sessionId ?? ''
+  const s = await api.session(id)
+  const transcript = () => {
+    const file = join(state.home, '.stub-sessions', `${s.agentSession?.id ?? ''}.txt`)
+    return existsSync(file) ? readFileSync(file, 'utf8') : ''
+  }
+  await expect.poll(async () => (await api.session(id)).attention?.state, { timeout: 30_000 }).toBe('done')
+  await api.ok('POST', `/api/sessions/${id}/attention`, {
+    state: 'needs_input',
+    message: 'Which branch?',
+    options: [
+      { label: 'Yes, and use auto mode', input: 'yolo\r', mode: true },
+      { label: 'main', input: 'main\r' },
+      { label: 'release', input: 'release\r' },
+    ],
+  })
+  const { grid } = await open(page, first, 3)
+  const tile = grid.locator(':scope > [data-member="core"] [data-session-tile]')
+  await expect(tile.locator('[data-run-ask-choice]')).toHaveCount(3)
+  // The mode choice has no number: main is 2, release 3, as the choices draw them.
+  await expect(tile.locator('[data-run-ask-choice="1"] kbd')).toHaveCount(0)
+  // In its terminal, a digit is the agent's.
+  await tile.locator('.xterm-screen').click()
+  await page.keyboard.press('7')
+  await expect(tile.locator('[data-run-ask-choice]')).toHaveCount(3)
+  expect(transcript()).not.toMatch(/main|release/)
+  // On the frame, 3 answers release.
+  await tile.focus()
+  await page.keyboard.press('3')
+  await expect.poll(transcript, { timeout: 30_000, message: 'core got the choice from the frame' }).toContain('release')
+  await expect(tile.locator('[data-run-ask-choices]')).toHaveCount(0)
+  expect(transcript()).not.toContain('yolo')
+  // Enter on the frame still opens the member.
+  await tile.focus()
+  await page.keyboard.press('Enter')
+  await expect(page).toHaveURL(new RegExp(`/sessions/${id}`))
+})
+
+// A question the tile cannot answer, and a member that ended (R20b).
+test('a question without choices says it is answered in its terminal, and an ended member says Resume in words', async ({ page, api }) => {
+  test.setTimeout(3 * 30_000 + 8 * 15_000 + 30_000)
+  const run = await api.run(second)
+  const solo = member(run, 'solo').sessionId ?? ''
+  const pair = member(run, 'pair').sessionId ?? ''
+  await expect.poll(async () => (await api.session(solo)).attention?.state, { timeout: 30_000 }).toBe('done')
+  await api.ok('POST', `/api/sessions/${solo}/attention`, { state: 'needs_input', message: 'Which port should the preview use?' })
+  await api.stopSession(pair)
+  await expect.poll(async () => (await api.session(pair)).status, { timeout: 30_000 }).toMatch(/^(exited|stopped)$/)
+  const { grid } = await open(page, second, 2)
+  const asking = grid.locator(':scope > [data-member="solo"]')
+  await expect(asking.locator('[data-run-tile-question]')).toHaveText('solo asks: Which port should the preview use?')
+  await expect(asking.locator('[data-run-tile-answer="terminal"]')).toHaveText('Answer it in its terminal')
+  await expect(asking.locator('[data-run-ask-choice]')).toHaveCount(0)
+  const ended = grid.locator(':scope > [data-member="pair"]')
+  const resume = ended.getByRole('button', { name: /^(Resume|Relaunch)$/ })
+  await expect(resume).toBeVisible()
+  await expect(resume).toHaveAttribute('data-resume-kind', 'label')
+  await expect(ended.locator('[data-tile-foot]')).not.toContainText('shared cwd')
 })
