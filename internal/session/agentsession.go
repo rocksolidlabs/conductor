@@ -85,6 +85,8 @@ func (s *Local) ReportAgentSession(id, policy string, turn bool) {
 	s.mu.Unlock()
 	if changed {
 		s.notifyChange()
+		// A noted move waits for a conversation it can resume (move.go).
+		s.tryNoted()
 	}
 }
 

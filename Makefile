@@ -7,7 +7,7 @@ GO_MIN   := $(shell awk '/^go /{print $$2}' go.mod)
 NODE_MIN := 22
 NODE_STAMP := web/node_modules/.package-lock.json
 
-.PHONY: help deps check-tools build build-go check-version notices web-install web-build web-typecheck web-dev run dev test test-web test-e2e test-live design-capture test-pebble test-network test-recipes desktop-install desktop-dev desktop-test desktop-binaries desktop-dist desktop-e2e mobile-install mobile-sync mobile-test mobile-native-test mobile-ios-resolve mobile-ios mobile-ios-policy mobile-android mobile-android-image mobile-android-boot mobile-android-notices lint lint-static vuln fmt generate docker clean preflight
+.PHONY: help deps check-tools build build-go check-version notices web-install web-build web-typecheck web-dev run dev test test-web test-e2e test-live design-capture design-md test-pebble test-network test-recipes desktop-install desktop-dev desktop-test desktop-binaries desktop-dist desktop-e2e mobile-install mobile-sync mobile-test mobile-native-test mobile-ios-resolve mobile-ios mobile-ios-policy mobile-android mobile-android-image mobile-android-boot mobile-android-notices lint lint-static vuln fmt generate docker clean preflight
 
 help: ## list targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-16s %s\n", $$1, $$2}'
@@ -82,6 +82,9 @@ test-live: build-go ## the live tier: the real Claude Code and Codex (CONDUCTOR_
 design-capture: web-build build-go ## the release's design capture: every page of the seeded day in both themes and sizes (web/test-results/look), then what drifted against docs/design/system.json
 	cd web && CONDUCTOR_E2E_LOOK=1 npx playwright test e2e/look.spec.ts
 	python3 scripts/design_drift.py
+
+design-md: $(NODE_STAMP) ## DESIGN.md at the root, made from the app's tokens, the brand's and docs/design/system.md's rules (web/build/designMd.ts)
+	cd web && npx vitest run build/designMd.test.ts -u
 
 desktop-install: ## npm ci for the desktop shell (Electron)
 	cd desktop && npm ci
