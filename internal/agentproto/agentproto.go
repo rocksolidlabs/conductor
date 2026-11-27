@@ -23,7 +23,7 @@ const ClaudeStreamJSON = "claude-stream-json"
 
 // Names are the protocols a catalog's agent may declare, in the order they
 // were added.
-func Names() []string { return []string{ClaudeStreamJSON, CodexAppServer} }
+func Names() []string { return []string{ClaudeStreamJSON, CodexAppServer, ACPv1} }
 
 // Check reports an error when r names a protocol Conductor does not speak;
 // nil and the empty recipe ({}, the protocol off) pass. The recipe's shape
@@ -54,6 +54,18 @@ func Moves(name string) bool {
 	return false
 }
 
+// MovesFor is Moves for an agent of the catalog: for the Agent Client
+// Protocol, whose one client speaks to many agents, the agent's own word
+// (acpMoves, by its adapter), set only once its session id through the
+// protocol is shown to be its terminal's own; for any other protocol, its
+// driver's.
+func MovesFor(name, adapter string) bool {
+	if name == ACPv1 {
+		return acpMoves[adapter]
+	}
+	return Moves(name)
+}
+
 // claudeMoves is Claude Code's Moves: set on the by-hand observation of both
 // directions with the real agent, recorded in row 5's As built note.
 const claudeMoves = true
@@ -68,6 +80,11 @@ func Qualified(name, version string) bool {
 		return versionAtLeast(version, ClaudeMinVersion)
 	case CodexAppServer:
 		return versionAtLeast(version, CodexMinVersion)
+	case ACPv1:
+		// One client for many agents, each of its own versions: the
+		// protocol's version, in the initialize answer, is the gate (Begin),
+		// and a program the probe found is enough here.
+		return strings.TrimSpace(version) != ""
 	}
 	return false
 }
@@ -77,8 +94,11 @@ func Qualified(name, version string) bool {
 // of a chat whose child did not start: each driver's own words, Claude
 // Code's for a name Conductor does not speak.
 func NotQualifiedFor(name string) error {
-	if name == CodexAppServer {
+	switch name {
+	case CodexAppServer:
 		return ErrCodexNotQualified
+	case ACPv1:
+		return ErrACPNotQualified
 	}
 	return ErrNotQualified
 }
@@ -86,11 +106,19 @@ func NotQualifiedFor(name string) error {
 // NotStartedFor is the refusal of a chat of the protocol name whose child
 // did not start (NotQualifiedFor).
 func NotStartedFor(name string) error {
-	if name == CodexAppServer {
+	switch name {
+	case CodexAppServer:
 		return ErrCodexNotStarted
+	case ACPv1:
+		return ErrACPNotStarted
 	}
 	return ErrNotStarted
 }
+
+// ErrNoRequest is a driver's Reply for a request it no longer holds (one
+// answered, taken back, resolved or replaced): the verdict reached nobody,
+// and the session records it so.
+var ErrNoRequest = errors.New("agentproto: the agent holds no such request")
 
 // StartWords is the sentence a person reads for a chat's start that err
 // ended, by its kind: a version not qualified, a child that did not start

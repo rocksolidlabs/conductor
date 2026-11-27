@@ -17,7 +17,7 @@ export interface AgentCopy {
   /** The copy's prompt shape (the catalog's promptShape): what the server recognises as the agent's own prompt. */
   promptShape?: string
   /** The copy's protocol (the catalog's protocol): the agent's own interface a session of it moves to as a chat. */
-  protocol?: { name: string }
+  protocol?: { name: string; args?: string[] }
   /** The copy's name, as a person's catalog names it (`Claude Code`); `<the copied agent's name>, <id>` when not given. */
   name?: string
 }

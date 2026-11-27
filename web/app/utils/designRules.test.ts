@@ -669,9 +669,7 @@ function browserWords(from: Record<string, TNode> = templates): Record<string, n
 type Known = Record<string, { count: number; why: string }>
 const countsOf = (known: Known) => Object.fromEntries(Object.entries(known).map(([path, k]) => [path, k.count]))
 
-const YOLO_FOLDED_KNOWN: Known = {
-  'components/CrewEditor.vue': { count: 1, why: "More options holds the crew's Yolo, as Permission prompts: to be brought into view" },
-}
+const YOLO_FOLDED_KNOWN: Known = {}
 
 const SETTINGS_FOLDS_KNOWN: Known = {
   'components/BrakemanSettings.vue': { count: 1, why: "Brakeman's card folds its advanced settings: to be unfolded" },

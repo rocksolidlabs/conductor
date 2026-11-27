@@ -69,7 +69,7 @@ const runsInHelp = computed(() => {
 /** The view link a launch creates lasts 8 hours when the switch is on. */
 const VIEW_LINK_TTL = 8 * 3600
 
-// The permission prompts of the crew's runs: the server's default, or ask (yolo off), or skip (yolo on). A launch fixes the choice on
+// The crew's Yolo: the server's default, or off (the members ask), or on (they act without asking). A launch fixes the choice on
 // the run, so members started later follow it.
 const yoloItems = computed(() => permissionItems(!!props.yoloDefault))
 const yolo = computed({
@@ -87,7 +87,7 @@ const afterLaunch = computed({
 })
 /** More options, folded: the line beside it says what each choice is now. */
 const moreOpen = ref(false)
-const moreLine = computed(() => moreOptionsLine(crew.value, !!props.yoloDefault))
+const moreLine = computed(() => moreOptionsLine(crew.value))
 
 function set<K extends keyof DraftCrew>(key: K, value: DraftCrew[K]) {
   crew.value = { ...crew.value, [key]: value }
@@ -225,7 +225,12 @@ function refused(message: string) {
       <USelect v-model="coordination" :items="coordinationItems" :aria-label="SETUP_WORDS.start" class="w-full" data-crew-coordination />
     </UFormField>
 
-    <!-- The options a crew rarely changes, folded; the line beside the toggle says what each is now. -->
+    <!-- Yolo is used all the time: in view, never in the fold (docs/design/system.md). -->
+    <UFormField :label="SETUP_WORDS.permissions" name="yolo" :ui="{ help: 'mt-1 text-xs' }" help="On, a member acts without asking you first: only for work you trust." data-crew-yolo-field>
+      <USelect v-model="yolo" :items="yoloItems" :aria-label="SETUP_WORDS.permissions" class="w-full" data-crew-yolo />
+    </UFormField>
+
+    <!-- The options a crew rarely changes, folded; the line beside the toggle says what each is now. Yolo is not one of them. -->
     <UCollapsible v-model:open="moreOpen" :ui="{ content: 'pt-3' }">
       <div class="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
         <UButton label="More options" :icon="moreOpen ? 'i-lucide-chevron-down' : 'i-lucide-chevron-right'" color="neutral" variant="ghost" size="sm" class="-ml-2.5 max-sm:min-h-11" :aria-expanded="moreOpen" data-crew-more-options />
@@ -235,9 +240,6 @@ function refused(message: string) {
         <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3" data-crew-more>
           <UFormField :label="SETUP_WORDS.afterLaunch" name="afterLaunch">
             <USelect v-model="afterLaunch" :items="SETUP_WORDS.afterLaunchItems.map((i) => ({ ...i }))" :aria-label="SETUP_WORDS.afterLaunch" class="w-full" data-crew-after-launch />
-          </UFormField>
-          <UFormField :label="SETUP_WORDS.permissions" name="yolo" :ui="{ help: 'mt-1 text-xs' }" help="Skipped, a member acts without asking you first: only for work you trust.">
-            <USelect v-model="yolo" :items="yoloItems" :aria-label="SETUP_WORDS.permissions" class="w-full" data-crew-yolo />
           </UFormField>
           <UFormField :label="SETUP_WORDS.viewLink" name="viewLink" :ui="{ help: 'mt-1 text-xs' }" help="Each launch makes a link anyone can use to watch every member, view only.">
             <USwitch v-model="viewLink" :label="`Make one for ${viewLinkHoursWords(crew.viewLinkTtlSeconds)}`" class="min-h-8 max-sm:min-h-11" data-crew-view-link />
