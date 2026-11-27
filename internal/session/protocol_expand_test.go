@@ -362,9 +362,74 @@ func TestTheWelcomeSaysExpandToTheOperatorAlone(t *testing.T) {
 	}
 }
 
+// wayMessages are the way messages sink was sent, in order.
+func wayMessages(sink *chanSink) []map[string]any {
+	var out []map[string]any
+	for i := range sink.count() {
+		fr, err := proto.Decode(sink.frame(i))
+		if err != nil || fr.Type != proto.TypeControl {
+			continue
+		}
+		var m map[string]any
+		if json.Unmarshal(fr.Payload, &m) == nil && m["t"] == proto.CtlWay {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// A chat's connections are told when a line may no longer be expanded: a
+// crew formed around the session while the operator's connection is open
+// sends it a way message without expand, and its line asking for the word
+// is refused from then on.
+func TestAConnectionIsToldWhenItMayNoLongerExpand(t *testing.T) {
+	s, f := markedChat(t)
+	op, own := attachAs(t, s, operatorChat)
+	if w := welcomeOf(t, own); !bytes.Contains(w, []byte(`"expand":true`)) {
+		t.Fatalf("the operator's welcome: %s", w)
+	}
+	drainedOf(t, op)
+	if n := len(wayMessages(own)); n != 0 {
+		t.Fatalf("%d way messages before the change", n)
+	}
+	if !s.SetCrew(CrewRef{RunID: "run-1", Member: "lead"}) {
+		t.Fatal("SetCrew set nothing")
+	}
+	drainedOf(t, op)
+	ways := wayMessages(own)
+	if len(ways) != 1 || ways[0]["way"] != proto.WayProtocol || ways[0]["expand"] != nil {
+		t.Fatalf("the way messages after the change: %v", ways)
+	}
+	if _, err := s.Submit(context.Background(), Submission{Text: "/compact", By: op, Expand: true}); !errors.Is(err, ErrNoExpand) {
+		t.Fatalf("a line asking for the word after the change: %v", err)
+	}
+	if n := len(f.Sent()); n != 0 {
+		t.Fatalf("written %+v", f.Sent())
+	}
+}
+
+// drainedOf waits until every frame the session queued for sub is handed
+// to its sink; the bound only bounds a hang.
+func drainedOf(t *testing.T, sub *Subscription) {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	for !sub.drained() {
+		if time.Now().After(deadline) {
+			t.Fatal("the viewer was never handed what it was sent")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 // After a move to Chat on open connections, the way message says expand to
-// the operator's own chat connection alone.
+// the operator's own chat connection alone, and to nobody on a chat whose
+// driver has no mark.
 func TestTheWayMessageSaysExpandToTheOperatorAlone(t *testing.T) {
+	t.Run("a driver with a mark", func(t *testing.T) { wayAfterTheMove(t, true) })
+	t.Run("a driver with no mark", func(t *testing.T) { wayAfterTheMove(t, false) })
+}
+
+func wayAfterTheMove(t *testing.T, marked bool) {
 	s, _ := movable(t, 0)
 	_, own := attachAs(t, s, operatorChat)
 	_, link := attachAs(t, s, AttachOptions{Role: RoleControl, LinkID: "link-1", Name: "Guest", Owner: true, ViewerSocket: true})
@@ -372,7 +437,7 @@ func TestTheWayMessageSaysExpandToTheOperatorAlone(t *testing.T) {
 	ts := &terminals{}
 	ts.cleanup(t)
 	f := sessiontest.NewFakeProtocol()
-	f.IsVerbatim = true
+	f.IsVerbatim = marked
 	toChat(t, s, f, ts)
 	wayTo := func(sink *chanSink) map[string]any {
 		t.Helper()
@@ -394,8 +459,8 @@ func TestTheWayMessageSaysExpandToTheOperatorAlone(t *testing.T) {
 			time.Sleep(time.Millisecond)
 		}
 	}
-	if m := wayTo(own); m["expand"] != true {
-		t.Fatalf("the operator's way message: %v", m)
+	if m := wayTo(own); (m["expand"] == true) != marked {
+		t.Fatalf("the operator's way message (a driver with a mark: %v): %v", marked, m)
 	}
 	for _, sink := range []*chanSink{link, peer} {
 		if m := wayTo(sink); m["expand"] != nil {

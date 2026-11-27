@@ -314,6 +314,11 @@ func (s *Local) wayFrameLocked(why string, expands bool) []byte {
 // caller holds s.mu.
 func (s *Local) broadcastWayLocked() { s.sendWayLocked("") }
 
+// standingChangedLocked tells every viewer of a chat its way again after
+// the session's standing changed (a crew formed around it): the way
+// message's expand as it now is, to each connection. The caller holds s.mu.
+func (s *Local) standingChangedLocked() { s.sendWayLocked("") }
+
 // sendWayLocked tells every viewer the way, the noted move and why, and,
 // on a chat whose driver has a mark, the operator's own chat connection
 // alone that its typed line goes for the agent to expand (Way.Expands,
