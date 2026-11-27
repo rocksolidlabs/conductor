@@ -3,7 +3,8 @@ import type { RunInfo, SessionInfo } from '~/composables/useSessions'
 import type { CrewFeedItem } from '~/utils/crews'
 import type { ChatMessage } from '~/utils/protocol'
 import type { TerminalTransport } from '~/utils/transport/types'
-import { memberAsk, memberLook } from '~/utils/crewWords'
+import { memberLook } from '~/utils/crewWords'
+import { tileAskOf } from '~/utils/tileAsk'
 import { memberOffer } from '~/utils/runs'
 import { wallTracks, type RunLayout, type RunWallTile } from '~/utils/wall'
 
@@ -64,12 +65,11 @@ function looked(t: RunWallTile) {
 }
 
 /**
- * A tile's question with its choices (C6): the same line the run's chat offers, answered through the same path (the member's running
- * session, the question named); none where the page cannot answer it.
+ * A tile's question (C6): who asks, the question whole and its choices, the same line the run's chat offers, answered through the
+ * same path (the member's running session, the question named); none where the page cannot answer it.
  */
 function tileAsk(t: RunWallTile) {
-  const line = memberAsk(t.name, t.session).line
-  return line && props.answerable(line) ? line : null
+  return tileAskOf(t.name, t.session, props.answerable)
 }
 
 /** Follows an element's content box. */
@@ -140,7 +140,7 @@ function small(i: number) {
           @select="emit('open', t.session.id)"
         >
           <template v-if="tileAsk(t)" #ask>
-            <RunAskChoices :line="tileAsk(t)!" :answer="props.answer" />
+            <RunTileAsk :ask="tileAsk(t)!" :answer="props.answer" />
           </template>
           <template v-if="$slots.leading" #leading>
             <slot name="leading" :tile="t" />

@@ -73,8 +73,9 @@ const label = computed(() => (ask.value ? `${props.session.name} asks: ${ask.val
       <div class="flex-1 min-h-0" data-tile-terminal>
         <TerminalView :create-transport="props.createTransport" fit="tile" compact :auto-focus="false" :font-size="TILE_FONT_SIZE" :scrollback="TILE_SCROLLBACK" />
       </div>
-      <!-- The page's own answer to the tile's question (a run's tile: its choices as buttons), between the terminal and the foot. -->
-      <div v-if="$slots.ask" class="shrink-0 border-t border-default px-2.5 py-1.5" data-tile-ask-bar>
+      <!-- The page's own answer to the tile's question (a run's tile: the question whole and its choices), between the terminal and
+           the foot: at most half the tile, scrolling inside past that. -->
+      <div v-if="$slots.ask" class="max-h-[50%] shrink-0 overflow-y-auto border-t border-default px-2.5 py-1.5" data-tile-ask-bar>
         <slot name="ask" />
       </div>
       <!-- The foot: the state's cell first, outside the slot, so a run page's tiles keep their branch and diff after it. -->
