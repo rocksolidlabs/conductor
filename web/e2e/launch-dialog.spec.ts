@@ -1,5 +1,5 @@
 import type { Locator, Page, Route } from '@playwright/test'
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { DAILY, atRest, dayPage, expect, openMore, test } from './fixtures'
 import { noSideways, probeColour, tapTarget } from './layout'
@@ -34,7 +34,11 @@ test.beforeAll(async () => {
   })
 })
 
+/** Sessions a test launched for real: ended before the server goes. */
+const made: string[] = []
+
 test.afterAll(async () => {
+  for (const id of made) await own.api.stopSession(id).catch(() => {})
   await own.stop()
 })
 
@@ -481,5 +485,59 @@ test('the usage sits beside the account as its figures, opens the full panel in 
   await pick(dialog, PLAIN)
   await expect(usage).toHaveCount(0)
   await expect(note).toHaveCount(0)
+})
+
+test('after a launch the dialog remembers the agent, the folder, its model and the fold, across a reload, and never the rest', async ({ browser }) => {
+  const page = await dayPage(browser, { server: own.started })
+  const work = join(own.root, 'remembered')
+  mkdirSync(work, { recursive: true })
+  let dialog = await openLaunch(page)
+  await pick(dialog, PROMPTED)
+  await dialog.getByLabel('Folder', { exact: true }).fill(work)
+  const more = await openMore(dialog)
+  await more.locator('[data-launch-model-input]').fill('claude-e2e-model')
+  await more.locator('[data-launch-args]').fill('--add-dir ../secret-key')
+  await more.getByRole('textbox', { name: 'Name', exact: true }).fill('remembered launch')
+  await dialog.locator('[data-launch-message-input]').fill('say hello')
+  const answered = page.waitForResponse((r) => r.request().method() === 'POST' && new URL(r.url()).pathname === '/api/sessions')
+  await dialog.locator('[data-launch-submit]').click()
+  const answer = await answered
+  if (answer.status() === 201) made.push(((await answer.json()) as { id: string }).id)
+  expect(answer.status(), 'the launch made a session').toBe(201)
+  await expect(page).toHaveURL(/\/sessions\//)
+  // Kept once the server took it: read after the page moved, through a poll.
+  const kept = () => page.evaluate(() => localStorage.getItem('conductor.launch.last') ?? '')
+  await expect.poll(kept).toContain('claude-e2e-model')
+  const raw = await kept()
+  for (const never of ['secret-key', 'say hello', 'remembered launch', 'yolo', 'account']) expect(raw, never).not.toContain(never)
+
+  await page.reload()
+  await expect(page.locator('#dashboard-sidebar-main')).toBeVisible()
+  dialog = await openLaunch(page)
+  await expect(dialog.getByRole('radio', { name: re(PROMPTED) })).toHaveAttribute('aria-checked', 'true')
+  await expect(dialog.getByLabel('Folder', { exact: true })).toHaveValue(work)
+  // The fold was left open: it opens so; its model is back, and the names typed are offered.
+  await expect(dialog.locator('[data-more-options]')).toHaveAttribute('aria-expanded', 'true')
+  await expect(dialog.locator('[data-launch-model-input]')).toHaveValue('claude-e2e-model')
+  await expect(dialog.locator('[data-launch-model-names] option')).toHaveAttribute('value', 'claude-e2e-model')
+  await expect(dialog.locator('[data-launch-args]')).toHaveValue('')
+  await dialog.locator('[data-more-options]').click()
+  await expect(dialog.locator('[data-more-line]')).toHaveText('claude-e2e-model')
+  await dialog.getByRole('button', { name: 'Cancel' }).click()
+  await expect(dialog).toHaveCount(0)
+
+  // A remembered folder the server refuses is said under Folder, never changed quietly.
+  await page.evaluate(() => {
+    const v = JSON.parse(localStorage.getItem('conductor.launch.last') ?? '{}')
+    localStorage.setItem('conductor.launch.last', JSON.stringify({ ...v, folder: '/' }))
+  })
+  await page.reload()
+  await expect(page.locator('#dashboard-sidebar-main')).toBeVisible()
+  dialog = await openLaunch(page)
+  const folder = dialog.getByLabel('Folder', { exact: true })
+  await expect(folder).toHaveValue('/')
+  await dialog.locator('[data-launch-submit]').click()
+  await expect(dialog.locator('[data-launch-folder-refused]')).toHaveText("Agents can't use this folder yet.")
+  await expect(folder).toHaveValue('/')
 })
 

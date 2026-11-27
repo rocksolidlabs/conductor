@@ -10,6 +10,7 @@ import { accountChoices, accountOfLaunch, capacityKey, faceWords, modelProblem, 
 import { argsHoldYolo, argsNameModel, chipStep, launchKey, launchNote, launchRefusal, messageProblem, namePlaceholderFor, noTaskLine, optionsSummary, plainOffMachine, showsRunsOn, takesFirstMessage, type LaunchRefusal } from '~/utils/launch'
 import { effectiveYolo, hasYoloRecipe, yoloSummary, yoloUnavailable } from '~/utils/yolo'
 import { offersRunAs, readRunAs, writeRunAs } from '~/utils/launchWay'
+import { afterLaunch, launchStorage, readLast, writeLast, type LastLaunch } from '~/utils/lastLaunch'
 import type { SessionWay } from '~/utils/protocol'
 
 const open = defineModel<boolean>('open', { default: false })
@@ -140,6 +141,21 @@ watch([open, launchModal.asked], async ([v]) => {
   fieldsOf = p?.agentId ?? state.agentId
   if (p?.yolo !== undefined) state.yolo = p.yolo
   let wantedAgent = p?.agentId
+  // What the last launch left (utils/lastLaunch.ts), never for a clone: the fold as it was left, each agent's model and the names
+  // typed; and, at the page's first opening, its agent and folder (after that the dialog keeps what was last picked, as it always has).
+  // A prefill wins.
+  const memory = p?.clone ? null : readLast(launchStorage())
+  lastMemory.value = memory ?? { models: {} }
+  if (memory) {
+    if (!memoryTaken) {
+      memoryTaken = true
+      if (!p?.agentId && memory.agent) wantedAgent = memory.agent
+      if (p?.cwd === undefined && memory.folder !== undefined && !state.cwd) state.cwd = memory.folder
+    }
+    moreOpen.value = memory.moreOpen ?? false
+    for (const [id, m] of Object.entries(memory.models)) perAgent.set(id, { model: m.model, args: '' })
+    model.value = memory.models[fieldsOf]?.model ?? ''
+  }
   const wanted = () => {
     if (opening !== openings) return
     if (wantedAgent && offered.value.some((a) => a.id === wantedAgent)) {
@@ -275,6 +291,12 @@ const argsShown = computed(() => (cloning.value ? cloneArgsShown({ allowArgs: !!
 // Model and arguments belong to the agent picked: picking another keeps them for the first and shows the other's, as last typed in
 // this opening (never stored: arguments can hold a key). A clone keeps its own fields across a pick, by its rules.
 const perAgent = new Map<string, { model: string; args: string }>()
+/** The memory of the last launch, as this opening read it; whether the page's first opening has taken its agent and folder. */
+const lastMemory = ref<LastLaunch>({ models: {} })
+let memoryTaken = false
+/** The model names typed at this agent's last launches, offered as Model's suggestions. */
+const modelNames = computed(() => lastMemory.value.models[state.agentId]?.names ?? [])
+const modelListId = useId()
 /** The agent whose model and arguments the fields hold now. */
 let fieldsOf = ''
 watch(
@@ -448,6 +470,9 @@ async function submit() {
       way: showsRunAs.value && runAs.value === 'protocol' ? 'protocol' : undefined,
     })
     if (showsRunAs.value) writeRunAs(browserStorage(), state.agentId, runAs.value)
+    // Remembered only once the server took the launch: never the arguments, the task, the name, the account or Yolo.
+    const kept = launchStorage()
+    writeLast(kept, afterLaunch(readLast(kept), { agent: state.agentId, folder: state.cwd, model: takesAccount.value ? model.value : '', moreOpen: moreOpen.value }))
     toast.add({ title: 'Session started', description: session.name, color: 'success', icon: 'i-lucide-play' })
     emit('launched', session)
     open.value = false
@@ -598,7 +623,10 @@ async function submit() {
                 <UInput v-model="state.name" :placeholder="namePlaceholder" class="w-full" />
               </UFormField>
               <UFormField v-if="takesAccount" label="Model" name="model" :error="modelError || undefined" data-launch-model>
-                <UInput v-model="model" placeholder="The agent's choice" autocapitalize="off" autocorrect="off" spellcheck="false" class="w-full font-mono" data-launch-model-input />
+                <UInput v-model="model" placeholder="The agent's choice" autocapitalize="off" autocorrect="off" spellcheck="false" :list="modelNames.length ? modelListId : undefined" class="w-full font-mono" data-launch-model-input />
+                <datalist v-if="modelNames.length" :id="modelListId" data-launch-model-names>
+                  <option v-for="n in modelNames" :key="n" :value="n" />
+                </datalist>
               </UFormField>
             </div>
             <div v-if="argsShown" class="flex flex-col gap-1.5">
