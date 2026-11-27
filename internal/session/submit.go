@@ -249,12 +249,13 @@ type Submission struct {
 	PromptHoldsText bool
 	// Expand asks that a chat send the line without the as-written mark,
 	// for the agent's own program to expand (docs/plans/chat-or-terminal.md,
-	// I19): the submit's expand from the server's own viewer socket alone
-	// (internal/api/ws_viewer.go). The session honours it only where By is
+	// I19): a submit's expand, as its socket got it (internal/api/ws_viewer.go,
+	// internal/hostagent/peer.go). The session honours it only where By is
 	// the operator's own chat connection (operatorChatLocked), the line
 	// names no question and no decision and relays nobody, and the driver
-	// has a mark; everywhere else, and on a terminal session, it changes
-	// nothing. Read only in submitProtocol (expand_walk_test.go).
+	// has a mark; everywhere else, and on a terminal session, the line is
+	// refused (ErrNoExpand), nothing written. Read in submitProtocol and,
+	// for the terminal's refusal, in Submit (expand_walk_test.go).
 	Expand bool
 }
 
@@ -517,6 +518,11 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 	if p := s.way.Load(); p != nil {
 		// A session in the protocol way: its own queue (protocol.go).
 		return s.submitProtocol(p, sub)
+	}
+	if sub.Expand {
+		// A terminal expands every line itself: a line that asks for it
+		// was sent for a chat, and is refused, nothing typed (I19).
+		return res, ErrNoExpand
 	}
 	text := SubmitLine(sub.Text)
 	if len(text) > MaxSubmitText {

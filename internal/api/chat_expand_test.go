@@ -78,7 +78,11 @@ func TestExpandOverTheSocket(t *testing.T) {
 		t.Fatalf("a control link's welcome %v", w.m)
 	}
 	link.until("ready", controlOf(proto.CtlReady), nil)
-	link.send(proto.MustControl(proto.Submit{T: proto.CtlSubmit, Text: "/compact", ReqID: "l1", Expand: true}))
+	link.send(proto.MustControl(proto.Submit{T: proto.CtlSubmit, Text: "/compact", ReqID: "l0", Expand: true}))
+	if c := link.until("the refusal", func(c chatFrame) bool { return c.names("l0") }, nil); c.m["code"] != proto.ErrCodeNotSent || c.m["message"] != session.NoExpandWords {
+		t.Fatalf("a control link's line asking for the word: %v", c.m)
+	}
+	link.send(proto.MustControl(proto.Submit{T: proto.CtlSubmit, Text: "/compact", ReqID: "l1"}))
 	if m := sent(2); m.Text != "/compact" || m.Expand {
 		t.Fatalf("a control link's line went %+v", m)
 	}

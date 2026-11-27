@@ -14,8 +14,9 @@ import (
 // I19 through the host link (docs/plans/chat-or-terminal.md, row 12): a
 // viewer with no link, from a server the person said is their own, is one
 // of the owner's windows on the host, and yet its line never goes to a
-// chat's agent without the as-written mark, whatever its submit asks; its
-// welcome says no expand. Only the server's own viewer socket may ask.
+// chat's agent without the as-written mark: a submit asking for it is
+// refused, never sent as written in its place; its welcome says no
+// expand. Only the server's own viewer socket may ask.
 func TestAPeersSubmitIsNeverExpanded(t *testing.T) {
 	a, s, _, viewer := relayCredHost(t)
 	a.opts.ServerIsOwners = true
@@ -40,26 +41,26 @@ func TestAPeersSubmitIsNeverExpanded(t *testing.T) {
 	if err := json.Unmarshal(welcome.Payload, &w); err != nil || w["way"] != session.WayProtocol || w["expand"] != nil {
 		t.Fatalf("the peer's welcome %v (%v)", w, err)
 	}
-	for _, line := range []string{
-		`{"t":"submit","text":"/compact","reqId":"p1","expand":true}`,
-		`{"t":"submit","text":"@notes.txt","expand":true}`,
-	} {
-		p.handleFrame(proto.Frame{Type: proto.TypeControl, Payload: []byte(line)})
+	// Its submit with expand is passed on as it came and refused there:
+	// not_sent, nothing written.
+	p.handleFrame(proto.Frame{Type: proto.TypeControl, Payload: []byte(`{"t":"submit","text":"/compact","reqId":"p1","expand":true}`)})
+	refusal := relayedTo(t, s, id, func(f proto.Frame) bool {
+		var m map[string]any
+		return f.Type == proto.TypeControl && json.Unmarshal(f.Payload, &m) == nil && m["requestId"] == "p1"
+	})
+	var r map[string]any
+	_ = json.Unmarshal(refusal.Payload, &r)
+	if r["t"] != proto.CtlError || r["code"] != proto.ErrCodeNotSent || r["message"] != session.NoExpandWords {
+		t.Fatalf("the peer's line asking for the word: %v", r)
 	}
+	// The same line without it goes, marked, and is the only one written.
+	p.handleFrame(proto.Frame{Type: proto.TypeControl, Payload: []byte(`{"t":"submit","text":"/compact","reqId":"p2"}`)})
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if !f.Await(ctx, func(c []string) bool { return sessiontest.Count(c, "send") >= 1 }) {
 		t.Fatalf("no write: %v", f.Calls())
 	}
-	f.Accepted(f.Sent()[0].Ref)
-	f.TurnStarted("")
-	f.TurnEnded("done", session.Usage{})
-	if !f.Await(ctx, func(c []string) bool { return sessiontest.Count(c, "send") >= 2 }) {
-		t.Fatalf("no second write: %v", f.Calls())
-	}
-	for _, m := range f.Sent() {
-		if m.Expand {
-			t.Fatalf("a peer's line went unmarked: %+v", m)
-		}
+	if sent := f.Sent(); len(sent) != 1 || sent[0].Expand || sent[0].Text != "/compact" {
+		t.Fatalf("written %+v", sent)
 	}
 }

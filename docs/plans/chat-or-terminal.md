@@ -846,11 +846,11 @@ test (`internal/proto/transcript_test.go`, `testdata/transcript-max.json`).
   or a switchyard, a link of any role, a relayed connection and a quiet
   one never pass it.
   - `submit` gains `expand` (bool, optional; absent means the mark; an
-    older owner ignores it). Read only by the server's own viewer socket,
-    which hands it to the session; `peer.go` never does. The session
-    sends the line without the mark only where the connection passes the
-    test, the line names no question and no decision and relays nobody,
-    and the driver has a mark; everywhere else the word changes nothing.
+    older owner ignores it). Both sockets hand it to the session as it
+    came. The session sends the line without the mark only where the
+    connection passes the test, the line names no question and no
+    decision and relays nobody, and the driver has a mark; anywhere else
+    the line is refused `not_sent`, nothing written.
   - `welcome` gains `expand: true` where the connection passes the test
     and the session is a chat whose driver has a mark; the `way` message
     says it again to that connection alone after a move (`expand`), so
@@ -3165,9 +3165,10 @@ planned; nothing of it is built.
 field with the safe zero value at each layer, each set and read in one
 place:
 - `proto.Submit` gains `Expand` (`expand`, optional; `Valid` unchanged).
-  Only the submit case of `internal/api/ws_viewer.go` reads it, into
-  `session.Submission.Expand`; `internal/hostagent/peer.go` never copies
-  it (a comment says why, a test holds it).
+  The submit cases of `internal/api/ws_viewer.go` and
+  `internal/hostagent/peer.go` pass it into `session.Submission.Expand`
+  as it came; the session refuses it from a peer (never the operator's
+  own chat connection), so no layer drops it unread.
 - `session.AttachOptions` gains a word that only `internal/api/ws_viewer.go`
   gives: the client came by the server's own viewer socket.
 - `session.Submission.Expand` is read only in `submitProtocol`, under the
@@ -3295,7 +3296,13 @@ adversarial read; the page's parts come after them. **30 h.**
   it; row 12's part 2 sends the commands by it too.
 - `submitProtocol` sets `Message.Expand` at the one line that builds the
   queued message, judged as the submission is queued, under the session's
-  lock; the entry's `expanded` is the message's. A sender who no longer
+  lock; the entry's `expanded` is the message's. A submission that asks
+  for it where it cannot be honoured (another connection, a question, a
+  decision, a relay, a driver with no mark, a terminal) is refused
+  `ErrNoExpand` (`not_sent`), nothing written: a line is never sent
+  otherwise than it asked, so no layer drops the word it does not honour.
+  `peer.go` passes a viewer's `expand` on as it came, and the session
+  refuses it there (its connection never has `ViewerSocket`). A sender who no longer
   stands when the message's turn comes withdraws it unwritten, as before.
   The Go fields are `Submit.Expand`, `Welcome.Expands`, `Way.Expands` and
   `TranscriptEntry.Expanded` (JSON `expand`, `expand`, `expand`,

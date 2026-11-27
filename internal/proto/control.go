@@ -164,12 +164,12 @@ type Submit struct {
 	UnlessWaiting bool   `json:"unlessWaiting,omitempty"`
 	// Expand asks that the line go to a chat's agent without the
 	// as-written mark, for the agent's own program to expand its @path and
-	// run its /command (docs/plans/chat-or-terminal.md, I19, row 12). Only
-	// the server's own viewer socket reads it (internal/api/ws_viewer.go),
-	// and the session sends the line so only from the operator's own chat
+	// run its /command (docs/plans/chat-or-terminal.md, I19, row 12). Each
+	// socket hands it to the session as it came, and the session sends the
+	// line so only from the operator's own chat
 	// connection (Welcome.Expands): from anyone else, and on a terminal
-	// session, it changes nothing. Absent means the mark; an older owner
-	// ignores it.
+	// session, the line is refused (not_sent), nothing written. Absent
+	// means the mark; an older owner ignores it.
 	Expand bool `json:"expand,omitempty"`
 }
 
