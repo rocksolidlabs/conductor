@@ -157,6 +157,11 @@ for (const size of SIZES) {
       await page.goto('/sessions')
       await page.getByRole('button', { name: 'Launch agent' }).first().click()
       const dialog = page.getByRole('dialog')
+      // The dialog opens on the agent launched last, the day's Plain, which has no recipe: its switch is rightly off and disabled.
+      // Claude Code's stub has one; picked, its switch is the one a person turns on.
+      const claude = dialog.getByRole('radiogroup', { name: 'Agent' }).getByRole('radio', { name: /Claude Code \(e2e stub\)$/ })
+      await claude.click()
+      await expect(claude).toHaveAttribute('aria-checked', 'true')
       const yolo = dialog.locator('[data-slot="footer"] [data-yolo-switch]')
       await expect(yolo).toBeEnabled({ timeout: MEASURE_WAIT_MS })
       if ((await yolo.getAttribute('aria-checked')) !== 'true') await yolo.click()
