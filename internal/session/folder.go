@@ -92,17 +92,28 @@ func OpenFolder(path string) (*Folder, error) {
 // the directory opened must be that one (os.SameFile), so dir replaced in
 // between (a link put at its path or its parents') is refused.
 func OpenFolderIn(dir, rel string, want os.FileInfo) (*Folder, error) {
+	var same func(got os.FileInfo) bool
+	if want != nil {
+		same = func(got os.FileInfo) bool { return os.SameFile(got, want) }
+	}
+	return OpenFolderInWith(dir, rel, same)
+}
+
+// OpenFolderInWith is OpenFolderIn with the judgement of the opened root
+// given whole: same is asked of the root as opened (its handle's stat), and
+// a false refuses the open. A nil same takes the root as it is.
+func OpenFolderInWith(dir, rel string, same func(got os.FileInfo) bool) (*Folder, error) {
 	parent, err := os.OpenRoot(openDirOnly(dir))
 	if err != nil {
 		return nil, err
 	}
 	defer parent.Close()
-	if want != nil {
+	if same != nil {
 		got, err := parent.Stat(".")
 		if err != nil {
 			return nil, err
 		}
-		if !os.SameFile(got, want) {
+		if !same(got) {
 			return nil, errors.New("session: the folder's root changed while it was opened")
 		}
 	}

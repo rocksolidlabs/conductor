@@ -33,7 +33,7 @@ func TestSwitchyardLaunchesNothing(t *testing.T) {
 	e := switchyardEnv(t, true)
 	for _, tc := range []struct{ method, path string }{
 		{"POST", "/api/sessions"}, {"GET", "/api/catalog"}, {"GET", "/api/catalog/claude/flags"}, {"GET", "/api/launch/last"}, {"POST", "/api/catalog/check"}, {"GET", "/api/crews"}, {"POST", "/api/crews"},
-		{"GET", "/api/runs"}, {"POST", "/api/runs/x-1a2b3c4d/stop"}, {"GET", "/api/integrations"}, {"GET", "/api/paths"}, {"GET", "/api/git/check"},
+		{"GET", "/api/runs"}, {"POST", "/api/runs/x-1a2b3c4d/stop"}, {"GET", "/api/integrations"}, {"GET", "/api/paths"}, {"GET", "/api/git/check"}, {"GET", "/api/roots/check"}, {"POST", "/api/roots"},
 		{"POST", "/api/sessions/abc/resume"}, {"POST", "/api/sessions/abc/clone"}, {"POST", "/api/sessions/abc/crew"}, {"GET", "/api/sessions/abc/run"},
 	} {
 		resp, out := e.do(tc.method, tc.path, adminToken, map[string]any{})

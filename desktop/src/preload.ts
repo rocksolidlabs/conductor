@@ -1,5 +1,24 @@
 import { contextBridge, ipcRenderer } from 'electron'
 
+/**
+ * The app on Windows offers no Allow this folder until one press has been seen to work there: allow.ts's ALLOW_ON_WINDOWS, copied
+ * here because a sandboxed preload imports nothing of the app's (a test holds the two equal).
+ */
+export const ALLOW_FOLDER_ON_WINDOWS = false
+
+/** What became of Allow this folder: ok with the folder and whether the settings file holds it, or why not. */
+export type AllowFolderAnswer =
+  | { ok: true; root: string; saved: boolean; error?: string }
+  | { ok: false; code: string; message: string; real?: string; wide?: string; reason?: string }
+
+/** allowFolderCall is the bridge's allowFolder on platform, or none where the app does not offer the press. */
+export function allowFolderCall(platform: string): ((path: string, confirmed?: string) => Promise<AllowFolderAnswer>) | undefined {
+  if (platform === 'win32' && !ALLOW_FOLDER_ON_WINDOWS) return undefined
+  return (path, confirmed) => ipcRenderer.invoke('conductor:allowFolder', path, confirmed ?? '')
+}
+
+const allowFolder = allowFolderCall(process.platform)
+
 /** The bridge the workbench sees as window.conductorDesktop (web/app/utils/desktop.ts mirrors it). */
 const bridge = {
   version: process.env.CONDUCTOR_DESKTOP_VERSION ?? '',
@@ -18,6 +37,18 @@ const bridge = {
     get: () => ipcRenderer.invoke('conductor:settings:get'),
     set: (patch: Record<string, unknown>) => ipcRenderer.invoke('conductor:settings:set', patch),
     outcome: (): Promise<string> => ipcRenderer.invoke('conductor:settings:outcome'),
+  },
+  /**
+   * Allow this folder: agents may use path from now on, with nothing restarted, and the settings keep it (saved false, with why,
+   * when the file could not be written). confirmed names a wide folder's kind ('home', 'above_home', 'holds_data') once asked.
+   * Absent where the app does not offer it.
+   */
+  ...(allowFolder ? { allowFolder } : {}),
+  /** The settings changed outside the Settings page (a folder allowed): read them again. */
+  onSettings: (cb: () => void): (() => void) => {
+    const handler = () => cb()
+    ipcRenderer.on('conductor:settings', handler)
+    return () => ipcRenderer.removeListener('conductor:settings', handler)
   },
   restartServer: (): Promise<void> => ipcRenderer.invoke('conductor:restartServer'),
   openInBrowser: (): Promise<void> => ipcRenderer.invoke('conductor:openInBrowser'),

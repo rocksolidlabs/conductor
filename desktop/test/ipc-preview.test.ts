@@ -107,9 +107,13 @@ describe("the preview's two channels", () => {
     }
   })
 
-  it("leave the other channels' trust as it was: a file: page of the app still reads them", () => {
+  it("are like every channel of the bridge: the token call too answers the workbench's main frame alone, never a page of the app's own", () => {
     const file = win('file:///opt/Conductor/resources/static/log.html', 'file://')
-    expect(handlers.get('conductor:token')!(file.from(file.main))).toBe('t')
+    expect(() => handlers.get('conductor:token')!(file.from(file.main))).toThrow("refused: not the workbench's main frame")
+    const w = win(origin + '/')
+    const child = frame(origin, origin + '/', w.main)
+    expect(() => handlers.get('conductor:token')!(w.from(child))).toThrow("refused: not the workbench's main frame")
+    expect(handlers.get('conductor:token')!(w.from(w.main))).toBe('t')
   })
 
   it("refuse the workbench's own origin and a remote page as the frame to put the bridge in", async () => {
