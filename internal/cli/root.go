@@ -99,7 +99,7 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	case "serve":
 		return runServe(ctx, args[1:], stdin, stdout, stderr)
 	case "switchyard":
-		return runServe(ctx, append([]string{"--switchyard"}, args[1:]...), stdin, stdout, stderr)
+		return runSwitchyard(ctx, args[1:], stdin, stdout, stderr)
 	case "host":
 		return runHost(ctx, args[1:], stdin, stdout, stderr)
 	case "notify":
