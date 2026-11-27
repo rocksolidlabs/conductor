@@ -5,8 +5,8 @@ import { atRest, dayPage, expect, member, pagePath, test, type Run } from './fix
 import { noOverlap, uncut } from './layout'
 import { ownServer, type OwnServer } from './own-server'
 
-// A crew member's page carries its crew (UX3 R12, #1170): one strip above the session's header with `Back to the crew` and the run's
-// title, at every width. A run of two shells launched by the spec, on a server of its own: a member's page shows the strip with the
+// A crew member's page carries its crew (UX3 R12, #1170): one strip above the session's header with `Back to the crew`, the run's
+// title and a tab for each member, at every width; a tab opens that member in the page's place, so one Back leaves. A run of two shells launched by the spec, on a server of its own: a member's page shows the strip with the
 // run's title; `Back to the crew` lands on the run's page; Alt+Q typed while the terminal has the keys goes back too, and Escape typed
 // there reaches the shell while the page stays; on a phone the strip is in view and `Back to the list` is not drawn. The session's name
 // is whole and nothing in the header overlaps, measured at rest, at 2000 x 810, 1440 x 900 and 390 x 844. Members are found by the
@@ -97,7 +97,8 @@ for (const size of [
       await headerWhole(page)
       // The tooltip names the run it goes back to, with its key.
       await back.hover()
-      await expect(page.getByRole('tooltip')).toContainText(`Back to ${CREW}`)
+      // reka keeps the role on a copy of the words, hidden from the tree, for the button's description (tooltips.spec.ts).
+      await expect(page.getByRole('tooltip', { includeHidden: true })).toContainText(`Back to ${CREW}`)
       await back.click()
       await expect.poll(() => pagePath(page)).toBe(`/runs/${encodeURIComponent(run.id)}`)
     } finally {
@@ -105,6 +106,32 @@ for (const size of [
     }
   })
 }
+
+test("a member's tab opens that member in this page's place: one Back leaves the crew's members", async ({ browser }) => {
+  const page = await dayPage(browser, { server: own.started, width: 1440, height: 900 })
+  try {
+    const home = pagePath(page)
+    await memberPage(page, 'lead')
+    const strip = page.locator(`[data-member-strip][data-run="${run.id}"]`)
+    const lead = strip.locator('[data-member-tab="lead"]')
+    const core = strip.locator('[data-member-tab="core"]')
+    await expect(lead).toHaveAttribute('aria-current', 'page')
+    await expect(core).not.toHaveAttribute('aria-current', 'page')
+    // Each tab carries its member's mark: both shells run.
+    await expect(lead.locator('[data-status-mark]')).toBeVisible()
+    await expect(core.locator('[data-status-mark]')).toBeVisible()
+    await core.click()
+    await expect.poll(() => pagePath(page)).toBe(`/sessions/${encodeURIComponent(idOf('core'))}`)
+    await expect(strip.locator('[data-member-tab="core"]')).toHaveAttribute('aria-current', 'page')
+    await expect(strip.locator('[data-member-tab="lead"]')).not.toHaveAttribute('aria-current', 'page')
+    await headerWhole(page)
+    // The tab replaced the page: one Back leaves the crew's members for where the person was before.
+    await page.goBack()
+    await expect.poll(() => pagePath(page)).toBe(home)
+  } finally {
+    await page.context().close()
+  }
+})
 
 test('Alt+Q in the terminal goes back to the crew; Escape there is the agent\'s', async ({ browser }) => {
   const page = await dayPage(browser, { server: own.started, width: 1440, height: 900 })

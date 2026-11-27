@@ -742,7 +742,7 @@ palette.registerPage(() => {
 <template>
   <UDashboardPanel :id="`session-${id}`" :ui="{ body: 'p-0 sm:p-0 flex flex-col min-h-0 gap-0' }">
     <template #header>
-      <MemberStrip v-if="memberRun && !gone" :run-id="memberRun" @gone="stripGone = memberRun" />
+      <MemberStrip v-if="memberRun && !gone" :run-id="memberRun" :session-id="id" @gone="stripGone = memberRun" />
       <UDashboardNavbar :toggle="false" :ui="{ root: 'h-14 bg-default', title: 'min-w-0' }" data-session-bar>
         <template #leading>
           <!-- A member's way back is its strip's, above (UX3 R12). -->
