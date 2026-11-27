@@ -4,11 +4,9 @@ import { joinArgv } from '~/utils/argv'
 import { reportStatus } from '~/utils/integrations'
 import { agentIcon } from '~/utils/agentIcons'
 import { checkBadge, identity, isAvailable, notInstalledBadge, pageRequests, settleChecks } from '~/utils/agents'
+import { IDENTITY_COLOR as identityColor, IDENTITY_ICON as identityIcon, NOT_INSTALLED_BADGE } from '~/utils/agentBadges'
 
-// Amber only where a person should look (the UX review's P16): a check that failed. An identified agent and one the check could not
-// name ask nothing, so they are neutral; green is for a live agent.
-const identityColor: Record<string, 'error' | 'warning' | 'neutral'> = { ok: 'neutral', impostor: 'error', unidentified: 'neutral', pending: 'neutral', failed: 'warning' }
-const identityIcon: Record<string, string> = { ok: 'i-lucide-badge-check', impostor: 'i-lucide-shield-alert', unidentified: 'i-lucide-help-circle', pending: 'i-lucide-loader-circle', failed: 'i-lucide-triangle-alert' }
+// The badges' colours and icons: one table with Settings' Agents on this machine (utils/agentBadges.ts).
 import { removalOf, removalText } from '~/utils/catalog'
 import { pageState } from '~/utils/pageState'
 
@@ -290,8 +288,8 @@ usePalette().registerPage(() => ({
                   v-else-if="!isAvailable(a)"
                   :label="notInstalledBadge(a, serverHost.host.value).label"
                   :title="notInstalledBadge(a, serverHost.host.value).title"
-                  icon="i-lucide-circle-off"
-                  color="neutral"
+                  :icon="NOT_INSTALLED_BADGE.icon"
+                  :color="NOT_INSTALLED_BADGE.color"
                   variant="subtle"
                   size="sm"
                   data-not-installed
@@ -301,8 +299,8 @@ usePalette().registerPage(() => ({
                   v-else-if="identity(a, serverHost.host.value).state !== 'unprobed'"
                   :label="identity(a, serverHost.host.value).label"
                   :title="identity(a, serverHost.host.value).title"
-                  :icon="identityIcon[identity(a, serverHost.host.value).state]"
-                  :color="identityColor[identity(a, serverHost.host.value).state]"
+                  :icon="identityIcon[identity(a, serverHost.host.value).state as keyof typeof identityIcon]"
+                  :color="identityColor[identity(a, serverHost.host.value).state as keyof typeof identityColor]"
                   variant="subtle"
                   size="sm"
                   :data-identity="identity(a, serverHost.host.value).state"
