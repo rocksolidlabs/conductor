@@ -617,7 +617,7 @@ describe('broadcastSelection', () => {
       { label: 'lead', on: true, tip: '' },
       { label: 'core', on: true, tip: '' },
       { label: 'review · answer it first', on: false, tip: 'review waits on your answer. Press to see its question.' },
-      { label: 'web · ended', on: false, tip: 'web has ended. Resume it on its tile.' },
+      { label: 'web · ended', on: false, tip: 'web has ended.' },
       { label: 'docs · starting', on: false, tip: 'docs is starting.' },
       { label: 'tests · not started', on: false, tip: 'tests has not started yet.' },
     ])

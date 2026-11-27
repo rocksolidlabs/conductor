@@ -583,7 +583,7 @@ test('a question without choices says it is answered in its terminal, and an end
   const { grid } = await open(page, second, 2)
   const asking = grid.locator(':scope > [data-member="solo"]')
   await expect(asking.locator('[data-run-tile-question]')).toHaveText('solo asks: Which port should the preview use?')
-  await expect(asking.locator('[data-run-tile-answer="terminal"]')).toHaveText('Answer it in its terminal')
+  await expect(asking.locator('[data-run-tile-answer="terminal"]')).toHaveText('Answer it in its terminal.')
   await expect(asking.locator('[data-run-ask-choice]')).toHaveCount(0)
   const ended = grid.locator(':scope > [data-member="pair"]')
   const resume = ended.getByRole('button', { name: /^(Resume|Relaunch)$/ })
