@@ -606,6 +606,15 @@ func strictCanonical(input []byte) ([]byte, bool) {
 // value as the session does: false for what does not decode cleanly.
 func StrictCanonical(input []byte) ([]byte, bool) { return strictCanonical(input) }
 
+// KeysOnce says input, one JSON value, gives no object a key twice, its
+// nesting within maxInputDepth.
+func KeysOnce(input []byte) bool {
+	dec := json.NewDecoder(bytes.NewReader(input))
+	dec.UseNumber()
+	_, err := strictValue(dec, 0)
+	return err == nil
+}
+
 // maxInputDepth bounds the nesting of a request's input.
 const maxInputDepth = 256
 

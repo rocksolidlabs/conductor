@@ -514,6 +514,35 @@ func (c *ACP) unreadLine(e session.ProtocolEvents) {
 	c.withdrawAbout("", e)
 }
 
+// unreadJudged is a line that does not read strictly (a key twice at any
+// level, text that is not UTF-8, a lone surrogate), where it is a frame the
+// client judges a call by: a permission request is answered cancelled by
+// its id; an update of a call, or any update with a key twice (whose last
+// copy would stand for what the agent sent), is skipped. Either way every
+// open call is changed and every open request withdrawn. Every other line
+// (text, a step's output, an answer to the client's own calls) is read as
+// it is: false.
+func (c *ACP) unreadJudged(method string, hasID bool, id json.RawMessage, params map[string]json.RawMessage, b []byte, e session.ProtocolEvents) bool {
+	switch method {
+	case "session/request_permission":
+		if !hasID {
+			return false
+		}
+		_ = c.answerOutcome(id, acpCancelled())
+	case "session/update":
+		var kind string
+		field(object(params["update"]), "sessionUpdate", &kind)
+		if kind != "tool_call" && kind != "tool_call_update" && session.KeysOnce(b) {
+			return false
+		}
+	default:
+		return false
+	}
+	e.Notice(NoticeDeclined, ACPSkippedWords)
+	c.unreadLine(e)
+	return true
+}
+
 func (c *ACP) handle(b []byte, e session.ProtocolEvents) error {
 	var m map[string]json.RawMessage
 	if err := json.Unmarshal(b, &m); err != nil || m == nil {
@@ -522,19 +551,14 @@ func (c *ACP) handle(b []byte, e session.ProtocolEvents) error {
 		}
 		return fmt.Errorf("%w (%v)", ErrACPUnreadable, err)
 	}
-	if _, strict := session.StrictCanonical(b); !strict {
-		// A line is read strictly: a key twice at any level, text that is
-		// not UTF-8, a lone surrogate. Read loosely its last copy would
-		// stand for what the agent sent.
-		e.Notice(NoticeDeclined, ACPSkippedWords)
-		c.unreadLine(e)
-		return nil
-	}
 	var method string
 	field(m, "method", &method)
 	id, hasID := m["id"]
 	hasID = hasID && validID(id)
 	params := object(m["params"])
+	if _, strict := session.StrictCanonical(b); !strict && c.unreadJudged(method, hasID, id, params, b, e) {
+		return nil
+	}
 	switch {
 	case method != "" && hasID:
 		c.agentRequest(method, id, params, e)
