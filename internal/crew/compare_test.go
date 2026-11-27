@@ -101,7 +101,7 @@ func TestCompareValidates(t *testing.T) {
 		}, `task "polish" is in no lane`},
 		{"a task needing two candidates", func(c *Crew) {
 			c.Tasks = append(c.Tasks, Task{ID: "merge", Member: "cand-a", Kind: TaskWork, Instructions: "Merge.", Needs: []string{"approach-a", "approach-b"}})
-		}, `task "merge" needs "approach-a" and "approach-b": a comparison never builds on two candidates`},
+		}, `task "merge" needs "approach-a" and "approach-b": a trial never builds on two candidates`},
 		{"two reviews of one candidate", func(c *Crew) { taskByID(c, "review-b").Needs = []string{"approach-a"} }, `tasks "review-a" and "review-b" both review "approach-a"`},
 		{"a review of a review", func(c *Crew) { taskByID(c, "review-b").Needs = []string{"review-a"} }, "a review needs exactly one work task"},
 		{"no criterion", func(c *Crew) { c.Compare.Criteria = nil }, "1 to 12 criteria, not 0"},
@@ -128,7 +128,7 @@ func TestCompareValidates(t *testing.T) {
 				}
 			}
 			c.Compare.Criteria = criteriaOf(maxCompareCriteria, strings.Repeat("\U0001D11E", maxCriterionText))
-		}, "goal, role, instructions and comparison are"},
+		}, "goal, role, instructions and trial are"},
 		{"the comparison within the never-cut bound", func(c *Crew) {
 			c.Goal = wide
 			c.Compare.Criteria = criteriaOf(maxCompareCriteria, strings.Repeat("\U0001D11E", maxCriterionText))

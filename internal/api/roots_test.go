@@ -378,15 +378,19 @@ func TestAFolderThatHoldsTheDiskBelowItIsRefused(t *testing.T) {
 	aboveAgain := mkdir(t, filepath.Join(holdsAbove, "up"))
 	plain := mkdir(t, filepath.Join(parent, "plain"))
 	mkdir(t, filepath.Join(plain, "sub"))
-	secondName(e, map[string]string{disk: "/", homeAgain: home, aboveAgain: filepath.Dir(home)})
+	data := realRoot(t, mkdir(t, e.srv.cfg.DataDir))
+	holdsData := mkdir(t, filepath.Join(parent, "holds-data"))
+	dataAbove := mkdir(t, filepath.Join(holdsData, "mnt"))
+	secondName(e, map[string]string{disk: "/", homeAgain: home, aboveAgain: filepath.Dir(home), dataAbove: filepath.Dir(data)})
 	e.srv.roots.mounts = func() []string {
-		return []string{"/", disk, homeAgain, aboveAgain, filepath.Join(plain, "sub"), holdsDisk + "x"}
+		return []string{"/", disk, homeAgain, aboveAgain, filepath.Join(plain, "sub"), holdsDisk + "x", dataAbove}
 	}
 	for _, c := range []struct{ path, refused, wide string }{
 		{holdsDisk, "whole_disk", ""},
 		{filepath.Join(holdsDisk, "deep"), "whole_disk", ""},
 		{holdsHome, "", "above_home"},
 		{holdsAbove, "", "above_home"},
+		{holdsData, "", "holds_data"},
 		{plain, "", ""},
 	} {
 		out := e.checkRoot(c.path)

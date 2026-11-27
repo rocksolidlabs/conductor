@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { ref } from 'vue'
 import { CONTROL_TOO_LARGE, ERR_NOT_TERMINAL, MAX_QUESTION_ID, TOO_LONG } from './protocol'
-import { choiceReply, clearAnswered, answerMessage, NOT_TERMINAL_CHOICE, bindDraft, draftQuestion, holdLine, LINE_KEPT, listedAttention, questionOf, repliedQuestions, ReplyError, replyFailure, replyLine, replyOutcomeOf } from './reply'
+import { choiceReply, clearAnswered, answerMessage, NOT_TERMINAL_CHOICE, bindDraft, draftQuestion, holdLine, LINE_KEPT, LINE_KEPT_IN_CHAT, listedAttention, questionOf, repliedQuestions, ReplyError, replyFailure, replyLine, replyOutcomeOf } from './reply'
 import { sessionRow } from './sidebar'
 import { rowPrompt } from './sidebarActions'
 import type { SessionInfo } from '~/composables/useSessions'
@@ -359,8 +359,14 @@ describe('choiceReply', () => {
     expect(replyFailure(answered, 'agent', false, 'protocol').description).toBe("agent's question was answered by Nate. Nothing was sent.")
     expect(replyFailure(answered, 'agent', false, 'terminal').description).toBe("agent's question was answered by Nate. Nothing was sent. If the agent still asks, answer it in its terminal.")
     expect(replyFailure(answered, 'agent').description).toBe("agent's question was answered by Nate. Nothing was sent. If the agent still asks, answer it in its terminal.")
-    // A line typed is kept in its field, in a chat as in a terminal.
-    expect(replyFailure(answered, 'agent', true, 'protocol').description).toBe(`agent's question was answered by Nate. Nothing was sent. ${LINE_KEPT}`)
+    // A line typed is kept in its field, in a chat as in a terminal; in a chat it becomes a message only once the box is emptied (UX3 R5).
+    expect(replyFailure(answered, 'agent', true, 'protocol').description).toBe(`agent's question was answered by Nate. Nothing was sent. ${LINE_KEPT_IN_CHAT}`)
+    expect(LINE_KEPT_IN_CHAT).toBe('Your line is kept for that question. To send it as a message, empty the box and write it again.')
+    expect(replyFailure(answered, 'agent', true, 'terminal').description).toBe(`agent's question was answered by Nate. Nothing was sent. ${LINE_KEPT}`)
+  })
+  it('saysNoQuestionByWay: a reply naming no question, in a chat, is never told to answer in the terminal (UX3 R5)', () => {
+    expect(replyFailure(new ReplyError('no_question', 'x'), undefined, true, 'protocol').description).toBe('This page could not tell the session which question your reply was for, so nothing was sent. Try again in a moment.')
+    expect(replyFailure(new ReplyError('no_question', 'x'), undefined, true, 'terminal').description).toContain('or answer in the terminal')
   })
   it("saysAChatsRefusalOfKeys: a choice's keys a chat refused (it moved to its chat meanwhile) are said, with what to do", () => {
     expect(replyFailure(new ReplyError(ERR_NOT_TERMINAL, 'This session is a chat: it has no terminal.'), 'agent')).toEqual({ title: 'Not sent', description: NOT_TERMINAL_CHOICE, color: 'warning' })

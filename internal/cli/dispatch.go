@@ -103,16 +103,17 @@ const dispatchUsage = `Usage:
   conductor dispatch launch KEY-n [--plan N] [--label TEXT] [--candidates N]
       start a managed run from the ticket's approved revision (or revision N),
       with its crew, commit and yolo choice, and print the run and its page;
-      the label is the ticket's key and title unless given; a comparison's
+      the label is the ticket's key and title unless given; a trial's
       revision is launched only with --candidates, the count it starts:
       without it, or with another, what the launch starts is printed and the
       exit is 2, nothing sent
-  conductor dispatch comparison KEY-n [--run RUN] [--json]
-      a comparison as measured: its base, objective and criteria, a column
+  conductor dispatch trial KEY-n [--run RUN] [--json]
+      a trial as measured (dispatch comparison is the same command): its
+      base, objective and criteria, a column
       per candidate with its result, size, dependency changes and commits
       shared with another, and each check's row with each candidate's cell,
       its verdict and why; RUN any run of its chain, the ticket's newest
-      comparison when not given; --json prints the server's reply
+      trial when not given; --json prints the server's reply
   conductor dispatch runs KEY-n
       the ticket's launches, the runs linked to it by hand and their
       continuations, newest first, each run's state, tasks, questions and
@@ -312,6 +313,10 @@ func runDispatch(ctx context.Context, args []string, stdin io.Reader, stdout, st
 		return 0, nil
 	}
 	sub, rest := args[0], args[1:]
+	// dispatch trial is another name of dispatch comparison.
+	if sub == "trial" {
+		sub = "comparison"
+	}
 	if _, planned := dispatchPlannedArgs[sub]; planned {
 		return runDispatchPlanned(ctx, sub, rest, stdin, stdout, stderr)
 	}

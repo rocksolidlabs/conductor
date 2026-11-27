@@ -394,7 +394,7 @@ var operationsTable = sync.OnceValue(func() []Operation {
 		// dispatcher of its own. A turn's session token names its session
 		// in X-Conductor-Session on each.
 		{Name: "observe", MCP: "observe", Scope: "observe", Method: http.MethodGet, Path: "/api/brakeman/changes", needs: needLauncher,
-			Summary:     "Read what you may see as a Brakeman turn: what changed, a status, runs, tasks, receipts, logs, candidates, comparisons, tickets, plan revisions, sessions, files, overlaps, earlier briefs, the history, capacity, a preview's captures.",
+			Summary:     "Read what you may see as a Brakeman turn: what changed, a status, runs, tasks, receipts, logs, candidates, trials, tickets, plan revisions, sessions, files, overlaps, earlier briefs, the history, capacity, a preview's captures.",
 			Description: "When this session is a Brakeman turn: read one thing Conductor holds, within your scope and visibility, each answer counted against your reads. what names it (changes, status, screen, overlaps, briefs, search, runs, run, task, steps, log, command, messages, candidates, comparison, projects, tickets, ticket, history, comments, plans, sessions, touched, capacity, capture, capture_send) and query its parameters (run, task, n, id, k, command, key, session, since, cursor, limit, lines, q, after, before, agent, account, launch, send). Every item carries the ref a brief cites it by; each answer keeps its observe_<what> entry's bound.",
 			CLI:         []string{"conductor", "brakeman", "observe", "WHAT", "--KEY", "VALUE"},
 			Input: obj(map[string]any{
@@ -416,7 +416,7 @@ var operationsTable = sync.OnceValue(func() []Operation {
 		observeOp("command", "/api/runs/{run}/commands/{command}", "A run command's receipt."),
 		observeOp("messages", "/api/runs/{run}/messages", "A managed run's members' messages, a page at a time: after (the page before's next) and limit (at most 200).", "after", "limit"),
 		observeOp("candidates", "/api/runs/{run}/candidates", "A managed run's candidates: each task's attempts that submitted something, with the commit, whether it stands, and the receipts of the checks run against it, each with its ref; a page of tasks at a time (after), or one task (task) and its older ones (before).", "after", "task", "before"),
-		observeOp("comparison", "/api/runs/{run}/comparison", "A comparison as its page measures it, from any run of its chain: each candidate with its ref, size, dependency changes and shared commits, each check's cells with their receipts' refs and its verdict, and what was said beside it (claims, reviews, your draft's request); never the person's selection."),
+		observeOp("comparison", "/api/runs/{run}/comparison", "A trial as its page measures it, from any run of its chain: each candidate with its ref, size, dependency changes and shared commits, each check's cells with their receipts' refs and its verdict, and what was said beside it (claims, reviews, your draft's request); never the person's selection."),
 		observeOp("projects", "/api/dispatch/projects", "Dispatch's projects in your scope.", "archived", "limit", "cursor"),
 		observeOp("tickets", "/api/dispatch/tickets", "A page of tickets in your scope, each with its ref and rev.", "project", "status", "q", "limit", "cursor"),
 		observeOp("ticket", "/api/dispatch/tickets/{key}", "A ticket whole with its last comments, each with its ref and rev."),
@@ -667,12 +667,12 @@ var operationsTable = sync.OnceValue(func() []Operation {
 		// A comparison's crew and its read (compare.go, Program item CP1):
 		// no MCP tool, so tools/list is as it was.
 		{Name: "crew_compare", Scope: "admin", Method: http.MethodPost, Path: "/api/crews/templates/compare", needs: needLauncher,
-			Summary: "Save a comparison's crew from its template: 2 to 4 candidates, each an agent with an approach, the same instructions, checks and criteria, each reviewed or not. Saving launches nothing: a comparison is launched from a ticket's approved plan revision, repeating the count it starts.",
+			Summary: "Save an agent trial's crew from its template: 2 to 4 candidates, each an agent with an approach, the same instructions, checks and criteria, each reviewed or not. Saving launches nothing: an agent trial starts from a ticket's approved plan revision, repeating the count it starts.",
 			CLI:     []string{"conductor", "crews", "compare", "SPEC.json"},
 			Input:   bodySchema(crew.CompareSpec{}),
 			Bounds:  map[string]int{"body": maxCompareSpecBody}},
 		{Name: "comparison", Scope: "admin", Method: http.MethodGet, Path: "/api/runs/{run}/comparison", needs: needLauncher,
-			Summary: "A comparison as measured, from any run of its chain: the base, the criteria, each candidate's result, size, dependency changes and commits shared with another, each check's cells with its verdict and why, and what independence is not observed.",
+			Summary: "A trial as measured, from any run of its chain: the base, the criteria, each candidate's result, size, dependency changes and commits shared with another, each check's cells with its verdict and why, and what independence is not observed.",
 			CLI:     []string{"conductor", "dispatch", "comparison", "KEY-n", "--run", "RUN"},
 			Input:   map[string]any{"type": "object", "description": "no body"},
 			Bounds:  map[string]int{"reply": crew.MaxComparison}},

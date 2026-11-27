@@ -63,7 +63,7 @@ With the workbench token (--server, --token and --insecure as conductor dispatch
   conductor brakeman ask KIND [--subject REF]... [--note-file F] [--since T]
                                             ask Brakeman: KIND is briefing, explain, decision,
                                             draft_tickets, propose_crew, handoff, locate, overlaps,
-                                            ask or compare (one run:<run> of a comparison); REF a
+                                            ask or compare (one run:<run> of a trial); REF a
                                             ref such as run:<run> or ticket:CND-4; F a
                                             Markdown file, - for stdin; T a time (2026-11-02T09:00:00Z,
                                             or 18:00 for the last one), or a duration back (12h)

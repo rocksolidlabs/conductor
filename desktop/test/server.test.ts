@@ -237,7 +237,7 @@ process.stdin.resume()
     expect(trustedOrigin(s.status)).toBe('http://' + h.listen)
     await s.stop()
   })
-  it('writes a fresh first line at every start, and a server answers only its own token', async () => {
+  it('asks for its first line again at every start, so a server answers only the token of its own line', async () => {
     // A server that takes its token from its first line and answers 401 to any other.
     const dir = mkdtempSync(join(tmpdir(), 'cd-fake-'))
     const file = join(dir, 'server.js')

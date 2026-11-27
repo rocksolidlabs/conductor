@@ -170,10 +170,10 @@ func runDispatchPlanned(ctx context.Context, sub string, rest []string, stdin io
 	case "launch":
 		f.plan = fs.String("plan", "", "the revision to launch from, its number or its id: the approved one when not given")
 		f.label = fs.String("label", "", "the run's name: the ticket's key and title when not given")
-		f.candidates = fs.Int("candidates", -1, "a comparison's revision: how many candidates it starts, as its statement says, which the launch repeats")
+		f.candidates = fs.Int("candidates", -1, "a trial's revision: how many candidates it starts, as its statement says, which the launch repeats")
 	case "comparison":
-		f.run = fs.String("run", "", "a run of the comparison's chain: the ticket's newest comparison when not given")
-		f.json = fs.Bool("json", false, "print the comparison as the server answers it, one JSON object")
+		f.run = fs.String("run", "", "a run of the trial's chain: the ticket's newest trial when not given")
+		f.json = fs.Bool("json", false, "print the trial as the server answers it, one JSON object")
 	}
 	fs.Usage = func() {
 		fmt.Fprint(stderr, dispatchUsage, "\nFlags of dispatch "+name+":\n")
@@ -219,7 +219,7 @@ func runDispatchPlanned(ctx context.Context, sub string, rest []string, stdin io
 		return 2, fmt.Errorf("dispatch comparison: --run: %q is no run's id", *f.run)
 	}
 	if name == "launch" && *f.candidates < -1 {
-		return 2, errors.New("dispatch launch: --candidates is how many candidates the comparison's revision starts")
+		return 2, errors.New("dispatch launch: --candidates is how many candidates the trial's revision starts")
 	}
 	if name == "launch" && *f.plan != "" {
 		r, err := parseRevision(*f.plan)
@@ -1175,7 +1175,7 @@ func dispatchLaunch(ctx context.Context, c *apiClient, key string, ref *revision
 		fmt.Fprintln(stdout, compareStatement(*p.Compare, compareAgents(out.Plan.Body), compareManifest(out.Plan.Body)))
 		return 2, fmt.Errorf("dispatch launch: r%d starts %d candidates: send --candidates %d to launch them", p.N, p.Compare.Candidates, p.Compare.Candidates)
 	case p.Compare == nil && candidates >= 0:
-		return 2, fmt.Errorf("dispatch launch: r%d is no comparison: --candidates is for a comparison's revision", p.N)
+		return 2, fmt.Errorf("dispatch launch: r%d is no trial: --candidates is for a trial's revision", p.N)
 	}
 	body := map[string]any{"opId": newOpID(), "plan": p.ID}
 	if label != "" {

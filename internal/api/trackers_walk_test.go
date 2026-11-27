@@ -215,6 +215,12 @@ func TestTrackerTokenSavedNeverServed(t *testing.T) {
 		}
 	}
 
+	// The roots' add, which reads no tracker token: its replies, a body
+	// holding a token included, hold none (the replies' check below).
+	for _, body := range []string{`{"path":"/"}`, `{"path":"/` + plantedToken + `"}`, `{"path":"` + plantedToken + `"}`} {
+		call(b.testEnv, adminToken, "", "POST", "/api/roots", []byte(body))
+	}
+
 	// credentialFor's credentials, the file's and the environment's, at
 	// GitHub, and the kept one refused there.
 	for _, host := range []string{"github.com", gheHost} {
