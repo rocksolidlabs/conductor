@@ -56,6 +56,8 @@ test("an answer to the agent's question from the chat's box reaches it, its send
     await expect(answer).toHaveText('Yes, go on.')
     await expect(answer).toHaveAttribute('data-answer-own', 'true')
     await expect(page.locator('[data-chat-answer-line]')).toHaveText('Only you see your answer.')
+    // Received as the question's answer, never as a message: no message bubble holds the words.
+    await expect(page.locator('[data-chat-prompt-text]').filter({ hasText: 'Yes, go on.' })).toHaveCount(0)
     // Away from the session page and back in the same tab: a new view and connection, the answer's words the tab's own.
     budget(LONG_MS + 4 * STEP_MS)
     await page.locator('[data-sidebar-tile]').filter({ has: page.locator('[data-nav-label]', { hasText: /^Yard$/ }) }).first().click({ timeout: STEP_MS })

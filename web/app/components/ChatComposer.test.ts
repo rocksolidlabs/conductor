@@ -55,12 +55,12 @@ describe("the agent's box", () => {
 
   it('answers the question the page shows: a line begun as it shows is bound to it and goes as its answer, Send reading Answer', () => {
     // Bound as the sidebar's rows bind theirs (RowDrafts.edit, bindDraft): to the question shown at the line's first character.
-    expect(src).toContain('if (props.agent) lines.edit(lineKey.value, v, asking())')
-    expect(src).toContain('return a?.reply ? (a.id ?? ASKED) : undefined')
+    expect(src).toContain('const now = asking()')
+    expect(src).toMatch(/if \(!a\?\.reply\) return undefined\s*const id = a\.id \?\? ASKED/)
     expect(src).toContain("const answering = computed(() => !!props.agent && lines.get(lineKey.value)?.question !== undefined)")
     expect(src).toContain('if (answering.value) return answer()')
     // The answer leaves the box as it goes; a refused one comes back bound as it was (RowDrafts.settle).
-    expect(src).toMatch(/emit\('answer', raw\.trim\(\), bound === ASKED \? undefined : bound, \(outcome\) => \{\s*lines\.settle\(key, raw, outcome\)/)
+    expect(src).toMatch(/emit\('answer', raw\.trim\(\), bound === ASKED \? undefined : bound, \(outcome\) => \{[\s\S]*?lines\.settle\(key, raw, outcome\)/)
     expect(agentForm).toContain(`:label="answering ? 'Answer' : 'Send'"`)
     // The placeholder says what the box does now.
     expect(src).toContain("return a.choices ? 'Pick an answer above, or type your own' : `Answer ${who.value}…`")
@@ -105,7 +105,7 @@ describe("the agent's box", () => {
     expect(src.match(/own\.typed\(/g)).toHaveLength(2)
     // A refused answer and a refused message come back as the page's.
     expect(src).toMatch(/if \(outcome === 'refused'\) own\.set\(key\)/)
-    expect(src).toMatch(/draft\.value = text\s*own\.set\(key\)/)
+    expect(src).toMatch(/lines\.edit\(key, text, undefined\)\s*own\.set\(key\)/)
     expect(src).toContain("emit('send', draft.value, to, { own: mine, back })")
     // The chat asks for expand only for that line, and only on the server's word for this connection.
     expect(view).toContain('const canExpand = computed(() => controls.value && conn.expand.value)')
@@ -123,5 +123,18 @@ describe("the agent's box", () => {
     }
     walk(root)
     expect(asking.sort()).toEqual(['components/ChatView.vue', 'composables/useSessionConnection.ts', 'utils/transport/base.ts'])
+  })
+
+  it("keepsAnAnswerAnAnswer (UX3 R5's read): what was typed for one purpose is never sent for another", () => {
+    // B1: a line begun while this box's answer to the question is on its way is a message, never a second answer; one the page had
+    // already answered goes free, said.
+    expect(src).toMatch(/return answeredHere\.has\(id\) \? undefined : id/)
+    expect(src).toContain('if (bound && bound !== ASKED) answeredHere.add(bound)')
+    expect(src).toMatch(/if \(outcome === 'held'\) \{\s*if \(lines\.text\(key\) === raw\) \{\s*lines\.free\(key\)/)
+    // B2: a kept line rebinds only to a question that takes a typed reply; with none it stays bound, and says how to go on.
+    expect(src).toContain('lines.edit(lineKey.value, v, d?.kept && now === undefined ? d.question : now)')
+    expect(src).toContain("'Its question was answered. Empty the box to write a message instead.'")
+    // B3: a line begun before its question had an id takes the id as it comes.
+    expect(src).toMatch(/if \(now && !was\) lines\.rebind\(lineKey\.value, ASKED, now\)/)
   })
 })

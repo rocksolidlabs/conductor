@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { broadcastByName, broadcastSelection, messageCount, messageToast, MESSAGE_ALL_TIP, MESSAGE_MAX, sendOutcome, sentWords, togglePick, type BroadcastMember, type MessageChip, type RecipientPick } from '~/utils/crews'
+import { alonePick, broadcastByName, broadcastSelection, messageCount, messageToast, MESSAGE_ALL_TIP, MESSAGE_MAX, sendOutcome, sentWords, togglePick, type BroadcastMember, type RecipientPick } from '~/utils/crews'
 import { STATUS_LOOK, statusOfKey } from '~/utils/status'
 
 /**
@@ -7,19 +7,22 @@ import { STATUS_LOOK, statusOfKey } from '~/utils/status'
  * tick (POST /api/runs/{run}/broadcast), recorded as input by the display name, or by the server's OS user when none is set
  * (broadcastByName). The chips are the one place a person picks who gets the line (broadcastSelection): `All` and each member that
  * can get a line now, ticked or not, and each one that cannot, saying why (it waits on a question, ended, is starting, has not
- * started). The pick is the page's (`v-model:pick`), so its command palette sends to the same members. A line every member it named
+ * started). A double-click on a member's chip leaves that member alone; a press on the chip of one that waits on a question asks the
+ * page to show its tile (`show`). The pick is the page's (`v-model:pick`), so its command palette sends to the same members, and the
+ * bar says whether it holds the focus (`update:focused`), so the page rings the tiles that will get the line. The pick and the line
+ * begun are kept for each run for the tab's life (useRunRecipients). A line every member it named
  * got is said in the bar alone: the field reads `Sent to lead and core.` for SENT_SHOWN ms, and a polite live region says it once. One
  * that reached only some toasts who was skipped and why; one that reached nobody, or failed, toasts `Not sent` and stays in the field.
  * From MESSAGE_COUNT_FROM bytes the field counts them; past MESSAGE_MAX the count is red and Send is off. On a stopped run the bar says
  * so, with no field.
  */
 const props = defineProps<{ runId: string; members: readonly BroadcastMember[]; pick: RecipientPick; ended?: boolean; disabled?: boolean }>()
-const emit = defineEmits<{ 'update:pick': [pick: RecipientPick] }>()
+const emit = defineEmits<{ 'update:pick': [pick: RecipientPick]; 'update:focused': [focused: boolean]; show: [name: string] }>()
 
 const api = useSessions()
 const toast = useToast()
 const identity = useIdentity()
-const text = ref('')
+const { text } = useRunRecipients(toRef(props, 'runId'))
 const sending = ref(false)
 
 const selection = computed(() => broadcastSelection(props.members, props.pick))
@@ -47,13 +50,22 @@ onBeforeUnmount(() => clearTimeout(sentTimer))
 const placeholder = computed(() => sent.value || selection.value.placeholder)
 const canSend = computed(() => !props.disabled && !props.ended && !sending.value && selection.value.to.length > 0 && !!text.value.trim() && !tooLong.value)
 
-/** A chip that cannot be ticked: amber for one that waits on a person (the status language's needs), grey for the rest. */
-const tone = (c: MessageChip) => (c.state === 'waiting' ? STATUS_LOOK.needs.tone : 'neutral')
+/** The chip of a member that waits on a question is amber through the status language (needs); the others that cannot be ticked are grey. */
 const needs = statusOfKey('needs')
 
 function toggle(name: string) {
   emit('update:pick', togglePick(props.members, props.pick, name))
 }
+function alone(name: string) {
+  emit('update:pick', alonePick(props.members, props.pick, name))
+}
+
+/** Whether the focus is in the bar: the page rings the tiles that will get the line while it is. */
+function focusLeft(e: FocusEvent) {
+  const to = e.relatedTarget as Node | null
+  if (!to || !(e.currentTarget as HTMLElement).contains(to)) emit('update:focused', false)
+}
+onBeforeUnmount(() => emit('update:focused', false))
 
 async function send() {
   if (!canSend.value) return
@@ -77,7 +89,7 @@ async function send() {
 
 <template>
   <div v-if="ended" class="rounded-md border border-default px-3.5 py-2.5 text-sm text-muted" data-broadcast data-broadcast-ended>This run has ended.</div>
-  <form v-else class="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-md border border-default px-3.5 py-2.5" data-broadcast data-message-bar @submit.prevent="send">
+  <form v-else class="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-md border border-default px-3.5 py-2.5" data-broadcast data-message-bar @submit.prevent="send" @focusin="emit('update:focused', true)" @focusout="focusLeft">
     <span id="message-to" class="flex-none text-sm font-semibold text-highlighted">Message to</span>
     <!-- A press on a chip keeps the focus in the field (mousedown), so a line half written stays under the cursor. -->
     <div class="flex flex-wrap items-center gap-1.5" role="group" aria-labelledby="message-to" data-message-chips>
@@ -115,12 +127,18 @@ async function send() {
           :data-chip-state="c.on ? 'on' : 'off'"
           @mousedown.prevent
           @click="toggle(c.name)"
+          @dblclick="alone(c.name)"
         />
+        <!-- One that waits on a question: a press shows its tile, where the question is answered. -->
+        <UTooltip v-else-if="c.state === 'waiting'" :text="c.tip">
+          <UButton :label="c.label" size="xs" :color="STATUS_LOOK.needs.tone" variant="subtle" class="max-sm:min-h-11" :data-message-chip="c.name" :data-chip-state="c.state" @click="emit('show', c.name)">
+            <template #leading>
+              <StatusMark :status="needs" />
+            </template>
+          </UButton>
+        </UTooltip>
         <UTooltip v-else :text="c.tip">
-          <UBadge :color="tone(c)" :variant="tone(c) === 'neutral' ? 'outline' : 'subtle'" size="md" class="max-sm:min-h-11" :class="tone(c) === 'neutral' && 'text-muted'" aria-disabled="true" :data-message-chip="c.name" :data-chip-state="c.state">
-            <StatusMark v-if="c.state === 'waiting'" :status="needs" />
-            {{ c.label }}
-          </UBadge>
+          <UBadge color="neutral" variant="outline" size="md" class="text-muted max-sm:min-h-11" aria-disabled="true" :data-message-chip="c.name" :data-chip-state="c.state">{{ c.label }}</UBadge>
         </UTooltip>
       </template>
     </div>

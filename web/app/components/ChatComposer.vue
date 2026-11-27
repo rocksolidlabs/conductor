@@ -75,18 +75,46 @@ const people = ref('')
 const draft = computed({
   get: () => (props.agent ? lines.text(lineKey.value) : people.value),
   set: (v: string) => {
-    if (props.agent) lines.edit(lineKey.value, v, asking())
-    else people.value = v
+    if (!props.agent) {
+      people.value = v
+      return
+    }
+    note.value = ''
+    // A line kept for an answered question rebinds only to a question that takes a typed reply: with none shown, it stays bound to
+    // its own and goes nowhere until the person empties the box (UX3 R5: what was typed as an answer never becomes a message).
+    const d = lines.get(lineKey.value)
+    const now = asking()
+    lines.edit(lineKey.value, v, d?.kept && now === undefined ? d.question : now)
   },
 })
+/** Why the line in the box goes nowhere, or goes otherwise than it was begun, said under it until the next edit. */
+const note = ref('')
 /** What a line begun now is bound to: the question shown while it takes a typed reply (its id, or ASKED for one with none). */
 const ASKED = '\u0000asked'
+/** The questions this box has sent an answer to: a line begun while one still shows is a message, never a second answer to it. */
+const answeredHere = new Set<string>()
 function asking(): string | undefined {
   const a = props.agent?.asked
-  return a?.reply ? (a.id ?? ASKED) : undefined
+  if (!a?.reply) return undefined
+  const id = a.id ?? ASKED
+  return answeredHere.has(id) ? undefined : id
 }
 /** The line in the box is an answer: it was begun for a question (which the owner refuses if it is no longer the one shown). */
 const answering = computed(() => !!props.agent && lines.get(lineKey.value)?.question !== undefined)
+/** The question its line was begun for is not the one shown: said, with the way on. */
+const stale = computed(() => {
+  if (!answering.value) return false
+  const a = props.agent?.asked
+  const shown = a?.reply ? (a.id ?? ASKED) : undefined
+  return lines.get(lineKey.value)?.question !== shown
+})
+// A line begun while its question had no id yet takes the id as it comes (UX3 R5), so that Send names it.
+watch(
+  () => props.agent?.asked?.id,
+  (now, was) => {
+    if (now && !was) lines.rebind(lineKey.value, ASKED, now)
+  },
+)
 const bytes = computed(() => (props.agent ? chatBytes(draft.value.replace(/\r\n/g, '\n').trim()) : chatBytes(cleanChatText(draft.value))))
 /** The agent's box counts from three quarters of its bound, the people's chat from its own. */
 const counter = computed(() => (props.agent ? (bytes.value < (MAX_SUBMIT * 3) / 4 ? '' : `${(bytes.value / 1024).toFixed(1)} / ${MAX_SUBMIT / 1024} KiB`) : chatCounter(bytes.value)))
@@ -138,7 +166,8 @@ function send(to: string) {
   // it goes as written.
   const back = (text: string) => {
     if (lineKey.value !== key || draft.value !== '') return
-    draft.value = text
+    // As the message it was: bound to no question, whatever shows now.
+    lines.edit(key, text, undefined)
     own.set(key)
   }
   emit('send', draft.value, to, { own: mine, back })
@@ -153,7 +182,17 @@ function answer() {
   const raw = draft.value
   const bound = lines.get(key)?.question
   const from = typeof document === 'undefined' ? null : (document.activeElement as HTMLElement | null)
+  if (bound && bound !== ASKED) answeredHere.add(bound)
   emit('answer', raw.trim(), bound === ASKED ? undefined : bound, (outcome) => {
+    // This page had already sent its answer to that question (a choice, a line before): the line goes free, a message now, and says so.
+    if (outcome === 'held') {
+      if (lines.text(key) === raw) {
+        lines.free(key)
+        note.value = 'That question is already answered. Send now sends this line as a message.'
+      }
+      return
+    }
+    if (outcome === 'refused' && bound) answeredHere.delete(bound)
     lines.settle(key, raw, outcome)
     // What comes back into the box is the page's now, until the person changes it.
     if (outcome === 'refused') own.set(key)
@@ -345,6 +384,7 @@ function keepTyping(e: Event) {
     <p v-if="slash && agent.verbatim === true" class="text-[11px] text-muted" data-chat-help="verbatim">Sent as plain text. To run a command, use the Terminal.</p>
     <p v-else-if="slash && agent.verbatim === false" class="text-[11px] text-muted" data-chat-help="commands">Messages starting with <code class="font-mono">/</code> may run as the agent's commands.</p>
     <p v-if="outside" class="text-[11px] text-warning" role="status" data-chat-outside><span class="font-mono" data-mono="path">{{ outside }}</span> is outside {{ folderName }}. The agent attaches it without asking.</p>
+    <p v-if="note || stale" class="text-[11px] text-warning" role="status" data-chat-box-note>{{ note || 'Its question was answered. Empty the box to write a message instead.' }}</p>
     <p v-if="agent.said" class="text-[11px] text-warning" role="status" data-chat-said>{{ agent.said }}</p>
     <span v-if="counter" class="self-end font-mono text-[11px] text-muted" :class="tooLong && 'text-error'" data-mono="measure" data-chat-counter>{{ counter }}</span>
   </form>

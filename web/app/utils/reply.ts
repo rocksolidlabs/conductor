@@ -141,6 +141,11 @@ export type ReplyTaken = (outcome: ReplyOutcome) => void
 
 /** What the toast for a typed line refused as answered adds: the line stays in its field, and how it goes. */
 export const LINE_KEPT = 'Your line is kept: change it to send it for what is asked now.'
+/**
+ * The same in a chat (UX3 R5): a line kept for an answered question never becomes a message by an edit; it goes as one only once the
+ * person has emptied the box and written it again.
+ */
+export const LINE_KEPT_IN_CHAT = 'Your line is kept for that question. To send it as a message, empty the box and write it again.'
 
 /**
  * What a reply's failure (its promise's rejection) is for its field: every word the owner gives a reply, and the page's own, by
@@ -341,7 +346,7 @@ export function replyFailure(e: unknown, name?: string, line = false, way?: stri
       title: 'Already answered',
       // A line typed is kept in its field, whatever the way; a choice on a session in its terminal may be answered there, and one in
       // a chat has nothing more to say: its question was answered and nothing was sent (#1148).
-      description: `${name ? `${name}'s` : 'This'} question ${what}. Nothing was sent.${line ? ` ${LINE_KEPT}` : way === 'protocol' || way === 'unknown' ? '' : ' If the agent still asks, answer it in its terminal.'}`,
+      description: `${name ? `${name}'s` : 'This'} question ${what}. Nothing was sent.${line ? ` ${way === 'protocol' ? LINE_KEPT_IN_CHAT : LINE_KEPT}` : way === 'protocol' || way === 'unknown' ? '' : ' If the agent still asks, answer it in its terminal.'}`,
       color: 'warning',
     }
   }
@@ -356,7 +361,8 @@ export function replyFailure(e: unknown, name?: string, line = false, way?: stri
     }
   }
   if (code === NO_QUESTION) {
-    return { title: 'Not sent', description: 'This page could not tell the session which question your reply was for, so nothing was sent. Try again in a moment, or answer in the terminal.', color: 'warning' }
+    // A chat has no terminal to answer in (UX3 R5).
+    return { title: 'Not sent', description: `This page could not tell the session which question your reply was for, so nothing was sent. Try again in a moment${way === 'protocol' ? '' : ', or answer in the terminal'}.`, color: 'warning' }
   }
   if (code === 'no_word' || code === 'closed') {
     const when = code === 'no_word' ? `within ${ANSWER_WAIT_SECONDS} s` : 'before the connection closed'

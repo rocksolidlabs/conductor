@@ -99,8 +99,11 @@ for (const vp of [
     // Every member has a chip, in the run's order; All and the members that can get a line are pressed.
     await expect(bar(page).locator('[data-message-chip]')).toHaveText(['All', 'lead', 'core', /review · answer it first$/, 'tests · not started'])
     for (const name of ['all', 'lead', 'core']) await expect(chip(page, name)).toHaveAttribute('aria-pressed', 'true')
-    // The two that cannot get a line are not buttons: review's says it waits on you, in the status language's amber.
-    await expect(bar(page).getByRole('button', { name: /review|tests/ })).toHaveCount(0)
+    // Neither can be ticked: review's says it waits on you, in the status language's amber, and is a button that shows its tile (no
+    // pressed state); tests' is no button at all.
+    await expect(chip(page, 'review')).not.toHaveAttribute('aria-pressed')
+    expect(await chip(page, 'review').evaluate((e) => e.tagName)).toBe('BUTTON')
+    await expect(bar(page).getByRole('button', { name: /tests/ })).toHaveCount(0)
     await expect(chip(page, 'review').locator('[data-status-mark="needs"]')).toHaveCount(1)
     await expect(chip(page, 'tests')).toHaveAttribute('data-chip-state', 'not_started')
     const input = field(page)
@@ -208,6 +211,65 @@ test('a long line shows its count from 3,072 bytes, red past 4,096 with Send off
   await input.fill('short')
   await expect(count).toHaveCount(0)
   await expect(send).toBeEnabled()
+})
+
+test('a double-click on a chip leaves that member alone, and All puts everyone back', async ({ page }) => {
+  await page.setViewportSize({ width: 2000, height: 810 })
+  await openRun(page)
+  const send = bar(page).locator('[data-broadcast-send]')
+  await chip(page, 'core').dblclick()
+  await expect(chip(page, 'core')).toHaveAttribute('aria-pressed', 'true')
+  await expect(chip(page, 'lead')).toHaveAttribute('aria-pressed', 'false')
+  await expect(chip(page, 'all')).toHaveAttribute('aria-pressed', 'false')
+  await expect(field(page)).toHaveAttribute('placeholder', 'Write a line for core')
+  await expect(send).toHaveText('Send to 1')
+  await chip(page, 'all').click()
+  await expect(send).toHaveText('Send to 2')
+})
+
+test("the waiting member's chip shows its tile, focused, from another view", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.goto(`/runs/${encodeURIComponent(runId)}?view=graph`)
+  await expect(page.locator('[data-run-graph]')).toBeVisible({ timeout: 30_000 })
+  await expect(chip(page, 'review')).toHaveAttribute('data-chip-state', 'waiting', { timeout: 30_000 })
+  await chip(page, 'review').click()
+  const tile = page.locator('[data-run-grid] [data-member="review"] [data-session-tile]')
+  await expect(tile).toBeFocused()
+  await expect(tile).toBeInViewport()
+  await expect(page.locator('[data-run-view]').getByRole('tab', { name: 'Members' })).toHaveAttribute('aria-selected', 'true')
+})
+
+test('while the bar holds the focus the tiles that will get the line carry the ring', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await openRun(page)
+  const ringed = page.locator('[data-run-grid] [data-session-tile][data-receiving]')
+  await expect(ringed).toHaveCount(0)
+  await field(page).focus()
+  await expect(ringed).toHaveCount(2)
+  await expect(page.locator('[data-run-grid] [data-member="lead"] [data-session-tile]')).toHaveAttribute('data-receiving', 'true')
+  // A press on a chip keeps the focus in the bar: the ring follows the pick.
+  await chip(page, 'core').click()
+  await expect(ringed).toHaveCount(1)
+  await expect(page.locator('[data-run-grid] [data-member="core"] [data-session-tile]')).not.toHaveAttribute('data-receiving')
+  // Out of the bar, no ring.
+  await page.locator('[data-run-view]').getByRole('tab', { name: 'Members' }).focus()
+  await expect(ringed).toHaveCount(0)
+  await chip(page, 'all').click()
+})
+
+test('the pick and the line begun survive a trip to a member and back', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await openRun(page)
+  await chip(page, 'core').click()
+  await field(page).fill('half a line')
+  await page.locator('[data-run-grid] [data-member="lead"] [data-tile-open]').click()
+  await expect(page).toHaveURL(/\/sessions\//)
+  await page.goBack()
+  await expect(chip(page, 'core')).toHaveAttribute('aria-pressed', 'false', { timeout: 30_000 })
+  await expect(chip(page, 'lead')).toHaveAttribute('aria-pressed', 'true')
+  await expect(field(page)).toHaveValue('half a line')
+  await field(page).fill('')
+  await chip(page, 'all').click()
 })
 
 test('an answered member comes back ticked only while All is on', async ({ page, api }) => {
