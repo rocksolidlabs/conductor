@@ -780,7 +780,9 @@ function askAgent() {
 function saveFromPalette() {
   if (!tabs.value.folded) void save()
 }
-defineExpose({ find: () => editorRef.value?.find(), gotoLine: () => editorRef.value?.gotoLine(), requestClose, closeScope, palette: paletteState, setKeymap, save: saveFromPalette, askAgent })
+/** A Neovim holds changes not written (the keymap is Neovim's and a tab is unsaved): they live with the page's connection alone. */
+const holdsUnsaved = () => nvimOn.value && dirty.size > 0
+defineExpose({ find: () => editorRef.value?.find(), gotoLine: () => editorRef.value?.gotoLine(), requestClose, closeScope, palette: paletteState, setKeymap, save: saveFromPalette, askAgent, holdsUnsaved })
 </script>
 
 <template>

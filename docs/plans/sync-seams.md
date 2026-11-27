@@ -905,9 +905,14 @@ characters made once in `ui/writer`), at most 64 KiB each:
   `components/EditorColumn.vue`), the sidebar's mode, width and folds
   (`composables/useSidebar.ts`, `useSidebarFolds.ts`, `utils/sidebar.ts`),
   the crew graph's direction, handoffs and members switches
-  (`components/CrewGraph.vue`), and the run and project pages' chosen
-  views (`pages/runs/[run].vue`, `pages/dispatch/[project]/index.vue`):
-  enums and fractions only, each with its own schema.
+  (`components/CrewGraph.vue`), the run page's tiles (`runTiles`: the last
+  layout of a run's members' tiles and whether Activity is beside them,
+  and each crew's own, at most 30, the latest first, with the member One
+  large draws large and the shares its gaps were dragged to;
+  `utils/runTiles.ts`, `pages/runs/[run].vue`), and the run and project
+  pages' chosen views (`pages/runs/[run].vue`,
+  `pages/dispatch/[project]/index.vue`): enums and fractions only, each with
+  its own schema.
 - `palette`: the palette's recents (`utils/palette.ts`'s `Recent`,
   `{key: {count, last}}`), at most `RECENT_MAX` (200) entries, each key
   at most 300 bytes.
@@ -1007,7 +1012,10 @@ longer listed is shown greyed and removed after 7 days
 choice). The layout's schema is `editor {layout, split, sideSplit}`,
 `sidebar {mode, width, folds}` (the width in rem, the folds by section,
 `pinned` among them), `crewGraph {direction, handoffs, members}`,
-`runView` and `projectView`, each optional and each the setting a
+`runTiles {layout, activity, crews}` (each crew's `{crew, layout,
+activity, large, sizes}`, the sizes of that crew's own layout alone: a
+crew's other layouts keep theirs on the machine where they were made; only
+a wide window writes it), `runView` and `projectView`, each optional and each the setting a
 local-storage key held before, so the cache and the document hold one
 thing. A change this browser made and the server has not kept yet (a reload
 inside the second a change waits, a server not answering) is marked

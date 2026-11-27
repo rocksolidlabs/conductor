@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/rocksolidlabs/conductor/internal/proto"
@@ -87,7 +88,9 @@ func (s *Local) AnswerPermission(ctx context.Context, by *Subscription, a proto.
 	s.mu.Lock()
 	r, err := s.matchLocked(p, a)
 	if err != nil {
+		out := s.closeNotAsShownLocked(p, r, err)
 		s.mu.Unlock()
+		s.sendApplied(out)
 		return err
 	}
 	if r.claim != 0 {
@@ -117,7 +120,9 @@ func (s *Local) AnswerPermission(ctx context.Context, by *Subscription, a proto.
 		}
 		return nil
 	}(); err != nil {
+		closed := s.closeNotAsShownLocked(p, r, err)
 		s.mu.Unlock()
+		s.sendApplied(closed)
 		return err
 	}
 	// Who answered, recorded first.
@@ -185,6 +190,22 @@ func (s *Local) AnswerPermission(ctx context.Context, by *Subscription, a proto.
 	return nil
 }
 
+// errNotAsShown is ErrStaleRequest for a request whose call the session no
+// longer holds as it was shown.
+var errNotAsShown = fmt.Errorf("%w", ErrStaleRequest)
+
+// closeNotAsShownLocked closes the open request r when err says its call
+// is no longer held as it was shown: its card closes, the agent told no.
+// The caller holds s.mu.
+func (s *Local) closeNotAsShownLocked(p *protocolWay, r *openPermission, err error) applied {
+	var out applied
+	if r != nil && err == errNotAsShown && s.listedLocked(p, r) {
+		out.event = "permission_withdrawn"
+		s.closePermissionLocked(p, r, PermissionWithdrawn, StaleRequestWords, nil, &out)
+	}
+	return out
+}
+
 // matchLocked is the open request a answers, checked as the hand-over
 // checks it: ErrQuestionAnswered when none is open by its question,
 // ErrStaleRequest when its call or digest differ or its call has a
@@ -199,6 +220,12 @@ func (s *Local) matchLocked(p *protocolWay, a proto.PermissionAnswer) (*openPerm
 		}
 		if r.call != "" && p.resulted[r.call] {
 			return nil, ErrStaleRequest
+		}
+		// The call as it was shown: a call the session no longer holds, or
+		// holds announced again with another input, is not the one asked
+		// about.
+		if t := p.tools[r.call]; r.call != "" && (t == nil || t.digest != r.digest) {
+			return r, errNotAsShown
 		}
 		return r, nil
 	}

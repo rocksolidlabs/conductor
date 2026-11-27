@@ -112,7 +112,7 @@ func TestDispatchLaunchCandidates(t *testing.T) {
 		if code != 2 || err == nil || !strings.Contains(err.Error(), "send --candidates 2 to launch them") {
 			t.Fatalf("launch %v: %d %v", args, code, err)
 		}
-		want := "This comparison starts 2 candidates (ready-cat, ready-cat): 2 agent sessions, once the plan's decisions and the project's prerequisites let the work start; " +
+		want := "This trial starts 2 candidates (ready-cat, ready-cat): 2 agent sessions, once the plan's decisions and the project's prerequisites let the work start; " +
 			"then an agent review of each candidate that succeeds: up to 2 more sessions, none for a candidate that fails or is cancelled; " +
 			"then what 2 runs of one candidate's crew would take, since each candidate is worked as a task of its own crew is"
 		if !strings.HasPrefix(out, want) || !strings.Contains(out, "1 check on each submitted candidate attempt (the task's checks; the plan holds no manifest, so no verify steps)") || strings.Contains(out, "Brakeman") || strings.Contains(strings.ToLower(out), "total") {
@@ -130,7 +130,7 @@ func TestDispatchLaunchCandidates(t *testing.T) {
 	a.mustDispatch(t, "plan", "propose", "CND-1", "--crew", a.crew)
 	a.mustDispatch(t, "plan", "approve", "CND-1", "2")
 	from := a.count()
-	if code, _, _, err := a.dispatchCmd(t, "", "launch", "CND-1", "--plan", "2", "--candidates", "1"); code != 2 || err == nil || !strings.Contains(err.Error(), "r2 is no comparison") {
+	if code, _, _, err := a.dispatchCmd(t, "", "launch", "CND-1", "--plan", "2", "--candidates", "1"); code != 2 || err == nil || !strings.Contains(err.Error(), "r2 is no trial") {
 		t.Fatalf("a count on an ordinary revision: %d %v", code, err)
 	}
 	if p := a.posts(from, "/api/dispatch/tickets/CND-1/launch"); len(p) != 0 {
@@ -223,5 +223,33 @@ func TestTheCompareStatementNamesTheManifestHeld(t *testing.T) {
 	}
 	if got := compareStatement(pc, nil, compareManifest([]byte(`{"crew":{}}`))); strings.Contains(got, "manifest.json") {
 		t.Errorf("a plan with no manifest names the file: %q", got)
+	}
+}
+
+// conductor crews trial and conductor dispatch trial are other names of
+// crews compare and dispatch comparison, each answering exactly as the old
+// name does; the help names trial first.
+func TestTrialIsAnotherNameOfTheCompareCommands(t *testing.T) {
+	a := newPlannedAPI(t)
+	var out bytes.Buffer
+	code, err := Run(t.Context(), []string{"crews", "trial", "--server", a.hs.URL, "--token", dispatchToken, "-"}, strings.NewReader(compareSpecJSON(t, a.repo)), &out, &bytes.Buffer{})
+	if code != 0 || err != nil || !compareCrewLine.MatchString(out.String()) {
+		t.Fatalf("crews trial: %d %v %q", code, err, out.String())
+	}
+	id := compareCrewLine.FindStringSubmatch(out.String())[1]
+	a.mustDispatch(t, "plan", "propose", "CND-1", "--crew", id)
+	a.mustDispatch(t, "plan", "approve", "CND-1", "1")
+	a.mustDispatch(t, "launch", "CND-1", "--candidates", "2")
+	if old, now := a.mustDispatch(t, "comparison", "CND-1", "--json"), a.mustDispatch(t, "trial", "CND-1", "--json"); old != now || !strings.Contains(now, `"independence"`) {
+		t.Fatalf("dispatch trial answers otherwise than dispatch comparison:\n%s\n%s", old, now)
+	}
+	if code, _, _, err := a.dispatchCmd(t, "", "trial", "CND-1", "--run", "not a run"); code != 2 || err == nil {
+		t.Fatalf("dispatch trial with a bad run: %d %v", code, err)
+	}
+	if !strings.HasPrefix(crewsCompareUsage, "Usage:\n  conductor crews trial SPEC.json|-") || !strings.Contains(crewsCompareUsage, "conductor crews compare is the same command") {
+		t.Fatalf("crews trial's help:\n%s", crewsCompareUsage)
+	}
+	if !strings.Contains(dispatchUsage, "conductor dispatch trial KEY-n [--run RUN] [--json]") || !strings.Contains(dispatchUsage, "dispatch comparison is the same command") {
+		t.Fatal("dispatch's help does not name dispatch trial first")
 	}
 }

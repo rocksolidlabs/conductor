@@ -88,14 +88,18 @@ describe('the chat', () => {
     expect(terminal).toContain(':opens-changes="opensChanges"')
     expect(terminal).toContain('opensChanges: false')
     const pages = (p: string) => readFileSync(new URL(`../pages/${p}`, import.meta.url), 'utf8')
-    expect(pages('sessions/[id].vue')).toMatch(/operator\s+opens-changes/)
+    // The session's whole view is SessionView, which its page and a crew's page draw (UX3 R72).
+    const sessionView = readFileSync(new URL('./SessionView.vue', import.meta.url), 'utf8')
+    expect(sessionView).toMatch(/operator\s+opens-changes/)
     for (const p of ['yard.vue', 'roundhouse.vue', 'join/[token].vue']) expect(pages(p), p).not.toContain('opens-changes')
   })
 
   it("noBarBesideTheQuestion: where the chat shows a permission question, no reply bar repeats it", () => {
     const pages = (p: string) => readFileSync(new URL(`../pages/${p}`, import.meta.url), 'utf8')
-    expect(pages('sessions/[id].vue')).toContain(`<QuickReplyBar v-else-if="!askInChat && !(way === 'protocol' && answersInChat(attention))"`)
-    expect(pages('sessions/[id].vue')).toContain(`<QuickReplyBar v-if="!answersInChat(attention)"`)
+    // The session's whole view is SessionView, which its page and a crew's page draw (UX3 R72).
+    const sessionView = readFileSync(new URL('./SessionView.vue', import.meta.url), 'utf8')
+    expect(sessionView).toContain(`<QuickReplyBar v-else-if="!askInChat && !(way === 'protocol' && answersInChat(attention))"`)
+    expect(sessionView).toContain(`<QuickReplyBar v-if="!answersInChat(attention)"`)
     expect(pages('join/[token].vue')).toContain(`<QuickReplyBar v-if="!(joinWay === 'protocol' && answersInChat(attention))"`)
     expect(pages('yard.vue')).toContain(`<QuickReplyBar v-if="!(focused.way === 'protocol' && answersInChat(focused.attention))"`)
   })
@@ -112,7 +116,7 @@ describe('the chat', () => {
     // The terminal hands the page's card to its chat, and the session page fills it in Chat alone.
     const terminal = readFileSync(new URL('./TerminalView.vue', import.meta.url), 'utf8')
     expect(terminal).toContain('<template v-if="$slots.ask" #ask><slot name="ask" /></template>')
-    const page = readFileSync(new URL('../pages/sessions/[id].vue', import.meta.url), 'utf8')
+    const page = readFileSync(new URL('./SessionView.vue', import.meta.url), 'utf8') // the session's whole view (UX3 R72)
     expect(page).toContain('<template v-if="askInChat" #ask>')
   })
 

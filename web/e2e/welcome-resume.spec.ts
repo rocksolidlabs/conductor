@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Browser, Page } from '@playwright/test'
 import { budget, DAILY, dayPage, expect, test, type Session } from './fixtures'
-import { inside, uncut } from './layout'
+import { inside, noOverlap, tapTarget, uncut } from './layout'
 import { ownServer, type OwnServer } from './own-server'
 import { START_WAIT_MS } from './server'
 
@@ -178,5 +178,39 @@ test('four ended sessions give three rows and All 4 ended sessions, which opens 
   await expect(all).toHaveText('All 4 ended sessions')
   await all.click()
   await page.waitForURL((u) => u.pathname === '/history' && u.searchParams.get('q') === 'kind:session', { timeout: STEP_MS })
+  await page.context().close()
+})
+
+test("on a phone a row's name is whole on a line of its own, its folder and age under it, and Resume beside them, a target to tap", async ({ browser }) => {
+  budget(START_WAIT_MS)
+  srv = await ownServer('welcome-resume-phone')
+  // Thirty letters, as a person names the work they come back to.
+  const name = 'refund-split-for-the-shop-apis'
+  expect(name).toHaveLength(30)
+  const { id, page: first } = await withTurn(browser, srv, name)
+  await first.context().close()
+  await ended(srv, id)
+  await again(srv, [id])
+
+  budget(8 * STEP_MS)
+  const page = await dayPage(browser, { width: 390, height: 844, touch: true, path: '/sessions', server: srv.started })
+  const card = page.locator('[data-welcome-card]')
+  const row = card.locator(`[data-resume-row="${id}"]`)
+  await expect(row).toBeVisible({ timeout: LONG_MS })
+  await row.scrollIntoViewIfNeeded()
+  const nameEl = row.locator('[data-resume-name]')
+  await expect(nameEl).toHaveText(name)
+  await uncut(nameEl)
+  await uncut(row.locator('[data-resume-age]'))
+  // Two lines: the folder and the age under the name.
+  const [n, f] = [(await nameEl.boundingBox())!, (await row.locator('[data-resume-folder]').boundingBox())!]
+  expect(f.y, 'the folder under the name').toBeGreaterThanOrEqual(n.y + n.height - 1)
+  // Resume beside them, over none of the row's words, and big enough to tap.
+  const button = row.locator('[data-resume-button]')
+  await tapTarget(button)
+  await noOverlap(row, 'button, [data-resume-name], [data-resume-folder], [data-resume-age]')
+  await inside(row, card)
+  await button.tap()
+  await expect(page.getByRole('dialog', { name: `Resume ${name}?` })).toBeVisible()
   await page.context().close()
 })

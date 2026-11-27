@@ -3,6 +3,8 @@ import type { BrakemanRequest } from '~/utils/brakeman'
 import { stateWords, stopAction } from '~/utils/brakeman'
 import { askedWords, kindLine, subjectWords } from '~/utils/brakemanRows'
 import { relativeTime } from '~/utils/sessions'
+// A link to a session opens its place: a crew's member inside its crew (UX3 R72).
+const placeOf = useSessionPlace()
 
 /**
  * In progress, on the Brakeman page (the Brakeman design review): the turn under way, what it asks and of what, who asked it and when,
@@ -71,7 +73,7 @@ const stopOf = computed(() => (props.current ? stopAction(props.current) : null)
               color="neutral"
               variant="outline"
               class="max-sm:min-h-11"
-              :to="current.sessionId ? `/sessions/${encodeURIComponent(current.sessionId)}` : undefined"
+              :to="current.sessionId ? placeOf(current.sessionId) : undefined"
               :disabled="!current.sessionId"
               data-request-session
             />

@@ -1709,10 +1709,13 @@ func (s *Local) toolNameLocked(p *protocolWay, ref string) string {
 func (e protocolEvents) Permission(r PermissionRequest) {
 	// The walk of a call's strings is for calls that come in an agent's
 	// stream, and is made here, on the driver's goroutine, before the
-	// session's lock is taken: it reads only what does not change over the
-	// session, and is bounded (streamFloored). The lock is then held for
-	// the bound and the binding alone.
-	walked := len(r.Input) <= MaxTranscriptPart && e.s.streamFloored(r.Input)
+	// session's lock is taken: it reads the session's folder and the deny
+	// list, needing no lock, and is bounded (streamFloored). The lock is
+	// then held for the bound, the binding and the rest of the floor.
+	walked := ""
+	if len(r.Input) <= MaxTranscriptPart {
+		walked = e.s.streamFloored(r.Input)
+	}
 	if !e.begin() {
 		return
 	}
@@ -1745,7 +1748,10 @@ func (e protocolEvents) Permission(r PermissionRequest) {
 		why = TooManyRequestsWords
 	default:
 		call, why = s.bindInStreamLocked(p, r.Call, r.Tool, digest)
-		if why == "" && (walked || s.flooredLocked(r.Tool, r.Input)) {
+		if why == "" && walked != "" {
+			why = walked
+		}
+		if why == "" && s.flooredLocked(r.Tool, r.Input) {
 			why = FloorWords
 		}
 	}

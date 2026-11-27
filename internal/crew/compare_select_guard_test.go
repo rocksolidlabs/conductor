@@ -394,7 +394,7 @@ func TestAContinuationRepairsTheSelectedLane(t *testing.T) {
 	waitOutcome(t, se.e, se.run.ID, ledger.OutcomeSucceeded)
 	se.e.ForgetForTest(se.run.ID)
 	_, err := continueWithRepair(se.e, se.run.ID, "q1", "approach-b", 1, b.Result.Commit, "", personsRequest("rv-0001"))
-	if !errors.Is(err, ErrNotSelected) || err.Error() != "a comparison's candidate is repaired once it is selected" {
+	if !errors.Is(err, ErrNotSelected) || err.Error() != "a trial's candidate is repaired once it is selected" {
 		t.Fatalf("a repair of the lane not selected: %v", err)
 	}
 	next, err := continueWithRepair(se.e, se.run.ID, "q2", "approach-a", 1, a.Result.Commit, "", personsRequest("rv-0002"))

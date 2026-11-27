@@ -110,6 +110,9 @@ func serveConfig(path string) (*config.Config, error) {
 	return cfg, err
 }
 
+// secretsSwitchyardWords refuse --secrets-stdin to a switchyard.
+const secretsSwitchyardWords = "--secrets-stdin is the desktop app's way to start its own server; a switchyard takes no secrets on stdin"
+
 // maxSecretsLine bounds the line --secrets-stdin reads, its newline
 // included.
 const maxSecretsLine = 4096
@@ -211,7 +214,18 @@ func tokenFromEnv(name string) (string, error) {
 }
 
 func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
-	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
+	return runServeAs(ctx, "serve", args, stdin, stdout, stderr)
+}
+
+// runSwitchyard is conductor switchyard: serve as a switchyard. It takes no
+// secrets on stdin: that is the desktop app's way to start its own server,
+// and the app never starts a switchyard.
+func runSwitchyard(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
+	return runServeAs(ctx, "switchyard", append([]string{"--switchyard"}, args...), stdin, stdout, stderr)
+}
+
+func runServeAs(ctx context.Context, name string, args []string, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	configPath := fs.String("config", "", "path to a JSON config file")
 	listen := fs.String("listen", "", "listen address (overrides config)")
@@ -222,7 +236,10 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 	printListen := fs.Bool("print-listen", false, "print one JSON line to stdout once listening: {listen, publicUrl, pid, version, workbenchToken?, tlsListen?} (for a parent process such as the desktop app)")
 	exitOnStdinClose := fs.Bool("exit-on-stdin-close", false, "shut down when stdin closes (a parent process that dies takes the server with it)")
 	switchyard := fs.Bool("switchyard", false, "coordinate hosted sessions and launch nothing: no sessions, crews, runs or catalog of its own (env CONDUCTOR_SWITCHYARD=1; conductor switchyard)")
-	secretsStdin := fs.Bool("secrets-stdin", false, "read the workbench token, and the desktop app's key, from the first line of stdin, one JSON object {workbenchToken, desktopKey?}, before anything else: they take the place of a configured token and of a generated one, and reach the server through no environment variable or argument (the desktop app starts its server so)")
+	secretsStdin := new(bool)
+	if name == "serve" {
+		secretsStdin = fs.Bool("secrets-stdin", false, "read the workbench token, and the desktop app's key, from the first line of stdin, one JSON object {workbenchToken, desktopKey?}, before anything else: they take the place of a configured token and of a generated one, and reach the server through no environment variable or argument (the desktop app starts its server so)")
+	}
 	tokenEnv := fs.String("token-env", "", "take the workbench token from the environment variable `NAME`: its value takes the place of a configured token (workbenchToken, CONDUCTOR_WORKBENCH_TOKEN) and of a generated one; a name that is no variable's name, or a variable unset or empty, stops the server, and the value is printed, logged and kept nowhere")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -239,6 +256,9 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 	// A --token-env given, whatever its value (the empty one included), is the token's one source: never the flag's absence.
 	tokenEnvGiven := false
 	fs.Visit(func(f *flag.Flag) { tokenEnvGiven = tokenEnvGiven || f.Name == "token-env" })
+	if *switchyard && *secretsStdin {
+		return 2, errors.New(secretsSwitchyardWords)
+	}
 	if tokenEnvGiven && *secretsStdin {
 		return 2, errors.New("--secrets-stdin and --token-env each name the workbench token's one source: give one")
 	}
@@ -293,6 +313,11 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 	}
 	if *switchyard {
 		cfg.Switchyard.Enabled = true
+	}
+	// A switchyard, however it was turned on (the flag, CONDUCTOR_SWITCHYARD or
+	// the file), takes no secrets on stdin: refused before anything is bound.
+	if cfg.Switchyard.Enabled && *secretsStdin {
+		return 2, errors.New(secretsSwitchyardWords)
 	}
 	// With the flags applied, before anything is written, started or bound.
 	if cfg.PublishesToItself() {

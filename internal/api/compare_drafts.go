@@ -351,7 +351,7 @@ func (s *Server) compareAskRefusal(ctx context.Context, in brakeman.Request) err
 		return nil
 	}
 	run := in.Subjects[0].Run
-	refuse := &brakeman.Invalid{Code: brakeman.CodeInvalidRequest, Field: "subjects[0]", Why: fmt.Sprintf("run:%s is not a comparison's run: a compare request names a run of a comparison", run)}
+	refuse := &brakeman.Invalid{Code: brakeman.CodeInvalidRequest, Field: "subjects[0]", Why: fmt.Sprintf("run:%s is not a trial's run: a compare request names a run of a trial", run)}
 	if s.ledger == nil || !crew.ValidRunID(run) {
 		return refuse
 	}
@@ -367,7 +367,7 @@ func (s *Server) compareAskRefusal(ctx context.Context, in brakeman.Request) err
 
 // selectionMadeWords is why a compare request, or its brief, is refused
 // once the comparison's selection is answered.
-const selectionMadeWords = "the comparison's selection is answered: Brakeman drafts a comparison before the selection, never with the person's answer as its input"
+const selectionMadeWords = "the trial's selection is answered: Brakeman sums up a trial before it, never after"
 
 // selectionMadeRefusal is 409 selection_made once the comparison of the
 // run's chain is answered, selected or ended with None of these (the
@@ -379,7 +379,7 @@ func (s *Server) selectionMadeRefusal(ctx context.Context, run string) error {
 	}
 	st, err := s.runs.ComparisonStateOf(ctx, run)
 	if err != nil {
-		return fmt.Errorf("the comparison of %s: %w", run, err)
+		return fmt.Errorf("the trial of %s: %w", run, err)
 	}
 	switch st.State {
 	case crew.CompareAnswered, crew.CompareSelected, crew.CompareNone:
