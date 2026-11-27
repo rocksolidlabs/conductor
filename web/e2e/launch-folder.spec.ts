@@ -293,3 +293,65 @@ for (const [size, touch] of [[DAILY, false], [{ width: 1440, height: 900 }, fals
     await noSideways(page, { root: dialog })
   })
 }
+
+// UX3 R76: the same line, and the same one press, under every field where a person names a folder agents will work in.
+
+/** Types a folder into a field and moves the focus away, the field's list closed: its check runs. */
+async function typeInto(page: Page, input: Locator, path: string) {
+  await input.fill(path)
+  await input.press('Tab')
+  await expect(page.getByRole('listbox')).toHaveCount(0)
+}
+
+test("a crew's folder, an agent trial's, a Dispatch project's and Brakeman's say the same line, and the press allows the folder named", async ({ browser }) => {
+  const { page, asked } = await folderPage(browser, 'press')
+  const lineIn = (scope: Locator) => scope.locator('[data-launch-folder-line]')
+
+  // A new crew's folder: the line, and the press.
+  await page.goto('/crews/new')
+  await expect(page.getByRole('textbox', { name: 'Crew name' })).toBeFocused()
+  const crewFolder = outside('crew-folder')
+  // The editor has one folder field: the crew's.
+  const crewField = page.locator('[data-dir-input] input[role="combobox"]')
+  await expect(crewField).toHaveCount(1)
+  await typeInto(page, crewField, crewFolder)
+  const crewLine = lineIn(page.locator('body'))
+  await expect(crewLine).toHaveAttribute('data-folder-state', 'outside')
+  await expect(crewLine.locator('[data-folder-words]')).toHaveText("Agents can't use this folder yet.")
+  await crewLine.locator('[data-launch-allow]').click()
+  await expect(crewLine).toHaveAttribute('data-folder-state', 'allowed_now')
+  expect(asked).toEqual([{ path: crewFolder, confirmed: '' }])
+
+  // The agent trial's folder.
+  await page.goto('/crews')
+  await page.locator('[data-new-comparison]').click()
+  const form = page.locator('[data-compare-template]')
+  await expect(form).toBeVisible()
+  await atRest(page.getByRole('dialog').filter({ has: form }))
+  const trialFolder = outside('trial-folder')
+  await typeInto(page, form.locator('[data-compare-cwd]').getByRole('combobox'), trialFolder)
+  await expect(lineIn(form)).toHaveAttribute('data-folder-state', 'outside')
+  await expect(lineIn(form).locator('[data-launch-allow]')).toBeVisible()
+  await page.keyboard.press('Escape')
+
+  // A Dispatch project's repository.
+  await page.goto('/dispatch')
+  await page.locator('[data-new-project-open]').click()
+  const project = page.locator('[data-new-project]')
+  await expect(project).toBeVisible()
+  await typeInto(page, project.locator('[data-dir-input] input[role="combobox"]'), outside('project-folder'))
+  await expect(lineIn(project)).toHaveAttribute('data-folder-state', 'outside')
+  await expect(lineIn(project).locator('[data-launch-allow]')).toBeVisible()
+  await page.keyboard.press('Escape')
+
+  // The folder Brakeman reads, on Settings, where Brakeman is offered.
+  await page.goto('/settings?section=brakeman')
+  const brakemanField = page.locator('[data-brakeman-cwd] input, input[data-brakeman-cwd]').first()
+  if (await brakemanField.count()) {
+    await typeInto(page, brakemanField, outside('brakeman-folder'))
+    const card = page.locator('[data-settings-section="brakeman"]')
+    await expect(lineIn(card)).toHaveAttribute('data-folder-state', 'outside')
+  }
+  // Only the crew's press was made: each line asks the app only when pressed.
+  expect(asked).toHaveLength(1)
+})

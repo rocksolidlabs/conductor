@@ -323,6 +323,7 @@ defineExpose({ dirty, blocked: computed(() => Object.keys(problems.value).length
       </UFormField>
       <UFormField label="Folder it reads" description="It changes nothing there." :error="fieldError('cwd')" :ui="fieldUi">
         <DirInput v-model="form.cwd" picker-title="The folder Brakeman reads" data-brakeman-cwd />
+        <FolderAllowLine :path="form?.cwd ?? ''" :off="!form?.cwd?.trim()" @use="(p: string) => form && (form.cwd = p)" />
       </UFormField>
       <p v-if="folders" class="text-xs break-all text-muted" data-brakeman-folders>{{ foldersLine(folders, saved?.cwd ?? '') }}</p>
       <UFormField v-if="caps?.allowTools" label="Conductor's tools" :error="fieldError('allowConductorTools')" :ui="fieldUi">

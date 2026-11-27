@@ -29,6 +29,9 @@ const api = useSessions()
 const toast = useToast()
 // The agent select names the server's host beside an agent not installed there.
 const serverHost = useServerHost()
+// The folder agents will work in (UX3 R76): the same line, and press, as Launch agent's (FolderAllowLine).
+const folderLine = useTemplateRef<{ blocks: boolean }>('folderLine')
+const folderBlocked = computed(() => !!folderLine.value?.blocks)
 serverHost.load()
 // Each member's Account choice is made of the accounts (docs/plans/capacity.md, PR-7): read as the editor shows.
 const accounts = useAccounts()
@@ -200,9 +203,10 @@ function refused(message: string) {
       </div>
       <div class="flex min-w-0 flex-col gap-4">
         <!-- The git line is the field's help: announced with the input, and wrapped anywhere so a long path keeps the column's width. -->
-        <UFormField label="Folder" name="cwd" :help="runsInHelp" :ui="{ help: 'mt-1 text-xs' }">
+        <UFormField label="Folder" name="cwd" :help="folderBlocked ? undefined : runsInHelp" :error="folderBlocked || undefined" :ui="{ help: 'mt-1 text-xs' }">
           <DirInput :model-value="crew.cwd" placeholder="The server's default folder" name="cwd" picker-title="The crew's folder" @update:model-value="set('cwd', $event)" />
-          <template #help>
+          <FolderAllowLine ref="folderLine" :path="crew.cwd" @use="(p: string) => set('cwd', p)" />
+          <template v-if="!folderBlocked" #help>
             <span class="[overflow-wrap:anywhere]" :class="{ 'text-success': gitLine.tone === 'success', 'text-warning': gitLine.tone === 'warning', 'text-muted': gitLine.tone === 'neutral' }" data-git-state>{{ runsInHelp }}</span>
           </template>
         </UFormField>
