@@ -226,7 +226,7 @@ func TestReadOnlyArgsMatchTheCLIs(t *testing.T) {
 // launch form leans on are read so. A help whose form changed fails here
 // first. The parsed list goes to CONDUCTOR_RECIPES_OUT.
 func TestTheCLIFlagsAreRead(t *testing.T) {
-	for _, id := range []string{"claude", "codex"} {
+	for _, id := range []string{"claude", "codex", "copilot", "agy", "goose"} {
 		t.Run(id, func(t *testing.T) {
 			command := cli(t, id)
 			entry, _ := catalog.Default().Get(id)
@@ -250,9 +250,13 @@ func TestTheCLIFlagsAreRead(t *testing.T) {
 				byName[f.Name] = f
 			}
 			ad := adapter(t, id)
-			model := strings.SplitN(ad.ModelArgs("x")[0], "=", 2)[0]
-			if f, ok := byName[model]; !ok || f.Set != agents.SetModel {
-				t.Errorf("%s: the model flag %s: %+v", id, model, f)
+			if ad.ModelArgs != nil {
+				model := strings.SplitN(ad.ModelArgs("x")[0], "=", 2)[0]
+				if f, ok := byName[model]; !ok || f.Set != agents.SetModel {
+					t.Errorf("%s: the model flag %s: %+v", id, model, f)
+				}
+			} else if f := byName["--model"]; f.Kind != agents.KindModel {
+				t.Errorf("%s: --model: %+v", id, f)
 			}
 			for _, x := range entry.Yolo.Args {
 				name := strings.SplitN(x, "=", 2)[0]
@@ -260,8 +264,11 @@ func TestTheCLIFlagsAreRead(t *testing.T) {
 					t.Errorf("%s: the yolo flag %s: %+v", id, name, f)
 				}
 			}
-			if f := byName["--add-dir"]; f.Kind != agents.KindFolder {
+			if f, ok := byName["--add-dir"]; id != "goose" && (!ok || (f.Kind != agents.KindFolder && f.Value != agents.ValueUnknown)) {
 				t.Errorf("%s: --add-dir: %+v", id, f)
+			}
+			if f := byName["--name"]; id == "goose" && f.Set != agents.SetSession {
+				t.Errorf("goose: --name: %+v", f)
 			}
 			if id == "codex" {
 				var vals []string
