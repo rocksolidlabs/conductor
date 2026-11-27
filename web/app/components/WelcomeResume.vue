@@ -64,13 +64,17 @@ async function yes() {
     <h3 class="text-xs font-medium text-muted">Pick up where you left off</h3>
     <ul class="flex flex-col gap-1">
       <li v-for="r in offer.rows" :key="r.id" class="flex min-w-0 items-center gap-2 text-sm" :data-resume-row="r.id">
-        <span class="flex min-w-0 flex-1 items-baseline gap-1">
-          <span class="min-w-0 shrink truncate text-default" :title="r.name" data-resume-name>{{ r.name }}</span>
-          <span class="flex-none text-muted" aria-hidden="true">·</span>
-          <span class="min-w-0 shrink-[2] truncate text-left font-mono text-xs text-muted [direction:rtl]" :title="r.cwd" data-mono="path" data-resume-folder
-            ><bdi>{{ shortCwd(r.cwd) }}</bdi></span
-          >
-          <span class="flex-none whitespace-nowrap text-muted" data-resume-age>· {{ endedWords(r, now) }}</span>
+        <!-- On a phone two lines, the name whole on the first (it wraps before it is cut), the folder and the age on the second; from
+             sm up one line, the name cut at its end with its whole form in its title. -->
+        <span class="flex min-w-0 flex-1 flex-col gap-0.5 sm:flex-row sm:items-baseline sm:gap-1">
+          <span class="min-w-0 text-default [overflow-wrap:anywhere] sm:shrink sm:truncate" :title="r.name" data-resume-name>{{ r.name }}</span>
+          <span class="flex-none text-muted max-sm:hidden" aria-hidden="true">·</span>
+          <span class="flex min-w-0 items-baseline gap-1 sm:shrink-[2]">
+            <span class="min-w-0 truncate text-left font-mono text-xs text-muted [direction:rtl]" :title="r.cwd" data-mono="path" data-resume-folder
+              ><bdi>{{ shortCwd(r.cwd) }}</bdi></span
+            >
+            <span class="flex-none whitespace-nowrap text-muted" data-resume-age>· {{ endedWords(r, now) }}</span>
+          </span>
         </span>
         <UButton
           :label="endNotSeen(r) ? 'Resume…' : 'Resume'"

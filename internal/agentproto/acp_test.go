@@ -623,9 +623,10 @@ func askAbout(t *testing.T, s *acpServer, rec *recorder, n int, id, input string
 // A call that changes closes its card: an update after the request that
 // gives a shown field another value (a number written another way too) or
 // holds only a field the client does not read, a repeated announcement with
-// other fields, an update that sets the call running, and a line the client
-// could not read (too long, a key twice, not UTF-8, a lone surrogate) each
-// withdraw the open request (the session is told, the agent answered
+// other fields, an update that sets the call running, a line too long to
+// read, and an update of the call that does not read strictly (a key twice
+// whose last copy is as announced; text not UTF-8, or a lone surrogate, in a
+// field nothing shows) each withdraw the open request (the session is told, the agent answered
 // cancelled), and a later verdict on it writes nothing, so allow_once is
 // never selected; a later request about each changed call is declined.
 func TestACPACallThatChangesClosesItsCard(t *testing.T) {
@@ -640,9 +641,9 @@ func TestACPACallThatChangesClosesItsCard(t *testing.T) {
 		{"a line too long to read", "c4", `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"` + acpSession + `","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"` + strings.Repeat("a", session.MaxProtocolLine) + `"}}}}`, ""},
 		{"an update holding only a field the client does not read", "c5", acpUpdate(`{"sessionUpdate":"tool_call_update","toolCallId":"c5","_meta":{"x":1}}`), ""},
 		{"a number written another way", "c6", acpUpdate(`{"sessionUpdate":"tool_call_update","toolCallId":"c6","rawInput":{"command":"ls","path":1.0}}`), `{"command":"ls","path":1}`},
-		{"a line with a key twice", "c7", acpUpdate(`{"sessionUpdate":"tool_call_update","toolCallId":"c7","rawInput":{"command":"cat /etc/passwd","command":"ls"}}`), ""},
-		{"a line that is not UTF-8", "c8", acpUpdate(`{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"a` + "\xff" + `"}}`), ""},
-		{"a line with a lone surrogate", "c9", acpUpdate(`{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"\ud800"}}`), ""},
+		{"an update with a key twice, its last copy as announced", "c7", acpUpdate(`{"sessionUpdate":"tool_call_update","toolCallId":"c7","rawInput":{"command":"cat /etc/passwd","command":"ls"}}`), ""},
+		{"an update that is not UTF-8 where nothing shown changes", "c8", acpUpdate(`{"sessionUpdate":"tool_call_update","toolCallId":"c8","rawOutput":"a` + "\xff" + `"}`), ""},
+		{"an update with a lone surrogate where nothing shown changes", "c9", acpUpdate(`{"sessionUpdate":"tool_call_update","toolCallId":"c9","rawOutput":"\ud800"}`), ""},
 	}
 	for i, tc := range changes {
 		input := tc.input
@@ -846,4 +847,42 @@ func TestACPARequestThatChangesItsCallClosesItsCards(t *testing.T) {
 			t.Fatalf("%s: %d requests reached the session", tc.name, n)
 		}
 	}
+}
+
+// A line is read strictly only where it is judged: text with a lone
+// surrogate or bytes that are not UTF-8 is kept and closes no card; a
+// permission request that does not read strictly is answered cancelled by
+// its id, closing the open cards; an update with a key twice is skipped,
+// closing them; the prompt's answer that does not read strictly still ends
+// the turn.
+func TestACPALineIsReadStrictlyOnlyWhereItIsJudged(t *testing.T) {
+	c, s, rec := begun(t, ACPOptions{})
+	p := askAbout(t, s, rec, 170, "c1", `{"command":"ls"}`, 0)
+	texts := len(rec.kinds("text"))
+	s.write(acpUpdate(`{"sessionUpdate":"agent_message_chunk","messageId":"m2","content":{"type":"text","text":"a\ud800b` + "\xff" + `"}}`))
+	if got := waitEvent(t, rec, "text", texts+1)[texts]; got.ref != "m2" || got.text == "" {
+		t.Fatalf("the text %+v", got)
+	}
+	if n := len(rec.kinds("permission_withdrawn")); n != 0 {
+		t.Fatalf("text closed %d cards", n)
+	}
+	s.write(`{"jsonrpc":"2.0","id":171,"method":"session/request_permission","params":{"sessionId":"` + acpSession + `","toolCall":{"toolCallId":"c1"},"options":` + acpOpts + `,"options":` + acpOpts + `}}`)
+	if got := s.await(`"id":171,`); got != `{"id":171,"jsonrpc":"2.0","result":{"outcome":{"outcome":"cancelled"}}}` {
+		t.Fatalf("the request that does not read strictly was answered %s", got)
+	}
+	if w := waitEvent(t, rec, "permission_withdrawn", 1)[0]; w.ref != p.ref {
+		t.Fatalf("withdrew %s, want %s", w.ref, p.ref)
+	}
+	if err := c.Reply(context.Background(), p.ref, session.Verdict{Allow: true}); !errors.Is(err, ErrNoRequest) {
+		t.Fatalf("a verdict on the closed card: %v", err)
+	}
+	// An update with a key twice, read loosely as text, could hide a change
+	// of a call: skipped, the open cards closed.
+	p = askAbout(t, s, rec, 172, "c2", `{"command":"ls"}`, 1)
+	s.write(acpUpdate(`{"sessionUpdate":"tool_call_update","toolCallId":"c2","rawInput":{"command":"cat /etc/passwd"},"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"x"}}`))
+	if w := waitEvent(t, rec, "permission_withdrawn", 2)[1]; w.ref != p.ref {
+		t.Fatalf("withdrew %s, want %s", w.ref, p.ref)
+	}
+	s.write(`{"jsonrpc":"2.0","id":` + s.promptID() + `,"result":{"stopReason":"end_turn","_meta":{"note":"\ud800"}}}`)
+	waitEvent(t, rec, "turn_ended", 1)
 }

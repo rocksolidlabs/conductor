@@ -44,11 +44,6 @@ const emit = defineEmits<{ open: [sessionId: string]; start: [name: string]; 'sh
 /** Whether the tiles stack (a narrow area): no layout applies there, and the page draws no switch. */
 const stacked = defineModel<boolean>('narrow', { default: false })
 
-defineSlots<{
-  /** The page's own control beside a member's tile (SessionTile's leading slot). */
-  leading?: (p: { tile: RunWallTile }) => unknown
-}>()
-
 function footer(t: RunWallTile): { where: string; diff: string } {
   const m = t.member
   const branch = m?.branch || t.session?.branch || ''
@@ -224,9 +219,6 @@ function small(i: number) {
         >
           <template v-if="tileAsk(t)" #ask>
             <RunTileAsk :ask="tileAsk(t)!" :answer="props.answer" @open="emit('open', t.session!.id)" @decision="emit('decision', $event)" />
-          </template>
-          <template v-if="$slots.leading" #leading>
-            <slot name="leading" :tile="t" />
           </template>
           <template v-if="small(i)" #header-action>
             <IconButton :label="`Show ${t.name} large`" icon="i-lucide-layout-panel-left" size="xs" color="neutral" variant="ghost" data-tile-show-large @click.stop="emit('show-large', t.name)" />
