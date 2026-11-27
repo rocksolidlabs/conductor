@@ -551,11 +551,13 @@ func TestACPWhatTheClientDoesNotReadIsDeclined(t *testing.T) {
 			t.Fatalf("request %s answered %s", id, got)
 		}
 	}
+	// Each decline's notice follows its answer: once all are told, every
+	// request has been handled.
+	if n := len(waitEvent(t, rec, "notice", 4)); n != 4 {
+		t.Fatalf("%d notices for 4 declines", n)
+	}
 	if n := len(rec.kinds("permission")); n != 0 {
 		t.Fatalf("%d declined requests reached the session", n)
-	}
-	if n := len(rec.kinds("notice")); n != 4 {
-		t.Fatalf("%d notices for 4 declines", n)
 	}
 	ask(65, `{"toolCallId":"a5","rawInput":{"command":"rm -rf /"}}`, "")
 	p := waitEvent(t, rec, "permission", 1)[0].perm

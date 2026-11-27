@@ -927,12 +927,13 @@ func TestCodexWhatTheDriverDoesNotReadIsDeclined(t *testing.T) {
 			t.Fatalf("%s: answered %s", tc.reason, got)
 		}
 	}
-	syncLine(t, c, s)
+	// Each decline's notice follows its answer: once all are told, every
+	// request has been handled.
+	if n := len(waitEvent(t, rec, "notice", len(cases))); n != len(cases) {
+		t.Fatalf("%d notices for %d declines", n, len(cases))
+	}
 	if n := len(rec.kinds("permission")); n != 0 {
 		t.Fatalf("%d declined requests reached the session:\n%s", n, rec.render())
-	}
-	if n := len(rec.kinds("notice")); n != len(cases) {
-		t.Fatalf("%d notices for %d declines", n, len(cases))
 	}
 	// Nulls are no fields: an ordinary approval with them is asked.
 	ask(15, "commandExecution", "i6", `,"approvalId":null,"reason":null,"networkApprovalContext":null,"kind":"command","proposedExecpolicyAmendment":["ls"]`)
