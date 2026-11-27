@@ -276,7 +276,9 @@ func (s *Server) handleLaunchCrew(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("id")
-	run, c, release, err := s.launchSaved(r.Context(), id, strings.TrimSpace(body.Label), body.Revision, nil, crew.LaunchOpts{})
+	// The route is the admin's (launching): the operator's own launch, which
+	// makes a new folder's first commit (crew.LaunchOpts.FirstCommit).
+	run, c, release, err := s.launchSaved(r.Context(), id, strings.TrimSpace(body.Label), body.Revision, nil, crew.LaunchOpts{FirstCommit: operatorOf(r)})
 	// Released once the reply is written: the view link is minted first, so a
 	// launch at the cap meanwhile cannot forget the run.
 	defer release()

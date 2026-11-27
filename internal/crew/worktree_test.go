@@ -346,6 +346,22 @@ func TestPickerHoldsTheCanWorktreeMessage(t *testing.T) {
 	}
 }
 
+// A new project is no refusal for the picker either: msgFirstCommit is
+// web/app/utils/dirInput.ts's GIT_FIRST_COMMIT, word for word.
+func TestPickerHoldsTheFirstCommitMessage(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join("..", "..", "web", "app", "utils", "dirInput.ts"))
+	if err != nil {
+		t.Fatalf("the picker's words: %v", err)
+	}
+	m := regexp.MustCompile(`export const GIT_FIRST_COMMIT = "([^"]*)"`).FindSubmatch(b)
+	if m == nil {
+		t.Fatal(`web/app/utils/dirInput.ts has no export const GIT_FIRST_COMMIT = "..."`)
+	}
+	if got := string(m[1]); got != msgFirstCommit {
+		t.Fatalf("GIT_FIRST_COMMIT is %q, msgFirstCommit %q", got, msgFirstCommit)
+	}
+}
+
 // RepoRoots names a repository's top and, for a linked worktree, the main
 // repository's top too; outside a repository, the directory itself.
 func TestRepoRoots(t *testing.T) {

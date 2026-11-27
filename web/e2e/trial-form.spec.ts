@@ -1,8 +1,9 @@
-import { mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { Locator, Page } from '@playwright/test'
-import { DAILY, atRest, budget, expect, git, openMore, standingRoute, test, useTheme, type Api } from './fixtures'
+import { DAILY, atRest, budget, expect, git, logged, openMore, standingRoute, test, useTheme, type Api } from './fixtures'
+import { makeComparison } from './compare-helpers'
 import { noSideways, probeColour } from './layout'
 
 // New agent trial, the form on Crews (CP1, docs/plans/compare-crew.md, "The template", where it is called New comparison): it opens on
@@ -370,5 +371,36 @@ test("New agent trial comes back as the last saved trial left it: its agents, fo
     await expect(form.locator('[data-trial-agent-args]'), step).toHaveCount(0)
     await dialog.locator('[data-compare-cancel]').click()
     await expect(dialog).toHaveCount(0)
+  }
+})
+
+test('an agent trial starts in a new project: the folder gets its first commit, the form shows no word of it, and the run says so', async ({ page, api, state }) => {
+  test.setTimeout(240_000)
+  // A new project: a folder with a file and no repository yet.
+  const fresh = mkdtempSync(join(state.root, 'e2e-trial-new-'))
+  writeFileSync(join(fresh, 'README.md'), '# new shop\n')
+  await page.setViewportSize(DESK)
+  await page.goto('/crews')
+  const { dialog, form } = await openForm(page)
+  const folder = form.locator('[data-compare-cwd]').getByRole('combobox')
+  const checked = page.waitForResponse((r) => new URL(r.url()).pathname === '/api/git/check' && new URL(r.url()).searchParams.get('cwd') === fresh)
+  await folder.fill(fresh)
+  await folder.press('Tab')
+  expect((await checked).status()).toBe(200)
+  await expect(folder).not.toHaveAttribute('aria-invalid', 'true')
+  for (const words of ['commit', 'repository', 'git']) await expect(dialog).not.toContainText(words)
+  await dialog.locator('[data-compare-cancel]').click()
+  // The checks of the form made nothing there.
+  expect(existsSync(join(fresh, '.git'))).toBe(false)
+
+  // Saved, proposed on its ticket, approved and launched as a person does: the proposal makes the first commit, the launch starts.
+  const trial = await makeComparison(page, api, { cwd: fresh, checks: [{ id: 'unit', argv: ['true'] }], candidates: [{ agentId: 'worker' }, { agentId: 'worker-cli' }] })
+  made.push(trial.crewId)
+  try {
+    expect(git(fresh, 'log', '--format=%s', '-1').trim()).toBe('First commit, made by Conductor so that agents could each work on a copy of this folder')
+    expect(git(fresh, 'ls-tree', '-r', '--name-only', 'HEAD').trim()).toBe('README.md')
+    await expect.poll(async () => logged(await api.run(trial.runId), `started from the first commit Conductor made in ${fresh}`), { timeout: 30_000 }).toBe(true)
+  } finally {
+    await api.stopRun(trial.runId)
   }
 })

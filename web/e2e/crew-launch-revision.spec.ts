@@ -1,6 +1,4 @@
 import { randomBytes } from 'node:crypto'
-import { mkdirSync } from 'node:fs'
-import { join } from 'node:path'
 import type { Page, Response, Route } from '@playwright/test'
 import { expect, standingRoute, test, type Api, type Run } from './fixtures'
 
@@ -366,9 +364,9 @@ test('nothing that should go is refused: a saved crew, a draft in one go, two la
 })
 
 test("a launch the server refuses stays on the sheet in the server's words, with the run's name kept; Launch again is refused again: no run", async ({ page, api, state }) => {
-  // A crew of worktrees in a folder that is no git working tree: the server refuses its launch 409 not_a_repo, starting nothing.
-  const plain = join(state.root, `launch-plain-${randomBytes(3).toString('hex')}`)
-  mkdirSync(plain, { recursive: true })
+  // A crew of worktrees in the server's home folder, with no repository: the server refuses its launch 409 not_a_repo, starting nothing
+  // (a new project's folder gets its first commit instead; the home folder never does).
+  const plain = state.home
   const name = label('refused')
   const { crew } = await api.ok<{ crew: { id: string } }>('POST', '/api/crews', { name, goal: '', cwd: plain, where: 'server', isolation: 'worktree', openAfterLaunch: false, yolo: false, members: [{ name: 'lead', agentId: 'claude', prompt: '', start: { when: 'manual' } }] })
   made.crews.push(crew.id)

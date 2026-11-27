@@ -1009,7 +1009,7 @@ func (e *Engine) launchNamed(ctx context.Context, c Crew, label string, opts Lau
 	// commit its manifest is validated at, the run records and its
 	// prerequisites and first attempts start from, whatever HEAD does
 	// after.
-	p, err := e.prepare(ctx, c, "", nil)
+	p, err := e.prepareWith(ctx, c, "", nil, opts.FirstCommit)
 	if err != nil {
 		return nil, noop, err
 	}
@@ -1097,6 +1097,12 @@ type prepared struct {
 	opts LaunchOpts
 	// continuation makes the run a continuation (run.continuation).
 	continuation bool
+	// first is the first commit this launch made in the crew's folder
+	// (EnsureFirstCommit); fromFirst says the run's base is one Conductor
+	// made before (the proposal of a trial's plan revision): the run's log
+	// says either.
+	first     FirstCommit
+	fromFirst bool
 }
 
 // prepare checks c as LaunchHeld describes and, with worktrees, finds where
@@ -1112,6 +1118,13 @@ type prepared struct {
 // so is a comparison with nothing to compare at its base (compareChecked),
 // before a run exists.
 func (e *Engine) prepare(ctx context.Context, c Crew, base string, pkg *runPackage) (prepared, error) {
+	return e.prepareWith(ctx, c, base, pkg, false)
+}
+
+// prepareWith is prepare; with first, a crew with worktrees whose folder
+// has no commit yet, or is no repository yet, gets its first commit before
+// the folder is checked (EnsureFirstCommit, LaunchOpts.FirstCommit).
+func (e *Engine) prepareWith(ctx context.Context, c Crew, base string, pkg *runPackage, first bool) (prepared, error) {
 	if err := c.validateWithID(); err != nil {
 		return prepared{}, err
 	}
@@ -1141,6 +1154,13 @@ func (e *Engine) prepare(ctx context.Context, c Crew, base string, pkg *runPacka
 	if err := checkWorktreesDir(c.Cwd); err != nil {
 		return prepared{}, err
 	}
+	var made FirstCommit
+	if first {
+		var err error
+		if made, err = EnsureFirstCommit(ctx, c.Cwd); err != nil {
+			return prepared{}, err
+		}
+	}
 	if err := CheckRepo(ctx, c.Cwd); err != nil {
 		return prepared{}, err
 	}
@@ -1148,7 +1168,7 @@ func (e *Engine) prepare(ctx context.Context, c Crew, base string, pkg *runPacka
 	if err != nil {
 		return prepared{}, err
 	}
-	p := prepared{prefix: prefix}
+	p := prepared{prefix: prefix, first: made}
 	if !c.Managed() {
 		return p, nil
 	}
@@ -1163,6 +1183,7 @@ func (e *Engine) prepare(ctx context.Context, c Crew, base string, pkg *runPacka
 		return prepared{}, fmt.Errorf("the repository's commit %q is not a commit id", base)
 	}
 	p.base = base
+	p.fromFirst = !made.Made && IsFirstCommit(ctx, c.Cwd, base)
 	m := c.effectiveManifest()
 	if !m.File {
 		p.man = resolvedManifest{m: m, source: sourceCrew, revision: c.ManifestRevision}
@@ -1519,6 +1540,12 @@ func (e *Engine) addRun(c Crew, p prepared, label, id string, pkg *runPackage) (
 	e.runs[r.id] = r
 	e.held.Store(r.id, struct{}{})
 	e.order = append(e.order, r)
+	switch {
+	case p.first.Made:
+		r.note(session.ActivityStatus, "made the first commit in %s", c.Cwd)
+	case p.fromFirst:
+		r.note(session.ActivityStatus, "started from the first commit Conductor made in %s", c.Cwd)
+	}
 	if label != "" {
 		r.note(session.ActivityStatus, "launched %s as %q: %d members, %d starting now", c.Name, label, len(c.Members), immediate)
 	} else {
