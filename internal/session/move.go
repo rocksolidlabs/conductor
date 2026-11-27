@@ -32,7 +32,7 @@ const (
 	HostedStaysWords     = "Sessions on another machine stay in their terminal."
 	MovingWords          = "The session is moving; try again in a moment."
 	MovedToTerminalWords = "Moved to the terminal."
-	MovedToChatWords     = "Moved to Chat. Turns made in the terminal are not shown here. What the agent left running in its terminal was ended."
+	MovedToChatWords     = "Moved to Chat. Earlier terminal messages are not shown here, and commands left running in the terminal were stopped."
 	// AfterFirstReplyWords is a move to Chat noted at the launch (NoteWay)
 	// while the agent's first reply has not ended: the plan has no sentence
 	// for a move noted before a turn (issue 1174).
