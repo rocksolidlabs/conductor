@@ -38,7 +38,7 @@ const props = defineProps<{
   large: string
 }>()
 
-const emit = defineEmits<{ open: [sessionId: string]; start: [name: string]; 'show-large': [name: string] }>()
+const emit = defineEmits<{ open: [sessionId: string]; start: [name: string]; 'show-large': [name: string]; decision: [id: string] }>()
 /** Whether the tiles stack (a narrow area): no layout applies there, and the page draws no switch. */
 const stacked = defineModel<boolean>('narrow', { default: false })
 
@@ -49,7 +49,7 @@ defineSlots<{
 
 function footer(t: RunWallTile): { where: string; diff: string } {
   const m = t.member
-  const branch = m?.branch || t.session?.branch || (props.run?.isolation === 'worktree' ? '' : 'shared cwd')
+  const branch = m?.branch || t.session?.branch || ''
   // A managed run's member is on a task: `build #2 · crew/<run>/build.2`.
   const where = m?.task ? `${m.task} #${m.attempt}${branch ? ` · ${branch}` : ''}` : branch
   const diff = m?.diff ? `+${m.diff.added} −${m.diff.removed}` : ''
@@ -136,11 +136,12 @@ function small(i: number) {
           :status="looked(t)?.view"
           :create-transport="props.createTransport(t.session)"
           :receiving="!!props.receiving?.includes(t.name)"
+          resume-word
           :data-member="t.name"
           @select="emit('open', t.session.id)"
         >
           <template v-if="tileAsk(t)" #ask>
-            <RunTileAsk :ask="tileAsk(t)!" :answer="props.answer" />
+            <RunTileAsk :ask="tileAsk(t)!" :answer="props.answer" @open="emit('open', t.session!.id)" @decision="emit('decision', $event)" />
           </template>
           <template v-if="$slots.leading" #leading>
             <slot name="leading" :tile="t" />

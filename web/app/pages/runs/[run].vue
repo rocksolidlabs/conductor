@@ -669,6 +669,7 @@ palette.registerPage(() => {
           :layout="tilesLayout"
           :large="largeMember"
           @show-large="chooseTiles({ large: $event })"
+          @decision="decisionModal.open($event)"
           @open="router.push(`/sessions/${$event}`)"
           @start="startMember"
         >
