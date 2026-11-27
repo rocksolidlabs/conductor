@@ -7,7 +7,8 @@ import type { OwnServer } from './own-server'
 // The switch's offer of Chat and its marks (issue 1136), on a server of the spec's own with the chat's stub: the page offers Chat by
 // the session's firstTurn, the one fact the move's route judges by. A first turn held at the stub's gate (its conversation already
 // resumable, as the agent's prompt hook makes it) keeps Chat unpressable and its sentence shown for the whole of it, through a redraw
-// the test causes; the turn's end offers Chat and takes the sentence away with no reload. Moves to Chat, the terminal and Chat again
+// the test causes; the turn's end offers Chat and takes the sentence away with no reload. The sentence stands nowhere above the
+// terminal (UX3 R15): it is the dimmed Chat side's own, its tooltip and description, and a press of it shows it for a moment. Moves to Chat, the terminal and Chat again
 // on the page's one connection mark each move once, in order, the terminal's among them, as a reload's replay draws them.
 test.describe.configure({ mode: 'serial' })
 
@@ -37,9 +38,15 @@ test('a first turn held at the gate keeps Chat waiting with its sentence; its en
   try {
     await openSession(page, s.id)
     const line = page.locator('[data-way-line]')
-    budget(2 * STEP_MS)
-    await expect(line).toHaveText(FIRST_REPLY)
+    budget(4 * STEP_MS)
+    await expect(side(page, 'protocol')).toHaveAttribute('aria-description', FIRST_REPLY)
     await expect(side(page, 'protocol')).toBeDisabled()
+    await expect(line).toHaveCount(0)
+    // A press of the dimmed side (by key: Playwright's click waits for it to be enabled) says why, and moves nothing.
+    await side(page, 'protocol').focus()
+    await page.keyboard.press('Enter')
+    await expect(line).toHaveText(FIRST_REPLY)
+    await expect(page.locator('[data-way-switch]')).toHaveAttribute('data-way', 'terminal')
     await expect(page.locator(`[data-session-status="${s.id}"]`)).not.toHaveAttribute('data-status-mark', 'working')
     // The first line, its turn held at the stub's gate: the agent at work, its conversation resumable (the prompt hook's word), its
     // first reply not ended.
@@ -57,16 +64,17 @@ test('a first turn held at the gate keeps Chat waiting with its sentence; its en
     budget(5 * STEP_MS)
     await expect(page.locator(`[data-session-status="${s.id}"]`)).toHaveAttribute('data-status-mark', 'working')
     await expect(side(page, 'protocol')).toBeDisabled()
-    await expect(line).toHaveText(FIRST_REPLY)
+    await expect(side(page, 'protocol')).toHaveAttribute('aria-description', FIRST_REPLY)
     // Again after a redraw the test causes (a narrower window): still waiting.
     await page.setViewportSize({ width: 1280, height: 860 })
     await expect(side(page, 'protocol')).toBeDisabled()
-    await expect(line).toHaveText(FIRST_REPLY)
+    await expect(side(page, 'protocol')).toHaveAttribute('aria-description', FIRST_REPLY)
     // The gate opened, the turn ended: Chat offered, the sentence gone, no reload.
     writeFileSync(stubFile(own, conv, 'hold'), 'stop\n')
     budget(LONG_MS + 2 * STEP_MS)
     await expect.poll(async () => !!(await api.session(s.id)).firstTurn, { timeout: 30_000 }).toBe(true)
     await expect(side(page, 'protocol')).toBeEnabled()
+    await expect(side(page, 'protocol')).not.toHaveAttribute('aria-description', FIRST_REPLY)
     await expect(line).toHaveCount(0)
   } finally {
     await page.context().close()
