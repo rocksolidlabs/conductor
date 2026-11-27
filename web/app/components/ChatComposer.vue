@@ -306,10 +306,10 @@ const menuFoot = computed(() => {
   // The commands' list says nothing of its own: its rows are the agent's.
   if (command.value) return ''
   const row = menuRows.value[active.value]
-  if (row && !row.pickable) return 'Type this path yourself: its name has a space or a mark.'
+  if (row && !row.pickable) return 'Type this path yourself: its name has a space, a quote or a hidden character.'
   if (finding.value && !menuRows.value.length) return 'Finding…'
   if (fileList.value && fileList.value.words === mention.value?.words) {
-    if (!menuRows.value.length) return 'No file matches.'
+    if (!menuRows.value.length) return mention.value?.words ? 'No file matches.' : 'Type a name to find a file.'
     if (fileList.value.more) return 'More files match. Keep typing.'
   }
   return ''
@@ -421,13 +421,13 @@ function keepTyping(e: Event) {
         <UButton type="submit" :label="answering ? 'Answer' : 'Send'" icon="i-lucide-send" class="flex-none" :disabled="disabled || empty || tooLong" :data-chat-answering="answering || undefined" data-chat-send />
       </UTooltip>
     </div>
-    <p v-if="slash && agent.verbatim === true" class="text-[11px] text-muted" data-chat-help="verbatim">Sent as plain text. To run a command, use the Terminal.</p>
+    <p v-if="slash && agent.verbatim === true" class="text-[11px] text-muted" data-chat-help="verbatim">Sent as plain text. To run a command, switch to Terminal.</p>
     <p v-else-if="slash && agent.verbatim === false" class="text-[11px] text-muted" data-chat-help="commands">Messages starting with <code class="font-mono">/</code> may run as the agent's commands.</p>
     <p v-else-if="plainSlash" class="text-[11px] text-muted" data-chat-help="plain">Sent as plain text. Type it yourself to run it as a command.</p>
     <p v-if="outside" class="text-[11px] text-warning" role="status" data-chat-outside><span class="font-mono" data-mono="path">{{ outside }}</span> is outside {{ folderName }}. The agent attaches it without asking.</p>
     <p v-if="note || stale" class="text-[11px] text-warning" role="status" data-chat-box-note>{{ note || 'Its question was answered. Empty the box to write a message instead.' }}</p>
     <p v-if="agent.said" class="text-[11px] text-warning" role="status" data-chat-said>{{ agent.said }}</p>
-    <p v-if="waitingBack" class="text-[11px] text-warning" role="status" data-chat-waiting>{{ waitingBack === 1 ? 'A line was not sent: it comes back here once you send or clear this one.' : `${waitingBack} lines were not sent: each comes back here once you send or clear the one before.` }}</p>
+    <p v-if="waitingBack" class="text-[11px] text-warning" role="status" data-chat-waiting>{{ waitingBack === 1 ? 'A message was not sent: it comes back here once you send or clear this one.' : `${waitingBack} messages were not sent: each comes back here once you send or clear the one before.` }}</p>
     <span v-if="counter" class="self-end font-mono text-[11px] text-muted" :class="tooLong && 'text-error'" data-mono="measure" data-chat-counter>{{ counter }}</span>
   </form>
   <form v-else class="flex flex-col gap-1.5 border-t border-default px-3 py-2.5" data-chat-composer @submit.prevent="send(scope)">

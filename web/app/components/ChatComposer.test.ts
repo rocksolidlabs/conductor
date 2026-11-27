@@ -13,7 +13,7 @@ describe("the agent's box", () => {
   it('draws no standing line: what the session does with a command is said only while the line begins with /', () => {
     // Where the server lets this box send a line to expand, the line is no plain text and says nothing (UX3 R10).
     expect(src).toContain("const slash = computed(() => !!props.agent && !props.agent.expand && draft.value.trimStart().startsWith('/'))")
-    expect(agentForm).toMatch(/<p v-if="slash && agent\.verbatim === true"[^>]*data-chat-help="verbatim">Sent as plain text\. To run a command, use the Terminal\.<\/p>/)
+    expect(agentForm).toMatch(/<p v-if="slash && agent\.verbatim === true"[^>]*data-chat-help="verbatim">Sent as plain text\. To run a command, switch to Terminal\.<\/p>/)
     expect(agentForm).toMatch(/<p v-else-if="slash && agent\.verbatim === false"[^>]*data-chat-help="commands">Messages starting with <code[^>]*>\/<\/code> may run as the agent's commands\.<\/p>/)
     expect(src.match(/data-chat-help=/g)).toHaveLength(3)
     // Where the box may expand, a / line that is not the person's own goes as plain text, and says so (UX3 R10).
@@ -166,5 +166,12 @@ describe("the agent's box", () => {
     expect(src).not.toContain('wholeCommand')
     expect(src).not.toContain('It is sent as you typed it')
     expect(src).not.toContain('Type a name to see the rest')
+  })
+  it("saysWhatIsNeededInPlainWords: the box's sentences, each a fact and the way on", () => {
+    expect(src).toContain("return mention.value?.words ? 'No file matches.' : 'Type a name to find a file.'")
+    expect(src).toContain("'Type this path yourself: its name has a space, a quote or a hidden character.'")
+    expect(src).toContain("'A message was not sent: it comes back here once you send or clear this one.'")
+    expect(src).toContain('messages were not sent: each comes back here once you send or clear the one before.')
+    expect(src).not.toContain('use the Terminal')
   })
 })
