@@ -1118,13 +1118,14 @@ type prepared struct {
 // so is a comparison with nothing to compare at its base (compareChecked),
 // before a run exists.
 func (e *Engine) prepare(ctx context.Context, c Crew, base string, pkg *runPackage) (prepared, error) {
-	return e.prepareWith(ctx, c, base, pkg, false)
+	return e.prepareWith(ctx, c, base, pkg, nil)
 }
 
-// prepareWith is prepare; with first, a crew with worktrees whose folder
-// has no commit yet, or is no repository yet, gets its first commit before
-// the folder is checked (EnsureFirstCommit, LaunchOpts.FirstCommit).
-func (e *Engine) prepareWith(ctx context.Context, c Crew, base string, pkg *runPackage, first bool) (prepared, error) {
+// prepareWith is prepare; with first, a crew with worktrees in a new
+// folder or a repository just started gets its first commit before the
+// folder is checked (EnsureFirstCommit, LaunchOpts.FirstCommit), in the
+// folder first holds open, which must be the crew's.
+func (e *Engine) prepareWith(ctx context.Context, c Crew, base string, pkg *runPackage, first *FirstCommitIn) (prepared, error) {
 	if err := c.validateWithID(); err != nil {
 		return prepared{}, err
 	}
@@ -1155,9 +1156,12 @@ func (e *Engine) prepareWith(ctx context.Context, c Crew, base string, pkg *runP
 		return prepared{}, err
 	}
 	var made FirstCommit
-	if first {
+	if first != nil {
+		if first.Path != c.Cwd {
+			return prepared{}, invalidf("the folder opened for the first commit is not the crew's")
+		}
 		var err error
-		if made, err = EnsureFirstCommit(ctx, c.Cwd); err != nil {
+		if made, err = EnsureFirstCommit(ctx, *first); err != nil {
 			return prepared{}, err
 		}
 	}

@@ -31,12 +31,13 @@ type LaunchOpts struct {
 	Request string
 	Origin  *ledger.OriginRow
 	// FirstCommit is set by a launch the operator makes (Crews' Launch,
-	// the command line's up, through the admin's route): a crew with
-	// worktrees in a folder with no commit yet, or that is no repository
-	// yet, gets its first commit (EnsureFirstCommit) and launches. Every
-	// other launch (an agent's, a Brakeman turn's, a continuation's) meets
-	// the refusal it always met.
-	FirstCommit bool
+	// the command line's up, through the admin's route), with the crew's
+	// folder as the launch opened it: a crew with worktrees in a new folder
+	// or a repository just started gets its first commit there
+	// (EnsureFirstCommit) and launches. Every other launch (an agent's, a
+	// Brakeman turn's, a provider's, a continuation's) meets the refusal it
+	// always met.
+	FirstCommit *FirstCommitIn
 }
 
 // The caps of a Brakeman turn's runs: the engine keeps at most
@@ -59,7 +60,7 @@ var requestPattern = regexp.MustCompile(`^br-[1-9][0-9]{0,17}$`)
 // check holds the options to their shapes: a known class, and a request
 // exactly when the class is Brakeman's.
 func (o LaunchOpts) check() error {
-	if o.FirstCommit && (o.Class != "" || o.Origin != nil) {
+	if o.FirstCommit != nil && (o.Class != "" || o.Origin != nil) {
 		return invalidf("a first commit is made for the operator's own launch alone")
 	}
 	switch o.Class {

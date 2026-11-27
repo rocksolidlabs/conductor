@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rocksolidlabs/conductor/ext"
 	"github.com/rocksolidlabs/conductor/internal/crew"
 	"github.com/rocksolidlabs/conductor/internal/dispatch"
 	"github.com/rocksolidlabs/conductor/internal/session"
@@ -180,4 +182,61 @@ func TestTheOperatorsLaunchMakesANewFoldersFirstCommit(t *testing.T) {
 			t.Fatalf("the second run says it made the commit: %+v", second.Log)
 		}
 	}
+}
+
+// Every other way to a launch or a proposal makes no first commit, the
+// folder a new one: a crew an agent forms round its session with the
+// agent's token, a provider's launch, and the operator's proposal of a
+// trial whose folder is outside the folders agents may use. Each is
+// refused as before, and no .git appears.
+func TestNoOtherWayMakesAFirstCommit(t *testing.T) {
+	p := newCompareTicket(t)
+	fresh := newFolder(t, p, "new-team")
+
+	// A crew an agent forms round its session in a new folder.
+	resp, out := p.do("POST", "/api/sessions", adminToken, map[string]any{"agentId": "ready-cat", "cwd": fresh})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("session: %d %v", resp.StatusCode, out)
+	}
+	sid := out["id"].(string)
+	t.Cleanup(func() {
+		if d, ok := p.srv.registry.Get(sid); ok {
+			_ = d.Stop(context.Background())
+		}
+	})
+	body := crewBody("lead", memberDef("lead", "ready-cat", "manual"), memberDef("other", "ready-cat", "manual"))
+	body["isolation"] = "worktree"
+	if resp, out := p.do("POST", "/api/sessions/"+sid+"/crew", agentOf(t, p.testEnv, sid), body); resp.StatusCode != http.StatusConflict || out["error"].(map[string]any)["code"] != "not_a_repo" {
+		t.Fatalf("an agent's crew: %d %v", resp.StatusCode, out)
+	}
+	noGit(t, fresh, "an agent's crew")
+
+	// A provider's launch of a saved crew with worktrees there.
+	c := p.saveCrew(t, crew.Crew{Name: "Nightly", Cwd: fresh, Where: crew.WhereServer, Isolation: crew.IsolationWorktree,
+		Members: []crew.Member{{Name: "lead", AgentID: "ready-cat", Start: crew.Start{When: crew.StartImmediately}}}})
+	if _, err := testHost(p.srv, t.Context(), "sched").Launch(t.Context(), ext.LaunchRequest{Crew: c.ID, By: ada}); err == nil {
+		t.Fatal("a provider's launch in a new folder started")
+	}
+	noGit(t, fresh, "a provider's launch")
+
+	// The operator's proposal of a trial whose folder is outside the roots.
+	outside := t.TempDir()
+	trial := entityOf(t, p.expect(t, "POST", "/api/crews/templates/compare", compareSpecBody("Far", fresh, 2, false, nil), http.StatusCreated, ""), "crew")["id"].(string)
+	saved, err := p.srv.crews.Get(trial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved.Cwd = outside
+	if _, err := p.srv.crews.Update(saved.ID, saved); err != nil {
+		t.Fatal(err)
+	}
+	// A project with no folder of its own: the proposal's folder is the crew's.
+	p.newDispatchProject(t, "FAR", nil)
+	p.newDispatchTicket(t, "FAR", "Far away", nil)
+	out = p.propose(t, "FAR-1", map[string]any{"crew": trial}, http.StatusConflict, dispatch.RefusalInvalid)
+	if !strings.Contains(fmt.Sprint(out), "outside the allowed roots") {
+		t.Fatalf("refused for another reason: %v", out)
+	}
+	noGit(t, outside, "a proposal outside the roots")
+	noGit(t, fresh, "a proposal outside the roots")
 }

@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -81,9 +82,9 @@ type State struct {
 // msgCanWorktree is State.Message when worktrees can be made.
 const msgCanWorktree = "a git repository with a commit: a crew with worktrees can launch here"
 
-// msgFirstCommit is State.Message for a folder with no commit yet, or that
-// is no repository yet: the operator's launch makes its first commit there
-// (EnsureFirstCommit), so the check refuses nothing.
+// msgFirstCommit is State.Message for a new folder or a repository just
+// started (judgeFolder): the operator's launch makes its first commit
+// there (EnsureFirstCommit), so the check refuses nothing.
 const msgFirstCommit = "no commit yet: the operator's launch makes the folder's first commit"
 
 // repoState makes the checks CheckRepo makes of dir, through the same
@@ -132,17 +133,27 @@ func (e *headError) Unwrap() error { return e.err }
 // GitState reports, in one answer, what a launch with isolation "worktree"
 // checks of a crew's working directory, by the same checks: whether dir is in
 // a git working tree and its top, and whether HEAD is a commit to branch from
-// (repoState, as CheckRepo), and whether its .conductor or
+// (as repoState and CheckRepo), and whether its .conductor or
 // .conductor/worktrees is a symbolic link (checkWorktreesDir), which the
 // launch refuses first. Message is the launch's refusal of dir, or says that
-// worktrees can be made there, or that the operator's launch makes the
-// folder's first commit (msgFirstCommit: a folder with no commit yet, or no
-// repository yet, is no refusal; the check itself makes nothing); a directory git refuses for another reason
-// (dubious ownership, permissions) is InRepo false with git's message, and
-// one whose HEAD git cannot read is InRepo, without a commit, with git's
-// message. The error is ErrNoGit when git is not on PATH, or ctx's.
+// worktrees can be made there, or, for a new folder or a repository just
+// started, that the operator's launch makes its first commit
+// (msgFirstCommit), by the judgement the first commit itself makes
+// (judgeFolder); a folder with no commit that is neither is refused in its
+// sentence (errMakeItYourself). The check makes nothing and runs no git but
+// reads under gitcli's safe configuration. A directory git refuses for
+// another reason (dubious ownership, permissions) is InRepo false with
+// git's message, and one whose HEAD git cannot read is InRepo, without a
+// commit, with git's message. The error is ErrNoGit when git is not on
+// PATH, or ctx's.
 func GitState(ctx context.Context, dir string) (State, error) {
-	st, refusal, err := repoState(ctx, dir)
+	if err := checkGit(); err != nil {
+		return State{}, err
+	}
+	g := gitAt{a: gitcli.Alone{Path: dir}}
+	st, kind, refusal, err := judgeFolder(ctx, g, func(name string) (fs.FileInfo, error) {
+		return os.Lstat(filepath.Join(dir, name))
+	}, dir)
 	var head *headError
 	switch {
 	case errors.As(err, &head):
@@ -150,15 +161,11 @@ func GitState(ctx context.Context, dir string) (State, error) {
 	case err != nil:
 		return State{}, err
 	}
-	firstCommit := refusal == errNoCommit || refusal == errNotInRepo
-	if firstCommit {
-		refusal = nil
-	}
 	if err := checkWorktreesDir(dir); err != nil {
 		refusal = err
 	}
 	st.Message = msgCanWorktree
-	if firstCommit {
+	if kind != notNew {
 		st.Message = msgFirstCommit
 	}
 	if refusal != nil {

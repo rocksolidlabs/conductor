@@ -708,10 +708,11 @@ var proposeSeam atomic.Pointer[func(key string)]
 // resolved, before git runs there. When it reports false it has answered.
 //
 // first is the operator's own proposal: the crew of an agent trial (its
-// compare block) in a folder with no commit yet, or that is no repository
-// yet, gets its first commit there (crew.EnsureFirstCommit) once the folder
-// is resolved and admitted, before it is checked, so the revision's base is
-// that commit. Every other proposal meets the refusal it always met.
+// compare block) in a new project gets its first commit there
+// (crew.EnsureFirstCommit), in the folder opened through its allowed root,
+// once it is resolved and admitted and before it is checked, so the
+// revision's base is that commit. Every other proposal meets the refusal
+// it always met.
 func (s *Server) planBody(ctx context.Context, w http.ResponseWriter, ds *dispatch.Store, key string, req dispatch.PlanRequest, guard *planGuard, first bool) (dispatch.PlanBody, bool) {
 	fail := func(status int, code, format string, args ...any) (dispatch.PlanBody, bool) {
 		writeError(w, status, code, fmt.Sprintf(format, args...))
@@ -775,7 +776,12 @@ func (s *Server) planBody(ctx context.Context, w http.ResponseWriter, ds *dispat
 		}
 	}
 	if first && c.Compare != nil {
-		made, err := crew.EnsureFirstCommit(ctx, cwd)
+		in, done, err := s.firstCommitIn(cwd)
+		if err != nil {
+			return fail(http.StatusConflict, dispatch.RefusalInvalid, "the crew's working directory: %s", err.Error())
+		}
+		made, err := crew.EnsureFirstCommit(ctx, *in)
+		done()
 		switch {
 		case errors.Is(err, crew.ErrNotRepo) || errors.Is(err, crew.ErrNoGit):
 			return fail(http.StatusConflict, dispatch.RefusalInvalid, "the crew's working directory %s: %s", cwd, err.Error())
