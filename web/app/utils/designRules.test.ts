@@ -673,9 +673,7 @@ const YOLO_FOLDED_KNOWN: Known = {
   'components/CrewEditor.vue': { count: 1, why: "More options holds the crew's Yolo, as Permission prompts: to be brought into view" },
 }
 
-const SETTINGS_FOLDS_KNOWN: Known = {
-  'components/BrakemanSettings.vue': { count: 1, why: "Brakeman's card folds its advanced settings: to be unfolded" },
-}
+const SETTINGS_FOLDS_KNOWN: Known = {}
 
 const BROWSER_WORDS_KNOWN: Known = {
   'components/AddAgentSlideover.vue': { count: 1, why: "a real browser: an agent's browser profile folder" },
