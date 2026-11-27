@@ -22,62 +22,54 @@ import (
 
 // A crew whose members work on copies of their own (isolation "worktree",
 // an agent trial among them) needs a commit of its folder to copy, and a
-// new project has none. EnsureFirstCommit makes that first commit in
-// exactly two situations (judgeFolder), and in every other makes nothing
-// and says one sentence (errMakeItYourself), so that the person makes it
-// (issue 1179):
-//
-//   - a new folder: nothing named .git in it (no folder, file or link of
-//     that name), and git finds no repository above it;
-//   - a repository just started: the folder is itself its top, its .git a
-//     real folder in it that is git's directory for it (no common
-//     directory elsewhere), with no commit and no reference of any kind,
-//     and its own configuration (read with its includes off, so that an
-//     include shows as a key) holding only keys that run no program and
-//     move no write (knownKey).
+// new project has none. EnsureFirstCommit makes that first commit in one
+// situation, a new folder (judgeFolder): nothing named .git in it (no
+// folder, file or link of that name) and no repository above it. Every
+// other folder with no commit (a repository with no commit, whatever it
+// holds, a folder below one, a .git that is a file or a link) is refused
+// with one sentence (errMakeItYourself), so that the person makes it, and
+// nothing is made: Conductor runs no git that writes in a .git it did not
+// make (issue 1179).
 //
 // What it makes, and how:
 //
-//   - In a new folder the repository is built aside, in a folder of
-//     Conductor's own under .conductor/ (made as a launch makes it, never
-//     through a link), the folder its work tree; the tree is added and
-//     committed there, and the finished repository is put at <folder>/.git
-//     by one rename that fails if anything is there (renameNoReplace).
-//     Until then the folder has no .git, so a failure or a stop of the
-//     server at any moment leaves it as it was but for that folder of
-//     Conductor's own, which the next attempt removes.
-//   - In a repository just started the add goes into an index of
-//     Conductor's own inside it, never the person's, and the commit is put
-//     on the branch only from nothing (update-ref HEAD <commit> <none>): if
-//     a commit appeared meanwhile, Conductor's is dropped and the launch
-//     goes on from the person's. The person's index is brought to the
-//     commit once it exists. A failure leaves the repository as it was but
-//     for objects nobody refers to.
+//   - The repository is built aside, in a folder of Conductor's own under
+//     .conductor/ (made as a launch makes it, never through a link, and
+//     held by a lock of its own while it is built), the folder its work
+//     tree; the tree is added and committed there, and the finished
+//     repository is put at <folder>/.git without replacing anything
+//     (putInPlace). Until then the folder has no .git, so a failure or a
+//     stop of the server at any moment leaves it as it was but for that
+//     folder of Conductor's own, which the next attempt removes once it can
+//     take its lock.
 //   - Every git names its repository and its work tree outright and runs
 //     in the folder its caller opened (gitcli.Alone), in a session of its
 //     own whose process group is ended at the git's bound (Wait, and
 //     CommitWait for the commit, the step that runs the person's signing
 //     program), so the call returns there.
-//   - What goes in: the folder's files as git add --all takes them into an
-//     empty index, its ignore files and git's own excludes respected; never
-//     Conductor's .conductor/ (at any depth, left out of the measure and
-//     the add by the same pathspecs), nor a repository nested in it (left
-//     out, never added as a link). An empty folder gets an empty commit.
+//   - What goes in: the folder's files as git add --all takes them into the
+//     new repository's empty index, its ignore files and git's own excludes
+//     respected; never Conductor's .conductor/ (at any depth, left out of
+//     the measure and the add by the same pathspecs), nor a repository
+//     nested in it (left out, never added as a link). An empty folder gets
+//     an empty commit.
 //   - A bound: never a home folder or a file system's root, nor more than
 //     MaxFirstCommitFiles files or MaxFirstCommitBytes bytes, measured
-//     before anything is written and again on the tree the add staged,
-//     before the commit is made.
-//   - Whose name: the person's when git finds one they configured
-//     (user.useConfigOnly), else Conductor's (firstCommitName,
-//     firstCommitEmail) for this one commit, written into no settings.
-//   - Signing: as the person's own settings say (commit.gpgSign in their
-//     global or system configuration: the folder's own may name no signer,
-//     knownKey), never overridden and never waited on past the bound.
-//   - A new repository's first branch is git's configured default, else
-//     main. The commit's message says who made it and why.
+//     before anything is written (stopping at the bound) and again on the
+//     tree the add staged, before the commit is made.
+//   - Whose name and whose signature: the person's own settings, wherever
+//     this server's environment says git keeps them (personSettings). The
+//     person's name when they configured one (user.useConfigOnly), else
+//     Conductor's (firstCommitName, firstCommitEmail) for this one commit,
+//     written into no settings. Signed when their settings say so
+//     (commit.gpgSign), the commit given what a signer needs to reach its
+//     agent (signerReach); a commit that cannot be signed is refused, never
+//     made unsigned.
+//   - The first branch is git's configured default, else main. The commit's
+//     message says who made it and why.
 //   - Once: two at once in one process make one commit, the second finds
-//     it (firstCommitMu); across processes the rename, or the reference set
-//     from nothing, lets one through.
+//     it (firstCommitMu); across processes the step that puts the
+//     repository in place lets one through.
 //
 // Its callers call it for the operator's own launch and proposal alone,
 // with the folder they resolved and opened (openCwd): a folder agents may
@@ -105,12 +97,41 @@ const FirstCommitMessage = "First commit, made by Conductor so that agents could
 // no bound of its own.
 const FirstCommitWait = 30 * time.Second
 
-// msgMakeItYourself is the refusal of a folder with no commit that is
-// neither a new folder nor a repository just started: Conductor makes
-// nothing there.
+// msgMakeItYourself is the refusal of a folder with no commit that is no
+// new folder: Conductor makes nothing there.
 const msgMakeItYourself = "This folder has no commit yet. Make its first commit yourself, then launch"
 
 var errMakeItYourself = &repoError{msgMakeItYourself}
+
+// personSettings are the variables of the server's own environment that
+// say where the person's git keeps its settings, handed to every git of a
+// first commit: GIT_CONFIG_GLOBAL and GIT_CONFIG_SYSTEM (the files git
+// reads in place of the global and system ones), GIT_CONFIG_NOSYSTEM (no
+// system file) and XDG_CONFIG_HOME (where the global $XDG_CONFIG_HOME/git/
+// config is). Each is a place, none a secret, and none a setting itself
+// (GIT_CONFIG_COUNT and its pairs, which are, are not handed on); HOME
+// comes through for every child already. With them the person's name and
+// signing are found wherever they keep them.
+var personSettings = []string{"GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM", "XDG_CONFIG_HOME"}
+
+// signerReach are the variables a signing program needs to reach the
+// person's agent, handed to the commit alone (git commit-tree, which runs
+// it): SSH_AUTH_SOCK, the ssh agent's socket (an ssh key held there, a key
+// git hands ssh-keygen with -U), and GNUPGHOME, gpg's home, where it finds
+// its keys and its agent's socket. Each is a place, none a secret.
+// GPG_TTY is not: the commit has no terminal to ask on.
+var signerReach = []string{"SSH_AUTH_SOCK", "GNUPGHOME"}
+
+// fromServer is the server's own values of names, those it has.
+func fromServer(names []string) map[string]string {
+	out := map[string]string{}
+	for _, n := range names {
+		if v, ok := os.LookupEnv(n); ok {
+			out[n] = v
+		}
+	}
+	return out
+}
 
 // FirstCommitIn is what EnsureFirstCommit is handed: the crew's folder as
 // its caller opened it (Folder, through its allowed root) and resolved it
@@ -122,20 +143,28 @@ type FirstCommitIn struct {
 	// commit-tree, which runs the person's signing program); zero for
 	// FirstCommitWait.
 	Wait, CommitWait time.Duration
-	// GitEnv is set in every git's environment: the tests' way to keep
-	// git's system and global configuration out (GIT_CONFIG_NOSYSTEM).
+	// GitEnv is set in every git's environment over what the server's
+	// gives (personSettings): the tests' way to keep git's system and
+	// global configuration out (GIT_CONFIG_NOSYSTEM).
 	GitEnv map[string]string
 	// hold, when set, is called at each step it names: the tests' way to
 	// change the folder between two of them.
 	hold func(step string)
+	// commitClock, when set, is handed what starts the commit's bound,
+	// which it starts when it will (at once when unset): the tests' way to
+	// start it once the signing program runs.
+	commitClock func(start func())
+	// rename, when set, is renameNoReplace: the tests' way to a file
+	// system that has no rename that refuses to replace.
+	rename func(from *os.File, fromName string, to *os.File, toName string) error
 }
 
 // firstCommitMu keeps two first commits from being made at once.
 var firstCommitMu sync.Mutex
 
 // FirstCommit is what EnsureFirstCommit made: nothing (Made false) in a
-// folder whose HEAD is a commit; else the folder, whether its repository
-// was made too, and the commit.
+// folder whose HEAD is a commit; else the folder, its repository made with
+// it (Init), and the commit.
 type FirstCommit struct {
 	Made   bool
 	Init   bool
@@ -151,15 +180,6 @@ type firstCommitError struct{ msg string }
 func (e *firstCommitError) Error() string { return e.msg }
 func (e *firstCommitError) Unwrap() error { return ErrNotRepo }
 
-// newProject is what judgeFolder finds a folder to be.
-type newProject int
-
-const (
-	notNew      newProject = iota // a commit to branch from, or refused
-	newFolder                     // no repository at or above it yet
-	justStarted                   // the top of a repository with nothing in it yet
-)
-
 // gitAt is where a git of a judgement or a first commit runs (a), within
 // wait (none for zero).
 type gitAt struct {
@@ -171,15 +191,21 @@ type gitAt struct {
 // folder its work tree), and env beside its own.
 func (g gitAt) in(gitDir string, env map[string]string) gitAt {
 	g.a.GitDir, g.a.WorkTree = gitDir, "."
-	if len(env) > 0 {
-		all := maps.Clone(g.a.Env)
-		if all == nil {
-			all = map[string]string{}
-		}
-		maps.Copy(all, env)
-		g.a.Env = all
-	}
+	g.a.Env = withEnv(g.a.Env, env)
 	return g
+}
+
+// withEnv is base with env over it, base left as it is.
+func withEnv(base, env map[string]string) map[string]string {
+	if len(env) == 0 {
+		return base
+	}
+	all := maps.Clone(base)
+	if all == nil {
+		all = map[string]string{}
+	}
+	maps.Copy(all, env)
+	return all
 }
 
 func (g gitAt) bound(ctx context.Context) (context.Context, context.CancelFunc) {
@@ -201,9 +227,9 @@ func (g gitAt) each(ctx context.Context, each func([]byte) bool, args ...string)
 	return g.a.Each(ctx, each, args...)
 }
 
-// readFolderState is repoState read where g runs: whether the folder is in a git
-// working tree and its top, and whether HEAD is a commit (refusal nil), by
-// the same rev-parse calls and the same answers.
+// readFolderState is repoState read where g runs: whether the folder is in
+// a git working tree and its top, and whether HEAD is a commit (refusal
+// nil), by the same rev-parse calls and the same answers.
 func readFolderState(ctx context.Context, g gitAt) (st State, refusal, err error) {
 	out, err := g.run(ctx, "rev-parse", "--show-toplevel")
 	if err != nil {
@@ -233,16 +259,16 @@ func readFolderState(ctx context.Context, g gitAt) (st State, refusal, err error
 	return st, nil, nil
 }
 
-// judgeFolder answers what the folder g runs in is for a first commit,
-// path its path and lstat a look at a name in it that follows no link: st
-// as repoState reads it, and the kind it is (newFolder, justStarted), or
-// notNew with the refusal a launch makes (nil for a folder with a commit).
-// It makes nothing, and runs no git but reads under gitcli's safe
-// configuration. err is ErrNoGit, ctx's, or a *headError.
-func judgeFolder(ctx context.Context, g gitAt, lstat func(name string) (fs.FileInfo, error), path string) (st State, kind newProject, refusal, err error) {
+// judgeFolder answers whether the folder g runs in is a new folder, path
+// its path and lstat a look at a name in it that follows no link: st as
+// repoState reads it, and newFolder, or the refusal a launch makes (nil
+// for a folder with a commit). It makes nothing, and runs no git but
+// rev-parse's reads under gitcli's safe configuration. err is ErrNoGit,
+// ctx's, or a *headError.
+func judgeFolder(ctx context.Context, g gitAt, lstat func(name string) (fs.FileInfo, error), path string) (st State, newFolder bool, refusal, err error) {
 	st, refusal, err = readFolderState(ctx, g)
 	if err != nil || refusal == nil {
-		return st, notNew, refusal, err
+		return st, false, refusal, err
 	}
 	switch refusal {
 	case errNotInRepo:
@@ -250,143 +276,24 @@ func judgeFolder(ctx context.Context, g gitAt, lstat func(name string) (fs.FileI
 		switch {
 		case errors.Is(err, fs.ErrNotExist):
 		case err != nil:
-			return st, notNew, &repoError{"the folder's .git cannot be looked at: " + err.Error()}, nil
+			return st, false, &repoError{"the folder's .git cannot be looked at: " + err.Error()}, nil
 		case fi.IsDir():
 			// A .git folder git does not read as a repository: git's own
-			// refusal, and Conductor runs no git init over it.
-			return st, notNew, errNotInRepo, nil
+			// refusal, and Conductor makes nothing over it.
+			return st, false, errNotInRepo, nil
 		default:
-			return st, notNew, errMakeItYourself, nil
+			return st, false, errMakeItYourself, nil
 		}
 		if why := notCommittedIn(path); why != nil {
-			return st, notNew, why, nil
+			return st, false, why, nil
 		}
-		return st, newFolder, nil, nil
+		return st, true, nil, nil
 	case errNoCommit:
-		if why, err := justStartedRefusal(ctx, g, lstat, st.Toplevel, path); why != nil || err != nil {
-			return st, notNew, why, err
-		}
-		return st, justStarted, nil, nil
+		// A repository with no commit, whatever it holds: Conductor writes
+		// in no .git it did not make.
+		return st, false, errMakeItYourself, nil
 	}
-	return st, notNew, refusal, nil
-}
-
-// justStartedRefusal is why the repository with no commit that holds the
-// folder is no repository just started (errMakeItYourself, or the home
-// folder's or a root's refusal), nil when it is one; err is ctx's.
-func justStartedRefusal(ctx context.Context, g gitAt, lstat func(string) (fs.FileInfo, error), top, path string) (refusal, err error) {
-	// The folder is the repository's top, and its .git a real folder.
-	if !sameFolder(top, path) {
-		return errMakeItYourself, nil
-	}
-	fi, lerr := lstat(".git")
-	if lerr != nil || !fi.IsDir() {
-		return errMakeItYourself, nil
-	}
-	in := g.in(".git", nil)
-	read := func(args ...string) (string, bool) {
-		out, err := in.run(ctx, args...)
-		return out, err == nil
-	}
-	// git's directory for it is that folder, and its common directory too
-	// (no commondir that sends its objects and its configuration elsewhere).
-	dirs, ok := read("rev-parse", "--absolute-git-dir", "--git-common-dir")
-	lines := strings.Split(strings.TrimSpace(dirs), "\n")
-	switch {
-	case ctx.Err() != nil:
-		return nil, ctx.Err()
-	case !ok || len(lines) != 2 || !sameAs(lines[0], fi) || lines[1] != ".git" && !(filepath.IsAbs(lines[1]) && sameAs(lines[1], fi)):
-		return errMakeItYourself, nil
-	}
-	// Its own configuration holds only keys that run nothing and move no
-	// write, includes read as keys.
-	config, ok := read("config", "--file", filepath.Join(".git", "config"), "--no-includes", "-z", "--list")
-	if ctx.Err() != nil {
-		return nil, ctx.Err()
-	}
-	if !ok || !knownConfig(config) {
-		return errMakeItYourself, nil
-	}
-	// HEAD names a branch, and no reference of any kind exists.
-	head, ok := read("symbolic-ref", "-q", "HEAD")
-	if ctx.Err() != nil {
-		return nil, ctx.Err()
-	}
-	if !ok || !strings.HasPrefix(strings.TrimSpace(head), "refs/heads/") {
-		return errMakeItYourself, nil
-	}
-	refs, ok := read("for-each-ref", "--count=1", "--format=%(refname)")
-	if ctx.Err() != nil {
-		return nil, ctx.Err()
-	}
-	if !ok || strings.TrimSpace(refs) != "" {
-		return errMakeItYourself, nil
-	}
-	return notCommittedIn(path), nil
-}
-
-// sameAs reports whether path names the file fi describes.
-func sameAs(path string, fi fs.FileInfo) bool {
-	got, err := os.Stat(path)
-	return err == nil && os.SameFile(got, fi)
-}
-
-// knownConfig reports whether raw, a configuration file as git config
-// --no-includes -z --list prints it, holds only keys knownKey knows.
-func knownConfig(raw string) bool {
-	if raw == "" {
-		return true
-	}
-	for rec := range strings.SplitSeq(strings.TrimSuffix(raw, "\x00"), "\x00") {
-		key, value, hasValue := strings.Cut(rec, "\n")
-		if !knownKey(key, value, hasValue) {
-			return false
-		}
-	}
-	return true
-}
-
-// knownKey reports whether a repository's own configuration may hold key
-// (as git lists it: its section and name in lower case) with value, for a
-// first commit Conductor makes there: what git init writes (format version
-// 0, not bare), a name and an address, remotes' addresses and fetch lines,
-// branches' remote and merge, the default branch's name. None names a
-// program git runs or a place it writes: core.filemode, ignorecase,
-// precomposeunicode and symlinks change how git reads the folder's names
-// and modes, core.logallrefupdates whether a reference's log is kept, a
-// remote's address is used only by a fetch or a push, which Conductor
-// never makes (gitcli allows no transport). Any other key, an include
-// among them, is not known, and the folder is refused: a gate never trims
-// what it does not read.
-func knownKey(key, value string, hasValue bool) bool {
-	section, rest, ok := strings.Cut(key, ".")
-	if !ok {
-		return false
-	}
-	sub, name := "", rest
-	if i := strings.LastIndexByte(rest, '.'); i >= 0 {
-		sub, name = rest[:i], rest[i+1:]
-	}
-	switch {
-	case section == "core" && sub == "":
-		switch name {
-		case "repositoryformatversion":
-			return hasValue && value == "0"
-		case "bare":
-			return hasValue && value == "false"
-		case "filemode", "logallrefupdates", "ignorecase", "precomposeunicode", "symlinks":
-			return true
-		}
-	case section == "user" && sub == "":
-		return name == "name" || name == "email"
-	case section == "init" && sub == "":
-		return name == "defaultbranch"
-	case section == "remote" && sub != "":
-		return name == "url" || name == "fetch"
-	case section == "branch" && sub != "":
-		return name == "remote" || name == "merge"
-	}
-	return false
+	return st, false, refusal, nil
 }
 
 // notCommittedIn is why Conductor makes no first commit in dir by itself:
@@ -403,18 +310,21 @@ func notCommittedIn(dir string) error {
 }
 
 // EnsureFirstCommit makes the first commit of the folder in names when it
-// is a new folder or a repository just started, and reports what it made;
-// a folder whose HEAD is a commit is left as it is, and every other is
-// refused with nothing made (see above). The error matches ErrNotRepo for
-// a folder it makes nothing in (refused, past the bound, a commit git
-// refused or did not finish in time), is ErrNoGit when git is not on PATH,
-// or ctx's.
+// is a new folder, and reports what it made; a folder whose HEAD is a
+// commit is left as it is, and every other is refused with nothing made
+// (see above). The error matches ErrNotRepo for a folder it makes nothing
+// in (refused, past the bound, a commit git refused or did not finish in
+// time, a repository that could not be put in place), is ErrNoGit when git
+// is not on PATH, or ctx's.
 func EnsureFirstCommit(ctx context.Context, in FirstCommitIn) (FirstCommit, error) {
 	if err := checkGit(); err != nil {
 		return FirstCommit{}, err
 	}
 	if in.Folder == nil || !filepath.IsAbs(in.Path) {
 		return FirstCommit{}, errors.New("a first commit is made in a folder its caller opened")
+	}
+	if !firstCommitHere {
+		return FirstCommit{}, &firstCommitError{"Conductor makes no first commit on this system. Make the folder's first commit yourself, then launch"}
 	}
 	dir, err := in.Folder.Open(".")
 	if err != nil {
@@ -423,23 +333,18 @@ func EnsureFirstCommit(ctx context.Context, in FirstCommitIn) (FirstCommit, erro
 	defer dir.Close()
 	f := &firstCommitter{in: in, dir: dir, wait: cmp.Or(in.Wait, FirstCommitWait)}
 	f.commitWait = cmp.Or(in.CommitWait, f.wait)
-	f.g = gitAt{a: gitcli.Alone{Dir: dir, Path: in.Path, Env: in.GitEnv}, wait: f.wait}
+	env := withEnv(fromServer(personSettings), in.GitEnv)
+	f.g = gitAt{a: gitcli.Alone{Dir: dir, Path: in.Path, Env: env}, wait: f.wait}
 	firstCommitMu.Lock()
 	defer firstCommitMu.Unlock()
-	_, kind, refusal, err := judgeFolder(ctx, f.g, in.Folder.Lstat, in.Path)
+	_, isNew, refusal, err := judgeFolder(ctx, f.g, in.Folder.Lstat, in.Path)
 	switch {
 	case err != nil:
 		return FirstCommit{}, err
 	case refusal != nil:
 		return FirstCommit{}, refusal
-	case kind == newFolder && !firstCommitHere:
-		// No rename here that fails when something is there: nothing is
-		// built.
-		return FirstCommit{}, errMakeItYourself
-	case kind == newFolder:
+	case isNew:
 		return f.newFolder(ctx)
-	case kind == justStarted:
-		return f.justStarted(ctx)
 	}
 	return FirstCommit{}, nil
 }
@@ -476,16 +381,27 @@ func (f *firstCommitter) failed(ctx context.Context, what string, err error) err
 }
 
 // asidePrefix names the folders a first commit is built in, under the
-// project's .conductor/.
-const asidePrefix = "first-commit-"
+// project's .conductor/, each followed by 16 hex digits; asideLock is the
+// file beside each that its builder holds locked while it builds.
+const (
+	asidePrefix = "first-commit-"
+	asideLock   = ".lock"
+)
 
-// ownIndex is the index a first commit in a repository just started adds
-// to, inside its .git: never the person's.
-const ownIndex = "conductor-first-commit.index"
+// asideName reports whether name is one of the folders a first commit is
+// built in: asidePrefix and 16 hex digits, nothing else.
+func asideName(name string) bool {
+	rest, ok := strings.CutPrefix(name, asidePrefix)
+	if !ok || len(rest) != 16 {
+		return false
+	}
+	_, err := hex.DecodeString(rest)
+	return err == nil
+}
 
 // newFolder makes the first commit of a new folder: measured through a
 // repository of the server's own outside the folder, then built aside
-// under .conductor/ and put at .git by one rename.
+// under .conductor/ and put at .git without replacing anything.
 func (f *firstCommitter) newFolder(ctx context.Context) (FirstCommit, error) {
 	tmp, err := os.MkdirTemp("", "conductor-first-commit-")
 	if err != nil {
@@ -519,33 +435,51 @@ func (f *firstCommitter) newFolder(ctx context.Context) (FirstCommit, error) {
 	if _, err := repo.run(ctx, "config", "--unset", "core.worktree"); err != nil {
 		return FirstCommit{}, f.failed(ctx, "the first commit's repository could not be made", err)
 	}
-	// What git init wrote is held to the keys a repository just started
-	// may hold (a template of the person's settings can add more).
-	config, err := repo.run(ctx, "config", "--file", filepath.Join(".conductor", name, "config"), "--no-includes", "-z", "--list")
-	if err != nil {
-		return FirstCommit{}, f.failed(ctx, "the first commit's repository could not be made", err)
-	}
-	if !knownConfig(config) {
-		return FirstCommit{}, errMakeItYourself
-	}
 	commit, err := f.commit(ctx, repo, nested)
 	if err != nil {
 		return FirstCommit{}, err
 	}
 	f.hold("rename")
-	if err := renameNoReplace(cdir, name, f.dir, ".git"); err != nil {
-		// Something is at .git now: it is left as it is, and Conductor's
-		// repository goes (done).
-		return FirstCommit{}, errMakeItYourself
+	if err := f.putInPlace(cdir, name); err != nil {
+		return FirstCommit{}, err
 	}
 	return FirstCommit{Made: true, Init: true, Top: f.in.Path, Commit: commit}, nil
 }
 
+// putInPlace moves the repository built in .conductor/name to the
+// folder's .git without replacing anything there: by one rename that
+// refuses to replace (renameNoReplace), or, on a file system that has
+// none, by an exclusive make of .git and a plain rename over that empty
+// folder (renameOverMade). Something at .git refuses it in the sentence;
+// a step the file system cannot take, in its true reason.
+func (f *firstCommitter) putInPlace(cdir *os.File, name string) error {
+	rename := renameNoReplace
+	if f.in.rename != nil {
+		rename = f.in.rename
+	}
+	err := rename(cdir, name, f.dir, ".git")
+	if err != nil && noReplaceUnsupported(err) {
+		err = renameOverMade(cdir, name, f.dir, ".git")
+	}
+	switch {
+	case err == nil:
+		return nil
+	case placeTaken(err):
+		// Something is at .git now: it is left as it is, and Conductor's
+		// repository goes (aside's done).
+		return errMakeItYourself
+	}
+	return &firstCommitError{"the folder's new repository could not be put in place at .git: " + err.Error()}
+}
+
 // aside makes the folder a new folder's repository is built in: under the
 // project's .conductor/, made when missing and refused when it is not a
-// folder (a link among them), an earlier attempt's folder removed first,
-// the new one made exclusively. done removes it, and .conductor/ when this
-// call made it and it is empty again.
+// folder (a link among them). Its lock (name.lock beside it) is taken
+// before the folder is made and held until done; an earlier attempt's
+// folder is removed first, but only one whose lock is free (another
+// Conductor may be building in it), and nothing that is not a real folder
+// named as these are. done removes the folder, its lock, and .conductor/
+// when this call made it and it is empty again.
 func (f *firstCommitter) aside() (name string, cdir *os.File, done func(), err error) {
 	root := f.in.Folder
 	made := false
@@ -591,60 +525,63 @@ func (f *firstCommitter) aside() (name string, cdir *os.File, done func(), err e
 		return fail(err)
 	}
 	for _, e := range entries {
-		if strings.HasPrefix(e.Name(), asidePrefix) {
-			_ = croot.RemoveAll(e.Name())
+		if asideName(e.Name()) {
+			sweep(croot, e.Name())
 		}
 	}
 	var b [8]byte
 	_, _ = rand.Read(b[:])
 	name = asidePrefix + hex.EncodeToString(b[:])
-	if err := croot.Mkdir(name, 0o700); err != nil {
+	lock, err := croot.OpenFile(name+asideLock, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		cdir.Close()
+		return fail(err)
+	}
+	unlock := func() {
+		_ = croot.Remove(name + asideLock)
+		lock.Close()
+	}
+	if ok, err := lockFile(lock); err != nil || !ok {
+		unlock()
+		cdir.Close()
+		return fail(cmp.Or(err, errors.New("the first commit's lock is held")))
+	}
+	// The mode git's own mkdir gives a new .git: what the umask leaves.
+	if err := croot.Mkdir(name, 0o777); err != nil {
+		unlock()
 		cdir.Close()
 		return fail(err)
 	}
 	return name, cdir, func() {
 		_ = croot.RemoveAll(name)
+		unlock()
 		cdir.Close()
 		croot.Close()
 		gone()
 	}, nil
 }
 
-// justStarted makes the first commit of a repository just started, into
-// an index of Conductor's own, the branch set from nothing; a commit that
-// appeared meanwhile is the person's, and Conductor's is dropped.
-func (f *firstCommitter) justStarted(ctx context.Context) (FirstCommit, error) {
-	index := filepath.Join(".git", ownIndex)
-	clear := func() {
-		_ = f.in.Folder.Remove(index)
-		_ = f.in.Folder.Remove(index + ".lock")
+// sweep removes the folder an earlier attempt left in .conductor/ under
+// name, with its lock, when it is a real folder and its lock can be taken
+// now: one whose builder still holds it is left.
+func sweep(croot *os.Root, name string) {
+	if fi, err := croot.Lstat(name); err != nil || !fi.IsDir() {
+		return
 	}
-	clear()
-	defer clear()
-	repo := f.g.in(".git", map[string]string{"GIT_INDEX_FILE": index})
-	nested, err := f.measure(ctx, repo)
+	if fi, err := croot.Lstat(name + asideLock); err == nil && !fi.Mode().IsRegular() {
+		return
+	}
+	lock, err := croot.OpenFile(name+asideLock, os.O_RDWR|os.O_CREATE, 0o600)
 	if err != nil {
-		return FirstCommit{}, err
+		return
 	}
-	f.hold("measured")
-	commit, err := f.commit(ctx, repo, nested)
-	if errors.Is(err, errHeadMoved) {
-		if _, refusal, rerr := readFolderState(ctx, f.g); rerr == nil && refusal == nil {
-			return FirstCommit{}, nil
-		}
+	defer lock.Close()
+	if ok, err := lockFile(lock); err != nil || !ok {
+		return
 	}
-	if err != nil {
-		return FirstCommit{}, err
-	}
-	// The person's index brought to the commit, as git's own lock takes it;
-	// an index another git holds just then stays as it was.
-	_, _ = f.g.in(".git", nil).run(ctx, "read-tree", "-m", "HEAD")
-	return FirstCommit{Made: true, Top: f.in.Path, Commit: commit}, nil
+	_ = croot.RemoveAll(name)
+	_ = croot.Remove(name + asideLock)
 }
-
-// errHeadMoved is a commit that could not be put on the branch: something
-// is on it now.
-var errHeadMoved = &firstCommitError{"the folder got a commit while its first commit was made"}
 
 // pathspecs are what a first commit takes of the folder: all of it but
 // Conductor's own .conductor/ at any depth and each repository nested in it.
@@ -657,12 +594,14 @@ func pathspecs(nested []string) []string {
 }
 
 // measure lists what a first commit would take where g's repository is
-// (an empty index: every file its ignore rules keep), refuses it past the
-// bound, and gives the repositories nested in it, which are left out.
+// (an empty index: every file its ignore rules keep), stopping as soon as
+// it passes the bound, which it then refuses, and gives the repositories
+// nested in it, which are left out.
 func (f *firstCommitter) measure(ctx context.Context, g gitAt) (nested []string, err error) {
 	var files int
 	var bytes int64
 	_, err = g.each(ctx, func(rec []byte) bool {
+		f.hold("listed")
 		p := string(rec)
 		switch {
 		case p == "":
@@ -671,13 +610,11 @@ func (f *firstCommitter) measure(ctx context.Context, g gitAt) (nested []string,
 			nested = append(nested, strings.TrimSuffix(p, "/"))
 		default:
 			files++
-			if bytes <= MaxFirstCommitBytes {
-				if fi, err := f.in.Folder.Lstat(filepath.FromSlash(p)); err == nil && fi.Mode().IsRegular() {
-					bytes += fi.Size()
-				}
+			if fi, err := f.in.Folder.Lstat(filepath.FromSlash(p)); err == nil && fi.Mode().IsRegular() {
+				bytes += fi.Size()
 			}
 		}
-		return true
+		return !pastBounds(files, bytes)
 	}, append([]string{"ls-files", "-z", "--others", "--exclude-standard", "--"}, pathspecs(nil)...)...)
 	if err != nil {
 		return nil, f.failed(ctx, "the folder's files could not be listed", err)
@@ -688,14 +625,18 @@ func (f *firstCommitter) measure(ctx context.Context, g gitAt) (nested []string,
 	return nested, nil
 }
 
-// pastBound is the refusal of a first commit of files files and bytes
-// bytes past the bound, nil within it.
+func pastBounds(files int, bytes int64) bool {
+	return files > MaxFirstCommitFiles || bytes > MaxFirstCommitBytes
+}
+
+// pastBound is the refusal of a first commit past the bound, said in the
+// bound's own terms (the count stops there), nil within it.
 func pastBound(files int, bytes int64) error {
 	switch {
 	case files > MaxFirstCommitFiles:
-		return &firstCommitError{fmt.Sprintf("This folder has %s files and no commit yet. Make its first commit yourself, then launch", grouped(files))}
+		return &firstCommitError{fmt.Sprintf("This folder has more than %s files and no commit yet. Make its first commit yourself, then launch", grouped(MaxFirstCommitFiles))}
 	case bytes > MaxFirstCommitBytes:
-		return &firstCommitError{fmt.Sprintf("This folder has %s MB of files and no commit yet. Make its first commit yourself, then launch", grouped(int(bytes>>20)))}
+		return &firstCommitError{fmt.Sprintf("This folder has more than %s MB of files and no commit yet. Make its first commit yourself, then launch", grouped(MaxFirstCommitBytes>>20))}
 	}
 	return nil
 }
@@ -703,7 +644,7 @@ func pastBound(files int, bytes int64) error {
 // commit adds the folder to g's index (nested left out), measures the tree
 // staged against the bound again, and commits it, the person's identity
 // else Conductor's, signed as the person's settings say, onto the branch
-// HEAD names only while it has no commit (errHeadMoved otherwise).
+// HEAD names while it has no commit.
 func (f *firstCommitter) commit(ctx context.Context, g gitAt, nested []string) (string, error) {
 	const what = "the folder's first commit could not be made"
 	if _, err := g.run(ctx, append([]string{"add", "--all", "--"}, pathspecs(nested)...)...); err != nil {
@@ -725,24 +666,50 @@ func (f *firstCommitter) commit(ctx context.Context, g gitAt, nested []string) (
 	if err != nil {
 		return "", f.failed(ctx, what, err)
 	}
-	c := g.in(g.a.GitDir, ident)
+	commit, err := f.commitTree(ctx, g, ident, sign, tree)
+	if err != nil {
+		return "", err
+	}
+	f.hold("commit")
+	if _, err := g.run(ctx, "update-ref", "-m", "first commit (Conductor)", "HEAD", commit, strings.Repeat("0", len(commit))); err != nil {
+		return "", f.failed(ctx, what, err)
+	}
+	return commit, nil
+}
+
+// commitTree makes the commit object of tree (git commit-tree), with
+// ident in its environment and what a signer needs to reach its agent
+// (signerReach), signed when sign, within the commit's bound: a clock the
+// tests start themselves (commitClock), at once otherwise.
+func (f *firstCommitter) commitTree(ctx context.Context, g gitAt, ident map[string]string, sign bool, tree string) (string, error) {
+	const what = "the folder's first commit could not be made"
+	c := g.in(g.a.GitDir, withEnv(withEnv(fromServer(signerReach), f.in.GitEnv), ident))
 	c.a.Config = append(c.a.Config, "user.useConfigOnly=true")
-	c.wait = f.commitWait
+	c.wait = 0
+	cctx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
+	start := func() {
+		t := time.AfterFunc(f.commitWait, func() { cancel(context.DeadlineExceeded) })
+		context.AfterFunc(cctx, func() { t.Stop() })
+	}
+	if f.in.commitClock != nil {
+		f.in.commitClock(start)
+	} else {
+		start()
+	}
 	args := []string{"commit-tree"}
 	if sign {
 		args = append(args, "-S")
 	}
-	out, err = c.run(ctx, append(args, "-m", FirstCommitMessage, tree)...)
+	out, err := c.run(cctx, append(args, "-m", FirstCommitMessage, tree)...)
 	commit := strings.TrimSpace(out)
-	if err != nil || !fullCommit(commit) {
+	switch {
+	case ctx.Err() != nil:
+		return "", ctx.Err()
+	case errors.Is(context.Cause(cctx), context.DeadlineExceeded):
+		return "", f.failed(ctx, what, context.DeadlineExceeded)
+	case err != nil || !fullCommit(commit):
 		return "", f.failed(ctx, what, cmp.Or(err, fmt.Errorf("git commit-tree answered %q", commit)))
-	}
-	f.hold("commit")
-	if _, err := g.run(ctx, "update-ref", "-m", "first commit (Conductor)", "HEAD", commit, strings.Repeat("0", len(commit))); err != nil {
-		if ctx.Err() != nil {
-			return "", ctx.Err()
-		}
-		return "", errHeadMoved
 	}
 	return commit, nil
 }
@@ -768,7 +735,7 @@ func (f *firstCommitter) staged(ctx context.Context, g gitAt, tree string) error
 		if n, err := strconv.ParseInt(fields[3], 10, 64); err == nil {
 			bytes += n
 		}
-		return true
+		return !pastBounds(files, bytes)
 	}, "ls-tree", "-r", "-z", "-l", "--full-tree", tree)
 	switch {
 	case err != nil:
@@ -801,9 +768,9 @@ func (f *firstCommitter) identity(ctx context.Context, g gitAt) (map[string]stri
 }
 
 // signs reports whether the person's settings sign every commit
-// (commit.gpgSign): git commit-tree signs only when told (-S), and the
-// repository's own configuration names no signing key (knownKey), so the
-// answer is the person's global or system one.
+// (commit.gpgSign): git commit-tree signs only when told (-S). The new
+// repository's own configuration is git init's, so the answer is the
+// person's.
 func (f *firstCommitter) signs(ctx context.Context, g gitAt) (bool, error) {
 	out, err := g.run(ctx, "config", "--type=bool", "--get", "commit.gpgSign")
 	switch {

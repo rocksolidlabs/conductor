@@ -3,6 +3,7 @@
 package crew
 
 import (
+	"errors"
 	"os"
 
 	"golang.org/x/sys/unix"
@@ -17,8 +18,8 @@ const firstCommitHere = true
 // RENAME_NOREPLACE checks and renames in one step and answers EEXIST for
 // whatever is there, an empty folder, a file or a link alike (rename(2)
 // alone would replace an empty folder or a file), and follows no link at
-// toName. A file system without the flag answers EINVAL, and nothing is
-// moved: the first commit is refused there.
+// toName. A file system without the flag answers so
+// (noReplaceUnsupported), and nothing is moved.
 func renameNoReplace(from *os.File, fromName string, to *os.File, toName string) error {
 	if err := unix.Renameat2(int(from.Fd()), fromName, int(to.Fd()), toName, unix.RENAME_NOREPLACE); err != nil {
 		return &os.LinkError{Op: "renameat2", Old: fromName, New: toName, Err: err}
@@ -26,8 +27,9 @@ func renameNoReplace(from *os.File, fromName string, to *os.File, toName string)
 	return nil
 }
 
-// rmdirAt removes dir/name only when it is an empty folder: never a file,
-// a link or a folder something was put in.
-func rmdirAt(dir *os.File, name string) error {
-	return unix.Unlinkat(int(dir.Fd()), name, unix.AT_REMOVEDIR)
+// noReplaceUnsupported reports whether err is renameNoReplace's answer on
+// a file system that has no such rename (9p, as for Windows folders under
+// WSL, NFS, some FUSE ones): the kernel's EINVAL, ENOSYS or EOPNOTSUPP.
+func noReplaceUnsupported(err error) bool {
+	return errors.Is(err, unix.EINVAL) || errors.Is(err, unix.ENOSYS) || errors.Is(err, unix.EOPNOTSUPP)
 }

@@ -303,10 +303,10 @@ func TestGitStateReportsRepoCommitAndPlain(t *testing.T) {
 		t.Fatal(err)
 	}
 	runGit(t, empty, "init", "-q")
-	if st, err := GitState(t.Context(), empty); err != nil || !st.InRepo || st.Toplevel != empty || st.HasCommit || st.Message != msgFirstCommit {
+	if st, err := GitState(t.Context(), empty); err != nil || !st.InRepo || st.Toplevel != empty || st.HasCommit || st.Message != msgMakeItYourself {
 		t.Fatalf("no commit: %+v %v", st, err)
 	}
-	// A new project, no commit yet or no repository yet, is no refusal: the operator's launch makes its first commit.
+	// A new folder is no refusal: the operator's launch makes its first commit; a repository with no commit is refused.
 	if st, err := GitState(t.Context(), t.TempDir()); err != nil || st.InRepo || st.HasCommit || st.Message != msgFirstCommit {
 		t.Fatalf("plain: %+v %v", st, err)
 	}

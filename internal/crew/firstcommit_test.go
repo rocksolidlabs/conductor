@@ -20,9 +20,10 @@ import (
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
 )
 
-// A new project's first commit (issue 1179, firstcommit.go): the two
-// situations it is made in, what goes in, whose name is on it, what is
-// never run, and that every other folder is left exactly as it was. Each
+// A new project's first commit (issue 1179, firstcommit.go): the one
+// situation it is made in, a new folder, what goes in, whose name and
+// signature are on it, what is never run, and that every other folder is
+// left exactly as it was. Each
 // test has a HOME of its own (t.Setenv) and keeps git's system
 // configuration out (FirstCommitIn.GitEnv, and gitOf's environment), so
 // none runs in parallel; the test repositories do no maintenance of their
@@ -174,17 +175,6 @@ func folderListing(t *testing.T, root string) string {
 	return b.String()
 }
 
-// butObjects is a listing of a .git without its object store.
-func butObjects(listing string) string {
-	var keep []string
-	for line := range strings.SplitSeq(listing, "\n") {
-		if !strings.HasPrefix(line, "objects") {
-			keep = append(keep, line)
-		}
-	}
-	return strings.Join(keep, "\n")
-}
-
 // marker is a program that leaves a mark when run, and the mark's path.
 func marker(t *testing.T) (program, mark string) {
 	t.Helper()
@@ -271,32 +261,6 @@ func TestAFolderWithFilesGetsThemCommittedAsItsIgnoreFileSays(t *testing.T) {
 	// .conductor/ was there: it stays, and only Conductor's own folder in it went.
 	if entries, _ := os.ReadDir(filepath.Join(dir, ".conductor")); len(entries) != 1 || entries[0].Name() != "worktrees" {
 		t.Fatalf(".conductor holds %v", entries)
-	}
-}
-
-// A repository nested in the folder is left out, never added as a link.
-func TestANestedRepositoryIsLeftOut(t *testing.T) {
-	for _, outer := range []bool{false, true} {
-		dir, in := project(t, "")
-		inner := filepath.Join(dir, "vendor", "lib")
-		if err := os.MkdirAll(inner, 0o755); err != nil {
-			t.Fatal(err)
-		}
-		gitOf(t, inner, "init", "-q")
-		writeFile(t, filepath.Join(inner, "lib.go"), "package lib\n")
-		gitOf(t, inner, "add", "-A")
-		personCommits(t, inner, "lib")
-		writeFile(t, filepath.Join(dir, "main.go"), "package main\n")
-		if outer {
-			gitOf(t, dir, "init", "-q")
-		}
-		mustFirstCommit(t, in)
-		if got := committed(t, dir); !slices.Equal(got, []string{"main.go"}) {
-			t.Fatalf("outer repository %v: committed %v", outer, got)
-		}
-		if links := gitOf(t, dir, "ls-files", "-s"); strings.Contains(links, "160000") {
-			t.Fatalf("a nested repository was added as a link:\n%s", links)
-		}
 	}
 }
 
@@ -436,218 +400,6 @@ func TestAFailureAfterTheBuildAsideLeavesTheFolderAsItWas(t *testing.T) {
 	noEntry(t, stale)
 }
 
-// (B) A repository just started keeps its .git; its tree goes in as it
-// stands, what was staged with the rest, and the person's index is the
-// commit's after it; Conductor's own index is gone.
-func TestARepositoryJustStartedGetsItsTreeCommitted(t *testing.T) {
-	for _, staged := range []bool{false, true} {
-		dir, in := project(t, "")
-		gitOf(t, dir, "init", "-q")
-		writeFile(t, filepath.Join(dir, "a.txt"), "a\n")
-		writeFile(t, filepath.Join(dir, "b.txt"), "b\n")
-		if staged {
-			gitOf(t, dir, "add", "a.txt")
-		}
-		if st, err := GitState(t.Context(), dir); err != nil || st.Message != msgFirstCommit {
-			t.Fatalf("the folder's check: %+v %v", st, err)
-		}
-		fc := mustFirstCommit(t, in)
-		if fc.Init {
-			t.Fatal("a repository that was there is reported made")
-		}
-		if got := committed(t, dir); !slices.Equal(got, []string{"a.txt", "b.txt"}) {
-			t.Fatalf("staged %v: committed %v", staged, got)
-		}
-		clean(t, dir)
-		if got := gitOf(t, dir, "ls-files"); got != "a.txt\nb.txt" {
-			t.Fatalf("the person's index holds %q", got)
-		}
-		noEntry(t, filepath.Join(dir, ".git", ownIndex))
-	}
-}
-
-// (B) A repository whose own configuration holds a key off the list is
-// refused, and the program the key names is not run: a signer, a signing
-// switch, an include, a filter, a work tree, a hooks path, an alias, a
-// monitor, format version 1, an extension, bare. Nothing in it changes.
-func TestAKeyOffTheListIsRefusedAndRunsNothing(t *testing.T) {
-	program, mark := marker(t)
-	elsewhere := t.TempDir()
-	included := filepath.Join(t.TempDir(), "included")
-	writeFile(t, included, "[commit]\n\tgpgSign = true\n[gpg]\n\tprogram = "+program+"\n")
-	cases := map[string]string{
-		"a signer":         "[commit]\n\tgpgSign = true\n[gpg]\n\tprogram = " + program + "\n",
-		"a signing switch": "[commit]\n\tgpgSign = true\n",
-		"an include":       "[include]\n\tpath = " + included + "\n",
-		"a filter":         "[filter \"x\"]\n\tclean = " + program + "\n\tsmudge = " + program + "\n",
-		"a work tree":      "[core]\n\tworktree = " + elsewhere + "\n",
-		"a hooks path":     "[core]\n\thooksPath = " + filepath.Dir(program) + "\n",
-		"an alias":         "[alias]\n\tst = !" + program + "\n",
-		"a monitor":        "[core]\n\tfsmonitor = " + program + "\n",
-		"format version 1": "[core]\n\trepositoryformatversion = 1\n",
-		"an extension":     "[core]\n\trepositoryformatversion = 1\n[extensions]\n\tworktreeConfig = true\n",
-		"bare":             "[core]\n\tbare\n",
-	}
-	for name, extra := range cases {
-		t.Run(name, func(t *testing.T) {
-			dir, in := project(t, "")
-			gitOf(t, dir, "init", "-q")
-			writeFile(t, filepath.Join(dir, "a.txt"), "a\n")
-			writeFile(t, filepath.Join(dir, ".gitattributes"), "* filter=x\n")
-			for _, h := range []string{"pre-commit", "reference-transaction", "post-index-change"} {
-				if err := os.Symlink(program, filepath.Join(filepath.Dir(program), h)); err != nil && !errors.Is(err, fs.ErrExist) {
-					t.Fatal(err)
-				}
-			}
-			cfg := filepath.Join(dir, ".git", "config")
-			b, err := os.ReadFile(cfg)
-			if err != nil {
-				t.Fatal(err)
-			}
-			writeFile(t, cfg, string(b)+extra)
-			before := folderListing(t, dir)
-			if st, err := GitState(t.Context(), dir); err != nil || st.Message == msgFirstCommit {
-				t.Fatalf("the folder's check: %+v %v", st, err)
-			}
-			if _, err := EnsureFirstCommit(t.Context(), in); !errors.Is(err, ErrNotRepo) {
-				t.Fatalf("not refused: %v", err)
-			}
-			noEntry(t, mark)
-			if after := folderListing(t, dir); after != before {
-				t.Fatalf("the repository changed:\n%s\nwas\n%s", after, before)
-			}
-		})
-	}
-}
-
-// (B) A repository with references but no commit on its branch, and a
-// folder below the top of a repository just started, are refused with
-// nothing made.
-func TestReferencesButNoCommitAndAFolderBelowTheTopAreRefused(t *testing.T) {
-	dir, in := project(t, "")
-	gitOf(t, dir, "init", "-q")
-	writeFile(t, filepath.Join(dir, "a.txt"), "a\n")
-	gitOf(t, dir, "add", "a.txt")
-	personCommits(t, dir, "mine")
-	gitOf(t, dir, "checkout", "-q", "--orphan", "fresh")
-	before := folderListing(t, dir)
-	refused(t, in, msgMakeItYourself)
-	if after := folderListing(t, dir); after != before {
-		t.Fatalf("the repository changed:\n%s\nwas\n%s", after, before)
-	}
-
-	top, _ := project(t, "")
-	gitOf(t, top, "init", "-q")
-	sub := filepath.Join(top, "app")
-	if err := os.Mkdir(sub, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	writeFile(t, filepath.Join(sub, "app.txt"), "a\n")
-	before = folderListing(t, top)
-	if st, err := GitState(t.Context(), sub); err != nil || st.Message != msgMakeItYourself {
-		t.Fatalf("the folder's check: %+v %v", st, err)
-	}
-	refused(t, opened(t, sub, os.Getenv("HOME")), msgMakeItYourself)
-	if after := folderListing(t, top); after != before {
-		t.Fatalf("the repository changed:\n%s\nwas\n%s", after, before)
-	}
-}
-
-// (B) A commit the person makes while the first commit is under way is
-// theirs: Conductor's is dropped, the answer is that none was made, and
-// the launch goes on from theirs.
-func TestACommitThatAppearsMeanwhileIsKept(t *testing.T) {
-	dir, in := project(t, "")
-	gitOf(t, dir, "init", "-q")
-	writeFile(t, filepath.Join(dir, "a.txt"), "a\n")
-	writeFile(t, filepath.Join(dir, "b.txt"), "b\n")
-	var theirs string
-	in.hold = func(step string) {
-		if step == "commit" {
-			gitOf(t, dir, "add", "b.txt")
-			personCommits(t, dir, "theirs")
-			theirs = gitOf(t, dir, "rev-parse", "HEAD")
-		}
-	}
-	fc, err := EnsureFirstCommit(t.Context(), in)
-	if err != nil || fc.Made {
-		t.Fatalf("%+v %v", fc, err)
-	}
-	if head := gitOf(t, dir, "rev-parse", "HEAD"); head != theirs || gitOf(t, dir, "rev-list", "--count", "HEAD") != "1" {
-		t.Fatalf("HEAD %s, theirs %s", head, theirs)
-	}
-	if got := gitOf(t, dir, "ls-files"); got != "b.txt" {
-		t.Fatalf("their index holds %q", got)
-	}
-	noEntry(t, filepath.Join(dir, ".git", ownIndex))
-	if err := CheckRepo(t.Context(), dir); err != nil {
-		t.Fatalf("the launch cannot go on from theirs: %v", err)
-	}
-}
-
-// The bound: more than MaxFirstCommitFiles files or MaxFirstCommitBytes
-// bytes on the first measure, or on what the add staged after files came
-// meanwhile, is refused with the fact and the way on, and nothing is made.
-func TestTheBoundHoldsOnTheMeasureAndOnWhatWasStaged(t *testing.T) {
-	if n := MaxFirstCommitFiles; n != 5000 || MaxFirstCommitBytes != 200<<20 {
-		t.Fatalf("the bound moved: %d files, %d bytes", n, MaxFirstCommitBytes)
-	}
-	many := func(t *testing.T, dir string, n int) {
-		for i := range n {
-			writeFile(t, filepath.Join(dir, fmt.Sprintf("f%06d", i)), "")
-		}
-	}
-	dir, in := project(t, "")
-	many(t, dir, MaxFirstCommitFiles+1)
-	refused(t, in, "This folder has 5,001 files and no commit yet. Make its first commit yourself, then launch")
-	noEntry(t, filepath.Join(dir, ".git"))
-
-	big, in := project(t, "")
-	f, err := os.Create(filepath.Join(big, "data.bin"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := f.Truncate(MaxFirstCommitBytes + 1); err != nil {
-		t.Fatal(err)
-	}
-	f.Close()
-	refused(t, in, "This folder has 200 MB of files and no commit yet")
-	noEntry(t, filepath.Join(big, ".git"))
-
-	// Files that came between the measure and the add: the tree staged is
-	// measured again, before the commit.
-	for _, started := range []bool{false, true} {
-		dir, in := project(t, "")
-		if started {
-			gitOf(t, dir, "init", "-q")
-		}
-		writeFile(t, filepath.Join(dir, "a.txt"), "a\n")
-		if started {
-			gitOf(t, dir, "add", "a.txt")
-		}
-		repoBefore := ""
-		if started {
-			repoBefore = butObjects(folderListing(t, filepath.Join(dir, ".git")))
-		}
-		in.hold = func(step string) {
-			if step == "measured" {
-				many(t, dir, MaxFirstCommitFiles+1)
-			}
-		}
-		refused(t, in, "This folder has 5,002 files and no commit yet")
-		if started {
-			// The repository as it was, but for objects nobody refers to.
-			if after := butObjects(folderListing(t, filepath.Join(dir, ".git"))); after != repoBefore {
-				t.Fatalf("the repository changed:\n%s\nwas\n%s", after, repoBefore)
-			}
-			noEntry(t, filepath.Join(dir, ".git", ownIndex))
-		} else {
-			noEntry(t, filepath.Join(dir, ".git"))
-			noEntry(t, filepath.Join(dir, ".conductor"))
-		}
-	}
-}
-
 // A home folder and a file system's root are never committed by Conductor.
 func TestTheHomeFolderAndARootAreNeverCommitted(t *testing.T) {
 	_, _ = project(t, "")
@@ -658,140 +410,6 @@ func TestTheHomeFolderAndARootAreNeverCommitted(t *testing.T) {
 	if why := notCommittedIn(string(filepath.Separator)); why == nil || !strings.Contains(why.Error(), "root") {
 		t.Fatalf("root: %v", why)
 	}
-}
-
-// The person's own signing settings sign the commit: their signing program
-// runs (its mark) and the commit carries its signature.
-func TestThePersonsSigningSettingsSignTheCommit(t *testing.T) {
-	bin := t.TempDir()
-	mark := filepath.Join(bin, "signed")
-	sign := filepath.Join(bin, "sign")
-	writeFile(t, sign, "#!/bin/sh\ncat >/dev/null\ntouch "+mark+"\nprintf '\\n[GNUPG:] SIG_CREATED D 1 8 00 0 0\\n' >&2\nprintf -- '-----BEGIN PGP SIGNATURE-----\\n\\nfake\\n-----END PGP SIGNATURE-----\\n'\n")
-	if err := os.Chmod(sign, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	cfg := "[user]\n\tname = Ada\n\temail = ada@example.com\n[commit]\n\tgpgSign = true\n[gpg]\n\tprogram = " + sign + "\n"
-	for _, started := range []bool{false, true} {
-		dir, in := project(t, cfg)
-		if started {
-			gitOf(t, dir, "init", "-q")
-		}
-		fc := mustFirstCommit(t, in)
-		if _, err := os.Lstat(mark); err != nil {
-			t.Fatalf("the person's signer did not run: %v", err)
-		}
-		if raw := gitOf(t, dir, "cat-file", "commit", fc.Commit); !strings.Contains(raw, "gpgsig -----BEGIN PGP SIGNATURE-----") {
-			t.Fatalf("the commit is not signed:\n%s", raw)
-		}
-		os.Remove(mark)
-	}
-}
-
-// A signing program of the person's that never ends and holds git's output
-// (an ssh signer git hands its own standard output) is ended at the
-// commit's bound with its whole process group: the first commit is
-// refused, nothing is left running, nothing is made, and the next call is
-// not held.
-func TestASignerThatNeverEndsIsEndedAtTheBound(t *testing.T) {
-	bin := t.TempDir()
-	pidFile := filepath.Join(bin, "pid")
-	sign := filepath.Join(bin, "sign")
-	writeFile(t, sign, "#!/bin/sh\necho $$ > "+pidFile+"\nexec sleep 600\n")
-	if err := os.Chmod(sign, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	dir, in := project(t, "[user]\n\tname = Ada\n\temail = ada@example.com\n\tsigningKey = key::ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOmR test\n[commit]\n\tgpgSign = true\n[gpg]\n\tformat = ssh\n[gpg \"ssh\"]\n\tprogram = "+sign+"\n")
-	writeFile(t, filepath.Join(dir, "a.txt"), "a\n")
-	in.CommitWait = 2 * time.Second
-	done := make(chan error, 1)
-	go func() {
-		_, err := EnsureFirstCommit(t.Context(), in)
-		done <- err
-	}()
-	pid, err := pidOf(t, pidFile, done)
-	if pid == 0 {
-		t.Fatalf("the signer never ran; the first commit answered %v", err)
-	}
-	if err = <-done; !errors.Is(err, ErrNotRepo) || !strings.Contains(err.Error(), "did not finish within its bound") {
-		t.Fatalf("refused: %v", err)
-	}
-	for syscall.Kill(pid, 0) == nil {
-		if t.Context().Err() != nil {
-			t.Fatalf("the signer %d is still running", pid)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	noEntry(t, filepath.Join(dir, ".git"))
-	noEntry(t, filepath.Join(dir, ".conductor"))
-	// The lock is free: the next call, with signing off, is made.
-	writeFile(t, filepath.Join(os.Getenv("HOME"), ".gitconfig"), "[user]\n\tname = Ada\n\temail = ada@example.com\n")
-	next, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	mustFirstCommit(t, opened(t, next, os.Getenv("HOME")))
-}
-
-// pidOf is the pid a program wrote to path, once it has; 0 and the call's
-// answer when the call answered first, which then ran no such program.
-func pidOf(t *testing.T, path string, done <-chan error) (int, error) {
-	t.Helper()
-	for {
-		if b, err := os.ReadFile(path); err == nil && strings.HasSuffix(string(b), "\n") {
-			pid, err := strconv.Atoi(strings.TrimSpace(string(b)))
-			if err != nil || pid <= 0 {
-				t.Fatalf("pid %q", b)
-			}
-			return pid, nil
-		}
-		select {
-		case err := <-done:
-			return 0, err
-		case <-t.Context().Done():
-			t.Fatal("no pid written")
-		case <-time.After(10 * time.Millisecond):
-		}
-	}
-}
-
-// An identity git would only guess (a name from the environment, an
-// address from the account and the machine) is not the person's: the
-// commit is Conductor's, and nothing is written to any settings.
-func TestOnlyAConfiguredIdentityIsThePersons(t *testing.T) {
-	for _, started := range []bool{false, true} {
-		dir, in := project(t, "")
-		if started {
-			gitOf(t, dir, "init", "-q")
-		}
-		in.GitEnv["GIT_AUTHOR_NAME"], in.GitEnv["GIT_COMMITTER_NAME"] = "Somebody", "Somebody"
-		cfgBefore := folderListing(t, os.Getenv("HOME"))
-		mustFirstCommit(t, in)
-		if got := gitOf(t, dir, "log", "-1", "--format=%an <%ae>|%cn <%ce>"); got != "Conductor <conductor@noreply.invalid>|Conductor <conductor@noreply.invalid>" {
-			t.Fatalf("the commit is %q", got)
-		}
-		if after := folderListing(t, os.Getenv("HOME")); after != cfgBefore {
-			t.Fatalf("the home folder changed:\n%s", after)
-		}
-		if cfg := gitOf(t, dir, "config", "--local", "--list"); strings.Contains(cfg, "user.") {
-			t.Fatalf("an identity was written into the repository's settings:\n%s", cfg)
-		}
-	}
-}
-
-// No hook of the folder runs for a first commit in a repository just
-// started: its hooks would fail and leave a mark.
-func TestAFirstCommitRunsNoHook(t *testing.T) {
-	program, mark := marker(t)
-	dir, in := project(t, "")
-	gitOf(t, dir, "init", "-q")
-	for _, h := range []string{"pre-commit", "commit-msg", "post-commit", "reference-transaction", "post-index-change"} {
-		if err := os.Symlink(program, filepath.Join(dir, ".git", "hooks", h)); err != nil {
-			t.Fatal(err)
-		}
-	}
-	writeFile(t, filepath.Join(dir, "a.txt"), "a\n")
-	mustFirstCommit(t, in)
-	noEntry(t, mark)
 }
 
 // Two at once in one new folder make one first commit; one made already is
@@ -821,49 +439,6 @@ func TestTwoAtOnceMakeOneFirstCommit(t *testing.T) {
 	}
 }
 
-// The folder's check answers a new folder and a repository just started
-// as no refusal, and makes nothing in either.
-func TestTheFolderCheckMakesNothing(t *testing.T) {
-	dir, _ := project(t, "")
-	before := folderListing(t, dir)
-	if st, err := GitState(t.Context(), dir); err != nil || st.Message != msgFirstCommit || st.InRepo {
-		t.Fatalf("%+v %v", st, err)
-	}
-	if after := folderListing(t, dir); after != before {
-		t.Fatalf("the check made %s", after)
-	}
-	gitOf(t, dir, "init", "-q")
-	before = folderListing(t, dir)
-	if st, err := GitState(t.Context(), dir); err != nil || st.Message != msgFirstCommit || !st.InRepo || st.HasCommit {
-		t.Fatalf("%+v %v", st, err)
-	}
-	if after := folderListing(t, dir); after != before {
-		t.Fatalf("the check changed the repository:\n%s", after)
-	}
-}
-
-// The keys a repository just started may hold: what this machine's git
-// init writes, and nothing that names a program or a place.
-func TestKnownKeysAreWhatGitInitWrites(t *testing.T) {
-	dir, _ := project(t, "")
-	gitOf(t, dir, "init", "-q")
-	raw := gitOf(t, dir, "config", "--file", filepath.Join(dir, ".git", "config"), "--no-includes", "-z", "--list")
-	if !knownConfig(raw) {
-		t.Fatalf("git init's own configuration is refused: %q", raw)
-	}
-	for key, ok := range map[string]bool{
-		"remote.origin.url\nhttps://example.com/r.git": true, "remote.a.b.fetch\n+refs/heads/*:refs/remotes/a.b/*": true,
-		"branch.main.remote\norigin": true, "branch.main.merge\nrefs/heads/main": true, "user.name\nAda": true,
-		"init.defaultbranch\ntrunk": true, "core.repositoryformatversion\n1": false, "core.bare\ntrue": false,
-		"core.bare": false, "remote.url\nx": false, "remote.origin.pushurl\nx": false, "core.sshcommand\nx": false,
-		"gpg.program\nx": false, "include.path\nx": false, "includeif.gitdir:/x/.path\ny": false, "user.signingkey\nk": false,
-	} {
-		if got := knownConfig(key + "\x00"); got != ok {
-			t.Errorf("%q: known %v, want %v", key, got, ok)
-		}
-	}
-}
-
 // Only the operator's own launch makes a first commit: the options refuse
 // one with a Brakeman turn's class or a provider's origin.
 func TestLaunchOptionsRefuseAFirstCommitForAnyoneElse(t *testing.T) {
@@ -878,5 +453,505 @@ func TestLaunchOptionsRefuseAFirstCommitForAnyoneElse(t *testing.T) {
 	}
 	if err := (LaunchOpts{FirstCommit: first}).check(); err != nil {
 		t.Fatalf("the operator's: %v", err)
+	}
+}
+
+// A repository nested in the new folder is left out, never added as a link.
+func TestANestedRepositoryIsLeftOut(t *testing.T) {
+	dir, in := project(t, "")
+	inner := filepath.Join(dir, "vendor", "lib")
+	if err := os.MkdirAll(inner, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitOf(t, inner, "init", "-q")
+	writeFile(t, filepath.Join(inner, "lib.go"), "package lib\n")
+	gitOf(t, inner, "add", "-A")
+	personCommits(t, inner, "lib")
+	writeFile(t, filepath.Join(dir, "main.go"), "package main\n")
+	mustFirstCommit(t, in)
+	if got := committed(t, dir); !slices.Equal(got, []string{"main.go"}) {
+		t.Fatalf("committed %v", got)
+	}
+	if links := gitOf(t, dir, "ls-files", "-s"); strings.Contains(links, "160000") {
+		t.Fatalf("a nested repository was added as a link:\n%s", links)
+	}
+}
+
+// A repository with no commit is no new folder, whatever it holds and
+// whatever its settings: one just started, one with files staged, one
+// whose .git names a common directory elsewhere (by a relative path and
+// an absolute one), one with links inside its .git, one with references
+// but no commit on its branch, and a folder below such a repository's
+// top. Each is refused in the sentence, at the folder's check and at the
+// press, no program its settings name is run, and the folder, its .git
+// whole and what a link points to are byte for byte as they were.
+func TestARepositoryWithNoCommitIsRefusedAndLeftAsItWas(t *testing.T) {
+	program, mark := marker(t)
+	signer := "[commit]\n\tgpgSign = true\n[gpg]\n\tprogram = " + program + "\n"
+	appendTo := func(t *testing.T, path, text string) {
+		b, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		writeFile(t, path, string(b)+text)
+	}
+	cases := []struct {
+		name string
+		make func(t *testing.T, dir, elsewhere string) (judged string)
+	}{
+		{"just started", func(t *testing.T, dir, _ string) string {
+			gitOf(t, dir, "init", "-q")
+			return dir
+		}},
+		{"with files staged", func(t *testing.T, dir, _ string) string {
+			gitOf(t, dir, "init", "-q")
+			writeFile(t, filepath.Join(dir, "a.txt"), "a\n")
+			writeFile(t, filepath.Join(dir, "b.txt"), "b\n")
+			gitOf(t, dir, "add", "a.txt")
+			appendTo(t, filepath.Join(dir, ".git", "config"), signer)
+			return dir
+		}},
+		{"a common directory named by a relative path", func(t *testing.T, dir, _ string) string {
+			gitOf(t, dir, "init", "-q")
+			gitOf(t, dir, "init", "-q", "--bare", ".shared")
+			appendTo(t, filepath.Join(dir, ".shared", "config"), signer)
+			writeFile(t, filepath.Join(dir, ".git", "commondir"), "../.shared\n")
+			return dir
+		}},
+		{"a common directory named by an absolute path", func(t *testing.T, dir, elsewhere string) string {
+			gitOf(t, dir, "init", "-q")
+			gitOf(t, elsewhere, "init", "-q", "--bare")
+			appendTo(t, filepath.Join(elsewhere, "config"), signer)
+			writeFile(t, filepath.Join(dir, ".git", "commondir"), elsewhere+"\n")
+			return dir
+		}},
+		{"links inside its .git", func(t *testing.T, dir, elsewhere string) string {
+			gitOf(t, dir, "init", "-q")
+			writeFile(t, filepath.Join(elsewhere, "startup"), "kept\n")
+			if err := os.MkdirAll(filepath.Join(dir, ".git", "logs"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			for _, at := range []string{filepath.Join(".git", "logs", "HEAD"), filepath.Join(".git", "index")} {
+				if err := os.Symlink(filepath.Join(elsewhere, "startup"), filepath.Join(dir, at)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			writeFile(t, filepath.Join(dir, "a.txt"), "a\n")
+			return dir
+		}},
+		{"references but no commit on its branch", func(t *testing.T, dir, _ string) string {
+			gitOf(t, dir, "init", "-q")
+			writeFile(t, filepath.Join(dir, "a.txt"), "a\n")
+			gitOf(t, dir, "add", "a.txt")
+			personCommits(t, dir, "mine")
+			gitOf(t, dir, "checkout", "-q", "--orphan", "fresh")
+			return dir
+		}},
+		{"a folder below its top", func(t *testing.T, dir, _ string) string {
+			gitOf(t, dir, "init", "-q")
+			sub := filepath.Join(dir, "app")
+			if err := os.Mkdir(sub, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			writeFile(t, filepath.Join(sub, "app.txt"), "a\n")
+			return sub
+		}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dir, _ := project(t, "")
+			elsewhere := t.TempDir()
+			judged := c.make(t, dir, elsewhere)
+			before, target := folderListing(t, dir), folderListing(t, elsewhere)
+			if st, err := GitState(t.Context(), judged); err != nil || st.Message == msgFirstCommit || st.Message == msgCanWorktree {
+				t.Fatalf("the folder's check: %+v %v", st, err)
+			}
+			fc, err := EnsureFirstCommit(t.Context(), opened(t, judged, os.Getenv("HOME")))
+			if !errors.Is(err, ErrNotRepo) || fc.Made {
+				t.Fatalf("not refused: %+v %v", fc, err)
+			}
+			if !strings.HasPrefix(c.name, "a common directory") && err.Error() != msgMakeItYourself {
+				t.Fatalf("refused in other words: %v", err)
+			}
+			noEntry(t, mark)
+			if after := folderListing(t, dir); after != before {
+				t.Fatalf("the folder changed:\n%s\nwas\n%s", after, before)
+			}
+			if after := folderListing(t, elsewhere); after != target {
+				t.Fatalf("what a link points to changed:\n%s\nwas\n%s", after, target)
+			}
+		})
+	}
+}
+
+// Where the file system has no rename that refuses to replace, the new
+// repository is put in place by an exclusive make of .git and a plain
+// rename over it: made, and the folder's own .git. Something put at .git
+// meanwhile is kept and the commit refused; a step the file system cannot
+// take is refused in its true reason.
+func TestWithoutARenameThatRefusesTheRepositoryIsStillPutInPlace(t *testing.T) {
+	unsupported := func(*os.File, string, *os.File, string) error {
+		return &os.LinkError{Op: "renameat2", Err: syscall.EINVAL}
+	}
+	dir, in := project(t, "")
+	writeFile(t, filepath.Join(dir, "a.txt"), "a\n")
+	in.rename = unsupported
+	mustFirstCommit(t, in)
+	if got := committed(t, dir); !slices.Equal(got, []string{"a.txt"}) {
+		t.Fatalf("committed %v", got)
+	}
+	clean(t, dir)
+	noEntry(t, filepath.Join(dir, ".conductor"))
+
+	theirs, in := project(t, "")
+	writeFile(t, filepath.Join(theirs, "a.txt"), "a\n")
+	in.rename = unsupported
+	in.hold = func(step string) {
+		if step == "rename" {
+			writeFile(t, filepath.Join(theirs, ".git"), "gitdir: theirs\n")
+		}
+	}
+	refused(t, in, msgMakeItYourself)
+	if b, err := os.ReadFile(filepath.Join(theirs, ".git")); err != nil || string(b) != "gitdir: theirs\n" {
+		t.Fatalf("theirs changed: %q %v", b, err)
+	}
+	noEntry(t, filepath.Join(theirs, ".conductor"))
+
+	denied, in := project(t, "")
+	in.rename = func(*os.File, string, *os.File, string) error {
+		return &os.LinkError{Op: "renameat2", Err: syscall.EACCES}
+	}
+	before := folderListing(t, denied)
+	refused(t, in, "could not be put in place at .git: renameat2")
+	if after := folderListing(t, denied); after != before {
+		t.Fatalf("the folder changed:\n%s", after)
+	}
+}
+
+// The new .git has the mode a plain git init gives under the umask.
+func TestTheNewGitHasTheModeGitInitGives(t *testing.T) {
+	dir, in := project(t, "")
+	mustFirstCommit(t, in)
+	plain := t.TempDir()
+	gitOf(t, plain, "init", "-q")
+	made, err := os.Stat(filepath.Join(dir, ".git"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := os.Stat(filepath.Join(plain, ".git"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if made.Mode() != want.Mode() {
+		t.Fatalf(".git is %v, git init's %v", made.Mode(), want.Mode())
+	}
+}
+
+// An earlier attempt's folder is swept only when its lock is free: one
+// another Conductor holds locked, building in it, is left, and so is a
+// person's own file that only looks like one.
+func TestASweepLeavesAFolderAnotherIsBuildingIn(t *testing.T) {
+	dir, in := project(t, "")
+	busy := filepath.Join(dir, ".conductor", asidePrefix+"aaaaaaaaaaaaaaaa")
+	if err := os.MkdirAll(filepath.Join(busy, "objects"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	lock, err := os.OpenFile(busy+asideLock, os.O_RDWR|os.O_CREATE, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Close()
+	if ok, err := lockFile(lock); !ok || err != nil {
+		t.Fatalf("lock: %v %v", ok, err)
+	}
+	notes := filepath.Join(dir, ".conductor", asidePrefix+"notes")
+	writeFile(t, notes, "mine\n")
+	mustFirstCommit(t, in)
+	if _, err := os.Stat(filepath.Join(busy, "objects")); err != nil {
+		t.Fatalf("the folder another builds in went: %v", err)
+	}
+	if b, err := os.ReadFile(notes); err != nil || string(b) != "mine\n" {
+		t.Fatalf("the person's file went: %q %v", b, err)
+	}
+}
+
+// The bound: more than MaxFirstCommitFiles files or MaxFirstCommitBytes
+// bytes is refused in the bound's own words, and nothing is made; the
+// measure stops listing at the bound; files that came between the measure
+// and the add are caught on the tree the add staged, before the commit.
+func TestTheBoundHoldsOnTheMeasureAndOnWhatWasStaged(t *testing.T) {
+	if n := MaxFirstCommitFiles; n != 5000 || MaxFirstCommitBytes != 200<<20 {
+		t.Fatalf("the bound moved: %d files, %d bytes", n, MaxFirstCommitBytes)
+	}
+	many := func(t *testing.T, dir string, n int) {
+		for i := range n {
+			writeFile(t, filepath.Join(dir, fmt.Sprintf("f%06d", i)), "")
+		}
+	}
+	dir, in := project(t, "")
+	many(t, dir, MaxFirstCommitFiles+100)
+	listed := 0
+	in.hold = func(step string) {
+		if step == "listed" {
+			listed++
+		}
+	}
+	refused(t, in, "This folder has more than 5,000 files and no commit yet. Make its first commit yourself, then launch")
+	if listed != MaxFirstCommitFiles+1 {
+		t.Fatalf("the measure read %d of the folder's files, not one past the bound", listed)
+	}
+	noEntry(t, filepath.Join(dir, ".git"))
+
+	big, in := project(t, "")
+	f, err := os.Create(filepath.Join(big, "data.bin"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Truncate(MaxFirstCommitBytes + 1); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	refused(t, in, "This folder has more than 200 MB of files and no commit yet")
+	noEntry(t, filepath.Join(big, ".git"))
+
+	late, in := project(t, "")
+	writeFile(t, filepath.Join(late, "a.txt"), "a\n")
+	in.hold = func(step string) {
+		if step == "measured" {
+			many(t, late, MaxFirstCommitFiles+1)
+		}
+	}
+	refused(t, in, "This folder has more than 5,000 files and no commit yet")
+	noEntry(t, filepath.Join(late, ".git"))
+	noEntry(t, filepath.Join(late, ".conductor"))
+}
+
+// fakeSigner is an openpgp signing program that leaves a mark and a
+// signature git takes, and the mark's path.
+func fakeSigner(t *testing.T) (program, mark string) {
+	t.Helper()
+	bin := t.TempDir()
+	mark = filepath.Join(bin, "signed")
+	program = filepath.Join(bin, "sign")
+	writeFile(t, program, "#!/bin/sh\ncat >/dev/null\ntouch "+mark+"\nprintf '\\n[GNUPG:] SIG_CREATED D 1 8 00 0 0\\n' >&2\nprintf -- '-----BEGIN PGP SIGNATURE-----\\n\\nfake\\n-----END PGP SIGNATURE-----\\n'\n")
+	if err := os.Chmod(program, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return program, mark
+}
+
+func signed(t *testing.T, dir, commit string) {
+	t.Helper()
+	if raw := gitOf(t, dir, "cat-file", "commit", commit); !strings.Contains(raw, "gpgsig -----BEGIN") {
+		t.Fatalf("the commit is not signed:\n%s", raw)
+	}
+}
+
+// The person's own signing settings sign the commit: their signing program
+// runs (its mark) and the commit carries its signature.
+func TestThePersonsSigningSettingsSignTheCommit(t *testing.T) {
+	sign, mark := fakeSigner(t)
+	dir, in := project(t, "[user]\n\tname = Ada\n\temail = ada@example.com\n[commit]\n\tgpgSign = true\n[gpg]\n\tprogram = "+sign+"\n")
+	fc := mustFirstCommit(t, in)
+	if _, err := os.Lstat(mark); err != nil {
+		t.Fatalf("the person's signer did not run: %v", err)
+	}
+	signed(t, dir, fc.Commit)
+}
+
+// Settings the person keeps where only the server's environment says
+// (GIT_CONFIG_GLOBAL, XDG_CONFIG_HOME) are found: their name is on the
+// commit and their signing signs it.
+func TestSettingsFoundThroughTheServersEnvironmentAreThePersons(t *testing.T) {
+	sign, mark := fakeSigner(t)
+	settings := "[user]\n\tname = Ada\n\temail = ada@example.com\n[commit]\n\tgpgSign = true\n[gpg]\n\tprogram = " + sign + "\n"
+	for _, where := range []string{"GIT_CONFIG_GLOBAL", "XDG_CONFIG_HOME"} {
+		t.Run(where, func(t *testing.T) {
+			dir, in := project(t, "")
+			delete(in.GitEnv, "GIT_CONFIG_GLOBAL")
+			kept := t.TempDir()
+			switch where {
+			case "GIT_CONFIG_GLOBAL":
+				writeFile(t, filepath.Join(kept, "gitconfig"), settings)
+				t.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(kept, "gitconfig"))
+			default:
+				if err := os.Mkdir(filepath.Join(kept, "git"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				writeFile(t, filepath.Join(kept, "git", "config"), settings)
+				t.Setenv("XDG_CONFIG_HOME", kept)
+			}
+			fc := mustFirstCommit(t, in)
+			if got := gitOf(t, dir, "log", "-1", "--format=%an <%ae>"); got != "Ada <ada@example.com>" {
+				t.Fatalf("the commit is %q", got)
+			}
+			signed(t, dir, fc.Commit)
+			if _, err := os.Lstat(mark); err != nil {
+				t.Fatalf("the person's signer did not run: %v", err)
+			}
+			os.Remove(mark)
+		})
+	}
+}
+
+// An ssh signer that needs its agent reaches it through the socket the
+// server's environment names; without it the commit, which must be signed,
+// is refused, never made unsigned.
+func TestAnSSHSignerReachesItsAgent(t *testing.T) {
+	bin := t.TempDir()
+	sock := filepath.Join(bin, "agent.sock")
+	sign := filepath.Join(bin, "ssh-sign")
+	writeFile(t, sign, "#!/bin/sh\n[ \"$SSH_AUTH_SOCK\" = \""+sock+"\" ] || { echo 'no agent' >&2; exit 3; }\nfor last; do :; done\nprintf -- '-----BEGIN SSH SIGNATURE-----\\nZmFrZQ==\\n-----END SSH SIGNATURE-----\\n' > \"$last.sig\"\n")
+	if err := os.Chmod(sign, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := "[user]\n\tname = Ada\n\temail = ada@example.com\n\tsigningKey = key::ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOmR test\n[commit]\n\tgpgSign = true\n[gpg]\n\tformat = ssh\n[gpg \"ssh\"]\n\tprogram = " + sign + "\n"
+	t.Setenv("SSH_AUTH_SOCK", sock)
+	dir, in := project(t, cfg)
+	fc := mustFirstCommit(t, in)
+	signed(t, dir, fc.Commit)
+
+	os.Unsetenv("SSH_AUTH_SOCK")
+	without, in := project(t, cfg)
+	refused(t, in, "first commit could not be made")
+	noEntry(t, filepath.Join(without, ".git"))
+}
+
+// A signing program of the person's that never ends and holds git's output
+// (an ssh signer git hands its own standard output) is ended at the
+// commit's bound with its whole process group, the bound started once it
+// runs: the first commit is refused, nothing is left running, nothing is
+// made, and the next call is not held.
+func TestASignerThatNeverEndsIsEndedAtTheBound(t *testing.T) {
+	bin := t.TempDir()
+	pidFile := filepath.Join(bin, "pid")
+	sign := filepath.Join(bin, "sign")
+	writeFile(t, sign, "#!/bin/sh\necho $$ > "+pidFile+"\nexec sleep 600\n")
+	if err := os.Chmod(sign, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dir, in := project(t, "[user]\n\tname = Ada\n\temail = ada@example.com\n\tsigningKey = key::ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOmR test\n[commit]\n\tgpgSign = true\n[gpg]\n\tformat = ssh\n[gpg \"ssh\"]\n\tprogram = "+sign+"\n")
+	writeFile(t, filepath.Join(dir, "a.txt"), "a\n")
+	in.CommitWait = time.Second
+	done := make(chan error, 1)
+	running := make(chan int, 1)
+	quit := make(chan struct{})
+	t.Cleanup(func() { close(quit) })
+	// The bound's clock starts once the signer runs, so that nothing before
+	// it (git's start, its look at the configuration) spends it.
+	in.commitClock = func(start func()) {
+		go func() {
+			if pid := signerPid(pidFile, quit); pid > 0 {
+				running <- pid
+				start()
+			}
+		}()
+	}
+	go func() {
+		_, err := EnsureFirstCommit(t.Context(), in)
+		done <- err
+	}()
+	var pid int
+	select {
+	case pid = <-running:
+	case err := <-done:
+		t.Fatalf("the first commit answered before the signer ran: %v", err)
+	}
+	if err := <-done; !errors.Is(err, ErrNotRepo) || !strings.Contains(err.Error(), "did not finish within its bound") {
+		t.Fatalf("refused: %v", err)
+	}
+	for syscall.Kill(pid, 0) == nil {
+		if t.Context().Err() != nil {
+			t.Fatalf("the signer %d is still running", pid)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	noEntry(t, filepath.Join(dir, ".git"))
+	noEntry(t, filepath.Join(dir, ".conductor"))
+	// The lock is free: the next call, with signing off, is made.
+	writeFile(t, filepath.Join(os.Getenv("HOME"), ".gitconfig"), "[user]\n\tname = Ada\n\temail = ada@example.com\n")
+	next, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustFirstCommit(t, opened(t, next, os.Getenv("HOME")))
+}
+
+// signerPid is the pid a program wrote to path, once it has; 0 once quit is
+// closed first.
+func signerPid(path string, quit <-chan struct{}) int {
+	for {
+		if b, err := os.ReadFile(path); err == nil && strings.HasSuffix(string(b), "\n") {
+			if pid, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil && pid > 0 {
+				return pid
+			}
+		}
+		select {
+		case <-quit:
+			return 0
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+}
+
+// An identity git would only guess (a name from the environment, an
+// address from the account and the machine) is not the person's: the
+// commit is Conductor's, and nothing is written to any settings.
+func TestOnlyAConfiguredIdentityIsThePersons(t *testing.T) {
+	dir, in := project(t, "")
+	in.GitEnv["GIT_AUTHOR_NAME"], in.GitEnv["GIT_COMMITTER_NAME"] = "Somebody", "Somebody"
+	homeBefore := folderListing(t, os.Getenv("HOME"))
+	mustFirstCommit(t, in)
+	if got := gitOf(t, dir, "log", "-1", "--format=%an <%ae>|%cn <%ce>"); got != "Conductor <conductor@noreply.invalid>|Conductor <conductor@noreply.invalid>" {
+		t.Fatalf("the commit is %q", got)
+	}
+	if after := folderListing(t, os.Getenv("HOME")); after != homeBefore {
+		t.Fatalf("the home folder changed:\n%s", after)
+	}
+	if cfg := gitOf(t, dir, "config", "--local", "--list"); strings.Contains(cfg, "user.") {
+		t.Fatalf("an identity was written into the repository's settings:\n%s", cfg)
+	}
+}
+
+// No hook runs for a first commit: hooks the person's own template puts in
+// the new repository would fail and leave a mark.
+func TestAFirstCommitRunsNoHook(t *testing.T) {
+	program, mark := marker(t)
+	template := t.TempDir()
+	if err := os.Mkdir(filepath.Join(template, "hooks"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, h := range []string{"pre-commit", "commit-msg", "post-commit", "reference-transaction", "post-index-change"} {
+		if err := os.Symlink(program, filepath.Join(template, "hooks", h)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	dir, in := project(t, "[init]\n\ttemplateDir = "+template+"\n")
+	writeFile(t, filepath.Join(dir, "a.txt"), "a\n")
+	mustFirstCommit(t, in)
+	if _, err := os.Lstat(filepath.Join(dir, ".git", "hooks", "reference-transaction")); err != nil {
+		t.Fatalf("the template's hooks are not in the repository: %v", err)
+	}
+	noEntry(t, mark)
+}
+
+// The folder's check answers a new folder as no refusal, a repository
+// with no commit in the press's sentence, and makes nothing in either.
+func TestTheFolderCheckMakesNothing(t *testing.T) {
+	dir, _ := project(t, "")
+	before := folderListing(t, dir)
+	if st, err := GitState(t.Context(), dir); err != nil || st.Message != msgFirstCommit || st.InRepo {
+		t.Fatalf("%+v %v", st, err)
+	}
+	if after := folderListing(t, dir); after != before {
+		t.Fatalf("the check made %s", after)
+	}
+	gitOf(t, dir, "init", "-q")
+	before = folderListing(t, dir)
+	if st, err := GitState(t.Context(), dir); err != nil || st.Message != msgMakeItYourself || !st.InRepo || st.HasCommit {
+		t.Fatalf("%+v %v", st, err)
+	}
+	if after := folderListing(t, dir); after != before {
+		t.Fatalf("the check changed the repository:\n%s", after)
 	}
 }

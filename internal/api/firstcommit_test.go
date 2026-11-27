@@ -27,9 +27,12 @@ import (
 // t.Setenv), so none runs in parallel.
 
 // newFolder is an empty folder under the server's allowed root, no
-// repository yet.
+// repository yet, for a server whose first commits read no system
+// configuration.
 func newFolder(t *testing.T, p *planTest, name string) string {
 	t.Helper()
+	// The first commit's gits read no system configuration of the machine's.
+	p.srv.firstCommitEnv.Store(&map[string]string{"GIT_CONFIG_NOSYSTEM": "1"})
 	dir := filepath.Join(realRoot(t, p.root), name)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)

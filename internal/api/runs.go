@@ -447,7 +447,11 @@ func (s *Server) firstCommitIn(cwd string) (*crew.FirstCommitIn, func(), error) 
 	if err != nil {
 		return nil, nil, &cwdError{"working directory could not be opened", err}
 	}
-	return &crew.FirstCommitIn{Folder: root, Path: folder.Path()}, func() { root.Close() }, nil
+	in := &crew.FirstCommitIn{Folder: root, Path: folder.Path()}
+	if env := s.firstCommitEnv.Load(); env != nil {
+		in.GitEnv = *env
+	}
+	return in, func() { root.Close() }, nil
 }
 
 // launchViewLink creates the view link a crew asks for at launch, as POST

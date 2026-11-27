@@ -1122,8 +1122,7 @@ func (e *Engine) prepare(ctx context.Context, c Crew, base string, pkg *runPacka
 }
 
 // prepareWith is prepare; with first, a crew with worktrees in a new
-// folder or a repository just started gets its first commit before the
-// folder is checked (EnsureFirstCommit, LaunchOpts.FirstCommit), in the
+// folder gets its first commit before the folder is checked (EnsureFirstCommit, LaunchOpts.FirstCommit), in the
 // folder first holds open, which must be the crew's.
 func (e *Engine) prepareWith(ctx context.Context, c Crew, base string, pkg *runPackage, first *FirstCommitIn) (prepared, error) {
 	if err := c.validateWithID(); err != nil {

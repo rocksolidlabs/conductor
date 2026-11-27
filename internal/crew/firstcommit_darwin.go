@@ -3,6 +3,7 @@
 package crew
 
 import (
+	"errors"
 	"os"
 
 	"golang.org/x/sys/unix"
@@ -17,8 +18,7 @@ const firstCommitHere = true
 // RENAME_EXCL checks and renames in one step and answers EEXIST for
 // whatever is there, an empty folder, a file or a link alike (rename(2)
 // alone would replace an empty folder or a file). A file system without
-// the flag refuses it, and nothing is moved: the first commit is refused
-// there.
+// the flag answers so (noReplaceUnsupported), and nothing is moved.
 func renameNoReplace(from *os.File, fromName string, to *os.File, toName string) error {
 	if err := unix.RenameatxNp(int(from.Fd()), fromName, int(to.Fd()), toName, unix.RENAME_EXCL); err != nil {
 		return &os.LinkError{Op: "renameatx_np", Old: fromName, New: toName, Err: err}
@@ -26,8 +26,8 @@ func renameNoReplace(from *os.File, fromName string, to *os.File, toName string)
 	return nil
 }
 
-// rmdirAt removes dir/name only when it is an empty folder: never a file,
-// a link or a folder something was put in.
-func rmdirAt(dir *os.File, name string) error {
-	return unix.Unlinkat(int(dir.Fd()), name, unix.AT_REMOVEDIR)
+// noReplaceUnsupported reports whether err is renameNoReplace's answer on
+// a file system that has no such rename: EINVAL or ENOTSUP.
+func noReplaceUnsupported(err error) bool {
+	return errors.Is(err, unix.EINVAL) || errors.Is(err, unix.ENOTSUP)
 }

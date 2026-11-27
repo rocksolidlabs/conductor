@@ -33,8 +33,7 @@ type LaunchOpts struct {
 	// FirstCommit is set by a launch the operator makes (Crews' Launch,
 	// the command line's up, through the admin's route), with the crew's
 	// folder as the launch opened it: a crew with worktrees in a new folder
-	// or a repository just started gets its first commit there
-	// (EnsureFirstCommit) and launches. Every other launch (an agent's, a
+	// gets its first commit there (EnsureFirstCommit) and launches. Every other launch (an agent's, a
 	// Brakeman turn's, a provider's, a continuation's) meets the refusal it
 	// always met.
 	FirstCommit *FirstCommitIn

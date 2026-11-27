@@ -708,7 +708,7 @@ var proposeSeam atomic.Pointer[func(key string)]
 // resolved, before git runs there. When it reports false it has answered.
 //
 // first is the operator's own proposal: the crew of an agent trial (its
-// compare block) in a new project gets its first commit there
+// compare block) in a new folder gets its first commit there
 // (crew.EnsureFirstCommit), in the folder opened through its allowed root,
 // once it is resolved and admitted and before it is checked, so the
 // revision's base is that commit. Every other proposal meets the refusal

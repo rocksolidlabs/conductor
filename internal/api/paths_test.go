@@ -309,9 +309,9 @@ func TestGitCheckAnswersByTheLaunchRules(t *testing.T) {
 	if status, out := check(filepath.Join(root, "repo", "pkg")); status != http.StatusOK || out["inRepo"] != true || out["toplevel"] != filepath.Join(root, "repo") || out["hasCommit"] != true {
 		t.Fatalf("repo: %d %v", status, out)
 	}
-	// A new project, a repository with no commit yet or a folder that is no repository yet, is no refusal (the operator's launch makes
-	// its first commit), and the check makes nothing there.
-	if _, out := check(filepath.Join(root, "fresh")); out["inRepo"] != true || out["hasCommit"] != false || !strings.Contains(out["message"].(string), "makes the folder's first commit") {
+	// A new folder is no refusal (the operator's launch makes its first commit); a repository with no commit is refused as the press
+	// refuses it; the check makes nothing in either.
+	if _, out := check(filepath.Join(root, "fresh")); out["inRepo"] != true || out["hasCommit"] != false || out["message"] != "This folder has no commit yet. Make its first commit yourself, then launch" {
 		t.Fatalf("fresh: %v", out)
 	}
 	if _, out := check(filepath.Join(root, "plain")); out["inRepo"] != false || out["hasCommit"] != false || !strings.Contains(out["message"].(string), "makes the folder's first commit") {
