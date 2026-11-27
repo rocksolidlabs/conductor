@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { RunInfo, RunMember, SessionInfo } from '~/composables/useSessions'
+import type { RunInfo, SessionInfo } from '~/composables/useSessions'
 import { scopeItems } from '~/utils/chat'
 import { broadcastByName, broadcastSelection, crewFeed, messageToast, recipientState, type RecipientPick, memberStatus, skipWords, takeViewLink } from '~/utils/crews'
 import { stopRunPageQuestion, type Action } from '~/utils/actions'
@@ -8,10 +8,10 @@ import { attemptSession, markSection, sessionStatus, taskStatus } from '~/utils/
 import { rowPrompt } from '~/utils/sidebarActions'
 import { sessionRow } from '~/utils/sidebar'
 import type { PaletteItem } from '~/composables/usePalette'
-import { memberAsk, memberLook, runTitle, startedClock } from '~/utils/crewWords'
+import { memberLook, runTitle, startedClock } from '~/utils/crewWords'
 import { memberOffer, runOffer } from '~/utils/runs'
 import { handoffsOf } from '~/utils/crewGraph'
-import { bestGrid, lastItemSpan } from '~/utils/wall'
+import type { RunWallTile } from '~/utils/wall'
 import type { RelatedTicket } from '~/composables/useDispatch'
 import { chainLinkedTicket, latest } from '~/utils/review'
 import { runLinkWatch, runTicketRead } from '~/composables/useDispatchLive'
@@ -123,18 +123,12 @@ function changed(r: RunInfo) {
 /** The run's sessions in the live store. */
 const sessions = computed(() => live.sessions.value.filter((s) => s.crew?.runId === runId.value))
 
-interface Tile {
-  name: string
-  member?: RunMember
-  session?: SessionInfo
-}
-
 /**
  * One tile per member in the run's order, then any session of the run the last read did not know yet. A managed run's member has one
  * session per attempt over time: its tile is its latest, and the earlier attempts' sessions get no tile of their own.
  */
-const tiles = computed<Tile[]>(() => {
-  const out: Tile[] = []
+const tiles = computed<RunWallTile[]>(() => {
+  const out: RunWallTile[] = []
   const seen = new Set<string>()
   const names = new Set<string>()
   for (const m of run.value?.members ?? []) {
@@ -340,31 +334,6 @@ function transportFor(s: SessionInfo) {
   return () => create({ sessionId: s.id, token: admin.token.value, kind: s.kind })
 }
 
-function footer(t: Tile): { where: string; diff: string } {
-  const m = t.member
-  const branch = m?.branch || t.session?.branch || (run.value?.isolation === 'worktree' ? '' : 'shared cwd')
-  // A managed run's member is on a task: `build #2 · crew/<run>/build.2`.
-  const where = m?.task ? `${m.task} #${m.attempt}${branch ? ` · ${branch}` : ''}` : branch
-  const diff = m?.diff ? `+${m.diff.added} −${m.diff.removed}` : ''
-  return { where, diff }
-}
-
-/**
- * A member's state in the Crews pages' one vocabulary (C2, memberLook): the tile's foot and a tile without a session say it, with
- * whom it waits for ("after driver") on a member not started.
- */
-function looked(t: Tile) {
-  return t.member && run.value ? memberLook(run.value, t.member, live.sessions.value, now.value) : null
-}
-/**
- * A tile's question with its choices (C6): the same line the run's chat offers, answered through the same path (runChatAnswers:
- * the member's running session, the question named); none where the page cannot answer it.
- */
-function tileAsk(t: Tile) {
-  const line = memberAsk(t.name, t.session).line
-  return line && runChatAnswers.answerable(line) ? line : null
-}
-
 const starting = ref('')
 async function startMember(name: string) {
   starting.value = name
@@ -376,32 +345,6 @@ async function startMember(name: string) {
     starting.value = ''
   }
 }
-
-// Grid: every tile and the activity card fit on screen, as on the wall; on
-// a narrow screen they stack and the page scrolls.
-const grid = useTemplateRef<HTMLDivElement>('grid')
-const box = ref({ w: 0, h: 0 })
-watch(
-  grid,
-  (el, _prev, onCleanup) => {
-    if (!el) return
-    const observer = new ResizeObserver((entries) => {
-      const r = entries[0]?.contentRect
-      if (r) box.value = { w: r.width, h: r.height }
-    })
-    observer.observe(el)
-    onCleanup(() => observer.disconnect())
-  },
-  { immediate: true },
-)
-const narrow = computed(() => box.value.w > 0 && box.value.w < 640)
-const layout = computed(() => bestGrid(tiles.value.length + 1, box.value.w, box.value.h, 12, 1.4))
-const feedSpan = computed(() => lastItemSpan(tiles.value.length + 1, layout.value))
-const gridStyle = computed(() =>
-  narrow.value
-    ? { gridTemplateColumns: 'minmax(0, 1fr)', gridAutoRows: '16rem' }
-    : { gridTemplateColumns: `repeat(${layout.value.cols}, minmax(0, 1fr))`, gridTemplateRows: `repeat(${layout.value.rows}, minmax(0, 1fr))` },
-)
 
 let tick: number | undefined
 onMounted(() => {
@@ -635,45 +578,21 @@ palette.registerPage(() => {
         <div v-else-if="shownView === 'timeline' && run" class="min-h-0 flex-1 overflow-y-auto p-3" data-run-timeline-view>
           <RunTimeline :run="run" :sessions="sessions" :feed="events.entries.value" :now="now" />
         </div>
-        <div v-else ref="grid" class="min-h-0 flex-1 p-3" :class="narrow ? 'overflow-y-auto' : 'overflow-hidden'">
-          <div class="grid h-full w-full gap-3" :class="narrow && 'h-auto'" :style="gridStyle" data-run-grid>
-            <template v-for="t in tiles" :key="t.session?.id ?? `m-${t.name}`">
-              <SessionTile v-if="t.session" :session="t.session" :status="looked(t)?.view" :create-transport="transportFor(t.session)" :data-member="t.name" @select="router.push(`/sessions/${t.session.id}`)">
-                <template v-if="tileAsk(t)" #ask>
-                  <RunAskChoices :line="tileAsk(t)!" :answer="runChatAnswers.answer" />
-                </template>
-                <template #footer>
-                  <span class="truncate font-mono" data-mono="commit" data-branch>{{ footer(t).where }}</span>
-                  <span class="ml-auto flex-none font-mono" data-mono="measure" data-diff>{{ footer(t).diff }}</span>
-                </template>
-              </SessionTile>
-              <div v-else class="flex min-h-0 flex-col overflow-hidden rounded-lg border border-dashed border-accented" :data-member="t.name">
-                <div class="flex items-center gap-2 border-b border-default px-2.5 py-1.5 text-xs">
-                  <SessionAvatar :agent-id="t.member?.agentId ?? ''" dashed />
-                  <span class="flex-1 truncate text-[13px] font-semibold">{{ t.name }}</span>
-                </div>
-                <div class="flex flex-1 flex-col items-center justify-center gap-2 p-3 text-center text-sm text-muted">
-                  <span v-if="looked(t)" class="inline-flex flex-wrap items-center justify-center gap-x-2" data-member-words :data-phase="looked(t)!.phase">
-                    <StatusMark :status="looked(t)!.view" word />
-                    <span v-if="looked(t)!.after && looked(t)!.phase === 'waiting'">{{ looked(t)!.after }}</span>
-                  </span>
-                  <UButton
-                    v-if="memberOffer(t.member?.status, run) === 'start'"
-                    label="Start now"
-                    icon="i-lucide-play"
-                    size="xs"
-                    color="neutral"
-                    variant="outline"
-                    :loading="starting === t.name"
-                    @click="startMember(t.name)"
-                  />
-                  <ResumeButton v-else-if="memberOffer(t.member?.status, run) === 'resume'" :run-id="runId" :member="t.name" stay size="xs" />
-                </div>
-              </div>
-            </template>
-            <CrewFeed :items="feed" :style="narrow ? undefined : { gridColumn: `span ${feedSpan} / span ${feedSpan}` }" />
-          </div>
-        </div>
+        <RunWall
+          v-else
+          :tiles="tiles"
+          :run="run"
+          :run-id="runId"
+          :sessions="live.sessions.value"
+          :feed="feed"
+          :now="now"
+          :starting="starting"
+          :create-transport="transportFor"
+          :answerable="runChatAnswers.answerable"
+          :answer="runChatAnswers.answer"
+          @open="router.push(`/sessions/${$event}`)"
+          @start="startMember"
+        />
         <div class="flex-none px-3 pb-3">
           <BroadcastBar v-model:pick="pick" :run-id="runId" :members="recipients" :ended="!!run?.stoppedAt" :disabled="!run" />
         </div>

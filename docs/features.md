@@ -229,9 +229,9 @@ kept for the chat, as its terminal had it.
   site, and under it that in Chat the agent has Conductor's tools only. A refused move says the server's words. A link's
   viewer sees the way as a label.
 - **Run as, at launch.** The Launch agent dialog offers **Run as: Terminal |
-  Chat** for an agent that can run as a chat. With Chat, the session starts
-  in its terminal ("Starts in its terminal, then moves to Chat."), its switch
-  says "Moves to Chat after the agent's first reply.", and it moves to Chat
+  Chat** for an agent that can run as a chat: the choice alone, nothing of
+  how it is carried out. With Chat, the session starts in its terminal, its
+  switch says "Moves to Chat after the agent's first reply.", and it moves to Chat
   by itself once that reply has ended and the move can be made; what was
   typed as its task is typed into the terminal once. Pressing Terminal
   before then keeps it there. A move that cannot be made leaves it in its

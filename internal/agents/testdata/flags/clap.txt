@@ -1,0 +1,65 @@
+A made-up agent for Conductor's tests, its help in the form clap prints
+
+Usage: helper [OPTIONS] [PROMPT]
+       helper [OPTIONS] <COMMAND> [ARGS]
+
+Commands:
+  exec  Runs once and ends
+  help  Prints the help of a command
+
+Arguments:
+  [PROMPT]
+          What to begin with
+
+Options:
+  -c, --config <key=value>
+          Changes one setting for this run. The value is read as TOML (`a.b.c`).
+
+          Examples: - `-c model="x"` - `-c name=y`
+
+      --enable <FEATURE>
+          Turns a feature on (repeatable)
+
+  -m, --model <MODEL>
+          The model the agent uses
+
+      --local-provider <PROVIDER>
+          Which local provider to use (first or second). Without it the
+          setting decides
+
+  -s, --sandbox <SANDBOX_MODE>
+          How the commands it runs are fenced in
+
+          [possible values: read-only, workspace-write, danger-full-access]
+
+      --approve-for-me
+          Sends the questions to an automatic review
+
+      --dangerously-bypass-approvals-and-sandbox
+          Asks nothing and fences nothing
+
+      --dangerously-bypass-hook-trust
+          Runs hooks without asking whether they are trusted
+
+  -C, --cd <DIR>
+          The folder to work in
+
+      --add-dir <DIR>
+          Another folder the agent may write in
+
+  -a, --ask-for-approval <APPROVAL_POLICY>
+          When to ask before a command runs
+
+          Possible values:
+          - on-request: The model asks when it wants
+            to
+          - never:      Never asks
+
+  -i, --image <FILE>...
+          Pictures to attach to the first prompt
+
+  -h, --help
+          Prints help
+
+  -V, --version
+          Prints the version
