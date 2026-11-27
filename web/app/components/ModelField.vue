@@ -11,7 +11,10 @@ const props = defineProps<{
   agent?: { id: string; name: string; version?: string } | null
   placeholder?: string
   size?: 'xs' | 'sm' | 'md' | 'lg' | 'xl'
+  /** More classes for the input itself (a table's smaller text and touch height). */
+  baseClass?: string
 }>()
+const base = computed(() => ['font-mono', props.baseClass].filter(Boolean).join(' '))
 
 const { reply } = useAgentFlags(() => (props.agent ? { id: props.agent.id, version: props.agent.version } : null))
 const names = computed(() => (reply.value?.state === 'read' ? reply.value.models : []))
@@ -67,7 +70,7 @@ function onBlur(e: FocusEvent) {
 </script>
 
 <template>
-  <UInput v-if="!names.length" v-bind="$attrs" v-model="model" :placeholder="placeholder" :size="size" class="w-full" :ui="{ base: 'font-mono' }" />
+  <UInput v-if="!names.length" v-bind="$attrs" v-model="model" :placeholder="placeholder" :size="size" class="w-full" :ui="{ base }" />
   <div v-else ref="root" class="w-full min-w-0" data-model-field @focusin="onFocus" @keydown.capture="onKeydown">
     <UInputMenu
       ref="menu"
@@ -83,7 +86,7 @@ function onBlur(e: FocusEvent) {
       autocapitalize="off"
       autocomplete="off"
       spellcheck="false"
-      :ui="{ base: 'font-mono' }"
+      :ui="{ base }"
       class="w-full"
       @update:model-value="onText"
       @update:open="onOpen"
