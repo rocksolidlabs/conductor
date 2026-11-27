@@ -40,6 +40,16 @@ export function noteVersion(path: string, version: number): void {
 }
 
 /**
+ * Whether path's model holds edits not saved, as its editor saw it last: true for a tab whose editor is not mounted now (one behind
+ * the one in front, a view built again with its tabs kept), so the tab wears its dot, asks before it closes and holds back a keymap's
+ * change (UX3 R72).
+ */
+export function unsavedNow(path: string): boolean {
+  const v = currentVersions.get(path)
+  return v !== undefined && isDirty(path, v)
+}
+
+/**
  * A save of path's model at version was written: that version is the saved one (version undefined: the text sent was not the model's,
  * so the model is forgotten and takes the saved text from the next read). Reports whether the model is unsaved still, edits having
  * been made since that version.

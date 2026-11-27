@@ -69,11 +69,11 @@ const fade = computed(() => {
   const mask = `linear-gradient(to right, ${left ? 'transparent, black 1.5rem' : 'black'}, ${right ? 'black calc(100% - 1.5rem), transparent' : 'black'})`
   return { maskImage: mask, WebkitMaskImage: mask }
 })
-function keepInView() {
+function keepInView(given?: HTMLElement) {
   measureMore()
   const el = list.value
-  if (!el || !openName.value) return
-  const tab = el.querySelector<HTMLElement>(`[data-member-tab="${CSS.escape(openName.value)}"]`)
+  if (!el || (!given && !openName.value)) return
+  const tab = given ?? el.querySelector<HTMLElement>(`[data-member-tab="${CSS.escape(openName.value)}"]`)
   if (!tab) return
   const [l, t] = [el.getBoundingClientRect(), tab.getBoundingClientRect()]
   // Clear of the edges' fade, so the open tab stays whole and readable.
@@ -131,6 +131,7 @@ const TAB = 'inline-flex flex-none items-center gap-1.5 rounded-md px-2 py-1 tex
       data-member-tabs
       :data-tabs-more="more.left && more.right ? 'both' : more.left ? 'left' : more.right ? 'right' : undefined"
       @scroll.passive="measureMore"
+      @focusin="(e: FocusEvent) => keepInView(((e.target as HTMLElement).closest('[data-member-tab]') as HTMLElement | null) ?? undefined)"
     >
       <template v-for="t in tabs" :key="t.name">
         <NuxtLink

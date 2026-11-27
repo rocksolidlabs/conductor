@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { RunInfo, RunMember, SessionInfo } from '~/composables/useSessions'
 import type { Attention } from './protocol'
-import { backByHistory, backTitle, BACK_TO_CREW, carriedQuery, memberOfRun, memberPlace, memberTabs, READ_SAID, readSaidFor, sessionPlace, stripRunOf, stripsRun } from './memberStrip'
+import { backByHistory, backTitle, BACK_TO_CREW, carriedQuery, keepIfHere, memberOfRun, memberPlace, memberTabs, placeOfAddress, READ_SAID, readSaidFor, sessionPlace, stripRunOf, stripsRun } from './memberStrip'
 
 const NOW = Date.parse('2026-11-26T12:00:00Z')
 const MIN = 60_000
@@ -92,6 +92,24 @@ describe('sessionPlace: every in-app link to a session goes to its place (UX3 R7
     expect(sessionPlace(sess('s-own'), 's-own')).toBe('/sessions/s-own')
     expect(sessionPlace(TURN, 's-turn')).toBe('/sessions/s-turn')
     expect(sessionPlace(undefined, 's-x', { open: 'b c.go', tab: '' })).toBe('/sessions/s-x?open=b+c.go')
+  })
+})
+
+describe('placeOfAddress and keepIfHere: an address the server builds, and the place already open', () => {
+  const find = (id: string) => (id === LEAD.id ? LEAD : id === 's-own' ? sess('s-own') : undefined)
+  it("maps a session's address to its place, carrying tab, open and line; leaves any other address", () => {
+    expect(placeOfAddress('/sessions/s-lead', find)).toBe(`/runs/${RUN}?session=s-lead`)
+    expect(placeOfAddress('/sessions/s-lead?tab=files&open=a.go&line=3', find)).toBe(`/runs/${RUN}?session=s-lead&tab=files&open=a.go&line=3`)
+    expect(placeOfAddress('/sessions/s-own', find)).toBe('/sessions/s-own')
+    expect(placeOfAddress('/history/sessions/s-lead', find)).toBe('/history/sessions/s-lead')
+    expect(placeOfAddress('/runs/r?view=graph', find)).toBe('/runs/r?view=graph')
+  })
+  it("is the page's own address for the member already open, whatever its own tab, open or line", () => {
+    const here = { path: `/runs/${RUN}`, query: { session: 's-lead', tab: 'files', open: 'a.go' }, fullPath: `/runs/${RUN}?session=s-lead&tab=files&open=a.go` }
+    expect(keepIfHere(`/runs/${RUN}?session=s-lead`, here)).toBe(here.fullPath)
+    expect(keepIfHere(`/runs/${RUN}?session=s-core`, here)).toBe(`/runs/${RUN}?session=s-core`)
+    expect(keepIfHere('/sessions/s-own', here)).toBe('/sessions/s-own')
+    expect(keepIfHere(`/runs/${RUN}?session=s-lead`, { path: `/runs/${RUN}`, query: {}, fullPath: `/runs/${RUN}` })).toBe(`/runs/${RUN}?session=s-lead`)
   })
 })
 
