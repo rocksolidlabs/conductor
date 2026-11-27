@@ -318,6 +318,11 @@ function noteTerms() {
   }
   chatNote.value = { site: agentInfo.value?.site?.startsWith('https://') ? agentInfo.value.site : undefined }
 }
+// A move to Chat noted at the launch (the Launch agent dialog's Run as Chat, issue 1174) and made by itself is a press of Chat made
+// in the dialog: the note on the vendor's terms is shown as for a press, once in this browser.
+watch([way, () => switchFacts.value.noted], ([w], [was, wasNoted]) => {
+  if (w === 'protocol' && was === 'terminal' && wasNoted === 'protocol') noteTerms()
+})
 async function moveTo(to: SessionWay) {
   if (!current.value) return
   if (to === 'protocol') noteTerms()

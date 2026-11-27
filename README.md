@@ -6,7 +6,7 @@
 Licence: [Apache-2.0](LICENSE)
 
 **Shared agent terminals.** Launch coding agents such as Claude Code, Codex or
-Antigravity in real terminals, watch and drive them from the browser, and share
+Antigravity in real terminals, watch and drive them from anywhere, and share
 a live session with other developers through a link. Inspired by
 [webtty](https://github.com/maxmcd/webtty), rebuilt as a small server with a
 Nuxt UI workbench.
@@ -2896,8 +2896,10 @@ Conductor previews the app as the agent changes it, and a capture of it
 names the Vue component's file.
 
 The wire protocol is documented in [docs/protocol.md](docs/protocol.md), the
-architecture in [docs/architecture.md](docs/architecture.md), and the brand in
-[docs/design/brand.md](docs/design/brand.md). A `Dockerfile` builds a server
+architecture in [docs/architecture.md](docs/architecture.md), the brand in
+[docs/design/brand.md](docs/design/brand.md), and the design system, its
+rules and their checks, in [docs/design/system.md](docs/design/system.md).
+A `Dockerfile` builds a server
 image without agent CLIs; install them in a derived image or use `conductor host`.
 The image keeps its data directory on the `/var/lib/conductor` volume. Give it
 `CONDUCTOR_WORKBENCH_TOKEN` (`docker run -e`), or read the token it generates
