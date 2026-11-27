@@ -48,11 +48,9 @@ async function putConf(over: (c: Config) => Partial<Config>) {
 }
 const card = (page: Page) => page.locator('[data-brakeman-settings]')
 const field = (page: Page, hook: string) => card(page).locator(`[data-${hook}] input, input[data-${hook}]`).first()
-/** Opens Advanced, once its toggle is drawn, and waits for its fields to show. */
+/** Brakeman's limits, in view under Limits since UX3 R59 (a settings page folds nothing): waits for their fields to show. */
 async function openAdvanced(page: Page) {
-  const toggle = card(page).locator('[data-brakeman-advanced-toggle]')
-  await expect(toggle).toHaveAttribute('aria-expanded', 'false')
-  await toggle.click()
+  await expect(card(page).locator('[data-brakeman-advanced-toggle]')).toHaveCount(0)
   await expect(field(page, 'brakeman-reads')).toBeVisible()
 }
 /** Picks a preset by its words. */
@@ -195,15 +193,15 @@ test('a preset fills only what Brakeman may do and run: Act within grants asks f
   await putConf((s) => ({ permissions: { ...s.permissions, draft: true, propose: true, act: [] } }))
 })
 
-test("Settings turns the background role on with its window, cooldown, briefing times and the day's minutes, the limits under Advanced", async ({ page }) => {
+test("Settings turns the background role on with its window, cooldown, briefing times and the day's minutes, the limits in view", async ({ page }) => {
   budget(26 * STEP_MS)
   await srv.open(page, '/settings')
   const c = card(page)
   const save = page.locator('[data-save-settings]')
   await expect(c.locator('[data-brakeman-role-settings]')).toBeVisible()
-  // The limits are folded at first, kept in the page: none shows until Advanced is opened.
-  await expect(c.locator('[data-brakeman-window]')).toHaveCount(1)
-  await expect(field(page, 'brakeman-window')).toBeHidden()
+  // The limits are in view under Limits, never folded (UX3 R59).
+  await expect(c.locator('[data-brakeman-advanced]')).toContainText('Limits')
+  await expect(field(page, 'brakeman-window')).toBeVisible()
   await c.getByRole('switch', { name: 'Wake on events' }).click()
   // The briefing times are a list: a row a time, added and taken out.
   const times = c.locator('[data-brakeman-briefings]')
@@ -217,16 +215,13 @@ test("Settings turns the background role on with its window, cooldown, briefing 
   await openAdvanced(page)
   await field(page, 'brakeman-window').fill('10')
   await field(page, 'brakeman-cooldown').fill('30')
-  // A value the server would refuse is said before the save, and on Advanced's toggle while it is folded.
+  // A value the server would refuse is said before the save, at its field, and the bar says to fix it.
   await field(page, 'brakeman-minutes').fill('5')
-  await expect(c).toContainText('Minutes a day are 10 to 1440.')
+  await expect(c.locator('[data-brakeman-advanced]')).toContainText('Minutes a day are 10 to 1440.')
   await expect(save).toBeDisabled()
-  await c.locator('[data-brakeman-advanced-toggle]').click()
-  await expect(c.locator('[data-brakeman-advanced-toggle]')).toHaveText('Advanced: 1 to fix')
-  await expect(field(page, 'brakeman-minutes')).toBeHidden()
-  await openAdvanced(page)
+  await expect(page.locator('[data-settings-blocked]')).toContainText('Fix the marked field to save.')
   await field(page, 'brakeman-minutes').fill('240')
-  await expect(c.locator('[data-brakeman-advanced-toggle]')).toHaveText('Advanced')
+  await expect(c).not.toContainText('Minutes a day are 10 to 1440.')
   await save.click()
   await expect
     .poll(async () => {
@@ -302,7 +297,7 @@ for (const size of [
   { width: 1440, height: 900 },
   { width: 390, height: 844 },
 ]) {
-  test(`the card at ${size.width} x ${size.height}, in both themes: nothing scrolls sideways, with Advanced folded and open`, async ({ page }) => {
+  test(`the card at ${size.width} x ${size.height}, in both themes: nothing scrolls sideways, its limits in view`, async ({ page }) => {
     budget(20 * STEP_MS)
     await page.setViewportSize(size)
     await srv.open(page, '/settings')
@@ -311,7 +306,7 @@ for (const size of [
     for (const theme of ['light', 'dark'] as const) {
       await useTheme(page, theme)
       await expect(preset(page, 'Draft and propose')).toHaveAttribute('aria-checked', 'true')
-      // What is in view is measured: the presets, then the scope, then the limits once Advanced is open.
+      // What is in view is measured: the presets, then the scope, then the limits.
       for (const part of ['[data-brakeman-presets]', '[data-brakeman-scope="repos"]']) {
         await c.locator(part).scrollIntoViewIfNeeded()
         await noSideways(page, { root: c as Locator })

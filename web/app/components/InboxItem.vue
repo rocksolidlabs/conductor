@@ -273,7 +273,7 @@ function sendComment() {
       </div>
       <form v-if="commenting" class="flex flex-col gap-2" data-inbox-comment @submit.prevent="sendComment">
         <UTextarea v-model="comment" :rows="3" autoresize placeholder="A comment on the ticket" data-inbox-comment-input />
-        <UButton type="submit" :label="`Comment on ${ticket}`" icon="i-lucide-send" size="md" class="min-h-11 self-start" :loading="busy === 'Comment'" :disabled="!!busy || !comment.trim()" data-inbox-comment-send />
+        <UButton type="submit" :label="`Comment on ${ticket}`" icon="i-lucide-send" size="md" class="min-h-11 self-end" :loading="busy === 'Comment'" :disabled="!!busy || !comment.trim()" data-inbox-comment-send />
       </form>
     </section>
 

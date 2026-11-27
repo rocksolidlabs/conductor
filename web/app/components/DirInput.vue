@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { PathEntry } from '~/composables/useSessions'
-import { caretToEnd, DIR_DEBOUNCE_MS, dirQuery, enterKeepsText, gitMark, matchingEntries, moreNote, movesHighlight } from '~/utils/dirInput'
+import { caretToEnd, DIR_DEBOUNCE_MS, dirQuery, enterKeepsText, gitMark, homeExpanded, matchingEntries, moreNote, movesHighlight } from '~/utils/dirInput'
 
 /**
  * A working-directory field completed from the server: as the text changes,
@@ -122,9 +122,14 @@ function schedule() {
   timer = window.setTimeout(fetchNow, DIR_DEBOUNCE_MS)
 }
 
+// A leading `~/` typed is the server's home, as a shell reads it (homeExpanded): the server's, read once per app.
+const serverHost = useServerHost()
+onMounted(() => void serverHost.load())
+
 // Typing and picking in the field change the text; a change from the form around (a crew discarded) is no pick.
 // A pick of the text as it stands changes nothing: its children are listed all the same.
-function onText(text: string) {
+function onText(typed: string) {
+  const text = homeExpanded(typed, serverHost.home.value)
   moved = false
   if (entries.value.some((e) => e.path === text)) {
     // Picked: the field's view goes to the end of the path as the pick lands in it (#167), and again once its listing is back.
@@ -136,6 +141,12 @@ function onText(text: string) {
   }
   if (text === model.value) schedule()
   model.value = text
+  // Expanded, the field shows the path with the caret at its end.
+  if (text !== typed)
+    nextTick(() => {
+      const input = menu.value?.inputRef
+      if (input) caretToEnd(input)
+    })
 }
 
 // Any change of the text: the entries it has moved past go at once, and it is listed again after a pause.

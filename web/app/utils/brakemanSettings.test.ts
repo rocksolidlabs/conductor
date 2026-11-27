@@ -29,6 +29,12 @@ describe('the presets', () => {
   it('are the three, in order, each with its words', () => {
     expect(PRESETS.map((p) => p.value)).toEqual(['observe', 'draft', 'act'])
     expect(PRESETS.map((p) => presetLabel(p.value))).toEqual(['Observe', 'Draft and propose', 'Act within grants'])
+    // Each says in one line what it does (UX3 R59).
+    expect(PRESETS.map((p) => p.description)).toEqual([
+      'Reads and briefs. Nothing else.',
+      'Also drafts tickets and crews and proposes operations, for you to take.',
+      'Also runs by itself what you turn on under What it may run.',
+    ])
     expect(presetLabel('custom')).toBe('Custom')
   })
 

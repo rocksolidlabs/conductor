@@ -42,7 +42,7 @@ const (
 	// personLaunchesWords refuses a comparison's launch to every caller
 	// but a person's route (ext.Host's LaunchApproved, Brakeman's granted
 	// launch act among them).
-	personLaunchesWords = "a comparison is launched by a person, who reads what it starts: open the ticket's revision"
+	personLaunchesWords = "an agent trial is started by a person, who reads what it starts: open the ticket's revision"
 	notObservedWords    = "A read of another candidate's folder or of an agent's own stored state is not observed, and a change rewritten by hand is not detected; what the agents report of their own file activity is not used as a measure."
 )
 
@@ -135,7 +135,7 @@ func (s *Server) handleRunComparison(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", "no such run")
 		return
 	case !rowIsComparison(row):
-		writeError(w, http.StatusNotFound, "not_found", "this run is not a comparison")
+		writeError(w, http.StatusNotFound, "not_found", "this run is not a trial")
 		return
 	}
 	c, err := s.runs.Comparison(ctx, runID)
@@ -155,7 +155,7 @@ func (s *Server) handleRunComparison(w http.ResponseWriter, r *http.Request) {
 		return
 	case err != nil:
 		s.log.Warn("a comparison could not be read", "run", runID, "err", err)
-		writeError(w, http.StatusInternalServerError, "internal", "the comparison could not be read")
+		writeError(w, http.StatusInternalServerError, "internal", "the trial could not be read")
 		return
 	}
 	reply := comparisonReply{Comparison: c, Independence: comparisonIndependence{NotObserved: notObservedWords},
@@ -165,7 +165,7 @@ func (s *Server) handleRunComparison(w http.ResponseWriter, r *http.Request) {
 	enc.SetEscapeHTML(false)
 	if err := enc.Encode(reply); err != nil || b.Len() > crew.MaxComparison {
 		s.log.Warn("a comparison's reply is past its bound", "run", runID, "bytes", b.Len(), "err", err)
-		writeError(w, http.StatusInternalServerError, "internal", "the comparison could not be read")
+		writeError(w, http.StatusInternalServerError, "internal", "the trial could not be read")
 		return
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")

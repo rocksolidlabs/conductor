@@ -323,9 +323,9 @@ const milestoneOver = computed(() => new TextEncoder().encode(milestoneDescripti
               @update:model-value="(on: boolean | 'indeterminate') => tick(r.value, on)"
             />
           </div>
-          <div v-if="!archived" class="flex items-center gap-2">
-            <UButton label="Save the policy" icon="i-lucide-check" size="sm" :disabled="!policyChanged" :loading="policySaving" data-close-policy-save @click="savePolicy" />
+          <div v-if="!archived" class="flex items-center justify-end gap-2" data-close-policy-foot>
             <UButton v-if="policyChanged" label="Put it back" color="neutral" variant="ghost" size="sm" data-close-policy-reset @click="policyFromProject" />
+            <UButton label="Save the policy" icon="i-lucide-check" size="sm" :disabled="!policyChanged" :loading="policySaving" data-close-policy-save @click="savePolicy" />
           </div>
           <p v-if="policyTheirs" class="text-xs text-warning" data-policy-theirs>It was changed to {{ policyWords(policyTheirs) }} while you ticked: Save again to replace that with yours, or Put it back to keep it.</p>
         </section>

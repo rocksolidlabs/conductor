@@ -125,10 +125,10 @@ async function create() {
       <p v-if="again.words" class="text-xs text-muted" data-made-words>{{ again.words }}</p>
       <p v-else-if="made" class="text-xs text-muted" data-made-words>{{ madeWords(made) }}</p>
       <UAlert v-if="error" color="error" variant="subtle" icon="i-lucide-triangle-alert" :title="error" data-draft-error />
-      <div class="flex items-center gap-2">
-        <UButton v-if="finishing" label="Finish making it" icon="i-lucide-rotate-cw" size="sm" :loading="sending" data-draft-finish @click="create" />
-        <UButton v-else label="Create the ticket" icon="i-lucide-plus" size="sm" :loading="sending" :disabled="!title.trim() || !project.trim() || made?.state === 'pending'" data-draft-create @click="create" />
-        <span class="text-xs text-muted">Made as you edited it, under your name; Brakeman makes nothing itself.</span>
+      <div class="flex flex-wrap items-center gap-2" data-draft-foot>
+        <span class="min-w-0 flex-1 text-xs text-muted">Made as you edited it, under your name; Brakeman makes nothing itself.</span>
+        <UButton v-if="finishing" label="Finish making it" icon="i-lucide-rotate-cw" size="sm" class="ms-auto" :loading="sending" data-draft-finish @click="create" />
+        <UButton v-else label="Create the ticket" icon="i-lucide-plus" size="sm" class="ms-auto" :loading="sending" :disabled="!title.trim() || !project.trim() || made?.state === 'pending'" data-draft-create @click="create" />
       </div>
     </template>
   </div>

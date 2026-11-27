@@ -19,7 +19,7 @@ import (
 // The refusals' words.
 const (
 	selectRationaleSay = "say why: the rationale is the record of this selection"
-	selectNoCancel     = "a selection is not cancelled: answer None of these, with a rationale, to end the comparison with no candidate"
+	selectNoCancel     = "a selection is not cancelled: answer None of these, with a rationale, to end the trial with no candidate"
 )
 
 // NotSelectedError is the refusal of a lane not selected, in words that
@@ -53,10 +53,10 @@ func (r *run) laneSelected(intent, taskID string) error {
 		lane = taskID
 	}
 	if sel.None {
-		return &NotSelectedError{Words: fmt.Sprintf("no candidate was selected in %s (None of these): launch a new comparison to try %s again", sel.Decision, lane)}
+		return &NotSelectedError{Words: fmt.Sprintf("no candidate was selected in %s (None of these): run a new trial to try %s again", sel.Decision, lane)}
 	}
 	if lane != sel.Task {
-		return &NotSelectedError{Words: fmt.Sprintf("%s was not selected in %s: launch a new comparison to try it again", lane, sel.Decision)}
+		return &NotSelectedError{Words: fmt.Sprintf("%s was not selected in %s: run a new trial to try it again", lane, sel.Decision)}
 	}
 	return nil
 }
