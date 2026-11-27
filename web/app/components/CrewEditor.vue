@@ -61,6 +61,11 @@ watch(
   { immediate: true },
 )
 onBeforeUnmount(() => window.clearTimeout(gitTimer))
+/** The folder allowed by the line's press: its git state read again now, so no refusal read before the press is shown under it. */
+function checkGitNow() {
+  window.clearTimeout(gitTimer)
+  void checkGit()
+}
 const gitLine = computed(() => gitCheckLine(gitCheck.value, crew.value.isolation))
 /** Under "Folder": the git state of the folder, and that it is the server's. */
 const runsInHelp = computed(() => {
@@ -204,8 +209,8 @@ function refused(message: string) {
       <div class="flex min-w-0 flex-col gap-4">
         <!-- The git line is the field's help: announced with the input, and wrapped anywhere so a long path keeps the column's width. -->
         <UFormField label="Folder" name="cwd" :help="folderBlocked ? undefined : runsInHelp" :error="folderBlocked || undefined" :ui="{ help: 'mt-1 text-xs' }">
-          <DirInput :model-value="crew.cwd" placeholder="The server's default folder" name="cwd" picker-title="The crew's folder" @update:model-value="set('cwd', $event)" />
-          <FolderAllowLine ref="folderLine" :path="crew.cwd" @use="(p: string) => set('cwd', p)" />
+          <DirInput :model-value="crew.cwd" placeholder="The server's default folder" name="cwd" picker-title="The crew's folder" lined @update:model-value="set('cwd', $event)" />
+          <FolderAllowLine ref="folderLine" :path="crew.cwd" @use="(p: string) => set('cwd', p)" @allowed="checkGitNow" />
           <template v-if="!folderBlocked" #help>
             <span class="[overflow-wrap:anywhere]" :class="{ 'text-success': gitLine.tone === 'success', 'text-warning': gitLine.tone === 'warning', 'text-muted': gitLine.tone === 'neutral' }" data-git-state>{{ runsInHelp }}</span>
           </template>

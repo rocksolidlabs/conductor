@@ -274,8 +274,9 @@ function onKey(e: KeyboardEvent) {
               <UInput :model-value="draft.check" autocapitalize="off" spellcheck="false" :ui="{ base: 'font-mono' }" class="w-full" data-compare-check @update:model-value="typeCheck(String($event ?? ''))" />
             </UFormField>
             <UFormField label="Folder" name="folder" :error="allowBlocked || folderLine || marked('folder')">
-              <DirInput :model-value="draft.folder" name="folder" picker-title="The trial's folder" data-compare-cwd @update:model-value="patch({ folder: $event })" />
-              <FolderAllowLine ref="allowLine" :path="draft.folder" :off="!draft.folder.trim()" @use="(p: string) => patch({ folder: p })" @allowed="checkFolder(draft.folder.trim())" @leave="open = false" />
+              <DirInput :model-value="draft.folder" name="folder" picker-title="The trial's folder" lined data-compare-cwd @update:model-value="patch({ folder: $event })" />
+              <!-- The folder as the trial sends it, trimmed: the line checks that text. -->
+              <FolderAllowLine ref="allowLine" :path="draft.folder.trim()" @use="(p: string) => patch({ folder: p })" @allowed="checkFolder(draft.folder.trim())" @leave="open = false" />
             </UFormField>
           </div>
 
