@@ -1,3 +1,5 @@
+import { mkdirSync } from 'node:fs'
+import { join } from 'node:path'
 import type { Locator, Page, Route } from '@playwright/test'
 import { DAILY, atRest, dayPage, expect, openMore, test } from './fixtures'
 import { ownServer, type OwnServer } from './own-server'
@@ -123,7 +125,7 @@ test("typing -- lists the agent's own flags, Tab and Enter take one, its values 
     await page.keyboard.press('Tab')
     await expect(field).toHaveValue('--add-dir ')
     await expect(field).toBeFocused()
-    await expect(page.getByRole('listbox')).toHaveCount(0)
+    // (Its value lists folders: the test of a folder flag below.)
 
     // The arrows and Enter take another; after a flag whose help lists its values, they show at once.
     await field.fill('')
@@ -255,6 +257,42 @@ test("Brakeman's Model field in Settings offers the names its agent's help gives
     expect(await rowsOf(page, '[data-model-name]')).toEqual(['alpha', 'beta'])
     await page.keyboard.press('Escape')
     await expect(page.getByRole('listbox')).toHaveCount(0)
+  } finally {
+    await page.context().close()
+  }
+})
+
+test("a folder flag's value lists the folders beside the session's, a pick goes on to its children, and a path outside is sent as typed", async ({ browser }) => {
+  const shared = join(own.root, 'shared')
+  mkdirSync(join(shared, 'inner'), { recursive: true })
+  const page = await dayPage(browser, { server: own.started, ...DAILY })
+  try {
+    const { field } = await argsOf(page, CLAUDE, 'flags')
+    await field.click()
+    await field.pressSequentially('--add-dir ')
+    // Nothing typed: the folders beside the session's (the server's default folder, the scratch repository, under the root).
+    await expect.poll(() => rows(page)).toContain(shared)
+    await highlight(page, shared)
+    await page.keyboard.press('Enter')
+    await expect(field).toHaveValue(`--add-dir ${shared}`)
+    // The list goes on to the folder's children.
+    await expect.poll(() => rows(page)).toEqual([join(shared, 'inner')])
+    // A space ends the value: the list closes.
+    await field.pressSequentially(' ')
+    await expect(page.getByRole('listbox')).toHaveCount(0)
+    // A path outside the folders agents may use lists nothing, and is sent as typed.
+    await field.fill('--add-dir /')
+    const listed = page.waitForResponse((r) => new URL(r.url()).pathname === '/api/paths' && new URL(r.url()).searchParams.get('prefix') === '/e')
+    await field.pressSequentially('e')
+    await expect(field).toHaveValue('--add-dir /e')
+    // Its listing answered: no list is a list that was not drawn.
+    await listed
+    const launches = await holdLaunches(page)
+    await expect(page.getByRole('listbox')).toHaveCount(0)
+    await page.keyboard.press('ControlOrMeta+Enter')
+    await expect.poll(() => launches.held.length, { message: 'the launch was sent' }).toBe(1)
+    expect(launches.held[0]!.request().postDataJSON()).toMatchObject({ agentId: 'flags', args: ['--add-dir', '/e'] })
+    await launches.refuse()
   } finally {
     await page.context().close()
   }
