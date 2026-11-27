@@ -658,25 +658,35 @@ func (s *Server) takePressed(pressed []config.PressedRoot) {
 			continue
 		}
 		v := s.judgeFolder(p.Path, l.list())
-		why := ""
-		switch {
-		case v.state == folderAllowed:
+		if v.state == folderAllowed {
 			continue
-		case v.state != folderOutside:
-			why = "it is " + strings.ReplaceAll(v.state, "_", " ")
-		case v.real != p.Path:
-			why = "its path goes through a link"
-		case v.refused != "":
-			why = refusedFolderWords[v.refused]
-		case v.wide != "" && v.wide != p.Confirmed:
-			why = "it is wider than it was allowed as (" + v.wide + ")"
 		}
-		if why != "" {
+		if used, why := pressedVerdict(v, p); !used {
 			s.log.Warn("a folder allowed by the press is not used this run", "folder", p.Path, "why", why)
 			continue
 		}
 		l.with(allowedRoot{path: p.Path, real: p.Path, id: v.id})
 	}
+}
+
+// pressedVerdict is whether a pressed folder judged at the start (v, not
+// allowed already) is used, and why not: the judgement decides, as the
+// press's does, and its words are for the log line alone, the reason's
+// code where it has none. A kind the server does not know is not used.
+func pressedVerdict(v folderVerdict, p config.PressedRoot) (bool, string) {
+	switch {
+	case p.Confirmed != "" && p.Confirmed != wideHome && p.Confirmed != wideAboveHome && p.Confirmed != wideHoldsData:
+		return false, "it was allowed as a kind this server does not know"
+	case v.state != folderOutside:
+		return false, "it is " + strings.ReplaceAll(v.state, "_", " ")
+	case v.real != p.Path:
+		return false, "its path goes through a link"
+	case v.refused != "":
+		return false, cmp.Or(refusedFolderWords[v.refused], v.refused)
+	case v.wide != "" && v.wide != p.Confirmed:
+		return false, "it is wider than it was allowed as (" + v.wide + ")"
+	}
+	return true, ""
 }
 
 // refusedFolderWords are a refused folder's words.

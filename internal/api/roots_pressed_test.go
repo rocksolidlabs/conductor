@@ -134,3 +134,35 @@ func TestATypedFolderNotThereAtTheStartIsTakenOnceItIs(t *testing.T) {
 		t.Fatalf("a typed folder made after the start: %v", out)
 	}
 }
+
+// The start's judgement of a pressed folder is the press's, and fails
+// closed: any refusal, with words or without, leaves the folder unused,
+// and so does a kind the server does not know.
+func TestTheStartsJudgementIsThePresss(t *testing.T) {
+	ok := folderVerdict{path: "/srv/a", real: "/srv/a", state: folderOutside}
+	for _, c := range []struct {
+		name string
+		v    folderVerdict
+		p    config.PressedRoot
+		used bool
+	}{
+		{"a plain folder", ok, config.PressedRoot{Path: "/srv/a"}, true},
+		{"a refusal with no words", folderVerdict{path: "/srv/a", real: "/srv/a", state: folderOutside, refused: "a-reason-of-no-words"}, config.PressedRoot{Path: "/srv/a"}, false},
+		{"a kind the server does not know", ok, config.PressedRoot{Path: "/srv/a", Confirmed: "everything"}, false},
+		{"wide, confirmed as it", folderVerdict{path: "/srv/a", real: "/srv/a", state: folderOutside, wide: wideHome}, config.PressedRoot{Path: "/srv/a", Confirmed: wideHome}, true},
+		{"wide, confirmed as another", folderVerdict{path: "/srv/a", real: "/srv/a", state: folderOutside, wide: wideHome}, config.PressedRoot{Path: "/srv/a", Confirmed: wideAboveHome}, false},
+		{"missing", folderVerdict{path: "/srv/a", state: folderMissing}, config.PressedRoot{Path: "/srv/a"}, false},
+		{"through a link", folderVerdict{path: "/srv/a", real: "/srv/b", state: folderOutside}, config.PressedRoot{Path: "/srv/a"}, false},
+	} {
+		used, why := pressedVerdict(c.v, c.p)
+		if used != c.used || (!used && why == "") {
+			t.Errorf("%s: used %v, why %q", c.name, used, why)
+		}
+	}
+	// Through the start: an unknown kind is not used.
+	plain := mkdir(t, filepath.Join(realRoot(t, t.TempDir()), "plain"))
+	e := newTestEnv(t, func(c *config.Config) { c.PressedRoots = []config.PressedRoot{{Path: plain, Confirmed: "everything"}} })
+	if out := e.checkRoot(plain); out["state"] == "allowed" {
+		t.Fatalf("a pressed folder of an unknown kind is used: %v", out)
+	}
+}
