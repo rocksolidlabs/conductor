@@ -61,7 +61,8 @@ func newACPChatEnvWith(t *testing.T, env map[string]string, edit func(*catalog.A
 
 // An ACP agent's chat's child starts through the session's Runtime's
 // StartPipes, in the terminal's folder, as the agent's own start of its ACP
-// server and nothing else, with CONDUCTOR_PROTOCOL=1 and no TERM; the
+// server and nothing else, with CONDUCTOR_PROTOCOL set to its protocol's
+// name (which lists no permission tool) and no TERM; the
 // terminal's session is taken up through the protocol in the session's
 // folder with no MCP server; Info says acp-v1 and that its messages are not
 // claimed as written; a message is a turn of the agent's.
@@ -76,8 +77,8 @@ func TestACPChatChildThroughPipes(t *testing.T) {
 	if len(specs) != 1 || !slices.Equal(specs[0].Argv, []string{stubProtocol(t), "acp"}) || specs[0].Dir != info.Cwd {
 		t.Fatalf("started %+v", specs)
 	}
-	if v, ok := envValue(specs[0].Env, "CONDUCTOR_PROTOCOL"); !ok || v != "1" {
-		t.Fatal("no CONDUCTOR_PROTOCOL=1")
+	if v, ok := envValue(specs[0].Env, "CONDUCTOR_PROTOCOL"); !ok || v != agentproto.ACPv1 {
+		t.Fatalf("CONDUCTOR_PROTOCOL=%q, want its protocol's name", v)
 	}
 	if _, ok := envValue(specs[0].Env, "TERM"); ok {
 		t.Fatal("TERM in a chat's environment")
@@ -165,6 +166,27 @@ func TestACPChatTakesNoneOfAYoloLaunchsVariables(t *testing.T) {
 			return e.Kind == session.EntryNotice && e.Words == agentproto.ACPYoloLeftWords
 		})
 	})
+}
+
+// The permission route takes requests of Claude Code's chat alone: one for
+// an ACP agent's chat, with the session's own agent token, is denied as no
+// call the session is making, and no question opens.
+func TestThePermissionRouteTakesOnlyClaudeCodesChat(t *testing.T) {
+	c, _ := newACPChatEnv(t, nil)
+	l := c.launch(t)
+	if err := c.enter(t, l); err != nil {
+		t.Fatal(err)
+	}
+	id := l.Info().ID
+	tok := c.agentToken(id)
+	h := postPermission(c.testEnv, id, tok, []byte(`{"call":"c1","tool":"execute","input":{"command":"ls"}}`))
+	<-h.done
+	if h.status != http.StatusOK || h.body["behavior"] != "deny" || h.body["message"] != session.NotACallWords {
+		t.Fatalf("answered %d %v", h.status, h.body)
+	}
+	if att := l.Info().Attention; att.Kind == session.KindPermission {
+		t.Fatalf("a question opened: %+v", att)
+	}
 }
 
 // The move to Chat of an ACP agent's session, and a launch as a chat, are

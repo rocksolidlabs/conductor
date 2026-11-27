@@ -96,6 +96,16 @@ func (s *Server) keepChatLaunch(id string, l chatLaunch) {
 			return yolo
 		})
 	}
+	if name := l.agent.Protocol.Name; name != agentproto.ClaudeStreamJSON {
+		// Only Claude Code's program calls Conductor's permission tool:
+		// another protocol's child is marked by its protocol's name, which
+		// silences the terminal way's hooks and lists no permission tool.
+		for i, kv := range l.env {
+			if kv == "CONDUCTOR_PROTOCOL=1" {
+				l.env[i] = "CONDUCTOR_PROTOCOL=" + name
+			}
+		}
+	}
 	l.gate = &chatGate{}
 	s.chatLaunches.Store(id, &l)
 }
