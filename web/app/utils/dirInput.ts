@@ -44,6 +44,29 @@ export function homeExpanded(text: string, home: string): string {
   return `${home.replace(/\/+$/, '')}${text.slice(1)}`
 }
 
+/** The listing route's words for a prefix under none of the folders agents may use (internal/api/paths.go errNoAllowedDir). */
+const NO_ALLOWED_DIR = 'no directory in the prefix is under the allowed roots'
+
+/** At most this many of the folders agents may use are named in the picker's sentence; the rest are counted. */
+export const ROOTS_NAMED = 3
+
+/**
+ * What the folder picker, or a folder list with no line under its field, says of a listing refused, in plain words: for a place
+ * outside the folders agents may use, those folders (the route names them after its own words; at most ROOTS_NAMED, the rest
+ * counted); for a server that did not answer, that; for anything else, that the place cannot be listed. Never the route's own text.
+ */
+export function listingProblem(code: string, message: string): string {
+  if (code === 'invalid_cwd' && message.startsWith(NO_ALLOWED_DIR)) {
+    const roots = message.slice(NO_ALLOWED_DIR.length).replace(/^:\s*/, '').trim()
+    if (!roots) return "Agents can't use a folder here. Pick another."
+    const all = roots.split(', ')
+    const named = all.length > ROOTS_NAMED ? `${all.slice(0, ROOTS_NAMED).join(', ')} and ${all.length - ROOTS_NAMED} more` : all.join(', ')
+    return `Agents can use only the folders inside ${named}. Pick one there.`
+  }
+  if (code === 'network') return 'Conductor did not answer. Type on to try again.'
+  return "This place can't be listed. Pick another."
+}
+
 /** The prefix sent for what is typed: the text trimmed; empty means the server's default directory. */
 export function dirQuery(text: string): string {
   return text.trim()
@@ -103,6 +126,12 @@ export type GitCheckView = GitCheck & { error?: boolean }
 export const GIT_CAN_WORKTREE = 'a git repository with a commit: a crew with worktrees can launch here'
 
 /**
+ * The git check's message for a new project, a folder with no commit yet or no repository yet: the server's msgFirstCommit. The
+ * operator's launch makes its first commit (internal/crew/firstcommit.go), so it is no refusal, and the line says nothing.
+ */
+export const GIT_FIRST_COMMIT = "no commit yet: the operator's launch makes the folder's first commit"
+
+/**
  * What the crew editor says under the working directory. With worktrees the
  * line is the server's verdict in its words and explains a launch it would
  * refuse (`blocks`, for the launch button's tooltip); without a message (an
@@ -113,6 +142,7 @@ export const GIT_CAN_WORKTREE = 'a git repository with a commit: a crew with wor
 export function gitCheckLine(check: GitCheckView | null, isolation: 'none' | 'worktree'): { text: string; tone: 'success' | 'warning' | 'neutral'; blocks: boolean } {
   if (!check) return { text: '', tone: 'neutral', blocks: false }
   if (check.error) return { text: check.message, tone: 'warning', blocks: false }
+  if (check.message === GIT_FIRST_COMMIT) return { text: '', tone: 'neutral', blocks: false }
   if (isolation === 'worktree') {
     const canLaunch = check.message ? check.message === GIT_CAN_WORKTREE : check.inRepo && check.hasCommit
     if (canLaunch) return { text: check.message || 'A git repository with a commit: worktrees can be made.', tone: 'success', blocks: false }

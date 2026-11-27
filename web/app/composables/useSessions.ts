@@ -1,3 +1,4 @@
+import type { RootCheck } from '~/utils/folderAllow'
 import { type AttemptContextRow, CONTEXT_SHA_HEADER, contextBodyPath } from '~/utils/attemptContext'
 import { itemOf, type InboxItem, type InboxPage, type InboxTrack } from '~/utils/inbox'
 import type { ChatMessage, ActivityEntry, AgentBrowser, Attention, AttentionKind, AttentionOption, CrewCompare, CrewLaunchBody, OpenEvent, Role } from '~/utils/protocol'
@@ -1212,7 +1213,7 @@ export function useSessions() {
     /** OS user running the server; the default display name for admins. */
     /** The last launch on this server: its agent, its folder and each agent's model; `{v: 1, models: {}}` before any. */
     lastLaunch: () => request<LastLaunchRecord>('/api/launch/last'),
-    whoami: () => request<{ user: string; host: string; switchyard: boolean; home?: string; version?: string }>('/api/whoami'),
+    whoami: () => request<{ user: string; host: string; switchyard: boolean; home?: string; version?: string; folders?: string }>('/api/whoami'),
     /** The server's reach: its public address, the mapped port and the certificate's readiness. */
     reach: () => request<ReachInfo>('/api/reach'),
     /**
@@ -1223,6 +1224,8 @@ export function useSessions() {
     /** `scope: 'any'` lists outside the allowed roots, on a server with paths.browse any (the desktop app's). */
     listPaths: (prefix: string, limit = 50, scope: 'roots' | 'any' = 'roots') =>
       request<PathsReply>('/api/paths', { query: { prefix, limit: String(limit), ...(scope === 'any' ? { scope } : {}) } }),
+    /** Whether agents may use the folder at `path` (the server's default when empty), and why not (GET /api/roots/check, UX3 R30). */
+    checkRoot: (path: string, signal?: AbortSignal) => request<RootCheck>('/api/roots/check', { query: { path }, signal }),
     /** Whether a crew with worktrees could launch in `cwd` (the server's default when empty). A preview: the launch's 409 `not_a_repo` decides. */
     gitCheck: (cwd: string) => request<GitCheck>('/api/git/check', { query: { cwd } }),
     /** Every hook adapter, in a stable order, with its install checked in the server user's home, the server's host name, and its webhooks. */
