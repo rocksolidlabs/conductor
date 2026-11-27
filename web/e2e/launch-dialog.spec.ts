@@ -385,7 +385,8 @@ test("an agent that takes no arguments shows none, and Name's placeholder says w
   await expect(name).toHaveAttribute('placeholder', 'Made from the task')
   await dialog.locator('[data-launch-message-input]').fill('fix the build')
   await expect(name).toHaveAttribute('placeholder', 'fix the build')
-  await expect(more.locator('[data-launch-args]')).toHaveAttribute('placeholder', 'Flags, as you would type them in a terminal')
+  // The arguments field's own words (R48's): its flags offered when the agent's help was read, else how to type them.
+  await expect(more.locator('[data-launch-args]')).toHaveAttribute('placeholder', /^(Type -- to see its flags|Flags, as you would type them in a terminal)$/)
   await expect(more.locator('[data-launch-model-input]')).toHaveAttribute('placeholder', "The agent's choice")
   await pick(dialog, PLAIN)
   await expect(name).toHaveAttribute('placeholder', `${PLAIN} and a number`)
