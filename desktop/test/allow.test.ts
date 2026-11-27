@@ -242,7 +242,7 @@ describe('Allow this folder', () => {
 
   it('refuses before any request a path the saved list cannot hold, a wrong confirmed, the 65th folder and a list past 8,192 characters', async () => {
     const f = fake()
-    for (const p of ['/srv/a,b', '/srv/a\nb', '/srv/a\tb', '/srv/a‎b', '/srv/a ', ' /srv/a', 'srv/a', '/srv/a/', '/srv//a', '/srv/./a', '/srv/../a', '/' + 'a'.repeat(1024), '', 42, null, ['/srv']]) {
+    for (const p of ['/srv/a,b', '/srv/a\nb', '/srv/a\tb', '/srv/a' + String.fromCodePoint(0x200e) + 'b', '/srv/a ', ' /srv/a', 'srv/a', '/srv/a/', '/srv//a', '/srv/./a', '/srv/../a', '/' + 'a'.repeat(1024), '', 42, null, ['/srv']]) {
       expect(await f.allow.allow(p, ''), JSON.stringify(p)).toMatchObject({ ok: false, code: 'invalid_request' })
     }
     expect(await f.allow.allow('/srv/a', 'all')).toMatchObject({ ok: false, code: 'invalid_request' })
