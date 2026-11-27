@@ -83,6 +83,9 @@ type allowedRoot struct {
 	path string
 	real string
 	id   folderID
+	// ident is how a later look tells what the folder is (identify, or a
+	// test's stand-in: rootList.identity).
+	ident func(path string, fi os.FileInfo) folderID
 }
 
 // pinRoot is the folder path is now, kept as the one allowed: a path that
@@ -117,7 +120,11 @@ func (r allowedRoot) resolve() (string, func(os.FileInfo) bool, bool) {
 	if !r.id.known() {
 		return real, func(got os.FileInfo) bool { return os.SameFile(got, fi) }, true
 	}
-	if real != r.real || !identify(real, fi).same(r.id) {
+	ident := r.ident
+	if ident == nil {
+		ident = identify
+	}
+	if real != r.real || !ident(real, fi).same(r.id) {
 		return "", nil, false
 	}
 	return real, r.id.sameStat, true
@@ -128,7 +135,7 @@ func (r allowedRoot) resolve() (string, func(os.FileInfo) bool, bool) {
 // mu and stores a new list. stores counts the lists stored, the first one
 // included.
 type rootList struct {
-	mu     sync.Mutex
+	mu     countedMutex
 	held   atomic.Pointer[[]allowedRoot]
 	stores atomic.Int64
 	// stat, when a test sets it before its request, stands in for os.Stat
@@ -139,9 +146,28 @@ type rootList struct {
 	mounts func() []string
 	// beforeAdd, when a test sets it before its request, runs under mu
 	// between a folder's judgement and the last look before it is added;
-	// beforeLock runs as an add asks for mu, before anything is judged.
+	// beforeLock runs as an add asks for mu, before anything is judged;
+	// afterJudge once the add has read the list and judged the folder.
+	// identity stands in for identify in a root's later looks and in the
+	// last look before an add.
 	beforeAdd  func(path string)
 	beforeLock func(path string)
+	afterJudge func(path string)
+	identity   func(path string, fi os.FileInfo) folderID
+}
+
+// countedMutex is a mutex that counts the lockers waiting for it, so that
+// a test can wait for an add to be at the lock rather than guess.
+type countedMutex struct {
+	sync.Mutex
+	waiting atomic.Int32
+}
+
+// Lock takes the mutex, counted among the waiting while it waits.
+func (m *countedMutex) Lock() {
+	m.waiting.Add(1)
+	defer m.waiting.Add(-1)
+	m.Mutex.Lock()
 }
 
 // newRootList holds the configuration's allowed roots (the folders typed in
@@ -183,6 +209,15 @@ func (l *rootList) paths() []string {
 		out[i] = r.path
 	}
 	return out
+}
+
+// idOf is how the holder tells what a folder is: identify, or the test's
+// stand-in.
+func (l *rootList) idOf() func(string, os.FileInfo) folderID {
+	if l != nil && l.identity != nil {
+		return l.identity
+	}
+	return identify
 }
 
 // with stores the roots with r added at their end; the caller holds mu.
@@ -253,7 +288,7 @@ func (s *Server) judgeFolder(path string, roots []allowedRoot) folderVerdict {
 		return v
 	}
 	g.Close()
-	v.state, v.id = folderOutside, identify(real, want)
+	v.state, v.id = folderOutside, s.roots.idOf()(real, want)
 	v.refused = s.refusedKind(real)
 	if v.refused == "" && !ownedByServer(v.id) {
 		v.refused = refusedOwner
@@ -605,6 +640,9 @@ func (s *Server) allowRoot(path, confirmed string) (string, bool, *rootRefusal) 
 	defer l.mu.Unlock()
 	roots := l.list()
 	v := s.judgeFolder(path, roots)
+	if l.afterJudge != nil {
+		l.afterJudge(path)
+	}
 	switch v.state {
 	case folderAllowed:
 		return v.real, false, nil
@@ -630,10 +668,10 @@ func (s *Server) allowRoot(path, confirmed string) (string, bool, *rootRefusal) 
 	if l.beforeAdd != nil {
 		l.beforeAdd(path)
 	}
-	if no := stillTheFolder(path, v.id); no != nil {
+	if no := stillTheFolder(path, v.id, l.idOf()); no != nil {
 		return "", false, no
 	}
-	l.with(allowedRoot{path: path, real: path, id: v.id})
+	l.with(allowedRoot{path: path, real: path, id: v.id, ident: l.identity})
 	s.log.Info("a folder agents may use was added", "folder", path, "wide", v.wide)
 	if s.cfg.OverlapsDataDir(path) {
 		s.log.Warn(config.DataDirOverlapWords, "dataDir", s.cfg.DataDir, "allowedRoot", path)
@@ -665,7 +703,7 @@ func (s *Server) takePressed(pressed []config.PressedRoot) {
 			s.log.Warn("a folder allowed by the press is not used this run", "folder", p.Path, "why", why)
 			continue
 		}
-		l.with(allowedRoot{path: p.Path, real: p.Path, id: v.id})
+		l.with(allowedRoot{path: p.Path, real: p.Path, id: v.id, ident: l.identity})
 	}
 }
 
@@ -699,7 +737,7 @@ var refusedFolderWords = map[string]string{
 
 // stillTheFolder is the last look before an add: path is still its own
 // real path, and still the directory the judgement opened.
-func stillTheFolder(path string, id folderID) *rootRefusal {
+func stillTheFolder(path string, id folderID, ident func(string, os.FileInfo) folderID) *rootRefusal {
 	real, err := filepath.EvalSymlinks(path)
 	if err != nil {
 		return &rootRefusal{status: http.StatusConflict, code: "folder_missing", message: "the folder does not exist"}
@@ -708,7 +746,7 @@ func stillTheFolder(path string, id folderID) *rootRefusal {
 		return &rootRefusal{status: http.StatusConflict, code: "folder_is_link", message: "the path goes through a link: only the folder it leads to can be allowed", key: "real", value: real}
 	}
 	fi, err := os.Stat(path)
-	if err != nil || !identify(path, fi).same(id) {
+	if err != nil || !ident(path, fi).same(id) {
 		return &rootRefusal{status: http.StatusConflict, code: "folder_changed", message: "the folder changed while it was checked: check it again"}
 	}
 	return nil

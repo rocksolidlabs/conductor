@@ -14,7 +14,7 @@ import { ServerSupervisor, StartStopped, trustedOrigin } from './server'
 import { defaultSettings, keepIn, loadSettings, migrateToWsl, noticeOnce, refusedSwitchyardNote, saveSettings, type DesktopSettings } from './settings'
 import { loginShellPath, mergePaths } from './shellPath'
 import { createTray } from './tray'
-import { createWindow, fenceLocalPage, mainFrameAllowed, ServerWindows, type FenceContents, type ShownWindow, logWindowOptions, restrictPermissions, sameOrigin, workbenchWindows } from './window'
+import { createWindow, fenceLocalPage, followTrusted, type FenceContents, type ShownWindow, logWindowOptions, restrictPermissions, sameOrigin, workbenchWindows } from './window'
 import { moveZoom, zoomKey, ZoomStart, type ZoomMove } from './zoom'
 import { WslLauncher, wslAvailable, wslNetworkingMode } from './launcher-wsl'
 import { ICE_UDP_PORT, UdpForwarder, windowsLanAddress } from './udp-forwarder'
@@ -422,9 +422,11 @@ async function run() {
   })
   // Every window that shows a page of the server, kept on the server the app trusts (ServerWindows); and no window's page loads
   // from an address the app does not trust now, a reload or a history step included.
-  const shown = new ServerWindows(() => BrowserWindow.getAllWindows() as unknown as ShownWindow[])
-  session.defaultSession.webRequest.onBeforeRequest({ urls: ['<all_urls>'] }, (details, cb) => {
-    cb({ cancel: !mainFrameAllowed(details.resourceType, details.url, origin()) })
+  const trustedWindows = followTrusted({
+    supervisor,
+    windows: () => BrowserWindow.getAllWindows() as unknown as ShownWindow[],
+    requests: session.defaultSession.webRequest as never,
+    origin,
   })
   // Built again after each zoom move, for the level it shows.
   function setMenu(zoomLevel: number) {
@@ -440,12 +442,7 @@ async function run() {
         },
         restart: () => void supervisor.restart().catch(() => {}),
         showLog,
-        reload: () => {
-          const w = BrowserWindow.getFocusedWindow()
-          if (!w || w.isDestroyed()) return
-          const target = shown.reloadTarget(w as unknown as ShownWindow)
-          if (target) void w.webContents.loadURL(target).catch(() => {})
-        },
+        reload: () => trustedWindows.reload(BrowserWindow.getFocusedWindow() as unknown as ShownWindow | null),
         zoom,
         zoomLevel,
         dev,
@@ -454,10 +451,9 @@ async function run() {
   }
   setMenu(settings.zoomLevel)
   supervisor.on('state', (st) => {
+    // Every window on a page of the server follows the server the app trusts (followTrusted, on the same state event): it shows
+    // nothing while none runs, and goes back to its page on the new origin once one does.
     if (main && !main.isDestroyed()) main.webContents.send('conductor:serverState', st)
-    // Every window on a page of the server follows the server the app trusts: it shows nothing while none runs, and goes back to
-    // its page on the new origin once one does (a restarted server listens on a fresh port).
-    shown.moved(origin())
   })
   supervisor.on('gaveUp', (st) => {
     void dialog.showMessageBox({ type: 'error', title: 'Conductor', message: 'The server keeps failing', detail: `${st.lastError ?? ''}\nSee the server log (Server › Server log), then Restart server.` })

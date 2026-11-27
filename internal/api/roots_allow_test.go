@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -439,11 +440,12 @@ func TestWhoAmISaysWhereTheFoldersComeFrom(t *testing.T) {
 
 // An add judges the folder under the roots' lock: a second press of the
 // same folder, made while the first is held between its judgement and its
-// add, lets the first go only as it asks for the lock itself (its
-// beforeLock, which also proves the first holds the lock), then finds the
-// folder allowed and adds nothing. A judgement made before the lock is
-// made before the first has added, and adds the folder a second time,
-// every run.
+// add, finds the first holding the lock (beforeLock). The first goes on
+// only once the second has either judged the folder (afterJudge) or is
+// waiting at the lock (its count), whichever comes: under the lock the
+// second waits, judges only after the first has added, and adds nothing;
+// a judgement made anywhere outside the lock comes first, before the first
+// has added, and adds the folder a second time, every run.
 func TestAnAddIsJudgedUnderTheLock(t *testing.T) {
 	e := newTestEnv(t, withDesktopKey)
 	folder := realRoot(t, t.TempDir())
@@ -453,13 +455,14 @@ func TestAnAddIsJudgedUnderTheLock(t *testing.T) {
 		if asks.Add(1) != 2 {
 			return
 		}
-		// The second press: the first holds the lock, and goes on now.
+		// The second press: the first holds the lock.
 		if e.srv.roots.mu.TryLock() {
 			e.srv.roots.mu.Unlock()
 			t.Error("the first press does not hold the roots' lock")
 		}
-		close(release)
 	}
+	var judged atomic.Int32
+	e.srv.roots.afterJudge = func(string) { judged.Add(1) }
 	var once sync.Once
 	e.srv.roots.beforeAdd = func(string) {
 		once.Do(func() {
@@ -481,6 +484,12 @@ func TestAnAddIsJudgedUnderTheLock(t *testing.T) {
 		status, out := e.allow(folder, "")
 		second <- answer{status, out}
 	}()
+	// The first has judged (one), and holds the lock; the second either
+	// judges too, or waits at the lock.
+	for judged.Load() < 2 && e.srv.roots.mu.waiting.Load() < 1 {
+		runtime.Gosched()
+	}
+	close(release)
 	a, b := <-first, <-second
 	if a.status != http.StatusOK || a.out["added"] != true {
 		t.Fatalf("the first press: %d %v", a.status, a.out)
