@@ -51,6 +51,12 @@ type createSessionRequest struct {
 	// (session.NameFromMessage). Kept in memory only, never in Info, the
 	// launch or a record: a resume or a clone never types it again.
 	Message string `json:"message,omitempty"`
+	// Way is the way the person's launch runs its agent (issue 1174):
+	// "terminal", the default and what a client that sends none means, or
+	// "protocol", Run as Chat: the session starts in its terminal all the
+	// same (I21) and moves to Chat by itself at the first moment the move
+	// can be made (launch_way.go). A person's launch alone reads it.
+	Way string `json:"way,omitempty"`
 	// login, set by a resume or a Brakeman turn's launch, is the binding
 	// the launch must get again, or Brakeman's folder.
 	login loginWant
@@ -143,6 +149,11 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "first_message_unsupported", "this agent takes no first message: Conductor types one only where it knows the agent's prompt")
 		return
 	}
+	// The way is judged before anything starts: a launch as a chat its
+	// agent cannot run is refused in the switch's words, no process made.
+	if s.refuseLaunchWay(w, r, &req) {
+		return
+	}
 	req.ctx = context.WithoutCancel(r.Context())
 	local, aerr := s.createLocalSession(req, nil)
 	if aerr != nil {
@@ -152,6 +163,10 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	agent, known := s.Catalog().Get(req.AgentID)
 	if known {
 		s.noteIdentity(local, agent)
+	}
+	if req.Way == session.WayProtocol {
+		// Noted before the reply, so the page's first welcome says it.
+		s.noteChatAtLaunch(req.ctx, local)
 	}
 	if req.Message != "" {
 		// The reply says the message waits; it is typed on a goroutine of

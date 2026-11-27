@@ -116,7 +116,7 @@ How the screens apply these, the main action, the code font, the page
 header, the list row, cutting text and tooltips, is
 [the design system](system.md), with the checks that hold each rule.
 
-The browser workbench carries these values as Tailwind scales in
+The workbench carries these values as Tailwind scales in
 `web/app/assets/css/main.css`; `tokens.css` names the same values, light and
 dark, and the token test holds that the two agree. The workbench opens dark
 (the ink scale, with forest-300 as the primary) whatever the OS prefers; light

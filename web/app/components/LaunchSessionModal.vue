@@ -9,6 +9,8 @@ import { hostAdapter, hostCommand } from '~/utils/hostCommand'
 import { accountChoices, accountOfLaunch, capacityKey, modelProblem, type CapacityQuery } from '~/utils/capacity'
 import { launchKey, messageProblem, namePreview, noFirstMessageLine, optionsSummary, plainOffMachine, showsRunsOn, takesFirstMessage } from '~/utils/launch'
 import { effectiveYolo, hasYoloRecipe, yoloUnavailable } from '~/utils/yolo'
+import { offersRunAs, readRunAs, writeRunAs } from '~/utils/launchWay'
+import type { SessionWay } from '~/utils/protocol'
 
 const open = defineModel<boolean>('open', { default: false })
 const launchModal = useLaunchModal()
@@ -39,6 +41,22 @@ const state = reactive<{ agentId: string; runsOn: 'server' | 'local'; name: stri
 const message = ref('')
 const messageError = computed(() => (takesMessage.value ? messageProblem(message.value) : ''))
 const namePlaceholder = computed(() => (takesMessage.value && namePreview(message.value)) || 'optional')
+
+// Run as: Terminal | Chat (issue 1174), for an agent that can run as a chat, on this server, never a clone: a launch as a chat
+// starts in its terminal and moves to Chat by itself. It comes back as that agent was last launched in this browser, read at every
+// opening and pick, written at Launch alone (a side pressed and then cancelled is not kept); the first time it is Terminal.
+const runAs = ref<SessionWay>('terminal')
+const showsRunAs = computed(() => !cloning.value && state.runsOn === 'server' && offersRunAs(selected.value))
+function browserStorage(): Storage | null {
+  try {
+    return typeof localStorage === 'undefined' ? null : localStorage
+  } catch {
+    return null
+  }
+}
+watch([open, () => state.agentId], ([v, agentId]) => {
+  if (v) runAs.value = agentId ? readRunAs(browserStorage(), agentId) : 'terminal'
+})
 
 // Clone with options… (#434): the dialog titled for the clone of a session, filled in with its launch, on this server, the name
 // empty and required; the arguments as recorded while their line is left as it was; the agent never another than the source's
@@ -344,7 +362,10 @@ async function submit() {
       account: decided.value.sent,
       model: takesAccount.value && model.value.trim() ? model.value.trim() : undefined,
       message: takesMessage.value && message.value.trim() ? message.value : undefined,
+      // Only a launch as a chat says its way: one as a terminal sends none, as before, so an older server takes it.
+      way: showsRunAs.value && runAs.value === 'protocol' ? 'protocol' : undefined,
     })
+    if (showsRunAs.value) writeRunAs(browserStorage(), state.agentId, runAs.value)
     toast.add({ title: 'Session started', description: session.name, color: 'success', icon: 'i-lucide-play' })
     emit('launched', session)
     open.value = false
@@ -428,6 +449,7 @@ async function submit() {
           </UFormField>
 
           <MoreOptions v-if="hasMore" v-model:open="moreOpen" data-launch-more>
+            <template v-if="showsRunAs" #end><RunAsChoice v-model="runAs" orientation="horizontal" :ui="{ root: 'items-center gap-3', wrapper: 'flex-none' }" /></template>
             <template v-if="moreLine" #line><code class="font-mono whitespace-pre-wrap [overflow-wrap:anywhere]" data-launch-more-line>{{ moreLine }}</code></template>
             <UFormField v-if="!cloning" label="Name" name="name" hint="optional">
               <UInput v-model="state.name" :placeholder="namePlaceholder" class="w-full" />
