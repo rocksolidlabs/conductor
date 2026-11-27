@@ -312,6 +312,9 @@ func (f *FakeProtocol) TurnEnded(outcome string, u way.Usage) bool {
 func (f *FakeProtocol) Notice(code, words string) bool {
 	return f.Hand(func(e way.ProtocolEvents) { e.Notice(code, words) })
 }
+func (f *FakeProtocol) Commands(list []way.Command) bool {
+	return f.Hand(func(e way.ProtocolEvents) { e.Commands(list) })
+}
 
 // FakeChild is a FakeProtocol's child (session.Child): its Stop, or End,
 // ends it and the driver's output.

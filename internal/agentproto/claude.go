@@ -208,6 +208,9 @@ type claudeRead struct {
 	lastCost  float64
 	costKnown bool
 	restarted bool
+	// commandsListed says the initialize answer or a change gave the
+	// agent's commands as a list (system/init's names are then not used).
+	commandsListed bool
 }
 
 // NewClaude is the driver of a Claude Code child whose input is in and
@@ -302,9 +305,22 @@ type userContent struct {
 	Content string `json:"content"`
 }
 
+// expandedMessage is userMessage without client_composed: the operator's
+// own typed line (session.Message.Expand, I19), which Claude Code expands
+// as it does in its terminal (an @path attached, a leading /command run).
+// The key is left out, as the recorded run wrote it; false was not seen.
+type expandedMessage struct {
+	Type            string      `json:"type"`
+	UUID            string      `json:"uuid"`
+	ParentToolUseID *string     `json:"parent_tool_use_id"`
+	Message         userContent `json:"message"`
+}
+
 // Send writes m as a user message with client_composed set and a uuid of
 // the driver's own, which the replay of it names (Accepted with m.Ref).
 // The text goes as written: encoded as JSON, nothing added or taken out.
+// Only a message the session marked Expand (the operator's own typed line,
+// I19) goes without client_composed.
 func (c *Claude) Send(_ context.Context, m session.Message) error {
 	u := newUUID()
 	c.mu.Lock()
@@ -313,7 +329,11 @@ func (c *Claude) Send(_ context.Context, m session.Message) error {
 		c.sends = c.sends[len(c.sends)-maxPendingSends:]
 	}
 	c.mu.Unlock()
-	err := c.writeJSON(userMessage{Type: "user", UUID: u, ClientComposed: true, Message: userContent{Role: "user", Content: m.Text}})
+	var msg any = userMessage{Type: "user", UUID: u, ClientComposed: true, Message: userContent{Role: "user", Content: m.Text}}
+	if m.Expand {
+		msg = expandedMessage{Type: "user", UUID: u, Message: userContent{Role: "user", Content: m.Text}}
+	}
+	err := c.writeJSON(msg)
 	if err != nil {
 		c.mu.Lock()
 		for i, s := range c.sends {
@@ -501,6 +521,10 @@ type claudeEvent struct {
 	RequestID       string          `json:"request_id"`
 	// system/init
 	Capabilities []string `json:"capabilities"`
+	// system/init's names of the commands, and system/commands_changed's
+	// list (undocumented; row 12 of docs/plans/chat-or-terminal.md).
+	SlashCommands []string        `json:"slash_commands"`
+	Commands      json.RawMessage `json:"commands"`
 	// system task events and permission_denied
 	TaskID    string          `json:"task_id"`
 	ToolUseID string          `json:"tool_use_id"`
@@ -514,7 +538,11 @@ type claudeEvent struct {
 	APIErrorStatus *int    `json:"api_error_status"`
 	TerminalReason string  `json:"terminal_reason"`
 	TotalCostUSD   float64 `json:"total_cost_usd"`
-	Usage          struct {
+	// UserMessageUUID and UserMessageUUIDs name the messages a result
+	// answers (undocumented; row 12's fixtures record them).
+	UserMessageUUID  string   `json:"user_message_uuid"`
+	UserMessageUUIDs []string `json:"user_message_uuids"`
+	Usage            struct {
 		InputTokens   int64 `json:"input_tokens"`
 		CacheCreation int64 `json:"cache_creation_input_tokens"`
 		CacheRead     int64 `json:"cache_read_input_tokens"`
@@ -530,7 +558,7 @@ func (c *Claude) handle(b []byte, e session.ProtocolEvents) error {
 	}
 	switch ev.Type {
 	case "control_response":
-		c.controlResponse(ev.Response)
+		c.controlResponse(ev.Response, e)
 	case "control_request":
 		// Conductor registers no callback with the child (no hooks, no
 		// SDK servers, no permission route in its stream): any request
@@ -554,9 +582,10 @@ func (c *Claude) handle(b []byte, e session.ProtocolEvents) error {
 	return nil
 }
 
-// controlResponse takes the answer to the initialize request; answers to
-// the driver's other requests (an interrupt's receipt) change nothing.
-func (c *Claude) controlResponse(raw json.RawMessage) {
+// controlResponse takes the answer to the initialize request, and, once it
+// passed the shape check, the agent's commands it lists; answers to the
+// driver's other requests (an interrupt's receipt) change nothing.
+func (c *Claude) controlResponse(raw json.RawMessage, e session.ProtocolEvents) {
 	var r struct {
 		Subtype   string          `json:"subtype"`
 		RequestID string          `json:"request_id"`
@@ -575,8 +604,57 @@ func (c *Claude) controlResponse(raw json.RawMessage) {
 	}
 	c.mu.Unlock()
 	if mine {
-		answer <- checkInitialize(r.Subtype, r.Response, r.Pending)
+		err := checkInitialize(r.Subtype, r.Response, r.Pending)
+		answer <- err
+		if err == nil {
+			// Its commands, the payload's "commands" alone: nothing else of
+			// it (an account sits beside them) is read.
+			var p struct {
+				Commands json.RawMessage `json:"commands"`
+			}
+			if json.Unmarshal(r.Response, &p) == nil {
+				c.commands(p.Commands, e)
+			}
+		}
 	}
+}
+
+// maxCommandsScan bounds the entries of a commands list the driver reads.
+const maxCommandsScan = 1000
+
+// commands hands the session the agent's commands from a list of objects
+// (the initialize answer's, system/commands_changed's; undocumented): each
+// entry's name, description, argumentHint and aliases, each field taken
+// only when of its type, at most maxCommandsScan entries. Anything that is
+// not such a list, an entry that is not an object with a string name among
+// them, changes nothing; a list is the whole list, and the names
+// system/init gives are not used once one came.
+func (c *Claude) commands(raw json.RawMessage, e session.ProtocolEvents) {
+	var entries []json.RawMessage
+	if json.Unmarshal(raw, &entries) != nil || entries == nil {
+		return
+	}
+	list := make([]session.Command, 0, min(len(entries), maxCommandsScan))
+	for i, en := range entries {
+		if i == maxCommandsScan {
+			break
+		}
+		var m map[string]json.RawMessage
+		if json.Unmarshal(en, &m) != nil {
+			return
+		}
+		var cmd session.Command
+		field(m, "name", &cmd.Name)
+		field(m, "description", &cmd.Words)
+		field(m, "argumentHint", &cmd.Hint)
+		field(m, "aliases", &cmd.Aliases)
+		if cmd.Name == "" {
+			return
+		}
+		list = append(list, cmd)
+	}
+	c.r.commandsListed = true
+	e.Commands(list)
 }
 
 // checkInitialize is the shape check of an initialize answer: a success,
@@ -630,6 +708,20 @@ func (c *Claude) system(ev claudeEvent, e session.ProtocolEvents) error {
 		c.mu.Lock()
 		c.receipt = receipt
 		c.mu.Unlock()
+		// Where neither the initialize answer nor a change gave the list,
+		// the names the init lists, with no words.
+		if !c.r.commandsListed && ev.SlashCommands != nil {
+			list := make([]session.Command, 0, min(len(ev.SlashCommands), maxCommandsScan))
+			for i, name := range ev.SlashCommands {
+				if i == maxCommandsScan {
+					break
+				}
+				list = append(list, session.Command{Name: name})
+			}
+			e.Commands(list)
+		}
+	case "commands_changed":
+		c.commands(ev.Commands, e)
 	case "permission_denied":
 		if ev.ToolUseID != "" && !r.denied[ev.ToolUseID] {
 			r.denied[ev.ToolUseID] = true
@@ -849,12 +941,13 @@ func toolSummary(name string, input json.RawMessage) string {
 // user is a user line: the replay of a message the driver wrote (its
 // acknowledgement), or the results of tool calls.
 func (c *Claude) user(ev claudeEvent, e session.ProtocolEvents) {
-	if ev.IsReplay {
-		c.replay(ev.UUID, e)
-		return
-	}
 	var m struct {
 		Content json.RawMessage `json:"content"`
+	}
+	if ev.IsReplay {
+		_ = json.Unmarshal(ev.Message, &m)
+		c.replay(ev.UUID, m.Content, e)
+		return
 	}
 	if json.Unmarshal(ev.Message, &m) != nil {
 		return
@@ -891,8 +984,10 @@ func (c *Claude) user(ev claudeEvent, e session.ProtocolEvents) {
 // replay is a message's replay: Accepted for the message it names, or for
 // the oldest written one when it names none. A replay that names a message
 // the driver did not write (one the agent took from elsewhere) accepts
-// nothing. Never matched by time.
-func (c *Claude) replay(uuid string, e session.ProtocolEvents) {
+// nothing; when it is only a command's own output (localCommandWords: the
+// line a command such as /compact replays under an id of the agent's,
+// undocumented, row 12), its words are the agent's. Never matched by time.
+func (c *Claude) replay(uuid string, content json.RawMessage, e session.ProtocolEvents) {
 	ref, found := "", false
 	c.mu.Lock()
 	for i, s := range c.sends {
@@ -907,6 +1002,68 @@ func (c *Claude) replay(uuid string, e session.ProtocolEvents) {
 		e.Accepted(ref)
 	}
 	c.startTurn(e)
+	if !found && uuid != "" && len(uuid) <= maxLocalRef {
+		if words, ok := localCommandWords(content); ok {
+			e.Text("local:"+uuid, words, true)
+		}
+	}
+}
+
+// maxLocalRef bounds the id a command's own output is drawn under.
+const maxLocalRef = 64
+
+// localCommandWords is the words of a replay line that is only a command's
+// own output, <local-command-stdout>words</local-command-stdout> (how
+// Claude Code replays what a command it runs itself printed, such as
+// /compact's "Compacted"): the words, trimmed, when the line is a string
+// of exactly that form with no tag inside; else false.
+func localCommandWords(content json.RawMessage) (string, bool) {
+	const openTag, closeTag = "<local-command-stdout>", "</local-command-stdout>"
+	var s string
+	if json.Unmarshal(content, &s) != nil {
+		return "", false
+	}
+	s = strings.TrimSpace(s)
+	if !strings.HasPrefix(s, openTag) || !strings.HasSuffix(s, closeTag) || len(s) < len(openTag)+len(closeTag) {
+		return "", false
+	}
+	words := s[len(openTag) : len(s)-len(closeTag)]
+	if strings.Contains(words, "<local-command-") {
+		return "", false
+	}
+	words = strings.TrimSpace(words)
+	return words, words != ""
+}
+
+// acceptNamed accepts the messages a result names (user_message_uuid,
+// user_message_uuids; undocumented, row 12) that were written and not yet
+// replayed: a command the agent's program answers itself, with no replay
+// of the message (one this session cannot run), would else wait out the
+// session's AcceptWait and say unconfirmed. Only a name the driver wrote
+// is accepted, never the oldest in its place.
+func (c *Claude) acceptNamed(ev claudeEvent, e session.ProtocolEvents) {
+	names := append([]string{ev.UserMessageUUID}, ev.UserMessageUUIDs...)
+	var refs []string
+	c.mu.Lock()
+	for _, u := range names {
+		if u == "" {
+			continue
+		}
+		for i, s := range c.sends {
+			if s.uuid == u {
+				refs = append(refs, s.ref)
+				c.sends = append(c.sends[:i], c.sends[i+1:]...)
+				break
+			}
+		}
+	}
+	c.mu.Unlock()
+	for _, ref := range refs {
+		e.Accepted(ref)
+	}
+	if len(refs) > 0 {
+		c.startTurn(e)
+	}
 }
 
 // toolResult ends a step: its status (denied where a permission_denied
@@ -1032,6 +1189,7 @@ func (c *Claude) result(ev claudeEvent, e session.ProtocolEvents) error {
 	if authFailed && !r.answered {
 		return c.notSignedIn(e)
 	}
+	c.acceptNamed(ev, e)
 	for _, ref := range slices.Sorted(maps.Keys(r.streamed)) {
 		e.Text(ref, "", true)
 	}

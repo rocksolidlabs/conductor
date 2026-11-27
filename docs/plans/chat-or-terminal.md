@@ -8,7 +8,9 @@ of work, grouped into pull requests as `AGENTS.md` (Working an issue)
 says, with the boundaries kept apart. Codex and each Agent Client
 Protocol agent wait for an answer of their own (rows 10 and 11). The
 rest of what the plan chooses is a table of defaults a maintainer may
-overturn (Defaults this plan is written to).
+overturn (Defaults this plan is written to). Row 12, planned 2026-11-27
+(#1169), lets the operator's own typed line in a chat use the agent's
+`@file` and `/command`, and every other message stay as written (I19).
 
 Written against `main` at `0a60d09f` after reading `internal/session`
 (`local.go`, `submit.go`, `attention.go`, `answeras.go`, `chat.go`,
@@ -280,7 +282,8 @@ type Protocol interface {
 	// a first message has arrived.
 	Begin(ctx context.Context) error
 	// Send writes one message as a new user turn, with the protocol's
-	// as-written mark where Verbatim is true, and returns once its bytes
+	// as-written mark where Verbatim is true, on every message but the
+	// operator's own typed line (m.Expand, I19), and returns once its bytes
 	// are written to the agent's input, or the write failed. A written
 	// message is not a taken one: the agent's acknowledgement arrives as
 	// ProtocolEvents.Accepted with m.Ref.
@@ -328,6 +331,7 @@ type ProtocolEvents interface {
 	Background(running bool)                   // work the agent started still runs after its turn (or no longer does)
 	TurnEnded(outcome string, u Usage)         // "done", "interrupted", "error", "limit"
 	Notice(code, words string)                 // something the agent said that is none of the above
+	Commands(list []Command)                   // the agent's own commands, the whole list (row 12)
 }
 ```
 
@@ -537,7 +541,13 @@ the person's own installed `claude`, never a bundled copy, and no SDK.
 |---|---|---|---|
 | `-p`, `--input-format stream-json`, `--output-format stream-json` (with `--verbose`), `--include-partial-messages`, `--replay-user-messages` ("Re-emit user messages from stdin back on stdout for acknowledgment") | https://code.claude.com/docs/en/cli-reference.md | documented | none needed |
 | a replayed user message carries the `uuid` the client wrote | not stated on the pages read | undocumented | row 4's fixture records it; where it does not, replays are matched to writes in order (one message in flight per session), never by time |
-| `client_composed: true` on a user message: "Claude Code then doesn't expand `@path` mentions, and doesn't run text that starts with `/` as a command"; "Requires ... Claude Code v2.1.248 or later" | https://code.claude.com/docs/en/agent-sdk/typescript.md, SDKUserMessage | documented | **gated**: `MinVersion` is at least 2.1.248; the driver's `Verbatim` is true and `Send` sets it on every message |
+| `client_composed: true` on a user message: "Claude Code then doesn't expand `@path` mentions, and doesn't run text that starts with `/` as a command"; "Requires ... Claude Code v2.1.248 or later" | https://code.claude.com/docs/en/agent-sdk/typescript.md, SDKUserMessage | documented | **gated**: `MinVersion` is at least 2.1.248; the driver's `Verbatim` is true and `Send` sets it on every message but the operator's own typed line (I19, row 12) |
+| a message without `client_composed` is expanded by the agent's own program: a leading `/name` runs as its command, an `@path` attaches the file | the commands: https://code.claude.com/docs/en/slash-commands.md; the `@` over stream-json only by the mark's own sentence (above) | documented for commands; for `@` the inverse of the mark's sentence, observed at 2.1.332 | row 12: only the operator's own typed line goes without the mark (I19); every other message keeps it |
+| the `initialize` answer lists the session's commands (`commands`: name, description, argument hint, aliases) before any message; `system/init` names them at each turn (`slash_commands`) | not stated on the pages read | undocumented, observed at 2.1.332 | row 12: read leniently, each field only when of its type, nothing else of the answer (it carries an account, never read); no list is no menu |
+| `system/commands_changed` carries the whole new list | not stated | undocumented, observed at 2.1.332 | row 12: read as the `initialize` list is; never read, the list stays as it was |
+| a command the session cannot run is answered by the agent's own sentence in an assistant line, with no replay of the message and no model turn | not stated | undocumented, observed at 2.1.332 | row 12: the line is the agent's words, as any; the message is accepted by the result below, else marked unconfirmed after `AcceptWait`, never written again |
+| a `result` names the message it answers (`user_message_uuid`) | not stated | undocumented, observed at 2.1.332 | row 12: a result naming a message written and not yet replayed accepts it; without it the replay alone accepts (I4) |
+| a command the program runs itself (`/compact`) is replayed as a line of `<local-command-stdout>` under an id of the agent's, before the message's own replay | not stated | undocumented, observed at 2.1.332 | row 12: such a line naming no message written is drawn as the agent's words; any other line naming none accepts nothing |
 | an `@` reference "makes no tool call", so `PreToolUse` hooks do not run for it; "Claude Code doesn't include a file that the rule matches" for a `Read` deny rule | https://code.claude.com/docs/en/common-workflows.md | documented | the floor's `Read` and `Edit` deny rules (design 7) |
 | a `-p` run uses a folder's settings-file hooks, its `env` block and its `.mcp.json` servers without a trust dialog | https://code.claude.com/docs/en/permissions.md, What runs before you trust a folder | documented | a chat is started only from a session whose terminal ran the agent's own program in that folder to its prompt (design 9), with the same setting sources: it loads nothing the terminal did not; and `--strict-mcp-config` (below) keeps every tool server but Conductor's out of a chat |
 | `--session-id <uuid>`, `--resume <id>`; a `-p` session resumes by id in the terminal UI: "You can still resume one by passing its session ID to `claude --resume <session-id>`" | https://code.claude.com/docs/en/sessions.md | documented | the move is observed by hand in row 5 before `Moves` is set |
@@ -710,7 +720,11 @@ By kind:
   `state` (`queued`, `written`, `accepted`, `unconfirmed`). A message
   that answers a question carries `answers` (the question's id) and no
   `text`: its text is shown to its sender by their own browser alone,
-  the people's chat's rule (`docs/protocol.md`, Chat; #364).
+  the people's chat's rule (`docs/protocol.md`, Chat; #364). A message
+  sent without the as-written mark carries `expanded: true` (row 12, I19),
+  so every viewer and every test sees how each message went; the app
+  draws a leading `/name` and each `@path` of such a message as chips,
+  and every other message as plain text.
 - **`text`**: the agent's words. `text` at most 4 KiB an entry, cut at a
   character boundary; a longer message continues in the next entry with
   the same `ref`. Streamed: revised at most once per 100 ms per entry,
@@ -823,6 +837,40 @@ test (`internal/proto/transcript_test.go`, `testdata/transcript-max.json`).
   `error{moving}` during a move; the socket's read loop is not held past
   the enqueue, so an `interrupt` sent next is read at once.
   `ws_viewer.go` and `peer.go` do this alike.
+- **Row 12's words (I19).** One test decides all of them, the
+  **operator's own chat connection**: the operator's own connection (the
+  one that answers a permission request: the workbench token's own
+  windows, or an identity provider's principal holding `admin`, with no
+  link, as a controller), attached by the server's own viewer socket
+  (`internal/api/ws_viewer.go`, the only place that tells the session
+  so), on a session that is no crew member's. A peer over the host link
+  or a switchyard, a link of any role, a relayed connection and a quiet
+  one never pass it.
+  - `submit` gains `expand` (bool, optional; absent means the mark; an
+    older owner ignores it). Both sockets hand it to the session as it
+    came. The session sends the line without the mark only where the
+    connection passes the test, the line names no question and no
+    decision and relays nobody, and the driver has a mark; anywhere else
+    the line is refused `not_sent`, nothing written.
+  - `welcome` gains `expand: true` where the connection passes the test
+    and the session is a chat whose driver has a mark; the `way` message
+    says it again to that connection alone after a move (`expand`), so
+    the page never stands in with a word of its own.
+  - TRANSCRIPT gains the message `commands`:
+    `{"t":"commands","rev":n,"commands":[{"name","words"?,"hint"?,"aliases"?}],"more"?:true}`,
+    the agent's own commands as the session keeps them: at most 200
+    (`more` when the agent listed more), a name at most 64 bytes of
+    `[A-Za-z0-9_][A-Za-z0-9_.:-]*` (any other dropped, a duplicate
+    dropped), at most 2 aliases of the same form and 32 bytes each, the
+    agent's words cut to 120 bytes with an ellipsis, the hint to 64,
+    control and hidden characters dropped; within `MaxTranscript`. Sent
+    to connections that pass the test alone, and to no other: after the
+    transcript's replay at the attach, on a change (at most one a second),
+    and after a move to Chat. A link's viewer, a peer and a quiet
+    connection are never sent it: the list names what is installed on
+    the operator's machine. It is kept in memory with the chat, gone with
+    it, and never in `Info`, a log line, the journal, the activity, sync
+    or export.
 - **The resume point is a mark.** `hello` gains `transcriptAfter`
   (uint64, optional): the highest `mark` the client holds. The owner
   replays, after `ready` and the activity and chat replays, every open
@@ -838,8 +886,9 @@ test (`internal/proto/transcript_test.go`, `testdata/transcript-max.json`).
   entry; the mark is one counter.)
 - **`welcome` gains** `way` (`"protocol"`; absent for a terminal
   session, as from an older owner), `noted` (a noted move), `verbatim`,
-  `transcript {first, last, mark}`, `interrupt: true` and
-  `permissionAnswer: true`. A protocol session sends no SCROLLBACK and
+  `transcript {first, last, mark}`, `interrupt: true`,
+  `permissionAnswer: true` and, with row 12, `expand: true`. A protocol
+  session sends no SCROLLBACK and
   `scrollbackBytes` 0.
 - **New error codes:** `not_terminal`, `not_protocol`, `no_turn`,
   `transcript_gone`, `stale_request`, `not_answerer`, `permission` (an
@@ -999,7 +1048,15 @@ is `PermissionWithdrawn`.
    person installed can still approve some calls a deny rule refuses
    (permissions.md); and the folder's own hooks and helpers run as the
    person's account, as they do in the terminal (of tool servers a chat
-   loads Conductor's alone: design 4).
+   loads Conductor's alone: design 4). With row 12, what the operator's
+   own typed `/command` changes (the conversation, the model, the agent's
+   own settings) is the agent's, as it is in its terminal; row 12's
+   by-hand checks state what `/clear`, `/model`, `/mcp` and a settings
+   command do in a chat, and a name they find loading another tool
+   server or changing the permission mode is sent with the mark. What the agent's
+   program does with an operator's `@` of a file under the deny list is
+   read and stated by row 12 before it is built (Row 12, Read and stated
+   before).
 3. **The bound.** At most `MaxPendingPermissions` (8) open or waiting
    per session; past it, denied "Too many requests are waiting; this one
    was denied."
@@ -1342,13 +1399,32 @@ conversation, and a hand-off of a running turn makes two writers.
   answer."
 - **The box to write in** is `ChatComposer`'s, bound to 4,096 bytes, its
   Send the work area's one filled button, with **Stop** (an
-  `IconButton`, "Stop this turn" in its tooltip) while a turn runs. Its
-  help is one line, shown only where the session's `verbatim` is true:
-  "Sent as written: `@file` and `/command` are not expanded here."; where
-  it is false: "Messages starting with `/` may run as the agent's
-  commands." A message sent during a turn shows "Sends when the turn
-  ends."; one not acknowledged shows "Sent, not yet confirmed.", never
-  sent again.
+  `IconButton`, "Stop this turn" in its tooltip) while a turn runs. With
+  row 12 it has no standing help line. Where the connection's welcome
+  (or, after a move, its `way` message) says `expand`, the box is the
+  operator's: its placeholder reads "Write to the agent. / for its
+  commands, @ for a file." (on a phone, and for everyone else, "Write to
+  the agent"); it sends the line with `expand: true`, and it alone does
+  (the palette's line, the sidebar's reply and the terminal view's
+  submit never send the word); `/` at the start opens a menu of the
+  agent's own commands (at most eight rows: the name in the code font,
+  its hint, the agent's words muted; Tab or Enter completes, Enter on a
+  whole listed name sends at once, Escape closes and keeps the text;
+  "Type a name to see the rest." when more were sent; "No command by
+  that name. It is sent as you typed it." for none); `@` at a word's
+  start opens a menu of files (the files the agent touched first, then
+  the folder's as typed, through the session's file requests; a pick
+  writes `@<path> `; "Finding…", "No file matches.", "More files match.
+  Keep typing."; a name with a space, a quote or a hidden mark is listed
+  and cannot be picked: "Type this path yourself: its name has a space
+  or a mark."); and a mention outside the folder says, while it is in
+  the box, "<path> is outside <folder>. The agent attaches it without
+  asking." Without `expand`, while the line begins with `/` or names a
+  file with `@`, one line reads "Sent as plain text from a shared
+  link." on a link's page. A driver with no mark keeps "Messages
+  starting with `/` may run as the agent's commands." A message sent
+  during a turn shows "Sends when the turn ends."; one not acknowledged
+  shows "Sent, not yet confirmed.", never sent again.
 - **People.** On every session's page, the people's chat and the roster
   are one rail item, **People** (the chat's panel already shows who is
   here), its sheet below xl too; `?tab=chat` and `?tab=people` both open
@@ -1399,7 +1475,8 @@ their diffs, permission questions with their state). A message that
 answers a question shows no text to anyone but its sender (#364's
 rule), and no typed answer is echoed to anyone. A control link may send
 messages and press Stop, as it may type and press keys in a terminal
-today. No link answers a permission request (design 7) or moves a
+today. A control link's messages are sent as written, and it is not
+sent the agent's commands (row 12). No link answers a permission request (design 7) or moves a
 session (design 9). A decision link is a control link here. A decide
 principal has no live connection and sees nothing of a transcript. The
 Share dialog says, for a chat, in one sentence: "People with this link
@@ -1423,6 +1500,11 @@ Every string is one short sentence.
 | a message not acknowledged (`unconfirmed`) | "Sent, not yet confirmed." |
 | a message during a turn | "Sends when the turn ends." |
 | a full queue (`too_many_requests` on `submit`) | "Too many messages are waiting." |
+| the operator's box (row 12), its placeholder | "Write to the agent. / for its commands, @ for a file." |
+| the `/` menu (row 12) | "Type a name to see the rest." / "No command by that name. It is sent as you typed it." |
+| the `@` menu (row 12) | "Finding…" / "No file matches." / "More files match. Keep typing." / "Type this path yourself: its name has a space or a mark." |
+| an operator's mention outside the folder (row 12) | "<path> is outside <folder>. The agent attaches it without asking." |
+| a link's line that begins with `/` or names a file (row 12) | "Sent as plain text from a shared link." |
 | a move pressed during a turn | "Moves to Chat when this turn ends." / "Moves to the terminal when this turn ends." |
 | a move to Chat noted at the launch, before the first reply (#1174) | "Moves to Chat after the agent's first reply." |
 | a noted move that cannot be made (`move_refused`) | "A request is waiting for an answer." / "Background work is still running." / "Crew members stay in their terminals." / "This agent cannot move its conversation yet." / "Sessions on another machine stay in their terminal." / "Sessions launched with an added folder stay in their terminal." / "This session's arguments hold <flag>, which a chat sets itself; it stays in its terminal." |
@@ -1565,12 +1647,25 @@ builder: answered for Claude Code on 2026-11-24).
 - **I18. Open requests hold the attention.** While any permission
   request is open, the attention shows the oldest; no other question
   replaces or withdraws it, and every open one can be answered.
-- **I19. A message is sent as written where the driver can say so.** A
-  driver whose protocol documents an as-written mark (Claude Code's
-  `client_composed`) sets it on every message, and no `@path` is
-  expanded and no `/command` runs from it; a driver with no such mark is
-  declared only once its row states what its agent does with them, and
-  its sessions' `verbatim` is false.
+- **I19. Only the operator's own typed line is left for the agent to
+  expand.** A driver whose protocol documents an as-written mark (Claude
+  Code's `client_composed`) sets it on every message but one kind: a line
+  the operator typed into a chat's box and sent from their own
+  connection (the workbench's own, or an identity provider's principal
+  holding `admin`, attached by the server's own viewer socket; never a
+  link's, a relayed one, a host's peer's or a switchyard's), naming no
+  question, on a session that is no crew member's. In that line the
+  agent's own program attaches the files it names with `@` and runs a
+  `/command` it begins with, as it does in its terminal. Every other
+  message carries the mark, whoever caused it: a link's viewer's line,
+  an answer or a choice, a line of the people's chat sent on to the
+  agent, and everything Conductor composes or relays (a crew's prompt
+  and task line, a handoff, a message, a broadcast, a decision's answer,
+  a launch's first message, an extension's line). The agent's own
+  commands are sent to that same connection alone. A driver with no such
+  mark is declared only once its row states what its agent does with
+  them, and its sessions' `verbatim` is false. Until the page sends the
+  word (row 12, part 4), every message carries the mark.
 - **I20. An open request's question never disappears, and an ended one
   is never drawn open.** An open request's entry and input part are
   never dropped, every replay carries every open request's entry, and a
@@ -1605,6 +1700,11 @@ Three steps, each usable by itself:
 - **Step 3, more agents** (rows 10 and 11), each after the maintainers'
   decision on its agents. At its end Codex, then the first Agent Client
   Protocol agents, run as chats the way step 1 does.
+- **Row 12, the operator's own `@file` and `/command` in a chat**
+  (#1169). After step 1, beside steps 2 and 3. At its end the operator's
+  own typed line in a chat goes for the agent to expand, with a menu of
+  the agent's commands on `/` and of the folder's files on `@`, and every
+  other message stays as written.
 
 Each row is a unit of work built with the checks of its surfaces
 (`docs/checks.md`) and leaves `main` green. Grouping into pull requests
@@ -1614,8 +1714,10 @@ list a part of its own with an adversarial review of its own (the
 links); **PR-B** is row 6 alone (who may answer); **bundle 2** is row 7,
 which ends step 1 (the switch is mounted on the page only by row 7);
 **bundle 3** is rows 8 and 9, after step 2's trust design; rows 10 and
-11 are later pull requests. No row migrates the ledger, and no row
-changes the journal's record.
+11 are later pull requests; row 12's server parts are parts of their own,
+each with an adversarial read of its own (what a message may make an
+agent do, and who is sent the agent's commands). No row migrates the
+ledger, and no row changes the journal's record.
 
 Sizes are hours of one builder's work with its review and CI, from
 comparable merged rows: a wire change across `internal/hostagent`,
@@ -1640,6 +1742,7 @@ screens with its specs, several builders, about 5 hours of wall time
 | 9 | 2 | crew, session, api, signal, hostagent, web: Yardmaster on the protocol way, with a live crew | `internal/crew` (`run.go`, `task.go`, `handoff.go`, `decisions.go`, `messages.go`, `runtime.go`), `internal/session` (`Options.OnActivity`), `internal/api` (`runs.go`, `publish.go`, `server.go`), `internal/signal` (`hub.go`, `hosted.go`), `internal/hostagent/uplink.go`, `web/e2e`, `docs/protocol.md` (run log rows) | rows 6, 8 | no | 16 h |
 | 10 | 3 | agentproto, catalog, agents: Codex's app server | `internal/agentproto/codex.go`, `internal/catalog/defaults.go`, `internal/agents/codex.go` (`codexMCPEnv` gains `CONDUCTOR_PROTOCOL`), `web/e2e` (a second stub mode) | row 7; the maintainers' decision on Codex | no | 18 h |
 | 11 | 3 | agentproto, catalog: the Agent Client Protocol client and its first native agents | `internal/agentproto/acp.go`, `internal/catalog/defaults.go`, `web/e2e` | row 7; the maintainers' decision per agent | no | 18 h |
+| 12 | after 1 | session, agentproto, proto, api, hostagent, web: the operator's own typed line expanded, the agent's commands to the operator alone, the box's two menus | `internal/session` (`submit.go`, `protocol.go`, `transcript.go`, `local.go`, `move.go`, `commands.go`), `internal/session/internal/way`, `internal/session/sessiontest`, `internal/agentproto/claude.go`, `claude_decode.go` and fixtures, `internal/proto` (`control.go`, `way.go`, `transcript.go`), `internal/api/ws_viewer.go`, `internal/hostagent/peer.go`, `web/app/utils/protocol.ts`, `web/e2e/stub-protocol.mjs`, `docs/protocol.md`; the page's box (`ChatComposer.vue`, `ChatView.vue`, a menu of its own, `utils/transcript.ts`, `utils/transport/`, `composables/useSessionConnection.ts`) | row 7; the by-hand checks below | yes: the server's two parts each with an adversarial read; the page's parts after them | 30 h |
 
 Step 1 (rows 1 to 7): about 97 hours. Step 2 (rows 8 and 9): about 26
 hours, after its trust design. Step 3 (rows 10 and 11): about 36 hours.
@@ -1651,7 +1754,9 @@ row 2: row 3 beside row 4's driver work (both touch `internal/api`, in
 different files; built in worktrees of their own feeding bundle 1's
 branch); row 4's launch work lands after row 3. Row 5 after row 4; row 6
 after row 5; row 7 after row 6. Rows 10 and 11 beside each other, after
-row 7. Rows 8 and 9 after step 2's trust design.
+row 7. Rows 8 and 9 after step 2's trust design. Row 12 after row 7: its
+server's rule first, then the commands, then the page's three parts (the
+`@` menu, the word sent, the `/` menu).
 
 ### Row 1: a child with pipes beside the Runtime, and its guard
 
@@ -2633,7 +2738,8 @@ and the tooltip), `e2e/inspector-rail.spec.ts`, `e2e/comments.spec.ts`,
   raw, or marks every line feed), `noFolderWithoutASource` (a Claude
   Code request shows no folder).
 - `ChatComposer.test.ts`: `helpLineByVerbatim` (the "Sent as written"
-  line only where `verbatim` is true).
+  line only where `verbatim` is true; row 12 rewrites it, the standing
+  line gone).
 - `inspector.test.ts`: `peopleIsOneItem` (the rail lists People once, and
   both tabs open it).
 Playwright (with the stub agent):
@@ -3219,6 +3325,215 @@ denied); its options' ids and kinds; what a signed-out start answers; and
 whether a turn leaves work running after its answer. Then its fixtures are
 recorded there.
 
+### Row 12: the operator's own `@file` and `/command` in a chat
+
+**Why.** A chat sends every message as written (I19 before this row), so
+`@file` and `/command`, which work in the agent's terminal, do nothing
+in Chat. This row makes the operator's own typed line the one exception,
+decided in one place on the server with a safe default, and gives the
+box a menu of the agent's commands and of the folder's files. Status:
+planned; nothing of it is built.
+
+**Scope, part 1: the rule (a part of its own, adversarial read).** One
+field with the safe zero value at each layer, each set and read in one
+place:
+- `proto.Submit` gains `Expand` (`expand`, optional; `Valid` unchanged).
+  The submit cases of `internal/api/ws_viewer.go` and
+  `internal/hostagent/peer.go` pass it into `session.Submission.Expand`
+  as it came; the session refuses it from a peer (never the operator's
+  own chat connection), so no layer drops it unread.
+- `session.AttachOptions` gains a word that only `internal/api/ws_viewer.go`
+  gives: the client came by the server's own viewer socket.
+- `session.Submission.Expand` is read only in `submitProtocol`, under the
+  session's lock, where the queued message is built: the message goes
+  without the mark only when the submission says `Expand`, its `By` is
+  the operator's own chat connection (design 6: the operator's own
+  connection, by the server's own socket, on a session that is no crew
+  member's), it names no question and no decision, it relays nobody
+  (`From` nil), and the driver has a mark. A terminal session ignores it.
+- `way.Message` gains `Expand`, read only by the Claude Code driver's
+  `Send`, the one writer of a user message: `client_composed: true`
+  unless `Expand`, and with `Expand` the key left out.
+- A source walk (`go/parser`, as `ext/local/boundary_test.go` walks)
+  fails when a file but those sets or reads `Expand`.
+- The prompt entry's `expanded`, the welcome's `expand` and the `way`
+  message's `expand` to that connection alone (design 6).
+- The driver: a `result` naming a message written and not replayed
+  accepts it; a replay line of `<local-command-stdout>` that names no
+  message written is drawn as the agent's words (design 4).
+- The stub agent (`web/e2e/stub-protocol.mjs`) treats a message without
+  `client_composed` as the real agent does (a leading `/name` of its
+  list runs it, `/compact` compacts with no model turn, a `/name` it
+  does not list is answered with its own sentence and no replay, an
+  `@path` of a file in its folder is attached) and writes each message's
+  mark beside its conversation (`<conversation>.marks`).
+- The three places: `internal/proto`, `web/app/utils/protocol.ts`,
+  `docs/protocol.md`.
+
+**Scope, part 2: the commands (a part of its own, adversarial read).**
+`way.Command` and `ProtocolEvents.Commands`; the Claude Code driver reads
+the `initialize` answer's `commands` once its shape check passed, and
+`system/commands_changed` (at most 1,000 entries scanned; each field only
+when of its type; nothing else of the answer), else `system/init`'s
+`slash_commands` names with no words; the session cleans and bounds the
+list (design 6), keeps it on the chat with a `rev` raised by each change,
+replaces it at a child's restart, lets it go with the chat, and sends the
+TRANSCRIPT message `commands` to the operator's own chat connections
+alone (design 6). The stub lists a made-up set in our own words, and a
+file beside its conversation makes it send a change.
+
+**Scope, parts 3 to 5: the page.** The `@` menu (messages still marked:
+the path is plain text the model may read as a visible step); then the
+word sent (`expand: true` from the Chat box alone, by the server's word
+alone, the command and mentions of an `expanded` prompt drawn as chips);
+then the `/` menu from the `commands` message (design 11).
+
+**Tests.** Go race:
+- `TestOnlyTheOperatorsOwnLineIsExpanded` (`internal/session`): a table
+  on a chat over the fake driver: the operator's own chat connection
+  with `Expand` sends `Expand` and an entry `expanded`; the same word
+  from a control link, a view link, a decision link, an owner with no
+  socket word (a host's peer), a quiet connection, a crew member's chat,
+  with `Question`, with `Decision`, with `From`, with no `By`, without
+  the word, and on a driver with no mark: none expanded.
+- `TestExpandIsPerMessage`: a guest's, the operator's and a guest's line
+  queued in one turn keep their own word, in order.
+- `TestAnExpandedLineOfARevokedSenderIsNeverWritten`: the operator's line
+  queued and its connection revoked before the write: never written.
+- `TestChatSendIsNeverExpanded`, `TestAChoiceAndAnAnswerAreNeverExpanded`,
+  and Conductor's own lines (a crew's, a run chat's send, a broadcast).
+- `TestOnlyTheViewersSubmitSetsExpand` (the source walk).
+- `TestClaudeExpandLeavesTheMarkOff`, `TestClaudeAcceptsByTheResult`,
+  `TestClaudeLocalCommandIsTheAgentsWords` (`internal/agentproto`);
+  `TestClaudeSendIsVerbatim` stays as it is.
+- `TestExpandOverTheSocket` (`internal/api`): real sockets: the
+  operator's submit with `expand` is expanded and its welcome says
+  `expand`; a link's is not, and its welcome's bytes hold no such key;
+  after a move the `way` message says it to the operator alone.
+- `TestAPeersSubmitIsNeverExpanded` (`internal/hostagent`): a viewer
+  with no link through a host whose owner is the server's own: no
+  `expand`, no commands, never expanded.
+- `TestSubmitExpand`, the welcome's and the `way` message's bytes
+  without the word, and the commands message's bounds (`internal/proto`,
+  `testdata/commands-max.json`).
+- `TestCommandsBoundedAndCleaned`, `TestCommandsChangedIsCoalesced`,
+  `TestCommandsUnchangedSendNothing`, `TestCommandsGoneWithTheChat`,
+  `TestCommandsGoToTheOperatorAlone` (no link, peer or quiet connection
+  is sent them; `Info`, the listing and the log hold no command's name).
+vitest and Playwright: the page's parts, each with its own (the stub's
+`.marks` file says how each message went).
+
+**Read and stated before part 1 is merged** (by hand, with the real
+agent, on a server with its real floor, in a Manual and in a Yolo
+session; the pull request says each was made and held). Two sentences of
+this plan wait on them and are added only once observed:
+- What the model does with a marked `/name` and a marked `@path` (a
+  folder's command, a built-in such as `/compact`). Once observed, I19
+  gains: "The mark says what the agent's program does with the text, not
+  what the model does with the words: the model reads a marked `/name`
+  and may act on it under the agent's own permission rules."
+- What stops an operator's `@` of a file: the floor's own deny rules
+  against a file under the deny list by absolute path, by `~`, through a
+  link inside the folder, in another letter case where the file system
+  folds it, and as a folder; and a file outside the folder. Once
+  observed, design 7's What the floor does not promise gains: "The
+  operator's own `@` attaches a file with no request to Conductor; only
+  a deny rule stops it, the floor's for Conductor's own files."
+- And: a control link's same lines (marked: the model's own tools and the
+  operator's question, nothing attached); `/compact`, a folder's command
+  with an argument, a command the session cannot run, `/clear` (the
+  conversation's id after it, then a move to the Terminal and back),
+  `/model`, `/context`, `/usage`, `/mcp` and a settings command (the
+  child still loads Conductor's tool server alone and keeps its
+  permission mode, else those names are sent with the mark and this row
+  says so); the agent's interactive commands (`/permissions`, `/add-dir`,
+  `/config`, `/login`): what each does when it arrives unmarked in this
+  mode; a leading `!` and a leading `#` on an unmarked line; a path with
+  a space; a message of several lines that begins
+  with `/name`; the `result` naming its message and the local-command
+  lines at the recorded version; whether leaving `client_composed` out
+  is the same as `false`, and whether `ClaudeMinVersion` behaves as the
+  recorded version does (else it is raised to it). The fixtures recorded
+  there replace the hand-built ones.
+
+**Boundary:** yes. Parts 1 and 2 are each a part of their own with an
+adversarial read; the page's parts come after them. **30 h.**
+
+**As built, row 12, part 1** (#1169; `internal/session/protocol.go`,
+`permission_answer.go`, `move.go`, `local.go`, `internal/agentproto/claude.go`,
+`internal/api/ws_viewer.go`, `internal/proto/control.go` and `way.go`,
+`web/e2e/stub-protocol.mjs`), before the by-hand checks above:
+
+- The operator's own chat connection is one test, `operatorChatLocked`:
+  `operatorAnswers` (owner, no link, a controller), the subscription's
+  `ViewerSocket` (an `AttachOptions` word only `ws_viewer.go` gives), not
+  quiet (a run's chat), and the session's `Crew` nil. The welcome's
+  `expand`, the `way` message's `expand` and the unmarked send all read
+  it; row 12's part 2 sends the commands by it too.
+- `submitProtocol` sets `Message.Expand` at the one line that builds the
+  queued message, judged as the submission is queued, under the session's
+  lock; the entry's `expanded` is the message's. A submission that asks
+  for it where it cannot be honoured (another connection, a question, a
+  decision, a relay, a driver with no mark, a terminal) is refused
+  `ErrNoExpand` (`not_sent`), nothing written: a line is never sent
+  otherwise than it asked, so no layer drops the word it does not honour.
+  `peer.go` passes a viewer's `expand` on as it came, and the session
+  refuses it there (its connection never has `ViewerSocket`). A sender who no longer
+  stands when the message's turn comes withdraws it unwritten, as before.
+  The Go fields are `Submit.Expand`, `Welcome.Expands`, `Way.Expands` and
+  `TranscriptEntry.Expanded` (JSON `expand`, `expand`, `expand`,
+  `expanded`), so that the source walk watches `Expand` and
+  `ViewerSocket` alone (`expand_walk_test.go`: their sets and reads, each
+  counted in its one file).
+- After a move, the session sends each viewer its own `way` frame, the
+  operator's own chat connection's with `expand`.
+- The Claude Code driver writes an expanded message with no
+  `client_composed` key; accepts a message a `result` names
+  (`user_message_uuid`, `user_message_uuids`) that no replay accepted, by
+  that name only; and draws a replay line of `<local-command-stdout>`
+  under an id it did not write as the agent's words (`local:<id>`).
+- No real run was recorded through this driver: the fixture
+  `hand-built-expand.jsonl` is built from a recorded run's shapes at
+  2.1.332 and says so. `ClaudeMinVersion` stays 2.1.331 until the
+  by-hand check says whether that version behaves the same.
+- The stub takes an unmarked message as the fixture does (`/compact`,
+  `/fix-issue`, any other `/name`, `@path` inside its folder) and keeps
+  each message's mark in `<conversation>.marks`.
+
+**As built, row 12, part 2** (#1169; `internal/session/commands.go`,
+`internal/proto/commands.go`, `internal/agentproto/claude.go`,
+`web/app/utils/protocol.ts`, `web/e2e/stub-protocol.mjs`):
+
+- `way.Command` and `ProtocolEvents.Commands(list)`: a driver hands the
+  whole list each time. The Claude Code driver reads the `initialize`
+  answer's `commands` once the shape check passed (the payload's
+  `commands` key alone), each `system/commands_changed` list, and, where
+  neither came, `system/init`'s `slash_commands` names; a list that is
+  not an array of objects with a string name changes nothing, and past
+  1,000 entries the rest is not read.
+- The session (`cleanCommands`) keeps a name only of the shape and bound,
+  once, its aliases of the same rules, never one that is a kept command's
+  name or an alias already given (so a name and an alias never mean two
+  commands), its words
+  and hint on one line with every control, format and line-separator
+  character dropped, cut at a character with `…` for the words; at most
+  200, `more` past them. An unchanged list is not sent again; a change
+  within `CommandsEvery` (1 s) of the last send is held and sent once,
+  the last list, by the session's clock (`Options.Now`, `AfterFunc`).
+  The list lives on the chat (`protocolWay.commands`): a move back to
+  the terminal lets it go, a held send of a chat that went is dropped, a
+  restarted child's list replaces it.
+- Sent by `operatorChatLocked` alone: after the transcript's replay in
+  `AttachWith`, at a change, and after the `way` message of a move, on
+  any chat (a driver with no mark included: who may see the list, not
+  what a line does).
+- `proto.TranscriptCommandsMsg` with `Valid`, `EncodeCommands` (never a
+  frame past its bounds) and `DecodeCommands` (strict); the app's
+  `decodeTranscript` takes `commands` only within the same bounds
+  (`commandsValid`). The stub's `initialize` answer lists a made-up set
+  (`compact`, `clear`, `model`, `fix-issue`) and a change follows each
+  change of `<conversation>.commands`.
+
 ## Decision before any builder
 
 **Answered by a maintainer on 2026-11-24, for Claude Code: (a), any
@@ -3264,9 +3579,9 @@ the other answer.
   its signals is the work that follows, issue #1092 ("session: the
   terminal way delivers through the agent's own hooks and reads a turn
   from its signals").
-- **Expanding `@file` and `/command` in a person's own typed message.**
-  A driver that can send as written does so for every message in the
-  first cut.
+- **A guest's line expanded, and the operator's line from another
+  machine through a switchyard.** Only the operator's own typed line on
+  the server's own socket is left for the agent to expand (I19, row 12).
 - **Conductor's own folder trust, a start that is a chat from its first
   moment, a Settings choice of where agents run, and a way chosen at
   launch.** Every session starts in its terminal, where the agent asks

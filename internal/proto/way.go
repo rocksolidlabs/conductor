@@ -59,6 +59,11 @@ type Way struct {
 	Protocol string `json:"protocol,omitempty"`
 	Noted    string `json:"noted,omitempty"`
 	Why      string `json:"why,omitempty"`
+	// Expands is the welcome's expand said again (Welcome.Expands): sent to
+	// the operator's own chat connection alone, while the session is a chat
+	// whose driver has a mark, so a page never stands in with a word of
+	// its own after a move.
+	Expands bool `json:"expand,omitempty"`
 }
 
 // ValidWay reports whether w is a way a session runs: "terminal" or

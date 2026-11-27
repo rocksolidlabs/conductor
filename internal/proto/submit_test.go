@@ -92,3 +92,53 @@ func TestALineThatEncodesPastMaxControlIsRefused(t *testing.T) {
 		t.Fatalf("the words %q for a bound of %d bytes", ControlTooLargeWords, MaxControl)
 	}
 }
+
+// Row 12 (docs/plans/chat-or-terminal.md, I19): a submit may ask that its
+// line go without the as-written mark (expand); absent, and from an older
+// client, it is the mark, and the bytes are what they were. The welcome's
+// and the way message's expand are absent unless said, byte for byte.
+func TestSubmitExpand(t *testing.T) {
+	var m Submit
+	if err := json.Unmarshal([]byte(`{"t":"submit","text":"/compact","reqId":"s1","expand":true}`), &m); err != nil || !m.Valid() || !m.Expand {
+		t.Fatalf("submit %v %+v", err, m)
+	}
+	// The last of two is the word, as encoding/json reads every field;
+	// a word that is not a bool is no submit.
+	if err := json.Unmarshal([]byte(`{"t":"submit","text":"x","expand":true,"expand":false}`), &m); err != nil || m.Expand {
+		t.Fatalf("twice %v %+v", err, m)
+	}
+	var bad Submit
+	if err := json.Unmarshal([]byte(`{"t":"submit","text":"x","expand":"true"}`), &bad); err == nil {
+		t.Fatalf("a string's expand read as %+v", bad)
+	}
+	b, _ := json.Marshal(Submit{T: CtlSubmit, Text: "plain"})
+	if string(b) != `{"t":"submit","text":"plain"}` {
+		t.Fatalf("without expand: %s", b)
+	}
+	b, _ = json.Marshal(Submit{T: CtlSubmit, Text: "/compact", ReqID: "s2", Expand: true})
+	if string(b) != `{"t":"submit","text":"/compact","reqId":"s2","expand":true}` {
+		t.Fatalf("with expand: %s", b)
+	}
+	w, _ := json.Marshal(Welcome{T: CtlWelcome, Way: WayProtocol, Verbatim: true, Interrupt: true, PermissionAnswer: true})
+	if string(w) != `{"t":"welcome","proto":0,"sessionId":"","role":"","cols":0,"rows":0,"status":"","scrollbackBytes":0,"transport":"","fileView":false,"way":"protocol","verbatim":true,"interrupt":true,"permissionAnswer":true}` {
+		t.Fatalf("a welcome without expand: %s", w)
+	}
+	w, _ = json.Marshal(Welcome{T: CtlWelcome, Expands: true})
+	if !strings.HasSuffix(string(w), `,"expand":true}`) {
+		t.Fatalf("a welcome with expand: %s", w)
+	}
+	way, err := EncodeWay(Way{T: CtlWay, Way: WayProtocol, Protocol: "claude-stream-json"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f, _ := Decode(way); string(f.Payload) != `{"t":"way","way":"protocol","protocol":"claude-stream-json"}` {
+		t.Fatalf("a way message without expand: %s", f.Payload)
+	}
+	way, err = EncodeWay(Way{T: CtlWay, Way: WayProtocol, Expands: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f, _ := Decode(way); string(f.Payload) != `{"t":"way","way":"protocol","expand":true}` {
+		t.Fatalf("a way message with expand: %s", f.Payload)
+	}
+}
