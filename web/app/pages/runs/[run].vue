@@ -19,7 +19,7 @@ import { runLinkWatch, runTicketRead } from '~/composables/useDispatchLive'
 import { previewPath } from '~/utils/capture'
 import type { BrakemanRequest } from '~/utils/brakeman'
 import { askChips, askDisabled } from '~/utils/brakemanAsk'
-import { carriedQuery, memberOfRun, readSaidFor, sessionPlace } from '~/utils/memberStrip'
+import { carriedQuery, keepIfHere, memberOfRun, readSaidFor } from '~/utils/memberStrip'
 import { RUN_SHORTCUTS } from '~/composables/useShortcuts'
 
 // The run page: a tile for every member of one run, its activity and a
@@ -147,11 +147,13 @@ watch(
  * Every way to a member's session: in this page's place when the live list holds it as this run's, its address naming the member alone
  * (the run's own `decision`, `task` and the rest come back through history), else its own page, which lands a member in its crew.
  */
-function openSession(id: string) {
-  const s = live.sessions.value.find((x) => x.id === id)
-  if (s && memberOfRun(s, runId.value)) void router.push({ path: route.path, query: { session: id } })
+function openSession(id: string, given?: Pick<SessionInfo, 'crew'>) {
+  // The session as just handed (a resumed member's, before the live list holds it), else as the list knows it.
+  const s = given ?? live.sessions.value.find((x) => x.id === id)
+  if (s && memberOfRun(s, runId.value)) void router.push(keepIfHere(`${route.path}?session=${encodeURIComponent(id)}`, route))
   else void router.push(`/sessions/${encodeURIComponent(id)}`)
 }
+const placeOf = useSessionPlace()
 
 /** An action (add, start, stop) answered with the run as it is now. */
 function changed(r: RunInfo) {
@@ -548,10 +550,10 @@ palette.registerPage(() => {
         run: () => {
           if (s && !ended) openMember(t.name)
           else if (offer === 'start') void startMember(t.name)
-          else if (offer === 'resume') void api.resumeRunMember(runId.value, t.name).then((res) => openSession(res.session.id)).catch((e) => toast.add({ title: 'It did not start', description: (e as Error).message, color: 'error' }))
+          else if (offer === 'resume') void api.resumeRunMember(runId.value, t.name).then((res) => openSession(res.session.id, res.session)).catch((e) => toast.add({ title: 'It did not start', description: (e as Error).message, color: 'error' }))
           else if (s) openMember(t.name)
         },
-        href: s ? sessionPlace(s, s.id) : undefined,
+        href: s ? placeOf(s.id, {}, s) : undefined,
       }
     })
   const rows: PaletteItem[] = [

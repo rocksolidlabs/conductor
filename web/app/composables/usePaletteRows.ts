@@ -1,4 +1,3 @@
-import { sessionPlace } from '~/utils/memberStrip'
 import type { CrewSummary, RunInfo, SessionInfo } from '~/composables/useSessions'
 import type { TicketSummary } from '~/composables/useDispatch'
 import { parseTicketKey, pickEdit, priorityWord, statusWord, ticketPath, ticketSummaryOf, type PickField } from '~/utils/dispatch'
@@ -183,7 +182,8 @@ export function usePaletteRows(ctx: PaletteContext) {
 
   function go(to: string) {
     ctx.close()
-    void router.push(to)
+    // An address of a session (the History rows' are the server's) goes to the session's place; the place already open moves nothing.
+    void router.push(placeOf.address(to))
   }
   // History (Program item HS1): the `~` mode's groups and the plain search's History group, from the server per query.
   const historyRows = usePaletteHistory({ go, token: ctx.token })
@@ -211,7 +211,7 @@ export function usePaletteRows(ctx: PaletteContext) {
       const r = s.crew ? await api.resumeRunMember(s.crew.runId, s.crew.member) : await api.resumeSession(s.id)
       if (r.notice) toast.add({ title: `${r.session.name} started anew`, description: r.notice, icon: 'i-lucide-rotate-ccw', color: 'neutral' })
       else toast.add({ title: `${r.session.name} resumed`, icon: 'i-lucide-history', color: 'success' })
-      go(sessionPlace(r.session, r.session.id))
+      go(placeOf(r.session.id, {}, r.session))
     } catch (e) {
       toast.add({ title: 'It did not start', description: (e as Error).message, icon: 'i-lucide-triangle-alert', color: 'error' })
     }
@@ -354,7 +354,7 @@ export function usePaletteRows(ctx: PaletteContext) {
       page.showView(view)
       return
     }
-    go(sessionPlace(s, s.id, { tab }))
+    go(placeOf(s.id, { tab }, s))
   }
 
   /**
@@ -375,7 +375,7 @@ export function usePaletteRows(ctx: PaletteContext) {
     const own = rowActions(
       sessionTarget(s, live),
       {
-        open: () => go(sessionPlace(s, s.id)),
+        open: () => go(placeOf(s.id, {}, s)),
         openRun: () => s.crew && go(`/runs/${encodeURIComponent(s.crew.runId)}`),
         share: () => ctx.share({ sessionId: s.id, sessionName: s.name }),
         yard: () => go(`/yard?focus=${encodeURIComponent(s.id)}`),
@@ -415,10 +415,10 @@ export function usePaletteRows(ctx: PaletteContext) {
       status: sessionStatus(s, now),
       session: s,
       prompt: rowPrompt(row),
-      run: () => go(sessionPlace(s, s.id)),
+      run: () => go(placeOf(s.id, {}, s)),
       actions: [...own.filter((a) => a.id !== 'open'), ...more],
       field: live ? { placeholder: `A line for ${s.name}…`, button: 'Type', submit: (text: string) => say(s, text), draft: sayDrafts.get(s.id) } : undefined,
-      href: sessionPlace(s, s.id),
+      href: placeOf(s.id, {}, s),
       yardId: s.id,
       runId: s.crew?.runId,
       ...extra,
@@ -443,7 +443,7 @@ export function usePaletteRows(ctx: PaletteContext) {
           for (const s of g.sessions) quick.choose(s, o, { question: s.attention?.id }).catch((e) => toast.add({ title: `${s.name}: not answered`, description: (e as Error).message, color: 'error' }))
           toast.add({ title: `Answered ${g.sessions.length}: ${o.label}`, description: names, icon: 'i-lucide-reply-all', color: 'success' })
         },
-        run: () => go(sessionPlace(g.sessions[0], g.sessions[0]!.id)),
+        run: () => go(placeOf(g.sessions[0]!.id, {}, g.sessions[0])),
       }
     })
   }

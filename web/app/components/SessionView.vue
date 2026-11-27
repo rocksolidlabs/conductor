@@ -36,6 +36,8 @@ const props = defineProps<{ sessionId: string; leave?: (s: SessionInfo) => strin
 /** The view has gone (its page left, another member opened): nothing that answers after it acts any more. */
 let left = false
 onBeforeUnmount(() => (left = true))
+/** The view's first read has answered (or failed): from then on its reads only refresh it. */
+let firstRead = false
 const router = useRouter()
 /**
  * Goes to `to` in this address's place, marked as the session's read's own word (READ_SAID): the page it lands on waits for its own
@@ -87,7 +89,11 @@ watch(
   (open) => {
     if (!open || restored || !keptHere) return
     restored = true
-    tabs.value = keptHere.tabs
+    // Merged with what was opened meanwhile (a file from the palette before the terminal connected), which stays in front.
+    const now = tabs.value
+    const have = new Set(keptHere.tabs.tabs.map((t) => t.id))
+    const added = now.tabs.filter((t) => !have.has(t.id))
+    tabs.value = now.tabs.length ? { ...keptHere.tabs, tabs: [...keptHere.tabs.tabs, ...added], active: now.active ?? keptHere.tabs.active, folded: false } : keptHere.tabs
   },
 )
 watch(
@@ -258,9 +264,42 @@ watch(
   { immediate: true },
 )
 const stripInline = computed(() => headWidth.value >= STRIP_INLINE_MIN)
-/** What the strip may take of the header's row: all but the session's name at its least, its meta line and the buttons at the right. */
-const STRIP_RESERVE = 680
-const stripRoom = computed(() => Math.max(360, Math.round(headWidth.value - STRIP_RESERVE)))
+/**
+ * What the strip may take of the header's row, measured: the row's width less what the buttons at the right take, what the name line
+ * holds besides the name (its state, Yolo, Terminal | Chat) and the name at its least (NAME_MIN, readable), so the name and the
+ * buttons always keep their room and the strip gives way. Measured again as any of them changes size.
+ */
+const NAME_MIN = 160
+/** The row's own padding and gaps around the strip and the name (the bar's px-6, its gaps, the strip's own end). */
+const ROW_SPARE = 80
+const stripRoom = ref(0)
+function measureRoom() {
+  const el = head.value
+  const bar = el?.querySelector<HTMLElement>('[data-session-bar]')
+  const right = bar?.querySelector<HTMLElement>('[data-slot="right"]')
+  const line = bar?.querySelector<HTMLElement>('[data-session-name-line]')
+  if (!el || !bar || !right || !line) return
+  let fixed = 0
+  for (const c of Array.from(line.children) as HTMLElement[]) {
+    if (!c.offsetWidth || c.matches('[data-session-title]') || c.querySelector('[data-session-title]')) continue
+    fixed += c.offsetWidth + 8
+  }
+  stripRoom.value = Math.max(200, Math.round(el.getBoundingClientRect().width - right.offsetWidth - fixed - NAME_MIN - ROW_SPARE))
+}
+watch(
+  [head, stripInline],
+  ([el, inline], _prev, onCleanup) => {
+    if (!el || !inline) return
+    const observer = new ResizeObserver(() => measureRoom())
+    void nextTick(() => {
+      const bar = el.querySelector<HTMLElement>('[data-session-bar]')
+      for (const t of [el, bar?.querySelector('[data-slot="right"]'), bar?.querySelector('[data-session-name-line]')]) if (t) observer.observe(t)
+      measureRoom()
+    })
+    onCleanup(() => observer.disconnect())
+  },
+  { immediate: true },
+)
 /** A hosted session whose machine is away: its files cannot be read until it returns (design 4f). */
 const hostAway = computed(() => (current.value?.kind === 'hosted' && current.value.status === 'host_disconnected' ? current.value.hostName || 'The host' : undefined))
 const copy = useCopy()
@@ -524,12 +563,15 @@ async function load() {
     admin.needsToken.value = true
     return
   }
+  // Only the first read may send the view elsewhere: a later one (after Stop, after a token change) is this view's own.
+  const first = !firstRead
   try {
     const res = await api.get(id.value)
     // A view that has gone does nothing more with what it asked for (its page is somewhere else now).
     if (left) return
+    firstRead = true
     // Where the session is not drawn here: gone before anything of it is drawn, its terminal never connected.
-    const away = props.leave?.(res.session)
+    const away = first ? props.leave?.(res.session) : undefined
     if (away) return goAway(away)
     if (!agents.value.length) void api.catalog().then((a) => (agents.value = a), () => undefined)
     session.value = res.session
@@ -540,8 +582,9 @@ async function load() {
     gone.value = null
   } catch (e) {
     if (left) return
+    firstRead = true
     // A session that cannot be read here is drawn on its own page (a crew's page sends it there), never under another page's head.
-    if (props.strayTo) return goAway(props.strayTo(id.value))
+    if (props.strayTo && first) return goAway(props.strayTo(id.value))
     if (sessionGone(e)) {
       const read = await history.record(id.value).then(
         (r) => ({ ok: r.record }),
@@ -723,7 +766,8 @@ watch(
 )
 
 // S shares and X asks to stop the session this page is on (#303): X opens the palette on the page's Stop row, asking.
-const liveNow = computed(() => !!current.value && (current.value.status === 'running' || current.value.status === 'starting'))
+// Nothing of a session acts here until its first read has answered and allowed it (UX3 R72): a cold load's head draws no control.
+const liveNow = computed(() => ready.value && !!current.value && (current.value.status === 'running' || current.value.status === 'starting'))
 function askStop() {
   if (liveNow.value) palette.askRow('page:stop')
 }
@@ -751,8 +795,14 @@ function mayGo(): boolean {
   if (first) col.closeScope(first, 'all')
   return false
 }
-onBeforeRouteLeave(() => mayGo())
-onBeforeRouteUpdate((to, from) => (to.params.id === from.params.id && to.query.session === from.query.session) || mayGo())
+// A move allowed is the person's: from then on nothing this view asked for acts, though the next page may still be loading (UX3 R72).
+function going(): boolean {
+  const ok = mayGo()
+  if (ok) left = true
+  return ok
+}
+onBeforeRouteLeave(() => going())
+onBeforeRouteUpdate((to, from) => (to.params.id === from.params.id && to.query.session === from.query.session) || going())
 /** A phone folds the terminal under an open file by itself: the palette offers no collapse there, as the strip offers no button (#432). */
 const phone = useIsPhone()
 /**
@@ -790,7 +840,7 @@ async function copyViewLink() {
 }
 palette.registerPage(() => {
   const s = current.value
-  if (!s) return null
+  if (!s || !ready.value) return null
   const live = s.status === 'running' || s.status === 'starting'
   const views: Array<[InspectorView, string, string]> = [
     ['explorer', 'Open Files', 'i-lucide-folder'],
@@ -892,7 +942,7 @@ palette.registerPage(() => {
             <StatusMark :status="statusOfKey('exited')" word class="text-xs" data-session-status="gone" />
           </div>
           <div v-else class="flex min-w-0 flex-col">
-            <div class="flex items-center gap-2 min-w-0">
+            <div class="flex items-center gap-2 min-w-0" data-session-name-line>
               <UPopover v-if="nameCut" :content="NAME_POPOVER">
                 <button ref="nameEl" type="button" :class="NAME_BUTTON" :title="headName" :aria-describedby="nameHint" data-session-title>{{ headName }}</button>
                 <template #content><p class="max-w-[min(28rem,calc(100vw-2rem))] p-3 text-sm font-semibold text-highlighted [overflow-wrap:anywhere]" data-session-title-whole>{{ headName }}</p></template>
@@ -901,13 +951,13 @@ palette.registerPage(() => {
               <span :id="nameHint" hidden>Show the whole name</span>
               <StatusMark v-if="status" :status="status" word class="text-xs" :data-session-status="current?.id" />
               <YoloBadge v-if="current?.yolo" />
-              <WaySwitch v-if="sm" :facts="switchFacts" :line="false" class="flex-none" @move="moveTo" @held="showHeld" />
+              <WaySwitch v-if="sm && ready" :facts="switchFacts" :line="false" class="flex-none" @move="moveTo" @held="showHeld" />
             </div>
             <span v-if="headline" class="truncate font-mono text-[11.5px] text-muted" :title="headline.title" data-session-meta>{{ headline.line }}</span>
           </div>
         </template>
         <template #right>
-          <template v-if="!gone">
+          <template v-if="!gone && ready">
             <TransportBadge :kind="transport.kind" :state="transport.state" :rtt="transport.rtt" compact class="hidden md:inline-flex" />
             <ViewerAvatars :viewers="viewers" class="hidden md:flex" />
             <!-- Icons only on a phone, as on the run page: the labels would push the name off the bar. Below sm Files, Share and
