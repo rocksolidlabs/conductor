@@ -12,7 +12,7 @@ import { memberLook, runTitle, startedClock } from '~/utils/crewWords'
 import { memberOffer, runOffer } from '~/utils/runs'
 import { handoffsOf } from '~/utils/crewGraph'
 import { RUN_LAYOUTS, RUN_LAYOUT_LOOK, type RunLayout, type RunWallTile } from '~/utils/wall'
-import { choiceFor, choose, crewOfRun, largeOf, readRunTiles, takeLast, withShares, writeRunTiles, type RunTilesChoice } from '~/utils/runTiles'
+import { choiceFor, choose, crewOfRun, crewsForDoc, largeOf, readRunTiles, takeKept, withShares, writeRunTiles, type RunTilesChoice } from '~/utils/runTiles'
 import type { RelatedTicket } from '~/composables/useDispatch'
 import { chainLinkedTicket, latest } from '~/utils/review'
 import { runLinkWatch, runTicketRead } from '~/composables/useDispatchLive'
@@ -247,16 +247,16 @@ const tilesChoice = computed(() => choiceFor(tilesRecord.value, crew.value))
 function chooseTiles(change: Partial<RunTilesChoice>) {
   tilesRecord.value = choose(tilesRecord.value, crew.value, change)
   writeRunTiles(pageStorage(), tilesRecord.value)
-  // The last choice is the layout document's too (R88): the desktop app's server starts on a fresh address, whose page storage is
-  // empty, and the server's copy brings the choice back.
-  const last = tilesRecord.value.last
-  ui.setLayout({ runTiles: { layout: last.layout, activity: last.activity } })
+  // The record is the layout document's too (R88, R73): the desktop app's server starts on a fresh address, whose page storage is
+  // empty, and the server's copy brings the choices back; another machine's arrive the same way.
+  const { last, crews } = tilesRecord.value
+  ui.setLayout({ runTiles: { layout: last.layout, activity: last.activity, crews: crewsForDoc(crews) } })
 }
-// The server's copy, taken up when it arrives: a crew with a choice of its own keeps it.
+// The server's copy, taken up when it arrives.
 watch(
   () => ui.layout.value.runTiles,
   (kept) => {
-    const next = takeLast(tilesRecord.value, kept)
+    const next = takeKept(tilesRecord.value, kept)
     if (next !== tilesRecord.value) {
       tilesRecord.value = next
       writeRunTiles(pageStorage(), next)

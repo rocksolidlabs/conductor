@@ -8,6 +8,7 @@ import { SPLIT_KEY } from './editorTabs'
 import { RECENT_MAX, type Recent } from './palette'
 import { SIDEBAR_FOLDS_KEY, SIDEBAR_KEY, SIDEBAR_SIZE_KEY, type SectionKey, type SidebarMode } from './sidebar'
 import type { Pin } from './pins'
+import { crewsOf, type RunTilesRecord } from './runTiles'
 
 export type UiName = 'layout' | 'palette' | 'pins'
 export const UI_NAMES: readonly UiName[] = ['layout', 'palette', 'pins']
@@ -35,8 +36,8 @@ export interface UiLayout {
   editor?: { layout?: EditorLayout; split?: number; sideSplit?: number }
   sidebar?: { mode?: SidebarMode; width?: number; folds?: Partial<Record<SectionKey, boolean>> }
   crewGraph?: { direction?: GraphDirection; handoffs?: boolean; members?: boolean }
-  /** The run page's last choice for its members' tiles, which a crew opened for the first time takes. */
-  runTiles?: { layout?: TileLayout; activity?: boolean }
+  /** The run page's last choice for its members' tiles, which a crew opened for the first time takes, and each crew's own (runTiles.ts). */
+  runTiles?: { layout?: TileLayout; activity?: boolean; crews?: RunTilesRecord['crews'] }
   runView?: RunView
   projectView?: ProjectView
 }
@@ -133,6 +134,7 @@ export function layoutFromStorage(storage: Read): UiLayout {
     const t: NonNullable<UiLayout['runTiles']> = {}
     if (TILE_LAYOUTS.includes(tiles.layout as TileLayout)) t.layout = tiles.layout as TileLayout
     if (typeof tiles.activity === 'boolean') t.activity = tiles.activity
+    if (Array.isArray(tiles.crews)) t.crews = crewsOf(tiles.crews)
     if (Object.keys(t).length) out.runTiles = t
   }
   const run = get(storage, RUN_VIEW_KEY)

@@ -276,6 +276,28 @@ test("the last layout and Activity come back from the server when the page's sto
   await expect(page.locator('[data-crew-feed]')).toBeVisible()
 })
 
+test("a crew's own layout comes back from the server too, beside a different last choice", async ({ page, api }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  // second: One large, its own; then first: Grid, the last choice made anywhere.
+  await open(page, second, 2)
+  await page.locator('[data-run-layout-choice="large"]').click()
+  await expect(page.locator('[data-run-grid]')).toHaveAttribute('data-run-layout', 'large')
+  await open(page, first, 3)
+  await page.locator('[data-run-layout-choice="grid"]').click()
+  await expect(page.locator('[data-run-grid]')).toHaveAttribute('data-run-layout', 'grid')
+  await expect
+    .poll(async () => {
+      const t = (await api.ok<{ runTiles?: { layout?: string; crews?: Array<{ layout: string }> } }>('GET', '/api/ui/layout')).runTiles
+      return `${t?.layout} ${t?.crews?.map((c) => c.layout).join(',')}`
+    }, { timeout: 15_000, message: 'the server keeps both crews and the last choice' })
+    .toBe('grid grid,large')
+  await page.evaluate((keys) => keys.forEach((k) => localStorage.removeItem(k)), TILE_KEYS)
+  const read = page.waitForResponse((r) => r.url().endsWith('/api/ui/layout') && r.request().method() === 'GET')
+  await page.goto(`/runs/${encodeURIComponent(second)}`)
+  await read
+  await expect(page.locator('[data-run-grid]')).toHaveAttribute('data-run-layout', 'large')
+})
+
 test('a phone-width window keeps its Activity to itself and writes no layout for the server', async ({ page, api }) => {
   await page.setViewportSize({ width: 390, height: 844 })
   const { toggle } = await open(page, second, 2)
