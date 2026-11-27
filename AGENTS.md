@@ -1,6 +1,6 @@
 # Conductor repository contract
 
-Conductor runs coding agents in PTYs and shares browser terminals. One Go module, one Nuxt app, one binary. Read `docs/repository-map.md` for architecture and extension points; `docs/dependencies.md` before changing dependencies. These are on-demand references, not startup imports.
+Conductor runs coding agents in PTYs and shares their terminals, to watch and drive from anywhere. One Go module, one Nuxt app, one binary. Read `docs/repository-map.md` for architecture and extension points; `docs/dependencies.md` before changing dependencies. These are on-demand references, not startup imports.
 
 - Test every affected surface. Server/CLI changes get Go race tests; UI behavior gets vitest and Playwright. Changes spanning both require both. Python tooling runs the scripts suite. See `docs/checks.md`; report unavailable checks accurately.
 - Protocol changes touch three places together: `internal/proto`,
@@ -27,7 +27,8 @@ Conductor runs coding agents in PTYs and shares browser terminals. One Go module
   (an `os.Root`), never a path opened again. Do not bypass either.
 - Keep per-connection bounds (read limits, queues, in-flight file requests).
 - UI components come from Nuxt UI; use the brand palette in `web/app/app.config.ts`
-  and `docs/design/brand.md`. The junction mark is artwork, never a status light.
+  and `docs/design/brand.md`. Screens follow the design system's rules,
+  `docs/design/system.md`. The junction mark is artwork, never a status light.
 - Names follow the railroad: Conductor is the application, Yardmaster the
   agent harness (a crew with tasks runs as its managed run), Dispatch the
   ticketing and project tracking component (its items are tickets; what
@@ -46,6 +47,49 @@ Conductor runs coding agents in PTYs and shares browser terminals. One Go module
   instructions and by-hand checklists follow this; a check that would need
   such a step on WSL is done from a machine that is not WSL, or waits for the
   app. The maintainers have said this twice; do not raise it again.
+
+## UX and UI priorities
+
+Optimize for completing the user's task with fewer unnecessary decisions.
+
+Before adding a screen, adding controls, or restructuring a flow:
+- Identify the user's main task and the information needed to complete it.
+- Where your agent has uxui-principles (an MCP server a person may add:
+  `docs/design/tools.md`), consult it for relevant guidance on cognitive
+  load, Hick's Law, progressive disclosure, and the applicable flow
+  checklist; without it, work from the design system alone. Name a
+  principle by its id; never copy its text.
+- Reuse established interaction patterns and existing components.
+  Outside guidance gives way to `docs/design/system.md` and `PRODUCT.md`.
+
+When designing:
+- Give the main task and its next action clear visual priority.
+- Keep frequent actions visible and easy to reach.
+- Reveal infrequent and advanced options at the point of need. How often
+  a thing is used decides, never how advanced it looks: Yolo stays in view.
+- Choose sensible defaults when a meaningful user decision is unnecessary.
+- Expose implementation settings only when users need to understand or
+  control them.
+- Add controls only when they serve a requested or clearly necessary task.
+- Preserve clear labels, accessibility, discoverability, and recovery.
+- People use Conductor all day: simpler means less to watch, never more
+  presses for daily work. No change makes a session's Chat or Terminal
+  view slower to use. A settings page folds nothing and cuts nothing: its
+  settings are the page.
+
+Before finishing:
+- Inspect the rendered interface and walk through the main task, in a
+  wide, short window (about 2000 x 810) as well as at 1440 and 390: after
+  each change, `make web-build build-go`, then in a terminal of its own
+  `CONDUCTOR_E2E_DAY_OPEN=1 npx playwright test day.spec.ts -g open` in
+  `web/` (the seeded day, `docs/checks.md`; it runs until Ctrl+C, and no
+  other Playwright run starts in that worktree while it does). An agent
+  that cannot open a page says so in the pull request.
+- Review competing actions, redundant information, unnecessary steps,
+  and choices that could be handled by defaults.
+- Apply justified simplifications, then verify affected secondary tasks.
+- Briefly explain, under What changed and why in the pull request, the
+  decisions removed, deferred, or handled by defaults.
 
 ## Working an issue
 
@@ -81,10 +125,11 @@ and moves the board for them.
   with review rounds and checks of its own; three had merged after a
   night.)
 - **Kept out of a bundle:** a change at a boundary (sign-in, tokens,
-  links, who may answer or act, the host link) gets a pull request of its
-  own, or a part of a bundle that is its own with an adversarial review of
-  its own; a fix people are hitting now ships alone and at once; a ledger
-  migration ships alone, so that it can be reverted alone.
+  links, who may answer or act, the host link, what `.mcp.json` starts)
+  gets a pull request of its own, or a part of a bundle that is its own
+  with an adversarial review of its own; a fix people are hitting now
+  ships alone and at once; a ledger migration ships alone, so that it can
+  be reverted alone.
 - Open a draft PR at the first commit, and tick the template's checklist.
   `Fixes #N` finishes the issue; `Part of #N` leaves it open. Say in the PR
   body which agent or person made it, with a session link when there is one.
