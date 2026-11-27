@@ -258,8 +258,8 @@ anywhere", "in the app" or "on this device". The word stays where a real
 browser is meant: Open in browser, an agent's browser profile.
 
 Not yet: the places `designRules.test.ts` lists as to be reworded, and
-words built in scripts (toasts, the palette, the events table), which the
-check does not read yet.
+words built in scripts (toasts, the palette, the events table), which a
+check reads only where `deviceWords.test.ts` names them.
 
 Checks: `designRules.test.ts`, the words (no "browser" in a template's text
 or in an attribute written as text that a person reads: a label, a

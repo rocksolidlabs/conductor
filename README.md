@@ -877,7 +877,7 @@ an attention word, or a hook mapped to one) that the server answers `429` is
 tried again after 0.1, 0.25, 0.5, 1 and 2 s, within the 5 s the command takes
 at most; an event is tried once. Sessions that need a human show an amber
 **needs input** badge, move to the top of the sidebar, count in the tab title,
-can raise a browser notification, and say their question at their tile's foot on the Yard. Claude Code's
+can raise a notification on this device, and say their question at their tile's foot on the Yard. Claude Code's
 dialogs (a tool's permission, the plan's approval, AskUserQuestion's choices)
 offer their own choices wherever the prompt is shown, read off the dialog as
 it is drawn: a choice that changes the permission mode (auto mode, accept
@@ -906,18 +906,18 @@ the feed, and its Integrations tab on Agents' Reporting to Conductor.
 **Alerts** is one panel at the right of the window, opened by **Alerts…** in
 your menu or the command palette, by **All alert rules** in the phone's More,
 or by `?alerts` on any page's address (an old link to the retired Events
-page's Routing tab opens it over History's feed). On top are the two switches, a browser
-notification and a chime, for when a session needs input and for the events
-routed to Browser. While Brakeman runs in the background a third switch,
+page's Routing tab opens it over History's feed). On top are the two switches, a
+notification on this device and a chime, for when a session needs input and for the events
+routed to This device. While Brakeman runs in the background a third switch,
 **Brakeman's background briefs with a decision**, says whether such a brief
-alerts in this browser (on unless you switch it off; Brakeman, In the
+alerts on this device (on unless you switch it off; Brakeman, In the
 background). Under them, **Where each event goes** lists the ten events
 grouped by how loud they are (needs you, worth knowing, background), each
 with its destinations as switches: a labelled badge on its session in the
 sidebar and on its Yard tile (until the session reports `working` or
-`needs_input`, or you open it), a browser notification with the chime (as
+`needs_input`, or you open it), a notification on this device with the chime (as
 switched on above), a Roundhouse jump while it follows, and a line in the
-live feed. Routes are saved in the browser.
+live feed. Routes are saved on this device.
 
 **Reporting to Conductor** is a section of the **Agents** page, under the
 cards. Each card says whether its agent reports: **Reports to Conductor** (its
@@ -1775,7 +1775,7 @@ candidate's diff against the run's base, where the attempt started or
 another result of the task, file by file in Monaco. Select lines on either
 side and **Add a note** (or Ctrl+Shift+M; on a phone, **Note on lines** with
 the lines typed), note a whole file or the candidate as a whole: the notes
-gather in a draft kept in this browser, and **Send review** sends them as one
+gather in a draft kept on this device, and **Send review** sends them as one
 batch, **Request changes** (asked first: Yardmaster reopens the task at this
 candidate, its next attempt reads the notes in its task file), **Comment** or
 **Approve** (recorded, changing nothing). A sent review says that it was
@@ -2069,8 +2069,8 @@ are hidden) opens "Share with a crew's people": the people of the crews
 whose runs the brief is about, as those runs were launched (at most three
 runs read), each a chip with what they answer for that links to their page,
 and a choice of crew when the brief names more than one. **Copy for them**
-puts the brief on your clipboard (where the browser refuses the clipboard,
-the dialog says "The browser did not let the page copy: select the text
+puts the brief on your clipboard (where the clipboard is refused,
+the dialog says "The page could not copy: select the text
 below and copy it by hand." and shows the text to select) and **Comment on
 <ticket>…** opens the
 comment dialog with the run's own ticket picked, each with their names as
@@ -2164,7 +2164,7 @@ minutes are spent. Between turns no process runs and no model is polled, and
 a restart carries on from Conductor's records (a batch that was gathering
 fires once). A background turn's question is listed in Needs you and
 notifies no one. A background brief that holds a decision no earlier
-background brief held notifies once: a browser notification ("Brakeman's
+background brief held notifies once: a notification on this device ("Brakeman's
 background brief br-14 holds 1 decision", which opens it) and the chime, as
 your Alerts switches say, on the pages open then (each open page plays
 its own chime, as for every other alert), and a POST to the webhooks that
