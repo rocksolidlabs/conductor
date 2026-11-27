@@ -455,7 +455,7 @@ async function submit() {
               <UInput v-model="state.name" :placeholder="namePlaceholder" class="w-full" />
             </UFormField>
             <UFormField v-if="takesAccount" label="Model" name="model" hint="empty: the agent chooses, or its arguments do" :error="modelError || undefined" data-launch-model>
-              <UInput v-model="model" placeholder="no model named" class="w-full font-mono" data-launch-model-input />
+              <ModelField v-model="model" :agent="selected ? { id: selected.id, name: selected.name, version: selected.identity?.version } : null" placeholder="no model named" data-launch-model-input />
             </UFormField>
             <UFormField
               v-if="argsShown"

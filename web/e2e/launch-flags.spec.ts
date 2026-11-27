@@ -209,3 +209,53 @@ test('an agent whose flags Conductor has not read offers no list, and its typed 
   }
 })
 
+test("the Model field offers the model names the agent's help gives, narrows as typed, and takes any other name as typed", async ({ browser }) => {
+  const page = await dayPage(browser, { server: own.started, width: 1440, height: 900 })
+  try {
+    const { dialog } = await argsOf(page, CLAUDE, 'flags')
+    const model = dialog.locator('input[data-launch-model-input]')
+    await expect(model).toBeVisible()
+    // The names list opens on the focus.
+    await model.click()
+    const names = () => rowsOf(page, '[data-model-name]')
+    expect(await names()).toEqual(['alpha', 'beta'])
+    await model.pressSequentially('be')
+    expect(await names()).toEqual(['beta'])
+    await page.keyboard.press('Enter')
+    await expect(model).toHaveValue('beta')
+    await expect(page.getByRole('listbox')).toHaveCount(0)
+    // A name the help does not give is taken as typed.
+    await model.fill('gamma-2')
+    await expect(page.getByRole('listbox')).toHaveCount(0)
+    const launches = await holdLaunches(page)
+    await page.keyboard.press('ControlOrMeta+Enter')
+    await expect.poll(() => launches.held.length, { message: 'the launch was sent' }).toBe(1)
+    expect(launches.held[0]!.request().postDataJSON()).toMatchObject({ agentId: 'flags', model: 'gamma-2' })
+    await launches.refuse()
+  } finally {
+    await page.context().close()
+  }
+})
+
+test("Brakeman's Model field in Settings offers the names its agent's help gives", async ({ browser }) => {
+  const page = await dayPage(browser, { server: own.started, path: '/settings', width: 1440, height: 900 })
+  try {
+    const c = page.locator('[data-brakeman-settings]')
+    await expect(c).toBeVisible()
+    const on = c.getByRole('switch', { name: 'Brakeman on' })
+    if ((await on.getAttribute('aria-checked')) !== 'true') await on.click()
+    const answered = page.waitForResponse((r) => new URL(r.url()).pathname === '/api/catalog/flags/flags')
+    await c.locator('[data-brakeman-agent]').click()
+    await page.getByRole('option', { name: CLAUDE }).click()
+    await expect(page.getByRole('listbox')).toHaveCount(0)
+    await answered
+    const model = c.locator('input[data-brakeman-model]')
+    await expect(model).toBeVisible()
+    await model.click()
+    expect(await rowsOf(page, '[data-model-name]')).toEqual(['alpha', 'beta'])
+    await page.keyboard.press('Escape')
+    await expect(page.getByRole('listbox')).toHaveCount(0)
+  } finally {
+    await page.context().close()
+  }
+})
