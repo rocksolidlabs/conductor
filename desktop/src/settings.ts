@@ -83,8 +83,8 @@ export function rootPaths(s: Pick<DesktopSettings, 'allowedRoots' | 'pressedRoot
  */
 export function shownSettings(s: DesktopSettings): Omit<DesktopSettings, 'pressedRoots'> & { pressedPaths: string[] } {
   const { pressedRoots: _pressed, ...rest } = s
-  // pressedPaths, read-only: which folders of the list a press added, for the page to say at a field what a save would do. Nothing
-  // the page sends under this name, or under pressedRoots, is ever taken (SettingsSaver).
+  // pressedPaths, read-only: which folders of the list a press added. No page reads it yet. Nothing the page sends under this name,
+  // or under pressedRoots, is ever taken (SettingsSaver).
   return { ...rest, allowedRoots: rootPaths(s), pressedPaths: (s.pressedRoots ?? []).map((p) => p.path) }
 }
 
