@@ -6,6 +6,7 @@ import { ApiError } from './useApi'
 import { useHistory } from './useHistory'
 import { useHistorySearch } from './useHistorySearch'
 import { usePaletteHistory } from './usePaletteHistory'
+import { useRecordResume } from './useRecordResume'
 
 // The palette's history (Program item HS1, PR-7), review round 1 on #746, wired to an API whose every request the test holds and lets go
 // in the order it needs: Find this elsewhere invoked from a plain search's History row shows its answer there; a resume whose outcome
@@ -46,6 +47,7 @@ beforeEach(() => {
     },
   }))
   vi.stubGlobal('useHistory', useHistory)
+  vi.stubGlobal('useRecordResume', useRecordResume)
   vi.stubGlobal('useHistorySearch', useHistorySearch)
   vi.stubGlobal('useWorkbenchToken', () => ({ hasToken: vue.ref(true), needsToken: vue.ref(false), token: vue.ref('t') }))
   vi.stubGlobal('usePalette', () => ({ open: vue.ref(true), query }))

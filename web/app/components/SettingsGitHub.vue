@@ -79,7 +79,7 @@ const revokeHref = (h: string) => githubHref(`https://${h}/settings/tokens`, h)
 <template>
   <UCard v-if="store.available.value !== false" :ui="{ header: 'px-4 py-3 sm:px-5', body: 'p-4 sm:p-5' }" data-settings-github>
     <template #header>
-      <SettingsCardTitle title="GitHub" description="A token of your own, so Dispatch reads GitHub's issues and pull requests and publishes only what you choose. Kept by this server." />
+      <SettingsCardTitle title="GitHub" description="A token so Dispatch reads GitHub's issues and pull requests, and publishes only what you choose. Saved by its own button." />
     </template>
     <div class="flex flex-col gap-4">
       <UAlert v-if="failure" color="error" variant="subtle" icon="i-lucide-triangle-alert" :title="failure" data-github-error />
@@ -115,21 +115,20 @@ const revokeHref = (h: string) => githubHref(`https://${h}/settings/tokens`, h)
         </li>
       </ul>
       <p v-else-if="store.available.value === null && store.loading.value" class="text-sm text-muted">Reading the tokens…</p>
-      <p v-else class="text-sm text-dimmed" data-github-none>No GitHub token is kept yet.</p>
+      <p v-else class="text-sm text-muted" data-github-none>No GitHub token is kept yet.</p>
 
       <!--
         No form element and no submit: a browser's password manager offers to save what a submitted password form held, and the token is
         kept by the server alone. The fields stay in place, the token's only emptied; Enter in either saves, as the button does.
       -->
       <div class="flex flex-col gap-3" data-github-form @keydown.enter="onEnter">
-        <UFormField label="Host" description="github.com, or your GitHub Enterprise Server's name." size="sm">
+        <UFormField label="Host" description="github.com, or your GitHub Enterprise address." size="sm">
           <UInput v-model="host" class="w-full" autocomplete="off" spellcheck="false" aria-label="The GitHub host" data-github-host />
         </UFormField>
         <UFormField label="Token" size="sm">
           <template #description>
-            A fine-grained token with read access to metadata, pull requests, commit statuses and actions, and read and write access to issues;
-            or a classic token with <code data-mono="key">repo</code>. A fine-grained token cannot call GitHub's Checks API: with one, a pull
-            request's checks are its commit statuses and its GitHub Actions jobs, and other apps' check runs need a classic token.
+            Fine-grained: read access to metadata, pull requests, commit statuses and actions, and read and write to issues. Or a classic token
+            with <code data-mono="key">repo</code>; only a classic one reads other apps' check runs.
           </template>
           <!--
             A password field in every browser: what is typed in one is a secret to the browser, the operating system and assistive tools
@@ -152,9 +151,10 @@ const revokeHref = (h: string) => githubHref(`https://${h}/settings/tokens`, h)
             data-github-token
           />
         </UFormField>
-        <div class="flex flex-wrap items-center gap-2">
-          <UButton type="button" label="Check and save" icon="i-lucide-shield-check" size="sm" color="neutral" variant="outline" :loading="saving" :disabled="!token || !host.trim()" data-github-save @click="save" />
-          <span class="text-xs text-muted">Saved by its own Check and save, which asks GitHub whose it is first; not by the page's Save. The token is never shown again.</span>
+        <!-- The note at the left, Check and save at the right, where a form's action is looked for (UX3 R58). -->
+        <div class="flex flex-wrap items-center gap-x-3 gap-y-2" data-github-foot>
+          <span class="min-w-0 flex-1 text-xs text-muted">GitHub says whose it is first. The token is never shown again.</span>
+          <UButton type="button" label="Check and save" icon="i-lucide-shield-check" size="sm" color="neutral" variant="outline" class="ms-auto" :loading="saving" :disabled="!token || !host.trim()" data-github-save @click="save" />
         </div>
       </div>
     </div>

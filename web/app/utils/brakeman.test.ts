@@ -663,10 +663,15 @@ describe("the grants in Settings and what Brakeman did under them (PR-13)", () =
     expect(actDecision({ ...routed, state: 'refused' })).toBe('')
     expect(actDecision({ ...routed, receipt: 'dr-7' })).toBe('')
     expect(actDecision(act({ opId: 'a1' }))).toBe('')
-    // Settings' words say it may route to a person, and that it never answers.
-    expect(GRANTS.find((g) => g.value === 'route_decision')?.words).toBe(
-      "Send an open decision record to you, the operator, or to a person of its run's crew, by name or by the responsibility they hold. It never answers one: you answer it, for them.",
-    )
+    // Settings' words say what each grant does in one line, and what it never does (UX3 R59).
+    expect(GRANTS.map((g) => g.words)).toEqual([
+      'Starts a run from a plan you approved. It never approves one.',
+      'Asks a running task for changes, as its own review. It never accepts a result.',
+      'Proposes the next plan for a ticket. It runs only once you approve it.',
+      'Sends an open decision to you or a crew member. It never answers one.',
+    ])
+    // Brakeman on with no agent says what to do, at the field.
+    expect(configProblems(config({ enabled: true, agentId: '' }), '').agentId).toBe('Pick the agent Brakeman runs on.')
   })
 
   it('tells two proposals of one operation on one ticket apart: only the one Brakeman ran is done', () => {

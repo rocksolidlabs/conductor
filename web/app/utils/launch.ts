@@ -1,5 +1,6 @@
 import { MAX_SESSION_NAME, MAX_SUBMIT } from './protocol'
 import { moreLine } from './moreOptions'
+import { accountWords, clockWords, limited, WARN_PERCENT, type CapacityView } from './capacity'
 
 /**
  * Whether the launch dialog asks where the agent runs. There are two answers
@@ -126,15 +127,58 @@ export function takesFirstMessage(agent: { firstMessage?: boolean } | null | und
 }
 
 /**
- * The line under the agent's choice when it takes no first message: why, and which of the agents offered do (by name, as the catalog
- * names them), so that the words stay true of the catalog as it is.
+ * The line in place of `What should it do?` for an agent that takes no first message: that it starts at its prompt, and, for one that
+ * takes a task at all (it takes arguments: an agent, not a shell), where to type it.
  */
-export function noFirstMessageLine(offered: Array<{ name: string; firstMessage?: boolean }>): string {
-  const names = offered.filter(takesFirstMessage).map((a) => a.name)
-  const why = "Conductor types a first message only where it knows the agent's prompt"
-  if (names.length === 0) return `${why}, and knows none of these agents' prompts.`
-  const list = names.length === 1 ? names[0] : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`
-  return `${why}: ${list} here.`
+export function noTaskLine(agent: { name: string; allowArgs?: boolean }): string {
+  return agent.allowArgs ? `${agent.name} starts at its prompt. Type your task in its terminal.` : `${agent.name} starts at its prompt.`
+}
+
+/**
+ * The agent chip a key moves the Agent row's choice to from `current` (one Tab stop, the arrows within it, as a radio group does):
+ * the next or the previous of `ids`, round at the ends, the first or the last for Home and End; null for any other key or no chips.
+ */
+export function chipStep(ids: readonly string[], current: string, key: string): string | null {
+  if (!ids.length) return null
+  const at = Math.max(0, ids.indexOf(current))
+  switch (key) {
+    case 'ArrowRight':
+    case 'ArrowDown':
+      return ids[(at + 1) % ids.length]!
+    case 'ArrowLeft':
+    case 'ArrowUp':
+      return ids[(at - 1 + ids.length) % ids.length]!
+    case 'Home':
+      return ids[0]!
+    case 'End':
+      return ids[ids.length - 1]!
+  }
+  return null
+}
+
+/** How the Launch agent dialog says a launch the server refused: under Folder for the folder's refusal, else in the alert on top. */
+export interface LaunchRefusal {
+  /** `folder`: said under Folder, the field marked invalid and given the focus; `top`: the alert above the form. */
+  at: 'folder' | 'top'
+  words: string
+  /** The folder is outside the folders agents may use: Settings is where that changes. */
+  outside?: boolean
+}
+
+/**
+ * A refusal of POST /api/sessions in the dialog's words. invalid_cwd is the folder's (its kinds as the server's resolveCwd says them:
+ * outside the allowed roots, no such folder, a file; any other in the server's words); every other code is said on top as `Not
+ * started: <the server's words>.`, the code kept out of the words (the caller marks it on the alert).
+ */
+export function launchRefusal(code: string, message: string): LaunchRefusal {
+  const said = message.trim().replace(/[.\s]+$/, '')
+  if (code === 'invalid_cwd') {
+    if (/outside the allowed roots/i.test(said)) return { at: 'folder', words: "Agents can't use this folder yet.", outside: true }
+    if (/does not exist|no such file/i.test(said)) return { at: 'folder', words: 'There is no folder at this path.' }
+    if (/not a directory/i.test(said)) return { at: 'folder', words: 'This is a file, not a folder.' }
+    return { at: 'folder', words: said ? `${said.charAt(0).toUpperCase()}${said.slice(1)}.` : "Agents can't use this folder." }
+  }
+  return { at: 'top', words: said ? `Not started: ${said}.` : 'Not started.' }
 }
 
 /**
@@ -169,3 +213,50 @@ export function launchKey(e: LaunchKey, inTask: boolean): boolean {
   if (e.ctrlKey || e.metaKey) return true
   return inTask && !e.shiftKey
 }
+
+/** Whether a launch's arguments name a model themselves: `--model`, `--model=<name>` or `-m`, as the agents' own flags spell it. */
+export function argsNameModel(args: readonly string[]): boolean {
+  return args.some((a) => a === '--model' || a.startsWith('--model=') || a === '-m')
+}
+
+/** Whether a launch's arguments hold one of the agent's yolo recipe arguments: the Yolo switch is the place for those. */
+export function argsHoldYolo(args: readonly string[], recipe: readonly string[] | undefined): boolean {
+  return !!recipe?.length && args.some((a) => recipe.includes(a))
+}
+
+/**
+ * The placeholder of Launch agent's Name: the name the task gives once one is typed (namePreview), `Made from the task` before, and
+ * for an agent that takes no task the name the server gives it, `<Agent> and a number`.
+ */
+export function namePlaceholderFor(agent: { name: string } | undefined, takesTask: boolean, task: string): string {
+  if (!agent) return ''
+  if (!takesTask) return `${agent.name} and a number`
+  return namePreview(task) || 'Made from the task'
+}
+
+/** The one line under Launch agent's Account when the usage should slow a launch: its words and colour. It never holds Launch. */
+export interface LaunchNote {
+  words: string
+  tone: 'warning' | 'error'
+}
+
+/**
+ * Whether the account's usage should slow a launch, by the judgement the crew's sheet uses (warningOf): a limit the provider says is
+ * reached; a window at warning or critical, or past WARN_PERCENT, named with its share and its reset (the error colour when the
+ * provider says critical); the agent signed out on the account. null when all is fine, or nothing is known yet.
+ */
+export function launchNote(view: Pick<CapacityView, 'state' | 'windows' | 'limits' | 'account'> | null | undefined, agent: { name: string } | undefined, timeZone?: string): LaunchNote | null {
+  if (!view || !agent) return null
+  const account = accountWords(view.account)
+  if (view.state === 'signed_out') return { words: `${agent.name} is signed out on ${account}. It will ask you to sign in when it starts.`, tone: 'warning' }
+  if (view.state !== 'ok') return null
+  if (limited(view.limits)) return { words: `${account} has reached a limit, its provider says. The agent may stop at once.`, tone: 'error' }
+  const near = view.windows.filter((w) => w.severity === 'warning' || w.severity === 'critical' || w.percent >= WARN_PERCENT)
+  if (!near.length) return null
+  const rank = (w: (typeof near)[number]) => (w.severity === 'critical' ? 2 : 1) * 1000 + w.percent
+  const worst = near.reduce((a, b) => (rank(b) > rank(a) ? b : a))
+  const at = worst.resetsAt ? Date.parse(worst.resetsAt) : NaN
+  const resets = Number.isNaN(at) ? '' : `, resets ${clockWords(at, timeZone)}`
+  return { words: `${account} is near a limit: ${worst.name} ${worst.percent}% used${resets}. The agent may stop before then.`, tone: worst.severity === 'critical' ? 'error' : 'warning' }
+}
+

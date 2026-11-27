@@ -9,9 +9,9 @@ export function waitsForTerminal(a: Pick<Attention, 'state' | 'source'> | undefi
   return a?.state === 'needs_input' && a.source === 'submit'
 }
 
-/** The heading a reply bar shows for a session that needs input: the terminal's for a held turn, else the agent's. */
+/** The heading a question's card shows for a session that needs input: the terminal's for a held turn, else `<agent> asks`. */
 export function waitingHeading(a: Pick<Attention, 'state' | 'source'> | undefined, agentName: string): string {
-  return waitsForTerminal(a) ? 'Type in the terminal to go on' : `${agentName} is waiting on you`
+  return waitsForTerminal(a) ? 'Type in the terminal to go on' : `${agentName} asks`
 }
 
 /**

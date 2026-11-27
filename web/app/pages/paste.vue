@@ -103,7 +103,7 @@ const answerLooksRight = computed(() => isPasteBlob(answer.value))
             <UFormField label="Your name" description="What the others see you as.">
               <UInput v-model="nameDraft" class="w-full" maxlength="40" />
             </UFormField>
-            <UButton v-if="!offer" label="Make my invite" icon="i-lucide-sparkles" :loading="making" :disabled="!nameDraft.trim()" class="self-start" data-paste-make @click="makeInvite" />
+            <UButton v-if="!offer" label="Make my invite" icon="i-lucide-sparkles" :loading="making" :disabled="!nameDraft.trim()" class="self-end" data-paste-make @click="makeInvite" />
             <template v-else>
               <UTextarea :model-value="offer" :rows="4" readonly class="w-full font-mono text-[11px]" data-paste-offer />
               <div class="flex items-center gap-2">
