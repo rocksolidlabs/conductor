@@ -15,7 +15,9 @@ describe("the agent's box", () => {
     expect(src).toContain("const slash = computed(() => !!props.agent && !props.agent.expand && draft.value.trimStart().startsWith('/'))")
     expect(agentForm).toMatch(/<p v-if="slash && agent\.verbatim === true"[^>]*data-chat-help="verbatim">Sent as plain text\. To run a command, use the Terminal\.<\/p>/)
     expect(agentForm).toMatch(/<p v-else-if="slash && agent\.verbatim === false"[^>]*data-chat-help="commands">Messages starting with <code[^>]*>\/<\/code> may run as the agent's commands\.<\/p>/)
-    expect(src.match(/data-chat-help=/g)).toHaveLength(2)
+    expect(src.match(/data-chat-help=/g)).toHaveLength(3)
+    // Where the box may expand, a / line that is not the person's own goes as plain text, and says so (UX3 R10).
+    expect(agentForm).toMatch(/<p v-else-if="plainSlash"[^>]*data-chat-help="plain">Sent as plain text\. Type it yourself to run it as a command\.<\/p>/)
     // The old standing lines are gone, the keys line among them: it is Send's tooltip now.
     expect(src).not.toContain('are not expanded here')
     expect(agentForm).not.toContain('Enter sends · Shift+Enter new line')
@@ -81,7 +83,8 @@ describe("the agent's box", () => {
     expect(agentForm).toContain('<ChatBoxMenu v-if="menuOpen"')
     expect(src.slice(src.indexOf('<form v-else'))).not.toContain('ChatBoxMenu')
     expect(src).toContain('const mention = computed<Mention | null>(() => (props.agent && props.files ? mentionAt(draft.value, caret.value) : null))')
-    expect(view).toContain(':files="conn.fileView.value ? files : undefined"')
+    // Only where this box may expand a line: a picked file there is attached; elsewhere no list reads like it would be (UX3 R10).
+    expect(view).toContain(':files="canExpand && conn.fileView.value ? files : undefined"')
     // Enter and Tab pick while it is open and never send; nothing while an input method composes.
     expect(src).toMatch(/function onKeydown\(e: KeyboardEvent\) \{\s*if \(menuKey\(e\)\) return/)
     expect(src).toContain("if (!menuOpen.value || e.isComposing) return false")
@@ -97,32 +100,44 @@ describe("the agent's box", () => {
     expect(src).toContain('if (!m || !row?.pickable) return')
     expect(src).toContain('const put = pickMention(draft.value, m, row.value)')
   })
-  it("marksForExpandOnlyThePersonsOwnLine (UX3 R10): the person's typing or own pick, where the server said expand", () => {
-    // The line is the person's only after a trusted input in the box or their own pick; code that sets it makes it the page's.
-    expect(src).toMatch(/function onInput\(e: Event\) \{\s*if \(e\.isTrusted\) own\.typed\(lineKey\.value\)/)
-    expect(src).toContain('if (trusted) own.typed(lineKey.value)')
-    expect(src).toContain('pick(active.value, e.isTrusted)')
-    expect(src.match(/own\.typed\(/g)).toHaveLength(2)
-    // A refused answer and a refused message come back as the page's.
-    expect(src).toMatch(/if \(outcome === 'refused'\) own\.set\(key\)/)
-    expect(src).toMatch(/lines\.edit\(key, text, undefined\)\s*own\.set\(key\)/)
-    expect(src).toContain("emit('send', draft.value, to, { own: mine, back })")
-    // The chat asks for expand only for that line, and only on the server's word for this connection.
+  it("marksForExpandOnlyThePersonsOwnLine (UX3 R10): the box keeps by utils/boxLine.ts, whose tests prove the rules", () => {
+    // The box hands every input to markInput with the text it left, and asks expandsLine at a send: the rules are boxLine.test.ts's.
+    expect(src).toMatch(/function onInput\(e: Event\) \{\s*markInput\(own, lineKey\.value, e as InputEvent, \(e\.target as HTMLTextAreaElement \| null\)\?\.value \?\? ''\)/)
+    expect(src).toContain('const mine = expandsLine(true, own, key, draft.value)')
+    expect(src).toContain('if (trusted) own.typed(lineKey.value, put.text)')
+    expect(src).toContain("if (v === '') own.set(lineKey.value)")
+    expect(src).toContain('if (freeHeld(lines, own, key, raw))')
+    expect(src).toContain('const back = (text: string) => lines.putBack(key, text)')
+    // The chat asks for expand only for that line, only on the server's word for this connection; a not_sent puts the line back.
     expect(view).toContain('const canExpand = computed(() => controls.value && conn.expand.value)')
     expect(view).toContain('const expand = canExpand.value && how?.own === true')
     expect(view).toMatch(/if \(e instanceof ReplyError && e\.code === 'not_sent'\) \{[\s\S]*?how\?\.back\(text\)/)
-    // No other place of the app asks for it.
+    // No other place of the app passes an `expand` to a submit, with any value: each submitAcked call read whole, to its paren.
     const root = new URL('..', import.meta.url).pathname
     const asking: string[] = []
+    const calls = (text: string) => {
+      const out: string[] = []
+      for (let i = text.indexOf('submitAcked('); i >= 0; i = text.indexOf('submitAcked(', i + 1)) {
+        let depth = 0
+        let j = i + 'submitAcked'.length
+        for (; j < text.length; j++) {
+          if (text[j] === '(') depth++
+          else if (text[j] === ')' && --depth === 0) break
+        }
+        out.push(text.slice(i, j + 1))
+      }
+      return out
+    }
     const walk = (dir: string) => {
       for (const f of readdirSync(dir)) {
         const p = join(dir, f)
         if (statSync(p).isDirectory()) walk(p)
-        else if (/\.(vue|ts)$/.test(f) && !/\.test\.ts$/.test(f) && /expand: true/.test(readFileSync(p, 'utf8'))) asking.push(p.slice(root.length))
+        else if (/\.(vue|ts)$/.test(f) && !/\.test\.ts$/.test(f) && calls(readFileSync(p, 'utf8')).some((c) => /\bexpand\b|\.\.\./.test(c))) asking.push(p.slice(root.length))
       }
     }
     walk(root)
-    expect(asking.sort()).toEqual(['components/ChatView.vue', 'composables/useSessionConnection.ts', 'utils/transport/base.ts'])
+    // The chat, the connection that passes its word on, and the transport's own signatures.
+    expect(asking.sort()).toEqual(['components/ChatView.vue', 'composables/useSessionConnection.ts', 'utils/transport/base.ts', 'utils/transport/types.ts'])
   })
 
   it("keepsAnAnswerAnAnswer (UX3 R5's read): what was typed for one purpose is never sent for another", () => {
@@ -130,7 +145,7 @@ describe("the agent's box", () => {
     // already answered goes free, said.
     expect(src).toMatch(/return answeredHere\.has\(id\) \? undefined : id/)
     expect(src).toContain('if (bound && bound !== ASKED) answeredHere.add(bound)')
-    expect(src).toMatch(/if \(outcome === 'held'\) \{\s*if \(lines\.text\(key\) === raw\) \{\s*lines\.free\(key\)/)
+    expect(src).toMatch(/if \(outcome === 'held'\) \{\s*if \(freeHeld\(lines, own, key, raw\)\)/)
     // B2: a kept line rebinds only to a question that takes a typed reply; with none it stays bound, and says how to go on.
     expect(src).toContain('lines.edit(lineKey.value, v, d?.kept && now === undefined ? d.question : now)')
     expect(src).toContain("'Its question was answered. Empty the box to write a message instead.'")

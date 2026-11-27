@@ -4,6 +4,7 @@ import { chatBytes, chatCounter, chatTooLong, cleanChatText } from '~/utils/chat
 import { MAX_SUBMIT } from '~/utils/protocol'
 import { giveFocusBack, type ReplyTaken } from '~/utils/reply'
 import { OwnLines, RowDrafts } from '~/utils/rowDrafts'
+import { expandsLine, freeHeld, markInput } from '~/utils/boxLine'
 import { fileRows, mentionAt, outsideMention, pickMention, type Mention, type MenuRow } from '~/utils/chatBoxMenu'
 
 /**
@@ -65,12 +66,14 @@ const emit = defineEmits<{ send: [text: string, to: string, how?: { own: boolean
 /** The agent's box keeps its line by session in the app's store; the people's chat keeps its own. */
 const lines: RowDrafts = props.agent?.draftKey ? useBoxDrafts() : (reactive(new RowDrafts()) as RowDrafts)
 const lineKey = computed(() => props.agent?.draftKey ?? '')
-/** Whose the line in the box is: the person's own typing (a trusted input, or their own pick), or one the page put there. */
-const own: OwnLines = props.agent?.draftKey ? useOwnLines() : new OwnLines()
+/** Whose the line in the box is: the person's own typing or pasting (utils/boxLine.ts), or their own pick; else the page's. */
+const own: OwnLines = props.agent?.draftKey ? useOwnLines() : (reactive(new OwnLines()) as OwnLines)
 function onInput(e: Event) {
-  if (e.isTrusted) own.typed(lineKey.value)
+  markInput(own, lineKey.value, e as InputEvent, (e.target as HTMLTextAreaElement | null)?.value ?? '')
   noteCaret()
 }
+/** The line in the box is the person's own, as it stands now. */
+const mineNow = computed(() => own.is(lineKey.value, draft.value))
 const people = ref('')
 const draft = computed({
   get: () => (props.agent ? lines.text(lineKey.value) : people.value),
@@ -80,6 +83,8 @@ const draft = computed({
       return
     }
     note.value = ''
+    // An emptied box holds nobody's line.
+    if (v === '') own.set(lineKey.value)
     // A line kept for an answered question rebinds only to a question that takes a typed reply: with none shown, it stays bound to
     // its own and goes nowhere until the person empties the box (UX3 R5: what was typed as an answer never becomes a message).
     const d = lines.get(lineKey.value)
@@ -129,6 +134,8 @@ const boxPlaceholder = computed(() => {
 })
 /** The agent's line begins with /: what the session does with a command is said then, and only then. */
 const slash = computed(() => !!props.agent && !props.agent.expand && draft.value.trimStart().startsWith('/'))
+/** Where the box may expand a line, a line beginning with / that is not the person's own goes as plain text: said, with the way on. */
+const plainSlash = computed(() => !!props.agent?.expand && draft.value.trimStart().startsWith('/') && !mineNow.value)
 /** A file the line names that lies outside the folder, where the agent would attach it: said, so that the person can take it out. */
 const outside = computed(() => (props.agent?.expand ? outsideMention(draft.value) : ''))
 const folderName = computed(() => props.agent?.folder?.replace(/\/+$/, '').split('/').pop() || 'the folder')
@@ -161,15 +168,11 @@ function send(to: string) {
   if (props.disabled || empty.value || tooLong.value) return
   if (answering.value) return answer()
   const key = lineKey.value
-  const mine = own.is(key)
-  // A line the owner refused (`not_sent`) comes back into an empty box as the page's, never as the person's: sent again unchanged,
-  // it goes as written.
-  const back = (text: string) => {
-    if (lineKey.value !== key || draft.value !== '') return
-    // As the message it was: bound to no question, whatever shows now.
-    lines.edit(key, text, undefined)
-    own.set(key)
-  }
+  const mine = expandsLine(true, own, key, draft.value)
+  // A line the owner refused (`not_sent`) comes back into its own session's box, as a message bound to no question: at once if that
+  // box is empty, else when the person empties it (RowDrafts.putBack). It is the page's line then: sent again unchanged, it goes as
+  // written.
+  const back = (text: string) => lines.putBack(key, text)
   emit('send', draft.value, to, { own: mine, back })
   draft.value = ''
   own.sent(key)
@@ -186,10 +189,7 @@ function answer() {
   emit('answer', raw.trim(), bound === ASKED ? undefined : bound, (outcome) => {
     // This page had already sent its answer to that question (a choice, a line before): the line goes free, a message now, and says so.
     if (outcome === 'held') {
-      if (lines.text(key) === raw) {
-        lines.free(key)
-        note.value = 'That question is already answered. Send now sends this line as a message.'
-      }
+      if (freeHeld(lines, own, key, raw)) note.value = 'That question is already answered. Send now sends this line as a message.'
       return
     }
     if (outcome === 'refused' && bound) answeredHere.delete(bound)
@@ -289,7 +289,7 @@ function pick(i: number, trusted: boolean) {
   if (!m || !row?.pickable) return
   const put = pickMention(draft.value, m, row.value)
   draft.value = put.text
-  if (trusted) own.typed(lineKey.value)
+  if (trusted) own.typed(lineKey.value, put.text)
   else own.set(lineKey.value)
   caret.value = put.caret
   fileList.value = null
@@ -383,6 +383,7 @@ function keepTyping(e: Event) {
     </div>
     <p v-if="slash && agent.verbatim === true" class="text-[11px] text-muted" data-chat-help="verbatim">Sent as plain text. To run a command, use the Terminal.</p>
     <p v-else-if="slash && agent.verbatim === false" class="text-[11px] text-muted" data-chat-help="commands">Messages starting with <code class="font-mono">/</code> may run as the agent's commands.</p>
+    <p v-else-if="plainSlash" class="text-[11px] text-muted" data-chat-help="plain">Sent as plain text. Type it yourself to run it as a command.</p>
     <p v-if="outside" class="text-[11px] text-warning" role="status" data-chat-outside><span class="font-mono" data-mono="path">{{ outside }}</span> is outside {{ folderName }}. The agent attaches it without asking.</p>
     <p v-if="note || stale" class="text-[11px] text-warning" role="status" data-chat-box-note>{{ note || 'Its question was answered. Empty the box to write a message instead.' }}</p>
     <p v-if="agent.said" class="text-[11px] text-warning" role="status" data-chat-said>{{ agent.said }}</p>

@@ -20,7 +20,7 @@ export function boxDrafts(listed: () => readonly string[] | undefined): RowDraft
  * no longer listed. Its watch lives in the effect scope it is made in.
  */
 export function ownLines(listed: () => readonly string[] | undefined): OwnLines {
-  const own = new OwnLines()
+  const own = reactive(new OwnLines()) as OwnLines
   watch(listed, (ids) => {
     if (ids) own.keep(ids)
   })

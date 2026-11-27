@@ -1,6 +1,7 @@
 import { MAX_TRANSCRIPT_ENTRY, MAX_TRANSCRIPT_PAGE, type TranscriptEntry, type TranscriptMessage, type TranscriptReply, type TranscriptRequest, type Welcome } from './protocol'
 import type { MarkView } from './status'
 import { EVENT_INFO, type EventType } from './events'
+import { mentionsIn } from './chatBoxMenu'
 
 // A chat's transcript as the page keeps it (docs/plans/chat-or-terminal.md, designs 5, 6 and 11): the entries the owner sent, each
 // kept at its latest revision by `seq`, the highest `mark` held (the next hello's `transcriptAfter`, so a connection made again is
@@ -560,11 +561,11 @@ export function promptParts(e: Pick<TranscriptEntry, 'text' | 'expanded' | 'answ
     rest = rest.slice(cmd[0].length)
   }
   let at = 0
-  for (const m of rest.matchAll(/(^|\s)(@\S+)/g)) {
-    const start = m.index! + m[1]!.length
-    if (start > at) parts.push({ kind: 'text', text: rest.slice(at, start) })
-    parts.push({ kind: 'mention', text: m[2]! })
-    at = start + m[2]!.length
+  // Each file as the agent reads it: a quoted path is one mention, a sentence's punctuation after a bare one is text.
+  for (const f of mentionsIn(rest)) {
+    if (f.start > at) parts.push({ kind: 'text', text: rest.slice(at, f.start) })
+    parts.push({ kind: 'mention', text: rest.slice(f.start, f.end) })
+    at = f.end
   }
   if (at < rest.length) parts.push({ kind: 'text', text: rest.slice(at) })
   return parts
