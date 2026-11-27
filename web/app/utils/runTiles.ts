@@ -95,6 +95,19 @@ export function choose(record: RunTilesRecord, crew: string, change: Partial<Run
   return { last: next, crews }
 }
 
+/**
+ * The record with the server's copy of the last choice taken up (the layout document's `runTiles`, R88): what the page's storage
+ * lost at a restart of the server comes back, and a crew with a choice of its own keeps it. A layout this page does not draw is
+ * left as it was.
+ */
+export function takeLast(record: RunTilesRecord, kept: { layout?: string; activity?: boolean } | undefined): RunTilesRecord {
+  if (!kept) return record
+  const last = { ...record.last }
+  if (isRunLayout(kept.layout)) last.layout = kept.layout
+  if (typeof kept.activity === 'boolean') last.activity = kept.activity
+  return last.layout === record.last.layout && last.activity === record.last.activity ? record : { ...record, last }
+}
+
 /** The member One large draws large among `names` (the run's order): the one chosen while it is still a member, else the first. */
 export function largeOf(choice: RunTilesChoice, names: readonly string[]): string {
   return choice.large && names.includes(choice.large) ? choice.large : (names[0] ?? '')

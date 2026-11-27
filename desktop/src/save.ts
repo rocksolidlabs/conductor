@@ -1,4 +1,4 @@
-import { serverAffecting, validate, type DesktopSettings } from './settings'
+import { serverAffecting, splitRoots, validate, type DesktopSettings } from './settings'
 
 /** What became of the last save from the Settings page, for its toast: handed to the workbench once (SettingsSaver.take). */
 export type SaveOutcome = '' | 'saved' | 'restarted'
@@ -42,6 +42,8 @@ export class SettingsSaver {
       updateAnnounced: cur.updateAnnounced,
       updateDownloaded: cur.updateDownloaded,
       updateFailedNoticed: cur.updateFailedNoticed,
+      // The page has one list of folders: the press's stay the app's own while the list holds them (splitRoots).
+      ...splitRoots(cur, (patch as { allowedRoots?: unknown }).allowedRoots),
     } as DesktopSettings
     const problems = validate(next, d.posix)
     if (problems.length) throw new Error(problems.join('; '))

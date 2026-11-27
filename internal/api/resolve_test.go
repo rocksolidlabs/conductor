@@ -196,7 +196,7 @@ func TestInProject(t *testing.T) {
 	// A symbolic link inside the project leading out is resolved first.
 	e, _ := resolveEnv(t, nil)
 	out := t.TempDir()
-	e.srv.cfg.AllowedRoots = append(e.srv.cfg.AllowedRoots, out)
+	e.srv.roots.addRoot(out)
 	link := filepath.Join(e.root, "out")
 	if err := os.Symlink(out, link); err != nil {
 		t.Fatal(err)

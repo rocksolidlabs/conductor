@@ -43,7 +43,19 @@ registerIpc({
     },
   },
 })
-const from = (url: string) => ({ senderFrame: { url } })
+// A call from the main frame of a window showing url (its origin as the page's, or opaque for one that is not http(s)).
+let frames = 1
+const from = (url: string) => {
+  let o = 'null'
+  try {
+    const u = new URL(url)
+    if (u.protocol === 'http:' || u.protocol === 'https:') o = u.origin
+  } catch {
+    /* none */
+  }
+  const f = { url, origin: o, parent: null, frameTreeNodeId: frames++, executeJavaScript: async () => {} }
+  return { sender: { mainFrame: f }, senderFrame: f }
+}
 
 describe('the bridge\'s openUrl and browsers', () => {
   it('refuse a sender that is not the workbench, starting nothing', async () => {
