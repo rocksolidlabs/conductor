@@ -359,3 +359,40 @@ test("a crew member's Extra arguments and Model offer its agent's flags and name
     await own.api.call('DELETE', `/api/crews/${encodeURIComponent(body.crew.id)}`)
   }
 })
+
+/** Whether the point at the centre of `l` is `l` itself or inside it: nothing drawn over it there. */
+async function uncovered(l: Locator): Promise<boolean> {
+  return l.evaluate((el) => {
+    const r = el.getBoundingClientRect()
+    const at = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2)
+    return !!at && (el === at || el.contains(at))
+  })
+}
+
+for (const size of [{ width: 1440, height: 900 }, DAILY]) {
+  test(`at ${size.width} x ${size.height} a flag's values open above Extra arguments: Yolo and Launch stay uncovered, and the list is whole in the window`, async ({ browser }) => {
+    const page = await dayPage(browser, { server: own.started, ...size })
+    try {
+      const { dialog, field } = await argsOf(page, CLAUDE, 'flags')
+      await field.click()
+      await field.pressSequentially('--eff')
+      await page.keyboard.press('Tab')
+      await expect(field).toHaveValue('--effort ')
+      expect(await rows(page)).toEqual(['low', 'medium', 'high'])
+      const list = page.getByRole('listbox')
+      const box = (await list.boundingBox())!
+      const at = (await field.boundingBox())!
+      expect(box.y + box.height, 'the list opens above the field').toBeLessThanOrEqual(at.y + 1)
+      expect(box.y).toBeGreaterThanOrEqual(0)
+      expect(box.x).toBeGreaterThanOrEqual(0)
+      expect(box.x + box.width).toBeLessThanOrEqual(size.width)
+      const yolo = dialog.locator('[data-yolo-switch]')
+      const launch = dialog.getByRole('button', { name: 'Launch', exact: true })
+      await expect(yolo).toBeVisible()
+      expect(await uncovered(yolo), 'the Yolo switch is not covered').toBe(true)
+      expect(await uncovered(launch), 'Launch is not covered').toBe(true)
+    } finally {
+      await page.context().close()
+    }
+  })
+}
