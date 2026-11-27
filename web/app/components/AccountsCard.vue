@@ -50,6 +50,11 @@ const others = computed(() => {
   return agents.value.filter((a) => a.available !== false && !moved.has(a.adapter ?? '')).map((a) => a.name)
 })
 
+/** Whether an agent has two or more logins to choose from (its own and an account not retired): only then is the default marked. */
+function manyLogins(adapter: string): boolean {
+  return accountsOf(adapter).some((a) => !a.retired)
+}
+
 function accountsOf(adapter: string): Account[] {
   const list = doc.value?.accounts.filter((a) => a.adapter === adapter) ?? []
   return [...list.filter((a) => !a.retired), ...list.filter((a) => a.retired)]
@@ -125,18 +130,19 @@ const removing = ref('')
 
       <section v-for="ad in doc?.adapters ?? []" :key="ad.adapter" class="flex flex-col gap-2" :data-accounts-adapter="ad.adapter">
         <h3 class="text-sm font-semibold">{{ ad.name }}</h3>
-        <ul class="flex flex-col divide-y divide-default rounded-md border border-default">
-          <li class="flex flex-col gap-1.5 p-3" data-account-row="default">
+        <!-- Its logins as rows parted by a line, no box round them; a login's usage is its row's second line (UX3 R60). -->
+        <ul class="flex flex-col divide-y divide-default">
+          <li class="flex flex-col gap-1.5 py-3" data-account-row="default">
             <div class="flex flex-wrap items-center gap-2">
               <span class="text-sm font-medium">Default login</span>
-              <UBadge v-if="ad.default === 'default'" label="default" color="primary" variant="subtle" size="sm" data-account-is-default />
+              <UBadge v-if="ad.default === 'default' && manyLogins(ad.adapter)" label="default" color="primary" variant="subtle" size="sm" data-account-is-default />
               <span class="text-xs text-muted">the agent's own login on this machine</span>
               <div class="flex-1" />
               <UButton v-if="ad.default !== 'default'" label="Set as default" size="xs" color="neutral" variant="outline" :disabled="busy || !owner" data-account-set-default @click="run(() => store.setDefault(ad.adapter, 'default'))" />
             </div>
-            <CapacityPanel v-if="readerAgent(ad)" compact :query="{ agent: readerAgent(ad), account: 'default' }" />
+            <CapacityPanel v-if="readerAgent(ad)" compact bare :query="{ agent: readerAgent(ad), account: 'default' }" />
           </li>
-          <li v-for="a in accountsOf(ad.adapter)" :key="a.id" class="flex flex-col gap-1.5 p-3" :class="a.retired ? 'opacity-70' : ''" :data-account-row="a.id" :data-account-label="a.label">
+          <li v-for="a in accountsOf(ad.adapter)" :key="a.id" class="flex flex-col gap-1.5 py-3" :class="a.retired ? 'opacity-70' : ''" :data-account-row="a.id" :data-account-label="a.label">
             <div class="flex flex-wrap items-center gap-2">
               <template v-if="renaming?.id === a.id">
                 <UInput v-model="renaming.label" size="sm" maxlength="60" class="min-w-40 flex-1" aria-label="The account's new label" data-account-rename-input @keydown.enter.prevent="saveRename" />
@@ -145,7 +151,7 @@ const removing = ref('')
               </template>
               <template v-else>
                 <span class="text-sm font-medium" data-account-name>{{ a.label }}</span>
-                <UBadge v-if="ad.default === a.id" label="default" color="primary" variant="subtle" size="sm" data-account-is-default />
+                <UBadge v-if="ad.default === a.id && manyLogins(ad.adapter)" label="default" color="primary" variant="subtle" size="sm" data-account-is-default />
                 <UBadge v-if="a.retired" label="retired" color="neutral" variant="outline" size="sm" data-account-retired />
                 <code class="min-w-0 flex-1 break-all text-xs text-muted" data-account-folder>{{ a.folder }}</code>
               </template>
@@ -163,7 +169,7 @@ const removing = ref('')
                 <UButton label="Remove" size="xs" color="neutral" variant="ghost" :disabled="busy || !owner" data-account-remove @click="removing = a.id" />
               </template>
             </div>
-            <CapacityPanel v-if="!a.retired && readerAgent(ad, a)" compact :query="{ agent: readerAgent(ad, a), account: a.id }" />
+            <CapacityPanel v-if="!a.retired && readerAgent(ad, a)" compact bare :query="{ agent: readerAgent(ad, a), account: a.id }" />
           </li>
         </ul>
       </section>
