@@ -332,6 +332,8 @@ watch(
 // press, a model set twice or Yolo's own arguments typed. Neither holds Launch: the server stays the judge.
 const extraArgs = computed(() => (selected.value?.allowArgs && state.args.trim() ? splitArgs(state.args) : []))
 const runsView = computed(() => yoloSummary(selected.value, yolo.value, extraArgs.value))
+/** The agent's own recipe arguments, which the arguments field says to leave to the Yolo switch when typed by hand. */
+const recipeArgs = computed(() => selected.value?.yolo?.args)
 const modelTwice = computed(() => (takesAccount.value && !!model.value.trim() && argsNameModel(extraArgs.value) ? 'The model is set here and in Model. Keep one of them.' : ''))
 
 // Folder: its placeholder is the folder a launch that names none runs in (the agent's own, else the server's default, which GET
@@ -654,7 +656,7 @@ async function submit() {
                 :error="modelTwice || undefined"
                 data-launch-args-field
               >
-                <AgentArgsField v-model="state.args" :agent="selected?.allowArgs ? { id: selected.id, name: selected.name, version: selected.identity?.version } : null" :model-field="takesAccount" :yolo-args="selected?.yolo?.args" autocapitalize="off" autocorrect="off" spellcheck="false" data-launch-args />
+                <AgentArgsField v-model="state.args" :agent="selected?.allowArgs ? { id: selected.id, name: selected.name, version: selected.identity?.version } : null" :model-field="takesAccount" :yolo-args="recipeArgs" autocapitalize="off" autocorrect="off" spellcheck="false" data-launch-args />
               </UFormField>
               <p v-if="selected?.allowArgs && runsView.argv.length" class="text-xs text-muted [overflow-wrap:anywhere]" data-launch-runs>
                 Runs: <code class="font-mono" data-mono="command">{{ runsView.argv.join(' ') }}</code><template v-if="takesAccount && model.trim()"> · model {{ model.trim() }}</template>
