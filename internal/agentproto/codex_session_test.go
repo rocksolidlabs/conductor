@@ -35,14 +35,21 @@ func (quiet) Close(error)             {}
 // codexSession is a session in the protocol way whose driver is the Codex
 // driver on a fake app server, on the fixtures' thread, a turn under way.
 func codexSession(t *testing.T) (*session.Local, *codexServer) {
+	s, srv, _ := codexSessionDriver(t)
+	return s, srv
+}
+
+// codexSessionDriver is codexSession with its driver.
+func codexSessionDriver(t *testing.T) (*session.Local, *codexServer, *Codex) {
 	t.Helper()
 	s := session.NewLocal(session.Info{ID: "sess", Kind: session.KindServer, Cwd: t.TempDir(), Cols: 80, Rows: 24,
 		AgentSession: &session.AgentSession{ID: fixtureThread, Resumable: true}}, sessiontest.NewFakeProc(), session.Options{ScrollbackBytes: 4096})
 	t.Cleanup(func() { _ = s.Stop(context.Background()) })
 	var srv *codexServer
+	var drv *Codex
 	start := func(_ context.Context, conv string) (session.Child, session.Protocol, error) {
 		c, fake := codexPipes(t, CodexOptions{Resume: CodexResume{Thread: conv}})
-		srv = fake
+		srv, drv = fake, c
 		return &pipeChild{done: make(chan struct{})}, c, nil
 	}
 	if err := sessiontest.EnterProtocol(s, start); err != nil {
@@ -61,13 +68,13 @@ func codexSession(t *testing.T) (*session.Local, *codexServer) {
 		}
 		return false
 	})
-	return s, srv
+	return s, srv, drv
 }
 
 // entriesNow is the session's transcript, waited for until ok holds.
 func entriesNow(t *testing.T, s *session.Local, what string, ok func([]session.TranscriptEntry) bool) []session.TranscriptEntry {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := testDeadline(t)
 	for {
 		es, _ := s.Transcript(0, session.MaxTranscriptPage)
 		if ok(es) {
@@ -166,5 +173,48 @@ func TestCodexApprovalsAreTheSessionsQuestionBoundToTheirItem(t *testing.T) {
 	}
 	if n := strings.Count(strings.Join(srv.written(), "\n"), `"accept"`); n != 1 {
 		t.Fatalf("%d accepts: only the operator's Allow is one", n)
+	}
+}
+
+// An answer that reached nobody is not recorded as given: when the driver no
+// longer holds the request as the operator's verdict is handed to it (the
+// server resolved it meanwhile), the request is recorded withdrawn and the
+// answer is told question_answered, for an allow and for a deny; no
+// decision is written for it.
+func TestCodexAnAnswerThatReachedNobodyIsRecordedWithdrawn(t *testing.T) {
+	for _, choice := range []string{proto.PermissionAllowOnce, proto.PermissionDeny} {
+		t.Run(choice, func(t *testing.T) {
+			s, srv, drv := codexSessionDriver(t)
+			srv.write(`{"method":"item/started","params":{"threadId":"` + fixtureThread + `","turnId":"turn-test-1","item":{"type":"commandExecution","id":"call-1","command":"ls","cwd":"/work","status":"inProgress","commandActions":[]}}}`)
+			srv.write(`{"id":7,"method":"item/commandExecution/requestApproval","params":{"threadId":"` + fixtureThread + `","turnId":"turn-test-1","itemId":"call-1","startedAtMs":1}}`)
+			es := entriesNow(t, s, "the request", func(es []session.TranscriptEntry) bool { _, ok := requestOf(es, "codex-req-1"); return ok })
+			r, _ := requestOf(es, "codex-req-1")
+			// The server's resolve, read by the driver in the gap between the
+			// session's hand-over and the driver's reply.
+			drv.mu.Lock()
+			delete(drv.requests, "codex-req-1")
+			delete(drv.byID, "7")
+			drv.mu.Unlock()
+			owner, err := s.AttachWith(session.AttachOptions{Role: session.RoleControl, Name: "Ada", Owner: true}, quiet{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = s.AnswerPermission(context.Background(), owner, proto.PermissionAnswer{T: proto.CtlPermissionAnswer, ReqID: "a1", Question: r.Question, Call: r.Call, Sha256: r.InputSha256, Choice: choice})
+			if !errors.Is(err, session.ErrQuestionAnswered) {
+				t.Fatalf("the answer: %v", err)
+			}
+			es = entriesNow(t, s, "the request withdrawn", func(es []session.TranscriptEntry) bool {
+				e, _ := requestOf(es, "codex-req-1")
+				return e.State == session.PermissionWithdrawn
+			})
+			if e, _ := requestOf(es, "codex-req-1"); e.Why != session.RequestLostWords {
+				t.Fatalf("the request %+v", e)
+			}
+			for _, l := range srv.written() {
+				if strings.Contains(l, `"decision"`) {
+					t.Fatalf("a decision was written: %s", l)
+				}
+			}
+		})
 	}
 }

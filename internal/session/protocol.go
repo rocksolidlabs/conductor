@@ -1744,6 +1744,16 @@ func (e protocolEvents) Permission(r PermissionRequest) {
 // call's ref, or the words the request is denied with. The caller holds
 // s.mu.
 func (s *Local) bindInStreamLocked(p *protocolWay, call, tool, digest string) (ref, words string) {
+	if p.stopping {
+		// Every open request was denied as the stop began: none is taken
+		// after.
+		return "", EndedBeforeAnswerWords
+	}
+	if call == "" {
+		// An in-stream request names its call: one that names none is no
+		// call this session is making.
+		return "", NotACallWords
+	}
 	if tool == permissionToolName || len(call) > MaxEntryRef || len(tool) > MaxEventTool || !p.isReady || p.restarting || s.moveDone != nil {
 		return "", NotACallWords
 	}
@@ -1909,11 +1919,11 @@ func canonicalJSON(input []byte) []byte {
 // plainOf is the closed set of a request's plain words by its tool.
 func plainOf(tool string) string {
 	switch strings.ToLower(tool) {
-	case "bash", "shell", "exec", "command", "commandexecution":
+	case "bash", "shell", "exec", "command", "commandexecution", "execute":
 		return "command"
-	case "edit", "write", "multiedit", "notebookedit", "filechange":
+	case "edit", "write", "multiedit", "notebookedit", "filechange", "delete", "move":
 		return "file"
-	case "read", "grep", "glob", "ls":
+	case "read", "grep", "glob", "ls", "search":
 		return "read"
 	}
 	return "tool"

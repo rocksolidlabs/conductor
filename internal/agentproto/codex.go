@@ -192,6 +192,9 @@ type codexRead struct {
 type codexTool struct {
 	name  string
 	input []byte
+	// unread says the item held a field the driver does not read: a
+	// request about it is declined, never asked without it.
+	unread bool
 }
 
 type codexTokens struct{ in, out int64 }
@@ -438,7 +441,9 @@ func (c *Codex) Reply(_ context.Context, ref string, v session.Verdict) error {
 	}
 	c.mu.Unlock()
 	if r == nil {
-		return nil
+		// Answered, resolved or replaced already: the verdict reaches no
+		// request.
+		return ErrNoRequest
 	}
 	decision := "decline"
 	if v.Allow && !v.Cancel {
@@ -771,11 +776,11 @@ func (c *Codex) itemStarted(item map[string]json.RawMessage, e session.ProtocolE
 	if !ok {
 		return
 	}
-	c.announce(id, name, input, summary, e)
+	c.announce(id, name, input, summary, codexUnread(kind, item), e)
 }
 
 // announce tells the session of a step, once.
-func (c *Codex) announce(id, name string, input []byte, summary string, e session.ProtocolEvents) {
+func (c *Codex) announce(id, name string, input []byte, summary string, unread bool, e session.ProtocolEvents) {
 	r := &c.r
 	if _, open := r.tools[id]; open {
 		return
@@ -785,7 +790,7 @@ func (c *Codex) announce(id, name string, input []byte, summary string, e sessio
 		delete(r.tools, r.toolSeq[0])
 		r.toolSeq = r.toolSeq[1:]
 	}
-	r.tools[id] = codexTool{name: name, input: input}
+	r.tools[id] = codexTool{name: name, input: input, unread: unread}
 	e.ToolStarted(session.ToolStep{Ref: id, Name: name, Input: bytes.Clone(input), Summary: summary})
 }
 
@@ -829,24 +834,101 @@ func commandInput(command, cwd string) []byte {
 	return b
 }
 
-// changesInput is a file change's input: each change's path, kind and diff;
-// and the first path.
+// changesInput is a file change's input: each change's path, its kind
+// (its type, and the place it moves the file to where it moves one) and its
+// diff; and the first path.
 func changesInput(changes []json.RawMessage) ([]byte, string) {
 	list := make([]map[string]any, 0, len(changes))
 	first := ""
 	for _, raw := range changes {
 		ch := object(raw)
-		var path, diff, kind string
+		var path, diff, kind, moveTo string
 		field(ch, "path", &path)
 		field(ch, "diff", &diff)
 		field(object(ch["kind"]), "type", &kind)
+		field(object(ch["kind"]), "move_path", &moveTo)
 		if first == "" {
 			first = path
 		}
-		list = append(list, map[string]any{"path": path, "kind": kind, "diff": diff})
+		k := map[string]any{"type": kind}
+		if moveTo != "" {
+			k["move_path"] = moveTo
+		}
+		list = append(list, map[string]any{"path": path, "kind": k, "diff": diff})
 	}
 	b, _ := marshal(map[string]any{"changes": list})
 	return b, first
+}
+
+// The fields of the items a person is asked about that the driver reads
+// (the stable schema's, CodexMinVersion): an item holding any other, not
+// null, is one the driver cannot show whole.
+var (
+	codexCommandFields = []string{"type", "id", "command", "cwd", "status", "commandActions", "aggregatedOutput", "exitCode", "durationMs", "processId", "source", "pluginId", "scriptPath"}
+	codexChangeFields  = []string{"type", "id", "changes", "status"}
+	codexChangeKeys    = []string{"path", "kind", "diff"}
+	codexKindKeys      = []string{"type", "move_path"}
+	codexKindTypes     = []string{"add", "delete", "update"}
+)
+
+// codexUnread says a command's or a file change's item holds what the
+// driver does not read: a field beyond the ones it reads, a change or a
+// change's kind beyond its own, a kind of change it does not know, a
+// command or a change set that is not of the shape it reads.
+func codexUnread(kind string, item map[string]json.RawMessage) bool {
+	switch kind {
+	case "commandExecution":
+		if extraFields(item, codexCommandFields) {
+			return true
+		}
+		var command string
+		return !fieldIs(item, "command", &command) || command == ""
+	case "fileChange":
+		if extraFields(item, codexChangeFields) {
+			return true
+		}
+		var changes []json.RawMessage
+		if !fieldIs(item, "changes", &changes) {
+			return true
+		}
+		for _, raw := range changes {
+			ch := object(raw)
+			if ch == nil || extraFields(ch, codexChangeKeys) {
+				return true
+			}
+			k := object(ch["kind"])
+			var t, path string
+			if k == nil || extraFields(k, codexKindKeys) || !fieldIs(k, "type", &t) || !contains(codexKindTypes, t) || !fieldIs(ch, "path", &path) || path == "" {
+				return true
+			}
+			if raw, ok := k["move_path"]; ok && !isNull(raw) {
+				var to string
+				if !fieldIs(k, "move_path", &to) || to == "" {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// extraFields says m holds a field, not null, that is not one of known.
+func extraFields(m map[string]json.RawMessage, known []string) bool {
+	for k, v := range m {
+		if !contains(known, k) && !isNull(v) {
+			return true
+		}
+	}
+	return false
+}
+
+// fieldIs is field, saying whether m[key] was there and of dst's type.
+func fieldIs[T any](m map[string]json.RawMessage, key string, dst *T) bool {
+	raw, ok := m[key]
+	if !ok {
+		return false
+	}
+	return json.Unmarshal(raw, dst) == nil
 }
 
 // argumentsOf is a tool call's arguments as the server gave them, {} for
@@ -903,7 +985,7 @@ func (c *Codex) itemCompleted(item map[string]json.RawMessage, e session.Protoco
 		return
 	}
 	// A step whose start was not told is announced as it ends.
-	c.announce(id, name, input, summary, e)
+	c.announce(id, name, input, summary, codexUnread(kind, item), e)
 	delete(c.r.tools, id)
 	var status string
 	field(item, "status", &status)
@@ -955,7 +1037,7 @@ func (c *Codex) itemCompleted(item map[string]json.RawMessage, e session.Protoco
 		var changes []json.RawMessage
 		field(item, "changes", &changes)
 		for _, raw := range changes {
-			if f, ok := codexFileChange(id, object(raw)); ok {
+			for _, f := range codexFileChanges(id, object(raw)) {
 				e.FileChanged(f)
 			}
 		}
@@ -974,6 +1056,12 @@ func codexFileChange(tool string, ch map[string]json.RawMessage) (session.FileCh
 	field(object(ch["kind"]), "type", &kind)
 	if path == "" {
 		return session.FileChange{}, false
+	}
+	var moveTo string
+	field(object(ch["kind"]), "move_path", &moveTo)
+	if moveTo != "" {
+		// A move: the change lands at its destination.
+		path = moveTo
 	}
 	f := session.FileChange{Tool: tool, Path: path, Op: session.ChangeEdit}
 	switch kind {
@@ -1004,6 +1092,22 @@ func codexFileChange(tool string, ch map[string]json.RawMessage) (session.FileCh
 		f.Diff = []byte(diff)
 	}
 	return f, true
+}
+
+// codexFileChanges are the files a change made: its file changed, and for a
+// move the file at its destination and the one it left, deleted.
+func codexFileChanges(tool string, ch map[string]json.RawMessage) []session.FileChange {
+	f, ok := codexFileChange(tool, ch)
+	if !ok {
+		return nil
+	}
+	out := []session.FileChange{f}
+	var from string
+	field(ch, "path", &from)
+	if from != f.Path {
+		out = append(out, session.FileChange{Tool: tool, Path: from, Op: session.ChangeDelete})
+	}
+	return out
 }
 
 // serverRequest is a request the server makes of the driver. An approval of
@@ -1054,8 +1158,12 @@ func (c *Codex) approval(method string, id json.RawMessage, p map[string]json.Ra
 	field(p, "cwd", &cwd)
 	field(p, "command", &command)
 	field(p, "grantRoot", &grantRoot)
-	if item == "" {
+	if item == "" || !codexApprovalRead(method, p) {
+		// No item named, or the request asks for more than its card
+		// shows: declined, never asked without what the driver does not
+		// read.
 		c.decline(id)
+		e.Notice(NoticeDeclined, CodexDeclinedWords)
 		return
 	}
 	// The session takes a request only for the call the stream announced,
@@ -1067,6 +1175,12 @@ func (c *Codex) approval(method string, id json.RawMessage, p map[string]json.Ra
 	// call and denied; one for an item never announced is handed over as it
 	// is, and denied.
 	step, announced := c.r.tools[item]
+	if announced && step.unread {
+		// Its item held what the driver does not read.
+		c.decline(id)
+		e.Notice(NoticeDeclined, CodexDeclinedWords)
+		return
+	}
 	var tool string
 	var input []byte
 	if method == "item/commandExecution/requestApproval" {
@@ -1086,6 +1200,15 @@ func (c *Codex) approval(method string, id json.RawMessage, p map[string]json.Ra
 		tool = "fileChange"
 		input = []byte(`{"changes":[]}`)
 		if announced && step.name == tool {
+			var was struct {
+				Changes []json.RawMessage `json:"changes"`
+			}
+			if json.Unmarshal(step.input, &was) != nil || len(was.Changes) == 0 {
+				// A change set announced empty is not shown whole yet.
+				c.decline(id)
+				e.Notice(NoticeDeclined, CodexDeclinedWords)
+				return
+			}
 			input = step.input
 		}
 		if grantRoot != "" {
@@ -1105,7 +1228,8 @@ func (c *Codex) approval(method string, id json.RawMessage, p map[string]json.Ra
 		c.decline(id)
 		return
 	}
-	if old, ok := c.byID[key]; ok {
+	old, reused := c.byID[key]
+	if reused {
 		delete(c.requests, old)
 	}
 	c.reqSeq++
@@ -1113,7 +1237,39 @@ func (c *Codex) approval(method string, id json.RawMessage, p map[string]json.Ra
 	c.requests[ref] = &codexRequest{id: bytes.Clone(id), method: method}
 	c.byID[key] = ref
 	c.mu.Unlock()
+	if reused {
+		// The server named a new request by an open one's id: the open
+		// one's card closes, its answer reaching nobody.
+		e.PermissionWithdrawn(old)
+	}
 	e.Permission(session.PermissionRequest{Ref: ref, Call: item, Tool: tool, Input: input, Cwd: cwd})
+}
+
+// The fields of an approval request the driver reads, and those it takes
+// only empty (stable schema, CodexMinVersion): a request that holds any
+// other, or one of those, asks for more than its card shows (a network
+// access, added permissions, a sub-approval of a command, a reason to read,
+// another environment), and is declined.
+var (
+	codexCommandApprovalFields = []string{"threadId", "turnId", "itemId", "startedAtMs", "command", "cwd", "commandActions", "proposedExecpolicyAmendment", "proposedNetworkPolicyAmendments", "kind"}
+	codexChangeApprovalFields  = []string{"threadId", "turnId", "itemId", "startedAtMs", "grantRoot"}
+)
+
+// codexApprovalRead says the driver reads all an approval request asks:
+// no field beyond the ones it reads (an empty one aside), a command's kind
+// "command" where it names one.
+func codexApprovalRead(method string, p map[string]json.RawMessage) bool {
+	known := codexChangeApprovalFields
+	if method == "item/commandExecution/requestApproval" {
+		known = codexCommandApprovalFields
+		if raw, ok := p["kind"]; ok && !isNull(raw) {
+			var kind string
+			if json.Unmarshal(raw, &kind) != nil || kind != "command" {
+				return false
+			}
+		}
+	}
+	return !extraFields(p, known)
 }
 
 // codexItemIDInLine finds the item a cut line completes.
