@@ -64,7 +64,8 @@ test('the app opens the workbench on its own server and stops it on quit', async
     if (!item) throw new Error('no Restart server in the menu')
     item.click()
   })
-  await expect.poll(() => new URL(page.url()).origin, { timeout: 60_000 }).not.toBe(url.origin)
+  // The window shows nothing while no server runs (about:blank, a state it passes through): wait for the page on the new server.
+  await expect.poll(() => workbench.test(page.url()) && new URL(page.url()).origin !== url.origin, { timeout: 60_000 }).toBe(true)
   expect(new URL(page.url()).pathname).toBe('/agents')
   await expect(page.locator('[data-agent]').first()).toBeVisible({ timeout: 30_000 })
   const live = new URL(page.url())

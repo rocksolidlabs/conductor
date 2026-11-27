@@ -66,7 +66,7 @@ func TestCommandsFrameBounds(t *testing.T) {
 			m.Commands[0].Name = "-x"
 		},
 		"an empty name":           func(m *TranscriptCommandsMsg) { m.Commands[0].Name = "" },
-		"a name with a bidi mark": func(m *TranscriptCommandsMsg) { m.Commands[0].Name = "fix‮issue" },
+		"a name with a bidi mark": func(m *TranscriptCommandsMsg) { m.Commands[0].Name = "fix" + string(rune(0x202E)) + "issue" },
 		"a name twice":            func(m *TranscriptCommandsMsg) { m.Commands[1].Name = m.Commands[0].Name },
 		"three aliases":           func(m *TranscriptCommandsMsg) { m.Commands[0].Aliases = append(m.Commands[0].Aliases, "c") },
 		"an alias past its bound": func(m *TranscriptCommandsMsg) {

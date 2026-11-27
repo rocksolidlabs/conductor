@@ -32,7 +32,7 @@ describe("the chat box's list for @", () => {
 
   it('unsafeNamesCannotBePicked: a space, a newline, a quote, a backslash, an @, a leading - or /, a .. part, a bidi mark', () => {
     for (const ok of ['notes.txt', 'src/main.go', 'a-b_c+d=e,f%g.txt', 'ünïcode/naïve.md']) expect(safePath(ok), ok).toBe(true)
-    for (const bad of ['my notes.txt', 'a\nb', 'it"s', "it's", 'a\\b', 'a@b', '-rf', '/etc/hosts', 'a/../b', '..', `abc‮def`, 'x​y', '', 'a'.repeat(1025)]) {
+    for (const bad of ['my notes.txt', 'a\nb', 'it"s', "it's", 'a\\b', 'a@b', '-rf', '/etc/hosts', 'a/../b', '..', `abc${String.fromCodePoint(0x202e)}def`, `x${String.fromCodePoint(0x200b)}y`, '', 'a'.repeat(1025)]) {
       expect(safePath(bad), JSON.stringify(bad)).toBe(false)
     }
     const rows = fileRows(['notes.txt', 'my notes.txt', 'notes.txt'])

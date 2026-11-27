@@ -206,7 +206,10 @@ export interface DesktopBridge {
    * (an older app, Windows while its switch is off).
    */
   allowFolder?(path: string, confirmed?: string): Promise<{ ok: true; root: string; saved: boolean; error?: string } | { ok: false; code: string; message: string; real?: string; wide?: string; reason?: string }>
-  /** The settings changed outside the Settings page (a folder allowed): read them again. Older apps lack it. */
+  /**
+   * The settings changed outside the Settings page (a folder allowed from the Launch agent dialog, a trial's or a crew's): the page
+   * reads them again (UX3 R62). Older apps lack it.
+   */
   onSettings?(cb: () => void): () => void
   restartServer(): Promise<void>
   openInBrowser(): Promise<void>
