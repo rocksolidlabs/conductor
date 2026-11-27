@@ -1,6 +1,6 @@
 import { mkdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import { expect, standingRoute, test, viaMore, type Api } from './fixtures'
+import { expect, standingRoute, stopStrays, test, viaMore, type Api } from './fixtures'
 import type { Locator, Page, Request } from '@playwright/test'
 import { uncut } from './layout'
 import type { E2EState } from './state'
@@ -12,8 +12,11 @@ import type { E2EState } from './state'
 test.skip(process.platform === 'win32', 'POSIX paths')
 
 // The tests route the page while it works: the standing route keeps its interception on from before the first load.
-test.beforeEach(async ({ page }) => {
+// No session another spec left runs: a save that restarts the server asks first while agents run (UX3 R56), and the tests that save
+// mean the save to go at once; the question has tests of its own, each with a session of its own.
+test.beforeEach(async ({ page, api }) => {
   await standingRoute(page.context())
+  await stopStrays(api, [])
 })
 
 /**
@@ -531,7 +534,7 @@ test('the save toast says what became of the save, on the page that saved or the
 
   // On the page that saved: yolo is how agents run, the server restarts (here without moving), and the toast says so.
   await page.locator('[data-yolo-switch]').click()
-  await expect(save).toHaveText('Save and restart the server')
+  await expect(save).toHaveText('Save and restart')
   await save.click()
   await expect(toast('Saved; the server restarted')).toBeVisible()
   await expect(save).toBeDisabled()
@@ -552,7 +555,7 @@ test('the save toast says what became of the save, on the page that saved or the
   // A restart that fails: the error and no toast; the retry, the settings kept, says saved alone.
   await page.evaluate(() => sessionStorage.setItem('e2e.restart', 'fail'))
   await page.locator('[data-yolo-switch]').click()
-  await expect(save).toHaveText('Save and restart the server')
+  await expect(save).toHaveText('Save and restart')
   await save.click()
   await expect(page.locator('[data-settings-error]')).toContainText('did not start')
   await expect(toast('Saved; the server restarted')).toHaveCount(0)
@@ -683,7 +686,7 @@ test("the page's one Save saves Brakeman's section with the app's settings, and 
     // Both: Brakeman's is on the server by the time the app's are set (and the server restarts).
     await page.locator('[data-yolo-switch]').click()
     await readsField(page).fill(String(reads + 1))
-    await expect(save).toHaveText('Save and restart the server')
+    await expect(save).toHaveText('Save and restart')
     await save.click()
     await expect(toast('Saved; the server restarted')).toBeVisible()
     await expect(save).toBeDisabled()
@@ -702,7 +705,7 @@ test("the page's one Save saves Brakeman's section with the app's settings, and 
     await expect(error).toHaveText("Brakeman's settings were saved. The app's settings were not: the settings were refused. Your edits are kept.")
     await expect.poll(savedReads).toBe(reads + 2)
     await expect(page.locator('[data-yolo-switch]')).toHaveAttribute('aria-checked', 'false')
-    await expect(save).toHaveText('Save and restart the server')
+    await expect(save).toHaveText('Save and restart')
     // Saved this time (the toast of the save before may still show its same words: the app's record says it).
     await save.click()
     await expect.poll(async () => (await sets()).length).toBe(3)
@@ -1167,7 +1170,7 @@ for (const platform of ['linux', 'win32'] as const) {
       // A field changed and saved, the save bar in the window and above the bottom bar.
       await page.locator('[data-yolo-switch]').click()
       const save = page.locator('[data-save-settings]')
-      await expect(save).toHaveText('Save and restart the server')
+      await expect(save).toHaveText('Save and restart')
       const bar = page.locator('[data-settings-save-bar]')
       await expect(bar).toBeInViewport()
       expect((await boxOf(bar)).bottom).toBeLessThanOrEqual((await boxOf(page.locator('[data-bottom-bar]'))).top)
@@ -1215,16 +1218,22 @@ for (const at of [{ name: 'a wide window', use: { viewport: { width: 1440, heigh
       await page.goto('/settings?section=running')
       await settled(page, 'linux')
       const save = page.locator('[data-save-settings]')
-      // No note: the button at the right end all the same.
+      // No words: the button at the right end all the same, the bar's empty words left of it.
       await expect(save).toHaveText('Save')
-      saveAtTheRight(await saveBarOf(page), 0)
-      // The restart sentence shown: left of the button, whole, and the button whole in the window.
-      await page.locator('[data-yolo-switch]').click()
-      await expect(save).toHaveText('Save and restart the server')
-      await expect(page.locator('[data-settings-save-bar]')).toContainText('running sessions end')
+      await expect(page.locator('[data-settings-discard]')).toHaveCount(0)
       saveAtTheRight(await saveBarOf(page), 1)
+      // What changed and what a save costs, left of Discard, and Discard left of Save: whole, the button whole in the window.
+      await page.locator('[data-yolo-switch]').click()
+      await expect(save).toHaveText('Save and restart')
+      await expect(page.locator('[data-settings-changed]')).toHaveText('Changed: How agents run. Saving restarts the server.')
+      await expect(page.locator('[data-settings-save-bar]')).not.toContainText('running sessions end')
+      const m = await saveBarOf(page)
+      saveAtTheRight(m, 2)
+      expect(m.notes[1]!.right, 'Discard ends where Save begins, less the gap').toBeLessThanOrEqual(m.save.left)
+      expect(m.notes[1]!.left, 'Discard is right of the words').toBeGreaterThanOrEqual(m.notes[0]!.right - 1)
       await uncut(save)
-      await uncut(page.locator('[data-settings-save-bar] > :not([data-save-settings])'))
+      await uncut(page.locator('[data-settings-discard]'))
+      await uncut(page.locator('[data-settings-changed]'))
     })
   })
 }
@@ -1261,7 +1270,7 @@ test('the save that restarts the server keeps the section in view in the address
   // Yolo, in view at the top of the page, back as it was: a change that restarts all the same.
   await page.locator('[data-yolo-switch]').click()
   expect((await layoutOf(page)).body.scrollTop).toBe(0)
-  await expect(page.locator('[data-save-settings]')).toHaveText('Save and restart the server')
+  await expect(page.locator('[data-save-settings]')).toHaveText('Save and restart')
   await page.locator('[data-save-settings]').click()
   await expect(page.getByText('Saved; the server restarted', { exact: true }).last()).toBeVisible()
   await expect(page).toHaveURL(/\/settings$/)
@@ -1280,7 +1289,7 @@ test('a second click on Save while the first is under way saves once', async ({ 
   await page.goto('/settings?section=running')
   await settled(page, 'linux')
   await page.locator('[data-yolo-switch]').click()
-  await expect(page.locator('[data-save-settings]')).toHaveText('Save and restart the server')
+  await expect(page.locator('[data-save-settings]')).toHaveText('Save and restart')
   // Scrolled by hand from the section the address names to the end, so the save writes the section in view first and has that to
   // wait on.
   const sections = await boxOf(page.locator('[data-settings-sections]'))
@@ -1328,7 +1337,7 @@ test('a window made shorter moves the mark to the section in view, and a restart
   await page.goto('/settings')
   await settled(page, 'linux')
   await page.locator('[data-yolo-switch]').click()
-  await expect(page.locator('[data-save-settings]')).toHaveText('Save and restart the server')
+  await expect(page.locator('[data-save-settings]')).toHaveText('Save and restart')
   const sections = await boxOf(page.locator('[data-settings-sections]'))
   await page.mouse.move(sections.left + sections.width / 2, 450)
   await page.mouse.wheel(0, 100000)
@@ -1361,7 +1370,7 @@ test('a restart save made while a scroll\'s mark is still to come writes the sec
   // Yolo changed (the click is the person's own, so the mark follows the scroll alone from here), then Where agents work brought
   // back to the top of the body and marked.
   await page.locator('[data-yolo-switch]').click()
-  await expect(page.locator('[data-save-settings]')).toHaveText('Save and restart the server')
+  await expect(page.locator('[data-save-settings]')).toHaveText('Save and restart')
   await body(page).evaluate((b) => {
     const s = b.querySelector('[data-settings-section="folders"]')!
     b.scrollTop += s.getBoundingClientRect().top - b.getBoundingClientRect().top - 24
@@ -1544,3 +1553,84 @@ test('the folders agents can use: Add folder makes a chip, a chip goes, the last
   await uncut(chip)
   expect(await body(page).evaluate((b) => b.scrollWidth <= b.clientWidth)).toBe(true)
 })
+
+// The save bar names what changed and offers Discard (UX3 R56): Discard puts back the app's fields and Brakeman's, and a refused
+// save's words sit in the bar beside Save, in view, the edits kept.
+test("Discard puts back the app's fields and Brakeman's; a refused save says why in the bar", async ({ page, state, api }) => {
+  test.setTimeout(20 * 15_000)
+  const start = await brakemanConf(api)
+  const reads = start.budget.readsPerTurn === 400 ? 500 : 400
+  const { sets } = await oneSaveStandIn(page, state)
+  try {
+    await page.goto('/settings')
+    await settled(page, 'linux')
+    await brakemanAdvanced(page)
+    const save = page.locator('[data-save-settings]')
+    const words = page.locator('[data-settings-changed]')
+    await page.locator('[data-yolo-switch]').click()
+    await page.locator('[data-tray-switch]').click()
+    await readsField(page).fill(String(reads))
+    await expect(words).toHaveText('Changed: How agents run, Brakeman, The app. Saving restarts the server.')
+    await page.locator('[data-settings-discard]').click()
+    await expect(page.locator('[data-yolo-switch]')).toHaveAttribute('aria-checked', 'false')
+    await expect(page.locator('[data-tray-switch]')).toHaveAttribute('aria-checked', 'true')
+    await expect(readsField(page)).toHaveValue(String(start.budget.readsPerTurn))
+    await expect(save).toBeDisabled()
+    await expect(page.locator('[data-settings-discard]')).toHaveCount(0)
+    expect(await sets()).toEqual([])
+    // A save the app refuses: its words in the bar, in the error tone and in view, beside Save; the edit kept for the next Save.
+    await page.evaluate(() => sessionStorage.setItem('e2e.fail', 'refuse'))
+    await page.locator('[data-tray-switch]').click()
+    await save.click()
+    const error = page.locator('[data-settings-save-bar] [data-settings-error]')
+    await expect(error).toHaveText('the settings were refused')
+    await expect(error).toBeInViewport()
+    await expect(error).toHaveAttribute('role', 'alert')
+    await expect(page.locator('[data-tray-switch]')).toHaveAttribute('aria-checked', 'false')
+    await expect(page.locator('[data-settings-sections] [data-settings-error]')).toHaveCount(0)
+  } finally {
+    await putBack(api, start)
+  }
+})
+
+// A save that restarts the server while agents run asks first, in the bar (UX3 R56): Keep editing keeps every edit, Escape too, a double
+// click does not pass the question, and Save and restart saves. The session is the test's own; none other runs (the beforeEach).
+for (const size of [{ width: 2000, height: 810 }, { width: 1440, height: 810 }]) {
+  test(`at ${size.width} × ${size.height} Save and restart asks before a running agent stops`, async ({ page, state, api }) => {
+    test.setTimeout(20 * 15_000)
+    await page.setViewportSize(size)
+    const s = await api.ok<{ id: string }>('POST', '/api/sessions', { agentId: 'shell', name: 'settings restart question', cwd: state.root })
+    try {
+      await standIn(page, state, 'linux')
+      await page.goto('/settings')
+      await settled(page, 'linux')
+      const bar = page.locator('[data-settings-save-bar]')
+      const save = page.locator('[data-save-settings]')
+      await page.locator('[data-yolo-switch]').click()
+      await expect(save).toHaveText('Save and restart')
+      // The session is on the page's list (its sidebar row) before the question can count it.
+      await expect(page.locator(`[data-session-list="sidebar"] [data-sidebar-row="s:${s.id}"]`).first()).toBeAttached()
+      await save.click()
+      await expect(bar.locator('[data-settings-question]')).toHaveText('Restart the server now? 1 running agent stops.')
+      await expect(bar.locator('[data-settings-keep-editing]')).toBeFocused()
+      await bar.locator('[data-settings-keep-editing]').click()
+      await expect(bar.locator('[data-settings-question]')).toHaveCount(0)
+      await expect(page.locator('[data-yolo-switch]')).toHaveAttribute('aria-checked', 'true')
+      // Escape keeps editing too.
+      await save.click()
+      await expect(bar.locator('[data-settings-keep-editing]')).toBeFocused()
+      await page.keyboard.press('Escape')
+      await expect(bar.locator('[data-settings-question]')).toHaveCount(0)
+      // A double click on Save asks, and its second click does not pass the question.
+      await save.dblclick()
+      await expect(bar.locator('[data-settings-question]')).toBeVisible()
+      expect(await page.evaluate(() => (window as unknown as { e2eSets: object[] }).e2eSets.length)).toBe(0)
+      // Save and restart saves.
+      await bar.locator('[data-settings-confirm]').click()
+      await expect(page.getByText('Saved; the server restarted', { exact: true })).toBeVisible()
+      expect(await page.evaluate(() => (window as unknown as { e2eSets: Array<{ yolo?: boolean }> }).e2eSets.map((x) => x.yolo))).toEqual([true])
+    } finally {
+      await api.stopSession(s.id)
+    }
+  })
+}

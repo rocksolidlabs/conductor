@@ -6,7 +6,7 @@ import { identity, notInstalledBadge } from '~/utils/agents'
 import { NOT_INSTALLED_BADGE, identityBadge } from '~/utils/agentBadges'
 import { PUBLIC_SWITCHYARD, folderProblems, foldersHeld, plainCopy, switchyardProblem, type DesktopIceStatus, type DesktopSettings } from '~/utils/desktop'
 import { followSaved, holds, holdsFields, saveParts, saveWords, together, type BrakemanPart, type SaveOutcome } from '~/utils/settingsSave'
-import { SETTINGS_FIELD_UI, SETTINGS_SWITCH_UI, sectionFromQuery, sectionInView, sectionOf, shownSections, type SectionBox, type SettingsAddress, type SettingsSectionId } from '~/utils/settingsSections'
+import { SETTINGS_FIELD_UI, SETTINGS_SWITCH_UI, changedSections, changedWords, sectionFromQuery, sectionInView, sectionOf, shownSections, type SectionBox, type SettingsAddress, type SettingsSectionId } from '~/utils/settingsSections'
 
 // The desktop app's settings: what its shell starts the server with. In a
 // browser against a server configured by its file, the page says so.
@@ -67,7 +67,7 @@ const reachItems = [
 const onWindows = computed(() => desktop.bridge.value?.platform === 'win32')
 const appDirty = computed(() => !!settings.value && JSON.stringify({ ...settings.value }) !== JSON.stringify({ ...form }))
 /** Brakeman's section, saved by the page's one Save with the rest (#707); in a browser, alone. */
-const brakemanCard = useTemplateRef<{ dirty: boolean; blocked: boolean; take: () => BrakemanPart | null }>('brakemanCard')
+const brakemanCard = useTemplateRef<{ dirty: boolean; blocked: boolean; take: () => BrakemanPart | null; discard: () => void }>('brakemanCard')
 /** Brakeman's form holds a change the form's own checks refuse: nothing is saved until it is fixed, where it says. */
 const brakemanBlocked = computed(() => !!brakemanCard.value?.dirty && !!brakemanCard.value?.blocked)
 /** A change that cannot be saved as it is: Brakeman's form refuses a value, or a folder field holds what the app refuses. Said at the field. */
@@ -106,11 +106,50 @@ async function load() {
   ])
 }
 
-/** A Save refused before anything was sent: the words at the top, and where the button is too (#348) when Brakeman's is held with it. */
+/** A Save refused before anything was sent: the words in the save bar, beside Save (UX3 R56). */
 function refuse(out: SaveOutcome) {
   const words = saveWords(out)
   error.value = words.description ?? words.title
-  if (out.brakeman === 'held') toast.add({ title: words.title, description: words.description, icon: 'i-lucide-triangle-alert', color: 'error' })
+}
+
+// The save bar (UX3 R56): what changed, by section, Discard, and Save; a save that restarts while agents run asks first, in the bar.
+const live = useAttention()
+/** The sessions of this machine running or starting, a shell's too: what a restart of the server stops. */
+const running = computed(() => live.sessions.value.filter((s) => s.kind === 'server' && (s.status === 'running' || s.status === 'starting')).length)
+const changedIds = computed(() => changedSections(settings.value, form, !!brakemanCard.value?.dirty))
+const changed = computed(() => changedWords(changedIds.value))
+/** The question a press of Save and restart asks while agents run: in the bar, never a dialog. */
+const asking = ref(false)
+const question = computed(() => saveRestartQuestion(running.value))
+const keepEditingButton = useTemplateRef<{ $el: HTMLElement }>('keepEditingEl')
+watch([dirty, restarts], ([d, r]) => {
+  if (!d || !r) asking.value = false
+})
+/** Save pressed in the bar: a save that restarts the server while agents run asks once; otherwise it saves at once. */
+function pressSave() {
+  if (saving.value || blocked.value || !dirty.value) return
+  if (restarts.value && running.value > 0) {
+    asking.value = true
+    void nextTick(() => keepEditingButton.value?.$el?.focus())
+    return
+  }
+  void save()
+}
+/** The question's Save and restart: never the second click of a double click whose first asked. */
+function confirmSave(e: MouseEvent) {
+  if (e.detail > 1) return
+  asking.value = false
+  void save()
+}
+function keepEditing() {
+  asking.value = false
+}
+/** Discard: the app's fields back to what is saved, and Brakeman's form to its saved configuration (a stale choice that waits is kept). */
+function discard() {
+  if (settings.value) followSaved(form, null, settings.value)
+  brakemanCard.value?.discard()
+  error.value = ''
+  asking.value = false
 }
 
 async function save() {
@@ -167,11 +206,8 @@ async function save() {
     })
     const words = saveWords(out)
     if (words.ok) toast.add({ title: words.title, icon: 'i-lucide-check', color: 'success' })
-    else {
-      error.value = words.description ?? words.title
-      // The alert sits at the top of a long page: say it where the button is too (#348).
-      toast.add({ title: words.title, description: words.description, icon: 'i-lucide-triangle-alert', color: 'error' })
-    }
+    // A refusal is said in the bar, beside Save, and the edits stay (UX3 R56).
+    else error.value = words.description ?? words.title
     if (out.app === 'saved' || out.app === 'restarted') await load()
   } finally {
     saving.value = false
@@ -352,14 +388,14 @@ onMounted(async () => {
 
 // This page's group in the command palette (#302): Save, and the desktop app's buttons. Only in the desktop app (#332): the
 // browser's page is the server's file, a notice and Brakeman's section, which its save bar saves, so it offers no row.
-const live = useAttention()
 usePalette().registerPage(() => {
   if (!desktop.isDesktop.value) return null
-  const n = live.sessions.value.filter((s) => s.kind === 'server' && (s.status === 'running' || s.status === 'starting')).length
+  const n = running.value
   return {
     label: 'Settings',
     rows: [
-      { key: 'page:save', label: restarts.value ? 'Save and restart the server' : 'Save', icon: 'i-lucide-save', disabled: !dirty.value || saving.value || blocked.value, ask: restarts.value ? saveRestartQuestion(n) : undefined, run: save },
+      // Asked only while agents run, in the bar's words; a save confirmed here is not asked again by the bar.
+      { key: 'page:save', label: restarts.value ? 'Save and restart' : 'Save', icon: 'i-lucide-save', disabled: !dirty.value || saving.value || blocked.value, ask: restarts.value && n ? saveRestartQuestion(n) : undefined, run: save },
       ...(desktop.isDesktop.value
         ? [
             { key: 'page:restart', label: 'Restart server', icon: 'i-lucide-rotate-ccw', ask: restartQuestion(n), run: () => void desktop.bridge.value?.restartServer() },
@@ -440,7 +476,6 @@ usePalette().registerPage(() => {
         </nav>
         <!-- A fieldset, so a save that may move the page holds every field of the sections at once (holding). -->
         <fieldset :disabled="holding" class="@container m-0 flex min-w-0 flex-1 flex-col gap-5 border-0 p-0" data-settings-sections>
-        <UAlert v-if="error" color="error" variant="subtle" icon="i-lucide-triangle-alert" :title="error" data-settings-error />
         <UAlert
           v-if="desktop.serverState.value"
           :color="desktop.serverState.value.state === 'running' ? 'success' : desktop.serverState.value.state === 'failed' ? 'error' : 'neutral'"
@@ -581,10 +616,26 @@ usePalette().registerPage(() => {
     <!-- The save bar is the panel's footer: in reach wherever the page is scrolled (#366). In a browser it saves Brakeman's section (#707).
          Save at its right end, its note in the room left of it, wrapping there, so a phone never pushes the button out of view (#1154). -->
     <template v-if="desktop.isDesktop.value || brakeman.available.value !== false" #footer>
-      <div class="flex items-center gap-3 border-t border-default px-4 py-3 sm:px-6" data-settings-save-bar>
-        <span v-if="blocked" class="min-w-0 flex-1 text-xs text-error" data-settings-blocked>Fix the marked field to save.</span>
-        <span v-else-if="restarts" class="min-w-0 flex-1 text-xs text-muted">Changing where or how agents run restarts the server; running sessions end.</span>
-        <UButton class="ms-auto shrink-0" :label="restarts ? 'Save and restart the server' : 'Save'" icon="i-lucide-save" :loading="saving" :disabled="!dirty || blocked" data-save-settings @click="save" />
+      <!--
+        Left to right: the bar's words, Discard, Save (UX3 R56). The words say what changed, by section, and what a save costs; a refusal in
+        the error tone, beside Save, announced. While agents run, Save and restart asks here first: Keep editing, or Save and restart.
+      -->
+      <div class="flex items-center gap-3 border-t border-default px-4 py-3 sm:px-6" data-settings-save-bar :data-settings-asking="asking || undefined" @keydown.esc="keepEditing">
+        <template v-if="asking">
+          <span class="min-w-0 flex-1 text-sm text-highlighted" role="status" data-settings-question>{{ question.title }} {{ question.detail }}</span>
+          <UButton ref="keepEditingEl" class="shrink-0" :label="question.keep" color="neutral" variant="ghost" data-settings-keep-editing @click="keepEditing" />
+          <UButton class="shrink-0" :label="question.confirm" icon="i-lucide-save" :loading="saving" data-save-settings data-settings-confirm @click="confirmSave" />
+        </template>
+        <template v-else>
+          <span class="min-w-0 flex-1 text-xs" aria-live="polite">
+            <span v-if="error" class="text-error" role="alert" data-settings-error>{{ error }}</span>
+            <span v-else-if="blocked" class="text-error" data-settings-blocked>{{ changed ? `${changed} ` : '' }}Fix the marked field to save.</span>
+            <span v-else-if="restarts && dirty" class="text-muted" data-settings-changed>{{ changed }} Saving restarts the server.</span>
+            <span v-else-if="dirty" class="text-muted" data-settings-changed>{{ changed }}</span>
+          </span>
+          <UButton v-if="dirty" class="shrink-0" label="Discard" color="neutral" variant="ghost" :disabled="saving" data-settings-discard @click="discard" />
+          <UButton class="shrink-0" :label="restarts ? 'Save and restart' : 'Save'" icon="i-lucide-save" :loading="saving" :disabled="!dirty || blocked" data-save-settings @click="pressSave" />
+        </template>
       </div>
     </template>
   </UDashboardPanel>

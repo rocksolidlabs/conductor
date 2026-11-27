@@ -20,6 +20,43 @@ export const SETTINGS_SECTIONS = [
  */
 export const SECTION_ROWS = { webrtc: 'switchyard' } as const
 
+/** The section each of the app's settings is shown in: what the save bar names as changed (UX3 R56). */
+const SECTION_OF_SETTING: Record<string, SettingsSectionId> = {
+  dataDir: 'folders',
+  allowedRoots: 'folders',
+  defaultCwd: 'folders',
+  wslWindowsHome: 'folders',
+  yolo: 'running',
+  wslDistro: 'running',
+  reach: 'switchyard',
+  switchyardEnabled: 'switchyard',
+  switchyardServer: 'switchyard',
+  switchyardToken: 'switchyard',
+  switchyardName: 'switchyard',
+  closeToTray: 'app',
+}
+
+/**
+ * The sections that hold a change, in page order: each of the app's settings whose form differs from what is saved, by the section it
+ * is shown in, and Brakeman's when its form holds a change. None before the app's settings were read.
+ */
+export function changedSections(saved: object | null, form: object, brakeman: boolean): SettingsSectionId[] {
+  const changed = new Set<SettingsSectionId>()
+  if (saved) {
+    const a = saved as Record<string, unknown>
+    const b = form as Record<string, unknown>
+    for (const [k, id] of Object.entries(SECTION_OF_SETTING)) if (JSON.stringify(a[k]) !== JSON.stringify(b[k])) changed.add(id)
+  }
+  if (brakeman) changed.add('brakeman')
+  return SETTINGS_SECTIONS.filter((s) => changed.has(s.id)).map((s) => s.id)
+}
+
+/** What the save bar says of the sections changed: `Changed: How agents run, Brakeman.`, '' for none. */
+export function changedWords(ids: readonly SettingsSectionId[]): string {
+  if (!ids.length) return ''
+  return `Changed: ${ids.map((id) => SETTINGS_SECTIONS.find((s) => s.id === id)!.title).join(', ')}.`
+}
+
 /**
  * A setting as one row once the sections' column has room (48rem, a container query: the sidebar resizes and collapses), its label
  * and description on the left and its control on the right, which never stretches past 36rem; stacked below that. A UFormField's
