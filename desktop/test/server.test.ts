@@ -280,7 +280,8 @@ process.stdin.resume()
     )
     const s = new ServerSupervisor({ launcher: new ScriptLauncher(file), args: [], env: () => ({ PATH: process.env.PATH ?? '' }), backoffMinMs: 60_000, healthMs: 60_000, log: quiet })
     await s.start()
-    let stored = { ...defaultSettings('/home/me', '/ud') }
+    // The settings in the distribution's form, as the app keeps them on Windows too (posix): no path joined on this system.
+    let stored = { ...defaultSettings('/home/me', '/ud'), dataDir: '/ud/conductor' }
     const allow = new FolderAllow({
       get: () => stored,
       set: (x) => void (stored = x),

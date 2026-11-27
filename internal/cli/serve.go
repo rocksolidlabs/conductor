@@ -110,6 +110,9 @@ func serveConfig(path string) (*config.Config, error) {
 	return cfg, err
 }
 
+// secretsSwitchyardWords refuse --secrets-stdin to a switchyard.
+const secretsSwitchyardWords = "--secrets-stdin is the desktop app's way to start its own server; a switchyard takes no secrets on stdin"
+
 // maxSecretsLine bounds the line --secrets-stdin reads, its newline
 // included.
 const maxSecretsLine = 4096
@@ -254,7 +257,7 @@ func runServeAs(ctx context.Context, name string, args []string, stdin io.Reader
 	tokenEnvGiven := false
 	fs.Visit(func(f *flag.Flag) { tokenEnvGiven = tokenEnvGiven || f.Name == "token-env" })
 	if *switchyard && *secretsStdin {
-		return 2, errors.New("--secrets-stdin is the desktop app's way to start its own server; a switchyard takes no secrets on stdin")
+		return 2, errors.New(secretsSwitchyardWords)
 	}
 	if tokenEnvGiven && *secretsStdin {
 		return 2, errors.New("--secrets-stdin and --token-env each name the workbench token's one source: give one")
@@ -310,6 +313,11 @@ func runServeAs(ctx context.Context, name string, args []string, stdin io.Reader
 	}
 	if *switchyard {
 		cfg.Switchyard.Enabled = true
+	}
+	// A switchyard, however it was turned on (the flag, CONDUCTOR_SWITCHYARD or
+	// the file), takes no secrets on stdin: refused before anything is bound.
+	if cfg.Switchyard.Enabled && *secretsStdin {
+		return 2, errors.New(secretsSwitchyardWords)
 	}
 	// With the flags applied, before anything is written, started or bound.
 	if cfg.PublishesToItself() {
