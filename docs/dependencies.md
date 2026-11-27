@@ -17,6 +17,7 @@
 | modernc.org/sqlite (the managed runs' ledger, `internal/crew/ledger`, Dispatch's store, `internal/dispatch`, and the history's index, `internal/history` (HS1, a cache rebuilt from the stores), the three importers: SQLite translated to Go, so `CGO_ENABLED=0` stays; the owner chose it on 2026-10-22, #334; FTS5 and JSON1 are compiled in, checked 2026-10-28 for Dispatch's search) | v1.61.0 |
 | Neovim (`nvim`, found on PATH at runtime; CI installs it for the bridge's tests) | v0.10.4 in CI; 0.10 or later on a machine |
 | github.com/letsencrypt/pebble/v2 (test CA, `make test-pebble`; not a module dependency) | v2.10.1 |
+| @uxuiprinciples/mcp-server (the design principles' MCP server, a tool a person may add to their own agent, with the pinned command in `docs/design/tools.md`; not checked in, not a module or package dependency, never shipped, so not in `THIRD_PARTY_NOTICES`; its own dependencies come by range) | 1.3.0 |
 | nuxt / @nuxt/ui / vue | 4.5.2 / 4.11.2 / 3.5.43 |
 | reka-ui (declared at the version @nuxt/ui ships: the editor's tab menu closes itself through `injectContextMenuRootContext`, so Escape inside it never reaches the page's shortcuts, #330) | 2.10.4 |
 | @xterm/xterm (+ fit, webgl, web-links) | 6.0.0 (0.11.0, 0.19.0, 0.12.0) |

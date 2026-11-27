@@ -228,6 +228,15 @@ kept for the chat, as its terminal had it.
   non-interactive mode may be used and counted, with a link to the agent's
   site, and under it that in Chat the agent has Conductor's tools only. A refused move says the server's words. A link's
   viewer sees the way as a label.
+- **Run as, at launch.** The Launch agent dialog offers **Run as: Terminal |
+  Chat** for an agent that can run as a chat. With Chat, the session starts
+  in its terminal ("Starts in its terminal, then moves to Chat."), its switch
+  says "Moves to Chat after the agent's first reply.", and it moves to Chat
+  by itself once that reply has ended and the move can be made; what was
+  typed as its task is typed into the terminal once. Pressing Terminal
+  before then keeps it there. A move that cannot be made leaves it in its
+  terminal, the switch saying why. The dialog comes back as that agent was
+  last launched in this browser; the first time it is Terminal.
 - **The chat.** Where the terminal was: what the person wrote and what the
   agent wrote (Markdown without HTML, a link only to `https://`), each turn's
   steps in one line ("12 steps", "Working." while it runs) that opens to the

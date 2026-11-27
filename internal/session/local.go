@@ -1985,6 +1985,8 @@ func (s *Local) SetFirstMessage(v string) {
 	s.mu.Unlock()
 	if changed {
 		s.notifyChange()
+		// A move noted at the launch waits for its first message (move.go).
+		s.tryNoted()
 	}
 }
 
