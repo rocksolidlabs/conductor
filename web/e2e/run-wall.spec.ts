@@ -269,16 +269,16 @@ test('a tile that asks shows its question whole above its choices, in at most ha
   const w = (await tile.boundingBox())!.width
   expect(w).toBeGreaterThan(240)
   expect(w).toBeLessThan(300)
-  // Whole: the question's text is all there, never cut with an ellipsis, and every choice's label is whole.
-  expect(await words.evaluate((el) => getComputedStyle(el).textOverflow)).not.toBe('ellipsis')
-  await uncut(tile.locator('[data-run-ask-choices]'))
   // At most half of the tile, and the rest is reached by its own scroll.
   const bar = tile.locator('[data-tile-ask-bar]')
   const m = await bar.evaluate((el) => ({ h: el.clientHeight, sh: el.scrollHeight, tile: (el.closest('[data-session-tile]') as HTMLElement).clientHeight }))
   expect(m.h).toBeLessThanOrEqual(m.tile / 2 + 1)
   expect(m.sh).toBeGreaterThan(m.h)
+  // Whole: the question's text is all there, never cut with an ellipsis, and every choice's label is whole once scrolled to.
+  expect(await words.evaluate((el) => getComputedStyle(el).textOverflow)).not.toBe('ellipsis')
   await bar.evaluate((el) => (el.scrollTop = el.scrollHeight))
   await expect(choices.nth(1)).toBeInViewport()
+  await uncut(tile.locator('[data-run-ask-choices]'))
   // On the wide window in Grid, the bar holds it all without a scroll: the question above its choices.
   await page.setViewportSize(DAILY)
   await page.locator('[data-run-layout-choice="grid"]').click()
