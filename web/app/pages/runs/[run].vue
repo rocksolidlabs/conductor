@@ -19,7 +19,7 @@ import { runLinkWatch, runTicketRead } from '~/composables/useDispatchLive'
 import { previewPath } from '~/utils/capture'
 import type { BrakemanRequest } from '~/utils/brakeman'
 import { askChips, askDisabled } from '~/utils/brakemanAsk'
-import { carriedQuery, memberOfRun, readSaidFor } from '~/utils/memberStrip'
+import { carriedQuery, memberOfRun, readSaidFor, sessionPlace } from '~/utils/memberStrip'
 import { RUN_SHORTCUTS } from '~/composables/useShortcuts'
 
 // The run page: a tile for every member of one run, its activity and a
@@ -541,7 +541,7 @@ palette.registerPage(() => {
           else if (offer === 'resume') void api.resumeRunMember(runId.value, t.name).then((res) => openSession(res.session.id)).catch((e) => toast.add({ title: 'It did not start', description: (e as Error).message, color: 'error' }))
           else if (s) openMember(t.name)
         },
-        href: s ? `/sessions/${s.id}` : undefined,
+        href: s ? sessionPlace(s, s.id) : undefined,
       }
     })
   const rows: PaletteItem[] = [
