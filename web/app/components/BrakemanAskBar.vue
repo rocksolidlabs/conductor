@@ -339,7 +339,7 @@ const optionId = (i: number) => `${id}-mention-${i}`
             <IconButton icon="i-lucide-chevron-down" color="neutral" variant="outline" :size="size === 'compact' ? 'xs' : 'sm'" :class="square" label="Brief me since another time" :disabled="!!disabled || sending" data-ask-since-open />
             <template #content>
               <div class="flex w-72 max-w-[calc(100vw-2rem)] flex-col gap-2 p-3" data-ask-since-panel>
-                <UFormField label="Since" description="The time the briefing starts from, in this browser's time.">
+                <UFormField label="Since" description="The time the briefing starts from, in this device's time.">
                   <UInput v-model="since" type="datetime-local" class="w-full" :ui="{ base: 'max-lg:min-h-11' }" data-ask-since />
                 </UFormField>
                 <UButton label="Brief me" color="neutral" variant="outline" class="self-start max-lg:min-h-11" :disabled="!sinceISO || !!disabled || sending" data-ask-since-send @click="briefSince(c)" />

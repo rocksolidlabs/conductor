@@ -530,7 +530,7 @@ describe('the makes kept, across a new token', () => {
     bk.reset()
     expect(bk.keptMake(other, 1)).toBeUndefined()
     expect(makeAgain(undefined, bk.keptMake(other, 1)).kind).toBe('none')
-    expect(() => bk.finishMake(other, 1)).toThrow('This browser holds no make of it to finish.')
+    expect(() => bk.finishMake(other, 1)).toThrow('This device holds no make of it to finish.')
     expect(sent).toHaveLength(1)
     // The first server's request, under any token, still finishes its make, as it was sent.
     const kept = bk.keptMake(first, 1)!
