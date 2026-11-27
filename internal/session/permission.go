@@ -812,6 +812,49 @@ func (s *Local) nestedDenied(fields map[string]any, deny []string) bool {
 	return false
 }
 
+// linksFirst is an absolute path with its links followed one part at a time
+// before any ".." after them is applied, so that "link/../x" is the place
+// the link's ".." reaches; parts that do not exist are kept as written. At
+// most 40 links are followed.
+func linksFirst(p string) string {
+	if !filepath.IsAbs(p) {
+		return p
+	}
+	parts := strings.Split(p, string(filepath.Separator))
+	cur := string(filepath.Separator)
+	hops := 0
+	for i := 0; i < len(parts); i++ {
+		part := parts[i]
+		switch part {
+		case "", ".":
+			continue
+		case "..":
+			cur = filepath.Dir(cur)
+			continue
+		}
+		next := filepath.Join(cur, part)
+		fi, err := os.Lstat(next)
+		if err != nil || fi.Mode()&os.ModeSymlink == 0 || hops >= 40 {
+			cur = next
+			continue
+		}
+		target, err := os.Readlink(next)
+		if err != nil {
+			cur = next
+			continue
+		}
+		hops++
+		if !filepath.IsAbs(target) {
+			target = filepath.Join(cur, target)
+		}
+		// The link's target, its own parts walked the same way, then the
+		// rest.
+		rest := append(strings.Split(target, string(filepath.Separator)), parts[i+1:]...)
+		parts, i, cur = rest, -1, string(filepath.Separator)
+	}
+	return cur
+}
+
 // changesDenied says a file change's input names a path denied says is
 // under the deny list: one of its changes' paths or the place it moves the
 // file to, or the root it asks to write under.
@@ -874,6 +917,16 @@ func (s *Local) pathDenied(path string, deny []string) bool {
 			return false
 		}
 		path = filepath.Join(s.info.Cwd, path)
+	}
+	// Its links followed before its "..", as the system follows them, and
+	// as its letters read.
+	if linked := linksFirst(path); linked != filepath.Clean(path) {
+		if insideAny(linked, deny) {
+			return true
+		}
+		if real, err := evalExisting(linked); err == nil && insideAny(real, deny) {
+			return true
+		}
 	}
 	path = filepath.Clean(path)
 	if real, err := evalExisting(path); err == nil && insideAny(real, deny) {

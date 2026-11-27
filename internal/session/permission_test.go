@@ -1024,3 +1024,44 @@ func TestAnACPCallIsFlooredByEveryPlaceItNames(t *testing.T) {
 		deniedWith(t, s, e, v, FloorWords)
 	}
 }
+
+// linkTo is a link in a folder of the test's own to target.
+func linkTo(t *testing.T, target string) string {
+	t.Helper()
+	l := filepath.Join(t.TempDir(), "l")
+	if err := os.Symlink(target, l); err != nil {
+		t.Fatal(err)
+	}
+	return l
+}
+
+// The floor follows a path's links before its "..": a path through a link
+// and then ".." into a denied place is the denied place's, for a request to
+// the prompt tool (Claude Code's) and for an in-stream one; and a command's
+// folder that is a link is judged by where it leads.
+func TestTheFloorFollowsAPathsLinksBeforeItsDotDot(t *testing.T) {
+	base := realDir(t, t.TempDir())
+	data := filepath.Join(base, "conductor")
+	sibling := filepath.Join(base, "applications")
+	for _, d := range []string{data, sibling} {
+		if err := os.Mkdir(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(data, "config.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s, f, _ := permissionSession(t, Options{FileDeny: DenyList([]string{data}, nil)})
+	l := linkTo(t, sibling)
+	through := l + "/../conductor/config.json"
+	// The prompt tool's request.
+	announce(f, "c-read", "Read", `{"file_path":"`+through+`"}`)
+	if v := ask(s, "c-read", "Read", `{"file_path":"`+through+`"}`).returned(t); v.Allow || v.Message != FloorWords {
+		t.Fatalf("a read through a link and ..: %+v", v)
+	}
+	// An in-stream one.
+	in := `{"changes":[{"path":"` + through + `","kind":{"type":"update"},"diff":""}]}`
+	f.ToolStarted(ToolStep{Ref: "c-change", Name: "fileChange", Input: []byte(in)})
+	e, v := inStreamAsked(t, s, f, "req-change", "c-change", "fileChange", in)
+	deniedWith(t, s, e, v, FloorWords)
+}
