@@ -84,6 +84,12 @@ type probeCache struct {
 	closed  bool
 	running map[*agents.ProbeProcess]struct{}
 	probing sync.WaitGroup
+	// The help reads (flags.go): help runs one as r (r.Help), in the same
+	// slots as the probes and ended by the same stop; helps keeps their
+	// answers, helpCalls the reads under way.
+	help      func(ctx context.Context, r *agents.ProbeProcess, command, args []string, env map[string]string) (string, agents.ProbeResult)
+	helps     map[string]*helpEntry
+	helpCalls map[string]*helpCall
 }
 
 func newProbeCache() *probeCache {
@@ -100,6 +106,11 @@ func newProbeCache() *probeCache {
 		life:    life,
 		end:     end,
 		running: map[*agents.ProbeProcess]struct{}{},
+		help: func(ctx context.Context, r *agents.ProbeProcess, command, args []string, env map[string]string) (string, agents.ProbeResult) {
+			return r.Help(ctx, command, args, env)
+		},
+		helps:     map[string]*helpEntry{},
+		helpCalls: map[string]*helpCall{},
 	}
 }
 
@@ -204,26 +215,7 @@ func (c *probeCache) identity(ctx context.Context, command []string, adapter, na
 func (c *probeCache) probe(key string, command []string, p agents.Probe, env map[string]string, call *probeCall) {
 	defer c.probing.Done()
 	res := agents.ProbeResult{Error: errProbeStopping}
-	select {
-	case c.sem <- struct{}{}:
-		// Counted under mu, where stop ends every probe counted: one begun
-		// after stop is not run.
-		r := &agents.ProbeProcess{Timeout: c.timeout}
-		c.mu.Lock()
-		run := !c.closed
-		if run {
-			c.running[r] = struct{}{}
-		}
-		c.mu.Unlock()
-		if run {
-			res = c.run(c.life, r, command, p, env)
-			c.mu.Lock()
-			delete(c.running, r)
-			c.mu.Unlock()
-		}
-		<-c.sem
-	case <-c.life.Done():
-	}
+	c.inSlot(func(r *agents.ProbeProcess) { res = c.run(c.life, r, command, p, env) })
 	c.mu.Lock()
 	call.e = probeEntry{res: res, at: c.now()}
 	if c.inflight[key] == call {
@@ -246,6 +238,34 @@ func (c *probeCache) probe(key string, command []string, p agents.Probe, env map
 	}
 	c.mu.Unlock()
 	close(call.done)
+}
+
+// inSlot runs fn with a process of its own once one of the cache's worker
+// slots is free, unless the stop came first; false when fn was not run.
+// The process is counted under mu, where stop ends every one counted: one
+// begun after stop is not run. The caller is counted in probing.
+func (c *probeCache) inSlot(fn func(r *agents.ProbeProcess)) bool {
+	select {
+	case c.sem <- struct{}{}:
+	case <-c.life.Done():
+		return false
+	}
+	defer func() { <-c.sem }()
+	r := &agents.ProbeProcess{Timeout: c.timeout}
+	c.mu.Lock()
+	run := !c.closed
+	if run {
+		c.running[r] = struct{}{}
+	}
+	c.mu.Unlock()
+	if !run {
+		return false
+	}
+	fn(r)
+	c.mu.Lock()
+	delete(c.running, r)
+	c.mu.Unlock()
+	return true
 }
 
 // cached is the identity the cache holds for command and adapter, without

@@ -173,6 +173,19 @@ func ClaudeArgs(l ClaudeLaunch) ([]string, error) {
 	return argv, nil
 }
 
+// StaysInTerminal says whether a launch whose arguments hold arg (a flag,
+// alone or with "=value") is one the chat of protocol name refuses, so
+// that the session stays in its terminal: for Claude Code, an added folder
+// or a flag the chat sets itself, judged by the same lists ClaudeArgs
+// refuses by. A name Conductor does not speak: false.
+func StaysInTerminal(name, arg string) bool {
+	switch name {
+	case ClaudeStreamJSON:
+		return addedFolder([]string{arg}) || ownFlag([]string{arg}) != ""
+	}
+	return false
+}
+
 // addedFolder reports whether args name an added folder: the flag alone
 // (its folders follow) or with "=value".
 func addedFolder(args []string) bool {

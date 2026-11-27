@@ -16,6 +16,10 @@ const props = defineProps<{
   createTransport: () => TerminalTransport
   /** The state the foot says, where the page says it in words of its own (a run's member: the Crews pages' vocabulary); else the session's. */
   status?: MarkView
+  /** The tile's member will get the next line from its run's message bar: its frame carries the primary ring. */
+  receiving?: boolean
+  /** Resume (or Relaunch) is drawn with its word, not as an icon alone. */
+  resumeWord?: boolean
 }>()
 
 const emit = defineEmits<{ select: [] }>()
@@ -44,7 +48,8 @@ const label = computed(() => (ask.value ? `${props.session.name} asks: ${ask.val
     </div>
     <div
       class="group flex h-full min-h-0 flex-col overflow-hidden rounded-lg border bg-elevated/40 transition-colors outline-none focus-visible:ring-2 focus-visible:ring-primary"
-      :class="needsInput ? 'border-warning ring-2 ring-warning/60' : 'border-default hover:border-accented focus-within:border-accented'"
+      :class="needsInput ? 'border-warning ring-2 ring-warning/60' : [props.receiving && 'ring-2 ring-primary', 'border-default hover:border-accented focus-within:border-accented']"
+      :data-receiving="props.receiving || undefined"
       role="group"
       tabindex="0"
       data-session-tile
@@ -58,7 +63,9 @@ const label = computed(() => (ask.value ? `${props.session.name} asks: ${ask.val
         <span class="min-w-0 flex-1 truncate text-[13px] font-semibold" :title="props.session.name" data-tile-name>{{ props.session.name }}</span>
         <EventMarkBadge :session-id="props.session.id" :finished="own.key === 'finished'" icon />
         <YoloBadge v-if="props.session.yolo" icon />
-        <ResumeButton v-if="isEnded(props.session.status)" :session="props.session" stay icon-only size="xs" />
+        <ResumeButton v-if="isEnded(props.session.status)" :session="props.session" stay :icon-only="!props.resumeWord" size="xs" />
+        <!-- One more button of the page's own (a run's tile: show it large), before the open button. -->
+        <slot name="header-action" />
         <UTooltip text="Open in full (or double-click here)">
           <UButton icon="i-lucide-maximize-2" size="xs" color="neutral" variant="ghost" :aria-label="`Open ${props.session.name}`" data-tile-open @click.stop="emit('select')" />
         </UTooltip>
