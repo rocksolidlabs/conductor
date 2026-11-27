@@ -28,3 +28,12 @@ mobile/ios/ConductorNative/Sources/ConductorPackaging/Packaging/
 
 # Python workflow execution artifacts
 __pycache__/
+
+# A person's own agent settings (their own entry for a design tool's MCP server: docs/design/tools.md)
+.claude/settings.local.json
+.cursor/mcp.json
+.codex/config.toml
+
+# Impeccable, when a person uses it here (docs/design/tools.md): only its shared settings are committed
+.impeccable/*
+!.impeccable/config.json
