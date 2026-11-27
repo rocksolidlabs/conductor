@@ -48,10 +48,9 @@ import (
 // (AddWorktree), and Run refuses a worktree add that checks out.
 //
 // The person's own identity and settings in the global configuration still
-// apply. Conductor commits only a new project's first commit (Alone,
-// crew.EnsureFirstCommit), in a folder whose own configuration names no
-// program (or in a repository it built itself), signed as the person's
-// global or system settings say; it signs nothing else.
+// apply. Conductor commits only a new folder's first commit (Alone,
+// crew.EnsureFirstCommit), in a repository it built itself, signed as the
+// person's own settings say; it signs nothing else.
 
 // safeConfig is set with -c on every git Conductor runs.
 var safeConfig = []string{

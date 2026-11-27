@@ -163,3 +163,37 @@ func waitGone(t *testing.T, pid int) {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+// A program git started that leaves git's group (a session of its own)
+// and keeps git's output open is out of the group's reach: the call still
+// returns, once its wait for the output is spent (aloneWaitDelay), rather
+// than wait on that program.
+func TestAloneReturnsWhenAProgramThatLeftTheGroupKeepsTheOutput(t *testing.T) {
+	aloneHome(t)
+	if _, err := exec.LookPath("setsid"); err != nil {
+		t.Skip("no setsid here")
+	}
+	dir := t.TempDir()
+	pidFile := filepath.Join(t.TempDir(), "pid")
+	a := Alone{Dir: openDir(t, dir), Path: dir, Env: aloneEnv,
+		// git's shell returns once the program has left the group and
+		// written its pid, so the group's end never reaches it first.
+		Config: []string{"alias.leave=!setsid sh -c 'echo $$ > " + pidFile + "; exec sleep 600' & while [ ! -s " + pidFile + " ]; do sleep 0.01; done"}}
+	done := make(chan error, 1)
+	go func() {
+		_, err := a.Run(t.Context(), "leave")
+		done <- err
+	}()
+	pid := waitPid(t, pidFile)
+	t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
+	// The wait the code applies, and the git's own start and end on a
+	// loaded machine above it.
+	select {
+	case <-done:
+	case <-time.After(aloneWaitDelay + time.Minute):
+		t.Fatalf("the call is still waiting on a program outside git's group")
+	}
+	if syscall.Kill(pid, 0) != nil {
+		t.Fatal("the program that left the group was ended: the test shows nothing")
+	}
+}
