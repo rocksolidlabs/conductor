@@ -125,6 +125,9 @@ type TranscriptEntry struct {
 	State   string `json:"state,omitempty"`
 	Answers string `json:"answers,omitempty"`
 	Final   bool   `json:"final,omitempty"`
+	// Expanded says the prompt went without the as-written mark, for the
+	// agent's own program to expand (I19): the operator's own typed line.
+	Expanded bool `json:"expanded,omitempty"`
 
 	// A tool step, and a permission request: the tool's name (for a file,
 	// the ref of the step that changed it), a summary, the input's size and

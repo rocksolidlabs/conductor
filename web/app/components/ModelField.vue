@@ -13,11 +13,16 @@ const props = defineProps<{
   size?: 'xs' | 'sm' | 'md' | 'lg' | 'xl'
   /** More classes for the input itself (a table's smaller text and touch height). */
   baseClass?: string
+  /** Names the person used before for this agent: offered first, before those its help gives. */
+  recent?: readonly string[]
 }>()
 const base = computed(() => ['font-mono', props.baseClass].filter(Boolean).join(' '))
 
 const { reply } = useAgentFlags(() => (props.agent ? { id: props.agent.id, version: props.agent.version } : null))
-const names = computed(() => (reply.value?.state === 'read' ? reply.value.models : []))
+const names = computed(() => [...new Set([...(props.recent ?? []), ...(reply.value?.state === 'read' ? reply.value.models : [])])])
+// With the list drawn here, a datalist the form keeps for the plain field (`list`) would offer the names twice.
+const attrs = useAttrs()
+const menuAttrs = computed(() => Object.fromEntries(Object.entries(attrs).filter(([k]) => k !== 'list')))
 
 const root = useTemplateRef<HTMLElement>('root')
 const menu = useTemplateRef<{ inputRef?: HTMLInputElement; viewportRef?: HTMLElement }>('menu')
@@ -74,7 +79,7 @@ function onBlur(e: FocusEvent) {
   <div v-else ref="root" class="w-full min-w-0" data-model-field @focusin="onFocus" @keydown.capture="onKeydown">
     <UInputMenu
       ref="menu"
-      v-bind="$attrs"
+      v-bind="menuAttrs"
       :model-value="model"
       :open="open"
       mode="autocomplete"
