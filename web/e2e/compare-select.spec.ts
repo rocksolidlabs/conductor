@@ -72,9 +72,9 @@ test.describe("a selection on DR1's card", () => {
     const card = item.locator('[data-decision-card]')
     const respond = item.locator('[data-decision-respond]')
 
-    // What it authorizes, in the server's words, which say it is final; asked by the comparison; its subject the comparison.
+    // What it authorizes, in the server's words, which say it is final; asked by the trial; its subject the trial.
     await expect(card.locator('[data-decision-authorizes-line]')).toHaveText(`A selection authorizes: ${SELECTION_AUTHORIZES}`)
-    await expect(card).toContainText('Asked by the comparison in')
+    await expect(card).toContainText('Asked by the trial in')
     await expect(card.locator('[data-decision-from-compare]')).toBeVisible()
     await expect(card.locator('[data-decision-subject]')).toHaveText('the trial at base ccccccc, digest dddddddddddd')
 
