@@ -121,7 +121,7 @@ func (s *Server) chatStart(local *session.Local) (session.ProtocolStart, error) 
 	}
 	name := l.agent.Protocol.Name
 	switch name {
-	case agentproto.ClaudeStreamJSON, agentproto.CodexAppServer:
+	case agentproto.ClaudeStreamJSON, agentproto.CodexAppServer, agentproto.ACPv1:
 	default:
 		return nil, errNoChat
 	}
@@ -162,6 +162,11 @@ func (s *Server) chatStart(local *session.Local) (session.ProtocolStart, error) 
 		if name == agentproto.CodexAppServer {
 			return session.PipesChild(pipes), agentproto.NewCodex(pipes.Stdin(), pipes.Stdout(), agentproto.CodexOptions{Resume: resume, InitWait: initWait}), nil
 		}
+		if name == agentproto.ACPv1 {
+			// The terminal's session taken up through the protocol, in the
+			// session's folder.
+			return session.PipesChild(pipes), agentproto.NewACP(pipes.Stdin(), pipes.Stdout(), agentproto.ACPOptions{Session: conversation, Cwd: l.folder.Path(), InitWait: initWait}), nil
+		}
 		driver := agentproto.NewClaude(pipes.Stdin(), pipes.Stdout(), agentproto.ClaudeOptions{
 			Restart:  func() { _ = local.RestartProtocol("restarted", restartedInputWords) },
 			InitWait: initWait,
@@ -178,6 +183,14 @@ func chatArgv(l *chatLaunch, conversation, hooks string, mcp bool) ([]string, ag
 	var yoloArgs []string
 	if l.yolo && l.agent.Yolo != nil {
 		yoloArgs = slices.Clone(l.agent.Yolo.Args)
+	}
+	if l.agent.Protocol.Name == agentproto.ACPv1 {
+		// The agent's own start of its ACP server, nothing of the
+		// terminal's: its session is taken up through the protocol.
+		argv, err := agentproto.ACPArgs(agentproto.ACPLaunch{
+			Command: l.agent.Command, Protocol: l.agent.Protocol.Args, Conversation: conversation, Model: l.model, LaunchArgs: l.args,
+		})
+		return argv, agentproto.CodexResume{}, err
 	}
 	if l.agent.Protocol.Name == agentproto.CodexAppServer {
 		// Conductor's MCP server as the terminal's launch gave it (its
