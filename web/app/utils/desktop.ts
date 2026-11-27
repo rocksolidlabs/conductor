@@ -92,9 +92,9 @@ function thisMachine(raw: string, u: URL): boolean {
 
 /** What Settings says at a folder field, checked as it is picked (UX3 R55): the app's validate (desktop/src/settings.ts) refuses the first two. */
 export const FOLDER_WORDS = {
-  /** The last folder agents can use cannot be taken away: validate's "at least one allowed root is needed". */
+  /** The last folder agents can use cannot be taken away: validate's "agents need at least one folder". */
   lastRoot: 'Agents need at least one folder.',
-  /** The default folder outside every folder agents can use: validate's "the default working directory must lie under an allowed root". */
+  /** The default folder outside every folder agents can use: validate's "the default folder must be inside a folder agents can use". */
   defaultOutside: 'Pick a folder inside one that agents can use.',
   /** The data folder inside a folder agents can use: said, never held (the server keeps its own guard). */
   dataInside: 'Keep this outside the folders agents can use.',
@@ -151,6 +151,9 @@ export interface DesktopIceStatus {
   publicIp: string
   wslAddress: string
   firewall: 'present' | 'missing' | 'unknown'
+  /** WSL shares Windows' network (mirrored mode): viewers connect straight, nothing is forwarded or said. */
+  mirrored?: boolean
+  /** Why viewers cannot connect straight yet, in the app's own words: never a program's raw text. */
   reason?: string
 }
 

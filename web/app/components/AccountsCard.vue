@@ -44,12 +44,6 @@ function readerAgent(ad: AccountsAdapter, a?: Account): string {
   return named(a?.reading?.agent) || named(ad.reading?.agent) || named(ad.adapter) || of[0]?.id || ''
 }
 
-/** The agents whose tool's login folder Conductor cannot move: their own login only, their usage unknown. */
-const others = computed(() => {
-  const moved = new Set(doc.value?.adapters.map((a) => a.adapter) ?? [])
-  return agents.value.filter((a) => a.available !== false && !moved.has(a.adapter ?? '')).map((a) => a.name)
-})
-
 /** Whether an agent has two or more logins to choose from (its own and an account not retired): only then is the default marked. */
 function manyLogins(adapter: string): boolean {
   return accountsOf(adapter).some((a) => !a.retired)
@@ -200,7 +194,6 @@ const removing = ref('')
         </div>
       </form>
 
-      <p v-if="others.length" class="text-xs text-muted" data-accounts-others>{{ others.join(', ') }}: {{ others.length === 1 ? 'its' : 'their' }} own login only. Conductor cannot read {{ others.length === 1 ? 'its' : 'their' }} usage.</p>
     </div>
   </UCard>
 </template>
