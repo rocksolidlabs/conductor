@@ -624,10 +624,11 @@ export function changedFields(draft: CrewInput, saved: CrewInput | undefined): s
   const out: string[] = []
   if (a.name !== b.name) out.push('Name')
   if (a.goal !== b.goal) out.push('Goal')
-  // In the Setup's own words: its Folder, its Workspace, and what More options folds.
+  // In the Setup's own words: its Folder, its Workspace, its Yolo, and what More options folds.
   if (a.cwd !== b.cwd) out.push('Folder')
   if (a.isolation !== b.isolation) out.push('Workspace')
-  if (a.openAfterLaunch !== b.openAfterLaunch || a.viewLinkTtlSeconds !== b.viewLinkTtlSeconds || a.yolo !== b.yolo) out.push('More options')
+  if (a.yolo !== b.yolo) out.push('Yolo')
+  if (a.openAfterLaunch !== b.openAfterLaunch || a.viewLinkTtlSeconds !== b.viewLinkTtlSeconds) out.push('More options')
   if (JSON.stringify(a.members) !== JSON.stringify(b.members)) out.push('Members')
   if (JSON.stringify(a.compare) !== JSON.stringify(b.compare)) out.push('Comparison')
   return out

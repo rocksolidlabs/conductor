@@ -173,7 +173,7 @@ test('where the browser refuses the clipboard, the dialog draws the addressed te
   const dialog = await share(page, b, 'wide')
   await expect(dialog.locator('[data-share-uncopied]')).toHaveCount(0)
   await page.locator('[data-share-copy]').click()
-  await expect(dialog.locator('[data-share-uncopied] span')).toHaveText('The browser did not let the page copy: select the text below and copy it by hand.')
+  await expect(dialog.locator('[data-share-uncopied] span')).toHaveText('The page could not copy: select the text below and copy it by hand.')
   const text = await dialog.locator('[data-share-text]').evaluate((el) => el.textContent ?? '')
   expect(text.split('\n').slice(0, 3)).toEqual([API_LINE, '', `# ${TITLE}`])
 })
