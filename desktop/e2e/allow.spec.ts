@@ -91,8 +91,10 @@ test('a folder outside is allowed from the app with no restart, kept in its sett
     const answer = await page.evaluate(`(${desk})().allowFolder(${JSON.stringify(outside)})`)
     expect(answer).toEqual({ ok: true, root: outside, saved: true })
     const userData = await app.evaluate(({ app }) => app.getPath('userData'))
-    const saved = JSON.parse(readFileSync(join(userData, 'settings.json'), 'utf8')) as { allowedRoots: string[] }
-    expect(saved.allowedRoots).toContain(outside)
+    // Kept as the press's, apart from the folders typed in Settings.
+    const saved = JSON.parse(readFileSync(join(userData, 'settings.json'), 'utf8')) as { allowedRoots: string[]; pressedRoots: Array<{ path: string; confirmed: string }> }
+    expect(saved.pressedRoots).toContainEqual({ path: outside, confirmed: '' })
+    expect(saved.allowedRoots).not.toContain(outside)
     // Nothing restarted: the same server process, the session started before still running.
     const after = await state()
     expect(after.pid).toBe(before.pid)

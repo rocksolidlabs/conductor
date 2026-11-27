@@ -82,10 +82,27 @@ test('a window the workbench opens, and one that window opens, keep the same fen
     await staysOn(grandchild, 'https://example.com/grandchild-link')
     // Restart server: every window follows the next server to its new address, the children as the main one.
     void page.evaluate(() => (window as unknown as { conductorDesktop: { restartServer(): Promise<void> } }).conductorDesktop.restartServer()).catch(() => {})
-    for (const w of [page, child, grandchild]) {
-      await expect.poll(() => { try { return new URL(w.url()).origin } catch { return '' } }, { timeout: 60_000 }).not.toBe(origin)
-      await expect.poll(() => w.url(), { timeout: 60_000 }).toMatch(workbench)
+    const originOf = (w: Page) => {
+      try {
+        return new URL(w.url()).origin
+      } catch {
+        return ''
+      }
     }
+    // The next server's address, as the app reports it once the main window is on it.
+    let next = ''
+    await expect
+      .poll(
+        async () => {
+          if (!workbench.test(page.url()) || originOf(page) === origin) return false
+          const st = (await page.evaluate(() => (window as unknown as { conductorDesktop: { serverState(): Promise<{ state: string; origin?: string }> } }).conductorDesktop.serverState()).catch(() => null)) as { state: string; origin?: string } | null
+          next = st?.state === 'running' ? (st.origin ?? '') : ''
+          return next !== '' && next !== origin
+        },
+        { timeout: 60_000 },
+      )
+      .toBe(true)
+    for (const w of [page, child, grandchild]) await expect.poll(() => originOf(w), { timeout: 60_000 }).toBe(next)
     await app.close()
     app = undefined
   } finally {
