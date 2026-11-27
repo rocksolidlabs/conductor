@@ -6,11 +6,13 @@ import { noOverlap, uncut } from './layout'
 import { ownServer, type OwnServer } from './own-server'
 
 // A crew member's page carries its crew (UX3 R12, #1170): one strip above the session's header with `Back to the crew`, the run's
-// title and a tab for each member, at every width; a tab opens that member in the page's place, so one Back leaves. A run of two shells launched by the spec, on a server of its own: a member's page shows the strip with the
-// run's title; `Back to the crew` lands on the run's page; Alt+Q typed while the terminal has the keys goes back too, and Escape typed
+// title and a tab for each member, at every width; a tab opens that member in the page's place, so one Back leaves. A run of two
+// shells and a copy of the Claude Code stub with its chat declared, launched by the spec, on a server of its own: a member's page
+// shows the strip with the run's title; `Back to the crew` lands on the run's page; Alt+Q typed while the terminal has the keys goes back too, and Escape typed
 // there reaches the shell while the page stays; on a phone the strip is in view and `Back to the list` is not drawn. The session's name
 // is whole and nothing in the header overlaps, measured at rest, at 2000 x 810, 1440 x 900 and 390 x 844. Members are found by the
-// run's id and their names, never by a count.
+// run's id and their names, never by a count. A member's Terminal | Chat (UX3 R13, #1171) draws both sides as on any agent, the
+// Chat side dimmed with why, and a press of it sends nothing.
 test.describe.configure({ mode: 'serial' })
 
 const STEP_MS = 15_000
@@ -28,7 +30,9 @@ let cwd = ''
 
 test.beforeAll(async () => {
   test.setTimeout(120_000)
-  own = await ownServer('member-strip')
+  own = await ownServer('member-strip', {
+    agents: [{ id: 'claude-proto', from: 'claude', env: { STUB_CLAUDE_VERSION: '2.1.331', STUB_NODE: process.execPath }, protocol: { name: 'claude-stream-json' } }],
+  })
   cwd = join(own.repo, 'strip')
   mkdirSync(cwd, { recursive: true })
   const api = own.api
@@ -43,11 +47,12 @@ test.beforeAll(async () => {
       members: [
         { name: 'lead', agentId: 'shell', prompt: '', start: { when: 'immediately' } },
         { name: 'core', agentId: 'shell', prompt: '', start: { when: 'immediately' } },
+        { name: 'review', agentId: 'claude-proto', prompt: 'say hello', start: { when: 'immediately' } },
       ],
     })
   ).crew.id
   run = await api.launchCrew(crewId)
-  for (const name of ['lead', 'core']) {
+  for (const name of ['lead', 'core', 'review']) {
     await expect.poll(async () => member(await api.run(run.id), name).sessionId ?? '', { timeout: LONG_MS, message: `${name} starts` }).not.toBe('')
   }
   run = await api.run(run.id)
@@ -133,6 +138,38 @@ test("a member's tab opens that member in this page's place: one Back leaves the
   }
 })
 
+const MEMBER_TERMINAL = 'Crew members run in their terminals.'
+
+test("a member's Terminal | Chat: both sides drawn, Chat dimmed with why; a press shows why and sends nothing", async ({ browser }) => {
+  const page = await dayPage(browser, { server: own.started, width: 1440, height: 900 })
+  try {
+    const moves: string[] = []
+    page.on('request', (r) => {
+      if (r.method() === 'POST' && new URL(r.url()).pathname.endsWith('/way')) moves.push(r.url())
+    })
+    await memberPage(page, 'review')
+    const sw = page.locator('[data-way-switch]')
+    await expect(sw).toHaveAttribute('data-way', 'terminal')
+    const terminal = sw.locator('[data-way-side="terminal"]')
+    const chat = sw.locator('[data-way-side="protocol"]')
+    await expect(terminal).toHaveAttribute('aria-pressed', 'true')
+    // Dimmed, not disabled: it keeps its tooltip, on hover and on focus.
+    await expect(chat).toHaveAttribute('aria-disabled', 'true')
+    await expect(chat).toBeEnabled()
+    // No line stands above a member's terminal, the first reply's among them.
+    await expect(page.locator('[data-way-line]')).toHaveCount(0)
+    await chat.hover()
+    await expect(page.getByRole('tooltip', { includeHidden: true })).toContainText(MEMBER_TERMINAL)
+    // A press says it as the line, for a moment, and moves nothing.
+    await chat.click()
+    await expect(page.locator('[data-way-line]')).toHaveText(MEMBER_TERMINAL)
+    await expect(sw).toHaveAttribute('data-way', 'terminal')
+    expect(moves).toEqual([])
+  } finally {
+    await page.context().close()
+  }
+})
+
 test('Alt+Q in the terminal goes back to the crew; Escape there is the agent\'s', async ({ browser }) => {
   const page = await dayPage(browser, { server: own.started, width: 1440, height: 900 })
   try {
@@ -170,6 +207,12 @@ test("on a phone the strip is a member's way back, in view; Back to the list is 
     await headerWhole(page)
     await back.tap()
     await expect.poll(() => pagePath(page)).toBe(`/runs/${encodeURIComponent(run.id)}`)
+    // Below sm the way is More's two items: Chat says why and cannot be pressed (UX3 R13).
+    await memberPage(page, 'review')
+    await page.locator('[data-more-button]').tap()
+    const item = page.getByRole('menuitemcheckbox', { name: /Chat/ })
+    await expect(item).toContainText(MEMBER_TERMINAL)
+    await expect(item).toHaveAttribute('aria-disabled', 'true')
   } finally {
     await page.context().close()
   }

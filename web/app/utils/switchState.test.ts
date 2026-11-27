@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { ENDS_TERMINAL_WORK, FIRST_REPLY, MOVES_TO_CHAT, MOVES_TO_TERMINAL, MOVING, NOT_QUALIFIED, firstReplyOf, pressFor, refusalStands, switchState, type Refusal, type SwitchFacts } from './switchState'
+import { ENDS_TERMINAL_WORK, FIRST_REPLY, MEMBER_TERMINAL, MOVES_TO_CHAT, MOVES_TO_TERMINAL, MOVING, NOT_QUALIFIED, firstReplyOf, pressFor, refusalStands, switchState, type Refusal, type SwitchFacts } from './switchState'
 
 const at = (f: Partial<SwitchFacts>): SwitchFacts => ({
   hasProtocol: true, way: 'terminal', noted: '', why: '', canMove: true, firstReply: true, qualified: true, inTurn: false, moving: false, ...f,
@@ -39,6 +39,20 @@ describe('switchState: which sentence the switch shows', () => {
   })
   it("a link's viewer: a label of the way, no action, no line", () => {
     expect(switchState(at({ canMove: false, way: 'protocol', noted: 'terminal' }))).toMatchObject({ shown: true, selected: 'protocol', pressable: false, line: '', noted: '' })
+  })
+  it("a crew's member (UX3 R13): both sides shown, its way selected, the other held with why, no line, no press", () => {
+    for (const f of [{}, { firstReply: false }, { inTurn: true }, { noted: 'protocol' as const }, { why: 'Claude Code did not start a chat.' }]) {
+      const s = switchState(at({ member: true, ...f }))
+      expect(s).toMatchObject({ shown: true, selected: 'terminal', pressable: false, line: '', noted: '', held: MEMBER_TERMINAL })
+      expect(pressFor(s, 'protocol')).toBeNull()
+      expect(pressFor(s, 'terminal')).toBeNull()
+    }
+    expect(MEMBER_TERMINAL).toBe('Crew members run in their terminals.')
+    // An ended member is a label of its way, as any ended session; one of an agent with no protocol has no switch.
+    expect(switchState(at({ member: true, canMove: false }))).toMatchObject({ shown: true, pressable: false, held: '' })
+    expect(switchState(at({ member: true, hasProtocol: false })).shown).toBe(false)
+    // Any other session holds nothing.
+    expect(switchState(at({})).held).toBe('')
   })
   it('at rest after a turn, to Chat: pressable, and the line says what the move ends', () => {
     expect(switchState(at({}))).toMatchObject({ pressable: true, line: ENDS_TERMINAL_WORK })

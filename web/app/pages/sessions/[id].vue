@@ -280,10 +280,23 @@ const switchFacts = computed<SwitchFacts>(() => ({
   inTurn: attention.value.state === 'working',
   moving: moving.value,
   refused: refusal.value?.words || undefined,
+  // A crew's member runs the way its crew runs it (UX3 R13): its other side is drawn dimmed, with why.
+  member: !!current.value?.crew,
 }))
 const switched = computed(() => switchState(switchFacts.value))
+// A press of a side that cannot be taken shows why, for a moment, as the line; nothing is sent.
+const HELD_MS = 5000
+const heldLine = ref('')
+let heldTimer: ReturnType<typeof setTimeout> | undefined
+function showHeld(why: string) {
+  heldLine.value = why
+  clearTimeout(heldTimer)
+  heldTimer = setTimeout(() => (heldLine.value = ''), HELD_MS)
+}
+onBeforeUnmount(() => clearTimeout(heldTimer))
+watch(id, () => (heldLine.value = ''))
 /** The switch's line above the terminal: what a press did or why it waits; the at-rest line is the Chat side's own tooltip. */
-const wayLine = computed(() => (switched.value.shown && switched.value.line !== ENDS_TERMINAL_WORK ? switched.value.line : ''))
+const wayLine = computed(() => heldLine.value || (switched.value.shown && switched.value.line !== ENDS_TERMINAL_WORK ? switched.value.line : ''))
 // Every `way` message ends what a press began: the move made, noted, taken back, or gone back with its sentence (a start that failed
 // sends the way it was, unchanged, with why), so the switch never stays on "moving" after it.
 let wayMessages = 0
@@ -344,11 +357,12 @@ const wayItems = computed(() =>
     ? [
         (['terminal', 'protocol'] as const).map((w) => ({
           label: w === 'protocol' ? 'Chat' : 'Terminal',
-          // What a move to Chat ends, said on the item before it is pressed, as the switch's Chat side says it.
-          ...(w === 'protocol' && switched.value.line === ENDS_TERMINAL_WORK ? { description: ENDS_TERMINAL_WORK } : {}),
+          // What a move to Chat ends, said on the item before it is pressed, as the switch's Chat side says it; a side that cannot be
+          // taken says why (UX3 R13).
+          ...(w !== switched.value.selected && switched.value.held ? { description: switched.value.held } : w === 'protocol' && switched.value.line === ENDS_TERMINAL_WORK ? { description: ENDS_TERMINAL_WORK } : {}),
           type: 'checkbox' as const,
           checked: switched.value.selected === w,
-          disabled: !switchFacts.value.canMove || (w !== switched.value.selected && !switched.value.pressable),
+          disabled: !switchFacts.value.canMove || !!switched.value.held || (w !== switched.value.selected && !switched.value.pressable),
           onSelect: () => w !== switched.value.selected && void moveTo(w),
         })),
       ]
@@ -768,7 +782,7 @@ palette.registerPage(() => {
               <span :id="nameHint" hidden>Show the whole name</span>
               <StatusMark v-if="status" :status="status" word class="text-xs" :data-session-status="current?.id" />
               <YoloBadge v-if="current?.yolo" />
-              <WaySwitch v-if="sm" :facts="switchFacts" :line="false" class="flex-none" @move="moveTo" />
+              <WaySwitch v-if="sm" :facts="switchFacts" :line="false" class="flex-none" @move="moveTo" @held="showHeld" />
             </div>
             <span v-if="headline" class="truncate font-mono text-[11.5px] text-muted" :title="headline.title" data-session-meta>{{ headline.line }}</span>
           </div>
