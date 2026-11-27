@@ -258,8 +258,8 @@ anywhere", "in the app" or "on this device". The word stays where a real
 browser is meant: Open in browser, an agent's browser profile.
 
 Not yet: the places `designRules.test.ts` lists as to be reworded, and
-words built in scripts (toasts, the palette, the events table), which the
-check does not read yet.
+words built in scripts (toasts, the palette, the events table), which a
+check reads only where `deviceWords.test.ts` names them.
 
 Checks: `designRules.test.ts`, the words (no "browser" in a template's text
 or in an attribute written as text that a person reads: a label, a
@@ -274,11 +274,13 @@ Decided 2026-11-16 by the maintainers, #941.
 Amber is for what waits on a person: a question, a plan to approve, a
 task out of attempts, a decision, a confirm that loses work, a read that
 failed. Never a standing fact: a setting that is on, an agent that is not
-installed, a count.
+installed, a count. The yolo badge says a setting is on, so it is
+neutral wherever it is drawn, and a Yolo switch that is on is never amber.
 
 Checks: `main-action.spec.ts`, amber: Not installed and an identified
 agent's badge are neither amber nor green, the Yard's Needs you chip's
-mark is amber.
+mark is amber; `yolo-badge.spec.ts`: the yolo badge in a session's header
+and its sidebar row is not amber, in both themes.
 
 ### The page header
 
@@ -305,12 +307,9 @@ may wait behind More or a fold, at the place it is needed.
 A settings page folds nothing: its settings are the page. It is made
 calmer with plainer words and a better order, never by hiding sections.
 
-Not yet everywhere: the crew editor folds a crew's Yolo under More
-options, as "Permission prompts" (`CrewEditor.vue`), and Brakeman's card
-on the settings page folds its advanced settings (`BrakemanSettings.vue`).
-
 Checks: `designRules.test.ts`, what stays in view (no control bound to a
-Yolo value inside a `UCollapsible` or a `UAccordion`, and neither of those
+Yolo value inside a `UCollapsible`, a `UAccordion` or the forms' own fold
+`MoreOptions`, and neither of the first two
 on the settings page or in a card it draws; the places that still do are
 listed there, each with its reason, and the list only shrinks).
 

@@ -133,7 +133,7 @@ test("Ask Brakeman why sends from the row and the answer stands under it: readin
   await expect(latest.locator('[data-panel-counts]')).toContainText('1 fact')
 
   // A redraw the test causes: another view and back. The answer is still under the row.
-  await page.locator('[data-run-view]').getByRole('tab', { name: 'Grid' }).click()
+  await page.locator('[data-run-view]').getByRole('tab', { name: 'Members' }).click()
   await expect(page.locator('[data-run-grid]')).toBeVisible()
   await page.locator('[data-run-view]').getByRole('tab', { name: 'Tasks' }).click()
   await expect(answer(page, 'build')).toHaveAttribute('data-request', id, { timeout: 15_000 })

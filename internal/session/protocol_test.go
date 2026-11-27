@@ -677,7 +677,7 @@ func TestTranscriptBounds(t *testing.T) {
 	s, _, f := protocolSession(t, Options{})
 	f.TurnStarted("") // seq 1
 	input := bytes.Repeat([]byte("i"), 200<<10)
-	f.Permission(PermissionRequest{Ref: "req-1", Call: "c0", Tool: "Bash", Input: []byte(`{"command":"` + string(input) + `"}`)})
+	askInStream(f, "req-1", "c0", "Bash", `{"command":"`+string(input)+`"}`) // seqs 2 (its step) and 3
 	req := lastEntry(t, s)
 	if req.Kind != EntryPermission || req.State != PermissionOpen {
 		t.Fatalf("request %+v", req)
@@ -784,9 +784,9 @@ func TestProtocolPermissionBound(t *testing.T) {
 	s, _, f := protocolSession(t, Options{})
 	f.TurnStarted("")
 	for i := range MaxPendingPermissions {
-		f.Permission(PermissionRequest{Ref: fmt.Sprintf("req-%d", i), Tool: "Bash", Input: []byte(`{}`)})
+		askInStream(f, fmt.Sprintf("req-%d", i), fmt.Sprintf("c-%d", i), "Bash", `{}`)
 	}
-	f.Permission(PermissionRequest{Ref: "req-past", Tool: "Bash", Input: []byte(`{}`)})
+	askInStream(f, "req-past", "c-past", "Bash", `{}`)
 	past := lastEntry(t, s)
 	if past.State != PermissionDenied || past.Why != TooManyRequestsWords || past.Question != "" {
 		t.Fatalf("the ninth %+v", past)
@@ -796,7 +796,7 @@ func TestProtocolPermissionBound(t *testing.T) {
 		t.Fatalf("replied %+v", r)
 	}
 	f.PermissionWithdrawn("req-0")
-	f.Permission(PermissionRequest{Ref: "req-next", Tool: "Bash", Input: []byte(`{}`)})
+	askInStream(f, "req-next", "c-next", "Bash", `{}`)
 	if e := lastEntry(t, s); e.State != PermissionOpen {
 		t.Fatalf("after a place freed %+v", e)
 	}
@@ -1082,7 +1082,7 @@ func TestPromptThatAnswersCarriesNoText(t *testing.T) {
 func TestProtocolStopClosesInputFirst(t *testing.T) {
 	s, _, f := protocolSession(t, Options{})
 	f.TurnStarted("")
-	f.Permission(PermissionRequest{Ref: "req-1", Tool: "Bash", Input: []byte(`{}`)})
+	askInStream(f, "req-1", "c-1", "Bash", `{}`)
 	if err := s.Stop(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -1126,7 +1126,10 @@ func TestProtocolCapturedReachesOnCaptured(t *testing.T) {
 	f.FileChanged(FileChange{Tool: "c1", Path: "x.go", Op: ChangeEdit, Added: 1, Diff: diff})
 	want.Write(diff)
 	req := []byte(`{"command":"curl example.invalid"}`)
-	f.Permission(PermissionRequest{Ref: "req-1", Tool: "Bash", Input: req})
+	f.TurnStarted("")
+	f.ToolStarted(ToolStep{Ref: "c2", Name: "Bash", Input: req})
+	want.Write(req)
+	f.Permission(PermissionRequest{Ref: "req-1", Call: "c2", Tool: "Bash", Input: req})
 	want.Write(req)
 	mu.Lock()
 	defer mu.Unlock()
@@ -1194,7 +1197,7 @@ func TestReadIsNotBlockedByARequest(t *testing.T) {
 	applied := make(chan struct{})
 	go func() {
 		defer close(applied)
-		f.Permission(PermissionRequest{Ref: "req-1", Call: "c1", Tool: "Bash", Input: []byte(`{"command":"make"}`)})
+		askInStream(f, "req-1", "c1", "Bash", `{"command":"make"}`)
 		f.Notice("after", "the next event")
 	}()
 	select {
@@ -1237,7 +1240,7 @@ func TestProtocolBeginFailureStaysInTheTerminal(t *testing.T) {
 func TestProtocolChildExitEndsTheSession(t *testing.T) {
 	s, _, f := protocolSession(t, Options{})
 	f.TurnStarted("")
-	f.Permission(PermissionRequest{Ref: "req-1", Tool: "Bash", Input: []byte(`{}`)})
+	askInStream(f, "req-1", "c-1", "Bash", `{}`)
 	req := lastEntry(t, s)
 	words := make(chan finishWord, 1)
 	_, err := s.Submit(context.Background(), Submission{Text: "later", Finished: finishedInto(words)})
@@ -1288,7 +1291,7 @@ func TestTurnEndWithdrawsOpenRequests(t *testing.T) {
 	f.ToolStarted(ToolStep{Ref: "c1", Name: "Bash", Input: []byte(`{"command":"make"}`)})
 	f.Permission(PermissionRequest{Ref: "req-1", Call: "c1", Tool: "Bash", Input: []byte(`{"command":"make"}`)})
 	first := lastEntry(t, s)
-	f.Permission(PermissionRequest{Ref: "req-2", Call: "c2", Tool: "Bash", Input: []byte(`{"command":"make install"}`)})
+	askInStream(f, "req-2", "c2", "Bash", `{"command":"make install"}`)
 	second := lastEntry(t, s)
 	f.ToolEnded("c1", ToolResult{Status: ToolOK})
 	if e := entryOf(t, s, first.Seq); e.State != PermissionWithdrawn || e.Why != AnsweredByAgentWords {
@@ -1310,4 +1313,13 @@ func TestTurnEndWithdrawsOpenRequests(t *testing.T) {
 	if open != 0 {
 		t.Fatalf("%d requests still open", open)
 	}
+}
+
+// askInStream has the stream announce the call call (tool, input) and then
+// hand over an in-stream request ref about it, as Codex's and an ACP
+// agent's approvals come: an in-stream request is taken only for a call the
+// stream announced.
+func askInStream(f *sessiontest.FakeProtocol, ref, call, tool, input string) {
+	f.ToolStarted(ToolStep{Ref: call, Name: tool, Input: []byte(input)})
+	f.Permission(PermissionRequest{Ref: ref, Call: call, Tool: tool, Input: []byte(input)})
 }

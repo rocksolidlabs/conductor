@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
-import { cutAtWord, firstMessageLine, isLoopbackHost, messageProblem, namePreview, noFirstMessageLine, plainOffMachine, showsRunsOn, takesFirstMessage } from './launch'
+import { cutAtWord, firstMessageLine, isLoopbackHost, launchKey, messageProblem, namePreview, noFirstMessageLine, optionsSummary, plainOffMachine, showsRunsOn, takesFirstMessage } from './launch'
 
 describe('showsRunsOn', () => {
   it('never asks in the desktop app', () => {
@@ -117,5 +117,35 @@ describe('which agents take a first message', () => {
     expect(noFirstMessageLine([claude, aider])).toBe("Conductor types a first message only where it knows the agent's prompt: Claude Code here.")
     expect(noFirstMessageLine([{ name: 'A', firstMessage: true }, { name: 'B', firstMessage: true }, codex])).toBe("Conductor types a first message only where it knows the agent's prompt: A, B and Codex here.")
     expect(noFirstMessageLine([aider])).toBe("Conductor types a first message only where it knows the agent's prompt, and knows none of these agents' prompts.")
+  })
+})
+
+describe("the closed line of Launch agent's More options", () => {
+  it('names what is set inside, in order, and nothing when all is as it comes', () => {
+    expect(optionsSummary({})).toBe('')
+    expect(optionsSummary({ name: '  ', model: '', args: ' ' })).toBe('')
+    expect(optionsSummary({ model: 'opus' })).toBe('opus')
+    expect(optionsSummary({ name: 'fix the build', model: ' opus ', args: '--add-dir ../shared' })).toBe('"fix the build" · opus · --add-dir ../shared')
+    expect(optionsSummary({ args: '--model opus "two words"' })).toBe('--model opus "two words"')
+  })
+})
+
+describe('the keys that launch from the Launch dialog', () => {
+  const key = (over: Partial<Parameters<typeof launchKey>[0]> = {}) => ({ key: 'Enter', shiftKey: false, ctrlKey: false, metaKey: false, altKey: false, isComposing: false, repeat: false, ...over })
+  it('Enter in the task box, and Ctrl or Cmd+Enter anywhere', () => {
+    expect(launchKey(key(), true)).toBe(true)
+    expect(launchKey(key(), false)).toBe(false)
+    expect(launchKey(key({ ctrlKey: true }), false)).toBe(true)
+    expect(launchKey(key({ metaKey: true }), false)).toBe(true)
+    expect(launchKey(key({ ctrlKey: true }), true)).toBe(true)
+  })
+  it('never Shift+Enter in the task box, a composing Enter, a held key, Alt, or another key', () => {
+    expect(launchKey(key({ shiftKey: true }), true)).toBe(false)
+    expect(launchKey(key({ isComposing: true }), true)).toBe(false)
+    expect(launchKey(key({ keyCode: 229 }), true)).toBe(false)
+    expect(launchKey(key({ repeat: true }), true)).toBe(false)
+    expect(launchKey(key({ repeat: true, ctrlKey: true }), false)).toBe(false)
+    expect(launchKey(key({ altKey: true }), true)).toBe(false)
+    expect(launchKey(key({ key: 'a', ctrlKey: true }), true)).toBe(false)
   })
 })
