@@ -1077,7 +1077,7 @@ export function useBrakeman() {
   /** Asks the item's unfinished make again, as it was sent: the same id and body, which the route finishes and never makes twice. */
   function finishMake(r: MakeOf, item: number) {
     const k = keptMake(r, item)
-    if (!k) throw new Error('This browser holds no make of it to finish.')
+    if (!k) throw new Error('This device holds no make of it to finish.')
     return make(r, item, k.body, k.opId)
   }
 

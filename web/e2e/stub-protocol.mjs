@@ -6,6 +6,8 @@
 //
 //   stub-protocol.mjs --version          prints "2.1.331 (Claude Code)" (STUB_PROTOCOL_VERSION changes the number)
 //   stub-protocol.mjs -p ... --resume ID speaks stream-json on stdin and stdout, on the conversation ID
+//   stub-protocol.mjs app-server ...     is Codex's app server (its second mode, stub-protocol-codex.mjs; with
+//                                        STUB_PROTOCOL_AGENT=codex, --version too)
 //
 // Each turn's message goes into $HOME/.stub-sessions/<conversation>.txt as "chat: <message>" when that folder is there (the
 // terminal stub's transcript, which a terminal resumed on the conversation prints).
@@ -50,8 +52,14 @@ import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs
 import { join } from 'node:path'
 import { createInterface } from 'node:readline'
 
-const version = process.env.STUB_PROTOCOL_VERSION || '2.1.331'
 const args = process.argv.slice(2)
+// Codex's app server (a chat's child of Codex): the stub's second mode, in a file of its own (stub-protocol-codex.mjs), which
+// answers until its input ends and exits itself.
+if (process.env.STUB_PROTOCOL_AGENT === 'codex' || args.includes('app-server')) {
+  await import('./stub-protocol-codex.mjs')
+  await new Promise(() => {})
+}
+const version = process.env.STUB_PROTOCOL_VERSION || '2.1.331'
 if (args.includes('--version')) {
   process.stdout.write(`${version} (Claude Code)\n`)
   process.exit(0)

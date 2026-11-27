@@ -24,6 +24,11 @@ export interface OwnServerOptions {
   /** Copies of the catalog's agents, added to the e2e catalog. */
   agents?: AgentCopy[]
   /**
+   * The ids of the e2e catalog's own agents to keep, the rest left out (the copies are made first, from the whole catalog): a dialog
+   * measured with the half dozen agents a person has, not the e2e catalog's sixteen. Every one when not given.
+   */
+  keep?: string[]
+  /**
    * Where the scratch repository is, under the server's root: `repo` when not given. The day gives a nested path about as long as a
    * real checkout's, so that a cut in a meta line is measured against a real length.
    */
@@ -105,6 +110,10 @@ async function startOwn(o: OwnServerOptions, root: string, log: string, remove: 
     const base = cfg.catalog.agents.find((x) => x.id === a.from)
     if (!base) throw new Error(`the e2e catalog has no agent ${a.from} to copy as ${a.id}`)
     cfg.catalog.agents.push({ ...JSON.parse(JSON.stringify(base)), id: a.id, name: `${base.name}, ${a.id}`, env: { ...base.env, ...a.env }, ...(a.promptShape ? { promptShape: a.promptShape } : {}), ...(a.protocol ? { protocol: a.protocol } : {}) })
+  }
+  if (o.keep) {
+    const copies = new Set((o.agents ?? []).map((a) => a.id))
+    cfg.catalog.agents = cfg.catalog.agents.filter((x) => copies.has(x.id) || o.keep!.includes(x.id))
   }
   writeFileSync(config, JSON.stringify(cfg, null, 2) + '\n')
   const start = () => startServer({ config, home, data, allowedRoot: root, defaultCwd: repo, log, env: o.env, hostToken: o.hostToken })

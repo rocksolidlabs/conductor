@@ -21,13 +21,15 @@ async function openFromMenu(page: Page) {
   return panel
 }
 
-test('your menu opens Alerts with the switches and the rules; a destination toggled there is kept in this browser', async ({ page }) => {
+test('your menu opens Alerts with the switches and the rules; a destination toggled there is kept on this device', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 })
   await page.goto('/crews')
   await expect(page.locator('[data-session-list="sidebar"]')).toBeVisible()
   let panel = await openFromMenu(page)
-  await expect(panel.getByText('Browser notification')).toBeVisible()
-  await expect(panel.getByText('When a session needs input, and for the events routed to Browser:')).toBeVisible()
+  await expect(panel.getByText('Notification on this device', { exact: true })).toBeVisible()
+  await expect(panel.getByText('When a session needs input, and for the events routed to This device:')).toBeVisible()
+  // The old words are gone (UX3 R86).
+  await expect(panel.getByText(/browser/i)).toHaveCount(0)
   // Under the switches, where each event goes; inside the panel the switches have no way to the rules: they are here.
   await expect(panel.getByRole('heading', { name: 'Where each event goes' })).toBeVisible()
   const matrix = panel.locator('[data-routing-matrix]')
@@ -39,7 +41,7 @@ test('your menu opens Alerts with the switches and the rules; a destination togg
   const width = (await panel.boundingBox())!.width
   expect(width).toBeLessThanOrEqual(44 * 16 + 0.5)
   expect(width).toBeGreaterThan(600)
-  // The pill toggles and is kept in this browser.
+  // The pill toggles and is kept on this device.
   const pill = panel.locator('[data-cell="done.browser"]')
   await expect(pill).toHaveAttribute('aria-checked', 'false')
   await pill.click()
@@ -62,7 +64,8 @@ for (const theme of ['dark', 'light'] as const) {
     const page = await dayPage(browser, { server: state, path: '/sessions', width: 390, height: 844, touch: true, theme })
     await page.locator('[data-bottom-tab="more"]').tap()
     const more = page.locator('[data-bottom-more]')
-    await expect(more.getByText('Browser notification')).toBeVisible()
+    await expect(more.getByText('Notification on this device', { exact: true })).toBeVisible()
+    await expect(more.getByText('Browser notification')).toHaveCount(0)
     const rules = more.getByRole('button', { name: 'All alert rules' })
     await expect(rules).toBeVisible()
     await tapTarget(rules)
@@ -82,7 +85,7 @@ for (const theme of ['dark', 'light'] as const) {
     await expect(panel).toHaveCount(0)
     // More again: its switches and the way to the rules, as before.
     await page.locator('[data-bottom-tab="more"]').tap()
-    await expect(more.getByText('Browser notification')).toBeVisible()
+    await expect(more.getByText('Notification on this device', { exact: true })).toBeVisible()
     await expect(more.getByRole('button', { name: 'All alert rules' })).toBeVisible()
   })
 }
