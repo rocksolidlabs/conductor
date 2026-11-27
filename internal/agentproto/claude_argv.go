@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -177,11 +178,22 @@ func ClaudeArgs(l ClaudeLaunch) ([]string, error) {
 // alone or with "=value") is one the chat of protocol name refuses, so
 // that the session stays in its terminal: for Claude Code, an added folder
 // or a flag the chat sets itself, judged by the same lists ClaudeArgs
-// refuses by. A name Conductor does not speak: false.
+// refuses by; for Codex, an added folder or any flag its app server takes
+// no counterpart of (codexTakes, the list CodexArgs reads by). A name
+// Conductor does not speak: false.
 func StaysInTerminal(name, arg string) bool {
 	switch name {
 	case ClaudeStreamJSON:
 		return addedFolder([]string{arg}) || ownFlag([]string{arg}) != ""
+	case CodexAppServer:
+		if addedFolder([]string{arg}) {
+			return true
+		}
+		flag, _, _ := strings.Cut(arg, "=")
+		if len(flag) > 2 && flag[0] == '-' && flag[1] != '-' {
+			flag = flag[:2]
+		}
+		return strings.HasPrefix(flag, "-") && !slices.Contains(codexTakes, flag)
 	}
 	return false
 }
