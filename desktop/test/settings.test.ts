@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from '
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { defaultSettings, loadSettings, migrateToWsl, noticeOnce, owedNotice, PLAIN_SWITCHYARD, plainSwitchyard, saveSettings, serverAffecting, SWITCHYARD_EXTRA, SWITCHYARD_SHAPE, refusedSwitchyardNote, switchyardExtra, switchyardRefusal, switchyardRefused, switchyardShape, validate } from '../src/settings'
+import { defaultSettings, loadSettings, rootPaths, shownSettings, splitRoots, migrateToWsl, noticeOnce, owedNotice, PLAIN_SWITCHYARD, plainSwitchyard, saveSettings, serverAffecting, SWITCHYARD_EXTRA, SWITCHYARD_SHAPE, refusedSwitchyardNote, switchyardExtra, switchyardRefusal, switchyardRefused, switchyardShape, validate } from '../src/settings'
 import { secretsLine, serverEnv, SERVE_ARGS } from '../src/env'
 
 // On Windows the server and its files live in WSL (launcher-wsl); these POSIX paths, modes and shells are not the app's there.
@@ -66,6 +66,26 @@ describe('server environment', () => {
     expect(serverEnv({}, defaults, '/usr/bin', 'C:\\Users\\me\\AppData\\Roaming\\conductor-desktop').CONDUCTOR_DESKTOP_DIR).toBe('C:\\Users\\me\\AppData\\Roaming\\conductor-desktop')
     // None known: none named, and none the app itself was started with comes through.
     expect(serverEnv({ CONDUCTOR_DESKTOP_DIR: '/elsewhere' }, defaults, '/usr/bin', '')).not.toHaveProperty('CONDUCTOR_DESKTOP_DIR')
+  })
+  it("hands the server the press's folders apart from the typed ones, each with the kind it was confirmed as", () => {
+    const defaults = defaultSettings('/home/me', '/ud')
+    expect(serverEnv({}, defaults, '/usr/bin', '/ud')).not.toHaveProperty('CONDUCTOR_PRESSED_ROOTS')
+    const env = serverEnv({}, { ...defaults, pressedRoots: [{ path: '/srv/a', confirmed: '' }, { path: '/home', confirmed: 'above_home' }] }, '/usr/bin', '/ud')
+    expect(env.CONDUCTOR_ALLOWED_ROOTS).toBe('/home/me')
+    expect(JSON.parse(env.CONDUCTOR_PRESSED_ROOTS!)).toEqual([{ path: '/srv/a' }, { path: '/home', confirmed: 'above_home' }])
+  })
+  it('shows the page one list of folders, and takes it apart again', () => {
+    const s = { ...defaultSettings('/home/me', '/ud'), pressedRoots: [{ path: '/srv/a', confirmed: '' as const }] }
+    const shown = shownSettings(s)
+    expect(shown.allowedRoots).toEqual(['/home/me', '/srv/a'])
+    expect(shown).not.toHaveProperty('pressedRoots')
+    expect(rootPaths(s)).toEqual(['/home/me', '/srv/a'])
+    expect(splitRoots(s, ['/home/me', '/srv/a', '/srv/b'])).toEqual({ allowedRoots: ['/home/me', '/srv/b'], pressedRoots: [{ path: '/srv/a', confirmed: '' }] })
+    expect(splitRoots(s, ['/home/me'])).toEqual({ allowedRoots: ['/home/me'], pressedRoots: [] })
+    expect(splitRoots(s, undefined)).toEqual({ allowedRoots: ['/home/me'], pressedRoots: [{ path: '/srv/a', confirmed: '' }] })
+    // The default folder may lie under a pressed folder; a pressed folder is held to the paths' rule.
+    expect(validate({ ...s, defaultCwd: '/srv/a/x' })).toEqual([])
+    expect(validate({ ...s, pressedRoots: [{ path: 'rel', confirmed: '' }] })).not.toEqual([])
   })
   it("hands the server its token and its key on stdin alone: neither is in the environment it builds", () => {
     const defaults = defaultSettings('/home/me', '/ud')
@@ -295,5 +315,17 @@ describe('the one-time notices', () => {
     const off = owedNotice({ ...defaults, noticed: [], switchyardEnabled: false })
     expect(off.notice).toBe('')
     expect(off.settings.noticed).toEqual(['publishing'])
+  })
+})
+
+describe("the press's folders in the settings file", () => {
+  it('are read back as kept, a kind it does not know read as none, and junk left out', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cd-pressed-'))
+    const file = join(dir, 'settings.json')
+    const d = defaultSettings('/home/me', '/ud')
+    writeFileSync(file, JSON.stringify({ ...d, pressedRoots: [{ path: '/srv/a', confirmed: 'home' }, { path: '/srv/b', confirmed: 'everything' }, 'junk', { nopath: 1 }] }))
+    expect(loadSettings(file, d).pressedRoots).toEqual([{ path: '/srv/a', confirmed: 'home' }, { path: '/srv/b', confirmed: '' }])
+    writeFileSync(file, JSON.stringify(d))
+    expect(loadSettings(file, d).pressedRoots).toEqual([])
   })
 })

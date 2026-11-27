@@ -62,6 +62,7 @@ const (
 	refusedWholeDisk     = "whole_disk"
 	refusedConductorData = "conductor_data"
 	refusedName          = "name"
+	refusedOwner         = "owner"
 )
 
 // How wide a folder outside the roots is.
@@ -74,12 +75,14 @@ const (
 // allowedRoot is one folder agents may use: its path as configured or as
 // added, and the folder it was when it was allowed (as the server started,
 // or as it was added): where its links led then (real) and what that folder
-// is (id). A configured folder not there at the start has none, and is
-// taken wherever its path leads at each use.
+// is (id: its device and number, owner and birth time). A folder typed in
+// the configuration that is not there at the start has none, and is taken
+// wherever its path leads at each use, as the person wrote it; a folder
+// allowed by the press always has one (takePressed).
 type allowedRoot struct {
 	path string
 	real string
-	id   os.FileInfo
+	id   folderID
 }
 
 // pinRoot is the folder path is now, kept as the one allowed: a path that
@@ -93,16 +96,16 @@ func pinRoot(path string) allowedRoot {
 	if err != nil || !fi.IsDir() {
 		return allowedRoot{path: path}
 	}
-	return allowedRoot{path: path, real: real, id: fi}
+	return allowedRoot{path: path, real: real, id: identify(real, fi)}
 }
 
-// resolve is where the root's path leads now, and the folder to open there:
-// used only while it is still the folder it was when it was allowed, the
-// same place and the same folder. A link put at its path or above it later,
-// or another folder put in its place, leads nowhere. The folder returned is
-// the one allowed, so an open through it (session.OpenFolderIn) refuses a
-// folder swapped in after this look.
-func (r allowedRoot) resolve() (string, os.FileInfo, bool) {
+// resolve is where the root's path leads now, and the judgement of the
+// folder an open there must find: used only while it is still the folder it
+// was when it was allowed, the same place and the same folder (identify). A
+// link put at its path or above it later, or another folder put in its
+// place, leads nowhere. An open through it (session.OpenFolderInWith)
+// refuses a folder swapped in after this look.
+func (r allowedRoot) resolve() (string, func(os.FileInfo) bool, bool) {
 	real, err := filepath.EvalSymlinks(r.path)
 	if err != nil {
 		return "", nil, false
@@ -111,13 +114,13 @@ func (r allowedRoot) resolve() (string, os.FileInfo, bool) {
 	if err != nil || !fi.IsDir() {
 		return "", nil, false
 	}
-	if r.id == nil {
-		return real, fi, true
+	if !r.id.known() {
+		return real, func(got os.FileInfo) bool { return os.SameFile(got, fi) }, true
 	}
-	if real != r.real || !os.SameFile(fi, r.id) {
+	if real != r.real || !identify(real, fi).same(r.id) {
 		return "", nil, false
 	}
-	return real, r.id, true
+	return real, r.id.sameStat, true
 }
 
 // rootList holds the allowed roots: a list never changed in place, behind an
@@ -139,8 +142,10 @@ type rootList struct {
 	beforeLock func(path string)
 }
 
-// newRootList holds the configuration's allowed roots, each the folder it
-// is as the server starts (pinRoot).
+// newRootList holds the configuration's allowed roots (the folders typed in
+// it or in the app's Settings), each the folder it is as the server starts
+// (pinRoot). The folders the app's press allowed come after, judged again
+// (takePressed).
 func newRootList(cfg *config.Config) *rootList {
 	l := &rootList{}
 	roots := make([]allowedRoot, 0, len(cfg.AllowedRoots))
@@ -192,7 +197,7 @@ type folderVerdict struct {
 	wide    string
 	// id is the folder as the check opened it (an outside folder's), for
 	// the last look before an add (stillTheFolder).
-	id os.FileInfo
+	id folderID
 }
 
 // judgeFolder says of path whether agents may use it under roots, by what a
@@ -246,8 +251,11 @@ func (s *Server) judgeFolder(path string, roots []allowedRoot) folderVerdict {
 		return v
 	}
 	g.Close()
-	v.state, v.id = folderOutside, want
+	v.state, v.id = folderOutside, identify(real, want)
 	v.refused = s.refusedKind(real)
+	if v.refused == "" && !ownedByServer(v.id) {
+		v.refused = refusedOwner
+	}
 	if v.refused == "" {
 		v.wide = s.wideKind(real)
 	}
@@ -592,16 +600,55 @@ func (s *Server) allowRoot(path, confirmed string) (string, bool, *rootRefusal) 
 	return path, true, nil
 }
 
+// takePressed adds the folders the app's press allowed before (the app
+// keeps them apart from the ones typed in Settings), each judged again as
+// the press judged it: the folder its path names, its own real path, owned
+// by the server's user, neither refused nor wider than the kind it was
+// confirmed as. One that fails, or is not there, is not used for this run,
+// and never followed by its name; a log line says so. One the typed roots
+// hold already is not added again.
+func (s *Server) takePressed(pressed []config.PressedRoot) {
+	l := s.roots
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for _, p := range pressed {
+		if len(l.list()) >= maxRoots {
+			s.log.Warn("a folder allowed by the press is not used this run", "folder", p.Path, "why", "agents may use at most 64 folders")
+			continue
+		}
+		v := s.judgeFolder(p.Path, l.list())
+		why := ""
+		switch {
+		case v.state == folderAllowed:
+			continue
+		case v.state != folderOutside:
+			why = "it is " + strings.ReplaceAll(v.state, "_", " ")
+		case v.real != p.Path:
+			why = "its path goes through a link"
+		case v.refused != "":
+			why = refusedFolderWords[v.refused]
+		case v.wide != "" && v.wide != p.Confirmed:
+			why = "it is wider than it was allowed as (" + v.wide + ")"
+		}
+		if why != "" {
+			s.log.Warn("a folder allowed by the press is not used this run", "folder", p.Path, "why", why)
+			continue
+		}
+		l.with(allowedRoot{path: p.Path, real: p.Path, id: v.id})
+	}
+}
+
 // refusedFolderWords are a refused folder's words.
 var refusedFolderWords = map[string]string{
 	refusedWholeDisk:     "agents cannot use the whole disk",
 	refusedConductorData: "Conductor keeps its own data in this folder",
 	refusedName:          "the folder's name holds a comma, a control character or a space at an end, which the saved list of folders cannot hold",
+	refusedOwner:         "the folder belongs to another user",
 }
 
 // stillTheFolder is the last look before an add: path is still its own
 // real path, and still the directory the judgement opened.
-func stillTheFolder(path string, id os.FileInfo) *rootRefusal {
+func stillTheFolder(path string, id folderID) *rootRefusal {
 	real, err := filepath.EvalSymlinks(path)
 	if err != nil {
 		return &rootRefusal{status: http.StatusConflict, code: "folder_missing", message: "the folder does not exist"}
@@ -610,7 +657,7 @@ func stillTheFolder(path string, id os.FileInfo) *rootRefusal {
 		return &rootRefusal{status: http.StatusConflict, code: "folder_is_link", message: "the path goes through a link: only the folder it leads to can be allowed", key: "real", value: real}
 	}
 	fi, err := os.Stat(path)
-	if err != nil || id == nil || !os.SameFile(fi, id) {
+	if err != nil || !identify(path, fi).same(id) {
 		return &rootRefusal{status: http.StatusConflict, code: "folder_changed", message: "the folder changed while it was checked: check it again"}
 	}
 	return nil

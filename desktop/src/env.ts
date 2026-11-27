@@ -18,6 +18,8 @@ export function serverEnv(base: NodeJS.ProcessEnv, settings: DesktopSettings, pa
   out.CONDUCTOR_DATA_DIR = settings.dataDir
   if (appDir) out.CONDUCTOR_DESKTOP_DIR = appDir
   out.CONDUCTOR_ALLOWED_ROOTS = settings.allowedRoots.join(',')
+  // The press's folders, apart: the server judges each again as it starts.
+  if (settings.pressedRoots?.length) out.CONDUCTOR_PRESSED_ROOTS = JSON.stringify(settings.pressedRoots.map((p) => (p.confirmed ? p : { path: p.path })))
   out.CONDUCTOR_DEFAULT_CWD = settings.defaultCwd
   out.CONDUCTOR_YOLO = settings.yolo ? '1' : '0'
   out.CONDUCTOR_REACH = settings.reach

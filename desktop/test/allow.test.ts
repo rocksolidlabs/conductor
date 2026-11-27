@@ -12,7 +12,7 @@ vi.mock('electron', () => ({
 import { ALLOW_ON_WINDOWS, allowOffered, covered, FolderAllow, keyFor, listRefusal, MAX_ROOTS, pathRefusal, type AllowDeps } from '../src/allow'
 import { ALLOW_FOLDER_ON_WINDOWS, allowFolderCall } from '../src/preload'
 import { secretsLine, serverEnv } from '../src/env'
-import { defaultSettings, keepIn, type DesktopSettings } from '../src/settings'
+import { defaultSettings, keepIn, rootPaths, type DesktopSettings } from '../src/settings'
 
 const TOKEN = 'tok-' + 'a'.repeat(60)
 const KEY = 'key-' + 'b'.repeat(60)
@@ -76,7 +76,10 @@ describe('Allow this folder', () => {
     expect(f.asked[0]).toMatchObject({ url: 'http://127.0.0.1:4312/api/roots', redirect: 'error', body: { path: '/srv/proj' } })
     expect(f.asked[0]!.headers.Authorization).toBe(`Bearer ${TOKEN}`)
     expect(f.asked[0]!.headers['X-Conductor-Desktop-Key']).toBe(KEY)
-    expect(f.stored().allowedRoots).toEqual(['/home/me', '/srv/proj'])
+    // Kept apart from the typed folders, as the press's; the person sees one list.
+    expect(f.stored().allowedRoots).toEqual(['/home/me'])
+    expect(f.stored().pressedRoots).toEqual([{ path: '/srv/proj', confirmed: '' }])
+    expect(rootPaths(f.stored())).toEqual(['/home/me', '/srv/proj'])
     expect(f.told()).toBe(1)
   })
 
@@ -97,6 +100,7 @@ describe('Allow this folder', () => {
     const f = fake()
     await f.allow.allow('/srv/wide', 'above_home')
     expect(f.asked[0]!.body).toEqual({ path: '/srv/wide', confirmed: 'above_home' })
+    expect(f.stored().pressedRoots).toEqual([{ path: '/srv/wide', confirmed: 'above_home' }])
   })
 
   it('says saved false, with why, when the file cannot be written: the server holds the folder until it restarts', async () => {
@@ -139,7 +143,7 @@ describe('Allow this folder', () => {
       whenRunning: () => new Promise((r) => (comes = r)),
     })
     const press = f.allow.allow('/srv/proj', '')
-    await vi.waitFor(() => expect(f.stored().allowedRoots).toContain('/srv/proj'))
+    await vi.waitFor(() => expect(rootPaths(f.stored())).toContain('/srv/proj'))
     expect(f.asked).toHaveLength(1)
     Object.assign(f.server, { url: 'http://127.0.0.1:5000', pid: 300, running: true })
     comes({ ...f.server })
@@ -170,10 +174,10 @@ describe('Allow this folder', () => {
     // A file where the settings' folder would be: the write fails.
     writeFileSync(join(dir, 'blocked'), 'x')
     const f = fake({ set: (s, take) => keepIn(join(dir, 'blocked', 'settings.json'), take)(s) })
-    const before = f.stored().allowedRoots
+    const before = rootPaths(f.stored())
     const a = await f.allow.allow('/srv/proj', '')
     expect(a).toMatchObject({ ok: true, root: '/srv/proj', saved: false })
-    expect(f.stored().allowedRoots).toEqual(before)
+    expect(rootPaths(f.stored())).toEqual(before)
     expect(f.told()).toBe(0)
   })
 
@@ -212,7 +216,7 @@ describe('Allow this folder', () => {
     const all = await Promise.all(Array.from({ length: 20 }, (_, i) => f.allow.allow(`/srv/p${i}`, '')))
     expect(most).toBe(1)
     expect(all.every((a) => a.ok && a.saved)).toBe(true)
-    expect(f.stored().allowedRoots).toHaveLength(21)
+    expect(rootPaths(f.stored())).toHaveLength(21)
   })
 
   it('is busy during a Settings save, and a save waits for a press under way', async () => {
@@ -223,7 +227,7 @@ describe('Allow this folder', () => {
     await vi.waitFor(() => expect(f.asked).toHaveLength(1))
     let sawThePress: boolean | undefined
     const save = f.allow.save(async () => {
-      sawThePress = f.stored().allowedRoots.includes('/srv/proj')
+      sawThePress = rootPaths(f.stored()).includes('/srv/proj')
       // During the save a press is busy and asks nothing.
       expect(await f.allow.allow('/srv/other', '')).toMatchObject({ ok: false, code: 'busy' })
     })

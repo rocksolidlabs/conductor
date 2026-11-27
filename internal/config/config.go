@@ -667,6 +667,12 @@ type Config struct {
 	AllowedOrigins []string `json:"allowedOrigins"`
 	// AllowedRoots are directories under which server-hosted sessions may run.
 	AllowedRoots []string `json:"allowedRoots"`
+	// PressedRoots are the folders the desktop app's press allowed
+	// (CONDUCTOR_PRESSED_ROOTS, a JSON array of {path, confirmed?}), kept by
+	// the app apart from the ones typed in Settings: the server judges each
+	// again as it starts, as the press did, and uses one only while it is
+	// that folder. Not a config-file key.
+	PressedRoots []PressedRoot `json:"-"`
 	// DefaultCwd is used when a launch request omits cwd.
 	DefaultCwd string `json:"defaultCwd"`
 	// ScrollbackBytes is the per-session replay buffer size.
@@ -904,6 +910,15 @@ func applyEnv(cfg *Config, getenv func(string) string) error {
 	list("CONDUCTOR_HOST_TOKENS", &cfg.HostTokens)
 	list("CONDUCTOR_ALLOWED_ORIGINS", &cfg.AllowedOrigins)
 	list("CONDUCTOR_ALLOWED_ROOTS", &cfg.AllowedRoots)
+	if v := getenv("CONDUCTOR_PRESSED_ROOTS"); v != "" {
+		dec := json.NewDecoder(strings.NewReader(v))
+		dec.DisallowUnknownFields()
+		var pressed []PressedRoot
+		if err := dec.Decode(&pressed); err != nil || dec.More() || len(pressed) > 64 {
+			return errors.New("CONDUCTOR_PRESSED_ROOTS must be a JSON array of at most 64 {path, confirmed?}")
+		}
+		cfg.PressedRoots = pressed
+	}
 	str("CONDUCTOR_DEFAULT_CWD", &cfg.DefaultCwd)
 	list("CONDUCTOR_ENV_PASSTHROUGH", &cfg.EnvPassthrough)
 	str("CONDUCTOR_CATALOG_PATH", &cfg.CatalogPath)
@@ -1570,6 +1585,13 @@ func (c *Config) LoadCatalog() (catalog.Catalog, error) {
 		return catalog.Catalog{}, errors.Join(errs...)
 	}
 	return cat, nil
+}
+
+// PressedRoot is a folder the desktop app's press allowed, and the kind of
+// wide folder it was confirmed as ("" for none).
+type PressedRoot struct {
+	Path      string `json:"path"`
+	Confirmed string `json:"confirmed,omitempty"`
 }
 
 // DataDirOverlap returns the first allowed root that overlaps DataDir: one that

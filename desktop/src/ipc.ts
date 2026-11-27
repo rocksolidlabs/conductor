@@ -1,7 +1,7 @@
 import { pathToFileURL } from 'node:url'
 import { app, ipcMain, shell, type BrowserWindow, type IpcMainInvokeEvent, type WebContents } from 'electron'
 import { external } from './window'
-import type { DesktopSettings } from './settings'
+import { shownSettings, type DesktopSettings } from './settings'
 import { SettingsSaver } from './save'
 import type { FolderAllow } from './allow'
 import type { ServerSupervisor, ServerStatus } from './server'
@@ -137,7 +137,8 @@ export function registerIpc(d: IpcDeps): void {
     }),
   )
   ipcMain.handle('conductor:browsers', guard(() => installedBrowsers(browsers())))
-  ipcMain.handle('conductor:settings:get', guard(() => d.settings.get()))
+  // The page sees one list of folders: the typed ones and the press's (shownSettings).
+  ipcMain.handle('conductor:settings:get', guard(() => shownSettings(d.settings.get())))
   ipcMain.handle('conductor:update', guard(() => d.update?.() ?? { ready: '', announce: false, restart: '', failed: '' }))
   ipcMain.handle(
     'conductor:installUpdate',
@@ -149,7 +150,9 @@ export function registerIpc(d: IpcDeps): void {
   const serial = <T>(f: () => Promise<T>): Promise<T> => (d.folders ? d.folders.save(f) : f())
   ipcMain.handle(
     'conductor:settings:set',
-    guard((_e, patch) => serial(() => saver.save({ get: d.settings.get, set: d.settings.set, restart: () => d.supervisor.restart(), posix: !!d.wsl?.() }, patch as Partial<DesktopSettings>))),
+    guard((_e, patch) =>
+      serial(() => saver.save({ get: d.settings.get, set: d.settings.set, restart: () => d.supervisor.restart(), posix: !!d.wsl?.() }, patch as Partial<DesktopSettings>)).then(shownSettings),
+    ),
   )
   // Allow this folder: it changes where agents may work, so it answers the workbench's main frame alone, as Settings' own page.
   ipcMain.handle(

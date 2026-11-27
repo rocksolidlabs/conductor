@@ -1,5 +1,5 @@
 import { loopbackOrigin } from './server'
-import { validate, type DesktopSettings } from './settings'
+import { rootPaths, validate, type DesktopSettings } from './settings'
 
 /**
  * Allow this folder (the Launch agent dialog's one press): the app asks the server it started to let agents use one more folder
@@ -137,7 +137,7 @@ export class FolderAllow {
     if (typeof confirmed !== 'string' || !(CONFIRMED as readonly string[]).includes(confirmed)) return { ok: false, code: 'invalid_request', message: 'confirmed must be home, above_home or holds_data' }
     const p = path as string
     if (this.saves > 0) return { ok: false, code: 'busy', message: 'the settings are being saved: try again' }
-    const full = listRefusal(this.d.get().allowedRoots, p)
+    const full = listRefusal(rootPaths(this.d.get()), p)
     if (full) return { ok: false, code: 'too_many_roots', message: full }
     const first = this.d.server()
     if (!first.running || !first.url || first.pid === undefined) return { ok: false, code: 'busy', message: 'Conductor is restarting: try again' }
@@ -146,10 +146,11 @@ export class FolderAllow {
     const root = asked.root
     // A folder already within the saved list needs nothing saved.
     const cur = this.d.get()
-    if (covered(cur.allowedRoots, root)) return { ok: true, root, saved: true }
-    const tooMany = listRefusal(cur.allowedRoots, root)
+    if (covered(rootPaths(cur), root)) return { ok: true, root, saved: true }
+    const tooMany = listRefusal(rootPaths(cur), root)
     if (tooMany) return { ok: true, root, saved: false, error: tooMany }
-    const next = { ...cur, allowedRoots: [...cur.allowedRoots, root] }
+    // Kept apart from the folders typed in Settings, with the kind it was confirmed as: the server judges it again at every start.
+    const next = { ...cur, pressedRoots: [...(cur.pressedRoots ?? []), { path: root, confirmed: confirmed as Confirmed }] }
     const problems = validate(next, this.d.posix)
     if (problems.length) return { ok: true, root, saved: false, error: problems.join('; ') }
     try {

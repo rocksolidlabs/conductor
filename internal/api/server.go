@@ -655,6 +655,8 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 	// Every provider behind the guard before the server's first write of
 	// its own (the ledger's recovery, the records): nothing calls them yet.
 	s.readRevision = gitcli.RevisionOf
+	// The folders the app's press allowed before, judged again now (roots.go).
+	s.takePressed(cfg.PressedRoots)
 	s.settleTick = o.settleTick
 	s.settlePass, s.settleWaits, s.settleBetween = o.settlePass, o.settleWaits, o.settleBetween
 	if len(o.previewBridge) > 0 {

@@ -71,7 +71,10 @@ describe('conductor:allowFolder', () => {
   it("is answered for the workbench's main frame", async () => {
     const w = win(origin + '/')
     expect(await call(w.from(w.main), '/srv/proj', '')).toEqual({ ok: true, root: '/srv/proj', saved: true })
-    expect(stored.allowedRoots).toContain('/srv/proj')
+    expect(stored.pressedRoots.map((r) => r.path)).toContain('/srv/proj')
+    // The page sees the one list.
+    expect(((await handlers.get('conductor:settings:get')!(w.from(w.main))) as { allowedRoots: string[]; pressedRoots?: unknown }).allowedRoots).toContain('/srv/proj')
+    expect(((await handlers.get('conductor:settings:get')!(w.from(w.main))) as { pressedRoots?: unknown }).pressedRoots).toBeUndefined()
     expect(asked).toEqual([origin + '/api/roots'])
   })
 

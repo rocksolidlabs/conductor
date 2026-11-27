@@ -710,7 +710,7 @@ func openCwdIn(cwd string, roots []allowedRoot) (*session.Folder, error) {
 	launchHook("resolved")
 	for _, root := range roots {
 		// The root as allowed: the folder is opened only through that one.
-		rootReal, want, ok := root.resolve()
+		rootReal, same, ok := root.resolve()
 		if !ok {
 			continue
 		}
@@ -719,7 +719,7 @@ func openCwdIn(cwd string, roots []allowedRoot) (*session.Folder, error) {
 			continue
 		}
 		launchHook("root")
-		f, err := session.OpenFolderIn(rootReal, rel, want)
+		f, err := session.OpenFolderInWith(rootReal, rel, same)
 		if err == nil {
 			return f, nil
 		}
