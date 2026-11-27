@@ -15,7 +15,8 @@ test('a line typed for a link that is let go holds the session: the view says so
   const { s, bar, terminal, guestCtx, stub } = await holdOne(page, api, browser, state.home)
   try {
     // The owner's view says the session waits for the terminal, in plain words, and takes no reply meanwhile.
-    await expect(bar).toContainText('Type in the terminal to go on')
+    // The card's heading leads its question's line, drawn before it (UX3 R3): read from the line's own words for it.
+    await expect(bar.locator('[data-quick-reply-message]')).toHaveAttribute('data-heading', 'Type in the terminal to go on: ')
     await expect(bar).toContainText(HELD)
     await expect(bar.locator('input')).toBeDisabled()
     await expect(bar.locator('input')).toHaveAttribute('placeholder', 'Type in the terminal first')

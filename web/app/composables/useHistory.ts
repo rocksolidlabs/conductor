@@ -1,5 +1,5 @@
 import { CommandRefused, mintCommandId, sendCommand } from '~/utils/tasks'
-import type { HistoryCommand, HistoryItem, RecordReply, ResumeReceipt, ResumeReply } from '~/utils/history'
+import type { HistoryCommand, HistoryItem, RecordReply, ResumeReceipt, ResumeReply, SessionSummary } from '~/utils/history'
 
 /** What a resume from a record may add to its command id: resume without the launch's variables; a lost record's second yes. */
 export interface ResumeFlags {
@@ -41,6 +41,9 @@ export function useHistory() {
   const { request } = useApi()
   const enc = encodeURIComponent
   return {
+    /** The first page of the records' rows, newest first by their start: `limit` 1 to 100. */
+    sessions: (limit: number, signal?: AbortSignal) =>
+      request<{ records?: SessionSummary[] }>('/api/history/sessions', { query: { limit: String(limit) }, signal }).then((r) => r.records ?? []),
     record: (id: string) => request<RecordReply>(`/api/history/sessions/${enc(id)}`),
     entry: (key: string, signal?: AbortSignal) => request<{ entry: HistoryItem }>('/api/history/entry', { query: { key }, signal }).then((r) => r.entry),
     command: (run: string, actor: string, id: string) => request<{ command: HistoryCommand }>('/api/history/command', { query: { run, actor, id } }).then((r) => r.command),
