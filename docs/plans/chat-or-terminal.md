@@ -3121,10 +3121,19 @@ below.
   diffs as file changes; thoughts, plans, the context's use and the rest
   are no entry, and an update of another session, or between turns, is
   dropped.
-- A permission request is handed to the session with its `toolCallId` as
-  the call and the step's name and input as announced (its own name and
-  `rawInput` where it gives them), so that the session's binding (design 7,
-  rule 1) takes only a request about a call the stream showed. An Allow
+- A tool call's input is every field it was shown with (`name`, `title`,
+  `kind`, `rawInput`, `content`, `locations`), whole. A permission request
+  is handed to the session with its `toolCallId` as the call and the step's
+  name and input as announced, the request's own values for those fields
+  over them, so that the session's binding (design 7, rule 1) takes only a
+  request about a call the stream showed as it showed it. What the client
+  does not read is declined, never asked without it: a request about a call
+  announced with a field it does not read or changed by an update since,
+  and one whose `toolCall` or params hold such a field. A verdict on a
+  request it no longer holds is `ErrNoRequest`, recorded withdrawn. The
+  floor judges an ACP call by every place it names (its raw input as a
+  command's and a file tool's, each location's and each diff's path),
+  whatever its kind; `execute` has a command's plain words. An Allow
   selects the `allow_once` option by its own `optionId`, a Deny the
   `reject_once` option's or `cancelled`; an `allow_always` or
   `reject_always` option is never selected. Built differently from design
