@@ -307,12 +307,9 @@ may wait behind More or a fold, at the place it is needed.
 A settings page folds nothing: its settings are the page. It is made
 calmer with plainer words and a better order, never by hiding sections.
 
-Not yet everywhere: the crew editor folds a crew's Yolo under More
-options, as "Permission prompts" (`CrewEditor.vue`), and Brakeman's card
-on the settings page folds its advanced settings (`BrakemanSettings.vue`).
-
 Checks: `designRules.test.ts`, what stays in view (no control bound to a
-Yolo value inside a `UCollapsible` or a `UAccordion`, and neither of those
+Yolo value inside a `UCollapsible`, a `UAccordion` or the forms' own fold
+`MoreOptions`, and neither of the first two
 on the settings page or in a card it draws; the places that still do are
 listed there, each with its reason, and the list only shrinks).
 
