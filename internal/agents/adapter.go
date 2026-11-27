@@ -137,6 +137,10 @@ type Adapter struct {
 	// one server); nil for a name that is not a plain word. nil for an
 	// agent that asks before each tool.
 	AllowTools func(server string) []string
+	// Flags, when set, says how the agent prints its flags and what its
+	// help cannot say about them (flags.go): an arguments field offers
+	// them. nil for an agent whose help Conductor has not read.
+	Flags *FlagsRecipe
 }
 
 // mcpServerName is what an MCP server's name must be for AllowTools to
