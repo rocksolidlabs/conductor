@@ -37,7 +37,7 @@ const some = computed(() => props.closed.length > 0 || props.recent.length > 0)
       </ul>
     </template>
     <template v-if="recent.length">
-      <p class="text-xs text-muted">From this browser</p>
+      <p class="text-xs text-muted">From this device</p>
       <ul class="flex flex-col gap-1">
         <li v-for="e in recent" :key="trackKey(e)">
           <button type="button" class="flex min-h-11 w-full items-center justify-between gap-2 rounded-md px-3 py-2 text-left hover:bg-elevated/50" :data-recent-row="e.ref" :data-recent-receipt="e.receipt" @click="emit('openRecent', e)">
