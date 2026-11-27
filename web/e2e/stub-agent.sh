@@ -411,6 +411,12 @@ auth)
 		exit 0
 	fi
 	;;
+acp | --acp)
+	# A chat's child of an Agent Client Protocol agent (CONDUCTOR_PROTOCOL set): the protocol stub's third mode.
+	if [[ ${CONDUCTOR_PROTOCOL:-} == 1 ]]; then
+		exec "${STUB_NODE:-node}" "$(dirname "${BASH_SOURCE[0]}")/stub-protocol.mjs" "$@"
+	fi
+	;;
 app-server)
 	# A chat's child of Codex (the protocol way, CONDUCTOR_PROTOCOL set): the protocol stub's Codex mode speaks its app
 	# server, on the same conversation's transcript (STUB_NODE is the suite's node); a usage read sets no CONDUCTOR_PROTOCOL.
