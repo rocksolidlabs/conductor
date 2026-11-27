@@ -162,6 +162,15 @@ type Submit struct {
 	Text          string `json:"text"`
 	ReqID         string `json:"reqId,omitempty"`
 	UnlessWaiting bool   `json:"unlessWaiting,omitempty"`
+	// Expand asks that the line go to a chat's agent without the
+	// as-written mark, for the agent's own program to expand its @path and
+	// run its /command (docs/plans/chat-or-terminal.md, I19, row 12). Each
+	// socket hands it to the session as it came, and the session sends the
+	// line so only from the operator's own chat
+	// connection (Welcome.Expands): from anyone else, and on a terminal
+	// session, the line is refused (not_sent), nothing written. Absent
+	// means the mark; an older owner ignores it.
+	Expand bool `json:"expand,omitempty"`
 }
 
 // MaxSubmit bounds the text of a submit message, in bytes: a reply box's line.
@@ -531,6 +540,12 @@ type Welcome struct {
 	// alone (absent to every other, and from an older owner), so that only
 	// the operator is drawn a permission request's buttons.
 	PermissionAnswer bool `json:"permissionAnswer,omitempty"`
+	// Expands says the owner sends this connection's submit with expand
+	// without the as-written mark (I19): a chat's welcome to the operator's
+	// own chat connection alone, on a chat whose driver has a mark (absent
+	// to every other, and from an older owner). After a move on an open
+	// connection the way message says it again (Way.Expands).
+	Expands bool `json:"expand,omitempty"`
 }
 
 // ICEServer is the WebRTC ICE server description sent to clients.
