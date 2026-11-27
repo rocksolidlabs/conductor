@@ -50,7 +50,7 @@ func TestStubProtocolSpeaksTheDriver(t *testing.T) {
 	}
 	read := make(chan error, 1)
 	go func() { read <- c.Read(context.Background(), rec) }()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithDeadline(context.Background(), testDeadline(t))
 	defer cancel()
 	if err := c.Begin(ctx); err != nil {
 		t.Fatal(err)
@@ -143,7 +143,7 @@ func TestStubCodexSpeaksTheDriver(t *testing.T) {
 	}
 	read := make(chan error, 1)
 	go func() { read <- c.Read(context.Background(), rec) }()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithDeadline(context.Background(), testDeadline(t))
 	defer cancel()
 	if err := c.Begin(ctx); err != nil {
 		t.Fatal(err)
@@ -247,7 +247,7 @@ func TestStubACPSpeaksTheClient(t *testing.T) {
 			}
 			read := make(chan error, 1)
 			go func() { read <- c.Read(context.Background(), rec) }()
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			ctx, cancel := context.WithDeadline(context.Background(), testDeadline(t))
 			defer cancel()
 			if err := c.Begin(ctx); err != nil {
 				t.Fatal(err)
@@ -276,7 +276,7 @@ func TestStubACPSpeaksTheClient(t *testing.T) {
 			if err := c.Send(ctx, session.Message{Ref: "r2", Text: "hold"}); err != nil {
 				t.Fatal(err)
 			}
-			deadline := time.Now().Add(20 * time.Second)
+			deadline := testDeadline(t)
 			for {
 				if _, err := os.Stat(filepath.Join(kept, acpSession+".held")); err == nil {
 					break

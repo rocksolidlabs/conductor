@@ -413,7 +413,12 @@ func TestACPGate(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rec := &recorder{}
-			c, s := newACPServer(t, rec, ACPOptions{InitWait: 300 * time.Millisecond})
+			opts := ACPOptions{}
+			if tc.name == "no answer" {
+				// The client's own bound is what this case is about.
+				opts.InitWait = 300 * time.Millisecond
+			}
+			c, s := newACPServer(t, rec, opts)
 			tc.edit(s)
 			err := c.Begin(context.Background())
 			if !errors.Is(err, tc.want) || StartWords(err) == "" {
