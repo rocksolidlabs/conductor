@@ -327,7 +327,20 @@ export function configForm<T extends { rev: number }>(deps: ConfigFormDeps<T>) {
       return true
     })
   }
-  return { form, base, gen, busy, stale, staleError, choosing, edited, dirty, reset, drop, follow, op, save, readAgain, keepMine }
+  /**
+   * Discard (UX3 R56): the form put back to what is saved, under its generation. A stale refusal that waits for its choice keeps
+   * waiting: its Read again or Keep mine still reads what is saved now.
+   */
+  function discard(): boolean {
+    const s = deps.saved()
+    if (!s || !form.value) return false
+    base.value = copy(s)
+    form.value = copy(s)
+    staleError.value = ''
+    deps.shown(form.value, 'all')
+    return true
+  }
+  return { form, base, gen, busy, stale, staleError, choosing, edited, dirty, reset, drop, follow, op, save, readAgain, keepMine, discard }
 }
 
 /** A save refused since the configuration was saved elsewhere since the form's revision (its cause the server's refusal). */
