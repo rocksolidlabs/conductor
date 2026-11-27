@@ -1,0 +1,44 @@
+Usage: helper [options] [command] [prompt]
+
+A made-up agent for Conductor's tests, its help in the form commander
+prints: one row a flag, the words at a column of their own.
+
+Arguments:
+  prompt                                What to begin with
+
+Options:
+  --add-dir <directories...>            More folders the agent may read
+  --allow-dangerously-skip-permissions  Lets a key turn every question off
+                                        later on
+  --allowedTools, --allowed-tools <tools...>
+      Tools that run without a question (e.g. "Bash(git *)
+      Edit")
+  --autocompact <auto|tokens>           When to shorten the talk (auto, or at
+                                        least 100k tokens)
+  --dangerously-skip-permissions        Asks nothing at all
+  --effort <level>                      How hard to think (low, medium,
+                                        high)
+  --fallback-model <model>              Models to try next (comma-separated, in
+                                        order)
+  -h, --help                            Shows this help
+  --input-format <format>               How input comes: "text" (default) or
+                                        "stream-json" (choices: "text",
+                                        "stream-json")
+  --model <model>                       The model to use: an alias (e.g.
+                                        'alpha', 'beta', or 'gamma') or a
+                                        model's full name.
+  --permission-mode <mode>              How questions are asked (choices:
+                                        "ask", "bypassPermissions", "plan",
+                                        default: "ask")
+  -c, --continue                        Goes on with the last talk
+  --session-id <uuid>                   The id the session is given
+  --settings <file-or-json>             A settings file, or JSON
+  --sources [names]                     Where settings come from (default: [])
+  --verbose                             Says more
+  -v, --version                         Prints the version
+  -w, --worktree [name]                 Works in a new worktree (optionally
+                                        named)
+
+Commands:
+  doctor                                Checks the install
+  help [command]                        Help for a command

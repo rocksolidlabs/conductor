@@ -4,10 +4,12 @@ package agents_test
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -215,4 +217,72 @@ func TestReadOnlyArgsMatchTheCLIs(t *testing.T) {
 			t.Errorf("codex names no granular approval policy: %v\n%s", err, out)
 		}
 	})
+}
+
+// The flags an arguments field offers, read from each CLI's own help as a
+// launch form reads them (agents.HelpArgs, ProbeProcess.Help, ParseFlags):
+// the list is not empty, the adapter's model flag is in it and set model,
+// the entry's yolo flag is set yolo, and the folder and choice flags the
+// launch form leans on are read so. A help whose form changed fails here
+// first. The parsed list goes to CONDUCTOR_RECIPES_OUT.
+func TestTheCLIFlagsAreRead(t *testing.T) {
+	for _, id := range []string{"claude", "codex"} {
+		t.Run(id, func(t *testing.T) {
+			command := cli(t, id)
+			entry, _ := catalog.Default().Get(id)
+			args, ok := agents.HelpArgs(entry)
+			if !ok {
+				t.Fatalf("%s has no flags recipe", id)
+			}
+			help, res := (&agents.ProbeProcess{Timeout: 20 * time.Second}).Help(context.Background(), command, args, entry.Env)
+			if !res.Ran {
+				t.Fatalf("%s's help: %+v", id, res)
+			}
+			flags, err := agents.ParseFlags(entry, help)
+			if err != nil {
+				t.Fatalf("%s's help: %v", id, err)
+			}
+			if b, err := json.MarshalIndent(flags, "", "  "); err == nil {
+				keepOut(t, id+"-flags", string(b))
+			}
+			byName := map[string]agents.Flag{}
+			for _, f := range flags {
+				byName[f.Name] = f
+			}
+			ad := adapter(t, id)
+			model := strings.SplitN(ad.ModelArgs("x")[0], "=", 2)[0]
+			if f, ok := byName[model]; !ok || f.Set != agents.SetModel {
+				t.Errorf("%s: the model flag %s: %+v", id, model, f)
+			}
+			for _, x := range entry.Yolo.Args {
+				name := strings.SplitN(x, "=", 2)[0]
+				if f, ok := byName[name]; !ok || f.Set != agents.SetYolo {
+					t.Errorf("%s: the yolo flag %s: %+v", id, name, f)
+				}
+			}
+			if f := byName["--add-dir"]; f.Kind != agents.KindFolder {
+				t.Errorf("%s: --add-dir: %+v", id, f)
+			}
+			if id == "codex" {
+				var vals []string
+				for _, c := range byName["--sandbox"].Choices {
+					vals = append(vals, c.Value)
+				}
+				if !slices.Contains(vals, "read-only") {
+					t.Errorf("codex: --sandbox lists %v", vals)
+				}
+				if f := byName["--cd"]; f.Set != agents.SetLaunch {
+					t.Errorf("codex: --cd: %+v", f)
+				}
+			}
+			if id == "claude" {
+				if f := byName["--settings"]; f.Set != agents.SetLaunch {
+					t.Errorf("claude: --settings: %+v", f)
+				}
+				if f := byName["--permission-mode"]; f.Kind != agents.KindChoice {
+					t.Errorf("claude: --permission-mode: %+v", f)
+				}
+			}
+		})
+	}
 }
