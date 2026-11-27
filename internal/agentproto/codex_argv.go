@@ -133,6 +133,11 @@ func codexOwnArg(args []string) string {
 	return ""
 }
 
+// codexTakes are the flags codexTake carries over to a chat (each case of
+// its switch): any other flag keeps a session in its terminal
+// (StaysInTerminal).
+var codexTakes = []string{"-c", "--config", "--enable", "--disable", "--strict-config", "-m", "--model", "-s", "--sandbox", "-a", "--ask-for-approval", "--dangerously-bypass-approvals-and-sandbox", "--yolo", "--no-alt-screen", "--no-daemon"}
+
 // codexTake reads a terminal's arguments: the configuration overrides it
 // returns, to go on the app server's argv; the model, the approval policy
 // and the sandbox into res. Refused: any other flag, and a word that is no

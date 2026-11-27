@@ -7,7 +7,7 @@ import { splitArgs } from '~/utils/argv'
 import { ATTEMPT_WARNING, SHARED_TREE_WARNING, cloneArgsShown, cloneCwd, cloneLaunchArgs, cloneLaunchCwd, cloneName, cloneNameError, cloneRefusal, inRunWorktree, missingSourceAgent, yoloStored } from '~/utils/clone'
 import { hostAdapter, hostCommand } from '~/utils/hostCommand'
 import { accountChoices, accountOfLaunch, capacityKey, faceWords, modelProblem, type CapacityQuery } from '~/utils/capacity'
-import { argsHoldYolo, argsNameModel, chipStep, launchKey, launchNote, launchRefusal, messageProblem, namePlaceholderFor, noTaskLine, optionsSummary, plainOffMachine, showsRunsOn, takesFirstMessage, type LaunchRefusal } from '~/utils/launch'
+import { argsNameModel, chipStep, launchKey, launchNote, launchRefusal, messageProblem, namePlaceholderFor, noTaskLine, optionsSummary, plainOffMachine, showsRunsOn, takesFirstMessage, type LaunchRefusal } from '~/utils/launch'
 import { effectiveYolo, hasYoloRecipe, yoloSummary, yoloUnavailable } from '~/utils/yolo'
 import { offersRunAs, readRunAs, writeRunAs } from '~/utils/launchWay'
 import { afterLaunch, launchStorage, readLast, withRecord, writeLast, type LastLaunch } from '~/utils/lastLaunch'
@@ -333,7 +333,6 @@ watch(
 const extraArgs = computed(() => (selected.value?.allowArgs && state.args.trim() ? splitArgs(state.args) : []))
 const runsView = computed(() => yoloSummary(selected.value, yolo.value, extraArgs.value))
 const modelTwice = computed(() => (takesAccount.value && !!model.value.trim() && argsNameModel(extraArgs.value) ? 'The model is set here and in Model. Keep one of them.' : ''))
-const yoloTyped = computed(() => (argsHoldYolo(extraArgs.value, selected.value?.yolo?.args) ? 'Use the Yolo switch for this.' : ''))
 
 // Folder: its placeholder is the folder a launch that names none runs in (the agent's own, else the server's default, which GET
 // /api/paths names for an empty prefix); a refusal of the folder is said under it, and Launch sends nothing until it changes.
@@ -640,7 +639,7 @@ async function submit() {
                 <UInput v-model="state.name" :placeholder="namePlaceholder" class="w-full" />
               </UFormField>
               <UFormField v-if="takesAccount" label="Model" name="model" :error="modelError || undefined" data-launch-model>
-                <UInput v-model="model" placeholder="The agent's choice" autocapitalize="off" autocorrect="off" spellcheck="false" :list="modelNames.length ? modelListId : undefined" class="w-full font-mono" data-launch-model-input />
+                <ModelField v-model="model" :agent="selected ? { id: selected.id, name: selected.name, version: selected.identity?.version } : null" placeholder="The agent's choice" autocapitalize="off" autocorrect="off" spellcheck="false" :list="modelNames.length ? modelListId : undefined" data-launch-model-input />
                 <datalist v-if="modelNames.length" :id="modelListId" data-launch-model-names>
                   <option v-for="n in modelNames" :key="n" :value="n" />
                 </datalist>
@@ -651,11 +650,11 @@ async function submit() {
                 label="Extra arguments"
                 name="args"
                 :hint="selected?.allowArgs ? undefined : 'this agent takes no extra arguments now'"
-                :help="selected?.allowArgs ? yoloTyped || undefined : 'Recorded at its launch: the server refuses a clone with them; clear them to clone without'"
+                :help="selected?.allowArgs ? undefined : 'Recorded at its launch: the server refuses a clone with them; clear them to clone without'"
                 :error="modelTwice || undefined"
                 data-launch-args-field
               >
-                <UInput v-model="state.args" placeholder="Flags, as you would type them in a terminal" autocapitalize="off" autocorrect="off" spellcheck="false" class="w-full font-mono" data-launch-args />
+                <AgentArgsField v-model="state.args" :agent="selected?.allowArgs ? { id: selected.id, name: selected.name, version: selected.identity?.version } : null" :model-field="takesAccount" :yolo-args="selected?.yolo?.args" autocapitalize="off" autocorrect="off" spellcheck="false" data-launch-args />
               </UFormField>
               <p v-if="selected?.allowArgs && runsView.argv.length" class="text-xs text-muted [overflow-wrap:anywhere]" data-launch-runs>
                 Runs: <code class="font-mono" data-mono="command">{{ runsView.argv.join(' ') }}</code><template v-if="takesAccount && model.trim()"> · model {{ model.trim() }}</template>
