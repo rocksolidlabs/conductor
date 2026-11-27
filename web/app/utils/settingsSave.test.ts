@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { DesktopSettings } from './desktop'
-import { answer, followSaved, formMove, newer, holds, holdsFields, saveParts, saveWords, together, type AppPart } from './settingsSave'
+import { answer, configForm, followSaved, StaleRefusal, formMove, newer, holds, holdsFields, saveParts, saveWords, together, type AppPart } from './settingsSave'
 
 /** A part that records its call in `calls` and answers `value`, or throws `fail`. */
 function part<T>(calls: string[], name: string, value: T, fail?: string) {
@@ -245,5 +245,58 @@ describe('saveWords', () => {
 
   it("says the app's refusal in its own words when Brakeman's part was unchanged, as before", () => {
     expect(saveWords({ brakeman: 'unchanged', app: 'failed', error: 'the server did not start' })).toEqual({ ok: false, title: 'Not saved', description: 'the server did not start' })
+  })
+})
+
+describe('Discard (UX3 R56)', () => {
+  type Conf = { rev: number; reads: number }
+  function harness() {
+    let saved: Conf | null = { rev: 1, reads: 300 }
+    const shown: string[] = []
+    const ctl = configForm<Conf>({
+      generation: () => 0,
+      saved: () => saved,
+      save: async () => {
+        throw Object.assign(new Error('stale'), { stale: true })
+      },
+      read: async () => ({ rev: 2, reads: 500 }),
+      isStale: (e) => (e as { stale?: boolean }).stale === true,
+      current: (f) => f,
+      same: (a, b) => a.reads === b.reads,
+      shown: (_f, fields) => shown.push(String(fields)),
+    })
+    ctl.follow()
+    return { ctl, shown, setSaved: (c: Conf | null) => (saved = c) }
+  }
+
+  it('puts the form back to what is saved, its text fields with it', () => {
+    const { ctl, shown } = harness()
+    ctl.form.value!.reads = 400
+    expect(ctl.dirty.value).toBe(true)
+    expect(ctl.discard()).toBe(true)
+    expect(ctl.form.value).toEqual({ rev: 1, reads: 300 })
+    expect(ctl.dirty.value).toBe(false)
+    expect(ctl.edited.value).toBe(false)
+    expect(shown.at(-1)).toBe('all')
+  })
+
+  it('keeps a stale refusal that waits for its choice, which still reads what is saved now', async () => {
+    const { ctl } = harness()
+    ctl.form.value!.reads = 400
+    await expect(ctl.save({ rev: 1, reads: 400 }, 0)).rejects.toBeInstanceOf(StaleRefusal)
+    expect(ctl.stale.value).toBe(true)
+    ctl.discard()
+    expect(ctl.stale.value).toBe(true)
+    expect(ctl.form.value!.reads).toBe(300)
+    expect(await ctl.readAgain()).toBe(true)
+    expect(ctl.stale.value).toBe(false)
+    expect(ctl.form.value).toEqual({ rev: 2, reads: 500 })
+  })
+
+  it('does nothing before anything was read', () => {
+    const { ctl, setSaved } = harness()
+    setSaved(null)
+    ctl.drop()
+    expect(ctl.discard()).toBe(false)
   })
 })

@@ -30,6 +30,13 @@ function hook(id: PageId): Record<string, string> {
 const moreActive = computed(() => props.more.some((p) => active(p.id)))
 const moreItems = computed<DropdownMenuItem[]>(() => props.more.map((p) => ({ label: p.label, icon: p.icon, to: p.to, kbds: p.chord ? [...p.chord] : undefined, active: active(p.id) })))
 
+/**
+ * A tile's tooltip opens to the right, over the next tile: it closes as the pointer leaves its tile (`disable-hoverable-content`: there
+ * is nothing in it to reach) and is gone at once, with no closing animation, so a press on the tile beside it lands on that tile, as
+ * TipButton's does.
+ */
+const TIP_UI = { content: 'data-[state=closed]:animate-none' }
+
 // On the canvas the theme's raised hover would vanish in light (sage on sage): a tile hovers to the canvas's hover tone, and the
 // current page's tile takes the page's tone, as the sidebar's rows do.
 const TILE = 'relative flex h-12 w-full min-w-0 flex-col items-center justify-center gap-0.5 rounded-md px-0 py-1 text-[11px] font-medium leading-tight tracking-tight'
@@ -42,7 +49,16 @@ function tileClass(on: boolean): string {
   <nav aria-label="Pages" class="grid w-full grid-cols-3 gap-x-0.5 gap-y-1" data-sidebar-tiles>
     <template v-for="(t, i) in tiles" :key="t.kind === 'page' ? t.page.id : t.kind">
       <div v-if="t.kind === 'held'" class="h-12" aria-hidden="true" data-sidebar-tile="held" />
-      <UTooltip v-else-if="t.kind === 'page'" :text="pageTip(t.page)" :kbds="t.page.chord ? [...t.page.chord] : undefined" :content="{ side: 'right' }" :delay-duration="300" ignore-non-keyboard-focus>
+      <UTooltip
+        v-else-if="t.kind === 'page'"
+        :text="pageTip(t.page)"
+        :kbds="t.page.chord ? [...t.page.chord] : undefined"
+        :content="{ side: 'right' }"
+        :delay-duration="300"
+        :ui="TIP_UI"
+        ignore-non-keyboard-focus
+        disable-hoverable-content
+      >
         <UButton
           :to="t.page.to"
           color="neutral"
