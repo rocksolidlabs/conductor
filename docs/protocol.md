@@ -9755,8 +9755,8 @@ environment, or the terminal with the agent's `resumeArgs` and the
 launch's other arguments. Every viewer is sent `way`; the terminal's
 ring and screens begin empty with the new process; the transcript stays,
 with a `notice` entry at the boundary: `Moved to the terminal.` or `Moved
-to Chat. Turns made in the terminal are not shown here. What the agent
-left running in its terminal was ended.`, and the activity says the
+to Chat. Earlier terminal messages are not shown here, and commands left
+running in the terminal were stopped.`, and the activity says the
 move. A new start that fails goes back the way it came
 from, once, its sentence on the `way` message's `why` and in the activity
 (`Claude Code did not start a chat.`, `Claude Code is not signed in; sign

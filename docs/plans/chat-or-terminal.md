@@ -1295,9 +1295,9 @@ noted and the line says why in one sentence:
 5. It broadcasts `status` and the `way` control message; viewers draw
    the other view. The terminal's ring and screens begin empty with the
    new process. The transcript stays, with a `notice` entry at the
-   boundary: "Moved to the terminal." or "Moved to Chat. Turns made in
-   the terminal are not shown here. What the agent left running in its
-   terminal was ended."
+   boundary: "Moved to the terminal." or "Moved to Chat. Earlier
+   terminal messages are not shown here, and commands left running in the
+   terminal were stopped."
 6. If the new start fails, the session tries once to resume the way it
    came from; if that fails too, it ends with both failures' words, and
    the conversation stays resumable with Resume.
@@ -2373,8 +2373,10 @@ start in `local.go`, `internal/api/move.go`, `internal/proto/way.go`,
   ended, never doubled, and the person is told: the switch's line before
   a move to Chat at rest says "Moving to Chat ends what the agent left
   running in its terminal.", and the boundary's notice and activity line
-  after it "Moved to Chat. Turns made in the terminal are not shown here.
-  What the agent left running in its terminal was ended." A chat's
+  after it "Moved to Chat. Earlier terminal messages are not shown here,
+  and commands left running in the terminal were stopped." (#1169; it said
+  "Turns made in the terminal are not shown here. What the agent left
+  running in its terminal was ended." before). A chat's
   background work (its driver's task events) holds a move to the terminal
   ("Background work is still running.").
 - The `way` message gains `why` (at most 200 bytes), beside the plan's
