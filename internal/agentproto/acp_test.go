@@ -534,10 +534,11 @@ func TestACPFixturesReplay(t *testing.T) {
 // What the client does not read is declined, never asked without it: a
 // request about a call announced with a field the client does not read, or
 // changed by an update since it was announced, one whose own toolCall holds
-// such a field, and one whose params do. Each is answered at once (never an
-// allow) with a notice, and none reaches the session; a request whose
-// toolCall gives the call's fields its own values is handed over with them,
-// for the session's binding to judge.
+// such a field, one whose params do, and one whose toolCall gives a shown
+// field another value (and a later one about that call). Each is answered
+// at once (never an allow) with a notice, and none reaches the session; a
+// request whose toolCall gives the call's fields their own values is handed
+// over as the call was announced.
 func TestACPWhatTheClientDoesNotReadIsDeclined(t *testing.T) {
 	_, s, rec := begun(t, ACPOptions{})
 	opts := `[{"optionId":"o1","name":"Allow","kind":"allow_once"},{"optionId":"r1","name":"Reject","kind":"reject_once"}]`
@@ -571,9 +572,25 @@ func TestACPWhatTheClientDoesNotReadIsDeclined(t *testing.T) {
 	if n := len(rec.kinds("permission")); n != 0 {
 		t.Fatalf("%d declined requests reached the session", n)
 	}
+	// A request whose own toolCall gives a shown field another value
+	// changes the call: declined, and so is a later one giving only its id.
 	ask(65, `{"toolCallId":"a5","rawInput":{"command":"rm -rf /"}}`, "")
+	ask(66, `{"toolCallId":"a5"}`, "")
+	for _, id := range []string{"65", "66"} {
+		if got := s.await(`"id":` + id + `,`); strings.Contains(got, `"o1"`) {
+			t.Fatalf("request %s answered %s", id, got)
+		}
+	}
+	waitEvent(t, rec, "notice", 6)
+	if n := len(rec.kinds("permission")); n != 0 {
+		t.Fatalf("%d declined requests reached the session", n)
+	}
+	// One whose toolCall gives the call's fields their own values is
+	// handed over as the call was announced.
+	call("a6", "")
+	ask(67, `{"toolCallId":"a6","title":"ls","rawInput":{"command":"ls"}}`, "")
 	p := waitEvent(t, rec, "permission", 1)[0].perm
-	if p.Call != "a5" || string(p.Input) != `{"kind":"execute","rawInput":{"command":"rm -rf /"},"title":"ls"}` {
+	if p.Call != "a6" || string(p.Input) != `{"kind":"execute","rawInput":{"command":"ls"},"title":"ls"}` {
 		t.Fatalf("handed over %+v %s", p, p.Input)
 	}
 }
@@ -789,5 +806,34 @@ func TestACPACallWithAnOpenRequestIsNotForgotten(t *testing.T) {
 	}
 	if got := s.await(`"id":151,`); got != `{"id":151,"jsonrpc":"2.0","result":{"outcome":{"outcome":"cancelled"}}}` {
 		t.Fatalf("the agent was answered %s", got)
+	}
+}
+
+// A request that itself changes its call marks it changed: its own
+// toolCall giving a shown field another value, or the request declined for
+// another reason, closes every open card about the call, and a later
+// request giving only the call's id is declined.
+func TestACPARequestThatChangesItsCallClosesItsCards(t *testing.T) {
+	_, s, rec := begun(t, ACPOptions{})
+	for i, tc := range []struct{ name, toolCall, opts string }{
+		{"its toolCall gives another title", `{"toolCallId":"c1","title":"cat /etc/passwd"}`, acpOpts},
+		{"its options are not read", `{"toolCallId":"c2"}`, `[{"optionId":"o1","name":"Allow","kind":"allow_once","_meta":{}}]`},
+	} {
+		id := "c" + itoa(i+1)
+		p := askAbout(t, s, rec, 160+i*10, id, `{"command":"ls"}`, i)
+		s.write(`{"jsonrpc":"2.0","id":` + itoa(161+i*10) + `,"method":"session/request_permission","params":{"sessionId":"` + acpSession + `","toolCall":` + tc.toolCall + `,"options":` + tc.opts + `}}`)
+		if w := waitEvent(t, rec, "permission_withdrawn", i+1)[i]; w.ref != p.ref {
+			t.Fatalf("%s: withdrew %s, want %s", tc.name, w.ref, p.ref)
+		}
+		if got := s.await(`"id":` + itoa(160+i*10) + `,`); !strings.Contains(got, `{"outcome":"cancelled"}`) {
+			t.Fatalf("%s: the open request was answered %s", tc.name, got)
+		}
+		s.write(`{"jsonrpc":"2.0","id":` + itoa(162+i*10) + `,"method":"session/request_permission","params":{"sessionId":"` + acpSession + `","toolCall":{"toolCallId":"` + id + `"},"options":` + acpOpts + `}}`)
+		if got := s.await(`"id":` + itoa(162+i*10) + `,`); strings.Contains(got, `"o1"`) {
+			t.Fatalf("%s: a later request answered %s", tc.name, got)
+		}
+		if n := len(rec.kinds("permission")); n != i+1 {
+			t.Fatalf("%s: %d requests reached the session", tc.name, n)
+		}
 	}
 }

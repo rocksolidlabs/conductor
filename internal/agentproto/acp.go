@@ -998,18 +998,36 @@ func (c *ACP) agentRequest(method string, id json.RawMessage, p map[string]json.
 		_ = c.answerOutcome(id, acpCancelled())
 		return
 	}
+	// The call it names. A request's own toolCall is an update of the
+	// call: a request declined for any reason, its toolCall's fields
+	// compared or not, changes the call it names when that call is open
+	// (marked changed, every open card about it closed), so that a later
+	// request giving only the call's id is declined too.
+	tc := object(p["toolCall"])
+	var call string
+	field(tc, "toolCallId", &call)
+	step, announced := c.r.tools[call]
+	decline := func(outcome map[string]any, words string) {
+		if announced {
+			step.changed = true
+			c.r.tools[call] = step
+			c.withdrawAbout(call, e)
+		}
+		_ = c.answerOutcome(id, outcome)
+		if words != "" {
+			e.Notice(NoticeDeclined, words)
+		}
+	}
 	if extraFields(p, []string{"sessionId", "toolCall", "options"}) {
 		// A request asking for more than the client reads: declined.
-		_ = c.answerOutcome(id, acpCancelled())
-		e.Notice(NoticeDeclined, ACPDeclinedWords)
+		decline(acpCancelled(), ACPDeclinedWords)
 		return
 	}
 	options, read := acpOptions(p["options"])
 	if !read {
 		// Options the client does not read whole: declined, never put to a
 		// person.
-		_ = c.answerOutcome(id, acpCancelled())
-		e.Notice(NoticeDeclined, ACPDeclinedWords)
+		decline(acpCancelled(), ACPDeclinedWords)
 		return
 	}
 	allowOnce := false
@@ -1019,59 +1037,30 @@ func (c *ACP) agentRequest(method string, id json.RawMessage, p map[string]json.
 	if !allowOnce {
 		// No way to allow it once: declined at once, never put to a person
 		// as an Allow the client could not keep.
-		_ = c.answerOutcome(id, acpOutcome(options, session.Verdict{}))
-		e.Notice(NoticeDeclined, ACPNoAllowOnceWords)
+		decline(acpOutcome(options, session.Verdict{}), ACPNoAllowOnceWords)
 		return
 	}
-	// The call it names, as the stream announced it: its id the call, its
-	// name and input the step's; what the request's own toolCall gives
-	// beside them goes into that input, so that a request about more than
-	// the step showed is bound to no call. A request about a call holding
-	// what the client does not read, or changed since it was announced, or
-	// whose own toolCall holds a field the client does not read, is
-	// declined.
-	tc := object(p["toolCall"])
-	var call string
-	field(tc, "toolCallId", &call)
-	step, announced := c.r.tools[call]
-	if !announced || step.unread || step.changed || tc == nil || extraFields(tc, append(append([]string{}, acpShownFields...), acpUpdateFields...)) {
-		_ = c.answerOutcome(id, acpOutcome(options, session.Verdict{}))
-		e.Notice(NoticeDeclined, ACPDeclinedWords)
+	// The call as the stream announced it: its id the call, its name and
+	// input the step's. A request about a call holding what the client
+	// does not read, or changed since it was announced, or whose own
+	// toolCall holds a field the client does not read or gives a shown
+	// field another value, is declined.
+	if !announced || step.unread || step.changed || tc == nil ||
+		extraFields(tc, append(append([]string{}, acpShownFields...), acpUpdateFields...)) || acpChanges(step.fields, tc) {
+		decline(acpOutcome(options, session.Verdict{}), ACPDeclinedWords)
 		return
 	}
-	fields := map[string]json.RawMessage{}
-	name := "other"
-	if announced {
-		maps.Copy(fields, step.fields)
-		name = step.name
-	}
-	for _, k := range acpShownFields {
-		if raw, ok := tc[k]; ok && !isNull(raw) {
-			fields[k] = bytes.Clone(raw)
-		}
-	}
-	var reqName string
-	field(tc, "name", &reqName)
-	if reqName != "" {
-		name = reqName
-	} else if !announced {
-		var kind string
-		field(tc, "kind", &kind)
-		if kind != "" {
-			name = kind
-		}
-	}
-	input, ok := acpInput(fields)
-	if !ok || !rawInputRead(fields["rawInput"], c.keys) {
-		_ = c.answerOutcome(id, acpOutcome(options, session.Verdict{}))
-		e.Notice(NoticeDeclined, ACPDeclinedWords)
+	name := step.name
+	input, ok := acpInput(step.fields)
+	if !ok || !rawInputRead(step.fields["rawInput"], c.keys) {
+		decline(acpOutcome(options, session.Verdict{}), ACPDeclinedWords)
 		return
 	}
 	key := idKey(id)
 	c.mu.Lock()
 	if len(c.requests) >= maxACPRequests {
 		c.mu.Unlock()
-		_ = c.answerOutcome(id, acpOutcome(options, session.Verdict{}))
+		decline(acpOutcome(options, session.Verdict{}), "")
 		return
 	}
 	old, reused := c.byID[key]
