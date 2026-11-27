@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { AGENTS_KEPT, LAST_LAUNCH_KEY, NAMES_KEPT, SHELL_ID, afterLaunch, readLast, writeLast, type LastLaunch } from './lastLaunch'
+import { AGENTS_KEPT, LAST_LAUNCH_KEY, NAMES_KEPT, SHELL_ID, afterLaunch, readLast, withRecord, writeLast, type LastLaunch } from './lastLaunch'
 
 // What Launch agent remembers of the last launch (UX3 R29): read as the dialog opens, written after a launch the server took.
 
@@ -68,3 +68,19 @@ describe('the memory of the last launch', () => {
     expect(() => writeLast(refusing, { models: {} })).not.toThrow()
   })
 })
+
+describe("the server's record of the last launch (R89)", () => {
+  const local: LastLaunch = { agent: 'codex', folder: '/old', models: { codex: { model: 'o3', names: ['o3'] } }, moreOpen: true }
+  it("wins for the agent, the folder and the models, and leaves the fold this viewer's own", () => {
+    const rec = { v: 1, agent: 'claude', folder: '/srv/api', models: { claude: { model: 'opus', names: ['opus', 'sonnet'] } }, order: ['claude'] }
+    expect(withRecord(local, rec)).toEqual({ agent: 'claude', folder: '/srv/api', models: { claude: { model: 'opus', names: ['opus', 'sonnet'] } }, moreOpen: true })
+    expect(withRecord({ models: {} }, rec).moreOpen).toBeUndefined()
+  })
+  it('leaves the memory as it is with no record, an empty one, or one it cannot read', () => {
+    expect(withRecord(local, null)).toBe(local)
+    expect(withRecord(local, { models: {} })).toBe(local)
+    expect(withRecord(local, { agent: 'shell', models: {} })).toBe(local)
+    expect(withRecord(local, { models: { claude: { model: 3, names: 'x' } } })).toEqual({ models: { claude: { model: '', names: [] } }, moreOpen: true })
+  })
+})
+

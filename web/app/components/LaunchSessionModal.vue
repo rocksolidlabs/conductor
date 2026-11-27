@@ -10,7 +10,7 @@ import { accountChoices, accountOfLaunch, capacityKey, faceWords, modelProblem, 
 import { argsHoldYolo, argsNameModel, chipStep, launchKey, launchNote, launchRefusal, messageProblem, namePlaceholderFor, noTaskLine, optionsSummary, plainOffMachine, showsRunsOn, takesFirstMessage, type LaunchRefusal } from '~/utils/launch'
 import { effectiveYolo, hasYoloRecipe, yoloSummary, yoloUnavailable } from '~/utils/yolo'
 import { offersRunAs, readRunAs, writeRunAs } from '~/utils/launchWay'
-import { afterLaunch, launchStorage, readLast, writeLast, type LastLaunch } from '~/utils/lastLaunch'
+import { afterLaunch, launchStorage, readLast, withRecord, writeLast, type LastLaunch } from '~/utils/lastLaunch'
 import type { SessionWay } from '~/utils/protocol'
 
 const open = defineModel<boolean>('open', { default: false })
@@ -144,7 +144,20 @@ watch([open, launchModal.asked], async ([v]) => {
   // What the last launch left (utils/lastLaunch.ts), never for a clone: the fold as it was left, each agent's model and the names
   // typed; and, at the page's first opening, its agent and folder (after that the dialog keeps what was last picked, as it always has).
   // A prefill wins.
-  const memory = p?.clone ? null : readLast(launchStorage())
+  let memory = p?.clone ? null : readLast(launchStorage())
+  // The catalog is asked at once; at the page's first opening the server's record of the last launch is read beside it, which
+  // outlasts a restart of the server (R89), and wins over what this page kept. A record that does not come in LAST_LAUNCH_WAIT_MS
+  // is gone without.
+  const catalogAsk = api.catalogInfo().then(
+    (info) => ({ info }),
+    (e: unknown) => ({ e }),
+  )
+  loading.value = true
+  if (memory && !memoryTaken) {
+    const recorded = await Promise.race([api.lastLaunch().catch(() => null), new Promise<null>((r) => setTimeout(() => r(null), LAST_LAUNCH_WAIT_MS))])
+    if (opening !== openings) return
+    memory = withRecord(memory, recorded)
+  }
   lastMemory.value = memory ?? { models: {} }
   if (memory) {
     if (!memoryTaken) {
@@ -170,7 +183,9 @@ watch([open, launchModal.asked], async ([v]) => {
   }
   loading.value = true
   try {
-    const info = await api.catalogInfo()
+    const asked = await catalogAsk
+    if ('e' in asked) throw asked.e
+    const info = asked.info
     if (opening !== openings) return
     cachedCatalog.value = info
     agents.value = info.agents
@@ -294,6 +309,8 @@ const perAgent = new Map<string, { model: string; args: string }>()
 /** The memory of the last launch, as this opening read it; whether the page's first opening has taken its agent and folder. */
 const lastMemory = ref<LastLaunch>({ models: {} })
 let memoryTaken = false
+/** How long the first opening waits for the server's record of the last launch before it goes on without. */
+const LAST_LAUNCH_WAIT_MS = 3000
 /** The model names typed at this agent's last launches, offered as Model's suggestions. */
 const modelNames = computed(() => lastMemory.value.models[state.agentId]?.names ?? [])
 const modelListId = useId()

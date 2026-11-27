@@ -97,6 +97,18 @@ export function writeLast(storage: Writable, v: LastLaunch): void {
   }
 }
 
+/**
+ * The memory with the server's record of the last launch over it (GET /api/launch/last, kept in the server's data directory, so it
+ * outlasts a restart of the server, which this app's storage does not): the server's agent, folder and models win, since it saw
+ * every launch; the fold's state is this viewer's own. No record (an older server, a refusal): the memory as it is.
+ */
+export function withRecord(local: LastLaunch, rec: { agent?: string; folder?: string; models?: Record<string, { model?: unknown; names?: unknown }> } | null | undefined): LastLaunch {
+  if (!rec || typeof rec !== 'object') return local
+  const read = readLast({ getItem: () => JSON.stringify({ agent: rec.agent, folder: rec.folder, models: rec.models }) })
+  if (!read.agent && read.folder === undefined && !Object.keys(read.models).length) return local
+  return { ...read, ...(local.moreOpen !== undefined ? { moreOpen: local.moreOpen } : {}) }
+}
+
 /** This app's storage, or null where reading it throws (blocked site data, a sandboxed page). */
 export function launchStorage(): Storage | null {
   try {

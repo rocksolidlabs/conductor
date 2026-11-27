@@ -967,6 +967,14 @@ export interface CommandCheckReply {
   /** With an adapter in the request: what its probe found the program to be. */
   identity?: Identity
 }
+/** GET /api/launch/last: what the last launch on this server was (UX3 R89), kept by the server in its data directory. */
+export interface LastLaunchRecord {
+  v: number
+  agent?: string
+  folder?: string
+  models: Record<string, { model: string; names: string[] }>
+  order?: string[]
+}
 export interface PathsReply {
   dir: string
   entries: PathEntry[]
@@ -1163,6 +1171,8 @@ export function useSessions() {
     revokeRunLink: (runId: string, linkId: string) =>
       request<void>(`/api/runs/${encodeURIComponent(runId)}/links/${encodeURIComponent(linkId)}`, { method: 'DELETE' }),
     /** OS user running the server; the default display name for admins. */
+    /** The last launch on this server: its agent, its folder and each agent's model; `{v: 1, models: {}}` before any. */
+    lastLaunch: () => request<LastLaunchRecord>('/api/launch/last'),
     whoami: () => request<{ user: string; host: string; switchyard: boolean; home?: string; version?: string }>('/api/whoami'),
     /** The server's reach: its public address, the mapped port and the certificate's readiness. */
     reach: () => request<ReachInfo>('/api/reach'),

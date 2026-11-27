@@ -541,3 +541,23 @@ test('after a launch the dialog remembers the agent, the folder, its model and t
   await expect(folder).toHaveValue('/')
 })
 
+
+test('after a restart of the server the dialog still starts from the last launch, which the server kept', async ({ browser }) => {
+  // The last test's launch, as the server recorded it.
+  const rec = await own.api.ok<{ agent?: string; folder?: string; models: Record<string, { model: string; names: string[] }> }>('GET', '/api/launch/last')
+  expect(rec).toMatchObject({ agent: 'prompted', folder: join(own.root, 'remembered'), models: { prompted: { model: 'claude-e2e-model', names: ['claude-e2e-model'] } } })
+  // Its session ended first, then the server restarted on the same data directory: a fresh port, so the page keeps nothing of before.
+  for (const id of made.splice(0)) {
+    await own.api.stopSession(id)
+    await expect.poll(async () => (await own.api.call<{ session?: { status?: string } }>('GET', `/api/sessions/${id}`)).body?.session?.status ?? 'gone', { timeout: 15_000 }).toMatch(/exited|stopped|gone/)
+  }
+  await own.restart()
+  const page = await dayPage(browser, { server: own.started })
+  expect(await page.evaluate(() => localStorage.getItem('conductor.launch.last'))).toBeNull()
+  const dialog = await openLaunch(page)
+  await expect(dialog.getByRole('radio', { name: re(PROMPTED) })).toHaveAttribute('aria-checked', 'true')
+  await expect(dialog.getByLabel('Folder', { exact: true })).toHaveValue(join(own.root, 'remembered'))
+  const more = await openMore(dialog)
+  await expect(more.locator('[data-launch-model-input]')).toHaveValue('claude-e2e-model')
+  await expect(more.locator('[data-launch-model-names] option')).toHaveAttribute('value', 'claude-e2e-model')
+})
