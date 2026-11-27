@@ -8,7 +8,7 @@ vi.mock('electron', () => ({
   contextBridge: { exposeInMainWorld: (name: string, api: unknown) => (exposed[name] = api) },
   ipcRenderer: { invoke: async (...args: unknown[]) => void invoked.push(args), on: () => {}, removeListener: () => {} },
 }))
-import { ALLOW_ON_WINDOWS, allowOffered, covered, FolderAllow, listRefusal, MAX_ROOTS, pathRefusal, type AllowDeps } from '../src/allow'
+import { ALLOW_ON_WINDOWS, allowOffered, covered, FolderAllow, keyFor, listRefusal, MAX_ROOTS, pathRefusal, type AllowDeps } from '../src/allow'
 import { ALLOW_FOLDER_ON_WINDOWS, allowFolderCall } from '../src/preload'
 import { secretsLine, serverEnv } from '../src/env'
 import { defaultSettings, type DesktopSettings } from '../src/settings'
@@ -233,6 +233,18 @@ describe('where the press is offered', () => {
     const bridge = exposed.conductorDesktop as Record<string, unknown>
     expect(typeof bridge.allowFolder === 'function').toBe(allowOffered(process.platform))
     expect(bridge.onSettings).toBeTypeOf('function')
+  })
+  it('mints no key where the press is off, and hands the server none: it then allows no folder', () => {
+    const mint = vi.fn(() => KEY)
+    expect(keyFor('win32', mint)).toBe(ALLOW_ON_WINDOWS ? KEY : '')
+    if (!ALLOW_ON_WINDOWS) {
+      expect(mint).not.toHaveBeenCalled()
+      expect(secretsLine('tok', keyFor('win32', mint))).toBe('{"workbenchToken":"tok"}\n')
+    }
+    expect(keyFor('linux', mint)).toBe(KEY)
+    expect(keyFor('darwin', mint)).toBe(KEY)
+    const main = readFileSync(join(__dirname, '..', 'src', 'main.ts'), 'utf8')
+    expect(main).toContain("const desktopKey = keyFor(process.platform, () => randomBytes(32).toString('hex'))")
   })
 })
 

@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { secretsLine, serverEnv, SERVE_ARGS } from './env'
 import { ensureStableBinary, stableBinaryPath } from './install'
 import { registerIpc } from './ipc'
-import { allowOffered, FolderAllow } from './allow'
+import { allowOffered, FolderAllow, keyFor } from './allow'
 import { NativeLauncher, type Launcher } from './launcher'
 import { Logs } from './logs'
 import { buildMenu } from './menu'
@@ -111,7 +111,7 @@ async function run() {
   const token = randomBytes(32).toString('hex')
   // The second secret of the run: with it the app alone may allow a folder while the server runs (allow.ts). It is handed to the
   // server on its stdin alone, with the token (secretsLine), never to an environment, a page, a log line or a file.
-  const desktopKey = randomBytes(32).toString('hex')
+  const desktopKey = keyFor(process.platform, () => randomBytes(32).toString('hex'))
   process.env.CONDUCTOR_DESKTOP_VERSION = app.getVersion()
 
   const source = sourceBinary()

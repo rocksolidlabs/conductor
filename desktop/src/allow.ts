@@ -29,6 +29,15 @@ export function allowOffered(platform: string): boolean {
   return platform !== 'win32' || ALLOW_ON_WINDOWS
 }
 
+/**
+ * keyFor is the run's key on platform: minted where the app offers the press, '' where it does not (Windows while its switch is
+ * off), so that a server there holds no key, refuses every request to allow a folder and tells the page its folders are the
+ * configuration's (whoami folders config).
+ */
+export function keyFor(platform: string, mint: () => string): string {
+  return allowOffered(platform) ? mint() : ''
+}
+
 /** The kinds of wide folder a press may confirm ('' for none). */
 const CONFIRMED = ['', 'home', 'above_home', 'holds_data'] as const
 export type Confirmed = (typeof CONFIRMED)[number]
