@@ -213,7 +213,7 @@ var (
 	// optional placeholder after one space or =, then the line's end or two
 	// spaces and words.
 	flagRow = regexp.MustCompile(`^ {2,8}(` + flagSpelling + `(?:, ` + flagSpelling + `)*)` +
-		`(?:[ =](\[<[^<>\[\]]+>\](?:\.\.\.)?|<[^<>]+>(?:\.\.\.)?|\[[^\[\]<>]+\](?:\.\.\.)?))?` +
+		`(?:[ =](\[<[^<>\[\]]+>(?:\.\.\.)?\](?:\.\.\.)?|<[^<>]+>(?:\.\.\.)?|\[[^\[\]<>]+\](?:\.\.\.)?))?` +
 		`(?:$|\s{2,}(\S.*)$)`)
 	// R5 (1): commander's (choices: "a", "b", default: "a").
 	choicesQuoted = regexp.MustCompile(`\(choices:\s*((?:"[^"]*"(?:,\s*)?)+)`)
@@ -228,6 +228,9 @@ var (
 	plainGroup = regexp.MustCompile(`\(([^()]*)\)`)
 	plainWord  = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9_.-]*[a-z0-9])?$`)
 	plainSplit = regexp.MustCompile(`, or |, | or | ?\| ?`)
+	// R9: a row of one spelling whose words only name another flag: an
+	// alias of it ("Short alias for --continue", "Alias for --print").
+	aliasRow = regexp.MustCompile(`^(?:Short )?[Aa]lias for (--[A-Za-z0-9][A-Za-z0-9_-]{0,61})\.?$`)
 	// R6: (e.g. 'a', 'b', or 'c').
 	examplesGroup = regexp.MustCompile(`\(e\.g\.,? ([^()]*)\)`)
 	exampleSplit  = regexp.MustCompile(`, or |, | or `)
@@ -313,6 +316,31 @@ func ParseFlags(a catalog.Agent, help string) ([]Flag, error) {
 	if sections == 0 || len(rows) == 0 {
 		return nil, ErrNoFlags
 	}
+	// R9: a row that is only another flag's alias joins that flag.
+	aliasOf := map[int]int{}
+	for i, r := range rows {
+		if len(r.flag.Aliases) > 0 || len(r.words) != 1 {
+			continue
+		}
+		if m := aliasRow.FindStringSubmatch(strings.TrimSpace(r.words[0])); m != nil {
+			if t := slices.IndexFunc(rows, func(o row) bool { return o.flag.Name == m[1] }); t >= 0 && t != i {
+				aliasOf[i] = t
+			}
+		}
+	}
+	var kept []row
+	for i, r := range rows {
+		if _, gone := aliasOf[i]; gone {
+			continue
+		}
+		for j := range rows {
+			if t, ok := aliasOf[j]; ok && t == i && len(r.flag.Aliases) < maxFlagAliases && !slices.Contains(r.flag.Aliases, rows[j].flag.Name) {
+				r.flag.Aliases = append(r.flag.Aliases, rows[j].flag.Name)
+			}
+		}
+		kept = append(kept, r)
+	}
+	rows = kept
 	if len(rows) > maxFlags {
 		rows = rows[:maxFlags]
 	}

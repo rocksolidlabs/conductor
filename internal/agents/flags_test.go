@@ -89,6 +89,8 @@ func TestFlagsFixtures(t *testing.T) {
 		// in a row's form (a value word without brackets), and no
 		// placeholder anywhere, so every value is unknown.
 		{"plain.txt", plain, 3},
+		{"goflag.txt", builtIn(t, "agy"), 8},
+		{"clap-tight.txt", builtIn(t, "copilot"), 14},
 	} {
 		t.Run(c.fixture, func(t *testing.T) {
 			flags := parse(t, c.agent, flagsFixture(t, c.fixture))
@@ -534,7 +536,14 @@ func TestHelpArgs(t *testing.T) {
 	if args, ok := HelpArgs(edited); !ok || !slices.Equal(args, []string{"--help"}) {
 		t.Errorf("edited: %v %v", args, ok)
 	}
-	for _, id := range []string{"goose", "agy", "aider", ""} {
+	for id, want := range map[string][]string{"goose": {"session", "--help"}, "agy": {"--help"}, "copilot": {"--help"}} {
+		a := claude
+		a.Adapter = id
+		if args, ok := HelpArgs(a); !ok || !slices.Equal(args, want) {
+			t.Errorf("%s: %v %v", id, args, ok)
+		}
+	}
+	for _, id := range []string{"aider", "cursor", ""} {
 		a := claude
 		a.Adapter = id
 		if args, ok := HelpArgs(a); ok || args != nil {
@@ -557,5 +566,92 @@ func TestHelpArgs(t *testing.T) {
 	ad.Flags.Taken[0] = "--changed"
 	if again, _ := Get("claude"); again.Flags.Taken[0] != "--settings" {
 		t.Error("Get handed out the registry's own recipe")
+	}
+}
+
+// Go's flag form (Antigravity's): no placeholder on any row, so every value
+// is unknown; a row that is only another's alias joins it (R9); the lists in
+// words are read for every row.
+func TestFlagsGoFlagForm(t *testing.T) {
+	flags := parse(t, builtIn(t, "agy"), flagsFixture(t, "goflag.txt"))
+	if !slices.Equal(names(flags), []string{"--add-dir", "--continue", "--dangerously-skip-permissions", "--effort", "--mode", "--model", "--print", "--output-format"}) {
+		t.Fatalf("%v", names(flags))
+	}
+	for _, f := range flags {
+		if f.Value != ValueUnknown {
+			t.Errorf("%s: value %s", f.Name, f.Value)
+		}
+	}
+	if f := flagNamed(t, flags, "--continue"); !slices.Equal(f.Aliases, []string{"-c"}) {
+		t.Errorf("--continue: %+v", f)
+	}
+	if f := flagNamed(t, flags, "--print"); !slices.Equal(f.Aliases, []string{"-p", "--prompt"}) {
+		t.Errorf("--print: %+v", f)
+	}
+	if f := flagNamed(t, flags, "--effort"); !slices.Equal(values(f.Choices), []string{"low", "medium", "high"}) {
+		t.Errorf("--effort: %+v", f)
+	}
+	if f := flagNamed(t, flags, "--mode"); !slices.Equal(values(f.Choices), []string{"edit", "plan", "review"}) {
+		t.Errorf("--mode: %+v", f)
+	}
+	// The last group in brackets is the default, which is no list.
+	if f := flagNamed(t, flags, "--output-format"); f.Choices != nil {
+		t.Errorf("--output-format: %+v", f)
+	}
+	if f := flagNamed(t, flags, "--model"); f.Kind != KindModel || f.Set != "" {
+		t.Errorf("--model: %+v", f)
+	}
+	if f := flagNamed(t, flags, "--dangerously-skip-permissions"); f.Set != SetYolo {
+		t.Errorf("the yolo flag: %+v", f)
+	}
+	// An alias row naming a flag the help does not list stays a row.
+	if got := parse(t, builtIn(t, "agy"), "Usage of x:\n  -q  Short alias for --quiet\n  --loud  Says more\n"); !slices.Equal(names(got), []string{"-q", "--loud"}) {
+		t.Errorf("%v", names(got))
+	}
+}
+
+// clap's form with no blank line between options (the Copilot CLI's): an
+// optional value written [<x>...], a short spelling alone, the env note;
+// the flags that grant every permission are set yolo.
+func TestFlagsTightClapForm(t *testing.T) {
+	flags := parse(t, builtIn(t, "copilot"), flagsFixture(t, "clap-tight.txt"))
+	if f := flagNamed(t, flags, "--allow-tool"); f.Value != ValueOptional || f.Placeholder != "tools" || !f.Repeat {
+		t.Errorf("--allow-tool: %+v", f)
+	}
+	if f := flagNamed(t, flags, "--resume"); f.Value != ValueOptional || f.Placeholder != "value" || !slices.Equal(f.Aliases, []string{"-r"}) {
+		t.Errorf("--resume: %+v", f)
+	}
+	if f := flagNamed(t, flags, "-C"); f.Kind != KindFolder || f.Placeholder != "directory" {
+		t.Errorf("-C: %+v", f)
+	}
+	if f := flagNamed(t, flags, "--reasoning-effort"); !slices.Equal(values(f.Choices), []string{"low", "medium", "high"}) {
+		t.Errorf("--reasoning-effort: %+v", f)
+	}
+	for _, name := range []string{"--yolo", "--allow-all", "--allow-all-tools", "--allow-all-paths", "--allow-all-urls"} {
+		if f := flagNamed(t, flags, name); f.Set != SetYolo {
+			t.Errorf("%s: set %q", name, f.Set)
+		}
+	}
+	if f := flagNamed(t, flags, "--session-id"); f.Set != SetSession {
+		t.Errorf("--session-id: %+v", f)
+	}
+	if f := flagNamed(t, flags, "--model"); f.Kind != KindModel || f.Set != "" || f.Examples != nil {
+		t.Errorf("--model: %+v", f)
+	}
+	for _, name := range []string{"--version", "--help"} {
+		if f := flagNamed(t, flags, name); f.Set != SetExit {
+			t.Errorf("%s: set %q", name, f.Set)
+		}
+	}
+}
+
+// Goose's launch is its session sub-command: its --name is the session's.
+func TestFlagsGooseSession(t *testing.T) {
+	flags := parse(t, builtIn(t, "goose"), "Options:\n  -n, --name <NAME>\n          The session's name\n\n      --model <MODEL>\n          The model\n")
+	if f := flagNamed(t, flags, "--name"); f.Set != SetSession {
+		t.Errorf("--name: %+v", f)
+	}
+	if f := flagNamed(t, flags, "--model"); f.Kind != KindModel || f.Set != "" {
+		t.Errorf("--model: %+v", f)
 	}
 }
