@@ -1,9 +1,9 @@
 <script setup lang="ts">
 /**
- * The alert settings: a browser notification and a chime when a session needs input, and for events routed to Browser. Drawn alone
+ * The alert settings: a notification on this device and a chime when a session needs input, and for events routed to This device. Drawn alone
  * (the phone's More, `rules`), it ends with "All alert rules", which asks for the Alerts panel (AlertsPanel); inside the panel the
  * rules are under it, so it has none. While Brakeman runs in the background a third switch says whether its background briefs that
- * hold a decision alert in this browser (on unless switched off); the server decides which do, and the page alerts on its event alone.
+ * hold a decision alert on this device (on unless switched off); the server decides which do, and the page alerts on its event alone.
  */
 import { BRIEF_SWITCH_DESCRIPTION, BRIEF_SWITCH_LABEL } from '~/utils/brakemanAlert'
 
@@ -19,11 +19,11 @@ const background = computed(() => {
 
 <template>
   <div class="flex flex-col gap-3" data-alert-switches>
-    <p class="text-xs text-muted">When a session needs input, and for the events routed to Browser:</p>
+    <p class="text-xs text-muted">When a session needs input, and for the events routed to This device:</p>
     <USwitch
       :model-value="alerts.settings.value.notifications"
-      label="Browser notification"
-      :description="alerts.permission.value === 'denied' ? 'Blocked by the browser' : undefined"
+      label="Notification on this device"
+      :description="alerts.permission.value === 'denied' ? 'Blocked on this device' : undefined"
       :disabled="alerts.permission.value === 'denied' || alerts.permission.value === 'unsupported'"
       @update:model-value="alerts.setNotifications"
     />

@@ -280,9 +280,11 @@ test("the run page: the broadcast field, the views, the run's chat, Share, Stop"
   await page.goto(`/runs/${encodeURIComponent(run.id)}`)
   await expect(page.locator('[data-palette]')).toBeHidden()
   await expect(page.locator('[data-run-chat-button]')).toBeVisible({ timeout: 30_000 })
-  // Broadcast takes a line in the row (Enter opens the field; nothing is sent without a line).
+  // Message the crew takes a line in the row (Enter opens the field; nothing is sent without a line). Its old word is gone.
   let palette = await enterRow(page, 'page:broadcast')
   await expect(palette.locator('[data-palette-row="page:broadcast"] [data-palette-field] input')).toBeFocused()
+  await expect(palette.locator('[data-palette-row="page:broadcast"]')).toContainText('Message the crew…')
+  await expect(palette.locator('[data-palette-row="page:broadcast"]')).not.toContainText('Broadcast')
   await closePalette(page)
   // The views read as on once run.
   await runRow(page, 'page:view:graph')

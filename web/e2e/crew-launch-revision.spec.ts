@@ -315,7 +315,7 @@ test("a crew read without a revision holds Launch with words, and so does one Sa
   await expect(s.unrevised).toHaveText(unrevised)
   await expect(s.confirm).toBeDisabled()
   // The crew inherits its yolo setting: the sheet says it is the server's at the launch, and what it is now.
-  await expect(s.yolo).toHaveText(`Permission prompts: ${yoloDefault ? 'skipped: the members act without asking' : 'the members ask before they act'} (the server's default now)`)
+  await expect(s.yolo).toHaveText(`Yolo: ${yoloDefault ? 'on. The members act without asking' : 'off. The members ask before they act'} (the server's default now)`)
   await page.locator('[data-crew-launch-cancel]').click()
   await expect(s.confirm).toHaveCount(0)
   // An edit's Save and launch saves it first, and the save answers no revision; the sheet then reads the crew, which comes without one

@@ -14,10 +14,10 @@ export const BRIEF_ALERT_TAG = 'conductor-brakeman-needs-you'
 /** The notification's body: where a click goes. */
 export const BRIEF_ALERT_BODY = 'It opens on the Brakeman page.'
 
-/** The Alerts switch of its own, per browser, shown while Brakeman runs in the background. */
+/** The Alerts switch of its own, per device, shown while Brakeman runs in the background. */
 export const BRIEF_SWITCH_LABEL = "Brakeman's background briefs with a decision"
 export const BRIEF_SWITCH_DESCRIPTION =
-  "A browser notification and the chime, as switched on above, when a brief holds a decision no earlier one held: once, on the pages open then. Its other briefs, and its turns' own questions, alert no one."
+  "A notification on this device and the chime, as switched on above, when a brief holds a decision no earlier one held: once, on the pages open then. Its other briefs, and its turns' own questions, alert no one."
 /** Settings → Brakeman's sentence under "Wake on events", after what it already says. */
 export const BRIEF_SETTINGS_SENTENCE =
   'A background brief that holds a decision no earlier one held notifies once: the pages open then, and the webhooks that list brakeman_needs_you.'

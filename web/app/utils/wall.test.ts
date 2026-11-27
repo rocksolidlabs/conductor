@@ -5,7 +5,7 @@ import { liveSession } from './attention'
 import { needsYou } from './needsYou'
 import { sessionRow } from './sidebar'
 import { rowPrompt } from './sidebarActions'
-import { bestGrid, tileAsk, yardFilterOf, lastItemSpan, needsChipWords, yardChips, yardCounts, yardFilter, YARD_FILTERS, type YardCounts } from './wall'
+import { bestGrid, isRunLayout, RUN_LAYOUT_LOOK, RUN_LAYOUTS, TILE_GAP, TILE_MIN_HEIGHT, TILE_MIN_WIDTH, tileAsk, wallTracks, yardFilterOf, lastItemSpan, needsChipWords, yardChips, yardCounts, yardFilter, YARD_FILTERS, type YardCounts } from './wall'
 
 describe('bestGrid', () => {
   it('handles empty and degenerate boxes', () => {
@@ -65,6 +65,81 @@ describe('lastItemSpan', () => {
       expect(span).toBeGreaterThanOrEqual(1)
       expect(span).toBeLessThanOrEqual(g.cols)
     }
+  })
+})
+
+describe("a run's wall of member tiles", () => {
+  // The Members view's tile area at 2000 x 810 (no Activity), with Activity's 320 px column beside it, and at 1440 x 900.
+  const boxes = [
+    [1680, 600],
+    [1348, 600],
+    [1120, 690],
+  ] as const
+  it('fits the members alone, the last tile taking the cells its row leaves, for 1, 2, 3, 5, 6 and 12 members', () => {
+    for (const [w, h] of boxes) {
+      for (const n of [1, 2, 3, 5, 6, 12]) {
+        const g = bestGrid(n, w, h, 12, 1.4)
+        const span = lastItemSpan(n, g)
+        // Every cell is filled once: n - 1 tiles of one cell and the last of `span`.
+        expect(n - 1 + span).toBe(g.cols * g.rows)
+        expect(span).toBeLessThanOrEqual(g.cols)
+      }
+    }
+  })
+  it('puts three members in one row on the wide window, and wraps six into two rows', () => {
+    expect(bestGrid(3, 1680, 600, 12, 1.4)).toEqual({ cols: 3, rows: 1 })
+    expect(bestGrid(6, 1680, 600, 12, 1.4)).toEqual({ cols: 3, rows: 2 })
+    expect(lastItemSpan(5, bestGrid(5, 1680, 600, 12, 1.4))).toBe(2)
+  })
+})
+
+describe('wallTracks', () => {
+  const counts = [1, 2, 3, 5, 6, 12]
+  it('Grid: every tile has a cell, the last one fills its row, no tile narrower than its floor', () => {
+    for (const [w, h] of [
+      [1680, 600],
+      [1120, 690],
+      [700, 500],
+    ] as const) {
+      for (const n of counts) {
+        const t = wallTracks('grid', n, w, h)
+        const cols = Number(/^repeat\((\d+),/.exec(t.columns)![1])
+        const rows = Number(/^repeat\((\d+),/.exec(t.rows)![1])
+        expect(cols * rows).toBeGreaterThanOrEqual(n)
+        expect((w - TILE_GAP * (cols - 1)) / cols).toBeGreaterThanOrEqual(TILE_MIN_WIDTH)
+        expect(t.rows).toContain(`minmax(${TILE_MIN_HEIGHT}px, 1fr)`)
+        const span = Number(/span (\d+)/.exec(t.cells[n - 1]!.gridColumn ?? 'span 1')![1])
+        expect(n - 1 + span).toBe(cols * rows)
+        expect(t.large).toBe(-1)
+      }
+    }
+    expect(wallTracks('grid', 3, 1680, 600).columns).toBe('repeat(3, minmax(0, 1fr))')
+    expect(wallTracks('grid', 6, 1680, 600).rows).toBe(`repeat(2, minmax(${TILE_MIN_HEIGHT}px, 1fr))`)
+  })
+
+  it('One large: the chosen tile in two thirds and the whole height, the others in a column of rows at least 140 px', () => {
+    for (const n of counts.filter((x) => x > 1)) {
+      const t = wallTracks('large', n, 1680, 600, 1)
+      expect(t.columns).toBe('minmax(0, 2fr) minmax(0, 1fr)')
+      expect(t.rows).toBe(`repeat(${n - 1}, minmax(${TILE_MIN_HEIGHT}px, 1fr))`)
+      expect(t.large).toBe(1)
+      expect(t.cells[1]).toEqual({ gridColumn: '1', gridRow: `1 / span ${n - 1}` })
+      // The others, in the run's order, one row each in the column.
+      const others = t.cells.filter((_, i) => i !== 1)
+      expect(others.map((c) => c.gridColumn)).toEqual(Array(n - 1).fill('2'))
+      expect(others.map((c) => c.gridRow)).toEqual(Array.from({ length: n - 1 }, (_, i) => String(i + 1)))
+    }
+    // A large tile that is not there is the first; one member alone is the grid's one tile.
+    expect(wallTracks('large', 3, 1680, 600, 7).large).toBe(0)
+    expect(wallTracks('large', 1, 1680, 600).large).toBe(-1)
+    expect(wallTracks('large', 1, 1680, 600).columns).toBe('repeat(1, minmax(0, 1fr))')
+  })
+
+  it('names its layouts in the order the switch draws them', () => {
+    expect(RUN_LAYOUTS).toEqual(['grid', 'large'])
+    expect(RUN_LAYOUTS.map((l) => RUN_LAYOUT_LOOK[l].label)).toEqual(['Grid', 'One large'])
+    expect(isRunLayout('large')).toBe(true)
+    expect(isRunLayout('focus')).toBe(false)
   })
 })
 

@@ -211,6 +211,61 @@ that order.
   link grants. Content appears only after the guest joins.
 - **No Runs nav item** until there is something behind it.
 
+## The six screens made simpler (UX3, #1174; 2026-11-27)
+
+The screens a person uses all day, redesigned on the owner's plan: less to
+watch and hold in the head, never more presses for daily work. What is used
+all the time (Yolo, the folder, the task) stays in view; what is changed
+rarely folds under **More options** (`MoreOptions.vue`, one fold for the
+forms that have one, its closed line naming only what was changed in it).
+The design system's rules (`docs/design/system.md`) say what holds, and
+`designRules.test.ts` checks what a machine can see of them.
+
+### The words
+
+- **No screen says browser for where Conductor is used** (UX3 R86, #1163).
+  Conductor is used in its apps: the words say this device, on every device
+  or from anywhere. The alert switch reads "Notification on this device",
+  the routing's destination "This device"; Alerts says where each kind of
+  event goes on this device; the Share panel with no link says a link lets
+  someone watch the session from anywhere; Brakeman's Since is in this
+  device's time; Recent decisions reads "From this device"; a saved view
+  deleted is gone on every device; a review's draft is kept on this device
+  until it is sent; the workbench token is kept on this device only. A real
+  browser keeps its name (an agent's browser profile, Open in browser, which
+  the desktop app opens). `deviceWords.test.ts`, `designRules.test.ts`;
+  `device-words.spec.ts`, `alerts.spec.ts`.
+
+### A session
+
+- **The yolo badge is neutral** (UX3 R2, #1169). Yolo on is a setting, a
+  standing fact, so its badge (the session's header, its sidebar row, a
+  run's tile, a crew's run card, the runs panel) is drawn neutral, never
+  amber; its tooltip says "The agent skips its permission prompts". Amber
+  stays for what waits on a person (`yolo-badge.spec.ts`).
+
+### A crew's Setup
+
+- **A crew's Yolo is in view under its name** (UX3 R87, #1164). The crew's
+  Setup no longer folds it inside More options: the select sits after How
+  members start, labelled Yolo, with The server's default (now on or off),
+  Off: members ask before acting, and On: members act without asking. The
+  line beside More options names only what is still folded there, and an
+  edit of it is said as "Yolo edited." The launch sheet reads "Yolo: on. The
+  members act without asking" or "Yolo: off. The members ask before they
+  act", with the crew's setting or the server's default now
+  (`crews.test.ts`, `CrewLaunchSheet.test.ts`, `designRules.test.ts`;
+  `crew-yolo.spec.ts`, `crew-make.spec.ts`).
+
+### Launch agent
+
+- **An agent's own flags, read from its help** (UX3 R46, R47, R52, #1172). The
+  server reads the flags of Claude Code, Codex, Copilot CLI, Antigravity and
+  Goose from the help of the version installed, once for each version, and
+  answers them to the app's arguments fields (`GET /api/catalog/{id}/flags`).
+  Nothing is read for an agent whose program the identity check did not
+  recognise, or that takes no arguments.
+
 ## Chat or terminal: a session run as a chat, and its permission question (#1088, row 7 #1110; 2026-11-25)
 
 A Claude Code session can run as a chat (`docs/plans/chat-or-terminal.md`,
@@ -223,7 +278,7 @@ kept for the chat, as its terminal had it.
   (below `sm`, two items of More). Before the agent's first reply it says "Chat
   opens after the agent's first reply."; pressed during a turn, the move is made
   at the turn's end, with a line saying so; at rest, the Chat side says what a
-  move ends. The first time a person presses Chat in a browser, one note in
+  move ends. The first time a person presses Chat on a device, one note in
   the chat, under the move's notice, says the agent's own terms decide how its
   non-interactive mode may be used and counted, with a link to the agent's
   site, and under it that in Chat the agent has Conductor's tools only. A refused move says the server's words. A link's
@@ -236,7 +291,7 @@ kept for the chat, as its terminal had it.
   typed as its task is typed into the terminal once. Pressing Terminal
   before then keeps it there. A move that cannot be made leaves it in its
   terminal, the switch saying why. The dialog comes back as that agent was
-  last launched in this browser; the first time it is Terminal.
+  last launched on this device; the first time it is Terminal.
 - **The chat.** Where the terminal was: what the person wrote and what the
   agent wrote (Markdown without HTML, a link only to `https://`), each turn's
   steps in one line ("12 steps", "Working." while it runs) that opens to the

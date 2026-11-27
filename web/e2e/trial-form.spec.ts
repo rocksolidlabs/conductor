@@ -31,6 +31,8 @@ async function openForm(page: Page): Promise<{ dialog: Locator; form: Locator }>
   const dialog = page.getByRole('dialog').filter({ has: form })
   await expect(form).toBeVisible()
   await atRest(dialog)
+  // The catalog read: the agents are on the form (a form opened before it was read takes them when it comes).
+  await expect(form.locator('[data-trial-agent]').first()).toBeVisible()
   return { dialog, form }
 }
 

@@ -134,6 +134,10 @@ test("a member's question with choices is answered on the home's card and on the
   const tile = page.locator(`[data-run-grid] [data-member="core"]`)
   const choices = tile.locator('[data-run-ask-choices]')
   await expect(choices.locator('[data-run-ask-choice]')).toHaveCount(2)
+  // The question's words, whole, above its two choices.
+  const words = tile.locator('[data-run-tile-question]')
+  await expect(words).toHaveText('core asks: Which branch now?')
+  expect((await words.boundingBox())!.y + (await words.boundingBox())!.height).toBeLessThanOrEqual((await choices.boundingBox())!.y + 0.5)
   await expect(tile.locator('[data-tile-state] [data-status-word]')).toHaveText('Needs you')
   await choices.locator('[data-run-ask-choice="1"]').click()
   await expect.poll(() => transcript(state.home, core), { timeout: 20_000, message: 'core got the choice from the tile' }).toMatch(/release[\s\S]*main/)
