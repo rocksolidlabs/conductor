@@ -116,12 +116,25 @@ describe('the chat', () => {
     expect(page).toContain('<template v-if="askInChat" #ask>')
   })
 
+  it("drawsATileReadOnly: a chat's tile is the end of the conversation, with no box, no Stop and no answer, always at its end", () => {
+    expect(view).toContain("const controls = computed(() => !props.tile && !props.readOnly && conn.role.value === 'control')")
+    expect(view).toContain('const canAnswer = computed(() => !props.tile && !props.readOnly')
+    expect(view).toContain('if (el && !props.tile && !atChatEnd(el)) return')
+    expect(view).toContain(':inert="tile || undefined"')
+    expect(view).toContain(':data-chat-tile="tile ? \'\' : undefined"')
+    // The box is the controls' alone, and the Stop is the box's.
+    expect(template(view)).toMatch(/<ChatComposer\s+v-if="controls"/)
+    const terminal = readFileSync(new URL('./TerminalView.vue', import.meta.url), 'utf8')
+    expect(terminal).toContain('<ChatView v-else-if="chatShown" tile :connection="conn" read-only class="absolute inset-0 z-10" />')
+    expect(terminal).not.toContain('Runs as a chat.')
+  })
+
   it("followsOnlyAtTheEnd: where the person is, is measured as a change arrives, before it is drawn; one reading above the end stays", () => {
     expect(atChatEnd({ scrollHeight: 2000, scrollTop: 1500, clientHeight: 500 })).toBe(true)
     expect(atChatEnd({ scrollHeight: 2000, scrollTop: 1500 - CHAT_END_SLACK + 1, clientHeight: 500 })).toBe(true)
     // An input opened at the end grew below: the same place is no longer the end.
     expect(atChatEnd({ scrollHeight: 2800, scrollTop: 1500, clientHeight: 500 })).toBe(false)
-    expect(view).toMatch(/watch\(\s*\(\) => conn\.transcriptVersion\.value,\s*\(\) => \{\s*const el = scroller\.value\s*if \(el && !atChatEnd\(el\)\) return/)
+    expect(view).toMatch(/watch\(\s*\(\) => conn\.transcriptVersion\.value,\s*\(\) => \{\s*const el = scroller\.value\s*(\/\/[^\n]*\s*)?if \(el && !props\.tile && !atChatEnd\(el\)\) return/)
     expect(view).toContain("{ flush: 'pre' },")
     expect(view).not.toContain('atBottom')
     // The browser spec that judges the follow measures the end by the same slack (it cannot import this module).

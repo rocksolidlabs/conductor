@@ -40,8 +40,13 @@ const props = withDefaults(
      * so that 1 to 9 still answer; otherwise it takes the cursor as the chat is drawn, when nothing else holds it.
      */
     asked?: { id?: string; choices: boolean; reply: boolean } | null
+    /**
+     * A tile's form (UX3 R8a: the Yard's tiles, a run's): the end of the conversation, read-only (no box, no Stop, no answer), each
+     * turn's steps one line ("Working." while it runs), always following the end. A tile's question is answered on the tile.
+     */
+    tile?: boolean
   }>(),
-  { readOnly: false, operator: false, verbatim: undefined, opensChanges: false, note: null, agentName: undefined, draftKey: undefined, asked: null },
+  { readOnly: false, operator: false, verbatim: undefined, opensChanges: false, note: null, agentName: undefined, draftKey: undefined, asked: null, tile: false },
 )
 /** `reply`: a line typed in the box as the answer to the question the page shows (`asked`), for the page's answer. */
 const emit = defineEmits<{ openDiff: [entry: TranscriptEntry]; dismissNote: []; reply: [text: string, question: string | undefined, taken: ReplyTaken] }>()
@@ -56,10 +61,10 @@ const entries = computed(() => {
 })
 const blocks = computed(() => chatBlocks(entries.value))
 const running = computed(() => blocks.value.some((b) => b.kind === 'turn' && b.running))
-const controls = computed(() => !props.readOnly && conn.role.value === 'control')
+const controls = computed(() => !props.tile && !props.readOnly && conn.role.value === 'control')
 /** The chat's own welcome says both; after a move on this connection the page's word stands in for it. */
 const chatWelcome = computed(() => conn.welcome.value?.way === 'protocol')
-const canAnswer = computed(() => !props.readOnly && (chatWelcome.value ? !!conn.welcome.value?.permissionAnswer : props.operator))
+const canAnswer = computed(() => !props.tile && !props.readOnly && (chatWelcome.value ? !!conn.welcome.value?.permissionAnswer : props.operator))
 const verbatim = computed<boolean | undefined>(() => (chatWelcome.value ? !!conn.welcome.value?.verbatim : props.verbatim))
 const opened = ref(new Set<string>())
 const said = ref('')
@@ -147,7 +152,8 @@ watch(
   () => conn.transcriptVersion.value,
   () => {
     const el = scroller.value
-    if (el && !atChatEnd(el)) return
+    // A tile has no scroll of its own to leave the end by: it always shows the end.
+    if (el && !props.tile && !atChatEnd(el)) return
     void nextTick(() => {
       const box = scroller.value
       if (box) box.scrollTop = box.scrollHeight
@@ -175,7 +181,12 @@ function takeCursor() {
   const el = document.activeElement
   if (!el || el === document.body) composer.value?.focus()
 }
-onMounted(() => void nextTick(takeCursor))
+onMounted(() =>
+  void nextTick(() => {
+    if (props.tile && scroller.value) scroller.value.scrollTop = scroller.value.scrollHeight
+    takeCursor()
+  }),
+)
 watch(
   keysAnswer,
   (now, was) => {
@@ -185,9 +196,17 @@ watch(
 </script>
 
 <template>
-  <div class="flex h-full min-h-0 flex-col bg-default" data-chat-view :data-chat-entries="entries.length" :data-turn-running="running || undefined">
-    <div ref="scroller" class="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-4 py-4" data-chat-scroll>
-      <div class="mx-auto flex max-w-3xl flex-col gap-4">
+  <!-- A tile's form is the same conversation, smaller, behind `inert`: nothing in it takes a press, a key or the focus. -->
+  <div
+    class="flex h-full min-h-0 flex-col bg-default"
+    :data-chat-view="tile ? undefined : ''"
+    :data-chat-tile="tile ? '' : undefined"
+    :data-chat-entries="entries.length"
+    :data-turn-running="running || undefined"
+    :inert="tile || undefined"
+  >
+    <div ref="scroller" class="min-h-0 flex-1 overflow-x-hidden" :class="tile ? 'overflow-y-hidden px-2.5 py-2 text-xs' : 'overflow-y-auto px-4 py-4'" data-chat-scroll>
+      <div class="mx-auto flex flex-col" :class="tile ? 'gap-2' : 'max-w-3xl gap-4'">
         <ChatNote v-if="note && !noteAfter" :site="note.site" :host="siteHost" @dismiss="emit('dismissNote')" />
         <template v-for="b in blocks" :key="b.key">
           <template v-if="b.kind === 'notice'">
@@ -213,7 +232,11 @@ watch(
               <span v-if="p.byName && p.by === 'person'" class="text-[11px] text-muted">{{ p.byName }}</span>
               <span v-if="promptLine(p)" class="text-[11px] text-muted" data-chat-prompt-line>{{ promptLine(p) }}</span>
             </div>
-            <div v-if="stepsLine(b)" class="flex flex-col" data-chat-steps>
+            <p v-if="tile && stepsLine(b)" class="flex items-center gap-1.5 text-muted" data-chat-steps data-chat-steps-line>
+              <UIcon v-if="!b.steps.length" name="i-lucide-loader-circle" class="size-3 animate-spin" aria-hidden="true" />
+              <span>{{ stepsLine(b) }}</span>
+            </p>
+            <div v-else-if="stepsLine(b)" class="flex flex-col" data-chat-steps>
               <button type="button" class="flex w-fit items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted hover:bg-elevated hover:text-default" :aria-expanded="opened.has(b.key)" :disabled="!b.steps.length" data-chat-steps-line @click="toggleSteps(b)">
                 <UIcon v-if="b.steps.length" :name="opened.has(b.key) ? 'i-lucide-chevron-down' : 'i-lucide-chevron-right'" class="size-3.5" aria-hidden="true" />
                 <UIcon v-else name="i-lucide-loader-circle" class="size-3.5 animate-spin" aria-hidden="true" />
