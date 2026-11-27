@@ -12,6 +12,7 @@ import {
   inMore,
   optionsLine,
   rowKey,
+  type DraftAgent,
   type DraftComparison,
   type TrialField,
 } from '~/utils/compareTemplate'
@@ -90,12 +91,23 @@ function fromMemory(): DraftComparison {
   const d = draftOnOpen(null, props.agents)
   memory = readTrialMemory(viewerStore())
   checkTyped = false
-  const agents = rememberedAgents(memory, props.agents)
-  if (agents) d.agents = agents.map((agentId, i) => ({ ...(d.agents[i] ?? { key: rowKey(), args: '', approach: '' }), agentId, args: '', approach: '' }))
+  d.agents = startAgents(d.agents)
   if (memory?.folder) d.folder = memory.folder
   d.check = checkFor(memory, d.folder)
   return d
 }
+/** A new draft's agents: the last trial's still installed, else the form's own start. */
+function startAgents(start: DraftAgent[]): DraftAgent[] {
+  const kept = rememberedAgents(memory, props.agents)
+  return kept ? kept.map((agentId, i) => ({ ...(start[i] ?? { key: rowKey(), args: '', approach: '' }), agentId, args: '', approach: '' })) : start
+}
+// The catalog read after the form opened (a reload, a first visit): a draft with no agent yet takes its agents then.
+watch(
+  () => props.agents,
+  () => {
+    if (!draft.value.agents.length && props.agents.length) patch({ agents: startAgents(draftOnOpen(null, props.agents).agents) })
+  },
+)
 watch(
   () => draft.value.folder,
   (folder) => {
