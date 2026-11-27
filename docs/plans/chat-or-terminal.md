@@ -1663,8 +1663,8 @@ builder: answered for Claude Code on 2026-11-24).
   a launch's first message, an extension's line). The agent's own
   commands are sent to that same connection alone. A driver with no such
   mark is declared only once its row states what its agent does with
-  them, and its sessions' `verbatim` is false. Until row 12 is built
-  every message carries the mark.
+  them, and its sessions' `verbatim` is false. Until the page sends the
+  word (row 12, part 4), every message carries the mark.
 - **I20. An open request's question never disappears, and an ended one
   is never drawn open.** An open request's entry and input part are
   never dropped, every replay carries every open request's entry, and a
@@ -3281,6 +3281,41 @@ this plan wait on them and are added only once observed:
 
 **Boundary:** yes. Parts 1 and 2 are each a part of their own with an
 adversarial read; the page's parts come after them. **30 h.**
+
+**As built, row 12, part 1** (#1169; `internal/session/protocol.go`,
+`permission_answer.go`, `move.go`, `local.go`, `internal/agentproto/claude.go`,
+`internal/api/ws_viewer.go`, `internal/proto/control.go` and `way.go`,
+`web/e2e/stub-protocol.mjs`), before the by-hand checks above:
+
+- The operator's own chat connection is one test, `operatorChatLocked`:
+  `operatorAnswers` (owner, no link, a controller), the subscription's
+  `ViewerSocket` (an `AttachOptions` word only `ws_viewer.go` gives), not
+  quiet (a run's chat), and the session's `Crew` nil. The welcome's
+  `expand`, the `way` message's `expand` and the unmarked send all read
+  it; row 12's part 2 sends the commands by it too.
+- `submitProtocol` sets `Message.Expand` at the one line that builds the
+  queued message, judged as the submission is queued, under the session's
+  lock; the entry's `expanded` is the message's. A sender who no longer
+  stands when the message's turn comes withdraws it unwritten, as before.
+  The Go fields are `Submit.Expand`, `Welcome.Expands`, `Way.Expands` and
+  `TranscriptEntry.Expanded` (JSON `expand`, `expand`, `expand`,
+  `expanded`), so that the source walk watches `Expand` and
+  `ViewerSocket` alone (`expand_walk_test.go`: their sets and reads, each
+  counted in its one file).
+- After a move, the session sends each viewer its own `way` frame, the
+  operator's own chat connection's with `expand`.
+- The Claude Code driver writes an expanded message with no
+  `client_composed` key; accepts a message a `result` names
+  (`user_message_uuid`, `user_message_uuids`) that no replay accepted, by
+  that name only; and draws a replay line of `<local-command-stdout>`
+  under an id it did not write as the agent's words (`local:<id>`).
+- No real run was recorded through this driver: the fixture
+  `hand-built-expand.jsonl` is built from a recorded run's shapes at
+  2.1.332 and says so. `ClaudeMinVersion` stays 2.1.331 until the
+  by-hand check says whether that version behaves the same.
+- The stub takes an unmarked message as the fixture does (`/compact`,
+  `/fix-issue`, any other `/name`, `@path` inside its folder) and keeps
+  each message's mark in `<conversation>.marks`.
 
 ## Decision before any builder
 

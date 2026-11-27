@@ -98,6 +98,12 @@ export interface SubmitMsg {
   text: string
   reqId?: string
   unlessWaiting?: boolean
+  /**
+   * Asks that a chat's agent get the line without its as-written mark, to expand its `@path` and run its `/command` (I19): sent
+   * only by the Chat box, and only where this connection's welcome (or, after a move, its `way` message) said `expand`. The owner
+   * honours it from the operator's own chat connection alone; from anyone else it changes nothing. Absent means the mark.
+   */
+  expand?: boolean
 }
 
 /** A chat message's text, in bytes after cleaning (proto.MaxChatText); the composer counts from CHAT_COUNTER_FROM. */
@@ -575,6 +581,8 @@ export interface Welcome {
   noted?: SessionWay
   /** The owner takes this connection's `permission_answer`: a chat's welcome to the operator's own connection alone, so only it is drawn a request's buttons. */
   permissionAnswer?: boolean
+  /** The owner sends this connection's `submit` with `expand` for the agent to expand (I19): the operator's own chat connection alone, on a chat whose agent has an as-written mark. After a move, the `way` message says it again. */
+  expand?: boolean
 }
 
 export type ControlMessage =
@@ -2159,6 +2167,8 @@ export interface WayMessage {
   protocol?: string
   noted?: SessionWay
   why?: string
+  /** The welcome's `expand`, said again to the operator's own chat connection alone while the session is a chat (I19). */
+  expand?: boolean
 }
 
 /** The way message's bounds, in bytes (proto.MaxWayProtocol, proto.MaxWayWhy); the move's body (the route's). */
@@ -2171,7 +2181,7 @@ export const ERR_MOVING = 'moving'
 export const ERR_MOVE_REFUSED = 'move_refused'
 
 /** Whether m is a way message within its bounds: what a client acts on. */
-export function validWay(m: { t?: unknown; way?: unknown; protocol?: unknown; noted?: unknown; why?: unknown }): m is WayMessage {
+export function validWay(m: { t?: unknown; way?: unknown; protocol?: unknown; noted?: unknown; why?: unknown; expand?: unknown }): m is WayMessage {
   const ways = ['terminal', 'protocol']
   const bytes = (v: unknown) => new TextEncoder().encode(String(v)).length
   return (
@@ -2179,7 +2189,8 @@ export function validWay(m: { t?: unknown; way?: unknown; protocol?: unknown; no
     ways.includes(m.way as string) &&
     (m.noted === undefined || ways.includes(m.noted as string)) &&
     (m.protocol === undefined || (typeof m.protocol === 'string' && bytes(m.protocol) <= MAX_WAY_PROTOCOL)) &&
-    (m.why === undefined || (typeof m.why === 'string' && bytes(m.why) <= MAX_WAY_WHY))
+    (m.why === undefined || (typeof m.why === 'string' && bytes(m.why) <= MAX_WAY_WHY)) &&
+    (m.expand === undefined || typeof m.expand === 'boolean')
   )
 }
 
@@ -2203,6 +2214,8 @@ export interface TranscriptEntry {
   state?: string
   answers?: string
   final?: boolean
+  /** A prompt sent without the as-written mark, for the agent to expand (I19): the operator's own typed line. */
+  expanded?: boolean
   /** A tool step, and a permission request. */
   tool?: string
   summary?: string
