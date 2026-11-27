@@ -59,6 +59,13 @@ func (s *Local) SetCrew(ref CrewRef) bool {
 	}
 	r := ref
 	s.info.Crew = &r
+	if s.way.Load() != nil {
+		// A chat whose standing changed: every connection is told whether
+		// its typed line may still go for the agent to expand (a crew
+		// member's may not: operatorChatLocked), so a page never holds a
+		// word the session no longer honours.
+		s.standingChangedLocked()
+	}
 	s.mu.Unlock()
 	s.notifyChange()
 	return true

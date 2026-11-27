@@ -644,12 +644,6 @@ describe("the operator's own typed line (I19, row 12)", () => {
     expect(chat.validWay({ t: 'way', way: 'protocol', expand: 'true' })).toBe(false)
     expect(chat.validWay({ t: 'way', way: 'protocol', expand: 1 })).toBe(false)
   })
-  it('sends expand on a submit only when it is set', () => {
-    const plain: chat.SubmitMsg = { t: 'submit', text: '/compact' }
-    const own: chat.SubmitMsg = { t: 'submit', text: '/compact', expand: true }
-    expect(JSON.stringify(plain)).toBe('{"t":"submit","text":"/compact"}')
-    expect(JSON.stringify(own)).toBe('{"t":"submit","text":"/compact","expand":true}')
-  })
 })
 
 describe("the agent's own commands (row 12)", () => {

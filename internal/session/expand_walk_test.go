@@ -23,8 +23,12 @@ import (
 // honoured: the session's submitProtocol and the driver's Send. A file
 // that sets or reads Expand or ViewerSocket anywhere else (a crew's line,
 // a peer's submit, a run's broadcast, an extension) fails it, and so does
-// a second set in an allowed file. Every Go file outside tests under
-// internal, ext and cmd is walked.
+// a second set in an allowed file. Every Go file outside tests in the
+// module is walked, from its root (the app's screens, the desktop app, the
+// phone shells, node_modules and testdata aside); a positional literal of a
+// Submission, a Message or an AttachOptions, and a field named by its name
+// (reflection: FieldByName), fail it anywhere, since they set the word
+// without naming it.
 func TestOnlyTheViewersSubmitSetsExpand(t *testing.T) {
 	root, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {
@@ -34,13 +38,15 @@ func TestOnlyTheViewersSubmitSetsExpand(t *testing.T) {
 	count := map[use]int{}
 	fset := token.NewFileSet()
 	walked := 0
-	for _, top := range []string{"internal", "ext", "cmd"} {
+	skip := map[string]bool{"testdata": true, "node_modules": true, "web": true, "desktop": true, "mobile": true, ".git": true, ".claude": true}
+	var unseen []string
+	for _, top := range []string{"."} {
 		err := filepath.WalkDir(filepath.Join(root, top), func(path string, d fs.DirEntry, err error) error {
 			if err != nil {
 				return err
 			}
 			if d.IsDir() {
-				if d.Name() == "testdata" || d.Name() == "node_modules" {
+				if path != root && (skip[d.Name()] || strings.HasPrefix(d.Name(), ".")) {
 					return filepath.SkipDir
 				}
 				return nil
@@ -78,6 +84,20 @@ func TestOnlyTheViewersSubmitSetsExpand(t *testing.T) {
 					}
 				case *ast.CallExpr:
 					called[n.Fun] = true
+					// A field named by its name: reflection sets it unseen.
+					if sel, ok := n.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "FieldByName" && len(n.Args) == 1 {
+						if lit, ok := n.Args[0].(*ast.BasicLit); ok && (strings.Contains(lit.Value, "Expand") || strings.Contains(lit.Value, "ViewerSocket")) {
+							unseen = append(unseen, rel+": FieldByName("+lit.Value+")")
+						}
+					}
+				case *ast.CompositeLit:
+					// A positional literal of the three types sets the word
+					// by its place alone.
+					if name := typeName(n.Type); (name == "Submission" || name == "Message" || name == "AttachOptions") && len(n.Elts) > 0 {
+						if _, keyed := n.Elts[0].(*ast.KeyValueExpr); !keyed {
+							unseen = append(unseen, rel+": a positional "+name+" literal")
+						}
+					}
 				}
 				return true
 			})
@@ -95,6 +115,9 @@ func TestOnlyTheViewersSubmitSetsExpand(t *testing.T) {
 	}
 	if walked < 500 {
 		t.Fatalf("walked %d files: the walk did not find the tree", walked)
+	}
+	if len(unseen) > 0 {
+		t.Fatalf("Expand or ViewerSocket can be set where the walk cannot count it:\n%s", strings.Join(unseen, "\n"))
 	}
 	want := map[use]int{
 		{"internal/api/ws_viewer.go", "Expand", "set"}:        1, // Submission{..., Expand: m.Expand}
@@ -117,4 +140,15 @@ func TestOnlyTheViewersSubmitSetsExpand(t *testing.T) {
 		}
 		t.Fatalf("Expand and ViewerSocket are set or read outside their places, or not where they must be:\n%s", strings.Join(got, "\n"))
 	}
+}
+
+// typeName is the last name of a composite literal's type (session.X, X).
+func typeName(e ast.Expr) string {
+	switch t := e.(type) {
+	case *ast.Ident:
+		return t.Name
+	case *ast.SelectorExpr:
+		return t.Sel.Name
+	}
+	return ""
 }
