@@ -8,6 +8,11 @@ export type ServerState = 'stopped' | 'starting' | 'running' | 'failed'
 export interface ServerStatus {
   state: ServerState
   url: string
+  /**
+   * The address the server bound, as an origin (http://127.0.0.1:<port>): what the app loads its windows from, trusts and talks to,
+   * so that no name is resolved to reach its server. '' when the server bound no loopback address written as an address.
+   */
+  origin?: string
   pid?: number
   version?: string
   failures: number
@@ -45,6 +50,27 @@ export interface SupervisorOptions {
  * token travels on the server's stdin (firstLine), never in its environment, its arguments or on disk.
  */
 /** The start was stopped (stop) while it prepared, before the server spawned: nothing runs, and nothing is restarted. */
+/**
+ * loopbackOrigin is http://<listen> for a listen address that is a loopback address written as one (127.x.x.x or [::1]) with a port,
+ * '' for anything else (a name, another address, no port): the app talks to its server by the socket it bound, never by a name.
+ */
+export function loopbackOrigin(listen: string): string {
+  const m = /^(127\.\d{1,3}\.\d{1,3}\.\d{1,3}|\[::1\]):(\d{1,5})$/.exec(listen)
+  if (!m) return ''
+  const port = Number(m[2])
+  if (port < 1 || port > 65535) return ''
+  if (m[1]!.startsWith('127.') && m[1]!.split('.').some((o) => Number(o) > 255)) return ''
+  return `http://${m[1]}:${port}`
+}
+
+/**
+ * trustedOrigin is the origin the app trusts now: its server's bound address while that server runs, '' otherwise. While the server
+ * stops, starts or has failed, no page is answered and nothing is loaded or sent: a port it freed may be another program's.
+ */
+export function trustedOrigin(st: ServerStatus): string {
+  return st.state === 'running' ? (st.origin ?? '') : ''
+}
+
 export class StartStopped extends Error {
   constructor() {
     super('the server was stopped before it started')
@@ -164,7 +190,7 @@ export class ServerSupervisor extends EventEmitter {
       const h = await handshake
       this.handshake = h
       this.backoff = this.o.backoffMinMs ?? 1000
-      this.setState('running', { url: h.publicUrl, pid: h.pid, version: h.version, lastError: undefined })
+      this.setState('running', { url: h.publicUrl, origin: loopbackOrigin(h.listen), pid: h.pid, version: h.version, lastError: undefined })
       this.o.log('main', `server listening at ${h.listen} (${h.publicUrl}), pid ${h.pid}, ${h.version}`)
       this.startHealth()
       return h
@@ -221,7 +247,7 @@ export class ServerSupervisor extends EventEmitter {
     this.healthTimer = setInterval(async () => {
       if (!this.handshake || !this.child) return
       try {
-        const res = await f(`${this.handshake.publicUrl}/api/health`, { signal: AbortSignal.timeout(period) })
+        const res = await f(`${loopbackOrigin(this.handshake.listen) || this.handshake.publicUrl}/api/health`, { signal: AbortSignal.timeout(period) })
         misses = res.ok ? 0 : misses + 1
       } catch {
         misses++

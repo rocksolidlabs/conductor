@@ -32,8 +32,10 @@ const folders = new FolderAllow({
   posix: false,
   told: () => {},
 })
+// The origin the app trusts: its server's address while it runs, '' while none does (trustedOrigin).
+let trusted = origin
 registerIpc({
-  origin: () => origin,
+  origin: () => trusted,
   token: () => TOKEN,
   supervisor: { restart: async () => void restarts.push(1) } as never,
   settings: { get: () => stored, set: (s) => void (stored = s) },
@@ -143,5 +145,23 @@ describe('conductor:allowFolder', () => {
     await handlers.get('conductor:settings:set')!(w.from(w.main), { closeToTray: false })
     await handlers.get('conductor:restartServer')!(w.from(w.main))
     expect(restarts).toHaveLength(1)
+  })
+
+  it("answers no call while the app's server is not running, its own page's included", async () => {
+    trusted = ''
+    try {
+      const w = win(origin + '/')
+      for (const [ch, args] of [['conductor:token', []], ['conductor:settings:get', []], ['conductor:allowFolder', ['/srv/five', '']]] as const) {
+        let thrown: unknown
+        try {
+          await handlers.get(ch)!(w.from(w.main), ...args)
+        } catch (err) {
+          thrown = err
+        }
+        expect(String(thrown), ch).toMatch(/refused/)
+      }
+    } finally {
+      trusted = origin
+    }
   })
 })

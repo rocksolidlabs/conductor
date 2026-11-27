@@ -10,7 +10,7 @@ import { allowOffered, FolderAllow } from './allow'
 import { NativeLauncher, type Launcher } from './launcher'
 import { Logs } from './logs'
 import { buildMenu } from './menu'
-import { ServerSupervisor, StartStopped } from './server'
+import { ServerSupervisor, StartStopped, trustedOrigin } from './server'
 import { defaultSettings, loadSettings, migrateToWsl, noticeOnce, refusedSwitchyardNote, saveSettings, type DesktopSettings } from './settings'
 import { loginShellPath, mergePaths } from './shellPath'
 import { createTray } from './tray'
@@ -216,7 +216,13 @@ async function run() {
   let main: BrowserWindow | null = null
   let tray: Tray | null = null
   let quitting = false
-  const origin = () => supervisor.status.url || 'http://127.0.0.1'
+  // The app's server by the address it bound, while it runs; '' otherwise (trustedOrigin): every gate, every load and the press go by it.
+  const origin = () => trustedOrigin(supervisor.status)
+  /** at is a page of the app's server, '' while none runs. */
+  const at = (path: string) => {
+    const o = origin()
+    return o ? o + path : ''
+  }
 
   // An invite for the open window goes to its page over the bridge, which routes in place: the workbench keeps its terminals.
   const delivery = new InviteDelivery({
@@ -225,7 +231,8 @@ async function run() {
     },
     load: (inv) => {
       log('main', 'invite: the page did not take it; loading the join page')
-      if (main && !main.isDestroyed()) void main.loadURL(origin() + invitePath(inv))
+      const url = at(invitePath(inv))
+      if (url && main && !main.isDestroyed()) void main.loadURL(url)
     },
     ask: () => {
       if (main && !main.isDestroyed()) main.webContents.send('conductor:inviteAsk')
@@ -268,7 +275,19 @@ async function run() {
       if (details.isMainFrame && !details.isSameDocument) delivery.pageLeft()
     })
     main.webContents.on('did-stop-loading', () => delivery.settled())
-    void main.loadURL(origin() + path)
+    const url = at(path)
+    if (url) void main.loadURL(url)
+    else {
+      // Shown while the server restarts: the page loads once it runs again.
+      const w = main
+      const later = (st: { state: string }) => {
+        if (st.state !== 'running') return
+        supervisor.off('state', later)
+        const next = at(path)
+        if (next && !w.isDestroyed()) void w.loadURL(next)
+      }
+      supervisor.on('state', later)
+    }
     return main
   }
   const showLog = () => {
@@ -294,7 +313,7 @@ async function run() {
     ? new FolderAllow({
         get: () => settings,
         set: keepSettings,
-        server: () => ({ url: supervisor.status.url, pid: supervisor.status.pid, running: supervisor.status.state === 'running' }),
+        server: () => ({ url: origin(), pid: supervisor.status.pid, running: supervisor.status.state === 'running' }),
         token: () => token,
         key: () => desktopKey,
         fetch: (url, init) => fetch(url, init),
@@ -382,8 +401,14 @@ async function run() {
   function setMenu(zoomLevel: number) {
     Menu.setApplicationMenu(
       buildMenu({
-        settings: () => void show().loadURL(origin() + '/settings'),
-        openInBrowser: () => void import('electron').then(({ shell }) => shell.openExternal(`${origin()}/#token=${encodeURIComponent(token)}`)),
+        settings: () => {
+          const url = at('/settings')
+          if (url) void show().loadURL(url)
+        },
+        openInBrowser: () => {
+          const url = at(`/#token=${encodeURIComponent(token)}`)
+          if (url) void import('electron').then(({ shell }) => shell.openExternal(url))
+        },
         restart: () => void supervisor.restart().catch(() => {}),
         showLog,
         zoom,
@@ -430,7 +455,10 @@ async function run() {
   const inTray = createTray({
     icon: iconPath(),
     show: () => show(),
-    openInBrowser: () => void import('electron').then(({ shell }) => shell.openExternal(`${origin()}/#token=${encodeURIComponent(token)}`)),
+    openInBrowser: () => {
+          const url = at(`/#token=${encodeURIComponent(token)}`)
+          if (url) void import('electron').then(({ shell }) => shell.openExternal(url))
+        },
     restart: () => void supervisor.restart().catch(() => {}),
     showLog,
     quit: () => app.quit(),

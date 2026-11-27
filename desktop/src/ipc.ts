@@ -166,7 +166,8 @@ export function registerIpc(d: IpcDeps): void {
     'conductor:openInBrowser',
     guard(async () => {
       // The token travels in the fragment, which never reaches the server and which the workbench takes and drops.
-      await shell.openExternal(`${d.origin()}/#token=${encodeURIComponent(d.token())}`)
+      const o = d.origin()
+      if (o) await shell.openExternal(`${o}/#token=${encodeURIComponent(d.token())}`)
     }),
   )
   ipcMain.handle(

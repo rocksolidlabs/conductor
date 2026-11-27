@@ -115,6 +115,15 @@ describe('Allow this folder', () => {
     expect(f.asked.map((a) => a.url)).toEqual(['http://127.0.0.1:4312/api/roots', 'http://127.0.0.1:5000/api/roots'])
   })
 
+  it('sends the token and the key to a loopback address written as one alone', async () => {
+    for (const url of ['http://localhost:4312', 'http://10.0.0.1:4312', 'https://127.0.0.1:4312', 'http://127.0.0.1:4312/x', 'http://evil.example']) {
+      const f = fake()
+      f.server.url = url
+      expect(await f.allow.allow('/srv/proj', ''), url).toMatchObject({ ok: false })
+      expect(f.asked, url).toHaveLength(0)
+    }
+  })
+
   it('sends nothing to a server not running, or whose process is not the one its handshake named', async () => {
     const f = fake()
     f.server.running = false

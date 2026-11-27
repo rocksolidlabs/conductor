@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import type { Launcher } from '../src/launcher'
-import { ServerSupervisor, StartStopped } from '../src/server'
+import { loopbackOrigin, ServerSupervisor, StartStopped, trustedOrigin } from '../src/server'
 
 /** A fake server: a node script that prints the handshake (after optional noise), serves /api/health, and exits when stdin closes. */
 function fakeServer(opts: { noise?: boolean; crashAfterMs?: number; silent?: boolean }): string {
@@ -114,11 +114,27 @@ process.stdin.on('data', onData)
       firstLine: () => '{"workbenchToken":"tok","desktopKey":"key"}\n',
       log: quiet,
     })
-    await s.start()
+    const h = await s.start()
+    // The app's origin is the address the server bound, never the name in its publicUrl.
+    expect(h.publicUrl).toMatch(/^http:\/\/localhost:/)
+    expect(s.status.origin).toBe('http://' + h.listen)
+    expect(trustedOrigin(s.status)).toBe('http://' + h.listen)
     const got = JSON.parse(readFileSync(seen, 'utf8')) as { line: string; env: string[] }
     expect(got.line).toBe('{"workbenchToken":"tok","desktopKey":"key"}')
     expect(got.env).toEqual(['CONDUCTOR_DATA_DIR'])
     await s.stop()
+    // A server that runs no more is trusted no more.
+    expect(trustedOrigin(s.status)).toBe('')
+  })
+  it('takes for its origin a loopback address written as one, and nothing else', () => {
+    expect(loopbackOrigin('127.0.0.1:4312')).toBe('http://127.0.0.1:4312')
+    expect(loopbackOrigin('127.1.2.3:1')).toBe('http://127.1.2.3:1')
+    expect(loopbackOrigin('[::1]:4312')).toBe('http://[::1]:4312')
+    for (const x of ['localhost:4312', '0.0.0.0:4312', '10.0.0.1:4312', '127.0.0.1', '127.0.0.1:0', '127.0.0.1:70000', '127.0.0.300:1', '[::]:4312', 'evil.example:80', '127.0.0.1:1@evil.example', '']) {
+      expect(loopbackOrigin(x), x).toBe('')
+    }
+    for (const state of ['stopped', 'starting', 'failed'] as const) expect(trustedOrigin({ state, url: 'http://localhost:1', origin: 'http://127.0.0.1:1', failures: 0 })).toBe('')
+    expect(trustedOrigin({ state: 'running', url: 'http://localhost:1', failures: 0 })).toBe('')
   })
   it("a stop during the start's preparation spawns nothing (#363, Codex's review)", async () => {
     const launcher = new ScriptLauncher(fakeServer({}))

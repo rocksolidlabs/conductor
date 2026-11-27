@@ -1,3 +1,4 @@
+import { loopbackOrigin } from './server'
 import { validate, type DesktopSettings } from './settings'
 
 /**
@@ -42,7 +43,7 @@ export interface AllowDeps {
   get: () => DesktopSettings
   /** Saves the settings file; throws when it cannot be written. */
   set: (s: DesktopSettings) => void
-  /** The server's origin now, and its process id (the supervisor's handshake); undefined while none runs. */
+  /** The server's origin now (the address it bound, '' while none runs) and its process id (the supervisor's handshake). */
   server: () => { url: string; pid?: number; running: boolean }
   token: () => string
   key: () => string
@@ -149,6 +150,8 @@ export class FolderAllow {
 
   /** ask posts the folder to the server s, its handshake's, following no redirect; its answer, or why there is none. */
   private async ask(s: { url: string; pid?: number }, path: string, confirmed: string): Promise<{ ok: true; root: string } | Extract<AllowAnswer, { ok: false }>> {
+    // The token and the key go to a loopback address written as one, the socket the server bound, and to nothing else.
+    if (!s.url || loopbackOrigin(s.url.replace(/^http:\/\//, '')) !== s.url) return { ok: false, code: 'busy', message: 'Conductor is restarting: try again' }
     const now = this.d.server()
     // Only to the server whose handshake gave this origin, while that process runs.
     if (!now.running || now.url !== s.url || now.pid !== s.pid) return { ok: false, code: 'busy', message: 'Conductor is restarting: try again' }
