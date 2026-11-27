@@ -204,6 +204,44 @@ export function welcomeOffer(list: readonly AgentInfo[], o: { gaveUp?: ReadonlyS
   return { state: 'found', main: welcomeAgent(first), named, rest: others.length - named.length }
 }
 
+/** A program named by a path relative to the session's folder: the server judges it only at launch, so nothing asks about it before. */
+function relativeProgram(p: string): boolean {
+  return /[/\\]/.test(p) && !p.startsWith('/') && !/^[A-Za-z]:[/\\]/.test(p)
+}
+
+/**
+ * The programs the welcome's Look again asks the server about (UX3): the first word of each agent's command the server cannot launch,
+ * each once, in the catalog's order, never a relative path.
+ */
+export function programsToLookFor(list: readonly Pick<AgentInfo, 'available' | 'command'>[]): string[] {
+  const out = new Set<string>()
+  for (const a of list) {
+    const p = a.command[0]
+    if (a.available === false && p && !relativeProgram(p)) out.add(p)
+  }
+  return [...out]
+}
+
+/**
+ * Asks the machine about each program now (the server keeps each look-up for 30 seconds, so a plain read again could answer from before
+ * an install), `workers` at a time; a check that fails or does not answer within CHECK_READ_DEADLINE_MS is given up, and the rest go on.
+ */
+export async function lookAgain(programs: readonly string[], check: (program: string) => Promise<unknown>, o: { workers?: number; after?: After } = {}): Promise<void> {
+  const queue = [...programs]
+  async function work() {
+    for (let p = queue.shift(); p !== undefined; p = queue.shift()) {
+      const program = p
+      await withDeadline(() => check(program), CHECK_READ_DEADLINE_MS, 'The check did not answer', o.after).catch(() => undefined)
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(o.workers ?? 2, queue.length) }, work))
+}
+
+/** The agent the welcome names when the server found one only on Windows, seen from WSL (`onWindows`): the first in the catalog's order. */
+export function onWindowsOnly(list: readonly Pick<AgentInfo, 'id' | 'name' | 'onWindows'>[]): string | undefined {
+  return list.find((a) => a.id !== SHELL_ID && a.onWindows)?.name
+}
+
 /** The agents the Launch dialog's server tab offers. */
 export function serverAgents<T extends Pick<AgentInfo, 'available'>>(list: readonly T[]): T[] {
   return list.filter(isAvailable)

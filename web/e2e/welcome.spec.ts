@@ -225,8 +225,6 @@ const EXAMPLES_TIP = 'Adds five ready-made crews to Crews; nothing starts until 
 const TIPS = {
   agent: (name: string, version?: string) => `Opens the Launch dialog with ${name}${version ? ` ${version}` : ''} picked.`,
   more: 'Opens the Launch dialog with every agent this machine has.',
-  agents: 'Opens Agents: the agents Conductor knows, and which of them this machine has.',
-  launch: 'Opens the Launch dialog, which looks for the agents on this machine again.',
   host: 'Opens the Quick start: how to run conductor host on another machine.',
   examples: EXAMPLES_TIP,
 }
@@ -351,36 +349,6 @@ test("a tooltip closes as the pointer leaves its button: a press on the Or line'
   const dialog = page.getByRole('dialog')
   await expect(dialog, 'the press reached the second agent').toBeVisible()
   await expect(dialog.getByRole('radio', { checked: true })).toContainText(name)
-})
-
-test('the welcome with no agent found offers Agents, and with the agents not read offers Launch agent, each saying what it does', async ({ browser }) => {
-  const srv = await empty()
-  budget(2 * 20 * STEP_MS)
-  for (const [state, button, name, tip] of [
-    ['none', '[data-welcome-agents]', 'Agents', TIPS.agents],
-    ['unread', '[data-welcome-launch]', 'Launch agent', TIPS.launch],
-  ] as const) {
-    const page = await dayPage(browser, { width: 1440, height: 900, path: '/', server: srv.started })
-    // The catalog's quick answer as this state has it, from the first load on.
-    await page.route(
-      (u) => u.pathname === '/api/catalog',
-      (r) => (state === 'none' ? r.fulfill({ json: { agents: [] } }) : r.fulfill({ status: 500, json: { error: 'catalog_failed', message: 'the catalog could not be read' } })),
-    )
-    await page.reload()
-    const card = page.locator('[data-welcome-card]')
-    await expect(card.locator(button), state).toBeVisible()
-    // Its button says what it does on hover, and reached by the keyboard (Shift+Tab from the fold's row, the control after it).
-    const b = card.locator(button)
-    await expect(b, state).toHaveAccessibleName(name)
-    await b.hover()
-    await tipShown(page, b, tip, `${state}, hovered`)
-    await noTip(page)
-    await card.locator('[data-welcome-expander]').focus()
-    await page.keyboard.press('Shift+Tab')
-    await expect(b).toBeFocused()
-    await tipShown(page, b, tip, `${state}, by the keyboard`)
-    await page.context().close()
-  }
 })
 
 test("on a phone the welcome's buttons keep their labels as their names, and a tap opens no tooltip, then or when the dialog it opened closes", async ({ browser }) => {

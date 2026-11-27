@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import type { AgentInfo } from '~/composables/useSessions'
 import { QUICK_START_URL } from '~/utils/about'
-import { pageRequests, settleChecks, welcomeOffer } from '~/utils/agents'
-import { EXAMPLES_FAILED, examplesToast, welcomeTips } from '~/utils/welcome'
+import { lookAgain, onWindowsOnly, pageRequests, programsToLookFor, settleChecks, welcomeOffer } from '~/utils/agents'
+import { EXAMPLES_FAILED, examplesToast, welcomeTips, welcomeWords } from '~/utils/welcome'
 
 // The first-run welcome (#359; the UX review's P17; UX3): one sentence, one button that launches the first agent this machine has, the
 // other agents on one line, and the other ways to start folded. It shows where the server has no session at all: the home, and the
@@ -22,10 +22,17 @@ const gaveUp = ref<ReadonlySet<string>>(new Set())
 /** The agent the main button names once it is drawn: it stays until the card reads again, unless an answer says it is gone. */
 const held = ref<string>()
 const requests = pageRequests()
-async function readAgents() {
+/**
+ * Reads the agents. From the start (`fresh`: the first read, Read again) the card shows the looking state meanwhile; a read for Look
+ * again keeps the card as it is until the answer.
+ */
+async function readAgents(fresh = true) {
   const gen = requests.next()
   gaveUp.value = new Set()
   held.value = undefined
+  if (fresh) catalog.value = null
+  catalogError.value = ''
+  looked.value = false
   try {
     const r = await requests.live(api.catalogNow())
     if (gen.aborted) return
@@ -37,13 +44,38 @@ async function readAgents() {
       { signal: gen, gaveUp: (id) => (gaveUp.value = new Set([...gaveUp.value, id])), reads: 1 },
     )
   } catch (e) {
-    if (!gen.aborted) catalogError.value = (e as Error).message
+    if (gen.aborted) return
+    catalog.value = null
+    catalogError.value = (e as Error).message
   }
 }
-onMounted(readAgents)
+onMounted(() => readAgents())
 onBeforeUnmount(() => requests.end())
 const offer = computed(() => (catalog.value ? welcomeOffer(catalog.value, { gaveUp: gaveUp.value, keep: held.value }) : null))
 watch(offer, (o) => o?.state === 'found' && (held.value = o.main.id))
+/** With no agent found: the one the server saw on Windows alone, from WSL, which the card names. */
+const windowsOnly = computed(() => (offer.value?.state === 'none' && catalog.value ? onWindowsOnly(catalog.value) : undefined))
+
+// Look again: the machine asked now about each program the server cannot launch, then the agents read again. None found: a line says
+// so, and the focus stays on the button.
+const start = useTemplateRef<HTMLElement>('start')
+const looking = ref(false)
+const looked = ref(false)
+async function lookAgainNow() {
+  if (looking.value || !catalog.value) return
+  looking.value = true
+  try {
+    await lookAgain(programsToLookFor(catalog.value), (p) => api.checkCommand(p))
+    if (requests.left()) return
+    await readAgents(false)
+  } finally {
+    looking.value = false
+  }
+  if (offer.value?.state !== 'none') return
+  looked.value = true
+  await nextTick()
+  start.value?.querySelector<HTMLElement>('[data-welcome-again]')?.focus()
+}
 
 /** The other ways to start, folded at every visit. */
 const unfolded = ref(false)
@@ -77,10 +109,12 @@ async function loadExamples() {
         </div>
       </div>
 
-      <div class="flex flex-col gap-3" data-welcome-start>
-        <p v-if="!catalogError && (!offer || offer.state === 'looking')" class="flex items-center gap-2 text-sm text-muted" data-welcome-looking>
-          <UIcon name="i-lucide-loader-circle" class="size-4 animate-spin" />Looking for agents on this machine…
-        </p>
+      <div ref="start" class="flex flex-col gap-3" data-welcome-start>
+        <!-- No answer yet: a button the main one's size where it will be, and the Or line's room under it, so nothing below moves. -->
+        <template v-if="!catalogError && (!offer || offer.state === 'looking')">
+          <UButton :label="welcomeWords.looking" loading block size="lg" color="neutral" variant="subtle" :ui="{ label: 'min-w-0 text-clip whitespace-normal text-center' }" class="pointer-coarse:min-h-11" data-welcome-looking />
+          <div class="min-h-7 pointer-coarse:min-h-11" aria-hidden="true" />
+        </template>
         <template v-else-if="offer?.state === 'found'">
           <TipButton
             :tip="welcomeTips.agent(offer.main.name, offer.main.version)"
@@ -125,11 +159,25 @@ async function loadExamples() {
           </p>
         </template>
         <template v-else-if="offer">
-          <p class="text-sm text-muted" data-welcome-none>No agent is installed on this machine yet.</p>
-          <TipButton :tip="welcomeTips.agents" label="Agents" icon="i-lucide-bot" color="neutral" variant="outline" to="/agents" class="self-start pointer-coarse:min-h-11" data-welcome-agents />
+          <!-- No agent but the shell: said in plain text (a standing fact, never amber), with the two ways on. -->
+          <p class="text-sm text-default" data-welcome-none :data-welcome-windows="windowsOnly ? '' : undefined">{{ windowsOnly ? welcomeWords.onWindows(windowsOnly) : welcomeWords.none }}</p>
+          <div class="flex flex-wrap gap-2">
+            <TipButton :tip="welcomeTips.agents" label="Choose an agent to install" icon="i-lucide-bot" to="/agents" class="pointer-coarse:min-h-11" data-welcome-agents />
+            <UButton label="Look again" icon="i-lucide-refresh-cw" color="neutral" variant="outline" :loading="looking" class="pointer-coarse:min-h-11" data-welcome-again @click="lookAgainNow" />
+          </div>
+          <p v-if="looked" role="status" class="text-sm text-muted" data-welcome-looked>{{ welcomeWords.looked }}</p>
         </template>
-        <!-- The catalog not read: the dialog reads it again and says why. -->
-        <TipButton v-else :tip="welcomeTips.launch" label="Launch agent" icon="i-lucide-play" block class="pointer-coarse:min-h-11" data-welcome-launch @click="launch.show()" />
+        <!-- The agents not read: the server's words, the Launch dialog (which reads them itself) and a read again. -->
+        <template v-else>
+          <p class="flex items-start gap-2 text-sm text-warning" data-welcome-failed>
+            <UIcon name="i-lucide-triangle-alert" class="mt-0.5 size-4 flex-none" />
+            <span class="min-w-0">{{ welcomeWords.failed(catalogError) }}</span>
+          </p>
+          <div class="flex flex-wrap gap-2">
+            <TipButton :tip="welcomeTips.launch" label="Launch agent" icon="i-lucide-play" class="pointer-coarse:min-h-11" data-welcome-launch @click="launch.show()" />
+            <UButton label="Read again" icon="i-lucide-refresh-cw" color="neutral" variant="outline" class="pointer-coarse:min-h-11" data-welcome-read-again @click="readAgents()" />
+          </div>
+        </template>
       </div>
 
       <div class="flex flex-col border-t border-default pt-2">

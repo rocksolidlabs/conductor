@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { AgentInfo } from '~/composables/useSessions'
-import { agentItem, CHECK_READ_DEADLINE_MS, checkBadge, identity, isAvailable, launchListNote, misidentified, notInstalled, notInstalledBadge, notInstalledTitle, pageRequests, serverAgents, settleChecks, SHELL_ID, stillLookedUp, welcomeOffer } from './agents'
+import { agentItem, CHECK_READ_DEADLINE_MS, checkBadge, identity, isAvailable, launchListNote, lookAgain, misidentified, notInstalled, notInstalledBadge, notInstalledTitle, onWindowsOnly, pageRequests, programsToLookFor, serverAgents, settleChecks, SHELL_ID, stillLookedUp, welcomeOffer } from './agents'
 import type { After } from './capacity'
 
 const agent = (over: Partial<AgentInfo>): AgentInfo => ({ id: 'a', name: 'Agent', command: ['a'], allowArgs: true, ...over })
@@ -322,5 +322,52 @@ describe("the welcome's offer (UX3)", () => {
     const odd = { ran: true, identified: false, verified: false, output: 'v9', version: '9' }
     const o = welcomeOffer([agent({ id: 'x', available: true, identity: odd })])
     expect(o.state === 'found' && o.main.version).toBeUndefined()
+  })
+})
+
+describe("the welcome's Look again (UX3)", () => {
+  const tick = () => new Promise((r) => setTimeout(r, 0))
+
+  it('asks about the programs the server cannot launch, each once, never a relative path', () => {
+    const list = [
+      agent({ id: 'one', available: true, command: ['claude'] }),
+      agent({ id: 'two', available: false, command: ['codex', 'exec'] }),
+      agent({ id: 'three', available: false, command: ['codex'] }),
+      agent({ id: 'four', available: false, command: ['./bin/agent'] }),
+      agent({ id: 'five', available: false, command: ['/opt/agent/bin/agent'] }),
+      agent({ id: 'six', command: ['gemini'] }),
+    ]
+    expect(programsToLookFor(list)).toEqual(['codex', '/opt/agent/bin/agent'])
+  })
+
+  it('checks two at a time, and gives up a check past its deadline while the rest go on', async () => {
+    const asked: Array<{ p: string; answer: () => void }> = []
+    const check = (p: string) => new Promise<void>((resolve) => asked.push({ p, answer: resolve }))
+    const timers: Array<{ ms: number; fn: () => void; on: boolean }> = []
+    const after: After = (ms, fn) => {
+      const t = { ms, fn, on: true }
+      timers.push(t)
+      return () => (t.on = false)
+    }
+    let done = false
+    void lookAgain(['a', 'b', 'c'], check, { after }).then(() => (done = true))
+    await tick()
+    expect(asked.map((a) => a.p)).toEqual(['a', 'b'])
+    asked[1]!.answer()
+    await tick()
+    expect(asked.map((a) => a.p)).toEqual(['a', 'b', 'c'])
+    // a never answers: its deadline gives it up.
+    const a = timers[0]!
+    expect(a.ms).toBe(CHECK_READ_DEADLINE_MS)
+    a.fn()
+    asked[2]!.answer()
+    await tick()
+    expect(done).toBe(true)
+  })
+
+  it('names the first agent the server saw on Windows alone, never the shell', () => {
+    expect(onWindowsOnly([agent({ id: 'a', name: 'A' }), agent({ id: 'b', name: 'Claude Code', onWindows: '/mnt/c/x/claude.exe' }), agent({ id: 'c', name: 'C', onWindows: '/mnt/c/c' })])).toBe('Claude Code')
+    expect(onWindowsOnly([agent({ id: SHELL_ID, name: 'Shell', onWindows: '/mnt/c/bash.exe' })])).toBeUndefined()
+    expect(onWindowsOnly([])).toBeUndefined()
   })
 })

@@ -15,6 +15,17 @@ export const welcomeTips = {
   examples: EXAMPLES_LINE,
 } as const
 
+/** What the welcome says of what it found (UX3): while it looks, when no agent is there, and when the agents could not be read. */
+export const welcomeWords = {
+  looking: 'Looking for agents on this machine…',
+  none: 'No coding agent is installed on this machine yet.',
+  /** An agent found on Windows alone, seen from WSL: what the person does about it. */
+  onWindows: (name: string) => `${name} is installed on Windows, not in WSL, where Conductor runs. Install it in WSL, then press Look again.`,
+  looked: 'Looked again: still none found.',
+  /** The read of the agents failed: the server's words, or that it did not answer. */
+  failed: (words?: string) => `The agents could not be read: ${words?.trim() || 'The server did not answer.'}`,
+} as const
+
 /** The toast after the welcome loaded the example crews, in the words Crews says: how many were added, or that they were there. */
 export function examplesToast(added: number): { title: string; color: 'success' | 'neutral' } {
   if (!added) return { title: 'The examples are here already', color: 'neutral' }
