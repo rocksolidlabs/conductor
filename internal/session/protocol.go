@@ -1689,8 +1689,11 @@ func (e protocolEvents) Permission(r PermissionRequest) {
 	s, p := e.s, e.p
 	out := applied{event: "permission"}
 	// An in-stream request is judged at once (the driver hands events in
-	// order): a digest of one form, the bound, the floor; then it is the
-	// session's question as a request to the prompt tool is.
+	// order): a digest of one form, the bound, the call it names as the
+	// stream announced it (bindLocked, as a request to the prompt tool is
+	// bound, with no wait: a call not yet shown is none this session is
+	// making), the floor; then it is the session's question as a request to
+	// the prompt tool is.
 	canon, clean := strictCanonical(r.Input)
 	digest := inputDigest(r.Tool, r.Input)
 	if clean {
@@ -1699,6 +1702,7 @@ func (e protocolEvents) Permission(r PermissionRequest) {
 	entry := s.permissionEntryLocked(p, r.Call, r.Tool, r.Input, digest, r.Cwd)
 	entry.Ref = cutAt(r.Ref, MaxEntryRef)
 	why := ""
+	var call string
 	switch {
 	case len(r.Input) > MaxTranscriptPart:
 		// Kept whole or not shown: a part past its bound would be cut
@@ -1709,8 +1713,11 @@ func (e protocolEvents) Permission(r PermissionRequest) {
 	case p.requests+p.inStreamLocked() >= MaxPendingPermissions:
 		// Past the bound: denied, never left waiting.
 		why = TooManyRequestsWords
-	case s.flooredLocked(r.Tool, r.Input):
-		why = FloorWords
+	default:
+		call, why = s.bindInStreamLocked(p, r.Call, r.Tool, digest)
+		if why == "" && s.flooredLocked(r.Tool, r.Input) {
+			why = FloorWords
+		}
 	}
 	if why != "" {
 		entry.State, entry.Why = PermissionDenied, why
@@ -1721,9 +1728,30 @@ func (e protocolEvents) Permission(r PermissionRequest) {
 		s.sendApplied(out)
 		return
 	}
-	s.takeLocked(p, entry, entry.Call, r.Ref, r.Input, nil, &out)
+	// One request per call: a second for it is "Already asked."
+	p.asked[call] = true
+	entry.Call = cutAt(call, MaxEntryRef)
+	s.takeLocked(p, entry, call, r.Ref, r.Input, nil, &out)
 	s.mu.Unlock()
 	s.sendApplied(out)
+}
+
+// bindInStreamLocked is the call an in-stream request names, bound as a
+// request to the prompt tool is (bindLocked: a tool call of the current
+// turn that the stream showed, with that call id, the same name and input
+// digest, no result yet, not asked about before), judged at once: a call
+// the stream has not shown is none this session is making. It returns the
+// call's ref, or the words the request is denied with. The caller holds
+// s.mu.
+func (s *Local) bindInStreamLocked(p *protocolWay, call, tool, digest string) (ref, words string) {
+	if tool == permissionToolName || len(call) > MaxEntryRef || len(tool) > MaxEventTool || !p.isReady || p.restarting || s.moveDone != nil {
+		return "", NotACallWords
+	}
+	ref, words = s.bindLocked(p, call, tool, digest)
+	if words == "" && ref == "" {
+		words = NotACallWords
+	}
+	return ref, words
 }
 
 func (e protocolEvents) PermissionWithdrawn(ref string) {
