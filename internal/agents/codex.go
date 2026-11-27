@@ -101,6 +101,19 @@ func codexSteps(hooksDir string) []step {
 // codexIdentity is Codex's probe, which its usage reader asks too.
 var codexIdentity = &Probe{Args: []string{"--version"}, Match: regexp.MustCompile(`(?m)^\s*codex-cli\s+(\d+\.\d+\.\d+)`), Verified: true}
 
+// codexFlags is how Codex's flags are read (`codex --help`, 0.167.2, and
+// the recipes tier): its help, clap's form. --cd would move the agent out of
+// the folder the launch checked, so it is the launch's. Besides the yolo
+// recipe's flag, these turn its questions, or its fence, off: the
+// danger-full-access sandbox, the never approval policy, --approve-for-me
+// (approvals routed to an automatic review) and
+// --dangerously-bypass-hook-trust (hooks run without their trust asked).
+var codexFlags = &FlagsRecipe{
+	Args:  []string{"--help"},
+	Taken: []string{"--cd"},
+	Skips: []string{"--sandbox=danger-full-access", "--ask-for-approval=never", "--approve-for-me", "--dangerously-bypass-hook-trust"},
+}
+
 func codexAdapter() Adapter {
 	return Adapter{
 		ID:   "codex",
@@ -161,6 +174,7 @@ func codexAdapter() Adapter {
 			return []string{"--model=" + model}
 		},
 		ChoosesModel: codexChoosesModel,
+		Flags:        codexFlags,
 		// Codex asks before every tool of an MCP server ("Allow the
 		// conductor MCP server to run tool …?" in 0.163.0), whatever the
 		// sandbox, unless the server's default_tools_approval_mode is
@@ -263,5 +277,7 @@ const MCPToolTimeout = 12 * time.Minute
 // codexMCPEnv is the TOML list of the variables Codex passes on to
 // Conductor's MCP server (#354): every CONDUCTOR_* one a session sets,
 // CONDUCTOR_BRAKEMAN among them, by which the server lists a Brakeman
-// turn's tools.
-const codexMCPEnv = `["CONDUCTOR_SESSION_ID","CONDUCTOR_NOTIFY_URL","CONDUCTOR_NOTIFY_TOKEN","CONDUCTOR_HOST_SOCKET","CONDUCTOR_HOST_EVENTS","CONDUCTOR_BIN","CONDUCTOR_CREW","CONDUCTOR_RUN","CONDUCTOR_MEMBER","CONDUCTOR_TASK","CONDUCTOR_ATTEMPT","CONDUCTOR_TASK_FILE","CONDUCTOR_AGENT","CONDUCTOR_SKILL","CONDUCTOR_BRAKEMAN"]`
+// turn's tools, and CONDUCTOR_PROTOCOL, set for a chat's child (the
+// protocol way, docs/plans/chat-or-terminal.md, row 10), by which it knows
+// it serves a chat.
+const codexMCPEnv = `["CONDUCTOR_SESSION_ID","CONDUCTOR_NOTIFY_URL","CONDUCTOR_NOTIFY_TOKEN","CONDUCTOR_HOST_SOCKET","CONDUCTOR_HOST_EVENTS","CONDUCTOR_BIN","CONDUCTOR_CREW","CONDUCTOR_RUN","CONDUCTOR_MEMBER","CONDUCTOR_TASK","CONDUCTOR_ATTEMPT","CONDUCTOR_TASK_FILE","CONDUCTOR_AGENT","CONDUCTOR_SKILL","CONDUCTOR_BRAKEMAN","CONDUCTOR_PROTOCOL"]`

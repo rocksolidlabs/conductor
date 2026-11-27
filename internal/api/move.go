@@ -111,7 +111,7 @@ func (s *Server) moveStarts(ctx context.Context, local *session.Local, to string
 		Protocol: chat,
 		Terminal: s.terminalStart(l),
 		Gone:     session.GroupGone,
-		Words:    moveWords,
+		Words:    moveWordsFor(l.agent.Protocol.Name),
 	}
 	if seam := s.moveSeam; seam != nil {
 		m.AfterOldExit = func() { seam(id) }
@@ -152,7 +152,7 @@ func (s *Server) chatRefusal(ctx context.Context, l *chatLaunch, toChat bool) st
 		version = id.Version
 	}
 	if !agentproto.Qualified(l.agent.Protocol.Name, version) {
-		return agentproto.NotQualifiedWords
+		return agentproto.StartWords(agentproto.NotQualifiedFor(l.agent.Protocol.Name))
 	}
 	return ""
 }
@@ -161,11 +161,14 @@ func (s *Server) chatRefusal(ctx context.Context, l *chatLaunch, toChat bool) st
 // started with (design 13).
 func chatArgsWords(err error) string {
 	var own *agentproto.OwnFlagError
+	var codexArg *agentproto.CodexArgError
 	switch {
 	case errors.Is(err, agentproto.ErrAddedFolder):
 		return agentproto.AddedFolderWords
 	case errors.As(err, &own):
 		return agentproto.OwnFlagWords(own.Flag)
+	case errors.As(err, &codexArg):
+		return agentproto.CodexArgWords(codexArg.Flag)
 	}
 	return session.CannotMoveWords
 }
@@ -204,18 +207,19 @@ func (s *Server) terminalStart(l *chatLaunch) func(context.Context, string, uint
 	}
 }
 
-// moveWords is a failed start's sentence: the driver's own for a chat that
-// did not start (design 13), the terminal's for one that did not.
-func moveWords(err error) string {
-	switch {
-	case errors.Is(err, agentproto.ErrNotQualified):
-		return agentproto.NotQualifiedWords
-	case errors.Is(err, agentproto.ErrNotSignedIn):
-		return agentproto.NotSignedInWords
-	case errors.Is(err, agentproto.ErrNotStarted), errors.Is(err, errNoConversation), errors.Is(err, errNoPipes):
-		return agentproto.NotStartedWords
+// moveWordsFor is a failed start's sentence for an agent of the protocol
+// name: its driver's own for a chat that did not start (design 13), the
+// terminal's for one that did not.
+func moveWordsFor(name string) func(error) string {
+	return func(err error) string {
+		if w := agentproto.StartWords(err); w != "" {
+			return w
+		}
+		if errors.Is(err, errNoConversation) || errors.Is(err, errNoPipes) {
+			return agentproto.StartWords(agentproto.NotStartedFor(name))
+		}
+		return ""
 	}
-	return ""
 }
 
 // endChatOnOlderSwitchyard ends the publication of a session that has

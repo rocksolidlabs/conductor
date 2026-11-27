@@ -1,0 +1,12 @@
+accepted m1
+turn_started
+tool_started call_fixture_5 parent="" mcp__conductor__report summary="" input={"event":"progress","message":"checked the files"}
+notice declined "Codex asked for something a chat cannot show here; Conductor declined it."
+tool_ended call_fixture_5 ok exit=none cut=false output="reported"
+tool_started ws_fixture_1 parent="" webSearch summary="example query" input={"query":"example query"}
+tool_ended ws_fixture_1 ok exit=none cut=false output=""
+text msg_fixture_4 3 call(s) final=true "Reported."
+turn_ended done in=0 out=0 cost=0.00000000
+--- written
+{"id":"elicit-1","result":{"action":"decline"}}
+{"error":{"code":-32601,"message":"Conductor does not answer this request"},"id":11}

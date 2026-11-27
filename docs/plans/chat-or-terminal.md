@@ -1425,7 +1425,6 @@ Every string is one short sentence.
 | a full queue (`too_many_requests` on `submit`) | "Too many messages are waiting." |
 | a move pressed during a turn | "Moves to Chat when this turn ends." / "Moves to the terminal when this turn ends." |
 | a move to Chat noted at the launch, before the first reply (#1174) | "Moves to Chat after the agent's first reply." |
-| the Launch agent dialog's Run as, Chat picked (#1174) | "Starts in its terminal, then moves to Chat." |
 | a noted move that cannot be made (`move_refused`) | "A request is waiting for an answer." / "Background work is still running." / "Crew members stay in their terminals." / "This agent cannot move its conversation yet." / "Sessions on another machine stay in their terminal." / "Sessions launched with an added folder stay in their terminal." / "This session's arguments hold <flag>, which a chat sets itself; it stays in its terminal." |
 | the session moving (`moving`) | "The session is moving; try again in a moment." |
 | a permission answer from a non-answerer (`not_answerer`) | "Only the person who runs this server can answer." |
@@ -2818,8 +2817,10 @@ and `chat-layout`, each on a server of its own with `claude-proto` and
 - The Launch agent dialog offers **Run as: Terminal | Chat** for an agent
   whose catalog entry has a protocol, on this server, never for a clone:
   the header switch's two sides in its order, one press, the arrow keys
-  moving between them, and under it while Chat is picked "Starts in its
-  terminal, then moves to Chat." It comes back as that agent was last
+  moving between them, and nothing else: the dialog shows the choice
+  alone, and no line says how a launch as a chat is carried out (a
+  maintainer's word: only what is needed is shown; the session's switch
+  says it while the move waits). It comes back as that agent was last
   launched in this browser (its storage, a per-viewer convenience: the
   dialog kept nothing per agent before), written at Launch alone; the
   first time it is Terminal.
@@ -2929,6 +2930,99 @@ session's question and its reply carries the verdict for its id alone,
 `/`-leading message is checked against the declaration, and the box's
 "Sent as written" line is drawn only if it holds), and a second mode of
 the stub with its Playwright run. **18 h.**
+
+**As built, row 10, before the live look** (#1175; `internal/agentproto/codex.go`,
+`codex_argv.go`, its fixtures in `testdata/codex`, `internal/api/chat_start.go`,
+`move.go`, `internal/session/permission.go`, `web/e2e/stub-protocol-codex.mjs`).
+Codex's catalog declaration is not made: `codexMoves` and `codexVerbatim` are
+false and no built-in names `codex-app-server` until the look below.
+
+- `CodexMinVersion` is 0.167.2, the version whose schema
+  (`codex app-server generate-json-schema`, with and without
+  `--experimental`, under an empty `CODEX_HOME`) the driver was written to;
+  `testdata/codex/surface-0.167.2.json` keeps the extract
+  `TestCodexStableSurfaceOnly` holds every written line to. No real run was
+  recorded: the fixtures are hand-built from the schema and the app-server
+  page's order of messages, and say so.
+- `initialize` sends `clientInfo` (`conductor`) and no `capabilities` at all.
+  Its answer's shape check needs a `userAgent`; the version after its first
+  slash (`codex_cli_rs/0.163.0 (...)`, the usage reader's recorded form) is
+  held to `CodexMinVersion` where it names one, and one that names none
+  passes, the probed version having been checked at the start. `Begin` also
+  resumes the thread (`thread/resume` with `excludeTurns`, the session's
+  folder as `cwd`): a thread not resumed stays in the terminal.
+- A message is `turn/start` with one text input, the text as written; the
+  answer to it is `Accepted`, and its refusal a notice. `turn/interrupt`
+  names the turn; asked before the turn's id is known, it is written as the
+  id arrives.
+- What the plan does not say, built to the lenient side: the argv is the
+  command, `app-server --listen stdio://`, the protocol's arguments, the
+  terminal's `-c`, `--config`, `--enable`, `--disable` and
+  `--strict-config`, and Conductor's MCP server as the terminal's launch gave
+  it (`agents.MCPFor`); the model, `-a` and `-s` (a yolo launch: `never` and
+  `danger-full-access`) go to `thread/resume`, the app server taking no such
+  flags; `--no-alt-screen` and `--no-daemon` are dropped; any other argument,
+  a prompt among them, refuses the move with the terminal still running
+  ("This session's arguments hold …, which a chat cannot take; it stays in
+  its terminal."), `--add-dir` in the added folder's words.
+- Approvals: a command's and a file change's, of the session's thread, are
+  handed to the session with the item's id as the call, the tool name the
+  item was announced under (`commandExecution`, `fileChange`) and an input
+  built as the item's was (`{command, cwd}`, the request's own command and
+  folder where it names them; a file change's `changes`, with its
+  `grantRoot` beside them), the request's `cwd` shown. The session takes an
+  in-stream request only for a call the stream announced (design 7, rule 1,
+  shared with the prompt tool's requests: `bindLocked`), judged at once: a
+  call of the current turn, with that id, the same name and canonical
+  input's digest, no result yet; one request per call ("Already asked.").
+  So a command's approval that names a line or a folder other than its
+  item's, a file change's that asks for a root to write under, and one for
+  an item never announced are denied "Not a call this session is making.",
+  and Codex is told `decline`. Allow answers `accept`; a deny and every withdrawal
+  the session makes answer `decline`, never `cancel`, which also interrupts
+  the turn (design 7's "the protocol's own cancel" is row 10's "accept or
+  decline only"). A file change never announced, another thread's request,
+  an MCP server's form, `item/permissions/requestApproval` and
+  `item/tool/requestUserInput` are declined at once (the last three with a
+  notice), and every other request of the server's refused `-32601`.
+- The floor reads a Codex step's paths: a file change's `changes[].path`
+  and `grantRoot`, a command's `cwd`.
+- Items: `commandExecution` (its exit, its output, `declined` as denied),
+  `fileChange` (each change a `file` entry, counted from its diff),
+  `mcpToolCall` (as `mcp__<server>__<tool>`), `dynamicToolCall`, `webSearch`;
+  `agentMessage` streamed by its deltas; reasoning, plans and the rest are
+  no entry; another thread's events (a subagent's) are dropped. A turn's
+  use is the thread's total less the total at its start; a failed turn's
+  `usageLimitExceeded`, `contextWindowExceeded` or `sessionBudgetExceeded` is
+  `limit`; `unauthorized` before a first answer goes back to the terminal
+  ("Codex is not signed in; sign in from its terminal."). Codex's stable
+  surface reports no background work after a turn: `Background` is never
+  told.
+- The words of a failed start are each driver's own (`StartWords`,
+  `NotQualifiedFor`, `NotStartedFor`).
+- The stub's second mode (`stub-protocol-codex.mjs`, reached from
+  `stub-protocol.mjs` by `app-server` or `STUB_PROTOCOL_AGENT=codex`, and
+  from the terminal stub by `app-server` with `CONDUCTOR_PROTOCOL=1`);
+  `TestStubCodexSpeaksTheDriver` holds it to the driver, and
+  `chat-codex.spec.ts` walks a Codex chat (its `fixme` lifted with
+  `CODEX_MOVES` by the declaration).
+
+**Row 10's live look, before the declaration** (one session of the real
+Codex at `CodexMinVersion` or later, in a throwaway repository): the
+initialize answer's `userAgent` form; whether `codex app-server --listen
+stdio://` is a server of its own or attaches to a running daemon (the TUI's
+`--no-daemon` says one exists); the thread of a terminal session resumed by
+`thread/resume` after the terminal's exit, and back with `codex resume
+<id>`, the writer lock released each way (`Moves`); what a `/`-leading
+message and an `@path` in `turn/start`'s text do (`Verbatim`); whether the
+app server loads the folder's `.codex/config.toml`, `AGENTS.md` and its MCP
+servers as the terminal did (`instructionSources` in the resume's answer);
+whether `-c` overrides and `thread/resume`'s approval and sandbox hold on a
+resumed thread; the approvals' order against `item/started`, a command's
+`command` against its item's; a file change's diff form for an add and a
+delete; whether Conductor's own MCP tools ask through
+`mcpServer/elicitation/request` in a chat; and whether a turn can leave
+work running after `turn/completed`. Then the fixtures are recorded there.
 
 ### Row 11: the Agent Client Protocol client
 
