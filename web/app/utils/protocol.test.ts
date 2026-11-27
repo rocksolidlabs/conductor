@@ -686,5 +686,8 @@ describe("the agent's own commands (row 12)", () => {
     }
     expect(chat.decodeTranscript(enc({ t: 'commands', rev: 1, commands: [{ name: 'compact' }, { name: 'fix-issue', words: 'Fix one.', hint: '<number>', aliases: ['fi'] }] }))?.t).toBe('commands')
     expect(chat.decodeTranscript(enc({ t: 'commands', rev: '1', commands: [] }))).toBeNull()
+    // A field it does not read refuses the whole message, never taken without it.
+    expect(chat.decodeTranscript(enc({ t: 'commands', rev: 1, commands: [], account: {} }))).toBeNull()
+    expect(chat.decodeTranscript(enc({ t: 'commands', rev: 1, commands: [{ name: 'compact', description: 'x' }] }))).toBeNull()
   })
 })

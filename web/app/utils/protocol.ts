@@ -2297,18 +2297,23 @@ export const MAX_COMMAND_HINT = 64
 /** What a command's name and an alias are made of (proto.CommandNameShape). */
 export const COMMAND_NAME = /^[A-Za-z0-9_][A-Za-z0-9_.:-]*$/
 
-/** Whether m is a commands message within its bounds (proto.TranscriptCommandsMsg.Valid): what a client acts on. */
+/**
+ * Whether m is a commands message within its bounds (proto.TranscriptCommandsMsg.Valid): what a client acts on. A field it does not
+ * know, on the message or on a command, refuses the whole message: nothing is taken without what it did not read.
+ */
 export function commandsValid(m: { t?: unknown; rev?: unknown; commands?: unknown; more?: unknown }): m is TranscriptCommands {
   const bytes = (v: string) => new TextEncoder().encode(v).length
   // eslint-disable-next-line no-control-regex
   const control = /[\u0000-\u001f\u007f-\u009f]/
   const text = (v: unknown, max: number) => v === undefined || (typeof v === 'string' && bytes(v) <= max && !control.test(v))
   const name = (v: unknown, max: number) => typeof v === 'string' && bytes(v) <= max && COMMAND_NAME.test(v)
+  const known = (o: object, keys: string[]) => Object.keys(o).every((k) => keys.includes(k))
   if (m.t !== 'commands' || typeof m.rev !== 'number' || !Array.isArray(m.commands) || m.commands.length > MAX_COMMANDS) return false
+  if (!known(m, ['t', 'rev', 'commands', 'more'])) return false
   if (m.more !== undefined && typeof m.more !== 'boolean') return false
   const seen = new Set<string>()
   for (const c of m.commands as AgentCommand[]) {
-    if (!c || typeof c !== 'object' || !name(c.name, MAX_COMMAND_NAME) || seen.has(c.name)) return false
+    if (!c || typeof c !== 'object' || !known(c, ['name', 'words', 'hint', 'aliases']) || !name(c.name, MAX_COMMAND_NAME) || seen.has(c.name)) return false
     seen.add(c.name)
     if (!text(c.words, MAX_COMMAND_WORDS) || !text(c.hint, MAX_COMMAND_HINT)) return false
     if (c.aliases !== undefined && (!Array.isArray(c.aliases) || c.aliases.length > MAX_COMMAND_ALIASES || !c.aliases.every((a) => name(a, MAX_COMMAND_ALIAS)))) return false
