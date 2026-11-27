@@ -283,7 +283,11 @@ async function readAgain() {
 function keepMine() {
   return ctl.keepMine()
 }
-defineExpose({ dirty, blocked: computed(() => Object.keys(problems.value).length > 0), take })
+/** Discard (UX3 R56): the form back to what is saved; a stale refusal that waits keeps its choice. */
+function discard() {
+  if (ctl.discard()) serverError.value = null
+}
+defineExpose({ dirty, blocked: computed(() => Object.keys(problems.value).length > 0), take, discard })
 </script>
 
 <template>

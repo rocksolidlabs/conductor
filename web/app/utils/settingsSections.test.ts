@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { SETTINGS_SECTIONS, sectionFromQuery, sectionInView, sectionOf, shownSections, type SectionBox, type SettingsShown } from './settingsSections'
+import { SETTINGS_SECTIONS, changedSections, changedWords, sectionFromQuery, sectionInView, sectionOf, shownSections, type SectionBox, type SettingsShown } from './settingsSections'
 
 const ids = (s: SettingsShown) => shownSections(s).map((x) => x.id)
 const desktop: SettingsShown = { desktop: true, platform: 'linux', agents: 13, brakeman: true }
@@ -121,5 +121,24 @@ describe('sectionInView', () => {
   it('does not take an unscrolled body that holds all as scrolled to its end', () => {
     const short: SectionBox[] = [{ id: 'brakeman', top: 0, bottom: 200 }, { id: 'app', top: 220, bottom: 400 }]
     expect(sectionInView(short, { scrollTop: 0, clientHeight: 500, scrollHeight: 400 })).toBe('brakeman')
+  })
+})
+
+describe('changedSections (UX3 R56)', () => {
+  const saved = { dataDir: '/d', allowedRoots: ['/r'], defaultCwd: '/r', yolo: false, reach: 'off', closeToTray: true, wslDistro: '', wslWindowsHome: false, switchyardEnabled: false, switchyardServer: '', switchyardToken: '', switchyardName: '' }
+
+  it('names the sections that hold a change, in page order', () => {
+    expect(changedSections(saved, saved, false)).toEqual([])
+    expect(changedSections(saved, { ...saved, yolo: true }, true)).toEqual(['running', 'brakeman'])
+    expect(changedSections(saved, { ...saved, closeToTray: false, allowedRoots: ['/r', '/s'], reach: 'auto' }, false)).toEqual(['folders', 'switchyard', 'app'])
+    expect(changedSections(saved, { ...saved, wslWindowsHome: true, wslDistro: 'Ubuntu' }, false)).toEqual(['folders', 'running'])
+    // Before the app's settings were read, only Brakeman's.
+    expect(changedSections(null, saved, true)).toEqual(['brakeman'])
+  })
+
+  it('says them as the bar says them', () => {
+    expect(changedWords([])).toBe('')
+    expect(changedWords(['running', 'brakeman'])).toBe('Changed: How agents run, Brakeman.')
+    expect(changedWords(['folders'])).toBe('Changed: Where agents work.')
   })
 })
