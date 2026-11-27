@@ -241,6 +241,8 @@ export interface AgentFlags {
   name: string
   version?: string
   state: 'read' | 'reading' | 'none'
+  /** The agent has a chat way at its installed version: a lone `--` in a launch's arguments keeps its session in its terminal. */
+  chat?: boolean
   why?: 'no_args' | 'no_recipe' | 'not_installed' | 'not_identified' | 'unreadable' | 'too_long' | 'no_flags'
   flags: AgentFlag[]
   models: string[]

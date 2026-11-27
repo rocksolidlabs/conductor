@@ -19,7 +19,8 @@ const props = defineProps<{
 const base = computed(() => ['font-mono', props.baseClass].filter(Boolean).join(' '))
 
 const { reply } = useAgentFlags(() => (props.agent ? { id: props.agent.id, version: props.agent.version } : null))
-const names = computed(() => [...new Set([...(props.recent ?? []), ...(reply.value?.state === 'read' ? reply.value.models : [])])])
+// A name holding a control or format character (a mark a person cannot see) is never offered.
+const names = computed(() => [...new Set([...(props.recent ?? []), ...(reply.value?.state === 'read' ? reply.value.models : [])])].filter((n) => n !== '' && !/[\p{Cc}\p{Cf}\u2028\u2029]/u.test(n)))
 // With the list drawn here, a datalist the form keeps for the plain field (`list`) would offer the names twice.
 const attrs = useAttrs()
 const menuAttrs = computed(() => Object.fromEntries(Object.entries(attrs).filter(([k]) => k !== 'list')))
