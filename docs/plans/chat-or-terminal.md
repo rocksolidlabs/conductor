@@ -2985,8 +2985,30 @@ false and no built-in names `codex-app-server` until the look below.
   an MCP server's form, `item/permissions/requestApproval` and
   `item/tool/requestUserInput` are declined at once (the last three with a
   notice), and every other request of the server's refused `-32601`.
-- The floor reads a Codex step's paths: a file change's `changes[].path`
-  and `grantRoot`, a command's `cwd`.
+- What the driver does not read is declined, never passed on without it:
+  an approval about an item holding a field beyond the ones it reads (in
+  the item, a change, or a change's kind; a kind of change other than add,
+  delete and update); a command approval asking for more than its command
+  (a network context, added permissions, a sub-approval's `approvalId`, a
+  `reason`, an `environmentId`, a kind other than `command`, a field it
+  does not read); a file change's with a `reason`; one naming no item; and
+  a file change's whose item announced no changes. A change that moves a
+  file carries its destination (`kind.move_path`) into the step's and the
+  request's input, the floor and the record (an edit at the destination,
+  the file it left deleted). A request named by an open one's id closes the
+  open one's card. A verdict on a request the driver no longer holds
+  (answered, resolved, replaced) is `ErrNoRequest`, and the session records
+  the request withdrawn, never as given.
+- The floor reads a Codex step's paths: a file change's `changes[].path`,
+  each change's `kind.move_path` and `grantRoot`, a command's `cwd`, and the
+  command line's relative words from that folder as well as from the
+  session's. An in-stream request that names no call is denied, as is one
+  read while a stop is under way, and an answer that arrives during a stop
+  reaches no request.
+- Conductor's MCP server for Codex is not handed `CONDUCTOR_PROTOCOL`, so
+  it lists no permission tool to Codex's model (Codex asks in its own
+  stream); Codex's notify and hooks have the variable from Codex's own
+  environment, which the live look confirms.
 - Items: `commandExecution` (its exit, its output, `declined` as denied),
   `fileChange` (each change a `file` entry, counted from its diff),
   `mcpToolCall` (as `mcp__<server>__<tool>`), `dynamicToolCall`, `webSearch`;
@@ -3006,6 +3028,22 @@ false and no built-in names `codex-app-server` until the look below.
   `TestStubCodexSpeaksTheDriver` holds it to the driver, and
   `chat-codex.spec.ts` walks a Codex chat (its `fixme` lifted with
   `CODEX_MOVES` by the declaration).
+
+**Read and stated before Codex is declared, beside the look below:**
+
+- What the floor covers for Codex. Claude Code keeps Conductor's deny rules
+  in every mode; for Codex the floor sees only the steps Codex asks about,
+  and a command its own policy runs unasked (a read inside its sandbox, a
+  safe command, everything under `never`) reaches no floor. Before the
+  declaration, one of two: the chat's child gets a floor it keeps itself
+  (its own configuration puts the deny list's places out of its sandbox's
+  reach, and a launch whose policy asks about nothing is not moved to
+  Chat), or this limit is stated under design 7's "What the floor does not
+  promise". The live look decides which is possible.
+- The fixtures. The live look records a file change's announcement before
+  its approval and replaces the hand-built fixtures; until a recording
+  shows a change set is whole when it is announced, a file change's
+  approval whose announced item has no changes is declined (as built).
 
 **Row 10's live look, before the declaration** (one session of the real
 Codex at `CodexMinVersion` or later, in a throwaway repository): the
