@@ -9562,7 +9562,7 @@ publishes it again.
 A chat's agent asks Conductor before a call its own configuration does not
 allow by itself: Claude Code calls `conductor mcp`'s `permission` tool
 (`--permission-prompt-tool mcp__conductor__permission`; the tool is listed
-in a chat alone, `CONDUCTOR_PROTOCOL` set, and left out of the guide's
+in Claude Code's chat alone, `CONDUCTOR_PROTOCOL=1`, and left out of the guide's
 text), which posts the call to `POST /api/sessions/{id}/permission`; an
 agent that asks in its stream (Codex, the Agent Client Protocol, later)
 hands the request over there. A call the agent's own configuration allows
@@ -9647,7 +9647,7 @@ its replies written one at a time. A `notifications/cancelled` naming a
 call ends it, its POST with it, and no reply is written for that id; the
 end of stdin ends every held permission call the same way; a second call
 under a held call's id ends the first, unanswered, and is refused. The
-`permission` tool is listed in a chat alone (`CONDUCTOR_PROTOCOL` set),
+`permission` tool is listed in Claude Code's chat alone (`CONDUCTOR_PROTOCOL=1`),
 reads Claude Code's arguments (`tool_name`, `input`, `tool_use_id`, the
 last posted as `call`) and posts on a client with no timeout of its own,
 its call bounded by 8 hours (the server's 7 hours 59 minutes and one
