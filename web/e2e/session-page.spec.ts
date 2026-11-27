@@ -372,3 +372,47 @@ test('on a phone and in a narrow window a name too long for the header is cut wi
   await page.setViewportSize({ width: 1024, height: 768 })
   await cutAndWhole(page, 'gone, resized to 1024 × 768')
 })
+
+// More's Stop session… asks first, the question the sidebar's row, the palette and X ask (UX3 R14, #1169): Cancel keeps the session
+// running, Stop ends it. Mark as holds the three marks. Each step waits for the menu's content to be gone before the next key.
+test("More's Stop session… asks first: Cancel keeps the session, Stop ends it; Mark as holds the three marks", async ({ browser, api, state }) => {
+  const s = await launch(api, state.root, 'e2e stop asks')
+  const page = await dayPage(browser, { server: state, path: `/sessions/${s.id}` })
+  await connected(page)
+  const more = page.getByRole('button', { name: 'More', exact: true })
+  const menu = page.getByRole('menu')
+  const palette = page.locator('[data-palette]')
+  const ask = palette.locator('[data-palette-ask]')
+
+  // Mark as: one item, its three marks under it; Needs you sets the session's mark.
+  await more.click()
+  await expect(page.getByRole('menuitem', { name: 'Mark as needs input' })).toHaveCount(0)
+  await page.getByRole('menuitem', { name: 'Mark as', exact: true }).hover()
+  await expect(page.getByRole('menuitem', { name: 'Working', exact: true })).toBeVisible()
+  await expect(page.getByRole('menuitem', { name: 'Clear the mark' })).toBeVisible()
+  await page.getByRole('menuitem', { name: 'Needs you', exact: true }).click()
+  await expect(menu).toHaveCount(0)
+  await expect.poll(async () => (await api.session(s.id)).attention?.state, { timeout: 15_000 }).toBe('needs_input')
+
+  // Stop session…, then Cancel: the question asked, and the session still running.
+  await more.click()
+  await page.getByRole('menuitem', { name: 'Stop session…' }).click()
+  await expect(menu).toHaveCount(0)
+  await expect(ask).toContainText('Stop e2e stop asks?')
+  await expect(ask).toContainText('Its terminal closes. Resume brings the conversation back from Exited.')
+  await ask.getByRole('button', { name: 'Cancel', exact: true }).click()
+  await expect(ask).toHaveCount(0)
+  // The palette stays on its row, as after X: Escape goes to its search, and Escape there closes it.
+  await page.keyboard.press('Escape')
+  await expect(palette.locator('input[data-palette-input]')).toBeFocused()
+  await page.keyboard.press('Escape')
+  await expect(palette).toBeHidden()
+  expect((await api.session(s.id)).status).toBe('running')
+
+  // Stop session…, then Stop: the session ends.
+  await more.click()
+  await page.getByRole('menuitem', { name: 'Stop session…' }).click()
+  await expect(menu).toHaveCount(0)
+  await ask.getByRole('button', { name: 'Stop', exact: true }).click()
+  await expect.poll(async () => (await api.session(s.id)).status, { timeout: 15_000 }).toMatch(/exited|stopped/)
+})
