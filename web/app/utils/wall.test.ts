@@ -135,9 +135,31 @@ describe('wallTracks', () => {
     expect(wallTracks('large', 1, 1680, 600).columns).toBe('repeat(1, minmax(0, 1fr))')
   })
 
+  it('Columns: one row, each tile at least 260 px wide, scrolling sideways; Rows: one column, each at least 140 px tall', () => {
+    for (const n of counts) {
+      const c = wallTracks('columns', n, 1680, 600)
+      expect(c.columns).toBe(`repeat(${n}, minmax(${TILE_MIN_WIDTH}px, 1fr))`)
+      expect(c.rows).toBe('minmax(0, 1fr)')
+      expect(c.scroll).toBe('x')
+      expect(c.cells).toEqual(Array(n).fill({}))
+      expect(c.large).toBe(-1)
+      const r = wallTracks('rows', n, 1680, 600)
+      expect(r.columns).toBe('minmax(0, 1fr)')
+      expect(r.rows).toBe(`repeat(${n}, minmax(${TILE_MIN_HEIGHT}px, 1fr))`)
+      expect(r.scroll).toBe('y')
+      expect(r.cells).toEqual(Array(n).fill({}))
+    }
+    // Six members at 2000 x 810 in Columns: six of about 272 px fit the 1680 px wall; twelve scroll.
+    expect(6 * TILE_MIN_WIDTH + 5 * TILE_GAP).toBeLessThanOrEqual(1680)
+    expect(12 * TILE_MIN_WIDTH + 11 * TILE_GAP).toBeGreaterThan(1680)
+    expect(wallTracks('grid', 3, 1680, 600).scroll).toBe('y')
+    expect(wallTracks('large', 3, 1680, 600).scroll).toBe('y')
+  })
+
   it('names its layouts in the order the switch draws them', () => {
-    expect(RUN_LAYOUTS).toEqual(['grid', 'large'])
-    expect(RUN_LAYOUTS.map((l) => RUN_LAYOUT_LOOK[l].label)).toEqual(['Grid', 'One large'])
+    expect(RUN_LAYOUTS).toEqual(['grid', 'columns', 'rows', 'large'])
+    expect(RUN_LAYOUTS.map((l) => RUN_LAYOUT_LOOK[l].label)).toEqual(['Grid', 'Columns', 'Rows', 'One large'])
+    expect(isRunLayout('rows')).toBe(true)
     expect(isRunLayout('large')).toBe(true)
     expect(isRunLayout('focus')).toBe(false)
   })

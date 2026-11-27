@@ -123,7 +123,7 @@ function small(i: number) {
     <div
       ref="grid"
       class="grid min-h-0 min-w-0 flex-1 gap-3"
-      :class="narrow ? 'flex-none' : 'h-full overflow-y-auto'"
+      :class="narrow ? 'flex-none' : ['h-full', tracks.scroll === 'x' ? 'overflow-x-auto overflow-y-hidden' : 'overflow-y-auto']"
       :style="gridStyle"
       :data-run-layout="narrow ? 'stacked' : props.layout"
       data-run-grid
