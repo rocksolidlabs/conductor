@@ -4,6 +4,7 @@ import type { PermissionAnswer, TranscriptEntry, TranscriptPartName, TranscriptR
 import { ReplyError, type ReplyTaken } from '~/utils/reply'
 import { answerOf, atChatEnd, chatBlocks, limitReads, OWN_ANSWER_LINE, promptLine, promptText, readPart, stepsLine, type ChatTurn } from '~/utils/transcript'
 import { MAX_TRANSCRIPT_IN_FLIGHT } from '~/utils/protocol'
+import { plainWords } from '~/utils/permissionInput'
 
 /**
  * A session run as a chat (docs/plans/chat-or-terminal.md, design 11), where its terminal is drawn otherwise: quiet by design. What
@@ -171,6 +172,43 @@ function showQuestion() {
 defineExpose({ showQuestion })
 
 /**
+ * The oldest open permission request, and whether its card is out of the conversation's view (UX3 R71): then one amber line above the
+ * box says what it asks, with `Show it`, which brings the card back with the focus on its first button. Measured as the person
+ * scrolls, as the chat changes and as the pane is sized; gone once the card is in view or answered.
+ */
+const openAsk = computed(() => {
+  for (const b of blocks.value) {
+    if (b.kind !== 'turn') continue
+    for (const it of b.items) if (it.kind === 'permission' && it.entry.state === 'open') return it.entry
+  }
+  return undefined
+})
+const askAway = ref(false)
+function measureAway() {
+  const el = scroller.value
+  const card = el?.querySelector<HTMLElement>('[data-permission-question][data-permission-state="open"]')
+  if (!el || !card || props.tile) {
+    askAway.value = false
+    return
+  }
+  const r = card.getBoundingClientRect()
+  const s = el.getBoundingClientRect()
+  askAway.value = r.bottom <= s.top || r.top >= s.bottom
+}
+watch(
+  () => conn.transcriptVersion.value,
+  () => void nextTick(measureAway),
+  { flush: 'post' },
+)
+let sized: ResizeObserver | undefined
+onMounted(() => {
+  if (typeof ResizeObserver === 'undefined' || !scroller.value) return
+  sized = new ResizeObserver(() => measureAway())
+  sized.observe(scroller.value)
+})
+onBeforeUnmount(() => sized?.disconnect())
+
+/**
  * The box takes the cursor as the chat is drawn and once a question is answered, when nothing else holds it (UX3 R4), unless choices
  * show (their number keys answer) or the question is one the box does not answer (a permission request's own buttons do).
  */
@@ -205,7 +243,7 @@ watch(
     :data-turn-running="running || undefined"
     :inert="tile || undefined"
   >
-    <div ref="scroller" class="min-h-0 flex-1 overflow-x-hidden" :class="tile ? 'overflow-y-hidden px-2.5 py-2 text-xs' : 'overflow-y-auto px-4 py-4'" data-chat-scroll>
+    <div ref="scroller" class="min-h-0 flex-1 overflow-x-hidden" @scroll.passive="measureAway" :class="tile ? 'overflow-y-hidden px-2.5 py-2 text-xs' : 'overflow-y-auto px-4 py-4'" data-chat-scroll>
       <div class="mx-auto flex flex-col" :class="tile ? 'gap-2' : 'max-w-3xl gap-4'">
         <ChatNote v-if="note && !noteAfter" :site="note.site" :host="siteHost" @dismiss="emit('dismissNote')" />
         <template v-for="b in blocks" :key="b.key">
@@ -260,6 +298,13 @@ watch(
     <!-- The chat's foot, in the conversation's column: the card for the agent's question (the page's `ask`) just above the box, so
          that what it asks and where to answer sit together. The card draws nothing while nothing is asked. -->
     <div v-if="$slots.ask || controls" class="mx-auto w-full max-w-3xl border-t border-default" data-chat-foot>
+      <div v-if="askAway && openAsk" class="px-3 pt-2.5" data-chat-permission-away>
+        <div class="flex items-center gap-3 rounded-lg border border-warning bg-warning/10 px-3.5 py-2">
+          <span class="size-2 flex-none rounded-full bg-warning" aria-hidden="true" />
+          <p class="min-w-0 flex-1 break-words text-sm text-default"><span class="font-semibold">{{ agentName || 'The agent' }} asks:</span> {{ plainWords(openAsk.plain) }}</p>
+          <UButton label="Show it" size="sm" color="neutral" variant="outline" class="flex-none" data-chat-permission-show @click="showQuestion" />
+        </div>
+      </div>
       <div v-if="$slots.ask" class="px-3 [&_[data-quick-reply]]:mt-2.5" data-chat-ask><slot name="ask" /></div>
       <ChatComposer
         v-if="controls"

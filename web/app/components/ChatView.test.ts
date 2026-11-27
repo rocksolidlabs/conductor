@@ -129,6 +129,13 @@ describe('the chat', () => {
     expect(terminal).not.toContain('Runs as a chat.')
   })
 
+  it('leavesALineForARequestOutOfView: an open permission card scrolled away is said above the box, with Show it', () => {
+    expect(view).toContain("if (it.kind === 'permission' && it.entry.state === 'open') return it.entry")
+    expect(view).toContain('askAway.value = r.bottom <= s.top || r.top >= s.bottom')
+    expect(view).toContain('@scroll.passive="measureAway"')
+    expect(template(view)).toMatch(/<div v-if="askAway && openAsk"[^>]*data-chat-permission-away>[\s\S]*asks:<\/span> \{\{ plainWords\(openAsk\.plain\) \}\}[\s\S]*label="Show it"[^>]*@click="showQuestion"/)
+  })
+
   it("followsOnlyAtTheEnd: where the person is, is measured as a change arrives, before it is drawn; one reading above the end stays", () => {
     expect(atChatEnd({ scrollHeight: 2000, scrollTop: 1500, clientHeight: 500 })).toBe(true)
     expect(atChatEnd({ scrollHeight: 2000, scrollTop: 1500 - CHAT_END_SLACK + 1, clientHeight: 500 })).toBe(true)
