@@ -957,9 +957,15 @@ async function standIn(page: Page, state: E2EState, platform: Platform, server?:
   await page.addInitScript(
     ({ token, form, url, platform, server }) => {
       const settings = { ...form }
-      const w = window as unknown as { conductorDesktop: unknown; e2eSets: object[]; e2eRestarts: number }
+      const w = window as unknown as { conductorDesktop: unknown; e2eSets: object[]; e2eRestarts: number; e2eAllow: (dir: string) => void }
       w.e2eSets = []
       w.e2eRestarts = 0
+      // A folder allowed outside the page (the Launch agent dialog's press): the app keeps it and tells the page (UX3 R62).
+      const told: Array<() => void> = []
+      w.e2eAllow = (dir: string) => {
+        settings.allowedRoots = [...settings.allowedRoots, dir]
+        for (const cb of told) cb()
+      }
       w.conductorDesktop = {
         version: 'e2e',
         platform,
@@ -983,6 +989,10 @@ async function standIn(page: Page, state: E2EState, platform: Platform, server?:
         allowIceFirewall: async () => 'present',
         versions: async () => ({ app: 'e2e', electron: '', node: '', chrome: '', server: '' }),
         onServerState: () => () => {},
+        onSettings: (cb: () => void) => {
+          told.push(cb)
+          return () => told.splice(told.indexOf(cb), 1)
+        },
       }
     },
     { token: state.token, form, url: state.baseURL, platform, server },
@@ -1803,3 +1813,46 @@ test.describe('on a phone, a long note', () => {
     saveAtTheRight(await saveBarOf(page), 2)
   })
 })
+
+
+// A folder allowed from a dialog while Settings is open (UX3 R62): it joins the form's list without losing its edits, is no change of
+// this form (not in "Changed:", nothing it costs), Discard keeps it, and the next Save sends it with the rest.
+for (const size of [{ width: 2000, height: 810, touch: false }, { width: 390, height: 844, touch: true }]) {
+  test.describe(`at ${size.width} × ${size.height}, a folder allowed elsewhere`, () => {
+    test.use({ viewport: { width: size.width, height: size.height }, hasTouch: size.touch, isMobile: size.touch })
+
+    test('joins the open form, keeps its edits, is no change of its own, and the next Save keeps it', async ({ page, state }) => {
+      test.setTimeout(20 * 15_000)
+      await standIn(page, state, 'linux')
+      await page.goto('/settings')
+      await settled(page, 'linux')
+      const allow = (dir: string) => page.evaluate((dir) => (window as unknown as { e2eAllow: (d: string) => void }).e2eAllow(dir), dir)
+      const chip = (dir: string) => page.locator(`[data-root-chip="${dir}"]`)
+      const words = page.locator('[data-settings-changed]')
+      const save = page.locator('[data-save-settings]')
+      // Untouched but for Yolo: the folder joins, and the bar names How agents run alone.
+      const pressed = join(state.root, 'r62-pressed')
+      await page.locator('[data-yolo-switch]').click()
+      await allow(pressed)
+      await expect(chip(pressed)).toBeVisible()
+      await expect(words).toHaveText('Changed: How agents run. Saving restarts the server.')
+      await expect(page.locator('[data-yolo-switch]')).toHaveAttribute('aria-checked', 'true')
+      // Discard keeps it: it was never this form's change.
+      await page.locator('[data-settings-discard]').click()
+      await expect(chip(pressed)).toBeVisible()
+      await expect(save).toBeDisabled()
+      // The folders list edited here (one more added), then another folder allowed: both kept, and Save sends every folder.
+      const own = pickerFolder(state.root, 'r62-typed')
+      await addFolder(page, own.pick)
+      const second = join(state.root, 'r62-pressed-again')
+      await allow(second)
+      await expect(chip(second)).toBeVisible()
+      await expect(chip(own.pick)).toBeVisible()
+      await expect(words).toHaveText('Changed: Where agents work. Saving restarts the server.')
+      await save.click()
+      await expect(page.getByText('Saved; the server restarted', { exact: true })).toBeVisible()
+      const sent = await page.evaluate(() => (window as unknown as { e2eSets: Array<{ allowedRoots: string[] }> }).e2eSets.map((x) => x.allowedRoots))
+      expect(sent).toEqual([[state.root, pressed, own.pick, second]])
+    })
+  })
+}

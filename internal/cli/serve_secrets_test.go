@@ -183,3 +183,38 @@ func readLine(t *testing.T, r *bufio.Reader) string {
 	}
 	return line
 }
+
+// A server whose stdin has ended before it would print its handshake
+// prints none, and shuts down: the end of stdin is watched before the
+// handshake, which a parent that told it to stop while it started never
+// gets. The seam holds the handshake until the end has been seen (the old
+// order never sees it there, and prints).
+func TestServePrintsNoHandshakeOnceStdinHasEnded(t *testing.T) {
+	clearConductorEnv(t)
+	dir := t.TempDir()
+	cfg := writeServeConfig(t, dir, fmt.Sprintf(`{"workbenchToken": "t", "allowedRoots": [%q], "defaultCwd": %q, "dataDir": %q}`, dir, dir, filepath.Join(dir, "state")))
+	t.Cleanup(agents.ForgetBinary())
+	deadline, wait := startDeadline(t)
+	var seen bool
+	beforeHandshake = func(ended <-chan struct{}) {
+		select {
+		case <-ended:
+			seen = true
+		case <-deadline:
+		}
+	}
+	t.Cleanup(func() { beforeHandshake = nil })
+	var logs, out syncBuffer
+	ctx, cancel := context.WithTimeout(t.Context(), wait+30*time.Second)
+	defer cancel()
+	code, err := runServe(ctx, []string{"--listen", "127.0.0.1:0", "--config", cfg, "--print-listen", "--exit-on-stdin-close"}, strings.NewReader(""), &out, &logs)
+	if err != nil || code != 0 {
+		t.Fatalf("serve: exit %d: %v\n%s", code, err, logs.String())
+	}
+	if !seen {
+		t.Fatalf("the end of stdin was not seen before the handshake:\n%s", logs.String())
+	}
+	if out.String() != "" {
+		t.Fatalf("a handshake was printed after stdin ended: %q", out.String())
+	}
+}
