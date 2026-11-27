@@ -1,0 +1,150 @@
+[
+  {
+    "name": "--config",
+    "aliases": [
+      "-c"
+    ],
+    "value": "required",
+    "placeholder": "key=value",
+    "about": "Changes one setting for this run. The value is read as TOML (`a.b.c`)."
+  },
+  {
+    "name": "--enable",
+    "value": "required",
+    "placeholder": "FEATURE",
+    "about": "Turns a feature on (repeatable)"
+  },
+  {
+    "name": "--model",
+    "aliases": [
+      "-m"
+    ],
+    "value": "required",
+    "placeholder": "MODEL",
+    "about": "The model the agent uses",
+    "kind": "model",
+    "set": "model"
+  },
+  {
+    "name": "--local-provider",
+    "value": "required",
+    "placeholder": "PROVIDER",
+    "about": "Which local provider to use (first or second). Without it the setting decides",
+    "choices": [
+      {
+        "value": "first"
+      },
+      {
+        "value": "second"
+      }
+    ],
+    "kind": "choice"
+  },
+  {
+    "name": "--sandbox",
+    "aliases": [
+      "-s"
+    ],
+    "value": "required",
+    "placeholder": "SANDBOX_MODE",
+    "about": "How the commands it runs are fenced in",
+    "choices": [
+      {
+        "value": "read-only"
+      },
+      {
+        "value": "workspace-write"
+      },
+      {
+        "value": "danger-full-access",
+        "set": "yolo"
+      }
+    ],
+    "kind": "choice"
+  },
+  {
+    "name": "--approve-for-me",
+    "value": "none",
+    "about": "Sends the questions to an automatic review",
+    "set": "yolo"
+  },
+  {
+    "name": "--dangerously-bypass-approvals-and-sandbox",
+    "value": "none",
+    "about": "Asks nothing and fences nothing",
+    "set": "yolo"
+  },
+  {
+    "name": "--dangerously-bypass-hook-trust",
+    "value": "none",
+    "about": "Runs hooks without asking whether they are trusted",
+    "set": "yolo"
+  },
+  {
+    "name": "--cd",
+    "aliases": [
+      "-C"
+    ],
+    "value": "required",
+    "placeholder": "DIR",
+    "about": "The folder to work in",
+    "kind": "folder",
+    "set": "launch"
+  },
+  {
+    "name": "--add-dir",
+    "value": "required",
+    "placeholder": "DIR",
+    "about": "Another folder the agent may write in",
+    "kind": "folder"
+  },
+  {
+    "name": "--ask-for-approval",
+    "aliases": [
+      "-a"
+    ],
+    "value": "required",
+    "placeholder": "APPROVAL_POLICY",
+    "about": "When to ask before a command runs",
+    "choices": [
+      {
+        "value": "on-request",
+        "about": "The model asks when it wants to"
+      },
+      {
+        "value": "never",
+        "about": "Never asks",
+        "set": "yolo"
+      }
+    ],
+    "kind": "choice"
+  },
+  {
+    "name": "--image",
+    "aliases": [
+      "-i"
+    ],
+    "value": "required",
+    "placeholder": "FILE",
+    "repeat": true,
+    "about": "Pictures to attach to the first prompt"
+  },
+  {
+    "name": "--help",
+    "aliases": [
+      "-h"
+    ],
+    "value": "none",
+    "about": "Prints help",
+    "set": "exit"
+  },
+  {
+    "name": "--version",
+    "aliases": [
+      "-V"
+    ],
+    "value": "none",
+    "about": "Prints the version",
+    "set": "exit"
+  }
+]
