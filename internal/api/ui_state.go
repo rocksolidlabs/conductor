@@ -26,8 +26,9 @@ import (
 // directory's writer id, ui/writer), at most maxUIDoc bytes:
 //
 //   - layout: the editor's layout and splits, the sidebar's mode, width
-//     and folds, the crew graph's switches and the run and project pages'
-//     views: enums, fractions and bounded numbers only;
+//     and folds, the crew graph's switches, the run and project pages'
+//     views and the run page's last layout of its tiles: enums, booleans,
+//     fractions and bounded numbers only;
 //   - palette: the palette's recents, by row key, at most uiMaxRecents;
 //   - pins: the pinned sessions, at most uiMaxPins.
 //
@@ -92,6 +93,7 @@ type uiLayoutDoc struct {
 	Editor      *uiEditor    `json:"editor,omitempty"`
 	Sidebar     *uiSidebar   `json:"sidebar,omitempty"`
 	CrewGraph   *uiCrewGraph `json:"crewGraph,omitempty"`
+	RunTiles    *uiRunTiles  `json:"runTiles,omitempty"`
 	RunView     string       `json:"runView,omitempty"`
 	ProjectView string       `json:"projectView,omitempty"`
 }
@@ -112,6 +114,14 @@ type uiCrewGraph struct {
 	Direction string `json:"direction,omitempty"` // LR | TB
 	Handoffs  *bool  `json:"handoffs,omitempty"`
 	Members   *bool  `json:"members,omitempty"`
+}
+
+// uiRunTiles is the run page's last choice for its members' tiles, which
+// a crew opened for the first time takes: their layout and whether the
+// Activity column is beside them.
+type uiRunTiles struct {
+	Layout   string `json:"layout,omitempty"` // grid | columns | rows | large
+	Activity *bool  `json:"activity,omitempty"`
 }
 
 // uiPaletteDoc is the palette document's content: each row key's uses.
@@ -151,6 +161,7 @@ var (
 	uiSections     = map[string]bool{"needs": true, "finished": true, "working": true, "shared": true, "exited": true, "pinned": true}
 	uiRunViews     = map[string]bool{"grid": true, "graph": true, "timeline": true, "tasks": true}
 	uiProjectViews = map[string]bool{"list": true, "board": true, "roadmap": true}
+	uiTileLayouts  = map[string]bool{"grid": true, "columns": true, "rows": true, "large": true}
 )
 
 // fraction reports whether v is absent or a share in [0, 1].
@@ -184,6 +195,9 @@ func (d uiLayoutDoc) check() error {
 	}
 	if g := d.CrewGraph; g != nil && g.Direction != "" && g.Direction != "LR" && g.Direction != "TB" {
 		return errors.New("crewGraph.direction is LR or TB")
+	}
+	if t := d.RunTiles; t != nil && t.Layout != "" && !uiTileLayouts[t.Layout] {
+		return errors.New("runTiles.layout is grid, columns, rows or large")
 	}
 	if d.RunView != "" && !uiRunViews[d.RunView] {
 		return errors.New("runView is grid, graph, timeline or tasks")

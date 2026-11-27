@@ -530,3 +530,63 @@ func TestAUIDocumentIsBoundedAsItIsStored(t *testing.T) {
 		t.Fatalf("the next PUT's document: %v", got)
 	}
 }
+
+// The layout keeps the run page's last choice for its members' tiles
+// (runTiles): each of the four layouts, with Activity on and with it
+// off, is kept and answered as put; an unknown layout, a member runTiles
+// does not have and a value of the wrong type are refused, and the
+// document kept stays; a document past the bound is refused with it.
+func TestUIStateKeepsTheRunTiles(t *testing.T) {
+	t.Parallel()
+	e := newTestEnv(t, nil)
+	for _, layout := range []string{"grid", "columns", "rows", "large"} {
+		for _, activity := range []bool{true, false} {
+			putUIDoc(t, e, "layout", map[string]any{"v": 1, "runView": "grid", "runTiles": map[string]any{"layout": layout, "activity": activity}}, http.StatusOK)
+			got := e.expect(t, "GET", "/api/ui/layout", nil, http.StatusOK, "")
+			if rt, _ := got["runTiles"].(map[string]any); rt["layout"] != layout || rt["activity"] != activity || got["runView"] != "grid" {
+				t.Fatalf("%s with activity %v read back: %v", layout, activity, got)
+			}
+		}
+	}
+	for _, c := range []struct {
+		body any
+		want string
+	}{
+		{map[string]any{"v": 1, "runTiles": map[string]any{"layout": "focus"}}, "runTiles.layout is grid, columns, rows or large"},
+		{map[string]any{"v": 1, "runTiles": map[string]any{"layout": "grid", "large": "core"}}, `unknown field "large"`},
+		{map[string]any{"v": 1, "runTiles": map[string]any{"activity": "yes"}}, "cannot unmarshal"},
+		{map[string]any{"v": 1, "runTiles": map[string]any{"layout": 2}}, "cannot unmarshal"},
+		{map[string]any{"v": 1, "runTiles": "grid"}, "cannot unmarshal"},
+	} {
+		out := putUIDoc(t, e, "layout", c.body, http.StatusBadRequest)
+		if errorCode(out) != "invalid_request" || !strings.Contains(apiMessage(out), c.want) {
+			t.Errorf("%v: %v", c.body, out)
+		}
+	}
+	if rt, _ := uiFile(t, e, "layout")["runTiles"].(map[string]any); rt["layout"] != "large" || rt["activity"] != false {
+		t.Fatalf("a refused layout changed the one kept: %v", rt)
+	}
+	big := []byte(`{"v":1,"runTiles":{"layout":"rows","activity":true},"runView":"` + strings.Repeat("x", maxUIDoc) + `"}`)
+	if out := putUIDoc(t, e, "layout", big, http.StatusRequestEntityTooLarge); errorCode(out) != "bound" {
+		t.Fatalf("past its bound: %v", out)
+	}
+}
+
+// A layout another machine left that holds runTiles is taken through the
+// sync store's door, and one whose runTiles is past its schema is refused.
+func TestALayoutFromElsewhereKeepsItsRunTiles(t *testing.T) {
+	ctx := context.Background()
+	e, own := syncDoorsEnv(t, newFakeSync())
+	t0 := time.Now().UTC().Add(-time.Hour).Truncate(time.Millisecond)
+	doc := laterDoc(t, map[string]any{"v": 1, "runTiles": map[string]any{"layout": "columns", "activity": true}}, t0, strings.Repeat("a", 32))
+	if err := own.SetUIState(ctx, "layout", doc); err != nil {
+		t.Fatal(err)
+	}
+	if rt, _ := uiFile(t, e, "layout")["runTiles"].(map[string]any); rt["layout"] != "columns" || rt["activity"] != true {
+		t.Fatalf("the layout as kept: %v", rt)
+	}
+	bad := laterDoc(t, map[string]any{"v": 1, "runTiles": map[string]any{"layout": "mosaic"}}, t0.Add(time.Second), strings.Repeat("b", 32))
+	if err := own.SetUIState(ctx, "layout", bad); !errors.Is(err, ext.ErrRefused) || !strings.Contains(err.Error(), "runTiles.layout") {
+		t.Fatalf("a runTiles past its schema: %v", err)
+	}
+}
